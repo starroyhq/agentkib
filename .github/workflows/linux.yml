@@ -22,7 +22,7 @@ jobs:
     runs-on: ubuntu-24.04-arm
     timeout-minutes: 25
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Install Linux build dependencies
         run: |
@@ -33,11 +33,11 @@ jobs:
             librsvg2-dev libxdo-dev libfuse2 libglib2.0-bin \
             desktop-file-utils xdg-utils dbus-x11 xvfb
 
-      - uses: pnpm/action-setup@v4
+      - uses: pnpm/action-setup@v6
         with:
           run_install: false
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v7
         with:
           node-version: 22
 
@@ -68,7 +68,7 @@ jobs:
 
       - name: Upload Ubuntu ARM64 check log
         if: failure()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: agentkib-linux-ubuntu-arm64-preview-log
           if-no-files-found: warn
@@ -90,13 +90,13 @@ jobs:
             librsvg2-devel libxdo-devel rpm-build rpmdevtools cpio \
             desktop-file-utils xdg-utils dbus-daemon xorg-x11-server-Xvfb util-linux
 
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
-      - uses: pnpm/action-setup@v4
+      - uses: pnpm/action-setup@v6
         with:
           run_install: false
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v7
         with:
           node-version: 22
 
@@ -124,7 +124,7 @@ jobs:
 
       - name: Upload Fedora x64 check log
         if: failure()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: agentkib-linux-fedora-x64-log
           if-no-files-found: warn

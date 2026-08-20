@@ -31,7 +31,7 @@ jobs:
       CARGO_TERM_COLOR: always
     steps:
       - name: Checkout selected revision
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           ref: ${{ inputs.release_tag || github.sha }}
           fetch-depth: 0
@@ -45,12 +45,12 @@ jobs:
             libayatana-appindicator3-dev librsvg2-dev libxdo-dev
 
       - name: Setup pnpm
-        uses: pnpm/action-setup@v4
+        uses: pnpm/action-setup@v6
         with:
           run_install: false
 
       - name: Setup Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v7
         with:
           node-version: 22
           cache: pnpm
@@ -218,7 +218,7 @@ jobs:
 
     steps:
       - name: Checkout selected revision
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           ref: ${{ needs.preflight.outputs.release_sha }}
 
@@ -235,12 +235,12 @@ jobs:
             xdg-utils dbus-x11 xvfb
 
       - name: Setup pnpm
-        uses: pnpm/action-setup@v4
+        uses: pnpm/action-setup@v6
         with:
           run_install: false
 
       - name: Setup Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v7
         with:
           node-version: 22
           cache: pnpm
@@ -344,7 +344,7 @@ jobs:
           done
 
       - name: Upload workflow artifacts
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: agentkib-desktop-${{ matrix.artifact }}
           path: ${{ env.DESKTOP_RELEASE_DIR }}/*
@@ -371,17 +371,17 @@ jobs:
             desktop-file-utils xdg-utils dbus-daemon xorg-x11-server-Xvfb util-linux
 
       - name: Checkout selected revision
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           ref: ${{ needs.preflight.outputs.release_sha }}
 
       - name: Setup pnpm
-        uses: pnpm/action-setup@v4
+        uses: pnpm/action-setup@v6
         with:
           run_install: false
 
       - name: Setup Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v7
         with:
           node-version: 22
           cache: pnpm
@@ -435,7 +435,7 @@ jobs:
           )
 
       - name: Upload workflow artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: agentkib-desktop-linux-fedora-x64
           path: ${{ env.DESKTOP_RELEASE_DIR }}/*
@@ -461,7 +461,7 @@ jobs:
 
     steps:
       - name: Download platform artifacts
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           pattern: agentkib-desktop-*
           path: ${{ env.WORKFLOW_ARTIFACTS_DIR }}
@@ -533,7 +533,18 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          query_error="$RUNNER_TEMP/release-query-error.txt"
+
+          find_release() {
+            gh api --paginate "repos/$GITHUB_REPOSITORY/releases?per_page=100" \
+              | jq -s --arg tag "$RELEASE_TAG" '
+                  add
+                  | map(select(.tag_name == $tag))
+                  | if length > 1 then error("multiple releases found for tag " + $tag)
+                    elif length == 1 then .[0]
+                    else empty
+                    end
+                '
+          }
 
           remote_tag_sha=$(gh api "repos/$GITHUB_REPOSITORY/commits/$RELEASE_TAG" --jq '.sha')
           if [[ "$remote_tag_sha" != "$RELEASE_SHA" ]]; then
@@ -541,18 +552,14 @@ jobs:
             exit 1
           fi
 
-          set +e
-          release_json=$(gh api "repos/$GITHUB_REPOSITORY/releases/tags/$RELEASE_TAG" 2>"$query_error")
-          query_status=$?
-          set -e
-
-          if [[ "$query_status" -eq 0 ]]; then
+          release_json=$(find_release)
+          if [[ -n "$release_json" ]]; then
             if [[ "$(jq -r '.draft' <<<"$release_json")" != true ]]; then
               echo "Release $RELEASE_TAG is already public; refusing to overwrite it" >&2
               exit 1
             fi
             echo "Resuming existing draft release $RELEASE_TAG"
-          elif grep -q 'HTTP 404' "$query_error"; then
+          else
             create_args=(
               release create "$RELEASE_TAG"
               --repo "$GITHUB_REPOSITORY"
@@ -566,10 +573,15 @@ jobs:
               create_args+=(--prerelease)
             fi
             gh "${create_args[@]}"
-          else
-            cat "$query_error" >&2
-            exit "$query_status"
+            release_json=$(find_release)
           fi
+
+          release_id=$(jq -r '.id // empty' <<<"$release_json")
+          if ! [[ "$release_id" =~ ^[0-9]+$ ]]; then
+            echo "Unable to resolve draft release ID for $RELEASE_TAG" >&2
+            exit 1
+          fi
+          echo "RELEASE_ID=$release_id" >> "$GITHUB_ENV"
 
       - name: Upload release assets
         shell: bash
@@ -590,7 +602,7 @@ jobs:
             printf '%s\t%s\n' "$(basename "$artifact")" "$(stat -c '%s' "$artifact")"
           done | LC_ALL=C sort > "$local_manifest"
 
-          gh api "repos/$GITHUB_REPOSITORY/releases/tags/$RELEASE_TAG" \
+          gh api "repos/$GITHUB_REPOSITORY/releases/$RELEASE_ID" \
             --jq '.assets[] | [.name, .size] | @tsv' \
             | LC_ALL=C sort > "$remote_manifest"
 
@@ -615,7 +627,7 @@ jobs:
               --latest
           fi
 
-          release_json=$(gh api "repos/$GITHUB_REPOSITORY/releases/tags/$RELEASE_TAG")
+          release_json=$(gh api "repos/$GITHUB_REPOSITORY/releases/$RELEASE_ID")
           if [[ "$(jq -r '.draft' <<<"$release_json")" != false ]]; then
             echo "Release $RELEASE_TAG remained a draft after publication" >&2
             exit 1

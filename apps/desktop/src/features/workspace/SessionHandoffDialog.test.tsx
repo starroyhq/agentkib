@@ -31,6 +31,18 @@ const session = {
   availability: "readable",
 } as ConversationSessionSummary;
 
+const capabilities = {
+  source_agent: "codex",
+  target_agent: "claude-code",
+  source_read: { status: "supported" },
+  source_parse: { status: "supported" },
+  native_resume: { status: "supported" },
+  file_handoff: { status: "supported" },
+  windowed_context: { status: "unavailable", reason: "mcp-not-connected" },
+  mcp_setup: { status: "supported" },
+  interactive_launch: { status: "supported" },
+} as const;
+
 const draft: SessionHandoffDraft = {
   filename: "continuation.md",
   format: "markdown",
@@ -39,6 +51,7 @@ const draft: SessionHandoffDraft = {
   source_fingerprint: "fingerprint",
   mode: "native-session",
   native_capability: { supported: true, beta: true },
+  capabilities,
   stats: {
     turn_count: 100,
     message_count: 60,
@@ -175,7 +188,20 @@ describe("SessionHandoffDialog", () => {
   ] as const)(
     "explains that %s cannot read a private archive instead of offering MCP setup",
     async (targetAgent, agentLabel) => {
-      vi.mocked(api.prepareSessionHandoff).mockResolvedValue({ status: "ready", draft });
+      vi.mocked(api.prepareSessionHandoff).mockResolvedValue({
+        status: "ready",
+        draft: {
+          ...draft,
+          capabilities: {
+            ...capabilities,
+            target_agent: targetAgent,
+            native_resume: { status: "unsupported", reason: "target-not-supported" },
+            windowed_context: { status: "unsupported", reason: "target-not-supported" },
+            mcp_setup: { status: "unsupported", reason: "target-not-supported" },
+            interactive_launch: { status: "unsupported", reason: "target-not-supported" },
+          },
+        },
+      });
       render(
         <SessionHandoffDialog
           workspace={workspace}

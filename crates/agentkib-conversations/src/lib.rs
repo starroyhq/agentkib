@@ -15,8 +15,10 @@ use walkdir::WalkDir;
 
 mod archive;
 mod continuation;
+mod opencode;
 pub use archive::*;
 pub use continuation::*;
+pub use opencode::OpenCodeProvider;
 
 const MAX_TITLE_CHARS: usize = 200;
 const MAX_MESSAGE_BYTES: usize = 256 * 1024;
@@ -881,6 +883,7 @@ pub fn providers() -> Vec<Box<dyn ConversationProvider + Send + Sync>> {
     vec![
         Box::new(CodexProvider::default()),
         Box::new(ClaudeProvider::default()),
+        Box::new(OpenCodeProvider::default()),
     ]
 }
 
@@ -888,6 +891,7 @@ pub fn provider(agent: AgentKind) -> Option<Box<dyn ConversationProvider + Send 
     match agent {
         AgentKind::Codex => Some(Box::new(CodexProvider::default())),
         AgentKind::ClaudeCode => Some(Box::new(ClaudeProvider::default())),
+        AgentKind::OpenCode => Some(Box::new(OpenCodeProvider::default())),
         _ => None,
     }
 }

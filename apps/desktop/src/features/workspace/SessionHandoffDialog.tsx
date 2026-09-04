@@ -17,6 +17,7 @@ import { api } from "@/core/api";
 import { localizeMessage, tr } from "@/core/i18n";
 import type {
   AgentKind,
+  ContinuationCapabilityStatus,
   ConversationSessionSummary,
   HandoffFormat,
   PlannedSessionHandoff,
@@ -113,7 +114,9 @@ export function SessionHandoffDialog({
     [draft?.losses],
   );
   const reasoningExcluded = draft?.losses.find((loss) => loss.code === "reasoning-excluded");
-  const supportsMcpSetup = targetAgent === "codex" || targetAgent === "claude-code";
+  const mcpSetupStatus = draft?.capabilities?.mcp_setup.status;
+  const nativeCapabilityReason =
+    draft?.capabilities?.native_resume.reason ?? draft?.native_capability.reason;
 
   const showDraft = (nextDraft: SessionHandoffDraft) => {
     setDraft(nextDraft);
@@ -170,7 +173,7 @@ export function SessionHandoffDialog({
   };
 
   const planMcpConnection = async () => {
-    if (!supportsMcpSetup) return;
+    if (mcpSetupStatus !== "supported") return;
     const identity = captureIdentity();
     setBusy(true);
     setError("");
@@ -322,6 +325,26 @@ export function SessionHandoffDialog({
                 active: formatEstimatedTokens(draft.window_stats.estimated_active_tokens),
               })}
             </p>
+            {draft.capabilities && (
+              <div className="grid gap-2 rounded-lg border border-border/70 bg-muted/20 p-3">
+                <strong className="text-xs uppercase tracking-[.08em] text-muted-foreground">
+                  {tr("handoff.capabilities.title")}
+                </strong>
+                <div className="grid gap-2 sm:grid-cols-2">
+                  {(Object.keys(capabilityLabels) as Array<keyof typeof capabilityLabels>).map(
+                    (capability) => (
+                      <div
+                        className="flex items-center justify-between gap-3 rounded-md bg-background px-2.5 py-2 text-xs"
+                        key={capability}
+                      >
+                        <span>{tr(capabilityLabels[capability])}</span>
+                        <CapabilityStatus status={draft.capabilities[capability].status} />
+                      </div>
+                    ),
+                  )}
+                </div>
+              </div>
+            )}
             {draft.window_strategy === "windowed" && (
               <div
                 className={`grid grid-cols-[auto_minmax(0,1fr)_auto] items-start gap-2 rounded-lg border px-3 py-2 text-sm ${
@@ -337,16 +360,18 @@ export function SessionHandoffDialog({
                         turns: draft.window_stats.deferred_turn_count,
                         blocks: draft.window_stats.deferred_block_count,
                       })
-                    : supportsMcpSetup
+                    : mcpSetupStatus === "supported"
                       ? tr("handoff.window.mcpRequired", {
                           turns: draft.window_stats.deferred_turn_count,
                           blocks: draft.window_stats.deferred_block_count,
                         })
-                      : tr("handoff.window.mcpUnsupported", {
-                          agent: agentName(targetAgent),
-                        })}
+                      : mcpSetupStatus === "unavailable"
+                        ? tr("handoff.window.mcpUnavailable")
+                        : tr("handoff.window.mcpUnsupported", {
+                            agent: agentName(targetAgent),
+                          })}
                 </span>
-                {!draft.mcp_available && supportsMcpSetup && (
+                {!draft.mcp_available && mcpSetupStatus === "supported" && (
                   <Button
                     size="sm"
                     className="shrink-0"
@@ -359,9 +384,9 @@ export function SessionHandoffDialog({
                 )}
               </div>
             )}
-            {draft.native_capability.reason && (
+            {nativeCapabilityReason && (
               <p className="m-0 text-xs text-muted-foreground">
-                {tr(`handoff.capabilityReason.${draft.native_capability.reason}`)}
+                {tr(`handoff.capabilityReason.${nativeCapabilityReason}`)}
               </p>
             )}
             {reasoningExcluded && (
@@ -545,4 +570,32 @@ function formatEstimatedTokens(value: number) {
 
 function agentName(agent: AgentKind) {
   return sessionHandoffTargets.find(([value]) => value === agent)?.[1] ?? agent;
+}
+
+const capabilityLabels = {
+  source_read: "handoff.capabilities.sourceRead",
+  source_parse: "handoff.capabilities.sourceParse",
+  native_resume: "handoff.capabilities.nativeResume",
+  file_handoff: "handoff.capabilities.fileHandoff",
+  windowed_context: "handoff.capabilities.windowedContext",
+  mcp_setup: "handoff.capabilities.mcpSetup",
+  interactive_launch: "handoff.capabilities.interactiveLaunch",
+} as const;
+
+function CapabilityStatus({ status }: { status: ContinuationCapabilityStatus }) {
+  return (
+    <span
+      className={`rounded-full px-2 py-0.5 text-[11px] font-medium ${
+        status === "supported"
+          ? "bg-emerald-500/10 text-emerald-700"
+          : status === "unavailable"
+            ? "bg-amber-500/10 text-amber-700"
+            : status === "unsupported"
+              ? "bg-muted text-muted-foreground"
+              : "bg-blue-500/10 text-blue-700"
+      }`}
+    >
+      {tr(`handoff.capabilities.status.${status}`)}
+    </span>
+  );
 }

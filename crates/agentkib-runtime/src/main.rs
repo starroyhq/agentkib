@@ -14,13 +14,14 @@ use std::time::{Duration, Instant};
 mod obsidian;
 
 use agentkib_conversations::{
-    HandoffFormat, NativeImportCapability, SessionContinuationMode, SessionDocument,
-    SessionHandoffDraftV2, SessionHandoffPreparationV2, SessionHandoffRequest,
-    SessionWindowStrategy, archive_directory, build_session_archive, fingerprint,
-    plan_session_window, provider, providers, render_claude_native_session_with_notice,
-    render_codex_native_session_with_notice, render_handoff_with_notice, sanitize_handoff_export,
-    stats, validate_history_budget, validate_native_jsonl, validate_native_roundtrip,
-    validate_session_archive, windowed_import_notice,
+    ContinuationCapabilities, ContinuationCapability, ContinuationCapabilityStatus, HandoffFormat,
+    NativeImportCapability, SessionContinuationMode, SessionDocument, SessionHandoffDraftV2,
+    SessionHandoffPreparationV2, SessionHandoffRequest, SessionWindowStrategy, archive_directory,
+    build_session_archive, fingerprint, plan_session_window, provider, providers,
+    render_claude_native_session_with_notice, render_codex_native_session_with_notice,
+    render_handoff_with_notice, sanitize_handoff_export, stats, validate_history_budget,
+    validate_native_jsonl, validate_native_roundtrip, validate_session_archive,
+    windowed_import_notice,
 };
 use agentkib_core::{AgentKind, McpNetworkSettings, encode_url_path_segment};
 use agentkib_discovery::discover as discover_local_workspaces;
@@ -909,7 +910,7 @@ fn refresh_workspace_sessions(
     let store = Store::open_default()?;
     if !request.force {
         let statuses = store.conversation_index_status(&request.workspace_id)?;
-        if statuses.len() == 2
+        if statuses.len() == providers().len()
             && statuses.iter().all(|status| {
                 status.freshness == agentkib_conversations::SessionIndexFreshness::Fresh
             })
@@ -1109,6 +1110,8 @@ enum SessionHandoffLaunchRequest {
         target_path: PathBuf,
         archive_id: Option<String>,
         archive_hash: Option<String>,
+        #[serde(default)]
+        capabilities: Option<ContinuationCapabilities>,
     },
     HandoffFile {
         workspace_id: String,
@@ -1116,6 +1119,8 @@ enum SessionHandoffLaunchRequest {
         target_agent: AgentKind,
         archive_id: Option<String>,
         archive_hash: Option<String>,
+        #[serde(default)]
+        capabilities: Option<ContinuationCapabilities>,
     },
 }
 
@@ -1259,6 +1264,16 @@ fn prepare_session_handoff(
             )
         })
         .unwrap_or_else(|| agentkib_conversations::import_notice().into());
+    let mcp_available = continuation_mcp_status(window.strategy, || {
+        continuation_mcp_available(&continuation_workspace_id, envelope.request.target_agent)
+    })?;
+    let capabilities = continuation_capabilities(
+        source.agent,
+        envelope.request.target_agent,
+        &native_capability,
+        window.strategy,
+        mcp_available,
+    )?;
     let content = render_handoff_with_notice(
         &window.active_document,
         envelope.request.target_agent,
@@ -1291,12 +1306,8 @@ fn prepare_session_handoff(
             window_strategy: window.strategy,
             window_stats: window.stats,
             archive_id,
-            mcp_available: continuation_mcp_status(window.strategy, || {
-                continuation_mcp_available(
-                    &continuation_workspace_id,
-                    envelope.request.target_agent,
-                )
-            })?,
+            mcp_available,
+            capabilities,
             losses: document.losses.clone(),
         },
     })
@@ -1401,13 +1412,24 @@ fn plan_session_handoff(
     )?;
     let archive_id =
         (window.strategy == SessionWindowStrategy::Windowed).then_some(planning_archive_id);
+    let native_capability = native_import_capability(request.target_agent);
+    let mcp_available = continuation_mcp_status(window.strategy, || {
+        continuation_mcp_available(&continuation_workspace_id, request.target_agent)
+    })?;
+    let capabilities = continuation_capabilities(
+        source.agent,
+        request.target_agent,
+        &native_capability,
+        window.strategy,
+        mcp_available,
+    )?;
     anyhow::ensure!(
         archive_id == request.archive_id,
         "Continuation window changed after the preview was prepared"
     );
     if archive_id.is_some() {
         anyhow::ensure!(
-            continuation_mcp_available(&continuation_workspace_id, request.target_agent)?,
+            capabilities.windowed_context.status == ContinuationCapabilityStatus::Supported,
             "AgentKib MCP must be connected before a windowed continuation can be applied"
         );
     }
@@ -1433,9 +1455,8 @@ fn plan_session_handoff(
         None
     };
     if request.mode == SessionContinuationMode::NativeSession {
-        let capability = native_import_capability(request.target_agent);
         anyhow::ensure!(
-            capability.supported,
+            native_capability.supported,
             "Native session import is no longer available"
         );
         let artifact = plan_native_session_artifact(
@@ -1462,6 +1483,7 @@ fn plan_session_handoff(
                 archive_hash: archive
                     .as_ref()
                     .map(|value| value.manifest.document_sha256.clone()),
+                capabilities: Some(capabilities),
             },
         });
     }
@@ -1509,6 +1531,7 @@ fn plan_session_handoff(
             archive_hash: archive
                 .as_ref()
                 .map(|value| value.manifest.document_sha256.clone()),
+            capabilities: Some(capabilities),
         },
     })
 }
@@ -1935,6 +1958,107 @@ fn native_import_capability(target: AgentKind) -> NativeImportCapability {
             }
         }),
     }
+}
+
+fn continuation_capability(
+    status: ContinuationCapabilityStatus,
+    reason: Option<&str>,
+) -> ContinuationCapability {
+    ContinuationCapability {
+        status,
+        reason: reason.map(str::to_owned),
+    }
+}
+
+fn native_resume_capability(
+    target: AgentKind,
+    native: &NativeImportCapability,
+) -> ContinuationCapability {
+    if !matches!(target, AgentKind::Codex | AgentKind::ClaudeCode) {
+        return continuation_capability(
+            ContinuationCapabilityStatus::Unsupported,
+            Some("target-not-supported"),
+        );
+    }
+    if native.supported {
+        return continuation_capability(ContinuationCapabilityStatus::Supported, None);
+    }
+    let status = match native.reason.as_deref() {
+        Some("cli-unavailable" | "agent-home-not-writable") => {
+            ContinuationCapabilityStatus::Unavailable
+        }
+        _ => ContinuationCapabilityStatus::Unsupported,
+    };
+    continuation_capability(status, native.reason.as_deref())
+}
+
+fn continuation_capabilities(
+    source: AgentKind,
+    target: AgentKind,
+    native: &NativeImportCapability,
+    window_strategy: SessionWindowStrategy,
+    mcp_available: bool,
+) -> anyhow::Result<ContinuationCapabilities> {
+    let target_supports_continuation = matches!(target, AgentKind::Codex | AgentKind::ClaudeCode);
+    let mcp_setup = if !target_supports_continuation {
+        continuation_capability(
+            ContinuationCapabilityStatus::Unsupported,
+            Some("target-not-supported"),
+        )
+    } else if mcp_hub()?.status().running {
+        continuation_capability(ContinuationCapabilityStatus::Supported, None)
+    } else {
+        continuation_capability(
+            ContinuationCapabilityStatus::Unavailable,
+            Some("mcp-hub-unavailable"),
+        )
+    };
+    let windowed_context = if !target_supports_continuation {
+        continuation_capability(
+            ContinuationCapabilityStatus::Unsupported,
+            Some("target-not-supported"),
+        )
+    } else if window_strategy == SessionWindowStrategy::Full || mcp_available {
+        continuation_capability(ContinuationCapabilityStatus::Supported, None)
+    } else {
+        continuation_capability(
+            ContinuationCapabilityStatus::Unavailable,
+            Some("mcp-not-connected"),
+        )
+    };
+    let interactive_launch = if !target_supports_continuation {
+        continuation_capability(
+            ContinuationCapabilityStatus::Unsupported,
+            Some("target-not-supported"),
+        )
+    } else if resolve_agent_cli(target).is_some() {
+        continuation_capability(ContinuationCapabilityStatus::Supported, None)
+    } else {
+        continuation_capability(
+            ContinuationCapabilityStatus::Unavailable,
+            Some("cli-unavailable"),
+        )
+    };
+    Ok(ContinuationCapabilities {
+        source_agent: source,
+        target_agent: target,
+        source_read: continuation_capability(ContinuationCapabilityStatus::Supported, None),
+        source_parse: continuation_capability(ContinuationCapabilityStatus::Supported, None),
+        native_resume: native_resume_capability(target, native),
+        file_handoff: continuation_capability(ContinuationCapabilityStatus::Supported, None),
+        windowed_context,
+        mcp_setup,
+        interactive_launch,
+    })
+}
+
+fn resolve_agent_cli(target: AgentKind) -> Option<PathBuf> {
+    let command = match target {
+        AgentKind::Codex => "codex",
+        AgentKind::ClaudeCode => "claude",
+        _ => return None,
+    };
+    agentkib_platform::command::resolve(command)
 }
 
 const NATIVE_VERSION_PROBE_TIMEOUT: Duration = Duration::from_secs(2);

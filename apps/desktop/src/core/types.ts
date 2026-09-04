@@ -1031,6 +1031,26 @@ export interface NativeImportCapability {
   beta: boolean;
   reason?: string;
 }
+export type ContinuationCapabilityStatus =
+  | "supported"
+  | "unavailable"
+  | "unsupported"
+  | "unverified";
+export interface ContinuationCapability {
+  status: ContinuationCapabilityStatus;
+  reason?: string | null;
+}
+export interface ContinuationCapabilities {
+  source_agent: AgentKind;
+  target_agent: AgentKind;
+  source_read: ContinuationCapability;
+  source_parse: ContinuationCapability;
+  native_resume: ContinuationCapability;
+  file_handoff: ContinuationCapability;
+  windowed_context: ContinuationCapability;
+  mcp_setup: ContinuationCapability;
+  interactive_launch: ContinuationCapability;
+}
 export interface SessionImportStats {
   turn_count: number;
   message_count: number;
@@ -1061,6 +1081,7 @@ export interface SessionHandoffDraft {
   source_fingerprint: string;
   mode: SessionContinuationMode;
   native_capability: NativeImportCapability;
+  capabilities: ContinuationCapabilities;
   stats: SessionImportStats;
   history_budget_tokens: number;
   window_strategy: SessionWindowStrategy;
@@ -1079,6 +1100,7 @@ export type SessionHandoffLaunchRequest =
       target_path: string;
       archive_id?: string;
       archive_hash?: string;
+      capabilities?: ContinuationCapabilities;
     }
   | {
       mode: "handoff-file";
@@ -1087,6 +1109,7 @@ export type SessionHandoffLaunchRequest =
       target_agent: AgentKind;
       archive_id?: string;
       archive_hash?: string;
+      capabilities?: ContinuationCapabilities;
     };
 export interface PlannedSessionHandoff {
   change_set: ChangeSet;

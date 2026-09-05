@@ -463,11 +463,11 @@ function WorkspacesPage({
                 {pageStart}–{pageEnd} / {filtered.length}
               </span>
               {totalPages > 1 && (
-                <div className="flex items-center gap-1" aria-label="工作区分页">
+                <div className="flex items-center gap-1" aria-label={tr("workspace.pagination")}>
                   <Button
                     variant="ghost"
                     size="icon-sm"
-                    aria-label="上一页"
+                    aria-label={tr("workspace.previousPage")}
                     disabled={activePage === 1}
                     onClick={() => setPage((value) => Math.max(1, value - 1))}
                   >
@@ -479,7 +479,7 @@ function WorkspacesPage({
                   <Button
                     variant="ghost"
                     size="icon-sm"
-                    aria-label="下一页"
+                    aria-label={tr("workspace.nextPage")}
                     disabled={activePage === totalPages}
                     onClick={() => setPage((value) => Math.min(totalPages, value + 1))}
                   >

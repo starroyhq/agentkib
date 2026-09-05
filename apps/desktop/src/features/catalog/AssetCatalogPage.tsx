@@ -1,13 +1,6 @@
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader } from "@/components/ui/card";
-import {
-  Dialog,
-  DialogContent,
-  DialogDescription,
-  DialogHeader,
-  DialogTitle,
-} from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import {
   Select,
@@ -25,9 +18,19 @@ import {
   TableRow,
 } from "@/components/ui/table";
 import { cn } from "@/lib/utils";
-import { ChevronRight, FileCode2, Library, Search, X } from "lucide-react";
-import { useMemo, useState } from "react";
-import { formatDateTime, tr } from "@/core/i18n";
+import { AgentIcon } from "@/features/agents/AgentIcon";
+import {
+  ChevronLeft,
+  ChevronRight,
+  FileCode2,
+  Grid2X2,
+  Library,
+  List,
+  Search,
+  X,
+} from "lucide-react";
+import { useEffect, useMemo, useState } from "react";
+import { tr } from "@/core/i18n";
 import type { AgentKind, WorkspaceSummary } from "@/core/types";
 import type { CatalogAssetGroup } from "@/features/catalog/catalog";
 
@@ -42,6 +45,8 @@ const agentLabels: Record<AgentKind, string> = {
   "deepseek-harness": "DeepSeek Harness",
 };
 
+const ASSETS_PER_PAGE = 6;
+
 function shortPath(path: string) {
   const parts = path.split("/").filter(Boolean);
   return parts.length > 3 ? `…/${parts.slice(-3).join("/")}` : path;
@@ -52,6 +57,22 @@ function formatBytes(bytes: number) {
   if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
   if (bytes < 1024 * 1024 * 1024) return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
   return `${(bytes / (1024 * 1024 * 1024)).toFixed(2)} GB`;
+}
+
+function formatCatalogDateTime(value: string) {
+  const parts = Object.fromEntries(
+    new Intl.DateTimeFormat("en-GB", {
+      year: "numeric",
+      month: "2-digit",
+      day: "2-digit",
+      hour: "2-digit",
+      minute: "2-digit",
+      hourCycle: "h23",
+    })
+      .formatToParts(new Date(value))
+      .map(({ type, value: part }) => [type, part]),
+  );
+  return `${parts.year}.${parts.month}.${parts.day} ${parts.hour}:${parts.minute}`;
 }
 
 function AssetIcon() {
@@ -75,6 +96,8 @@ export function AssetCatalogPage({ assets, workspaces, onOpen }: AssetCatalogPag
   const [workspaceId, setWorkspaceId] = useState("all");
   const [ownership, setOwnership] = useState<"all" | "shared" | "native">("all");
   const [selectedId, setSelectedId] = useState<string>();
+  const [viewMode, setViewMode] = useState<"table" | "grid">("table");
+  const [page, setPage] = useState(1);
 
   const kinds = useMemo(() => [...new Set(assets.map((asset) => asset.kind))].sort(), [assets]);
   const showKind = kinds.length > 1;
@@ -92,7 +115,24 @@ export function AssetCatalogPage({ assets, workspaces, onOpen }: AssetCatalogPag
       );
     });
   }, [agent, assets, kind, ownership, query, workspaceId]);
-  const selected = assets.find((asset) => asset.id === selectedId);
+  useEffect(() => {
+    setPage(1);
+  }, [agent, kind, ownership, query, workspaceId]);
+  const totalPages = Math.max(1, Math.ceil(filtered.length / ASSETS_PER_PAGE));
+  const activePage = Math.min(page, totalPages);
+  const paginated = filtered.slice(
+    (activePage - 1) * ASSETS_PER_PAGE,
+    activePage * ASSETS_PER_PAGE,
+  );
+  const pageStart = filtered.length ? (activePage - 1) * ASSETS_PER_PAGE + 1 : 0;
+  const pageEnd = Math.min(activePage * ASSETS_PER_PAGE, filtered.length);
+  const selected = paginated.find((asset) => asset.id === selectedId);
+  const activeSelectedId = selected?.id;
+  const goToPage = (nextPage: number) => {
+    const nextActivePage = Math.min(Math.max(1, nextPage), totalPages);
+    setPage(nextActivePage);
+    setSelectedId(filtered[(nextActivePage - 1) * ASSETS_PER_PAGE]?.id);
+  };
   const workspaceName = (id?: string) =>
     workspaces.find((workspace) => workspace.id === id)?.name ?? "—";
   const controlClass = "h-10 w-[136px] min-w-0";
@@ -186,8 +226,8 @@ export function AssetCatalogPage({ assets, workspaces, onOpen }: AssetCatalogPag
 
   return (
     <div className="grid min-w-0 gap-4">
-      <section className="grid gap-4">
-        <div className="flex flex-col gap-3 xl:flex-row">
+      <section className="rounded-2xl border border-border bg-card p-3 shadow-sm">
+        <div className="flex flex-col gap-3 xl:flex-row xl:items-center">
           <label className="flex h-10 min-w-0 flex-1 items-center gap-2 rounded-xl border border-border bg-card px-3 text-muted-foreground shadow-xs transition-colors focus-within:border-primary focus-within:ring-2 focus-within:ring-primary/15">
             <Search size={16} aria-hidden="true" />
             <Input
@@ -208,193 +248,329 @@ export function AssetCatalogPage({ assets, workspaces, onOpen }: AssetCatalogPag
               </Button>
             )}
           </label>
-          {filterControls}
+          <div className="flex flex-wrap gap-2 xl:justify-end">{filterControls}</div>
         </div>
       </section>
-      <Card className="min-w-0 overflow-hidden rounded-2xl border-border bg-card shadow-sm">
-        <CardHeader className="flex min-h-[58px] flex-row items-center justify-between gap-3 border-b border-border px-4 py-3 sm:px-5">
-          <div>
-            <h2 className="text-base font-semibold tracking-tight">{tr("catalog.asset")}</h2>
-            <p className="mt-0.5 text-xs text-muted-foreground">
-              {filtered.length} {tr("common.assets")}
-            </p>
-          </div>
-        </CardHeader>
-        <CardContent className="p-0">
-          <Table className="min-w-[860px] border-separate border-spacing-0 [&_th]:h-11 [&_th]:bg-muted/30 [&_th]:text-[11px] [&_th]:font-semibold [&_th]:uppercase [&_th]:tracking-[.08em] [&_th]:text-muted-foreground [&_td]:h-[76px]">
-            <TableHeader>
-              <TableRow className="border-border hover:bg-transparent">
-                <TableHead>{tr("catalog.asset")}</TableHead>
-                {showKind && <TableHead>{tr("catalog.type")}</TableHead>}
-                <TableHead className="hidden md:table-cell">{tr("catalog.workspace")}</TableHead>
-                <TableHead className="hidden lg:table-cell">
-                  {tr("catalog.visibleAgents")}
-                </TableHead>
-                <TableHead className="hidden sm:table-cell">{tr("assets.size")}</TableHead>
-                <TableHead className="hidden xl:table-cell">{tr("catalog.modified")}</TableHead>
-              </TableRow>
-            </TableHeader>
-            <TableBody>
-              {filtered.map((asset) => {
-                const visibleAgents = asset.agents.slice(0, 2);
-                const hiddenAgentCount = asset.agents.length - visibleAgents.length;
-                const allAgents = asset.agents.map((value) => agentLabels[value]).join(", ");
-                const allOwners = [allAgents, ...(asset.shared ? [tr("catalog.shared")] : [])]
-                  .filter(Boolean)
-                  .join(", ");
-                return (
-                  <TableRow
-                    key={asset.id}
-                    tabIndex={0}
-                    role="button"
-                    aria-selected={selectedId === asset.id}
-                    data-state={selectedId === asset.id ? "selected" : undefined}
-                    className={cn(
-                      "cursor-pointer transition-colors hover:bg-muted/40 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring",
-                      selectedId === asset.id && "bg-muted/60 hover:bg-muted/70",
-                    )}
-                    onClick={() => setSelectedId(asset.id)}
-                    onKeyDown={(event) => {
-                      if (event.key === "Enter" || event.key === " ") {
-                        event.preventDefault();
-                        setSelectedId(asset.id);
-                      }
-                    }}
-                  >
-                    <TableCell className="max-w-[420px]">
-                      <div className="flex min-w-0 items-center gap-3">
-                        <AssetIcon />
-                        <span className="min-w-0">
-                          <strong className="block truncate text-sm font-semibold text-foreground">
-                            {asset.name}
-                          </strong>
-                          <small
-                            className="mt-0.5 block truncate text-xs text-muted-foreground"
-                            title={asset.path}
-                          >
-                            {shortPath(asset.path)}
-                          </small>
-                        </span>
-                      </div>
-                    </TableCell>
-                    {showKind && (
-                      <TableCell>
-                        <Badge variant="secondary" className="font-medium">
-                          {tr(`status.asset.${asset.kind}`)}
-                        </Badge>
-                      </TableCell>
-                    )}
-                    <TableCell className="hidden max-w-[180px] truncate text-sm text-muted-foreground md:table-cell">
-                      {workspaceName(asset.workspace_id)}
-                    </TableCell>
-                    <TableCell className="hidden lg:table-cell">
-                      <div
-                        className="flex flex-wrap items-center gap-1.5"
-                        aria-label={allOwners}
-                        title={allOwners}
-                      >
-                        {visibleAgents.map((value) => (
-                          <Badge key={value} variant="outline" className="font-medium">
-                            {agentLabels[value]}
-                          </Badge>
-                        ))}
-                        {hiddenAgentCount > 0 && (
-                          <Badge variant="secondary">+{hiddenAgentCount}</Badge>
-                        )}
-                        {asset.shared && <Badge variant="secondary">{tr("catalog.shared")}</Badge>}
-                      </div>
-                    </TableCell>
-                    <TableCell className="hidden whitespace-nowrap text-sm tabular-nums text-muted-foreground sm:table-cell">
-                      {formatBytes(asset.size)}
-                    </TableCell>
-                    <TableCell className="hidden whitespace-nowrap text-sm text-muted-foreground xl:table-cell">
-                      {asset.modified_at ? formatDateTime(asset.modified_at) : "—"}
-                    </TableCell>
-                  </TableRow>
-                );
-              })}
-            </TableBody>
-          </Table>
-          {!filtered.length && (
-            <div className="grid min-h-[240px] place-items-center px-6 py-10 text-center">
-              <div className="grid justify-items-center gap-2">
-                <span className="grid size-10 place-items-center rounded-full bg-muted text-muted-foreground">
-                  <Library size={18} />
-                </span>
-                <h3 className="text-sm font-semibold text-foreground">{tr("catalog.noMatch")}</h3>
-                <p className="max-w-sm text-sm leading-6 text-muted-foreground">
-                  {tr("catalog.noMatchText")}
-                </p>
-              </div>
-            </div>
-          )}
-        </CardContent>
-      </Card>
-
-      <Dialog
-        open={Boolean(selected)}
-        onOpenChange={(open) => {
-          if (!open) setSelectedId(undefined);
-        }}
+      <div
+        className={cn(
+          "grid min-w-0 gap-4",
+          selected && "grid-cols-[minmax(0,1fr)_minmax(300px,380px)] max-[500px]:grid-cols-1",
+        )}
       >
+        <Card className="min-w-0 overflow-hidden rounded-2xl border-border bg-card shadow-sm">
+          <CardHeader className="flex min-h-[58px] flex-row items-center justify-between gap-3 border-b border-border px-4 py-3 sm:px-5">
+            <div>
+              <h2 className="text-sm font-semibold tracking-tight">{tr("catalog.asset")}</h2>
+              <p className="mt-0.5 text-xs tabular-nums text-muted-foreground">
+                {filtered.length} {tr("common.assets")}
+              </p>
+            </div>
+            <div className="flex items-center gap-1 rounded-lg border border-border bg-background p-1">
+              <Button
+                variant="ghost"
+                size="icon-sm"
+                className={viewMode === "table" ? "bg-muted text-foreground" : ""}
+                aria-label={tr("catalog.viewTable")}
+                aria-pressed={viewMode === "table"}
+                onClick={() => setViewMode("table")}
+              >
+                <List size={15} />
+              </Button>
+              <Button
+                variant="ghost"
+                size="icon-sm"
+                className={viewMode === "grid" ? "bg-muted text-foreground" : ""}
+                aria-label={tr("catalog.viewGrid")}
+                aria-pressed={viewMode === "grid"}
+                onClick={() => setViewMode("grid")}
+              >
+                <Grid2X2 size={15} />
+              </Button>
+            </div>
+          </CardHeader>
+          <CardContent className="p-0">
+            <div className="h-[456px] overflow-y-auto">
+              {viewMode === "table" ? (
+                <Table className="w-full table-fixed min-w-0 border-separate border-spacing-0 [&_th]:h-11 [&_th]:overflow-hidden [&_th]:bg-muted/30 [&_th]:text-xs [&_th]:font-medium [&_th]:text-muted-foreground [&_td]:h-[68px] [&_td]:overflow-hidden">
+                  <TableHeader>
+                    <TableRow className="border-border hover:bg-transparent">
+                      <TableHead className="w-[38%]">{tr("catalog.asset")}</TableHead>
+                      {showKind && (
+                        <TableHead className="w-[100px]">{tr("catalog.type")}</TableHead>
+                      )}
+                      <TableHead className="hidden w-[20%] md:table-cell">
+                        {tr("catalog.workspace")}
+                      </TableHead>
+                      <TableHead className="hidden w-[128px] min-w-[128px] whitespace-nowrap lg:table-cell">
+                        {tr("catalog.visibleAgents")}
+                      </TableHead>
+                      <TableHead className="hidden w-[92px] whitespace-nowrap sm:table-cell">
+                        {tr("assets.size")}
+                      </TableHead>
+                      <TableHead className="hidden w-[150px] whitespace-nowrap xl:table-cell">
+                        {tr("catalog.modified")}
+                      </TableHead>
+                    </TableRow>
+                  </TableHeader>
+                  <TableBody>
+                    {paginated.map((asset) => {
+                      const visibleAgents = asset.agents.slice(0, 2);
+                      const hiddenAgentCount = asset.agents.length - visibleAgents.length;
+                      const allAgents = asset.agents.map((value) => agentLabels[value]).join(", ");
+                      const allOwners = [allAgents, ...(asset.shared ? [tr("catalog.shared")] : [])]
+                        .filter(Boolean)
+                        .join(", ");
+                      return (
+                        <TableRow
+                          key={asset.id}
+                          tabIndex={0}
+                          role="button"
+                          aria-selected={activeSelectedId === asset.id}
+                          data-state={activeSelectedId === asset.id ? "selected" : undefined}
+                          className={cn(
+                            "cursor-pointer transition-colors hover:bg-muted/40 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring",
+                            activeSelectedId === asset.id && "bg-muted/60 hover:bg-muted/70",
+                          )}
+                          onClick={() => setSelectedId(asset.id)}
+                          onKeyDown={(event) => {
+                            if (event.key === "Enter" || event.key === " ") {
+                              event.preventDefault();
+                              setSelectedId(asset.id);
+                            }
+                          }}
+                        >
+                          <TableCell className="max-w-[420px]">
+                            <div className="flex min-w-0 items-center gap-3">
+                              <AssetIcon />
+                              <span className="min-w-0">
+                                <strong className="block truncate text-sm font-semibold text-foreground">
+                                  {asset.name}
+                                </strong>
+                                <small
+                                  className="mt-0.5 block truncate text-xs text-muted-foreground"
+                                  title={asset.path}
+                                >
+                                  {shortPath(asset.path)}
+                                </small>
+                              </span>
+                            </div>
+                          </TableCell>
+                          {showKind && (
+                            <TableCell>
+                              <Badge variant="secondary" className="font-medium">
+                                {tr(`status.asset.${asset.kind}`)}
+                              </Badge>
+                            </TableCell>
+                          )}
+                          <TableCell className="hidden max-w-0 truncate text-sm text-muted-foreground md:table-cell">
+                            {workspaceName(asset.workspace_id)}
+                          </TableCell>
+                          <TableCell className="hidden w-[128px] min-w-[128px] lg:table-cell">
+                            <div className="flex min-w-0 items-center gap-0" aria-label={allOwners}>
+                              {visibleAgents.map((value) => (
+                                <span
+                                  className="grid size-5 shrink-0 place-items-center overflow-hidden rounded-md border border-border bg-background"
+                                  key={value}
+                                  title={agentLabels[value]}
+                                  aria-label={agentLabels[value]}
+                                >
+                                  <AgentIcon agent={value} compact />
+                                </span>
+                              ))}
+                              {hiddenAgentCount > 0 && (
+                                <span
+                                  className="grid size-5 shrink-0 place-items-center rounded-md bg-muted text-[9px] font-semibold text-muted-foreground"
+                                  title={`${hiddenAgentCount} more agents`}
+                                  aria-label={`${hiddenAgentCount} more agents`}
+                                >
+                                  +{hiddenAgentCount}
+                                </span>
+                              )}
+                              {asset.shared && (
+                                <span
+                                  className="grid size-5 shrink-0 place-items-center rounded-md bg-muted text-[9px] font-semibold text-muted-foreground"
+                                  title={tr("catalog.shared")}
+                                  aria-label={tr("catalog.shared")}
+                                >
+                                  ···
+                                </span>
+                              )}
+                            </div>
+                          </TableCell>
+                          <TableCell className="hidden max-w-0 truncate whitespace-nowrap text-sm tabular-nums text-muted-foreground sm:table-cell">
+                            {formatBytes(asset.size)}
+                          </TableCell>
+                          <TableCell className="hidden max-w-0 truncate whitespace-nowrap text-sm text-muted-foreground xl:table-cell">
+                            {asset.modified_at ? formatCatalogDateTime(asset.modified_at) : "—"}
+                          </TableCell>
+                        </TableRow>
+                      );
+                    })}
+                  </TableBody>
+                </Table>
+              ) : (
+                <div className="grid gap-3 p-3 sm:grid-cols-2 xl:grid-cols-3">
+                  {paginated.map((asset) => (
+                    <Button
+                      key={asset.id}
+                      variant="bare"
+                      size="content"
+                      className={cn(
+                        "grid min-w-0 gap-3 rounded-xl border border-border bg-background p-4 text-left transition-colors hover:border-primary/35 hover:bg-muted/35 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
+                        activeSelectedId === asset.id && "border-primary bg-primary/[0.06]",
+                      )}
+                      onClick={() => setSelectedId(asset.id)}
+                    >
+                      <div className="flex items-start justify-between gap-3">
+                        <div className="flex min-w-0 items-center gap-3">
+                          <AssetIcon />
+                          <span className="min-w-0">
+                            <strong className="block truncate text-sm text-foreground">
+                              {asset.name}
+                            </strong>
+                            <small className="mt-0.5 block truncate text-xs text-muted-foreground">
+                              {shortPath(asset.path)}
+                            </small>
+                          </span>
+                        </div>
+                        <ChevronRight size={15} className="mt-1 shrink-0 text-muted-foreground" />
+                      </div>
+                      <div className="flex flex-wrap gap-1.5">
+                        <Badge variant="secondary">{tr(`status.asset.${asset.kind}`)}</Badge>
+                        {asset.shared && <Badge variant="outline">{tr("catalog.shared")}</Badge>}
+                      </div>
+                      <div className="flex items-center justify-between gap-3 text-xs text-muted-foreground">
+                        <span className="truncate">{workspaceName(asset.workspace_id)}</span>
+                        <span className="shrink-0 tabular-nums">{formatBytes(asset.size)}</span>
+                      </div>
+                    </Button>
+                  ))}
+                </div>
+              )}
+              {!filtered.length && (
+                <div className="grid min-h-[240px] place-items-center px-6 py-10 text-center">
+                  <div className="grid justify-items-center gap-2">
+                    <span className="grid size-10 place-items-center rounded-full bg-muted text-muted-foreground">
+                      <Library size={18} />
+                    </span>
+                    <h3 className="text-sm font-semibold text-foreground">
+                      {tr("catalog.noMatch")}
+                    </h3>
+                    <p className="max-w-sm text-sm leading-6 text-muted-foreground">
+                      {tr("catalog.noMatchText")}
+                    </p>
+                  </div>
+                </div>
+              )}
+            </div>
+            {filtered.length > 0 && (
+              <div className="flex min-h-[58px] items-center justify-between gap-3 border-t border-border px-4 py-3 sm:px-5">
+                <span className="text-xs tabular-nums text-muted-foreground">
+                  {pageStart}–{pageEnd} / {filtered.length}
+                </span>
+                {totalPages > 1 && (
+                  <div className="flex items-center gap-1" aria-label={tr("catalog.pagination")}>
+                    <Button
+                      variant="ghost"
+                      size="icon-sm"
+                      aria-label={tr("catalog.previousPage")}
+                      disabled={activePage === 1}
+                      onClick={() => goToPage(activePage - 1)}
+                    >
+                      <ChevronLeft size={15} />
+                    </Button>
+                    <span className="min-w-[52px] text-center text-xs tabular-nums text-muted-foreground">
+                      {activePage} / {totalPages}
+                    </span>
+                    <Button
+                      variant="ghost"
+                      size="icon-sm"
+                      aria-label={tr("catalog.nextPage")}
+                      disabled={activePage === totalPages}
+                      onClick={() => goToPage(activePage + 1)}
+                    >
+                      <ChevronRight size={15} />
+                    </Button>
+                  </div>
+                )}
+              </div>
+            )}
+          </CardContent>
+        </Card>
+
         {selected && (
-          <DialogContent className="max-h-[min(720px,calc(100vh-2rem))] w-[min(640px,calc(100%-2rem))] max-w-[min(640px,calc(100%-2rem))] overflow-y-auto">
-            <DialogHeader className="pr-8">
+          <aside className="sticky top-4 grid h-fit max-h-[calc(100vh-6rem)] w-full grid-rows-[auto_minmax(0,1fr)_auto] gap-0 overflow-hidden rounded-2xl border border-border bg-card text-sm text-card-foreground shadow-sm">
+            <header className="relative border-b border-border px-5 py-4 pr-12">
               <div className="flex min-w-0 items-center gap-3">
                 <AssetIcon />
                 <div className="min-w-0">
                   <span className="block text-xs font-medium uppercase tracking-[0.12em] text-muted-foreground">
                     {tr("catalog.asset")}
                   </span>
-                  <DialogTitle className="truncate text-lg" title={selected.name}>
+                  <h2
+                    id="catalog-asset-title"
+                    className="truncate text-lg font-semibold"
+                    title={selected.name}
+                  >
                     {selected.name}
-                  </DialogTitle>
+                  </h2>
                 </div>
               </div>
+              <Button
+                variant="ghost"
+                size="icon-sm"
+                className="absolute right-3 top-3"
+                onClick={() => setSelectedId(undefined)}
+                aria-label={tr("common.close")}
+              >
+                <X size={15} />
+              </Button>
+            </header>
+            <div className="overflow-y-auto px-5 py-4">
               {selected.summary && (
-                <DialogDescription className="leading-6">{selected.summary}</DialogDescription>
+                <p className="mb-4 leading-6 text-muted-foreground">{selected.summary}</p>
               )}
-            </DialogHeader>
-            <dl className="grid gap-3">
-              <div className="grid gap-1 border-b border-border/70 pb-3">
-                <dt className="text-xs font-medium uppercase tracking-[0.1em] text-muted-foreground">
-                  {tr("catalog.type")}
-                </dt>
-                <dd className="text-sm font-medium text-foreground">
-                  {tr(`status.asset.${selected.kind}`)}
-                </dd>
-              </div>
-              <div className="grid gap-1 border-b border-border/70 pb-3">
-                <dt className="text-xs font-medium uppercase tracking-[0.1em] text-muted-foreground">
-                  {tr("catalog.workspace")}
-                </dt>
-                <dd className="text-sm font-medium text-foreground">
-                  {workspaceName(selected.workspace_id)}
-                </dd>
-              </div>
-              <div className="grid gap-1 border-b border-border/70 pb-3">
-                <dt className="text-xs font-medium uppercase tracking-[0.1em] text-muted-foreground">
-                  {tr("catalog.visibleAgents")}
-                </dt>
-                <dd className="text-sm font-medium text-foreground">
-                  {[
-                    ...selected.agents.map((value) => agentLabels[value]),
-                    ...(selected.shared ? [tr("catalog.shared")] : []),
-                  ].join(" · ")}
-                </dd>
-              </div>
-              <div className="grid gap-1">
-                <dt className="text-xs font-medium uppercase tracking-[0.1em] text-muted-foreground">
-                  {tr("catalog.path")}
-                </dt>
-                <dd className="break-all font-mono text-xs leading-5 text-muted-foreground">
-                  {selected.path}
-                </dd>
-              </div>
-            </dl>
+              <dl className="grid gap-4">
+                <div className="grid gap-1.5">
+                  <dt className="text-xs font-medium uppercase tracking-[0.1em] text-muted-foreground">
+                    {tr("catalog.type")}
+                  </dt>
+                  <dd className="text-sm font-medium text-foreground">
+                    {tr(`status.asset.${selected.kind}`)}
+                  </dd>
+                </div>
+                <div className="grid gap-1.5">
+                  <dt className="text-xs font-medium uppercase tracking-[0.1em] text-muted-foreground">
+                    {tr("catalog.workspace")}
+                  </dt>
+                  <dd className="text-sm font-medium text-foreground">
+                    {workspaceName(selected.workspace_id)}
+                  </dd>
+                </div>
+                <div className="grid gap-1.5">
+                  <dt className="text-xs font-medium uppercase tracking-[0.1em] text-muted-foreground">
+                    {tr("catalog.visibleAgents")}
+                  </dt>
+                  <dd className="text-sm font-medium text-foreground">
+                    {[
+                      ...selected.agents.map((value) => agentLabels[value]),
+                      ...(selected.shared ? [tr("catalog.shared")] : []),
+                    ].join(" · ")}
+                  </dd>
+                </div>
+                <div className="grid gap-1.5">
+                  <dt className="text-xs font-medium uppercase tracking-[0.1em] text-muted-foreground">
+                    {tr("catalog.path")}
+                  </dt>
+                  <dd className="break-all font-mono text-xs leading-5 text-muted-foreground">
+                    {selected.path}
+                  </dd>
+                </div>
+              </dl>
+            </div>
             {selected.workspace_id && (
               <Button
-                className="w-full justify-between"
+                className="mx-5 mb-5 w-[calc(100%-2.5rem)] justify-between rounded-xl"
                 onClick={() => {
                   setSelectedId(undefined);
                   onOpen(selected.workspace_id!);
@@ -404,9 +580,9 @@ export function AssetCatalogPage({ assets, workspaces, onOpen }: AssetCatalogPag
                 <ChevronRight size={15} />
               </Button>
             )}
-          </DialogContent>
+          </aside>
         )}
-      </Dialog>
+      </div>
     </div>
   );
 }

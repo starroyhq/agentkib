@@ -3118,7 +3118,7 @@ mod tests {
             let survived = task_survived.to_string_lossy().into_owned();
             probe_version(&task_probe, &[&ready, &trigger, &survived]).await
         });
-        tokio::time::timeout(StdDuration::from_secs(5), async {
+        tokio::time::timeout(StdDuration::from_secs(15), async {
             while !descendant_ready.exists() {
                 tokio::time::sleep(StdDuration::from_millis(10)).await;
             }

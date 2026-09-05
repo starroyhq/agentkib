@@ -39,6 +39,17 @@ const launchRequest: SessionHandoffLaunchRequest = {
   target_agent: "codex",
   target_session_id: "session",
   target_path: "/agent-home/sessions/import.jsonl",
+  capabilities: {
+    source_agent: "codex",
+    target_agent: "codex",
+    source_read: { status: "supported" },
+    source_parse: { status: "supported" },
+    native_resume: { status: "supported" },
+    file_handoff: { status: "supported" },
+    windowed_context: { status: "supported" },
+    mcp_setup: { status: "supported" },
+    interactive_launch: { status: "supported" },
+  },
 };
 
 describe("Changes", () => {

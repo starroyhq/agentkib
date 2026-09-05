@@ -78,8 +78,8 @@ export function QuotaWindowRow({
       size="content"
       type="button"
       className={cn(
-        "grid w-full gap-2.5 border-0 border-b border-border bg-transparent px-0 py-5 text-left text-foreground hover:bg-muted/60 hover:px-2.5",
-        target && "my-1 rounded-lg border border-primary/55 bg-primary/[0.08] px-3",
+        "grid w-full gap-2.5 rounded-xl border border-border bg-background px-4 py-4 text-left text-foreground transition-colors hover:border-primary/35 hover:bg-muted/45",
+        target && "border-primary/55 bg-primary/[0.08]",
       )}
       data-quota-target={target || undefined}
       onClick={() => onOpen(item)}
@@ -89,8 +89,8 @@ export function QuotaWindowRow({
   ) : (
     <article
       className={cn(
-        "grid w-full gap-2.5 border-0 border-b border-border bg-transparent px-0 py-5 text-left text-foreground",
-        target && "my-1 rounded-lg border border-primary/55 bg-primary/[0.08] px-3",
+        "grid w-full gap-2.5 rounded-xl border border-border bg-background px-4 py-4 text-left text-foreground",
+        target && "border-primary/55 bg-primary/[0.08]",
       )}
       data-quota-target={target || undefined}
     >

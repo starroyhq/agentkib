@@ -20,12 +20,16 @@ const agentIcons: Record<AgentKind, string> = {
   "deepseek-harness": deepSeekHarnessIcon,
 };
 
-export function AgentIcon({ agent }: { agent: AgentKind }) {
+export function AgentIcon({ agent, compact = false }: { agent: AgentKind; compact?: boolean }) {
   return (
-    <div className="grid size-9 place-items-center overflow-hidden" aria-hidden="true">
+    <div
+      className={cn("grid place-items-center overflow-hidden", compact ? "size-5" : "size-9")}
+      aria-hidden="true"
+    >
       <img
         className={cn(
-          "block size-8 object-contain",
+          "block object-contain",
+          compact ? "size-4" : "size-8",
           agent === "cursor" && "rounded-md bg-[#1d1d1f] p-1",
           agent === "opencode" && "dark:invert",
           agent === "hermes" && "opacity-[0.92] dark:invert",

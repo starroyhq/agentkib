@@ -125,6 +125,34 @@ pub struct NativeImportCapability {
     pub reason: Option<String>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum ContinuationCapabilityStatus {
+    Supported,
+    Unavailable,
+    Unsupported,
+    Unverified,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ContinuationCapability {
+    pub status: ContinuationCapabilityStatus,
+    pub reason: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ContinuationCapabilities {
+    pub source_agent: AgentKind,
+    pub target_agent: AgentKind,
+    pub source_read: ContinuationCapability,
+    pub source_parse: ContinuationCapability,
+    pub native_resume: ContinuationCapability,
+    pub file_handoff: ContinuationCapability,
+    pub windowed_context: ContinuationCapability,
+    pub mcp_setup: ContinuationCapability,
+    pub interactive_launch: ContinuationCapability,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SessionImportStats {
     pub turn_count: usize,
@@ -143,6 +171,7 @@ pub struct SessionHandoffDraftV2 {
     pub source_fingerprint: String,
     pub mode: SessionContinuationMode,
     pub native_capability: NativeImportCapability,
+    pub capabilities: ContinuationCapabilities,
     pub stats: SessionImportStats,
     pub history_budget_tokens: usize,
     pub window_strategy: SessionWindowStrategy,
@@ -1399,7 +1428,7 @@ fn render_jsonl(records: &[Value]) -> Result<String> {
     Ok(output)
 }
 
-fn finish_document(
+pub(crate) fn finish_document(
     source: &ConversationSessionSummary,
     mut turns: Vec<SessionTurn>,
     loss_counts: BTreeMap<SessionLossCode, usize>,

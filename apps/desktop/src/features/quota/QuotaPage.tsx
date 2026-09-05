@@ -298,26 +298,30 @@ export function QuotaPage({
       )}
       {snapshot && (
         <>
-          <section className="grid gap-3 rounded-2xl border border-border bg-card p-4 shadow-sm max-[900px]:p-3">
-            <div className="flex items-center justify-between gap-3">
-              <div>
-                <h2 className="text-base font-semibold tracking-tight">{tr("quota.providers")}</h2>
+          <div className="grid gap-4 lg:grid-cols-[minmax(250px,0.36fr)_minmax(0,1fr)]">
+            <section className="grid content-start gap-3 rounded-2xl border border-border bg-card p-4 shadow-sm max-[900px]:p-3">
+              <div className="flex items-center justify-between gap-3">
+                <h2 className="text-sm font-semibold tracking-tight">{tr("quota.providers")}</h2>
+                <Badge variant="outline">{tr(`quota.freshness.${snapshot.freshness}`)}</Badge>
               </div>
-              <Badge variant="outline">{tr(`quota.freshness.${snapshot.freshness}`)}</Badge>
-            </div>
-            <ProviderTabs providers={providers} selectedId={selectedId} onSelect={setSelectedId} />
-          </section>
+              <ProviderTabs
+                providers={providers}
+                selectedId={selectedId}
+                onSelect={setSelectedId}
+              />
+            </section>
+            {selected && (
+              <QuotaProviderDetail
+                provider={selected}
+                snapshot={snapshot}
+                targetWindow={initialWindow}
+              />
+            )}
+          </div>
           {!providers.length && (
             <div className="grid min-h-[180px] place-content-center text-sm text-muted-foreground">
               {tr("quota.noMatch")}
             </div>
-          )}
-          {selected && (
-            <QuotaProviderDetail
-              provider={selected}
-              snapshot={snapshot}
-              targetWindow={initialWindow}
-            />
           )}
         </>
       )}
@@ -337,7 +341,7 @@ function ProviderTabs({
   return (
     <Tabs value={selectedId} onValueChange={onSelect}>
       <TabsList
-        className="segmented-control !h-auto !gap-3 min-h-[92px] w-full items-stretch justify-start overflow-x-auto overflow-y-hidden"
+        className="grid !h-auto w-full grid-flow-col auto-cols-[minmax(210px,1fr)] items-stretch gap-2 overflow-x-auto overflow-y-hidden bg-transparent p-0 lg:grid-flow-row lg:grid-cols-1 lg:auto-cols-auto"
         variant="default"
         aria-label={tr("quota.providers")}
       >
@@ -351,7 +355,7 @@ function ProviderTabs({
               key={provider.id}
               value={provider.id}
               className={cn(
-                "relative grid h-auto min-h-[92px] min-w-[210px] flex-none grid-cols-[auto_minmax(0,1fr)_auto] grid-rows-[auto_auto] items-start gap-x-2.5 gap-y-0.5 justify-start rounded-xl border border-border bg-background px-3.5 py-3.5 text-left transition-colors hover:border-foreground/25 hover:bg-muted/30 data-active:!border-primary data-active:!bg-background data-active:!text-foreground data-active:!shadow-[0_0_0_1px_var(--primary)]",
+                "relative grid h-auto min-h-[86px] min-w-0 grid-cols-[auto_minmax(0,1fr)_auto] grid-rows-[auto_auto] items-start gap-x-2.5 gap-y-0.5 justify-start rounded-xl border border-border bg-background px-3.5 py-3.5 text-left transition-colors hover:border-foreground/25 hover:bg-muted/30 data-active:!border-primary data-active:!bg-background data-active:!text-foreground data-active:!shadow-[0_0_0_1px_var(--primary)]",
                 unavailable && "opacity-60",
               )}
             >
@@ -428,7 +432,7 @@ function QuotaProviderDetail({
   const targetKey = targetWindow ? quotaWindowKey(targetWindow) : undefined;
   const unavailable = providerIsUnavailable(provider);
   return (
-    <section className="w-full max-w-none overflow-hidden rounded-2xl border border-border bg-card px-5 pb-5 shadow-sm max-[900px]:px-4">
+    <section className="h-full w-full max-w-none overflow-hidden rounded-2xl border border-border bg-card px-5 pb-5 shadow-sm max-[900px]:px-4">
       <header className="-mx-5 grid min-h-[82px] grid-cols-[auto_minmax(0,1fr)_auto_auto] items-center gap-3 border-b border-border px-5 max-[900px]:mx-[-16px] max-[900px]:grid-cols-[auto_minmax(0,1fr)_auto] max-[900px]:px-4">
         <ProviderIcon provider={provider} />
         <div className="min-w-0">
@@ -458,7 +462,7 @@ function QuotaProviderDetail({
       </header>
 
       {direct.length > 0 && (
-        <div className="grid px-1">
+        <div className="grid gap-3 px-1 pt-5">
           {direct.map((item) => (
             <QuotaWindowRow key={item.key} item={item} target={item.key === targetKey} />
           ))}
@@ -488,7 +492,7 @@ function QuotaProviderDetail({
                   </time>
                 )}
               </header>
-              <div className="grid">
+              <div className="grid gap-3">
                 {accountWindows.map((item) => (
                   <QuotaWindowRow key={item.key} item={item} target={item.key === targetKey} />
                 ))}

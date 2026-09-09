@@ -1048,8 +1048,36 @@ export class WebAccessService {
       });
       this.streams.set(res, hash);
       let timer: ReturnType<typeof setTimeout>;
+      let drainTimer: ReturnType<typeof setTimeout> | undefined;
+      let backpressured = false;
       let previousData: string | undefined;
       let lastWriteAt = Date.now();
+      const cleanup = () => {
+        clearTimeout(timer);
+        clearTimeout(drainTimer);
+        res.off("drain", resume);
+        this.streams.delete(res);
+      };
+      const resume = () => {
+        clearTimeout(drainTimer);
+        backpressured = false;
+        if (this.streams.has(res) && !res.writableEnded && !res.destroyed)
+          timer = setTimeout(() => void poll(), 2000);
+      };
+      const write = (message: string) => {
+        if (res.writableEnded || res.destroyed || !this.streams.has(res)) return;
+        // false means the frame was accepted into Node's buffer. Do not resend
+        // it or poll for another snapshot until the slow reader catches up.
+        if (!res.write(message)) {
+          backpressured = true;
+          res.once("drain", resume);
+          drainTimer = setTimeout(() => {
+            cleanup();
+            res.destroy();
+          }, 30_000);
+        }
+        lastWriteAt = Date.now();
+      };
       const poll = async () => {
         try {
           const device = this.grant(hash);
@@ -1065,11 +1093,7 @@ export class WebAccessService {
               : Date.now() - lastWriteAt >= 15_000
                 ? ": heartbeat\n\n"
                 : undefined;
-          if (message && !res.write(message)) {
-            res.end();
-            return;
-          }
-          if (message) lastWriteAt = Date.now();
+          if (message) write(message);
           previousData = data;
         } catch (error) {
           // Admission reserves runtime capacity for control. A skipped read is
@@ -1079,23 +1103,20 @@ export class WebAccessService {
             !res.writableEnded
           ) {
             previousData = undefined;
-            res.write("event: unavailable\ndata: {}\n\n");
-            lastWriteAt = Date.now();
+            write("event: unavailable\ndata: {}\n\n");
           } else if (
             this.streams.has(res) &&
             !res.writableEnded &&
             Date.now() - lastWriteAt >= 15_000
           ) {
-            if (!res.write(": heartbeat\n\n")) res.end();
-            lastWriteAt = Date.now();
+            write(": heartbeat\n\n");
           }
         }
-        if (this.streams.has(res)) timer = setTimeout(() => void poll(), 2000);
+        if (this.streams.has(res) && !backpressured && !res.writableEnded && !res.destroyed)
+          timer = setTimeout(() => void poll(), 2000);
       };
-      res.on("close", () => {
-        clearTimeout(timer);
-        this.streams.delete(res);
-      });
+      res.once("close", cleanup);
+      res.once("finish", cleanup);
       void poll();
       return;
     }

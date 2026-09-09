@@ -2,7 +2,7 @@
 use super::*;
 use std::io::{Seek, SeekFrom};
 
-const PARSER_VERSION: u32 = 1;
+const PARSER_VERSION: u32 = 2;
 const BOUNDARY_BYTES: u64 = 256;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -133,7 +133,7 @@ pub fn collect_codex_incremental(
                     continue;
                 }
                 diagnostics.files_seen += 1;
-                let id = identify_path(entry.path());
+                let id = identify_source(entry.path(), identify_path);
                 seen.insert(id.clone());
                 let stamp = match file_stamp(entry.path()) {
                     Ok(stamp) => stamp,
@@ -199,7 +199,7 @@ pub fn collect_codex_incremental(
                 {
                     continue;
                 }
-                let id = identify_path(&path);
+                let id = identify_source(&path, identify_path);
                 seen_databases.insert(id.clone());
                 let fingerprint = match database_fingerprint(&path) {
                     Ok(value) => value,
@@ -660,11 +660,14 @@ fn read_database(
     for row in rows {
         let (rollout, cwd, updated, total, model) = row?;
         let session = rollout.as_deref().map(Path::new).map(|path| {
-            identify_path(&if path.is_absolute() {
-                path.to_path_buf()
-            } else {
-                home.join(path)
-            })
+            identify_source(
+                &if path.is_absolute() {
+                    path.to_path_buf()
+                } else {
+                    home.join(path)
+                },
+                identify_path,
+            )
         });
         if let (Some(session), Some(model)) = (
             &session,
@@ -713,6 +716,13 @@ fn read_database(
     Ok(Some(state))
 }
 
+fn identify_source(path: &Path, identify_path: &dyn Fn(&Path) -> String) -> String {
+    // Path equality treats Windows slash variants equally, but hashing raw OS bytes
+    // does not. SQLite paths and WalkDir must feed the same spelling to the hasher.
+    // Do not canonicalize: missing rollouts still need a stable fallback identity.
+    identify_path(&path.components().collect::<PathBuf>())
+}
+
 fn workspace_ancestors(path: &Path, identify_path: &dyn Fn(&Path) -> String) -> Vec<String> {
     // Workspace roots use canonical paths in Store. Resolve aliases before hashing,
     // with the same lexical fallback as legacy matching for a removed cwd.
@@ -750,12 +760,32 @@ mod tests {
     fn identify(path: &Path) -> String {
         let mut hash = Sha256::new();
         hash.update(b"test-installation-salt");
-        hash.update(path.as_os_str().as_encoded_bytes());
+        hash.update(
+            path.components()
+                .collect::<PathBuf>()
+                .as_os_str()
+                .as_encoded_bytes(),
+        );
         format!("{:x}", hash.finalize())
     }
 
     fn workspace(_: &str) -> Option<String> {
         Some("workspace-id".into())
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_source_identity_normalizes_separators_before_raw_hashing() {
+        let raw_hash =
+            |path: &Path| format!("{:x}", Sha256::digest(path.as_os_str().as_encoded_bytes()));
+        // Neither path needs to exist: SQLite fallback rows can reference removed logs.
+        let native = Path::new(r"C:\codex\sessions\missing.jsonl");
+        let mixed = Path::new(r"C:\codex\sessions/missing.jsonl");
+        assert_ne!(raw_hash(native), raw_hash(mixed));
+        assert_eq!(
+            identify_source(native, &raw_hash),
+            identify_source(mixed, &raw_hash)
+        );
     }
 
     fn collect(home: &Path, state: &CodexIncrementalState) -> CodexIncrementalResult {
@@ -857,6 +887,27 @@ mod tests {
     }
 
     #[test]
+    fn lexical_rollout_variants_merge_with_raw_identity_callback() {
+        let (dir, _) = fixture();
+        drop(database(
+            dir.path(),
+            &dir.path().join("sessions/./session.jsonl"),
+        ));
+        let raw_hash =
+            |path: &Path| format!("{:x}", Sha256::digest(path.as_os_str().as_encoded_bytes()));
+        let result = collect_codex_incremental(
+            dir.path(),
+            &CodexIncrementalState::default(),
+            &raw_hash,
+            &workspace,
+        )
+        .unwrap();
+        assert_eq!(total(&result), 100);
+        assert_eq!(result.events.len(), 1);
+        assert_eq!(result.events[0].model.as_deref(), Some("model-a"));
+    }
+
+    #[test]
     fn trailing_partial_line_is_only_counted_after_completion() {
         let (dir, path) = fixture();
         let first = collect(dir.path(), &CodexIncrementalState::default());
@@ -927,6 +978,55 @@ mod tests {
         let next = collect(dir.path(), &first.state);
         assert_eq!(next.diagnostics.files_rebuilt, 1);
         assert_eq!(total(&next), 100);
+    }
+
+    #[test]
+    fn v1_database_checkpoint_rebuilds_raw_rollout_identity_without_double_counting() {
+        let (dir, path) = fixture();
+        let rollout = dir.path().join("sessions/./session.jsonl");
+        drop(database(dir.path(), &rollout));
+        let raw_hash =
+            |path: &Path| format!("{:x}", Sha256::digest(path.as_os_str().as_encoded_bytes()));
+        let collect_raw = |state: &CodexIncrementalState| {
+            collect_codex_incremental(dir.path(), state, &raw_hash, &workspace).unwrap()
+        };
+        let mut prior = collect_raw(&CodexIncrementalState::default()).state;
+        let old_session = raw_hash(&rollout);
+        assert_ne!(old_session, identify_source(&path, &raw_hash));
+        for file in prior.files.values_mut() {
+            file.parser_version = 1;
+        }
+        for database in prior.databases.values_mut() {
+            database.parser_version = 1;
+            database.models.clear();
+            database
+                .models
+                .insert(old_session.clone(), "model-a".into());
+            for fallback in &mut database.fallbacks {
+                fallback.event.session_key = Some(old_session.clone());
+                fallback.event.source_key = format!(
+                    "{:x}",
+                    Sha256::digest(format!("codex-fallback:{old_session}").as_bytes())
+                );
+            }
+        }
+        // Simulate a persisted v1 checkpoint without changing the source fingerprints.
+        let prior = serde_json::from_str(&serde_json::to_string(&prior).unwrap()).unwrap();
+        let next = collect_raw(&prior);
+        assert_eq!(next.diagnostics.databases_read, 1);
+        assert_eq!(next.diagnostics.files_rebuilt, 1);
+        assert_eq!(next.events.len(), 1);
+        assert_eq!(total(&next), 100);
+        assert_eq!(next.events[0].model.as_deref(), Some("model-a"));
+        assert_eq!(
+            next.events[0].session_key,
+            Some(identify_source(&path, &raw_hash))
+        );
+        let idle = collect_raw(&next.state);
+        assert!(idle.unchanged);
+        assert_eq!(idle.diagnostics.databases_read, 0);
+        assert_eq!(idle.diagnostics.files_read, 0);
+        assert_eq!(total(&idle), 100);
     }
 
     #[test]
@@ -1262,7 +1362,9 @@ mod tests {
         let modified = fs::metadata(&path).unwrap().modified().unwrap();
         let replacement = dir.path().join("replacement");
         fs::write(&replacement, token(40, None)).unwrap();
-        File::open(&replacement)
+        fs::OpenOptions::new()
+            .write(true)
+            .open(&replacement)
             .unwrap()
             .set_modified(modified)
             .unwrap();

@@ -595,6 +595,100 @@ describe("WebAccessService loopback security boundary", () => {
       ).toMatchObject({ controlOutcome: "unknown" });
     },
   );
+  it("keeps a real large snapshot connection open after Node drains its buffer", async () => {
+    await bootstrap();
+    await pair();
+    runtime.mockResolvedValue({
+      runtimeBootId: "r",
+      revision: 1,
+      streamText: "x".repeat(1024 * 1024),
+    });
+    const stream = openStream();
+    try {
+      await vi.waitFor(() => expect(stream.chunks.join("")).toContain("\n\n"));
+      await vi.waitFor(() => expect(runtime.mock.calls.length).toBeGreaterThanOrEqual(2), {
+        timeout: 3000,
+      });
+      expect(stream.chunks.join("").match(/event: snapshot/g)).toHaveLength(1);
+    } finally {
+      stream.close();
+    }
+  });
+
+  it("pauses SSE polling until drain without closing or resending the buffered snapshot", async () => {
+    await bootstrap();
+    await pair();
+    let response: ServerResponse | undefined;
+    const original = ServerResponse.prototype.write;
+    const write = vi.spyOn(ServerResponse.prototype, "write").mockImplementation(function (
+      this: ServerResponse,
+      ...args: Parameters<typeof original>
+    ) {
+      if (String(args[0]).startsWith("event: snapshot")) {
+        response = this;
+        return false;
+      }
+      return original.apply(this, args);
+    });
+    const stream = openStream();
+    try {
+      await vi.waitFor(() => expect(response).toBeDefined());
+      await new Promise((resolve) => setTimeout(resolve, 2100));
+      expect(runtime).toHaveBeenCalledTimes(1);
+      expect(response!.writableEnded).toBe(false);
+      expect(response!.listenerCount("drain")).toBe(1);
+      response!.emit("drain");
+      await vi.waitFor(() => expect(runtime).toHaveBeenCalledTimes(2), { timeout: 3000 });
+      expect(
+        write.mock.calls.filter(([message]) => String(message).startsWith("event: snapshot")),
+      ).toHaveLength(1);
+      expect(response!.listenerCount("drain")).toBe(0);
+    } finally {
+      stream.close();
+    }
+  }, 10_000);
+
+  it.each(["close", "revoke", "timeout"])(
+    "cleans up a backpressured stream on %s",
+    async (reason) => {
+      await bootstrap();
+      const id = await pair();
+      let response: ServerResponse | undefined;
+      let expireDrain: (() => void) | undefined;
+      const timeout = globalThis.setTimeout;
+      vi.spyOn(globalThis, "setTimeout").mockImplementation(((
+        callback: () => void,
+        delay?: number,
+        ...args: unknown[]
+      ) => {
+        if (delay === 30_000) expireDrain = callback;
+        return timeout(callback, delay, ...args);
+      }) as typeof setTimeout);
+      const original = ServerResponse.prototype.write;
+      vi.spyOn(ServerResponse.prototype, "write").mockImplementation(function (
+        this: ServerResponse,
+        ...args: Parameters<typeof original>
+      ) {
+        if (String(args[0]).startsWith("event: snapshot")) {
+          response = this;
+          return false;
+        }
+        return original.apply(this, args);
+      });
+      const stream = openStream();
+      try {
+        await vi.waitFor(() => expect(response?.listenerCount("drain")).toBe(1));
+        if (reason === "close") stream.close();
+        else if (reason === "revoke") await service.request({ operation: "revoke", id });
+        else expireDrain!();
+        await vi.waitFor(() => expect(response!.listenerCount("drain")).toBe(0));
+        expect(response!.destroyed || response!.writableEnded).toBe(true);
+      } finally {
+        stream.close();
+      }
+    },
+  );
+
   it("shares same-scope SSE reads, omits unchanged snapshots and retains heartbeats", async () => {
     await bootstrap();
     await pair();

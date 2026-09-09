@@ -33,6 +33,8 @@ pub struct Store {
     connection: Connection,
 }
 
+mod incremental_insights;
+
 fn enable_wal(connection: &Connection, budget: std::time::Duration) -> Result<()> {
     let deadline = std::time::Instant::now() + budget;
     // Journal-mode conversion can return BUSY immediately instead of invoking SQLite's
@@ -514,6 +516,32 @@ impl Store {
             transaction.execute(
                 "INSERT OR REPLACE INTO schema_meta(key, value) VALUES ('schema_version', '13')",
                 [],
+            )?;
+        }
+        if current_version.is_none_or(|version| version < 14) {
+            transaction.execute_batch(
+                "CREATE TABLE IF NOT EXISTS codex_incremental_state (
+                   id INTEGER PRIMARY KEY CHECK(id = 1),
+                   state_json TEXT NOT NULL
+                 );
+                 CREATE TABLE IF NOT EXISTS insight_source_events (
+                   source_id TEXT NOT NULL,
+                   source_key TEXT NOT NULL REFERENCES usage_events(source_key) ON DELETE CASCADE,
+                   PRIMARY KEY(source_id, source_key)
+                 );
+                 CREATE INDEX IF NOT EXISTS idx_insight_source_events_key ON insight_source_events(source_key);
+                 INSERT OR REPLACE INTO schema_meta(key, value) VALUES ('schema_version', '14');",
+            )?;
+        }
+        if current_version.is_none_or(|version| version < 15) {
+            transaction.execute_batch(
+                "CREATE TABLE IF NOT EXISTS codex_source_checkpoints (
+                   source_kind TEXT NOT NULL CHECK(source_kind IN ('files', 'databases')),
+                   source_id TEXT NOT NULL,
+                   state_json TEXT NOT NULL,
+                   PRIMARY KEY(source_kind, source_id)
+                 );
+                 INSERT OR REPLACE INTO schema_meta(key, value) VALUES ('schema_version', '15');",
             )?;
         }
         let has_usage_events: bool = transaction.query_row(
@@ -1828,12 +1856,29 @@ impl Store {
                 params![provider, repository.fingerprint, to_i64(repository.commits.len() as u64), now],
             )?;
         }
-        transaction.execute(
-            "UPDATE git_commits SET is_mine = EXISTS(SELECT 1 FROM git_identities WHERE identity_hash = git_commits.author_identity_hash AND enabled = 1)",
+        let changed_providers = usage_batches
+            .iter()
+            .filter(|batch| {
+                !batch.unchanged && (batch.status.available || !batch.events.is_empty())
+            })
+            .map(|batch| enum_string(batch.status.agent))
+            .collect::<Result<BTreeSet<_>>>()?;
+        for provider in &changed_providers {
+            rebuild_provider_usage_daily(&transaction, provider)?;
+        }
+        let git_changed = repositories
+            .iter()
+            .any(|repository| repository.changed && repository.error.is_none());
+        // Identity discovery can change without a new commit (e.g. git user.email).
+        // Reclassify only affected rows so an unchanged refresh performs no writes here.
+        let identities_changed = transaction.execute(
+            "UPDATE git_commits SET is_mine = EXISTS(SELECT 1 FROM git_identities WHERE identity_hash = git_commits.author_identity_hash AND enabled = 1)
+             WHERE is_mine != EXISTS(SELECT 1 FROM git_identities WHERE identity_hash = git_commits.author_identity_hash AND enabled = 1)",
             [],
-        )?;
-        rebuild_usage_daily(&transaction)?;
-        rebuild_commit_attributions(&transaction)?;
+        )? > 0;
+        if git_changed || identities_changed || !changed_providers.is_empty() {
+            rebuild_commit_attributions(&transaction)?;
+        }
         transaction.execute(
             "INSERT INTO audit_events(id, project_id, action, detail, created_at) VALUES (?1, NULL, 'insights.refresh', ?2, ?3)",
             params![
@@ -1843,7 +1888,9 @@ impl Store {
             ],
         )?;
         transaction.commit()?;
-        self.refresh_achievement_unlocks()?;
+        if git_changed || identities_changed || !changed_providers.is_empty() {
+            self.refresh_achievement_unlocks()?;
+        }
         Ok(())
     }
 
@@ -2792,15 +2839,18 @@ impl Store {
     }
 }
 
-fn rebuild_usage_daily(connection: &Connection) -> Result<()> {
-    connection.execute("DELETE FROM usage_daily", [])?;
+fn rebuild_provider_usage_daily(connection: &Connection, provider: &str) -> Result<()> {
+    connection.execute(
+        "DELETE FROM usage_daily WHERE surface_agent = ?1",
+        [provider],
+    )?;
     connection.execute(
         "INSERT INTO usage_daily(day, surface_agent, workspace_id, input_tokens, output_tokens, cache_read_tokens, cache_write_tokens, reasoning_tokens, total_tokens, session_count, quality)
          SELECT day, surface_agent, COALESCE(workspace_id, ''), SUM(input_tokens), SUM(output_tokens), SUM(cache_read_tokens), SUM(cache_write_tokens), SUM(reasoning_tokens), SUM(total_tokens), SUM(session_count),
                 CASE MAX(CASE quality WHEN 'incomplete' THEN 2 WHEN 'estimated' THEN 1 ELSE 0 END) WHEN 2 THEN 'incomplete' WHEN 1 THEN 'estimated' ELSE 'exact' END
-         FROM usage_events WHERE day IS NOT NULL AND date_precision != 'aggregate'
+         FROM usage_events WHERE day IS NOT NULL AND date_precision != 'aggregate' AND surface_agent = ?1
          GROUP BY day, surface_agent, COALESCE(workspace_id, '')",
-        [],
+        [provider],
     )?;
     Ok(())
 }
@@ -4721,7 +4771,7 @@ mod tests {
                 |row| row.get(0),
             )
             .unwrap();
-        assert_eq!(version, "13");
+        assert_eq!(version, "15");
         assert_eq!(tables, 2);
         assert_eq!(kept, 1);
     }
@@ -4760,7 +4810,7 @@ mod tests {
             })
             .collect();
         for handle in handles {
-            assert_eq!(handle.join().unwrap().unwrap(), "13");
+            assert_eq!(handle.join().unwrap().unwrap(), "15");
         }
     }
 
@@ -4820,7 +4870,7 @@ mod tests {
             })
             .collect();
         for handle in handles {
-            assert_eq!(handle.join().unwrap().unwrap(), "13");
+            assert_eq!(handle.join().unwrap().unwrap(), "15");
         }
     }
 
@@ -4941,7 +4991,7 @@ mod tests {
                 |row| row.get(0),
             )
             .unwrap();
-        assert_eq!(version, "13");
+        assert_eq!(version, "15");
 
         let workspace_type: String = store
             .connection
@@ -5292,6 +5342,14 @@ mod tests {
         )
         .unwrap();
         store.save_quota_snapshot(&snapshot).unwrap();
+        let last_success: String = store
+            .connection
+            .query_row(
+                "SELECT last_success_at FROM quota_snapshot WHERE id = 1",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
         store
             .record_quota_failure(
                 QuotaBackend::CodexBarCli,
@@ -5303,6 +5361,15 @@ mod tests {
         let retained = store.quota_snapshot().unwrap().unwrap();
         assert_eq!(retained.providers[0].id, "codex");
         assert_eq!(retained.freshness, agentkib_quota::QuotaFreshness::Stale);
+        let retained_success: String = store
+            .connection
+            .query_row(
+                "SELECT last_success_at FROM quota_snapshot WHERE id = 1",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(last_success, retained_success);
         let diagnostic: String = store
             .connection
             .query_row(

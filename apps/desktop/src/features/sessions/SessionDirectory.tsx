@@ -27,6 +27,7 @@ import {
   sessionSourceLabel,
 } from "./session-labels";
 import type { AgentKind } from "@/core/types";
+import { groupSessions } from "./session-catalog";
 
 export function SessionDirectory({
   onMenuOpenChange,
@@ -41,18 +42,7 @@ export function SessionDirectory({
     element.scrollTop = useSessionViewStore.getState().scrollTop;
   }, [hub.ready]);
   const agents = [...new Set(hub.sessions.map((session) => session.agent))];
-  const groups = hub.workspaces
-    .map((workspace) => ({
-      workspace,
-      sessions: hub.filtered.filter((session) => session.workspace_id === workspace.id),
-    }))
-    .filter((group) => group.sessions.length > 0)
-    .sort(
-      (a, b) =>
-        (a.workspace.remote?.host_id ?? "").localeCompare(b.workspace.remote?.host_id ?? "") ||
-        (b.sessions[0]?.updated_at ?? "").localeCompare(a.sessions[0]?.updated_at ?? "") ||
-        a.workspace.id.localeCompare(b.workspace.id),
-    );
+  const groups = groupSessions(hub.filtered, hub.workspaces);
   return (
     <div className="session-directory" aria-label={tr("sessions.directory")}>
       <div className="session-directory-controls">
@@ -196,7 +186,7 @@ export function SessionDirectory({
         ref={scrollRef}
         onScroll={(event) => view.setScrollTop(event.currentTarget.scrollTop)}
       >
-        {groups.map(({ workspace, sessions }, index) => (
+        {groups.map(({ workspace, sessions, label }, index) => (
           <Fragment key={workspace.id}>
             {!!hub.remoteHosts?.length &&
               view.host === "all" &&
@@ -229,7 +219,7 @@ export function SessionDirectory({
                 ) : (
                   <FolderOpen size={16} aria-hidden="true" />
                 )}
-                <strong>{workspace.name}</strong>
+                <strong>{label}</strong>
                 <span>{sessions.length}</span>
               </CollapsibleTrigger>
               <CollapsibleContent

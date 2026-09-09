@@ -7,6 +7,7 @@
     "dev": "pnpm --filter @agentkib/desktop dev",
     "dev:web": "pnpm --filter @agentkib/web dev",
     "build:web": "pnpm --filter @agentkib/web build",
+    "build:web:hosted": "pnpm --filter @agentkib/web build:hosted",
     "test:web": "pnpm --filter @agentkib/web test",
     "dev:electron": "pnpm --filter @agentkib/desktop dev:electron",
     "build": "pnpm --filter @agentkib/desktop build",

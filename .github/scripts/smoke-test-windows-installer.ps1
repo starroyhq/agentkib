@@ -2,10 +2,48 @@ param(
   [Parameter(Mandatory = $true)]
   [string] $SearchRoot,
   [switch] $SkipLaunch,
-  [switch] $SkipQuota
+  [switch] $SkipQuota,
+  [string] $DiagnosticsDirectory = "artifacts/windows-installer-diagnostics"
 )
 
 $ErrorActionPreference = "Stop"
+$diagnostics = [ordered]@{
+  startedAt = [DateTime]::UtcNow.ToString("o")
+  outcome = "running"
+  snapshots = @()
+}
+
+function Save-UninstallSnapshot {
+  param([string] $Stage)
+  $snapshot = [ordered]@{ stage = $Stage; at = [DateTime]::UtcNow.ToString("o") }
+  try {
+    if ($installationRoot -and (Test-Path -LiteralPath $installationRoot)) {
+      $snapshot.files = @(Get-ChildItem -LiteralPath $installationRoot -File -Recurse |
+        Select-Object -First 100 -Property FullName, Length, LastWriteTimeUtc)
+      $snapshot.fileLimit = 100
+    }
+  } catch { $snapshot.fileCollectionFailed = $true }
+  try {
+    # Do not collect command lines or unrelated process information.
+    $snapshot.processes = @(Get-CimInstance Win32_Process | Where-Object {
+      ($installationRoot -and $_.ExecutablePath -and
+        $_.ExecutablePath.StartsWith($installationRoot.TrimEnd([IO.Path]::DirectorySeparatorChar) + [IO.Path]::DirectorySeparatorChar, [StringComparison]::OrdinalIgnoreCase)) -or
+      ($uninstall -and ($_.ProcessId -eq $uninstall.Id -or $_.ParentProcessId -eq $uninstall.Id))
+    } | Select-Object -First 50 -Property ProcessId, ParentProcessId, Name, ExecutablePath)
+  } catch { $snapshot.processCollectionFailed = $true }
+  try {
+    $snapshot.registry = @(@(
+      "HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall\*",
+      "HKLM:\Software\Microsoft\Windows\CurrentVersion\Uninstall\*",
+      "HKLM:\Software\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall\*"
+    ) | ForEach-Object { Get-ItemProperty -Path $_ -ErrorAction SilentlyContinue } |
+      Where-Object { $_.DisplayName -eq "AgentKib" } |
+      Select-Object -First 20 -Property DisplayName, DisplayVersion, InstallLocation)
+  } catch { $snapshot.registryCollectionFailed = $true }
+  $diagnostics.snapshots += $snapshot
+}
+
+try {
 $installer = Get-ChildItem -LiteralPath $SearchRoot -Filter "AgentKib_*_windows-*.exe" -File |
   Select-Object -First 1
 if (-not $installer) {
@@ -135,18 +173,26 @@ if (-not (Test-Path -LiteralPath $sentinel)) {
 Stop-AgentKibProcesses
 
 $installationRoot = Split-Path -Parent $executable.FullName
+$diagnostics.installationRoot = $installationRoot
+$diagnostics.executable = $executable.FullName
 $uninstaller = Get-ChildItem -LiteralPath $installationRoot -Filter "Uninstall*.exe" -File |
   Select-Object -First 1
 if (-not $uninstaller) {
   throw "AgentKib uninstaller was not found"
 }
+$diagnostics.uninstaller = $uninstaller.FullName
+Save-UninstallSnapshot "before-uninstall"
+$diagnostics.uninstallStartedAt = [DateTime]::UtcNow.ToString("o")
 $uninstall = Start-Process -FilePath $uninstaller.FullName -ArgumentList "/S" -Wait -PassThru
+$diagnostics.uninstallPid = $uninstall.Id
+$diagnostics.uninstallExitCode = $uninstall.ExitCode
+$diagnostics.uninstallReturnedAt = [DateTime]::UtcNow.ToString("o")
 if ($uninstall.ExitCode -ne 0) {
   throw "AgentKib uninstaller failed with exit code $($uninstall.ExitCode)"
 }
 # NSIS performs the final removal from a detached cleanup process after the
-# launcher exits. Hosted Windows runners can take longer than 30 seconds to
-# release the installed executable while antivirus scanning is active.
+# launcher exits. Keep the bounded wait; a timeout requires diagnostics rather
+# than assuming antivirus scanning or increasing the timeout again.
 $uninstallDeadline = (Get-Date).AddMinutes(2)
 while ((Test-Path -LiteralPath $executable.FullName) -and (Get-Date) -lt $uninstallDeadline) {
   Start-Sleep -Milliseconds 500
@@ -159,3 +205,20 @@ if (-not (Test-Path -LiteralPath $sentinel)) {
 }
 Remove-Item -LiteralPath $sentinel -Force
 Write-Output "AgentKib installer smoke test passed."
+$diagnostics.outcome = "passed"
+} catch {
+  $diagnostics.outcome = "failed"
+  # Preserve the original error in the job log, without copying arbitrary error
+  # text (which may contain environment details) into the artifact.
+  throw
+} finally {
+  try {
+    Save-UninstallSnapshot "finished"
+    $diagnostics.finishedAt = [DateTime]::UtcNow.ToString("o")
+    New-Item -ItemType Directory -Force -Path $DiagnosticsDirectory | Out-Null
+    $diagnostics | ConvertTo-Json -Depth 6 |
+      Set-Content -LiteralPath (Join-Path $DiagnosticsDirectory "summary.json") -Encoding utf8
+  } catch {
+    Write-Warning "Could not write installer diagnostics; the original smoke-test result is unchanged."
+  }
+}

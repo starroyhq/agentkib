@@ -84,6 +84,8 @@ struct Request {
     text: Option<String>,
     turn_id: Option<String>,
     approval_id: Option<Value>,
+    question_id: Option<Value>,
+    answers: Option<Value>,
     decision: Option<String>,
     #[serde(default)]
     experimental_enabled: bool,
@@ -94,6 +96,11 @@ struct Service {
     // Independent of the bridge cache: reconnect/eviction must not turn a lost
     // control acknowledgement into permission to submit a second operation.
     unresolved: BTreeSet<String>,
+    claude: BTreeMap<String, crate::claude_runner::Runner>,
+    claude_identity: BTreeMap<String, (PathBuf, String)>,
+    claude_targets: BTreeMap<String, agentkib_conversations::VerifiedClaudeControlTarget>,
+    claude_target_retry: BTreeMap<String, std::time::Instant>,
+    claude_available: InstallationProbe,
     #[cfg(target_os = "macos")]
     bridges: BTreeMap<String, agentkib_codex_bridge::Bridge>,
     #[cfg(target_os = "macos")]
@@ -105,6 +112,11 @@ impl Default for Service {
             boot: uuid::Uuid::new_v4().to_string(),
             used: BTreeSet::new(),
             unresolved: BTreeSet::new(),
+            claude: BTreeMap::new(),
+            claude_identity: BTreeMap::new(),
+            claude_targets: BTreeMap::new(),
+            claude_target_retry: BTreeMap::new(),
+            claude_available: InstallationProbe::default(),
             #[cfg(target_os = "macos")]
             bridges: BTreeMap::new(),
             #[cfg(target_os = "macos")]
@@ -125,7 +137,7 @@ impl Service {
         anyhow::ensure!(
             matches!(
                 request.operation.as_str(),
-                "catalog" | "events" | "live" | "send" | "approve"
+                "catalog" | "events" | "live" | "send" | "approve" | "answer"
             ),
             "web-operation-unsupported"
         );
@@ -133,10 +145,7 @@ impl Service {
             data_dir: agentkib_store::default_data_dir()?,
         };
         if request.operation == "catalog" {
-            if source.ensure_available().is_err() {
-                return Ok(json!({"sessions":[],"indexEnabled":false}));
-            }
-            return Ok(json!({"sessions":source.catalog()?["sessions"],"indexEnabled":true}));
+            return web_catalog(&source);
         }
         let epoch = source.availability_epoch()?;
         let id = request
@@ -161,6 +170,120 @@ impl Service {
         }
         if request.operation != "live" {
             self.claim(&request)?;
+        }
+        if session.agent == AgentKind::ClaudeCode {
+            if !cfg!(target_os = "macos") {
+                return self.unsupported(&request, "platform-unsupported");
+            }
+            if !self.claude_available.supported(
+                std::time::Instant::now(),
+                crate::claude_runner::Runner::installation_supported,
+            ) {
+                return self.unsupported(&request, "unverified-installation");
+            }
+            anyhow::ensure!(!session.sidechain, "auxiliary-session-not-controllable");
+            // Mutations resolve current provider metadata as well; only the hot
+            // read-only polling path may reuse the target's discovery result.
+            let target = cached_target(
+                &mut self.claude_targets,
+                &mut self.claude_target_retry,
+                id,
+                std::time::Instant::now(),
+                request.operation != "live",
+                || {
+                    let adapter = provider(session.agent).context("provider-unavailable")?;
+                    let native = adapter
+                        .list_sessions(&workspace)?
+                        .into_iter()
+                        .find(|candidate| {
+                            store
+                                .conversation_id(session.agent, &candidate.native_ref)
+                                .is_ok_and(|found| found == id)
+                        })
+                        .context("session-unavailable")?;
+                    adapter
+                        .verified_claude_control_target(&native.native_ref)?
+                        .context("unverified-session-identity")
+                },
+                |target| target.revalidate(),
+            )?;
+            // Polling an existing target never rediscovers every Claude project.
+            // Reopen its bounded metadata on every request to reject deletion or
+            // replacement with another session, workspace or auxiliary transcript.
+            let uuid = target.session_id.clone();
+            let cwd = target.workspace.clone();
+            anyhow::ensure!(
+                cwd.starts_with(fs::canonicalize(&workspace)?),
+                "session-workspace-mismatch"
+            );
+            if let Some(previous) = self.claude_identity.get(id) {
+                anyhow::ensure!(
+                    previous == &(cwd.clone(), uuid.clone()),
+                    "session-identity-changed"
+                );
+            }
+            if request.operation == "live" && !self.claude.contains_key(id) {
+                validate_session_access(&source, epoch, &store, &session, &workspace)?;
+                return Ok(json!({"sessionId":id,"runtimeBootId":self.boot,
+                    "executionMode":"managed-resume","status":"idle","revision":0,
+                    "turnId":null,"approvals":[],"streamText":"",
+                    "sendEnabled":request.experimental_enabled}));
+            }
+            if request.operation == "send" {
+                self.reserve_claude_worker(id)?;
+            }
+            if !self.claude.contains_key(id) {
+                self.claude_identity
+                    .insert(id.to_owned(), (cwd.clone(), uuid.clone()));
+                self.claude
+                    .insert(id.to_owned(), crate::claude_runner::Runner::new(cwd, uuid));
+            }
+            let runner = self
+                .claude
+                .get_mut(id)
+                .context("managed-session-unavailable")?;
+            validate_session_access(&source, epoch, &store, &session, &workspace)?;
+            if request.operation == "live" {
+                let mut state = runner.snapshot();
+                state["executionMode"] = json!("managed-resume");
+                state["sessionId"] = json!(id);
+                state["runtimeBootId"] = json!(self.boot);
+                if !request.experimental_enabled {
+                    state["sendEnabled"] = json!(false);
+                    if let Some(questions) = state["questions"].as_array_mut() {
+                        for question in questions {
+                            question["supported"] = json!(false);
+                        }
+                    }
+                    if let Some(approvals) = state["approvals"].as_array_mut() {
+                        for approval in approvals {
+                            approval["supported"] = json!(false);
+                        }
+                    }
+                }
+                return Ok(state);
+            }
+            let revision = request.expected_revision.context("missing-revision")?;
+            // Runner errors are preflight/enqueue failures. After acceptance,
+            // asynchronous write errors remain fenced in the runner snapshot.
+            let outcome = if request.operation == "send" {
+                runner.send(request.text.as_deref().context("missing-text")?, revision)
+            } else if request.operation == "answer" {
+                runner.answer(
+                    request.question_id.as_ref().context("missing-question")?,
+                    request.turn_id.as_deref().context("missing-turn")?,
+                    request.answers.as_ref().context("missing-answers")?,
+                    revision,
+                )
+            } else {
+                runner.approve(
+                    request.approval_id.as_ref().context("missing-approval")?,
+                    request.turn_id.as_deref().context("missing-turn")?,
+                    request.decision.as_deref().context("missing-decision")?,
+                    revision,
+                )
+            };
+            return control_response(&request, &self.boot, outcome.is_ok(), outcome);
         }
         #[cfg(target_os = "macos")]
         {
@@ -271,14 +394,29 @@ impl Service {
                 }
                 let state = bridge.state().context("state-unavailable")?;
                 if request.operation == "live" {
+                    let questions: Vec<_> = state
+                        .questions()
+                        .into_iter()
+                        .map(|mut q| {
+                            if !controls {
+                                q["supported"] = json!(false);
+                            }
+                            q
+                        })
+                        .collect();
                     let approvals: Vec<_> = state
                         .approvals()
                         .into_iter()
                         .map(|approval| safe_approval(approval, controls))
                         .collect();
+                    let status = if !questions.is_empty() {
+                        json!("waiting-input")
+                    } else {
+                        json!(state.status())
+                    };
                     validate_session_access(&source, epoch, &store, &session, &workspace)?;
                     return Ok(
-                        json!({"sessionId":id,"runtimeBootId":self.boot,"status":state.status(),"revision":state.revision(),"turnId":state.active_turn(),"sendEnabled":controls && state.status()==agentkib_codex_bridge::Status::Idle,"approvals":approvals}),
+                        json!({"sessionId":id,"runtimeBootId":self.boot,"status":status,"revision":state.revision(),"turnId":state.active_turn(),"sendEnabled":controls && state.status()==agentkib_codex_bridge::Status::Idle,"approvals":approvals,"questions":questions}),
                     );
                 }
                 anyhow::ensure!(
@@ -297,6 +435,15 @@ impl Service {
                     let text = request.text.as_deref().context("missing-text")?;
                     bridge.send_text_at_revision_with_authorization(
                         text,
+                        request.expected_revision,
+                        authorize,
+                        dispatch,
+                    )
+                } else if request.operation == "answer" {
+                    bridge.answer_at_revision_with_authorization(
+                        request.question_id.as_ref().context("missing-question")?,
+                        request.turn_id.as_deref().context("missing-turn")?,
+                        request.answers.as_ref().context("missing-answers")?,
                         request.expected_revision,
                         authorize,
                         dispatch,
@@ -376,6 +523,30 @@ impl Service {
         );
         Ok(())
     }
+    fn reserve_claude_worker(&mut self, id: &str) -> anyhow::Result<()> {
+        if self
+            .claude
+            .get(id)
+            .is_some_and(|runner| runner.has_worker())
+        {
+            return Ok(());
+        }
+        let mut count = self
+            .claude
+            .values()
+            .filter(|runner| runner.has_worker())
+            .count();
+        for (other_id, runner) in &self.claude {
+            if count < 8 {
+                break;
+            }
+            if other_id != id && runner.retire_if_inactive() {
+                count -= 1;
+            }
+        }
+        anyhow::ensure!(count < 8, "managed-session-limit");
+        Ok(())
+    }
     fn unsupported(&self, request: &Request, reason: &str) -> anyhow::Result<Value> {
         anyhow::ensure!(request.operation == "live", "control-unavailable");
         Ok(
@@ -384,7 +555,77 @@ impl Service {
     }
 }
 
-#[cfg(any(target_os = "macos", test))]
+// Failed targets are evicted, not retained forever at an obsolete path. A
+// cooldown also bounds discovery when a transcript is absent or malformed.
+fn cached_target<'a, T>(
+    targets: &'a mut BTreeMap<String, T>,
+    retry: &mut BTreeMap<String, std::time::Instant>,
+    id: &str,
+    now: std::time::Instant,
+    refresh: bool,
+    resolve: impl FnOnce() -> anyhow::Result<T>,
+    validate: impl FnOnce(&T) -> anyhow::Result<()>,
+) -> anyhow::Result<&'a T> {
+    anyhow::ensure!(
+        retry.get(id).is_none_or(|deadline| now >= *deadline),
+        "session-rediscovery-cooldown"
+    );
+    let outcome = (|| {
+        if refresh || !targets.contains_key(id) {
+            targets.insert(id.to_owned(), resolve()?);
+        }
+        validate(&targets[id])
+    })();
+    if let Err(error) = outcome {
+        targets.remove(id);
+        retry.insert(id.to_owned(), now + std::time::Duration::from_secs(30));
+        return Err(error);
+    }
+    retry.remove(id);
+    Ok(&targets[id])
+}
+
+#[derive(Default)]
+struct InstallationProbe {
+    result: Option<(bool, std::time::Instant)>,
+}
+impl InstallationProbe {
+    const RETRY_AFTER: std::time::Duration = std::time::Duration::from_secs(30);
+
+    fn supported(&mut self, now: std::time::Instant, probe: impl FnOnce() -> bool) -> bool {
+        if let Some((supported, checked_at)) = self.result {
+            // SSE polls must not launch a process every two seconds, but a failed
+            // check must recover after an installation/upgrade without a restart.
+            // Successful checks retain the existing policy: Runner revalidates
+            // the exact supported version before starting each new process.
+            if supported || now.saturating_duration_since(checked_at) < Self::RETRY_AFTER {
+                return supported;
+            }
+        }
+        let supported = probe();
+        self.result = Some((supported, now));
+        supported
+    }
+}
+
+// The browser needs project identity, not the native peer's richer workspace
+// summary. Project only this whitelist from the same snapshot as the sessions.
+fn web_catalog(source: &impl Source) -> anyhow::Result<Value> {
+    if source.ensure_available().is_err() {
+        return Ok(json!({"workspaces":[],"sessions":[],"indexEnabled":false}));
+    }
+    let snapshot = source.catalog()?;
+    let workspaces = snapshot["workspaces"]
+        .as_array()
+        .context("invalid-catalog-workspaces")?
+        .iter()
+        .map(|workspace| {
+            json!({"id":workspace["id"],"name":workspace["name"],"path":workspace["path"]})
+        })
+        .collect::<Vec<_>>();
+    Ok(json!({"workspaces":workspaces,"sessions":snapshot["sessions"],"indexEnabled":true}))
+}
+
 fn validate_session_access(
     source: &RemoteSessionSource,
     epoch: u64,
@@ -407,7 +648,6 @@ fn validate_session_access(
     Ok(())
 }
 
-#[cfg(any(target_os = "macos", test))]
 fn control_response(
     request: &Request,
     boot: &str,
@@ -568,6 +808,199 @@ fn complete_file_change(change: &Value) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn cached_targets_evict_bad_paths_and_rediscover_after_cooldown() {
+        let mut targets = BTreeMap::new();
+        let mut retry = BTreeMap::new();
+        let now = std::time::Instant::now();
+        assert_eq!(
+            *cached_target(
+                &mut targets,
+                &mut retry,
+                "s",
+                now,
+                false,
+                || Ok("old-path"),
+                |_| Ok(())
+            )
+            .unwrap(),
+            "old-path"
+        );
+        assert!(
+            cached_target(
+                &mut targets,
+                &mut retry,
+                "s",
+                now,
+                false,
+                || panic!("valid cache does not rediscover"),
+                |_| anyhow::bail!("transcript replaced")
+            )
+            .is_err()
+        );
+        assert!(!targets.contains_key("s"));
+        for seconds in [0, 2, 29] {
+            assert!(
+                cached_target(
+                    &mut targets,
+                    &mut retry,
+                    "s",
+                    now + std::time::Duration::from_secs(seconds),
+                    false,
+                    || panic!("failed cache must not cause a polling discovery storm"),
+                    |_| Ok(())
+                )
+                .is_err()
+            );
+        }
+        let recovered = cached_target(
+            &mut targets,
+            &mut retry,
+            "s",
+            now + std::time::Duration::from_secs(30),
+            false,
+            || Ok("new-path"),
+            |path| {
+                anyhow::ensure!(*path == "new-path", "wrong path");
+                Ok(())
+            },
+        )
+        .unwrap();
+        assert_eq!(*recovered, "new-path");
+        assert!(retry.is_empty());
+        // A control always resolves again, and failed resolution never leaves a
+        // previously valid target available for the next live request.
+        assert!(
+            cached_target(
+                &mut targets,
+                &mut retry,
+                "s",
+                now + std::time::Duration::from_secs(31),
+                true,
+                || anyhow::bail!("identity mismatch"),
+                |_| Ok(())
+            )
+            .is_err()
+        );
+        assert!(targets.is_empty());
+    }
+
+    #[test]
+    fn failed_installation_probe_recovers_without_polling_spawn_storm() {
+        let mut cache = InstallationProbe::default();
+        let start = std::time::Instant::now();
+        assert!(!cache.supported(start, || false));
+        for seconds in (2..30).step_by(2) {
+            assert!(
+                !cache.supported(start + std::time::Duration::from_secs(seconds), || {
+                    panic!("SSE polling must reuse the failed probe during cooldown")
+                })
+            );
+        }
+        // Installing a supported version is discovered at the retry boundary.
+        assert!(cache.supported(start + InstallationProbe::RETRY_AFTER, || true));
+        assert!(
+            cache.supported(start + std::time::Duration::from_secs(120), || {
+                panic!("successful probe remains cached; Runner validates before spawn")
+            })
+        );
+    }
+
+    #[test]
+    fn unknown_installation_remains_disabled_after_retries() {
+        let mut cache = InstallationProbe::default();
+        let start = std::time::Instant::now();
+        for attempt in 0..3 {
+            let mut probed = false;
+            assert!(
+                !cache.supported(start + InstallationProbe::RETRY_AFTER * attempt, || {
+                    probed = true;
+                    false
+                })
+            );
+            assert!(probed);
+        }
+    }
+
+    #[test]
+    fn claude_capacity_retires_idle_processes_without_forgetting_security_state() {
+        let mut service = Service::default();
+        for index in 0..8 {
+            service.claude.insert(
+                index.to_string(),
+                crate::claude_runner::Runner::mock_worker("idle"),
+            );
+        }
+        service.used.insert("used-request".into());
+        service
+            .claude_identity
+            .insert("0".into(), (PathBuf::from("/project"), "native".into()));
+        service.reserve_claude_worker("ninth").unwrap();
+        assert_eq!(
+            service.claude.values().filter(|r| r.has_worker()).count(),
+            7
+        );
+        assert_eq!(service.claude.len(), 8);
+        assert!(service.used.contains("used-request"));
+        assert!(service.claude_identity.contains_key("0"));
+        assert_eq!(service.claude["0"].snapshot()["revision"], 1);
+        let mut busy = Service::default();
+        for index in 0..8 {
+            busy.claude.insert(
+                index.to_string(),
+                crate::claude_runner::Runner::mock_worker("running"),
+            );
+        }
+        assert!(busy.reserve_claude_worker("ninth").is_err());
+        assert!(busy.reserve_claude_worker("0").is_ok());
+    }
+
+    #[test]
+    fn web_catalog_projects_one_snapshot_and_only_browser_workspace_fields() {
+        struct Snapshot;
+        impl Source for Snapshot {
+            fn catalog(&self) -> anyhow::Result<Value> {
+                Ok(
+                    json!({"workspaces":[{"id":"w","name":"test","path":"/projects/test",
+                    "discovery_sources":["private"],"status":"active","asset_count":9}],
+                    "sessions":[{"id":"s","workspace_id":"w","origin":"auxiliary",
+                    "forked_from_session_id":"parent","spawned_by_session_id":null,
+                    "created_at":"2026-09-09T00:00:00Z","git_branch":"main"}]}),
+                )
+            }
+            fn events(&self, _: &str, _: Option<&str>, _: usize) -> anyhow::Result<Value> {
+                panic!("catalog must not read individual histories")
+            }
+        }
+        let result = web_catalog(&Snapshot).unwrap();
+        assert_eq!(result["indexEnabled"], true);
+        assert_eq!(
+            result["workspaces"],
+            json!([{"id":"w","name":"test","path":"/projects/test"}])
+        );
+        assert_eq!(result["sessions"], Snapshot.catalog().unwrap()["sessions"]);
+    }
+
+    #[test]
+    fn web_catalog_disabled_index_returns_no_workspaces_or_sessions() {
+        struct Disabled;
+        impl Source for Disabled {
+            fn ensure_available(&self) -> anyhow::Result<()> {
+                anyhow::bail!("index-disabled")
+            }
+            fn catalog(&self) -> anyhow::Result<Value> {
+                panic!("disabled catalog must not read the source")
+            }
+            fn events(&self, _: &str, _: Option<&str>, _: usize) -> anyhow::Result<Value> {
+                panic!("disabled catalog must not read histories")
+            }
+        }
+        assert_eq!(
+            web_catalog(&Disabled).unwrap(),
+            json!({"workspaces":[],"sessions":[],"indexEnabled":false})
+        );
+    }
 
     #[test]
     fn final_session_access_rejects_index_and_registry_changes() {

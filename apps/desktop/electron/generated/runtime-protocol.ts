@@ -120,6 +120,7 @@ export const RUNTIME_METHODS = {
   setQuotaPreferences: "quota.setPreferences",
   refreshQuota: "quota.refresh",
   setQuotaAutoRefresh: "quota.setAutoRefresh",
+  setLocalAutoRefresh: "set_local_auto_refresh",
   setQuotaPromptSeen: "quota.setPromptSeen",
   storageOverview: "storage.overview",
   storageChildren: "storage.children",

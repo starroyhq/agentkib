@@ -933,6 +933,47 @@ fn key_words(key: &str) -> Vec<String> {
     words
 }
 
+/// A provider-resolved target, retained only in memory. Every use revalidates the
+/// transcript rather than trusting the cached discovery metadata.
+#[derive(Clone)]
+pub struct VerifiedClaudeControlTarget {
+    pub session_id: String,
+    pub workspace: PathBuf,
+    transcript: PathBuf,
+}
+
+impl VerifiedClaudeControlTarget {
+    pub fn revalidate(&self) -> Result<()> {
+        let id = uuid::Uuid::parse_str(&self.session_id)?;
+        let reader = BufReader::new(File::open(&self.transcript)?.take(256 * 1024));
+        for line in reader.lines() {
+            let line = line?;
+            let Ok(value) = serde_json::from_str::<Value>(&line) else {
+                continue;
+            };
+            let Some(found) = value["sessionId"].as_str() else {
+                continue;
+            };
+            anyhow::ensure!(
+                uuid::Uuid::parse_str(found)? == id,
+                "session-identity-mismatch"
+            );
+            anyhow::ensure!(
+                value["isSidechain"] != true,
+                "auxiliary-session-not-controllable"
+            );
+            if let Some(cwd) = value["cwd"].as_str() {
+                anyhow::ensure!(
+                    fs::canonicalize(cwd)? == self.workspace,
+                    "session-workspace-mismatch"
+                );
+                return Ok(());
+            }
+        }
+        anyhow::bail!("unverified-session-identity")
+    }
+}
+
 pub trait ConversationProvider {
     fn agent(&self) -> AgentKind;
     fn list_sessions(&self, workspace: &Path) -> Result<Vec<NativeSessionSummary>>;
@@ -944,6 +985,16 @@ pub trait ConversationProvider {
     }
     /// Resolve through provider metadata, never interpret an opaque reference as a file path.
     fn verified_control_id(&self, _native_ref: &str) -> Result<Option<String>> {
+        Ok(None)
+    }
+
+    fn verified_control_workspace(&self, _native_ref: &str) -> Result<Option<PathBuf>> {
+        Ok(None)
+    }
+    fn verified_claude_control_target(
+        &self,
+        _native_ref: &str,
+    ) -> Result<Option<VerifiedClaudeControlTarget>> {
         Ok(None)
     }
     fn read_events(
@@ -1729,6 +1780,37 @@ fn read_claude_session_index(path: &Path) -> Result<Value> {
 impl ConversationProvider for ClaudeProvider {
     fn agent(&self) -> AgentKind {
         AgentKind::ClaudeCode
+    }
+
+    fn verified_control_id(&self, native_ref: &str) -> Result<Option<String>> {
+        self.verified_control_workspace(native_ref)?;
+        Ok(Some(uuid::Uuid::parse_str(native_ref)?.to_string()))
+    }
+
+    fn verified_control_workspace(&self, native_ref: &str) -> Result<Option<PathBuf>> {
+        Ok(self
+            .verified_claude_control_target(native_ref)?
+            .map(|target| target.workspace))
+    }
+
+    fn verified_claude_control_target(
+        &self,
+        native_ref: &str,
+    ) -> Result<Option<VerifiedClaudeControlTarget>> {
+        let id = uuid::Uuid::parse_str(native_ref)?;
+        let session = self
+            .native_sessions(None)?
+            .into_iter()
+            .find(|session| session.native_ref == native_ref)
+            .context("Claude session is no longer available")?;
+        anyhow::ensure!(!session.sidechain, "auxiliary-session-not-controllable");
+        let target = VerifiedClaudeControlTarget {
+            session_id: id.to_string(),
+            workspace: fs::canonicalize(&session.project_path)?,
+            transcript: session.transcript,
+        };
+        target.revalidate()?;
+        Ok(Some(target))
     }
 
     fn list_sessions(&self, workspace: &Path) -> Result<Vec<NativeSessionSummary>> {
@@ -3413,6 +3495,69 @@ mod tests {
         ] {
             assert!(!debug.contains(secret));
         }
+    }
+
+    #[test]
+    fn claude_control_identity_requires_matching_transcript_workspace_and_uuid() {
+        let dir = tempdir().unwrap();
+        let workspace = dir.path().join("workspace");
+        let projects = dir.path().join("projects/project");
+        fs::create_dir_all(&workspace).unwrap();
+        fs::create_dir_all(&projects).unwrap();
+        let id = "3121ec99-e4cb-465b-8056-0d653212b113";
+        let transcript = projects.join(format!("{id}.jsonl"));
+        fs::write(
+            projects.join("sessions-index.json"),
+            serde_json::to_vec(&serde_json::json!({
+                "version":1,"entries":[{"sessionId":id,"fullPath":transcript,
+                    "projectPath":workspace,"isSidechain":false}]
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+        let adapter = ClaudeProvider::with_home(dir.path().to_path_buf());
+        let record = |uuid: &str, cwd: &Path| {
+            serde_json::to_vec(&serde_json::json!({
+                "type":"user","sessionId":uuid,"cwd":cwd,"message":{"role":"user","content":"test"}
+            }))
+            .unwrap()
+        };
+        fs::write(&transcript, record(id, &workspace)).unwrap();
+        assert_eq!(
+            adapter.verified_control_id(id).unwrap(),
+            Some(id.to_owned())
+        );
+        assert_eq!(
+            adapter.verified_control_workspace(id).unwrap(),
+            Some(fs::canonicalize(&workspace).unwrap())
+        );
+        let target = adapter.verified_claude_control_target(id).unwrap().unwrap();
+        // A live target needs only its own transcript, not directory discovery or
+        // the potentially stale/large sessions index. It still checks each use.
+        let index = fs::read(projects.join("sessions-index.json")).unwrap();
+        fs::write(projects.join("sessions-index.json"), "invalid index").unwrap();
+        target.revalidate().unwrap();
+        fs::write(projects.join("sessions-index.json"), index).unwrap();
+        let mut sidechain: Value = serde_json::from_slice(&record(id, &workspace)).unwrap();
+        sidechain["isSidechain"] = serde_json::json!(true);
+        fs::write(&transcript, serde_json::to_vec(&sidechain).unwrap()).unwrap();
+        assert!(target.revalidate().is_err());
+        assert!(adapter.verified_control_id(id).is_err());
+        fs::write(
+            &transcript,
+            record("aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", &workspace),
+        )
+        .unwrap();
+        assert!(target.revalidate().is_err());
+        assert!(adapter.verified_control_id(id).is_err());
+        fs::write(&transcript, record(id, dir.path())).unwrap();
+        assert!(target.revalidate().is_err());
+        assert!(adapter.verified_control_id(id).is_err());
+        fs::write(&transcript, "{}\n").unwrap();
+        assert!(target.revalidate().is_err());
+        assert!(adapter.verified_control_id(id).is_err());
+        fs::remove_file(&transcript).unwrap();
+        assert!(target.revalidate().is_err());
     }
 
     #[test]

@@ -5,6 +5,37 @@ use std::path::Path;
 use sha2::{Digest, Sha256};
 use tempfile::NamedTempFile;
 
+/// Stable Windows file identity, independent of timestamps retained by replacement.
+#[cfg(windows)]
+pub fn file_identity(file: &fs::File) -> io::Result<String> {
+    use std::os::windows::io::AsRawHandle;
+    use windows_sys::Win32::Storage::FileSystem::{
+        FILE_ID_INFO, FileIdInfo, GetFileInformationByHandleEx,
+    };
+
+    let mut info = std::mem::MaybeUninit::<FILE_ID_INFO>::uninit();
+    // SAFETY: the borrowed File keeps the handle alive and the buffer has the
+    // size required by FileIdInfo. Read the initialized buffer only on success.
+    let succeeded = unsafe {
+        GetFileInformationByHandleEx(
+            file.as_raw_handle(),
+            FileIdInfo,
+            info.as_mut_ptr().cast(),
+            std::mem::size_of::<FILE_ID_INFO>() as u32,
+        )
+    };
+    if succeeded == 0 {
+        return Err(io::Error::last_os_error());
+    }
+    // SAFETY: GetFileInformationByHandleEx successfully initialized FILE_ID_INFO.
+    let info = unsafe { info.assume_init() };
+    Ok(format!(
+        "win-file-id:{}:{}",
+        info.VolumeSerialNumber,
+        hex::encode(info.FileId.Identifier)
+    ))
+}
+
 #[derive(Debug, Clone, Copy)]
 pub enum ExpectedFile<'a> {
     Any,
@@ -225,6 +256,38 @@ mod windows {
 mod tests {
     use super::*;
     use tempfile::tempdir;
+
+    #[cfg(windows)]
+    #[test]
+    fn file_identity_is_stable_and_distinguishes_matching_timestamps() {
+        use std::os::windows::fs::FileTimesExt;
+
+        let directory = tempdir().unwrap();
+        let original = directory.path().join("original");
+        let replacement = directory.path().join("replacement");
+        fs::write(&original, b"old").unwrap();
+        fs::write(&replacement, b"new").unwrap();
+        let file = fs::File::open(&original).unwrap();
+        let metadata = file.metadata().unwrap();
+        let times = fs::FileTimes::new()
+            .set_created(metadata.created().unwrap())
+            .set_modified(metadata.modified().unwrap());
+        let replacement_file = fs::OpenOptions::new()
+            .write(true)
+            .open(&replacement)
+            .unwrap();
+        replacement_file.set_times(times).unwrap();
+        assert_eq!(
+            metadata.created().unwrap(),
+            replacement_file.metadata().unwrap().created().unwrap()
+        );
+        let identity = file_identity(&file).unwrap();
+        assert_eq!(
+            identity,
+            file_identity(&fs::File::open(&original).unwrap()).unwrap()
+        );
+        assert_ne!(identity, file_identity(&replacement_file).unwrap());
+    }
 
     #[test]
     fn atomically_replaces_existing_file() {

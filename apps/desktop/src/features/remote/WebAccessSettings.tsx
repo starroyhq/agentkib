@@ -3,7 +3,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Switch } from "@/components/ui/switch";
 import { Checkbox } from "@/components/ui/checkbox";
-import { desktopApi } from "@/core/desktop";
+import { requestWebAdmin, subscribeWebStatus } from "./web-status";
 import { useI18n } from "@/core/useI18n";
 import {
   SettingsSection,
@@ -17,49 +17,48 @@ import type {
   WebConfig,
 } from "../../../electron/main/web/service";
 import { webSettingsCopy } from "./web-settings-copy";
+import { lanSettingsCopy } from "./lan-settings-copy";
+import { ConnectionQr } from "./ConnectionQr";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
 
-export function WebAccessSettings() {
+export function WebAccessSettings({ target }: { target?: "lan" } = {}) {
   const { locale, formatDateTime } = useI18n();
-  const c = webSettingsCopy[locale];
+  const lan = target === "lan";
+  const l = lanSettingsCopy[locale];
+  const c = { ...webSettingsCopy[locale], ...(lan ? l : {}) };
+  const fieldPrefix = lan ? "lan-web" : "web";
   const [status, setStatus] = useState<WebAdminStatus>();
   const [config, setConfig] = useState<WebConfig>();
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
   const [grants, setGrants] = useState<Record<string, { send: boolean; approve: boolean }>>({});
   const mounted = useRef(false);
-  const revision = useRef(0);
   useEffect(() => {
     mounted.current = true;
-    let inFlight = false;
-    const refresh = async () => {
-      if (inFlight) return;
-      const generation = revision.current;
-      inFlight = true;
-      try {
-        const next = await desktopApi().web.request({ operation: "status" });
-        if (mounted.current && generation === revision.current) {
-          setStatus(next);
-          setConfig((old) => old ?? next.config);
-        }
-      } catch {
-        if (mounted.current && generation === revision.current) setError(c.unavailable);
-      } finally {
-        inFlight = false;
-      }
-    };
-    void refresh();
-    const timer = window.setInterval(() => void refresh(), 2000);
+    const unsubscribe = subscribeWebStatus(target, {
+      status: (next) => {
+        setStatus(next);
+        setConfig((old) => old ?? next.config);
+      },
+      error: () => setError(c.unavailable),
+      success: () => setError(""),
+    });
     return () => {
       mounted.current = false;
-      window.clearInterval(timer);
+      unsubscribe();
     };
-  }, [c.unavailable]);
+  }, [c.unavailable, lan, target]);
   async function run(input: WebAdminRequest) {
-    revision.current += 1;
     setBusy(true);
     setError("");
     try {
-      const next = await desktopApi().web.request(input);
+      const next = await requestWebAdmin({ ...input, ...(lan ? { target } : {}) });
       if (mounted.current) {
         setStatus(next);
         if (input.operation === "configure") setConfig(next.config);
@@ -67,9 +66,6 @@ export function WebAccessSettings() {
     } catch {
       if (mounted.current) setError(c.unavailable);
     } finally {
-      // Polls may start while the mutation is awaiting its response. They must
-      // not replace that response (for example restoring a revoked browser).
-      revision.current += 1;
       if (mounted.current) setBusy(false);
     }
   }
@@ -83,7 +79,13 @@ export function WebAccessSettings() {
       )}
       {error && <p role="alert">{error}</p>}
       {status?.error && (
-        <p role="alert">{status.error === "port_in_use" ? c.portError : c.unavailable}</p>
+        <p role="alert">
+          {status.error === "port_in_use"
+            ? c.portError
+            : lan && status.error === "lan_address_unavailable"
+              ? l.addressLost
+              : c.unavailable}
+        </p>
       )}
       {!config ? (
         <p>{c.loading}</p>
@@ -102,9 +104,9 @@ export function WebAccessSettings() {
             />
           </SettingsRow>
           <SettingsRow>
-            <label htmlFor="web-port">{c.port}</label>
+            <label htmlFor={`${fieldPrefix}-port`}>{c.port}</label>
             <Input
-              id="web-port"
+              id={`${fieldPrefix}-port`}
               type="number"
               min={1024}
               max={65535}
@@ -113,17 +115,58 @@ export function WebAccessSettings() {
               onChange={(e) => setConfig({ ...config, port: Number(e.target.value) })}
             />
           </SettingsRow>
-          <SettingsRow>
-            <label htmlFor="web-origin">{c.origin}</label>
-            <Input
-              id="web-origin"
-              type="url"
-              placeholder="https://agent.example.com"
-              value={config.externalOrigin}
-              disabled={busy}
-              onChange={(e) => setConfig({ ...config, externalOrigin: e.target.value })}
-            />
-          </SettingsRow>
+          {lan ? (
+            <>
+              <SettingsRow>
+                <label htmlFor="lan-web-address">{l.address}</label>
+                <Select
+                  value={config.lanAddress || null}
+                  disabled={busy}
+                  onValueChange={(value) => setConfig({ ...config, lanAddress: value || "" })}
+                >
+                  <SelectTrigger id="lan-web-address" className="max-w-full min-w-0">
+                    <SelectValue placeholder={l.choose} />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {(status?.addresses ?? []).map(({ name, address }) => (
+                      <SelectItem key={`${name}-${address}`} value={address}>
+                        {name} · {address}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </SettingsRow>
+              {!status?.addresses?.length && <SettingsNotice>{l.noAddress}</SettingsNotice>}
+              {!!config.lanAddress &&
+                !status?.addresses?.some(({ address }) => address === config.lanAddress) && (
+                  <SettingsNotice>{l.addressLost}</SettingsNotice>
+                )}
+              <div className="border-b px-5 py-4">
+                <label className="flex items-start gap-3 text-sm leading-relaxed">
+                  <Checkbox
+                    checked={config.allowPlaintext === true}
+                    disabled={busy}
+                    onCheckedChange={(checked) =>
+                      setConfig({ ...config, allowPlaintext: checked === true })
+                    }
+                  />
+                  <span>{l.risk}</span>
+                </label>
+              </div>
+            </>
+          ) : (
+            <SettingsRow>
+              <label htmlFor="web-origin">{c.origin}</label>
+              <Input
+                id="web-origin"
+                type="url"
+                placeholder="https://agent.example.com"
+                value={config.externalOrigin}
+                disabled={busy}
+                onChange={(e) => setConfig({ ...config, externalOrigin: e.target.value })}
+              />
+            </SettingsRow>
+          )}
           <SettingsRow>
             <SettingsCopy>
               <strong>{c.experimental}</strong>
@@ -141,7 +184,14 @@ export function WebAccessSettings() {
           <div className="flex flex-wrap justify-end gap-2 border-b px-5 py-3">
             <Button
               disabled={
-                busy || !Number.isInteger(config.port) || config.port < 1024 || config.port > 65535
+                busy ||
+                !Number.isInteger(config.port) ||
+                config.port < 1024 ||
+                config.port > 65535 ||
+                (lan &&
+                  config.enabled &&
+                  (!config.allowPlaintext ||
+                    !status?.addresses?.some(({ address }) => address === config.lanAddress)))
               }
               onClick={() => void run({ operation: "configure", ...config })}
             >
@@ -156,6 +206,26 @@ export function WebAccessSettings() {
             </Button>
           </div>
         </>
+      )}
+      {lan && status?.running && status.connectionUrl && (
+        <SettingsNotice>
+          <div className="flex flex-wrap items-start gap-4">
+            <ConnectionQr url={status.connectionUrl} label={l.qr} />
+            <div className="min-w-0 flex-1 space-y-2 break-all">
+              <p>
+                {l.endpoint}: <code>{status.localUrl}</code>
+              </p>
+              <label htmlFor="lan-web-link">{l.link}</label>
+              <Input
+                id="lan-web-link"
+                readOnly
+                value={status.connectionUrl}
+                onFocus={(event) => event.target.select()}
+              />
+            </div>
+          </div>
+          <p className="mt-3">{l.session}</p>
+        </SettingsNotice>
       )}
       {status?.code && status.code.expiresAt > Date.now() && (
         <SettingsNotice>

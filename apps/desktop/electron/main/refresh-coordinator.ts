@@ -10,7 +10,7 @@ import type {
   RuntimeInfo,
 } from "../../src/core/types";
 import { RUNTIME_METHODS } from "../generated/runtime-protocol";
-import type { DesktopRuntimeHost } from "./runtime-host";
+import { RuntimeUnavailableError, type DesktopRuntimeHost } from "./runtime-host";
 
 const REFRESH_KINDS: RefreshKind[] = ["discovery", "insights", "gateways", "quota", "storage"];
 const SCHEDULER_INTERVAL_MS = 60_000;
@@ -23,10 +23,16 @@ const GATEWAYS_MAX_AGE_MS = 15 * 60_000;
 const INSIGHTS_MAX_AGE_MS = 30 * 60_000;
 const QUOTA_VISIBLE_MAX_AGE_MS = 5 * 60_000;
 const QUOTA_BACKGROUND_MAX_AGE_MS = 15 * 60_000;
-const QUOTA_RESET_GRACE_MS = 60_000;
+export interface QuotaScheduleState {
+  failures: number;
+  lastAttemptAt?: string;
+  nextAllowedAt?: string;
+}
 
 interface RefreshCoordinatorOptions {
   runtime(): DesktopRuntimeHost;
+  loadQuotaSchedule?(): Promise<QuotaScheduleState | undefined>;
+  saveQuotaSchedule?(state: QuotaScheduleState): Promise<void>;
   isMainWindowVisible(): boolean;
   onStatus(status: RefreshJobStatus): void;
   onQuotaSnapshot(snapshot: QuotaSnapshot): void;
@@ -43,11 +49,16 @@ export class ElectronRefreshCoordinator {
     REFRESH_KINDS.map((kind) => [kind, { status: idleStatus(kind), failures: 0 }]),
   );
   readonly #active = new Map<RefreshKind, Promise<RefreshReceipt>>();
+  readonly #initializedLocalKinds = new Set<RefreshKind>();
+  readonly #manualRequests = new Set<RefreshKind>();
   readonly #timers = new Set<NodeJS.Timeout>();
   #refreshLane: Promise<void> = Promise.resolve();
   #sequence = 1;
   #accepting = false;
   #runtimeAvailable = true;
+  #suspended = false;
+  #resumeTimer?: NodeJS.Timeout;
+  #quotaLastAttemptAt?: string;
 
   constructor(options: RefreshCoordinatorOptions) {
     this.#options = options;
@@ -56,10 +67,10 @@ export class ElectronRefreshCoordinator {
   start(): void {
     if (this.#accepting) return;
     this.#accepting = true;
-    void this.#seedFreshness()
+    void Promise.all([this.#seedFreshness(), this.#restoreQuotaSchedule()])
       .catch(() => undefined)
       .finally(() => {
-        if (!this.#accepting) return;
+        if (!this.#accepting || this.#suspended) return;
         this.#schedule("quota", QUOTA_INITIAL_DELAY_MS);
         this.#schedule("discovery", DISCOVERY_INITIAL_DELAY_MS);
         this.#schedule("gateways", GATEWAYS_INITIAL_DELAY_MS);
@@ -69,6 +80,7 @@ export class ElectronRefreshCoordinator {
 
   stop(): void {
     this.#accepting = false;
+    clearTimeout(this.#resumeTimer);
     for (const timer of this.#timers) {
       clearTimeout(timer);
       clearInterval(timer);
@@ -79,27 +91,40 @@ export class ElectronRefreshCoordinator {
   setRuntimeAvailable(available: boolean): void {
     this.#runtimeAvailable = available;
     if (!available) return;
-    for (const record of this.#jobs.values()) {
-      if (record.status.state !== "failed" && record.status.state !== "backoff") continue;
-      record.status = {
-        ...record.status,
-        state: "idle",
-        finished_at: undefined,
-        error: undefined,
-        next_allowed_at: undefined,
-      };
-      this.#emit(record.status);
+    this.activityChanged();
+  }
+
+  setSuspended(suspended: boolean): void {
+    if (this.#suspended === suspended) return;
+    this.#suspended = suspended;
+    if (suspended) {
+      for (const timer of this.#timers) clearTimeout(timer);
+      this.#timers.clear();
+    } else if (this.#accepting) {
+      for (const kind of ["quota", "discovery", "gateways", "insights"] as const)
+        this.#schedule(kind, 2_000);
     }
-    if (this.#accepting) void this.refreshIfDue();
+    this.activityChanged();
+  }
+
+  activityChanged(): void {
+    clearTimeout(this.#resumeTimer);
+    this.#resumeTimer = undefined;
+    if (!this.#accepting || this.#suspended) return;
+    this.#resumeTimer = setTimeout(() => {
+      this.#resumeTimer = undefined;
+      void this.refreshIfDue();
+    }, 2_000);
   }
 
   statuses(): RefreshJobStatus[] {
     return REFRESH_KINDS.map((kind) => ({ ...this.#record(kind).status }));
   }
 
-  request(kind: RefreshKind, force = false): Promise<RefreshReceipt> {
+  request(kind: RefreshKind, force = false, automatic = false): Promise<RefreshReceipt> {
     const active = this.#active.get(kind);
     if (active) {
+      if (!automatic) this.#manualRequests.add(kind);
       const status = { ...this.#record(kind).status };
       return Promise.resolve({
         kind,
@@ -125,6 +150,7 @@ export class ElectronRefreshCoordinator {
       });
     }
 
+    const previousNextAllowed = record.status.next_allowed_at;
     const requestId = this.#requestId(kind);
     const queuedAt = new Date().toISOString();
     record.status = {
@@ -137,11 +163,16 @@ export class ElectronRefreshCoordinator {
     };
     this.#emit(record.status);
 
-    const promise = this.#enqueue(() => this.#execute(kind, requestId));
+    const promise = this.#enqueue(() =>
+      this.#execute(kind, requestId, automatic, previousNextAllowed),
+    );
     this.#active.set(kind, promise);
     void promise
       .finally(() => {
-        if (this.#active.get(kind) === promise) this.#active.delete(kind);
+        if (this.#active.get(kind) === promise) {
+          this.#active.delete(kind);
+          this.#manualRequests.delete(kind);
+        }
       })
       .catch(() => undefined);
     return promise;
@@ -156,28 +187,37 @@ export class ElectronRefreshCoordinator {
   }
 
   async refreshIfDue(): Promise<void> {
-    if (!this.#accepting || !this.#runtimeAvailable) return;
-    const requests: Promise<unknown>[] = [];
-    if (this.#isStale("discovery", DISCOVERY_MAX_AGE_MS)) {
-      requests.push(this.request("discovery", false));
-    }
-    if (this.#isStale("insights", INSIGHTS_MAX_AGE_MS)) {
-      requests.push(this.request("insights", false));
-    }
-    const [gatewaysDue, quotaDue] = await Promise.all([
-      this.#gatewaysNeedRefresh().catch(() => false),
-      this.#quotaNeedsRefresh().catch(() => false),
-    ]);
-    if (gatewaysDue) requests.push(this.request("gateways", false));
-    if (quotaDue) requests.push(this.request("quota", false));
-    await Promise.allSettled(requests);
+    await Promise.allSettled(
+      (["discovery", "insights", "gateways", "quota"] as const).map((kind) =>
+        this.#requestScheduled(kind),
+      ),
+    );
   }
 
-  async #execute(kind: RefreshKind, requestId: string): Promise<RefreshReceipt> {
+  async #execute(
+    kind: RefreshKind,
+    requestId: string,
+    automatic: boolean,
+    previousNextAllowed: string | undefined,
+  ): Promise<RefreshReceipt> {
     const record = this.#record(kind);
+    const wasInitialized = this.#initializedLocalKinds.has(kind);
+    const previousQuotaAttempt = this.#quotaLastAttemptAt;
     try {
+      if (automatic && !this.#manualRequests.has(kind) && !(await this.#automaticAllowed(kind))) {
+        record.status = { ...record.status, state: "idle" };
+        this.#emit(record.status);
+        return {
+          kind,
+          disposition: "backoff",
+          request_id: requestId,
+          status: { ...record.status },
+        };
+      }
       if (!this.#accepting) throw new Error("Refresh coordinator is shutting down");
-      if (!this.#runtimeAvailable) throw new Error("AgentKib runtime is restarting");
+      if (!this.#runtimeAvailable)
+        throw new RuntimeUnavailableError(new Error("AgentKib runtime is restarting"));
+      if (kind === "discovery" || kind === "insights") this.#initializedLocalKinds.add(kind);
       const startedAt = new Date().toISOString();
       record.status = {
         ...record.status,
@@ -185,6 +225,10 @@ export class ElectronRefreshCoordinator {
         started_at: startedAt,
       };
       this.#emit(record.status);
+      if (kind === "quota") {
+        this.#quotaLastAttemptAt = startedAt;
+        await this.#persistQuotaSchedule();
+      }
 
       if (kind === "gateways") await this.#refreshGateways(record);
       else await this.#requestRuntimeRefresh(kind);
@@ -199,6 +243,7 @@ export class ElectronRefreshCoordinator {
         error: undefined,
         next_allowed_at: undefined,
       };
+      if (kind === "quota") await this.#persistQuotaSchedule();
       this.#emit(record.status);
       return {
         kind,
@@ -207,8 +252,14 @@ export class ElectronRefreshCoordinator {
         status: { ...record.status },
       };
     } catch (error) {
-      record.failures += 1;
-      const nextAllowedAt = new Date(Date.now() + backoffDelay(record.failures)).toISOString();
+      const unavailable = error instanceof RuntimeUnavailableError;
+      if (unavailable) {
+        if (!wasInitialized) this.#initializedLocalKinds.delete(kind);
+        if (kind === "quota") this.#quotaLastAttemptAt = previousQuotaAttempt;
+      } else record.failures += 1;
+      const nextAllowedAt = unavailable
+        ? previousNextAllowed
+        : new Date(Date.now() + backoffDelay(record.failures)).toISOString();
       record.status = {
         ...record.status,
         state: "failed",
@@ -216,6 +267,7 @@ export class ElectronRefreshCoordinator {
         error: error instanceof Error ? error.message : String(error),
         next_allowed_at: nextAllowedAt,
       };
+      if (kind === "quota") await this.#persistQuotaSchedule();
       this.#emit(record.status);
       throw error;
     }
@@ -294,7 +346,8 @@ export class ElectronRefreshCoordinator {
   #seed(kind: RefreshKind, finishedAt: string | undefined): void {
     if (!finishedAt) return;
     const record = this.#record(kind);
-    record.status = { ...idleStatus(kind), state: "succeeded", finished_at: finishedAt };
+    if (kind === "discovery" || kind === "insights") this.#initializedLocalKinds.add(kind);
+    record.status = { ...record.status, state: "succeeded", finished_at: finishedAt };
   }
 
   #schedule(kind: "discovery" | "insights" | "gateways" | "quota", initialDelay: number): void {
@@ -312,17 +365,19 @@ export class ElectronRefreshCoordinator {
   }
 
   async #requestScheduled(kind: "discovery" | "insights" | "gateways" | "quota"): Promise<void> {
-    if (!this.#accepting || !this.#runtimeAvailable) return;
+    if (!(await this.#automaticAllowed(kind))) return;
     if (kind === "gateways") {
-      if (await this.#gatewaysNeedRefresh()) await this.request(kind, false).catch(() => undefined);
+      if (await this.#gatewaysNeedRefresh())
+        await this.request(kind, false, true).catch(() => undefined);
       return;
     }
     if (kind === "quota") {
-      if (await this.#quotaNeedsRefresh()) await this.request(kind, false).catch(() => undefined);
+      if (await this.#quotaNeedsRefresh())
+        await this.request(kind, false, true).catch(() => undefined);
       return;
     }
     const maxAge = kind === "discovery" ? DISCOVERY_MAX_AGE_MS : INSIGHTS_MAX_AGE_MS;
-    if (this.#isStale(kind, maxAge)) await this.request(kind, false).catch(() => undefined);
+    if (this.#isStale(kind, maxAge)) await this.request(kind, false, true).catch(() => undefined);
   }
 
   async #gatewaysNeedRefresh(): Promise<boolean> {
@@ -333,47 +388,58 @@ export class ElectronRefreshCoordinator {
     return gateways.length > 0;
   }
 
+  async #automaticAllowed(kind: RefreshKind): Promise<boolean> {
+    if (!this.#accepting || !this.#runtimeAvailable || this.#suspended || this.#resumeTimer)
+      return false;
+    const next = parseTime(this.#record(kind).status.next_allowed_at);
+    if (Number.isFinite(next) && next > Date.now()) return false;
+    if (kind === "discovery" || kind === "insights") {
+      if (!this.#options.isMainWindowVisible()) return false;
+      const info = await this.#options
+        .runtime()
+        .request<RuntimeInfo>(RUNTIME_METHODS.runtimeInfo, {});
+      return info.local_auto_refresh_enabled !== false || !this.#initializedLocalKinds.has(kind);
+    }
+    if (kind === "quota") return this.#quotaNeedsRefresh();
+    return true;
+  }
+
   async #quotaNeedsRefresh(): Promise<boolean> {
     const runtime = this.#options.runtime();
-    const runtimeInfo = await runtime.request<RuntimeInfo>(RUNTIME_METHODS.runtimeInfo, {});
-    if (!runtimeInfo.quota_auto_refresh_enabled) return false;
-    const [snapshot, collector] = await Promise.all([
-      runtime.request<QuotaSnapshot | undefined>(RUNTIME_METHODS.quotaSnapshot, {}),
-      runtime.request<QuotaCollectorStatus>(RUNTIME_METHODS.quotaCollectorStatus, {}),
-    ]);
-    const lastSuccessAt = parseTime(collector.last_success_at);
-    const lowRemaining = snapshot?.providers?.some((provider) => {
-      const windows = [
-        ...(provider.windows ?? []),
-        ...(provider.accounts ?? []).flatMap((account) => account.windows ?? []),
-      ];
-      return windows.some(
-        (window) =>
-          typeof window.remaining_percent === "number" &&
-          Number.isFinite(window.remaining_percent) &&
-          window.remaining_percent <= 20,
-      );
-    });
-    const maxAge =
-      this.#options.isMainWindowVisible() || lowRemaining
-        ? QUOTA_VISIBLE_MAX_AGE_MS
-        : QUOTA_BACKGROUND_MAX_AGE_MS;
-    const staleByAge = !Number.isFinite(lastSuccessAt) || Date.now() - lastSuccessAt >= maxAge;
-    const resetDue = snapshot?.providers?.some((provider) => {
-      const windows = [
-        ...(provider.windows ?? []),
-        ...(provider.accounts ?? []).flatMap((account) => account.windows ?? []),
-      ];
-      return windows.some((window) => {
-        const resetAt = parseTime(window.reset_at);
-        return (
-          Number.isFinite(resetAt) &&
-          resetAt <= Date.now() - QUOTA_RESET_GRACE_MS &&
-          (!Number.isFinite(lastSuccessAt) || lastSuccessAt < resetAt)
-        );
-      });
-    });
-    return snapshot?.freshness === "stale" || staleByAge || Boolean(resetDue);
+    const info = await runtime.request<RuntimeInfo>(RUNTIME_METHODS.runtimeInfo, {});
+    if (!info.quota_auto_refresh_enabled) return false;
+    const collector = await runtime.request<QuotaCollectorStatus>(
+      RUNTIME_METHODS.quotaCollectorStatus,
+      {},
+    );
+    const last = Math.max(
+      parseTime(this.#quotaLastAttemptAt) || 0,
+      parseTime(collector.last_success_at) || 0,
+    );
+    const age = this.#options.isMainWindowVisible()
+      ? QUOTA_VISIBLE_MAX_AGE_MS
+      : QUOTA_BACKGROUND_MAX_AGE_MS;
+    return !last || Date.now() - last >= age;
+  }
+
+  async #restoreQuotaSchedule(): Promise<void> {
+    const state = await this.#options.loadQuotaSchedule?.().catch(() => undefined);
+    if (!state || !Number.isInteger(state.failures) || state.failures < 0) return;
+    const record = this.#record("quota");
+    record.failures = state.failures;
+    this.#quotaLastAttemptAt = state.lastAttemptAt;
+    record.status.next_allowed_at = state.nextAllowedAt;
+  }
+
+  async #persistQuotaSchedule(): Promise<void> {
+    const record = this.#record("quota");
+    await this.#options
+      .saveQuotaSchedule?.({
+        failures: record.failures,
+        lastAttemptAt: this.#quotaLastAttemptAt,
+        nextAllowedAt: record.status.next_allowed_at,
+      })
+      .catch(() => undefined);
   }
 
   #isStale(kind: RefreshKind, maxAge: number): boolean {

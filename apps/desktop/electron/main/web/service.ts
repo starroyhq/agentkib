@@ -2,12 +2,39 @@ import { createHash, randomBytes, randomInt } from "node:crypto";
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 import { mkdir, readFile, realpath, rename, writeFile } from "node:fs/promises";
 import { extname, join, relative, resolve, sep } from "node:path";
+import { networkInterfaces } from "node:os";
+
+export const HOSTED_ORIGIN = "https://remote.agentkib.com";
+export function isPrivateIPv4(address: string): boolean {
+  const parts = address.split(".");
+  if (parts.length !== 4 || parts.some((p) => !/^(0|[1-9]\d{0,2})$/.test(p) || Number(p) > 255))
+    return false;
+  const [a, b] = parts.map(Number);
+  return a === 10 || (a === 172 && b >= 16 && b <= 31) || (a === 192 && b === 168);
+}
+export function lanAddresses(): Array<{ name: string; address: string }> {
+  return Object.entries(networkInterfaces()).flatMap(([name, entries]) =>
+    (entries ?? [])
+      .filter((entry) => entry.family === "IPv4" && !entry.internal && isPrivateIPv4(entry.address))
+      .map((entry) => ({ name, address: entry.address })),
+  );
+}
+export function createWebControlState() {
+  return {
+    admission: false,
+    active: new Set<string>(),
+    unconfirmed: new Set<string>(),
+    requests: new Set<string>(),
+  };
+}
 
 export interface WebConfig {
   enabled: boolean;
   port: number;
   externalOrigin: string;
   experimentalEnabled: boolean;
+  lanAddress?: string;
+  allowPlaintext?: boolean;
 }
 export interface WebDevice {
   id: string;
@@ -32,8 +59,11 @@ export interface WebAdminStatus {
   code?: { value: string; expiresAt: number };
   pending: WebPending[];
   devices: WebDevice[];
+  mode?: "lan" | "local";
+  addresses?: Array<{ name: string; address: string }>;
+  connectionUrl?: string;
 }
-export type WebAdminRequest =
+export type WebAdminRequest = { target?: "lan" } & (
   | { operation: "status" | "generate-code" }
   | {
       operation: "configure";
@@ -41,10 +71,13 @@ export type WebAdminRequest =
       port: number;
       externalOrigin: string;
       experimentalEnabled: boolean;
+      lanAddress?: string;
+      allowPlaintext?: boolean;
     }
   | { operation: "approve"; id: string; send: boolean; approve: boolean }
-  | { operation: "reject" | "revoke"; id: string };
-type Credential = { hash: string; expiresAt: number; device: WebDevice };
+  | { operation: "reject" | "revoke"; id: string }
+);
+type Credential = { hash: string; expiresAt: number; device: WebDevice; binding?: string };
 type Browser = { csrf: string; expiresAt: number; pending?: WebPending; ended?: boolean };
 class HttpError extends Error {
   constructor(
@@ -74,6 +107,7 @@ export class WebAccessService {
   private credentials: Credential[] = [];
   private browsers = new Map<string, Browser>();
   private streams = new Map<ServerResponse, string>();
+  private liveReads = new Map<string, Promise<unknown>>();
   private active = new Set<string>();
   // One runtime worker serves all Web sessions. Reserve its admission across
   // preflight and mutation; new reads must not queue behind that preflight.
@@ -86,20 +120,53 @@ export class WebAccessService {
   private adminQueue: Promise<unknown> = Promise.resolve();
   private persistence: Promise<void> = Promise.resolve();
   private bootId = token();
+  private addressTimer?: ReturnType<typeof setInterval>;
   constructor(
     private readonly options: {
       dataDir: string;
       staticDir: string;
       runtimeRequest: (params: unknown) => Promise<unknown>;
       verifiedExperimental?: boolean;
+      verifiedClaudeManaged?: boolean;
       acceptanceSessionId?: string;
+      mode?: "lan";
+      sharedControl?: ReturnType<typeof createWebControlState>;
+      addresses?: typeof lanAddresses;
     },
   ) {
+    if (options.sharedControl) {
+      this.active = options.sharedControl.active;
+      this.unconfirmed = options.sharedControl.unconfirmed;
+      this.requests = options.sharedControl.requests;
+    }
+    if (options.mode === "lan") {
+      if (options.acceptanceSessionId) throw new Error("acceptance_is_local_only");
+      this.config = {
+        ...DEFAULT,
+        port: 1422,
+        externalOrigin: HOSTED_ORIGIN,
+        lanAddress: "",
+        allowPlaintext: false,
+      };
+    }
     if (
       options.acceptanceSessionId !== undefined &&
       !/^[a-f0-9]{64}$/.test(options.acceptanceSessionId)
     )
       throw new Error("invalid_acceptance_session");
+  }
+  private get admission() {
+    return this.options.sharedControl?.admission ?? this.controlAdmission;
+  }
+  private set admission(value: boolean) {
+    if (this.options.sharedControl) this.options.sharedControl.admission = value;
+    else this.controlAdmission = value;
+  }
+  private get binding() {
+    return `${HOSTED_ORIGIN}|http://${this.config.lanAddress}:${this.config.port}`;
+  }
+  private get addresses() {
+    return (this.options.addresses ?? lanAddresses)();
   }
 
   private controlsEnabled(sessionId?: string) {
@@ -108,7 +175,19 @@ export class WebAccessService {
       this.config.experimentalEnabled &&
       (scope
         ? !this.config.externalOrigin && (sessionId === undefined || sessionId === scope)
-        : this.options.verifiedExperimental === true)
+        : this.options.verifiedExperimental === true || this.options.verifiedClaudeManaged === true)
+    );
+  }
+  private controlsEnabledForSnapshot(sessionId: string | undefined, snapshot: unknown) {
+    return (
+      this.controlsEnabled(sessionId) &&
+      (!!this.options.acceptanceSessionId ||
+        this.options.verifiedExperimental === true ||
+        (this.options.verifiedClaudeManaged === true &&
+          snapshot !== null &&
+          typeof snapshot === "object" &&
+          "executionMode" in snapshot &&
+          snapshot.executionMode === "managed-resume"))
     );
   }
 
@@ -124,6 +203,7 @@ export class WebAccessService {
         (c: Credential) =>
           /^[a-f0-9]{64}$/.test(c.hash) &&
           c.expiresAt > Date.now() &&
+          (this.options.mode !== "lan" || c.binding === this.binding) &&
           c.device &&
           typeof c.device.id === "string" &&
           typeof c.device.name === "string" &&
@@ -132,7 +212,7 @@ export class WebAccessService {
       );
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code !== "ENOENT") {
-        this.config = { ...DEFAULT };
+        this.config.enabled = false;
         this.credentials = [];
         this.error = "invalid_saved_configuration";
       }
@@ -157,10 +237,15 @@ export class WebAccessService {
     this.expire();
     switch (input.operation) {
       case "status":
+        await this.checkLanAddress();
         break;
       case "configure": {
         const config = this.validateConfig(input);
         await this.shutdown();
+        if (this.options.mode === "lan") {
+          this.browsers.clear();
+          this.credentials = [];
+        }
         this.config = config;
         this.code = undefined;
         this.failures = 0;
@@ -182,8 +267,10 @@ export class WebAccessService {
         if (!entry?.[1].pending) throw new Error("pairing_expired");
         const [hash, browser] = entry;
         const pending = browser.pending!;
+        if (this.credentials.length >= 128) throw new Error("device_limit");
         this.credentials.push({
           hash,
+          ...(this.options.mode === "lan" ? { binding: this.binding } : {}),
           expiresAt: Date.now() + MAX_AGE,
           device: {
             id: pending.id,
@@ -236,6 +323,25 @@ export class WebAccessService {
       typeof input.externalOrigin !== "string"
     )
       throw new Error("invalid_configuration");
+    if (this.options.mode === "lan") {
+      if (input.externalOrigin !== HOSTED_ORIGIN) throw new Error("invalid_external_origin");
+      if (
+        typeof input.lanAddress !== "string" ||
+        (input.lanAddress !== "" && !isPrivateIPv4(input.lanAddress))
+      )
+        throw new Error("invalid_lan_address");
+      if (typeof input.allowPlaintext !== "boolean") throw new Error("invalid_configuration");
+      if (input.enabled && (!input.allowPlaintext || !input.lanAddress))
+        throw new Error("plaintext_confirmation_required");
+      return {
+        enabled: input.enabled,
+        port: input.port,
+        externalOrigin: HOSTED_ORIGIN,
+        experimentalEnabled: input.experimentalEnabled,
+        lanAddress: input.lanAddress,
+        allowPlaintext: input.allowPlaintext,
+      };
+    }
     let externalOrigin = "";
     if (this.options.acceptanceSessionId && input.externalOrigin)
       throw new Error("acceptance_is_local_only");
@@ -265,9 +371,20 @@ export class WebAccessService {
       running: !!this.server?.listening,
       error: this.error,
       experimentalAvailable:
-        this.options.verifiedExperimental === true || !!this.options.acceptanceSessionId,
+        this.options.verifiedExperimental === true ||
+        this.options.verifiedClaudeManaged === true ||
+        !!this.options.acceptanceSessionId,
       acceptanceSessionId: this.options.acceptanceSessionId,
-      localUrl: `http://127.0.0.1:${this.config.port}`,
+      localUrl: `http://${this.options.mode === "lan" ? this.config.lanAddress : "127.0.0.1"}:${this.config.port}`,
+      mode: this.options.mode ?? "local",
+      ...(this.options.mode === "lan"
+        ? {
+            addresses: this.addresses,
+            connectionUrl: this.server?.listening
+              ? `${HOSTED_ORIGIN}/#connect=${encodeURIComponent(`http://${this.config.lanAddress}:${this.config.port}`)}`
+              : undefined,
+          }
+        : {}),
       code: this.code && { ...this.code },
       pending: [...this.browsers.values()].flatMap((b) => (b.pending ? [{ ...b.pending }] : [])),
       devices: this.credentials.map((c) => ({ ...c.device })),
@@ -285,6 +402,13 @@ export class WebAccessService {
   }
   private async start() {
     this.error = undefined;
+    if (
+      this.options.mode === "lan" &&
+      !this.addresses.some((entry) => entry.address === this.config.lanAddress)
+    ) {
+      this.error = "lan_address_unavailable";
+      return;
+    }
     const server = createServer((req, res) => {
       const control = { request: false, dispatched: false, priorUncertain: false };
       void this.handle(req, res, control).catch((error) => {
@@ -307,12 +431,22 @@ export class WebAccessService {
     try {
       await new Promise<void>((resolve, reject) => {
         server.once("error", reject);
-        server.listen(this.config.port, "127.0.0.1", () => {
-          server.removeListener("error", reject);
-          resolve();
-        });
+        server.listen(
+          this.config.port,
+          this.options.mode === "lan" ? this.config.lanAddress : "127.0.0.1",
+          () => {
+            server.removeListener("error", reject);
+            resolve();
+          },
+        );
       });
       this.server = server;
+      if (this.options.mode === "lan") {
+        this.addressTimer = setInterval(() => {
+          void this.checkLanAddress();
+        }, 30_000);
+        this.addressTimer.unref();
+      }
       server.on("error", () => {
         this.error = "web_server_error";
       });
@@ -321,8 +455,19 @@ export class WebAccessService {
         (error as NodeJS.ErrnoException).code === "EADDRINUSE" ? "port_in_use" : "web_start_failed";
     }
   }
+  /** Also called on OS resume and when settings request their current status. */
+  async checkLanAddress(): Promise<void> {
+    if (this.options.mode !== "lan" || !this.server) return;
+    if (!this.addresses.some((entry) => entry.address === this.config.lanAddress)) {
+      this.error = "lan_address_unavailable";
+      await this.shutdown();
+    }
+  }
   async shutdown() {
+    clearInterval(this.addressTimer);
+    this.addressTimer = undefined;
     this.bootId = token();
+    this.liveReads.clear();
     this.endStreams();
     const server = this.server;
     this.server = undefined;
@@ -334,10 +479,34 @@ export class WebAccessService {
   }
   runtimeUnavailable() {
     this.bootId = token();
-    this.endStreams();
+    this.liveReads.clear();
+    this.endStreams(undefined, this.options.mode === "lan" ? "unavailable" : "access-ended");
   }
   private projectLive(sessionId: string | undefined, snapshot: unknown) {
-    if (!sessionId || !this.unconfirmed.has(sessionId)) return snapshot;
+    if (!sessionId || !this.unconfirmed.has(sessionId)) {
+      if (
+        snapshot &&
+        typeof snapshot === "object" &&
+        !this.controlsEnabledForSnapshot(sessionId, snapshot)
+      ) {
+        const state = snapshot as Record<string, unknown>;
+        return {
+          ...state,
+          sendEnabled: false,
+          questions: Array.isArray(state.questions)
+            ? state.questions.map((question) => ({ ...question, supported: false }))
+            : [],
+          approvals: Array.isArray(state.approvals)
+            ? state.approvals.map((approval) => ({
+                ...approval,
+                supported: false,
+                availableDecisions: [],
+              }))
+            : [],
+        };
+      }
+      return snapshot;
+    }
     return {
       sessionId,
       status: "outcome-unknown",
@@ -345,6 +514,7 @@ export class WebAccessService {
       turnId: null,
       sendEnabled: false,
       approvals: [],
+      questions: [],
       reason: "control-outcome-unconfirmed",
     };
   }
@@ -367,10 +537,10 @@ export class WebAccessService {
     if (++rate.count > limit || this.rates.size > 4096) throw new HttpError(429, "rate_limited");
     this.rates.set(key, rate);
   }
-  private endStreams(hash?: string) {
+  private endStreams(hash?: string, event: "access-ended" | "unavailable" = "access-ended") {
     for (const [res, owner] of this.streams)
       if (!hash || hash === owner) {
-        res.write("event: access-ended\ndata: {}\n\n");
+        res.write(`event: ${event}\ndata: {}\n\n`);
         res.end();
         this.streams.delete(res);
       }
@@ -404,8 +574,10 @@ export class WebAccessService {
   }
   private grant(hash: string, permission?: "send" | "approve") {
     const credential = this.credentials.find((c) => c.hash === hash && c.expiresAt > Date.now());
-    if (!this.server || !credential || this.browsers.get(hash)?.ended)
+    if (!this.server || !credential || this.browsers.get(hash)?.ended) {
+      this.endStreams(hash);
       throw new HttpError(401, "access_ended");
+    }
     if (permission && (!this.controlsEnabled() || !credential.device[permission]))
       throw new HttpError(403, "permission_denied");
     return credential.device;
@@ -421,7 +593,7 @@ export class WebAccessService {
     return value;
   }
   private async runtime(params: unknown, existing?: Promise<unknown>, reserved = false) {
-    if (!existing && !reserved && this.controlAdmission) throw new HttpError(409, "operation_busy");
+    if (!existing && !reserved && this.admission) throw new HttpError(409, "operation_busy");
     // Timeout does not cancel owner execution. Callers never automatically retry mutations.
     let timer: ReturnType<typeof setTimeout>;
     try {
@@ -435,6 +607,28 @@ export class WebAccessService {
       clearTimeout(timer!);
     }
   }
+  private streamSnapshot(sessionId: string | undefined, device: WebDevice) {
+    const experimentalEnabled = this.controlsEnabled(sessionId);
+    // Never share reads across host generations, transport modes or permission scopes.
+    const key = JSON.stringify([
+      this.bootId,
+      this.options.mode ?? "local",
+      sessionId,
+      experimentalEnabled,
+      device.send,
+      device.approve,
+    ]);
+    const existing = this.liveReads.get(key);
+    if (existing) return existing;
+    const read = this.runtime({ operation: "live", sessionId, experimentalEnabled });
+    this.liveReads.set(key, read);
+    void read
+      .finally(() => {
+        if (this.liveReads.get(key) === read) this.liveReads.delete(key);
+      })
+      .catch(() => undefined);
+    return read;
+  }
   private async handle(
     req: IncomingMessage,
     res: ServerResponse,
@@ -447,31 +641,85 @@ export class WebAccessService {
       "default-src 'self'; script-src 'self'; style-src 'self'; font-src 'self'; img-src 'self' data:; connect-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'",
     );
     this.expire();
-    const localOrigin = `http://127.0.0.1:${this.config.port}`;
+    const lan = this.options.mode === "lan";
+    if (lan && !this.addresses.some((entry) => entry.address === this.config.lanAddress)) {
+      this.error = "lan_address_unavailable";
+      void this.shutdown();
+      throw new HttpError(503, "lan_address_unavailable");
+    }
+    const localOrigin = `http://${lan ? this.config.lanAddress : "127.0.0.1"}:${this.config.port}`;
     const host = req.headers.host;
     const external =
-      !!this.config.externalOrigin && host === new URL(this.config.externalOrigin).host;
+      !lan && !!this.config.externalOrigin && host === new URL(this.config.externalOrigin).host;
     if (host !== new URL(localOrigin).host && !external) throw new HttpError(403, "invalid_host");
-    const origin = external ? this.config.externalOrigin : localOrigin;
+    const origin = lan ? HOSTED_ORIGIN : external ? this.config.externalOrigin : localOrigin;
+    if (lan && req.headers.origin !== origin) throw new HttpError(403, "invalid_origin");
     if (req.headers.origin && req.headers.origin !== origin)
       throw new HttpError(403, "invalid_origin");
-    if (req.headers["sec-fetch-site"] === "cross-site")
+    if (!lan && req.headers["sec-fetch-site"] === "cross-site")
       throw new HttpError(403, "cross_site_request");
     this.rate("global", 600);
+    if (lan) {
+      res.setHeader("Access-Control-Allow-Origin", origin);
+      res.setHeader("Vary", "Origin");
+    }
     const url = new URL(req.url || "/", origin);
-    if (!url.pathname.startsWith("/api/")) return this.static(req, res);
+    if (!url.pathname.startsWith("/api/")) {
+      if (lan) throw new HttpError(404, "not_found");
+      return this.static(req, res);
+    }
     res.setHeader("Cache-Control", "no-store");
     const path = url.pathname.replace(/^\/api\/web\/v1/, "");
     if (!url.pathname.startsWith("/api/web/v1/")) throw new HttpError(404, "not_found");
-    control.request = req.method === "POST" && (path === "/send" || path === "/approve");
+    const getPaths = ["/access", "/info", "/catalog", "/events", "/live", "/stream"];
+    const postPaths = ["/pair", "/pair/cancel", "/logout", "/send", "/approve", "/answer"];
+    if (lan && req.method === "OPTIONS") {
+      const method = req.headers["access-control-request-method"];
+      const allowed = method === "GET" ? getPaths : method === "POST" ? postPaths : [];
+      const headers = String(req.headers["access-control-request-headers"] ?? "")
+        .split(",")
+        .map((header) => header.trim().toLowerCase())
+        .filter(Boolean);
+      if (
+        !allowed.includes(path) ||
+        headers.some(
+          (header) => !["authorization", "content-type", "x-csrf-token"].includes(header),
+        )
+      )
+        throw new HttpError(403, "invalid_preflight");
+      res.setHeader("Access-Control-Allow-Methods", method!);
+      res.setHeader("Access-Control-Allow-Headers", "Authorization, Content-Type, X-CSRF-Token");
+      if (req.headers["access-control-request-private-network"] === "true")
+        res.setHeader("Access-Control-Allow-Private-Network", "true");
+      res.writeHead(204);
+      res.end();
+      return;
+    }
+    if (req.method === "GET" && path === "/info")
+      return this.json(res, 200, {
+        protocolVersion: 1,
+        transport: lan ? "lan" : "local",
+        capabilities: { read: true, send: this.controlsEnabled(), approve: this.controlsEnabled() },
+      });
+    control.request = req.method === "POST" && ["/send", "/approve", "/answer"].includes(path);
     const cookieName = external ? "ak_web_secure" : "ak_web_local";
-    let raw = req.headers.cookie
-      ?.split(";")
-      .map((v) => v.trim())
-      .find((v) => v.startsWith(`${cookieName}=`))
-      ?.slice(cookieName.length + 1);
+    let raw = lan
+      ? req.headers.authorization?.match(/^Bearer ([A-Za-z0-9_-]{43})$/)?.[1]
+      : req.headers.cookie
+          ?.split(";")
+          .map((v) => v.trim())
+          .find((v) => v.startsWith(`${cookieName}=`))
+          ?.slice(cookieName.length + 1);
     let hash = raw && /^[A-Za-z0-9_-]{43}$/.test(raw) ? digest(raw) : "";
     let browser = this.browsers.get(hash);
+    let bearerToken: string | undefined;
+    if (
+      lan &&
+      req.headers.authorization &&
+      !browser &&
+      !this.credentials.some((c) => c.hash === hash)
+    )
+      throw new HttpError(401, "access_ended");
     if (!browser && hash && this.credentials.some((c) => c.hash === hash)) {
       browser = { csrf: token(), expiresAt: Date.now() + MAX_AGE };
       this.browsers.set(hash, browser);
@@ -484,10 +732,12 @@ export class WebAccessService {
         hash = digest(raw);
         browser = { csrf: token(), expiresAt: Date.now() + 300_000 };
         this.browsers.set(hash, browser);
-        res.setHeader(
-          "Set-Cookie",
-          `${cookieName}=${raw}; Path=/; HttpOnly; SameSite=Strict; Max-Age=${MAX_AGE / 1000}${external ? "; Secure" : ""}`,
-        );
+        if (lan) bearerToken = raw;
+        else
+          res.setHeader(
+            "Set-Cookie",
+            `${cookieName}=${raw}; Path=/; HttpOnly; SameSite=Strict; Max-Age=${MAX_AGE / 1000}${external ? "; Secure" : ""}`,
+          );
       }
       const device = this.credentials.find((c) => c.hash === hash)?.device;
       return this.json(res, 200, {
@@ -503,6 +753,7 @@ export class WebAccessService {
         device: browser.ended ? undefined : device,
         pending: browser.pending,
         experimentalEnabled: this.controlsEnabled(),
+        ...(bearerToken ? { bearerToken } : {}),
       });
     }
     if (!browser) throw new HttpError(401, "unpaired");
@@ -542,14 +793,16 @@ export class WebAccessService {
         browser.ended = true;
         this.endStreams(hash);
         await this.save();
-        res.setHeader(
-          "Set-Cookie",
-          `${cookieName}=; Path=/; HttpOnly; SameSite=Strict; Max-Age=0${external ? "; Secure" : ""}`,
-        );
+        if (!lan)
+          res.setHeader(
+            "Set-Cookie",
+            `${cookieName}=; Path=/; HttpOnly; SameSite=Strict; Max-Age=0${external ? "; Secure" : ""}`,
+          );
         return this.json(res, 200, { ok: true });
       }
-      if (path !== "/send" && path !== "/approve") throw new HttpError(404, "not_found");
-      const permission = path === "/send" ? "send" : "approve";
+      if (!["/send", "/approve", "/answer"].includes(path)) throw new HttpError(404, "not_found");
+      const operation = path.slice(1);
+      const permission = operation === "approve" ? "approve" : "send";
       this.grant(hash, permission);
       if (body.bootId !== this.bootId) throw new HttpError(409, "stale_boot");
       const sessionId = this.field(body.sessionId);
@@ -568,13 +821,13 @@ export class WebAccessService {
       if (!Number.isSafeInteger(body.expectedRevision) || Number(body.expectedRevision) < 0)
         throw new HttpError(400, "invalid_revision");
       const params: Record<string, unknown> = {
-        operation: permission,
+        operation,
         sessionId,
         requestId,
         expectedRevision: body.expectedRevision,
         experimentalEnabled: true,
       };
-      if (permission === "send") {
+      if (operation === "send") {
         if (
           typeof body.text !== "string" ||
           !body.text.trim() ||
@@ -583,6 +836,39 @@ export class WebAccessService {
         )
           throw new HttpError(400, "invalid_text");
         params.text = body.text;
+      } else if (operation === "answer") {
+        params.turnId = this.field(body.turnId);
+        params.questionId =
+          typeof body.questionId === "number" &&
+          Number.isSafeInteger(body.questionId) &&
+          body.questionId >= 0
+            ? body.questionId
+            : this.field(body.questionId);
+        if (!body.answers || typeof body.answers !== "object" || Array.isArray(body.answers))
+          throw new HttpError(400, "invalid_answers");
+        const entries = Object.entries(body.answers);
+        if (
+          !entries.length ||
+          entries.length > 32 ||
+          entries.some(
+            ([key, values]) =>
+              !key ||
+              key.length > 4096 ||
+              !Array.isArray(values) ||
+              !values.length ||
+              values.length > 64 ||
+              values.some(
+                (value) =>
+                  typeof value !== "string" ||
+                  !value.trim() ||
+                  value.length > 4096 ||
+                  Buffer.byteLength(value, "utf8") > 8192,
+              ) ||
+              new Set(values).size !== values.length,
+          )
+        )
+          throw new HttpError(400, "invalid_answers");
+        params.answers = body.answers;
       } else {
         params.turnId = this.field(body.turnId);
         params.approvalId =
@@ -591,15 +877,15 @@ export class WebAccessService {
           body.approvalId >= 0
             ? body.approvalId
             : this.field(body.approvalId);
-        if (!["accept", "decline", "cancel"].includes(String(body.decision)))
+        if (!["accept", "decline", "cancel", "allow", "deny"].includes(String(body.decision)))
           throw new HttpError(400, "invalid_decision");
         params.decision = body.decision;
       }
-      if (this.controlAdmission) throw new HttpError(409, "operation_busy");
+      if (this.admission) throw new HttpError(409, "operation_busy");
       this.rate(`control:${hash}`, 30);
       this.requests.add(requestId);
       this.active.add(sessionId);
-      this.controlAdmission = true;
+      this.admission = true;
       const boot = this.bootId;
       let dispatched = false;
       try {
@@ -615,6 +901,17 @@ export class WebAccessService {
           runtimeBootId?: string;
           revision?: number;
           sendEnabled?: boolean;
+          questions?: {
+            requestId: unknown;
+            turnId: string;
+            supported: boolean;
+            questions: {
+              id: string;
+              multiSelect: boolean;
+              allowCustom: boolean;
+              options: { label: string }[];
+            }[];
+          }[];
           approvals?: {
             requestId: unknown;
             turnId: string;
@@ -624,10 +921,38 @@ export class WebAccessService {
         };
         this.grant(hash, permission);
         if (boot !== this.bootId) throw new HttpError(409, "stale_boot");
+        if (!this.controlsEnabledForSnapshot(sessionId, snapshot))
+          throw new HttpError(403, "provider_control_not_allowed");
         if (!snapshot?.runtimeBootId || snapshot.revision !== body.expectedRevision)
           throw new HttpError(409, "stale_state");
-        if (permission === "send" && snapshot.sendEnabled !== true)
+        if (operation === "send" && snapshot.sendEnabled !== true)
           throw new HttpError(409, "control_unavailable");
+        if (operation === "answer") {
+          const question = snapshot.questions?.find(
+            (item) =>
+              item.requestId === params.questionId &&
+              item.turnId === params.turnId &&
+              item.supported === true,
+          );
+          if (!question || !Array.isArray(question.questions) || !question.questions.length)
+            throw new HttpError(409, "question_unavailable");
+          const answers = body.answers as Record<string, string[]>;
+          if (
+            Object.keys(answers).length !== question.questions.length ||
+            new Set(question.questions.map((item) => item.id)).size !== question.questions.length ||
+            question.questions.some((item) => {
+              const values = Object.hasOwn(answers, item.id) ? answers[item.id] : undefined;
+              return (
+                !values ||
+                (item.multiSelect !== true && values.length !== 1) ||
+                !Array.isArray(item.options) ||
+                (item.allowCustom !== true &&
+                  values.some((value) => !item.options.some((option) => option.label === value)))
+              );
+            })
+          )
+            throw new HttpError(400, "invalid_answers");
+        }
         if (
           permission === "approve" &&
           !snapshot.approvals?.some(
@@ -649,7 +974,7 @@ export class WebAccessService {
           .then(() => this.options.runtimeRequest(params))
           .finally(() => {
             this.active.delete(sessionId);
-            this.controlAdmission = false;
+            this.admission = false;
           });
         const result = await this.runtime(params, pending);
         // Runtime admission is not owner dispatch: the bridge rechecks state
@@ -702,7 +1027,7 @@ export class WebAccessService {
       } finally {
         if (!dispatched) {
           this.active.delete(sessionId);
-          this.controlAdmission = false;
+          this.admission = false;
         }
       }
     }
@@ -723,37 +1048,75 @@ export class WebAccessService {
       });
       this.streams.set(res, hash);
       let timer: ReturnType<typeof setTimeout>;
+      let drainTimer: ReturnType<typeof setTimeout> | undefined;
+      let backpressured = false;
+      let previousData: string | undefined;
+      let lastWriteAt = Date.now();
+      const cleanup = () => {
+        clearTimeout(timer);
+        clearTimeout(drainTimer);
+        res.off("drain", resume);
+        this.streams.delete(res);
+      };
+      const resume = () => {
+        clearTimeout(drainTimer);
+        backpressured = false;
+        if (this.streams.has(res) && !res.writableEnded && !res.destroyed)
+          timer = setTimeout(() => void poll(), 2000);
+      };
+      const write = (message: string) => {
+        if (res.writableEnded || res.destroyed || !this.streams.has(res)) return;
+        // false means the frame was accepted into Node's buffer. Do not resend
+        // it or poll for another snapshot until the slow reader catches up.
+        if (!res.write(message)) {
+          backpressured = true;
+          res.once("drain", resume);
+          drainTimer = setTimeout(() => {
+            cleanup();
+            res.destroy();
+          }, 30_000);
+        }
+        lastWriteAt = Date.now();
+      };
       const poll = async () => {
         try {
-          this.grant(hash);
-          const snapshot = await this.runtime({
-            operation: "live",
-            sessionId,
-            experimentalEnabled: this.controlsEnabled(sessionId),
-          });
+          const device = this.grant(hash);
+          const snapshot = await this.streamSnapshot(sessionId, device);
+          // Each browser remains independently authorized before and after the shared read.
           this.grant(hash);
           if (!this.streams.has(res)) return;
           const data = JSON.stringify(this.projectLive(sessionId, snapshot));
           if (Buffer.byteLength(data) > 4 * 1024 * 1024) throw new Error("snapshot_too_large");
-          if (!res.write(`event: snapshot\ndata: ${data}\n\n`)) {
-            res.end();
-            return;
-          }
+          const message =
+            data !== previousData
+              ? `event: snapshot\ndata: ${data}\n\n`
+              : Date.now() - lastWriteAt >= 15_000
+                ? ": heartbeat\n\n"
+                : undefined;
+          if (message) write(message);
+          previousData = data;
         } catch (error) {
           // Admission reserves runtime capacity for control. A skipped read is
           // not a stream outage; keep polling and keep revocation checks active.
           if (
             !(error instanceof HttpError && error.message === "operation_busy") &&
             !res.writableEnded
-          )
-            res.write("event: unavailable\ndata: {}\n\n");
+          ) {
+            previousData = undefined;
+            write("event: unavailable\ndata: {}\n\n");
+          } else if (
+            this.streams.has(res) &&
+            !res.writableEnded &&
+            Date.now() - lastWriteAt >= 15_000
+          ) {
+            write(": heartbeat\n\n");
+          }
         }
-        if (this.streams.has(res)) timer = setTimeout(() => void poll(), 2000);
+        if (this.streams.has(res) && !backpressured && !res.writableEnded && !res.destroyed)
+          timer = setTimeout(() => void poll(), 2000);
       };
-      res.on("close", () => {
-        clearTimeout(timer);
-        this.streams.delete(res);
-      });
+      res.once("close", cleanup);
+      res.once("finish", cleanup);
       void poll();
       return;
     }

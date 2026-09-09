@@ -96,6 +96,21 @@ pub fn identity(path: &Path) -> String {
     identity_for_platform(&path.to_string_lossy(), cfg!(windows))
 }
 
+/// Path-shaped identity for salted keys. Preserve Unix OS bytes while applying
+/// Windows comparison rules, including when the final directory no longer exists.
+pub fn identity_path(path: &Path) -> PathBuf {
+    let normalized =
+        canonicalize(path).unwrap_or_else(|_| strip_verbatim_prefix(path.to_path_buf()));
+    #[cfg(windows)]
+    {
+        PathBuf::from(identity_for_platform(&normalized.to_string_lossy(), true))
+    }
+    #[cfg(not(windows))]
+    {
+        normalized
+    }
+}
+
 pub fn equivalent(left: &Path, right: &Path) -> bool {
     identity(left) == identity(right)
 }

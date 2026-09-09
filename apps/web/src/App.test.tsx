@@ -196,6 +196,7 @@ function mockServer(initial = "approved", availability = "readable") {
     if (path.includes("/catalog"))
       return Response.json({
         indexEnabled: true,
+        workspaces: [{ id: "w", name: "test", path: "/projects/test" }],
         sessions: [
           {
             id: "s",
@@ -228,6 +229,81 @@ function mockServer(initial = "approved", availability = "readable") {
   };
 }
 describe("Web access UI", () => {
+  it("refreshes background pending markers and clears them after another client answers", async () => {
+    const { fetcher } = mockServer();
+    const original = fetcher.getMockImplementation()!;
+    let pending = false;
+    fetcher.mockImplementation(async (url) => {
+      const path = String(url);
+      if (path.includes("/catalog"))
+        return Response.json({
+          indexEnabled: true,
+          workspaces: [{ id: "w", name: "test", path: "/projects/test" }],
+          sessions: ["s", "other"].map((id) => ({
+            id,
+            title: id,
+            workspace_id: "w",
+            agent: "codex",
+            availability: "readable",
+          })),
+        });
+      if (path.includes("/live")) {
+        const id = new URL(path, "http://localhost").searchParams.get("sessionId")!;
+        return Response.json({
+          sessionId: id,
+          status: "idle",
+          revision: 1,
+          sendEnabled: false,
+          approvals: [],
+          questions: id === "s" && pending ? [{ requestId: "q" }] : [],
+        });
+      }
+      return original(url);
+    });
+    const ticks: (() => void)[] = [];
+    const interval = globalThis.setInterval;
+    vi.spyOn(globalThis, "setInterval").mockImplementation(((
+      callback: () => void,
+      delay: number,
+    ) => {
+      if (delay === 4000) ticks.push(callback);
+      return interval(callback, 60000);
+    }) as typeof setInterval);
+    render(<App />);
+    fireEvent.click(await screen.findByRole("button", { name: "Codex · s" }));
+    await screen.findByText("Secret history");
+    fireEvent.click(screen.getByRole("button", { name: "Codex · other" }));
+    await screen.findByText("Secret history");
+    expect(screen.getByRole("button", { name: "Codex · other" })).toHaveAttribute(
+      "aria-current",
+      "page",
+    );
+    pending = true;
+    await act(async () => {
+      ticks.forEach((tick) => tick());
+    });
+    expect(await screen.findByLabelText("等待处理")).toBeVisible();
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+    pending = false;
+    await act(async () => {
+      ticks.forEach((tick) => tick());
+    });
+    await waitFor(() => expect(screen.queryByLabelText("等待处理")).not.toBeInTheDocument());
+    // A stream reset clears state without changing the approved access status.
+    act(() => FakeEvents.instances.at(-1)!.emit("unavailable", {}));
+    await act(async () => {
+      ticks.forEach((tick) => tick());
+    });
+    fireEvent.click(await screen.findByRole("button", { name: "Codex · s" }));
+    await screen.findByText("Secret history");
+    fireEvent.click(screen.getByRole("button", { name: "Codex · other" }));
+    await screen.findByText("Secret history");
+    pending = true;
+    await act(async () => {
+      ticks.forEach((tick) => tick());
+    });
+    expect(await screen.findByLabelText("等待处理")).toBeVisible();
+  });
   it("keeps live updates and revocation active when the selected session is clicked again", async () => {
     mockServer();
     render(<App />);
@@ -253,6 +329,8 @@ describe("Web access UI", () => {
     const { fetcher } = mockServer("approved", "metadata-only");
     const before = FakeEvents.instances.length;
     render(<App />);
+    fireEvent.click(await screen.findByText("目录选项"));
+    fireEvent.change(screen.getByLabelText("记录类型"), { target: { value: "metadata" } });
     const entry = await screen.findByRole("button", { name: /Test session/ });
     expect(entry).toBeDisabled();
     fireEvent.click(entry);
@@ -635,6 +713,7 @@ describe("Web access UI", () => {
         if (String(url).includes("/catalog"))
           return Response.json({
             indexEnabled: true,
+            workspaces: [{ id: "w", name: "test", path: "/projects/test" }],
             sessions: [
               {
                 id: "s",

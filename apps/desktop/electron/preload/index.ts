@@ -17,6 +17,8 @@ function subscribe<T>(channel: string, listener: (value: T) => void): () => void
 const desktopApi = Object.freeze({
   platform: process.platform,
   events: Object.freeze({
+    onWindowActivity: (listener: (active: boolean) => void) =>
+      subscribe("agentkib:window-activity", listener),
     onQuitRequested: (listener: () => void) =>
       subscribe("agentkib:quit-requested", () => listener()),
     onThemeChanged: (listener: (theme: "light" | "dark") => void) =>
@@ -288,6 +290,8 @@ const desktopApi = Object.freeze({
     setQuotaPreferences: (preferences: unknown) =>
       ipcRenderer.invoke("agentkib:home:set-quota-preferences", preferences),
     refreshQuota: (force?: boolean) => ipcRenderer.invoke("agentkib:home:refresh-quota", force),
+    setLocalAutoRefresh: (enabled: boolean) =>
+      ipcRenderer.invoke("agentkib:home:set-local-auto-refresh", enabled),
     setQuotaAutoRefresh: (enabled: boolean) =>
       ipcRenderer.invoke("agentkib:home:set-quota-auto-refresh", enabled),
     setQuotaPromptSeen: (seen: boolean) =>

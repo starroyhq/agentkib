@@ -35,6 +35,67 @@ beforeEach(() => {
 });
 
 describe("remote connection state", () => {
+  it("ignores same-minute heartbeats but accepts minute and connection state changes", async () => {
+    const connected: RemoteStatus = {
+      ...status,
+      connections: [
+        {
+          id: "host",
+          name: "Host",
+          address: "192.168.1.2:42987",
+          status: "online",
+          last_seen: 120,
+          error: null,
+        },
+      ],
+      authorized: [{ id: "peer", name: "Peer", approved_at: 100, last_seen: 120 }],
+    };
+    const heartbeat: RemoteStatus = {
+      ...connected,
+      connections: connected.connections.map((record) => ({ ...record, last_seen: 179 })),
+      authorized: connected.authorized.map((record) => ({ ...record, last_seen: 179 })),
+    };
+    const nextMinute: RemoteStatus = {
+      ...heartbeat,
+      connections: heartbeat.connections.map((record) => ({ ...record, last_seen: 181 })),
+      authorized: heartbeat.authorized.map((record) => ({ ...record, last_seen: 183 })),
+    };
+    const offline: RemoteStatus = {
+      ...nextMinute,
+      connections: nextMinute.connections.map((record) => ({
+        ...record,
+        status: "offline",
+        last_seen: 185,
+      })),
+    };
+    vi.mocked(api.remoteRequest)
+      .mockResolvedValueOnce(connected)
+      .mockResolvedValueOnce(heartbeat)
+      .mockResolvedValueOnce(nextMinute)
+      .mockResolvedValueOnce(offline);
+    await useRemoteStore.getState().refresh();
+    expect(useRemoteStore.getState().snapshot).toBe(connected);
+    await useRemoteStore.getState().refresh();
+    expect(useRemoteStore.getState().snapshot).toBe(connected);
+    await useRemoteStore.getState().refresh();
+    expect(useRemoteStore.getState().snapshot).toBe(nextMinute);
+    expect(useRemoteStore.getState().snapshot?.connections[0].last_seen).toBe(181);
+    expect(useRemoteStore.getState().snapshot?.authorized[0].last_seen).toBe(183);
+    await useRemoteStore.getState().refresh();
+    expect(useRemoteStore.getState().snapshot).toBe(offline);
+  });
+
+  it("applies authorization removal immediately within a heartbeat minute", async () => {
+    const approved: RemoteStatus = {
+      ...status,
+      authorized: [{ id: "peer", name: "Peer", approved_at: 100, last_seen: 120 }],
+    };
+    vi.mocked(api.remoteRequest).mockResolvedValueOnce(approved).mockResolvedValueOnce(status);
+    await useRemoteStore.getState().refresh();
+    await useRemoteStore.getState().refresh();
+    expect(useRemoteStore.getState().snapshot).toBe(status);
+  });
+
   it("does not let background status polling erase a failed user operation", async () => {
     const failure = new Error("pairing denied");
     vi.mocked(api.remoteRequest).mockRejectedValueOnce(failure).mockResolvedValue(status);

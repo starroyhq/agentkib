@@ -387,6 +387,8 @@
   "settings.section.diagnostics": "診斷",
   "settings.interface": "介面",
   "settings.quotaTitle": "額度查詢",
+  "settings.automaticUpdates": "自動更新",
+  "settings.localAutoRefresh": "自動更新本機探索與統計",
   "settings.quotaAutoRefresh": "自動取得額度",
   "settings.shortcutsTitle": "鍵盤快速鍵",
   "settings.shortcuts": "快速鍵說明",

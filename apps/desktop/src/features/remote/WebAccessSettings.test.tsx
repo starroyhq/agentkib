@@ -19,7 +19,32 @@ beforeEach(() => {
 });
 afterEach(() => {
   cleanup();
+  vi.useRealTimers();
   vi.restoreAllMocks();
+});
+
+it("refreshes active Web settings every two seconds and clears a recovered polling error without changed data", async () => {
+  vi.useFakeTimers();
+  const activeStatus = { ...status, running: true };
+  request.mockResolvedValue(activeStatus);
+  render(<WebAccessSettings />);
+  await act(async () => {});
+  expect(request).toHaveBeenCalledTimes(1);
+  request.mockRejectedValueOnce(new Error("temporarily unavailable"));
+  await act(async () => {
+    await vi.advanceTimersByTimeAsync(1_999);
+  });
+  expect(request).toHaveBeenCalledTimes(1);
+  await act(async () => {
+    await vi.advanceTimersByTimeAsync(1);
+  });
+  expect(request).toHaveBeenCalledTimes(2);
+  expect(screen.queryByRole("alert")).not.toBeNull();
+  await act(async () => {
+    await vi.advanceTimersByTimeAsync(2_000);
+  });
+  expect(request).toHaveBeenCalledTimes(3);
+  expect(screen.queryByRole("alert")).toBeNull();
 });
 it("does not enable service until settings are saved", async () => {
   render(<WebAccessSettings />);
@@ -69,20 +94,17 @@ it("shows binding error and invokes revocation without granting extra permission
   await waitFor(() => expect(request).toHaveBeenCalledWith({ operation: "revoke", id: "d" }));
 });
 
-it("does not restore a revoked browser from a poll started during revocation", async () => {
-  let poll!: () => void;
-  vi.spyOn(window, "setInterval").mockImplementation((callback, delay) => {
-    if (delay === 2000) poll = callback as () => void;
-    return 1 as unknown as ReturnType<typeof window.setInterval>;
-  });
+it("does not restore a revoked browser from an older shared poll", async () => {
+  vi.useFakeTimers();
   const oldStatus = {
     ...status,
+    running: true,
     devices: [{ id: "d", name: "Phone", send: false, approve: false, createdAt: Date.now() }],
   };
   request.mockResolvedValueOnce(oldStatus);
   render(<WebAccessSettings />);
-  await screen.findByText("Phone");
   await act(async () => {});
+  expect(screen.getByText("Phone")).toBeTruthy();
   let finishRevoke!: (value: typeof status) => void;
   let finishPoll!: (value: typeof oldStatus) => void;
   request.mockImplementation(
@@ -92,11 +114,15 @@ it("does not restore a revoked browser from a poll started during revocation", a
         else finishPoll = resolve;
       }),
   );
+  await act(async () => {
+    await vi.advanceTimersByTimeAsync(5000);
+  });
   fireEvent.click(screen.getByRole("button", { name: "Revoke" }));
-  act(() => poll());
   expect(request).toHaveBeenCalledTimes(3);
   await act(async () => finishRevoke(status));
   expect(screen.queryByText("Phone")).toBeNull();
-  await act(async () => finishPoll?.(oldStatus));
+  await act(async () => finishPoll(oldStatus));
   expect(screen.queryByText("Phone")).toBeNull();
+  cleanup();
+  vi.useRealTimers();
 });

@@ -387,6 +387,8 @@
   "settings.section.diagnostics": "Diagnostics",
   "settings.interface": "Interface",
   "settings.quotaTitle": "Quota query",
+  "settings.automaticUpdates": "Automatic updates",
+  "settings.localAutoRefresh": "Automatically update local discovery and statistics",
   "settings.quotaAutoRefresh": "Automatically get quota",
   "settings.shortcutsTitle": "Keyboard shortcuts",
   "settings.shortcuts": "Shortcut help",

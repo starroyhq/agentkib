@@ -42,6 +42,7 @@ pub(crate) fn method_version(method: &str) -> Option<u64> {
         | "client-status-changed"
         | "ipc-connection-reset"
         | "thread-follower-command-approval-decision"
+        | "thread-follower-submit-user-input"
         | "thread-follower-file-approval-decision" => Some(1),
         "thread-follower-start-turn" => Some(2),
         "thread-follower-interrupt-turn" => Some(4),

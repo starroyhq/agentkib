@@ -669,11 +669,15 @@ function QuotaAutoRefreshSetting({
   const { t: tr } = useTranslation();
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
-  const toggle = async (enabled: boolean) => {
+  const toggle = async (enabled: boolean, local = false) => {
     setBusy(true);
     setError("");
     try {
-      onChanged(await api.setQuotaAutoRefreshEnabled(enabled));
+      onChanged(
+        await (local
+          ? api.setLocalAutoRefreshEnabled(enabled)
+          : api.setQuotaAutoRefreshEnabled(enabled)),
+      );
     } catch (reason) {
       setError(localizeMessage(reason));
     } finally {
@@ -682,7 +686,19 @@ function QuotaAutoRefreshSetting({
   };
 
   return (
-    <SettingsSection title={tr("settings.quotaTitle")} target="general-quota">
+    <SettingsSection title={tr("settings.automaticUpdates")} target="general-quota">
+      <SettingsRow border={false}>
+        <SettingsCopy>
+          <strong>{tr("settings.localAutoRefresh")}</strong>
+        </SettingsCopy>
+        <Label className="inline-flex items-center justify-self-end">
+          <Switch
+            checked={runtime?.local_auto_refresh_enabled !== false}
+            disabled={busy || !runtime}
+            onCheckedChange={(checked) => void toggle(checked, true)}
+          />
+        </Label>
+      </SettingsRow>
       <SettingsRow border={false}>
         <SettingsCopy>
           <strong>{tr("settings.quotaAutoRefresh")}</strong>

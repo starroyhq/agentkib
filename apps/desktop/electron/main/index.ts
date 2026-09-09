@@ -1,6 +1,6 @@
-import { readFile } from "node:fs/promises";
+import { readFile, writeFile, mkdir, rename } from "node:fs/promises";
 import path from "node:path";
-import { WebAccessService } from "./web/service";
+import { WebAccessService, createWebControlState } from "./web/service";
 import { acceptanceSession } from "./web/acceptance";
 import { requireRemoteRequest } from "./ipc/remote-validation";
 import {
@@ -12,6 +12,7 @@ import {
   nativeImage,
   nativeTheme,
   protocol,
+  powerMonitor,
   shell,
   type IpcMainInvokeEvent,
 } from "electron";
@@ -58,10 +59,13 @@ app.setPath("userData", electronDataPath);
 app.setPath("sessionData", electronDataPath);
 
 let mainWindow: BrowserWindow | undefined;
+let systemSuspended = false;
+let screenLocked = false;
 let nativeShell: ElectronNativeShell | undefined;
 let refreshCoordinator: ElectronRefreshCoordinator | undefined;
 let runtimeHost: DesktopRuntimeHost | undefined;
 let webAccess: WebAccessService | undefined;
+let lanWebAccess: WebAccessService | undefined;
 let runtimeHandshake: RuntimeHandshakeResult | undefined;
 let shutdownStarted = false;
 let quitApproved = false;
@@ -95,6 +99,7 @@ interface ElectronRuntimeInfo {
   effective_theme?: "light" | "dark";
   effective_locale?: SupportedLocale;
   quota_auto_refresh_enabled?: boolean;
+  local_auto_refresh_enabled?: boolean;
 }
 
 const hasSingleInstanceLock = app.requestSingleInstanceLock();
@@ -131,7 +136,7 @@ app.on("before-quit", (event) => {
   nativeShell?.destroy();
   void (async () => {
     try {
-      await webAccess?.shutdown();
+      await Promise.allSettled([webAccess?.shutdown(), lanWebAccess?.shutdown()]);
     } finally {
       await runtimeHost?.stop();
     }
@@ -173,6 +178,7 @@ async function startApplication(): Promise<void> {
   runtimeHost.on("exit", ({ expected }: { expected: boolean }) => {
     runtimeHandshake = undefined;
     webAccess?.runtimeUnavailable();
+    lanWebAccess?.runtimeUnavailable();
     if (!expected) refreshCoordinator?.setRuntimeAvailable(false);
   });
   runtimeHost.on("restart-error", (error: unknown) => {
@@ -182,7 +188,10 @@ async function startApplication(): Promise<void> {
     process.stderr.write(`AgentKib runtime entered a crash loop: ${error.message}\n`);
   });
 
+  const sharedControl = createWebControlState();
   webAccess = new WebAccessService({
+    sharedControl,
+    verifiedClaudeManaged: process.platform === "darwin",
     acceptanceSessionId: acceptanceSession(process.env),
     dataDir: path.join(electronDataPath, "web"),
     staticDir: app.isPackaged
@@ -194,14 +203,65 @@ async function startApplication(): Promise<void> {
     },
   });
   await webAccess.initialize();
+  lanWebAccess = new WebAccessService({
+    mode: "lan",
+    sharedControl,
+    verifiedClaudeManaged: process.platform === "darwin",
+    dataDir: path.join(electronDataPath, "web-lan"),
+    staticDir: "",
+    runtimeRequest: (params) => {
+      if (!runtimeHandshake) return Promise.reject(new Error("runtime_unavailable"));
+      return requireRuntime().request(RUNTIME_METHODS.webRequest, params);
+    },
+  });
+  await lanWebAccess.initialize();
   registerApplicationIpc();
   refreshCoordinator = new ElectronRefreshCoordinator({
     runtime: requireRuntime,
+    loadQuotaSchedule: async () =>
+      JSON.parse(await readFile(path.join(electronDataPath, "refresh-state.json"), "utf8")),
+    saveQuotaSchedule: async (state) => {
+      await mkdir(electronDataPath, { recursive: true });
+      const destination = path.join(electronDataPath, "refresh-state.json");
+      await writeFile(`${destination}.tmp`, JSON.stringify(state), { mode: 0o600 });
+      await rename(`${destination}.tmp`, destination);
+    },
     isMainWindowVisible: () =>
-      Boolean(mainWindow && !mainWindow.isDestroyed() && mainWindow.isVisible()),
+      Boolean(
+        mainWindow &&
+        !mainWindow.isDestroyed() &&
+        mainWindow.isVisible() &&
+        !mainWindow.isMinimized(),
+      ),
     onStatus: emitElectronRefreshState,
     onQuotaSnapshot: (snapshot: QuotaSnapshot) =>
       sendRendererEvent("agentkib:quota-updated", snapshot),
+  });
+
+  const updatePowerActivity = () => {
+    const paused = systemSuspended || screenLocked;
+    refreshCoordinator?.setSuspended(paused);
+    sendRendererEvent(
+      "agentkib:window-activity",
+      !paused && Boolean(mainWindow?.isVisible() && !mainWindow?.isMinimized()),
+    );
+    if (!paused) void lanWebAccess?.checkLanAddress();
+  };
+  powerMonitor.on("suspend", () => {
+    systemSuspended = true;
+    updatePowerActivity();
+  });
+  powerMonitor.on("lock-screen", () => {
+    screenLocked = true;
+    updatePowerActivity();
+  });
+  powerMonitor.on("resume", () => {
+    systemSuspended = false;
+    updatePowerActivity();
+  });
+  powerMonitor.on("unlock-screen", () => {
+    screenLocked = false;
+    updatePowerActivity();
   });
 
   startupBenchmark.mark("runtime-spawn");
@@ -522,8 +582,12 @@ function registerHomeIpc(): void {
   });
   ipcMain.handle("agentkib:web:request", (event, input: unknown) => {
     assertTrustedRenderer(event);
-    if (!webAccess) throw new Error("web_unavailable");
-    return webAccess.request(input as Parameters<WebAccessService["request"]>[0]);
+    const request = input as Parameters<WebAccessService["request"]>[0];
+    if (request?.target !== undefined && request.target !== "lan")
+      throw new Error("invalid_web_target");
+    const service = request?.target === "lan" ? lanWebAccess : webAccess;
+    if (!service) throw new Error("web_unavailable");
+    return service.request(request);
   });
   ipcMain.handle("agentkib:home:runtime", async (event) => {
     assertTrustedRenderer(event);
@@ -683,6 +747,17 @@ function registerHomeIpc(): void {
       "quota",
       force === undefined ? true : requireBoolean(force, "force"),
     );
+  });
+  ipcMain.handle("agentkib:home:set-local-auto-refresh", async (event, enabled: unknown) => {
+    assertTrustedRenderer(event);
+    const runtime = await requireRuntime().request<ElectronRuntimeInfo>(
+      RUNTIME_METHODS.setLocalAutoRefresh,
+      {
+        value: requireBoolean(enabled, "enabled"),
+      },
+    );
+    requireRefreshCoordinator().activityChanged();
+    return withElectronRuntimeCapabilities(runtime);
   });
   ipcMain.handle("agentkib:home:set-quota-auto-refresh", (event, enabled: unknown) => {
     assertTrustedRenderer(event);
@@ -858,7 +933,17 @@ async function createMainWindow(): Promise<void> {
     }
     void showFirstClosePrompt(window);
   });
-  window.on("focus", () => void refreshCoordinator?.refreshIfDue());
+  const updateWindowActivity = () => {
+    refreshCoordinator?.activityChanged();
+    sendRendererEvent(
+      "agentkib:window-activity",
+      !systemSuspended && !screenLocked && window.isVisible() && !window.isMinimized(),
+    );
+  };
+  window.on("show", updateWindowActivity);
+  window.on("hide", updateWindowActivity);
+  window.on("minimize", updateWindowActivity);
+  window.on("restore", updateWindowActivity);
   window.webContents.setWindowOpenHandler(() => ({ action: "deny" }));
   window.webContents.on("will-navigate", (event, targetUrl) => {
     const allowedOrigin = process.env.VITE_DEV_SERVER_URL

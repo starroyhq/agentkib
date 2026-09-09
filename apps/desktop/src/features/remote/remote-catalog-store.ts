@@ -4,7 +4,8 @@ import { api } from "@/core/api";
 import { DEFAULT_SESSION_PAGE_SIZE } from "@/core/session-history";
 import type { RemoteCatalog, RemoteConnection } from "@/core/remote-types";
 import type { ConversationEventPage, ConversationSessionSummary } from "@/core/types";
-import { useRemoteStore } from "./remote-store";
+import { subscribeRemoteStatus, useRemoteStore } from "./remote-store";
+import { isRemoteViewActive } from "./visible-polling";
 import { parseRemoteCatalog, parseRemoteEvents } from "./remote-payload";
 
 interface CachedCatalog extends RemoteCatalog {
@@ -215,10 +216,9 @@ export function RemoteCatalogBridge() {
     let disposed = false;
     let running = false;
     const tick = async () => {
-      if (disposed || running) return;
+      if (disposed || running || !isRemoteViewActive()) return;
       running = true;
       try {
-        await useRemoteStore.getState().refresh();
         const hosts = useRemoteStore.getState().snapshot?.connections ?? [];
         // Keep controller reads bounded even with many paired hosts.
         for (let offset = 0; offset < hosts.length && !disposed; offset += 4) {
@@ -230,11 +230,10 @@ export function RemoteCatalogBridge() {
         running = false;
       }
     };
-    void tick();
-    const timer = window.setInterval(() => void tick(), 5_000);
+    const unsubscribe = subscribeRemoteStatus(tick);
     return () => {
       disposed = true;
-      window.clearInterval(timer);
+      unsubscribe();
     };
   }, []);
   return null;

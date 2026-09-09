@@ -3,10 +3,13 @@ import http from "node:http";
 import { readFile } from "node:fs/promises";
 import { resolve, extname } from "node:path";
 const root = resolve(import.meta.dirname, "../dist");
+const port = Number(process.env.QA_PORT || 1423);
+if (!Number.isInteger(port) || port < 1024 || port > 65535) throw Error("Invalid QA_PORT");
 let status = "unpaired",
   pairedAt = 0,
   revision = 1;
 let approvalPending = false;
+let questionPending = false;
 const item = (id, kind, content, extra = {}) => ({
   id,
   kind,
@@ -41,9 +44,44 @@ const events = [
 ];
 const live = () => ({
   sessionId: "qa-session",
-  status: approvalPending ? "running" : "idle",
+  status: questionPending ? "waiting-input" : approvalPending ? "waiting-approval" : "idle",
+  turnId: "qa-turn",
   revision,
-  sendEnabled: !approvalPending,
+  sendEnabled: !approvalPending && !questionPending,
+  questions: questionPending
+    ? [
+        {
+          requestId: `qa-question-${revision}`,
+          turnId: "qa-turn",
+          method: "claude/AskUserQuestion",
+          supported: true,
+          questions: [
+            {
+              id: "color",
+              header: "颜色",
+              question: "请选择测试颜色",
+              multiSelect: false,
+              allowCustom: true,
+              options: [
+                { label: "蓝色", description: "冷色" },
+                { label: "绿色", description: "自然色" },
+              ],
+            },
+            {
+              id: "checks",
+              header: "检查项",
+              question: "选择检查项（可多选）",
+              multiSelect: true,
+              allowCustom: true,
+              options: [
+                { label: "键盘", description: "焦点与提交" },
+                { label: "布局", description: "窄屏与主题" },
+              ],
+            },
+          ],
+        },
+      ]
+    : [],
   approvals: approvalPending
     ? [
         {
@@ -60,7 +98,7 @@ const live = () => ({
 });
 http
   .createServer(async (req, res) => {
-    const url = new URL(req.url, "http://127.0.0.1:1423");
+    const url = new URL(req.url, `http://127.0.0.1:${port}`);
     const json = (value) => {
       res.writeHead(200, { "content-type": "application/json", "cache-control": "no-store" });
       res.end(JSON.stringify(value));
@@ -98,6 +136,10 @@ http
       if (p === "catalog")
         return json({
           indexEnabled: true,
+          workspaces: [
+            { id: "agentkib", name: "合成测试", path: "/synthetic/agentkib" },
+            { id: "workspace", name: "另一个项目", path: "/synthetic/other" },
+          ],
           sessions: [
             {
               id: "qa-session",
@@ -137,12 +179,18 @@ http
       }
       if (p === "send") {
         revision++;
-        approvalPending = true;
+        questionPending = process.env.QA_INTERACTION === "question";
+        approvalPending = !questionPending;
         return json({ accepted: true });
       }
       if (p === "approve") {
         revision++;
         approvalPending = false;
+        return json({ accepted: true });
+      }
+      if (p === "answer") {
+        revision++;
+        questionPending = false;
         return json({ accepted: true });
       }
       res.writeHead(404);
@@ -168,4 +216,4 @@ http
       res.end();
     }
   })
-  .listen(1423, "127.0.0.1", () => console.log("Synthetic QA only: http://127.0.0.1:1423"));
+  .listen(port, "127.0.0.1", () => console.log(`Synthetic QA only: http://127.0.0.1:${port}`));

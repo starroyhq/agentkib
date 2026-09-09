@@ -11,6 +11,7 @@ use std::sync::mpsc::{self, Sender};
 use std::sync::{Arc, OnceLock};
 use std::time::{Duration, Instant};
 
+mod claude_runner;
 mod obsidian;
 mod web;
 
@@ -26,7 +27,9 @@ use agentkib_conversations::{
 };
 use agentkib_core::{AgentKind, McpNetworkSettings, encode_url_path_segment};
 use agentkib_discovery::discover as discover_local_workspaces;
-use agentkib_insights::{InsightsCollectionPolicy, InsightsQuery, collect_git, collect_usage};
+use agentkib_insights::{
+    InsightsCollectionPolicy, InsightsQuery, collect_git, collect_usage_without_codex,
+};
 use agentkib_platform::applications::{
     WorkspaceApplicationCategory, detect_workspace_applications,
     open_workspace as open_workspace_application,
@@ -908,6 +911,9 @@ fn handle_request(request: RpcRequest) -> (RpcResponse, bool) {
         SET_QUOTA_PREFERENCES_METHOD => command_response(request, set_quota_preferences),
         REFRESH_QUOTA_METHOD => command_response(request, refresh_quota),
         SET_QUOTA_AUTO_REFRESH_METHOD => command_response(request, set_quota_auto_refresh),
+        agentkib_protocol::SET_LOCAL_AUTO_REFRESH_METHOD => {
+            command_response(request, set_local_auto_refresh)
+        }
         SET_QUOTA_PROMPT_SEEN_METHOD => command_response(request, set_quota_prompt_seen),
         STORAGE_OVERVIEW_METHOD => command_response(request, storage_overview),
         STORAGE_CHILDREN_METHOD => command_response(request, storage_children),
@@ -3109,6 +3115,10 @@ fn runtime_info(_: EmptyRequest) -> anyhow::Result<Value> {
             .get("quota_auto_refresh_enabled")
             .and_then(Value::as_bool)
             .unwrap_or(false),
+        "local_auto_refresh_enabled": preferences
+            .get("local_auto_refresh_enabled")
+            .and_then(Value::as_bool)
+            .unwrap_or(true),
         "quota_auto_refresh_prompt_seen": preferences
             .get("quota_auto_refresh_prompt_seen")
             .and_then(Value::as_bool)
@@ -4568,9 +4578,34 @@ fn refresh_insights(_: EmptyRequest) -> anyhow::Result<RefreshReceipt> {
         .map(|value| value.get())
         .unwrap_or(2);
     let policy = InsightsCollectionPolicy::for_parallelism(parallelism, true);
-    let usage = collect_usage(&usage_cursors, policy);
+    let mut usage = collect_usage_without_codex(&usage_cursors, policy);
     let repositories = collect_git(&workspaces, &fingerprints, policy);
-    Store::open_default()?.sync_insights(&usage, &repositories)?;
+    let store = Store::open_default()?;
+    let codex_home = std::env::var_os("CODEX_HOME")
+        .map(PathBuf::from)
+        .or_else(|| dirs::home_dir().map(|home| home.join(".codex")));
+    let codex_result = codex_home
+        .context("Codex Home is unavailable")
+        .and_then(|home| store.refresh_codex_insights(&home));
+    if let Err(error) = codex_result {
+        usage.push(agentkib_insights::UsageBatch {
+            events: Vec::new(),
+            cursor: None,
+            unchanged: false,
+            status: agentkib_insights::ProviderStatus {
+                agent: AgentKind::Codex,
+                available: false,
+                quality: agentkib_insights::UsageQuality::Incomplete,
+                coverage_from: None,
+                coverage_to: None,
+                imported_events: 0,
+                error_key: Some("errors.providerUnavailable".into()),
+                error_params: BTreeMap::new(),
+                error: Some(error.to_string()),
+            },
+        });
+    }
+    store.sync_insights(&usage, &repositories)?;
 
     Ok(completed_refresh_receipt_with_id(
         "insights", request_id, queued_at, started_at,
@@ -4695,6 +4730,10 @@ fn set_quota_preferences(request: SetQuotaPreferencesRequest) -> anyhow::Result<
 
 fn set_quota_auto_refresh(request: BoolRequest) -> anyhow::Result<Value> {
     update_quota_boolean("quota_auto_refresh_enabled", request.value, true)
+}
+
+fn set_local_auto_refresh(request: BoolRequest) -> anyhow::Result<Value> {
+    update_quota_boolean("local_auto_refresh_enabled", request.value, false)
 }
 
 fn set_quota_prompt_seen(request: BoolRequest) -> anyhow::Result<Value> {
@@ -5100,6 +5139,7 @@ fn handle_handshake(request: RpcRequest) -> (RpcResponse, bool) {
         capabilities: vec![
             "web-v1".into(),
             "experimental-codex-bridge-version-gated".into(),
+            "experimental-claude-managed-resume-version-gated".into(),
             "discovery-source-diagnostics".into(),
             "agent-history-capabilities".into(),
         ],

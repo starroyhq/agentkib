@@ -80,6 +80,23 @@ describe("WebAccessService loopback security boundary", () => {
     await service.request({ operation: "approve", id, send, approve });
     return id;
   }
+  function openStream(streamCookie = cookie, sessionId = "s") {
+    const chunks: string[] = [];
+    const req = request(
+      {
+        hostname: "127.0.0.1",
+        port,
+        path: `/api/web/v1/stream?sessionId=${sessionId}`,
+        headers: { Cookie: streamCookie },
+      },
+      (res) => {
+        res.on("data", (chunk) => chunks.push(String(chunk)));
+      },
+    );
+    req.on("error", () => {});
+    req.end();
+    return { chunks, close: () => req.destroy() };
+  }
   beforeEach(async () => {
     runtime.mockReset();
     runtime.mockResolvedValue({
@@ -154,6 +171,46 @@ describe("WebAccessService loopback security boundary", () => {
     ).toBe(404);
     expect(runtime).toHaveBeenCalledTimes(1);
     expect((await http("/api/web/v1/events?sessionId=x&limit=10000")).status).toBe(400);
+  });
+  it("protects the workspace catalog and preserves history metadata without requiring control grants", async () => {
+    const catalog = {
+      indexEnabled: true,
+      workspaces: [{ id: "workspace", name: "test", path: "/projects/test" }],
+      sessions: [
+        { id: "session", workspace_id: "workspace", origin: "interactive", git_branch: "main" },
+      ],
+    };
+    const events = {
+      events: [
+        {
+          id: "event",
+          kind: "tool-summary",
+          turn_id: "turn",
+          message_phase: null,
+          tool_name: "Bash",
+          tool_status: "failed",
+          duration_ms: 12,
+          attachment_count: 0,
+          truncated: true,
+        },
+      ],
+      next_cursor: "older",
+      warnings: ["read-budget-exhausted"],
+    };
+    runtime.mockImplementation(async (params) =>
+      (params as { operation: string }).operation === "catalog" ? catalog : events,
+    );
+    await bootstrap();
+    expect((await http("/api/web/v1/catalog")).status).toBe(401);
+    expect(runtime).not.toHaveBeenCalled();
+    const id = await pair(false, false);
+    expect((await http("/api/web/v1/catalog")).json()).toEqual(catalog);
+    expect((await http("/api/web/v1/events?sessionId=session")).json()).toEqual(events);
+    await service.request({ operation: "revoke", id });
+    const revoked = await http("/api/web/v1/catalog");
+    expect(revoked.status).toBe(401);
+    expect(revoked.body).not.toContain("/projects/test");
+    expect(runtime).toHaveBeenCalledTimes(2);
   });
   it("requires desktop confirmation, persists only hashed credentials, and revokes access", async () => {
     await bootstrap();
@@ -538,6 +595,176 @@ describe("WebAccessService loopback security boundary", () => {
       ).toMatchObject({ controlOutcome: "unknown" });
     },
   );
+  it("keeps a real large snapshot connection open after Node drains its buffer", async () => {
+    await bootstrap();
+    await pair();
+    runtime.mockResolvedValue({
+      runtimeBootId: "r",
+      revision: 1,
+      streamText: "x".repeat(1024 * 1024),
+    });
+    const stream = openStream();
+    try {
+      await vi.waitFor(() => expect(stream.chunks.join("")).toContain("\n\n"));
+      await vi.waitFor(() => expect(runtime.mock.calls.length).toBeGreaterThanOrEqual(2), {
+        timeout: 3000,
+      });
+      expect(stream.chunks.join("").match(/event: snapshot/g)).toHaveLength(1);
+    } finally {
+      stream.close();
+    }
+  });
+
+  it("pauses SSE polling until drain without closing or resending the buffered snapshot", async () => {
+    await bootstrap();
+    await pair();
+    let response: ServerResponse | undefined;
+    const original = ServerResponse.prototype.write;
+    const write = vi.spyOn(ServerResponse.prototype, "write").mockImplementation(function (
+      this: ServerResponse,
+      ...args: Parameters<typeof original>
+    ) {
+      if (String(args[0]).startsWith("event: snapshot")) {
+        response = this;
+        return false;
+      }
+      return original.apply(this, args);
+    });
+    const stream = openStream();
+    try {
+      await vi.waitFor(() => expect(response).toBeDefined());
+      await new Promise((resolve) => setTimeout(resolve, 2100));
+      expect(runtime).toHaveBeenCalledTimes(1);
+      expect(response!.writableEnded).toBe(false);
+      expect(response!.listenerCount("drain")).toBe(1);
+      response!.emit("drain");
+      await vi.waitFor(() => expect(runtime).toHaveBeenCalledTimes(2), { timeout: 3000 });
+      expect(
+        write.mock.calls.filter(([message]) => String(message).startsWith("event: snapshot")),
+      ).toHaveLength(1);
+      expect(response!.listenerCount("drain")).toBe(0);
+    } finally {
+      stream.close();
+    }
+  }, 10_000);
+
+  it.each(["close", "revoke", "timeout"])(
+    "cleans up a backpressured stream on %s",
+    async (reason) => {
+      await bootstrap();
+      const id = await pair();
+      let response: ServerResponse | undefined;
+      let expireDrain: (() => void) | undefined;
+      const timeout = globalThis.setTimeout;
+      vi.spyOn(globalThis, "setTimeout").mockImplementation(((
+        callback: () => void,
+        delay?: number,
+        ...args: unknown[]
+      ) => {
+        if (delay === 30_000) expireDrain = callback;
+        return timeout(callback, delay, ...args);
+      }) as typeof setTimeout);
+      const original = ServerResponse.prototype.write;
+      vi.spyOn(ServerResponse.prototype, "write").mockImplementation(function (
+        this: ServerResponse,
+        ...args: Parameters<typeof original>
+      ) {
+        if (String(args[0]).startsWith("event: snapshot")) {
+          response = this;
+          return false;
+        }
+        return original.apply(this, args);
+      });
+      const stream = openStream();
+      try {
+        await vi.waitFor(() => expect(response?.listenerCount("drain")).toBe(1));
+        if (reason === "close") stream.close();
+        else if (reason === "revoke") await service.request({ operation: "revoke", id });
+        else expireDrain!();
+        await vi.waitFor(() => expect(response!.listenerCount("drain")).toBe(0));
+        expect(response!.destroyed || response!.writableEnded).toBe(true);
+      } finally {
+        stream.close();
+      }
+    },
+  );
+
+  it("shares same-scope SSE reads, omits unchanged snapshots and retains heartbeats", async () => {
+    await bootstrap();
+    await pair();
+    let finish!: (value: unknown) => void;
+    const snapshot = { runtimeBootId: "r", revision: 7, events: [] };
+    runtime.mockImplementationOnce(
+      () =>
+        new Promise((resolve) => {
+          finish = resolve;
+        }),
+    );
+    runtime.mockResolvedValue(snapshot);
+    const first = openStream();
+    const second = openStream();
+    try {
+      await vi.waitFor(() => expect(runtime).toHaveBeenCalledTimes(1));
+      // Both clients must have entered the stream before releasing the common read.
+      await new Promise((resolve) => setTimeout(resolve, 50));
+      expect(runtime).toHaveBeenCalledTimes(1);
+      finish(snapshot);
+      await vi.waitFor(() => {
+        expect(first.chunks.join("")).toContain("event: snapshot");
+        expect(second.chunks.join("")).toContain("event: snapshot");
+      });
+      await new Promise((resolve) => setTimeout(resolve, 2100));
+      expect(first.chunks.join("").match(/event: snapshot/g)).toHaveLength(1);
+      expect(second.chunks.join("").match(/event: snapshot/g)).toHaveLength(1);
+      const now = Date.now();
+      vi.spyOn(Date, "now").mockReturnValue(now + 16_000);
+      await new Promise((resolve) => setTimeout(resolve, 2100));
+      expect(first.chunks.join("")).toContain(": heartbeat");
+      expect(second.chunks.join("")).toContain(": heartbeat");
+    } finally {
+      finish?.(snapshot);
+      first.close();
+      second.close();
+    }
+  }, 10_000);
+
+  it.each([false, true])(
+    "isolates SSE scopes and independently rechecks revocation (writable peer: %s)",
+    async (writable) => {
+      await bootstrap();
+      const readOnlyId = await pair();
+      const readOnlyCookie = cookie;
+      cookie = "";
+      await bootstrap();
+      await pair(writable);
+      const finishes: Array<(value: unknown) => void> = [];
+      runtime.mockImplementation(
+        () =>
+          new Promise((resolve) => {
+            finishes.push(resolve);
+          }),
+      );
+      const first = openStream(readOnlyCookie);
+      const second = openStream();
+      try {
+        await vi.waitFor(() => expect(runtime).toHaveBeenCalledTimes(writable ? 2 : 1));
+        await new Promise((resolve) => setTimeout(resolve, 50));
+        expect(runtime).toHaveBeenCalledTimes(writable ? 2 : 1);
+        await service.request({ operation: "revoke", id: readOnlyId });
+        finishes.forEach((finish) => finish({ revision: 8, events: [] }));
+        await vi.waitFor(() => {
+          expect(first.chunks.join("")).toContain("event: access-ended");
+          expect(second.chunks.join("")).toContain("event: snapshot");
+        });
+        expect(first.chunks.join("")).not.toContain("event: snapshot");
+      } finally {
+        finishes.forEach((finish) => finish({ revision: 8, events: [] }));
+        first.close();
+        second.close();
+      }
+    },
+  );
+
   it("keeps SSE connected across reserved preflight and mutation, while revocation still closes it", async () => {
     await bootstrap();
     const id = await pair(true);
@@ -760,6 +987,278 @@ describe("WebAccessService loopback security boundary", () => {
     expect((await http("/api/web/v1/catalog", { headers: { Host: "web.example" } })).status).toBe(
       401,
     );
+  });
+  it("Claude-only verification never enables Codex or unknown providers", async () => {
+    await service.shutdown();
+    service = new WebAccessService({
+      dataDir: dir,
+      staticDir: dir,
+      runtimeRequest: runtime,
+      verifiedClaudeManaged: true,
+    });
+    await service.initialize();
+    await bootstrap();
+    await pair(true, true);
+    for (const executionMode of [undefined, "unknown", "managed-resume"]) {
+      runtime.mockResolvedValue({
+        runtimeBootId: "runtime-one",
+        revision: 4,
+        sendEnabled: true,
+        executionMode,
+        accepted: true,
+        approvals: [],
+      });
+      const live = await http("/api/web/v1/live?sessionId=s");
+      expect(live.json().sendEnabled).toBe(executionMode === "managed-resume");
+      const sent = await http("/api/web/v1/send", {
+        method: "POST",
+        body: {
+          sessionId: "s",
+          text: "test",
+          requestId: `mode-${executionMode}`,
+          bootId,
+          expectedRevision: 4,
+        },
+      });
+      expect(sent.status).toBe(executionMode === "managed-resume" ? 200 : 403);
+    }
+  });
+  it("answers questions with send-only permission while a turn is waiting, without requiring idle", async () => {
+    await bootstrap();
+    await pair(true, false);
+    runtime.mockResolvedValue({
+      accepted: true,
+      runtimeBootId: "runtime-one",
+      revision: 4,
+      sendEnabled: false,
+      questions: [
+        {
+          requestId: 7,
+          turnId: "turn",
+          supported: true,
+          questions: [
+            {
+              id: "choice",
+              multiSelect: true,
+              allowCustom: false,
+              options: [{ label: "A" }, { label: "B" }],
+            },
+            { id: "custom", multiSelect: false, allowCustom: true, options: [] },
+          ],
+        },
+      ],
+    });
+    const body = {
+      bootId,
+      sessionId: "s",
+      requestId: "answer-one",
+      expectedRevision: 4,
+      questionId: 7,
+      turnId: "turn",
+      answers: { choice: ["A", "B"], custom: ["My answer"] },
+    };
+    expect((await http("/api/web/v1/answer", { method: "POST", body })).status).toBe(200);
+    expect(runtime).toHaveBeenCalledWith(
+      expect.objectContaining({ operation: "answer", questionId: 7, answers: body.answers }),
+    );
+    expect((await http("/api/web/v1/answer", { method: "POST", body })).json().error).toBe(
+      "duplicate_request",
+    );
+  });
+  it("enforces the native per-answer UTF-8 limit before runtime dispatch", async () => {
+    await bootstrap();
+    await pair(true, false);
+    runtime.mockResolvedValue({
+      accepted: true,
+      runtimeBootId: "runtime-one",
+      revision: 4,
+      sendEnabled: false,
+      questions: [
+        {
+          requestId: "q",
+          turnId: "turn",
+          supported: true,
+          questions: [{ id: "answer", multiSelect: false, allowCustom: true, options: [] }],
+        },
+      ],
+    });
+    for (const [index, value] of [
+      "文".repeat(2730),
+      "文".repeat(2730) + "ab",
+      "文".repeat(2731),
+    ].entries()) {
+      runtime.mockClear();
+      const result = await http("/api/web/v1/answer", {
+        method: "POST",
+        body: {
+          bootId,
+          sessionId: "s",
+          requestId: `utf8-${index}`,
+          expectedRevision: 4,
+          questionId: "q",
+          turnId: "turn",
+          answers: { answer: [value] },
+        },
+      });
+      expect(result.status).toBe(index < 2 ? 200 : 400);
+      if (index === 2) expect(runtime).not.toHaveBeenCalled();
+    }
+  });
+
+  it("does not substitute approval permission for question answering", async () => {
+    await bootstrap();
+    await pair(false, true);
+    expect((await http("/api/web/v1/answer", { method: "POST", body: { bootId } })).status).toBe(
+      403,
+    );
+    expect(runtime).not.toHaveBeenCalled();
+  });
+  it("rechecks question-answer authorization after preflight and rejects CSRF", async () => {
+    await bootstrap();
+    const id = await pair(true, false);
+    const body = {
+      bootId,
+      sessionId: "s",
+      requestId: "answer-race",
+      expectedRevision: 4,
+      questionId: "q",
+      turnId: "t",
+      answers: { x: ["A"] },
+    };
+    expect(
+      (
+        await http("/api/web/v1/answer", {
+          method: "POST",
+          body,
+          headers: { "X-CSRF-Token": "wrong" },
+        })
+      ).status,
+    ).toBe(403);
+    expect(runtime).not.toHaveBeenCalled();
+    let resolve!: (snapshot: unknown) => void;
+    runtime.mockImplementationOnce(
+      () =>
+        new Promise((done) => {
+          resolve = done;
+        }),
+    );
+    const response = http("/api/web/v1/answer", { method: "POST", body });
+    await vi.waitFor(() => expect(resolve).toBeTypeOf("function"));
+    await service.request({ operation: "revoke", id });
+    resolve({
+      runtimeBootId: "runtime-one",
+      revision: 4,
+      questions: [
+        {
+          requestId: "q",
+          turnId: "t",
+          supported: true,
+          questions: [
+            { id: "x", multiSelect: false, allowCustom: false, options: [{ label: "A" }] },
+          ],
+        },
+      ],
+    });
+    expect((await response).status).toBe(401);
+    expect(runtime).toHaveBeenCalledTimes(1);
+  });
+  it("rejects stale, unsupported and malformed question answers before dispatch", async () => {
+    await bootstrap();
+    await pair(true, true);
+    const snapshot = {
+      runtimeBootId: "runtime-one",
+      revision: 4,
+      sendEnabled: false,
+      questions: [
+        {
+          requestId: "q",
+          turnId: "turn",
+          supported: true,
+          questions: [
+            {
+              id: "choice",
+              multiSelect: false,
+              allowCustom: false,
+              options: [{ label: "A" }, { label: "B" }],
+            },
+          ],
+        },
+      ],
+    };
+    runtime.mockResolvedValue(snapshot);
+    const body = {
+      bootId,
+      sessionId: "s",
+      expectedRevision: 4,
+      questionId: "q",
+      turnId: "turn",
+      answers: { choice: ["A"] },
+    };
+    const variants = [
+      { turnId: "old" },
+      { questionId: "absent" },
+      { expectedRevision: 3 },
+      { answers: { choice: ["C"] } },
+      { answers: { choice: ["A", "B"] } },
+      { answers: { choice: ["A"], extra: ["A"] } },
+      { answers: { other: ["A"] } },
+    ];
+    for (const [index, variant] of variants.entries()) {
+      const response = await http("/api/web/v1/answer", {
+        method: "POST",
+        body: { ...body, ...variant, requestId: `invalid-${index}` },
+      });
+      expect([400, 409]).toContain(response.status);
+    }
+    snapshot.questions[0].supported = false;
+    expect(
+      (
+        await http("/api/web/v1/answer", {
+          method: "POST",
+          body: { ...body, requestId: "unsupported" },
+        })
+      ).json().error,
+    ).toBe("question_unavailable");
+    expect(runtime.mock.calls.every(([value]) => (value as any).operation === "live")).toBe(true);
+  });
+  it("forwards native Claude decisions only when the exact pending request offers them", async () => {
+    await bootstrap();
+    await pair(true, true);
+    runtime.mockResolvedValue({
+      accepted: true,
+      runtimeBootId: "runtime-one",
+      revision: 4,
+      sendEnabled: false,
+      approvals: [
+        {
+          requestId: "claude-request",
+          turnId: "turn",
+          supported: true,
+          method: "claude/can_use_tool",
+          availableDecisions: ["allow", "deny"],
+        },
+      ],
+    });
+    for (const decision of ["allow", "deny", "accept", "cancel"]) {
+      const response = await http("/api/web/v1/approve", {
+        method: "POST",
+        body: {
+          sessionId: "s",
+          requestId: `claude-${decision}`,
+          bootId,
+          expectedRevision: 4,
+          turnId: "turn",
+          approvalId: "claude-request",
+          decision,
+        },
+      });
+      expect(response.status).toBe(["allow", "deny"].includes(decision) ? 200 : 409);
+    }
+    expect(
+      runtime.mock.calls.some(
+        ([value]) => (value as any).operation === "approve" && (value as any).decision === "allow",
+      ),
+    ).toBe(true);
   });
   it("rejects unavailable send and only forwards exact supported numeric approvals", async () => {
     await bootstrap();

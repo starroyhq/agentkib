@@ -213,6 +213,7 @@ export const api = {
     desktopApi().workspace.sessionStatus(workspaceId),
   clearSessionIndex: (workspaceId?: string) => desktopApi().sessions.clearIndex(workspaceId),
   setSessionIndexEnabled: (enabled: boolean) => desktopApi().sessions.setIndexEnabled(enabled),
+  setLocalAutoRefreshEnabled: (enabled: boolean) => desktopApi().home.setLocalAutoRefresh(enabled),
   setQuotaAutoRefreshEnabled: (enabled: boolean) => desktopApi().home.setQuotaAutoRefresh(enabled),
   setQuotaAutoRefreshPromptSeen: (seen: boolean) => desktopApi().home.setQuotaPromptSeen(seen),
   addWorkspace: (path: string) => desktopApi().workspace.add(path),
@@ -267,7 +268,7 @@ export const api = {
   setGitIdentityEnabled: (id: string, enabled: boolean) =>
     desktopApi().insights.setGitIdentityEnabled(id, enabled),
   quotaSnapshot: () => desktopApi().home.quotaSnapshot(),
-  refreshQuota: () => desktopApi().home.refreshQuota(),
+  refreshQuota: () => desktopApi().home.refreshQuota(true),
   quotaCollectorStatus: () => desktopApi().home.quotaCollectorStatus(),
   quotaPopoverPreferences: () => desktopApi().home.quotaPreferences(),
   setQuotaPopoverPreferences: (preferences: QuotaPopoverPreferences) =>

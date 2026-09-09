@@ -1,12 +1,37 @@
 export interface ConversationSessionSummary {
   id: string;
   workspace_id: string;
-  agent: "codex" | "claude-code" | "opencode" | "open-claw" | "hermes" | "grok-build";
+  agent:
+    | "codex"
+    | "claude-code"
+    | "cursor"
+    | "opencode"
+    | "open-claw"
+    | "hermes"
+    | "grok-build"
+    | "deepseek-harness";
   title?: string;
+  created_at?: string | null;
   updated_at?: string;
+  origin?: "interactive" | "auxiliary" | "unknown";
+  forked_from_session_id?: string | null;
+  spawned_by_session_id?: string | null;
+  git_branch?: string | null;
+  message_count?: number | null;
   availability: "readable" | "metadata-only";
   archived: boolean;
   sidechain: boolean;
+}
+export interface ConversationWorkspaceSummary {
+  id: string;
+  name: string;
+  path: string;
+}
+export interface ConversationCatalog {
+  sessions: ConversationSessionSummary[];
+  // Missing on older desktop hosts; never treat it as an empty known catalog.
+  workspaces?: ConversationWorkspaceSummary[];
+  indexEnabled: boolean;
 }
 export interface ConversationEvent {
   id: string;
@@ -26,8 +51,9 @@ export interface ConversationEventPage {
   next_cursor?: string;
   warnings: string[];
 }
-export type Decision = "accept" | "decline" | "cancel";
+export type Decision = "accept" | "decline" | "cancel" | "allow" | "deny";
 export interface Access {
+  bearerToken?: string;
   status: "unpaired" | "pending" | "approved" | "ended";
   csrfToken: string;
   bootId: string;
@@ -39,6 +65,14 @@ export interface Approval {
   requestId: string | number;
   turnId: string;
   method: string;
+  toolName?: string;
+  input?: unknown;
+  context?: {
+    blockedPath?: unknown;
+    decisionReason?: unknown;
+    description?: unknown;
+    permissionSuggestions?: unknown;
+  };
   command?: unknown;
   cwd?: string;
   changes?: unknown;
@@ -49,6 +83,21 @@ export interface Approval {
   proposedExecpolicyAmendment?: string[] | null;
   environmentId?: "local" | null;
 }
+export interface UserQuestionRequest {
+  requestId: string | number;
+  turnId: string;
+  method?: string;
+  supported: boolean;
+  unsupportedReason?: string | null;
+  questions: {
+    id: string;
+    header?: string;
+    question: string;
+    options: { label: string; description?: string }[];
+    multiSelect: boolean;
+    allowCustom: boolean;
+  }[];
+}
 export interface Live {
   sessionId: string;
   status: string;
@@ -56,7 +105,10 @@ export interface Live {
   turnId?: string;
   sendEnabled: boolean;
   approvals: Approval[];
+  questions?: UserQuestionRequest[];
   reason?: string;
+  executionMode?: "managed-resume";
+  streamText?: string;
 }
 export class ApiError extends Error {
   constructor(
@@ -69,17 +121,58 @@ export class ApiError extends Error {
 }
 export class WebClient {
   csrfToken = "";
-  constructor(private readonly transport?: typeof fetch) {}
+  private bearerToken = "";
+  private compatible = false;
+  private accessFlight?: Promise<Access>;
+  constructor(
+    private readonly transport?: typeof fetch,
+    readonly origin = "",
+  ) {
+    if (origin && parseLanOrigin(origin) !== origin) throw new Error("invalid_lan_address");
+  }
+  reset() {
+    this.bearerToken = "";
+    this.csrfToken = "";
+    this.compatible = false;
+  }
+  async info(signal?: AbortSignal) {
+    const info = await this.request<{
+      protocolVersion: number;
+      transport: string;
+      capabilities: { read: boolean; send: boolean; approve: boolean };
+    }>("info", undefined, signal);
+    this.compatible =
+      info.protocolVersion === 1 &&
+      info.transport === "lan" &&
+      info.capabilities?.read === true &&
+      typeof info.capabilities.send === "boolean" &&
+      typeof info.capabilities.approve === "boolean";
+    if (!this.compatible) throw new ApiError(409, "incompatible_protocol");
+    return info;
+  }
+  private headers(body?: unknown) {
+    const headers: Record<string, string> = {};
+    if (this.origin && this.bearerToken) headers.Authorization = `Bearer ${this.bearerToken}`;
+    if (body !== undefined) {
+      headers["Content-Type"] = "application/json";
+      headers["X-CSRF-Token"] = this.csrfToken;
+    }
+    return headers;
+  }
   async request<T>(path: string, body?: unknown, signal?: AbortSignal): Promise<T> {
-    const response = await (this.transport ?? fetch)(`/api/web/v1/${path}`, {
+    if (
+      this.origin &&
+      path !== "info" &&
+      (!this.compatible || (path !== "access" && !this.bearerToken))
+    )
+      throw new ApiError(401, "access_ended");
+    const response = await (this.transport ?? fetch)(`${this.origin}/api/web/v1/${path}`, {
       method: body === undefined ? "GET" : "POST",
-      credentials: "same-origin",
+      credentials: this.origin ? "omit" : "same-origin",
+      redirect: "error",
       cache: "no-store",
-      signal,
-      headers:
-        body === undefined
-          ? undefined
-          : { "Content-Type": "application/json", "X-CSRF-Token": this.csrfToken },
+      signal: signal ?? (this.origin ? AbortSignal.timeout(15000) : undefined),
+      headers: this.headers(body),
       body: body === undefined ? undefined : JSON.stringify(body),
     });
     if (!response.ok) {
@@ -102,16 +195,94 @@ export class WebClient {
     return response.status === 204 ? (undefined as T) : (response.json() as Promise<T>);
   }
   async access(signal?: AbortSignal) {
+    if (this.origin && this.accessFlight) return this.accessFlight;
+    const pending = this.loadAccess(signal);
+    if (!this.origin) return pending;
+    this.accessFlight = pending;
+    try {
+      return await pending;
+    } finally {
+      if (this.accessFlight === pending) this.accessFlight = undefined;
+    }
+  }
+  private async loadAccess(signal?: AbortSignal) {
+    if (this.origin && !this.compatible) await this.info(signal);
     const result = await this.request<Access>("access", undefined, signal);
+    if (this.origin && !this.bearerToken) {
+      if (!result.bearerToken) throw new ApiError(401, "access_ended");
+      this.bearerToken = result.bearerToken;
+    }
     this.csrfToken = result.csrfToken;
-    return result;
+    const { bearerToken: _credential, ...publicAccess } = result;
+    return publicAccess;
+  }
+  stream(
+    sessionId: string,
+    handlers: {
+      event: (type: string, data: string) => void;
+      open: () => void;
+      error: (error?: unknown) => void;
+    },
+  ) {
+    const path = `/api/web/v1/stream?${new URLSearchParams({ sessionId })}`;
+    if (!this.origin) {
+      const source = new EventSource(path);
+      for (const type of ["snapshot", "unavailable", "access-ended"])
+        source.addEventListener(type, (e) => handlers.event(type, (e as MessageEvent).data));
+      source.onopen = handlers.open;
+      source.onerror = () => handlers.error();
+      return () => source.close();
+    }
+    const abort = new AbortController();
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const run = async () => {
+      try {
+        if (!this.bearerToken || !this.compatible) throw new ApiError(401, "access_ended");
+        const response = await (this.transport ?? fetch)(`${this.origin}${path}`, {
+          headers: this.headers(),
+          credentials: "omit",
+          cache: "no-store",
+          redirect: "error",
+          signal: abort.signal,
+        });
+        if (response.status === 401 || response.status === 403) {
+          handlers.event("access-ended", "");
+          return;
+        }
+        if (
+          !response.ok ||
+          !response.body ||
+          !response.headers.get("content-type")?.includes("text/event-stream")
+        )
+          throw new Error("stream_unavailable");
+        handlers.open();
+        const reader = response.body.getReader(),
+          decoder = new TextDecoder();
+        const parser = new SseParser(handlers.event);
+        try {
+          while (!abort.signal.aborted) {
+            const { done, value } = await reader.read();
+            if (done) break;
+            parser.push(decoder.decode(value, { stream: true }));
+          }
+        } finally {
+          await reader.cancel().catch(() => {});
+          reader.releaseLock();
+        }
+        if (!abort.signal.aborted) handlers.error();
+      } catch (error) {
+        if (!abort.signal.aborted) handlers.error(error);
+      }
+      if (!abort.signal.aborted) timer = setTimeout(() => void run(), 2000);
+    };
+    void run();
+    return () => {
+      abort.abort();
+      clearTimeout(timer);
+    };
   }
   catalog(signal?: AbortSignal) {
-    return this.request<{ sessions: ConversationSessionSummary[]; indexEnabled: boolean }>(
-      "catalog",
-      undefined,
-      signal,
-    );
+    return this.request<ConversationCatalog>("catalog", undefined, signal);
   }
   events(sessionId: string, cursor?: string, signal?: AbortSignal) {
     const q = new URLSearchParams({ sessionId, limit: "50" });
@@ -120,5 +291,57 @@ export class WebClient {
   }
   live(sessionId: string, signal?: AbortSignal) {
     return this.request<Live>(`live?${new URLSearchParams({ sessionId })}`, undefined, signal);
+  }
+}
+
+/** Reject alternate numeric spellings before URL normalization can hide them. */
+export function parseLanOrigin(value: string): string {
+  const match = /^http:\/\/((?:\d{1,3}\.){3}\d{1,3}):(\d{1,5})$/.exec(value.trim());
+  if (!match) throw new Error("invalid_lan_address");
+  const octets = match[1].split(".").map(Number);
+  if (octets.some((n, i) => n > 255 || String(n) !== match[1].split(".")[i]))
+    throw new Error("invalid_lan_address");
+  const [a, b] = octets,
+    port = Number(match[2]);
+  if (
+    !(a === 10 || (a === 172 && b >= 16 && b <= 31) || (a === 192 && b === 168)) ||
+    port < 1 ||
+    port > 65535 ||
+    String(port) !== match[2]
+  )
+    throw new Error("invalid_lan_address");
+  return `http://${match[1]}:${port}`;
+}
+
+export class SseParser {
+  private buffer = "";
+  private event = "message";
+  private data: string[] = [];
+  private dataBytes = 0;
+  private encoder = new TextEncoder();
+  constructor(private readonly emit: (event: string, data: string) => void) {}
+  push(chunk: string) {
+    this.buffer += chunk;
+    let end: number;
+    while ((end = this.buffer.indexOf("\n")) >= 0) {
+      const line = this.buffer.slice(0, end).replace(/\r$/, "");
+      this.buffer = this.buffer.slice(end + 1);
+      if (!line) {
+        if (this.data.length) this.emit(this.event, this.data.join("\n"));
+        this.event = "message";
+        this.data = [];
+        this.dataBytes = 0;
+      } else if (line.startsWith("event:")) {
+        if (line.length > 128) throw new Error("stream_too_large");
+        this.event = line.slice(6).replace(/^ /, "");
+      } else if (line.startsWith("data:")) {
+        const value = line.slice(5).replace(/^ /, "");
+        this.dataBytes += this.encoder.encode(value).byteLength + (this.data.length ? 1 : 0);
+        if (this.dataBytes > 4 * 1024 * 1024) throw new Error("stream_too_large");
+        this.data.push(value);
+      }
+    }
+    if (this.encoder.encode(this.buffer).byteLength + this.dataBytes > 4 * 1024 * 1024 + 1024)
+      throw new Error("stream_too_large");
   }
 }

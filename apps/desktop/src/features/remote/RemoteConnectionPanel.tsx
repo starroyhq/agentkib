@@ -304,6 +304,7 @@ export function RemoteConnectionSettings() {
   return (
     <SettingsPage variant="management">
       <WebAccessSettings />
+      <WebAccessSettings target="lan" />
       <RemoteFeedback />
       <SettingsSection title={tr("remote.access")} target="remote-access">
         <SettingsNotice>{tr("remote.readonly")}</SettingsNotice>

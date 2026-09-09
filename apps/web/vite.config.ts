@@ -2,12 +2,22 @@ import { defineConfig } from "vitest/config";
 import react from "@vitejs/plugin-react";
 import { execFileSync } from "node:child_process";
 import { readFileSync } from "node:fs";
-export default defineConfig({
+export default defineConfig(({ mode }) => ({
+  build: { outDir: mode === "hosted" ? "dist-hosted" : "dist" },
   plugins: [
     react(),
     {
       name: "agentkib-build-info",
       generateBundle() {
+        if (mode === "hosted") {
+          for (const fileName of ["_headers", "_redirects"]) {
+            this.emitFile({
+              type: "asset",
+              fileName,
+              source: readFileSync(new URL(`./hosting/${fileName}`, import.meta.url), "utf8"),
+            });
+          }
+        }
         const version = JSON.parse(readFileSync(new URL("./package.json", import.meta.url), "utf8"))
           .version as string;
         let revision = "unknown";
@@ -34,7 +44,7 @@ export default defineConfig({
     },
   ],
   server: {
-    port: 1422,
+    port: 1423,
     strictPort: true,
     proxy: {
       "/api": {
@@ -47,4 +57,4 @@ export default defineConfig({
     },
   },
   test: { environment: "jsdom", setupFiles: ["./src/test-setup.ts"] },
-});
+}));

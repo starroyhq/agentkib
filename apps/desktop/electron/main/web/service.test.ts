@@ -172,6 +172,46 @@ describe("WebAccessService loopback security boundary", () => {
     expect(runtime).toHaveBeenCalledTimes(1);
     expect((await http("/api/web/v1/events?sessionId=x&limit=10000")).status).toBe(400);
   });
+  it("protects the workspace catalog and preserves history metadata without requiring control grants", async () => {
+    const catalog = {
+      indexEnabled: true,
+      workspaces: [{ id: "workspace", name: "test", path: "/projects/test" }],
+      sessions: [
+        { id: "session", workspace_id: "workspace", origin: "interactive", git_branch: "main" },
+      ],
+    };
+    const events = {
+      events: [
+        {
+          id: "event",
+          kind: "tool-summary",
+          turn_id: "turn",
+          message_phase: null,
+          tool_name: "Bash",
+          tool_status: "failed",
+          duration_ms: 12,
+          attachment_count: 0,
+          truncated: true,
+        },
+      ],
+      next_cursor: "older",
+      warnings: ["read-budget-exhausted"],
+    };
+    runtime.mockImplementation(async (params) =>
+      (params as { operation: string }).operation === "catalog" ? catalog : events,
+    );
+    await bootstrap();
+    expect((await http("/api/web/v1/catalog")).status).toBe(401);
+    expect(runtime).not.toHaveBeenCalled();
+    const id = await pair(false, false);
+    expect((await http("/api/web/v1/catalog")).json()).toEqual(catalog);
+    expect((await http("/api/web/v1/events?sessionId=session")).json()).toEqual(events);
+    await service.request({ operation: "revoke", id });
+    const revoked = await http("/api/web/v1/catalog");
+    expect(revoked.status).toBe(401);
+    expect(revoked.body).not.toContain("/projects/test");
+    expect(runtime).toHaveBeenCalledTimes(2);
+  });
   it("requires desktop confirmation, persists only hashed credentials, and revokes access", async () => {
     await bootstrap();
     const status = await service.request({ operation: "generate-code" });
@@ -853,6 +893,238 @@ describe("WebAccessService loopback security boundary", () => {
     expect((await http("/api/web/v1/catalog", { headers: { Host: "web.example" } })).status).toBe(
       401,
     );
+  });
+  it("Claude-only verification never enables Codex or unknown providers", async () => {
+    await service.shutdown();
+    service = new WebAccessService({
+      dataDir: dir,
+      staticDir: dir,
+      runtimeRequest: runtime,
+      verifiedClaudeManaged: true,
+    });
+    await service.initialize();
+    await bootstrap();
+    await pair(true, true);
+    for (const executionMode of [undefined, "unknown", "managed-resume"]) {
+      runtime.mockResolvedValue({
+        runtimeBootId: "runtime-one",
+        revision: 4,
+        sendEnabled: true,
+        executionMode,
+        accepted: true,
+        approvals: [],
+      });
+      const live = await http("/api/web/v1/live?sessionId=s");
+      expect(live.json().sendEnabled).toBe(executionMode === "managed-resume");
+      const sent = await http("/api/web/v1/send", {
+        method: "POST",
+        body: {
+          sessionId: "s",
+          text: "test",
+          requestId: `mode-${executionMode}`,
+          bootId,
+          expectedRevision: 4,
+        },
+      });
+      expect(sent.status).toBe(executionMode === "managed-resume" ? 200 : 403);
+    }
+  });
+  it("answers questions with send-only permission while a turn is waiting, without requiring idle", async () => {
+    await bootstrap();
+    await pair(true, false);
+    runtime.mockResolvedValue({
+      accepted: true,
+      runtimeBootId: "runtime-one",
+      revision: 4,
+      sendEnabled: false,
+      questions: [
+        {
+          requestId: 7,
+          turnId: "turn",
+          supported: true,
+          questions: [
+            {
+              id: "choice",
+              multiSelect: true,
+              allowCustom: false,
+              options: [{ label: "A" }, { label: "B" }],
+            },
+            { id: "custom", multiSelect: false, allowCustom: true, options: [] },
+          ],
+        },
+      ],
+    });
+    const body = {
+      bootId,
+      sessionId: "s",
+      requestId: "answer-one",
+      expectedRevision: 4,
+      questionId: 7,
+      turnId: "turn",
+      answers: { choice: ["A", "B"], custom: ["My answer"] },
+    };
+    expect((await http("/api/web/v1/answer", { method: "POST", body })).status).toBe(200);
+    expect(runtime).toHaveBeenCalledWith(
+      expect.objectContaining({ operation: "answer", questionId: 7, answers: body.answers }),
+    );
+    expect((await http("/api/web/v1/answer", { method: "POST", body })).json().error).toBe(
+      "duplicate_request",
+    );
+  });
+  it("does not substitute approval permission for question answering", async () => {
+    await bootstrap();
+    await pair(false, true);
+    expect((await http("/api/web/v1/answer", { method: "POST", body: { bootId } })).status).toBe(
+      403,
+    );
+    expect(runtime).not.toHaveBeenCalled();
+  });
+  it("rechecks question-answer authorization after preflight and rejects CSRF", async () => {
+    await bootstrap();
+    const id = await pair(true, false);
+    const body = {
+      bootId,
+      sessionId: "s",
+      requestId: "answer-race",
+      expectedRevision: 4,
+      questionId: "q",
+      turnId: "t",
+      answers: { x: ["A"] },
+    };
+    expect(
+      (
+        await http("/api/web/v1/answer", {
+          method: "POST",
+          body,
+          headers: { "X-CSRF-Token": "wrong" },
+        })
+      ).status,
+    ).toBe(403);
+    expect(runtime).not.toHaveBeenCalled();
+    let resolve!: (snapshot: unknown) => void;
+    runtime.mockImplementationOnce(
+      () =>
+        new Promise((done) => {
+          resolve = done;
+        }),
+    );
+    const response = http("/api/web/v1/answer", { method: "POST", body });
+    await vi.waitFor(() => expect(resolve).toBeTypeOf("function"));
+    await service.request({ operation: "revoke", id });
+    resolve({
+      runtimeBootId: "runtime-one",
+      revision: 4,
+      questions: [
+        {
+          requestId: "q",
+          turnId: "t",
+          supported: true,
+          questions: [
+            { id: "x", multiSelect: false, allowCustom: false, options: [{ label: "A" }] },
+          ],
+        },
+      ],
+    });
+    expect((await response).status).toBe(401);
+    expect(runtime).toHaveBeenCalledTimes(1);
+  });
+  it("rejects stale, unsupported and malformed question answers before dispatch", async () => {
+    await bootstrap();
+    await pair(true, true);
+    const snapshot = {
+      runtimeBootId: "runtime-one",
+      revision: 4,
+      sendEnabled: false,
+      questions: [
+        {
+          requestId: "q",
+          turnId: "turn",
+          supported: true,
+          questions: [
+            {
+              id: "choice",
+              multiSelect: false,
+              allowCustom: false,
+              options: [{ label: "A" }, { label: "B" }],
+            },
+          ],
+        },
+      ],
+    };
+    runtime.mockResolvedValue(snapshot);
+    const body = {
+      bootId,
+      sessionId: "s",
+      expectedRevision: 4,
+      questionId: "q",
+      turnId: "turn",
+      answers: { choice: ["A"] },
+    };
+    const variants = [
+      { turnId: "old" },
+      { questionId: "absent" },
+      { expectedRevision: 3 },
+      { answers: { choice: ["C"] } },
+      { answers: { choice: ["A", "B"] } },
+      { answers: { choice: ["A"], extra: ["A"] } },
+      { answers: { other: ["A"] } },
+    ];
+    for (const [index, variant] of variants.entries()) {
+      const response = await http("/api/web/v1/answer", {
+        method: "POST",
+        body: { ...body, ...variant, requestId: `invalid-${index}` },
+      });
+      expect([400, 409]).toContain(response.status);
+    }
+    snapshot.questions[0].supported = false;
+    expect(
+      (
+        await http("/api/web/v1/answer", {
+          method: "POST",
+          body: { ...body, requestId: "unsupported" },
+        })
+      ).json().error,
+    ).toBe("question_unavailable");
+    expect(runtime.mock.calls.every(([value]) => (value as any).operation === "live")).toBe(true);
+  });
+  it("forwards native Claude decisions only when the exact pending request offers them", async () => {
+    await bootstrap();
+    await pair(true, true);
+    runtime.mockResolvedValue({
+      accepted: true,
+      runtimeBootId: "runtime-one",
+      revision: 4,
+      sendEnabled: false,
+      approvals: [
+        {
+          requestId: "claude-request",
+          turnId: "turn",
+          supported: true,
+          method: "claude/can_use_tool",
+          availableDecisions: ["allow", "deny"],
+        },
+      ],
+    });
+    for (const decision of ["allow", "deny", "accept", "cancel"]) {
+      const response = await http("/api/web/v1/approve", {
+        method: "POST",
+        body: {
+          sessionId: "s",
+          requestId: `claude-${decision}`,
+          bootId,
+          expectedRevision: 4,
+          turnId: "turn",
+          approvalId: "claude-request",
+          decision,
+        },
+      });
+      expect(response.status).toBe(["allow", "deny"].includes(decision) ? 200 : 409);
+    }
+    expect(
+      runtime.mock.calls.some(
+        ([value]) => (value as any).operation === "approve" && (value as any).decision === "allow",
+      ),
+    ).toBe(true);
   });
   it("rejects unavailable send and only forwards exact supported numeric approvals", async () => {
     await bootstrap();

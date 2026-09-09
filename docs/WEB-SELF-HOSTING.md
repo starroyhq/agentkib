@@ -2,6 +2,8 @@
 
 Web 是 AgentKib 桌面应用的一部分，不是官方云服务。安装包包含网页、字体和本机服务；普通用户无需安装 Node、Rust 或下载源码构建，也不需要官方账号。项目继续使用根目录 MIT 许可。
 
+本文描述保留不变的内置同源模式。另有[托管 Web 与局域网直连](WEB-HOSTED-LAN.md)：网页独立托管到 `remote.agentkib.com`，通过单独、默认关闭的局域网 HTTP 监听器连接桌面，不使用本节 cookie 或扩大原监听范围。
+
 ## 开启与本机使用
 
 1. 安装对应版本的 AgentKib，打开设置 → 远程连接 → Web 访问。
@@ -96,6 +98,7 @@ pnpm install --frozen-lockfile
 pnpm build:web
 pnpm dev:electron
 # 在桌面设置开启 Web 服务后，可使用独立前端开发服务器：
+# 前端监听 127.0.0.1:1423，1422 留给托管网页局域网服务
 pnpm dev:web
 pnpm test:web
 pnpm typecheck

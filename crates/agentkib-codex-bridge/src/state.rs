@@ -141,6 +141,24 @@ impl SessionState {
             .collect()
     }
 
+    pub fn questions(&self) -> Vec<Value> {
+        let Some(snapshot) = &self.snapshot else {
+            return vec![];
+        };
+        let Some(turn) = self.active_turn() else {
+            return vec![];
+        };
+        snapshot["requests"].as_array().into_iter().flatten().filter_map(|r| {
+            let p = &r["params"];
+            if r["method"] != "item/tool/requestUserInput" || p["threadId"] != self.conversation || p["turnId"] != turn || !(r["id"].is_string() || r["id"].is_i64()) { return None; }
+            let rows = p["questions"].as_array().map(Vec::as_slice).unwrap_or_default();
+            let mut ids = std::collections::HashSet::new();
+            let supported = !rows.is_empty() && rows.len() <= 16 && rows.iter().all(|q| q["id"].as_str().is_some_and(|id| !id.is_empty() && ids.insert(id)) && q["question"].as_str().is_some_and(|s| !s.is_empty()) && q.get("isSecret").is_none_or(|v| v == false) && q.get("isMultiSelect").is_none_or(|v| v == false) && q["options"].as_array().is_some_and(|opts| { let mut labels = std::collections::HashSet::new(); (!opts.is_empty() || q["isOther"] == true) && opts.iter().all(|o| o["label"].as_str().is_some_and(|label| !label.is_empty() && labels.insert(label))) }));
+            let questions: Vec<_> = rows.iter().map(|q| serde_json::json!({"id":q["id"],"header":q["header"],"question":q["question"],"options":q["options"],"multiSelect":false,"allowCustom":q["isOther"] == true})).collect();
+            Some(serde_json::json!({"requestId":r["id"],"turnId":turn,"method":r["method"],"supported":supported,"questions":questions}))
+        }).collect()
+    }
+
     #[cfg(any(target_os = "macos", test))]
     pub(crate) fn notification(&mut self, message: Value) -> Result<()> {
         if !self.valid_stream {
@@ -381,4 +399,26 @@ fn index(value: &Value) -> Result<usize> {
             .context("patch index must be a non-negative integer")?,
     )
     .context("patch index overflow")
+}
+
+#[cfg(test)]
+mod question_tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn questions_require_active_identity_and_answerable_contract() {
+        let mut state = SessionState::new("thread".into(), "owner".into());
+        state.snapshot = Some(
+            json!({"turns":[{"turnId":"turn","status":"inProgress","items":[]}],"requests":[{"id":"q","method":"item/tool/requestUserInput","params":{"threadId":"thread","turnId":"turn","questions":[{"id":"choice","question":"Which?","isOther":true,"options":[{"label":"A"}]}]}}]}),
+        );
+        assert_eq!(state.questions()[0]["supported"], true);
+        state.snapshot.as_mut().unwrap()["requests"][0]["params"]["questions"][0]["options"] =
+            json!([]);
+        state.snapshot.as_mut().unwrap()["requests"][0]["params"]["questions"][0]["isOther"] =
+            json!(false);
+        assert_eq!(state.questions()[0]["supported"], false);
+        state.snapshot.as_mut().unwrap()["requests"][0]["params"]["turnId"] = json!("old");
+        assert!(state.questions().is_empty());
+    }
 }

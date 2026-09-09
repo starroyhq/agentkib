@@ -367,6 +367,63 @@ impl Bridge {
         .map(|_| ())
     }
 
+    pub fn answer_at_revision_with_authorization(
+        &mut self,
+        id: &Value,
+        turn: &str,
+        answers: &Value,
+        revision: Option<u64>,
+        authorize: impl FnOnce() -> Result<()>,
+        dispatch: impl FnOnce(),
+    ) -> Result<()> {
+        self.ready()?;
+        let _operation = OperationGuard::acquire(
+            &self.endpoint,
+            self.selected
+                .as_ref()
+                .context("no selected session")?
+                .conversation_id(),
+        )?;
+        self.refresh()?;
+        let state = self.selected.as_ref().context("no selected session")?;
+        ensure!(
+            revision.is_some() && revision == state.revision(),
+            "stale question revision"
+        );
+        let pending = state
+            .questions()
+            .into_iter()
+            .find(|q| &q["requestId"] == id && q["turnId"] == turn && q["supported"] == true)
+            .context("question no longer pending or unsupported")?;
+        let rows = pending["questions"]
+            .as_array()
+            .context("invalid questions")?;
+        let map = answers.as_object().context("invalid answers")?;
+        ensure!(map.len() == rows.len(), "answer keys mismatch");
+        let mut response = serde_json::Map::new();
+        for row in rows {
+            let key = row["id"].as_str().context("invalid question id")?;
+            let values = map
+                .get(key)
+                .and_then(Value::as_array)
+                .context("missing answer")?;
+            ensure!(values.len() == 1, "invalid answer cardinality");
+            let text = values[0]
+                .as_str()
+                .filter(|s| !s.trim().is_empty() && s.len() <= 8192)
+                .context("invalid answer")?;
+            ensure!(
+                row["allowCustom"] == true
+                    || row["options"]
+                        .as_array()
+                        .is_some_and(|opts| opts.iter().any(|o| o["label"] == text)),
+                "answer not offered"
+            );
+            response.insert(key.to_owned(), json!({"answers":values}));
+        }
+        self.mutate_with_authorization("thread-follower-submit-user-input", json!({"conversationId":state.conversation,"requestId":id,"response":{"answers":response}}), authorize, dispatch).map(|_| ())
+    }
+
     fn ready(&self) -> Result<()> {
         ensure!(
             self.controls_enabled && self.compatibility.is_known(),

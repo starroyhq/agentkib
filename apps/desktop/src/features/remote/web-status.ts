@@ -12,8 +12,8 @@ type Channel = {
   release?: () => void;
 };
 const channels = new Map<string, Channel>();
-function channelFor() {
-  const key = "local";
+function channelFor(target?: "lan") {
+  const key = target ?? "local";
   let channel = channels.get(key);
   if (!channel) {
     channel = { listeners: new Set(), revision: 0, busy: 0, inFlight: false };
@@ -28,8 +28,8 @@ function publish(channel: Channel, snapshot: WebAdminStatus) {
   channel.listeners.forEach((listener) => listener.status(snapshot));
 }
 
-export function subscribeWebStatus(listener: Listener) {
-  const channel = channelFor();
+export function subscribeWebStatus(target: "lan" | undefined, listener: Listener) {
+  const channel = channelFor(target);
   channel.listeners.add(listener);
   if (channel.snapshot) listener.status(channel.snapshot);
   if (!channel.release)
@@ -47,6 +47,7 @@ export function subscribeWebStatus(listener: Listener) {
         try {
           const snapshot = await desktopApi().web.request({
             operation: "status",
+            ...(target ? { target } : {}),
           });
           if (revision === channel.revision) publish(channel, snapshot);
         } catch {
@@ -60,14 +61,14 @@ export function subscribeWebStatus(listener: Listener) {
     channel.listeners.delete(listener);
     if (!channel.listeners.size) {
       channel.release?.();
-      channels.delete("local");
+      channels.delete(target ?? "local");
       channel.revision += 1;
     }
   };
 }
 
 export async function requestWebAdmin(input: WebAdminRequest) {
-  const channel = channelFor();
+  const channel = channelFor(input.target);
   channel.revision += 1;
   channel.busy += 1;
   try {

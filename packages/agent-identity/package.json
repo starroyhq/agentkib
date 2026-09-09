@@ -1,0 +1,10 @@
+{
+  "name": "@agentkib/agent-identity",
+  "version": "0.9.0",
+  "private": true,
+  "type": "module",
+  "exports": "./src/index.tsx",
+  "peerDependencies": { "react": "^19.1.0" },
+  "devDependencies": { "@types/react": "^19.0.0" },
+  "dependencies": { "lucide-react": "^0.468.0" }
+}

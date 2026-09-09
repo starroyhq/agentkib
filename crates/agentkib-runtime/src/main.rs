@@ -11,6 +11,7 @@ use std::sync::mpsc::{self, Sender};
 use std::sync::{Arc, OnceLock};
 use std::time::{Duration, Instant};
 
+mod claude_runner;
 mod obsidian;
 mod web;
 
@@ -5138,6 +5139,7 @@ fn handle_handshake(request: RpcRequest) -> (RpcResponse, bool) {
         capabilities: vec![
             "web-v1".into(),
             "experimental-codex-bridge-version-gated".into(),
+            "experimental-claude-managed-resume-version-gated".into(),
             "discovery-source-diagnostics".into(),
             "agent-history-capabilities".into(),
         ],

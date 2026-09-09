@@ -946,6 +946,10 @@ pub trait ConversationProvider {
     fn verified_control_id(&self, _native_ref: &str) -> Result<Option<String>> {
         Ok(None)
     }
+
+    fn verified_control_workspace(&self, _native_ref: &str) -> Result<Option<PathBuf>> {
+        Ok(None)
+    }
     fn read_events(
         &self,
         native_ref: &str,
@@ -1729,6 +1733,49 @@ fn read_claude_session_index(path: &Path) -> Result<Value> {
 impl ConversationProvider for ClaudeProvider {
     fn agent(&self) -> AgentKind {
         AgentKind::ClaudeCode
+    }
+
+    fn verified_control_id(&self, native_ref: &str) -> Result<Option<String>> {
+        self.verified_control_workspace(native_ref)?;
+        Ok(Some(uuid::Uuid::parse_str(native_ref)?.to_string()))
+    }
+
+    fn verified_control_workspace(&self, native_ref: &str) -> Result<Option<PathBuf>> {
+        let id = uuid::Uuid::parse_str(native_ref)?;
+        let session = self
+            .native_sessions(None)?
+            .into_iter()
+            .find(|session| session.native_ref == native_ref)
+            .context("Claude session is no longer available")?;
+        anyhow::ensure!(!session.sidechain, "auxiliary-session-not-controllable");
+        // Index entries are discovery hints, not authority to resume a different
+        // transcript. Verify bounded transcript metadata before starting a CLI.
+        let reader = BufReader::new(File::open(&session.transcript)?.take(256 * 1024));
+        for line in reader.lines() {
+            let line = line?;
+            let Ok(value) = serde_json::from_str::<Value>(&line) else {
+                continue;
+            };
+            let Some(found) = value["sessionId"].as_str() else {
+                continue;
+            };
+            anyhow::ensure!(
+                uuid::Uuid::parse_str(found)? == id,
+                "session-identity-mismatch"
+            );
+            anyhow::ensure!(
+                value["isSidechain"] != true,
+                "auxiliary-session-not-controllable"
+            );
+            if let Some(cwd) = value["cwd"].as_str() {
+                anyhow::ensure!(
+                    fs::canonicalize(cwd)? == fs::canonicalize(&session.project_path)?,
+                    "session-workspace-mismatch"
+                );
+                return Ok(Some(fs::canonicalize(cwd)?));
+            }
+        }
+        anyhow::bail!("unverified-session-identity")
     }
 
     fn list_sessions(&self, workspace: &Path) -> Result<Vec<NativeSessionSummary>> {
@@ -3413,6 +3460,56 @@ mod tests {
         ] {
             assert!(!debug.contains(secret));
         }
+    }
+
+    #[test]
+    fn claude_control_identity_requires_matching_transcript_workspace_and_uuid() {
+        let dir = tempdir().unwrap();
+        let workspace = dir.path().join("workspace");
+        let projects = dir.path().join("projects/project");
+        fs::create_dir_all(&workspace).unwrap();
+        fs::create_dir_all(&projects).unwrap();
+        let id = "3121ec99-e4cb-465b-8056-0d653212b113";
+        let transcript = projects.join(format!("{id}.jsonl"));
+        fs::write(
+            projects.join("sessions-index.json"),
+            serde_json::to_vec(&serde_json::json!({
+                "version":1,"entries":[{"sessionId":id,"fullPath":transcript,
+                    "projectPath":workspace,"isSidechain":false}]
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+        let adapter = ClaudeProvider::with_home(dir.path().to_path_buf());
+        let record = |uuid: &str, cwd: &Path| {
+            serde_json::to_vec(&serde_json::json!({
+                "type":"user","sessionId":uuid,"cwd":cwd,"message":{"role":"user","content":"test"}
+            }))
+            .unwrap()
+        };
+        fs::write(&transcript, record(id, &workspace)).unwrap();
+        assert_eq!(
+            adapter.verified_control_id(id).unwrap(),
+            Some(id.to_owned())
+        );
+        assert_eq!(
+            adapter.verified_control_workspace(id).unwrap(),
+            Some(fs::canonicalize(&workspace).unwrap())
+        );
+        let mut sidechain: Value = serde_json::from_slice(&record(id, &workspace)).unwrap();
+        sidechain["isSidechain"] = serde_json::json!(true);
+        fs::write(&transcript, serde_json::to_vec(&sidechain).unwrap()).unwrap();
+        assert!(adapter.verified_control_id(id).is_err());
+        fs::write(
+            &transcript,
+            record("aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", &workspace),
+        )
+        .unwrap();
+        assert!(adapter.verified_control_id(id).is_err());
+        fs::write(&transcript, record(id, dir.path())).unwrap();
+        assert!(adapter.verified_control_id(id).is_err());
+        fs::write(&transcript, "{}\n").unwrap();
+        assert!(adapter.verified_control_id(id).is_err());
     }
 
     #[test]

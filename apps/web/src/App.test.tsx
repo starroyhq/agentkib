@@ -196,6 +196,7 @@ function mockServer(initial = "approved", availability = "readable") {
     if (path.includes("/catalog"))
       return Response.json({
         indexEnabled: true,
+        workspaces: [{ id: "w", name: "test", path: "/projects/test" }],
         sessions: [
           {
             id: "s",
@@ -253,6 +254,8 @@ describe("Web access UI", () => {
     const { fetcher } = mockServer("approved", "metadata-only");
     const before = FakeEvents.instances.length;
     render(<App />);
+    fireEvent.click(await screen.findByText("目录选项"));
+    fireEvent.change(screen.getByLabelText("记录类型"), { target: { value: "metadata" } });
     const entry = await screen.findByRole("button", { name: /Test session/ });
     expect(entry).toBeDisabled();
     fireEvent.click(entry);
@@ -635,6 +638,7 @@ describe("Web access UI", () => {
         if (String(url).includes("/catalog"))
           return Response.json({
             indexEnabled: true,
+            workspaces: [{ id: "w", name: "test", path: "/projects/test" }],
             sessions: [
               {
                 id: "s",

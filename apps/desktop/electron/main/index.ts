@@ -1,6 +1,6 @@
 import { readFile, writeFile, mkdir, rename } from "node:fs/promises";
 import path from "node:path";
-import { WebAccessService } from "./web/service";
+import { WebAccessService, createWebControlState } from "./web/service";
 import { acceptanceSession } from "./web/acceptance";
 import { requireRemoteRequest } from "./ipc/remote-validation";
 import {
@@ -65,6 +65,7 @@ let nativeShell: ElectronNativeShell | undefined;
 let refreshCoordinator: ElectronRefreshCoordinator | undefined;
 let runtimeHost: DesktopRuntimeHost | undefined;
 let webAccess: WebAccessService | undefined;
+let lanWebAccess: WebAccessService | undefined;
 let runtimeHandshake: RuntimeHandshakeResult | undefined;
 let shutdownStarted = false;
 let quitApproved = false;
@@ -135,7 +136,7 @@ app.on("before-quit", (event) => {
   nativeShell?.destroy();
   void (async () => {
     try {
-      await webAccess?.shutdown();
+      await Promise.allSettled([webAccess?.shutdown(), lanWebAccess?.shutdown()]);
     } finally {
       await runtimeHost?.stop();
     }
@@ -177,6 +178,7 @@ async function startApplication(): Promise<void> {
   runtimeHost.on("exit", ({ expected }: { expected: boolean }) => {
     runtimeHandshake = undefined;
     webAccess?.runtimeUnavailable();
+    lanWebAccess?.runtimeUnavailable();
     if (!expected) refreshCoordinator?.setRuntimeAvailable(false);
   });
   runtimeHost.on("restart-error", (error: unknown) => {
@@ -186,7 +188,10 @@ async function startApplication(): Promise<void> {
     process.stderr.write(`AgentKib runtime entered a crash loop: ${error.message}\n`);
   });
 
+  const sharedControl = createWebControlState();
   webAccess = new WebAccessService({
+    sharedControl,
+    verifiedClaudeManaged: process.platform === "darwin",
     acceptanceSessionId: acceptanceSession(process.env),
     dataDir: path.join(electronDataPath, "web"),
     staticDir: app.isPackaged
@@ -198,6 +203,18 @@ async function startApplication(): Promise<void> {
     },
   });
   await webAccess.initialize();
+  lanWebAccess = new WebAccessService({
+    mode: "lan",
+    sharedControl,
+    verifiedClaudeManaged: process.platform === "darwin",
+    dataDir: path.join(electronDataPath, "web-lan"),
+    staticDir: "",
+    runtimeRequest: (params) => {
+      if (!runtimeHandshake) return Promise.reject(new Error("runtime_unavailable"));
+      return requireRuntime().request(RUNTIME_METHODS.webRequest, params);
+    },
+  });
+  await lanWebAccess.initialize();
   registerApplicationIpc();
   refreshCoordinator = new ElectronRefreshCoordinator({
     runtime: requireRuntime,
@@ -228,6 +245,7 @@ async function startApplication(): Promise<void> {
       "agentkib:window-activity",
       !paused && Boolean(mainWindow?.isVisible() && !mainWindow?.isMinimized()),
     );
+    if (!paused) void lanWebAccess?.checkLanAddress();
   };
   powerMonitor.on("suspend", () => {
     systemSuspended = true;
@@ -564,8 +582,12 @@ function registerHomeIpc(): void {
   });
   ipcMain.handle("agentkib:web:request", (event, input: unknown) => {
     assertTrustedRenderer(event);
-    if (!webAccess) throw new Error("web_unavailable");
-    return webAccess.request(input as Parameters<WebAccessService["request"]>[0]);
+    const request = input as Parameters<WebAccessService["request"]>[0];
+    if (request?.target !== undefined && request.target !== "lan")
+      throw new Error("invalid_web_target");
+    const service = request?.target === "lan" ? lanWebAccess : webAccess;
+    if (!service) throw new Error("web_unavailable");
+    return service.request(request);
   });
   ipcMain.handle("agentkib:home:runtime", async (event) => {
     assertTrustedRenderer(event);

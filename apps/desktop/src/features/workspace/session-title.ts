@@ -1,20 +1,7 @@
 import { tr } from "@/core/i18n";
 
-const internalTitlePrefixes = [
-  "<path>",
-  "<content>",
-  "<recommended_plugins>",
-  "<available_skills>",
-  "<app-context>",
-  "<skills_instructions>",
-  "<environment_context>",
-  "# AGENTS.md instructions",
-];
+import { displaySessionTitle as sharedDisplaySessionTitle } from "@agentkib/session-catalog";
 
 export function displaySessionTitle(title?: string, translate = tr) {
-  const value = title?.trim();
-  if (!value || internalTitlePrefixes.some((prefix) => value.startsWith(prefix))) {
-    return translate("conversations.untitled");
-  }
-  return value;
+  return sharedDisplaySessionTitle(title, translate("conversations.untitled"));
 }

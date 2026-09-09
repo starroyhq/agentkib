@@ -1,4 +1,16 @@
 const zh = {
+  lanAddress: "电脑的局域网地址",
+  lanPlaintextShort: "局域网明文连接",
+  lanRisk:
+    "会话、凭据和控制请求使用明文 HTTP，可能被局域网攻击者读取或篡改。仅在你信任的局域网试用。",
+  lanAcknowledge: "我了解明文风险，并确认与电脑在同一局域网",
+  lanPermission:
+    "请使用 Chromium 浏览器并允许本地网络访问。桌面需开启托管网页局域网访问；页面刷新后需重新配对。",
+  lanFailure:
+    "无法确认连接。请检查地址、桌面服务、防火墙、访客 Wi-Fi 隔离及浏览器本地网络权限；不要关闭浏览器安全保护。",
+  lanInvalid: "请输入完整的私有 IPv4 HTTP 地址与端口，例如 http://192.168.1.10:1422。",
+  lanIncompatible: "桌面连接协议不兼容，请升级 AgentKib 后重新连接。",
+  changeBackend: "更换连接 / 清空内容",
   connect: "连接桌面 AgentKib",
   cwd: "执行目录",
   localExecution: "执行环境：主机本机",
@@ -58,6 +70,13 @@ const zh = {
   notDispatched: "本次操作未执行。请刷新状态后重试，不会自动重发。",
   approval: "等待审批",
   accept: "允许一次",
+  allow: "允许一次",
+  deny: "拒绝此次操作",
+  claudeDecisionInfo: "请检查工具名称与完整输入。仅允许或拒绝此次操作，不保存权限规则。",
+  claudeContextInfo: "审批上下文（只读）。权限建议仅供查看，不会应用或保存。",
+  managedResumeInfo:
+    "Claude 托管续接由 AgentKib 运行，并非控制原终端。使用前请关闭原终端中的同一会话，避免并发运行。",
+  streamingReply: "当前实时回复",
   decline: "拒绝",
   cancelTurn: "取消轮次",
   approvalFallback: "此审批无法安全处理，请回官方客户端查看。",
@@ -76,6 +95,8 @@ const zh = {
   metadataOnly: "仅元数据 · 无可读历史",
   agent: "Agent",
   workspace: "工作区",
+  workspaceId: "工作区 ID",
+  sessionId: "会话 ID",
   status: "状态",
   warnings: "读取警告",
   tool: "工具详情",
@@ -87,6 +108,18 @@ const zh = {
 export type Words = typeof zh;
 export type Locale = "zh-CN" | "zh-TW" | "en-US" | "ja-JP";
 const en: Words = {
+  lanAddress: "Computer's LAN address",
+  lanPlaintextShort: "Unencrypted LAN connection",
+  lanRisk:
+    "Conversations, credentials and controls use plain HTTP. LAN attackers may read or alter them. Try this only on a network you trust.",
+  lanAcknowledge: "I understand the risk and am on the same LAN as the computer",
+  lanPermission:
+    "Use Chromium and allow local network access. Enable hosted LAN access on desktop. Refreshing this page requires pairing again.",
+  lanFailure:
+    "Connection could not be confirmed. Check the address, desktop service, firewall, guest Wi-Fi isolation and browser local network permission. Do not disable browser protections.",
+  lanInvalid: "Enter a private IPv4 HTTP address and port, e.g. http://192.168.1.10:1422.",
+  lanIncompatible: "Incompatible desktop protocol. Upgrade AgentKib before reconnecting.",
+  changeBackend: "Change connection / clear content",
   connect: "Connect to desktop AgentKib",
   cwd: "Working directory",
   localExecution: "Execution environment: local to the host",
@@ -153,6 +186,15 @@ const en: Words = {
     "This operation was not executed. Refresh the state before retrying. No automatic retry.",
   approval: "Approval required",
   accept: "Allow once",
+  allow: "Allow once",
+  claudeContextInfo:
+    "Approval context (read-only). Permission suggestions are for review only; they are not applied or saved.",
+  deny: "Deny this operation",
+  claudeDecisionInfo:
+    "Review the tool name and full input. Allow or deny this operation only; no permission rules are saved.",
+  managedResumeInfo:
+    "Claude managed resume runs through AgentKib; it does not control the original terminal. Close the same session in the original terminal before use to avoid concurrent runs.",
+  streamingReply: "Current live reply",
   decline: "Decline",
   cancelTurn: "Cancel turn",
   approvalFallback: "This approval cannot be handled safely here. Use the official client.",
@@ -172,6 +214,8 @@ const en: Words = {
   metadataOnly: "Metadata only · No readable history",
   agent: "Agent",
   workspace: "Workspace",
+  workspaceId: "Workspace ID",
+  sessionId: "Session ID",
   status: "Status",
   warnings: "Read warnings",
   tool: "Tool details",
@@ -182,6 +226,18 @@ const en: Words = {
 };
 const tw: Words = {
   ...zh,
+  lanAddress: "電腦的區域網路位址",
+  lanPlaintextShort: "區域網路明文連線",
+  lanRisk:
+    "對話、憑據和控制請求使用明文 HTTP，可能被區域網路攻擊者讀取或竄改。僅在你信任的網路試用。",
+  lanAcknowledge: "我了解明文風險，並確認與電腦在同一區域網路",
+  lanPermission:
+    "請使用 Chromium 瀏覽器並允許本機網路存取。桌面需開啟託管網頁區域網路存取；頁面重新整理後需重新配對。",
+  lanFailure:
+    "無法確認連線。請檢查位址、桌面服務、防火牆、訪客 Wi-Fi 隔離與瀏覽器本機網路權限；不要關閉瀏覽器安全保護。",
+  lanInvalid: "請輸入完整的私有 IPv4 HTTP 位址與連接埠，例如 http://192.168.1.10:1422。",
+  lanIncompatible: "桌面連線協定不相容，請升級 AgentKib 後重新連線。",
+  changeBackend: "更換連線 / 清空內容",
   connect: "連接桌面 AgentKib",
   cwd: "執行目錄",
   localExecution: "執行環境：主機本機",
@@ -241,6 +297,13 @@ const tw: Words = {
   notDispatched: "本次操作未執行。請重新整理狀態後重試，不會自動重送。",
   approval: "等待審批",
   accept: "允許一次",
+  allow: "允許一次",
+  deny: "拒絕此次操作",
+  claudeDecisionInfo: "請檢查工具名稱與完整輸入。僅允許或拒絕此次操作，不儲存權限規則。",
+  claudeContextInfo: "審批情境（唯讀）。權限建議僅供查看，不會套用或儲存。",
+  managedResumeInfo:
+    "Claude 託管續接由 AgentKib 執行，並非控制原終端。使用前請關閉原終端中的同一會話，避免並行執行。",
+  streamingReply: "目前即時回覆",
   decline: "拒絕",
   cancelTurn: "取消輪次",
   approvalFallback: "此審批無法安全處理，請回官方客戶端查看。",
@@ -259,6 +322,8 @@ const tw: Words = {
   metadataOnly: "僅中繼資料 · 無可讀歷史",
   agent: "Agent",
   workspace: "工作區",
+  workspaceId: "工作區 ID",
+  sessionId: "會話 ID",
   status: "狀態",
   warnings: "讀取警告",
   tool: "工具詳細資訊",
@@ -268,6 +333,19 @@ const tw: Words = {
   safety: "連線與資料保留在你自己的裝置，不需要官方帳號。",
 };
 const ja: Words = {
+  lanAddress: "コンピューターの LAN アドレス",
+  lanPlaintextShort: "暗号化されていない LAN 接続",
+  lanRisk:
+    "会話、認証情報、操作は平文 HTTP で送信され、LAN 内の攻撃者に読み取り・改ざんされる可能性があります。信頼するネットワークでのみ試してください。",
+  lanAcknowledge: "リスクを理解し、コンピューターと同じ LAN に接続しています",
+  lanPermission:
+    "Chromium でローカルネットワークへのアクセスを許可してください。デスクトップで LAN アクセスを有効にします。ページ更新後は再ペアリングが必要です。",
+  lanFailure:
+    "接続を確認できません。アドレス、デスクトップ、ファイアウォール、ゲスト Wi-Fi の分離、ブラウザーのローカルネットワーク権限を確認してください。保護機能を無効にしないでください。",
+  lanInvalid:
+    "プライベート IPv4 の HTTP アドレスとポートを入力してください（例：http://192.168.1.10:1422）。",
+  lanIncompatible: "デスクトップのプロトコルが非対応です。AgentKib を更新して再接続してください。",
+  changeBackend: "接続を変更 / 内容を消去",
   connect: "デスクトップ AgentKib に接続",
   cwd: "実行ディレクトリ",
   localExecution: "実行環境：ホストのローカル環境",
@@ -332,6 +410,15 @@ const ja: Words = {
     "今回の操作は実行されませんでした。状態を更新してから再試行してください。自動再送はしません。",
   approval: "承認待ち",
   accept: "今回のみ許可",
+  allow: "今回のみ許可",
+  claudeContextInfo:
+    "承認のコンテキスト（読み取り専用）。権限の提案は確認用で、適用も保存もしません。",
+  deny: "今回の操作を拒否",
+  claudeDecisionInfo:
+    "ツール名と入力全体を確認してください。今回の操作のみ許可または拒否し、権限ルールは保存しません。",
+  managedResumeInfo:
+    "Claude の再開は AgentKib が実行し、元のターミナルは操作しません。同時実行を避けるため、使用前に元のターミナルで同じセッションを閉じてください。",
+  streamingReply: "現在のリアルタイム応答",
   decline: "拒否",
   cancelTurn: "ターンを取り消す",
   approvalFallback: "ここでは安全に承認を処理できません。公式クライアントを使用してください。",
@@ -350,6 +437,8 @@ const ja: Words = {
   metadataOnly: "メタデータのみ · 閲覧可能な履歴なし",
   agent: "Agent",
   workspace: "ワークスペース",
+  workspaceId: "ワークスペース ID",
+  sessionId: "セッション ID",
   status: "状態",
   warnings: "読み取りの警告",
   tool: "ツールの詳細",

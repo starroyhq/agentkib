@@ -120,8 +120,8 @@ it("shares Web status subscribers, publishes only changes and gates polling afte
   bridge.web.mockResolvedValue(snapshot);
   const first = vi.fn();
   const second = vi.fn();
-  releases.push(subscribeWebStatus({ status: first, error: vi.fn() }));
-  releases.push(subscribeWebStatus({ status: second, error: vi.fn() }));
+  releases.push(subscribeWebStatus(undefined, { status: first, error: vi.fn() }));
+  releases.push(subscribeWebStatus(undefined, { status: second, error: vi.fn() }));
   await vi.advanceTimersByTimeAsync(30_000);
   expect(bridge.web).toHaveBeenCalledTimes(1);
   expect(first).toHaveBeenCalledTimes(1);

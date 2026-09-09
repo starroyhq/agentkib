@@ -12,7 +12,7 @@ describe("AgentIcon", () => {
     const icon = container.querySelector("img");
 
     expect(icon?.classList.contains("invert")).toBe(false);
-    expect(icon?.classList.contains("dark:invert")).toBe(true);
+    expect(icon?.classList.contains("ak-agent-invert")).toBe(true);
   });
 
   it("renders the OpenCode asset", () => {
@@ -26,6 +26,6 @@ describe("AgentIcon", () => {
     const image = container.querySelector("img");
 
     expect(image?.getAttribute("src")).toContain("Grok");
-    expect(image?.classList.contains("dark:invert")).toBe(true);
+    expect(image?.classList.contains("ak-agent-invert")).toBe(true);
   });
 });

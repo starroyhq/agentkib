@@ -3,7 +3,8 @@
 import { beforeAll, describe, expect, it } from "vitest";
 import { initializeI18n } from "@/core/i18n";
 import type { ConversationSessionSummary, WorkspaceSummary } from "@/core/types";
-import { filterSessions, sessionCatalogStats, sortSessions } from "./session-catalog";
+import { filterSessions, groupSessions, sessionCatalogStats, sortSessions } from "./session-catalog";
+import { filterSessions as sharedFilterSessions, groupSessions as sharedGroupSessions } from "@agentkib/session-catalog";
 
 const workspaces = [
   { id: "one", name: "Shared project" },
@@ -135,5 +136,44 @@ describe("session catalog", () => {
       metadata: 1,
     });
     expect(sessionCatalogStats([])).toEqual({ total: 0, readable: 0, archived: 0, metadata: 0 });
+  });
+
+  it("keeps desktop and Web structural records on identical shared rules", () => {
+    const filters = { query: "", agent: "all" as const, filter: "all" as const };
+    const desktop = filterSessions(sessions, workspaces, filters);
+    const web = sharedFilterSessions(sessions, workspaces, filters, "Untitled session");
+    expect(desktop).toEqual(web);
+    expect(groupSessions(desktop, workspaces)).toEqual(sharedGroupSessions(web, workspaces));
+  });
+
+  it("groups by identity, disambiguates project names and uses creation time fallback", () => {
+    const projects = [
+      { id: "one", name: "app", path: "/work/personal/app" },
+      { id: "two", name: "app", path: "/work/company/app" },
+    ];
+    const records = [
+      { ...sessions[0], updated_at: undefined },
+      { ...sessions[1], updated_at: "invalid", created_at: "2026-09-03T00:00:00Z" },
+    ];
+    const groups = groupSessions(records, projects);
+    expect(groups.map(({ workspace, label }) => [workspace.id, label])).toEqual([
+      ["two", "app · company/app"], ["one", "app · personal/app"],
+    ]);
+    expect(groups[0].sessions.map(({ id }) => id)).toEqual(["archived"]);
+  });
+
+  it("keeps remote host groups contiguous and equal timestamps stable", () => {
+    const projects = [
+      { id: "one", name: "One", path: "/one" },
+      { id: "two", name: "Two", path: "/two" },
+      { id: "remote", name: "Remote", path: "/remote", remote: { host_id: "z", online: true } },
+    ];
+    const records = [
+      { ...sessions[0], updated_at: undefined },
+      { ...sessions[0], id: "other", workspace_id: "two", updated_at: undefined },
+      { ...sessions[0], id: "remote", workspace_id: "remote" },
+    ];
+    expect(groupSessions(records, projects).map(({ workspace }) => workspace.id)).toEqual(["one", "two", "remote"]);
+    expect(groupSessions(records, projects)[2].workspace.remote?.online).toBe(true);
   });
 });

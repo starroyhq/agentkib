@@ -84,6 +84,8 @@ struct Request {
     text: Option<String>,
     turn_id: Option<String>,
     approval_id: Option<Value>,
+    question_id: Option<Value>,
+    answers: Option<Value>,
     decision: Option<String>,
     #[serde(default)]
     experimental_enabled: bool,
@@ -94,6 +96,9 @@ struct Service {
     // Independent of the bridge cache: reconnect/eviction must not turn a lost
     // control acknowledgement into permission to submit a second operation.
     unresolved: BTreeSet<String>,
+    claude: BTreeMap<String, crate::claude_runner::Runner>,
+    claude_identity: BTreeMap<String, (PathBuf, String)>,
+    claude_available: Option<bool>,
     #[cfg(target_os = "macos")]
     bridges: BTreeMap<String, agentkib_codex_bridge::Bridge>,
     #[cfg(target_os = "macos")]
@@ -105,6 +110,9 @@ impl Default for Service {
             boot: uuid::Uuid::new_v4().to_string(),
             used: BTreeSet::new(),
             unresolved: BTreeSet::new(),
+            claude: BTreeMap::new(),
+            claude_identity: BTreeMap::new(),
+            claude_available: None,
             #[cfg(target_os = "macos")]
             bridges: BTreeMap::new(),
             #[cfg(target_os = "macos")]
@@ -125,7 +133,7 @@ impl Service {
         anyhow::ensure!(
             matches!(
                 request.operation.as_str(),
-                "catalog" | "events" | "live" | "send" | "approve"
+                "catalog" | "events" | "live" | "send" | "approve" | "answer"
             ),
             "web-operation-unsupported"
         );
@@ -133,10 +141,7 @@ impl Service {
             data_dir: agentkib_store::default_data_dir()?,
         };
         if request.operation == "catalog" {
-            if source.ensure_available().is_err() {
-                return Ok(json!({"sessions":[],"indexEnabled":false}));
-            }
-            return Ok(json!({"sessions":source.catalog()?["sessions"],"indexEnabled":true}));
+            return web_catalog(&source);
         }
         let epoch = source.availability_epoch()?;
         let id = request
@@ -161,6 +166,103 @@ impl Service {
         }
         if request.operation != "live" {
             self.claim(&request)?;
+        }
+        if session.agent == AgentKind::ClaudeCode {
+            if !cfg!(target_os = "macos") {
+                return self.unsupported(&request, "platform-unsupported");
+            }
+            if !*self
+                .claude_available
+                .get_or_insert_with(crate::claude_runner::Runner::installation_supported)
+            {
+                return self.unsupported(&request, "unverified-installation");
+            }
+            let adapter = provider(session.agent).context("provider-unavailable")?;
+            let native = adapter
+                .list_sessions(&workspace)?
+                .into_iter()
+                .find(|candidate| {
+                    store
+                        .conversation_id(session.agent, &candidate.native_ref)
+                        .is_ok_and(|found| found == id)
+                })
+                .context("session-unavailable")?;
+            let uuid = adapter
+                .verified_control_id(&native.native_ref)?
+                .context("unverified-session-identity")?;
+            let cwd = adapter
+                .verified_control_workspace(&native.native_ref)?
+                .context("unverified-session-workspace")?;
+            anyhow::ensure!(
+                cwd.starts_with(fs::canonicalize(&workspace)?),
+                "session-workspace-mismatch"
+            );
+            if let Some(previous) = self.claude_identity.get(id) {
+                anyhow::ensure!(
+                    previous == &(cwd.clone(), uuid.clone()),
+                    "session-identity-changed"
+                );
+            }
+            if request.operation == "live" && !self.claude.contains_key(id) {
+                validate_session_access(&source, epoch, &store, &session, &workspace)?;
+                return Ok(json!({"sessionId":id,"runtimeBootId":self.boot,
+                    "executionMode":"managed-resume","status":"idle","revision":0,
+                    "turnId":null,"approvals":[],"streamText":"",
+                    "sendEnabled":request.experimental_enabled}));
+            }
+            if !self.claude.contains_key(id) {
+                anyhow::ensure!(self.claude.len() < 8, "managed-session-limit");
+                self.claude_identity
+                    .insert(id.to_owned(), (cwd.clone(), uuid.clone()));
+                self.claude
+                    .insert(id.to_owned(), crate::claude_runner::Runner::new(cwd, uuid));
+            }
+            let runner = self
+                .claude
+                .get_mut(id)
+                .context("managed-session-unavailable")?;
+            validate_session_access(&source, epoch, &store, &session, &workspace)?;
+            if request.operation == "live" {
+                let mut state = runner.snapshot();
+                state["executionMode"] = json!("managed-resume");
+                state["sessionId"] = json!(id);
+                state["runtimeBootId"] = json!(self.boot);
+                if !request.experimental_enabled {
+                    state["sendEnabled"] = json!(false);
+                    if let Some(questions) = state["questions"].as_array_mut() {
+                        for question in questions {
+                            question["supported"] = json!(false);
+                        }
+                    }
+                    if let Some(approvals) = state["approvals"].as_array_mut() {
+                        for approval in approvals {
+                            approval["supported"] = json!(false);
+                        }
+                    }
+                }
+                return Ok(state);
+            }
+            let revision = request.expected_revision.context("missing-revision")?;
+            // Runner errors are preflight/enqueue failures. After acceptance,
+            // asynchronous write errors remain fenced in the runner snapshot.
+            let outcome = if request.operation == "send" {
+                runner.send(request.text.as_deref().context("missing-text")?, revision)
+            } else if request.operation == "answer" {
+                runner.answer(
+                    request.question_id.as_ref().context("missing-question")?,
+                    request.turn_id.as_deref().context("missing-turn")?,
+                    request.answers.as_ref().context("missing-answers")?,
+                    revision,
+                )
+            } else {
+                runner.approve(
+                    request.approval_id.as_ref().context("missing-approval")?,
+                    request.turn_id.as_deref().context("missing-turn")?,
+                    request.decision.as_deref().context("missing-decision")?,
+                    revision,
+                )
+            };
+            return control_response(&request, &self.boot, outcome.is_ok(), outcome);
         }
         #[cfg(target_os = "macos")]
         {
@@ -271,14 +373,29 @@ impl Service {
                 }
                 let state = bridge.state().context("state-unavailable")?;
                 if request.operation == "live" {
+                    let questions: Vec<_> = state
+                        .questions()
+                        .into_iter()
+                        .map(|mut q| {
+                            if !controls {
+                                q["supported"] = json!(false);
+                            }
+                            q
+                        })
+                        .collect();
                     let approvals: Vec<_> = state
                         .approvals()
                         .into_iter()
                         .map(|approval| safe_approval(approval, controls))
                         .collect();
+                    let status = if !questions.is_empty() {
+                        json!("waiting-input")
+                    } else {
+                        json!(state.status())
+                    };
                     validate_session_access(&source, epoch, &store, &session, &workspace)?;
                     return Ok(
-                        json!({"sessionId":id,"runtimeBootId":self.boot,"status":state.status(),"revision":state.revision(),"turnId":state.active_turn(),"sendEnabled":controls && state.status()==agentkib_codex_bridge::Status::Idle,"approvals":approvals}),
+                        json!({"sessionId":id,"runtimeBootId":self.boot,"status":status,"revision":state.revision(),"turnId":state.active_turn(),"sendEnabled":controls && state.status()==agentkib_codex_bridge::Status::Idle,"approvals":approvals,"questions":questions}),
                     );
                 }
                 anyhow::ensure!(
@@ -297,6 +414,15 @@ impl Service {
                     let text = request.text.as_deref().context("missing-text")?;
                     bridge.send_text_at_revision_with_authorization(
                         text,
+                        request.expected_revision,
+                        authorize,
+                        dispatch,
+                    )
+                } else if request.operation == "answer" {
+                    bridge.answer_at_revision_with_authorization(
+                        request.question_id.as_ref().context("missing-question")?,
+                        request.turn_id.as_deref().context("missing-turn")?,
+                        request.answers.as_ref().context("missing-answers")?,
                         request.expected_revision,
                         authorize,
                         dispatch,
@@ -384,7 +510,24 @@ impl Service {
     }
 }
 
-#[cfg(any(target_os = "macos", test))]
+// The browser needs project identity, not the native peer's richer workspace
+// summary. Project only this whitelist from the same snapshot as the sessions.
+fn web_catalog(source: &impl Source) -> anyhow::Result<Value> {
+    if source.ensure_available().is_err() {
+        return Ok(json!({"workspaces":[],"sessions":[],"indexEnabled":false}));
+    }
+    let snapshot = source.catalog()?;
+    let workspaces = snapshot["workspaces"]
+        .as_array()
+        .context("invalid-catalog-workspaces")?
+        .iter()
+        .map(|workspace| {
+            json!({"id":workspace["id"],"name":workspace["name"],"path":workspace["path"]})
+        })
+        .collect::<Vec<_>>();
+    Ok(json!({"workspaces":workspaces,"sessions":snapshot["sessions"],"indexEnabled":true}))
+}
+
 fn validate_session_access(
     source: &RemoteSessionSource,
     epoch: u64,
@@ -407,7 +550,6 @@ fn validate_session_access(
     Ok(())
 }
 
-#[cfg(any(target_os = "macos", test))]
 fn control_response(
     request: &Request,
     boot: &str,
@@ -568,6 +710,52 @@ fn complete_file_change(change: &Value) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn web_catalog_projects_one_snapshot_and_only_browser_workspace_fields() {
+        struct Snapshot;
+        impl Source for Snapshot {
+            fn catalog(&self) -> anyhow::Result<Value> {
+                Ok(
+                    json!({"workspaces":[{"id":"w","name":"test","path":"/projects/test",
+                    "discovery_sources":["private"],"status":"active","asset_count":9}],
+                    "sessions":[{"id":"s","workspace_id":"w","origin":"auxiliary",
+                    "forked_from_session_id":"parent","spawned_by_session_id":null,
+                    "created_at":"2026-09-09T00:00:00Z","git_branch":"main"}]}),
+                )
+            }
+            fn events(&self, _: &str, _: Option<&str>, _: usize) -> anyhow::Result<Value> {
+                panic!("catalog must not read individual histories")
+            }
+        }
+        let result = web_catalog(&Snapshot).unwrap();
+        assert_eq!(result["indexEnabled"], true);
+        assert_eq!(
+            result["workspaces"],
+            json!([{"id":"w","name":"test","path":"/projects/test"}])
+        );
+        assert_eq!(result["sessions"], Snapshot.catalog().unwrap()["sessions"]);
+    }
+
+    #[test]
+    fn web_catalog_disabled_index_returns_no_workspaces_or_sessions() {
+        struct Disabled;
+        impl Source for Disabled {
+            fn ensure_available(&self) -> anyhow::Result<()> {
+                anyhow::bail!("index-disabled")
+            }
+            fn catalog(&self) -> anyhow::Result<Value> {
+                panic!("disabled catalog must not read the source")
+            }
+            fn events(&self, _: &str, _: Option<&str>, _: usize) -> anyhow::Result<Value> {
+                panic!("disabled catalog must not read histories")
+            }
+        }
+        assert_eq!(
+            web_catalog(&Disabled).unwrap(),
+            json!({"workspaces":[],"sessions":[],"indexEnabled":false})
+        );
+    }
 
     #[test]
     fn final_session_access_rejects_index_and_registry_changes() {

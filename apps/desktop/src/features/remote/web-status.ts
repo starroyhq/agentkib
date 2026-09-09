@@ -37,8 +37,10 @@ export function subscribeWebStatus(target: "lan" | undefined, listener: Listener
       interval: 2_000,
       enabled: () =>
         Boolean(
-          channel.snapshot &&
-          (channel.snapshot.running || channel.snapshot.pending.length || channel.snapshot.code),
+          !channel.snapshot ||
+          channel.snapshot.running ||
+          channel.snapshot.pending.length ||
+          channel.snapshot.code,
         ),
       run: async () => {
         if (channel.inFlight || channel.busy) return;

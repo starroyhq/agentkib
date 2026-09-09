@@ -74,7 +74,9 @@ it("preserves title search, selection and returning to the catalog", async () =>
   expect(screen.queryByRole("button", { name: /分析 Electron 风险/ })).toBeNull();
   fireEvent.click(screen.getByRole("button", { name: /Claude Code.*Claude 代码检查/ }));
   expect(await screen.findByRole("heading", { name: /Claude 代码检查/ })).toBeVisible();
-  expect(screen.getByRole("button", { name: /Claude Code.*Claude 代码检查/ })).toHaveClass("selected");
+  expect(screen.getByRole("button", { name: /Claude Code.*Claude 代码检查/ })).toHaveClass(
+    "selected",
+  );
   fireEvent.click(screen.getByRole("button", { name: dictionaries["zh-CN"].back }));
   expect(screen.queryByRole("heading", { name: /Claude 代码检查/ })).toBeNull();
   expect(search).toHaveValue("代码检查");

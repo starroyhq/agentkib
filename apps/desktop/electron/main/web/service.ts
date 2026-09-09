@@ -858,7 +858,11 @@ export class WebAccessService {
               !values.length ||
               values.length > 64 ||
               values.some(
-                (value) => typeof value !== "string" || !value.trim() || value.length > 4096,
+                (value) =>
+                  typeof value !== "string" ||
+                  !value.trim() ||
+                  value.length > 4096 ||
+                  Buffer.byteLength(value, "utf8") > 8192,
               ) ||
               new Set(values).size !== values.length,
           )

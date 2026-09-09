@@ -63,6 +63,53 @@ it("shares status requests and stops waking when remote features are idle", asyn
   expect(vi.getTimerCount()).toBe(0);
 });
 
+it("retries an unknown remote status at the bounded cadence, then stops for known idle", async () => {
+  vi.mocked(api.remoteRequest)
+    .mockRejectedValueOnce(new Error("runtime restarting"))
+    .mockResolvedValue(status);
+  releases.push(subscribeRemoteStatus(() => {}));
+  await vi.advanceTimersByTimeAsync(0);
+  expect(api.remoteRequest).toHaveBeenCalledTimes(1);
+  await vi.advanceTimersByTimeAsync(4_999);
+  expect(api.remoteRequest).toHaveBeenCalledTimes(1);
+  await vi.advanceTimersByTimeAsync(1);
+  expect(api.remoteRequest).toHaveBeenCalledTimes(2);
+  expect(useRemoteStore.getState().snapshot).toEqual(status);
+  expect(useRemoteStore.getState().error).toBe("");
+  await vi.advanceTimersByTimeAsync(60_000);
+  expect(api.remoteRequest).toHaveBeenCalledTimes(2);
+});
+
+it.each([undefined, "lan"] as const)(
+  "retries unknown Web status for %s only while visible",
+  async (target) => {
+    const snapshot = {
+      config: { enabled: false, port: 1421, externalOrigin: "", experimentalEnabled: false },
+      running: false,
+      localUrl: "http://127.0.0.1:1421",
+      pending: [],
+      devices: [],
+    };
+    bridge.web.mockRejectedValueOnce(new Error("not ready")).mockResolvedValue(snapshot);
+    const receive = vi.fn();
+    const error = vi.fn();
+    releases.push(subscribeWebStatus(target, { status: receive, error }));
+    await vi.advanceTimersByTimeAsync(0);
+    expect(error).toHaveBeenCalledTimes(1);
+    await vi.advanceTimersByTimeAsync(1_999);
+    expect(bridge.web).toHaveBeenCalledTimes(1);
+    bridge.activity?.(false);
+    await vi.advanceTimersByTimeAsync(60_000);
+    expect(bridge.web).toHaveBeenCalledTimes(1);
+    bridge.activity?.(true);
+    await vi.advanceTimersByTimeAsync(0);
+    expect(bridge.web).toHaveBeenCalledTimes(2);
+    expect(receive).toHaveBeenCalledWith(snapshot);
+    await vi.advanceTimersByTimeAsync(60_000);
+    expect(bridge.web).toHaveBeenCalledTimes(2);
+  },
+);
+
 it("uses the fastest active remote subscription and returns to catalog cadence on close", async () => {
   vi.mocked(api.remoteRequest).mockResolvedValue({
     ...status,

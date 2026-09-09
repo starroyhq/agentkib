@@ -1,8 +1,30 @@
-.ak-agent-mark { display: inline-grid; place-items: center; flex: none; vertical-align: middle; }
-.ak-agent-image { display: block; width: 100%; height: 100%; object-fit: contain; }
-.ak-agent-dim { opacity: .92; }
-.ak-agent-cursor { border-radius: 6px; background: #1d1d1f; padding: 4px; box-sizing: border-box; }
-.dark .ak-agent-invert, :root[data-theme="dark"] .ak-agent-invert { filter: invert(1); }
+.ak-agent-mark {
+  display: inline-grid;
+  place-items: center;
+  flex: none;
+  vertical-align: middle;
+}
+.ak-agent-image {
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+}
+.ak-agent-dim {
+  opacity: 0.92;
+}
+.ak-agent-cursor {
+  border-radius: 6px;
+  background: #1d1d1f;
+  padding: 4px;
+  box-sizing: border-box;
+}
+.dark .ak-agent-invert,
+:root[data-theme="dark"] .ak-agent-invert {
+  filter: invert(1);
+}
 @media (prefers-color-scheme: dark) {
-  :root[data-theme="system"] .ak-agent-invert { filter: invert(1); }
+  :root[data-theme="system"] .ak-agent-invert {
+    filter: invert(1);
+  }
 }

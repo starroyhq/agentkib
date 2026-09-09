@@ -10,6 +10,7 @@ import { createServer } from "node:net";
 import { randomUUID } from "node:crypto";
 import { WebAccessService } from "./service";
 import { PROTOCOL_VERSION } from "../../generated/runtime-protocol";
+import { claudeAcceptanceTarget } from "./claude-acceptance-target";
 
 it.skipIf(process.env.AGENTKIB_CLAUDE_REAL_SESSION !== "3121ec99-e4cb-465b-8056-0d653212b113")(
   "real Claude test session receives one Web message and returns history",
@@ -58,9 +59,22 @@ it.skipIf(process.env.AGENTKIB_CLAUDE_REAL_SESSION !== "3121ec99-e4cb-465b-8056-
         workspaceId: workspace.id,
         force: true,
       });
-      const claude = sessions.filter((s: any) => s.agent === "claude-code");
-      expect(claude).toHaveLength(1);
-      const sessionId = claude[0].id;
+      // Inspect only this test's isolated database; no native file or user DB is rewritten.
+      const { DatabaseSync } = await import("node:sqlite");
+      const database = new DatabaseSync(join(data, "agentkib.db"), { readOnly: true });
+      let sessionId: string;
+      try {
+        const row = database
+          .prepare("SELECT value FROM schema_meta WHERE key = 'conversation_salt'")
+          .get();
+        sessionId = claudeAcceptanceTarget(
+          sessions,
+          process.env.AGENTKIB_CLAUDE_REAL_SESSION!,
+          row?.value,
+        );
+      } finally {
+        database.close();
+      }
       const socket = createServer();
       await new Promise<void>((done) => socket.listen(0, "127.0.0.1", done));
       const port = (socket.address() as { port: number }).port;

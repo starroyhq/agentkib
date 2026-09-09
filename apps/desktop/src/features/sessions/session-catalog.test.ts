@@ -3,8 +3,16 @@
 import { beforeAll, describe, expect, it } from "vitest";
 import { initializeI18n } from "@/core/i18n";
 import type { ConversationSessionSummary, WorkspaceSummary } from "@/core/types";
-import { filterSessions, groupSessions, sessionCatalogStats, sortSessions } from "./session-catalog";
-import { filterSessions as sharedFilterSessions, groupSessions as sharedGroupSessions } from "@agentkib/session-catalog";
+import {
+  filterSessions,
+  groupSessions,
+  sessionCatalogStats,
+  sortSessions,
+} from "./session-catalog";
+import {
+  filterSessions as sharedFilterSessions,
+  groupSessions as sharedGroupSessions,
+} from "@agentkib/session-catalog";
 
 const workspaces = [
   { id: "one", name: "Shared project" },
@@ -157,7 +165,8 @@ describe("session catalog", () => {
     ];
     const groups = groupSessions(records, projects);
     expect(groups.map(({ workspace, label }) => [workspace.id, label])).toEqual([
-      ["two", "app · company/app"], ["one", "app · personal/app"],
+      ["two", "app · company/app"],
+      ["one", "app · personal/app"],
     ]);
     expect(groups[0].sessions.map(({ id }) => id)).toEqual(["archived"]);
   });
@@ -173,7 +182,11 @@ describe("session catalog", () => {
       { ...sessions[0], id: "other", workspace_id: "two", updated_at: undefined },
       { ...sessions[0], id: "remote", workspace_id: "remote" },
     ];
-    expect(groupSessions(records, projects).map(({ workspace }) => workspace.id)).toEqual(["one", "two", "remote"]);
+    expect(groupSessions(records, projects).map(({ workspace }) => workspace.id)).toEqual([
+      "one",
+      "two",
+      "remote",
+    ]);
     expect(groupSessions(records, projects)[2].workspace.remote?.online).toBe(true);
   });
 });

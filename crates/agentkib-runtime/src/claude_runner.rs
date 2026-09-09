@@ -432,6 +432,36 @@ enum Event {
     Error(String),
     Eof,
     Write(Value),
+    Control(Control, SyncSender<Result<()>>),
+}
+
+enum Control {
+    Approve(Value, String, String, u64),
+    Answer(Value, String, Value, u64),
+}
+
+impl Control {
+    fn apply(self, state: &mut State) -> Result<Value> {
+        match self {
+            Self::Approve(id, turn, decision, revision) => {
+                state.approve(&id, &turn, &decision, revision)
+            }
+            Self::Answer(id, turn, answers, revision) => {
+                state.answer(&id, &turn, &answers, revision)
+            }
+        }
+    }
+}
+
+fn process_control(state: &mut State, control: Control, writer: &SyncSender<Value>) -> Result<()> {
+    // Called by the same lifecycle consumer as cancellation/result frames.
+    // Never enqueue a prevalidated response ahead of pending inbound events.
+    let response = control.apply(state)?;
+    if let Err(error) = write_frame(writer, response) {
+        state.fail("Claude interaction transport unavailable");
+        return Err(error);
+    }
+    Ok(())
 }
 
 struct Worker {
@@ -457,6 +487,54 @@ pub struct Runner {
 }
 
 impl Runner {
+    #[cfg(test)]
+    pub(crate) fn mock_worker(status: &str) -> Self {
+        let runner = Self::new(PathBuf::new(), "test".into());
+        runner.state.lock().unwrap().status = status.into();
+        let (sender, _) = mpsc::sync_channel(32);
+        *runner.worker.lock().unwrap() = Some(Worker {
+            sender,
+            stop: Arc::new(AtomicBool::new(false)),
+            join: None,
+        });
+        runner
+    }
+
+    pub fn has_worker(&self) -> bool {
+        self.worker
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .is_some()
+    }
+
+    pub fn retire_if_inactive(&self) -> bool {
+        let mut worker = self.worker.lock().unwrap_or_else(|p| p.into_inner());
+        let state = self.state.lock().unwrap_or_else(|p| p.into_inner());
+        let finished = worker
+            .as_ref()
+            .and_then(|worker| worker.join.as_ref())
+            .is_some_and(thread::JoinHandle::is_finished);
+        if worker.is_none() || (state.status != "idle" && !finished) {
+            return false;
+        }
+        let retired = worker.take();
+        if let Some(retired) = &retired {
+            retired.stop.store(true, Ordering::Release);
+        }
+        // Stop and join with the old initialized state intact: a worker may
+        // already be waiting for this mutex with an inbound frame in hand.
+        drop(state);
+        drop(retired);
+        let mut state = self.state.lock().unwrap_or_else(|p| p.into_inner());
+        if state.status == "idle" {
+            state.initialized = false;
+            state.init_id.clear();
+            state.seen_requests.clear();
+            state.revision += 1;
+        }
+        true
+    }
+
     pub fn installation_supported() -> bool {
         check_version().is_ok()
     }
@@ -526,41 +604,44 @@ impl Runner {
         decision: &str,
         expected_revision: u64,
     ) -> Result<()> {
-        let worker = self
-            .worker
-            .lock()
-            .map_err(|_| anyhow::anyhow!("Claude worker lock poisoned"))?;
-        let worker = worker.as_ref().context("Claude session has not started")?;
-        let mut state = self
-            .state
-            .lock()
-            .map_err(|_| anyhow::anyhow!("Claude state lock poisoned"))?;
-        let response = state.approve(request_id, turn_id, decision, expected_revision)?;
-        if let Err(error) = worker.sender.try_send(Event::Write(response)) {
-            state.fail("Claude approval transport unavailable");
-            worker.stop.store(true, Ordering::Release);
-            return Err(error.into());
-        }
-        Ok(())
+        self.control(Control::Approve(
+            request_id.clone(),
+            turn_id.into(),
+            decision.into(),
+            expected_revision,
+        ))
     }
 
     pub fn answer(&self, id: &Value, turn: &str, answers: &Value, revision: u64) -> Result<()> {
+        self.control(Control::Answer(
+            id.clone(),
+            turn.into(),
+            answers.clone(),
+            revision,
+        ))
+    }
+
+    fn control(&self, control: Control) -> Result<()> {
         let worker = self
             .worker
             .lock()
             .map_err(|_| anyhow::anyhow!("Claude worker lock poisoned"))?;
         let worker = worker.as_ref().context("Claude session has not started")?;
-        let mut state = self
-            .state
-            .lock()
-            .map_err(|_| anyhow::anyhow!("Claude state lock poisoned"))?;
-        let response = state.answer(id, turn, answers, revision)?;
-        if let Err(error) = worker.sender.try_send(Event::Write(response)) {
-            state.fail("Claude answer transport unavailable");
-            worker.stop.store(true, Ordering::Release);
-            return Err(error.into());
+        let (reply, result) = mpsc::sync_channel(1);
+        worker.sender.try_send(Event::Control(control, reply))?;
+        match result.recv_timeout(Duration::from_secs(5)) {
+            Ok(outcome) => outcome,
+            Err(_) => {
+                // Admission succeeded but its acknowledgement is uncertain. Do
+                // not report a safe rejection or permit another operation.
+                self.state
+                    .lock()
+                    .unwrap_or_else(|p| p.into_inner())
+                    .fail("Claude interaction acknowledgement unavailable");
+                worker.stop.store(true, Ordering::Release);
+                Ok(())
+            }
         }
-        Ok(())
     }
 
     fn start(&self, state: &mut State, user: Value) -> Result<Worker> {
@@ -704,6 +785,14 @@ impl Runner {
                             }
                         }
                         Ok(Event::Write(frame)) => write_frame(&writer, frame)?,
+                        Ok(Event::Control(control, reply)) => {
+                            let result = process_control(
+                                &mut shared.lock().unwrap_or_else(|p| p.into_inner()),
+                                control,
+                                &writer,
+                            );
+                            let _ = reply.send(result);
+                        }
                         Ok(Event::Error(error)) => bail!("{error}"),
                         Ok(Event::Eof) => bail!("Claude stream closed"),
                         Err(mpsc::RecvTimeoutError::Timeout) => {}
@@ -798,6 +887,120 @@ mod tests {
     }
     fn permission(id: &str) -> Value {
         json!({"type":"control_request","request_id":id,"request":{"subtype":"can_use_tool","tool_name":"Bash","input":{"command":"pwd"}}})
+    }
+
+    #[test]
+    fn queued_cancellation_rejects_approval_and_answer_without_writing() {
+        for question in [false, true] {
+            let mut state = active();
+            let mut request = permission("pending");
+            if question {
+                request["request"]["tool_name"] = json!("AskUserQuestion");
+                request["request"]["input"] = json!({"questions":[{"question":"Which?","options":[{"label":"A"},{"label":"B"}]}]});
+            }
+            state.frame(request).unwrap();
+            let revision = state.revision;
+            let control = if question {
+                Control::Answer(
+                    json!("pending"),
+                    "turn".into(),
+                    json!({"Which?":["A"]}),
+                    revision,
+                )
+            } else {
+                Control::Approve(json!("pending"), "turn".into(), "allow".into(), revision)
+            };
+            let (events, queue) = mpsc::sync_channel(2);
+            let (reply, outcome) = mpsc::sync_channel(1);
+            events
+                .send(Event::Frame(
+                    json!({"type":"control_cancel_request","request_id":"pending"}),
+                ))
+                .unwrap();
+            events.send(Event::Control(control, reply)).unwrap();
+            let (writer, writes) = mpsc::sync_channel(1);
+            if let Event::Frame(frame) = queue.recv().unwrap() {
+                state.frame(frame).unwrap();
+            }
+            if let Event::Control(control, reply) = queue.recv().unwrap() {
+                reply
+                    .send(process_control(&mut state, control, &writer))
+                    .unwrap();
+            }
+            assert!(outcome.recv().unwrap().is_err());
+            assert!(writes.try_recv().is_err());
+            assert_eq!(state.status, "running");
+        }
+    }
+
+    #[test]
+    fn lifecycle_control_writes_once_and_rejects_duplicate() {
+        let mut state = active();
+        state.frame(permission("pending")).unwrap();
+        let revision = state.revision;
+        let (writer, writes) = mpsc::sync_channel(2);
+        let command =
+            || Control::Approve(json!("pending"), "turn".into(), "allow".into(), revision);
+        process_control(&mut state, command(), &writer).unwrap();
+        assert_eq!(writes.recv().unwrap()["response"]["request_id"], "pending");
+        assert!(process_control(&mut state, command(), &writer).is_err());
+        assert!(writes.try_recv().is_err());
+    }
+
+    #[test]
+    fn retirement_keeps_initialized_state_until_worker_has_joined() {
+        let runner = Runner::mock_worker("idle");
+        runner.state.lock().unwrap().initialized = true;
+        let shared = runner.state.clone();
+        let mut worker = runner.worker.lock().unwrap();
+        let stop = worker.as_ref().unwrap().stop.clone();
+        worker.as_mut().unwrap().join = Some(thread::spawn(move || {
+            while !stop.load(Ordering::Acquire) {
+                thread::yield_now();
+            }
+            let mut state = shared.lock().unwrap();
+            if state
+                .frame(json!({"type":"result","subtype":"success"}))
+                .is_err()
+            {
+                state.fail("initialization was reset before pending frame drained");
+            }
+        }));
+        drop(worker);
+        assert!(runner.retire_if_inactive());
+        assert_eq!(runner.snapshot()["status"], "idle");
+        assert!(!runner.state.lock().unwrap().initialized);
+    }
+
+    #[test]
+    fn retiring_idle_worker_preserves_freshness_and_never_recovers_unknown() {
+        let runner = Runner::mock_worker("idle");
+        let old = runner.snapshot()["revision"].as_u64().unwrap();
+        assert!(runner.retire_if_inactive());
+        assert!(!runner.has_worker());
+        assert!(runner.snapshot()["revision"].as_u64().unwrap() > old);
+        assert!(runner.send("must fail before launching", old).is_err());
+        for status in [
+            "running",
+            "waiting-input",
+            "waiting-approval",
+            "outcome-unknown",
+        ] {
+            let runner = Runner::mock_worker(status);
+            assert!(!runner.retire_if_inactive());
+            assert!(runner.has_worker());
+            assert_eq!(runner.snapshot()["status"], status);
+        }
+        let failed = Runner::mock_worker("outcome-unknown");
+        let done = thread::spawn(|| {});
+        while !done.is_finished() {
+            thread::yield_now();
+        }
+        failed.worker.lock().unwrap().as_mut().unwrap().join = Some(done);
+        assert!(failed.retire_if_inactive());
+        assert!(!failed.has_worker());
+        assert_eq!(failed.snapshot()["status"], "outcome-unknown");
+        assert!(failed.send("must stay fenced", 0).is_err());
     }
 
     #[test]

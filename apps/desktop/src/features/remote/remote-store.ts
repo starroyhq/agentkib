@@ -95,12 +95,12 @@ let refreshPending = false;
 function needsPolling() {
   const { snapshot, pairing } = useRemoteStore.getState();
   return Boolean(
-    snapshot &&
-    (snapshot.local.enabled ||
-      snapshot.connections.length ||
-      snapshot.pending.length ||
-      (snapshot.pairing_expires_at && snapshot.pairing_expires_at * 1000 > Date.now()) ||
-      (pairing && pairing.expires_at * 1000 > Date.now())),
+    !snapshot ||
+    snapshot.local.enabled ||
+    snapshot.connections.length ||
+    snapshot.pending.length ||
+    (snapshot.pairing_expires_at && snapshot.pairing_expires_at * 1000 > Date.now()) ||
+    (pairing && pairing.expires_at * 1000 > Date.now()),
   );
 }
 function updateRemotePolling() {

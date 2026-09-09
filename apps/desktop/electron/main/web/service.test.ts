@@ -971,6 +971,46 @@ describe("WebAccessService loopback security boundary", () => {
       "duplicate_request",
     );
   });
+  it("enforces the native per-answer UTF-8 limit before runtime dispatch", async () => {
+    await bootstrap();
+    await pair(true, false);
+    runtime.mockResolvedValue({
+      accepted: true,
+      runtimeBootId: "runtime-one",
+      revision: 4,
+      sendEnabled: false,
+      questions: [
+        {
+          requestId: "q",
+          turnId: "turn",
+          supported: true,
+          questions: [{ id: "answer", multiSelect: false, allowCustom: true, options: [] }],
+        },
+      ],
+    });
+    for (const [index, value] of [
+      "文".repeat(2730),
+      "文".repeat(2730) + "ab",
+      "文".repeat(2731),
+    ].entries()) {
+      runtime.mockClear();
+      const result = await http("/api/web/v1/answer", {
+        method: "POST",
+        body: {
+          bootId,
+          sessionId: "s",
+          requestId: `utf8-${index}`,
+          expectedRevision: 4,
+          questionId: "q",
+          turnId: "turn",
+          answers: { answer: [value] },
+        },
+      });
+      expect(result.status).toBe(index < 2 ? 200 : 400);
+      if (index === 2) expect(runtime).not.toHaveBeenCalled();
+    }
+  });
+
   it("does not substitute approval permission for question answering", async () => {
     await bootstrap();
     await pair(false, true);

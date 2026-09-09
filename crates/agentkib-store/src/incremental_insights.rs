@@ -266,6 +266,35 @@ mod tests {
     }
 
     #[test]
+    fn legacy_database_schema_does_not_block_initial_jsonl_or_append() {
+        let dir = tempdir().unwrap();
+        let (store, home, a, _) = fixture(dir.path());
+        let legacy = Connection::open(home.join("state_0.sqlite")).unwrap();
+        legacy
+            .execute_batch("CREATE TABLE threads(id TEXT);")
+            .unwrap();
+        let initial = store.refresh_codex_insights(&home).unwrap();
+        assert_eq!(initial.read_errors, 0);
+        assert_eq!(total(&store), 30);
+        append(&a, &event(7));
+        let next = store.refresh_codex_insights(&home).unwrap();
+        assert_eq!(next.read_errors, 0);
+        assert_eq!(next.files_read, 1);
+        assert_eq!(total(&store), 37);
+    }
+
+    #[test]
+    fn unreadable_database_still_blocks_initial_migration() {
+        let dir = tempdir().unwrap();
+        let (store, home, _, _) = fixture(dir.path());
+        fs::write(home.join("state_0.sqlite"), "not sqlite").unwrap();
+        store.connection.execute("INSERT INTO usage_events(source_key, surface_agent, total_tokens, session_count, date_precision, quality) VALUES ('legacy','codex',99,1,'aggregate','estimated')", []).unwrap();
+        assert!(store.refresh_codex_insights(&home).is_err());
+        assert_eq!(total(&store), 99);
+        assert!(store.load_codex_checkpoint().unwrap().0.is_none());
+    }
+
+    #[test]
     fn checkpoint_write_failure_rolls_back_contributions_and_manifest() {
         let dir = tempdir().unwrap();
         let (store, home, a, _) = fixture(dir.path());

@@ -215,10 +215,15 @@ pub fn collect_codex_incremental(
                 }
                 diagnostics.databases_read += 1;
                 match read_database(home, &path, &id, fingerprint, identify_path) {
-                    Ok(next) => {
+                    Ok(Some(next)) => {
                         state.databases.insert(id, next);
                         changed = true;
                     }
+                    Ok(None) if !state.databases.contains_key(&id) => {
+                        // Legacy schemas that never supplied a checkpoint cannot
+                        // contribute usage. They must not block importing JSONL.
+                    }
+                    Ok(None) => diagnostics.read_errors += 1,
                     Err(_) => diagnostics.read_errors += 1,
                 }
             }
@@ -618,11 +623,23 @@ fn read_database(
     id: &str,
     fingerprint: String,
     identify_path: &dyn Fn(&Path) -> String,
-) -> Result<DatabaseState> {
+) -> Result<Option<DatabaseState>> {
     let connection = Connection::open_with_flags(
         path,
         OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX,
     )?;
+    let columns = connection
+        .prepare("PRAGMA table_info(threads)")?
+        .query_map([], |row| row.get::<_, String>(1))?
+        .collect::<rusqlite::Result<BTreeSet<_>>>()?;
+    if !["rollout_path", "cwd", "updated_at", "tokens_used", "model"]
+        .iter()
+        .all(|column| columns.contains(*column))
+    {
+        // This is an unsupported legacy schema, not an unreadable SQLite file.
+        // The caller retains any previously imported contribution on schema loss.
+        return Ok(None);
+    }
     let mut statement = connection
         .prepare("SELECT rollout_path, cwd, updated_at, tokens_used, model FROM threads")?;
     let rows = statement.query_map([], |row| {
@@ -693,7 +710,7 @@ fn read_database(
     }
     // Keep the pre-query fingerprint. SQLite supplies a consistent read snapshot;
     // concurrent writes (or a newly created WAL) therefore trigger another read next time.
-    Ok(state)
+    Ok(Some(state))
 }
 
 fn workspace_ancestors(path: &Path, identify_path: &dyn Fn(&Path) -> String) -> Vec<String> {
@@ -978,6 +995,29 @@ mod tests {
         assert_eq!(fallback.events[0].date_precision, DatePrecision::Aggregate);
         let serialized = serde_json::to_string(&fallback.state).unwrap();
         assert!(!serialized.contains("/private/workspace"));
+    }
+
+    #[test]
+    fn schema_loss_retains_prior_database_contribution_and_retries() {
+        let (dir, path) = fixture();
+        let connection = database(dir.path(), &path);
+        let first = collect(dir.path(), &CodexIncrementalState::default());
+        connection
+            .execute_batch(
+                "ALTER TABLE threads RENAME TO saved_threads; CREATE TABLE threads(id TEXT);",
+            )
+            .unwrap();
+        let failed = collect(dir.path(), &first.state);
+        assert_eq!(failed.diagnostics.read_errors, 1);
+        assert!(!failed.initial_complete);
+        assert_eq!(failed.events[0].model.as_deref(), Some("model-a"));
+        connection
+            .execute_batch("DROP TABLE threads; ALTER TABLE saved_threads RENAME TO threads;")
+            .unwrap();
+        let recovered = collect(dir.path(), &failed.state);
+        assert_eq!(recovered.diagnostics.read_errors, 0);
+        assert_eq!(recovered.diagnostics.databases_read, 1);
+        assert_eq!(total(&recovered), 100);
     }
 
     #[test]

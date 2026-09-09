@@ -25,7 +25,7 @@ import {
   type UserQuestionRequest,
 } from "@agentkib/web-client";
 import { SafeMarkdown, Transcript, toolStatusLabel } from "@agentkib/session-ui";
-import { QuestionForm, interactionCopy } from "./QuestionForm";
+import { QuestionForm, interactionCopy, answerRequestBody } from "./QuestionForm";
 import { AgentMark, agentName } from "@agentkib/agent-identity";
 import { displaySessionTitle } from "@agentkib/session-catalog";
 import { SessionCatalog, type CatalogWorkspace } from "./SessionCatalog";
@@ -142,6 +142,8 @@ export function SessionApp({
     { sessionId: string; requestId: string; turnId?: string; observedActive: boolean } | undefined
   >(undefined);
   const [pendingSessions, setPendingSessions] = useState<Record<string, boolean>>({});
+  const watchedSessions = useRef(new Set<string>());
+  const watchEpoch = useRef(0);
   const generation = useRef(0),
     selection = useRef(""),
     accessRef = useRef<Access | undefined>(undefined),
@@ -172,6 +174,8 @@ export function SessionApp({
     shownInteractions.current.clear();
     receipt.current = undefined;
     setPendingSessions({});
+    watchedSessions.current.clear();
+    watchEpoch.current++;
     setCode("");
     setName("");
     setOnline(false);
@@ -330,6 +334,78 @@ export function SessionApp({
     };
   }, [refresh, syncAccess, fail, clear, client, origin]);
   useEffect(() => {
+    const readable = new Set(
+      sessions.filter((s) => s.availability === "readable").map((s) => s.id),
+    );
+    for (const id of watchedSessions.current) {
+      if (!readable.has(id)) watchedSessions.current.delete(id);
+    }
+    setPendingSessions((previous) => {
+      const entries = Object.entries(previous).filter(([id]) => readable.has(id));
+      return entries.length === Object.keys(previous).length
+        ? previous
+        : Object.fromEntries(entries);
+    });
+  }, [sessions]);
+  useEffect(() => {
+    if (access?.status !== "approved") return;
+    let closed = false;
+    let polling = false;
+    let cursor = 0;
+    let inFlight: AbortController | undefined;
+    // Monitor previously opened sessions without opening a stream/probe for the
+    // entire catalog. Rotate at most two reads per tick, below the device limit.
+    const timer = setInterval(() => {
+      if (closed || polling) return;
+      const epoch = watchEpoch.current;
+      polling = true;
+      void (async () => {
+        try {
+          const ids = [...watchedSessions.current].filter((id) => id !== selection.current);
+          for (let i = 0; i < Math.min(2, ids.length); i++) {
+            const id = ids[cursor++ % ids.length];
+            const g = generation.current;
+            const controller = new AbortController();
+            inFlight = controller;
+            const timeout = setTimeout(() => controller.abort(), 15000);
+            try {
+              const state = await client.live(id, controller.signal);
+              if (closed || epoch !== watchEpoch.current) return;
+              if (g !== generation.current) continue;
+              if (!watchedSessions.current.has(id)) continue;
+              if (id !== selection.current)
+                setPendingSessions((previous) => ({
+                  ...previous,
+                  [id]:
+                    state.sessionId === id &&
+                    (state.approvals.length > 0 || !!state.questions?.length),
+                }));
+            } catch (e) {
+              if (closed || epoch !== watchEpoch.current) return;
+              if (g !== generation.current) continue;
+              // An unavailable snapshot is not evidence of a pending request.
+              setPendingSessions((previous) => ({ ...previous, [id]: false }));
+              if (e instanceof ApiError && e.code === "access_ended") {
+                fail(e);
+                return;
+              }
+            } finally {
+              clearTimeout(timeout);
+              inFlight = undefined;
+            }
+          }
+        } finally {
+          polling = false;
+        }
+      })();
+    }, 4000);
+    return () => {
+      closed = true;
+      inFlight?.abort();
+      clearInterval(timer);
+    };
+  }, [access?.status, client, fail]);
+  useEffect(() => {
     if (!selected || access?.status !== "approved") return;
     const id = selected,
       g = generation.current;
@@ -431,6 +507,7 @@ export function SessionApp({
   async function choose(id: string) {
     if (selection.current === id) return;
     if (sessions.find((session) => session.id === id)?.availability !== "readable") return;
+    watchedSessions.current.add(id);
     generation.current++;
     selection.current = id;
     setSelected(id);
@@ -606,7 +683,12 @@ export function SessionApp({
           ? { text }
           : kind === "approve"
             ? { turnId: approval!.turnId, approvalId: approval!.requestId, decision }
-            : { turnId: question!.turnId, questionId: question!.requestId, answers }),
+            : answerRequestBody(
+                question!,
+                answers!,
+                { sessionId: id, bootId: access.bootId, expectedRevision: live.revision },
+                requestId,
+              )),
       });
       if (g !== generation.current) return;
       receipt.current = {
@@ -1060,6 +1142,11 @@ export function SessionApp({
             request={modal}
             locale={locale}
             busy={busy}
+            requestContext={
+              access && live
+                ? { sessionId: selected, bootId: access.bootId, expectedRevision: live.revision }
+                : undefined
+            }
             enabled={
               !!(
                 modal.supported &&

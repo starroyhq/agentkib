@@ -210,8 +210,10 @@ impl Service {
                     "turnId":null,"approvals":[],"streamText":"",
                     "sendEnabled":request.experimental_enabled}));
             }
+            if request.operation == "send" {
+                self.reserve_claude_worker(id)?;
+            }
             if !self.claude.contains_key(id) {
-                anyhow::ensure!(self.claude.len() < 8, "managed-session-limit");
                 self.claude_identity
                     .insert(id.to_owned(), (cwd.clone(), uuid.clone()));
                 self.claude
@@ -502,6 +504,30 @@ impl Service {
         );
         Ok(())
     }
+    fn reserve_claude_worker(&mut self, id: &str) -> anyhow::Result<()> {
+        if self
+            .claude
+            .get(id)
+            .is_some_and(|runner| runner.has_worker())
+        {
+            return Ok(());
+        }
+        let mut count = self
+            .claude
+            .values()
+            .filter(|runner| runner.has_worker())
+            .count();
+        for (other_id, runner) in &self.claude {
+            if count < 8 {
+                break;
+            }
+            if other_id != id && runner.retire_if_inactive() {
+                count -= 1;
+            }
+        }
+        anyhow::ensure!(count < 8, "managed-session-limit");
+        Ok(())
+    }
     fn unsupported(&self, request: &Request, reason: &str) -> anyhow::Result<Value> {
         anyhow::ensure!(request.operation == "live", "control-unavailable");
         Ok(
@@ -710,6 +736,39 @@ fn complete_file_change(change: &Value) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn claude_capacity_retires_idle_processes_without_forgetting_security_state() {
+        let mut service = Service::default();
+        for index in 0..8 {
+            service.claude.insert(
+                index.to_string(),
+                crate::claude_runner::Runner::mock_worker("idle"),
+            );
+        }
+        service.used.insert("used-request".into());
+        service
+            .claude_identity
+            .insert("0".into(), (PathBuf::from("/project"), "native".into()));
+        service.reserve_claude_worker("ninth").unwrap();
+        assert_eq!(
+            service.claude.values().filter(|r| r.has_worker()).count(),
+            7
+        );
+        assert_eq!(service.claude.len(), 8);
+        assert!(service.used.contains("used-request"));
+        assert!(service.claude_identity.contains_key("0"));
+        assert_eq!(service.claude["0"].snapshot()["revision"], 1);
+        let mut busy = Service::default();
+        for index in 0..8 {
+            busy.claude.insert(
+                index.to_string(),
+                crate::claude_runner::Runner::mock_worker("running"),
+            );
+        }
+        assert!(busy.reserve_claude_worker("ninth").is_err());
+        assert!(busy.reserve_claude_worker("0").is_ok());
+    }
 
     #[test]
     fn web_catalog_projects_one_snapshot_and_only_browser_workspace_fields() {

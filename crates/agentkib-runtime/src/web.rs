@@ -98,6 +98,8 @@ struct Service {
     unresolved: BTreeSet<String>,
     claude: BTreeMap<String, crate::claude_runner::Runner>,
     claude_identity: BTreeMap<String, (PathBuf, String)>,
+    claude_targets: BTreeMap<String, agentkib_conversations::VerifiedClaudeControlTarget>,
+    claude_target_retry: BTreeMap<String, std::time::Instant>,
     claude_available: InstallationProbe,
     #[cfg(target_os = "macos")]
     bridges: BTreeMap<String, agentkib_codex_bridge::Bridge>,
@@ -112,6 +114,8 @@ impl Default for Service {
             unresolved: BTreeSet::new(),
             claude: BTreeMap::new(),
             claude_identity: BTreeMap::new(),
+            claude_targets: BTreeMap::new(),
+            claude_target_retry: BTreeMap::new(),
             claude_available: InstallationProbe::default(),
             #[cfg(target_os = "macos")]
             bridges: BTreeMap::new(),
@@ -177,22 +181,37 @@ impl Service {
             ) {
                 return self.unsupported(&request, "unverified-installation");
             }
-            let adapter = provider(session.agent).context("provider-unavailable")?;
-            let native = adapter
-                .list_sessions(&workspace)?
-                .into_iter()
-                .find(|candidate| {
-                    store
-                        .conversation_id(session.agent, &candidate.native_ref)
-                        .is_ok_and(|found| found == id)
-                })
-                .context("session-unavailable")?;
-            let uuid = adapter
-                .verified_control_id(&native.native_ref)?
-                .context("unverified-session-identity")?;
-            let cwd = adapter
-                .verified_control_workspace(&native.native_ref)?
-                .context("unverified-session-workspace")?;
+            anyhow::ensure!(!session.sidechain, "auxiliary-session-not-controllable");
+            // Mutations resolve current provider metadata as well; only the hot
+            // read-only polling path may reuse the target's discovery result.
+            let target = cached_target(
+                &mut self.claude_targets,
+                &mut self.claude_target_retry,
+                id,
+                std::time::Instant::now(),
+                request.operation != "live",
+                || {
+                    let adapter = provider(session.agent).context("provider-unavailable")?;
+                    let native = adapter
+                        .list_sessions(&workspace)?
+                        .into_iter()
+                        .find(|candidate| {
+                            store
+                                .conversation_id(session.agent, &candidate.native_ref)
+                                .is_ok_and(|found| found == id)
+                        })
+                        .context("session-unavailable")?;
+                    adapter
+                        .verified_claude_control_target(&native.native_ref)?
+                        .context("unverified-session-identity")
+                },
+                |target| target.revalidate(),
+            )?;
+            // Polling an existing target never rediscovers every Claude project.
+            // Reopen its bounded metadata on every request to reject deletion or
+            // replacement with another session, workspace or auxiliary transcript.
+            let uuid = target.session_id.clone();
+            let cwd = target.workspace.clone();
             anyhow::ensure!(
                 cwd.starts_with(fs::canonicalize(&workspace)?),
                 "session-workspace-mismatch"
@@ -536,6 +555,36 @@ impl Service {
     }
 }
 
+// Failed targets are evicted, not retained forever at an obsolete path. A
+// cooldown also bounds discovery when a transcript is absent or malformed.
+fn cached_target<'a, T>(
+    targets: &'a mut BTreeMap<String, T>,
+    retry: &mut BTreeMap<String, std::time::Instant>,
+    id: &str,
+    now: std::time::Instant,
+    refresh: bool,
+    resolve: impl FnOnce() -> anyhow::Result<T>,
+    validate: impl FnOnce(&T) -> anyhow::Result<()>,
+) -> anyhow::Result<&'a T> {
+    anyhow::ensure!(
+        retry.get(id).is_none_or(|deadline| now >= *deadline),
+        "session-rediscovery-cooldown"
+    );
+    let outcome = (|| {
+        if refresh || !targets.contains_key(id) {
+            targets.insert(id.to_owned(), resolve()?);
+        }
+        validate(&targets[id])
+    })();
+    if let Err(error) = outcome {
+        targets.remove(id);
+        retry.insert(id.to_owned(), now + std::time::Duration::from_secs(30));
+        return Err(error);
+    }
+    retry.remove(id);
+    Ok(&targets[id])
+}
+
 #[derive(Default)]
 struct InstallationProbe {
     result: Option<(bool, std::time::Instant)>,
@@ -759,6 +808,83 @@ fn complete_file_change(change: &Value) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn cached_targets_evict_bad_paths_and_rediscover_after_cooldown() {
+        let mut targets = BTreeMap::new();
+        let mut retry = BTreeMap::new();
+        let now = std::time::Instant::now();
+        assert_eq!(
+            *cached_target(
+                &mut targets,
+                &mut retry,
+                "s",
+                now,
+                false,
+                || Ok("old-path"),
+                |_| Ok(())
+            )
+            .unwrap(),
+            "old-path"
+        );
+        assert!(
+            cached_target(
+                &mut targets,
+                &mut retry,
+                "s",
+                now,
+                false,
+                || panic!("valid cache does not rediscover"),
+                |_| anyhow::bail!("transcript replaced")
+            )
+            .is_err()
+        );
+        assert!(!targets.contains_key("s"));
+        for seconds in [0, 2, 29] {
+            assert!(
+                cached_target(
+                    &mut targets,
+                    &mut retry,
+                    "s",
+                    now + std::time::Duration::from_secs(seconds),
+                    false,
+                    || panic!("failed cache must not cause a polling discovery storm"),
+                    |_| Ok(())
+                )
+                .is_err()
+            );
+        }
+        let recovered = cached_target(
+            &mut targets,
+            &mut retry,
+            "s",
+            now + std::time::Duration::from_secs(30),
+            false,
+            || Ok("new-path"),
+            |path| {
+                anyhow::ensure!(*path == "new-path", "wrong path");
+                Ok(())
+            },
+        )
+        .unwrap();
+        assert_eq!(*recovered, "new-path");
+        assert!(retry.is_empty());
+        // A control always resolves again, and failed resolution never leaves a
+        // previously valid target available for the next live request.
+        assert!(
+            cached_target(
+                &mut targets,
+                &mut retry,
+                "s",
+                now + std::time::Duration::from_secs(31),
+                true,
+                || anyhow::bail!("identity mismatch"),
+                |_| Ok(())
+            )
+            .is_err()
+        );
+        assert!(targets.is_empty());
+    }
 
     #[test]
     fn failed_installation_probe_recovers_without_polling_spawn_storm() {

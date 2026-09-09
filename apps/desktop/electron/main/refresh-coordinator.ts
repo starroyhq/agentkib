@@ -10,7 +10,7 @@ import type {
   RuntimeInfo,
 } from "../../src/core/types";
 import { RUNTIME_METHODS } from "../generated/runtime-protocol";
-import type { DesktopRuntimeHost } from "./runtime-host";
+import { RuntimeUnavailableError, type DesktopRuntimeHost } from "./runtime-host";
 
 const REFRESH_KINDS: RefreshKind[] = ["discovery", "insights", "gateways", "quota", "storage"];
 const SCHEDULER_INTERVAL_MS = 60_000;
@@ -150,6 +150,7 @@ export class ElectronRefreshCoordinator {
       });
     }
 
+    const previousNextAllowed = record.status.next_allowed_at;
     const requestId = this.#requestId(kind);
     const queuedAt = new Date().toISOString();
     record.status = {
@@ -162,7 +163,9 @@ export class ElectronRefreshCoordinator {
     };
     this.#emit(record.status);
 
-    const promise = this.#enqueue(() => this.#execute(kind, requestId, automatic));
+    const promise = this.#enqueue(() =>
+      this.#execute(kind, requestId, automatic, previousNextAllowed),
+    );
     this.#active.set(kind, promise);
     void promise
       .finally(() => {
@@ -195,8 +198,11 @@ export class ElectronRefreshCoordinator {
     kind: RefreshKind,
     requestId: string,
     automatic: boolean,
+    previousNextAllowed: string | undefined,
   ): Promise<RefreshReceipt> {
     const record = this.#record(kind);
+    const wasInitialized = this.#initializedLocalKinds.has(kind);
+    const previousQuotaAttempt = this.#quotaLastAttemptAt;
     try {
       if (automatic && !this.#manualRequests.has(kind) && !(await this.#automaticAllowed(kind))) {
         record.status = { ...record.status, state: "idle" };
@@ -209,7 +215,8 @@ export class ElectronRefreshCoordinator {
         };
       }
       if (!this.#accepting) throw new Error("Refresh coordinator is shutting down");
-      if (!this.#runtimeAvailable) throw new Error("AgentKib runtime is restarting");
+      if (!this.#runtimeAvailable)
+        throw new RuntimeUnavailableError(new Error("AgentKib runtime is restarting"));
       if (kind === "discovery" || kind === "insights") this.#initializedLocalKinds.add(kind);
       const startedAt = new Date().toISOString();
       record.status = {
@@ -245,8 +252,14 @@ export class ElectronRefreshCoordinator {
         status: { ...record.status },
       };
     } catch (error) {
-      record.failures += 1;
-      const nextAllowedAt = new Date(Date.now() + backoffDelay(record.failures)).toISOString();
+      const unavailable = error instanceof RuntimeUnavailableError;
+      if (unavailable) {
+        if (!wasInitialized) this.#initializedLocalKinds.delete(kind);
+        if (kind === "quota") this.#quotaLastAttemptAt = previousQuotaAttempt;
+      } else record.failures += 1;
+      const nextAllowedAt = unavailable
+        ? previousNextAllowed
+        : new Date(Date.now() + backoffDelay(record.failures)).toISOString();
       record.status = {
         ...record.status,
         state: "failed",

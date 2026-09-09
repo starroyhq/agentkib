@@ -109,6 +109,7 @@ export interface Live {
   reason?: string;
   executionMode?: "managed-resume";
   streamText?: string;
+  streamTextTruncated?: boolean;
 }
 export class ApiError extends Error {
   constructor(

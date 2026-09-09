@@ -21,8 +21,24 @@ use std::{
     time::{Duration, Instant},
 };
 
-const MAX_LINE: usize = 1024 * 1024;
-const MAX_TEXT: usize = 4 * MAX_LINE;
+const MAX_TEXT: usize = 4 * 1024 * 1024;
+// JSON can escape each text byte as six ASCII bytes (e.g. \u0000).
+// Allow a completed copy of the output plus bounded protocol metadata.
+const MAX_LINE: usize = 6 * MAX_TEXT + 1024 * 1024;
+
+fn read_frame(reader: &mut impl BufRead) -> Result<Option<Value>> {
+    let mut bytes = Vec::new();
+    let size = reader
+        .take((MAX_LINE + 1) as u64)
+        .read_until(b'\n', &mut bytes)?;
+    if size == 0 {
+        return Ok(None);
+    }
+    ensure!(size <= MAX_LINE, "Claude frame exceeds 25 MiB");
+    Ok(Some(
+        serde_json::from_slice(&bytes).context("malformed Claude stream JSON")?,
+    ))
+}
 const SUPPORTED_VERSION: &str = "2.1.263 (Claude Code)";
 
 // Embedded 2.1.263 AskUserQuestion schema: answers are keyed by question text,
@@ -136,11 +152,30 @@ impl State {
     }
     fn fail(&mut self, reason: impl Into<String>) {
         self.status = "outcome-unknown".into();
-        self.reason = Some(reason.into());
+        let mut reason = reason.into();
+        if reason.len() > 4096 {
+            let mut end = 4096;
+            while !reason.is_char_boundary(end) {
+                end -= 1;
+            }
+            reason.truncate(end);
+            reason.push_str("… [truncated]");
+        }
+        self.reason = Some(reason);
         self.approvals.clear();
         self.questions.clear();
         self.pending_user = None;
         self.revision += 1;
+    }
+
+    fn check_interaction_budget(&self, pending: &Value) -> Result<()> {
+        // Count the complete projected inputs (including duplicated question
+        // descriptions) together. Never offer approval of a clipped command.
+        ensure!(
+            serde_json::to_vec(&(&self.approvals, &self.questions, pending))?.len() <= 1024 * 1024,
+            "Claude pending interaction exceeds Web delivery budget; process stopped"
+        );
+        Ok(())
     }
 
     fn append(&mut self, text: &str) -> Result<()> {
@@ -289,7 +324,9 @@ impl State {
                 if name == "AskUserQuestion" {
                     let questions = question_schema(&request["input"])?;
                     ensure!(self.questions.len() < 32, "too many pending questions");
-                    self.questions.push(json!({"requestId":id,"turnId":self.turn_id,"method":"claude/AskUserQuestion","supported":true,"questions":questions,"input":request["input"]}));
+                    let pending = json!({"requestId":id,"turnId":self.turn_id,"method":"claude/AskUserQuestion","supported":true,"questions":questions,"input":request["input"]});
+                    self.check_interaction_budget(&pending)?;
+                    self.questions.push(pending);
                     self.status = "waiting-input".into();
                     self.revision += 1;
                     return Ok(None);
@@ -311,7 +348,9 @@ impl State {
                     "permissionSuggestions".into(),
                     request["permission_suggestions"].clone(),
                 );
-                self.approvals.push(json!({"requestId":id,"turnId":self.turn_id,"method":"claude/can_use_tool","supported":true,"toolName":name,"input":request["input"],"context":context,"availableDecisions":["allow","deny"]}));
+                let pending = json!({"requestId":id,"turnId":self.turn_id,"method":"claude/can_use_tool","supported":true,"toolName":name,"input":request["input"],"context":context,"availableDecisions":["allow","deny"]});
+                self.check_interaction_budget(&pending)?;
+                self.approvals.push(pending);
                 self.status = if self.questions.is_empty() {
                     "waiting-approval"
                 } else {
@@ -576,7 +615,14 @@ impl Runner {
 
     pub fn snapshot(&self) -> Value {
         let state = self.state.lock().unwrap_or_else(|p| p.into_inner());
-        json!({"status":state.status,"sendEnabled":state.status == "idle","revision":state.revision,"turnId":state.turn_id,"approvals":state.approvals,"questions":state.questions,"streamText":state.stream_text,"reason":state.reason})
+        // Keep the preview below 512 KiB even with worst-case JSON escaping;
+        // retain the full output internally and in native history. Never truncate
+        // approval/question inputs, which must remain complete to be actionable.
+        let mut end = state.stream_text.len().min((512 * 1024 - 2) / 6);
+        while !state.stream_text.is_char_boundary(end) {
+            end -= 1;
+        }
+        json!({"status":state.status,"sendEnabled":state.status == "idle","revision":state.revision,"turnId":state.turn_id,"approvals":state.approvals,"questions":state.questions,"streamText":&state.stream_text[..end],"streamTextTruncated":end < state.stream_text.len(),"reason":state.reason})
     }
 
     pub fn send(&self, text: &str, expected_revision: u64) -> Result<()> {
@@ -752,35 +798,18 @@ impl Runner {
         thread::spawn(move || {
             let mut reader = BufReader::new(stdout);
             loop {
-                let mut bytes = Vec::new();
-                match (&mut reader)
-                    .take((MAX_LINE + 1) as u64)
-                    .read_until(b'\n', &mut bytes)
-                {
-                    Ok(0) => {
+                match read_frame(&mut reader) {
+                    Ok(None) => {
                         let _ = reader_sender.send(Event::Eof);
                         break;
                     }
-                    Ok(_) if bytes.len() > MAX_LINE => {
-                        let _ =
-                            reader_sender.send(Event::Error("Claude frame exceeds 1 MiB".into()));
-                        break;
-                    }
-                    Ok(_) => match serde_json::from_slice(&bytes) {
-                        Ok(frame) => {
-                            if reader_sender.send(Event::Frame(frame)).is_err() {
-                                break;
-                            }
-                        }
-                        Err(_) => {
-                            let _ = reader_sender
-                                .send(Event::Error("malformed Claude stream JSON".into()));
+                    Ok(Some(frame)) => {
+                        if reader_sender.send(Event::Frame(frame)).is_err() {
                             break;
                         }
-                    },
-                    Err(_) => {
-                        let _ =
-                            reader_sender.send(Event::Error("Claude stream read failed".into()));
+                    }
+                    Err(error) => {
+                        let _ = reader_sender.send(Event::Error(error.to_string()));
                         break;
                     }
                 }
@@ -1006,6 +1035,45 @@ mod tests {
     }
     fn permission(id: &str) -> Value {
         json!({"type":"control_request","request_id":id,"request":{"subtype":"can_use_tool","tool_name":"Bash","input":{"command":"pwd"}}})
+    }
+
+    #[test]
+    fn interaction_budget_rejects_large_and_accumulated_inputs_without_clipping() {
+        let mut state = active();
+        let mut large = permission("large");
+        large["request"]["input"]["command"] = json!("x".repeat(5 * 1024 * 1024));
+        assert!(
+            state
+                .frame(large)
+                .unwrap_err()
+                .to_string()
+                .contains("delivery budget")
+        );
+        assert!(state.approvals.is_empty());
+        let mut question = permission("question");
+        question["request"]["tool_name"] = json!("AskUserQuestion");
+        question["request"]["input"] = json!({"questions":[{"question":"x".repeat(600 * 1024),"options":[{"label":"A"},{"label":"B"}]}]});
+        assert!(
+            state
+                .frame(question)
+                .unwrap_err()
+                .to_string()
+                .contains("delivery budget")
+        );
+        assert!(state.questions.is_empty());
+        for index in 0..3 {
+            let mut request = permission(&index.to_string());
+            request["request"]["input"]["command"] = json!("x".repeat(300 * 1024));
+            state.frame(request).unwrap();
+        }
+        let mut next = permission("overflow");
+        next["request"]["input"]["command"] = json!("x".repeat(300 * 1024));
+        assert!(state.frame(next).is_err());
+        assert_eq!(state.approvals.len(), 3);
+        // The lifecycle worker fails closed on this error and clears interactions.
+        state.fail("Claude pending interaction exceeds Web delivery budget; process stopped");
+        assert!(state.approvals.is_empty());
+        assert_eq!(state.status, "outcome-unknown");
     }
 
     #[test]
@@ -1237,6 +1305,69 @@ mod tests {
             .unwrap();
         assert_eq!(state.status, "idle");
         assert!(state.stream_text.is_empty());
+    }
+
+    #[test]
+    fn completed_frames_allow_full_output_and_json_escaping() {
+        for text in ["x".repeat(MAX_TEXT), "\0".repeat(MAX_TEXT)] {
+            let mut state = active();
+            state.frame(json!({"type":"stream_event","event":{"type":"content_block_delta","delta":{"type":"text_delta","text":text}}})).unwrap();
+            let frame =
+                json!({"type":"assistant","message":{"content":[{"type":"text","text":text}]}});
+            let mut bytes = serde_json::to_vec(&frame).unwrap();
+            bytes.push(b'\n');
+            state
+                .frame(read_frame(&mut bytes.as_slice()).unwrap().unwrap())
+                .unwrap();
+            assert_eq!(state.stream_text, text);
+        }
+        let oversized = vec![b'x'; MAX_LINE + 2];
+        let mut input = oversized.as_slice();
+        assert!(
+            read_frame(&mut input)
+                .unwrap_err()
+                .to_string()
+                .contains("exceeds")
+        );
+        assert_eq!(input.len(), 1);
+    }
+
+    #[test]
+    fn live_preview_bounds_encoded_text_without_losing_internal_output() {
+        let runner = Runner::new(PathBuf::new(), "test".into());
+        for text in ["\0".repeat(MAX_TEXT), "文😀".repeat(MAX_TEXT / 7)] {
+            runner.state.lock().unwrap().stream_text = text.clone();
+            let snapshot = runner.snapshot();
+            assert_eq!(snapshot["streamTextTruncated"], true);
+            let preview = snapshot["streamText"].as_str().unwrap();
+            assert!(text.starts_with(preview));
+            assert!(serde_json::to_vec(&snapshot).unwrap().len() < 600 * 1024);
+            assert_eq!(runner.state.lock().unwrap().stream_text, text);
+        }
+        runner.state.lock().unwrap().stream_text = "short".into();
+        assert_eq!(runner.snapshot()["streamTextTruncated"], false);
+    }
+
+    #[test]
+    fn large_failure_result_keeps_a_deliverable_failure_snapshot() {
+        let runner = Runner::new(PathBuf::new(), "test".into());
+        let frame = json!({"type":"result","subtype":"error_during_execution","is_error":true,"errors":["文".repeat(2 * 1024 * 1024)]});
+        let bytes = serde_json::to_vec(&frame).unwrap();
+        let mut state = active();
+        let error = state
+            .frame(read_frame(&mut bytes.as_slice()).unwrap().unwrap())
+            .unwrap_err();
+        state.fail(error.to_string());
+        *runner.state.lock().unwrap() = state;
+        let snapshot = runner.snapshot();
+        assert_eq!(snapshot["status"], "outcome-unknown");
+        assert!(
+            snapshot["reason"]
+                .as_str()
+                .unwrap()
+                .ends_with("[truncated]")
+        );
+        assert!(serde_json::to_vec(&snapshot).unwrap().len() < 32 * 1024);
     }
 
     #[test]

@@ -18,7 +18,12 @@ impl Store {
             .iter()
             .map(|(path, id)| {
                 (
-                    keyed_hash(&salt, path.as_os_str().as_encoded_bytes()),
+                    keyed_hash(
+                        &salt,
+                        platform_path::identity_path(path)
+                            .as_os_str()
+                            .as_encoded_bytes(),
+                    ),
                     id.clone(),
                 )
             })
@@ -281,6 +286,51 @@ mod tests {
         assert_eq!(next.read_errors, 0);
         assert_eq!(next.files_read, 1);
         assert_eq!(total(&store), 37);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn missing_windows_cwd_preserves_project_mapping_across_path_spellings() {
+        let dir = tempdir().unwrap();
+        let (store, home, a, b) = fixture(dir.path());
+        fs::remove_file(b).unwrap();
+        let project = dir.path().join("MixedCaseProject");
+        fs::create_dir(&project).unwrap();
+        let workspace = store.add_workspace(&project).unwrap();
+        let missing = project.join("removed-child");
+        assert!(!missing.exists());
+        let lexical = missing.to_string_lossy().to_lowercase();
+        for cwd in [
+            lexical.clone(),
+            lexical.replace('\\', "/"),
+            format!(r"\\?\{}", lexical),
+        ] {
+            assert!(platform_path::starts_with(Path::new(&cwd), &project));
+            fs::write(
+                &a,
+                format!(
+                    "{}\n{}",
+                    serde_json::json!({"type":"session_meta", "payload":{"cwd":cwd}}),
+                    event(10)
+                ),
+            )
+            .unwrap();
+            let db = Connection::open(home.join("state_5.sqlite")).unwrap();
+            db.execute_batch("CREATE TABLE IF NOT EXISTS threads(rollout_path TEXT, cwd TEXT, updated_at INTEGER, tokens_used INTEGER, model TEXT); DELETE FROM threads;").unwrap();
+            db.execute(
+                "INSERT INTO threads VALUES('missing.jsonl', ?1, 1788912000, 25, 'test')",
+                [&cwd],
+            )
+            .unwrap();
+            drop(db);
+            store.refresh_codex_insights(&home).unwrap();
+            let mapped: i64 = store.connection.query_row(
+                "SELECT COUNT(*) FROM usage_events WHERE workspace_id = ?1 AND surface_agent = 'codex'",
+                [&workspace.id], |row| row.get(0),
+            ).unwrap();
+            assert_eq!(mapped, 2, "{cwd}");
+            assert_eq!(total(&store), 35);
+        }
     }
 
     #[test]

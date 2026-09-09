@@ -77,6 +77,7 @@ const zh = {
   managedResumeInfo:
     "Claude 托管续接由 AgentKib 运行，并非控制原终端。使用前请关闭原终端中的同一会话，避免并发运行。",
   streamingReply: "当前实时回复",
+  streamingReplyTruncated: "实时预览已截断，仅显示开头部分；请在历史记录中查看已保存的内容。",
   decline: "拒绝",
   cancelTurn: "取消轮次",
   approvalFallback: "此审批无法安全处理，请回官方客户端查看。",
@@ -195,6 +196,8 @@ const en: Words = {
   managedResumeInfo:
     "Claude managed resume runs through AgentKib; it does not control the original terminal. Close the same session in the original terminal before use to avoid concurrent runs.",
   streamingReply: "Current live reply",
+  streamingReplyTruncated:
+    "Live preview truncated: only the beginning is shown. Check the history for saved content.",
   decline: "Decline",
   cancelTurn: "Cancel turn",
   approvalFallback: "This approval cannot be handled safely here. Use the official client.",
@@ -304,6 +307,7 @@ const tw: Words = {
   managedResumeInfo:
     "Claude 託管續接由 AgentKib 執行，並非控制原終端。使用前請關閉原終端中的同一會話，避免並行執行。",
   streamingReply: "目前即時回覆",
+  streamingReplyTruncated: "即時預覽已截斷，僅顯示開頭部分；請在歷史記錄中查看已儲存的內容。",
   decline: "拒絕",
   cancelTurn: "取消輪次",
   approvalFallback: "此審批無法安全處理，請回官方客戶端查看。",
@@ -419,6 +423,8 @@ const ja: Words = {
   managedResumeInfo:
     "Claude の再開は AgentKib が実行し、元のターミナルは操作しません。同時実行を避けるため、使用前に元のターミナルで同じセッションを閉じてください。",
   streamingReply: "現在のリアルタイム応答",
+  streamingReplyTruncated:
+    "リアルタイムプレビューは先頭部分のみ表示しています。保存済みの内容は履歴で確認してください。",
   decline: "拒否",
   cancelTurn: "ターンを取り消す",
   approvalFallback: "ここでは安全に承認を処理できません。公式クライアントを使用してください。",

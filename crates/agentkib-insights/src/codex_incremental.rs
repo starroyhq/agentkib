@@ -2,7 +2,7 @@
 use super::*;
 use std::io::{Seek, SeekFrom};
 
-const PARSER_VERSION: u32 = 2;
+const PARSER_VERSION: u32 = 3;
 const BOUNDARY_BYTES: u64 = 256;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -737,7 +737,10 @@ fn workspace_ancestors(path: &Path, identify_path: &dyn Fn(&Path) -> String) -> 
     // with the same lexical fallback as legacy matching for a removed cwd.
     let normalized =
         agentkib_platform::path::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
-    normalized.ancestors().map(identify_path).collect()
+    normalized
+        .ancestors()
+        .map(|ancestor| identify_path(&agentkib_platform::path::identity_path(ancestor)))
+        .collect()
 }
 
 fn merge_cached_event(aggregates: &mut BTreeMap<AggregateKey, CachedEvent>, cached: CachedEvent) {
@@ -987,6 +990,41 @@ mod tests {
         let next = collect(dir.path(), &first.state);
         assert_eq!(next.diagnostics.files_rebuilt, 1);
         assert_eq!(total(&next), 100);
+    }
+
+    #[test]
+    fn v2_workspace_keys_are_rebuilt_for_files_and_databases() {
+        let (dir, path) = fixture();
+        drop(database(dir.path(), &dir.path().join("missing.jsonl")));
+        let mut prior = collect(dir.path(), &CodexIncrementalState::default()).state;
+        for file in prior.files.values_mut() {
+            file.parser_version = 2;
+            for cached in &mut file.aggregates {
+                cached.workspace_ancestors = vec!["legacy-case-sensitive-key".into()];
+            }
+        }
+        for database in prior.databases.values_mut() {
+            database.parser_version = 2;
+            for cached in &mut database.fallbacks {
+                cached.workspace_ancestors = vec!["legacy-case-sensitive-key".into()];
+            }
+        }
+        let upgraded = collect(dir.path(), &prior);
+        assert_eq!(upgraded.diagnostics.files_rebuilt, 1);
+        assert_eq!(upgraded.diagnostics.databases_read, 1);
+        assert!(
+            !serde_json::to_string(&upgraded.state)
+                .unwrap()
+                .contains("legacy-case-sensitive-key")
+        );
+        assert_eq!(total(&upgraded), 4100);
+        assert_eq!(
+            upgraded.state.files[&identify(&path)].parser_version,
+            PARSER_VERSION
+        );
+        let idle = collect(dir.path(), &upgraded.state);
+        assert_eq!(idle.diagnostics.files_read, 0);
+        assert_eq!(idle.diagnostics.databases_read, 0);
     }
 
     #[test]

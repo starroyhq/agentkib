@@ -144,5 +144,29 @@ it.each(Object.keys(dictionaries) as Locale[])(
     expect(words.claudeDecisionInfo).not.toBe(words.decisionInfo);
     expect(words.managedResumeInfo).toContain("AgentKib");
     expect(words.streamingReply).toBeTruthy();
+    expect(words.streamingReplyTruncated).toBeTruthy();
   },
 );
+
+it("shows an explicit truncated preview without changing control state", async () => {
+  const { update, fetcher } = await setup();
+  update({
+    status: "running",
+    streamText: "Preview prefix",
+    streamTextTruncated: true,
+    sendEnabled: false,
+  });
+  const preview = screen.getByRole("article", { name: "当前实时回复" });
+  expect(preview).toHaveTextContent("Preview prefix");
+  expect(preview).toHaveTextContent(dictionaries["zh-CN"].streamingReplyTruncated);
+  expect(screen.getByText("实时状态 · 运行中")).toBeVisible();
+  expect(screen.getByRole("button", { name: "发送" })).toBeDisabled();
+  expect(fetcher.mock.calls.some(([url]) => /\/(send|approve|answer)$/.test(String(url)))).toBe(
+    false,
+  );
+  update({ streamTextTruncated: false });
+  expect(screen.queryByText(dictionaries["zh-CN"].streamingReplyTruncated)).toBeNull();
+  expect(screen.getByRole("article", { name: "当前实时回复" })).toHaveTextContent("Preview prefix");
+  update({ streamTextTruncated: true, status: "idle" });
+  expect(screen.queryByRole("article", { name: "当前实时回复" })).toBeNull();
+});

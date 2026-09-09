@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { ElectronRefreshCoordinator, type QuotaScheduleState } from "./refresh-coordinator";
 import { RUNTIME_METHODS as M } from "../generated/runtime-protocol";
-import type { DesktopRuntimeHost } from "./runtime-host";
+import { RuntimeUnavailableError, type DesktopRuntimeHost } from "./runtime-host";
 
 const coordinators: ElectronRefreshCoordinator[] = [];
 afterEach(() => {
@@ -52,6 +52,53 @@ const calls = (request: ReturnType<typeof vi.fn>, method: string) =>
   request.mock.calls.filter(([value]) => value === method).length;
 
 describe("energy-aware refresh scheduling", () => {
+  it("preserves genuine backoff when a forced retry loses the runtime", async () => {
+    const { coordinator, request, state } = setup();
+    await vi.advanceTimersByTimeAsync(0);
+    state.failQuota = true;
+    await expect(coordinator.request("quota", true)).rejects.toThrow("all providers failed");
+    const deadline = coordinator.statuses().find((job) => job.kind === "quota")?.next_allowed_at;
+    request.mockRejectedValueOnce(new RuntimeUnavailableError(new Error("runtime exited")));
+    await expect(coordinator.request("quota", true)).rejects.toThrow("runtime exited");
+    expect(coordinator.statuses().find((job) => job.kind === "quota")?.next_allowed_at).toBe(
+      deadline,
+    );
+  });
+  it.each(["discovery", "insights", "quota"] as const)(
+    "retries %s after a runtime outage without provider backoff",
+    async (kind) => {
+      const { coordinator, request, state } = setup(undefined, true);
+      await vi.advanceTimersByTimeAsync(0);
+      state.enabled = false;
+      let reject!: (error: Error) => void;
+      request.mockImplementationOnce(
+        () =>
+          new Promise((_, fail) => {
+            reject = fail;
+          }),
+      );
+      const attempt = coordinator.request(kind, true);
+      const rejected = expect(attempt).rejects.toThrow("runtime exited");
+      await vi.advanceTimersByTimeAsync(0);
+      coordinator.setRuntimeAvailable(false);
+      reject(new RuntimeUnavailableError(new Error("runtime exited")));
+      await rejected;
+      expect(
+        coordinator.statuses().find((job) => job.kind === kind)?.next_allowed_at,
+      ).toBeUndefined();
+      coordinator.setRuntimeAvailable(true);
+      // Quota's authoritative last success is now old enough, but the failed
+      // transport attempt must not impose a new attempt interval.
+      if (kind === "quota") vi.setSystemTime(new Date("2026-09-09T00:06:00Z"));
+      await vi.advanceTimersByTimeAsync(2100);
+      const method = {
+        discovery: M.refreshDiscovery,
+        insights: M.refreshInsights,
+        quota: M.refreshQuota,
+      }[kind];
+      expect(calls(request, method)).toBe(2);
+    },
+  );
   it("keeps the foreground discovery and statistics intervals", async () => {
     const { request } = setup();
     await vi.advanceTimersByTimeAsync(14 * 60_000);

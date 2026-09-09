@@ -976,6 +976,7 @@ export function SessionApp({
                     <article aria-label={t.streamingReply}>
                       <small>{t.streamingReply}</small>
                       <SafeMarkdown text={live.streamText} />
+                      {live.streamTextTruncated && <p role="note">{t.streamingReplyTruncated}</p>}
                     </article>
                   )}
                 </section>

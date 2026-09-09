@@ -4,7 +4,11 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { PROTOCOL_VERSION } from "../generated/runtime-protocol";
-import { DesktopRuntimeHost, type RuntimeHostStatus } from "./runtime-host";
+import {
+  DesktopRuntimeHost,
+  RuntimeUnavailableError,
+  type RuntimeHostStatus,
+} from "./runtime-host";
 
 const fakeRuntimeSource = String.raw`
 const readline = require("node:readline");
@@ -102,6 +106,15 @@ describe("DesktopRuntimeHost", () => {
     expect(host.status.state).toBe("ready");
   });
 
+  it("classifies requests awaiting a failed handshake as runtime outages", async () => {
+    const host = createHost(() => "exit-before-handshake", 0);
+    const starting = expect(host.start()).rejects.toBeInstanceOf(RuntimeUnavailableError);
+    const waiting = expect(host.request("echo", {})).rejects.toBeInstanceOf(
+      RuntimeUnavailableError,
+    );
+    await Promise.all([starting, waiting]);
+  });
+
   it("recovers queued startup requests after a failed first process", async () => {
     const statuses: RuntimeHostStatus[] = [];
     const host = createHost(() => "restart-once");
@@ -120,7 +133,7 @@ describe("DesktopRuntimeHost", () => {
     const host = createHost(() => "ready", 0);
     await host.start();
 
-    await expect(host.request("crash", {})).rejects.toThrow("exited with code 14");
+    await expect(host.request("crash", {})).rejects.toBeInstanceOf(RuntimeUnavailableError);
     await vi.waitFor(() => expect(host.status.state).toBe("failed"));
   });
 
@@ -130,6 +143,7 @@ describe("DesktopRuntimeHost", () => {
 
     await expect(host.start()).rejects.toThrow();
     expect(host.status.state).toBe("failed");
+    await expect(host.request("echo", {})).rejects.toBeInstanceOf(RuntimeUnavailableError);
 
     mode = "ready";
     await expect(host.retry()).resolves.toMatchObject({ protocolVersion: PROTOCOL_VERSION });
@@ -158,7 +172,7 @@ describe("DesktopRuntimeHost", () => {
     await host.start();
     const exited = vi.fn();
     host.on("exit", exited);
-    const first = expect(host.request("hold", {})).rejects.toThrow("EPIPE");
+    const first = expect(host.request("hold", {})).rejects.toBeInstanceOf(RuntimeUnavailableError);
     const second = expect(host.request("hold", {})).rejects.toThrow("EPIPE");
     children[0].stdin.destroy(new Error("EPIPE"));
     await Promise.all([first, second]);
@@ -175,7 +189,7 @@ describe("DesktopRuntimeHost", () => {
     vi.spyOn(children[0].stdin, "write").mockImplementation(() => {
       throw new Error("synchronous pipe failure");
     });
-    await expect(host.request("echo", {})).rejects.toThrow("synchronous pipe failure");
+    await expect(host.request("echo", {})).rejects.toBeInstanceOf(RuntimeUnavailableError);
     expect(host.status.state).toBe("failed");
   });
 
@@ -184,12 +198,13 @@ describe("DesktopRuntimeHost", () => {
     const starting = host.start();
     const request = host.request("echo", {});
     const startingResult = expect(starting).rejects.toThrow("stopping");
-    const requestResult = expect(request).rejects.toThrow("stopping");
+    const requestResult = expect(request).rejects.toBeInstanceOf(RuntimeUnavailableError);
 
     await host.stop();
     await startingResult;
     await requestResult;
     expect(host.status.state).toBe("stopping");
+    await expect(host.request("echo", {})).rejects.toBeInstanceOf(RuntimeUnavailableError);
   });
 
   it("bounds shutdown when the runtime ignores the shutdown request", async () => {

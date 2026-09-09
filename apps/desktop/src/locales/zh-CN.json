@@ -387,6 +387,8 @@
   "settings.section.diagnostics": "诊断",
   "settings.interface": "界面",
   "settings.quotaTitle": "额度查询",
+  "settings.automaticUpdates": "自动更新",
+  "settings.localAutoRefresh": "自动更新本地发现与统计",
   "settings.quotaAutoRefresh": "自动获取额度",
   "settings.shortcutsTitle": "键盘快捷键",
   "settings.shortcuts": "快捷键帮助",

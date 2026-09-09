@@ -20,6 +20,12 @@ use serde_json::Value;
 use sha2::{Digest, Sha256};
 use walkdir::WalkDir;
 
+mod codex_incremental;
+pub use codex_incremental::{
+    CodexIncrementalDiagnostics, CodexIncrementalResult, CodexIncrementalState, CodexUsageEvent,
+    collect_codex_incremental,
+};
+
 static EXTERNAL_COMMANDS_ACCEPTING: AtomicBool = AtomicBool::new(true);
 
 pub fn shutdown_external_commands() {
@@ -254,6 +260,22 @@ pub fn collect_usage(
     cursors: &BTreeMap<AgentKind, String>,
     policy: InsightsCollectionPolicy,
 ) -> Vec<UsageBatch> {
+    collect_usage_filtered(cursors, policy, true)
+}
+
+/// Used when Codex is collected with durable per-file checkpoints.
+pub fn collect_usage_without_codex(
+    cursors: &BTreeMap<AgentKind, String>,
+    policy: InsightsCollectionPolicy,
+) -> Vec<UsageBatch> {
+    collect_usage_filtered(cursors, policy, false)
+}
+
+fn collect_usage_filtered(
+    cursors: &BTreeMap<AgentKind, String>,
+    policy: InsightsCollectionPolicy,
+    include_codex: bool,
+) -> Vec<UsageBatch> {
     let home = dirs::home_dir();
     parallel_map_bounded(
         vec![
@@ -262,7 +284,10 @@ pub fn collect_usage(
             AgentKind::OpenClaw,
             AgentKind::Hermes,
             AgentKind::DeepSeekHarness,
-        ],
+        ]
+        .into_iter()
+        .filter(|agent| include_codex || *agent != AgentKind::Codex)
+        .collect(),
         policy.provider_concurrency,
         |agent| {
             let provider: Box<dyn UsageProvider> = match agent {

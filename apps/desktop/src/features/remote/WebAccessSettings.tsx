@@ -3,7 +3,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Switch } from "@/components/ui/switch";
 import { Checkbox } from "@/components/ui/checkbox";
-import { desktopApi } from "@/core/desktop";
+import { requestWebAdmin, subscribeWebStatus } from "./web-status";
 import { useI18n } from "@/core/useI18n";
 import {
   SettingsSection,
@@ -27,39 +27,26 @@ export function WebAccessSettings() {
   const [busy, setBusy] = useState(false);
   const [grants, setGrants] = useState<Record<string, { send: boolean; approve: boolean }>>({});
   const mounted = useRef(false);
-  const revision = useRef(0);
   useEffect(() => {
     mounted.current = true;
-    let inFlight = false;
-    const refresh = async () => {
-      if (inFlight) return;
-      const generation = revision.current;
-      inFlight = true;
-      try {
-        const next = await desktopApi().web.request({ operation: "status" });
-        if (mounted.current && generation === revision.current) {
-          setStatus(next);
-          setConfig((old) => old ?? next.config);
-        }
-      } catch {
-        if (mounted.current && generation === revision.current) setError(c.unavailable);
-      } finally {
-        inFlight = false;
-      }
-    };
-    void refresh();
-    const timer = window.setInterval(() => void refresh(), 2000);
+    const unsubscribe = subscribeWebStatus({
+      status: (next) => {
+        setStatus(next);
+        setConfig((old) => old ?? next.config);
+      },
+      error: () => setError(c.unavailable),
+      success: () => setError(""),
+    });
     return () => {
       mounted.current = false;
-      window.clearInterval(timer);
+      unsubscribe();
     };
   }, [c.unavailable]);
   async function run(input: WebAdminRequest) {
-    revision.current += 1;
     setBusy(true);
     setError("");
     try {
-      const next = await desktopApi().web.request(input);
+      const next = await requestWebAdmin(input);
       if (mounted.current) {
         setStatus(next);
         if (input.operation === "configure") setConfig(next.config);
@@ -67,9 +54,6 @@ export function WebAccessSettings() {
     } catch {
       if (mounted.current) setError(c.unavailable);
     } finally {
-      // Polls may start while the mutation is awaiting its response. They must
-      // not replace that response (for example restoring a revoked browser).
-      revision.current += 1;
       if (mounted.current) setBusy(false);
     }
   }

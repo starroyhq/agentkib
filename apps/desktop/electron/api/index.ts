@@ -95,6 +95,7 @@ export interface DesktopApi {
   web: { request(input: WebAdminRequest): Promise<WebAdminStatus> };
   platform: NodeJS.Platform;
   events: {
+    onWindowActivity(listener: (active: boolean) => void): DesktopEventUnsubscribe;
     onQuitRequested(listener: () => void): DesktopEventUnsubscribe;
     onThemeChanged(listener: (theme: EffectiveTheme) => void): DesktopEventUnsubscribe;
     onRefreshState(listener: (status: RefreshJobStatus) => void): DesktopEventUnsubscribe;
@@ -285,6 +286,7 @@ export interface DesktopApi {
     quotaPreferences(): Promise<QuotaPopoverPreferences>;
     setQuotaPreferences(preferences: QuotaPopoverPreferences): Promise<QuotaPopoverPreferences>;
     refreshQuota(force?: boolean): Promise<RefreshReceipt>;
+    setLocalAutoRefresh(enabled: boolean): Promise<RuntimeInfo>;
     setQuotaAutoRefresh(enabled: boolean): Promise<RuntimeInfo>;
     setQuotaPromptSeen(seen: boolean): Promise<RuntimeInfo>;
     refreshStatus(): Promise<RefreshJobStatus[]>;

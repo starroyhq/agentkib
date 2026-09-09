@@ -120,6 +120,7 @@ pub const QUOTA_PREFERENCES_METHOD: &str = "quota.preferences";
 pub const SET_QUOTA_PREFERENCES_METHOD: &str = "quota.setPreferences";
 pub const REFRESH_QUOTA_METHOD: &str = "quota.refresh";
 pub const SET_QUOTA_AUTO_REFRESH_METHOD: &str = "quota.setAutoRefresh";
+pub const SET_LOCAL_AUTO_REFRESH_METHOD: &str = "set_local_auto_refresh";
 pub const SET_QUOTA_PROMPT_SEEN_METHOD: &str = "quota.setPromptSeen";
 pub const STORAGE_OVERVIEW_METHOD: &str = "storage.overview";
 pub const STORAGE_CHILDREN_METHOD: &str = "storage.children";
@@ -325,6 +326,7 @@ export const RUNTIME_METHODS = {{
   setQuotaPreferences: "{SET_QUOTA_PREFERENCES_METHOD}",
   refreshQuota: "{REFRESH_QUOTA_METHOD}",
   setQuotaAutoRefresh: "{SET_QUOTA_AUTO_REFRESH_METHOD}",
+  setLocalAutoRefresh: "{SET_LOCAL_AUTO_REFRESH_METHOD}",
   setQuotaPromptSeen: "{SET_QUOTA_PROMPT_SEEN_METHOD}",
   storageOverview: "{STORAGE_OVERVIEW_METHOD}",
   storageChildren: "{STORAGE_CHILDREN_METHOD}",

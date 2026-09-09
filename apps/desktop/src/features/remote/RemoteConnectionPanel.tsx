@@ -27,7 +27,7 @@ import {
   SettingsStatus,
 } from "@/features/settings/components/SettingsLayout";
 import { useI18n } from "@/core/useI18n";
-import { useRemoteStore } from "./remote-store";
+import { subscribeRemoteStatus, useRemoteStore } from "./remote-store";
 import { RemoteErrorDetails } from "./RemoteErrorDetails";
 import { WebAccessSettings } from "./WebAccessSettings";
 
@@ -35,12 +35,9 @@ function useRemoteStatus() {
   const store = useRemoteStore();
   const [now, setNow] = useState(Date.now());
   useEffect(() => {
-    void store.refresh();
-    const timer = window.setInterval(() => {
+    return subscribeRemoteStatus(() => {
       setNow(Date.now());
-      void useRemoteStore.getState().refresh();
-    }, 2000);
-    return () => window.clearInterval(timer);
+    }, 2_000);
   }, [store.refresh]);
   return { ...store, now };
 }

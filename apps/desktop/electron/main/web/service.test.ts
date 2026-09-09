@@ -80,6 +80,23 @@ describe("WebAccessService loopback security boundary", () => {
     await service.request({ operation: "approve", id, send, approve });
     return id;
   }
+  function openStream(streamCookie = cookie, sessionId = "s") {
+    const chunks: string[] = [];
+    const req = request(
+      {
+        hostname: "127.0.0.1",
+        port,
+        path: `/api/web/v1/stream?sessionId=${sessionId}`,
+        headers: { Cookie: streamCookie },
+      },
+      (res) => {
+        res.on("data", (chunk) => chunks.push(String(chunk)));
+      },
+    );
+    req.on("error", () => {});
+    req.end();
+    return { chunks, close: () => req.destroy() };
+  }
   beforeEach(async () => {
     runtime.mockReset();
     runtime.mockResolvedValue({
@@ -538,6 +555,82 @@ describe("WebAccessService loopback security boundary", () => {
       ).toMatchObject({ controlOutcome: "unknown" });
     },
   );
+  it("shares same-scope SSE reads, omits unchanged snapshots and retains heartbeats", async () => {
+    await bootstrap();
+    await pair();
+    let finish!: (value: unknown) => void;
+    const snapshot = { runtimeBootId: "r", revision: 7, events: [] };
+    runtime.mockImplementationOnce(
+      () =>
+        new Promise((resolve) => {
+          finish = resolve;
+        }),
+    );
+    runtime.mockResolvedValue(snapshot);
+    const first = openStream();
+    const second = openStream();
+    try {
+      await vi.waitFor(() => expect(runtime).toHaveBeenCalledTimes(1));
+      // Both clients must have entered the stream before releasing the common read.
+      await new Promise((resolve) => setTimeout(resolve, 50));
+      expect(runtime).toHaveBeenCalledTimes(1);
+      finish(snapshot);
+      await vi.waitFor(() => {
+        expect(first.chunks.join("")).toContain("event: snapshot");
+        expect(second.chunks.join("")).toContain("event: snapshot");
+      });
+      await new Promise((resolve) => setTimeout(resolve, 2100));
+      expect(first.chunks.join("").match(/event: snapshot/g)).toHaveLength(1);
+      expect(second.chunks.join("").match(/event: snapshot/g)).toHaveLength(1);
+      const now = Date.now();
+      vi.spyOn(Date, "now").mockReturnValue(now + 16_000);
+      await new Promise((resolve) => setTimeout(resolve, 2100));
+      expect(first.chunks.join("")).toContain(": heartbeat");
+      expect(second.chunks.join("")).toContain(": heartbeat");
+    } finally {
+      finish?.(snapshot);
+      first.close();
+      second.close();
+    }
+  }, 10_000);
+
+  it.each([false, true])(
+    "isolates SSE scopes and independently rechecks revocation (writable peer: %s)",
+    async (writable) => {
+      await bootstrap();
+      const readOnlyId = await pair();
+      const readOnlyCookie = cookie;
+      cookie = "";
+      await bootstrap();
+      await pair(writable);
+      const finishes: Array<(value: unknown) => void> = [];
+      runtime.mockImplementation(
+        () =>
+          new Promise((resolve) => {
+            finishes.push(resolve);
+          }),
+      );
+      const first = openStream(readOnlyCookie);
+      const second = openStream();
+      try {
+        await vi.waitFor(() => expect(runtime).toHaveBeenCalledTimes(writable ? 2 : 1));
+        await new Promise((resolve) => setTimeout(resolve, 50));
+        expect(runtime).toHaveBeenCalledTimes(writable ? 2 : 1);
+        await service.request({ operation: "revoke", id: readOnlyId });
+        finishes.forEach((finish) => finish({ revision: 8, events: [] }));
+        await vi.waitFor(() => {
+          expect(first.chunks.join("")).toContain("event: access-ended");
+          expect(second.chunks.join("")).toContain("event: snapshot");
+        });
+        expect(first.chunks.join("")).not.toContain("event: snapshot");
+      } finally {
+        finishes.forEach((finish) => finish({ revision: 8, events: [] }));
+        first.close();
+        second.close();
+      }
+    },
+  );
+
   it("keeps SSE connected across reserved preflight and mutation, while revocation still closes it", async () => {
     await bootstrap();
     const id = await pair(true);

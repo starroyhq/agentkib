@@ -1,4 +1,4 @@
-import { readFile } from "node:fs/promises";
+import { readFile, writeFile, mkdir, rename } from "node:fs/promises";
 import path from "node:path";
 import { WebAccessService } from "./web/service";
 import { acceptanceSession } from "./web/acceptance";
@@ -12,6 +12,7 @@ import {
   nativeImage,
   nativeTheme,
   protocol,
+  powerMonitor,
   shell,
   type IpcMainInvokeEvent,
 } from "electron";
@@ -58,6 +59,8 @@ app.setPath("userData", electronDataPath);
 app.setPath("sessionData", electronDataPath);
 
 let mainWindow: BrowserWindow | undefined;
+let systemSuspended = false;
+let screenLocked = false;
 let nativeShell: ElectronNativeShell | undefined;
 let refreshCoordinator: ElectronRefreshCoordinator | undefined;
 let runtimeHost: DesktopRuntimeHost | undefined;
@@ -95,6 +98,7 @@ interface ElectronRuntimeInfo {
   effective_theme?: "light" | "dark";
   effective_locale?: SupportedLocale;
   quota_auto_refresh_enabled?: boolean;
+  local_auto_refresh_enabled?: boolean;
 }
 
 const hasSingleInstanceLock = app.requestSingleInstanceLock();
@@ -197,11 +201,49 @@ async function startApplication(): Promise<void> {
   registerApplicationIpc();
   refreshCoordinator = new ElectronRefreshCoordinator({
     runtime: requireRuntime,
+    loadQuotaSchedule: async () =>
+      JSON.parse(await readFile(path.join(electronDataPath, "refresh-state.json"), "utf8")),
+    saveQuotaSchedule: async (state) => {
+      await mkdir(electronDataPath, { recursive: true });
+      const destination = path.join(electronDataPath, "refresh-state.json");
+      await writeFile(`${destination}.tmp`, JSON.stringify(state), { mode: 0o600 });
+      await rename(`${destination}.tmp`, destination);
+    },
     isMainWindowVisible: () =>
-      Boolean(mainWindow && !mainWindow.isDestroyed() && mainWindow.isVisible()),
+      Boolean(
+        mainWindow &&
+        !mainWindow.isDestroyed() &&
+        mainWindow.isVisible() &&
+        !mainWindow.isMinimized(),
+      ),
     onStatus: emitElectronRefreshState,
     onQuotaSnapshot: (snapshot: QuotaSnapshot) =>
       sendRendererEvent("agentkib:quota-updated", snapshot),
+  });
+
+  const updatePowerActivity = () => {
+    const paused = systemSuspended || screenLocked;
+    refreshCoordinator?.setSuspended(paused);
+    sendRendererEvent(
+      "agentkib:window-activity",
+      !paused && Boolean(mainWindow?.isVisible() && !mainWindow?.isMinimized()),
+    );
+  };
+  powerMonitor.on("suspend", () => {
+    systemSuspended = true;
+    updatePowerActivity();
+  });
+  powerMonitor.on("lock-screen", () => {
+    screenLocked = true;
+    updatePowerActivity();
+  });
+  powerMonitor.on("resume", () => {
+    systemSuspended = false;
+    updatePowerActivity();
+  });
+  powerMonitor.on("unlock-screen", () => {
+    screenLocked = false;
+    updatePowerActivity();
   });
 
   startupBenchmark.mark("runtime-spawn");
@@ -684,6 +726,17 @@ function registerHomeIpc(): void {
       force === undefined ? true : requireBoolean(force, "force"),
     );
   });
+  ipcMain.handle("agentkib:home:set-local-auto-refresh", async (event, enabled: unknown) => {
+    assertTrustedRenderer(event);
+    const runtime = await requireRuntime().request<ElectronRuntimeInfo>(
+      RUNTIME_METHODS.setLocalAutoRefresh,
+      {
+        value: requireBoolean(enabled, "enabled"),
+      },
+    );
+    requireRefreshCoordinator().activityChanged();
+    return withElectronRuntimeCapabilities(runtime);
+  });
   ipcMain.handle("agentkib:home:set-quota-auto-refresh", (event, enabled: unknown) => {
     assertTrustedRenderer(event);
     return requireRuntime()
@@ -858,7 +911,17 @@ async function createMainWindow(): Promise<void> {
     }
     void showFirstClosePrompt(window);
   });
-  window.on("focus", () => void refreshCoordinator?.refreshIfDue());
+  const updateWindowActivity = () => {
+    refreshCoordinator?.activityChanged();
+    sendRendererEvent(
+      "agentkib:window-activity",
+      !systemSuspended && !screenLocked && window.isVisible() && !window.isMinimized(),
+    );
+  };
+  window.on("show", updateWindowActivity);
+  window.on("hide", updateWindowActivity);
+  window.on("minimize", updateWindowActivity);
+  window.on("restore", updateWindowActivity);
   window.webContents.setWindowOpenHandler(() => ({ action: "deny" }));
   window.webContents.on("will-navigate", (event, targetUrl) => {
     const allowedOrigin = process.env.VITE_DEV_SERVER_URL

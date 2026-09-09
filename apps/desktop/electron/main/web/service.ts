@@ -74,6 +74,7 @@ export class WebAccessService {
   private credentials: Credential[] = [];
   private browsers = new Map<string, Browser>();
   private streams = new Map<ServerResponse, string>();
+  private liveReads = new Map<string, Promise<unknown>>();
   private active = new Set<string>();
   // One runtime worker serves all Web sessions. Reserve its admission across
   // preflight and mutation; new reads must not queue behind that preflight.
@@ -323,6 +324,7 @@ export class WebAccessService {
   }
   async shutdown() {
     this.bootId = token();
+    this.liveReads.clear();
     this.endStreams();
     const server = this.server;
     this.server = undefined;
@@ -334,6 +336,7 @@ export class WebAccessService {
   }
   runtimeUnavailable() {
     this.bootId = token();
+    this.liveReads.clear();
     this.endStreams();
   }
   private projectLive(sessionId: string | undefined, snapshot: unknown) {
@@ -434,6 +437,27 @@ export class WebAccessService {
     } finally {
       clearTimeout(timer!);
     }
+  }
+  private streamSnapshot(sessionId: string | undefined, device: WebDevice) {
+    const experimentalEnabled = this.controlsEnabled(sessionId);
+    // Never share reads across host generations or permission scopes.
+    const key = JSON.stringify([
+      this.bootId,
+      sessionId,
+      experimentalEnabled,
+      device.send,
+      device.approve,
+    ]);
+    const existing = this.liveReads.get(key);
+    if (existing) return existing;
+    const read = this.runtime({ operation: "live", sessionId, experimentalEnabled });
+    this.liveReads.set(key, read);
+    void read
+      .finally(() => {
+        if (this.liveReads.get(key) === read) this.liveReads.delete(key);
+      })
+      .catch(() => undefined);
+    return read;
   }
   private async handle(
     req: IncomingMessage,
@@ -723,30 +747,47 @@ export class WebAccessService {
       });
       this.streams.set(res, hash);
       let timer: ReturnType<typeof setTimeout>;
+      let previousData: string | undefined;
+      let lastWriteAt = Date.now();
       const poll = async () => {
         try {
-          this.grant(hash);
-          const snapshot = await this.runtime({
-            operation: "live",
-            sessionId,
-            experimentalEnabled: this.controlsEnabled(sessionId),
-          });
+          const device = this.grant(hash);
+          const snapshot = await this.streamSnapshot(sessionId, device);
+          // Each browser remains independently authorized before and after the shared read.
           this.grant(hash);
           if (!this.streams.has(res)) return;
           const data = JSON.stringify(this.projectLive(sessionId, snapshot));
           if (Buffer.byteLength(data) > 4 * 1024 * 1024) throw new Error("snapshot_too_large");
-          if (!res.write(`event: snapshot\ndata: ${data}\n\n`)) {
+          const message =
+            data !== previousData
+              ? `event: snapshot\ndata: ${data}\n\n`
+              : Date.now() - lastWriteAt >= 15_000
+                ? ": heartbeat\n\n"
+                : undefined;
+          if (message && !res.write(message)) {
             res.end();
             return;
           }
+          if (message) lastWriteAt = Date.now();
+          previousData = data;
         } catch (error) {
           // Admission reserves runtime capacity for control. A skipped read is
           // not a stream outage; keep polling and keep revocation checks active.
           if (
             !(error instanceof HttpError && error.message === "operation_busy") &&
             !res.writableEnded
-          )
+          ) {
+            previousData = undefined;
             res.write("event: unavailable\ndata: {}\n\n");
+            lastWriteAt = Date.now();
+          } else if (
+            this.streams.has(res) &&
+            !res.writableEnded &&
+            Date.now() - lastWriteAt >= 15_000
+          ) {
+            if (!res.write(": heartbeat\n\n")) res.end();
+            lastWriteAt = Date.now();
+          }
         }
         if (this.streams.has(res)) timer = setTimeout(() => void poll(), 2000);
       };

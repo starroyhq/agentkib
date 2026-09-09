@@ -114,6 +114,19 @@ pub struct QuotaSnapshot {
 }
 
 impl QuotaSnapshot {
+    /// A successful process exit is not evidence that any provider returned quota.
+    pub fn has_usable_quota(&self) -> bool {
+        self.providers.iter().any(|provider| {
+            provider.enabled
+                && ((provider.error.is_none()
+                    && (!provider.windows.is_empty() || provider.credits.is_some()))
+                    || provider
+                        .accounts
+                        .iter()
+                        .any(|account| account.error.is_none() && !account.windows.is_empty()))
+        })
+    }
+
     pub fn refresh_freshness(&mut self, now: DateTime<Utc>) {
         let stale_at =
             self.generated_at + chrono::Duration::seconds(self.stale_after_seconds.max(1) as i64);
@@ -222,7 +235,11 @@ impl<R: QuotaCommandRunner> QuotaCollector for DashboardCliCollector<R> {
             }
             bail!("quota collector command failed: {diagnostic}");
         }
-        parse_dashboard_snapshot(&output.stdout, self.backend, Utc::now())
+        let snapshot = parse_dashboard_snapshot(&output.stdout, self.backend, Utc::now())?;
+        if !snapshot.has_usable_quota() {
+            bail!("quota collector returned no usable quota for enabled providers");
+        }
+        Ok(snapshot)
     }
 }
 
@@ -668,6 +685,57 @@ mod tests {
             *collector.runner.args.lock().unwrap(),
             ["dashboard", "--identity", "full", "--timeout", "12"]
         );
+    }
+
+    #[test]
+    fn collector_rejects_empty_disabled_and_failed_providers_but_keeps_partial_success() {
+        let original: serde_json::Value = serde_json::from_str(FIXTURE).unwrap();
+        for scenario in ["empty", "disabled", "failed", "no-windows", "partial"] {
+            let mut payload = original.clone();
+            let providers = payload["providers"].as_array_mut().unwrap();
+            match scenario {
+                "empty" => providers.clear(),
+                "disabled" => providers
+                    .iter_mut()
+                    .for_each(|p| p["enabled"] = false.into()),
+                "failed" => providers.iter_mut().for_each(|p| {
+                    p["error"] = "unauthorized".into();
+                    p["accounts"] = serde_json::json!([]);
+                }),
+                "no-windows" => providers.iter_mut().for_each(|p| {
+                    p["windows"] = serde_json::json!([]);
+                    p["accounts"] = serde_json::json!([]);
+                    p["credits"] = serde_json::Value::Null;
+                }),
+                "partial" => providers.push(serde_json::json!({
+                    "id":"failed", "name":"Failed", "enabled":true, "error":"unauthorized"
+                })),
+                _ => unreachable!(),
+            }
+            let collector = DashboardCliCollector::new(
+                QuotaBackend::CodexBarCli,
+                FixtureRunner {
+                    output: QuotaCommandOutput {
+                        stdout: serde_json::to_vec(&payload).unwrap(),
+                        stderr: Vec::new(),
+                        success: true,
+                    },
+                    args: Mutex::new(Vec::new()),
+                },
+                BTreeMap::new(),
+                CollectorCapabilities {
+                    platform_supported: true,
+                    sidecar_available: true,
+                    multi_account: true,
+                    credits: true,
+                },
+            );
+            assert_eq!(
+                collector.collect(Duration::from_secs(35)).is_ok(),
+                scenario == "partial",
+                "{scenario}"
+            );
+        }
     }
 
     #[test]

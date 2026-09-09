@@ -387,6 +387,8 @@
   "settings.section.diagnostics": "診断",
   "settings.interface": "インターフェース",
   "settings.quotaTitle": "クォータ取得",
+  "settings.automaticUpdates": "自動更新",
+  "settings.localAutoRefresh": "ローカル検出と統計を自動更新",
   "settings.quotaAutoRefresh": "クォータを自動取得",
   "settings.shortcutsTitle": "キーボードショートカット",
   "settings.shortcuts": "ショートカットのヘルプ",

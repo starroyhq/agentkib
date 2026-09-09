@@ -362,6 +362,11 @@ fn event_fingerprints(events: &[CodexUsageEvent]) -> BTreeMap<String, String> {
 }
 
 fn file_stamp(path: &Path) -> Result<FileStamp> {
+    #[cfg(windows)]
+    let file = File::open(path)?;
+    #[cfg(windows)]
+    let metadata = file.metadata()?;
+    #[cfg(not(windows))]
     let metadata = fs::metadata(path)?;
     if !metadata.is_file() {
         bail!("Source is not a regular file");
@@ -371,7 +376,11 @@ fn file_stamp(path: &Path) -> Result<FileStamp> {
         use std::os::unix::fs::MetadataExt;
         format!("{}:{}", metadata.dev(), metadata.ino())
     };
-    #[cfg(not(unix))]
+    // Creation time is not a file identity: Windows can preserve it on replacement.
+    // Use the same handle for metadata and identity to avoid mixing two files.
+    #[cfg(windows)]
+    let identity = agentkib_platform::fs::file_identity(&file)?;
+    #[cfg(not(any(unix, windows)))]
     let identity = format!("{:?}", metadata.created().ok());
     Ok(FileStamp {
         size: metadata.len(),
@@ -1355,11 +1364,28 @@ mod tests {
     }
 
     #[test]
+    fn legacy_timestamp_identity_rebuilds_once() {
+        let (dir, path) = fixture();
+        fs::write(&path, token(20, None)).unwrap();
+        let mut first = collect(dir.path(), &CodexIncrementalState::default());
+        for file in first.state.files.values_mut() {
+            file.stamp.identity = format!("{:?}", fs::metadata(&path).unwrap().created().ok());
+        }
+        let rebuilt = collect(dir.path(), &first.state);
+        assert_eq!(total(&rebuilt), 20);
+        assert_eq!(rebuilt.diagnostics.files_rebuilt, 1);
+        let unchanged = collect(dir.path(), &rebuilt.state);
+        assert_eq!(total(&unchanged), 20);
+        assert_eq!(unchanged.diagnostics.files_read, 0);
+    }
+
+    #[test]
     fn replacement_with_same_length_and_timestamp_uses_file_identity() {
         let (dir, path) = fixture();
         fs::write(&path, token(20, None)).unwrap();
         let first = collect(dir.path(), &CodexIncrementalState::default());
         let modified = fs::metadata(&path).unwrap().modified().unwrap();
+        let original_stamp = file_stamp(&path).unwrap();
         let replacement = dir.path().join("replacement");
         fs::write(&replacement, token(40, None)).unwrap();
         fs::OpenOptions::new()
@@ -1373,6 +1399,10 @@ mod tests {
             fs::metadata(&path).unwrap().len()
         );
         fs::rename(replacement, &path).unwrap();
+        let replacement_stamp = file_stamp(&path).unwrap();
+        assert_eq!(original_stamp.size, replacement_stamp.size);
+        assert_eq!(original_stamp.modified_ns, replacement_stamp.modified_ns);
+        assert_ne!(original_stamp.identity, replacement_stamp.identity);
         let next = collect(dir.path(), &first.state);
         assert_eq!(total(&next), 40);
         assert_eq!(next.diagnostics.files_rebuilt, 1);

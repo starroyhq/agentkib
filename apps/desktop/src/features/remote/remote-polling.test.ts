@@ -106,9 +106,47 @@ it.each([undefined, "lan"] as const)(
     expect(bridge.web).toHaveBeenCalledTimes(2);
     expect(receive).toHaveBeenCalledWith(snapshot);
     await vi.advanceTimersByTimeAsync(60_000);
-    expect(bridge.web).toHaveBeenCalledTimes(2);
+    expect(bridge.web).toHaveBeenCalledTimes(target === "lan" ? 32 : 2);
   },
 );
+
+it("refreshes disabled LAN interface choices with shared polling only while settings are visible", async () => {
+  const snapshot = {
+    config: { enabled: false, port: 1422, externalOrigin: "", experimentalEnabled: false },
+    running: false,
+    localUrl: "",
+    pending: [],
+    devices: [],
+    addresses: [],
+  };
+  bridge.web.mockResolvedValue(snapshot);
+  const first = vi.fn();
+  const second = vi.fn();
+  const closeFirst = subscribeWebStatus("lan", { status: first, error: vi.fn() });
+  const closeSecond = subscribeWebStatus("lan", { status: second, error: vi.fn() });
+  releases.push(closeFirst, closeSecond);
+  await vi.advanceTimersByTimeAsync(0);
+  expect(bridge.web).toHaveBeenCalledTimes(1);
+  const connected = { ...snapshot, addresses: [{ name: "en0", address: "192.168.1.20" }] };
+  bridge.web.mockResolvedValue(connected);
+  await vi.advanceTimersByTimeAsync(2_000);
+  expect(bridge.web).toHaveBeenLastCalledWith({ operation: "status", target: "lan" });
+  expect(first).toHaveBeenLastCalledWith(connected);
+  expect(second).toHaveBeenLastCalledWith(connected);
+  bridge.web.mockResolvedValue(snapshot);
+  await vi.advanceTimersByTimeAsync(2_000);
+  expect(first).toHaveBeenLastCalledWith(snapshot);
+  vi.spyOn(document, "visibilityState", "get").mockReturnValue("hidden");
+  document.dispatchEvent(new Event("visibilitychange"));
+  await vi.advanceTimersByTimeAsync(60_000);
+  expect(bridge.web).toHaveBeenCalledTimes(3);
+  closeFirst();
+  closeSecond();
+  vi.spyOn(document, "visibilityState", "get").mockReturnValue("visible");
+  document.dispatchEvent(new Event("visibilitychange"));
+  await vi.advanceTimersByTimeAsync(60_000);
+  expect(bridge.web).toHaveBeenCalledTimes(3);
+});
 
 it("uses the fastest active remote subscription and returns to catalog cadence on close", async () => {
   vi.mocked(api.remoteRequest).mockResolvedValue({

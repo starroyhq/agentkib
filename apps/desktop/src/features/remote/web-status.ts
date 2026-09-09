@@ -37,6 +37,9 @@ export function subscribeWebStatus(target: "lan" | undefined, listener: Listener
       interval: 2_000,
       enabled: () =>
         Boolean(
+          // LAN settings need fresh interface choices even before the listener is enabled.
+          // The shared scheduler still suspends hidden/locked views and unsubscribes on close.
+          target === "lan" ||
           !channel.snapshot ||
           channel.snapshot.running ||
           channel.snapshot.pending.length ||

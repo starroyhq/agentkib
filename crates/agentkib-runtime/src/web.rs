@@ -98,7 +98,7 @@ struct Service {
     unresolved: BTreeSet<String>,
     claude: BTreeMap<String, crate::claude_runner::Runner>,
     claude_identity: BTreeMap<String, (PathBuf, String)>,
-    claude_available: Option<bool>,
+    claude_available: InstallationProbe,
     #[cfg(target_os = "macos")]
     bridges: BTreeMap<String, agentkib_codex_bridge::Bridge>,
     #[cfg(target_os = "macos")]
@@ -112,7 +112,7 @@ impl Default for Service {
             unresolved: BTreeSet::new(),
             claude: BTreeMap::new(),
             claude_identity: BTreeMap::new(),
-            claude_available: None,
+            claude_available: InstallationProbe::default(),
             #[cfg(target_os = "macos")]
             bridges: BTreeMap::new(),
             #[cfg(target_os = "macos")]
@@ -171,10 +171,10 @@ impl Service {
             if !cfg!(target_os = "macos") {
                 return self.unsupported(&request, "platform-unsupported");
             }
-            if !*self
-                .claude_available
-                .get_or_insert_with(crate::claude_runner::Runner::installation_supported)
-            {
+            if !self.claude_available.supported(
+                std::time::Instant::now(),
+                crate::claude_runner::Runner::installation_supported,
+            ) {
                 return self.unsupported(&request, "unverified-installation");
             }
             let adapter = provider(session.agent).context("provider-unavailable")?;
@@ -536,6 +536,29 @@ impl Service {
     }
 }
 
+#[derive(Default)]
+struct InstallationProbe {
+    result: Option<(bool, std::time::Instant)>,
+}
+impl InstallationProbe {
+    const RETRY_AFTER: std::time::Duration = std::time::Duration::from_secs(30);
+
+    fn supported(&mut self, now: std::time::Instant, probe: impl FnOnce() -> bool) -> bool {
+        if let Some((supported, checked_at)) = self.result {
+            // SSE polls must not launch a process every two seconds, but a failed
+            // check must recover after an installation/upgrade without a restart.
+            // Successful checks retain the existing policy: Runner revalidates
+            // the exact supported version before starting each new process.
+            if supported || now.saturating_duration_since(checked_at) < Self::RETRY_AFTER {
+                return supported;
+            }
+        }
+        let supported = probe();
+        self.result = Some((supported, now));
+        supported
+    }
+}
+
 // The browser needs project identity, not the native peer's richer workspace
 // summary. Project only this whitelist from the same snapshot as the sessions.
 fn web_catalog(source: &impl Source) -> anyhow::Result<Value> {
@@ -736,6 +759,43 @@ fn complete_file_change(change: &Value) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn failed_installation_probe_recovers_without_polling_spawn_storm() {
+        let mut cache = InstallationProbe::default();
+        let start = std::time::Instant::now();
+        assert!(!cache.supported(start, || false));
+        for seconds in (2..30).step_by(2) {
+            assert!(
+                !cache.supported(start + std::time::Duration::from_secs(seconds), || {
+                    panic!("SSE polling must reuse the failed probe during cooldown")
+                })
+            );
+        }
+        // Installing a supported version is discovered at the retry boundary.
+        assert!(cache.supported(start + InstallationProbe::RETRY_AFTER, || true));
+        assert!(
+            cache.supported(start + std::time::Duration::from_secs(120), || {
+                panic!("successful probe remains cached; Runner validates before spawn")
+            })
+        );
+    }
+
+    #[test]
+    fn unknown_installation_remains_disabled_after_retries() {
+        let mut cache = InstallationProbe::default();
+        let start = std::time::Instant::now();
+        for attempt in 0..3 {
+            let mut probed = false;
+            assert!(
+                !cache.supported(start + InstallationProbe::RETRY_AFTER * attempt, || {
+                    probed = true;
+                    false
+                })
+            );
+            assert!(probed);
+        }
+    }
 
     #[test]
     fn claude_capacity_retires_idle_processes_without_forgetting_security_state() {

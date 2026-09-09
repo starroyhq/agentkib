@@ -374,6 +374,15 @@ jobs:
         shell: pwsh
         run: ./.release-helpers/.github/scripts/smoke-test-windows-installer.ps1 -SearchRoot apps/desktop/release-electron -SkipQuota
 
+      - name: Upload Windows installer diagnostics
+        if: always() && runner.os == 'Windows'
+        uses: actions/upload-artifact@v7
+        with:
+          name: agentkib-installer-diagnostics-${{ matrix.artifact }}
+          path: artifacts/windows-installer-diagnostics/summary.json
+          if-no-files-found: warn
+          retention-days: 7
+
       - name: Verify macOS application bundle
         if: runner.os == 'macOS'
         shell: bash

@@ -95,6 +95,41 @@ describe("hosted transport", () => {
     expect(emit).toHaveBeenCalledWith("snapshot", data);
     expect(() => parser.push(`data: ${"文".repeat(1_500_000)}\n\n`)).toThrow("stream_too_large");
   });
+  it("processes a fragmented 4 MiB frame with linear UTF-8 encoding work", () => {
+    const encode = TextEncoder.prototype.encode;
+    let encodedUnits = 0;
+    const spy = vi.spyOn(TextEncoder.prototype, "encode").mockImplementation(function (
+      this: TextEncoder,
+      value = "",
+    ) {
+      encodedUnits += value.length;
+      return encode.call(this, value);
+    });
+    try {
+      const emit = vi.fn();
+      const parser = new SseParser(emit);
+      const data = "x".repeat(4 * 1024 * 1024);
+      const frame = `event: snapshot\ndata: ${data}\n\n`;
+      for (let offset = 0; offset < frame.length; offset += 1024)
+        parser.push(frame.slice(offset, offset + 1024));
+      expect(emit).toHaveBeenCalledExactlyOnceWith("snapshot", data);
+      expect(encodedUnits).toBeLessThanOrEqual(frame.length * 2);
+      parser.push("data: next\n\n");
+      expect(emit).toHaveBeenLastCalledWith("message", "next");
+    } finally {
+      spy.mockRestore();
+    }
+  });
+  it("preserves fragmented Unicode and rejects oversized unfinished lines", () => {
+    const emit = vi.fn();
+    const parser = new SseParser(emit);
+    parser.push("data: 文\ud83d");
+    parser.push("\ude00\r");
+    parser.push("\n\n");
+    expect(emit).toHaveBeenCalledWith("message", "文😀");
+    parser.push("data: " + "x".repeat(4 * 1024 * 1024));
+    expect(() => parser.push("x".repeat(1024))).toThrow("stream_too_large");
+  });
   it("requires protocol check, keeps token out of Access and sends bearer and CSRF without cookies", async () => {
     const fetcher = vi
       .fn()

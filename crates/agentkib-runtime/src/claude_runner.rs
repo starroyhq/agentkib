@@ -56,7 +56,7 @@ fn question_schema(input: &Value) -> Result<Vec<Value>> {
     }).collect()
 }
 
-#[derive(Default)]
+#[derive(Default, Clone)]
 struct State {
     session_id: String,
     revision: u64,
@@ -486,6 +486,29 @@ pub struct Runner {
     worker: Mutex<Option<Worker>>,
 }
 
+struct SessionLock(File);
+
+impl Drop for SessionLock {
+    fn drop(&mut self) {
+        // A concurrently forked child can retain this open file description
+        // until exec closes it. Closing only our descriptor would then leave
+        // flock held transiently; explicitly release ownership before closing.
+        let _ = self.0.unlock();
+    }
+}
+
+fn acquire_session_lock(path: &std::path::Path) -> Result<SessionLock> {
+    let lock = OpenOptions::new()
+        .create(true)
+        .truncate(false)
+        .read(true)
+        .write(true)
+        .open(path)?;
+    lock.try_lock()
+        .context("Claude session is managed by another process")?;
+    Ok(SessionLock(lock))
+}
+
 impl Runner {
     #[cfg(test)]
     pub(crate) fn mock_worker(status: &str) -> Self {
@@ -557,6 +580,17 @@ impl Runner {
     }
 
     pub fn send(&self, text: &str, expected_revision: u64) -> Result<()> {
+        self.send_with_start(text, expected_revision, |state, user| {
+            self.start(state, user)
+        })
+    }
+
+    fn send_with_start(
+        &self,
+        text: &str,
+        expected_revision: u64,
+        start: impl FnOnce(&mut State, Value) -> Result<Worker>,
+    ) -> Result<()> {
         ensure!(
             !text.trim().is_empty() && text.len() <= 128 * 1024,
             "Claude message must contain 1–131072 bytes"
@@ -571,6 +605,7 @@ impl Runner {
             .map_err(|_| anyhow::anyhow!("Claude state lock poisoned"))?;
         ensure!(state.revision == expected_revision, "stale Claude revision");
         ensure!(state.status == "idle", "Claude session is busy or failed");
+        let before_start = worker.is_none().then(|| state.clone());
         let turn_id = uuid::Uuid::new_v4().to_string();
         let user = json!({"type":"user","session_id":self.uuid,"parent_tool_use_id":null,"uuid":turn_id,"message":{"role":"user","content":text}});
         state.turn_id = turn_id;
@@ -585,11 +620,16 @@ impl Runner {
                 return Err(error.into());
             }
         } else {
-            match self.start(&mut state, user) {
+            match start(&mut state, user) {
                 Ok(started) => *worker = Some(started),
                 Err(error) => {
-                    state.fail(error.to_string());
-                    state.status = "unsupported".into();
+                    // start only returns errors before any frame is admitted.
+                    // A temporary lock/version/spawn failure must not poison this
+                    // retained runner. Preserve the last completed turn, but make
+                    // callers resynchronize before explicitly trying again.
+                    *state = before_start.expect("startup state captured");
+                    state.revision += 1;
+                    state.reason = Some(error.to_string());
                     return Err(error);
                 }
             }
@@ -651,14 +691,7 @@ impl Runner {
             .context("runtime data directory unavailable")?
             .join("agentkib/claude-runner-locks");
         std::fs::create_dir_all(&lock_dir)?;
-        let lock = OpenOptions::new()
-            .create(true)
-            .truncate(false)
-            .read(true)
-            .write(true)
-            .open(lock_dir.join(format!("{uuid}.lock")))?;
-        lock.try_lock()
-            .context("Claude session is managed by another process")?;
+        let lock = acquire_session_lock(&lock_dir.join(format!("{uuid}.lock")))?;
         check_version()?;
         let mut command = Command::new("claude");
         #[cfg(unix)]
@@ -688,9 +721,15 @@ impl Runner {
             .stderr(Stdio::null())
             .spawn()
             .context("failed to start Claude")?;
-        let stdout = child.stdout.take().context("Claude stdout unavailable")?;
+        // No error after this point may escape as a retryable startup failure.
+        // Pipe setup failure has not sent input, but still needs child cleanup.
+        let pipes = child.stdout.take().zip(child.stdin.take());
+        let Some((stdout, mut stdin)) = pipes else {
+            let _ = child.kill();
+            let _ = child.wait();
+            bail!("Claude stdio unavailable");
+        };
         let (sender, receiver) = mpsc::sync_channel(32);
-        let mut stdin = child.stdin.take().context("Claude stdin unavailable")?;
         let (writer, write_queue) = mpsc::sync_channel::<Value>(32);
         let write_errors = sender.clone();
         // Keep pipe backpressure off the lifecycle worker so Drop can always kill
@@ -754,7 +793,7 @@ impl Runner {
         let stop = Arc::new(AtomicBool::new(false));
         let worker_stop = stop.clone();
         let join = thread::spawn(move || {
-            let _lock: File = lock;
+            let _lock = lock;
             let started = Instant::now();
             let result = (|| -> Result<()> {
                 write_frame(&writer, initialize)?;
@@ -877,6 +916,86 @@ fn check_version() -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn startup_lock_failure_can_recover_only_after_resynchronizing() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("session.lock");
+        let held = acquire_session_lock(&path).unwrap();
+        let runner = Runner::new(PathBuf::new(), "test".into());
+        {
+            let mut state = runner.state.lock().unwrap();
+            state.turn_id = "completed-turn".into();
+            state.stream_text = "completed reply".into();
+        }
+        assert!(
+            runner
+                .send_with_start("first", 0, |_, _| {
+                    acquire_session_lock(&path)?;
+                    panic!("lock contention must reject before startup")
+                })
+                .is_err()
+        );
+        assert!(!runner.has_worker());
+        assert_eq!(runner.snapshot()["status"], "idle");
+        assert_eq!(runner.snapshot()["turnId"], "completed-turn");
+        assert_eq!(runner.snapshot()["streamText"], "completed reply");
+        assert!(
+            runner
+                .send_with_start("stale", 0, |_, _| panic!("stale revision"))
+                .is_err()
+        );
+        drop(held);
+        let revision = runner.snapshot()["revision"].as_u64().unwrap();
+        runner
+            .send_with_start("explicit retry", revision, |_, _| {
+                let _lock = acquire_session_lock(&path)?;
+                let (sender, _) = mpsc::sync_channel(32);
+                Ok(Worker {
+                    sender,
+                    stop: Arc::new(AtomicBool::new(false)),
+                    join: None,
+                })
+            })
+            .unwrap();
+        assert!(runner.has_worker());
+        assert_eq!(runner.snapshot()["status"], "running");
+    }
+
+    #[test]
+    fn startup_failure_does_not_recover_an_existing_uncertain_worker() {
+        let runner = Runner::mock_worker("idle");
+        assert!(runner.send("broken transport", 0).is_err());
+        assert_eq!(runner.snapshot()["status"], "outcome-unknown");
+        let revision = runner.snapshot()["revision"].as_u64().unwrap();
+        assert!(
+            runner
+                .send_with_start("do not replay", revision, |_, _| {
+                    panic!("uncertain delivery must never restart")
+                })
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn synchronous_startup_failures_never_leave_pending_input() {
+        let runner = Runner::new(PathBuf::new(), "test".into());
+        for reason in ["version timeout", "spawn unavailable"] {
+            let revision = runner.snapshot()["revision"].as_u64().unwrap();
+            assert!(
+                runner
+                    .send_with_start("not delivered", revision, |state, user| {
+                        state.session_id = "temporary".into();
+                        state.pending_user = Some(user);
+                        bail!(reason)
+                    })
+                    .is_err()
+            );
+            assert_eq!(runner.snapshot()["sendEnabled"], true);
+            assert!(runner.state.lock().unwrap().pending_user.is_none());
+            assert!(!runner.has_worker());
+        }
+    }
+
     fn active() -> State {
         State {
             initialized: true,
@@ -1144,21 +1263,28 @@ mod tests {
     fn session_lock_excludes_another_owner() {
         let directory = tempfile::tempdir().unwrap();
         let path = directory.path().join("session.lock");
-        let first = OpenOptions::new()
-            .read(true)
-            .write(true)
-            .create_new(true)
-            .open(&path)
-            .unwrap();
-        let second = OpenOptions::new()
-            .read(true)
-            .write(true)
-            .open(&path)
-            .unwrap();
-        first.try_lock().unwrap();
-        assert!(second.try_lock().is_err());
+        let first = acquire_session_lock(&path).unwrap();
+        assert!(acquire_session_lock(&path).is_err());
         drop(first);
-        second.try_lock().unwrap();
+        let _second = acquire_session_lock(&path).unwrap();
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn session_lock_releases_with_an_inherited_descriptor_still_open() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("session.lock");
+        let owner = acquire_session_lock(&path).unwrap();
+        // dup shares the open file description just as fork inheritance does,
+        // deterministically reproducing the parallel spawn window without timing.
+        let inherited = owner.0.try_clone().unwrap();
+        assert!(acquire_session_lock(&path).is_err());
+        drop(owner);
+        let contender = acquire_session_lock(&path).unwrap();
+        drop(inherited);
+        assert!(acquire_session_lock(&path).is_err());
+        drop(contender);
+        assert!(acquire_session_lock(&path).is_ok());
     }
 
     #[test]

@@ -1422,6 +1422,16 @@ fn command_output_with_limits(
                 .with_context(|| format!("Failed to supervise {program} process tree"));
         }
     };
+    collect_command_output(child, &process_tree, program, timeout, stdout_limit)
+}
+
+fn collect_command_output(
+    mut child: std::process::Child,
+    process_tree: &ProcessTree,
+    program: &str,
+    timeout: Duration,
+    stdout_limit: usize,
+) -> Result<Vec<u8>> {
     let stdout = child
         .stdout
         .take()
@@ -1438,13 +1448,13 @@ fn command_output_with_limits(
             break (status, false);
         }
         if !EXTERNAL_COMMANDS_ACCEPTING.load(Ordering::SeqCst) {
-            terminate_command(&mut child, &process_tree);
+            terminate_command(&mut child, process_tree);
             let _ = child.kill();
             let _ = child.wait();
             bail!("{program} query was cancelled because AgentKib is exiting");
         }
         if started.elapsed() >= timeout {
-            terminate_command(&mut child, &process_tree);
+            terminate_command(&mut child, process_tree);
             let _ = child.kill();
             break (child.wait()?, true);
         }
@@ -1654,23 +1664,32 @@ mod tests {
     #[cfg(windows)]
     #[test]
     fn command_timeout_terminates_the_windows_job_object() {
+        use std::ffi::c_void;
+        use std::os::windows::io::{AsRawHandle, FromRawHandle, OwnedHandle};
+
+        #[link(name = "kernel32")]
+        unsafe extern "system" {
+            fn OpenProcess(access: u32, inherit: i32, pid: u32) -> *mut c_void;
+            fn WaitForSingleObject(handle: *mut c_void, milliseconds: u32) -> u32;
+        }
+
         let dir = tempdir().unwrap();
         let child_script = dir.path().join("child.ps1");
         let parent_script = dir.path().join("parent.ps1");
         let child_started = dir.path().join("child-started");
-        let child_survived = dir.path().join("child-survived");
+        let attached = dir.path().join("attached");
         fs::write(
             &child_script,
-            r#"param([string] $Started, [string] $Marker)
-Set-Content -LiteralPath $Started -Value "started"
-Start-Sleep -Milliseconds 30000
-Set-Content -LiteralPath $Marker -Value "survived"
+            r#"param([string] $Started)
+Set-Content -LiteralPath $Started -Value $PID
+while ($true) { Start-Sleep -Seconds 1 }
 "#,
         )
         .unwrap();
         fs::write(
             &parent_script,
-            r#"param([string] $ChildScript, [string] $Started, [string] $Marker)
+            r#"param([string] $ChildScript, [string] $Started, [string] $Attached)
+while (!(Test-Path -LiteralPath $Attached)) { Start-Sleep -Milliseconds 25 }
 $arguments = @(
   "-NoProfile",
   "-NonInteractive",
@@ -1679,9 +1698,7 @@ $arguments = @(
   "-File",
   ('"{0}"' -f $ChildScript),
   "-Started",
-  ('"{0}"' -f $Started),
-  "-Marker",
-  ('"{0}"' -f $Marker)
+  ('"{0}"' -f $Started)
 )
 $child = Start-Process -FilePath "powershell.exe" -ArgumentList $arguments -PassThru
 Wait-Process -Id $child.Id
@@ -1691,11 +1708,11 @@ Wait-Process -Id $child.Id
         let parent_script = parent_script.to_string_lossy().into_owned();
         let child_script = child_script.to_string_lossy().into_owned();
         let child_started_arg = child_started.to_string_lossy().into_owned();
-        let child_survived_arg = child_survived.to_string_lossy().into_owned();
+        let attached_arg = attached.to_string_lossy().into_owned();
 
-        let error = command_output_with_timeout(
-            "powershell.exe",
-            &[
+        let mut command = Command::new("powershell.exe");
+        command
+            .args([
                 "-NoProfile",
                 "-NonInteractive",
                 "-ExecutionPolicy",
@@ -1706,21 +1723,69 @@ Wait-Process -Id $child.Id
                 &child_script,
                 "-Started",
                 &child_started_arg,
-                "-Marker",
-                &child_survived_arg,
-            ],
-            // Hosted Windows runners can take several seconds to cold-start the nested
-            // PowerShell process. Keep the descendant alive well beyond this deadline so
-            // the assertion still proves that Job Object termination stopped it.
-            Duration::from_secs(12),
+                "-Attached",
+                &attached_arg,
+            ])
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped());
+        agentkib_platform::process::configure_process_group(&mut command);
+        let mut child = command.spawn().unwrap();
+        let process_tree = ProcessTree::attach(&child).unwrap_or_else(|error| {
+            let _ = child.kill();
+            let _ = child.wait();
+            panic!("cannot supervise fixture: {error}");
+        });
+        fs::write(&attached, "attached").unwrap();
+
+        // Fixture startup has a separate bounded readiness wait. The command timeout
+        // under test starts only after the descendant exists, not during two cold
+        // PowerShell startups on a busy Windows runner.
+        let readiness_deadline = Instant::now() + Duration::from_secs(60);
+        let descendant_pid = loop {
+            if let Ok(contents) = fs::read_to_string(&child_started)
+                && let Ok(pid) = contents.trim().parse::<u32>()
+            {
+                break pid;
+            }
+            if child.try_wait().unwrap().is_some() || Instant::now() >= readiness_deadline {
+                process_tree.terminate().unwrap();
+                let output = child.wait_with_output().unwrap();
+                panic!(
+                    "descendant fixture failed readiness: {}",
+                    String::from_utf8_lossy(&output.stderr)
+                );
+            }
+            thread::sleep(Duration::from_millis(25));
+        };
+        // Keep the actual process handle, rather than observing a delayed marker or
+        // looking up a PID after termination (which could already have been reused).
+        const SYNCHRONIZE: u32 = 0x0010_0000;
+        const WAIT_OBJECT_0: u32 = 0;
+        const WAIT_TIMEOUT: u32 = 258;
+        let handle = unsafe { OpenProcess(SYNCHRONIZE, 0, descendant_pid) };
+        assert!(!handle.is_null(), "{}", std::io::Error::last_os_error());
+        let descendant = unsafe { OwnedHandle::from_raw_handle(handle) };
+        assert_eq!(
+            unsafe { WaitForSingleObject(descendant.as_raw_handle(), 0) },
+            WAIT_TIMEOUT,
+            "descendant must be alive before the command timeout"
+        );
+        let error = collect_command_output(
+            child,
+            &process_tree,
+            "powershell.exe",
+            Duration::from_millis(100),
+            1024,
         )
         .unwrap_err();
         assert!(error.to_string().contains("timed out"));
-        assert!(child_started.exists(), "descendant fixture did not start");
-        thread::sleep(Duration::from_millis(2250));
-        assert!(
-            !child_survived.exists(),
-            "descendant survived the Windows Job Object termination"
+        // Assert before dropping the job guard: kill-on-close must not hide a broken
+        // timeout termination implementation.
+        assert_eq!(
+            unsafe { WaitForSingleObject(descendant.as_raw_handle(), 5_000) },
+            WAIT_OBJECT_0,
+            "descendant survived the Windows Job Object timeout termination"
         );
     }
 

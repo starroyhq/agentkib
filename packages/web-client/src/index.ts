@@ -314,18 +314,44 @@ export function parseLanOrigin(value: string): string {
 }
 
 export class SseParser {
-  private buffer = "";
+  private lineParts: string[] = [];
+  private lineBytes = 0;
+  private lastCodeUnit = 0;
   private event = "message";
   private data: string[] = [];
   private dataBytes = 0;
   private encoder = new TextEncoder();
   constructor(private readonly emit: (event: string, data: string) => void) {}
   push(chunk: string) {
-    this.buffer += chunk;
-    let end: number;
-    while ((end = this.buffer.indexOf("\n")) >= 0) {
-      const line = this.buffer.slice(0, end).replace(/\r$/, "");
-      this.buffer = this.buffer.slice(end + 1);
+    let start = 0;
+    while (start < chunk.length) {
+      const end = chunk.indexOf("\n", start);
+      const part = chunk.slice(start, end < 0 ? chunk.length : end);
+      if (part) {
+        this.lineBytes += this.encoder.encode(part).byteLength;
+        // A surrogate pair split between push calls encodes as four bytes, not
+        // two replacement characters (six bytes). TextDecoder normally avoids this.
+        const first = part.charCodeAt(0);
+        if (
+          this.lastCodeUnit >= 0xd800 &&
+          this.lastCodeUnit <= 0xdbff &&
+          first >= 0xdc00 &&
+          first <= 0xdfff
+        )
+          this.lineBytes -= 2;
+        this.lastCodeUnit = part.charCodeAt(part.length - 1);
+        if (this.lineBytes + this.dataBytes > 4 * 1024 * 1024 + 1024)
+          throw new Error("stream_too_large");
+        this.lineParts.push(part);
+      }
+      if (end < 0) return;
+      // Join only completed lines: neither scanning nor byte accounting revisits
+      // an accumulated near-4 MiB prefix on every network chunk.
+      const line = this.lineParts.join("").replace(/\r$/, "");
+      this.lineParts = [];
+      this.lineBytes = 0;
+      this.lastCodeUnit = 0;
+      start = end + 1;
       if (!line) {
         if (this.data.length) this.emit(this.event, this.data.join("\n"));
         this.event = "message";
@@ -341,7 +367,5 @@ export class SseParser {
         this.data.push(value);
       }
     }
-    if (this.encoder.encode(this.buffer).byteLength + this.dataBytes > 4 * 1024 * 1024 + 1024)
-      throw new Error("stream_too_large");
   }
 }

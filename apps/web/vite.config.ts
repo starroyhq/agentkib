@@ -5,7 +5,7 @@ import { readFileSync } from "node:fs";
 export default defineConfig(({ mode }) => ({
   build: { outDir: mode === "hosted" ? "dist-hosted" : "dist" },
   plugins: [
-    react({ compiler: true }),
+    react(),
     {
       name: "agentkib-build-info",
       generateBundle() {

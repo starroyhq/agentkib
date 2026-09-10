@@ -1,6 +1,9 @@
+import { Textarea } from "@/components/ui/textarea";
+import { Input } from "@/components/ui/input";
+import { Button } from "@/components/ui/button";
 import { useState } from "react";
 import type { UserQuestionRequest } from "@agentkib/web-client";
-import type { Locale } from "./i18n";
+import type { Locale } from "@/i18n";
 
 export const MAX_ANSWER_LENGTH = 4096;
 export const MAX_ANSWER_BYTES = 8192;
@@ -180,15 +183,22 @@ export function QuestionForm({
       }}
     >
       {request.questions.map((q) => (
-        <fieldset key={q.id} disabled={!enabled || busy} className="question-fieldset">
+        <fieldset
+          key={q.id}
+          disabled={!enabled || busy}
+          className="space-y-2 border-0 py-3 [&>legend]:text-sm [&>legend]:font-medium [&>textarea]:w-full"
+        >
           <legend>
             {q.header && <small>{q.header} · </small>}
             {q.question}
           </legend>
           {q.multiSelect && <small>{copy.multiple}</small>}
           {q.options.map((option, index) => (
-            <label key={index} className="question-option">
-              <input
+            <label
+              key={index}
+              className="flex items-start gap-3 rounded-lg px-2 py-3 text-sm hover:bg-muted/50 [&_input]:mt-1 [&_input]:size-4 [&_input]:shrink-0 [&_small]:mt-1 [&_small]:block [&_small]:text-xs [&_small]:leading-5 [&_small]:text-muted-foreground"
+            >
+              <Input
                 type={q.multiSelect ? "checkbox" : "radio"}
                 name={q.id}
                 checked={(own(choices, q.id) ?? []).includes(option.label)}
@@ -212,8 +222,8 @@ export function QuestionForm({
           ))}
           {q.allowCustom && (
             <>
-              <label className="question-option">
-                <input
+              <label className="flex items-start gap-3 rounded-lg px-2 py-3 text-sm hover:bg-muted/50 [&_input]:mt-1 [&_input]:size-4 [&_input]:shrink-0 [&_small]:mt-1 [&_small]:block [&_small]:text-xs [&_small]:leading-5 [&_small]:text-muted-foreground">
+                <Input
                   type={q.multiSelect ? "checkbox" : "radio"}
                   name={q.id}
                   checked={!!own(useCustom, q.id)}
@@ -225,7 +235,7 @@ export function QuestionForm({
                 {copy.other}
               </label>
               {own(useCustom, q.id) && (
-                <textarea
+                <Textarea
                   aria-label={`${q.question} · ${copy.other}`}
                   maxLength={MAX_ANSWER_LENGTH}
                   value={own(custom, q.id) ?? ""}
@@ -240,9 +250,14 @@ export function QuestionForm({
       ))}
       {!enabled && <aside className="info">{copy.unavailable}</aside>}
       {validationError && <p role="alert">{validationError}</p>}
-      <button className="primary" disabled={!enabled || busy || !valid} type="submit">
+      <Button
+        variant="default"
+        className="h-11"
+        disabled={!enabled || busy || !valid}
+        type="submit"
+      >
         {copy.submit}
-      </button>
+      </Button>
     </form>
   );
 }

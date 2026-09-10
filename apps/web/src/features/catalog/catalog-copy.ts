@@ -1,4 +1,4 @@
-import type { Locale } from "./i18n";
+import type { Locale } from "@/i18n";
 export const catalogCopy = {
   "zh-CN": {
     options: "目录选项",

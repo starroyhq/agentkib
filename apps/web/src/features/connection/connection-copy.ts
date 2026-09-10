@@ -1,4 +1,4 @@
-import type { Locale } from "./i18n";
+import type { Locale } from "@/i18n";
 
 export const connectionCopy: Record<
   Locale,

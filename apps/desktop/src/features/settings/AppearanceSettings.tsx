@@ -9,11 +9,11 @@ import {
   applyAccentTheme,
   applyTheme,
   cacheAccentTheme,
-  cacheEffectiveTheme,
   systemTheme,
 } from "@/core/theme";
 import type { AccentThemeId, EffectiveTheme, RuntimeInfo, ThemePreference } from "@/core/types";
 import { localizeMessage } from "@/core/i18n";
+import { Button } from "@/components/ui/button";
 
 import {
   SettingsNotice,
@@ -172,7 +172,6 @@ export function AppearanceSettings({ runtime, onChanged }: AppearanceSettingsPro
     try {
       const nextRuntime = await api.setThemePreference(preference);
       applyTheme(nextRuntime.effective_theme);
-      cacheEffectiveTheme(nextRuntime.effective_theme, nextRuntime.theme_preference);
       onChanged(nextRuntime);
     } catch (reason) {
       setError(localizeMessage(reason));
@@ -211,9 +210,11 @@ export function AppearanceSettings({ runtime, onChanged }: AppearanceSettingsPro
             const Icon = themeIcons[mode];
             const selected = selectedMode === mode;
             return (
-              <button
+              <Button
                 key={mode}
                 type="button"
+                variant="bare"
+                size="content"
                 className="theme-choice-card"
                 aria-pressed={selected}
                 disabled={busy || !runtime}
@@ -227,7 +228,7 @@ export function AppearanceSettings({ runtime, onChanged }: AppearanceSettingsPro
                   </span>
                   {selected && <Check size={16} aria-hidden="true" />}
                 </span>
-              </button>
+              </Button>
             );
           })}
         </div>
@@ -241,9 +242,11 @@ export function AppearanceSettings({ runtime, onChanged }: AppearanceSettingsPro
           {ACCENT_THEME_IDS.map((theme) => {
             const selected = selectedAccent === theme;
             return (
-              <button
+              <Button
                 key={theme}
                 type="button"
+                variant="bare"
+                size="content"
                 className="theme-choice-card"
                 aria-pressed={selected}
                 disabled={busy || !runtime}
@@ -254,7 +257,7 @@ export function AppearanceSettings({ runtime, onChanged }: AppearanceSettingsPro
                   <span className="truncate">{tr(`settings.accentTheme.${theme}`)}</span>
                   {selected && <Check size={16} aria-hidden="true" />}
                 </span>
-              </button>
+              </Button>
             );
           })}
         </div>

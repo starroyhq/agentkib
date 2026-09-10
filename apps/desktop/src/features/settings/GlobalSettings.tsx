@@ -55,6 +55,7 @@ import {
   accentThemePreference,
   applyAccentTheme,
   cacheAccentTheme,
+  cacheEffectiveTheme,
   isAccentThemeId,
 } from "@/core/theme";
 import { normalizePlatform, primaryShortcutModifier, usesSystemTrayWording } from "@/core/platform";
@@ -155,7 +156,15 @@ export function GlobalSettings({
   if (section === "remote") return <RemoteConnectionSettings />;
 
   if (section === "appearance") {
-    return <AppearanceSettings runtime={runtime} onChanged={onLocaleChanged} />;
+    return (
+      <AppearanceSettings
+        runtime={runtime}
+        onChanged={(nextRuntime) => {
+          cacheEffectiveTheme(nextRuntime.effective_theme, nextRuntime.theme_preference);
+          onLocaleChanged(nextRuntime);
+        }}
+      />
+    );
   }
 
   if (section === "general")

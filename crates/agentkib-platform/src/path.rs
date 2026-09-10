@@ -113,9 +113,17 @@ pub fn identity_path(path: &Path) -> PathBuf {
 fn normalize_identity_path(path: &Path) -> PathBuf {
     #[cfg(windows)]
     {
-        canonicalize_allow_missing(path)
-            .or_else(|_| canonicalize(path))
-            .unwrap_or_else(|_| strip_verbatim_prefix(path.to_path_buf()))
+        let has_windows_prefix = path
+            .components()
+            .next()
+            .is_some_and(|component| matches!(component, Component::Prefix(_)));
+        if has_windows_prefix {
+            canonicalize_allow_missing(path)
+                .or_else(|_| canonicalize(path))
+                .unwrap_or_else(|_| strip_verbatim_prefix(path.to_path_buf()))
+        } else {
+            strip_verbatim_prefix(path.to_path_buf())
+        }
     }
     #[cfg(not(windows))]
     {

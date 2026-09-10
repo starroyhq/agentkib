@@ -134,7 +134,7 @@ export function SettingsRow({
   return (
     <div
       className={cn(
-        "grid min-h-16 grid-cols-[minmax(0,1fr)_minmax(180px,max-content)] items-center gap-8 px-5 py-3 max-[640px]:grid-cols-1 max-[640px]:gap-3",
+        "grid min-h-16 grid-cols-[minmax(0,1fr)_minmax(180px,max-content)] items-center gap-8 px-5 py-3 [&>*:nth-child(2)]:justify-self-end max-[640px]:grid-cols-1 max-[640px]:gap-3",
         border && "border-b border-border/60",
         className,
       )}

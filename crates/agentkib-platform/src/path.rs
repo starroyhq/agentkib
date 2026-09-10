@@ -92,15 +92,14 @@ pub fn canonicalize_allow_missing(path: &Path) -> io::Result<PathBuf> {
 
 /// Stable path identity used for deduplication and containment comparisons.
 pub fn identity(path: &Path) -> String {
-    let path = canonicalize(path).unwrap_or_else(|_| strip_verbatim_prefix(path.to_path_buf()));
+    let path = identity_path(path);
     identity_for_platform(&path.to_string_lossy(), cfg!(windows))
 }
 
 /// Path-shaped identity for salted keys. Preserve Unix OS bytes while applying
 /// Windows comparison rules, including when the final directory no longer exists.
 pub fn identity_path(path: &Path) -> PathBuf {
-    let normalized =
-        canonicalize(path).unwrap_or_else(|_| strip_verbatim_prefix(path.to_path_buf()));
+    let normalized = normalize_identity_path(path);
     #[cfg(windows)]
     {
         PathBuf::from(identity_for_platform(&normalized.to_string_lossy(), true))
@@ -108,6 +107,19 @@ pub fn identity_path(path: &Path) -> PathBuf {
     #[cfg(not(windows))]
     {
         normalized
+    }
+}
+
+fn normalize_identity_path(path: &Path) -> PathBuf {
+    #[cfg(windows)]
+    {
+        canonicalize_allow_missing(path)
+            .or_else(|_| canonicalize(path))
+            .unwrap_or_else(|_| strip_verbatim_prefix(path.to_path_buf()))
+    }
+    #[cfg(not(windows))]
+    {
+        canonicalize(path).unwrap_or_else(|_| strip_verbatim_prefix(path.to_path_buf()))
     }
 }
 

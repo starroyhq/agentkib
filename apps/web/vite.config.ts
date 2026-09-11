@@ -1,10 +1,16 @@
 import { defineConfig } from "vitest/config";
 import react from "@vitejs/plugin-react";
+import { tanstackRouter } from "@tanstack/router-plugin/vite";
+import tailwindcss from "@tailwindcss/vite";
+import { fileURLToPath } from "node:url";
 import { execFileSync } from "node:child_process";
 import { readFileSync } from "node:fs";
 export default defineConfig(({ mode }) => ({
+  resolve: { alias: { "@": fileURLToPath(new URL("./src", import.meta.url)) } },
   build: { outDir: mode === "hosted" ? "dist-hosted" : "dist" },
   plugins: [
+    tanstackRouter({ target: "react", autoCodeSplitting: mode !== "test" }),
+    tailwindcss(),
     react(),
     {
       name: "agentkib-build-info",

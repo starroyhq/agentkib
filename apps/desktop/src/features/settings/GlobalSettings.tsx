@@ -11,10 +11,7 @@ import {
   GitCommitHorizontal,
   History,
   Keyboard,
-  Monitor,
-  Moon,
   RefreshCw,
-  Sun,
   Trash2,
   X,
 } from "lucide-react";
@@ -37,6 +34,7 @@ import { ObsidianSettingsCard } from "@/features/obsidian/ObsidianIntegration";
 import { QuotaDiagnostics } from "@/features/quota/QuotaDiagnostics";
 import { RemoteGatewaysSettings } from "./RemoteGateways";
 import { AgentToolsSettings } from "./AgentToolsSettings";
+import { AppearanceSettings } from "./AppearanceSettings";
 import { RemoteConnectionSettings } from "@/features/remote/RemoteConnectionPanel";
 import {
   SettingsCopy,
@@ -53,13 +51,7 @@ import { api } from "@/core/api";
 import { desktopApi } from "@/core/desktop";
 import { cacheEffectiveLocale, changeLocale, localizeMessage } from "@/core/i18n";
 import {
-  ACCENT_THEME_IDS,
-  accentThemePreference,
-  applyAccentTheme,
-  applyTheme,
-  cacheAccentTheme,
   cacheEffectiveTheme,
-  isAccentThemeId,
 } from "@/core/theme";
 import { normalizePlatform, primaryShortcutModifier, usesSystemTrayWording } from "@/core/platform";
 import type { SettingsSection as SettingsSectionId } from "./SettingsSidebar";
@@ -77,7 +69,6 @@ import type {
   RemoteGatewaySummary,
   RuntimeInfo,
   ScanRoot,
-  ThemePreference,
   WorkspaceSummary,
 } from "@/core/types";
 import { activityPresentation } from "@/features/activity/activity-presentation";
@@ -159,13 +150,23 @@ export function GlobalSettings({
   const { tr, formatDateTime } = useI18n();
   if (section === "remote") return <RemoteConnectionSettings />;
 
+  if (section === "appearance") {
+    return (
+      <AppearanceSettings
+        runtime={runtime}
+        onChanged={(nextRuntime) => {
+          cacheEffectiveTheme(nextRuntime.effective_theme, nextRuntime.theme_preference);
+          onLocaleChanged(nextRuntime);
+        }}
+      />
+    );
+  }
+
   if (section === "general")
     return (
       <SettingsPage variant="form">
         <SettingsPageHeader title={tr("settings.section.general")} />
         <SettingsSection title={tr("settings.interface")} target="general-interface">
-          <ThemeSetting runtime={runtime} onChanged={onLocaleChanged} />
-          <AccentThemeSetting runtime={runtime} onChanged={onLocaleChanged} />
           <AppIconSetting runtime={runtime} onChanged={onLocaleChanged} />
           <LanguageSetting runtime={runtime} onChanged={onLocaleChanged} />
           <SettingsRow>
@@ -852,126 +853,6 @@ function LanguageSetting({
         </SelectContent>
       </Select>
     </SettingsRow>
-  );
-}
-
-function ThemeSetting({
-  runtime,
-  onChanged,
-}: {
-  runtime?: RuntimeInfo;
-  onChanged: (runtime: RuntimeInfo) => void;
-}) {
-  const { t: tr } = useTranslation();
-  const update = async (preference: ThemePreference) => {
-    const nextRuntime = await api.setThemePreference(preference);
-    applyTheme(nextRuntime.effective_theme);
-    cacheEffectiveTheme(nextRuntime.effective_theme, nextRuntime.theme_preference);
-    onChanged(nextRuntime);
-  };
-  const selected = runtime?.theme_preference ?? "system";
-  return (
-    <SettingsRow>
-      <SettingsCopy>
-        <strong>{tr("settings.theme")}</strong>
-      </SettingsCopy>
-      <ToggleGroup
-        spacing={0}
-        variant="outline"
-        className="segmented-control w-max max-w-none shrink-0 justify-self-end max-[640px]:w-full max-[640px]:max-w-full"
-        value={[selected]}
-        onValueChange={(values) => {
-          const theme = values[0];
-          if (theme === "light" || theme === "dark" || theme === "system") void update(theme);
-        }}
-        aria-label={tr("settings.theme")}
-      >
-        {(["light", "dark", "system"] as ThemePreference[]).map((theme) => (
-          <ToggleGroupItem
-            key={theme}
-            value={theme}
-            className="segmented-control-item h-9 min-h-9 min-w-[82px] px-3 text-sm"
-          >
-            {theme === "light" ? (
-              <Sun size={16} aria-hidden="true" />
-            ) : theme === "dark" ? (
-              <Moon size={16} aria-hidden="true" />
-            ) : (
-              <Monitor size={16} aria-hidden="true" />
-            )}
-            {tr(`settings.theme.${theme}`)}
-          </ToggleGroupItem>
-        ))}
-      </ToggleGroup>
-    </SettingsRow>
-  );
-}
-
-export function AccentThemeSetting({
-  runtime,
-  onChanged,
-}: {
-  runtime?: RuntimeInfo;
-  onChanged: (runtime: RuntimeInfo) => void;
-}) {
-  const { t: tr } = useTranslation();
-  const [busy, setBusy] = useState(false);
-  const [error, setError] = useState("");
-  const selected = runtime?.accent_theme_preference ?? accentThemePreference();
-  const update = async (preference: (typeof ACCENT_THEME_IDS)[number]) => {
-    setBusy(true);
-    setError("");
-    try {
-      const nextRuntime = await api.setAccentThemePreference(preference);
-      const nextAccent = nextRuntime.accent_theme_preference ?? preference;
-      applyAccentTheme(nextAccent);
-      cacheAccentTheme(nextAccent);
-      onChanged(nextRuntime);
-    } catch (reason) {
-      setError(localizeMessage(reason));
-    } finally {
-      setBusy(false);
-    }
-  };
-
-  return (
-    <>
-      <SettingsRow>
-        <SettingsCopy>
-          <strong>{tr("settings.accentTheme")}</strong>
-          <small className="sr-only">
-            {tr(
-              runtime?.effective_theme === "dark"
-                ? "settings.accentTheme.darkHint"
-                : "settings.accentTheme.description",
-            )}
-          </small>
-        </SettingsCopy>
-        <Select
-          value={selected}
-          disabled={busy || !runtime}
-          onValueChange={(value) => {
-            if (isAccentThemeId(value)) void update(value);
-          }}
-        >
-          <SelectTrigger className={settingsControlClass} aria-label={tr("settings.accentTheme")}>
-            <SelectValue>{tr(`settings.accentTheme.${selected}`)}</SelectValue>
-          </SelectTrigger>
-          <SelectContent>
-            {ACCENT_THEME_IDS.map((theme) => (
-              <SelectItem key={theme} value={theme}>
-                {tr(`settings.accentTheme.${theme}`)}
-              </SelectItem>
-            ))}
-          </SelectContent>
-        </Select>
-      </SettingsRow>
-      {error && (
-        <SettingsNotice tone="error" role="alert">
-          {error}
-        </SettingsNotice>
-      )}
-    </>
   );
 }
 

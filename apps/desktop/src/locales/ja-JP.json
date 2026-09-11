@@ -381,6 +381,7 @@
   "settings.diagnostics.healthy": "正常に稼働中",
   "settings.diagnostics.needsAttention": "対応が必要",
   "settings.section.general": "一般",
+  "settings.section.appearance": "テーマと外観",
   "settings.section.discovery": "検出",
   "settings.section.integrations": "連携",
   "settings.section.privacy": "データとプライバシー",

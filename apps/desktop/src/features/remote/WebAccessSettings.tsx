@@ -3,6 +3,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Switch } from "@/components/ui/switch";
 import { Checkbox } from "@/components/ui/checkbox";
+import { Check, Copy } from "lucide-react";
 import { requestWebAdmin, subscribeWebStatus } from "./web-status";
 import { useI18n } from "@/core/useI18n";
 import {
@@ -28,7 +29,7 @@ import {
 } from "@/components/ui/select";
 
 export function WebAccessSettings({ target }: { target?: "lan" } = {}) {
-  const { locale, formatDateTime } = useI18n();
+  const { locale, tr, formatDateTime } = useI18n();
   const lan = target === "lan";
   const l = lanSettingsCopy[locale];
   const c = { ...webSettingsCopy[locale], ...(lan ? l : {}) };
@@ -37,6 +38,7 @@ export function WebAccessSettings({ target }: { target?: "lan" } = {}) {
   const [config, setConfig] = useState<WebConfig>();
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
+  const [codeCopied, setCodeCopied] = useState(false);
   const [grants, setGrants] = useState<Record<string, { send: boolean; approve: boolean }>>({});
   const mounted = useRef(false);
   useEffect(() => {
@@ -69,6 +71,16 @@ export function WebAccessSettings({ target }: { target?: "lan" } = {}) {
       if (mounted.current) setBusy(false);
     }
   }
+  async function copyPairingCode(code: string) {
+    if (!navigator.clipboard) return;
+    try {
+      await navigator.clipboard.writeText(code);
+      setCodeCopied(true);
+      window.setTimeout(() => setCodeCopied(false), 1600);
+    } catch {
+      // Clipboard access can be unavailable in an embedded or restricted web view.
+    }
+  }
   return (
     <SettingsSection title={c.title}>
       <SettingsNotice>{c.scope}</SettingsNotice>
@@ -77,15 +89,19 @@ export function WebAccessSettings({ target }: { target?: "lan" } = {}) {
           {c.acceptance} <code>{status.acceptanceSessionId}</code>
         </SettingsNotice>
       )}
-      {error && <p role="alert">{error}</p>}
+      {error && (
+        <SettingsNotice tone="error" inset={false} className="text-sm" role="alert">
+          {error}
+        </SettingsNotice>
+      )}
       {status?.error && (
-        <p role="alert">
+        <SettingsNotice tone="error" inset={false} className="text-sm" role="alert">
           {status.error === "port_in_use"
             ? c.portError
             : lan && status.error === "lan_address_unavailable"
               ? l.addressLost
               : c.unavailable}
-        </p>
+        </SettingsNotice>
       )}
       {!config ? (
         <p>{c.loading}</p>
@@ -228,11 +244,22 @@ export function WebAccessSettings({ target }: { target?: "lan" } = {}) {
         </SettingsNotice>
       )}
       {status?.code && status.code.expiresAt > Date.now() && (
-        <SettingsNotice>
-          <strong className="font-mono text-xl tracking-widest">{status.code.value}</strong>
-          <p>
-            {c.expires} {formatDateTime(new Date(status.code.expiresAt))}
-          </p>
+        <SettingsNotice className="items-center justify-end gap-3">
+          <div className="flex min-w-0 flex-wrap items-baseline justify-end gap-x-3 gap-y-1">
+            <strong className="font-mono text-xl tracking-widest">{status.code.value}</strong>
+            <p>
+              {c.expires} {formatDateTime(new Date(status.code.expiresAt))}
+            </p>
+          </div>
+          <Button
+            variant="outline"
+            size="sm"
+            disabled={busy}
+            onClick={() => void copyPairingCode(status.code!.value)}
+          >
+            {codeCopied ? <Check aria-hidden="true" /> : <Copy aria-hidden="true" />}
+            {tr(codeCopied ? "handoff.copied" : "common.copy")}
+          </Button>
         </SettingsNotice>
       )}
       <h3 className="px-5 pt-4 text-sm font-medium">{c.pending}</h3>

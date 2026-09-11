@@ -1389,3 +1389,289 @@ button {
     animation: none;
   }
 }
+
+.theme-choice-card {
+  display: grid;
+  width: 100%;
+  overflow: hidden;
+  appearance: none;
+  cursor: pointer;
+  border: 1px solid var(--border);
+  border-radius: 0.9rem;
+  background: var(--card);
+  color: var(--card-foreground);
+  text-align: left;
+  transition:
+    border-color 180ms ease,
+    box-shadow 180ms ease,
+    transform 180ms ease;
+}
+
+.theme-choice-card:hover {
+  border-color: color-mix(in oklch, var(--primary) 48%, var(--border));
+  box-shadow: 0 0.5rem 1.25rem color-mix(in srgb, var(--foreground) 7%, transparent);
+  transform: translateY(-1px);
+}
+
+.theme-choice-card:active {
+  transform: translateY(1px);
+}
+
+.theme-choice-card:focus-visible {
+  border-color: var(--ring);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--ring) 25%, transparent);
+  outline: none;
+}
+
+.theme-choice-card[aria-pressed="true"] {
+  border-color: var(--primary);
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--primary) 18%, transparent);
+}
+
+.theme-choice-card:disabled {
+  cursor: wait;
+  opacity: 0.68;
+  transform: none;
+}
+
+.theme-choice-card-footer {
+  display: flex;
+  min-height: 3.25rem;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+  padding: 0.75rem 0.875rem;
+  color: var(--foreground);
+  font-size: 0.875rem;
+  font-weight: 600;
+}
+
+.theme-choice-card-footer > svg {
+  flex: 0 0 auto;
+  color: var(--primary);
+}
+
+.theme-mode-preview,
+.theme-accent-preview {
+  position: relative;
+  display: grid;
+  min-height: 8.25rem;
+  gap: 0.45rem;
+  overflow: hidden;
+  padding: 1.35rem 0.65rem 0.65rem;
+}
+
+.theme-mode-preview {
+  grid-template-columns: 29% minmax(0, 1fr);
+  background: var(--preview-canvas);
+}
+
+.theme-mode-preview[data-preview-mode="light"] {
+  --preview-canvas: #fbfbfb;
+  --preview-sidebar: #f0f1f3;
+  --preview-line: #d5d8dd;
+  --preview-strong: #3b4148;
+  --preview-accent: #2e67ff;
+}
+
+.theme-mode-preview[data-preview-mode="dark"] {
+  --preview-canvas: #1d2126;
+  --preview-sidebar: #14181d;
+  --preview-line: #404850;
+  --preview-strong: #e7ebef;
+  --preview-accent: #8baaff;
+}
+
+.theme-mode-preview[data-preview-mode="system"] {
+  --preview-canvas: #f7f8f9;
+  --preview-sidebar: #e8ebee;
+  --preview-line: #cfd5da;
+  --preview-strong: #4b535c;
+  --preview-accent: #64748b;
+  background: linear-gradient(112deg, #f7f8f9 0 52%, #242a31 52% 100%);
+}
+
+.theme-mode-preview-sidebar,
+.theme-mode-preview-content {
+  display: grid;
+  align-content: start;
+  gap: 0.45rem;
+  min-width: 0;
+  border-radius: 0.45rem;
+  padding: 0.55rem;
+}
+
+.theme-mode-preview-sidebar {
+  background: var(--preview-sidebar);
+}
+
+.theme-mode-preview-content {
+  background: color-mix(in srgb, var(--preview-canvas) 88%, var(--preview-sidebar));
+}
+
+.theme-preview-chrome {
+  position: absolute;
+  top: 0.62rem;
+  left: 0.72rem;
+  width: 2.4rem;
+  height: 0.34rem;
+  border-radius: 999px;
+  background:
+    radial-gradient(circle at 0.2rem 50%, var(--preview-accent) 0 0.13rem, transparent 0.14rem),
+    radial-gradient(circle at 0.75rem 50%, var(--preview-line) 0 0.13rem, transparent 0.14rem),
+    radial-gradient(circle at 1.3rem 50%, var(--preview-line) 0 0.13rem, transparent 0.14rem),
+    linear-gradient(90deg, transparent 1.7rem, var(--preview-line) 1.7rem);
+  opacity: 0.92;
+}
+
+.theme-preview-dot,
+.theme-preview-logo {
+  display: block;
+  width: 1rem;
+  height: 1rem;
+  border-radius: 0.32rem;
+  background: var(--preview-accent);
+}
+
+.theme-preview-line {
+  display: block;
+  width: 100%;
+  height: 0.35rem;
+  border-radius: 999px;
+  background: var(--preview-line);
+}
+
+.theme-preview-line-short {
+  width: 62%;
+}
+
+.theme-preview-line-medium {
+  width: 78%;
+}
+
+.theme-preview-line-title {
+  width: 44%;
+  height: 0.42rem;
+  background: var(--preview-strong);
+}
+
+.theme-accent-preview {
+  grid-template-columns: 27% minmax(0, 1fr);
+  background: var(--preview-canvas);
+}
+
+.theme-accent-preview[data-preview-mode="dark"] {
+  --preview-text: #e7ebef;
+  --preview-muted: #7d8792;
+}
+
+.theme-accent-preview:not([data-preview-mode="dark"]) {
+  --preview-text: #3f464e;
+  --preview-muted: #8a929b;
+}
+
+.theme-accent-preview-sidebar,
+.theme-accent-preview-content {
+  display: grid;
+  align-content: start;
+  gap: 0.42rem;
+  min-width: 0;
+  border-radius: 0.45rem;
+  padding: 0.55rem;
+}
+
+.theme-accent-preview-sidebar {
+  background: color-mix(in srgb, var(--preview-sidebar) 86%, var(--preview-accent) 14%);
+}
+
+.theme-accent-preview-content {
+  background: color-mix(in srgb, var(--preview-canvas) 92%, var(--preview-sidebar));
+}
+
+.theme-preview-logo {
+  width: 1.15rem;
+  height: 1.15rem;
+  margin-bottom: 0.25rem;
+  border-radius: 0.38rem;
+  box-shadow: 0 0 0 0.2rem color-mix(in srgb, var(--preview-accent) 16%, transparent);
+}
+
+.theme-accent-preview .theme-preview-line {
+  background: color-mix(in srgb, var(--preview-muted) 72%, var(--preview-canvas));
+}
+
+.theme-accent-preview .theme-preview-line-title {
+  background: var(--preview-text);
+}
+
+.theme-preview-toolbar,
+.theme-preview-card-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.4rem;
+}
+
+.theme-preview-action {
+  display: block;
+  width: 1.4rem;
+  height: 0.55rem;
+  border-radius: 999px;
+  background: var(--preview-accent);
+}
+
+.theme-preview-chart {
+  display: flex;
+  height: 1.75rem;
+  align-items: end;
+  gap: 0.24rem;
+  margin-top: 0.22rem;
+  padding: 0.3rem 0.4rem;
+  border-radius: 0.35rem;
+  background: color-mix(in srgb, var(--preview-accent-soft) 48%, var(--preview-canvas));
+}
+
+.theme-preview-chart-bar {
+  display: block;
+  flex: 1;
+  height: 42%;
+  border-radius: 0.15rem 0.15rem 0.08rem 0.08rem;
+  background: color-mix(in srgb, var(--preview-accent) 52%, var(--preview-canvas));
+}
+
+.theme-preview-chart-bar-short {
+  height: 27%;
+}
+
+.theme-preview-chart-bar-medium {
+  height: 60%;
+}
+
+.theme-preview-chart-bar-tall {
+  height: 82%;
+  background: var(--preview-accent);
+}
+
+.theme-preview-card-row {
+  margin-top: 0.25rem;
+}
+
+.theme-preview-card {
+  display: block;
+  width: 48%;
+  height: 2rem;
+  border: 1px solid color-mix(in srgb, var(--preview-muted) 38%, transparent);
+  border-radius: 0.35rem;
+  background: color-mix(in srgb, var(--preview-sidebar) 56%, var(--preview-canvas));
+}
+
+.theme-preview-card-accent {
+  border-color: color-mix(in srgb, var(--preview-accent) 40%, transparent);
+  background: var(--preview-accent-soft);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .theme-choice-card {
+    transition: none;
+  }
+}

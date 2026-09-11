@@ -1717,13 +1717,13 @@ impl ClaudeProvider {
                 .and_then(|value| value.to_str())
                 .map(str::to_owned);
             if let Some(session) = file_ref.as_ref().and_then(|value| output.get_mut(value)) {
-                session.transcript = transcript_path;
+                session.update_transcript(transcript_path);
                 continue;
             }
             match claude_session_from_transcript(&transcript_path) {
                 Ok(Some(session)) => {
                     if let Some(indexed) = output.get_mut(&session.native_ref) {
-                        indexed.transcript = transcript_path;
+                        indexed.update_transcript(transcript_path);
                     } else {
                         output.insert(session.native_ref.clone(), session);
                     }
@@ -1891,6 +1891,19 @@ struct ClaudeNativeSession {
     message_count: Option<u64>,
     git_branch: Option<String>,
     sidechain: bool,
+}
+
+impl ClaudeNativeSession {
+    fn update_transcript(&mut self, path: PathBuf) {
+        // The index can lag behind writes to an already discovered transcript.
+        // Enrich its time from metadata only; retain native identity and title.
+        let modified = fs::metadata(&path)
+            .and_then(|metadata| metadata.modified())
+            .ok()
+            .map(DateTime::<Utc>::from);
+        self.updated_at = latest_time(self.updated_at, modified);
+        self.transcript = path;
+    }
 }
 
 fn claude_session_from_transcript(path: &Path) -> Result<Option<ClaudeNativeSession>> {
@@ -3592,6 +3605,86 @@ mod tests {
         assert!(!debug.contains("private system"));
         assert!(!debug.contains("private result"));
         assert!(!debug.contains("file_path"));
+    }
+
+    #[test]
+    fn claude_indexed_transcript_merges_latest_time_without_reading_body() {
+        let dir = tempdir().unwrap();
+        let projects = dir.path().join("projects/project");
+        let workspace = dir.path().join("workspace");
+        fs::create_dir_all(&projects).unwrap();
+        fs::create_dir_all(&workspace).unwrap();
+        let transcript = projects.join("indexed-session.jsonl");
+        // An index hit must not need to parse or read transcript messages.
+        fs::write(&transcript, "not json").unwrap();
+        let file_time = Utc.with_ymd_and_hms(2026, 9, 10, 10, 0, 0).unwrap();
+        File::options()
+            .write(true)
+            .open(&transcript)
+            .unwrap()
+            .set_times(std::fs::FileTimes::new().set_modified(file_time.into()))
+            .unwrap();
+        let created = Utc.with_ymd_and_hms(2026, 9, 1, 10, 0, 0).unwrap();
+        for (modified, history, expected) in [
+            (
+                serde_json::json!("2026-09-02T10:00:00Z"),
+                Value::Null,
+                file_time,
+            ),
+            (Value::Null, Value::Null, file_time),
+            (
+                serde_json::json!("invalid"),
+                serde_json::json!("invalid"),
+                file_time,
+            ),
+            (
+                serde_json::json!("2026-09-02T10:00:00Z"),
+                serde_json::json!("2026-09-11T10:00:00Z"),
+                Utc.with_ymd_and_hms(2026, 9, 11, 10, 0, 0).unwrap(),
+            ),
+            (
+                serde_json::json!("2026-09-12T10:00:00Z"),
+                serde_json::json!("2026-09-11T10:00:00Z"),
+                Utc.with_ymd_and_hms(2026, 9, 12, 10, 0, 0).unwrap(),
+            ),
+        ] {
+            fs::write(projects.join("sessions-index.json"), serde_json::to_vec(&serde_json::json!({
+                "version":1,"entries":[{"sessionId":"indexed-session","fullPath":transcript,"projectPath":workspace,"summary":"Native title","created":created.to_rfc3339(),"modified":modified,"messageCount":7,"isSidechain":true,"gitBranch":"native-branch"}]
+            })).unwrap()).unwrap();
+            fs::write(
+                dir.path().join("history.jsonl"),
+                format!(
+                    "{}\n",
+                    serde_json::json!({"sessionId":"indexed-session","timestamp":history})
+                ),
+            )
+            .unwrap();
+            let mut sessions = ClaudeProvider::with_home(dir.path().to_path_buf())
+                .native_sessions(Some(&workspace))
+                .unwrap();
+            assert_eq!(sessions.len(), 1);
+            let session = sessions.pop().unwrap();
+            assert_eq!(session.updated_at, Some(expected));
+            assert_eq!(session.created_at, Some(created));
+            assert_eq!(session.native_ref, "indexed-session");
+            assert_eq!(session.project_path, workspace);
+            assert_eq!(session.transcript, transcript);
+            assert_eq!(session.title.as_deref(), Some("Native title"));
+            assert_eq!(session.origin, SessionOrigin::Auxiliary);
+            assert!(session.sidechain);
+            assert_eq!(session.message_count, Some(7));
+            assert_eq!(session.git_branch.as_deref(), Some("native-branch"));
+
+            let mut session = session;
+            session.spawned_by_session_id = Some("parent".to_owned());
+            session.forked_from_session_id = Some("source".to_owned());
+            session.update_transcript(dir.path().join("missing.jsonl"));
+            assert_eq!(session.updated_at, Some(expected));
+            assert_eq!(session.created_at, Some(created));
+            assert_eq!(session.title.as_deref(), Some("Native title"));
+            assert_eq!(session.spawned_by_session_id.as_deref(), Some("parent"));
+            assert_eq!(session.forked_from_session_id.as_deref(), Some("source"));
+        }
     }
 
     #[test]

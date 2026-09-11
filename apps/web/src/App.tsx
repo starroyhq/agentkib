@@ -31,6 +31,7 @@ import { displaySessionTitle } from "@agentkib/session-catalog";
 import { SessionCatalog, type CatalogWorkspace } from "./SessionCatalog";
 import { catalogCopy } from "./catalog-copy";
 import { dictionaries, type Locale } from "./i18n";
+import { unavailableReasonText } from "./live-status";
 import { HostedConnection } from "./HostedConnection";
 import { PairingLayout } from "./PairingLayout";
 const MAX_MESSAGE_LENGTH = 16_000;
@@ -49,11 +50,13 @@ export function Dialog({
   closeLabel,
   onClose,
   children,
+  footer,
 }: {
   title: string;
   closeLabel: string;
   onClose: () => void;
   children: ReactNode;
+  footer?: ReactNode;
 }) {
   const ref = useRef<HTMLDialogElement>(null);
   useEffect(() => {
@@ -72,6 +75,7 @@ export function Dialog({
         onClose();
       }}
       aria-label={title}
+      className={footer ? "interaction-dialog" : undefined}
     >
       <header>
         <h2>{title}</h2>
@@ -79,7 +83,14 @@ export function Dialog({
           <X size={20} />
         </button>
       </header>
-      {children}
+      {footer ? (
+        <div className="dialog-body" tabIndex={0}>
+          {children}
+        </div>
+      ) : (
+        children
+      )}
+      {footer && <footer className="dialog-footer">{footer}</footer>}
     </dialog>
   );
 }
@@ -761,7 +772,7 @@ export function SessionApp({
             : live?.status === "awaiting-approval" || live?.status === "waiting-approval"
               ? t.approval
               : live?.reason
-                ? t.unavailable
+                ? unavailableReasonText(live.reason, t)
                 : t.unknown;
   const icon = <span className="brand-mark">K</span>;
   return (
@@ -1128,7 +1139,7 @@ export function SessionApp({
           <h3>{modal.tool_name || t.unknownTool}</h3>
           <p>{toolStatusLabel(modal.tool_status, locale)}</p>
           {modal.timestamp && <time>{new Date(modal.timestamp).toLocaleString(locale)}</time>}
-          <pre>{modal.content || t.history}</pre>
+          {modal.content?.trim() ? <pre>{modal.content}</pre> : <p>{t.toolSummaryUnavailable}</p>}
           {modal.truncated && <p>{t.truncated}</p>}
         </Dialog>
       )}
@@ -1163,7 +1174,42 @@ export function SessionApp({
         </Dialog>
       )}
       {typeof modal === "object" && "requestId" in modal && !("questions" in modal) && (
-        <Dialog closeLabel={t.close} title={t.approval} onClose={() => setModal(undefined)}>
+        <Dialog
+          closeLabel={t.close}
+          title={t.approval}
+          onClose={() => setModal(undefined)}
+          footer={
+            modal.supported &&
+            access?.experimentalEnabled &&
+            access.device?.approve &&
+            controlReady &&
+            online &&
+            live?.approvals.some((a) => JSON.stringify(a) === JSON.stringify(modal)) ? (
+              <div className="decision-actions">
+                {modal.availableDecisions
+                  .filter((d) =>
+                    (modal.method === "claude/can_use_tool"
+                      ? ["allow", "deny"]
+                      : ["accept", "decline", "cancel"]
+                    ).includes(d),
+                  )
+                  .map((d) => (
+                    <button
+                      key={d}
+                      className={d === "accept" || d === "allow" ? "primary" : ""}
+                      disabled={busy}
+                      onClick={() => void control("approve", modal, d)}
+                    >
+                      {(d === "accept" || d === "allow") && <Check size={16} />}{" "}
+                      {d === "cancel" ? t.cancelTurn : t[d]}
+                    </button>
+                  ))}
+              </div>
+            ) : (
+              <aside className="info">{t.approvalFallback}</aside>
+            )
+          }
+        >
           <p>{modal.method === "claude/can_use_tool" ? t.claudeDecisionInfo : t.decisionInfo}</p>
           {modal.method === "claude/can_use_tool" && <h3>{modal.toolName || t.unknownTool}</h3>}
           {modal.environmentId === "local" && <p>{t.localExecution}</p>}
@@ -1183,45 +1229,16 @@ export function SessionApp({
             )}
           </pre>
           {modal.method === "claude/can_use_tool" && modal.context && (
-            <aside className="info">
+            <aside className="approval-context">
               <p>{t.claudeContextInfo}</p>
               <pre>{JSON.stringify(modal.context, null, 2)}</pre>
             </aside>
           )}
           {modal.method !== "claude/can_use_tool" && modal.proposedExecpolicyAmendment && (
-            <aside className="info policy-proposal">
+            <aside className="approval-context policy-proposal">
               <p>{t.policyProposal}</p>
               <pre>{JSON.stringify(modal.proposedExecpolicyAmendment, null, 2)}</pre>
             </aside>
-          )}
-          {modal.supported &&
-          access?.experimentalEnabled &&
-          access.device?.approve &&
-          controlReady &&
-          online &&
-          live?.approvals.some((a) => JSON.stringify(a) === JSON.stringify(modal)) ? (
-            <div className="decision-actions">
-              {modal.availableDecisions
-                .filter((d) =>
-                  (modal.method === "claude/can_use_tool"
-                    ? ["allow", "deny"]
-                    : ["accept", "decline", "cancel"]
-                  ).includes(d),
-                )
-                .map((d) => (
-                  <button
-                    key={d}
-                    className={d === "accept" || d === "allow" ? "primary" : ""}
-                    disabled={busy}
-                    onClick={() => void control("approve", modal, d)}
-                  >
-                    {(d === "accept" || d === "allow") && <Check size={16} />}{" "}
-                    {d === "cancel" ? t.cancelTurn : t[d]}
-                  </button>
-                ))}
-            </div>
-          ) : (
-            <aside className="info">{t.approvalFallback}</aside>
           )}
         </Dialog>
       )}

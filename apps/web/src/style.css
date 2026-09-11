@@ -727,6 +727,49 @@ dialog {
 dialog::backdrop {
   background: #0006;
 }
+dialog.interaction-dialog[open] {
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  padding: 0;
+}
+.interaction-dialog > header {
+  flex-shrink: 0;
+  margin: 0;
+  padding: 16px 20px;
+  border-bottom: 1px solid var(--line);
+}
+.interaction-dialog > header h2 {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.interaction-dialog > header button {
+  flex-shrink: 0;
+}
+.dialog-body {
+  min-height: 0;
+  min-width: 0;
+  overflow: auto;
+  overscroll-behavior: contain;
+  padding: 16px 20px;
+}
+.dialog-footer {
+  flex-shrink: 0;
+  padding: 16px 20px;
+  border-top: 1px solid var(--line);
+  background: var(--bg);
+}
+.approval-context {
+  display: block;
+  min-width: 0;
+}
+.approval-context p {
+  color: var(--muted);
+}
+.dialog-footer .decision-actions button {
+  min-height: 44px;
+  white-space: normal;
+}
 dialog header {
   display: flex;
   justify-content: space-between;

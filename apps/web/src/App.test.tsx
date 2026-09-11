@@ -229,6 +229,37 @@ function mockServer(initial = "approved", availability = "readable") {
   };
 }
 describe("Web access UI", () => {
+  it.each([undefined, "", "   ", "Saved summary"])(
+    "explains tool summary content %s",
+    async (content) => {
+      const server = mockServer();
+      const original = server.fetcher.getMockImplementation()!;
+      server.fetcher.mockImplementation(async (url) => {
+        if (String(url).includes("/events"))
+          return Response.json({
+            events: [
+              event("tool", "tool-summary", {
+                tool_name: "Bash",
+                tool_status: "failed",
+                content,
+                truncated: true,
+              }),
+            ],
+            warnings: [],
+          });
+        return original(url);
+      });
+      render(<App />);
+      fireEvent.click(await screen.findByRole("button", { name: /Test session/ }));
+      fireEvent.click(await screen.findByRole("button", { name: /Bash/ }));
+      const dialog = screen.getByRole("dialog", { name: "工具摘要" });
+      expect(dialog).toHaveTextContent(
+        content?.trim() ? content : dictionaries["zh-CN"].toolSummaryUnavailable,
+      );
+      expect(dialog).toHaveTextContent(dictionaries["zh-CN"].truncated);
+      expect(dialog).not.toHaveTextContent("历史只读");
+    },
+  );
   it("refreshes background pending markers and clears them after another client answers", async () => {
     const { fetcher } = mockServer();
     const original = fetcher.getMockImplementation()!;
@@ -785,8 +816,21 @@ describe("Web access UI", () => {
     expect(screen.getByText(/允许一次不会保存此规则/)).toBeVisible();
     expect(screen.queryByRole("button", { name: /持久放行/ })).toBeNull();
     expect(screen.getByRole("button", { name: "允许一次" })).toBeEnabled();
+    const approvalDialog = screen.getByRole("dialog", { name: "等待审批" });
+    expect(approvalDialog.querySelector(".dialog-body")).toHaveAttribute("tabindex", "0");
+    expect(approvalDialog.querySelector(".dialog-footer")).toContainElement(
+      screen.getByRole("button", { name: "允许一次" }),
+    );
+    expect(approvalDialog.querySelector(".dialog-body")).not.toContainElement(
+      screen.getByRole("button", { name: "允许一次" }),
+    );
     expect(screen.getByRole("button", { name: "取消轮次" })).toBeEnabled();
     expect(screen.queryByRole("button", { name: "拒绝" })).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "关闭" }));
+    expect(screen.queryByRole("dialog")).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "等待审批" }));
+    expect(screen.getByRole("dialog", { name: "等待审批" })).toBeVisible();
+    expect(screen.getByRole("button", { name: "允许一次" })).toBeEnabled();
     act(() =>
       FakeEvents.instances.at(-1)!.emit("snapshot", {
         sessionId: "s",
@@ -1097,6 +1141,46 @@ describe("Web access UI", () => {
       0,
     );
   });
+  it.each([
+    ["unverified-installation", dictionaries["zh-CN"].unverifiedInstallation],
+    ["open-in-original-client", dictionaries["zh-CN"].openOriginalClient],
+    ["future-reason", dictionaries["zh-CN"].unavailable],
+  ])(
+    "renders accurate unavailable advice for %s without enabling control",
+    async (reason, copy) => {
+      const server = mockServer();
+      const original = server.fetcher.getMockImplementation()!;
+      server.fetcher.mockImplementation(async (url) => {
+        if (String(url).endsWith("/access"))
+          return Response.json({
+            status: "approved",
+            csrfToken: "x",
+            bootId: "b",
+            experimentalEnabled: true,
+            device: { id: "d", name: "Browser", send: true, approve: true },
+          });
+        if (String(url).includes("/live"))
+          return Response.json({
+            sessionId: "s",
+            status: "unavailable",
+            reason,
+            revision: null,
+            sendEnabled: false,
+            approvals: [],
+          });
+        return original(url);
+      });
+      render(<App />);
+      fireEvent.click(await screen.findByRole("button", { name: /Test session/ }));
+      await screen.findByText(copy, { exact: false });
+      fireEvent.change(screen.getByLabelText("发送消息"), { target: { value: "hello" } });
+      expect(screen.getByRole("button", { name: "发送" })).toBeDisabled();
+      if (reason !== "open-in-original-client")
+        expect(
+          screen.queryByText(dictionaries["zh-CN"].openOriginalClient),
+        ).not.toBeInTheDocument();
+    },
+  );
   it("explains the host control fence without suggesting reopening restores control", async () => {
     const server = mockServer();
     const original = server.fetcher.getMockImplementation()!;

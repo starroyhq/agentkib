@@ -1,1 +1,21 @@
-{"compilerOptions":{"target":"ES2022","lib":["ES2022","DOM","DOM.Iterable"],"module":"ESNext","moduleResolution":"Bundler","jsx":"react-jsx","strict":true,"skipLibCheck":true,"allowImportingTsExtensions":true,"noEmit":true,"types":["vite/client","vitest/globals"]},"include":["src","vite.config.ts","../../packages/web-client/src","../../packages/session-ui/src"]}
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "lib": ["ES2022", "DOM", "DOM.Iterable"],
+    "module": "ESNext",
+    "moduleResolution": "Bundler",
+    "jsx": "react-jsx",
+    "strict": true,
+    "skipLibCheck": true,
+    "allowImportingTsExtensions": true,
+    "noEmit": true,
+    "paths": { "@/*": ["./src/*"] },
+    "types": ["vite/client", "vitest/globals"]
+  },
+  "include": [
+    "src",
+    "vite.config.ts",
+    "../../packages/web-client/src",
+    "../../packages/session-ui/src"
+  ]
+}

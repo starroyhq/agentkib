@@ -10,6 +10,7 @@ import {
   Menu,
   MonitorSmartphone,
   PackageSearch,
+  Palette,
   PlugZap,
   Search,
   Settings2,
@@ -24,6 +25,7 @@ import { focusSettingsTarget } from "./components/SettingsLayout";
 
 export type SettingsSection =
   | "general"
+  | "appearance"
   | "discovery"
   | "tools"
   | "remote"
@@ -35,6 +37,8 @@ export const settingsTargets = [
   "general-interface",
   "general-shortcuts",
   "general-quota",
+  "appearance-mode",
+  "appearance-theme",
   "discovery-status",
   "discovery-sources",
   "discovery-roots",
@@ -64,6 +68,7 @@ const sections: Array<{
   icon: ComponentType<{ size?: number }>;
 }> = [
   { id: "general", label: "settings.section.general", icon: Settings2 },
+  { id: "appearance", label: "settings.section.appearance", icon: Palette },
   { id: "discovery", label: "settings.section.discovery", icon: FolderSearch },
   { id: "tools", label: "settings.section.tools", icon: PackageSearch },
   { id: "remote", label: "settings.section.remote", icon: MonitorSmartphone },
@@ -95,11 +100,28 @@ const searchEntries: Array<{
     target: "general-interface",
     label: "settings.interface",
     keywords: [
-      "settings.theme",
-      "settings.accentTheme",
       "settings.appIcon",
       "settings.language",
       "settings.closeBehavior",
+    ],
+  },
+  {
+    section: "appearance",
+    target: "appearance-mode",
+    label: "settings.theme",
+    keywords: ["settings.theme.light", "settings.theme.dark", "settings.theme.system"],
+  },
+  {
+    section: "appearance",
+    target: "appearance-theme",
+    label: "settings.accentTheme",
+    keywords: [
+      "settings.accentTheme.description",
+      "settings.accentTheme.minimal-neutral",
+      "settings.accentTheme.vtron",
+      "settings.accentTheme.claude",
+      "settings.accentTheme.sakura",
+      "settings.accentTheme.ocean-breeze",
     ],
   },
   {

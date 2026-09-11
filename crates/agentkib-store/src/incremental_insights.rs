@@ -299,13 +299,28 @@ mod tests {
         let workspace = store.add_workspace(&project).unwrap();
         let missing = project.join("removed-child");
         assert!(!missing.exists());
-        let lexical = missing.to_string_lossy().to_lowercase();
+        assert!(
+            platform_path::starts_with(&missing, &project),
+            "missing={missing:?}, project={project:?}"
+        );
+        // Build valid spelling variants without doubling a verbatim prefix
+        // that may already be present in the runner's temporary directory.
+        let lexical = platform_path::canonicalize(&project)
+            .unwrap()
+            .join("removed-child")
+            .to_string_lossy()
+            .to_lowercase();
         for cwd in [
             lexical.clone(),
             lexical.replace('\\', "/"),
             format!(r"\\?\{}", lexical),
         ] {
-            assert!(platform_path::starts_with(Path::new(&cwd), &project));
+            assert!(
+                platform_path::starts_with(Path::new(&cwd), &project),
+                "cwd={cwd:?}, project={project:?}, cwd_identity={:?}, project_identity={:?}",
+                platform_path::identity(Path::new(&cwd)),
+                platform_path::identity(&project),
+            );
             fs::write(
                 &a,
                 format!(

@@ -1195,8 +1195,12 @@ mod tests {
         append(&path, &token(20, None));
         let connection = database(dir.path(), &dir.path().join("sessions/missing.jsonl"));
         drop(connection);
-        let root = identify(Path::new("/private"));
-        let child = identify(Path::new("/private/workspace"));
+        let root = identify(&agentkib_platform::path::identity_path(Path::new(
+            "/private",
+        )));
+        let child = identify(&agentkib_platform::path::identity_path(Path::new(
+            "/private/workspace",
+        )));
         let initial = collect_codex_incremental(
             dir.path(),
             &CodexIncrementalState::default(),

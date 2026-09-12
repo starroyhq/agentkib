@@ -30,7 +30,7 @@ export function SessionDialogs() {
           <h3>{modal.tool_name || t.unknownTool}</h3>
           <p>{toolStatusLabel(modal.tool_status, locale)}</p>
           {modal.timestamp && <time>{new Date(modal.timestamp).toLocaleString(locale)}</time>}
-          <pre>{modal.content || t.history}</pre>
+          <pre>{modal.content?.trim() ? modal.content : t.toolSummaryUnavailable}</pre>
           {modal.truncated && <p>{t.truncated}</p>}
         </Dialog>
       )}

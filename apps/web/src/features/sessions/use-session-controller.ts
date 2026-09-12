@@ -17,6 +17,7 @@ import { answerRequestBody, interactionCopy } from "@/features/interactions/ques
 import type { CatalogWorkspace } from "@/features/catalog/session-catalog";
 import { catalogCopy } from "@/features/catalog/catalog-copy";
 import { dictionaries, type Locale } from "@/i18n";
+import { unavailableReasonText } from "@/live-status";
 import { isValidMessage, mergeLatestPage } from "./session-model";
 import { useAppearance } from "@/features/preferences/use-appearance";
 export function useSessionController({
@@ -534,7 +535,7 @@ export function useSessionController({
             : live?.status === "awaiting-approval" || live?.status === "waiting-approval"
               ? t.approval
               : live?.reason
-                ? t.unavailable
+                ? unavailableReasonText(live.reason, t)
                 : t.unknown;
   const leaveSession = useCallback(() => {
     generation.current++;

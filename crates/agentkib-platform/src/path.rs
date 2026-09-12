@@ -92,14 +92,14 @@ pub fn canonicalize_allow_missing(path: &Path) -> io::Result<PathBuf> {
 
 /// Stable path identity used for deduplication and containment comparisons.
 pub fn identity(path: &Path) -> String {
-    let path = identity_path(path);
+    let path = identity_base(path);
     identity_for_platform(&path.to_string_lossy(), cfg!(windows))
 }
 
 /// Path-shaped identity for salted keys. Preserve Unix OS bytes while applying
 /// Windows comparison rules, including when the final directory no longer exists.
 pub fn identity_path(path: &Path) -> PathBuf {
-    let normalized = normalize_identity_path(path);
+    let normalized = identity_base(path);
     #[cfg(windows)]
     {
         PathBuf::from(identity_for_platform(&normalized.to_string_lossy(), true))
@@ -110,25 +110,14 @@ pub fn identity_path(path: &Path) -> PathBuf {
     }
 }
 
-fn normalize_identity_path(path: &Path) -> PathBuf {
+fn identity_base(path: &Path) -> PathBuf {
+    let resolved = canonicalize(path);
+    // A removed child still needs its existing ancestor resolved: Windows may
+    // expose that ancestor through an 8.3 alias or a junction. Lexical fallback
+    // alone would no longer match the canonical identity of its workspace.
     #[cfg(windows)]
-    {
-        let has_windows_prefix = path
-            .components()
-            .next()
-            .is_some_and(|component| matches!(component, Component::Prefix(_)));
-        if has_windows_prefix {
-            canonicalize_allow_missing(path)
-                .or_else(|_| canonicalize(path))
-                .unwrap_or_else(|_| strip_verbatim_prefix(path.to_path_buf()))
-        } else {
-            strip_verbatim_prefix(path.to_path_buf())
-        }
-    }
-    #[cfg(not(windows))]
-    {
-        canonicalize(path).unwrap_or_else(|_| strip_verbatim_prefix(path.to_path_buf()))
-    }
+    let resolved = resolved.or_else(|_| canonicalize_allow_missing(path));
+    resolved.unwrap_or_else(|_| strip_verbatim_prefix(path.to_path_buf()))
 }
 
 pub fn equivalent(left: &Path, right: &Path) -> bool {
@@ -330,6 +319,39 @@ mod tests {
             canonicalize_allow_missing(&path).unwrap_err().kind(),
             io::ErrorKind::InvalidInput
         );
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn missing_child_identity_resolves_existing_short_path_ancestor() {
+        use std::os::windows::ffi::{OsStrExt, OsStringExt};
+        use windows_sys::Win32::Storage::FileSystem::GetShortPathNameW;
+
+        let directory = tempfile::tempdir().unwrap();
+        let project = directory.path().join("Long Workspace Name");
+        fs::create_dir(&project).unwrap();
+        let canonical = canonicalize(&project).unwrap();
+        let input: Vec<u16> = canonical.as_os_str().encode_wide().chain(Some(0)).collect();
+        let required = unsafe { GetShortPathNameW(input.as_ptr(), std::ptr::null_mut(), 0) };
+        assert!(required > 0, "{}", io::Error::last_os_error());
+        let mut output = vec![0u16; required as usize];
+        let written = unsafe { GetShortPathNameW(input.as_ptr(), output.as_mut_ptr(), required) };
+        assert!(written > 0 && written < required);
+        let alias = PathBuf::from(std::ffi::OsString::from_wide(&output[..written as usize]));
+        let child = canonical.join("removed-child").join("nested");
+        let lexical = alias.join("removed-child").join("nested");
+        let lexical = lexical.to_string_lossy().to_lowercase();
+        for spelling in [
+            lexical.clone(),
+            lexical.replace('\\', "/"),
+            format!(r"\\?\{}", lexical),
+        ] {
+            let path = Path::new(&spelling);
+            assert_eq!(identity(path), identity(&child), "{spelling}");
+            assert_eq!(identity_path(path), identity_path(&child), "{spelling}");
+            assert!(starts_with(path, &project), "{spelling}");
+            assert!(!starts_with(path, &project.join("removed")), "{spelling}");
+        }
     }
 
     #[test]

@@ -738,8 +738,10 @@ impl Runner {
             .join("agentkib/claude-runner-locks");
         std::fs::create_dir_all(&lock_dir)?;
         let lock = acquire_session_lock(&lock_dir.join(format!("{uuid}.lock")))?;
-        check_version()?;
-        let mut command = Command::new("claude");
+        // GUI launches may have only the system PATH. Resolve with the same
+        // platform search rules as discovery, then launch the verified binary.
+        let executable = check_version()?;
+        let mut command = Command::new(executable);
         #[cfg(unix)]
         command.process_group(0);
         // Non-Unix descendant cleanup needs a job object before it can be enabled.
@@ -909,8 +911,14 @@ fn terminate_owned_process_group(child: &mut std::process::Child) {
     let _ = child.wait();
 }
 
-fn check_version() -> Result<()> {
-    let mut child = Command::new("claude")
+fn check_version() -> Result<PathBuf> {
+    let executable =
+        agentkib_platform::command::resolve("claude").context("Claude CLI unavailable")?;
+    check_version_at(executable)
+}
+
+fn check_version_at(executable: PathBuf) -> Result<PathBuf> {
+    let mut child = Command::new(&executable)
         .arg("--version")
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
@@ -931,7 +939,7 @@ fn check_version() -> Result<()> {
                 status.success() && output.trim() == SUPPORTED_VERSION,
                 "managed Claude requires CLI 2.1.263"
             );
-            return Ok(());
+            return Ok(executable);
         }
         if Instant::now() >= deadline {
             let _ = child.kill();
@@ -945,6 +953,47 @@ fn check_version() -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(unix)]
+    #[test]
+    fn verifies_and_launches_resolved_cli_without_shell_path() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let directory = tempfile::tempdir().unwrap();
+        let system_bin = directory.path().join("system-bin");
+        let user_bin = directory.path().join("home/.local/bin");
+        std::fs::create_dir_all(&system_bin).unwrap();
+        std::fs::create_dir_all(&user_bin).unwrap();
+        let executable = user_bin.join("claude");
+        std::fs::write(
+            &executable,
+            format!("#!/bin/sh\nprintf '%s\\n' '{SUPPORTED_VERSION}'\n"),
+        )
+        .unwrap();
+        std::fs::set_permissions(&executable, std::fs::Permissions::from_mode(0o755)).unwrap();
+        assert!(agentkib_platform::command::resolve_in("claude", [system_bin.as_path()]).is_none());
+        let resolved = agentkib_platform::command::resolve_in(
+            "claude",
+            [system_bin.as_path(), user_bin.as_path()],
+        )
+        .unwrap();
+        let verified = check_version_at(resolved).unwrap();
+        assert_eq!(verified, executable);
+        let output = Command::new(verified)
+            .env("PATH", &system_bin)
+            .output()
+            .unwrap();
+        assert!(output.status.success());
+        assert_eq!(
+            String::from_utf8(output.stdout).unwrap().trim(),
+            SUPPORTED_VERSION
+        );
+
+        std::fs::write(&executable, "#!/bin/sh\nprintf 'unknown version\\n'\n").unwrap();
+        assert!(check_version_at(executable).is_err());
+        assert!(check_version_at(user_bin.join("missing")).is_err());
+    }
+
     #[test]
     fn startup_lock_failure_can_recover_only_after_resynchronizing() {
         let directory = tempfile::tempdir().unwrap();

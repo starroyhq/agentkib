@@ -9,20 +9,14 @@ import {
 import { useEffect, useId, useState, type ComponentType } from "react";
 import {
   Bot,
-  Boxes,
   ChevronDown,
-  Code2,
   Ellipsis,
   FolderGit2,
-  GitCommitHorizontal,
-  GitCompareArrows,
-  LayoutDashboard,
   Menu,
-  MessageSquareText,
   MonitorSmartphone,
   Settings,
-  ShieldCheck,
   SlidersHorizontal,
+  Star,
 } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import { cn } from "@/lib/utils";
@@ -37,7 +31,7 @@ import {
   type ShortcutId,
 } from "@/core/keyboard-shortcuts";
 import type { WorkspaceSummary } from "@/core/types";
-import type { GlobalPage, Page } from "@/features/app/app-route";
+import type { GlobalPage } from "@/features/app/app-route";
 import { SessionDirectory } from "@/features/sessions/SessionDirectory";
 import { RemoteConnectionPanel } from "@/features/remote/RemoteConnectionPanel";
 
@@ -53,35 +47,12 @@ export type AgentFilter = "all" | "enabled" | "available";
 
 export type AppSidebarContext =
   | { kind: "sessions" }
-  | {
-      kind: "global";
-      recentWorkspaces: WorkspaceSummary[];
-      onOpenWorkspace: (workspace: WorkspaceSummary) => void;
-    }
-  | {
-      kind: "workspace";
-      workspace?: WorkspaceSummary;
-      page: Page;
-      changeCount: number;
-      onWorkspaceNavigate: (page: Page) => void;
-    }
+  | { kind: "global" }
   | {
       kind: "agents";
       filter: AgentFilter;
       onFilterChange: (filter: AgentFilter) => void;
     };
-
-const workspaceTaskEntries = [
-  ["overview", "nav.overview", LayoutDashboard],
-  ["sessions", "nav.sessions", MessageSquareText],
-  ["assets", "nav.assets", Boxes],
-] as const;
-
-const workspaceDevelopmentEntries = [
-  ["git", "nav.git", GitCommitHorizontal],
-  ["context", "nav.context", Code2],
-  ["doctor", "nav.doctor", ShieldCheck],
-] as const;
 
 const agentFilters: Array<[AgentFilter, string]> = [
   ["all", "agents.filter.all"],
@@ -103,6 +74,9 @@ export function AppSidebar(props: {
   searchOpen?: boolean;
   collapsed: boolean;
   context?: AppSidebarContext;
+  workspaces?: WorkspaceSummary[];
+  favoriteWorkspaceIds?: string[];
+  onOpenWorkspace?: (workspace: WorkspaceSummary) => void;
   onCollapsedChange?: (collapsed: boolean) => void;
 }) {
   const { t: tr } = useTranslation();
@@ -247,10 +221,10 @@ export function AppSidebar(props: {
           <nav className="app-sidebar-nav" aria-label={tr("common.primaryNavigation")}>
             <div className="app-sidebar-group">{primaryEntries.map(renderNavigationEntry)}</div>
 
-            {context?.kind === "global" && context.recentWorkspaces.length > 0 && (
+            {active === "workspaces" && !!props.workspaces?.length && (
               <div className="app-sidebar-group app-sidebar-context-group">
-                <SidebarSectionLabel>{tr("home.recentWorkspaces")}</SidebarSectionLabel>
-                {context.recentWorkspaces.slice(0, 5).map((workspace) => (
+                <SidebarSectionLabel>{tr("sidebar.allWorkspaces")}</SidebarSectionLabel>
+                {props.workspaces.map((workspace) => (
                   <Button
                     key={workspace.id}
                     variant="bare"
@@ -259,7 +233,7 @@ export function AppSidebar(props: {
                     title={workspace.name}
                     onClick={() => {
                       setMobileOpen(false);
-                      context.onOpenWorkspace(workspace);
+                      props.onOpenWorkspace?.(workspace);
                     }}
                   >
                     <span className="app-sidebar-item-icon">
@@ -268,83 +242,24 @@ export function AppSidebar(props: {
                     <span className="app-sidebar-item-label min-w-0 flex-1 truncate text-left">
                       {workspace.name}
                     </span>
-                    {workspace.status === "attention" ? (
+                    {workspace.status === "attention" && (
                       <span
                         className="app-sidebar-status-dot"
                         aria-label={tr("status.workspace.attention")}
                       />
-                    ) : null}
+                    )}
+                    <Star
+                      size={13}
+                      className={cn(
+                        "transition-opacity",
+                        props.favoriteWorkspaceIds?.includes(workspace.id)
+                          ? "fill-current opacity-70"
+                          : "opacity-0",
+                      )}
+                      aria-hidden="true"
+                    />
                   </Button>
                 ))}
-              </div>
-            )}
-
-            {context?.kind === "workspace" && (
-              <div className="app-sidebar-group app-sidebar-context-group">
-                <SidebarSectionLabel>{tr("nav.workspaces")}</SidebarSectionLabel>
-                <div className="app-sidebar-workspace" title={context.workspace?.name}>
-                  <FolderGit2 size={16} />
-                  <span>{context.workspace?.name ?? tr("common.loading")}</span>
-                </div>
-                <SidebarSectionLabel>{tr("sidebar.tasks")}</SidebarSectionLabel>
-                {workspaceTaskEntries.map(([id, label, Icon]) => (
-                  <Button
-                    key={id}
-                    variant="bare"
-                    size="content"
-                    className={cn(
-                      "app-sidebar-item",
-                      context.page === id && "app-sidebar-item-active",
-                    )}
-                    onClick={() => context.onWorkspaceNavigate(id)}
-                  >
-                    <span className="app-sidebar-item-icon">
-                      <Icon size={16} />
-                    </span>
-                    <span className="app-sidebar-item-label min-w-0 flex-1 truncate text-left">
-                      {tr(label)}
-                    </span>
-                  </Button>
-                ))}
-                <SidebarSectionLabel>{tr("sidebar.development")}</SidebarSectionLabel>
-                {workspaceDevelopmentEntries.map(([id, label, Icon]) => (
-                  <Button
-                    key={id}
-                    variant="bare"
-                    size="content"
-                    className={cn(
-                      "app-sidebar-item",
-                      context.page === id && "app-sidebar-item-active",
-                    )}
-                    onClick={() => context.onWorkspaceNavigate(id)}
-                  >
-                    <span className="app-sidebar-item-icon">
-                      <Icon size={16} />
-                    </span>
-                    <span className="app-sidebar-item-label min-w-0 flex-1 truncate text-left">
-                      {tr(label)}
-                    </span>
-                  </Button>
-                ))}
-                {context.changeCount > 0 && (
-                  <Button
-                    variant="bare"
-                    size="content"
-                    className={cn(
-                      "app-sidebar-item",
-                      context.page === "changes" && "app-sidebar-item-active",
-                    )}
-                    onClick={() => context.onWorkspaceNavigate("changes")}
-                  >
-                    <span className="app-sidebar-item-icon">
-                      <GitCompareArrows size={16} />
-                    </span>
-                    <span className="app-sidebar-item-label min-w-0 flex-1 truncate text-left">
-                      {tr("nav.changes")}
-                    </span>
-                    <em className="app-sidebar-item-badge">{context.changeCount}</em>
-                  </Button>
-                )}
               </div>
             )}
 

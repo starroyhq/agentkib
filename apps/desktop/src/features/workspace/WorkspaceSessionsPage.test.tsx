@@ -2,6 +2,7 @@
 
 import "@testing-library/jest-dom/vitest";
 import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { api } from "@/core/api";
 import { initializeI18n } from "@/core/i18n";
@@ -118,6 +119,7 @@ describe("WorkspaceSessionsPage", () => {
   );
 
   it("uses the shared auxiliary toggle consistently with the visible workspace count", async () => {
+    const user = userEvent.setup();
     const auxiliary = {
       ...cachedSession,
       id: "auxiliary-session",
@@ -139,8 +141,8 @@ describe("WorkspaceSessionsPage", () => {
     );
     expect(await screen.findAllByText("Cached continuation")).not.toHaveLength(0);
     expect(screen.queryByText("Auxiliary continuation")).toBeNull();
-    fireEvent.click(screen.getByRole("button", { name: "Session history" }));
-    fireEvent.click(
+    await user.click(screen.getByRole("button", { name: "Session history" }));
+    await user.click(
       await screen.findByRole("menuitemcheckbox", { name: "Show auxiliary sessions" }),
     );
     expect(useSessionViewStore.getState().showAuxiliary).toBe(true);

@@ -7,7 +7,17 @@ import {
   useNavigate,
   useParams,
 } from "@tanstack/react-router";
-import { FolderGit2, GitCompareArrows } from "lucide-react";
+import {
+  Boxes,
+  Code2,
+  FolderGit2,
+  GitCommitHorizontal,
+  GitCompareArrows,
+  LayoutDashboard,
+  MessageSquareText,
+  ShieldCheck,
+  type LucideIcon,
+} from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import {
@@ -35,6 +45,8 @@ import {
 } from "@/components/ui/dropdown-menu";
 import { WorkspaceOpenWith } from "@/features/workspace/WorkspaceOpenWith";
 import { Copy, MoreHorizontal, RefreshCw } from "lucide-react";
+import { useAppDialogs } from "@/components/AppDialogProvider";
+import { workspaceSearchForPage, type AppSearch } from "@/features/app/app-route";
 function WorkspaceActions({
   workspace,
   onError,
@@ -102,9 +114,21 @@ function workspaceStatusLabel(status: WorkspaceSummary["status"]) {
 }
 
 type Page = "overview" | "sessions" | "git" | "assets" | "context" | "doctor" | "changes";
+const workspaceTaskEntries = [
+  { page: "overview", label: "nav.overview", icon: LayoutDashboard },
+  { page: "sessions", label: "nav.sessions", icon: MessageSquareText },
+  { page: "assets", label: "nav.assets", icon: Boxes },
+] as const;
+const workspaceDevelopmentEntries = [
+  { page: "git", label: "nav.git", icon: GitCommitHorizontal },
+  { page: "context", label: "nav.context", icon: Code2 },
+  { page: "doctor", label: "nav.doctor", icon: ShieldCheck },
+] as const;
+
 function WorkspaceLayout() {
   const { localizeMessage, tr } = useI18n();
   const navigate = useNavigate();
+  const dialogs = useAppDialogs();
   const location = useLocation();
   const { workspaceId } = useParams({ from: "/workspace/$workspaceId" });
   const setRuntime = useAppStore((state) => state.setRuntime);
@@ -136,6 +160,48 @@ function WorkspaceLayout() {
   );
   const operationRequest = useRef(0);
   const loadStartedWorkspace = useRef<string | undefined>(undefined);
+
+  const navigateWorkspace = (page: Page) => {
+    if (useWorkspaceStore.getState().applyingChanges) {
+      void dialogs.notify(tr("dialog.quit.changesApplying"));
+      return;
+    }
+    const path =
+      page === "overview" ? "/workspace/$workspaceId" : `/workspace/$workspaceId/${page}`;
+    void navigate({
+      to: path as never,
+      params: { workspaceId } as never,
+      search: (current) => workspaceSearchForPage(current as AppSearch, page) as never,
+    });
+  };
+  const renderWorkspaceNavEntries = (
+    entries: readonly { page: Page; label: string; icon: LucideIcon }[],
+  ) =>
+    entries.map(({ page, label, icon: Icon }) => (
+      <Button
+        key={page}
+        variant="bare"
+        size="content"
+        className={cn(
+          "h-9 gap-2 rounded-lg border border-transparent px-3 text-sm transition-colors",
+          currentPage === page
+            ? "border-primary/40 font-semibold text-primary shadow-sm"
+            : "text-muted-foreground hover:bg-muted hover:text-foreground",
+        )}
+        style={
+          currentPage === page
+            ? { backgroundColor: "color-mix(in srgb, var(--primary) 22%, var(--background))" }
+            : undefined
+        }
+        aria-current={currentPage === page ? "page" : undefined}
+        onClick={() => navigateWorkspace(page)}
+      >
+        <Icon size={15} />
+        {tr(label)}
+      </Button>
+    ));
+  const changeCount =
+    workspaceState.changeSet?.changes.length ?? (workspaceState.handoffLaunchRequest ? 1 : 0);
 
   useEffect(() => {
     operationRequest.current += 1;
@@ -290,6 +356,59 @@ function WorkspaceLayout() {
           reviewDisabled={busy || !hasUnsavedDraft}
         />
       </section>
+      <nav
+        aria-label={tr("workspace.navigation")}
+        className="flex flex-wrap items-start gap-x-6 gap-y-3 border-b border-border pb-4"
+      >
+        <div role="group" aria-label={tr("sidebar.tasks")} className="grid gap-1.5">
+          <span className="px-3 text-sm font-semibold leading-5 text-foreground">
+            {tr("sidebar.tasks")}
+          </span>
+          <div className="flex flex-wrap items-center gap-1">
+            {renderWorkspaceNavEntries(workspaceTaskEntries)}
+          </div>
+        </div>
+        <div
+          role="group"
+          aria-label={tr("sidebar.development")}
+          className="grid gap-1.5 border-l border-border pl-5"
+        >
+          <span className="px-3 text-sm font-semibold leading-5 text-foreground">
+            {tr("sidebar.development")}
+          </span>
+          <div className="flex flex-wrap items-center gap-1">
+            {renderWorkspaceNavEntries(workspaceDevelopmentEntries)}
+            {changeCount > 0 && (
+              <Button
+                variant="bare"
+                size="content"
+                className={cn(
+                  "h-9 gap-2 rounded-lg border border-transparent px-3 text-sm transition-colors",
+                  currentPage === "changes"
+                    ? "border-primary/40 font-semibold text-primary shadow-sm"
+                    : "text-muted-foreground hover:bg-muted hover:text-foreground",
+                )}
+                style={
+                  currentPage === "changes"
+                    ? {
+                        backgroundColor:
+                          "color-mix(in srgb, var(--primary) 22%, var(--background))",
+                      }
+                    : undefined
+                }
+                aria-current={currentPage === "changes" ? "page" : undefined}
+                onClick={() => navigateWorkspace("changes")}
+              >
+                <GitCompareArrows size={15} />
+                {tr("nav.changes")}
+                <Badge variant="secondary" className="h-5 min-w-5 px-1 text-[10px]">
+                  {changeCount}
+                </Badge>
+              </Button>
+            )}
+          </div>
+        </div>
+      </nav>
       <section className={cn("min-w-0", currentPage === "git" && "min-h-[calc(100vh-118px)]")}>
         {busy || (currentPage !== "doctor" && (!scan || !manifest)) ? (
           <WorkspacePageSkeleton page={currentPage} />

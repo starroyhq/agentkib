@@ -218,6 +218,15 @@ export function useAppNavigation() {
   const openWorkspace = useCallback(
     async (workspace: WorkspaceSummary, initialPage: Page = "overview") => {
       if (!(await ensureWorkspaceChangeAllowed())) return;
+      if (
+        route.kind === "workspace" &&
+        workspaceRouteId === workspace.id &&
+        selectedWorkspace?.id === workspace.id &&
+        project === workspace.path
+      ) {
+        if (workspaceRoutePage !== initialPage) navigateWorkspacePageFor(workspace.id, initialPage);
+        return;
+      }
       const requestId = ++workspaceOpenRequest.current;
       persistWorkspaceDraft();
       setMessage("");
@@ -237,6 +246,9 @@ export function useAppNavigation() {
       ensureWorkspaceChangeAllowed,
       navigateWorkspacePageFor,
       persistWorkspaceDraft,
+      project,
+      route.kind,
+      selectedWorkspace?.id,
       setBaselineManifest,
       setBusy,
       setChangeSet,
@@ -249,6 +261,8 @@ export function useAppNavigation() {
       setScan,
       setSelectedWorkspace,
       workspaceDrafts,
+      workspaceRouteId,
+      workspaceRoutePage,
     ],
   );
 

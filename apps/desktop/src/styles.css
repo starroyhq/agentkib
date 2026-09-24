@@ -707,23 +707,6 @@ button {
   gap: 0.125rem;
   margin-top: 0.125rem;
 }
-.app-sidebar-workspace {
-  display: grid;
-  min-height: 2.5rem;
-  grid-template-columns: auto minmax(0, 1fr);
-  align-items: center;
-  gap: 0.625rem;
-  padding: 0.5rem 0.75rem;
-  color: var(--sidebar-foreground);
-  font-size: 0.8125rem;
-  font-weight: 620;
-}
-.app-sidebar-workspace span {
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
 .page-scroll-container {
   overflow-x: hidden;
   overflow-y: auto;

@@ -14,12 +14,7 @@ import type { InsightsSection } from "@/features/insights/InsightsPage";
 import type { AgentKind, RefreshJobStatus } from "../core/types";
 import { AppRuntimeBridge } from "../features/app/AppRuntimeBridge";
 import { AppShell } from "../features/app/AppShell";
-import {
-  workspaceSearchForPage,
-  type AppSearch,
-  type GlobalPage,
-  type ParsedRoute,
-} from "../features/app/app-route";
+import { type AppSearch, type GlobalPage, type ParsedRoute } from "../features/app/app-route";
 import { cn } from "@/lib/utils";
 import { useAppNavigation } from "../features/app/useAppNavigation";
 import { ShortcutHelpDialog } from "../features/app/ShortcutHelpDialog";
@@ -32,7 +27,6 @@ import { useWorkspaceStore } from "@/features/workspace/workspace-store";
 import { AppToolbar } from "@/features/app/AppToolbar";
 import { GlobalSearchDialog } from "@/features/app/GlobalSearchDialog";
 import type { WorkspaceSummary } from "@/core/types";
-import { useAppDialogs } from "@/components/AppDialogProvider";
 import { SessionHubProvider } from "@/features/sessions/SessionHubContext";
 import { useSessionViewStore } from "@/features/sessions/session-view-store";
 import { SessionWindowToolbar } from "@/features/sessions/SessionWindowToolbar";
@@ -152,9 +146,9 @@ function AppShellRouter({
 }) {
   const { tr } = useI18n();
   const navigate = useNavigate();
-  const dialogs = useAppDialogs();
   const search = useSearch({ strict: false }) as AppSearch;
   const sidebarCollapsed = useAppStore((state) => state.sidebarCollapsed);
+  const favoriteWorkspaceIds = useAppStore((state) => state.favoriteWorkspaceIds);
   const workspaceState = useWorkspaceStore();
   const settingsSection = search.settingsSection ?? "general";
   const isSettings = route.kind === "settings";
@@ -180,21 +174,6 @@ function AppShellRouter({
     });
   };
 
-  const navigateWorkspace = (page: import("@/features/app/app-route").Page) => {
-    if (!isWorkspace) return;
-    if (useWorkspaceStore.getState().applyingChanges) {
-      void dialogs.notify(tr("dialog.quit.changesApplying"));
-      return;
-    }
-    const path =
-      page === "overview" ? "/workspace/$workspaceId" : `/workspace/$workspaceId/${page}`;
-    void navigate({
-      to: path as never,
-      params: { workspaceId: route.workspaceId } as never,
-      search: (current) => workspaceSearchForPage(current as AppSearch, page) as never,
-    });
-  };
-
   const sidebar = isSettings ? (
     <SettingsSidebar
       searchOpen={searchOpen}
@@ -212,6 +191,18 @@ function AppShellRouter({
       active={isWorkspace ? "workspaces" : active}
       collapsed={sidebarCollapsed}
       entries={entries}
+      favoriteWorkspaceIds={favoriteWorkspaceIds}
+      workspaces={[...workspaces].sort((left, right) => {
+        const leftFavorite = favoriteWorkspaceIds.indexOf(left.id);
+        const rightFavorite = favoriteWorkspaceIds.indexOf(right.id);
+        if (leftFavorite >= 0 || rightFavorite >= 0) {
+          if (leftFavorite < 0) return 1;
+          if (rightFavorite < 0) return -1;
+          return leftFavorite - rightFavorite;
+        }
+        return left.name.localeCompare(right.name);
+      })}
+      onOpenWorkspace={onOpenWorkspace}
       onNavigate={onNavigate}
       onSettings={onSettings}
       onRemoteSettings={() =>
@@ -219,30 +210,12 @@ function AppShellRouter({
       }
       context={
         isWorkspace
-          ? {
-              kind: "workspace",
-              workspace:
-                workspaceState.selectedWorkspace ??
-                workspaces.find((workspace) => workspace.id === route.workspaceId),
-              page: route.page,
-              changeCount:
-                workspaceState.changeSet?.changes.length ??
-                (workspaceState.handoffLaunchRequest ? 1 : 0),
-              onWorkspaceNavigate: navigateWorkspace,
-            }
+          ? undefined
           : isSessions
             ? { kind: "sessions" }
             : active === "agents"
               ? { kind: "agents", filter: agentFilter, onFilterChange: setAgentFilter }
-              : {
-                  kind: "global",
-                  recentWorkspaces: [...workspaces]
-                    .sort((left, right) =>
-                      (right.last_active_at ?? "").localeCompare(left.last_active_at ?? ""),
-                    )
-                    .slice(0, 2),
-                  onOpenWorkspace,
-                }
+              : { kind: "global" }
       }
     />
   );

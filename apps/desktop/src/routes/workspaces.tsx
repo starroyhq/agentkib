@@ -29,9 +29,18 @@ import {
   useHomeWorkspaces,
 } from "@/features/home/home-query";
 import { useWorkspaceStore } from "@/features/workspace/workspace-store";
-import { ChevronLeft, ChevronRight, FolderGit2, RefreshCw, Search, Trash2 } from "lucide-react";
+import {
+  ChevronLeft,
+  ChevronRight,
+  FolderGit2,
+  RefreshCw,
+  Search,
+  Star,
+  Trash2,
+} from "lucide-react";
 import type { AgentKind, DiscoveryReport, RefreshJobStatus, WorkspaceSummary } from "../core/types";
 import { cn } from "@/lib/utils";
+import { useAppStore } from "@/stores/app-store";
 
 type WorkspaceView = "list" | "storage";
 type WorkspacesSearch = { workspaceView?: WorkspaceView };
@@ -52,6 +61,8 @@ function WorkspacesRoute() {
   const { tr, localizeMessage } = useI18n();
   const navigate = useNavigate();
   const dialogs = useAppDialogs();
+  const favoriteWorkspaceIds = useAppStore((state) => state.favoriteWorkspaceIds);
+  const toggleFavoriteWorkspace = useAppStore((state) => state.toggleFavoriteWorkspace);
   const queryClient = useQueryClient();
   const search = useSearch({ strict: false }) as WorkspacesSearch;
   const view = search.workspaceView ?? "list";
@@ -171,6 +182,8 @@ function WorkspacesRoute() {
       view={view}
       storageJob={storageJob}
       workspaces={workspaces}
+      favoriteWorkspaceIds={favoriteWorkspaceIds}
+      onToggleFavorite={toggleFavoriteWorkspace}
       discovery={discovery}
       assetCounts={assetCounts}
       discoveryRefreshing={discoveryRefreshing}
@@ -194,6 +207,8 @@ function WorkspacesPage({
   view,
   storageJob,
   workspaces,
+  favoriteWorkspaceIds,
+  onToggleFavorite,
   discovery,
   assetCounts,
   discoveryRefreshing,
@@ -208,6 +223,8 @@ function WorkspacesPage({
   view: WorkspaceView;
   storageJob?: RefreshJobStatus;
   workspaces: WorkspaceSummary[];
+  favoriteWorkspaceIds: string[];
+  onToggleFavorite: (workspaceId: string) => void;
   discovery?: DiscoveryReport;
   assetCounts: Map<string, number>;
   discoveryRefreshing: boolean;
@@ -433,69 +450,97 @@ function WorkspacesPage({
                 ? sourceAgents.map((value) => agentLabels[value]).join(" · ")
                 : tr("workspace.source.manual");
               return (
-                <Button
+                <div
                   key={workspace.id}
-                  variant="bare"
-                  size="content"
                   className={cn(
-                    "group grid min-h-[72px] w-full grid-cols-[auto_minmax(0,1fr)_auto] items-center gap-3 rounded-xl px-3 py-2.5 text-left",
+                    "group/workspace flex min-h-[72px] items-center rounded-xl",
                     selectedWorkspace?.id === workspace.id
                       ? "bg-muted text-foreground shadow-xs"
                       : "text-muted-foreground hover:bg-muted/55 hover:text-foreground",
                   )}
-                  onClick={() => setSelectedId(workspace.id)}
-                  onDoubleClick={() => void onOpen(workspace)}
                 >
-                  <span className="grid size-9 place-items-center rounded-xl border border-border bg-background text-foreground transition-colors group-hover:border-primary/30">
-                    <FolderGit2 size={16} />
-                  </span>
-                  <span className="min-w-0">
-                    <strong
-                      className="block truncate text-sm font-semibold text-foreground"
-                      title={workspace.name}
-                    >
-                      {workspace.name}
-                    </strong>
-                    <small className="mt-1 block truncate text-xs" title={workspace.path}>
-                      {workspace.path}
-                    </small>
-                  </span>
-                  <span className="grid justify-items-end gap-1.5">
-                    {workspace.status === "attention" ? (
-                      <Badge variant="destructive" className="text-[10px]">
-                        {workspaceStatusLabel("attention")}
-                      </Badge>
-                    ) : (
-                      <span
-                        className="size-1.5 rounded-full bg-[var(--green)]"
-                        title={workspaceStatusLabel("healthy")}
-                      />
-                    )}
-                    <span
-                      className="flex items-center gap-0.5"
-                      aria-label={sourceLabel}
-                      title={sourceLabel}
-                    >
-                      {sourceAgents.length ? (
-                        sourceAgents.slice(0, 3).map((value) => (
-                          <span
-                            className="grid size-5 place-items-center rounded-md border border-border bg-background"
-                            key={value}
-                          >
-                            <AgentIcon agent={value} compact />
-                          </span>
-                        ))
-                      ) : (
-                        <small className="text-[11px]">{tr("workspace.source.manual")}</small>
-                      )}
-                      {sourceAgents.length > 3 && (
-                        <span className="grid size-5 place-items-center rounded-md bg-muted text-[9px] font-semibold">
-                          +{sourceAgents.length - 3}
-                        </span>
-                      )}
+                  <Button
+                    variant="bare"
+                    size="content"
+                    className="grid min-h-[72px] min-w-0 flex-1 grid-cols-[auto_minmax(0,1fr)_auto] items-center gap-3 rounded-xl px-3 py-2.5 text-left"
+                    onClick={() => setSelectedId(workspace.id)}
+                    onDoubleClick={() => void onOpen(workspace)}
+                  >
+                    <span className="grid size-9 place-items-center rounded-xl border border-border bg-background text-foreground transition-colors group-hover/workspace:border-primary/30">
+                      <FolderGit2 size={16} />
                     </span>
-                  </span>
-                </Button>
+                    <span className="min-w-0">
+                      <strong
+                        className="block truncate text-sm font-semibold text-foreground"
+                        title={workspace.name}
+                      >
+                        {workspace.name}
+                      </strong>
+                      <small className="mt-1 block truncate text-xs" title={workspace.path}>
+                        {workspace.path}
+                      </small>
+                    </span>
+                    <span className="grid justify-items-end gap-1.5">
+                      {workspace.status === "attention" ? (
+                        <Badge variant="destructive" className="text-[10px]">
+                          {workspaceStatusLabel("attention")}
+                        </Badge>
+                      ) : (
+                        <span
+                          className="size-1.5 rounded-full bg-[var(--green)]"
+                          title={workspaceStatusLabel("healthy")}
+                        />
+                      )}
+                      <span
+                        className="flex items-center gap-0.5"
+                        aria-label={sourceLabel}
+                        title={sourceLabel}
+                      >
+                        {sourceAgents.length ? (
+                          sourceAgents.slice(0, 3).map((value) => (
+                            <span
+                              className="grid size-5 place-items-center rounded-md border border-border bg-background"
+                              key={value}
+                            >
+                              <AgentIcon agent={value} compact />
+                            </span>
+                          ))
+                        ) : (
+                          <small className="text-[11px]">{tr("workspace.source.manual")}</small>
+                        )}
+                        {sourceAgents.length > 3 && (
+                          <span className="grid size-5 place-items-center rounded-md bg-muted text-[9px] font-semibold">
+                            +{sourceAgents.length - 3}
+                          </span>
+                        )}
+                      </span>
+                    </span>
+                  </Button>
+                  <Button
+                    variant="ghost"
+                    size="icon-sm"
+                    className="mr-2 shrink-0 opacity-60 transition-opacity hover:opacity-100 group-hover/workspace:opacity-100 focus-visible:opacity-100"
+                    aria-label={tr(
+                      favoriteWorkspaceIds.includes(workspace.id)
+                        ? "workspace.removeFavorite"
+                        : "workspace.addFavorite",
+                      { name: workspace.name },
+                    )}
+                    aria-pressed={favoriteWorkspaceIds.includes(workspace.id)}
+                    title={tr(
+                      favoriteWorkspaceIds.includes(workspace.id)
+                        ? "workspace.removeFavorite"
+                        : "workspace.addFavorite",
+                      { name: workspace.name },
+                    )}
+                    onClick={() => onToggleFavorite(workspace.id)}
+                  >
+                    <Star
+                      size={15}
+                      className={favoriteWorkspaceIds.includes(workspace.id) ? "fill-current" : ""}
+                    />
+                  </Button>
+                </div>
               );
             })}
             {!filtered.length && (

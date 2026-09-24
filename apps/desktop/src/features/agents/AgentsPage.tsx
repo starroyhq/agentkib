@@ -334,7 +334,7 @@ export function AgentsPage({
                     {tr("agents.capabilitiesDescription")}
                   </span>
                 </div>
-                <div className="grid gap-1 sm:grid-cols-2 lg:grid-cols-5">
+                <div className="grid grid-cols-[repeat(auto-fit,minmax(min(100%,12rem),1fr))] gap-2">
                   {[
                     ["workspace_discovery", tr("agents.capability.workspaceDiscovery")],
                     ["session_list", tr("agents.capability.sessionList")],
@@ -346,13 +346,13 @@ export function AgentsPage({
                     const enabled = value === true;
                     return (
                       <div
-                        className="flex min-h-[58px] items-center justify-between gap-2 rounded-lg bg-muted/25 px-3 py-2 text-sm"
+                        className="grid min-h-[68px] content-center gap-2 rounded-lg bg-muted/25 px-3 py-2 text-sm"
                         key={key}
                       >
-                        <span className="text-muted-foreground">{label}</span>
+                        <span className="min-w-0 text-muted-foreground">{label}</span>
                         <span
                           className={cn(
-                            "inline-flex items-center gap-1 text-xs font-medium",
+                            "inline-flex w-fit shrink-0 items-center gap-1 whitespace-nowrap text-xs font-medium",
                             !known
                               ? "text-muted-foreground"
                               : enabled
@@ -372,9 +372,11 @@ export function AgentsPage({
                       </div>
                     );
                   })}
-                  <div className="flex min-h-[58px] items-center justify-between gap-2 rounded-lg bg-muted/25 px-3 py-2 text-sm">
-                    <span className="text-muted-foreground">{tr("agents.capability.control")}</span>
-                    <span className="inline-flex items-center gap-1 text-xs font-medium text-muted-foreground">
+                  <div className="grid min-h-[68px] content-center gap-2 rounded-lg bg-muted/25 px-3 py-2 text-sm">
+                    <span className="min-w-0 text-muted-foreground">
+                      {tr("agents.capability.control")}
+                    </span>
+                    <span className="inline-flex w-fit shrink-0 items-center gap-1 whitespace-nowrap text-xs font-medium text-muted-foreground">
                       <LockKeyhole size={14} />
                       {tr(
                         support

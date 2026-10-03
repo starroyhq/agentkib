@@ -32,8 +32,10 @@ import {
   Search,
   X,
 } from "lucide-react";
+import { useInfiniteQuery } from "@tanstack/react-query";
 import { api } from "@/core/api";
 import { DEFAULT_SESSION_PAGE_SIZE } from "@/core/session-history";
+import { queryDefaults, useOptionalQueryClient } from "@/features/home/home-query";
 import { AgentIcon } from "@/features/agents/AgentIcon";
 import { useSessionSourceCapability } from "@/features/sessions/useSessionSourceCapability";
 import { NativeImportRecoveryPanel } from "./NativeImportRecoveryPanel";
@@ -44,7 +46,7 @@ import { withAsyncCleanup } from "@/lib/utils";
 import type {
   AgentKind,
   ChangeSet,
-  ConversationEvent,
+  ConversationEventPage,
   ConversationIndexStatus,
   ConversationSessionSummary,
   CursorBridgeStatus,
@@ -64,6 +66,34 @@ import { useSessionViewStore } from "@/features/sessions/session-view-store";
 
 type SessionFilter = "current" | "archived" | "metadata" | "all";
 type AgentFilter = "all" | ConversationSessionSummary["agent"];
+
+const sessionTranscriptKey = (sessionId: string) => ["sessions", "transcript", sessionId] as const;
+
+/**
+ * 把按时间倒序加载的分页合并为正序记录：更早的页面在前，同一事件只保留一次。
+ * 预算提示只对最早加载的那一页有意义，继续向前加载后丢弃旧的提示。
+ */
+export function mergeTranscriptPages(pages: ConversationEventPage[]) {
+  const seen = new Set<string>();
+  const ordered = [...pages].reverse();
+  const events = ordered
+    .flatMap((page) => page.events)
+    .filter((event) => {
+      if (seen.has(event.id)) return false;
+      seen.add(event.id);
+      return true;
+    });
+  const warnings = [
+    ...new Set(
+      ordered.flatMap((page, index) =>
+        index === 0
+          ? page.warnings
+          : page.warnings.filter((warning) => warning !== "TRANSCRIPT_SCAN_BUDGET"),
+      ),
+    ),
+  ];
+  return { events, warnings, nextCursor: pages.at(-1)?.next_cursor };
+}
 
 function matchesSessionFilter(session: ConversationSessionSummary, filter: SessionFilter) {
   if (filter === "current") return !session.archived && session.availability === "readable";
@@ -99,35 +129,31 @@ export function WorkspaceSessionsPage({
   const [showClaude, setShowClaude] = useState(false);
   const [cursorBridgeWorkspaceId, setCursorBridgeWorkspaceId] = useState<string>();
   const [cursorBindingId, setCursorBindingId] = useState("");
+  const showCursorBridge = cursorBridgeWorkspaceId === workspace.id && !workspace.remote;
   const cursorConnections = useRef<{ workspaceId: string; connected: Set<string> } | undefined>(
     undefined,
   );
-  const showCursorBridge = cursorBridgeWorkspaceId === workspace.id && !workspace.remote;
   const [sessions, setSessions] = useState<ConversationSessionSummary[]>([]);
   const [statuses, setStatuses] = useState<ConversationIndexStatus[]>([]);
   const [selectedId, setSelectedId] = useState<string>();
-  const [events, setEvents] = useState<ConversationEvent[]>([]);
-  const [nextCursor, setNextCursor] = useState<string>();
-  const [warnings, setWarnings] = useState<string[]>([]);
+  const [readRevision, setReadRevision] = useState(0);
+
   const [query, setQuery] = useState("");
   const [searchOpen, setSearchOpen] = useState(false);
   const [agent, setAgent] = useState<AgentFilter>("all");
   const [filter, setFilter] = useState<SessionFilter>("current");
   const [refreshing, setRefreshing] = useState(false);
   const [slowLoading, setSlowLoading] = useState(false);
-  const [reading, setReading] = useState(false);
-  const [loadingEarlier, setLoadingEarlier] = useState(false);
-  const [rawError, setError] = useState<unknown>("");
-  const [historyError, setHistoryError] = useState(false);
-  const [readRevision, setReadRevision] = useState(0);
-  const error = rawError === "" ? "" : localizeMessage(rawError);
+  // 会话列表的错误（带发生时间）；会话记录的错误来自下面的 transcript 查询。
+  const [listError, setListError] = useState<{ reason: unknown; at: number }>();
+  const setError = (reason: unknown) =>
+    setListError(reason === "" ? undefined : { reason, at: Date.now() });
+  const queryClient = useOptionalQueryClient();
   const [showDetail, setShowDetail] = useState(false);
   const [showHandoff, setShowHandoff] = useState(false);
   const [resumedRequest, setResumedRequest] = useState<
     (SessionContinuationResume & { autoPrepare: boolean }) | undefined
   >();
-  const readSequence = useRef(0);
-  const earlierRequest = useRef<number | null>(null);
   const cacheSequence = useRef(0);
   const consumedInitialSession = useRef<string | undefined>(undefined);
   const showAuxiliary = useSessionViewStore((state) => state.showAuxiliary);
@@ -149,7 +175,6 @@ export function WorkspaceSessionsPage({
           setStatuses(nextStatuses);
         } catch (reason) {
           if (sequence === cacheSequence.current) {
-            setHistoryError(false);
             setError(reason);
           }
         }
@@ -163,18 +188,15 @@ export function WorkspaceSessionsPage({
   const onCursorStatusChange = (status: CursorBridgeStatus | undefined) => {
     if (!status || workspace.remote) return;
     const connected = new Set(
-      status.bindings.filter((binding) => binding.connected).map((b) => b.id),
+      status.bindings.filter((binding) => binding.connected).map((binding) => binding.id),
     );
     const previous = cursorConnections.current;
     cursorConnections.current = { workspaceId: workspace.id, connected };
-    // Status polling must not repeatedly scan history. A newly connected profile may
-    // be the workspace's first readable source, so invalidate the cached scan once.
     if (
       previous?.workspaceId === workspace.id &&
       [...connected].some((id) => !previous.connected.has(id))
-    ) {
+    )
       void refresh(true);
-    }
   };
 
   useEffect(() => {
@@ -212,7 +234,6 @@ export function WorkspaceSessionsPage({
           setStatuses(nextStatuses);
         } catch (reason) {
           if (!disposed && sequence === cacheSequence.current) {
-            setHistoryError(false);
             setError(reason);
           }
         }
@@ -224,7 +245,6 @@ export function WorkspaceSessionsPage({
     return () => {
       disposed = true;
       cacheSequence.current += 1;
-      readSequence.current += 1;
     };
   }, [workspace.id, enabled]);
 
@@ -304,80 +324,55 @@ export function WorkspaceSessionsPage({
     onResumeConsumed?.();
   }, [onResumeConsumed, resumeContinuation, revealSession, sessions]);
 
-  useEffect(() => {
-    const sequence = ++readSequence.current;
-    earlierRequest.current = null;
-    setEvents([]);
-    setLoadingEarlier(false);
-    setNextCursor(undefined);
-    setWarnings([]);
-    setError("");
-    if (!selected || selected.availability !== "readable") {
-      setReading(false);
-      return;
-    }
-    setReading(true);
-    void api
-      .sessionEvents(selected.id)
-      .then((page) => {
-        if (sequence !== readSequence.current) return;
-        setEvents(page.events);
-        setNextCursor(page.next_cursor);
-        setWarnings(page.warnings);
-      })
-      .catch((reason) => {
-        if (sequence === readSequence.current) {
-          setHistoryError(true);
-          setError(reason);
-        }
-      })
-      .finally(() => {
-        if (sequence === readSequence.current) setReading(false);
-      });
-  }, [selected?.id, selected?.availability, readRevision]);
+  // 切换会话时清掉列表错误，与之前"换会话即清空错误"的行为一致。
+  const [errorSessionId, setErrorSessionId] = useState(selected?.id);
+  if (selected?.id !== errorSessionId) {
+    setErrorSessionId(selected?.id);
+    setListError(undefined);
+  }
+  const readableSessionId = selected?.availability === "readable" ? selected.id : undefined;
+  const transcriptKey = sessionTranscriptKey(readableSessionId ?? "");
+  // 第一页是最新的记录窗口，之后每一页都更早。staleTime 无限 + gcTime 0：
+  // 选中时读取一次、取消选中即丢弃，与之前"每次选中重新读取"的行为一致，
+  // 也避免后台按旧游标重取已失效的分页。
+  const transcriptQuery = useInfiniteQuery(
+    {
+      ...queryDefaults,
+      queryKey: transcriptKey,
+      queryFn: ({ pageParam }) =>
+        pageParam
+          ? api.sessionEvents(readableSessionId!, pageParam)
+          : api.sessionEvents(readableSessionId!),
+      initialPageParam: undefined as string | undefined,
+      getNextPageParam: (page) => page.next_cursor ?? undefined,
+      enabled: !!readableSessionId,
+      staleTime: Infinity,
+      gcTime: 0,
+    },
+    queryClient,
+  );
+  const transcriptPages = readableSessionId ? transcriptQuery.data?.pages : undefined;
+  const { events, warnings, nextCursor } = useMemo(
+    () => mergeTranscriptPages(transcriptPages ?? []),
+    [transcriptPages],
+  );
+  const reading = transcriptQuery.isLoading;
+  const loadingEarlier = transcriptQuery.isFetchingNextPage;
+  const transcriptError = readableSessionId ? transcriptQuery.error : null;
+  // 两种错误同时存在时显示较新的那个。
+  const historyError =
+    !!transcriptError && (!listError || transcriptQuery.errorUpdatedAt >= listError.at);
+  const rawError: unknown = historyError ? transcriptError : (listError?.reason ?? "");
+  const error = rawError === "" || rawError == null ? "" : localizeMessage(rawError);
+  // 旧游标失效时从最新窗口重新读取，丢弃已加载的更早页面。
+  const reloadTranscript = () => {
+    setReadRevision((value) => value + 1);
+    void queryClient.resetQueries({ queryKey: transcriptKey });
+  };
 
   const loadEarlier = async () => {
-    if (!selected || !nextCursor || reading || earlierRequest.current !== null) return;
-    const sequence = readSequence.current;
-    earlierRequest.current = sequence;
-    const selectedSessionId = selected.id;
-    const cursor = nextCursor;
-    setLoadingEarlier(true);
-    setError("");
-    await withAsyncCleanup(
-      async () => {
-        try {
-          const page = await api.sessionEvents(selectedSessionId, cursor);
-          if (sequence !== readSequence.current) return;
-          setEvents((current) => {
-            const seen = new Set<string>();
-            return [...page.events, ...current].filter((event) => {
-              if (seen.has(event.id)) return false;
-              seen.add(event.id);
-              return true;
-            });
-          });
-          setNextCursor(page.next_cursor);
-          setWarnings((current) => [
-            ...new Set([
-              ...page.warnings,
-              ...current.filter((warning) => warning !== "TRANSCRIPT_SCAN_BUDGET"),
-            ]),
-          ]);
-        } catch (reason) {
-          if (sequence === readSequence.current) {
-            setHistoryError(true);
-            setError(reason);
-          }
-        }
-      },
-      () => {
-        if (sequence === readSequence.current) {
-          earlierRequest.current = null;
-          setLoadingEarlier(false);
-        }
-      },
-    );
+    if (!nextCursor || reading || loadingEarlier) return;
+    await transcriptQuery.fetchNextPage();
   };
 
   if (!enabled) {
@@ -401,7 +396,7 @@ export function WorkspaceSessionsPage({
     );
   }
 
-  if (refreshing && !sessions.length && !error && !showCursorBridge) {
+  if (refreshing && !sessions.length && !error) {
     return (
       <div className="grid min-h-[calc(100vh-220px)] place-content-center justify-items-center gap-3 p-6 text-center">
         <RefreshCw className="animate-spin text-muted-foreground" size={22} />
@@ -434,10 +429,19 @@ export function WorkspaceSessionsPage({
                   {filtered.length}
                 </Badge>
               </div>
-              <div className="ml-auto flex shrink-0 items-center gap-0.5">
+              <div className="ml-auto flex min-w-0 flex-wrap items-center justify-end gap-0.5">
                 <Button size="sm" variant="ghost" onClick={() => setShowClaude(true)}>
                   Claude Code
                 </Button>
+                {!workspace.remote && (
+                  <Button
+                    size="sm"
+                    variant="ghost"
+                    onClick={() => setCursorBridgeWorkspaceId(workspace.id)}
+                  >
+                    {tr("handoff.cursor.connect")}
+                  </Button>
+                )}
                 <DropdownMenu>
                   <DropdownMenuTrigger
                     className={`inline-flex size-8 items-center justify-center rounded-lg text-muted-foreground transition-colors hover:bg-muted hover:text-foreground ${agent !== "all" ? "bg-accent text-accent-foreground" : ""}`}
@@ -534,19 +538,6 @@ export function WorkspaceSessionsPage({
                 </Button>
               </div>
             </div>
-            {!workspace.remote && (
-              <Button
-                size="sm"
-                variant="outline"
-                className="mt-3 w-full"
-                onClick={() => {
-                  setCursorBindingId("");
-                  setCursorBridgeWorkspaceId(workspace.id);
-                }}
-              >
-                {tr("handoff.cursor.connect")}
-              </Button>
-            )}
             {searchOpen && (
               <label className="mt-3 flex h-9 min-w-0 items-center gap-2 rounded-lg border border-input bg-background px-3 text-muted-foreground transition-colors focus-within:border-ring focus-within:ring-3 focus-within:ring-ring/20">
                 <Search size={15} />
@@ -705,14 +696,14 @@ export function WorkspaceSessionsPage({
                         : tr("conversations.unknownTime")}
                       {selected.git_branch ? ` · ${selected.git_branch}` : ""}
                     </p>
-                    {selected?.origin === "auxiliary" && !selectedSources.length && (
-                      <span className="mt-1 block text-xs text-muted-foreground">
-                        {tr("conversations.auxiliary")}
-                      </span>
-                    )}
                     {sourceCapability?.source_surface && (
                       <span className="mt-1 block text-xs text-muted-foreground">
                         {tr(`handoff.cursor.source.${sourceCapability.source_surface}`)}
+                      </span>
+                    )}
+                    {selected?.origin === "auxiliary" && !selectedSources.length && (
+                      <span className="mt-1 block text-xs text-muted-foreground">
+                        {tr("conversations.auxiliary")}
                       </span>
                     )}
                     {selectedSources.map((source) =>
@@ -811,10 +802,7 @@ export function WorkspaceSessionsPage({
             {error && (
               <div className="mx-5 mt-5">
                 {historyError ? (
-                  <HistoryError
-                    error={rawError}
-                    onRetry={() => setReadRevision((value) => value + 1)}
-                  />
+                  <HistoryError error={rawError} onRetry={reloadTranscript} />
                 ) : (
                   <div
                     role="alert"
@@ -894,7 +882,7 @@ export function WorkspaceSessionsPage({
           </div>
         </Card>
       </div>
-      {showCursorBridge && (
+      {showCursorBridge && !workspace.remote && (
         <Dialog
           open
           onOpenChange={(open) => {

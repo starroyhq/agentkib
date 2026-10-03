@@ -3,8 +3,6 @@ import path from "node:path";
 import { describe, expect, it } from "vitest";
 
 const desktopRoot = path.resolve(import.meta.dirname, "../..");
-const repositoryRoot = path.resolve(desktopRoot, "../..");
-
 describe("desktop startup flow", () => {
   it("renders from cached appearance without awaiting runtimeInfo", () => {
     const source = readFileSync(path.join(desktopRoot, "src/main.tsx"), "utf8");
@@ -34,18 +32,24 @@ describe("desktop startup flow", () => {
     const end = source.indexOf("function registerApplicationIpc", start);
     const startup = source.slice(start, end);
 
+    expect(start).toBeGreaterThan(-1);
+    expect(end).toBeGreaterThan(start);
+    expect(startup.indexOf("registerApplicationIpc()")).toBeGreaterThan(-1);
+    expect(startup.indexOf("selectedRuntimeHost.start()")).toBeGreaterThan(-1);
     expect(startup.indexOf("registerApplicationIpc()")).toBeLessThan(
-      startup.indexOf("runtimeHost.start()"),
+      startup.indexOf("selectedRuntimeHost.start()"),
     );
-    expect(startup).toContain("void runtimeHost.start()");
+    expect(startup).toContain("void selectedRuntimeHost.start()");
     expect(startup).toContain("await createMainWindow()");
-    expect(startup).not.toContain("await runtimeHost.start()");
+    expect(startup).not.toContain("await selectedRuntimeHost.start()");
   });
 
   it("exits benchmark mode when Runtime startup exhausts retries", () => {
     const source = readFileSync(path.join(desktopRoot, "electron/main/index.ts"), "utf8");
-    const runtimeStart = source.indexOf("void runtimeHost.start().catch");
+    const runtimeStart = source.indexOf("void selectedRuntimeHost.start().catch");
     const windowCreation = source.indexOf("await createMainWindow()", runtimeStart);
+    expect(runtimeStart).toBeGreaterThan(-1);
+    expect(windowCreation).toBeGreaterThan(runtimeStart);
     const failureHandler = source.slice(runtimeStart, windowCreation);
 
     expect(failureHandler).toContain("startupBenchmark.enabled");
@@ -89,22 +93,12 @@ describe("desktop startup flow", () => {
     expect(source).toContain("AGENTKIB_APP_NAME: appDisplayName");
   });
 
-  it("flushes the handshake response before initializing the MCP Hub", () => {
-    const source = readFileSync(
-      path.join(repositoryRoot, "crates/agentkib-runtime/src/main.rs"),
-      "utf8",
-    );
-    const response = source.indexOf("write_response(&mut stdout, response)?;");
-    const hub = source.indexOf("if handshake_succeeded", response);
-
-    expect(response).toBeGreaterThan(-1);
-    expect(hub).toBeGreaterThan(response);
-  });
-
   it("bounds the benchmark client's shutdown request", () => {
     const source = readFileSync(path.join(desktopRoot, "scripts/benchmark-runtime.mjs"), "utf8");
 
     expect(source).toContain("const gracefulShutdown = (async () =>");
-    expect(source).toContain("Promise.race([\n      gracefulShutdown,");
+    expect(source).toMatch(
+      /Promise\.race\(\[\s*gracefulShutdown,\s*new Promise\(\(resolve\) => setTimeout\(resolve, 2_000\)\)/,
+    );
   });
 });

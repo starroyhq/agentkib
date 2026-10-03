@@ -401,6 +401,8 @@ it("keeps an enabled LAN listener visible while its settings are collapsed", asy
   webSnapshot.running = true;
   render(<RemoteConnectionSettings />);
   expect(await screen.findByText("LAN HTTP access is running")).toBeTruthy();
+  expect(screen.getAllByText("LAN direct connection is not encrypted")).toHaveLength(1);
+  expect(screen.getByText(/capture the access token/)).toBeTruthy();
   const summary = screen.getByRole("button", { name: "LAN access (advanced)" });
   expect(summary.getAttribute("aria-expanded")).toBe("false");
   fireEvent.click(screen.getByRole("button", { name: "Manage LAN access" }));
@@ -419,4 +421,5 @@ it("shows an enabled but unavailable LAN service without reporting it as running
   render(<RemoteConnectionSettings />);
   expect(await screen.findByText("LAN access is enabled but unavailable")).toBeTruthy();
   expect(screen.queryByText("LAN HTTP access is running")).toBeNull();
+  expect(screen.queryByText("LAN direct connection is not encrypted")).toBeNull();
 });

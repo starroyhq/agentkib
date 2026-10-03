@@ -61,6 +61,7 @@ import {
   SettingsPanel,
   settingsTargetId,
 } from "./components/SettingsLayout";
+import { AGENT_LABELS as agentLabels } from "@/core/agents";
 
 type Translate = typeof tr;
 
@@ -76,18 +77,6 @@ const MANAGED_AGENTS = new Set<AgentKind>([
   "hermes",
   "grok-build",
 ]);
-
-const agentLabels: Record<AgentKind, string> = {
-  codex: "Codex",
-  "claude-code": "Claude Code",
-  antigravity: "Antigravity",
-  cursor: "Cursor",
-  opencode: "OpenCode",
-  "open-claw": "OpenClaw",
-  hermes: "Hermes",
-  "grok-build": "Grok Build",
-  "deepseek-harness": "DeepSeek Harness",
-};
 
 const stateIcons: Record<AgentToolState, typeof Check> = {
   current: Check,

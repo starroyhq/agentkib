@@ -73,6 +73,15 @@ it("shows an address-only QR and link only for a running listener", async () => 
   );
 });
 
+it("leaves the running plaintext warning to the LAN summary instead of repeating it", async () => {
+  // 常驻警告由 RemoteConnectionPanel 的 LanAccessSettings 显示（折叠区外），这里不能再出现一份。
+  request.mockResolvedValue({ ...status, running: true });
+  render(<WebAccessSettings target="lan" />);
+  await screen.findByRole("switch", { name: "Enable LAN direct connection" });
+  expect(screen.queryByText("LAN direct connection is not encrypted")).toBeNull();
+  expect(screen.queryByText(/capture the access token/)).toBeNull();
+});
+
 it("does not reuse local browser authorization when granting LAN access", async () => {
   request.mockResolvedValue({
     ...status,

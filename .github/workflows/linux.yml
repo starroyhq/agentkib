@@ -1,4 +1,4 @@
-name: Linux Checks
+name: Linux TypeScript Checks
 
 on:
   pull_request:
@@ -13,123 +13,39 @@ concurrency:
   group: linux-checks-${{ github.ref }}
   cancel-in-progress: true
 
-env:
-  CARGO_TERM_COLOR: always
-
 jobs:
   ubuntu-arm64:
-    name: Check Ubuntu 24.04 ARM64 preview
+    name: Typecheck on Ubuntu ARM64
     runs-on: ubuntu-24.04-arm
-    timeout-minutes: 25
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v7
-
-      - name: Install Linux build dependencies
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends \
-            build-essential binutils curl file git pkg-config patchelf libssl-dev \
-            libgtk-3-dev libfuse2 libglib2.0-bin \
-            desktop-file-utils xdg-utils dbus-x11 xvfb
-
       - uses: pnpm/action-setup@v6
         with:
           run_install: false
-
       - uses: actions/setup-node@v7
         with:
           node-version: 22
-
-      - uses: dtolnay/rust-toolchain@stable
-        with:
-          components: clippy
-
-      - name: Cache Rust
-        uses: Swatinem/rust-cache@v2
-        with:
-          shared-key: linux-ubuntu24-arm64-checks
-
-      - name: Diagnose build environment
-        run: apps/desktop/scripts/diagnose-linux.sh --strict
-
-      - name: Run Ubuntu ARM64 checks
-        shell: bash
-        run: |
-          set -euo pipefail
-          mkdir -p artifacts
-          log=artifacts/linux-ubuntu24-arm64-checks.log
-          run_logged() {
-            printf '\n## %s\n' "$*" | tee -a "$log"
-            "$@" 2>&1 | tee -a "$log"
-          }
-          run_logged cargo test --workspace
-          run_logged cargo clippy --workspace --all-targets -- -D warnings
-
-      - name: Upload Ubuntu ARM64 check log
-        if: failure()
-        uses: actions/upload-artifact@v7
-        with:
-          name: agentkib-linux-ubuntu-arm64-preview-log
-          if-no-files-found: warn
-          path: artifacts/linux-ubuntu24-arm64-checks.log
-          retention-days: 7
+          cache: pnpm
+          cache-dependency-path: pnpm-lock.yaml
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm typecheck
 
   fedora-x64:
-    name: Check Fedora x64
+    name: Typecheck on Fedora x64
     runs-on: ubuntu-24.04
     container: fedora:42
-    timeout-minutes: 25
+    timeout-minutes: 20
     steps:
-      - name: Install Fedora build dependencies
-        run: |
-          dnf install -y \
-            git curl tar gzip xz file findutils which binutils \
-            gcc gcc-c++ make libatomic openssl-devel pkgconf-pkg-config patchelf \
-            gtk3-devel rpm-build rpmdevtools cpio \
-            desktop-file-utils xdg-utils dbus-daemon xorg-x11-server-Xvfb util-linux procps-ng
-
+      - name: Install required system tools
+        run: dnf install -y git curl tar gzip xz gcc gcc-c++ make python3
       - uses: actions/checkout@v7
-
-      - name: Setup Node.js
-        uses: actions/setup-node@v7
+      - uses: actions/setup-node@v7
         with:
           node-version: 22
-
       - name: Setup pnpm
-        shell: bash
         run: |
-          set -euo pipefail
           pnpm_version=$(node -p "JSON.parse(require('fs').readFileSync('package.json', 'utf8')).packageManager.replace(/^pnpm@/, '')")
           npm install --global "pnpm@$pnpm_version"
-          pnpm --version
-
-      - uses: dtolnay/rust-toolchain@stable
-
-      - name: Cache Rust
-        uses: Swatinem/rust-cache@v2
-        with:
-          shared-key: linux-fedora42-x64-checks
-
-      - name: Diagnose build environment
-        run: apps/desktop/scripts/diagnose-linux.sh --strict
-
-      - name: Run Fedora checks
-        shell: bash
-        run: |
-          set -euo pipefail
-          mkdir -p artifacts
-          log=artifacts/linux-fedora42-x64-checks.log
-          run_logged() {
-            printf '\n## %s\n' "$*" | tee -a "$log"
-            "$@" 2>&1 | tee -a "$log"
-          }
-          run_logged cargo test --workspace
-
-      - name: Upload Fedora x64 check log
-        if: failure()
-        uses: actions/upload-artifact@v7
-        with:
-          name: agentkib-linux-fedora-x64-log
-          if-no-files-found: warn
-          path: artifacts/linux-fedora42-x64-checks.log
-          retention-days: 7
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm typecheck

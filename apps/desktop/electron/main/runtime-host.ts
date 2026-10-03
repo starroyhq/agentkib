@@ -1,6 +1,10 @@
-import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 import { EventEmitter } from "node:events";
-import { createInterface, type Interface } from "node:readline";
+import {
+  createStdioTransport,
+  type RuntimeProcessFactory,
+  type RuntimeTransport,
+  type RuntimeTransportFactory,
+} from "./runtime-transport";
 import {
   PROTOCOL_VERSION,
   RUNTIME_METHODS,
@@ -9,6 +13,7 @@ import {
 } from "../generated/runtime-protocol";
 
 const HEALTHY_RUNTIME_RESET_MS = 30_000;
+const FORCE_KILL_GRACE_MS = 500;
 
 export type RuntimeHostState = "starting" | "ready" | "restarting" | "failed" | "stopping";
 
@@ -18,18 +23,15 @@ export interface RuntimeHostStatus {
   error?: string;
 }
 
-type RuntimeProcessFactory = (
-  executablePath: string,
-  args: string[],
-  options: Parameters<typeof spawn>[2],
-) => ChildProcessWithoutNullStreams;
-
-interface RuntimeHostOptions {
+export interface RuntimeHostOptions {
+  args?: string[];
+  createTransport?: RuntimeTransportFactory;
   executablePath: string;
   clientVersion: string;
   environment?: NodeJS.ProcessEnv;
   maxRestarts?: number;
   shutdownTimeoutMs?: number;
+  handshakeTimeoutMs?: number;
   spawnProcess?: RuntimeProcessFactory;
 }
 
@@ -80,12 +82,11 @@ export class RuntimeRequestError extends Error {
 
 export class DesktopRuntimeHost extends EventEmitter {
   readonly #options: Required<
-    Pick<RuntimeHostOptions, "maxRestarts" | "shutdownTimeoutMs" | "spawnProcess">
+    Pick<RuntimeHostOptions, "maxRestarts" | "shutdownTimeoutMs" | "handshakeTimeoutMs">
   > &
-    Omit<RuntimeHostOptions, "maxRestarts" | "shutdownTimeoutMs" | "spawnProcess">;
+    Omit<RuntimeHostOptions, "maxRestarts" | "shutdownTimeoutMs" | "handshakeTimeoutMs">;
   readonly #pending = new Map<number, PendingRequest>();
-  #child?: ChildProcessWithoutNullStreams;
-  #lines?: Interface;
+  #child?: RuntimeTransport;
   #nextRequestId = 1;
   #restartCount = 0;
   #lastReadyAt = 0;
@@ -100,7 +101,8 @@ export class DesktopRuntimeHost extends EventEmitter {
     this.#options = {
       maxRestarts: 3,
       shutdownTimeoutMs: 2_000,
-      spawnProcess: spawn as RuntimeProcessFactory,
+      // 冷启动时 runtime 要打开数据库，Windows 上还可能被杀毒扫描拖慢，留足余量。
+      handshakeTimeoutMs: 20_000,
       ...options,
     };
   }
@@ -167,7 +169,7 @@ export class DesktopRuntimeHost extends EventEmitter {
     this.#rejectReadiness(stoppingError);
 
     const child = this.#child;
-    if (!child || child.exitCode !== null) {
+    if (!child || hasExited(child)) {
       this.#rejectPending(stoppingError);
       return;
     }
@@ -182,9 +184,14 @@ export class DesktopRuntimeHost extends EventEmitter {
       await exited;
     })();
     await Promise.race([gracefulShutdown, delay(this.#options.shutdownTimeoutMs)]);
-    if (child.exitCode === null) {
-      child.kill();
-      await Promise.race([exited, delay(500)]);
+    if (!hasExited(child)) {
+      child.terminate();
+      await Promise.race([exited, delay(FORCE_KILL_GRACE_MS)]);
+    }
+    // 忽略 SIGTERM 的 runtime 不能在应用退出后变成孤儿进程。
+    if (!hasExited(child)) {
+      child.forceKill();
+      await Promise.race([exited, delay(FORCE_KILL_GRACE_MS)]);
     }
   }
 
@@ -195,35 +202,54 @@ export class DesktopRuntimeHost extends EventEmitter {
   }
 
   async #spawnAndHandshake(): Promise<void> {
-    const child = this.#options.spawnProcess(this.#options.executablePath, [], {
-      env: { ...process.env, ...this.#options.environment },
-      stdio: ["pipe", "pipe", "pipe"],
-      windowsHide: true,
-    });
+    const options = {
+      executablePath: this.#options.executablePath,
+      args: this.#options.args ?? [],
+      environment: { ...process.env, ...this.#options.environment },
+    };
+    let child: RuntimeTransport;
+    try {
+      child = this.#options.createTransport
+        ? this.#options.createTransport(options)
+        : createStdioTransport(options, this.#options.spawnProcess);
+    } catch (error) {
+      this.#scheduleRestart(toError(error));
+      throw error;
+    }
     this.#child = child;
 
-    // Writable write callbacks do not consume the stream's subsequent error event.
-    // Keep this listener on the old stream too: a late EPIPE after exit is expected.
-    child.stdin.on("error", (error: Error) => this.#handleProcessFailure(child, error));
-
-    child.stderr.setEncoding("utf8");
-    child.stderr.on("data", (chunk: string) => process.stderr.write(`[agentkib-runtime] ${chunk}`));
-
-    const lines = createInterface({ input: child.stdout });
-    this.#lines = lines;
-    lines.on("line", (line) => this.#handleLine(line));
+    child.on("failure", (error: Error) => this.#handleProcessFailure(child, error));
+    child.on("diagnostic", (chunk: string) => process.stderr.write(`[agentkib-backend] ${chunk}`));
+    child.on("message", (message: unknown) => {
+      if (this.#child === child) this.#handleMessage(message);
+    });
+    child.on("protocol-error", (error: Error) => this.emit("protocol-error", error));
     child.once("exit", (code, signal) => this.#handleExit(child, code, signal));
 
     try {
       await new Promise<void>((resolve, reject) => {
-        child.once("spawn", resolve);
-        child.once("error", reject);
+        const spawned = () => {
+          child.off("failure", failed);
+          resolve();
+        };
+        const failed = (error: Error) => {
+          child.off("spawn", spawned);
+          reject(error);
+        };
+        child.once("spawn", spawned);
+        child.once("failure", failed);
       });
 
-      const handshake = await this.#requestNow<RuntimeHandshakeResult>(RUNTIME_METHODS.handshake, {
-        protocolVersion: PROTOCOL_VERSION,
-        client: { name: "agentkib-electron", version: this.#options.clientVersion },
-      });
+      // 进程已启动但一直不回握手时，所有排队请求都会永久挂起；超时后交给
+      // 常规失败路径（杀进程、按退避重启，超过上限进入 failed）。
+      const handshake = await withTimeout(
+        this.#requestNow<RuntimeHandshakeResult>(RUNTIME_METHODS.handshake, {
+          protocolVersion: PROTOCOL_VERSION,
+          client: { name: "agentkib-electron", version: this.#options.clientVersion },
+        }),
+        this.#options.handshakeTimeoutMs,
+        "AgentKib runtime did not complete the handshake in time",
+      );
       if (handshake.protocolVersion !== PROTOCOL_VERSION) {
         throw new Error(
           `Runtime returned protocol ${handshake.protocolVersion}; expected ${PROTOCOL_VERSION}`,
@@ -244,59 +270,55 @@ export class DesktopRuntimeHost extends EventEmitter {
     }
   }
 
-  #handleProcessFailure(child: ChildProcessWithoutNullStreams, error: Error): void {
+  #handleProcessFailure(child: RuntimeTransport, error: Error): void {
     if (this.#child !== child) return;
     const wasReady = this.#state === "ready";
     this.#child = undefined;
-    this.#lines?.close();
-    this.#lines = undefined;
     this.#handshake = undefined;
     if (wasReady) this.#readiness = deferred<RuntimeHandshakeResult>();
     this.#rejectPending(error);
     // Consumers must invalidate runtime-backed services immediately, even when
     // the OS process has not delivered its exit event yet.
-    this.emit("exit", { code: child.exitCode, signal: null, expected: this.#state === "stopping" });
-    if (child.exitCode === null) child.kill();
+    this.emit("exit", { code: null, signal: null, expected: this.#state === "stopping" });
+    // 失败的进程可能忽略 SIGTERM（例如卡在打开数据库）；句柄在这里就被替换掉了，
+    // 之后 stop() 再也够不到它，所以当场升级到 SIGKILL，避免与重启后的新进程并存。
+    terminate(child);
     this.#scheduleRestart(error);
   }
 
   #requestNow<TResult>(method: string, params: unknown): Promise<TResult> {
     const child = this.#child;
-    if (!child || child.exitCode !== null)
+    if (!child || child.hasExited)
       throw new RuntimeUnavailableError(new Error("AgentKib runtime is not running"));
 
     const id = this.#nextRequestId++;
-    const payload = JSON.stringify({ jsonrpc: "2.0", id, method, params });
+    const payload = { jsonrpc: "2.0", id, method, params };
 
     return new Promise<TResult>((resolve, reject) => {
       this.#pending.set(id, {
         resolve: resolve as (value: unknown) => void,
         reject,
       });
-      try {
-        child.stdin.write(`${payload}\n`, (error) => {
-          if (!error) return;
-          this.#pending.delete(id);
-          reject(new RuntimeUnavailableError(error));
-          this.#handleProcessFailure(child, error);
-        });
-      } catch (error) {
+      void child.send(payload).catch((error: unknown) => {
         this.#pending.delete(id);
         const runtimeError = toError(error);
         reject(new RuntimeUnavailableError(runtimeError));
         this.#handleProcessFailure(child, runtimeError);
-      }
+      });
     });
   }
 
-  #handleLine(line: string): void {
-    let message: RpcResponse & { method?: string; params?: unknown };
-    try {
-      message = JSON.parse(line) as RpcResponse & { method?: string; params?: unknown };
-    } catch (error) {
-      this.emit("protocol-error", new Error(`Invalid runtime JSON: ${String(error)}`));
+  #handleMessage(value: unknown): void {
+    if (
+      typeof value !== "object" ||
+      value === null ||
+      !("jsonrpc" in value) ||
+      value.jsonrpc !== "2.0"
+    ) {
+      this.emit("protocol-error", new Error("Invalid runtime RPC message"));
       return;
     }
+    const message = value as RpcResponse & { method?: string; params?: unknown };
 
     if (typeof message.id !== "number") {
       if (message.method) this.emit("notification", message.method, message.params);
@@ -310,15 +332,9 @@ export class DesktopRuntimeHost extends EventEmitter {
     else pending.resolve(message.result);
   }
 
-  #handleExit(
-    child: ChildProcessWithoutNullStreams,
-    code: number | null,
-    signal: NodeJS.Signals | null,
-  ): void {
+  #handleExit(child: RuntimeTransport, code: number | null, signal: NodeJS.Signals | null): void {
     if (this.#child !== child) return;
     this.#child = undefined;
-    this.#lines?.close();
-    this.#lines = undefined;
     const error = new Error(
       `AgentKib runtime exited${code === null ? "" : ` with code ${code}`}${signal ? ` (${signal})` : ""}`,
     );
@@ -399,10 +415,46 @@ function deferred<T>(): Deferred<T> {
   return value;
 }
 
+function terminate(child: RuntimeTransport) {
+  if (hasExited(child)) return;
+  child.terminate();
+  const timer = setTimeout(() => {
+    if (!hasExited(child)) child.forceKill();
+  }, FORCE_KILL_GRACE_MS);
+  child.once("exit", () => clearTimeout(timer));
+}
+
+function hasExited(child: RuntimeTransport): boolean {
+  // 被信号终止时 exitCode 为 null，必须同时检查 signalCode。
+  return child.hasExited;
+}
+
 function toError(error: unknown): Error {
   return error instanceof Error ? error : new Error(String(error));
 }
 
+async function withTimeout<T>(promise: Promise<T>, milliseconds: number, message: string) {
+  let timer: NodeJS.Timeout | undefined;
+  try {
+    return await Promise.race([
+      promise,
+      new Promise<never>((_, reject) => {
+        timer = setTimeout(() => reject(new Error(message)), milliseconds);
+      }),
+    ]);
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 function delay(milliseconds: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, milliseconds));
+}
+
+export interface RuntimeHost extends EventEmitter {
+  readonly status: RuntimeHostStatus;
+  start(): Promise<RuntimeHandshakeResult>;
+  retry(): Promise<RuntimeHandshakeResult>;
+  request<TResult>(method: string, params: unknown): Promise<TResult>;
+  stop(): Promise<void>;
 }

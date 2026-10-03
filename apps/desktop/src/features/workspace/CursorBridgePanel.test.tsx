@@ -25,7 +25,7 @@ const challenge = "synthetic-one-time-code";
 const other = { ...offline, id: "other-binding", profile: "other-profile" };
 const status: CursorBridgeStatus = {
   supported: true,
-  version: "3.22.12",
+  supportedVersions: ["3.22.12", "3.23.12"],
   bindings: [offline, other],
 };
 function panel(bindingId = offline.id) {
@@ -56,7 +56,7 @@ describe("Cursor bridge connection UI", () => {
       .mockImplementation(async (request) =>
         request.action === "connect"
           ? { challenge, expires_in_seconds: 1 }
-          : { supported: true, version: "3.22.12", bindings: [offline] },
+          : { supported: true, supportedVersions: ["3.22.12", "3.23.12"], bindings: [offline] },
       );
   });
   afterEach(() => {
@@ -244,7 +244,7 @@ describe("Cursor bridge connection UI", () => {
     const onStatusChange = vi.fn();
     vi.mocked(api.cursorBridge).mockResolvedValue({
       supported: true,
-      version: "3.22.12",
+      supportedVersions: ["3.22.12", "3.23.12"],
       bindings: [{ ...offline, connected: true }],
     });
     render(

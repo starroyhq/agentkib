@@ -107,7 +107,7 @@ it("offers a fixed Cursor binding reconnect even when the original source is mis
       ? { challenge: "synthetic-reconnect-code", expires_in_seconds: 120 }
       : {
           supported: true,
-          version: "3.22.12",
+          supportedVersions: ["3.22.12", "3.23.12"],
           bindings: [
             {
               id: "frozen-binding",

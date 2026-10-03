@@ -27,8 +27,6 @@ jobs:
       release_tag: ${{ steps.release.outputs.release_tag }}
       release_sha: ${{ steps.release.outputs.release_sha }}
       should_publish: ${{ steps.release.outputs.should_publish }}
-    env:
-      CARGO_TERM_COLOR: always
     steps:
       - name: Checkout selected revision
         uses: actions/checkout@v7
@@ -55,16 +53,6 @@ jobs:
           cache: pnpm
           cache-dependency-path: pnpm-lock.yaml
 
-      - name: Setup Rust
-        uses: dtolnay/rust-toolchain@stable
-        with:
-          components: rustfmt, clippy
-
-      - name: Cache Rust
-        uses: Swatinem/rust-cache@v2
-        with:
-          shared-key: package-preflight-ubuntu22-x64
-
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
@@ -74,26 +62,10 @@ jobs:
         run: |
           set -euo pipefail
           package_version=$(node -p "JSON.parse(require('fs').readFileSync('apps/desktop/package.json')).version")
-          cargo_version=$(cargo metadata --no-deps --format-version 1 | node -e '
-            let input = "";
-            process.stdin.setEncoding("utf8");
-            process.stdin.on("data", (chunk) => input += chunk);
-            process.stdin.on("end", () => {
-              const runtime = JSON.parse(input).packages.find(({ name }) => name === "agentkib-runtime");
-              if (!runtime) process.exit(1);
-              console.log(runtime.version);
-            });
-          ')
-
           if [[ ! "$package_version" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?(\+[0-9A-Za-z.-]+)?$ ]]; then
             echo "Invalid desktop version: $package_version" >&2
             exit 1
           fi
-          if [[ "$package_version" != "$cargo_version" ]]; then
-            echo "Desktop versions differ: package=$package_version cargo=$cargo_version" >&2
-            exit 1
-          fi
-
           echo "Validated AgentKib desktop version $package_version"
           echo "app_version=$package_version" >> "$GITHUB_OUTPUT"
 
@@ -178,15 +150,6 @@ jobs:
       - name: Test release scripts
         run: node --test .github/scripts/*.test.mjs
 
-      - name: Check formatting
-        run: cargo fmt --all -- --check
-
-      - name: Test Rust workspace
-        run: cargo test --workspace
-
-      - name: Lint Rust workspace
-        run: cargo clippy --workspace --all-targets -- -D warnings
-
       - name: Test frontend
         run: pnpm test
 
@@ -235,7 +198,6 @@ jobs:
 
     env:
       APP_VERSION: ${{ needs.preflight.outputs.app_version }}
-      CARGO_TERM_COLOR: always
       DESKTOP_RELEASE_DIR: dist/desktop-release
       SHOULD_PUBLISH: ${{ needs.preflight.outputs.should_publish }}
 
@@ -276,15 +238,6 @@ jobs:
           cache: pnpm
           cache-dependency-path: pnpm-lock.yaml
 
-      - name: Setup Rust
-        uses: dtolnay/rust-toolchain@stable
-
-      - name: Cache Rust and quota collector
-        uses: Swatinem/rust-cache@v2
-        with:
-          shared-key: release-${{ matrix.artifact }}
-          cache-directories: ~/.cache/agentkib/codexbar/0.49.5
-
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
@@ -322,9 +275,8 @@ jobs:
           cd apps/desktop
           pnpm protocol:generate
           pnpm cursor:stage
-          pnpm runtime:build
           pnpm quota:prepare
-          pnpm runtime:stage
+          pnpm quota:stage
           pnpm relay:stage
           pnpm --filter @agentkib/web build
           pnpm build:web
@@ -501,7 +453,6 @@ jobs:
     container: fedora:42
     env:
       APP_VERSION: ${{ needs.preflight.outputs.app_version }}
-      CARGO_TERM_COLOR: always
       DESKTOP_RELEASE_DIR: dist/desktop-release
 
     steps:
@@ -531,15 +482,6 @@ jobs:
           npm install --global "pnpm@$pnpm_version"
           pnpm --version
 
-      - name: Setup Rust
-        uses: dtolnay/rust-toolchain@stable
-
-      - name: Cache Rust and quota collector
-        uses: Swatinem/rust-cache@v2
-        with:
-          shared-key: release-fedora-x64
-          cache-directories: ~/.cache/agentkib/codexbar/0.49.5
-
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
@@ -554,9 +496,8 @@ jobs:
           cd apps/desktop
           pnpm protocol:generate
           pnpm cursor:stage
-          pnpm runtime:build
           pnpm quota:prepare
-          pnpm runtime:stage
+          pnpm quota:stage
           pnpm relay:stage
           pnpm --filter @agentkib/web build
           pnpm build:web

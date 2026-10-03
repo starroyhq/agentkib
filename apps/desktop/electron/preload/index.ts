@@ -27,7 +27,11 @@ const desktopApi = Object.freeze({
     onWindowActivity: (listener: (active: boolean) => void) =>
       subscribe("agentkib:window-activity", listener),
     onQuitRequested: (listener: () => void) =>
-      subscribe("agentkib:quit-requested", () => listener()),
+      subscribe("agentkib:quit-requested", () => {
+        // 先回执再处理：主进程据此区分"renderer 正在询问用户"和"renderer 已卡死"。
+        ipcRenderer.send("agentkib:quit-acknowledged");
+        listener();
+      }),
     onThemeChanged: (listener: (theme: "light" | "dark") => void) =>
       subscribe("agentkib:theme-changed", listener),
     onRefreshState: (listener: (status: RefreshJobStatus) => void) =>
@@ -65,8 +69,8 @@ const desktopApi = Object.freeze({
   changes: Object.freeze({
     plan: (project: string, manifest: unknown, includeHome: boolean) =>
       ipcRenderer.invoke("agentkib:changes:plan", project, manifest, includeHome),
-    apply: (changeSet: unknown, approveHome: boolean) =>
-      ipcRenderer.invoke("agentkib:changes:apply", changeSet, approveHome),
+    apply: (changeSet: unknown, approveHome: boolean, launchRequest?: unknown) =>
+      ipcRenderer.invoke("agentkib:changes:apply", changeSet, approveHome, launchRequest),
   }),
   memories: Object.freeze({
     list: (project: string, status?: string) =>

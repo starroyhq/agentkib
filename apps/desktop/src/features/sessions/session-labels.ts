@@ -1,18 +1,9 @@
-import type { AgentKind, ConversationSessionSummary } from "@/core/types";
+import type { ConversationSessionSummary } from "@/core/types";
 import { tr as defaultTranslate } from "@/core/i18n";
 import { displaySessionTitle } from "@/features/workspace/session-title";
+import { AGENT_LABELS } from "@/core/agents";
 
-export const sessionAgentNames: Record<AgentKind, string> = {
-  codex: "Codex",
-  "claude-code": "Claude Code",
-  antigravity: "Antigravity",
-  cursor: "Cursor",
-  opencode: "OpenCode",
-  "open-claw": "OpenClaw",
-  hermes: "Hermes",
-  "grok-build": "Grok Build",
-  "deepseek-harness": "DeepSeek Harness",
-};
+export const sessionAgentNames = AGENT_LABELS;
 
 export function sessionRecordLabel(session: ConversationSessionSummary, tr = defaultTranslate) {
   return [

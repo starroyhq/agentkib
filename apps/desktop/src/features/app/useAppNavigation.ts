@@ -27,6 +27,8 @@ import {
   useHomeWorkspaces,
 } from "@/features/home/home-query";
 
+const EMPTY_WORKSPACES: WorkspaceSummary[] = [];
+
 export type { AppSearch, GlobalPage, Page, ParsedRoute } from "./app-route";
 
 export function useAppNavigation() {
@@ -43,7 +45,7 @@ export function useAppNavigation() {
   const appMode = route.kind === "settings" ? "settings" : "main";
   const queryClient = useOptionalQueryClient();
   const {
-    data: workspaces = [],
+    data: workspaces = EMPTY_WORKSPACES,
     isPending: workspacesPending,
     error: workspaceLoadError,
   } = useHomeWorkspaces();
@@ -313,14 +315,20 @@ export function useAppNavigation() {
       return;
     const workspace = workspaces.find((item) => item.id === workspaceRouteId);
     if (workspace) void openWorkspace(workspace, workspaceRoutePage ?? "overview");
-    else setMessage(tr("common.notFound"));
+    else {
+      const notFound = tr("common.notFound");
+      if (message !== notFound) setMessage(notFound);
+    }
   }, [
     route.kind,
     workspaceRouteId,
     workspaceRoutePage,
     selectedWorkspace?.id,
     workspaces,
+    workspacesPending,
     openWorkspace,
+    message,
+    tr,
     setMessage,
   ]);
 

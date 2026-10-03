@@ -2,8 +2,10 @@ export const webSettingsCopy = {
   "zh-CN": {
     generateAccess: "生成八位授权码",
     codeScope:
-      "有效授权码将直接授予全部 AgentKib 工作区的完整远控权限，包含任务控制、审批和文件访问，无需桌面再次确认。仅分享给可信设备；操作以当前支持的能力为准。",
+      "有效授权码无需桌面再次确认，即按所选档位授权全部 AgentKib 工作区：“只读”可查看会话历史与文件；“完整远控”另含任务控制、审批与上传。授权后可随时在下方调整档位或撤销。仅分享给可信设备。",
     fullAccess: "完整远控权限",
+    readOnlyAccess: "只读（查看会话与文件）",
+    accessLevel: "授权档位",
     acceptance: "本地隔离验收模式：控制仅限以下会话，不代表正式验收通过。",
     portError: "端口已被占用，请选择其他端口后保存。",
     unverified: "本构建尚未通过 Web 实验控制真实验收，发送与审批保持禁用。",
@@ -47,8 +49,10 @@ export const webSettingsCopy = {
   "zh-TW": {
     generateAccess: "產生八位授權碼",
     codeScope:
-      "有效授權碼會直接授予全部 AgentKib 工作區的完整遠端權限，包含任務控制、審批和檔案存取，無需桌面再次確認。僅分享給可信裝置；操作以目前支援的能力為準。",
+      "有效授權碼無需桌面再次確認，即依所選等級授權全部 AgentKib 工作區：「唯讀」可查看對話紀錄與檔案；「完整遠端操作」另含任務控制、審批與上傳。授權後可隨時在下方調整等級或撤銷。僅分享給可信裝置。",
     fullAccess: "完整遠端操作權限",
+    readOnlyAccess: "唯讀（查看對話與檔案）",
+    accessLevel: "授權等級",
     acceptance: "本機隔離驗收模式：操作僅限以下對話，不代表正式驗收通過。",
     portError: "連接埠已被佔用，請選擇其他連接埠後儲存。",
     unverified: "此建置尚未通過 Web 實驗控制真實驗收，傳送與核准維持停用。",
@@ -92,8 +96,10 @@ export const webSettingsCopy = {
   "en-US": {
     generateAccess: "Generate 8-digit access code",
     codeScope:
-      "A valid access code grants full remote access to all AgentKib workspaces, including task control, approvals and files, without another desktop confirmation. Share only with trusted devices; operations remain limited to currently supported capabilities.",
+      "A valid access code authorizes all AgentKib workspaces at the selected level without another desktop confirmation. Read-only allows session history and files; full remote access adds task control, approvals and uploads. Change the level or revoke access below at any time. Share only with trusted devices.",
     fullAccess: "Full remote access",
+    readOnlyAccess: "Read-only (sessions and files)",
+    accessLevel: "Access level",
     acceptance:
       "Isolated local acceptance: controls are limited to this session. This is not release approval.",
     portError: "This port is in use. Choose another port and save.",
@@ -140,8 +146,10 @@ export const webSettingsCopy = {
   "ja-JP": {
     generateAccess: "8 桁の認証コードを生成",
     codeScope:
-      "有効な認証コードで全 AgentKib ワークスペースのタスク操作・承認・ファイル閲覧を許可します。デスクトップでの再確認は不要です。信頼できる端末にのみ共有してください。操作は現在対応する機能に限られます。",
+      "有効な認証コードで、選択したレベルに応じて全 AgentKib ワークスペースへのアクセスを許可します。デスクトップでの再確認は不要です。「閲覧のみ」は会話履歴とファイルの閲覧、「完全なリモートアクセス」はタスク操作・承認・アップロードも含みます。レベルの変更や取り消しは下でいつでも行えます。信頼できる端末にのみ共有してください。",
     fullAccess: "完全なリモートアクセス",
+    readOnlyAccess: "閲覧のみ（会話とファイル）",
+    accessLevel: "アクセスレベル",
     acceptance:
       "ローカル検証モード：操作は次のセッションのみ対象です。正式な検証完了ではありません。",
     portError: "ポートは使用中です。別のポートを選択して保存してください。",

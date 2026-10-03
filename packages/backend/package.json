@@ -1,0 +1,50 @@
+{
+  "name": "@agentkib/backend",
+  "version": "0.13.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts",
+    "./migration": "./src/migration.ts",
+    "./session-store": "./src/session-store.ts",
+    "./sql": "./src/sql.ts",
+    "./codex-sessions": "./src/codex-sessions.ts",
+    "./claude-sessions": "./src/claude-sessions.ts",
+    "./grok-sessions": "./src/grok-sessions.ts",
+    "./openclaw-sessions": "./src/openclaw-sessions.ts",
+    "./hermes-sessions": "./src/hermes-sessions.ts",
+    "./session-paging": "./src/session-paging.ts",
+    "./hermes-events": "./src/hermes-events.ts",
+    "./opencode-sessions": "./src/opencode-sessions.ts",
+    "./command-resolution": "./src/command-resolution.ts",
+    "./commands": "./src/commands.ts",
+    "./antigravity-acp": "./src/antigravity-acp.ts",
+    "./acp-json": "./src/acp-json.ts",
+    "./antigravity-sessions": "./src/antigravity-sessions.ts",
+    "./antigravity-replay": "./src/antigravity-replay.ts",
+    "./antigravity-paging": "./src/antigravity-paging.ts",
+    "./manifest": "./src/manifest.ts",
+    "./native-context": "./src/native-context.ts"
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@agentkib/runtime-protocol": "workspace:*",
+    "@modelcontextprotocol/sdk": "1.30.0",
+    "bonjour-service": "1.4.4",
+    "cross-spawn": "^7.0.6",
+    "json5": "^2.2.3",
+    "koffi": "^2.15.1",
+    "smol-toml": "^1.9.0",
+    "ws": "^8.21.3",
+    "yaml": "^2.9.1",
+    "zod": "^4.4.3"
+  },
+  "devDependencies": {
+    "@types/cross-spawn": "^6.0.6",
+    "@types/node": "^22.10.0",
+    "@types/ws": "^8.18.2",
+    "typescript": "^7.0.2"
+  }
+}

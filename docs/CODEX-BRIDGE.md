@@ -1,3 +1,5 @@
+> Historical reference for the removed Rust bridge. Its `cargo` commands require an archived checkout and are not part of the current TypeScript application.
+
 # Codex 原会话实验桥接
 
 ## 状态与边界

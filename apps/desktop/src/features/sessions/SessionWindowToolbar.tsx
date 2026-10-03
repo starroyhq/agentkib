@@ -1,4 +1,5 @@
 import { cn } from "@/lib/utils";
+import { sessionCollection } from "@agentkib/runtime-protocol";
 import { navigationStyles } from "@/components/navigationStyles";
 import { useNavigate } from "@tanstack/react-router";
 import { ArrowUpRight, LayoutDashboard, MoreHorizontal, RefreshCw } from "lucide-react";
@@ -23,7 +24,12 @@ export function SessionWindowToolbar() {
   const selected = hub.selected;
   const workspace = hub.selectedWorkspace;
   const sourceCapability = useSessionSourceCapability(
-    selected && !selected.remote && selected.availability === "readable" ? selected.id : undefined,
+    selected &&
+      !sessionCollection(selected.workspace_id) &&
+      !selected.remote &&
+      selected.availability === "readable"
+      ? selected.id
+      : undefined,
   );
   if (!selected)
     return (
@@ -35,6 +41,7 @@ export function SessionWindowToolbar() {
     );
   const canContinue =
     workspace &&
+    !sessionCollection(workspace.id) &&
     !selected.remote &&
     selected.availability === "readable" &&
     canContinueFromHistory(sourceCapability);

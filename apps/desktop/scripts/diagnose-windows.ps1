@@ -71,32 +71,6 @@ if ($pnpmVersion -eq "10.8.1") {
   Add-Result "pnpm 10.8.1" "FAIL" "pnpm was not found. Install Node.js 22 and enable Corepack."
 }
 
-$rustVersion = Get-CommandOutput "rustc" @("--version")
-$cargoVersion = Get-CommandOutput "cargo" @("--version")
-$rustVerbose = Get-CommandOutput "rustc" @("-vV")
-if ($rustVersion -and $cargoVersion -and $rustVerbose -match "host:\s+x86_64-pc-windows-msvc") {
-  Add-Result "Rust stable MSVC" "PASS" "$rustVersion; $cargoVersion"
-} elseif ($rustVersion) {
-  Add-Result "Rust stable MSVC" "FAIL" "Rust is installed, but the default host is not x86_64-pc-windows-msvc."
-} else {
-  Add-Result "Rust stable MSVC" "FAIL" "Rust was not found. Install Rustup and select stable-msvc."
-}
-
-$installedTargets = Get-CommandOutput "rustup" @("target", "list", "--installed")
-if ($installedTargets -match "(?m)^x86_64-pc-windows-msvc$") {
-  Add-Result "Rust Windows target" "PASS" "x86_64-pc-windows-msvc"
-} else {
-  Add-Result "Rust Windows target" "FAIL" "Run: rustup target add x86_64-pc-windows-msvc"
-}
-
-$rustfmtVersion = Get-CommandOutput "cargo" @("fmt", "--version")
-$clippyVersion = Get-CommandOutput "cargo" @("clippy", "--version")
-if ($rustfmtVersion -and $clippyVersion) {
-  Add-Result "rustfmt + clippy" "PASS" "$rustfmtVersion; $clippyVersion"
-} else {
-  Add-Result "rustfmt + clippy" "FAIL" "Run: rustup component add rustfmt clippy"
-}
-
 $vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
 $buildToolsPath = $null
 if (Test-Path -LiteralPath $vswhere) {
@@ -129,13 +103,6 @@ if ($gitVersion) {
   } else {
     Add-Result "GitHub Git connection" "FAIL" "Git cannot reach GitHub. Check Clash and the GitHub-specific Git proxy."
   }
-}
-
-try {
-  Invoke-WebRequest -UseBasicParsing -Method Head -TimeoutSec 10 -Uri "https://index.crates.io/config.json" | Out-Null
-  Add-Result "Cargo registry connection" "PASS" "index.crates.io is reachable."
-} catch {
-  Add-Result "Cargo registry connection" "WARN" "crates.io is unreachable; HTTPS_PROXY may be required while building."
 }
 
 $results | Format-Table -AutoSize -Wrap

@@ -2,13 +2,14 @@ import { useI18n } from "@/core/useI18n";
 import { createFileRoute, useNavigate, useParams } from "@tanstack/react-router";
 import { WorkspaceContextSkeleton } from "@/features/workspace/WorkspaceSkeleton";
 import { useWorkspaceStore } from "@/features/workspace/workspace-store";
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useState } from "react";
+import { keepPreviousData, useQuery } from "@tanstack/react-query";
 import { api } from "../../../core/api";
+import { queryDefaults, useOptionalQueryClient } from "@/features/home/home-query";
 import { tr } from "../../../core/i18n";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
-import { withAsyncCleanup } from "@/lib/utils";
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -29,17 +30,7 @@ import {
   SlidersHorizontal,
 } from "lucide-react";
 import type { AgentKind, ContextPreview } from "../../../core/types";
-const agentLabels: Record<AgentKind, string> = {
-  codex: "Codex",
-  "claude-code": "Claude Code",
-  antigravity: "Antigravity",
-  cursor: "Cursor",
-  opencode: "OpenCode",
-  "open-claw": "OpenClaw",
-  hermes: "Hermes",
-  "grok-build": "Grok Build",
-  "deepseek-harness": "DeepSeek Harness",
-};
+import { AGENT_LABELS as agentLabels } from "@/core/agents";
 function Pills({ values, empty }: { values: string[]; empty: string }) {
   return values.length ? (
     <div className="flex flex-wrap gap-2">
@@ -56,11 +47,19 @@ function Pills({ values, empty }: { values: string[]; empty: string }) {
     </div>
   );
 }
+function useDebouncedValue<T>(value: T, delayMs: number) {
+  const [debounced, setDebounced] = useState(value);
+  useEffect(() => {
+    const timeout = window.setTimeout(() => setDebounced(value), delayMs);
+    return () => window.clearTimeout(timeout);
+  }, [value, delayMs]);
+  return debounced;
+}
 function shortPath(path: string) {
   const parts = path.split("/").filter(Boolean);
   return parts.length > 3 ? `…/${parts.slice(-3).join("/")}` : path;
 }
-function ContextPage({
+export function ContextPage({
   project,
   onOpenInstructions,
 }: {
@@ -70,34 +69,24 @@ function ContextPage({
   const { localizeMessage, tr } = useI18n();
   const [agent, setAgent] = useState<AgentKind>("codex");
   const [cwd, setCwd] = useState(project);
-  const [preview, setPreview] = useState<ContextPreview>();
-  const [error, setError] = useState("");
-  const [resolving, setResolving] = useState(false);
-  const requestSequence = useRef(0);
-  const run = async () => {
-    const sequence = ++requestSequence.current;
-    setResolving(true);
-    setError("");
-    await withAsyncCleanup(
-      async () => {
-        try {
-          const next = await api.context(project, cwd, agent);
-          if (sequence === requestSequence.current) setPreview(next);
-        } catch (value) {
-          if (sequence === requestSequence.current) setError(localizeMessage(value));
-        }
-      },
-      () => {
-        if (sequence === requestSequence.current) setResolving(false);
-      },
-    );
-  };
-  useEffect(() => {
-    const timeout = window.setTimeout(() => {
-      void run();
-    }, 350);
-    return () => window.clearTimeout(timeout);
-  }, [project, cwd, agent]);
+  // 输入工作目录时防抖，避免每敲一个字符都解析一次上下文。
+  const debouncedCwd = useDebouncedValue(cwd, 350);
+  const queryClient = useOptionalQueryClient();
+  const contextQuery = useQuery(
+    {
+      ...queryDefaults,
+      queryKey: ["workspace", "context", project, debouncedCwd, agent] as const,
+      queryFn: () => api.context(project, debouncedCwd, agent),
+      staleTime: 0,
+      // 切换参数时保留上一次结果，只在首次加载时显示骨架屏。
+      placeholderData: keepPreviousData,
+    },
+    queryClient,
+  );
+  const preview: ContextPreview | undefined = contextQuery.data;
+  const resolving = contextQuery.isFetching;
+  const error = contextQuery.error ? localizeMessage(contextQuery.error) : "";
+  const run = () => void contextQuery.refetch();
   const empty = preview && !preview.sections.length;
   if (resolving && !preview) return <WorkspaceContextSkeleton />;
   return (
@@ -115,14 +104,14 @@ function ContextPage({
         </div>
         <div className="grid gap-4 p-4">
           <div className="grid gap-1.5">
-            <Label className="text-xs text-muted-foreground">Agent</Label>
+            <Label className="text-xs text-muted-foreground">{tr("context.agent")}</Label>
             <Select
               value={agent}
               onValueChange={(value) => {
                 if (value !== null) setAgent(String(value) as AgentKind);
               }}
             >
-              <SelectTrigger className="h-10 w-full" aria-label="Agent">
+              <SelectTrigger className="h-10 w-full" aria-label={tr("context.agent")}>
                 <SelectValue>{agentLabels[agent]}</SelectValue>
               </SelectTrigger>
               <SelectContent>
@@ -135,7 +124,7 @@ function ContextPage({
             </Select>
           </div>
           <div className="grid gap-1.5">
-            <Label className="text-xs text-muted-foreground">
+            <Label htmlFor="context-working-directory" className="text-xs text-muted-foreground">
               {tr("context.workingDirectory")}
             </Label>
             <div className="relative">
@@ -144,13 +133,14 @@ function ContextPage({
                 className="pointer-events-none absolute top-1/2 left-3 -translate-y-1/2 text-muted-foreground"
               />
               <Input
+                id="context-working-directory"
                 className="h-10 pl-9"
                 value={cwd}
                 onChange={(event) => setCwd(event.target.value)}
               />
             </div>
           </div>
-          <Button className="h-10 w-full" onClick={() => void run()} disabled={resolving}>
+          <Button className="h-10 w-full" onClick={run} disabled={resolving}>
             <RefreshCw size={15} className={resolving ? "animate-spin" : ""} />
             {tr("context.resolve")}
           </Button>

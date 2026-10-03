@@ -1,7 +1,8 @@
 import { useI18n } from "@/core/useI18n";
+import { sessionCollection } from "@agentkib/runtime-protocol";
 import { cn } from "@/lib/utils";
 import { Fragment, useLayoutEffect, useRef, useState, type DragEvent } from "react";
-import { Ellipsis, Folder, FolderOpen, GitBranch, Monitor, X } from "lucide-react";
+import { Ellipsis, Folder, FolderOpen, GitBranch, MessageSquare, Monitor, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
 import {
@@ -380,9 +381,11 @@ export function SessionDirectory({
                       }
                     />
                   }
-                  title={`${workspace.name}\n${workspace.path}`}
+                  title={workspace.path ? `${workspace.name}\n${workspace.path}` : workspace.name}
                 >
-                  {view.collapsed[workspace.id] ? (
+                  {sessionCollection(workspace.id) ? (
+                    <MessageSquare size={16} aria-hidden="true" />
+                  ) : view.collapsed[workspace.id] ? (
                     <Folder size={16} aria-hidden="true" />
                   ) : (
                     <FolderOpen size={16} aria-hidden="true" />

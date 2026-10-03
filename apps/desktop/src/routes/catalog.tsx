@@ -52,7 +52,6 @@ import {
   X,
 } from "lucide-react";
 import type {
-  AgentKind,
   ChangeSet,
   CatalogAsset,
   Manifest,
@@ -66,19 +65,9 @@ import type {
   WorkspaceSummary,
 } from "../core/types";
 import { cn, withAsyncCleanup } from "@/lib/utils";
+import { AGENT_LABELS as agentLabels } from "@/core/agents";
 
 type AssetSection = "instructions" | "skills" | "mcp" | "memory" | "other";
-const agentLabels: Record<AgentKind, string> = {
-  codex: "Codex",
-  "claude-code": "Claude Code",
-  antigravity: "Antigravity",
-  cursor: "Cursor",
-  opencode: "OpenCode",
-  "open-claw": "OpenClaw",
-  hermes: "Hermes",
-  "grok-build": "Grok Build",
-  "deepseek-harness": "DeepSeek Harness",
-};
 type CatalogSearch = { assetSection?: AssetSection };
 
 function CatalogRoute() {

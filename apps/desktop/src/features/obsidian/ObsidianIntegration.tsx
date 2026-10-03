@@ -12,9 +12,11 @@ import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Badge } from "@/components/ui/badge";
 import { Card } from "@/components/ui/card";
-import { useEffect, useState } from "react";
+import { useState } from "react";
 import { ExternalLink, FolderOpen, Link2, Unlink } from "lucide-react";
 import { api } from "@/core/api";
+import { useOptionalQueryClient } from "@/features/home/home-query";
+import { obsidianKeys, useObsidianIntegration } from "./obsidian-query";
 
 import type { ObsidianIntegration } from "@/core/types";
 import { SettingsNotice, SettingsPanel } from "@/features/settings/components/SettingsLayout";
@@ -39,24 +41,19 @@ function InstallationStatus({ integration }: { integration: ObsidianIntegration 
   );
 }
 
+/** 操作失败优先显示；否则显示读取失败。 */
+function useObsidianError(actionError: unknown, loadError: unknown) {
+  const { localizeMessage } = useI18n();
+  const cause = actionError !== "" ? actionError : loadError;
+  return cause === "" || cause == null ? "" : localizeMessage(cause);
+}
+
 export function ObsidianSettingsCard() {
-  const { localizeMessage, tr } = useI18n();
-  const [integration, setIntegration] = useState<ObsidianIntegration>();
-  const [rawError, setError] = useState<unknown>("");
-  const error = rawError === "" ? "" : localizeMessage(rawError);
-
-  const load = async () => {
-    try {
-      setError("");
-      setIntegration(await api.obsidianIntegration());
-    } catch (cause) {
-      setError(cause);
-    }
-  };
-
-  useEffect(() => {
-    void load();
-  }, []);
+  const { tr } = useI18n();
+  const queryClient = useOptionalQueryClient();
+  const { data: integration, error: loadError } = useObsidianIntegration();
+  const [actionError, setError] = useState<unknown>("");
+  const error = useObsidianError(actionError, loadError);
 
   const openApp = async () => {
     try {
@@ -72,7 +69,7 @@ export function ObsidianSettingsCard() {
     if (typeof selected !== "string") return;
     try {
       setError("");
-      setIntegration(await api.addObsidianVault(selected));
+      queryClient.setQueryData(obsidianKeys.integration(), await api.addObsidianVault(selected));
     } catch (cause) {
       setError(cause);
     }
@@ -147,35 +144,25 @@ export function ObsidianSettingsCard() {
 }
 
 export function WorkspaceObsidianCard({ workspaceId }: { workspaceId: string }) {
-  const { localizeMessage, tr } = useI18n();
-  const [integration, setIntegration] = useState<ObsidianIntegration>();
-  const [vaultPath, setVaultPath] = useState("");
+  const { tr } = useI18n();
+  const queryClient = useOptionalQueryClient();
+  const { data: integration, error: loadError } = useObsidianIntegration();
+  const [selectedVaultPath, setVaultPath] = useState("");
   const [relativeTarget, setRelativeTarget] = useState("");
-  const [rawError, setError] = useState<unknown>("");
-  const error = rawError === "" ? "" : localizeMessage(rawError);
-
-  const load = async () => {
-    try {
-      setError("");
-      const next = await api.obsidianIntegration();
-      setIntegration(next);
-      setVaultPath((current) => current || next.vaults[0]?.path || "");
-    } catch (cause) {
-      setError(cause);
-    }
-  };
-
-  useEffect(() => {
-    void load();
-  }, [workspaceId]);
+  const [actionError, setError] = useState<unknown>("");
+  const error = useObsidianError(actionError, loadError);
+  // 用户没选时默认第一个 vault；不再把服务端数据同步进 state。
+  const vaultPath = selectedVaultPath || integration?.vaults[0]?.path || "";
   const link = integration?.workspace_links.find((item) => item.workspace_id === workspaceId);
+
+  const reload = () => queryClient.invalidateQueries({ queryKey: obsidianKeys.integration() });
 
   const linkWorkspace = async () => {
     if (!vaultPath) return;
     try {
       setError("");
       await api.linkWorkspaceToObsidian(workspaceId, vaultPath, relativeTarget);
-      await load();
+      await reload();
     } catch (cause) {
       setError(cause);
     }
@@ -185,7 +172,7 @@ export function WorkspaceObsidianCard({ workspaceId }: { workspaceId: string }) 
     try {
       setError("");
       await api.unlinkWorkspaceFromObsidian(workspaceId);
-      await load();
+      await reload();
     } catch (cause) {
       setError(cause);
     }

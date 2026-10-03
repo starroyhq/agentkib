@@ -1,5 +1,5 @@
 import { useI18n } from "@/core/useI18n";
-import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 import { AlertTriangle, RefreshCw } from "lucide-react";
 import { Button } from "@/components/ui/button";
@@ -24,14 +24,22 @@ import { withAsyncCleanup } from "@/lib/utils";
 import type { AppMenuCommandRequest, AppNavigationRequest, EffectiveTheme } from "@/core/types";
 import type { DesktopRuntimeStatus } from "../../../electron/api";
 
+function hasUnsavedWorkspaceDraft(workspace: ReturnType<typeof useWorkspaceStore.getState>) {
+  const manifestChanged = Boolean(
+    workspace.manifest &&
+    workspace.baselineManifest &&
+    JSON.stringify(workspace.manifest) !== workspace.baselineManifest,
+  );
+  return manifestChanged || Object.keys(workspace.workspaceDrafts).length > 0;
+}
+
 export function AppRuntimeBridge() {
   const { localizeMessage, tr } = useI18n();
   const dialogs = useAppDialogs();
   const queryClient = useQueryClient();
   const appStore = useAppStore();
-  const workspaceStore = useWorkspaceStore();
+  const setMessage = useWorkspaceStore((state) => state.setMessage);
   const { setRuntime, setNavigationRequest, setMenuCommand } = appStore;
-  const { setMessage, applyingChanges } = workspaceStore;
   const quitPromptOpen = useRef(false);
   const previousRuntimeState = useRef<DesktopRuntimeStatus["state"] | undefined>(undefined);
   const [runtimeStatus, setRuntimeStatus] = useState<DesktopRuntimeStatus>();
@@ -167,29 +175,20 @@ export function AppRuntimeBridge() {
     return () => window.removeEventListener("focus", refreshRuntime);
   }, [clearRuntimeError, setRuntime]);
 
-  const hasUnsavedDraft = Boolean(
-    workspaceStore.manifest &&
-    workspaceStore.baselineManifest &&
-    JSON.stringify(workspaceStore.manifest) !== workspaceStore.baselineManifest,
-  );
-  const hasAnyUnsavedDraft =
-    hasUnsavedDraft || Object.keys(workspaceStore.workspaceDrafts).length > 0;
-  const quitState = useRef({ hasUnsavedDraft: hasAnyUnsavedDraft, applyingChanges });
-  useLayoutEffect(() => {
-    quitState.current = { hasUnsavedDraft: hasAnyUnsavedDraft, applyingChanges };
-  }, [applyingChanges, hasAnyUnsavedDraft]);
   useEffect(() => {
     const handleQuitRequest = async () => {
       if (quitPromptOpen.current) return;
       quitPromptOpen.current = true;
       await withAsyncCleanup(
         async () => {
-          if (quitState.current.applyingChanges) {
+          // 只在退出时读取一次草稿状态：之前每次渲染都序列化整个 manifest 做比较。
+          const workspace = useWorkspaceStore.getState();
+          if (workspace.applyingChanges) {
             await dialogs.notify(tr("dialog.quit.changesApplying"));
             return;
           }
           if (
-            quitState.current.hasUnsavedDraft &&
+            hasUnsavedWorkspaceDraft(workspace) &&
             !(await dialogs.confirm({
               description: tr("dialog.quit.discardDraft"),
               tone: "destructive",

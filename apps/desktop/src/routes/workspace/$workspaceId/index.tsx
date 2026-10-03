@@ -12,18 +12,8 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
 import { CircleAlert, Copy } from "lucide-react";
 import { formatRelativeTime } from "../../../core/i18n";
-import type { AgentKind, Manifest, WorkspaceScan, WorkspaceSummary } from "../../../core/types";
-const agentLabels: Record<AgentKind, string> = {
-  codex: "Codex",
-  "claude-code": "Claude Code",
-  antigravity: "Antigravity",
-  cursor: "Cursor",
-  opencode: "OpenCode",
-  "open-claw": "OpenClaw",
-  hermes: "Hermes",
-  "grok-build": "Grok Build",
-  "deepseek-harness": "DeepSeek Harness",
-};
+import type { Manifest, WorkspaceScan, WorkspaceSummary } from "../../../core/types";
+import { AGENT_LABELS as agentLabels } from "@/core/agents";
 function relativeTime(value: string) {
   return formatRelativeTime(value);
 }

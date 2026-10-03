@@ -39,6 +39,7 @@ import { agentSupport } from "@/features/agents/agent-capabilities";
 import { SidebarPanel } from "@/features/app/SidebarPanel";
 import { useAgentViewStore, type AgentDetailSection } from "./agent-view-store";
 import type { AgentFilter } from "@/components/AppSidebar";
+import { AGENT_LABELS as agentLabels } from "@/core/agents";
 
 const agentKinds: AgentKind[] = [
   "codex",
@@ -51,17 +52,6 @@ const agentKinds: AgentKind[] = [
   "grok-build",
   "deepseek-harness",
 ];
-const agentLabels: Record<AgentKind, string> = {
-  codex: "Codex",
-  "claude-code": "Claude Code",
-  antigravity: "Antigravity",
-  cursor: "Cursor",
-  opencode: "OpenCode",
-  "open-claw": "OpenClaw",
-  hermes: "Hermes",
-  "grok-build": "Grok Build",
-  "deepseek-harness": "DeepSeek Harness",
-};
 
 export function AgentsPage({
   installations,

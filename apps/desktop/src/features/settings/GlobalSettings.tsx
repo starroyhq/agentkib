@@ -1,7 +1,8 @@
 import { useTranslation } from "react-i18next";
-import type { TFunction } from "i18next";
 import { useI18n } from "@/core/useI18n";
-import { useEffect, useState, type ReactNode } from "react";
+import { useMemo, useState, type ReactNode } from "react";
+import { useOptionalQueryClient } from "@/features/home/home-query";
+import { settingsKeys, useGitIdentities, useIndexedWorkspaceCount } from "./settings-query";
 import {
   Check,
   CircleAlert,
@@ -55,7 +56,6 @@ import { normalizePlatform, primaryShortcutModifier, usesSystemTrayWording } fro
 import type { SettingsSection as SettingsSectionId } from "./SettingsSidebar";
 import type {
   ActivityRecord,
-  AgentKind,
   AppIconPreference,
   CloseBehavior,
   DiscoveryReport,
@@ -75,6 +75,7 @@ import { cn } from "@/lib/utils";
 import appIconBlack from "../../../resources/icons/app-icon-black.png";
 import appIconWhite from "../../../resources/icons/app-icon-white.png";
 import { KeyboardShortcutsSettings } from "./KeyboardShortcutsSettings";
+import { AGENT_LABELS as agentLabels } from "@/core/agents";
 
 const buildPlatform = desktopApi().platform;
 const appPlatform = normalizePlatform(buildPlatform);
@@ -84,17 +85,6 @@ const settingsControlClass =
 const appIconAssets: Record<AppIconPreference, string> = {
   white: appIconWhite,
   black: appIconBlack,
-};
-const agentLabels: Record<AgentKind, string> = {
-  codex: "Codex",
-  "claude-code": "Claude Code",
-  antigravity: "Antigravity",
-  cursor: "Cursor",
-  opencode: "OpenCode",
-  "open-claw": "OpenClaw",
-  hermes: "Hermes",
-  "grok-build": "Grok Build",
-  "deepseek-harness": "DeepSeek Harness",
 };
 
 export type GlobalSettingsProps = {
@@ -697,18 +687,14 @@ function ConversationPrivacySettings({
 }) {
   const { t: tr } = useTranslation();
   const dialogs = useAppDialogs();
-  const [indexedCount, setIndexedCount] = useState(0);
+  const queryClient = useOptionalQueryClient();
+  const workspaceIds = useMemo(() => workspaces.map((workspace) => workspace.id), [workspaces]);
+  // 统计失败时显示 0，和之前静默忽略错误的行为一致。
+  const indexedCount = useIndexedWorkspaceCount(workspaceIds).data ?? 0;
+  const setIndexedCount = (count: number) =>
+    queryClient.setQueryData(settingsKeys.indexedWorkspaceCount(workspaceIds), count);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
-  const loadCount = async () => {
-    const statuses = await Promise.all(
-      workspaces.map((workspace) => api.workspaceSessionStatus(workspace.id)),
-    );
-    setIndexedCount(statuses.filter((items) => items.some((item) => item.last_success_at)).length);
-  };
-  useEffect(() => {
-    void loadCount().catch(() => undefined);
-  }, [workspaces]);
   const toggle = async (enabled: boolean) => {
     setBusy(true);
     setError("");
@@ -924,26 +910,30 @@ function CloseBehaviorSelect({
 
 function GitIdentitySettings() {
   const { t: tr } = useTranslation();
-  const [identities, setIdentities] = useState<GitIdentitySummary[]>([]);
+  const queryClient = useOptionalQueryClient();
+  const identitiesQuery = useGitIdentities();
+  const identities: GitIdentitySummary[] = identitiesQuery.data ?? [];
   const [email, setEmail] = useState("");
-  const [error, setError] = useState("");
-  const load = async () => {
-    try {
-      setIdentities(await api.gitIdentities());
-    } catch (reason) {
-      setError(localizeMessage(reason));
-    }
-  };
-  useEffect(() => {
-    void load();
-  }, []);
+  const [actionError, setError] = useState("");
+  const error =
+    actionError || (identitiesQuery.error ? localizeMessage(identitiesQuery.error) : "");
+  const reload = () => queryClient.invalidateQueries({ queryKey: settingsKeys.gitIdentities() });
   const add = async () => {
     if (!email.trim()) return;
     try {
       setError("");
       await api.addGitIdentityAlias(email);
       setEmail("");
-      await load();
+      await reload();
+    } catch (reason) {
+      setError(localizeMessage(reason));
+    }
+  };
+  const setEnabled = async (id: string, enabled: boolean) => {
+    try {
+      setError("");
+      await api.setGitIdentityEnabled(id, enabled);
+      await reload();
     } catch (reason) {
       setError(localizeMessage(reason));
     }
@@ -979,19 +969,14 @@ function GitIdentitySettings() {
           >
             <GitCommitHorizontal size={15} className="text-muted-foreground" />
             <span className="min-w-0">
-              <strong className="block break-all text-sm font-medium">
-                {metadataLabel(identity.label, tr)}
-              </strong>
+              <strong className="block break-all text-sm font-medium">{tr(identity.label)}</strong>
               <small className="mt-1 block text-xs text-muted-foreground">
                 {identity.source} · {identity.id.slice(0, 10)}…
               </small>
             </span>
             <Switch
               checked={identity.enabled}
-              onCheckedChange={async (checked) => {
-                await api.setGitIdentityEnabled(identity.id, checked);
-                await load();
-              }}
+              onCheckedChange={(checked) => void setEnabled(identity.id, checked)}
             />
           </Label>
         ))}
@@ -1003,13 +988,4 @@ function GitIdentitySettings() {
       </div>
     </SettingsSection>
   );
-}
-
-function metadataLabel(value: string, tr: TFunction) {
-  if (value === "__unknown_model__") return tr("insights.unknownModel");
-  if (value === "__unlinked_workspace__") return tr("insights.unlinkedWorkspace");
-  if (value === "仓庫 Git 身份") return tr("settings.gitIdentityRepository");
-  if (value === "全局 Git 身份") return tr("settings.gitIdentityGlobal");
-  if (value === "历史邮箱别名") return tr("settings.gitIdentityAlias");
-  return value.startsWith("settings.gitIdentity") ? tr(value) : value;
 }

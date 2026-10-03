@@ -26,18 +26,8 @@ import {
 } from "lucide-react";
 import { cn, withAsyncCleanup } from "@/lib/utils";
 import { diffLines } from "@/features/workspace/diff";
-import type { AgentKind, ChangeSet, SessionHandoffLaunchRequest } from "../../../core/types";
-const agentLabels: Record<AgentKind, string> = {
-  codex: "Codex",
-  "claude-code": "Claude Code",
-  antigravity: "Antigravity",
-  cursor: "Cursor",
-  opencode: "OpenCode",
-  "open-claw": "OpenClaw",
-  hermes: "Hermes",
-  "grok-build": "Grok Build",
-  "deepseek-harness": "DeepSeek Harness",
-};
+import type { ChangeSet, SessionHandoffLaunchRequest } from "../../../core/types";
+import { AGENT_LABELS as agentLabels } from "@/core/agents";
 function Empty({
   icon: Icon,
   title,
@@ -117,6 +107,7 @@ export function Changes({
   const change = changeSet?.changes[selected];
   const launchSupported = launchRequest?.capabilities?.interactive_launch.status === "supported";
   const isNativeImport = launchRequest?.mode === "native-import";
+  const canApplyAndContinue = Boolean(launchRequest && (launchSupported || isNativeImport));
   const targetAgentName = launchRequest ? agentLabels[launchRequest.target_agent] : "";
   useEffect(() => {
     active.current = true;
@@ -198,12 +189,16 @@ export function Changes({
     );
   const apply = async () => {
     await runLocked(async () => {
-      await api.apply(changeSet, homeApproved);
+      await api.apply(
+        changeSet,
+        homeApproved,
+        launchRequest?.mode === "native-import" ? launchRequest : undefined,
+      );
       if (active.current) await onApplied(false);
     });
   };
   const applyAndContinue = async () => {
-    if (!launchRequest || !launchSupported) return;
+    if (!launchRequest || !canApplyAndContinue) return;
     await runLocked(async () => {
       let result;
       try {
@@ -360,11 +355,11 @@ export function Changes({
             <Button
               className="bg-primary text-primary-foreground hover:bg-primary/90"
               onClick={() =>
-                void (origin === "handoff" && launchSupported ? applyAndContinue() : apply())
+                void (origin === "handoff" && canApplyAndContinue ? applyAndContinue() : apply())
               }
               disabled={disabled}
             >
-              {origin === "handoff" && launchSupported ? (
+              {origin === "handoff" && canApplyAndContinue ? (
                 <>
                   <ExternalLink size={15} />
                   {tr(busy ? "changes.applying" : "handoff.applyAndContinue", {

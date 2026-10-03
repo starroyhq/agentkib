@@ -177,6 +177,22 @@ describe("hosted LAN transport", () => {
       ).status,
     ).toBe(403);
   });
+  it("preflights receipt lookups but not other dynamic or prototype paths", async () => {
+    const preflight = (path: string, method = "GET") =>
+      http(
+        path,
+        {
+          "Access-Control-Request-Method": method,
+          "Access-Control-Request-Headers": "authorization",
+        },
+        "OPTIONS",
+      );
+    expect((await preflight("/requests/a169d42b-c32a-45e0-83b6-c2460c111bed")).status).toBe(204);
+    expect((await preflight("/requests/a/b")).status).toBe(403);
+    expect((await preflight("/requests/x", "POST")).status).toBe(403);
+    expect((await preflight("/constructor")).status).toBe(403);
+    expect((await preflight("/codex/rename", "POST")).status).toBe(403);
+  });
   it("issues bearer only at bootstrap, never cookies, and requires desktop approval and CSRF", async () => {
     const response = await bootstrap();
     expect(bearer).toMatch(/^[A-Za-z0-9_-]{43}$/);

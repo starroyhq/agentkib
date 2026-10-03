@@ -237,7 +237,9 @@ export function RemoteGatewaysSettings({
               <X size={14} />
               {tr("common.cancel")}
             </Button>
-            <Button disabled={Boolean(busyId)}>{tr("common.save")}</Button>
+            <Button type="submit" disabled={Boolean(busyId)}>
+              {tr("common.save")}
+            </Button>
           </div>
         </form>
       )}

@@ -1,11 +1,14 @@
-import { app, ipcMain, shell, type IpcMainInvokeEvent } from "electron";
+import type { IpcMainInvokeEvent } from "electron";
+import { app, shell } from "electron";
 import path from "node:path";
 import { RUNTIME_METHODS } from "../../generated/runtime-protocol";
-import type { DesktopRuntimeHost } from "../runtime-host";
+import type { RuntimeHost } from "../runtime-host";
+import { createIpcRegistrar } from "./registrar";
 import { verifiedCursorBridgeBundle } from "../cursor-bridge-bundle";
 import {
   optionalPositiveInteger,
   optionalString,
+  requireAgentKind,
   requireBoolean,
   requireObject,
   requirePositiveInteger,
@@ -13,19 +16,8 @@ import {
   requireText,
 } from "./validation";
 
-const KNOWN_AGENTS = new Set([
-  "codex",
-  "claude-code",
-  "cursor",
-  "opencode",
-  "open-claw",
-  "hermes",
-  "antigravity",
-  "deepseek-harness",
-]);
-
 interface RuntimeIpcOptions {
-  runtime(): DesktopRuntimeHost;
+  runtime(): RuntimeHost;
   assertTrustedRenderer(event: IpcMainInvokeEvent): void;
   withRuntimeCapabilities(runtime: unknown): unknown;
 }
@@ -35,6 +27,8 @@ export function registerRuntimeIpc({
   assertTrustedRenderer,
   withRuntimeCapabilities: withElectronRuntimeCapabilities,
 }: RuntimeIpcOptions): void {
+  const { handle, forward } = createIpcRegistrar({ assertTrustedRenderer, runtime });
+
   function registerWorkspaceIpc(): void {
     const bridgeBundle = () =>
       verifiedCursorBridgeBundle(
@@ -42,190 +36,172 @@ export function registerRuntimeIpc({
           ? path.join(process.resourcesPath, "cursor-bridge")
           : path.join(app.getAppPath(), "build", "cursor-bridge"),
       );
-    ipcMain.handle("agentkib:cursor:bridge-bundle", (event) => {
-      assertTrustedRenderer(event);
-      return bridgeBundle();
-    });
-    ipcMain.handle("agentkib:cursor:reveal-bridge-bundle", async (event) => {
-      assertTrustedRenderer(event);
+    handle("agentkib:cursor:bridge-bundle", () => bridgeBundle());
+    handle("agentkib:cursor:reveal-bridge-bundle", async () => {
       const bundle = await bridgeBundle();
       shell.showItemInFolder(bundle.path);
     });
-    ipcMain.handle("agentkib:workspace:cursor-bridge", (event, request: unknown) => {
-      assertTrustedRenderer(event);
-      const input = requireObject(request, "Cursor bridge request");
-      const action = requireString(input.action, "action");
-      if (
-        !["status", "connect", "disconnect"].includes(action) ||
-        Object.keys(input).some((key) => !["action", "workspaceId", "bindingId"].includes(key))
-      ) {
-        throw new TypeError("Unsupported Cursor bridge request");
-      }
-      if (action === "status" && input.bindingId !== undefined)
-        throw new TypeError("Unexpected Cursor binding identity");
-      return runtime().request(RUNTIME_METHODS.cursorBridge, {
-        action,
-        workspaceId: requireString(input.workspaceId, "workspaceId"),
-        bindingId:
-          action === "disconnect"
-            ? requireString(input.bindingId, "bindingId")
-            : optionalString(input.bindingId, "bindingId"),
-      });
-    });
-    ipcMain.handle("agentkib:workspace:scan", (event, project: unknown) => {
-      assertTrustedRenderer(event);
-      return runtime().request(RUNTIME_METHODS.scanWorkspace, {
-        project: requireString(project, "project"),
-      });
-    });
-    ipcMain.handle("agentkib:workspace:prepare-manifest", (event, project: unknown) => {
-      assertTrustedRenderer(event);
-      return runtime().request(RUNTIME_METHODS.prepareManifest, {
-        project: requireString(project, "project"),
-      });
-    });
-    ipcMain.handle(
-      "agentkib:workspace:resolve-context",
-      (event, project: unknown, cwd: unknown, agent: unknown) => {
-        assertTrustedRenderer(event);
-        const parsedAgent = requireString(agent, "agent");
-        if (!KNOWN_AGENTS.has(parsedAgent)) throw new Error(`Unsupported agent: ${parsedAgent}`);
-        return runtime().request(RUNTIME_METHODS.resolveContext, {
-          project: requireString(project, "project"),
-          cwd: requireString(cwd, "cwd"),
-          agent: parsedAgent,
-        });
+    forward(
+      "agentkib:workspace:cursor-bridge",
+      RUNTIME_METHODS.cursorBridge,
+      (request: unknown) => {
+        const input = requireObject(request, "Cursor bridge request");
+        const action = requireString(input.action, "action");
+        if (
+          !["status", "connect", "disconnect"].includes(action) ||
+          Object.keys(input).some((key) => !["action", "workspaceId", "bindingId"].includes(key))
+        )
+          throw new TypeError("Unsupported Cursor bridge request");
+        if (action === "status" && input.bindingId !== undefined)
+          throw new TypeError("Unexpected Cursor binding identity");
+        return {
+          action,
+          workspaceId: requireString(input.workspaceId, "workspaceId"),
+          ...(action === "disconnect"
+            ? { bindingId: requireString(input.bindingId, "bindingId") }
+            : input.bindingId !== undefined
+              ? { bindingId: optionalString(input.bindingId, "bindingId") }
+              : {}),
+        };
       },
     );
-    ipcMain.handle("agentkib:workspace:add", (event, workspacePath: unknown) => {
-      assertTrustedRenderer(event);
-      return runtime().request(RUNTIME_METHODS.addWorkspace, {
+    forward("agentkib:workspace:scan", RUNTIME_METHODS.scanWorkspace, (project: unknown) => ({
+      project: requireString(project, "project"),
+    }));
+    forward(
+      "agentkib:workspace:prepare-manifest",
+      RUNTIME_METHODS.prepareManifest,
+      (project: unknown) => ({
+        project: requireString(project, "project"),
+      }),
+    );
+    forward(
+      "agentkib:workspace:resolve-context",
+      RUNTIME_METHODS.resolveContext,
+      (project: unknown, cwd: unknown, agent: unknown) => ({
+        project: requireString(project, "project"),
+        cwd: requireString(cwd, "cwd"),
+        agent: requireAgentKind(agent),
+      }),
+    );
+    forward("agentkib:workspace:add", RUNTIME_METHODS.addWorkspace, (workspacePath: unknown) => ({
+      path: requireString(workspacePath, "path"),
+    }));
+    forward("agentkib:workspace:refresh", RUNTIME_METHODS.refreshWorkspace, (id: unknown) => ({
+      id: requireString(id, "id"),
+    }));
+    forward("agentkib:workspace:exclude", RUNTIME_METHODS.excludeWorkspace, (id: unknown) => ({
+      id: requireString(id, "id"),
+    }));
+    forward(
+      "agentkib:workspace:restore-excluded",
+      RUNTIME_METHODS.restoreExcludedWorkspace,
+      (workspacePath: unknown) => ({
         path: requireString(workspacePath, "path"),
-      });
-    });
-    ipcMain.handle("agentkib:workspace:refresh", (event, id: unknown) => {
-      assertTrustedRenderer(event);
-      return runtime().request(RUNTIME_METHODS.refreshWorkspace, {
+      }),
+    );
+    forward(
+      "agentkib:workspace:doctor-report",
+      RUNTIME_METHODS.workspaceDoctorReport,
+      (id: unknown) => ({
         id: requireString(id, "id"),
-      });
-    });
-    ipcMain.handle("agentkib:workspace:exclude", (event, id: unknown) => {
-      assertTrustedRenderer(event);
-      return runtime().request(RUNTIME_METHODS.excludeWorkspace, {
-        id: requireString(id, "id"),
-      });
-    });
-    ipcMain.handle("agentkib:workspace:restore-excluded", (event, workspacePath: unknown) => {
-      assertTrustedRenderer(event);
-      return runtime().request(RUNTIME_METHODS.restoreExcludedWorkspace, {
-        path: requireString(workspacePath, "path"),
-      });
-    });
-    ipcMain.handle("agentkib:workspace:doctor-report", (event, id: unknown) => {
-      assertTrustedRenderer(event);
-      return runtime().request(RUNTIME_METHODS.workspaceDoctorReport, {
-        id: requireString(id, "id"),
-      });
-    });
-    ipcMain.handle("agentkib:workspace:git-summary", (event, id: unknown) => {
-      assertTrustedRenderer(event);
-      return runtime().request(RUNTIME_METHODS.workspaceGitSummary, {
+      }),
+    );
+    forward(
+      "agentkib:workspace:git-summary",
+      RUNTIME_METHODS.workspaceGitSummary,
+      (id: unknown) => ({
         id: requireString(id, "workspaceId"),
-      });
-    });
-    ipcMain.handle("agentkib:workspace:git-history", (event, id: unknown, query: unknown) => {
-      assertTrustedRenderer(event);
-      return runtime().request(RUNTIME_METHODS.workspaceGitHistory, {
+      }),
+    );
+    forward(
+      "agentkib:workspace:git-history",
+      RUNTIME_METHODS.workspaceGitHistory,
+      (id: unknown, query: unknown) => ({
         workspaceId: requireString(id, "workspaceId"),
         query: requireObject(query, "git history query"),
-      });
-    });
-    ipcMain.handle("agentkib:workspace:git-commit-files", (event, id: unknown, oid: unknown) => {
-      assertTrustedRenderer(event);
-      return runtime().request(RUNTIME_METHODS.gitCommitFiles, {
+      }),
+    );
+    forward(
+      "agentkib:workspace:git-commit-files",
+      RUNTIME_METHODS.gitCommitFiles,
+      (id: unknown, oid: unknown) => ({
         workspaceId: requireString(id, "workspaceId"),
         oid: requireString(oid, "oid"),
-      });
-    });
-    ipcMain.handle("agentkib:workspace:git-diff", (event, id: unknown, request: unknown) => {
-      assertTrustedRenderer(event);
-      return runtime().request(RUNTIME_METHODS.gitDiff, {
+      }),
+    );
+    forward(
+      "agentkib:workspace:git-diff",
+      RUNTIME_METHODS.gitDiff,
+      (id: unknown, request: unknown) => ({
         workspaceId: requireString(id, "workspaceId"),
         request: requireObject(request, "git diff request"),
-      });
-    });
-    ipcMain.handle("agentkib:workspace:sessions", (event, id: unknown) => {
-      assertTrustedRenderer(event);
-      return runtime().request(RUNTIME_METHODS.workspaceSessions, {
+      }),
+    );
+    forward("agentkib:workspace:sessions", RUNTIME_METHODS.workspaceSessions, (id: unknown) => ({
+      workspaceId: requireString(id, "workspaceId"),
+    }));
+    forward(
+      "agentkib:workspace:session-status",
+      RUNTIME_METHODS.workspaceSessionStatus,
+      (id: unknown) => ({
         workspaceId: requireString(id, "workspaceId"),
-      });
-    });
-    ipcMain.handle("agentkib:workspace:session-status", (event, id: unknown) => {
-      assertTrustedRenderer(event);
-      return runtime().request(RUNTIME_METHODS.workspaceSessionStatus, {
-        workspaceId: requireString(id, "workspaceId"),
-      });
-    });
-    ipcMain.handle("agentkib:workspace:refresh-sessions", (event, id: unknown, force: unknown) => {
-      assertTrustedRenderer(event);
-      return runtime().request(RUNTIME_METHODS.refreshWorkspaceSessions, {
+      }),
+    );
+    forward(
+      "agentkib:workspace:refresh-sessions",
+      RUNTIME_METHODS.refreshWorkspaceSessions,
+      (id: unknown, force: unknown) => ({
         workspaceId: requireString(id, "workspaceId"),
         force: force === undefined ? false : requireBoolean(force, "force"),
-      });
-    });
-    ipcMain.handle(
+      }),
+    );
+    forward(
       "agentkib:session:events",
-      (event, id: unknown, cursor: unknown, limit: unknown) => {
-        assertTrustedRenderer(event);
-        return runtime().request(RUNTIME_METHODS.sessionEvents, {
-          sessionId: requireString(id, "sessionId"),
-          cursor: optionalString(cursor, "cursor"),
-          limit: optionalPositiveInteger(limit, "limit"),
-        });
-      },
+      RUNTIME_METHODS.sessionEvents,
+      (id: unknown, cursor: unknown, limit: unknown) => ({
+        sessionId: requireString(id, "sessionId"),
+        cursor: optionalString(cursor, "cursor"),
+        limit: optionalPositiveInteger(limit, "limit"),
+      }),
     );
-    ipcMain.handle("agentkib:session:source-capability", (event, sessionId: unknown) => {
-      assertTrustedRenderer(event);
-      return runtimeRequest(event, RUNTIME_METHODS.sessionSourceCapability, {
-        sessionId: requireString(sessionId, "sessionId"),
-      });
-    });
-    ipcMain.handle("agentkib:session:native-imports", (event, workspaceId: unknown) => {
-      assertTrustedRenderer(event);
-      return runtimeRequest(event, RUNTIME_METHODS.listNativeImports, {
-        workspaceId: requireString(workspaceId, "workspaceId"),
-      });
-    });
-    ipcMain.handle("agentkib:session:prepare-handoff", (event, request: unknown) => {
-      assertTrustedRenderer(event);
-      return runtimeRequest(event, RUNTIME_METHODS.prepareSessionHandoff, {
+    forward(
+      "agentkib:session:source-capability",
+      RUNTIME_METHODS.sessionSourceCapability,
+      (sessionId: unknown) => ({ sessionId: requireString(sessionId, "sessionId") }),
+    );
+    forward(
+      "agentkib:session:native-imports",
+      RUNTIME_METHODS.listNativeImports,
+      (workspaceId: unknown) => ({ workspaceId: requireString(workspaceId, "workspaceId") }),
+    );
+    forward(
+      "agentkib:session:prepare-handoff",
+      RUNTIME_METHODS.prepareSessionHandoff,
+      (request: unknown) => ({
         request: requireObject(request, "handoff request"),
-      });
-    });
-    ipcMain.handle(
+      }),
+    );
+    forward(
       "agentkib:session:plan-mcp-connection",
-      (event, workspaceId: unknown, targetAgent: unknown) => {
-        assertTrustedRenderer(event);
-        return runtimeRequest(event, RUNTIME_METHODS.planSessionMcpConnection, {
-          workspaceId: requireString(workspaceId, "workspaceId"),
-          targetAgent: requireString(targetAgent, "targetAgent"),
-        });
-      },
+      RUNTIME_METHODS.planSessionMcpConnection,
+      (workspaceId: unknown, targetAgent: unknown) => ({
+        workspaceId: requireString(workspaceId, "workspaceId"),
+        targetAgent: requireString(targetAgent, "targetAgent"),
+      }),
     );
-    ipcMain.handle(
+    forward(
       "agentkib:session:sanitize-handoff",
-      (event, format: unknown, editedContent: unknown) => {
-        assertTrustedRenderer(event);
-        return runtimeRequest(event, RUNTIME_METHODS.sanitizeSessionHandoff, {
-          format: requireString(format, "format"),
-          editedContent: requireText(editedContent, "editedContent"),
-        });
-      },
+      RUNTIME_METHODS.sanitizeSessionHandoff,
+      (format: unknown, editedContent: unknown) => ({
+        format: requireString(format, "format"),
+        editedContent: requireText(editedContent, "editedContent"),
+      }),
     );
-    ipcMain.handle(
+    forward(
       "agentkib:session:plan-handoff",
+      RUNTIME_METHODS.planSessionHandoff,
       (
-        event,
         sessionId: unknown,
         workspaceId: unknown,
         filename: unknown,
@@ -240,125 +216,116 @@ export function registerRuntimeIpc({
         targetFingerprint: unknown,
         targetSurface: unknown,
         bindingId: unknown,
-      ) => {
-        assertTrustedRenderer(event);
-        const surface = optionalString(targetSurface, "targetSurface");
-        if (surface !== undefined && surface !== "cursor-ide")
-          throw new TypeError("Unsupported target surface");
-        return runtimeRequest(event, RUNTIME_METHODS.planSessionHandoff, {
-          sessionId: requireString(sessionId, "sessionId"),
-          workspaceId: requireString(workspaceId, "workspaceId"),
-          filename: requireString(filename, "filename"),
-          format: requireString(format, "format"),
-          editedContent:
-            editedContent === undefined ? undefined : requireText(editedContent, "editedContent"),
-          targetAgent: requireString(targetAgent, "targetAgent"),
-          mode: requireString(mode, "mode"),
-          sourceFingerprint: requireString(sourceFingerprint, "sourceFingerprint"),
-          acceptLosses: requireBoolean(acceptLosses, "acceptLosses"),
-          historyBudgetTokens: requirePositiveInteger(historyBudgetTokens, "historyBudgetTokens"),
-          archiveId: optionalString(archiveId, "archiveId"),
-          targetFingerprint: optionalString(targetFingerprint, "targetFingerprint"),
-          targetSurface: surface,
-          bindingId: optionalString(bindingId, "bindingId"),
-        });
-      },
+      ) => ({
+        sessionId: requireString(sessionId, "sessionId"),
+        workspaceId: requireString(workspaceId, "workspaceId"),
+        filename: requireString(filename, "filename"),
+        format: requireString(format, "format"),
+        editedContent:
+          editedContent === undefined ? undefined : requireText(editedContent, "editedContent"),
+        targetAgent: requireString(targetAgent, "targetAgent"),
+        mode: requireString(mode, "mode"),
+        sourceFingerprint: requireString(sourceFingerprint, "sourceFingerprint"),
+        acceptLosses: requireBoolean(acceptLosses, "acceptLosses"),
+        historyBudgetTokens: requirePositiveInteger(historyBudgetTokens, "historyBudgetTokens"),
+        archiveId: optionalString(archiveId, "archiveId"),
+        targetFingerprint: optionalString(targetFingerprint, "targetFingerprint"),
+        targetSurface: optionalString(targetSurface, "targetSurface"),
+        bindingId: optionalString(bindingId, "bindingId"),
+      }),
     );
-    ipcMain.handle(
+    forward(
       "agentkib:session:continue-handoff",
-      (event, changeSet: unknown, launchRequest: unknown, approveHome: unknown) => {
-        assertTrustedRenderer(event);
-        return runtimeRequest(event, RUNTIME_METHODS.continueSessionHandoff, {
-          changeSet: requireObject(changeSet, "changeSet"),
-          launchRequest: requireObject(launchRequest, "launchRequest"),
-          approveHome: requireBoolean(approveHome, "approveHome"),
-        });
-      },
+      RUNTIME_METHODS.continueSessionHandoff,
+      (changeSet: unknown, launchRequest: unknown, approveHome: unknown) => ({
+        changeSet: requireObject(changeSet, "changeSet"),
+        launchRequest: requireObject(launchRequest, "launchRequest"),
+        approveHome: requireBoolean(approveHome, "approveHome"),
+      }),
     );
-    ipcMain.handle("agentkib:session:launch-handoff", (event, launchRequest: unknown) => {
-      assertTrustedRenderer(event);
-      return runtimeRequest(event, RUNTIME_METHODS.launchSessionHandoff, {
+    forward(
+      "agentkib:session:launch-handoff",
+      RUNTIME_METHODS.launchSessionHandoff,
+      (launchRequest: unknown) => ({
         ...requireObject(launchRequest, "launchRequest"),
-      });
-    });
-    ipcMain.handle("agentkib:workspace:openers", (event, id: unknown) => {
-      assertTrustedRenderer(event);
-      return runtime().request(RUNTIME_METHODS.listWorkspaceOpeners, {
-        workspaceId: requireString(id, "workspaceId"),
-      });
-    });
-    ipcMain.handle("agentkib:workspace:open", async (event, id: unknown, openerId: unknown) => {
-      assertTrustedRenderer(event);
-      return runtime().request(RUNTIME_METHODS.openWorkspaceWithApp, {
+      }),
+    );
+    forward("agentkib:workspace:openers", RUNTIME_METHODS.listWorkspaceOpeners, (id: unknown) => ({
+      workspaceId: requireString(id, "workspaceId"),
+    }));
+    forward(
+      "agentkib:workspace:open",
+      RUNTIME_METHODS.openWorkspaceWithApp,
+      (id: unknown, openerId: unknown) => ({
         workspaceId: requireString(id, "workspaceId"),
         openerId: optionalString(openerId, "openerId"),
-      });
-    });
+      }),
+    );
   }
 
   function registerFeatureIpc(): void {
-    ipcMain.handle(
+    forward(
       "agentkib:changes:plan",
-      (event, project: unknown, manifest: unknown, includeHome: unknown) => {
-        assertTrustedRenderer(event);
-        return runtime().request(RUNTIME_METHODS.planChanges, {
-          project: requireString(project, "project"),
-          manifest: requireObject(manifest, "manifest"),
-          includeHome: requireBoolean(includeHome, "includeHome"),
-        });
-      },
+      RUNTIME_METHODS.planChanges,
+      (project: unknown, manifest: unknown, includeHome: unknown) => ({
+        project: requireString(project, "project"),
+        manifest: requireObject(manifest, "manifest"),
+        includeHome: requireBoolean(includeHome, "includeHome"),
+      }),
     );
-    ipcMain.handle("agentkib:changes:apply", (event, changeSet: unknown, approveHome: unknown) => {
-      assertTrustedRenderer(event);
-      return runtime().request(RUNTIME_METHODS.applyChanges, {
+    forward(
+      "agentkib:changes:apply",
+      RUNTIME_METHODS.applyChanges,
+      (changeSet: unknown, approveHome: unknown, launchRequest: unknown) => ({
         changeSet: requireObject(changeSet, "changeSet"),
         approveHome: requireBoolean(approveHome, "approveHome"),
-      });
-    });
-    ipcMain.handle("agentkib:memories:list", (event, project: unknown, status: unknown) => {
-      assertTrustedRenderer(event);
-      return runtime().request(RUNTIME_METHODS.listMemories, {
+        ...(launchRequest === undefined
+          ? {}
+          : { launchRequest: requireObject(launchRequest, "launchRequest") }),
+      }),
+    );
+    forward(
+      "agentkib:memories:list",
+      RUNTIME_METHODS.listMemories,
+      (project: unknown, status: unknown) => ({
         project: requireString(project, "project"),
         status: status === undefined ? null : optionalString(status, "status"),
-      });
-    });
-    ipcMain.handle(
-      "agentkib:memories:search",
-      (event, project: unknown, query: unknown, limit: unknown) => {
-        assertTrustedRenderer(event);
-        return runtime().request(RUNTIME_METHODS.searchMemories, {
-          project: requireString(project, "project"),
-          query: requireText(query, "query"),
-          limit: optionalPositiveInteger(limit, "limit") ?? 50,
-        });
-      },
+      }),
     );
-    ipcMain.handle("agentkib:memories:propose", (event, project: unknown, proposal: unknown) => {
-      assertTrustedRenderer(event);
-      return runtime().request(RUNTIME_METHODS.proposeMemory, {
+    forward(
+      "agentkib:memories:search",
+      RUNTIME_METHODS.searchMemories,
+      (project: unknown, query: unknown, limit: unknown) => ({
+        project: requireString(project, "project"),
+        query: requireText(query, "query"),
+        limit: optionalPositiveInteger(limit, "limit") ?? 50,
+      }),
+    );
+    forward(
+      "agentkib:memories:propose",
+      RUNTIME_METHODS.proposeMemory,
+      (project: unknown, proposal: unknown) => ({
         project: requireString(project, "project"),
         proposal: requireObject(proposal, "proposal"),
-      });
-    });
-    ipcMain.handle(
-      "agentkib:memories:review",
-      (event, id: unknown, status: unknown, editedContent: unknown) => {
-        assertTrustedRenderer(event);
-        return runtime().request(RUNTIME_METHODS.reviewMemory, {
-          id: requireString(id, "id"),
-          status: requireString(status, "status"),
-          editedContent: optionalString(editedContent, "editedContent"),
-        });
-      },
+      }),
     );
-    ipcMain.handle("agentkib:sessions:clear-index", (event, workspaceId: unknown) => {
-      assertTrustedRenderer(event);
-      return runtime().request(RUNTIME_METHODS.clearSessionIndex, {
+    forward(
+      "agentkib:memories:review",
+      RUNTIME_METHODS.reviewMemory,
+      (id: unknown, status: unknown, editedContent: unknown) => ({
+        id: requireString(id, "id"),
+        status: requireString(status, "status"),
+        editedContent: optionalString(editedContent, "editedContent"),
+      }),
+    );
+    forward(
+      "agentkib:sessions:clear-index",
+      RUNTIME_METHODS.clearSessionIndex,
+      (workspaceId: unknown) => ({
         workspaceId: optionalString(workspaceId, "workspaceId"),
-      });
-    });
-    ipcMain.handle("agentkib:sessions:set-index-enabled", (event, enabled: unknown) => {
-      assertTrustedRenderer(event);
+      }),
+    );
+    handle("agentkib:sessions:set-index-enabled", (_event, enabled: unknown) => {
       return runtime()
         .request(RUNTIME_METHODS.setSessionIndexEnabled, {
           value: requireBoolean(enabled, "enabled"),
@@ -366,242 +333,229 @@ export function registerRuntimeIpc({
         .then(withElectronRuntimeCapabilities);
     });
 
-    ipcMain.handle("agentkib:skills:catalog", (event, force: unknown) =>
-      runtimeRequest(event, RUNTIME_METHODS.listSkillCatalog, {
-        force: typeof force === "boolean" ? force : false,
-      }),
-    );
-    ipcMain.handle("agentkib:skills:discover", (event, url: unknown) =>
-      runtimeRequest(event, RUNTIME_METHODS.discoverSkills, {
-        url: requireText(url, "url"),
-      }),
-    );
-    ipcMain.handle("agentkib:skills:installed", (event) =>
-      runtimeRequest(event, RUNTIME_METHODS.listInstalledSkills, {}),
-    );
-    ipcMain.handle("agentkib:skills:prepare-install", (event, source: unknown) =>
-      runtimeRequest(event, RUNTIME_METHODS.prepareSkillInstall, {
+    forward("agentkib:skills:catalog", RUNTIME_METHODS.listSkillCatalog, (force: unknown) => ({
+      force: typeof force === "boolean" ? force : false,
+    }));
+    forward("agentkib:skills:discover", RUNTIME_METHODS.discoverSkills, (url: unknown) => ({
+      url: requireText(url, "url"),
+    }));
+    forward("agentkib:skills:installed", RUNTIME_METHODS.listInstalledSkills);
+    forward(
+      "agentkib:skills:prepare-install",
+      RUNTIME_METHODS.prepareSkillInstall,
+      (source: unknown) => ({
         source: requireObject(source, "source"),
       }),
     );
-    ipcMain.handle(
+    forward(
       "agentkib:skills:apply-operation",
-      (event, token: unknown, allowModified: unknown) =>
-        runtimeRequest(event, RUNTIME_METHODS.applySkillOperation, {
-          token: requireString(token, "token"),
-          confirmed: true,
-          allowModified: typeof allowModified === "boolean" ? allowModified : false,
-        }),
+      RUNTIME_METHODS.applySkillOperation,
+      (token: unknown, allowModified: unknown) => ({
+        token: requireString(token, "token"),
+        confirmed: true,
+        allowModified: typeof allowModified === "boolean" ? allowModified : false,
+      }),
     );
-    ipcMain.handle("agentkib:skills:check-updates", (event) =>
-      runtimeRequest(event, RUNTIME_METHODS.checkSkillUpdates, {}),
-    );
-    ipcMain.handle("agentkib:skills:prepare-update", (event, name: unknown) =>
-      runtimeRequest(event, RUNTIME_METHODS.prepareSkillUpdate, {
+    forward("agentkib:skills:check-updates", RUNTIME_METHODS.checkSkillUpdates);
+    forward(
+      "agentkib:skills:prepare-update",
+      RUNTIME_METHODS.prepareSkillUpdate,
+      (name: unknown) => ({
         name: requireString(name, "name"),
       }),
     );
-    ipcMain.handle("agentkib:skills:rollback", (event, name: unknown) =>
-      runtimeRequest(event, RUNTIME_METHODS.rollbackSkill, {
-        name: requireString(name, "name"),
-        confirmed: true,
-      }),
-    );
-    ipcMain.handle("agentkib:skills:uninstall", (event, name: unknown) =>
-      runtimeRequest(event, RUNTIME_METHODS.uninstallSkill, {
-        name: requireString(name, "name"),
-        confirmed: true,
-      }),
-    );
-    ipcMain.handle("agentkib:skills:removed", (event) =>
-      runtimeRequest(event, RUNTIME_METHODS.listRemovedSkills, {}),
-    );
-    ipcMain.handle("agentkib:skills:restore", (event, id: unknown) =>
-      runtimeRequest(event, RUNTIME_METHODS.restoreSkill, {
-        id: requireString(id, "id"),
-        confirmed: true,
-      }),
-    );
-    ipcMain.handle("agentkib:skills:read-file", (event, name: unknown, filePath: unknown) =>
-      runtimeRequest(event, RUNTIME_METHODS.readSkillFile, {
+    forward("agentkib:skills:rollback", RUNTIME_METHODS.rollbackSkill, (name: unknown) => ({
+      name: requireString(name, "name"),
+      confirmed: true,
+    }));
+    forward("agentkib:skills:uninstall", RUNTIME_METHODS.uninstallSkill, (name: unknown) => ({
+      name: requireString(name, "name"),
+      confirmed: true,
+    }));
+    forward("agentkib:skills:removed", RUNTIME_METHODS.listRemovedSkills);
+    forward("agentkib:skills:restore", RUNTIME_METHODS.restoreSkill, (id: unknown) => ({
+      id: requireString(id, "id"),
+      confirmed: true,
+    }));
+    forward(
+      "agentkib:skills:read-file",
+      RUNTIME_METHODS.readSkillFile,
+      (name: unknown, filePath: unknown) => ({
         name: requireString(name, "name"),
         path: requireString(filePath, "path"),
       }),
     );
 
-    ipcMain.handle("agentkib:mcp:hub-status", (event) =>
-      runtimeRequest(event, RUNTIME_METHODS.mcpHubStatus, {}),
-    );
-    ipcMain.handle("agentkib:mcp:update-network", (event, settings: unknown) =>
-      runtimeRequest(event, RUNTIME_METHODS.updateMcpNetwork, {
+    forward("agentkib:mcp:hub-status", RUNTIME_METHODS.mcpHubStatus);
+    forward(
+      "agentkib:mcp:update-network",
+      RUNTIME_METHODS.updateMcpNetwork,
+      (settings: unknown) => ({
         settings: requireObject(settings, "settings"),
       }),
     );
-    ipcMain.handle("agentkib:mcp:list-servers", (event, project: unknown) =>
-      runtimeRequest(event, RUNTIME_METHODS.listMcpServers, {
-        project: optionalString(project, "project") ?? null,
-      }),
-    );
-    ipcMain.handle("agentkib:mcp:get-server", (event, serverId: unknown, project: unknown) =>
-      runtimeRequest(event, RUNTIME_METHODS.getMcpServer, {
+    forward("agentkib:mcp:list-servers", RUNTIME_METHODS.listMcpServers, (project: unknown) => ({
+      project: optionalString(project, "project") ?? null,
+    }));
+    forward(
+      "agentkib:mcp:get-server",
+      RUNTIME_METHODS.getMcpServer,
+      (serverId: unknown, project: unknown) => ({
         serverId: requireString(serverId, "serverId"),
         project: optionalString(project, "project") ?? null,
       }),
     );
-    ipcMain.handle("agentkib:mcp:save-server", (event, server: unknown, project: unknown) =>
-      runtimeRequest(event, RUNTIME_METHODS.saveMcpServer, {
+    forward(
+      "agentkib:mcp:save-server",
+      RUNTIME_METHODS.saveMcpServer,
+      (server: unknown, project: unknown) => ({
         server: requireObject(server, "server"),
         project: optionalString(project, "project") ?? null,
       }),
     );
-    ipcMain.handle(
+    forward(
       "agentkib:mcp:save-local-values",
-      (event, serverId: unknown, env: unknown, headers: unknown, project: unknown) =>
-        runtimeRequest(event, RUNTIME_METHODS.saveMcpLocalValues, {
-          serverId: requireString(serverId, "serverId"),
-          env: requireObject(env, "env"),
-          headers: requireObject(headers, "headers"),
-          project: optionalString(project, "project") ?? null,
-        }),
+      RUNTIME_METHODS.saveMcpLocalValues,
+      (serverId: unknown, env: unknown, headers: unknown, project: unknown) => ({
+        serverId: requireString(serverId, "serverId"),
+        env: requireObject(env, "env"),
+        headers: requireObject(headers, "headers"),
+        project: optionalString(project, "project") ?? null,
+      }),
     );
-    ipcMain.handle("agentkib:mcp:remove-server", (event, serverId: unknown, project: unknown) =>
-      runtimeRequest(event, RUNTIME_METHODS.removeMcpServer, {
+    forward(
+      "agentkib:mcp:remove-server",
+      RUNTIME_METHODS.removeMcpServer,
+      (serverId: unknown, project: unknown) => ({
         serverId: requireString(serverId, "serverId"),
         project: optionalString(project, "project") ?? null,
       }),
     );
-    ipcMain.handle("agentkib:mcp:probe-runtime", (event, serverId: unknown, project: unknown) =>
-      runtimeRequest(event, RUNTIME_METHODS.probeMcpRuntime, {
+    forward(
+      "agentkib:mcp:probe-runtime",
+      RUNTIME_METHODS.probeMcpRuntime,
+      (serverId: unknown, project: unknown) => ({
         serverId: requireString(serverId, "serverId"),
         project: optionalString(project, "project") ?? null,
       }),
     );
-    ipcMain.handle("agentkib:mcp:start-oauth", (event, serverId: unknown, project: unknown) =>
-      runtimeRequest(event, RUNTIME_METHODS.startMcpOAuth, {
+    forward(
+      "agentkib:mcp:start-oauth",
+      RUNTIME_METHODS.startMcpOAuth,
+      (serverId: unknown, project: unknown) => ({
         serverId: requireString(serverId, "serverId"),
         project: optionalString(project, "project") ?? null,
       }),
     );
-    ipcMain.handle("agentkib:mcp:list-runtimes", (event) =>
-      runtimeRequest(event, RUNTIME_METHODS.listMcpRuntimes, {}),
-    );
-    ipcMain.handle("agentkib:mcp:restart-runtime", (event, serverId: unknown, project: unknown) =>
-      runtimeRequest(event, RUNTIME_METHODS.restartMcpRuntime, {
+    forward("agentkib:mcp:list-runtimes", RUNTIME_METHODS.listMcpRuntimes);
+    forward(
+      "agentkib:mcp:restart-runtime",
+      RUNTIME_METHODS.restartMcpRuntime,
+      (serverId: unknown, project: unknown) => ({
         serverId: requireString(serverId, "serverId"),
         project: optionalString(project, "project") ?? null,
       }),
     );
-    ipcMain.handle("agentkib:mcp:stop-runtime", (event, serverId: unknown) =>
-      runtimeRequest(event, RUNTIME_METHODS.stopMcpRuntime, {
-        serverId: optionalString(serverId, "serverId") ?? null,
-      }),
-    );
-    ipcMain.handle("agentkib:mcp:search-registry", (event, query: unknown) =>
-      runtimeRequest(event, RUNTIME_METHODS.searchMcpRegistry, {
+    forward("agentkib:mcp:stop-runtime", RUNTIME_METHODS.stopMcpRuntime, (serverId: unknown) => ({
+      serverId: optionalString(serverId, "serverId") ?? null,
+    }));
+    forward(
+      "agentkib:mcp:search-registry",
+      RUNTIME_METHODS.searchMcpRegistry,
+      (query: unknown) => ({
         query: requireText(query, "query"),
       }),
     );
-    ipcMain.handle("agentkib:mcp:refresh-registry", (event, query: unknown) =>
-      runtimeRequest(event, RUNTIME_METHODS.refreshMcpRegistry, {
+    forward(
+      "agentkib:mcp:refresh-registry",
+      RUNTIME_METHODS.refreshMcpRegistry,
+      (query: unknown) => ({
         query: requireText(query, "query"),
       }),
     );
-    ipcMain.handle("agentkib:mcp:install", (event, entry: unknown, project: unknown) =>
-      runtimeRequest(event, RUNTIME_METHODS.installMcp, {
+    forward(
+      "agentkib:mcp:install",
+      RUNTIME_METHODS.installMcp,
+      (entry: unknown, project: unknown) => ({
         entry: requireObject(entry, "entry"),
         project: optionalString(project, "project") ?? null,
         confirmed: true,
       }),
     );
-    ipcMain.handle(
+    forward(
       "agentkib:mcp:update",
-      (event, installationId: unknown, entry: unknown, project: unknown) =>
-        runtimeRequest(event, RUNTIME_METHODS.updateMcp, {
-          installationId: requireString(installationId, "installationId"),
-          entry: requireObject(entry, "entry"),
-          project: optionalString(project, "project") ?? null,
-          confirmed: true,
-        }),
-    );
-    ipcMain.handle("agentkib:mcp:list-installations", (event) =>
-      runtimeRequest(event, RUNTIME_METHODS.listMcpInstallations, {}),
-    );
-    ipcMain.handle("agentkib:mcp:uninstall", (event, installationId: unknown) =>
-      runtimeRequest(event, RUNTIME_METHODS.uninstallMcp, {
+      RUNTIME_METHODS.updateMcp,
+      (installationId: unknown, entry: unknown, project: unknown) => ({
         installationId: requireString(installationId, "installationId"),
+        entry: requireObject(entry, "entry"),
+        project: optionalString(project, "project") ?? null,
         confirmed: true,
       }),
     );
-    ipcMain.handle("agentkib:mcp:scan-native", (event, project: unknown) =>
-      runtimeRequest(event, RUNTIME_METHODS.scanNativeMcp, {
-        project: optionalString(project, "project") ?? null,
-      }),
-    );
-    ipcMain.handle(
-      "agentkib:mcp:plan-migration",
-      (event, project: unknown, candidateIds: unknown) => {
-        assertTrustedRenderer(event);
-        if (!Array.isArray(candidateIds)) throw new TypeError("candidateIds must be an array");
-        return runtime().request(RUNTIME_METHODS.planMcpMigration, {
-          project: requireString(project, "project"),
-          candidateIds: candidateIds.map((id) => requireString(id, "candidateId")),
-        });
-      },
-    );
+    forward("agentkib:mcp:list-installations", RUNTIME_METHODS.listMcpInstallations);
+    forward("agentkib:mcp:uninstall", RUNTIME_METHODS.uninstallMcp, (installationId: unknown) => ({
+      installationId: requireString(installationId, "installationId"),
+      confirmed: true,
+    }));
+    forward("agentkib:mcp:scan-native", RUNTIME_METHODS.scanNativeMcp, (project: unknown) => ({
+      project: optionalString(project, "project") ?? null,
+    }));
+    handle("agentkib:mcp:plan-migration", (_event, project: unknown, candidateIds: unknown) => {
+      if (!Array.isArray(candidateIds)) throw new TypeError("candidateIds must be an array");
+      return runtime().request(RUNTIME_METHODS.planMcpMigration, {
+        project: requireString(project, "project"),
+        candidateIds: candidateIds.map((id) => requireString(id, "candidateId")),
+      });
+    });
 
-    ipcMain.handle("agentkib:insights:heatmap", (event, query: unknown) =>
-      runtimeRequest(event, RUNTIME_METHODS.insightsHeatmap, {
+    forward("agentkib:insights:heatmap", RUNTIME_METHODS.insightsHeatmap, (query: unknown) => ({
+      query: requireObject(query, "query"),
+    }));
+    forward(
+      "agentkib:insights:agent-usage",
+      RUNTIME_METHODS.agentUsageBreakdown,
+      (query: unknown) => ({
         query: requireObject(query, "query"),
       }),
     );
-    ipcMain.handle("agentkib:insights:agent-usage", (event, query: unknown) =>
-      runtimeRequest(event, RUNTIME_METHODS.agentUsageBreakdown, {
+    forward(
+      "agentkib:insights:model-usage",
+      RUNTIME_METHODS.modelUsageBreakdown,
+      (query: unknown) => ({
         query: requireObject(query, "query"),
       }),
     );
-    ipcMain.handle("agentkib:insights:model-usage", (event, query: unknown) =>
-      runtimeRequest(event, RUNTIME_METHODS.modelUsageBreakdown, {
+    forward(
+      "agentkib:insights:workspace-usage",
+      RUNTIME_METHODS.workspaceUsageBreakdown,
+      (query: unknown) => ({
         query: requireObject(query, "query"),
       }),
     );
-    ipcMain.handle("agentkib:insights:workspace-usage", (event, query: unknown) =>
-      runtimeRequest(event, RUNTIME_METHODS.workspaceUsageBreakdown, {
+    forward(
+      "agentkib:insights:repository-commits",
+      RUNTIME_METHODS.repositoryCommitBreakdown,
+      (query: unknown) => ({
         query: requireObject(query, "query"),
       }),
     );
-    ipcMain.handle("agentkib:insights:repository-commits", (event, query: unknown) =>
-      runtimeRequest(event, RUNTIME_METHODS.repositoryCommitBreakdown, {
-        query: requireObject(query, "query"),
-      }),
-    );
-    ipcMain.handle("agentkib:insights:achievements", (event) =>
-      runtimeRequest(event, RUNTIME_METHODS.achievements, {}),
-    );
-    ipcMain.handle("agentkib:insights:git-identities", (event) =>
-      runtimeRequest(event, RUNTIME_METHODS.gitIdentities, {}),
-    );
-    ipcMain.handle("agentkib:insights:add-git-identity-alias", (event, email: unknown) =>
-      runtimeRequest(event, RUNTIME_METHODS.addGitIdentityAlias, {
+    forward("agentkib:insights:achievements", RUNTIME_METHODS.achievements);
+    forward("agentkib:insights:git-identities", RUNTIME_METHODS.gitIdentities);
+    forward(
+      "agentkib:insights:add-git-identity-alias",
+      RUNTIME_METHODS.addGitIdentityAlias,
+      (email: unknown) => ({
         email: requireString(email, "email"),
       }),
     );
-    ipcMain.handle(
+    forward(
       "agentkib:insights:set-git-identity-enabled",
-      (event, id: unknown, enabled: unknown) =>
-        runtimeRequest(event, RUNTIME_METHODS.setGitIdentityEnabled, {
-          id: requireString(id, "id"),
-          enabled: requireBoolean(enabled, "enabled"),
-        }),
+      RUNTIME_METHODS.setGitIdentityEnabled,
+      (id: unknown, enabled: unknown) => ({
+        id: requireString(id, "id"),
+        enabled: requireBoolean(enabled, "enabled"),
+      }),
     );
-  }
-
-  function runtimeRequest(
-    event: IpcMainInvokeEvent,
-    method: string,
-    params: unknown,
-  ): Promise<unknown> {
-    assertTrustedRenderer(event);
-    return runtime().request(method, params);
   }
 
   registerWorkspaceIpc();

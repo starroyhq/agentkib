@@ -1,6 +1,6 @@
 import { createHash, randomBytes, randomInt } from "node:crypto";
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
-import { mkdir, readFile, realpath, rename, writeFile } from "node:fs/promises";
+import { mkdir, readFile, realpath, rename, stat, writeFile } from "node:fs/promises";
 import { extname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { networkInterfaces } from "node:os";
 import { ArtifactService, ArtifactError } from "./artifacts";
@@ -8,6 +8,7 @@ import { AttachmentStore, AttachmentError } from "./attachments";
 import { dispatchClaude } from "./claude-dispatch";
 import { CLAUDE_LOCAL_OWNER, localClaudeRequest } from "./local-claude";
 import { replayClaudeAttachments, settleClaudeAttachments } from "./claude-attachment-receipts";
+import { markdownLinkTargets } from "./markdown-links";
 import {
   DEFAULT_RELAY_BROKER,
   RelayManager,
@@ -83,17 +84,22 @@ export interface WebAdminStatus {
   localUrl: string;
   experimentalAvailable: boolean;
   acceptanceSessionId?: string;
-  code?: { value: string; expiresAt: number };
+  code?: { value: string; expiresAt: number; access: WebAccessLevel };
   pending: WebPending[];
-  devices: WebDevice[];
+  devices: WebAdminDevice[];
   mode?: "lan" | "local";
   addresses?: Array<{ name: string; address: string }>;
   connectionUrl?: string;
   workspaces?: { id: string; name: string; path: string }[];
   relay?: RelayStatus;
 }
+/** 授权码配对的权限档位；LAN 确认配对仍按单项权限逐个授予。 */
+export type WebAccessLevel = "read" | "full";
+export type WebAdminDevice = WebDevice & { accessLevel?: WebAccessLevel };
 export type WebAdminRequest = { target?: "lan" } & (
-  | { operation: "status" | "generate-code" }
+  | { operation: "status" }
+  | { operation: "generate-code"; access?: WebAccessLevel }
+  | { operation: "set-access"; id: string; access: WebAccessLevel }
   | {
       operation: "configure";
       enabled: boolean;
@@ -131,6 +137,15 @@ export type WebAdminRequest = { target?: "lan" } & (
   | { operation: "reject" | "revoke"; id: string }
 );
 type Credential = { hash: string; expiresAt: number; device: WebDevice; binding?: string };
+type PairingCode = {
+  value: string;
+  expiresAt: number;
+  access: WebAccessLevel;
+  /** 本码累计失败次数；只作纵深防御，正常情况下先被全局 pair 限流拦住。 */
+  failures: number;
+  /** 按浏览器计数：单个客户端猜错只锁死自己，不再让配对码对所有人失效。 */
+  failuresByBrowser: Map<string, number>;
+};
 type Browser = { csrf: string; expiresAt: number; pending?: WebPending; ended?: boolean };
 type Availability = { available: boolean; reason?: string };
 type ContextResourceReference = {
@@ -149,6 +164,164 @@ class HttpError extends Error {
 const token = () => randomBytes(32).toString("base64url");
 const digest = (value: string) => createHash("sha256").update(value).digest("hex");
 const MAX_AGE = 30 * 24 * 60 * 60 * 1000;
+const PAIRING_CODE_TTL_MS = 300_000;
+const PAIRING_FAILURES_PER_BROWSER = 5;
+// 全局 pair 限流为每分钟 20 次、码有效期 5 分钟，一个码最多被试约 100 次；
+// 这里取同一数量级作为上限，猜中 8 位码的概率不超过 1e-6。
+const PAIRING_FAILURES_PER_CODE = 100;
+const newPairingCode = (access: WebAccessLevel = "full"): PairingCode => ({
+  value: randomInt(0, 100_000_000).toString().padStart(8, "0"),
+  expiresAt: Date.now() + PAIRING_CODE_TTL_MS,
+  access,
+  failures: 0,
+  failuresByBrowser: new Map(),
+});
+type DevicePermissions = Required<
+  Pick<
+    WebDevice,
+    | "send"
+    | "approve"
+    | "manage"
+    | "files"
+    | "attachments"
+    | "advancedControl"
+    | "organize"
+    | "settings"
+    | "extendedApproval"
+  >
+>;
+// 只读仍保留 accessMode: "full" 的工作区范围（跟随已登记工作区），
+// 但所有写操作权限关闭；服务端每次请求都按这些标志重新授权。
+const CODE_ACCESS_PERMISSIONS: Record<WebAccessLevel, DevicePermissions> = {
+  read: {
+    send: false,
+    approve: false,
+    manage: false,
+    files: true,
+    attachments: false,
+    advancedControl: false,
+    organize: false,
+    settings: false,
+    extendedApproval: false,
+  },
+  full: {
+    send: true,
+    approve: true,
+    manage: true,
+    files: true,
+    attachments: true,
+    advancedControl: true,
+    organize: true,
+    settings: true,
+    extendedApproval: true,
+  },
+};
+/**
+ * API 路由的元数据，替代原先三份手工同步的路径列表。
+ * - lan：允许托管网页在 LAN 模式下跨源预检（其余路径在 LAN 上本来就不开放）。
+ * - control：会占用执行 worker、需要控制栅栏与回执的变更请求。
+ * 实际分发仍在 handle() 中进行；新增路由时在这里登记它的属性。
+ */
+type RouteSpec = { lan?: true; control?: true };
+const API_ROUTES: Record<"GET" | "POST", Record<string, RouteSpec>> = {
+  GET: {
+    "/access": { lan: true },
+    "/info": { lan: true },
+    "/catalog": { lan: true },
+    "/events": { lan: true },
+    "/live": { lan: true },
+    "/stream": { lan: true },
+    "/attachments": { lan: true },
+    "/codex/capabilities": { lan: true },
+    "/codex/queue": { lan: true },
+    "/codex/session-settings": { lan: true },
+    "/codex/goals": { lan: true },
+    "/codex/context-options": { lan: true },
+    "/managed/options": { lan: true },
+    "/managed/capabilities": { lan: true },
+    "/managed/inspect": { lan: true },
+    "/managed/context": { lan: true },
+    "/files/workspaces": { lan: true },
+    "/files/list": { lan: true },
+    "/files/text": { lan: true },
+    "/artifacts": { lan: true },
+    "/diff": { lan: true },
+  },
+  POST: {
+    "/pair": { lan: true },
+    "/pair/cancel": { lan: true },
+    "/logout": { lan: true },
+    "/send": { lan: true, control: true },
+    "/stop": { lan: true, control: true },
+    "/approve": { lan: true, control: true },
+    "/answer": { lan: true, control: true },
+    "/codex/goal-set": { lan: true, control: true },
+    "/codex/goal-pause": { lan: true, control: true },
+    "/codex/goal-resume": { lan: true, control: true },
+    "/codex/goal-clear": { lan: true, control: true },
+    "/managed/create": { lan: true, control: true },
+    "/managed/adopt": { lan: true, control: true },
+    "/managed/release": { lan: true, control: true },
+    "/managed/reconcile": { lan: true, control: true },
+    "/artifact-tickets": { lan: true },
+    "/attachments": { lan: true },
+    "/attachments/delete": { lan: true },
+  },
+};
+// 回执查询带动态 ID；控制请求结果不确定时客户端靠它恢复，LAN 也需要能预检。
+const RECEIPT_ROUTE = /^\/requests\/[^/]+$/;
+function routeSpec(method: string | undefined, path: string): RouteSpec | undefined {
+  if (method !== "GET" && method !== "POST") return undefined;
+  return Object.hasOwn(API_ROUTES[method], path) ? API_ROUTES[method][path] : undefined;
+}
+function lanPreflightAllowed(method: string | undefined, path: string): boolean {
+  return routeSpec(method, path)?.lan === true || (method === "GET" && RECEIPT_ROUTE.test(path));
+}
+function isControlRequest(method: string | undefined, path: string): boolean {
+  if (routeSpec(method, path)?.control) return true;
+  // 其余 /codex/* POST（重命名、归档、队列等）一律按控制请求处理；inspect 是只读探测。
+  return method === "POST" && path.startsWith("/codex/") && path !== "/codex/inspect";
+}
+/**
+ * relay broker 只能是 HTTPS origin（可带结尾的 "/"），返回规范化后的 origin。
+ * 类型不对或无法解析时抛 invalid_relay_configuration，而不是把 URL 的 TypeError 原样抛给设置页。
+ */
+function relayBrokerOrigin(value: unknown): string {
+  let url: URL | undefined;
+  try {
+    if (typeof value === "string") url = new URL(value.trim());
+  } catch {
+    url = undefined;
+  }
+  if (
+    !url ||
+    url.protocol !== "https:" ||
+    url.username ||
+    url.password ||
+    url.pathname !== "/" ||
+    url.search ||
+    url.hash
+  )
+    throw new Error("invalid_relay_configuration");
+  return url.origin;
+}
+/** 读取 runtime 快照上的字段；快照不是对象或缺少该字段时返回 undefined。 */
+function snapshotField(snapshot: unknown, key: string): unknown {
+  return snapshot !== null && typeof snapshot === "object" && key in snapshot
+    ? (snapshot as Record<string, unknown>)[key]
+    : undefined;
+}
+const isAccessLevel = (value: unknown): value is WebAccessLevel =>
+  value === "read" || value === "full";
+function accessLevelOf(device: WebDevice): WebAccessLevel | undefined {
+  if (device.accessMode !== "full") return undefined;
+  return (Object.keys(CODE_ACCESS_PERMISSIONS) as WebAccessLevel[]).find((level) =>
+    Object.entries(CODE_ACCESS_PERMISSIONS[level]).every(
+      ([permission, allowed]) =>
+        (device[permission as keyof DevicePermissions] === true) === allowed,
+    ),
+  );
+}
 const DEFAULT: WebConfig = {
   enabled: false,
   port: 1421,
@@ -161,8 +334,7 @@ export class WebAccessService {
   private config = { ...DEFAULT };
   private server?: Server;
   private error?: string;
-  private code?: { value: string; expiresAt: number };
-  private failures = 0;
+  private code?: PairingCode;
   private credentials: Credential[] = [];
   private browsers = new Map<string, Browser>();
   private streams = new Map<ServerResponse, string>();
@@ -188,6 +360,7 @@ export class WebAccessService {
   private previewStarting?: Promise<void>;
   private relay?: RelayManager;
   private relayEpoch = 0;
+  private disposed = false;
   private remotePairingInitialized = false;
   private contextArtifactRefs = new Map<
     string,
@@ -328,8 +501,8 @@ export class WebAccessService {
   private isFullAccess(device?: WebDevice) {
     return this.options.mode !== "lan" && device?.accessMode === "full";
   }
-  private fullAccess(hash: string) {
-    const device = this.grant(hash);
+  private fullAccess(hash: string, permission?: "advancedControl") {
+    const device = this.grant(hash, permission);
     if (!this.isFullAccess(device)) throw new HttpError(403, "permission_denied");
     return device;
   }
@@ -358,37 +531,24 @@ export class WebAccessService {
     device?: WebDevice,
     reserved = false,
   ) {
-    if (
-      snapshot &&
-      typeof snapshot === "object" &&
-      "executionMode" in snapshot &&
-      ["codex-managed", "claude-managed"].includes(String(snapshot.executionMode)) &&
-      (!("workspaceId" in snapshot) ||
-        typeof snapshot.workspaceId !== "string" ||
-        !(await this.workspaceAllowed(snapshot.workspaceId, device, reserved)))
-    )
-      return false;
+    const executionMode = snapshotField(snapshot, "executionMode");
+    if (["codex-managed", "claude-managed"].includes(String(executionMode))) {
+      const workspaceId = snapshotField(snapshot, "workspaceId");
+      if (
+        typeof workspaceId !== "string" ||
+        !(await this.workspaceAllowed(workspaceId, device, reserved))
+      )
+        return false;
+    }
     return (
       this.controlsEnabled(sessionId, device) &&
       (!!this.options.acceptanceSessionId ||
         this.options.verifiedExperimental === true ||
         (this.options.verifiedCodex === true &&
-          snapshot !== null &&
-          typeof snapshot === "object" &&
-          "executionMode" in snapshot &&
-          (snapshot.executionMode === "codex-managed" ||
-            snapshot.executionMode === "codex-follower")) ||
+          (executionMode === "codex-managed" || executionMode === "codex-follower")) ||
         (this.options.verifiedClaudeManaged === true &&
-          snapshot !== null &&
-          typeof snapshot === "object" &&
-          "executionMode" in snapshot &&
-          (snapshot.executionMode === "managed-resume" ||
-            snapshot.executionMode === "claude-managed")) ||
-        (this.options.verifiedAntigravityManaged === true &&
-          snapshot !== null &&
-          typeof snapshot === "object" &&
-          "executionMode" in snapshot &&
-          snapshot.executionMode === "acp-managed"))
+          (executionMode === "managed-resume" || executionMode === "claude-managed")) ||
+        (this.options.verifiedAntigravityManaged === true && executionMode === "acp-managed"))
     );
   }
 
@@ -431,10 +591,28 @@ export class WebAccessService {
     this.adminQueue = result.catch(() => undefined);
     return result;
   }
+  /**
+   * 应用退出时调用。排在正在执行的桌面操作之后：否则进行到一半的 remote-enable 会在
+   * shutdown 之后重新监听端口、再建一个 RelayManager（连带一个 frpc）。之后的操作一律拒绝。
+   */
+  dispose(): Promise<void> {
+    this.disposed = true;
+    const result = this.adminQueue.then(() => this.shutdown());
+    this.adminQueue = result.catch(() => undefined);
+    return result;
+  }
   private async admin(input: WebAdminRequest): Promise<WebAdminStatus> {
+    if (this.disposed) throw new Error("web_unavailable");
     if (!input || typeof input !== "object") throw new Error("invalid_admin_request");
-    if (["approve", "reject", "revoke"].includes(input.operation))
+    if (["approve", "reject", "revoke", "set-access"].includes(input.operation))
       this.field((input as { id: string }).id);
+    if (
+      (input.operation === "set-access" && !isAccessLevel(input.access)) ||
+      (input.operation === "generate-code" &&
+        input.access !== undefined &&
+        !isAccessLevel(input.access))
+    )
+      throw new Error("invalid_admin_request");
     if (
       input.operation === "approve" &&
       (typeof input.send !== "boolean" || typeof input.approve !== "boolean")
@@ -449,22 +627,22 @@ export class WebAccessService {
           throw new Error("remote_enable_unavailable");
         if (input.reenroll && (typeof input.inviteCode !== "string" || !input.inviteCode.trim()))
           throw new Error("invitation_required_for_reenrollment");
-        if (input.brokerUrl === DEFAULT_RELAY_BROKER) {
+        const brokerUrl = relayBrokerOrigin(input.brokerUrl);
+        if (brokerUrl === DEFAULT_RELAY_BROKER) {
           const identity = await this.accountIdentity();
           if (identity?.accountClaimPending) throw new Error("account_claim_pending");
           if (identity?.accountId && !this.options.account)
             throw new Error("account_login_required");
           await this.options.account?.ensureDeviceOwner(identity?.accountId);
         }
-        const changedBroker =
-          !!this.config.relay && this.config.relay.brokerUrl !== input.brokerUrl;
+        const changedBroker = !!this.config.relay && this.config.relay.brokerUrl !== brokerUrl;
         const next = this.validateConfig({
           ...this.config,
           enabled: true,
           externalOrigin: changedBroker ? "" : this.config.externalOrigin,
           relay: {
             enabled: true,
-            brokerUrl: input.brokerUrl,
+            brokerUrl,
             ...(input.frpcPath ? { frpcPath: input.frpcPath } : {}),
           },
         });
@@ -538,7 +716,6 @@ export class WebAccessService {
         }
         this.config = config;
         this.code = undefined;
-        this.failures = 0;
         for (const browser of this.browsers.values()) browser.pending = undefined;
         await this.save();
         if (config.enabled) await this.start();
@@ -546,12 +723,28 @@ export class WebAccessService {
       }
       case "generate-code":
         if (!this.server) throw new Error("web_not_running");
-        this.code = {
-          value: randomInt(0, 100_000_000).toString().padStart(8, "0"),
-          expiresAt: Date.now() + 300_000,
-        };
-        this.failures = 0;
+        // LAN 配对码只用于发起确认请求，权限在桌面确认时逐项授予，档位不适用。
+        this.code = newPairingCode(this.options.mode === "lan" ? "full" : input.access);
         break;
+      case "set-access": {
+        if (this.options.mode === "lan") throw new Error("invalid_admin_operation");
+        const credential = this.credentials.find(
+          (c) => c.device.id === input.id && c.device.accessMode === "full",
+        );
+        if (!credential) throw new Error("device_not_found");
+        const previous = credential.device;
+        credential.device = { ...previous, ...CODE_ACCESS_PERMISSIONS[input.access] };
+        try {
+          await this.save();
+        } catch (error) {
+          credential.device = previous;
+          throw error;
+        }
+        // 已连接的浏览器还拿着旧的 /access 快照（控件按旧权限显示）。断开它的流让它重连，
+        // 重连时会重新同步权限；不发 access-ended，否则客户端会当成被注销。
+        this.endStreams(credential.hash, null);
+        break;
+      }
       case "approve": {
         const entry = [...this.browsers].find(([, b]) => b.pending?.id === input.id);
         if (!entry?.[1].pending) throw new Error("pairing_expired");
@@ -672,11 +865,9 @@ export class WebAccessService {
       throw new Error("invalid_workspace_grants");
     if (input.relay) {
       const relay = input.relay;
-      const broker = new URL(relay.brokerUrl);
+      relayBrokerOrigin(relay.brokerUrl);
       if (
         typeof relay.enabled !== "boolean" ||
-        broker.protocol !== "https:" ||
-        broker.origin !== relay.brokerUrl ||
         (relay.frpcPath !== undefined &&
           (typeof relay.frpcPath !== "string" ||
             !isAbsolute(relay.frpcPath) ||
@@ -719,7 +910,7 @@ export class WebAccessService {
         ? {
             relay: {
               enabled: input.relay.enabled,
-              brokerUrl: input.relay.brokerUrl,
+              brokerUrl: relayBrokerOrigin(input.relay.brokerUrl),
               ...(input.relay.frpcPath ? { frpcPath: input.relay.frpcPath } : {}),
             },
           }
@@ -749,9 +940,16 @@ export class WebAccessService {
               : undefined,
           }
         : {}),
-      code: this.code && { ...this.code },
+      code: this.code && {
+        value: this.code.value,
+        expiresAt: this.code.expiresAt,
+        access: this.code.access,
+      },
       pending: [...this.browsers.values()].flatMap((b) => (b.pending ? [{ ...b.pending }] : [])),
-      devices: this.credentials.map((c) => ({ ...c.device })),
+      devices: this.credentials.map((c) => {
+        const accessLevel = accessLevelOf(c.device);
+        return { ...c.device, ...(accessLevel ? { accessLevel } : {}) };
+      }),
       relay: this.relay?.status,
     };
   }
@@ -770,6 +968,7 @@ export class WebAccessService {
     return result;
   }
   private async start(connectRelay = true) {
+    if (this.disposed) return;
     this.error = undefined;
     if (
       this.options.mode === "lan" &&
@@ -949,6 +1148,7 @@ export class WebAccessService {
     await rename(file + ".tmp", file);
   }
   private startRelay(inviteCode?: string, reenroll?: boolean) {
+    if (this.disposed) return;
     const config = this.config.relay;
     if (!config?.enabled) return;
     const targets = this.relayTargets();
@@ -956,6 +1156,7 @@ export class WebAccessService {
     this.relay = new RelayManager({
       brokerUrl: config.brokerUrl,
       frpcPath: config.frpcPath || this.options.bundledFrpcPath || "",
+      trustedFrpcPath: this.options.bundledFrpcPath || "",
       createCsr:
         this.options.createRelayCsr ?? (() => Promise.reject(new Error("runtime_unavailable"))),
       inviteCode,
@@ -1007,13 +1208,7 @@ export class WebAccessService {
           }
           this.remotePairingInitialized = true;
           if (this.error === "web_state_save_failed") this.error = undefined;
-          if (!this.code || this.code.expiresAt <= Date.now()) {
-            this.code = {
-              value: randomInt(0, 100_000_000).toString().padStart(8, "0"),
-              expiresAt: Date.now() + 300_000,
-            };
-            this.failures = 0;
-          }
+          if (!this.code || this.code.expiresAt <= Date.now()) this.code = newPairingCode();
         });
         this.adminQueue = update.catch(() => {
           this.error = "web_state_save_failed";
@@ -1129,25 +1324,35 @@ export class WebAccessService {
     };
     return catalog.workspaces ?? [];
   }
-  private async fileScope(hash: string, workspaceId: string) {
-    const device = this.grant(hash, "files");
+  private async fileScopeFor(device: WebDevice, workspaceId: string) {
     if (!(await this.fileRoots(device)).some((w) => w.id === workspaceId))
       throw new HttpError(403, "workspace_not_authorized");
-    this.grant(hash, "files");
     return { deviceId: device.id, workspaceId };
   }
-  private async files(res: ServerResponse, hash: string, path: string, url: URL) {
+  /** 供有副作用的调用方使用（如签发预览票据）：await 之后必须立刻确认授权仍然有效。 */
+  private async fileScope(hash: string, workspaceId: string) {
+    const scope = await this.fileScopeFor(this.grant(hash, "files"), workspaceId);
     this.grant(hash, "files");
+    return scope;
+  }
+  private async files(res: ServerResponse, hash: string, path: string, url: URL) {
+    // 这里全是只读操作：开始时授权一次，响应前再确认一次。期间被撤销的设备
+    // 拿不到任何数据，中间步骤无需反复重查。
+    const device = this.grant(hash, "files");
+    const result = await this.readFiles(device, path, url);
+    this.grant(hash, "files");
+    return this.json(res, 200, result);
+  }
+  private async readFiles(device: WebDevice, path: string, url: URL): Promise<unknown> {
     if (path === "/files/workspaces") {
-      const roots = await this.fileRoots(this.grant(hash, "files"));
-      this.grant(hash, "files");
-      return this.json(res, 200, { workspaces: roots.map(({ id, name }) => ({ id, name })) });
+      const roots = await this.fileRoots(device);
+      return { workspaces: roots.map(({ id, name }) => ({ id, name })) };
     }
     const workspaceId = this.field(url.searchParams.get("workspaceId"));
-    const scope = await this.fileScope(hash, workspaceId);
+    const scope = await this.fileScopeFor(device, workspaceId);
     let result: unknown;
     if (path === "/diff") {
-      if (!(await this.workspaceAllowed(workspaceId, this.grant(hash), this.admission)))
+      if (!(await this.workspaceAllowed(workspaceId, device, this.admission)))
         throw new HttpError(403, "workspace_not_authorized");
       const kind = url.searchParams.get("kind") ?? "worktree";
       if (!["worktree", "staged", "commit"].includes(kind))
@@ -1182,21 +1387,14 @@ export class WebAccessService {
           limit: 50,
           cursor: url.searchParams.get("cursor") ?? undefined,
         })) as { events: { content?: string }[]; next_cursor?: string };
-        const refs = page.events.flatMap((event) =>
-          [
-            ...(event.content ?? "").matchAll(
-              /!?\[[^\]]*\]\((?:<([^>]+)>|([^\s)]+))(?:\s+"[^"]*")?\)/g,
-            ),
-          ].map((m) => m[1] ?? m[2]),
-        );
+        const refs = page.events.flatMap((event) => markdownLinkTargets(event.content ?? ""));
         result = {
           artifacts: await this.artifacts.resolveReferences(scope, refs),
           next_cursor: page.next_cursor,
         };
       } else throw new HttpError(404, "not_found");
     }
-    this.grant(hash, "files");
-    return this.json(res, 200, result);
+    return result;
   }
   private optionalString(value: unknown, max = 256) {
     return typeof value === "string" && value.trim() && value.length <= max ? value : undefined;
@@ -2418,15 +2616,21 @@ export class WebAccessService {
   }
   private rate(key: string, limit: number) {
     const previous = this.rates.get(key);
+    // 表满时只拒绝新建 key；已有额度的客户端不能因为别人把表撑满而被 429。
+    if (!previous && this.rates.size >= 4096) throw new HttpError(429, "rate_limited");
     const rate =
       previous && previous.until > Date.now() ? previous : { count: 0, until: Date.now() + 60_000 };
-    if (++rate.count > limit || this.rates.size > 4096) throw new HttpError(429, "rate_limited");
+    if (++rate.count > limit) throw new HttpError(429, "rate_limited");
     this.rates.set(key, rate);
   }
-  private endStreams(hash?: string, event: "access-ended" | "unavailable" = "access-ended") {
+  /**
+   * event 为 null 时只关闭连接、不发事件：客户端按普通断线处理，重连时重新读取 /access，
+   * 从而拿到新的权限（与工作区授权撤销时关闭流的做法一致）。
+   */
+  private endStreams(hash?: string, event: "access-ended" | "unavailable" | null = "access-ended") {
     for (const [res, owner] of this.streams)
       if (!hash || hash === owner) {
-        res.write(`event: ${event}\ndata: {}\n\n`);
+        if (event) res.write(`event: ${event}\ndata: {}\n\n`);
         res.end();
         this.streams.delete(res);
       }
@@ -2560,7 +2764,19 @@ export class WebAccessService {
       throw new HttpError(403, "invalid_origin");
     if (!lan && req.headers["sec-fetch-site"] === "cross-site")
       throw new HttpError(403, "cross_site_request");
-    this.rate("global", 600);
+    const cookieName = external ? "ak_web_secure" : "ak_web_local";
+    let raw = lan
+      ? req.headers.authorization?.match(/^Bearer ([A-Za-z0-9_-]{43})$/)?.[1]
+      : req.headers.cookie
+          ?.split(";")
+          .map((v) => v.trim())
+          .find((v) => v.startsWith(`${cookieName}=`))
+          ?.slice(cookieName.length + 1);
+    let hash = raw && /^[A-Za-z0-9_-]{43}$/.test(raw) ? digest(raw) : "";
+    // 已配对设备各自一份额度；未认证流量（含静态资源、预检、配对）共享一个池。
+    // 经 relay 进来的请求都来自本机 frpc，拿不到真实客户端地址，无法再按 IP 细分。
+    const paired = !!hash && this.credentials.some((c) => c.hash === hash);
+    this.rate(paired ? `paired:${hash}` : "anonymous", 600);
     if (lan) {
       res.setHeader("Access-Control-Allow-Origin", origin);
       res.setHeader("Vary", "Origin");
@@ -2573,58 +2789,14 @@ export class WebAccessService {
     res.setHeader("Cache-Control", "no-store");
     const path = url.pathname.replace(/^\/api\/web\/v1/, "");
     if (!url.pathname.startsWith("/api/web/v1/")) throw new HttpError(404, "not_found");
-    const getPaths = [
-      "/access",
-      "/info",
-      "/catalog",
-      "/events",
-      "/live",
-      "/stream",
-      "/attachments",
-      "/codex/capabilities",
-      "/codex/queue",
-      "/codex/session-settings",
-      "/codex/goals",
-      "/codex/context-options",
-      "/managed/options",
-      "/managed/capabilities",
-      "/managed/inspect",
-      "/managed/context",
-      "/files/workspaces",
-      "/files/list",
-      "/files/text",
-      "/artifacts",
-      "/diff",
-    ];
-    const postPaths = [
-      "/pair",
-      "/pair/cancel",
-      "/logout",
-      "/send",
-      "/stop",
-      "/approve",
-      "/answer",
-      "/codex/goal-set",
-      "/codex/goal-pause",
-      "/codex/goal-resume",
-      "/codex/goal-clear",
-      "/managed/create",
-      "/managed/adopt",
-      "/managed/release",
-      "/managed/reconcile",
-      "/artifact-tickets",
-      "/attachments",
-      "/attachments/delete",
-    ];
     if (lan && req.method === "OPTIONS") {
       const method = req.headers["access-control-request-method"];
-      const allowed = method === "GET" ? getPaths : method === "POST" ? postPaths : [];
       const headers = String(req.headers["access-control-request-headers"] ?? "")
         .split(",")
         .map((header) => header.trim().toLowerCase())
         .filter(Boolean);
       if (
-        !allowed.includes(path) ||
+        !lanPreflightAllowed(method, path) ||
         headers.some(
           (header) => !["authorization", "content-type", "x-csrf-token"].includes(header),
         )
@@ -2644,28 +2816,7 @@ export class WebAccessService {
         transport: lan ? "lan" : "local",
         capabilities: { read: true, send: this.controlsEnabled(), approve: this.controlsEnabled() },
       });
-    control.request =
-      (req.method === "POST" &&
-        [
-          "/send",
-          "/stop",
-          "/approve",
-          "/answer",
-          "/managed/create",
-          "/managed/adopt",
-          "/managed/release",
-          "/managed/reconcile",
-        ].includes(path)) ||
-      (req.method === "POST" && path.startsWith("/codex/") && path !== "/codex/inspect");
-    const cookieName = external ? "ak_web_secure" : "ak_web_local";
-    let raw = lan
-      ? req.headers.authorization?.match(/^Bearer ([A-Za-z0-9_-]{43})$/)?.[1]
-      : req.headers.cookie
-          ?.split(";")
-          .map((v) => v.trim())
-          .find((v) => v.startsWith(`${cookieName}=`))
-          ?.slice(cookieName.length + 1);
-    let hash = raw && /^[A-Za-z0-9_-]{43}$/.test(raw) ? digest(raw) : "";
+    control.request = isControlRequest(req.method, path);
     let browser = this.browsers.get(hash);
     let bearerToken: string | undefined;
     if (
@@ -2773,8 +2924,15 @@ export class WebAccessService {
           if (this.browsers.get(hash) !== pairingBrowser || !this.server)
             throw new HttpError(401, "access_ended");
           const name = this.field(body.name, 80);
-          if (!this.code || this.failures >= 5 || body.code !== this.code.value) {
-            this.failures++;
+          if (!this.code) throw new HttpError(403, "invalid_pairing_code");
+          const browserFailures = this.code.failuresByBrowser.get(hash) ?? 0;
+          if (
+            browserFailures >= PAIRING_FAILURES_PER_BROWSER ||
+            this.code.failures >= PAIRING_FAILURES_PER_CODE ||
+            body.code !== this.code.value
+          ) {
+            this.code.failuresByBrowser.set(hash, browserFailures + 1);
+            this.code.failures++;
             throw new HttpError(403, "invalid_pairing_code");
           }
           if (!lan) {
@@ -2787,15 +2945,7 @@ export class WebAccessService {
                 name,
                 accessMode: "full",
                 createdAt: Date.now(),
-                send: true,
-                approve: true,
-                manage: true,
-                files: true,
-                attachments: true,
-                advancedControl: true,
-                organize: true,
-                settings: true,
-                extendedApproval: true,
+                ...CODE_ACCESS_PERMISSIONS[this.code.access],
               },
             };
             const next = [...this.credentials, credential];
@@ -3251,17 +3401,19 @@ export class WebAccessService {
       path === "/codex/context-options"
     ) {
       const sessionId = this.field(url.searchParams.get("sessionId"));
-      const device = this.fullAccess(hash);
+      // 与 projectCapabilities 一致：settings-state/usage/goal/context 都属于 advancedControl，
+      // 只读设备即便是 full 模式也不能读取。
+      const device = this.fullAccess(hash, "advancedControl");
       const workspaceId = await this.codexScope(sessionId, hash);
       let result: unknown;
       if (path === "/codex/session-settings") {
         const settings = await this.runtime({ operation: "settings-state", sessionId });
-        this.fullAccess(hash);
+        this.fullAccess(hash, "advancedControl");
         const usage = await this.runtime({ operation: "usage", sessionId });
         result = { sessionId, ...this.projectSettings(settings, usage) };
       } else if (path === "/codex/goals") {
         const goal = await this.runtime({ operation: "goal", sessionId });
-        this.fullAccess(hash);
+        this.fullAccess(hash, "advancedControl");
         const capabilities = await this.runtime({
           operation: "capabilities",
           sessionId,
@@ -3278,7 +3430,8 @@ export class WebAccessService {
         result = (await this.contextResources(sessionId, device, workspaceId, directoryId))
           .response;
       }
-      if (this.fullAccess(hash).id !== device.id) throw new HttpError(401, "access_ended");
+      if (this.fullAccess(hash, "advancedControl").id !== device.id)
+        throw new HttpError(401, "access_ended");
       await this.codexScope(sessionId, hash);
       return this.json(res, 200, result);
     }
@@ -3647,8 +3800,11 @@ export class WebAccessService {
     const rel = relative(root, file);
     if (rel === ".." || rel.startsWith(`..${sep}`) || resolve(root, rel) !== file)
       throw new HttpError(403, "invalid_path");
+    // 先看元数据：目录直接 404，超大文件在读入内存之前就拒绝。
+    const info = await stat(file);
+    if (!info.isFile()) throw new HttpError(404, "not_found");
+    if (info.size > 16 * 1024 * 1024) throw new HttpError(413, "asset_too_large");
     const data = await readFile(file);
-    if (data.length > 16 * 1024 * 1024) throw new HttpError(413, "asset_too_large");
     const mime: Record<string, string> = {
       ".html": "text/html; charset=utf-8",
       ".js": "text/javascript",

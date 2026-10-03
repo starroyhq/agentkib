@@ -20,15 +20,15 @@ AgentKib 是一个本地优先的 Coding Agent 资产中心。它发现 Codex、
 
 ### Agent 支持矩阵
 
-| Agent | 发现与盘点 | 上下文诊断与同步 | 会话浏览与交接 |
-| --- | --- | --- | --- |
-| Codex | 支持 | 支持 | 支持 |
-| Claude Code | 支持 | 支持 | 支持 |
-| Cursor | 支持 | 支持 | — |
-| OpenCode | 支持 | 支持 | — |
-| OpenClaw | 支持 | 支持 | — |
-| Hermes | 支持 | 支持 | — |
-| DeepSeek Harness | Beta，只读 | 仅诊断，不写入 | — |
+| Agent            | 发现与盘点 | 上下文诊断与同步 | 会话浏览与交接 |
+| ---------------- | ---------- | ---------------- | -------------- |
+| Codex            | 支持       | 支持             | 支持           |
+| Claude Code      | 支持       | 支持             | 支持           |
+| Cursor           | 支持       | 支持             | —              |
+| OpenCode         | 支持       | 支持             | —              |
+| OpenClaw         | 支持       | 支持             | —              |
+| Hermes           | 支持       | 支持             | —              |
+| DeepSeek Harness | Beta，只读 | 仅诊断，不写入   | —              |
 
 ## 一、安装编译环境
 
@@ -59,25 +59,7 @@ Set-ExecutionPolicy -Scope CurrentUser -ExecutionPolicy RemoteSigned
 
 `RemoteSigned` 允许本地脚本运行，但从网络下载且未解除阻止的脚本仍需签名。
 
-### 2. Rust stable MSVC
-
-```powershell
-winget install --exact --id Rustlang.Rustup --source winget --accept-package-agreements --accept-source-agreements
-rustup default stable-msvc
-rustup target add x86_64-pc-windows-msvc
-rustup component add rustfmt clippy
-```
-
-验证：
-
-```powershell
-rustc -vV
-cargo --version
-```
-
-`rustc -vV` 中的 host 应为 `x86_64-pc-windows-msvc`。
-
-### 3. Visual Studio Build Tools 2022 和 Windows SDK
+### 2. Visual Studio Build Tools 2022 和 Windows SDK
 
 ```powershell
 winget install --exact --id Microsoft.VisualStudio.2022.BuildTools --source winget --accept-package-agreements --accept-source-agreements --override "--wait --passive --add Microsoft.VisualStudio.Workload.VCTools --includeRecommended"
@@ -85,7 +67,7 @@ winget install --exact --id Microsoft.VisualStudio.2022.BuildTools --source wing
 
 该工作负载应包含 MSVC x64/x86 编译工具和 Windows 10/11 SDK。若安装器提示重启，请先重启 Windows。
 
-### 4. 一键诊断
+### 3. 一键诊断
 
 在仓库根目录执行：
 
@@ -93,7 +75,7 @@ winget install --exact --id Microsoft.VisualStudio.2022.BuildTools --source wing
 pnpm diagnose:windows
 ```
 
-诊断为只读操作，会检查系统架构、Git/Node/pnpm/Rust、MSVC、Windows SDK，以及 GitHub 和 Cargo Registry 连通性。存在必需项缺失时会返回非零退出码和修复提示。
+诊断为只读操作，会检查系统架构、Git/Node/pnpm、MSVC、Windows SDK，以及 GitHub 连通性。必需项缺失时会返回非零退出码和修复提示。
 
 ## 二、安装项目依赖
 
@@ -111,7 +93,7 @@ pnpm install --frozen-lockfile
 pnpm dev
 ```
 
-首次编译 Rust 依赖耗时会明显长于后续启动。编译完成后会打开带 Windows 原生标题栏的 **AgentKib Dev** 主窗口。开发版 identifier 为 `ai.agentkib.dev`，可以与正式安装版同时运行。
+`pnpm dev` 使用 TypeScript backend。启动后会打开带 Windows 原生标题栏的 **AgentKib Dev** 主窗口。开发版 identifier 为 `ai.agentkib.dev`，可以与正式安装版同时运行。
 
 - 停止开发服务：回到运行命令的终端按 `Ctrl+C`。
 - 关闭主窗口：首次关闭会询问“隐藏到托盘”或“退出”；选择隐藏后会记住该行为，应用继续在后台运行。
@@ -182,7 +164,7 @@ git ls-remote https://github.com/starroyhq/agentkib.git refs/heads/main
 
 端口 `7897` 只是示例，必须以本机 Clash 实际配置为准。
 
-### Cargo 或 sidecar 下载失败
+### Sidecar 下载失败
 
 只在当前构建会话设置代理，不要把本机端口写进仓库：
 

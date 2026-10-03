@@ -24,7 +24,7 @@ import type {
   WorkspaceSummary,
 } from "../../src/core/types";
 import { RUNTIME_METHODS } from "../generated/runtime-protocol";
-import type { DesktopRuntimeHost } from "./runtime-host";
+import type { RuntimeHost } from "./runtime-host";
 
 const QUOTA_POPOVER_WIDTH = 392;
 const QUOTA_POPOVER_HEIGHT = 560;
@@ -37,7 +37,7 @@ const messages: Record<SupportedLocale, Record<string, string>> = {
 };
 
 interface NativeShellOptions {
-  runtime(): DesktopRuntimeHost;
+  runtime(): RuntimeHost;
   mainWindow(): BrowserWindow | undefined;
   preloadPath: string;
   rendererUrl(surface?: "quota-popover"): string;

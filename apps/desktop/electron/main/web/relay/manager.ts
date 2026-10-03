@@ -6,12 +6,14 @@ import {
   createPublicKey,
   randomBytes,
   randomUUID,
+  createHash,
 } from "node:crypto";
-import { chmod, mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
+import { chmod, mkdir, open, readFile, rename, rm, writeFile } from "node:fs/promises";
+import { constants as fsConstants } from "node:fs";
 import { request as httpRequest, type IncomingHttpHeaders } from "node:http";
 import { createServer, request as httpsRequest, type Server } from "node:https";
 import type { Duplex } from "node:stream";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import { rootCertificates, type TLSSocket } from "node:tls";
 import { promisify } from "node:util";
 
@@ -25,7 +27,17 @@ export type RelayFailure = {
     | "preview-connector"
     | "control-probe"
     | "preview-probe";
-  code: "dns" | "timeout" | "tls" | "http" | "process" | "identity" | "unreachable" | "unknown";
+  code:
+    | "dns"
+    | "timeout"
+    | "tls"
+    | "http"
+    | "process"
+    | "identity"
+    | "unreachable"
+    | "unknown"
+    | "integrity"
+    | "conflict";
 };
 type Reason =
   | "revoked"
@@ -45,6 +57,7 @@ export type RelayStatus = {
   retryAt?: number;
   certificateWarning?: boolean;
   failure?: RelayFailure;
+  connectorExit?: { channel: Channel; code?: number; signal?: string };
 };
 type Target = { host: "127.0.0.1"; port: number };
 export type RelayNode = { id: string; transport: "frp-wss"; host: string; port: number };
@@ -74,6 +87,8 @@ export type RelayOptions = {
   reenroll?: boolean;
   stateDirectory: string;
   frpcPath: string;
+  /** Desktop production supplies the checksum-verified bundled executable as the trust anchor. */
+  trustedFrpcPath?: string;
   /** Local IPC only. Private key material must never be sent to the broker. */
   createCsr?: (
     input: { privateKeyDer: string; hosts: string[] },
@@ -95,12 +110,16 @@ const execute = promisify(execFile);
 const HOST = /^(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,63}$/;
 const CREDENTIAL = /^[A-Za-z0-9_-]{40,128}$/;
 const RENEW_BEFORE = 21 * 86_400_000;
+/** 本机 runtime 生成 CSR 的上限；runtime 卡住但没退出时，请求不能无限挂着。 */
+const CSR_TIMEOUT_MS = 30_000;
 const CHANNELS: Channel[] = ["control", "preview"];
 
 class RelayHttpError extends Error {}
 class RelayIdentityError extends Error {}
+class RelayExecutableError extends Error {}
 
 function failureCode(error: unknown): RelayFailure["code"] {
+  if (error instanceof RelayExecutableError) return "integrity";
   if (error instanceof RelayHttpError) return "http";
   if (error instanceof RelayIdentityError) return "identity";
   if (error instanceof Error && (error.name === "TimeoutError" || error.name === "AbortError"))
@@ -219,6 +238,14 @@ export function buildFrpcConfig(
   const host = device.node?.host ?? device.tunnelHost;
   return `serverAddr = ${q(host)}\nserverPort = 443\nuser = ${q(device.deviceId)}\nloginFailExit = false\nmetadatas.credential = ${q(device.credential)}\ntransport.protocol = "wss"\ntransport.tls.enable = true\ntransport.tls.serverName = ${q(host)}\ntransport.tls.trustedCaFile = ${q(trustedCaFile)}\ntransport.tcpMux = true\ntransport.heartbeatInterval = 15\ntransport.heartbeatTimeout = 45\nauth.additionalScopes = ["HeartBeats", "NewWorkConns"]\nlog.level = "warn"\nlog.to = "console"\n[[proxies]]\nname = ${q(channel)}\ntype = "https"\nlocalIP = "127.0.0.1"\nlocalPort = ${localPort}\ncustomDomains = [${q(channel === "control" ? device.controlHost : device.previewHost)}]\n`;
 }
+/**
+ * 状态文件不存在或内容损坏（JSON 解析失败、字段校验失败）。带其他 errno 的 IO 错误
+ * （权限、磁盘）不算，照常抛出。
+ */
+function unreadableState(error: unknown) {
+  const code = (error as NodeJS.ErrnoException | undefined)?.code;
+  return code === "ENOENT" || code === undefined;
+}
 /** Do not rely on a callback/fetch implementation honoring AbortSignal: late results must never revive a session. */
 function abortable<T>(work: Promise<T>, signal: AbortSignal): Promise<T> {
   return new Promise((resolve, reject) => {
@@ -240,13 +267,16 @@ export class RelayManager {
   private registration?: Registration;
   private servers = new Map<Channel, Server>();
   private children = new Map<Channel, ChildProcess>();
+  private connectorFailures = new Map<Channel, RelayFailure>();
   private sockets = new Set<Duplex>();
+  private exiting = new Set<Promise<void>>();
   private ready: Record<Channel, boolean> = { control: false, preview: false };
   private abort?: AbortController;
   private running?: Promise<void>;
   private stopping?: Promise<void>;
   private maintaining?: Promise<void>;
   private authorizing?: Promise<void>;
+  private renewing?: Promise<void>;
   private authTimer?: ReturnType<typeof setTimeout>;
   private leaseTimer?: ReturnType<typeof setTimeout>;
   private certificateTimer?: ReturnType<typeof setTimeout>;
@@ -254,6 +284,7 @@ export class RelayManager {
   private leaseUntil = 0;
   private wallLeaseUntil = 0;
   private probeToken = randomBytes(32).toString("hex");
+  private frpcPath: string;
   private certificate = "";
   private key = "";
   private generation = 0;
@@ -264,7 +295,9 @@ export class RelayManager {
   private suspended = false;
   private certificateWarning = false;
   private failure?: RelayFailure;
+  private connectorExit?: RelayStatus["connectorExit"];
   constructor(private options: RelayOptions) {
+    this.frpcPath = options.frpcPath;
     this.reenrolling = options.reenroll === true;
     if (this.reenrolling && !options.inviteCode?.trim())
       throw new Error("A new invitation is required for reenrollment");
@@ -292,7 +325,11 @@ export class RelayManager {
     return { ...this.current, channels: { ...this.ready } };
   }
   private report(phase: RelayStatus["phase"], reason?: Reason, retryAt?: number) {
-    if (phase === "ready" || phase === "disabled") this.failure = undefined;
+    if (phase === "ready" || phase === "disabled") {
+      this.failure = undefined;
+      this.connectorExit = undefined;
+      this.connectorFailures.clear();
+    }
     this.current = {
       phase,
       ...(this.registration
@@ -316,6 +353,9 @@ export class RelayManager {
           }
         : {}),
       ...(retryAt ? { retryAt } : {}),
+      ...(this.connectorExit && reason === "connector"
+        ? { connectorExit: this.connectorExit }
+        : {}),
       ...(this.certificateWarning ? { certificateWarning: true } : {}),
       ...(reason && this.failure && !["revoked", "lease-expired", "suspended"].includes(reason)
         ? { failure: this.failure }
@@ -326,7 +366,7 @@ export class RelayManager {
   private recordFailure(stage: RelayFailure["stage"], error: unknown) {
     this.failure = { stage, code: failureCode(error) };
   }
-  private async store(name: string, value: string) {
+  private async store(name: string, value: string | Buffer) {
     const file = join(this.options.stateDirectory, name);
     await writeFile(file + ".tmp", value, { mode: 0o600 });
     await chmod(file + ".tmp", 0o600);
@@ -366,8 +406,12 @@ export class RelayManager {
         signal,
       );
       this.active(generation);
-      if (response.status === 403) throw new RelayAuthorizationError();
-      if (!response.ok) throw new RelayHttpError();
+      if (!response.ok) {
+        // 不读的错误响应体要取消，否则连接一直被占着，重试风暴时会攒下一堆。
+        void response.body?.cancel().catch(() => {});
+        if (response.status === 403) throw new RelayAuthorizationError();
+        throw new RelayHttpError();
+      }
       const reader = response.body?.getReader();
       if (!reader) throw new Error("Empty relay response");
       const chunks: Uint8Array[] = [];
@@ -401,6 +445,7 @@ export class RelayManager {
     if (this.retryTimer) clearTimeout(this.retryTimer);
     this.abort = new AbortController();
     this.failure = undefined;
+    this.connectorExit = undefined;
     const generation = ++this.generation;
     // Announce startup before the async executable check so repeated desktop
     // enable requests recognize the in-flight attempt rather than restart it.
@@ -415,7 +460,7 @@ export class RelayManager {
             : this.failure?.stage === "broker"
               ? "network"
               : "setup",
-        !(error instanceof RelayAuthorizationError),
+        !(error instanceof RelayAuthorizationError || error instanceof RelayExecutableError),
       );
     });
     this.running = work;
@@ -438,7 +483,10 @@ export class RelayManager {
       )
         throw new Error("Invalid pending registration");
     } catch (error) {
-      if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+      if (!unreadableState(error)) throw error;
+      // 损坏的待注册记录没法再用（凭据对不上），留着只会让每次启动都失败，包括重新邀请。
+      pending = undefined;
+      await rm(join(this.options.stateDirectory, "registration-pending.json"), { force: true });
     }
     // A durable pending reenrollment takes precedence even after a crash. Never fall back to the revoked old identity.
     if (!pending && !this.reenrolling) {
@@ -451,7 +499,8 @@ export class RelayManager {
         this.registration = validateRegistration(stored, this.brokerUrl);
         return;
       } catch (error) {
-        if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+        // 损坏的注册记录按"没有注册"处理：有邀请码就重新注册，没有就提示需要邀请码。
+        if (!unreadableState(error)) throw error;
       }
     }
     if (pending?.accountId && pending.accountId !== this.options.registrationAccountId)
@@ -503,17 +552,63 @@ export class RelayManager {
     await rm(join(this.options.stateDirectory, "registration-pending.json"), { force: true });
     this.reenrolling = false;
   }
-  private async initialize(generation: number) {
-    const version = await execute(this.options.frpcPath, ["--version"], {
-      encoding: "utf8",
-      timeout: 5_000,
-      maxBuffer: 4_096,
-      signal: this.abort!.signal,
-    });
-    if (version.stdout.trim() !== "0.68.0") throw new Error("frpc v0.68.0 is required");
+  private async prepareFrpc(generation: number) {
+    this.frpcPath = this.options.frpcPath;
+    const trusted = this.options.trustedFrpcPath;
+    if (trusted === undefined) return;
+    if (!trusted || !this.options.frpcPath)
+      throw new RelayExecutableError("Bundled frpc unavailable");
+    // The packaged asset was verified against the upstream archive during staging.
+    // Check bytes before any execution, including --version (a script could spoof its output).
+    const signal = AbortSignal.any([this.abort!.signal, AbortSignal.timeout(10_000)]);
+    const readExecutable = async (path: string) => {
+      const file = await open(path, fsConstants.O_RDONLY | fsConstants.O_NONBLOCK);
+      try {
+        const info = await file.stat();
+        if (!info.isFile() || info.size === 0 || info.size > 64 * 1024 * 1024)
+          throw new RelayExecutableError("Invalid frpc executable");
+        return await readFile(file, { signal });
+      } finally {
+        await file.close();
+      }
+    };
+    const [candidate, reference] = await abortable(
+      Promise.all([readExecutable(this.options.frpcPath), readExecutable(trusted)]),
+      signal,
+    );
     this.active(generation);
+    const hash = (bytes: Buffer) => createHash("sha256").update(bytes).digest("hex");
+    if (hash(candidate) !== hash(reference))
+      throw new RelayExecutableError("frpc checksum mismatch");
+    if (resolve(this.options.frpcPath) === resolve(trusted)) return;
+    // Execute this verified snapshot: replacing the user-supplied path after the check must
+    // not switch the program launched during a later reconnect.
+    const name = process.platform === "win32" ? "verified-frpc.exe" : "verified-frpc";
+    await this.store(name, candidate);
+    const staged = join(this.options.stateDirectory, name);
+    await chmod(staged, 0o700);
+    this.active(generation);
+    this.frpcPath = staged;
+  }
+  private async initialize(generation: number) {
     await mkdir(this.options.stateDirectory, { recursive: true, mode: 0o700 });
     await chmod(this.options.stateDirectory, 0o700);
+    try {
+      await this.prepareFrpc(generation);
+      this.active(generation);
+      const version = await execute(this.frpcPath, ["--version"], {
+        encoding: "utf8",
+        timeout: 5_000,
+        maxBuffer: 4_096,
+        signal: this.abort!.signal,
+      });
+      if (version.stdout.trim() !== "0.68.0")
+        throw new RelayExecutableError("frpc v0.68.0 is required");
+    } catch (error) {
+      this.recordFailure("control-connector", error);
+      throw error;
+    }
+    this.active(generation);
     this.report("registering");
     await this.register(generation);
     this.active(generation);
@@ -636,7 +731,13 @@ export class RelayManager {
       valid = validateCertificate(pem, this.key, hosts);
       this.certificate = pem;
       this.watchCertificate(valid, generation);
-      if (Date.parse(valid.validTo) - Date.now() > RENEW_BEFORE) return;
+      // Short-lived certificates renew in their final third, rather than on every
+      // hourly check simply because their entire lifetime is shorter than 21 days.
+      const renewAt = this.certificateRenewalAt(valid);
+      if (Date.now() < renewAt) {
+        this.nextRenewal = renewAt;
+        return;
+      }
     } catch {
       /* A missing or invalid cached certificate requires issuance. */
     }
@@ -646,10 +747,17 @@ export class RelayManager {
       const privateKeyDer = createPrivateKey(this.key)
         .export({ type: "pkcs8", format: "der" })
         .toString("base64");
-      const { csrPem: csr } = await abortable(
-        this.options.createCsr({ privateKeyDer, hosts }, this.abort!.signal),
-        this.abort!.signal,
+      const timeout = new AbortController();
+      const timer = setTimeout(
+        () => timeout.abort(new DOMException("Local CSR timed out", "TimeoutError")),
+        CSR_TIMEOUT_MS,
       );
+      timer.unref();
+      const csrSignal = AbortSignal.any([this.abort!.signal, timeout.signal]);
+      const { csrPem: csr } = await abortable(
+        this.options.createCsr({ privateKeyDer, hosts }, csrSignal),
+        csrSignal,
+      ).finally(() => clearTimeout(timer));
       this.active(generation);
       if (
         typeof csr !== "string" ||
@@ -669,10 +777,15 @@ export class RelayManager {
       this.active(generation);
       this.certificate = result.certificate;
       this.certificateWarning = false;
+      this.nextRenewal = Math.max(
+        Date.now() + this.certificateRetryDelay(renewed),
+        this.certificateRenewalAt(renewed),
+      );
       this.watchCertificate(renewed, generation);
       for (const server of this.servers.values())
         server.setSecureContext({ key: this.key, cert: this.certificate, minVersion: "TLSv1.2" });
     } catch (error) {
+      this.nextRenewal = Date.now() + (valid ? this.certificateRetryDelay(valid) : 3_600_000);
       this.active(generation);
       if (error instanceof RelayAuthorizationError) throw error;
       // Renewal outages must not discard a still-valid certificate. Never retain an expired one.
@@ -682,9 +795,16 @@ export class RelayManager {
         throw error;
       }
       this.certificateWarning = true;
-    } finally {
-      this.nextRenewal = Date.now() + 3_600_000;
     }
+  }
+  private certificateRenewalAt(cert: X509Certificate) {
+    const expiresAt = Date.parse(cert.validTo);
+    const lifetime = expiresAt - Date.parse(cert.validFrom);
+    return expiresAt - Math.min(RENEW_BEFORE, lifetime / 3);
+  }
+  private certificateRetryDelay(cert: X509Certificate) {
+    // A fixed one-hour retry can outlive a short certificate. Retry before its expiry.
+    return Math.max(1_000, Math.min(3_600_000, (Date.parse(cert.validTo) - Date.now()) / 2));
   }
   private watchCertificate(cert: X509Certificate, generation: number) {
     if (this.certificateTimer) clearTimeout(this.certificateTimer);
@@ -765,13 +885,20 @@ export class RelayManager {
     server.on("upgrade", (_request, socket) => socket.destroy());
     server.on("tlsClientError", () => {});
     this.servers.set(channel, server);
-    await new Promise<void>((resolve, reject) => {
-      server.once("error", reject);
-      server.listen(0, "127.0.0.1", () => {
-        server.off("error", reject);
-        resolve();
+    try {
+      await new Promise<void>((resolve, reject) => {
+        server.once("error", reject);
+        server.listen(0, "127.0.0.1", () => {
+          server.off("error", reject);
+          resolve();
+        });
       });
-    });
+    } catch (error) {
+      // 不能把没监听成功的 server 留在表里：之后每轮 maintain 都会因为 servers.has() 跳过它，
+      // 然后拿一个指向不存在端口的配置去拉 frpc。
+      if (this.servers.get(channel) === server) this.servers.delete(channel);
+      throw error;
+    }
     if (generation !== this.generation) {
       server.closeAllConnections();
       server.close();
@@ -794,26 +921,61 @@ export class RelayManager {
     this.active(generation);
     if (!this.liveLease()) throw new Error("No authorization lease");
     const child = spawn(
-      this.options.frpcPath,
+      this.frpcPath,
       ["-c", join(this.options.stateDirectory, `frpc-${channel}.toml`)],
-      { stdio: "ignore", windowsHide: true },
+      { stdio: ["ignore", "pipe", "pipe"], windowsHide: true },
     );
     this.children.set(channel, child);
+    this.connectorFailures.delete(channel);
+    // Keep only bounded classifications, never raw output (which can include credentials).
+    let output = "";
+    let outputCode: RelayFailure["code"] = "process";
+    const capture = (chunk: Buffer) => {
+      output = (output + chunk.toString("utf8")).slice(-4_096);
+      if (/proxy.*(?:already exists|already in use)|duplicate proxy/i.test(output))
+        outputCode = "conflict";
+      else if (
+        /authentication failed|authorization failed|invalid token|login.*(?:failed|rejected)/i.test(
+          output,
+        )
+      )
+        outputCode = "identity";
+      else if (/certificate|tls.*(?:fail|error)|x509/i.test(output)) outputCode = "tls";
+      else if (
+        /connection refused|no such host|network is unreachable|dial.*(?:fail|error)/i.test(output)
+      )
+        outputCode = "unreachable";
+      if (
+        outputCode !== "process" &&
+        this.children.get(channel) === child &&
+        generation === this.generation
+      )
+        this.connectorFailures.set(channel, { stage: `${channel}-connector`, code: outputCode });
+    };
+    child.stdout?.on("data", capture);
+    child.stderr?.on("data", capture);
     const disconnected = () => {
       if (this.children.get(channel) !== child) return;
       this.children.delete(channel);
       this.ready[channel] = false;
       if (generation === this.generation) {
-        this.failure = { stage: `${channel}-connector`, code: "process" };
+        this.failure = { stage: `${channel}-connector`, code: outputCode };
+        this.connectorExit = {
+          channel,
+          ...(typeof child.exitCode === "number" ? { code: child.exitCode } : {}),
+          ...(typeof child.signalCode === "string" ? { signal: child.signalCode } : {}),
+        };
         this.report("offline", "connector");
         this.scheduleMaintain(generation, true);
       }
     };
-    child.once("error", disconnected);
+    // error 可能不止一次（例如 disconnect 里 kill 失败）；没有监听器的 error 会让主进程崩溃。
+    child.on("error", disconnected);
     child.once("exit", disconnected);
   }
   private async probe(host: string, generation: number) {
     const fingerprint = new X509Certificate(this.certificate).fingerprint256;
+    let deadline: ReturnType<typeof setTimeout> | undefined;
     await new Promise<void>((resolve, reject) => {
       const request = httpsRequest(
         {
@@ -848,8 +1010,11 @@ export class RelayManager {
       request.on("socket", (socket) => this.track(socket));
       request.on("error", reject);
       request.on("timeout", () => request.destroy(new Error("Relay probe timeout")));
+      // timeout 选项只管空闲；对端每隔几秒挤一个字节就能一直拖住单飞的 maintain。
+      deadline = setTimeout(() => request.destroy(new Error("Relay probe timeout")), 10_000);
+      deadline.unref();
       request.end();
-    });
+    }).finally(() => clearTimeout(deadline));
     this.active(generation);
   }
   private maintain(generation: number): Promise<void> {
@@ -881,14 +1046,17 @@ export class RelayManager {
       this.active(generation);
       CHANNELS.forEach((channel, index) => {
         this.ready[channel] = outcomes[index].status === "fulfilled" && this.children.has(channel);
+        if (this.ready[channel]) this.connectorFailures.delete(channel);
       });
       const exited = CHANNELS.find((channel) => !this.children.has(channel));
       const failedProbe = outcomes.findIndex((outcome) => outcome.status === "rejected");
-      if (exited) this.failure = { stage: `${exited}-connector`, code: "process" };
-      else if (failedProbe >= 0) {
+      if (exited) {
+        if (this.failure?.stage !== `${exited}-connector`)
+          this.failure = { stage: `${exited}-connector`, code: "process" };
+      } else if (failedProbe >= 0) {
         const outcome = outcomes[failedProbe];
         if (outcome.status === "rejected")
-          this.failure = {
+          this.failure = this.connectorFailures.get(CHANNELS[failedProbe]) ?? {
             stage: `${CHANNELS[failedProbe]}-probe`,
             code: failureCode(outcome.reason),
           };
@@ -897,8 +1065,9 @@ export class RelayManager {
       this.failures = 0;
       this.report("ready");
       // Authorization refresh and its deadline run separately while ACME is slow.
-      if (Date.now() >= this.nextRenewal) await this.ensureCertificate(generation);
-      this.active(generation);
+      // 续期在后台进行：maintain 是单飞的，续期卡住（CSR 或 ACME 慢）时，
+      // frpc 退出后的重连也会被一起卡住。
+      this.renewInBackground(generation);
       this.scheduleMaintain(generation, false);
     })().catch((error) => {
       if (generation !== this.generation) return;
@@ -923,6 +1092,22 @@ export class RelayManager {
       if (this.maintaining === work) this.maintaining = undefined;
     });
     return work;
+  }
+  private renewInBackground(generation: number) {
+    if (this.renewing || Date.now() < this.nextRenewal) return;
+    const work = this.ensureCertificate(generation).catch((error) => {
+      if (generation !== this.generation) return;
+      if (error instanceof RelayAuthorizationError) {
+        this.failClosed("revoked", false);
+        return;
+      }
+      // ensureCertificate 只在手上没有仍然有效的证书时才抛错。
+      this.failClosed("certificate", true);
+    });
+    this.renewing = work;
+    void work.finally(() => {
+      if (this.renewing === work) this.renewing = undefined;
+    });
   }
   private backoff() {
     return Math.round(
@@ -950,14 +1135,36 @@ export class RelayManager {
     }
     this.servers.clear();
     for (const child of this.children.values()) {
+      const running = () => child.exitCode === null && child.signalCode === null;
+      const exited = new Promise<void>((resolve) => {
+        if (!running()) resolve();
+        else child.once("exit", () => resolve());
+      });
       child.kill("SIGTERM");
-      const timer = setTimeout(() => {
-        if (child.exitCode === null) child.kill("SIGKILL");
+      const kill = setTimeout(() => {
+        if (running()) child.kill("SIGKILL");
       }, 2_000);
-      timer.unref();
-      child.once("exit", () => clearTimeout(timer));
+      kill.unref();
+      // SIGKILL 之后再给 1 秒；仍不退出就不再等，退出流程最多被拖住 3 秒。
+      let giveUp: ReturnType<typeof setTimeout> | undefined;
+      const bounded = Promise.race([
+        exited,
+        new Promise<void>((resolve) => {
+          giveUp = setTimeout(resolve, 3_000);
+          giveUp.unref();
+        }),
+      ]).finally(() => {
+        clearTimeout(kill);
+        clearTimeout(giveUp);
+        this.exiting.delete(bounded);
+      });
+      this.exiting.add(bounded);
     }
     this.children.clear();
+  }
+  /** 等被 disconnect 的 frpc 真正退出。只发 SIGTERM 就返回的话，应用退出后 frpc 会成为孤儿进程。 */
+  private async waitForExits() {
+    await Promise.all([...this.exiting]);
   }
   private invalidate() {
     ++this.generation;
@@ -974,6 +1181,9 @@ export class RelayManager {
     this.disconnect();
   }
   private failClosed(reason: Reason, retry: boolean) {
+    // 被 broker 拒绝后只能靠新邀请码恢复；不关掉 enabled 的话，每次系统唤醒 resume()
+    // 都会拿旧凭据再撞一次 403，并短暂把"需要新邀请"的错误盖成"连接中"。
+    if (reason === "revoked") this.enabled = false;
     this.invalidate();
     this.report(reason === "revoked" ? "error" : "offline", reason);
     if (!retry || !this.enabled || this.suspended) return;
@@ -983,10 +1193,15 @@ export class RelayManager {
     this.retryTimer = setTimeout(() => {
       void (async () => {
         await Promise.allSettled(
-          [this.running, this.maintaining, this.authorizing].filter((p): p is Promise<void> => !!p),
+          [this.running, this.maintaining, this.authorizing, this.renewing].filter(
+            (p): p is Promise<void> => !!p,
+          ),
         );
         if (generation !== this.generation || !this.enabled || this.suspended) return;
         this.disconnect();
+        // 旧 frpc 还没退出时再拉起新的，会在 frps 上抢同名 proxy。
+        await this.waitForExits();
+        if (generation !== this.generation || !this.enabled || this.suspended) return;
         await this.start();
       })();
     }, delay);
@@ -996,8 +1211,13 @@ export class RelayManager {
     if (this.stopping) return this.stopping;
     this.invalidate();
     const work = Promise.allSettled(
-      [this.running, this.maintaining, this.authorizing].filter((p): p is Promise<void> => !!p),
-    ).then(() => this.disconnect());
+      [this.running, this.maintaining, this.authorizing, this.renewing].filter(
+        (p): p is Promise<void> => !!p,
+      ),
+    ).then(() => {
+      this.disconnect();
+      return this.waitForExits();
+    });
     this.stopping = work;
     void work.finally(() => {
       if (this.stopping === work) this.stopping = undefined;
@@ -1008,6 +1228,14 @@ export class RelayManager {
     this.enabled = false;
     this.suspended = false;
     await this.quiesce();
+    // frpc 配置里有设备凭据，只在连接时需要；下次启动会重新生成，关闭后不留在磁盘上。
+    await Promise.all(
+      CHANNELS.map((channel) =>
+        rm(join(this.options.stateDirectory, `frpc-${channel}.toml`), { force: true }).catch(
+          () => {},
+        ),
+      ),
+    );
     if (!this.enabled) this.report("disabled");
   }
   async suspend(): Promise<void> {

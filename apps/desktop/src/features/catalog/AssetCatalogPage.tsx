@@ -34,18 +34,7 @@ import { useEffect, useMemo, useState } from "react";
 import type { AgentKind, WorkspaceSummary } from "@/core/types";
 import type { CatalogAssetGroup } from "@/features/catalog/catalog";
 import { AssetDetails } from "./AssetDetails";
-
-const agentLabels: Record<AgentKind, string> = {
-  codex: "Codex",
-  "claude-code": "Claude Code",
-  antigravity: "Antigravity",
-  cursor: "Cursor",
-  opencode: "OpenCode",
-  "open-claw": "OpenClaw",
-  hermes: "Hermes",
-  "grok-build": "Grok Build",
-  "deepseek-harness": "DeepSeek Harness",
-};
+import { AGENT_LABELS as agentLabels } from "@/core/agents";
 
 const ASSETS_PER_PAGE = 6;
 

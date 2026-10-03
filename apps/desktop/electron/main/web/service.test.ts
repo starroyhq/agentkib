@@ -1,6 +1,6 @@
 // @vitest-environment node
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, symlink, truncate, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createServer, request, ServerResponse } from "node:http";
@@ -458,6 +458,42 @@ describe("WebAccessService loopback security boundary", () => {
     const id = seedLegacyPending(service, cookie);
     await service.request({ operation: "reject", id });
     expect((await http("/api/web/v1/access")).json().status).toBe("ended");
+  });
+  it("keeps paired devices within their own budget when anonymous traffic is exhausted", async () => {
+    await bootstrap();
+    await pair();
+    const pairedCookie = cookie;
+    // 先让已配对设备占到自己的额度 key，表满后已有 key 仍应可用。
+    expect((await http("/api/web/v1/catalog")).status).toBe(200);
+    const rates = (service as unknown as { rates: Map<string, { count: number; until: number }> })
+      .rates;
+    // 模拟未认证流量打满共享额度，并把限流表撑到上限。
+    rates.set("anonymous", { count: 600, until: Date.now() + 60_000 });
+    for (let i = rates.size; i < 4096; i++)
+      rates.set(`filler:${i}`, { count: 1, until: Date.now() + 60_000 });
+
+    cookie = "";
+    expect((await http("/api/web/v1/access")).status).toBe(429);
+    cookie = pairedCookie;
+    expect((await http("/api/web/v1/access")).status).toBe(200);
+    expect((await http("/api/web/v1/catalog")).status).toBe(200);
+  });
+  it("does not let one browser's wrong guesses invalidate the code for another browser", async () => {
+    await bootstrap();
+    const status = await service.request({ operation: "generate-code" });
+    for (let i = 0; i < 5; i++)
+      expect(
+        (await http("/api/web/v1/pair", { method: "POST", body: { code: "wrong", name: "Probe" } }))
+          .status,
+      ).toBe(403);
+    cookie = "";
+    await bootstrap();
+    const paired = await http("/api/web/v1/pair", {
+      method: "POST",
+      body: { code: status.code!.value, name: "Phone" },
+    });
+    expect(paired.status).toBe(200);
+    expect(paired.json().status).toBe("approved");
   });
   it("isolates send/approve permissions and prevents duplicate or stale control requests", async () => {
     await bootstrap();
@@ -1096,6 +1132,15 @@ describe("WebAccessService loopback security boundary", () => {
     expect((await http(`/escape/${dir.split("/").at(-1)}/index.html`)).status).toBe(200);
     await symlink("/etc/hosts", join(dir, "outside"));
     expect((await http("/outside")).status).toBe(403);
+  });
+  it("rejects directories and oversized assets before reading them into memory", async () => {
+    await mkdir(join(dir, "assets"));
+    expect((await http("/assets")).status).toBe(404);
+    const large = join(dir, "large.js");
+    await writeFile(large, "");
+    await truncate(large, 16 * 1024 * 1024 + 1);
+    // 稀疏文件：大小超限但不占用磁盘，服务端应只看元数据就拒绝。
+    expect((await http("/large.js")).status).toBe(413);
   });
   it("uses configured external HTTPS origin, never trusts forwarded headers", async () => {
     await service.request({

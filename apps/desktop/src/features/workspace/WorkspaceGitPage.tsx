@@ -31,8 +31,10 @@ import {
   Search,
   Tags,
 } from "lucide-react";
+import { useInfiniteQuery, useQuery } from "@tanstack/react-query";
 import { api } from "@/core/api";
-import { withAsyncCleanup } from "@/lib/utils";
+import { queryDefaults, useOptionalQueryClient } from "@/features/home/home-query";
+import { workspaceKeys } from "./workspace-query";
 
 import { WorkspaceGitSkeleton } from "./WorkspaceSkeleton";
 import type {
@@ -80,6 +82,7 @@ interface HistoryPage {
 
 const historyPageSize = 50;
 const emptyCommitHistory: GitCommitSummary[] = [];
+const emptyFileChanges: GitFileChange[] = [];
 
 export interface CommitGraphRow {
   lane: number;
@@ -137,14 +140,16 @@ export function WorkspaceGitPage({ workspace, subview, onSubviewChange }: Worksp
   const { formatDateTime, localizeMessage, tr } = useI18n();
   const [section, setSection] = useState<GitSection>("history");
   const [internalSubview, setInternalSubview] = useState<GitSubview | undefined>(subview);
-  const [summary, setSummary] = useState<GitWorkspaceSummary>();
-  const [historyPages, setHistoryPages] = useState<HistoryPage[]>([]);
-  const [historyPageIndex, setHistoryPageIndex] = useState(0);
-  const [selectedOid, setSelectedOid] = useState<string>();
-  const [files, setFiles] = useState<GitFileChange[]>([]);
+  // 父组件改变 subview 时在渲染阶段同步，而不是用 effect 再触发一轮渲染。
+  const [previousSubview, setPreviousSubview] = useState(subview);
+  if (subview !== previousSubview) {
+    setPreviousSubview(subview);
+    setInternalSubview(subview);
+  }
+  const [requestedPageIndex, setHistoryPageIndex] = useState(0);
+  const [preferredOid, setSelectedOid] = useState<string>();
   const [selectedFile, setSelectedFile] = useState<string>();
   const [selectedWorktree, setSelectedWorktree] = useState<{ path: string; kind: GitDiffKind }>();
-  const [diffState, setDiffState] = useState<DiffState>({ status: "idle" });
   const [search, setSearch] = useState("");
   const [reference, setReference] = useState("");
   const [author, setAuthor] = useState("");
@@ -152,17 +157,8 @@ export function WorkspaceGitPage({ workspace, subview, onSubviewChange }: Worksp
   const [until, setUntil] = useState("");
   const [path, setPath] = useState("");
   const [mergesOnly, setMergesOnly] = useState(false);
-  const [loading, setLoading] = useState(false);
-  const [loadingPage, setLoadingPage] = useState(false);
-  const [filesLoading, setFilesLoading] = useState(false);
-  const [rawFilesError, setFilesError] = useState<unknown>("");
-  const filesError = rawFilesError === "" ? "" : localizeMessage(rawFilesError);
-  const [rawError, setError] = useState<unknown>("");
-  const error = rawError === "" ? "" : localizeMessage(rawError);
   const [mobileDetailPane, setMobileDetailPane] = useState<"files" | "diff">("files");
-  const historySequence = useRef(0);
-  const filesSequence = useRef(0);
-  const diffSequence = useRef(0);
+  const queryClient = useOptionalQueryClient();
   const historyListRef = useRef<HTMLDivElement>(null);
   const worktreeListRef = useRef<HTMLElement>(null);
   const historyScrollTop = useRef(0);
@@ -181,11 +177,7 @@ export function WorkspaceGitPage({ workspace, subview, onSubviewChange }: Worksp
     onSubviewChange?.(next);
   };
 
-  useEffect(() => {
-    setInternalSubview(subview);
-  }, [subview]);
-
-  const historyQuery = (): GitHistoryQuery => ({
+  const historyParams = (): GitHistoryQuery => ({
     limit: historyPageSize,
     reference: appliedFilters.reference || undefined,
     author: appliedFilters.author.trim() || undefined,
@@ -195,44 +187,53 @@ export function WorkspaceGitPage({ workspace, subview, onSubviewChange }: Worksp
     merges_only: appliedFilters.mergesOnly,
   });
 
-  const load = async () => {
-    const sequence = ++historySequence.current;
-    setLoading(true);
-    setLoadingPage(false);
-    setError("");
-    setSelectedFile(undefined);
-    setDiffState({ status: "idle" });
-    await withAsyncCleanup(
-      async () => {
-        try {
-          const nextSummary = await api.workspaceGitSummary(workspace.id);
-          if (sequence !== historySequence.current) return;
-          setSummary(nextSummary);
-          if (!nextSummary) {
-            setHistoryPages([]);
-            setHistoryPageIndex(0);
-            return;
-          }
-          const page = await api.workspaceGitHistory(workspace.id, historyQuery());
-          if (sequence !== historySequence.current) return;
-          const commits = page?.commits ?? [];
-          setHistoryPages([{ commits, nextCursor: page?.next_cursor }]);
-          setHistoryPageIndex(0);
-          setSelectedOid((current) =>
-            commits.some((commit) => commit.oid === current) ? current : commits[0]?.oid,
-          );
-        } catch (reason) {
-          if (sequence === historySequence.current) setError(reason);
-        }
-      },
-      () => {
-        if (sequence === historySequence.current) setLoading(false);
-      },
-    );
-  };
+  const summaryQuery = useQuery(
+    {
+      ...queryDefaults,
+      queryKey: workspaceKeys.gitSummary(workspace.id),
+      queryFn: () => api.workspaceGitSummary(workspace.id),
+      staleTime: 0,
+    },
+    queryClient,
+  );
+  const summary: GitWorkspaceSummary | undefined = summaryQuery.data ?? undefined;
+  // 历史按页缓存（向前翻页直接复用），筛选条件是 key 的一部分；不是 Git 仓库时不请求。
+  const historyQuery = useInfiniteQuery(
+    {
+      ...queryDefaults,
+      queryKey: workspaceKeys.gitHistory(workspace.id, appliedFilters),
+      queryFn: ({ pageParam }) =>
+        api.workspaceGitHistory(workspace.id, {
+          ...historyParams(),
+          ...(pageParam ? { cursor: pageParam } : {}),
+        }),
+      initialPageParam: undefined as string | undefined,
+      getNextPageParam: (page) => page?.next_cursor ?? undefined,
+      enabled: !!summary,
+      staleTime: 0,
+    },
+    queryClient,
+  );
+  const historyPages: HistoryPage[] = useMemo(
+    () =>
+      (historyQuery.data?.pages ?? []).map((page) => ({
+        commits: page?.commits ?? [],
+        nextCursor: page?.next_cursor,
+      })),
+    [historyQuery.data],
+  );
+  const loading = summaryQuery.isPending || (!!summary && historyQuery.isPending);
+  const loadingPage = historyQuery.isFetchingNextPage;
+  const refreshing = summaryQuery.isFetching || (historyQuery.isFetching && !loadingPage);
+  const loadError = summaryQuery.error ?? historyQuery.error;
+  const error = loadError ? localizeMessage(loadError) : "";
 
+  // 换工作区或筛选条件时回到第一页，并清掉上一次选中的文件。
+  const historyGeneration = useRef(0);
   useEffect(() => {
-    void load();
+    historyGeneration.current += 1;
+    setHistoryPageIndex(0);
+    setSelectedFile(undefined);
   }, [workspace.id, appliedFilters]);
 
   useEffect(() => {
@@ -252,8 +253,14 @@ export function WorkspaceGitPage({ workspace, subview, onSubviewChange }: Worksp
     return () => window.clearTimeout(timeout);
   }, [reference, author, since, until, path, mergesOnly, appliedFilters]);
 
+  // 刷新或外部失效后页数可能变少（force-push、切分支），页码不能指向不存在的页。
+  const historyPageIndex = Math.min(requestedPageIndex, Math.max(0, historyPages.length - 1));
   const commits = historyPages[historyPageIndex]?.commits ?? emptyCommitHistory;
   const nextCursor = historyPages[historyPageIndex]?.nextCursor;
+  // 选中的提交不在当前页时（首次加载、换页、换筛选）默认选第一条。
+  const selectedOid = commits.some((commit) => commit.oid === preferredOid)
+    ? preferredOid
+    : commits[0]?.oid;
   const filteredCommits = useMemo(() => {
     const needle = search.trim().toLocaleLowerCase();
     if (!needle) return commits;
@@ -273,35 +280,23 @@ export function WorkspaceGitPage({ workspace, subview, onSubviewChange }: Worksp
   const selectedWorktreeIsUntracked =
     selectedWorktree?.kind === "worktree" && selectedWorktreeChange?.kind === "untracked";
 
-  const loadCommitFiles = async (oid: string) => {
-    const sequence = ++filesSequence.current;
-    setFiles([]);
-    setFilesError("");
-    setFilesLoading(true);
-    await withAsyncCleanup(
-      async () => {
-        try {
-          const nextFiles = await api.gitCommitFiles(workspace.id, oid);
-          if (sequence === filesSequence.current) setFiles(nextFiles ?? []);
-        } catch (reason) {
-          if (sequence === filesSequence.current) setFilesError(reason);
-        }
-      },
-      () => {
-        if (sequence === filesSequence.current) setFilesLoading(false);
-      },
-    );
-  };
+  const filesQuery = useQuery(
+    {
+      ...queryDefaults,
+      queryKey: workspaceKeys.gitCommitFiles(workspace.id, detailOid ?? ""),
+      queryFn: () => api.gitCommitFiles(workspace.id, detailOid!),
+      enabled: !!detailOid,
+      // 同一个提交的文件列表不会变。
+      staleTime: Infinity,
+    },
+    queryClient,
+  );
+  const files: GitFileChange[] = (detailOid && filesQuery.data) || emptyFileChanges;
+  const filesLoading = !!detailOid && filesQuery.isPending;
+  const filesError = detailOid && filesQuery.error ? localizeMessage(filesQuery.error) : "";
 
   useEffect(() => {
     setSelectedFile(undefined);
-    if (!detailOid) {
-      setFiles([]);
-      setFilesError("");
-      setFilesLoading(false);
-      return;
-    }
-    void loadCommitFiles(detailOid);
   }, [workspace.id, detailOid]);
 
   useEffect(() => {
@@ -348,28 +343,41 @@ export function WorkspaceGitPage({ workspace, subview, onSubviewChange }: Worksp
     return undefined;
   }, [activeSubview, selectedFile, selectedWorktree, selectedWorktreeIsUntracked]);
 
-  const loadDiff = async (request: GitDiffRequest | undefined) => {
-    const sequence = ++diffSequence.current;
-    if (!request) {
-      setDiffState({ status: "idle" });
-      return;
-    }
-    setDiffState({ status: "loading" });
-    try {
-      const value = await api.gitDiff(workspace.id, request);
-      if (sequence !== diffSequence.current) return;
-      if (!value || (!value.patch.trim() && !value.binary && !value.submodule))
-        setDiffState({ status: "empty" });
-      else setDiffState({ status: "ready", value });
-    } catch (reason) {
-      if (sequence === diffSequence.current)
-        setDiffState({ status: "error", message: localizeMessage(reason) });
-    }
-  };
+  const diffQuery = useQuery(
+    {
+      ...queryDefaults,
+      queryKey: workspaceKeys.gitDiff(workspace.id, diffRequest),
+      queryFn: () => api.gitDiff(workspace.id, diffRequest!),
+      enabled: !!diffRequest,
+      // 工作区 diff 随文件改动变化，每次打开都重新读取，但先显示缓存。
+      staleTime: 0,
+    },
+    queryClient,
+  );
+  const diffState: DiffState = !diffRequest
+    ? { status: "idle" }
+    : // 失败后重试期间显示加载中，而不是继续显示上一次的错误。
+      diffQuery.isPending || (diffQuery.isFetching && diffQuery.isError)
+      ? { status: "loading" }
+      : diffQuery.error
+        ? { status: "error", message: localizeMessage(diffQuery.error) }
+        : !diffQuery.data ||
+            (!diffQuery.data.patch.trim() && !diffQuery.data.binary && !diffQuery.data.submodule)
+          ? { status: "empty" }
+          : { status: "ready", value: diffQuery.data };
 
-  useEffect(() => {
-    void loadDiff(diffRequest);
-  }, [workspace.id, diffRequest]);
+  // 刷新回到第一页并只重取第一页；否则会按旧游标依次重取所有已加载的页。
+  const refreshGit = () => {
+    historyGeneration.current += 1;
+    setHistoryPageIndex(0);
+    void queryClient.resetQueries({
+      queryKey: workspaceKeys.gitHistory(workspace.id, appliedFilters),
+    });
+    void queryClient.invalidateQueries({
+      queryKey: workspaceKeys.git(workspace.id),
+      predicate: (query) => query.queryKey[3] !== "history",
+    });
+  };
 
   const showPreviousPage = () => {
     if (historyPageIndex === 0 || loadingPage) return;
@@ -383,39 +391,22 @@ export function WorkspaceGitPage({ workspace, subview, onSubviewChange }: Worksp
     if (loadingPage) return;
     const cachedPage = historyPages[historyPageIndex + 1];
     if (cachedPage) {
-      setHistoryPageIndex((current) => current + 1);
+      setHistoryPageIndex(historyPageIndex + 1);
       setSelectedOid(cachedPage.commits[0]?.oid);
       historyListRef.current?.scrollTo({ top: 0 });
       return;
     }
-    if (!nextCursor) return;
-    const sequence = historySequence.current;
-    const cursor = nextCursor;
-    setLoadingPage(true);
-    await withAsyncCleanup(
-      async () => {
-        try {
-          const page = await api.workspaceGitHistory(workspace.id, {
-            ...historyQuery(),
-            cursor,
-          });
-          if (sequence !== historySequence.current) return;
-          const commits = page?.commits ?? [];
-          setHistoryPages((current) => [
-            ...current.slice(0, historyPageIndex + 1),
-            { commits, nextCursor: page?.next_cursor },
-          ]);
-          setHistoryPageIndex((current) => current + 1);
-          setSelectedOid(commits[0]?.oid);
-          historyListRef.current?.scrollTo({ top: 0 });
-        } catch (reason) {
-          if (sequence === historySequence.current) setError(reason);
-        }
-      },
-      () => {
-        if (sequence === historySequence.current) setLoadingPage(false);
-      },
-    );
+    // 只有当前页是已加载的最后一页时才会走到这里，fetchNextPage 追加的正是下一页。
+    if (!nextCursor || historyPageIndex !== historyPages.length - 1) return;
+    const generation = historyGeneration.current;
+    const result = await historyQuery.fetchNextPage();
+    // 失败时错误已在 historyQuery.error 中显示；请求期间换了工作区或筛选条件则丢弃结果。
+    if (result.isError || generation !== historyGeneration.current) return;
+    const page = result.data?.pages[historyPageIndex + 1];
+    if (!page) return;
+    setHistoryPageIndex(historyPageIndex + 1);
+    setSelectedOid(page.commits[0]?.oid);
+    historyListRef.current?.scrollTo({ top: 0 });
   };
 
   const worktreeEntries = useMemo(() => worktreeRows(summary?.changes ?? []), [summary?.changes]);
@@ -535,12 +526,7 @@ export function WorkspaceGitPage({ workspace, subview, onSubviewChange }: Worksp
                   <div className="flex min-h-9 items-center gap-2 px-2 text-xs text-destructive">
                     <CircleAlert size={14} />
                     <span className="min-w-0 flex-1">{tr("git.filesFailed")}</span>
-                    <Button
-                      variant="ghost"
-                      onClick={() => {
-                        if (detailOid) void loadCommitFiles(detailOid);
-                      }}
-                    >
+                    <Button variant="ghost" onClick={() => void filesQuery.refetch()}>
                       {tr("git.retry")}
                     </Button>
                   </div>
@@ -611,7 +597,7 @@ export function WorkspaceGitPage({ workspace, subview, onSubviewChange }: Worksp
             fileCount={commitDetail && !selectedFile ? files.length : undefined}
             diffState={diffState}
             untracked={!commitDetail && selectedWorktreeIsUntracked}
-            onRetry={() => void loadDiff(diffRequest)}
+            onRetry={() => void diffQuery.refetch()}
             onBackToFiles={() => setMobileDetailPane("files")}
             mobileVisible={mobileDetailPane === "diff"}
           />
@@ -675,12 +661,12 @@ export function WorkspaceGitPage({ workspace, subview, onSubviewChange }: Worksp
           variant="ghost"
           size="icon"
           className="shrink-0"
-          onClick={() => void load()}
-          disabled={loading}
+          onClick={refreshGit}
+          disabled={refreshing}
           aria-label={tr("common.refresh")}
           title={tr("common.refresh")}
         >
-          <RefreshCw size={15} className={loading ? "animate-spin" : ""} />
+          <RefreshCw size={15} className={refreshing ? "animate-spin" : ""} />
         </Button>
       </div>
       {error && (

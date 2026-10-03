@@ -1,13 +1,7 @@
+import { AGENT_KINDS, AGENT_LABELS } from "@/core/agents";
 import type { AgentKind } from "@/core/types";
 
-export const sessionHandoffTargets: Array<[AgentKind, string]> = [
-  ["codex", "Codex"],
-  ["claude-code", "Claude Code"],
-  ["antigravity", "Antigravity"],
-  ["cursor", "Cursor"],
-  ["opencode", "OpenCode"],
-  ["open-claw", "OpenClaw"],
-  ["hermes", "Hermes"],
-  ["grok-build", "Grok Build"],
-  ["deepseek-harness", "DeepSeek Harness"],
-];
+export const sessionHandoffTargets: Array<[AgentKind, string]> = AGENT_KINDS.map((agent) => [
+  agent,
+  AGENT_LABELS[agent],
+]);

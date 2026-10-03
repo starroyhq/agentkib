@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 
 import type { ReactNode } from "react";
-import { act, cleanup, renderHook } from "@testing-library/react";
+import { act, cleanup, renderHook, waitFor } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { initializeI18n } from "@/core/i18n";
@@ -20,6 +20,7 @@ const testDoubles = vi.hoisted(() => ({
   open: vi.fn(),
   agentTools: vi.fn(),
   requestRefresh: vi.fn(),
+  workspaces: vi.fn(),
   location: { pathname: "/" },
   search: {} as Record<string, string>,
 }));
@@ -58,6 +59,7 @@ describe("useAppNavigation guards", () => {
         home: {
           agentTools: testDoubles.agentTools,
           refreshDiscovery: testDoubles.requestRefresh,
+          workspaces: testDoubles.workspaces,
         },
       },
     });
@@ -69,6 +71,7 @@ describe("useAppNavigation guards", () => {
     testDoubles.open.mockReset();
     testDoubles.agentTools.mockReset();
     testDoubles.requestRefresh.mockReset().mockResolvedValue(undefined);
+    testDoubles.workspaces.mockReset().mockResolvedValue([]);
     testDoubles.location.pathname = "/";
     testDoubles.search = {};
   });
@@ -87,6 +90,25 @@ describe("useAppNavigation guards", () => {
     } finally {
       window.removeEventListener(SESSION_REFRESH_EVENT, listener);
     }
+  });
+
+  it("does not loop while resolving a direct workspace route after discovery fails", async () => {
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false } },
+    });
+    const wrapper = ({ children }: { children: ReactNode }) => (
+      <QueryClientProvider client={queryClient}>{children}</QueryClientProvider>
+    );
+    testDoubles.location.pathname = "/workspace/missing-workspace";
+    testDoubles.workspaces.mockRejectedValueOnce(new Error("workspace discovery unavailable"));
+
+    renderHook(() => useAppNavigation(), { wrapper });
+
+    await waitFor(() => {
+      expect(useWorkspaceStore.getState().message).toBe("Not found");
+    });
+    expect(testDoubles.workspaces).toHaveBeenCalledOnce();
+    queryClient.clear();
   });
 
   it("opens settings without discarding the current workspace draft", () => {

@@ -1,6 +1,5 @@
 node_modules/
 dist/
-target/
 work/
 outputs/
 __pycache__/

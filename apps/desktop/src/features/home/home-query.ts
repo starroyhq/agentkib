@@ -39,7 +39,21 @@ export const homeKeys = {
   excluded: () => [...homeKeys.all, "excluded"] as const,
   insightsStatus: () => [...homeKeys.all, "insights-status"] as const,
   doctorReport: (workspaceId: string) => [...homeKeys.all, "doctor-report", workspaceId] as const,
+  storageOverview: () => [...homeKeys.all, "storage-overview"] as const,
 };
+
+/** 放在 homeKeys 下：存储扫描任务完成时 useHomeQueryEvents 会一并刷新它。 */
+export function useHomeStorageOverview() {
+  const queryClient = useOptionalQueryClient();
+  return useQuery(
+    {
+      ...queryDefaults,
+      queryKey: homeKeys.storageOverview(),
+      queryFn: () => api.storageOverview(),
+    },
+    queryClient,
+  );
+}
 
 export function useHomeWorkspaces() {
   const queryClient = useOptionalQueryClient();

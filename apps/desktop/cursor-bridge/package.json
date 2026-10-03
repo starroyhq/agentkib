@@ -7,5 +7,5 @@
   "main": "./extension.cjs",
   "activationEvents": ["onStartupFinished", "onCommand:agentkib.connect"],
   "contributes": {"commands": [{"command": "agentkib.connect", "title": "AgentKib: Connect This Workspace"}]},
-  "description": "Explicit local session import and history handoff for Cursor IDE 3.22.12"
+  "description": "Explicit local session import and history handoff for Cursor IDE 3.22.12 and 3.23.12"
 }

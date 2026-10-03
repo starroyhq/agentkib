@@ -201,6 +201,15 @@ describe("energy-aware refresh scheduling", () => {
     await vi.advanceTimersByTimeAsync(1);
     expect(calls(request, M.refreshDiscovery)).toBe(1);
   });
+  it("keeps one scheduler per kind when suspended and resumed before startup finishes", async () => {
+    const { coordinator } = setup();
+    // start() 的初始化还在等 runtime；此时挂起再恢复，恢复和初始化完成都会调度。
+    coordinator.setSuspended(true);
+    coordinator.setSuspended(false);
+    await vi.advanceTimersByTimeAsync(31_000);
+    // 四类任务各一个 interval（其余一次性计时器都已触发完）。
+    expect(vi.getTimerCount()).toBe(4);
+  });
   it("restores backoff and last attempt across coordinator restarts", async () => {
     const { coordinator, request, state, save } = setup({
       failures: 2,

@@ -1,5 +1,7 @@
 import { useI18n } from "@/core/useI18n";
-import { useEffect, useMemo, useState } from "react";
+import { useMemo, useState } from "react";
+import { useOptionalQueryClient } from "@/features/home/home-query";
+import { skillKeys, useSkillLibrary, type SkillLibrary } from "./skills-query";
 import {
   ArchiveRestore,
   CircleAlert,
@@ -44,6 +46,8 @@ import type { CatalogAssetGroup } from "@/features/catalog/catalog";
 import { cn } from "@/lib/utils";
 
 type SkillHubSection = "library" | "workspace" | "discover";
+const noInstalledSkills: InstalledSkill[] = [];
+const noRemovedSkills: RemovedSkill[] = [];
 
 interface SkillHubPageProps {
   workspaceAssets: CatalogAssetGroup[];
@@ -100,8 +104,19 @@ export function SkillHubPage({ workspaceAssets, workspaces, onOpen, onReload }: 
   const { localizeMessage, tr, formatDateTime } = useI18n();
   const dialogs = useAppDialogs();
   const [section, setSection] = useState<SkillHubSection>("library");
-  const [installed, setInstalled] = useState<InstalledSkill[]>([]);
-  const [removed, setRemoved] = useState<RemovedSkill[]>([]);
+  const queryClient = useOptionalQueryClient();
+  const libraryQuery = useSkillLibrary();
+  const installed = libraryQuery.data?.installed ?? noInstalledSkills;
+  const removed = libraryQuery.data?.removed ?? noRemovedSkills;
+  // 操作结果直接写回缓存，界面立即更新；随后的 refreshAfterMutation 再与服务端对齐。
+  const updateLibrary = (update: (library: SkillLibrary) => SkillLibrary) =>
+    queryClient.setQueryData<SkillLibrary>(skillKeys.library(), (current) =>
+      update(current ?? { installed: [], removed: [] }),
+    );
+  const setInstalled = (next: (items: InstalledSkill[]) => InstalledSkill[]) =>
+    updateLibrary((library) => ({ ...library, installed: next(library.installed) }));
+  const setRemoved = (next: (items: RemovedSkill[]) => RemovedSkill[]) =>
+    updateLibrary((library) => ({ ...library, removed: next(library.removed) }));
   const [catalog, setCatalog] = useState<SkillCatalogSnapshot>();
   const [candidates, setCandidates] = useState<SkillCandidate[]>([]);
   const [url, setUrl] = useState("");
@@ -109,15 +124,11 @@ export function SkillHubPage({ workspaceAssets, workspaces, onOpen, onReload }: 
   const [preview, setPreview] = useState<SkillOperationPreview>();
   const [busy, setBusy] = useState<string>();
   const [errors, setErrors] = useState<unknown[]>([]);
-  const error = errors.map(localizeMessage).join(" · ");
+  const visibleErrors = errors.length || !libraryQuery.error ? errors : [libraryQuery.error];
+  const error = visibleErrors.map(localizeMessage).join(" · ");
 
   const loadLibrary = async () => {
-    const [nextInstalled, nextRemoved] = await Promise.all([
-      api.installedSkills(),
-      api.removedSkills(),
-    ]);
-    setInstalled(nextInstalled);
-    setRemoved(nextRemoved);
+    await libraryQuery.refetch({ throwOnError: true });
   };
 
   const loadCatalog = async (force = false, reportError = true): Promise<unknown[]> => {
@@ -136,22 +147,6 @@ export function SkillHubPage({ workspaceAssets, workspaces, onOpen, onReload }: 
       () => setBusy(undefined),
     );
   };
-
-  useEffect(() => {
-    let cancelled = false;
-    Promise.all([api.installedSkills(), api.removedSkills()])
-      .then(([nextInstalled, nextRemoved]) => {
-        if (cancelled) return;
-        setInstalled(nextInstalled);
-        setRemoved(nextRemoved);
-      })
-      .catch((nextError) => {
-        if (!cancelled) setErrors([nextError]);
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, []);
 
   const run = async (key: string, task: () => Promise<void>) => {
     setBusy(key);
@@ -216,7 +211,8 @@ export function SkillHubPage({ workspaceAssets, workspaces, onOpen, onReload }: 
 
   const checkUpdates = () =>
     run("check-updates", async () => {
-      setInstalled(await api.checkSkillUpdates());
+      const checked = await api.checkSkillUpdates();
+      setInstalled(() => checked);
     });
 
   const rollback = async (skill: InstalledSkill) => {

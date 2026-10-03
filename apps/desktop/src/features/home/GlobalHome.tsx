@@ -29,6 +29,7 @@ import { GettingStartedCard } from "./GettingStartedCard";
 import type { RecentContinuation } from "./home-continuations";
 import { displaySessionTitle } from "@/features/workspace/session-title";
 import { activityPresentation } from "@/features/activity/activity-presentation";
+import { AGENT_LABELS as agentLabels } from "@/core/agents";
 
 export type AssetSection = "instructions" | "skills" | "mcp" | "memory" | "other";
 export type ContinuationHomeState =
@@ -38,18 +39,6 @@ export type ContinuationHomeState =
   | "metadata-only"
   | "empty"
   | "error";
-
-const agentLabels: Record<AgentKind, string> = {
-  codex: "Codex",
-  "claude-code": "Claude Code",
-  antigravity: "Antigravity",
-  cursor: "Cursor",
-  opencode: "OpenCode",
-  "open-claw": "OpenClaw",
-  hermes: "Hermes",
-  "grok-build": "Grok Build",
-  "deepseek-harness": "DeepSeek Harness",
-};
 
 function resolveContinuationState(
   continuationState: ContinuationHomeState | undefined,

@@ -15,13 +15,16 @@ describe("trusted Claude owner boundary", () => {
     dir = await mkdtemp(join(tmpdir(), "ak-local-claude-"));
     live = { revision: 1, runtimeBootId: "boot", sendEnabled: true, turnId: "turn" };
     deps = {
-      managed: vi.fn(async (params) => params),
+      managed: vi.fn(async (raw) => {
+        const params = raw as Record<string, unknown>;
+        if (params.operation === "live") return live;
+        return { accepted: true, requestId: params.requestId, params };
+      }),
       runtime: vi.fn(async (raw) => {
         const params = raw as Record<string, unknown>;
         if (params.operation === "catalog")
           return { sessions: [{ id: "session", agent: "claude-code" }] };
-        if (params.operation === "live") return live;
-        return { accepted: true, requestId: params.requestId, params };
+        throw new Error(`Unexpected runtime operation: ${String(params.operation)}`);
       }),
       receipt: vi.fn(async ({ requestId }) => ({ found: false, requestId })),
       attachments: new AttachmentStore(dir),
@@ -39,7 +42,7 @@ describe("trusted Claude owner boundary", () => {
   };
   it("assigns the owner in the host and does not forward caller paths or device IDs", async () => {
     await localClaudeRequest(deps, { ...send, deviceId: "phone", path: "/private/secret" });
-    expect(deps.runtime).toHaveBeenLastCalledWith({
+    expect(deps.managed).toHaveBeenLastCalledWith({
       ...send,
       deviceId: "agentkib-local-owner",
       experimentalEnabled: true,
@@ -51,10 +54,10 @@ describe("trusted Claude owner boundary", () => {
       controlOutcome: "not-dispatched",
       error: "stale_state",
     });
-    const runtime = deps.runtime;
-    deps.runtime = async (params) => {
+    const managed = deps.managed;
+    deps.managed = async (params) => {
       if ((params as Record<string, unknown>).operation === "send") throw new Error("pipe_closed");
-      return runtime(params);
+      return managed(params);
     };
     await expect(localClaudeRequest(deps, send)).rejects.toThrow("pipe_closed");
   });
@@ -62,7 +65,7 @@ describe("trusted Claude owner boundary", () => {
     live = { ...live, revision: 3, sendEnabled: false };
     deps.receipt = vi.fn(async () => ({ found: true, sessionId: "session", requestId: "request" }));
     await localClaudeRequest(deps, send);
-    expect(deps.runtime).toHaveBeenLastCalledWith(
+    expect(deps.managed).toHaveBeenLastCalledWith(
       expect.objectContaining({ operation: "send", expectedRevision: 1 }),
     );
   });

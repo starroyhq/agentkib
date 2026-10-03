@@ -96,7 +96,7 @@ describe("SessionHandoffDialog", () => {
       .mockReset()
       .mockResolvedValue({
         supported: true,
-        version: "3.22.12",
+        supportedVersions: ["3.22.12", "3.23.12"],
         bindings: [
           {
             id: "selected-binding",

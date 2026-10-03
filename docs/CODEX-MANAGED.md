@@ -1,3 +1,5 @@
+> Historical Rust implementation notes. The current desktop runtime is TypeScript-only; the examples and Cargo checks below describe the retired backend.
+
 # Codex 托管执行
 
 本实现面向 macOS，将官方客户端 follower 与 AgentKib 自己持有的 app-server 分开。Follower 的 `executionMode` 为 `codex-follower`，托管为 `codex-managed`。创建和原 ID 交接须单独的设备管理授权；执行还须启用实验控制、允许对应工作区。Web/Electron 负责授权，Rust 只接受注册工作区 ID，并在每次操作前复核 canonical 路径和 CODEX_HOME。

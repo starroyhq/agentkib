@@ -65,7 +65,7 @@ printf '  session: %s / %s\n' "${XDG_SESSION_TYPE:-unknown}" "${XDG_CURRENT_DESK
 
 echo
 echo "Build commands"
-for command_name in git curl file node pnpm rustc cargo pkg-config patchelf strip; do
+for command_name in git curl file node pnpm pkg-config patchelf strip; do
   require_command "$command_name"
 done
 

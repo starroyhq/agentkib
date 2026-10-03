@@ -17,25 +17,21 @@ electronLanguages:
   - zh-CN
   - zh-TW
 compression: normal
+asarUnpack:
+  - dist-electron/native/koffi/**
 extraResources:
   - from: build/cursor-bridge
     to: cursor-bridge
   - from: ../../LICENSE
     to: licenses/AgentKib-LICENSE
+  - from: resources/quota/resources/licenses
+    to: licenses/quota
   - from: ../web/dist
     to: web
-  - from: build/runtime
-    to: bin
   - from: build/frpc
     to: bin
   - from: build/quota
     to: bin
-  - from: resources/quota/resources/CodexBar_CodexBarCore.bundle
-    to: CodexBar_CodexBarCore.bundle
-  - from: resources/quota/resources/linux
-    to: bin/linux
-  - from: resources/quota/resources/windows
-    to: windows
   - from: resources/icons/tray-icon.png
     to: icons/tray-icon.png
   - from: resources/icons/app-icon-white.png
@@ -47,6 +43,9 @@ extraResources:
   - from: resources/icons/app-icon-black-macos.png
     to: icons/app-icon-black-macos.png
 mac:
+  extraResources:
+    - from: resources/quota/resources/CodexBar_CodexBarCore.bundle
+      to: CodexBar_CodexBarCore.bundle
   icon: resources/icons/icon.icns
   category: public.app-category.developer-tools
   hardenedRuntime: true
@@ -56,6 +55,9 @@ mac:
     - zip
   artifactName: AgentKib_${version}_macos-${arch}.${ext}
 win:
+  extraResources:
+    - from: resources/quota/resources/windows
+      to: windows
   icon: resources/icons/icon.ico
   target:
     - nsis
@@ -64,6 +66,9 @@ nsis:
   oneClick: false
   perMachine: false
 linux:
+  extraResources:
+    - from: resources/quota/resources/linux
+      to: bin/linux
   icon: resources/icons/icon.png
   category: Development
   maintainer: AgentKib contributors

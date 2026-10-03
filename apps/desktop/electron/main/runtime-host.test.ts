@@ -9,12 +9,14 @@ import {
   RuntimeUnavailableError,
   type RuntimeHostStatus,
 } from "./runtime-host";
+import { createStdioTransport } from "./runtime-transport";
 
 const fakeRuntimeSource = String.raw`
 const readline = require("node:readline");
 const fs = require("node:fs");
 const mode = process.env.FAKE_RUNTIME_MODE;
 if (mode === "exit-before-handshake") process.exit(12);
+if (mode === "ignore-sigterm" || mode === "stuck-ignore-sigterm") process.on("SIGTERM", () => {});
 if (mode === "restart-once") {
   const marker = process.env.FAKE_RUNTIME_MARKER;
   if (!fs.existsSync(marker)) {
@@ -31,7 +33,7 @@ const respond = (request, result) => process.stdout.write(JSON.stringify({
 lines.on("line", (line) => {
   const request = JSON.parse(line);
   if (request.method === "agentkib.handshake") {
-    if (mode === "never-handshake") return;
+    if (mode === "never-handshake" || mode === "stuck-ignore-sigterm") return;
     const send = () => respond(request, {
       protocolVersion: ${PROTOCOL_VERSION},
       runtime: { name: "fake-runtime", version: "0.0.0" },
@@ -42,7 +44,7 @@ lines.on("line", (line) => {
     return;
   }
   if (request.method === "agentkib.shutdown") {
-    if (mode === "ignore-shutdown") return;
+    if (mode === "ignore-shutdown" || mode === "ignore-sigterm") return;
     respond(request, null);
     process.exit(0);
   }
@@ -72,13 +74,14 @@ describe("DesktopRuntimeHost", () => {
     vi.restoreAllMocks();
   });
 
-  function createHost(mode: () => string, maxRestarts = 3) {
+  function createHost(mode: () => string, maxRestarts = 3, handshakeTimeoutMs?: number) {
     const marker = path.join(directory, "restart.marker");
     const host = new DesktopRuntimeHost({
       executablePath: process.execPath,
       clientVersion: "test",
       maxRestarts,
       shutdownTimeoutMs: 200,
+      ...(handshakeTimeoutMs === undefined ? {} : { handshakeTimeoutMs }),
       spawnProcess: (_executablePath, _args, options) => {
         const child = spawn(process.execPath, [script], {
           ...options,
@@ -104,6 +107,39 @@ describe("DesktopRuntimeHost", () => {
     await expect(starting).resolves.toMatchObject({ protocolVersion: PROTOCOL_VERSION });
     await expect(request).resolves.toEqual({ value: 7 });
     expect(host.status.state).toBe("ready");
+  });
+
+  it("recovers when creating a transport throws before a process exists", async () => {
+    const createTransport = vi.fn((options) => {
+      if (createTransport.mock.calls.length === 1) throw new Error("transport could not start");
+      return createStdioTransport({ ...options, args: [script] });
+    });
+    const host = new DesktopRuntimeHost({
+      executablePath: process.execPath,
+      clientVersion: "test",
+      maxRestarts: 1,
+      createTransport,
+    });
+    hosts.push(host);
+    await expect(host.start()).resolves.toMatchObject({ protocolVersion: PROTOCOL_VERSION });
+    expect(createTransport).toHaveBeenCalledTimes(2);
+    expect(host.status.restartCount).toBe(1);
+  });
+
+  it("reports a terminal transport creation failure only once", async () => {
+    const host = new DesktopRuntimeHost({
+      executablePath: process.execPath,
+      clientVersion: "test",
+      maxRestarts: 0,
+      createTransport: () => {
+        throw new Error("transport could not start");
+      },
+    });
+    hosts.push(host);
+    const crashLoop = vi.fn();
+    host.on("crash-loop", crashLoop);
+    await expect(host.start()).rejects.toBeInstanceOf(RuntimeUnavailableError);
+    expect(crashLoop).toHaveBeenCalledTimes(1);
   });
 
   it("classifies requests awaiting a failed handshake as runtime outages", async () => {
@@ -216,5 +252,38 @@ describe("DesktopRuntimeHost", () => {
 
     expect(Date.now() - startedAt).toBeLessThan(2_000);
     expect(host.status.state).toBe("stopping");
+  });
+
+  it("force-kills a runtime that ignores both shutdown and SIGTERM", async () => {
+    const host = createHost(() => "ignore-sigterm");
+    await host.start();
+    const child = children[0];
+
+    await host.stop();
+
+    expect(child.exitCode !== null || child.signalCode !== null).toBe(true);
+  });
+
+  it("fails startup when the runtime never answers the handshake", async () => {
+    const host = createHost(() => "never-handshake", 0, 100);
+    const starting = expect(host.start()).rejects.toThrow("did not complete the handshake in time");
+    const waiting = expect(host.request("echo", {})).rejects.toBeInstanceOf(
+      RuntimeUnavailableError,
+    );
+
+    await Promise.all([starting, waiting]);
+    expect(host.status.state).toBe("failed");
+    await vi.waitFor(() =>
+      expect(children[0].exitCode !== null || children[0].signalCode !== null).toBe(true),
+    );
+  });
+
+  it("force-kills a runtime that times out the handshake and ignores SIGTERM", async () => {
+    const host = createHost(() => "stuck-ignore-sigterm", 0, 100);
+    await expect(host.start()).rejects.toThrow("did not complete the handshake in time");
+    const child = children[0];
+    await vi.waitFor(() => expect(child.signalCode ?? child.exitCode).not.toBeNull(), {
+      timeout: 2_000,
+    });
   });
 });

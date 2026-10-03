@@ -1,27 +1,30 @@
 {
   "name": "agentkib",
   "private": true,
-  "packageManager": "pnpm@10.8.1",
   "scripts": {
+    "verify:windows:mcp-cleanup": "pnpm --filter @agentkib/desktop verify:windows:mcp-cleanup",
     "diagnose:windows": "powershell -NoProfile -ExecutionPolicy Bypass -File apps/desktop/scripts/diagnose-windows.ps1",
     "dev": "pnpm --filter @agentkib/desktop dev",
+    "dev:typescript": "pnpm --filter @agentkib/desktop dev:typescript",
     "dev:web": "pnpm --filter @agentkib/web dev",
+    "agentkib": "node apps/desktop/scripts/agentkib.mjs",
     "build:web": "pnpm --filter @agentkib/web build",
     "build:web:hosted": "pnpm --filter @agentkib/web build:hosted",
     "test:web": "pnpm --filter @agentkib/web test",
-    "dev:electron": "pnpm --filter @agentkib/desktop dev:electron",
     "build": "pnpm --filter @agentkib/desktop build",
     "dist:electron": "pnpm --filter @agentkib/desktop dist:electron",
     "benchmark:runtime": "pnpm --filter @agentkib/desktop benchmark:runtime",
+    "benchmark:memory": "pnpm --filter @agentkib/desktop benchmark:memory",
     "format": "oxfmt apps/desktop/src apps/desktop/electron apps/desktop/vite*.config.ts apps/web/src apps/web/vite.config.ts packages",
     "format:check": "oxfmt --check apps/desktop/src apps/desktop/electron apps/desktop/vite*.config.ts apps/web/src apps/web/vite.config.ts packages",
     "lint": "oxlint apps/desktop/src apps/desktop/electron",
     "lint:fix": "oxlint apps/desktop/src apps/desktop/electron --fix",
     "test": "pnpm --filter @agentkib/desktop test && pnpm test:web",
-    "typecheck": "pnpm --filter @agentkib/desktop typecheck && pnpm --filter @agentkib/web typecheck"
+    "typecheck": "pnpm --filter @agentkib/backend typecheck && pnpm --filter @agentkib/desktop typecheck && pnpm --filter @agentkib/web typecheck"
   },
   "devDependencies": {
     "oxfmt": "^0.64.0",
     "oxlint": "^1.79.0"
-  }
+  },
+  "packageManager": "pnpm@10.8.1"
 }

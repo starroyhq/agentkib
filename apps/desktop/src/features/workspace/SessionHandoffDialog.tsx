@@ -188,7 +188,7 @@ export function SessionHandoffDialog({
   }, [initialRequest?.autoPrepare, sourceCanContinue, cursorTargetReady]);
 
   const plan = async () => {
-    if (!draft || !sourceCanContinue) return;
+    if (!draft || !sourceCanContinue || !cursorTargetReady) return;
     if (busyRef.current) return;
     busyRef.current = true;
     const identity = captureIdentity();
@@ -535,7 +535,10 @@ export function SessionHandoffDialog({
                   value={targetAgent}
                   disabled={busy}
                   onValueChange={(value) => {
-                    if (value !== null) setTargetAgent(String(value) as AgentKind);
+                    if (value !== null) {
+                      reset();
+                      setTargetAgent(String(value) as AgentKind);
+                    }
                   }}
                 >
                   <SelectTrigger aria-label={tr("handoff.target")}>
@@ -561,6 +564,7 @@ export function SessionHandoffDialog({
                       disabled={busy}
                       onValueChange={(value) => {
                         if (value === "ide" || value === "cli" || value === "agents-window") {
+                          reset();
                           setCursorSurface(value);
                           setError("");
                         }
@@ -584,7 +588,10 @@ export function SessionHandoffDialog({
                       workspace={workspace}
                       bindingId={bindingId}
                       disabled={busy}
-                      onBindingChange={setBindingId}
+                      onBindingChange={(nextBindingId) => {
+                        reset();
+                        setBindingId(nextBindingId);
+                      }}
                       onStatusChange={setCursorStatus}
                     />
                   ) : (
@@ -686,6 +693,7 @@ export function SessionHandoffDialog({
                 disabled={
                   busy ||
                   !sourceCanContinue ||
+                  !cursorTargetReady ||
                   !acceptLosses ||
                   (draft.window_strategy === "windowed" && !draft.mcp_available)
                 }

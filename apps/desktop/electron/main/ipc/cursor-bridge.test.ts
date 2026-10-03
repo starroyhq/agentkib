@@ -37,6 +37,16 @@ beforeEach(() => {
   });
 });
 describe("local Cursor bridge IPC", () => {
+  it("omits an absent binding identity from status requests", () => {
+    handler("agentkib:workspace:cursor-bridge")(event, {
+      action: "status",
+      workspaceId: "workspace",
+    });
+    expect(request).toHaveBeenCalledWith("workspace.cursorBridge", {
+      action: "status",
+      workspaceId: "workspace",
+    });
+  });
   it("allows explicit reconnect identity and only the fixed runtime method", () => {
     handler("agentkib:workspace:cursor-bridge")(event, {
       action: "connect",
@@ -44,7 +54,7 @@ describe("local Cursor bridge IPC", () => {
       bindingId: "binding",
     });
     expect(trusted).toHaveBeenCalledWith(event);
-    expect(request).toHaveBeenCalledWith("cursor.bridge", {
+    expect(request).toHaveBeenCalledWith("workspace.cursorBridge", {
       action: "connect",
       workspaceId: "workspace",
       bindingId: "binding",

@@ -10,7 +10,7 @@
 
 <!-- 列出实际运行的命令和结果，以及未运行检查的原因。List exact commands, results, and omitted checks. -->
 
-- [ ] Rust 测试或检查 / Rust tests or checks
+- [ ] Backend 检查 / Backend checks
 - [ ] 前端测试、类型检查或构建 / Frontend tests, typecheck, or build
 - [ ] 手动验证 / Manual verification
 - [ ] 不适用，并已在上方说明 / Not applicable, explained above

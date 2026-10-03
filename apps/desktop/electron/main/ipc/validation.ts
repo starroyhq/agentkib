@@ -1,12 +1,22 @@
-import type { BrowserWindow, IpcMainInvokeEvent } from "electron";
+import type { AgentKind } from "../../../src/core/types";
 
-export function assertTrustedRenderer(
-  event: IpcMainInvokeEvent,
-  mainWindow: BrowserWindow | undefined,
-): void {
-  if (!mainWindow || event.sender !== mainWindow.webContents) {
-    throw new Error("Rejected IPC from an unknown renderer");
-  }
+// Record 强制覆盖 AgentKind 的每个成员：新增 agent 时漏写这里会直接编译失败。
+const AGENT_KINDS: Record<AgentKind, true> = {
+  codex: true,
+  "claude-code": true,
+  antigravity: true,
+  cursor: true,
+  opencode: true,
+  "open-claw": true,
+  hermes: true,
+  "grok-build": true,
+  "deepseek-harness": true,
+};
+
+export function requireAgentKind(value: unknown): AgentKind {
+  const agent = requireString(value, "agent");
+  if (!Object.hasOwn(AGENT_KINDS, agent)) throw new Error(`Unsupported agent: ${agent}`);
+  return agent as AgentKind;
 }
 
 export function requireString(value: unknown, name: string): string {

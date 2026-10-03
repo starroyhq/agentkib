@@ -36,18 +36,13 @@ import type {
   WorkspaceStorage,
   WorkspaceSummary,
 } from "@/core/types";
+import { AGENT_LABELS as agentLabels } from "@/core/agents";
+import {
+  homeKeys,
+  useHomeStorageOverview,
+  useOptionalQueryClient,
+} from "@/features/home/home-query";
 
-const agentLabels: Record<AgentKind, string> = {
-  codex: "Codex",
-  "claude-code": "Claude Code",
-  antigravity: "Antigravity",
-  cursor: "Cursor",
-  opencode: "OpenCode",
-  "open-claw": "OpenClaw",
-  hermes: "Hermes",
-  "grok-build": "Grok Build",
-  "deepseek-harness": "DeepSeek Harness",
-};
 type StorageMetric = "allocated" | "regenerable" | "agent-assets";
 interface StorageLocation {
   workspaceId: string;
@@ -83,8 +78,10 @@ export function WorkspaceStoragePage({
   job?: RefreshJobStatus;
 }) {
   const { formatDateTime, locale, localizeMessage, tr } = useI18n();
-  const [overview, setOverview] = useState<StorageOverview>();
-  const [loaded, setLoaded] = useState(false);
+  const queryClient = useOptionalQueryClient();
+  const overviewQuery = useHomeStorageOverview();
+  const overview: StorageOverview | undefined = overviewQuery.data;
+  const loaded = !overviewQuery.isPending;
   const [query, setQuery] = useState("");
   const [agent, setAgent] = useState<"all" | AgentKind>("all");
   const [metric, setMetric] = useState<StorageMetric>("allocated");
@@ -94,29 +91,11 @@ export function WorkspaceStoragePage({
   const [failure, setFailure] = useState<{ reason: unknown; expanding?: boolean }>();
   const error = failure
     ? `${failure.expanding ? `${tr("storage.expandFailed")}: ` : ""}${localizeMessage(failure.reason)}`
-    : "";
+    : overviewQuery.error
+      ? localizeMessage(overviewQuery.error)
+      : "";
   const [refreshPending, setRefreshPending] = useState(false);
   const active = refreshPending || job?.state === "queued" || job?.state === "running";
-
-  useEffect(() => {
-    let disposed = false;
-    void withAsyncCleanup(
-      async () => {
-        try {
-          const cached = await api.storageOverview();
-          if (!disposed) setOverview(cached);
-        } catch (reason) {
-          if (!disposed) setFailure({ reason });
-        }
-      },
-      () => {
-        if (!disposed) setLoaded(true);
-      },
-    );
-    return () => {
-      disposed = true;
-    };
-  }, []);
 
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
@@ -193,7 +172,9 @@ export function WorkspaceStoragePage({
       async () => {
         try {
           const receipt = await api.requestRefresh("storage", true);
-          if (receipt.status.state === "succeeded") setOverview(await api.storageOverview());
+          // 异步完成的扫描由 useHomeQueryEvents 在任务成功时刷新；这里只处理同步完成的情况。
+          if (receipt.status.state === "succeeded")
+            await queryClient.invalidateQueries({ queryKey: homeKeys.storageOverview() });
         } catch (reason) {
           setFailure({ reason });
         }

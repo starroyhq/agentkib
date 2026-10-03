@@ -32,6 +32,7 @@ import { subscribeRemoteStatus, useRemoteStore } from "./remote-store";
 import { RemoteErrorDetails } from "./RemoteErrorDetails";
 import { WebAccessSettings } from "./WebAccessSettings";
 import { remoteEntryCopy } from "./remote-entry-copy";
+import { lanSettingsCopy } from "./lan-settings-copy";
 import { subscribeWebStatus } from "./web-status";
 import type { WebAdminStatus } from "../../../electron/main/web/service";
 import { QuickConnect } from "./QuickConnect";
@@ -309,8 +310,18 @@ function LanAccessSettings() {
   return (
     <div className="space-y-3">
       {status?.config.enabled && (
-        <SettingsNotice tone={status.running && !unavailable ? "default" : "warning"}>
-          <p>{status.running && !unavailable ? copy.lanRunning : copy.lanUnavailable}</p>
+        // 开启即为明文 HTTP，运行中同样用警告样式，而不是普通提示。这是唯一一处明文警告：
+        // 放在折叠区外面，设置收起时也常驻可见。
+        <SettingsNotice tone="warning">
+          {status.running && !unavailable ? (
+            <>
+              <strong>{lanSettingsCopy[locale].plaintextActiveTitle}</strong>
+              <p>{copy.lanRunning}</p>
+              <p>{lanSettingsCopy[locale].plaintextActive}</p>
+            </>
+          ) : (
+            <p>{copy.lanUnavailable}</p>
+          )}
           <Button
             variant="outline"
             onClick={() => {

@@ -117,6 +117,46 @@ afterEach(async () => {
   await rm(dir, { recursive: true, force: true });
 });
 
+describe("relay broker validation", () => {
+  it("treats a trailing slash as the same broker instead of a provider change", async () => {
+    await service.request({ operation: "remote-enable", brokerUrl, inviteCode: "x" });
+    relays[0].report(ready);
+    const headers = await pairBrowser();
+    relays[0].report({ phase: "offline", reason: "network" });
+    const result = await service.request({
+      operation: "remote-enable",
+      brokerUrl: `${brokerUrl}/`,
+    });
+    expect(result.config.relay?.brokerUrl).toBe(brokerUrl);
+    expect(result.devices).toHaveLength(1);
+    const access = await fetch(`http://127.0.0.1:${port}/api/web/v1/access`, { headers });
+    expect((await access.json()).status).toBe("approved");
+  });
+
+  it("rejects a malformed broker with a configuration error", async () => {
+    for (const bad of [undefined, 42, "not a url", "http://api.agentkib.com", "https://a.com/x"])
+      await expect(
+        service.request({ operation: "remote-enable", brokerUrl: bad as never }),
+      ).rejects.toThrow("invalid_relay_configuration");
+  });
+});
+
+describe("quitting during remote enable", () => {
+  it("waits for an in-flight enable and leaves no listener or relay behind", async () => {
+    const paused = pauseNextSave();
+    const enabling = service.request({ operation: "remote-enable", brokerUrl, inviteCode: "x" });
+    await paused.started;
+    const disposing = service.dispose();
+    paused.release();
+    await enabling;
+    await disposing;
+    const internal = service as unknown as { server?: { listening: boolean } };
+    expect(internal.server?.listening ?? false).toBe(false);
+    expect(relays.every((relay) => relay.stop.mock.calls.length > 0)).toBe(true);
+    await expect(status()).rejects.toThrow("web_unavailable");
+  });
+});
+
 describe("remote enable orchestration", () => {
   it("starts the listener and relay without broadening permissions, and deduplicates concurrent clicks", async () => {
     await Promise.all([

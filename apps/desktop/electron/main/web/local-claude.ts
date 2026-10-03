@@ -126,7 +126,7 @@ async function localClaudeRequestInner(
       if (!Number.isSafeInteger(input.expectedRevision) || Number(input.expectedRevision) < 0)
         throw new Error("invalid_revision");
       const live = record(
-        await deps.runtime({ operation: "live", sessionId, experimentalEnabled: true }),
+        await deps.managed({ operation: "live", sessionId, experimentalEnabled: true }),
       );
       params.runtimeBootId = field(live.runtimeBootId);
       params.expectedRevision = input.expectedRevision;
@@ -145,14 +145,14 @@ async function localClaudeRequestInner(
   if (["inspect", "capabilities"].includes(operation))
     return deps.managed({ operation, sessionId, experimentalEnabled: true });
   if (operation === "events")
-    return deps.runtime({
+    return deps.managed({
       operation,
       sessionId,
       limit: 50,
       ...(input.cursor ? { cursor: field(input.cursor, 4096) } : {}),
     });
   if (operation === "live") {
-    const live = await deps.runtime({ operation, sessionId, experimentalEnabled: true });
+    const live = await deps.managed({ operation, sessionId, experimentalEnabled: true });
     await settleClaudeAttachments(deps.attachments, deps.receipt, sessionId);
     return live;
   }
@@ -192,7 +192,7 @@ async function localClaudeRequestInner(
     throw new Error("invalid_revision");
   const requestId = field(input.requestId);
   const live = record(
-    await deps.runtime({ operation: "live", sessionId, experimentalEnabled: true }),
+    await deps.managed({ operation: "live", sessionId, experimentalEnabled: true }),
   );
   const receipt = record(await deps.receipt({ requestId, deviceId: OWNER }));
   const replay = receipt.found === true && receipt.sessionId === sessionId;
@@ -248,7 +248,7 @@ async function localClaudeRequestInner(
       params.answers = record(input.answers);
     }
   }
-  const result = record(await deps.runtime(params));
+  const result = record(await deps.managed(params));
   if (result.requestId === requestId && result.controlOutcome === "not-dispatched")
     await deps.attachments.settle(OWNER, sessionId, requestId);
   return result;

@@ -1,4 +1,4 @@
-name: Windows Checks
+name: Windows TypeScript Checks
 
 on:
   pull_request:
@@ -14,74 +14,36 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  arm64-compile:
-    name: Check Windows ARM64 preview
+  typecheck-arm64:
+    name: Typecheck on Windows ARM64
+    runs-on: windows-11-arm
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v7
+      - uses: pnpm/action-setup@v6
+        with:
+          run_install: false
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+          cache: pnpm
+          cache-dependency-path: pnpm-lock.yaml
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm typecheck
+
+  typecheck:
+    name: Typecheck on Windows x64
     runs-on: windows-2022
     timeout-minutes: 20
-    env:
-      CARGO_BUILD_TARGET: aarch64-pc-windows-msvc
-      CARGO_TERM_COLOR: always
     steps:
       - uses: actions/checkout@v7
-
-      - name: Install Rust MSVC toolchain
-        uses: dtolnay/rust-toolchain@stable
+      - uses: pnpm/action-setup@v6
         with:
-          targets: aarch64-pc-windows-msvc
-
-      - name: Cache Rust
-        uses: Swatinem/rust-cache@v2
+          run_install: false
+      - uses: actions/setup-node@v7
         with:
-          shared-key: windows-arm64-checks
-
-      - name: Check workspace for ARM64
-        shell: pwsh
-        run: cargo check --workspace --all-targets
-
-  build:
-    name: Test Windows x64
-    runs-on: windows-2022
-    timeout-minutes: 30
-    env:
-      CARGO_TERM_COLOR: always
-    steps:
-      - uses: actions/checkout@v7
-
-      - name: Install Rust MSVC toolchain
-        uses: dtolnay/rust-toolchain@stable
-        with:
-          targets: x86_64-pc-windows-msvc
-          components: clippy
-
-      - name: Cache Rust
-        uses: Swatinem/rust-cache@v2
-        with:
-          shared-key: windows-x64-checks
-
-      - name: Run Windows checks
-        shell: pwsh
-        run: |
-          New-Item -ItemType Directory -Force -Path artifacts | Out-Null
-          $log = "artifacts/windows-x64-checks.log"
-          $ErrorActionPreference = "Stop"
-
-          function Invoke-LoggedCommand {
-            param([string] $Name, [scriptblock] $Command)
-            "`n## $Name" | Tee-Object -FilePath $log -Append
-            & $Command *>&1 | Tee-Object -FilePath $log -Append
-            if ($LASTEXITCODE -ne 0) {
-              throw "$Name failed with exit code $LASTEXITCODE"
-            }
-          }
-
-          Invoke-LoggedCommand "cargo test --workspace" { cargo test --workspace }
-          Invoke-LoggedCommand "cargo clippy --workspace --all-targets -- -D warnings" { cargo clippy --workspace --all-targets -- -D warnings }
-
-      - name: Upload Windows x64 check log
-        if: failure()
-        uses: actions/upload-artifact@v7
-        with:
-          name: agentkib-windows-x64-log
-          if-no-files-found: warn
-          path: artifacts/windows-x64-checks.log
-          retention-days: 7
+          node-version: 22
+          cache: pnpm
+          cache-dependency-path: pnpm-lock.yaml
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm typecheck

@@ -1,12 +1,10 @@
+> Historical migration assessment. Its Rust comparison, outstanding gates, and platform requirements describe the pre-migration state and are retained only as history. The current migration status and remaining real-Agent acceptance are tracked in `list.md`.
+
 # Runtime 后端对照实验
 
-## 裁决
+## 當前狀態
 
-**当前不接受 `typescript-backend-spike` 替换 Rust Runtime。**
-
-TS 分支已经是有实质实现的工程 spike：当前 Renderer 使用的 107 个 Runtime 方法都能在 TS registry 中找到处理器，TypeScript-only Electron 构建也能产出 main、preload 和 worker。但它同时未通过功能、恢复和跨平台硬门槛，且相对优化 Rust 没有达到预先约定的性能替换标准。
-
-这不是“Rust 永远胜出”的结论。TS 分支在握手、会话事件解析和小型 SQLite 查询上有优势，值得保留为实现参考；但现在合并它会把一个已优化、可独立重启的 Runtime 换成仍需补齐兼容性和恢复能力的旧基线 Worker。
+此文件記錄的是遷移開始前的評估，不代表目前產品狀態。Rust runtime、Cargo workspace 與 Rust 封裝入口已移除；桌面正式執行路徑使用 TypeScript backend。第 8 批已完成，第 9 批 macOS arm64 封裝與啟動 smoke 已驗證。依使用者指示，驗收只涵蓋 macOS，不要求 Windows／Linux build。第 3／7 批仍欠缺本機可用的第二 Agent 原生 session 與真實 Claude CLI 的互通驗收，見 `list.md`。
 
 ## 比较对象
 
@@ -16,7 +14,7 @@ TS 分支已经是有实质实现的工程 spike：当前 Renderer 使用的 107
 | 优化 Rust | `codex/optimize-rust-runtime-startup`，已采样 | 窗口先创建，请求等待 readiness；握手先于 MCP Hub |
 | TS Worker | `a48f449`，已采样 | `typescript-backend-spike`；相对当前 main 落后 19 个提交，版本仍为 0.5.0 |
 
-TS 分支的迁移文档自身仍把“Parity and acceptance gates passed”和“Rust and Cargo removed”标为未完成，并注明 Windows/Linux 安装包 smoke test 尚未执行。
+下方的比較數據與門檻是當時 `typescript-backend-spike` 的狀態，不能用來描述目前遷移結果。
 
 ## 可复现实验
 
@@ -89,8 +87,8 @@ TS 在文本解析和 Node `node:sqlite` 小查询上有优势；Rust 在文件�
 | 数据兼容 | 现有 Rust schema | 声称保持 schema 10，但 Rust↔TS 差分和回读门槛未签字 | 待验证 |
 | 路径兼容 | canonical path 测试通过 | `/var` 与 `/private/var` 同一工作区无法匹配 Claude 会话 | TS 未通过 |
 | TypeScript-only 构建 | 不适用 | main/preload/worker 构建通过 | 通过 |
-| 默认测试去 Rust | 不适用 | desktop `test` 仍先执行 `runtime:build:dev` | TS 未完成 |
-| Windows/Linux 安装运行 | 现有 CI 基线 | 分支文档明确尚待 release host smoke | TS 未通过 |
+| 默认测试去 Rust | 不适用 | 當時 desktop `test` 仍先執行 `runtime:build:dev` | 歷史狀態；目前見 `list.md` |
+| Windows/Linux 安装运行 | 现有 CI 基线 | 當時分支文件尚待 release host smoke | 非目前使用者要求的驗收範圍 |
 
 路径问题由相同基准夹具直接复现：存储层把 macOS `/var/...` canonicalize 为 `/private/var/...`，会话索引只用 `path.resolve` 比较来源路径，最终同一工作区返回零会话。修正夹具为 canonical path 后才能继续测纯性能，这一调整没有掩盖兼容缺口，缺口本身仍计为硬门槛失败。
 
@@ -116,7 +114,7 @@ TS 在文本解析和 Node `node:sqlite` 小查询上有优势；Rust 在文件�
 3. 补齐 `starting/ready/restarting/failed/stopping` 状态机、有限重启、请求等待和手动重试。
 4. 修复 canonical path 会话匹配，并加入 `/var`、symlink、大小写和网络盘夹具。
 5. 完成 Rust↔TS 数据库回读、方法输出、错误语义和高价值 fixture 差分测试。
-6. 让默认测试、CI 和安装包真正不依赖 Cargo，并完成 Windows/Linux release-host smoke。
+6. 讓預設開發、CI 和 macOS 安裝包不依賴 Cargo。（已由後續遷移完成；Windows/Linux build 不在目前驗收範圍。）
 7. 处理 TOML direct `eval` 构建警告后，用同一基准重新采样。
 
 在这些条件完成前，建议保留 Rust Runtime，把 TS 分支中更快的会话解析和 SQLite 查询实现作为定向优化线索，而不是整体替换后端。

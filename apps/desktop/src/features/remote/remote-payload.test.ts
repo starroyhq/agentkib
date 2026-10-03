@@ -128,7 +128,7 @@ describe("remote payload validation", () => {
     expect(result.sessions[0].spawned_by_session_id).toBeUndefined();
     expect(result.sessions[0].forked_from_session_id).toBeUndefined();
   });
-  it("normalizes nullable Rust fields and strips remote-provided provenance", () => {
+  it("normalizes legacy nullable fields and strips remote-provided provenance", () => {
     const result = parseRemoteCatalog({
       workspaces: [{ ...workspace, remote: { host_id: "forged" } }],
       sessions: [{ ...session, title: null }],

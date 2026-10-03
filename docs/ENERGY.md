@@ -1,3 +1,5 @@
+> Historical Rust-versus-TypeScript measurements. The Rust benchmark harness has been removed; retain this report only as migration history.
+
 # 能耗与后台更新
 
 AgentKib 使用缓存展示发现结果、会话用量和额度。缓存过期表示数据可能不够新，不等于必须立即启动后台任务。
@@ -32,24 +34,14 @@ Web 订阅按会话及权限范围合并正在执行的读取，每个客户端�
 
 ## 验证方式
 
-固定数据集验证读取量：
+歷史固定資料集曾以 Rust 測試和隔離 benchmark harness 驗證未變檔案的讀取量、SQLite 寫入量，以及前景／背景執行個體的 CPU 和磁碟 I/O。Rust-only harness 已隨 Rust backend 一併移除；這些舊命令不再適用於目前版本，也沒有 TypeScript 等價的長時間能耗 benchmark。
+
+目前可用的 macOS 開發版啟動與畫面檢查方式：
 
 ```sh
-cargo test -p agentkib-insights ten_thousand -- --nocapture
-cargo test -p agentkib-store ten_thousand -- --nocapture
-```
-
-对一万个历史文件，未变化时要求正文读取数和字节数均为零；单文件追加时只读一个文件，读取量包含有限的边界校验。Store 测试使用数据库触发器计数，验证未变化时不写贡献和日期汇总，追加只替换受影响来源和日期。
-
-隔离实例持续采样（先构建桌面与开发 Runtime）：
-
-```sh
-cargo build -p agentkib-runtime --features dev-app
-pnpm --filter @agentkib/desktop build:web
+pnpm typecheck
 pnpm --filter @agentkib/desktop electron:build
-node apps/desktop/scripts/benchmark-energy.mjs 10 output/energy-benchmark.json
+pnpm dev
 ```
 
-脚本同时启动前台和隐藏的独立开发实例，预热 40 秒后各采样 10 分钟。使用独立临时数据目录，不改当前安装版配置；额度网络采集关闭、Codex Home 为空测试目录。记录窗口可见性、Runtime 方法调用、进程 CPU，以及 macOS 进程磁盘 I/O。运行中会出现独立开发窗口，结束后自动退出。
-
-该采样用于确认空闲时没有持续扫描和远程轮询，不代表真实大历史库或有远程请求时的整机能耗。macOS 的“使用大量能耗”仍取决于实际任务和系统判定，不能仅凭一次采样保证提示永久消失。
+在開發版檢查視窗隱藏／顯示、系統休眠恢復及閒置期間是否仍持續掃描。此手動檢查不能取代量化能耗採樣；不要執行已移除的 `benchmark-energy.mjs` 或 Cargo 命令。

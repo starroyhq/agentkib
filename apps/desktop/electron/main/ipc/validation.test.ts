@@ -1,6 +1,37 @@
 import { describe, expect, it } from "vitest";
 
-import { requireAccentThemePreference, requireSidebarWidthPreference } from "./validation";
+import {
+  requireAccentThemePreference,
+  requireAgentKind,
+  requireSidebarWidthPreference,
+} from "./validation";
+
+describe("agent IPC validation", () => {
+  it.each([
+    "codex",
+    "claude-code",
+    "antigravity",
+    "cursor",
+    "opencode",
+    "open-claw",
+    "hermes",
+    "grok-build",
+    "deepseek-harness",
+  ])("accepts the supported agent %s", (agent) => {
+    expect(requireAgentKind(agent)).toBe(agent);
+  });
+
+  it.each(["unknown", "toString", "__proto__", "Codex"])(
+    "rejects the unsupported agent %s",
+    (agent) => {
+      expect(() => requireAgentKind(agent)).toThrow(`Unsupported agent: ${agent}`);
+    },
+  );
+
+  it.each([undefined, null, "", 1])("rejects the non-string agent %s", (agent) => {
+    expect(() => requireAgentKind(agent)).toThrow("agent must be a non-empty string");
+  });
+});
 
 describe("sidebar width IPC validation", () => {
   it.each([250, 325, 400])("accepts integer %s", (width) => {

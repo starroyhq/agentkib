@@ -6,8 +6,7 @@ branch pushes run platform checks but do not publish installers.
 
 ## Publish a release
 
-1. Update the desktop version in the workspace `Cargo.toml`,
-   and `apps/desktop/package.json`.
+1. Update the desktop version in `apps/desktop/package.json`.
 2. Merge the version change into `main` and make sure the required checks pass.
 3. Run the workflow manually without `release_tag`, then complete the
    pre-release parts of the [Beta acceptance guide](BETA.md) against the
@@ -38,8 +37,8 @@ tags such as `v0.1.0` become the latest release. Tags containing a prerelease
 suffix, such as `v0.2.0-beta.1`, are published as prereleases.
 
 The workflow refuses to publish when the tag does not exactly match the
-desktop version, the two version sources differ, or the tagged commit is not
-contained in `origin/main`. Every build job checks out the same resolved commit.
+desktop version or the tagged commit is not contained in `origin/main`. Every
+build job checks out the same resolved commit.
 
 ## Retry a failed release
 

@@ -1,0 +1,6 @@
+# agentkib:managed:start
+[mcp_servers.agentkib]
+url = "http://127.0.0.1:47654/mcp/v1/workspaces/ffd5a40f-e6a0-448f-8b98-49576ab006c8/agents/codex"
+enabled = true
+enabled_tools = ["session_search", "session_read_chunk"]
+# agentkib:managed:end

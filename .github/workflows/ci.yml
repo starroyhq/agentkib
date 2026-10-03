@@ -13,9 +13,6 @@ concurrency:
   group: ci-${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
-env:
-  CARGO_TERM_COLOR: always
-
 jobs:
   quality:
     name: Test, lint and build
@@ -44,36 +41,17 @@ jobs:
           cache: pnpm
           cache-dependency-path: pnpm-lock.yaml
 
-      - name: Setup Rust
-        uses: dtolnay/rust-toolchain@stable
-        with:
-          components: rustfmt, clippy
-
-      - name: Cache Rust
-        uses: Swatinem/rust-cache@v2
-        with:
-          shared-key: ci-ubuntu22-x64
-
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
       - name: Diagnose Linux build environment
         run: apps/desktop/scripts/diagnose-linux.sh --strict
 
-      - name: Check formatting
-        run: cargo fmt --all -- --check
-
       - name: Check frontend formatting
         run: pnpm format:check
 
       - name: Lint frontend
         run: pnpm lint
-
-      - name: Test Rust workspace
-        run: cargo test --workspace
-
-      - name: Lint Rust workspace
-        run: cargo clippy --workspace --all-targets -- -D warnings
 
       - name: Test frontend
         run: pnpm test

@@ -46,9 +46,6 @@ import type {
   ConversationEventPage,
   ConversationIndexStatus,
   ConversationSessionSummary,
-  CursorBridgeRequest,
-  CursorBridgeResponse,
-  CursorBridgeBundle,
   SessionHandoffRequest,
   SessionHandoffPreparation,
   SessionContinuationMode,
@@ -127,7 +124,11 @@ export interface DesktopApi {
   };
   changes: {
     plan(project: string, manifest: Manifest, includeHome: boolean): Promise<ChangeSet>;
-    apply(changeSet: ChangeSet, approveHome: boolean): Promise<unknown>;
+    apply(
+      changeSet: ChangeSet,
+      approveHome: boolean,
+      launchRequest?: SessionHandoffLaunchRequest,
+    ): Promise<unknown>;
   };
   memories: {
     list(project: string, status?: string): Promise<MemoryRecord[]>;
@@ -200,8 +201,10 @@ export interface DesktopApi {
     setGitIdentityEnabled(id: string, enabled: boolean): Promise<void>;
   };
   workspace: {
-    cursorBridge(request: CursorBridgeRequest): Promise<CursorBridgeResponse>;
-    bridgeBundle(): Promise<CursorBridgeBundle>;
+    cursorBridge(
+      request: import("../../src/core/types").CursorBridgeRequest,
+    ): Promise<import("../../src/core/types").CursorBridgeResponse>;
+    bridgeBundle(): Promise<import("../../src/core/types").CursorBridgeBundle>;
     revealBridgeBundle(): Promise<void>;
     scan(project: string): Promise<WorkspaceScan>;
     prepareManifest(project: string): Promise<Manifest>;

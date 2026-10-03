@@ -47,18 +47,12 @@ const releases = {
     format: "linux-tar",
   },
   "x86_64-pc-windows-msvc": {
-    version: "0.48.0",
-    asset: "Win-CodexBar-v0.48.0.tar.gz",
-    sha256: "67c60ddbc6072df0970e146771232bbe6991f8ae330016b42d37cdeb7129ccee",
-    url: "https://codeload.github.com/nesszer/Win-CodexBar/tar.gz/refs/tags/v0.48.0",
-    format: "cargo",
+    version: "0.60.3",
+    asset: "CodexBarCLI-v0.60.3-windows-x64.zip",
+    sha256: "2f61a448e340de2b87d2a5ca3d155da5fb3bddeac890c4896ba0bdd49325f020",
+    url: "https://github.com/nesszer/Win-CodexBar/releases/download/v0.60.3/CodexBarCLI-v0.60.3-windows-x64.zip",
+    format: "zip",
   },
-};
-
-const windowsArmNsis = {
-  asset: "nsis-3.11.zip",
-  sha1: "ef7ff767e5cbd9edd22add3a32c9b8f4500bb10d",
-  url: "https://sourceforge.net/projects/nsis/files/NSIS%203/3.11/nsis-3.11.zip/download",
 };
 
 const scriptDirectory = dirname(fileURLToPath(import.meta.url));
@@ -66,12 +60,8 @@ const desktopDirectory = resolve(scriptDirectory, "..");
 const quotaResourcesDirectory = join(desktopDirectory, "resources/quota/resources");
 const quotaBinariesDirectory = join(desktopDirectory, "resources/quota/binaries");
 const target =
-  process.env.AGENTKIB_QUOTA_TARGET ?? process.env.CARGO_BUILD_TARGET ?? rustHostTriple();
+  process.env.AGENTKIB_QUOTA_TARGET ?? hostQuotaTarget();
 const release = releases[target];
-
-if (process.platform === "win32" && process.arch === "arm64") {
-  await prepareWindowsArmNsis();
-}
 
 if (!release) {
   if (target.endsWith("-windows-msvc")) {
@@ -125,8 +115,8 @@ try {
       await cp(join(extracted, "CodexBar_CodexBarCore.bundle"), resourceBundle, {
         recursive: true,
       });
-      // The tiny launcher is source-controlled so plain cargo builds do not
-      // depend on downloading the large collector archive first.
+      // The source-controlled shell launcher locates the packaged CLI and its
+      // adjacent Swift resource bundle.
       await access(binary);
       await chmod(binary, 0o755);
     } else {
@@ -141,57 +131,37 @@ try {
         recursive: true,
       });
     }
-  } else {
-    const sourceDirectory = join(cacheRoot, "source");
-    const manifest = join(sourceDirectory, "rust/Cargo.toml");
-    try {
-      await access(manifest);
-    } catch {
-      await rm(sourceDirectory, { recursive: true, force: true });
-      await mkdir(sourceDirectory, { recursive: true });
-      const localArchive = join(sourceDirectory, release.asset);
-      await copyFile(archive, localArchive);
-      try {
-        const unpack = spawnSync("tar", ["-xzf", release.asset, "--strip-components", "1"], {
-          cwd: sourceDirectory,
-          stdio: "inherit",
-        });
-        if (unpack.status !== 0)
-          throw new Error("Failed to extract the Win-CodexBar source archive");
-      } finally {
-        await rm(localArchive, { force: true });
-      }
-    }
+  } else if (release.format === "zip") {
+    const unpack =
+      process.platform === "win32"
+        ? spawnSync(
+            "powershell.exe",
+            [
+              "-NoLogo",
+              "-NoProfile",
+              "-NonInteractive",
+              "-Command",
+              "$ErrorActionPreference = 'Stop'; Add-Type -AssemblyName System.IO.Compression.FileSystem; [System.IO.Compression.ZipFile]::ExtractToDirectory($env:AGENTKIB_QUOTA_ARCHIVE, $env:AGENTKIB_QUOTA_DESTINATION)",
+            ],
+            {
+              env: {
+                ...process.env,
+                AGENTKIB_QUOTA_ARCHIVE: archive,
+                AGENTKIB_QUOTA_DESTINATION: extracted,
+              },
+              stdio: "inherit",
+            },
+          )
+        : spawnSync("unzip", ["-q", archive, "-d", extracted], { stdio: "inherit" });
+    if (unpack.status !== 0) throw new Error("Failed to extract the Win-CodexBar CLI archive");
 
-    const cargoTargetDirectory = join(cacheRoot, "cargo-target");
-    const build = spawnSync(
-      "cargo",
-      [
-        "build",
-        "--locked",
-        "--release",
-        "--manifest-path",
-        manifest,
-        "--bin",
-        "codexbar",
-        "--target",
-        target,
-      ],
-      {
-        stdio: "inherit",
-        env: {
-          ...process.env,
-          CARGO_TARGET_DIR: cargoTargetDirectory,
-        },
-      },
-    );
-    if (build.status !== 0) throw new Error("Failed to build the Win-CodexBar CLI");
-
-    const source = join(cargoTargetDirectory, target, "release/codexbar.exe");
+    const source = join(extracted, "codexbar-cli.exe");
     await access(source);
     const resourceDirectory = join(quotaResourcesDirectory, "windows");
     await mkdir(resourceDirectory, { recursive: true });
     await copyFile(source, join(resourceDirectory, "agentkib-quota-sidecar.exe"));
+  } else {
+    throw new Error(`Unsupported quota archive format: ${release.format}`);
   }
   process.stdout.write(
     `AgentKib quota sidecar: prepared collector ${release.version} for ${target}.\n`,
@@ -200,12 +170,17 @@ try {
   await rm(extracted, { recursive: true, force: true, maxRetries: 20, retryDelay: 250 });
 }
 
-function rustHostTriple() {
-  const result = spawnSync("rustc", ["-vV"], { encoding: "utf8" });
-  if (result.status !== 0) throw new Error("Unable to determine Rust host triple");
-  const host = result.stdout.match(/^host:\s+(.+)$/m)?.[1]?.trim();
-  if (!host) throw new Error("rustc did not report a host triple");
-  return host;
+function hostQuotaTarget() {
+  const arch = { arm64: "aarch64", x64: "x86_64" }[process.arch];
+  const platform = {
+    darwin: "apple-darwin",
+    linux: "unknown-linux-gnu",
+    win32: "pc-windows-msvc",
+  }[process.platform];
+  if (!arch || !platform) {
+    throw new Error(`Unsupported quota host: ${process.platform}/${process.arch}`);
+  }
+  return `${arch}-${platform}`;
 }
 
 async function hasExpectedHash(path, expected, algorithm = "sha256") {
@@ -216,72 +191,6 @@ async function hasExpectedHash(path, expected, algorithm = "sha256") {
     return digest === expected;
   } catch {
     return false;
-  }
-}
-
-async function prepareWindowsArmNsis() {
-  const localAppData = process.env.LOCALAPPDATA;
-  if (!localAppData) return;
-
-  const nsisCacheDirectory = resolve(localAppData, "AgentKibBuild/cache/nsis");
-  const nsisDirectory = join(nsisCacheDirectory, "NSIS");
-  const nativeCompiler = join(nsisDirectory, "Bin/makensis.exe");
-  const compilerLauncher = join(nsisDirectory, "makensis.exe");
-
-  try {
-    await access(nativeCompiler);
-  } catch {
-    await mkdir(nsisCacheDirectory, { recursive: true });
-    const archivePath = join(nsisCacheDirectory, windowsArmNsis.asset);
-    if (!(await hasExpectedHash(archivePath, windowsArmNsis.sha1, "sha1"))) {
-      await rm(archivePath, { force: true });
-      const temporary = `${archivePath}.download`;
-      await rm(temporary, { force: true });
-      await download(windowsArmNsis.url, temporary);
-      if (!(await hasExpectedHash(temporary, windowsArmNsis.sha1, "sha1"))) {
-        await rm(temporary, { force: true });
-        throw new Error("NSIS 3.11 checksum mismatch");
-      }
-      await rename(temporary, archivePath);
-    }
-
-    const extracted = await mkdtemp(join(tmpdir(), "agentkib-nsis-"));
-    try {
-      const unpack = spawnSync(
-        "powershell.exe",
-        [
-          "-NoLogo",
-          "-NoProfile",
-          "-NonInteractive",
-          "-Command",
-          "Expand-Archive -LiteralPath $env:AGENTKIB_NSIS_ARCHIVE -DestinationPath $env:AGENTKIB_NSIS_DESTINATION -Force",
-        ],
-        {
-          env: {
-            ...process.env,
-            AGENTKIB_NSIS_ARCHIVE: archivePath,
-            AGENTKIB_NSIS_DESTINATION: extracted,
-          },
-          stdio: "inherit",
-        },
-      );
-      if (unpack.status !== 0) throw new Error("Failed to extract NSIS 3.11");
-      await rm(nsisDirectory, { recursive: true, force: true });
-      await cp(join(extracted, "nsis-3.11"), nsisDirectory, { recursive: true });
-    } finally {
-      await rm(extracted, { recursive: true, force: true });
-    }
-  }
-
-  // NSIS ships an x86 dispatcher at the root that cannot launch its child on
-  // Windows ARM64. Keep the real compiler in Bin (where it can resolve Stubs and
-  // Plugins), and replace only the dispatcher with a tiny host-native launcher.
-  const launcherSource = join(scriptDirectory, "windows-nsis-launcher.rs");
-  const buildLauncher = spawnSync("rustc", [launcherSource, "-O", "-o", compilerLauncher], {
-    stdio: "inherit",
-  });
-  if (buildLauncher.status !== 0) {
-    throw new Error("Failed to build the Windows ARM64 NSIS launcher");
   }
 }
 

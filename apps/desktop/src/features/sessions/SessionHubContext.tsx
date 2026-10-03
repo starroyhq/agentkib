@@ -1,4 +1,6 @@
 import { useI18n } from "@/core/useI18n";
+import { SESSION_COLLECTIONS } from "@agentkib/runtime-protocol";
+import type { WorkspaceSummary } from "@/core/types";
 import {
   createContext,
   useCallback,
@@ -23,11 +25,27 @@ import {
 import "./sessions.css";
 
 function useHub(active: boolean) {
-  const { localizeMessage } = useI18n();
+  const { localizeMessage, tr } = useI18n();
   const workspaceQuery = useHomeWorkspaces();
-  const localWorkspaces = useMemo(() => workspaceQuery.data ?? [], [workspaceQuery.data]);
   const runtime = useAppStore((state) => state.runtime);
   const localEnabled = runtime?.session_index_enabled === true;
+  const localWorkspaces = useMemo(
+    (): WorkspaceSummary[] => [
+      ...(workspaceQuery.data ?? []),
+      ...(active && localEnabled
+        ? Object.entries(SESSION_COLLECTIONS).map(([kind, id]) => ({
+            id,
+            name: tr(kind === "projectless" ? "sessions.projectless" : "sessions.unclassified"),
+            path: "",
+            status: "healthy" as const,
+            asset_count: 0,
+            warning_count: 0,
+            sources: [],
+          }))
+        : []),
+    ],
+    [workspaceQuery.data, active, localEnabled, tr],
+  );
   const remote = useRemoteCatalogEntries();
   const enabled = active && (localEnabled || remote.hosts.length > 0);
   const catalog = useSessionCatalog(localWorkspaces, active && localEnabled);

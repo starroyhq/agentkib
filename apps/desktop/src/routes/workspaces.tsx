@@ -41,21 +41,11 @@ import {
 import type { AgentKind, DiscoveryReport, RefreshJobStatus, WorkspaceSummary } from "../core/types";
 import { cn } from "@/lib/utils";
 import { useAppStore } from "@/stores/app-store";
+import { AGENT_LABELS as agentLabels } from "@/core/agents";
 
 type WorkspaceView = "list" | "storage";
 type WorkspacesSearch = { workspaceView?: WorkspaceView };
 const WORKSPACES_PER_PAGE = 8;
-const agentLabels: Record<AgentKind, string> = {
-  codex: "Codex",
-  "claude-code": "Claude Code",
-  antigravity: "Antigravity",
-  cursor: "Cursor",
-  opencode: "OpenCode",
-  "open-claw": "OpenClaw",
-  hermes: "Hermes",
-  "grok-build": "Grok Build",
-  "deepseek-harness": "DeepSeek Harness",
-};
 
 function WorkspacesRoute() {
   const { tr, localizeMessage } = useI18n();

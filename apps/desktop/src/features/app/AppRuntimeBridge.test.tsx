@@ -114,6 +114,41 @@ describe("AppRuntimeBridge", () => {
     },
   );
 
+  it("reads workspace drafts at quit time instead of on every render", async () => {
+    runtimeInfo.mockResolvedValue({
+      effective_theme: "light",
+      effective_locale: "en-US",
+      accent_theme_preference: "vtron",
+    });
+    await changeLocale("en-US");
+    let quit: (() => void) | undefined;
+    vi.spyOn(window.agentkibDesktop!.events, "onQuitRequested").mockImplementation((listener) => {
+      quit = listener;
+      return () => undefined;
+    });
+    const stringify = vi.spyOn(JSON, "stringify");
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    render(
+      <QueryClientProvider client={queryClient}>
+        <AppDialogProvider>
+          <AppRuntimeBridge />
+        </AppDialogProvider>
+      </QueryClientProvider>,
+    );
+    await waitFor(() => expect(useAppStore.getState().runtime?.effective_locale).toBe("en-US"));
+    const manifest = { schema_version: 1 } as never;
+    act(() => {
+      useWorkspaceStore.setState({ manifest, baselineManifest: "{}" });
+    });
+    expect(stringify).not.toHaveBeenCalledWith(manifest);
+
+    act(() => quit!());
+    expect(
+      await screen.findByText("Discard unsaved workspace drafts and quit AgentKib?"),
+    ).toBeTruthy();
+    expect(stringify).toHaveBeenCalledWith(manifest);
+  });
+
   it("synchronizes Runtime information when legacy workspace migration fails", async () => {
     window.localStorage.setItem("agentkib.project", "/missing/legacy-workspace");
     addWorkspace.mockRejectedValue(new Error("legacy workspace missing"));

@@ -1,11 +1,11 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { execFileSync, type ChildProcess } from "node:child_process";
 import { generateKeyPairSync } from "node:crypto";
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createServer as createHttpServer } from "node:http";
-import { request, type Server } from "node:https";
+import { request, Server as TlsServer, type Server } from "node:https";
 import { Transform, type Duplex } from "node:stream";
 import { createServer as createTcpServer, connect, type Socket } from "node:net";
 import {
@@ -224,6 +224,34 @@ describe("relay registration and authorization leases", () => {
     await second.internal.register(1);
     expect(second.internal.registration.credential).toBe(received.credential);
     await expect(readFile(join(path, "registration-pending.json"))).rejects.toThrow();
+  });
+  it("re-registers with a new invitation when both state files are corrupt", async () => {
+    const path = await directory();
+    await writeFile(join(path, "registration-pending.json"), '{"brokerUrl":');
+    await writeFile(join(path, "registration.json"), "not json");
+    const { internal } = setup(path, { inviteCode: "fresh-invitation" });
+    const fetcher = vi.fn(async (_url: URL, options: RequestInit) => {
+      const body = JSON.parse(options.body as string);
+      expect(body.invitation).toBe("fresh-invitation");
+      const { credential: _credential, ...result } = assignment;
+      return new Response(JSON.stringify(result));
+    });
+    vi.stubGlobal("fetch", fetcher);
+    await internal.register(1);
+    expect(fetcher).toHaveBeenCalledTimes(1);
+    expect(internal.registration.deviceId).toBe(registration.deviceId);
+    expect(JSON.parse(await readFile(join(path, "registration.json"), "utf8")).deviceId).toBe(
+      registration.deviceId,
+    );
+  });
+  it("still surfaces unreadable state files instead of discarding them", async () => {
+    const path = await directory();
+    // 目录代替文件：readFile 抛 EISDIR，不能当成"损坏"删掉重来。
+    await mkdir(join(path, "registration-pending.json"));
+    const { internal } = setup(path, { inviteCode: "fresh-invitation" });
+    vi.stubGlobal("fetch", vi.fn());
+    await expect(internal.register(1)).rejects.toMatchObject({ code: "EISDIR" });
+    expect(fetch).not.toHaveBeenCalled();
   });
   it("reenrollment preserves old identity on failure and resumes pending intent ahead of it after restart", async () => {
     const path = await directory();
@@ -464,6 +492,8 @@ describe("relay TLS channels and certificate lifecycle", () => {
         return new Response("{}", { status: 503 });
       }),
     );
+    vi.useFakeTimers();
+    vi.setSystemTime(Date.now() + 36 * 3_600_000);
     await internal.ensureCertificate(1);
     expect(internal.certificate).toBe(cert);
     expect(csr).toHaveBeenCalled();
@@ -477,20 +507,167 @@ describe("relay TLS channels and certificate lifecycle", () => {
     internal.key = key;
     internal.certificate = cert;
     vi.useFakeTimers();
+    vi.setSystemTime(Date.now() + 36 * 3_600_000);
     const fetcher = vi.fn(async () => new Response(JSON.stringify(assignment)));
     vi.stubGlobal("fetch", fetcher);
     await internal.authorize(1);
     const renewal = internal.ensureCertificate(1);
     const rejected = expect(renewal).rejects.toThrow();
-    await vi.advanceTimersByTimeAsync(40_001);
-    expect(fetcher).toHaveBeenCalledTimes(3);
+    // 在 CSR 超时（30 秒）之前停止。
+    await vi.advanceTimersByTimeAsync(20_001);
+    expect(fetcher).toHaveBeenCalledTimes(2);
     await manager.stop();
     await rejected;
     pending.resolve({ csrPem: "-----BEGIN CERTIFICATE REQUEST-----\nlate" });
     await Promise.resolve();
-    expect(fetcher).toHaveBeenCalledTimes(3);
+    expect(fetcher).toHaveBeenCalledTimes(2);
     expect(manager.status.phase).toBe("disabled");
   });
+  it("gives up on a hung local CSR and keeps the still-valid certificate", async () => {
+    const { path, key, cert } = await certificate();
+    const { manager, internal } = setup(path, { createCsr: () => new Promise(() => {}) });
+    internal.key = key;
+    internal.certificate = cert;
+    vi.useFakeTimers();
+    vi.setSystemTime(Date.now() + 36 * 3_600_000);
+    vi.stubGlobal("fetch", vi.fn());
+    const renewal = internal.ensureCertificate(1);
+    await vi.advanceTimersByTimeAsync(30_000);
+    // 证书还有效：续期失败只是告警，不能让 relay 断开。
+    await expect(renewal).resolves.toBeUndefined();
+    expect(fetch).not.toHaveBeenCalled();
+    expect(manager.status.certificateWarning).toBeUndefined();
+    expect((manager as unknown as { certificateWarning: boolean }).certificateWarning).toBe(true);
+  });
+  it("reconnects a crashed connector while certificate renewal is still pending", async () => {
+    const { path, key, cert } = await certificate();
+    const { manager, internal } = setup(path);
+    internal.key = key;
+    internal.certificate = cert;
+    (internal as unknown as { nextRenewal: number }).nextRenewal = 0;
+    vi.spyOn(internal, "startTls").mockResolvedValue();
+    const spawn = vi.spyOn(internal, "spawnFrpc").mockImplementation((channel) =>
+      internal.children.set(channel, {
+        kill: vi.fn(),
+        once: vi.fn(),
+        on: vi.fn(),
+        exitCode: 0,
+      } as unknown as ChildProcess),
+    );
+    vi.spyOn(internal, "probe").mockResolvedValue();
+    // 续期一直挂着，直到 relay 停止。
+    const renewal = vi
+      .spyOn(internal, "ensureCertificate")
+      .mockImplementation(
+        () =>
+          new Promise((_, reject) =>
+            internal.abort.signal.addEventListener("abort", () => reject(new Error("stopped"))),
+          ),
+      );
+    await internal.maintain(1);
+    expect(manager.status.phase).toBe("ready");
+    expect(renewal).toHaveBeenCalledTimes(1);
+    // 一个 frpc 退出后，下一轮 maintain 必须能重新拉起它，而不是等着卡住的续期。
+    internal.children.delete("preview");
+    await internal.maintain(1);
+    expect(spawn).toHaveBeenLastCalledWith("preview", 1);
+    expect(manager.status.phase).toBe("ready");
+    expect(renewal).toHaveBeenCalledTimes(1);
+  });
+  it("cancels unread broker error bodies", async () => {
+    const path = await directory();
+    const { internal } = setup(path);
+    const cancel = vi.fn();
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => new Response(new ReadableStream({ cancel }), { status: 503 })),
+    );
+    await expect(internal.authorize(1)).rejects.toThrow();
+    await vi.waitFor(() => expect(cancel).toHaveBeenCalled());
+  });
+  it("survives repeated error events from an frpc child", async () => {
+    const path = await directory();
+    const frpc = join(path, "frpc");
+    await writeFile(frpc, "#!/bin/sh\nsleep 5\n", { mode: 0o700 });
+    const { internal } = setup(path, { frpcPath: frpc });
+    internal.spawnFrpc("preview", 1);
+    const child = internal.children.get("preview")!;
+    child.emit("error", new Error("first"));
+    expect(() => child.emit("error", new Error("second"))).not.toThrow();
+    child.kill("SIGKILL");
+  });
+  it("does not reconnect a revoked relay when the computer wakes up", async () => {
+    const path = await directory();
+    const { manager, internal } = setup(path);
+    (internal as unknown as { enabled: boolean }).enabled = true;
+    internal.failClosed("revoked", false);
+    expect(manager.status).toMatchObject({ phase: "error", reason: "revoked" });
+    const start = vi.spyOn(manager, "start");
+    await manager.suspend();
+    await manager.resume();
+    expect(start).not.toHaveBeenCalled();
+    expect(manager.status).toMatchObject({ phase: "error", reason: "revoked" });
+  });
+  it("retries a TLS listener that failed to listen instead of skipping it forever", async () => {
+    const { path, key, cert } = await certificate();
+    const { internal } = setup(path);
+    internal.key = key;
+    internal.certificate = cert;
+    const listen = vi
+      .spyOn(TlsServer.prototype, "listen")
+      .mockImplementationOnce(function (this: TlsServer) {
+        process.nextTick(() =>
+          this.emit("error", Object.assign(new Error("EMFILE"), { code: "EMFILE" })),
+        );
+        return this;
+      });
+    await expect(internal.startTls("control", 1)).rejects.toThrow("EMFILE");
+    expect(internal.servers.has("control")).toBe(false);
+    await internal.startTls("control", 1);
+    expect(listen).toHaveBeenCalledTimes(2);
+    expect(internal.servers.get("control")?.listening).toBe(true);
+  });
+  it("kills an frpc that ignores SIGTERM before stop resolves and removes its config", async () => {
+    const { path, key, cert } = await certificate();
+    await writeFile(join(path, "registration.json"), JSON.stringify(registration));
+    await writeFile(join(path, "device-key.pem"), key);
+    await writeFile(join(path, "certificate.pem"), cert);
+    const frpc = join(path, "frpc-stubborn");
+    await writeFile(
+      frpc,
+      '#!/usr/bin/env node\nif(process.argv.includes("--version")) console.log("0.68.0"); else { process.on("SIGTERM",()=>{}); setInterval(()=>{},1000); }\n',
+      { mode: 0o700 },
+    );
+    const manager = new RelayManager({
+      stateDirectory: path,
+      brokerUrl: registration.brokerUrl,
+      frpcPath: frpc,
+      target: { host: "127.0.0.1", port: 1234 },
+      preview: { host: "127.0.0.1", port: 1235 },
+    });
+    const internal = manager as unknown as Internals;
+    stops.unshift(() => manager.stop());
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => new Response(JSON.stringify(assignment))),
+    );
+    vi.spyOn(internal, "probe").mockResolvedValue();
+    await manager.start();
+    expect(manager.status.phase).toBe("ready");
+    const children = [...internal.children.values()];
+    expect(await readFile(join(path, "frpc-control.toml"), "utf8")).toContain(
+      registration.credential,
+    );
+    // 等 node 装好 SIGTERM 处理器，否则 SIGTERM 会直接杀掉它。
+    await new Promise((resolve) => setTimeout(resolve, 300));
+    await manager.stop();
+    expect(children.map((child) => child.signalCode)).toEqual(["SIGKILL", "SIGKILL"]);
+    // 带凭据的 frpc 配置不留在磁盘上。
+    for (const channel of ["control", "preview"])
+      await expect(readFile(join(path, `frpc-${channel}.toml`))).rejects.toMatchObject({
+        code: "ENOENT",
+      });
+  }, 15_000);
   it("suspend closes both connectors and resume requests a fresh lease before reconnecting", async () => {
     const { path, key, cert } = await certificate();
     await writeFile(join(path, "registration.json"), JSON.stringify(registration));

@@ -65,7 +65,7 @@ describe("WorkspaceSessionsPage", () => {
     vi.mocked(api.sessionEvents).mockResolvedValue({ events: [], warnings: [] });
     vi.mocked(api.cursorBridge).mockResolvedValue({
       supported: true,
-      version: "3.22.12",
+      supportedVersions: ["3.22.12", "3.23.12"],
       bindings: [],
     });
   });
@@ -81,7 +81,11 @@ describe("WorkspaceSessionsPage", () => {
       agent: "cursor",
       title: "First Cursor IDE history",
     } satisfies ConversationSessionSummary;
-    let status: CursorBridgeStatus = { supported: true, version: "3.22.12", bindings: [] };
+    let status: CursorBridgeStatus = {
+      supported: true,
+      supportedVersions: ["3.22.12", "3.23.12"],
+      bindings: [],
+    };
     vi.mocked(api.workspaceSessions).mockResolvedValue([]);
     vi.mocked(api.refreshWorkspaceSessions).mockImplementation(async (_, force) =>
       force ? [ideSession] : [],
@@ -147,7 +151,7 @@ describe("WorkspaceSessionsPage", () => {
   it("does not scan again just by opening an already connected Cursor profile", async () => {
     vi.mocked(api.cursorBridge).mockResolvedValue({
       supported: true,
-      version: "3.22.12",
+      supportedVersions: ["3.22.12", "3.23.12"],
       bindings: [
         {
           id: "existing-binding",
@@ -178,7 +182,7 @@ describe("WorkspaceSessionsPage", () => {
     vi.mocked(api.refreshWorkspaceSessions).mockResolvedValue([]);
     vi.mocked(api.cursorBridge).mockResolvedValue({
       supported: false,
-      version: "3.22.12",
+      supportedVersions: ["3.22.12", "3.23.12"],
       bindings: [],
     });
     render(
@@ -195,7 +199,7 @@ describe("WorkspaceSessionsPage", () => {
     const dialog = await screen.findByRole("dialog", { name: "Cursor IDE · normal window" });
     expect(
       await within(dialog).findByText(
-        "Cursor IDE native import currently supports macOS with Cursor 3.22.12.",
+        "Cursor IDE native import currently supports macOS with Cursor 3.22.12 or 3.23.12.",
       ),
     ).toBeVisible();
     expect(within(dialog).getByRole("button", { name: "Connect a Cursor window" })).toBeDisabled();
@@ -237,7 +241,7 @@ describe("WorkspaceSessionsPage", () => {
         return { challenge: "synthetic-first-connection", expires_in_seconds: 120 };
       }
       return ++statusRequests === 1
-        ? { supported: true, version: "3.22.12", bindings: [] }
+        ? { supported: true, supportedVersions: ["3.22.12", "3.23.12"], bindings: [] }
         : lateStatus.promise;
     });
     const props = {
@@ -267,7 +271,7 @@ describe("WorkspaceSessionsPage", () => {
     await act(async () => {
       lateStatus.resolve({
         supported: true,
-        version: "3.22.12",
+        supportedVersions: ["3.22.12", "3.23.12"],
         bindings: [
           { id: "late-binding", profile: "explicit-profile", version: "3.22.12", connected: true },
         ],

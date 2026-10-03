@@ -7,6 +7,7 @@ import { InsightsSkeleton } from "@/features/insights/InsightsSkeleton";
 import { createFileRoute, useNavigate, useSearch } from "@tanstack/react-router";
 import type { InsightsSection } from "@/features/insights/InsightsPage";
 import { useHomeWorkspaces } from "@/features/home/home-query";
+import { insightsRefreshError } from "@/features/insights/insights";
 import {
   useInsightsRefreshJob,
   useInsightsRefreshMutation,
@@ -28,11 +29,12 @@ function InsightsRoute() {
   const workspacesQuery = useHomeWorkspaces();
   const refreshJobQuery = useInsightsRefreshJob();
   const refreshMutation = useInsightsRefreshMutation();
-  const [refreshError, setRefreshError] = useState("");
+  const [refreshError, setRefreshError] = useState<{ message: string; at: number }>();
   const workspaces = workspacesQuery.data ?? [];
   const refreshJob = refreshJobQuery.data;
   const refreshing =
     refreshMutation.isPending || refreshJob?.state === "queued" || refreshJob?.state === "running";
+  const bannerError = insightsRefreshError(refreshError, refreshJob, localizeMessage);
 
   const setSection = (nextSection: InsightsSection) => {
     void navigate({
@@ -42,11 +44,11 @@ function InsightsRoute() {
   };
 
   const refresh = async () => {
-    setRefreshError("");
+    setRefreshError(undefined);
     try {
       await refreshMutation.mutateAsync();
     } catch (error) {
-      setRefreshError(localizeMessage(error));
+      setRefreshError({ message: localizeMessage(error), at: Date.now() });
     }
   };
 
@@ -88,10 +90,13 @@ function InsightsRoute() {
           <RefreshCw size={15} className={refreshing ? "animate-spin" : ""} />
         </Button>
       </div>
-      {refreshError && (
-        <div className="flex items-center gap-2 rounded-xl border border-destructive/30 bg-destructive/10 px-3 py-2 text-sm text-destructive">
+      {bannerError && (
+        <div
+          role="alert"
+          className="flex items-center gap-2 rounded-xl border border-destructive/30 bg-destructive/10 px-3 py-2 text-sm text-destructive"
+        >
           <CircleAlert size={16} />
-          {refreshError}
+          {bannerError}
         </div>
       )}
       <Suspense fallback={<InsightsSkeleton section={section} />}>

@@ -10,7 +10,7 @@ import type {
   RuntimeInfo,
 } from "../../src/core/types";
 import { RUNTIME_METHODS } from "../generated/runtime-protocol";
-import { RuntimeUnavailableError, type DesktopRuntimeHost } from "./runtime-host";
+import { RuntimeUnavailableError, type RuntimeHost } from "./runtime-host";
 
 const REFRESH_KINDS: RefreshKind[] = ["discovery", "insights", "gateways", "quota", "storage"];
 const SCHEDULER_INTERVAL_MS = 60_000;
@@ -30,7 +30,7 @@ export interface QuotaScheduleState {
 }
 
 interface RefreshCoordinatorOptions {
-  runtime(): DesktopRuntimeHost;
+  runtime(): RuntimeHost;
   loadQuotaSchedule?(): Promise<QuotaScheduleState | undefined>;
   saveQuotaSchedule?(state: QuotaScheduleState): Promise<void>;
   isMainWindowVisible(): boolean;
@@ -52,6 +52,8 @@ export class ElectronRefreshCoordinator {
   readonly #initializedLocalKinds = new Set<RefreshKind>();
   readonly #manualRequests = new Set<RefreshKind>();
   readonly #timers = new Set<NodeJS.Timeout>();
+  // 每类任务最多一组计时器：start() 的初始化还没完成时挂起再恢复，两边都会调度同一类任务。
+  readonly #scheduledKinds = new Set<RefreshKind>();
   #refreshLane: Promise<void> = Promise.resolve();
   #sequence = 1;
   #accepting = false;
@@ -86,6 +88,7 @@ export class ElectronRefreshCoordinator {
       clearInterval(timer);
     }
     this.#timers.clear();
+    this.#scheduledKinds.clear();
   }
 
   setRuntimeAvailable(available: boolean): void {
@@ -100,6 +103,7 @@ export class ElectronRefreshCoordinator {
     if (suspended) {
       for (const timer of this.#timers) clearTimeout(timer);
       this.#timers.clear();
+      this.#scheduledKinds.clear();
     } else if (this.#accepting) {
       for (const kind of ["quota", "discovery", "gateways", "insights"] as const)
         this.#schedule(kind, 2_000);
@@ -351,6 +355,8 @@ export class ElectronRefreshCoordinator {
   }
 
   #schedule(kind: "discovery" | "insights" | "gateways" | "quota", initialDelay: number): void {
+    if (this.#scheduledKinds.has(kind)) return;
+    this.#scheduledKinds.add(kind);
     const initial = setTimeout(() => {
       this.#timers.delete(initial);
       void this.#requestScheduled(kind).catch(() => undefined);

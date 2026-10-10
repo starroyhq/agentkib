@@ -34,9 +34,11 @@ jobs:
       - name: Build backend and stage native bindings
         run: pnpm --filter @agentkib/desktop backend:build
       - name: Test backend workers, native bindings and MCP ownership
-        # Each fixture also starts real backend Workers; avoid oversubscribing the runner.
+        # Each fixture starts real backend Workers; cap parallelism without serializing the suite.
         # Allow Windows integration startup time; explicit deadlines and latency assertions remain.
-        run: pnpm test:backend:stability --maxWorkers=1 --testTimeout=15000
+        env:
+          NODE_OPTIONS: --disable-warning=ExperimentalWarning
+        run: pnpm test:backend:stability --maxWorkers=2 --testTimeout=15000
 
   typecheck:
     name: Typecheck on Windows x64
@@ -57,5 +59,8 @@ jobs:
       - name: Build backend and stage native bindings
         run: pnpm --filter @agentkib/desktop backend:build
       - name: Test backend workers, native bindings and MCP ownership
+        # Cap parallelism while allowing independent test files to run together.
         # Allow Windows integration startup time; explicit deadlines and latency assertions remain.
-        run: pnpm test:backend:stability --maxWorkers=1 --testTimeout=15000
+        env:
+          NODE_OPTIONS: --disable-warning=ExperimentalWarning
+        run: pnpm test:backend:stability --maxWorkers=2 --testTimeout=15000

@@ -1,7 +1,7 @@
 import { Markdown } from "@tanstack/markdown/react";
 import type { ComponentProps } from "react";
 import { api } from "@/core/api";
-import { cn } from "@/lib/utils";
+import { cn } from "cn";
 
 export function MarkdownContent({ content, className }: { content: string; className?: string }) {
   return (

@@ -16,7 +16,9 @@ import { Input } from "@/components/ui/input";
 import {
   Select,
   SelectContent,
+  SelectGroup,
   SelectItem,
+  SelectLabel,
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
@@ -317,12 +319,15 @@ export function SkillImportDialog({
                   </SelectValue>
                 </SelectTrigger>
                 <SelectContent>
-                  <SelectItem value="all">{tr("skills.imports.allAgents")}</SelectItem>
-                  {agents.map((entry) => (
-                    <SelectItem key={entry} value={entry}>
-                      {sessionAgentNames[entry]}
-                    </SelectItem>
-                  ))}
+                  <SelectGroup>
+                    <SelectLabel>{tr("skills.imports.agent")}</SelectLabel>
+                    <SelectItem value="all">{tr("skills.imports.allAgents")}</SelectItem>
+                    {agents.map((entry) => (
+                      <SelectItem key={entry} value={entry}>
+                        {sessionAgentNames[entry]}
+                      </SelectItem>
+                    ))}
+                  </SelectGroup>
                 </SelectContent>
               </Select>
               <Select
@@ -342,9 +347,12 @@ export function SkillImportDialog({
                   </SelectValue>
                 </SelectTrigger>
                 <SelectContent>
-                  <SelectItem value="all">{tr("skills.manager.allLocations")}</SelectItem>
-                  <SelectItem value="personal">{tr("skills.manager.personal")}</SelectItem>
-                  <SelectItem value="workspace">{tr("skills.manager.project")}</SelectItem>
+                  <SelectGroup>
+                    <SelectLabel>{tr("skills.manager.scope")}</SelectLabel>
+                    <SelectItem value="all">{tr("skills.manager.allLocations")}</SelectItem>
+                    <SelectItem value="personal">{tr("skills.manager.personal")}</SelectItem>
+                    <SelectItem value="workspace">{tr("skills.manager.project")}</SelectItem>
+                  </SelectGroup>
                 </SelectContent>
               </Select>
             </div>

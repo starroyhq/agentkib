@@ -10,7 +10,9 @@ import { Textarea } from "@/components/ui/textarea";
 import {
   Select,
   SelectContent,
+  SelectGroup,
   SelectItem,
+  SelectLabel,
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
@@ -235,12 +237,17 @@ export function CursorBridgePanel({
             </SelectValue>
           </SelectTrigger>
           <SelectContent>
-            {status?.bindings.map((binding) => (
-              <SelectItem key={binding.id} value={binding.id}>
-                {binding.profile} · {binding.id.slice(0, 8)} · Cursor {binding.version} ·{" "}
-                {tr(binding.connected ? "handoff.cursor.connected" : "handoff.cursor.disconnected")}
-              </SelectItem>
-            ))}
+            <SelectGroup>
+              <SelectLabel>{tr("handoff.cursor.window")}</SelectLabel>
+              {status?.bindings.map((binding) => (
+                <SelectItem key={binding.id} value={binding.id}>
+                  {binding.profile} · {binding.id.slice(0, 8)} · Cursor {binding.version} ·{" "}
+                  {tr(
+                    binding.connected ? "handoff.cursor.connected" : "handoff.cursor.disconnected",
+                  )}
+                </SelectItem>
+              ))}
+            </SelectGroup>
           </SelectContent>
         </Select>
       </Label>

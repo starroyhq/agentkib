@@ -19,7 +19,9 @@ import { Label } from "@/components/ui/label";
 import {
   Select,
   SelectContent,
+  SelectGroup,
   SelectItem,
+  SelectLabel,
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
@@ -561,14 +563,17 @@ export function SkillDeploymentDialog({
                 </SelectValue>
               </SelectTrigger>
               <SelectContent>
-                <SelectItem value="personal">{tr("skills.manager.personal")}</SelectItem>
-                {workspaces
-                  .filter((workspace) => !workspace.remote)
-                  .map((workspace) => (
-                    <SelectItem key={workspace.id} value={workspace.id}>
-                      {workspace.name}
-                    </SelectItem>
-                  ))}
+                <SelectGroup>
+                  <SelectLabel>{tr("skills.manager.scope")}</SelectLabel>
+                  <SelectItem value="personal">{tr("skills.manager.personal")}</SelectItem>
+                  {workspaces
+                    .filter((workspace) => !workspace.remote)
+                    .map((workspace) => (
+                      <SelectItem key={workspace.id} value={workspace.id}>
+                        {workspace.name}
+                      </SelectItem>
+                    ))}
+                </SelectGroup>
               </SelectContent>
             </Select>
             <div className="grid max-h-96 gap-2 overflow-auto">
@@ -981,9 +986,12 @@ export function SkillUsageList({
             <SelectValue />
           </SelectTrigger>
           <SelectContent>
-            <SelectItem value="all">{tr("skills.manager.allScopes")}</SelectItem>
-            <SelectItem value="personal">{tr("skills.manager.personal")}</SelectItem>
-            <SelectItem value="workspace">{tr("skills.manager.project")}</SelectItem>
+            <SelectGroup>
+              <SelectLabel>{tr("skills.manager.scope")}</SelectLabel>
+              <SelectItem value="all">{tr("skills.manager.allScopes")}</SelectItem>
+              <SelectItem value="personal">{tr("skills.manager.personal")}</SelectItem>
+              <SelectItem value="workspace">{tr("skills.manager.project")}</SelectItem>
+            </SelectGroup>
           </SelectContent>
         </Select>
         <Select value={agent} onValueChange={(value) => value && setAgent(value)}>
@@ -991,12 +999,15 @@ export function SkillUsageList({
             <SelectValue />
           </SelectTrigger>
           <SelectContent>
-            <SelectItem value="all">{tr("workspace.allAgents")}</SelectItem>
-            {agents.map((value) => (
-              <SelectItem value={value} key={value}>
-                {sessionAgentNames[value]}
-              </SelectItem>
-            ))}
+            <SelectGroup>
+              <SelectLabel>{tr("workspace.allAgents")}</SelectLabel>
+              <SelectItem value="all">{tr("workspace.allAgents")}</SelectItem>
+              {agents.map((value) => (
+                <SelectItem value={value} key={value}>
+                  {sessionAgentNames[value]}
+                </SelectItem>
+              ))}
+            </SelectGroup>
           </SelectContent>
         </Select>
       </div>

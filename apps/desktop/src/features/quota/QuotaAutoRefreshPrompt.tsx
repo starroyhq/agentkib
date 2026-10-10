@@ -1,7 +1,8 @@
 import { useI18n } from "@/core/useI18n";
 import { Button } from "@/components/ui/button";
 
-import { cn, withAsyncCleanup } from "@/lib/utils";
+import { cn } from "cn";
+import { withAsyncCleanup } from "@/lib/utils";
 import { Gauge } from "lucide-react";
 import { useState } from "react";
 

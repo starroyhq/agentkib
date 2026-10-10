@@ -1,6 +1,6 @@
 import { DesktopHistorySearch } from "./DesktopHistorySearch";
 import { useShallow } from "zustand/react/shallow";
-import { Ellipsis, X } from "lucide-react";
+import { SlidersHorizontal, X } from "lucide-react";
 import { useI18n } from "@/core/useI18n";
 import type { AgentKind } from "@/core/types";
 import { Button } from "@/components/ui/button";
@@ -39,6 +39,8 @@ export function SessionDirectoryControls({
     })),
   );
   const agents = [...new Set(hub.sessions.map((session) => session.agent))];
+  const activeFilterCount =
+    Number(view.agent !== "all") + Number(view.filter !== "current") + Number(view.host !== "all");
   return (
     <div className="session-directory-controls grid gap-2.5 py-3 pb-2.5">
       <DesktopHistorySearch />
@@ -48,12 +50,18 @@ export function SessionDirectoryControls({
         </span>
         <DropdownMenu onOpenChange={onMenuOpenChange}>
           <DropdownMenuTrigger
-            render={<Button variant="ghost" size="icon-sm" />}
+            render={<Button variant="outline" size="sm" className="h-8 gap-2 px-2.5" />}
             aria-label={tr("sessions.directoryOptions")}
             data-session-directory-options=""
             disabled={!hub.enabled}
           >
-            <Ellipsis size={18} aria-hidden="true" />
+            <SlidersHorizontal size={15} aria-hidden="true" />
+            <span>{tr("sessions.filters")}</span>
+            {activeFilterCount > 0 && (
+              <span className="grid size-5 place-items-center rounded-full bg-primary text-[11px] text-primary-foreground">
+                {activeFilterCount}
+              </span>
+            )}
           </DropdownMenuTrigger>
           <DropdownMenuContent align="end" className="min-w-48" positionerClassName="z-80">
             {!!hub.remoteHosts?.length && (

@@ -194,6 +194,7 @@ function HomeRoute() {
       await api.requestRefresh("discovery", true);
     }
   };
+  const issuesPending = doctorSummariesQuery.isPending || memoriesQuery.isPending;
   if (workspacesQuery.isPending) return <HomeSkeleton />;
   return (
     <GlobalHome
@@ -201,8 +202,12 @@ function HomeRoute() {
       doctorSummaries={doctorSummaries}
       installations={installations}
       memories={globalMemories}
+      issuesPending={issuesPending}
       discovery={discovery}
       activity={activity}
+      activityPending={activityQuery.isPending}
+      installationsPending={installationsQuery.isPending}
+      catalogPending={catalogQuery.isPending}
       insights={insightsSummary}
       uniqueAssetCount={groupedCatalog.filter((asset) => asset.scope === "workspace").length}
       assetCounts={assetCounts}

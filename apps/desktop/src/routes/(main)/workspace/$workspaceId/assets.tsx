@@ -12,14 +12,16 @@ import { Input } from "@/components/ui/input";
 import {
   Select,
   SelectContent,
+  SelectGroup,
   SelectItem,
+  SelectLabel,
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
 import { Textarea } from "@/components/ui/textarea";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { FileCode2, Search, ShieldCheck, X } from "lucide-react";
-import { cn } from "@/lib/utils";
+import { cn } from "cn";
 import type { AgentKind, ConnectionDefinition, Manifest, WorkspaceScan } from "@/core/types";
 import { AGENT_LABELS as agentLabels } from "@/core/agents";
 type WorkspaceAssetSection = "instructions" | "skills" | "mcp" | "native";
@@ -264,8 +266,11 @@ function Assets({
                 <SelectValue>{transport === "stdio" ? "stdio" : "HTTP"}</SelectValue>
               </SelectTrigger>
               <SelectContent>
-                <SelectItem value="stdio">stdio</SelectItem>
-                <SelectItem value="http">HTTP</SelectItem>
+                <SelectGroup>
+                  <SelectLabel>{tr("assets.transport")}</SelectLabel>
+                  <SelectItem value="stdio">stdio</SelectItem>
+                  <SelectItem value="http">HTTP</SelectItem>
+                </SelectGroup>
               </SelectContent>
             </Select>
             <Input

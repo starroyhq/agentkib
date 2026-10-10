@@ -6,7 +6,7 @@ import { useEffect, useState } from "react";
 import { quotaSeverity, type QuotaDisplayWindow } from "@/features/quota/quota";
 import type { AgentKind, QuotaProvider, QuotaSnapshot } from "@/core/types";
 import { AgentIcon } from "@/features/agents/AgentIcon";
-import { cn } from "@/lib/utils";
+import { cn } from "cn";
 
 export function ProviderIcon({ provider }: { provider: QuotaProvider }) {
   const agent = providerAgent(provider.id, provider.name);

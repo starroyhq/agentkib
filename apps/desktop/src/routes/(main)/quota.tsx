@@ -1,27 +1,17 @@
-import { lazy, Suspense } from "react";
-import { QuotaSkeleton } from "@/features/quota/QuotaSkeleton";
-import { createFileRoute, useSearch } from "@tanstack/react-router";
+import { createFileRoute } from "@tanstack/react-router";
 import { useAppStore } from "@/stores/app-store";
-import type { QuotaWindowSelector } from "@/core/types";
-
-const QuotaPageLazy = lazy(() =>
-  import("@/features/quota/QuotaPage").then(({ QuotaPage }) => ({ default: QuotaPage })),
-);
-
-type QuotaSearch = { quotaProvider?: string; quotaWindow?: QuotaWindowSelector };
+import { QuotaPage } from "@/features/quota/QuotaPage";
 
 function QuotaRoute() {
-  const search = useSearch({ strict: false }) as QuotaSearch;
+  const search = Route.useSearch();
   const configurePopoverRequest = useAppStore((state) => state.quotaConfigureRequest);
 
   return (
-    <Suspense fallback={<QuotaSkeleton />}>
-      <QuotaPageLazy
-        initialProvider={search.quotaProvider}
-        initialWindow={search.quotaWindow}
-        configurePopoverRequest={configurePopoverRequest}
-      />
-    </Suspense>
+    <QuotaPage
+      initialProvider={search.quotaProvider}
+      initialWindow={search.quotaWindow}
+      configurePopoverRequest={configurePopoverRequest}
+    />
   );
 }
 

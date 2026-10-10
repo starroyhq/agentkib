@@ -25,7 +25,8 @@ import { useHomeWorkspaces } from "@/features/home/home-query";
 import { useWorkspaceStore } from "@/features/workspace/workspace-store";
 import { api } from "@/core/api";
 import { tr } from "@/core/i18n";
-import { cn, withAsyncCleanup } from "@/lib/utils";
+import { cn } from "cn";
+import { withAsyncCleanup } from "@/lib/utils";
 import type { Manifest, WorkspaceSummary } from "@/core/types";
 import {
   DropdownMenu,

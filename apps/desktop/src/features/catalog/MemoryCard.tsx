@@ -3,7 +3,7 @@ import { useState } from "react";
 import { Check, Pencil, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
-import { cn } from "@/lib/utils";
+import { cn } from "cn";
 import type { MemoryRecord } from "@/core/types";
 
 export function MemoryCard({

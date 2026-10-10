@@ -10,7 +10,7 @@ import { api } from "@/core/api";
 import type { SkillFileEntry } from "@/core/types";
 import { useI18n } from "@/core/useI18n";
 import { diffLines } from "@/features/workspace/diff";
-import { cn } from "@/lib/utils";
+import { cn } from "cn";
 
 export interface SkillReadableContent {
   path: string;

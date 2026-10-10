@@ -33,6 +33,8 @@ jobs:
       - name: Build backend and stage native bindings
         run: pnpm --filter @agentkib/desktop backend:build
       - name: Test backend workers, native bindings and MCP ownership
+        env:
+          NODE_OPTIONS: --disable-warning=ExperimentalWarning
         run: pnpm test:backend:stability
 
   fedora-x64:
@@ -56,4 +58,6 @@ jobs:
       - name: Build backend and stage native bindings
         run: pnpm --filter @agentkib/desktop backend:build
       - name: Test backend workers, native bindings and MCP ownership
+        env:
+          NODE_OPTIONS: --disable-warning=ExperimentalWarning
         run: pnpm test:backend:stability

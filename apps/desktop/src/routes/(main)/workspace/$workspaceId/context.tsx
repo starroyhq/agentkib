@@ -16,7 +16,9 @@ import { Label } from "@/components/ui/label";
 import {
   Select,
   SelectContent,
+  SelectGroup,
   SelectItem,
+  SelectLabel,
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
@@ -115,11 +117,14 @@ export function ContextPage({
                 <SelectValue>{agentLabels[agent]}</SelectValue>
               </SelectTrigger>
               <SelectContent>
-                {Object.entries(agentLabels).map(([value, label]) => (
-                  <SelectItem value={value} key={value}>
-                    {label}
-                  </SelectItem>
-                ))}
+                <SelectGroup>
+                  <SelectLabel>{tr("context.agent")}</SelectLabel>
+                  {Object.entries(agentLabels).map(([value, label]) => (
+                    <SelectItem value={value} key={value}>
+                      {label}
+                    </SelectItem>
+                  ))}
+                </SelectGroup>
               </SelectContent>
             </Select>
           </div>

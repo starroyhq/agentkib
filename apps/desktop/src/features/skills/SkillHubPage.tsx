@@ -23,7 +23,6 @@ import {
   Sparkles,
   Trash2,
 } from "lucide-react";
-
 import { useAppDialogs } from "@/components/AppDialogProvider";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -41,7 +40,9 @@ import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import {
   Select,
   SelectContent,
+  SelectGroup,
   SelectItem,
+  SelectLabel,
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
@@ -58,7 +59,7 @@ import type {
   WorkspaceSummary,
 } from "@/core/types";
 import type { CatalogAssetGroup } from "@/features/catalog/catalog";
-import { cn } from "@/lib/utils";
+import { cn } from "cn";
 import { isSkillDirectory, SkillFileBrowser } from "./SkillFileBrowser";
 import {
   readableSkillFile,
@@ -551,10 +552,13 @@ export function SkillHubPage({ workspaces, onOpen, onReload }: SkillHubPageProps
                 </SelectValue>
               </SelectTrigger>
               <SelectContent>
-                <SelectItem value="all">{tr("skills.manager.allSources")}</SelectItem>
-                <SelectItem value="local">{tr("skills.localSource")}</SelectItem>
-                <SelectItem value="github">GitHub</SelectItem>
-                <SelectItem value="openai-curated">{tr("skills.openaiCurated")}</SelectItem>
+                <SelectGroup>
+                  <SelectLabel>{tr("catalog.source")}</SelectLabel>
+                  <SelectItem value="all">{tr("skills.manager.allSources")}</SelectItem>
+                  <SelectItem value="local">{tr("skills.localSource")}</SelectItem>
+                  <SelectItem value="github">GitHub</SelectItem>
+                  <SelectItem value="openai-curated">{tr("skills.openaiCurated")}</SelectItem>
+                </SelectGroup>
               </SelectContent>
             </Select>
             <Select
@@ -569,14 +573,17 @@ export function SkillHubPage({ workspaces, onOpen, onReload }: SkillHubPageProps
                 </SelectValue>
               </SelectTrigger>
               <SelectContent>
-                <SelectItem value="all">{tr("skills.manager.allStatuses")}</SelectItem>
-                {(["current", "update-available", "modified", "unmanaged"] as const).map(
-                  (status) => (
-                    <SelectItem key={status} value={status}>
-                      {statusLabel(status, tr)}
-                    </SelectItem>
-                  ),
-                )}
+                <SelectGroup>
+                  <SelectLabel>{tr("skills.manager.statusFilter")}</SelectLabel>
+                  <SelectItem value="all">{tr("skills.manager.allStatuses")}</SelectItem>
+                  {(["current", "update-available", "modified", "unmanaged"] as const).map(
+                    (status) => (
+                      <SelectItem key={status} value={status}>
+                        {statusLabel(status, tr)}
+                      </SelectItem>
+                    ),
+                  )}
+                </SelectGroup>
               </SelectContent>
             </Select>
             <Select value={libraryUsage} onValueChange={(value) => value && setLibraryUsage(value)}>
@@ -592,10 +599,13 @@ export function SkillHubPage({ workspaces, onOpen, onReload }: SkillHubPageProps
                 </SelectValue>
               </SelectTrigger>
               <SelectContent>
-                <SelectItem value="all">{tr("skills.manager.allLocations")}</SelectItem>
-                <SelectItem value="unused">{tr("skills.manager.notDeployed")}</SelectItem>
-                <SelectItem value="personal">{tr("skills.manager.personal")}</SelectItem>
-                <SelectItem value="workspace">{tr("skills.manager.project")}</SelectItem>
+                <SelectGroup>
+                  <SelectLabel>{tr("skills.workspaceUsage")}</SelectLabel>
+                  <SelectItem value="all">{tr("skills.manager.allLocations")}</SelectItem>
+                  <SelectItem value="unused">{tr("skills.manager.notDeployed")}</SelectItem>
+                  <SelectItem value="personal">{tr("skills.manager.personal")}</SelectItem>
+                  <SelectItem value="workspace">{tr("skills.manager.project")}</SelectItem>
+                </SelectGroup>
               </SelectContent>
             </Select>
           </div>

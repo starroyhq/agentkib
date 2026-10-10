@@ -29,7 +29,9 @@ import { RemoteAccountSettings } from "./RemoteAccountSettings";
 import {
   Select,
   SelectContent,
+  SelectGroup,
   SelectItem,
+  SelectLabel,
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
@@ -191,8 +193,11 @@ export function WebAccessSettings({ target }: { target?: "lan" } = {}) {
         <SelectValue>{levelLabel(codeLevel)}</SelectValue>
       </SelectTrigger>
       <SelectContent>
-        <SelectItem value="read">{c.readOnlyAccess}</SelectItem>
-        <SelectItem value="full">{c.fullAccess}</SelectItem>
+        <SelectGroup>
+          <SelectLabel>{c.accessLevel}</SelectLabel>
+          <SelectItem value="read">{c.readOnlyAccess}</SelectItem>
+          <SelectItem value="full">{c.fullAccess}</SelectItem>
+        </SelectGroup>
       </SelectContent>
     </Select>
   ) : null;
@@ -262,11 +267,14 @@ export function WebAccessSettings({ target }: { target?: "lan" } = {}) {
                 <SelectValue placeholder={l.choose} />
               </SelectTrigger>
               <SelectContent>
-                {(status?.addresses ?? []).map(({ name, address }) => (
-                  <SelectItem key={`${name}-${address}`} value={address}>
-                    {name} · {address}
-                  </SelectItem>
-                ))}
+                <SelectGroup>
+                  <SelectLabel>{l.address}</SelectLabel>
+                  {(status?.addresses ?? []).map(({ name, address }) => (
+                    <SelectItem key={`${name}-${address}`} value={address}>
+                      {name} · {address}
+                    </SelectItem>
+                  ))}
+                </SelectGroup>
               </SelectContent>
             </Select>
           </SettingsRow>
@@ -772,8 +780,11 @@ export function WebAccessSettings({ target }: { target?: "lan" } = {}) {
                   <SelectValue>{levelLabel(device.accessLevel)}</SelectValue>
                 </SelectTrigger>
                 <SelectContent>
-                  <SelectItem value="read">{c.readOnlyAccess}</SelectItem>
-                  <SelectItem value="full">{c.fullAccess}</SelectItem>
+                  <SelectGroup>
+                    <SelectLabel>{`${c.accessLevel}: ${device.name}`}</SelectLabel>
+                    <SelectItem value="read">{c.readOnlyAccess}</SelectItem>
+                    <SelectItem value="full">{c.fullAccess}</SelectItem>
+                  </SelectGroup>
                 </SelectContent>
               </Select>
             )}

@@ -1,6 +1,6 @@
 import { useI18n } from "@/core/useI18n";
 import { sessionCollection } from "@agentkib/runtime-protocol";
-import { cn } from "@/lib/utils";
+import { cn } from "cn";
 import { Fragment, useLayoutEffect, useRef } from "react";
 import { useShallow } from "zustand/react/shallow";
 import { Folder, FolderOpen, GitBranch, MessageSquare, Monitor } from "lucide-react";
@@ -52,6 +52,7 @@ export function SessionDirectory({
     finishDrag,
     allowDrop,
     dropBefore,
+    moveByKeyboard,
   } = useSessionDirectoryOrder(hub);
 
   return (
@@ -65,6 +66,9 @@ export function SessionDirectory({
         ref={scrollRef}
         onScroll={(event) => view.setScrollTop(event.currentTarget.scrollTop)}
       >
+        <p id="session-directory-reorder-hint" className="sr-only">
+          {tr("sessions.reorderHint")}
+        </p>
         {orderedGroups.map(({ workspace, sessions: workspaceSessions, label }, index) => {
           const sessions = sessionOrder(workspaceSessions, view.sessionOrder[workspace.id] ?? []);
           return (
@@ -123,6 +127,11 @@ export function SessionDirectory({
                       onDrop={(event) =>
                         dropBefore(event, { kind: "workspace", workspaceId: workspace.id })
                       }
+                      onKeyDown={(event) =>
+                        moveByKeyboard(event, { kind: "workspace", workspaceId: workspace.id })
+                      }
+                      aria-describedby="session-directory-reorder-hint"
+                      aria-keyshortcuts="Alt+ArrowUp Alt+ArrowDown"
                     />
                   }
                   title={workspace.path ? `${workspace.name}\n${workspace.path}` : workspace.name}
@@ -180,6 +189,15 @@ export function SessionDirectory({
                           sessionId: session.id,
                         })
                       }
+                      onKeyDown={(event) =>
+                        moveByKeyboard(event, {
+                          kind: "session",
+                          workspaceId: workspace.id,
+                          sessionId: session.id,
+                        })
+                      }
+                      aria-describedby="session-directory-reorder-hint"
+                      aria-keyshortcuts="Alt+ArrowUp Alt+ArrowDown"
                       aria-current={hub.selected?.id === session.id ? "page" : undefined}
                       onClick={() => hub.select(session.id)}
                       title={[
@@ -215,7 +233,7 @@ export function SessionDirectory({
             </Fragment>
           );
         })}
-        {hub.enabled && !hub.loading && !groups.length && (
+        {hub.enabled && !hub.loading && !hub.catalogError && !groups.length && (
           <div className="session-directory-empty p-[18px_10px] text-center text-muted-foreground">
             <p>{tr(hub.sessions.length ? "sessions.noMatches" : "sessions.noSessions")}</p>
             {hub.sessions.length > 0 && (

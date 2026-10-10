@@ -19,7 +19,6 @@ import {
   ShieldAlert,
   TerminalSquare,
 } from "lucide-react";
-
 import { AgentIcon } from "@/features/agents/AgentIcon";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -34,7 +33,9 @@ import {
 import {
   Select,
   SelectContent,
+  SelectGroup,
   SelectItem,
+  SelectLabel,
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
@@ -52,7 +53,8 @@ import type {
   AgentToolStatus,
   AppUpdateInfo,
 } from "@/core/types";
-import { cn, withAsyncCleanup } from "@/lib/utils";
+import { cn } from "cn";
+import { withAsyncCleanup } from "@/lib/utils";
 import { useWorkspaceStore } from "@/features/workspace/workspace-store";
 import { acquireAgentToolsExecution, refreshAgentTools, useAgentTools } from "./agent-tools-query";
 import {
@@ -447,12 +449,15 @@ export function AgentToolsSettings({
                   </SelectValue>
                 </SelectTrigger>
                 <SelectContent>
-                  <SelectItem value="none">{tr("settings.tools.selectAgent")}</SelectItem>
-                  {tools.map((tool) => (
-                    <SelectItem key={tool.agent} value={tool.agent}>
-                      {agentLabels[tool.agent]}
-                    </SelectItem>
-                  ))}
+                  <SelectGroup>
+                    <SelectLabel>{tr("settings.tools.selectAgent")}</SelectLabel>
+                    <SelectItem value="none">{tr("settings.tools.selectAgent")}</SelectItem>
+                    {tools.map((tool) => (
+                      <SelectItem key={tool.agent} value={tool.agent}>
+                        {agentLabels[tool.agent]}
+                      </SelectItem>
+                    ))}
+                  </SelectGroup>
                 </SelectContent>
               </Select>
               <div className="flex min-h-12 items-center justify-between gap-3 rounded-lg bg-muted/35 px-3 py-2">
@@ -604,11 +609,14 @@ function AgentToolCard({
               <SelectValue>{channelLabel(action?.channel ?? tool.channel, tr)}</SelectValue>
             </SelectTrigger>
             <SelectContent>
-              {tool.actions.map((candidate) => (
-                <SelectItem key={candidate.id} value={candidate.id}>
-                  {channelLabel(candidate.channel, tr)}
-                </SelectItem>
-              ))}
+              <SelectGroup>
+                <SelectLabel>{tr("settings.tools.selectChannel")}</SelectLabel>
+                {tool.actions.map((candidate) => (
+                  <SelectItem key={candidate.id} value={candidate.id}>
+                    {channelLabel(candidate.channel, tr)}
+                  </SelectItem>
+                ))}
+              </SelectGroup>
             </SelectContent>
           </Select>
         )}

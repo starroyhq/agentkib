@@ -4,7 +4,9 @@ import { Input } from "@/components/ui/input";
 import {
   Select,
   SelectContent,
+  SelectGroup,
   SelectItem,
+  SelectLabel,
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
@@ -17,7 +19,6 @@ import { ExternalLink, FolderOpen, Link2, Unlink } from "lucide-react";
 import { api } from "@/core/api";
 import { useOptionalQueryClient } from "@/features/home/home-query";
 import { obsidianKeys, useObsidianIntegration } from "./obsidian-query";
-
 import type { ObsidianIntegration } from "@/core/types";
 import { SettingsNotice, SettingsPanel } from "@/features/settings/components/SettingsLayout";
 
@@ -252,11 +253,14 @@ export function WorkspaceObsidianCard({ workspaceId }: { workspaceId: string }) 
                 </SelectValue>
               </SelectTrigger>
               <SelectContent>
-                {integration.vaults.map((vault) => (
-                  <SelectItem key={vault.path} value={vault.path}>
-                    {vault.name}
-                  </SelectItem>
-                ))}
+                <SelectGroup>
+                  <SelectLabel>{tr("obsidian.chooseVault")}</SelectLabel>
+                  {integration.vaults.map((vault) => (
+                    <SelectItem key={vault.path} value={vault.path}>
+                      {vault.name}
+                    </SelectItem>
+                  ))}
+                </SelectGroup>
               </SelectContent>
             </Select>
           </Label>

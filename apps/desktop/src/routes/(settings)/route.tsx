@@ -25,7 +25,7 @@ import { useSidebarWidthStore } from "@/features/app/sidebar-width-store";
 import { useAppStore } from "@/stores/app-store";
 import { useWorkspaceStore } from "@/features/workspace/workspace-store";
 import { WindowToolbar } from "@/components/WindowToolbar";
-import { cn } from "@/lib/utils";
+import { cn } from "cn";
 
 function SettingsLayout() {
   const { app, history, searchOpen, onOpenSearch } = useAppNavigationContext();

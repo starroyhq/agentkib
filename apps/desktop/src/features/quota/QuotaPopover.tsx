@@ -18,7 +18,7 @@ import { applyTheme } from "@/core/theme";
 import type { EffectiveTheme, QuotaProvider } from "@/core/types";
 import { ProviderIcon, QuotaWindowRow } from "./QuotaDisplay";
 import { QuotaAutoRefreshPrompt } from "./QuotaAutoRefreshPrompt";
-import { cn } from "@/lib/utils";
+import { cn } from "cn";
 import {
   DEFAULT_QUOTA_PREFERENCES,
   quotaKeys,

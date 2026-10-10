@@ -27,7 +27,9 @@ import { Checkbox } from "@/components/ui/checkbox";
 import {
   Select,
   SelectContent,
+  SelectGroup,
   SelectItem,
+  SelectLabel,
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
@@ -581,13 +583,16 @@ export function ClaudeSessionPanel({
               </SelectValue>
             </SelectTrigger>
             <SelectContent>
-              {catalog?.sessions
-                .filter((item) => item.workspace_id === workspaceId)
-                .map((item) => (
-                  <SelectItem key={item.id} value={item.id}>
-                    {item.title || "Claude Code"}
-                  </SelectItem>
-                ))}
+              <SelectGroup>
+                <SelectLabel>{text("会话", "Session")}</SelectLabel>
+                {catalog?.sessions
+                  .filter((item) => item.workspace_id === workspaceId)
+                  .map((item) => (
+                    <SelectItem key={item.id} value={item.id}>
+                      {item.title || "Claude Code"}
+                    </SelectItem>
+                  ))}
+              </SelectGroup>
             </SelectContent>
           </Select>
         </label>

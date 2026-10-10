@@ -15,7 +15,14 @@ export default defineConfig({
       fileName: () => "main.cjs",
     },
     rollupOptions: {
-      external: ["electron", ...builtinModules, ...builtinModules.map((name) => `node:${name}`)],
+      // `ws` exposes a browser conditional export; Electron's main process needs
+      // the Node implementation that provides WebSocketServer.
+      external: [
+        "electron",
+        "ws",
+        ...builtinModules,
+        ...builtinModules.map((name) => `node:${name}`),
+      ],
     },
   },
 });

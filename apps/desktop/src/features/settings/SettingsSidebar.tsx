@@ -17,7 +17,7 @@ import {
   X,
 } from "lucide-react";
 import { tr } from "@/core/i18n";
-import { cn } from "@/lib/utils";
+import { cn } from "cn";
 import { useSidebarViewStore } from "@/features/app/sidebar-view-store";
 import { focusSettingsTarget } from "./components/SettingsLayout";
 

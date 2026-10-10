@@ -7,7 +7,9 @@ import { Switch } from "@/components/ui/switch";
 import {
   Select,
   SelectContent,
+  SelectGroup,
   SelectItem,
+  SelectLabel,
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
@@ -412,14 +414,17 @@ export function RemoteConnectionSettings() {
                 </SelectValue>
               </SelectTrigger>
               <SelectContent>
-                {!snapshot?.interfaces.length && (
-                  <SelectItem value="">{tr("remote.noNetwork")}</SelectItem>
-                )}
-                {snapshot?.interfaces.map((network) => (
-                  <SelectItem key={network.address} value={network.address}>
-                    {network.name} · {network.address}
-                  </SelectItem>
-                ))}
+                <SelectGroup>
+                  <SelectLabel>{tr("remote.network")}</SelectLabel>
+                  {!snapshot?.interfaces.length && (
+                    <SelectItem value="">{tr("remote.noNetwork")}</SelectItem>
+                  )}
+                  {snapshot?.interfaces.map((network) => (
+                    <SelectItem key={network.address} value={network.address}>
+                      {network.name} · {network.address}
+                    </SelectItem>
+                  ))}
+                </SelectGroup>
               </SelectContent>
             </Select>
           </SettingsRow>

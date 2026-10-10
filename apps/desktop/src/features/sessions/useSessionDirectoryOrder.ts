@@ -1,4 +1,4 @@
-import { useRef, useState, type DragEvent } from "react";
+import { useRef, useState, type DragEvent, type KeyboardEvent } from "react";
 import { useShallow } from "zustand/react/shallow";
 import type { ConversationSessionSummary, WorkspaceSummary } from "@/core/types";
 import { groupSessions } from "./session-catalog";
@@ -154,6 +154,46 @@ export function useSessionDirectoryOrder(hub: {
     }
     finishDrag();
   };
+  const moveByKeyboard = (event: KeyboardEvent<HTMLButtonElement>, target: DirectoryDragEntry) => {
+    if (!event.altKey || (event.key !== "ArrowUp" && event.key !== "ArrowDown")) return;
+    event.preventDefault();
+    const after = event.key === "ArrowDown";
+
+    if (target.kind === "workspace") {
+      const hostId =
+        hub.workspaces.find((workspace) => workspace.id === target.workspaceId)?.remote?.host_id ??
+        "local";
+      const siblings = orderedGroups
+        .filter((group) => (group.workspace.remote?.host_id ?? "local") === hostId)
+        .map((group) => group.workspace.id);
+      const index = siblings.indexOf(target.workspaceId);
+      const neighbor = siblings[index + (after ? 1 : -1)];
+      if (!neighbor) return;
+      view.setWorkspaceOrder(
+        moveRelative(completeWorkspaceOrder, target.workspaceId, neighbor, after, (id) => id),
+      );
+      return;
+    }
+
+    const visibleGroup = groups.find((group) => group.workspace.id === target.workspaceId);
+    const allGroup = allGroups.find((group) => group.workspace.id === target.workspaceId);
+    if (!visibleGroup || !allGroup) return;
+    const visibleIds = sessionOrder(
+      visibleGroup.sessions,
+      view.sessionOrder[target.workspaceId] ?? [],
+    ).map((session) => session.id);
+    const index = visibleIds.indexOf(target.sessionId);
+    const neighbor = visibleIds[index + (after ? 1 : -1)];
+    if (!neighbor) return;
+    const completeOrder = normalizeSessionDirectoryOrder(
+      view.sessionOrder[target.workspaceId] ?? [],
+      allGroup.sessions.map((session) => session.id),
+    );
+    view.setSessionOrder(
+      target.workspaceId,
+      moveRelative(completeOrder, target.sessionId, neighbor, after, (id) => id),
+    );
+  };
   return {
     groups,
     orderedGroups,
@@ -164,5 +204,6 @@ export function useSessionDirectoryOrder(hub: {
     finishDrag,
     allowDrop,
     dropBefore,
+    moveByKeyboard,
   };
 }

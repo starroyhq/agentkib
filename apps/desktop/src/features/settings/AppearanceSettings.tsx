@@ -1,4 +1,4 @@
-import { cn } from "@/lib/utils";
+import { cn } from "cn";
 import { useState, type CSSProperties } from "react";
 import { useTranslation } from "react-i18next";
 import { Check, CircleAlert, Monitor, Moon, Sun } from "lucide-react";

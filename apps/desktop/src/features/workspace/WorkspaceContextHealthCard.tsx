@@ -11,7 +11,7 @@ import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 
 import type { ContextDoctorSummary } from "@/core/types";
-import { cn } from "@/lib/utils";
+import { cn } from "cn";
 
 export function WorkspaceContextHealthCard({
   summary,

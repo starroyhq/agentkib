@@ -24,7 +24,7 @@ import { SessionHubProvider } from "@/features/sessions/SessionHubContext";
 import { SessionWindowToolbar } from "@/features/sessions/SessionWindowToolbar";
 import { WindowToolbar } from "@/components/WindowToolbar";
 import { workspaceSearchForPage, type AppSearch, type Page } from "@/features/app/app-route";
-import { cn } from "@/lib/utils";
+import { cn } from "cn";
 import { useAppDialogs } from "@/components/AppDialogProvider";
 
 function MainLayout() {

@@ -24,7 +24,8 @@ import {
   GitCompareArrows,
   ShieldCheck,
 } from "lucide-react";
-import { cn, withAsyncCleanup } from "@/lib/utils";
+import { cn } from "cn";
+import { withAsyncCleanup } from "@/lib/utils";
 import { diffLines } from "@/features/workspace/diff";
 import type { ChangeSet, SessionHandoffLaunchRequest } from "@/core/types";
 import { AGENT_LABELS as agentLabels } from "@/core/agents";

@@ -1,4 +1,4 @@
-import { cn } from "@/lib/utils";
+import { cn } from "cn";
 import { sessionCollection } from "@agentkib/runtime-protocol";
 import { navigationStyles } from "@/components/navigationStyles";
 import { useNavigate } from "@tanstack/react-router";

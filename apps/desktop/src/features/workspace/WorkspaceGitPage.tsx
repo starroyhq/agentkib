@@ -3,7 +3,9 @@ import { Input } from "@/components/ui/input";
 import {
   Select,
   SelectContent,
+  SelectGroup,
   SelectItem,
+  SelectLabel,
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
@@ -35,7 +37,6 @@ import { useInfiniteQuery, useQuery } from "@tanstack/react-query";
 import { api } from "@/core/api";
 import { queryDefaults, useOptionalQueryClient } from "@/features/home/home-query";
 import { workspaceKeys } from "./workspace-query";
-
 import { WorkspaceGitSkeleton } from "./WorkspaceSkeleton";
 import type {
   GitCommitSummary,
@@ -48,7 +49,7 @@ import type {
   GitWorkspaceSummary,
   WorkspaceSummary,
 } from "@/core/types";
-import { cn } from "@/lib/utils";
+import { cn } from "cn";
 
 type GitSection = "history" | "worktree";
 
@@ -712,19 +713,22 @@ export function WorkspaceGitPage({ workspace, subview, onSubviewChange }: Worksp
                 </SelectValue>
               </SelectTrigger>
               <SelectContent>
-                <SelectItem value="__all_refs__">{tr("git.allRefs")}</SelectItem>
-                {summary.refs
-                  .filter(
-                    (ref) =>
-                      ref.kind === "local-branch" ||
-                      ref.kind === "remote-branch" ||
-                      ref.kind === "tag",
-                  )
-                  .map((ref) => (
-                    <SelectItem key={ref.full_name} value={ref.full_name}>
-                      {ref.name}
-                    </SelectItem>
-                  ))}
+                <SelectGroup>
+                  <SelectLabel>{tr("git.reference")}</SelectLabel>
+                  <SelectItem value="__all_refs__">{tr("git.allRefs")}</SelectItem>
+                  {summary.refs
+                    .filter(
+                      (ref) =>
+                        ref.kind === "local-branch" ||
+                        ref.kind === "remote-branch" ||
+                        ref.kind === "tag",
+                    )
+                    .map((ref) => (
+                      <SelectItem key={ref.full_name} value={ref.full_name}>
+                        {ref.name}
+                      </SelectItem>
+                    ))}
+                </SelectGroup>
               </SelectContent>
             </Select>
             <Select
@@ -737,8 +741,11 @@ export function WorkspaceGitPage({ workspace, subview, onSubviewChange }: Worksp
                 </SelectValue>
               </SelectTrigger>
               <SelectContent>
-                <SelectItem value="all">{tr("git.allCommits")}</SelectItem>
-                <SelectItem value="merges">{tr("git.mergesOnly")}</SelectItem>
+                <SelectGroup>
+                  <SelectLabel>{tr("git.commitKind")}</SelectLabel>
+                  <SelectItem value="all">{tr("git.allCommits")}</SelectItem>
+                  <SelectItem value="merges">{tr("git.mergesOnly")}</SelectItem>
+                </SelectGroup>
               </SelectContent>
             </Select>
             <Input

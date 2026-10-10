@@ -14,7 +14,8 @@ import type {
   WorkspaceSummary,
 } from "@/core/types";
 import { AgentIcon } from "@/features/agents/AgentIcon";
-import { cn, withAsyncCleanup } from "@/lib/utils";
+import { cn } from "cn";
+import { withAsyncCleanup } from "@/lib/utils";
 import { useHomeDoctorReport } from "@/features/home/home-query";
 import { AGENT_LABELS } from "@/core/agents";
 

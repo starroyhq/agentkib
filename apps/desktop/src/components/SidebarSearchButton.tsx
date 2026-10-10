@@ -7,7 +7,7 @@ import {
   formatShortcut,
   getShortcutDefinition,
 } from "@/core/keyboard-shortcuts";
-import { cn } from "@/lib/utils";
+import { cn } from "cn";
 
 export function SidebarSearchButton({
   onOpenSearch,

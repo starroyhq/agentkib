@@ -4,7 +4,9 @@ import { Textarea } from "@/components/ui/textarea";
 import {
   Select,
   SelectContent,
+  SelectGroup,
   SelectItem,
+  SelectLabel,
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
@@ -15,7 +17,6 @@ import { Dialog, DialogContent, DialogTitle } from "@/components/ui/dialog";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { CircleAlert, Copy, FileOutput, PlugZap, ShieldCheck, X } from "lucide-react";
 import { api } from "@/core/api";
-
 import type {
   AgentKind,
   ContinuationCapabilityStatus,
@@ -547,11 +548,14 @@ export function SessionHandoffDialog({
                     </SelectValue>
                   </SelectTrigger>
                   <SelectContent>
-                    {availableTargets.map(([value, label]) => (
-                      <SelectItem value={value} key={value}>
-                        {label}
-                      </SelectItem>
-                    ))}
+                    <SelectGroup>
+                      <SelectLabel>{tr("handoff.target")}</SelectLabel>
+                      {availableTargets.map(([value, label]) => (
+                        <SelectItem value={value} key={value}>
+                          {label}
+                        </SelectItem>
+                      ))}
+                    </SelectGroup>
                   </SelectContent>
                 </Select>
               </Label>
@@ -574,11 +578,14 @@ export function SessionHandoffDialog({
                         <SelectValue>{tr(`handoff.cursor.surface.${cursorSurface}`)}</SelectValue>
                       </SelectTrigger>
                       <SelectContent>
-                        {(["ide", "cli", "agents-window"] as const).map((surface) => (
-                          <SelectItem key={surface} value={surface}>
-                            {tr(`handoff.cursor.surface.${surface}`)}
-                          </SelectItem>
-                        ))}
+                        <SelectGroup>
+                          <SelectLabel>{tr("handoff.cursor.surface")}</SelectLabel>
+                          {(["ide", "cli", "agents-window"] as const).map((surface) => (
+                            <SelectItem key={surface} value={surface}>
+                              {tr(`handoff.cursor.surface.${surface}`)}
+                            </SelectItem>
+                          ))}
+                        </SelectGroup>
                       </SelectContent>
                     </Select>
                   </Label>
@@ -624,9 +631,12 @@ export function SessionHandoffDialog({
                     </SelectValue>
                   </SelectTrigger>
                   <SelectContent>
-                    <SelectItem value="64000">64k</SelectItem>
-                    <SelectItem value="120000">120k · {tr("handoff.recommended")}</SelectItem>
-                    <SelectItem value="180000">180k</SelectItem>
+                    <SelectGroup>
+                      <SelectLabel>{tr("handoff.historyBudget")}</SelectLabel>
+                      <SelectItem value="64000">64k</SelectItem>
+                      <SelectItem value="120000">120k · {tr("handoff.recommended")}</SelectItem>
+                      <SelectItem value="180000">180k</SelectItem>
+                    </SelectGroup>
                   </SelectContent>
                 </Select>
                 <span>{tr("handoff.historyBudgetDetail")}</span>
@@ -658,8 +668,11 @@ export function SessionHandoffDialog({
                         <SelectValue>{format === "markdown" ? "Markdown" : "JSON"}</SelectValue>
                       </SelectTrigger>
                       <SelectContent>
-                        <SelectItem value="markdown">Markdown</SelectItem>
-                        <SelectItem value="json">JSON</SelectItem>
+                        <SelectGroup>
+                          <SelectLabel>{tr("handoff.format")}</SelectLabel>
+                          <SelectItem value="markdown">Markdown</SelectItem>
+                          <SelectItem value="json">JSON</SelectItem>
+                        </SelectGroup>
                       </SelectContent>
                     </Select>
                   </Label>

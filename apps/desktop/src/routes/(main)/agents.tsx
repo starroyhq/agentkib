@@ -1,7 +1,8 @@
 import { lazy, Suspense, useMemo } from "react";
-import { createFileRoute, useSearch } from "@tanstack/react-router";
+import { createFileRoute, useNavigate, useSearch } from "@tanstack/react-router";
 import { AgentsSkeleton } from "@/features/agents/AgentsSkeleton";
-import { useNavigate } from "@tanstack/react-router";
+import { Button } from "@/components/ui/button";
+import { useI18n } from "@/core/useI18n";
 import {
   useHomeCatalog,
   useHomeInsightsStatus,
@@ -18,26 +19,38 @@ const AgentsPageLazy = lazy(() =>
 );
 
 function AgentsRoute() {
+  const { tr } = useI18n();
   const navigate = useNavigate();
   const search = useSearch({ strict: false }) as { agent?: AgentKind; agentFilter?: AgentFilter };
-  const { data: installations = [], isPending: installationsPending } = useHomeInstallations();
-  const { data: catalog = [], isPending: catalogPending } = useHomeCatalog();
-  const assets = useMemo(() => catalog.filter((asset) => asset.scope === "agent-home"), [catalog]);
-  const { data: workspaces = [], isPending: workspacesPending } = useHomeWorkspaces();
-  const { data: remoteGateways = [], isPending: gatewaysPending } = useHomeRemoteGateways();
-  const { data: insightsStatus, isPending: insightsPending } = useHomeInsightsStatus();
+  const installationsQuery = useHomeInstallations();
+  const catalogQuery = useHomeCatalog();
+  const assets = useMemo(
+    () => (catalogQuery.data ?? []).filter((asset) => asset.scope === "agent-home"),
+    [catalogQuery.data],
+  );
+  const workspacesQuery = useHomeWorkspaces();
+  const gatewaysQuery = useHomeRemoteGateways();
+  const insightsQuery = useHomeInsightsStatus();
+  const installations = installationsQuery.data ?? [];
+  const workspaces = workspacesQuery.data ?? [];
+  const remoteGateways = gatewaysQuery.data ?? [];
   const openWorkspace = async (workspace: WorkspaceSummary) => {
     await navigate({ to: "/workspace/$workspaceId", params: { workspaceId: workspace.id } });
   };
 
-  if (
-    workspacesPending ||
-    installationsPending ||
-    catalogPending ||
-    gatewaysPending ||
-    insightsPending
-  )
-    return <AgentsSkeleton />;
+  if (installationsQuery.isPending) return <AgentsSkeleton />;
+  if (installationsQuery.isError && installationsQuery.data === undefined) {
+    return (
+      <section
+        role="alert"
+        className="grid min-h-[420px] place-content-center justify-items-center gap-3 rounded-2xl border border-border bg-card p-8 text-center"
+      >
+        <h2 className="text-base font-semibold">{tr("nav.agents")}</h2>
+        <p className="text-sm text-muted-foreground">{tr("errors.generic")}</p>
+        <Button onClick={() => void installationsQuery.refetch()}>{tr("runtime.retry")}</Button>
+      </section>
+    );
+  }
 
   return (
     <Suspense fallback={<AgentsSkeleton />}>
@@ -46,7 +59,25 @@ function AgentsRoute() {
         assets={assets}
         workspaces={workspaces}
         remoteGateways={remoteGateways}
-        insightsStatus={insightsStatus}
+        insightsStatus={insightsQuery.data}
+        loading={{
+          assets: catalogQuery.isPending,
+          workspaces: workspacesQuery.isPending,
+          gateways: gatewaysQuery.isPending,
+          insights: insightsQuery.isPending,
+        }}
+        errors={{
+          assets: catalogQuery.isError && catalogQuery.data === undefined,
+          workspaces: workspacesQuery.isError && workspacesQuery.data === undefined,
+          gateways: gatewaysQuery.isError && gatewaysQuery.data === undefined,
+          insights: insightsQuery.isError && insightsQuery.data === undefined,
+        }}
+        onRetry={{
+          assets: () => void catalogQuery.refetch(),
+          workspaces: () => void workspacesQuery.refetch(),
+          gateways: () => void gatewaysQuery.refetch(),
+          insights: () => void insightsQuery.refetch(),
+        }}
         onOpen={openWorkspace}
         filter={search.agentFilter ?? "all"}
         selectedAgent={search.agent}
@@ -54,6 +85,12 @@ function AgentsRoute() {
           void navigate({
             to: "/agents",
             search: (current) => ({ ...current, agent }) as never,
+          })
+        }
+        onClearFilters={() =>
+          void navigate({
+            to: "/agents",
+            search: (current) => ({ ...current, agentFilter: "all" }) as never,
           })
         }
       />

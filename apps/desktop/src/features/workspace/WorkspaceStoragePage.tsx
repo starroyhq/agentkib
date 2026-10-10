@@ -4,7 +4,9 @@ import { Input } from "@/components/ui/input";
 import {
   Select,
   SelectContent,
+  SelectGroup,
   SelectItem,
+  SelectLabel,
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
@@ -28,7 +30,6 @@ import {
 } from "lucide-react";
 import { api } from "@/core/api";
 import { withAsyncCleanup } from "@/lib/utils";
-
 import type {
   AgentKind,
   RefreshJobStatus,
@@ -288,12 +289,15 @@ export function WorkspaceStoragePage({
               </SelectValue>
             </SelectTrigger>
             <SelectContent>
-              <SelectItem value="all">{tr("workspace.allAgents")}</SelectItem>
-              {Object.entries(agentLabels).map(([value, label]) => (
-                <SelectItem key={value} value={value}>
-                  {label}
-                </SelectItem>
-              ))}
+              <SelectGroup>
+                <SelectLabel>{tr("workspace.allAgents")}</SelectLabel>
+                <SelectItem value="all">{tr("workspace.allAgents")}</SelectItem>
+                {Object.entries(agentLabels).map(([value, label]) => (
+                  <SelectItem key={value} value={value}>
+                    {label}
+                  </SelectItem>
+                ))}
+              </SelectGroup>
             </SelectContent>
           </Select>
           <ToggleGroup

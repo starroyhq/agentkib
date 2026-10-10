@@ -7,7 +7,7 @@ import { useI18n } from "@/core/useI18n";
 import { useSessionHub } from "./SessionHubContext";
 import { refreshConversationCatalog } from "./conversation-catalog";
 import { useSessionViewStore } from "./session-view-store";
-import { cn } from "@/lib/utils";
+import { cn } from "cn";
 import { subscribeConversationPanel } from "./conversation-panel-commands";
 
 const EmbeddedConversation = lazy(() =>

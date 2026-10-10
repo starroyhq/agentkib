@@ -23,7 +23,9 @@ import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group";
 import {
   Select,
   SelectContent,
+  SelectGroup,
   SelectItem,
+  SelectLabel,
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
@@ -72,7 +74,7 @@ import type {
 } from "@/core/types";
 import { activityPresentation } from "@/features/activity/activity-presentation";
 import { agentSupportsInsights } from "@/features/insights/insights";
-import { cn } from "@/lib/utils";
+import { cn } from "cn";
 import appIconBlack from "../../../resources/icons/app-icon-black.png";
 import appIconWhite from "../../../resources/icons/app-icon-white.png";
 import { KeyboardShortcutsSettings } from "./KeyboardShortcutsSettings";
@@ -288,10 +290,7 @@ export function GlobalSettings({
   if (section === "integrations")
     return (
       <SettingsPage variant="management">
-        <SettingsPageHeader
-          title={tr("settings.section.integrations")}
-          description={tr("settings.page.integrations.description")}
-        />
+        <SettingsPageHeader title={tr("settings.section.integrations")} />
         <SettingsSection title={tr("settings.search.localService")} target="integrations-mcp">
           <SettingsRow border={false}>
             <SettingsCopy>
@@ -357,7 +356,6 @@ export function GlobalSettings({
     <SettingsPage variant="management">
       <SettingsPageHeader
         title={tr("settings.section.diagnostics")}
-        description={tr("settings.page.diagnostics.description")}
         action={
           <Button variant="outline" onClick={() => void onRefreshDiagnostics()}>
             <RefreshCw size={15} />
@@ -369,7 +367,6 @@ export function GlobalSettings({
         <SettingsRow border={false}>
           <SettingsCopy>
             <strong>{tr("settings.diagnostics.healthStatus")}</strong>
-            <small>{tr("settings.diagnostics.healthDescription")}</small>
           </SettingsCopy>
           <SettingsStatus tone={diagnosticsHealthy ? "success" : "warning"}>
             {tr(
@@ -803,11 +800,16 @@ function LanguageSetting({
           </SelectValue>
         </SelectTrigger>
         <SelectContent>
-          {(["system", "zh-CN", "zh-TW", "ja-JP", "en-US"] as LocalePreference[]).map((locale) => (
-            <SelectItem key={locale} value={locale}>
-              {tr(`settings.language.${locale}`)}
-            </SelectItem>
-          ))}
+          <SelectGroup>
+            <SelectLabel>{tr("settings.language")}</SelectLabel>
+            {(["system", "zh-CN", "zh-TW", "ja-JP", "en-US"] as LocalePreference[]).map(
+              (locale) => (
+                <SelectItem key={locale} value={locale}>
+                  {tr(`settings.language.${locale}`)}
+                </SelectItem>
+              ),
+            )}
+          </SelectGroup>
         </SelectContent>
       </Select>
     </SettingsRow>
@@ -900,11 +902,14 @@ function CloseBehaviorSelect({
         </SelectValue>
       </SelectTrigger>
       <SelectContent>
-        <SelectItem value="ask">{tr("settings.close.ask")}</SelectItem>
-        <SelectItem value="minimize-to-tray" disabled={!trayAvailable}>
-          {tr(trayKey)}
-        </SelectItem>
-        <SelectItem value="quit">{tr("settings.close.quit")}</SelectItem>
+        <SelectGroup>
+          <SelectLabel>{tr("settings.closeBehavior")}</SelectLabel>
+          <SelectItem value="ask">{tr("settings.close.ask")}</SelectItem>
+          <SelectItem value="minimize-to-tray" disabled={!trayAvailable}>
+            {tr(trayKey)}
+          </SelectItem>
+          <SelectItem value="quit">{tr("settings.close.quit")}</SelectItem>
+        </SelectGroup>
       </SelectContent>
     </Select>
   );

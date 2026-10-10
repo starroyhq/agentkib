@@ -6,7 +6,7 @@ import {
   formatShortcut,
   getShortcutDefinition,
 } from "@/core/keyboard-shortcuts";
-import { cn } from "@/lib/utils";
+import { cn } from "cn";
 import { useAppStore } from "@/stores/app-store";
 import { ArrowLeft, ArrowRight, PanelLeftClose, PanelLeftOpen, Search } from "lucide-react";
 

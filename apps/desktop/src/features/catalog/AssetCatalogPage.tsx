@@ -6,7 +6,9 @@ import { Input } from "@/components/ui/input";
 import {
   Select,
   SelectContent,
+  SelectGroup,
   SelectItem,
+  SelectLabel,
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
@@ -18,7 +20,7 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table";
-import { cn } from "@/lib/utils";
+import { cn } from "cn";
 import { AgentIcon } from "@/features/agents/AgentIcon";
 import {
   ChevronLeft,
@@ -130,12 +132,15 @@ export function AssetCatalogPage({ assets, workspaces, onOpen }: AssetCatalogPag
           </SelectValue>
         </SelectTrigger>
         <SelectContent>
-          <SelectItem value="all">{tr("workspace.all")}</SelectItem>
-          {workspaces.map((workspace) => (
-            <SelectItem key={workspace.id} value={workspace.id}>
-              {workspace.name}
-            </SelectItem>
-          ))}
+          <SelectGroup>
+            <SelectLabel>{tr("workspace.all")}</SelectLabel>
+            <SelectItem value="all">{tr("workspace.all")}</SelectItem>
+            {workspaces.map((workspace) => (
+              <SelectItem key={workspace.id} value={workspace.id}>
+                {workspace.name}
+              </SelectItem>
+            ))}
+          </SelectGroup>
         </SelectContent>
       </Select>
       <Select
@@ -150,12 +155,15 @@ export function AssetCatalogPage({ assets, workspaces, onOpen }: AssetCatalogPag
           </SelectValue>
         </SelectTrigger>
         <SelectContent>
-          <SelectItem value="all">{tr("workspace.allAgents")}</SelectItem>
-          {Object.entries(agentLabels).map(([value, label]) => (
-            <SelectItem key={value} value={value}>
-              {label}
-            </SelectItem>
-          ))}
+          <SelectGroup>
+            <SelectLabel>{tr("workspace.allAgents")}</SelectLabel>
+            <SelectItem value="all">{tr("workspace.allAgents")}</SelectItem>
+            {Object.entries(agentLabels).map(([value, label]) => (
+              <SelectItem key={value} value={value}>
+                {label}
+              </SelectItem>
+            ))}
+          </SelectGroup>
         </SelectContent>
       </Select>
       {showKind && (
@@ -171,12 +179,15 @@ export function AssetCatalogPage({ assets, workspaces, onOpen }: AssetCatalogPag
             </SelectValue>
           </SelectTrigger>
           <SelectContent>
-            <SelectItem value="all">{tr("catalog.allTypes")}</SelectItem>
-            {kinds.map((value) => (
-              <SelectItem key={value} value={value}>
-                {tr(`status.asset.${value}`)}
-              </SelectItem>
-            ))}
+            <SelectGroup>
+              <SelectLabel>{tr("catalog.allTypes")}</SelectLabel>
+              <SelectItem value="all">{tr("catalog.allTypes")}</SelectItem>
+              {kinds.map((value) => (
+                <SelectItem key={value} value={value}>
+                  {tr(`status.asset.${value}`)}
+                </SelectItem>
+              ))}
+            </SelectGroup>
           </SelectContent>
         </Select>
       )}
@@ -192,9 +203,12 @@ export function AssetCatalogPage({ assets, workspaces, onOpen }: AssetCatalogPag
           </SelectValue>
         </SelectTrigger>
         <SelectContent>
-          <SelectItem value="all">{tr("catalog.allOwnership")}</SelectItem>
-          <SelectItem value="shared">{tr("catalog.shared")}</SelectItem>
-          <SelectItem value="native">{tr("catalog.native")}</SelectItem>
+          <SelectGroup>
+            <SelectLabel>{tr("catalog.allOwnership")}</SelectLabel>
+            <SelectItem value="all">{tr("catalog.allOwnership")}</SelectItem>
+            <SelectItem value="shared">{tr("catalog.shared")}</SelectItem>
+            <SelectItem value="native">{tr("catalog.native")}</SelectItem>
+          </SelectGroup>
         </SelectContent>
       </Select>
     </div>

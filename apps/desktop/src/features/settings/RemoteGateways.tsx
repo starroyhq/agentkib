@@ -4,7 +4,9 @@ import { Input } from "@/components/ui/input";
 import {
   Select,
   SelectContent,
+  SelectGroup,
   SelectItem,
+  SelectLabel,
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
@@ -159,8 +161,11 @@ export function RemoteGatewaysSettings({
                 <SelectValue>{draft.kind === "open-claw" ? "OpenClaw" : "Hermes"}</SelectValue>
               </SelectTrigger>
               <SelectContent>
-                <SelectItem value="open-claw">OpenClaw</SelectItem>
-                <SelectItem value="hermes">Hermes</SelectItem>
+                <SelectGroup>
+                  <SelectLabel>{tr("gateway.kind")}</SelectLabel>
+                  <SelectItem value="open-claw">OpenClaw</SelectItem>
+                  <SelectItem value="hermes">Hermes</SelectItem>
+                </SelectGroup>
               </SelectContent>
             </Select>
           </Label>
@@ -199,11 +204,14 @@ export function RemoteGatewaysSettings({
                 <SelectValue>{tr(`gateway.auth.${draft.auth_kind}`)}</SelectValue>
               </SelectTrigger>
               <SelectContent>
-                {authKinds(draft.kind).map((kind) => (
-                  <SelectItem value={kind} key={kind}>
-                    {tr(`gateway.auth.${kind}`)}
-                  </SelectItem>
-                ))}
+                <SelectGroup>
+                  <SelectLabel>{tr("gateway.auth")}</SelectLabel>
+                  {authKinds(draft.kind).map((kind) => (
+                    <SelectItem value={kind} key={kind}>
+                      {tr(`gateway.auth.${kind}`)}
+                    </SelectItem>
+                  ))}
+                </SelectGroup>
               </SelectContent>
             </Select>
           </Label>

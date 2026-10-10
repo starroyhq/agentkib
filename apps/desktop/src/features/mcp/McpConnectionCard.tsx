@@ -15,7 +15,9 @@ import { Label } from "@/components/ui/label";
 import {
   Select,
   SelectContent,
+  SelectGroup,
   SelectItem,
+  SelectLabel,
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
@@ -32,7 +34,8 @@ import type {
 import { useI18n } from "@/core/useI18n";
 import { AgentIcon } from "@/features/agents/AgentIcon";
 import { diffLines } from "@/features/workspace/diff";
-import { cn, withAsyncCleanup } from "@/lib/utils";
+import { cn } from "cn";
+import { withAsyncCleanup } from "@/lib/utils";
 
 const CONNECTION_AGENTS = AGENT_KINDS.filter((agent) => agent !== "deepseek-harness");
 type Operation = "plan" | "apply" | "verify";
@@ -247,11 +250,14 @@ export function McpConnectionCard({
                     </SelectValue>
                   </SelectTrigger>
                   <SelectContent>
-                    {workspaces.map((workspace) => (
-                      <SelectItem key={workspace.id} value={workspace.id}>
-                        {workspace.name}
-                      </SelectItem>
-                    ))}
+                    <SelectGroup>
+                      <SelectLabel>{tr("mcp.connection.workspace")}</SelectLabel>
+                      {workspaces.map((workspace) => (
+                        <SelectItem key={workspace.id} value={workspace.id}>
+                          {workspace.name}
+                        </SelectItem>
+                      ))}
+                    </SelectGroup>
                   </SelectContent>
                 </Select>
               </Label>
@@ -271,12 +277,15 @@ export function McpConnectionCard({
                     </SelectValue>
                   </SelectTrigger>
                   <SelectContent>
-                    {CONNECTION_AGENTS.map((agent) => (
-                      <SelectItem key={agent} value={agent}>
-                        <AgentIcon agent={agent} compact />
-                        {AGENT_LABELS[agent]}
-                      </SelectItem>
-                    ))}
+                    <SelectGroup>
+                      <SelectLabel>{tr("mcp.connection.agent")}</SelectLabel>
+                      {CONNECTION_AGENTS.map((agent) => (
+                        <SelectItem key={agent} value={agent}>
+                          <AgentIcon agent={agent} compact />
+                          {AGENT_LABELS[agent]}
+                        </SelectItem>
+                      ))}
+                    </SelectGroup>
                   </SelectContent>
                 </Select>
               </Label>

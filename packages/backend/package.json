@@ -34,7 +34,7 @@
   },
   "dependencies": {
     "@agentkib/runtime-protocol": "workspace:*",
-    "@modelcontextprotocol/sdk": "1.31.0",
+    "@modelcontextprotocol/sdk": "1.32.0",
     "bonjour-service": "1.4.4",
     "cross-spawn": "^7.0.6",
     "json5": "^2.2.3",

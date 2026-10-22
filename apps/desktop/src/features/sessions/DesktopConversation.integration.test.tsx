@@ -974,7 +974,7 @@ describe("desktop embedded conversation", () => {
     );
 
     it.each(["zh-CN", "zh-TW", "en-US", "ja-JP"] as const)(
-      "shows an unverified native version in %s without enabling terminal controls",
+      "keeps unverified native version details out of the session page in %s without enabling controls",
       async (locale) => {
         const { bridge, patch } = await open(
           {
@@ -989,7 +989,11 @@ describe("desktop embedded conversation", () => {
           locale,
         );
         const text = claudeConnectionCopy[locale].unverifiedVersion.replace("{version}", "2.1.307");
-        expect(await screen.findByText(text)).toHaveClass("text-muted-foreground");
+        expect(
+          await screen.findByText(sessionContinuationCopy(locale).terminalWatch),
+        ).toBeVisible();
+        expect(screen.queryByText(text)).toBeNull();
+        expect(document.querySelector("[data-terminal-compatibility]")).toBeNull();
         expect(screen.queryByRole("textbox")).toBeNull();
         expect(
           vi.mocked(bridge.request).mock.calls.filter(([path]) => path === "send"),

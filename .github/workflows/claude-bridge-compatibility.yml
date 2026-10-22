@@ -1,6 +1,9 @@
 name: Claude terminal compatibility
 
 on:
+  # Daily at 04:17 UTC, off the top-of-hour Actions scheduling peak.
+  schedule:
+    - cron: "17 4 * * *"
   workflow_dispatch:
   pull_request:
     paths:

@@ -20,9 +20,9 @@ Each pairing and reconnect checks the minimum stable CLI version and required
 native capabilities: session identity, messages, usage, credential storage, and
 plugin-file reads. Older or unrecognized versions and missing required capabilities
 are rejected. Only **2.1.301** is currently listed as verified; higher stable
-versions that pass these checks may connect read-only. AgentKib shows a neutral
-notice that the version has not been verified and synchronized content may be
-incomplete. Production sending remains disabled. `/agentkib-status` is a local
+versions that pass these checks may connect read-only. The connection dialog shows
+a neutral notice that the version has not been verified and synchronized content
+may be incomplete; the session page does not repeat it. Production sending remains disabled. `/agentkib-status` is a local
 command and does not call a model.
 
 ## Current capabilities
@@ -53,6 +53,13 @@ commands, URLs, or the chat UI. Native identity changes and session end invalida
 the lease; Runtime owns persistent request receipts and unknown outcome recovery.
 
 ## Validation
+
+The `Claude terminal compatibility` workflow checks the minimum and latest CLI
+daily at 04:17 UTC, on related pull requests, or when manually triggered. Scheduled
+runs use the default branch and start after the workflow is merged there; local
+or PR validation does not prove the daily trigger has run. Failures report only
+known capability names. Checks do not sign in, call a model, change the verified
+version list, or publish a release.
 
 ```sh
 claude plugin validate ./packages/claude-bridge-plugin --strict

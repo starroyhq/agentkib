@@ -207,7 +207,7 @@ describe("terminal connection evidence and management gates", () => {
       expect(within(dialog).getByRole("button", { name: copy.refresh })).toBeDisabled();
       expect(operations()).toEqual([]);
       fireEvent.click(within(dialog).getByRole("button", { name: copy.clearConnection }));
-      const confirmation = await screen.findByRole("dialog", { name: copy.clearConnection });
+      const confirmation = await screen.findByRole("group", { name: copy.clearConnection });
       expect(within(confirmation).getByText(copy.clearConnectionInfo)).toBeVisible();
       expect(operations()).toEqual([]);
       fireEvent.click(
@@ -302,7 +302,7 @@ describe("terminal connection evidence and management gates", () => {
       const disconnect = within(dialog).getByRole("button", { name: copy.disconnectShort });
       expect(disconnect).toBeEnabled();
       fireEvent.click(disconnect);
-      const confirmation = await screen.findByRole("dialog", { name: copy.disconnect });
+      const confirmation = await screen.findByRole("group", { name: copy.disconnect });
       expect(operations()).toEqual(["bridge-status"]);
       fireEvent.click(within(confirmation).getByRole("button", { name: copy.confirmDisconnect }));
       await waitFor(() => expect(operations()).toContain("bridge-disconnect"));

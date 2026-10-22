@@ -88,3 +88,37 @@
 ## 真实终端待验收
 
 由用户按交接路径验收：连接后 `/exit`；直接关闭终端；恢复原会话；保持终端打开并重启 AgentKib 后再发一条消息；清除连接后恢复原会话。检查各次等待状态、自动重连及清除后的拒绝重连。合成截图、单元测试和无登录插件测试不替代这些真实操作。
+
+## PR #144 独立审查与修复
+
+固定审查基线 `54b30806b202b727dd589301f3a4b1b82d4c0147`、初始 HEAD `c38f4f47cfb0264f42a8f82cb1b9582daf93ba5e`，按 code-review 的 Standards、Spec 两轴及额外插件对抗性检查独立审查，不沿用上一轮无 finding 的结论。
+
+首轮 Standards 无 finding；Spec 与对抗性检查共同确认一项 P2：有效旧绑定自动恢复期间执行过期或无效的新连接码，配对开始时清除 `needsReconnect`，HTTP 409 失败后没有恢复；`connection` 也为空，定时器和终端事件均提前退出。旧凭据仍有效，却必须重新启动终端或成功配对才能恢复，违反 B3 的自动重连与备用生成要求。
+
+纯内存生产公共钩子探针对固定基线与初始 HEAD 做同序列对照：先连接 → lease 过期 → Runtime 短暂离线 → 执行过期/无效备用码 → 服务恢复。基线自动重连 1 次并成功，初始 HEAD 重连 0 次；100 次 timer 检查及一次终端提示事件均不能恢复。401/410 撤销与身份变化对照均不重连，未放宽保守规则。探针不读取真实配置、不打开 socket、不登录、不发送模型请求。
+
+修复保留配对开始前的恢复意图，握手期间暂停后台恢复；仅当失败响应仍属于当前代际、会话未关闭且没有新的有效连接时恢复该意图。之后仍进入原 `reconnectOnce`，重新读取凭据并执行身份、版本、能力等全部检查。没有复用缓存 token、重放发送/停止，或将失败配对视为授权。新增 `connectOnce` 与既有 `reconnect/reconnectOnce` 采用相同的生命周期边界，避免扩大握手逻辑的修改。
+
+最终独立复审进一步发现同一问题的并发变体：两次备用配对重叠且均失败，后一次可能只读到配对期间临时为 false 的恢复标志。两种响应顺序 × timer/prompt 的 4 项回归在第一版补丁中全部失败。最终以当前代际标记传递已有恢复意图，只有当前代际可继承或清理自己的标记；失效时立即清除。4 项转绿，纯内存三方对照也确认固定基线及最终补丁恢复成功，初始 HEAD 不恢复。该标记只存在插件内存，不改持久化结构或私有协议。
+
+首版修复的桌面全量为 7875 通过、3 跳过（362.59 秒）；发现并发变体后，对最终冻结代码重新完整运行，不把前一次结果作为最终验收。最终独立 Standards 与 Spec 均为 no finding；Spec 额外以另一份纯内存公共钩子探针覆盖两种失败顺序及会话结束、401、410、身份变化共 6 组：前 2 组恢复，后 4 组经过 200 次 timer 与 prompt/turn 唤醒仍不恢复。静态复核和合成反证不替代真实 TUI 验收。
+
+新增共 20 项回归：过期码失败后的 timer、prompt、turn 三种唤醒；配对进行中暂停和失败后继续有限退避；会话结束、新配对代际及 401/410/身份变化后的拒绝恢复；旧后台握手晚到成功/410；原凭据删除后拒绝使用缓存；并发失败的两种顺序、并发期间失效及无原恢复意图。第一组 9 项先红（4 失败、5 通过），修复后 9/9；双失败 4 项先红后绿，补齐边界后插件整文件 116/116 通过。保留原超时、断言和生产 `send: false`。
+
+| 复验命令/检查 | 本轮结果 |
+| --- | --- |
+| 审查前相关桌面 7 文件 / Web 字典 | 350/350、21/21 通过 |
+| 插件回归单文件，`vitest run test/claude-bridge-plugin.test.ts --maxWorkers=1` | 最终 116/116 通过 |
+| `pnpm typecheck` | 通过，保留既有 Web 路由循环依赖提示 |
+| `pnpm lint` | 通过，277 警告、0 错误；相对初始 PR 无新增警告 |
+| `pnpm format:check` | 通过，1008 文件 |
+| `pnpm exec oxfmt --check apps/desktop/test/claude-bridge-plugin.test.ts` | 通过 |
+| `pnpm test:web` | 69 文件、1484 测试通过 |
+| `node .github/scripts/claude-bridge-compatibility.mjs --version minimum --skip-bridge-tests` | 最终 2.1.301 strict validate、原生插件引擎 9/9 通过 |
+| `node .github/scripts/claude-bridge-compatibility.mjs --version latest` | 最终 2.1.308 strict validate、原生插件引擎 9/9、6 文件桥接安全 260/260 通过 |
+| `pnpm --filter @agentkib/desktop test --maxWorkers=2` | 最终 394 文件通过、1 跳过；7883 测试通过、3 跳过，378.68 秒 |
+| `pnpm build:web:hosted` | 通过 |
+| `pnpm --filter @agentkib/desktop build:electron` | 最终构建通过，保留既有 chunk 大小提示；全量结束后重建插件构建目录 |
+| 最终独立两轴复审、字典镜像、插件语法及 diff 检查 | Standards 0 finding、Spec 0 finding；其余检查通过 |
+
+两端用户文案不变，字典逐字镜像检查通过；不改兼容规则、发送关闭、跨 Agent 继续、Codex follower、C/D 或设计文件。复用本记录的合成截图，界面没有新增视觉变化；真实终端生命周期仍由用户验收。官方兼容检查继续隔离五类目录并通过网络/个人目录屏障，无登录或模型请求，临时目录在 finally 清理。

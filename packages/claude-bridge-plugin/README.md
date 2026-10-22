@@ -60,6 +60,12 @@ terminal afterward cannot restore that connection without explicit pairing.
 Recoverable transport failures are retried using the existing Mods timer and
 terminal events, with identity, version, capabilities and credentials checked
 again. Retry never replays a send or creates a replacement terminal process.
+An expired or invalid fallback pairing code does not revoke an existing valid
+binding or permanently cancel its recovery, including after overlapping failed
+pairing attempts. No additional background recovery starts while pairing is
+pending; stale handshake responses cannot affect the current generation. Explicit
+revocation, identity changes and session end still prevent that binding from
+reconnecting.
 
 ## Validation
 

@@ -179,6 +179,7 @@ export function initialState() {
     flushing: false,
     closed: false,
     needsReconnect: false,
+    pairingRecoveryGeneration: null,
     reconnectGeneration: null,
     reconnectFailures: 0,
     reconnectDelayTicks: 0,
@@ -489,6 +490,7 @@ function invalidate(state, reason) {
   state.connection = null;
   state.connectionFailure = null;
   state.needsReconnect = false;
+  state.pairingRecoveryGeneration = null;
   state.reconnectGeneration = null;
   state.reconnectFailures = 0;
   state.reconnectDelayTicks = 0;
@@ -867,13 +869,32 @@ async function connect($, state, ticket) {
   if (!state.connection && state.closed && !state.pendingSend) state.identity = null;
   if (state.connection && state.connection.leaseId !== "reconnecting")
     throw new Error("already-connected");
+  // A newer code can supersede an awaiting pairing. Transfer only that current
+  // attempt's saved-binding recovery intent without waking the pump mid-pair.
+  const resumeRecovery =
+    state.needsReconnect || state.pairingRecoveryGeneration === state.generation;
   const generation = ++state.generation;
+  state.pairingRecoveryGeneration = resumeRecovery ? generation : null;
   state.connection = null;
   state.connectionFailure = null;
   state.needsReconnect = false;
   state.reconnectFailures = 0;
   state.reconnectDelayTicks = 0;
   state.socketPath = ticket.socketPath;
+  try {
+    await connectOnce($, state, ticket, generation);
+  } catch (error) {
+    // A rejected replacement code does not revoke the saved binding. Resume its
+    // full reconnect checks only if this attempt still owns the open generation.
+    if (resumeRecovery && state.generation === generation && !state.closed && !state.connection)
+      state.needsReconnect = true;
+    throw error;
+  } finally {
+    if (state.pairingRecoveryGeneration === generation) state.pairingRecoveryGeneration = null;
+  }
+}
+
+async function connectOnce($, state, ticket, generation) {
   let observed;
   try {
     observed = await probeCapabilities($, state);

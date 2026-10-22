@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import {
   Check,
   ChevronDown,
@@ -148,12 +148,18 @@ export function ClaudeBridgePanel({ active, onClose }: { active: boolean; onClos
   const [confirmDisconnect, setConfirmDisconnect] = useState<"disconnect" | "clear">();
   const revokeTrigger = useRef<HTMLButtonElement>(null);
   const cancelConfirmation = useRef<HTMLButtonElement>(null);
+  // Expiry and status checks can move the inline confirmation to another card.
+  // Focus the new cancel button on mount, including after a pending clear fails.
+  const focusCancelConfirmation = useCallback((button: HTMLButtonElement | null) => {
+    cancelConfirmation.current = button;
+    button?.focus();
+  }, []);
   const hadConfirmation = useRef(false);
   useEffect(() => {
     if (confirmDisconnect) cancelConfirmation.current?.focus();
     else if (hadConfirmation.current) revokeTrigger.current?.focus();
     hadConfirmation.current = !!confirmDisconnect;
-  }, [confirmDisconnect]);
+  }, [confirmDisconnect, loading]);
   const [revokedBinding, setRevokedBinding] = useState<{
     connectionGeneration?: string;
     runtimeBootId?: string;
@@ -455,7 +461,7 @@ export function ClaudeBridgePanel({ active, onClose }: { active: boolean; onClos
       </p>
       <div className="flex flex-wrap items-center gap-2">
         <Button
-          ref={cancelConfirmation}
+          ref={focusCancelConfirmation}
           variant="outline"
           disabled={loading}
           onClick={() => setConfirmDisconnect(undefined)}

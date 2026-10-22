@@ -6,6 +6,9 @@ const zh = {
   flow: "在终端里继续这条会话，AgentKib 同步显示；发送、停止和审批都在终端里做。",
   platformVersion: "仅 macOS · 需要 Claude Code {version} 或更高版本",
   installStep: "安装插件（只需一次）",
+  installedStep: "已安装插件",
+  codeExpiresSafety: "{time} 前有效 · 只在你自己的终端使用，不要发给别人",
+  disconnectConfirmInfo: "确定断开？终端照常运行，AgentKib 停止同步。",
   generateStep: "生成连接码",
   pasteStep: "在终端粘贴并回车",
   pasteHint: "粘贴后，这里会显示连接状态",
@@ -25,8 +28,7 @@ const zh = {
   expiresAt: "{time} 前有效",
   clearConnection: "清除连接…",
   confirmClearConnection: "确认清除连接",
-  clearConnectionInfo:
-    "清除后会撤销该终端连接的凭据和未使用的连接码；终端照常运行，AgentKib 停止同步。",
+  clearConnectionInfo: "清除后会撤销这个终端连接的凭据和未使用的连接码。",
   disconnectBeforeCode: "若要生成新的连接码，请先断开当前终端连接。",
   invalidCode: "连接码无效。请重新生成，并在目标终端使用完整的新连接码。",
   versionMismatch: "终端里的连接插件需要更新。按第 1 步重新安装后，重新生成连接码。",
@@ -99,6 +101,9 @@ export const claudeConnectionCopy: Record<Locale, Copy> = {
     flow: "在終端裡繼續這段對話，AgentKib 同步顯示；傳送、停止和審批都在終端裡進行。",
     platformVersion: "僅 macOS · 需要 Claude Code {version} 或以上版本",
     installStep: "安裝外掛（只需一次）",
+    installedStep: "已安裝外掛",
+    codeExpiresSafety: "{time} 前有效 · 只在你自己的終端使用，不要傳給別人",
+    disconnectConfirmInfo: "確定中斷？終端照常執行，AgentKib 停止同步。",
     generateStep: "產生連線碼",
     pasteStep: "在終端貼上並按下 Enter",
     pasteHint: "貼上後，這裡會顯示連線狀態",
@@ -118,8 +123,7 @@ export const claudeConnectionCopy: Record<Locale, Copy> = {
     expiresAt: "{time} 前有效",
     clearConnection: "清除連線…",
     confirmClearConnection: "確認清除連線",
-    clearConnectionInfo:
-      "清除後會撤銷此終端連線的憑據與未使用的連線碼；終端照常執行，AgentKib 停止同步。",
+    clearConnectionInfo: "清除後會撤銷此終端連線的憑據與未使用的連線碼。",
     disconnectBeforeCode: "若要產生新的連線碼，請先中斷目前終端連線。",
     invalidCode: "連線碼無效。請重新產生，並在目標終端使用完整的新連線碼。",
     versionMismatch: "終端裡的連線外掛需要更新。依第 1 步重新安裝後，重新產生連線碼。",
@@ -190,6 +194,9 @@ export const claudeConnectionCopy: Record<Locale, Copy> = {
     flow: "Continue this session in the terminal; AgentKib keeps it in sync. Send messages, stop turns, and handle approvals in the terminal.",
     platformVersion: "macOS only · Requires Claude Code {version} or later",
     installStep: "Install the plugin (once)",
+    installedStep: "Plugin installed",
+    codeExpiresSafety: "Valid until {time} · Use only in your own terminal. Do not share it.",
+    disconnectConfirmInfo: "Disconnect? The terminal keeps running; AgentKib stops synchronizing.",
     generateStep: "Generate connection code",
     pasteStep: "Paste into the terminal and press Enter",
     pasteHint: "The connection status will appear here after you paste",
@@ -211,7 +218,7 @@ export const claudeConnectionCopy: Record<Locale, Copy> = {
     clearConnection: "Clear connection…",
     confirmClearConnection: "Clear connection",
     clearConnectionInfo:
-      "Clearing revokes this terminal connection's credentials and unused connection codes. The terminal keeps running; AgentKib stops synchronizing.",
+      "Clearing revokes this terminal connection's credentials and unused connection codes.",
     disconnectBeforeCode:
       "Disconnect the current terminal before generating a new connection code.",
     invalidCode:
@@ -302,6 +309,10 @@ export const claudeConnectionCopy: Record<Locale, Copy> = {
     flow: "この会話はターミナルで続け、AgentKib に同期して表示します。送信、停止、承認はターミナルで行ってください。",
     platformVersion: "macOS のみ · Claude Code {version} 以降が必要です",
     installStep: "プラグインをインストール（初回のみ）",
+    installedStep: "プラグインをインストール済み",
+    codeExpiresSafety:
+      "{time} まで有効 · 自分のターミナルでのみ使用し、他の人に共有しないでください。",
+    disconnectConfirmInfo: "切断しますか？ターミナルは実行を続け、AgentKib は同期を停止します。",
     generateStep: "接続コードを生成",
     pasteStep: "ターミナルに貼り付けて Enter を押す",
     pasteHint: "貼り付けると、ここに接続状態が表示されます",
@@ -323,7 +334,7 @@ export const claudeConnectionCopy: Record<Locale, Copy> = {
     clearConnection: "接続をクリア…",
     confirmClearConnection: "接続をクリア",
     clearConnectionInfo:
-      "クリアすると、このターミナル接続の認証情報と未使用の接続コードを無効にします。ターミナルは実行を続け、AgentKib は同期を停止します。",
+      "クリアすると、このターミナル接続の認証情報と未使用の接続コードを無効にします。",
     disconnectBeforeCode:
       "新しい接続コードを生成するには、現在のターミナル接続を先に切断してください。",
     invalidCode:

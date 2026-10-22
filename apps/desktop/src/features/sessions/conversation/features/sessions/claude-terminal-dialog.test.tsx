@@ -87,6 +87,10 @@ describe("Claude terminal connection dialog", () => {
       expect(within(dialog).getAllByRole("heading", { name: copy.title })).toHaveLength(1);
       expect(dialog).toHaveAccessibleDescription("合成测试会话 · Claude Code");
       expect(within(dialog).getByText(copy.notConnected, { exact: true })).toBeVisible();
+      expect(within(dialog).getByText(copy.notConnected, { exact: true })).toHaveAttribute(
+        "data-slot",
+        "badge",
+      );
       expect(within(dialog).getByText(copy.flow)).toBeVisible();
       expect(
         within(dialog).getByText(copy.platformVersion.replace("{version}", "2.1.301")),
@@ -119,6 +123,12 @@ describe("Claude terminal connection dialog", () => {
     );
     const { dialog, copy } = await openDialog(locale);
     const note = within(dialog).getByText(copy.unverifiedVersion.replace("{version}", "2.1.307"));
+    const installed = within(dialog).getByRole("button", { name: copy.installedStep });
+    expect(installed).toHaveAttribute("aria-expanded", "false");
+    expect(within(dialog).getByText(installCommand)).not.toBeVisible();
+    fireEvent.click(installed);
+    expect(installed).toHaveAttribute("aria-expanded", "true");
+    expect(within(dialog).getByText(installCommand)).toBeVisible();
     expect(note).toHaveClass("text-muted-foreground");
     expect(note.closest('[role="alert"]')).toBeNull();
     expect(within(dialog).getByText(copy.connectedTitle)).toBeVisible();
@@ -183,10 +193,38 @@ describe("Claude terminal connection dialog", () => {
     expect(within(dialog).queryByRole("button", { name: copy.generate })).not.toBeInTheDocument();
     expect(dialog.querySelectorAll("button.bg-primary")).toHaveLength(0);
     expect(within(dialog).getByText(copy.waiting, { exact: true })).toBeVisible();
+    const preview = within(dialog).getByRole("button", { name: connectionCommand });
+    expect(preview).toHaveAttribute("aria-expanded", "false");
+    expect(preview).toHaveAttribute("title", connectionCommand);
+    expect(within(preview).getByText(connectionCommand)).toHaveClass("line-clamp-2");
+    fireEvent.click(preview);
+    expect(preview).toHaveAttribute("aria-expanded", "true");
+    expect(within(preview).getByText(connectionCommand)).not.toHaveClass("line-clamp-2");
+    fireEvent.click(preview);
+    expect(preview).toHaveAttribute("aria-expanded", "false");
+    const steps = dialog.querySelectorAll("ol > li");
+    expect(
+      within(steps[1] as HTMLElement).getByRole("button", { name: copy.regenerate }),
+    ).toHaveClass("text-primary-text");
+    expect(
+      within(steps[1] as HTMLElement).getByRole("button", { name: copy.copyOptions }),
+    ).toBeVisible();
+    expect(within(steps[2] as HTMLElement).getAllByRole("button")).toHaveLength(1);
+    expect(
+      within(steps[2] as HTMLElement).getByRole("button", { name: copy.refresh }),
+    ).toBeVisible();
+    expect(
+      within(steps[2] as HTMLElement)
+        .getByText(copy.waiting)
+        .querySelector("svg"),
+    ).not.toBeNull();
     expect(within(dialog).queryByText(copy.pasteHint)).not.toBeInTheDocument();
     expect(
       within(dialog).getByText(
-        copy.expiresAt.replace("{time}", new Date(expiresAt).toLocaleTimeString("zh-CN")),
+        copy.codeExpiresSafety.replace(
+          "{time}",
+          new Date(expiresAt).toLocaleTimeString("zh-CN", { hour: "2-digit", minute: "2-digit" }),
+        ),
       ),
     ).toBeVisible();
     fireEvent.click(within(dialog).getByRole("button", { name: copy.copyCommand }));
@@ -212,24 +250,29 @@ describe("Claude terminal connection dialog", () => {
     expect(within(dialog).getByText(copy.connectedBadge, { exact: true })).toBeVisible();
     expect(within(dialog).getByText(copy.connectedTitle)).toBeVisible();
     expect(within(dialog).getByText(copy.connectedInfo)).toBeVisible();
-    expect(within(dialog).getByText(copy.disconnectInfo)).toBeVisible();
+    expect(within(dialog).queryByText(copy.disconnectInfo)).not.toBeInTheDocument();
     expect(within(dialog).queryByText(copy.generateStep)).not.toBeInTheDocument();
     expect(within(dialog).queryByText(copy.pasteStep)).not.toBeInTheDocument();
     expect(
       within(dialog).queryByRole("button", { name: copy.clearConnection }),
     ).not.toBeInTheDocument();
     fireEvent.click(within(dialog).getByRole("button", { name: copy.disconnectShort }));
-    const confirmation = await screen.findByRole("dialog", { name: copy.disconnect });
+    const confirmation = await screen.findByRole("group", { name: copy.disconnect });
+    expect(screen.getAllByRole("dialog")).toHaveLength(1);
+    expect(confirmation.closest("ol > li")).not.toBeNull();
+    expect(within(confirmation).getByText(copy.disconnectConfirmInfo)).toBeVisible();
+    expect(within(confirmation).getByRole("button", { name: copy.cancel })).toHaveFocus();
     expect(operations()).not.toContain("bridge-disconnect");
     fireEvent.click(
       within(confirmation).getByText(copy.cancel, { selector: "button", exact: true }),
     );
     await waitFor(() =>
-      expect(screen.queryByRole("dialog", { name: copy.disconnect })).not.toBeInTheDocument(),
+      expect(screen.queryByRole("group", { name: copy.disconnect })).not.toBeInTheDocument(),
     );
     expect(operations()).not.toContain("bridge-disconnect");
+    expect(within(dialog).getByRole("button", { name: copy.disconnectShort })).toHaveFocus();
     fireEvent.click(within(dialog).getByRole("button", { name: copy.disconnectShort }));
-    const confirmed = await screen.findByRole("dialog", { name: copy.disconnect });
+    const confirmed = await screen.findByRole("group", { name: copy.disconnect });
     fireEvent.click(within(confirmed).getByRole("button", { name: copy.confirmDisconnect }));
     await waitFor(() =>
       expect(state.request).toHaveBeenCalledWith({
@@ -252,6 +295,8 @@ describe("Claude terminal connection dialog", () => {
     fireEvent.click(within(dialog).getByRole("button", { name: copy.generate }));
     await within(dialog).findByText(copy.expiredTitle, { exact: true });
     expect(within(dialog).getByText(copy.expiredInfo)).toBeVisible();
+    expect(within(dialog).getByRole("button", { name: copy.regenerate })).toHaveClass("bg-primary");
+    expect(dialog.querySelectorAll("button.bg-primary")).toHaveLength(1);
     expect(within(dialog).queryByText(connectionCommand)).not.toBeInTheDocument();
     expect(within(dialog).queryByText(copy.waiting, { exact: true })).not.toBeInTheDocument();
     expect(within(dialog).queryByText(copy.pasteStep)).not.toBeInTheDocument();
@@ -278,10 +323,10 @@ describe("Claude terminal connection dialog", () => {
     });
     const { dialog, copy } = await openDialog();
     fireEvent.click(within(dialog).getByRole("button", { name: copy.disconnectShort }));
-    const confirmation = await screen.findByRole("dialog", { name: copy.disconnect });
+    const confirmation = await screen.findByRole("group", { name: copy.disconnect });
     fireEvent.click(within(confirmation).getByRole("button", { name: copy.confirmDisconnect }));
     await waitFor(() =>
-      expect(screen.queryByRole("dialog", { name: copy.disconnect })).not.toBeInTheDocument(),
+      expect(screen.queryByRole("group", { name: copy.disconnect })).not.toBeInTheDocument(),
     );
     const regenerate = await within(dialog).findByRole("button", {
       name: copy.regenerate,
@@ -344,7 +389,7 @@ describe("Claude terminal connection dialog", () => {
     );
     const { dialog, copy } = await openDialog();
     fireEvent.click(within(dialog).getByRole("button", { name: copy.clearConnection }));
-    const confirmation = await screen.findByRole("dialog", { name: copy.clearConnection });
+    const confirmation = await screen.findByRole("group", { name: copy.clearConnection });
     const confirm = within(confirmation).getByRole("button", { name: copy.confirmClearConnection });
     fireEvent.click(confirm);
     await waitFor(() =>
@@ -358,7 +403,7 @@ describe("Claude terminal connection dialog", () => {
       within(confirmation).getByText(copy.cancel, { selector: "button", exact: true }),
     );
     await waitFor(() =>
-      expect(screen.queryByRole("dialog", { name: copy.clearConnection })).not.toBeInTheDocument(),
+      expect(screen.queryByRole("group", { name: copy.clearConnection })).not.toBeInTheDocument(),
     );
     expect(within(dialog).getByRole("alert")).toHaveTextContent(copy.failed);
     expect(within(dialog).getByRole("button", { name: copy.clearConnection })).toBeEnabled();
@@ -382,7 +427,7 @@ describe("Claude terminal connection dialog", () => {
       within(dialog).queryByRole("button", { name: copy.disconnectShort }),
     ).not.toBeInTheDocument();
     fireEvent.click(within(dialog).getByRole("button", { name: copy.clearConnection }));
-    const confirmation = await screen.findByRole("dialog", { name: copy.clearConnection });
+    const confirmation = await screen.findByRole("group", { name: copy.clearConnection });
     expect(within(confirmation).getByText(copy.clearConnectionInfo)).toBeVisible();
     expect(operations()).not.toContain("bridge-disconnect");
     fireEvent.click(
@@ -404,12 +449,143 @@ describe("Claude terminal connection dialog", () => {
     const copy = claudeConnectionCopy["zh-CN"];
     const dialog = await screen.findByRole("dialog", { name: copy.title });
     await within(dialog).findByText(copy.unsupportedTitle);
-    expect(within(dialog).getByText(copy.platformUnsupported)).toBeVisible();
+    expect(within(dialog).queryByText(copy.platformUnsupported)).not.toBeInTheDocument();
+    expect(dialog.querySelector("[data-slot=badge]")).toBeNull();
     for (const text of [copy.installStep, copy.generateStep, copy.pasteStep, installCommand]) {
       expect(within(dialog).queryByText(text)).not.toBeInTheDocument();
     }
     expect(within(dialog).queryByRole("button", { name: copy.generate })).not.toBeInTheDocument();
     expect(new Set(operations())).toEqual(new Set(["bridge-status"]));
+  });
+
+  it.each(locales)(
+    "keeps disconnect and clear confirmations inline and keyboard-safe in %s",
+    async (locale) => {
+      for (const connected of [true, false]) {
+        state.session.locale = locale;
+        state.session.live = {
+          ...state.session.live!,
+          executionMode: "claude-follower",
+          status: connected ? "idle" : "unsupported",
+          reason: connected ? undefined : "claude-bridge-disconnected",
+        };
+        state.request.mockResolvedValue(bridgeStatus({ connected }));
+        const { dialog, copy, unmount } = await openDialog(locale);
+        const trigger = within(dialog).getByRole("button", {
+          name: connected ? copy.disconnectShort : copy.clearConnection,
+        });
+        fireEvent.click(trigger);
+        const group = await within(dialog).findByRole("group", {
+          name: connected ? copy.disconnect : copy.clearConnection,
+        });
+        const cancel = within(group).getByRole("button", { name: copy.cancel });
+        expect(cancel).toHaveFocus();
+        expect(
+          within(group).getByText(
+            connected ? copy.disconnectConfirmInfo : copy.clearConnectionInfo,
+          ),
+        ).toBeVisible();
+        expect(
+          within(group).getByRole("button", {
+            name: connected ? copy.confirmDisconnect : copy.confirmClearConnection,
+          }),
+        ).toHaveClass("text-destructive-text");
+        expect(screen.getAllByRole("dialog")).toHaveLength(1);
+        fireEvent.keyDown(cancel, { key: "Escape" });
+        await waitFor(() => expect(within(dialog).queryByRole("group")).toBeNull());
+        expect(trigger.isConnected).toBe(false);
+        expect(
+          within(dialog).getByRole("button", {
+            name: connected ? copy.disconnectShort : copy.clearConnection,
+          }),
+        ).toHaveFocus();
+        expect(close).not.toHaveBeenCalled();
+        expect(operations()).not.toContain("bridge-disconnect");
+        unmount();
+      }
+    },
+  );
+
+  it.each(locales)("uses semantic state icons and installed summaries in %s", async (locale) => {
+    for (const kind of ["connected", "disconnected", "expired", "error"] as const) {
+      state.session.live = {
+        ...state.session.live!,
+        executionMode: kind === "disconnected" ? "claude-follower" : "managed-resume",
+        status: kind === "disconnected" ? "unsupported" : "idle",
+        reason: kind === "disconnected" ? "claude-bridge-disconnected" : undefined,
+      };
+      state.request.mockResolvedValue(
+        bridgeStatus({
+          connected: kind === "connected",
+          connectionError:
+            kind === "expired"
+              ? "expired-bridge-challenge"
+              : kind === "error"
+                ? "bridge-plugin-update-required"
+                : undefined,
+        }),
+      );
+      const { dialog, copy, unmount } = await openDialog(locale);
+      if (kind === "error") {
+        const problem = within(dialog).getByRole("alert");
+        expect(problem).toHaveClass("text-destructive-text");
+        expect(problem.parentElement?.querySelector("svg")).toHaveClass("text-destructive-icon");
+        expect(within(dialog).getByText(installCommand)).toBeVisible();
+      } else {
+        const title =
+          kind === "connected"
+            ? copy.connectedTitle
+            : kind === "expired"
+              ? copy.expiredTitle
+              : copy.lostTitle;
+        const status = within(dialog).getByText(title).closest('[role="status"]')!;
+        expect(status.parentElement?.querySelector("svg")).toHaveClass(
+          kind === "connected"
+            ? "text-[var(--green)]"
+            : kind === "expired"
+              ? "text-destructive-icon"
+              : "text-[var(--amber)]",
+        );
+        if (kind === "expired")
+          expect(within(dialog).getByRole("button", { name: copy.regenerate })).toHaveClass(
+            "bg-primary",
+          );
+        else {
+          expect(within(dialog).getByRole("button", { name: copy.installedStep })).toHaveAttribute(
+            "aria-expanded",
+            "false",
+          );
+          expect(within(dialog).getByText(installCommand)).not.toBeVisible();
+        }
+      }
+      unmount();
+    }
+  });
+
+  it("does not dismiss an inline confirmation while revocation is pending", async () => {
+    let resolve!: (result: unknown) => void;
+    state.session.live = { ...state.session.live!, executionMode: "claude-follower" };
+    state.request.mockImplementation(async ({ operation }) =>
+      operation === "bridge-status"
+        ? bridgeStatus({ connected: true })
+        : new Promise((done) => {
+            resolve = done;
+          }),
+    );
+    const { dialog, copy } = await openDialog();
+    fireEvent.click(within(dialog).getByRole("button", { name: copy.disconnectShort }));
+    const group = await within(dialog).findByRole("group", { name: copy.disconnect });
+    fireEvent.click(within(group).getByRole("button", { name: copy.confirmDisconnect }));
+    expect(within(group).getByRole("button", { name: copy.cancel })).toBeDisabled();
+    fireEvent.keyDown(dialog, { key: "Escape" });
+    expect(close).not.toHaveBeenCalled();
+    expect(group).toBeInTheDocument();
+    expect(operations().filter((operation) => operation === "bridge-disconnect")).toHaveLength(1);
+    resolve({ disconnected: true });
+    await waitFor(() =>
+      expect(within(dialog).queryByRole("group", { name: copy.disconnect })).toBeNull(),
+    );
+    expect(state.session.refresh).toHaveBeenCalled();
   });
 
   it.each([

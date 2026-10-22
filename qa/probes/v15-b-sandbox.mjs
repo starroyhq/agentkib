@@ -30,7 +30,7 @@ const command = process.argv[2];
 const options = {};
 for (let index = 3; index < process.argv.length; index += 2) {
   assert.ok(
-    ["--root", "--cdp-port", "--state", "--cli-version", "--connection-error"].includes(
+    ["--root", "--cdp-port", "--state", "--cli-version", "--connection-error", "--locale"].includes(
       process.argv[index],
     ),
   );
@@ -41,6 +41,7 @@ const root = path
   .resolve(options.root ?? "/tmp/agentkib-v15-b-sandbox")
   .replace(/^\/tmp\//, "/private/tmp/");
 assert.ok(/^\/(?:private\/)?tmp\/agentkib-v15-b-[^/]+$/.test(root), "Use a dedicated QA root");
+assert.ok(!options.locale || ["zh-CN", "zh-TW", "en-US", "ja-JP"].includes(options.locale));
 const owner = "agentkib-v15-b-sandbox";
 const states = [
   "unconnected",
@@ -89,7 +90,7 @@ async function freePort() {
   await new Promise((done) => server.close(done));
   return port;
 }
-function environment() {
+function environment(locale = "zh-CN") {
   // Deliberately do not inherit provider/account variables or any personal roots.
   return {
     PATH: `${path.dirname(process.execPath)}:/usr/bin:/bin:/usr/sbin:/sbin`,
@@ -105,7 +106,7 @@ function environment() {
     AGENTKIB_BENCHMARK_USER_DATA: paths.profile,
     AGENTKIB_APP_FLAVOR: "ai.agentkib.dev",
     AGENTKIB_DEV: "1",
-    AGENTKIB_LOCALE: "zh-CN",
+    AGENTKIB_LOCALE: locale,
     AGENTKIB_SYSTEM_THEME: "light",
     AGENTKIB_V15_B_FIXTURE: configFile,
     LANG: "zh_CN.UTF-8",
@@ -151,13 +152,14 @@ if (command === "prepare") {
     webPort: await freePort(),
     mcpPort: await freePort(),
     cdpPort,
+    locale: options.locale ?? "zh-CN",
     sessionId: null,
     nativeId: "11111111-1111-4111-8111-111111111111",
   };
   await put(configFile, config);
   await put(stateFile, { owner, mode: "unconnected", revision: 1 });
   await put(path.join(paths.data, "preferences.json"), {
-    locale_preference: "zh-CN",
+    locale_preference: config.locale,
     theme_preference: "light",
     accent_theme_preference: "vtron",
     close_behavior: "quit",
@@ -389,7 +391,7 @@ if (command === "prepare") {
       ],
       {
         cwd: workspace,
-        env: { ...environment(), ELECTRON_RUN_AS_NODE: "1" },
+        env: { ...environment(config.locale), ELECTRON_RUN_AS_NODE: "1" },
         stdio: ["pipe", "pipe", "pipe"],
       },
     );
@@ -487,7 +489,7 @@ if (command === "prepare") {
       ],
       {
         cwd: workspace,
-        env: environment(),
+        env: environment(config.locale),
         detached: true,
         stdio: ["ignore", log.fd, log.fd],
       },

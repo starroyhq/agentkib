@@ -130,7 +130,7 @@ describe("conversation reading position", () => {
     },
   );
   it.each(["zh-CN", "zh-TW", "en-US", "ja-JP"] as const)(
-    "shows a neutral native version note without enabling controls in %s",
+    "keeps unverified native version details out of the session page in %s without enabling controls",
     (locale) => {
       state = {
         ...state,
@@ -153,7 +153,8 @@ describe("conversation reading position", () => {
       };
       const view = render(<SessionReader />);
       const text = claudeConnectionCopy[locale].unverifiedVersion.replace("{version}", "2.1.307");
-      expect(screen.getByText(text)).toHaveClass("text-muted-foreground");
+      expect(screen.queryByText(text)).toBeNull();
+      expect(view.container.querySelector("[data-terminal-compatibility]")).toBeNull();
       expect(screen.getByText("First answer")).toBeVisible();
       expect(view.container.querySelector('[role="alert"]')).toBeNull();
       state.live = { ...state.live!, bridgeCompatibility: null };

@@ -220,7 +220,7 @@ describe("Claude terminal connection management", () => {
     fireEvent.click(screen.getByRole("button", { name: "复制连接码" }));
     await screen.findByText("复制连接码 · 已复制");
     expect(writeText).toHaveBeenLastCalledWith(challenge.challenge);
-    expect(screen.getByText("只在你自己的终端使用，不要发给别人")).toBeVisible();
+    expect(screen.getByText(/前有效 · 只在你自己的终端使用，不要发给别人/)).toBeVisible();
     writeText.mockRejectedValueOnce(new Error("clipboard unavailable"));
     fireEvent.click(screen.getByRole("button", { name: "复制连接码" }));
     expect(await screen.findByRole("alert")).toHaveTextContent("复制失败，请手动选择并复制。");
@@ -434,7 +434,7 @@ describe("Claude terminal connection management", () => {
       expect(screen.getByText("正在检查连接…")).toBeVisible();
       expect(screen.getByRole("button", { name: "确认清除连接" })).toBeDisabled();
       await act(async () => disconnect.resolve({ disconnected: true }));
-      expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+      expect(screen.queryByRole("group", { name: "清除连接…" })).not.toBeInTheDocument();
       expect(screen.queryByText("正在检查连接…")).not.toBeInTheDocument();
       expect(state.session.refresh).toHaveBeenCalledExactlyOnceWith(true);
     },
@@ -451,7 +451,7 @@ describe("Claude terminal connection management", () => {
     expect(screen.getByRole("button", { name: "重新生成" })).toBeDisabled();
   });
   it.each([
-    ["platform-unsupported", "连接终端仅支持 macOS。请在 macOS 电脑上操作。"],
+    ["platform-unsupported", "连接终端目前只支持 macOS"],
     [
       "claude-bridge-unavailable",
       "终端连接服务无法启动。请检查这台电脑日志并重新启动 AgentKib 后重试。",

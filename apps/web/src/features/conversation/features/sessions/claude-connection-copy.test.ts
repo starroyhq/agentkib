@@ -79,10 +79,12 @@ describe("terminal connection guide copy", () => {
     expect(copy.generateStep).toBe(copy.generate);
     expect(copy.generate).not.toMatch(/一次性|one-time|一回限り/);
     expect(copy.clearConnection).toMatch(/…$/);
-    expect(copy.clearConnectionInfo).toContain("AgentKib");
+    expect(copy.disconnectConfirmInfo).toContain("AgentKib");
+    expect(copy.codeExpiresSafety).toContain("{time}");
+    expect(copy.installedStep).not.toBe(copy.installStep);
     expect(copy.clearConnectionInfo).toMatch(/凭据|憑據|credentials|認証情報/);
     expect(copy.clearConnectionInfo).toMatch(/未使用|unused/);
-    expect(copy.clearConnectionInfo).toMatch(
+    expect(copy.disconnectConfirmInfo).toMatch(
       /终端照常运行|終端照常執行|terminal keeps running|ターミナルは実行を続け/,
     );
   });

@@ -207,7 +207,7 @@ describe("terminal connection evidence and management gates", () => {
       expect(within(dialog).getByRole("button", { name: copy.refresh })).toBeDisabled();
       expect(operations()).toEqual([]);
       fireEvent.click(within(dialog).getByRole("button", { name: copy.clearConnection }));
-      const confirmation = await screen.findByRole("dialog", { name: copy.clearConnection });
+      const confirmation = await screen.findByRole("group", { name: copy.clearConnection });
       expect(within(confirmation).getByText(copy.clearConnectionInfo)).toBeVisible();
       expect(operations()).toEqual([]);
       fireEvent.click(
@@ -279,6 +279,81 @@ describe("terminal connection evidence and management gates", () => {
     expect(operations().filter((operation) => operation === "bridge-challenge")).toHaveLength(2);
   });
 
+  it.each(["local-expiry", "expired-poll", "failed-poll", "connected-poll"] as const)(
+    "keeps the clear confirmation focused when %s replaces its command",
+    async (transition) => {
+      vi.useFakeTimers();
+      state.session.live = {
+        ...state.session.live!,
+        executionMode: "claude-follower",
+        status: "unsupported",
+        reason: "claude-bridge-disconnected",
+      };
+      render(<ClaudeBridgePanel active onClose={vi.fn()} />);
+      await act(async () => {});
+      const dialog = screen.getByRole("dialog", { name: copy.title });
+      fireEvent.click(within(dialog).getByRole("button", { name: copy.regenerate }));
+      await act(async () => {});
+      expect(within(dialog).getByText(command)).toBeVisible();
+      fireEvent.click(within(dialog).getByRole("button", { name: copy.clearConnection }));
+      const initial = within(dialog).getByRole("group", { name: copy.clearConnection });
+      expect(within(initial).getByRole("button", { name: copy.cancel })).toHaveFocus();
+
+      if (transition === "failed-poll")
+        state.request.mockRejectedValueOnce(new Error("synthetic status unavailable"));
+      else if (transition !== "local-expiry")
+        state.request.mockResolvedValueOnce({
+          sessionId: "s",
+          supported: true,
+          connected: transition === "connected-poll",
+          version: "2.1.301",
+          pluginDirectory: "/synthetic/plugin",
+          installInstructions: "Install synthetic plugin",
+          connectionError: transition === "expired-poll" ? "expired-bridge-challenge" : undefined,
+        });
+      await act(async () => vi.advanceTimersByTime(transition === "local-expiry" ? 120_000 : 2500));
+
+      const confirmation = within(dialog).getByRole("group", { name: copy.clearConnection });
+      expect(confirmation).toBeVisible();
+      const cancel = within(confirmation).getByRole("button", { name: copy.cancel });
+      expect(cancel).toHaveFocus();
+      expect(operations()).not.toContain("bridge-disconnect");
+      fireEvent.keyDown(cancel, { key: "Escape" });
+      expect(within(dialog).queryByRole("group", { name: copy.clearConnection })).toBeNull();
+      expect(within(dialog).getByRole("button", { name: copy.clearConnection })).toHaveFocus();
+    },
+  );
+
+  it("refocuses cancel after a pending clear moves the confirmation and fails", async () => {
+    state.session.live = {
+      ...state.session.live!,
+      executionMode: "claude-follower",
+      status: "unsupported",
+      reason: "claude-bridge-disconnected",
+    };
+    render(<ClaudeBridgePanel active onClose={vi.fn()} />);
+    const dialog = screen.getByRole("dialog", { name: copy.title });
+    const regenerate = within(dialog).getByRole("button", { name: copy.regenerate });
+    await waitFor(() => expect(regenerate).toBeEnabled());
+    fireEvent.click(regenerate);
+    await within(dialog).findByText(command);
+    fireEvent.click(within(dialog).getByRole("button", { name: copy.clearConnection }));
+    let resolve!: (value: unknown) => void;
+    state.request.mockReturnValueOnce(new Promise((done) => (resolve = done)));
+    fireEvent.click(within(dialog).getByRole("button", { name: copy.confirmClearConnection }));
+    const confirmation = within(dialog).getByRole("group", { name: copy.clearConnection });
+    const cancel = within(confirmation).getByRole("button", { name: copy.cancel });
+    expect(cancel).toBeDisabled();
+    expect(within(dialog).queryByText(command)).not.toBeInTheDocument();
+    await act(async () => resolve({ disconnected: false }));
+    expect(within(dialog).getByRole("alert")).toHaveTextContent(copy.failed);
+    expect(cancel).toBeEnabled();
+    expect(cancel).toHaveFocus();
+    expect(operations().filter((operation) => operation === "bridge-disconnect")).toHaveLength(1);
+    fireEvent.click(cancel);
+    expect(within(dialog).getByRole("button", { name: copy.clearConnection })).toHaveFocus();
+  });
+
   it.each(["busy", "controlReady", "experimental"] as const)(
     "keeps a confirmed connection while %s blocks new connections",
     async (gate) => {
@@ -302,7 +377,7 @@ describe("terminal connection evidence and management gates", () => {
       const disconnect = within(dialog).getByRole("button", { name: copy.disconnectShort });
       expect(disconnect).toBeEnabled();
       fireEvent.click(disconnect);
-      const confirmation = await screen.findByRole("dialog", { name: copy.disconnect });
+      const confirmation = await screen.findByRole("group", { name: copy.disconnect });
       expect(operations()).toEqual(["bridge-status"]);
       fireEvent.click(within(confirmation).getByRole("button", { name: copy.confirmDisconnect }));
       await waitFor(() => expect(operations()).toContain("bridge-disconnect"));

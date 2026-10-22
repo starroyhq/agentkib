@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
-import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { createRequire } from "node:module";
 import path from "node:path";
 import test from "node:test";
 import {
@@ -12,6 +13,70 @@ import {
   verifySandboxBoundaries,
 } from "./claude-bridge-compatibility.mjs";
 import { CLAUDE_BRIDGE_COMPATIBILITY } from "../../packages/claude-bridge-plugin/hooks/compatibility.js";
+
+// YAML is already a declared desktop dependency; use its real parser rather
+// than accepting a schedule-shaped substring or adding another tool dependency.
+const { parseDocument } = createRequire(
+  new URL("../../apps/desktop/package.json", import.meta.url),
+)("yaml");
+
+test("the workflow runs once per UTC day and preserves manual, PR and read-only safety gates", async () => {
+  const document = parseDocument(
+    await readFile(
+      new URL("../workflows/claude-bridge-compatibility.yml", import.meta.url),
+      "utf8",
+    ),
+  );
+  assert.deepEqual(document.errors, []);
+  const workflow = document.toJS();
+  assert.ok(Object.hasOwn(workflow.on, "workflow_dispatch"));
+  assert.deepEqual(workflow.on.pull_request.paths, [
+    ".github/workflows/claude-bridge-compatibility.yml",
+    ".github/scripts/claude-bridge-compatibility*.mjs",
+    "packages/claude-bridge-plugin/**",
+    "packages/runtime-protocol/src/claude-bridge.ts",
+    "packages/backend/src/claude-bridge*.ts",
+    "apps/desktop/scripts/stage-claude-bridge.mjs",
+    "apps/desktop/test/claude-bridge*.test.ts",
+  ]);
+  assert.equal(workflow.on.schedule.length, 1);
+  const { cron } = workflow.on.schedule[0];
+  assert.match(cron, /^\d{1,2} \d{1,2} \* \* \*$/);
+  const [minute, hour] = cron.split(" ").map(Number);
+  assert.ok(Number.isInteger(minute) && minute >= 0 && minute < 60);
+  assert.ok(Number.isInteger(hour) && hour >= 0 && hour < 24);
+  for (const day of ["2026-01-01", "2028-02-29", "2026-12-31"]) {
+    const start = Date.parse(`${day}T00:00:00Z`);
+    const occurrences = Array.from(
+      { length: 24 * 60 },
+      (_, offset) => new Date(start + offset * 60_000),
+    ).filter((time) => time.getUTCHours() === hour && time.getUTCMinutes() === minute);
+    assert.equal(occurrences.length, 1);
+  }
+  assert.deepEqual(workflow.permissions, { contents: "read" });
+  const job = workflow.jobs.compatibility;
+  assert.equal(job.if, undefined, "Scheduled runs must reach the compatibility job");
+  assert.equal(job["runs-on"], "macos-15");
+  assert.equal(job.strategy["fail-fast"], false);
+  assert.deepEqual(job.strategy.matrix.version, ["minimum", "latest"]);
+  assert.equal(
+    job.steps.find((step) => step.uses?.startsWith("actions/checkout@"))?.with[
+      "persist-credentials"
+    ],
+    false,
+  );
+  assert.equal(
+    job.steps.find((step) => step.name === "Verify compatibility checker isolation")?.run,
+    "node --test .github/scripts/claude-bridge-compatibility.test.mjs",
+  );
+  assert.equal(
+    job.steps.at(-1).run,
+    "node .github/scripts/claude-bridge-compatibility.mjs --version '${{ matrix.version }}'",
+  );
+  assert.ok(
+    job.steps.every((step) => step.if === undefined && step["continue-on-error"] === undefined),
+  );
+});
 
 test("only the minimum, latest or an unambiguous stable CLI can be installed", () => {
   assert.equal(requestedVersion("minimum"), CLAUDE_BRIDGE_COMPATIBILITY.minimumCliVersion);

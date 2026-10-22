@@ -1,10 +1,9 @@
 import assert from "node:assert/strict";
-import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import test from "node:test";
+import { spawnPowerShellSync } from "./headless-powershell.mjs";
 
-const powershell = process.env.AGENTKIB_PWSH || "pwsh";
-const availability = spawnSync(powershell, ["-NoLogo", "-NoProfile", "-Command", "exit 0"]);
+const availability = spawnPowerShellSync(["-NoLogo", "-NoProfile", "-Command", "exit 0"]);
 const harness = fileURLToPath(new URL("./windows-uninstall.test.ps1", import.meta.url));
 
 for (const scenario of [
@@ -34,7 +33,7 @@ for (const scenario of [
     () => {
       assert.ifError(availability.error);
       assert.equal(availability.status, 0);
-      const result = spawnSync(powershell, ["-NoLogo", "-NoProfile", "-File", harness, scenario], {
+      const result = spawnPowerShellSync(["-NoLogo", "-NoProfile", "-File", harness, scenario], {
         encoding: "utf8",
         timeout: 20_000,
       });

@@ -131,3 +131,41 @@ Web 没有新增本机向导，未伪造对应 Web 管理页截图；已有指�
 最终 Standards 与 Spec 分别复核完整 PR 和本轮补修，均为 **no finding**；独立原触发复现和新撤销竞态回归再次通过。该结论只表示当前审查范围内没有剩余明确缺陷，不替代前述未覆盖的真实 CLI 连接和原生平台验收。本轮没有重新运行 Electron 视觉沙盒，也没有启动真实 CLI、tmux 或更改系统技能；测试进程已随命令退出。原工作区未提交文档和其它无关文件保持原样。
 
 本轮补修为 5 个文件（向导、3 个测试与本 QA），PR 总范围为 25 个文件。仍为原草稿 PR，不合并；推送后按新完整 HEAD 独立核对 CI，不用原提交已成功的 5 项检查替代新提交结果。
+
+## Windows ARM64 CI 崩溃与修复（2026-10-22）
+
+### 失败证据与边界
+
+`ca67da7c7abff471c961eda82a0b591d47bd6e52` 的 5 项检查中，4 项成功，唯一失败为 [Windows ARM64 job 119620646453](https://github.com/starroyhq/agentkib/actions/runs/39716775113/job/119620646453)。失败发生在串行 helper 步骤 `real NSIS uninstall observation: residual`，PowerShell 宿主报告 `Internal CLR error (0x80131506)`，退出码 `3221225477`，约 533ms；不是原 20 秒超时，也不是业务断言发现残留文件被接受。该步 52 项通过、1 项失败、9 项跳过，后续原生 NSIS、类型与 backend 检查未执行，不能记作通过。
+
+该场景只加载生产卸载控制函数，计时器、进程与诊断均为合成夹具，不运行 NSIS、不加载 Win32 诊断声明或项目的 `Add-Type`。原 PR 的两次提交没有修改这些脚本；不将本次崩溃误归为连接向导状态回归或旧冷编译超时。
+
+### 定位与最小修复
+
+- 失败使用的 [runner 镜像清单](https://github.com/actions/runner-images/blob/win11-vs2026-arm64/20261013.183/images/windows/Windows11-VS2026-Arm64-Readme.md)列出 PowerShell 7.6.6。上游 [dotnet/runtime #131636](https://github.com/dotnet/runtime/issues/131636)记录同 Windows 11 ARM 宿主、错误码与启动阶段崩溃；[PowerShell #28186](https://github.com/PowerShell/PowerShell/pull/28186)定位 JumpList 的 `PropVariant` 内存布局过小导致越界清理，该修复当时尚未合并。
+- [PowerShell 7.6.6 源码](https://github.com/PowerShell/PowerShell/blob/v7.6.6/src/Microsoft.PowerShell.ConsoleHost/WindowsTaskbarJumpList/TaskbarJumpList.cs#L56)证明：启动时即使设置 `-NonInteractive` 也会初始化 JumpList；设置启动标志 `STARTF_USESHOWWINDOW` 配合 `SW_HIDE` 可确保在 COM 调用前退出。[Node 22/libuv](https://github.com/nodejs/node/blob/v22.20.0/deps/uv/src/win/process.c#L1023)将 `windowsHide: true` 转换为这组标志。
+- 当前后台测试启动 PowerShell 未统一传入隐藏标志，存在上述确定的易损路径。新共用启动器只强制 `windowsHide: true`，原样传递命令、环境、工作目录、stdio、预算、结果和错误；卸载控制、文件诊断和原生锁夹具复用它，ACL 子进程也显式隐藏。稀疏 release-helper 用例同时携带这一新依赖，保留选定 source-root 的隔离检查。
+- **证据限制**：本次失败没有该进程的 dump，因此上游缺陷是高可信匹配，不声称已对本进程做堆栈或内存转储分析。修复直接阻断源码确认的 JumpList COM 路径，不依赖重跑概率、JIT 开关或 PowerShell 升级。
+
+原 `Invoke-AgentKibUninstall`、16 项场景、120000ms 单调预算、20/30 秒子进程预算、退出码、残留、用户数据、所有权清理、诊断顺序、升级回滚及全部安全断言不改；不添加 retry、continue-on-error 或跳过失败的规则。本轮没有修改用户文案、桌面/Web 四语、安全校验、跨 Agent 继续、Codex follower 或 B2/C/D。
+
+### 回归与验证
+
+本机使用临时官方 PowerShell 7.6.7 macOS ARM64，发行归档 SHA256 `50dde99bb066adacbb9a748182d09eb9beff25119dc3b12e85c84b6b6b1c5da9` 与官方校验值一致；HOME/TMPDIR 使用独立临时目录，不修改系统 PowerShell 或仓库依赖。
+
+未修基线：卸载 16/16 通过；完整串行 helper 为 52 通过、0 失败、10 跳过。macOS 不包含 Windows JumpList 分支，此基线不构成 Windows 根因已复现的证据。跳过为 Windows API 与 NSIS 原生/编译器相关项，不当作原生通过。
+
+新启动契约先红后绿：不设置隐藏标志的转发实现为 4 失败、2 通过、1 项 Windows 专用跳过；强制隐藏后为 6 通过、0 失败、1 跳过。覆盖同步/异步启动、原样参数/环境/cwd/stdio/timeout、调用方 options 不突变，以及真实 ENOENT 仍为失败。新增 Windows 原生回归通过同一启动器调用 `GetStartupInfoW`，只输出并断言 `STARTF_USESHOWWINDOW` 与 `SW_HIDE`，在两个 Windows helper glob 中实际执行；macOS 只能验证其 C# 声明编译和结构尺寸，不冒充 Win32 执行。
+
+| 本轮本地检查 | 结果 |
+| --- | --- |
+| 完整串行 helper：`node --test --test-concurrency=1 .github/scripts/*.test.mjs` | 临时 PowerShell 与既有 checksum-pinned NSIS 编译器下，69 项：59 通过、0 失败、10 跳过，25.644 秒 |
+| 原卸载安全场景 | 16/16 通过；残留、退出码、两分钟预算、清理顺序及用户数据断言全部保留 |
+| NSIS 原子升级/产品策略编译 | 三种合成 fixture 编译通过；没有执行 macOS 不支持的 Windows 安装器 |
+| `pnpm typecheck` / `pnpm lint` / `pnpm format:check` | 全部通过；276 条原有 warning，无新增；1002 文件格式通过 |
+| 修改过的 5 个 `.mjs` 的 `node --check`、额外 `oxfmt --check`、`git diff --check` | 全部通过 |
+| 独立实现复核 | no finding；核对原断言/预算、启动契约和稀疏 helper 依赖闭包 |
+
+10 项本机跳过为新启动标志探针、真实 Win32 文件诊断，以及 Windows NSIS 门禁/执行场景；对应的原生结果以推送后的 Windows CI 为准。本轮没有修改应用源码，不重复执行前述桌面/Web 全量或界面构建。临时编译器只使用当前 electron-builder 已固定的工具和校验和，不修改依赖、全局缓存或系统 PowerShell；自有测试进程均已退出。
+
+推送后按新完整 HEAD 核对两个 Windows 和其余 CI；不修改既有检查结果，不合并。纯 CI 状态收敛只更新 PR 说明，避免追加状态提交再次触发同一组 CI。

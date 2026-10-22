@@ -8,6 +8,7 @@ import type {
   HistorySearchStatus,
 } from "@agentkib/runtime-protocol";
 export type {
+  ClaudeBridgeCompatibilityStatus,
   HistorySearchQuery,
   HistorySearchResult,
   HistoryLocation,
@@ -19,6 +20,8 @@ export type {
   HistoryRecordKind,
 } from "@agentkib/runtime-protocol";
 export {
+  CLAUDE_BRIDGE_CLI_VERSION,
+  claudeBridgeCompatibility,
   formatHistoryReferences,
   literalHistoryMatchRanges,
   HISTORY_REFERENCE_LIMIT,
@@ -230,6 +233,8 @@ export interface Live {
   continuationNoticeId?: string | null;
   /** Whether a connected terminal can take messages sent from AgentKib at all. */
   terminalSend?: boolean;
+  /** Observed native terminal version; does not grant sending or stopping. */
+  bridgeCompatibility?: import("@agentkib/runtime-protocol").ClaudeBridgeCompatibilityStatus | null;
   executionMode?:
     | "managed-resume"
     | "claude-managed"

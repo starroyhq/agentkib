@@ -1,9 +1,10 @@
+import { CLAUDE_BRIDGE_CLI_VERSION, claudeBridgeCompatibility } from "@agentkib/web-client";
 import { surfaceCopy, type SessionSurface } from "./session-surface-copy";
 type Locale = "zh-CN" | "zh-TW" | "en-US" | "ja-JP";
 
 const zh = {
   flow: "在终端里继续这条会话，AgentKib 同步显示；发送、停止和审批都在终端里做。",
-  platformVersion: "仅 macOS · 需要 Claude Code {version}",
+  platformVersion: "仅 macOS · 需要 Claude Code {version} 或更高版本",
   installStep: "安装插件（只需一次）",
   generateStep: "生成连接码",
   pasteStep: "在终端粘贴并回车",
@@ -28,7 +29,14 @@ const zh = {
     "清除后会撤销该终端连接的凭据和未使用的连接码；终端照常运行，AgentKib 停止同步。",
   disconnectBeforeCode: "若要生成新的连接码，请先断开当前终端连接。",
   invalidCode: "连接码无效。请重新生成，并在目标终端使用完整的新连接码。",
-  versionMismatch: "Claude Code 或插件版本不匹配。请按安装指引更新后重新连接。",
+  versionMismatch: "终端里的连接插件需要更新。按第 1 步重新安装后，重新生成连接码。",
+  unknownVersion: "未知",
+  cliUnsupported: "无法识别当前 Claude Code 版本。请更新 Claude Code 后重新连接。",
+  cliTooOld: "当前是 Claude Code {version}，需要 {minimum} 或更高。更新 Claude Code 后重新连接。",
+  pluginOutdated: "终端里的连接插件需要更新。按第 1 步重新安装后，重新生成连接码。",
+  missingCapabilities:
+    "Claude Code {version} 暂时不支持连接终端。可以继续在终端里使用，AgentKib 后续版本会适配。",
+  unverifiedVersion: "Claude Code {version} 还没有验证过，同步显示可能不完整",
   identityMismatch: "目标终端与所选会话不匹配。请在所选会话的终端重新连接。",
   connectionUnconfirmed: "上次操作结果尚未确认。请先核对终端状态，再重新连接。",
   managedUnconfirmed:
@@ -89,7 +97,7 @@ export const claudeConnectionCopy: Record<Locale, Copy> = {
   "zh-CN": zh,
   "zh-TW": {
     flow: "在終端裡繼續這段對話，AgentKib 同步顯示；傳送、停止和審批都在終端裡進行。",
-    platformVersion: "僅 macOS · 需要 Claude Code {version}",
+    platformVersion: "僅 macOS · 需要 Claude Code {version} 或以上版本",
     installStep: "安裝外掛（只需一次）",
     generateStep: "產生連線碼",
     pasteStep: "在終端貼上並按下 Enter",
@@ -114,7 +122,15 @@ export const claudeConnectionCopy: Record<Locale, Copy> = {
       "清除後會撤銷此終端連線的憑據與未使用的連線碼；終端照常執行，AgentKib 停止同步。",
     disconnectBeforeCode: "若要產生新的連線碼，請先中斷目前終端連線。",
     invalidCode: "連線碼無效。請重新產生，並在目標終端使用完整的新連線碼。",
-    versionMismatch: "Claude Code 或外掛版本不符。請依安裝指引更新後重新連接。",
+    versionMismatch: "終端裡的連線外掛需要更新。依第 1 步重新安裝後，重新產生連線碼。",
+    unknownVersion: "未知",
+    cliUnsupported: "無法識別目前的 Claude Code 版本。請更新 Claude Code 後重新連接。",
+    cliTooOld:
+      "目前為 Claude Code {version}，需要 {minimum} 或以上版本。更新 Claude Code 後重新連接。",
+    pluginOutdated: "終端裡的連線外掛需要更新。依第 1 步重新安裝後，重新產生連線碼。",
+    missingCapabilities:
+      "Claude Code {version} 暫時不支援連接終端。可以繼續在終端裡使用，AgentKib 後續版本會適配。",
+    unverifiedVersion: "Claude Code {version} 尚未驗證過，同步顯示可能不完整",
     identityMismatch: "目標終端與所選對話不符。請在所選對話的終端重新連接。",
     connectionUnconfirmed: "上次操作結果尚未確認。請先核對終端狀態，再重新連接。",
     managedUnconfirmed:
@@ -172,7 +188,7 @@ export const claudeConnectionCopy: Record<Locale, Copy> = {
   },
   "en-US": {
     flow: "Continue this session in the terminal; AgentKib keeps it in sync. Send messages, stop turns, and handle approvals in the terminal.",
-    platformVersion: "macOS only · Requires Claude Code {version}",
+    platformVersion: "macOS only · Requires Claude Code {version} or later",
     installStep: "Install the plugin (once)",
     generateStep: "Generate connection code",
     pasteStep: "Paste into the terminal and press Enter",
@@ -201,7 +217,18 @@ export const claudeConnectionCopy: Record<Locale, Copy> = {
     invalidCode:
       "The connection code is invalid. Generate a new code and use it in full in the target terminal.",
     versionMismatch:
-      "The Claude Code or plugin version does not match. Update using the installation guide and reconnect.",
+      "The terminal connection plugin needs an update. Reinstall it using step 1, then generate a new connection code.",
+    unknownVersion: "unknown",
+    cliUnsupported:
+      "The current Claude Code version could not be identified. Update Claude Code, then reconnect.",
+    cliTooOld:
+      "You are using Claude Code {version}; {minimum} or later is required. Update Claude Code, then reconnect.",
+    pluginOutdated:
+      "The terminal connection plugin needs an update. Reinstall it using step 1, then generate a new connection code.",
+    missingCapabilities:
+      "Claude Code {version} does not currently support connecting a terminal. You can keep using it in the terminal; a future AgentKib release will add support.",
+    unverifiedVersion:
+      "Claude Code {version} has not been verified yet. Synchronized content may be incomplete.",
     identityMismatch:
       "The terminal does not match the selected session. Reconnect from that session’s terminal.",
     connectionUnconfirmed:
@@ -273,7 +300,7 @@ export const claudeConnectionCopy: Record<Locale, Copy> = {
   },
   "ja-JP": {
     flow: "この会話はターミナルで続け、AgentKib に同期して表示します。送信、停止、承認はターミナルで行ってください。",
-    platformVersion: "macOS のみ · Claude Code {version} が必要です",
+    platformVersion: "macOS のみ · Claude Code {version} 以降が必要です",
     installStep: "プラグインをインストール（初回のみ）",
     generateStep: "接続コードを生成",
     pasteStep: "ターミナルに貼り付けて Enter を押す",
@@ -302,7 +329,18 @@ export const claudeConnectionCopy: Record<Locale, Copy> = {
     invalidCode:
       "接続コードが無効です。新しいコードを生成し、対象ターミナルで完全なコードを使用してください。",
     versionMismatch:
-      "Claude Code またはプラグインのバージョンが一致しません。インストールガイドに従って更新し、再接続してください。",
+      "ターミナルの接続プラグインを更新する必要があります。手順 1 に従って再インストールし、新しい接続コードを生成してください。",
+    unknownVersion: "不明",
+    cliUnsupported:
+      "現在の Claude Code のバージョンを確認できません。Claude Code を更新してから再接続してください。",
+    cliTooOld:
+      "現在の Claude Code は {version} です。{minimum} 以降が必要です。Claude Code を更新してから再接続してください。",
+    pluginOutdated:
+      "ターミナルの接続プラグインを更新する必要があります。手順 1 に従って再インストールし、新しい接続コードを生成してください。",
+    missingCapabilities:
+      "Claude Code {version} は現在ターミナル接続に対応していません。ターミナルでは引き続き利用できます。AgentKib の今後のバージョンで対応します。",
+    unverifiedVersion:
+      "Claude Code {version} はまだ検証されていません。同期表示が不完全な場合があります。",
     identityMismatch:
       "ターミナルが選択した会話と一致しません。その会話のターミナルから再接続してください。",
     connectionUnconfirmed:
@@ -378,8 +416,14 @@ export function claudeConnectionReason(
   locale: Locale,
   reason?: string,
   surface: SessionSurface = "desktop",
+  details?: { cliVersion?: string },
 ) {
   const copy = claudeConnectionCopyForSurface(locale, surface);
+  const observed = details?.cliVersion;
+  const version =
+    typeof observed === "string" && claudeBridgeCompatibility(observed) !== "invalid"
+      ? observed
+      : copy.unknownVersion;
   switch (reason) {
     case "expired-bridge-challenge":
       return copy.expired;
@@ -387,6 +431,16 @@ export function claudeConnectionReason(
       return copy.invalidCode;
     case "bridge-version-mismatch":
       return copy.versionMismatch;
+    case "bridge-cli-too-old":
+      return copy.cliTooOld
+        .replace("{version}", version)
+        .replace("{minimum}", CLAUDE_BRIDGE_CLI_VERSION);
+    case "bridge-cli-unsupported":
+      return copy.cliUnsupported;
+    case "bridge-plugin-update-required":
+      return copy.pluginOutdated;
+    case "bridge-capabilities-missing":
+      return copy.missingCapabilities.replace("{version}", version);
     case "bridge-identity-mismatch":
     case "unsupported-native-identity":
     case "native-identity-changed":

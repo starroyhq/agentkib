@@ -136,6 +136,7 @@ describe("session copy identifies the computer and application", () => {
       "session-display-state.ts",
       "claude-session-banner.ts",
       "claude-connection-copy.ts",
+      "claude-compatibility-note.tsx",
       "managed-copy.ts",
       "managed-error-copy.ts",
       "context-usage-copy.ts",

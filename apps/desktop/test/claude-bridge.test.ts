@@ -17,7 +17,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { ClaudeBridge, type ClaudeBridgeTarget } from "../../../packages/backend/src/claude-bridge";
 import { readControlReceipt } from "../../../packages/backend/src/control-receipt";
 import { openManagedLedger } from "../../../packages/backend/src/managed-ledger";
-import type { ClaudeBridgeSnapshot } from "@agentkib/runtime-protocol";
+import { CLAUDE_BRIDGE_COMPATIBILITY, type ClaudeBridgeSnapshot } from "@agentkib/runtime-protocol";
 import { createConversationState, reduceSessionStreamEvent } from "@agentkib/conversation-state";
 import { register as registerPlugin } from "../../../packages/claude-bridge-plugin/hooks/register.js";
 
@@ -72,7 +72,17 @@ async function fixture(timeout = 1000) {
     cwd: workspace,
     cliVersion: "2.1.301",
     instanceId,
-    pluginVersion: "0.1.0",
+    pluginVersion: "0.2.0",
+    nativeCapabilities: {
+      version: 1 as const,
+      available: [
+        "session-identity",
+        "session-messages",
+        "session-usage",
+        "credential-store",
+        "credential-read",
+      ],
+    },
   };
   function http(
     url: string,
@@ -123,7 +133,17 @@ async function fixture(timeout = 1000) {
   const snapshot: ClaudeBridgeSnapshot = {
     ...hello,
     cliVersion: "2.1.301",
-    pluginVersion: "0.1.0",
+    pluginVersion: "0.2.0",
+    nativeCapabilities: {
+      version: 1 as const,
+      available: [
+        "session-identity",
+        "session-messages",
+        "session-usage",
+        "credential-store",
+        "credential-read",
+      ],
+    },
     revision: 0,
     currentTurnId: null,
     status: "idle",
@@ -212,7 +232,10 @@ describe.skipIf(process.platform === "win32")("native Claude borrowed-host broke
       ]);
       return { catch() {} };
     });
+    const store = new Map<string, unknown>();
     const api = {
+      plugin: { root: "/synthetic/plugin" },
+      fs: { read: async () => JSON.stringify({ version: "0.2.0" }) },
       session: {
         id: async () => f.target.nativeId,
         cwd: async () => f.target.workspace,
@@ -221,7 +244,12 @@ describe.skipIf(process.platform === "win32")("native Claude borrowed-host broke
         usage: async () => null,
       },
       command: { register: async () => undefined },
-      store: { get: async () => undefined, set: async () => undefined },
+      store: {
+        get: async (key: string) => store.get(key),
+        set: async (key: string, value: unknown) => {
+          store.set(key, value);
+        },
+      },
       clock: { every: (_ms: number, callback: () => Promise<void>) => timers.push(callback) },
       http: {
         fetch: async (url: string, init: any) => {
@@ -327,6 +355,9 @@ describe.skipIf(process.platform === "win32")("native Claude borrowed-host broke
     const status = await f.manage("bridge-status");
     expect(JSON.stringify(status)).not.toContain(f.connection.token);
     expect(status).toMatchObject({ supported: true, connected: true });
+    expect((status as { installInstructions: string }).installInstructions).toContain(
+      "claude plugin update agentkib-bridge@agentkib-local",
+    );
   });
   it("reports unverified native send without disabling the separately verified current-turn cancel", async () => {
     const f = await fixture();
@@ -357,16 +388,135 @@ describe.skipIf(process.platform === "win32")("native Claude borrowed-host broke
     });
     expect(f.live()).toMatchObject({ sendEnabled: false, stopEnabled: true, status: "running" });
   });
+  it.each(["2.1.301", "2.1.307", "2.2.0", "3.0.0"])(
+    "checks capabilities and retains actual CLI %s across pairing and reconnect",
+    async (cliVersion) => {
+      const f = await fixture();
+      await f.manage("bridge-disconnect");
+      const prepared = (await f.manage("bridge-challenge")) as { challenge: string };
+      const ticket = JSON.parse(Buffer.from(prepared.challenge, "base64url").toString());
+      const hello = { ...f.hello, cliVersion };
+      const paired = await f.http("/v1/pair", { ...hello, ticket: ticket.ticket });
+      expect(paired.status).toBe(200);
+      const credential = JSON.parse(readFileSync(paired.body.credentialPath, "utf8"));
+      expect(credential.cliVersion).toBe(cliVersion);
+      const compatibility = {
+        cliVersion,
+        status: CLAUDE_BRIDGE_COMPATIBILITY.verifiedCliVersions.includes(cliVersion)
+          ? "verified"
+          : "unverified",
+      };
+      expect(await f.manage("bridge-status")).toMatchObject({ bridgeCompatibility: compatibility });
+      const reconnect = await f.http(
+        "/v1/reconnect",
+        { ...hello, bindingId: paired.body.bindingId },
+        paired.body.token,
+      );
+      expect(reconnect.status).toBe(200);
+      expect(reconnect.body.leaseId).not.toBe(paired.body.leaseId);
+      expect(f.live()).toMatchObject({
+        cliVersion: `${cliVersion} (Claude Code)`,
+        bridgeCompatibility: compatibility,
+      });
+    },
+  );
+  it.each([
+    "session-identity",
+    "session-messages",
+    "session-usage",
+    "credential-store",
+    "credential-read",
+  ])("refuses missing %s on pairing and authenticated reconnect", async (missing) => {
+    const f = await fixture();
+    const fields = {
+      nativeCapabilities: {
+        version: 1,
+        available: f.hello.nativeCapabilities.available.filter((name) => name !== missing),
+      },
+    };
+    const prepared = (await f.manage("bridge-challenge")) as { challenge: string };
+    const ticket = JSON.parse(Buffer.from(prepared.challenge, "base64url").toString());
+    expect(
+      await f.http("/v1/pair", { ...f.hello, ...fields, ticket: ticket.ticket }),
+    ).toMatchObject({
+      status: 409,
+      body: {
+        error: "bridge-capabilities-missing",
+        missingCapabilities: [missing],
+        cliVersion: "2.1.301",
+      },
+    });
+    expect(await f.manage("bridge-status")).toMatchObject({
+      connectionError: "bridge-capabilities-missing",
+      connectionCliVersion: "2.1.301",
+      connectionMissingCapabilities: [missing],
+    });
+    expect(
+      await f.http(
+        "/v1/reconnect",
+        { ...f.hello, ...fields, bindingId: f.connection.bindingId },
+        f.connection.token,
+      ),
+    ).toMatchObject({ status: 409, body: { error: "bridge-capabilities-missing" } });
+    // A failed compatibility attempt cannot consume a still-current code or replace a live lease.
+    expect(f.live().connectionGeneration).toBe(f.connection.leaseId);
+    expect((await f.http("/v1/pair", { ...f.hello, ticket: ticket.ticket })).status).toBe(200);
+  });
+  it.each([
+    [{ cliVersion: "2.1.300" }, "bridge-cli-too-old"],
+    [{ cliVersion: "2.1.307-preview" }, "bridge-cli-unsupported"],
+    [{ pluginVersion: "0.1.0" }, "bridge-plugin-update-required"],
+    [{ protocol: 2 }, "bridge-plugin-update-required"],
+    [{ nativeCapabilities: undefined }, "bridge-capabilities-missing"],
+  ])(
+    "rejects incompatible native metadata without weakening the current binding",
+    async (fields, reason) => {
+      const f = await fixture();
+      const prepared = (await f.manage("bridge-challenge")) as { challenge: string };
+      const ticket = JSON.parse(Buffer.from(prepared.challenge, "base64url").toString());
+      expect(
+        await f.http("/v1/pair", { ...f.hello, ...fields, ticket: ticket.ticket }),
+      ).toMatchObject({ status: 409, body: { error: reason } });
+      expect(f.live().connectionGeneration).toBe(f.connection.leaseId);
+      expect((await f.http("/v1/pair", { ...f.hello, ticket: ticket.ticket })).status).toBe(200);
+    },
+  );
   it("consumes the challenge and refuses mismatched session, cwd and version", async () => {
     const f = await fixture();
     expect((await f.http("/v1/pair", { ...f.hello, ticket: f.ticket.ticket })).status).toBe(409);
-    for (const fields of [{ nativeId: randomUUID() }, { cwd: f.root }, { cliVersion: "2.1.302" }]) {
+    for (const fields of [{ nativeId: randomUUID() }, { cwd: f.root }, { cliVersion: "2.1.300" }]) {
       const challenge = (await f.manage("bridge-challenge")) as { challenge: string };
       const ticket = JSON.parse(Buffer.from(challenge.challenge, "base64url").toString());
       expect(
         (await f.http("/v1/pair", { ...f.hello, ...fields, ticket: ticket.ticket })).status,
       ).toBe(409);
     }
+  });
+  it.each([
+    { cliVersion: "2.1.307" },
+    { pluginVersion: "0.1.0" },
+    { nativeCapabilities: { version: 1, available: ["session-identity"] } },
+  ])("rejects snapshot metadata that was not negotiated by the current lease", async (fields) => {
+    const f = await fixture();
+    expect(
+      (await f.events({ type: "snapshot", snapshot: { ...f.snapshot, ...fields, revision: 1 } }))
+        .status,
+    ).toBe(409);
+    expect(f.live().cliVersion).toBe("2.1.301 (Claude Code)");
+    expect(f.live().connectionGeneration).toBe(f.connection.leaseId);
+    expect(f.live().revision).toBeGreaterThanOrEqual(0);
+  });
+  it("explicitly clears public compatibility when a source is invalid or disconnected", async () => {
+    const f = await fixture();
+    expect(f.live().bridgeCompatibility).toEqual({ cliVersion: "2.1.301", status: "verified" });
+    await f.manage("bridge-disconnect");
+    expect(f.live().bridgeCompatibility).toBeNull();
+    expect(await f.manage("bridge-status")).toHaveProperty("bridgeCompatibility", null);
+    f.invalidate();
+    expect(f.live().bridgeCompatibility).toBeNull();
+    const active = await fixture();
+    active.invalidate();
+    expect(active.live().bridgeCompatibility).toBeNull();
   });
   it("reports expired connection codes to the desktop and clears the failure for a new code", async () => {
     const f = await fixture();
@@ -443,7 +593,7 @@ describe.skipIf(process.platform === "win32")("native Claude borrowed-host broke
     },
   );
   it.each([
-    [{ cliVersion: "2.1.302" }, "bridge-version-mismatch"],
+    [{ cliVersion: "2.1.300" }, "bridge-cli-too-old"],
     [{ cwd: "/another/workspace" }, "bridge-identity-mismatch"],
   ])(
     "explains failed identity validation without granting a connection",
@@ -489,7 +639,7 @@ describe.skipIf(process.platform === "win32")("native Claude borrowed-host broke
     ).toMatchObject({ status: 409 });
     expect(await f.manage("bridge-status")).toMatchObject({
       connected: false,
-      connectionError: "bridge-version-mismatch",
+      connectionError: "bridge-plugin-update-required",
     });
     await f.manage("bridge-disconnect");
     expect(await f.manage("bridge-status")).not.toHaveProperty(

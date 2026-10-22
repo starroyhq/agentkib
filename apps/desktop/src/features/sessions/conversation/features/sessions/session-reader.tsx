@@ -2,6 +2,7 @@ import { catalogCopy } from "../catalog/catalog-copy";
 import { codexReason } from "./codex-copy";
 import { isSendEnter, useEnterSends } from "./composer-shortcuts";
 import { claudeSessionBanner } from "./claude-session-banner";
+import { ClaudeCompatibilityNote } from "./claude-compatibility-note";
 import { HistoryReferenceChips } from "../history/history-search-controls";
 import { validHistoryMessage } from "../history/history-reference-model";
 import { SessionOperations } from "./session-operations";
@@ -145,6 +146,18 @@ export function SessionReader() {
                     {banner.title && <strong className="block mb-1">{banner.title}</strong>}
                     {banner.body}
                   </aside>
+                )}
+              {current?.agent === "claude-code" &&
+                online &&
+                live?.sessionId === selected &&
+                live.executionMode === "claude-follower" &&
+                live.status !== "unsupported" &&
+                live.reason !== "claude-bridge-disconnected" && (
+                  <ClaudeCompatibilityNote
+                    locale={locale}
+                    compatibility={live.bridgeCompatibility}
+                    className="mx-auto mb-4 w-full max-w-3xl"
+                  />
                 )}
               {["codex", "claude-code"].includes(current?.agent ?? "") &&
                 current?.forked_from_session_id && (

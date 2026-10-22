@@ -170,7 +170,17 @@ describe.skipIf(process.platform !== "darwin")(
         nativeId,
         cwd: workspace,
         cliVersion: "2.1.301",
-        pluginVersion: "0.1.0",
+        pluginVersion: "0.2.0",
+        nativeCapabilities: {
+          version: 1 as const,
+          available: [
+            "session-identity",
+            "session-messages",
+            "session-usage",
+            "credential-store",
+            "credential-read",
+          ],
+        },
         instanceId,
       };
       const paired = await plugin<ClaudeBridgeConnection>(
@@ -184,7 +194,17 @@ describe.skipIf(process.platform !== "darwin")(
         ...identity,
         protocol: 1,
         cliVersion: "2.1.301",
-        pluginVersion: "0.1.0",
+        pluginVersion: "0.2.0",
+        nativeCapabilities: {
+          version: 1 as const,
+          available: [
+            "session-identity",
+            "session-messages",
+            "session-usage",
+            "credential-store",
+            "credential-read",
+          ],
+        },
         revision: 1,
         currentTurnId: null,
         status: "idle",

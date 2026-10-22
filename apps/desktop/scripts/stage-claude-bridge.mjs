@@ -11,6 +11,7 @@ const entries = [
   "package.json",
   "hooks/hooks.json",
   "hooks/register.js",
+  "hooks/compatibility.js",
 ];
 const hash = createHash("sha256");
 await rm(destination, { recursive: true, force: true });

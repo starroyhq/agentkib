@@ -932,6 +932,39 @@ describe("desktop embedded conversation", () => {
     });
 
     it.each(["zh-CN", "zh-TW", "en-US", "ja-JP"] as const)(
+      "shows an unverified native version in %s without enabling terminal controls",
+      async (locale) => {
+        const { bridge, patch } = await open(
+          {
+            ...live(),
+            executionMode: "claude-follower",
+            connectionGeneration: "lease-a",
+            sendEnabled: false,
+            terminalSend: false,
+            reason: "claude-follower-send-unverified",
+            bridgeCompatibility: { cliVersion: "2.1.307", status: "unverified" },
+          },
+          locale,
+        );
+        const text = claudeConnectionCopy[locale].unverifiedVersion.replace("{version}", "2.1.307");
+        expect(await screen.findByText(text)).toHaveClass("text-muted-foreground");
+        expect(screen.queryByRole("textbox")).toBeNull();
+        expect(
+          vi.mocked(bridge.request).mock.calls.filter(([path]) => path === "send"),
+        ).toHaveLength(0);
+        patch({ bridgeCompatibility: null });
+        await waitFor(() => expect(screen.queryByText(text)).toBeNull());
+        patch({ bridgeCompatibility: { cliVersion: "2.1.301", status: "verified" } });
+        await waitFor(() => expect(screen.queryByText(text)).toBeNull());
+        patch({
+          executionMode: "claude-managed",
+          bridgeCompatibility: { cliVersion: "2.1.307", status: "unverified" },
+        });
+        expect(screen.queryByText(text)).toBeNull();
+      },
+    );
+
+    it.each(["zh-CN", "zh-TW", "en-US", "ja-JP"] as const)(
       "shows unconfirmed native turn state in %s without handoff",
       async (locale) => {
         const { bridge } = await open(

@@ -5,6 +5,7 @@ import { dictionaries } from "@/features/conversation/i18n";
 import { SessionReader } from "@/features/conversation/features/sessions/session-reader";
 import { useSession } from "@/features/conversation/features/sessions/session-context";
 import { webLayoutCopy } from "@/features/conversation/features/sessions/web-layout-copy";
+import { claudeConnectionCopy } from "@/features/conversation/features/sessions/claude-connection-copy";
 import { codexReason } from "@/features/conversation/features/sessions/codex-copy";
 
 vi.mock("@/features/conversation/features/sessions/session-context", () => ({
@@ -56,6 +57,52 @@ function moveTo(top: number) {
 }
 
 describe("conversation reading position", () => {
+  it.each(["zh-CN", "zh-TW", "en-US", "ja-JP"] as const)(
+    "shows a neutral native version note without enabling controls in %s",
+    (locale) => {
+      state = {
+        ...state,
+        locale,
+        t: dictionaries[locale],
+        online: true,
+        current: { ...state.current!, agent: "claude-code" },
+        live: {
+          sessionId: "first",
+          status: "idle",
+          revision: 1,
+          approvals: [],
+          executionMode: "claude-follower",
+          sendEnabled: false,
+          stopEnabled: false,
+          terminalSend: false,
+          reason: "claude-follower-send-unverified",
+          bridgeCompatibility: { cliVersion: "2.1.307", status: "unverified" },
+        },
+      };
+      const view = render(<SessionReader />);
+      const text = claudeConnectionCopy[locale].unverifiedVersion.replace("{version}", "2.1.307");
+      expect(screen.getByText(text)).toHaveClass("text-muted-foreground");
+      expect(screen.getByText("First answer")).toBeVisible();
+      expect(view.container.querySelector('[role="alert"]')).toBeNull();
+      state.live = { ...state.live!, bridgeCompatibility: null };
+      view.rerender(<SessionReader />);
+      expect(view.container.querySelector("[data-terminal-compatibility]")).toBeNull();
+      state.live = {
+        ...state.live!,
+        bridgeCompatibility: { cliVersion: "2.1.301", status: "verified" },
+      };
+      view.rerender(<SessionReader />);
+      expect(view.container.querySelector("[data-terminal-compatibility]")).toBeNull();
+      state.live = {
+        ...state.live!,
+        executionMode: "claude-managed",
+        bridgeCompatibility: { cliVersion: "2.1.307", status: "unverified" },
+      };
+      view.rerender(<SessionReader />);
+      expect(view.container.querySelector("[data-terminal-compatibility]")).toBeNull();
+    },
+  );
+
   it("anchors a pending user before a reply that arrives ahead of native persistence", () => {
     state.pendingSend = { sessionId: "first", text: "next question", afterEventId: "tail" };
     state.page!.events.push(message("new-answer", "New answer"));

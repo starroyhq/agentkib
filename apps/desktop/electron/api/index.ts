@@ -158,6 +158,9 @@ export interface DesktopRuntimeStatus {
 }
 
 export interface ClaudeBridgeStatus {
+  bridgeCompatibility?: import("@agentkib/runtime-protocol").ClaudeBridgeCompatibilityStatus | null;
+  connectionCliVersion?: string;
+  connectionMissingCapabilities?: string[];
   connectionError?: string;
   supported: boolean;
   connected: boolean;

@@ -83,6 +83,7 @@ function statusFor(state) {
     installInstructions: [
       `claude plugin marketplace add '${examplePlugin}'`,
       "claude plugin install agentkib-bridge@agentkib-local",
+      "claude plugin update agentkib-bridge@agentkib-local",
       "/reload-plugins",
     ].join("\n"),
     reason:
@@ -97,8 +98,16 @@ function statusFor(state) {
       state.mode === "expired"
         ? "expired-bridge-challenge"
         : state.mode === "failed"
-          ? "bridge-version-mismatch"
+          ? (state.connectionError ?? "bridge-version-mismatch")
           : undefined,
+    connectionCliVersion: state.cliVersion,
+    bridgeCompatibility:
+      state.mode === "connected" && state.cliVersion
+        ? {
+            cliVersion: state.cliVersion,
+            status: state.cliVersion === "2.1.301" ? "verified" : "unverified",
+          }
+        : null,
   };
 }
 function liveFor(live) {
@@ -118,6 +127,13 @@ function liveFor(live) {
           ? "claude-follower-send-unverified"
           : undefined,
     terminalSend: false,
+    bridgeCompatibility:
+      state.mode === "connected" && state.cliVersion
+        ? {
+            cliVersion: state.cliVersion,
+            status: state.cliVersion === "2.1.301" ? "verified" : "unverified",
+          }
+        : null,
     sendEnabled: false,
     stopEnabled: false,
     turnId: null,
@@ -195,7 +211,13 @@ ipcMain.handle = (channel, handler) =>
       !["status", "discover"].includes(args[0]?.operation)
     )
       throw new Error("Synthetic visual QA does not pair or share computers");
-    if (channel === "agentkib:web:request" && args[0]?.operation !== "status")
+    // B2 may pair one local read-only test browser. Keep control grants and all
+    // configuration/remote mutations blocked; the real handler owns the code.
+    if (
+      channel === "agentkib:web:request" &&
+      args[0]?.operation !== "status" &&
+      !(args[0]?.operation === "generate-code" && args[0]?.access === "read")
+    )
       throw new Error("Synthetic visual QA does not change remote access");
     if (channel === "agentkib:conversation:request") {
       const route = typeof args[0] === "string" ? args[0].replace(/^\//, "").split("?")[0] : "";

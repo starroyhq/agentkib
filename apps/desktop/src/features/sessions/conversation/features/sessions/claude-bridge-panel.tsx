@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { CLAUDE_BRIDGE_CLI_VERSION } from "@agentkib/runtime-protocol";
+import { ClaudeCompatibilityNote } from "./claude-compatibility-note";
 import type { ClaudeBridgeChallenge, ClaudeBridgeStatus } from "../../../../../../electron/api";
 import { desktopApi } from "@/core/desktop";
 import { Button } from "@/components/ui/button";
@@ -7,6 +8,14 @@ import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/component
 import { Dialog } from "../../components/dialog";
 import { useSession } from "./session-context";
 import { claudeConnectionCopy, claudeConnectionReason } from "./claude-connection-copy";
+
+const incompatibleReasons = new Set([
+  "bridge-cli-too-old",
+  "bridge-cli-unsupported",
+  "bridge-capabilities-missing",
+  "bridge-plugin-update-required",
+  "bridge-version-mismatch",
+]);
 
 function statusResponse(value: unknown, sessionId: string): ClaudeBridgeStatus {
   if (
@@ -23,7 +32,16 @@ function statusResponse(value: unknown, sessionId: string): ClaudeBridgeStatus {
     typeof row.version !== "string" ||
     typeof row.pluginDirectory !== "string" ||
     typeof row.installInstructions !== "string" ||
-    (row.connectionError !== undefined && typeof row.connectionError !== "string")
+    (row.connectionError !== undefined && typeof row.connectionError !== "string") ||
+    (row.connectionCliVersion !== undefined && typeof row.connectionCliVersion !== "string") ||
+    (row.bridgeCompatibility !== undefined &&
+      row.bridgeCompatibility !== null &&
+      (!row.bridgeCompatibility ||
+        typeof row.bridgeCompatibility !== "object" ||
+        !("cliVersion" in row.bridgeCompatibility) ||
+        typeof row.bridgeCompatibility.cliVersion !== "string" ||
+        !("status" in row.bridgeCompatibility) ||
+        !["verified", "unverified"].includes(String(row.bridgeCompatibility.status))))
   )
     throw new Error("invalid_bridge_status");
   return value as ClaudeBridgeStatus;
@@ -64,6 +82,7 @@ export function ClaudeBridgePanel({ active, onClose }: { active: boolean; onClos
       connectionGeneration?: string;
     }
   >();
+  const incompatible = incompatibleReasons.has(status?.connectionError ?? "");
   const [expired, setExpired] = useState(false);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState(false);
@@ -144,6 +163,7 @@ export function ClaudeBridgePanel({ active, onClose }: { active: boolean; onClos
             connectionGeneration: live?.connectionGeneration,
           });
           setError(false);
+          if (incompatibleReasons.has(result.connectionError ?? "")) setChallenge(undefined);
           if (result.connectionError === "expired-bridge-challenge") {
             setChallenge(undefined);
             setExpired(true);
@@ -318,11 +338,14 @@ export function ClaudeBridgePanel({ active, onClose }: { active: boolean; onClos
           : status?.connectionError && status.connectionError !== "expired-bridge-challenge"
             ? status.connectionError === "control-outcome-unconfirmed"
               ? copy.connectionUnconfirmed
-              : (claudeConnectionReason(locale, status.connectionError) ?? copy.failed)
+              : (claudeConnectionReason(locale, status.connectionError, "desktop", {
+                  cliVersion: status.connectionCliVersion,
+                }) ?? copy.failed)
             : status && !status.supported
               ? (claudeConnectionReason(locale, status.reason) ?? copy.failed)
               : undefined;
-  const displayedChallenge = challenge?.sessionId === selected && canRevoke ? challenge : undefined;
+  const displayedChallenge =
+    !incompatible && challenge?.sessionId === selected && canRevoke ? challenge : undefined;
   const stateKind = problem
     ? "error"
     : confirmedConnected
@@ -414,6 +437,9 @@ export function ClaudeBridgePanel({ active, onClose }: { active: boolean; onClos
         <p className="text-xs text-muted-foreground">
           {copy.platformVersion.replace("{version}", status?.version ?? CLAUDE_BRIDGE_CLI_VERSION)}
         </p>
+        {confirmedConnected && (
+          <ClaudeCompatibilityNote locale={locale} compatibility={status?.bridgeCompatibility} />
+        )}
       </div>
       {platformUnsupported ? (
         <div className="rounded-lg border bg-muted/30 p-4" role="status">

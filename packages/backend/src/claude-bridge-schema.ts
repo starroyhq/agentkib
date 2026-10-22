@@ -1,7 +1,8 @@
 import { z } from "zod";
 import {
-  CLAUDE_BRIDGE_CLI_VERSION,
   CLAUDE_BRIDGE_PLUGIN_VERSION,
+  claudeBridgeCompatibility,
+  missingClaudeBridgeCapabilities,
 } from "@agentkib/runtime-protocol";
 
 const id = z.string().uuid();
@@ -12,8 +13,15 @@ export const bridgeIdentitySchema = z.object({
   protocol: z.literal(1),
   nativeId: id,
   cwd,
-  cliVersion: z.literal(CLAUDE_BRIDGE_CLI_VERSION),
+  cliVersion: z
+    .string()
+    .max(64)
+    .refine((version) => ["verified", "unverified"].includes(claudeBridgeCompatibility(version))),
   pluginVersion: z.literal(CLAUDE_BRIDGE_PLUGIN_VERSION),
+  nativeCapabilities: z
+    .object({ version: z.literal(1), available: z.array(z.string().min(1).max(64)).max(32) })
+    .strict()
+    .refine((report) => missingClaudeBridgeCapabilities(report).length === 0),
   instanceId: id,
 });
 export const bridgeLeaseSchema = z.object({

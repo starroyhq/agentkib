@@ -460,7 +460,7 @@ describe("Claude terminal connection management", () => {
     state.request.mockResolvedValue({ ...status(), supported: false, reason });
     render(<ClaudeBridgePanel active />);
     expect(await screen.findByText(explanation)).toBeVisible();
-    expect(screen.getByText("仅 macOS · 需要 Claude Code 2.1.301")).toBeVisible();
+    expect(screen.getByText("仅 macOS · 需要 Claude Code 2.1.301 或更高版本")).toBeVisible();
     if (reason === "platform-unsupported")
       expect(screen.queryByRole("button", { name: "重新生成" })).not.toBeInTheDocument();
     else expect(screen.getByRole("button", { name: "重新生成" })).toBeDisabled();
@@ -481,7 +481,9 @@ describe("Claude terminal connection management", () => {
     expect(screen.getByText(challenge.instructions, { selector: "code" })).toBeVisible();
     result = { ...result, connectionError: "bridge-version-mismatch" };
     await act(async () => vi.advanceTimersByTime(2500));
-    expect(screen.getByRole("alert")).toHaveTextContent("Claude Code 或插件版本不匹配");
+    expect(screen.getByRole("alert")).toHaveTextContent(
+      "终端里的连接插件需要更新。按第 1 步重新安装后，重新生成连接码。",
+    );
     expect(
       screen.queryByText(challenge.instructions, { selector: "code" }),
     ).not.toBeInTheDocument();

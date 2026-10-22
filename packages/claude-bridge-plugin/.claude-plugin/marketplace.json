@@ -7,7 +7,7 @@
       "name": "agentkib-bridge",
       "source": "./",
       "description": "Connect your existing Claude Code session to the local AgentKib application.",
-      "version": "0.1.0"
+      "version": "0.2.0"
     }
   ]
 }

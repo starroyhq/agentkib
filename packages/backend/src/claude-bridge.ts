@@ -18,6 +18,10 @@ import {
   CLAUDE_BRIDGE_CLI_VERSION,
   CLAUDE_BRIDGE_PLUGIN_VERSION,
   CLAUDE_BRIDGE_PATHS,
+  CLAUDE_BRIDGE_REQUIRED_CAPABILITIES,
+  claudeBridgeCompatibility,
+  missingClaudeBridgeCapabilities,
+  type ClaudeBridgeIdentity,
   type ClaudeBridgeCommand,
   type ClaudeBridgeEvent,
   type ClaudeBridgeSnapshot,
@@ -62,6 +66,7 @@ const bindingSchema = z
     target: targetSchema,
     token: z.string().regex(/^[a-f0-9]{64}$/),
     revoked: z.boolean(),
+    cliVersion: z.string().max(64).optional(),
     inflight: z
       .object({ requestId: uuid, commandId: uuid, turnId: uuid.nullable() })
       .strict()
@@ -79,6 +84,7 @@ type Pending = {
   timer: ReturnType<typeof setTimeout>;
 };
 type Connection = {
+  identity: ClaudeBridgeIdentity;
   leaseId: string;
   instanceId: string;
   lastSeen: number;
@@ -148,13 +154,43 @@ function stable(value: unknown): string {
 }
 const digest = (value: string) => createHash("sha256").update(value).digest();
 
+class CompatibilityError extends Error {
+  constructor(
+    reason: string,
+    readonly cliVersion?: string,
+    readonly missingCapabilities?: string[],
+  ) {
+    super(reason);
+  }
+}
+function requireCompatibility(value: unknown): void {
+  const row = value && typeof value === "object" ? (value as Record<string, unknown>) : {};
+  const state = claudeBridgeCompatibility(row.cliVersion);
+  const version = state === "invalid" ? undefined : (row.cliVersion as string);
+  if (row.protocol !== 1 || row.pluginVersion !== CLAUDE_BRIDGE_PLUGIN_VERSION)
+    throw new CompatibilityError("bridge-plugin-update-required", version);
+  if (state === "too-old") throw new CompatibilityError("bridge-cli-too-old", version);
+  if (state === "invalid") throw new CompatibilityError("bridge-cli-unsupported");
+  const missing = missingClaudeBridgeCapabilities(row.nativeCapabilities);
+  if (missing.length) throw new CompatibilityError("bridge-capabilities-missing", version, missing);
+}
+function compatibilityStatus(connection?: Connection) {
+  if (!connection) return undefined;
+  const cliVersion = connection.identity.cliVersion;
+  const status = claudeBridgeCompatibility(cliVersion);
+  return status === "verified" || status === "unverified" ? { cliVersion, status } : undefined;
+}
+
 /** A borrowed native execution host. Closing this broker never signals a Claude process. */
 export class ClaudeBridge {
   readonly root: string;
   #bindings = new Map<string, Binding>();
   #connections = new Map<string, Connection>();
   #challenges = new Map<string, Challenge>();
-  #connectionAttempts = new Map<string, { challenge: Challenge; error?: string }>();
+  #connectionAttempts = new Map<
+    string,
+    { challenge: Challenge; error?: string; cliVersion?: string; missingCapabilities?: string[] }
+  >();
   #server?: Server;
   #listening?: Promise<void>;
   #socketPath?: string;
@@ -298,6 +334,10 @@ export class ClaudeBridge {
         sessionId: input.sessionId,
         version: CLAUDE_BRIDGE_CLI_VERSION,
         connectionError: this.#connectionAttempts.get(input.sessionId)?.error,
+        connectionCliVersion: this.#connectionAttempts.get(input.sessionId)?.cliVersion,
+        connectionMissingCapabilities: this.#connectionAttempts.get(input.sessionId)
+          ?.missingCapabilities,
+        bridgeCompatibility: compatibilityStatus(this.#connections.get(input.sessionId)) ?? null,
         reason: this.supported
           ? this.#startupFailed
             ? "claude-bridge-unavailable"
@@ -309,6 +349,7 @@ export class ClaudeBridge {
         installInstructions: [
           `claude plugin marketplace add '${this.options.pluginDirectory.replaceAll("'", "'\\''")}'`,
           "claude plugin install agentkib-bridge@agentkib-local",
+          "claude plugin update agentkib-bridge@agentkib-local",
           "/reload-plugins",
         ].join("\n"),
       };
@@ -412,7 +453,8 @@ export class ClaudeBridge {
       // The plugin's static capability; `sendEnabled` additionally needs an idle terminal.
       terminalSend: snapshot?.capabilities.send === true,
       connectionGeneration: connection?.leaseId ?? this.options.bootId,
-      cliVersion: `${CLAUDE_BRIDGE_CLI_VERSION} (Claude Code)`,
+      cliVersion: connection ? `${connection.identity.cliVersion} (Claude Code)` : undefined,
+      bridgeCompatibility: valid ? (compatibilityStatus(connection) ?? null) : null,
       revision: connection?.revision ?? this.#revision,
       status,
       reason,
@@ -806,7 +848,8 @@ export class ClaudeBridge {
       token: row.token,
       nativeId: row.target.nativeId,
       cwd: row.target.workspace,
-      cliVersion: CLAUDE_BRIDGE_CLI_VERSION,
+      // Registries written before B2 could only contain the exactly pinned CLI.
+      cliVersion: row.cliVersion ?? CLAUDE_BRIDGE_CLI_VERSION,
       pluginVersion: CLAUDE_BRIDGE_PLUGIN_VERSION,
     });
   }
@@ -857,21 +900,34 @@ export class ClaudeBridge {
               ticket: z.string(),
               connectionError: z.enum([
                 "bridge-version-mismatch",
+                "bridge-cli-too-old",
+                "bridge-cli-unsupported",
+                "bridge-capabilities-missing",
+                "bridge-plugin-update-required",
                 "unsupported-native-identity",
                 "native-identity-changed",
               ]),
+              cliVersion: z
+                .string()
+                .max(64)
+                .refine((version) => claudeBridgeCompatibility(version) !== "invalid")
+                .optional(),
+              missingCapabilities: z
+                .array(z.enum(CLAUDE_BRIDGE_REQUIRED_CAPABILITIES as [string, ...string[]]))
+                .max(CLAUDE_BRIDGE_REQUIRED_CAPABILITIES.length)
+                .optional(),
             })
             .strict()
             .parse(value);
-          throw new Error(report.connectionError);
+          throw new CompatibilityError(
+            report.connectionError === "bridge-version-mismatch"
+              ? "bridge-plugin-update-required"
+              : report.connectionError,
+            report.cliVersion,
+            report.missingCapabilities,
+          );
         }
-        if (
-          value &&
-          typeof value === "object" &&
-          (("cliVersion" in value && value.cliVersion !== CLAUDE_BRIDGE_CLI_VERSION) ||
-            ("pluginVersion" in value && value.pluginVersion !== CLAUDE_BRIDGE_PLUGIN_VERSION))
-        )
-          throw new Error("bridge-version-mismatch");
+        requireCompatibility(value);
         const hello = bridgeIdentitySchema
           .extend({ ticket: z.string().regex(/^[a-f0-9]{64}$/) })
           .strict()
@@ -917,6 +973,7 @@ export class ClaudeBridge {
           target,
           token: randomBytes(32).toString("hex"),
           revoked: false,
+          cliVersion: hello.cliVersion,
           inflight: null,
         };
         if (this.#bindings.size >= 64 && !old) throw new Error("claude-bridge-binding-limit");
@@ -924,7 +981,7 @@ export class ClaudeBridge {
         this.#save();
         this.#writeCredential(row);
         if (old) rmSync(this.#credentialPath(old.bindingId), { force: true });
-        const connection = this.#newConnection(row, hello.instanceId);
+        const connection = this.#newConnection(row, hello);
         this.#connectionAttempts.delete(target.sessionId);
         reply(200, {
           protocol: 1,
@@ -959,11 +1016,15 @@ export class ClaudeBridge {
         return;
       }
       if (request.url === CLAUDE_BRIDGE_PATHS.reconnect) {
+        requireCompatibility(value);
         const hello = bridgeIdentitySchema.extend({ bindingId: uuid }).strict().parse(value);
         if (hello.nativeId !== row.target.nativeId || hello.cwd !== row.target.workspace)
           throw new Error("bridge-identity-mismatch");
         this.#disconnect(row.target.sessionId);
-        const connection = this.#newConnection(row, hello.instanceId);
+        row.cliVersion = hello.cliVersion;
+        this.#save();
+        this.#writeCredential(row);
+        const connection = this.#newConnection(row, hello);
         reply(200, {
           protocol: 1,
           bindingId: row.bindingId,
@@ -1152,6 +1213,10 @@ export class ClaudeBridge {
           "invalid-bridge-challenge",
           "expired-bridge-challenge",
           "bridge-version-mismatch",
+          "bridge-cli-too-old",
+          "bridge-cli-unsupported",
+          "bridge-capabilities-missing",
+          "bridge-plugin-update-required",
           "unsupported-native-identity",
           "native-identity-changed",
           "bridge-identity-mismatch",
@@ -1164,15 +1229,24 @@ export class ClaudeBridge {
         ? this.#connectionAttempts.get(attemptedChallenge.target.sessionId)
         : undefined;
       // A replaced, revoked or successfully paired code no longer owns the panel's feedback.
-      if (attempt && attempt.challenge === attemptedChallenge) attempt.error = reason;
-      reply(409, { error: reason });
+      const details =
+        error instanceof CompatibilityError
+          ? { cliVersion: error.cliVersion, missingCapabilities: error.missingCapabilities }
+          : {};
+      if (attempt && attempt.challenge === attemptedChallenge) {
+        attempt.error = reason;
+        attempt.cliVersion = details.cliVersion;
+        attempt.missingCapabilities = details.missingCapabilities;
+      }
+      reply(409, { error: reason, ...details });
     }
   }
 
-  #newConnection(row: Binding, instanceId: string): Connection {
+  #newConnection(row: Binding, identity: ClaudeBridgeIdentity): Connection {
     const connection: Connection = {
       leaseId: randomUUID(),
-      instanceId,
+      instanceId: identity.instanceId,
+      identity,
       lastSeen: Date.now(),
       seq: 0,
       revision: ++this.#revision,
@@ -1208,7 +1282,10 @@ export class ClaudeBridge {
       if (
         snapshot.nativeId !== row.target.nativeId ||
         snapshot.cwd !== row.target.workspace ||
-        snapshot.instanceId !== connection.instanceId
+        snapshot.instanceId !== connection.instanceId ||
+        snapshot.cliVersion !== connection.identity.cliVersion ||
+        snapshot.pluginVersion !== connection.identity.pluginVersion ||
+        stable(snapshot.nativeCapabilities) !== stable(connection.identity.nativeCapabilities)
       )
         throw new Error("bridge-identity-mismatch");
       if (connection.snapshot && snapshot.revision < connection.snapshot.revision)

@@ -20,6 +20,7 @@ import { useRemoteStore } from "./remote-store";
 
 const web = vi.hoisted(() => ({
   request: vi.fn(),
+  adminState: { busy: false, configurationUncertain: false },
   listener: undefined as { status(value: WebAdminStatus): void; error(): void } | undefined,
   status: undefined as WebAdminStatus | undefined,
 }));
@@ -33,6 +34,8 @@ vi.mock("./web-status", () => ({
     };
   },
   requestWebAdmin: web.request,
+  useWebAdminState: () => web.adminState,
+  getWebAdminState: () => web.adminState,
 }));
 const run = vi.fn();
 const interfaces = [
@@ -86,11 +89,13 @@ async function choose(address = "192.168.20.10") {
 }
 beforeAll(() => initializeI18n("en-US"));
 beforeEach(() => {
+  web.adminState = { busy: false, configurationUncertain: false };
   web.status = structuredClone(lan);
   web.request.mockReset().mockImplementation(async (input) => {
     const { operation: _operation, target: _target, ...config } = input;
     const next = { ...web.status!, config };
     web.status = next;
+    web.adminState = { ...web.adminState, configurationUncertain: false };
     web.listener?.status(next);
     return next;
   });
@@ -136,6 +141,73 @@ it("requires an explicit interface choice and never starts a listener while edit
   expect(run).not.toHaveBeenCalled();
 });
 
+it.each([false, true])(
+  "requires saving the existing computer interface for phone LAN access (port changed=%s)",
+  async (changePort) => {
+    const sharing = {
+      ...native,
+      local: { ...native.local, enabled: true, address: "192.168.20.10:43000" },
+      authorized: [
+        { id: "paired-computer", name: "Paired computer", approved_at: 1, last_seen: 1 },
+      ],
+    };
+    useRemoteStore.setState({ snapshot: sharing });
+    web.status!.config = { ...lan.config, experimentalEnabled: true };
+    render(<Harness />);
+
+    expect(screen.getByLabelText("Saved address")).toBeEmptyDOMElement();
+    expect(screen.getByRole("combobox", { name: "Shared LAN interface" })).toHaveTextContent(
+      "Select a private IPv4 address",
+    );
+    expect(screen.getByLabelText("Dirty")).toHaveTextContent("false");
+    if (changePort)
+      fireEvent.change(screen.getByLabelText("Phone LAN port"), { target: { value: "1442" } });
+    await choose();
+    expect(screen.getByLabelText("Dirty")).toHaveTextContent("true");
+    expect(screen.getByLabelText("Saved address")).toBeEmptyDOMElement();
+    expect(web.request).not.toHaveBeenCalled();
+    expect(run).not.toHaveBeenCalled();
+
+    fireEvent.click(screen.getByRole("button", { name: "Save network" }));
+    await waitFor(() =>
+      expect(web.request).toHaveBeenCalledExactlyOnceWith({
+        operation: "configure",
+        target: "lan",
+        ...lan.config,
+        experimentalEnabled: true,
+        lanAddress: "192.168.20.10",
+        port: changePort ? 1442 : lan.config.port,
+      }),
+    );
+    expect(screen.getByLabelText("Saved address")).toHaveTextContent("192.168.20.10");
+    expect(screen.getByLabelText("Dirty")).toHaveTextContent("false");
+    expect(web.status!.config.enabled).toBe(false);
+    expect(web.status!.config.allowPlaintext).toBe(false);
+    expect(run).not.toHaveBeenCalled();
+    expect(useRemoteStore.getState().snapshot).toEqual(sharing);
+  },
+);
+
+it("does not save a newly selected shared interface after it disappears", async () => {
+  useRemoteStore.setState({
+    snapshot: {
+      ...native,
+      local: { ...native.local, enabled: true, address: "192.168.20.10:43000" },
+    },
+  });
+  render(<Harness />);
+  await choose();
+  act(() => {
+    web.listener?.status({ ...web.status!, addresses: [interfaces[1]] });
+  });
+  expect(screen.getByLabelText("Dirty")).toHaveTextContent("true");
+  expect(screen.getByLabelText("Valid")).toHaveTextContent("false");
+  expect(screen.getByRole("button", { name: "Save network" })).toBeDisabled();
+  fireEvent.click(screen.getByRole("button", { name: "Save network" }));
+  expect(web.request).not.toHaveBeenCalled();
+  expect(run).not.toHaveBeenCalled();
+});
+
 it("does not reconfigure either service when no network setting changed", async () => {
   web.status!.config.lanAddress = "192.168.20.10";
   render(<Harness />);
@@ -143,6 +215,62 @@ it("does not reconfigure either service when no network setting changed", async 
   await act(async () => {});
   expect(web.request).not.toHaveBeenCalled();
   expect(run).not.toHaveBeenCalled();
+});
+
+it("blocks network edits and a captured save while another Web controller is pending", async () => {
+  const hook = renderHook(useRemoteNetworkSettings);
+  const view = render(<>{hook.result.current.content}</>);
+  await choose();
+  const saveBeforeBusy = hook.result.current.save;
+  web.adminState = { busy: true, configurationUncertain: false };
+  await act(async () => {
+    expect(await saveBeforeBusy()).toBe(false);
+  });
+  hook.rerender();
+  view.rerender(<>{hook.result.current.content}</>);
+  expect(hook.result.current.busy).toBe(true);
+  expect(screen.getByRole("combobox", { name: "Shared LAN interface" })).toBeDisabled();
+  expect(screen.getByLabelText("Phone LAN port")).toBeDisabled();
+  expect(web.request).not.toHaveBeenCalled();
+  expect(run).not.toHaveBeenCalled();
+});
+
+it("keeps uncertain configuration retryable across remounts without trusting status reads", async () => {
+  web.adminState = { busy: false, configurationUncertain: true };
+  web.status!.config.lanAddress = "10.20.0.10";
+  const view = render(<Harness />);
+  expect(screen.getByLabelText("Saved address")).toBeEmptyDOMElement();
+  expect(screen.getByLabelText("Dirty")).toHaveTextContent("true");
+  act(() => web.listener!.status(web.status!));
+  expect(screen.getByLabelText("Saved address")).toBeEmptyDOMElement();
+  view.unmount();
+  render(<Harness />);
+  expect(screen.getByLabelText("Saved address")).toBeEmptyDOMElement();
+  expect(screen.getByLabelText("Dirty")).toHaveTextContent("true");
+  expect(screen.getByRole("combobox", { name: "Shared LAN interface" })).toHaveTextContent(
+    "10.20.0.10",
+  );
+  expect(web.request).not.toHaveBeenCalled();
+  fireEvent.click(screen.getByRole("button", { name: "Save network" }));
+  await waitFor(() => expect(screen.getByLabelText("Dirty")).toHaveTextContent("false"));
+  expect(screen.getByLabelText("Saved address")).toHaveTextContent("10.20.0.10");
+  expect(web.request).toHaveBeenCalledExactlyOnceWith({
+    operation: "configure",
+    target: "lan",
+    ...lan.config,
+    lanAddress: "10.20.0.10",
+  });
+  expect(run).not.toHaveBeenCalled();
+});
+
+it("does not retry an uncertain interface that is no longer available", () => {
+  web.adminState = { busy: false, configurationUncertain: true };
+  web.status!.config.lanAddress = "192.168.20.99";
+  render(<Harness />);
+  expect(screen.getByLabelText("Saved address")).toBeEmptyDOMElement();
+  expect(screen.getByLabelText("Dirty")).toHaveTextContent("true");
+  expect(screen.getByRole("button", { name: "Save network" })).toBeDisabled();
+  expect(web.request).not.toHaveBeenCalled();
 });
 
 it("keeps conflicting running addresses unchanged until the user chooses", async () => {

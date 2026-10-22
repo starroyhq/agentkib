@@ -156,6 +156,7 @@ test("renderer reload can read runtime status without allowing runtime retry", a
 test("first-time config omits relay while a saved pause retains its relay settings", () => {
   const first = webStatus({ owner: OWNER, mode: "first-time" });
   assert.equal(Object.hasOwn(first.config, "relay"), false);
+  assert.equal(webStatus({ owner: OWNER, mode: "first-time" }, "lan").config.lanAddress, "");
   for (const mode of MODES.filter((mode) => mode !== "first-time")) {
     const saved = webStatus({ owner: OWNER, mode });
     assert.equal(saved.config.relay.brokerUrl, "https://relay.example.invalid");

@@ -49,7 +49,10 @@ function webStatus(state, target) {
       externalOrigin: lan ? "https://remote.agentkib.com" : ready ? PUBLIC_URL : "",
       experimentalEnabled: false,
       ...(lan
-        ? { lanAddress: INTERFACE.address, allowPlaintext: false }
+        ? {
+            lanAddress: state.mode === "first-time" ? "" : INTERFACE.address,
+            allowPlaintext: false,
+          }
         : {
             allowedWorkspaceIds: [],
             extraRoots: [],

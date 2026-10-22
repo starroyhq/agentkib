@@ -12,7 +12,12 @@ import { SettingsNotice, SettingsRow } from "@/features/settings/components/Sett
 import { useI18n } from "@/core/useI18n";
 import type { WebAdminStatus } from "../../../electron/main/web/service";
 import { useRemoteStore } from "./remote-store";
-import { requestWebAdmin, subscribeWebStatus } from "./web-status";
+import {
+  getWebAdminState,
+  requestWebAdmin,
+  subscribeWebStatus,
+  useWebAdminState,
+} from "./web-status";
 import { remoteNetworkCopy } from "./remote-network-copy";
 
 type SaveResult = {
@@ -46,6 +51,7 @@ export function useRemoteNetworkSettings(): {
   const { locale } = useI18n();
   const c = remoteNetworkCopy[locale];
   const { snapshot, busy: nativeBusy, run } = useRemoteStore();
+  const admin = useWebAdminState("lan");
   const [status, setStatus] = useState<WebAdminStatus>();
   const [savedLanAddress, setSavedLanAddress] = useState("");
   const [addressDraft, setAddressDraft] = useState<string>();
@@ -66,7 +72,11 @@ export function useRemoteNetworkSettings(): {
         setStatus(next);
         // A failed save may be visible in a later in-memory status before it reaches disk.
         // Do not let that status authorize a sharing switch to apply the unsaved address.
-        if (!locked.current && !uncommittedLan.current)
+        if (
+          !locked.current &&
+          !uncommittedLan.current &&
+          !getWebAdminState("lan").configurationUncertain
+        )
           setSavedLanAddress(next.config.lanAddress ?? "");
       },
       error: () => setLoadFailed(true),
@@ -81,7 +91,9 @@ export function useRemoteNetworkSettings(): {
   const conflict = Boolean(
     snapshot?.local.enabled && nativeHost && savedLanAddress && nativeHost !== savedLanAddress,
   );
-  const savedAddress = conflict ? "" : savedLanAddress || nativeHost;
+  // A computer-sharing address does not mean phone LAN access saved that choice.
+  // Keep it unselected until the user explicitly saves the shared interface.
+  const savedAddress = conflict ? "" : savedLanAddress;
   const interfaces = (status?.addresses ?? []).filter(
     ({ address }, index, entries) =>
       privateIPv4(address) &&
@@ -89,13 +101,16 @@ export function useRemoteNetworkSettings(): {
       entries.findIndex((entry) => entry.address === address) === index,
   );
   const available = (address: string) => interfaces.some((entry) => entry.address === address);
-  const chosenAddress = addressDraft ?? savedAddress;
+  const chosenAddress =
+    addressDraft ??
+    (admin.configurationUncertain ? (status?.config.lanAddress ?? "") : savedAddress);
   const port = portDraft ?? status?.config.port ?? 1422;
   const lanChanged = Boolean(
     status &&
     ((addressDraft !== undefined && addressDraft !== (status.config.lanAddress ?? "")) ||
       (portDraft !== undefined && portDraft !== status.config.port) ||
-      retryLan),
+      retryLan ||
+      admin.configurationUncertain),
   );
   const nativeChanged = Boolean(
     snapshot?.local.enabled &&
@@ -112,15 +127,20 @@ export function useRemoteNetworkSettings(): {
       !loadFailed &&
       portValid &&
       (!conflict || addressDraft !== undefined) &&
-      (!(addressDraft !== undefined || status.config.enabled || nativeChanged) ||
+      (!(
+        addressDraft !== undefined ||
+        status.config.enabled ||
+        nativeChanged ||
+        (admin.configurationUncertain && chosenAddress)
+      ) ||
         available(chosenAddress)),
     );
-  const busy = saving || nativeBusy;
+  const busy = saving || nativeBusy || admin.busy;
   const failed = result?.lan === "failed" || result?.native === "failed";
   const lost = Boolean(savedAddress && !available(savedAddress));
 
   async function save() {
-    if (locked.current || busy || !valid) return false;
+    if (locked.current || busy || getWebAdminState("lan").busy || !valid) return false;
     if (!dirty) return true;
     if (!status || !snapshot) return false;
     locked.current = true;
@@ -222,7 +242,10 @@ export function useRemoteNetworkSettings(): {
     busy,
     valid,
     save,
-    address: !retryLan && !saving && available(savedAddress) ? savedAddress : "",
+    address:
+      !admin.configurationUncertain && !retryLan && !saving && available(savedAddress)
+        ? savedAddress
+        : "",
     content: (
       <div className="space-y-3 border-t pt-4" aria-label={c.title}>
         <h3 className="px-5 text-sm font-medium">{c.title}</h3>

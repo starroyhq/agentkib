@@ -461,3 +461,114 @@ it("hides a phone code and blocks generation if an open connection dialog is pau
   fireEvent.click(generate);
   expect(request).not.toHaveBeenCalledWith(expect.objectContaining({ operation: "generate-code" }));
 });
+
+it("resumes saved connection settings without applying unconfirmed provider or program drafts", async () => {
+  local = {
+    ...local,
+    config: {
+      ...local.config,
+      relay: {
+        enabled: false,
+        brokerUrl: "https://saved.example.com",
+        frpcPath: "/synthetic/saved-frpc",
+      },
+    },
+  };
+  render(<WebAccessSettings />);
+  await screen.findByRole("heading", { name: "Authorized browsers 0" });
+  fireEvent.click(screen.getByRole("button", { name: "Advanced settings" }));
+  fireEvent.change(screen.getByLabelText(remoteEntryCopy["en-US"].broker), {
+    target: { value: "https://draft.example.com" },
+  });
+  fireEvent.change(screen.getByLabelText(remoteEntryCopy["en-US"].frpc), {
+    target: { value: "/synthetic/draft-frpc" },
+  });
+  fireEvent.click(screen.getByRole("button", { name: "Enable remote access" }));
+  await waitFor(() =>
+    expect(request).toHaveBeenCalledWith({
+      operation: "remote-enable",
+      brokerUrl: "https://saved.example.com",
+      frpcPath: "/synthetic/saved-frpc",
+    }),
+  );
+  expect(screen.getByLabelText(remoteEntryCopy["en-US"].broker)).toHaveValue(
+    "https://draft.example.com",
+  );
+  expect(screen.queryByRole("dialog")).toBeNull();
+});
+
+it.each(["zh-CN", "zh-TW", "en-US", "ja-JP"] as const)(
+  "explains the code grant scope once beside first and additional phone generation in %s",
+  async (locale) => {
+    await changeLocale(locale);
+    render(<WebAccessSettings />);
+    const enable = await screen.findByRole("button", { name: remoteEntryCopy[locale].enable });
+    ready();
+    fireEvent.click(enable);
+    expect(await screen.findByText(webSettingsCopy[locale].codeScope)).toBeVisible();
+    expect(screen.getByText(remotePhoneCopy[locale].codeHint)).toBeVisible();
+    expect(screen.getAllByText(webSettingsCopy[locale].codeScope)).toHaveLength(1);
+    local = { ...local, devices: [browser] };
+    await act(async () => {
+      await requestWebAdmin({ operation: "status" });
+    });
+    fireEvent.click(screen.getByRole("button", { name: remotePhoneCopy[locale].connectNew }));
+    const dialog = await screen.findByRole("dialog", { name: remotePhoneCopy[locale].connectNew });
+    expect(within(dialog).getByText(webSettingsCopy[locale].codeScope)).toBeVisible();
+    expect(within(dialog).getByText(remotePhoneCopy[locale].codeHint)).toBeVisible();
+    expect(screen.getAllByText(webSettingsCopy[locale].codeScope)).toHaveLength(1);
+  },
+);
+
+it.each(["", "192.168.50.99"])(
+  "opens shared network settings from a LAN dialog with an unavailable address (%s)",
+  async (address) => {
+    const user = userEvent.setup();
+    lan = {
+      ...lan,
+      config: { ...lan.config, lanAddress: address, enabled: !!address, allowPlaintext: true },
+    };
+    render(<WebAccessSettings />);
+    await user.click(await screen.findByRole("button", { name: "Set up LAN direct connection" }));
+    const dialog = await screen.findByRole("dialog", { name: "LAN direct connection" });
+    expect(within(dialog).getByText(webSettingsCopy["en-US"].lanNetworkRequired)).toBeVisible();
+    const enabled = within(dialog).getByRole("checkbox", { name: "Enable LAN direct connection" });
+    if (!address) await user.click(enabled);
+    expect(within(dialog).getByRole("button", { name: "Save settings" })).toBeDisabled();
+    await user.click(enabled);
+    expect(within(dialog).getByRole("button", { name: "Save settings" })).toBeEnabled();
+    await user.click(
+      within(dialog).getByRole("button", { name: webSettingsCopy["en-US"].openNetworkSettings }),
+    );
+    await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+    const advanced = screen.getByRole("button", { name: "Advanced settings" });
+    expect(advanced).toHaveAttribute("aria-expanded", "true");
+    await waitFor(() => expect(advanced).toHaveFocus());
+  },
+);
+
+it("retries an unpersisted local configuration after every settings controller remounts", async () => {
+  request.mockImplementation(async (input) => {
+    if (input.operation === "configure") {
+      const { operation: _operation, ...config } = input;
+      local = { ...local, config };
+      throw new Error("synthetic local persistence failure");
+    }
+    return local;
+  });
+  const first = render(<WebAccessSettings />);
+  fireEvent.click(await screen.findByRole("button", { name: "Advanced settings" }));
+  fireEvent.change(screen.getByLabelText("Port"), { target: { value: "1444" } });
+  fireEvent.click(screen.getByRole("button", { name: "Save settings" }));
+  await screen.findByText(remoteEntryCopy["en-US"].saveFailed);
+  first.unmount();
+  request.mockImplementation(async () => local);
+  render(<WebAccessSettings />);
+  fireEvent.click(await screen.findByRole("button", { name: "Advanced settings" }));
+  expect(await screen.findByText(webSettingsCopy["en-US"].unsaved)).toBeVisible();
+  expect(screen.getByLabelText("Port")).toHaveValue(1444);
+  fireEvent.click(screen.getByRole("button", { name: "Save settings" }));
+  expect(await screen.findByText(webSettingsCopy["en-US"].saved)).toBeVisible();
+  expect(request.mock.calls.filter(([input]) => input.operation === "configure")).toHaveLength(2);
+  expect(screen.queryByText(webSettingsCopy["en-US"].unsaved)).toBeNull();
+});

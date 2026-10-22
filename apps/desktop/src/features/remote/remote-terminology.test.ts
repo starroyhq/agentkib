@@ -68,6 +68,50 @@ const wording = [
   },
 ] as const;
 
+const safetyWording = [
+  {
+    locale: "zh-CN",
+    network: ["共用高级设置", "选择并保存", "局域网接口", "才能在此对话框开启局域网直连"],
+    openNetworkSettings: "打开共用网络设置",
+    scope: ["全部现有", "以后新增", "工作区", "任务控制", "审批", "上传"],
+  },
+  {
+    locale: "zh-TW",
+    network: ["共用進階設定", "選擇並儲存", "區域網路介面", "才能在此對話框開啟區域網路直連"],
+    openNetworkSettings: "開啟共用網路設定",
+    scope: ["全部既有", "日後新增", "工作區", "任務控制", "審批", "上傳"],
+  },
+  {
+    locale: "en-US",
+    network: [
+      "shared advanced settings",
+      "Select and save",
+      "LAN interface",
+      "before enabling LAN direct connection in this dialog",
+    ],
+    openNetworkSettings: "Open shared network settings",
+    scope: ["all current and future", "workspaces", "task control", "approvals", "uploads"],
+  },
+  {
+    locale: "ja-JP",
+    network: [
+      "共通の詳細設定",
+      "選択して保存",
+      "LAN インターフェース",
+      "このダイアログで LAN 直接接続を有効にするには",
+    ],
+    openNetworkSettings: "共通のネットワーク設定を開く",
+    scope: [
+      "現在および今後追加されるすべて",
+      "ワークスペース",
+      "読み取り専用",
+      "タスク操作",
+      "承認",
+      "アップロード",
+    ],
+  },
+] as const;
+
 function flattenCopy(value: object, prefix = ""): Record<string, string> {
   return Object.fromEntries(
     Object.entries(value).flatMap(([key, entry]) => {
@@ -82,6 +126,19 @@ function placeholders(value: string) {
 }
 
 describe("remote connection terminology", () => {
+  it.each(safetyWording)(
+    "explains shared LAN prerequisites and access scope in $locale",
+    ({ locale, network, openNetworkSettings, scope }) => {
+      const copy = webSettingsCopy[locale];
+      for (const phrase of network) expect(copy.lanNetworkRequired).toContain(phrase);
+      expect(copy.openNetworkSettings).toBe(openNetworkSettings);
+      expect(placeholders(copy.lanNetworkRequired)).toEqual([]);
+      expect(placeholders(copy.openNetworkSettings)).toEqual([]);
+      for (const phrase of scope) expect(copy.codeScope).toContain(phrase);
+      expect(copy.codeScope).not.toMatch(/主机|主機|桌面|desktop|デスクトップ|ホスト/i);
+    },
+  );
+
   it.each(wording)("uses the current translated pairing guidance in $locale", async (copy) => {
     await initializeI18n(copy.locale);
     expect(tr("remote.quick.codeHint")).toBe(copy.hint);

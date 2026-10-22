@@ -3,7 +3,7 @@ import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { api } from "@/core/api";
 import type { RemoteStatus } from "@/core/remote-types";
 import { subscribeRemoteStatus, useRemoteStore } from "./remote-store";
-import { requestWebAdmin, subscribeWebStatus } from "./web-status";
+import { getWebAdminState, requestWebAdmin, subscribeWebStatus } from "./web-status";
 
 const bridge = vi.hoisted(() => ({
   web: vi.fn(),
@@ -220,4 +220,43 @@ it("shares Web status subscribers, publishes only changes and gates polling afte
   const calls = bridge.web.mock.calls.length;
   await vi.advanceTimersByTimeAsync(60_000);
   expect(bridge.web).toHaveBeenCalledTimes(calls);
+});
+
+it("keeps pending writes and configure uncertainty across status-controller lifetimes", async () => {
+  const snapshot = {
+    config: { enabled: false, port: 1422, externalOrigin: "", experimentalEnabled: false },
+    running: false,
+    localUrl: "",
+    experimentalAvailable: false,
+    pending: [],
+    devices: [],
+  };
+  bridge.web.mockResolvedValue(snapshot);
+  const close = subscribeWebStatus("lan", { status: vi.fn(), error: vi.fn() });
+  releases.push(close);
+  await vi.advanceTimersByTimeAsync(0);
+  let reject!: (error: Error) => void;
+  bridge.web.mockImplementationOnce(
+    () =>
+      new Promise((_, rejectRequest) => {
+        reject = rejectRequest;
+      }),
+  );
+  const pending = requestWebAdmin({ operation: "configure", target: "lan", ...snapshot.config });
+  expect(getWebAdminState().busy).toBe(true);
+  close();
+  expect(getWebAdminState("lan").busy).toBe(true);
+  const failure = expect(pending).rejects.toThrow("synthetic persistence failure");
+  reject(new Error("synthetic persistence failure"));
+  await failure;
+  expect(getWebAdminState("lan")).toEqual({ busy: false, configurationUncertain: true });
+  const receive = vi.fn();
+  releases.push(subscribeWebStatus("lan", { status: receive, error: vi.fn() }));
+  await vi.advanceTimersByTimeAsync(0);
+  expect(receive).toHaveBeenCalledWith(snapshot);
+  expect(getWebAdminState("lan").configurationUncertain).toBe(true);
+  await requestWebAdmin({ operation: "configure", ...snapshot.config });
+  expect(getWebAdminState("lan").configurationUncertain).toBe(true);
+  await requestWebAdmin({ operation: "configure", target: "lan", ...snapshot.config });
+  expect(getWebAdminState("lan")).toEqual({ busy: false, configurationUncertain: false });
 });

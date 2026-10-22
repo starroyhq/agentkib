@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import "@testing-library/jest-dom/vitest";
-import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeAll, beforeEach, expect, it, vi } from "vitest";
 import { changeLocale, initializeI18n } from "@/core/i18n";
@@ -320,12 +320,15 @@ it.each(["https://remote.agentkib.com", "https://api.remote.agentkib.com"])(
     ).toBe(true);
     fireEvent.click(screen.getByRole("button", { name: "Prepare service migration" }));
     expect(request.mock.calls.every(([input]) => input.operation === "status")).toBe(true);
-    const confirm = screen.getByRole("button", { name: "Confirm migration and enable access" });
+    const confirm = screen.getByRole("button", { name: "Apply connection settings" });
     expect((confirm as HTMLButtonElement).disabled).toBe(true);
     fireEvent.change(screen.getByLabelText("Invitation (first connection only)"), {
       target: { value: "new-invitation" },
     });
     fireEvent.click(confirm);
+    const dialog = screen.getByRole("dialog", { name: "Apply connection settings" });
+    expect(request.mock.calls.every(([input]) => input.operation === "status")).toBe(true);
+    fireEvent.click(within(dialog).getByRole("button", { name: "Apply connection settings" }));
     await waitFor(() =>
       expect(request).toHaveBeenCalledWith({
         operation: "remote-enable",

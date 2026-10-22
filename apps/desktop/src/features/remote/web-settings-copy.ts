@@ -8,6 +8,9 @@ export const webSettingsCopy = {
     generateNeedsService:
       "Web 服务尚未运行。请先开启远程访问，或在高级设置中启用并保存本机 Web 服务。",
     generateNeedsLanService: "局域网 Web 服务尚未运行。请先启用服务并保存设置。",
+    lanNetworkRequired:
+      "请先在共用高级设置中选择并保存可用的局域网接口，才能在此对话框开启局域网直连。",
+    openNetworkSettings: "打开共用网络设置",
     generateNeedsConnection: "远程连接就绪后才能生成连接码，请先检查上方连接状态。",
     accessCodeHint: "授权码由手机浏览器输入，直接按所选档位获得权限，电脑上无需再次确认。",
     pairingCodeHint: "配对码用于发起浏览器配对，仍需在这台电脑上确认并授予权限。",
@@ -17,7 +20,7 @@ export const webSettingsCopy = {
       "连接服务地址和程序路径需通过“应用连接设置”应用：更换服务会重新登记并清除浏览器授权，需单独确认；其他设置由“保存设置”保存。",
     generateAccess: "生成授权码",
     codeScope:
-      "有效授权码无需电脑再次确认，即按所选档位授权全部 AgentKib 工作区：“只读”可查看会话历史与文件；“完整控制”另含任务控制、审批与上传。授权后可随时在下方调整档位或撤销。仅分享给可信设备。",
+      "有效授权码无需电脑再次确认，即按所选档位授权全部现有及以后新增的 AgentKib 工作区：“只读”可查看会话历史与文件；“完整控制”另含任务控制、审批与上传。授权后可随时在下方调整档位或撤销。仅分享给可信设备。",
     fullAccess: "完整控制",
     readOnlyAccess: "只读（查看会话与文件）",
     accessLevel: "授权档位",
@@ -70,6 +73,9 @@ export const webSettingsCopy = {
     generateNeedsService:
       "Web 服務尚未執行。請先開啟遠端存取，或在進階設定中啟用並儲存本機 Web 服務。",
     generateNeedsLanService: "區域網路 Web 服務尚未執行。請先啟用服務並儲存設定。",
+    lanNetworkRequired:
+      "請先在共用進階設定中選擇並儲存可用的區域網路介面，才能在此對話框開啟區域網路直連。",
+    openNetworkSettings: "開啟共用網路設定",
     generateNeedsConnection: "遠端連線就緒後才能產生連線碼，請先檢查上方連線狀態。",
     accessCodeHint: "授權碼由手機瀏覽器輸入，直接依所選等級取得權限，電腦上無需再次確認。",
     pairingCodeHint: "配對碼用於發起瀏覽器配對，仍需在這台電腦上確認並授予權限。",
@@ -79,7 +85,7 @@ export const webSettingsCopy = {
       "連線服務位址和程式路徑需透過「套用連線設定」套用：更換服務會重新登記並清除瀏覽器授權，需個別確認；其他設定由「儲存設定」儲存。",
     generateAccess: "產生授權碼",
     codeScope:
-      "有效授權碼無需電腦再次確認，即依所選等級授權全部 AgentKib 工作區：「唯讀」可查看對話紀錄與檔案；「完整控制」另含任務控制、審批與上傳。授權後可隨時在下方調整等級或撤銷。僅分享給可信裝置。",
+      "有效授權碼無需電腦再次確認，即依所選等級授權全部既有與日後新增的 AgentKib 工作區：「唯讀」可查看對話紀錄與檔案；「完整控制」另含任務控制、審批與上傳。授權後可隨時在下方調整等級或撤銷。僅分享給可信裝置。",
     fullAccess: "完整控制",
     readOnlyAccess: "唯讀（查看對話與檔案）",
     accessLevel: "授權等級",
@@ -133,6 +139,9 @@ export const webSettingsCopy = {
       "The Web service is not running. Enable remote access above, or enable and save the local Web service in advanced settings.",
     generateNeedsLanService:
       "The LAN Web service is not running. Enable it and save settings first.",
+    lanNetworkRequired:
+      "Select and save an available LAN interface in shared advanced settings before enabling LAN direct connection in this dialog.",
+    openNetworkSettings: "Open shared network settings",
     generateNeedsConnection: "Wait for the remote connection to be ready. Check its status above.",
     accessCodeHint:
       "Enter an access code in the phone browser to grant the selected access level without another desktop confirmation.",
@@ -145,7 +154,7 @@ export const webSettingsCopy = {
       "Apply the connection service and executable path with “Apply connection settings”. Changing service re-registers this computer and clears browser grants, so it requires confirmation. “Save settings” saves the other fields.",
     generateAccess: "Generate access code",
     codeScope:
-      "A valid access code authorizes all AgentKib workspaces at the selected level without another desktop confirmation. Read-only allows session history and files; full control adds task control, approvals and uploads. Change the level or revoke access below at any time. Share only with trusted devices.",
+      "A valid access code authorizes all current and future AgentKib workspaces at the selected level without another confirmation on this computer. Read-only allows session history and files; full control adds task control, approvals and uploads. Change the level or revoke access below at any time. Share only with trusted devices.",
     fullAccess: "Full control",
     readOnlyAccess: "Read-only (sessions and files)",
     accessLevel: "Access level",
@@ -201,6 +210,9 @@ export const webSettingsCopy = {
     generateNeedsService:
       "Web サービスが停止しています。上のリモートアクセスを有効にするか、詳細設定でローカル Web サービスを有効にして設定を保存してください。",
     generateNeedsLanService: "LAN Web サービスが停止しています。有効にして設定を保存してください。",
+    lanNetworkRequired:
+      "このダイアログで LAN 直接接続を有効にするには、先に共通の詳細設定で利用可能な LAN インターフェースを選択して保存してください。",
+    openNetworkSettings: "共通のネットワーク設定を開く",
     generateNeedsConnection:
       "リモート接続の準備が完了するとコードを生成できます。上の接続状態を確認してください。",
     accessCodeHint:
@@ -214,7 +226,7 @@ export const webSettingsCopy = {
       "接続サービスと実行ファイルは「接続設定を適用」で反映します。サービス変更は端末の再登録とブラウザー認証の削除を伴うため、個別に確認します。その他の項目は「設定を保存」で保存します。",
     generateAccess: "認証コードを生成",
     codeScope:
-      "有効な認証コードで、選択したレベルに応じて全 AgentKib ワークスペースへのアクセスを許可します。デスクトップでの再確認は不要です。「閲覧のみ」は会話履歴とファイルの閲覧、「フルコントロール」はタスク操作・承認・アップロードも含みます。レベルの変更や取り消しは下でいつでも行えます。信頼できる端末にのみ共有してください。",
+      "有効な認証コードで、選択したレベルに応じて現在および今後追加されるすべての AgentKib ワークスペースへのアクセスを許可します。このコンピューターでの再確認は不要です。「読み取り専用」は会話履歴とファイルの閲覧、「フルコントロール」はタスク操作・承認・アップロードも含みます。レベルの変更や取り消しは下でいつでも行えます。信頼できる端末にのみ共有してください。",
     fullAccess: "フルコントロール",
     readOnlyAccess: "閲覧のみ（会話とファイル）",
     accessLevel: "アクセスレベル",

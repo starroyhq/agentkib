@@ -14,7 +14,12 @@ import {
 } from "@/components/ui/dialog";
 import { remotePhoneCopy } from "./remote-phone-copy";
 import type { DesktopAccountStatus } from "../../../electron/main/account/state";
-import { requestWebAdmin, subscribeWebStatus } from "./web-status";
+import {
+  getWebAdminState,
+  requestWebAdmin,
+  subscribeWebStatus,
+  useWebAdminState,
+} from "./web-status";
 import { useI18n } from "@/core/useI18n";
 import { withAsyncCleanup } from "@/lib/utils";
 import {
@@ -106,6 +111,7 @@ export type WebAccessSettingsProps = {
   hideNetworkFields?: boolean;
   advancedOpen?: boolean;
   onAdvancedOpenChange?: (open: boolean) => void;
+  onOpenNetworkSettings?: () => void;
 };
 
 function SetupStep({
@@ -159,6 +165,7 @@ export function WebAccessSettings({
   hideNetworkFields = false,
   advancedOpen,
   onAdvancedOpenChange,
+  onOpenNetworkSettings,
 }: WebAccessSettingsProps = {}) {
   const { locale, tr, formatDateTime } = useI18n();
   const lan = target === "lan";
@@ -171,6 +178,7 @@ export function WebAccessSettings({
   const [lanStatus, setLanStatus] = useState<WebAdminStatus>();
   const [lanUnavailable, setLanUnavailable] = useState(false);
   const [lanOpen, setLanOpen] = useState(false);
+  const focusNetworkSettings = useRef(false);
   const [newPhoneOpen, setNewPhoneOpen] = useState(false);
   const [confirmation, setConfirmation] = useState<"pause" | "connection" | { device: string }>();
   const cancelRef = useRef<HTMLButtonElement>(null);
@@ -191,7 +199,8 @@ export function WebAccessSettings({
   const [localSaveFailed, setLocalSaveFailed] = useState(false);
   const [saveState, setSaveState] = useState<"saved" | "failed">();
   const [operationBusy, setBusy] = useState(false);
-  const busy = operationBusy || advancedBusy;
+  const sharedAdmin = useWebAdminState(target);
+  const busy = operationBusy || advancedBusy || sharedAdmin.busy;
   const [activeOperation, setActiveOperation] = useState<WebAdminRequest["operation"]>();
   const [codeCopied, setCodeCopied] = useState(false);
   const [extraRootsText, setExtraRootsText] = useState<string>();
@@ -273,7 +282,7 @@ export function WebAccessSettings({
     });
   }, [lan]);
   async function run(input: WebAdminRequest) {
-    if (locked.current) return;
+    if (locked.current || getWebAdminState(target).busy) return;
     locked.current = true;
     setBusy(true);
     setActiveOperation(input.operation);
@@ -383,7 +392,7 @@ export function WebAccessSettings({
     JSON.stringify(comparableConfig(configToSave)) !==
       JSON.stringify(comparableConfig(status.config)),
   );
-  const unsaved = localConfigDirty || localSaveFailed;
+  const unsaved = localConfigDirty || localSaveFailed || sharedAdmin.configurationUncertain;
   const connectionDirty = Boolean(
     status &&
     (relayBroker.trim().replace(/\/$/, "") !==
@@ -413,14 +422,28 @@ export function WebAccessSettings({
       ...(status?.relay?.reason === "revoked" ? { reenroll: true } : {}),
     });
   };
+  const savedRelay = status?.config.relay;
+  const resumeDisabled =
+    busy ||
+    !savedRelay?.brokerUrl.trim() ||
+    legacyBrokerUrls.includes(savedRelay.brokerUrl.replace(/\/$/, "")) ||
+    status?.relay?.reason === "revoked";
+  const resumeConnection = () => {
+    if (resumeDisabled || !savedRelay) return;
+    return run({
+      operation: "remote-enable",
+      brokerUrl: savedRelay.brokerUrl,
+      ...(savedRelay.frpcPath ? { frpcPath: savedRelay.frpcPath } : {}),
+    });
+  };
   async function saveSettings() {
-    if (busy || locked.current) return;
-    if (!localConfigDirty && !localSaveFailed && !advancedDirty) {
+    if (busy || locked.current || getWebAdminState(target).busy) return;
+    if (!unsaved && !advancedDirty) {
       setOperationError(undefined);
       setSaveState(undefined);
       return;
     }
-    if (localConfigDirty || localSaveFailed) {
+    if (unsaved) {
       await run({ operation: "configure", ...configToSave! });
       return;
     }
@@ -517,6 +540,25 @@ export function WebAccessSettings({
   ) : (
     <>
       <SettingsNotice id={saveHintId}>{c.saveHint}</SettingsNotice>
+      {lan &&
+        hideNetworkFields &&
+        !status?.addresses?.some(({ address }) => address === config.lanAddress) && (
+          <SettingsNotice>
+            <div>
+              <p>{c.lanNetworkRequired}</p>
+              {onOpenNetworkSettings && (
+                <Button
+                  variant="link"
+                  size="content"
+                  disabled={busy}
+                  onClick={onOpenNetworkSettings}
+                >
+                  {c.openNetworkSettings}
+                </Button>
+              )}
+            </div>
+          </SettingsNotice>
+        )}
       <SettingsRow>
         <SettingsCopy>
           <strong>{c.enabled}</strong>
@@ -1089,6 +1131,7 @@ export function WebAccessSettings({
         </p>
       )}
       <p className="text-xs leading-5 text-muted-foreground">{p.codeHint}</p>
+      {codeAccess && <p className="text-xs leading-5 text-muted-foreground">{c.codeScope}</p>}
     </div>
   );
   const confirmations = (
@@ -1292,8 +1335,8 @@ export function WebAccessSettings({
                     {p.pause}
                   </Button>
                 ) : (
-                  <Button disabled={connectionDisabled} onClick={() => void enableConnection()}>
-                    {connectionActionLabel}
+                  <Button disabled={resumeDisabled} onClick={() => void resumeConnection()}>
+                    {r.enable}
                   </Button>
                 )}
               </div>
@@ -1336,7 +1379,13 @@ export function WebAccessSettings({
                 )}
               </div>
             </div>
-            <Button variant="outline" onClick={() => setLanOpen(true)}>
+            <Button
+              variant="outline"
+              disabled={busy}
+              onClick={() => {
+                if (!getWebAdminState().busy) setLanOpen(true);
+              }}
+            >
               {setupComplete ? p.settings : p.lanSetup}
             </Button>
           </div>
@@ -1347,7 +1396,9 @@ export function WebAccessSettings({
           )}
         </section>
       </div>
-      {children}
+      <fieldset disabled={busy} className="m-0 min-w-0 border-0 p-0">
+        {children}
+      </fieldset>
       <Collapsible
         open={advancedOpen ?? localAdvancedOpen}
         onOpenChange={(open) => {
@@ -1447,12 +1498,30 @@ export function WebAccessSettings({
         </CollapsibleContent>
       </Collapsible>
       <Dialog open={lanOpen} onOpenChange={setLanOpen}>
-        <DialogContent className="max-h-[85vh] overflow-y-auto sm:max-w-2xl">
+        <DialogContent
+          className="max-h-[85vh] overflow-y-auto sm:max-w-2xl"
+          finalFocus={() => {
+            if (!focusNetworkSettings.current) return true;
+            focusNetworkSettings.current = false;
+            return document.getElementById("remote-advanced-trigger");
+          }}
+        >
           <DialogHeader className="sr-only">
             <DialogTitle>{p.lanSummary}</DialogTitle>
             <DialogDescription>{l.scope}</DialogDescription>
           </DialogHeader>
-          {lanOpen && <WebAccessSettings target="lan" hideNetworkFields />}
+          {lanOpen && (
+            <WebAccessSettings
+              target="lan"
+              hideNetworkFields
+              onOpenNetworkSettings={() => {
+                focusNetworkSettings.current = true;
+                setLanOpen(false);
+                setLocalAdvancedOpen(true);
+                onAdvancedOpenChange?.(true);
+              }}
+            />
+          )}
         </DialogContent>
       </Dialog>
       <Dialog open={newPhoneOpen} onOpenChange={setNewPhoneOpen}>

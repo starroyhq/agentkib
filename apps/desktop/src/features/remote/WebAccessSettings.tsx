@@ -39,6 +39,7 @@ import { lanSettingsCopy } from "./lan-settings-copy";
 import { remoteEntryCopy } from "./remote-entry-copy";
 import { ConnectionQr } from "./ConnectionQr";
 import { RemoteAccountSettings } from "./RemoteAccountSettings";
+import { useRemoteStore } from "./remote-store";
 import {
   Select,
   SelectContent,
@@ -282,7 +283,7 @@ export function WebAccessSettings({
     });
   }, [lan]);
   async function run(input: WebAdminRequest) {
-    if (locked.current || getWebAdminState(target).busy) return;
+    if (locked.current || getWebAdminState(target).busy || useRemoteStore.getState().busy) return;
     locked.current = true;
     setBusy(true);
     setActiveOperation(input.operation);
@@ -423,6 +424,10 @@ export function WebAccessSettings({
     });
   };
   const savedRelay = status?.config.relay;
+  const resumeNeedsLogin =
+    !relayActive &&
+    savedRelay?.brokerUrl.trim().replace(/\/$/, "") === "https://api.agentkib.com" &&
+    !signedIn;
   const resumeDisabled =
     busy ||
     !savedRelay?.brokerUrl.trim() ||
@@ -437,7 +442,8 @@ export function WebAccessSettings({
     });
   };
   async function saveSettings() {
-    if (busy || locked.current || getWebAdminState(target).busy) return;
+    if (busy || locked.current || getWebAdminState(target).busy || useRemoteStore.getState().busy)
+      return;
     if (!unsaved && !advancedDirty) {
       setOperationError(undefined);
       setSaveState(undefined);
@@ -830,26 +836,28 @@ export function WebAccessSettings({
               <Smartphone className="size-4 text-muted-foreground" aria-hidden="true" />
               {device.name}
             </strong>
-            <small>
-              {device.accessLevel
-                ? levelLabel(device.accessLevel)
-                : device.accessMode === "full"
-                  ? c.fullAccess
-                  : [
-                      c.read,
-                      device.send && c.send,
-                      device.approve && c.approve,
-                      device.manage && c.manage,
-                      device.files && c.files,
-                      device.attachments && c.attachments,
-                      device.advancedControl && c.advancedControl,
-                      device.organize && c.organize,
-                      device.settings && c.settings,
-                      device.extendedApproval && c.extendedApproval,
-                    ]
-                      .filter(Boolean)
-                      .join(" · ")}
-            </small>
+            {!(codeAccess && device.accessLevel) && (
+              <small>
+                {device.accessLevel
+                  ? levelLabel(device.accessLevel)
+                  : device.accessMode === "full"
+                    ? c.fullAccess
+                    : [
+                        c.read,
+                        device.send && c.send,
+                        device.approve && c.approve,
+                        device.manage && c.manage,
+                        device.files && c.files,
+                        device.attachments && c.attachments,
+                        device.advancedControl && c.advancedControl,
+                        device.organize && c.organize,
+                        device.settings && c.settings,
+                        device.extendedApproval && c.extendedApproval,
+                      ]
+                        .filter(Boolean)
+                        .join(" · ")}
+              </small>
+            )}
           </SettingsCopy>
           <div className="flex flex-wrap items-center justify-end gap-2">
             {codeAccess && device.accessLevel && (
@@ -891,42 +899,43 @@ export function WebAccessSettings({
   const diagnostics = (
     <>
       {" "}
-      {(status?.relay?.failure || status?.relay?.connectorExit || status?.relay?.channels) && (
-        <Collapsible className="space-y-3">
-          <CollapsibleTrigger className="cursor-pointer text-muted-foreground">
-            {c.diagnostics}
-          </CollapsibleTrigger>
-          <CollapsibleContent className="space-y-3">
-            {status.relay.failure && status.relay.phase !== "ready" && (
-              <p className="text-xs text-muted-foreground">
-                {r.failureStages[status.relay.failure.stage]}:{" "}
-                {r.failureCodes[status.relay.failure.code]}
-              </p>
-            )}
-            {status.relay.connectorExit && (
-              <p className="text-xs text-muted-foreground">
-                {status.relay.connectorExit.code !== undefined && (
-                  <>
-                    {r.exitCode}: {status.relay.connectorExit.code}
-                  </>
-                )}
-                {status.relay.connectorExit.signal && (
-                  <>
-                    {r.exitSignal}: {status.relay.connectorExit.signal}
-                  </>
-                )}
-              </p>
-            )}
-            {status.relay.channels && status.relay.phase !== "disabled" && (
-              <p className="text-xs text-muted-foreground">
-                {r.control}：{status.relay.channels.control ? "✓" : "…"}
-                {" · "}
-                {r.preview}：{status.relay.channels.preview ? "✓" : "…"}
-              </p>
-            )}
-          </CollapsibleContent>
-        </Collapsible>
-      )}
+      {(status?.relay?.phase === "offline" || status?.relay?.phase === "error") &&
+        (status.relay.failure || status.relay.connectorExit || status.relay.channels) && (
+          <Collapsible className="space-y-3">
+            <CollapsibleTrigger className="cursor-pointer text-muted-foreground">
+              {c.diagnostics}
+            </CollapsibleTrigger>
+            <CollapsibleContent className="space-y-3">
+              {status.relay.failure && (
+                <p className="text-xs text-muted-foreground">
+                  {r.failureStages[status.relay.failure.stage]}:{" "}
+                  {r.failureCodes[status.relay.failure.code]}
+                </p>
+              )}
+              {status.relay.connectorExit && (
+                <p className="text-xs text-muted-foreground">
+                  {status.relay.connectorExit.code !== undefined && (
+                    <>
+                      {r.exitCode}: {status.relay.connectorExit.code}
+                    </>
+                  )}
+                  {status.relay.connectorExit.signal && (
+                    <>
+                      {r.exitSignal}: {status.relay.connectorExit.signal}
+                    </>
+                  )}
+                </p>
+              )}
+              {status.relay.channels && (
+                <p className="text-xs text-muted-foreground">
+                  {r.control}：{status.relay.channels.control ? "✓" : "…"}
+                  {" · "}
+                  {r.preview}：{status.relay.channels.preview ? "✓" : "…"}
+                </p>
+              )}
+            </CollapsibleContent>
+          </Collapsible>
+        )}
       {status?.relay?.certificateWarning && (
         <p role="status" className="text-xs text-muted-foreground">
           {r.certificateWarning}
@@ -1027,26 +1036,36 @@ export function WebAccessSettings({
       </div>
     </SettingsNotice>
   );
-  const connectionState = (
-    <div className="space-y-2">
-      <p role="status" className="flex items-center gap-2 text-xs text-muted-foreground">
-        {(activeOperation === "remote-enable" ||
-          ["registering", "certifying", "connecting"].includes(status?.relay?.phase ?? "")) && (
-          <LoaderCircle className="size-3.5 animate-spin" aria-hidden="true" />
-        )}
-        {activeOperation === "remote-enable"
-          ? r.phases.connecting
+  const connectionSummary = (
+    <p role="status" className="flex items-center gap-2 text-xs text-muted-foreground">
+      {(activeOperation === "remote-enable" ||
+        ["registering", "certifying", "connecting"].includes(status?.relay?.phase ?? "")) && (
+        <LoaderCircle className="size-3.5 animate-spin" aria-hidden="true" />
+      )}
+      {activeOperation === "remote-enable"
+        ? r.phases.connecting
+        : setupComplete && !relayActive
+          ? p.pausedHint
           : status?.relay?.phase === "offline"
             ? p.offline
             : r.phases[status?.relay?.phase ?? "disabled"]}
-        {status?.relay?.reason ? ` · ${r.reasons[status.relay.reason]}` : ""}
-      </p>
+      {status?.relay?.reason ? ` · ${r.reasons[status.relay.reason]}` : ""}
+    </p>
+  );
+  const connectionDetails = (
+    <>
       {status?.relay?.retryAt && status.relay.retryAt > now && (
         <p className="text-xs text-muted-foreground">
           {r.retryAt} {formatDateTime(new Date(status.relay.retryAt))}
         </p>
       )}
       {diagnostics}
+    </>
+  );
+  const connectionState = (
+    <div className="space-y-2">
+      {connectionSummary}
+      {connectionDetails}
     </div>
   );
   const phoneConnection = (
@@ -1074,7 +1093,10 @@ export function WebAccessSettings({
           ))}
         </div>
       )}
-      {status?.code && status.code.expiresAt > now && !phoneGenerateHint ? (
+      {status?.code &&
+      status.code.expiresAt > now &&
+      !phoneGenerateHint &&
+      (!codeAccess || status.code.access === codeLevel) ? (
         <div className="flex flex-wrap items-center gap-5 rounded-lg border bg-background p-4">
           {status.relay?.phase === "ready" && status.relay.publicUrl && (
             <div className="space-y-1 text-center">
@@ -1090,9 +1112,11 @@ export function WebAccessSettings({
             >
               {status.code.value.replace(/(\d{4})(\d{4})/, "$1 $2")}
             </strong>
-            <p className="text-xs text-muted-foreground">
-              {c.accessLevel}: {levelLabel(status.code.access)}
-            </p>
+            {!newPhoneOpen && (
+              <p className="text-xs text-muted-foreground">
+                {c.accessLevel}: {levelLabel(status.code.access)}
+              </p>
+            )}
             <p className="text-xs text-muted-foreground">
               {c.expires}{" "}
               {new Intl.DateTimeFormat(locale, {
@@ -1314,32 +1338,35 @@ export function WebAccessSettings({
           </section>
         ) : (
           <>
-            <section className="flex flex-wrap items-center justify-between gap-3 rounded-xl border bg-card p-4">
-              <div className="space-y-1">
-                <div className="flex items-center gap-2 text-sm">
+            <section className="space-y-3 rounded-xl border bg-card p-4">
+              <div className="flex flex-wrap items-center justify-between gap-3">
+                <div className="flex flex-wrap items-center gap-2 text-sm">
                   <span
                     aria-hidden="true"
                     className={`size-2 rounded-full ${relayReady ? "bg-emerald-600" : "bg-muted-foreground"}`}
                   />
                   <strong>{relayActive ? r.enabledRemote : p.paused}</strong>
+                  {connectionSummary}
                 </div>
-                {connectionState}
+                <div className="flex flex-wrap gap-2">
+                  {relayActive ? (
+                    <Button
+                      variant="outline"
+                      disabled={busy}
+                      onClick={() => setConfirmation("pause")}
+                    >
+                      {p.pause}
+                    </Button>
+                  ) : (
+                    !resumeNeedsLogin && (
+                      <Button disabled={resumeDisabled} onClick={() => void resumeConnection()}>
+                        {r.enable}
+                      </Button>
+                    )
+                  )}
+                </div>
               </div>
-              <div className="flex flex-wrap gap-2">
-                {relayActive ? (
-                  <Button
-                    variant="outline"
-                    disabled={busy}
-                    onClick={() => setConfirmation("pause")}
-                  >
-                    {p.pause}
-                  </Button>
-                ) : (
-                  <Button disabled={resumeDisabled} onClick={() => void resumeConnection()}>
-                    {r.enable}
-                  </Button>
-                )}
-              </div>
+              {connectionDetails}
             </section>
             <section className="space-y-2">
               <header className="flex flex-wrap items-center justify-between gap-3">
@@ -1391,7 +1418,11 @@ export function WebAccessSettings({
           </div>
           {setupComplete && (
             <div className="border-t p-4">
-              <RemoteAccountSettings variant="footer" onStatusChange={setAccountStatus} />
+              <RemoteAccountSettings
+                variant="footer"
+                primary={resumeNeedsLogin}
+                onStatusChange={setAccountStatus}
+              />
             </div>
           )}
         </section>
@@ -1470,7 +1501,7 @@ export function WebAccessSettings({
                 {p.pause}
               </Button>
             )}
-            {!signedIn && connectionState}
+            {!signedIn && !setupComplete && connectionState}
             <label className="block space-y-1">
               {r.bandwidth}
               <Input

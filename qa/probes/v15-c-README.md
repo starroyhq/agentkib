@@ -29,9 +29,10 @@ node qa/probes/v15-c-sandbox.mjs state --root /tmp/agentkib-v15-b-c-remote --sta
 node qa/probes/v15-c-sandbox.mjs state --root /tmp/agentkib-v15-b-c-remote --state registering
 node qa/probes/v15-c-sandbox.mjs state --root /tmp/agentkib-v15-b-c-remote --state offline
 node qa/probes/v15-c-sandbox.mjs state --root /tmp/agentkib-v15-b-c-remote --state failed
+node qa/probes/v15-c-sandbox.mjs state --root /tmp/agentkib-v15-b-c-remote --state paused-signed-out
 ```
 
-每次切状态后重新加载本地 renderer，使账号订阅与引导同步。`ready` 可点击“暂停”截确认框；确认只把合成状态变为 `paused`。也可点击“连接新手机”后生成公开测试码；只改夹具状态，不调用原授权码方法。`set-access`/`revoke` 只操作唯一合成浏览器；登录、绑定、配置、原生共享/配对、模型和会话控制、外部应用操作均拒绝。未知 IPC 默认拒绝，遇到未覆盖入口时会显示失败，不能据此扩展为真实操作。
+每次切状态后重新加载本地 renderer，使账号订阅与引导同步。`ready` 可点击“暂停”截确认框；确认只把合成状态变为 `paused`。`paused-signed-out` 仅展示已保存官方服务、未登录且暂停的组合，不调用官方接口。也可点击“连接新手机”后生成公开测试码；只改夹具状态，不调用原授权码方法。`set-access`/`revoke` 只操作唯一合成浏览器；原生 `configure` 仅接受合成名称、固定的关闭监听开关及公开夹具/loopback 占位地址，只保存名称到夹具状态，不调用真实配置方法，也不接受任意地址、端口或开启监听。登录、绑定、其他配置、原生共享/配对、模型和会话控制、外部应用操作均拒绝。未知 IPC 默认拒绝，遇到未覆盖入口时会显示失败，不能据此扩展为真实操作。
 
 账号/Web/native 夹具必须先通过对应原始 `status` 读取；它保留生产 renderer 和 target 校验，再返回固定合成对象。只接受本地 `app://bundle` 顶层 renderer。不会调用原修改方法，也不接受 ticket、token、邀请码等额外输入。展示已登录账号为 `reader@example.invalid`，不创建真实账号或设备授权。
 

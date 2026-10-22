@@ -215,6 +215,158 @@ it("opens step three for a new phone while account actions stay in account manag
   ).toBeVisible();
 });
 
+it.each([
+  ["zh-CN", "手机暂时连不上"],
+  ["zh-TW", "手機暫時無法連線"],
+  ["en-US", "Your phone cannot connect for now"],
+  ["ja-JP", "スマートフォンからは一時的に接続できません"],
+] as const)(
+  "requires sign-in before resuming a saved official pause in %s",
+  async (locale, hint) => {
+    await changeLocale(locale);
+    account = { phase: "signed-out", secureStorage: true };
+    local = {
+      ...local,
+      config: {
+        ...local.config,
+        relay: { enabled: false, brokerUrl: "https://api.agentkib.com" },
+      },
+      relay: { phase: "disabled" },
+    };
+    const view = render(<WebAccessSettings />);
+    expect(await screen.findByText(hint)).toBeVisible();
+    expect(screen.queryByText(remoteEntryCopy[locale].phases.disabled)).toBeNull();
+    expect(screen.queryByRole("button", { name: remoteEntryCopy[locale].enable })).toBeNull();
+    const login = await screen.findByRole("button", { name: remoteAccountCopy[locale].login });
+    expect(view.container.querySelectorAll("button.bg-primary")).toHaveLength(1);
+    expect(login).toHaveClass("bg-primary");
+    account = { phase: "signing-in", secureStorage: true };
+    fireEvent.click(login);
+    expect(
+      await screen.findByRole("button", { name: remoteAccountCopy[locale].cancel }),
+    ).toBeVisible();
+    expect(request.mock.calls.every(([input]) => input.operation === "status")).toBe(true);
+    act(() => accountListener?.(signedIn));
+    const resume = await screen.findByRole("button", { name: remoteEntryCopy[locale].enable });
+    expect(resume).toBeEnabled();
+    expect(screen.queryByRole("button", { name: remoteAccountCopy[locale].login })).toBeNull();
+    fireEvent.click(resume);
+    await waitFor(() =>
+      expect(request).toHaveBeenCalledWith({
+        operation: "remote-enable",
+        brokerUrl: "https://api.agentkib.com",
+      }),
+    );
+  },
+);
+
+it("keeps official pause login cancellable without applying a self-hosted provider draft", async () => {
+  local = {
+    ...local,
+    config: {
+      ...local.config,
+      relay: { enabled: false, brokerUrl: "https://api.agentkib.com" },
+    },
+  };
+  render(<WebAccessSettings />);
+  await screen.findByRole("button", { name: "Enable remote access" });
+  fireEvent.click(screen.getByRole("button", { name: "Advanced settings" }));
+  fireEvent.change(screen.getByLabelText(remoteEntryCopy["en-US"].broker), {
+    target: { value: "https://draft.example.com" },
+  });
+  act(() => accountListener?.({ phase: "signed-out", secureStorage: true }));
+  const login = await screen.findByRole("button", { name: remoteAccountCopy["en-US"].login });
+  expect(screen.queryByRole("button", { name: "Enable remote access" })).toBeNull();
+  account = { phase: "signing-in", secureStorage: true };
+  fireEvent.click(login);
+  const cancel = await screen.findByRole("button", { name: remoteAccountCopy["en-US"].cancel });
+  account = { phase: "signed-out", secureStorage: true };
+  fireEvent.click(cancel);
+  expect(
+    await screen.findByRole("button", { name: remoteAccountCopy["en-US"].login }),
+  ).toBeVisible();
+  expect(accountRequest).toHaveBeenCalledWith({ operation: "cancel-login" });
+  expect(request.mock.calls.every(([input]) => input.operation === "status")).toBe(true);
+  act(() => accountListener?.(signedIn));
+  fireEvent.click(await screen.findByRole("button", { name: "Enable remote access" }));
+  await waitFor(() =>
+    expect(request).toHaveBeenCalledWith({
+      operation: "remote-enable",
+      brokerUrl: "https://api.agentkib.com",
+    }),
+  );
+  expect(screen.getByLabelText(remoteEntryCopy["en-US"].broker)).toHaveValue(
+    "https://draft.example.com",
+  );
+});
+
+it("keeps self-hosted pause resume independent of account sign-in and official provider drafts", async () => {
+  account = { phase: "signed-out", secureStorage: true };
+  local = {
+    ...local,
+    config: {
+      ...local.config,
+      relay: { enabled: false, brokerUrl: "https://self-hosted.example.com" },
+    },
+  };
+  const view = render(<WebAccessSettings />);
+  const resume = await screen.findByRole("button", { name: "Enable remote access" });
+  expect(resume).toBeEnabled();
+  expect(view.container.querySelectorAll("button.bg-primary")).toHaveLength(1);
+  fireEvent.click(screen.getByRole("button", { name: "Advanced settings" }));
+  fireEvent.change(screen.getByLabelText(remoteEntryCopy["en-US"].broker), {
+    target: { value: "https://api.agentkib.com" },
+  });
+  fireEvent.click(resume);
+  await waitFor(() =>
+    expect(request).toHaveBeenCalledWith({
+      operation: "remote-enable",
+      brokerUrl: "https://self-hosted.example.com",
+    }),
+  );
+});
+
+it.each(["ready", "connecting", "offline", "error"] as const)(
+  "shows diagnostics only for a failed or interrupted management connection (%s)",
+  async (phase) => {
+    ready();
+    local = {
+      ...local,
+      devices: [browser],
+      relay: { ...local.relay!, phase, channels: { control: true, preview: phase === "ready" } },
+    };
+    render(<WebAccessSettings />);
+    await screen.findByRole("heading", { name: "Authorized browsers 1" });
+    const diagnostics = screen.queryByRole("button", { name: "Connection diagnostics" });
+    if (phase === "offline" || phase === "error") expect(diagnostics).toBeVisible();
+    else expect(diagnostics).toBeNull();
+    expect(screen.getAllByText("Full control")).toHaveLength(1);
+    expect(
+      screen.getByRole("combobox", { name: "Access level: iPhone · Safari" }),
+    ).toHaveTextContent("Full control");
+  },
+);
+
+it("keeps legacy browser permission details while avoiding repeated generated-code access levels", async () => {
+  ready();
+  local = {
+    ...local,
+    devices: [{ ...browser, accessMode: undefined, accessLevel: undefined }],
+    code: { value: "48291736", access: "full", expiresAt: Date.now() + 60_000 },
+  };
+  render(<WebAccessSettings />);
+  const name = await screen.findByText(browser.name);
+  expect(name.closest("div")).toHaveTextContent(webSettingsCopy["en-US"].read);
+  fireEvent.click(screen.getByRole("button", { name: "Connect a new phone" }));
+  const dialog = await screen.findByRole("dialog", { name: "Connect a new phone" });
+  expect(within(dialog).getByText("4829 1736")).toBeVisible();
+  expect(within(dialog).queryByText(/^Access level:/)).toBeNull();
+  fireEvent.click(within(dialog).getByRole("button", { name: "Read-only" }));
+  expect(within(dialog).queryByText("4829 1736")).toBeNull();
+  expect(within(dialog).getByRole("button", { name: "Generate access code" })).toBeEnabled();
+  expect(request).not.toHaveBeenCalledWith(expect.objectContaining({ operation: "generate-code" }));
+});
+
 it("does not restart local Web for external-only save failures, retries, or discarded external drafts", async () => {
   const save = vi.fn().mockResolvedValue(false);
   const view = render(
@@ -394,7 +546,7 @@ it.each([false, true])(
     expect(await screen.findByRole("heading", { name: "Authorized browsers 0" })).toBeVisible();
     expect(screen.getByText("Remote access paused")).toBeVisible();
     expect(screen.queryByRole("heading", { name: remotePhoneCopy["en-US"].introTitle })).toBeNull();
-    expect(screen.getByRole("button", { name: "Enable remote access" })).toBeEnabled();
+    expect(await screen.findByRole("button", { name: "Enable remote access" })).toBeEnabled();
     expect(screen.getByRole("button", { name: "Connect a new phone" })).toBeDisabled();
     expect(screen.queryByLabelText("Invitation (first connection only)")).toBeNull();
   },
@@ -508,7 +660,11 @@ it.each(["zh-CN", "zh-TW", "en-US", "ja-JP"] as const)(
     expect(await screen.findByText(webSettingsCopy[locale].codeScope)).toBeVisible();
     expect(screen.getByText(remotePhoneCopy[locale].codeHint)).toBeVisible();
     expect(screen.getAllByText(webSettingsCopy[locale].codeScope)).toHaveLength(1);
-    local = { ...local, devices: [browser] };
+    local = {
+      ...local,
+      devices: [browser],
+      code: { value: "48291736", access: "full", expiresAt: Date.now() + 60_000 },
+    };
     await act(async () => {
       await requestWebAdmin({ operation: "status" });
     });
@@ -516,6 +672,12 @@ it.each(["zh-CN", "zh-TW", "en-US", "ja-JP"] as const)(
     const dialog = await screen.findByRole("dialog", { name: remotePhoneCopy[locale].connectNew });
     expect(within(dialog).getByText(webSettingsCopy[locale].codeScope)).toBeVisible();
     expect(within(dialog).getByText(remotePhoneCopy[locale].codeHint)).toBeVisible();
+    expect(within(dialog).getByText("4829 1736")).toBeVisible();
+    expect(
+      within(dialog).queryByText(
+        `${webSettingsCopy[locale].accessLevel}: ${webSettingsCopy[locale].fullAccess}`,
+      ),
+    ).toBeNull();
     expect(screen.getAllByText(webSettingsCopy[locale].codeScope)).toHaveLength(1);
   },
 );

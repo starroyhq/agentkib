@@ -31,7 +31,7 @@ const zh = {
   expiresAt: "{time} 前有效",
   clearConnection: "清除连接…",
   confirmClearConnection: "确认清除连接",
-  clearConnectionInfo: "清除后会撤销这个终端连接的凭据和未使用的连接码。",
+  clearConnectionInfo: "清除后，这条会话在终端继续时不会再自动连接；以后要连接，需要新的连接码。",
   disconnectBeforeCode: "若要生成新的连接码，请先断开当前终端连接。",
   invalidCode: "连接码无效。请重新生成，并在目标终端使用完整的新连接码。",
   versionMismatch: "终端里的连接插件需要更新。按第 1 步重新安装后，重新生成连接码。",
@@ -129,7 +129,8 @@ export const claudeConnectionCopy: Record<Locale, Copy> = {
     expiresAt: "{time} 前有效",
     clearConnection: "清除連線…",
     confirmClearConnection: "確認清除連線",
-    clearConnectionInfo: "清除後會撤銷此終端連線的憑據與未使用的連線碼。",
+    clearConnectionInfo:
+      "清除後，這段對話在終端繼續時不會再自動連線；日後若要連線，需要新的連線碼。",
     disconnectBeforeCode: "若要產生新的連線碼，請先中斷目前終端連線。",
     invalidCode: "連線碼無效。請重新產生，並在目標終端使用完整的新連線碼。",
     versionMismatch: "終端裡的連線外掛需要更新。依第 1 步重新安裝後，重新產生連線碼。",
@@ -228,7 +229,7 @@ export const claudeConnectionCopy: Record<Locale, Copy> = {
     clearConnection: "Clear connection…",
     confirmClearConnection: "Clear connection",
     clearConnectionInfo:
-      "Clearing revokes this terminal connection's credentials and unused connection codes.",
+      "After clearing, resuming this session in the terminal will no longer connect automatically. You will need a new connection code to connect again.",
     disconnectBeforeCode:
       "Disconnect the current terminal before generating a new connection code.",
     invalidCode:
@@ -348,7 +349,7 @@ export const claudeConnectionCopy: Record<Locale, Copy> = {
     clearConnection: "接続をクリア…",
     confirmClearConnection: "接続をクリア",
     clearConnectionInfo:
-      "クリアすると、このターミナル接続の認証情報と未使用の接続コードを無効にします。",
+      "クリアすると、この会話をターミナルで再開しても自動接続しなくなります。再び接続するには、新しい接続コードが必要です。",
     disconnectBeforeCode:
       "新しい接続コードを生成するには、現在のターミナル接続を先に切断してください。",
     invalidCode:

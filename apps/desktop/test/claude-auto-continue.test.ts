@@ -344,6 +344,26 @@ async function rejectedControl(action: Promise<unknown>) {
 describe.skipIf(!["darwin", "linux"].includes(process.platform))(
   "Claude automatic continuation ownership boundaries (offline CLI)",
   () => {
+    it.each([undefined, "", "   "])(
+      "keeps default configuration semantics for a resume request when the override is %j",
+      async (override) => {
+        const host = fixture();
+        host.owner.environment.CLAUDE_CONFIG_DIR = override;
+        const { id, nativeId } = host.create();
+        const before = readFileSync(path.join(host.root, "claude-managed", `${id}.json`), "utf8");
+        const probe = vi.spyOn(ClaudeSessionOwnerProbe.prototype, "check");
+        const command = await host.owner.request({ operation: "resume-command", sessionId: id });
+        expect(command).toMatchObject({ available: true, runOn: "host", shell: "posix" });
+        expect((command as { command: string }).command).toContain(`claude --resume '${nativeId}'`);
+        expect((command as { command: string }).command).not.toContain("CLAUDE_CONFIG_DIR");
+        expect(readFileSync(path.join(host.root, "claude-managed", `${id}.json`), "utf8")).toBe(
+          before,
+        );
+        expect(host.frames()).toEqual([]);
+        expect(probe).not.toHaveBeenCalled();
+      },
+    );
+
     it("reads a verified host resume command without checking owners, starting a CLI, or writing metadata", async () => {
       const host = fixture();
       const { id, nativeId } = host.create();

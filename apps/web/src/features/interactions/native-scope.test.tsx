@@ -2,6 +2,24 @@ import { cleanup, render, screen } from "@testing-library/react";
 import { afterEach, expect, it } from "vitest";
 import { NativeScope } from "@/features/conversation/features/interactions/native-scope";
 afterEach(cleanup);
+it.each([
+  ["zh-CN", "主机"],
+  ["zh-TW", "主機"],
+  ["en-US", "Host"],
+  ["ja-JP", "ホスト"],
+] as const)("keeps %s host as the network permission destination", (locale, label) => {
+  render(
+    <NativeScope
+      locale={locale}
+      value={{ networkApprovalContext: { host: "destination.example.test", protocol: "https" } }}
+    />,
+  );
+  const destination = screen.getByText("https://destination.example.test", {
+    exact: false,
+    selector: "li",
+  });
+  expect(destination).toHaveTextContent(`${label}: https://destination.example.test`);
+});
 it("keeps permission paths and network scope visible while collapsing raw metadata", () => {
   const { container } = render(
     <NativeScope

@@ -9,8 +9,8 @@ export const remoteSettingsCopy = {
     emptyTitle: "还没有和其他电脑连接",
     emptyInfo: "电脑之间可以通过局域网只读查看会话历史：一台电脑开启共享，另一台查找并配对。",
     discover: "查找附近的电脑",
+    find: "查找",
     shareAction: "共享这台电脑",
-    nameHint: "名称随高级设置中的“保存设置”生效。",
     networkRequired: "请先在高级设置中选择并保存局域网接口，再开启共享。",
     advanced: "打开高级设置",
     saved: "名称已保存。",
@@ -28,8 +28,8 @@ export const remoteSettingsCopy = {
     emptyTitle: "還沒有和其他電腦連線",
     emptyInfo: "電腦之間可以透過區域網路唯讀查看對話紀錄：一台電腦開啟共享，另一台尋找並配對。",
     discover: "尋找附近的電腦",
+    find: "尋找",
     shareAction: "共享這台電腦",
-    nameHint: "名稱在進階設定中點選「儲存設定」後生效。",
     networkRequired: "請先在進階設定中選擇並儲存區域網路介面，再開啟共享。",
     advanced: "開啟進階設定",
     saved: "名稱已儲存。",
@@ -48,8 +48,8 @@ export const remoteSettingsCopy = {
     emptyInfo:
       "Computers on the same local network can view session history read-only. Enable sharing on one, then find and pair it from the other.",
     discover: "Find nearby computers",
+    find: "Find",
     shareAction: "Share this computer",
-    nameHint: "Save a changed name with “Save settings” in advanced settings.",
     networkRequired:
       "Select and save a local network interface in advanced settings before sharing.",
     advanced: "Open advanced settings",
@@ -69,8 +69,8 @@ export const remoteSettingsCopy = {
     emptyInfo:
       "同じ LAN 上のコンピューターで会話履歴を閲覧できます。一方で共有を有効にし、もう一方で検索してペアリングしてください。",
     discover: "近くのコンピューターを検索",
+    find: "検索",
     shareAction: "このコンピューターを共有",
-    nameHint: "変更した名前は、詳細設定の「設定を保存」で適用されます。",
     networkRequired:
       "共有を有効にする前に、詳細設定で LAN インターフェースを選択して保存してください。",
     advanced: "詳細設定を開く",

@@ -16,9 +16,10 @@ function navigationRows() {
   const section = screen
     .getByRole("heading", { name: tr("shortcuts.group.navigation") })
     .closest("section")!;
-  return Array.from(section.querySelectorAll("kbd"))
-    .slice(0, 7)
-    .map((key) => [key.previousElementSibling?.textContent, key.textContent]);
+  return Array.from(section.querySelectorAll("kbd")).map((key) => [
+    key.previousElementSibling?.textContent,
+    key.textContent,
+  ]);
 }
 
 describe("ShortcutHelpDialog", () => {
@@ -44,15 +45,37 @@ describe("ShortcutHelpDialog", () => {
       document.documentElement.dataset.platform = platform;
       await act(() => changeLocale(locale));
       try {
-        const expected = createGlobalNavigation(0).map((entry, index) => [
+        const entries = createGlobalNavigation(0);
+        expect(entries.map((entry) => entry.id)).toEqual([
+          "home",
+          "workspaces",
+          "sessions",
+          "catalog",
+          "quota",
+          "insights",
+        ]);
+        const expectedPages = entries.map((entry, index) => [
           tr(entry.label),
           `${platform === "macos" ? "⌘" : "Ctrl+"}${index + 1}`,
         ]);
+        const settingsShortcut = `${platform === "macos" ? "⌘" : "Ctrl+"},`;
+        const expected = [
+          ...expectedPages,
+          [tr("menu.settings"), settingsShortcut],
+          [tr("shortcuts.back"), platform === "macos" ? "⌘[" : "Alt+←"],
+          [tr("shortcuts.forward"), platform === "macos" ? "⌘]" : "Alt+→"],
+        ];
         const help = render(<ShortcutHelpDialog open onOpenChange={() => undefined} />);
         expect(navigationRows()).toEqual(expected);
+        expect(navigationRows().filter(([label]) => label === tr("menu.settings"))).toEqual([
+          [tr("menu.settings"), settingsShortcut],
+        ]);
         help.unmount();
         render(<KeyboardShortcutsSettings />);
         expect(navigationRows()).toEqual(expected);
+        expect(navigationRows().filter(([label]) => label === tr("menu.settings"))).toEqual([
+          [tr("menu.settings"), settingsShortcut],
+        ]);
         expect(screen.getByText(tr("sessions.nav"))).toBeVisible();
         expect(screen.getByText(tr("nav.catalog"))).toBeVisible();
       } finally {

@@ -1,4 +1,4 @@
-import { Award, Bot, FolderGit2, Gauge, Home, Library, MessageSquareText } from "lucide-react";
+import { Award, FolderGit2, Gauge, Home, Library, MessageSquareText } from "lucide-react";
 import type { SidebarEntry } from "@/components/AppSidebar";
 import type { GlobalPage } from "./app-route";
 
@@ -10,7 +10,6 @@ const globalNav: SidebarEntry<GlobalPage>[] = [
     icon: FolderGit2,
     shortcut: "navigate-workspaces",
   },
-  { id: "agents", label: "nav.agents", icon: Bot, shortcut: "navigate-agents" },
   { id: "sessions", label: "sessions.nav", icon: MessageSquareText, shortcut: "navigate-sessions" },
   { id: "catalog", label: "nav.catalog", icon: Library, shortcut: "navigate-catalog" },
   { id: "quota", label: "nav.quota", icon: Gauge, shortcut: "navigate-quota" },

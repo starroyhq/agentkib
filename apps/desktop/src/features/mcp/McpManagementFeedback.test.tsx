@@ -351,9 +351,12 @@ describe("MCP inventory empty feedback", () => {
     async (locale) => {
       await initializeI18n(locale);
       renderPanel(inventory([]));
-      expect(await screen.findByText(tr("mcp.configuredEmpty"))).toBeVisible();
+      const emptyText = tr("mcp.manage.scopeEmpty", {
+        scope: tr("mcp.manage.projectScope", { name: "/workspace/one" }),
+      });
+      expect(await screen.findByText(emptyText)).toBeVisible();
       search("unmatched-term");
-      expect(screen.getByText(tr("mcp.configuredEmpty"))).toBeVisible();
+      expect(screen.getByText(emptyText)).toBeVisible();
       expect(
         screen.queryByText(tr("mcp.manage.searchEmpty", { query: "unmatched-term" })),
       ).toBeNull();

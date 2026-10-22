@@ -69,12 +69,12 @@ describe("useAppShortcuts", () => {
   });
 
   it.each(["windows", "linux"] as const)(
-    "navigates all seven sidebar destinations on %s",
+    "navigates all six sidebar destinations on %s",
     (platform) => {
       document.documentElement.dataset.platform = platform;
       const actions = createActions();
       render(<ShortcutHarness {...actions} />);
-      for (let index = 1; index <= 7; index++) {
+      for (let index = 1; index <= 6; index++) {
         const event = new KeyboardEvent("keydown", {
           key: String(index),
           ctrlKey: true,
@@ -85,12 +85,11 @@ describe("useAppShortcuts", () => {
       }
       expect(actions.onNavigate).toHaveBeenNthCalledWith(1, "home");
       expect(actions.onNavigate).toHaveBeenNthCalledWith(2, "workspaces");
-      expect(actions.onNavigate).toHaveBeenNthCalledWith(3, "agents");
-      expect(actions.onNavigate).toHaveBeenNthCalledWith(4, "sessions");
-      expect(actions.onNavigate).toHaveBeenNthCalledWith(5, "catalog");
-      expect(actions.onNavigate).toHaveBeenNthCalledWith(6, "quota");
-      expect(actions.onNavigate).toHaveBeenNthCalledWith(7, "insights");
-      expect(actions.onNavigate).toHaveBeenCalledTimes(7);
+      expect(actions.onNavigate).toHaveBeenNthCalledWith(3, "sessions");
+      expect(actions.onNavigate).toHaveBeenNthCalledWith(4, "catalog");
+      expect(actions.onNavigate).toHaveBeenNthCalledWith(5, "quota");
+      expect(actions.onNavigate).toHaveBeenNthCalledWith(6, "insights");
+      expect(actions.onNavigate).toHaveBeenCalledTimes(6);
       expect(actions.onOpenSettings).not.toHaveBeenCalled();
     },
   );
@@ -103,12 +102,12 @@ describe("useAppShortcuts", () => {
     fireEvent.keyDown(editor, { key: "1", ctrlKey: true });
     fireEvent.keyDown(window, { key: "2", ctrlKey: true, isComposing: true });
     fireEvent.keyDown(window, { key: "3", ctrlKey: true, repeat: true });
-    fireEvent.keyDown(window, { key: "4", ctrlKey: true, isComposing: true });
-    fireEvent.keyDown(window, { key: "4", ctrlKey: true, repeat: true });
+    fireEvent.keyDown(window, { key: "3", ctrlKey: true, isComposing: true });
+    fireEvent.keyDown(window, { key: "3", ctrlKey: true, repeat: true });
     for (const tag of ["textarea", "select"] as const) {
       const field = document.createElement(tag);
       document.body.append(field);
-      fireEvent.keyDown(field, { key: "4", ctrlKey: true });
+      fireEvent.keyDown(field, { key: "3", ctrlKey: true });
       field.remove();
     }
     const editable = document.createElement("div");
@@ -116,7 +115,7 @@ describe("useAppShortcuts", () => {
     const child = document.createElement("span");
     editable.append(child);
     document.body.append(editable);
-    fireEvent.keyDown(child, { key: "4", ctrlKey: true });
+    fireEvent.keyDown(child, { key: "3", ctrlKey: true });
     editable.remove();
 
     expect(actions.onNavigate).not.toHaveBeenCalled();
@@ -132,8 +131,8 @@ describe("useAppShortcuts", () => {
       { ctrlKey: true, shiftKey: true },
       { ctrlKey: true, altKey: true },
     ])
-      fireEvent.keyDown(window, { key: "4", ...modifiers });
-    const handled = new KeyboardEvent("keydown", { key: "4", ctrlKey: true, cancelable: true });
+      fireEvent.keyDown(window, { key: "3", ...modifiers });
+    const handled = new KeyboardEvent("keydown", { key: "3", ctrlKey: true, cancelable: true });
     handled.preventDefault();
     window.dispatchEvent(handled);
     expect(actions.onNavigate).not.toHaveBeenCalled();
@@ -143,7 +142,7 @@ describe("useAppShortcuts", () => {
     const actions = createActions({ helpOpen: true });
     render(<ShortcutHarness {...actions} />);
 
-    fireEvent.keyDown(window, { key: "4", ctrlKey: true });
+    fireEvent.keyDown(window, { key: "3", ctrlKey: true });
 
     expect(actions.onNavigate).not.toHaveBeenCalled();
   });
@@ -154,7 +153,7 @@ describe("useAppShortcuts", () => {
     const actions = createActions();
     render(<ShortcutHarness {...actions} />);
 
-    for (let index = 1; index <= 7; index++)
+    for (let index = 1; index <= 6; index++)
       fireEvent.keyDown(window, { key: String(index), metaKey: true });
     fireEvent.keyDown(window, { key: "b", metaKey: true });
     fireEvent.keyDown(window, { key: "/", metaKey: true });

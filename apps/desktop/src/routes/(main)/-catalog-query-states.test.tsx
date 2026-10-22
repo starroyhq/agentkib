@@ -47,6 +47,7 @@ vi.mock("@/features/skills/SkillHubPage", () => ({
   SkillHubPage: () => <h2>Available skill library</h2>,
 }));
 vi.mock("@/features/mcp/McpManagementPanel", () => ({
+  MCP_ALL_SCOPES: "__all_scopes__",
   McpManagementPanel: () => <h2>Available MCP services</h2>,
 }));
 vi.mock("@/components/AppDialogProvider", () => ({

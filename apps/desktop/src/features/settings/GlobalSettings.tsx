@@ -1,3 +1,4 @@
+import { AgentIntegrationsSettings } from "./AgentIntegrationsSettings";
 import { HistorySearchSettings } from "./HistorySearchSettings";
 import { useOptionalAppNavigationContext } from "@/features/app/AppNavigationContext";
 import { useTranslation } from "react-i18next";
@@ -57,7 +58,7 @@ import { desktopApi } from "@/core/desktop";
 import { cacheEffectiveLocale, changeLocale, localizeMessage } from "@/core/i18n";
 import { cacheEffectiveTheme } from "@/core/theme";
 import { normalizePlatform, primaryShortcutModifier, usesSystemTrayWording } from "@/core/platform";
-import type { SettingsSection as SettingsSectionId } from "./SettingsSidebar";
+import type { SettingsTarget, SettingsSection as SettingsSectionId } from "./SettingsSidebar";
 import type {
   ActivityRecord,
   AppIconPreference,
@@ -93,6 +94,9 @@ const appIconAssets: Record<AppIconPreference, string> = {
 
 export type GlobalSettingsProps = {
   section: SettingsSectionId;
+  settingsTarget?: SettingsTarget;
+  onSettingsTargetChange?: (target: SettingsTarget) => void;
+  agentsContent?: ReactNode;
   runtime?: RuntimeInfo;
   workspaces: WorkspaceSummary[];
   discovery?: DiscoveryReport;
@@ -115,6 +119,9 @@ export type GlobalSettingsProps = {
 
 export function GlobalSettings({
   section,
+  settingsTarget,
+  onSettingsTargetChange,
+  agentsContent,
   runtime,
   workspaces,
   discovery,
@@ -291,8 +298,11 @@ export function GlobalSettings({
     );
   if (section === "integrations")
     return (
-      <SettingsPage variant="management">
-        <SettingsPageHeader title={tr("settings.section.integrations")} />
+      <AgentIntegrationsSettings
+        target={settingsTarget}
+        onTargetChange={onSettingsTargetChange}
+        agents={agentsContent}
+      >
         <SettingsSection title={tr("settings.search.localService")} target="integrations-mcp">
           <p className="text-sm text-muted-foreground">{tr("settings.mcpLocation")}</p>
           <SettingsRow border={false}>
@@ -327,7 +337,7 @@ export function GlobalSettings({
         <SettingsAnchor target="integrations-obsidian">
           <ObsidianSettingsCard />
         </SettingsAnchor>
-      </SettingsPage>
+      </AgentIntegrationsSettings>
     );
   if (section === "privacy")
     return (

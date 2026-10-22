@@ -4,9 +4,11 @@ import type { RemoteGatewaySummary } from "@/core/types";
 
 export function RemoteAgentGatewayDetails({ gateways }: { gateways: RemoteGatewaySummary[] }) {
   const { tr } = useI18n();
+  const hasWorkspaces = gateways.some((gateway) => gateway.workspaces.length > 0);
+  const hasAssets = gateways.some((gateway) => gateway.assets.length > 0);
   const sectionClass = "grid gap-3 rounded-xl border border-border bg-background p-4";
   return (
-    <div className="grid gap-4 lg:grid-cols-3">
+    <div className="grid grid-cols-[repeat(auto-fit,minmax(min(100%,16rem),1fr))] gap-4">
       <section className={sectionClass}>
         <h3 className="text-sm font-semibold">{tr("gateway.title")}</h3>
         <div className="grid gap-2">
@@ -29,61 +31,63 @@ export function RemoteAgentGatewayDetails({ gateways }: { gateways: RemoteGatewa
           ))}
         </div>
       </section>
-      <section className={sectionClass}>
-        <h3 className="text-sm font-semibold">{tr("gateway.remoteWorkspaces")}</h3>
-        <div className="grid gap-2">
-          {gateways.flatMap((gateway) =>
-            gateway.workspaces.map((workspace) => (
-              <div
-                className="grid min-h-[58px] grid-cols-[auto_minmax(0,1fr)_auto] items-center gap-3 rounded-lg bg-muted/20 px-2 text-sm"
-                key={`${gateway.id}:${workspace.id}`}
-              >
-                <FolderGit2 size={15} className="text-muted-foreground" />
-                <span className="min-w-0 truncate">
-                  <strong className="block truncate">{workspace.name}</strong>
-                  <small className="block truncate text-xs text-muted-foreground">
-                    {workspace.path ?? gateway.name}
+      {hasWorkspaces && (
+        <section className={sectionClass}>
+          <h3 className="text-sm font-semibold">{tr("gateway.remoteWorkspaces")}</h3>
+          <div className="grid gap-2">
+            {gateways.flatMap((gateway) =>
+              gateway.workspaces.map((workspace) => (
+                <div
+                  className="grid min-h-[58px] grid-cols-[auto_minmax(0,1fr)_auto] items-center gap-3 rounded-lg bg-muted/20 px-2 text-sm"
+                  key={`${gateway.id}:${workspace.id}`}
+                >
+                  <FolderGit2 size={15} className="text-muted-foreground" />
+                  <span className="min-w-0 truncate">
+                    <strong className="block truncate">{workspace.name}</strong>
+                    <small className="block truncate text-xs text-muted-foreground">
+                      {workspace.path ?? gateway.name}
+                    </small>
+                  </span>
+                  <small className="text-xs text-muted-foreground">
+                    {tr("common.sessions")} {workspace.session_count}
                   </small>
-                </span>
-                <small className="text-xs text-muted-foreground">
-                  {tr("common.sessions")} {workspace.session_count}
-                </small>
-              </div>
-            )),
-          )}
-        </div>
-      </section>
-      <section className={sectionClass}>
-        <h3 className="text-sm font-semibold">{tr("gateway.remoteAssets")}</h3>
-        <div className="grid gap-2">
-          {gateways.flatMap((gateway) =>
-            gateway.assets.map((asset) => (
-              <div
-                className="grid min-h-[58px] grid-cols-[auto_minmax(0,1fr)_auto] items-center gap-3 rounded-lg bg-muted/20 px-2 text-sm"
-                key={`${gateway.id}:${asset.id}`}
-              >
-                <FileCode2 size={15} className="text-muted-foreground" />
-                <span className="min-w-0 truncate">
-                  <strong className="block truncate">{asset.name}</strong>
-                  <small className="block truncate text-xs text-muted-foreground">
-                    {asset.path}
-                  </small>
-                </span>
-                <em className="not-italic text-xs text-muted-foreground">{asset.kind}</em>
-              </div>
-            )),
-          )}
-          {gateways.every((gateway) => !gateway.assets.length) && (
-            <p className="pt-2 text-sm text-muted-foreground">
-              {tr(
-                gateways.every((gateway) => gateway.kind === "hermes")
-                  ? "gateway.hermesPartial"
-                  : "gateway.noRemoteAssets",
-              )}
-            </p>
-          )}
-        </div>
-      </section>
+                </div>
+              )),
+            )}
+          </div>
+        </section>
+      )}
+      {hasAssets && (
+        <section className={sectionClass}>
+          <h3 className="text-sm font-semibold">{tr("gateway.remoteAssets")}</h3>
+          <div className="grid gap-2">
+            {gateways.flatMap((gateway) =>
+              gateway.assets.map((asset) => (
+                <div
+                  className="grid min-h-[58px] grid-cols-[auto_minmax(0,1fr)_auto] items-center gap-3 rounded-lg bg-muted/20 px-2 text-sm"
+                  key={`${gateway.id}:${asset.id}`}
+                >
+                  <FileCode2 size={15} className="text-muted-foreground" />
+                  <span className="min-w-0 truncate">
+                    <strong className="block truncate">{asset.name}</strong>
+                    <small className="block truncate text-xs text-muted-foreground">
+                      {asset.path}
+                    </small>
+                  </span>
+                  <em className="not-italic text-xs text-muted-foreground">{asset.kind}</em>
+                </div>
+              )),
+            )}
+          </div>
+        </section>
+      )}
+      {!hasAssets &&
+        gateways.length > 0 &&
+        gateways.every((gateway) => gateway.kind === "hermes") && (
+          <p className="col-span-full text-sm text-muted-foreground">
+            {tr("gateway.hermesPartial")}
+          </p>
+        )}
     </div>
   );
 }

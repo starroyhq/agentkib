@@ -69,7 +69,7 @@ async function renderRow(enabled: boolean, inherited: boolean) {
   const buttons = within(row).getAllByRole("button");
   const primary = enabled ? buttons[0] : undefined;
   const more = buttons.at(-1)!;
-  return { primary, more };
+  return { primary, more, toggle: within(row).getByRole("switch") };
 }
 
 beforeEach(async () => {
@@ -89,7 +89,7 @@ describe("MCP action focus in a horizontally scrollable table", () => {
   ] as const)(
     "reveals the available %s actions without dispatching them",
     async (_state, enabled, inherited) => {
-      const { primary, more } = await renderRow(enabled, inherited);
+      const { primary, more, toggle } = await renderRow(enabled, inherited);
       const scroll = vi.spyOn(Element.prototype, "scrollIntoView");
       const user = userEvent.setup();
       const first = primary ?? more;
@@ -97,7 +97,12 @@ describe("MCP action focus in a horizontally scrollable table", () => {
       expect(first).toHaveFocus();
       expect(scroll).toHaveBeenLastCalledWith({ block: "nearest", inline: "nearest" });
       expect(scroll.mock.contexts.at(-1)).toBe(first);
-      if (primary) await user.tab();
+      if (primary) {
+        await user.tab();
+        expect(toggle).toHaveFocus();
+        expect(scroll.mock.contexts.at(-1)).toBe(toggle);
+        await user.tab();
+      }
       expect(more).toHaveFocus();
       expect(scroll).toHaveBeenLastCalledWith({ block: "nearest", inline: "nearest" });
       expect(scroll.mock.contexts.at(-1)).toBe(more);

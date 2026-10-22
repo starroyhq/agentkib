@@ -14,6 +14,7 @@ import {
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
+import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
 import {
   Dialog,
   DialogContent,
@@ -61,6 +62,7 @@ import { useI18n } from "@/core/useI18n";
 import { AgentIcon } from "@/features/agents/AgentIcon";
 import { sessionAgentNames } from "@/features/sessions/session-labels";
 import { withAsyncCleanup } from "@/lib/utils";
+import { usePathDisplay } from "@/lib/usePathDisplay";
 import { isSkillDirectory, SkillFileBrowser, type SkillReadableContent } from "./SkillFileBrowser";
 
 const knownStatuses = new Set([
@@ -110,6 +112,27 @@ export function groupSkillObservations(observations: SkillObservation[]): Observ
   return [...groups.values()];
 }
 
+export function canReadSkillObservation(observation: SkillObservation) {
+  return (
+    Boolean(observation.resolved_path) &&
+    !["broken-link", "link-loop", "invalid"].includes(observation.status)
+  );
+}
+
+export function skillImportGroups(inventory: SkillInventory, deployments: SkillDeployment[]) {
+  return groupSkillObservations(
+    inventory.observations.filter(
+      (observation) =>
+        observation.owner !== "agentkib" &&
+        !deployments.some(
+          (deployment) =>
+            deployment.status !== "inactive" &&
+            observationMatchesDeployment(observation, deployment),
+        ),
+    ),
+  );
+}
+
 export function readableSkillFile(file: SkillPreviewFile): SkillReadableContent {
   return {
     path: file.path,
@@ -146,6 +169,7 @@ function SkillUsageActions({
   const { tr } = useI18n();
   const primary = actions.find((action) => action.id === primaryId);
   const secondary = actions.filter((action) => action.id !== primaryId);
+  if (!actions.length) return null;
   return (
     <div className="flex flex-wrap gap-2">
       {primary && (
@@ -974,9 +998,10 @@ export function SkillUsageList({
   emptyMessage?: string | null;
 }) {
   const { tr } = useI18n();
+  const displayPath = usePathDisplay();
   const [query, setQuery] = useState("");
   const [scope, setScope] = useState("all");
-  const [agent, setAgent] = useState("all");
+  const [agent, setAgent] = useState<AgentKind | "all">("all");
   const [showInactive, setShowInactive] = useState(false);
   const matches = (name: string, path: string, scopeValue: string, agents: string[]) =>
     `${name} ${path} ${agents.join(" ")}`.toLowerCase().includes(query.trim().toLowerCase()) &&
@@ -1027,31 +1052,102 @@ export function SkillUsageList({
         ),
       ),
     ];
+    const visibleAgents = [...new Set(group.observations.flatMap((entry) => entry.agents))];
+    const sources = [
+      ...new Set(
+        group.observations.map((entry) =>
+          entry.scope === "personal"
+            ? tr("skills.manager.personal")
+            : entry.workspace_id
+              ? tr("skills.manager.projectSource", { name: location(entry) })
+              : tr("skills.manager.unknownProjectSource"),
+        ),
+      ),
+    ];
+    const paths = [...new Set(group.observations.map((entry) => entry.path))];
+    if (!paths.includes(group.path)) paths.push(group.path);
+    const otherPaths = paths.filter((path) => path !== item.path);
+    const statuses = [...new Set(group.observations.map((entry) => entry.status))];
     return (
       <div key={group.path} className="grid gap-3 rounded-xl border p-4">
+        <div className="flex flex-wrap items-start justify-between gap-3">
+          <div className="grid min-w-0 gap-2">
+            <strong>{item.name}</strong>
+            <div className="flex flex-wrap gap-2">
+              {sources.map((source) => (
+                <Badge key={source} variant="outline">
+                  {source}
+                </Badge>
+              ))}
+              {[...new Set(group.observations.map((entry) => entry.owner))]
+                .filter((owner) => owner !== "external")
+                .map((owner) => (
+                  <Badge key={owner} variant="outline" title={owner}>
+                    {owner === "cc-switch"
+                      ? "CC Switch"
+                      : owner === "agentkib"
+                        ? "AgentKib"
+                        : tr("skills.manager.otherInstaller")}
+                  </Badge>
+                ))}
+            </div>
+          </div>
+          <div className="flex flex-wrap gap-2">
+            <Button
+              size="sm"
+              variant="outline"
+              onClick={() => onDetail({ observation_id: item.id })}
+            >
+              {tr("skills.manager.viewNative")}
+            </Button>
+            <Button size="sm" variant="outline" disabled={busy} onClick={() => onImport(item.id)}>
+              {tr("skills.manager.addNative")}
+            </Button>
+          </div>
+        </div>
+        <code className="truncate text-xs text-muted-foreground" title={item.path}>
+          {displayPath(item.path)}
+        </code>
         <div className="flex flex-wrap items-center gap-2">
-          <strong>{item.name}</strong>
-          <Badge variant="outline">{tr("skills.manager.external")}</Badge>
-          {[...new Set(group.observations.map((observation) => observation.owner))].map((owner) => (
-            <Badge key={owner} variant="outline">
-              {owner}
+          {visibleAgents.map((value) => (
+            <Badge key={value} variant="secondary">
+              <AgentIcon agent={value} compact />
+              {sessionAgentNames[value]}
             </Badge>
           ))}
+          {statuses
+            .filter((status) => status !== "visible")
+            .map((status) => (
+              <Badge key={status} variant="outline">
+                {skillStatusLabel(status, tr)}
+              </Badge>
+            ))}
         </div>
-        <code className="break-all text-xs">{group.path}</code>
-        <div className="grid gap-2 border-l pl-3">
-          {group.observations.map((observation) => (
-            <div key={observation.id} className="grid gap-1">
-              <code className="break-all text-xs">{observation.path}</code>
-              <p className="text-xs text-muted-foreground">
-                {location(observation)} ·{" "}
-                {observation.agents.map((value) => sessionAgentNames[value]).join(" · ")} ·{" "}
-                {skillStatusLabel(observation.status, tr)}
-              </p>
-            </div>
-          ))}
-        </div>
-        <p className="text-xs text-muted-foreground">{tr("skills.manager.externalNotice")}</p>
+        {otherPaths.length > 0 && (
+          <Collapsible className="text-xs">
+            <CollapsibleTrigger className="cursor-pointer text-muted-foreground">
+              {tr("skills.manager.otherEntrypoints", { count: otherPaths.length })}
+            </CollapsibleTrigger>
+            <CollapsibleContent className="mt-2 grid gap-2 border-l pl-3">
+              {paths.map((path) => (
+                <div key={path} className="grid min-w-0 gap-1">
+                  <code className="truncate" title={path}>
+                    {displayPath(path)}
+                  </code>
+                  {group.observations
+                    .filter((entry) => entry.path === path)
+                    .map((entry) => (
+                      <p key={entry.id} className="text-muted-foreground">
+                        {location(entry)} ·{" "}
+                        {entry.agents.map((value) => sessionAgentNames[value]).join(" · ")} ·{" "}
+                        {skillStatusLabel(entry.status, tr)}
+                      </p>
+                    ))}
+                </div>
+              ))}
+            </CollapsibleContent>
+          </Collapsible>
+        )}
         {diagnostics.map((diagnostic) => (
           <p key={diagnostic} className="text-xs text-amber-700">
             {diagnostic}
@@ -1059,19 +1155,8 @@ export function SkillUsageList({
         ))}
         <SkillUsageActions
           name={item.name}
-          primaryId="details"
+          primaryId=""
           actions={[
-            {
-              id: "details",
-              label: tr("skills.manager.details"),
-              run: () => onDetail({ observation_id: item.id }),
-            },
-            {
-              id: "import",
-              label: tr("skills.manager.copyToLibrary"),
-              disabled: busy,
-              run: () => onImport(item.id),
-            },
             ...(syncState?.observations.find((observation) => observation.id === item.id)?.can_adopt
               ? [
                   {
@@ -1106,20 +1191,36 @@ export function SkillUsageList({
             />
             <Select value={scope} onValueChange={(value) => value && setScope(value)}>
               <SelectTrigger aria-label={tr("skills.manager.scope")} className="w-36">
-                <SelectValue />
+                <SelectValue>
+                  {tr(
+                    scope === "all"
+                      ? "skills.manager.allSources"
+                      : scope === "personal"
+                        ? "skills.manager.personal"
+                        : "skills.manager.project",
+                  )}
+                </SelectValue>
               </SelectTrigger>
               <SelectContent>
                 <SelectGroup>
                   <SelectLabel>{tr("skills.manager.scope")}</SelectLabel>
-                  <SelectItem value="all">{tr("skills.manager.allScopes")}</SelectItem>
+                  <SelectItem value="all">{tr("skills.manager.allSources")}</SelectItem>
                   <SelectItem value="personal">{tr("skills.manager.personal")}</SelectItem>
                   <SelectItem value="workspace">{tr("skills.manager.project")}</SelectItem>
                 </SelectGroup>
               </SelectContent>
             </Select>
-            <Select value={agent} onValueChange={(value) => value && setAgent(value)}>
+            <Select
+              value={agent}
+              onValueChange={(value) => {
+                const next = value === "all" ? "all" : agents.find((entry) => entry === value);
+                if (next) setAgent(next);
+              }}
+            >
               <SelectTrigger aria-label={tr("workspace.allAgents")} className="w-40">
-                <SelectValue />
+                <SelectValue>
+                  {agent === "all" ? tr("workspace.allAgents") : sessionAgentNames[agent]}
+                </SelectValue>
               </SelectTrigger>
               <SelectContent>
                 <SelectGroup>
@@ -1345,7 +1446,9 @@ export function SkillUsageList({
                 <Badge variant="outline">{tr("skills.manager.differsFromLibrary")}</Badge>
               )}
             </div>
-            <code className="break-all text-xs">{item.target}</code>
+            <code className="truncate text-xs" title={item.target}>
+              {displayPath(item.target)}
+            </code>
             {!localSource && (
               <p className="text-xs text-amber-700">
                 {tr("skills.manager.sourceUnavailable")}
@@ -1388,6 +1491,9 @@ export function SkillUsageList({
           </div>
         );
       })}
+      {filteredNative.length > 0 && (
+        <p className="text-xs text-muted-foreground">{tr("skills.manager.inventoryNotice")}</p>
+      )}
       {filteredNative.map(observationRow)}
       {!loading &&
         !filteredDeployments.length &&

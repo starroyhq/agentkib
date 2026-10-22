@@ -55,7 +55,6 @@ describe("keyboard shortcuts", () => {
     expect(entries.map((entry) => entry.id)).toEqual([
       "home",
       "workspaces",
-      "agents",
       "sessions",
       "catalog",
       "quota",
@@ -64,31 +63,22 @@ describe("keyboard shortcuts", () => {
     expect(entries.map((entry) => entry.shortcut)).toEqual([
       "navigate-home",
       "navigate-workspaces",
-      "navigate-agents",
       "navigate-sessions",
       "navigate-catalog",
       "navigate-quota",
       "navigate-insights",
     ]);
-    const definitions = shortcutsForGroup("navigation").slice(0, 7);
+    const definitions = shortcutsForGroup("navigation").slice(0, 6);
     expect(definitions.map((definition) => definition.id)).toEqual(
       entries.map((entry) => entry.shortcut),
     );
     expect(definitions.map((definition) => definition.labelKey)).toEqual(
       entries.map((entry) => entry.label),
     );
-    expect(definitions.map((definition) => definition.key)).toEqual([
-      "1",
-      "2",
-      "3",
-      "4",
-      "5",
-      "6",
-      "7",
-    ]);
+    expect(definitions.map((definition) => definition.key)).toEqual(["1", "2", "3", "4", "5", "6"]);
     expect(entries.find((entry) => entry.id === "catalog")?.badge).toBe(3);
-    expect(formatShortcut(getShortcutDefinition("navigate-sessions"), "macos")).toBe("⌘4");
-    expect(ariaShortcut(getShortcutDefinition("navigate-sessions"), "linux")).toBe("Control+4");
+    expect(formatShortcut(getShortcutDefinition("navigate-sessions"), "macos")).toBe("⌘3");
+    expect(ariaShortcut(getShortcutDefinition("navigate-sessions"), "linux")).toBe("Control+3");
   });
 
   it("matches shifted shortcuts without accepting the unshifted key", () => {

@@ -192,8 +192,8 @@ describe("SkillHubPage", () => {
   });
   it.each([
     ["en-US", "Skill library", "The Skill library is empty"],
-    ["zh-CN", "技能库", "技能库为空"],
-    ["zh-TW", "技能庫", "技能庫是空的"],
+    ["zh-CN", "技能库", "技能库还是空的"],
+    ["zh-TW", "技能庫", "技能庫還是空的"],
     ["ja-JP", "スキルライブラリ", "スキルライブラリは空です"],
   ] as const)("names the library consistently in %s", async (locale, label, empty) => {
     await initializeI18n(locale);
@@ -431,12 +431,7 @@ describe("SkillHubPage", () => {
     expect(await screen.findByText("A scan root was unavailable")).toBeTruthy();
     const user = userEvent.setup();
     await user.click(screen.getByRole("tab", { name: /Usage locations/ }));
-    await user.click(
-      await screen.findByRole("button", {
-        name: `${tr("common.moreActions")} · external-reviewer`,
-      }),
-    );
-    await user.click(await screen.findByRole("menuitem", { name: "Copy to Skill library" }));
+    await user.click(await screen.findByRole("button", { name: "Add to library" }));
     expect(await screen.findByText("Review Skill package")).toBeTruthy();
     expect(mocks.prepareSkillImport).toHaveBeenCalledWith("external-1");
     await user.click(screen.getByRole("button", { name: "Add to Skill library" }));
@@ -551,11 +546,14 @@ describe("SkillHubPage", () => {
       const user = userEvent.setup();
       await waitFor(() =>
         expect(
-          (screen.getByRole("button", { name: "Import from local Agents" }) as HTMLButtonElement)
-            .disabled,
+          (
+            screen.getByRole("button", {
+              name: `Import from local Agents (${count})`,
+            }) as HTMLButtonElement
+          ).disabled,
         ).toBe(false),
       );
-      await user.click(screen.getByRole("button", { name: "Import from local Agents" }));
+      await user.click(screen.getByRole("button", { name: `Import from local Agents (${count})` }));
       await user.click(screen.getByRole("button", { name: "Review selected packages" }));
       await user.click(await screen.findByRole("button", { name: "Import ready packages" }));
       expect(await screen.findAllByText("Imported")).toHaveLength(count);
@@ -563,6 +561,7 @@ describe("SkillHubPage", () => {
         expect(screen.getAllByText(/Batch refresh failed/).length).toBeGreaterThan(0),
       );
       await user.click(screen.getAllByRole("button", { name: "Close" }).at(-1)!);
+      await user.click(screen.getByRole("tab", { name: new RegExp(tr("skills.library")) }));
       for (const name of names) expect(await screen.findByText(`Imported ${name}`)).toBeTruthy();
       const message = screen.getByText(
         count === 1
@@ -1145,9 +1144,10 @@ describe("SkillHubPage", () => {
         </AppDialogProvider>,
       );
 
-      if (operation === "restore")
+      if (operation === "restore") {
+        await user.click(screen.getByRole("tab", { name: new RegExp(tr("skills.library")) }));
         await user.click(await screen.findByRole("button", { name: tr(action) }));
-      else await libraryAction(user, tr(action));
+      } else await libraryAction(user, tr(action));
       if (operation !== "restore") {
         await user.click(screen.getByRole("button", { name: tr("common.confirm") }));
       }

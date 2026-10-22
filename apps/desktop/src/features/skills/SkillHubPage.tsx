@@ -59,6 +59,7 @@ import {
 import { api } from "@/core/api";
 import { tr } from "@/core/i18n";
 import { withAsyncCleanup } from "@/lib/utils";
+import { usePathDisplay } from "@/lib/usePathDisplay";
 import type {
   InstalledSkill,
   RemovedSkill,
@@ -78,6 +79,8 @@ import {
   SkillDeploymentDialog,
   SkillDetailDialog,
   SkillUsageList,
+  canReadSkillObservation,
+  skillImportGroups,
   type SkillDeploymentAction,
 } from "./SkillManagerPanels";
 import { SkillImportDialog } from "./SkillImportDialog";
@@ -162,9 +165,15 @@ export function SkillHubPage({
   onReload,
 }: SkillHubPageProps) {
   const { localizeMessage, tr, formatDateTime } = useI18n();
+  const displayPath = usePathDisplay();
   const dialogs = useAppDialogs();
-  const [localSection, setLocalSection] = useState<SkillHubSection>("library");
-  const section = controlledSection ?? localSection;
+  const [localSection, setLocalSection] = useState<SkillHubSection>();
+  const [previousControlledSection, setPreviousControlledSection] = useState(controlledSection);
+  if (previousControlledSection !== controlledSection) {
+    setPreviousControlledSection(controlledSection);
+    // Browser history can remove an explicit URL destination without remounting this page.
+    if (controlledSection === undefined) setLocalSection(undefined);
+  }
   const setSection = (next: SkillHubSection) => {
     if (controlledSection === undefined) setLocalSection(next);
     onSectionChange?.(next);
@@ -173,6 +182,34 @@ export function SkillHubPage({
   const libraryQuery = useSkillLibrary();
   const installed = libraryQuery.data?.installed ?? noInstalledSkills;
   const removed = libraryQuery.data?.removed ?? noRemovedSkills;
+  const inventoryQuery = useSkillInventory();
+  const deploymentsQuery = useSkillDeployments();
+  const inventory = inventoryQuery.data ?? { observations: [], warnings: [] };
+  const deployments = deploymentsQuery.data ?? [];
+  const activeDeployments = deployments.filter((item) => item.status !== "inactive");
+  const workspaceUsageCount =
+    activeDeployments.length +
+    groupSkillObservations(
+      inventory.observations.filter(
+        (item) =>
+          !activeDeployments.some((deployment) => observationMatchesDeployment(item, deployment)),
+      ),
+    ).length;
+  const importableCount = skillImportGroups(inventory, deployments).filter((group) =>
+    group.observations.some(canReadSkillObservation),
+  ).length;
+  // Resolve the first automatic destination only from complete successful snapshots.
+  // A user choice or an explicit URL always wins and survives later refreshes.
+  if (
+    controlledSection === undefined &&
+    localSection === undefined &&
+    libraryQuery.isSuccess &&
+    inventoryQuery.isSuccess &&
+    deploymentsQuery.isSuccess
+  ) {
+    setLocalSection(!installed.length && workspaceUsageCount > 0 ? "workspace" : "library");
+  }
+  const section = controlledSection ?? localSection ?? "library";
   // 操作结果直接写回缓存，界面立即更新；随后的 refreshAfterMutation 再与服务端对齐。
   const updateLibrary = (update: (library: SkillLibrary) => SkillLibrary) =>
     queryClient.setQueryData<SkillLibrary>(skillKeys.library(), (current) =>
@@ -182,7 +219,11 @@ export function SkillHubPage({
     updateLibrary((library) => ({ ...library, installed: next(library.installed) }));
   const setRemoved = (next: (items: RemovedSkill[]) => RemovedSkill[]) =>
     updateLibrary((library) => ({ ...library, removed: next(library.removed) }));
-  const libraryLoading = libraryQuery.isPending;
+  const libraryLoading =
+    libraryQuery.isPending ||
+    (controlledSection === undefined &&
+      localSection === undefined &&
+      (inventoryQuery.isPending || deploymentsQuery.isPending));
   const catalogQuery = useQuery(
     {
       ...queryDefaults,
@@ -193,8 +234,6 @@ export function SkillHubPage({
     queryClient,
   );
   const catalog = catalogQuery.data;
-  const inventoryQuery = useSkillInventory();
-  const deploymentsQuery = useSkillDeployments();
   const syncQuery = useSkillSyncState();
   const syncStatus = useSkillSyncStatus();
   const [pendingOnly, setPendingOnly] = useState(false);
@@ -231,8 +270,6 @@ export function SkillHubPage({
   }>();
   const [busy, setBusy] = useState<string>();
   const [errors, setErrors] = useState<unknown[]>([]);
-  const inventory = inventoryQuery.data ?? { observations: [], warnings: [] };
-  const deployments = deploymentsQuery.data ?? [];
   const pendingSync =
     syncQuery.data?.deployments.filter(
       (item) =>
@@ -449,15 +486,6 @@ export function SkillHubPage({
         .includes(normalized),
     );
   }, [candidates, catalog, query, tr]);
-  const activeDeployments = deployments.filter((item) => item.status !== "inactive");
-  const workspaceUsageCount =
-    activeDeployments.length +
-    groupSkillObservations(
-      inventory.observations.filter(
-        (item) =>
-          !activeDeployments.some((deployment) => observationMatchesDeployment(item, deployment)),
-      ),
-    ).length;
   const successHasDeployments = Boolean(
     success?.skills.some((skill) =>
       activeDeployments.some(
@@ -498,7 +526,7 @@ export function SkillHubPage({
 
   return (
     <div className="grid min-w-0 gap-4">
-      <div className="flex flex-col gap-3 rounded-2xl border border-border bg-card p-3 shadow-sm sm:flex-row sm:items-center sm:justify-between">
+      <div className="flex flex-wrap items-center gap-3">
         <Tabs
           value={section}
           onValueChange={(value) => {
@@ -531,11 +559,27 @@ export function SkillHubPage({
             </TabsTrigger>
           </TabsList>
         </Tabs>
-        <p className="text-xs text-muted-foreground">{tr("skills.libraryLocation")}</p>
+        <p className="min-w-0 flex-1 text-xs text-muted-foreground">
+          {tr("skills.libraryLocation")}
+        </p>
+        <DropdownMenu>
+          <DropdownMenuTrigger render={<Button variant="outline" size="sm" />}>
+            <MoreHorizontal size={14} />
+            {tr("common.moreActions")}
+          </DropdownMenuTrigger>
+          <DropdownMenuContent align="end">
+            <DropdownMenuItem onClick={() => setSyncPolicyOpen(true)}>
+              {tr("skills.sync.policy")}
+            </DropdownMenuItem>
+            <DropdownMenuItem onClick={() => setSyncRunsOpen(true)}>
+              {tr("skills.sync.history")}
+            </DropdownMenuItem>
+          </DropdownMenuContent>
+        </DropdownMenu>
       </div>
 
-      <div className="flex flex-wrap items-center justify-end gap-2">
-        {pendingSyncCount > 0 && (
+      {pendingSyncCount > 0 && (
+        <div className="flex flex-wrap items-center justify-end gap-2">
           <Button
             variant="outline"
             size="sm"
@@ -546,14 +590,8 @@ export function SkillHubPage({
           >
             {tr("skills.sync.pending", { count: pendingSyncCount })}
           </Button>
-        )}
-        <Button variant="outline" size="sm" onClick={() => setSyncPolicyOpen(true)}>
-          {tr("skills.sync.policy")}
-        </Button>
-        <Button variant="outline" size="sm" onClick={() => setSyncRunsOpen(true)}>
-          {tr("skills.sync.history")}
-        </Button>
-      </div>
+        </div>
+      )}
       {syncStatus.data?.state === "failed" && (
         <p
           role="alert"
@@ -660,6 +698,13 @@ export function SkillHubPage({
                 </Button>
               )}
               <Button
+                disabled={Boolean(busy) || managerLoading || importableCount === 0}
+                onClick={() => setImportOpen(true)}
+              >
+                <Download size={15} />
+                {tr("skills.imports.countedTitle", { count: importableCount })}
+              </Button>
+              <Button
                 variant="outline"
                 disabled={Boolean(busy)}
                 onClick={() =>
@@ -678,7 +723,9 @@ export function SkillHubPage({
             unavailablePending.map((item) => (
               <div key={item.id} className="grid gap-2 rounded-xl border border-amber-500/40 p-4">
                 <strong>{item.display_name ?? item.package_name}</strong>
-                <code className="break-all text-xs">{item.target}</code>
+                <code className="truncate text-xs" title={item.target}>
+                  {displayPath(item.target)}
+                </code>
                 <p role="status" className="text-sm text-amber-700">
                   {tr("skills.sync.pendingUnavailable")}
                 </p>
@@ -711,119 +758,157 @@ export function SkillHubPage({
 
       {section === "library" && (
         <div className="grid gap-4">
-          <div className="flex items-center justify-between gap-3">
-            <div>
-              <h2 className="text-base font-semibold">{tr("skills.libraryTitle")}</h2>
-              <p className="text-sm text-muted-foreground">{tr("skills.libraryDescription")}</p>
-            </div>
-            <div className="flex flex-wrap gap-2">
-              <Button
-                variant="outline"
-                disabled={Boolean(busy) || managerLoading}
-                onClick={() => setImportOpen(true)}
-              >
-                <Download size={15} />
-                {tr("skills.imports.title")}
-              </Button>
-              <Button
-                variant="outline"
-                disabled={Boolean(busy)}
-                onClick={() => void checkUpdates()}
-              >
-                <RefreshCw className={cn(busy === "check-updates" && "animate-spin")} size={15} />
-                {tr("skills.checkUpdates")}
-              </Button>
-            </div>
-          </div>
-          <div className="flex flex-wrap gap-2">
-            <Input
-              className="min-w-40 flex-1"
-              aria-label={tr("skills.manager.searchLibrary")}
-              placeholder={tr("skills.manager.searchLibrary")}
-              value={librarySearch}
-              onChange={(event) => setLibrarySearch(event.target.value)}
-            />
-            <Select
-              value={librarySource}
-              onValueChange={(value) => value && setLibrarySource(value)}
-            >
-              <SelectTrigger className="w-36" aria-label={tr("catalog.source")}>
-                <SelectValue>
-                  {librarySource === "all"
-                    ? tr("skills.manager.allSources")
-                    : librarySource === "local"
-                      ? tr("skills.localSource")
-                      : librarySource === "openai-curated"
-                        ? tr("skills.openaiCurated")
-                        : "GitHub"}
-                </SelectValue>
-              </SelectTrigger>
-              <SelectContent>
-                <SelectGroup>
-                  <SelectLabel>{tr("catalog.source")}</SelectLabel>
-                  <SelectItem value="all">{tr("skills.manager.allSources")}</SelectItem>
-                  <SelectItem value="local">{tr("skills.localSource")}</SelectItem>
-                  <SelectItem value="github">GitHub</SelectItem>
-                  <SelectItem value="openai-curated">{tr("skills.openaiCurated")}</SelectItem>
-                </SelectGroup>
-              </SelectContent>
-            </Select>
-            <Select
-              value={libraryStatus}
-              onValueChange={(value) => value && setLibraryStatus(value)}
-            >
-              <SelectTrigger className="w-36" aria-label={tr("skills.manager.statusFilter")}>
-                <SelectValue>
-                  {libraryStatus === "all"
-                    ? tr("skills.manager.allStatuses")
-                    : tr(`skills.status.${libraryStatus}`)}
-                </SelectValue>
-              </SelectTrigger>
-              <SelectContent>
-                <SelectGroup>
-                  <SelectLabel>{tr("skills.manager.statusFilter")}</SelectLabel>
-                  <SelectItem value="all">{tr("skills.manager.allStatuses")}</SelectItem>
-                  {(["current", "update-available", "modified", "unmanaged"] as const).map(
-                    (status) => (
-                      <SelectItem key={status} value={status}>
-                        {statusLabel(status, tr)}
-                      </SelectItem>
-                    ),
-                  )}
-                </SelectGroup>
-              </SelectContent>
-            </Select>
-            <Select value={libraryUsage} onValueChange={(value) => value && setLibraryUsage(value)}>
-              <SelectTrigger className="w-40" aria-label={tr("skills.workspaceUsage")}>
-                <SelectValue>
-                  {libraryUsage === "all"
-                    ? tr("skills.manager.allLocations")
-                    : libraryUsage === "unused"
-                      ? tr("skills.manager.notDeployed")
-                      : libraryUsage === "personal"
-                        ? tr("skills.manager.personal")
-                        : tr("skills.manager.project")}
-                </SelectValue>
-              </SelectTrigger>
-              <SelectContent>
-                <SelectGroup>
-                  <SelectLabel>{tr("skills.workspaceUsage")}</SelectLabel>
-                  <SelectItem value="all">{tr("skills.manager.allLocations")}</SelectItem>
-                  <SelectItem value="unused">{tr("skills.manager.notDeployed")}</SelectItem>
-                  <SelectItem value="personal">{tr("skills.manager.personal")}</SelectItem>
-                  <SelectItem value="workspace">{tr("skills.manager.project")}</SelectItem>
-                </SelectGroup>
-              </SelectContent>
-            </Select>
-          </div>
+          {(libraryLoading || installed.length > 0) && (
+            <>
+              <div className="flex items-center justify-between gap-3">
+                <div>
+                  <h2 className="text-base font-semibold">{tr("skills.libraryTitle")}</h2>
+                  <p className="text-sm text-muted-foreground">{tr("skills.libraryDescription")}</p>
+                </div>
+                <div className="flex flex-wrap gap-2">
+                  <Button
+                    variant="outline"
+                    disabled={Boolean(busy) || managerLoading || importableCount === 0}
+                    onClick={() => setImportOpen(true)}
+                  >
+                    <Download size={15} />
+                    {tr("skills.imports.countedTitle", { count: importableCount })}
+                  </Button>
+                  <Button
+                    variant="outline"
+                    disabled={Boolean(busy)}
+                    onClick={() => void checkUpdates()}
+                  >
+                    <RefreshCw
+                      className={cn(busy === "check-updates" && "animate-spin")}
+                      size={15}
+                    />
+                    {tr("skills.checkUpdates")}
+                  </Button>
+                </div>
+              </div>
+              <div className="flex flex-wrap gap-2">
+                <Input
+                  className="min-w-40 flex-1"
+                  aria-label={tr("skills.manager.searchLibrary")}
+                  placeholder={tr("skills.manager.searchLibrary")}
+                  value={librarySearch}
+                  onChange={(event) => setLibrarySearch(event.target.value)}
+                />
+                <Select
+                  value={librarySource}
+                  onValueChange={(value) => value && setLibrarySource(value)}
+                >
+                  <SelectTrigger className="w-36" aria-label={tr("catalog.source")}>
+                    <SelectValue>
+                      {librarySource === "all"
+                        ? tr("skills.manager.allSources")
+                        : librarySource === "local"
+                          ? tr("skills.localSource")
+                          : librarySource === "openai-curated"
+                            ? tr("skills.openaiCurated")
+                            : "GitHub"}
+                    </SelectValue>
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectGroup>
+                      <SelectLabel>{tr("catalog.source")}</SelectLabel>
+                      <SelectItem value="all">{tr("skills.manager.allSources")}</SelectItem>
+                      <SelectItem value="local">{tr("skills.localSource")}</SelectItem>
+                      <SelectItem value="github">GitHub</SelectItem>
+                      <SelectItem value="openai-curated">{tr("skills.openaiCurated")}</SelectItem>
+                    </SelectGroup>
+                  </SelectContent>
+                </Select>
+                <Select
+                  value={libraryStatus}
+                  onValueChange={(value) => value && setLibraryStatus(value)}
+                >
+                  <SelectTrigger className="w-36" aria-label={tr("skills.manager.statusFilter")}>
+                    <SelectValue>
+                      {libraryStatus === "all"
+                        ? tr("skills.manager.allStatuses")
+                        : tr(`skills.status.${libraryStatus}`)}
+                    </SelectValue>
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectGroup>
+                      <SelectLabel>{tr("skills.manager.statusFilter")}</SelectLabel>
+                      <SelectItem value="all">{tr("skills.manager.allStatuses")}</SelectItem>
+                      {(["current", "update-available", "modified", "unmanaged"] as const).map(
+                        (status) => (
+                          <SelectItem key={status} value={status}>
+                            {statusLabel(status, tr)}
+                          </SelectItem>
+                        ),
+                      )}
+                    </SelectGroup>
+                  </SelectContent>
+                </Select>
+                <Select
+                  value={libraryUsage}
+                  onValueChange={(value) => value && setLibraryUsage(value)}
+                >
+                  <SelectTrigger className="w-40" aria-label={tr("skills.workspaceUsage")}>
+                    <SelectValue>
+                      {libraryUsage === "all"
+                        ? tr("skills.manager.allLocations")
+                        : libraryUsage === "unused"
+                          ? tr("skills.manager.notDeployed")
+                          : libraryUsage === "personal"
+                            ? tr("skills.manager.personal")
+                            : tr("skills.manager.project")}
+                    </SelectValue>
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectGroup>
+                      <SelectLabel>{tr("skills.workspaceUsage")}</SelectLabel>
+                      <SelectItem value="all">{tr("skills.manager.allLocations")}</SelectItem>
+                      <SelectItem value="unused">{tr("skills.manager.notDeployed")}</SelectItem>
+                      <SelectItem value="personal">{tr("skills.manager.personal")}</SelectItem>
+                      <SelectItem value="workspace">{tr("skills.manager.project")}</SelectItem>
+                    </SelectGroup>
+                  </SelectContent>
+                </Select>
+              </div>
+            </>
+          )}
 
           {libraryLoading ? (
             <EmptyState title={tr("common.loading")} />
+          ) : !libraryQuery.data ? (
+            <Button
+              variant="outline"
+              className="justify-self-start"
+              disabled={Boolean(busy)}
+              onClick={() => void run("refresh-library", loadLibrary)}
+            >
+              {tr("runtime.retry")}
+            </Button>
           ) : !installed.length ? (
-            <EmptyState
-              title={tr("skills.libraryEmpty")}
-              description={tr("skills.libraryEmptyHint")}
-            />
+            <div className="grid min-h-60 place-items-center rounded-2xl border bg-card p-8 text-center">
+              <div className="grid justify-items-center gap-3">
+                <Library className="text-muted-foreground" size={24} />
+                <h2 className="font-semibold">{tr("skills.libraryEmpty")}</h2>
+                <p className="text-sm text-muted-foreground">
+                  {tr(importableCount > 0 ? "skills.libraryEmptyHint" : "skills.libraryEmptyNone", {
+                    count: importableCount,
+                  })}
+                </p>
+                <div className="flex flex-wrap items-center justify-center gap-2">
+                  <Button
+                    disabled={Boolean(busy) || managerLoading || importableCount === 0}
+                    onClick={() => setImportOpen(true)}
+                  >
+                    <Download size={15} />
+                    {tr("skills.imports.countedTitle", { count: importableCount })}
+                  </Button>
+                  <Button variant="link" onClick={() => setSection("discover")}>
+                    {tr("skills.browseCurated")}
+                  </Button>
+                </div>
+              </div>
+            </div>
           ) : (
             <div className="grid gap-2">
               {filteredInstalled.map((skill) => (

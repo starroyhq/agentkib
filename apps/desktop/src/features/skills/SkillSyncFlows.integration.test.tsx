@@ -156,9 +156,7 @@ async function chooseUsageMenuAction(
   target: string,
   name: string,
 ) {
-  const card = screen
-    .getAllByText(target, { selector: "code" })[0]
-    .closest<HTMLDivElement>("div.rounded-xl");
+  const card = screen.getAllByTitle(target)[0].closest<HTMLDivElement>("div.rounded-xl");
   if (!card) throw new Error("Usage card missing");
   await flow.user.click(within(card).getByRole("button", { name: /^More actions/ }));
   await flow.user.click(await screen.findByRole("menuitem", { name }));

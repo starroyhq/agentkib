@@ -1,0 +1,105 @@
+{
+  "runtime": "Electron 44.9.1 / macOS arm64",
+  "synthetic": true,
+  "startup": {
+    "width": 1360,
+    "height": 860
+  },
+  "minimum": {
+    "width": 1280,
+    "height": 680
+  },
+  "checks": [
+    {
+      "scene": "Agent minimum",
+      "width": 1280,
+      "height": 680,
+      "scrollX": false,
+      "titleY": 73.5,
+      "tabs": [
+        {
+          "label": "Agent",
+          "y": 155,
+          "width": 50.0546875
+        },
+        {
+          "label": "集成",
+          "y": 155,
+          "width": 40.5625
+        },
+        {
+          "label": "概览",
+          "y": 225.5,
+          "width": 52.5625
+        },
+        {
+          "label": "全局配置",
+          "y": 225.5,
+          "width": 81.125
+        },
+        {
+          "label": "工作区",
+          "y": 225.5,
+          "width": 66.84375
+        },
+        {
+          "label": "用量",
+          "y": 225.5,
+          "width": 52.5625
+        }
+      ]
+    },
+    {
+      "scene": "MCP minimum",
+      "width": 1280,
+      "height": 680,
+      "scrollX": false,
+      "controls": [
+        {
+          "label": "搜索名称、命令或地址",
+          "x": 346,
+          "right": 788.2265625
+        },
+        {
+          "label": "配置作用域",
+          "x": 796.2265625,
+          "right": 909.6328125
+        },
+        {
+          "label": "按 Agent 筛选",
+          "x": 917.6328125,
+          "right": 1029.75
+        },
+        {
+          "label": "添加服务",
+          "x": 1037.75,
+          "right": 1116.875
+        },
+        {
+          "label": "导入",
+          "x": 1124.875,
+          "right": 1175.4375
+        },
+        {
+          "label": "更多",
+          "x": 1183.4375,
+          "right": 1256
+        },
+        {
+          "label": "探测",
+          "x": 1104.4375,
+          "right": 1155
+        }
+      ]
+    }
+  ],
+  "oldAgentRoute": "/settings?settingsSection=integrations&settingsTarget=integrations-agents&settingsAgent=codex&settingsAgentFilter=enabled",
+  "legacyUntargetedIntegration": "integrations tab",
+  "mcpIntegration": {
+    "url": "/settings?assetSection=mcp&settingsSection=integrations&settingsTarget=integrations-mcp",
+    "tab": "集成"
+  },
+  "nativeMenu": "Six visible items and CmdOrCtrl+1 through 6 verified in actual Electron menu; no Agent item",
+  "keyboardLimitation": "CDP keyboard injection did not activate native menu accelerators; physical keyboard not claimed",
+  "externalRequests": "OS loopback-only guard and renderer request deny; no external action used"
+}

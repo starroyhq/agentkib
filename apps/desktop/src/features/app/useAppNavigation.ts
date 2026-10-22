@@ -431,8 +431,15 @@ export function useAppNavigation(activeRoute?: ParsedRoute) {
         } catch (error) {
           setMessage(localizeMessage(error));
         }
-      } else if (settingsSection === "integrations") await requestRefreshKinds(["gateways"]);
-      else if (settingsSection === "diagnostics")
+      } else if (settingsSection === "integrations") {
+        if (search.settingsTarget === "integrations-agents") {
+          await requestRefreshKinds(["discovery", "insights", "gateways"]);
+          await Promise.all([
+            queryClient.invalidateQueries({ queryKey: homeKeys.installations() }),
+            queryClient.invalidateQueries({ queryKey: homeKeys.catalog() }),
+          ]);
+        } else await requestRefreshKinds(["gateways"]);
+      } else if (settingsSection === "diagnostics")
         await requestRefreshKinds(["discovery", "insights", "gateways", "quota"]);
       else await loadGlobal();
       return;

@@ -66,16 +66,15 @@ afterEach(() => {
 
 describe("native navigation shortcuts", () => {
   it.each(["zh-CN", "zh-TW", "en-US", "ja-JP"] as const)(
-    "dispatches all seven sidebar destinations with matching labels in %s",
+    "dispatches all six sidebar destinations with matching labels in %s",
     (locale) => {
       const { shell, showMainWindow } = start(locale);
       const items = submenu(shell.translate("menu.view")).filter((item) =>
-        /^CmdOrCtrl\+[1-7]$/.test(item.accelerator ?? ""),
+        /^CmdOrCtrl\+[1-6]$/.test(item.accelerator ?? ""),
       );
       const entries = [
         { id: "home", label: "nav.home" },
         { id: "workspaces", label: "nav.workspaces" },
-        { id: "agents", label: "nav.agents" },
         { id: "sessions", label: "sessions.nav" },
         { id: "catalog", label: "nav.catalog" },
         { id: "quota", label: "nav.quota" },
@@ -91,7 +90,6 @@ describe("native navigation shortcuts", () => {
         "CmdOrCtrl+4",
         "CmdOrCtrl+5",
         "CmdOrCtrl+6",
-        "CmdOrCtrl+7",
       ]);
       for (const item of items) Reflect.apply(item.click!, undefined, []);
       expect(electron.send.mock.calls).toEqual(
@@ -100,7 +98,7 @@ describe("native navigation shortcuts", () => {
           { page: entry.id, settings_section: undefined, configure_popover: false },
         ]),
       );
-      expect(showMainWindow).toHaveBeenCalledTimes(7);
+      expect(showMainWindow).toHaveBeenCalledTimes(6);
     },
   );
 

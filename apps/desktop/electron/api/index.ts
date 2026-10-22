@@ -179,6 +179,7 @@ export interface ClaudeBridgeChallenge {
 }
 
 export interface DesktopApi {
+  paths: { displayContext(): Promise<{ homeDirectory: string }> };
   claude: { request(input: Record<string, unknown>): Promise<unknown> };
   account: {
     request(input: DesktopAccountRequest): Promise<DesktopAccountStatus>;

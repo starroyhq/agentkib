@@ -1,5 +1,6 @@
 import { z } from "zod";
 import type { AgentKind } from "@/core/types";
+import { AGENT_KINDS } from "@/core/agents";
 import type { InsightsSection } from "@/features/insights/InsightsPage";
 import { settingsTargets, type SettingsSection } from "@/features/settings/SettingsSidebar";
 
@@ -46,6 +47,8 @@ export const appSearchSchema = z.object({
     .optional()
     .catch(undefined),
   settingsTarget: z.enum(settingsTargets).optional().catch(undefined),
+  settingsAgent: z.enum(AGENT_KINDS).optional().catch(undefined),
+  settingsAgentFilter: z.enum(["all", "enabled", "available"]).optional().catch(undefined),
   insightsSection: z
     .enum(["overview", "tokens", "commits", "milestones", "sources"] satisfies InsightsSection[])
     .optional()

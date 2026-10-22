@@ -90,6 +90,33 @@ describe("useAppNavigation guards", () => {
     await initializeI18n("en-US");
   });
 
+  it("refreshes Agent discovery, capabilities, configurations and provider status in settings", async () => {
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    const invalidate = vi.spyOn(queryClient, "invalidateQueries");
+    const refresh = vi.spyOn(api, "requestRefresh").mockResolvedValue({
+      kind: "discovery",
+      disposition: "queued",
+      request_id: "refresh",
+      status: { kind: "discovery", state: "queued" },
+    });
+    testDoubles.location.pathname = "/settings";
+    testDoubles.search = {
+      settingsSection: "integrations",
+      settingsTarget: "integrations-agents",
+      agent: "codex",
+    };
+    const { result } = renderHook(() => useAppNavigation(), {
+      wrapper: ({ children }) => (
+        <QueryClientProvider client={queryClient}>{children}</QueryClientProvider>
+      ),
+    });
+    await act(async () => result.current.refreshCurrentView());
+    expect(refresh.mock.calls.map(([kind]) => kind)).toEqual(["discovery", "insights", "gateways"]);
+    expect(invalidate).toHaveBeenCalledWith({ queryKey: ["home", "installations"] });
+    expect(invalidate).toHaveBeenCalledWith({ queryKey: ["home", "catalog"] });
+    queryClient.clear();
+  });
+
   it("routes session refresh to the mounted hub instead of starting discovery", async () => {
     testDoubles.location.pathname = "/sessions";
     const listener = vi.fn();

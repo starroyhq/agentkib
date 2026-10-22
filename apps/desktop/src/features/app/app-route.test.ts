@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { AppSearch } from "./app-route";
-import { parseRoute, workspaceSearchForPage } from "./app-route";
+import { legacyAgentSettingsSearch, parseRoute, workspaceSearchForPage } from "./app-route";
 
 describe("parseRoute", () => {
   it("distinguishes the global hub from workspace session history", () => {
@@ -58,5 +58,28 @@ describe("workspaceSearchForPage", () => {
     expect(workspaceSearchForPage(current, "changes")).toMatchObject(current);
     expect(workspaceSearchForPage(current, "overview")).toEqual({ gitSubview: undefined });
     expect(workspaceSearchForPage({ handoffPreCompaction: true }, "git")).toEqual({});
+  });
+});
+
+describe("legacy Agent settings destination", () => {
+  it("maps saved Agent and filters into the settings namespace", () => {
+    expect(
+      legacyAgentSettingsSearch({
+        agent: "claude-code",
+        agentFilter: "available",
+        settingsSection: "general",
+        settingsTarget: "general-interface",
+      }),
+    ).toEqual({
+      settingsSection: "integrations",
+      settingsTarget: "integrations-agents",
+      settingsAgent: "claude-code",
+      settingsAgentFilter: "available",
+      agent: undefined,
+      agentFilter: undefined,
+    });
+  });
+  it("keeps an omitted legacy Agent eligible for the first-data default", () => {
+    expect(legacyAgentSettingsSearch({}).settingsAgent).toBeUndefined();
   });
 });

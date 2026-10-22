@@ -21,6 +21,8 @@ export type AppSearch = {
   skillSection?: SkillHubSection;
   settingsSection?: SettingsSection;
   settingsTarget?: SettingsTarget;
+  settingsAgent?: AgentKind;
+  settingsAgentFilter?: AgentFilter;
   quotaProvider?: string;
   quotaWindow?: import("@/core/types").QuotaWindowSelector;
   gitSubview?: GitSubview;
@@ -37,6 +39,19 @@ export type AppSearch = {
   agent?: AgentKind;
   agentFilter?: AgentFilter;
 };
+
+/** Agent's old global query must not be confused with a workspace's selected Agent. */
+export function legacyAgentSettingsSearch(search: AppSearch): AppSearch {
+  return {
+    ...search,
+    settingsSection: "integrations",
+    settingsTarget: "integrations-agents",
+    settingsAgent: search.agent,
+    settingsAgentFilter: search.agentFilter,
+    agent: undefined,
+    agentFilter: undefined,
+  };
+}
 
 export type ParsedRoute =
   | { kind: "settings" }

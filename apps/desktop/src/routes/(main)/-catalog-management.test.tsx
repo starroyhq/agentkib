@@ -28,6 +28,7 @@ vi.mock("@/features/home/home-query", async (importOriginal) => ({
 }));
 vi.mock("@/components/AppDialogProvider", () => ({ useAppDialogs: () => ({ confirm: vi.fn() }) }));
 vi.mock("@/features/mcp/McpManagementPanel", () => ({
+  MCP_ALL_SCOPES: "__all_scopes__",
   McpManagementPanel: () => <p>MCP services</p>,
 }));
 vi.mock("@/core/api", () => ({

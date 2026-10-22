@@ -163,10 +163,13 @@ describe("MCP row action hierarchy", () => {
   it("keeps inherited rows read-only while allowing a workspace override", async () => {
     renderPanel([entry("blender", true, true)], "/workspace/one");
     const row = await serviceRow();
-    for (const control of within(row).getAllByRole("checkbox").slice(1))
-      expect(control).toHaveAttribute("aria-disabled", "true");
+    expect(within(row).getByRole("switch")).toHaveAttribute("aria-disabled", "true");
     const user = userEvent.setup();
     await openMore(user);
+    expect(screen.getByRole("menuitem", { name: tr("mcp.manage.chooseAgents") })).toHaveAttribute(
+      "aria-disabled",
+      "true",
+    );
     expect(screen.queryByRole("menuitem", { name: tr("mcp.manage.removeOverride") })).toBeNull();
     expect(screen.queryByRole("menuitem", { name: tr("common.remove") })).toBeNull();
     await user.click(screen.getByRole("menuitem", { name: tr("mcp.manage.createOverride") }));
@@ -182,7 +185,7 @@ describe("MCP row action hierarchy", () => {
     // Install the deferred after the fixture's normal save response.
     vi.mocked(api.saveMcpConfiguration).mockReturnValue(saving.promise);
     fireEvent.click(
-      within(await serviceRow()).getByRole("checkbox", {
+      within(await serviceRow()).getByRole("switch", {
         name: `Blender ${tr("mcp.manage.enabled")}`,
       }),
     );

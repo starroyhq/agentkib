@@ -81,7 +81,8 @@ describe("production MCP management connection entry", () => {
       await waitFor(() =>
         expect(api.mcpManagementState).toHaveBeenCalledExactlyOnceWith({ project: undefined }),
       );
-      fireEvent.click(screen.getByRole("button", { name: tr("mcp.manage.connect") }));
+      await user.click(screen.getByRole("button", { name: tr("mcp.manage.more") }));
+      await user.click(await screen.findByRole("menuitem", { name: tr("mcp.manage.connect") }));
       expect(screen.getByText(tr("mcp.manage.connectHint"))).toBeVisible();
       const prepare = screen.getByRole("button", { name: tr("mcp.manage.checkPreview") });
       expect(prepare).toBeDisabled();

@@ -223,9 +223,11 @@ it.each(["pending", "failed"])(
     expect(mocks.mcpManagementState).toHaveBeenCalledExactlyOnceWith({ project: undefined });
     expect(screen.getByRole("button", { name: tr("mcp.manage.add") })).toBeEnabled();
     expect(screen.getByRole("combobox", { name: tr("mcp.scope") })).toHaveTextContent(
-      tr("mcp.globalScope"),
+      tr("mcp.manage.allScopes"),
     );
-    fireEvent.click(screen.getByRole("button", { name: tr("mcp.manage.connect") }));
+    const menuUser = userEvent.setup();
+    await menuUser.click(screen.getByRole("button", { name: tr("mcp.manage.more") }));
+    await menuUser.click(await screen.findByRole("menuitem", { name: tr("mcp.manage.connect") }));
     expect(screen.getByRole("button", { name: tr("mcp.manage.checkPreview") })).toBeDisabled();
     if (state === "pending") {
       await act(async () => pending.resolve([workspace]));
@@ -274,7 +276,11 @@ it.each(["zh-CN", "zh-TW", "en-US", "ja-JP"] as const)(
     fireEvent.click(within(alert).getByRole("button", { name: tr("runtime.retry") }));
     await waitFor(() => expect(screen.queryByRole("alert")).not.toBeInTheDocument());
     expect(mocks.workspaces).toHaveBeenCalledTimes(2);
-    expect(mocks.mcpManagementState).toHaveBeenCalledTimes(1);
+    expect(mocks.mcpManagementState).toHaveBeenCalledTimes(2);
+    expect(mocks.mcpManagementState.mock.calls).toEqual([
+      [{ project: undefined }],
+      [{ project: workspace.path }],
+    ]);
     const user = userEvent.setup();
     await user.click(screen.getByRole("combobox", { name: tr("mcp.scope") }));
     await user.click(await screen.findByRole("option", { name: workspace.name }));

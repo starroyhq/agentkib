@@ -1,3 +1,4 @@
+import { usePathDisplay } from "@/lib/usePathDisplay";
 import { useI18n } from "@/core/useI18n";
 import { Button } from "@/components/ui/button";
 import type { RemoteGatewaySummary, WorkspaceSummary } from "@/core/types";
@@ -21,6 +22,7 @@ export function AgentWorkspacesPanel({
   onRetry: () => void;
 }) {
   const { tr } = useI18n();
+  const displayPath = usePathDisplay();
   if (loading || error) return <AgentSectionFeedback error={error} onRetry={onRetry} />;
 
   return (
@@ -42,7 +44,7 @@ export function AgentWorkspacesPanel({
               className="mt-1 block truncate text-xs text-muted-foreground"
               title={workspace.path}
             >
-              {workspace.path}
+              {workspace.remote ? workspace.path : displayPath(workspace.path)}
             </small>
           </span>
           <span className="flex items-center gap-2 text-xs text-muted-foreground">

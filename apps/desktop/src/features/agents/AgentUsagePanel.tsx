@@ -16,6 +16,12 @@ export function AgentUsagePanel({
 }) {
   const { tr } = useI18n();
   if (loading || error) return <AgentSectionFeedback error={error} onRetry={onRetry} />;
+  if (
+    !(provider?.available && provider.imported_events > 0) &&
+    !provider?.error &&
+    !provider?.error_key
+  )
+    return <p className="p-5 text-sm text-muted-foreground">{tr("insights.noData")}</p>;
   return (
     <div className="grid gap-4 p-5">
       <section className="grid gap-2 rounded-xl border border-border bg-muted/20 p-4">

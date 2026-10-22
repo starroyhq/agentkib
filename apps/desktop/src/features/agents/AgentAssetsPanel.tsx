@@ -1,4 +1,5 @@
-import { shortPath } from "@/lib/path-display";
+import { usePathDisplay } from "@/lib/usePathDisplay";
+
 import { useI18n } from "@/core/useI18n";
 import { FileCode2, Search } from "lucide-react";
 import { Input } from "@/components/ui/input";
@@ -40,6 +41,7 @@ export function AgentAssetsPanel({
   onRetry: () => void;
 }) {
   const { tr } = useI18n();
+  const displayPath = usePathDisplay();
   const navigation = useOptionalAppNavigationContext();
   if (loading || error) return <AgentSectionFeedback error={error} onRetry={onRetry} />;
 
@@ -96,8 +98,11 @@ export function AgentAssetsPanel({
             </span>
             <span className="min-w-0 truncate">
               <strong className="block truncate">{asset.name}</strong>
-              <small className="mt-1 block truncate text-xs text-muted-foreground">
-                {shortPath(asset.path)}
+              <small
+                title={asset.path}
+                className="mt-1 block truncate text-xs text-muted-foreground"
+              >
+                {displayPath(asset.path)}
               </small>
             </span>
             <div className="flex flex-wrap items-center justify-end gap-2">

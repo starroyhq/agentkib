@@ -29,23 +29,15 @@ import type {
   SkillImportBatchPreview,
   SkillImportResult,
   SkillInventory,
-  SkillObservation,
 } from "@/core/types";
 import { useI18n } from "@/core/useI18n";
 import { sessionAgentNames } from "@/features/sessions/session-labels";
 import { SkillFileBrowser } from "./SkillFileBrowser";
 import {
-  groupSkillObservations,
-  observationMatchesDeployment,
+  canReadSkillObservation as canRead,
+  skillImportGroups,
   readableSkillFile,
 } from "./SkillManagerPanels";
-
-function canRead(observation: SkillObservation) {
-  return (
-    Boolean(observation.resolved_path) &&
-    !["broken-link", "link-loop", "invalid"].includes(observation.status)
-  );
-}
 
 function ImportItemIdentity({ libraryId, paths }: { libraryId?: string | null; paths: string[] }) {
   const { tr } = useI18n();
@@ -103,21 +95,7 @@ export function SkillImportDialog({
   onImported: (skills: InstalledSkill[], warnings: string[]) => Promise<unknown[]>;
 }) {
   const { tr, localizeMessage, formatDateTime } = useI18n();
-  const groups = useMemo(
-    () =>
-      groupSkillObservations(
-        inventory.observations.filter(
-          (observation) =>
-            observation.owner !== "agentkib" &&
-            !deployments.some(
-              (deployment) =>
-                deployment.status !== "inactive" &&
-                observationMatchesDeployment(observation, deployment),
-            ),
-        ),
-      ),
-    [inventory.observations, deployments],
-  );
+  const groups = useMemo(() => skillImportGroups(inventory, deployments), [inventory, deployments]);
   const [selected, setSelected] = useState(
     () =>
       new Set(

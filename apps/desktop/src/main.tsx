@@ -8,6 +8,7 @@ import { WebPairingPrompt } from "@/features/remote/WebPairingPrompt";
 import { cachedEffectiveLocale, initializeI18n } from "./core/i18n";
 import { applyPlatformAttribute } from "./core/platform";
 import { desktopApi } from "./core/desktop";
+import { PathDisplayProvider } from "./lib/usePathDisplay";
 import {
   accentThemePreference,
   applyAccentTheme,
@@ -53,10 +54,12 @@ async function bootstrap() {
     <StrictMode>
       <QueryClientProvider client={queryClient}>
         {surface !== "quota-popover" && <BenchmarkCommitMarker />}
-        <AppDialogProvider>
-          {app}
-          {surface !== "quota-popover" && <WebPairingPrompt />}
-        </AppDialogProvider>
+        <PathDisplayProvider>
+          <AppDialogProvider>
+            {app}
+            {surface !== "quota-popover" && <WebPairingPrompt />}
+          </AppDialogProvider>
+        </PathDisplayProvider>
       </QueryClientProvider>
     </StrictMode>,
   );

@@ -20,6 +20,9 @@ function subscribe<T>(channel: string, listener: (value: T) => void): () => void
 
 const desktopApi = Object.freeze({
   platform: process.platform,
+  paths: Object.freeze({
+    displayContext: () => ipcRenderer.invoke("agentkib:paths:display-context"),
+  }),
   account: Object.freeze({
     request: (input: DesktopAccountRequest) =>
       ipcRenderer.invoke("agentkib:account:request", input),

@@ -138,4 +138,15 @@ describe("SettingsSidebar v9 navigation", () => {
       await act(() => changeLocale("en-US"));
     }
   });
+  it("opens the Agent tab from the renamed section and exposes the Agent search destination", () => {
+    const onSelect = vi.fn();
+    render(<SettingsSidebar active="general" onSelect={onSelect} />);
+    fireEvent.click(screen.getByRole("button", { name: tr("settings.section.integrations") }));
+    expect(onSelect).toHaveBeenLastCalledWith("integrations", "integrations-agents");
+    fireEvent.change(screen.getByRole("searchbox", { name: tr("settings.search.placeholder") }), {
+      target: { value: "Agent" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: tr("nav.agents") }));
+    expect(onSelect).toHaveBeenLastCalledWith("integrations", "integrations-agents");
+  });
 });

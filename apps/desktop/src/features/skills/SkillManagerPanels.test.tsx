@@ -893,11 +893,18 @@ describe("Skill usage and details", () => {
         onOpen={vi.fn()}
       />,
     );
-    await openUsageMenu();
-    expect(screen.getAllByRole("menuitem", { name: "Copy to Skill library" })).toHaveLength(1);
-    expect(screen.getByText(alias.path)).toBeTruthy();
-    expect(screen.getByText(observation.path)).toBeTruthy();
-    await userEvent.setup().click(screen.getByRole("menuitem", { name: "Copy to Skill library" }));
+    expect(screen.getAllByRole("button", { name: "Add to library" })).toHaveLength(1);
+    const expand = screen.getByRole("button", { name: /Other paths/ });
+    const paths = expand.closest<HTMLElement>('[data-slot="collapsible"]')!;
+    expect(expand.getAttribute("aria-expanded")).toBe("false");
+    const user = userEvent.setup();
+    await user.click(expand);
+    expect(expand.getAttribute("aria-expanded")).toBe("true");
+    expect(within(paths).getByText(alias.path)).toBeTruthy();
+    expect(within(paths).getByText(observation.path)).toBeTruthy();
+    await user.keyboard("{Enter}");
+    expect(expand.getAttribute("aria-expanded")).toBe("false");
+    await user.click(screen.getByRole("button", { name: "Add to library" }));
     expect(onImport).toHaveBeenCalledWith("cc-root");
   });
   it("keeps external aliases of a managed package visible, filterable and copyable", async () => {
@@ -929,22 +936,19 @@ describe("Skill usage and details", () => {
         onOpen={vi.fn()}
       />,
     );
-    expect(screen.getByText(alias.path)).toBeTruthy();
+    expect(screen.getAllByTitle(alias.path).length).toBeGreaterThan(0);
     expect(screen.getByText("Deployment managed by AgentKib")).toBeTruthy();
-    await openUsageMenu(1);
-    expect(screen.getAllByRole("menuitem", { name: "Copy to Skill library" })).toHaveLength(1);
+    expect(screen.getAllByRole("button", { name: "Add to library" })).toHaveLength(1);
     const user = userEvent.setup();
-    await user.keyboard("{Escape}");
     await user.click(screen.getByRole("combobox", { name: "All Agents" }));
     await user.click(await screen.findByRole("option", { name: "Claude Code" }));
     await waitFor(() => expect(screen.queryByRole("listbox")).toBeNull());
-    expect(screen.getByText(alias.path)).toBeTruthy();
+    expect(screen.getAllByTitle(alias.path).length).toBeGreaterThan(0);
     expect(screen.queryByText("Deployment managed by AgentKib")).toBeNull();
     expect(screen.queryByText("No matching Skill locations.")).toBeNull();
-    await user.click(screen.getByRole("button", { name: "View contents" }));
+    await user.click(screen.getByRole("button", { name: "View" }));
     expect(onDetail).toHaveBeenCalledWith({ observation_id: alias.id });
-    await openUsageMenu();
-    await user.click(screen.getByRole("menuitem", { name: "Copy to Skill library" }));
+    await user.click(screen.getByRole("button", { name: "Add to library" }));
     expect(onImport).toHaveBeenCalledWith(alias.id);
   });
   it.each(["library", "external alias"])(
@@ -1262,12 +1266,12 @@ describe("Skill usage and details", () => {
         onOpen={vi.fn()}
       />,
     );
-    expect(screen.getByText("cc-switch")).toBeTruthy();
-    expect(screen.getByText(/does not take ownership/)).toBeTruthy();
-    await openUsageMenu();
+    expect(screen.getByText("CC Switch")).toBeTruthy();
+    expect(screen.getByText(/read only in AgentKib/)).toBeTruthy();
+    expect(screen.queryByRole("button", { name: /More actions/ })).toBeNull();
     expect(screen.queryByRole("menuitem", { name: "Withdraw deployment" })).toBeNull();
     expect(screen.queryByRole("menuitem", { name: "Sync library version" })).toBeNull();
-    await userEvent.setup().click(screen.getByRole("menuitem", { name: "Copy to Skill library" }));
+    await userEvent.setup().click(screen.getByRole("button", { name: "Add to library" }));
     expect(onImport).toHaveBeenCalledWith("cc-observation");
   });
   it("preserves local source attribution and loads safe content by detail identity", async () => {
@@ -1437,11 +1441,12 @@ describe("Skill deployment action hierarchy", () => {
         }}
       />,
     );
-    expect(screen.getByRole("button", { name: "View contents" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "View" })).toBeTruthy();
     expect(screen.queryByRole("button", { name: "Adopt this installation" })).toBeNull();
     await openUsageMenu();
     expect(screen.queryByRole("menuitem", { name: "Withdraw deployment" })).toBeNull();
-    expect(screen.getByRole("menuitem", { name: "Copy to Skill library" })).toBeTruthy();
+    expect(screen.queryByRole("menuitem", { name: "Add to library" })).toBeNull();
+    expect(screen.getByRole("button", { name: "Add to library" })).toBeTruthy();
     await userEvent
       .setup()
       .click(screen.getByRole("menuitem", { name: "Adopt this installation" }));

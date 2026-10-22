@@ -45,4 +45,30 @@ describe("appSearchSchema", () => {
       );
     expect(appSearchSchema.parse({}).handoffPreCompaction).toBeUndefined();
   });
+  it("keeps settings Agent selection distinct from a workspace Agent", () => {
+    expect(
+      appSearchSchema.parse({
+        agent: "codex",
+        settingsSection: "integrations",
+        settingsTarget: "integrations-agents",
+        settingsAgent: "claude-code",
+        settingsAgentFilter: "available",
+      }),
+    ).toMatchObject({
+      agent: "codex",
+      settingsAgent: "claude-code",
+      settingsAgentFilter: "available",
+      settingsTarget: "integrations-agents",
+    });
+    expect(appSearchSchema.parse({ agent: "codex" }).settingsAgent).toBeUndefined();
+  });
+  it("drops malformed settings Agent and filter fields without changing other navigation", () => {
+    for (const settingsAgent of ["not-an-agent", true, null, {}, ["codex"]])
+      expect(
+        appSearchSchema.parse({ settingsAgent, settingsSection: "integrations" }),
+      ).toMatchObject({ settingsAgent: undefined, settingsSection: "integrations" });
+    expect(
+      appSearchSchema.parse({ settingsAgentFilter: "unknown" }).settingsAgentFilter,
+    ).toBeUndefined();
+  });
 });

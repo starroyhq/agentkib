@@ -182,6 +182,11 @@ describe("MCP management review regressions", () => {
     async (surface) => {
       const original: McpManagedEntry["config"]["targets"] = [];
       const onDraft = renderTargets(surface, original);
+      if (surface === "table") {
+        const user = userEvent.setup();
+        await user.click(await screen.findByRole("button", { name: "mcp.manage.moreActions" }));
+        await user.click(await screen.findByRole("menuitem", { name: "mcp.manage.chooseAgents" }));
+      }
       const checkbox = await screen.findByRole("checkbox", {
         name: surface === "table" ? "one Codex" : "Codex",
       });
@@ -215,6 +220,11 @@ describe("MCP management review regressions", () => {
     "%s refuses to turn the last explicit target back into all-targets",
     async (surface) => {
       const onDraft = renderTargets(surface, ["codex"]);
+      if (surface === "table") {
+        const user = userEvent.setup();
+        await user.click(await screen.findByRole("button", { name: "mcp.manage.moreActions" }));
+        await user.click(await screen.findByRole("menuitem", { name: "mcp.manage.chooseAgents" }));
+      }
       const checkbox = await screen.findByRole("checkbox", {
         name: surface === "table" ? "one Codex" : "Codex",
       });

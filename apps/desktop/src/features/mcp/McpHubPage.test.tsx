@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 
 import "@testing-library/jest-dom/vitest";
-import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -121,12 +121,22 @@ const server = (name = "Blender"): McpServerConfig => ({
   args: ["mcp-for-blender"],
 });
 const props = { runtime, workspaces, onRuntimeChanged: vi.fn(), onMigrationPlanned: vi.fn() };
-const renderHub = () =>
+const renderAllHub = () =>
   render(
     <QueryClientProvider client={new QueryClient()}>
       <McpHubPage {...props} />
     </QueryClientProvider>,
   );
+
+// These regressions exercise operations in the explicitly selected global scope.
+// The all-scope default is covered separately below.
+const renderHub = async () => {
+  const view = renderAllHub();
+  const user = userEvent.setup();
+  await user.click(screen.getByRole("combobox", { name: tr("mcp.scope") }));
+  await user.click(await screen.findByRole("option", { name: tr("mcp.globalScope") }));
+  return view;
+};
 
 const entry = (name = "Blender"): McpManagedEntry => ({
   config: server(name),
@@ -205,6 +215,115 @@ describe("McpHubPage management", () => {
     vi.mocked(api.saveMcpConfiguration).mockResolvedValue(state());
   });
   afterEach(cleanup);
+
+  it("labels known runtime ownership in all scopes and never infers an unknown or removed scope", async () => {
+    vi.mocked(api.mcpRuntimes).mockResolvedValue([
+      runtimeInstance("Global runtime", null),
+      runtimeInstance("Project runtime", workspaces[0].path),
+      runtimeInstance("Legacy runtime"),
+      runtimeInstance("Removed scope runtime", "/removed/project"),
+    ]);
+    renderAllHub();
+    await screen.findByText("Blender");
+    openAdvanced();
+    const row = (await screen.findByText("Project runtime")).closest("article")!;
+    expect(
+      within(row).getByText(tr("mcp.manage.projectScope", { name: workspaces[0].name })),
+    ).toBeVisible();
+    expect(screen.getByText("Global runtime")).toBeVisible();
+    expect(screen.queryByText("Legacy runtime")).toBeNull();
+    expect(screen.queryByText("Removed scope runtime")).toBeNull();
+    await userEvent.setup().click(within(row).getByRole("button", { name: tr("mcp.restart") }));
+    expect(api.restartMcpRuntime).toHaveBeenCalledExactlyOnceWith("blender", workspaces[0].path);
+  });
+
+  it("starts with all local scopes and requires an explicit registry destination", async () => {
+    vi.mocked(api.searchMcpRegistry).mockResolvedValue([registryEntry]);
+    dialogs.requestSecrets.mockResolvedValue({ API_KEY: "fixture-only" });
+    vi.mocked(api.installMcp).mockResolvedValue(installationResult);
+    renderAllHub();
+    await screen.findByText("Blender");
+    expect(screen.getByRole("combobox", { name: tr("mcp.scope") })).toHaveTextContent(
+      tr("mcp.manage.allScopes"),
+    );
+    expect(screen.queryByRole("heading", { name: tr("mcp.scope") })).toBeNull();
+    expect(screen.getByRole("button", { name: tr("mcp.manage.advanced") })).toHaveAttribute(
+      "aria-expanded",
+      "false",
+    );
+    openAdvanced();
+    await searchRegistry();
+    const install = screen.getByRole("button", { name: tr("mcp.install") });
+    expect(install).toBeDisabled();
+    fireEvent.click(install);
+    expect(dialogs.confirm).not.toHaveBeenCalled();
+    expect(api.installMcp).not.toHaveBeenCalled();
+    const user = userEvent.setup();
+    await user.click(screen.getByRole("combobox", { name: tr("mcp.manage.targetScope") }));
+    await user.click(await screen.findByRole("option", { name: workspaces[0].name }));
+    expect(install).toBeEnabled();
+    await user.click(install);
+    await waitFor(() =>
+      expect(api.installMcp).toHaveBeenCalledExactlyOnceWith(registryEntry, workspaces[0].path),
+    );
+    expect(api.saveMcpLocalValues).toHaveBeenCalledExactlyOnceWith(
+      "blender",
+      { API_KEY: "fixture-only" },
+      {},
+      workspaces[0].path,
+    );
+    expect(api.updateMcpNetwork).not.toHaveBeenCalled();
+  });
+
+  it("cancels a registry installation when its explicit destination changes during secrets entry", async () => {
+    const secrets = deferred<Record<string, string> | null>();
+    dialogs.requestSecrets.mockReturnValueOnce(secrets.promise);
+    vi.mocked(api.searchMcpRegistry).mockResolvedValue([registryEntry]);
+    renderAllHub();
+    await screen.findByText("Blender");
+    openAdvanced();
+    await searchRegistry();
+    const user = userEvent.setup();
+    await user.click(screen.getByRole("combobox", { name: tr("mcp.manage.targetScope") }));
+    await user.click(await screen.findByRole("option", { name: tr("mcp.globalScope") }));
+    await user.click(screen.getByRole("button", { name: tr("mcp.install") }));
+    await waitFor(() => expect(dialogs.requestSecrets).toHaveBeenCalledOnce());
+    await user.click(screen.getByRole("combobox", { name: tr("mcp.manage.targetScope") }));
+    await user.click(await screen.findByRole("option", { name: workspaces[1].name }));
+    await act(async () => secrets.resolve({ API_KEY: "fixture-only" }));
+    expect(api.installMcp).not.toHaveBeenCalled();
+    expect(api.saveMcpLocalValues).not.toHaveBeenCalled();
+    expect(screen.getByRole("button", { name: tr("mcp.install") })).toBeEnabled();
+  });
+
+  it("keeps an all-scope editor draft bound to its selected destination and original revision", async () => {
+    const user = userEvent.setup();
+    renderAllHub();
+    await screen.findByText("Blender");
+    await user.click(screen.getByRole("button", { name: tr("mcp.manage.add") }));
+    await user.click(screen.getByRole("combobox", { name: tr("mcp.manage.targetScope") }));
+    await user.click(await screen.findByRole("option", { name: workspaces[0].name }));
+    const name = await screen.findByRole("textbox", { name: tr("mcp.manage.name") });
+    fireEvent.change(name, { target: { value: "Project-scoped draft" } });
+    await user.click(screen.getByRole("combobox", { name: tr("mcp.scope") }));
+    await user.click(await screen.findByRole("option", { name: tr("mcp.globalScope") }));
+    await screen.findByText("Blender");
+    await user.click(screen.getByRole("combobox", { name: tr("mcp.scope") }));
+    await user.click(await screen.findByRole("option", { name: tr("mcp.manage.allScopes") }));
+    expect(await screen.findByRole("textbox", { name: tr("mcp.manage.name") })).toHaveValue(
+      "Project-scoped draft",
+    );
+    await user.click(screen.getByRole("button", { name: tr("common.save") }));
+    await waitFor(() => expect(api.saveMcpConfiguration).toHaveBeenCalledOnce());
+    expect(api.saveMcpConfiguration).toHaveBeenCalledWith(
+      expect.objectContaining({
+        project: workspaces[0].path,
+        revision: "r1",
+        server: expect.objectContaining({ name: "Project-scoped draft", enabled: false }),
+      }),
+    );
+    expect(api.probeMcpRuntime).not.toHaveBeenCalled();
+  });
   it.each([
     ["zh-CN", "高级设置", "官方目录、运行实例与网络", "官方目录"],
     ["zh-TW", "進階設定", "官方目錄、執行實例與網路", "官方目錄"],
@@ -219,7 +338,7 @@ describe("McpHubPage management", () => {
     "labels the advanced section and directory without starting a search in %s",
     async (locale, advanced, sections, directory) => {
       await initializeI18n(locale);
-      renderHub();
+      await renderHub();
       const toggle = screen.getByRole("button", { name: advanced });
       expect(toggle).toHaveAttribute("aria-expanded", "false");
       expect(screen.queryByRole("heading", { name: sections })).toBeNull();
@@ -234,7 +353,7 @@ describe("McpHubPage management", () => {
     dialogs.confirm.mockReturnValueOnce(confirmation.promise).mockResolvedValueOnce(true);
     vi.mocked(api.mcpRuntimes).mockResolvedValue([runtimeInstance("Global runtime", null)]);
     vi.mocked(api.stopMcpRuntime).mockResolvedValue(undefined);
-    renderHub();
+    await renderHub();
     await screen.findByText("Blender");
     openAdvanced();
     const stop = await screen.findByRole("button", { name: tr("mcp.stopAllScopes") });
@@ -253,7 +372,7 @@ describe("McpHubPage management", () => {
 
   it("labels installed-package removal as an uninstall with a destructive icon control", async () => {
     vi.mocked(api.mcpInstallations).mockResolvedValue([installation]);
-    renderHub();
+    await renderHub();
     await screen.findByText("Blender");
     openAdvanced();
     const uninstall = await screen.findByRole("button", {
@@ -332,7 +451,7 @@ describe("McpHubPage management", () => {
   it.each(["write", "readback", "mismatch"] as const)(
     "keeps a typed port and reports an unconfirmed %s without automatic retries",
     async (failure) => {
-      renderHub();
+      await renderHub();
       await screen.findByText("Blender");
       await waitFor(() => expect(props.onRuntimeChanged).toHaveBeenCalledWith(runtime));
       if (failure === "write") {
@@ -419,7 +538,7 @@ describe("McpHubPage management", () => {
       await initializeI18n(locale);
       const request = deferred<(typeof registryEntry)[]>();
       vi.mocked(api.searchMcpRegistry).mockReturnValueOnce(request.promise);
-      renderHub();
+      await renderHub();
       await screen.findByText("Blender");
       openAdvanced();
       expect(screen.getByText(tr("mcp.registryEmpty"))).toBeVisible();
@@ -451,7 +570,7 @@ describe("McpHubPage management", () => {
       vi.mocked(api.searchMcpRegistry)
         .mockRejectedValueOnce(new Error("Registry unavailable"))
         .mockResolvedValueOnce([]);
-      renderHub();
+      await renderHub();
       await screen.findByText("Blender");
       openAdvanced();
       fireEvent.change(screen.getByPlaceholderText(tr("mcp.searchPlaceholder")), {
@@ -495,9 +614,11 @@ describe("McpHubPage management", () => {
         </AppNavigationProvider>
       </QueryClientProvider>,
     );
-    await userEvent
-      .setup()
-      .click(screen.getByRole("button", { name: tr("mcp.openIntegrationSettings") }));
+    const user = userEvent.setup();
+    await user.click(screen.getByRole("button", { name: tr("mcp.manage.more") }));
+    await user.click(
+      await screen.findByRole("menuitem", { name: tr("mcp.openIntegrationSettings") }),
+    );
     expect(openSettings).toHaveBeenCalledExactlyOnceWith("integrations", "integrations-mcp");
     expect(api.updateMcpNetwork).not.toHaveBeenCalled();
   });
@@ -530,23 +651,24 @@ describe("McpHubPage management", () => {
     ["zh-TW", "MCP 服務中心", "向 Agent 提供已啟用的服務"],
     ["ja-JP", "MCP ハブ", "共通の接続を通じて"],
   ] as const)(
-    "explains the MCP entry point before advanced settings in %s",
+    "preserves the MCP entry explanation inside advanced settings in %s",
     async (locale, label, explanation) => {
       await initializeI18n(locale);
-      renderHub();
-      expect(screen.getByRole("note")).toHaveTextContent(explanation);
+      await renderHub();
+      expect(screen.queryByRole("note")).toBeNull();
       expect(screen.queryByText("STREAMABLE HTTP MCP HUB")).toBeNull();
       await userEvent
         .setup()
         .click(screen.getByRole("button", { name: tr("mcp.manage.advanced") }));
       expect(screen.getByText(label)).toBeVisible();
+      expect(screen.getByRole("note")).toHaveTextContent(explanation);
     },
   );
   it("shows query failures while advanced controls are collapsed and recovers on refresh", async () => {
     vi.mocked(api.mcpInstallations)
       .mockRejectedValueOnce(new Error("Package inventory unavailable"))
       .mockResolvedValue([]);
-    renderHub();
+    await renderHub();
     expect(await screen.findByRole("alert")).toHaveTextContent("Package inventory unavailable");
     expect(screen.getByRole("button", { name: tr("mcp.manage.advanced") })).toHaveAttribute(
       "aria-expanded",
@@ -567,7 +689,7 @@ describe("McpHubPage management", () => {
     vi.mocked(api.installMcp)
       .mockReturnValueOnce(installing.promise)
       .mockResolvedValue(installationResult);
-    renderHub();
+    await renderHub();
     await screen.findByText("Blender");
     openAdvanced();
     await searchRegistry();
@@ -603,7 +725,7 @@ describe("McpHubPage management", () => {
     vi.mocked(api.updateMcp)
       .mockRejectedValueOnce(new Error("Update failed"))
       .mockResolvedValue(installationResult);
-    renderHub();
+    await renderHub();
     await screen.findByText("Blender");
     openAdvanced();
     await searchRegistry();
@@ -632,7 +754,7 @@ describe("McpHubPage management", () => {
     vi.mocked(api.uninstallMcp)
       .mockReturnValueOnce(uninstalling.promise)
       .mockResolvedValue(undefined);
-    renderHub();
+    await renderHub();
     await screen.findByText("Blender");
     openAdvanced();
     const remove = await screen.findByRole("button", {
@@ -666,7 +788,7 @@ describe("McpHubPage management", () => {
       })
       .mockResolvedValue([]);
     vi.mocked(api.stopMcpRuntime).mockReturnValueOnce(request.promise).mockResolvedValue(undefined);
-    renderHub();
+    await renderHub();
     await screen.findByText("Blender");
     openAdvanced();
     const action = await screen.findByRole("button", { name: tr(label) });
@@ -689,7 +811,7 @@ describe("McpHubPage management", () => {
     const secrets = deferred<Record<string, string> | null>();
     dialogs.requestSecrets.mockReturnValueOnce(secrets.promise);
     vi.mocked(api.searchMcpRegistry).mockResolvedValue([registryEntry]);
-    renderHub();
+    await renderHub();
     await screen.findByText("Blender");
     openAdvanced();
     await searchRegistry();
@@ -710,7 +832,7 @@ describe("McpHubPage management", () => {
       runtimeInstance("Workspace two runtime", "/workspaces/two"),
     ]);
     vi.mocked(api.restartMcpRuntime).mockReturnValueOnce(restarting.promise).mockResolvedValue([]);
-    renderHub();
+    await renderHub();
     await screen.findByText("Blender");
     openAdvanced();
     fireEvent.click(screen.getByRole("button", { name: tr("mcp.restart") }));
@@ -735,7 +857,7 @@ describe("McpHubPage management", () => {
       vi.mocked(api.uninstallMcp).mockReturnValue(request.promise);
       vi.mocked(api.updateMcpNetwork).mockReturnValue(request.promise);
       vi.mocked(api.stopMcpRuntime).mockReturnValue(request.promise);
-      renderHub();
+      await renderHub();
       await screen.findByText("Blender");
       openAdvanced();
       if (operation === "uninstall") {
@@ -780,7 +902,7 @@ describe("McpHubPage management", () => {
     const confirmation = deferred<boolean>();
     dialogs.confirm.mockReturnValueOnce(confirmation.promise);
     vi.mocked(api.mcpInstallations).mockResolvedValue([installation]);
-    renderHub();
+    await renderHub();
     await screen.findByText("Blender");
     openAdvanced();
     fireEvent.click(
@@ -808,7 +930,7 @@ describe("McpHubPage management", () => {
         project ? "Workspace service" : installed ? "Installed global service" : "Global service",
       ),
     );
-    renderHub();
+    await renderHub();
     await screen.findByText("Global service");
     openAdvanced();
     await searchRegistry();
@@ -836,7 +958,7 @@ describe("McpHubPage management", () => {
     dialogs.confirm.mockResolvedValueOnce(false);
     dialogs.requestSecrets.mockResolvedValueOnce(null);
     vi.mocked(api.searchMcpRegistry).mockResolvedValue([registryEntry]);
-    renderHub();
+    await renderHub();
     await screen.findByText("Blender");
     openAdvanced();
     await searchRegistry();
@@ -859,7 +981,7 @@ describe("McpHubPage management", () => {
       runtimeInstance("Workspace two runtime", "/workspaces/two"),
       runtimeInstance("Legacy runtime"),
     ]);
-    renderHub();
+    await renderHub();
     await screen.findByText("Blender");
     await user.click(screen.getByRole("button", { name: tr("mcp.manage.advanced") }));
     expect(await screen.findByText("Global runtime")).toBeVisible();
@@ -894,7 +1016,7 @@ describe("McpHubPage management", () => {
       runtimeInstance("Workspace two runtime", "/workspaces/two"),
       runtimeInstance("Legacy runtime"),
     ]);
-    renderHub();
+    await renderHub();
     await screen.findByText("Blender");
     await user.click(screen.getByRole("button", { name: tr("mcp.manage.advanced") }));
     expect(await screen.findByText(tr("mcp.runtimesEmpty"))).toBeVisible();
@@ -916,7 +1038,7 @@ describe("McpHubPage management", () => {
     vi.mocked(api.mcpManagementState).mockImplementation((request) =>
       request.project ? Promise.resolve(state("Workspace service")) : old,
     );
-    renderHub();
+    await renderHub();
     await user.click(screen.getByRole("combobox", { name: tr("mcp.scope") }));
     await user.click(await screen.findByRole("option", { name: "Workspace two" }));
     expect(await screen.findByText("Workspace service")).toBeVisible();
@@ -926,7 +1048,7 @@ describe("McpHubPage management", () => {
   });
   it("preserves an editor draft across scope switches and keeps its original revision", async () => {
     const user = userEvent.setup();
-    renderHub();
+    await renderHub();
     await screen.findByText("Blender");
     await user.click(
       screen.getByRole("button", { name: tr("mcp.manage.moreActions", { name: "Blender" }) }),
@@ -954,7 +1076,7 @@ describe("McpHubPage management", () => {
     });
   });
   it("saves a manual new service disabled without probing", async () => {
-    renderHub();
+    await renderHub();
     await screen.findByText("Blender");
     fireEvent.click(screen.getByRole("button", { name: tr("mcp.manage.add") }));
     fireEvent.click(screen.getByRole("button", { name: tr("common.save") }));
@@ -983,7 +1105,7 @@ describe("McpHubPage management", () => {
       revision: "r2",
       results: [{ key: "one", status: "saved" }],
     });
-    renderHub();
+    await renderHub();
     await screen.findByText("Blender");
     fireEvent.click(screen.getByRole("button", { name: tr("mcp.manage.import") }));
     const text = JSON.stringify({ mcpServers: { blender: { command: "uvx" } } });
@@ -1020,9 +1142,10 @@ describe("McpHubPage management", () => {
     vi.mocked(api.applyMcpConnections).mockResolvedValue({
       targets: [{ agent: "hermes", status: "applied" }],
     });
-    renderHub();
+    await renderHub();
     await screen.findByText("Blender");
-    fireEvent.click(screen.getByRole("button", { name: tr("mcp.manage.connect") }));
+    await user.click(screen.getByRole("button", { name: tr("mcp.manage.more") }));
+    await user.click(await screen.findByRole("menuitem", { name: tr("mcp.manage.connect") }));
     expect(screen.getByRole("button", { name: tr("mcp.manage.checkPreview") })).toBeDisabled();
     await user.click(screen.getByRole("combobox", { name: tr("mcp.manage.workspace") }));
     await user.click(await screen.findByRole("option", { name: "Workspace two" }));
@@ -1066,7 +1189,7 @@ describe("McpHubPage management", () => {
         },
       };
     });
-    renderHub();
+    await renderHub();
     await screen.findByText("Blender");
     fireEvent.click(screen.getByRole("button", { name: tr("mcp.manage.advanced") }));
     fireEvent.click(screen.getByRole("button", { name: tr("common.search") }));
@@ -1092,7 +1215,7 @@ describe("McpHubPage management", () => {
         throw new Error("external edit");
       return initial;
     });
-    renderHub();
+    await renderHub();
     await screen.findByText("Blender");
     fireEvent.click(screen.getByRole("checkbox", { name: tr("mcp.manage.selectVisible") }));
     fireEvent.click(screen.getByRole("button", { name: tr("mcp.manage.disableSelected") }));

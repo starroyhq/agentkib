@@ -118,6 +118,32 @@ afterEach(() => {
 });
 
 describe("catalog Skills URL navigation", () => {
+  it("opens populated usage for an empty library when the URL has no explicit subtab", async () => {
+    vi.mocked(api.skillInventory).mockResolvedValue({
+      observations: [
+        {
+          id: "native",
+          name: "reviewer",
+          path: "/fixture/skills/reviewer",
+          resolved_path: "/fixture/skills/reviewer",
+          scope: "personal",
+          workspace_id: null,
+          agents: ["codex"],
+          kind: "directory",
+          status: "visible",
+          owner: "external",
+          library_id: null,
+          diagnostics: [],
+        },
+      ],
+      warnings: [],
+    });
+    const { router } = await start();
+    await selected("workspace");
+    expect(screen.getByText("reviewer")).toBeVisible();
+    expect(router.state.location.search.skillSection).toBeUndefined();
+    expect(api.skillCatalog).not.toHaveBeenCalled();
+  });
   it.each(["library", "workspace", "discover"] as const)(
     "loads and refreshes the %s deep link",
     async (section) => {
@@ -176,6 +202,17 @@ describe("catalog Skills URL navigation", () => {
   });
 
   it("keeps discovery input and a pending result across URL tab changes without remounting the hub", async () => {
+    vi.mocked(api.installedSkills).mockResolvedValue([
+      {
+        name: "saved",
+        display_name: "Saved",
+        description: "Saved skill",
+        path: "/fixture/library/saved",
+        size: 1,
+        status: "current",
+        can_rollback: false,
+      },
+    ]);
     const result = deferred<Awaited<ReturnType<typeof api.discoverSkills>>>();
     vi.mocked(api.discoverSkills).mockReturnValue(result.promise);
     const { router, history } = await start("/catalog?assetSection=skills&skillSection=discover");

@@ -1,4 +1,4 @@
-import { McpDisclosure } from "@/features/mcp/McpControls";
+import { McpChoice, McpDisclosure } from "@/features/mcp/McpControls";
 import { McpPortField } from "@/features/mcp/McpPortField";
 import { useOptionalAppNavigationContext } from "@/features/app/AppNavigationContext";
 import { navigationStyles } from "@/components/navigationStyles";
@@ -18,7 +18,11 @@ import { AgentIcon } from "@/features/agents/AgentIcon";
 import { SidebarPanel } from "@/features/app/SidebarPanel";
 import { AssetCatalogPage } from "@/features/catalog/AssetCatalogPage";
 import { SkillHubPage, type SkillHubSection } from "@/features/skills/SkillHubPage";
-import { McpManagementPanel, type McpEditorState } from "@/features/mcp/McpManagementPanel";
+import {
+  MCP_ALL_SCOPES,
+  McpManagementPanel,
+  type McpEditorState,
+} from "@/features/mcp/McpManagementPanel";
 import { CatalogSkeleton } from "@/features/catalog/CatalogSkeleton";
 import { useAppDialogs } from "@/components/AppDialogProvider";
 import { MemoryCard } from "@/features/catalog/MemoryCard";
@@ -27,15 +31,7 @@ import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import {
-  Select,
-  SelectContent,
-  SelectGroup,
-  SelectItem,
-  SelectLabel,
-  SelectTrigger,
-  SelectValue,
-} from "@/components/ui/select";
+import { SelectItem } from "@/components/ui/select";
 import { Switch } from "@/components/ui/switch";
 import { api } from "@/core/api";
 import { groupCatalogAssets } from "@/features/catalog/catalog";
@@ -268,7 +264,7 @@ function CatalogRoute() {
       <CatalogPage
         section={section}
         onSection={setSection}
-        skillSection={search.skillSection ?? "library"}
+        skillSection={search.skillSection}
         onSkillSection={setSkillSection}
         assets={assets}
         assetsAvailable={assetsQuery.data !== undefined}
@@ -346,7 +342,7 @@ function CatalogPage({
 }: {
   section: AssetSection;
   onSection: (section: AssetSection) => void;
-  skillSection: SkillHubSection;
+  skillSection?: SkillHubSection;
   onSkillSection: (section: SkillHubSection) => void;
   assets: CatalogAsset[];
   assetsAvailable: boolean;
@@ -589,7 +585,7 @@ function GlobalMemoryInbox({
 
 export function McpHubPage({
   runtime,
-  workspaces,
+  workspaces: suppliedWorkspaces,
   onRuntimeChanged,
   focusNetworkSettings = false,
   onNetworkSettingsFocused,
@@ -602,6 +598,7 @@ export function McpHubPage({
   onNetworkSettingsFocused?: () => void;
 }) {
   const { localizeMessage, tr } = useI18n();
+  const workspaces = suppliedWorkspaces.filter((workspace) => !workspace.remote);
   const navigation = useOptionalAppNavigationContext();
   const networkSettings = useRef<HTMLDivElement>(null);
   const networkFocusHandled = useRef(false);
@@ -632,7 +629,8 @@ export function McpHubPage({
   const queryClient = useQueryClient();
   const [registryRequest, setRegistryRequest] = useState<string>();
   const [query, setQuery] = useState("");
-  const [scope, setScope] = useState("");
+  const [scope, setScope] = useState(MCP_ALL_SCOPES);
+  const [registryTarget, setRegistryTarget] = useState<string>();
   const [drafts] = useState(() => new Map<string, McpEditorState>());
   const [actionBusy, setBusy] = useState(false);
   const [actionError, setError] = useState("");
@@ -646,7 +644,14 @@ export function McpHubPage({
       scopeEpoch.current += 1;
     };
   }, []);
-  const project = scope || undefined;
+  const allScopes = scope === MCP_ALL_SCOPES;
+  const project = allScopes ? undefined : scope || undefined;
+  const registryProject = allScopes
+    ? registryTarget === "__global_scope__"
+      ? undefined
+      : registryTarget
+    : project;
+  const registryDestinationChosen = !allScopes || registryTarget !== undefined;
   const installationsQuery = useQuery({
     ...queryDefaults,
     queryKey: ["mcp", "installations"],
@@ -676,7 +681,13 @@ export function McpHubPage({
   const busy = actionBusy || registryQuery.isFetching;
   const installations = installationsQuery.data ?? [];
   // Older runtimes do not report ownership; never infer it from the selected scope.
-  const runtimes = (runtimesQuery.data ?? []).filter((item) => item.project === (project ?? null));
+  const runtimes = (runtimesQuery.data ?? []).filter(
+    (item) =>
+      item.project !== undefined &&
+      (allScopes
+        ? item.project === null || workspaces.some((workspace) => workspace.path === item.project)
+        : item.project === (project ?? null)),
+  );
   const queryError = installationsQuery.error ?? runtimesQuery.error ?? runtimeQuery.error;
   const error = actionError || (queryError ? localizeMessage(queryError) : "");
   const runtimeChanged = useRef(onRuntimeChanged);
@@ -686,16 +697,25 @@ export function McpHubPage({
   useEffect(() => {
     if (runtimeQuery.data) runtimeChanged.current(runtimeQuery.data);
   }, [runtimeQuery.data]);
-  const load = async (targetProject = project) => {
+  const refreshHost = async () => {
     await Promise.all([
-      queryClient.invalidateQueries({
-        queryKey: ["mcp", "management", targetProject],
-        exact: true,
-      }),
       queryClient.invalidateQueries({ queryKey: ["mcp", "installations"] }),
       queryClient.invalidateQueries({ queryKey: ["mcp", "runtimes"] }),
       queryClient.invalidateQueries({ queryKey: ["mcp", "runtime"] }),
     ]);
+  };
+  const load = async () => {
+    await Promise.all([
+      queryClient.invalidateQueries({ queryKey: ["mcp", "management"] }),
+      refreshHost(),
+    ]);
+  };
+  const changeScope = (nextScope: string) => {
+    if (nextScope === scope) return;
+    scopeEpoch.current += 1;
+    setError("");
+    setRegistryTarget(undefined);
+    setScope(nextScope);
   };
   const runAction = async (
     action: (isCurrent: () => boolean) => Promise<void>,
@@ -724,6 +744,7 @@ export function McpHubPage({
     else setRegistryRequest(query);
   };
   const install = async (entry: McpRegistryEntry) => {
+    if (!registryDestinationChosen) return;
     const command =
       entry.package_kind === "remote"
         ? entry.url
@@ -733,12 +754,14 @@ export function McpHubPage({
       if (!isCurrent()) return;
       const env = await dialogs.requestSecrets(entry.required_env);
       if (env === null || !isCurrent()) return;
-      const result = await api.installMcp(entry, project);
-      if (Object.keys(env).length) await api.saveMcpLocalValues(result.server.id, env, {}, project);
+      const result = await api.installMcp(entry, registryProject);
+      if (Object.keys(env).length)
+        await api.saveMcpLocalValues(result.server.id, env, {}, registryProject);
       await load();
     });
   };
   const updateInstallation = async (installation: McpInstallation, entry: McpRegistryEntry) => {
+    if (!registryDestinationChosen) return;
     await runAction(async (isCurrent) => {
       if (
         !(await dialogs.confirm(
@@ -749,8 +772,9 @@ export function McpHubPage({
         return;
       const env = await dialogs.requestSecrets(entry.required_env);
       if (env === null || !isCurrent()) return;
-      const result = await api.updateMcp(installation.id, entry, project);
-      if (Object.keys(env).length) await api.saveMcpLocalValues(result.server.id, env, {}, project);
+      const result = await api.updateMcp(installation.id, entry, registryProject);
+      if (Object.keys(env).length)
+        await api.saveMcpLocalValues(result.server.id, env, {}, registryProject);
       await load();
     });
   };
@@ -795,61 +819,18 @@ export function McpHubPage({
   };
   return (
     <div className="grid gap-5">
-      <div className="overflow-hidden rounded-2xl border border-border bg-card shadow-sm">
-        <div className="flex items-center justify-between gap-4 border-b border-border px-5 py-5">
-          <div className="grid gap-1.5">
-            <h2>{tr("mcp.scope")}</h2>
-          </div>
-          <Select
-            value={scope || "__global_scope__"}
-            onValueChange={(value) => {
-              if (value !== null) {
-                const nextScope = String(value);
-                const nextProject = nextScope === "__global_scope__" ? undefined : nextScope;
-                if (nextProject === project) return;
-                scopeEpoch.current += 1;
-                setError("");
-                setScope(nextProject ?? "");
-              }
-            }}
-          >
-            <SelectTrigger className="min-w-40" aria-label={tr("mcp.scope")}>
-              <SelectValue>
-                {workspaces.find((workspace) => workspace.path === scope)?.name ??
-                  tr("mcp.globalScope")}
-              </SelectValue>
-            </SelectTrigger>
-            <SelectContent>
-              <SelectGroup>
-                <SelectLabel>{tr("mcp.scope")}</SelectLabel>
-                <SelectItem value="__global_scope__">{tr("mcp.globalScope")}</SelectItem>
-                {workspaces.map((workspace) => (
-                  <SelectItem key={workspace.id} value={workspace.path}>
-                    {workspace.name}
-                  </SelectItem>
-                ))}
-              </SelectGroup>
-            </SelectContent>
-          </Select>
-        </div>
-      </div>
-      <p role="note" className="text-sm text-muted-foreground">
-        {tr("mcp.hubExplanation")}
-      </p>
-      {navigation && (
-        <Button
-          variant="outline"
-          className="justify-self-start"
-          onClick={() => navigation.app.openSettings("integrations", "integrations-mcp")}
-        >
-          {tr("mcp.openIntegrationSettings")}
-        </Button>
-      )}
       <McpManagementPanel
-        key={project ?? "global"}
+        key={scope}
+        scope={scope}
+        onScopeChange={changeScope}
+        onOpenIntegrations={
+          navigation
+            ? () => navigation.app.openSettings("integrations", "integrations-mcp")
+            : undefined
+        }
         project={project}
         workspaces={workspaces}
-        onChanged={load}
+        onChanged={refreshHost}
         drafts={drafts}
       />
       {error && (
@@ -874,6 +855,30 @@ export function McpHubPage({
         onOpenChange={(open) => setAdvanced((current) => ({ ...current, open }))}
       >
         <h2>{tr("mcp.manage.advancedSections")}</h2>
+        <p role="note" className="text-sm text-muted-foreground">
+          {tr("mcp.hubExplanation")}
+        </p>
+        {allScopes && (
+          <McpChoice
+            value={registryTarget ?? "__choose_scope__"}
+            aria-label={tr("mcp.manage.targetScope")}
+            onValueChange={(value) => {
+              scopeEpoch.current += 1;
+              setError("");
+              setRegistryTarget(value);
+            }}
+          >
+            <SelectItem value="__choose_scope__" disabled>
+              {tr("mcp.manage.chooseScope")}
+            </SelectItem>
+            <SelectItem value="__global_scope__">{tr("mcp.globalScope")}</SelectItem>
+            {workspaces.map((workspace) => (
+              <SelectItem key={workspace.id} value={workspace.path}>
+                {workspace.name}
+              </SelectItem>
+            ))}
+          </McpChoice>
+        )}
         <div className="grid gap-4 rounded-2xl border border-border bg-card p-5 md:grid-cols-[minmax(0,1fr)_auto]">
           <div className="grid gap-1.5">
             <span className="text-xs font-semibold uppercase tracking-[.12em] text-muted-foreground">
@@ -963,7 +968,7 @@ export function McpHubPage({
                   </div>
                   <Button
                     className="border border-transparent bg-transparent text-foreground hover:bg-muted"
-                    disabled={busy}
+                    disabled={busy || !registryDestinationChosen}
                     onClick={() => void install(entry)}
                   >
                     {tr("mcp.install")}
@@ -1026,7 +1031,7 @@ export function McpHubPage({
                       {update && (
                         <Button
                           className="border border-transparent bg-transparent text-foreground hover:bg-muted"
-                          disabled={busy}
+                          disabled={busy || !registryDestinationChosen}
                           onClick={() => void updateInstallation(item, update)}
                         >
                           {tr("mcp.update")}
@@ -1082,10 +1087,21 @@ export function McpHubPage({
               {runtimes.map((item) => (
                 <article
                   className="grid gap-4 py-4 lg:grid-cols-[minmax(0,1fr)_auto] lg:items-center"
-                  key={item.config_hash}
+                  key={JSON.stringify([item.project, item.config_hash])}
                 >
                   <div className="grid gap-1">
                     <strong>{item.server_name}</strong>
+                    {allScopes && (
+                      <Badge variant="secondary" className="justify-self-start">
+                        {item.project
+                          ? tr("mcp.manage.projectScope", {
+                              name:
+                                workspaces.find((workspace) => workspace.path === item.project)
+                                  ?.name ?? item.project,
+                            })
+                          : tr("mcp.globalScope")}
+                      </Badge>
+                    )}
                     <small>{item.config_hash.slice(0, 16)}…</small>
                     <span
                       className={cn(

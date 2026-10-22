@@ -144,8 +144,8 @@ describe("AppSidebar v8 navigation", () => {
         />,
       );
       expect(container.querySelector(".app-context-sidebar")?.hasAttribute("inert")).toBe(true);
-      await userEvent.setup().click(screen.getByRole("button", { name: tr("nav.agents") }));
-      expect(onNavigate).toHaveBeenCalledWith("agents");
+      await userEvent.setup().click(screen.getByRole("button", { name: tr("nav.catalog") }));
+      expect(onNavigate).toHaveBeenCalledWith("catalog");
       expect(useAppStore.getState().sidebarCollapsed).toBe(false);
     } finally {
       restore();
@@ -168,8 +168,10 @@ describe("AppSidebar v8 navigation", () => {
       );
       const user = userEvent.setup();
       await user.click(screen.getByRole("button", { name: tr("common.primaryNavigation") }));
-      await user.click(screen.getByRole("button", { name: tr("nav.agents") }));
-      expect(onNavigate).toHaveBeenCalledWith("agents");
+      await user.click(screen.getByRole("button", { name: tr("nav.catalog") }));
+      expect(onNavigate).toHaveBeenCalledWith("catalog");
+      // A primary destination with a context panel keeps the drawer available for its next selection.
+      expect(screen.getByRole("dialog", { name: tr("common.primaryNavigation") })).toBeTruthy();
       expect(useAppStore.getState().sidebarCollapsed).toBe(true);
     } finally {
       restore();
@@ -273,7 +275,7 @@ describe("AppSidebar v8 navigation", () => {
     expect(useAppStore.getState().sidebarCollapsed).toBe(true);
   });
 
-  it("adds sessions after Agents in the same sidebar and preserves the tool navigation", async () => {
+  it("keeps six activity destinations with sessions after workspaces and preserves the tool navigation", async () => {
     const user = userEvent.setup();
     const onNavigate = vi.fn();
     const { container, rerender } = render(
@@ -292,11 +294,21 @@ describe("AppSidebar v8 navigation", () => {
     const names = within(primary as HTMLElement)
       .getAllByRole("button")
       .map((button) => button.getAttribute("aria-label"));
-    expect(names.indexOf(tr("sessions.nav"))).toBe(names.indexOf(tr("nav.agents")) + 1);
+    expect(names).toEqual([
+      tr("nav.home"),
+      tr("nav.workspaces"),
+      tr("sessions.nav"),
+      tr("nav.catalog"),
+      tr("nav.quota"),
+      tr("nav.insights"),
+    ]);
+    expect(
+      within(primary as HTMLElement).queryByRole("button", { name: tr("nav.agents") }),
+    ).toBeNull();
     const sessions = screen.getByRole("button", { name: tr("sessions.nav") });
     expect(sessions.getAttribute("aria-current")).toBe("page");
     expect(sessions.getAttribute("aria-keyshortcuts")).toBe(
-      currentAppPlatform() === "macos" ? "Meta+4" : "Control+4",
+      currentAppPlatform() === "macos" ? "Meta+3" : "Control+3",
     );
     expect(within(sidebar as HTMLElement).getByText("Example session")).toBeTruthy();
     expect(screen.getByRole("button", { name: tr("nav.catalog") })).toBeTruthy();
@@ -306,12 +318,12 @@ describe("AppSidebar v8 navigation", () => {
     expect(onNavigate).toHaveBeenCalledWith("sessions");
     rerender(
       <AppSidebar
-        active="agents"
+        active="catalog"
         entries={createGlobalNavigation(0)}
         onNavigate={onNavigate}
         onSettings={() => undefined}
         collapsed={false}
-        context={{ kind: "agents", filter: "all", onFilterChange: () => undefined }}
+        context={{ kind: "global" }}
       />,
     );
     expect(container.querySelector(".app-sidebar-sessions")).toBeNull();

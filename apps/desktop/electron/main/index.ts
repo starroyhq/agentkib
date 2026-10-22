@@ -2,6 +2,7 @@ import { DesktopAccountService } from "./account/service";
 import type { DesktopAccountRequest } from "./account/state";
 import { readFile, writeFile, mkdir, rename } from "node:fs/promises";
 import path from "node:path";
+import { homedir } from "node:os";
 import { WebAccessService, createWebControlState } from "./web/service";
 import { acceptanceSession } from "./web/acceptance";
 import { ConversationHub } from "./conversation-hub";
@@ -609,6 +610,7 @@ function registerUpdateIpc(): void {
 }
 
 function registerShellIpc(): void {
+  handle("agentkib:paths:display-context", () => ({ homeDirectory: homedir() }));
   handle("agentkib:shell:open-directory", async (_event, title: unknown) => {
     const window = mainWindow;
     if (!window) throw new Error("AgentKib window is not ready");

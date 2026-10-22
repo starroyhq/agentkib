@@ -29,6 +29,15 @@ beforeEach(() => {
   electron.removeListener.mockClear();
 });
 
+describe("desktop path display preload", () => {
+  it("reads only the local display context without accepting a renderer path", async () => {
+    const context = { homeDirectory: "/fixture/home" };
+    electron.invoke.mockResolvedValueOnce(context);
+    expect(await desktop.paths.displayContext()).toBe(context);
+    expect(electron.invoke).toHaveBeenCalledExactlyOnceWith("agentkib:paths:display-context");
+  });
+});
+
 describe("MCP connection preload", () => {
   it.each([
     ["connectionInfo", "agentkib:mcp:connection-info"],

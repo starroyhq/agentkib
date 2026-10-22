@@ -47,6 +47,7 @@ export const settingsTargets = [
   "tools-actions",
   "remote-access",
   "remote-devices",
+  "integrations-agents",
   "integrations-mcp",
   "integrations-gateways",
   "integrations-obsidian",
@@ -178,6 +179,12 @@ const searchEntries: Array<{
     target: "tools-actions",
     label: "settings.search.updateActions",
     keywords: ["settings.tools.batchDescription", "settings.tools.manualCommand"],
+  },
+  {
+    section: "integrations",
+    target: "integrations-agents",
+    label: "nav.agents",
+    keywords: ["agents.capabilities", "agents.homeAssets", "agents.linkedWorkspaces"],
   },
   {
     section: "integrations",
@@ -322,7 +329,7 @@ export function SettingsSidebar(props: {
               )}
               aria-current={active === id ? "page" : undefined}
               title={tr(label)}
-              onClick={() => select(id)}
+              onClick={() => select(id, id === "integrations" ? "integrations-agents" : undefined)}
             >
               <span className={navigationStyles.appSidebarItemIcon}>
                 <Icon size={18} />

@@ -1,11 +1,12 @@
+import { ConnectedAgents } from "@/features/agents/ConnectedAgents";
+import type { AppSearch } from "@/features/app/app-route";
 import { useI18n } from "@/core/useI18n";
-import { createFileRoute, useSearch } from "@tanstack/react-router";
+import { createFileRoute, useNavigate, useSearch } from "@tanstack/react-router";
 import { useQueryClient } from "@tanstack/react-query";
 import { api } from "@/core/api";
 import { GlobalSettings } from "@/features/settings/GlobalSettings";
 import { SettingsContentSkeleton } from "@/features/settings/SettingsSkeleton";
 import type { SettingsPageVariant } from "@/features/settings/components/SettingsLayout";
-import type { SettingsSection, SettingsTarget } from "@/features/settings/SettingsSidebar";
 import { useSettingsTargetFocus } from "@/features/settings/useSettingsTargetFocus";
 import { useAppStore } from "@/stores/app-store";
 import {
@@ -22,15 +23,19 @@ import { useWorkspaceStore } from "@/features/workspace/workspace-store";
 import { useQuotaStatus } from "@/features/quota/quota-query";
 import type { CloseBehavior, RefreshKind, RuntimeInfo } from "@/core/types";
 
-type SettingsSearch = { settingsSection?: SettingsSection; settingsTarget?: SettingsTarget };
+type SettingsSearch = Pick<
+  AppSearch,
+  "settingsSection" | "settingsTarget" | "settingsAgent" | "settingsAgentFilter"
+>;
 
 function SettingsRoute() {
   const { localizeMessage, tr } = useI18n();
   const queryClient = useQueryClient();
+  const navigate = useNavigate();
   const search = useSearch({ strict: false }) as SettingsSearch;
   const section = search.settingsSection ?? "general";
   const layoutVariant: SettingsPageVariant =
-    section === "tools"
+    section === "tools" || section === "integrations"
       ? "workspace"
       : section === "general" ||
           section === "appearance" ||
@@ -129,6 +134,39 @@ function SettingsRoute() {
       ) : (
         <GlobalSettings
           section={section}
+          settingsTarget={search.settingsTarget}
+          onSettingsTargetChange={(target) =>
+            void navigate({
+              to: "/settings",
+              search: (current) => ({ ...current, settingsTarget: target }),
+            })
+          }
+          agentsContent={
+            <ConnectedAgents
+              selectedAgent={search.settingsAgent}
+              filter={search.settingsAgentFilter}
+              onSelectedAgentChange={(agent) =>
+                void navigate({
+                  to: "/settings",
+                  replace: true,
+                  search: (current) => ({ ...current, settingsAgent: agent }),
+                })
+              }
+              onFilterChange={(filter) =>
+                void navigate({
+                  to: "/settings",
+                  replace: true,
+                  search: (current) => ({ ...current, settingsAgentFilter: filter }),
+                })
+              }
+              onOpen={async (workspace) => {
+                await navigate({
+                  to: "/workspace/$workspaceId",
+                  params: { workspaceId: workspace.id },
+                });
+              }}
+            />
+          }
           runtime={runtime}
           workspaces={workspaces}
           discovery={discovery}

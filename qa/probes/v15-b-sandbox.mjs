@@ -29,7 +29,11 @@ const desktop = path.join(repository, "apps/desktop");
 const command = process.argv[2];
 const options = {};
 for (let index = 3; index < process.argv.length; index += 2) {
-  assert.ok(["--root", "--cdp-port", "--state"].includes(process.argv[index]));
+  assert.ok(
+    ["--root", "--cdp-port", "--state", "--cli-version", "--connection-error"].includes(
+      process.argv[index],
+    ),
+  );
   assert.ok(process.argv[index + 1] && !process.argv[index + 1].startsWith("--"));
   options[process.argv[index].slice(2)] = process.argv[index + 1];
 }
@@ -329,12 +333,27 @@ if (command === "prepare") {
   const config = await readConfig();
   if (command === "state") {
     assert.ok(states.includes(options.state), `Use --state ${states.join("|")}`);
+    assert.ok(
+      !options["cli-version"] ||
+        /^(0|[1-9]\d{0,5})\.(0|[1-9]\d{0,5})\.(0|[1-9]\d{0,5})$/.test(options["cli-version"]),
+    );
+    assert.ok(
+      !options["connection-error"] ||
+        [
+          "bridge-cli-too-old",
+          "bridge-cli-unsupported",
+          "bridge-capabilities-missing",
+          "bridge-plugin-update-required",
+        ].includes(options["connection-error"]),
+    );
     const previous = JSON.parse(await readFile(stateFile, "utf8"));
     assert.equal(previous.owner, owner);
     const next = {
       owner,
       mode: options.state,
       revision: (previous.revision ?? 0) + 1,
+      cliVersion: options["cli-version"],
+      connectionError: options["connection-error"],
       expiresAt: new Date(
         Date.now() + (options.state === "expired" ? -1000 : 120_000),
       ).toISOString(),

@@ -1,7 +1,28 @@
 /** Private local transport. These credentials never cross Renderer or Web RPC. */
 export const CLAUDE_BRIDGE_PROTOCOL = 1 as const;
-export const CLAUDE_BRIDGE_PLUGIN_VERSION = "0.1.0" as const;
-export const CLAUDE_BRIDGE_CLI_VERSION = "2.1.301" as const;
+import { CLAUDE_BRIDGE_COMPATIBILITY } from "../../claude-bridge-plugin/hooks/compatibility.js";
+export {
+  CLAUDE_BRIDGE_COMPATIBILITY,
+  CLAUDE_BRIDGE_REQUIRED_CAPABILITIES,
+  claudeBridgeCompatibility,
+  missingClaudeBridgeCapabilities,
+} from "../../claude-bridge-plugin/hooks/compatibility.js";
+export const CLAUDE_BRIDGE_PLUGIN_VERSION = CLAUDE_BRIDGE_COMPATIBILITY.pluginVersion;
+/** Minimum supported stable CLI; actual observed versions travel in identities. */
+export const CLAUDE_BRIDGE_CLI_VERSION = CLAUDE_BRIDGE_COMPATIBILITY.minimumCliVersion;
+export interface ClaudeBridgeNativeCapabilities {
+  version: 1;
+  available: string[];
+}
+export interface ClaudeBridgeCompatibilityStatus {
+  cliVersion: string;
+  status: "verified" | "unverified";
+}
+export interface ClaudeBridgeConnectionFailure {
+  reason: string;
+  cliVersion?: string;
+  missingCapabilities?: string[];
+}
 export const CLAUDE_BRIDGE_PATHS = {
   pair: "/v1/pair",
   reconnect: "/v1/reconnect",
@@ -20,9 +41,10 @@ export interface ClaudeBridgeIdentity {
   protocol: 1;
   nativeId: string;
   cwd: string;
-  cliVersion: "2.1.301";
+  cliVersion: string;
   instanceId: string;
-  pluginVersion: "0.1.0";
+  pluginVersion: string;
+  nativeCapabilities: ClaudeBridgeNativeCapabilities;
 }
 
 export interface ClaudeBridgePairRequest extends ClaudeBridgeIdentity {
@@ -45,8 +67,8 @@ export interface ClaudeBridgeCredential {
   token: string;
   nativeId: string;
   cwd: string;
-  cliVersion: "2.1.301";
-  pluginVersion: "0.1.0";
+  cliVersion: string;
+  pluginVersion: string;
 }
 
 export interface ClaudeBridgeReconnectRequest extends ClaudeBridgeIdentity {

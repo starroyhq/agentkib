@@ -32,6 +32,58 @@ function fixture(
 }
 describe("Claude execution and terminal connection presentation", () => {
   it.each(["zh-CN", "zh-TW", "en-US", "ja-JP"] as const)(
+    "explains authenticated reconnect compatibility failures without overriding safety in %s",
+    (locale) => {
+      const copy = claudeConnectionCopy[locale];
+      for (const reason of [
+        "bridge-cli-too-old",
+        "bridge-cli-unsupported",
+        "bridge-capabilities-missing",
+        "bridge-plugin-update-required",
+      ]) {
+        const failed = fixture(locale, "claude-follower", "unsupported", reason);
+        const failure = {
+          reason,
+          cliVersion: "2.1.300",
+          missingCapabilities: ["session-messages"],
+        };
+        Object.assign(failed.live!, { bridgeConnectionFailure: failure });
+        const expected = claudeConnectionReason(locale, reason, "desktop", failure);
+        expect(claudeSessionBanner(failed)).toEqual({ title: copy.lostTitle, body: expected });
+        expect(sessionDisplayState(failed)).toMatchObject({
+          reason: expected,
+          continuation: "view-only",
+        });
+        expect(claudeSessionBanner({ ...failed, online: false })).toEqual({
+          title: copy.hostDisconnected,
+          body: copy.hostDisconnectedInfo,
+        });
+        const uncertain = { ...failed, notice: "uncertain" as const };
+        expect(claudeSessionBanner(uncertain)?.body).toBe(copy.connectionUnconfirmed);
+        expect(sessionDisplayState(uncertain).reason).not.toBe(expected);
+        const denied = {
+          ...failed,
+          access: { ...failed.access!, device: { ...failed.access!.device!, send: false } },
+        };
+        expect(claudeSessionBanner(denied)).toBeNull();
+        expect(sessionDisplayState(denied).reason).not.toBe(expected);
+        Object.assign(failed.live!, {
+          bridgeConnectionFailure: { ...failure, reason: "other-failure" },
+        });
+        expect(claudeSessionBanner(failed)?.body).toBe(copy.lost);
+        Object.assign(failed.live!, { bridgeConnectionFailure: null });
+        expect(claudeSessionBanner(failed)?.body).toBe(copy.lost);
+        expect(sessionDisplayState(failed).reason).toBe(copy.lost);
+        Object.assign(failed.live!, {
+          bridgeConnectionFailure: null,
+          reason: "claude-bridge-disconnected",
+        });
+        expect(claudeSessionBanner(failed)).toEqual({ title: copy.lostTitle, body: copy.lost });
+        expect(sessionDisplayState(failed).reason).toBe(copy.lost);
+      }
+    },
+  );
+  it.each(["zh-CN", "zh-TW", "en-US", "ja-JP"] as const)(
     "keeps ownership, connection and failure states distinct in %s",
     (locale) => {
       const copy = claudeConnectionCopy[locale];

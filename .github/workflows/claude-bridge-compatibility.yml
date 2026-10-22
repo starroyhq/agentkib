@@ -1,0 +1,59 @@
+name: Claude terminal compatibility
+
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - .github/workflows/claude-bridge-compatibility.yml
+      - .github/scripts/claude-bridge-compatibility*.mjs
+      - packages/claude-bridge-plugin/**
+      - packages/runtime-protocol/src/claude-bridge.ts
+      - packages/backend/src/claude-bridge*.ts
+      - apps/desktop/scripts/stage-claude-bridge.mjs
+      - apps/desktop/test/claude-bridge*.test.ts
+
+permissions:
+  contents: read
+
+concurrency:
+  group: claude-terminal-compatibility-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  compatibility:
+    name: No-login compatibility (${{ matrix.version }})
+    runs-on: macos-15
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        version: [minimum, latest]
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v6
+        with:
+          run_install: false
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v7
+        with:
+          node-version: 22
+          cache: pnpm
+          cache-dependency-path: pnpm-lock.yaml
+
+      - name: Install repository dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Verify compatibility checker isolation
+        run: node --test .github/scripts/claude-bridge-compatibility.test.mjs
+
+      # The script allows the official registry only during installation. CLI
+      # validation/testing is sandboxed with no network or personal config access;
+      # bridge tests allow private sockets/loopback only. No login/model calls.
+      - name: Check official CLI, explicit capability contracts and bridge safety
+        run: node .github/scripts/claude-bridge-compatibility.mjs --version '${{ matrix.version }}'

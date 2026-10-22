@@ -109,6 +109,67 @@ describe("Claude terminal connection dialog", () => {
     },
   );
 
+  it.each(locales)("shows an unverified version as neutral text in %s", async (locale) => {
+    state.session.live = { ...state.session.live!, executionMode: "claude-follower" };
+    state.request.mockResolvedValue(
+      bridgeStatus({
+        connected: true,
+        bridgeCompatibility: { cliVersion: "2.1.307", status: "unverified" },
+      }),
+    );
+    const { dialog, copy } = await openDialog(locale);
+    const note = within(dialog).getByText(copy.unverifiedVersion.replace("{version}", "2.1.307"));
+    expect(note).toHaveClass("text-muted-foreground");
+    expect(note.closest('[role="alert"]')).toBeNull();
+    expect(within(dialog).getByText(copy.connectedTitle)).toBeVisible();
+    expect(within(dialog).queryByRole("button", { name: copy.generate })).toBeNull();
+    expect(operations()).not.toContain("send");
+  });
+
+  it("accepts explicit cleared compatibility metadata without reviving an old version note", async () => {
+    state.session.live = { ...state.session.live!, executionMode: "claude-follower" };
+    state.request.mockResolvedValue(bridgeStatus({ connected: true, bridgeCompatibility: null }));
+    const { dialog, copy } = await openDialog();
+    expect(within(dialog).getByText(copy.connectedTitle)).toBeVisible();
+    expect(dialog.querySelector("[data-terminal-compatibility]")).toBeNull();
+    expect(within(dialog).queryByRole("alert")).toBeNull();
+  });
+
+  it.each(locales)(
+    "explains incompatible versions and hides the old command in %s",
+    async (locale) => {
+      let result = bridgeStatus();
+      state.request.mockImplementation(async ({ operation }) =>
+        operation === "bridge-status" ? result : challenge(),
+      );
+      const { dialog, copy } = await openDialog(locale);
+      fireEvent.click(within(dialog).getByRole("button", { name: copy.generate }));
+      await within(dialog).findByText(connectionCommand);
+      for (const [reason, expected] of [
+        [
+          "bridge-cli-too-old",
+          copy.cliTooOld.replace("{version}", "2.1.300").replace("{minimum}", "2.1.301"),
+        ],
+        ["bridge-plugin-update-required", copy.pluginOutdated],
+        ["bridge-capabilities-missing", copy.missingCapabilities.replace("{version}", "2.1.307")],
+        ["bridge-cli-unsupported", copy.cliUnsupported],
+      ]) {
+        result = bridgeStatus({
+          connectionError: reason,
+          connectionCliVersion: reason === "bridge-cli-too-old" ? "2.1.300" : "2.1.307",
+        });
+        fireEvent.click(within(dialog).getByRole("button", { name: copy.refresh }));
+        expect(await within(dialog).findByRole("alert")).toHaveTextContent(expected);
+        expect(within(dialog).queryByText(connectionCommand)).toBeNull();
+        expect(within(dialog).queryByRole("button", { name: copy.copyCommand })).toBeNull();
+      }
+      state.request.mockRejectedValueOnce(new Error("status unavailable"));
+      fireEvent.click(within(dialog).getByRole("button", { name: copy.refresh }));
+      await waitFor(() => expect(within(dialog).getByRole("alert")).toHaveTextContent(copy.failed));
+      expect(within(dialog).queryByText(connectionCommand)).toBeNull();
+    },
+  );
+
   it("copies the complete commands and checks status without clearing a generated code", async () => {
     const expiresAt = new Date(Date.now() + 120_000).toISOString();
     state.request.mockImplementation(async ({ operation }) =>

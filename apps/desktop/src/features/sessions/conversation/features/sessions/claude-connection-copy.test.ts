@@ -75,7 +75,7 @@ describe("terminal connection guide copy", () => {
     expect(copy.unsupportedTitle).toBe(expected.unsupported);
     expect(copy.statusUnavailable).toBe(expected.statusUnavailable);
     expect(copy.platformVersion).toContain("{version}");
-    expect(copy.platformVersion).not.toMatch(/更高|更新版本|later|newer|以降|以上/);
+    expect(copy.platformVersion).toMatch(/更高|later|以降|以上/);
     expect(copy.expiresAt.replace("{time}", "10:42")).toContain("10:42");
     expect(copy.generateStep).toBe(copy.generate);
     expect(copy.generate).not.toMatch(/一次性|one-time|一回限り/);
@@ -100,6 +100,41 @@ describe("terminal connection guide copy", () => {
     );
     expect(web).toBe(claudeConnectionCopyForSurface(expected.locale, "web"));
   });
+
+  it.each(cases)("distinguishes compatibility reasons in $locale", ({ locale }) => {
+    const copy = claudeConnectionCopy[locale];
+    expect(copy.cliTooOld).toContain("{version}");
+    expect(copy.cliTooOld).toContain("{minimum}");
+    expect(copy.pluginOutdated).toMatch(/第 1|step 1|手順 1/);
+    expect(copy.missingCapabilities).toContain("{version}");
+    expect(copy.unverifiedVersion).toContain("{version}");
+  });
+
+  it.each(cases)(
+    "formats observed versions without exposing invalid diagnostics in $locale",
+    ({ locale }) => {
+      const copy = claudeConnectionCopy[locale];
+      expect(
+        claudeConnectionReason(locale, "bridge-cli-too-old", "desktop", { cliVersion: "2.1.300" }),
+      ).toBe(copy.cliTooOld.replace("{version}", "2.1.300").replace("{minimum}", "2.1.301"));
+      expect(
+        claudeConnectionReason(locale, "bridge-capabilities-missing", "web", {
+          cliVersion: "2.1.307",
+        }),
+      ).toBe(copy.missingCapabilities.replace("{version}", "2.1.307"));
+      expect(claudeConnectionReason(locale, "bridge-plugin-update-required", "web")).toBe(
+        copy.pluginOutdated,
+      );
+      expect(claudeConnectionReason(locale, "bridge-cli-unsupported", "desktop")).toBe(
+        copy.cliUnsupported,
+      );
+      const invalid = claudeConnectionReason(locale, "bridge-capabilities-missing", "desktop", {
+        cliVersion: "/private/sensitive-diagnostic",
+      });
+      expect(invalid).toBe(copy.missingCapabilities.replace("{version}", copy.unknownVersion));
+      expect(invalid).not.toContain("/private/");
+    },
+  );
 
   it("keeps every language's keys and placeholders aligned", () => {
     const baseline = claudeConnectionCopy["zh-CN"];

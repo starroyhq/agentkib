@@ -3,6 +3,32 @@ import { claudeConnectionCopyForSurface, claudeConnectionReason } from "./claude
 import { sessionContinuationCopy } from "@agentkib/session-ui";
 import type { SessionController } from "./use-session-controller";
 
+const reconnectCompatibilityReasons = new Set([
+  "bridge-cli-too-old",
+  "bridge-cli-unsupported",
+  "bridge-capabilities-missing",
+  "bridge-plugin-update-required",
+]);
+
+/** Only the current authenticated offline failure can supply native version details. */
+export function claudeReconnectFailureReason(
+  live: SessionController["live"],
+  locale: SessionController["locale"],
+  surface: SessionSurface = "desktop",
+) {
+  if (
+    live?.executionMode !== "claude-follower" ||
+    live.status !== "unsupported" ||
+    live.executionLocation === "terminal" ||
+    !reconnectCompatibilityReasons.has(live.reason ?? "")
+  )
+    return undefined;
+  const failure = live.bridgeConnectionFailure;
+  return failure && failure.reason === live.reason
+    ? claudeConnectionReason(locale, failure.reason, surface, failure)
+    : claudeConnectionCopyForSurface(locale, surface).lost;
+}
+
 /** Normal ownership is shown in the header; only transitions and safety notices need a banner. */
 export function claudeSessionBanner(
   {
@@ -11,7 +37,8 @@ export function claudeSessionBanner(
     online,
     notice,
     t,
-  }: Pick<SessionController, "locale" | "live" | "online" | "notice" | "t">,
+    access,
+  }: Pick<SessionController, "locale" | "live" | "online" | "notice" | "t" | "access">,
   surface: SessionSurface = "desktop",
 ) {
   const copy = claudeConnectionCopyForSurface(locale, surface);
@@ -36,8 +63,18 @@ export function claudeSessionBanner(
     return { title: "", body: continuation.backgroundEnded, notice: "background-ended" as const };
   if (live?.executionMode === "claude-follower") {
     if (live.reason === "claude-bridge-event-gap") return { title: copy.connected, body: copy.gap };
-    if (live.reason === "claude-bridge-disconnected" || live.status === "unsupported")
-      return { title: copy.lostTitle, body: copy.lost };
+    if (live.reason === "claude-bridge-disconnected" || live.status === "unsupported") {
+      const failureReason = claudeReconnectFailureReason(live, locale, surface);
+      if (
+        failureReason &&
+        (access?.status !== "approved" ||
+          access.protocolVersion !== 2 ||
+          !access.experimentalEnabled ||
+          !access.device?.send)
+      )
+        return null;
+      return { title: copy.lostTitle, body: failureReason ?? copy.lost };
+    }
     if (
       ["claude-follower-turn-unconfirmed", "claude-terminal-permission-unconfirmed"].includes(
         live.reason ?? "",

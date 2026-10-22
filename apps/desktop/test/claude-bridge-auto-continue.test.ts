@@ -287,7 +287,17 @@ require("node:readline").createInterface({ input: process.stdin }).on("line", li
             nativeId,
             cwd: workspace,
             cliVersion: "2.1.301",
-            pluginVersion: "0.1.0",
+            pluginVersion: "0.2.0",
+            nativeCapabilities: {
+              version: 1 as const,
+              available: [
+                "session-identity",
+                "session-messages",
+                "session-usage",
+                "credential-store",
+                "credential-read",
+              ],
+            },
             instanceId: randomUUID(),
             ticket: ticket.ticket,
           }),

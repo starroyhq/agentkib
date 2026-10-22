@@ -1,9 +1,10 @@
 # AgentKib Claude Code session bridge
 
-First-party local Mods plugin for the exact Claude Code **2.1.301** contract. It
-connects AgentKib's existing chat interface to the terminal's original execution
-process. It never starts a replacement Claude process, resumes another UUID,
-calls a model itself, or changes the user's permission rules.
+First-party local Mods plugin for Claude Code **2.1.301 or later**, using AgentKib
+bridge contract **0.2.0**. It connects AgentKib's existing chat interface to the
+terminal's original execution process. It never starts a replacement Claude
+process, resumes another UUID, calls a model itself, or changes the user's
+permission rules.
 
 ## Connect a session
 
@@ -15,9 +16,14 @@ AgentKib. For isolated development only, `claude --plugin-dir <this-directory>`
 loads the plugin for that invocation without installing it.
 
 Only the native session UUID and working directory selected in AgentKib can pair.
-The CLI version must match exactly. An unknown version or an unconfirmed native
-activity state leaves sending disabled. `/agentkib-status` is a local command and
-does not call a model.
+Each pairing and reconnect checks the minimum stable CLI version and required
+native capabilities: session identity, messages, usage, credential storage, and
+plugin-file reads. Older or unrecognized versions and missing required capabilities
+are rejected. Only **2.1.301** is currently listed as verified; higher stable
+versions that pass these checks may connect read-only. AgentKib shows a neutral
+notice that the version has not been verified and synchronized content may be
+incomplete. Production sending remains disabled. `/agentkib-status` is a local
+command and does not call a model.
 
 ## Current capabilities
 

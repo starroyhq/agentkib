@@ -6,6 +6,8 @@ import { Button } from "@/components/ui/button";
 import { useSession } from "./conversation/features/sessions/session-context";
 import { sessionDisplayState } from "./conversation/features/sessions/session-display-state";
 import { webLayoutCopy } from "./conversation/features/sessions/web-layout-copy";
+import { useSessionViewStore } from "./session-view-store";
+import { useSessionPanels } from "./conversation/features/sessions/session-panels";
 
 type ToolbarSlots = { files: HTMLElement | null; status: HTMLElement | null };
 
@@ -19,7 +21,27 @@ export function ConversationWindowTools({
 }) {
   const session = useSession();
   const { selected, current, access, locale } = session;
+  const setTerminalOpen = useSessionPanels()?.setTerminalOpen;
   const [slots, setSlots] = useState<ToolbarSlots>({ files: null, status: null });
+  const canConnectTerminal =
+    !!selected &&
+    current?.id === selected &&
+    current.agent === "claude-code" &&
+    document.documentElement.dataset.platform === "macos" &&
+    access?.status === "approved" &&
+    !!access.device?.manage &&
+    !!setTerminalOpen;
+  useLayoutEffect(() => {
+    if (!selected || !canConnectTerminal || !setTerminalOpen) return;
+    // The toolbar has catalog summaries only. Publish the actual view's grant,
+    // and keep older view cleanup from removing a newer session's registration.
+    // Opening this view's guide preserves explicit revocation during an unknown
+    // outcome. The panel still applies its separate generation/revocation gates.
+    const entry = { sessionId: selected, open: () => setTerminalOpen(true) };
+    const view = useSessionViewStore.getState();
+    view.registerTerminalEntry(entry);
+    return () => view.unregisterTerminalEntry(entry);
+  }, [selected, canConnectTerminal, setTerminalOpen]);
   useLayoutEffect(() => {
     const sync = () => {
       const toolbar = document.querySelector<HTMLElement>("[data-session-window-session]");

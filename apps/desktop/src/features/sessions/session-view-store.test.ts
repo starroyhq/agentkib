@@ -111,4 +111,21 @@ describe("session view source visibility", () => {
       "terminal",
     );
   });
+  it("keeps terminal menu eligibility in memory and ignores an older owner's cleanup", () => {
+    const first = { sessionId: "same-session", open: vi.fn() };
+    const second = { sessionId: "same-session", open: vi.fn() };
+    const view = useSessionViewStore.getState();
+    view.registerTerminalEntry(first);
+    view.registerTerminalEntry(second);
+    view.unregisterTerminalEntry(first);
+    expect(useSessionViewStore.getState().terminalEntry).toBe(second);
+    useSessionViewStore.getState().terminalEntry?.open();
+    expect(second.open).toHaveBeenCalledOnce();
+    expect(first.open).not.toHaveBeenCalled();
+    view.unregisterTerminalEntry(second);
+    expect(useSessionViewStore.getState().terminalEntry).toBeUndefined();
+    expect(localStorage.getItem("agentkib.session-directory-order") ?? "").not.toContain(
+      "terminal",
+    );
+  });
 });

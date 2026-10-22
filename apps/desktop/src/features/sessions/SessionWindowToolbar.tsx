@@ -7,6 +7,7 @@ import {
   Plus,
   RefreshCw,
   SlidersHorizontal,
+  Terminal,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import {
@@ -24,13 +25,15 @@ import { useHistoryContinuation } from "./useHistoryContinuation";
 import { useSessionHub } from "./SessionHubContext";
 import { hasDesktopConversation } from "@/core/conversation-bridge";
 import { useSessionViewStore } from "./session-view-store";
+import { claudeConnectionCopy } from "./conversation/features/sessions/claude-connection-copy";
 
 export function SessionWindowToolbar() {
-  const { tr } = useI18n();
+  const { tr, locale } = useI18n();
   const hub = useSessionHub();
   const selected = hub.selected;
   const workspace = hub.selectedWorkspace;
   const creating = useSessionViewStore((state) => state.creatingConversation);
+  const terminalEntry = useSessionViewStore((state) => state.terminalEntry);
   const createConversation = () => {
     useSessionViewStore.getState().setCreatingConversation(true);
     hub.select();
@@ -64,6 +67,12 @@ export function SessionWindowToolbar() {
     !selected.remote &&
     selected.availability === "readable" &&
     ["codex", "claude-code", "antigravity"].includes(selected.agent);
+  const canConnectTerminal =
+    interactive &&
+    hub.ready &&
+    selected.agent === "claude-code" &&
+    document.documentElement.dataset.platform === "macos" &&
+    terminalEntry?.sessionId === selected.id;
   return (
     <div
       data-session-window-session={interactive ? selected.id : undefined}
@@ -139,34 +148,12 @@ export function SessionWindowToolbar() {
           </DropdownMenuTrigger>
           <DropdownMenuContent align="end" className="min-w-56">
             <DropdownMenuGroup>
-              {interactive && (
-                <>
-                  <DropdownMenuItem
-                    onClick={() =>
-                      useSessionViewStore.getState().requestPanel(selected.id, "actions")
-                    }
-                  >
-                    <SlidersHorizontal size={15} />
-                    {tr("sessions.conversationActions")}
-                  </DropdownMenuItem>
-                  <DropdownMenuSeparator />
-                </>
-              )}
               {hasDesktopConversation() && hub.localEnabled && (
                 <DropdownMenuItem onClick={createConversation}>
                   <Plus size={15} />
                   {tr("sessions.newConversation")}
                 </DropdownMenuItem>
               )}
-              <DropdownMenuItem
-                onClick={() => {
-                  useSessionViewStore.getState().setCreatingConversation(false);
-                  hub.select();
-                }}
-              >
-                <LayoutDashboard size={15} />
-                {tr("sessions.backOverview")}
-              </DropdownMenuItem>
               {canContinue && (
                 <DropdownMenuItem onClick={continueSession}>
                   <ArrowUpRight size={15} />
@@ -176,6 +163,45 @@ export function SessionWindowToolbar() {
               <DropdownMenuItem disabled={hub.refreshing} onClick={() => void hub.refresh()}>
                 <RefreshCw size={15} />
                 {tr("sessions.refresh")}
+              </DropdownMenuItem>
+            </DropdownMenuGroup>
+            {interactive && (
+              <>
+                <DropdownMenuSeparator />
+                <DropdownMenuGroup>
+                  {canConnectTerminal && (
+                    <DropdownMenuItem
+                      onClick={() => {
+                        const entry = useSessionViewStore.getState().terminalEntry;
+                        if (entry === terminalEntry && entry?.sessionId === selected.id)
+                          entry.open();
+                      }}
+                    >
+                      <Terminal size={15} />
+                      {claudeConnectionCopy[locale].title}…
+                    </DropdownMenuItem>
+                  )}
+                  <DropdownMenuItem
+                    onClick={() =>
+                      useSessionViewStore.getState().requestPanel(selected.id, "actions")
+                    }
+                  >
+                    <SlidersHorizontal size={15} />
+                    {tr("sessions.conversationActions")}…
+                  </DropdownMenuItem>
+                </DropdownMenuGroup>
+              </>
+            )}
+            <DropdownMenuSeparator />
+            <DropdownMenuGroup>
+              <DropdownMenuItem
+                onClick={() => {
+                  useSessionViewStore.getState().setCreatingConversation(false);
+                  hub.select();
+                }}
+              >
+                <LayoutDashboard size={15} />
+                {tr("sessions.backOverview")}
               </DropdownMenuItem>
             </DropdownMenuGroup>
           </DropdownMenuContent>

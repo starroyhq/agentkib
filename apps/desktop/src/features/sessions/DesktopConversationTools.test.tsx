@@ -27,7 +27,8 @@ import {
   type ConversationClientBridge,
   type Live,
 } from "@agentkib/web-client";
-import { initializeI18n, changeLocale, tr } from "@/core/i18n";
+import { initializeI18n, changeLocale, conversationWords, tr } from "@/core/i18n";
+import { api } from "@/core/api";
 import type { AgentKind, ConversationSessionSummary, WorkspaceSummary } from "@/core/types";
 import { useAppStore } from "@/stores/app-store";
 import { useSessionHub } from "./SessionHubContext";
@@ -35,12 +36,17 @@ import { SessionHubPage } from "./SessionHubPage";
 import { SessionWindowToolbar } from "./SessionWindowToolbar";
 import { useSessionViewStore } from "./session-view-store";
 import { codexCopy } from "./conversation/features/sessions/codex-copy";
+import { claudeConnectionCopy } from "./conversation/features/sessions/claude-connection-copy";
 import { useSessionController } from "./conversation/features/sessions/use-session-controller";
 
 const doubles = vi.hoisted(() => ({
   client: undefined as WebClient | undefined,
   desktop: true,
   catalog: vi.fn(),
+  terminalRequest: vi.fn(),
+}));
+vi.mock("@/core/desktop", () => ({
+  desktopApi: () => ({ claude: { request: doubles.terminalRequest } }),
 }));
 vi.mock("@/core/conversation-bridge", () => ({
   createDesktopConversationClient: () => doubles.client,
@@ -180,7 +186,7 @@ function fixture(agent: AgentKind = "codex", files = true, readOnly = false) {
     uploadAttachment: vi.fn(),
   };
   const client = new WebClient(undefined, { type: "same-origin" }, bridge);
-  return { client, request, summary, live };
+  return { client, request, summary, live, access };
 }
 function setHub(selected: ConversationSessionSummary | undefined) {
   hub = {
@@ -214,10 +220,12 @@ function setHub(selected: ConversationSessionSummary | undefined) {
 async function mount(
   f: ReturnType<typeof fixture>,
   selected: ConversationSessionSummary | null = f.summary,
+  localEnabled = false,
 ) {
   doubles.client = f.client;
   doubles.catalog.mockResolvedValue([f.summary]);
   setHub(selected ?? undefined);
+  hub.localEnabled = localEnabled;
   const root = createRootRoute({
     component: () => (
       <>
@@ -262,6 +270,16 @@ beforeEach(() => {
   useAppStore.getState().reset();
   useSessionViewStore.getState().setCreatingConversation(false);
   useSessionViewStore.getState().resetFilters();
+  doubles.terminalRequest.mockReset().mockResolvedValue({
+    sessionId: "session",
+    supported: true,
+    connected: false,
+    version: "2.1.301",
+    pluginDirectory: "/synthetic/plugin",
+    installInstructions: "synthetic install instruction",
+  });
+  vi.mocked(api.sessionSourceCapability).mockResolvedValue({ status: "unsupported" });
+  delete document.documentElement.dataset.platform;
   vi.mocked(useSessionHub).mockImplementation(() => hub);
   vi.spyOn(window, "scrollTo").mockImplementation(() => {});
 });
@@ -272,6 +290,155 @@ afterEach(async () => {
 });
 
 describe("desktop window conversation tools", () => {
+  it.each(["zh-CN", "zh-TW", "en-US", "ja-JP"] as const)(
+    "orders the Claude menu and opens terminal setup directly with draft and focus preserved in %s",
+    async (locale) => {
+      await changeLocale(locale);
+      document.documentElement.dataset.platform = "macos";
+      vi.mocked(api.sessionSourceCapability).mockResolvedValue({ status: "supported" });
+      const f = fixture("claude-code");
+      await mount(f, f.summary, true);
+      await screen.findByText("Loaded session body");
+      await screen.findByRole("button", { name: tr("sessions.continueWorkspace") });
+      const draft = screen.getByRole("textbox", { name: tr("conversation.message") });
+      fireEvent.change(draft, { target: { value: "Keep this Claude draft" } });
+      const user = userEvent.setup();
+      const more = screen.getByRole("button", { name: tr("common.moreActions") });
+      await user.click(more);
+      const menu = await screen.findByRole("menu");
+      const terminalName = `${claudeConnectionCopy[locale].title}…`;
+      expect(
+        within(menu)
+          .getAllByRole("menuitem")
+          .map((item) => item.textContent),
+      ).toEqual([
+        tr("sessions.newConversation"),
+        tr("sessions.continueWorkspace"),
+        tr("sessions.refresh"),
+        terminalName,
+        `${tr("sessions.conversationActions")}…`,
+        tr("sessions.backOverview"),
+      ]);
+      const terminal = within(menu).getByRole("menuitem", { name: terminalName });
+      terminal.focus();
+      await user.keyboard("{Enter}");
+      const dialog = await screen.findByRole("dialog", {
+        name: claudeConnectionCopy[locale].title,
+      });
+      expect(dialog).toBeVisible();
+      expect(screen.getAllByRole("dialog")).toHaveLength(1);
+      await waitFor(() =>
+        expect(doubles.terminalRequest).toHaveBeenCalledWith({
+          operation: "bridge-status",
+          sessionId: "session",
+        }),
+      );
+      expect(
+        doubles.terminalRequest.mock.calls.every(([value]) => value.operation === "bridge-status"),
+      ).toBe(true);
+      await user.keyboard("{Escape}");
+      await waitFor(() => expect(more).toHaveFocus());
+      expect(draft).toHaveValue("Keep this Claude draft");
+      expect(mutations(f)).toEqual([]);
+      await user.click(more);
+      await user.click(
+        await screen.findByRole("menuitem", {
+          name: `${tr("sessions.conversationActions")}…`,
+        }),
+      );
+      const actions = await screen.findByRole("dialog", {
+        name: tr("sessions.conversationActions"),
+      });
+      expect(within(actions).queryByRole("button", { name: terminalName })).toBeNull();
+    },
+  );
+  it.each(["linux", "win32", "no-platform", "no-manage", "not-approved", "codex"])(
+    "does not expose terminal setup for %s",
+    async (boundary) => {
+      document.documentElement.dataset.platform =
+        boundary === "no-platform"
+          ? ""
+          : boundary === "linux" || boundary === "win32"
+            ? boundary
+            : "macos";
+      const f = fixture(
+        boundary === "codex" ? "codex" : "claude-code",
+        true,
+        boundary === "no-manage",
+      );
+      if (boundary === "not-approved") f.access.status = "pending";
+      await mount(f);
+      if (boundary !== "not-approved") await screen.findByText("Loaded session body");
+      await userEvent.setup().click(screen.getByRole("button", { name: tr("common.moreActions") }));
+      expect(
+        within(await screen.findByRole("menu")).queryByRole("menuitem", {
+          name: "Connect terminal…",
+        }),
+      ).toBeNull();
+      expect(doubles.terminalRequest).not.toHaveBeenCalled();
+    },
+  );
+  it.each(["outcome-unknown", "experimental-disabled"] as const)(
+    "opens the current view's terminal guide for explicit revocation while %s without generating a code",
+    async (boundary) => {
+      document.documentElement.dataset.platform = "macos";
+      const f = fixture("claude-code");
+      f.live.executionMode = "claude-follower";
+      if (boundary === "outcome-unknown") {
+        f.live.status = "outcome-unknown";
+        f.live.reason = "control-outcome-unconfirmed";
+      } else f.access.experimentalEnabled = false;
+      await mount(f);
+      await screen.findByText("Loaded session body");
+      const copy = claudeConnectionCopy["en-US"];
+      const user = userEvent.setup();
+      await user.click(screen.getByRole("button", { name: tr("common.moreActions") }));
+      await user.click(await screen.findByRole("menuitem", { name: `${copy.title}…` }));
+      const dialog = await screen.findByRole("dialog", { name: copy.title });
+      expect(within(dialog).getByRole("button", { name: copy.clearConnection })).toBeEnabled();
+      expect(within(dialog).getByRole("button", { name: copy.regenerate })).toBeDisabled();
+      expect(within(dialog).queryByRole("button", { name: copy.disconnectShort })).toBeNull();
+      expect(doubles.terminalRequest).not.toHaveBeenCalled();
+      expect(mutations(f)).toEqual([]);
+      expect(useSessionViewStore.getState().requestedPanel).toBeUndefined();
+    },
+  );
+  it("opens the current view's terminal guide during a pending history read without generating a code", async () => {
+    document.documentElement.dataset.platform = "macos";
+    const f = fixture("claude-code");
+    f.live.executionMode = "claude-follower";
+    const originalRequest = f.request.getMockImplementation()!;
+    let finishEarlier!: (value: Awaited<ReturnType<typeof originalRequest>>) => void;
+    const earlier = new Promise<Awaited<ReturnType<typeof originalRequest>>>((resolve) => {
+      finishEarlier = resolve;
+    });
+    f.request.mockImplementation(async (path, body) => {
+      if (path.startsWith("events?") && new URLSearchParams(path.split("?")[1]).has("cursor"))
+        return earlier;
+      const result = await originalRequest(path, body);
+      return path.startsWith("events?")
+        ? { ...result, next_cursor: "synthetic-older-page" }
+        : result;
+    });
+    await mount(f);
+    await screen.findByText("Loaded session body");
+    const user = userEvent.setup();
+    const earlierButton = await screen.findByRole("button", {
+      name: conversationWords("en-US").earlier,
+    });
+    await user.click(earlierButton);
+    await waitFor(() => expect(earlierButton).toBeDisabled());
+    const copy = claudeConnectionCopy["en-US"];
+    await user.click(screen.getByRole("button", { name: tr("common.moreActions") }));
+    await user.click(await screen.findByRole("menuitem", { name: `${copy.title}…` }));
+    const dialog = await screen.findByRole("dialog", { name: copy.title });
+    expect(within(dialog).getByRole("button", { name: copy.clearConnection })).toBeEnabled();
+    expect(within(dialog).getByRole("button", { name: copy.regenerate })).toBeDisabled();
+    expect(doubles.terminalRequest).not.toHaveBeenCalled();
+    expect(mutations(f)).toEqual([]);
+    expect(useSessionViewStore.getState().requestedPanel).toBeUndefined();
+    await act(async () => finishEarlier({ events: [], warnings: [] }));
+  });
   it("does not replay a prior retirement from another client and shows a new retirement during this visit", async () => {
     const f = fixture("claude-code");
     Object.assign(f.live, {
@@ -329,7 +496,7 @@ describe("desktop window conversation tools", () => {
       await user.keyboard("{Enter}");
       const menu = await screen.findByRole("menu");
       expect(within(menu).queryByRole("menuitem", { name: filesName })).toBeNull();
-      const actions = within(menu).getByRole("menuitem", { name: actionsName });
+      const actions = within(menu).getByRole("menuitem", { name: `${actionsName}…` });
       actions.focus();
       await user.keyboard("{Enter}");
       expect(await screen.findByRole("dialog", { name: actionsName })).toBeVisible();
@@ -348,7 +515,7 @@ describe("desktop window conversation tools", () => {
       await screen.findByText("Loaded session body");
       const user = userEvent.setup();
       await user.click(screen.getByRole("button", { name: tr("common.moreActions") }));
-      await user.click(await screen.findByRole("menuitem", { name: "Session actions" }));
+      await user.click(await screen.findByRole("menuitem", { name: "Session actions…" }));
       expect(await screen.findByRole("dialog", { name: "Session actions" })).toBeVisible();
       expect(screen.getByRole("button", { name: "Details" })).toBeVisible();
       expect(mutations(f)).toEqual([]);
@@ -362,7 +529,7 @@ describe("desktop window conversation tools", () => {
     expect(screen.queryByRole("button", { name: "Files & artifacts" })).toBeNull();
     const user = userEvent.setup();
     await user.click(screen.getByRole("button", { name: tr("common.moreActions") }));
-    await user.click(await screen.findByRole("menuitem", { name: "Session actions" }));
+    await user.click(await screen.findByRole("menuitem", { name: "Session actions…" }));
     const dialog = await screen.findByRole("dialog", { name: "Session actions" });
     fireEvent.change(within(dialog).getByLabelText(codexCopy["en-US"].name), {
       target: { value: "Changed title" },
@@ -408,7 +575,8 @@ describe("desktop window conversation tools", () => {
           .setup()
           .click(screen.getByRole("button", { name: tr("common.moreActions") }));
         const menu = await screen.findByRole("menu");
-        expect(within(menu).queryByRole("menuitem", { name: "Session actions" })).toBeNull();
+        expect(within(menu).queryByRole("menuitem", { name: "Session actions…" })).toBeNull();
+        expect(within(menu).queryByRole("menuitem", { name: "Connect terminal…" })).toBeNull();
       }
     },
   );

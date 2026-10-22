@@ -1,6 +1,5 @@
 import { useEffect, useState } from "react";
 import { useSessionPanels } from "./session-panels";
-import { claudeConnectionCopy } from "./claude-connection-copy";
 import { Button } from "@/components/ui/button";
 import { Dialog } from "../../components/dialog";
 import { CodexTools } from "./codex-tools";
@@ -24,7 +23,6 @@ export function SessionOperations({
     current?.agent === "claude-code" &&
     document.documentElement.dataset.platform === "macos" &&
     !!access?.device?.manage;
-  const terminalCopy = claudeConnectionCopy[locale];
   useEffect(() => {
     setTerminalOpen(false);
   }, [selected, canConnectTerminal, setTerminalOpen]);
@@ -84,36 +82,13 @@ export function SessionOperations({
             open={open}
             onOpenChange={onOpenChange}
             showTrigger={false}
-            shortcuts={
-              <>
-                {canConnectTerminal && (
-                  <Button
-                    variant="outline"
-                    className="min-h-11"
-                    onClick={() => {
-                      onOpenChange(false);
-                      setTerminalOpen(true);
-                    }}
-                  >
-                    {terminalCopy.title}…
-                  </Button>
-                )}
-                {shortcuts}
-              </>
-            }
+            shortcuts={shortcuts}
             ownership={pendingOutcome}
           />
         )}
       />
       {canConnectTerminal && terminalOpen && (
-        <Dialog
-          panel
-          title={terminalCopy.title}
-          closeLabel={t.close}
-          onClose={() => setTerminalOpen(false)}
-        >
-          <ClaudeBridgePanel active />
-        </Dialog>
+        <ClaudeBridgePanel active onClose={() => setTerminalOpen(false)} />
       )}
     </>
   );

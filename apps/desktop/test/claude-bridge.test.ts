@@ -10,6 +10,7 @@ import {
   realpathSync,
   rmSync,
   statSync,
+  writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -217,10 +218,11 @@ async function fixture(timeout = 1000) {
       seq = 0;
       return response;
     },
-    async restart() {
+    async restart(reconnect = true) {
       await bridge.close();
       bridge = new ClaudeBridge(options);
       bridge.initialize();
+      if (!reconnect) return;
       await expect.poll(() => existsSync(ticket.socketPath)).toBe(true);
       await this.reconnect();
     },
@@ -366,11 +368,139 @@ describe.skipIf(process.platform === "win32")("native Claude borrowed-host broke
     expect(statSync(f.connection.credentialPath).mode & 0o777).toBe(0o600);
     const status = await f.manage("bridge-status");
     expect(JSON.stringify(status)).not.toContain(f.connection.token);
-    expect(status).toMatchObject({ supported: true, connected: true });
+    expect(status).toMatchObject({ supported: true, connected: true, hasBinding: true });
+    expect(JSON.stringify(status)).not.toContain(f.connection.bindingId);
+    expect(JSON.stringify(status)).not.toContain(f.connection.credentialPath);
     expect((status as { installInstructions: string }).installInstructions).toContain(
       "claude plugin update agentkib-bridge@agentkib-local",
     );
   });
+  it("retains a verified binding after terminal exit and broker restart before the first snapshot", async () => {
+    const f = await fixture();
+    await f.events({ type: "invalidated", reason: "synthetic-terminal-exit", revision: 1 });
+    expect(await f.manage("bridge-status")).toMatchObject({ connected: false, hasBinding: true });
+    expect(f.live()).toMatchObject({ sendEnabled: false, stopEnabled: false });
+    await f.restart(false);
+    expect(await f.manage("bridge-status")).toMatchObject({ connected: false, hasBinding: true });
+    await expect.poll(() => existsSync(f.ticket.socketPath)).toBe(true);
+    await f.reconnect();
+    expect(await f.manage("bridge-status")).toMatchObject({ connected: false, hasBinding: true });
+    await f.events({ type: "snapshot", snapshot: f.snapshot });
+    expect(await f.manage("bridge-status")).toMatchObject({ connected: true, hasBinding: true });
+  });
+  it("keeps an expired lease recoverable without granting control", async () => {
+    const f = await fixture();
+    vi.spyOn(Date, "now").mockReturnValue(Date.now() + 35_001);
+    expect(await f.manage("bridge-status")).toMatchObject({ connected: false, hasBinding: true });
+    expect(f.live()).toMatchObject({ sendEnabled: false, stopEnabled: false });
+    expect(f.bridge.blocksManagedResume(f.target.sessionId)).toBe(false);
+  });
+  it("persists revocation of an offline binding and rejects its saved credential", async () => {
+    const f = await fixture();
+    await f.events({ type: "invalidated", reason: "synthetic-terminal-exit", revision: 1 });
+    await f.manage("bridge-disconnect");
+    expect(await f.manage("bridge-status")).toMatchObject({ connected: false, hasBinding: false });
+    expect(existsSync(f.connection.credentialPath)).toBe(false);
+    expect(
+      await f.http(
+        "/v1/reconnect",
+        { ...f.hello, bindingId: f.connection.bindingId },
+        f.connection.token,
+      ),
+    ).toMatchObject({ status: 410, body: { error: "bridge-binding-revoked" } });
+    await f.restart(false);
+    expect(await f.manage("bridge-status")).toMatchObject({ connected: false, hasBinding: false });
+  });
+  it("does not infer a binding from pending, rejected or expired connection codes", async () => {
+    const f = await fixture();
+    f.target.sessionId = "unbound-session";
+    f.target.nativeId = randomUUID();
+    expect(await f.manage("bridge-status")).toMatchObject({ connected: false, hasBinding: false });
+    const challenge = (await f.manage("bridge-challenge")) as {
+      challenge: string;
+      expiresAt: string;
+    };
+    expect(await f.manage("bridge-status")).toMatchObject({ connected: false, hasBinding: false });
+    const ticket = JSON.parse(Buffer.from(challenge.challenge, "base64url").toString());
+    expect(
+      await f.http("/v1/pair", {
+        ticket: ticket.ticket,
+        connectionError: "unsupported-native-identity",
+      }),
+    ).toMatchObject({ status: 409 });
+    expect(await f.manage("bridge-status")).toMatchObject({ connected: false, hasBinding: false });
+    vi.spyOn(Date, "now").mockReturnValue(Date.parse(challenge.expiresAt) + 1);
+    expect(await f.manage("bridge-status")).toMatchObject({ connected: false, hasBinding: false });
+  });
+  it.each(["sessionId", "nativeId", "workspaceId", "workspace", "registeredWorkspace"] as const)(
+    "does not report a binding when the current %s no longer matches its identity",
+    async (field) => {
+      const f = await fixture();
+      vi.spyOn(f.options, "target").mockResolvedValue({
+        ...f.target,
+        [field]: `${f.target[field]}-changed`,
+      });
+      expect(await f.manage("bridge-status")).toMatchObject({
+        connected: false,
+        hasBinding: false,
+      });
+    },
+  );
+  it("requires validation of the original binding as well as the current target", async () => {
+    const f = await fixture();
+    const validate = vi.spyOn(f.options, "validate").mockImplementation((...args: unknown[]) => {
+      if (args[2]) throw new Error("binding-source-unavailable");
+    });
+    expect(await f.manage("bridge-status")).toMatchObject({ connected: false, hasBinding: false });
+    expect(validate).toHaveBeenCalledWith(f.target, false, f.connection.bindingId);
+  });
+  it("preserves current-target permission failures instead of reporting a usable binding", async () => {
+    const f = await fixture();
+    vi.spyOn(f.options, "validate").mockImplementation(() => {
+      throw new Error("session-index-disabled");
+    });
+    await expect(f.manage("bridge-status")).rejects.toThrow("session-index-disabled");
+  });
+  it("reports no verified binding when the session or registry cannot be validated", async () => {
+    const f = await fixture();
+    f.invalidate();
+    expect(await f.manage("bridge-status")).toMatchObject({
+      connected: false,
+      hasBinding: false,
+      reason: "claude-bridge-session-unavailable",
+    });
+    await f.bridge.close();
+    const registry = path.join(f.root, "data/claude-bridge/bindings-v1.json");
+    writeFileSync(registry, "{invalid synthetic registry");
+    await f.restart(false);
+    expect(await f.manage("bridge-status")).toMatchObject({
+      connected: false,
+      hasBinding: false,
+      reason: "claude-bridge-registry-invalid",
+    });
+    expect(readFileSync(registry, "utf8")).toBe("{invalid synthetic registry");
+  });
+  it.each(["linux", "win32"] as const)(
+    "does not report a recoverable binding on %s",
+    async (platform) => {
+      const f = await fixture();
+      await f.bridge.close();
+      const unsupported = new ClaudeBridge({ ...f.options, platform });
+      cleanups.push(() => unsupported.close());
+      expect(
+        await unsupported.management({
+          operation: "bridge-status",
+          sessionId: f.target.sessionId,
+          deviceId: "agentkib-local-owner",
+        }),
+      ).toMatchObject({
+        supported: false,
+        connected: false,
+        hasBinding: false,
+        reason: "platform-unsupported",
+      });
+    },
+  );
   it("reports unverified native send without disabling the separately verified current-turn cancel", async () => {
     const f = await fixture();
     await f.events({
@@ -970,6 +1100,8 @@ describe.skipIf(process.platform === "win32")("native Claude borrowed-host broke
     expect((await f.poll()).body.commands).toHaveLength(1);
     await f.restart();
     expect(await first).toMatchObject({ controlOutcome: "unknown" });
+    expect(await f.manage("bridge-status")).toMatchObject({ connected: false, hasBinding: true });
+    await expect(f.manage("bridge-challenge")).rejects.toThrow("control-outcome-unconfirmed");
     await f.events({ type: "snapshot", snapshot: f.snapshot });
     expect(f.live()).toMatchObject({ status: "outcome-unknown", sendEnabled: false });
     expect(await f.bridge.request(input)).toMatchObject({ controlOutcome: "unknown" });
@@ -1407,17 +1539,20 @@ describe.skipIf(process.platform === "win32")("native Claude borrowed-host broke
     await f.bridge.close();
     await poll;
   });
-  it("checks the local owner before offering connection challenges", async () => {
-    const f = await fixture();
-    await expect(
-      f.bridge.management({
-        operation: "bridge-challenge",
-        sessionId: f.target.sessionId,
-        deviceId: "browser-a",
-      }),
-    ).rejects.toThrow();
-    expect(readFileSync(f.connection.credentialPath, "utf8")).toContain(f.connection.token);
-  });
+  it.each(["bridge-status", "bridge-challenge", "bridge-disconnect"])(
+    "checks the local owner before %s",
+    async (operation) => {
+      const f = await fixture();
+      await expect(
+        f.bridge.management({
+          operation,
+          sessionId: f.target.sessionId,
+          deviceId: "browser-a",
+        }),
+      ).rejects.toThrow();
+      expect(readFileSync(f.connection.credentialPath, "utf8")).toContain(f.connection.token);
+    },
+  );
   it("retains matching completion evidence received before the first reconnect snapshot", async () => {
     const f = await fixture();
     const input = f.control();

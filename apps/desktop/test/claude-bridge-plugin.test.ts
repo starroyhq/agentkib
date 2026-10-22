@@ -871,14 +871,523 @@ describe("Claude Code native session plugin", () => {
     await expect
       .poll(() => f.calls.filter((call) => call.url.endsWith("/reconnect")).length)
       .toBe(1);
-    await f.tick();
-    await f.tick();
+    for (let tick = 0; tick < 4; tick++) await f.tick();
     expect(f.calls.filter((call) => call.url.endsWith("/reconnect"))).toHaveLength(2);
     expect((await f.run("command.run", { command: "agentkib-status", args: "" })).text).toContain(
       "is connected",
     );
     expect(f.dispatches).toBe(0);
   });
+
+  it.each(["timer", "prompt.submit", "turn.start"])(
+    "recovers a running terminal after Runtime returns using %s without enabling sends",
+    async (wake) => {
+      const f = await fixture({ experiment: false });
+      f.nextHttpResponse("/v1/commands", { status: 409, body: { error: "bridge-lease-expired" } });
+      await f.tick();
+      let offline = true;
+      f.setHttpInterceptor(async (url) => {
+        if (url.endsWith("/reconnect") && offline) throw new Error("Runtime is offline");
+      });
+      await f.tick();
+      expect(f.calls.filter((call) => call.url.endsWith("/reconnect"))).toHaveLength(1);
+      offline = false;
+      f.setIdentity({ version: "2.1.307" });
+      if (wake === "timer") {
+        for (let tick = 0; tick < 40; tick++) await f.tick();
+      } else {
+        const event = { text: "native terminal prompt", turnId: randomUUID() };
+        let nativeCalls = 0;
+        const result = await f.run(wake, event, (received) => {
+          nativeCalls++;
+          expect(received).toBe(event);
+          return { native: true };
+        });
+        expect(result).toEqual({ native: true });
+        expect(nativeCalls).toBe(1);
+        await expect
+          .poll(() => f.calls.filter((call) => call.url.endsWith("/reconnect")).length)
+          .toBe(2);
+      }
+      await f.tick();
+      expect(f.calls.filter((call) => call.url.endsWith("/reconnect")).at(-1)?.body).toMatchObject({
+        cliVersion: "2.1.307",
+        nativeCapabilities: {
+          available: expect.arrayContaining(["session-messages", "credential-read"]),
+        },
+      });
+      expect((await f.run("command.run", { command: "agentkib-status", args: "" })).text).toContain(
+        "is connected",
+      );
+      expect(f.snapshots().at(-1).capabilities).toMatchObject({ read: true, send: false });
+      expect(f.dispatches).toBe(0);
+      expect(f.stops).toBe(0);
+    },
+  );
+
+  it("backs off repeated offline reconnects while repeating the credential and capability checks", async () => {
+    const f = await fixture({ experiment: false });
+    const messages = vi.spyOn(f.api.session, "messages");
+    const reads = vi.spyOn(f.api.fs, "read");
+    const attempts: number[] = [];
+    let tick = 0;
+    f.nextHttpResponse("/v1/commands", { status: 409, body: { error: "bridge-lease-expired" } });
+    await f.tick();
+    f.setHttpInterceptor(async (url) => {
+      if (url.endsWith("/reconnect")) {
+        attempts.push(tick);
+        throw new Error("Runtime stays offline");
+      }
+    });
+    for (; tick < 96; tick++) await f.tick();
+    expect(attempts.length).toBeGreaterThanOrEqual(4);
+    expect(attempts.length).toBeLessThanOrEqual(6);
+    const gaps = attempts.slice(1).map((value, index) => value - attempts[index]!);
+    expect(
+      gaps.every((gap, index) => gap >= 4 && gap <= 32 && (!index || gap >= gaps[index - 1]!)),
+    ).toBe(true);
+    expect(messages).toHaveBeenCalledTimes(attempts.length);
+    expect(reads.mock.calls.filter(([path]) => path === f.connection.credentialPath)).toHaveLength(
+      attempts.length,
+    );
+    expect(
+      reads.mock.calls.filter(([path]) => path === "/synthetic/plugin/package.json"),
+    ).toHaveLength(attempts.length);
+    expect(f.dispatches).toBe(0);
+  });
+
+  it.each(["timer", "prompt.submit", "turn.start"])(
+    "retains saved-binding recovery after an expired replacement pairing using %s",
+    async (wake) => {
+      const f = await fixture({ experiment: false });
+      f.nextHttpResponse("/v1/commands", { status: 409, body: { error: "bridge-lease-expired" } });
+      await f.tick();
+      let offline = true;
+      f.setHttpInterceptor(async (url) => {
+        if (url.endsWith("/reconnect") && offline) throw new Error("Runtime is offline");
+      });
+      await f.tick();
+      offline = false;
+      f.nextHttpResponse("/v1/pair", { status: 409, body: { error: "expired-bridge-challenge" } });
+      const rejected = await f.run("command.run", { command: "agentkib-connect", args: f.ticket });
+      expect(rejected.text).toContain("has expired");
+      const reads = vi.spyOn(f.api.fs, "read");
+      const set = vi.spyOn(f.api.store, "set");
+      if (wake === "timer") {
+        for (let tick = 0; tick < 8; tick++) await f.tick();
+      } else {
+        await f.run(wake, { text: "native terminal prompt", turnId: randomUUID() });
+      }
+      await expect
+        .poll(() => f.calls.filter((call) => call.url.endsWith("/reconnect")).length)
+        .toBe(2);
+      await f.tick();
+      expect(
+        reads.mock.calls.filter(([path]) => path === f.connection.credentialPath),
+      ).toHaveLength(1);
+      expect(
+        reads.mock.calls.filter(([path]) => path === "/synthetic/plugin/package.json"),
+      ).toHaveLength(1);
+      expect(set).toHaveBeenCalledWith(
+        "compatibility:credential-store:1",
+        "agentkib-bridge:0.2.0:capabilities:1",
+      );
+      expect((await f.run("command.run", { command: "agentkib-status", args: "" })).text).toContain(
+        "is connected",
+      );
+      expect(f.snapshots().at(-1).capabilities.send).toBe(false);
+      expect(f.dispatches).toBe(0);
+      expect(f.stops).toBe(0);
+    },
+  );
+
+  it("pauses saved-binding recovery during replacement pairing and resumes its bounded backoff after rejection", async () => {
+    const f = await fixture({ experiment: false });
+    f.nextHttpResponse("/v1/commands", { status: 409, body: { error: "bridge-lease-expired" } });
+    await f.tick();
+    const held = deferred<void>();
+    f.setHttpInterceptor(async (url) => {
+      if (url.endsWith("/reconnect")) throw new Error("Runtime stays offline");
+      if (url.endsWith("/pair")) await held.promise;
+    });
+    await f.tick();
+    f.nextHttpResponse("/v1/pair", { status: 409, body: { error: "invalid-bridge-challenge" } });
+    const pairing = f.run("command.run", { command: "agentkib-connect", args: f.ticket });
+    await expect.poll(() => f.calls.filter((call) => call.url.endsWith("/pair")).length).toBe(2);
+    for (let tick = 0; tick < 40; tick++) await f.tick();
+    await f.run("prompt.submit", { text: "native prompt during pairing" });
+    await f.run("turn.start", { text: "native prompt during pairing", turnId: randomUUID() });
+    expect(f.calls.filter((call) => call.url.endsWith("/reconnect"))).toHaveLength(1);
+    held.resolve();
+    expect((await pairing).text).toContain("invalid or already used");
+    for (let tick = 0; tick < 96; tick++) await f.tick();
+    const reconnects = f.calls.filter((call) => call.url.endsWith("/reconnect"));
+    expect(reconnects.length).toBeGreaterThanOrEqual(5);
+    expect(reconnects.length).toBeLessThanOrEqual(7);
+    expect(f.dispatches).toBe(0);
+    expect(f.stops).toBe(0);
+  });
+
+  it.each([
+    { wake: "timer", order: "first-fails-first" },
+    { wake: "timer", order: "first-fails-last" },
+    { wake: "prompt.submit", order: "first-fails-first" },
+    { wake: "prompt.submit", order: "first-fails-last" },
+  ])(
+    "retains recovery through overlapping rejected replacement pairings using $wake when $order",
+    async ({ wake, order }) => {
+      const f = await fixture({ experiment: false });
+      f.nextHttpResponse("/v1/commands", { status: 409, body: { error: "bridge-lease-expired" } });
+      await f.tick();
+      f.setHttpInterceptor(async (url) => {
+        if (url.endsWith("/reconnect")) throw new Error("Runtime is offline");
+      });
+      await f.tick();
+      const held = [deferred<void>(), deferred<void>()];
+      let pairingIndex = 0;
+      f.setHttpInterceptor(async (url) => {
+        if (url.endsWith("/pair")) await held[pairingIndex++]!.promise;
+      });
+      const first = f.run("command.run", { command: "agentkib-connect", args: f.ticket });
+      await expect.poll(() => f.calls.filter((call) => call.url.endsWith("/pair")).length).toBe(2);
+      const second = f.run("command.run", { command: "agentkib-connect", args: f.ticket });
+      await expect.poll(() => f.calls.filter((call) => call.url.endsWith("/pair")).length).toBe(3);
+      for (let tick = 0; tick < 8; tick++) await f.tick();
+      await f.run("prompt.submit", { text: "native prompt while both pairings wait" });
+      expect(f.calls.filter((call) => call.url.endsWith("/reconnect"))).toHaveLength(1);
+      const earlier = order === "first-fails-first" ? 0 : 1;
+      f.nextHttpResponse("/v1/pair", { status: 409, body: { error: "expired-bridge-challenge" } });
+      held[earlier]!.resolve();
+      await [first, second][earlier];
+      if (earlier === 0) {
+        for (let tick = 0; tick < 8; tick++) await f.tick();
+        await f.run("prompt.submit", { text: "native prompt while latest pairing waits" });
+        expect(f.calls.filter((call) => call.url.endsWith("/reconnect"))).toHaveLength(1);
+      }
+      f.nextHttpResponse("/v1/pair", { status: 409, body: { error: "invalid-bridge-challenge" } });
+      held[1 - earlier]!.resolve();
+      await [first, second][1 - earlier];
+      f.setHttpInterceptor(undefined);
+      if (wake === "timer") {
+        for (let tick = 0; tick < 8; tick++) await f.tick();
+      } else await f.run(wake, { text: "native prompt after both pairings fail" });
+      await expect
+        .poll(() => f.calls.filter((call) => call.url.endsWith("/reconnect")).length)
+        .toBe(2);
+      await f.tick();
+      expect((await f.run("command.run", { command: "agentkib-status", args: "" })).text).toContain(
+        "is connected",
+      );
+      expect(f.snapshots().at(-1).capabilities.send).toBe(false);
+      expect(f.dispatches).toBe(0);
+      expect(f.stops).toBe(0);
+    },
+  );
+
+  it.each(["end", "new-pair"])(
+    "does not restore recovery from a replacement pairing failure after %s",
+    async (action) => {
+      const f = await fixture({ experiment: false });
+      f.nextHttpResponse("/v1/commands", { status: 409, body: { error: "bridge-lease-expired" } });
+      await f.tick();
+      f.setHttpInterceptor(async (url) => {
+        if (url.endsWith("/reconnect")) throw new Error("Runtime is offline");
+      });
+      await f.tick();
+      const held = deferred<void>();
+      let holdPair = true;
+      f.setHttpInterceptor(async (url) => {
+        if (url.endsWith("/pair") && holdPair) {
+          holdPair = false;
+          await held.promise;
+        }
+      });
+      const pairing = f.run("command.run", { command: "agentkib-connect", args: f.ticket });
+      await expect.poll(() => f.calls.filter((call) => call.url.endsWith("/pair")).length).toBe(2);
+      if (action === "end") await f.run("session.end", { reason: "exit" });
+      else {
+        const paired = await f.run("command.run", { command: "agentkib-connect", args: f.ticket });
+        expect(paired.text).toContain("connected to this");
+      }
+      f.nextHttpResponse("/v1/pair", { status: 409, body: { error: "expired-bridge-challenge" } });
+      held.resolve();
+      await pairing;
+      for (let tick = 0; tick < 40; tick++) await f.tick();
+      await f.run("prompt.submit", { text: "native prompt after stale pairing" });
+      for (let tick = 0; tick < 40; tick++) await f.tick();
+      expect(f.calls.filter((call) => call.url.endsWith("/reconnect"))).toHaveLength(1);
+      expect((await f.run("command.run", { command: "agentkib-status", args: "" })).text).toContain(
+        action === "end" ? "not connected" : "is connected",
+      );
+    },
+  );
+
+  it.each(["end", 401, 410])(
+    "does not retain overlapping pairings' recovery intent after %s",
+    async (invalidation) => {
+      const f = await fixture({ experiment: false });
+      f.nextHttpResponse("/v1/commands", { status: 409, body: { error: "bridge-lease-expired" } });
+      await f.tick();
+      f.setHttpInterceptor(async (url) => {
+        if (url.endsWith("/reconnect")) throw new Error("Runtime is offline");
+      });
+      await f.tick();
+      const held = [deferred<void>(), deferred<void>()];
+      let pairingIndex = 0;
+      f.setHttpInterceptor(async (url) => {
+        if (url.endsWith("/pair")) await held[pairingIndex++]!.promise;
+      });
+      const first = f.run("command.run", { command: "agentkib-connect", args: f.ticket });
+      await expect.poll(() => f.calls.filter((call) => call.url.endsWith("/pair")).length).toBe(2);
+      const second = f.run("command.run", { command: "agentkib-connect", args: f.ticket });
+      await expect.poll(() => f.calls.filter((call) => call.url.endsWith("/pair")).length).toBe(3);
+      if (invalidation === "end") await f.run("session.end", { reason: "exit" });
+      f.nextHttpResponse("/v1/pair", {
+        status: invalidation === "end" ? 409 : invalidation,
+        body: { error: invalidation === "end" ? "invalid-bridge-challenge" : "binding-revoked" },
+      });
+      held[1]!.resolve();
+      await second;
+      f.nextHttpResponse("/v1/pair", { status: 409, body: { error: "expired-bridge-challenge" } });
+      held[0]!.resolve();
+      await first;
+      f.setHttpInterceptor(undefined);
+      for (let tick = 0; tick < 40; tick++) await f.tick();
+      await f.run("prompt.submit", {
+        text: "native prompt after overlapping pairing invalidation",
+      });
+      for (let tick = 0; tick < 40; tick++) await f.tick();
+      expect(f.calls.filter((call) => call.url.endsWith("/reconnect"))).toHaveLength(1);
+      expect((await f.run("command.run", { command: "agentkib-status", args: "" })).text).toContain(
+        "not connected",
+      );
+      expect(f.dispatches).toBe(0);
+      expect(f.stops).toBe(0);
+    },
+  );
+
+  it("does not invent saved-binding recovery for overlapping first-time pairings", async () => {
+    const f = await fixture({ experiment: false, connect: false });
+    // Finish the startup lookup so it has established that no saved path exists.
+    for (let tick = 0; tick < 8; tick++) await f.tick();
+    const held = deferred<void>();
+    let holdFirst = true;
+    f.setHttpInterceptor(async (url) => {
+      if (url.endsWith("/pair") && holdFirst) {
+        holdFirst = false;
+        await held.promise;
+      }
+    });
+    const first = f.run("command.run", { command: "agentkib-connect", args: f.ticket });
+    await expect.poll(() => f.calls.filter((call) => call.url.endsWith("/pair")).length).toBe(1);
+    f.nextHttpResponse("/v1/pair", { status: 409, body: { error: "expired-bridge-challenge" } });
+    await f.run("command.run", { command: "agentkib-connect", args: f.ticket });
+    f.nextHttpResponse("/v1/pair", { status: 409, body: { error: "invalid-bridge-challenge" } });
+    held.resolve();
+    await first;
+    const identityRead = vi.spyOn(f.api.session, "version");
+    for (let tick = 0; tick < 40; tick++) await f.tick();
+    await f.run("prompt.submit", { text: "native prompt with no saved binding" });
+    for (let tick = 0; tick < 40; tick++) await f.tick();
+    expect(identityRead).not.toHaveBeenCalled();
+    expect(f.calls.filter((call) => call.url.endsWith("/reconnect"))).toHaveLength(0);
+    expect(f.dispatches).toBe(0);
+    expect(f.stops).toBe(0);
+  });
+
+  it.each([401, 410, "identity-change"])(
+    "keeps saved-binding recovery closed after replacement pairing fails with %s",
+    async (failure) => {
+      const f = await fixture({ experiment: false });
+      f.nextHttpResponse("/v1/commands", { status: 409, body: { error: "bridge-lease-expired" } });
+      await f.tick();
+      f.setHttpInterceptor(async (url) => {
+        if (url.endsWith("/reconnect")) throw new Error("Runtime is offline");
+      });
+      await f.tick();
+      f.setHttpInterceptor(undefined);
+      if (failure === "identity-change") f.setIdentity({ cwd: "/other/workspace" });
+      else f.nextHttpResponse("/v1/pair", { status: failure, body: { error: "binding-revoked" } });
+      await f.run("command.run", { command: "agentkib-connect", args: f.ticket });
+      for (let tick = 0; tick < 40; tick++) await f.tick();
+      await f.run("prompt.submit", { text: "native prompt after invalidation" });
+      await f.run("turn.start", { text: "native prompt after invalidation", turnId: randomUUID() });
+      for (let tick = 0; tick < 40; tick++) await f.tick();
+      expect(f.calls.filter((call) => call.url.endsWith("/reconnect"))).toHaveLength(1);
+      expect((await f.run("command.run", { command: "agentkib-status", args: "" })).text).toContain(
+        "not connected",
+      );
+      expect(f.dispatches).toBe(0);
+      expect(f.stops).toBe(0);
+    },
+  );
+
+  it.each(["success", "revoked"])(
+    "ignores a prior handshake's late %s after replacement pairing fails",
+    async (outcome) => {
+      const f = await fixture({ experiment: false });
+      f.nextHttpResponse("/v1/commands", { status: 409, body: { error: "bridge-lease-expired" } });
+      await f.tick();
+      const held = deferred<void>();
+      f.setHttpInterceptor(async (url) => {
+        if (url.endsWith("/reconnect")) await held.promise;
+      });
+      await f.run("prompt.submit", { text: "native prompt starts reconnect" });
+      await expect
+        .poll(() => f.calls.filter((call) => call.url.endsWith("/reconnect")).length)
+        .toBe(1);
+      f.nextHttpResponse("/v1/pair", { status: 409, body: { error: "expired-bridge-challenge" } });
+      const rejected = await f.run("command.run", { command: "agentkib-connect", args: f.ticket });
+      expect(rejected.text).toContain("has expired");
+      if (outcome === "revoked")
+        f.nextHttpResponse("/v1/reconnect", { status: 410, body: { error: "binding-revoked" } });
+      held.resolve();
+      f.setHttpInterceptor(undefined);
+      for (let tick = 0; tick < 8; tick++) await f.tick();
+      expect(f.calls.filter((call) => call.url.endsWith("/reconnect"))).toHaveLength(2);
+      expect((await f.run("command.run", { command: "agentkib-status", args: "" })).text).toContain(
+        "is connected",
+      );
+      expect(f.snapshots().at(-1).capabilities.send).toBe(false);
+      expect(f.dispatches).toBe(0);
+      expect(f.stops).toBe(0);
+    },
+  );
+
+  it("does not reuse cached credentials after a failed replacement pairing and credential removal", async () => {
+    const f = await fixture({ experiment: false });
+    f.nextHttpResponse("/v1/commands", { status: 409, body: { error: "bridge-lease-expired" } });
+    await f.tick();
+    f.setHttpInterceptor(async (url) => {
+      if (url.endsWith("/reconnect")) throw new Error("Runtime is offline");
+    });
+    await f.tick();
+    f.setHttpInterceptor(undefined);
+    f.nextHttpResponse("/v1/pair", { status: 409, body: { error: "expired-bridge-challenge" } });
+    await f.run("command.run", { command: "agentkib-connect", args: f.ticket });
+    const read = f.api.fs.read;
+    f.api.fs.read = async (path: string) => {
+      if (path === f.connection.credentialPath) throw new Error("credential no longer exists");
+      return read(path);
+    };
+    for (let tick = 0; tick < 40; tick++) await f.tick();
+    await f.run("prompt.submit", { text: "native prompt after credential removal" });
+    for (let tick = 0; tick < 40; tick++) await f.tick();
+    expect(f.calls.filter((call) => call.url.endsWith("/reconnect"))).toHaveLength(1);
+    expect((await f.run("command.run", { command: "agentkib-status", args: "" })).text).toContain(
+      "not connected",
+    );
+    expect(f.dispatches).toBe(0);
+    expect(f.stops).toBe(0);
+  });
+
+  it("does not block native events or start overlapping reconnects while a handshake is pending", async () => {
+    const f = await fixture({ experiment: false });
+    f.nextHttpResponse("/v1/commands", { status: 409, body: { error: "bridge-lease-expired" } });
+    await f.tick();
+    const held = deferred<void>();
+    f.setHttpInterceptor(async (url) => {
+      if (url.endsWith("/reconnect")) await held.promise;
+    });
+    let nativePrompts = 0;
+    await f.run("prompt.submit", { text: "native prompt" }, () => {
+      nativePrompts++;
+      return { native: true };
+    });
+    expect(nativePrompts).toBe(1);
+    await expect
+      .poll(() => f.calls.filter((call) => call.url.endsWith("/reconnect")).length)
+      .toBe(1);
+    await f.run("turn.start", { text: "native prompt", turnId: randomUUID() });
+    await f.tick();
+    await f.tick();
+    expect(f.calls.filter((call) => call.url.endsWith("/reconnect"))).toHaveLength(1);
+    held.resolve();
+    await expect
+      .poll(async () => (await f.run("command.run", { command: "agentkib-status", args: "" })).text)
+      .toContain("is connected");
+    expect(f.dispatches).toBe(0);
+  });
+
+  it.each(["revoked", "deleted-credential"])(
+    "does not recover through cached credentials after %s",
+    async (reason) => {
+      const f = await fixture({ experiment: false });
+      f.nextHttpResponse("/v1/commands", { status: 409, body: { error: "bridge-lease-expired" } });
+      await f.tick();
+      if (reason === "revoked") {
+        f.nextHttpResponse("/v1/reconnect", { status: 410, body: { error: "binding-revoked" } });
+      } else {
+        const read = f.api.fs.read;
+        f.api.fs.read = async (path: string) => {
+          if (path === f.connection.credentialPath) throw new Error("credential no longer exists");
+          return read(path);
+        };
+      }
+      const eventsBefore = f.events().length;
+      for (let tick = 0; tick < 40; tick++) await f.tick();
+      await f.run("prompt.submit", { text: "native terminal prompt" });
+      await f.run("turn.start", { turnId: randomUUID(), text: "native terminal prompt" });
+      for (let tick = 0; tick < 40; tick++) await f.tick();
+      expect(f.calls.filter((call) => call.url.endsWith("/reconnect"))).toHaveLength(
+        reason === "revoked" ? 1 : 0,
+      );
+      expect(
+        f
+          .events()
+          .slice(eventsBefore)
+          .every(
+            ({ event }) =>
+              event.type === "invalidated" ||
+              (event.type === "snapshot" &&
+                event.snapshot.status === "disconnected" &&
+                event.snapshot.messages.length === 0 &&
+                event.snapshot.streamText === ""),
+          ),
+      ).toBe(true);
+      expect((await f.run("command.run", { command: "agentkib-status", args: "" })).text).toContain(
+        "not connected",
+      );
+      expect(f.dispatches).toBe(0);
+    },
+  );
+
+  it.each(["pair", "end", "identity"])(
+    "isolates an in-session reconnect failure from a later %s",
+    async (action) => {
+      const f = await fixture({ experiment: false });
+      f.nextHttpResponse("/v1/commands", { status: 409, body: { error: "bridge-lease-expired" } });
+      await f.tick();
+      const held = deferred<void>();
+      f.setHttpInterceptor(async (url) => {
+        if (url.endsWith("/reconnect")) {
+          await held.promise;
+          throw new Error("late offline failure");
+        }
+      });
+      await f.run("prompt.submit", { text: "native prompt" });
+      await expect
+        .poll(() => f.calls.filter((call) => call.url.endsWith("/reconnect")).length)
+        .toBe(1);
+      if (action === "pair") {
+        const paired = await f.run("command.run", { command: "agentkib-connect", args: f.ticket });
+        expect(paired.text).toContain("connected to this");
+      } else if (action === "end") {
+        await f.run("session.end", { reason: "resume" });
+      } else {
+        f.setIdentity({ cwd: "/other/workspace" });
+      }
+      held.resolve();
+      for (let tick = 0; tick < 40; tick++) await f.tick();
+      await f.run("prompt.submit", { text: "later native prompt" });
+      for (let tick = 0; tick < 40; tick++) await f.tick();
+      expect(f.calls.filter((call) => call.url.endsWith("/reconnect"))).toHaveLength(1);
+      expect((await f.run("command.run", { command: "agentkib-status", args: "" })).text).toContain(
+        action === "pair" ? "is connected" : "not connected",
+      );
+      expect(f.dispatches).toBe(0);
+    },
+  );
 
   it("keeps a slow reconnect private from both timer lanes and preserves native completion", async () => {
     let release!: () => void;

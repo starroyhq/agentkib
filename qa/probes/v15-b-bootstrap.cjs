@@ -52,6 +52,7 @@ function bridgeState() {
       "expired",
       "failed",
       "disconnected",
+      "reconnecting",
       "unsupported",
     ].includes(state.mode),
   );
@@ -73,10 +74,17 @@ const publicCode = Buffer.from(
     fixture: "SYNTHETIC_VISUAL_ONLY_NOT_A_REAL_CREDENTIAL",
   }),
 ).toString("base64url");
+function hasBinding(state) {
+  return state.hasBinding ?? ["connected", "disconnected", "reconnecting"].includes(state.mode);
+}
+function connectionGeneration(state) {
+  return state.connectionGeneration ?? `synthetic-visual-${state.revision ?? 1}`;
+}
 function statusFor(state) {
   return {
     supported: state.mode !== "unsupported",
     connected: state.mode === "connected",
+    hasBinding: hasBinding(state),
     sessionId: config.sessionId,
     version: "2.1.301",
     pluginDirectory: examplePlugin,
@@ -118,7 +126,7 @@ function liveFor(live) {
     sessionId: config.sessionId,
     executionMode: follower ? "claude-follower" : "managed-resume",
     executionLocation: state.mode === "connected" ? "terminal" : null,
-    connectionGeneration: `synthetic-visual-${state.revision ?? 1}`,
+    connectionGeneration: connectionGeneration(state),
     status: state.mode === "disconnected" ? "unsupported" : "idle",
     reason:
       state.mode === "disconnected"
@@ -187,7 +195,15 @@ ipcMain.handle = (channel, handler) =>
         }
         assert.notEqual(state.mode, "unsupported", "platform-unsupported");
         const expiresAt = new Date(Date.now() + 120_000).toISOString();
-        saveState({ owner, mode: "waiting", revision: (state.revision ?? 0) + 1, expiresAt });
+        saveState({
+          owner,
+          mode: "waiting",
+          revision: (state.revision ?? 0) + 1,
+          expiresAt,
+          hasBinding: hasBinding(state),
+          // Creating a challenge does not establish or replace a terminal lease.
+          connectionGeneration: connectionGeneration(state),
+        });
         return {
           challenge: publicCode,
           expiresAt,

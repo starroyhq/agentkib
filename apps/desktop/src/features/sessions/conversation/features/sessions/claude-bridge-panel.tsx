@@ -1,9 +1,10 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 import {
   Check,
   ChevronDown,
   CircleAlert,
   CircleCheck,
+  CirclePause,
   LoaderCircle,
   TriangleAlert,
 } from "lucide-react";
@@ -88,6 +89,7 @@ function statusResponse(value: unknown, sessionId: string): ClaudeBridgeStatus {
   if (
     typeof row.supported !== "boolean" ||
     typeof row.connected !== "boolean" ||
+    (row.hasBinding !== undefined && typeof row.hasBinding !== "boolean") ||
     typeof row.version !== "string" ||
     typeof row.pluginDirectory !== "string" ||
     typeof row.installInstructions !== "string" ||
@@ -128,6 +130,7 @@ export function ClaudeBridgePanel({ active, onClose }: { active: boolean; onClos
     status: ClaudeBridgeStatus;
     connectionGeneration?: string;
   }>();
+  const [bindingEvidence, setBindingEvidence] = useState<{ sessionId: string }>();
   // An observation describes the lease that was current when its read began.
   // A later live generation must obtain its own confirmation, even while gated.
   const status =
@@ -166,10 +169,14 @@ export function ClaudeBridgePanel({ active, onClose }: { active: boolean; onClos
   }>();
   const [copied, setCopied] = useState("");
   const [copyError, setCopyError] = useState(false);
+  const [copyingResume, setCopyingResume] = useState(false);
+  const resumeRequest = useRef<AbortController | undefined>(undefined);
   const [revision, setRevision] = useState(0);
   const generation = useRef(0);
   const statusRequest = useRef(0);
   const copyRequest = useRef(0);
+  const operationRequest = useRef(0);
+  const pendingOperation = useRef<"bridge-challenge" | "bridge-disconnect" | undefined>(undefined);
   const pending = useRef(false);
   const lastConnected = useRef(false);
   const canRevoke = !!(
@@ -194,9 +201,11 @@ export function ClaudeBridgePanel({ active, onClose }: { active: boolean; onClos
   useEffect(() => {
     generation.current++;
     pending.current = false;
+    pendingOperation.current = undefined;
     lastConnected.current = false;
     setChallenge(undefined);
     setStatusObservation(undefined);
+    setBindingEvidence(undefined);
     setExpired(false);
     setError(false);
     setLoading(false);
@@ -208,6 +217,19 @@ export function ClaudeBridgePanel({ active, onClose }: { active: boolean; onClos
       generation.current++;
     };
   }, [canRevoke, selected]);
+  useEffect(() => {
+    // A new terminal lease invalidates only a pending connection code. A
+    // revocation must still process its ACK and fence the lease it revoked.
+    if (pendingOperation.current === "bridge-challenge") {
+      operationRequest.current++;
+      pendingOperation.current = undefined;
+      pending.current = false;
+      setLoading(false);
+    }
+    setChallenge((previous) =>
+      previous?.connectionGeneration === live?.connectionGeneration ? previous : undefined,
+    );
+  }, [live?.connectionGeneration]);
   useEffect(() => {
     if (!canManage) return;
     const request = generation.current;
@@ -231,6 +253,10 @@ export function ClaudeBridgePanel({ active, onClose }: { active: boolean; onClos
           selected,
         );
         if (isCurrent()) {
+          if (result.hasBinding === true) {
+            setBindingEvidence({ sessionId: selected });
+            if (result.supported) setRevokedBinding(undefined);
+          } else if (result.supported && result.hasBinding === false) setBindingEvidence(undefined);
           setStatusObservation({
             status: result,
             connectionGeneration: live?.connectionGeneration,
@@ -283,16 +309,77 @@ export function ClaudeBridgePanel({ active, onClose }: { active: boolean; onClos
     (revokedBinding.connectionGeneration === live?.connectionGeneration ||
       (!!revokedBinding.runtimeBootId &&
         revokedBinding.runtimeBootId === live?.connectionGeneration));
+  // An unavailable source cannot disprove an existing live binding. Only a
+  // successful owner lookup or a revocation ACK can clear that evidence.
+  const bindingKnownAbsent = status?.supported && status.hasBinding === false;
+  // A validated binding survives a lease change for display and revocation.
+  // Confirming, copying and generating still require the new generation's status.
+  const retainedBinding = !locallyRevoked && bindingEvidence?.sessionId === selected;
   const connected =
-    (status?.sessionId === selected && status.connected) ||
-    (!locallyRevoked &&
-      live?.sessionId === selected &&
-      live.executionMode === "claude-follower" &&
-      live.status !== "unsupported" &&
-      live.reason !== "claude-bridge-disconnected");
+    !locallyRevoked &&
+    ((status?.sessionId === selected && status.connected) ||
+      (status?.hasBinding === undefined &&
+        !bindingKnownAbsent &&
+        live?.sessionId === selected &&
+        live.executionMode === "claude-follower" &&
+        live.status !== "unsupported" &&
+        live.reason !== "claude-bridge-disconnected"));
   const hasBinding =
-    connected ||
-    (!locallyRevoked && live?.sessionId === selected && live.executionMode === "claude-follower");
+    !locallyRevoked &&
+    !bindingKnownAbsent &&
+    (status?.hasBinding === true ||
+      retainedBinding ||
+      connected ||
+      (live?.sessionId === selected && live.executionMode === "claude-follower"));
+  const canCopyResume = !!(
+    canManage &&
+    hasBinding &&
+    !connected &&
+    status?.supported &&
+    !status.connectionError &&
+    !error &&
+    !loading
+  );
+  // Clean up before the newly enabled button can receive input. A passive
+  // cleanup could otherwise abort a request started during the new commit.
+  useLayoutEffect(() => {
+    return () => {
+      resumeRequest.current?.abort();
+      resumeRequest.current = undefined;
+      setCopyingResume(false);
+    };
+  }, [canCopyResume, selected, live?.connectionGeneration]);
+  async function copyResumeCommand() {
+    if (!canCopyResume || resumeRequest.current) return;
+    const controller = new AbortController();
+    resumeRequest.current = controller;
+    const request = ++copyRequest.current;
+    const scope = generation.current;
+    const isCurrent = () =>
+      !controller.signal.aborted && generation.current === scope && copyRequest.current === request;
+    setCopied("");
+    setCopyError(false);
+    setCopyingResume(true);
+    try {
+      const result = await session.client.claudeResumeCommand(selected, controller.signal);
+      if (!isCurrent()) return;
+      if (
+        result?.available !== true ||
+        typeof result.command !== "string" ||
+        !result.command.trim()
+      )
+        throw new Error("command-unavailable");
+      await navigator.clipboard.writeText(result.command);
+      if (isCurrent()) setCopied(copy.copyResumeCommand);
+    } catch {
+      if (isCurrent()) setCopyError(true);
+    } finally {
+      if (resumeRequest.current === controller) {
+        resumeRequest.current = undefined;
+        setCopyingResume(false);
+      }
+    }
+  }
   async function copyText(value: string, label: string) {
     const request = ++copyRequest.current;
     const scope = generation.current;
@@ -332,7 +419,11 @@ export function ClaudeBridgePanel({ active, onClose }: { active: boolean; onClos
     // A lookup started before this operation cannot describe its connection code or result.
     statusRequest.current++;
     pending.current = true;
+    pendingOperation.current = operation;
     const request = generation.current;
+    const transaction = ++operationRequest.current;
+    const isCurrent = () =>
+      generation.current === request && operationRequest.current === transaction;
     setLoading(true);
     setError(false);
     setStatusObservation((previous) =>
@@ -347,7 +438,7 @@ export function ClaudeBridgePanel({ active, onClose }: { active: boolean; onClos
     setExpired(false);
     try {
       const result = await desktopApi().claude.request({ operation, sessionId: selected });
-      if (generation.current !== request) return;
+      if (!isCurrent()) return;
       if (operation === "bridge-challenge")
         setChallenge({
           ...challengeResponse(result),
@@ -363,22 +454,26 @@ export function ClaudeBridgePanel({ active, onClose }: { active: boolean; onClos
         )
           throw new Error("invalid_bridge_disconnect");
         lastConnected.current = false;
+        setBindingEvidence(undefined);
         setConfirmDisconnect(undefined);
         setRevokedBinding({
           connectionGeneration: live?.connectionGeneration,
           runtimeBootId: live?.runtimeBootId,
         });
         setStatusObservation((previous) =>
-          previous ? { ...previous, status: { ...previous.status, connected: false } } : previous,
+          previous
+            ? { ...previous, status: { ...previous.status, connected: false, hasBinding: false } }
+            : previous,
         );
         setRevision((value) => value + 1);
         void session.refresh(true);
       }
     } catch {
-      if (generation.current === request) setError(true);
+      if (isCurrent()) setError(true);
     } finally {
-      if (generation.current === request) {
+      if (isCurrent()) {
         pending.current = false;
+        pendingOperation.current = undefined;
         setLoading(false);
       }
     }
@@ -406,7 +501,7 @@ export function ClaudeBridgePanel({ active, onClose }: { active: boolean; onClos
       ? copy.connectionUnconfirmed
       : error
         ? copy.failed
-        : !status && hasBinding && !liveDisconnected
+        : !status && hasBinding && !liveDisconnected && !retainedBinding
           ? copy.statusUnavailable
           : status?.connectionError && status.connectionError !== "expired-bridge-challenge"
             ? status.connectionError === "control-outcome-unconfirmed"
@@ -418,16 +513,20 @@ export function ClaudeBridgePanel({ active, onClose }: { active: boolean; onClos
               ? (claudeConnectionReason(locale, status.reason) ?? copy.failed)
               : undefined;
   const displayedChallenge =
-    !incompatible && challenge?.sessionId === selected && canRevoke ? challenge : undefined;
+    !incompatible &&
+    challenge?.sessionId === selected &&
+    challenge.connectionGeneration === live?.connectionGeneration &&
+    canRevoke
+      ? challenge
+      : undefined;
   const stateKind = problem
     ? "error"
     : confirmedConnected
       ? "connected"
       : connectionExpired
         ? "expired"
-        : (hasBinding || locallyRevoked || status?.reason === "claude-bridge-disconnected") &&
-            !displayedChallenge
-          ? "disconnected"
+        : hasBinding && !displayedChallenge
+          ? "reconnecting"
           : "steps";
   const canGenerate = canManage && !!status?.supported && !connected && !loading;
   const checkConnection = (
@@ -443,7 +542,7 @@ export function ClaudeBridgePanel({ active, onClose }: { active: boolean; onClos
   const revokeButton = hasBinding && (
     <Button
       ref={revokeTrigger}
-      variant="outline"
+      variant={stateKind === "reconnecting" ? "link" : "outline"}
       disabled={!canRevoke || loading}
       onClick={() => setConfirmDisconnect(confirmedConnected ? "disconnect" : "clear")}
     >
@@ -504,7 +603,7 @@ export function ClaudeBridgePanel({ active, onClose }: { active: boolean; onClos
         {copy.codeExpiresSafety.replace(
           "{time}",
           new Date(displayedChallenge.expiresAt).toLocaleTimeString(locale, {
-            hour: "2-digit",
+            hour: "numeric",
             minute: "2-digit",
           }),
         )}
@@ -545,7 +644,7 @@ export function ClaudeBridgePanel({ active, onClose }: { active: boolean; onClos
       {confirmedConnected ? copy.connectedBadge : copy.notConnected}
     </Badge>
   );
-  const installed = stateKind === "connected" || stateKind === "disconnected";
+  const installed = stateKind === "connected" || stateKind === "reconnecting";
   const installContent = status?.installInstructions ? (
     commandBlock(status.installInstructions, copy.copyInstall)
   ) : (
@@ -555,15 +654,19 @@ export function ClaudeBridgePanel({ active, onClose }: { active: boolean; onClos
   const StateIcon =
     stateKind === "connected"
       ? CircleCheck
-      : stateKind === "disconnected" || caution
-        ? TriangleAlert
-        : CircleAlert;
+      : stateKind === "reconnecting"
+        ? CirclePause
+        : caution
+          ? TriangleAlert
+          : CircleAlert;
   const stateIconClass =
     stateKind === "connected"
       ? "text-[var(--green)]"
-      : stateKind === "disconnected" || caution
-        ? "text-[var(--amber)]"
-        : "text-destructive-icon";
+      : stateKind === "reconnecting"
+        ? "text-muted-foreground"
+        : caution
+          ? "text-[var(--amber)]"
+          : "text-destructive-icon";
   const content = (
     <section
       className="min-w-0 space-y-4"
@@ -579,9 +682,14 @@ export function ClaudeBridgePanel({ active, onClose }: { active: boolean; onClos
       {!onClose && badge}
       <div className="space-y-1">
         <p className="text-sm">{copy.flow}</p>
-        <p className="text-xs text-muted-foreground">
-          {copy.platformVersion.replace("{version}", status?.version ?? CLAUDE_BRIDGE_CLI_VERSION)}
-        </p>
+        {!platformUnsupported && (
+          <p className="text-xs text-muted-foreground">
+            {copy.platformVersion.replace(
+              "{version}",
+              status?.version ?? CLAUDE_BRIDGE_CLI_VERSION,
+            )}
+          </p>
+        )}
         {confirmedConnected && (
           <ClaudeCompatibilityNote locale={locale} compatibility={status?.bridgeCompatibility} />
         )}
@@ -691,14 +799,14 @@ export function ClaudeBridgePanel({ active, onClose }: { active: boolean; onClos
                           ? copy.connectedTitle
                           : stateKind === "expired"
                             ? copy.expiredTitle
-                            : copy.lostTitle}
+                            : copy.reconnectingTitle}
                       </h3>
                       <p className="text-sm text-muted-foreground">
                         {stateKind === "connected"
                           ? copy.connectedInfo
                           : stateKind === "expired"
                             ? copy.expiredInfo
-                            : copy.disconnectedInfo}
+                            : copy.reconnectingInfo}
                       </p>
                     </div>
                   )}
@@ -709,15 +817,35 @@ export function ClaudeBridgePanel({ active, onClose }: { active: boolean; onClos
                     revocation
                   ) : (
                     <div className="flex flex-wrap items-center gap-2">
+                      {stateKind === "reconnecting" && (
+                        <Button
+                          variant="outline"
+                          disabled={!canCopyResume || copyingResume}
+                          aria-busy={copyingResume}
+                          onClick={() => void copyResumeCommand()}
+                        >
+                          {copy.copyResumeCommand}
+                        </Button>
+                      )}
                       {stateKind !== "connected" && (
                         <>
-                          {stateKind !== "expired" && checkConnection}
+                          {stateKind !== "expired" &&
+                            stateKind !== "reconnecting" &&
+                            checkConnection}
                           <Button
-                            variant={stateKind === "expired" ? "default" : "outline"}
+                            variant={
+                              stateKind === "expired"
+                                ? "default"
+                                : stateKind === "reconnecting"
+                                  ? "link"
+                                  : "outline"
+                            }
                             disabled={!canGenerate}
                             onClick={() => void run("bridge-challenge")}
                           >
-                            {copy.regenerate}
+                            {stateKind === "reconnecting"
+                              ? copy.regenerateConnection
+                              : copy.regenerate}
                           </Button>
                         </>
                       )}

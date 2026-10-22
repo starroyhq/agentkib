@@ -323,6 +323,7 @@ export class ClaudeBridge {
       return {
         supported: false,
         connected: false,
+        hasBinding: false,
         sessionId: input.sessionId,
         version: CLAUDE_BRIDGE_CLI_VERSION,
         reason: "claude-bridge-registry-invalid",
@@ -352,6 +353,7 @@ export class ClaudeBridge {
       return {
         supported: false,
         connected: false,
+        hasBinding: false,
         sessionId: input.sessionId,
         version: CLAUDE_BRIDGE_CLI_VERSION,
         reason: "claude-bridge-session-unavailable",
@@ -361,20 +363,34 @@ export class ClaudeBridge {
     }
     this.options.validate(target, false);
     if (input.operation === "bridge-status") {
+      const row = this.#bindings.get(input.sessionId);
+      let hasBinding = false;
+      if (this.supported && row && !row.revoked && stable(row.target) === stable(target)) {
+        try {
+          this.options.validate(row.target, false, row.bindingId);
+          hasBinding = true;
+        } catch {
+          // A retained credential is recoverable only for its still-valid original identity.
+        }
+      }
+      const connected = hasBinding && this.#online(input.sessionId);
       return {
         supported: this.supported,
-        connected: this.#online(input.sessionId),
+        connected,
+        hasBinding,
         sessionId: input.sessionId,
         version: CLAUDE_BRIDGE_CLI_VERSION,
         connectionError: this.#connectionAttempts.get(input.sessionId)?.error,
         connectionCliVersion: this.#connectionAttempts.get(input.sessionId)?.cliVersion,
         connectionMissingCapabilities: this.#connectionAttempts.get(input.sessionId)
           ?.missingCapabilities,
-        bridgeCompatibility: compatibilityStatus(this.#connections.get(input.sessionId)) ?? null,
+        bridgeCompatibility: hasBinding
+          ? (compatibilityStatus(this.#connections.get(input.sessionId)) ?? null)
+          : null,
         reason: this.supported
           ? this.#startupFailed
             ? "claude-bridge-unavailable"
-            : this.#online(input.sessionId)
+            : connected
               ? undefined
               : "claude-bridge-not-connected"
           : "platform-unsupported",

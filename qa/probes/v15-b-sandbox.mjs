@@ -50,6 +50,7 @@ const states = [
   "expired",
   "failed",
   "disconnected",
+  "reconnecting",
   "unsupported",
 ];
 const paths = {
@@ -353,6 +354,7 @@ if (command === "prepare") {
     const next = {
       owner,
       mode: options.state,
+      hasBinding: ["connected", "disconnected", "reconnecting"].includes(options.state),
       revision: (previous.revision ?? 0) + 1,
       cliVersion: options["cli-version"],
       connectionError: options["connection-error"],

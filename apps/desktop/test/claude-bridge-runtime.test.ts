@@ -510,6 +510,97 @@ describe.skipIf(process.platform !== "darwin")(
       });
     });
 
+    it("retains the original offline binding through history growth and a real backend restart", async () => {
+      const manage = (operation: string) =>
+        rpc<Record<string, unknown>>("claude.managed", {
+          operation,
+          sessionId,
+          deviceId: "agentkib-local-owner",
+        });
+      expect(await manage("bridge-status")).toMatchObject({ connected: false, hasBinding: false });
+      await connect();
+      expect(await manage("bridge-status")).toMatchObject({ connected: true, hasBinding: true });
+      sourceBytes +=
+        JSON.stringify({
+          type: "assistant",
+          uuid: randomUUID(),
+          sessionId: nativeId,
+          cwd: workspace,
+          timestamp: "2026-10-16T00:01:00Z",
+          message: { role: "assistant", content: "Synthetic appended history" },
+        }) + "\n";
+      writeFileSync(source, sourceBytes);
+      await events({ type: "invalidated", reason: "synthetic-terminal-exit", revision: 2 });
+      expect(await manage("bridge-status")).toMatchObject({ connected: false, hasBinding: true });
+      const environment = backend.environment;
+      await backend.close();
+      backend = new TypeScriptBackend(environment);
+      await rpc("backend.initialize", { dataDir: join(directory, "data") });
+      const status = await manage("bridge-status");
+      expect(status).toMatchObject({ connected: false, hasBinding: true });
+      expect(JSON.stringify(status)).not.toContain(binding.token);
+      expect(JSON.stringify(status)).not.toContain(binding.bindingId);
+      expect(JSON.stringify(status)).not.toContain(binding.credentialPath);
+      await expect.poll(() => existsSync(ticket.socketPath)).toBe(true);
+      const identity = {
+        protocol: snapshot.protocol,
+        nativeId,
+        cwd: workspace,
+        cliVersion: snapshot.cliVersion,
+        pluginVersion: snapshot.pluginVersion,
+        nativeCapabilities: snapshot.nativeCapabilities,
+        instanceId,
+        bindingId: binding.bindingId,
+      };
+      const reconnected = await plugin<ClaudeBridgeConnection>(
+        CLAUDE_BRIDGE_PATHS.reconnect,
+        identity,
+      );
+      expect(reconnected.status).toBe(200);
+      binding = reconnected.body;
+      seq = 0;
+      expect(await manage("bridge-status")).toMatchObject({ connected: false, hasBinding: true });
+      await events({ type: "snapshot", snapshot });
+      expect(await manage("bridge-status")).toMatchObject({ connected: true, hasBinding: true });
+      await manage("bridge-disconnect");
+      expect(await manage("bridge-status")).toMatchObject({ connected: false, hasBinding: false });
+      expect(await plugin(CLAUDE_BRIDGE_PATHS.reconnect, identity)).toMatchObject({
+        status: 410,
+        body: { error: "bridge-binding-revoked" },
+      });
+    });
+
+    it("keeps unknown command outcomes fenced when binding status cannot validate the current target", async () => {
+      await connect();
+      const initial = await live();
+      const requestId = randomUUID();
+      const pending = http("/send", {
+        sessionId,
+        bootId,
+        expectedRevision: initial.revision,
+        requestId,
+        text: "Synthetic unconfirmed native command",
+      });
+      expect(await commands(2_000)).toHaveLength(1);
+      await events({ type: "invalidated", reason: "synthetic-terminal-exit", revision: 2 });
+      expect((await pending).body).toMatchObject({ controlOutcome: "unknown" });
+      const manage = (operation: string) =>
+        rpc<Record<string, unknown>>("claude.managed", {
+          operation,
+          sessionId,
+          deviceId: "agentkib-local-owner",
+        });
+      expect(await manage("bridge-status")).toMatchObject({
+        connected: false,
+        hasBinding: false,
+        reason: "claude-bridge-session-unavailable",
+      });
+      await expect(manage("bridge-challenge")).rejects.toThrow("claude-bridge-session-unavailable");
+      expect((await http(`/requests/${requestId}`)).body).toMatchObject({ status: "unknown" });
+      await manage("bridge-disconnect");
+      expect((await http(`/requests/${requestId}`)).body).toMatchObject({ status: "unknown" });
+    });
+
     it("revokes a queued Web command before plugin dispatch", async () => {
       await connect();
       const initial = await live();

@@ -58,9 +58,14 @@ export function settingsTargetId(target: SettingsTarget) {
   return `settings-target-${target}`;
 }
 
+export const settingsTargetRequestEvent = "agentkib:settings-target-request";
+
 export function focusSettingsTarget(target: SettingsTarget) {
+  // Reveal the remote page's tabs and empty state before moving focus.
+  if (target === "remote-access" || target === "remote-devices")
+    window.dispatchEvent(new CustomEvent(settingsTargetRequestEvent, { detail: target }));
   const element = document.getElementById(settingsTargetId(target));
-  if (!element) return false;
+  if (!element || element.closest("[hidden]")) return false;
   const reduceMotion = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
   element.scrollIntoView({ behavior: reduceMotion ? "auto" : "smooth", block: "start" });
   element.focus({ preventScroll: true });

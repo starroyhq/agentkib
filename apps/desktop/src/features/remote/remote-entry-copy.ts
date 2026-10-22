@@ -4,7 +4,7 @@ export const remoteEntryCopy = {
       "开启远程访问后，用手机扫码并输入授权码即可连接，无需再次确认。关闭窗口后可继续运行；完全退出或关机将停止访问。",
     legacyPermissions: "旧版浏览器授权范围",
     legacyPermissionsHint:
-      "以下执行开关与工作区选择仅影响旧版授权；新授权码已包含全部 AgentKib 工作区与当前支持的远控操作。工作区外目录仍需在下方单独添加。",
+      "以下执行开关与工作区选择仅影响旧版授权；新授权码已包含全部 AgentKib 工作区与当前支持的远程控制操作。工作区外目录仍需在下方单独添加。",
     manualAccess:
       "本机或手动配置访问：未验证公网可达。请自行确认 HTTPS 反向代理配置与访问地址；此配对码不表示公网连接就绪。",
     saveFailed: "设置保存失败，请检查磁盘权限与空间后重试。",
@@ -41,7 +41,7 @@ export const remoteEntryCopy = {
     prepareMigration: "准备迁移官方连接",
     confirmMigration: "确认迁移并开启远程访问",
     nativeTitle: "连接其他电脑",
-    nativeDescription: "通过 AgentKib 桌面发现、配对和连接其他电脑，与手机浏览器授权分别管理。",
+    nativeDescription: "发现、配对和连接附近的电脑，与手机浏览器授权分别管理。",
     lanAdvanced: "局域网直连",
     lanRunning: "局域网 HTTP 访问正在运行",
     lanUnavailable: "局域网访问已开启但暂不可用",
@@ -57,11 +57,11 @@ export const remoteEntryCopy = {
     },
     reasons: {
       revoked: "设备授权已撤销，请输入新邀请码重新登记",
-      "lease-expired": "授权租约已过期，公网访问已关闭",
+      "lease-expired": "授权租约已过期，远程访问已关闭",
       network: "暂时无法连接服务，将自动重试",
       certificate: "证书不可用或校验未通过",
       connector: "连接程序暂不可用，将自动重试",
-      suspended: "电脑休眠期间暂停远控访问",
+      suspended: "电脑休眠期间暂停远程访问",
       setup: "请检查连接配置和设备登记状态",
     },
     failureStages: {
@@ -91,7 +91,7 @@ export const remoteEntryCopy = {
       "開啟遠端存取後，用手機掃碼並輸入授權碼即可連線，無需再次確認。關閉視窗後可繼續執行；完全結束或關機將停止存取。",
     legacyPermissions: "舊版瀏覽器授權範圍",
     legacyPermissionsHint:
-      "以下執行開關與工作區選擇僅影響舊版授權；新授權碼已包含全部 AgentKib 工作區與目前支援的遠端操作。工作區外目錄仍需在下方個別新增。",
+      "以下執行開關與工作區選擇僅影響舊版授權；新授權碼已包含全部 AgentKib 工作區與目前支援的遠端控制操作。工作區外目錄仍需在下方個別新增。",
     manualAccess:
       "本機或手動設定存取：未驗證公網可達。請自行確認 HTTPS 反向代理設定與存取位址；此配對碼不表示公網連線就緒。",
     saveFailed: "設定儲存失敗，請檢查磁碟權限與空間後重試。",
@@ -128,7 +128,7 @@ export const remoteEntryCopy = {
     prepareMigration: "準備移轉官方連線",
     confirmMigration: "確認移轉並開啟遠端存取",
     nativeTitle: "連接其他電腦",
-    nativeDescription: "透過 AgentKib 桌面探索、配對和連接其他電腦，與手機瀏覽器授權分開管理。",
+    nativeDescription: "探索、配對和連接附近的電腦，與手機瀏覽器授權分開管理。",
     lanAdvanced: "區域網路直連",
     lanRunning: "區域網路 HTTP 存取正在執行",
     lanUnavailable: "區域網路存取已開啟但暫不可用",
@@ -144,7 +144,7 @@ export const remoteEntryCopy = {
     },
     reasons: {
       revoked: "裝置授權已撤銷，請輸入新邀請碼重新登記",
-      "lease-expired": "授權租約已過期，公網存取已關閉",
+      "lease-expired": "授權租約已過期，遠端存取已關閉",
       network: "暫時無法連接服務，將自動重試",
       certificate: "憑證不可用或驗證未通過",
       connector: "連線程式暫不可用，將自動重試",
@@ -178,14 +178,14 @@ export const remoteEntryCopy = {
       "Enable remote access, scan with your phone and enter the access code to connect without another confirmation. Closing the window keeps access running; quitting the app or shutting down stops access.",
     legacyPermissions: "Legacy browser permissions",
     legacyPermissionsHint:
-      "These control and workspace settings apply only to legacy grants. New access codes include all AgentKib workspaces and currently supported remote operations. Add directories outside workspaces separately below.",
+      "These control and workspace settings apply only to legacy grants. New access codes include all AgentKib workspaces and currently supported remote control operations. Add directories outside workspaces separately below.",
     manualAccess:
-      "Local or manually configured access: public reachability is not verified. Check your HTTPS reverse proxy and access address. A pairing code does not mean public access is ready.",
+      "Local or manually configured access: public reachability is not verified. Check your HTTPS reverse proxy and access address. A pairing code does not mean remote access is ready.",
     saveFailed: "Settings could not be saved. Check disk permissions and space, then retry.",
     startFailed: "The local service could not start. Check advanced connection settings and retry.",
     switchWarning:
       "Changing connection service stops the old connection and clears browser grants. Pair your phone again; old service credentials are not transferred.",
-    remoteTitle: "Remote connection",
+    remoteTitle: "Remote connections",
     instructions:
       "Enable remote access, scan with your phone, then authorize it here. Closing the window keeps access running; quitting the app or shutting down stops access.",
     advanced: "Advanced connection and permissions",
@@ -201,8 +201,8 @@ export const remoteEntryCopy = {
     enable: "Enable remote access",
     enabledRemote: "Remote access is enabled",
     reenroll: "Register again with new invitation",
-    pause: "Pause public access",
-    pauseHint: "Pausing public access or revoking a phone does not stop Codex background tasks.",
+    pause: "Pause remote access",
+    pauseHint: "Pausing remote access or revoking a phone does not stop Codex background tasks.",
     control: "Control",
     preview: "Preview",
     certificateWarning: "Certificate renewal will retry; the current certificate is still valid.",
@@ -217,7 +217,7 @@ export const remoteEntryCopy = {
     confirmMigration: "Confirm migration and enable access",
     nativeTitle: "Connect to another computer",
     nativeDescription:
-      "Discover, pair and connect with another AgentKib desktop. These permissions are separate from phone browser access.",
+      "Discover, pair and connect with nearby computers. These permissions are separate from phone browser access.",
     lanAdvanced: "LAN direct connection",
     lanRunning: "LAN HTTP access is running",
     lanUnavailable: "LAN access is enabled but unavailable",
@@ -233,7 +233,7 @@ export const remoteEntryCopy = {
     },
     reasons: {
       revoked: "Device authorization revoked; register with a new invitation",
-      "lease-expired": "Authorization expired; public access closed",
+      "lease-expired": "Authorization expired; remote access closed",
       network: "Service unavailable; retrying automatically",
       certificate: "Certificate unavailable or invalid",
       connector: "Connector unavailable; retrying automatically",
@@ -269,7 +269,7 @@ export const remoteEntryCopy = {
     legacyPermissionsHint:
       "以下の操作とワークスペース設定は旧認証のみに適用されます。新しい認証コードでは全 AgentKib ワークスペースと現在対応するリモート操作が許可されます。ワークスペース外のディレクトリは下で個別に追加してください。",
     manualAccess:
-      "ローカルまたは手動設定でのアクセスです。インターネットからの到達性は未確認です。HTTPS リバースプロキシとアクセス先を確認してください。ペアリングコードは公開接続の準備完了を意味しません。",
+      "ローカルまたは手動設定でのアクセスです。インターネットからの到達性は未確認です。HTTPS リバースプロキシとアクセス先を確認してください。ペアリングコードはリモート接続の準備完了を意味しません。",
     saveFailed: "設定を保存できません。ディスクの権限と空き容量を確認して再試行してください。",
     startFailed: "ローカルサービスを起動できません。接続の詳細設定を確認して再試行してください。",
     switchWarning:
@@ -290,7 +290,7 @@ export const remoteEntryCopy = {
     enable: "リモートアクセスを有効化",
     enabledRemote: "リモートアクセスは有効です",
     reenroll: "新しい招待コードで再登録",
-    pause: "インターネット経由のアクセスを一時停止",
+    pause: "リモートアクセスを一時停止",
     pauseHint:
       "アクセスの一時停止や端末の取り消しでは Codex のバックグラウンドタスクは停止しません。",
     control: "操作チャネル",
@@ -307,7 +307,7 @@ export const remoteEntryCopy = {
     confirmMigration: "移行を確認してアクセスを有効化",
     nativeTitle: "別のコンピューターに接続",
     nativeDescription:
-      "別の AgentKib デスクトップを検出・ペアリング・接続します。スマートフォンのブラウザー権限とは別に管理します。",
+      "近くのコンピューターを検出・ペアリング・接続します。スマートフォンのブラウザー権限とは別に管理します。",
     lanAdvanced: "LAN 直接接続",
     lanRunning: "LAN HTTP アクセスは稼働中です",
     lanUnavailable: "LAN アクセスは有効ですが利用できません",
@@ -323,7 +323,7 @@ export const remoteEntryCopy = {
     },
     reasons: {
       revoked: "端末認証が取り消されました。新しい招待コードで登録してください",
-      "lease-expired": "認証期限が切れ、公開アクセスは停止しました",
+      "lease-expired": "認証期限が切れ、リモートアクセスは停止しました",
       network: "サービスに接続できません。自動的に再試行します",
       certificate: "証明書を利用できないか検証に失敗しました",
       connector: "コネクターを利用できません。自動的に再試行します",

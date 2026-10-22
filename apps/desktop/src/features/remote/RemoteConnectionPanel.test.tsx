@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
-import userEvent from "@testing-library/user-event";
+import type { ReactNode } from "react";
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { changeLocale, initializeI18n, tr } from "@/core/i18n";
 import type { RemoteStatus } from "@/core/remote-types";
@@ -8,6 +8,8 @@ import { RemoteConnectionPanel, RemoteConnectionSettings } from "./RemoteConnect
 import { useRemoteStore } from "./remote-store";
 import { remoteEntryCopy } from "./remote-entry-copy";
 import { QuickConnect } from "./QuickConnect";
+import { remoteSettingsCopy } from "./remote-settings-copy";
+import { focusSettingsTarget } from "@/features/settings/components/SettingsLayout";
 
 const status: RemoteStatus = {
   local: { id: "local", name: "Desk", enabled: false, address: null },
@@ -20,22 +22,50 @@ const status: RemoteStatus = {
   pairing_expires_at: null,
 };
 const run = vi.fn();
-const webSnapshot = vi.hoisted(() => ({
-  enabled: false,
-  running: false,
+let networkAddress = "192.168.1.3";
+vi.mock("./RemoteNetworkSettings", () => ({
+  useRemoteNetworkSettings: () => ({
+    address: networkAddress,
+    content: null,
+    dirty: false,
+    busy: false,
+    valid: true,
+    save: vi.fn().mockResolvedValue(true),
+  }),
 }));
-vi.mock("./web-status", () => ({
-  subscribeWebStatus: (_target: unknown, listener: { status(value: unknown): void }) => {
-    listener.status({ config: { enabled: webSnapshot.enabled }, running: webSnapshot.running });
-    return () => {};
-  },
+vi.mock("./WebAccessSettings", () => ({
+  WebAccessSettings: ({
+    children,
+    onSaveAdvanced,
+    advancedDirty,
+    advancedValid,
+  }: {
+    children?: ReactNode;
+    onSaveAdvanced?: () => Promise<boolean>;
+    advancedDirty?: boolean;
+    advancedValid?: boolean;
+  }) => (
+    <>
+      {children}
+      {advancedDirty && (
+        <button disabled={!advancedValid} onClick={() => void onSaveAdvanced?.()}>
+          Save settings
+        </button>
+      )}
+    </>
+  ),
 }));
-vi.mock("./WebAccessSettings", () => ({ WebAccessSettings: () => null }));
+function renderSettings() {
+  const view = render(<RemoteConnectionSettings />);
+  fireEvent.click(screen.getByRole("button", { name: "Other computers" }));
+  const setup = screen.queryByRole("button", { name: "Share this computer" });
+  if (setup) fireEvent.click(setup);
+  return view;
+}
 beforeAll(() => initializeI18n("en-US"));
 beforeEach(() => {
+  networkAddress = "192.168.1.3";
   run.mockReset().mockResolvedValue(null);
-  webSnapshot.enabled = false;
-  webSnapshot.running = false;
   useRemoteStore.setState({
     snapshot: status,
     loading: false,
@@ -181,6 +211,127 @@ describe("quick connection flow", () => {
 });
 
 describe("remote connections UI", () => {
+  it.each(["zh-CN", "zh-TW", "en-US", "ja-JP"] as const)(
+    "shows one computer empty state and preserves the setup draft across tabs in %s",
+    async (locale) => {
+      await act(() => changeLocale(locale));
+      try {
+        const copy = remoteSettingsCopy[locale];
+        render(<RemoteConnectionSettings />);
+        expect(screen.getByRole("heading", { name: copy.title })).toBeTruthy();
+        expect(screen.getByRole("button", { name: copy.phone }).getAttribute("aria-pressed")).toBe(
+          "true",
+        );
+        fireEvent.click(screen.getByRole("button", { name: copy.computers }));
+        expect(screen.getAllByText(copy.emptyTitle)).toHaveLength(1);
+        for (const key of ["remote.noConnections", "remote.noAuthorized", "remote.noNearby"])
+          expect(screen.queryByText(tr(key))).toBeNull();
+        expect(screen.queryByRole("switch")).toBeNull();
+        fireEvent.click(screen.getByRole("button", { name: copy.discover }));
+        expect(run).toHaveBeenCalledWith({ operation: "discover" });
+        expect(run.mock.calls.some(([input]) => input.operation === "configure")).toBe(false);
+        const input = screen.getByRole("textbox", { name: tr("remote.name") });
+        fireEvent.change(input, { target: { value: "Synthetic draft" } });
+        fireEvent.click(screen.getByRole("button", { name: copy.phone }));
+        fireEvent.click(screen.getByRole("button", { name: copy.computers }));
+        expect(
+          (screen.getByRole("textbox", { name: tr("remote.name") }) as HTMLInputElement).value,
+        ).toBe("Synthetic draft");
+        expect(run.mock.calls.some(([request]) => request.operation === "configure")).toBe(false);
+      } finally {
+        await act(() => changeLocale("en-US"));
+      }
+    },
+  );
+
+  it("does not apply an unsaved name when the sharing switch takes effect immediately", () => {
+    renderSettings();
+    fireEvent.change(screen.getByRole("textbox", { name: tr("remote.name") }), {
+      target: { value: "Unsaved name" },
+    });
+    fireEvent.click(screen.getByRole("switch", { name: remoteSettingsCopy["en-US"].enable }));
+    expect(run).toHaveBeenCalledWith({
+      operation: "configure",
+      enabled: true,
+      address: "192.168.1.3:42987",
+      name: "Desk",
+    });
+  });
+
+  it.each(["remote-access", "remote-devices"] as const)(
+    "reveals and focuses the %s settings search target without enabling sharing",
+    async (target) => {
+      if (target === "remote-devices")
+        useRemoteStore.setState({
+          snapshot: {
+            ...status,
+            authorized: [{ id: "synthetic", name: "Laptop", approved_at: 1, last_seen: null }],
+          },
+        });
+      render(<RemoteConnectionSettings />);
+      for (let attempt = 0; attempt < 2; attempt++) {
+        act(() => {
+          focusSettingsTarget(target);
+        });
+        await waitFor(() => expect(document.activeElement?.id).toBe(`settings-target-${target}`));
+        expect(
+          screen.getByRole("button", { name: "Other computers" }).getAttribute("aria-pressed"),
+        ).toBe("true");
+        expect(run).not.toHaveBeenCalled();
+        fireEvent.click(screen.getByRole("button", { name: "Phones" }));
+      }
+    },
+  );
+
+  it("saves a name through the shared advanced action and preserves its draft after failure", async () => {
+    renderSettings();
+    const input = screen.getByRole("textbox", { name: tr("remote.name") });
+    fireEvent.change(input, { target: { value: "New name" } });
+    fireEvent.click(screen.getByRole("button", { name: "Save settings" }));
+    await waitFor(() =>
+      expect(screen.getByRole("alert").textContent).toContain(
+        remoteSettingsCopy["en-US"].saveFailed,
+      ),
+    );
+    expect((input as HTMLInputElement).value).toBe("New name");
+    expect(run).toHaveBeenCalledWith({
+      operation: "configure",
+      enabled: false,
+      address: "192.168.1.3:42987",
+      name: "New name",
+    });
+    run.mockImplementation(async (request) => {
+      const next = { ...status, local: { ...status.local, name: request.name } };
+      useRemoteStore.setState({ snapshot: next });
+      return next;
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Save settings" }));
+    await waitFor(() => expect(screen.queryByRole("alert")).toBeNull());
+    expect(useRemoteStore.getState().snapshot?.local.name).toBe("New name");
+  });
+
+  it("keeps an entered address and pairing code when the last discovered computer disappears", () => {
+    useRemoteStore.setState({
+      snapshot: {
+        ...status,
+        discovered: [{ id: "peer", name: "Example laptop", address: "192.168.1.20:42987" }],
+      },
+    });
+    renderSettings();
+    const address = screen.getByRole("textbox", { name: tr("remote.address") });
+    const code = screen.getByRole("textbox", { name: tr("remote.code") });
+    address.focus();
+    fireEvent.change(address, { target: { value: "192.168.1.20:42987" } });
+    expect(document.activeElement).toBe(address);
+    fireEvent.change(code, { target: { value: "12345678" } });
+    act(() => useRemoteStore.setState({ snapshot: status }));
+    expect(screen.queryByText(remoteSettingsCopy["en-US"].emptyTitle)).toBeNull();
+    expect(screen.getByRole("textbox", { name: tr("remote.address") })).toBe(address);
+    expect((address as HTMLInputElement).value).toBe("192.168.1.20:42987");
+    expect((code as HTMLInputElement).value).toBe("12345678");
+    expect(run).not.toHaveBeenCalled();
+  });
+
   it("shows friendly feedback for a real wrapped IPC error in the quick panel", () => {
     const failure = new Error(
       "Error invoking remote method 'agentkib:remote:request': REMOTE_PAIRING_INVALID",
@@ -196,7 +347,7 @@ describe("remote connections UI", () => {
   it("retranslates a displayed structured error in all four languages and still clears it", async () => {
     const failure = { key: "errors.generic", detail: "REMOTE_PAIRING_DENIED" };
     useRemoteStore.setState({ error: failure, operationError: true });
-    render(<RemoteConnectionSettings />);
+    renderSettings();
     const alert = screen.getByRole("alert");
     expect(alert.textContent).toContain(tr(failure.key));
     expect(alert.textContent).not.toContain(failure.detail);
@@ -254,7 +405,7 @@ describe("remote connections UI", () => {
       useRemoteStore.setState({ error: "Approval failed" });
       return null;
     });
-    render(<RemoteConnectionSettings />);
+    renderSettings();
     fireEvent.click(screen.getByRole("button", { name: "Digits match — approve" }));
     await waitFor(() =>
       expect(screen.getByRole("alert").textContent).toContain(tr("remote.error.request")),
@@ -265,7 +416,7 @@ describe("remote connections UI", () => {
     expect(screen.getByText("321 654")).toBeTruthy();
   });
   it("does not expose a stale pairing code while sharing is off or after expiry", () => {
-    const { rerender } = render(<RemoteConnectionSettings />);
+    const { rerender } = renderSettings();
     expect(screen.queryByRole("button", { name: "Generate new code" })).toBeNull();
     expect(screen.queryByRole("button", { name: /copy/i })).toBeNull();
     useRemoteStore.setState({
@@ -301,10 +452,32 @@ describe("remote connections UI", () => {
     expect(screen.queryByRole("button", { name: /^(send|stop|run|execute|approve)$/i })).toBeNull();
     expect(screen.queryByRole("textbox", { name: /message/i })).toBeNull();
   });
+  it("can stop sharing when the saved interface is unavailable or conflicts", () => {
+    networkAddress = "";
+    useRemoteStore.setState({
+      snapshot: {
+        ...status,
+        local: { ...status.local, enabled: true, address: "192.168.1.3:42987" },
+      },
+    });
+    renderSettings();
+    fireEvent.click(
+      screen.getByRole("switch", { name: "Allow other computers to view (read-only)" }),
+    );
+    expect(run).toHaveBeenCalledWith({
+      operation: "configure",
+      enabled: false,
+      name: "Desk",
+      address: "192.168.1.3:42987",
+    });
+  });
+
   it("shares only after an explicit switch action with a private address and port", () => {
-    render(<RemoteConnectionSettings />);
+    renderSettings();
     expect(run).not.toHaveBeenCalled();
-    fireEvent.click(screen.getByRole("switch", { name: "Allow local network access" }));
+    fireEvent.click(
+      screen.getByRole("switch", { name: "Allow other computers to view (read-only)" }),
+    );
     expect(run).toHaveBeenCalledWith({
       operation: "configure",
       enabled: true,
@@ -331,7 +504,7 @@ describe("remote connections UI", () => {
         ],
       },
     });
-    render(<RemoteConnectionSettings />);
+    renderSettings();
     expect(screen.getByText("87654321")).toBeTruthy();
     expect(screen.getByText(/including workspaces added later/)).toBeTruthy();
     fireEvent.click(screen.getByRole("button", { name: "Digits match — approve" }));
@@ -355,7 +528,7 @@ describe("remote connections UI", () => {
     fireEvent.change(screen.getByLabelText("Computer IPv4 address and port"), {
       target: { value: "192.168.1.5:42987" },
     });
-    fireEvent.change(screen.getByLabelText("One-time pairing code"), {
+    fireEvent.change(screen.getByLabelText("Pairing code"), {
       target: { value: "12345678" },
     });
     fireEvent.click(screen.getByRole("button", { name: "Pair a computer" }));
@@ -385,7 +558,7 @@ describe("remote connections UI", () => {
         ],
       },
     });
-    render(<RemoteConnectionSettings />);
+    renderSettings();
     expect((screen.getByRole("button", { name: "Connect" }) as HTMLButtonElement).disabled).toBe(
       true,
     );
@@ -394,32 +567,4 @@ describe("remote connections UI", () => {
     fireEvent.click(screen.getByRole("button", { name: "Confirm" }));
     expect(run).toHaveBeenCalledWith({ operation: "revoke", id: "device" });
   });
-});
-
-it("keeps an enabled LAN listener visible while its settings are collapsed", async () => {
-  webSnapshot.enabled = true;
-  webSnapshot.running = true;
-  render(<RemoteConnectionSettings />);
-  expect(await screen.findByText("LAN HTTP access is running")).toBeTruthy();
-  expect(screen.getAllByText("LAN direct connection is not encrypted")).toHaveLength(1);
-  expect(screen.getByText(/capture the access token/)).toBeTruthy();
-  const summary = screen.getByRole("button", { name: "LAN direct connection" });
-  expect(summary.getAttribute("aria-expanded")).toBe("false");
-  fireEvent.click(screen.getByRole("button", { name: "Manage LAN access" }));
-  expect(summary.getAttribute("aria-expanded")).toBe("true");
-  expect(document.activeElement).toBe(summary);
-  const user = userEvent.setup();
-  await user.keyboard("{Enter}");
-  expect(summary.getAttribute("aria-expanded")).toBe("false");
-  await user.keyboard(" ");
-  expect(summary.getAttribute("aria-expanded")).toBe("true");
-  expect(screen.getByRole("region", { name: "Connect to another computer" })).toBeTruthy();
-});
-
-it("shows an enabled but unavailable LAN service without reporting it as running", async () => {
-  webSnapshot.enabled = true;
-  render(<RemoteConnectionSettings />);
-  expect(await screen.findByText("LAN access is enabled but unavailable")).toBeTruthy();
-  expect(screen.queryByText("LAN HTTP access is running")).toBeNull();
-  expect(screen.queryByText("LAN direct connection is not encrypted")).toBeNull();
 });

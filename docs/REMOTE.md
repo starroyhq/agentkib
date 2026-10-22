@@ -6,7 +6,7 @@
 
 AgentKib 可以连接另一台 AgentKib，也可以允许其他设备查看本机历史。本阶段只读：不发送消息、不审批或停止 Agent，不提供远程桌面、Shell、公网 Relay 或 Web 客户端。
 
-1. 主机打开「设置 → 远程连接」，选择私有 IPv4 网卡，开启局域网访问。默认关闭；连接其他主机不要求开启自己的共享。
+1. 打开“设置 → 远程连接 → 高级设置”，选择并保存私有 IPv4 接口，再在“其他电脑 → 共享这台电脑”开启“允许其他电脑查看（只读）”。共享开关立即生效，默认关闭；连接其他电脑不要求开启自己的共享。电脑名称在统一“保存设置”后生效。
 2. 主机生成一次性配对码。控制端从「更多 → 远程连接」发现主机，或输入主机显示的 IPv4 地址和端口。
 3. 输入 8 位配对码后，两端核对同一组校验数字。主机确认设备和授权范围后批准；数字不一致时拒绝。
 4. 控制端在「会话」中按主机、工作区查看已索引的历史。目录定期更新，正文按选择和分页读取；远程记录没有本地续接操作。
@@ -31,7 +31,7 @@ This guide covers native desktop-to-desktop connections. [Phone access](REMOTE-C
 
 AgentKib can connect to another desktop and accept incoming devices independently. This stage shares read-only history: no message sending, Agent approvals/stopping, remote desktop, shell, public relay or web client.
 
-1. On the host, open **Settings → Remote connections**, choose a private IPv4 interface and enable local network access. Sharing is off by default and is not required for outgoing connections.
+1. Open **Settings → Remote connections → Advanced settings**, select and save a private IPv4 interface, then enable **Allow other computers to view (read-only)** under **Other computers → Share this computer**. Sharing takes effect immediately and is off by default; outgoing connections do not require it. Save computer name changes with the shared **Save settings** action.
 2. Generate a one-time code. On the controller, use **More → Remote connections** to discover the host or enter its displayed IPv4 address and port.
 3. Enter the eight-digit code and compare the verification numbers on both devices. The host explicitly approves the device and scope; reject mismatching numbers.
 4. Browse indexed history in **Sessions**, grouped by host and workspace. Directories refresh periodically; transcript pages load on selection. Remote records cannot use local workspace continuation.

@@ -22,12 +22,12 @@ export const hostedCopy: Record<
   "zh-CN": {
     title: "连接你的电脑",
     account: "登录并选择电脑",
-    accountNote: "查看账号下的电脑。新浏览器首次连接仍需电脑上的八位远控授权码。",
+    accountNote: "查看账号下的电脑。新浏览器首次连接仍需电脑上的 AgentKib 显示的授权码。",
     intro: "从电脑上的 AgentKib 开始，在手机上继续查看会话、处理请求和浏览产物。",
     steps: [
-      "在电脑上的 AgentKib 设置中打开“允许手机访问这台电脑”，开启远程访问。",
+      "在电脑上的 AgentKib 打开“设置 → 远程连接 → 手机”，登录账号并开启远程访问。",
       "连接就绪后，用手机扫描电脑上的 AgentKib 显示的配对二维码。",
-      "输入电脑上的 AgentKib 显示的一次性授权码，即可使用全部工作区和已支持的远控功能。",
+      "输入电脑上的 AgentKib 显示的授权码，即可使用全部工作区和已支持的远程控制功能。",
     ],
     note: "电脑需要保持开机且 AgentKib 正在运行。连接地址由电脑提供，此页面不接收配对码。",
     other: "其他连接方式",
@@ -37,12 +37,12 @@ export const hostedCopy: Record<
   "zh-TW": {
     title: "連接你的電腦",
     account: "登入並選擇電腦",
-    accountNote: "查看帳號下的電腦。新瀏覽器首次連線仍需電腦上的八位遠端授權碼。",
+    accountNote: "查看帳號下的電腦。新瀏覽器首次連線仍需電腦上的 AgentKib 顯示的授權碼。",
     intro: "從電腦上的 AgentKib 開始，在手機上繼續查看對話、處理請求和瀏覽產物。",
     steps: [
-      "在電腦上的 AgentKib 設定中開啟「允許手機存取這台電腦」，啟用遠端存取。",
+      "在電腦上的 AgentKib 開啟「設定 → 遠端連線 → 手機」，登入帳號並啟用遠端存取。",
       "連線就緒後，用手機掃描電腦上的 AgentKib 顯示的配對 QR 碼。",
-      "輸入電腦上的 AgentKib 顯示的一次性授權碼，即可使用全部工作區和已支援的遠端功能。",
+      "輸入電腦上的 AgentKib 顯示的授權碼，即可使用全部工作區和已支援的遠端控制功能。",
     ],
     note: "電腦需要保持開機且 AgentKib 正在執行。連線位址由電腦提供，此頁面不接收配對碼。",
     other: "其他連線方式",
@@ -53,13 +53,13 @@ export const hostedCopy: Record<
     title: "Connect your computer",
     account: "Sign in and choose a computer",
     accountNote:
-      "View computers on your account. A new browser still needs the computer’s eight-character remote access code to connect for the first time.",
+      "View computers on your account. A new browser still needs the access code shown in AgentKib on your computer to connect for the first time.",
     intro:
       "Start in AgentKib on your computer, then use your phone to read conversations, handle requests and view artifacts.",
     steps: [
-      "Open “Allow phone access to this computer” in AgentKib on your computer and enable remote access.",
+      "In AgentKib on your computer, open “Settings → Remote connections → Phones”, sign in and enable remote access.",
       "When the connection is ready, scan the pairing QR code in AgentKib on your computer with your phone.",
-      "Enter the one-time access code shown in AgentKib on your computer to access all workspaces and supported remote features.",
+      "Enter the access code shown in AgentKib on your computer to access all workspaces and supported remote control features.",
     ],
     note: "Keep your computer on and AgentKib running. Your computer provides the connection link; this page does not accept pairing codes.",
     other: "Other connection methods",
@@ -71,13 +71,13 @@ export const hostedCopy: Record<
     title: "パソコンに接続",
     account: "ログインしてパソコンを選択",
     accountNote:
-      "アカウントに登録されたパソコンを表示します。新しいブラウザーでの初回接続には、パソコンに表示される8桁のリモート認証コードが必要です。",
+      "アカウントに登録されたパソコンを表示します。新しいブラウザーでの初回接続には、コンピューター上の AgentKib に表示される認証コードが必要です。",
     intro:
       "パソコンの AgentKib から始めて、スマートフォンで会話の確認、リクエストの処理、成果物の閲覧を続けられます。",
     steps: [
-      "コンピューター上の AgentKib の設定で「このパソコンへのスマートフォンアクセスを許可」を開き、リモートアクセスを有効にします。",
+      "コンピューター上の AgentKib で「設定 → リモート接続 → スマートフォン」を開き、ログインしてリモートアクセスを有効にします。",
       "接続の準備ができたら、コンピューター上の AgentKib に表示されたペアリング QR コードをスマートフォンで読み取ります。",
-      "コンピューター上の AgentKib に表示された使い捨ての認証コードを入力すると、すべてのワークスペースと対応するリモート機能を利用できます。",
+      "コンピューター上の AgentKib に表示された認証コードを入力すると、すべてのワークスペースと対応するリモート操作機能を利用できます。",
     ],
     note: "パソコンの電源を入れ、AgentKib を起動しておく必要があります。接続先はパソコンから取得します。このページではペアリングコードを入力できません。",
     other: "その他の接続方法",

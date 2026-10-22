@@ -30,7 +30,7 @@ afterEach(cleanup);
 
 it("requires plaintext acknowledgement and routes configuration to LAN only", async () => {
   render(<WebAccessSettings target="lan" />);
-  fireEvent.click(await screen.findByRole("switch", { name: "Enable LAN direct connection" }));
+  fireEvent.click(await screen.findByRole("checkbox", { name: "Enable LAN direct connection" }));
   expect(screen.getByRole("button", { name: "Save settings" })).toBeDisabled();
   expect(request).toHaveBeenCalledWith({ operation: "status", target: "lan" });
   fireEvent.click(screen.getByRole("checkbox", { name: /I understand/ }));
@@ -57,7 +57,7 @@ it("does not allow enabling a disappeared address, but allows disabling it", asy
   await screen.findByRole("alert");
   expect(screen.getByRole("alert")).toHaveTextContent("no longer available");
   expect(screen.getByRole("button", { name: "Save settings" })).toBeDisabled();
-  fireEvent.click(screen.getByRole("switch", { name: "Enable LAN direct connection" }));
+  fireEvent.click(screen.getByRole("checkbox", { name: "Enable LAN direct connection" }));
   expect(screen.getByRole("button", { name: "Save settings" })).toBeEnabled();
 });
 
@@ -67,7 +67,7 @@ it("shows an address-only QR and link only for a running listener", async () => 
   render(<WebAccessSettings target="lan" />);
   expect(await screen.findByRole("img", { name: /Scan to connect/ })).toBeVisible();
   expect(screen.getByLabelText("Connection link")).toHaveValue(connectionUrl);
-  expect(screen.getByRole("switch", { name: /Enable experimental/ })).toHaveAttribute(
+  expect(screen.getByRole("checkbox", { name: /Enable experimental/ })).toHaveAttribute(
     "aria-disabled",
     "true",
   );
@@ -77,7 +77,7 @@ it("leaves the running plaintext warning to the LAN summary instead of repeating
   // 常驻警告由 RemoteConnectionPanel 的 LanAccessSettings 显示（折叠区外），这里不能再出现一份。
   request.mockResolvedValue({ ...status, running: true });
   render(<WebAccessSettings target="lan" />);
-  await screen.findByRole("switch", { name: "Enable LAN direct connection" });
+  await screen.findByRole("checkbox", { name: "Enable LAN direct connection" });
   expect(screen.queryByText("LAN direct connection is not encrypted")).toBeNull();
   expect(screen.queryByText(/capture the access token/)).toBeNull();
 });

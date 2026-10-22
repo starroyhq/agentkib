@@ -66,6 +66,9 @@ it.each([
         expect(node, key).toHaveTextContent(app);
       }
     }
+    expect(screen.getByText(dictionaries[value].pairInfo).textContent).not.toMatch(
+      /八位|8\s*(?:位|桁)|8-digit/i,
+    );
     expect(view.container.textContent).not.toMatch(/桌面|デスクトップ|\bdesktop\b/i);
     accessStatus = "pending";
     view.rerender(<PairingPage />);
@@ -89,8 +92,18 @@ it.each(Object.keys(codePairingCopy) as Locale[])(
     pairingMode = "code";
     render(<PairingPage />);
     expect(screen.getByRole("heading", { name: codePairingCopy[value].title })).toBeVisible();
+    expect(screen.getByText(codePairingCopy[value].info)).toBeVisible();
+    expect(screen.getByText(codePairingCopy[value].info).textContent).not.toMatch(
+      /八位|8\s*(?:位|桁)|8-digit|一次性|one-time|使い捨て/i,
+    );
     expect(screen.getByText(codePairingCopy[value].scope)).toBeVisible();
-    expect(screen.getByLabelText(codePairingCopy[value].code)).toBeVisible();
+    expect(screen.getByText(codePairingCopy[value].safety)).toBeVisible();
+    const code = screen.getByLabelText(codePairingCopy[value].code);
+    expect(code).toBeVisible();
+    expect(code).toHaveAttribute("pattern", "[0-9]{8}");
+    expect(code).toHaveAttribute("minlength", "8");
+    expect(code).toHaveAttribute("maxlength", "8");
+    expect(code).toHaveAttribute("autocomplete", "one-time-code");
     expect(screen.queryByText(dictionaries[value].pending)).not.toBeInTheDocument();
   },
 );

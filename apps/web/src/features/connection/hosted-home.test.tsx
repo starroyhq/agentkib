@@ -2,7 +2,9 @@ import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/re
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { WebApplication, makeRouter } from "@/router";
 import { hostedCopy } from "./hosted-home";
-import type { Locale } from "@/features/conversation/i18n";
+import { codePairingCopy } from "./code-pairing-copy";
+import { connectionCopy } from "./connection-copy";
+import { dictionaries, type Locale } from "@/features/conversation/i18n";
 
 beforeEach(() => {
   vi.stubGlobal("scrollTo", vi.fn());
@@ -16,30 +18,82 @@ afterEach(() => {
 
 describe("hosted remote entry", () => {
   it.each([
-    ["zh-CN", "局域网直连", "电脑上的 AgentKib"],
-    ["zh-TW", "區域網路直連", "電腦上的 AgentKib"],
-    ["en-US", "LAN direct connection", "AgentKib on your computer"],
-    ["ja-JP", "LAN 直接接続", "コンピューター上の AgentKib"],
-  ] as const)("names the current LAN setting in %s", async (locale, setting, app) => {
-    const fetcher = vi.fn();
-    vi.stubGlobal("fetch", fetcher);
-    render(<WebApplication hosted initialLocale={locale} />);
-    const note = await screen.findByText(hostedCopy[locale].lanNote);
-    expect(note).toHaveTextContent(setting);
-    expect(note).toHaveTextContent(app);
-    const steps = screen.getAllByRole("listitem");
-    expect(steps).toHaveLength(3);
-    for (const step of steps) {
-      expect(step).toHaveTextContent(app);
-      expect(step.textContent).not.toMatch(/桌面|デスクトップ|\bdesktop\b/i);
-    }
-    if (locale === "zh-CN") expect(steps[0]).toHaveTextContent("“允许手机访问这台电脑”");
-    expect(screen.getByRole("link", { name: hostedCopy[locale].lan })).toHaveAttribute(
-      "href",
-      "/connect",
-    );
-    expect(fetcher).not.toHaveBeenCalled();
-  });
+    ["zh-CN", "局域网直连", "电脑上的 AgentKib", "设置 → 远程连接 → 手机", "授权码", "远程控制"],
+    ["zh-TW", "區域網路直連", "電腦上的 AgentKib", "設定 → 遠端連線 → 手機", "授權碼", "遠端控制"],
+    [
+      "en-US",
+      "LAN direct connection",
+      "AgentKib on your computer",
+      "Settings → Remote connections → Phones",
+      "access code",
+      "remote control",
+    ],
+    [
+      "ja-JP",
+      "LAN 直接接続",
+      "コンピューター上の AgentKib",
+      "設定 → リモート接続 → スマートフォン",
+      "認証コード",
+      "リモート操作",
+    ],
+  ] as const)(
+    "names the current remote settings and access code in %s",
+    async (locale, setting, app, path, code, control) => {
+      const fetcher = vi.fn();
+      vi.stubGlobal("fetch", fetcher);
+      render(<WebApplication hosted initialLocale={locale} />);
+      const note = await screen.findByText(hostedCopy[locale].lanNote);
+      expect(note).toHaveTextContent(setting);
+      expect(note).toHaveTextContent(app);
+      const steps = screen.getAllByRole("listitem");
+      expect(steps).toHaveLength(3);
+      for (const step of steps) {
+        expect(step).toHaveTextContent(app);
+      }
+      expect(steps[0]).toHaveTextContent(path);
+      expect(steps[2]).toHaveTextContent(code);
+      expect(steps[2]).toHaveTextContent(control);
+      expect(screen.getByText(hostedCopy[locale].accountNote)).toHaveTextContent(app);
+      expect(screen.getByText(hostedCopy[locale].accountNote)).toHaveTextContent(code);
+      expect(document.body.textContent).not.toMatch(
+        /主机|主機|远控|遠控|公网访问|公網存取|公網訪問|八位|一次性|桌面|デスクトップ|\bdesktop\b|eight-character|8\s*(?:位|桁)|8-digit|one-time|使い捨て/i,
+      );
+      expect(screen.getByRole("link", { name: hostedCopy[locale].lan })).toHaveAttribute(
+        "href",
+        "/connect",
+      );
+      expect(fetcher).not.toHaveBeenCalled();
+    },
+  );
+
+  it.each(Object.keys(hostedCopy) as Locale[])(
+    "keeps connection copy keys and interpolation tokens aligned in %s",
+    (locale) => {
+      const copyGroups: Record<Locale, Record<string, string | string[]>>[] = [
+        hostedCopy,
+        connectionCopy,
+        codePairingCopy,
+        dictionaries,
+      ];
+      for (const copies of copyGroups) {
+        const reference = copies["zh-CN"];
+        const localized = copies[locale];
+        expect(Object.keys(localized).sort()).toEqual(Object.keys(reference).sort());
+        for (const [key, value] of Object.entries(localized)) {
+          const source = reference[key];
+          const entries = Array.isArray(value) ? value : [value];
+          const sourceEntries = Array.isArray(source) ? source : [source];
+          expect(entries, key).toHaveLength(sourceEntries.length);
+          entries.forEach((entry, index) => {
+            expect(entry.trim(), key).not.toBe("");
+            expect(entry.match(/\{\{?[^{}]+\}?\}/g) ?? [], key).toEqual(
+              sourceEntries[index].match(/\{\{?[^{}]+\}?\}/g) ?? [],
+            );
+          });
+        }
+      }
+    },
+  );
 
   it.each(Object.keys(hostedCopy) as Locale[])(
     "shows guidance without accessing a computer in %s",

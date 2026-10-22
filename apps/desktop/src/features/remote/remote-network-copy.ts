@@ -1,0 +1,93 @@
+export const remoteNetworkCopy = {
+  "zh-CN": {
+    title: "局域网接口与端口",
+    interface: "共用局域网网卡",
+    port: "手机局域网端口",
+    choose: "请选择私有 IPv4 地址",
+    explicitChoice:
+      "请选择可信网络的网卡。即使只有一块网卡，也需明确选择并保存；选择不会自动开启连接。手机局域网直连和电脑共享使用此网卡，端口与授权分别管理。",
+    noInterface: "未发现两项服务均可使用的私有 IPv4 地址，请连接局域网后重试。",
+    unavailable: "局域网设置暂不可用，正在重新读取。",
+    conflict: "手机局域网直连和电脑共享使用不同网卡。请明确选择共用网卡后保存；此前保持现有连接。",
+    lost: "已保存的网卡地址已失效，不会自动改用其他网卡。请选择当前地址并保存。",
+    revokeWarning: "保存手机局域网网络更改会撤销已有的局域网浏览器授权，之后需要重新配对。",
+    invalidPort: "端口必须是 1024 至 65535 之间的整数。",
+    lanSaved: "手机局域网设置已保存。",
+    lanFailed: "手机局域网设置保存失败，请重试。",
+    lanUnchanged: "手机局域网设置未更改。",
+    nativeSaved: "电脑共享设置已保存。",
+    nativeFailed: "电脑共享设置保存失败，请重试。",
+    nativeUnchanged: "电脑共享设置未更改。",
+    nativeNotApplied: "电脑共享设置尚未应用。",
+  },
+  "zh-TW": {
+    title: "區域網路介面與連接埠",
+    interface: "共用區域網路網卡",
+    port: "手機區域網路連接埠",
+    choose: "請選擇私有 IPv4 位址",
+    explicitChoice:
+      "請選擇可信網路的網卡。即使只有一張網卡，也需明確選擇並儲存；選擇不會自動開啟連線。手機區域網路直連和電腦共用使用此網卡，連接埠與授權分別管理。",
+    noInterface: "未找到兩項服務皆可使用的私有 IPv4 位址，請連接區域網路後重試。",
+    unavailable: "區域網路設定暫時無法使用，正在重新讀取。",
+    conflict:
+      "手機區域網路直連和電腦共用使用不同網卡。請明確選擇共用網卡後儲存；此前維持現有連線。",
+    lost: "已儲存的網卡位址已失效，不會自動改用其他網卡。請選擇目前位址並儲存。",
+    revokeWarning: "儲存手機區域網路網路變更會撤銷既有的區域網路瀏覽器授權，之後需要重新配對。",
+    invalidPort: "連接埠必須是 1024 至 65535 之間的整數。",
+    lanSaved: "手機區域網路設定已儲存。",
+    lanFailed: "手機區域網路設定儲存失敗，請重試。",
+    lanUnchanged: "手機區域網路設定未變更。",
+    nativeSaved: "電腦共用設定已儲存。",
+    nativeFailed: "電腦共用設定儲存失敗，請重試。",
+    nativeUnchanged: "電腦共用設定未變更。",
+    nativeNotApplied: "電腦共用設定尚未套用。",
+  },
+  "en-US": {
+    title: "LAN interface and port",
+    interface: "Shared LAN interface",
+    port: "Phone LAN port",
+    choose: "Select a private IPv4 address",
+    explicitChoice:
+      "Choose an interface on a trusted network, even if only one is available, then save. Choosing does not start a connection. Phone LAN access and computer sharing use this interface with separate ports and authorizations.",
+    noInterface:
+      "No private IPv4 address is available to both services. Connect to your LAN and try again.",
+    unavailable: "LAN settings are unavailable. Reloading automatically.",
+    conflict:
+      "Phone LAN access and computer sharing use different interfaces. Choose a shared interface and save; existing connections remain unchanged until then.",
+    lost: "The saved interface address is no longer available. Another interface will not be selected automatically. Choose a current address and save.",
+    revokeWarning:
+      "Saving phone LAN network changes revokes existing LAN browser authorizations. Pair browsers again afterward.",
+    invalidPort: "The port must be an integer between 1024 and 65535.",
+    lanSaved: "Phone LAN settings saved.",
+    lanFailed: "Phone LAN settings failed to save. Try again.",
+    lanUnchanged: "Phone LAN settings unchanged.",
+    nativeSaved: "Computer sharing settings saved.",
+    nativeFailed: "Computer sharing settings failed to save. Try again.",
+    nativeUnchanged: "Computer sharing settings unchanged.",
+    nativeNotApplied: "Computer sharing settings have not been applied.",
+  },
+  "ja-JP": {
+    title: "LAN インターフェースとポート",
+    interface: "共通の LAN インターフェース",
+    port: "スマートフォンの LAN ポート",
+    choose: "プライベート IPv4 アドレスを選択",
+    explicitChoice:
+      "インターフェースが 1 つでも、信頼できるネットワークを明示的に選択して保存してください。選択だけでは接続を開始しません。スマートフォンの LAN 接続とパソコンの共有はこのインターフェースを使用し、ポートと認証は個別に管理します。",
+    noInterface:
+      "両方のサービスで使用できるプライベート IPv4 アドレスがありません。LAN に接続して再試行してください。",
+    unavailable: "LAN 設定を利用できません。自動的に再読み込みしています。",
+    conflict:
+      "スマートフォンの LAN 接続とパソコンの共有で異なるインターフェースを使用しています。共通のインターフェースを選択して保存するまで、既存の接続を維持します。",
+    lost: "保存済みアドレスを利用できません。別のインターフェースへ自動的に切り替えません。現在のアドレスを選択して保存してください。",
+    revokeWarning:
+      "スマートフォンの LAN 設定を変更して保存すると、既存の LAN ブラウザー認証が取り消されます。再ペアリングが必要です。",
+    invalidPort: "ポートには 1024 から 65535 までの整数を指定してください。",
+    lanSaved: "スマートフォンの LAN 設定を保存しました。",
+    lanFailed: "スマートフォンの LAN 設定を保存できませんでした。再試行してください。",
+    lanUnchanged: "スマートフォンの LAN 設定は変更していません。",
+    nativeSaved: "パソコンの共有設定を保存しました。",
+    nativeFailed: "パソコンの共有設定を保存できませんでした。再試行してください。",
+    nativeUnchanged: "パソコンの共有設定は変更していません。",
+    nativeNotApplied: "パソコンの共有設定はまだ適用していません。",
+  },
+};

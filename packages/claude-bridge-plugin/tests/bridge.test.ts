@@ -157,6 +157,111 @@ test("the native engine bounds a connected register stream without changing nati
   expect(new TextEncoder().encode(text).length <= 96 * 1024).toBe(true);
 });
 
+test("the native engine recovers a running terminal on its next prompt after an offline retry", async () => {
+  type Value = Record<string, any>;
+  type Hook = (api: Value, event: Value, next: (event: Value) => any) => any;
+  const hooks = new Map<string, Array<{ match: Value; hook: Hook }>>();
+  const timers: Array<() => Promise<void>> = [];
+  const stored = new Map<string, unknown>();
+  const snapshots: Value[] = [];
+  register((name: string, matcher: Value | Hook, handler?: Hook) => {
+    const match = typeof matcher === "function" ? {} : matcher;
+    const hook = typeof matcher === "function" ? matcher : handler!;
+    hooks.set(name, [...(hooks.get(name) ?? []), { match, hook }]);
+    return { catch: () => undefined };
+  });
+  const nativeId = "00000000-0000-4000-8000-000000000001";
+  const connection = {
+    protocol: 1,
+    bindingId: "00000000-0000-4000-8000-000000000002",
+    leaseId: "00000000-0000-4000-8000-000000000003",
+    token: "a".repeat(64),
+    credentialPath: "/synthetic/credential.json",
+  };
+  let offline = false;
+  let reconnects = 0;
+  const api = {
+    ...capabilityApi("2.1.307"),
+    store: {
+      get: async (key: string) => stored.get(key),
+      set: async (key: string, value: unknown) => stored.set(key, value),
+    },
+    command: { register: async () => undefined },
+    clock: { every: (_ms: number, callback: () => Promise<void>) => timers.push(callback) },
+    fs: {
+      read: async (path: string) =>
+        JSON.stringify(
+          path.endsWith("package.json")
+            ? { version: "0.2.0" }
+            : {
+                ...connection,
+                socketPath: "/synthetic/bridge.sock",
+                nativeId,
+                cwd: "/synthetic/workspace",
+                cliVersion: "2.1.307",
+                pluginVersion: "0.2.0",
+              },
+        ),
+    },
+    http: {
+      fetch: async (url: string, init: Value) => {
+        if (url.endsWith("/reconnect")) reconnects++;
+        if (offline) throw new Error("synthetic offline Runtime");
+        const body = JSON.parse(init.body);
+        if (url.endsWith("/events"))
+          snapshots.push(
+            ...body.events
+              .filter((entry: Value) => entry.event.type === "snapshot")
+              .map((entry: Value) => entry.event.snapshot),
+          );
+        return {
+          ok: true,
+          status: 200,
+          text: JSON.stringify(
+            url.endsWith("/pair") || url.endsWith("/reconnect")
+              ? connection
+              : url.endsWith("/events")
+                ? { ackSeq: body.events.at(-1).seq }
+                : { commands: [] },
+          ),
+        };
+      },
+    },
+  };
+  const run = (name: string, event: Value) => {
+    const rows = (hooks.get(name) ?? []).filter(({ match }) =>
+      Object.entries(match).every(([key, value]) => event[key] === value),
+    );
+    const visit = (index: number, value: Value): any =>
+      index === rows.length
+        ? value
+        : rows[index].hook(api, value, (next) => visit(index + 1, next));
+    return visit(0, event);
+  };
+  await run("session.start", {});
+  const ticket = btoa(
+    JSON.stringify({ protocol: 1, socketPath: "/synthetic/bridge.sock", ticket: "t".repeat(32) }),
+  )
+    .replaceAll("+", "-")
+    .replaceAll("/", "_")
+    .replace(/=+$/, "");
+  await run("command.run", { command: "agentkib-connect", args: ticket });
+  offline = true;
+  await timers[1]();
+  await timers[1]();
+  expect(reconnects).toBe(1);
+  offline = false;
+  const event = { text: "native prompt after Runtime restarts" };
+  expect(await run("prompt.submit", event)).toBe(event);
+  for (let index = 0; index < 64; index++) await Promise.resolve();
+  expect(reconnects).toBe(2);
+  await timers[0]();
+  expect(snapshots.at(-1)!.capabilities.send).toBe(false);
+  expect((await run("command.run", { command: "agentkib-status", args: "" })).text).toContain(
+    "is connected",
+  );
+});
+
 function capabilityApi(version: string) {
   const stored = new Map<string, unknown>();
   return {

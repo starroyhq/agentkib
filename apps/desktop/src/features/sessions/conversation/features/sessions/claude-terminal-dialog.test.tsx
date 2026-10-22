@@ -223,7 +223,7 @@ describe("Claude terminal connection dialog", () => {
       within(dialog).getByText(
         copy.codeExpiresSafety.replace(
           "{time}",
-          new Date(expiresAt).toLocaleTimeString("zh-CN", { hour: "2-digit", minute: "2-digit" }),
+          new Date(expiresAt).toLocaleTimeString("zh-CN", { hour: "numeric", minute: "2-digit" }),
         ),
       ),
     ).toBeVisible();
@@ -240,6 +240,49 @@ describe("Claude terminal connection dialog", () => {
     expect(operations().filter((operation) => operation === "bridge-challenge")).toHaveLength(1);
     expect(operations()).not.toContain("bridge-disconnect");
   });
+
+  it.each(locales)("formats a single-digit expiry hour without padding in %s", async (locale) => {
+    const expiry = new Date(Date.now() + 24 * 60 * 60 * 1000);
+    expiry.setHours(4, 1, 0, 0);
+    state.request.mockImplementation(async ({ operation }) =>
+      operation === "bridge-status" ? bridgeStatus() : challenge(expiry.toISOString()),
+    );
+    const { dialog, copy } = await openDialog(locale);
+    fireEvent.click(within(dialog).getByRole("button", { name: copy.generate }));
+    await within(dialog).findByText(connectionCommand);
+    const time = expiry.toLocaleTimeString(locale, { hour: "numeric", minute: "2-digit" });
+    const validity = within(dialog).getByText(copy.codeExpiresSafety.replace("{time}", time));
+    expect(validity).toBeVisible();
+    expect(validity.textContent).not.toContain("04:");
+    expect(validity.textContent).toContain("4:01");
+  });
+
+  it.each(locales)(
+    "shows a validated offline binding and its clear confirmation in %s",
+    async (locale) => {
+      state.request.mockResolvedValue(bridgeStatus({ hasBinding: true }));
+      const { dialog, copy } = await openDialog(locale);
+      expect(within(dialog).getByText(copy.reconnectingTitle)).toBeVisible();
+      expect(within(dialog).getByText(copy.reconnectingInfo)).toBeVisible();
+      expect(within(dialog).queryByText(copy.lostTitle)).not.toBeInTheDocument();
+      expect(within(dialog).getByRole("button", { name: copy.copyResumeCommand })).toBeEnabled();
+      expect(within(dialog).getByRole("button", { name: copy.regenerateConnection })).toHaveClass(
+        "text-primary-text",
+      );
+      expect(within(dialog).getByRole("button", { name: copy.installedStep })).toHaveAttribute(
+        "aria-expanded",
+        "false",
+      );
+      fireEvent.click(within(dialog).getByRole("button", { name: copy.clearConnection }));
+      const confirmation = within(dialog).getByRole("group", { name: copy.clearConnection });
+      expect(within(confirmation).getByText(copy.clearConnectionInfo)).toBeVisible();
+      expect(within(confirmation).getByRole("button", { name: copy.cancel })).toHaveFocus();
+      expect(
+        within(confirmation).getByRole("button", { name: copy.confirmClearConnection }),
+      ).toBeEnabled();
+      expect(operations()).toEqual(["bridge-status"]);
+    },
+  );
 
   it("confirms a connected terminal disconnection without stopping terminal execution", async () => {
     state.session.live = { ...state.session.live!, executionMode: "claude-follower" };
@@ -328,12 +371,13 @@ describe("Claude terminal connection dialog", () => {
     await waitFor(() =>
       expect(screen.queryByRole("group", { name: copy.disconnect })).not.toBeInTheDocument(),
     );
-    const regenerate = await within(dialog).findByRole("button", {
-      name: copy.regenerate,
+    const generate = await within(dialog).findByRole("button", {
+      name: copy.generate,
     });
-    expect(regenerate).toBeEnabled();
-    expect(within(dialog).getByText(copy.lostTitle, { exact: true })).toBeVisible();
-    expect(within(dialog).getByText(copy.disconnectedInfo)).toBeVisible();
+    expect(generate).toBeEnabled();
+    expect(within(dialog).getByText(copy.installStep)).toBeVisible();
+    expect(within(dialog).getByText(copy.pasteStep)).toBeVisible();
+    expect(within(dialog).queryByText(copy.reconnectingTitle)).not.toBeInTheDocument();
     expect(within(dialog).getByText(copy.notConnected, { exact: true })).toBeVisible();
     expect(
       within(dialog).queryByText(copy.connectedBadge, { exact: true }),
@@ -420,8 +464,8 @@ describe("Claude terminal connection dialog", () => {
       reason: "claude-bridge-disconnected",
     };
     const { dialog, copy } = await openDialog();
-    expect(within(dialog).getByText(copy.lostTitle, { exact: true })).toBeVisible();
-    expect(within(dialog).getByText(copy.disconnectedInfo)).toBeVisible();
+    expect(within(dialog).getByText(copy.reconnectingTitle, { exact: true })).toBeVisible();
+    expect(within(dialog).getByText(copy.reconnectingInfo)).toBeVisible();
     expect(within(dialog).queryByText(copy.pasteStep)).not.toBeInTheDocument();
     expect(
       within(dialog).queryByRole("button", { name: copy.disconnectShort }),
@@ -441,22 +485,29 @@ describe("Claude terminal connection dialog", () => {
     );
   });
 
-  it("shows only platform guidance without unusable connection steps", async () => {
-    state.request.mockResolvedValue(
-      bridgeStatus({ supported: false, reason: "platform-unsupported" }),
-    );
-    render(<ClaudeBridgePanel active onClose={close} />);
-    const copy = claudeConnectionCopy["zh-CN"];
-    const dialog = await screen.findByRole("dialog", { name: copy.title });
-    await within(dialog).findByText(copy.unsupportedTitle);
-    expect(within(dialog).queryByText(copy.platformUnsupported)).not.toBeInTheDocument();
-    expect(dialog.querySelector("[data-slot=badge]")).toBeNull();
-    for (const text of [copy.installStep, copy.generateStep, copy.pasteStep, installCommand]) {
-      expect(within(dialog).queryByText(text)).not.toBeInTheDocument();
-    }
-    expect(within(dialog).queryByRole("button", { name: copy.generate })).not.toBeInTheDocument();
-    expect(new Set(operations())).toEqual(new Set(["bridge-status"]));
-  });
+  it.each(locales)(
+    "shows only platform guidance without duplicate requirements in %s",
+    async (locale) => {
+      state.session.locale = locale;
+      state.request.mockResolvedValue(
+        bridgeStatus({ supported: false, reason: "platform-unsupported" }),
+      );
+      render(<ClaudeBridgePanel active onClose={close} />);
+      const copy = claudeConnectionCopy[locale];
+      const dialog = await screen.findByRole("dialog", { name: copy.title });
+      await within(dialog).findByText(copy.unsupportedTitle);
+      expect(within(dialog).queryByText(copy.platformUnsupported)).not.toBeInTheDocument();
+      expect(
+        within(dialog).queryByText(copy.platformVersion.replace("{version}", "2.1.301")),
+      ).not.toBeInTheDocument();
+      expect(dialog.querySelector("[data-slot=badge]")).toBeNull();
+      for (const text of [copy.installStep, copy.generateStep, copy.pasteStep, installCommand]) {
+        expect(within(dialog).queryByText(text)).not.toBeInTheDocument();
+      }
+      expect(within(dialog).queryByRole("button", { name: copy.generate })).not.toBeInTheDocument();
+      expect(new Set(operations())).toEqual(new Set(["bridge-status"]));
+    },
+  );
 
   it.each(locales)(
     "keeps disconnect and clear confirmations inline and keyboard-safe in %s",
@@ -537,14 +588,14 @@ describe("Claude terminal connection dialog", () => {
             ? copy.connectedTitle
             : kind === "expired"
               ? copy.expiredTitle
-              : copy.lostTitle;
+              : copy.reconnectingTitle;
         const status = within(dialog).getByText(title).closest('[role="status"]')!;
         expect(status.parentElement?.querySelector("svg")).toHaveClass(
           kind === "connected"
             ? "text-[var(--green)]"
             : kind === "expired"
               ? "text-destructive-icon"
-              : "text-[var(--amber)]",
+              : "text-muted-foreground",
         );
         if (kind === "expired")
           expect(within(dialog).getByRole("button", { name: copy.regenerate })).toHaveClass(

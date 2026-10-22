@@ -1,11 +1,16 @@
 // @vitest-environment jsdom
 import "@testing-library/jest-dom/vitest";
 import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { Profiler } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { SessionController } from "./use-session-controller";
 import { ClaudeBridgePanel } from "./claude-bridge-panel";
 
-const state = vi.hoisted(() => ({ session: {} as SessionController, request: vi.fn() }));
+const state = vi.hoisted(() => ({
+  session: {} as SessionController,
+  request: vi.fn(),
+  resumeCommand: vi.fn(),
+}));
 vi.mock("./session-context", () => ({ useSession: () => state.session }));
 vi.mock("@/core/desktop", () => ({ desktopApi: () => ({ claude: { request: state.request } }) }));
 
@@ -33,6 +38,12 @@ function deferred<T>() {
 }
 beforeEach(() => {
   state.request.mockReset();
+  state.resumeCommand.mockReset().mockResolvedValue({
+    available: true,
+    command: "cd -- '/synthetic/workspace with spaces' && claude --resume 'synthetic-session'",
+    shell: "posix",
+    runOn: "host",
+  });
   state.session = {
     selected: "s",
     current: { id: "s", agent: "claude-code" },
@@ -48,6 +59,7 @@ beforeEach(() => {
     busy: false,
     live: { sessionId: "s", status: "idle", executionMode: "managed-resume" },
     refresh: vi.fn().mockResolvedValue(undefined),
+    client: { claudeResumeCommand: state.resumeCommand },
   } as unknown as SessionController;
   state.request.mockImplementation(async ({ operation, sessionId }) =>
     operation === "bridge-status"
@@ -63,6 +75,286 @@ afterEach(() => {
 });
 
 describe("Claude terminal connection management", () => {
+  it("keeps a validated offline binding waiting for terminal reconnection after a restart", async () => {
+    state.request.mockResolvedValue({ ...status(), hasBinding: true });
+    render(<ClaudeBridgePanel active />);
+    expect(await screen.findByText("等待终端重新连接")).toBeVisible();
+    expect(screen.getByText("在终端继续这条会话后会自动连接，不需要新的连接码。")).toBeVisible();
+    expect(screen.getByRole("button", { name: "已安装插件" })).toHaveAttribute(
+      "aria-expanded",
+      "false",
+    );
+    expect(screen.getByRole("button", { name: "复制继续命令" })).toBeEnabled();
+    expect(screen.getByRole("button", { name: "重新生成连接码" })).toHaveClass("text-primary-text");
+    expect(screen.getByRole("button", { name: "清除连接…" })).toHaveClass("text-primary-text");
+    expect(screen.queryByRole("button", { name: "生成连接码" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+    expect(screen.getByText("未连接", { exact: true })).toBeVisible();
+  });
+
+  it("does not let an old follower snapshot revive an explicitly absent binding", async () => {
+    state.session.live = {
+      ...state.session.live!,
+      executionMode: "claude-follower",
+      status: "unsupported",
+      reason: "claude-bridge-disconnected",
+    };
+    state.request.mockResolvedValue({ ...status(), hasBinding: false });
+    render(<ClaudeBridgePanel active />);
+    await screen.findByText("Install isolated plugin");
+    expect(screen.getByRole("button", { name: "生成连接码" })).toBeEnabled();
+    expect(screen.queryByRole("button", { name: "清除连接…" })).not.toBeInTheDocument();
+    expect(screen.queryByText("等待终端重新连接")).not.toBeInTheDocument();
+  });
+
+  it("uses explicit offline status instead of a stale follower snapshot to allow recovery", async () => {
+    state.session.live = {
+      ...state.session.live!,
+      executionMode: "claude-follower",
+      status: "idle",
+    };
+    state.request.mockResolvedValue({ ...status(), hasBinding: true });
+    render(<ClaudeBridgePanel active />);
+    await waitFor(() => expect(screen.getByRole("button", { name: "复制继续命令" })).toBeEnabled());
+    expect(screen.getByText("等待终端重新连接")).toBeVisible();
+    expect(screen.getByRole("button", { name: "重新生成连接码" })).toBeEnabled();
+    expect(screen.queryByText("已连接终端")).not.toBeInTheDocument();
+  });
+
+  it("rejects an unvalidated binding flag instead of offering connection actions", async () => {
+    state.request.mockResolvedValue({ ...status(), hasBinding: "true" });
+    render(<ClaudeBridgePanel active />);
+    expect(await screen.findByRole("alert")).toHaveTextContent(
+      "无法完成连接操作，请检查这台电脑状态后重试。",
+    );
+    expect(screen.queryByRole("button", { name: "清除连接…" })).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "重新生成" })).toBeDisabled();
+  });
+
+  it("keeps revocation when an unsafe source cannot authoritatively report an absent binding", async () => {
+    state.session.live = {
+      ...state.session.live!,
+      executionMode: "claude-follower",
+      status: "idle",
+    };
+    state.request.mockResolvedValue({
+      ...status(),
+      supported: false,
+      hasBinding: false,
+      reason: "claude-bridge-session-unavailable",
+    });
+    const view = render(<ClaudeBridgePanel active />);
+    await screen.findByRole("alert");
+    expect(screen.getByRole("button", { name: "清除连接…" })).toBeEnabled();
+    expect(screen.getByRole("button", { name: "重新生成" })).toBeDisabled();
+    expect(screen.queryByRole("button", { name: "复制继续命令" })).not.toBeInTheDocument();
+    state.session = { ...state.session, notice: "uncertain" };
+    view.rerender(<ClaudeBridgePanel active />);
+    fireEvent.click(screen.getByRole("button", { name: "清除连接…" }));
+    state.request.mockResolvedValueOnce({ disconnected: true });
+    fireEvent.click(screen.getByRole("button", { name: "确认清除连接" }));
+    await waitFor(() => expect(state.session.refresh).toHaveBeenCalledExactlyOnceWith(true));
+    expect(screen.queryByRole("button", { name: "清除连接…" })).not.toBeInTheDocument();
+  });
+
+  it("copies the validated resume command without building a command or generating a code", async () => {
+    const writeText = vi.fn().mockResolvedValue(undefined);
+    Object.defineProperty(navigator, "clipboard", { configurable: true, value: { writeText } });
+    state.request.mockResolvedValue({ ...status(), hasBinding: true });
+    render(<ClaudeBridgePanel active />);
+    fireEvent.click(await screen.findByRole("button", { name: "复制继续命令" }));
+    await screen.findByText("复制继续命令 · 已复制");
+    expect(state.resumeCommand).toHaveBeenCalledExactlyOnceWith("s", expect.any(AbortSignal));
+    expect(writeText).toHaveBeenCalledExactlyOnceWith(
+      "cd -- '/synthetic/workspace with spaces' && claude --resume 'synthetic-session'",
+    );
+    expect(state.request.mock.calls.map(([request]) => request.operation)).toEqual([
+      "bridge-status",
+    ]);
+  });
+
+  it("keeps a resume request started at the first enabled commit alive", async () => {
+    const resume = deferred<unknown>();
+    state.resumeCommand.mockReturnValueOnce(resume.promise);
+    const writeText = vi.fn().mockResolvedValue(undefined);
+    Object.defineProperty(navigator, "clipboard", { configurable: true, value: { writeText } });
+    state.request.mockResolvedValue({ ...status(), hasBinding: true });
+    let clicked = false;
+    const disabledAtClick: boolean[] = [];
+    render(
+      <Profiler
+        id="first-enabled-copy"
+        onRender={() => {
+          const button = screen.queryByRole<HTMLButtonElement>("button", { name: "复制继续命令" });
+          if (clicked || !button || button.disabled) return;
+          clicked = true;
+          disabledAtClick.push(button.disabled);
+          // The outer render already uses act; avoid nesting it inside this commit.
+          button.click();
+        }}
+      >
+        <ClaudeBridgePanel active />
+      </Profiler>,
+    );
+    await waitFor(() => expect(state.resumeCommand).toHaveBeenCalledOnce());
+    await act(async () => {});
+    expect({
+      disabledAtClick,
+      requests: state.resumeCommand.mock.calls.length,
+      aborted: state.resumeCommand.mock.calls[0][1].aborted,
+      clipboardCalls: writeText.mock.calls.length,
+    }).toEqual({ disabledAtClick: [false], requests: 1, aborted: false, clipboardCalls: 0 });
+    await act(async () =>
+      resume.resolve({ available: true, command: "synthetic validated command" }),
+    );
+    expect({
+      aborted: state.resumeCommand.mock.calls[0][1].aborted,
+      clipboardCalls: writeText.mock.calls.length,
+    }).toEqual({ aborted: false, clipboardCalls: 1 });
+    await screen.findByText("复制继续命令 · 已复制");
+    expect(writeText).toHaveBeenCalledOnce();
+  });
+
+  it.each(["before", "after"] as const)(
+    "accepts only fresh binding evidence when an old poll arrives %s the clear ACK",
+    async (order) => {
+      vi.useFakeTimers();
+      const previous = deferred<unknown>();
+      const acknowledgement = deferred<unknown>();
+      state.session.live = { ...state.session.live!, connectionGeneration: "runtime-boot" };
+      state.request
+        .mockResolvedValueOnce({ ...status(), hasBinding: true })
+        .mockReturnValueOnce(previous.promise)
+        .mockReturnValueOnce(acknowledgement.promise)
+        .mockResolvedValue({ ...status(), hasBinding: false });
+      render(<ClaudeBridgePanel active />);
+      await act(async () => {});
+      expect(screen.getByText("等待终端重新连接")).toBeVisible();
+      await act(async () => vi.advanceTimersByTime(2500));
+      fireEvent.click(screen.getByRole("button", { name: "清除连接…" }));
+      fireEvent.click(screen.getByRole("button", { name: "确认清除连接" }));
+      if (order === "before")
+        await act(async () => previous.resolve({ ...status(), hasBinding: true }));
+      await act(async () => acknowledgement.resolve({ disconnected: true }));
+      if (order === "after")
+        await act(async () => previous.resolve({ ...status(), hasBinding: true }));
+      expect(screen.getByRole("button", { name: "生成连接码" })).toBeEnabled();
+      expect(screen.queryByRole("button", { name: "清除连接…" })).not.toBeInTheDocument();
+      expect(screen.queryByText("等待终端重新连接")).not.toBeInTheDocument();
+
+      // A later verified binding can already be offline before a lease snapshot
+      // reaches this renderer. Its fresh owner lookup proves it can be cleared.
+      state.request.mockResolvedValue({ ...status(), hasBinding: true });
+      await act(async () => vi.advanceTimersByTime(2500));
+      expect(screen.getByText("等待终端重新连接")).toBeVisible();
+      expect(screen.getByRole("button", { name: "清除连接…" })).toBeEnabled();
+      expect(screen.getByRole("button", { name: "复制继续命令" })).toBeEnabled();
+      expect(screen.queryByText("已连接终端")).not.toBeInTheDocument();
+      expect(state.session.refresh).toHaveBeenCalledExactlyOnceWith(true);
+    },
+  );
+
+  it("drops an old generation's pending challenge and keeps checking the new binding", async () => {
+    vi.useFakeTimers();
+    const previous = deferred<unknown>();
+    state.session.live = { ...state.session.live!, connectionGeneration: "old-generation" };
+    state.request
+      .mockResolvedValueOnce(status())
+      .mockReturnValueOnce(previous.promise)
+      .mockResolvedValue({ ...status(), hasBinding: true });
+    const view = render(<ClaudeBridgePanel active />);
+    await act(async () => {});
+    fireEvent.click(screen.getByRole("button", { name: "生成连接码" }));
+    state.session.live = {
+      ...state.session.live!,
+      connectionGeneration: "new-generation",
+      executionMode: "claude-follower",
+      status: "unsupported",
+      reason: "claude-bridge-disconnected",
+    };
+    view.rerender(<ClaudeBridgePanel active />);
+    await act(async () => {});
+    expect(screen.getByText("等待终端重新连接")).toBeVisible();
+    expect(screen.getByRole("button", { name: "重新生成连接码" })).toBeEnabled();
+    await act(async () => previous.resolve(challenge));
+    expect(
+      screen.queryByText(challenge.instructions, { selector: "code" }),
+    ).not.toBeInTheDocument();
+    expect(screen.getByText("等待终端重新连接")).toBeVisible();
+    await act(async () => vi.advanceTimersByTime(2500));
+    expect(state.request.mock.calls.map(([request]) => request.operation)).toEqual([
+      "bridge-status",
+      "bridge-challenge",
+      "bridge-status",
+      "bridge-status",
+    ]);
+  });
+
+  it.each(["session", "permission", "uncertain", "generation", "inactive"] as const)(
+    "does not copy a late resume command after the %s changes",
+    async (change) => {
+      const result = deferred<unknown>();
+      state.resumeCommand.mockReturnValueOnce(result.promise);
+      const writeText = vi.fn().mockResolvedValue(undefined);
+      Object.defineProperty(navigator, "clipboard", { configurable: true, value: { writeText } });
+      state.request.mockImplementation(async ({ sessionId }) => ({
+        ...status(sessionId),
+        hasBinding: true,
+      }));
+      const view = render(<ClaudeBridgePanel active />);
+      fireEvent.click(await screen.findByRole("button", { name: "复制继续命令" }));
+      expect(screen.getByRole("button", { name: "复制继续命令" })).toBeDisabled();
+      if (change === "session")
+        state.session = {
+          ...state.session,
+          selected: "other",
+          current: { ...state.session.current!, id: "other" },
+          live: { ...state.session.live!, sessionId: "other" },
+        };
+      else if (change === "permission")
+        state.session = {
+          ...state.session,
+          access: {
+            ...state.session.access!,
+            device: { ...state.session.access!.device!, manage: false },
+          },
+        };
+      else if (change === "uncertain") state.session = { ...state.session, notice: "uncertain" };
+      else if (change === "generation")
+        state.session = {
+          ...state.session,
+          live: { ...state.session.live!, connectionGeneration: "replacement-generation" },
+        };
+      view.rerender(<ClaudeBridgePanel active={change !== "inactive"} />);
+      await act(async () => result.resolve({ available: true, command: "stale command" }));
+      expect(writeText).not.toHaveBeenCalled();
+      expect(screen.queryByText(/· 已复制/)).not.toBeInTheDocument();
+      expect(state.resumeCommand.mock.calls[0][1].aborted).toBe(true);
+    },
+  );
+
+  it.each(["unavailable", "empty", "rejected", "clipboard"] as const)(
+    "reports a resume command %s failure without copying unvalidated content",
+    async (failure) => {
+      const writeText = vi.fn().mockResolvedValue(undefined);
+      Object.defineProperty(navigator, "clipboard", { configurable: true, value: { writeText } });
+      if (failure === "unavailable")
+        state.resumeCommand.mockResolvedValueOnce({ available: false, command: "unsafe command" });
+      else if (failure === "empty")
+        state.resumeCommand.mockResolvedValueOnce({ available: true, command: "  " });
+      else if (failure === "rejected")
+        state.resumeCommand.mockRejectedValueOnce(new Error("private diagnostic"));
+      else writeText.mockRejectedValueOnce(new Error("clipboard denied"));
+      state.request.mockResolvedValue({ ...status(), hasBinding: true });
+      render(<ClaudeBridgePanel active />);
+      fireEvent.click(await screen.findByRole("button", { name: "复制继续命令" }));
+      expect(await screen.findByRole("alert")).toHaveTextContent("复制失败，请手动选择并复制。");
+      if (failure !== "clipboard") expect(writeText).not.toHaveBeenCalled();
+      expect(screen.getByRole("button", { name: "复制继续命令" })).toBeEnabled();
+      expect(screen.queryByText("private diagnostic")).not.toBeInTheDocument();
+    },
+  );
+
   it.each([
     ["zh-CN", "未连接", "仅可查看"],
     ["zh-TW", "未連線", "僅可查看"],
@@ -460,10 +752,15 @@ describe("Claude terminal connection management", () => {
     state.request.mockResolvedValue({ ...status(), supported: false, reason });
     render(<ClaudeBridgePanel active />);
     expect(await screen.findByText(explanation)).toBeVisible();
-    expect(screen.getByText("仅 macOS · 需要 Claude Code 2.1.301 或更高版本")).toBeVisible();
-    if (reason === "platform-unsupported")
+    if (reason === "platform-unsupported") {
+      expect(
+        screen.queryByText("仅 macOS · 需要 Claude Code 2.1.301 或更高版本"),
+      ).not.toBeInTheDocument();
       expect(screen.queryByRole("button", { name: "重新生成" })).not.toBeInTheDocument();
-    else expect(screen.getByRole("button", { name: "重新生成" })).toBeDisabled();
+    } else {
+      expect(screen.getByText("仅 macOS · 需要 Claude Code 2.1.301 或更高版本")).toBeVisible();
+      expect(screen.getByRole("button", { name: "重新生成" })).toBeDisabled();
+    }
     expect(screen.queryByRole("button", { name: "清除连接…" })).not.toBeInTheDocument();
   });
   it("polls connection failures after code expiry and clears the code only on a confirmed connection", async () => {

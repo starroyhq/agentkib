@@ -19,6 +19,9 @@ const cases = [
     statusUnavailable: "暂时无法核实终端连接状态，请稍后检查连接。",
     webApp: "电脑上的 AgentKib",
     oldGuide: "打开连接指引",
+    reconnecting: "等待终端重新连接",
+    resume: "复制继续命令",
+    regenerate: "重新生成连接码",
   },
   {
     locale: "zh-TW",
@@ -32,6 +35,9 @@ const cases = [
     statusUnavailable: "暫時無法核實終端連線狀態，請稍後檢查連線。",
     webApp: "電腦上的 AgentKib",
     oldGuide: "開啟連線指引",
+    reconnecting: "等待終端重新連線",
+    resume: "複製繼續命令",
+    regenerate: "重新產生連線碼",
   },
   {
     locale: "en-US",
@@ -46,6 +52,9 @@ const cases = [
       "The terminal connection status cannot be checked right now. Check the connection again shortly.",
     webApp: "AgentKib on your computer",
     oldGuide: "Open the connection guide",
+    reconnecting: "Waiting for the terminal to reconnect",
+    resume: "Copy resume command",
+    regenerate: "Generate a new connection code",
   },
   {
     locale: "ja-JP",
@@ -60,6 +69,9 @@ const cases = [
       "ターミナルの接続状態を現在確認できません。しばらくしてから接続を確認してください。",
     webApp: "コンピューター上の AgentKib",
     oldGuide: "接続ガイドを開き",
+    reconnecting: "ターミナルの再接続を待っています",
+    resume: "再開コマンドをコピー",
+    regenerate: "接続コードを再生成",
   },
 ] as const;
 
@@ -74,6 +86,11 @@ describe("terminal connection guide copy", () => {
     expect(copy.expiredTitle).toBe(expected.expired);
     expect(copy.unsupportedTitle).toBe(expected.unsupported);
     expect(copy.statusUnavailable).toBe(expected.statusUnavailable);
+    expect(copy.reconnectingTitle).toBe(expected.reconnecting);
+    expect(copy.copyResumeCommand).toBe(expected.resume);
+    expect(copy.regenerateConnection).toBe(expected.regenerate);
+    expect(copy.reconnectingInfo).toMatch(/不需要|不要|No new/);
+    expect(copy).not.toHaveProperty("disconnectedInfo");
     expect(copy.platformVersion).toContain("{version}");
     expect(copy.platformVersion).toMatch(/更高|later|以降|以上/);
     expect(copy.expiresAt.replace("{time}", "10:42")).toContain("10:42");

@@ -12,6 +12,8 @@ const PLUGIN_VERSION = CLAUDE_BRIDGE_COMPATIBILITY.pluginVersion;
 const SEND_CONTRACT_EXPERIMENT = false;
 const MAX_STREAM = 96 * 1024;
 const MAX_EVENTS = 256;
+// The existing 250ms pump skips these ticks before retrying: about 1/2/4/8s.
+const RECONNECT_BACKOFF_TICKS = [3, 7, 15, 31];
 const PREVIEW_MARKER = "\n[AgentKib preview truncated; read the original history for full content]";
 function utf8Prefix(value, budget) {
   let read = 0;
@@ -177,6 +179,9 @@ export function initialState() {
     flushing: false,
     closed: false,
     needsReconnect: false,
+    reconnectGeneration: null,
+    reconnectFailures: 0,
+    reconnectDelayTicks: 0,
     lastSnapshot: null,
     termination: null,
     terminating: false,
@@ -483,10 +488,15 @@ function invalidate(state, reason) {
   state.closed = true;
   state.connection = null;
   state.connectionFailure = null;
+  state.needsReconnect = false;
+  state.reconnectGeneration = null;
+  state.reconnectFailures = 0;
+  state.reconnectDelayTicks = 0;
 }
 
 async function request($, state, path, body, authenticated = true) {
   if (!safeSocket(state.socketPath)) throw new Error("invalid-socket");
+  const generation = state.generation;
   const connection = state.connection;
   let response;
   try {
@@ -500,10 +510,12 @@ async function request($, state, path, body, authenticated = true) {
       body: JSON.stringify(body),
     });
   } catch {
-    if (state.connection === connection) state.needsReconnect = true;
+    if (state.generation === generation && state.connection === connection && !state.closed)
+      state.needsReconnect = true;
     throw new Error("bridge-unavailable");
   }
-  if (authenticated && state.connection !== connection) throw new Error("stale-bridge-response");
+  if (state.generation !== generation || (authenticated && state.connection !== connection))
+    throw new Error("stale-bridge-response");
   const decoded = typeof response?.text === "string" ? JSON.parse(response.text) : null;
   if (response?.status === 409 && decoded?.error === "bridge-lease-expired") {
     state.needsReconnect = true;
@@ -637,6 +649,8 @@ async function flush($, state) {
   if (
     !state.connection ||
     state.connection.leaseId === "reconnecting" ||
+    state.needsReconnect ||
+    state.reconnectGeneration === state.generation ||
     state.closed ||
     state.flushing
   )
@@ -808,18 +822,24 @@ async function execute($, state, command) {
   state.afterCommandId = command.commandId;
 }
 
-async function pump($, state) {
+async function pump($, state, nativeEvent = false) {
   if (
     (!state.connection && !state.needsReconnect) ||
     state.connection?.leaseId === "reconnecting" ||
+    state.reconnectGeneration === state.generation ||
     state.closed ||
     state.pumping
   )
     return;
+  if (state.needsReconnect && !state.pendingSend && !nativeEvent && state.reconnectDelayTicks > 0) {
+    state.reconnectDelayTicks -= 1;
+    return;
+  }
+  const generation = state.generation;
   state.pumping = true;
   try {
     if (state.needsReconnect && !state.pendingSend) await reconnect($, state);
-    if (!state.connection || state.closed) return;
+    if (state.generation !== generation || !state.connection || state.closed) return;
     await identity($, state);
     for (const result of state.unacknowledgedResults.values()) await reportResult($, state, result);
     const connection = state.connection;
@@ -850,6 +870,9 @@ async function connect($, state, ticket) {
   const generation = ++state.generation;
   state.connection = null;
   state.connectionFailure = null;
+  state.needsReconnect = false;
+  state.reconnectFailures = 0;
+  state.reconnectDelayTicks = 0;
   state.socketPath = ticket.socketPath;
   let observed;
   try {
@@ -974,9 +997,26 @@ async function reportReconnectFailure($, state, generation, failure) {
 
 async function reconnect($, state) {
   const generation = state.generation;
+  if (state.closed || state.reconnectGeneration === generation) return;
+  state.reconnectGeneration = generation;
+  state.needsReconnect = true;
+  // Once a lease needs recovery, no event may reuse it while probes/backoff run.
+  state.connection = null;
   try {
     await reconnectOnce($, state);
+    if (state.generation === generation && !state.closed) {
+      state.reconnectFailures = 0;
+      state.reconnectDelayTicks = 0;
+    }
   } catch (error) {
+    if (state.generation === generation && !state.closed) {
+      state.needsReconnect = true;
+      state.reconnectFailures = Math.min(
+        state.reconnectFailures + 1,
+        RECONNECT_BACKOFF_TICKS.length,
+      );
+      state.reconnectDelayTicks = RECONNECT_BACKOFF_TICKS[state.reconnectFailures - 1];
+    }
     if (
       state.generation === generation &&
       !state.closed &&
@@ -1002,6 +1042,9 @@ async function reconnect($, state) {
       }
     }
     throw error;
+  } finally {
+    if (state.generation === generation && state.reconnectGeneration === generation)
+      state.reconnectGeneration = null;
   }
 }
 
@@ -1010,7 +1053,10 @@ async function reconnectOnce($, state) {
   const previousIdentity = await identity($, state);
   const path = await $.store.get(`credentialPath:${previousIdentity.nativeId}`);
   if (state.generation !== generation || state.closed) throw new Error("stale-reconnect");
-  if (typeof path !== "string" || !path.startsWith("/") || path.includes("\0")) return;
+  if (typeof path !== "string" || !path.startsWith("/") || path.includes("\0")) {
+    state.needsReconnect = false;
+    return;
+  }
   // A terminal with no saved binding does not need history/file/store-write
   // probes on startup. Every actual reconnect still repeats the full probe.
   const observed = await probeCapabilities($, state);
@@ -1039,22 +1085,28 @@ async function reconnectOnce($, state) {
     credentialPath: path,
   };
   state.connection = connecting;
-  const response = await request($, state, "/v1/reconnect", {
-    ...observed,
-    bindingId: credential.bindingId,
-  });
-  if (state.generation !== generation || state.closed || state.connection !== connecting)
-    throw new Error("stale-reconnect");
-  state.connection = connectionFrom(response);
-  state.connectionFailure = null;
-  state.credentialPath = path;
-  state.closed = false;
-  state.needsReconnect = false;
-  state.seq = 0;
-  state.events = [];
-  state.snapshotRecovery = null;
-  state.afterCommandId = null;
-  state.dirty = true;
+  try {
+    const response = await request($, state, "/v1/reconnect", {
+      ...observed,
+      bindingId: credential.bindingId,
+    });
+    if (state.generation !== generation || state.closed || state.connection !== connecting)
+      throw new Error("stale-reconnect");
+    state.connection = connectionFrom(response);
+    state.connectionFailure = null;
+    state.credentialPath = path;
+    state.closed = false;
+    state.needsReconnect = false;
+    state.seq = 0;
+    state.events = [];
+    state.snapshotRecovery = null;
+    state.afterCommandId = null;
+    state.dirty = true;
+  } finally {
+    // A failed HTTP call must release only its own placeholder. A newer ticket
+    // or session.end has already replaced this generation and must stay intact.
+    if (state.generation === generation && state.connection === connecting) state.connection = null;
+  }
 }
 
 export function connectionFailureText(reason, cliVersion) {
@@ -1104,15 +1156,9 @@ export function register(on) {
     });
     $.clock.every(250, () => flush($, state));
     $.clock.every(250, () => pump($, state));
-    const generation = state.generation;
     // Offline Runtime must not delay startup of the original terminal. A later
     // session.end or explicit pairing invalidates this background generation.
-    void reconnect($, state).catch(() => {
-      if (state.generation === generation) {
-        state.connection = null;
-        state.needsReconnect = true;
-      }
-    });
+    void reconnect($, state).catch(() => {});
     return next(e);
   });
   on("command.run", { command: "agentkib-connect" }, async ($, e) => {
@@ -1178,7 +1224,12 @@ export function register(on) {
         return { drop: "AgentKib session changed before dispatch; no queued retry was created." };
       }
       pending.observed = true;
-    } else if (pending) pending.competing = true;
+    } else {
+      if (pending) pending.competing = true;
+      // A real terminal prompt bypasses background backoff without waiting on
+      // an offline Runtime or changing the native prompt's execution path.
+      if (state.needsReconnect) void pump($, state, true);
+    }
     return next(e);
   }).catch(async ($, e, next) => {
     if (next.called) throw new Error(next.error.message);
@@ -1224,6 +1275,7 @@ export function register(on) {
       pending.turnId = e.turnId;
     record(state, { type: "turn-start", turnId: e.turnId, revision: state.revision });
     state.dirty = true;
+    if (state.needsReconnect) void pump($, state, true);
     return next(e);
   });
   on("turn.step", async function* ($, e, next) {

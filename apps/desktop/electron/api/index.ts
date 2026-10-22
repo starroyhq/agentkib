@@ -164,6 +164,8 @@ export interface ClaudeBridgeStatus {
   connectionError?: string;
   supported: boolean;
   connected: boolean;
+  /** A verified, unrevoked original binding; independent of the current terminal lease. */
+  hasBinding?: boolean;
   sessionId: string;
   version: string;
   reason?: string;

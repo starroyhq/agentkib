@@ -72,6 +72,100 @@ afterEach(() => {
 });
 
 describe("terminal connection evidence and management gates", () => {
+  it.each(["unavailable-source", "failed-lookup"] as const)(
+    "retains a validated managed offline binding for clear after a %s",
+    async (failure) => {
+      vi.useFakeTimers();
+      state.request.mockResolvedValueOnce({
+        sessionId: "s",
+        supported: true,
+        connected: false,
+        hasBinding: true,
+        version: "2.1.301",
+        pluginDirectory: "/synthetic/plugin",
+        installInstructions: "Install synthetic plugin",
+      });
+      render(<ClaudeBridgePanel active onClose={vi.fn()} />);
+      await act(async () => {});
+      expect(screen.getByText(copy.reconnectingTitle)).toBeVisible();
+      expect(state.session.live?.executionMode).toBe("claude-managed");
+      if (failure === "failed-lookup")
+        state.request.mockRejectedValueOnce(new Error("synthetic lookup failed"));
+      else
+        state.request.mockResolvedValueOnce({
+          sessionId: "s",
+          supported: false,
+          connected: false,
+          hasBinding: false,
+          reason: "claude-bridge-session-unavailable",
+          version: "2.1.301",
+          pluginDirectory: "/synthetic/plugin",
+          installInstructions: "Install synthetic plugin",
+        });
+      await act(async () => vi.advanceTimersByTime(2500));
+      expect(screen.getByRole("alert")).toHaveTextContent(copy.failed);
+      expect(screen.getByRole("button", { name: copy.clearConnection })).toBeEnabled();
+      expect(screen.getByRole("button", { name: copy.regenerate })).toBeDisabled();
+      expect(screen.queryByRole("button", { name: copy.copyResumeCommand })).toBeNull();
+      fireEvent.click(screen.getByRole("button", { name: copy.clearConnection }));
+      state.request.mockResolvedValueOnce({ disconnected: true });
+      fireEvent.click(screen.getByRole("button", { name: copy.confirmClearConnection }));
+      await act(async () => {});
+      expect(screen.queryByRole("button", { name: copy.clearConnection })).toBeNull();
+      expect(screen.getByRole("button", { name: copy.generate })).toBeEnabled();
+      expect(screen.queryByText(copy.reconnectingTitle)).not.toBeInTheDocument();
+    },
+  );
+
+  it.each(["claude-managed", "claude-follower"] as const)(
+    "keeps a validated %s offline binding neutral while a new generation is being checked",
+    async (executionMode) => {
+      state.session.live = {
+        ...state.session.live!,
+        executionMode,
+        connectionGeneration: "offline-runtime",
+        status: "unsupported",
+        reason: "claude-bridge-disconnected",
+      };
+      const offline = {
+        sessionId: "s",
+        supported: true,
+        connected: false,
+        hasBinding: true,
+        version: "2.1.301",
+        pluginDirectory: "/synthetic/plugin",
+        installInstructions: "Install synthetic plugin",
+      };
+      state.request.mockResolvedValueOnce(offline);
+      const view = render(<ClaudeBridgePanel active onClose={vi.fn()} />);
+      await screen.findByText(copy.reconnectingTitle);
+      await waitFor(() =>
+        expect(screen.getByRole("button", { name: copy.copyResumeCommand })).toBeEnabled(),
+      );
+      let resolve!: (value: unknown) => void;
+      state.request.mockReturnValueOnce(new Promise((done) => (resolve = done)));
+      state.session.live = {
+        ...state.session.live!,
+        executionMode: "claude-follower",
+        connectionGeneration: "new-terminal-lease",
+        status: "idle",
+        reason: undefined,
+      };
+      view.rerender(<ClaudeBridgePanel active onClose={vi.fn()} />);
+      expect(screen.getByText(copy.reconnectingTitle)).toBeVisible();
+      expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+      expect(screen.queryByText(copy.connectedTitle)).not.toBeInTheDocument();
+      expect(screen.queryByText(copy.lostTitle)).not.toBeInTheDocument();
+      expect(screen.getByRole("button", { name: copy.copyResumeCommand })).toBeDisabled();
+      expect(screen.getByRole("button", { name: copy.regenerateConnection })).toBeDisabled();
+      expect(screen.getByRole("button", { name: copy.clearConnection })).toBeDisabled();
+      await act(async () => resolve({ ...offline, connected: true }));
+      expect(screen.getByText(copy.connectedTitle)).toBeVisible();
+      expect(screen.queryByText(copy.reconnectingTitle)).not.toBeInTheDocument();
+      expect(operations()).toEqual(["bridge-status", "bridge-status"]);
+    },
+  );
+
   it.each(["busy", "controlReady", "experimental"] as const)(
     "invalidates a confirmed connection when its generation disconnects while %s blocks checks",
     async (gate) => {
@@ -96,10 +190,10 @@ describe("terminal connection evidence and management gates", () => {
       await act(async () => vi.advanceTimersByTime(10_000));
       expect(screen.queryByText(copy.connectedTitle)).not.toBeInTheDocument();
       expect(screen.getByText(copy.notConnected, { exact: true })).toBeVisible();
-      expect(screen.getByText(copy.lostTitle)).toBeVisible();
+      expect(screen.getByText(copy.reconnectingTitle)).toBeVisible();
       expect(screen.queryByRole("button", { name: copy.disconnectShort })).toBeNull();
       expect(screen.getByRole("button", { name: copy.clearConnection })).toBeEnabled();
-      expect(screen.getByRole("button", { name: copy.regenerate })).toBeDisabled();
+      expect(screen.getByRole("button", { name: copy.regenerateConnection })).toBeDisabled();
       expect(operations()).toEqual(["bridge-status"]);
     },
   );
@@ -121,7 +215,7 @@ describe("terminal connection evidence and management gates", () => {
     };
     view.rerender(<ClaudeBridgePanel active onClose={vi.fn()} />);
     expect(screen.queryByText(copy.connectedTitle)).not.toBeInTheDocument();
-    expect(screen.getByText(copy.lostTitle)).toBeVisible();
+    expect(screen.getByText(copy.reconnectingTitle)).toBeVisible();
     expect(screen.getByRole("button", { name: copy.clearConnection })).toBeEnabled();
     expect(operations()).toEqual(["bridge-status"]);
   });
@@ -292,7 +386,7 @@ describe("terminal connection evidence and management gates", () => {
       render(<ClaudeBridgePanel active onClose={vi.fn()} />);
       await act(async () => {});
       const dialog = screen.getByRole("dialog", { name: copy.title });
-      fireEvent.click(within(dialog).getByRole("button", { name: copy.regenerate }));
+      fireEvent.click(within(dialog).getByRole("button", { name: copy.regenerateConnection }));
       await act(async () => {});
       expect(within(dialog).getByText(command)).toBeVisible();
       fireEvent.click(within(dialog).getByRole("button", { name: copy.clearConnection }));
@@ -333,7 +427,7 @@ describe("terminal connection evidence and management gates", () => {
     };
     render(<ClaudeBridgePanel active onClose={vi.fn()} />);
     const dialog = screen.getByRole("dialog", { name: copy.title });
-    const regenerate = within(dialog).getByRole("button", { name: copy.regenerate });
+    const regenerate = within(dialog).getByRole("button", { name: copy.regenerateConnection });
     await waitFor(() => expect(regenerate).toBeEnabled());
     fireEvent.click(regenerate);
     await within(dialog).findByText(command);

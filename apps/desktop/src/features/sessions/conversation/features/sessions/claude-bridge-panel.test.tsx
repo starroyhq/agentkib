@@ -290,7 +290,7 @@ describe("Claude terminal connection management", () => {
     expect(screen.getByText(challenge.instructions, { selector: "code" })).toBeVisible();
   });
   it.each(
-    ["connected", "connection-error", "rejected"].flatMap((outcome) =>
+    ["connected", "connection-error", "expired", "rejected"].flatMap((outcome) =>
       ["before", "after"].map((order) => ({ outcome, order })),
     ),
   )(
@@ -318,7 +318,11 @@ describe("Claude terminal connection management", () => {
               ...status(),
               connected: outcome === "connected",
               connectionError:
-                outcome === "connection-error" ? "bridge-version-mismatch" : undefined,
+                outcome === "connection-error"
+                  ? "bridge-version-mismatch"
+                  : outcome === "expired"
+                    ? "expired-bridge-challenge"
+                    : undefined,
             });
         });
       }

@@ -47,7 +47,17 @@ export function ClaudeBridgePanel({ active, onClose }: { active: boolean; onClos
   const session = useSession();
   const { selected, current, live, access, online, controlReady, busy, locale, notice } = session;
   const copy = claudeConnectionCopy[locale];
-  const [status, setStatus] = useState<ClaudeBridgeStatus>();
+  const [statusObservation, setStatusObservation] = useState<{
+    status: ClaudeBridgeStatus;
+    connectionGeneration?: string;
+  }>();
+  // An observation describes the lease that was current when its read began.
+  // A later live generation must obtain its own confirmation, even while gated.
+  const status =
+    statusObservation?.status.sessionId === selected &&
+    statusObservation.connectionGeneration === live?.connectionGeneration
+      ? statusObservation.status
+      : undefined;
   const [challenge, setChallenge] = useState<
     ClaudeBridgeChallenge & {
       sessionId: string;
@@ -58,7 +68,10 @@ export function ClaudeBridgePanel({ active, onClose }: { active: boolean; onClos
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState(false);
   const [confirmDisconnect, setConfirmDisconnect] = useState<"disconnect" | "clear">();
-  const [revokedBinding, setRevokedBinding] = useState<{ connectionGeneration?: string }>();
+  const [revokedBinding, setRevokedBinding] = useState<{
+    connectionGeneration?: string;
+    runtimeBootId?: string;
+  }>();
   const [copied, setCopied] = useState("");
   const [copyError, setCopyError] = useState(false);
   const [revision, setRevision] = useState(0);
@@ -91,7 +104,7 @@ export function ClaudeBridgePanel({ active, onClose }: { active: boolean; onClos
     pending.current = false;
     lastConnected.current = false;
     setChallenge(undefined);
-    setStatus(undefined);
+    setStatusObservation(undefined);
     setExpired(false);
     setError(false);
     setLoading(false);
@@ -126,8 +139,15 @@ export function ClaudeBridgePanel({ active, onClose }: { active: boolean; onClos
           selected,
         );
         if (isCurrent()) {
-          setStatus(result);
+          setStatusObservation({
+            status: result,
+            connectionGeneration: live?.connectionGeneration,
+          });
           setError(false);
+          if (result.connectionError === "expired-bridge-challenge") {
+            setChallenge(undefined);
+            setExpired(true);
+          }
           if (result.connected) {
             setRevokedBinding(undefined);
             setChallenge(undefined);
@@ -138,7 +158,7 @@ export function ClaudeBridgePanel({ active, onClose }: { active: boolean; onClos
         }
       } catch {
         if (isCurrent()) {
-          setStatus(undefined);
+          setStatusObservation(undefined);
           setError(true);
         }
       } finally {
@@ -155,8 +175,21 @@ export function ClaudeBridgePanel({ active, onClose }: { active: boolean; onClos
       if (!pending.current) setLoading(false);
     };
   }, [canManage, selected, live?.connectionGeneration, revision]);
+  if (
+    revokedBinding &&
+    live?.sessionId === selected &&
+    live.executionMode === "claude-follower" &&
+    live.connectionGeneration !== revokedBinding.connectionGeneration &&
+    live.connectionGeneration !== revokedBinding.runtimeBootId
+  )
+    setRevokedBinding(undefined);
+  // Disconnect publishes a boot-generation snapshot before returning its ACK.
+  // Suppress both old snapshots until a different lease proves a new binding.
   const locallyRevoked =
-    !!revokedBinding && revokedBinding.connectionGeneration === live?.connectionGeneration;
+    !!revokedBinding &&
+    (revokedBinding.connectionGeneration === live?.connectionGeneration ||
+      (!!revokedBinding.runtimeBootId &&
+        revokedBinding.runtimeBootId === live?.connectionGeneration));
   const connected =
     (status?.sessionId === selected && status.connected) ||
     (!locallyRevoked &&
@@ -209,7 +242,11 @@ export function ClaudeBridgePanel({ active, onClose }: { active: boolean; onClos
     const request = generation.current;
     setLoading(true);
     setError(false);
-    setStatus((value) => (value ? { ...value, connectionError: undefined } : value));
+    setStatusObservation((previous) =>
+      previous
+        ? { ...previous, status: { ...previous.status, connectionError: undefined } }
+        : previous,
+    );
     copyRequest.current++;
     setCopied("");
     setCopyError(false);
@@ -234,8 +271,13 @@ export function ClaudeBridgePanel({ active, onClose }: { active: boolean; onClos
           throw new Error("invalid_bridge_disconnect");
         lastConnected.current = false;
         setConfirmDisconnect(undefined);
-        setRevokedBinding({ connectionGeneration: live?.connectionGeneration });
-        setStatus((value) => (value ? { ...value, connected: false } : value));
+        setRevokedBinding({
+          connectionGeneration: live?.connectionGeneration,
+          runtimeBootId: live?.runtimeBootId,
+        });
+        setStatusObservation((previous) =>
+          previous ? { ...previous, status: { ...previous.status, connected: false } } : previous,
+        );
         setRevision((value) => value + 1);
         void session.refresh(true);
       }
@@ -253,7 +295,17 @@ export function ClaudeBridgePanel({ active, onClose }: { active: boolean; onClos
   // The live fallback still guards code generation, but only a fresh status can
   // promise that the terminal is connected in this dialog.
   const uncertain = notice === "uncertain" || live?.status === "outcome-unknown";
-  const confirmedConnected = !!(online && !uncertain && !error && status?.connected);
+  const liveDisconnected =
+    live?.sessionId === selected &&
+    live.executionMode === "claude-follower" &&
+    live.reason === "claude-bridge-disconnected";
+  const confirmedConnected = !!(
+    online &&
+    !uncertain &&
+    !error &&
+    !liveDisconnected &&
+    status?.connected
+  );
   const connectionExpired = expired || status?.connectionError === "expired-bridge-challenge";
   const problem = !online
     ? copy.hostDisconnectedInfo
@@ -261,7 +313,7 @@ export function ClaudeBridgePanel({ active, onClose }: { active: boolean; onClos
       ? copy.connectionUnconfirmed
       : error
         ? copy.failed
-        : !status && hasBinding
+        : !status && hasBinding && !liveDisconnected
           ? copy.statusUnavailable
           : status?.connectionError && status.connectionError !== "expired-bridge-challenge"
             ? status.connectionError === "control-outcome-unconfirmed"

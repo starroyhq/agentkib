@@ -13,7 +13,10 @@ import {
   permissionModeCopy,
   permissionModeSummaryCopy,
 } from "./conversation/features/sessions/permission-mode-copy";
-import { claudeConnectionCopy } from "./conversation/features/sessions/claude-connection-copy";
+import {
+  claudeConnectionCopy,
+  claudeConnectionReason,
+} from "./conversation/features/sessions/claude-connection-copy";
 import type { ConversationSubscription, SessionStreamEvent } from "@agentkib/conversation-state";
 import {
   createDesktopConversationAdapter,
@@ -930,6 +933,45 @@ describe("desktop embedded conversation", () => {
         0,
       );
     });
+
+    it.each(["zh-CN", "zh-TW", "en-US", "ja-JP"] as const)(
+      "renders authenticated reconnect failures in %s and clears them without enabling terminal controls",
+      async (locale) => {
+        const reason = "bridge-cli-too-old";
+        const { bridge, patch } = await open(
+          {
+            ...live(),
+            executionMode: "claude-follower",
+            executionLocation: null,
+            status: "unsupported",
+            sendEnabled: false,
+            stopEnabled: false,
+            terminalSend: false,
+            reason,
+            bridgeConnectionFailure: { reason, cliVersion: "2.1.300" },
+          },
+          locale,
+        );
+        for (const failureReason of [
+          reason,
+          "bridge-cli-unsupported",
+          "bridge-capabilities-missing",
+          "bridge-plugin-update-required",
+        ]) {
+          const failure = { reason: failureReason, cliVersion: "2.1.300" };
+          patch({ reason: failureReason, bridgeConnectionFailure: failure });
+          const text = claudeConnectionReason(locale, failureReason, "desktop", failure)!;
+          await waitFor(() => expect(screen.getAllByText(text)[0]).toBeVisible());
+          expect(screen.queryByRole("textbox")).toBeNull();
+          patch({ bridgeConnectionFailure: null });
+          await waitFor(() => expect(screen.queryByText(text)).toBeNull());
+          patch({ reason: "claude-bridge-disconnected" });
+        }
+        expect(
+          vi.mocked(bridge.request).mock.calls.filter(([path]) => ["send", "stop"].includes(path)),
+        ).toHaveLength(0);
+      },
+    );
 
     it.each(["zh-CN", "zh-TW", "en-US", "ja-JP"] as const)(
       "shows an unverified native version in %s without enabling terminal controls",

@@ -29,7 +29,8 @@ test("only the minimum, latest or an unambiguous stable CLI can be installed", (
 });
 
 test("CLI execution uses five isolated directories and inherits no account variables", () => {
-  const environment = compatibilityEnvironment("/private/tmp/synthetic", "/synthetic/node");
+  const root = "/private/tmp/synthetic";
+  const environment = compatibilityEnvironment(root, "/synthetic/node");
   for (const key of [
     "HOME",
     "CODEX_HOME",
@@ -42,7 +43,7 @@ test("CLI execution uses five isolated directories and inherits no account varia
     "NPM_CONFIG_CACHE",
     "TMPDIR",
   ])
-    assert.ok(environment[key].startsWith("/private/tmp/synthetic/"));
+    assert.equal(path.dirname(environment[key]), path.normalize(root));
   assert.equal(environment.NPM_CONFIG_REGISTRY, "https://registry.npmjs.org");
   assert.equal(environment.CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC, "1");
   for (const key of [
@@ -137,15 +138,15 @@ test("a successful exit cannot replace evidence that explicit capability cases a
   );
 });
 
-test("bridge checks require all five requested suites to complete successfully", () => {
-  assert.deepEqual(bridgeTestSummary("Test Files  5 passed (5)\n Tests  127 passed (127)"), {
-    files: 5,
+test("bridge checks require all six requested suites to complete successfully", () => {
+  assert.deepEqual(bridgeTestSummary("Test Files  6 passed (6)\n Tests  127 passed (127)"), {
+    files: 6,
     passed: 127,
   });
   for (const output of [
-    "Test Files  4 passed (4)\n Tests  127 passed (127)",
-    "Test Files  1 failed | 5 passed (6)\n Tests  127 passed (127)",
-    "Test Files  5 passed (5)\n Tests  1 failed | 127 passed (128)",
+    "Test Files  5 passed (5)\n Tests  127 passed (127)",
+    "Test Files  1 failed | 6 passed (7)\n Tests  127 passed (127)",
+    "Test Files  6 passed (6)\n Tests  1 failed | 127 passed (128)",
     "no tests found",
   ])
     assert.throws(() => bridgeTestSummary(output), /bridge-regression-tests-not-confirmed/);

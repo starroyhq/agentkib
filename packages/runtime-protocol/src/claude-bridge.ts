@@ -18,6 +18,11 @@ export interface ClaudeBridgeCompatibilityStatus {
   cliVersion: string;
   status: "verified" | "unverified";
 }
+export interface ClaudeBridgeConnectionFailure {
+  reason: string;
+  cliVersion?: string;
+  missingCapabilities?: string[];
+}
 export const CLAUDE_BRIDGE_PATHS = {
   pair: "/v1/pair",
   reconnect: "/v1/reconnect",

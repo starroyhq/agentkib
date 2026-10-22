@@ -116,7 +116,7 @@ export function bridgeTestSummary(output) {
   const clean = output.replace(/\u001b\[[0-9;]*m/g, "");
   const files = Number(/Test Files\s+(\d+) passed/.exec(clean)?.[1] ?? 0);
   const passed = Number(/Tests\s+(\d+) passed/.exec(clean)?.[1] ?? 0);
-  if (files !== 5 || passed === 0 || /(?:Test Files|Tests)[^\n]*\d+ failed/.test(clean))
+  if (files !== 6 || passed === 0 || /(?:Test Files|Tests)[^\n]*\d+ failed/.test(clean))
     throw new Error("bridge-regression-tests-not-confirmed");
   return { files, passed };
 }
@@ -270,6 +270,7 @@ export async function checkCompatibility({ version = "latest", cli, bridgeTests 
           path.join(repository, "apps/desktop/node_modules/vitest/vitest.mjs"),
           "run",
           "test/claude-bridge-plugin.test.ts",
+          "test/claude-bridge-capability-contract.test.ts",
           "test/claude-bridge-compatibility.test.ts",
           "test/claude-bridge.test.ts",
           "test/claude-bridge-runtime.test.ts",

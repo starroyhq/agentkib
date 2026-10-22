@@ -9,6 +9,7 @@ import type {
 } from "@agentkib/runtime-protocol";
 export type {
   ClaudeBridgeCompatibilityStatus,
+  ClaudeBridgeConnectionFailure,
   HistorySearchQuery,
   HistorySearchResult,
   HistoryLocation,
@@ -235,6 +236,10 @@ export interface Live {
   terminalSend?: boolean;
   /** Observed native terminal version; does not grant sending or stopping. */
   bridgeCompatibility?: import("@agentkib/runtime-protocol").ClaudeBridgeCompatibilityStatus | null;
+  /** Authenticated offline reconnect failure; never a control grant. Null clears prior feedback. */
+  bridgeConnectionFailure?:
+    | import("@agentkib/runtime-protocol").ClaudeBridgeConnectionFailure
+    | null;
   executionMode?:
     | "managed-resume"
     | "claude-managed"

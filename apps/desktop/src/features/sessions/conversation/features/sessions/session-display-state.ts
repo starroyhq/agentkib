@@ -6,6 +6,7 @@ import { contextUsageCopyForSurface } from "./context-usage-copy";
 import { webLayoutCopy } from "./web-layout-copy";
 import { managedControlCopyForSurface } from "./managed-control-copy";
 import { sessionContinuationCopy } from "@agentkib/session-ui";
+import { claudeReconnectFailureReason } from "./claude-session-banner";
 
 type State = Pick<
   SessionController,
@@ -215,7 +216,8 @@ export function sessionDisplayState(
       reason:
         reason === "platform-unsupported"
           ? copy.claudeWindowsUnsupported
-          : (claudeConnectionReason(locale, reason, surface) ??
+          : (claudeReconnectFailureReason(live, locale, surface) ??
+            claudeConnectionReason(locale, reason, surface) ??
             codexReason(locale, reason, surface).text),
       tone: "muted",
       continuation: "view-only",

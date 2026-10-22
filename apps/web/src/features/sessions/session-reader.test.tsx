@@ -5,7 +5,10 @@ import { dictionaries } from "@/features/conversation/i18n";
 import { SessionReader } from "@/features/conversation/features/sessions/session-reader";
 import { useSession } from "@/features/conversation/features/sessions/session-context";
 import { webLayoutCopy } from "@/features/conversation/features/sessions/web-layout-copy";
-import { claudeConnectionCopy } from "@/features/conversation/features/sessions/claude-connection-copy";
+import {
+  claudeConnectionCopy,
+  claudeConnectionReason,
+} from "@/features/conversation/features/sessions/claude-connection-copy";
 import { codexReason } from "@/features/conversation/features/sessions/codex-copy";
 
 vi.mock("@/features/conversation/features/sessions/session-context", () => ({
@@ -57,6 +60,75 @@ function moveTo(top: number) {
 }
 
 describe("conversation reading position", () => {
+  it.each(["zh-CN", "zh-TW", "en-US", "ja-JP"] as const)(
+    "renders authenticated reconnect failures in %s and clears the prior reason",
+    (locale) => {
+      state = {
+        ...state,
+        locale,
+        t: dictionaries[locale],
+        online: true,
+        controlReady: true,
+        canSend: false,
+        canStop: false,
+        busy: false,
+        message: "",
+        setMessage: vi.fn(),
+        control: vi.fn(),
+        access: {
+          ...state.access!,
+          status: "approved",
+          experimentalEnabled: true,
+          device: {
+            id: "device",
+            name: "Test browser",
+            accessMode: "full",
+            send: true,
+            approve: false,
+            advancedControl: false,
+          },
+        },
+        current: { ...state.current!, agent: "claude-code" },
+        capabilities: {
+          sessionId: "first",
+          executionMode: "claude-follower",
+          status: "unsupported",
+          features: { send: { available: false } },
+        },
+        live: {
+          sessionId: "first",
+          status: "unsupported",
+          revision: 1,
+          approvals: [],
+          executionMode: "claude-follower",
+          executionLocation: null,
+          sendEnabled: false,
+          stopEnabled: false,
+          terminalSend: false,
+        },
+      };
+      const view = render(<SessionReader />);
+      for (const reason of [
+        "bridge-cli-too-old",
+        "bridge-cli-unsupported",
+        "bridge-capabilities-missing",
+        "bridge-plugin-update-required",
+      ]) {
+        const failure = { reason, cliVersion: "2.1.300" };
+        state.live = { ...state.live!, reason, bridgeConnectionFailure: failure };
+        view.rerender(<SessionReader />);
+        const text = claudeConnectionReason(locale, reason, "desktop", failure)!;
+        expect(screen.getAllByText(text)[0]).toBeVisible();
+        expect(screen.queryByRole("textbox")).toBeNull();
+        expect(screen.queryByRole("button", { name: state.t.send })).toBeNull();
+        expect(screen.queryByRole("button", { name: state.t.stop })).toBeNull();
+        state.live = { ...state.live!, bridgeConnectionFailure: null };
+        view.rerender(<SessionReader />);
+        expect(screen.queryByText(text)).toBeNull();
+        state.live = { ...state.live!, reason: "claude-bridge-disconnected" };
+      }
+    },
+  );
   it.each(["zh-CN", "zh-TW", "en-US", "ja-JP"] as const)(
     "shows a neutral native version note without enabling controls in %s",
     (locale) => {

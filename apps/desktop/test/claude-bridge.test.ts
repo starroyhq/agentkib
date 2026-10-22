@@ -170,6 +170,17 @@ async function fixture(timeout = 1000) {
     ...extra,
   });
   const poll = () => post("/v1/commands", { afterCommandId: null, waitMs: 0 });
+  const reconnectFailure = {
+    protocol: 1,
+    pluginVersion: "0.2.0",
+    bindingId: connection.bindingId,
+    nativeId: target.nativeId,
+    cwd: workspace,
+    instanceId,
+    connectionError: "bridge-capabilities-missing",
+    cliVersion: "2.1.307",
+    missingCapabilities: ["session-messages"],
+  };
   return {
     root,
     target,
@@ -184,6 +195,7 @@ async function fixture(timeout = 1000) {
     live,
     control,
     poll,
+    reconnectFailure,
     manage,
     get bridge() {
       return bridge;
@@ -517,6 +529,194 @@ describe.skipIf(process.platform === "win32")("native Claude borrowed-host broke
     const active = await fixture();
     active.invalidate();
     expect(active.live().bridgeCompatibility).toBeNull();
+  });
+  it.each([
+    ["bridge-cli-too-old", "2.1.300"],
+    ["bridge-cli-unsupported", undefined],
+    ["bridge-capabilities-missing", "2.1.307"],
+    ["bridge-plugin-update-required", "2.1.307"],
+  ])(
+    "reports authenticated offline reconnect failure %s without granting a lease",
+    async (reason, cliVersion) => {
+      const f = await fixture();
+      expect(f.live()).toHaveProperty("bridgeConnectionFailure", null);
+      await f.events({ type: "invalidated", reason: "synthetic-offline", revision: 1 });
+      const report = { ...f.reconnectFailure, connectionError: reason, cliVersion };
+      expect(await f.http("/v1/reconnect", report, f.connection.token)).toEqual({
+        status: 200,
+        body: { reported: true },
+      });
+      const failure = { reason, cliVersion, missingCapabilities: ["session-messages"] };
+      expect(f.live()).toMatchObject({
+        reason,
+        bridgeConnectionFailure: failure,
+        status: "unsupported",
+        sendEnabled: false,
+        stopEnabled: false,
+      });
+      expect(await f.manage("bridge-status")).toMatchObject({
+        connected: false,
+        connectionError: reason,
+        connectionCliVersion: cliVersion,
+        connectionMissingCapabilities: ["session-messages"],
+      });
+      expect((await f.post("/v1/events", { events: [] })).status).toBe(409);
+    },
+  );
+  it.each([
+    [{}, undefined, 401],
+    [{}, "0".repeat(64), 401],
+    [{ bindingId: randomUUID() }, "correct", 401],
+    [{ nativeId: randomUUID() }, "correct", 409],
+    [{ cwd: "/synthetic/other-workspace" }, "correct", 409],
+  ] as const)(
+    "rejects unauthenticated or mismatched reconnect failure %j",
+    async (fields, token, status) => {
+      const f = await fixture();
+      await f.events({ type: "invalidated", reason: "synthetic-offline", revision: 1 });
+      expect(
+        await f.http(
+          "/v1/reconnect",
+          { ...f.reconnectFailure, ...fields },
+          token === "correct" ? f.connection.token : token,
+        ),
+      ).toMatchObject({ status });
+      expect(f.live()).toHaveProperty("bridgeConnectionFailure", null);
+      expect(await f.manage("bridge-status")).not.toHaveProperty(
+        "connectionError",
+        expect.any(String),
+      );
+    },
+  );
+  it.each(["revoked", "invalid-source"] as const)(
+    "rejects reconnect failure for %s bindings",
+    async (state) => {
+      const f = await fixture();
+      await f.events({ type: "invalidated", reason: "synthetic-offline", revision: 1 });
+      if (state === "revoked") await f.manage("bridge-disconnect");
+      else f.invalidate();
+      expect(await f.http("/v1/reconnect", f.reconnectFailure, f.connection.token)).toMatchObject({
+        status: 410,
+      });
+      expect(f.live()).toHaveProperty("bridgeConnectionFailure", null);
+      if (state === "invalid-source")
+        expect(f.live().reason).toBe("claude-bridge-session-unavailable");
+    },
+  );
+  it.each([
+    { protocol: 2 },
+    { pluginVersion: "0.1.0" },
+    { instanceId: "not-a-uuid" },
+    { cliVersion: "2.1.307-beta" },
+    { missingCapabilities: ["private-unknown-capability"] },
+    { connectionError: "native-identity-changed" },
+    { token: "untrusted-extra-field" },
+  ])("rejects malformed reconnect failure reports %j", async (fields) => {
+    const f = await fixture();
+    await f.events({ type: "invalidated", reason: "synthetic-offline", revision: 1 });
+    expect(
+      await f.http("/v1/reconnect", { ...f.reconnectFailure, ...fields }, f.connection.token),
+    ).toMatchObject({ status: 409 });
+    expect(f.live()).toHaveProperty("bridgeConnectionFailure", null);
+  });
+  it("ignores late reconnect failures while a current lease or manual connection code owns the session", async () => {
+    const f = await fixture();
+    expect(await f.http("/v1/reconnect", f.reconnectFailure, f.connection.token)).toEqual({
+      status: 200,
+      body: { reported: false },
+    });
+    expect(f.live().connectionGeneration).toBe(f.connection.leaseId);
+    expect(f.live()).toHaveProperty("bridgeConnectionFailure", null);
+    expect((await f.post("/v1/events", { events: [] })).status).toBe(200);
+    await f.events({ type: "invalidated", reason: "synthetic-offline", revision: 1 });
+    const prepared = (await f.manage("bridge-challenge")) as { challenge: string };
+    expect(await f.http("/v1/reconnect", f.reconnectFailure, f.connection.token)).toEqual({
+      status: 200,
+      body: { reported: false },
+    });
+    expect(await f.manage("bridge-status")).not.toHaveProperty(
+      "connectionError",
+      expect.any(String),
+    );
+    const ticket = JSON.parse(Buffer.from(prepared.challenge, "base64url").toString());
+    expect((await f.http("/v1/pair", { ...f.hello, ticket: ticket.ticket })).status).toBe(200);
+    expect(await f.http("/v1/reconnect", f.reconnectFailure, f.connection.token)).toMatchObject({
+      status: 401,
+    });
+    expect(f.live()).toHaveProperty("bridgeConnectionFailure", null);
+  });
+  it.each(["pair", "reconnect"] as const)(
+    "clears authenticated failure feedback after successful %s",
+    async (operation) => {
+      const f = await fixture();
+      await f.events({ type: "invalidated", reason: "synthetic-offline", revision: 1 });
+      expect((await f.http("/v1/reconnect", f.reconnectFailure, f.connection.token)).body).toEqual({
+        reported: true,
+      });
+      if (operation === "reconnect") await f.reconnect();
+      else {
+        const prepared = (await f.manage("bridge-challenge")) as { challenge: string };
+        const ticket = JSON.parse(Buffer.from(prepared.challenge, "base64url").toString());
+        expect((await f.http("/v1/pair", { ...f.hello, ticket: ticket.ticket })).status).toBe(200);
+      }
+      expect(f.live()).toHaveProperty("bridgeConnectionFailure", null);
+      expect(await f.manage("bridge-status")).not.toHaveProperty(
+        "connectionError",
+        expect.any(String),
+      );
+    },
+  );
+  it("keeps repeated authenticated reconnect failure reports idempotent", async () => {
+    const f = await fixture();
+    await f.events({ type: "invalidated", reason: "synthetic-offline", revision: 1 });
+    const report = () => f.http("/v1/reconnect", f.reconnectFailure, f.connection.token);
+    expect((await report()).body).toEqual({ reported: true });
+    const revision = f.live().revision;
+    const publications = f.publish.mock.calls.length;
+    expect((await report()).body).toEqual({ reported: true });
+    expect(f.live().revision).toBe(revision);
+    expect(f.publish).toHaveBeenCalledTimes(publications);
+  });
+  it("keeps binding feedback when an unrelated challenge cleans up an expired code", async () => {
+    const f = await fixture();
+    await f.events({ type: "invalidated", reason: "synthetic-offline", revision: 1 });
+    const prepared = (await f.manage("bridge-challenge")) as { expiresAt: string };
+    vi.spyOn(Date, "now").mockReturnValue(Date.parse(prepared.expiresAt) + 300_001);
+    expect((await f.http("/v1/reconnect", f.reconnectFailure, f.connection.token)).body).toEqual({
+      reported: true,
+    });
+    vi.spyOn(f.options, "target").mockResolvedValue({ ...f.target, sessionId: "other-session" });
+    await f.bridge.management({
+      operation: "bridge-challenge",
+      sessionId: "other-session",
+      deviceId: "agentkib-local-owner",
+    });
+    expect(f.live()).toMatchObject({
+      bridgeConnectionFailure: { reason: "bridge-capabilities-missing" },
+    });
+  });
+  it("keeps unknown outcomes and invalid sources ahead of authenticated compatibility feedback", async () => {
+    const f = await fixture();
+    const pending = f.bridge.request(f.control());
+    expect((await f.poll()).body.commands).toHaveLength(1);
+    await f.events({ type: "invalidated", reason: "synthetic-offline", revision: 1 });
+    expect(await pending).toMatchObject({ controlOutcome: "unknown" });
+    expect((await f.http("/v1/reconnect", f.reconnectFailure, f.connection.token)).body).toEqual({
+      reported: true,
+    });
+    expect(f.live()).toMatchObject({
+      reason: "control-outcome-unconfirmed",
+      status: "outcome-unknown",
+      sendEnabled: false,
+      stopEnabled: false,
+    });
+    f.invalidate();
+    expect(f.live()).toMatchObject({
+      reason: "claude-bridge-session-unavailable",
+      bridgeConnectionFailure: null,
+      sendEnabled: false,
+      stopEnabled: false,
+    });
   });
   it("reports expired connection codes to the desktop and clears the failure for a new code", async () => {
     const f = await fixture();

@@ -5,7 +5,9 @@ import { describe, expect, it, vi } from "vitest";
 import {
   decodeTicket,
   connectionFailureText,
+  initialState,
   previewText,
+  probeCapabilities,
   observeNativeStream,
   register as productionRegister,
   safeSocket,
@@ -128,6 +130,7 @@ async function fixture(
     credentialVersion?: string;
     httpInterceptor?: (url: string) => Promise<void>;
     storeGetInterceptor?: (key: string) => Promise<void>;
+    configure?: (api: Value) => void;
   } = {},
 ) {
   const hooks = new Map<string, Array<{ match: Value; hook: Hook }>>();
@@ -244,6 +247,7 @@ async function fixture(
     return { text: value.text };
   };
   if (options.storedCredential) stored.set(`credentialPath:${nativeId}`, connection.credentialPath);
+  options.configure?.(api);
   let nativeStarts = 0;
   await run("session.start", { cwd, isInteractive: true, surface: "terminal" }, (value) => {
     nativeStarts++;
@@ -474,10 +478,139 @@ describe("Claude Code native session plugin", () => {
     await f.tick();
     const before = f.calls.filter((call) => call.url.endsWith("/reconnect")).length;
     await f.tick();
-    expect(f.calls.filter((call) => call.url.endsWith("/reconnect"))).toHaveLength(before);
+    const reports = f.calls.filter((call) => call.url.endsWith("/reconnect")).slice(before);
+    expect(reports).toHaveLength(1);
+    expect(reports[0].body).toMatchObject({
+      connectionError: "bridge-capabilities-missing",
+      cliVersion: "2.1.307",
+      missingCapabilities: ["session-messages"],
+    });
     expect(f.dispatches).toBe(0);
   });
-  it("keeps the paired capability report when an old startup reconnect refreshes identity during the probe", async () => {
+  it.each([
+    ["bridge-cli-too-old", "2.1.300"],
+    ["bridge-cli-unsupported", "2.1.307-preview"],
+    ["bridge-capabilities-missing", "2.1.307"],
+    ["bridge-plugin-update-required", "2.1.307"],
+  ])(
+    "reports authenticated startup failure %s and explains it in terminal status",
+    async (reason, version) => {
+      const f = await fixture({
+        experiment: false,
+        connect: false,
+        storedCredential: true,
+        version,
+        credentialVersion: "2.1.301",
+        configure(api) {
+          if (reason === "bridge-capabilities-missing")
+            api.session.messages = async () => {
+              throw new Error("private native error");
+            };
+          if (reason === "bridge-plugin-update-required") {
+            const read = api.fs.read;
+            api.fs.read = async (path: string) =>
+              path === "/synthetic/plugin/package.json"
+                ? JSON.stringify({ version: "0.1.0" })
+                : read(path);
+          }
+        },
+      });
+      await expect
+        .poll(() => f.calls.some((call) => call.body.connectionError === reason))
+        .toBe(true);
+      const report = f.calls.find((call) => call.body.connectionError === reason)!;
+      expect(report.url).toBe("http://localhost/v1/reconnect");
+      expect(report.init.headers.Authorization).toBe(`Bearer ${f.connection.token}`);
+      expect(report.body).toMatchObject({
+        protocol: 1,
+        bindingId: f.connection.bindingId,
+        nativeId: f.nativeId,
+        cwd: "/isolated/workspace",
+        pluginVersion: "0.2.0",
+      });
+      expect(report.body).not.toHaveProperty("nativeCapabilities");
+      expect(report.body).not.toHaveProperty("token");
+      expect((await f.run("command.run", { command: "agentkib-status" })).text).toBe(
+        connectionFailureText(reason, version),
+      );
+      expect(f.snapshots()).toHaveLength(0);
+      expect(f.dispatches).toBe(0);
+      expect(f.stops).toBe(0);
+    },
+  );
+  it.each([
+    "no-binding",
+    "wrong-native-id",
+    "wrong-cwd",
+    "unsafe-socket",
+    "invalid-token",
+    "unreadable-identity",
+  ])(
+    "does not publish a reconnect diagnostic without verified credentials: %s",
+    async (invalid) => {
+      const f = await fixture({
+        experiment: false,
+        connect: false,
+        storedCredential: invalid !== "no-binding",
+        version: "2.1.300",
+        credentialVersion: "2.1.301",
+        configure(api) {
+          if (invalid === "unreadable-identity")
+            api.session.id = async () => {
+              throw new Error("private identity failure");
+            };
+          const read = api.fs.read;
+          api.fs.read = async (path: string) => {
+            const value = JSON.parse(await read(path));
+            if (invalid === "wrong-native-id") value.nativeId = randomUUID();
+            if (invalid === "wrong-cwd") value.cwd = "/another/workspace";
+            if (invalid === "unsafe-socket") value.socketPath = "/tmp/../bridge.sock";
+            if (invalid === "invalid-token") value.token = "";
+            return JSON.stringify(value);
+          };
+        },
+      });
+      await expect
+        .poll(async () => (await f.run("command.run", { command: "agentkib-status" })).text)
+        .toBe(connectionFailureText("bridge-cli-too-old", "2.1.300"));
+      await f.tick();
+      expect(f.calls).toHaveLength(0);
+    },
+  );
+  it("does not publish delayed failure feedback after a new explicit pair succeeds", async () => {
+    const reading = deferred<void>();
+    const release = deferred<void>();
+    const f = await fixture({
+      experiment: false,
+      connect: false,
+      storedCredential: true,
+      version: "2.1.300",
+      credentialVersion: "2.1.301",
+      configure(api) {
+        const read = api.fs.read;
+        api.fs.read = async (path: string) => {
+          if (path !== "/synthetic/plugin/package.json") {
+            reading.resolve();
+            await release.promise;
+          }
+          return read(path);
+        };
+      },
+    });
+    await reading.promise;
+    f.setIdentity({ version: "2.1.307" });
+    expect(
+      (await f.run("command.run", { command: "agentkib-connect", args: f.ticket })).text,
+    ).toContain("connected");
+    release.resolve();
+    await f.tick();
+    expect(f.calls.filter((call) => call.body.connectionError)).toHaveLength(0);
+    expect((await f.run("command.run", { command: "agentkib-status" })).text).toContain(
+      "is connected",
+    );
+    expect(f.dispatches).toBe(0);
+  });
+  it("does not run a superseded startup reconnect probe during explicit pairing", async () => {
     const credentialRead = deferred<void>();
     const credentialContinue = deferred<void>();
     const f = await fixture({
@@ -494,34 +627,146 @@ describe("Claude Code native session plugin", () => {
     await credentialRead.promise;
     const pairProbeRead = deferred<void>();
     const pairProbeContinue = deferred<void>();
-    const oldProbeRead = deferred<void>();
-    const oldProbeContinue = deferred<void>();
     let reads = 0;
     f.api.session.messages = async () => {
       reads++;
       if (reads === 1) {
         pairProbeRead.resolve();
         await pairProbeContinue.promise;
-      } else if (reads === 2) {
-        oldProbeRead.resolve();
-        await oldProbeContinue.promise;
       }
       return [];
     };
     const pairing = f.run("command.run", { command: "agentkib-connect", args: f.ticket });
     await pairProbeRead.promise;
     credentialContinue.resolve();
-    await oldProbeRead.promise;
-    try {
-      pairProbeContinue.resolve();
-      expect((await pairing).text).toContain("connected");
-      const hello = f.calls.find((call) => call.url.endsWith("/pair"))!.body;
-      expect(f.snapshots().at(-1).nativeCapabilities).toEqual(hello.nativeCapabilities);
-      expect(f.snapshots().at(-1).nativeCapabilities.available).toContain("credential-read");
-    } finally {
-      oldProbeContinue.resolve();
-      await f.tick();
-    }
+    pairProbeContinue.resolve();
+    expect((await pairing).text).toContain("connected");
+    await f.tick();
+    expect(reads).toBe(2); // The explicit pair probe and its first snapshot only.
+    const hello = f.calls.find((call) => call.url.endsWith("/pair"))!.body;
+    expect(f.snapshots().at(-1).nativeCapabilities).toEqual(hello.nativeCapabilities);
+    expect(f.snapshots().at(-1).nativeCapabilities.available).toContain("credential-read");
+  });
+  it("does not let a delayed reconnect identity invalidate a pair after session.end", async () => {
+    const credentialRead = deferred<void>();
+    const credentialContinue = deferred<void>();
+    const f = await fixture({
+      experiment: false,
+      connect: false,
+      storedCredential: true,
+      storeGetInterceptor: async (key) => {
+        if (key.startsWith("credentialPath:")) {
+          credentialRead.resolve();
+          await credentialContinue.promise;
+        }
+      },
+    });
+    await credentialRead.promise;
+    const identityRead = deferred<void>();
+    const identityContinue = deferred<void>();
+    const originalCwd = f.api.session.cwd;
+    let reads = 0;
+    f.api.session.cwd = async () => {
+      const cwd = await originalCwd();
+      if (++reads === 1) {
+        identityRead.resolve();
+        await identityContinue.promise;
+      }
+      return cwd;
+    };
+    credentialContinue.resolve();
+    await identityRead.promise;
+    await f.run("session.end", { reason: "clear" });
+    f.setIdentity({ cwd: "/isolated/workspace-after-clear" });
+    expect(
+      (await f.run("command.run", { command: "agentkib-connect", args: f.ticket })).text,
+    ).toContain("connected");
+    identityContinue.resolve();
+    await f.tick();
+    expect((await f.run("command.run", { command: "agentkib-status" })).text).toContain(
+      "is connected",
+    );
+    expect(f.events().filter((entry) => entry.event.reason === "native-identity-changed")).toEqual(
+      [],
+    );
+    expect(f.snapshots().at(-1).cwd).toBe("/isolated/workspace-after-clear");
+  });
+  it.each(["version", "id", "cwd"])(
+    "discards a superseded identity read after session.%s resolves",
+    async (method) => {
+      const f = await fixture({ experiment: false, connect: false });
+      const state: Value = initialState();
+      const read = deferred<void>();
+      const resume = deferred<void>();
+      const original = f.api.session[method];
+      f.api.session[method] = async () => {
+        const value = await original();
+        read.resolve();
+        await resume.promise;
+        return value;
+      };
+      const probing = probeCapabilities(f.api, state);
+      await read.promise;
+      state.generation++;
+      const current = { nativeId: randomUUID(), cwd: "/isolated/current-session" };
+      state.identity = current;
+      resume.resolve();
+      await expect(probing).rejects.toThrow("stale-native-identity");
+      expect(state.identity).toBe(current);
+      expect(state.closed).toBe(false);
+      expect(state.generation).toBe(1);
+      expect(f.calls).toEqual([]);
+    },
+  );
+  it.each([
+    ["tokens", 1.5],
+    ["window", 1.5],
+    ["tokens", Number.MAX_SAFE_INTEGER + 1],
+    ["window", Number.MAX_SAFE_INTEGER + 1],
+  ])("rejects a session-usage %s count of %s before pairing", async (key, value) => {
+    const f = await fixture({ experiment: false, connect: false, version: "2.1.307" });
+    f.api.session.usage = async () => ({ context: { tokens: 1, window: 100, [key]: value } });
+    const result = await f.run("command.run", { command: "agentkib-connect", args: f.ticket });
+    expect(result.text).toContain("does not currently support");
+    expect(f.calls.find((call) => call.url.endsWith("/pair"))?.body).toMatchObject({
+      connectionError: "bridge-capabilities-missing",
+      missingCapabilities: ["session-usage"],
+    });
+    expect(f.snapshots()).toEqual([]);
+  });
+  it.each([
+    ["tool", 0],
+    ["tool_use_id", 0],
+    ["tool", 257],
+    ["tool_use_id", 257],
+  ])("rejects a projected %s of length %s before pairing", async (key, length) => {
+    const f = await fixture({ experiment: false, connect: false, version: "2.1.307" });
+    f.setMessages([
+      {
+        role: "assistant",
+        text: "",
+        toolUses: [
+          { tool_use_id: "synthetic-id", tool: "synthetic-tool", [key]: "x".repeat(length) },
+        ],
+      },
+    ]);
+    const result = await f.run("command.run", { command: "agentkib-connect", args: f.ticket });
+    expect(result.text).toContain("does not currently support");
+    expect(f.calls.find((call) => call.url.endsWith("/pair"))?.body).toMatchObject({
+      connectionError: "bridge-capabilities-missing",
+      missingCapabilities: ["session-messages"],
+    });
+    expect(f.snapshots()).toEqual([]);
+  });
+  it("accepts projected tool identity and name at the snapshot length limit", async () => {
+    const f = await fixture({ experiment: false, connect: false, version: "2.1.307" });
+    const id = "i".repeat(256);
+    const name = "n".repeat(256);
+    f.setMessages([{ role: "assistant", text: "", toolUses: [{ tool_use_id: id, tool: name }] }]);
+    expect(
+      (await f.run("command.run", { command: "agentkib-connect", args: f.ticket })).text,
+    ).toContain("connected");
+    expect(f.snapshots().at(-1).toolItems).toMatchObject([{ id, name }]);
   });
   it("reports a missing version method as a capability failure without fabricating the CLI version", async () => {
     const f = await fixture({ connect: false });

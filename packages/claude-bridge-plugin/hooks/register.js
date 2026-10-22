@@ -147,6 +147,7 @@ export function initialState() {
     identity: null,
     instanceId: crypto.randomUUID(),
     connection: null,
+    connectionFailure: null,
     socketPath: null,
     credentialPath: null,
     revision: 0,
@@ -200,13 +201,20 @@ function compatibilityFailure(reason, cliVersion, missingCapabilities) {
   return error;
 }
 
+function requireGeneration(state, generation, reason) {
+  if (state.generation !== generation) throw new Error(reason);
+}
+
 async function identity($, state) {
+  const generation = state.generation;
   let version;
   try {
     version = await $.session.version();
   } catch {
+    requireGeneration(state, generation, "stale-native-identity");
     throw compatibilityFailure("bridge-capabilities-missing", undefined, ["session-identity"]);
   }
+  requireGeneration(state, generation, "stale-native-identity");
   const compatibility = claudeBridgeCompatibility(version?.version);
   if (compatibility === "invalid") throw compatibilityFailure("bridge-cli-unsupported");
   if (compatibility === "too-old")
@@ -215,12 +223,17 @@ async function identity($, state) {
   let cwd;
   try {
     nativeId = await $.session.id();
+    requireGeneration(state, generation, "stale-native-identity");
     cwd = await $.session.cwd();
   } catch {
+    requireGeneration(state, generation, "stale-native-identity");
     throw compatibilityFailure("bridge-capabilities-missing", version.version, [
       "session-identity",
     ]);
   }
+  // A completed host read can belong to the session that just ended. It must
+  // not overwrite or invalidate an identity explicitly paired in a later generation.
+  requireGeneration(state, generation, "stale-native-identity");
   if (
     typeof nativeId !== "string" ||
     !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(nativeId) ||
@@ -252,9 +265,11 @@ async function identity($, state) {
 export async function probeCapabilities($, state) {
   const generation = state.generation;
   const observed = await identity($, state);
+  requireGeneration(state, generation, "stale-capability-probe");
   const missing = [];
   try {
     const rows = await $.session.messages();
+    requireGeneration(state, generation, "stale-capability-probe");
     if (
       !Array.isArray(rows) ||
       rows.some(
@@ -268,11 +283,23 @@ export async function probeCapabilities($, state) {
       )
     )
       throw new Error("invalid-native-history");
+    if (
+      visibleTools(rows).some(
+        (tool) =>
+          tool.id.length === 0 ||
+          tool.id.length > 256 ||
+          tool.name.length === 0 ||
+          tool.name.length > 256,
+      )
+    )
+      throw new Error("invalid-native-history");
   } catch {
+    requireGeneration(state, generation, "stale-capability-probe");
     missing.push("session-messages");
   }
   try {
     const usage = await $.session.usage();
+    requireGeneration(state, generation, "stale-capability-probe");
     if (usage !== null && (typeof usage !== "object" || Array.isArray(usage)))
       throw new Error("invalid-native-usage");
     const context = usage?.context;
@@ -287,12 +314,13 @@ export async function probeCapabilities($, state) {
           (typeof value !== "number" ||
             !Number.isFinite(value) ||
             value < 0 ||
-            (key === "percent" && value > 100))
+            (key === "percent" ? value > 100 : !Number.isSafeInteger(value)))
         )
           throw new Error("invalid-native-usage");
       }
     }
   } catch {
+    requireGeneration(state, generation, "stale-capability-probe");
     missing.push("session-usage");
   }
   try {
@@ -300,9 +328,12 @@ export async function probeCapabilities($, state) {
     // This separate key never overwrites a saved credential path.
     const value = `agentkib-bridge:${PLUGIN_VERSION}:capabilities:1`;
     await $.store.set("compatibility:credential-store:1", value);
-    if ((await $.store.get("compatibility:credential-store:1")) !== value)
-      throw new Error("invalid-native-store");
+    requireGeneration(state, generation, "stale-capability-probe");
+    const stored = await $.store.get("compatibility:credential-store:1");
+    requireGeneration(state, generation, "stale-capability-probe");
+    if (stored !== value) throw new Error("invalid-native-store");
   } catch {
+    requireGeneration(state, generation, "stale-capability-probe");
     missing.push("credential-store");
   }
   try {
@@ -315,9 +346,11 @@ export async function probeCapabilities($, state) {
     )
       throw new Error("invalid-plugin-root");
     const manifest = JSON.parse(await $.fs.read(`${root}/package.json`));
+    requireGeneration(state, generation, "stale-capability-probe");
     if (manifest?.version !== PLUGIN_VERSION)
       throw compatibilityFailure("bridge-plugin-update-required", observed.cliVersion);
   } catch (error) {
+    requireGeneration(state, generation, "stale-capability-probe");
     if (error?.message === "bridge-plugin-update-required") throw error;
     missing.push("credential-read");
   }
@@ -449,6 +482,7 @@ function invalidate(state, reason) {
   }
   state.closed = true;
   state.connection = null;
+  state.connectionFailure = null;
 }
 
 async function request($, state, path, body, authenticated = true) {
@@ -815,6 +849,7 @@ async function connect($, state, ticket) {
     throw new Error("already-connected");
   const generation = ++state.generation;
   state.connection = null;
+  state.connectionFailure = null;
   state.socketPath = ticket.socketPath;
   let observed;
   try {
@@ -877,14 +912,109 @@ async function connect($, state, ticket) {
   await flush($, state);
 }
 
+// Diagnostic reports authenticate an existing binding without establishing a
+// lease. Fresh native identity reads are required even when version probing
+// failed before identity() could complete; cached identity is not evidence.
+async function reportReconnectFailure($, state, generation, failure) {
+  const current = () => state.generation === generation && !state.closed;
+  const nativeId = await $.session.id();
+  if (!current()) return;
+  const cwd = await $.session.cwd();
+  if (!current()) return;
+  if (
+    typeof nativeId !== "string" ||
+    !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(nativeId) ||
+    typeof cwd !== "string" ||
+    !cwd.startsWith("/") ||
+    cwd.includes("\0") ||
+    cwd.split("/").includes("..")
+  )
+    return;
+  const path = await $.store.get(`credentialPath:${nativeId}`);
+  if (!current()) return;
+  if (
+    typeof path !== "string" ||
+    !path.startsWith("/") ||
+    path.includes("\0") ||
+    path.split("/").includes("..")
+  )
+    return;
+  const credential = JSON.parse(await $.fs.read(path));
+  if (!current()) return;
+  if (
+    credential?.protocol !== 1 ||
+    credential.nativeId !== nativeId ||
+    credential.cwd !== cwd ||
+    credential.pluginVersion !== PLUGIN_VERSION ||
+    ["invalid", "too-old"].includes(claudeBridgeCompatibility(credential.cliVersion)) ||
+    !safeSocket(credential.socketPath) ||
+    typeof credential.bindingId !== "string" ||
+    !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(credential.bindingId) ||
+    typeof credential.token !== "string" ||
+    !/^[a-f0-9]{64}$/.test(credential.token)
+  )
+    return;
+  await $.http.fetch("http://localhost/v1/reconnect", {
+    socketPath: credential.socketPath,
+    method: "POST",
+    headers: { "Content-Type": "application/json", Authorization: `Bearer ${credential.token}` },
+    body: JSON.stringify({
+      protocol: 1,
+      pluginVersion: PLUGIN_VERSION,
+      bindingId: credential.bindingId,
+      nativeId,
+      cwd,
+      instanceId: state.instanceId,
+      connectionError: failure.reason,
+      ...(failure.cliVersion ? { cliVersion: failure.cliVersion } : {}),
+      ...(failure.missingCapabilities ? { missingCapabilities: failure.missingCapabilities } : {}),
+    }),
+  });
+}
+
 async function reconnect($, state) {
+  const generation = state.generation;
+  try {
+    await reconnectOnce($, state);
+  } catch (error) {
+    if (
+      state.generation === generation &&
+      !state.closed &&
+      [
+        "bridge-cli-too-old",
+        "bridge-cli-unsupported",
+        "bridge-capabilities-missing",
+        "bridge-plugin-update-required",
+      ].includes(error?.message)
+    ) {
+      const failure = {
+        reason: error.message,
+        ...(error.cliVersion ? { cliVersion: error.cliVersion } : {}),
+        ...(error.missingCapabilities ? { missingCapabilities: error.missingCapabilities } : {}),
+      };
+      state.connection = null;
+      state.connectionFailure = failure;
+      try {
+        await reportReconnectFailure($, state, generation, failure);
+      } catch {
+        // A local compatibility reason remains useful when the authenticated
+        // diagnostic cannot be delivered. Never substitute raw host errors.
+      }
+    }
+    throw error;
+  }
+}
+
+async function reconnectOnce($, state) {
   const generation = state.generation;
   const previousIdentity = await identity($, state);
   const path = await $.store.get(`credentialPath:${previousIdentity.nativeId}`);
+  if (state.generation !== generation || state.closed) throw new Error("stale-reconnect");
   if (typeof path !== "string" || !path.startsWith("/") || path.includes("\0")) return;
   // A terminal with no saved binding does not need history/file/store-write
   // probes on startup. Every actual reconnect still repeats the full probe.
   const observed = await probeCapabilities($, state);
+  if (state.generation !== generation || state.closed) throw new Error("stale-reconnect");
   const credential = JSON.parse(await $.fs.read(path));
   if (
     credential?.protocol !== 1 ||
@@ -916,6 +1046,7 @@ async function reconnect($, state) {
   if (state.generation !== generation || state.closed || state.connection !== connecting)
     throw new Error("stale-reconnect");
   state.connection = connectionFrom(response);
+  state.connectionFailure = null;
   state.credentialPath = path;
   state.closed = false;
   state.needsReconnect = false;
@@ -1000,7 +1131,12 @@ export function register(on) {
     text:
       state.connection && state.connection.leaseId !== "reconnecting" && !state.closed
         ? "AgentKib is connected to this session. Approvals and questions remain in the original terminal."
-        : "AgentKib bridge is not connected.",
+        : state.connectionFailure
+          ? connectionFailureText(
+              state.connectionFailure.reason,
+              state.connectionFailure.cliVersion,
+            )
+          : "AgentKib bridge is not connected.",
   }));
   on("ui.render", { component: "AbovePrompt" }, async ($, e, next) => {
     if (typeof e.props?.isWorking === "boolean" && !state.pendingSend) {

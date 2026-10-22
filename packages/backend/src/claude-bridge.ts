@@ -21,6 +21,7 @@ import {
   CLAUDE_BRIDGE_REQUIRED_CAPABILITIES,
   claudeBridgeCompatibility,
   missingClaudeBridgeCapabilities,
+  type ClaudeBridgeConnectionFailure,
   type ClaudeBridgeIdentity,
   type ClaudeBridgeCommand,
   type ClaudeBridgeEvent,
@@ -75,6 +76,41 @@ const bindingSchema = z
   .strict();
 type Binding = z.infer<typeof bindingSchema>;
 type Challenge = { target: ClaudeBridgeTarget; expires: number };
+type ConnectionAttempt = (
+  | { challenge: Challenge; bindingId?: never }
+  | { bindingId: string; challenge?: never }
+) & {
+  error?: string;
+  cliVersion?: string;
+  missingCapabilities?: string[];
+};
+const reportedCliVersion = z
+  .string()
+  .max(64)
+  .refine((version) => claudeBridgeCompatibility(version) !== "invalid")
+  .optional();
+const reportedMissingCapabilities = z
+  .array(z.enum(CLAUDE_BRIDGE_REQUIRED_CAPABILITIES as [string, ...string[]]))
+  .max(CLAUDE_BRIDGE_REQUIRED_CAPABILITIES.length)
+  .optional();
+const reconnectFailureSchema = z
+  .object({
+    protocol: z.literal(1),
+    pluginVersion: z.literal(CLAUDE_BRIDGE_PLUGIN_VERSION),
+    bindingId: uuid,
+    nativeId: uuid,
+    cwd: z.string().min(1).max(4096),
+    instanceId: uuid,
+    connectionError: z.enum([
+      "bridge-cli-too-old",
+      "bridge-cli-unsupported",
+      "bridge-capabilities-missing",
+      "bridge-plugin-update-required",
+    ]),
+    cliVersion: reportedCliVersion,
+    missingCapabilities: reportedMissingCapabilities,
+  })
+  .strict();
 type Pending = {
   command: ClaudeBridgeCommand;
   requestId: string;
@@ -187,10 +223,7 @@ export class ClaudeBridge {
   #bindings = new Map<string, Binding>();
   #connections = new Map<string, Connection>();
   #challenges = new Map<string, Challenge>();
-  #connectionAttempts = new Map<
-    string,
-    { challenge: Challenge; error?: string; cliVersion?: string; missingCapabilities?: string[] }
-  >();
+  #connectionAttempts = new Map<string, ConnectionAttempt>();
   #server?: Server;
   #listening?: Promise<void>;
   #socketPath?: string;
@@ -366,7 +399,8 @@ export class ClaudeBridge {
       // its session and explained in the desktop panel. The map remains bounded.
       if (item.expires + 300_000 < Date.now() || item.target.sessionId === input.sessionId) {
         this.#challenges.delete(ticket);
-        this.#connectionAttempts.delete(item.target.sessionId);
+        if (this.#connectionAttempts.get(item.target.sessionId)?.challenge === item)
+          this.#connectionAttempts.delete(item.target.sessionId);
       }
     if (this.#challenges.size >= 64) throw new Error("claude-bridge-busy");
     const ticket = randomBytes(32).toString("hex");
@@ -412,12 +446,21 @@ export class ClaudeBridge {
       (row.inflight !== null &&
         (!online || !row.inflight.turnId || snapshot?.currentTurnId !== row.inflight.turnId));
     const gap = connection?.gap === true;
+    const attempt = this.#connectionAttempts.get(id);
+    const connectionFailure: ClaudeBridgeConnectionFailure | null =
+      valid && !row.revoked && !online && attempt?.bindingId === row.bindingId && attempt.error
+        ? {
+            reason: attempt.error,
+            cliVersion: attempt.cliVersion,
+            missingCapabilities: attempt.missingCapabilities,
+          }
+        : null;
     const reason = !valid
       ? "claude-bridge-session-unavailable"
       : uncertain
         ? "control-outcome-unconfirmed"
         : !online
-          ? "claude-bridge-disconnected"
+          ? (connectionFailure?.reason ?? "claude-bridge-disconnected")
           : gap
             ? "claude-bridge-event-gap"
             : snapshot?.waiting === "permission"
@@ -455,6 +498,7 @@ export class ClaudeBridge {
       connectionGeneration: connection?.leaseId ?? this.options.bootId,
       cliVersion: connection ? `${connection.identity.cliVersion} (Claude Code)` : undefined,
       bridgeCompatibility: valid ? (compatibilityStatus(connection) ?? null) : null,
+      bridgeConnectionFailure: connectionFailure,
       revision: connection?.revision ?? this.#revision,
       status,
       reason,
@@ -907,15 +951,8 @@ export class ClaudeBridge {
                 "unsupported-native-identity",
                 "native-identity-changed",
               ]),
-              cliVersion: z
-                .string()
-                .max(64)
-                .refine((version) => claudeBridgeCompatibility(version) !== "invalid")
-                .optional(),
-              missingCapabilities: z
-                .array(z.enum(CLAUDE_BRIDGE_REQUIRED_CAPABILITIES as [string, ...string[]]))
-                .max(CLAUDE_BRIDGE_REQUIRED_CAPABILITIES.length)
-                .optional(),
+              cliVersion: reportedCliVersion,
+              missingCapabilities: reportedMissingCapabilities,
             })
             .strict()
             .parse(value);
@@ -981,8 +1018,8 @@ export class ClaudeBridge {
         this.#save();
         this.#writeCredential(row);
         if (old) rmSync(this.#credentialPath(old.bindingId), { force: true });
-        const connection = this.#newConnection(row, hello);
         this.#connectionAttempts.delete(target.sessionId);
+        const connection = this.#newConnection(row, hello);
         reply(200, {
           protocol: 1,
           bindingId: row.bindingId,
@@ -1016,6 +1053,39 @@ export class ClaudeBridge {
         return;
       }
       if (request.url === CLAUDE_BRIDGE_PATHS.reconnect) {
+        if ("connectionError" in value) {
+          if (
+            !("nativeId" in value) ||
+            value.nativeId !== row.target.nativeId ||
+            !("cwd" in value) ||
+            value.cwd !== row.target.workspace
+          )
+            throw new Error("bridge-identity-mismatch");
+          const report = reconnectFailureSchema.parse(value);
+          // An authenticated old terminal may explain an offline binding, but
+          // cannot replace a newer lease or the user's current pairing attempt.
+          const activeChallenge = [...this.#challenges.values()].some(
+            (challenge) =>
+              challenge.target.sessionId === row.target.sessionId &&
+              challenge.expires >= Date.now(),
+          );
+          const reported = !this.#connections.has(row.target.sessionId) && !activeChallenge;
+          if (reported) {
+            const attempt: ConnectionAttempt = {
+              bindingId: row.bindingId,
+              error: report.connectionError,
+              cliVersion: report.cliVersion,
+              missingCapabilities: report.missingCapabilities,
+            };
+            if (stable(this.#connectionAttempts.get(row.target.sessionId)) !== stable(attempt)) {
+              this.#connectionAttempts.set(row.target.sessionId, attempt);
+              ++this.#revision;
+              this.#publish(row.target.sessionId);
+            }
+          }
+          reply(200, { reported });
+          return;
+        }
         requireCompatibility(value);
         const hello = bridgeIdentitySchema.extend({ bindingId: uuid }).strict().parse(value);
         if (hello.nativeId !== row.target.nativeId || hello.cwd !== row.target.workspace)
@@ -1024,6 +1094,7 @@ export class ClaudeBridge {
         row.cliVersion = hello.cliVersion;
         this.#save();
         this.#writeCredential(row);
+        this.#connectionAttempts.delete(row.target.sessionId);
         const connection = this.#newConnection(row, hello);
         reply(200, {
           protocol: 1,

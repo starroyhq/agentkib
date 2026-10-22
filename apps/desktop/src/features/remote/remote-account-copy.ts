@@ -1,16 +1,16 @@
 export const remoteAccountCopy = {
   "zh-CN": {
     title: "账号",
-    intro: "账号仅用于公网远程访问的设备登记与管理。本地会话和 Codex 无需登录。",
+    intro: "账号仅用于远程访问的设备登记与管理。本地会话和 Codex 无需登录。",
     loading: "正在读取账号状态…",
     signedOut: "未登录",
-    login: "在浏览器中登录或注册",
+    login: "在浏览器中登录",
     cancel: "取消登录",
-    signingIn: "请在系统浏览器中完成登录。登录成功后，仍需手动开启远程访问。",
+    signingIn: "请在浏览器中完成登录",
     manage: "管理账号",
     logout: "退出并暂停远程访问",
     logoutHint:
-      "退出保留设备归属和手机授权，本地 Codex 任务继续运行。重新登录原账号后，可手动恢复公网访问。",
+      "退出保留设备归属和手机授权，本地 Codex 任务继续运行。重新登录原账号后，可手动恢复远程访问。",
     claim: "将这台电脑绑定到当前账号",
     unclaimed:
       "这台电脑尚未绑定账号。绑定会暂停远程访问，并保留连接地址和已有手机授权；成功后请手动恢复。",
@@ -31,21 +31,21 @@ export const remoteAccountCopy = {
     revokeFailed:
       "已在本机退出并暂停远程访问，但未能确认服务器上的登录会话已撤销。请在账号管理中检查并撤销该登录会话。",
     suspended: "账号当前不可用，请在账号管理中检查状态。",
-    claimPending: "设备绑定结果待核对，公网访问保持暂停。请重新登录原账号进行核对。",
+    claimPending: "设备绑定结果待核对，远程访问保持暂停。请重新登录原账号进行核对。",
     profileFailed: "账号状态暂未刷新，请重试核对设备配额。",
   },
   "zh-TW": {
     title: "帳號",
-    intro: "帳號僅用於公網遠端存取的裝置登記與管理。本機對話和 Codex 無需登入。",
+    intro: "帳號僅用於遠端存取的裝置登記與管理。本機對話和 Codex 無需登入。",
     loading: "正在讀取帳號狀態…",
     signedOut: "未登入",
-    login: "在瀏覽器中登入或註冊",
+    login: "在瀏覽器中登入",
     cancel: "取消登入",
-    signingIn: "請在系統瀏覽器中完成登入。登入成功後，仍需手動啟用遠端存取。",
+    signingIn: "請在瀏覽器中完成登入",
     manage: "管理帳號",
     logout: "登出並暫停遠端存取",
     logoutHint:
-      "登出保留裝置歸屬和手機授權，本機 Codex 任務繼續執行。重新登入原帳號後，可手動恢復公網存取。",
+      "登出保留裝置歸屬和手機授權，本機 Codex 任務繼續執行。重新登入原帳號後，可手動恢復遠端存取。",
     claim: "將這台電腦綁定至目前帳號",
     unclaimed:
       "這台電腦尚未綁定帳號。綁定會暫停遠端存取，並保留連線位址和既有手機授權；成功後請手動恢復。",
@@ -66,7 +66,7 @@ export const remoteAccountCopy = {
     revokeFailed:
       "已在本機登出並暫停遠端存取，但無法確認伺服器上的登入工作階段已撤銷。請在帳號管理中檢查並撤銷該登入工作階段。",
     suspended: "帳號目前無法使用，請在帳號管理中檢查狀態。",
-    claimPending: "裝置綁定結果待核對，公網存取保持暫停。請重新登入原帳號核對。",
+    claimPending: "裝置綁定結果待核對，遠端存取保持暫停。請重新登入原帳號核對。",
     profileFailed: "帳號狀態尚未更新，請重試核對裝置配額。",
   },
   "en-US": {
@@ -75,10 +75,9 @@ export const remoteAccountCopy = {
       "Your account registers and manages computers for public remote access. Local conversations and Codex do not require sign-in.",
     loading: "Loading account status…",
     signedOut: "Signed out",
-    login: "Sign in or register in browser",
+    login: "Sign in with your browser",
     cancel: "Cancel sign-in",
-    signingIn:
-      "Finish signing in in your system browser. Enable remote access manually after signing in.",
+    signingIn: "Finish signing in in your browser",
     manage: "Manage account",
     logout: "Sign out and pause public access",
     logoutHint:
@@ -115,10 +114,9 @@ export const remoteAccountCopy = {
       "アカウントは公衆ネットワーク経由のリモート接続の端末登録と管理にのみ使用します。ローカルの会話や Codex にログインは不要です。",
     loading: "アカウントの状態を読み込み中…",
     signedOut: "未ログイン",
-    login: "ブラウザーでログイン・登録",
+    login: "ブラウザーでログイン",
     cancel: "ログインをキャンセル",
-    signingIn:
-      "システムブラウザーでログインしてください。ログイン後、リモートアクセスを手動で有効にします。",
+    signingIn: "ブラウザーでログインしてください",
     manage: "アカウントを管理",
     logout: "ログアウトして公衆接続を一時停止",
     logoutHint:

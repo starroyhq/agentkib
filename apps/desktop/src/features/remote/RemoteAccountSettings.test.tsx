@@ -49,7 +49,7 @@ afterEach(cleanup);
 
 it("starts browser sign-in without enabling remote access and accepts async completion", async () => {
   render(<RemoteAccountSettings />);
-  const login = await screen.findByRole("button", { name: "Sign in or register in browser" });
+  const login = await screen.findByRole("button", { name: "Sign in with your browser" });
   await waitFor(() => expect(login).toBeEnabled());
   request.mockResolvedValueOnce({ phase: "signing-in", secureStorage: true });
   fireEvent.click(login);
@@ -111,7 +111,7 @@ it("blocks login without safe storage and never renders raw service errors", asy
   });
   render(<RemoteAccountSettings />);
   await screen.findByText(remoteAccountCopy["en-US"].storage);
-  expect(screen.getByRole("button", { name: "Sign in or register in browser" })).toBeDisabled();
+  expect(screen.getByRole("button", { name: "Sign in with your browser" })).toBeDisabled();
   expect(screen.queryByText("server-supplied-secret")).toBeNull();
   expect(screen.getByRole("alert")).toHaveTextContent(remoteAccountCopy["en-US"].failed);
 });
@@ -127,3 +127,14 @@ it.each(Object.keys(remoteAccountCopy) as (keyof typeof remoteAccountCopy)[])(
     expect(screen.getByRole("button", { name: remoteAccountCopy[locale].login })).toBeVisible();
   },
 );
+
+it("cancels an in-progress browser sign-in without changing Web access", async () => {
+  request.mockResolvedValue({ phase: "signing-in", secureStorage: true });
+  render(<RemoteAccountSettings variant="step" />);
+  const cancel = await screen.findByRole("button", { name: "Cancel sign-in" });
+  request.mockResolvedValueOnce(signedOut);
+  fireEvent.click(cancel);
+  expect(await screen.findByRole("button", { name: "Sign in with your browser" })).toBeEnabled();
+  expect(request).toHaveBeenLastCalledWith({ operation: "cancel-login" });
+  expect(refresh).not.toHaveBeenCalled();
+});

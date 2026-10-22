@@ -6,7 +6,7 @@ export const codePairingCopy: Record<
 > = {
   "zh-CN": {
     title: "输入授权码，连接电脑",
-    info: "输入电脑上 AgentKib 显示的 8 位授权码，即可直接连接，无需再次确认。",
+    info: "输入电脑上的 AgentKib 显示的授权码，即可直接连接，无需再次确认。",
     code: "授权码",
     connect: "连接并开始使用",
     scope:
@@ -16,7 +16,7 @@ export const codePairingCopy: Record<
   },
   "zh-TW": {
     title: "輸入授權碼，連接電腦",
-    info: "輸入電腦上 AgentKib 顯示的 8 位授權碼，即可直接連線，無需再次確認。",
+    info: "輸入電腦上的 AgentKib 顯示的授權碼，即可直接連線，無需再次確認。",
     code: "授權碼",
     connect: "連線並開始使用",
     scope:
@@ -26,7 +26,7 @@ export const codePairingCopy: Record<
   },
   "en-US": {
     title: "Enter an access code to connect",
-    info: "Enter the 8-digit access code shown in AgentKib on your computer. No second confirmation is needed.",
+    info: "Enter the access code shown in AgentKib on your computer. No second confirmation is needed.",
     code: "Access code",
     connect: "Connect and start using",
     scope:
@@ -36,7 +36,7 @@ export const codePairingCopy: Record<
   },
   "ja-JP": {
     title: "認証コードでパソコンに接続",
-    info: "パソコンの AgentKib に表示された 8 桁の認証コードを入力すると、追加の確認なしで接続できます。",
+    info: "コンピューター上の AgentKib に表示された認証コードを入力すると、追加の確認なしで接続できます。",
     code: "認証コード",
     connect: "接続して利用する",
     scope:

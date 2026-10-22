@@ -17,6 +17,7 @@ import test from "node:test";
 import { setTimeout as delay } from "node:timers/promises";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
+import { spawnPowerShell } from "./headless-powershell.mjs";
 
 const runFile = promisify(execFile);
 // Use the same PowerShell edition as the control harness and Actions shell.
@@ -136,6 +137,10 @@ test("a sparse release helper resolves the selected source through AGENTKIB_SOUR
   await mkdir(helpers, { recursive: true });
   const copied = path.join(helpers, "windows-installer-policy.test.mjs");
   await copyFile(fileURLToPath(import.meta.url), copied);
+  await copyFile(
+    fileURLToPath(new URL("./headless-powershell.mjs", import.meta.url)),
+    path.join(helpers, "headless-powershell.mjs"),
+  );
   const environment = { ...process.env, AGENTKIB_SOURCE_ROOT: repository };
   // This is a new runner, not a child participating in the parent's test IPC.
   delete environment.NODE_TEST_CONTEXT;
@@ -386,8 +391,7 @@ try {
   }
 } finally { $stream.Dispose() }
 `;
-  const child = spawn(
-    powershell,
+  const child = spawnPowerShell(
     [
       "-NoProfile",
       "-NonInteractive",
@@ -432,6 +436,7 @@ async function denyDirectoryListing(app) {
         Buffer.from(source, "utf16le").toString("base64"),
       ],
       {
+        windowsHide: true,
         env: {
           ...process.env,
           AGENTKIB_NSIS_ACL_ROOT: app.installation,

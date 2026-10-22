@@ -18,6 +18,7 @@ export function Dialog({
   className,
   bodyClassName,
   description,
+  headerAdornment,
 }: {
   title: string;
   closeLabel: string;
@@ -28,6 +29,7 @@ export function Dialog({
   className?: string;
   bodyClassName?: string;
   description?: string;
+  headerAdornment?: ReactNode;
 }) {
   const returnFocus = useRef<HTMLElement | null>(
     document.activeElement instanceof HTMLElement ? document.activeElement : null,
@@ -62,6 +64,7 @@ export function Dialog({
           )}
         >
           <DialogTitle>{title}</DialogTitle>
+          {headerAdornment && <div className="mr-10 shrink-0">{headerAdornment}</div>}
           <DialogClose
             className="absolute top-4 right-4 grid size-11 place-items-center rounded-md hover:bg-accent"
             aria-label={closeLabel}

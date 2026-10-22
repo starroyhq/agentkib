@@ -1,16 +1,14 @@
 import assert from "node:assert/strict";
-import { spawn, spawnSync } from "node:child_process";
 import { once } from "node:events";
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
+import { spawnPowerShell, spawnPowerShellSync } from "./headless-powershell.mjs";
 
 const helper = fileURLToPath(new URL("./windows-file-removal-diagnostics.ps1", import.meta.url));
-const powershell = process.env.AGENTKIB_PWSH || "pwsh";
-const runtime = spawnSync(
-  powershell,
+const runtime = spawnPowerShellSync(
   ["-NoProfile", "-NonInteractive", "-Command", "$PSVersionTable.PSVersion.Major"],
   {
     encoding: "utf8",
@@ -26,7 +24,7 @@ if (process.platform === "win32") {
 }
 
 function runPowerShell(source, environment = {}) {
-  const result = spawnSync(powershell, ["-NoProfile", "-NonInteractive", "-Command", source], {
+  const result = spawnPowerShellSync(["-NoProfile", "-NonInteractive", "-Command", source], {
     encoding: "utf8",
     timeout: 30_000,
     env: { ...process.env, AGENTKIB_DIAGNOSTIC_HELPER: helper, ...environment },
@@ -405,8 +403,7 @@ try {
     assert.equal(missing.attributesErrorCode, 2);
     assert.equal(missing.deleteAccessProbe.win32ErrorCode, 2);
 
-    const locker = spawn(
-      powershell,
+    const locker = spawnPowerShell(
       [
         "-NoProfile",
         "-NonInteractive",

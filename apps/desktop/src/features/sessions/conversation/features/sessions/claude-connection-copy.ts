@@ -2,6 +2,30 @@ import { surfaceCopy, type SessionSurface } from "./session-surface-copy";
 type Locale = "zh-CN" | "zh-TW" | "en-US" | "ja-JP";
 
 const zh = {
+  flow: "在终端里继续这条会话，AgentKib 同步显示；发送、停止和审批都在终端里做。",
+  platformVersion: "仅 macOS · 需要 Claude Code {version}",
+  installStep: "安装插件（只需一次）",
+  generateStep: "生成连接码",
+  pasteStep: "在终端粘贴并回车",
+  pasteHint: "粘贴后，这里会显示连接状态",
+  waiting: "等待连接…",
+  connectedBadge: "已连接",
+  connectedTitle: "已连接终端",
+  connectedInfo: "在终端中继续这条会话，这里会同步显示",
+  expiredTitle: "连接码已过期",
+  expiredInfo: "重新生成后，把新的连接命令粘贴到终端。",
+  regenerate: "重新生成",
+  disconnectedInfo: "请在终端重新执行连接命令。",
+  unsupportedTitle: "连接终端目前只支持 macOS",
+  statusUnavailable: "暂时无法核实终端连接状态，请稍后检查连接。",
+  copy: "复制",
+  copyOptions: "更多复制选项",
+  disconnectShort: "断开",
+  expiresAt: "{time} 前有效",
+  clearConnection: "清除连接…",
+  confirmClearConnection: "确认清除连接",
+  clearConnectionInfo:
+    "清除后会撤销该终端连接的凭据和未使用的连接码；终端照常运行，AgentKib 停止同步。",
   disconnectBeforeCode: "若要生成新的连接码，请先断开当前终端连接。",
   invalidCode: "连接码无效。请重新生成，并在目标终端使用完整的新连接码。",
   versionMismatch: "Claude Code 或插件版本不匹配。请按安装指引更新后重新连接。",
@@ -28,7 +52,7 @@ const zh = {
   copyCode: "复制连接码",
   copied: "已复制",
   copyFailed: "复制失败，请手动选择并复制。",
-  codeSafety: "连接码只用于你自己的终端，请勿发给他人。",
+  codeSafety: "只在你自己的终端使用，不要发给别人",
   disconnectInfo: "断开后，终端照常运行，AgentKib 停止同步。",
   confirmDisconnect: "确认断开",
   cancel: "取消",
@@ -41,8 +65,7 @@ const zh = {
   history: "仅可查看",
   notConnected: "未连接",
   info: "审批和提问在终端中处理。关闭 AgentKib 不会停止终端。",
-  disconnected:
-    "尚未连接终端。请在这台电脑上的 AgentKib 打开连接指引，并在目标 Claude Code 会话中连接。",
+  disconnected: "尚未连接终端。请在所选 Claude Code 会话的终端中连接。",
   lost: "终端连接已断开，正在重新检查会话状态。",
   approval: "正在等待工具审批，请在终端处理。",
   question: "正在等待问题回答，请在终端处理。",
@@ -65,6 +88,30 @@ type Copy = { [K in keyof typeof zh]: string };
 export const claudeConnectionCopy: Record<Locale, Copy> = {
   "zh-CN": zh,
   "zh-TW": {
+    flow: "在終端裡繼續這段對話，AgentKib 同步顯示；傳送、停止和審批都在終端裡進行。",
+    platformVersion: "僅 macOS · 需要 Claude Code {version}",
+    installStep: "安裝外掛（只需一次）",
+    generateStep: "產生連線碼",
+    pasteStep: "在終端貼上並按下 Enter",
+    pasteHint: "貼上後，這裡會顯示連線狀態",
+    waiting: "等待連線…",
+    connectedBadge: "已連線",
+    connectedTitle: "已連接終端",
+    connectedInfo: "在終端中繼續這段對話，這裡會同步顯示",
+    expiredTitle: "連線碼已過期",
+    expiredInfo: "重新產生後，把新的連線命令貼到終端。",
+    regenerate: "重新產生",
+    disconnectedInfo: "請在終端重新執行連線命令。",
+    unsupportedTitle: "連接終端目前僅支援 macOS",
+    statusUnavailable: "暫時無法核實終端連線狀態，請稍後檢查連線。",
+    copy: "複製",
+    copyOptions: "更多複製選項",
+    disconnectShort: "中斷",
+    expiresAt: "{time} 前有效",
+    clearConnection: "清除連線…",
+    confirmClearConnection: "確認清除連線",
+    clearConnectionInfo:
+      "清除後會撤銷此終端連線的憑據與未使用的連線碼；終端照常執行，AgentKib 停止同步。",
     disconnectBeforeCode: "若要產生新的連線碼，請先中斷目前終端連線。",
     invalidCode: "連線碼無效。請重新產生，並在目標終端使用完整的新連線碼。",
     versionMismatch: "Claude Code 或外掛版本不符。請依安裝指引更新後重新連接。",
@@ -91,7 +138,7 @@ export const claudeConnectionCopy: Record<Locale, Copy> = {
     copyCode: "複製連線碼",
     copied: "已複製",
     copyFailed: "複製失敗，請手動選取並複製。",
-    codeSafety: "連線碼僅用於你自己的終端，請勿傳給他人。",
+    codeSafety: "只在你自己的終端使用，不要傳給別人",
     disconnectInfo: "中斷後，終端照常執行，AgentKib 停止同步。",
     confirmDisconnect: "確認中斷",
     cancel: "取消",
@@ -104,8 +151,7 @@ export const claudeConnectionCopy: Record<Locale, Copy> = {
     history: "僅可查看",
     notConnected: "未連線",
     info: "核准和提問在終端中處理。關閉 AgentKib 不會停止終端。",
-    disconnected:
-      "尚未連接終端。請在這台電腦上的 AgentKib 開啟連線指引，並在目標 Claude Code 對話中連接。",
+    disconnected: "尚未連接終端。請在所選 Claude Code 對話的終端中連接。",
     lost: "終端連線已中斷，正在重新檢查對話狀態。",
     approval: "正在等待工具審批，請在終端處理。",
     question: "正在等待問題回答，請在終端處理。",
@@ -125,6 +171,31 @@ export const claudeConnectionCopy: Record<Locale, Copy> = {
     localOnly: "外掛安裝與連線管理僅在這台電腦上的 AgentKib 提供。",
   },
   "en-US": {
+    flow: "Continue this session in the terminal; AgentKib keeps it in sync. Send messages, stop turns, and handle approvals in the terminal.",
+    platformVersion: "macOS only · Requires Claude Code {version}",
+    installStep: "Install the plugin (once)",
+    generateStep: "Generate connection code",
+    pasteStep: "Paste into the terminal and press Enter",
+    pasteHint: "The connection status will appear here after you paste",
+    waiting: "Waiting for connection…",
+    connectedBadge: "Connected",
+    connectedTitle: "Terminal connected",
+    connectedInfo: "Continue this session in the terminal. It stays in sync here.",
+    expiredTitle: "Connection code expired",
+    expiredInfo: "Generate a new code and paste the new connection command into the terminal.",
+    regenerate: "Generate again",
+    disconnectedInfo: "Run the connection command again in the terminal.",
+    unsupportedTitle: "Connecting a terminal is currently supported only on macOS",
+    statusUnavailable:
+      "The terminal connection status cannot be checked right now. Check the connection again shortly.",
+    copy: "Copy",
+    copyOptions: "More copy options",
+    disconnectShort: "Disconnect",
+    expiresAt: "Valid until {time}",
+    clearConnection: "Clear connection…",
+    confirmClearConnection: "Clear connection",
+    clearConnectionInfo:
+      "Clearing revokes this terminal connection's credentials and unused connection codes. The terminal keeps running; AgentKib stops synchronizing.",
     disconnectBeforeCode:
       "Disconnect the current terminal before generating a new connection code.",
     invalidCode:
@@ -175,7 +246,7 @@ export const claudeConnectionCopy: Record<Locale, Copy> = {
     notConnected: "Not connected",
     info: "Handle approvals and questions in the terminal. Closing AgentKib does not stop the terminal.",
     disconnected:
-      "The terminal is not connected. Open the connection guide in AgentKib on this computer and connect from the target Claude Code session.",
+      "The terminal is not connected. Connect from the selected Claude Code session's terminal.",
     lost: "The terminal disconnected. Rechecking the session state.",
     approval: "Waiting for tool approval. Please handle it in the terminal.",
     question: "Waiting for an answer. Please respond in the terminal.",
@@ -201,6 +272,31 @@ export const claudeConnectionCopy: Record<Locale, Copy> = {
       "Plugin installation and connection management are only available in AgentKib on this computer.",
   },
   "ja-JP": {
+    flow: "この会話はターミナルで続け、AgentKib に同期して表示します。送信、停止、承認はターミナルで行ってください。",
+    platformVersion: "macOS のみ · Claude Code {version} が必要です",
+    installStep: "プラグインをインストール（初回のみ）",
+    generateStep: "接続コードを生成",
+    pasteStep: "ターミナルに貼り付けて Enter を押す",
+    pasteHint: "貼り付けると、ここに接続状態が表示されます",
+    waiting: "接続待ち…",
+    connectedBadge: "接続済み",
+    connectedTitle: "ターミナルに接続済み",
+    connectedInfo: "この会話はターミナルで続けてください。ここにも同期して表示されます。",
+    expiredTitle: "接続コードの期限切れ",
+    expiredInfo: "再生成して、新しい接続コマンドをターミナルに貼り付けてください。",
+    regenerate: "再生成",
+    disconnectedInfo: "ターミナルで接続コマンドをもう一度実行してください。",
+    unsupportedTitle: "ターミナル接続は現在 macOS のみ対応です",
+    statusUnavailable:
+      "ターミナルの接続状態を現在確認できません。しばらくしてから接続を確認してください。",
+    copy: "コピー",
+    copyOptions: "その他のコピー操作",
+    disconnectShort: "切断",
+    expiresAt: "{time} まで有効",
+    clearConnection: "接続をクリア…",
+    confirmClearConnection: "接続をクリア",
+    clearConnectionInfo:
+      "クリアすると、このターミナル接続の認証情報と未使用の接続コードを無効にします。ターミナルは実行を続け、AgentKib は同期を停止します。",
     disconnectBeforeCode:
       "新しい接続コードを生成するには、現在のターミナル接続を先に切断してください。",
     invalidCode:
@@ -252,7 +348,7 @@ export const claudeConnectionCopy: Record<Locale, Copy> = {
     notConnected: "未接続",
     info: "承認と質問はターミナルで対応してください。AgentKib を閉じてもターミナルは停止しません。",
     disconnected:
-      "ターミナルに未接続です。このコンピューター上の AgentKib で接続ガイドを開き、対象の Claude Code 会話から接続してください。",
+      "ターミナルに未接続です。選択した Claude Code 会話のターミナルから接続してください。",
     lost: "ターミナルとの接続が切れました。会話の状態を再確認しています。",
     approval: "ツールの承認待ちです。ターミナルで処理してください。",
     question: "回答待ちです。ターミナルで回答してください。",
@@ -327,9 +423,28 @@ export function claudeConnectionReason(
   }
 }
 
+const webDisconnected: Record<Locale, string> = {
+  "zh-CN": "尚未连接终端。请在电脑上的 AgentKib 打开连接指引，并在目标 Claude Code 会话中连接。",
+  "zh-TW": "尚未連接終端。請在電腦上的 AgentKib 開啟連線指引，並在目標 Claude Code 對話中連接。",
+  "en-US":
+    "The terminal is not connected. Open the connection guide in AgentKib on your computer and connect from the target Claude Code session.",
+  "ja-JP":
+    "ターミナルに未接続です。コンピューター上の AgentKib で接続ガイドを開き、対象の Claude Code 会話から接続してください。",
+};
+const webCopies = new Map<Locale, Copy>();
+
 export function claudeConnectionCopyForSurface(
   locale: Locale,
   surface: SessionSurface = "desktop",
 ) {
-  return surfaceCopy(claudeConnectionCopy[locale], surface, locale);
+  if (surface === "desktop") return claudeConnectionCopy[locale];
+  let copy = webCopies.get(locale);
+  if (!copy) {
+    copy = {
+      ...surfaceCopy(claudeConnectionCopy[locale], surface, locale),
+      disconnected: webDisconnected[locale],
+    };
+    webCopies.set(locale, copy);
+  }
+  return copy;
 }

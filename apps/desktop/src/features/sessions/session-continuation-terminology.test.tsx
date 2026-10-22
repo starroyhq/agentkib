@@ -415,8 +415,8 @@ describe("visible session continuation terminology", () => {
       fireEvent.click(screen.getByRole("button", { name: "Inspect session actions" }));
       const actions = await screen.findByRole("dialog");
       expect(
-        within(actions).getByRole("button", { name: `${expected.terminalTitle}…` }),
-      ).toBeVisible();
+        within(actions).queryByRole("button", { name: `${expected.terminalTitle}…` }),
+      ).not.toBeInTheDocument();
       expect(within(actions).getByRole("heading", { name: expected.queue })).toBeVisible();
       expectNoExecutionHandoff(expected.locale, actions);
       expect(session.codexAction).not.toHaveBeenCalled();

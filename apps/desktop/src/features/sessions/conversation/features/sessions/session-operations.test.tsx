@@ -18,7 +18,14 @@ vi.mock("./codex-tools", () => ({
   CodexTools: ({ open, shortcuts }: { open: boolean; shortcuts: ReactNode }) =>
     open ? <section>{shortcuts}</section> : null,
 }));
-vi.mock("./claude-bridge-panel", () => ({ ClaudeBridgePanel: () => <p>Terminal wizard</p> }));
+vi.mock("./claude-bridge-panel", () => ({
+  ClaudeBridgePanel: ({ onClose }: { onClose?: () => void }) => (
+    <section role="dialog" aria-label={claudeConnectionCopy[session.locale].title}>
+      <p>Terminal wizard</p>
+      <button onClick={onClose}>Close terminal</button>
+    </section>
+  ),
+}));
 vi.mock("../../components/dialog", () => ({
   Dialog: ({ title, children }: { title: string; children: ReactNode }) => (
     <section role="dialog" aria-label={title}>
@@ -65,21 +72,22 @@ beforeEach(() => {
 afterEach(cleanup);
 describe("Claude terminal setup entry", () => {
   it.each(["zh-CN", "zh-TW", "ja-JP", "en-US"] as const)(
-    "opens the existing wizard from session actions in %s",
+    "keeps the terminal dialog independent of session actions in %s",
     (locale) => {
       session.locale = locale;
       session.t = conversationWords(locale);
       render(<View />);
       expect(screen.queryByText("Terminal wizard")).not.toBeInTheDocument();
-      fireEvent.click(
-        screen.getByRole("button", { name: `${claudeConnectionCopy[locale].title}…` }),
-      );
-      expect(
-        screen.getByRole("dialog", { name: claudeConnectionCopy[locale].title }),
-      ).toHaveTextContent("Terminal wizard");
       expect(
         screen.queryByRole("button", { name: `${claudeConnectionCopy[locale].title}…` }),
       ).not.toBeInTheDocument();
+      fireEvent.click(screen.getByRole("button", { name: "Open terminal directly" }));
+      expect(screen.getAllByRole("dialog")).toHaveLength(1);
+      expect(
+        screen.getByRole("dialog", { name: claudeConnectionCopy[locale].title }),
+      ).toHaveTextContent("Terminal wizard");
+      fireEvent.click(screen.getByRole("button", { name: "Close terminal" }));
+      expect(screen.queryByText("Terminal wizard")).not.toBeInTheDocument();
     },
   );
   it.each(["linux", "win32", undefined] as const)(
@@ -107,9 +115,13 @@ describe("Claude terminal setup entry", () => {
     session.access!.device!.manage = false;
     view.rerender(<View revision={1} />);
     expect(screen.queryByRole("button", { name: "连接终端…" })).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Open terminal directly" }));
+    expect(screen.queryByText("Terminal wizard")).not.toBeInTheDocument();
     session.access!.device!.manage = true;
     session.current = { ...session.current!, agent: "codex" };
     view.rerender(<View revision={2} />);
     expect(screen.queryByRole("button", { name: "连接终端…" })).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Open terminal directly" }));
+    expect(screen.queryByText("Terminal wizard")).not.toBeInTheDocument();
   });
 });

@@ -4,6 +4,7 @@ import type { ConversationPanel } from "./conversation-panel-commands";
 import { isSessionVisible } from "./session-catalog";
 
 export type RequestedConversationPanel = { sessionId: string; panel: ConversationPanel };
+export type TerminalEntryRegistration = { sessionId: string; open: () => void };
 
 export type SessionRecordFilter = "current" | "archived" | "metadata" | "all";
 
@@ -84,8 +85,11 @@ export const useSessionViewStore = create<{
   scrollTop: number;
   creatingConversation: boolean;
   requestedPanel?: RequestedConversationPanel;
+  terminalEntry?: TerminalEntryRegistration;
   requestPanel: (sessionId: string, panel: ConversationPanel) => void;
   consumePanel: (request: RequestedConversationPanel) => void;
+  registerTerminalEntry: (entry: TerminalEntryRegistration) => void;
+  unregisterTerminalEntry: (entry: TerminalEntryRegistration) => void;
   setCreatingConversation: (creating: boolean) => void;
   revealSession: (session: ConversationSessionSummary) => void;
   setAgent: (agent: AgentKind | "all") => void;
@@ -107,6 +111,9 @@ export const useSessionViewStore = create<{
   requestPanel: (sessionId, panel) => set({ requestedPanel: { sessionId, panel } }),
   consumePanel: (request) =>
     set((state) => (state.requestedPanel === request ? { requestedPanel: undefined } : {})),
+  registerTerminalEntry: (terminalEntry) => set({ terminalEntry }),
+  unregisterTerminalEntry: (entry) =>
+    set((state) => (state.terminalEntry === entry ? { terminalEntry: undefined } : {})),
   setCreatingConversation: (creatingConversation) => set({ creatingConversation }),
   revealSession: (session) => {
     if (!isSessionVisible(session)) return;

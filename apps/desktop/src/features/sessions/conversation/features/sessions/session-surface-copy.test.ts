@@ -42,10 +42,9 @@ describe("session copy identifies the computer and application", () => {
         expect(managedControlCopyForSurface(locale)[key]).toContain(desktopApp);
         expect(managedControlCopyForSurface(locale, "web")[key]).toContain(webApp);
       }
-      for (const key of ["disconnected", "localOnly"] as const) {
-        expect(claudeConnectionCopyForSurface(locale)[key]).toContain(desktopApp);
-        expect(claudeConnectionCopyForSurface(locale, "web")[key]).toContain(webApp);
-      }
+      expect(claudeConnectionCopyForSurface(locale).localOnly).toContain(desktopApp);
+      expect(claudeConnectionCopyForSurface(locale, "web").localOnly).toContain(webApp);
+      expect(claudeConnectionCopyForSurface(locale, "web").disconnected).toContain(webApp);
       expect(codexReason(locale, "permission_denied").text).toContain(desktopApp);
       expect(codexReason(locale, "permission_denied", "web").text).toContain(webApp);
       expect(codexReason(locale, "control-disabled").text).toContain(desktopApp);

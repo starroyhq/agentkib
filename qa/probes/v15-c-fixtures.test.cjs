@@ -45,7 +45,11 @@ test("all modes use public synthetic values and contain no usable credentials", 
     const lan = webStatus(state, "lan");
     assert.equal(
       local.config.relay?.brokerUrl,
-      mode === "first-time" ? undefined : "https://relay.example.invalid",
+      mode === "first-time"
+        ? undefined
+        : mode === "paused-signed-out"
+          ? "https://api.agentkib.com"
+          : "https://relay.example.invalid",
     );
     assert.equal(lan.addresses[0].address, "192.168.1.23");
     assert.equal(lan.running, false);
@@ -56,6 +60,7 @@ test("all modes use public synthetic values and contain no usable credentials", 
     );
   }
   assert.equal(accountStatus({ owner: OWNER, mode: "first-time" }).phase, "signed-out");
+  assert.equal(accountStatus({ owner: OWNER, mode: "paused-signed-out" }).phase, "signed-out");
   assert.equal(nativeStatus().local.enabled, false);
   assert.deepEqual(nativeStatus().connections, []);
 });
@@ -65,6 +70,28 @@ test("remote discovery validates through the original status read and hides real
   assert.deepEqual(h.calls[0], [h.event, { operation: "status" }]);
   assert.deepEqual(status.interfaces, [{ name: "Example Wi-Fi", address: "192.168.1.23" }]);
   assert.equal(status.privateStatus, undefined);
+});
+test("name-only fixture saves cannot configure a real listener or accept other fields", async () => {
+  const h = harness();
+  const renamed = await h.call("agentkib:remote:request", {
+    operation: "configure",
+    name: "Example renamed computer",
+    enabled: false,
+    address: "127.0.0.1:42987",
+  });
+  assert.equal(renamed.local.name, "Example renamed computer");
+  assert.equal(renamed.local.enabled, false);
+  assert.equal(renamed.local.address, null);
+  assert.deepEqual(h.calls[0], [h.event, { operation: "status" }]);
+  for (const input of [
+    { operation: "configure", name: "Example computer", enabled: true },
+    { operation: "configure", name: "Example computer", address: "192.168.1.23:1420" },
+    { operation: "configure", name: "Example computer", port: 1420 },
+    { operation: "configure", name: "Example computer", enabled: false, address: "0.0.0.0:1420" },
+    { operation: "configure", name: "" },
+  ])
+    await assert.rejects(h.call("agentkib:remote:request", input));
+  assert.equal(h.calls.length, 1);
 });
 test("synthetic account data cannot bypass the original sender rejection", async () => {
   const h = harness("ready", async () => {
@@ -159,7 +186,10 @@ test("first-time config omits relay while a saved pause retains its relay settin
   assert.equal(webStatus({ owner: OWNER, mode: "first-time" }, "lan").config.lanAddress, "");
   for (const mode of MODES.filter((mode) => mode !== "first-time")) {
     const saved = webStatus({ owner: OWNER, mode });
-    assert.equal(saved.config.relay.brokerUrl, "https://relay.example.invalid");
-    assert.equal(saved.config.relay.enabled, mode !== "paused");
+    assert.equal(
+      saved.config.relay.brokerUrl,
+      mode === "paused-signed-out" ? "https://api.agentkib.com" : "https://relay.example.invalid",
+    );
+    assert.equal(saved.config.relay.enabled, !["paused", "paused-signed-out"].includes(mode));
   }
 });

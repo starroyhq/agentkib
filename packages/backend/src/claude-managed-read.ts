@@ -31,7 +31,11 @@ import { restrictRemotePath } from "./remote-tls";
 import { acquirePortableFileLease } from "./managed-session-lock";
 import { readClaudeVersion, supportsClaudeVersion } from "./claude-version";
 import { terminationCodeOf } from "./claude-frame-policy";
-import { assertClaudeConfigWritable, resolveClaudeConfig } from "./claude-config";
+import {
+  assertClaudeConfigWritable,
+  isClaudeConfigDirSet,
+  resolveClaudeConfig,
+} from "./claude-config";
 import {
   ClaudeHostStateStore,
   validClaudeDeviceId,
@@ -4120,6 +4124,7 @@ export class ClaudeManagedReadOwner {
     const target = async () => {
       const native = await this.#resolveNative(id);
       const config = this.#home();
+      const configOverridden = isClaudeConfigDirSet(this.environment);
       const directories = [native.workspace, config].map((directory) => {
         const info = lstatSync(directory);
         if (!info.isDirectory() || info.isSymbolicLink())
@@ -4129,7 +4134,8 @@ export class ClaudeManagedReadOwner {
       return {
         ...native,
         config,
-        key: JSON.stringify([native.workspaceId, native.nativeId, directories]),
+        configOverridden,
+        key: JSON.stringify([native.workspaceId, native.nativeId, directories, configOverridden]),
       };
     };
     const before = await target();
@@ -4137,7 +4143,11 @@ export class ClaudeManagedReadOwner {
     if (before.key !== after.key) throw new Error("session-unavailable");
     // Generating a command must remain possible on unsupported CLI/platforms and
     // while another client owns the session. It never checks out a runner or a lease.
-    return claudeResumeCommand(after.workspace, after.config, after.nativeId);
+    return claudeResumeCommand(
+      after.workspace,
+      after.configOverridden ? after.config : undefined,
+      after.nativeId,
+    );
   }
 
   async context(id: string): Promise<Record<string, unknown>> {

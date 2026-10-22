@@ -21,7 +21,7 @@ import { withAsyncCleanup } from "@/lib/utils";
 export function RemoteAccountSettings({
   variant = "standalone",
   onStatusChange,
-  primary = true,
+  primary = variant !== "footer",
 }: {
   variant?: "standalone" | "step" | "footer";
   onStatusChange?: (status: DesktopAccountStatus | undefined) => void;
@@ -161,7 +161,7 @@ export function RemoteAccountSettings({
         !signedIn && (
           <>
             <Button
-              variant={variant === "footer" || !primary ? "outline" : "default"}
+              variant={primary ? "default" : "outline"}
               disabled={busy || !status?.secureStorage}
               onClick={() => void run("login")}
             >

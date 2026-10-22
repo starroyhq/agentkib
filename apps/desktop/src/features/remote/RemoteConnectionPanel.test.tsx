@@ -23,14 +23,17 @@ const status: RemoteStatus = {
 };
 const run = vi.fn();
 let networkAddress = "192.168.1.3";
+let networkBusy = false;
+let networkDirty = false;
+const saveNetwork = vi.fn();
 vi.mock("./RemoteNetworkSettings", () => ({
   useRemoteNetworkSettings: () => ({
     address: networkAddress,
     content: null,
-    dirty: false,
-    busy: false,
+    dirty: networkDirty,
+    busy: networkBusy,
     valid: true,
-    save: vi.fn().mockResolvedValue(true),
+    save: saveNetwork,
   }),
 }));
 vi.mock("./WebAccessSettings", () => ({
@@ -65,6 +68,9 @@ function renderSettings() {
 beforeAll(() => initializeI18n("en-US"));
 beforeEach(() => {
   networkAddress = "192.168.1.3";
+  networkBusy = false;
+  networkDirty = false;
+  saveNetwork.mockReset().mockResolvedValue(true);
   run.mockReset().mockResolvedValue(null);
   useRemoteStore.setState({
     snapshot: status,
@@ -228,6 +234,7 @@ describe("remote connections UI", () => {
           expect(screen.queryByText(tr(key))).toBeNull();
         expect(screen.queryByRole("switch")).toBeNull();
         fireEvent.click(screen.getByRole("button", { name: copy.discover }));
+        expect(screen.getByRole("button", { name: copy.find })).toBeTruthy();
         expect(run).toHaveBeenCalledWith({ operation: "discover" });
         expect(run.mock.calls.some(([input]) => input.operation === "configure")).toBe(false);
         const input = screen.getByRole("textbox", { name: tr("remote.name") });
@@ -283,11 +290,11 @@ describe("remote connections UI", () => {
     },
   );
 
-  it("saves a name through the shared advanced action and preserves its draft after failure", async () => {
+  it("saves a name on blur and preserves its draft for an explicit retry after failure", async () => {
     renderSettings();
     const input = screen.getByRole("textbox", { name: tr("remote.name") });
     fireEvent.change(input, { target: { value: "New name" } });
-    fireEvent.click(screen.getByRole("button", { name: "Save settings" }));
+    fireEvent.blur(input);
     await waitFor(() =>
       expect(screen.getByRole("alert").textContent).toContain(
         remoteSettingsCopy["en-US"].saveFailed,
@@ -305,9 +312,201 @@ describe("remote connections UI", () => {
       useRemoteStore.setState({ snapshot: next });
       return next;
     });
-    fireEvent.click(screen.getByRole("button", { name: "Save settings" }));
+    fireEvent.click(screen.getByRole("button", { name: "Retry saving name" }));
     await waitFor(() => expect(screen.queryByRole("alert")).toBeNull());
     expect(useRemoteStore.getState().snapshot?.local.name).toBe("New name");
+    expect(screen.getByRole("status").textContent).toBe(remoteSettingsCopy["en-US"].saved);
+  });
+
+  it.each(["zh-CN", "zh-TW", "en-US", "ja-JP"] as const)(
+    "saves the computer name separately from advanced settings and shows success in %s",
+    async (locale) => {
+      await act(() => changeLocale(locale));
+      try {
+        const copy = remoteSettingsCopy[locale];
+        const view = render(<RemoteConnectionSettings />);
+        fireEvent.click(screen.getByRole("button", { name: copy.computers }));
+        fireEvent.click(screen.getByRole("button", { name: copy.shareAction }));
+        const input = screen.getByRole("textbox", { name: tr("remote.name") });
+        fireEvent.change(input, { target: { value: " New name " } });
+        expect(screen.queryByRole("button", { name: "Save settings" })).toBeNull();
+        run.mockImplementation(async (request) => {
+          const next = { ...status, local: { ...status.local, name: request.name } };
+          useRemoteStore.setState({ snapshot: next });
+          return next;
+        });
+        fireEvent.blur(input);
+        await waitFor(() => expect(screen.getByRole("status").textContent).toBe(copy.saved));
+        expect((input as HTMLInputElement).value).toBe("New name");
+        expect(run).toHaveBeenCalledExactlyOnceWith({
+          operation: "configure",
+          enabled: false,
+          address: "192.168.1.3:42987",
+          name: "New name",
+        });
+        expect(saveNetwork).not.toHaveBeenCalled();
+        view.unmount();
+      } finally {
+        await act(() => changeLocale("en-US"));
+      }
+    },
+  );
+
+  it("deduplicates Enter and blur while a name save is in flight", async () => {
+    let finish!: (value: RemoteStatus) => void;
+    run.mockImplementation(
+      () =>
+        new Promise((resolve) => {
+          finish = resolve;
+        }),
+    );
+    renderSettings();
+    const input = screen.getByRole("textbox", { name: tr("remote.name") });
+    fireEvent.change(input, { target: { value: "New name" } });
+    fireEvent.keyDown(input, { key: "Enter" });
+    fireEvent.keyDown(input, { key: "Enter" });
+    fireEvent.blur(input);
+    expect(run).toHaveBeenCalledTimes(1);
+    expect((input as HTMLInputElement).disabled).toBe(true);
+    await act(async () => {
+      const next = { ...status, local: { ...status.local, name: "New name" } };
+      useRemoteStore.setState({ snapshot: next });
+      finish(next);
+    });
+    expect(screen.getByRole("status").textContent).toBe(remoteSettingsCopy["en-US"].saved);
+    fireEvent.blur(input);
+    expect(run).toHaveBeenCalledTimes(1);
+  });
+
+  it("keeps an independent name draft out of the advanced network save", async () => {
+    networkDirty = true;
+    renderSettings();
+    const input = screen.getByRole("textbox", { name: tr("remote.name") });
+    fireEvent.change(input, { target: { value: "Name draft" } });
+    fireEvent.click(screen.getByRole("button", { name: "Save settings" }));
+    await waitFor(() => expect(saveNetwork).toHaveBeenCalledOnce());
+    expect(run).not.toHaveBeenCalled();
+    expect((input as HTMLInputElement).value).toBe("Name draft");
+  });
+
+  it("blocks a stale advanced save callback admitted in the same event batch as a name blur", async () => {
+    networkDirty = true;
+    let finish!: (value: RemoteStatus) => void;
+    run.mockImplementation(
+      () =>
+        new Promise((resolve) => {
+          finish = resolve;
+        }),
+    );
+    renderSettings();
+    const input = screen.getByRole("textbox", { name: tr("remote.name") });
+    const save = screen.getByRole("button", { name: "Save settings" });
+    fireEvent.change(input, { target: { value: "New name" } });
+    act(() => {
+      fireEvent.blur(input);
+      fireEvent.click(save);
+    });
+    expect(run).toHaveBeenCalledOnce();
+    expect(saveNetwork).not.toHaveBeenCalled();
+    await act(async () => finish({ ...status, local: { ...status.local, name: "New name" } }));
+  });
+
+  it("retains a dirty name across external updates and saves using the latest sharing address", async () => {
+    renderSettings();
+    const input = screen.getByRole("textbox", { name: tr("remote.name") });
+    fireEvent.change(input, { target: { value: "Name draft" } });
+    const next = {
+      ...status,
+      local: { ...status.local, name: "External", enabled: true, address: "10.20.0.5:43123" },
+    };
+    act(() => useRemoteStore.setState({ snapshot: next }));
+    expect((input as HTMLInputElement).value).toBe("Name draft");
+    fireEvent.blur(input);
+    expect(run).toHaveBeenCalledExactlyOnceWith({
+      operation: "configure",
+      enabled: true,
+      address: next.local.address,
+      name: "Name draft",
+    });
+  });
+
+  it("does not dispatch a name save during network work and keeps the draft for later", () => {
+    renderSettings();
+    const input = screen.getByRole("textbox", { name: tr("remote.name") });
+    fireEvent.change(input, { target: { value: "Name draft" } });
+    networkBusy = true;
+    act(() => useRemoteStore.setState({ snapshot: { ...status } }));
+    fireEvent.blur(input);
+    expect(run).not.toHaveBeenCalled();
+    expect((input as HTMLInputElement).value).toBe("Name draft");
+    networkBusy = false;
+    act(() => useRemoteStore.setState({ snapshot: { ...status } }));
+    fireEvent.keyDown(input, { key: "Enter" });
+    expect(run).toHaveBeenCalledOnce();
+  });
+
+  it("does not save an invalid name or confirm an old request after unmount", async () => {
+    const view = renderSettings();
+    const input = screen.getByRole("textbox", { name: tr("remote.name") });
+    fireEvent.change(input, { target: { value: "   " } });
+    fireEvent.blur(input);
+    expect(run).not.toHaveBeenCalled();
+    let finish!: (value: RemoteStatus) => void;
+    run.mockImplementation(
+      () =>
+        new Promise((resolve) => {
+          finish = resolve;
+        }),
+    );
+    fireEvent.change(input, { target: { value: "New name" } });
+    fireEvent.keyDown(input, { key: "Enter" });
+    expect(run).toHaveBeenCalledOnce();
+    view.unmount();
+    await act(async () => finish({ ...status, local: { ...status.local, name: "New name" } }));
+    renderSettings();
+    expect(screen.queryByRole("status")).toBeNull();
+    expect(
+      (screen.getByRole("textbox", { name: tr("remote.name") }) as HTMLInputElement).value,
+    ).toBe("Desk");
+    expect(run).toHaveBeenCalledOnce();
+  });
+
+  it("shows successful name feedback briefly and ignores Enter during input composition", async () => {
+    renderSettings();
+    const input = screen.getByRole("textbox", { name: tr("remote.name") });
+    fireEvent.change(input, { target: { value: "New name" } });
+    fireEvent.keyDown(input, { key: "Enter", isComposing: true });
+    expect(run).not.toHaveBeenCalled();
+    run.mockImplementation(async (request) => {
+      const next = { ...status, local: { ...status.local, name: request.name } };
+      useRemoteStore.setState({ snapshot: next });
+      return next;
+    });
+    vi.useFakeTimers();
+    try {
+      await act(async () => fireEvent.blur(input));
+      expect(screen.getByRole("status").textContent).toBe(remoteSettingsCopy["en-US"].saved);
+      await act(async () => vi.advanceTimersByTime(2_000));
+      expect(screen.queryByRole("status")).toBeNull();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("clears a failed name notice after a status refresh confirms the requested name", async () => {
+    renderSettings();
+    const input = screen.getByRole("textbox", { name: tr("remote.name") });
+    fireEvent.change(input, { target: { value: "New name" } });
+    fireEvent.blur(input);
+    await screen.findByRole("button", { name: "Retry saving name" });
+    act(() =>
+      useRemoteStore.setState({
+        snapshot: { ...status, local: { ...status.local, name: "New name" } },
+      }),
+    );
+    fireEvent.click(screen.getByRole("button", { name: "Retry saving name" }));
+    expect(screen.queryByRole("alert")).toBeNull();
+    expect(run).toHaveBeenCalledOnce();
   });
 
   it("keeps an entered address and pairing code when the last discovered computer disappears", () => {

@@ -31,6 +31,7 @@ import { remoteEntryCopy } from "./remote-entry-copy";
 import { QuickConnect } from "./QuickConnect";
 import { remoteSettingsCopy } from "./remote-settings-copy";
 import { useRemoteNetworkSettings } from "./RemoteNetworkSettings";
+import { getWebAdminState } from "./web-status";
 
 function useRemoteStatus() {
   const store = useRemoteStore();
@@ -138,7 +139,7 @@ function RemoteConnections() {
 }
 
 function PairHost({ now, onEdit }: { now: number; onEdit?: () => void }) {
-  const { tr } = useI18n();
+  const { tr, locale } = useI18n();
   const { snapshot, pairing, busy, run } = useRemoteStore();
   const [address, setAddress] = useState("");
   const [code, setCode] = useState("");
@@ -158,7 +159,7 @@ function PairHost({ now, onEdit }: { now: number; onEdit?: () => void }) {
             onClick={() => void run({ operation: "discover" })}
           >
             <RefreshCw size={15} />
-            {tr("remote.discover")}
+            {remoteSettingsCopy[locale].find}
           </Button>
         }
       >
@@ -293,6 +294,9 @@ function ComputerConnectionSettings({
   networkAddress,
   name,
   onNameChange,
+  onNameSave,
+  nameSaved,
+  nameError,
   onShowAdvanced,
   networkBusy,
   revealSetup,
@@ -300,6 +304,9 @@ function ComputerConnectionSettings({
   networkAddress: string;
   name: string;
   onNameChange: (value: string) => void;
+  onNameSave: () => Promise<boolean>;
+  nameSaved: boolean;
+  nameError: boolean;
   onShowAdvanced: () => void;
   networkBusy: boolean;
   revealSetup: boolean;
@@ -382,15 +389,38 @@ function ComputerConnectionSettings({
                 <SettingsCopy>
                   <strong>{tr("remote.name")}</strong>
                 </SettingsCopy>
-                <Input
-                  aria-label={tr("remote.name")}
-                  value={name}
-                  maxLength={64}
-                  disabled={disabled || !snapshot}
-                  onChange={(event) => onNameChange(event.target.value)}
-                />
+                <div className="grid min-w-0 gap-1.5">
+                  <Input
+                    aria-label={tr("remote.name")}
+                    value={name}
+                    maxLength={64}
+                    disabled={disabled || !snapshot}
+                    onChange={(event) => onNameChange(event.target.value)}
+                    onBlur={() => void onNameSave()}
+                    onKeyDown={(event) => {
+                      if (event.key === "Enter" && !event.nativeEvent.isComposing) {
+                        event.preventDefault();
+                        void onNameSave();
+                      }
+                    }}
+                  />
+                  {nameSaved && (
+                    <small role="status" className="text-muted-foreground">
+                      {copy.saved}
+                    </small>
+                  )}
+                  {nameError && (
+                    <Button
+                      variant="link"
+                      size="content"
+                      disabled={disabled}
+                      onClick={() => void onNameSave()}
+                    >
+                      {copy.retryName}
+                    </Button>
+                  )}
+                </div>
               </SettingsRow>
-              <p className="px-5 py-3 text-xs text-muted-foreground">{copy.nameHint}</p>
               <SettingsRow>
                 <SettingsCopy>
                   <strong>{copy.enable}</strong>
@@ -569,6 +599,10 @@ export function RemoteConnectionSettings() {
   const [name, setName] = useState(() => snapshot?.local.name ?? "");
   const previousName = useRef(snapshot?.local.name);
   const [nameError, setNameError] = useState(false);
+  const [nameSaving, setNameSaving] = useState(false);
+  const [savedName, setSavedName] = useState<string>();
+  const nameLocked = useRef(false);
+  const nameValue = useRef(name);
   const alive = useRef(true);
   useEffect(() => {
     function reveal(event: Event) {
@@ -605,29 +639,70 @@ export function RemoteConnectionSettings() {
     const next = snapshot?.local.name;
     if (next === undefined) return;
     const previous = previousName.current;
-    setName((draft) => (previous === undefined || draft === previous ? next : draft));
+    if (previous === undefined || nameValue.current === previous) {
+      nameValue.current = next;
+      setName(next);
+    }
     previousName.current = next;
   }, [snapshot?.local.name]);
   const nameDirty = Boolean(snapshot && name.trim() !== snapshot.local.name);
   const validName = !!name.trim() && name.trim().length <= 64;
   async function saveAdvanced() {
-    if (network.dirty && !(await network.save())) return false;
-    if (!alive.current) return false;
-    if (!nameDirty) return true;
+    if (nameLocked.current || useRemoteStore.getState().busy || getWebAdminState().busy)
+      return false;
+    return network.save();
+  }
+  useEffect(() => {
+    if (savedName === undefined) return;
+    const timeout = setTimeout(() => setSavedName(undefined), 2_000);
+    return () => clearTimeout(timeout);
+  }, [savedName]);
+  async function saveName() {
+    if (
+      !alive.current ||
+      nameLocked.current ||
+      network.busy ||
+      getWebAdminState().busy ||
+      useRemoteStore.getState().busy
+    )
+      return false;
     const current = useRemoteStore.getState().snapshot;
-    if (!current || !validName) return false;
+    const submitted = nameValue.current;
+    const nextName = submitted.trim();
+    if (!current || !nextName || nextName.length > 64) return false;
+    if (nextName === current.local.name) {
+      nameValue.current = nextName;
+      setName(nextName);
+      setNameError(false);
+      return true;
+    }
     if (current.local.enabled && !current.local.address) return false;
-    const result = await run({
-      operation: "configure",
-      enabled: current.local.enabled,
-      // Disabled configure still requires a nonempty address. The backend ignores
-      // it while off; this placeholder neither binds nor persists a new interface.
-      address: current.local.address ?? `${network.address || "127.0.0.1"}:42987`,
-      name: name.trim(),
-    });
-    const saved = !!result && "local" in result && result.local.name === name.trim();
-    if (alive.current) setNameError(!saved);
-    return saved;
+    nameLocked.current = true;
+    setNameSaving(true);
+    setSavedName(undefined);
+    try {
+      const result = await run({
+        operation: "configure",
+        enabled: current.local.enabled,
+        // Keep the current listener unchanged; disabled configure still needs a
+        // nonempty address but ignores this placeholder without binding to it.
+        address: current.local.address ?? `${network.address || "127.0.0.1"}:42987`,
+        name: nextName,
+      });
+      const saved = !!result && "local" in result && result.local.name === nextName;
+      if (alive.current && nameValue.current === submitted) {
+        setNameError(!saved);
+        if (saved) {
+          nameValue.current = nextName;
+          setName(nextName);
+          setSavedName(nextName);
+        }
+      }
+      return saved;
+    } finally {
+      nameLocked.current = false;
+      if (alive.current) setNameSaving(false);
+    }
   }
   function showAdvanced() {
     setAdvancedOpen(true);
@@ -668,9 +743,9 @@ export function RemoteConnectionSettings() {
         advancedOpen={advancedOpen}
         onAdvancedOpenChange={setAdvancedOpen}
         advancedContent={network.content}
-        advancedDirty={network.dirty || nameDirty}
-        advancedBusy={network.busy || busy}
-        advancedValid={network.valid && (!nameDirty || validName)}
+        advancedDirty={network.dirty}
+        advancedBusy={network.busy || busy || nameSaving}
+        advancedValid={network.valid}
         onSaveAdvanced={saveAdvanced}
       >
         <div hidden={tab !== "computers"} className="space-y-3">
@@ -686,13 +761,22 @@ export function RemoteConnectionSettings() {
           )}
           <ComputerConnectionSettings
             networkAddress={network.address}
-            networkBusy={network.busy}
+            networkBusy={network.busy || nameSaving}
             revealSetup={revealSetup}
             name={name}
             onNameChange={(value) => {
+              nameValue.current = value;
               setName(value);
               setNameError(false);
+              setSavedName(undefined);
             }}
+            onNameSave={saveName}
+            nameSaved={
+              savedName !== undefined &&
+              savedName === snapshot?.local.name &&
+              name.trim() === savedName
+            }
+            nameError={nameError}
             onShowAdvanced={showAdvanced}
           />
         </div>

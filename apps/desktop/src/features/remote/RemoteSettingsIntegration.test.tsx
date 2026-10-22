@@ -9,6 +9,7 @@ import type { DesktopAccountStatus } from "../../../electron/main/account/state"
 import type { WebAdminRequest, WebAdminStatus } from "../../../electron/main/web/service";
 import { RemoteConnectionSettings } from "./RemoteConnectionPanel";
 import { useRemoteStore } from "./remote-store";
+import { requestWebAdmin } from "./web-status";
 
 const webRequest = vi.fn();
 const accountRequest = vi.fn();
@@ -97,6 +98,163 @@ function enableLan(running: boolean) {
 }
 
 describe("remote settings integration", () => {
+  it("saves a blurred computer name without opening advanced settings or configuring Web services", async () => {
+    nativeRequest.mockImplementation(async (input: RemoteRequest) => {
+      if (input.operation === "configure") {
+        nativeStatus = { ...nativeStatus, local: { ...nativeStatus.local, name: input.name } };
+      } else if (input.operation !== "status") throw new Error("Unexpected native mutation");
+      return nativeStatus;
+    });
+    render(<RemoteConnectionSettings />);
+    await screen.findByRole("button", { name: "Sign in with your browser" });
+    fireEvent.click(screen.getByRole("button", { name: "Other computers" }));
+    fireEvent.click(screen.getByRole("button", { name: "Share this computer" }));
+    const input = screen.getByRole("textbox", { name: "This device name" });
+    fireEvent.change(input, { target: { value: "New example name" } });
+    fireEvent.blur(input);
+    await waitFor(() => expect(screen.getByRole("status")).toHaveTextContent("Name saved."));
+    expect(
+      nativeRequest.mock.calls.filter(([request]) => request.operation === "configure"),
+    ).toEqual([
+      [
+        {
+          operation: "configure",
+          enabled: false,
+          address: "192.168.20.10:42987",
+          name: "New example name",
+        },
+      ],
+    ]);
+    expect(webRequest.mock.calls.every(([request]) => request.operation === "status")).toBe(true);
+    expect(screen.getByRole("button", { name: "Advanced settings" })).toHaveAttribute(
+      "aria-expanded",
+      "false",
+    );
+  });
+
+  it("keeps shared settings locked until a name write finishes and does not submit it twice", async () => {
+    let finish!: (value: RemoteStatus) => void;
+    nativeRequest.mockImplementation((input: RemoteRequest) => {
+      if (input.operation === "configure")
+        return new Promise((resolve) => {
+          finish = resolve;
+        });
+      if (input.operation !== "status") throw new Error("Unexpected native mutation");
+      return Promise.resolve(nativeStatus);
+    });
+    render(<RemoteConnectionSettings />);
+    await screen.findByRole("button", { name: "Sign in with your browser" });
+    fireEvent.click(screen.getByRole("button", { name: "Other computers" }));
+    fireEvent.click(screen.getByRole("button", { name: "Share this computer" }));
+    const input = screen.getByRole("textbox", { name: "This device name" });
+    fireEvent.change(input, { target: { value: "New example name" } });
+    fireEvent.keyDown(input, { key: "Enter" });
+    fireEvent.blur(input);
+    expect(input).toBeDisabled();
+    fireEvent.click(screen.getByRole("button", { name: "Phones" }));
+    expect(screen.getByRole("button", { name: "Set up LAN direct connection" })).toBeDisabled();
+    fireEvent.click(screen.getByRole("button", { name: "Advanced settings" }));
+    expect(screen.getByRole("button", { name: "Save settings" })).toBeDisabled();
+    expect(screen.getByRole("combobox", { name: "Shared LAN interface" })).toBeDisabled();
+    expect(
+      nativeRequest.mock.calls.filter(([request]) => request.operation === "configure"),
+    ).toHaveLength(1);
+    await act(async () => {
+      nativeStatus = {
+        ...nativeStatus,
+        local: { ...nativeStatus.local, name: "New example name" },
+      };
+      finish(nativeStatus);
+    });
+    expect(screen.getByRole("button", { name: "Set up LAN direct connection" })).toBeEnabled();
+    expect(webRequest.mock.calls.every(([request]) => request.operation === "status")).toBe(true);
+  });
+
+  it("does not save a name while a Web write is pending, even through a stale blur handler", async () => {
+    render(<RemoteConnectionSettings />);
+    await screen.findByRole("button", { name: "Sign in with your browser" });
+    fireEvent.click(screen.getByRole("button", { name: "Other computers" }));
+    fireEvent.click(screen.getByRole("button", { name: "Share this computer" }));
+    const input = screen.getByRole("textbox", { name: "This device name" });
+    fireEvent.change(input, { target: { value: "New example name" } });
+    let finish!: (value: WebAdminStatus) => void;
+    webRequest.mockImplementation((request: WebAdminRequest) =>
+      request.operation === "configure"
+        ? new Promise((resolve) => {
+            finish = resolve;
+          })
+        : Promise.resolve(request.target === "lan" ? lanStatus : localStatus),
+    );
+    let pending!: Promise<WebAdminStatus>;
+    act(() => {
+      pending = requestWebAdmin({ operation: "configure", ...localStatus.config });
+    });
+    expect(input).toBeDisabled();
+    fireEvent.blur(input);
+    expect(nativeRequest.mock.calls.every(([request]) => request.operation === "status")).toBe(
+      true,
+    );
+    await act(async () => {
+      finish(localStatus);
+      await pending;
+    });
+    expect(input).toBeEnabled();
+    expect(input).toHaveValue("New example name");
+    expect(screen.queryByText("Name saved.")).toBeNull();
+  });
+
+  it("does not dispatch sharing or Web changes from clicks queued with a name blur", async () => {
+    let finish!: (value: RemoteStatus) => void;
+    nativeRequest.mockImplementation((input: RemoteRequest) => {
+      if (input.operation === "configure")
+        return new Promise((resolve) => {
+          finish = resolve;
+        });
+      if (input.operation !== "status") throw new Error("Unexpected native mutation");
+      return Promise.resolve(nativeStatus);
+    });
+    render(<RemoteConnectionSettings />);
+    await screen.findByRole("button", { name: "Sign in with your browser" });
+    fireEvent.click(screen.getByRole("button", { name: "Other computers" }));
+    fireEvent.click(screen.getByRole("button", { name: "Share this computer" }));
+    fireEvent.click(screen.getByRole("button", { name: "Advanced settings" }));
+    fireEvent.change(screen.getByRole("spinbutton", { name: "Port" }), {
+      target: { value: "1431" },
+    });
+    const input = screen.getByRole("textbox", { name: "This device name" });
+    const save = screen.getByRole("button", { name: "Save settings" });
+    const share = screen.getByRole("switch", { name: "Allow other computers to view (read-only)" });
+    fireEvent.change(input, { target: { value: "New example name" } });
+    act(() => {
+      fireEvent.blur(input);
+      fireEvent.click(save);
+      fireEvent.click(share);
+    });
+    expect(
+      nativeRequest.mock.calls.filter(([request]) => request.operation === "configure"),
+    ).toEqual([
+      [
+        {
+          operation: "configure",
+          enabled: false,
+          address: "192.168.20.10:42987",
+          name: "New example name",
+        },
+      ],
+    ]);
+    expect(webRequest.mock.calls.every(([request]) => request.operation === "status")).toBe(true);
+    await act(async () => {
+      nativeStatus = {
+        ...nativeStatus,
+        local: { ...nativeStatus.local, name: "New example name" },
+      };
+      finish(nativeStatus);
+    });
+    expect(nativeStatus.local.enabled).toBe(false);
+    expect(screen.getByRole("spinbutton", { name: "Port" })).toHaveValue(1431);
+    expect(screen.getByText("Unsaved changes")).toBeVisible();
+  });
+
   it.each([
     ["zh-CN", "连接新手机", "生成授权码", "完整控制"],
     ["zh-TW", "連接新手機", "產生授權碼", "完整控制"],

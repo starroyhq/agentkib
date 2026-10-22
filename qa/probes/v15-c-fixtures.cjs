@@ -1,7 +1,16 @@
 // Public synthetic display data only. No value in this module is a usable credential.
 const assert = require("node:assert/strict");
 const OWNER = "agentkib-v15-c-sandbox";
-const MODES = ["first-time", "registering", "ready", "code", "offline", "failed", "paused"];
+const MODES = [
+  "first-time",
+  "registering",
+  "ready",
+  "code",
+  "offline",
+  "failed",
+  "paused",
+  "paused-signed-out",
+];
 const INTERFACE = { name: "Example Wi-Fi", address: "192.168.1.23" };
 const BROKER = "https://relay.example.invalid";
 const PUBLIC_URL = "https://computer.example.invalid";
@@ -14,11 +23,16 @@ function validateState(state) {
   assert.equal(state?.owner, OWNER, "Unowned visual fixture state");
   assert.ok(MODES.includes(state.mode), "Unknown visual fixture mode");
   assert.ok(state.access === undefined || ["full", "read"].includes(state.access));
+  assert.ok(
+    state.nativeName === undefined ||
+      (typeof state.nativeName === "string" && /^[^\r\n]{1,64}$/.test(state.nativeName)),
+    "Invalid synthetic computer name",
+  );
   return state;
 }
 function accountStatus(state) {
   validateState(state);
-  return state.mode === "first-time"
+  return ["first-time", "paused-signed-out"].includes(state.mode)
     ? { phase: "signed-out", secureStorage: true }
     : {
         phase: "signed-in",
@@ -37,7 +51,7 @@ function accountStatus(state) {
 function webStatus(state, target) {
   validateState(state);
   const lan = target === "lan";
-  const enabled = !lan && !["first-time", "paused"].includes(state.mode);
+  const enabled = !lan && !["first-time", "paused", "paused-signed-out"].includes(state.mode);
   const ready = enabled && ["ready", "code"].includes(state.mode);
   const access = state.access ?? "full";
   return {
@@ -57,7 +71,15 @@ function webStatus(state, target) {
             allowedWorkspaceIds: [],
             extraRoots: [],
             previewBytesPerSecond: 2 * 1024 * 1024,
-            ...(state.mode === "first-time" ? {} : { relay: { enabled, brokerUrl: BROKER } }),
+            ...(state.mode === "first-time"
+              ? {}
+              : {
+                  relay: {
+                    enabled,
+                    brokerUrl:
+                      state.mode === "paused-signed-out" ? "https://api.agentkib.com" : BROKER,
+                  },
+                }),
           }),
     },
     running: enabled,
@@ -114,9 +136,14 @@ function webStatus(state, target) {
         : [],
   };
 }
-function nativeStatus() {
+function nativeStatus(state) {
   return {
-    local: { id: "fixture-computer", name: "Example computer", enabled: false, address: null },
+    local: {
+      id: "fixture-computer",
+      name: state?.nativeName ?? "Example computer",
+      enabled: false,
+      address: null,
+    },
     interfaces: [INTERFACE],
     discovered: [],
     pending: [],
@@ -186,7 +213,7 @@ function createBoundary({ readState, writeState, sessionId }) {
         if (channel === "agentkib:account:request" && input.operation !== "status") return denied();
         if (
           channel === "agentkib:remote:request" &&
-          !["status", "discover"].includes(input.operation)
+          !["status", "discover", "configure"].includes(input.operation)
         )
           return denied();
         if (
@@ -198,7 +225,12 @@ function createBoundary({ readState, writeState, sessionId }) {
           return denied();
         const fields =
           channel !== "agentkib:web:request"
-            ? ["operation"]
+            ? [
+                "operation",
+                ...(channel === "agentkib:remote:request" && input.operation === "configure"
+                  ? ["name", "enabled", "address"]
+                  : []),
+              ]
             : [
                 "operation",
                 "target",
@@ -209,6 +241,17 @@ function createBoundary({ readState, writeState, sessionId }) {
           Object.keys(input).every((field) => fields.includes(field)),
           "Unexpected visual fixture input",
         );
+        if (channel === "agentkib:remote:request" && input.operation === "configure")
+          assert.ok(
+            typeof input.name === "string" && /^[^\r\n]{1,64}$/.test(input.name),
+            "Synthetic visual QA blocks this action",
+          );
+        if (channel === "agentkib:remote:request" && input.operation === "configure")
+          assert.ok(
+            input.enabled === false &&
+              ["127.0.0.1:42987", `${INTERFACE.address}:42987`].includes(input.address),
+            "Synthetic visual QA blocks this action",
+          );
         assertLocalMainFrame(event);
         // Always run the corresponding production read first. It enforces renderer
         // ownership and target checks; no production mutation is ever dispatched.
@@ -216,8 +259,11 @@ function createBoundary({ readState, writeState, sessionId }) {
           operation: "status",
           ...(input.target === undefined ? {} : { target: input.target }),
         });
-        if (channel === "agentkib:remote:request") return nativeStatus();
         const state = validateState(readState());
+        if (channel === "agentkib:remote:request") {
+          if (input.operation === "configure") writeState({ ...state, nativeName: input.name });
+          return nativeStatus(readState());
+        }
         if (channel === "agentkib:account:request") return accountStatus(state);
         assert.ok(input.target === undefined || input.target === "lan");
         if (input.operation === "generate-code") {

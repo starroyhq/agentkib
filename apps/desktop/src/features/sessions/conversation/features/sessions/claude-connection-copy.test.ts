@@ -22,6 +22,7 @@ const cases = [
     reconnecting: "等待终端重新连接",
     resume: "复制继续命令",
     regenerate: "重新生成连接码",
+    clearInfo: "清除后，这条会话在终端继续时不会再自动连接；以后要连接，需要新的连接码。",
   },
   {
     locale: "zh-TW",
@@ -38,6 +39,7 @@ const cases = [
     reconnecting: "等待終端重新連線",
     resume: "複製繼續命令",
     regenerate: "重新產生連線碼",
+    clearInfo: "清除後，這段對話在終端繼續時不會再自動連線；日後若要連線，需要新的連線碼。",
   },
   {
     locale: "en-US",
@@ -55,6 +57,8 @@ const cases = [
     reconnecting: "Waiting for the terminal to reconnect",
     resume: "Copy resume command",
     regenerate: "Generate a new connection code",
+    clearInfo:
+      "After clearing, resuming this session in the terminal will no longer connect automatically. You will need a new connection code to connect again.",
   },
   {
     locale: "ja-JP",
@@ -72,6 +76,8 @@ const cases = [
     reconnecting: "ターミナルの再接続を待っています",
     resume: "再開コマンドをコピー",
     regenerate: "接続コードを再生成",
+    clearInfo:
+      "クリアすると、この会話をターミナルで再開しても自動接続しなくなります。再び接続するには、新しい接続コードが必要です。",
   },
 ] as const;
 
@@ -100,8 +106,8 @@ describe("terminal connection guide copy", () => {
     expect(copy.disconnectConfirmInfo).toContain("AgentKib");
     expect(copy.codeExpiresSafety).toContain("{time}");
     expect(copy.installedStep).not.toBe(copy.installStep);
-    expect(copy.clearConnectionInfo).toMatch(/凭据|憑據|credentials|認証情報/);
-    expect(copy.clearConnectionInfo).toMatch(/未使用|unused/);
+    expect(copy.clearConnectionInfo).toBe(expected.clearInfo);
+    expect(copy.clearConnectionInfo).not.toMatch(/凭据|憑據|credentials|認証情報/);
     expect(copy.disconnectConfirmInfo).toMatch(
       /终端照常运行|終端照常執行|terminal keeps running|ターミナルは実行を続け/,
     );

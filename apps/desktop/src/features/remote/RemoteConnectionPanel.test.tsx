@@ -85,6 +85,34 @@ beforeEach(() => {
 });
 afterEach(cleanup);
 
+it.each(["zh-CN", "zh-TW", "en-US", "ja-JP"] as const)(
+  "shows nearby computer empty guidance only after a successful load in %s",
+  async (locale) => {
+    await changeLocale(locale);
+    try {
+      useRemoteStore.setState({ snapshot: null, loading: true });
+      render(<RemoteConnectionSettings />);
+      fireEvent.click(screen.getByRole("button", { name: remoteSettingsCopy[locale].computers }));
+      expect(screen.queryByText(tr("remote.noNearby"))).toBeNull();
+      act(() =>
+        useRemoteStore.setState({
+          snapshot: { ...status, local: { ...status.local, enabled: true } },
+          loading: false,
+        }),
+      );
+      expect(screen.getByText(tr("remote.noNearby"))).toBeTruthy();
+      act(() => useRemoteStore.setState({ loading: true }));
+      expect(screen.queryByText(tr("remote.noNearby"))).toBeNull();
+      act(() => useRemoteStore.setState({ loading: false, error: "remote_unavailable" }));
+      expect(screen.queryByText(tr("remote.noNearby"))).toBeNull();
+      act(() => useRemoteStore.setState({ error: "", busy: true }));
+      expect(screen.queryByText(tr("remote.noNearby"))).toBeNull();
+    } finally {
+      await changeLocale("en-US");
+    }
+  },
+);
+
 describe("quick connection flow", () => {
   const now = Date.now();
   const pairing = {

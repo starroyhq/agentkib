@@ -64,7 +64,7 @@ export function McpManagementPanel({
   onScopeChange?: (scope: string) => void;
   onOpenIntegrations?: () => void;
 }) {
-  const { tr, localizeMessage } = useI18n();
+  const { tr, localizeMessage, locale } = useI18n();
   // Controller records belong to another computer even when their paths match locally.
   const workspaces = suppliedWorkspaces.filter((workspace) => !workspace.remote);
   const searchInput = useRef<HTMLInputElement>(null);
@@ -589,7 +589,10 @@ export function McpManagementPanel({
                         : entry.config.url}
                     </code>
                     <div className="mt-2 flex flex-wrap items-center gap-2">
-                      <Badge variant="secondary">
+                      <Badge
+                        variant="outline"
+                        className="border-transparent bg-[color-mix(in_srgb,var(--foreground)_5%,var(--background))] text-foreground"
+                      >
                         {entry.inherited ? tr("mcp.manage.inherited") : scopeName(entry.project)}
                       </Badge>
                       <span className="text-xs text-muted-foreground">
@@ -779,7 +782,12 @@ export function McpManagementPanel({
               others.map((other) => (
                 <p className="text-sm text-muted-foreground" key={other.project ?? globalChoice}>
                   {tr("mcp.manage.otherScopeCount", {
-                    scope: scopeName(other.project),
+                    scope:
+                      scopeName(other.project) +
+                      ((locale === "zh-CN" || locale === "zh-TW") &&
+                      /[A-Za-z0-9]$/.test(scopeName(other.project))
+                        ? " "
+                        : ""),
                     count: other.count,
                   })}
                 </p>
@@ -818,7 +826,7 @@ export function McpManagementPanel({
         >
           <DialogHeader>
             <DialogTitle>
-              {tr("mcp.manage.chooseAgents")} · {targetEntry?.config.name}
+              {tr("mcp.manage.chooseAgentsTitle")} · {targetEntry?.config.name}
             </DialogTitle>
           </DialogHeader>
           {error && (

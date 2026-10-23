@@ -1,0 +1,58 @@
+{
+  "realBackendReads": true,
+  "ipcReadOverrides": false,
+  "window": {
+    "width": 1360,
+    "height": 860
+  },
+  "minimum": {
+    "width": 1280,
+    "height": 680,
+    "heading": {
+      "x": 346,
+      "y": 76,
+      "width": 141.11,
+      "height": 32
+    }
+  },
+  "colors": [
+    {
+      "text": "Cursor",
+      "background": "color(srgb 0.941569 0.942745 0.947255)",
+      "foreground": "rgb(14, 20, 43)",
+      "rgbBackground": [
+        240,
+        240,
+        242
+      ],
+      "rgbForeground": [
+        14,
+        20,
+        43
+      ],
+      "opacity": "1",
+      "contrast": 15.994240005258462
+    },
+    {
+      "text": "项目 northstar-api",
+      "background": "color(srgb 0.941569 0.942745 0.947255)",
+      "foreground": "rgb(14, 20, 43)",
+      "rgbBackground": [
+        240,
+        240,
+        242
+      ],
+      "rgbForeground": [
+        14,
+        20,
+        43
+      ],
+      "opacity": "1",
+      "contrast": 15.994240005258462
+    }
+  ],
+  "advancedArrowOpenRotate": "90deg",
+  "mcpDialogTitle": "选择 Agent · github",
+  "focusRestoredAfterClose": true,
+  "newPhoneRelayScreenshot": false
+}

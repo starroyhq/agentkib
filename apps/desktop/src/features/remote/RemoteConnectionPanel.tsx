@@ -140,7 +140,7 @@ function RemoteConnections() {
 
 function PairHost({ now, onEdit }: { now: number; onEdit?: () => void }) {
   const { tr, locale } = useI18n();
-  const { snapshot, pairing, busy, run } = useRemoteStore();
+  const { snapshot, pairing, busy, loading, error, run } = useRemoteStore();
   const [address, setAddress] = useState("");
   const [code, setCode] = useState("");
   const [submitted, setSubmitted] = useState(Boolean(pairing));
@@ -163,6 +163,9 @@ function PairHost({ now, onEdit }: { now: number; onEdit?: () => void }) {
           </Button>
         }
       >
+        {snapshot && !snapshot.discovered.length && !loading && !busy && error === "" && (
+          <p className="p-4 text-sm text-muted-foreground">{tr("remote.noNearby")}</p>
+        )}
         {snapshot?.discovered.map((host) => (
           <div key={host.id} className="flex items-center justify-between gap-3 border-b p-4">
             <div className="min-w-0">

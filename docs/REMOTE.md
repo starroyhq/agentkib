@@ -57,3 +57,9 @@ History currently uses the existing Codex / Claude Code readers, not universal A
 Automated TLS and isolated dual-Runtime tests do not replace real cross-device acceptance. Validate discovery, certificate approval, revocation, firewall prompts and OS permissions on the intended machines. Windows file ACL enforcement also requires Windows verification.
 
 自动 TLS 与隔离双 Runtime 测试不能代替真实跨设备验收。请在目标机器验证发现、证书确认、撤销、防火墙提示和系统权限；Windows 文件 ACL 实际生效也需要 Windows 验证。
+
+## Phone and computer list feedback
+
+Phone access-code guidance states the complete authorization scope in one paragraph: all current and future workspaces, no further confirmation on the computer, read-only history/files, full-control task actions/approvals/uploads, and sharing only with your own devices. Access levels and revocation remain in the authorized browsers list
+
+An empty authorized-browsers list or nearby-computers list displays an explicit hint without an empty bordered row. Loading, failed reads and active discovery are not reported as an empty result. This changes presentation only; relay readiness, pairing, grant scope and security checks are unchanged

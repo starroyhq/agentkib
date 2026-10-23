@@ -23,7 +23,7 @@ export function AgentIntegrationsSettings({
   return (
     <SettingsPage variant="workspace">
       <SettingsAnchor target="integrations-agents">
-        <SettingsPageHeader title={tr("settings.section.integrations")} />
+        <SettingsPageHeader title={tr("settings.section.integrations")} className="min-h-0 pb-0" />
       </SettingsAnchor>
       <Tabs
         value={active}

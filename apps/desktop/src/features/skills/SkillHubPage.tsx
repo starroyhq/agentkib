@@ -542,7 +542,7 @@ export function SkillHubPage({
             >
               <Library size={15} />
               {tr("skills.library")}
-              <Badge variant="secondary">{installed.length}</Badge>
+              <span className="text-muted-foreground tabular-nums">{installed.length}</span>
             </TabsTrigger>
             <TabsTrigger
               className="segmented-control-item h-9 gap-2"
@@ -551,7 +551,7 @@ export function SkillHubPage({
             >
               <Sparkles size={15} />
               {tr("skills.workspaceUsage")}
-              <Badge variant="secondary">{workspaceUsageCount}</Badge>
+              <span className="text-muted-foreground tabular-nums">{workspaceUsageCount}</span>
             </TabsTrigger>
             <TabsTrigger className="segmented-control-item h-9 gap-2" value="discover">
               <Search size={15} />

@@ -94,7 +94,10 @@ beforeEach(async () => {
   accountRequest.mockReset().mockImplementation(async () => account);
   accountListener = undefined;
 });
-afterEach(cleanup);
+afterEach(() => {
+  cleanup();
+  vi.useRealTimers();
+});
 
 it.each(["zh-CN", "zh-TW", "en-US", "ja-JP"] as const)(
   "shows only the current first-time step action in %s",
@@ -145,7 +148,7 @@ it("keeps the first connection at step three and generates the selected level wi
   fireEvent.click(screen.getByRole("button", { name: webSettingsCopy["en-US"].generateAccess }));
   expect(await screen.findByText("4829 1736")).toBeVisible();
   expect(screen.getByRole("img", { name: "Open on your phone" })).toBeVisible();
-  expect(screen.getByText(remotePhoneCopy["en-US"].codeHint)).toBeVisible();
+  expect(screen.getByText(webSettingsCopy["en-US"].codeScope)).toBeVisible();
   expect(screen.getByText(/Access level: Read-only/)).toBeVisible();
   expect(request).toHaveBeenCalledWith({ operation: "generate-code", access: "read" });
   expect(screen.getByRole("button", { name: "Regenerate" })).toBeVisible();
@@ -658,7 +661,7 @@ it.each(["zh-CN", "zh-TW", "en-US", "ja-JP"] as const)(
     ready();
     fireEvent.click(enable);
     expect(await screen.findByText(webSettingsCopy[locale].codeScope)).toBeVisible();
-    expect(screen.getByText(remotePhoneCopy[locale].codeHint)).toBeVisible();
+    expect(screen.queryByText(remotePhoneCopy[locale].codeHint)).toBeNull();
     expect(screen.getAllByText(webSettingsCopy[locale].codeScope)).toHaveLength(1);
     local = {
       ...local,
@@ -671,7 +674,7 @@ it.each(["zh-CN", "zh-TW", "en-US", "ja-JP"] as const)(
     fireEvent.click(screen.getByRole("button", { name: remotePhoneCopy[locale].connectNew }));
     const dialog = await screen.findByRole("dialog", { name: remotePhoneCopy[locale].connectNew });
     expect(within(dialog).getByText(webSettingsCopy[locale].codeScope)).toBeVisible();
-    expect(within(dialog).getByText(remotePhoneCopy[locale].codeHint)).toBeVisible();
+    expect(within(dialog).queryByText(remotePhoneCopy[locale].codeHint)).toBeNull();
     expect(within(dialog).getByText("4829 1736")).toBeVisible();
     expect(
       within(dialog).queryByText(
@@ -681,6 +684,42 @@ it.each(["zh-CN", "zh-TW", "en-US", "ja-JP"] as const)(
     expect(screen.getAllByText(webSettingsCopy[locale].codeScope)).toHaveLength(1);
   },
 );
+
+it.each([
+  ["zh-CN", "还没有授权的浏览器"],
+  ["zh-TW", "還沒有授權的瀏覽器"],
+  ["en-US", "No authorized browsers yet"],
+  ["ja-JP", "認証済みのブラウザーはまだありません"],
+] as const)("shows an authorized browser empty state in %s", async (locale, empty) => {
+  await changeLocale(locale);
+  ready();
+  render(<WebAccessSettings />);
+  expect(await screen.findByText(empty)).toBeVisible();
+  local = { ...local, error: "web_unavailable" };
+  await act(async () => {
+    await requestWebAdmin({ operation: "status" });
+  });
+  expect(screen.queryByText(empty)).toBeNull();
+  expect(screen.getByRole("alert")).toBeVisible();
+});
+
+it("does not present an unresolved or failed browser status read as an empty list", async () => {
+  vi.useFakeTimers();
+  ready();
+  let resolve!: (value: WebAdminStatus) => void;
+  request.mockReturnValueOnce(new Promise<WebAdminStatus>((done) => (resolve = done)));
+  render(<WebAccessSettings />);
+  expect(screen.queryByText(remotePhoneCopy["en-US"].noBrowsers)).toBeNull();
+  await act(async () => resolve(local));
+  expect(screen.getByText(remotePhoneCopy["en-US"].noBrowsers)).toBeVisible();
+  request.mockRejectedValueOnce(new Error("status unavailable"));
+  await act(async () => vi.advanceTimersByTimeAsync(2_000));
+  expect(screen.queryByText(remotePhoneCopy["en-US"].noBrowsers)).toBeNull();
+  expect(screen.getByRole("alert")).toBeVisible();
+  await act(async () => vi.advanceTimersByTimeAsync(2_000));
+  expect(screen.getByText(remotePhoneCopy["en-US"].noBrowsers)).toBeVisible();
+  expect(screen.queryByRole("alert")).toBeNull();
+});
 
 it.each(["", "192.168.50.99"])(
   "opens shared network settings from a LAN dialog with an unavailable address (%s)",

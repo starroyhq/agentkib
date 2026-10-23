@@ -87,6 +87,12 @@ export type SkillSyncLocation = {
   target_key: string;
   observation_id?: string;
 };
+type SyncLocationParams = { deployment_id?: string; observation_id?: string };
+type SyncLocationRead = {
+  targets: readonly Target[];
+  receipts: Deployment[];
+  inventory?: { observations: Observation[]; warnings: string[] };
+};
 type SyncMutation = "write" | "adopt" | "baseline" | "detach" | "bind";
 type DeploymentOperation = "deploy" | "update" | "undeploy" | "rollback";
 type PlannedTarget = {
@@ -1930,12 +1936,43 @@ export class SkillManager {
     });
   }
 
+  /** Keep discovery within one read aggregate; mutation paths never receive this snapshot. */
+  async readSyncState() {
+    const targets = await this.targets();
+    const inventory = await this.#inventory(targets);
+    const deployments = await this.#listDeployments(targets, inventory.observations);
+    let receipts: Promise<Deployment[]> | undefined;
+    return {
+      inventory,
+      deployments,
+      resolveLocation: async (params: SyncLocationParams) => {
+        if (params.deployment_id && params.observation_id)
+          throw new Error("Choose exactly one deployment or observation ID");
+        // Strict reads stay lazy: corrupt ownership must block the location,
+        // without losing the inventory's existing warnings and readable rows.
+        receipts ??= this.#allReceipts({}, targets);
+        return this.#syncLocation(params, "package", undefined, {
+          targets,
+          receipts: await receipts,
+          inventory,
+        });
+      },
+    };
+  }
+
   async listDeployments(ignoreSyncOperationId?: string) {
     // Reuse discovery only within this read. Writers retain their separate checks
     // before and after staging, and the next read always discovers targets again.
     const targets = await this.targets();
     const inventory = await this.#inventory(targets);
-    const observations = inventory.observations;
+    return this.#listDeployments(targets, inventory.observations, ignoreSyncOperationId);
+  }
+
+  async #listDeployments(
+    targets: readonly Target[],
+    observations: readonly Observation[],
+    ignoreSyncOperationId?: string,
+  ) {
     const deployments = await this.#allReceipts(
       {
         tolerateUnavailableLibraries: true,
@@ -2026,7 +2063,7 @@ export class SkillManager {
 
   /** Resolves only scanned IDs; callers cannot turn a wire path into a writable location. */
   async syncLocation(
-    params: { deployment_id?: string; observation_id?: string },
+    params: SyncLocationParams,
     mode: "package" | "ownership" = "package",
     operationId?: string,
   ): Promise<SkillSyncLocation> {
@@ -2034,6 +2071,16 @@ export class SkillManager {
       throw new Error("Choose exactly one deployment or observation ID");
     const targets = await this.targets();
     const receipts = await this.#allReceipts({}, targets);
+    return this.#syncLocation(params, mode, operationId, { targets, receipts });
+  }
+
+  async #syncLocation(
+    params: SyncLocationParams,
+    mode: "package" | "ownership",
+    operationId: string | undefined,
+    read: SyncLocationRead,
+  ): Promise<SkillSyncLocation> {
+    const { targets, receipts } = read;
     let receipt: Deployment | null = null;
     let destination: string;
     if (params.deployment_id) {
@@ -2043,9 +2090,8 @@ export class SkillManager {
         throw new Error("Skill deployment belongs to another library");
       destination = receipt.target;
     } else if (params.observation_id) {
-      const observation = (await this.#inventory(targets)).observations.find(
-        (item) => item.id === params.observation_id,
-      );
+      const inventory = read.inventory ?? (await this.#inventory(targets));
+      const observation = inventory.observations.find((item) => item.id === params.observation_id);
       if (!observation) throw new Error("Skill observation no longer exists");
       if (observation.kind !== "directory")
         throw new Error("Linked Skills can only be copied into the library");

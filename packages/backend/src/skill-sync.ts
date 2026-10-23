@@ -335,8 +335,8 @@ export class SkillSyncService {
   async state(): Promise<SkillSyncState> {
     const policy = await this.policy();
     const libraries = await this.hooks.list();
-    const inventory = await this.manager.inventory();
-    const rows = await this.manager.listDeployments();
+    const snapshot = await this.manager.readSyncState();
+    const { inventory, deployments: rows } = snapshot;
     const deployments: SkillSyncState["deployments"] = [];
     for (const row of rows) {
       const library = row.source_is_current_library
@@ -345,7 +345,7 @@ export class SkillSyncService {
       let location: SkillSyncLocation | null = null;
       let failure: string | null = null;
       try {
-        location = await this.manager.syncLocation({ deployment_id: row.id });
+        location = await snapshot.resolveLocation({ deployment_id: row.id });
       } catch (error) {
         failure = message(error);
       }
@@ -382,7 +382,7 @@ export class SkillSyncService {
       let targetId: string | undefined;
       if (row.owner === "external" && row.kind === "directory") {
         try {
-          targetId = (await this.manager.syncLocation({ observation_id: row.id })).target.id;
+          targetId = (await snapshot.resolveLocation({ observation_id: row.id })).target.id;
         } catch {
           /* Read-only source. */
         }

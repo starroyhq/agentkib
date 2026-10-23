@@ -2,7 +2,7 @@ import { promises as fs } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import type { SkillSyncPreview, SkillSyncReport } from "@agentkib/runtime-protocol";
+import type { SkillSyncPreview, SkillSyncReport, SkillSyncState } from "@agentkib/runtime-protocol";
 import { Skills } from "../../../packages/backend/src/skills";
 
 const homes: string[] = [];
@@ -79,6 +79,86 @@ async function preparedCursorDeployment() {
 }
 
 describe("Skill target discovery within read aggregates", () => {
+  it("scans each native root once for a multi-skill synchronization state", async () => {
+    const f = await fixture();
+    const nativeRoot = path.dirname(f.target);
+    const paths = [f.target];
+    for (let index = 1; index < 8; index++) {
+      paths.push(await f.nativeSkill(path.join(nativeRoot, `reviewer-${index}`)));
+    }
+    const discover = vi.spyOn(f.skills.manager, "targets");
+    const readdir = vi.spyOn(fs, "readdir");
+
+    const state = (await f.skills.request("skills.syncState", {})) as SkillSyncState;
+
+    expect(state.observations.filter((row) => paths.includes(row.path))).toHaveLength(8);
+    for (const target of paths) {
+      expect(state.observations.find((row) => row.path === target)).toMatchObject({
+        can_adopt: true,
+        target_id: expect.any(String),
+      });
+    }
+    expect(discover).toHaveBeenCalledOnce();
+    expect(readdir.mock.calls.filter(([directory]) => directory === nativeRoot)).toHaveLength(1);
+  });
+
+  it("keeps overlapping synchronization state discoveries independent", async () => {
+    const f = await fixture();
+    const discover = vi.spyOn(f.skills.manager, "targets");
+
+    const states = (await Promise.all([
+      f.skills.request("skills.syncState", {}),
+      f.skills.request("skills.syncState", {}),
+    ])) as SkillSyncState[];
+
+    expect(discover).toHaveBeenCalledTimes(2);
+    expect(states[0].observations).toEqual(states[1].observations);
+    expect(states[0].observations.find((row) => row.path === f.target)?.can_adopt).toBe(true);
+  });
+
+  it("refreshes workspaces between synchronization state requests", async () => {
+    const f = await fixture();
+    const before = (await f.skills.request("skills.syncState", {})) as SkillSyncState;
+    expect(before.observations.some((row) => row.path === f.target)).toBe(true);
+    const replacement = path.join(f.home, "replacement");
+    const next = await f.nativeSkill(path.join(replacement, ".claude", "skills", "next"));
+    await fs.mkdir(path.join(replacement, ".git"));
+    f.workspaces[0] = { id: "project", path: replacement };
+
+    const after = (await f.skills.request("skills.syncState", {})) as SkillSyncState;
+
+    expect(after.observations.find((row) => row.path === next)?.can_adopt).toBe(true);
+    expect(after.observations.some((row) => row.path === f.target)).toBe(false);
+  });
+
+  it("refreshes package and receipt changes between synchronization state requests", async () => {
+    const f = await fixture();
+    const adopted = await f.adopt();
+    const read = () => f.skills.request("skills.syncState", {}) as Promise<SkillSyncState>;
+    expect((await read()).deployments[0]).toMatchObject({
+      id: adopted.deployment_id,
+      sync_state: "current",
+    });
+    await fs.writeFile(path.join(f.target, "SKILL.md"), f.text("external native edit"));
+    expect((await read()).deployments[0]).toMatchObject({ sync_state: "incoming" });
+    const receiptFile = path.join(f.project, ".agentkib", "skill-deployments.json");
+    const receipts = JSON.parse(await fs.readFile(receiptFile, "utf8"));
+    receipts.deployments[0].status = "inactive";
+    await fs.writeFile(receiptFile, JSON.stringify(receipts));
+    expect((await read()).deployments[0]).toMatchObject({ status: "inactive" });
+    await fs.writeFile(receiptFile, "invalid JSON");
+
+    const damaged = await read();
+
+    expect(
+      damaged.warnings.some((warning) => warning.includes("Skill ownership could not be verified")),
+    ).toBe(true);
+    expect(damaged.observations.find((row) => row.path === f.target)).toMatchObject({
+      status: "unverified",
+      can_adopt: false,
+    });
+  });
+
   it.each(["observation", "deployment"] as const)(
     "discovers targets once while resolving a %s with its real package and ownership",
     async (kind) => {
@@ -145,6 +225,7 @@ describe("Skill target discovery within read aggregates", () => {
         method === "availability"
           ? f.skills.manager.assertSyncOperationAvailable(f.target)
           : f.skills.manager.syncLocation({ deployment_id: adopted.deployment_id! });
+      await f.skills.request("skills.syncState", {});
       const discover = vi.spyOn(f.skills.manager, "targets");
       await request();
       expect(discover).toHaveBeenCalledOnce();
@@ -211,6 +292,7 @@ describe("Skill target discovery within read aggregates", () => {
       const receipt = (await f.skills.manager.listDeployments()).find(
         (row) => row.id === f.adopted.deployment_id,
       )!;
+      await f.skills.request("skills.syncState", {});
       const file = path.join(
         f.project,
         ".agentkib",
@@ -493,6 +575,7 @@ describe("Skill target discovery within read aggregates", () => {
         resolution: "library",
       });
       await f.skills.manager.listDeployments();
+      await f.skills.request("skills.syncState", {});
       const libraryFile = path.join(f.root, "skills", adopted.library_id!, "SKILL.md");
       const originalFile = path.join(f.target, "SKILL.md");
       let unchangedNative = originalFile;

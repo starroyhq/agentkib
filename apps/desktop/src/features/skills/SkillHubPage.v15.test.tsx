@@ -100,6 +100,11 @@ describe("v15 Skill library", () => {
     );
     expect(await screen.findByText("release-notes")).toBeVisible();
     expect(mocks.skillCatalog).not.toHaveBeenCalled();
+    for (const name of [/Skill library 0/, /Usage locations 1/]) {
+      const tab = screen.getByRole("tab", { name });
+      expect(tab.querySelector('[data-slot="badge"]')).toBeNull();
+      expect(tab.querySelector(".tabular-nums")).toHaveClass("text-muted-foreground");
+    }
   });
   it.each(["library", "discover"] as const)("keeps an explicit %s destination", async (section) => {
     mount(section);

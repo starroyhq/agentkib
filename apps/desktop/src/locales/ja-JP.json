@@ -2394,5 +2394,21 @@
   "agents.usageUnavailable": "{{agent}} の使用量を現在読み取れません",
   "skills.manager.visibleTo": "利用可能な Agent",
   "mcp.servicesTitle": "MCP サービス",
-  "mcp.manage.chooseAgentsTitle": "Agent を選択"
+  "mcp.manage.chooseAgentsTitle": "Agent を選択",
+  "agents.usageClaudeStatsCacheMissing": "Claude Code のローカル使用量統計ファイルが見つかりません",
+  "skills.manager.load.blocked": "{{agent}} は読み込みません：{{reason}}",
+  "skills.manager.load.unknown": "{{agent}} が読み込むか確認できません：{{reason}}",
+  "skills.manager.load.confirmation": "{{agent}} の読み込みには確認が必要です：{{reason}}",
+  "skills.manager.load.reason.noGitRoot": "プロジェクトに Git ルートがありません",
+  "skills.manager.load.reason.differentGitRoot": "スキルが検出対象の Git ルートにありません",
+  "skills.manager.load.reason.projectDiscoveryDisabled": "ネイティブ設定でプロジェクトのスキル検出が無効です",
+  "skills.manager.load.reason.projectNotTrusted": "プロジェクトが Agent に信頼されていません",
+  "skills.manager.load.reason.trustUnavailable": "プロジェクトの信頼設定を読み取れません",
+  "skills.manager.load.reason.nativeConfigDisabled": "ネイティブのスキル設定で制限されています",
+  "skills.manager.load.reason.nativeWorkspaceMissing": "対応するネイティブワークスペースが設定されていません",
+  "skills.manager.load.reason.configUnavailable": "ワークスペースまたはスキル設定を読み取れません",
+  "skills.manager.load.reason.allowlistExcluded": "ネイティブの許可リストに含まれていません",
+  "skills.manager.load.reason.permissionRequired": "ネイティブ設定でスキルの権限確認が必要です",
+  "skills.manager.load.reason.unverified": "ネイティブの読み込み状態は未確認です",
+  "skills.manager.load.detailsNotice": "詳細で追加の診断情報を確認できます"
 }

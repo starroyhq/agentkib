@@ -2394,5 +2394,21 @@
   "agents.usageUnavailable": "Unable to read {{agent}} usage right now",
   "skills.manager.visibleTo": "Visible to",
   "mcp.servicesTitle": "MCP services",
-  "mcp.manage.chooseAgentsTitle": "Choose Agents"
+  "mcp.manage.chooseAgentsTitle": "Choose Agents",
+  "agents.usageClaudeStatsCacheMissing": "Claude Code’s local usage statistics file was not found",
+  "skills.manager.load.blocked": "{{agent}} will not load: {{reason}}",
+  "skills.manager.load.unknown": "{{agent}} loading is unconfirmed: {{reason}}",
+  "skills.manager.load.confirmation": "{{agent}} needs confirmation before loading: {{reason}}",
+  "skills.manager.load.reason.noGitRoot": "the project has no Git root",
+  "skills.manager.load.reason.differentGitRoot": "the skill is outside the native discovery Git root",
+  "skills.manager.load.reason.projectDiscoveryDisabled": "native configuration disables project skill discovery",
+  "skills.manager.load.reason.projectNotTrusted": "the project is not trusted by the Agent",
+  "skills.manager.load.reason.trustUnavailable": "project trust configuration is unavailable",
+  "skills.manager.load.reason.nativeConfigDisabled": "native skill configuration restricts this skill",
+  "skills.manager.load.reason.nativeWorkspaceMissing": "no matching native workspace is configured",
+  "skills.manager.load.reason.configUnavailable": "workspace or skill configuration is unavailable",
+  "skills.manager.load.reason.allowlistExcluded": "the native allowlist excludes this skill",
+  "skills.manager.load.reason.permissionRequired": "native configuration requires skill permission approval",
+  "skills.manager.load.reason.unverified": "native loading has not been verified",
+  "skills.manager.load.detailsNotice": "More diagnostics are available in details"
 }

@@ -1,20 +1,23 @@
 import { promises as fs } from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { SkillSyncPreview, SkillSyncReport, SkillSyncState } from "@agentkib/runtime-protocol";
 import { Skills } from "../../../packages/backend/src/skills";
 import { createSkillRequestTracker } from "./fixtures/skill-request-tracker";
 
 const folders: string[] = [];
 const requests = createSkillRequestTracker();
-afterEach(async () => {
-  await requests.settle();
-  vi.restoreAllMocks();
-  await Promise.all(
-    folders.splice(0).map((folder) => fs.rm(folder, { recursive: true, force: true })),
-  );
-});
+beforeEach(() => requests.waitForCleanup());
+afterEach(() =>
+  requests.cleanup(async () => {
+    await requests.settle();
+    vi.restoreAllMocks();
+    await Promise.all(
+      folders.splice(0).map((folder) => fs.rm(folder, { recursive: true, force: true })),
+    );
+  }),
+);
 
 async function fixture(personal = false) {
   const home = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), "skill-sync-recovery-")));

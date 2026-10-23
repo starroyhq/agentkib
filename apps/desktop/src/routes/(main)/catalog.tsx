@@ -425,7 +425,12 @@ function CatalogPage({
               {label}
               {count !== undefined && (
                 <span
-                  className="ml-auto min-w-5 text-center text-[11px] tabular-nums text-muted-foreground"
+                  className={cn(
+                    "ml-auto min-w-5 text-center text-[11px] tabular-nums",
+                    id === "memory" && pending > 0
+                      ? "text-amber-700 dark:text-amber-400"
+                      : "text-muted-foreground",
+                  )}
                   aria-label={badgeLabel}
                   title={badgeLabel}
                 >

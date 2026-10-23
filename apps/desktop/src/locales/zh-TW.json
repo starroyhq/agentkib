@@ -2394,5 +2394,21 @@
   "agents.usageUnavailable": "暫時無法讀取 {{agent}} 的用量",
   "skills.manager.visibleTo": "可見於",
   "mcp.servicesTitle": "MCP 服務",
-  "mcp.manage.chooseAgentsTitle": "選擇 Agent"
+  "mcp.manage.chooseAgentsTitle": "選擇 Agent",
+  "agents.usageClaudeStatsCacheMissing": "找不到 Claude Code 的本機用量統計檔案",
+  "skills.manager.load.blocked": "{{agent}} 不會載入：{{reason}}",
+  "skills.manager.load.unknown": "{{agent}} 無法確定是否載入：{{reason}}",
+  "skills.manager.load.confirmation": "{{agent}} 載入前需要確認：{{reason}}",
+  "skills.manager.load.reason.noGitRoot": "專案沒有 Git 根目錄",
+  "skills.manager.load.reason.differentGitRoot": "技能不在原生探索使用的 Git 根目錄",
+  "skills.manager.load.reason.projectDiscoveryDisabled": "原生設定關閉了專案技能探索",
+  "skills.manager.load.reason.projectNotTrusted": "專案尚未取得原生信任",
+  "skills.manager.load.reason.trustUnavailable": "讀不到專案信任設定",
+  "skills.manager.load.reason.nativeConfigDisabled": "原生技能設定限制了此技能",
+  "skills.manager.load.reason.nativeWorkspaceMissing": "未設定對應的原生工作區",
+  "skills.manager.load.reason.configUnavailable": "讀不到工作區或技能設定",
+  "skills.manager.load.reason.allowlistExcluded": "原生允許清單未包含此技能",
+  "skills.manager.load.reason.permissionRequired": "原生設定要求先確認技能權限",
+  "skills.manager.load.reason.unverified": "原生載入狀態尚未驗證",
+  "skills.manager.load.detailsNotice": "還有診斷資訊，請查看詳細資料"
 }

@@ -1,0 +1,381 @@
+{
+  "zh-CN": {
+    "viewport": {
+      "width": 1360,
+      "height": 860,
+      "horizontalOverflow": false
+    },
+    "pending": {
+      "text": "1",
+      "color": "lab(47.2709 42.9082 69.2966)",
+      "opacity": "1",
+      "parentBackground": "rgba(0, 0, 0, 0)",
+      "title": "1 条待审批"
+    },
+    "usage": "暂时读不到 Claude Code 的用量\n\n未找到 Claude Code 的本机用量统计文件\n\n查看详情\n重试",
+    "detailsPreserved": true,
+    "control": "工作区发现 会话列表 历史阅读 继续会话 不支持 控制 · 不支持",
+    "stableMenu": {
+      "viewportWidth": 1360,
+      "rect": {
+        "x": 5,
+        "y": 303,
+        "width": 1328,
+        "height": 92,
+        "top": 303,
+        "right": 1333,
+        "bottom": 395,
+        "left": 5
+      },
+      "opacity": "1",
+      "transform": "none",
+      "rows": [
+        {
+          "height": 28,
+          "label": "接管此安装",
+          "title": "接管此安装",
+          "spanWidth": 71,
+          "textWidth": 71
+        },
+        {
+          "height": 28,
+          "label": "打开工作区 · northstar-api-long-project-name-long-project-name-long-project-name-long-project-name-long-project-name-long-project-name-long-project-name-long-project-name-long-project-name-long-project-name-",
+          "title": "打开工作区 · northstar-api-long-project-name-long-project-name-long-project-name-long-project-name-long-project-name-long-project-name-long-project-name-long-project-name-long-project-name-long-project-name-",
+          "spanWidth": 1308,
+          "textWidth": 1424
+        },
+        {
+          "height": 28,
+          "label": "打开工作区 · northstar-api",
+          "title": "打开工作区 · northstar-api",
+          "spanWidth": 165,
+          "textWidth": 165
+        }
+      ]
+    }
+  },
+  "zh-TW": {
+    "viewport": {
+      "width": 1360,
+      "height": 860,
+      "horizontalOverflow": false
+    },
+    "pending": {
+      "text": "1",
+      "color": "lab(47.2709 42.9082 69.2966)",
+      "opacity": "1",
+      "parentBackground": "rgba(0, 0, 0, 0)",
+      "title": "1 筆待審核"
+    },
+    "usage": "暫時無法讀取 Claude Code 的用量\n\n找不到 Claude Code 的本機用量統計檔案\n\n查看詳情\n重試",
+    "detailsPreserved": true,
+    "control": "工作區探索 對話清單 歷史記錄閱讀 繼續對話 不支援 控制 · 不支援",
+    "stableMenu": {
+      "viewportWidth": 1360,
+      "rect": {
+        "x": 5,
+        "y": 303,
+        "width": 1328,
+        "height": 92,
+        "top": 303,
+        "right": 1333,
+        "bottom": 395,
+        "left": 5
+      },
+      "opacity": "1",
+      "transform": "none",
+      "rows": [
+        {
+          "height": 28,
+          "label": "接管此安裝",
+          "title": "接管此安裝",
+          "spanWidth": 71,
+          "textWidth": 71
+        },
+        {
+          "height": 28,
+          "label": "開啟工作區 · northstar-api-long-project-name-long-project-name-long-project-name-long-project-name-long-project-name-long-project-name-long-project-name-long-project-name-long-project-name-long-project-name-",
+          "title": "開啟工作區 · northstar-api-long-project-name-long-project-name-long-project-name-long-project-name-long-project-name-long-project-name-long-project-name-long-project-name-long-project-name-long-project-name-",
+          "spanWidth": 1308,
+          "textWidth": 1424
+        },
+        {
+          "height": 28,
+          "label": "開啟工作區 · northstar-api",
+          "title": "開啟工作區 · northstar-api",
+          "spanWidth": 165,
+          "textWidth": 165
+        }
+      ]
+    }
+  },
+  "en-US": {
+    "viewport": {
+      "width": 1360,
+      "height": 860,
+      "horizontalOverflow": false
+    },
+    "pending": {
+      "text": "1",
+      "color": "lab(47.2709 42.9082 69.2966)",
+      "opacity": "1",
+      "parentBackground": "rgba(0, 0, 0, 0)",
+      "title": "1 pending"
+    },
+    "usage": "Unable to read Claude Code usage right now\n\nClaude Code’s local usage statistics file was not found\n\nDetails\nRetry",
+    "detailsPreserved": true,
+    "control": "Workspace discovery Session list History reading Continuation Not supported Control · Not supported",
+    "stableMenu": {
+      "viewportWidth": 1360,
+      "rect": {
+        "x": 5,
+        "y": 303,
+        "width": 1328,
+        "height": 92,
+        "top": 303,
+        "right": 1333,
+        "bottom": 395,
+        "left": 5
+      },
+      "opacity": "1",
+      "transform": "none",
+      "rows": [
+        {
+          "height": 28,
+          "label": "Adopt this installation",
+          "title": "Adopt this installation",
+          "spanWidth": 140,
+          "textWidth": 140
+        },
+        {
+          "height": 28,
+          "label": "Open workspace · northstar-api-long-project-name-long-project-name-long-project-name-long-project-name-long-project-name-long-project-name-long-project-name-long-project-name-long-project-name-long-project-name-",
+          "title": "Open workspace · northstar-api-long-project-name-long-project-name-long-project-name-long-project-name-long-project-name-long-project-name-long-project-name-long-project-name-long-project-name-long-project-name-",
+          "spanWidth": 1308,
+          "textWidth": 1461
+        },
+        {
+          "height": 28,
+          "label": "Open workspace · northstar-api",
+          "title": "Open workspace · northstar-api",
+          "spanWidth": 201,
+          "textWidth": 201
+        }
+      ]
+    }
+  },
+  "ja-JP": {
+    "viewport": {
+      "width": 1360,
+      "height": 860,
+      "horizontalOverflow": false
+    },
+    "pending": {
+      "text": "1",
+      "color": "lab(47.2709 42.9082 69.2966)",
+      "opacity": "1",
+      "parentBackground": "rgba(0, 0, 0, 0)",
+      "title": "承認待ち 1 件"
+    },
+    "usage": "Claude Code の使用量を現在読み取れません\n\nClaude Code のローカル使用量統計ファイルが見つかりません\n\n詳細を表示\n再試行",
+    "detailsPreserved": true,
+    "control": "ワークスペース検出 会話一覧 履歴の閲覧 会話継続 非対応 制御 · 非対応",
+    "stableMenu": {
+      "rect": {
+        "x": 5,
+        "y": 303,
+        "width": 1328,
+        "height": 92,
+        "top": 303,
+        "right": 1333,
+        "bottom": 395,
+        "left": 5
+      },
+      "opacity": "1",
+      "transform": "none",
+      "rows": [
+        {
+          "height": 28,
+          "text": "この配置を管理する",
+          "title": "この配置を管理する",
+          "spanWidth": 126,
+          "textWidth": 126
+        },
+        {
+          "height": 28,
+          "text": "ワークスペースを開く · northstar-api-long-project-name-long-project-name-long-project-name-long-project-name-long-project-name-long-project-name-long-project-name-long-project-name-long-project-name-long-project-name-",
+          "title": "ワークスペースを開く · northstar-api-long-project-name-long-project-name-long-project-name-long-project-name-long-project-name-long-project-name-long-project-name-long-project-name-long-project-name-long-project-name-",
+          "spanWidth": 1308,
+          "textWidth": 1490
+        },
+        {
+          "height": 28,
+          "text": "ワークスペースを開く · northstar-api",
+          "title": "ワークスペースを開く · northstar-api",
+          "spanWidth": 231,
+          "textWidth": 231
+        }
+      ]
+    }
+  },
+  "pendingColor": {
+    "foreground": [
+      187,
+      77,
+      0,
+      255
+    ],
+    "backgrounds": [
+      {
+        "tag": "SPAN",
+        "color": "lab(47.2709 42.9082 69.2966)",
+        "background": "rgba(0, 0, 0, 0)",
+        "opacity": "1",
+        "rgba": [
+          0,
+          0,
+          0,
+          0
+        ]
+      },
+      {
+        "tag": "BUTTON",
+        "color": "color(srgb 0.054902 0.0784314 0.168627 / 0.74)",
+        "background": "rgba(0, 0, 0, 0)",
+        "opacity": "1",
+        "rgba": [
+          0,
+          0,
+          0,
+          0
+        ]
+      },
+      {
+        "tag": "NAV",
+        "color": "rgb(14, 20, 43)",
+        "background": "rgba(0, 0, 0, 0)",
+        "opacity": "1",
+        "rgba": [
+          0,
+          0,
+          0,
+          0
+        ]
+      },
+      {
+        "tag": "DIV",
+        "color": "rgb(14, 20, 43)",
+        "background": "rgba(0, 0, 0, 0)",
+        "opacity": "1",
+        "rgba": [
+          0,
+          0,
+          0,
+          0
+        ]
+      },
+      {
+        "tag": "DIV",
+        "color": "rgb(14, 20, 43)",
+        "background": "rgba(0, 0, 0, 0)",
+        "opacity": "1",
+        "rgba": [
+          0,
+          0,
+          0,
+          0
+        ]
+      },
+      {
+        "tag": "DIV",
+        "color": "rgb(14, 20, 43)",
+        "background": "rgba(0, 0, 0, 0)",
+        "opacity": "1",
+        "rgba": [
+          0,
+          0,
+          0,
+          0
+        ]
+      },
+      {
+        "tag": "DIV",
+        "color": "rgb(14, 20, 43)",
+        "background": "rgba(0, 0, 0, 0)",
+        "opacity": "1",
+        "rgba": [
+          0,
+          0,
+          0,
+          0
+        ]
+      },
+      {
+        "tag": "ASIDE",
+        "color": "rgb(14, 20, 43)",
+        "background": "rgba(0, 0, 0, 0)",
+        "opacity": "1",
+        "rgba": [
+          0,
+          0,
+          0,
+          0
+        ]
+      },
+      {
+        "tag": "DIV",
+        "color": "rgb(14, 20, 43)",
+        "background": "rgb(250, 250, 250)",
+        "opacity": "1",
+        "rgba": [
+          250,
+          250,
+          250,
+          255
+        ]
+      },
+      {
+        "tag": "DIV",
+        "color": "rgb(14, 20, 43)",
+        "background": "rgba(0, 0, 0, 0)",
+        "opacity": "1",
+        "rgba": [
+          0,
+          0,
+          0,
+          0
+        ]
+      },
+      {
+        "tag": "BODY",
+        "color": "rgb(14, 20, 43)",
+        "background": "rgb(252, 252, 252)",
+        "opacity": "1",
+        "rgba": [
+          252,
+          252,
+          252,
+          255
+        ]
+      },
+      {
+        "tag": "HTML",
+        "color": "rgb(14, 20, 43)",
+        "background": "rgb(252, 252, 252)",
+        "opacity": "1",
+        "rgba": [
+          252,
+          252,
+          252,
+          255
+        ]
+      }
+    ]
+  },
+  "approvedCount": {
+    "text": "1",
+    "title": "",
+    "color": "rgb(98, 106, 126)",
+    "classes": "ml-auto min-w-5 text-center text-[11px] tabular-nums text-muted-foreground"
+  }
+}

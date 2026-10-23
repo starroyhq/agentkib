@@ -127,7 +127,7 @@ export function AgentOverviewPanel({
               <CircleHelp size={13} aria-hidden="true" />
             )}
             {tr("agents.capability.control")}
-            {support?.control === "experimental" && " · "}
+            {support && " · "}
             <span className="text-muted-foreground">
               {tr(
                 support

@@ -999,6 +999,42 @@ describe("Skill usage and details", () => {
       }
     },
   );
+  it("preserves raw native diagnostics from every grouped entry in View details", async () => {
+    const rawHermes = "Hermes: project skills are not loaded because this project has no Git root";
+    const rawUnknown = "OpenCode: a future native loading condition is not understood";
+    const alias: SkillObservation = {
+      ...observation,
+      id: "restricted-project-alias",
+      path: "/project/.agents/skills/reviewer",
+      scope: "workspace",
+      workspace_id: "project",
+      agents: ["hermes", "opencode"],
+      diagnostics: [rawHermes, rawUnknown],
+    };
+    mocks.skillDetail.mockResolvedValue({
+      library_id: null,
+      observation_id: observation.id,
+      name: "reviewer",
+      description: "Review",
+      source: null,
+      files: [],
+      total_size: 0,
+      diagnostics: [],
+    });
+    render(
+      <SkillDetailDialog
+        request={{ observation_id: observation.id }}
+        inventory={{ observations: [observation, alias], warnings: [] }}
+        onClose={vi.fn()}
+        onDeploy={vi.fn()}
+        onImport={vi.fn()}
+      />,
+    );
+    expect(await screen.findByText(rawHermes)).toBeTruthy();
+    expect(screen.getByText(rawUnknown)).toBeTruthy();
+    expect(screen.getByText(observation.diagnostics[0])).toBeTruthy();
+    expect(screen.getByText(alias.path)).toBeTruthy();
+  });
   it("separates deployed state from native restrictions and opens actual deployed content", async () => {
     const observed = {
       ...observation,

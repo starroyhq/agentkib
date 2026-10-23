@@ -67,6 +67,7 @@ import { sessionAgentNames } from "@/features/sessions/session-labels";
 import { withAsyncCleanup } from "@/lib/utils";
 import { usePathDisplay } from "@/lib/usePathDisplay";
 import { isSkillDirectory, SkillFileBrowser, type SkillReadableContent } from "./SkillFileBrowser";
+import { skillObservationVisibility } from "./skill-visibility";
 
 const knownStatuses = new Set([
   "current",
@@ -196,15 +197,17 @@ function SkillUsageActions({
             <MoreHorizontal size={14} aria-hidden="true" />
             {!iconOnly && tr("common.moreActions")}
           </DropdownMenuTrigger>
-          <DropdownMenuContent align="end">
+          <DropdownMenuContent align="end" className="w-max max-w-[calc(100vw-2rem)]">
             {secondary.map((action) => (
               <DropdownMenuItem
                 key={action.id}
                 variant={action.destructive ? "destructive" : "default"}
                 disabled={action.disabled}
                 onClick={action.run}
+                aria-label={action.label}
+                title={action.label}
               >
-                {action.label}
+                <span className="min-w-0 truncate">{action.label}</span>
               </DropdownMenuItem>
             ))}
           </DropdownMenuContent>
@@ -1080,9 +1083,9 @@ export function SkillUsageList({
     const item =
       group.observations.find((observation) => observation.path === group.path) ??
       group.observations[0];
-    const diagnostics = [
-      ...new Set(group.observations.flatMap((observation) => observation.diagnostics)),
-    ];
+    const { visibleAgents, issues, hasOtherDiagnostics } = skillObservationVisibility(
+      group.observations,
+    );
     const workspaceIds = [
       ...new Set(
         group.observations.flatMap((observation) =>
@@ -1090,7 +1093,6 @@ export function SkillUsageList({
         ),
       ),
     ];
-    const visibleAgents = [...new Set(group.observations.flatMap((entry) => entry.agents))];
     // A personal package can also be discovered in a workspace's ancestor roots.
     // Keep that relationship in the workspace actions rather than giving it a second source.
     const source = group.observations.some((entry) => entry.scope === "personal")
@@ -1214,11 +1216,39 @@ export function SkillUsageList({
             </CollapsibleContent>
           </Collapsible>
         )}
-        {diagnostics.map((diagnostic) => (
-          <p key={diagnostic} className="text-xs text-amber-700">
-            {diagnostic}
-          </p>
+        {issues.map((issue, index) => (
+          <div
+            key={`${issue.observation.id}:${index}`}
+            className="flex min-w-0 flex-wrap items-center gap-2 text-xs text-amber-700 dark:text-amber-400"
+          >
+            <p>
+              {tr(`skills.manager.load.${issue.kind}`, {
+                agent: sessionAgentNames[issue.agent],
+                reason: tr(`skills.manager.load.reason.${issue.reason}`),
+              })}
+            </p>
+            {visibleAgents.includes(issue.agent) && (
+              <>
+                <span>
+                  {issue.observation.scope === "personal"
+                    ? tr("skills.manager.personal")
+                    : tr("skills.manager.projectSource", { name: location(issue.observation) })}
+                </span>
+                <code className="max-w-full truncate" title={issue.observation.path}>
+                  {displayPath(issue.observation.path)}
+                </code>
+              </>
+            )}
+            {issue.context && (
+              <code className="max-w-full truncate" title={issue.context}>
+                {displayPath(issue.context)}
+              </code>
+            )}
+          </div>
         ))}
+        {hasOtherDiagnostics && (
+          <p className="text-xs text-muted-foreground">{tr("skills.manager.load.detailsNotice")}</p>
+        )}
       </div>
     );
   };

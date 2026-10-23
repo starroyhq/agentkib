@@ -4,6 +4,7 @@ interface SkillRequestClient {
 
 export function createSkillRequestTracker() {
   const pending = new Set<Promise<unknown>>();
+  let cleanupTail: Promise<void> = Promise.resolve();
   const observe = <T>(promise: Promise<T>): Promise<T> => {
     pending.add(promise);
     void promise.then(
@@ -13,6 +14,18 @@ export function createSkillRequestTracker() {
     return promise;
   };
   return {
+    waitForCleanup(): Promise<void> {
+      // A hook timeout abandons its wait without cancelling the cleanup.
+      return cleanupTail;
+    },
+    cleanup(body: () => Promise<void>): Promise<void> {
+      const previous = cleanupTail;
+      // A failed beforeEach still runs afterEach. Queue that cleanup after the
+      // previous attempt settles, and return this attempt's original rejection.
+      const next = previous.then(body, body);
+      cleanupTail = next;
+      return next;
+    },
     run<T>(body: () => Promise<T>): Promise<T> {
       // A timeout can leave the test between requests or inside fixture I/O.
       // Track its whole Promise so every awaited continuation finishes first.

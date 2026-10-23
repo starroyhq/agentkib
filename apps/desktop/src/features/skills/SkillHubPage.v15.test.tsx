@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import "@testing-library/jest-dom/vitest";
-import { act, cleanup, render, screen, waitFor } from "@testing-library/react";
+import { act, cleanup, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -265,6 +265,30 @@ describe("v15 Skill library", () => {
       await screen.findByRole("button", { name: "Import from local Agents (1)" }),
     ).toBeEnabled();
     expect(screen.queryByRole("button", { name: "Import from local Agents (2)" })).toBeNull();
+  });
+  it("passes workspace names to native details opened from the usage page", async () => {
+    mocks.skillDetail.mockResolvedValue({
+      library_id: null,
+      observation_id: observation.id,
+      name: observation.name,
+      description: "Review release notes",
+      source: null,
+      files: [],
+      total_size: 0,
+      diagnostics: [],
+    });
+    mount("workspace");
+    await userEvent
+      .setup()
+      .click(await screen.findByRole("button", { name: tr("skills.manager.viewNative") }));
+    const dialog = await screen.findByRole("dialog");
+    expect(
+      await within(dialog).findByText(
+        `${tr("skills.manager.projectSource", { name: "Demo project" })} · Claude Code`,
+      ),
+    ).toBeVisible();
+    expect(within(dialog).getByText(observation.path)).toBeVisible();
+    expect(mocks.skillDetail).toHaveBeenCalledWith({ observation_id: observation.id });
   });
   it("opens discovery from the empty card without adding redundant filters", async () => {
     mocks.skillInventory.mockResolvedValue({ observations: [], warnings: [] });

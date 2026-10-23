@@ -41,7 +41,7 @@ export function AgentUsagePanel({
       localizedReason || (missingClaudeStats ? tr("agents.usageClaudeStatsCacheMissing") : "");
     return (
       <div role="alert" className="grid justify-items-start gap-4 p-5">
-        <p className="text-sm text-muted-foreground">
+        <p className="text-sm text-foreground">
           {tr("agents.usageUnavailable", { agent: AGENT_LABELS[agent] })}
         </p>
         {reason && <p className="text-sm text-muted-foreground">{reason}</p>}

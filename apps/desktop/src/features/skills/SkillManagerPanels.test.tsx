@@ -10,6 +10,7 @@ import type {
   SkillObservation,
   SkillTargetCapability,
   SkillSyncState,
+  WorkspaceSummary,
 } from "@/core/types";
 import {
   SkillDeploymentDialog,
@@ -989,8 +990,10 @@ describe("Skill usage and details", () => {
         />,
       );
       expect(await screen.findByText(alias.path)).toBeTruthy();
-      expect(screen.getByText(/Personal · Claude Code · Native visibility:/)).toBeTruthy();
-      expect(screen.getByText(/Personal · Codex · OpenCode · Native visibility:/)).toBeTruthy();
+      expect(screen.getByText("Personal · Claude Code")).toBeTruthy();
+      expect(screen.getByText("Personal · Codex · OpenCode")).toBeTruthy();
+      expect(screen.queryByText(/Native visibility:/)).toBeNull();
+      expect(screen.queryByText(tr("skills.manager.status.visible"))).toBeNull();
       if (!library) {
         await userEvent
           .setup()
@@ -999,7 +1002,90 @@ describe("Skill usage and details", () => {
       }
     },
   );
-  it("preserves raw native diagnostics from every grouped entry in View details", async () => {
+  it.each(["zh-CN", "zh-TW", "en-US", "ja-JP"] as const)(
+    "keeps per-entry loading evidence and workspace names in details in %s",
+    async (locale) => {
+      await changeLocale(locale);
+      const rawHermes =
+        "Hermes: project skills are not loaded because this project has no Git root";
+      const rawOpenClaw =
+        "OpenClaw: native enablement is unknown because workspace or skills configuration could not be resolved";
+      const rawOpenCode = "OpenCode: permission.skill is deny for this Skill";
+      const personal: SkillObservation = {
+        ...observation,
+        agents: ["opencode"],
+        status: "observed",
+      };
+      const restricted: SkillObservation = {
+        ...personal,
+        id: "restricted-project-alias",
+        path: "/fixture/northstar/.agents/skills/reviewer",
+        scope: "workspace",
+        workspace_id: "northstar",
+        agents: ["codex", "cursor", "opencode", "hermes", "open-claw"],
+        status: "visible",
+        diagnostics: [rawHermes, rawOpenClaw, rawOpenCode],
+      };
+      const workspaces: WorkspaceSummary[] = ["northstar", "orion"].map((id) => ({
+        id,
+        name: `${id} workspace`,
+        path: `/fixture/${id}`,
+        status: "healthy",
+        asset_count: 0,
+        warning_count: 0,
+        sources: [],
+      }));
+      const inherited = workspaces.map((workspace) => ({
+        ...personal,
+        id: `inherited-${workspace.id}`,
+        scope: "workspace" as const,
+        workspace_id: workspace.id,
+      }));
+      mocks.skillDetail.mockResolvedValue({
+        library_id: null,
+        observation_id: personal.id,
+        name: "reviewer",
+        description: "Review",
+        source: null,
+        files: [],
+        total_size: 0,
+        diagnostics: [],
+      });
+      render(
+        <SkillDetailDialog
+          request={{ observation_id: personal.id }}
+          inventory={{ observations: [personal, restricted, ...inherited], warnings: [] }}
+          workspaces={workspaces}
+          onClose={vi.fn()}
+          onDeploy={vi.fn()}
+          onImport={vi.fn()}
+        />,
+      );
+      const restrictedRow = (await screen.findByText(restricted.path)).parentElement!;
+      expect(
+        within(restrictedRow).getByText(
+          `${tr("skills.manager.projectSource", { name: workspaces[0].name })} · Codex · Cursor`,
+        ),
+      ).toBeTruthy();
+      for (const raw of restricted.diagnostics)
+        expect(within(restrictedRow).getByText(raw)).toBeTruthy();
+      expect(screen.getByText(`${tr("skills.manager.personal")} · OpenCode`)).toBeTruthy();
+      for (const workspace of workspaces)
+        expect(
+          screen.getByText(
+            `${tr("skills.manager.projectSource", { name: workspace.name })} · OpenCode`,
+          ),
+        ).toBeTruthy();
+      expect(screen.getAllByText(personal.path)).toHaveLength(3);
+      expect(screen.getAllByText(personal.diagnostics[0])).toHaveLength(3);
+      expect(
+        screen.queryByText(tr("skills.manager.nativeVisibility"), { exact: false }),
+      ).toBeNull();
+      expect(screen.queryByText(tr("skills.manager.status.visible"))).toBeNull();
+      expect(screen.queryByText(tr("skills.manager.status.observed"))).toBeNull();
+    },
+  );
+  it("keeps unknown and unresolved usage rows without claiming their Agents will load", async () => {
     const rawHermes = "Hermes: project skills are not loaded because this project has no Git root";
     const rawUnknown = "OpenCode: a future native loading condition is not understood";
     const alias: SkillObservation = {
@@ -1010,6 +1096,16 @@ describe("Skill usage and details", () => {
       workspace_id: "project",
       agents: ["hermes", "opencode"],
       diagnostics: [rawHermes, rawUnknown],
+    };
+    const broken: SkillObservation = {
+      ...observation,
+      id: "unresolved-entry",
+      path: "/fixture/native/unresolved-reviewer",
+      resolved_path: null,
+      agents: ["codex"],
+      library_id: "reviewer",
+      status: "unverified",
+      diagnostics: ["Deployment ownership could not be verified"],
     };
     mocks.skillDetail.mockResolvedValue({
       library_id: null,
@@ -1023,8 +1119,14 @@ describe("Skill usage and details", () => {
     });
     render(
       <SkillDetailDialog
-        request={{ observation_id: observation.id }}
-        inventory={{ observations: [observation, alias], warnings: [] }}
+        request={{ library_id: "reviewer" }}
+        inventory={{
+          observations: [observation, alias, broken].map((item) => ({
+            ...item,
+            library_id: "reviewer",
+          })),
+          warnings: [],
+        }}
         onClose={vi.fn()}
         onDeploy={vi.fn()}
         onImport={vi.fn()}
@@ -1034,6 +1136,70 @@ describe("Skill usage and details", () => {
     expect(screen.getByText(rawUnknown)).toBeTruthy();
     expect(screen.getByText(observation.diagnostics[0])).toBeTruthy();
     expect(screen.getByText(alias.path)).toBeTruthy();
+    const restrictedRow = screen.getByText(alias.path).parentElement!;
+    expect(within(restrictedRow).queryByText(/^Project.* · (Hermes|OpenCode)/)).toBeNull();
+    const brokenRow = screen.getByText(broken.path).parentElement!;
+    expect(within(brokenRow).getByText(broken.diagnostics[0])).toBeTruthy();
+    expect(within(brokenRow).queryByText(/^Personal · Codex/)).toBeNull();
+    expect(within(brokenRow).getByText(tr("skills.manager.status.unverified"))).toBeTruthy();
+  });
+  it("retains positive native contexts and the full managed deployment target list in details", async () => {
+    const mixed: SkillObservation = {
+      ...observation,
+      id: "mixed-native-contexts",
+      library_id: "reviewer",
+      agents: ["hermes", "open-claw"],
+      diagnostics: [
+        "Hermes profile /fixture/untrusted: Git root is not trusted; run hermes skills trust yourself before native loading",
+        "Hermes profile /fixture/trusted: Git root is trusted; native content quarantine and session refresh still apply",
+        "OpenClaw Agent denied: excluded by its effective skills allowlist (per-Agent settings replace defaults)",
+        "OpenClaw Agent allowed: allowed by its effective skills allowlist (per-Agent settings replace defaults)",
+      ],
+    };
+    const managed = {
+      ...deployment,
+      visible_to: ["codex", "hermes", "open-claw"] as AgentKind[],
+    };
+    const restricted: SkillObservation = {
+      ...mixed,
+      id: "restricted-managed-entry",
+      path: managed.target,
+      resolved_path: managed.target,
+      kind: "directory",
+      owner: "agentkib",
+      agents: managed.visible_to,
+      diagnostics: [
+        "Hermes: project skills are not loaded because this project has no Git root",
+        "OpenClaw: native enablement is unknown because workspace or skills configuration could not be resolved",
+      ],
+    };
+    mocks.skillDetail.mockResolvedValue({
+      library_id: "reviewer",
+      observation_id: null,
+      name: "reviewer",
+      description: "Review",
+      source: null,
+      files: [],
+      total_size: 0,
+      diagnostics: [],
+    });
+    render(
+      <SkillDetailDialog
+        request={{ library_id: "reviewer" }}
+        inventory={{ observations: [mixed, restricted], warnings: [] }}
+        deployments={[managed]}
+        onClose={vi.fn()}
+        onDeploy={vi.fn()}
+        onImport={vi.fn()}
+      />,
+    );
+    expect(await screen.findByText("Personal · Hermes · OpenClaw")).toBeTruthy();
+    expect(screen.getByText("Personal · Codex")).toBeTruthy();
+    expect(
+      screen.getByText(`${tr("skills.manager.status.active")} · Codex · Hermes · OpenClaw`),
+    ).toBeTruthy();
+    for (const raw of [...mixed.diagnostics, ...restricted.diagnostics])
+      expect(screen.getByText(raw)).toBeTruthy();
   });
   it("separates deployed state from native restrictions and opens actual deployed content", async () => {
     const observed = {

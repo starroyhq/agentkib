@@ -2,7 +2,7 @@
 import { act, cleanup, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
-import { initializeI18n } from "@/core/i18n";
+import { initializeI18n, tr } from "@/core/i18n";
 import {
   SkillFileBrowser,
   SkillSafeMarkdown,
@@ -219,4 +219,117 @@ describe("Skill content preview", () => {
     await userEvent.setup().click(screen.getByRole("tab", { name: "Changes" }));
     expect(screen.getByText(/too large for an inline diff/)).toBeTruthy();
   });
+});
+
+describe("Skill file read states", () => {
+  it.each(["zh-CN", "zh-TW", "en-US", "ja-JP"] as const)(
+    "does not announce an error while loading or after a successful read in %s",
+    async (locale) => {
+      await initializeI18n(locale);
+      let resolveRead!: (value: SkillReadableContent) => void;
+      const readFile = vi.fn(
+        () =>
+          new Promise<SkillReadableContent>((resolve) => {
+            resolveRead = resolve;
+          }),
+      );
+      render(
+        <SkillFileBrowser
+          files={[{ path: "SKILL.md", size: 20, executable: false }]}
+          readFile={readFile}
+        />,
+      );
+
+      expect(screen.getByText(tr("skills.manager.readOnlyNotice"))).toBeTruthy();
+      expect(within(screen.getByRole("status")).getByText(tr("common.loading"))).toBeTruthy();
+      expect(screen.queryByRole("alert")).toBeNull();
+
+      await act(async () => resolveRead({ path: "SKILL.md", content: "# Reviewed instructions" }));
+
+      expect(await screen.findByRole("heading", { name: "Reviewed instructions" })).toBeTruthy();
+      expect(screen.queryByRole("status")).toBeNull();
+      expect(screen.queryByRole("alert")).toBeNull();
+      expect(screen.queryByText("null")).toBeNull();
+    },
+  );
+
+  it.each(["zh-CN", "zh-TW", "en-US", "ja-JP"] as const)(
+    "does not announce an error while loading or after an empty text read in %s",
+    async (locale) => {
+      await initializeI18n(locale);
+      let resolveRead!: (value: SkillReadableContent) => void;
+      const readFile = vi.fn(
+        () =>
+          new Promise<SkillReadableContent>((resolve) => {
+            resolveRead = resolve;
+          }),
+      );
+      const { container } = render(
+        <SkillFileBrowser
+          files={[{ path: "empty.txt", size: 0, executable: false }]}
+          readFile={readFile}
+        />,
+      );
+
+      expect(screen.getByText(tr("skills.manager.readOnlyNotice"))).toBeTruthy();
+      expect(within(screen.getByRole("status")).getByText(tr("common.loading"))).toBeTruthy();
+      expect(screen.queryByRole("alert")).toBeNull();
+
+      await act(async () => resolveRead({ path: "empty.txt", content: "" }));
+
+      await waitFor(() => expect(container.querySelector("pre")).not.toBeNull());
+      expect(container.querySelector("pre")?.textContent).toBe("");
+      expect(screen.queryByRole("status")).toBeNull();
+      expect(screen.queryByRole("alert")).toBeNull();
+      expect(screen.queryByText("null")).toBeNull();
+    },
+  );
+
+  it.each(["zh-CN", "zh-TW", "en-US", "ja-JP"] as const)(
+    "does not announce an error when only directories or no files are available in %s",
+    async (locale) => {
+      await initializeI18n(locale);
+      const readFile = vi.fn();
+      const { rerender } = render(
+        <SkillFileBrowser
+          files={[{ path: "resources/", size: 0, executable: false }]}
+          readFile={readFile}
+        />,
+      );
+
+      expect(screen.getByText(tr("skills.manager.readOnlyNotice"))).toBeTruthy();
+      expect(screen.getByText(tr("skills.manager.directoriesOnly"))).toBeTruthy();
+      expect(screen.queryByRole("status")).toBeNull();
+      expect(screen.queryByRole("alert")).toBeNull();
+
+      rerender(<SkillFileBrowser files={[]} readFile={readFile} />);
+
+      expect(screen.getByText(tr("skills.manager.readOnlyNotice"))).toBeTruthy();
+      expect(screen.queryByText(tr("skills.manager.directoriesOnly"))).toBeNull();
+      expect(screen.queryByRole("status")).toBeNull();
+      expect(screen.queryByRole("alert")).toBeNull();
+      expect(screen.queryByText("null")).toBeNull();
+      expect(readFile).not.toHaveBeenCalled();
+    },
+  );
+
+  it.each(["zh-CN", "zh-TW", "en-US", "ja-JP"] as const)(
+    "keeps an actual file read error readable in %s",
+    async (locale) => {
+      await initializeI18n(locale);
+      render(
+        <SkillFileBrowser
+          files={[{ path: "SKILL.md", size: 20, executable: false }]}
+          readFile={vi.fn().mockRejectedValue(new Error("Skill preview could not be read"))}
+        />,
+      );
+
+      expect(screen.getByText(tr("skills.manager.readOnlyNotice"))).toBeTruthy();
+      const alert = await screen.findByRole("alert");
+      await waitFor(() => expect(alert.textContent).toBe("Error: Skill preview could not be read"));
+      expect(screen.getAllByRole("alert")).toHaveLength(1);
+      expect(screen.queryByRole("status")).toBeNull();
+      expect(screen.queryByText("null")).toBeNull();
+    },
+  );
 });

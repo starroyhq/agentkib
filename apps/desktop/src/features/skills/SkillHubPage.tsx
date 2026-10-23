@@ -1297,6 +1297,7 @@ export function SkillHubPage({
           request={detailRequest}
           inventory={inventory}
           deployments={deployments}
+          workspaces={workspaces}
           onClose={() => setDetailRequest(undefined)}
           onDeploy={openDeployment}
           onImport={(id) => void prepareImport(id)}

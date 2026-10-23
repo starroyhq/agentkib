@@ -197,7 +197,7 @@ function SkillUsageActions({
             <MoreHorizontal size={14} aria-hidden="true" />
             {!iconOnly && tr("common.moreActions")}
           </DropdownMenuTrigger>
-          <DropdownMenuContent align="end" className="w-max max-w-[calc(100vw-2rem)]">
+          <DropdownMenuContent align="end" className="w-max max-w-[min(360px,calc(100vw-2rem))]">
             {secondary.map((action) => (
               <DropdownMenuItem
                 key={action.id}
@@ -257,6 +257,7 @@ export function SkillDetailDialog({
   onImport,
   deployments = [],
   inventory = { observations: [], warnings: [] },
+  workspaces = [],
 }: {
   request: SkillDetailRequest;
   onClose: () => void;
@@ -264,6 +265,7 @@ export function SkillDetailDialog({
   onImport: (observationId: string) => void;
   deployments?: SkillDeployment[];
   inventory?: SkillInventory;
+  workspaces?: WorkspaceSummary[];
 }) {
   const { tr, localizeMessage } = useI18n();
   const queryClient = useOptionalQueryClient();
@@ -375,25 +377,41 @@ export function SkillDetailDialog({
                   </span>
                 </div>
               ))}
-              {usedObservations.map((item) => (
-                <div key={item.id} className="grid gap-1 text-xs">
-                  <code className="break-all">{item.path}</code>
-                  <span>
-                    {tr(
-                      item.scope === "personal"
-                        ? "skills.manager.personal"
-                        : "skills.manager.project",
-                    )}{" "}
-                    · {item.agents.map((agent) => sessionAgentNames[agent]).join(" · ")} ·{" "}
-                    {tr("skills.manager.nativeVisibility")} {skillStatusLabel(item.status, tr)}
-                  </span>
-                  {item.diagnostics.map((message) => (
-                    <p key={message} className="text-amber-700">
-                      {message}
-                    </p>
-                  ))}
-                </div>
-              ))}
+              {usedObservations.map((item) => {
+                // Loading evidence belongs to this entry. A healthy personal alias
+                // must not add its Agents back to a restricted workspace row.
+                const { visibleAgents } = skillObservationVisibility([item]);
+                const source =
+                  item.scope === "personal"
+                    ? tr("skills.manager.personal")
+                    : item.workspace_id
+                      ? tr("skills.manager.projectSource", {
+                          name:
+                            workspaces.find((workspace) => workspace.id === item.workspace_id)
+                              ?.name ?? item.workspace_id,
+                        })
+                      : tr("skills.manager.unknownProjectSource");
+                return (
+                  <div key={item.id} className="grid min-w-0 gap-1 text-xs">
+                    <code className="break-all">{item.path}</code>
+                    <span className="break-words">
+                      {source}
+                      {visibleAgents.length > 0 &&
+                        ` · ${visibleAgents.map((agent) => sessionAgentNames[agent]).join(" · ")}`}
+                    </span>
+                    {!["observed", "visible"].includes(item.status) && (
+                      <span className="text-amber-700 dark:text-amber-400">
+                        {skillStatusLabel(item.status, tr)}
+                      </span>
+                    )}
+                    {item.diagnostics.map((message) => (
+                      <p key={message} className="text-amber-700">
+                        {message}
+                      </p>
+                    ))}
+                  </div>
+                );
+              })}
               {!usedDeployments.length && !usedObservations.length && (
                 <p className="text-xs text-muted-foreground">{tr("skills.manager.noUsage")}</p>
               )}
@@ -1160,8 +1178,12 @@ export function SkillUsageList({
           </div>
         </div>
         <div className="flex min-w-0 items-center gap-2">
-          <Badge variant="outline">{source}</Badge>
-          <code className="min-w-0 truncate text-xs text-muted-foreground" title={item.path}>
+          <Badge variant="outline" className="max-w-[240px]">
+            <span className="min-w-0 truncate" title={source}>
+              {source}
+            </span>
+          </Badge>
+          <code className="min-w-0 flex-1 truncate text-xs text-muted-foreground" title={item.path}>
             {displayPath(item.path)}
           </code>
         </div>

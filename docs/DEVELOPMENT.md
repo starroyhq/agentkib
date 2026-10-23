@@ -103,6 +103,14 @@ The CLI builds the TypeScript backend on first use and keeps its temporary valid
 
 `pnpm test` builds the TypeScript backend before running Vitest. `pnpm build` produces application code for the current platform but does not create an installer.
 
+### Pull request CI
+
+The quality workflow runs ordinary desktop tests in two shards, the serial filesystem/MCP projects in a separate job, Web tests in another job, and formatting/lint/type checks/builds/helper tests in another. Each job has its own checkout and build output; do not run a backend build concurrently with tests in the same checkout. The filesystem and MCP projects retain their serial file execution and group order. `node .github/scripts/verify-ci-quality-partition.mjs` verifies that the two shards and safety projects cover every desktop test file exactly once
+
+The existing required check, **Test, lint and build**, waits for every quality job and rejects failures, cancellations, missing results, or unexpected skips. Only pull requests whose complete merge-base diff consists of ordinary additions/modifications to the four root documents (`README.md`, `README.zh-CN.md`, `CONTRIBUTING.md`, `SECURITY.md`) or directly contained `docs/*.md` / `qa/*.md` use the documentation fast path. Renames, deletions, copies, executable/symlink changes, nested files, probes, assets, and uncertain classification run full validation. Pushes to `main` always run full validation
+
+The documentation fast path applies only to this quality workflow. Both Linux and both Windows checks, including native backend stability and Windows uninstall/rollback assertions, retain their existing behavior. Local validation and production build commands are unchanged
+
 ### Package the desktop app
 
 ```bash
@@ -219,6 +227,14 @@ pnpm --silent agentkib manifest <project>
 首次调用时 CLI 会构建 TypeScript backend；验证数据库保存在项目目录之外的临时目录。
 
 `pnpm test` 会先构建 TypeScript backend，再运行 Vitest。`pnpm build` 只构建当前平台的应用代码，不生成安装包。
+
+### Pull Request CI
+
+质量工作流把普通桌面测试拆成两个分片，将串行文件系统／MCP 项目、Web 测试、格式／Lint／类型检查／构建／辅助脚本测试分别放到独立任务。每个任务使用独立检出目录和构建产物；本地不要在同一检出目录并发执行后端构建和测试。文件系统及 MCP 项目的文件串行和组顺序保持不变，`node .github/scripts/verify-ci-quality-partition.mjs` 会核对两个分片和安全项目对全部桌面测试文件恰好覆盖一次
+
+原必需检查 **Test, lint and build** 等待全部质量任务，失败、取消、缺失结果或意外跳过都会拒绝通过。只有完整 merge-base 差异仅包含四个根文档（`README.md`、`README.zh-CN.md`、`CONTRIBUTING.md`、`SECURITY.md`）或 `docs/`、`qa/` 直接子目录内 Markdown 文件的普通新增／修改时，PR 才走文档快路。重命名、删除、复制、可执行文件／符号链接变更、嵌套文件、探针、资源文件和无法确认的分类均执行完整检查，推送到 `main` 始终完整检查
+
+文档快路只作用于质量工作流，两个 Linux 和两个 Windows 检查仍按原规则运行，包含原生后端稳定性及 Windows 卸载／回滚断言。本地验证和生产构建命令不变
 
 ### 打包桌面应用
 

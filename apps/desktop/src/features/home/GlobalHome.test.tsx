@@ -80,6 +80,29 @@ describe("GlobalHome", () => {
     );
   });
 
+  it("uses singular English for one workspace, installed Agent, and asset", () => {
+    const props = homeProps();
+    render(
+      <GlobalHome
+        {...props}
+        workspaces={[workspace]}
+        installations={
+          [
+            { agent: "codex", installed: true },
+            { agent: "claude-code", installed: false },
+          ] as AgentInstallation[]
+        }
+        uniqueAssetCount={1}
+      />,
+    );
+    fireEvent.click(screen.getByRole("button", { name: /^1\s*Workspace$/ }));
+    expect(props.onShowWorkspaces).toHaveBeenCalledTimes(1);
+    fireEvent.click(screen.getByRole("button", { name: /^1\s*Installed Agent$/ }));
+    expect(props.onShowAgents).toHaveBeenCalledTimes(1);
+    fireEvent.click(screen.getByRole("button", { name: /^1\s*Asset$/ }));
+    expect(props.onOpenAssets).toHaveBeenCalledExactlyOnceWith("instructions");
+  });
+
   it("uses diagnostic issues and memory proposals once, with consistent recent workspace states", () => {
     const healthy = {
       ...workspace,
@@ -125,7 +148,11 @@ describe("GlobalHome", () => {
       "text-warning",
     );
     expect(within(pending).getByText(tr("home.workspaceWarnings", { count: 2 }))).toBeVisible();
-    expect(within(pending).getByText(tr("home.pendingMemoryDetail", { count: 2 }))).toBeVisible();
+    expect(
+      within(pending).getByText(
+        `${tr("home.pendingMemoryDetail", { count: 2 })} · ${tr("home.fromWorkspaces", { count: 2 })}`,
+      ),
+    ).toBeVisible();
     const recent = screen
       .getByRole("heading", { name: tr("home.recentWorkspaces") })
       .closest<HTMLElement>("[data-slot=card]")!;

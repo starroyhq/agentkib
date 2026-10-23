@@ -362,6 +362,32 @@ instructions:
 });
 
 describe("agents other than Claude Code", () => {
+  it.each([
+    ["CLAUDE.md", "AGENTS.md"],
+    ["Claude.md", "Agents.md"],
+  ])("keeps the on-disk names %s and %s in duplicate evidence", async (claudeName, agentsName) => {
+    const f = fixture();
+    const claude = f.write(claudeName, "# Shared rules\nUse tabs.\n");
+    const agents = f.write(agentsName, "# Shared rules\nUse tabs.\n");
+    f.write(".grok/config.toml", "");
+
+    const preview = await f.context.resolve(f.project, f.project, "grok-build", null, []);
+    expect(new Set(preview.sections.map((section) => section.source))).toEqual(
+      new Set([claude, agents]),
+    );
+
+    const report = await new Doctor(f.context, () => f.project).report("fixture");
+    const duplicates = report.issues.filter(
+      (issue) => issue.agent === "grok-build" && issue.code === "instruction.exact-duplicate",
+    );
+    expect(duplicates).toHaveLength(1);
+    const evidence = duplicates[0]!.evidence[0]!;
+    expect(evidence.detail).toMatch(/^Exact duplicate of /);
+    expect(new Set([evidence.path, evidence.detail.slice("Exact duplicate of ".length)])).toEqual(
+      new Set([claude, agents]),
+    );
+  });
+
   // The same fixture, with a standalone import, an inline mention and a missing import.
   const content = "# Shared\n@notes.md\nUse @inline.md here.\n@missing.md\n";
   const expanded = "# Shared\nnote body\n\nUse @inline.md here.\n@missing.md\n";

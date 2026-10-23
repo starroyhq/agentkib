@@ -53,6 +53,7 @@ function Overview({
   const unconfiguredAgents = scan.agents.filter(
     (agent) => !agent.detected && agent.warnings.length === 0,
   );
+  const agentAssetCount = configuredAgents.reduce((total, agent) => total + agent.asset_count, 0);
   const sources =
     workspace.sources
       .flatMap((source) => (source.agent ? [agentLabels[source.agent]] : []))
@@ -134,14 +135,18 @@ function Overview({
               ))}
             </div>
             <Collapsible className="border-t border-border/70">
-              <CollapsibleTrigger className="group flex w-full items-center gap-2 px-5 py-4 text-left text-sm">
-                <ChevronRight
-                  size={14}
-                  className="shrink-0 transition-transform group-data-[panel-open]:rotate-90"
-                />
+              <CollapsibleTrigger
+                className={`group flex w-full items-center gap-2 px-5 py-4 text-left text-sm${agentAssetCount === 0 ? " text-muted-foreground" : ""}`}
+              >
+                {agentAssetCount > 0 && (
+                  <ChevronRight
+                    size={14}
+                    className="shrink-0 transition-transform group-data-[panel-open]:rotate-90"
+                  />
+                )}
                 {tr("overview.agentAssetsSummary", {
-                  count: configuredAgents.reduce((total, agent) => total + agent.asset_count, 0),
-                  agents: configuredAgents.length,
+                  count: agentAssetCount,
+                  agentLabel: tr("overview.agentCount", { count: configuredAgents.length }),
                 })}
               </CollapsibleTrigger>
               <CollapsibleContent className="px-5 pb-4">

@@ -75,6 +75,16 @@ describe("WorkspaceContextHealthCard", () => {
     expect(onOpenDoctor).toHaveBeenCalledOnce();
   });
 
+  it.each([
+    [1, 0, "1 warning"],
+    [0, 1, "1 error"],
+    [2, 3, "2 warnings · 3 errors"],
+  ] as const)("omits zero counts for %i warnings and %i errors", (warnings, errors, expected) => {
+    renderCard({ ...healthy, warning_count: warnings, error_count: errors });
+    expect(screen.getByText(new RegExp(`^${expected} · Checked`))).toBeTruthy();
+    expect(screen.queryByText(/\b0 (warnings|errors)\b/)).toBeNull();
+  });
+
   it("retains pending review without hiding the diagnosis summary", () => {
     const { onOpenChanges } = renderCard({ ...healthy, error_count: 3, repairable_count: 2 }, true);
 
@@ -111,7 +121,13 @@ describe("WorkspaceContextHealthCard", () => {
           onOpenChanges={vi.fn()}
         />,
       );
-      expect(screen.getByRole("heading").textContent).toContain("CLAUDE.md / AGENTS.md");
+      const files = {
+        "zh-CN": "CLAUDE.md 与 AGENTS.md",
+        "zh-TW": "CLAUDE.md 與 AGENTS.md",
+        "en-US": "CLAUDE.md and AGENTS.md",
+        "ja-JP": "CLAUDE.md と AGENTS.md",
+      };
+      expect(screen.getByRole("heading").textContent).toContain(files[locale]);
       expect(screen.queryByText(/Exact duplicate of/)).toBeNull();
       expect(screen.getByRole("button").className).toContain("border");
       await initializeI18n("en-US");

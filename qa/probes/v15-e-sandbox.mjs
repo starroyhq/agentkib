@@ -30,7 +30,7 @@ assert.ok(
 const options = {};
 for (let index = 3; index < process.argv.length; index += 2) {
   const key = process.argv[index];
-  assert.ok(["--root", "--electron", "--locale", "--cdp-port"].includes(key));
+  assert.ok(["--root", "--electron", "--locale", "--cdp-port", "--claude"].includes(key));
   assert.ok(process.argv[index + 1] && !process.argv[index + 1].startsWith("--"));
   options[key.slice(2)] = process.argv[index + 1];
 }
@@ -93,7 +93,7 @@ async function freePort() {
 }
 function environment(config) {
   return {
-    PATH: "/usr/bin:/bin:/usr/sbin:/sbin",
+    PATH: `${config.claude ? path.join(root, "bin") + ":" : ""}/usr/bin:/bin:/usr/sbin:/sbin`,
     HOME: paths.home,
     USERPROFILE: paths.home,
     XDG_CONFIG_HOME: path.join(home, ".config"),
@@ -146,6 +146,12 @@ if (command === "prepare") {
   const requireDesktop = createRequire(path.join(desktop, "package.json"));
   const electron = options.electron ?? requireDesktop("electron");
   assert.ok(path.isAbsolute(electron) && (await lstat(electron)).isFile());
+  const claude = options.claude ? await realpath(options.claude) : undefined;
+  if (claude) {
+    assert.ok(path.isAbsolute(claude) && (await lstat(claude)).isFile());
+    await mkdir(path.join(root, "bin"), { mode: 0o700 });
+    await symlink(claude, path.join(root, "bin/claude"));
+  }
   const config = {
     owner,
     root,
@@ -155,6 +161,7 @@ if (command === "prepare") {
     locale,
     cdpPort,
     electron,
+    claude,
     webPort: await freePort(),
     mcpPort: await freePort(),
     phase: "prepared",

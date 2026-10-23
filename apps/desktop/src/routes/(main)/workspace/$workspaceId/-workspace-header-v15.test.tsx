@@ -198,6 +198,11 @@ describe("v15 workspace header", () => {
       ];
       const { header } = await renderRoute();
       expect(within(header).getByText(copies[locale].attention(4))).toHaveClass("text-warning");
+      expect(
+        within(header)
+          .getByText(copies[locale].attention(4))
+          .querySelector(".lucide-triangle-alert"),
+      ).not.toBeNull();
       expect(within(header).queryByText(copies[locale].healthy)).toBeNull();
     },
   );

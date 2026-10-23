@@ -115,7 +115,10 @@ beforeEach(async () => {
   useWorkspaceStore.getState().setApplyingChanges(false);
   await initializeI18n("en-US");
 });
-afterEach(cleanup);
+afterEach(() => {
+  cleanup();
+  document.documentElement.dataset.platform = "linux";
+});
 
 it("shows initial loading without claiming no workspaces or no filter matches", async () => {
   const pending = deferred<WorkspaceSummary[]>();
@@ -389,3 +392,24 @@ it("keeps the existing apply lock when adding from an empty workspace page", asy
   expect(doubles.pick).not.toHaveBeenCalled();
   expect(doubles.add).not.toHaveBeenCalled();
 });
+
+it.each([
+  ["macos", "storage.revealInFinder"],
+  ["windows", "storage.revealInExplorer"],
+  ["linux", "storage.openLocation"],
+] as const)(
+  "uses the native file manager name on %s and reveals the same workspace",
+  async (platform, key) => {
+    document.documentElement.dataset.platform = platform;
+    start(true);
+    const user = userEvent.setup();
+    await user.click(
+      await screen.findByRole("button", {
+        name: tr("workspace.moreActions", { name: workspace.name }),
+      }),
+    );
+    await user.click(await screen.findByRole("menuitem", { name: tr(key) }));
+    await waitFor(() => expect(doubles.reveal).toHaveBeenCalledExactlyOnceWith(workspace.id, ""));
+    expect(doubles.navigate).not.toHaveBeenCalled();
+  },
+);

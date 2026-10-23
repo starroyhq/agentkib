@@ -4,7 +4,7 @@ import "@testing-library/jest-dom/vitest";
 import { act, cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { changeLocale, initializeI18n, tr } from "@/core/i18n";
-import type { WorkspaceSummary } from "@/core/types";
+import type { MemoryRecord, WorkspaceSummary } from "@/core/types";
 import { PendingTasksCard } from "./HomeTaskCards";
 
 const first: WorkspaceSummary = {
@@ -97,5 +97,57 @@ describe("empty pending-task diagnostics action", () => {
     expect(screen.getByRole("button", { name: "查看诊断：Alpha" })).toBe(button);
     fireEvent.click(button);
     expect(onOpenDoctor).toHaveBeenCalledExactlyOnceWith(first);
+  });
+});
+
+describe("pending memory workspace context", () => {
+  const pendingMemory = (project_id: string, status = "pending") =>
+    ({ project_id, status }) as MemoryRecord;
+
+  function renderPending(memories: MemoryRecord[]) {
+    const pending = memories.filter((memory) => memory.status === "pending").length;
+    const onOpenAssets = vi.fn();
+    render(
+      <PendingTasksCard
+        pending={pending}
+        pendingMemories={memories}
+        issueCount={pending}
+        issuesPending={false}
+        workspaces={[first, second]}
+        attention={[]}
+        doctorSummaries={{}}
+        onOpenDoctor={vi.fn()}
+        onOpenAssets={onOpenAssets}
+      />,
+    );
+    return onOpenAssets;
+  }
+
+  it.each(["zh-CN", "zh-TW", "en-US", "ja-JP"] as const)(
+    "names the sole workspace and keeps the memory-review destination in %s",
+    async (locale) => {
+      await initializeI18n(locale);
+      const onOpenAssets = renderPending([
+        pendingMemory(first.id),
+        pendingMemory(first.id),
+        pendingMemory(second.id, "approved"),
+      ]);
+      const detail = `${tr("home.pendingMemoryDetail", { count: 2 })} · ${first.name}`;
+      expect(screen.getByText(detail)).toBeVisible();
+      fireEvent.click(screen.getByText(detail).closest("button")!);
+      expect(onOpenAssets).toHaveBeenCalledExactlyOnceWith("memory");
+    },
+  );
+
+  it("counts unique workspaces instead of proposals when several need review", async () => {
+    await initializeI18n("en-US");
+    renderPending([pendingMemory(first.id), pendingMemory(first.id), pendingMemory(second.id)]);
+    expect(screen.getByText("3 proposals waiting for review · from 2 workspaces")).toBeVisible();
+  });
+
+  it("uses singular English for one pending proposal", async () => {
+    await initializeI18n("en-US");
+    renderPending([pendingMemory(first.id)]);
+    expect(screen.getByText("1 proposal waiting for review · Alpha")).toBeVisible();
   });
 });

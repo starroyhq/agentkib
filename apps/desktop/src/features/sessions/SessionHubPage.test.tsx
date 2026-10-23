@@ -29,6 +29,15 @@ vi.mock("@/core/api", () => ({
     sessionSourceCapability: vi.fn(),
   },
 }));
+vi.mock("./SessionHistoryContinuationDialog", () => ({
+  SessionHistoryContinuationDialog: ({
+    request,
+  }: {
+    request: { session: ConversationSessionSummary };
+  }) => (
+    <div role="dialog" data-testid="history-continuation" data-session-id={request.session.id} />
+  ),
+}));
 vi.mock("./SessionHubContext", () => ({ useSessionHub: vi.fn() }));
 vi.mock("./DesktopConversationPane", () => ({
   DesktopConversationPane: ({ sessionId, create }: { sessionId?: string; create?: boolean }) => (
@@ -122,6 +131,7 @@ describe("SessionHubPage", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     useAppStore.getState().reset();
+    useSessionViewStore.setState({ historyContinuation: undefined });
     useSessionViewStore.getState().resetFilters();
     useSessionViewStore.getState().setCreatingConversation(false);
     hub = defaultHub();
@@ -172,10 +182,10 @@ describe("SessionHubPage", () => {
     await userEvent
       .setup()
       .click(await within(menu).findByRole("menuitem", { name: tr("handoff.create") }));
-    expect(navigate).toHaveBeenCalledWith({
-      to: "/workspace/$workspaceId/sessions",
-      params: { workspaceId: workspace.id },
-      search: { handoffSession: readable.id },
+    expect(navigate).not.toHaveBeenCalled();
+    expect(useSessionViewStore.getState().historyContinuation).toMatchObject({
+      workspace,
+      session: { id: readable.id },
     });
   });
 
@@ -199,10 +209,10 @@ describe("SessionHubPage", () => {
       .setup()
       .click(await within(menu).findByRole("menuitem", { name: tr("handoff.create") }));
     expect(api.sessionSourceCapability).toHaveBeenCalledExactlyOnceWith("indexed-session");
-    expect(navigate).toHaveBeenCalledWith({
-      to: "/workspace/$workspaceId/sessions",
-      params: { workspaceId: workspace.id },
-      search: { handoffSession: "indexed-session" },
+    expect(navigate).not.toHaveBeenCalled();
+    expect(useSessionViewStore.getState().historyContinuation).toMatchObject({
+      workspace,
+      session: { id: "indexed-session" },
     });
   });
 
@@ -260,7 +270,7 @@ describe("SessionHubPage", () => {
     expect(api.sessionEvents).not.toHaveBeenCalled();
   });
 
-  it("selects a recent record, displays history in place, and keeps continuation in its workspace", async () => {
+  it("selects a recent record, displays history in place, and opens continuation without navigating away", async () => {
     const { rerender } = render(sessionSurface());
     fireEvent.click(screen.getByRole("button", { name: /Review theme switching/ }));
     expect(hub.select).toHaveBeenCalledWith(readable.id);
@@ -277,10 +287,10 @@ describe("SessionHubPage", () => {
     fireEvent.click(
       await within(readingContext).findByRole("button", { name: tr("handoff.create") }),
     );
-    expect(navigate).toHaveBeenCalledWith({
-      to: "/workspace/$workspaceId/sessions",
-      params: { workspaceId: workspace.id },
-      search: { handoffSession: readable.id },
+    expect(navigate).not.toHaveBeenCalled();
+    expect(useSessionViewStore.getState().historyContinuation).toMatchObject({
+      workspace,
+      session: { id: readable.id },
     });
     await userEvent.setup().click(screen.getByRole("button", { name: tr("common.moreActions") }));
     await userEvent
@@ -304,10 +314,10 @@ describe("SessionHubPage", () => {
       const action = await within(menu).findByRole("menuitem", { name: tr("handoff.create") });
       expect(action).toBeEnabled();
       await userEvent.setup().click(action);
-      expect(navigate).toHaveBeenCalledWith({
-        to: "/workspace/$workspaceId/sessions",
-        params: { workspaceId: workspace.id },
-        search: { handoffSession: `${agent}-history` },
+      expect(navigate).not.toHaveBeenCalled();
+      expect(useSessionViewStore.getState().historyContinuation).toMatchObject({
+        workspace,
+        session: { id: `${agent}-history` },
       });
       expect(api.sessionSourceCapability).toHaveBeenCalledWith(`${agent}-history`);
     },
@@ -338,10 +348,10 @@ describe("SessionHubPage", () => {
     expect(notice.className).not.toMatch(/hidden/);
     expect(continuation.className).not.toMatch(/hidden/);
     fireEvent.click(continuation);
-    expect(navigate).toHaveBeenCalledWith({
-      to: "/workspace/$workspaceId/sessions",
-      params: { workspaceId: workspace.id },
-      search: { handoffSession: readable.id },
+    expect(navigate).not.toHaveBeenCalled();
+    expect(useSessionViewStore.getState().historyContinuation).toMatchObject({
+      workspace,
+      session: { id: readable.id },
     });
   });
 

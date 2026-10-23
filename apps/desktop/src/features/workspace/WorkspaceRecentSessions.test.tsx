@@ -124,7 +124,7 @@ describe("workspace recent sessions", () => {
       "No readable sessions were found in recent workspaces.",
     );
   });
-  it("shows a read failure with retry while keeping cached rows usable", () => {
+  it("keeps cached rows usable without showing catalog failures in the recent card", () => {
     doubles.catalog.mockReturnValue({
       sessions: [session("cached", "2026-10-23")],
       errors: { project: "Read failed" },
@@ -134,9 +134,8 @@ describe("workspace recent sessions", () => {
       refresh: doubles.refresh,
     });
     render(<WorkspaceRecentSessions workspace={workspace} enabled />);
-    expect(screen.getByRole("alert")).toHaveTextContent("Read failed");
-    fireEvent.click(screen.getByRole("button", { name: "Retry" }));
-    expect(doubles.refresh).toHaveBeenCalledOnce();
+    expect(screen.queryByRole("alert")).toBeNull();
+    expect(screen.queryByRole("button", { name: "Retry" })).toBeNull();
     expect(screen.getByRole("button", { name: /Open session/ })).toBeVisible();
   });
   it("shows a newly managed session before its native history has been indexed", () => {
@@ -161,7 +160,8 @@ describe("workspace recent sessions", () => {
       error: new Error("managed unavailable"),
     });
     view.rerender(<WorkspaceRecentSessions workspace={workspace} enabled />);
-    expect(screen.getByRole("alert")).toBeVisible();
+    expect(screen.queryByRole("alert")).toBeNull();
+    expect(screen.getByRole("button", { name: "Retry" })).toHaveClass("text-muted-foreground");
     expect(screen.queryByText("No readable sessions were found in recent workspaces.")).toBeNull();
     fireEvent.click(screen.getByRole("button", { name: "Retry" }));
     expect(doubles.refreshManaged).toHaveBeenCalledOnce();
@@ -178,6 +178,10 @@ describe("workspace recent sessions", () => {
     expect(screen.queryByRole("alert")).toBeNull();
     doubles.installations.mockReturnValue({ data: [{ agent: "codex", installed: true }] });
     view.rerender(<WorkspaceRecentSessions workspace={workspace} enabled />);
-    expect(screen.getByRole("alert")).toHaveTextContent("Some session sources are unavailable");
+    expect(screen.queryByRole("alert")).toBeNull();
+    expect(screen.getByRole("button", { name: "Retry" })).toHaveClass("text-muted-foreground");
+    expect(screen.getByText("Recent sessions could not be read", { exact: false })).toHaveClass(
+      "text-muted-foreground",
+    );
   });
 });

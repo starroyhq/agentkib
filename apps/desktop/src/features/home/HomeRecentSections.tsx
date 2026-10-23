@@ -1,5 +1,5 @@
 import { useI18n } from "@/core/useI18n";
-import { Check, CircleAlert, FolderGit2 } from "lucide-react";
+import { Check, FolderGit2, TriangleAlert } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader } from "@/components/ui/card";
@@ -147,36 +147,41 @@ function WorkspaceRow({
     <Button
       variant="bare"
       size="content"
-      className="group grid w-full grid-cols-[auto_minmax(0,1fr)_auto] items-center gap-3 px-5 py-4 text-left hover:bg-muted/40"
+      className="group grid w-full grid-cols-[auto_minmax(0,1fr)] items-center gap-3 px-5 py-4 text-left hover:bg-muted/40"
       onClick={() => void onOpen(workspace)}
     >
       <div className="grid size-9 place-items-center rounded-lg bg-muted text-muted-foreground">
         <FolderGit2 size={19} />
       </div>
       <div className="min-w-0">
-        <strong className="block truncate text-sm font-semibold">{workspace.name}</strong>
+        <div className="flex min-w-0 items-center justify-between gap-3">
+          <strong className="truncate text-sm font-semibold">{workspace.name}</strong>
+          {status.state === "attention" ? (
+            <Badge variant="secondary" className="shrink-0 gap-1 bg-warning/10 text-warning">
+              <TriangleAlert size={13} />
+              {tr("workspace.status.attention", { count: status.issueCount })}
+            </Badge>
+          ) : status.state === "healthy" ? (
+            <Badge
+              variant="secondary"
+              className="shrink-0 gap-1 bg-emerald-500/10 text-emerald-700"
+            >
+              <Check size={13} />
+              {tr("workspace.status.healthy")}
+            </Badge>
+          ) : (
+            <Badge variant="secondary" className="shrink-0 bg-muted text-muted-foreground">
+              {tr("workspace.status.undiagnosed")}
+            </Badge>
+          )}
+        </div>
         <small className="mt-1 block truncate text-xs text-muted-foreground" title={workspace.path}>
           {displayPath(workspace.path)}
         </small>
-        <span className="mt-1 block truncate text-xs text-muted-foreground">
+        <span className="mt-1 block text-xs text-muted-foreground">
           {agents} · {tr("workspace.assetCount", { count })}
         </span>
       </div>
-      {status.state === "attention" ? (
-        <Badge variant="secondary" className="gap-1 bg-warning/10 text-warning">
-          <CircleAlert size={13} />
-          {tr("workspace.status.attention", { count: status.issueCount })}
-        </Badge>
-      ) : status.state === "healthy" ? (
-        <Badge variant="secondary" className="gap-1 bg-emerald-500/10 text-emerald-700">
-          <Check size={13} />
-          {tr("workspace.status.healthy")}
-        </Badge>
-      ) : (
-        <Badge variant="secondary" className="bg-muted text-muted-foreground">
-          {tr("workspace.status.undiagnosed")}
-        </Badge>
-      )}
     </Button>
   );
 }

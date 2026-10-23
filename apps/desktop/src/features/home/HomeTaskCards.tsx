@@ -2,7 +2,7 @@ import { useI18n } from "@/core/useI18n";
 import { Brain, Check, CircleAlert, MessageSquareText, RefreshCw } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader } from "@/components/ui/card";
-import type { ContextDoctorSummary, WorkspaceSummary } from "@/core/types";
+import type { ContextDoctorSummary, MemoryRecord, WorkspaceSummary } from "@/core/types";
 import { displaySessionTitle } from "@/features/workspace/session-title";
 import { AGENT_LABELS as agentLabels } from "@/core/agents";
 import type { RecentContinuation } from "./home-continuations";
@@ -83,6 +83,7 @@ export function ContinueWorkCard({
 
 export function PendingTasksCard({
   pending,
+  pendingMemories = [],
   issueCount,
   issuesPending,
   workspaces,
@@ -92,6 +93,7 @@ export function PendingTasksCard({
   onOpenAssets,
 }: {
   pending: number;
+  pendingMemories?: MemoryRecord[];
   issueCount: number;
   issuesPending: boolean;
   workspaces: WorkspaceSummary[];
@@ -102,6 +104,19 @@ export function PendingTasksCard({
 }) {
   const { tr } = useI18n();
   const doctorWorkspace = attention[0] ?? workspaces[0];
+  const memoryWorkspaceIds = [
+    ...new Set(
+      pendingMemories
+        .filter((memory) => memory.status === "pending")
+        .map((memory) => memory.project_id),
+    ),
+  ];
+  const memoryWorkspaceContext =
+    memoryWorkspaceIds.length === 1
+      ? workspaces.find((workspace) => workspace.id === memoryWorkspaceIds[0])?.name
+      : memoryWorkspaceIds.length > 1
+        ? tr("home.fromWorkspaces", { count: memoryWorkspaceIds.length })
+        : undefined;
   const hasUncheckedWorkspace = workspaces.some(
     (workspace) =>
       getWorkspaceStatus(workspace.id, doctorSummaries[workspace.id]).state === "undiagnosed",
@@ -180,6 +195,7 @@ export function PendingTasksCard({
                   <strong className="block truncate text-sm">{tr("home.pendingMemory")}</strong>
                   <small className="mt-0.5 block text-xs text-muted-foreground">
                     {tr("home.pendingMemoryDetail", { count: pending })}
+                    {memoryWorkspaceContext && ` · ${memoryWorkspaceContext}`}
                   </small>
                 </span>
                 <span className="rounded-lg border border-border px-3 py-2 text-xs font-semibold">

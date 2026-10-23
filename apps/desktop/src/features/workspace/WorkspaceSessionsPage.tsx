@@ -21,7 +21,6 @@ import {
   ArrowLeft,
   Check,
   ChevronRight,
-  CircleAlert,
   FileOutput,
   GitBranch,
   ListFilter,
@@ -69,7 +68,7 @@ import {
 } from "@/features/sessions/session-view-store";
 import { withAsyncCleanup } from "@/lib/utils";
 import { SessionDirectoryEntry } from "@/features/sessions/SessionDirectoryEntry";
-import { sessionSourceNeedsAttention } from "@/features/sessions/session-source-status";
+import { SessionSourceNotices } from "@/features/sessions/SessionSourceNotices";
 
 type SessionFilter = "current" | "archived" | "metadata" | "all";
 type AgentFilter = "all" | ConversationSessionSummary["agent"];
@@ -706,12 +705,13 @@ export function WorkspaceSessionsPage({
               </label>
             )}
           </div>
-          {statuses.some((status) => sessionSourceNeedsAttention(status, installedAgents)) && (
-            <div className="flex min-h-[38px] items-center gap-2 border-b border-warning/20 bg-warning/10 px-4 py-2.5 text-xs text-warning">
-              <CircleAlert size={14} />
-              <span>{tr("conversations.partialIndex")}</span>
-            </div>
-          )}
+          <SessionSourceNotices
+            statuses={statuses}
+            sessions={indexedSessions}
+            installedAgents={installedAgents}
+            refreshing={refreshing}
+            onRetry={catalog.refresh}
+          />
           <div role="list" className="min-h-0 flex-1 overflow-auto p-2">
             {filtered.map((session) => {
               const sourceLabel = sessionSourceLabel(session, indexedSessions, tr, formatDateTime);

@@ -63,6 +63,33 @@ describe("WorkspaceDoctorPage", () => {
     expect(await screen.findByText("No deterministic configuration issues found")).toBeTruthy();
   });
 
+  it("renders duplicate evidence with both source file names unchanged", async () => {
+    vi.mocked(api.workspaceDoctorReport).mockResolvedValue({
+      ...report,
+      summary: { ...report.summary, warning_count: 1 },
+      issues: [
+        {
+          id: "duplicate",
+          code: "instruction.exact-duplicate",
+          severity: "warning",
+          repairable: false,
+          evidence: [
+            {
+              path: "/workspace/CLAUDE.md",
+              detail: "Exact duplicate of /workspace/AGENTS.md",
+            },
+          ],
+        },
+      ],
+    });
+
+    render(<WorkspaceDoctorPage workspace={workspace} onRepair={vi.fn()} onDiagnosed={vi.fn()} />);
+
+    expect(await screen.findByText("/workspace/CLAUDE.md")).toBeTruthy();
+    expect(screen.getByText("Exact duplicate of /workspace/AGENTS.md")).toBeTruthy();
+    expect(screen.queryByText(/Claude\.md|Agents\.md/)).toBeNull();
+  });
+
   it("combines applied files and diagnostic verification into one dismissible notice", async () => {
     vi.mocked(api.workspaceDoctorReport).mockResolvedValue(report);
     useWorkspaceStore.getState().setAppliedChanges({

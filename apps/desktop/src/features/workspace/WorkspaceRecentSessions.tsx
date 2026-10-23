@@ -98,26 +98,26 @@ export function WorkspaceRecentSessions({
                 : error
                   ? tr("home.continuationsError")
                   : tr("home.noContinuations")}
+            {error && enabled && catalog.ready && managed.ready && (
+              <>
+                {" · "}
+                <Button
+                  variant="link"
+                  size="sm"
+                  className="h-auto p-0 text-xs text-muted-foreground"
+                  disabled={catalog.refreshing}
+                  onClick={() =>
+                    void Promise.allSettled([
+                      catalog.refresh(),
+                      !workspace.remote ? refreshConversationCatalog() : Promise.resolve(),
+                    ])
+                  }
+                >
+                  {tr("runtime.retry")}
+                </Button>
+              </>
+            )}
           </p>
-        )}
-        {error && (
-          <div role="alert" className="px-5 py-3 text-xs text-destructive-text">
-            <p>{error}</p>
-            <Button
-              variant="outline"
-              size="sm"
-              className="mt-2"
-              disabled={catalog.refreshing}
-              onClick={() =>
-                void Promise.allSettled([
-                  catalog.refresh(),
-                  !workspace.remote ? refreshConversationCatalog() : Promise.resolve(),
-                ])
-              }
-            >
-              {tr("runtime.retry")}
-            </Button>
-          </div>
         )}
       </CardContent>
     </Card>

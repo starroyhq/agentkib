@@ -85,6 +85,14 @@ describe("RecentWorkspacesCard", () => {
     expect(screen.queryByText(tr("workspace.status.attention", { count: 4 }))).toBeNull();
   });
 
+  it.each([
+    [1, "1 asset"],
+    [2, "2 assets"],
+  ] as const)("uses English asset plurals for %s", (count, label) => {
+    renderCard([{ ...workspace, asset_count: count }]);
+    expect(screen.getByText(new RegExp(`${label}$`))).toBeVisible();
+  });
+
   it("keeps both add actions secondary and separate", () => {
     const { onAddWorkspace, onAddRoot } = renderCard();
     const addWorkspace = screen.getByRole("button", { name: tr("home.addWorkspace") });

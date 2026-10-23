@@ -127,27 +127,29 @@ export function GlobalHome({
   const attention = workspaces.filter(
     (item) => getWorkspaceStatus(item.id, doctorSummaries[item.id]).diagnosticIssueCount > 0,
   );
-  const pending = memories.filter((item) => item.status === "pending").length;
+  const pendingMemories = memories.filter((item) => item.status === "pending");
+  const pending = pendingMemories.length;
   const doctorIssueCount = workspaces.reduce(
     (total, workspace) =>
       total + getWorkspaceStatus(workspace.id, doctorSummaries[workspace.id]).diagnosticIssueCount,
     0,
   );
   const issueCount = doctorIssueCount + pending;
+  const installedAgentCount = installations.filter((item) => item.installed).length;
   const metrics = [
     {
-      label: tr("home.workspaceMetric"),
+      label: tr("home.workspaceMetric", { count: workspaces.length }),
       value: workspaces.length,
       onClick: onShowWorkspaces,
     },
     {
-      label: tr("home.installedAgents"),
-      value: installations.filter((item) => item.installed).length,
+      label: tr("home.installedAgents", { count: installedAgentCount }),
+      value: installedAgentCount,
       pending: installationsPending,
       onClick: onShowAgents,
     },
     {
-      label: tr("home.assetMetric"),
+      label: tr("home.assetMetric", { count: uniqueAssetCount }),
       value: uniqueAssetCount,
       pending: catalogPending,
       onClick: () => onOpenAssets("instructions"),
@@ -161,6 +163,7 @@ export function GlobalHome({
   const pendingTasksCard = (
     <PendingTasksCard
       pending={pending}
+      pendingMemories={pendingMemories}
       issueCount={issueCount}
       issuesPending={issuesPending}
       workspaces={workspaces}

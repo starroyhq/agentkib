@@ -39,7 +39,7 @@ export function WorkspaceContextHealthCard({
   ];
   const problem =
     firstIssue?.code === "instruction.exact-duplicate" && files.length > 1
-      ? tr("overview.exactDuplicate", { files: files.join(" / ") })
+      ? tr("overview.exactDuplicate", { files: files.join(tr("overview.duplicateFileSeparator")) })
       : firstIssue
         ? tr(`doctor.issue.${firstIssue.code}`)
         : undefined;
@@ -59,7 +59,7 @@ export function WorkspaceContextHealthCard({
         issueCount > 0 && "border-warning/25 bg-warning/[0.035]",
       )}
     >
-      <div className="flex min-w-0 items-start gap-3">
+      <div className={cn("flex min-w-0 gap-3", healthy ? "items-center" : "items-start")}>
         <span
           className={cn(
             "grid size-10 shrink-0 place-items-center rounded-xl bg-muted text-muted-foreground",
@@ -73,10 +73,16 @@ export function WorkspaceContextHealthCard({
           <h2 className="text-sm font-semibold">{title}</h2>
           {summary && !healthy && (
             <p className="mt-1 text-xs text-muted-foreground">
-              {tr("overview.diagnosisCounts", {
-                warnings: summary.warning_count,
-                errors: summary.error_count,
-              })}
+              {[
+                summary.warning_count > 0
+                  ? tr("overview.diagnosisWarnings", { count: summary.warning_count })
+                  : undefined,
+                summary.error_count > 0
+                  ? tr("overview.diagnosisErrors", { count: summary.error_count })
+                  : undefined,
+              ]
+                .filter(Boolean)
+                .join(" · ")}
               {" · "}
               {tr("overview.contextHealthChecked", {
                 time: formatRelativeTime(summary.checked_at),

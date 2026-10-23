@@ -7,7 +7,7 @@ import {
   useNavigate,
   useParams,
 } from "@tanstack/react-router";
-import { FolderGit2, GitCompareArrows } from "lucide-react";
+import { FolderGit2, GitCompareArrows, TriangleAlert } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import {
@@ -445,6 +445,7 @@ function WorkspaceLayout() {
                       : "bg-muted text-muted-foreground",
                 )}
               >
+                {status.state === "attention" && <TriangleAlert size={12} aria-hidden="true" />}
                 {tr(`workspace.status.${status.state}`, { count: status.issueCount })}
               </Badge>
               {hasUnsavedDraft && (

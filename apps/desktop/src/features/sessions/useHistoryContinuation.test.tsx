@@ -1,8 +1,9 @@
 // @vitest-environment jsdom
-import { renderHook, waitFor, cleanup } from "@testing-library/react";
+import { renderHook, waitFor, cleanup, act } from "@testing-library/react";
 import { afterEach, beforeAll, expect, it, vi } from "vitest";
 import { initializeI18n } from "@/core/i18n";
 import type { ConversationSessionSummary, WorkspaceSummary } from "@/core/types";
+import { useSessionViewStore } from "./session-view-store";
 import { useHistoryContinuation } from "./useHistoryContinuation";
 
 const navigate = vi.hoisted(() => vi.fn());
@@ -25,10 +26,10 @@ it("opens the existing cross-Agent continuation flow using the indexed history i
     ),
   );
   await waitFor(() => expect(result.current.canContinue).toBe(true));
-  result.current.continueSession();
-  expect(navigate).toHaveBeenCalledWith({
-    to: "/workspace/$workspaceId/sessions",
-    params: { workspaceId: "workspace" },
-    search: { handoffSession: "indexed-history" },
+  act(() => result.current.continueSession());
+  expect(navigate).not.toHaveBeenCalled();
+  expect(useSessionViewStore.getState().historyContinuation).toMatchObject({
+    workspace: { id: "workspace" },
+    session: { id: "indexed-history" },
   });
 });

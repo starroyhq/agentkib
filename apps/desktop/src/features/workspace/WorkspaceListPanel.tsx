@@ -1,3 +1,4 @@
+import { currentAppPlatform } from "@/core/keyboard-shortcuts";
 import { useI18n } from "@/core/useI18n";
 import { AgentIcon } from "@/features/agents/AgentIcon";
 import { Badge } from "@/components/ui/badge";
@@ -64,6 +65,14 @@ export function WorkspaceListPanel({
 }) {
   const { tr, formatRelativeTime } = useI18n();
   const displayPath = usePathDisplay();
+  const platform = currentAppPlatform();
+  const revealLabel = tr(
+    platform === "macos"
+      ? "storage.revealInFinder"
+      : platform === "windows"
+        ? "storage.revealInExplorer"
+        : "storage.openLocation",
+  );
   return (
     <section className="min-w-0 overflow-hidden rounded-2xl border border-border bg-card shadow-sm">
       <header className="flex min-h-[58px] items-center gap-2 border-b border-border px-5 py-3">
@@ -222,7 +231,7 @@ export function WorkspaceListPanel({
                             </DropdownMenuItem>
                             <DropdownMenuItem onClick={() => void onReveal(workspace.id)}>
                               <FolderOpen />
-                              {tr("storage.openLocation")}
+                              {revealLabel}
                             </DropdownMenuItem>
                             <DropdownMenuSeparator />
                             <DropdownMenuItem

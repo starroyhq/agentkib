@@ -92,6 +92,41 @@ describe("WorkspaceSessionsPage", () => {
     vi.useRealTimers();
   });
 
+  it.each([0, 1])("names an unavailable installed source with previous count %s", async (count) => {
+    vi.mocked(api.workspaceSessionStatus).mockResolvedValue([
+      {
+        workspace_id: workspace.id,
+        agent: "antigravity",
+        freshness: "unavailable",
+        session_count: count,
+        error_key: "errors.conversations.sourceUnavailable",
+      },
+    ]);
+    render(
+      <WorkspaceSessionsPage
+        workspace={workspace}
+        enabled
+        installedAgents={["antigravity"]}
+        targetAgents={[]}
+        onRuntimeChanged={vi.fn()}
+        onHandoffPlanned={vi.fn()}
+        onMcpConnectionPlanned={vi.fn()}
+      />,
+    );
+    const notice = await screen.findByText("Antigravity sessions are temporarily unavailable", {
+      exact: false,
+    });
+    expect(notice).toHaveClass(count ? "text-warning" : "text-muted-foreground");
+    expect(notice).toHaveAttribute("role", count ? "alert" : "status");
+    await waitFor(() =>
+      expect(within(notice).getByRole("button", { name: "Retry" })).toBeEnabled(),
+    );
+    const scans = vi.mocked(api.refreshWorkspaceSessions).mock.calls.length;
+    fireEvent.click(within(notice).getByRole("button", { name: "Retry" }));
+    await waitFor(() => expect(api.refreshWorkspaceSessions).toHaveBeenCalledTimes(scans + 1));
+    expect(screen.queryByText("Some session sources are unavailable")).toBeNull();
+  });
+
   it("waits for session indexing to be enabled and prevents duplicate requests", async () => {
     const pending = deferred<void>();
     const onRuntimeChanged = vi.fn().mockReturnValue(pending.promise);

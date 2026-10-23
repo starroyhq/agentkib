@@ -329,7 +329,7 @@ export async function grokSections(
       content = chars.slice(0, 10000).join("");
       truncated = chars.length > 10000;
     } catch {
-      warnings.push(`Could not read ${source}`);
+      warnings.push(`Could not read ${resolved}`);
       continue;
     }
     if (path.basename(path.dirname(source)).toLowerCase() === "rules") {
@@ -341,10 +341,12 @@ export async function grokSections(
     }
     if (truncated)
       warnings.push(
-        `Grok Build instruction file exceeds 10000 characters and was truncated for preview: ${source}`,
+        `Grok Build instruction file exceeds 10000 characters and was truncated for preview: ${resolved}`,
       );
     output.push({
-      source,
+      // Case-insensitive filesystems can match an earlier candidate such as Claude.md
+      // against CLAUDE.md. Use the verified path so previews and Doctor evidence agree.
+      source: resolved,
       scope: withinLexical(path.dirname(source), root)
         ? path.relative(root, path.dirname(source))
         : "agent-home",

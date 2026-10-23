@@ -18,6 +18,9 @@ vi.mock("@tanstack/react-router", async (importOriginal) => ({
 }));
 vi.mock("@/features/home/home-query", () => ({ useHomeDoctorReport: () => ({ data: undefined }) }));
 vi.mock("@/features/obsidian/ObsidianIntegration", () => ({ WorkspaceObsidianCard: () => null }));
+vi.mock("@/features/workspace/WorkspaceRecentSessions", () => ({
+  WorkspaceRecentSessions: () => null,
+}));
 
 const workspace: WorkspaceSummary = {
   id: "workspace",
@@ -65,7 +68,7 @@ async function renderRoute() {
       </Suspense>,
     );
   });
-  await screen.findByText("Diagnostics");
+  await screen.findByText("Shared assets");
 }
 
 describe("overview pending changes", () => {
@@ -83,6 +86,41 @@ describe("overview pending changes", () => {
     });
   });
   afterEach(cleanup);
+
+  it("keeps zero Agent assets subdued without hiding unconfigured Agents", async () => {
+    useWorkspaceStore.setState({
+      scan: {
+        root: workspace.path,
+        manifest_exists: true,
+        agents: [{ agent: "claude-code", detected: false, asset_count: 0, warnings: [] }],
+        assets: [],
+        warnings: [],
+      },
+    });
+    await renderRoute();
+    const summary = screen.getByRole("button", { name: "0 assets in Agent folders from 0 Agents" });
+    expect(summary).toHaveClass("text-muted-foreground");
+    expect(summary.querySelector("svg")).toBeNull();
+    fireEvent.click(summary);
+    expect(screen.getByRole("button", { name: "Other Agent (1)" })).toBeVisible();
+  });
+
+  it.each([
+    [1, "1 asset in Agent folders from 1 Agent"],
+    [2, "2 assets in Agent folders from 1 Agent"],
+  ] as const)("pluralizes %i Agent assets independently of Agent count", async (count, text) => {
+    useWorkspaceStore.setState({
+      scan: {
+        root: workspace.path,
+        manifest_exists: true,
+        agents: [{ agent: "claude-code", detected: true, asset_count: count, warnings: [] }],
+        assets: [],
+        warnings: [],
+      },
+    });
+    await renderRoute();
+    expect(screen.getByRole("button", { name: text })).toBeVisible();
+  });
 
   it.each<ChangeSetOrigin>(["standard", "doctor", "handoff", "handoff-setup"])(
     "offers the actual pending %s plan with accurate wording",

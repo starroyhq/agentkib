@@ -1,10 +1,17 @@
 // @vitest-environment jsdom
 
 import "@testing-library/jest-dom/vitest";
-import { act, cleanup, fireEvent, render, screen } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, within } from "@testing-library/react";
 import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import { initializeI18n, tr } from "@/core/i18n";
-import type { ConversationSessionSummary, RuntimeInfo, WorkspaceSummary } from "@/core/types";
+import type {
+  AgentInstallation,
+  ContextDoctorSummary,
+  ConversationSessionSummary,
+  MemoryRecord,
+  RuntimeInfo,
+  WorkspaceSummary,
+} from "@/core/types";
 import { GlobalHome } from "./GlobalHome";
 
 const workspace = {
@@ -31,10 +38,8 @@ function homeProps() {
     doctorSummaries: {},
     installations: [],
     memories: [],
-    activity: [],
     uniqueAssetCount: 0,
     assetCounts: new Map<string, number>(),
-    onShowActivity: vi.fn(),
     onShowWorkspaces: vi.fn(),
     onShowAgents: vi.fn(),
     onOpen: vi.fn().mockResolvedValue(undefined),
@@ -51,6 +56,120 @@ describe("GlobalHome", () => {
   beforeAll(() => initializeI18n("en-US"));
   afterEach(cleanup);
 
+  it("replaces zero metrics with the new-user explanation and detected Agents", () => {
+    render(
+      <GlobalHome
+        {...homeProps()}
+        runtime={{ onboarding } as RuntimeInfo}
+        installations={
+          [
+            { agent: "codex", installed: true },
+            { agent: "claude-code", installed: false },
+          ] as AgentInstallation[]
+        }
+      />,
+    );
+    expect(screen.getByText(tr("home.emptySummary"))).toBeVisible();
+    expect(screen.getByText(tr("onboarding.readScope"))).toBeVisible();
+    expect(screen.getByText(`${tr("onboarding.detectedAgents")} Codex`)).toBeVisible();
+    expect(screen.queryByText(tr("home.issueSummary", { count: 0 }))).toBeNull();
+    expect(screen.queryByRole("button", { name: tr("common.refresh") })).toBeNull();
+    expect(screen.getByText(tr("onboarding.workspaceStep")).closest("li")).toHaveAttribute(
+      "aria-current",
+      "step",
+    );
+  });
+
+  it("uses singular English for one workspace, installed Agent, and asset", () => {
+    const props = homeProps();
+    render(
+      <GlobalHome
+        {...props}
+        workspaces={[workspace]}
+        installations={
+          [
+            { agent: "codex", installed: true },
+            { agent: "claude-code", installed: false },
+          ] as AgentInstallation[]
+        }
+        uniqueAssetCount={1}
+      />,
+    );
+    fireEvent.click(screen.getByRole("button", { name: /^1\s*Workspace$/ }));
+    expect(props.onShowWorkspaces).toHaveBeenCalledTimes(1);
+    fireEvent.click(screen.getByRole("button", { name: /^1\s*Installed Agent$/ }));
+    expect(props.onShowAgents).toHaveBeenCalledTimes(1);
+    fireEvent.click(screen.getByRole("button", { name: /^1\s*Asset$/ }));
+    expect(props.onOpenAssets).toHaveBeenCalledExactlyOnceWith("instructions");
+  });
+
+  it("uses diagnostic issues and memory proposals once, with consistent recent workspace states", () => {
+    const healthy = {
+      ...workspace,
+      id: "healthy",
+      name: "Clear workspace",
+      status: "attention",
+      last_active_at: "2026-10-23T01:00:00Z",
+    } as WorkspaceSummary;
+    const attention = {
+      ...workspace,
+      id: "attention",
+      name: "Attention",
+      last_active_at: "2026-10-22T01:00:00Z",
+    };
+    const summary = {
+      workspace_id: healthy.id,
+      error_count: 0,
+      warning_count: 0,
+      checked_at: "2026-10-23T00:00:00Z",
+    } as ContextDoctorSummary;
+    render(
+      <GlobalHome
+        {...homeProps()}
+        workspaces={[healthy, attention]}
+        doctorSummaries={{
+          healthy: summary,
+          attention: { ...summary, workspace_id: attention.id, warning_count: 2 },
+        }}
+        memories={
+          [
+            { id: "m1", project_id: attention.id, status: "pending" },
+            { id: "m2", project_id: "global", status: "pending" },
+          ] as MemoryRecord[]
+        }
+      />,
+    );
+    const summaryAction = screen.getByRole("button", {
+      name: tr("home.issueSummary", { count: 4 }),
+    });
+    expect(summaryAction).toBeVisible();
+    const pending = document.getElementById("home-pending-tasks")!;
+    expect(within(pending).getByText(tr("home.itemCount", { count: 4 }))).toHaveClass(
+      "text-warning",
+    );
+    expect(within(pending).getByText(tr("home.workspaceWarnings", { count: 2 }))).toBeVisible();
+    expect(
+      within(pending).getByText(
+        `${tr("home.pendingMemoryDetail", { count: 2 })} · ${tr("home.fromWorkspaces", { count: 2 })}`,
+      ),
+    ).toBeVisible();
+    const recent = screen
+      .getByRole("heading", { name: tr("home.recentWorkspaces") })
+      .closest<HTMLElement>("[data-slot=card]")!;
+    expect(within(recent).getByText(tr("workspace.status.attention", { count: 3 }))).toBeVisible();
+    expect(within(recent).getByText(tr("workspace.status.healthy"))).toBeVisible();
+    const workspaceRows = within(recent)
+      .getAllByRole("button")
+      .filter((button) => button.textContent?.includes("assets"));
+    expect(workspaceRows[0]).toHaveTextContent("Attention");
+    expect(screen.queryByRole("heading", { name: tr("home.recentActivity") })).toBeNull();
+    expect(screen.getByRole("button", { name: tr("common.refresh") })).toHaveClass("border-border");
+    const scrollIntoView = vi.fn();
+    pending.scrollIntoView = scrollIntoView;
+    fireEvent.click(summaryAction);
+    expect(scrollIntoView).toHaveBeenCalledWith({ behavior: "smooth", block: "start" });
+  });
+
   it("keeps the onboarding steps visible after discovering a workspace and advances to Doctor", () => {
     const props = homeProps();
     const runtime = { onboarding } as RuntimeInfo;
@@ -62,7 +181,7 @@ describe("GlobalHome", () => {
 
     view.rerender(<GlobalHome {...props} runtime={runtime} workspaces={[workspace]} />);
     expect(screen.getByRole("heading", { name: tr("onboarding.title") })).toBeVisible();
-    fireEvent.click(screen.getByRole("button", { name: tr("onboarding.runDoctor") }));
+    fireEvent.click(screen.getByRole("button", { name: tr("onboarding.viewResults") }));
     expect(props.onOpenDoctor).toHaveBeenCalledWith(workspace);
 
     view.rerender(
@@ -116,8 +235,10 @@ describe("GlobalHome", () => {
       expect(props.onAddRoot).toHaveBeenCalledTimes(1);
       expect(props.onAddWorkspace).toHaveBeenCalledTimes(1);
       await act(async () => {});
-      expect(screen.getByText(tr("home.addWorkspaceHint"))).toBeVisible();
-      expect(screen.getByText(tr("home.addScanRootHint"))).toBeVisible();
+      if (!existing) {
+        expect(screen.getByText(tr("home.addWorkspaceHint"))).toBeVisible();
+        expect(screen.getByText(tr("home.addScanRootHint"))).toBeVisible();
+      }
     },
   );
 
@@ -155,10 +276,8 @@ describe("GlobalHome", () => {
         doctorSummaries={{}}
         installations={[]}
         memories={[]}
-        activity={[]}
         uniqueAssetCount={0}
         assetCounts={new Map()}
-        onShowActivity={vi.fn()}
         onShowWorkspaces={vi.fn()}
         onShowAgents={vi.fn()}
         onOpen={vi.fn().mockResolvedValue(undefined)}
@@ -195,10 +314,8 @@ describe("GlobalHome", () => {
         doctorSummaries={{}}
         installations={[]}
         memories={[]}
-        activity={[]}
         uniqueAssetCount={0}
         assetCounts={new Map()}
-        onShowActivity={vi.fn()}
         onShowWorkspaces={vi.fn()}
         onShowAgents={vi.fn()}
         recentContinuations={[continuation]}
@@ -236,10 +353,8 @@ describe("GlobalHome", () => {
         doctorSummaries={{}}
         installations={[]}
         memories={[]}
-        activity={[]}
         uniqueAssetCount={0}
         assetCounts={new Map()}
-        onShowActivity={vi.fn()}
         onShowWorkspaces={vi.fn()}
         onShowAgents={vi.fn()}
         recentContinuations={[{ workspace, session: cachedSession }]}
@@ -276,10 +391,8 @@ describe("GlobalHome", () => {
         doctorSummaries={{}}
         installations={[]}
         memories={[]}
-        activity={[]}
         uniqueAssetCount={0}
         assetCounts={new Map()}
-        onShowActivity={vi.fn()}
         onShowWorkspaces={vi.fn()}
         onShowAgents={vi.fn()}
         recentContinuations={[{ workspace, session: cachedSession }]}
@@ -303,10 +416,8 @@ describe("GlobalHome", () => {
       doctorSummaries: {},
       installations: [],
       memories: [],
-      activity: [],
       uniqueAssetCount: 0,
       assetCounts: new Map<string, number>(),
-      onShowActivity: vi.fn(),
       onShowWorkspaces: vi.fn(),
       onShowAgents: vi.fn(),
       onOpen: vi.fn().mockResolvedValue(undefined),

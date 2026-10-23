@@ -13,6 +13,10 @@ import { useSessionHub } from "./SessionHubContext";
 import { filterSessions } from "./session-catalog";
 import { normalizeDirectoryOrder, useSessionViewStore } from "./session-view-store";
 
+vi.mock("@/features/home/home-query", async (original) => ({
+  ...(await original<typeof import("@/features/home/home-query")>()),
+  useHomeInstallations: () => ({ data: [{ agent: "antigravity", installed: true }] }),
+}));
 vi.mock("./SessionHubContext", () => ({ useSessionHub: vi.fn() }));
 vi.mock("@/features/agents/AgentIcon", () => ({
   AgentIcon: ({ agent }: { agent: string }) => <span aria-hidden="true">{agent} icon</span>,
@@ -129,6 +133,60 @@ describe("SessionDirectory", () => {
     }));
   });
   afterEach(cleanup);
+
+  it("keeps named source failures scoped to their own workspace history", () => {
+    hub.statuses = workspaces.map((workspace, index) => ({
+      workspace_id: workspace.id,
+      agent: "antigravity",
+      freshness: "unavailable",
+      session_count: index,
+      error_key: "errors.conversations.sourceUnavailable",
+    }));
+    render(<SessionDirectory />);
+    const neutral = screen.getByRole("status");
+    const warning = screen.getByRole("alert");
+    expect(neutral).toHaveTextContent(tr("sessions.sourceUnavailable", { agent: "Antigravity" }));
+    expect(neutral).toHaveClass("text-muted-foreground");
+    expect(neutral.closest(".session-workspace")).toContainElement(workspaceHeading(workspaces[0]));
+    expect(warning).toHaveClass("text-warning");
+    expect(warning.closest(".session-workspace")).toContainElement(workspaceHeading(workspaces[1]));
+  });
+
+  it("keeps empty source notices in the scroll tree and honors installation, host and Agent filters", () => {
+    hub.sessions = [];
+    hub.workspaces = [
+      { ...workspaces[0], name: "Visible source" },
+      { ...workspaces[1], name: "Uninstalled source" },
+    ];
+    hub.statuses = [
+      {
+        workspace_id: workspaces[0].id,
+        agent: "antigravity",
+        freshness: "unavailable",
+        session_count: 0,
+        error_key: "errors.conversations.sourceUnavailable",
+      },
+      {
+        workspace_id: workspaces[1].id,
+        agent: "codex",
+        freshness: "unavailable",
+        session_count: 0,
+        error_key: "errors.conversations.sourceUnavailable",
+      },
+    ];
+    const { container } = render(<SessionDirectory />);
+    expect(screen.getByText("Visible source").closest(".session-directory-tree")).toBe(
+      container.querySelector(".session-directory-tree"),
+    );
+    expect(screen.queryByText("Uninstalled source")).toBeNull();
+    act(() => useSessionViewStore.getState().setAgent("claude-code"));
+    expect(screen.queryByText("Visible source")).toBeNull();
+    act(() => {
+      useSessionViewStore.getState().setAgent("all");
+      useSessionViewStore.getState().setHost("remote-fixture");
+    });
+    expect(screen.queryByText("Visible source")).toBeNull();
+  });
 
   it.each([
     ["zh-CN", "有历史内容", "无历史内容"],

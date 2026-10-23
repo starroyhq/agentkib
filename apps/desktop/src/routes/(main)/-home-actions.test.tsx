@@ -2,12 +2,17 @@
 
 import "@testing-library/jest-dom/vitest";
 import { Suspense } from "react";
-import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { api } from "@/core/api";
 import { initializeI18n, tr } from "@/core/i18n";
-import type { RuntimeInfo, WorkspaceSummary } from "@/core/types";
+import type {
+  ContextDoctorSummary,
+  ConversationSessionSummary,
+  RuntimeInfo,
+  WorkspaceSummary,
+} from "@/core/types";
 import {
   AppNavigationProvider,
   type AppNavigationContextValue,
@@ -15,6 +20,7 @@ import {
 import { useAppNavigation } from "@/features/app/useAppNavigation";
 import { homeKeys } from "@/features/home/home-query";
 import { useWorkspaceStore } from "@/features/workspace/workspace-store";
+import { useSessionViewStore } from "@/features/sessions/session-view-store";
 import { useAppStore } from "@/stores/app-store";
 import { Route } from "./index";
 
@@ -25,6 +31,9 @@ const doubles = vi.hoisted(() => ({
   search: {},
   emptyListQuery: { data: [], isPending: false, isSuccess: true, isError: false },
   workspaces: [] as WorkspaceSummary[],
+  doctorSummaries: {} as Record<string, ContextDoctorSummary>,
+  doctorError: false,
+  managed: vi.fn(),
 }));
 vi.mock("@tanstack/react-router", async (importOriginal) => ({
   ...(await importOriginal<typeof import("@tanstack/react-router")>()),
@@ -42,13 +51,16 @@ vi.mock("@/core/api", () => ({
     addWorkspace: vi.fn(),
     addScanRoot: vi.fn(),
     requestRefresh: vi.fn(),
+    workspaceSessions: vi.fn(),
+    refreshWorkspaceSessions: vi.fn(),
   },
 }));
 vi.mock("@/core/desktop", () => ({
   desktopApi: () => ({ benchmark: { mark: vi.fn().mockResolvedValue(undefined) } }),
 }));
 vi.mock("@/features/sessions/conversation-catalog", () => ({
-  useConversationCatalog: () => ({ sessions: [] }),
+  useConversationCatalog: () => doubles.managed(),
+  refreshConversationCatalog: vi.fn(),
 }));
 vi.mock("@/features/home/home-query", async (importOriginal) => ({
   ...(await importOriginal<typeof import("@/features/home/home-query")>()),
@@ -58,7 +70,11 @@ vi.mock("@/features/home/home-query", async (importOriginal) => ({
   useHomeInstallations: () => doubles.emptyListQuery,
   useHomeActivity: () => doubles.emptyListQuery,
   useHomeCatalog: () => doubles.emptyListQuery,
-  useHomeDoctorSummaries: () => ({ ...doubles.emptyListQuery, data: {} }),
+  useHomeDoctorSummaries: () => ({
+    ...doubles.emptyListQuery,
+    data: doubles.doctorSummaries,
+    isError: doubles.doctorError,
+  }),
   useHomeDiscovery: () => ({ ...doubles.emptyListQuery, data: undefined }),
   useHomeInsightsSummary: () => ({ ...doubles.emptyListQuery, data: undefined }),
 }));
@@ -106,9 +122,13 @@ describe("home add actions", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     doubles.workspaces = [];
+    doubles.doctorSummaries = {};
+    doubles.doctorError = false;
+    doubles.managed.mockReturnValue({ sessions: [], ready: true });
     useAppStore.setState(useAppStore.getInitialState(), true);
     useAppStore.setState({ runtime: { session_index_enabled: false } as RuntimeInfo });
     useWorkspaceStore.setState(useWorkspaceStore.getInitialState(), true);
+    useSessionViewStore.setState(useSessionViewStore.getInitialState(), true);
     doubles.notify.mockResolvedValue(undefined);
     doubles.navigate.mockResolvedValue(undefined);
     vi.mocked(api.pickDirectory).mockResolvedValue("/project");
@@ -120,17 +140,63 @@ describe("home add actions", () => {
   });
   afterEach(cleanup);
 
-  it("opens the existing activity log instead of navigating to Insights", async () => {
+  it("does not show recent activity on the task home", async () => {
     doubles.workspaces = [workspace];
     await renderHome();
-    const activity = screen.getByRole("region", { name: tr("home.recentActivity") });
-    fireEvent.click(within(activity).getByRole("button", { name: tr("home.viewAll") }));
+    expect(screen.queryByRole("region", { name: tr("home.recentActivity") })).toBeNull();
+  });
+
+  it("does not show stale healthy status after a diagnostic summary request fails", async () => {
+    doubles.workspaces = [workspace];
+    doubles.doctorError = true;
+    doubles.doctorSummaries = {
+      [workspace.id]: {
+        workspace_id: workspace.id,
+        error_count: 0,
+        warning_count: 0,
+      } as ContextDoctorSummary,
+    };
+    await renderHome();
+    expect(screen.getByText(tr("workspace.status.undiagnosed"))).toBeVisible();
+    expect(screen.queryByText(tr("workspace.status.healthy"))).toBeNull();
+  });
+
+  it("opens a recent session directly in the session page", async () => {
+    doubles.workspaces = [workspace];
+    useAppStore.setState({ runtime: { session_index_enabled: true } as RuntimeInfo });
+    const session = {
+      id: "session-1",
+      workspace_id: workspace.id,
+      agent: "claude-code",
+      title: "Continue the test project",
+      availability: "readable",
+      archived: false,
+      sidechain: false,
+    } as ConversationSessionSummary;
+    vi.mocked(api.workspaceSessions).mockResolvedValue([session]);
+    vi.mocked(api.refreshWorkspaceSessions).mockResolvedValue([session]);
+    useSessionViewStore.setState({
+      agent: "codex",
+      host: "unrelated-host",
+      filter: "archived",
+      creatingConversation: true,
+      collapsed: { [workspace.id]: true },
+    });
+    await renderHome();
+    fireEvent.click(await screen.findByRole("button", { name: /Continue the test project/ }));
     await waitFor(() =>
-      expect(doubles.navigate).toHaveBeenCalledExactlyOnceWith({
-        to: "/settings",
-        search: { settingsSection: "diagnostics", settingsTarget: "diagnostics-activity" },
+      expect(doubles.navigate).toHaveBeenCalledWith({
+        to: "/sessions",
+        search: { sessionId: session.id },
       }),
     );
+    expect(useSessionViewStore.getState()).toMatchObject({
+      agent: "all",
+      host: "all",
+      filter: "all",
+      creatingConversation: false,
+      collapsed: { [workspace.id]: false },
+    });
   });
 
   it("adds a single workspace through the shared safe navigation flow", async () => {

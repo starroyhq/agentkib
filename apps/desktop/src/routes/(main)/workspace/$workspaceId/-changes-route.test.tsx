@@ -34,6 +34,8 @@ vi.mock("@tanstack/react-router", async (importOriginal) => ({
   Outlet: () => outlet(),
 }));
 vi.mock("@/features/home/home-query", () => ({
+  useHomeDoctorReport: () => ({ data: undefined, refetch: vi.fn() }),
+  useHomeMemories: () => ({ data: [] }),
   homeKeys: { all: ["home"] },
   useHomeWorkspaces: () => ({ data: workspaces(), isPending: false }),
 }));

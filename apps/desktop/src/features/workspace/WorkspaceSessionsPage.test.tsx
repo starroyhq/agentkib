@@ -3,12 +3,15 @@
 import "@testing-library/jest-dom/vitest";
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
+import { useState } from "react";
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { api } from "@/core/api";
 import { initializeI18n } from "@/core/i18n";
 import type {
   ConversationSessionSummary,
   CursorBridgeStatus,
+  SessionHandoffDraft,
+  PlannedSessionHandoff,
   WorkspaceSummary,
 } from "@/core/types";
 import { useSessionViewStore } from "@/features/sessions/session-view-store";
@@ -26,6 +29,8 @@ vi.mock("@/core/api", () => ({
     cursorBridge: vi.fn(),
     cursorBridgeBundle: vi.fn(),
     revealCursorBridgeBundle: vi.fn(),
+    prepareSessionHandoff: vi.fn(),
+    planSessionHandoff: vi.fn(),
   },
 }));
 const managedCatalog = vi.hoisted(() => ({
@@ -85,6 +90,41 @@ describe("WorkspaceSessionsPage", () => {
   afterEach(() => {
     cleanup();
     vi.useRealTimers();
+  });
+
+  it.each([0, 1])("names an unavailable installed source with previous count %s", async (count) => {
+    vi.mocked(api.workspaceSessionStatus).mockResolvedValue([
+      {
+        workspace_id: workspace.id,
+        agent: "antigravity",
+        freshness: "unavailable",
+        session_count: count,
+        error_key: "errors.conversations.sourceUnavailable",
+      },
+    ]);
+    render(
+      <WorkspaceSessionsPage
+        workspace={workspace}
+        enabled
+        installedAgents={["antigravity"]}
+        targetAgents={[]}
+        onRuntimeChanged={vi.fn()}
+        onHandoffPlanned={vi.fn()}
+        onMcpConnectionPlanned={vi.fn()}
+      />,
+    );
+    await screen.findByText("Antigravity sessions are temporarily unavailable");
+    const notice = screen.getByRole(count ? "alert" : "status");
+    expect(notice).toHaveTextContent("Antigravity sessions are temporarily unavailable");
+    expect(notice).toHaveClass(count ? "text-warning" : "text-muted-foreground");
+    expect(notice).toHaveAttribute("role", count ? "alert" : "status");
+    await waitFor(() =>
+      expect(within(notice).getByRole("button", { name: "Retry" })).toBeEnabled(),
+    );
+    const scans = vi.mocked(api.refreshWorkspaceSessions).mock.calls.length;
+    fireEvent.click(within(notice).getByRole("button", { name: "Retry" }));
+    await waitFor(() => expect(api.refreshWorkspaceSessions).toHaveBeenCalledTimes(scans + 1));
+    expect(screen.queryByText("Some session sources are unavailable")).toBeNull();
   });
 
   it("waits for session indexing to be enabled and prevents duplicate requests", async () => {
@@ -841,5 +881,247 @@ describe("WorkspaceSessionsPage", () => {
 
     await waitFor(() => expect(api.sessionEvents).toHaveBeenCalledWith(selected.id));
     expect(onInitialSessionConsumed).toHaveBeenCalledTimes(1);
+  });
+
+  it("opens workspace list rows in the shared session page without reading a preview", async () => {
+    const onOpenSession = vi.fn();
+    render(
+      <WorkspaceSessionsPage
+        workspace={workspace}
+        enabled
+        targetAgents={["codex"]}
+        onRuntimeChanged={vi.fn()}
+        onHandoffPlanned={vi.fn()}
+        onMcpConnectionPlanned={vi.fn()}
+        onOpenSession={onOpenSession}
+      />,
+    );
+    const row = await screen.findByRole("listitem");
+    expect(row).toHaveTextContent(cachedSession.title!);
+    expect(row).toHaveClass("session-directory-item");
+    fireEvent.click(row);
+    expect(onOpenSession).toHaveBeenCalledWith(cachedSession.id);
+    expect(api.sessionEvents).not.toHaveBeenCalled();
+    expect(screen.queryByText("Select a session")).toBeNull();
+  });
+
+  it("lists a newly managed session before native indexing and opens it in the shared session page", async () => {
+    const openSession = vi.fn();
+    vi.mocked(api.workspaceSessions).mockResolvedValue([]);
+    vi.mocked(api.refreshWorkspaceSessions).mockResolvedValue([]);
+    managedCatalog.sessions = [
+      {
+        ...cachedSession,
+        id: "new-managed-session",
+        title: "New managed conversation",
+        origin: "interactive",
+      },
+      {
+        ...cachedSession,
+        id: "other-managed-session",
+        workspace_id: "another-workspace",
+        title: "Other workspace conversation",
+        origin: "interactive",
+      },
+    ];
+    render(
+      <WorkspaceSessionsPage
+        workspace={workspace}
+        enabled
+        targetAgents={["codex"]}
+        onOpenSession={openSession}
+        onRuntimeChanged={vi.fn()}
+        onHandoffPlanned={vi.fn()}
+        onMcpConnectionPlanned={vi.fn()}
+      />,
+    );
+    const row = await screen.findByRole("listitem");
+    expect(row).toHaveTextContent("New managed conversation");
+    expect(screen.queryByText("Other workspace conversation")).toBeNull();
+    fireEvent.click(row);
+    expect(openSession).toHaveBeenCalledWith("new-managed-session");
+    expect(api.sessionEvents).not.toHaveBeenCalled();
+  });
+
+  it("lists an indexed session and its managed aliases only once", async () => {
+    const alias = { ...cachedSession, id: "native-alias", title: "Duplicate native alias" };
+    managedCatalog.sessions = [
+      {
+        ...cachedSession,
+        id: "managed-owner",
+        title: "Managed owner",
+        origin: "interactive",
+        indexedSessionIds: [cachedSession.id, alias.id],
+      },
+    ];
+    vi.mocked(api.workspaceSessions).mockResolvedValue([cachedSession, alias]);
+    vi.mocked(api.refreshWorkspaceSessions).mockResolvedValue([cachedSession, alias]);
+    render(
+      <WorkspaceSessionsPage
+        workspace={workspace}
+        enabled
+        targetAgents={["codex"]}
+        onOpenSession={vi.fn()}
+        onRuntimeChanged={vi.fn()}
+        onHandoffPlanned={vi.fn()}
+        onMcpConnectionPlanned={vi.fn()}
+      />,
+    );
+    await waitFor(() =>
+      expect(screen.getByRole("listitem")).toHaveTextContent(cachedSession.title!),
+    );
+    expect(screen.getAllByRole("listitem")).toHaveLength(1);
+    expect(screen.queryByText("Duplicate native alias")).toBeNull();
+    expect(screen.queryByText("Managed owner")).toBeNull();
+  });
+
+  it("sends legacy workspace session links directly to the shared session page", async () => {
+    const onOpenSession = vi.fn();
+    render(
+      <WorkspaceSessionsPage
+        workspace={workspace}
+        enabled
+        targetAgents={["codex"]}
+        initialSessionId={cachedSession.id}
+        onOpenSession={onOpenSession}
+        onRuntimeChanged={vi.fn()}
+        onHandoffPlanned={vi.fn()}
+        onMcpConnectionPlanned={vi.fn()}
+      />,
+    );
+    await waitFor(() => expect(onOpenSession).toHaveBeenCalledWith(cachedSession.id));
+    expect(api.sessionEvents).not.toHaveBeenCalled();
+  });
+
+  it("opens the existing cross-Agent dialog directly when explicitly requested", async () => {
+    render(
+      <WorkspaceSessionsPage
+        workspace={workspace}
+        enabled
+        targetAgents={["claude-code"]}
+        initialSessionId={cachedSession.id}
+        openHandoffOnInitialSession
+        onRuntimeChanged={vi.fn()}
+        onHandoffPlanned={vi.fn()}
+        onMcpConnectionPlanned={vi.fn()}
+      />,
+    );
+    expect(await screen.findByRole("dialog", { name: "Continue this work" })).toBeTruthy();
+  });
+
+  it("keeps cross-Agent continuation open after its route query is consumed", async () => {
+    const openSession = vi.fn();
+    const consumed = vi.fn();
+    const onPlanned = vi.fn();
+    const refreshed = deferred<ConversationSessionSummary[]>();
+    vi.mocked(api.refreshWorkspaceSessions).mockReturnValueOnce(refreshed.promise);
+    const stats = {
+      turn_count: 1,
+      message_count: 1,
+      tool_call_count: 0,
+      tool_result_count: 0,
+      attachment_count: 0,
+    };
+    const draft: SessionHandoffDraft = {
+      filename: "continuation.md",
+      format: "markdown",
+      content: "Reviewed synthetic history",
+      redaction_count: 0,
+      source_fingerprint: "source-fingerprint",
+      mode: "handoff-file",
+      native_capability: { supported: false, beta: false },
+      capabilities: {
+        source_agent: "codex",
+        target_agent: "claude-code",
+        source_read: { status: "supported" },
+        source_parse: { status: "supported" },
+        native_resume: { status: "unsupported" },
+        file_handoff: { status: "supported" },
+        windowed_context: { status: "supported" },
+        mcp_setup: { status: "supported" },
+        interactive_launch: { status: "supported" },
+      },
+      stats,
+      history_budget_tokens: 120_000,
+      include_pre_compaction_history: false,
+      window_strategy: "full",
+      window_stats: {
+        estimated_total_tokens: 20,
+        estimated_active_tokens: 20,
+        estimated_deferred_tokens: 0,
+        active: stats,
+        deferred_turn_count: 0,
+        deferred_block_count: 0,
+        estimate_quality: "conservative",
+      },
+      mcp_available: true,
+      losses: [],
+    };
+    const planned: PlannedSessionHandoff = {
+      change_set: {
+        id: "handoff-plan",
+        project_root: "/synthetic-project",
+        created_at: "2026-10-23T00:00:00Z",
+        changes: [],
+        requires_home_approval: false,
+      },
+      launch_request: {
+        mode: "handoff-file",
+        workspace_id: workspace.id,
+        filename: draft.filename,
+        target_agent: "claude-code",
+      },
+    };
+    vi.mocked(api.prepareSessionHandoff).mockResolvedValue({ status: "ready", draft });
+    vi.mocked(api.planSessionHandoff).mockResolvedValue(planned);
+    function ConsumingRoute() {
+      const [pending, setPending] = useState(true);
+      return (
+        <WorkspaceSessionsPage
+          workspace={workspace}
+          enabled
+          targetAgents={["claude-code"]}
+          initialSessionId={pending ? cachedSession.id : undefined}
+          openHandoffOnInitialSession={pending}
+          onOpenSession={pending ? undefined : openSession}
+          onInitialSessionConsumed={() => {
+            consumed();
+            setPending(false);
+          }}
+          onRuntimeChanged={vi.fn()}
+          onHandoffPlanned={onPlanned}
+          onMcpConnectionPlanned={vi.fn()}
+        />
+      );
+    }
+    render(<ConsumingRoute />);
+    await waitFor(() => expect(consumed).toHaveBeenCalledOnce());
+    expect(await screen.findByRole("dialog", { name: "Continue this work" })).toBeVisible();
+    expect(openSession).not.toHaveBeenCalled();
+    // The background scan may merge aliases or remove the original list row.
+    // The requested continuation must stay pinned to the original source.
+    await act(async () =>
+      refreshed.resolve([
+        { ...cachedSession, id: "newer-session", title: "Newer indexed session" },
+      ]),
+    );
+    const dialog = screen.getByRole("dialog", { name: "Continue this work" });
+    await waitFor(() =>
+      expect(
+        within(dialog).getByRole("button", { name: "Inspect transferable content" }),
+      ).toBeEnabled(),
+    );
+    fireEvent.click(within(dialog).getByRole("button", { name: "Inspect transferable content" }));
+    await waitFor(() =>
+      expect(api.prepareSessionHandoff).toHaveBeenCalledWith(
+        expect.objectContaining({ session_id: cachedSession.id, target_agent: "claude-code" }),
+      ),
+    );
+    const review = await within(dialog).findByRole("button", { name: "Review import changes" });
+    await waitFor(() => expect(review).toBeEnabled());
+    fireEvent.click(review);
+    await waitFor(() => expect(onPlanned).toHaveBeenCalledWith(planned));
+    expect(vi.mocked(api.planSessionHandoff).mock.calls[0]?.[0]).toBe(cachedSession.id);
+    expect(screen.queryByRole("dialog", { name: "Continue this work" })).toBeNull();
   });
 });

@@ -7,11 +7,11 @@ import { Button } from "@/components/ui/button";
 import { WorkspacesSkeleton } from "@/features/workspace/WorkspaceSkeleton";
 import { WorkspacesLoadError, WorkspacesPage } from "@/features/workspace/WorkspacesPage";
 import { api } from "@/core/api";
-import { groupCatalogAssets, workspaceAssetCounts } from "@/features/catalog/catalog";
 import { tr } from "@/core/i18n";
 import {
   homeKeys,
-  useHomeCatalog,
+  useHomeDoctorSummaries,
+  useHomeMemories,
   useHomeDiscovery,
   useHomeRefreshJobs,
   useHomeWorkspaces,
@@ -35,8 +35,9 @@ function WorkspacesRoute() {
   const workspacesQuery = useHomeWorkspaces();
   const workspaces = workspacesQuery.data ?? [];
   const { data: discovery } = useHomeDiscovery();
-  const catalogQuery = useHomeCatalog();
-  const catalog = catalogQuery.data ?? [];
+  const workspaceIds = useMemo(() => workspaces.map((workspace) => workspace.id), [workspaces]);
+  const doctorQuery = useHomeDoctorSummaries(workspaceIds);
+  const memoriesQuery = useHomeMemories();
   const { data: refreshJobs = [] } = useHomeRefreshJobs();
   const [refreshingWorkspaceIds, setRefreshingWorkspaceIds] = useState<string[]>([]);
   const openRequest = useRef(0);
@@ -52,7 +53,6 @@ function WorkspacesRoute() {
     setHandoffLaunchRequest,
     setMessage,
   } = useWorkspaceStore();
-  const assetCounts = useMemo(() => workspaceAssetCounts(groupCatalogAssets(catalog)), [catalog]);
   const discoveryRefreshing = refreshJobs.some(
     (job) => job.kind === "discovery" && (job.state === "queued" || job.state === "running"),
   );
@@ -127,11 +127,19 @@ function WorkspacesRoute() {
     setRefreshingWorkspaceIds((current) => (current.includes(id) ? current : [...current, id]));
     try {
       await api.refreshWorkspace(id);
-      await queryClient.invalidateQueries({ queryKey: homeKeys.workspaces() });
+      await queryClient.invalidateQueries({ queryKey: homeKeys.all });
     } catch (error) {
       setMessage(localizeMessage(error));
     } finally {
       setRefreshingWorkspaceIds((current) => current.filter((workspaceId) => workspaceId !== id));
+    }
+  };
+
+  const revealWorkspace = async (id: string) => {
+    try {
+      await api.openWorkspaceStoragePath(id, "");
+    } catch (error) {
+      setMessage(localizeMessage(error));
     }
   };
 
@@ -151,7 +159,8 @@ function WorkspacesRoute() {
 
   const failed = [
     { labelKey: "query.workspaces", query: workspacesQuery },
-    { labelKey: "query.catalog", query: catalogQuery },
+    { labelKey: "query.doctorSummaries", query: doctorQuery },
+    { labelKey: "query.memories", query: memoriesQuery },
   ].filter(({ query }) => query.isError);
   const retryFailed = async () => {
     if (retryPending.current) return;
@@ -209,9 +218,8 @@ function WorkspacesRoute() {
         favoriteWorkspaceIds={favoriteWorkspaceIds}
         onToggleFavorite={toggleFavoriteWorkspace}
         discovery={discovery}
-        assetCounts={assetCounts}
-        catalogPending={catalogQuery.isPending}
-        catalogError={catalogQuery.isError && catalogQuery.data === undefined}
+        doctorSummaries={doctorQuery.isError ? {} : (doctorQuery.data ?? {})}
+        memories={memoriesQuery.data ?? []}
         discoveryRefreshing={discoveryRefreshing}
         refreshingWorkspaceIds={refreshingWorkspaceIds}
         onAddWorkspace={() => void addWorkspace()}
@@ -226,6 +234,7 @@ function WorkspacesRoute() {
         }
         onRefreshWorkspace={refreshWorkspace}
         onExclude={excludeWorkspace}
+        onReveal={revealWorkspace}
       />
     </div>
   );

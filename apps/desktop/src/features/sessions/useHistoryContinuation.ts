@@ -1,7 +1,7 @@
-import { useNavigate } from "@tanstack/react-router";
 import { sessionCollection } from "@agentkib/runtime-protocol";
 import type { ConversationSessionSummary, WorkspaceSummary } from "@/core/types";
 import { canContinueFromHistory } from "@/features/agents/agent-capabilities";
+import { useSessionViewStore } from "./session-view-store";
 import { useSessionSourceCapability } from "./useSessionSourceCapability";
 
 export function useHistoryContinuation(
@@ -9,7 +9,6 @@ export function useHistoryContinuation(
   workspace?: WorkspaceSummary,
   revision = 0,
 ) {
-  const navigate = useNavigate();
   const historyId = selected?.indexedSessionIds ? selected.indexedSessionIds[0] : selected?.id;
   const blockedReason = !selected
     ? undefined
@@ -41,10 +40,9 @@ export function useHistoryContinuation(
 
   const continueSession = () => {
     if (!canContinue || !workspace || !historyId) return;
-    void navigate({
-      to: "/workspace/$workspaceId/sessions",
-      params: { workspaceId: workspace.id },
-      search: { sessionId: historyId },
+    useSessionViewStore.getState().requestHistoryContinuation({
+      workspace,
+      session: { ...selected, id: historyId },
     });
   };
   return { canContinue, continueSession, reasonKey };

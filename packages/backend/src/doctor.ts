@@ -69,7 +69,9 @@ export class Doctor {
       try {
         results.push((await this.report(id)).summary);
       } catch {
-        results.push({ ...summary(id, []), error_count: 1 });
+        // A failed check has no findings. Omitting it lets callers show "unchecked"
+        // while retaining the real results for the other requested workspaces.
+        continue;
       }
     return results;
   }

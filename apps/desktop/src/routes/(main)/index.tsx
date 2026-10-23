@@ -10,8 +10,12 @@ import { useAppStore } from "@/stores/app-store";
 import { useAppNavigationContext } from "@/features/app/AppNavigationContext";
 import { desktopApi } from "@/core/desktop";
 import { homeBenchmarkOutcome } from "@/features/home/home-benchmark";
-import { useConversationCatalog } from "@/features/sessions/conversation-catalog";
-import { projectManagedSessionAliases } from "@/features/sessions/session-catalog";
+import {
+  refreshConversationCatalog,
+  useConversationCatalog,
+} from "@/features/sessions/conversation-catalog";
+import { workspaceSessionEntries } from "@/features/sessions/session-catalog";
+import { prepareSessionNavigation } from "@/features/sessions/session-view-store";
 import {
   continuationIndexingEnabled,
   continuationRefreshFailed,
@@ -22,7 +26,6 @@ import {
 import type { ConversationSessionSummary, WorkspaceSummary } from "@/core/types";
 import {
   homeKeys,
-  useHomeActivity,
   useHomeCatalog,
   useHomeDiscovery,
   useHomeDoctorSummaries,
@@ -114,8 +117,12 @@ function HomeRoute() {
     [],
   );
   const projectedContinuationSessions = continuationEnabled
-    ? continuationQueries.map((query) =>
-        projectManagedSessionAliases(query.data ?? [], managedCatalog.sessions),
+    ? continuationQueries.map((query, index) =>
+        workspaceSessionEntries(
+          continuationWorkspaces[index].id,
+          query.data ?? [],
+          managedCatalog.sessions,
+        ),
       )
     : [];
   const recentContinuations = continuationEnabled
@@ -124,15 +131,19 @@ function HomeRoute() {
   const metadataOnlyWorkspace = continuationEnabled
     ? metadataOnlyContinuationWorkspace(continuationWorkspaces, projectedContinuationSessions)
     : undefined;
+  const continuationError =
+    continuationsError || (managedCatalog.error ? localizeMessage(managedCatalog.error) : "");
   const continuationState: ContinuationHomeState = !continuationRuntimeReady
     ? "loading"
     : !continuationEnabled
       ? "disabled"
       : recentContinuations.length
         ? "ready"
-        : continuationQueries.some((query) => query.isPending) || continuationsRefreshing
+        : continuationQueries.some((query) => query.isPending) ||
+            continuationsRefreshing ||
+            !managedCatalog.ready
           ? "loading"
-          : continuationsError
+          : continuationError
             ? "error"
             : metadataOnlyWorkspace
               ? "metadata-only"
@@ -141,7 +152,6 @@ function HomeRoute() {
   const installationsQuery = useHomeInstallations();
   const memoriesQuery = useHomeMemories();
   const discoveryQuery = useHomeDiscovery();
-  const activityQuery = useHomeActivity();
   const insightsQuery = useHomeInsightsSummary();
   const catalogQuery = useHomeCatalog();
   const benchmarkReported = useRef(false);
@@ -153,7 +163,6 @@ function HomeRoute() {
       installationsQuery,
       memoriesQuery,
       discoveryQuery,
-      activityQuery,
       insightsQuery,
       catalogQuery,
     ];
@@ -165,7 +174,6 @@ function HomeRoute() {
       .benchmark.mark(outcome === "ready" ? "home-data-ready" : "home-data-failed")
       .catch(() => undefined);
   }, [
-    activityQuery,
     catalogQuery,
     discoveryQuery,
     doctorSummariesQuery,
@@ -175,11 +183,10 @@ function HomeRoute() {
     runtime,
     workspacesQuery,
   ]);
-  const doctorSummaries = doctorSummariesQuery.data ?? {};
+  const doctorSummaries = doctorSummariesQuery.isError ? {} : (doctorSummariesQuery.data ?? {});
   const installations = installationsQuery.data ?? [];
   const globalMemories = memoriesQuery.data ?? [];
   const discovery = discoveryQuery.data;
-  const activity = activityQuery.data ?? [];
   const insightsSummary = insightsQuery.data;
   const catalog = catalogQuery.data ?? [];
   const groupedCatalog = groupCatalogAssets(catalog);
@@ -207,37 +214,29 @@ function HomeRoute() {
       memories={globalMemories}
       issuesPending={issuesPending}
       discovery={discovery}
-      activity={activity}
-      activityPending={activityQuery.isPending}
       installationsPending={installationsQuery.isPending}
       catalogPending={catalogQuery.isPending}
       insights={insightsSummary}
       uniqueAssetCount={groupedCatalog.filter((asset) => asset.scope === "workspace").length}
       assetCounts={assetCounts}
-      onShowActivity={() =>
-        void navigate({
-          to: "/settings",
-          search: { settingsSection: "diagnostics", settingsTarget: "diagnostics-activity" },
-        })
-      }
       onShowWorkspaces={() => void navigate({ to: "/workspaces" })}
       onShowAgents={() => void navigate({ to: "/agents" })}
       recentContinuations={recentContinuations}
       continuationState={continuationState}
       continuationSlow={continuationsSlow}
-      continuationError={continuationsError}
-      onContinue={async ({ workspace, session }) => {
+      continuationError={continuationError}
+      onContinue={async ({ session }) => {
+        prepareSessionNavigation(session);
         await navigate({
-          to: "/workspace/$workspaceId/sessions",
-          params: { workspaceId: workspace.id },
-          search: (current) => ({ ...current, sessionId: session.id }) as never,
+          to: "/sessions",
+          search: { sessionId: session.id },
         });
       }}
       onEnableContinuations={async () => {
         setRuntime(await api.setSessionIndexEnabled(true));
       }}
       onRetryContinuations={async () => {
-        await refreshContinuations();
+        await Promise.allSettled([refreshContinuations(), refreshConversationCatalog()]);
       }}
       onOpenContinuationWorkspace={async () => {
         const workspace = metadataOnlyWorkspace ?? continuationWorkspaces[0];

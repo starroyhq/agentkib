@@ -71,3 +71,28 @@ export function projectManagedSessionAliases(
     ];
   });
 }
+
+/** Include newly managed sessions before native history has been indexed, once per identity. */
+export function workspaceSessionEntries(
+  workspaceId: string,
+  indexed: ConversationSessionSummary[],
+  authoritative: ConversationSessionSummary[],
+  preferredId?: string,
+) {
+  const owners = authoritative.filter((session) => session.workspace_id === workspaceId);
+  const projected = projectManagedSessionAliases(
+    indexed.filter((session) => session.workspace_id === workspaceId),
+    owners,
+    preferredId,
+  );
+  const identity = (agent: string, id: string) => JSON.stringify([agent, id]);
+  const present = new Set(projected.map((session) => identity(session.agent, session.id)));
+  return [
+    ...projected,
+    ...owners.filter(
+      (owner) =>
+        !present.has(identity(owner.agent, owner.id)) &&
+        !(owner.indexedSessionIds ?? []).some((id) => present.has(identity(owner.agent, id))),
+    ),
+  ];
+}

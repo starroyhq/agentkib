@@ -41,6 +41,7 @@
   --color-primary-foreground: var(--primary-foreground);
   --color-primary: var(--primary);
   --color-primary-text: var(--primary-text);
+  --color-warning: var(--amber);
   --color-tab-inactive-foreground: var(--tab-inactive-foreground);
   --color-popover-foreground: var(--popover-foreground);
   --color-popover: var(--popover);

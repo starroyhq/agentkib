@@ -36,7 +36,7 @@ describe("WorkspaceContextHealthCard", () => {
   it("offers a diagnosis when no summary is available", () => {
     const { onOpenDoctor } = renderCard();
 
-    fireEvent.click(screen.getByRole("button", { name: /Run diagnosis/i }));
+    fireEvent.click(screen.getByRole("button", { name: /View diagnostics/i }));
 
     expect(onOpenDoctor).toHaveBeenCalledOnce();
   });
@@ -50,7 +50,7 @@ describe("WorkspaceContextHealthCard", () => {
         onOpenChanges={vi.fn()}
       />,
     );
-    expect(screen.getByText("Context configuration is healthy")).toBeTruthy();
+    expect(screen.getByText(/^Diagnostics healthy/)).toBeTruthy();
 
     rerender(
       <WorkspaceContextHealthCard
@@ -60,7 +60,7 @@ describe("WorkspaceContextHealthCard", () => {
         onOpenChanges={vi.fn()}
       />,
     );
-    expect(screen.getByText("Issues requiring manual action: 2")).toBeTruthy();
+    expect(screen.getByText("2 diagnostic issues found")).toBeTruthy();
   });
 
   it("opens Doctor for a repairable diagnosis", () => {
@@ -70,16 +70,67 @@ describe("WorkspaceContextHealthCard", () => {
       repairable_count: 2,
     });
 
-    expect(screen.getByText("Issues found: 3 · repairable: 2")).toBeTruthy();
-    fireEvent.click(screen.getByRole("button", { name: /Review repair plan/i }));
+    expect(screen.getByText("3 diagnostic issues found")).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: /View diagnostics/i }));
     expect(onOpenDoctor).toHaveBeenCalledOnce();
   });
 
-  it("prioritizes pending review over the diagnosis summary", () => {
+  it.each([
+    [1, 0, "1 warning"],
+    [0, 1, "1 error"],
+    [2, 3, "2 warnings · 3 errors"],
+  ] as const)("omits zero counts for %i warnings and %i errors", (warnings, errors, expected) => {
+    renderCard({ ...healthy, warning_count: warnings, error_count: errors });
+    expect(screen.getByText(new RegExp(`^${expected} · Checked`))).toBeTruthy();
+    expect(screen.queryByText(/\b0 (warnings|errors)\b/)).toBeNull();
+  });
+
+  it("retains pending review without hiding the diagnosis summary", () => {
     const { onOpenChanges } = renderCard({ ...healthy, error_count: 3, repairable_count: 2 }, true);
 
     expect(screen.getByText("Repair plan awaiting review")).toBeTruthy();
+    expect(screen.getByText("3 diagnostic issues found")).toBeTruthy();
     fireEvent.click(screen.getByRole("button", { name: /Review pending changes/i }));
     expect(onOpenChanges).toHaveBeenCalledOnce();
   });
+
+  it.each(["zh-CN", "zh-TW", "en-US", "ja-JP"] as const)(
+    "names the duplicate files in %s without exposing raw evidence",
+    async (locale) => {
+      await initializeI18n(locale);
+      render(
+        <WorkspaceContextHealthCard
+          summary={{ ...healthy, warning_count: 1 }}
+          issues={[
+            {
+              id: "duplicate",
+              code: "instruction.exact-duplicate",
+              severity: "warning",
+              agent: "grok-build",
+              repairable: false,
+              evidence: [
+                {
+                  path: "/fixture/project/CLAUDE.md",
+                  detail: "Exact duplicate of /fixture/project/AGENTS.md",
+                },
+              ],
+            },
+          ]}
+          pendingReview={false}
+          onOpenDoctor={vi.fn()}
+          onOpenChanges={vi.fn()}
+        />,
+      );
+      const files = {
+        "zh-CN": "CLAUDE.md 与 AGENTS.md",
+        "zh-TW": "CLAUDE.md 與 AGENTS.md",
+        "en-US": "CLAUDE.md and AGENTS.md",
+        "ja-JP": "CLAUDE.md と AGENTS.md",
+      };
+      expect(screen.getByRole("heading").textContent).toContain(files[locale]);
+      expect(screen.queryByText(/Exact duplicate of/)).toBeNull();
+      expect(screen.getByRole("button").className).toContain("border");
+      await initializeI18n("en-US");
+    },
+  );
 });

@@ -5,6 +5,7 @@ import type { ConversationSessionSummary } from "@/core/types";
 import {
   normalizeDirectoryOrder,
   normalizeSessionDirectoryOrder,
+  prepareSessionNavigation,
   useSessionViewStore,
 } from "./session-view-store";
 
@@ -51,6 +52,39 @@ describe("session view source visibility", () => {
   it("retains ordinary sidechain conversations and expands their workspace", () => {
     useSessionViewStore.getState().revealSession({ ...source, sidechain: true });
     expect(useSessionViewStore.getState().collapsed).toEqual({ workspace: false });
+  });
+
+  it("makes a deep link visible through conflicting filters and exits conversation creation", () => {
+    useSessionViewStore.setState({
+      agent: "claude-code",
+      host: "other-computer",
+      filter: "archived",
+      creatingConversation: true,
+    });
+    prepareSessionNavigation(source);
+    expect(useSessionViewStore.getState()).toMatchObject({
+      agent: "all",
+      host: "all",
+      filter: "all",
+      creatingConversation: false,
+      collapsed: { workspace: false },
+    });
+  });
+
+  it("preserves filters that already include a deep-linked session", () => {
+    useSessionViewStore.setState({
+      agent: "codex",
+      host: "local",
+      filter: "current",
+      creatingConversation: true,
+    });
+    prepareSessionNavigation(source);
+    expect(useSessionViewStore.getState()).toMatchObject({
+      agent: "codex",
+      host: "local",
+      filter: "current",
+      creatingConversation: false,
+    });
   });
 
   it("restores saved order and removes stale or duplicate IDs on its next write", async () => {

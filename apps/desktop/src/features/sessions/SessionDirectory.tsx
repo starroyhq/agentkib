@@ -1,29 +1,24 @@
-import { sessionContinuationListState, SessionContinuationDot } from "@agentkib/session-ui";
 import { useI18n } from "@/core/useI18n";
 import { sessionCollection } from "@agentkib/runtime-protocol";
 import { cn } from "cn";
 import { Fragment, useLayoutEffect, useRef } from "react";
 import { useShallow } from "zustand/react/shallow";
-import { Folder, FolderOpen, GitBranch, MessageSquare, Monitor } from "lucide-react";
+import { Folder, FolderOpen, MessageSquare, Monitor } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
-import { AgentIcon } from "@/features/agents/AgentIcon";
 import { displaySessionTitle } from "@/features/workspace/session-title";
 import { useSessionHub } from "./SessionHubContext";
 import { useSessionViewStore } from "./session-view-store";
-import {
-  isInteractiveFork,
-  sessionAgentNames,
-  sessionRecordLabel,
-  sessionSourceLabel,
-} from "./session-labels";
+import { sessionAgentNames, sessionRecordLabel, sessionSourceLabel } from "./session-labels";
 import { SessionDirectoryControls } from "./SessionDirectoryControls";
 import { sessionOrder, useSessionDirectoryOrder } from "./useSessionDirectoryOrder";
+import { SessionDirectoryEntry } from "./SessionDirectoryEntry";
+import { SessionDirectorySourceNotices } from "./SessionSourceNotices";
 
 export function SessionDirectory({
   onMenuOpenChange,
 }: { onMenuOpenChange?: (open: boolean) => void } = {}) {
-  const { locale, formatDateTime, tr } = useI18n();
+  const { formatDateTime, tr } = useI18n();
   const hub = useSessionHub();
   const view = useSessionViewStore(
     useShallow((state) => ({
@@ -70,6 +65,21 @@ export function SessionDirectory({
         <p id="session-directory-reorder-hint" className="sr-only">
           {tr("sessions.reorderHint")}
         </p>
+        {(hub.statuses ?? [])
+          .filter(
+            (status) =>
+              !hub.sessions.some((session) => session.workspace_id === status.workspace_id) &&
+              status.error_key,
+          )
+          .map((status) => status.workspace_id)
+          .filter((id, index, ids) => ids.indexOf(id) === index)
+          .map((workspaceId) => (
+            <SessionDirectorySourceNotices
+              key={workspaceId}
+              workspaceId={workspaceId}
+              showWorkspace
+            />
+          ))}
         {orderedGroups.map(({ workspace, sessions: workspaceSessions, label }, index) => {
           const sessions = sessionOrder(workspaceSessions, view.sessionOrder[workspace.id] ?? []);
           return (
@@ -152,8 +162,10 @@ export function SessionDirectory({
                   inert={Boolean(view.collapsed[workspace.id])}
                   aria-hidden={view.collapsed[workspace.id] || undefined}
                 >
+                  {!!hub.statuses?.some(
+                    (status) => status.workspace_id === workspace.id && status.error_key,
+                  ) && <SessionDirectorySourceNotices workspaceId={workspace.id} />}
                   {sessions.map((session) => {
-                    const status = sessionContinuationListState(session, locale);
                     return (
                       <Button
                         variant="bare"
@@ -212,33 +224,11 @@ export function SessionDirectory({
                           .filter(Boolean)
                           .join("\n")}
                       >
-                        <AgentIcon agent={session.agent} compact />
-                        <span>
-                          <strong
-                            className={cn(
-                              "truncate font-[550]",
-                              hub.selected?.id === session.id && "font-[650]",
-                            )}
-                          >
-                            {displaySessionTitle(session.title, tr)}
-                          </strong>
-                        </span>
-                        {status?.dot && (
-                          <SessionContinuationDot label={status.label} active={status.active} />
-                        )}
-                        {status &&
-                          !status.dot &&
-                          session.continuation?.reason === "codex-cli-version-too-old" && (
-                            <span className="shrink-0 text-xs text-muted-foreground">
-                              {status.label}
-                            </span>
-                          )}
-                        {isInteractiveFork(session) && (
-                          <GitBranch
-                            size={12}
-                            aria-label={`${tr("conversations.forked")}: ${sessionSourceLabel(session, hub.sessions, tr, formatDateTime)}`}
-                          />
-                        )}
+                        <SessionDirectoryEntry
+                          session={session}
+                          sessions={hub.sessions}
+                          selected={hub.selected?.id === session.id}
+                        />
                       </Button>
                     );
                   })}

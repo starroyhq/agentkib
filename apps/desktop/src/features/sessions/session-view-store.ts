@@ -1,9 +1,13 @@
 import { create } from "zustand";
-import type { AgentKind, ConversationSessionSummary } from "@/core/types";
+import type { AgentKind, ConversationSessionSummary, WorkspaceSummary } from "@/core/types";
 import type { ConversationPanel } from "./conversation-panel-commands";
 import { isSessionVisible } from "./session-catalog";
 
 export type RequestedConversationPanel = { sessionId: string; panel: ConversationPanel };
+export type HistoryContinuationRequest = {
+  workspace: WorkspaceSummary;
+  session: ConversationSessionSummary;
+};
 export type TerminalEntryRegistration = { sessionId: string; open: () => void };
 
 export type SessionRecordFilter = "current" | "archived" | "metadata" | "all";
@@ -85,6 +89,9 @@ export const useSessionViewStore = create<{
   scrollTop: number;
   creatingConversation: boolean;
   requestedPanel?: RequestedConversationPanel;
+  historyContinuation?: HistoryContinuationRequest;
+  requestHistoryContinuation: (request: HistoryContinuationRequest) => void;
+  closeHistoryContinuation: (request: HistoryContinuationRequest) => void;
   terminalEntry?: TerminalEntryRegistration;
   requestPanel: (sessionId: string, panel: ConversationPanel) => void;
   consumePanel: (request: RequestedConversationPanel) => void;
@@ -108,6 +115,11 @@ export const useSessionViewStore = create<{
   ...initialDirectoryOrder,
   scrollTop: 0,
   creatingConversation: false,
+  requestHistoryContinuation: (historyContinuation) => set({ historyContinuation }),
+  closeHistoryContinuation: (request) =>
+    set((state) =>
+      state.historyContinuation === request ? { historyContinuation: undefined } : {},
+    ),
   requestPanel: (sessionId, panel) => set({ requestedPanel: { sessionId, panel } }),
   consumePanel: (request) =>
     set((state) => (state.requestedPanel === request ? { requestedPanel: undefined } : {})),
@@ -151,3 +163,10 @@ export const useSessionViewStore = create<{
   setScrollTop: (scrollTop) => set({ scrollTop }),
   resetFilters: () => set({ agent: "all", filter: "current", host: "all" }),
 }));
+
+/** Make a deep-linked session visible without discarding already compatible filters. */
+export function prepareSessionNavigation(session: ConversationSessionSummary) {
+  const view = useSessionViewStore.getState();
+  view.revealSession(session);
+  view.setCreatingConversation(false);
+}

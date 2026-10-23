@@ -212,7 +212,7 @@ describe("composer drafts across connection changes", () => {
     expect(doubles.control).toHaveBeenCalledTimes(1);
     fireEvent.keyDown(input, { key: "Enter" });
     await waitFor(() => expect(doubles.control).toHaveBeenCalledTimes(2));
-    expect(input).toHaveValue("");
+    await waitFor(() => expect(input).toHaveValue(""));
   });
 
   it("clears an acknowledged send after disconnect without submitting it again", async () => {

@@ -21,7 +21,6 @@ import {
   ArrowLeft,
   Check,
   ChevronRight,
-  CircleAlert,
   FileOutput,
   GitBranch,
   ListFilter,
@@ -49,6 +48,7 @@ import type {
   ConversationEventPage,
   ConversationSessionSummary,
   CursorBridgeStatus,
+  NativeImportOperation,
   PlannedSessionHandoff,
   WorkspaceSummary,
 } from "@/core/types";
@@ -60,13 +60,15 @@ import {
   sessionSourceDetails,
   sessionAgentNames,
 } from "@/features/sessions/session-labels";
-import {
-  isSessionVisible,
-  projectManagedSessionAliases,
-} from "@/features/sessions/session-catalog";
+import { isSessionVisible, workspaceSessionEntries } from "@/features/sessions/session-catalog";
 import { useConversationCatalog } from "@/features/sessions/conversation-catalog";
-import { useSessionViewStore } from "@/features/sessions/session-view-store";
+import {
+  prepareSessionNavigation,
+  useSessionViewStore,
+} from "@/features/sessions/session-view-store";
 import { withAsyncCleanup } from "@/lib/utils";
+import { SessionDirectoryEntry } from "@/features/sessions/SessionDirectoryEntry";
+import { SessionSourceNotices } from "@/features/sessions/SessionSourceNotices";
 
 type SessionFilter = "current" | "archived" | "metadata" | "all";
 type AgentFilter = "all" | ConversationSessionSummary["agent"];
@@ -131,6 +133,9 @@ export function WorkspaceSessionsPage({
   onResumeConsumed,
   onOpenClaudeSession,
   targetAgents,
+  installedAgents,
+  onOpenSession,
+  openHandoffOnInitialSession = false,
 }: {
   workspace: WorkspaceSummary;
   enabled: boolean;
@@ -143,6 +148,9 @@ export function WorkspaceSessionsPage({
   onResumeConsumed?: () => void;
   onOpenClaudeSession?: (sessionId: string, panel?: "terminal") => void;
   targetAgents: AgentKind[];
+  installedAgents?: AgentKind[];
+  onOpenSession?: (sessionId: string) => void;
+  openHandoffOnInitialSession?: boolean;
 }) {
   const { formatDateTime, formatRelativeTime, localizeMessage, tr } = useI18n();
   const [enabling, setEnabling] = useState(false);
@@ -161,13 +169,15 @@ export function WorkspaceSessionsPage({
   const managedCatalog = useConversationCatalog(enabled && !workspace.remote);
   const indexedSessions = useMemo(
     () =>
-      projectManagedSessionAliases(
+      workspaceSessionEntries(
+        workspace.id,
         sessions,
         managedCatalog.sessions,
         initialSessionId ?? resumeContinuation?.sessionId ?? selectedId,
       ),
     [
       sessions,
+      workspace.id,
       managedCatalog.sessions,
       initialSessionId,
       resumeContinuation?.sessionId,
@@ -191,7 +201,14 @@ export function WorkspaceSessionsPage({
   const queryClient = useOptionalQueryClient();
   const [showDetail, setShowDetail] = useState(false);
   const [hiddenSessionNotice, setHiddenSessionNotice] = useState(false);
-  const [showHandoff, setShowHandoff] = useState(false);
+  // A continuation belongs to its requested source, not the list's transient selection.
+  // Consuming route parameters or refreshing the index must not dismiss the review.
+  const [handoffSource, setHandoffSource] = useState<{
+    workspaceId: string;
+    session: ConversationSessionSummary;
+  }>();
+  const handoffSession =
+    handoffSource?.workspaceId === workspace.id ? handoffSource.session : undefined;
   const [resumedRequest, setResumedRequest] = useState<
     (SessionContinuationResume & { autoPrepare: boolean }) | undefined
   >();
@@ -241,6 +258,9 @@ export function WorkspaceSessionsPage({
     setCursorBindingId("");
     cursorConnections.current = undefined;
     setSelectedId(undefined);
+    setHandoffSource(undefined);
+    setResumedRequest(undefined);
+    consumedInitialSession.current = undefined;
     setHiddenSessionNotice(false);
     setSlowLoading(false);
     setDismissedListErrorAt(0);
@@ -318,9 +338,16 @@ export function WorkspaceSessionsPage({
     consumedInitialSession.current = initialSessionId;
     setHiddenSessionNotice(false);
     revealSession(target);
+    if (onOpenSession && !openHandoffOnInitialSession) {
+      prepareSessionNavigation(target);
+      onOpenSession(target.id);
+      return;
+    }
     setFilter("all");
     setSelectedId(initialSessionId);
     setShowDetail(true);
+    if (openHandoffOnInitialSession)
+      setHandoffSource({ workspaceId: workspace.id, session: target });
     onInitialSessionConsumed?.();
   }, [
     initialSessionId,
@@ -330,10 +357,15 @@ export function WorkspaceSessionsPage({
     managedCatalog.ready,
     managedCatalog.error,
     workspace.remote,
+    onOpenSession,
+    openHandoffOnInitialSession,
   ]);
 
   useEffect(() => {
-    if (!resumeContinuation || !sessions.some(({ id }) => id === resumeContinuation.sessionId)) {
+    if (
+      !resumeContinuation ||
+      !indexedSessions.some(({ id }) => id === resumeContinuation.sessionId)
+    ) {
       return;
     }
     const target = indexedSessions.find(({ id }) => id === resumeContinuation.sessionId);
@@ -357,7 +389,7 @@ export function WorkspaceSessionsPage({
     setSelectedId(resumeContinuation.sessionId);
     setResumedRequest(resumeContinuation);
     setShowDetail(true);
-    setShowHandoff(true);
+    setHandoffSource({ workspaceId: workspace.id, session: target });
     onResumeConsumed?.();
   }, [
     onResumeConsumed,
@@ -376,7 +408,8 @@ export function WorkspaceSessionsPage({
     setErrorSessionId(selected?.id);
     setDismissedListErrorAt(catalog.errorUpdatedAt);
   }
-  const readableSessionId = selected?.availability === "readable" ? selected.id : undefined;
+  const readableSessionId =
+    !onOpenSession && selected?.availability === "readable" ? selected.id : undefined;
   const transcriptObserverId = useId();
   const transcriptKey = [...sessionTranscriptKey(readableSessionId ?? ""), transcriptObserverId];
   // 第一页是最新的记录窗口，之后每一页都更早。staleTime 无限 + gcTime 0：
@@ -421,6 +454,28 @@ export function WorkspaceSessionsPage({
     if (!nextCursor || reading || loadingEarlier) return;
     await transcriptQuery.fetchNextPage();
   };
+  const reviewRecovery = (operation: NativeImportOperation) => {
+    const source = visibleSessions.find(
+      (session) =>
+        session.id === operation.source_session_id && session.availability === "readable",
+    );
+    if (!source) return;
+    revealSession(source);
+    setFilter("all");
+    setSelectedId(source.id);
+    setResumedRequest({
+      sessionId: source.id,
+      targetAgent: operation.launch_request.target_agent,
+      historyBudgetTokens: 120_000,
+      format: "markdown",
+      autoPrepare: false,
+      ...(operation.binding_id && operation.launch_request.target_agent === "cursor"
+        ? { targetSurface: "cursor-ide" as const, bindingId: operation.binding_id }
+        : {}),
+    });
+    setShowDetail(true);
+    setHandoffSource({ workspaceId: workspace.id, session: source });
+  };
 
   if (!enabled) {
     return (
@@ -464,9 +519,32 @@ export function WorkspaceSessionsPage({
           {tr("sessions.hiddenRecord")}
         </p>
       )}
-      <div className="grid h-[calc(100vh-150px)] max-h-[calc(100vh-150px)] min-h-0 grid-cols-[minmax(340px,380px)_minmax(0,1fr)] items-stretch gap-4 max-[760px]:relative max-[760px]:h-full max-[760px]:max-h-none max-[760px]:block">
+      {onOpenSession && error && (
+        <div
+          role="alert"
+          className="mb-3 flex items-center justify-between gap-3 rounded-xl border border-destructive/25 bg-destructive/10 px-4 py-3 text-sm text-destructive-text"
+        >
+          <span>{error}</span>
+          <Button variant="outline" disabled={refreshing} onClick={() => void catalog.refresh()}>
+            {tr("sessions.retry")}
+          </Button>
+        </div>
+      )}
+      {onOpenSession && (
+        <NativeImportRecoveryPanel
+          workspaceId={workspace.id}
+          workspace={workspace}
+          readableSourceIds={visibleSessions
+            .filter((session) => session.availability === "readable")
+            .map((session) => session.id)}
+          onReview={reviewRecovery}
+        />
+      )}
+      <div
+        className={`grid h-[calc(100vh-150px)] max-h-[calc(100vh-150px)] min-h-0 items-stretch gap-4 max-[760px]:relative max-[760px]:h-full max-[760px]:max-h-none max-[760px]:block ${onOpenSession ? "grid-cols-1" : "grid-cols-[minmax(340px,380px)_minmax(0,1fr)]"}`}
+      >
         <Card
-          className={`flex min-h-0 min-w-0 flex-col self-start overflow-hidden rounded-2xl border-border/70 bg-card shadow-sm max-h-[calc(100vh-150px)] max-[760px]:absolute max-[760px]:inset-0 max-[760px]:h-full max-[760px]:max-h-none ${showDetail ? "max-[760px]:hidden" : ""}`}
+          className={`flex min-h-0 min-w-0 flex-col self-start overflow-hidden rounded-2xl border-border/70 bg-card shadow-sm max-h-[calc(100vh-150px)] max-[760px]:h-full max-[760px]:max-h-none ${!onOpenSession && showDetail ? "max-[760px]:hidden" : ""}`}
         >
           <div className="border-b border-border/70 bg-muted/15 px-3 py-2.5">
             <div className="flex min-h-9 items-center gap-2">
@@ -627,15 +705,16 @@ export function WorkspaceSessionsPage({
               </label>
             )}
           </div>
-          {statuses.some((status) => status.freshness !== "fresh") && (
-            <div className="flex min-h-[38px] items-center gap-2 border-b border-amber-200/70 bg-amber-50/70 px-4 py-2.5 text-xs text-amber-800">
-              <CircleAlert size={14} />
-              <span>{tr("conversations.partialIndex")}</span>
-            </div>
-          )}
+          <SessionSourceNotices
+            statuses={statuses}
+            sessions={indexedSessions}
+            installedAgents={installedAgents}
+            refreshing={refreshing}
+            onRetry={catalog.refresh}
+          />
           <div role="list" className="min-h-0 flex-1 overflow-auto p-2">
             {filtered.map((session) => {
-              const sourceLabel = sessionSourceLabel(session, sessions, tr, formatDateTime);
+              const sourceLabel = sessionSourceLabel(session, indexedSessions, tr, formatDateTime);
               return (
                 <Button
                   variant="bare"
@@ -643,62 +722,77 @@ export function WorkspaceSessionsPage({
                   key={session.id}
                   role="listitem"
                   title={sourceLabel || undefined}
-                  className={`group mb-1 grid min-h-[82px] w-full grid-cols-[36px_minmax(0,1fr)_16px] items-start gap-3 rounded-xl border px-3 py-3 text-left transition-colors duration-200 ${selected?.id === session.id ? "border-primary/20 bg-accent-soft ring-1 ring-primary/5" : "border-transparent hover:border-border/70 hover:bg-muted/60"}`}
+                  className={
+                    onOpenSession
+                      ? "session-directory-item mb-1 flex min-h-10 w-full items-center gap-2 rounded-lg px-3 py-2 text-left transition-colors hover:bg-sidebar-accent/70 [&>div]:shrink-0"
+                      : `group mb-1 grid min-h-[82px] w-full grid-cols-[36px_minmax(0,1fr)_16px] items-start gap-3 rounded-xl border px-3 py-3 text-left transition-colors duration-200 ${selected?.id === session.id ? "border-primary/20 bg-accent-soft ring-1 ring-primary/5" : "border-transparent hover:border-border/70 hover:bg-muted/60"}`
+                  }
                   onClick={() => {
+                    if (onOpenSession) {
+                      prepareSessionNavigation(session);
+                      onOpenSession(session.id);
+                      return;
+                    }
                     setHiddenSessionNotice(false);
                     setSelectedId(session.id);
                     setShowDetail(true);
                   }}
                 >
-                  <AgentIcon agent={session.agent} />
-                  <span className="min-w-0">
-                    <span className="flex min-w-0 items-center gap-2">
-                      <strong className="truncate text-sm">
-                        {displaySessionTitle(session.title, tr)}
-                      </strong>
-                      {isInteractiveFork(session) && (
-                        <GitBranch
-                          size={12}
-                          aria-label={`${tr("conversations.forked")}: ${sourceLabel}`}
-                        />
-                      )}
-                      {session.availability === "metadata-only" && (
-                        <Badge
-                          variant="secondary"
-                          className="shrink-0 !rounded-full !px-1.5 !py-0 !text-[10px]"
-                        >
-                          {tr("conversations.metadataOnly")}
-                        </Badge>
-                      )}
-                    </span>
-                    <small className="mt-1 block truncate text-xs text-muted-foreground">
-                      {session.updated_at
-                        ? formatRelativeTime(session.updated_at)
-                        : tr("conversations.unknownTime")}
-                      {session.message_count != null
-                        ? ` · ${tr("conversations.messageCount", { count: session.message_count })}`
-                        : ""}
-                    </small>
-                    <em className="mt-1.5 flex min-h-4 flex-wrap items-center gap-x-2 gap-y-1 text-xs text-muted-foreground not-italic">
-                      {session.git_branch && (
-                        <span className="inline-flex min-w-0 max-w-full items-center gap-1 truncate">
-                          <GitBranch size={11} className="shrink-0" />
-                          {session.git_branch}
+                  {onOpenSession ? (
+                    <SessionDirectoryEntry session={session} sessions={indexedSessions} />
+                  ) : (
+                    <>
+                      <AgentIcon agent={session.agent} />
+                      <span className="min-w-0">
+                        <span className="flex min-w-0 items-center gap-2">
+                          <strong className="truncate text-sm">
+                            {displaySessionTitle(session.title, tr)}
+                          </strong>
+                          {isInteractiveFork(session) && (
+                            <GitBranch
+                              size={12}
+                              aria-label={`${tr("conversations.forked")}: ${sourceLabel}`}
+                            />
+                          )}
+                          {session.availability === "metadata-only" && (
+                            <Badge
+                              variant="secondary"
+                              className="shrink-0 !rounded-full !px-1.5 !py-0 !text-[10px]"
+                            >
+                              {tr("conversations.metadataOnly")}
+                            </Badge>
+                          )}
                         </span>
-                      )}
-                      {session.archived && (
-                        <span className="inline-flex items-center gap-1">
-                          <Archive size={11} />
-                          {tr("conversations.archived")}
-                        </span>
-                      )}
-                      {session.sidechain && <span>{tr("conversations.sidechain")}</span>}
-                    </em>
-                  </span>
-                  <ChevronRight
-                    size={15}
-                    className={`mt-1 transition-transform duration-200 ${selected?.id === session.id ? "text-foreground" : "text-muted-foreground/60 group-hover:translate-x-0.5 group-hover:text-foreground"}`}
-                  />
+                        <small className="mt-1 block truncate text-xs text-muted-foreground">
+                          {session.updated_at
+                            ? formatRelativeTime(session.updated_at)
+                            : tr("conversations.unknownTime")}
+                          {session.message_count != null
+                            ? ` · ${tr("conversations.messageCount", { count: session.message_count })}`
+                            : ""}
+                        </small>
+                        <em className="mt-1.5 flex min-h-4 flex-wrap items-center gap-x-2 gap-y-1 text-xs text-muted-foreground not-italic">
+                          {session.git_branch && (
+                            <span className="inline-flex min-w-0 max-w-full items-center gap-1 truncate">
+                              <GitBranch size={11} className="shrink-0" />
+                              {session.git_branch}
+                            </span>
+                          )}
+                          {session.archived && (
+                            <span className="inline-flex items-center gap-1">
+                              <Archive size={11} />
+                              {tr("conversations.archived")}
+                            </span>
+                          )}
+                          {session.sidechain && <span>{tr("conversations.sidechain")}</span>}
+                        </em>
+                      </span>
+                      <ChevronRight
+                        size={15}
+                        className={`mt-1 transition-transform duration-200 ${selected?.id === session.id ? "text-foreground" : "text-muted-foreground/60 group-hover:translate-x-0.5 group-hover:text-foreground"}`}
+                      />
+                    </>
+                  )}
                 </Button>
               );
             })}
@@ -724,228 +818,210 @@ export function WorkspaceSessionsPage({
             )}
           </div>
         </Card>
-        <Card
-          className={`grid min-w-0 min-h-0 grid-rows-[auto_minmax(0,1fr)] overflow-hidden rounded-2xl border-border/70 bg-card shadow-sm max-[760px]:absolute max-[760px]:inset-0 ${showDetail ? "max-[760px]:grid" : "max-[760px]:hidden"}`}
-        >
-          <header className="flex min-h-[88px] items-center gap-3 border-b border-border/70 px-5 py-4">
-            <Button
-              variant="ghost"
-              size="icon-sm"
-              className="-ml-1 hidden shrink-0 text-muted-foreground hover:bg-muted hover:text-foreground max-[760px]:inline-flex"
-              onClick={() => setShowDetail(false)}
-              aria-label={tr("conversations.back")}
-            >
-              <ArrowLeft size={16} />
-            </Button>
-            {selected ? (
-              <>
-                <div className="flex min-w-0 flex-1 items-center gap-3">
-                  <AgentIcon agent={selected.agent} />
-                  <div className="min-w-0">
-                    <div className="flex min-w-0 items-center gap-2">
-                      <h2 className="truncate text-base font-semibold tracking-tight text-foreground">
-                        {displaySessionTitle(selected.title, tr)}
-                      </h2>
-                      {selected.availability === "metadata-only" && (
-                        <Badge
-                          variant="secondary"
-                          className="shrink-0 !rounded-full !px-1.5 !py-0 !text-[10px]"
-                        >
-                          {tr("conversations.metadataOnly")}
-                        </Badge>
+        {!onOpenSession && (
+          <Card
+            className={`grid min-w-0 min-h-0 grid-rows-[auto_minmax(0,1fr)] overflow-hidden rounded-2xl border-border/70 bg-card shadow-sm max-[760px]:absolute max-[760px]:inset-0 ${showDetail ? "max-[760px]:grid" : "max-[760px]:hidden"}`}
+          >
+            <header className="flex min-h-[88px] items-center gap-3 border-b border-border/70 px-5 py-4">
+              <Button
+                variant="ghost"
+                size="icon-sm"
+                className="-ml-1 hidden shrink-0 text-muted-foreground hover:bg-muted hover:text-foreground max-[760px]:inline-flex"
+                onClick={() => setShowDetail(false)}
+                aria-label={tr("conversations.back")}
+              >
+                <ArrowLeft size={16} />
+              </Button>
+              {selected ? (
+                <>
+                  <div className="flex min-w-0 flex-1 items-center gap-3">
+                    <AgentIcon agent={selected.agent} />
+                    <div className="min-w-0">
+                      <div className="flex min-w-0 items-center gap-2">
+                        <h2 className="truncate text-base font-semibold tracking-tight text-foreground">
+                          {displaySessionTitle(selected.title, tr)}
+                        </h2>
+                        {selected.availability === "metadata-only" && (
+                          <Badge
+                            variant="secondary"
+                            className="shrink-0 !rounded-full !px-1.5 !py-0 !text-[10px]"
+                          >
+                            {tr("conversations.metadataOnly")}
+                          </Badge>
+                        )}
+                      </div>
+                      <p className="mt-1 truncate text-xs text-muted-foreground">
+                        {selected.updated_at
+                          ? formatDateTime(selected.updated_at)
+                          : tr("conversations.unknownTime")}
+                        {selected.git_branch ? ` · ${selected.git_branch}` : ""}
+                      </p>
+                      {sourceCapability?.source_surface && (
+                        <span className="mt-1 block text-xs text-muted-foreground">
+                          {tr(`handoff.cursor.source.${sourceCapability.source_surface}`)}
+                        </span>
+                      )}
+                      {selected?.origin === "auxiliary" && !selectedSources.length && (
+                        <span className="mt-1 block text-xs text-muted-foreground">
+                          {tr("conversations.auxiliary")}
+                        </span>
+                      )}
+                      {selectedSources.map((source) =>
+                        source.session ? (
+                          <Button
+                            key={`${source.kind}:${source.id}`}
+                            variant="link"
+                            size="sm"
+                            className="mt-1 h-auto max-w-full justify-start truncate p-0 text-xs"
+                            title={source.label}
+                            aria-label={source.label}
+                            onClick={() => {
+                              revealSession(source.session!);
+                              setQuery("");
+                              setAgent("all");
+                              setFilter("all");
+                              setSelectedId(source.session!.id);
+                              setShowDetail(true);
+                            }}
+                          >
+                            {source.kind === "forked" && <GitBranch size={12} />}
+                            {source.label}
+                          </Button>
+                        ) : (
+                          <span
+                            key={`${source.kind}:${source.id}`}
+                            className="mt-1 block truncate text-xs text-muted-foreground"
+                            title={source.label}
+                          >
+                            {source.label}
+                          </span>
+                        ),
                       )}
                     </div>
-                    <p className="mt-1 truncate text-xs text-muted-foreground">
-                      {selected.updated_at
-                        ? formatDateTime(selected.updated_at)
-                        : tr("conversations.unknownTime")}
-                      {selected.git_branch ? ` · ${selected.git_branch}` : ""}
-                    </p>
-                    {sourceCapability?.source_surface && (
-                      <span className="mt-1 block text-xs text-muted-foreground">
-                        {tr(`handoff.cursor.source.${sourceCapability.source_surface}`)}
-                      </span>
-                    )}
-                    {selected?.origin === "auxiliary" && !selectedSources.length && (
-                      <span className="mt-1 block text-xs text-muted-foreground">
-                        {tr("conversations.auxiliary")}
-                      </span>
-                    )}
-                    {selectedSources.map((source) =>
-                      source.session ? (
-                        <Button
-                          key={`${source.kind}:${source.id}`}
-                          variant="link"
-                          size="sm"
-                          className="mt-1 h-auto max-w-full justify-start truncate p-0 text-xs"
-                          title={source.label}
-                          aria-label={source.label}
-                          onClick={() => {
-                            revealSession(source.session!);
-                            setQuery("");
-                            setAgent("all");
-                            setFilter("all");
-                            setSelectedId(source.session!.id);
-                            setShowDetail(true);
-                          }}
-                        >
-                          {source.kind === "forked" && <GitBranch size={12} />}
-                          {source.label}
-                        </Button>
-                      ) : (
-                        <span
-                          key={`${source.kind}:${source.id}`}
-                          className="mt-1 block truncate text-xs text-muted-foreground"
-                          title={source.label}
-                        >
-                          {source.label}
-                        </span>
-                      ),
-                    )}
                   </div>
+                  {selected.availability === "readable" && events.length > 0 && (
+                    <Button
+                      variant="outline"
+                      className="shrink-0"
+                      disabled={!canContinueFromHistory(sourceCapability)}
+                      title={
+                        sourceCapability?.reason ||
+                        (!sourceCapability ? tr("handoff.checkingSource") : undefined)
+                      }
+                      onClick={() =>
+                        setHandoffSource({ workspaceId: workspace.id, session: selected })
+                      }
+                    >
+                      <FileOutput size={14} />
+                      {tr("handoff.create")}
+                    </Button>
+                  )}
+                </>
+              ) : (
+                <div className="flex items-center gap-3 text-muted-foreground">
+                  <span className="grid size-9 place-items-center rounded-xl bg-muted">
+                    <MessageSquareText size={17} />
+                  </span>
+                  <strong className="text-sm text-foreground">
+                    {tr("conversations.selectSession")}
+                  </strong>
                 </div>
-                {selected.availability === "readable" && events.length > 0 && (
-                  <Button
-                    variant="outline"
-                    className="shrink-0"
-                    disabled={!canContinueFromHistory(sourceCapability)}
-                    title={
-                      sourceCapability?.reason ||
-                      (!sourceCapability ? tr("handoff.checkingSource") : undefined)
-                    }
-                    onClick={() => setShowHandoff(true)}
-                  >
-                    <FileOutput size={14} />
-                    {tr("handoff.create")}
-                  </Button>
-                )}
-              </>
-            ) : (
-              <div className="flex items-center gap-3 text-muted-foreground">
-                <span className="grid size-9 place-items-center rounded-xl bg-muted">
-                  <MessageSquareText size={17} />
-                </span>
-                <strong className="text-sm text-foreground">
-                  {tr("conversations.selectSession")}
-                </strong>
-              </div>
-            )}
-          </header>
-          <div className="min-h-0 overflow-auto bg-muted/15">
-            {enabled && (
-              <NativeImportRecoveryPanel
-                workspaceId={workspace.id}
-                workspace={workspace}
-                readableSourceIds={visibleSessions
-                  .filter((session) => session.availability === "readable")
-                  .map((session) => session.id)}
-                onReview={(operation) => {
-                  const source = visibleSessions.find(
-                    (session) =>
-                      session.id === operation.source_session_id &&
-                      session.availability === "readable",
-                  );
-                  if (!source) return;
-                  revealSession(source);
-                  setFilter("all");
-                  setSelectedId(source.id);
-                  setResumedRequest({
-                    sessionId: source.id,
-                    targetAgent: operation.launch_request.target_agent,
-                    historyBudgetTokens: 120_000,
-                    format: "markdown",
-                    autoPrepare: false,
-                    ...(operation.binding_id && operation.launch_request.target_agent === "cursor"
-                      ? { targetSurface: "cursor-ide" as const, bindingId: operation.binding_id }
-                      : {}),
-                  });
-                  setShowDetail(true);
-                  setShowHandoff(true);
-                }}
-              />
-            )}
-            {error && (
-              <div className="mx-5 mt-5">
-                {historyError ? (
-                  <HistoryError error={rawError} onRetry={reloadTranscript} />
-                ) : (
-                  <div
-                    role="alert"
-                    className="rounded-xl border border-destructive/25 bg-destructive/10 px-4 py-3 text-sm text-destructive-text"
-                  >
-                    {error}
-                  </div>
-                )}
-              </div>
-            )}
-            {warnings.length > 0 && (
-              <div className="mx-5 mt-4 grid gap-2">
-                {warnings.map((warning) => (
-                  <HistoryWarning key={warning} warning={warning} />
-                ))}
-              </div>
-            )}
-            {!selected && (
-              <div className="grid min-h-[420px] place-content-center justify-items-center gap-3 p-8 text-center text-muted-foreground">
-                <span className="grid size-12 place-items-center rounded-2xl bg-background shadow-sm ring-1 ring-border/70">
-                  <MessageSquareText size={22} />
-                </span>
-                <strong className="text-sm text-foreground">
-                  {tr("conversations.selectSession")}
-                </strong>
-              </div>
-            )}
-            {selected?.availability === "metadata-only" && (
-              <div className="grid min-h-[420px] place-content-center justify-items-center gap-3 p-8 text-center text-muted-foreground">
-                <span className="grid size-12 place-items-center rounded-2xl bg-background shadow-sm ring-1 ring-border/70">
-                  <Archive size={21} />
-                </span>
-                <strong className="text-sm text-foreground">
-                  {tr("conversations.metadataOnly")}
-                </strong>
-                <span className="max-w-xs text-xs leading-relaxed">
-                  {tr("conversations.metadataOnlyDetail")}
-                </span>
-              </div>
-            )}
-            {selected?.availability === "readable" && (
-              <div className="flex min-h-full flex-col gap-3 p-5">
-                <p className="text-sm text-muted-foreground">
-                  {tr("history.latestWindow", { count: DEFAULT_SESSION_PAGE_SIZE })}
-                </p>
-                {nextCursor && (
-                  <Button
-                    variant="outline"
-                    className="self-center"
-                    disabled={loadingEarlier}
-                    onClick={() => void loadEarlier()}
-                  >
-                    {tr(loadingEarlier ? "common.loading" : "conversations.loadEarlier")}
-                  </Button>
-                )}
-                {reading && (
-                  <div className="grid min-h-[180px] place-content-center justify-items-center gap-2 text-sm text-muted-foreground">
-                    <RefreshCw className="animate-spin" size={18} />
-                    <span>{tr("conversations.reading")}</span>
-                  </div>
-                )}
-                {!reading && !events.length && !error && (
-                  <div className="grid min-h-[220px] place-content-center justify-items-center gap-3 text-center text-muted-foreground">
-                    <span className="grid size-10 place-items-center rounded-xl bg-background ring-1 ring-border/70">
-                      <MessageSquareText size={19} />
-                    </span>
-                    <strong className="text-sm text-foreground">
-                      {tr(nextCursor ? "history.emptyWindow" : "conversations.noReadableEvents")}
-                    </strong>
-                  </div>
-                )}
-                {events.map((event) => (
-                  <ConversationEventRow key={event.id} event={event} />
-                ))}
-              </div>
-            )}
-          </div>
-        </Card>
+              )}
+            </header>
+            <div className="min-h-0 overflow-auto bg-muted/15">
+              {enabled && (
+                <NativeImportRecoveryPanel
+                  workspaceId={workspace.id}
+                  workspace={workspace}
+                  readableSourceIds={visibleSessions
+                    .filter((session) => session.availability === "readable")
+                    .map((session) => session.id)}
+                  onReview={reviewRecovery}
+                />
+              )}
+              {error && (
+                <div className="mx-5 mt-5">
+                  {historyError ? (
+                    <HistoryError error={rawError} onRetry={reloadTranscript} />
+                  ) : (
+                    <div
+                      role="alert"
+                      className="rounded-xl border border-destructive/25 bg-destructive/10 px-4 py-3 text-sm text-destructive-text"
+                    >
+                      {error}
+                    </div>
+                  )}
+                </div>
+              )}
+              {warnings.length > 0 && (
+                <div className="mx-5 mt-4 grid gap-2">
+                  {warnings.map((warning) => (
+                    <HistoryWarning key={warning} warning={warning} />
+                  ))}
+                </div>
+              )}
+              {!selected && (
+                <div className="grid min-h-[420px] place-content-center justify-items-center gap-3 p-8 text-center text-muted-foreground">
+                  <span className="grid size-12 place-items-center rounded-2xl bg-background shadow-sm ring-1 ring-border/70">
+                    <MessageSquareText size={22} />
+                  </span>
+                  <strong className="text-sm text-foreground">
+                    {tr("conversations.selectSession")}
+                  </strong>
+                </div>
+              )}
+              {selected?.availability === "metadata-only" && (
+                <div className="grid min-h-[420px] place-content-center justify-items-center gap-3 p-8 text-center text-muted-foreground">
+                  <span className="grid size-12 place-items-center rounded-2xl bg-background shadow-sm ring-1 ring-border/70">
+                    <Archive size={21} />
+                  </span>
+                  <strong className="text-sm text-foreground">
+                    {tr("conversations.metadataOnly")}
+                  </strong>
+                  <span className="max-w-xs text-xs leading-relaxed">
+                    {tr("conversations.metadataOnlyDetail")}
+                  </span>
+                </div>
+              )}
+              {selected?.availability === "readable" && (
+                <div className="flex min-h-full flex-col gap-3 p-5">
+                  <p className="text-sm text-muted-foreground">
+                    {tr("history.latestWindow", { count: DEFAULT_SESSION_PAGE_SIZE })}
+                  </p>
+                  {nextCursor && (
+                    <Button
+                      variant="outline"
+                      className="self-center"
+                      disabled={loadingEarlier}
+                      onClick={() => void loadEarlier()}
+                    >
+                      {tr(loadingEarlier ? "common.loading" : "conversations.loadEarlier")}
+                    </Button>
+                  )}
+                  {reading && (
+                    <div className="grid min-h-[180px] place-content-center justify-items-center gap-2 text-sm text-muted-foreground">
+                      <RefreshCw className="animate-spin" size={18} />
+                      <span>{tr("conversations.reading")}</span>
+                    </div>
+                  )}
+                  {!reading && !events.length && !error && (
+                    <div className="grid min-h-[220px] place-content-center justify-items-center gap-3 text-center text-muted-foreground">
+                      <span className="grid size-10 place-items-center rounded-xl bg-background ring-1 ring-border/70">
+                        <MessageSquareText size={19} />
+                      </span>
+                      <strong className="text-sm text-foreground">
+                        {tr(nextCursor ? "history.emptyWindow" : "conversations.noReadableEvents")}
+                      </strong>
+                    </div>
+                  )}
+                  {events.map((event) => (
+                    <ConversationEventRow key={event.id} event={event} />
+                  ))}
+                </div>
+              )}
+            </div>
+          </Card>
+        )}
       </div>
       {showCursorBridge && !workspace.remote && (
         <Dialog
@@ -983,23 +1059,25 @@ export function WorkspaceSessionsPage({
           }
         />
       )}
-      {showHandoff && selected && (
+      {handoffSession && (
         <SessionHandoffDialog
-          key={`${workspace.id}:${selected.id}`}
+          key={`${workspace.id}:${handoffSession.id}`}
           workspace={workspace}
-          session={selected}
+          session={handoffSession}
           targetAgents={targetAgents}
           onClose={() => {
-            setShowHandoff(false);
+            setHandoffSource(undefined);
             setResumedRequest(undefined);
           }}
           onPlanned={(changeSet) => {
-            setShowHandoff(false);
+            setHandoffSource(undefined);
             setResumedRequest(undefined);
             onHandoffPlanned(changeSet);
           }}
           onMcpConnectionPlanned={onMcpConnectionPlanned}
-          initialRequest={resumedRequest?.sessionId === selected.id ? resumedRequest : undefined}
+          initialRequest={
+            resumedRequest?.sessionId === handoffSession.id ? resumedRequest : undefined
+          }
         />
       )}
     </>

@@ -91,6 +91,7 @@ export function useWorkspaceTransitions({
       workspace: WorkspaceSummary,
       initialPage: Page = "overview",
       routeSearch?: AppSearch,
+      beforeNavigate?: () => void,
     ) => {
       if (!(await ensureWorkspaceChangeAllowed())) return false;
       const current = useWorkspaceStore.getState();
@@ -99,6 +100,7 @@ export function useWorkspaceTransitions({
       const currentRouteWorkspaceId = route.kind === "workspace" ? route.workspaceId : undefined;
       const currentRoutePage = route.kind === "workspace" ? route.page : undefined;
       if (current.selectedWorkspace?.id === workspace.id && current.project === workspace.path) {
+        beforeNavigate?.();
         if (
           route.kind !== "workspace" ||
           currentRouteWorkspaceId !== workspace.id ||
@@ -122,6 +124,7 @@ export function useWorkspaceTransitions({
       nextState.setManifest(undefined);
       nextState.setBaselineManifest("");
       nextState.setSelectedWorkspace(workspace);
+      beforeNavigate?.();
       navigateWorkspacePageFor(workspace.id, initialPage, routeSearch);
       return true;
     },

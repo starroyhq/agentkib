@@ -1,0 +1,107 @@
+{
+  "en-US": {
+    "locale": "en-US",
+    "home": {
+      "width": 1360,
+      "height": 860,
+      "scrollWidth": 1360
+    },
+    "overview": {
+      "width": 1360,
+      "height": 860,
+      "scrollWidth": 1360
+    },
+    "list": {
+      "width": 1360,
+      "height": 860,
+      "scrollWidth": 1360,
+      "tableWidth": 988,
+      "tableRight": 1335
+    }
+  },
+  "zh-TW": {
+    "locale": "zh-TW",
+    "home": {
+      "width": 1360,
+      "height": 860,
+      "scrollWidth": 1360
+    },
+    "overview": {
+      "width": 1360,
+      "height": 860,
+      "scrollWidth": 1360
+    },
+    "list": {
+      "width": 1360,
+      "height": 860,
+      "scrollWidth": 1360,
+      "tableWidth": 988,
+      "tableRight": 1335
+    }
+  },
+  "ja-JP": {
+    "locale": "ja-JP",
+    "home": {
+      "width": 1360,
+      "height": 860,
+      "scrollWidth": 1360
+    },
+    "overview": {
+      "width": 1360,
+      "height": 860,
+      "scrollWidth": 1360
+    },
+    "list": {
+      "width": 1360,
+      "height": 860,
+      "scrollWidth": 1360,
+      "tableWidth": 988,
+      "tableRight": 1335
+    }
+  },
+  "zh-CN": {
+    "locale": "zh-CN",
+    "home": {
+      "width": 1360,
+      "height": 860,
+      "scrollWidth": 1360
+    },
+    "overview": {
+      "width": 1360,
+      "height": 860,
+      "scrollWidth": 1360
+    },
+    "list": {
+      "width": 1360,
+      "height": 860,
+      "scrollWidth": 1360,
+      "tableWidth": 988,
+      "tableRight": 1335
+    }
+  },
+  "badge": {
+    "background": "#976500",
+    "foreground": "#ffffff",
+    "width": 15,
+    "height": 15
+  },
+  "englishRecentSource": {
+    "text": "Claude Code · 2 assets",
+    "width": 270,
+    "scrollWidth": 270,
+    "truncate": false
+  },
+  "healthyCenters": {
+    "title": 198,
+    "icon": 198
+  },
+  "emptyAssets": {
+    "muted": true,
+    "arrowCount": 0
+  },
+  "claude": {
+    "version": "2.1.309",
+    "ownerPsExecution": "Seatbelt denied execvp",
+    "modelRequests": 0
+  }
+}

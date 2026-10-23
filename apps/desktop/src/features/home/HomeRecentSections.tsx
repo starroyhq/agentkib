@@ -1,62 +1,18 @@
 import { useI18n } from "@/core/useI18n";
-import { Check, CircleAlert, FileText, FolderGit2, History } from "lucide-react";
+import { Check, FolderGit2, TriangleAlert } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader } from "@/components/ui/card";
-import type { ActivityRecord, AgentKind, WorkspaceSummary } from "@/core/types";
-import { activityPresentation } from "@/features/activity/activity-presentation";
+import type { AgentKind, ContextDoctorSummary, MemoryRecord, WorkspaceSummary } from "@/core/types";
 import { AGENT_LABELS as agentLabels } from "@/core/agents";
-
-export function RecentActivitySection({
-  activity,
-  pending,
-  onShowActivity,
-}: {
-  activity: ActivityRecord[];
-  pending: boolean;
-  onShowActivity: () => void;
-}) {
-  const { tr } = useI18n();
-  return (
-    <section aria-label={tr("home.recentActivity")}>
-      <div className="mb-2 flex items-center justify-between">
-        <h2 className="text-base font-semibold">{tr("home.recentActivity")}</h2>
-        <Button
-          variant="link"
-          className="h-auto p-0 text-xs text-primary-text"
-          onClick={onShowActivity}
-        >
-          {tr("home.viewAll")}
-        </Button>
-      </div>
-      {pending ? (
-        <p role="status" aria-live="polite" className="py-4 text-sm text-muted-foreground">
-          {tr("common.loading")}
-        </p>
-      ) : activity.length > 0 ? (
-        <div className="grid divide-y divide-border">
-          {activity.slice(0, 3).map((item) => (
-            <ActivityRow key={item.id} record={item} />
-          ))}
-        </div>
-      ) : (
-        <div className="flex items-start gap-3 py-4">
-          <History size={16} className="mt-0.5 text-muted-foreground" />
-          <span>
-            <strong className="block text-sm">{tr("home.noImportantActivity")}</strong>
-            <p className="mt-1 text-xs text-muted-foreground">
-              {tr("home.noImportantActivityText")}
-            </p>
-          </span>
-        </div>
-      )}
-    </section>
-  );
-}
+import { getWorkspaceStatus } from "@/features/workspace/workspace-status";
+import { usePathDisplay } from "@/lib/usePathDisplay";
 
 export function RecentWorkspacesCard({
   workspaces,
   assetCounts,
+  doctorSummaries,
+  memories,
   onOpen,
   onShowWorkspaces,
   additionsBusy = false,
@@ -65,6 +21,8 @@ export function RecentWorkspacesCard({
 }: {
   workspaces: WorkspaceSummary[];
   assetCounts: Map<string, number>;
+  doctorSummaries: Record<string, ContextDoctorSummary>;
+  memories: MemoryRecord[];
   onOpen: (workspace: WorkspaceSummary) => Promise<void>;
   onShowWorkspaces: () => void;
   additionsBusy?: boolean;
@@ -72,6 +30,16 @@ export function RecentWorkspacesCard({
   onAddRoot: () => Promise<void>;
 }) {
   const { tr } = useI18n();
+  const sortedWorkspaces = [...workspaces].sort((left, right) => {
+    const leftAttention =
+      getWorkspaceStatus(left.id, doctorSummaries[left.id], memories).state === "attention";
+    const rightAttention =
+      getWorkspaceStatus(right.id, doctorSummaries[right.id], memories).state === "attention";
+    return (
+      Number(rightAttention) - Number(leftAttention) ||
+      (right.last_active_at ?? "").localeCompare(left.last_active_at ?? "")
+    );
+  });
   return (
     <Card className="overflow-hidden rounded-xl border-border bg-card shadow-none">
       <CardHeader className="flex flex-row items-center justify-between border-b border-border px-5 py-4">
@@ -85,17 +53,21 @@ export function RecentWorkspacesCard({
         </Button>
       </CardHeader>
       <CardContent className="divide-y divide-border p-0">
-        {workspaces.slice(0, 3).map((workspace) => (
+        {sortedWorkspaces.slice(0, 4).map((workspace) => (
           <WorkspaceRow
             key={workspace.id}
             workspace={workspace}
             assetCount={assetCounts.get(workspace.id)}
+            doctorSummary={doctorSummaries[workspace.id]}
+            memories={memories}
             onOpen={onOpen}
           />
         ))}
         <div className="px-5 py-4">
           <WorkspaceAddActions
             busy={additionsBusy}
+            primary={false}
+            showHints={false}
             onAddWorkspace={onAddWorkspace}
             onAddRoot={onAddRoot}
           />
@@ -107,10 +79,14 @@ export function RecentWorkspacesCard({
 
 export function WorkspaceAddActions({
   busy,
+  primary = true,
+  showHints = true,
   onAddWorkspace,
   onAddRoot,
 }: {
   busy: boolean;
+  primary?: boolean;
+  showHints?: boolean;
   onAddWorkspace: () => Promise<void>;
   onAddRoot: () => Promise<void>;
 }) {
@@ -118,17 +94,26 @@ export function WorkspaceAddActions({
   return (
     <div className="grid gap-3 text-left">
       <div className="grid gap-1.5">
-        <Button disabled={busy} aria-busy={busy} onClick={() => void onAddWorkspace()}>
+        <Button
+          variant={primary ? "default" : "outline"}
+          disabled={busy}
+          aria-busy={busy}
+          onClick={() => void onAddWorkspace()}
+        >
           <FolderGit2 size={14} />
           {tr("home.addWorkspace")}
         </Button>
-        <p className="text-xs leading-5 text-muted-foreground">{tr("home.addWorkspaceHint")}</p>
+        {showHints && (
+          <p className="text-xs leading-5 text-muted-foreground">{tr("home.addWorkspaceHint")}</p>
+        )}
       </div>
       <div className="grid gap-1.5">
         <Button variant="outline" disabled={busy} onClick={() => void onAddRoot()}>
           {tr("home.addScanRoot")}
         </Button>
-        <p className="text-xs leading-5 text-muted-foreground">{tr("home.addScanRootHint")}</p>
+        {showHints && (
+          <p className="text-xs leading-5 text-muted-foreground">{tr("home.addScanRootHint")}</p>
+        )}
       </div>
     </div>
   );
@@ -137,13 +122,19 @@ export function WorkspaceAddActions({
 function WorkspaceRow({
   workspace,
   assetCount,
+  doctorSummary,
+  memories,
   onOpen,
 }: {
   workspace: WorkspaceSummary;
   assetCount?: number;
+  doctorSummary?: ContextDoctorSummary;
+  memories: MemoryRecord[];
   onOpen: (workspace: WorkspaceSummary) => Promise<void>;
 }) {
   const { tr } = useI18n();
+  const displayPath = usePathDisplay();
+  const status = getWorkspaceStatus(workspace.id, doctorSummary, memories);
   const sourceAgents = workspace.sources
     .map((source) => source.agent)
     .filter((value): value is AgentKind => Boolean(value))
@@ -156,54 +147,41 @@ function WorkspaceRow({
     <Button
       variant="bare"
       size="content"
-      className="group grid w-full grid-cols-[auto_minmax(0,1fr)_auto] items-center gap-3 px-5 py-4 text-left hover:bg-muted/40"
+      className="group grid w-full grid-cols-[auto_minmax(0,1fr)] items-center gap-3 px-5 py-4 text-left hover:bg-muted/40"
       onClick={() => void onOpen(workspace)}
     >
-      <div className="grid size-9 place-items-center rounded-lg text-emerald-700">
+      <div className="grid size-9 place-items-center rounded-lg bg-muted text-muted-foreground">
         <FolderGit2 size={19} />
       </div>
       <div className="min-w-0">
-        <strong className="block truncate text-sm font-semibold">{workspace.name}</strong>
+        <div className="flex min-w-0 items-center justify-between gap-3">
+          <strong className="truncate text-sm font-semibold">{workspace.name}</strong>
+          {status.state === "attention" ? (
+            <Badge variant="secondary" className="shrink-0 gap-1 bg-warning/10 text-warning">
+              <TriangleAlert size={13} />
+              {tr("workspace.status.attention", { count: status.issueCount })}
+            </Badge>
+          ) : status.state === "healthy" ? (
+            <Badge
+              variant="secondary"
+              className="shrink-0 gap-1 bg-emerald-500/10 text-emerald-700"
+            >
+              <Check size={13} />
+              {tr("workspace.status.healthy")}
+            </Badge>
+          ) : (
+            <Badge variant="secondary" className="shrink-0 bg-muted text-muted-foreground">
+              {tr("workspace.status.undiagnosed")}
+            </Badge>
+          )}
+        </div>
         <small className="mt-1 block truncate text-xs text-muted-foreground" title={workspace.path}>
-          {workspace.path}
+          {displayPath(workspace.path)}
         </small>
-        <span className="mt-1 block truncate text-xs text-muted-foreground">
+        <span className="mt-1 block text-xs text-muted-foreground">
           {agents} · {tr("workspace.assetCount", { count })}
         </span>
       </div>
-      {workspace.status === "attention" ? (
-        <Badge variant="secondary" className="gap-1 bg-primary/10 text-primary-text">
-          <CircleAlert size={13} />
-          {tr("status.workspace.attention")}
-        </Badge>
-      ) : (
-        <Badge variant="secondary" className="gap-1 bg-emerald-500/10 text-emerald-700">
-          <Check size={13} />
-          {tr("status.workspace.healthy")}
-        </Badge>
-      )}
     </Button>
-  );
-}
-
-function ActivityRow({ record }: { record: ActivityRecord }) {
-  const { tr, formatDateTime } = useI18n();
-  const presentation = activityPresentation(record, tr);
-  return (
-    <div className="grid min-h-12 grid-cols-[auto_minmax(0,1fr)_auto] items-center gap-3 py-2 text-sm">
-      <FileText size={16} className="text-muted-foreground" />
-      <div className="min-w-0">
-        <strong className="block truncate text-sm font-medium">{presentation.title}</strong>
-        <small
-          className="mt-0.5 block truncate text-xs text-muted-foreground"
-          title={presentation.detail}
-        >
-          {presentation.detail}
-        </small>
-      </div>
-      <time className="whitespace-nowrap text-xs text-muted-foreground">
-        {formatDateTime(record.created_at)}
-      </time>
-    </div>
   );
 }

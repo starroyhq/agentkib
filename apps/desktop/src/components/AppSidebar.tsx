@@ -296,7 +296,14 @@ export function AppSidebar(props: {
                         <Icon size={20} />
                         <span className="sr-only">{translatedLabel}</span>
                         {!!badge && (
-                          <em className="activity-bar-badge absolute top-px right-0 min-w-[15px] h-[15px] px-[3px] rounded-[8px] bg-sidebar-primary text-sidebar-primary-foreground text-[9px] leading-[15px] not-italic">
+                          <em
+                            className={cn(
+                              "activity-bar-badge absolute top-px right-0 min-w-[15px] h-[15px] px-[3px] rounded-[8px] text-[9px] leading-[15px] not-italic",
+                              id === "catalog"
+                                ? "bg-warning text-white"
+                                : "bg-sidebar-primary text-sidebar-primary-foreground",
+                            )}
+                          >
                             {badge}
                           </em>
                         )}

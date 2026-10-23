@@ -2,11 +2,12 @@ import { useI18n } from "@/core/useI18n";
 import { Brain, Check, CircleAlert, MessageSquareText, RefreshCw } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader } from "@/components/ui/card";
-import type { ContextDoctorSummary, WorkspaceSummary } from "@/core/types";
+import type { ContextDoctorSummary, MemoryRecord, WorkspaceSummary } from "@/core/types";
 import { displaySessionTitle } from "@/features/workspace/session-title";
 import { AGENT_LABELS as agentLabels } from "@/core/agents";
 import type { RecentContinuation } from "./home-continuations";
 import type { ContinuationHomeState } from "./GlobalHome";
+import { getWorkspaceStatus } from "@/features/workspace/workspace-status";
 
 export function ContinueWorkCard({
   state,
@@ -82,6 +83,7 @@ export function ContinueWorkCard({
 
 export function PendingTasksCard({
   pending,
+  pendingMemories = [],
   issueCount,
   issuesPending,
   workspaces,
@@ -91,6 +93,7 @@ export function PendingTasksCard({
   onOpenAssets,
 }: {
   pending: number;
+  pendingMemories?: MemoryRecord[];
   issueCount: number;
   issuesPending: boolean;
   workspaces: WorkspaceSummary[];
@@ -101,6 +104,23 @@ export function PendingTasksCard({
 }) {
   const { tr } = useI18n();
   const doctorWorkspace = attention[0] ?? workspaces[0];
+  const memoryWorkspaceIds = [
+    ...new Set(
+      pendingMemories
+        .filter((memory) => memory.status === "pending")
+        .map((memory) => memory.project_id),
+    ),
+  ];
+  const memoryWorkspaceContext =
+    memoryWorkspaceIds.length === 1
+      ? workspaces.find((workspace) => workspace.id === memoryWorkspaceIds[0])?.name
+      : memoryWorkspaceIds.length > 1
+        ? tr("home.fromWorkspaces", { count: memoryWorkspaceIds.length })
+        : undefined;
+  const hasUncheckedWorkspace = workspaces.some(
+    (workspace) =>
+      getWorkspaceStatus(workspace.id, doctorSummaries[workspace.id]).state === "undiagnosed",
+  );
 
   return (
     <Card
@@ -109,7 +129,13 @@ export function PendingTasksCard({
     >
       <CardHeader className="flex flex-row items-center justify-between gap-3 border-b border-border px-5 py-4">
         <h2 className="text-base font-semibold">{tr("home.pendingTasks")}</h2>
-        <span className="text-sm tabular-nums text-muted-foreground">
+        <span
+          className={
+            issueCount > 0
+              ? "text-sm tabular-nums text-warning"
+              : "text-sm tabular-nums text-muted-foreground"
+          }
+        >
           {issuesPending ? tr("common.loading") : tr("home.itemCount", { count: issueCount })}
         </span>
       </CardHeader>
@@ -124,11 +150,12 @@ export function PendingTasksCard({
             <span className="text-sm text-muted-foreground">{tr("common.loading")}</span>
           </div>
         ) : issueCount > 0 ? (
-          <div className="grid divide-y divide-border">
-            {attention.slice(0, 4).map((workspace) => {
-              const doctorCount =
-                (doctorSummaries[workspace.id]?.error_count ?? 0) +
-                (doctorSummaries[workspace.id]?.warning_count ?? 0);
+          <div className="grid max-h-80 divide-y divide-border overflow-y-auto">
+            {attention.map((workspace) => {
+              const doctorCount = getWorkspaceStatus(
+                workspace.id,
+                doctorSummaries[workspace.id],
+              ).diagnosticIssueCount;
               return (
                 <Button
                   variant="bare"
@@ -137,19 +164,19 @@ export function PendingTasksCard({
                   key={workspace.id}
                   onClick={() => void onOpenDoctor(workspace)}
                 >
-                  <span className="grid size-8 shrink-0 place-items-center rounded-lg bg-primary/10 text-primary">
+                  <span className="grid size-8 shrink-0 place-items-center rounded-lg bg-warning/10 text-warning">
                     <CircleAlert size={16} />
                   </span>
                   <span className="min-w-0 flex-1">
                     <strong className="block truncate text-sm">{workspace.name}</strong>
                     <small className="mt-0.5 block text-xs text-muted-foreground">
                       {tr("home.workspaceWarnings", {
-                        count: doctorCount || workspace.warning_count,
+                        count: doctorCount,
                       })}
                     </small>
                   </span>
                   <span className="rounded-lg border border-border px-3 py-2 text-xs font-semibold">
-                    {tr("home.fixNow")}
+                    {tr("home.goToDoctor")}
                   </span>
                 </Button>
               );
@@ -161,28 +188,37 @@ export function PendingTasksCard({
                 className="flex min-h-[74px] items-center gap-3 px-5 py-3.5 text-left hover:bg-muted/45"
                 onClick={() => onOpenAssets("memory")}
               >
-                <span className="grid size-8 shrink-0 place-items-center rounded-lg bg-amber-500/10 text-amber-700">
+                <span className="grid size-8 shrink-0 place-items-center rounded-lg bg-warning/10 text-warning">
                   <Brain size={15} />
                 </span>
                 <span className="min-w-0 flex-1">
                   <strong className="block truncate text-sm">{tr("home.pendingMemory")}</strong>
                   <small className="mt-0.5 block text-xs text-muted-foreground">
                     {tr("home.pendingMemoryDetail", { count: pending })}
+                    {memoryWorkspaceContext && ` · ${memoryWorkspaceContext}`}
                   </small>
                 </span>
                 <span className="rounded-lg border border-border px-3 py-2 text-xs font-semibold">
-                  {tr("home.reviewNow")}
+                  {tr("home.goToReview")}
                 </span>
               </Button>
             )}
           </div>
         ) : (
           <div className="flex min-h-28 items-center gap-3 px-5 py-5">
-            <span className="grid size-9 shrink-0 place-items-center rounded-lg bg-emerald-500/10 text-emerald-700">
-              <Check size={18} />
+            <span
+              className={
+                hasUncheckedWorkspace
+                  ? "grid size-9 shrink-0 place-items-center rounded-lg bg-muted text-muted-foreground"
+                  : "grid size-9 shrink-0 place-items-center rounded-lg bg-emerald-500/10 text-emerald-700"
+              }
+            >
+              {hasUncheckedWorkspace ? <CircleAlert size={18} /> : <Check size={18} />}
             </span>
             <span className="min-w-0 flex-1">
-              <strong className="block text-sm">{tr("home.allClear")}</strong>
+              <strong className="block text-sm">
+                {tr(hasUncheckedWorkspace ? "home.uncheckedWorkspaces" : "home.allClear")}
+              </strong>
             </span>
             {doctorWorkspace && (
               <Button variant="outline" onClick={() => void onOpenDoctor(doctorWorkspace)}>

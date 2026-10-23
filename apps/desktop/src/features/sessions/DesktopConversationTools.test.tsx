@@ -299,7 +299,7 @@ describe("desktop window conversation tools", () => {
       const f = fixture("claude-code");
       await mount(f, f.summary, true);
       await screen.findByText("Loaded session body");
-      await screen.findByRole("button", { name: tr("sessions.continueWorkspace") });
+      await waitFor(() => expect(api.sessionSourceCapability).toHaveBeenCalled());
       const draft = screen.getByRole("textbox", { name: tr("conversation.message") });
       fireEvent.change(draft, { target: { value: "Keep this Claude draft" } });
       const user = userEvent.setup();
@@ -313,7 +313,7 @@ describe("desktop window conversation tools", () => {
           .map((item) => item.textContent),
       ).toEqual([
         tr("sessions.newConversation"),
-        tr("sessions.continueWorkspace"),
+        tr("handoff.create"),
         tr("sessions.refresh"),
         terminalName,
         `${tr("sessions.conversationActions")}…`,

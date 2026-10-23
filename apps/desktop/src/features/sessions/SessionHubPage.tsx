@@ -14,11 +14,16 @@ import { DesktopConversationPane } from "./DesktopConversationPane";
 import { SessionNotice as Notice } from "./SessionNotice";
 import { SessionOverview } from "./SessionOverview";
 import { SessionHistoryContent } from "./SessionHistoryContent";
+import { SessionHistoryContinuationDialog } from "./SessionHistoryContinuationDialog";
 import { useSessionHistoryScroll } from "./useSessionHistoryScroll";
 
 export function SessionHubPage() {
   const { localizeMessage, tr } = useI18n();
   const hub = useSessionHub();
+  const continuation = useSessionViewStore((state) => state.historyContinuation);
+  const continuationDialog = continuation ? (
+    <SessionHistoryContinuationDialog request={continuation} />
+  ) : null;
   const creating = useSessionViewStore((state) => state.creatingConversation);
   const interactive =
     hasDesktopConversation() &&
@@ -143,6 +148,7 @@ export function SessionHubPage() {
             {catalogNotices}
           </div>
         )}
+        {continuationDialog}
         <DesktopConversationPane
           sessionId={creating ? undefined : selected?.id}
           create={creating}
@@ -152,6 +158,7 @@ export function SessionHubPage() {
 
   return (
     <div className="session-hub-page flex min-w-0 min-h-0 flex-1 flex-col text-sm">
+      {continuationDialog}
       <div
         className="session-hub-body min-h-0 flex-1 overflow-auto overscroll-contain p-6 px-7 pb-8 [overflow-anchor:none] max-[600px]:p-4"
         ref={historyRef}

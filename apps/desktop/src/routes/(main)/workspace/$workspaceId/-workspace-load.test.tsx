@@ -41,6 +41,8 @@ vi.mock("@tanstack/react-router", async (importOriginal) => ({
   Outlet: () => <WorkspaceContent />,
 }));
 vi.mock("@/features/home/home-query", () => ({
+  useHomeDoctorReport: () => ({ data: undefined, refetch: vi.fn() }),
+  useHomeMemories: () => ({ data: [] }),
   useHomeWorkspaces: () => ({ data: doubles.workspaces(), isPending: false }),
 }));
 vi.mock("@/features/workspace/WorkspaceOpenWith", () => ({ WorkspaceOpenWith: () => null }));
@@ -288,7 +290,7 @@ describe("workspace load recovery", () => {
       ),
     );
     expect(useWorkspaceStore.getState().baselineManifest).toBe(JSON.stringify(disk));
-    expect(screen.getByRole("button", { name: "Review changes" })).toBeDisabled();
+    expect(screen.queryByRole("button", { name: "Review changes" })).toBeNull();
     expect(doubles.confirm).not.toHaveBeenCalled();
   });
 

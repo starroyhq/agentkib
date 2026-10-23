@@ -69,6 +69,50 @@ describe("workspace draft transitions", () => {
     await initializeI18n("en-US");
   });
 
+  it.each(["cold", "warm"] as const)(
+    "prepares a destination plan after %s workspace initialization and before navigation",
+    async (state) => {
+      if (state === "warm")
+        useWorkspaceStore.setState({
+          selectedWorkspace: nextWorkspace,
+          project: nextWorkspace.path,
+        });
+      const plan = {
+        id: "prepared-plan",
+        project_root: nextWorkspace.path,
+        created_at: "",
+        changes: [],
+        requires_home_approval: false,
+      };
+      const { result, navigateWorkspacePageFor } = renderTransitions();
+      navigateWorkspacePageFor.mockImplementation(() => {
+        expect(useWorkspaceStore.getState().selectedWorkspace).toBe(nextWorkspace);
+        expect(useWorkspaceStore.getState().changeSet).toBe(plan);
+      });
+      await act(async () => {
+        expect(
+          await result.current.openWorkspace(nextWorkspace, "changes", undefined, () =>
+            useWorkspaceStore.getState().setChangeSet(plan),
+          ),
+        ).toBe(true);
+      });
+      expect(navigateWorkspacePageFor).toHaveBeenCalledOnce();
+    },
+  );
+
+  it("does not prepare a plan when workspace changes are locked", async () => {
+    useWorkspaceStore.setState({ applyingChanges: true });
+    const prepare = vi.fn();
+    const { result, navigateWorkspacePageFor } = renderTransitions();
+    await act(async () => {
+      expect(await result.current.openWorkspace(nextWorkspace, "changes", undefined, prepare)).toBe(
+        false,
+      );
+    });
+    expect(prepare).not.toHaveBeenCalled();
+    expect(navigateWorkspacePageFor).not.toHaveBeenCalled();
+  });
+
   it.each(["en-US", "zh-CN", "zh-TW", "ja-JP"] as const)(
     "uses an operation warning when navigation is locked in %s",
     async (locale) => {

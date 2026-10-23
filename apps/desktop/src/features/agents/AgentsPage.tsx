@@ -1,15 +1,6 @@
 import { useI18n } from "@/core/useI18n";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Input } from "@/components/ui/input";
-import {
-  Select,
-  SelectContent,
-  SelectGroup,
-  SelectItem,
-  SelectLabel,
-  SelectTrigger,
-  SelectValue,
-} from "@/components/ui/select";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Card, CardHeader } from "@/components/ui/card";
@@ -58,7 +49,6 @@ export function AgentsPage({
   filter,
   selectedAgent,
   onSelectedAgentChange,
-  onFilterChange,
   onClearFilters,
   loading = {},
   errors = {},
@@ -88,8 +78,6 @@ export function AgentsPage({
   const setSection = (nextSection: AgentDetailSection) => saveSection(selected, nextSection);
   const agentQuery = useAgentViewStore((state) => state.query);
   const setAgentQuery = useAgentViewStore((state) => state.setQuery);
-  const agentSort = useAgentViewStore((state) => state.sort);
-  const setAgentSort = useAgentViewStore((state) => state.setSort);
   const [assetQuery, setAssetQuery] = useState("");
   const [assetKind, setAssetKind] = useState("all");
   const installation = installations.find((item) => item.agent === selected);
@@ -139,6 +127,17 @@ export function AgentsPage({
     [remoteGateways, selected],
   );
   const support = agentSupport(installation);
+  const agentsWithData = useMemo(() => {
+    const agents = new Set<AgentKind>();
+    for (const workspace of workspaces)
+      for (const source of workspace.sources) if (source.agent) agents.add(source.agent);
+    for (const asset of assets) if (asset.agent) agents.add(asset.agent);
+    for (const gateway of remoteGateways)
+      if (gateway.workspaces.length > 0 || gateway.assets.length > 0) agents.add(gateway.kind);
+    for (const item of insightsStatus?.providers ?? [])
+      if (item.available && item.imported_events > 0) agents.add(item.agent);
+    return agents;
+  }, [assets, insightsStatus, remoteGateways, workspaces]);
   const visibleAgentKinds = useMemo(
     () =>
       agentKinds
@@ -151,16 +150,20 @@ export function AgentsPage({
           return true;
         })
         .sort((left, right) => {
-          if (agentSort === "name") return agentLabels[left].localeCompare(agentLabels[right]);
           const leftInstalled = installations.find((item) => item.agent === left)?.installed
             ? 1
             : 0;
           const rightInstalled = installations.find((item) => item.agent === right)?.installed
             ? 1
             : 0;
-          return rightInstalled - leftInstalled;
+          return (
+            rightInstalled - leftInstalled ||
+            (leftInstalled
+              ? Number(agentsWithData.has(right)) - Number(agentsWithData.has(left))
+              : 0)
+          );
         }),
-    [agentQuery, agentSort, filter, installations],
+    [agentQuery, agentsWithData, filter, installations],
   );
 
   useEffect(() => {
@@ -181,35 +184,12 @@ export function AgentsPage({
     )
       return;
     const next =
-      visibleAgentKinds.find(
-        (agent) =>
-          workspaces.some((workspace) =>
-            workspace.sources.some((source) => source.agent === agent),
-          ) ||
-          assets.some((asset) => asset.agent === agent) ||
-          remoteGateways.some(
-            (gateway) =>
-              gateway.kind === agent &&
-              (gateway.workspaces.length > 0 || gateway.assets.length > 0),
-          ) ||
-          insightsStatus?.providers.some(
-            (item) => item.agent === agent && item.available && item.imported_events > 0,
-          ),
-      ) ?? visibleAgentKinds[0];
+      visibleAgentKinds.find((agent) => agentsWithData.has(agent)) ?? visibleAgentKinds[0];
     if (!next) return;
     initialSelectionDone.current = true;
     setSelected(next);
     saveSection(next, "overview");
-  }, [
-    assets,
-    errors,
-    insightsStatus,
-    loading,
-    remoteGateways,
-    saveSection,
-    visibleAgentKinds,
-    workspaces,
-  ]);
+  }, [agentsWithData, errors, loading, saveSection, visibleAgentKinds]);
 
   useEffect(() => {
     if (visibleAgentKinds.length > 0 && !visibleAgentKinds.includes(selected)) {
@@ -241,59 +221,16 @@ export function AgentsPage({
         aria-label={tr("nav.agents")}
       >
         <section className="agent-sidebar-tools mb-3">
-          <div className="grid grid-cols-[minmax(0,1fr)_auto] items-center gap-2">
-            <label className="flex h-9 min-w-0 items-center gap-2 rounded-lg border border-border bg-background px-3">
-              <Search size={14} className="text-muted-foreground" aria-hidden="true" />
-              <Input
-                className="h-8 border-0 px-0 shadow-none focus-visible:ring-0"
-                aria-label={tr("common.search")}
-                value={agentQuery}
-                onChange={(event) => setAgentQuery(event.target.value)}
-                placeholder={tr("common.search")}
-              />
-            </label>
-            <Select
-              value={agentSort}
-              onValueChange={(value) => {
-                if (value !== null) setAgentSort(String(value) as typeof agentSort);
-              }}
-            >
-              <SelectTrigger className="h-9" aria-label={tr("agents.sortBy")}>
-                <SelectValue>
-                  {agentSort === "status" ? tr("agents.status") : tr("agents.name")}
-                </SelectValue>
-              </SelectTrigger>
-              <SelectContent>
-                <SelectGroup>
-                  <SelectLabel>{tr("agents.sortBy")}</SelectLabel>
-                  <SelectItem value="status">{tr("agents.status")}</SelectItem>
-                  <SelectItem value="name">{tr("agents.name")}</SelectItem>
-                </SelectGroup>
-              </SelectContent>
-            </Select>
-          </div>
-          {onFilterChange && (
-            <Select
-              value={filter}
-              onValueChange={(value) => {
-                if (value) onFilterChange(value as AgentFilter);
-              }}
-            >
-              <SelectTrigger className="mt-2 h-9 w-full" aria-label={tr("agents.filters")}>
-                <SelectValue>{tr(`agents.filter.${filter}`)}</SelectValue>
-              </SelectTrigger>
-              <SelectContent>
-                <SelectGroup>
-                  <SelectLabel>{tr("agents.filters")}</SelectLabel>
-                  {(["all", "enabled", "available"] as const).map((value) => (
-                    <SelectItem key={value} value={value}>
-                      {tr(`agents.filter.${value}`)}
-                    </SelectItem>
-                  ))}
-                </SelectGroup>
-              </SelectContent>
-            </Select>
-          )}
+          <label className="flex h-9 min-w-0 items-center gap-2 rounded-lg border border-border bg-background px-3">
+            <Search size={14} className="text-muted-foreground" aria-hidden="true" />
+            <Input
+              className="h-8 border-0 px-0 shadow-none focus-visible:ring-0"
+              aria-label={tr("common.search")}
+              value={agentQuery}
+              onChange={(event) => setAgentQuery(event.target.value)}
+              placeholder={tr("common.search")}
+            />
+          </label>
         </section>
         <div className="agent-sidebar-list [&_small]:leading-normal">
           <div className="grid gap-1">
@@ -498,6 +435,7 @@ export function AgentsPage({
             )}
             {section === "usage" && (
               <AgentUsagePanel
+                agent={selected}
                 provider={provider}
                 loading={loading.insights ?? false}
                 error={errors.insights ?? false}

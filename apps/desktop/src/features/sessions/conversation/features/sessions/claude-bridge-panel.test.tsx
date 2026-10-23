@@ -173,6 +173,156 @@ describe("Claude terminal connection management", () => {
     ]);
   });
 
+  it("clears feedback at local challenge expiry", async () => {
+    vi.useFakeTimers();
+    Object.defineProperty(navigator, "clipboard", {
+      configurable: true,
+      value: { writeText: vi.fn().mockResolvedValue(undefined) },
+    });
+    state.request.mockImplementation(async ({ operation, sessionId }) =>
+      operation === "bridge-status"
+        ? status(sessionId)
+        : { ...challenge, expiresAt: new Date(Date.now() + 1000).toISOString() },
+    );
+    render(<ClaudeBridgePanel active />);
+    await act(async () => {});
+    fireEvent.click(screen.getByRole("button", { name: "生成连接码" }));
+    await act(async () => {});
+    fireEvent.click(screen.getByRole("button", { name: "复制连接命令" }));
+    await act(async () => {});
+    expect(screen.getByText(/· 已复制/)).toBeVisible();
+    await act(async () => vi.advanceTimersByTimeAsync(1000));
+    expect(screen.getByText("连接码已过期")).toBeVisible();
+    expect(screen.queryByText(/· 已复制/)).not.toBeInTheDocument();
+  });
+  it("clears resume copy feedback when connection becomes uncertain", async () => {
+    vi.useFakeTimers();
+    Object.defineProperty(navigator, "clipboard", {
+      configurable: true,
+      value: { writeText: vi.fn().mockResolvedValue(undefined) },
+    });
+    state.request.mockResolvedValue({ ...status(), hasBinding: true });
+    const view = render(<ClaudeBridgePanel active />);
+    await act(async () => {});
+    fireEvent.click(screen.getByRole("button", { name: "复制继续命令" }));
+    await act(async () => {});
+    expect(screen.getByText("复制继续命令 · 已复制")).toBeVisible();
+    state.session = { ...state.session, notice: "uncertain" };
+    view.rerender(<ClaudeBridgePanel active />);
+    expect(screen.getByRole("alert")).toBeVisible();
+    expect(screen.queryByText(/· 已复制/)).not.toBeInTheDocument();
+  });
+
+  it("expires resume copy feedback after three seconds and gives a new copy its own timeout", async () => {
+    vi.useFakeTimers();
+    Object.defineProperty(navigator, "clipboard", {
+      configurable: true,
+      value: { writeText: vi.fn().mockResolvedValue(undefined) },
+    });
+    state.request.mockResolvedValue({ ...status(), hasBinding: true });
+    render(<ClaudeBridgePanel active />);
+    await act(async () => {});
+    fireEvent.click(screen.getByRole("button", { name: "复制继续命令" }));
+    await act(async () => {});
+    expect(screen.getByText("复制继续命令 · 已复制")).toBeVisible();
+    await act(async () => vi.advanceTimersByTimeAsync(2_000));
+    fireEvent.click(screen.getByRole("button", { name: "复制继续命令" }));
+    await act(async () => {});
+    await act(async () => vi.advanceTimersByTimeAsync(1_000));
+    expect(screen.getByText("复制继续命令 · 已复制")).toBeVisible();
+    await act(async () => vi.advanceTimersByTimeAsync(2_000));
+    expect(screen.queryByText("复制继续命令 · 已复制")).not.toBeInTheDocument();
+  });
+
+  it("clears copy feedback when the terminal connects and keeps it cleared after disconnection", async () => {
+    vi.useFakeTimers();
+    Object.defineProperty(navigator, "clipboard", {
+      configurable: true,
+      value: { writeText: vi.fn().mockResolvedValue(undefined) },
+    });
+    state.request.mockResolvedValue({ ...status(), hasBinding: true });
+    render(<ClaudeBridgePanel active />);
+    await act(async () => {});
+    fireEvent.click(screen.getByRole("button", { name: "复制继续命令" }));
+    await act(async () => {});
+    expect(screen.getByText("复制继续命令 · 已复制")).toBeVisible();
+    state.request.mockResolvedValue({ ...status(), hasBinding: true, connected: true });
+    await act(async () => vi.advanceTimersByTimeAsync(2_500));
+    expect(screen.getByText("已连接终端")).toBeVisible();
+    expect(screen.queryByText(/· 已复制/)).not.toBeInTheDocument();
+    state.request.mockResolvedValue({ ...status(), hasBinding: true });
+    await act(async () => vi.advanceTimersByTimeAsync(2_500));
+    expect(screen.getByText("等待终端重新连接")).toBeVisible();
+    expect(screen.queryByText(/· 已复制/)).not.toBeInTheDocument();
+  });
+
+  it.each(["session", "inactive"] as const)(
+    "does not let an old copy timeout clear feedback after the %s changes",
+    async (change) => {
+      vi.useFakeTimers();
+      Object.defineProperty(navigator, "clipboard", {
+        configurable: true,
+        value: { writeText: vi.fn().mockResolvedValue(undefined) },
+      });
+      state.request.mockImplementation(async ({ sessionId }) => ({
+        ...status(sessionId),
+        hasBinding: true,
+      }));
+      const view = render(<ClaudeBridgePanel active />);
+      await act(async () => {});
+      fireEvent.click(screen.getByRole("button", { name: "复制继续命令" }));
+      await act(async () => {});
+      await act(async () => vi.advanceTimersByTimeAsync(1_000));
+      if (change === "session") {
+        state.session = {
+          ...state.session,
+          selected: "other",
+          current: { ...state.session.current!, id: "other" },
+          live: { ...state.session.live!, sessionId: "other" },
+        };
+      } else {
+        view.rerender(<ClaudeBridgePanel active={false} />);
+      }
+      view.rerender(<ClaudeBridgePanel active />);
+      await act(async () => {});
+      expect(screen.queryByText(/· 已复制/)).not.toBeInTheDocument();
+      fireEvent.click(screen.getByRole("button", { name: "复制继续命令" }));
+      await act(async () => {});
+      await act(async () => vi.advanceTimersByTimeAsync(2_000));
+      expect(screen.getByText("复制继续命令 · 已复制")).toBeVisible();
+      await act(async () => vi.advanceTimersByTimeAsync(1_000));
+      expect(screen.queryByText(/· 已复制/)).not.toBeInTheDocument();
+    },
+  );
+
+  it.each(["connection", "generation", "inactive"] as const)(
+    "ignores late clipboard feedback after the %s changes",
+    async (change) => {
+      vi.useFakeTimers();
+      const clipboard = deferred<void>();
+      const writeText = vi.fn().mockReturnValue(clipboard.promise);
+      Object.defineProperty(navigator, "clipboard", { configurable: true, value: { writeText } });
+      const view = render(<ClaudeBridgePanel active />);
+      await act(async () => {});
+      expect(screen.getByText("Install isolated plugin")).toBeVisible();
+      fireEvent.click(screen.getByRole("button", { name: "复制安装命令" }));
+      if (change === "connection") {
+        state.request.mockResolvedValue({ ...status(), connected: true });
+        await act(async () => vi.advanceTimersByTimeAsync(2_500));
+        expect(screen.getByText("已连接终端")).toBeVisible();
+      } else if (change === "generation") {
+        state.session = {
+          ...state.session,
+          live: { ...state.session.live!, connectionGeneration: "new-terminal" },
+        };
+      }
+      view.rerender(<ClaudeBridgePanel active={change !== "inactive"} />);
+      await act(async () => clipboard.resolve());
+      if (change === "inactive") view.rerender(<ClaudeBridgePanel active />);
+      expect(screen.queryByText(/· 已复制/)).not.toBeInTheDocument();
+    },
+  );
+
   it("keeps a resume request started at the first enabled commit alive", async () => {
     const resume = deferred<unknown>();
     state.resumeCommand.mockReturnValueOnce(resume.promise);

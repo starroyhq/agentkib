@@ -300,7 +300,9 @@ it.each([
     });
     await user.click(more);
     await user.click(await screen.findByRole("menuitem", { name: chooseAgents }));
-    const dialog = await screen.findByRole("dialog");
+    const dialog = await screen.findByRole("dialog", {
+      name: `${tr("mcp.manage.chooseAgentsTitle")} · Project service`,
+    });
     expect(within(dialog).getByRole("checkbox", { name: "Project service Codex" })).toBeChecked();
     expect(
       within(dialog).getByRole("checkbox", { name: "Project service Claude Code" }),
@@ -320,4 +322,17 @@ it("does not repeat inherited global services from project snapshots in the all-
   expect(await screen.findByText("Global service", { selector: "strong" })).toBeVisible();
   expect(screen.getAllByText("Global service", { selector: "strong" })).toHaveLength(1);
   expect(screen.getAllByRole("row")).toHaveLength(2);
+});
+
+it.each([
+  ["zh-CN", "项目 northstar-api 里有 1 个服务"],
+  ["zh-TW", "專案 northstar-api 裡有 1 個服務"],
+] as const)("separates a Latin scope name from its Chinese suffix in %s", async (locale, text) => {
+  await initializeI18n(locale);
+  vi.mocked(api.mcpManagementState).mockImplementation(async ({ project }) => ({
+    revision: "r",
+    servers: project ? [entry("workspace")] : [],
+  }));
+  show("");
+  expect(await screen.findByText(text)).toBeVisible();
 });

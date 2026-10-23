@@ -29,7 +29,7 @@ vi.mock("@/features/home/home-query", async (importOriginal) => ({
 vi.mock("@/components/AppDialogProvider", () => ({ useAppDialogs: () => ({ confirm: vi.fn() }) }));
 vi.mock("@/features/mcp/McpManagementPanel", () => ({
   MCP_ALL_SCOPES: "__all_scopes__",
-  McpManagementPanel: () => <p>MCP services</p>,
+  McpManagementPanel: () => <p>Synthetic MCP management panel</p>,
 }));
 vi.mock("@/core/api", () => ({
   api: {
@@ -49,7 +49,7 @@ async function renderRoute() {
       </Suspense>
     </QueryClientProvider>,
   );
-  await screen.findByText("MCP services");
+  await screen.findByText("Synthetic MCP management panel");
 }
 describe("catalog network settings destination", () => {
   beforeEach(async () => {
@@ -87,7 +87,10 @@ describe("catalog network settings destination", () => {
       expect(
         navigation.getByRole("button", { name: `${tr("assets.hooksProfiles")} 1` }),
       ).toBeVisible();
-      expect(navigation.getByRole("button", { name: `${tr("assets.memories")} 0` })).toBeVisible();
+      const memories = navigation.getByRole("button", { name: `${tr("assets.memories")} 0` });
+      expect(memories).toBeVisible();
+      expect(within(memories).getByText("0")).toHaveClass("text-muted-foreground");
+      expect(memories.querySelector('[data-slot="badge"]')).toBeNull();
     },
   );
   it.each([

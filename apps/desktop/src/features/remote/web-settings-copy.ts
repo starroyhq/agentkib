@@ -20,7 +20,7 @@ export const webSettingsCopy = {
       "连接服务地址和程序路径需通过“应用连接设置”应用：更换服务会重新登记并清除浏览器授权，需单独确认；其他设置由“保存设置”保存。",
     generateAccess: "生成授权码",
     codeScope:
-      "有效授权码无需电脑再次确认，即按所选档位授权全部现有及以后新增的 AgentKib 工作区：“只读”可查看会话历史与文件；“完整控制”另含任务控制、审批与上传。授权后可随时在下方调整档位或撤销。仅分享给可信设备。",
+      "有效授权码无需电脑再次确认，即按所选档位授权全部现有及以后新增的 AgentKib 工作区：“只读”可查看会话历史与文件；“完整控制”另含任务控制、审批与上传。只发给你自己的设备；授权后可在已授权的浏览器列表中调整档位或撤销",
     fullAccess: "完整控制",
     readOnlyAccess: "只读（查看会话与文件）",
     accessLevel: "授权档位",
@@ -85,7 +85,7 @@ export const webSettingsCopy = {
       "連線服務位址和程式路徑需透過「套用連線設定」套用：更換服務會重新登記並清除瀏覽器授權，需個別確認；其他設定由「儲存設定」儲存。",
     generateAccess: "產生授權碼",
     codeScope:
-      "有效授權碼無需電腦再次確認，即依所選等級授權全部既有與日後新增的 AgentKib 工作區：「唯讀」可查看對話紀錄與檔案；「完整控制」另含任務控制、審批與上傳。授權後可隨時在下方調整等級或撤銷。僅分享給可信裝置。",
+      "有效授權碼無需電腦再次確認，即依所選等級授權全部既有與日後新增的 AgentKib 工作區：「唯讀」可查看對話紀錄與檔案；「完整控制」另含任務控制、審批與上傳。只傳給你自己的裝置；授權後可在已授權的瀏覽器清單中調整等級或撤銷",
     fullAccess: "完整控制",
     readOnlyAccess: "唯讀（查看對話與檔案）",
     accessLevel: "授權等級",
@@ -154,7 +154,7 @@ export const webSettingsCopy = {
       "Apply the connection service and executable path with “Apply connection settings”. Changing service re-registers this computer and clears browser grants, so it requires confirmation. “Save settings” saves the other fields.",
     generateAccess: "Generate access code",
     codeScope:
-      "A valid access code authorizes all current and future AgentKib workspaces at the selected level without another confirmation on this computer. Read-only allows session history and files; full control adds task control, approvals and uploads. Change the level or revoke access below at any time. Share only with trusted devices.",
+      "A valid access code authorizes all current and future AgentKib workspaces at the selected level without another confirmation on this computer. Read-only allows session history and files; full control adds task control, approvals and uploads. Share only with your own devices; change the level or revoke access in the authorized browsers list",
     fullAccess: "Full control",
     readOnlyAccess: "Read-only (sessions and files)",
     accessLevel: "Access level",
@@ -226,7 +226,7 @@ export const webSettingsCopy = {
       "接続サービスと実行ファイルは「接続設定を適用」で反映します。サービス変更は端末の再登録とブラウザー認証の削除を伴うため、個別に確認します。その他の項目は「設定を保存」で保存します。",
     generateAccess: "認証コードを生成",
     codeScope:
-      "有効な認証コードで、選択したレベルに応じて現在および今後追加されるすべての AgentKib ワークスペースへのアクセスを許可します。このコンピューターでの再確認は不要です。「読み取り専用」は会話履歴とファイルの閲覧、「フルコントロール」はタスク操作・承認・アップロードも含みます。レベルの変更や取り消しは下でいつでも行えます。信頼できる端末にのみ共有してください。",
+      "有効な認証コードで、選択したレベルに応じて現在および今後追加されるすべての AgentKib ワークスペースへのアクセスを許可します。このコンピューターでの再確認は不要です。「読み取り専用」は会話履歴とファイルの閲覧、「フルコントロール」はタスク操作・承認・アップロードも含みます。自分の端末にのみ共有してください。レベルの変更や取り消しは認証済みブラウザーの一覧で行えます",
     fullAccess: "フルコントロール",
     readOnlyAccess: "閲覧のみ（会話とファイル）",
     accessLevel: "アクセスレベル",

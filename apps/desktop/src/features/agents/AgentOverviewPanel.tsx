@@ -12,7 +12,8 @@ import type {
   RemoteGatewaySummary,
   WorkspaceSummary,
 } from "@/core/types";
-import { Check, CircleAlert, FolderGit2, LockKeyhole, X } from "lucide-react";
+import { Check, CircleAlert, CircleHelp, FlaskConical, FolderGit2, X } from "lucide-react";
+import { cn } from "cn";
 import { AgentSectionFeedback } from "./AgentSectionFeedback";
 import { RemoteAgentGatewayDetails } from "./RemoteAgentGatewayDetails";
 import { AgentUsagePanel } from "./AgentUsagePanel";
@@ -88,7 +89,10 @@ export function AgentOverviewPanel({
               return (
                 <span
                   key={key}
-                  className="inline-flex items-center gap-1.5 rounded-full border border-border bg-muted/25 px-2.5 py-1 text-xs"
+                  className={cn(
+                    "inline-flex items-center gap-1.5 rounded-full border border-border bg-muted/25 px-2.5 py-1 text-xs",
+                    value === false && "text-muted-foreground",
+                  )}
                 >
                   {value === undefined ? null : value ? (
                     <Check size={13} aria-hidden="true" />
@@ -96,22 +100,34 @@ export function AgentOverviewPanel({
                     <X size={13} aria-hidden="true" />
                   )}
                   {tr(`agents.capability.${label}`)}
-                  <span className="text-muted-foreground">
-                    {tr(
-                      value === undefined
-                        ? "agents.capability.unknown"
-                        : value
-                          ? "agents.capability.supported"
+                  {value !== true && (
+                    <span className="text-muted-foreground">
+                      {tr(
+                        value === undefined
+                          ? "agents.capability.unknown"
                           : "agents.capability.unavailable",
-                    )}
-                  </span>
+                      )}
+                    </span>
+                  )}
                 </span>
               );
             },
           )}
-          <span className="inline-flex items-center gap-1.5 rounded-full border border-border bg-muted/25 px-2.5 py-1 text-xs">
-            <LockKeyhole size={13} aria-hidden="true" />
+          <span
+            className={cn(
+              "inline-flex items-center gap-1.5 rounded-full border border-border bg-muted/25 px-2.5 py-1 text-xs",
+              support?.control === "none" && "text-muted-foreground",
+            )}
+          >
+            {support?.control === "experimental" ? (
+              <FlaskConical size={13} aria-hidden="true" />
+            ) : support?.control === "none" ? (
+              <X size={13} aria-hidden="true" />
+            ) : (
+              <CircleHelp size={13} aria-hidden="true" />
+            )}
             {tr("agents.capability.control")}
+            {support?.control === "experimental" && " · "}
             <span className="text-muted-foreground">
               {tr(
                 support
@@ -187,18 +203,21 @@ export function AgentOverviewPanel({
           </dl>
         </section>
       ) : null}
-      {(insightsPending ||
-        insightsError ||
-        (provider?.available && provider.imported_events > 0) ||
-        provider?.error ||
-        provider?.error_key) && (
-        <AgentUsagePanel
-          provider={provider}
-          loading={insightsPending}
-          error={insightsError}
-          onRetry={onRetryInsights}
-        />
-      )}
+      {!insightsPending &&
+        !insightsError &&
+        provider?.available &&
+        provider.imported_events > 0 &&
+        !provider.error &&
+        !provider.error_key && (
+          <AgentUsagePanel
+            agent={agent}
+            provider={provider}
+            loading={false}
+            error={false}
+            embedded
+            onRetry={onRetryInsights}
+          />
+        )}
       {gatewaysPending || gatewaysError ? (
         <AgentSectionFeedback error={gatewaysError} onRetry={onRetryGateways} />
       ) : remoteGateways.length > 0 ? (

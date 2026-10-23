@@ -175,6 +175,26 @@ export function ClaudeBridgePanel({ active, onClose }: { active: boolean; onClos
   const generation = useRef(0);
   const statusRequest = useRef(0);
   const copyRequest = useRef(0);
+  const copyTimer = useRef<number | undefined>(undefined);
+  const clearCopyFeedback = useCallback(() => {
+    window.clearTimeout(copyTimer.current);
+    copyTimer.current = undefined;
+    setCopied("");
+    setCopyError(false);
+  }, []);
+  const invalidateCopyFeedback = useCallback(() => {
+    copyRequest.current++;
+    clearCopyFeedback();
+  }, [clearCopyFeedback]);
+  function showCopyFeedback(label: string, request: number) {
+    window.clearTimeout(copyTimer.current);
+    setCopied(label);
+    copyTimer.current = window.setTimeout(() => {
+      if (copyRequest.current !== request) return;
+      copyTimer.current = undefined;
+      setCopied("");
+    }, 3_000);
+  }
   const operationRequest = useRef(0);
   const pendingOperation = useRef<"bridge-challenge" | "bridge-disconnect" | undefined>(undefined);
   const pending = useRef(false);
@@ -357,8 +377,7 @@ export function ClaudeBridgePanel({ active, onClose }: { active: boolean; onClos
     const scope = generation.current;
     const isCurrent = () =>
       !controller.signal.aborted && generation.current === scope && copyRequest.current === request;
-    setCopied("");
-    setCopyError(false);
+    clearCopyFeedback();
     setCopyingResume(true);
     try {
       const result = await session.client.claudeResumeCommand(selected, controller.signal);
@@ -370,7 +389,7 @@ export function ClaudeBridgePanel({ active, onClose }: { active: boolean; onClos
       )
         throw new Error("command-unavailable");
       await navigator.clipboard.writeText(result.command);
-      if (isCurrent()) setCopied(copy.copyResumeCommand);
+      if (isCurrent()) showCopyFeedback(copy.copyResumeCommand, request);
     } catch {
       if (isCurrent()) setCopyError(true);
     } finally {
@@ -383,11 +402,11 @@ export function ClaudeBridgePanel({ active, onClose }: { active: boolean; onClos
   async function copyText(value: string, label: string) {
     const request = ++copyRequest.current;
     const scope = generation.current;
-    setCopied("");
-    setCopyError(false);
+    clearCopyFeedback();
     try {
       await navigator.clipboard.writeText(value);
-      if (generation.current === scope && copyRequest.current === request) setCopied(label);
+      if (generation.current === scope && copyRequest.current === request)
+        showCopyFeedback(label, request);
     } catch {
       if (generation.current === scope && copyRequest.current === request) {
         setCopied("");
@@ -432,8 +451,7 @@ export function ClaudeBridgePanel({ active, onClose }: { active: boolean; onClos
         : previous,
     );
     copyRequest.current++;
-    setCopied("");
-    setCopyError(false);
+    clearCopyFeedback();
     setChallenge(undefined);
     setExpired(false);
     try {
@@ -478,7 +496,6 @@ export function ClaudeBridgePanel({ active, onClose }: { active: boolean; onClos
       }
     }
   }
-  if (!active || current?.agent !== "claude-code" || !access?.device?.manage) return null;
   const platformUnsupported = status?.reason === "platform-unsupported";
   // The live fallback still guards code generation, but only a fresh status can
   // promise that the terminal is connected in this dialog.
@@ -528,6 +545,23 @@ export function ClaudeBridgePanel({ active, onClose }: { active: boolean; onClos
         : hasBinding && !displayedChallenge
           ? "reconnecting"
           : "steps";
+  // Fence clipboard completions and timers before the next connection scope
+  // can receive input, including when a dialog closes without unmounting.
+  useLayoutEffect(
+    () => invalidateCopyFeedback,
+    [
+      active,
+      canRevoke,
+      selected,
+      live?.connectionGeneration,
+      connected,
+      stateKind,
+      status?.supported,
+      status?.connectionError,
+      invalidateCopyFeedback,
+    ],
+  );
+  if (!active || current?.agent !== "claude-code" || !access?.device?.manage) return null;
   const canGenerate = canManage && !!status?.supported && !connected && !loading;
   const checkConnection = (
     <Button

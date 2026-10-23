@@ -126,6 +126,16 @@ function placeholders(value: string) {
 }
 
 describe("remote connection terminology", () => {
+  it.each([
+    ["zh-CN", "自己的设备"],
+    ["zh-TW", "自己的裝置"],
+    ["en-US", "your own devices"],
+    ["ja-JP", "自分の端末"],
+  ] as const)("keeps one complete phone authorization explanation in %s", (locale, devices) => {
+    expect(webSettingsCopy[locale].codeScope).toContain(devices);
+    expect(webSettingsCopy[locale].codeScope).not.toMatch(/下方|below|下で|[。.]$/);
+  });
+
   it.each(safetyWording)(
     "explains shared LAN prerequisites and access scope in $locale",
     ({ locale, network, openNetworkSettings, scope }) => {

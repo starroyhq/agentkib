@@ -1040,7 +1040,14 @@ describe("Skill usage and details", () => {
     expect(screen.getByText("Different from library version")).toBeTruthy();
     expect(screen.getByText("Restricted by native settings")).toBeTruthy();
     expect(screen.getByText("Disabled by native policy")).toBeTruthy();
-    expect(screen.getByText(/does not confirm a running Agent/)).toBeTruthy();
+    expect(screen.queryByRole("checkbox", { name: "Show withdrawn deployments" })).toBeNull();
+    const user = userEvent.setup();
+    await user.click(screen.getByRole("button", { name: "Native visibility: · reviewer" }));
+    expect(await screen.findByRole("tooltip")).toHaveProperty(
+      "textContent",
+      tr("skills.manager.visibilityNotice"),
+    );
+    await user.keyboard("{Escape}");
     await openUsageMenu();
     expect(screen.queryByRole("menuitem", { name: "Copy to Skill library" })).toBeNull();
     await userEvent.setup().click(screen.getByRole("menuitem", { name: "View contents" }));
@@ -1350,8 +1357,8 @@ describe("Skill deployment action hierarchy", () => {
       state.deployments[0].sync_state = sync;
       state.library[0].observed_hash = state.library[0].hash;
       const f = usage(state);
-      expect(f.card.getAllByRole("button")).toHaveLength(2);
-      expect(f.card.getByRole("button", { name: /^More actions/ })).toBeTruthy();
+      const more = f.card.getByRole("button", { name: /^More actions/ });
+      expect(within(more.parentElement!).getAllByRole("button")).toHaveLength(2);
       await userEvent.setup().click(f.card.getByRole("button", { name: label }));
       if (operation)
         expect(f.onSync).toHaveBeenCalledExactlyOnceWith({

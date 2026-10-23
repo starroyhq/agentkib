@@ -6,6 +6,8 @@ Skill Hub separates the local library from the places where agents discover skil
 
 **My Skills** contains library packages. **Usage locations** also shows personal and project installations discovered outside AgentKib. **Discover** retains the OpenAI catalog and public GitHub import.
 
+Usage-location cards show one source, personal or project, beside the display path. Related workspaces remain available in **More → Open workspace**. Light Agent tags follow **Visible to**; their info control explains that visibility is inferred from native files and configuration, rather than confirmation that a running Agent loaded the Skill. Normal detected states are omitted; restrictions, trust requirements and unverified visibility remain on a separate line. The withdrawn-deployments filter appears only when withdrawn entries exist
+
 An existing CC Switch installation or linked skill can be inspected and copied into the library. The original files, links and manager metadata remain untouched. An external installation is never adopted merely because its name or content matches a library package. Different sources may have the same display name; a collision at a native destination blocks deployment.
 
 An external link that points to an AgentKib deployment remains visible under its own entry path and Agent filters. Details show the related locations without transferring ownership of the link.

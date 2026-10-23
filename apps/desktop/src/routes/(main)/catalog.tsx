@@ -378,7 +378,6 @@ function CatalogPage({
     icon: ComponentType<{ size?: number }>;
     count?: number;
     badgeLabel?: string;
-    highlight?: boolean;
   }> = [
     {
       id: "instructions",
@@ -394,7 +393,6 @@ function CatalogPage({
       icon: Brain,
       count: memoriesAvailable ? memories.length : undefined,
       badgeLabel: pendingMemoryLabel,
-      highlight: !!pending,
     },
     {
       id: "other",
@@ -408,7 +406,7 @@ function CatalogPage({
       <SidebarPanel>
         {/* 这是切换本页分区的导航，不是带面板的 Tabs：用按钮 + aria-current。 */}
         <nav className="catalog-sidebar-navigation grid gap-0.5" aria-label={tr("nav.assets")}>
-          {catalogSections.map(({ id, label, icon: Icon, count, badgeLabel, highlight }) => (
+          {catalogSections.map(({ id, label, icon: Icon, count, badgeLabel }) => (
             <Button
               key={id}
               variant="bare"
@@ -426,18 +424,13 @@ function CatalogPage({
               <Icon size={15} />
               {label}
               {count !== undefined && (
-                <Badge
-                  variant="secondary"
-                  className={cn(
-                    "ml-auto min-w-5 justify-center rounded-full px-1.5 py-0 text-[11px]",
-                    highlight &&
-                      "border-[color-mix(in_srgb,var(--amber)_45%,transparent)] bg-[color-mix(in_srgb,var(--amber)_16%,transparent)] text-[var(--amber)]",
-                  )}
+                <span
+                  className="ml-auto min-w-5 text-center text-[11px] tabular-nums text-muted-foreground"
                   aria-label={badgeLabel}
                   title={badgeLabel}
                 >
                   {count}
-                </Badge>
+                </span>
               )}
             </Button>
           ))}
@@ -819,6 +812,12 @@ export function McpHubPage({
   };
   return (
     <div className="grid gap-5">
+      <header className="grid gap-1">
+        <h1 className="text-xl font-semibold">{tr("mcp.servicesTitle")}</h1>
+        <p role="note" className="text-sm text-muted-foreground">
+          {tr("mcp.hubExplanation")}
+        </p>
+      </header>
       <McpManagementPanel
         key={scope}
         scope={scope}
@@ -849,15 +848,12 @@ export function McpHubPage({
         </div>
       )}
       <McpDisclosure
-        className="grid gap-4 rounded-xl border p-4"
+        className="rounded-xl border"
         title={<>{tr("mcp.manage.advanced")}</>}
+        description={tr("mcp.manage.advancedSections")}
         open={advanced.open}
         onOpenChange={(open) => setAdvanced((current) => ({ ...current, open }))}
       >
-        <h2>{tr("mcp.manage.advancedSections")}</h2>
-        <p role="note" className="text-sm text-muted-foreground">
-          {tr("mcp.hubExplanation")}
-        </p>
         {allScopes && (
           <McpChoice
             value={registryTarget ?? "__choose_scope__"}

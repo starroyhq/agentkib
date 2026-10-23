@@ -76,3 +76,9 @@ Hub 的目录与调用使用同一规则。即使客户端记住旧工具名，�
 ## 验证边界
 
 本轮使用合成配置、临时 Home 和合成 MCP 服务验证，不更改个人 Agent 配置或调用真实模型。自动化、Electron 验收及未验证平台见 [本轮 QA](../qa/mcp-management-2026-10-09.md)。旧单 Agent RPC 分支为兼容保留，新桌面流程使用版本化保存与后端预览 token。
+
+## MCP library presentation
+
+The **MCP services** page explains the shared Agent connection above the managed service list. The collapsed **Advanced settings** row always shows **Official directory, runtimes and network**; expanding it retains the existing directory, runtime, connection and network controls. It does not change service enablement, tool permissions, scope revisions or confirmation requirements
+
+Scope labels use light backgrounds. The per-row **Choose Agents…** menu opens **Choose Agents · {service name}**; the ellipsis remains a menu affordance rather than part of the dialog title

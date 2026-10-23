@@ -304,32 +304,34 @@ export function GlobalSettings({
         agents={agentsContent}
       >
         <SettingsSection title={tr("settings.search.localService")} target="integrations-mcp">
-          <p className="text-sm text-muted-foreground">{tr("settings.mcpLocation")}</p>
-          <SettingsRow border={false}>
-            <SettingsCopy>
-              <strong>{tr("mcp.network")}</strong>
-              <code>
-                {runtime?.mcp_hub ? runtime.mcp_hub.accessible_addresses.join(" · ") : "—"}
-              </code>
-            </SettingsCopy>
-            <SettingsStatus tone={runtime?.mcp_hub?.running ? "success" : "neutral"}>
-              {tr(runtime?.mcp_hub?.running ? "mcp.running" : "mcp.stopped")}
-            </SettingsStatus>
-          </SettingsRow>
-          {navigation && (
-            <Button
-              variant="outline"
-              className="justify-self-start"
-              onClick={() =>
-                navigation.app.navigateGlobal("catalog", false, {
-                  assetSection: "mcp",
-                  catalogTarget: "mcp-network",
-                })
-              }
-            >
-              {tr("settings.manageMcp")}
-            </Button>
-          )}
+          <div className="grid gap-4 p-5">
+            <p className="text-sm text-muted-foreground">{tr("settings.mcpLocation")}</p>
+            <SettingsRow border={false} className="min-h-0 px-0 py-0">
+              <SettingsCopy>
+                <strong>{tr("mcp.network")}</strong>
+                <code>
+                  {runtime?.mcp_hub ? runtime.mcp_hub.accessible_addresses.join(" · ") : "—"}
+                </code>
+              </SettingsCopy>
+              <SettingsStatus tone={runtime?.mcp_hub?.running ? "success" : "neutral"}>
+                {tr(runtime?.mcp_hub?.running ? "mcp.running" : "mcp.stopped")}
+              </SettingsStatus>
+            </SettingsRow>
+            {navigation && (
+              <Button
+                variant="outline"
+                className="justify-self-start"
+                onClick={() =>
+                  navigation.app.navigateGlobal("catalog", false, {
+                    assetSection: "mcp",
+                    catalogTarget: "mcp-network",
+                  })
+                }
+              >
+                {tr("settings.manageMcp")}
+              </Button>
+            )}
+          </div>
         </SettingsSection>
         <SettingsAnchor target="integrations-gateways">
           <RemoteGatewaysSettings gateways={remoteGateways} onChanged={onRemoteGatewaysChanged} />

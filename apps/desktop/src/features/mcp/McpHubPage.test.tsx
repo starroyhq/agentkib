@@ -216,6 +216,30 @@ describe("McpHubPage management", () => {
   });
   afterEach(cleanup);
 
+  it.each(["zh-CN", "zh-TW", "en-US", "ja-JP"] as const)(
+    "shows the MCP page explanation and advanced summary before expansion in %s",
+    async (locale) => {
+      await initializeI18n(locale);
+      renderAllHub();
+      expect(
+        screen.getByRole("heading", { name: tr("mcp.servicesTitle"), level: 1 }),
+      ).toBeVisible();
+      expect(screen.getByText(tr("mcp.hubExplanation"))).toBeVisible();
+      const advanced = screen.getByRole("button", { name: tr("mcp.manage.advanced") });
+      expect(advanced).toHaveTextContent(tr("mcp.manage.advancedSections"));
+      expect(advanced).toHaveAttribute("aria-expanded", "false");
+      expect(advanced).toHaveAttribute("aria-describedby");
+      expect(advanced.querySelector("svg")).toHaveAttribute("aria-hidden", "true");
+      expect(screen.queryByRole("spinbutton", { name: tr("mcp.port") })).toBeNull();
+      await userEvent.setup().click(advanced);
+      expect(advanced).toHaveAttribute("aria-expanded", "true");
+      expect(screen.getAllByText(tr("mcp.hubExplanation"))).toHaveLength(1);
+      await userEvent.setup().click(advanced);
+      expect(advanced).toHaveAttribute("aria-expanded", "false");
+      expect(screen.getByText(tr("mcp.manage.advancedSections"))).toBeVisible();
+    },
+  );
+
   it("labels known runtime ownership in all scopes and never infers an unknown or removed scope", async () => {
     vi.mocked(api.mcpRuntimes).mockResolvedValue([
       runtimeInstance("Global runtime", null),
@@ -341,9 +365,9 @@ describe("McpHubPage management", () => {
       await renderHub();
       const toggle = screen.getByRole("button", { name: advanced });
       expect(toggle).toHaveAttribute("aria-expanded", "false");
-      expect(screen.queryByRole("heading", { name: sections })).toBeNull();
+      expect(screen.getByText(sections)).toBeVisible();
       fireEvent.click(toggle);
-      expect(await screen.findByRole("heading", { name: sections })).toBeVisible();
+      expect(screen.getByText(sections)).toBeVisible();
       expect(screen.getByRole("heading", { name: directory })).toBeVisible();
       expect(api.searchMcpRegistry).not.toHaveBeenCalled();
     },
@@ -651,11 +675,11 @@ describe("McpHubPage management", () => {
     ["zh-TW", "MCP 服務中心", "向 Agent 提供已啟用的服務"],
     ["ja-JP", "MCP ハブ", "共通の接続を通じて"],
   ] as const)(
-    "preserves the MCP entry explanation inside advanced settings in %s",
+    "preserves the MCP entry explanation above advanced settings in %s",
     async (locale, label, explanation) => {
       await initializeI18n(locale);
       await renderHub();
-      expect(screen.queryByRole("note")).toBeNull();
+      expect(screen.getByRole("note")).toHaveTextContent(explanation);
       expect(screen.queryByText("STREAMABLE HTTP MCP HUB")).toBeNull();
       await userEvent
         .setup()

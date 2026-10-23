@@ -1154,8 +1154,9 @@ export function WebAccessSettings({
           {phoneGenerateHint}
         </p>
       )}
-      <p className="text-xs leading-5 text-muted-foreground">{p.codeHint}</p>
-      {codeAccess && <p className="text-xs leading-5 text-muted-foreground">{c.codeScope}</p>}
+      <p className="text-xs leading-5 text-muted-foreground">
+        {codeAccess ? c.codeScope : p.codeHint}
+      </p>
     </div>
   );
   const confirmations = (
@@ -1381,7 +1382,15 @@ export function WebAccessSettings({
                   {p.connectNew}
                 </Button>
               </header>
-              <div className="overflow-hidden rounded-xl border bg-card">{browserRows}</div>
+              {status?.devices.length ? (
+                <div className="overflow-hidden rounded-xl border bg-card">{browserRows}</div>
+              ) : (
+                status &&
+                !loadFailed &&
+                !operationError &&
+                !status.error &&
+                !busy && <p className="py-3 text-sm text-muted-foreground">{p.noBrowsers}</p>
+              )}
             </section>
           </>
         )}

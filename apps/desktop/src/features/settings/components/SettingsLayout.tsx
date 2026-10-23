@@ -34,13 +34,15 @@ export function SettingsPageHeader({
   title,
   description,
   action,
+  className,
 }: {
   title: ReactNode;
   description?: ReactNode;
   action?: ReactNode;
+  className?: string;
 }) {
   return (
-    <header className="flex min-h-14 items-start justify-between gap-6 pb-1">
+    <header className={cn("flex min-h-14 items-start justify-between gap-6 pb-1", className)}>
       <div className="grid min-w-0 gap-1.5">
         <h1 className="font-heading text-2xl font-semibold tracking-[-0.025em]">{title}</h1>
         {description && (

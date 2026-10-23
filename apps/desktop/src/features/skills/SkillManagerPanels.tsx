@@ -7,7 +7,9 @@ import {
   CircleAlert,
   Copy,
   Eye,
+  Info,
   LoaderCircle,
+  LockKeyhole,
   MoreHorizontal,
   RefreshCw,
 } from "lucide-react";
@@ -25,6 +27,7 @@ import {
 } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -161,10 +164,12 @@ function SkillUsageActions({
   name,
   actions,
   primaryId,
+  iconOnly = false,
 }: {
   name: string;
   actions: SkillUsageAction[];
   primaryId: string;
+  iconOnly?: boolean;
 }) {
   const { tr } = useI18n();
   const primary = actions.find((action) => action.id === primaryId);
@@ -182,14 +187,14 @@ function SkillUsageActions({
           <DropdownMenuTrigger
             render={
               <Button
-                size="sm"
+                size={iconOnly ? "icon-sm" : "sm"}
                 variant="outline"
                 aria-label={`${tr("common.moreActions")} · ${name}`}
               />
             }
           >
-            <MoreHorizontal size={14} />
-            {tr("common.moreActions")}
+            <MoreHorizontal size={14} aria-hidden="true" />
+            {!iconOnly && tr("common.moreActions")}
           </DropdownMenuTrigger>
           <DropdownMenuContent align="end">
             {secondary.map((action) => (
@@ -206,6 +211,39 @@ function SkillUsageActions({
         </DropdownMenu>
       )}
     </div>
+  );
+}
+
+function SkillVisibilityLabel({ label, name }: { label: string; name: string }) {
+  const { tr } = useI18n();
+  const [open, setOpen] = useState(false);
+  const noticeId = useId();
+  const triggerId = `${noticeId}-trigger`;
+  return (
+    <span className="inline-flex items-center gap-1 text-xs text-muted-foreground">
+      {label}
+      <Tooltip open={open} onOpenChange={setOpen} triggerId={triggerId}>
+        <TooltipTrigger
+          id={triggerId}
+          delay={0}
+          closeOnClick={false}
+          onClick={() => setOpen(true)}
+          render={
+            <Button
+              size="icon-xs"
+              variant="ghost"
+              aria-label={`${label} · ${name}`}
+              aria-describedby={open ? noticeId : undefined}
+            />
+          }
+        >
+          <Info size={12} aria-hidden="true" />
+        </TooltipTrigger>
+        <TooltipContent id={noticeId} role="tooltip">
+          {tr("skills.manager.visibilityNotice")}
+        </TooltipContent>
+      </Tooltip>
+    </span>
   );
 }
 
@@ -1053,44 +1091,52 @@ export function SkillUsageList({
       ),
     ];
     const visibleAgents = [...new Set(group.observations.flatMap((entry) => entry.agents))];
-    const sources = [
-      ...new Set(
-        group.observations.map((entry) =>
-          entry.scope === "personal"
-            ? tr("skills.manager.personal")
-            : entry.workspace_id
-              ? tr("skills.manager.projectSource", { name: location(entry) })
-              : tr("skills.manager.unknownProjectSource"),
-        ),
-      ),
-    ];
+    // A personal package can also be discovered in a workspace's ancestor roots.
+    // Keep that relationship in the workspace actions rather than giving it a second source.
+    const source = group.observations.some((entry) => entry.scope === "personal")
+      ? tr("skills.manager.personal")
+      : item.workspace_id
+        ? tr("skills.manager.projectSource", { name: location(item) })
+        : tr("skills.manager.unknownProjectSource");
     const paths = [...new Set(group.observations.map((entry) => entry.path))];
     if (!paths.includes(group.path)) paths.push(group.path);
     const otherPaths = paths.filter((path) => path !== item.path);
-    const statuses = [...new Set(group.observations.map((entry) => entry.status))];
+    const statuses = [...new Set(group.observations.map((entry) => entry.status))].filter(
+      (status) => status !== "visible" && status !== "observed",
+    );
+    const actions: SkillUsageAction[] = [
+      ...(syncState?.observations.find((observation) => observation.id === item.id)?.can_adopt
+        ? [
+            {
+              id: "adopt",
+              label: tr("skills.sync.operation.adopt"),
+              disabled: busy || !onSync,
+              run: () => onSync?.({ operation: "adopt", observation_id: item.id }),
+            },
+          ]
+        : []),
+      ...workspaceIds.map((id) => ({
+        id: `workspace:${id}`,
+        label: `${tr("skills.manager.openWorkspace")} · ${workspaces.find((workspace) => workspace.id === id)?.name ?? id}`,
+        run: () => onOpen(id),
+      })),
+    ];
     return (
       <div key={group.path} className="grid gap-3 rounded-xl border p-4">
         <div className="flex flex-wrap items-start justify-between gap-3">
-          <div className="grid min-w-0 gap-2">
+          <div className="flex min-w-0 flex-wrap items-center gap-2">
             <strong>{item.name}</strong>
-            <div className="flex flex-wrap gap-2">
-              {sources.map((source) => (
-                <Badge key={source} variant="outline">
-                  {source}
+            {[...new Set(group.observations.map((entry) => entry.owner))]
+              .filter((owner) => owner !== "external")
+              .map((owner) => (
+                <Badge key={owner} variant="outline" title={owner}>
+                  {owner === "cc-switch"
+                    ? "CC Switch"
+                    : owner === "agentkib"
+                      ? "AgentKib"
+                      : tr("skills.manager.otherInstaller")}
                 </Badge>
               ))}
-              {[...new Set(group.observations.map((entry) => entry.owner))]
-                .filter((owner) => owner !== "external")
-                .map((owner) => (
-                  <Badge key={owner} variant="outline" title={owner}>
-                    {owner === "cc-switch"
-                      ? "CC Switch"
-                      : owner === "agentkib"
-                        ? "AgentKib"
-                        : tr("skills.manager.otherInstaller")}
-                  </Badge>
-                ))}
-            </div>
           </div>
           <div className="flex flex-wrap gap-2">
             <Button
@@ -1103,26 +1149,46 @@ export function SkillUsageList({
             <Button size="sm" variant="outline" disabled={busy} onClick={() => onImport(item.id)}>
               {tr("skills.manager.addNative")}
             </Button>
+            <SkillUsageActions
+              name={`${item.name} · ${item.path}`}
+              primaryId=""
+              actions={actions}
+              iconOnly
+            />
           </div>
         </div>
-        <code className="truncate text-xs text-muted-foreground" title={item.path}>
-          {displayPath(item.path)}
-        </code>
+        <div className="flex min-w-0 items-center gap-2">
+          <Badge variant="outline">{source}</Badge>
+          <code className="min-w-0 truncate text-xs text-muted-foreground" title={item.path}>
+            {displayPath(item.path)}
+          </code>
+        </div>
         <div className="flex flex-wrap items-center gap-2">
+          <SkillVisibilityLabel label={tr("skills.manager.visibleTo")} name={item.name} />
           {visibleAgents.map((value) => (
-            <Badge key={value} variant="secondary">
+            <Badge
+              key={value}
+              variant="outline"
+              className="gap-1 border-transparent bg-[color-mix(in_srgb,var(--foreground)_5%,var(--background))] text-foreground"
+            >
               <AgentIcon agent={value} compact />
               {sessionAgentNames[value]}
             </Badge>
           ))}
-          {statuses
-            .filter((status) => status !== "visible")
-            .map((status) => (
-              <Badge key={status} variant="outline">
+        </div>
+        {statuses.length > 0 && (
+          <div className="flex flex-wrap items-center gap-2">
+            {statuses.map((status) => (
+              <Badge
+                key={status}
+                variant="outline"
+                className="border-amber-500/40 text-amber-700 dark:text-amber-400"
+              >
                 {skillStatusLabel(status, tr)}
               </Badge>
             ))}
-        </div>
+          </div>
+        )}
         {otherPaths.length > 0 && (
           <Collapsible className="text-xs">
             <CollapsibleTrigger className="cursor-pointer text-muted-foreground">
@@ -1153,27 +1219,6 @@ export function SkillUsageList({
             {diagnostic}
           </p>
         ))}
-        <SkillUsageActions
-          name={item.name}
-          primaryId=""
-          actions={[
-            ...(syncState?.observations.find((observation) => observation.id === item.id)?.can_adopt
-              ? [
-                  {
-                    id: "adopt",
-                    label: tr("skills.sync.operation.adopt"),
-                    disabled: busy || !onSync,
-                    run: () => onSync?.({ operation: "adopt", observation_id: item.id }),
-                  },
-                ]
-              : []),
-            ...workspaceIds.map((id) => ({
-              id: `workspace:${id}`,
-              label: `${tr("skills.manager.openWorkspace")} · ${workspaces.find((workspace) => workspace.id === id)?.name ?? id}`,
-              run: () => onOpen(id),
-            })),
-          ]}
-        />
       </div>
     );
   };
@@ -1235,17 +1280,24 @@ export function SkillUsageList({
               </SelectContent>
             </Select>
           </div>
-          <Label className="flex items-center gap-2 text-xs">
-            <Checkbox
-              checked={showInactive}
-              onCheckedChange={(checked) => setShowInactive(Boolean(checked))}
-            />
-            {tr("skills.manager.showInactive")}
-          </Label>
+          {deployments.some((item) => item.status === "inactive") && (
+            <Label className="flex items-center gap-2 text-xs">
+              <Checkbox
+                checked={showInactive}
+                onCheckedChange={(checked) => setShowInactive(Boolean(checked))}
+              />
+              {tr("skills.manager.showInactive")}
+            </Label>
+          )}
         </>
       )}
       {loading && <p role="status">{tr("common.loading")}</p>}
-      <p className="text-xs text-muted-foreground">{tr("skills.manager.visibilityNotice")}</p>
+      {filteredNative.length > 0 && (
+        <div className="flex items-start gap-2 text-xs text-muted-foreground">
+          <LockKeyhole size={14} className="shrink-0" aria-hidden="true" />
+          <p>{tr("skills.manager.inventoryNotice")}</p>
+        </div>
+      )}
       {filteredDeployments.map((item) => {
         const sync = syncState?.deployments.find((entry) => entry.id === item.id);
         const localSource = item.source_is_current_library === true;
@@ -1460,7 +1512,10 @@ export function SkillUsageList({
               {item.visible_to.map((value) => sessionAgentNames[value]).join(" · ")}
             </p>
             <div className="flex flex-wrap gap-2 text-xs">
-              <span>{tr("skills.manager.nativeVisibility")}</span>
+              <SkillVisibilityLabel
+                label={tr("skills.manager.nativeVisibility")}
+                name={item.display_name ?? item.package_name}
+              />
               {observed.length ? (
                 [...new Set(observed.map((observation) => observation.status))].map((status) => (
                   <Badge key={status} variant="outline">
@@ -1491,9 +1546,6 @@ export function SkillUsageList({
           </div>
         );
       })}
-      {filteredNative.length > 0 && (
-        <p className="text-xs text-muted-foreground">{tr("skills.manager.inventoryNotice")}</p>
-      )}
       {filteredNative.map(observationRow)}
       {!loading &&
         !filteredDeployments.length &&

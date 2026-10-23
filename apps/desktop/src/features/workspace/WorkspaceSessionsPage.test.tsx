@@ -113,9 +113,9 @@ describe("WorkspaceSessionsPage", () => {
         onMcpConnectionPlanned={vi.fn()}
       />,
     );
-    const notice = await screen.findByText("Antigravity sessions are temporarily unavailable", {
-      exact: false,
-    });
+    await screen.findByText("Antigravity sessions are temporarily unavailable");
+    const notice = screen.getByRole(count ? "alert" : "status");
+    expect(notice).toHaveTextContent("Antigravity sessions are temporarily unavailable");
     expect(notice).toHaveClass(count ? "text-warning" : "text-muted-foreground");
     expect(notice).toHaveAttribute("role", count ? "alert" : "status");
     await waitFor(() =>

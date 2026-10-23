@@ -241,7 +241,8 @@ describe("workspace change plans and drafts", () => {
     expect(state.manifest).toBe(editedDuringReload);
     expect(state.baselineManifest).toBe(JSON.stringify(planned));
     expect(state.workspaceDrafts[workspace.id]).toBe(editedDuringReload);
-    expect(state.changeSet).toBeUndefined();
+    expect(state.changeSet).toBe(plan);
+    expect(state.changeSetInvalidated).toBe(true);
   });
 
   it.each(["standard", "doctor"] as const)(
@@ -290,7 +291,7 @@ describe("workspace change plans and drafts", () => {
   });
 
   it.each(["value", "updater"] as const)(
-    "invalidates a plan and its launch request when the draft changes through a %s",
+    "keeps a read-only stale plan and clears its launch request when the draft changes through a %s",
     (updateKind) => {
       const draft = manifest("planned instructions");
       const nextDraft = manifest("newer instructions");
@@ -304,11 +305,46 @@ describe("workspace change plans and drafts", () => {
 
       const state = useWorkspaceStore.getState();
       expect(state.manifest).toBe(nextDraft);
-      expect(state.changeSet).toBeUndefined();
-      expect(state.changeSetManifest).toBeUndefined();
+      expect(state.changeSet).toBe(plan);
+      expect(state.changeSetManifest).toBe(JSON.stringify(draft));
+      expect(state.changeSetInvalidated).toBe(true);
       expect(state.handoffLaunchRequest).toBeUndefined();
     },
   );
+
+  it("clears stale and disk-conflict markers only when a new plan is accepted", () => {
+    useWorkspaceStore.getState().setChangeSet(plan, manifest("planned"));
+    useWorkspaceStore.getState().setChangeSetConflict(true);
+    useWorkspaceStore.getState().setChangeSetInvalidated(true);
+    useWorkspaceStore.getState().setChangeSet({ ...plan, id: "regenerated" }, manifest("new"));
+    expect(useWorkspaceStore.getState()).toMatchObject({
+      changeSetConflict: false,
+      changeSetInvalidated: false,
+    });
+  });
+
+  it("does not discard a draft while a plan is being generated and resets its lock on leaving", () => {
+    const draft = manifest("draft");
+    useWorkspaceStore.setState({
+      selectedWorkspace: workspace,
+      manifest: draft,
+      baselineManifest: JSON.stringify(manifest("saved")),
+      planningChanges: true,
+    });
+    expect(useWorkspaceStore.getState().discardWorkspaceDraft(JSON.stringify(draft))).toBe(false);
+    useWorkspaceStore.getState().resetWorkspace();
+    expect(useWorkspaceStore.getState().planningChanges).toBe(false);
+  });
+
+  it("does not let an old planning cleanup release a newer workspace operation", () => {
+    const first = useWorkspaceStore.getState().setPlanningChanges(true);
+    useWorkspaceStore.getState().resetWorkspace();
+    const second = useWorkspaceStore.getState().setPlanningChanges(true);
+    useWorkspaceStore.getState().finishPlanningChanges(first);
+    expect(useWorkspaceStore.getState().planningChanges).toBe(true);
+    useWorkspaceStore.getState().finishPlanningChanges(second);
+    expect(useWorkspaceStore.getState().planningChanges).toBe(false);
+  });
 
   it("retains the plan and launch request when a new manifest object has identical contents", () => {
     const draft = manifest("planned instructions");

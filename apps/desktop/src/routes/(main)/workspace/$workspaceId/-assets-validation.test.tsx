@@ -2,7 +2,7 @@
 
 import "@testing-library/jest-dom/vitest";
 import { Suspense } from "react";
-import { cleanup, fireEvent, render, screen } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Manifest } from "@/core/types";
@@ -99,6 +99,32 @@ beforeEach(async () => {
   useWorkspaceStore.setState(useWorkspaceStore.getInitialState(), true);
 });
 afterEach(cleanup);
+
+describe("E2 asset edit locks", () => {
+  it.each(["planningChanges", "applyingChanges"] as const)(
+    "keeps all draft inputs read-only during %s and restores editing afterwards",
+    async (lock) => {
+      const { name, value, manifest } = await mount();
+      fill(name, value, "New skill", ".agents/skills/new");
+      const add = screen.getByRole("button", { name: tr("common.add") });
+      act(() => useWorkspaceStore.setState({ [lock]: true }));
+      // Native fieldset semantics apply even when button.disabled itself is false.
+      expect(name).toBeDisabled();
+      expect(value).toBeDisabled();
+      expect(add).toBeDisabled();
+      await userEvent.setup().click(add);
+      expectUnchanged(manifest);
+      act(() => useWorkspaceStore.setState({ [lock]: false }));
+      expect(add).toBeEnabled();
+      await userEvent.setup().click(add);
+      expect(useWorkspaceStore.getState().manifest!.skills).toEqual([
+        { name: "New skill", path: ".agents/skills/new", targets: [] },
+      ]);
+      expect(api.plan).not.toHaveBeenCalled();
+      expect(api.apply).not.toHaveBeenCalled();
+    },
+  );
+});
 
 describe("workspace asset draft validation", () => {
   it.each(["zh-CN", "zh-TW", "en-US", "ja-JP"] as const)(

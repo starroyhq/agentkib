@@ -219,7 +219,7 @@ describe("empty change-plan review", () => {
     const request = deferred<ChangeSet>();
     vi.mocked(api.plan).mockReturnValue(request.promise);
     await mountRoute();
-    const home = screen.getByRole("button", { name: "Include Home Configuration" });
+    const home = screen.getByRole("button", { name: "Include global configuration" });
     const back = screen.getByRole("button", { name: "Back" });
     fireEvent.click(home);
     fireEvent.click(home);
@@ -239,10 +239,10 @@ describe("empty change-plan review", () => {
     expect(await screen.findByText("new home.md")).toBeVisible();
     expect(screen.queryByText(tr("changes.noFileChanges"))).toBeNull();
     expect(screen.queryByRole("button", { name: "Back" })).toBeNull();
-    expect(screen.getByRole("button", { name: "Reject Changes" })).toBeEnabled();
-    expect(screen.getByRole("button", { name: "Apply 1 Changes" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Reject" })).toBeEnabled();
+    expect(screen.getByRole("button", { name: "Apply 1 change" })).toBeDisabled();
     fireEvent.click(screen.getByRole("checkbox", { name: tr("changes.homeApproval") }));
-    expect(screen.getByRole("button", { name: "Apply 1 Changes" })).toBeEnabled();
+    expect(screen.getByRole("button", { name: "Apply 1 change" })).toBeEnabled();
     expect(useWorkspaceStore.getState().changeSet).toEqual(planned);
     noWrites();
   });
@@ -250,11 +250,11 @@ describe("empty change-plan review", () => {
   it("keeps an empty Home-planning error visible and allows retry or return", async () => {
     vi.mocked(api.plan).mockRejectedValueOnce(new Error("Home planning failed"));
     await mountRoute();
-    fireEvent.click(screen.getByRole("button", { name: "Include Home Configuration" }));
+    fireEvent.click(screen.getByRole("button", { name: "Include global configuration" }));
     expect(await screen.findByRole("alert")).toHaveTextContent("Home planning failed");
     expect(screen.getByRole("heading", { name: "No file changes in this plan" })).toBeVisible();
     expect(screen.getByRole("button", { name: "Back" })).toBeEnabled();
-    fireEvent.click(screen.getByRole("button", { name: "Include Home Configuration" }));
+    fireEvent.click(screen.getByRole("button", { name: "Include global configuration" }));
     await waitFor(() => expect(api.plan).toHaveBeenCalledTimes(2));
     await waitFor(() => expect(screen.queryByRole("alert")).toBeNull());
     noWrites();
@@ -273,11 +273,11 @@ describe("empty change-plan review", () => {
     fireEvent.click(screen.getByRole("button", { name: /^two.md/ }));
     expect(screen.getByText("new two.md")).toBeVisible();
     fireEvent.click(screen.getByRole("checkbox", { name: tr("changes.homeApproval") }));
-    expect(screen.getByRole("button", { name: "Apply 2 Changes" })).toBeEnabled();
-    fireEvent.click(screen.getByRole("button", { name: "Include Home Configuration" }));
+    expect(screen.getByRole("button", { name: "Apply 2 changes" })).toBeEnabled();
+    fireEvent.click(screen.getByRole("button", { name: "Include global configuration" }));
     expect(await screen.findByText("new new.md")).toBeVisible();
     expect(screen.getByRole("checkbox", { name: tr("changes.homeApproval") })).not.toBeChecked();
-    expect(screen.getByRole("button", { name: "Apply 1 Changes" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Apply 1 change" })).toBeDisabled();
     expect(screen.queryByText(tr("changes.synced"))).toBeNull();
     expect(screen.queryByText(tr("changes.noFileChanges"))).toBeNull();
     noWrites();
@@ -292,7 +292,7 @@ describe("empty change-plan review", () => {
     view.rerender(<Changes {...callbacks} changeSet={{ ...old, changes: [change("one.md")] }} />);
     expect(screen.getByText("new one.md")).toBeVisible();
     expect(screen.getByRole("button", { name: /^one.md/ })).toHaveClass("bg-muted");
-    expect(screen.getByRole("button", { name: "Apply 1 Changes" })).toBeEnabled();
+    expect(screen.getByRole("button", { name: "Apply 1 change" })).toBeEnabled();
     expect(screen.queryByText(tr("changes.synced"))).toBeNull();
     expect(screen.queryByText(tr("changes.noFileChanges"))).toBeNull();
     noWrites();
@@ -306,8 +306,8 @@ describe("empty change-plan review", () => {
     fireEvent.click(file);
     fireEvent.click(file);
     expect(screen.getByText("new two.md")).toBeVisible();
-    expect(screen.getByRole("button", { name: "Apply 2 Changes" })).toBeEnabled();
-    fireEvent.click(screen.getByRole("button", { name: "Apply 2 Changes" }));
+    expect(screen.getByRole("button", { name: "Apply 2 changes" })).toBeEnabled();
+    fireEvent.click(screen.getByRole("button", { name: "Apply 2 changes" }));
     await waitFor(() => expect(api.apply).toHaveBeenCalledExactlyOnceWith(plan, false, undefined));
     expect(callbacks.onApplied).toHaveBeenCalledOnce();
   });

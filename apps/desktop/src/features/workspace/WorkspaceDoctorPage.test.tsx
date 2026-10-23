@@ -86,6 +86,8 @@ describe("WorkspaceDoctorPage", () => {
     render(<WorkspaceDoctorPage workspace={workspace} onRepair={vi.fn()} onDiagnosed={vi.fn()} />);
 
     expect(await screen.findByText("/workspace/CLAUDE.md")).toBeTruthy();
+    expect(screen.queryByText("Exact duplicate of /workspace/AGENTS.md")).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "Details" }));
     expect(screen.getByText("Exact duplicate of /workspace/AGENTS.md")).toBeTruthy();
     expect(screen.queryByText(/Claude\.md|Agents\.md/)).toBeNull();
   });
@@ -134,13 +136,9 @@ describe("WorkspaceDoctorPage", () => {
       .mockRejectedValueOnce(new Error("planning unavailable"))
       .mockResolvedValueOnce(undefined);
     render(<WorkspaceDoctorPage workspace={workspace} onRepair={onRepair} onDiagnosed={vi.fn()} />);
-    fireEvent.click(
-      await screen.findByRole("button", { name: tr("doctor.reviewRepairCount", { count: 1 }) }),
-    );
+    fireEvent.click(await screen.findByRole("button", { name: "Review changes" }));
     expect((await screen.findByRole("alert")).textContent).toContain("planning unavailable");
-    fireEvent.click(
-      screen.getByRole("button", { name: tr("doctor.reviewRepairCount", { count: 1 }) }),
-    );
+    fireEvent.click(screen.getByRole("button", { name: "Review changes" }));
     await waitFor(() => expect(onRepair).toHaveBeenCalledTimes(2));
     expect(screen.queryByRole("alert")).toBeNull();
   });
@@ -151,7 +149,8 @@ describe("WorkspaceDoctorPage", () => {
     render(
       <WorkspaceDoctorPage workspace={workspace} onRepair={vi.fn()} onDiagnosed={onDiagnosed} />,
     );
-    const heading = await screen.findByText(tr("assets.instructions"));
+    fireEvent.click(await screen.findByRole("button", { name: /Checks by Agent/ }));
+    const heading = screen.getByText(tr("assets.instructions"));
     expect(screen.getByText(tr("assets.skills"))).toBeTruthy();
 
     await act(() => changeLocale("zh-CN"));
@@ -181,10 +180,11 @@ describe("WorkspaceDoctorPage", () => {
 
     render(<WorkspaceDoctorPage workspace={workspace} onRepair={vi.fn()} onDiagnosed={vi.fn()} />);
 
-    expect(await screen.findByText("OpenCode")).toBeTruthy();
+    fireEvent.click(await screen.findByRole("button", { name: /Checks by Agent/ }));
+    expect(screen.getByText("OpenCode")).toBeTruthy();
   });
 
-  it("keeps not-applicable counts and issue evidence fully readable", async () => {
+  it("keeps unsupported cells neutral and full issue evidence available on demand", async () => {
     const detail = "Synthetic configuration content mismatch";
     vi.mocked(api.workspaceDoctorReport).mockResolvedValue({
       ...report,
@@ -223,17 +223,21 @@ describe("WorkspaceDoctorPage", () => {
     const onRepair = vi.fn();
     render(<WorkspaceDoctorPage workspace={workspace} onRepair={onRepair} onDiagnosed={vi.fn()} />);
 
-    const count = await screen.findByText("0 / 2");
-    expect(count.closest("small")?.className).not.toMatch(/\bopacity-\d+/);
-    expect(count.parentElement?.className).toContain("text-muted-foreground");
+    fireEvent.click(await screen.findByRole("button", { name: /Checks by Agent/ }));
+    expect(screen.queryByText("0 / 2")).toBeNull();
+    const cell = screen.getByRole("table").querySelector('[data-status="not-applicable"]')!;
+    expect(cell.className).toContain("text-muted-foreground");
+    expect(cell.getAttribute("title")).toBe("Not applicable");
+    expect(screen.queryByText(detail)).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "Details" }));
     const article = screen.getByText(detail).closest("article")!;
-    expect(article.querySelector("header + p")?.className).not.toMatch(/\bopacity-\d+/);
+    expect(screen.getByText(detail).className).not.toMatch(/\bopacity-\d+/);
     const hashes = article.querySelector("small")!;
     expect(hashes.textContent).toContain("aaaaaaaaaaaa…");
     expect(hashes.textContent).toContain("bbbbbbbbbbbb…");
     expect(hashes.className).not.toMatch(/\bopacity-\d+/);
     expect(onRepair).not.toHaveBeenCalled();
-    expect(screen.queryByRole("button", { name: /Review .*Repairs/ })).toBeNull();
+    expect(screen.queryByRole("button", { name: /Review changes/ })).toBeNull();
   });
 
   it("shows the one-time repair verification result", async () => {
@@ -282,13 +286,14 @@ describe("WorkspaceDoctorPage", () => {
       />,
     );
 
-    expect(await screen.findByText("Issues requiring manual action: 1.")).toBeTruthy();
+    expect(await screen.findByText(tr("doctor.manual.readOnly"))).toBeTruthy();
+    expect(screen.queryByText(tr("doctor.allClear"))).toBeNull();
     expect(
       screen.getByText("Repairs were applied and rechecked. Issues remaining: 1 · repairable: 0."),
     ).toBeTruthy();
   });
 
-  it("separates repairable and manual issues in the conclusion", async () => {
+  it("separates automatic review from manual instructions in the issue cards", async () => {
     vi.mocked(api.workspaceDoctorReport).mockResolvedValue({
       ...report,
       summary: { ...report.summary, error_count: 1, warning_count: 1, repairable_count: 1 },
@@ -312,7 +317,9 @@ describe("WorkspaceDoctorPage", () => {
 
     render(<WorkspaceDoctorPage workspace={workspace} onRepair={vi.fn()} onDiagnosed={vi.fn()} />);
 
-    expect(await screen.findByText("Repairable: 1 · manual action: 1.")).toBeTruthy();
+    expect(await screen.findByText("1 automatically repairable")).toBeTruthy();
+    expect(screen.getAllByRole("button", { name: "Review changes" })).toHaveLength(1);
+    expect(screen.getByText(tr("doctor.manual.readOnly"))).toBeTruthy();
   });
 
   it("hides repair review when no automatic repairs are available", async () => {
@@ -321,8 +328,8 @@ describe("WorkspaceDoctorPage", () => {
     render(<WorkspaceDoctorPage workspace={workspace} onRepair={onRepair} onDiagnosed={vi.fn()} />);
     await screen.findByText("No deterministic configuration issues found");
 
-    expect(screen.queryByRole("button", { name: /Review .*Repairs/ })).toBeNull();
-    expect(screen.getByRole("button", { name: "Refresh" })).toBeTruthy();
+    expect(screen.queryByRole("button", { name: /Review changes/ })).toBeNull();
+    expect(screen.getByRole("button", { name: "Run diagnostics again" })).toBeTruthy();
     expect(onRepair).not.toHaveBeenCalled();
   });
 
@@ -359,7 +366,7 @@ describe("WorkspaceDoctorPage", () => {
       expect(await screen.findByText(tr(guidance))).toBeTruthy();
       fireEvent.click(screen.getByRole("button", { name: tr(label) }));
       expect(onOpenIssue).toHaveBeenCalledExactlyOnceWith(destination);
-      expect(screen.queryByRole("button", { name: /Review .*Repairs/ })).toBeNull();
+      expect(screen.queryByRole("button", { name: /Review changes/ })).toBeNull();
     },
   );
 
@@ -391,8 +398,9 @@ describe("WorkspaceDoctorPage", () => {
       );
 
       expect(await screen.findByText(tr(guidance))).toBeTruthy();
-      expect(screen.getAllByRole("button")).toHaveLength(1);
-      expect(screen.getByRole("button", { name: "Refresh" })).toBeTruthy();
+      for (const label of ["doctor.openContext", "doctor.openSkills", "doctor.openMcp"])
+        expect(screen.queryByRole("button", { name: tr(label) })).toBeNull();
+      expect(screen.getByRole("button", { name: "Run diagnostics again" })).toBeTruthy();
     },
   );
 
@@ -414,7 +422,7 @@ describe("WorkspaceDoctorPage", () => {
     render(<WorkspaceDoctorPage workspace={workspace} onRepair={onRepair} onDiagnosed={vi.fn()} />);
 
     const review = await screen.findByRole("button", {
-      name: tr("doctor.reviewRepairCount", { count: 1 }),
+      name: "Review changes",
     });
     expect(screen.queryByText(tr("doctor.manual.instruction"))).toBeNull();
     fireEvent.click(review);

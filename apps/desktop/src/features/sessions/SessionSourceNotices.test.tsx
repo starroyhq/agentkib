@@ -31,6 +31,10 @@ describe("named source notices", () => {
       tr("sessions.sourceUnavailable", { agent: "Antigravity" }),
     );
     expect(screen.getByRole("status")).toHaveClass("text-muted-foreground");
+    expect(screen.getByRole("button", { name: "Retry" })).toHaveClass("text-primary-text");
+    expect(
+      screen.getByText(tr("sessions.sourceUnavailable", { agent: "Antigravity" })),
+    ).not.toHaveClass("truncate");
     expect(screen.queryByRole("alert")).toBeNull();
     fireEvent.click(screen.getByRole("button", { name: "Retry" }));
     expect(retry).toHaveBeenCalledOnce();
@@ -96,4 +100,36 @@ describe("named source notices", () => {
     );
     expect(screen.queryByRole("status")).toBeNull();
   });
+
+  it.each([
+    ["zh-CN", "暂时读不到 Antigravity、Codex 的会话", "重试"],
+    ["zh-TW", "暫時讀不到 Antigravity、Codex 的會話", "重試"],
+    ["en-US", "Antigravity, Codex sessions are temporarily unavailable", "Retry"],
+    ["ja-JP", "Antigravity、Codex のセッションを一時的に読み取れません", "再試行"],
+  ] as const)(
+    "groups several unavailable Agents into one complete notice in %s",
+    async (locale, text, retryText) => {
+      await initializeI18n(locale);
+      try {
+        const retry = vi.fn();
+        render(
+          <SessionSourceNotices
+            statuses={[status, { ...status, workspace_id: "other" }, { ...status, agent: "codex" }]}
+            sessions={[]}
+            installedAgents={["antigravity", "codex"]}
+            refreshing={false}
+            onRetry={retry}
+          />,
+        );
+        expect(screen.getAllByRole("status")).toHaveLength(1);
+        expect(screen.getByRole("status")).toHaveTextContent(text);
+        expect(screen.getByText(text)).toHaveClass("whitespace-normal");
+        expect(screen.getByText(text)).not.toHaveClass("truncate");
+        fireEvent.click(screen.getByRole("button", { name: retryText }));
+        expect(retry).toHaveBeenCalledOnce();
+      } finally {
+        await initializeI18n("en-US");
+      }
+    },
+  );
 });

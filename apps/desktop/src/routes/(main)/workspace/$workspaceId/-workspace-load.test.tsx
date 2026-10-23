@@ -509,7 +509,11 @@ describe("workspace load recovery", () => {
       }),
     );
     expect(useWorkspaceStore.getState().changeSet).toBeUndefined();
-    expect(doubles.navigate).not.toHaveBeenCalled();
+    expect(doubles.navigate).toHaveBeenCalledOnce();
+    expect(doubles.navigate).toHaveBeenCalledWith({
+      to: "/workspace/$workspaceId/changes",
+      params: { workspaceId: "workspace" },
+    });
     expect(screen.getByTestId("workspace-scroll")).toBe(viewport);
     expect(screen.getByRole("textbox", { name: "Selected file" })).toHaveValue(
       "unchanged selection",

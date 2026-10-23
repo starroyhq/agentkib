@@ -303,7 +303,11 @@ describe("v15 workspace header", () => {
     await act(async () => pending.resolve(changeSet));
     expect(useWorkspaceStore.getState().changeSet).toBeUndefined();
     expect(useWorkspaceStore.getState().manifest).toEqual(newer);
-    expect(doubles.navigate).not.toHaveBeenCalled();
+    expect(doubles.navigate).toHaveBeenCalledOnce();
+    expect(doubles.navigate).toHaveBeenCalledWith({
+      to: "/workspace/$workspaceId/changes",
+      params: { workspaceId: "workspace" },
+    });
     expect(await screen.findByRole("alert")).toHaveTextContent(tr("workspace.planSuperseded"));
   });
 

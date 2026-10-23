@@ -4,7 +4,7 @@ import { once } from "node:events";
 import { existsSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { syncBuiltinESMExports } from "node:module";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   ClaudeManagedRunnerProcess,
   ClaudeUndispatchedError,
@@ -23,13 +23,24 @@ import type { BackendStore } from "../../../packages/backend/src/store";
 import type { SessionReaders } from "../../../packages/backend/src/session-readers";
 import type { Commands } from "../../../packages/backend/src/commands";
 import { processAlive, type FakeClaudePlan } from "./fixtures/claude-fake-cli";
-import { createStartupClaude } from "./fixtures/claude-startup-cli";
+import { createStartupClaude, createStartupClaudeSpawn } from "./fixtures/claude-startup-cli";
 
 const cleanups: Array<() => void | Promise<void>> = [];
 const confirmsOwnedTree = process.platform === "darwin";
+let startupSpawn: ReturnType<typeof createStartupClaudeSpawn>;
+beforeEach(() => {
+  // Preparing the real synthetic shell is not the protocol fault under test. Keep it outside
+  // the unchanged 300 ms initialize deadline, as for the detached-child setup below.
+  startupSpawn = createStartupClaudeSpawn();
+  vi.spyOn(childProcesses, "spawn").mockImplementation(startupSpawn.spawn);
+  syncBuiltinESMExports();
+});
 afterEach(async () => {
   vi.restoreAllMocks();
+  syncBuiltinESMExports();
   for (const cleanup of cleanups.splice(0).reverse()) await cleanup();
+  // A missing fixture prerequisite must fail even if an expected protocol timeout occurred.
+  expect(startupSpawn.failures).toEqual([]);
 });
 
 function fixture(plan: FakeClaudePlan) {
@@ -324,7 +335,8 @@ describe.skipIf(!["darwin", "linux"].includes(process.platform))("Claude startup
       };
       const originalPlatform = Object.getOwnPropertyDescriptor(process, "platform")!;
       const proof = vi.fn();
-      const actualSpawn = childProcesses.spawn;
+      // Keep the implementation rather than the spy object that the override below reuses.
+      const actualSpawn = startupSpawn.spawn;
       let childReady = false;
       const spawning = vi
         .spyOn(childProcesses, "spawn")
@@ -361,7 +373,8 @@ while IFS= read -r frame; do printf '%s\\n' "$frame" >> "$FAKE_LOG"; done
           randomUUID(),
           true,
           0,
-          { ...f.environment, TEST_CHILD_PID: childPidFile },
+          // This custom shell has its own detached-child readiness handshake above.
+          { ...f.environment, STARTUP_READY: undefined, TEST_CHILD_PID: childPidFile },
           () => undefined,
           true,
           undefined,
@@ -415,24 +428,37 @@ while IFS= read -r frame; do printf '%s\\n' "$frame" >> "$FAKE_LOG"; done
     30_000,
   );
 
-  it("restores an explicit settings initialize timeout after confirmed cleanup without a user frame", async () => {
-    const f = fixture({ silentInitialize: true });
-    await expect(f.runner.prepare(f.executable)).rejects.toThrow("Claude initialize timed out");
-    expect(f.runner.hasWorker).toBe(false);
-    expect(f.runner.snapshot()).toMatchObject({
-      status: confirmsOwnedTree ? "idle" : "outcome-unknown",
-      sendEnabled: confirmsOwnedTree,
-    });
-    expect(f.frames().filter((frame) => frame.type === "user")).toEqual([]);
-    f.setPlan({});
-    if (!confirmsOwnedTree) {
-      await expect(f.runner.prepare(f.executable)).rejects.toThrow("busy");
-      return;
-    }
-    await expect(f.runner.prepare(f.executable)).resolves.toMatchObject({
-      settingsAcknowledged: true,
-    });
-  }, 30_000);
+  it.each([0, 350])(
+    "restores an explicit settings initialize timeout after confirmed cleanup without a user frame (fixture restart delay: %i ms)",
+    async (startupDelay) => {
+      const f = fixture({ silentInitialize: true });
+      await expect(f.runner.prepare(f.executable)).rejects.toThrow("Claude initialize timed out");
+      expect(f.runner.hasWorker).toBe(false);
+      expect(f.runner.snapshot()).toMatchObject({
+        status: confirmsOwnedTree ? "idle" : "outcome-unknown",
+        sendEnabled: confirmsOwnedTree,
+      });
+      expect(f.frames().filter((frame) => frame.type === "user")).toEqual([]);
+      f.setPlan({});
+      if (startupDelay)
+        writeFileSync(
+          f.executable,
+          readFileSync(f.executable, "utf8").replace(
+            "#!/bin/sh\n",
+            `#!/bin/sh\n/bin/sleep ${startupDelay / 1000}\n`,
+          ),
+          { mode: 0o700 },
+        );
+      if (!confirmsOwnedTree) {
+        await expect(f.runner.prepare(f.executable)).rejects.toThrow("busy");
+        return;
+      }
+      await expect(f.runner.prepare(f.executable)).resolves.toMatchObject({
+        settingsAcknowledged: true,
+      });
+    },
+    30_000,
+  );
 
   it("keeps a settings initialize protocol failure unknown", async () => {
     const f = fixture({ beforeInitialize: [{ __raw: "invalid frame" }], silentInitialize: true });
@@ -441,42 +467,56 @@ while IFS= read -r frame; do printf '%s\\n' "$frame" >> "$FAKE_LOG"; done
     expect(f.runner.snapshot().status).toBe("outcome-unknown");
     expect(f.frames().filter((frame) => frame.type === "user")).toEqual([]);
   }, 30_000);
-  it("restores an undispatched initialize timeout after confirming worker cleanup, then permits a new send", async () => {
-    const f = fixture({ silentInitialize: true });
-    const dispatched = vi.fn();
-    const proof = vi.fn();
-    f.runner.options.onUndispatchedStartup = proof;
-    await expect(
-      f.runner.send(f.executable, "synthetic draft", randomUUID(), 0, dispatched),
-    ).rejects.toBeInstanceOf(confirmsOwnedTree ? ClaudeUndispatchedError : Error);
-    expect(dispatched).not.toHaveBeenCalled();
-    expect(f.frames().filter((frame) => frame.type === "user")).toEqual([]);
-    expect(f.runner.hasWorker).toBe(false);
-    expect(f.runner.snapshot()).toMatchObject({
-      status: confirmsOwnedTree ? "idle" : "outcome-unknown",
-      sendEnabled: confirmsOwnedTree,
-      ...(confirmsOwnedTree ? { turnId: "" } : {}),
-      reason: "Claude initialize timed out",
-    });
-    if (!confirmsOwnedTree) {
-      expect(proof).not.toHaveBeenCalled();
-      return;
-    }
-    expect(proof).toHaveBeenCalledWith(
-      expect.objectContaining({ cleanupKind: "mac-owned-process-tree" }),
-    );
-    f.setPlan({});
-    await f.runner.send(
-      f.executable,
-      "synthetic draft",
-      randomUUID(),
-      f.runner.snapshot().revision,
-      dispatched,
-    );
-    await expect.poll(() => f.runner.snapshot().status).toBe("idle");
-    expect(dispatched).toHaveBeenCalledTimes(1);
-    expect(f.frames().filter((frame) => frame.type === "user")).toHaveLength(1);
-  }, 30_000);
+  it.each([0, 350])(
+    "restores an undispatched initialize timeout after confirming worker cleanup, then permits a new send (fixture restart delay: %i ms)",
+    async (startupDelay) => {
+      const f = fixture({ silentInitialize: true });
+      const dispatched = vi.fn();
+      const proof = vi.fn();
+      f.runner.options.onUndispatchedStartup = proof;
+      await expect(
+        f.runner.send(f.executable, "synthetic draft", randomUUID(), 0, dispatched),
+      ).rejects.toBeInstanceOf(confirmsOwnedTree ? ClaudeUndispatchedError : Error);
+      expect(dispatched).not.toHaveBeenCalled();
+      expect(f.frames().filter((frame) => frame.type === "control_request")).toHaveLength(1);
+      expect(f.frames().filter((frame) => frame.type === "user")).toEqual([]);
+      expect(f.runner.hasWorker).toBe(false);
+      expect(f.runner.snapshot()).toMatchObject({
+        status: confirmsOwnedTree ? "idle" : "outcome-unknown",
+        sendEnabled: confirmsOwnedTree,
+        ...(confirmsOwnedTree ? { turnId: "" } : {}),
+        reason: "Claude initialize timed out",
+      });
+      if (!confirmsOwnedTree) {
+        expect(proof).not.toHaveBeenCalled();
+        return;
+      }
+      expect(proof).toHaveBeenCalledWith(
+        expect.objectContaining({ cleanupKind: "mac-owned-process-tree" }),
+      );
+      f.setPlan({});
+      if (startupDelay)
+        writeFileSync(
+          f.executable,
+          readFileSync(f.executable, "utf8").replace(
+            "#!/bin/sh\n",
+            `#!/bin/sh\n/bin/sleep ${startupDelay / 1000}\n`,
+          ),
+          { mode: 0o700 },
+        );
+      await f.runner.send(
+        f.executable,
+        "synthetic draft",
+        randomUUID(),
+        f.runner.snapshot().revision,
+        dispatched,
+      );
+      await expect.poll(() => f.runner.snapshot().status).toBe("idle");
+      expect(dispatched).toHaveBeenCalledTimes(1);
+      expect(f.frames().filter((frame) => frame.type === "user")).toHaveLength(1);
+    },
+    30_000,
+  );
 
   it.each(["send", "prepare"] as const)(
     "restores a failed %s initialize write only after the owned tree is gone",
@@ -704,6 +744,7 @@ while IFS= read -r frame; do printf '%s\\n' "$frame" >> "$FAKE_LOG"; done
       const requestId = randomUUID();
       // A missing interpreter proves no PID started on both supported Unix platforms.
       writeFileSync(f.executable, "#!/agentkib-nonexistent-interpreter\n", { mode: 0o700 });
+      f.environment.STARTUP_READY = "";
       const failed = (await send(owner, sessionId, requestId)) as { error: string };
       expect(failed).toMatchObject({
         controlOutcome: "not-dispatched",

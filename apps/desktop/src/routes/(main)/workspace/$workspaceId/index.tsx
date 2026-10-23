@@ -128,9 +128,16 @@ function Overview({
           <CardContent className="p-0">
             <div className="flex flex-wrap gap-x-2 gap-y-1 px-5 py-4 text-sm">
               {sourceRows.map(([label, value], index) => (
-                <span key={label} className={value ? "text-foreground" : "text-muted-foreground"}>
-                  {index > 0 && <span className="mr-2 text-muted-foreground">·</span>}
+                <span
+                  key={label}
+                  className={`inline-flex items-center gap-1 whitespace-nowrap ${value ? "text-foreground" : "text-muted-foreground"}`}
+                >
                   {label} <span className="tabular-nums">{value}</span>
+                  {index < sourceRows.length - 1 && (
+                    <span aria-hidden="true" className="ml-1 text-muted-foreground">
+                      ·
+                    </span>
+                  )}
                 </span>
               ))}
             </div>

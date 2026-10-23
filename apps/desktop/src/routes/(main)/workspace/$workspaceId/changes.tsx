@@ -1,3 +1,8 @@
+import { AppliedChangesNotice } from "@/features/workspace/AppliedChangesNotice";
+import {
+  WorkspacePlanView,
+  type WorkspacePlanViewProps,
+} from "@/features/workspace/WorkspacePlanView";
 import { fileName, shortPath } from "@/lib/path-display";
 import { useI18n } from "@/core/useI18n";
 import { createFileRoute, useNavigate, useParams, useSearch } from "@tanstack/react-router";
@@ -29,7 +34,7 @@ import {
 import { cn } from "cn";
 import { withAsyncCleanup } from "@/lib/utils";
 import { WorkspaceChangeDiff as Diff } from "@/features/workspace/WorkspaceChangeDiff";
-import type { ChangeSet, SessionHandoffLaunchRequest } from "@/core/types";
+import type { ChangeSet, ContextDoctorReport, SessionHandoffLaunchRequest } from "@/core/types";
 import { AGENT_LABELS as agentLabels } from "@/core/agents";
 import { isClaudeGlobalConfig } from "@/core/claude-global-config";
 function Empty({
@@ -67,7 +72,21 @@ export function Changes({
   onLaunchCompleted,
   onRejected,
   onApplyingChange,
+  planStatus = "ready",
+  onRegenerate = () => {},
+  onResolveConflict = () => {},
+  appliedNotice,
+  onBeforeApply,
+  plannedManifest,
+  baselineManifest,
 }: {
+  plannedManifest?: string;
+  baselineManifest?: string;
+  onBeforeApply?: () => Promise<void>;
+  planStatus?: WorkspacePlanViewProps["status"];
+  onRegenerate?: () => void;
+  onResolveConflict?: (choice: "disk" | "draft") => void;
+  appliedNotice?: WorkspacePlanViewProps["appliedNotice"];
   changeSet?: ChangeSet;
   origin: ChangeSetOrigin;
   homeIncluded?: boolean;
@@ -83,6 +102,7 @@ export function Changes({
 }) {
   const { localizeMessage, tr } = useI18n();
   const workspaceBusy = useWorkspaceStore((state) => state.busy);
+  const workspacePlanning = useWorkspaceStore((state) => state.planningChanges);
   const [selected, setSelected] = useState(0);
   const [busy, setBusy] = useState(false);
   const [planningHome, setPlanningHome] = useState(false);
@@ -183,12 +203,59 @@ export function Changes({
     );
   const apply = async () => {
     if (!hasChanges) return;
+    if (origin === "standard" || origin === "doctor") {
+      const current = useWorkspaceStore.getState();
+      if (
+        planStatus !== "ready" ||
+        current.changeSetInvalidated ||
+        current.changeSetConflict ||
+        current.planningChanges ||
+        ((onBeforeApply || current.changeSet) && current.changeSet !== changeSet)
+      )
+        return;
+    }
     await runLocked(async () => {
-      const result = await api.apply(
-        changeSet,
-        homeApproved,
-        launchRequest?.mode === "native-import" ? launchRequest : undefined,
-      );
+      if (origin === "standard" || origin === "doctor") {
+        const before = useWorkspaceStore.getState();
+        await onBeforeApply?.();
+        const current = useWorkspaceStore.getState();
+        if (
+          !active.current ||
+          current.project !== before.project ||
+          current.selectedWorkspace?.id !== before.selectedWorkspace?.id ||
+          current.changeSet !== before.changeSet ||
+          current.changeSetInvalidated ||
+          current.changeSetConflict ||
+          current.planningChanges
+        )
+          return;
+      }
+      let result;
+      try {
+        result = await api.apply(
+          changeSet,
+          homeApproved,
+          launchRequest?.mode === "native-import" ? launchRequest : undefined,
+        );
+      } catch (reason) {
+        // The backend remains the authority for hashes and permissions. Only its
+        // exact manifest conflict enters the UI's disk/draft reconciliation flow.
+        const target = changeSet.changes.find((file) =>
+          /[\\/]\.agentkib[\\/]manifest\.ya?ml$/.test(file.target),
+        )?.target;
+        const message = reason instanceof Error ? reason.message : String(reason);
+        if (
+          (origin === "standard" || origin === "doctor") &&
+          target &&
+          message.includes(`File was modified externally: ${target}`) &&
+          active.current &&
+          useWorkspaceStore.getState().changeSet?.id === changeSet.id
+        ) {
+          useWorkspaceStore.getState().setChangeSetConflict(true);
+          return;
+        }
+        throw reason;
+      }
       const report = result && typeof result === "object" ? result : undefined;
       // A missing report must not turn a completed write into a retryable failure.
       const applied =
@@ -260,6 +327,33 @@ export function Changes({
     planningHome ||
     !changeSet.changes.length ||
     (changeSet.requires_home_approval && !homeApproved);
+  if (origin === "standard" || origin === "doctor")
+    return (
+      <WorkspacePlanView
+        changeSet={changeSet}
+        origin={origin}
+        status={planStatus}
+        plannedManifest={plannedManifest ?? useWorkspaceStore.getState().changeSetManifest}
+        baselineManifest={baselineManifest ?? useWorkspaceStore.getState().baselineManifest}
+        homeIncluded={homeIncluded}
+        homeApproved={homeApproved}
+        onHomeApprovalChange={setHomeApproved}
+        disabled={disabled}
+        busy={busy || planningHome || workspaceBusy || workspacePlanning}
+        error={error}
+        applying={busy}
+        onApply={() => void apply()}
+        onReject={() => {
+          const current = useWorkspaceStore.getState();
+          if (!applying.current && !planning.current && !current.busy && !current.planningChanges)
+            onRejected();
+        }}
+        onIncludeHome={() => void planHome()}
+        onRegenerate={onRegenerate}
+        onResolveConflict={onResolveConflict}
+        appliedNotice={appliedNotice}
+      />
+    );
   return (
     <div className="grid min-w-0 gap-4 lg:grid-cols-[minmax(240px,.35fr)_minmax(0,1fr)]">
       <div className="rounded-xl border border-border bg-card shadow-sm overflow-hidden">
@@ -314,20 +408,6 @@ export function Changes({
             </span>
           </Button>
         ))}
-        {origin === "standard" && (
-          <div className="grid gap-2 border-t border-border p-4">
-            <p>{tr("changes.homeQuestion")}</p>
-            <Button
-              className="border border-transparent bg-transparent text-foreground hover:bg-muted"
-              onClick={() => void planHome()}
-              disabled={busy || planningHome || workspaceBusy || homeIncluded}
-              aria-busy={planningHome}
-            >
-              {planningHome && <LoaderCircle size={14} className="animate-spin" />}
-              {tr(homeIncluded ? "changes.homeIncluded" : "changes.includeHome")}
-            </Button>
-          </div>
-        )}
         {hasChanges && changeSet.requires_home_approval && (
           <Label className="flex items-center gap-2 border-t border-border p-4 text-xs text-muted-foreground">
             <Checkbox checked={homeApproved} onCheckedChange={setHomeApproved} />
@@ -443,8 +523,13 @@ function WorkspaceChangesRoute() {
     changeSetManifest,
     changeSetIncludesHome,
     changeSetOrigin,
+    changeSetInvalidated,
+    changeSetConflict,
+    planningChanges,
+    appliedChanges,
     handoffLaunchRequest,
     manifest,
+    baselineManifest,
     setChangeSet,
     setHandoffLaunchRequest,
     setHandoffRecoveryChanges,
@@ -457,7 +542,15 @@ function WorkspaceChangesRoute() {
   } = useWorkspaceStore();
   const homePlanRequest = useRef(0);
   const reloadRequest = useRef(0);
-  const activeFlow = hasActiveChangesFlow(changeSet, handoffLaunchRequest);
+  const diagnosisBeforeApply = useRef<ContextDoctorReport | undefined>(undefined);
+  const appliedResult =
+    appliedChanges?.workspaceId === workspaceId && appliedChanges.project === project
+      ? appliedChanges
+      : undefined;
+  const activeFlow =
+    hasActiveChangesFlow(changeSet, handoffLaunchRequest) ||
+    ((changeSetOrigin === "standard" || changeSetOrigin === "doctor") &&
+      (planningChanges || Boolean(appliedResult)));
   const [enteredWithActiveFlow] = useState(activeFlow);
   const navigateTo = useCallback(
     (page: WorkspaceFlowPage, verification = false) => {
@@ -514,26 +607,37 @@ function WorkspaceChangesRoute() {
     [workspaceId],
   );
   useEffect(() => {
-    if (project && !enteredWithActiveFlow) navigateTo("overview");
-  }, [enteredWithActiveFlow, navigateTo, project]);
+    if (project && !enteredWithActiveFlow && !activeFlow) navigateTo("overview");
+  }, [enteredWithActiveFlow, activeFlow, navigateTo, project]);
   if (!project) return <WorkspaceChangesSkeleton />;
-  if (!enteredWithActiveFlow) return <WorkspaceChangesSkeleton />;
+  if (!enteredWithActiveFlow && !activeFlow) return <WorkspaceChangesSkeleton />;
   const planHome = async () => {
-    if (!manifest || !changeSet) return;
+    if (!manifest || !changeSet || useWorkspaceStore.getState().changeSetConflict) return;
     const requestId = ++homePlanRequest.current;
     const targetProject = project;
-    const targetManifest = manifest;
+    const targetManifest =
+      changeSetOrigin === "doctor" && changeSetManifest
+        ? (JSON.parse(changeSetManifest) as typeof manifest)
+        : manifest;
+    const targetDraft = JSON.stringify(manifest);
     const targetChangeSetId = changeSet.id;
     const isCurrentRequest = () =>
       requestId === homePlanRequest.current &&
       useWorkspaceStore.getState().selectedWorkspace?.id === workspaceId &&
       useWorkspaceStore.getState().project === targetProject &&
       useWorkspaceStore.getState().changeSet?.id === targetChangeSetId &&
-      JSON.stringify(useWorkspaceStore.getState().manifest) === JSON.stringify(targetManifest);
-    const nextChangeSet = await api.plan(targetProject, targetManifest, true);
-    if (isCurrentRequest()) setChangeSet(nextChangeSet, targetManifest, true);
-    else if (useWorkspaceStore.getState().project === targetProject)
-      throw new Error(tr("workspace.planSuperseded"));
+      (changeSetOrigin !== "standard" ||
+        JSON.stringify(useWorkspaceStore.getState().manifest) === targetDraft);
+    const planningRevision = useWorkspaceStore.getState().setPlanningChanges(true);
+    try {
+      const nextChangeSet = await api.plan(targetProject, targetManifest, true);
+      if (isCurrentRequest()) setChangeSet(nextChangeSet, targetManifest, true);
+      else if (useWorkspaceStore.getState().project === targetProject)
+        throw new Error(tr("workspace.planSuperseded"));
+    } finally {
+      const current = useWorkspaceStore.getState();
+      current.finishPlanningChanges(planningRevision);
+    }
   };
   const reload = async (plannedManifest?: string, draftAtApply?: string) => {
     const requestId = ++reloadRequest.current;
@@ -553,13 +657,111 @@ function WorkspaceChangesRoute() {
     acceptAppliedManifest(manifest, plannedManifest, draftAtApply);
     return runtime;
   };
+  const regenerate = async (choice?: "disk" | "draft") => {
+    const state = useWorkspaceStore.getState();
+    if (
+      state.busy ||
+      state.applyingChanges ||
+      state.planningChanges ||
+      !state.manifest ||
+      (state.changeSetConflict && !choice)
+    )
+      return;
+    const targetProject = state.project;
+    const targetPlan = state.changeSet?.id;
+    const draftSnapshot = JSON.stringify(state.manifest);
+    const current = () =>
+      useWorkspaceStore.getState().project === targetProject &&
+      useWorkspaceStore.getState().selectedWorkspace?.id === workspaceId &&
+      useWorkspaceStore.getState().changeSet?.id === targetPlan;
+    const planningRevision = state.setPlanningChanges(true);
+    state.setMessage("");
+    try {
+      if (choice) {
+        const disk = await api.manifest(targetProject);
+        if (!current() || JSON.stringify(useWorkspaceStore.getState().manifest) !== draftSnapshot)
+          return;
+        if (choice === "disk") state.setManifest(disk);
+        state.setBaselineManifest(JSON.stringify(disk));
+        state.setChangeSetConflict(false);
+        state.setChangeSetInvalidated(true);
+        return; // Both choices require a newly reviewed plan before any write.
+      }
+      const source =
+        state.changeSetOrigin === "doctor" ? await api.manifest(targetProject) : state.manifest;
+      if (!current()) return;
+      const plan = await api.plan(targetProject, source, state.changeSetIncludesHome);
+      if (!current()) return;
+      if (
+        state.changeSetOrigin === "standard" &&
+        JSON.stringify(useWorkspaceStore.getState().manifest) !== draftSnapshot
+      ) {
+        state.setChangeSetInvalidated(true);
+        return;
+      }
+      state.setChangeSet(plan, source, state.changeSetIncludesHome);
+    } catch (error) {
+      if (current()) state.setMessage(localizeMessage(error));
+    } finally {
+      state.finishPlanningChanges(planningRevision);
+    }
+  };
+  const displayedPlan =
+    changeSet ??
+    (changeSetOrigin === "standard" || changeSetOrigin === "doctor"
+      ? (appliedResult?.changeSet ??
+        (planningChanges
+          ? {
+              id: "generating",
+              project_root: project,
+              created_at: "",
+              changes: [],
+              requires_home_approval: false,
+            }
+          : undefined))
+      : undefined);
   return (
     <Changes
-      changeSet={changeSet}
+      changeSet={displayedPlan}
+      plannedManifest={changeSet ? changeSetManifest : appliedResult?.plannedManifest}
+      baselineManifest={changeSet ? baselineManifest : appliedResult?.baselineManifest}
+      planStatus={
+        changeSetConflict
+          ? "conflict"
+          : planningChanges
+            ? "generating"
+            : changeSetInvalidated
+              ? "stale"
+              : appliedResult && !changeSet
+                ? "applied"
+                : "ready"
+      }
+      onRegenerate={() => void regenerate()}
+      onResolveConflict={(choice) => void regenerate(choice)}
+      appliedNotice={
+        appliedResult && (
+          <AppliedChangesNotice
+            result={appliedResult}
+            onDismiss={() => {
+              setAppliedChanges(undefined);
+              navigateTo(changesReturnPage(changeSetOrigin));
+            }}
+            onDoctor={() => navigateTo("doctor")}
+          />
+        )
+      }
       origin={changeSetOrigin}
       homeIncluded={changeSetIncludesHome}
       launchRequest={handoffLaunchRequest}
       onPlanHome={planHome}
+      onBeforeApply={async () => {
+        diagnosisBeforeApply.current = undefined;
+        try {
+          diagnosisBeforeApply.current = await api.workspaceDoctorReport(workspaceId);
+        } catch {
+          /* A failed read must not turn a successful file write into a retry. */
+        }
+      }}
       onApplied={async (keepLaunchRequest, result) => {
         const targetProject = project;
         const appliedDoctorRepair = changeSetOrigin === "doctor";
@@ -573,6 +775,13 @@ function WorkspaceChangesRoute() {
             applied: result.applied,
             backupDir: result.backup_dir,
             origin: changeSetOrigin,
+            ...(changeSetOrigin === "standard" || changeSetOrigin === "doctor"
+              ? {
+                  plannedManifest: changeSetManifest,
+                  baselineManifest,
+                  diagnosis: { status: "checking" as const, issues: [] },
+                }
+              : {}),
           });
         }
         setChangeSet(undefined);
@@ -603,10 +812,60 @@ function WorkspaceChangesRoute() {
                 setMessage(localizeMessage(error));
             }
           },
-          () => {
+          async () => {
+            if (
+              result &&
+              changeSet &&
+              (changeSetOrigin === "standard" || changeSetOrigin === "doctor")
+            ) {
+              const sameResult = () => {
+                const current = useWorkspaceStore.getState();
+                return (
+                  current.selectedWorkspace?.id === workspaceId &&
+                  current.project === targetProject &&
+                  current.appliedChanges?.changeSet.id === changeSet.id
+                );
+              };
+              try {
+                const report = await api.workspaceDoctorReport(workspaceId);
+                if (sameResult()) {
+                  queryClient.setQueryData(homeKeys.doctorReport(workspaceId), report);
+                  const before = diagnosisBeforeApply.current?.issues.filter(
+                    (issue) => issue.severity !== "info",
+                  );
+                  const after = report.issues.filter((issue) => issue.severity !== "info");
+                  const identity = (issue: (typeof after)[number]) =>
+                    JSON.stringify([
+                      issue.code,
+                      issue.agent,
+                      issue.asset_kind,
+                      issue.evidence.map((item) => [item.path, item.detail]),
+                    ]);
+                  const oldKeys = before ? new Set(before.map(identity)) : undefined;
+                  const newKeys = new Set(after.map(identity));
+                  const current = useWorkspaceStore.getState().appliedChanges!;
+                  setAppliedChanges({
+                    ...current,
+                    diagnosis: {
+                      status: "complete",
+                      resolved: before?.filter((issue) => !newKeys.has(identity(issue))).length,
+                      issues: oldKeys
+                        ? after.filter((issue) => !oldKeys.has(identity(issue)))
+                        : after,
+                    },
+                  });
+                }
+              } catch {
+                if (sameResult())
+                  setAppliedChanges({
+                    ...useWorkspaceStore.getState().appliedChanges!,
+                    diagnosis: { status: "failed", issues: [] },
+                  });
+              }
+            }
             if (!keepLaunchRequest) {
               if (appliedHandoffSetup) navigateToContinuation(true);
-              else navigateTo(returnPage, appliedDoctorRepair);
+              else if (changeSetOrigin === "handoff") navigateTo(returnPage, appliedDoctorRepair);
             }
           },
         );

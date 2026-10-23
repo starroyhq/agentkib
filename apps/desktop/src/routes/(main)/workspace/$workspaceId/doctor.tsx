@@ -2,12 +2,15 @@ import { createFileRoute, useNavigate, useParams, useSearch } from "@tanstack/re
 import { useCallback, useEffect, useRef, useState } from "react";
 import { WorkspaceDoctorSkeleton } from "@/features/workspace/WorkspaceSkeleton";
 import { WorkspaceDoctorPage } from "@/features/workspace/WorkspaceDoctorPage";
+import { doctorWorkspaceRelativePath } from "@/features/workspace/doctor-presentation";
 import { api } from "@/core/api";
+import { useI18n } from "@/core/useI18n";
 import { useWorkspaceStore } from "@/features/workspace/workspace-store";
 import { useAppStore } from "@/stores/app-store";
 import type { ContextDoctorSummary } from "@/core/types";
 
 function WorkspaceDoctorRoute() {
+  const { localizeMessage } = useI18n();
   const navigate = useNavigate();
   const { workspaceId } = useParams({ from: "/(main)/workspace/$workspaceId/doctor" });
   const search = useSearch({ strict: false }) as { doctorVerification?: "applied" };
@@ -64,19 +67,32 @@ function WorkspaceDoctorRoute() {
   );
   if (!selectedWorkspace) return <WorkspaceDoctorSkeleton />;
   const planRepairs = async () => {
-    if (!project) return;
+    const currentState = useWorkspaceStore.getState();
+    if (
+      !project ||
+      currentState.busy ||
+      currentState.planningChanges ||
+      currentState.applyingChanges
+    )
+      return;
+    const planningRevision = currentState.setPlanningChanges(true);
     const requestId = ++repairRequest.current;
     const targetProject = project;
     setAppliedChanges(undefined);
-    const currentManifest = await api.manifest(targetProject);
-    if (requestId !== repairRequest.current) return;
-    const nextChangeSet = await api.plan(targetProject, currentManifest, false);
-    if (requestId !== repairRequest.current) return;
-    if (useWorkspaceStore.getState().selectedWorkspace?.id !== workspaceId) return;
-    setChangeSet(nextChangeSet, currentManifest);
-    setChangeSetOrigin("doctor");
-    setHandoffLaunchRequest(undefined);
-    void navigate({ to: "/workspace/$workspaceId/changes", params: { workspaceId } });
+    try {
+      const currentManifest = await api.manifest(targetProject);
+      if (requestId !== repairRequest.current) return;
+      const nextChangeSet = await api.plan(targetProject, currentManifest, false);
+      if (requestId !== repairRequest.current) return;
+      if (useWorkspaceStore.getState().selectedWorkspace?.id !== workspaceId) return;
+      setChangeSet(nextChangeSet, currentManifest);
+      setChangeSetOrigin("doctor");
+      setHandoffLaunchRequest(undefined);
+      void navigate({ to: "/workspace/$workspaceId/changes", params: { workspaceId } });
+    } finally {
+      const current = useWorkspaceStore.getState();
+      current.finishPlanningChanges(planningRevision);
+    }
   };
   return (
     <WorkspaceDoctorPage
@@ -84,6 +100,20 @@ function WorkspaceDoctorRoute() {
       onRepair={planRepairs}
       verification={verification}
       onDiagnosed={recordDiagnosis}
+      onRevealPath={async (path) => {
+        const relative = doctorWorkspaceRelativePath(project, path);
+        if (relative === undefined) return;
+        const separator = relative.lastIndexOf("/");
+        const directory = separator < 0 ? "" : relative.slice(0, separator);
+        try {
+          // The existing storage action deliberately opens directories only.
+          await api.openWorkspaceStoragePath(workspaceId, directory);
+        } catch (error) {
+          const current = useWorkspaceStore.getState();
+          if (current.project === project && current.selectedWorkspace?.id === workspaceId)
+            current.setMessage(localizeMessage(error));
+        }
+      }}
       onOpenIssue={(destination) => {
         if (destination === "context") {
           void navigate({ to: "/workspace/$workspaceId/context", params: { workspaceId } });

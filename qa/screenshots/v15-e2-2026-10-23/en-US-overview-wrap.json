@@ -1,0 +1,37 @@
+{
+  "itemClass": "inline-flex items-center gap-1 whitespace-nowrap text-foreground",
+  "items": [
+    {
+      "text": "Shared Project Instructions 1·",
+      "x": 367,
+      "y": 427,
+      "width": 197.390625,
+      "whiteSpace": "nowrap",
+      "lastText": "·"
+    },
+    {
+      "text": "Shared Skills 0·",
+      "x": 572.390625,
+      "y": 427,
+      "width": 106.796875,
+      "whiteSpace": "nowrap",
+      "lastText": "·"
+    },
+    {
+      "text": "MCP 0·",
+      "x": 687.1875,
+      "y": 427,
+      "width": 54.28125,
+      "whiteSpace": "nowrap",
+      "lastText": "·"
+    },
+    {
+      "text": "Scoped Rules 0",
+      "x": 367,
+      "y": 451,
+      "width": 100.6484375,
+      "whiteSpace": "nowrap",
+      "lastText": "0"
+    }
+  ]
+}

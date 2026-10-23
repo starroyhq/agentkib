@@ -32,6 +32,7 @@ vi.mock("@tanstack/react-router", async (importOriginal) => ({
 }));
 vi.mock("@/features/home/home-query", async (importOriginal) => ({
   ...(await importOriginal<typeof import("@/features/home/home-query")>()),
+  useHomeDoctorReport: () => ({ data: undefined, refetch: vi.fn() }),
   useHomeWorkspaces: () => ({ data: doubles.workspaces(), isPending: false }),
   useHomeMemories: () => doubles.emptyQuery,
   useHomeRefreshJobs: () => doubles.emptyQuery,

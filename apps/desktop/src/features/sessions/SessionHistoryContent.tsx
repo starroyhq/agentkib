@@ -44,7 +44,7 @@ export function SessionHistoryContent({
             onClick={continuation.continueSession}
           >
             <ArrowUpRight size={13} />
-            {tr("sessions.continueWorkspace")}
+            {tr("handoff.create")}
           </Button>
         ) : (
           <span>{tr(continuation.reasonKey!)}</span>

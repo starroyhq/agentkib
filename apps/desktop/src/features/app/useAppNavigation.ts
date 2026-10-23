@@ -264,7 +264,7 @@ export function useAppNavigation(activeRoute?: ParsedRoute) {
     const workspace = workspaces.find((item) => item.id === workspaceRouteId);
     if (workspace) {
       missingWorkspaceNotice.current = undefined;
-      void openWorkspace(workspace, workspaceRoutePage ?? "overview");
+      void openWorkspace(workspace, workspaceRoutePage ?? "overview", search);
     } else {
       const nextMessage = workspaceLoadError
         ? localizeMessage(workspaceLoadError)
@@ -293,6 +293,7 @@ export function useAppNavigation(activeRoute?: ParsedRoute) {
     location.pathname,
     workspaceRouteId,
     workspaceRoutePage,
+    search,
     selectedWorkspace?.id,
     workspaces,
     workspacesPending,

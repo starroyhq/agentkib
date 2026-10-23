@@ -8,12 +8,18 @@ import { afterEach, beforeAll, beforeEach, expect, it, vi } from "vitest";
 import { initializeI18n, tr } from "@/core/i18n";
 import { homeKeys } from "@/features/home/home-query";
 import { useWorkspaceStore } from "@/features/workspace/workspace-store";
-import type { CatalogAsset, WorkspaceSummary } from "@/core/types";
+import type { ContextDoctorSummary, MemoryRecord, WorkspaceSummary } from "@/core/types";
+import { useAppStore } from "@/stores/app-store";
 import { Route } from "./workspaces";
 
 const doubles = vi.hoisted(() => ({
   workspaces: vi.fn(),
-  catalog: vi.fn(),
+  doctor: vi.fn(),
+  memories: vi.fn(),
+  refresh: vi.fn(),
+  reveal: vi.fn(),
+  exclude: vi.fn(),
+  view: "list",
   pick: vi.fn(),
   add: vi.fn(),
   navigate: vi.fn(),
@@ -23,8 +29,12 @@ const doubles = vi.hoisted(() => ({
 vi.mock("@/core/api", () => ({
   api: {
     workspaces: doubles.workspaces,
-    catalogAssets: doubles.catalog,
-    discoveryReport: async () => undefined,
+    workspaceDoctorSummaries: doubles.doctor,
+    globalMemories: doubles.memories,
+    refreshWorkspace: doubles.refresh,
+    openWorkspaceStoragePath: doubles.reveal,
+    excludeWorkspace: doubles.exclude,
+    discoveryReport: async () => null,
     refreshStatus: async () => [],
     pickDirectory: doubles.pick,
     addWorkspace: doubles.add,
@@ -36,7 +46,7 @@ vi.mock("@/components/AppDialogProvider", () => ({
 vi.mock("@tanstack/react-router", async (original) => ({
   ...(await original<typeof import("@tanstack/react-router")>()),
   createFileRoute: () => (options: unknown) => ({ options }),
-  useSearch: () => ({ workspaceView: "list" }),
+  useSearch: () => ({ workspaceView: doubles.view }),
   useNavigate: () => doubles.navigate,
 }));
 const workspace: WorkspaceSummary = {
@@ -48,15 +58,13 @@ const workspace: WorkspaceSummary = {
   warning_count: 0,
   sources: [],
 };
-const asset: CatalogAsset = {
-  id: "policy",
+const summary: ContextDoctorSummary = {
   workspace_id: "one",
-  scope: "workspace",
-  kind: "instruction",
-  name: "Policy",
-  path: "/alpha/AGENTS.md",
-  summary: "Project guidance",
-  size: 24,
+  error_count: 0,
+  warning_count: 0,
+  info_count: 0,
+  repairable_count: 0,
+  checked_at: "2026-10-23T01:00:00Z",
 };
 function deferred<T>() {
   let resolve!: (value: T) => void;
@@ -71,9 +79,10 @@ function start(cached = false) {
   const client = new QueryClient();
   if (cached) {
     client.setQueryData(homeKeys.workspaces(), [workspace]);
-    client.setQueryData(homeKeys.catalog(), [asset]);
+    client.setQueryData(homeKeys.doctorSummaries([workspace.id]), { [workspace.id]: summary });
+    client.setQueryData(homeKeys.memories(), []);
     doubles.workspaces.mockResolvedValue([workspace]);
-    doubles.catalog.mockResolvedValue([asset]);
+    doubles.doctor.mockResolvedValue([summary]);
   }
   const Component = Route.options.component!;
   const view = render(
@@ -85,11 +94,8 @@ function start(cached = false) {
   );
   return { client, ...view };
 }
-function countValue() {
-  return screen.getByText(tr("workspace.assetsColumn")).parentElement!.querySelector("strong");
-}
 function workspaceButtonName() {
-  return `${workspace.name}, ${tr("workspace.source.manual")}, ${tr(`status.workspace.${workspace.status}`)}`;
+  return `${workspace.name}, ${tr("workspace.source.manual")}, ${tr("workspace.status.healthy")}`;
 }
 beforeAll(async () => {
   const component = Route.options.component;
@@ -99,7 +105,10 @@ beforeAll(async () => {
 beforeEach(async () => {
   vi.resetAllMocks();
   doubles.workspaces.mockResolvedValue([]);
-  doubles.catalog.mockResolvedValue([]);
+  doubles.doctor.mockResolvedValue([summary]);
+  doubles.memories.mockResolvedValue([]);
+  doubles.view = "list";
+  useAppStore.setState({ favoriteWorkspaceIds: [] });
   doubles.pick.mockResolvedValue(null);
   doubles.confirm.mockResolvedValue(true);
   useWorkspaceStore.getState().resetWorkspace();
@@ -130,7 +139,7 @@ it("uses the existing failure state and retries an initially unavailable workspa
   fireEvent.click(within(alert).getByRole("button", { name: tr("runtime.retry") }));
   expect(await screen.findByRole("button", { name: workspaceButtonName() })).toBeVisible();
   expect(doubles.workspaces).toHaveBeenCalledTimes(2);
-  expect(doubles.catalog).toHaveBeenCalledTimes(1);
+  expect(doubles.memories).toHaveBeenCalledTimes(1);
 });
 
 it.each(["zh-CN", "zh-TW", "en-US", "ja-JP"] as const)(
@@ -140,10 +149,10 @@ it.each(["zh-CN", "zh-TW", "en-US", "ja-JP"] as const)(
     start();
     expect(await screen.findByRole("heading", { name: tr("workspace.emptyTitle") })).toBeVisible();
     expect(
-      screen.getByText(tr("workspace.emptyText", { action: tr("workspace.addManually") })),
+      screen.getByText(tr("workspace.emptyText", { action: tr("workspace.addWorkspace") })),
     ).toBeVisible();
     expect(screen.queryByText(tr("workspace.noMatch"))).not.toBeInTheDocument();
-    const buttons = screen.getAllByRole("button", { name: tr("workspace.addManually") });
+    const buttons = screen.getAllByRole("button", { name: tr("workspace.addWorkspace") });
     expect(buttons).toHaveLength(1);
     doubles.pick.mockResolvedValue("/chosen/project");
     doubles.add.mockResolvedValue({ ...workspace, path: "/chosen/project" });
@@ -184,7 +193,7 @@ it("keeps non-search filter semantics when existing workspaces do not match", as
   );
 });
 
-it("preserves the mounted list, search and cached selection on a failed workspace refresh", async () => {
+it("preserves the mounted list and search on a failed workspace refresh", async () => {
   const { client } = start(true);
   const search = await screen.findByRole("textbox", { name: tr("workspace.searchPlaceholder") });
   fireEvent.change(search, { target: { value: "Alpha" } });
@@ -195,10 +204,6 @@ it("preserves the mounted list, search and cached selection on a failed workspac
     refresh = client.invalidateQueries({ queryKey: homeKeys.workspaces() });
   });
   expect(screen.getByRole("textbox", { name: tr("workspace.searchPlaceholder") })).toBe(search);
-  expect(screen.getByRole("button", { name: workspaceButtonName() })).toHaveAttribute(
-    "aria-pressed",
-    "true",
-  );
   await act(async () => {
     pending.reject(new Error("refresh failed"));
     await refresh;
@@ -216,44 +221,168 @@ it("preserves the mounted list, search and cached selection on a failed workspac
   expect(screen.getByRole("textbox", { name: tr("workspace.searchPlaceholder") })).toBe(search);
 });
 
-it("names an initial catalog failure while keeping the real workspace list and an unknown asset count", async () => {
+it("keeps the list visible with an undiagnosed status when diagnostics are unavailable", async () => {
   doubles.workspaces.mockResolvedValue([workspace]);
-  doubles.catalog.mockRejectedValueOnce(new Error("catalog failed"));
+  doubles.doctor.mockRejectedValue(new Error("diagnostics unavailable"));
   start();
-  expect(await screen.findByRole("alert")).toHaveTextContent(tr("query.catalog"));
-  expect(screen.getByRole("alert")).toHaveTextContent(tr("query.initialUnavailable"));
-  expect(screen.getByRole("button", { name: workspaceButtonName() })).toBeVisible();
-  expect(countValue()).toHaveTextContent("—");
-  doubles.catalog.mockResolvedValue([asset]);
-  fireEvent.click(
-    within(screen.getByRole("alert")).getByRole("button", { name: tr("runtime.retry") }),
-  );
+  const alert = await screen.findByRole("alert");
+  expect(alert).toHaveTextContent(tr("query.doctorSummaries"));
+  expect(
+    screen.getByRole("button", {
+      name: `${workspace.name}, ${tr("workspace.source.manual")}, ${tr("workspace.status.undiagnosed")}`,
+    }),
+  ).toBeVisible();
+  doubles.doctor.mockResolvedValue([summary]);
+  fireEvent.click(within(alert).getByRole("button", { name: tr("runtime.retry") }));
+  expect(await screen.findByRole("button", { name: workspaceButtonName() })).toBeVisible();
   await waitFor(() => expect(screen.queryByRole("alert")).not.toBeInTheDocument());
-  expect(countValue()).toHaveTextContent("1");
-  expect(doubles.workspaces).toHaveBeenCalledTimes(1);
 });
 
-it("retains cached asset counts when the catalog refresh fails and retries only catalog data", async () => {
+it("retains cached rows but marks diagnostics unchecked when a refresh fails", async () => {
   const { client } = start(true);
   await screen.findByRole("button", { name: workspaceButtonName() });
-  doubles.catalog.mockRejectedValueOnce(new Error("catalog refresh failed"));
+  doubles.doctor.mockRejectedValueOnce(new Error("diagnostics refresh failed"));
   await act(async () => {
-    await client.invalidateQueries({ queryKey: homeKeys.catalog() });
+    await client.invalidateQueries({ queryKey: homeKeys.doctorSummaries([workspace.id]) });
   });
   const alert = await screen.findByRole("alert");
-  expect(alert).toHaveTextContent(tr("query.catalog"));
+  expect(alert).toHaveTextContent(tr("query.doctorSummaries"));
   expect(alert).toHaveTextContent(tr("query.staleData"));
-  expect(countValue()).toHaveTextContent("1");
+  expect(
+    screen.getByRole("button", {
+      name: `${workspace.name}, ${tr("workspace.source.manual")}, ${tr("workspace.status.undiagnosed")}`,
+    }),
+  ).toBeVisible();
   fireEvent.click(within(alert).getByRole("button", { name: tr("runtime.retry") }));
   await waitFor(() => expect(screen.queryByRole("alert")).not.toBeInTheDocument());
-  expect(countValue()).toHaveTextContent("1");
-  expect(doubles.catalog).toHaveBeenCalledTimes(2);
   expect(doubles.workspaces).not.toHaveBeenCalled();
+});
+
+it("opens a workspace overview on one click and keeps actions from opening it", async () => {
+  start(true);
+  fireEvent.click(await screen.findByRole("button", { name: workspaceButtonName() }));
+  await waitFor(() =>
+    expect(doubles.navigate).toHaveBeenCalledExactlyOnceWith({
+      to: "/workspace/$workspaceId",
+      params: { workspaceId: workspace.id },
+    }),
+  );
+  doubles.navigate.mockClear();
+  fireEvent.click(
+    screen.getByRole("button", { name: tr("workspace.addFavorite", { name: workspace.name }) }),
+  );
+  expect(useAppStore.getState().favoriteWorkspaceIds).toContain(workspace.id);
+  expect(doubles.navigate).not.toHaveBeenCalled();
+  expect(screen.queryByRole("button", { name: tr("common.details") })).not.toBeInTheDocument();
+  expect(screen.queryByRole("group", { name: tr("workspace.pagination") })).not.toBeInTheDocument();
+  const user = userEvent.setup();
+  await user.click(
+    screen.getByRole("button", { name: tr("workspace.moreActions", { name: workspace.name }) }),
+  );
+  expect((await screen.findAllByRole("menuitem")).map((item) => item.textContent)).toEqual([
+    tr("workspace.rescan"),
+    tr("storage.openLocation"),
+    tr("workspace.ignore"),
+  ]);
+  await user.click(await screen.findByRole("menuitem", { name: tr("storage.openLocation") }));
+  await waitFor(() => expect(doubles.reveal).toHaveBeenCalledExactlyOnceWith(workspace.id, ""));
+  expect(doubles.navigate).not.toHaveBeenCalled();
+});
+
+it("keeps rescan and confirmed ignore in the row menu", async () => {
+  start(true);
+  const user = userEvent.setup();
+  const more = await screen.findByRole("button", {
+    name: tr("workspace.moreActions", { name: workspace.name }),
+  });
+  await user.click(more);
+  await user.click(await screen.findByRole("menuitem", { name: tr("workspace.rescan") }));
+  await waitFor(() => expect(doubles.refresh).toHaveBeenCalledExactlyOnceWith(workspace.id));
+  await user.click(more);
+  await user.click(await screen.findByRole("menuitem", { name: tr("workspace.ignore") }));
+  await waitFor(() =>
+    expect(doubles.confirm).toHaveBeenCalledWith({
+      description: tr("workspace.ignoreConfirm"),
+      tone: "destructive",
+    }),
+  );
+  await waitFor(() => expect(doubles.exclude).toHaveBeenCalledExactlyOnceWith(workspace.id));
+  expect(doubles.navigate).not.toHaveBeenCalled();
+});
+
+it("filters by shared diagnostic and pending-memory counts instead of the stored status", async () => {
+  const unchecked = { ...workspace, id: "unchecked", name: "Unchecked", path: "/unchecked" };
+  const warning = { ...workspace, id: "warning", name: "Warning", path: "/warning" };
+  const memory: MemoryRecord = {
+    id: "pending",
+    project_id: workspace.id,
+    memory_type: "project_fact",
+    content: "Review this",
+    status: "pending",
+    created_at: "2026-10-23T01:00:00Z",
+  };
+  doubles.workspaces.mockResolvedValue([workspace, unchecked, warning]);
+  doubles.doctor.mockResolvedValue([
+    summary,
+    { ...summary, workspace_id: warning.id, warning_count: 2 },
+  ]);
+  doubles.memories.mockResolvedValue([memory]);
+  start();
+  expect(
+    await screen.findByRole("button", {
+      name: `${workspace.name}, ${tr("workspace.source.manual")}, ${tr("workspace.status.attention", { count: 1 })}`,
+    }),
+  ).toBeVisible();
+  expect(
+    screen.getByRole("button", {
+      name: `Warning, ${tr("workspace.source.manual")}, ${tr("workspace.status.attention", { count: 2 })}`,
+    }),
+  ).toBeVisible();
+  const user = userEvent.setup();
+  await user.click(screen.getByRole("combobox", { name: tr("workspace.allStatuses") }));
+  await user.click(await screen.findByRole("option", { name: tr("workspace.status.undiagnosed") }));
+  expect(
+    screen.getByRole("button", {
+      name: `Unchecked, ${tr("workspace.source.manual")}, ${tr("workspace.status.undiagnosed")}`,
+    }),
+  ).toBeVisible();
+  expect(screen.queryByText(workspace.name)).not.toBeInTheDocument();
+  expect(screen.queryByText(warning.name)).not.toBeInTheDocument();
+});
+
+it("keeps pagination for multiple pages and places the count by the list title", async () => {
+  doubles.workspaces.mockResolvedValue(
+    Array.from({ length: 9 }, (_, index) => ({
+      ...workspace,
+      id: String(index),
+      name: `Workspace ${index}`,
+      path: `/workspace-${index}`,
+    })),
+  );
+  start();
+  const pagination = await screen.findByRole("group", { name: tr("workspace.pagination") });
+  expect(
+    screen.getByRole("heading", { name: tr("nav.workspaces") }).parentElement,
+  ).toHaveTextContent(tr("workspace.listCount", { count: 9 }));
+  fireEvent.click(within(pagination).getByRole("button", { name: tr("workspace.nextPage") }));
+  expect(screen.getByText("Workspace 8")).toBeVisible();
+  expect(screen.queryByText("Workspace 0")).not.toBeInTheDocument();
+});
+
+it("preserves the space view switch", async () => {
+  start(true);
+  fireEvent.click(await screen.findByRole("button", { name: tr("workspace.view.storage") }));
+  expect(doubles.navigate).toHaveBeenCalledWith({
+    to: "/workspaces",
+    search: expect.any(Function),
+  });
+  const request = doubles.navigate.mock.calls.at(-1)![0];
+  expect(request.search({})).toEqual({ workspaceView: "storage" });
 });
 
 it("keeps the existing apply lock when adding from an empty workspace page", async () => {
   start();
-  const add = await screen.findByRole("button", { name: tr("workspace.addManually") });
+  const add = await screen.findByRole("button", { name: tr("workspace.addWorkspace") });
   useWorkspaceStore.getState().setApplyingChanges(true);
   fireEvent.click(add);
   await waitFor(() => expect(doubles.notify).toHaveBeenCalledWith(tr("workspace.changesApplying")));

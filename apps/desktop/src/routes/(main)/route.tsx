@@ -116,7 +116,7 @@ function MainLayout() {
   const breadcrumb = isWorkspace
     ? [workspaceState.selectedWorkspace?.name ?? tr("nav.workspaces"), tr(`nav.${route.page}`)]
     : active === "home"
-      ? [tr("nav.workspaces"), tr("nav.home")]
+      ? [tr("nav.home")]
       : [tr(entries.find((entry) => entry.id === active)?.label ?? "nav.home")];
   const toolbar = isSessions ? <SessionWindowToolbar /> : <AppToolbar breadcrumb={breadcrumb} />;
   const shellClassName = cn(

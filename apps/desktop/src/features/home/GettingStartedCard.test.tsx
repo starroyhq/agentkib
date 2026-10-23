@@ -5,7 +5,12 @@ import userEvent from "@testing-library/user-event";
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { api } from "@/core/api";
 import { changeLocale, initializeI18n, localizeMessage, tr } from "@/core/i18n";
-import type { OnboardingState, RuntimeInfo, WorkspaceSummary } from "@/core/types";
+import type {
+  ContextDoctorSummary,
+  OnboardingState,
+  RuntimeInfo,
+  WorkspaceSummary,
+} from "@/core/types";
 import { GettingStartedCard } from "./GettingStartedCard";
 
 vi.mock("@/core/api", () => ({ api: { updateOnboarding: vi.fn() } }));
@@ -74,7 +79,7 @@ describe("GettingStartedCard", () => {
         onOpenDoctor={vi.fn()}
       />,
     );
-    expect(screen.getByRole("button", { name: "Run diagnostics" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: tr("onboarding.viewResults") })).toBeTruthy();
   });
 
   it("returns to a workspace while repairable issues remain", async () => {
@@ -99,6 +104,50 @@ describe("GettingStartedCard", () => {
 
     await user.click(screen.getByRole("button", { name: "Review repair plan" }));
     expect(onOpenDoctor).toHaveBeenCalledWith(workspace);
+  });
+
+  it("shows discovered results and opens the first workspace needing attention", async () => {
+    const healthy = {
+      ...workspace,
+      id: "healthy",
+      sources: [{ evidence: "session-cwd", agent: "claude-code", session_count: 1 }],
+    } as WorkspaceSummary;
+    const attention = { ...healthy, id: "attention" };
+    const summary = {
+      workspace_id: healthy.id,
+      error_count: 0,
+      warning_count: 0,
+      checked_at: "2026-10-23T00:00:00Z",
+    } as ContextDoctorSummary;
+    const onOpenDoctor = vi.fn().mockResolvedValue(undefined);
+    render(
+      <GettingStartedCard
+        onboarding={{ ...baseOnboarding, workspace_id: healthy.id }}
+        workspaces={[healthy, attention]}
+        doctorSummaries={{
+          healthy: summary,
+          attention: { ...summary, workspace_id: attention.id, warning_count: 2 },
+        }}
+        onRuntimeChanged={vi.fn()}
+        onAddWorkspace={vi.fn()}
+        onAddRoot={vi.fn()}
+        onOpenDoctor={onOpenDoctor}
+      />,
+    );
+    expect(
+      screen.getByText(
+        tr("onboarding.discoveryHistoryResult", { count: 2, agents: "Claude Code" }),
+      ),
+    ).toBeTruthy();
+    expect(
+      screen.getByText(tr("onboarding.checkedAttention", { count: 2, attention: 1 })),
+    ).toBeTruthy();
+    const current = screen.getByText(tr("onboarding.checkResultsStep")).closest("li");
+    expect(current?.getAttribute("aria-current")).toBe("step");
+    await userEvent
+      .setup()
+      .click(screen.getByRole("button", { name: tr("onboarding.viewIssues") }));
+    expect(onOpenDoctor).toHaveBeenCalledWith(attention);
   });
 
   it("persists dismissal and hides acknowledged guides", async () => {

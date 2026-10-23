@@ -112,6 +112,11 @@ function sessionSurface() {
   );
 }
 
+async function openActionsMenu() {
+  await userEvent.setup().click(screen.getByRole("button", { name: tr("common.moreActions") }));
+  return screen.findByRole("menu");
+}
+
 describe("SessionHubPage", () => {
   beforeAll(() => initializeI18n("en-US"));
   beforeEach(() => {
@@ -163,7 +168,15 @@ describe("SessionHubPage", () => {
     );
     expect(api.sessionEvents).not.toHaveBeenCalled();
     expect(screen.queryByText(tr("sessions.historyReadonly"))).toBeNull();
-    expect(await screen.findByRole("button", { name: "Continue in workspace" })).toBeTruthy();
+    const menu = await openActionsMenu();
+    await userEvent
+      .setup()
+      .click(await within(menu).findByRole("menuitem", { name: tr("handoff.create") }));
+    expect(navigate).toHaveBeenCalledWith({
+      to: "/workspace/$workspaceId/sessions",
+      params: { workspaceId: workspace.id },
+      search: { handoffSession: readable.id },
+    });
   });
 
   it("opens task creation from the existing desktop toolbar", () => {
@@ -181,23 +194,27 @@ describe("SessionHubPage", () => {
       selectedWorkspace: workspace,
     };
     render(<SessionWindowToolbar />);
-    fireEvent.click(await screen.findByRole("button", { name: "Continue in workspace" }));
+    const menu = await openActionsMenu();
+    await userEvent
+      .setup()
+      .click(await within(menu).findByRole("menuitem", { name: tr("handoff.create") }));
     expect(api.sessionSourceCapability).toHaveBeenCalledExactlyOnceWith("indexed-session");
     expect(navigate).toHaveBeenCalledWith({
       to: "/workspace/$workspaceId/sessions",
       params: { workspaceId: workspace.id },
-      search: { sessionId: "indexed-session" },
+      search: { handoffSession: "indexed-session" },
     });
   });
 
-  it("does not route an unindexed managed session into the history-only workspace", () => {
+  it("does not route an unindexed managed session into the history-only workspace", async () => {
     hub = {
       ...hub,
       selected: { ...readable, id: "managed-session", indexedSessionIds: [] },
       selectedWorkspace: workspace,
     };
     render(<SessionWindowToolbar />);
-    expect(screen.queryByRole("button", { name: "Continue in workspace" })).toBeNull();
+    const menu = await openActionsMenu();
+    expect(within(menu).queryByRole("menuitem", { name: tr("handoff.create") })).toBeNull();
     expect(api.sessionSourceCapability).not.toHaveBeenCalled();
   });
 
@@ -258,12 +275,12 @@ describe("SessionHubPage", () => {
     expect(screen.queryByRole("button", { name: /^(send|approve|stop)/i })).toBeNull();
     const readingContext = screen.getByText("Read-only history").parentElement!;
     fireEvent.click(
-      await within(readingContext).findByRole("button", { name: "Continue in workspace" }),
+      await within(readingContext).findByRole("button", { name: tr("handoff.create") }),
     );
     expect(navigate).toHaveBeenCalledWith({
       to: "/workspace/$workspaceId/sessions",
       params: { workspaceId: workspace.id },
-      search: { sessionId: readable.id },
+      search: { handoffSession: readable.id },
     });
     await userEvent.setup().click(screen.getByRole("button", { name: tr("common.moreActions") }));
     await userEvent
@@ -282,8 +299,16 @@ describe("SessionHubPage", () => {
       };
       render(<SessionWindowToolbar />);
 
-      expect(screen.queryByRole("button", { name: "Continue in workspace" })).toBeNull();
-      expect(await screen.findByRole("button", { name: "Continue in workspace" })).toBeEnabled();
+      expect(screen.queryByRole("button", { name: tr("handoff.create") })).toBeNull();
+      const menu = await openActionsMenu();
+      const action = await within(menu).findByRole("menuitem", { name: tr("handoff.create") });
+      expect(action).toBeEnabled();
+      await userEvent.setup().click(action);
+      expect(navigate).toHaveBeenCalledWith({
+        to: "/workspace/$workspaceId/sessions",
+        params: { workspaceId: workspace.id },
+        search: { handoffSession: `${agent}-history` },
+      });
       expect(api.sessionSourceCapability).toHaveBeenCalledWith(`${agent}-history`);
     },
   );
@@ -297,7 +322,8 @@ describe("SessionHubPage", () => {
     render(<SessionWindowToolbar />);
     await act(async () => {});
     expect(api.sessionSourceCapability).toHaveBeenCalledWith(readable.id);
-    expect(screen.queryByRole("button", { name: "Continue in workspace" })).toBeNull();
+    const menu = await openActionsMenu();
+    expect(within(menu).queryByRole("menuitem", { name: tr("handoff.create") })).toBeNull();
   });
 
   it("keeps a text continuation action in the visible read-only notice", async () => {
@@ -305,17 +331,17 @@ describe("SessionHubPage", () => {
     render(sessionSurface());
     const notice = screen.getByText("Read-only history").parentElement!;
     const continuation = await within(notice).findByRole("button", {
-      name: "Continue in workspace",
+      name: tr("handoff.create"),
     });
     expect(continuation).toBeVisible();
-    expect(continuation.textContent).toContain("Continue in workspace");
+    expect(continuation.textContent).toContain(tr("handoff.create"));
     expect(notice.className).not.toMatch(/hidden/);
     expect(continuation.className).not.toMatch(/hidden/);
     fireEvent.click(continuation);
     expect(navigate).toHaveBeenCalledWith({
       to: "/workspace/$workspaceId/sessions",
       params: { workspaceId: workspace.id },
-      search: { sessionId: readable.id },
+      search: { handoffSession: readable.id },
     });
   });
 
@@ -330,16 +356,20 @@ describe("SessionHubPage", () => {
       hub = { ...hub, selected: readable, selectedWorkspace: workspace };
       render(sessionSurface());
       expect(await screen.findByText(tr(key))).toBeVisible();
-      expect(screen.queryByRole("button", { name: "Continue in workspace" })).toBeNull();
+      expect(screen.queryByRole("button", { name: tr("handoff.create") })).toBeNull();
+      const menu = await openActionsMenu();
+      expect(within(menu).queryByRole("menuitem", { name: tr("handoff.create") })).toBeNull();
     },
   );
 
-  it("shows pending source verification and never enables continuation early", () => {
+  it("shows pending source verification and never enables continuation early", async () => {
     vi.mocked(api.sessionSourceCapability).mockReturnValue(new Promise(() => {}));
     hub = { ...hub, selected: readable, selectedWorkspace: workspace };
     render(sessionSurface());
     expect(screen.getByText(tr("sessions.continuation.checking"))).toBeVisible();
-    expect(screen.queryByRole("button", { name: "Continue in workspace" })).toBeNull();
+    expect(screen.queryByRole("button", { name: tr("handoff.create") })).toBeNull();
+    const menu = await openActionsMenu();
+    expect(within(menu).queryByRole("menuitem", { name: tr("handoff.create") })).toBeNull();
   });
 
   it.each<[string, ConversationSessionSummary, WorkspaceSummary | undefined]>([
@@ -350,15 +380,20 @@ describe("SessionHubPage", () => {
       { ...readable, workspace_id: SESSION_COLLECTIONS.projectless },
       { ...workspace, id: SESSION_COLLECTIONS.projectless },
     ],
-  ])("explains the %s gate without checking a source", (reason, selected, selectedWorkspace) => {
-    hub = { ...hub, selected, selectedWorkspace };
-    render(sessionSurface());
-    expect(screen.getByText(tr(`sessions.continuation.${reason}`))).toBeVisible();
-    expect(screen.queryByRole("button", { name: "Continue in workspace" })).toBeNull();
-    expect(api.sessionSourceCapability).not.toHaveBeenCalled();
-  });
+  ])(
+    "explains the %s gate without checking a source",
+    async (reason, selected, selectedWorkspace) => {
+      hub = { ...hub, selected, selectedWorkspace };
+      render(sessionSurface());
+      expect(screen.getByText(tr(`sessions.continuation.${reason}`))).toBeVisible();
+      expect(screen.queryByRole("button", { name: tr("handoff.create") })).toBeNull();
+      const menu = await openActionsMenu();
+      expect(within(menu).queryByRole("menuitem", { name: tr("handoff.create") })).toBeNull();
+      expect(api.sessionSourceCapability).not.toHaveBeenCalled();
+    },
+  );
 
-  it("explains metadata-only records without reading history or offering continuation", () => {
+  it("explains metadata-only records without reading history or offering continuation", async () => {
     hub = { ...hub, selected: metadata, selectedWorkspace: workspace };
     render(sessionSurface());
     expect(
@@ -367,7 +402,9 @@ describe("SessionHubPage", () => {
       ),
     ).toBeTruthy();
     expect(api.sessionEvents).not.toHaveBeenCalled();
-    expect(screen.queryByRole("button", { name: "Continue in workspace" })).toBeNull();
+    expect(screen.queryByRole("button", { name: tr("handoff.create") })).toBeNull();
+    const menu = await openActionsMenu();
+    expect(within(menu).queryByRole("menuitem", { name: tr("handoff.create") })).toBeNull();
     expect(screen.getByText(tr("sessions.continuation.metadata"))).toBeVisible();
     expect(api.sessionSourceCapability).not.toHaveBeenCalled();
     expect(screen.queryByRole("textbox")).toBeNull();
@@ -399,7 +436,9 @@ describe("SessionHubPage", () => {
     expect(await screen.findByText("Cached remote history")).toBeTruthy();
     expect(readRemoteHistory).toHaveBeenCalledWith(selected);
     expect(api.sessionEvents).not.toHaveBeenCalled();
-    expect(screen.queryByRole("button", { name: "Continue in workspace" })).toBeNull();
+    expect(screen.queryByRole("button", { name: tr("handoff.create") })).toBeNull();
+    const menu = await openActionsMenu();
+    expect(within(menu).queryByRole("menuitem", { name: tr("handoff.create") })).toBeNull();
     expect(screen.getByText(tr("sessions.continuation.remote"))).toBeVisible();
     expect(api.sessionSourceCapability).not.toHaveBeenCalled();
     expect(screen.queryByRole("textbox")).toBeNull();

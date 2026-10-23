@@ -4,6 +4,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import { claudeSections } from "../../../packages/backend/src/context-claude";
 import { CONTEXT_NOTE_PREFIX } from "../../../packages/backend/src/context-files";
 import { Doctor } from "../../../packages/backend/src/doctor";
+import { RUNTIME_METHODS } from "@agentkib/runtime-protocol";
 import { contextFixture, type ContextFixture } from "./fixtures/claude-context";
 
 // Claude Code reads AGENTS.md as a fallback only when no CLAUDE.md-style file exists in the
@@ -31,6 +32,27 @@ afterEach(() => {
 });
 const summary = (preview: Awaited<ReturnType<ContextFixture["resolve"]>>) =>
   preview.sections.map((section) => [path.basename(section.source), section.scope]);
+
+describe("workspace diagnostic summary requests", () => {
+  it("omits failed checks and keeps the results before and after a failed workspace", async () => {
+    const f = fixture();
+    f.write("CLAUDE.md", "# Project\nUse tabs.\n");
+    const doctor = new Doctor(f.context, (id) => {
+      if (id === "unavailable") throw new Error("Workspace is unavailable");
+      return f.project;
+    });
+    const summaries = await doctor.request(RUNTIME_METHODS.workspaceDoctorSummaries, {
+      workspaceIds: ["first", "unavailable", "last"],
+    });
+    expect(summaries).toEqual([
+      expect.objectContaining({ workspace_id: "first", error_count: 0, warning_count: 0 }),
+      expect.objectContaining({ workspace_id: "last", error_count: 0, warning_count: 0 }),
+    ]);
+    await expect(
+      doctor.request(RUNTIME_METHODS.workspaceDoctorReport, { id: "unavailable" }),
+    ).rejects.toThrow("Workspace is unavailable");
+  });
+});
 
 describe("Claude Code instruction sources", () => {
   it("uses AGENTS.md when the project has no CLAUDE.md-style file", async () => {

@@ -3,16 +3,17 @@ import { createFileRoute, useNavigate, useParams } from "@tanstack/react-router"
 import { WorkspaceOverviewSkeleton } from "@/features/workspace/WorkspaceSkeleton";
 import { useWorkspaceStore, type ChangeSetOrigin } from "@/features/workspace/workspace-store";
 import { WorkspaceContextHealthCard } from "@/features/workspace/WorkspaceContextHealthCard";
+import { WorkspaceRecentSessions } from "@/features/workspace/WorkspaceRecentSessions";
 import { useHomeDoctorReport } from "@/features/home/home-query";
+import { useAppStore } from "@/stores/app-store";
 import { AgentIcon } from "@/features/agents/AgentIcon";
 import { WorkspaceObsidianCard } from "@/features/obsidian/ObsidianIntegration";
-import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
-import { CircleAlert, Copy } from "lucide-react";
+import { ChevronRight, CircleAlert } from "lucide-react";
 import { formatRelativeTime } from "@/core/i18n";
-import type { Manifest, WorkspaceScan, WorkspaceSummary } from "@/core/types";
+import type { DoctorIssue, Manifest, WorkspaceScan, WorkspaceSummary } from "@/core/types";
 import { AGENT_LABELS as agentLabels } from "@/core/agents";
 function relativeTime(value: string) {
   return formatRelativeTime(value);
@@ -23,20 +24,26 @@ function Overview({
   manifest,
   onOpenDoctor,
   onOpenChanges,
+  onOpenAssets,
   pendingChanges,
   pendingHandoffRecovery,
   busy,
   doctorSummary,
+  doctorIssues,
+  sessionsEnabled,
 }: {
   workspace: WorkspaceSummary;
   scan: WorkspaceScan;
   manifest: Manifest;
   onOpenDoctor: () => void;
   onOpenChanges: () => void;
+  onOpenAssets: () => void;
   pendingChanges?: { origin: ChangeSetOrigin; count: number };
   pendingHandoffRecovery: boolean;
   busy: boolean;
   doctorSummary?: import("@/core/types").ContextDoctorSummary;
+  doctorIssues?: DoctorIssue[];
+  sessionsEnabled: boolean;
 }) {
   const { tr } = useI18n();
   const pendingDoctorReview = pendingChanges?.origin === "doctor";
@@ -59,6 +66,13 @@ function Overview({
   ] as const;
   return (
     <div className="grid gap-5">
+      <WorkspaceContextHealthCard
+        summary={doctorSummary}
+        issues={doctorIssues}
+        pendingReview={pendingDoctorReview}
+        onOpenDoctor={onOpenDoctor}
+        onOpenChanges={onOpenChanges}
+      />
       {pendingHandoffRecovery && (
         <Card
           role="status"
@@ -70,7 +84,7 @@ function Overview({
               {tr("overview.pendingHandoffRecoveryText")}
             </p>
           </div>
-          <Button onClick={onOpenChanges} disabled={busy}>
+          <Button variant="outline" onClick={onOpenChanges} disabled={busy}>
             {tr("overview.openHandoffRecovery")}
           </Button>
         </Card>
@@ -88,17 +102,11 @@ function Overview({
               {tr("overview.pendingChangesText")}
             </p>
           </div>
-          <Button onClick={onOpenChanges} disabled={busy}>
+          <Button variant="outline" onClick={onOpenChanges} disabled={busy}>
             {tr("overview.contextHealthReviewChanges")}
           </Button>
         </Card>
       )}
-      <WorkspaceContextHealthCard
-        summary={doctorSummary}
-        pendingReview={pendingDoctorReview}
-        onOpenDoctor={onOpenDoctor}
-        onOpenChanges={onOpenChanges}
-      />
       {scan.warnings.map((warning) => (
         <div
           className="flex items-start gap-2.5 rounded-xl border border-amber-500/30 bg-amber-500/5 px-4 py-3 text-sm text-amber-700"
@@ -108,110 +116,76 @@ function Overview({
           <span>{warning}</span>
         </div>
       ))}
-      <div className="flex flex-wrap items-center justify-between gap-x-6 gap-y-2 rounded-xl border border-border/70 bg-muted/20 px-4 py-3 text-xs text-muted-foreground">
-        <Button
-          variant="bare"
-          size="content"
-          type="button"
-          className="flex min-w-0 max-w-full items-center gap-2 text-left transition-colors hover:text-foreground"
-          title={tr("workspace.copyPath")}
-          onClick={() => void navigator.clipboard?.writeText(workspace.path)}
-        >
-          <code className="truncate">{workspace.path}</code>
-          <Copy size={13} className="shrink-0" />
-        </Button>
-        <div className="flex flex-wrap items-center gap-x-5 gap-y-1">
-          <span>
-            <strong className="mr-1.5 font-medium text-foreground">
-              {tr("workspace.discoverySources")}
-            </strong>
-            {sources}
-          </span>
-          <span>
-            <strong className="mr-1.5 font-medium text-foreground">
-              {tr("workspace.lastScanLabel")}
-            </strong>
-            {workspace.last_scanned_at
-              ? relativeTime(workspace.last_scanned_at)
-              : tr("common.never")}
-          </span>
-        </div>
-      </div>
-      <div className="grid items-start gap-5 lg:grid-cols-[minmax(300px,.8fr)_minmax(420px,1.2fr)]">
-        <Card className="overflow-hidden rounded-2xl border-border/70 shadow-sm">
+      <div className="grid items-start gap-5 lg:grid-cols-2">
+        <Card className="overflow-hidden rounded-xl border-border/70 shadow-none">
           <CardHeader className="flex flex-row items-center justify-between gap-3 border-b border-border/70 px-5 py-4">
-            <div>
-              <CardTitle className="text-base">{tr("overview.publicSource")}</CardTitle>
-              <p className="mt-1 text-xs text-muted-foreground">
-                {tr("workspace.discoverySources")}: {sources}
-              </p>
-            </div>
-            {scan.manifest_exists && (
-              <Badge variant="outline">Schema v{manifest.schema_version}</Badge>
-            )}
+            <CardTitle className="text-base">{tr("overview.publicSource")}</CardTitle>
+            <Button variant="link" className="h-auto p-0 text-xs" onClick={onOpenAssets}>
+              {tr("overview.openAssets")}
+            </Button>
           </CardHeader>
           <CardContent className="p-0">
-            <div className="divide-y divide-border/70">
-              {sourceRows.map(([label, value]) => (
-                <div className="flex items-center justify-between gap-4 px-5 py-3.5" key={label}>
-                  <span className="text-sm text-muted-foreground">{label}</span>
-                  <strong className="text-sm tabular-nums text-foreground">{value}</strong>
-                </div>
+            <div className="flex flex-wrap gap-x-2 gap-y-1 px-5 py-4 text-sm">
+              {sourceRows.map(([label, value], index) => (
+                <span key={label} className={value ? "text-foreground" : "text-muted-foreground"}>
+                  {index > 0 && <span className="mr-2 text-muted-foreground">·</span>}
+                  {label} <span className="tabular-nums">{value}</span>
+                </span>
               ))}
             </div>
-          </CardContent>
-        </Card>
-        <Card className="overflow-hidden rounded-2xl border-border/70 shadow-sm">
-          <CardHeader className="border-b border-border/70 px-5 py-4">
-            <CardTitle className="text-base">{tr("overview.projectAgentConfigs")}</CardTitle>
-            <p className="mt-1 text-xs text-muted-foreground">
-              {tr("overview.nativeAssets", {
-                count: configuredAgents.reduce((total, agent) => total + agent.asset_count, 0),
-              })}
-            </p>
-          </CardHeader>
-          <CardContent className="p-0">
-            <div className="divide-y divide-border/70">
-              {configuredAgents.map((agent) => (
-                <div className="flex items-center gap-3 px-5 py-3.5" key={agent.agent}>
-                  <AgentIcon agent={agent.agent} />
-                  <span className="min-w-0 flex-1">
-                    <strong className="block truncate text-sm">{agentLabels[agent.agent]}</strong>
-                    <small className="mt-0.5 block text-xs text-muted-foreground">
+            <Collapsible className="border-t border-border/70">
+              <CollapsibleTrigger className="group flex w-full items-center gap-2 px-5 py-4 text-left text-sm">
+                <ChevronRight
+                  size={14}
+                  className="shrink-0 transition-transform group-data-[panel-open]:rotate-90"
+                />
+                {tr("overview.agentAssetsSummary", {
+                  count: configuredAgents.reduce((total, agent) => total + agent.asset_count, 0),
+                  agents: configuredAgents.length,
+                })}
+              </CollapsibleTrigger>
+              <CollapsibleContent className="px-5 pb-4">
+                {configuredAgents.map((agent) => (
+                  <div key={agent.agent} className="flex items-center gap-2 py-2 text-xs">
+                    <AgentIcon agent={agent.agent} />
+                    <span>{agentLabels[agent.agent]}</span>
+                    <span className="ml-auto text-muted-foreground">
                       {tr("overview.nativeAssets", { count: agent.asset_count })}
-                    </small>
-                  </span>
-                  <Badge variant={agent.warnings.length ? "destructive" : "secondary"}>
-                    {tr(agent.warnings.length ? "status.workspace.attention" : "overview.detected")}
-                  </Badge>
-                </div>
-              ))}
-              {!configuredAgents.length && (
-                <p className="px-5 py-5 text-xs text-muted-foreground">
-                  {tr("overview.noProjectAgentConfigs")}
-                </p>
-              )}
-              {unconfiguredAgents.length > 0 && (
-                <Collapsible className="px-5 py-3.5 text-xs text-muted-foreground">
-                  <CollapsibleTrigger>
-                    {tr("overview.otherAgents", { count: unconfiguredAgents.length })}
-                  </CollapsibleTrigger>
-                  <CollapsibleContent className="mt-3 grid gap-2">
-                    {unconfiguredAgents.map((agent) => (
-                      <div className="flex items-center gap-2" key={agent.agent}>
-                        <AgentIcon agent={agent.agent} />
-                        <span>{agentLabels[agent.agent]}</span>
-                        <span className="ml-auto">{tr("overview.noProjectConfig")}</span>
-                      </div>
-                    ))}
-                  </CollapsibleContent>
-                </Collapsible>
-              )}
-            </div>
+                    </span>
+                  </div>
+                ))}
+                {!configuredAgents.length && (
+                  <p className="text-xs text-muted-foreground">
+                    {tr("overview.noProjectAgentConfigs")}
+                  </p>
+                )}
+                {unconfiguredAgents.length > 0 && (
+                  <Collapsible className="pt-3 text-xs text-muted-foreground">
+                    <CollapsibleTrigger>
+                      {tr("overview.otherAgents", { count: unconfiguredAgents.length })}
+                    </CollapsibleTrigger>
+                    <CollapsibleContent className="mt-3 grid gap-2">
+                      {unconfiguredAgents.map((agent) => (
+                        <div className="flex items-center gap-2" key={agent.agent}>
+                          <AgentIcon agent={agent.agent} />
+                          <span>{agentLabels[agent.agent]}</span>
+                          <span className="ml-auto">{tr("overview.noProjectConfig")}</span>
+                        </div>
+                      ))}
+                    </CollapsibleContent>
+                  </Collapsible>
+                )}
+              </CollapsibleContent>
+            </Collapsible>
           </CardContent>
         </Card>
+        <WorkspaceRecentSessions workspace={workspace} enabled={sessionsEnabled} />
       </div>
       <WorkspaceObsidianCard workspaceId={workspace.id} />
+      <p className="px-1 text-xs text-muted-foreground">
+        {tr("workspace.discoverySources")} {sources} · {tr("workspace.lastScanLabel")}{" "}
+        {workspace.last_scanned_at ? relativeTime(workspace.last_scanned_at) : tr("common.never")}
+      </p>
     </div>
   );
 }
@@ -232,6 +206,7 @@ function WorkspaceOverviewRoute() {
     applyingChanges,
   } = useWorkspaceStore();
   const doctorReport = useHomeDoctorReport(workspaceId);
+  const sessionsEnabled = useAppStore((state) => state.runtime?.session_index_enabled === true);
   if (!selectedWorkspace || !scan || !manifest) return <WorkspaceOverviewSkeleton />;
   const pendingChanges =
     selectedWorkspace.id === workspaceId &&
@@ -243,7 +218,7 @@ function WorkspaceOverviewRoute() {
       changeSetManifest === JSON.stringify(manifest))
       ? { origin: changeSetOrigin, count: changeSet.changes.length }
       : undefined;
-  const open = (page: "doctor" | "changes") =>
+  const open = (page: "doctor" | "changes" | "assets") =>
     void navigate({
       to: `/workspace/$workspaceId/${page}` as never,
       params: { workspaceId } as never,
@@ -261,9 +236,12 @@ function WorkspaceOverviewRoute() {
         selectedWorkspace.path === project,
       )}
       busy={busy || applyingChanges}
-      doctorSummary={doctorReport.data?.summary}
+      doctorSummary={doctorReport.isError ? undefined : doctorReport.data?.summary}
+      doctorIssues={doctorReport.isError ? undefined : doctorReport.data?.issues}
+      sessionsEnabled={sessionsEnabled}
       onOpenDoctor={() => open("doctor")}
       onOpenChanges={() => open("changes")}
+      onOpenAssets={() => open("assets")}
     />
   );
 }

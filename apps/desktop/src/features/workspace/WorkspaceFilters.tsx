@@ -1,5 +1,4 @@
 import { useI18n } from "@/core/useI18n";
-import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import {
@@ -11,10 +10,11 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-import { FolderGit2, RefreshCw, Search } from "lucide-react";
-import type { AgentKind, WorkspaceSummary } from "@/core/types";
+import { FolderGit2, Search } from "lucide-react";
+import type { AgentKind } from "@/core/types";
 import { AGENT_LABELS as agentLabels } from "@/core/agents";
 import type { WorkspaceView } from "./workspace-page-types";
+import type { WorkspaceDisplayState } from "./workspace-status";
 
 export function WorkspacePageHeader({
   view,
@@ -32,7 +32,7 @@ export function WorkspacePageHeader({
         {view === "list" && (
           <Button className="h-9 rounded-lg px-3.5" onClick={onAddWorkspace}>
             <FolderGit2 size={15} />
-            {tr("workspace.addManually")}
+            {tr("workspace.addWorkspace")}
           </Button>
         )}
       </div>
@@ -66,22 +66,16 @@ export function WorkspaceFilters({
   query,
   status,
   agent,
-  resultCount,
-  discoveryRefreshing,
   onQueryChange,
   onStatusChange,
   onAgentChange,
-  onRefreshDiscovery,
 }: {
   query: string;
-  status: "all" | WorkspaceSummary["status"];
+  status: "all" | WorkspaceDisplayState;
   agent: "all" | AgentKind;
-  resultCount: number;
-  discoveryRefreshing: boolean;
   onQueryChange: (value: string) => void;
-  onStatusChange: (value: "all" | WorkspaceSummary["status"]) => void;
+  onStatusChange: (value: "all" | WorkspaceDisplayState) => void;
   onAgentChange: (value: "all" | AgentKind) => void;
-  onRefreshDiscovery: () => void;
 }) {
   const { tr } = useI18n();
   return (
@@ -127,8 +121,7 @@ export function WorkspaceFilters({
           <Select
             value={status}
             onValueChange={(value) => {
-              if (value !== null)
-                onStatusChange(String(value) as "all" | WorkspaceSummary["status"]);
+              if (value !== null) onStatusChange(String(value) as "all" | WorkspaceDisplayState);
             }}
           >
             <SelectTrigger
@@ -136,37 +129,25 @@ export function WorkspaceFilters({
               className="h-10 min-w-[146px] max-[520px]:min-w-0 max-[520px]:flex-1"
             >
               <SelectValue>
-                {status === "all" ? tr("workspace.allStatuses") : tr(`status.workspace.${status}`)}
+                {status === "all"
+                  ? tr("workspace.allStatuses")
+                  : tr(
+                      status === "attention"
+                        ? "workspace.status.attentionFilter"
+                        : `workspace.status.${status}`,
+                    )}
               </SelectValue>
             </SelectTrigger>
             <SelectContent>
               <SelectGroup>
                 <SelectLabel>{tr("workspace.allStatuses")}</SelectLabel>
                 <SelectItem value="all">{tr("workspace.allStatuses")}</SelectItem>
-                <SelectItem value="healthy">{tr("status.workspace.healthy")}</SelectItem>
-                <SelectItem value="attention">{tr("status.workspace.attention")}</SelectItem>
+                <SelectItem value="healthy">{tr("workspace.status.healthy")}</SelectItem>
+                <SelectItem value="attention">{tr("workspace.status.attentionFilter")}</SelectItem>
+                <SelectItem value="undiagnosed">{tr("workspace.status.undiagnosed")}</SelectItem>
               </SelectGroup>
             </SelectContent>
           </Select>
-          <Badge
-            variant="outline"
-            className="h-8 rounded-lg border-border bg-muted px-2.5 text-xs tabular-nums text-muted-foreground"
-            aria-live="polite"
-          >
-            {tr("workspace.resultCount", { count: resultCount })}
-          </Badge>
-          <Button
-            variant="outline"
-            size="icon"
-            className="size-10 rounded-xl"
-            title={tr("workspace.refreshDiscovery")}
-            aria-label={tr("workspace.refreshDiscovery")}
-            aria-busy={discoveryRefreshing}
-            onClick={onRefreshDiscovery}
-            disabled={discoveryRefreshing}
-          >
-            <RefreshCw size={15} className={discoveryRefreshing ? "animate-spin" : ""} />
-          </Button>
         </div>
       </div>
     </div>

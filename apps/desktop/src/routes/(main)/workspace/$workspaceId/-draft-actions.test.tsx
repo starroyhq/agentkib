@@ -21,6 +21,8 @@ vi.mock("@tanstack/react-router", async (importOriginal) => ({
   Outlet: () => <p>Assets editor</p>,
 }));
 vi.mock("@/features/home/home-query", () => ({
+  useHomeDoctorReport: () => ({ data: undefined, refetch: vi.fn() }),
+  useHomeMemories: () => ({ data: [] }),
   useHomeWorkspaces: () => ({ data: [], isPending: false }),
 }));
 vi.mock("@/features/workspace/WorkspaceOpenWith", () => ({ WorkspaceOpenWith: () => null }));
@@ -87,8 +89,8 @@ describe("workspace draft controls", () => {
     expect(confirm).toHaveBeenCalledWith(expect.objectContaining({ tone: "destructive" }));
     expect(screen.queryByText("Unsaved sections: 1")).toBeNull();
     expect(useWorkspaceStore.getState().workspaceDrafts.workspace).toBeUndefined();
-    expect(screen.getByRole("button", { name: "Review changes" })).toBeDisabled();
-    expect(screen.getByText("There are no unsaved draft changes.")).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Review changes" })).toBeNull();
+    expect(screen.queryByText("There are no unsaved draft changes.")).toBeNull();
   });
 
   it("retains the draft and its cache when confirmation is cancelled", async () => {

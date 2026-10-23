@@ -27,6 +27,14 @@ function WorkspaceSessionsRoute() {
       workspace={selectedWorkspace}
       enabled={runtime?.session_index_enabled === true}
       targetAgents={targetAgents}
+      installedAgents={installations.filter((agent) => agent.installed).map((agent) => agent.agent)}
+      onOpenSession={
+        search.handoffSession || search.handoffResume
+          ? undefined
+          : (sessionId) => {
+              void navigate({ to: "/sessions", search: { sessionId } });
+            }
+      }
       onOpenClaudeSession={(sessionId, panel) => {
         const view = useSessionViewStore.getState();
         view.resetFilters();
@@ -44,13 +52,20 @@ function WorkspaceSessionsRoute() {
         setChangeSetOrigin("handoff");
         void navigate({ to: "/workspace/$workspaceId/changes", params: { workspaceId } });
       }}
-      initialSessionId={search.sessionId}
+      initialSessionId={
+        search.sessionId ?? (!search.handoffTarget ? search.handoffSession : undefined)
+      }
+      openHandoffOnInitialSession={!!search.handoffSession && !search.handoffTarget}
       onInitialSessionConsumed={() => {
         void navigate({
           to: "/workspace/$workspaceId/sessions",
           params: { workspaceId },
           replace: true,
-          search: (current) => ({ ...current, sessionId: undefined }),
+          search: (current) => ({
+            ...current,
+            sessionId: undefined,
+            ...(!search.handoffTarget ? { handoffSession: undefined } : {}),
+          }),
         });
       }}
       resumeContinuation={

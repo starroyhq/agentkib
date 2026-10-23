@@ -1,5 +1,5 @@
 import { useI18n } from "@/core/useI18n";
-import { Check, CircleAlert, RefreshCw } from "lucide-react";
+import { ArrowDown, Check, CircleAlert, RefreshCw } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import type { DiscoveryReport } from "@/core/types";
 
@@ -40,6 +40,7 @@ export function HomeSummaryBar({
             <Check size={16} />
           )}
           {issuesPending ? tr("common.loading") : tr("home.issueSummary", { count: issueCount })}
+          <ArrowDown size={14} />
         </Button>
         {metrics.map(({ label, value, pending, onClick }) => (
           <Button
@@ -61,7 +62,7 @@ export function HomeSummaryBar({
             : tr("home.discovering")}
         </span>
       </div>
-      <Button className="shrink-0 gap-2" onClick={onRefresh}>
+      <Button variant="outline" className="shrink-0 gap-2" onClick={onRefresh}>
         <RefreshCw size={15} />
         {tr("common.refresh")}
       </Button>

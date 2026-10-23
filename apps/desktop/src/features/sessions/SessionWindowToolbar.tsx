@@ -110,18 +110,6 @@ export function SessionWindowToolbar() {
         {interactive && (
           <div data-session-window-files-slot className="flex shrink-0 items-center empty:hidden" />
         )}
-        {canContinue && (
-          <Button
-            variant="outline"
-            size="icon"
-            className="max-[1050px]:hidden"
-            aria-label={tr("sessions.continueWorkspace")}
-            title={tr("sessions.continueWorkspace")}
-            onClick={continueSession}
-          >
-            <ArrowUpRight size={15} />
-          </Button>
-        )}
         <Button
           variant="outline"
           size="icon"
@@ -157,7 +145,7 @@ export function SessionWindowToolbar() {
               {canContinue && (
                 <DropdownMenuItem onClick={continueSession}>
                   <ArrowUpRight size={15} />
-                  {tr("sessions.continueWorkspace")}
+                  {tr("handoff.create")}
                 </DropdownMenuItem>
               )}
               <DropdownMenuItem disabled={hub.refreshing} onClick={() => void hub.refresh()}>

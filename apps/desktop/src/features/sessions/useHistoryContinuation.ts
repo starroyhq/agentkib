@@ -44,7 +44,7 @@ export function useHistoryContinuation(
     void navigate({
       to: "/workspace/$workspaceId/sessions",
       params: { workspaceId: workspace.id },
-      search: { sessionId: historyId },
+      search: { handoffSession: historyId },
     });
   };
   return { canContinue, continueSession, reasonKey };

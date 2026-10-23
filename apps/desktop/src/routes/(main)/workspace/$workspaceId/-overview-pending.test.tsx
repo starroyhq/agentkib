@@ -18,6 +18,9 @@ vi.mock("@tanstack/react-router", async (importOriginal) => ({
 }));
 vi.mock("@/features/home/home-query", () => ({ useHomeDoctorReport: () => ({ data: undefined }) }));
 vi.mock("@/features/obsidian/ObsidianIntegration", () => ({ WorkspaceObsidianCard: () => null }));
+vi.mock("@/features/workspace/WorkspaceRecentSessions", () => ({
+  WorkspaceRecentSessions: () => null,
+}));
 
 const workspace: WorkspaceSummary = {
   id: "workspace",
@@ -65,7 +68,7 @@ async function renderRoute() {
       </Suspense>,
     );
   });
-  await screen.findByText("Diagnostics");
+  await screen.findByText("Shared assets");
 }
 
 describe("overview pending changes", () => {

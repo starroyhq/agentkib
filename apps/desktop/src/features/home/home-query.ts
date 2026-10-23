@@ -3,7 +3,7 @@ import { useContext } from "react";
 import { QueryClient, QueryClientContext, notifyManager, useQuery } from "@tanstack/react-query";
 import { api } from "@/core/api";
 import { desktopApi } from "@/core/desktop";
-import type { RefreshJobStatus } from "@/core/types";
+import type { ContextDoctorReport, ContextDoctorSummary, RefreshJobStatus } from "@/core/types";
 
 // React batches subscription updates; publish Query state without an extra timer.
 notifyManager.setScheduler((callback) => callback());
@@ -228,7 +228,34 @@ export function useHomeDoctorReport(workspaceId: string) {
     {
       ...queryDefaults,
       queryKey: homeKeys.doctorReport(workspaceId),
-      queryFn: () => api.workspaceDoctorReport(workspaceId),
+      queryFn: async () => {
+        let report: ContextDoctorReport;
+        try {
+          report = await api.workspaceDoctorReport(workspaceId);
+        } catch (error) {
+          queryClient.setQueriesData<Record<string, ContextDoctorSummary>>(
+            { queryKey: [...homeKeys.all, "doctor-summaries"] },
+            (current) => {
+              if (!current || !Object.hasOwn(current, workspaceId)) return current;
+              const next = { ...current };
+              delete next[workspaceId];
+              return next;
+            },
+          );
+          throw error;
+        }
+        queryClient.setQueriesData<Record<string, ContextDoctorSummary>>(
+          {
+            queryKey: [...homeKeys.all, "doctor-summaries"],
+            predicate: (query) => {
+              const requestedIds = query.queryKey[2];
+              return Array.isArray(requestedIds) && requestedIds.includes(workspaceId);
+            },
+          },
+          (current) => (current ? { ...current, [workspaceId]: report.summary } : current),
+        );
+        return report;
+      },
       staleTime: 0,
     },
     queryClient,

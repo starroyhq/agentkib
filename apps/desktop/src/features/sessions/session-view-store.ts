@@ -151,3 +151,10 @@ export const useSessionViewStore = create<{
   setScrollTop: (scrollTop) => set({ scrollTop }),
   resetFilters: () => set({ agent: "all", filter: "current", host: "all" }),
 }));
+
+/** Make a deep-linked session visible without discarding already compatible filters. */
+export function prepareSessionNavigation(session: ConversationSessionSummary) {
+  const view = useSessionViewStore.getState();
+  view.revealSession(session);
+  view.setCreatingConversation(false);
+}

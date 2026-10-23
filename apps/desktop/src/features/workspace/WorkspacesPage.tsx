@@ -3,10 +3,19 @@ import { useEffect, useMemo, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { WorkspaceStoragePage } from "@/features/workspace/WorkspaceStoragePage";
 import { cn } from "cn";
+import { History, RefreshCw, TriangleAlert } from "lucide-react";
+import { AGENT_LABELS } from "@/core/agents";
+import { getWorkspaceStatus, type WorkspaceDisplayState } from "./workspace-status";
 import { FolderGit2 } from "lucide-react";
-import type { AgentKind, DiscoveryReport, RefreshJobStatus, WorkspaceSummary } from "@/core/types";
-import { formatRelativeTime, tr as i18nTr } from "@/core/i18n";
-import { WorkspaceDetailsPanel } from "./WorkspaceDetailsPanel";
+import type {
+  AgentKind,
+  ContextDoctorSummary,
+  DiscoveryReport,
+  MemoryRecord,
+  RefreshJobStatus,
+  WorkspaceSummary,
+} from "@/core/types";
+import { tr as i18nTr } from "@/core/i18n";
 import { WorkspaceFilters, WorkspacePageHeader } from "./WorkspaceFilters";
 import { WorkspaceListPanel } from "./WorkspaceListPanel";
 import type { WorkspaceView } from "./workspace-page-types";
@@ -20,9 +29,8 @@ export function WorkspacesPage({
   favoriteWorkspaceIds,
   onToggleFavorite,
   discovery,
-  assetCounts,
-  catalogPending = false,
-  catalogError = false,
+  doctorSummaries,
+  memories,
   discoveryRefreshing,
   refreshingWorkspaceIds,
   onAddWorkspace,
@@ -32,6 +40,7 @@ export function WorkspacesPage({
   onOpenDiscoveryDetails,
   onRefreshWorkspace,
   onExclude,
+  onReveal,
 }: {
   view: WorkspaceView;
   storageJob?: RefreshJobStatus;
@@ -39,9 +48,8 @@ export function WorkspacesPage({
   favoriteWorkspaceIds: string[];
   onToggleFavorite: (workspaceId: string) => void;
   discovery?: DiscoveryReport;
-  assetCounts: Map<string, number>;
-  catalogPending?: boolean;
-  catalogError?: boolean;
+  doctorSummaries: Record<string, ContextDoctorSummary>;
+  memories: MemoryRecord[];
   discoveryRefreshing: boolean;
   refreshingWorkspaceIds?: string[];
   onAddWorkspace: () => void;
@@ -51,22 +59,32 @@ export function WorkspacesPage({
   onOpenDiscoveryDetails: () => void;
   onRefreshWorkspace: (id: string) => Promise<void>;
   onExclude: (id: string) => Promise<void>;
+  onReveal: (id: string) => Promise<void>;
 }) {
   const { tr, formatRelativeTime: relativeTime } = useI18n();
   const [query, setQuery] = useState("");
-  const [status, setStatus] = useState<"all" | WorkspaceSummary["status"]>("all");
+  const [status, setStatus] = useState<"all" | WorkspaceDisplayState>("all");
   const [agent, setAgent] = useState<"all" | AgentKind>("all");
-  const [selectedId, setSelectedId] = useState(workspaces[0]?.id ?? "");
   const [page, setPage] = useState(1);
+  const statuses = useMemo(
+    () =>
+      new Map(
+        workspaces.map((workspace) => [
+          workspace.id,
+          getWorkspaceStatus(workspace.id, doctorSummaries[workspace.id], memories),
+        ]),
+      ),
+    [workspaces, doctorSummaries, memories],
+  );
   const filtered = useMemo(
     () =>
       workspaces.filter(
         (item) =>
           `${item.name} ${item.path}`.toLowerCase().includes(query.toLowerCase()) &&
-          (status === "all" || item.status === status) &&
+          (status === "all" || statuses.get(item.id)?.state === status) &&
           (agent === "all" || item.sources.some((source) => source.agent === agent)),
       ),
-    [agent, query, status, workspaces],
+    [agent, query, status, workspaces, statuses],
   );
   useEffect(() => setPage(1), [agent, query, status]);
   const totalPages = Math.max(1, Math.ceil(filtered.length / WORKSPACES_PER_PAGE));
@@ -77,13 +95,6 @@ export function WorkspacesPage({
     () => filtered.slice((activePage - 1) * WORKSPACES_PER_PAGE, activePage * WORKSPACES_PER_PAGE),
     [activePage, filtered],
   );
-  useEffect(() => {
-    if (!paginatedWorkspaces.some((workspace) => workspace.id === selectedId)) {
-      setSelectedId(paginatedWorkspaces[0]?.id ?? "");
-    }
-  }, [paginatedWorkspaces, selectedId]);
-  const selectedWorkspace =
-    paginatedWorkspaces.find((workspace) => workspace.id === selectedId) ?? paginatedWorkspaces[0];
   const discoveryStatus = discoveryStatusSummary(discovery, discoveryRefreshing, tr, relativeTime);
 
   if (view === "storage") {
@@ -110,67 +121,67 @@ export function WorkspacesPage({
         query={query}
         status={status}
         agent={agent}
-        resultCount={filtered.length}
-        discoveryRefreshing={discoveryRefreshing}
         onQueryChange={setQuery}
         onStatusChange={setStatus}
         onAgentChange={setAgent}
-        onRefreshDiscovery={onRefreshDiscovery}
       />
-      <Button
-        variant="ghost"
-        className="h-auto min-h-8 justify-start gap-2 px-2 py-1 text-xs text-muted-foreground hover:text-foreground"
-        onClick={onOpenDiscoveryDetails}
-        aria-label={tr("workspace.discoveryDetailsLink")}
+      <div
+        className={cn(
+          "flex flex-wrap items-center gap-x-2 gap-y-1 px-1 text-xs",
+          discoveryStatus.tone === "warning" ? "text-[var(--amber)]" : "text-muted-foreground",
+        )}
       >
-        <span
-          className={cn(
-            "size-1.5 rounded-full",
-            discoveryStatus.tone === "error"
-              ? "bg-destructive"
-              : discoveryStatus.tone === "warning"
-                ? "bg-amber-500"
-                : discoveryStatus.tone === "success"
-                  ? "bg-emerald-500"
-                  : "bg-muted-foreground",
-          )}
-        />
+        {discoveryStatus.tone === "warning" ? (
+          <TriangleAlert size={14} aria-hidden="true" />
+        ) : (
+          <History size={14} aria-hidden="true" />
+        )}
         <span>{discoveryStatus.label}</span>
         {discoveryStatus.reportedAt && (
-          <span className="text-muted-foreground">{discoveryStatus.reportedAt}</span>
+          <>
+            <span>·</span>
+            <span>{discoveryStatus.reportedAt}</span>
+          </>
         )}
-        <span className="text-muted-foreground">·</span>
-        <span>{tr("workspace.discoveryDetailsLink")}</span>
-      </Button>
-      <div className="grid items-start gap-5 min-[1024px]:grid-cols-[minmax(360px,1fr)_minmax(0,1.25fr)]">
-        <WorkspaceListPanel
-          workspaces={paginatedWorkspaces}
-          totalCount={workspaces.length}
-          selectedId={selectedId}
-          pageStart={pageStart}
-          pageEnd={pageEnd}
-          filteredCount={filtered.length}
-          activePage={activePage}
-          totalPages={totalPages}
-          favoriteWorkspaceIds={favoriteWorkspaceIds}
-          onSelect={setSelectedId}
-          onOpen={onOpen}
-          onToggleFavorite={onToggleFavorite}
-          onPageChange={setPage}
-        />
-        {selectedWorkspace && (
-          <WorkspaceDetailsPanel
-            workspace={selectedWorkspace}
-            assetCount={assetCounts.get(selectedWorkspace.id) ?? selectedWorkspace.asset_count}
-            catalogPending={catalogPending}
-            catalogError={catalogError}
-            refreshing={refreshingWorkspaceIds?.includes(selectedWorkspace.id) ?? false}
-            onOpen={onOpen}
-            onRefresh={onRefreshWorkspace}
-            onExclude={onExclude}
-          />
-        )}
+        <span>·</span>
+        <Button
+          variant="link"
+          className="h-auto p-0 text-xs text-primary-text"
+          onClick={onOpenDiscoveryDetails}
+        >
+          {tr("workspace.discoverySettings")}
+        </Button>
+        <Button
+          variant="ghost"
+          size="icon-sm"
+          className="ml-auto text-muted-foreground"
+          aria-label={tr("workspace.refreshDiscovery")}
+          title={tr("workspace.refreshDiscovery")}
+          aria-busy={discoveryRefreshing}
+          disabled={discoveryRefreshing}
+          onClick={onRefreshDiscovery}
+        >
+          <RefreshCw size={14} className={discoveryRefreshing ? "animate-spin" : ""} />
+        </Button>
       </div>
+      <WorkspaceListPanel
+        workspaces={paginatedWorkspaces}
+        totalCount={workspaces.length}
+        statuses={statuses}
+        pageStart={pageStart}
+        pageEnd={pageEnd}
+        filteredCount={filtered.length}
+        activePage={activePage}
+        totalPages={totalPages}
+        favoriteWorkspaceIds={favoriteWorkspaceIds}
+        refreshingWorkspaceIds={refreshingWorkspaceIds}
+        onOpen={onOpen}
+        onToggleFavorite={onToggleFavorite}
+        onPageChange={setPage}
+        onRefresh={onRefreshWorkspace}
+        onReveal={onReveal}
+        onExclude={onExclude}
+      />
     </div>
   );
 }
@@ -202,32 +213,39 @@ export function discoveryStatusSummary(
   }
   const sourceFailures =
     discovery.source_diagnostics?.filter((source) =>
-      ["failed", "permission-denied"].includes(source.status),
+      ["failed", "permission-denied", "partial"].includes(source.status),
     ).length ?? 0;
   if (discovery.errors.length || sourceFailures > 0) {
     return {
       label: translateFn("workspace.discoveryAttention", {
-        count: discovery.errors.length + sourceFailures,
+        count: Math.max(discovery.errors.length, sourceFailures),
       }),
-      reportedAt: reportedLabel,
-      tone: "error" as const,
-    };
-  }
-  if (
-    discovery.source_diagnostics?.some((source) =>
-      ["not-configured", "missing", "partial", "unsupported"].includes(source.status),
-    )
-  ) {
-    return {
-      label: translateFn("workspace.discoveryPartial"),
       reportedAt: reportedLabel,
       tone: "warning" as const,
     };
   }
+  const sources = [
+    ...new Set(
+      discovery.source_diagnostics?.flatMap((source) => {
+        if (!source.agent || !(source.included_count ?? source.candidate_count ?? 0)) return [];
+        const agent = AGENT_LABELS[source.agent];
+        return [
+          source.source === "history-and-index"
+            ? translateFn("workspace.discoveryHistorySource", { agent })
+            : agent,
+        ];
+      }) ?? [],
+    ),
+  ];
   return {
-    label: translateFn("workspace.discoveryComplete"),
-    reportedAt: reportedLabel,
-    tone: "success" as const,
+    label: sources.length
+      ? translateFn("workspace.discoveryFoundFrom", {
+          count: discovery.discovered_count,
+          sources: sources.join(" · "),
+        })
+      : translateFn("workspace.discoveryFound", { count: discovery.discovered_count }),
+    reportedAt: reportedAt ? relativeTime(reportedAt) : undefined,
+    tone: "neutral" as const,
   };
 }
 

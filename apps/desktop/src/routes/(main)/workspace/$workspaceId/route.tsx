@@ -21,10 +21,15 @@ import {
   WorkspaceSessionsSkeleton,
 } from "@/features/workspace/WorkspaceSkeleton";
 import { useAppStore } from "@/stores/app-store";
-import { useHomeWorkspaces } from "@/features/home/home-query";
+import {
+  useHomeWorkspaces,
+  useHomeDoctorReport,
+  useHomeMemories,
+} from "@/features/home/home-query";
+import { getWorkspaceStatus } from "@/features/workspace/workspace-status";
+import { usePathDisplay } from "@/lib/usePathDisplay";
 import { useWorkspaceStore } from "@/features/workspace/workspace-store";
 import { api } from "@/core/api";
-import { tr } from "@/core/i18n";
 import { cn } from "cn";
 import { withAsyncCleanup } from "@/lib/utils";
 import type { Manifest, WorkspaceScan, WorkspaceSummary } from "@/core/types";
@@ -48,6 +53,7 @@ function WorkspaceActions({
   onReview,
   reviewDisabled,
   reviewDisabledReason,
+  showReview,
 }: {
   workspace: WorkspaceSummary;
   onError: (message: string) => void;
@@ -57,15 +63,11 @@ function WorkspaceActions({
   onReview: () => void | Promise<void>;
   reviewDisabled: boolean;
   reviewDisabledReason?: string;
+  showReview: boolean;
 }) {
   const { tr } = useI18n();
   return (
     <div className="flex flex-wrap items-center justify-end gap-1.5 md:gap-2">
-      {workspace.status === "attention" && (
-        <Badge variant="outline" className="mr-1 border-amber-500/30 bg-amber-500/5 text-amber-700">
-          {workspaceStatusLabel("attention")}
-        </Badge>
-      )}
       <WorkspaceOpenWith workspace={workspace} onError={onError} />
       <DropdownMenu>
         <DropdownMenuTrigger
@@ -93,28 +95,26 @@ function WorkspaceActions({
       >
         <RefreshCw size={15} className={busy ? "animate-spin" : ""} />
       </Button>
-      <span className="grid justify-items-end gap-1">
-        <Button
-          className="h-9 rounded-lg px-3"
-          onClick={() => void onReview()}
-          disabled={reviewDisabled || locked}
-          aria-describedby={reviewDisabledReason ? "workspace-review-reason" : undefined}
-        >
-          <GitCompareArrows size={15} />
-          {tr("workspace.reviewChanges")}
-        </Button>
-        {reviewDisabledReason && (
-          <span id="workspace-review-reason" className="max-w-64 text-xs text-muted-foreground">
-            {reviewDisabledReason}
-          </span>
-        )}
-      </span>
+      {showReview && (
+        <span className="grid justify-items-end gap-1">
+          <Button
+            className="h-9 rounded-lg px-3"
+            onClick={() => void onReview()}
+            disabled={reviewDisabled || locked}
+            aria-describedby={reviewDisabledReason ? "workspace-review-reason" : undefined}
+          >
+            <GitCompareArrows size={15} />
+            {tr("workspace.reviewChanges")}
+          </Button>
+          {reviewDisabledReason && (
+            <span id="workspace-review-reason" className="max-w-64 text-xs text-muted-foreground">
+              {reviewDisabledReason}
+            </span>
+          )}
+        </span>
+      )}
     </div>
   );
-}
-
-function workspaceStatusLabel(status: WorkspaceSummary["status"]) {
-  return tr(`status.workspace.${status}`);
 }
 
 type Page = "overview" | "sessions" | "git" | "assets" | "context" | "doctor" | "changes";
@@ -125,6 +125,14 @@ function WorkspaceLayout() {
   const dialogs = useAppDialogs();
   const location = useLocation();
   const { workspaceId } = useParams({ from: "/(main)/workspace/$workspaceId" });
+  const doctorReport = useHomeDoctorReport(workspaceId);
+  const memories = useHomeMemories();
+  const displayPath = usePathDisplay();
+  const status = getWorkspaceStatus(
+    workspaceId,
+    doctorReport.isError ? undefined : doctorReport.data?.summary,
+    memories.data ?? [],
+  );
   const setRuntime = useAppStore((state) => state.setRuntime);
   const workspaceState = useWorkspaceStore();
   const { data: workspaces = [], isPending: workspacesPending } = useHomeWorkspaces();
@@ -269,6 +277,7 @@ function WorkspaceLayout() {
             .cacheWorkspaceDraft(workspaceId, resolvedManifest, nextBaseline);
           setRuntime(runtimeResult.value);
           setLoadFailure(undefined);
+          void doctorReport.refetch();
           if (!resolvedManifest && currentPage !== "doctor") {
             void navigate({
               to: "/workspace/$workspaceId/doctor",
@@ -426,14 +435,17 @@ function WorkspaceLayout() {
                 {activeWorkspace.name}
               </h1>
               <Badge
-                variant={activeWorkspace.status === "attention" ? "destructive" : "outline"}
-                className={
-                  activeWorkspace.status === "healthy"
-                    ? "border-transparent bg-muted text-muted-foreground"
-                    : undefined
-                }
+                variant="outline"
+                className={cn(
+                  "border-transparent",
+                  status.state === "attention"
+                    ? "bg-warning/10 text-warning"
+                    : status.state === "healthy"
+                      ? "bg-emerald-500/10 text-emerald-700"
+                      : "bg-muted text-muted-foreground",
+                )}
               >
-                {workspaceStatusLabel(activeWorkspace.status)}
+                {tr(`workspace.status.${status.state}`, { count: status.issueCount })}
               </Badge>
               {hasUnsavedDraft && (
                 <Badge variant="outline">
@@ -441,9 +453,24 @@ function WorkspaceLayout() {
                 </Badge>
               )}
             </div>
-            <code className="mt-1 block truncate text-xs text-muted-foreground">
-              {activeWorkspace.path}
-            </code>
+            <div className="mt-1 flex min-w-0 items-center gap-2">
+              <code
+                title={activeWorkspace.path}
+                className="block truncate text-xs text-muted-foreground"
+              >
+                {displayPath(activeWorkspace.path)}
+              </code>
+              <Button
+                variant="bare"
+                size="content"
+                className="shrink-0 text-muted-foreground hover:text-foreground"
+                title={tr("workspace.copyPath")}
+                aria-label={tr("workspace.copyPath")}
+                onClick={() => void navigator.clipboard?.writeText(activeWorkspace.path)}
+              >
+                <Copy size={13} />
+              </Button>
+            </div>
           </div>
         </div>
         <div className="flex flex-wrap items-center gap-2">
@@ -464,14 +491,13 @@ function WorkspaceLayout() {
             locked={applyingChanges || discarding}
             onReview={() => plan(false)}
             reviewDisabled={busy || !hasUnsavedDraft}
+            showReview={hasUnsavedDraft}
             reviewDisabledReason={
               applyingChanges
                 ? tr("changes.applying")
                 : busy || discarding
                   ? tr("common.loading")
-                  : !hasUnsavedDraft
-                    ? tr("workspace.noDraftChanges")
-                    : undefined
+                  : undefined
             }
           />
         </div>

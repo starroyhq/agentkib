@@ -3,7 +3,7 @@
 import "@testing-library/jest-dom/vitest";
 import { act, cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { changeLocale, initializeI18n } from "@/core/i18n";
+import { changeLocale, initializeI18n, tr } from "@/core/i18n";
 import type { WorkspaceSummary } from "@/core/types";
 import { PendingTasksCard } from "./HomeTaskCards";
 
@@ -80,6 +80,13 @@ describe("empty pending-task diagnostics action", () => {
     await initializeI18n("en-US");
     renderCard([]);
     expect(screen.queryByRole("button")).toBeNull();
+  });
+
+  it("does not call an unchecked workspace healthy", async () => {
+    await initializeI18n("en-US");
+    renderCard([first]);
+    expect(screen.getByText(tr("home.uncheckedWorkspaces"))).toBeVisible();
+    expect(screen.queryByText(tr("home.allClear"))).toBeNull();
   });
 
   it("updates the named action when switching languages without changing its destination", async () => {

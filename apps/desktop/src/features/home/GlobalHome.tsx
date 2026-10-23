@@ -3,7 +3,6 @@ import { useRef, useState } from "react";
 import { FolderGit2 } from "lucide-react";
 import { Card } from "@/components/ui/card";
 import type {
-  ActivityRecord,
   AgentInstallation,
   ContextDoctorSummary,
   DiscoveryReport,
@@ -16,11 +15,8 @@ import { GettingStartedCard } from "./GettingStartedCard";
 import type { RecentContinuation } from "./home-continuations";
 import { HomeSummaryBar } from "./HomeSummaryBar";
 import { ContinueWorkCard, PendingTasksCard } from "./HomeTaskCards";
-import {
-  RecentActivitySection,
-  RecentWorkspacesCard,
-  WorkspaceAddActions,
-} from "./HomeRecentSections";
+import { RecentWorkspacesCard, WorkspaceAddActions } from "./HomeRecentSections";
+import { getWorkspaceStatus } from "@/features/workspace/workspace-status";
 
 export type AssetSection = "instructions" | "skills" | "mcp" | "memory" | "other";
 export type ContinuationHomeState =
@@ -46,14 +42,11 @@ export function GlobalHome({
   installations,
   memories,
   discovery,
-  activity,
-  activityPending = false,
   issuesPending = false,
   installationsPending = false,
   catalogPending = false,
   uniqueAssetCount,
   assetCounts,
-  onShowActivity,
   onShowWorkspaces,
   onShowAgents,
   recentContinuations = [],
@@ -78,15 +71,12 @@ export function GlobalHome({
   installations: AgentInstallation[];
   memories: MemoryRecord[];
   discovery?: DiscoveryReport;
-  activity: ActivityRecord[];
-  activityPending?: boolean;
   issuesPending?: boolean;
   installationsPending?: boolean;
   catalogPending?: boolean;
   insights?: InsightsSummary;
   uniqueAssetCount: number;
   assetCounts: Map<string, number>;
-  onShowActivity: () => void;
   onShowWorkspaces: () => void;
   onShowAgents: () => void;
   recentContinuations?: RecentContinuation[];
@@ -135,22 +125,15 @@ export function GlobalHome({
     recentContinuations,
   );
   const attention = workspaces.filter(
-    (item) =>
-      item.status === "attention" ||
-      (doctorSummaries[item.id]?.error_count ?? 0) +
-        (doctorSummaries[item.id]?.warning_count ?? 0) >
-        0,
+    (item) => getWorkspaceStatus(item.id, doctorSummaries[item.id]).diagnosticIssueCount > 0,
   );
   const pending = memories.filter((item) => item.status === "pending").length;
-  const doctorIssueCount = Object.values(doctorSummaries).reduce(
-    (total, summary) => total + summary.error_count + summary.warning_count,
+  const doctorIssueCount = workspaces.reduce(
+    (total, workspace) =>
+      total + getWorkspaceStatus(workspace.id, doctorSummaries[workspace.id]).diagnosticIssueCount,
     0,
   );
-  const legacyAttentionCount = attention.filter((workspace) => {
-    const summary = doctorSummaries[workspace.id];
-    return !summary || summary.error_count + summary.warning_count === 0;
-  }).length;
-  const issueCount = doctorIssueCount + legacyAttentionCount + pending;
+  const issueCount = doctorIssueCount + pending;
   const metrics = [
     {
       label: tr("home.workspaceMetric"),
@@ -190,7 +173,7 @@ export function GlobalHome({
   const continueWorkCard = (
     <ContinueWorkCard
       state={resolvedContinuationState}
-      recentContinuations={recentContinuations}
+      recentContinuations={showOnboarding ? recentContinuations.slice(0, 2) : recentContinuations}
       slow={continuationSlow}
       error={continuationError}
       onContinue={onContinue}
@@ -208,6 +191,9 @@ export function GlobalHome({
           onboarding={runtime?.onboarding}
           workspaces={workspaces}
           doctorSummaries={doctorSummaries}
+          memories={memories}
+          installations={installations}
+          installationsPending={installationsPending}
           onRuntimeChanged={onRuntimeChanged}
           additionsBusy={adding}
           onAddWorkspace={addWorkspace}
@@ -222,47 +208,40 @@ export function GlobalHome({
         </p>
       )}
 
-      <HomeSummaryBar
-        issueCount={issueCount}
-        issuesPending={issuesPending}
-        metrics={metrics}
-        discovery={discovery}
-        onShowPending={openPendingTasks}
-        onRefresh={onRefresh}
-      />
-
-      {!workspaces.length && !showOnboarding ? (
-        <Card className="grid min-h-[260px] place-content-center justify-items-center gap-3 rounded-xl border-dashed bg-card p-8 text-center shadow-none">
-          <span className="grid size-12 place-items-center rounded-xl bg-primary/8 text-primary">
-            <FolderGit2 size={24} />
-          </span>
-          <h2 className="text-lg font-semibold tracking-[-.02em]">{tr("home.emptyTitle")}</h2>
-          <p className="max-w-md text-sm leading-6 text-muted-foreground">{tr("home.emptyText")}</p>
-          <WorkspaceAddActions busy={adding} onAddWorkspace={addWorkspace} onAddRoot={addRoot} />
-        </Card>
-      ) : workspaces.length > 0 ? (
+      {!workspaces.length ? (
+        showOnboarding ? (
+          <p className="text-sm leading-6 text-muted-foreground">{tr("home.emptySummary")}</p>
+        ) : (
+          <Card className="grid min-h-[260px] place-content-center justify-items-center gap-3 rounded-xl border-dashed bg-card p-8 text-center shadow-none">
+            <span className="grid size-12 place-items-center rounded-xl bg-primary/8 text-primary">
+              <FolderGit2 size={24} />
+            </span>
+            <h2 className="text-lg font-semibold tracking-[-.02em]">{tr("home.emptyTitle")}</h2>
+            <p className="max-w-md text-sm leading-6 text-muted-foreground">
+              {tr("home.emptyText")}
+            </p>
+            <WorkspaceAddActions busy={adding} onAddWorkspace={addWorkspace} onAddRoot={addRoot} />
+          </Card>
+        )
+      ) : (
         <div className="grid items-start gap-5 lg:grid-cols-[minmax(0,1fr)_360px]">
           <div className="grid gap-6">
-            {issuesPending || issueCount > 0 ? (
-              <>
-                {pendingTasksCard}
-                {continueWorkCard}
-              </>
-            ) : (
-              <>
-                {continueWorkCard}
-                {pendingTasksCard}
-              </>
-            )}
-            <RecentActivitySection
-              activity={activity}
-              pending={activityPending}
-              onShowActivity={onShowActivity}
+            <HomeSummaryBar
+              issueCount={issueCount}
+              issuesPending={issuesPending}
+              metrics={metrics}
+              discovery={discovery}
+              onShowPending={openPendingTasks}
+              onRefresh={onRefresh}
             />
+            {pendingTasksCard}
+            {continueWorkCard}
           </div>
           <RecentWorkspacesCard
             workspaces={workspaces}
             assetCounts={assetCounts}
+            doctorSummaries={doctorSummaries}
+            memories={memories}
             onOpen={onOpen}
             onShowWorkspaces={onShowWorkspaces}
             additionsBusy={adding}
@@ -270,7 +249,7 @@ export function GlobalHome({
             onAddRoot={addRoot}
           />
         </div>
-      ) : null}
+      )}
     </div>
   );
 }

@@ -1282,7 +1282,11 @@ describe("relay managed WebSocket transport", () => {
     const client = await open({ head: Buffer.from("first") });
     client.socket.pause();
     client.socket.write(payload);
-    expect(await received.promise).toEqual(Buffer.concat([Buffer.from("first"), payload]));
+    // Compare every byte natively: deep equality enumerates these large Buffers
+    // twice and can consume the unchanged timeout before the socket resumes.
+    expect((await received.promise).equals(Buffer.concat([Buffer.from("first"), payload]))).toBe(
+      true,
+    );
     client.socket.resume();
     await vi.waitFor(() =>
       expect(client.bytes().length).toBeGreaterThan(payload.length + "first-from-server".length),
@@ -1293,9 +1297,9 @@ describe("relay managed WebSocket transport", () => {
     expect(bytes.subarray(0, boundary).toString()).toContain(
       "Sec-WebSocket-Protocol: agentkib.fixture",
     );
-    expect(bytes.subarray(boundary)).toEqual(
-      Buffer.concat([Buffer.from("first-from-server"), payload]),
-    );
+    expect(
+      bytes.subarray(boundary).equals(Buffer.concat([Buffer.from("first-from-server"), payload])),
+    ).toBe(true);
     client.socket.destroy();
   });
 

@@ -14,38 +14,39 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  quality:
-    name: Test, lint and build
+  changes:
+    name: Classify quality scope
+    runs-on: ubuntu-22.04
+    timeout-minutes: 20
+    outputs:
+      mode: ${{ steps.scope.outputs.mode }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Classify complete pull request diff
+        id: scope
+        run: node .github/scripts/ci-quality.mjs changes
+
+  checks:
+    name: Format, lint, typecheck and build
+    needs: changes
+    if: ${{ needs.changes.outputs.mode != 'docs' }}
     runs-on: ubuntu-22.04
     timeout-minutes: 20
     steps:
       - name: Checkout
         uses: actions/checkout@v7
-
-      - name: Install Linux build dependencies
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends \
-            build-essential pkg-config libssl-dev \
-            libgtk-3-dev
-
-      - name: Setup pnpm
-        uses: pnpm/action-setup@v6
         with:
-          run_install: false
+          persist-credentials: false
 
-      - name: Setup Node.js
-        uses: actions/setup-node@v7
+      - name: Setup quality environment
+        uses: ./.github/actions/setup-quality
         with:
-          node-version: 22
-          cache: pnpm
-          cache-dependency-path: pnpm-lock.yaml
-
-      - name: Install dependencies
-        run: pnpm install --frozen-lockfile
-
-      - name: Diagnose Linux build environment
-        run: apps/desktop/scripts/diagnose-linux.sh --strict
+          native: "true"
 
       - name: Check formatting
         run: pnpm format:check
@@ -53,11 +54,11 @@ jobs:
       - name: Lint desktop and backend
         run: pnpm lint
 
-      - name: Test frontend
-        run: pnpm test
-
       - name: Test release startup checks
         run: node --test .github/scripts/*.test.mjs
+
+      - name: Verify desktop test partition
+        run: node .github/scripts/verify-ci-quality-partition.mjs
 
       - name: Typecheck frontend
         run: pnpm typecheck
@@ -67,3 +68,89 @@ jobs:
 
       - name: Build hosted Web
         run: pnpm build:web:hosted
+
+  desktop:
+    name: Desktop tests (${{ matrix.shard }}/2)
+    needs: changes
+    if: ${{ needs.changes.outputs.mode != 'docs' }}
+    runs-on: ubuntu-22.04
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2]
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: Setup quality environment
+        uses: ./.github/actions/setup-quality
+        with:
+          native: "true"
+
+      - name: Build desktop test backend
+        run: pnpm --filter @agentkib/desktop backend:build
+
+      - name: Test ordinary desktop shard
+        run: pnpm --filter @agentkib/desktop exec vitest run --project=desktop --shard=${{ matrix.shard }}/2
+
+  safety:
+    name: Serial filesystem and MCP tests
+    needs: changes
+    if: ${{ needs.changes.outputs.mode != 'docs' }}
+    runs-on: ubuntu-22.04
+    timeout-minutes: 20
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: Setup quality environment
+        uses: ./.github/actions/setup-quality
+        with:
+          native: "true"
+
+      - name: Build desktop test backend
+        run: pnpm --filter @agentkib/desktop backend:build
+
+      - name: Test serial safety projects
+        run: pnpm --filter @agentkib/desktop exec vitest run --project=filesystem --project=mcp-latency
+
+  web:
+    name: Web tests
+    needs: changes
+    if: ${{ needs.changes.outputs.mode != 'docs' }}
+    runs-on: ubuntu-22.04
+    timeout-minutes: 20
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: Setup quality environment
+        uses: ./.github/actions/setup-quality
+
+      - name: Test Web
+        run: pnpm test:web
+
+  quality:
+    # Preserve the existing required check; skipped or cancelled work must fail it.
+    name: Test, lint and build
+    needs: [changes, checks, desktop, safety, web]
+    if: ${{ always() }}
+    runs-on: ubuntu-22.04
+    timeout-minutes: 20
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: Check complete quality result
+        run: node .github/scripts/ci-quality.mjs gate
+        env:
+          CI_QUALITY_NEEDS: ${{ toJSON(needs) }}

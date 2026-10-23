@@ -4,7 +4,7 @@
 
 - 基于最新 `origin/main`：`f4c3e30a736e8ce8c5224982bfb55935bc21d54e`，已包含 PR #149
 - 独立分支 `codex/ci-quality-parallel`，原工作区的文档和未跟踪文件不纳入本次修改
-- 只调整 `.github/workflows/ci.yml` 及其本地辅助脚本／共享安装步骤，应用代码、依赖和生产构建命令不变
+- 主要调整 `.github/workflows/ci.yml` 及其本地辅助脚本／共享安装步骤；远端失败另修复 Relay 回归的大缓冲区断言，应用生产代码、依赖和生产构建命令不变
 - Linux／Windows 工作流、原生后端验证、Windows 卸载／回滚、全部超时和安全断言不变
 - 不涉及 UI、四语字典、跨 Agent 继续、Codex follower 或设计文件
 
@@ -159,6 +159,17 @@
 原始来源：[质量 jobs](https://api.github.com/repos/starroyhq/agentkib/actions/runs/39894121432/jobs?filter=latest&per_page=100)、[Windows jobs](https://api.github.com/repos/starroyhq/agentkib/actions/runs/39894121302/jobs?filter=latest&per_page=100)、[Linux jobs](https://api.github.com/repos/starroyhq/agentkib/actions/runs/39894121252/jobs?filter=latest&per_page=100)、[GitHub 公开状态](https://www.githubstatus.com/)
 
 本节保存固定实现提交的远端证据。提交本 QA 后，仍按累计 PR 差异执行完整检查，继续核对最终 HEAD 的 11 项状态与耗时；最终状态写入 PR 说明，避免为记录状态反复制造新 CI 提交
+
+## QA 提交后的真实失败与修复
+
+- QA 提交 `fcedc6a749e3a8cbd2995a63b6f908720dbe2799` 的分类明确输出 `Full validation required`，五个质量分支实际运行，确认只追加 QA 不会误走文档快路
+- 该提交的 [desktop 2/2 job 120226650779](https://github.com/starroyhq/agentkib/actions/runs/39896032065/job/120226650779) 在 `electron/main/web/relay/manager.test.ts` 的握手／首包／双向大载荷流控回归触发原有 **5000ms** 超时；该片结果为 3944 通过、1 失败、19 既有跳过。其余两个 Linux、两个 Windows、桌面第一片、串行组、Web 和静态构建任务均成功
+- 最终 [原名门禁 job 120227764909](https://github.com/starroyhq/agentkib/actions/runs/39896032065/job/120227764909) 如期失败，输出 `CI quality gate rejected incomplete or unsuccessful checks`，补齐真实远端分片失败不能假绿的证据
+- 未直接重跑：独立定位到该用例对两个 512 KiB `Buffer` 使用 Vitest `.toEqual`，会逐字节递归后再枚举全部数值属性，创建大量条目。实际 Vitest 5.0.5 的三次合成微基准分别为 494.78／496.24／481.02ms；同尺寸原生 `Buffer.equals` 为 0.093／0.051／0.043ms。两次深比较约占本机原用例 1182ms 的八成，在负载下挤占 5 秒的网络流控预算
+- 只将这两处断言换成原生 `Buffer.equals` 加 `toBe(true)`，与同文件另一 512 KiB 拒绝响应回归保持一致。仍精确比较长度与每个字节，握手认证字段、两侧初始 head、完整 512 KiB 载荷、暂停／恢复读和协议断言均保留；未改生产网络实现、超时、worker 数或任何安全规则
+- 修复后目标用例本机 **96ms**，完整 manager 文件 **63/63** 通过（6.59 秒），完整第二分片 **3962 通过／2 既有跳过、195 文件**（27.28 秒）；没有新增跳过。目标定位命令的 `-t` 只用于单例诊断，完整文件、完整分片和 CI 均继续运行全部原用例
+- 相关命令：`pnpm --filter @agentkib/desktop exec vitest run --project=desktop electron/main/web/relay/manager.test.ts`、`pnpm --filter @agentkib/desktop exec vitest run --project=desktop --shard=2/2`；显式 `oxfmt --check`、全量 `pnpm format:check`、`pnpm lint`、`pnpm typecheck` 与 `git diff --check` 均通过，等价字节断言另经独立复核 no finding
+- 此处记录已定位的高开销及等价断言修复，不将尚无证据的传输死锁假设当作生产缺陷。修复提交后继续验证完整 11 项远端检查，最终 HEAD 的状态与耗时补入 PR 说明
 
 ## 限制与上线观察
 

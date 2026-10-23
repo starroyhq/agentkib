@@ -80,6 +80,7 @@ export function useWorkspaceTransitions({
       latest.setHandoffLaunchRequest(undefined);
       latest.setBaselineManifest("");
       latest.setAppliedChanges(undefined);
+      latest.setPlanningChanges(false);
       next();
       return true;
     },
@@ -117,6 +118,7 @@ export function useWorkspaceTransitions({
       nextState.setMessage("");
       nextState.setChangeSet(undefined);
       nextState.setAppliedChanges(undefined);
+      nextState.setPlanningChanges(false);
       nextState.setChangeSetOrigin("standard");
       nextState.setHandoffLaunchRequest(undefined);
       nextState.setProject(workspace.path);

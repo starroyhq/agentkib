@@ -2,9 +2,9 @@
 
 import "@testing-library/jest-dom/vitest";
 import { Suspense } from "react";
-import { act, cleanup, fireEvent, render, screen } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, within } from "@testing-library/react";
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
-import { initializeI18n } from "@/core/i18n";
+import { initializeI18n, tr } from "@/core/i18n";
 import type { ChangeSet, Manifest, WorkspaceSummary } from "@/core/types";
 import { useWorkspaceStore, type ChangeSetOrigin } from "@/features/workspace/workspace-store";
 import { Route } from "./index";
@@ -68,7 +68,7 @@ async function renderRoute() {
       </Suspense>,
     );
   });
-  await screen.findByText("Shared assets");
+  await screen.findByText(tr("overview.publicSource"));
 }
 
 describe("overview pending changes", () => {
@@ -86,6 +86,29 @@ describe("overview pending changes", () => {
     });
   });
   afterEach(cleanup);
+
+  it.each(["en-US", "ja-JP"] as const)(
+    "keeps separators with the preceding shared asset when summaries wrap in %s",
+    async (locale) => {
+      await initializeI18n(locale);
+      try {
+        await renderRoute();
+        const card = screen.getByText(tr("overview.publicSource")).closest('[data-slot="card"]')!;
+        for (const label of [
+          tr("assets.sharedInstructions"),
+          tr("overview.sharedSkills"),
+          "MCP",
+          tr("overview.scopedRules"),
+        ]) {
+          const item = within(card as HTMLElement).getByText(label);
+          expect(item.textContent?.trim().startsWith(label)).toBe(true);
+          expect(item).toHaveClass("whitespace-nowrap");
+        }
+      } finally {
+        await initializeI18n("en-US");
+      }
+    },
+  );
 
   it("keeps zero Agent assets subdued without hiding unconfigured Agents", async () => {
     useWorkspaceStore.setState({

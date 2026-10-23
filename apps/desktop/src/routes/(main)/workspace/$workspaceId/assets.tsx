@@ -555,7 +555,7 @@ function WorkspaceAssetsRoute() {
   const navigate = useNavigate();
   const { workspaceId } = useParams({ from: "/(main)/workspace/$workspaceId/assets" });
   const search = useSearch({ strict: false }) as AssetsSearch;
-  const { scan, manifest, setManifest } = useWorkspaceStore();
+  const { scan, manifest, setManifest, planningChanges, applyingChanges } = useWorkspaceStore();
   const section = search.workspaceAssetSection ?? "instructions";
   const setSection = (nextSection: WorkspaceAssetSection) =>
     void navigate({
@@ -565,13 +565,18 @@ function WorkspaceAssetsRoute() {
     });
   if (!scan || !manifest) return <WorkspaceAssetsSkeleton />;
   return (
-    <Assets
-      section={section}
-      onSection={setSection}
-      scan={scan}
-      manifest={manifest}
-      onChange={setManifest}
-    />
+    <fieldset disabled={planningChanges || applyingChanges} className="min-w-0 border-0 p-0 m-0">
+      <Assets
+        section={section}
+        onSection={setSection}
+        scan={scan}
+        manifest={manifest}
+        onChange={(next) => {
+          const current = useWorkspaceStore.getState();
+          if (!current.planningChanges && !current.applyingChanges) setManifest(next);
+        }}
+      />
+    </fieldset>
   );
 }
 

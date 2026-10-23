@@ -2,6 +2,7 @@ import { create } from "zustand";
 import type {
   ChangeSet,
   Manifest,
+  DoctorIssue,
   SessionHandoffLaunchRequest,
   WorkspaceScan,
   WorkspaceSummary,
@@ -15,6 +16,13 @@ export interface AppliedWorkspaceChanges {
   applied: string[];
   backupDir: string;
   origin?: ChangeSetOrigin;
+  plannedManifest?: string;
+  baselineManifest?: string;
+  diagnosis?: {
+    status: "checking" | "complete" | "failed";
+    resolved?: number;
+    issues: DoctorIssue[];
+  };
 }
 type Updater<T> = T | ((current: T) => T);
 
@@ -26,6 +34,10 @@ interface WorkspaceState {
   changeSet?: ChangeSet;
   changeSetManifest?: string;
   changeSetIncludesHome: boolean;
+  changeSetInvalidated: boolean;
+  changeSetConflict: boolean;
+  planningChanges: boolean;
+  planningRevision: number;
   changeSetOrigin: ChangeSetOrigin;
   handoffLaunchRequest?: SessionHandoffLaunchRequest;
   handoffRecoveryChanges?: Pick<AppliedWorkspaceChanges, "workspaceId" | "project" | "changeSet">;
@@ -68,6 +80,10 @@ interface WorkspaceActions {
   setBusy: (value: Updater<boolean>) => void;
   setMessage: (value: Updater<string>) => void;
   dismissMessage: (revision: number) => void;
+  setPlanningChanges: (value: boolean) => number;
+  finishPlanningChanges: (revision: number) => void;
+  setChangeSetInvalidated: (value: boolean) => void;
+  setChangeSetConflict: (value: boolean) => void;
   setApplyingChanges: (value: Updater<boolean>) => void;
   setAppliedChanges: (value: AppliedWorkspaceChanges | undefined) => void;
   discardWorkspaceDraft: (expectedManifest: string) => boolean;
@@ -100,6 +116,10 @@ export const useWorkspaceStore = create<WorkspaceState & WorkspaceActions>((set)
   project: "",
   changeSetOrigin: "standard",
   changeSetIncludesHome: false,
+  changeSetInvalidated: false,
+  changeSetConflict: false,
+  planningChanges: false,
+  planningRevision: 0,
   baselineManifest: "",
   workspaceDrafts: {},
   workspaceDraftBaselines: {},
@@ -122,9 +142,7 @@ export const useWorkspaceStore = create<WorkspaceState & WorkspaceActions>((set)
       ) {
         return {
           manifest,
-          changeSet: undefined,
-          changeSetManifest: undefined,
-          changeSetIncludesHome: false,
+          changeSetInvalidated: true,
           handoffLaunchRequest: undefined,
           handoffRecoveryChanges: undefined,
         };
@@ -136,6 +154,8 @@ export const useWorkspaceStore = create<WorkspaceState & WorkspaceActions>((set)
       const changeSet = resolve(value, state.changeSet);
       return {
         changeSet,
+        changeSetInvalidated: false,
+        changeSetConflict: false,
         changeSetManifest: plannedManifest ? JSON.stringify(plannedManifest) : undefined,
         changeSetIncludesHome: includesHome,
         ...(changeSet && changeSet !== state.changeSet
@@ -197,6 +217,18 @@ export const useWorkspaceStore = create<WorkspaceState & WorkspaceActions>((set)
     }),
   dismissMessage: (revision) =>
     set((state) => (state.messageRevision === revision ? { messageDismissed: true } : state)),
+  setPlanningChanges: (planningChanges) => {
+    let revision = 0;
+    set((state) => {
+      revision = state.planningRevision + 1;
+      return { planningChanges, planningRevision: revision };
+    });
+    return revision;
+  },
+  finishPlanningChanges: (revision) =>
+    set((state) => (state.planningRevision === revision ? { planningChanges: false } : state)),
+  setChangeSetInvalidated: (changeSetInvalidated) => set({ changeSetInvalidated }),
+  setChangeSetConflict: (changeSetConflict) => set({ changeSetConflict }),
   setApplyingChanges: (value) =>
     set((state) => ({ applyingChanges: resolve(value, state.applyingChanges) })),
   setAppliedChanges: (appliedChanges) => set({ appliedChanges }),
@@ -205,6 +237,7 @@ export const useWorkspaceStore = create<WorkspaceState & WorkspaceActions>((set)
     set((state) => {
       if (
         state.busy ||
+        state.planningChanges ||
         state.applyingChanges ||
         !state.selectedWorkspace ||
         !state.manifest ||
@@ -255,6 +288,10 @@ export const useWorkspaceStore = create<WorkspaceState & WorkspaceActions>((set)
       changeSet: undefined,
       changeSetManifest: undefined,
       changeSetIncludesHome: false,
+      changeSetInvalidated: false,
+      changeSetConflict: false,
+      planningChanges: false,
+      planningRevision: state.planningRevision + 1,
       changeSetOrigin: "standard",
       handoffLaunchRequest: undefined,
       handoffRecoveryChanges: undefined,

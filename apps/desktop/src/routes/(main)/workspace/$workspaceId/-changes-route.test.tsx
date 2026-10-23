@@ -115,7 +115,12 @@ async function renderRoute(withLayout = false, expectedHeading = "Change plan") 
       </QueryClientProvider>,
     );
   });
-  await screen.findByText(expectedHeading);
+  if (
+    useWorkspaceStore.getState().changeSetOrigin === "standard" ||
+    useWorkspaceStore.getState().changeSetOrigin === "doctor"
+  )
+    await screen.findByRole("region", { name: expectedHeading });
+  else await screen.findByText(expectedHeading);
 }
 async function renderDoctor() {
   const Component = DoctorRoute.options.component!;
@@ -172,9 +177,9 @@ describe("workspace changes lifecycle", () => {
     const request = deferred<ChangeSet>();
     vi.mocked(api.plan).mockReturnValue(request.promise);
     await renderRoute();
-    const includeHome = screen.getByRole("button", { name: "Include Home Configuration" });
-    const apply = screen.getByRole("button", { name: "Apply 1 Changes" });
-    const reject = screen.getByRole("button", { name: "Reject Changes" });
+    const includeHome = screen.getByRole("button", { name: "Include global configuration" });
+    const apply = screen.getByRole("button", { name: "Apply 1 change" });
+    const reject = screen.getByRole("button", { name: /^Reject( Changes)?$/ });
     fireEvent.click(includeHome);
     fireEvent.click(includeHome);
     fireEvent.click(apply);
@@ -190,7 +195,7 @@ describe("workspace changes lifecycle", () => {
 
     await act(async () => request.resolve({ ...changeSet, id: "home-plan" }));
     expect(includeHome).toBeDisabled();
-    expect(includeHome).toHaveTextContent("Home configuration included");
+    expect(includeHome).toHaveTextContent("Global configuration included");
     expect(apply).toBeEnabled();
     expect(reject).toBeEnabled();
     expect(useWorkspaceStore.getState().changeSetManifest).toBe(JSON.stringify(draft));
@@ -199,7 +204,7 @@ describe("workspace changes lifecycle", () => {
   it("shows a Home planning failure locally and permits retry", async () => {
     vi.mocked(api.plan).mockRejectedValueOnce(new Error("home planning failed"));
     await renderRoute();
-    const includeHome = screen.getByRole("button", { name: "Include Home Configuration" });
+    const includeHome = screen.getByRole("button", { name: "Include global configuration" });
     fireEvent.click(includeHome);
     expect(await screen.findByRole("alert")).toHaveTextContent("home planning failed");
     expect(useWorkspaceStore.getState().message).toBe("");
@@ -216,17 +221,17 @@ describe("workspace changes lifecycle", () => {
     const applyRequest = deferred<Awaited<ReturnType<typeof api.apply>>>();
     vi.mocked(api.apply).mockReturnValue(applyRequest.promise);
     await renderRoute(true);
-    const review = screen.getByRole("button", { name: "Review changes" });
+    expect(screen.queryByRole("button", { name: "Review changes" })).toBeNull();
     const scan = screen.getByRole("button", { name: "Scan" });
-    fireEvent.click(screen.getByRole("button", { name: "Apply 1 Changes" }));
-    expect(review).toBeDisabled();
+    fireEvent.click(screen.getByRole("button", { name: "Apply 1 change" }));
+
     expect(scan).toBeDisabled();
-    fireEvent.click(review);
+
     fireEvent.click(scan);
     expect(api.plan).not.toHaveBeenCalled();
     expect(api.scan).not.toHaveBeenCalled();
     await act(async () => applyRequest.resolve({ applied: [], backup_dir: "/backup" }));
-    await waitFor(() => expect(navigate).toHaveBeenCalled());
+    await waitFor(() => expect(useWorkspaceStore.getState().applyingChanges).toBe(false));
     expect(useWorkspaceStore.getState().changeSet).toBeUndefined();
     expect(useWorkspaceStore.getState().applyingChanges).toBe(false);
     expect(api.apply).toHaveBeenCalledOnce();
@@ -237,10 +242,12 @@ describe("workspace changes lifecycle", () => {
     const request = deferred<ChangeSet>();
     vi.mocked(api.plan).mockReturnValue(request.promise);
     await renderRoute(true);
-    fireEvent.click(screen.getByRole("button", { name: "Review changes" }));
+    act(() => useWorkspaceStore.getState().setChangeSetInvalidated(true));
+    fireEvent.click(screen.getByRole("button", { name: "Regenerate" }));
     act(() => useWorkspaceStore.getState().setManifest(manifest("newer editor draft")));
     await act(async () => request.resolve({ ...changeSet, id: "obsolete-standard-plan" }));
-    expect(useWorkspaceStore.getState().changeSet).toBeUndefined();
+    expect(useWorkspaceStore.getState().changeSet?.id).toBe(changeSet.id);
+    expect(useWorkspaceStore.getState().changeSetInvalidated).toBe(true);
     expect(useWorkspaceStore.getState().manifest).toEqual(manifest("newer editor draft"));
     expect(useWorkspaceStore.getState().busy).toBe(false);
     expect(api.apply).not.toHaveBeenCalled();
@@ -250,11 +257,12 @@ describe("workspace changes lifecycle", () => {
     const request = deferred<ChangeSet>();
     vi.mocked(api.plan).mockReturnValue(request.promise);
     await renderRoute();
-    fireEvent.click(screen.getByRole("button", { name: "Include Home Configuration" }));
+    fireEvent.click(screen.getByRole("button", { name: "Include global configuration" }));
     act(() => useWorkspaceStore.getState().setManifest(manifest("newer edit")));
     await act(async () => request.resolve({ ...changeSet, id: "obsolete-home-plan" }));
-    expect(useWorkspaceStore.getState().changeSet).toBeUndefined();
-    expect(screen.queryByRole("button", { name: "Apply 1 Changes" })).toBeNull();
+    expect(useWorkspaceStore.getState().changeSet?.id).toBe(changeSet.id);
+    expect(useWorkspaceStore.getState().changeSetInvalidated).toBe(true);
+    expect(screen.getByRole("button", { name: "Apply 1 change" })).toBeDisabled();
     expect(api.apply).not.toHaveBeenCalled();
   });
 
@@ -270,8 +278,8 @@ describe("workspace changes lifecycle", () => {
     cleanup();
     navigate.mockClear();
     await renderRoute();
-    fireEvent.click(screen.getByRole("button", { name: "Apply 1 Changes" }));
-    await waitFor(() => expect(navigate).toHaveBeenCalled());
+    fireEvent.click(screen.getByRole("button", { name: "Apply 1 change" }));
+    await waitFor(() => expect(useWorkspaceStore.getState().applyingChanges).toBe(false));
     expect(useWorkspaceStore.getState().manifest).toEqual(draft);
     expect(useWorkspaceStore.getState().baselineManifest).toBe(JSON.stringify(diskAfterApply));
   });
@@ -298,8 +306,12 @@ describe("workspace changes lifecycle", () => {
       state.setChangeSetOrigin(origin);
       state.setChangeSet(changeSet, origin === "doctor" ? baseline : undefined);
       await renderRoute();
-      fireEvent.click(screen.getByRole("button", { name: "Apply 1 Changes" }));
-      await waitFor(() => expect(navigate).toHaveBeenCalled());
+      fireEvent.click(
+        screen.getByRole("button", {
+          name: origin === "doctor" ? "Apply 1 change" : "Apply 1 Changes",
+        }),
+      );
+      await waitFor(() => expect(useWorkspaceStore.getState().applyingChanges).toBe(false));
       const current = useWorkspaceStore.getState();
       expect(current.manifest).toEqual(draft);
       expect(current.baselineManifest).toBe(JSON.stringify(diskAfterApply));
@@ -310,8 +322,8 @@ describe("workspace changes lifecycle", () => {
 
   it("consumes the reviewed standard draft and removes its old cache", async () => {
     await renderRoute();
-    fireEvent.click(screen.getByRole("button", { name: "Apply 1 Changes" }));
-    await waitFor(() => expect(navigate).toHaveBeenCalled());
+    fireEvent.click(screen.getByRole("button", { name: "Apply 1 change" }));
+    await waitFor(() => expect(useWorkspaceStore.getState().applyingChanges).toBe(false));
     const current = useWorkspaceStore.getState();
     expect(current.manifest).toEqual(diskAfterApply);
     expect(current.baselineManifest).toBe(JSON.stringify(diskAfterApply));
@@ -326,9 +338,9 @@ describe("workspace changes lifecycle", () => {
       backup_dir: "/backups/last-apply",
     });
     await renderRoute(true);
-    fireEvent.click(screen.getByRole("button", { name: "Apply 1 Changes" }));
+    fireEvent.click(screen.getByRole("button", { name: "Apply 1 change" }));
     await waitFor(() => expect(useWorkspaceStore.getState().applyingChanges).toBe(false));
-    expect(await screen.findByText("Applied files: 1")).toBeVisible();
+    expect(await screen.findByText("Changes applied to 1 file")).toBeVisible();
     fireEvent.click(screen.getByRole("button", { name: "View applied changes" }));
     const dialog = await screen.findByRole("dialog");
     expect(dialog).toHaveTextContent("/workspace/AGENTS.md");
@@ -346,8 +358,8 @@ describe("workspace changes lifecycle", () => {
     });
     vi.mocked(api.scan).mockRejectedValue(new Error("reload failed"));
     await renderRoute(true);
-    fireEvent.click(screen.getByRole("button", { name: "Apply 1 Changes" }));
-    await screen.findByText("Applied files: 1");
+    fireEvent.click(screen.getByRole("button", { name: "Apply 1 change" }));
+    await screen.findByText("Changes applied to 1 file");
     await waitFor(() => expect(useWorkspaceStore.getState().message).toContain("reload failed"));
     expect(useWorkspaceStore.getState().appliedChanges?.changeSet.id).toBe(changeSet.id);
     expect(api.apply).toHaveBeenCalledOnce();
@@ -358,12 +370,12 @@ describe("workspace changes lifecycle", () => {
     const refresh = deferred<WorkspaceScan>();
     vi.mocked(api.scan).mockReturnValueOnce(refresh.promise);
     await renderRoute(true);
-    const heading = screen.getByText("Change plan");
+    const heading = screen.getByRole("region", { name: "Change plan" });
     fireEvent.click(screen.getByRole("button", { name: "Scan" }));
-    expect(screen.getByText("Change plan")).toBe(heading);
-    const apply = screen.getByRole("button", { name: "Apply 1 Changes" });
-    const home = screen.getByRole("button", { name: "Include Home Configuration" });
-    const reject = screen.getByRole("button", { name: "Reject Changes" });
+    expect(screen.getByRole("region", { name: "Change plan" })).toBe(heading);
+    const apply = screen.getByRole("button", { name: "Apply 1 change" });
+    const home = screen.getByRole("button", { name: "Include global configuration" });
+    const reject = screen.getByRole("button", { name: /^Reject( Changes)?$/ });
     expect(apply).toBeDisabled();
     expect(home).toBeDisabled();
     expect(reject).toBeDisabled();
@@ -382,7 +394,7 @@ describe("workspace changes lifecycle", () => {
         warnings: [],
       }),
     );
-    expect(screen.getByText("Change plan")).toBe(heading);
+    expect(screen.getByRole("region", { name: "Change plan" })).toBe(heading);
     expect(apply).toBeEnabled();
     expect(home).toBeEnabled();
   });
@@ -394,7 +406,7 @@ describe("workspace changes lifecycle", () => {
     const reload = deferred<Manifest>();
     vi.mocked(api.manifest).mockReturnValue(reload.promise);
     await renderRoute();
-    fireEvent.click(screen.getByRole("button", { name: "Apply 1 Changes" }));
+    fireEvent.click(screen.getByRole("button", { name: "Apply 1 change" }));
     await waitFor(() => expect(api.manifest).toHaveBeenCalled());
     act(() => useWorkspaceStore.getState().setManifest(newerDraft));
     await act(async () => reload.resolve(diskAfterApply));

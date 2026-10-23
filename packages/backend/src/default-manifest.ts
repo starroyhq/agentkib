@@ -107,7 +107,9 @@ export function defaultManifest(project: string): Manifest {
             .join("\n")
         : claude
     ).trim();
-    if (value) overrides["claude-code"] = value;
+    // A copied shared file is not an independent Claude override. Re-importing
+    // it here would put the same instructions after the generated shared import.
+    if (value && value !== shared.trim()) overrides["claude-code"] = value;
   }
   if (agents !== null && gemini !== null) {
     let content = gemini;

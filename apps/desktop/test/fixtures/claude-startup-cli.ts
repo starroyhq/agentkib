@@ -1,4 +1,5 @@
-import { existsSync, readFileSync, writeFileSync } from "node:fs";
+import childProcesses from "node:child_process";
+import { existsSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { createFakeClaude, type FakeClaudePlan } from "./claude-fake-cli";
 
@@ -7,11 +8,18 @@ export function createStartupClaude() {
   const f = createFakeClaude("agentkib-claude-startup-");
   const modeFile = path.join(f.root, "startup-mode");
   const evidenceFile = path.join(f.root, "startup-evidence");
-  const environment = { ...f.environment, STARTUP_MODE: modeFile, STARTUP_EVIDENCE: evidenceFile };
+  const readyFile = path.join(f.root, "startup-ready");
+  const environment = {
+    ...f.environment,
+    STARTUP_MODE: modeFile,
+    STARTUP_EVIDENCE: evidenceFile,
+    STARTUP_READY: readyFile,
+  };
   writeFileSync(
     f.executable,
     `#!/bin/sh
 # Deliberately only shell builtins: no child interpreter competes with the 300 ms deadline.
+printf '%s\\n' "$$" > "$STARTUP_READY"
 while IFS= read -r frame; do
   printf '%s\\n' "$frame" >> "$FAKE_LOG"
   IFS= read -r mode < "$STARTUP_MODE"
@@ -98,8 +106,74 @@ done
         throw new Error("unsupported startup fixture plan");
       f.setPlan(plan);
       writeFileSync(modeFile, `${mode}\n`);
+      rmSync(readyFile, { force: true });
     },
     evidence: () =>
       existsSync(evidenceFile) ? readFileSync(evidenceFile, "utf8").trim().split("\n") : [],
+  };
+}
+
+/**
+ * Only the synthetic shell's preparation precedes the runner's unchanged protocol deadline.
+ * Always return the real child: the runner must retain ownership and perform its own cleanup,
+ * even when fixture readiness fails. The caller must assert failures after cleaning its runners.
+ */
+export function createStartupClaudeSpawn(
+  actualSpawn: (
+    ...args: Parameters<typeof childProcesses.spawn>
+  ) => ReturnType<typeof childProcesses.spawn> = childProcesses.spawn,
+  clock = {
+    now: () => performance.now(),
+    wait: () => {
+      Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 10);
+    },
+  },
+) {
+  const failures: string[] = [];
+  return {
+    failures,
+    spawn(...args: Parameters<typeof childProcesses.spawn>) {
+      const options = Array.isArray(args[1]) ? args[2] : (args[1] ?? args[2]);
+      const environment = options && "env" in options ? options.env : undefined;
+      const ready = environment?.STARTUP_READY;
+      const root = ready ? path.dirname(ready) : "";
+      if (
+        !ready ||
+        !path.isAbsolute(ready) ||
+        path.basename(root).indexOf("agentkib-claude-startup-") !== 0 ||
+        ready !== path.join(root, "startup-ready") ||
+        environment?.STARTUP_MODE !== path.join(root, "startup-mode") ||
+        environment.STARTUP_EVIDENCE !== path.join(root, "startup-evidence") ||
+        args[0] !== path.join(root, "bin", "claude")
+      )
+        return actualSpawn(...args);
+      try {
+        rmSync(ready, { force: true });
+      } catch {
+        failures.push("startup fixture readiness could not be reset");
+        return actualSpawn(...args);
+      }
+      const child = actualSpawn(...args);
+      if (!child.pid) {
+        failures.push("startup fixture has no process identity");
+        return child;
+      }
+      const deadline = clock.now() + 2000;
+      for (;;) {
+        try {
+          if (readFileSync(ready, "utf8").trim() === String(child.pid)) return child;
+        } catch (error) {
+          if ((error as NodeJS.ErrnoException).code !== "ENOENT") {
+            failures.push("startup fixture readiness could not be read");
+            return child;
+          }
+        }
+        if (clock.now() >= deadline) {
+          failures.push("startup fixture readiness timed out");
+          return child;
+        }
+        clock.wait();
+      }
+    },
   };
 }

@@ -41,6 +41,7 @@ import {
 } from "@/components/ui/dropdown-menu";
 import { WorkspaceOpenWith } from "@/features/workspace/WorkspaceOpenWith";
 import { useAppDialogs } from "@/components/AppDialogProvider";
+import { appliedChangeCopy } from "@/features/workspace/applied-change-copy";
 import { AppliedChangesNotice } from "@/features/workspace/AppliedChangesNotice";
 import { draftSectionCount, resolveRefreshedManifest } from "@/features/workspace/manifest-draft";
 import { Copy, MoreHorizontal, RefreshCw } from "lucide-react";
@@ -120,7 +121,7 @@ function WorkspaceActions({
 type Page = "overview" | "sessions" | "git" | "assets" | "context" | "doctor" | "changes";
 
 function WorkspaceLayout() {
-  const { localizeMessage, tr } = useI18n();
+  const { localizeMessage, tr, locale } = useI18n();
   const navigate = useNavigate();
   const dialogs = useAppDialogs();
   const location = useLocation();
@@ -145,6 +146,8 @@ function WorkspaceLayout() {
     baselineManifest,
     busy,
     applyingChanges,
+    planningChanges,
+    setPlanningChanges,
     appliedChanges,
     setAppliedChanges,
     discardWorkspaceDraft,
@@ -159,6 +162,9 @@ function WorkspaceLayout() {
     setMessage,
   } = workspaceState;
   const currentPage = getPage(location.pathname);
+  const e2ChangesPage =
+    currentPage === "changes" &&
+    (workspaceState.changeSetOrigin === "standard" || workspaceState.changeSetOrigin === "doctor");
   const activeWorkspace =
     workspace ?? (selectedWorkspace?.id === workspaceId ? selectedWorkspace : undefined);
   const matchesWorkspace =
@@ -205,6 +211,7 @@ function WorkspaceLayout() {
     operationRequest.current += 1;
     loadStartedWorkspace.current = undefined;
     setPlanning(false);
+    useWorkspaceStore.getState().setPlanningChanges(false);
     setPlanFeedback(undefined);
     return () => {
       operationRequest.current += 1;
@@ -296,7 +303,7 @@ function WorkspaceLayout() {
 
   const refreshWorkspace = () => {
     const current = useWorkspaceStore.getState();
-    if (current.busy || current.applyingChanges) return;
+    if (current.busy || current.applyingChanges || current.planningChanges) return;
     return loadWorkspace(current.manifest ?? current.workspaceDrafts[workspaceId]);
   };
 
@@ -318,7 +325,8 @@ function WorkspaceLayout() {
       !project ||
       !manifest ||
       useWorkspaceStore.getState().applyingChanges ||
-      useWorkspaceStore.getState().busy
+      useWorkspaceStore.getState().busy ||
+      useWorkspaceStore.getState().planningChanges
     )
       return;
     const requestId = ++operationRequest.current;
@@ -330,6 +338,10 @@ function WorkspaceLayout() {
       useWorkspaceStore.getState().project === targetProject;
     setBusy(true);
     setPlanning(true);
+    const planningRevision = setPlanningChanges(true);
+    setChangeSetOrigin("standard");
+    setHandoffLaunchRequest(undefined);
+    void navigate({ to: "/workspace/$workspaceId/changes", params: { workspaceId } });
     setPlanFeedback(undefined);
     setAppliedChanges(undefined);
     setMessage("");
@@ -356,18 +368,22 @@ function WorkspaceLayout() {
             params: { workspaceId },
           });
         } catch (error) {
-          if (isCurrentRequest())
+          if (isCurrentRequest()) {
             setPlanFeedback({
               workspaceId,
               project: targetProject,
               message: localizeMessage(error),
             });
+            if (!useWorkspaceStore.getState().changeSet)
+              void navigate({ to: "/workspace/$workspaceId/assets", params: { workspaceId } });
+          }
         }
       },
       () => {
         if (isCurrentRequest()) {
           setBusy(false);
           setPlanning(false);
+          useWorkspaceStore.getState().finishPlanningChanges(planningRevision);
         }
       },
     );
@@ -445,12 +461,17 @@ function WorkspaceLayout() {
                       : "bg-muted text-muted-foreground",
                 )}
               >
-                {status.state === "attention" && <TriangleAlert size={12} aria-hidden="true" />}
+                {status.state === "attention" && (
+                  <TriangleAlert size={12} className="mr-1" aria-hidden="true" />
+                )}
                 {tr(`workspace.status.${status.state}`, { count: status.issueCount })}
               </Badge>
-              {hasUnsavedDraft && (
+              {(hasUnsavedDraft ||
+                (e2ChangesPage && Boolean(workspaceState.changeSet?.changes.length))) && (
                 <Badge variant="outline">
-                  {tr("workspace.draftSections", { count: dirtySections })}
+                  {e2ChangesPage
+                    ? appliedChangeCopy(locale).unapplied(dirtySections || 1)
+                    : tr("workspace.draftSections", { count: dirtySections })}
                 </Badge>
               )}
             </div>
@@ -488,11 +509,11 @@ function WorkspaceLayout() {
             workspace={activeWorkspace}
             onError={setMessage}
             onScan={refreshWorkspace}
-            busy={busy}
+            busy={busy || planningChanges}
             locked={applyingChanges || discarding}
             onReview={() => plan(false)}
             reviewDisabled={busy || !hasUnsavedDraft}
-            showReview={hasUnsavedDraft}
+            showReview={hasUnsavedDraft && !e2ChangesPage}
             reviewDisabledReason={
               applyingChanges
                 ? tr("changes.applying")
@@ -506,6 +527,9 @@ function WorkspaceLayout() {
 
       {appliedChanges?.workspaceId === workspaceId &&
         appliedChanges.project === project &&
+        (currentPage !== "changes" ||
+          appliedChanges.origin === "handoff" ||
+          appliedChanges.origin === "handoff-setup") &&
         !(currentPage === "doctor" && appliedChanges.origin === "doctor") && (
           <AppliedChangesNotice
             key={appliedChanges.changeSet.id}
@@ -528,7 +552,7 @@ function WorkspaceLayout() {
         aria-busy={busy}
         className={cn("min-w-0", currentPage === "git" && "min-h-[calc(100vh-118px)]")}
       >
-        {busy && hasWorkspaceContent && (
+        {busy && hasWorkspaceContent && !(planningChanges && currentPage === "changes") && (
           <p role="status" className="mb-3 flex items-center gap-2 text-xs text-muted-foreground">
             <RefreshCw size={13} className="animate-spin" />
             {tr(planning ? "workspace.planning" : "workspace.updating")}

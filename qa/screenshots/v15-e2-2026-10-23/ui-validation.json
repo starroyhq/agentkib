@@ -1,0 +1,114 @@
+{
+  "viewport": {
+    "width": 1360,
+    "height": 860
+  },
+  "applyRectangle": {
+    "x": 1210.296875,
+    "y": 728,
+    "width": 108.703125,
+    "height": 36
+  },
+  "sourceNotices": {
+    "catalogCount": 1,
+    "workspaceCount": 1,
+    "whiteSpace": "normal",
+    "overflow": "visible",
+    "retryComputedColor": "rgb(40, 90, 224)",
+    "primaryText": "#285ae0",
+    "actualRetryCompleted": true,
+    "englishRetryComputedColor": "rgb(40, 90, 224)"
+  },
+  "locales": [
+    {
+      "locale": "zh-TW",
+      "doctorSize": {
+        "width": 1360,
+        "height": 860,
+        "scrollWidth": 1360
+      },
+      "planSize": {
+        "width": 1360,
+        "height": 860,
+        "scrollWidth": 1360
+      },
+      "footer": {
+        "x": 1210.296875,
+        "y": 728,
+        "width": 108.703125,
+        "height": 36
+      },
+      "doctorEnglishLeak": false,
+      "pageErrors": 0
+    },
+    {
+      "locale": "en-US",
+      "doctorSize": {
+        "width": 1360,
+        "height": 860,
+        "scrollWidth": 1360
+      },
+      "planSize": {
+        "width": 1360,
+        "height": 860,
+        "scrollWidth": 1360
+      },
+      "footer": {
+        "x": 1190.9609375,
+        "y": 728,
+        "width": 128.0390625,
+        "height": 36
+      },
+      "doctorEnglishLeak": false,
+      "pageErrors": 0,
+      "finalEnglishGrammarVerified": true
+    },
+    {
+      "locale": "ja-JP",
+      "doctorSize": {
+        "width": 1360,
+        "height": 860,
+        "scrollWidth": 1360
+      },
+      "planSize": {
+        "width": 1360,
+        "height": 860,
+        "scrollWidth": 1360
+      },
+      "footer": {
+        "x": 1187.1953125,
+        "y": 728,
+        "width": 131.8046875,
+        "height": 36
+      },
+      "doctorEnglishLeak": false,
+      "pageErrors": 0
+    }
+  ],
+  "cleanFlow": {
+    "beforeWarnings": 1,
+    "afterWarnings": 1,
+    "resolved": 1,
+    "writtenFiles": 9,
+    "backupFiles": 3,
+    "preannouncedDeepSeekWarning": true
+  },
+  "conflictFlow": {
+    "beforeInjectionWarnings": 1,
+    "beforeApplyWarnings": 10,
+    "expectedContentMissing": 9,
+    "afterWarnings": 1,
+    "resolved": 10,
+    "writtenFiles": 9,
+    "backupFiles": 3,
+    "preannouncedDeepSeekWarning": true
+  },
+  "controlledTiming": {
+    "onlyOriginalPlanResponseDelay": true,
+    "generatingScreenshotDelayMs": 3500,
+    "assetReadOnlyProbeDelayMs": 5000,
+    "noResultsReplaced": true
+  },
+  "pageErrors": [],
+  "finalEnglishSummary": "You changed: added 1 shared instruction line (- Update CHANGELOG before release); write 9 files when applied"
+}

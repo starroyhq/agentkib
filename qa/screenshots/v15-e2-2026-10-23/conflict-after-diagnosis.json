@@ -1,0 +1,26 @@
+{
+  "summary": {
+    "workspace_id": "4d4f47b0-7ed2-4322-b686-e9baedea70b2",
+    "error_count": 0,
+    "warning_count": 1,
+    "info_count": 1,
+    "repairable_count": 0,
+    "checked_at": "2026-10-23T16:26:08.190Z"
+  },
+  "issues": [
+    {
+      "code": "context.warning",
+      "severity": "warning",
+      "agent": "deepseek-harness",
+      "evidence": [
+        {
+          "path": "~/projects/northstar-api",
+          "detail": "DeepSeek Harness reads @AGENTS.md in CLAUDE.md as literal text, not as a Claude Code import"
+        }
+      ]
+    }
+  ],
+  "backupCount": 3,
+  "writtenFileCount": 9,
+  "unmanagedPrefixPreserved": true
+}

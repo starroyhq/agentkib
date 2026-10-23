@@ -134,7 +134,7 @@ describe("SessionDirectory", () => {
   });
   afterEach(cleanup);
 
-  it("keeps named source failures scoped to their own workspace history", () => {
+  it("shows one source notice above all workspace groups and retains any real warning", () => {
     hub.statuses = workspaces.map((workspace, index) => ({
       workspace_id: workspace.id,
       agent: "antigravity",
@@ -142,14 +142,26 @@ describe("SessionDirectory", () => {
       session_count: index,
       error_key: "errors.conversations.sourceUnavailable",
     }));
-    render(<SessionDirectory />);
-    const neutral = screen.getByRole("status");
+    const { container } = render(<SessionDirectory />);
     const warning = screen.getByRole("alert");
-    expect(neutral).toHaveTextContent(tr("sessions.sourceUnavailable", { agent: "Antigravity" }));
-    expect(neutral).toHaveClass("text-muted-foreground");
-    expect(neutral.closest(".session-workspace")).toContainElement(workspaceHeading(workspaces[0]));
+    expect(
+      screen.getAllByText(tr("sessions.sourceUnavailable", { agent: "Antigravity" })),
+    ).toHaveLength(1);
+    expect(warning.closest(".session-workspace")).toBeNull();
+    expect(warning.closest(".session-directory-tree")).toBe(
+      container.querySelector(".session-directory-tree"),
+    );
     expect(warning).toHaveClass("text-warning");
-    expect(warning.closest(".session-workspace")).toContainElement(workspaceHeading(workspaces[1]));
+    expect(
+      warning.compareDocumentPosition(workspaceHeading(workspaces[0])) &
+        Node.DOCUMENT_POSITION_FOLLOWING,
+    ).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Retry" }));
+    expect(hub.refresh).toHaveBeenCalledOnce();
+    act(() => {
+      useSessionViewStore.setState({ collapsed: { "workspace-a": true, "workspace-b": true } });
+    });
+    expect(screen.getByRole("alert")).toBeVisible();
   });
 
   it("keeps empty source notices in the scroll tree and honors installation, host and Agent filters", () => {
@@ -175,17 +187,53 @@ describe("SessionDirectory", () => {
       },
     ];
     const { container } = render(<SessionDirectory />);
-    expect(screen.getByText("Visible source").closest(".session-directory-tree")).toBe(
+    const text = tr("sessions.sourceUnavailable", { agent: "Antigravity" });
+    expect(screen.getByText(text).closest(".session-directory-tree")).toBe(
       container.querySelector(".session-directory-tree"),
     );
+    expect(screen.queryByText("Visible source")).toBeNull();
     expect(screen.queryByText("Uninstalled source")).toBeNull();
     act(() => useSessionViewStore.getState().setAgent("claude-code"));
-    expect(screen.queryByText("Visible source")).toBeNull();
+    expect(screen.queryByText(text)).toBeNull();
     act(() => {
       useSessionViewStore.getState().setAgent("all");
       useSessionViewStore.getState().setHost("remote-fixture");
     });
-    expect(screen.queryByText("Visible source")).toBeNull();
+    expect(screen.queryByText(text)).toBeNull();
+  });
+
+  it("does not carry another computer's source warning into the selected computer", () => {
+    hub.sessions = [];
+    hub.workspaces = [
+      workspaces[0],
+      {
+        ...workspaces[1],
+        remote: {
+          host_id: "remote-fixture",
+          host_name: "Test computer",
+          original_id: "remote-workspace",
+          online: false,
+          last_synced_at: "",
+        },
+      },
+    ];
+    hub.statuses = workspaces.map((workspace, index) => ({
+      workspace_id: workspace.id,
+      agent: "antigravity",
+      freshness: "unavailable",
+      session_count: index,
+      error_key: "errors.conversations.sourceUnavailable",
+    }));
+    render(<SessionDirectory />);
+    expect(screen.getByRole("alert")).toHaveTextContent("Antigravity");
+    act(() => useSessionViewStore.getState().setHost("local"));
+    expect(screen.queryByRole("alert")).toBeNull();
+    expect(screen.getByRole("status")).toHaveTextContent("Antigravity");
+    act(() => useSessionViewStore.getState().setHost("remote-fixture"));
+    expect(screen.queryByRole("status")).toBeNull();
+    expect(screen.getByRole("alert")).toHaveTextContent("Antigravity");
+    act(() => useSessionViewStore.getState().setAgent("codex"));
+    expect(screen.queryByRole("alert")).toBeNull();
   });
 
   it.each([

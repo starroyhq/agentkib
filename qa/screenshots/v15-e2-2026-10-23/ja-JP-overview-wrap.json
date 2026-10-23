@@ -1,0 +1,37 @@
+{
+  "itemClass": "inline-flex items-center gap-1 whitespace-nowrap text-foreground",
+  "items": [
+    {
+      "text": "共有プロジェクト指示 1·",
+      "x": 367,
+      "y": 427,
+      "width": 162.671875,
+      "whiteSpace": "nowrap",
+      "lastText": "·"
+    },
+    {
+      "text": "共有 Skills 0·",
+      "x": 537.671875,
+      "y": 427,
+      "width": 89.2265625,
+      "whiteSpace": "nowrap",
+      "lastText": "·"
+    },
+    {
+      "text": "MCP 0·",
+      "x": 634.8984375,
+      "y": 427,
+      "width": 54.28125,
+      "whiteSpace": "nowrap",
+      "lastText": "·"
+    },
+    {
+      "text": "ディレクトリ別ルール 0",
+      "x": 367,
+      "y": 451,
+      "width": 150.7265625,
+      "whiteSpace": "nowrap",
+      "lastText": "0"
+    }
+  ]
+}

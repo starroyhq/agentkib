@@ -51,8 +51,8 @@ describe("localized change plan explanation", () => {
           onApplyingChange={vi.fn()}
         />,
       );
-      expect(screen.getByRole("heading", { name: title })).toBeVisible();
-      expect(screen.getByText(new RegExp(explanation))).toBeVisible();
+      expect(screen.getByRole("heading", { name: title })).toHaveClass("sr-only");
+      expect(screen.getByText(new RegExp(explanation))).toHaveClass("sr-only");
       expect(screen.queryByText("ChangeSet")).toBeNull();
       expect(screen.getByText("Old instructions")).toBeVisible();
       expect(screen.getByText("New instructions")).toBeVisible();

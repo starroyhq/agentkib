@@ -65,21 +65,7 @@ export function SessionDirectory({
         <p id="session-directory-reorder-hint" className="sr-only">
           {tr("sessions.reorderHint")}
         </p>
-        {(hub.statuses ?? [])
-          .filter(
-            (status) =>
-              !hub.sessions.some((session) => session.workspace_id === status.workspace_id) &&
-              status.error_key,
-          )
-          .map((status) => status.workspace_id)
-          .filter((id, index, ids) => ids.indexOf(id) === index)
-          .map((workspaceId) => (
-            <SessionDirectorySourceNotices
-              key={workspaceId}
-              workspaceId={workspaceId}
-              showWorkspace
-            />
-          ))}
+        {hub.statuses?.some((status) => status.error_key) && <SessionDirectorySourceNotices />}
         {orderedGroups.map(({ workspace, sessions: workspaceSessions, label }, index) => {
           const sessions = sessionOrder(workspaceSessions, view.sessionOrder[workspace.id] ?? []);
           return (
@@ -162,9 +148,6 @@ export function SessionDirectory({
                   inert={Boolean(view.collapsed[workspace.id])}
                   aria-hidden={view.collapsed[workspace.id] || undefined}
                 >
-                  {!!hub.statuses?.some(
-                    (status) => status.workspace_id === workspace.id && status.error_key,
-                  ) && <SessionDirectorySourceNotices workspaceId={workspace.id} />}
                   {sessions.map((session) => {
                     return (
                       <Button

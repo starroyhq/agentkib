@@ -1,0 +1,314 @@
+{
+  "date": "2026-10-24",
+  "baseline": "f0d0329d7d39e13ab678ec04854926d364d5662c",
+  "runner_blob_matches_baseline": true,
+  "runner_blob": "1424ad38f5a9454350b76bdd1cc37ca87d8e95bc",
+  "scope": "Synthetic test prerequisite synchronization only; production timeout and safety unchanged",
+  "precise_ungated_sampling": {
+    "samples": 12,
+    "failures": 0,
+    "note": "Diagnostic sample, not a reliability pass or reproduction of the original uninstrumented full run",
+    "timings": [
+      {
+        "sample": 0,
+        "failure": null,
+        "workers": [
+          {
+            "worker": 1,
+            "spawn_return_to_shell_ready_ms": 262.265,
+            "ready_to_mode_read_complete_ms": 0.68,
+            "ready_to_response_ms": null
+          },
+          {
+            "worker": 2,
+            "spawn_return_to_shell_ready_ms": 4.974,
+            "ready_to_mode_read_complete_ms": 0.344,
+            "ready_to_response_ms": 0.422
+          }
+        ]
+      },
+      {
+        "sample": 1,
+        "failure": null,
+        "workers": [
+          {
+            "worker": 1,
+            "spawn_return_to_shell_ready_ms": 50.684,
+            "ready_to_mode_read_complete_ms": 0.38,
+            "ready_to_response_ms": null
+          },
+          {
+            "worker": 2,
+            "spawn_return_to_shell_ready_ms": 6.058,
+            "ready_to_mode_read_complete_ms": 0.371,
+            "ready_to_response_ms": 0.458
+          }
+        ]
+      },
+      {
+        "sample": 2,
+        "failure": null,
+        "workers": [
+          {
+            "worker": 1,
+            "spawn_return_to_shell_ready_ms": 62.0,
+            "ready_to_mode_read_complete_ms": 0.403,
+            "ready_to_response_ms": null
+          },
+          {
+            "worker": 2,
+            "spawn_return_to_shell_ready_ms": 8.268,
+            "ready_to_mode_read_complete_ms": 0.335,
+            "ready_to_response_ms": 0.417
+          }
+        ]
+      },
+      {
+        "sample": 3,
+        "failure": null,
+        "workers": [
+          {
+            "worker": 1,
+            "spawn_return_to_shell_ready_ms": 58.687,
+            "ready_to_mode_read_complete_ms": 0.373,
+            "ready_to_response_ms": null
+          },
+          {
+            "worker": 2,
+            "spawn_return_to_shell_ready_ms": 8.324,
+            "ready_to_mode_read_complete_ms": 0.474,
+            "ready_to_response_ms": 0.577
+          }
+        ]
+      },
+      {
+        "sample": 4,
+        "failure": null,
+        "workers": [
+          {
+            "worker": 1,
+            "spawn_return_to_shell_ready_ms": 84.562,
+            "ready_to_mode_read_complete_ms": 0.851,
+            "ready_to_response_ms": null
+          },
+          {
+            "worker": 2,
+            "spawn_return_to_shell_ready_ms": 6.109,
+            "ready_to_mode_read_complete_ms": 0.408,
+            "ready_to_response_ms": 0.567
+          }
+        ]
+      },
+      {
+        "sample": 5,
+        "failure": null,
+        "workers": [
+          {
+            "worker": 1,
+            "spawn_return_to_shell_ready_ms": 58.035,
+            "ready_to_mode_read_complete_ms": 0.719,
+            "ready_to_response_ms": null
+          },
+          {
+            "worker": 2,
+            "spawn_return_to_shell_ready_ms": 7.28,
+            "ready_to_mode_read_complete_ms": 0.694,
+            "ready_to_response_ms": 0.886
+          }
+        ]
+      },
+      {
+        "sample": 6,
+        "failure": null,
+        "workers": [
+          {
+            "worker": 1,
+            "spawn_return_to_shell_ready_ms": 56.195,
+            "ready_to_mode_read_complete_ms": 0.375,
+            "ready_to_response_ms": null
+          },
+          {
+            "worker": 2,
+            "spawn_return_to_shell_ready_ms": 11.171,
+            "ready_to_mode_read_complete_ms": 0.326,
+            "ready_to_response_ms": 0.416
+          }
+        ]
+      },
+      {
+        "sample": 7,
+        "failure": null,
+        "workers": [
+          {
+            "worker": 1,
+            "spawn_return_to_shell_ready_ms": 62.183,
+            "ready_to_mode_read_complete_ms": 0.372,
+            "ready_to_response_ms": null
+          },
+          {
+            "worker": 2,
+            "spawn_return_to_shell_ready_ms": 7.139,
+            "ready_to_mode_read_complete_ms": 0.324,
+            "ready_to_response_ms": 0.404
+          }
+        ]
+      },
+      {
+        "sample": 8,
+        "failure": null,
+        "workers": [
+          {
+            "worker": 1,
+            "spawn_return_to_shell_ready_ms": 55.215,
+            "ready_to_mode_read_complete_ms": 1.126,
+            "ready_to_response_ms": null
+          },
+          {
+            "worker": 2,
+            "spawn_return_to_shell_ready_ms": 8.896,
+            "ready_to_mode_read_complete_ms": 0.328,
+            "ready_to_response_ms": 0.416
+          }
+        ]
+      },
+      {
+        "sample": 9,
+        "failure": null,
+        "workers": [
+          {
+            "worker": 1,
+            "spawn_return_to_shell_ready_ms": 62.209,
+            "ready_to_mode_read_complete_ms": 0.73,
+            "ready_to_response_ms": null
+          },
+          {
+            "worker": 2,
+            "spawn_return_to_shell_ready_ms": 12.231,
+            "ready_to_mode_read_complete_ms": 0.375,
+            "ready_to_response_ms": 0.466
+          }
+        ]
+      },
+      {
+        "sample": 10,
+        "failure": null,
+        "workers": [
+          {
+            "worker": 1,
+            "spawn_return_to_shell_ready_ms": 58.589,
+            "ready_to_mode_read_complete_ms": 0.346,
+            "ready_to_response_ms": null
+          },
+          {
+            "worker": 2,
+            "spawn_return_to_shell_ready_ms": 4.623,
+            "ready_to_mode_read_complete_ms": 0.307,
+            "ready_to_response_ms": 0.383
+          }
+        ]
+      },
+      {
+        "sample": 11,
+        "failure": null,
+        "workers": [
+          {
+            "worker": 1,
+            "spawn_return_to_shell_ready_ms": 50.62,
+            "ready_to_mode_read_complete_ms": 0.365,
+            "ready_to_response_ms": null
+          },
+          {
+            "worker": 2,
+            "spawn_return_to_shell_ready_ms": 6.591,
+            "ready_to_mode_read_complete_ms": 0.342,
+            "ready_to_response_ms": 0.425
+          }
+        ]
+      }
+    ]
+  },
+  "controlled_before_fix": {
+    "setup_delay_ms": 350,
+    "original_control_timeout_ms": 300,
+    "per_test_timeout_ms": 30000,
+    "send_and_prepare_regressions_failed": 2,
+    "failure": "Error: Claude initialize timed out",
+    "second_worker_ready": false,
+    "second_write_to_timeout_ms": 301,
+    "phase_events": [
+      ["1:spawn-start", 7],
+      ["1:spawn-return", 7],
+      ["1:write", 8],
+      ["1:spawn-event", 8],
+      ["1:write-callback", 8],
+      ["snapshot", 308],
+      ["1:close", 310],
+      ["snapshot", 320],
+      ["first-settled", 320],
+      ["normal-mode-written", 321],
+      ["2:spawn-start", 321],
+      ["2:spawn-return", 322],
+      ["2:write", 322],
+      ["2:spawn-event", 322],
+      ["2:write-callback", 322],
+      ["snapshot", 623],
+      ["2:close", 625],
+      ["snapshot", 635],
+      ["second-settled", 635]
+    ],
+    "frames_received_types": ["control_request"]
+  },
+  "fix": {
+    "fixture_setup_bound_ms": 2000,
+    "bound_precedent": "Existing Linux detached-child prerequisite uses the same 2000ms setup bound",
+    "protocol_timeout_ms": 300,
+    "per_test_timeout_ms": 30000,
+    "spawn_retries": 0,
+    "ready_checks": [
+      "fresh marker",
+      "actual PID",
+      "fixture executable and paths",
+      "fail setup after original owned cleanup"
+    ],
+    "production_runner_changed": false
+  },
+  "red_green": {
+    "before_fix": "2 controlled restart regressions failed with Claude initialize timed out",
+    "after_fix": "54 startup recovery and 9 fixture readiness tests passed; 9.70s"
+  },
+  "final_validation": {
+    "related": {
+      "passed_files": 112,
+      "skipped_files": 1,
+      "passed_tests": 3042,
+      "skipped_tests": 2,
+      "duration_seconds": 199.71,
+      "max_workers": 1,
+      "exit_code": 0
+    },
+    "desktop_full": {
+      "passed_files": 427,
+      "skipped_files": 1,
+      "passed_tests": 8526,
+      "skipped_tests": 3,
+      "duration_seconds": 165.79,
+      "default_concurrency": true,
+      "exit_code": 0
+    },
+    "typecheck": 0,
+    "lint": {
+      "exit_code": 0,
+      "warnings": 276,
+      "errors": 0
+    },
+    "format_check": 0,
+    "modified_test_fixture_format_files": 24,
+    "resources_restaged": [
+      "runtime protocol",
+      "Cursor plugin",
+      "Claude plugin",
+      "backend native resources"
+    ],
+    "startup_fixture_processes_remaining": 0
+  }
+}

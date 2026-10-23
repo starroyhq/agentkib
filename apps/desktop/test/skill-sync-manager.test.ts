@@ -2,7 +2,7 @@ import { mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { promises as fs } from "node:fs";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { Skills } from "../../../packages/backend/src/skills";
 import { createSkillRequestTracker } from "./fixtures/skill-request-tracker";
 import type {
@@ -14,13 +14,16 @@ import type {
 
 const homes: string[] = [];
 const requests = createSkillRequestTracker();
-afterEach(async () => {
-  await requests.settle();
-  vi.restoreAllMocks();
-  await Promise.all(
-    homes.splice(0).map((directory) => rm(directory, { recursive: true, force: true })),
-  );
-});
+beforeEach(() => requests.waitForCleanup());
+afterEach(() =>
+  requests.cleanup(async () => {
+    await requests.settle();
+    vi.restoreAllMocks();
+    await Promise.all(
+      homes.splice(0).map((directory) => rm(directory, { recursive: true, force: true })),
+    );
+  }),
+);
 async function fixture() {
   const home = await mkdtemp(path.join(os.tmpdir(), "agentkib-sync-"));
   homes.push(home);

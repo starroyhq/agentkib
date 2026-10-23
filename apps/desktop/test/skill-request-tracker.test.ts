@@ -2,6 +2,7 @@ import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { existsSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { setImmediate as nextTurn } from "node:timers/promises";
 import { afterEach, expect, it, vi } from "vitest";
 import { createSkillRequestTracker } from "./fixtures/skill-request-tracker";
 
@@ -83,6 +84,204 @@ it.each([false, true])(
     expect(existsSync(directory)).toBe(false);
   },
 );
+
+it("blocks the next body until an abandoned hook's entire cleanup has finished", async () => {
+  const tracker = createSkillRequestTracker();
+  const bodyGate = deferred<void>();
+  const cleanupGate = deferred<void>();
+  const drained = deferred<void>();
+  const hookDeadline = deferred<void>();
+  const timeout = new Error("synthetic hook timeout");
+  const events: string[] = [];
+  const fixtures = ["first"];
+  const hooks = { current: () => "original" };
+  vi.spyOn(hooks, "current").mockReturnValue("first");
+  const body = tracker.run(async () => {
+    await bodyGate.promise;
+    events.push("first body finished");
+  });
+  let cleanup: Promise<void> | undefined;
+  let nextBody: Promise<void> | undefined;
+  try {
+    cleanup = tracker.cleanup(async () => {
+      await tracker.settle();
+      events.push("first body drained");
+      drained.resolve();
+      // Cleanup can still be in asynchronous fixture deletion after settle().
+      await cleanupGate.promise;
+      vi.restoreAllMocks();
+      fixtures.splice(0);
+      events.push("first cleanup finished");
+    });
+    const hookWrapper = Promise.race([cleanup, hookDeadline.promise]);
+    const rejectedHook = expect(hookWrapper).rejects.toBe(timeout);
+    hookDeadline.reject(timeout);
+    await rejectedHook;
+
+    nextBody = (async () => {
+      await tracker.waitForCleanup();
+      await tracker.run(async () => {
+        fixtures.push("second");
+        vi.spyOn(hooks, "current").mockReturnValue("second");
+        events.push("second body started");
+      });
+    })();
+    await nextTurn();
+    expect(events).toEqual([]);
+    expect(fixtures).toEqual(["first"]);
+    expect(hooks.current()).toBe("first");
+
+    bodyGate.resolve();
+    await body;
+    await drained.promise;
+    await nextTurn();
+    expect(events).toEqual(["first body finished", "first body drained"]);
+    expect(fixtures).toEqual(["first"]);
+    expect(hooks.current()).toBe("first");
+
+    cleanupGate.resolve();
+    await Promise.all([cleanup, nextBody]);
+    expect(events).toEqual([
+      "first body finished",
+      "first body drained",
+      "first cleanup finished",
+      "second body started",
+    ]);
+    expect(fixtures).toEqual(["second"]);
+    expect(hooks.current()).toBe("second");
+  } finally {
+    bodyGate.resolve();
+    cleanupGate.resolve();
+    await Promise.allSettled([body, cleanup, nextBody]);
+  }
+});
+
+it("serializes another afterEach even when its beforeEach stopped waiting", async () => {
+  const tracker = createSkillRequestTracker();
+  const firstGate = deferred<void>();
+  const firstStarted = deferred<void>();
+  const secondGate = deferred<void>();
+  const secondStarted = deferred<void>();
+  const beforeDeadline = deferred<void>();
+  const timeout = new Error("synthetic beforeEach timeout");
+  const events: string[] = [];
+  let first: Promise<void> | undefined;
+  let second: Promise<void> | undefined;
+  let third: Promise<void> | undefined;
+  let ready: Promise<void> | undefined;
+  try {
+    first = tracker.cleanup(async () => {
+      events.push("first cleanup started");
+      firstStarted.resolve();
+      await firstGate.promise;
+      events.push("first cleanup finished");
+    });
+    await firstStarted.promise;
+    const beforeWrapper = Promise.race([tracker.waitForCleanup(), beforeDeadline.promise]);
+    const rejectedBefore = expect(beforeWrapper).rejects.toBe(timeout);
+    beforeDeadline.reject(timeout);
+    await rejectedBefore;
+
+    // Vitest still invokes afterEach when beforeEach times out and skips the body.
+    second = tracker.cleanup(async () => {
+      events.push("second cleanup started");
+      secondStarted.resolve();
+      await secondGate.promise;
+      events.push("second cleanup finished");
+    });
+    third = tracker.cleanup(async () => {
+      events.push("third cleanup finished");
+    });
+    let nextReady = false;
+    ready = tracker.waitForCleanup().then(() => {
+      nextReady = true;
+    });
+    await nextTurn();
+    expect(events).toEqual(["first cleanup started"]);
+    expect(nextReady).toBe(false);
+
+    firstGate.resolve();
+    await first;
+    await secondStarted.promise;
+    await nextTurn();
+    expect(events).toEqual([
+      "first cleanup started",
+      "first cleanup finished",
+      "second cleanup started",
+    ]);
+    expect(nextReady).toBe(false);
+
+    secondGate.resolve();
+    await Promise.all([second, third, ready]);
+    expect(events).toEqual([
+      "first cleanup started",
+      "first cleanup finished",
+      "second cleanup started",
+      "second cleanup finished",
+      "third cleanup finished",
+    ]);
+    expect(nextReady).toBe(true);
+  } finally {
+    firstGate.resolve();
+    secondGate.resolve();
+    await Promise.allSettled([first, second, third, ready]);
+  }
+});
+
+it("preserves a cleanup rejection for both hooks while allowing queued cleanup to run", async () => {
+  const tracker = createSkillRequestTracker();
+  const gate = deferred<void>();
+  const started = deferred<void>();
+  const failure = new Error("synthetic cleanup failure");
+  const events: string[] = [];
+  let failed: Promise<void> | undefined;
+  let queued: Promise<void> | undefined;
+  let rejectedCleanup: Promise<unknown> | undefined;
+  let rejectedBefore: Promise<unknown> | undefined;
+  try {
+    failed = tracker.cleanup(async () => {
+      events.push("failed cleanup started");
+      started.resolve();
+      await gate.promise;
+      events.push("failed cleanup rejected");
+      throw failure;
+    });
+    rejectedCleanup = expect(failed).rejects.toBe(failure);
+    rejectedBefore = expect(tracker.waitForCleanup()).rejects.toBe(failure);
+    await started.promise;
+    queued = tracker.cleanup(async () => {
+      events.push("queued cleanup finished");
+    });
+    await nextTurn();
+    expect(events).toEqual(["failed cleanup started"]);
+
+    gate.resolve();
+    await Promise.all([rejectedCleanup, rejectedBefore, queued]);
+    await expect(tracker.waitForCleanup()).resolves.toBeUndefined();
+    expect(events).toEqual([
+      "failed cleanup started",
+      "failed cleanup rejected",
+      "queued cleanup finished",
+    ]);
+  } finally {
+    gate.resolve();
+    await Promise.allSettled([failed, queued, rejectedCleanup, rejectedBefore]);
+  }
+});
+
+it("returns a synchronous cleanup failure as the original rejected promise result", async () => {
+  const tracker = createSkillRequestTracker();
+  const failure = new Error("synthetic synchronous cleanup failure");
+  const failed = tracker.cleanup(() => {
+    throw failure;
+  });
+  await expect(failed).rejects.toBe(failure);
+  await expect(tracker.waitForCleanup()).rejects.toBe(failure);
+  const cleanup = vi.fn(async () => undefined);
+  await tracker.cleanup(cleanup);
+  expect(cleanup).toHaveBeenCalledOnce();
+  await expect(tracker.waitForCleanup()).resolves.toBeUndefined();
+});
 
 it("also drains a request started by a settling request's continuation", async () => {
   const first = deferred<void>();

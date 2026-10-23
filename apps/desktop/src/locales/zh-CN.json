@@ -2394,5 +2394,21 @@
   "agents.usageUnavailable": "暂时读不到 {{agent}} 的用量",
   "skills.manager.visibleTo": "可见于",
   "mcp.servicesTitle": "MCP 服务",
-  "mcp.manage.chooseAgentsTitle": "选择 Agent"
+  "mcp.manage.chooseAgentsTitle": "选择 Agent",
+  "agents.usageClaudeStatsCacheMissing": "未找到 Claude Code 的本机用量统计文件",
+  "skills.manager.load.blocked": "{{agent}} 不会加载：{{reason}}",
+  "skills.manager.load.unknown": "{{agent}} 无法确定是否加载：{{reason}}",
+  "skills.manager.load.confirmation": "{{agent}} 加载前需要确认：{{reason}}",
+  "skills.manager.load.reason.noGitRoot": "项目没有 Git 根目录",
+  "skills.manager.load.reason.differentGitRoot": "技能不在原生发现使用的 Git 根目录",
+  "skills.manager.load.reason.projectDiscoveryDisabled": "原生配置关闭了项目技能发现",
+  "skills.manager.load.reason.projectNotTrusted": "项目尚未获得原生信任",
+  "skills.manager.load.reason.trustUnavailable": "读不到项目信任配置",
+  "skills.manager.load.reason.nativeConfigDisabled": "原生技能配置限制了此技能",
+  "skills.manager.load.reason.nativeWorkspaceMissing": "未配置对应的原生工作区",
+  "skills.manager.load.reason.configUnavailable": "读不到工作区或技能配置",
+  "skills.manager.load.reason.allowlistExcluded": "原生许可列表未包含此技能",
+  "skills.manager.load.reason.permissionRequired": "原生配置要求先确认技能权限",
+  "skills.manager.load.reason.unverified": "原生加载状态尚未验证",
+  "skills.manager.load.detailsNotice": "还有诊断信息，请查看详情"
 }

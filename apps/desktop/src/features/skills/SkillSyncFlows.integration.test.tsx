@@ -7,7 +7,7 @@ import { useState } from "react";
 import { mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { Skills } from "../../../../../packages/backend/src/skills";
 import { createSkillRequestTracker } from "../../../test/fixtures/skill-request-tracker";
 import { api } from "@/core/api";
@@ -29,17 +29,20 @@ const homes: string[] = [];
 const clients: QueryClient[] = [];
 const requests = createSkillRequestTracker();
 beforeAll(() => initializeI18n("en-US"));
-afterEach(async () => {
-  cleanup();
-  clients.splice(0).forEach((client) => client.clear());
-  await requests.settle();
-  // A timed-out fixture can finish and mount after the first cleanup.
-  cleanup();
-  clients.splice(0).forEach((client) => client.clear());
-  await requests.settle();
-  vi.restoreAllMocks();
-  await Promise.all(homes.splice(0).map((home) => rm(home, { recursive: true, force: true })));
-});
+beforeEach(() => requests.waitForCleanup());
+afterEach(() =>
+  requests.cleanup(async () => {
+    cleanup();
+    clients.splice(0).forEach((client) => client.clear());
+    await requests.settle();
+    // A timed-out fixture can finish and mount after the first cleanup.
+    cleanup();
+    clients.splice(0).forEach((client) => client.clear());
+    await requests.settle();
+    vi.restoreAllMocks();
+    await Promise.all(homes.splice(0).map((home) => rm(home, { recursive: true, force: true })));
+  }),
+);
 
 async function fixture(personal = false) {
   const home = await mkdtemp(path.join(os.tmpdir(), "agentkib-sync-ui-flow-"));

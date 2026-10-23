@@ -1,7 +1,7 @@
 import { promises as fs } from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { SkillSyncPreview, SkillSyncReport, SkillSyncState } from "@agentkib/runtime-protocol";
 import { Skills } from "../../../packages/backend/src/skills";
 import { createSkillRequestTracker } from "./fixtures/skill-request-tracker";
@@ -14,12 +14,15 @@ const A = "a".repeat(40),
 const text = (value: string) => `---\nname: reviewer\ndescription: Review changes\n---\n${value}\n`;
 type Preview = { token: string };
 
-afterEach(async () => {
-  await requests.settle();
-  vi.restoreAllMocks();
-  vi.unstubAllGlobals();
-  await Promise.all(homes.splice(0).map((home) => fs.rm(home, { recursive: true, force: true })));
-});
+beforeEach(() => requests.waitForCleanup());
+afterEach(() =>
+  requests.cleanup(async () => {
+    await requests.settle();
+    vi.restoreAllMocks();
+    vi.unstubAllGlobals();
+    await Promise.all(homes.splice(0).map((home) => fs.rm(home, { recursive: true, force: true })));
+  }),
+);
 
 async function fixture() {
   const home = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), "skill-damaged-backup-")));

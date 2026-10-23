@@ -25,11 +25,20 @@ export function AgentUsagePanel({
   if (loading) return <AgentSectionFeedback error={false} onRetry={onRetry} />;
   if (error || (provider && (!provider.available || provider.error || provider.error_key))) {
     // The generic backend key repeats the failure state, rather than explaining its cause.
-    const reason =
+    const localizedReason =
       provider?.error_key &&
       !["errors.providerUnavailable", "insights.providerUnavailable"].includes(provider.error_key)
         ? tr(provider.error_key, { ...provider.error_params, defaultValue: "" })
         : "";
+    // Match only the stats-cache read failure, including a configured Claude directory.
+    const missingClaudeStats =
+      agent === "claude-code" &&
+      provider?.agent === "claude-code" &&
+      /^ENOENT: no such file or directory, open '[^\r\n]*[\\/]stats-cache\.json'$/.test(
+        provider.error ?? "",
+      );
+    const reason =
+      localizedReason || (missingClaudeStats ? tr("agents.usageClaudeStatsCacheMissing") : "");
     return (
       <div role="alert" className="grid justify-items-start gap-4 p-5">
         <p className="text-sm text-muted-foreground">

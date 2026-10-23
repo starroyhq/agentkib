@@ -324,6 +324,42 @@ describe("AgentsPage", () => {
     },
   );
 
+  it.each(["zh-CN", "zh-TW", "en-US", "ja-JP"] as const)(
+    "separates the unsupported control status without repeating supported states in %s",
+    async (locale) => {
+      await act(() => changeLocale(locale));
+      render(
+        <AgentsPage
+          {...props()}
+          selectedAgent="claude-code"
+          installations={[
+            {
+              agent: "claude-code",
+              installed: true,
+              configured: true,
+              warnings: [],
+              support: {
+                workspace_discovery: true,
+                session_list: true,
+                history_read: true,
+                continuation: true,
+                control: "none",
+              },
+            },
+          ]}
+        />,
+      );
+      const capabilities = screen.getByRole("region", { name: tr("agents.capabilities") });
+      const control = within(capabilities).getByText(tr("agents.capability.control.none"));
+      expect(control.parentElement?.textContent).toContain(
+        `${tr("agents.capability.control")} · ${tr("agents.capability.control.none")}`,
+      );
+      expect(within(capabilities).queryByText(tr("agents.capability.supported"))).toBeNull();
+      expect(within(capabilities).queryByText(tr("agents.capability.unknown"))).toBeNull();
+      expect(control.parentElement?.querySelector(".lucide-x")).not.toBeNull();
+    },
+  );
+
   it("does not turn source failures into empty cards or hide retry controls", () => {
     const onRetry = { assets: vi.fn(), workspaces: vi.fn(), gateways: vi.fn(), insights: vi.fn() };
     render(
@@ -483,16 +519,25 @@ describe("AgentsPage", () => {
     );
     fireEvent.click(screen.getByRole("tab", { name: tr("agents.section.usage") }));
     expect(screen.getByText("Usage file unreadable: Permission denied")).toBeTruthy();
+    expect(screen.queryByText(tr("agents.usageClaudeStatsCacheMissing"))).toBeNull();
   });
 
   it.each([
-    ["zh-CN", "暂时读不到 Claude Code 的用量"],
-    ["zh-TW", "暫時無法讀取 Claude Code 的用量"],
-    ["en-US", "Unable to read Claude Code usage right now"],
-    ["ja-JP", "Claude Code の使用量を現在読み取れません"],
+    ["zh-CN", "暂时读不到 Claude Code 的用量", "未找到 Claude Code 的本机用量统计文件"],
+    ["zh-TW", "暫時無法讀取 Claude Code 的用量", "找不到 Claude Code 的本機用量統計檔案"],
+    [
+      "en-US",
+      "Unable to read Claude Code usage right now",
+      "Claude Code’s local usage statistics file was not found",
+    ],
+    [
+      "ja-JP",
+      "Claude Code の使用量を現在読み取れません",
+      "Claude Code のローカル使用量統計ファイルが見つかりません",
+    ],
   ] as const)(
-    "keeps real native failure details and retry in the usage tab in %s",
-    async (locale, message) => {
+    "explains a missing Claude statistics file while keeping native details and retry in %s",
+    async (locale, message, reason) => {
       await act(() => changeLocale(locale));
       const retry = vi.fn();
       render(
@@ -506,10 +551,73 @@ describe("AgentsPage", () => {
       expect(screen.queryByText(message)).toBeNull();
       fireEvent.click(screen.getByRole("tab", { name: tr("agents.section.usage") }));
       expect(screen.getByText(message)).toBeTruthy();
+      expect(screen.getByText(reason)).toBeTruthy();
+      expect(screen.getByRole("alert").textContent).not.toContain("/fixture/home");
+      expect(screen.queryByText(unavailableClaudeUsage.error!)).toBeNull();
       expect(screen.queryByText(tr("insights.providerUnavailable"))).toBeNull();
       expect(screen.queryByText(tr("errors.providerUnavailable"))).toBeNull();
       fireEvent.click(screen.getByRole("button", { name: tr("common.details") }));
       expect(screen.getByText(unavailableClaudeUsage.error!)).toBeTruthy();
+      fireEvent.click(screen.getByRole("button", { name: tr("runtime.retry") }));
+      expect(retry).toHaveBeenCalledOnce();
+    },
+  );
+
+  it.each([
+    "ENOENT: no such file or directory, open '/fixture/custom-claude/stats-cache.json'",
+    "ENOENT: no such file or directory, open 'C:\\fixture\\claude\\stats-cache.json'",
+  ])("recognizes a missing statistics file at a configured path: %s", (error) => {
+    render(
+      <AgentsPage
+        {...props()}
+        selectedAgent="claude-code"
+        insightsStatus={{
+          running: false,
+          providers: [{ ...unavailableClaudeUsage, error }],
+        }}
+      />,
+    );
+    fireEvent.click(screen.getByRole("tab", { name: tr("agents.section.usage") }));
+    expect(screen.getByText(tr("agents.usageClaudeStatsCacheMissing"))).toBeTruthy();
+  });
+
+  it.each([
+    {
+      agent: "claude-code" as const,
+      error: "EACCES: permission denied, open '/fixture/home/.claude/stats-cache.json'",
+    },
+    {
+      agent: "claude-code" as const,
+      error: "ENOENT: no such file or directory, open '/fixture/home/.claude/settings.json'",
+    },
+    {
+      agent: "claude-code" as const,
+      error: "ENOENT: no such file or directory, open '/fixture/home/.claude/stats-cache.json.bak'",
+    },
+    {
+      agent: "codex" as const,
+      error: unavailableClaudeUsage.error!,
+    },
+  ])(
+    "does not mislabel a $agent failure as missing Claude statistics: $error",
+    ({ agent, error }) => {
+      const retry = vi.fn();
+      render(
+        <AgentsPage
+          {...props()}
+          selectedAgent={agent}
+          insightsStatus={{
+            running: false,
+            providers: [{ ...unavailableClaudeUsage, agent, error }],
+          }}
+          onRetry={{ insights: retry }}
+        />,
+      );
+      fireEvent.click(screen.getByRole("tab", { name: tr("agents.section.usage") }));
+      expect(screen.queryByText(tr("agents.usageClaudeStatsCacheMissing"))).toBeNull();
+      expect(screen.getByRole("alert").textContent).not.toContain("/fixture/home");
+      fireEvent.click(screen.getByRole("button", { name: tr("common.details") }));
+      expect(screen.getByText(error)).toBeTruthy();
       fireEvent.click(screen.getByRole("button", { name: tr("runtime.retry") }));
       expect(retry).toHaveBeenCalledOnce();
     },

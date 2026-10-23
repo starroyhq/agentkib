@@ -6,13 +6,14 @@ import { cleanup, fireEvent, render, screen, within } from "@testing-library/rea
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { initializeI18n, tr } from "@/core/i18n";
-import type { CatalogAsset } from "@/core/types";
+import type { CatalogAsset, MemoryRecord } from "@/core/types";
 import { Route } from "./catalog";
 
 const doubles = vi.hoisted(() => ({
   search: {} as { assetSection?: string; catalogTarget?: string },
   navigate: vi.fn(),
   assets: [] as CatalogAsset[],
+  memories: [] as MemoryRecord[],
 }));
 vi.mock("@tanstack/react-router", async (importOriginal) => ({
   ...(await importOriginal<typeof import("@tanstack/react-router")>()),
@@ -24,7 +25,7 @@ vi.mock("@/features/home/home-query", async (importOriginal) => ({
   ...(await importOriginal<typeof import("@/features/home/home-query")>()),
   useHomeCatalog: () => ({ data: doubles.assets, isPending: false }),
   useHomeWorkspaces: () => ({ data: [], isPending: false }),
-  useHomeMemories: () => ({ data: [], isPending: false }),
+  useHomeMemories: () => ({ data: doubles.memories, isPending: false }),
 }));
 vi.mock("@/components/AppDialogProvider", () => ({ useAppDialogs: () => ({ confirm: vi.fn() }) }));
 vi.mock("@/features/mcp/McpManagementPanel", () => ({
@@ -55,6 +56,7 @@ describe("catalog network settings destination", () => {
   beforeEach(async () => {
     vi.clearAllMocks();
     doubles.assets = [];
+    doubles.memories = [];
     await initializeI18n("en-US");
   });
   afterEach(cleanup);
@@ -91,6 +93,41 @@ describe("catalog network settings destination", () => {
       expect(memories).toBeVisible();
       expect(within(memories).getByText("0")).toHaveClass("text-muted-foreground");
       expect(memories.querySelector('[data-slot="badge"]')).toBeNull();
+    },
+  );
+  it.each(
+    (["zh-CN", "zh-TW", "en-US", "ja-JP"] as const).flatMap((locale) =>
+      [true, false].map((pending) => ({ locale, pending })),
+    ),
+  )(
+    "keeps pending memory attention visible in $locale (pending=$pending)",
+    async ({ locale, pending }) => {
+      await initializeI18n(locale);
+      doubles.search = { assetSection: "mcp" };
+      doubles.memories = [0, 1].map((index) => ({
+        id: `memory-${index}`,
+        project_id: "northstar",
+        memory_type: "user_preference",
+        content: "Synthetic project preference",
+        status: pending && index === 0 ? "pending" : "approved",
+        created_at: "2026-10-23T00:00:00Z",
+      }));
+      await renderRoute();
+      const pendingLabel = tr("memory.pendingCount", { count: 1 });
+      const navigation = within(screen.getByRole("navigation", { name: tr("nav.assets") }));
+      const button = navigation.getByRole("button", {
+        name: `${tr("assets.memories")} ${pending ? pendingLabel : 2}`,
+      });
+      const count = within(button).getByText("2");
+      expect(count).not.toHaveAttribute("data-slot", "badge");
+      if (pending) {
+        expect(count).toHaveClass("text-amber-700", "dark:text-amber-400");
+        expect(count).not.toHaveClass("text-muted-foreground");
+        expect(count).toHaveAttribute("title", pendingLabel);
+      } else {
+        expect(count).toHaveClass("text-muted-foreground");
+        expect(count).not.toHaveClass("text-amber-700");
+      }
     },
   );
   it.each([

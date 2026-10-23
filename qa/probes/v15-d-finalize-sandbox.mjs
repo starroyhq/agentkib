@@ -30,7 +30,7 @@ assert.ok(
 const options = {};
 for (let index = 3; index < process.argv.length; index += 2) {
   const key = process.argv[index];
-  assert.ok(["--root", "--electron", "--locale", "--cdp-port"].includes(key));
+  assert.ok(["--root", "--electron", "--locale", "--cdp-port", "--scenario"].includes(key));
   assert.ok(process.argv[index + 1] && !process.argv[index + 1].startsWith("--"));
   options[key.slice(2)] = process.argv[index + 1];
 }
@@ -51,6 +51,10 @@ const paths = {
   app: path.join(root, "desktop"),
 };
 const workspace = path.join(home, "projects/northstar-api");
+assert.ok(options.scenario === undefined || options.scenario === "d-revalidation");
+const longWorkspaceName = "northstar-payments-reconciliation-release-workflow-"
+  .repeat(3)
+  .slice(0, 112);
 const json = (value) => `${JSON.stringify(value, null, 2)}\n`;
 async function put(file, value) {
   assert.ok(file.startsWith(`${root}/`));
@@ -146,6 +150,8 @@ if (command === "prepare") {
     webPort: await freePort(),
     mcpPort: await freePort(),
     nativeId: "11111111-1111-4111-8111-111111111111",
+    revalidationWorkspace:
+      options.scenario === "d-revalidation" ? path.join(home, "projects", longWorkspaceName) : null,
   };
   await put(configFile, config);
   await put(path.join(paths.data, "preferences.json"), {
@@ -211,6 +217,20 @@ if (command === "prepare") {
     );
   await put(path.join(paths.codex, "config.toml"), "# Synthetic offline QA configuration\n");
   await put(path.join(paths.claude, "settings.json"), {});
+  if (config.revalidationWorkspace) {
+    await put(path.join(config.revalidationWorkspace, "package.json"), {
+      name: longWorkspaceName,
+      private: true,
+    });
+    await put(
+      path.join(config.revalidationWorkspace, "AGENTS.md"),
+      "# Long workspace\nSynthetic offline revalidation workspace\n",
+    );
+    await put(
+      path.join(config.revalidationWorkspace, ".claude/skills/project-rules/SKILL.md"),
+      "---\nname: project-rules\ndescription: Synthetic project rules\n---\n\n# Project rules\n\nSynthetic offline acceptance Skill\n",
+    );
+  }
   await put(path.join(workspace, ".agentkib/mcp.json"), {
     schema_version: 1,
     servers: [
@@ -438,20 +458,24 @@ if (command === "prepare") {
       });
     try {
       await rpc("backend.initialize", { dataDir: paths.data });
-      const context = await rpc("backend.nativeContext");
-      const plan = await rpc("backend.planWorkspace", {
-        operation: "add",
-        path: workspace,
-        context,
-      });
-      const inspections = await rpc("backend.inspectWorkspaces", {
-        workspaces: [{ id: plan.id, path: plan.path }],
-      });
-      const added = await rpc("workspace.add", {
-        path: workspace,
-        _plan: plan,
-        _inspection: inspections[0].inspection,
-      });
+      const addWorkspace = async (directory) => {
+        const context = await rpc("backend.nativeContext");
+        const plan = await rpc("backend.planWorkspace", {
+          operation: "add",
+          path: directory,
+          context,
+        });
+        const inspections = await rpc("backend.inspectWorkspaces", {
+          workspaces: [{ id: plan.id, path: plan.path }],
+        });
+        return rpc("workspace.add", {
+          path: directory,
+          _plan: plan,
+          _inspection: inspections[0].inspection,
+        });
+      };
+      const added = await addWorkspace(workspace);
+      if (config.revalidationWorkspace) await addWorkspace(config.revalidationWorkspace);
       await rpc("workspace.refreshSessions", { workspaceId: added.id, force: true });
       const sessions = await rpc("workspace.sessions", { workspaceId: added.id });
       assert.equal(sessions.length, 1, "Expected one real-read synthetic Claude session");

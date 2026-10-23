@@ -550,8 +550,12 @@ describe("AgentsPage", () => {
       );
       expect(screen.queryByText(message)).toBeNull();
       fireEvent.click(screen.getByRole("tab", { name: tr("agents.section.usage") }));
-      expect(screen.getByText(message)).toBeTruthy();
-      expect(screen.getByText(reason)).toBeTruthy();
+      const messageElement = screen.getByText(message);
+      const reasonElement = screen.getByText(reason);
+      expect(messageElement.classList.contains("text-foreground")).toBe(true);
+      expect(messageElement.classList.contains("text-muted-foreground")).toBe(false);
+      expect(reasonElement.classList.contains("text-muted-foreground")).toBe(true);
+      expect(reasonElement.classList.contains("text-foreground")).toBe(false);
       expect(screen.getByRole("alert").textContent).not.toContain("/fixture/home");
       expect(screen.queryByText(unavailableClaudeUsage.error!)).toBeNull();
       expect(screen.queryByText(tr("insights.providerUnavailable"))).toBeNull();

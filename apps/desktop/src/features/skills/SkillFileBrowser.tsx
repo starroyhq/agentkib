@@ -231,7 +231,7 @@ export function SkillFileBrowser({
             {tr("common.loading")}
           </div>
         )}
-        {error !== undefined && (
+        {error != null && (
           <p role="alert" className="break-words text-sm text-destructive-text">
             {localizeMessage(error)}
           </p>

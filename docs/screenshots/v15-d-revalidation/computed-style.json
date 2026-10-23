@@ -1,0 +1,315 @@
+{
+  "zh-CN": {
+    "card": {
+      "label": "项目 northstar-payments-reconciliation-release-workflow-northstar-payments-reconciliation-release-workflow-northstar-",
+      "width": 240,
+      "client": 222,
+      "scroll": 685,
+      "overflow": "ellipsis",
+      "pathWidth": 708
+    },
+    "viewport": {
+      "w": 1360,
+      "h": 860,
+      "scroll": 1360
+    },
+    "menu": {
+      "width": 360,
+      "left": 959,
+      "right": 1319,
+      "items": [
+        {
+          "label": "接管此安装",
+          "title": "接管此安装",
+          "height": 28
+        },
+        {
+          "label": "打开工作区 · northstar-payments-reconciliation-release-workflow-northstar-payments-reconciliation-release-workflow-northstar-",
+          "title": "打开工作区 · northstar-payments-reconciliation-release-workflow-northstar-payments-reconciliation-release-workflow-northstar-",
+          "height": 28
+        }
+      ]
+    },
+    "focusRestored": true,
+    "workspaceActionReached": true,
+    "projectDetail": {
+      "alerts": 0,
+      "rows": [
+        {
+          "source": "项目 northstar-api · Codex · Cursor · OpenCode · Grok Build · Antigravity · DeepSeek Harness",
+          "diagnostics": [
+            "Hermes: project skills are not loaded because this project has no Git root",
+            "OpenClaw: native enablement is unknown because workspace or skills configuration could not be resolved"
+          ]
+        }
+      ]
+    },
+    "personalDetail": {
+      "alerts": 0,
+      "rows": [
+        {
+          "source": "个人 · Claude Code · Cursor · OpenCode · Grok Build",
+          "diagnostics": []
+        },
+        {
+          "source": "项目 northstar-payments-reconciliation-release-workflow-northstar-payments-reconciliation-release-workflow-northstar- · OpenCode",
+          "diagnostics": []
+        },
+        {
+          "source": "项目 northstar-api · OpenCode",
+          "diagnostics": []
+        }
+      ]
+    },
+    "usage": {
+      "paragraphs": [
+        {
+          "text": "暂时读不到 Claude Code 的用量",
+          "color": "rgb(14, 20, 43)",
+          "opacity": "1"
+        },
+        {
+          "text": "未找到 Claude Code 的本机用量统计文件",
+          "color": "rgb(98, 106, 126)",
+          "opacity": "1"
+        }
+      ],
+      "rawInitiallyHidden": true,
+      "rawDetailsPreserved": true
+    }
+  },
+  "zh-TW": {
+    "card": {
+      "label": "專案 northstar-payments-reconciliation-release-workflow-northstar-payments-reconciliation-release-workflow-northstar-",
+      "width": 240,
+      "client": 222,
+      "scroll": 685,
+      "overflow": "ellipsis",
+      "pathWidth": 708
+    },
+    "menu": {
+      "width": 360,
+      "left": 959,
+      "right": 1319,
+      "items": [
+        {
+          "title": "接管此安裝",
+          "aria": "接管此安裝",
+          "height": 28
+        },
+        {
+          "title": "開啟工作區 · northstar-payments-reconciliation-release-workflow-northstar-payments-reconciliation-release-workflow-northstar-",
+          "aria": "開啟工作區 · northstar-payments-reconciliation-release-workflow-northstar-payments-reconciliation-release-workflow-northstar-",
+          "height": 28
+        }
+      ]
+    },
+    "focusRestored": true,
+    "api-checks": {
+      "alerts": 0,
+      "rows": [
+        {
+          "source": "專案 northstar-api · Codex · Cursor · OpenCode · Grok Build · Antigravity · DeepSeek Harness",
+          "diagnostics": [
+            "Hermes: project skills are not loaded because this project has no Git root",
+            "OpenClaw: native enablement is unknown because workspace or skills configuration could not be resolved"
+          ]
+        }
+      ],
+      "textContainsNull": false
+    },
+    "code-style": {
+      "alerts": 0,
+      "rows": [
+        {
+          "source": "個人 · Claude Code · Cursor · OpenCode · Grok Build",
+          "diagnostics": []
+        },
+        {
+          "source": "專案 northstar-payments-reconciliation-release-workflow-northstar-payments-reconciliation-release-workflow-northstar- · OpenCode",
+          "diagnostics": []
+        },
+        {
+          "source": "專案 northstar-api · OpenCode",
+          "diagnostics": []
+        }
+      ],
+      "textContainsNull": false
+    },
+    "usage": {
+      "paragraphs": [
+        {
+          "text": "暫時無法讀取 Claude Code 的用量",
+          "color": "rgb(14, 20, 43)",
+          "opacity": "1"
+        },
+        {
+          "text": "找不到 Claude Code 的本機用量統計檔案",
+          "color": "rgb(98, 106, 126)",
+          "opacity": "1"
+        }
+      ],
+      "rawInitiallyHidden": true,
+      "rawDetailsPreserved": true
+    }
+  },
+  "en-US": {
+    "card": {
+      "label": "Project northstar-payments-reconciliation-release-workflow-northstar-payments-reconciliation-release-workflow-northstar-",
+      "width": 240,
+      "client": 222,
+      "scroll": 701,
+      "overflow": "ellipsis",
+      "pathWidth": 708
+    },
+    "menu": {
+      "width": 360,
+      "left": 959,
+      "right": 1319,
+      "items": [
+        {
+          "title": "Adopt this installation",
+          "aria": "Adopt this installation",
+          "height": 28
+        },
+        {
+          "title": "Open workspace · northstar-payments-reconciliation-release-workflow-northstar-payments-reconciliation-release-workflow-northstar-",
+          "aria": "Open workspace · northstar-payments-reconciliation-release-workflow-northstar-payments-reconciliation-release-workflow-northstar-",
+          "height": 28
+        }
+      ]
+    },
+    "focusRestored": true,
+    "api-checks": {
+      "alerts": 0,
+      "rows": [
+        {
+          "source": "Project northstar-api · Codex · Cursor · OpenCode · Grok Build · Antigravity · DeepSeek Harness",
+          "diagnostics": [
+            "Hermes: project skills are not loaded because this project has no Git root",
+            "OpenClaw: native enablement is unknown because workspace or skills configuration could not be resolved"
+          ]
+        }
+      ],
+      "textContainsNull": false
+    },
+    "code-style": {
+      "alerts": 0,
+      "rows": [
+        {
+          "source": "Personal · Claude Code · Cursor · OpenCode · Grok Build",
+          "diagnostics": []
+        },
+        {
+          "source": "Project northstar-payments-reconciliation-release-workflow-northstar-payments-reconciliation-release-workflow-northstar- · OpenCode",
+          "diagnostics": []
+        },
+        {
+          "source": "Project northstar-api · OpenCode",
+          "diagnostics": []
+        }
+      ],
+      "textContainsNull": false
+    },
+    "usage": {
+      "paragraphs": [
+        {
+          "text": "Unable to read Claude Code usage right now",
+          "color": "rgb(14, 20, 43)",
+          "opacity": "1"
+        },
+        {
+          "text": "Claude Code’s local usage statistics file was not found",
+          "color": "rgb(98, 106, 126)",
+          "opacity": "1"
+        }
+      ],
+      "rawInitiallyHidden": true,
+      "rawDetailsPreserved": true
+    }
+  },
+  "ja-JP": {
+    "card": {
+      "label": "プロジェクト northstar-payments-reconciliation-release-workflow-northstar-payments-reconciliation-release-workflow-northstar-",
+      "width": 240,
+      "client": 222,
+      "scroll": 732,
+      "overflow": "ellipsis",
+      "pathWidth": 708
+    },
+    "menu": {
+      "width": 360,
+      "left": 959,
+      "right": 1319,
+      "items": [
+        {
+          "title": "この配置を管理する",
+          "aria": "この配置を管理する",
+          "height": 28
+        },
+        {
+          "title": "ワークスペースを開く · northstar-payments-reconciliation-release-workflow-northstar-payments-reconciliation-release-workflow-northstar-",
+          "aria": "ワークスペースを開く · northstar-payments-reconciliation-release-workflow-northstar-payments-reconciliation-release-workflow-northstar-",
+          "height": 28
+        }
+      ]
+    },
+    "focusRestored": true,
+    "api-checks": {
+      "alerts": 0,
+      "rows": [
+        {
+          "source": "プロジェクト northstar-api · Codex · Cursor · OpenCode · Grok Build · Antigravity · DeepSeek Harness",
+          "diagnostics": [
+            "Hermes: project skills are not loaded because this project has no Git root",
+            "OpenClaw: native enablement is unknown because workspace or skills configuration could not be resolved"
+          ]
+        }
+      ],
+      "textContainsNull": false
+    },
+    "code-style": {
+      "alerts": 0,
+      "rows": [
+        {
+          "source": "個人 · Claude Code · Cursor · OpenCode · Grok Build",
+          "diagnostics": []
+        },
+        {
+          "source": "プロジェクト northstar-payments-reconciliation-release-workflow-northstar-payments-reconciliation-release-workflow-northstar- · OpenCode",
+          "diagnostics": []
+        },
+        {
+          "source": "プロジェクト northstar-api · OpenCode",
+          "diagnostics": []
+        }
+      ],
+      "textContainsNull": false
+    },
+    "usage": {
+      "paragraphs": [
+        {
+          "text": "Claude Code の使用量を現在読み取れません",
+          "color": "rgb(14, 20, 43)",
+          "opacity": "1"
+        },
+        {
+          "text": "Claude Code のローカル使用量統計ファイルが見つかりません",
+          "color": "rgb(98, 106, 126)",
+          "opacity": "1"
+        }
+      ],
+      "rawInitiallyHidden": true,
+      "rawDetailsPreserved": true
+    }
+  },
+  "runtime": {
+    "viewport": {
+      "width": 1360,
+      "height": 860
+    },
+    "theme": "VTRON light",
+    "pageErrors": [],
+    "workspaceNameLength": 112
+  }
+}

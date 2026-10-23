@@ -78,7 +78,9 @@ describe("v15 usage location cards", () => {
       expect(
         within(card).queryByText(tr("skills.manager.projectSource", { name: workspace.name })),
       ).toBeNull();
-      expect(source.parentElement).toBe(within(card).getByTitle(personal.path).parentElement);
+      expect(source.closest('[data-slot="badge"]')?.parentElement).toBe(
+        within(card).getByTitle(personal.path).parentElement,
+      );
       expect(screen.queryByText(tr("skills.manager.status.observed"))).toBeNull();
       expect(
         screen.queryByRole("checkbox", { name: tr("skills.manager.showInactive") }),
@@ -544,6 +546,30 @@ describe("v15 usage location cards", () => {
     expect(screen.queryByText(diagnostic)).toBeNull();
   });
   it.each(["zh-CN", "zh-TW", "en-US", "ja-JP"] as const)(
+    "bounds a long project source while retaining its full name and original path in %s",
+    async (locale) => {
+      await initializeI18n(locale);
+      const longWorkspace = {
+        ...workspace,
+        name: `${workspace.name}-${"long-project-name-".repeat(8)}`,
+      };
+      const { onDetail, onImport } = mount([related], [], [longWorkspace]);
+      const source = tr("skills.manager.projectSource", { name: longWorkspace.name });
+      const label = screen.getByText(source);
+      expect(label.closest('[data-slot="badge"]')).toHaveClass("max-w-[240px]");
+      expect(label).toHaveClass("truncate");
+      expect(label).toHaveAttribute("title", source);
+      const path = screen.getByTitle(related.path);
+      expect(path.parentElement).toBe(label.closest('[data-slot="badge"]')?.parentElement);
+      expect(path).toHaveClass("flex-1", "truncate");
+      const user = userEvent.setup();
+      await user.click(screen.getByRole("button", { name: tr("skills.manager.viewNative") }));
+      await user.click(screen.getByRole("button", { name: tr("skills.manager.addNative") }));
+      expect(onDetail).toHaveBeenCalledExactlyOnceWith({ observation_id: related.id });
+      expect(onImport).toHaveBeenCalledExactlyOnceWith(related.id);
+    },
+  );
+  it.each(["zh-CN", "zh-TW", "en-US", "ja-JP"] as const)(
     "keeps long workspace actions on one bounded line with their full accessible name in %s",
     async (locale) => {
       await initializeI18n(locale);
@@ -553,13 +579,17 @@ describe("v15 usage location cards", () => {
       };
       const { onOpen } = mount([related], [], [longWorkspace]);
       const user = userEvent.setup();
-      await user.click(
-        screen.getByRole("button", { name: new RegExp(`^${tr("common.moreActions")}`) }),
-      );
+      const more = screen.getByRole("button", {
+        name: new RegExp(`^${tr("common.moreActions")}`),
+      });
+      await user.click(more);
       const menu = await screen.findByRole("menu");
-      expect(menu).toHaveClass("w-max", "max-w-[calc(100vw-2rem)]");
+      expect(menu).toHaveClass("w-max", "max-w-[min(360px,calc(100vw-2rem))]");
+      await user.keyboard("{Escape}");
+      expect(more).toHaveFocus();
+      await user.click(more);
       const label = `${tr("skills.manager.openWorkspace")} · ${longWorkspace.name}`;
-      const action = screen.getByRole("menuitem", { name: label });
+      const action = await screen.findByRole("menuitem", { name: label });
       expect(within(action).getByText(label)).toHaveClass("truncate");
       expect(action).toHaveAttribute("title", label);
       await user.click(action);

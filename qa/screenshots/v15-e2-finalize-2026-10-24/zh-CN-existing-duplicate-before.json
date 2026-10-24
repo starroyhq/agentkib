@@ -1,0 +1,199 @@
+{
+  "summary": {
+    "workspace_id": "443147f6-00df-4173-9a59-888521637301",
+    "error_count": 0,
+    "warning_count": 15,
+    "info_count": 1,
+    "repairable_count": 7,
+    "checked_at": "2026-10-24T10:40:15.669Z"
+  },
+  "issues": [
+    {
+      "code": "instruction.unmanaged-duplicate",
+      "severity": "warning",
+      "agent": "cursor",
+      "evidence": [
+        {
+          "path": "~/projects/northstar-api/AGENTS.md",
+          "detail": "Instruction content outside the AgentKib-managed block overlaps shared project instructions",
+          "expected": "~/projects/northstar-api/AGENTS.md"
+        }
+      ]
+    },
+    {
+      "code": "instruction.unmanaged-duplicate",
+      "severity": "warning",
+      "agent": "antigravity",
+      "evidence": [
+        {
+          "path": "~/projects/northstar-api/AGENTS.md",
+          "detail": "Instruction content outside the AgentKib-managed block overlaps shared project instructions",
+          "expected": "~/projects/northstar-api/AGENTS.md"
+        }
+      ]
+    },
+    {
+      "code": "instruction.unmanaged-duplicate",
+      "severity": "warning",
+      "agent": "grok-build",
+      "evidence": [
+        {
+          "path": "~/projects/northstar-api/AGENTS.md",
+          "detail": "Instruction content outside the AgentKib-managed block overlaps shared project instructions",
+          "expected": "~/projects/northstar-api/AGENTS.md"
+        }
+      ]
+    },
+    {
+      "code": "instruction.unmanaged-duplicate",
+      "severity": "warning",
+      "agent": "open-claw",
+      "evidence": [
+        {
+          "path": "~/projects/northstar-api/AGENTS.md",
+          "detail": "Instruction content outside the AgentKib-managed block overlaps shared project instructions",
+          "expected": "~/projects/northstar-api/AGENTS.md"
+        }
+      ]
+    },
+    {
+      "code": "instruction.unmanaged-duplicate",
+      "severity": "warning",
+      "agent": "hermes",
+      "evidence": [
+        {
+          "path": "~/projects/northstar-api/AGENTS.md",
+          "detail": "Instruction content outside the AgentKib-managed block overlaps shared project instructions",
+          "expected": "~/projects/northstar-api/AGENTS.md"
+        }
+      ]
+    },
+    {
+      "code": "instruction.unmanaged-duplicate",
+      "severity": "warning",
+      "agent": "deepseek-harness",
+      "evidence": [
+        {
+          "path": "~/projects/northstar-api/AGENTS.md",
+          "detail": "Instruction content outside the AgentKib-managed block overlaps shared project instructions",
+          "expected": "~/projects/northstar-api/AGENTS.md"
+        }
+      ]
+    },
+    {
+      "code": "instruction.unmanaged-duplicate",
+      "severity": "warning",
+      "agent": "codex",
+      "evidence": [
+        {
+          "path": "~/projects/northstar-api/AGENTS.md",
+          "detail": "Instruction content outside the AgentKib-managed block overlaps shared project instructions",
+          "expected": "~/projects/northstar-api/AGENTS.md"
+        }
+      ]
+    },
+    {
+      "code": "instruction.unmanaged-duplicate",
+      "severity": "warning",
+      "agent": "opencode",
+      "evidence": [
+        {
+          "path": "~/projects/northstar-api/AGENTS.md",
+          "detail": "Instruction content outside the AgentKib-managed block overlaps shared project instructions",
+          "expected": "~/projects/northstar-api/AGENTS.md"
+        }
+      ]
+    },
+    {
+      "code": "managed.drift",
+      "severity": "warning",
+      "agent": "hermes",
+      "evidence": [
+        {
+          "path": "~/projects/northstar-api/AGENTS.md",
+          "detail": "AgentKib-managed file differs from its recorded hash",
+          "expected": "3ae36a78bfba1863b08e68f268dbb04feb74af3db9f3208db4fbacbf8b8a7839",
+          "actual": "ae4fb3c93276417164918bdc3e7ca9fd8d846218ce65310cc8ba0e8637681c97"
+        }
+      ]
+    },
+    {
+      "code": "managed.drift",
+      "severity": "warning",
+      "agent": "cursor",
+      "evidence": [
+        {
+          "path": "~/projects/northstar-api/AGENTS.md",
+          "detail": "AgentKib-managed file differs from its recorded hash",
+          "expected": "3ae36a78bfba1863b08e68f268dbb04feb74af3db9f3208db4fbacbf8b8a7839",
+          "actual": "ae4fb3c93276417164918bdc3e7ca9fd8d846218ce65310cc8ba0e8637681c97"
+        }
+      ]
+    },
+    {
+      "code": "managed.drift",
+      "severity": "warning",
+      "agent": "codex",
+      "evidence": [
+        {
+          "path": "~/projects/northstar-api/AGENTS.md",
+          "detail": "AgentKib-managed file differs from its recorded hash",
+          "expected": "3ae36a78bfba1863b08e68f268dbb04feb74af3db9f3208db4fbacbf8b8a7839",
+          "actual": "ae4fb3c93276417164918bdc3e7ca9fd8d846218ce65310cc8ba0e8637681c97"
+        }
+      ]
+    },
+    {
+      "code": "managed.drift",
+      "severity": "warning",
+      "agent": "grok-build",
+      "evidence": [
+        {
+          "path": "~/projects/northstar-api/AGENTS.md",
+          "detail": "AgentKib-managed file differs from its recorded hash",
+          "expected": "3ae36a78bfba1863b08e68f268dbb04feb74af3db9f3208db4fbacbf8b8a7839",
+          "actual": "ae4fb3c93276417164918bdc3e7ca9fd8d846218ce65310cc8ba0e8637681c97"
+        }
+      ]
+    },
+    {
+      "code": "managed.drift",
+      "severity": "warning",
+      "agent": "antigravity",
+      "evidence": [
+        {
+          "path": "~/projects/northstar-api/AGENTS.md",
+          "detail": "AgentKib-managed file differs from its recorded hash",
+          "expected": "3ae36a78bfba1863b08e68f268dbb04feb74af3db9f3208db4fbacbf8b8a7839",
+          "actual": "ae4fb3c93276417164918bdc3e7ca9fd8d846218ce65310cc8ba0e8637681c97"
+        }
+      ]
+    },
+    {
+      "code": "managed.drift",
+      "severity": "warning",
+      "agent": "opencode",
+      "evidence": [
+        {
+          "path": "~/projects/northstar-api/AGENTS.md",
+          "detail": "AgentKib-managed file differs from its recorded hash",
+          "expected": "3ae36a78bfba1863b08e68f268dbb04feb74af3db9f3208db4fbacbf8b8a7839",
+          "actual": "ae4fb3c93276417164918bdc3e7ca9fd8d846218ce65310cc8ba0e8637681c97"
+        }
+      ]
+    },
+    {
+      "code": "managed.drift",
+      "severity": "warning",
+      "agent": "open-claw",
+      "evidence": [
+        {
+          "path": "~/projects/northstar-api/AGENTS.md",
+          "detail": "AgentKib-managed file differs from its recorded hash",
+          "expected": "3ae36a78bfba1863b08e68f268dbb04feb74af3db9f3208db4fbacbf8b8a7839",
+          "actual": "ae4fb3c93276417164918bdc3e7ca9fd8d846218ce65310cc8ba0e8637681c97"
+        }
+      ]
+    }
+  ]
+}

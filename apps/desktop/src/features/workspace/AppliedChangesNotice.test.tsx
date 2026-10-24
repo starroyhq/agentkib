@@ -65,6 +65,64 @@ describe("applied changes diagnosis", () => {
     },
   );
 
+  it.each(["zh-CN", "zh-TW", "en-US", "ja-JP"] as const)(
+    "reports no new problems without inventing a zero-resolved claim in %s",
+    async (locale) => {
+      await changeLocale(locale);
+      const copy = appliedChangeCopy(locale);
+      render(
+        <AppliedChangesNotice
+          result={{
+            ...result,
+            diagnosis: { status: "complete", resolved: 0, remaining: 0, issues: [] },
+          }}
+          onDismiss={() => {}}
+        />,
+      );
+      expect(screen.getByText(copy.noNewIssues)).toBeVisible();
+      expect(screen.queryByText(copy.complete(0))).toBeNull();
+      expect(screen.queryByText(copy.newIssues(0))).toBeNull();
+    },
+  );
+
+  it.each(["zh-CN", "zh-TW", "en-US", "ja-JP"] as const)(
+    "keeps unresolved original problems visible in %s",
+    async (locale) => {
+      await changeLocale(locale);
+      const copy = appliedChangeCopy(locale);
+      const onDoctor = vi.fn();
+      render(
+        <AppliedChangesNotice
+          result={{
+            ...result,
+            diagnosis: { status: "complete", resolved: 0, remaining: 2, issues: [] },
+          }}
+          onDismiss={() => {}}
+          onDoctor={onDoctor}
+        />,
+      );
+      expect(screen.getByText(copy.remainingIssues(2))).toBeVisible();
+      expect(screen.queryByText(copy.complete(0))).toBeNull();
+      expect(screen.queryByText(copy.noNewIssues)).toBeNull();
+      fireEvent.click(screen.getByRole("button", { name: copy.doctor }));
+      expect(onDoctor).toHaveBeenCalledOnce();
+    },
+  );
+
+  it("shows both genuinely resolved and still-present issues rather than presenting only the new findings", async () => {
+    await changeLocale("en-US");
+    const copy = appliedChangeCopy("en-US");
+    render(
+      <AppliedChangesNotice
+        result={{ ...result, diagnosis: { ...result.diagnosis!, remaining: 2 } }}
+        onDismiss={() => {}}
+      />,
+    );
+    expect(screen.getByText(copy.complete(1))).toBeVisible();
+    expect(screen.getByText(copy.remainingIssues(2))).toBeVisible();
+    expect(screen.getByText(copy.newIssues(1))).toBeVisible();
+  });
+
   it.each(["checking", "failed"] as const)(
     "retains the applied result with only the %s diagnosis state",
     async (status) => {

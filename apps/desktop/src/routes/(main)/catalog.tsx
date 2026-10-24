@@ -44,7 +44,10 @@ import {
   useHomeWorkspaces,
 } from "@/features/home/home-query";
 import { useWorkspaceStore } from "@/features/workspace/workspace-store";
-import { resolveRefreshedManifest } from "@/features/workspace/manifest-draft";
+import {
+  preparedManifestBaseline,
+  resolveRefreshedManifest,
+} from "@/features/workspace/manifest-draft";
 import {
   Boxes,
   Brain,
@@ -184,6 +187,8 @@ function CatalogRoute() {
     const initialState = useWorkspaceStore.getState();
     const initialDraft = initialState.workspaceDrafts[workspace.id];
     const initialBaseline = initialState.workspaceDraftBaselines[workspace.id] ?? "";
+    const initialBaselineIsDefault =
+      initialState.workspaceDraftBaselineDefaults[workspace.id] === true;
     setBusy(true);
     setMessage("");
     return withAsyncCleanup(
@@ -204,13 +209,28 @@ function CatalogRoute() {
             if (requestId === openRequest.current) setMessage(localizeMessage(error));
           }
           if (requestId !== openRequest.current) return false;
+          let conflictRetained = false;
           const resolvedManifest = await resolveRefreshedManifest({
             initialManifest: initialDraft,
             initialBaseline,
+            initialBaselineIsDefault,
+            acknowledgedDisk: initialState.workspaceDraftDisks[workspace.id],
+            acknowledgedDiskIsDefault:
+              initialState.workspaceDraftDiskDefaults[workspace.id] === true,
             diskManifest: nextManifest,
+            diskIsDefault: !nextScan.manifest_exists,
+            onConflictRetained: () => {
+              conflictRetained = true;
+            },
             getCurrentManifest: () => useWorkspaceStore.getState().workspaceDrafts[workspace.id],
             confirmDiskVersion: () =>
-              dialogs.confirm({ description: tr("workspace.refreshConflict"), tone: "warning" }),
+              dialogs.confirm({
+                title: tr("workspace.refreshConflictTitle"),
+                description: tr("workspace.refreshConflict"),
+                confirmLabel: tr("workspace.refreshLoadDisk"),
+                cancelLabel: tr("workspace.refreshKeepDraft"),
+                tone: "warning",
+              }),
           });
           if (requestId !== openRequest.current) return false;
           setChangeSet(undefined);
@@ -219,11 +239,32 @@ function CatalogRoute() {
           setProject(workspace.path);
           setScan(nextScan);
           setManifest(resolvedManifest);
-          const nextBaseline = nextManifest ? JSON.stringify(nextManifest) : initialBaseline;
-          setBaselineManifest(nextBaseline);
+          const nextBaseline = nextManifest
+            ? conflictRetained
+              ? preparedManifestBaseline(
+                  initialBaseline,
+                  nextManifest,
+                  !nextScan.manifest_exists && initialBaselineIsDefault,
+                )
+              : JSON.stringify(nextManifest)
+            : initialBaseline;
+          const nextBaselineIsDefault =
+            nextManifest && !conflictRetained
+              ? !nextScan.manifest_exists
+              : initialBaselineIsDefault;
+          setBaselineManifest(nextBaseline, nextBaselineIsDefault);
           useWorkspaceStore
             .getState()
-            .cacheWorkspaceDraft(workspace.id, resolvedManifest, nextBaseline);
+            .cacheWorkspaceDraft(
+              workspace.id,
+              resolvedManifest,
+              nextBaseline,
+              nextManifest ? JSON.stringify(nextManifest) : undefined,
+              {
+                baselineIsDefault: nextBaselineIsDefault,
+                diskIsDefault: !nextScan.manifest_exists,
+              },
+            );
           setRuntime(nextRuntime);
           setSelectedWorkspace(workspace);
           setBusy(false);

@@ -130,7 +130,7 @@ describe("E2 diagnosis UI", () => {
     [
       "zh-CN",
       "CLAUDE.md 与 AGENTS.md 内容完全相同",
-      "同一段指令可能被重复读取",
+      "Grok Build 会读到两份相同的指令",
       "重新诊断",
       "详情",
       "各 Agent 的检查结果",
@@ -139,7 +139,7 @@ describe("E2 diagnosis UI", () => {
     [
       "zh-TW",
       "CLAUDE.md 與 AGENTS.md 內容完全相同",
-      "同一段指令可能被重複讀取",
+      "Grok Build 會讀到兩份相同的指令",
       "重新診斷",
       "詳細資料",
       "各 Agent 的檢查結果",
@@ -148,7 +148,7 @@ describe("E2 diagnosis UI", () => {
     [
       "en-US",
       "CLAUDE.md and AGENTS.md contain identical instructions",
-      "The same instructions may be read more than once",
+      "Grok Build will read the same instructions twice",
       "Run diagnostics again",
       "Details",
       "Checks by Agent",
@@ -157,7 +157,7 @@ describe("E2 diagnosis UI", () => {
     [
       "ja-JP",
       "CLAUDE.md と AGENTS.md の内容が完全に同じです",
-      "同じ指示が重複して読み込まれる可能性があります",
+      "Grok Build が同じ指示を 2 回読み込みます",
       "再診断",
       "詳細",
       "Agent ごとの検査結果",
@@ -176,6 +176,7 @@ describe("E2 diagnosis UI", () => {
       expect(screen.queryByText("DeepSeek Harness is available for diagnostics only")).toBeNull();
       const checks = screen.getByRole("button", { name: new RegExp(matrix) });
       expect(checks.getAttribute("aria-expanded")).toBe("false");
+      expect(checks.querySelector(".text-warning")).toHaveTextContent(/1/);
       expect(issue.compareDocumentPosition(checks) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
       expect(screen.queryByRole("table")).toBeNull();
       fireEvent.click(checks);
@@ -188,6 +189,26 @@ describe("E2 diagnosis UI", () => {
     },
   );
 
+  it.each([
+    ["zh-CN", "检查于 刚刚"],
+    ["zh-TW", "檢查於 剛剛"],
+    ["en-US", "checked just now"],
+    ["ja-JP", "最終確認：たった今"],
+  ] as const)("renders a consistent recent summary in %s", async (locale, checked) => {
+    await changeLocale(locale);
+    vi.mocked(api.workspaceDoctorReport).mockResolvedValue({
+      ...report,
+      summary: { ...report.summary, checked_at: new Date().toISOString() },
+    });
+    view();
+    expect(await screen.findByText(checked)).toBeVisible();
+    if (locale === "en-US") {
+      expect(screen.getByText("1 warning")).toBeVisible();
+      expect(screen.getByText("0 errors")).toBeVisible();
+      expect(screen.getByText("0 auto-fixable")).toBeVisible();
+    }
+  });
+
   it("reveals the actual source path instead of its display abbreviation", async () => {
     const onRevealPath = vi.fn();
     const onOpenIssue = vi.fn();
@@ -196,8 +217,8 @@ describe("E2 diagnosis UI", () => {
     expect(screen.getByText("~/northstar/AGENTS.md")).toBeVisible();
     fireEvent.click(screen.getByRole("button", { name: "Open containing folder" }));
     expect(onRevealPath).toHaveBeenCalledWith("/example/northstar/CLAUDE.md");
-    fireEvent.click(screen.getByRole("button", { name: "Inspect context sources" }));
-    expect(onOpenIssue).toHaveBeenCalledWith("context");
+    fireEvent.click(screen.getByRole("button", { name: "View instruction context" }));
+    expect(onOpenIssue).toHaveBeenCalledWith("context", "grok-build");
   });
 
   it.each([
@@ -256,8 +277,8 @@ describe("E2 diagnosis UI", () => {
     expect(await screen.findByText("/example/northstar-other/CLAUDE.md")).toBeVisible();
     expect(screen.getByText("/example/.claude/AGENTS.md")).toBeVisible();
     expect(screen.queryByRole("button", { name: "Open containing folder" })).toBeNull();
-    fireEvent.click(screen.getByRole("button", { name: "Inspect context sources" }));
-    expect(onOpenIssue).toHaveBeenCalledWith("context");
+    fireEvent.click(screen.getByRole("button", { name: "View instruction context" }));
+    expect(onOpenIssue).toHaveBeenCalledWith("context", "grok-build");
     fireEvent.click(screen.getByRole("button", { name: "Details" }));
     expect(screen.getByText("Exact duplicate of /example/.claude/AGENTS.md")).toBeVisible();
   });
@@ -270,7 +291,7 @@ describe("E2 diagnosis UI", () => {
     view({ onDiagnosed });
     expect(await screen.findByRole("alert")).toHaveTextContent("Temporary diagnostic failure");
     expect(screen.getByText("Not diagnosed")).toBeVisible();
-    expect(screen.queryByText("Warnings: 0")).toBeNull();
+    expect(screen.queryByText("0 warnings")).toBeNull();
     expect(screen.queryByText("No deterministic configuration issues found")).toBeNull();
     expect(onDiagnosed).not.toHaveBeenCalled();
   });
@@ -303,9 +324,9 @@ describe("E2 diagnosis UI", () => {
     expect(await screen.findByRole("alert")).toHaveTextContent("Refresh diagnosis failed");
     expect(client.getQueryData(homeKeys.doctorReport(workspace.id))).toEqual(healthy);
     expect(screen.getByText("Not diagnosed")).toBeVisible();
-    expect(screen.queryByText("Warnings: 0")).toBeNull();
-    expect(screen.queryByText("Errors: 0")).toBeNull();
-    expect(screen.queryByText("0 automatically repairable")).toBeNull();
+    expect(screen.queryByText("0 warnings")).toBeNull();
+    expect(screen.queryByText("0 errors")).toBeNull();
+    expect(screen.queryByText("0 auto-fixable")).toBeNull();
     expect(screen.queryByText("No deterministic configuration issues found")).toBeNull();
     expect(screen.queryByRole("button", { name: /Checks by Agent/ })).toBeNull();
     expect(screen.queryByRole("table")).toBeNull();
@@ -321,7 +342,7 @@ describe("E2 diagnosis UI", () => {
     expect(
       await screen.findByText("CLAUDE.md and AGENTS.md contain identical instructions"),
     ).toBeVisible();
-    expect(screen.getByText("Warnings: 1")).toBeVisible();
+    expect(screen.getByText("1 warning")).toBeVisible();
     expect(screen.queryByText("Not diagnosed")).toBeNull();
     expect(screen.queryByRole("alert")).toBeNull();
     expect(screen.getByRole("button", { name: /Checks by Agent/ })).toBeVisible();

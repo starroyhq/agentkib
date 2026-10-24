@@ -1,0 +1,23 @@
+{
+  "summary": {
+    "workspace_id": "11b221ee-adbc-43de-a6e2-d5cfd6aa1d83",
+    "error_count": 0,
+    "warning_count": 1,
+    "info_count": 1,
+    "repairable_count": 0,
+    "checked_at": "2026-10-24T10:42:01.413Z"
+  },
+  "issues": [
+    {
+      "code": "instruction.exact-duplicate",
+      "severity": "warning",
+      "agent": "grok-build",
+      "evidence": [
+        {
+          "path": "~/projects/northstar-api/CLAUDE.md",
+          "detail": "Exact duplicate of ~/projects/northstar-api/AGENTS.md"
+        }
+      ]
+    }
+  ]
+}

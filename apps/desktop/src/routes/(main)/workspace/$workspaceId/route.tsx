@@ -1,3 +1,4 @@
+import { planLiteralImportWarning } from "@/features/workspace/plan-import-context";
 import { useI18n } from "@/core/useI18n";
 import { useEffect, useRef, useState } from "react";
 import {
@@ -43,7 +44,11 @@ import { WorkspaceOpenWith } from "@/features/workspace/WorkspaceOpenWith";
 import { useAppDialogs } from "@/components/AppDialogProvider";
 import { appliedChangeCopy } from "@/features/workspace/applied-change-copy";
 import { AppliedChangesNotice } from "@/features/workspace/AppliedChangesNotice";
-import { draftSectionCount, resolveRefreshedManifest } from "@/features/workspace/manifest-draft";
+import {
+  draftSectionCount,
+  preparedManifestBaseline,
+  resolveRefreshedManifest,
+} from "@/features/workspace/manifest-draft";
 import { Copy, MoreHorizontal, RefreshCw } from "lucide-react";
 function WorkspaceActions({
   workspace,
@@ -225,6 +230,9 @@ function WorkspaceLayout() {
     const initialState = useWorkspaceStore.getState();
     const initialBaseline =
       initialState.baselineManifest || initialState.workspaceDraftBaselines[workspaceId] || "";
+    const initialBaselineIsDefault = initialState.baselineManifest
+      ? initialState.baselineManifestIsDefault
+      : initialState.workspaceDraftBaselineDefaults[workspaceId] === true;
     const scanAtStart = initialState.scan;
     const isCurrentRequest = () =>
       requestId === operationRequest.current &&
@@ -260,15 +268,27 @@ function WorkspaceLayout() {
           const nextScan = scanResult.value;
           const nextManifest =
             manifestResult.status === "fulfilled" ? manifestResult.value : undefined;
+          let conflictRetained = false;
           const resolvedManifest = await resolveRefreshedManifest({
             initialManifest: initialState.manifest,
             initialBaseline,
+            initialBaselineIsDefault,
+            acknowledgedDisk: initialState.workspaceDraftDisks[workspaceId],
+            acknowledgedDiskIsDefault:
+              initialState.workspaceDraftDiskDefaults[workspaceId] === true,
             cachedDraft: draft,
             diskManifest: nextManifest,
+            diskIsDefault: !nextScan.manifest_exists,
+            onConflictRetained: () => {
+              conflictRetained = true;
+            },
             getCurrentManifest: () => useWorkspaceStore.getState().manifest,
             confirmDiskVersion: () =>
               dialogs.confirm({
+                title: tr("workspace.refreshConflictTitle"),
                 description: tr("workspace.refreshConflict"),
+                confirmLabel: tr("workspace.refreshLoadDisk"),
+                cancelLabel: tr("workspace.refreshKeepDraft"),
                 tone: "warning",
               }),
           });
@@ -277,11 +297,32 @@ function WorkspaceLayout() {
             setMessage(localizeMessage(manifestResult.reason));
           setScan(nextScan);
           setManifest(resolvedManifest);
-          const nextBaseline = nextManifest ? JSON.stringify(nextManifest) : initialBaseline;
-          setBaselineManifest(nextBaseline);
+          const nextBaseline = nextManifest
+            ? conflictRetained
+              ? preparedManifestBaseline(
+                  initialBaseline,
+                  nextManifest,
+                  !nextScan.manifest_exists && initialBaselineIsDefault,
+                )
+              : JSON.stringify(nextManifest)
+            : initialBaseline;
+          const nextBaselineIsDefault =
+            nextManifest && !conflictRetained
+              ? !nextScan.manifest_exists
+              : initialBaselineIsDefault;
+          setBaselineManifest(nextBaseline, nextBaselineIsDefault);
           useWorkspaceStore
             .getState()
-            .cacheWorkspaceDraft(workspaceId, resolvedManifest, nextBaseline);
+            .cacheWorkspaceDraft(
+              workspaceId,
+              resolvedManifest,
+              nextBaseline,
+              nextManifest ? JSON.stringify(nextManifest) : undefined,
+              {
+                baselineIsDefault: nextBaselineIsDefault,
+                diskIsDefault: !nextScan.manifest_exists,
+              },
+            );
           setRuntime(runtimeResult.value);
           setLoadFailure(undefined);
           void doctorReport.refetch();
@@ -350,6 +391,10 @@ function WorkspaceLayout() {
         try {
           const nextChangeSet = await api.plan(targetProject, targetManifest, includeHome);
           if (!isCurrentRequest()) return;
+          const literalImportWarning = await planLiteralImportWarning(nextChangeSet, () =>
+            api.context(targetProject, targetProject, "deepseek-harness"),
+          );
+          if (!isCurrentRequest()) return;
           if (
             JSON.stringify(useWorkspaceStore.getState().manifest) !== JSON.stringify(targetManifest)
           ) {
@@ -360,7 +405,7 @@ function WorkspaceLayout() {
             });
             return;
           }
-          setChangeSet(nextChangeSet, targetManifest, includeHome);
+          setChangeSet(nextChangeSet, targetManifest, includeHome, literalImportWarning);
           setChangeSetOrigin("standard");
           setHandoffLaunchRequest(undefined);
           void navigate({

@@ -21,6 +21,7 @@ export interface AppliedWorkspaceChanges {
   diagnosis?: {
     status: "checking" | "complete" | "failed";
     resolved?: number;
+    remaining?: number;
     issues: DoctorIssue[];
   };
 }
@@ -33,6 +34,7 @@ interface WorkspaceState {
   manifest?: Manifest;
   changeSet?: ChangeSet;
   changeSetManifest?: string;
+  changeSetImportWarning?: boolean;
   changeSetIncludesHome: boolean;
   changeSetInvalidated: boolean;
   changeSetConflict: boolean;
@@ -42,8 +44,12 @@ interface WorkspaceState {
   handoffLaunchRequest?: SessionHandoffLaunchRequest;
   handoffRecoveryChanges?: Pick<AppliedWorkspaceChanges, "workspaceId" | "project" | "changeSet">;
   baselineManifest: string;
+  baselineManifestIsDefault: boolean;
   workspaceDrafts: Record<string, Manifest>;
   workspaceDraftBaselines: Record<string, string>;
+  workspaceDraftBaselineDefaults: Record<string, boolean>;
+  workspaceDraftDisks: Record<string, string>;
+  workspaceDraftDiskDefaults: Record<string, boolean>;
   busy: boolean;
   message: string;
   messageRevision: number;
@@ -61,6 +67,7 @@ interface WorkspaceActions {
     value: Updater<ChangeSet | undefined>,
     plannedManifest?: Manifest,
     includesHome?: boolean,
+    literalImportWarning?: boolean,
   ) => void;
   acceptAppliedManifest: (
     manifest: Manifest,
@@ -70,12 +77,14 @@ interface WorkspaceActions {
   setChangeSetOrigin: (value: Updater<ChangeSetOrigin>) => void;
   setHandoffLaunchRequest: (value: Updater<SessionHandoffLaunchRequest | undefined>) => void;
   setHandoffRecoveryChanges: (value: WorkspaceState["handoffRecoveryChanges"]) => void;
-  setBaselineManifest: (value: Updater<string>) => void;
+  setBaselineManifest: (value: Updater<string>, isDefault?: boolean) => void;
   setWorkspaceDrafts: (value: Updater<Record<string, Manifest>>) => void;
   cacheWorkspaceDraft: (
     workspaceId: string,
     manifest: Manifest | undefined,
     baseline: string,
+    diskSnapshot?: string,
+    origins?: { baselineIsDefault?: boolean; diskIsDefault?: boolean },
   ) => void;
   setBusy: (value: Updater<boolean>) => void;
   setMessage: (value: Updater<string>) => void;
@@ -98,18 +107,37 @@ function cachedDraftState(
   workspaceId: string,
   manifest: Manifest | undefined,
   baseline: string,
+  diskSnapshot?: string,
+  origins: { baselineIsDefault?: boolean; diskIsDefault?: boolean } = {},
 ) {
   const workspaceDrafts = { ...state.workspaceDrafts };
   const workspaceDraftBaselines = { ...state.workspaceDraftBaselines };
+  const workspaceDraftDisks = { ...state.workspaceDraftDisks };
+  const workspaceDraftBaselineDefaults = { ...state.workspaceDraftBaselineDefaults };
+  const workspaceDraftDiskDefaults = { ...state.workspaceDraftDiskDefaults };
   if (manifest && JSON.stringify(manifest) !== baseline) {
     workspaceDrafts[workspaceId] = manifest;
     if (baseline) workspaceDraftBaselines[workspaceId] = baseline;
     else delete workspaceDraftBaselines[workspaceId];
+    workspaceDraftBaselineDefaults[workspaceId] = origins.baselineIsDefault === true;
+    if (diskSnapshot !== undefined) {
+      workspaceDraftDisks[workspaceId] = diskSnapshot;
+      workspaceDraftDiskDefaults[workspaceId] = origins.diskIsDefault === true;
+    }
   } else {
     delete workspaceDrafts[workspaceId];
     delete workspaceDraftBaselines[workspaceId];
+    delete workspaceDraftDisks[workspaceId];
+    delete workspaceDraftBaselineDefaults[workspaceId];
+    delete workspaceDraftDiskDefaults[workspaceId];
   }
-  return { workspaceDrafts, workspaceDraftBaselines };
+  return {
+    workspaceDrafts,
+    workspaceDraftBaselines,
+    workspaceDraftDisks,
+    workspaceDraftBaselineDefaults,
+    workspaceDraftDiskDefaults,
+  };
 }
 
 export const useWorkspaceStore = create<WorkspaceState & WorkspaceActions>((set) => ({
@@ -121,8 +149,12 @@ export const useWorkspaceStore = create<WorkspaceState & WorkspaceActions>((set)
   planningChanges: false,
   planningRevision: 0,
   baselineManifest: "",
+  baselineManifestIsDefault: false,
   workspaceDrafts: {},
   workspaceDraftBaselines: {},
+  workspaceDraftBaselineDefaults: {},
+  workspaceDraftDisks: {},
+  workspaceDraftDiskDefaults: {},
   busy: false,
   message: "",
   messageRevision: 0,
@@ -149,11 +181,12 @@ export const useWorkspaceStore = create<WorkspaceState & WorkspaceActions>((set)
       }
       return { manifest };
     }),
-  setChangeSet: (value, plannedManifest, includesHome = false) =>
+  setChangeSet: (value, plannedManifest, includesHome = false, literalImportWarning) =>
     set((state) => {
       const changeSet = resolve(value, state.changeSet);
       return {
         changeSet,
+        changeSetImportWarning: changeSet ? literalImportWarning : undefined,
         changeSetInvalidated: false,
         changeSetConflict: false,
         changeSetManifest: plannedManifest ? JSON.stringify(plannedManifest) : undefined,
@@ -177,8 +210,15 @@ export const useWorkspaceStore = create<WorkspaceState & WorkspaceActions>((set)
       return {
         manifest,
         baselineManifest,
+        baselineManifestIsDefault: false,
         ...(state.selectedWorkspace
-          ? cachedDraftState(state, state.selectedWorkspace.id, manifest, baselineManifest)
+          ? cachedDraftState(
+              state,
+              state.selectedWorkspace.id,
+              manifest,
+              baselineManifest,
+              baselineManifest,
+            )
           : {}),
       };
     }),
@@ -195,18 +235,38 @@ export const useWorkspaceStore = create<WorkspaceState & WorkspaceActions>((set)
       };
     }),
   setHandoffRecoveryChanges: (handoffRecoveryChanges) => set({ handoffRecoveryChanges }),
-  setBaselineManifest: (value) =>
-    set((state) => ({ baselineManifest: resolve(value, state.baselineManifest) })),
+  setBaselineManifest: (value, isDefault = false) =>
+    set((state) => ({
+      baselineManifest: resolve(value, state.baselineManifest),
+      baselineManifestIsDefault: isDefault,
+    })),
   setWorkspaceDrafts: (value) =>
     set((state) => {
       const workspaceDrafts = resolve(value, state.workspaceDrafts);
       const workspaceDraftBaselines = Object.fromEntries(
         Object.entries(state.workspaceDraftBaselines).filter(([id]) => id in workspaceDrafts),
       );
-      return { workspaceDrafts, workspaceDraftBaselines };
+      const workspaceDraftDisks = Object.fromEntries(
+        Object.entries(state.workspaceDraftDisks).filter(([id]) => id in workspaceDrafts),
+      );
+      const workspaceDraftBaselineDefaults = Object.fromEntries(
+        Object.entries(state.workspaceDraftBaselineDefaults).filter(
+          ([id]) => id in workspaceDrafts,
+        ),
+      );
+      const workspaceDraftDiskDefaults = Object.fromEntries(
+        Object.entries(state.workspaceDraftDiskDefaults).filter(([id]) => id in workspaceDrafts),
+      );
+      return {
+        workspaceDrafts,
+        workspaceDraftBaselines,
+        workspaceDraftDisks,
+        workspaceDraftBaselineDefaults,
+        workspaceDraftDiskDefaults,
+      };
     }),
-  cacheWorkspaceDraft: (workspaceId, manifest, baseline) =>
-    set((state) => cachedDraftState(state, workspaceId, manifest, baseline)),
+  cacheWorkspaceDraft: (workspaceId, manifest, baseline, diskSnapshot, origins) =>
+    set((state) => cachedDraftState(state, workspaceId, manifest, baseline, diskSnapshot, origins)),
   setBusy: (value) => set((state) => ({ busy: resolve(value, state.busy) })),
   setMessage: (value) =>
     set((state) => {
@@ -269,6 +329,7 @@ export const useWorkspaceStore = create<WorkspaceState & WorkspaceActions>((set)
           ? {
               changeSet: undefined,
               changeSetManifest: undefined,
+              changeSetImportWarning: undefined,
               changeSetIncludesHome: false,
               // A completed/unknown import still needs its recovery request.
               handoffLaunchRequest: state.changeSet ? undefined : state.handoffLaunchRequest,
@@ -287,6 +348,7 @@ export const useWorkspaceStore = create<WorkspaceState & WorkspaceActions>((set)
       manifest: undefined,
       changeSet: undefined,
       changeSetManifest: undefined,
+      changeSetImportWarning: undefined,
       changeSetIncludesHome: false,
       changeSetInvalidated: false,
       changeSetConflict: false,
@@ -296,6 +358,7 @@ export const useWorkspaceStore = create<WorkspaceState & WorkspaceActions>((set)
       handoffLaunchRequest: undefined,
       handoffRecoveryChanges: undefined,
       baselineManifest: "",
+      baselineManifestIsDefault: false,
       busy: false,
       message: "",
       messageRevision: state.messageRevision + 1,

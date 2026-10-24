@@ -14,6 +14,7 @@ const codes = [
   "instruction.missing",
   "instruction.expected-content-missing",
   "instruction.exact-duplicate",
+  "instruction.unmanaged-duplicate",
   "context.warning",
   "context.unavailable",
   "mcp.config-unavailable",
@@ -64,6 +65,14 @@ describe.each([
     expect(tr("doctor.manual.skillTarget")).toContain("targets");
     expect(tr("doctor.manual.mcpTarget")).toContain("targets");
     expect(tr("doctor.manual.mcpTarget")).toContain("MCP");
+  });
+
+  it("names the actual instruction page in the action and guidance", async () => {
+    await initializeI18n(locale);
+    const page = tr("nav.context").toLocaleLowerCase();
+    expect(tr("doctor.openContext").toLocaleLowerCase()).toContain(page);
+    for (const key of ["instruction", "duplicate", "context"])
+      expect(tr(`doctor.manual.${key}`).toLocaleLowerCase()).toContain(page);
   });
 
   it("points to collapsed details rather than evidence supposedly above the guidance", async () => {

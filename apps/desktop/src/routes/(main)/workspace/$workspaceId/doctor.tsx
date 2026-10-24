@@ -1,3 +1,4 @@
+import { planLiteralImportWarning } from "@/features/workspace/plan-import-context";
 import { createFileRoute, useNavigate, useParams, useSearch } from "@tanstack/react-router";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { WorkspaceDoctorSkeleton } from "@/features/workspace/WorkspaceSkeleton";
@@ -84,8 +85,12 @@ function WorkspaceDoctorRoute() {
       if (requestId !== repairRequest.current) return;
       const nextChangeSet = await api.plan(targetProject, currentManifest, false);
       if (requestId !== repairRequest.current) return;
+      const literalImportWarning = await planLiteralImportWarning(nextChangeSet, () =>
+        api.context(targetProject, targetProject, "deepseek-harness"),
+      );
+      if (requestId !== repairRequest.current) return;
       if (useWorkspaceStore.getState().selectedWorkspace?.id !== workspaceId) return;
-      setChangeSet(nextChangeSet, currentManifest);
+      setChangeSet(nextChangeSet, currentManifest, false, literalImportWarning);
       setChangeSetOrigin("doctor");
       setHandoffLaunchRequest(undefined);
       void navigate({ to: "/workspace/$workspaceId/changes", params: { workspaceId } });
@@ -114,9 +119,13 @@ function WorkspaceDoctorRoute() {
             current.setMessage(localizeMessage(error));
         }
       }}
-      onOpenIssue={(destination) => {
+      onOpenIssue={(destination, agent) => {
         if (destination === "context") {
-          void navigate({ to: "/workspace/$workspaceId/context", params: { workspaceId } });
+          void navigate({
+            to: "/workspace/$workspaceId/context",
+            params: { workspaceId },
+            ...(agent ? { search: { agent } } : {}),
+          });
           return;
         }
         void navigate({

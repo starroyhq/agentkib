@@ -16,6 +16,7 @@ import { api } from "@/core/api";
 import { initializeI18n } from "@/core/i18n";
 import type {
   ChangeSet,
+  ContextPreview,
   Manifest,
   RuntimeInfo,
   WorkspaceScan,
@@ -50,7 +51,7 @@ vi.mock("@/components/AppDialogProvider", () => ({
   useAppDialogs: () => ({ confirm: doubles.confirm }),
 }));
 vi.mock("@/core/api", () => ({
-  api: { scan: vi.fn(), manifest: vi.fn(), runtime: vi.fn(), plan: vi.fn() },
+  api: { scan: vi.fn(), manifest: vi.fn(), runtime: vi.fn(), plan: vi.fn(), context: vi.fn() },
 }));
 
 function WorkspaceContent() {
@@ -194,12 +195,137 @@ describe("workspace load recovery", () => {
       expect(doubles.confirm).toHaveBeenCalledTimes(resolution === "unchanged" ? 0 : 1);
       const expected = resolution === true ? disk : draft;
       expect(useWorkspaceStore.getState().manifest).toEqual(expected);
-      expect(useWorkspaceStore.getState().baselineManifest).toBe(JSON.stringify(disk));
+      const retainedBaseline = resolution === false ? manifest : disk;
+      expect(useWorkspaceStore.getState().baselineManifest).toBe(JSON.stringify(retainedBaseline));
       expect(useWorkspaceStore.getState().workspaceDraftBaselines[workspace.id]).toBe(
-        resolution === true ? undefined : JSON.stringify(disk),
+        resolution === true ? undefined : JSON.stringify(retainedBaseline),
       );
     },
   );
+
+  it("keeps a no-manifest draft when switching away and back with a new prepared ID", async () => {
+    const draft = {
+      ...manifest,
+      instructions: { ...manifest.instructions, shared: "only draft edit" },
+    };
+    const disk = {
+      ...manifest,
+      workspace: { ...manifest.workspace, id: "new-server-prepared-id" },
+    };
+    useWorkspaceStore.setState({
+      manifest: draft,
+      scan: { ...scan, manifest_exists: false },
+      baselineManifest: JSON.stringify(manifest),
+      baselineManifestIsDefault: true,
+    });
+    const transitions = renderHook(() =>
+      useWorkspaceTransitions({
+        route: { kind: "workspace", workspaceId: workspace.id, page: "assets" },
+        navigateWorkspacePageFor: doubles.navigate,
+        clearGitSubview: vi.fn(),
+        invalidatePendingLoad: vi.fn(),
+      }),
+    );
+    await act(async () => {
+      await transitions.result.current.openWorkspace(otherWorkspace);
+      await transitions.result.current.openWorkspace(workspace);
+    });
+    transitions.unmount();
+    vi.mocked(api.scan).mockResolvedValue({ ...scan, manifest_exists: false });
+    vi.mocked(api.manifest).mockResolvedValue(disk);
+    await renderRoute();
+    await screen.findByRole("textbox", { name: "Workspace draft" });
+    expect(doubles.confirm).not.toHaveBeenCalled();
+    expect(useWorkspaceStore.getState().manifest).toEqual({ ...draft, workspace: disk.workspace });
+    expect(useWorkspaceStore.getState().baselineManifest).toBe(JSON.stringify(disk));
+    expect(useWorkspaceStore.getState().workspaceDraftBaselines[workspace.id]).toBe(
+      JSON.stringify(disk),
+    );
+    expect(useWorkspaceStore.getState().baselineManifestIsDefault).toBe(true);
+    expect(useWorkspaceStore.getState().workspaceDraftBaselineDefaults[workspace.id]).toBe(true);
+    expect(useWorkspaceStore.getState().workspaceDraftDiskDefaults[workspace.id]).toBe(true);
+  });
+
+  it("retains a real manifest's identity and deletion acknowledgment across cached workspace switches", async () => {
+    const draft = {
+      ...manifest,
+      instructions: { ...manifest.instructions, shared: "only draft edit" },
+    };
+    useWorkspaceStore.getState().cacheWorkspaceDraft(workspace.id, draft, JSON.stringify(manifest));
+    vi.mocked(api.scan).mockResolvedValue({ ...scan, manifest_exists: false });
+    vi.mocked(api.manifest).mockResolvedValue({
+      ...manifest,
+      workspace: { ...manifest.workspace, id: "first-prepared-id" },
+    });
+    await renderRoute();
+    await screen.findByRole("textbox", { name: "Workspace draft" });
+    expect(doubles.confirm).toHaveBeenCalledOnce();
+    expect(useWorkspaceStore.getState().manifest).toEqual(draft);
+    expect(useWorkspaceStore.getState().workspaceDraftBaselineDefaults[workspace.id]).toBe(false);
+    expect(useWorkspaceStore.getState().workspaceDraftDiskDefaults[workspace.id]).toBe(true);
+    cleanup();
+    const transitions = renderHook(() =>
+      useWorkspaceTransitions({
+        route: { kind: "workspace", workspaceId: workspace.id, page: "assets" },
+        navigateWorkspacePageFor: doubles.navigate,
+        clearGitSubview: vi.fn(),
+        invalidatePendingLoad: vi.fn(),
+      }),
+    );
+    await act(async () => {
+      await transitions.result.current.openWorkspace(otherWorkspace);
+      await transitions.result.current.openWorkspace(workspace);
+    });
+    transitions.unmount();
+    vi.mocked(api.manifest).mockResolvedValue({
+      ...manifest,
+      workspace: { ...manifest.workspace, id: "second-prepared-id" },
+    });
+    await renderRoute();
+    await screen.findByRole("textbox", { name: "Workspace draft" });
+    expect(doubles.confirm).toHaveBeenCalledOnce();
+    expect(useWorkspaceStore.getState().manifest).toEqual(draft);
+    expect(useWorkspaceStore.getState().baselineManifest).toBe(JSON.stringify(manifest));
+    expect(useWorkspaceStore.getState().baselineManifestIsDefault).toBe(false);
+  });
+
+  it("asks once for one external version across stable workspace switches and asks again for a new version", async () => {
+    const draft = {
+      ...manifest,
+      instructions: { ...manifest.instructions, shared: "only draft edit" },
+    };
+    const disk = { ...manifest, workspace: { ...manifest.workspace, name: "external disk name" } };
+    useWorkspaceStore.getState().cacheWorkspaceDraft(workspace.id, draft, JSON.stringify(manifest));
+    vi.mocked(api.manifest).mockResolvedValue(disk);
+    await renderRoute();
+    await screen.findByRole("textbox", { name: "Workspace draft" });
+    expect(doubles.confirm).toHaveBeenCalledOnce();
+    cleanup();
+    const transitions = renderHook(() =>
+      useWorkspaceTransitions({
+        route: { kind: "workspace", workspaceId: workspace.id, page: "assets" },
+        navigateWorkspacePageFor: doubles.navigate,
+        clearGitSubview: vi.fn(),
+        invalidatePendingLoad: vi.fn(),
+      }),
+    );
+    await act(async () => {
+      await transitions.result.current.openWorkspace(otherWorkspace);
+      await transitions.result.current.openWorkspace(workspace);
+    });
+    transitions.unmount();
+    await renderRoute();
+    await screen.findByRole("textbox", { name: "Workspace draft" });
+    expect(doubles.confirm).toHaveBeenCalledOnce();
+    expect(useWorkspaceStore.getState().baselineManifest).toBe(JSON.stringify(manifest));
+    expect(useWorkspaceStore.getState().manifest).toEqual(draft);
+    vi.mocked(api.manifest).mockResolvedValue({
+      ...disk,
+      workspace: { ...disk.workspace, name: "changed a second time" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Scan" }));
+    await waitFor(() => expect(doubles.confirm).toHaveBeenCalledTimes(2));
+  });
 
   it("preserves the cached baseline after a failed manifest read so retry detects external edits", async () => {
     const draft = {
@@ -317,7 +443,9 @@ describe("workspace load recovery", () => {
       await waitFor(() => expect(useWorkspaceStore.getState().busy).toBe(false));
       expect(doubles.confirm).toHaveBeenCalledWith(expect.objectContaining({ tone: "warning" }));
       expect(useWorkspaceStore.getState().manifest).toEqual(loadDisk ? disk : draft);
-      expect(useWorkspaceStore.getState().baselineManifest).toBe(JSON.stringify(disk));
+      expect(useWorkspaceStore.getState().baselineManifest).toBe(
+        JSON.stringify(loadDisk ? disk : manifest),
+      );
     },
   );
 
@@ -445,7 +573,7 @@ describe("workspace load recovery", () => {
   );
 
   it.each(["typed during refresh", "saved instructions"])(
-    "preserves the newer draft %s while updating its disk baseline",
+    "preserves the newer draft %s and its original comparison baseline",
     async (text) => {
       const draft = {
         ...manifest,
@@ -471,7 +599,7 @@ describe("workspace load recovery", () => {
       await act(async () => pending.resolve(scan));
       expect(screen.getByRole("textbox", { name: "Workspace draft" })).toHaveValue(text);
       expect(useWorkspaceStore.getState().manifest?.instructions.shared).toBe(text);
-      expect(useWorkspaceStore.getState().baselineManifest).toBe(JSON.stringify(disk));
+      expect(useWorkspaceStore.getState().baselineManifest).toBe(JSON.stringify(manifest));
     },
   );
 
@@ -522,6 +650,73 @@ describe("workspace load recovery", () => {
     expect(screen.queryByRole("status")).toBeNull();
     expect(screen.getByRole("alert")).toHaveTextContent("The draft changed. Review changes again.");
   });
+
+  it.each([false, true])(
+    "waits for actual import context and discards superseded results (%s)",
+    async (edit) => {
+      useWorkspaceStore.setState({
+        scan,
+        manifest: { ...manifest, instructions: { ...manifest.instructions, shared: "draft body" } },
+        baselineManifest: JSON.stringify(manifest),
+      });
+      const context = deferred<ContextPreview>();
+      vi.mocked(api.context).mockReturnValueOnce(context.promise);
+      const plan: ChangeSet = {
+        id: "with-import",
+        project_root: workspace.path,
+        created_at: "",
+        requires_home_approval: false,
+        changes: [
+          {
+            target: "/workspace/CLAUDE.md",
+            scope: "project",
+            validator: "managed-instructions",
+            before: "",
+            after: "@AGENTS.md",
+            risk: "low",
+          },
+        ],
+      };
+      vi.mocked(api.plan).mockResolvedValueOnce(plan);
+      await renderRoute();
+      fireEvent.click(screen.getByRole("button", { name: "Review changes" }));
+      await waitFor(() =>
+        expect(api.context).toHaveBeenCalledWith(
+          workspace.path,
+          workspace.path,
+          "deepseek-harness",
+        ),
+      );
+      expect(useWorkspaceStore.getState().changeSet).toBeUndefined();
+      expect(useWorkspaceStore.getState().planningChanges).toBe(true);
+      if (edit)
+        fireEvent.change(screen.getByRole("textbox", { name: "Workspace draft" }), {
+          target: { value: "new edit during context read" },
+        });
+      await act(async () =>
+        context.resolve({
+          agent: "deepseek-harness",
+          project: workspace.path,
+          cwd: workspace.path,
+          sections: [
+            {
+              scope: "project",
+              source: "/workspace/AGENTS.md",
+              content: "shared body",
+              precedence: 1,
+            },
+          ],
+          warnings: [],
+          visible_skills: [],
+          visible_connections: [],
+          approved_memories: [],
+        }),
+      );
+      expect(useWorkspaceStore.getState().planningChanges).toBe(false);
+      expect(useWorkspaceStore.getState().changeSet?.id).toBe(edit ? undefined : plan.id);
+      expect(useWorkspaceStore.getState().changeSetImportWarning).toBe(edit ? undefined : false);
+    },
+  );
 
   it("shows a failed change plan locally without leaving an error in the global banner", async () => {
     const draft = {

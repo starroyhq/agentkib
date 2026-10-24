@@ -17,6 +17,10 @@ const manualActions: Record<string, { guidanceKey: string; destination?: DoctorI
       guidanceKey: "doctor.manual.duplicate",
       destination: "context",
     },
+    "instruction.unmanaged-duplicate": {
+      guidanceKey: "doctor.manual.duplicate",
+      destination: "context",
+    },
     "context.warning": { guidanceKey: "doctor.manual.context", destination: "context" },
     "context.unavailable": { guidanceKey: "doctor.manual.context", destination: "context" },
     "mcp.config-unavailable": { guidanceKey: "doctor.manual.mcpConfig" },

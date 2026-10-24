@@ -257,6 +257,66 @@ describe("SessionDirectory", () => {
     },
   );
 
+  it.each(["zh-CN", "zh-TW", "en-US", "ja-JP"] as const)(
+    "keeps unused index source errors neutral per workspace in %s",
+    async (locale) => {
+      await initializeI18n(locale);
+      hub.sessions = [
+        { ...first, agent: "antigravity" },
+        { ...second, agent: "claude-code" },
+      ];
+      hub.statuses = workspaces.map((workspace) => ({
+        workspace_id: workspace.id,
+        agent: "antigravity",
+        freshness: "unavailable",
+        session_count: 0,
+        error_key: "errors.conversations.sourceUnavailable",
+      }));
+      try {
+        const { container } = render(<SessionOverview />);
+        const items = container.querySelectorAll(".session-index-item");
+        expect(items).toHaveLength(2);
+        const used = within(items[0] as HTMLElement).getByText(
+          tr("errors.conversations.sourceUnavailable"),
+        );
+        const unused = within(items[1] as HTMLElement).getByText(
+          tr("errors.conversations.sourceUnavailable"),
+        );
+        expect(used).toHaveClass("text-destructive-text");
+        expect(unused).toHaveClass("text-muted-foreground");
+        expect(unused).not.toHaveClass("text-destructive-text");
+      } finally {
+        await initializeI18n("en-US");
+      }
+    },
+  );
+
+  it("keeps a previously populated source in attention even when no current session is visible", () => {
+    hub.sessions = [];
+    hub.statuses = [
+      {
+        workspace_id: workspaces[0].id,
+        agent: "antigravity",
+        freshness: "unavailable",
+        session_count: 2,
+        error_key: "errors.conversations.sourceUnavailable",
+      },
+      {
+        workspace_id: workspaces[1].id,
+        agent: "antigravity",
+        freshness: "unavailable",
+        session_count: 0,
+        last_success_at: "2026-10-23T00:00:00Z",
+        error_detail: "Synthetic source read failed",
+      },
+    ];
+    render(<SessionOverview />);
+    expect(screen.getByText(tr("errors.conversations.sourceUnavailable"))).toHaveClass(
+      "text-destructive-text",
+    );
+    expect(screen.getByText("Synthetic source read failed")).toHaveClass("text-muted-foreground");
+  });
+
   it("keeps same-named workspace groups separate and exposes paths and the current session", () => {
     render(<SessionDirectory />);
     expect(screen.getAllByRole("button", { name: /Design kit/ })).toHaveLength(2);

@@ -1,11 +1,14 @@
 import { useI18n } from "@/core/useI18n";
-import { useCallback, useEffect, useLayoutEffect, useRef } from "react";
+import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { useLocation, useNavigate, useSearch } from "@tanstack/react-router";
 import { useAppDialogs } from "@/components/AppDialogProvider";
 import { api } from "@/core/api";
 import { useAppStore } from "@/stores/app-store";
 import { useWorkspaceStore } from "@/features/workspace/workspace-store";
-import { resolveRefreshedManifest } from "@/features/workspace/manifest-draft";
+import {
+  preparedManifestBaseline,
+  resolveRefreshedManifest,
+} from "@/features/workspace/manifest-draft";
 import type { Manifest, RefreshKind, WorkspaceSummary } from "@/core/types";
 import type { SettingsSection, SettingsTarget } from "@/features/settings/SettingsSidebar";
 import { refreshAgentTools } from "@/features/settings/agent-tools-query";
@@ -85,6 +88,22 @@ export function useAppNavigation(activeRoute?: ParsedRoute) {
     setAppliedChanges,
   } = workspaceStore;
   const workspaceOpenRequest = useRef(0);
+  const pendingWorkspaceNavigation = useRef<
+    { workspaceId: string; messageRevision: number; notice?: string } | undefined
+  >(undefined);
+  const completedWorkspaceNavigation = useRef<{ message?: string; revision: number } | undefined>(
+    undefined,
+  );
+  const restoringWorkspaceNotice = useRef<string | undefined>(undefined);
+  const [workspaceNavigationRevision, setWorkspaceNavigationRevision] = useState(0);
+  useEffect(
+    () => () => {
+      pendingWorkspaceNavigation.current = undefined;
+      completedWorkspaceNavigation.current = undefined;
+      restoringWorkspaceNotice.current = undefined;
+    },
+    [],
+  );
   const missingWorkspaceNotice = useRef<
     | {
         path: string;
@@ -121,13 +140,52 @@ export function useAppNavigation(activeRoute?: ParsedRoute) {
     (workspaceId: string, nextPage: Page, routeSearch?: AppSearch) => {
       const path =
         nextPage === "overview" ? "/workspace/$workspaceId" : `/workspace/$workspaceId/${nextPage}`;
-      void navigate({
-        to: path as never,
-        params: { workspaceId } as never,
-        search: (routeSearch ?? {}) as never,
-      });
+      // Workspace selection changes before the router finishes. Keep that
+      // explicit intent from being restored to the still-rendered old route.
+      const intent = {
+        workspaceId,
+        messageRevision: useWorkspaceStore.getState().messageRevision,
+        notice: restoringWorkspaceNotice.current,
+      };
+      restoringWorkspaceNotice.current = undefined;
+      pendingWorkspaceNavigation.current = intent;
+      completedWorkspaceNavigation.current = undefined;
+      const finish = (failure?: { error: unknown }) => {
+        if (pendingWorkspaceNavigation.current !== intent) return;
+        pendingWorkspaceNavigation.current = undefined;
+        const current = useWorkspaceStore.getState();
+        completedWorkspaceNavigation.current = {
+          revision: current.messageRevision,
+          message:
+            current.messageRevision !== intent.messageRevision && current.message
+              ? current.messageDismissed
+                ? undefined
+                : current.message
+              : failure
+                ? localizeMessage(failure.error)
+                : intent.notice,
+        };
+        // Cancelled/failed navigation may leave the URL unchanged. Reconcile it
+        // again even when no router update will trigger the restoration effect.
+        setWorkspaceNavigationRevision((revision) => revision + 1);
+      };
+      try {
+        void Promise.resolve(
+          navigate({
+            to: path as never,
+            params: { workspaceId } as never,
+            search: (routeSearch ?? {}) as never,
+          }),
+        ).then(
+          () => finish(),
+          (error) => finish({ error }),
+        );
+      } catch (error) {
+        finish({ error });
+        throw error;
+      }
     },
-    [navigate],
+    [navigate, localizeMessage],
   );
   const setGitSubview = useCallback(
     (nextSubview: import("@/features/workspace/WorkspaceGitPage").GitSubview | undefined) =>
@@ -155,6 +213,10 @@ export function useAppNavigation(activeRoute?: ParsedRoute) {
       initialState.baselineManifest ||
       (targetWorkspaceId && initialState.workspaceDraftBaselines[targetWorkspaceId]) ||
       "";
+    const initialBaselineIsDefault = initialState.baselineManifest
+      ? initialState.baselineManifestIsDefault
+      : !!targetWorkspaceId &&
+        initialState.workspaceDraftBaselineDefaults[targetWorkspaceId] === true;
     const isCurrentRequest = () =>
       requestId === workspaceOpenRequest.current &&
       useWorkspaceStore.getState().project === path &&
@@ -170,17 +232,32 @@ export function useAppNavigation(activeRoute?: ParsedRoute) {
             api.runtime(),
           ]);
           if (!isCurrentRequest()) return;
+          let conflictRetained = false;
           const resolvedManifest = await resolveRefreshedManifest({
             initialManifest: initialState.manifest,
             initialBaseline,
+            initialBaselineIsDefault,
+            acknowledgedDisk: targetWorkspaceId
+              ? initialState.workspaceDraftDisks[targetWorkspaceId]
+              : undefined,
+            acknowledgedDiskIsDefault:
+              !!targetWorkspaceId &&
+              initialState.workspaceDraftDiskDefaults[targetWorkspaceId] === true,
             cachedDraft:
               draft ??
               (targetWorkspaceId ? initialState.workspaceDrafts[targetWorkspaceId] : undefined),
             diskManifest: nextManifest,
+            diskIsDefault: !nextScan.manifest_exists,
+            onConflictRetained: () => {
+              conflictRetained = true;
+            },
             getCurrentManifest: () => useWorkspaceStore.getState().manifest,
             confirmDiskVersion: () =>
               dialogs.confirm({
+                title: tr("workspace.refreshConflictTitle"),
                 description: tr("workspace.refreshConflict"),
+                confirmLabel: tr("workspace.refreshLoadDisk"),
+                cancelLabel: tr("workspace.refreshKeepDraft"),
                 tone: "warning",
               }),
           });
@@ -188,12 +265,33 @@ export function useAppNavigation(activeRoute?: ParsedRoute) {
           setProject(path);
           setScan(nextScan);
           setManifest(resolvedManifest);
-          const nextBaseline = nextManifest ? JSON.stringify(nextManifest) : initialBaseline;
-          setBaselineManifest(nextBaseline);
+          const nextBaseline = nextManifest
+            ? conflictRetained
+              ? preparedManifestBaseline(
+                  initialBaseline,
+                  nextManifest,
+                  !nextScan.manifest_exists && initialBaselineIsDefault,
+                )
+              : JSON.stringify(nextManifest)
+            : initialBaseline;
+          const nextBaselineIsDefault =
+            nextManifest && !conflictRetained
+              ? !nextScan.manifest_exists
+              : initialBaselineIsDefault;
+          setBaselineManifest(nextBaseline, nextBaselineIsDefault);
           if (targetWorkspaceId)
             useWorkspaceStore
               .getState()
-              .cacheWorkspaceDraft(targetWorkspaceId, resolvedManifest, nextBaseline);
+              .cacheWorkspaceDraft(
+                targetWorkspaceId,
+                resolvedManifest,
+                nextBaseline,
+                JSON.stringify(nextManifest),
+                {
+                  baselineIsDefault: nextBaselineIsDefault,
+                  diskIsDefault: !nextScan.manifest_exists,
+                },
+              );
           useAppStore.getState().setRuntime(nextRuntime);
         } catch (error) {
           if (isCurrentRequest()) setMessage(localizeMessage(error));
@@ -252,20 +350,62 @@ export function useAppNavigation(activeRoute?: ParsedRoute) {
     // The URL updates before the committed route matches during navigation.
     // Do not restore the previous workspace while its matches are still rendered.
     const locationRoute = parseHistoryRoute(location.pathname);
-    if (
-      route.kind !== "workspace" ||
-      locationRoute.kind !== "workspace" ||
-      locationRoute.workspaceId !== workspaceRouteId ||
-      selectedWorkspace?.id === workspaceRouteId ||
-      workspacesPending ||
-      !workspaceRouteId
-    )
+    const pendingIntent = pendingWorkspaceNavigation.current;
+    const current = useWorkspaceStore.getState();
+    if (pendingIntent && current.selectedWorkspace?.id === pendingIntent.workspaceId) return;
+    let completion = completedWorkspaceNavigation.current;
+    if (completion && completion.revision !== current.messageRevision) {
+      completion = {
+        revision: current.messageRevision,
+        message: current.message
+          ? current.messageDismissed
+            ? undefined
+            : current.message
+          : completion.message,
+      };
+      completedWorkspaceNavigation.current = completion;
+    }
+    const publishCompletion = () => {
+      if (!completion || completedWorkspaceNavigation.current !== completion || current.busy)
+        return;
+      completedWorkspaceNavigation.current = undefined;
+      const latest = useWorkspaceStore.getState();
+      if (
+        completion.message &&
+        latest.messageRevision === completion.revision &&
+        latest.message !== completion.message
+      )
+        latest.setMessage(completion.message);
+    };
+    const carryCompletion = () => {
+      if (!completion || completedWorkspaceNavigation.current !== completion) return;
+      completedWorkspaceNavigation.current = undefined;
+      const latest = useWorkspaceStore.getState();
+      // openWorkspace clears the previous notice once before beforeNavigate.
+      // Do not overwrite any message published after this recovery started.
+      if (latest.messageRevision === completion.revision + 1 && !latest.message)
+        restoringWorkspaceNotice.current = completion.message;
+    };
+    if (route.kind !== "workspace") {
+      publishCompletion();
       return;
+    }
+    if (locationRoute.kind !== "workspace" || locationRoute.workspaceId !== workspaceRouteId)
+      return;
+    if (selectedWorkspace?.id === workspaceRouteId) {
+      publishCompletion();
+      return;
+    }
+    if (workspacesPending || !workspaceRouteId) return;
     const workspace = workspaces.find((item) => item.id === workspaceRouteId);
     if (workspace) {
       missingWorkspaceNotice.current = undefined;
-      void openWorkspace(workspace, workspaceRoutePage ?? "overview", search);
+      // Route-loader failures already use AppErrorFallback. Pre-commit navigate
+      // rejections may bypass it, so report them through the existing notice only
+      // after selection is aligned; cancellation and old intents publish nothing.
+      void openWorkspace(workspace, workspaceRoutePage ?? "overview", search, carryCompletion);
     } else {
+      completedWorkspaceNavigation.current = undefined;
       const nextMessage = workspaceLoadError
         ? localizeMessage(workspaceLoadError)
         : tr("common.notFound");
@@ -291,6 +431,8 @@ export function useAppNavigation(activeRoute?: ParsedRoute) {
     route.kind,
     location.href,
     location.pathname,
+    workspaceNavigationRevision,
+    workspaceStore.busy,
     workspaceRouteId,
     workspaceRoutePage,
     search,

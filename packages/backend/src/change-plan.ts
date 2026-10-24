@@ -22,6 +22,11 @@ import {
 import { compareUtf8, utcNow } from "./workspaces";
 import { mcpDocumentSchema, type McpServer } from "./mcp-config-read";
 import { assertUnmanagedSkillPath } from "./skill-ownership";
+import {
+  hasNoManifest,
+  unmanagedInstructions,
+  type InstructionImportProof,
+} from "./instruction-adoption";
 export interface FileChange {
   target: string;
   scope: "project" | "agent-home" | "application-data";
@@ -43,6 +48,9 @@ export interface HomeTargets {
   openclaw_config?: string;
   hermes_config?: string;
   skillHomes?: string[];
+  /** Server-owned, transient prepare evidence; never accepted from a plan RPC payload. */
+  instructionImport?: InstructionImportProof;
+  reconcileImportedInstructions?: boolean;
 }
 export function ensureGateway(manifest: Manifest, port: number): void {
   const segment = encodeURIComponent(manifest.workspace.id).replace(
@@ -250,18 +258,39 @@ export function planWorkspace(project: string, input: Manifest, home: HomeTarget
     ].some((agent) => enabled(agent as Agent)),
     gemini = read("GEMINI.md"),
     remainder = common ? promotedGemini(root, gemini, manifest.instructions.shared) : null;
+  const canAdopt = (name: "AGENTS.md" | "CLAUDE.md", existing: string) =>
+    !!home.instructionImport &&
+    hasNoManifest(root) &&
+    !existing.includes(MANAGED_START) &&
+    home.instructionImport.source_hashes[name] === hash(existing) &&
+    home.instructionImport.shared_hash === hash(existing.trim());
   if (common) {
-    write("AGENTS.md", managedMarkdown(read("AGENTS.md"), manifest.instructions.shared));
+    const existing = read("AGENTS.md");
+    write(
+      "AGENTS.md",
+      managedMarkdown(
+        canAdopt("AGENTS.md", existing) ? "" : existing,
+        manifest.instructions.shared,
+      ),
+    );
     if (!enabled("antigravity") && remainder !== null) write("GEMINI.md", remainder);
   }
   const gateway = manifest.connections.filter((connection) => connection.name === "agentkib");
   if (enabled("claude-code")) {
+    const existing = read("CLAUDE.md"),
+      adopt = common && canAdopt("CLAUDE.md", existing),
+      outside = unmanagedInstructions(existing),
+      extra = override("claude-code").trim(),
+      // An imported private body stays outside our block. Do not repeat the same
+      // native instructions in the generated override on this or later plans.
+      generatedOverride =
+        home.reconcileImportedInstructions && !adopt && outside?.trim() === extra ? "" : extra;
     write(
       "CLAUDE.md",
       managedMarkdown(
-        read("CLAUDE.md"),
-        override("claude-code").trim()
-          ? `@AGENTS.md\n\n${override("claude-code")}`
+        adopt ? "" : existing,
+        generatedOverride
+          ? `@AGENTS.md\n\n${generatedOverride}`
           : "@AGENTS.md\n\nClaude Code uses AGENTS.md as the shared project instructions.",
       ),
     );

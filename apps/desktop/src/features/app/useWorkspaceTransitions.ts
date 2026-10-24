@@ -33,7 +33,15 @@ export function useWorkspaceTransitions({
     const selectedWorkspace = workspace.selectedWorkspace;
     const manifest = workspace.manifest;
     if (!selectedWorkspace || !manifest || !workspace.baselineManifest) return;
-    workspace.cacheWorkspaceDraft(selectedWorkspace.id, manifest, workspace.baselineManifest);
+    workspace.cacheWorkspaceDraft(
+      selectedWorkspace.id,
+      manifest,
+      workspace.baselineManifest,
+      undefined,
+      {
+        baselineIsDefault: workspace.baselineManifestIsDefault,
+      },
+    );
   }, []);
 
   const leaveWorkspace = useCallback(

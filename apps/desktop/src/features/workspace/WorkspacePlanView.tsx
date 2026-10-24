@@ -14,6 +14,8 @@ import {
   defaultPlanTarget,
   hasDeepSeekImportLimitation,
   planText,
+  planFilePath,
+  instructionPlanNotes,
   summarizePlanEdit,
 } from "./change-plan-presentation";
 import { WorkspaceChangeDiff } from "./WorkspaceChangeDiff";
@@ -37,6 +39,7 @@ export interface WorkspacePlanViewProps {
   onRegenerate: () => void;
   onResolveConflict: (choice: "disk" | "draft") => void;
   appliedNotice?: ReactNode;
+  literalImportWarning?: boolean;
 }
 
 export function WorkspacePlanView(props: WorkspacePlanViewProps) {
@@ -58,7 +61,7 @@ export function WorkspacePlanView(props: WorkspacePlanViewProps) {
   const details: string[] = [];
   if (edit?.added)
     details.push(
-      `${text("added", edit.added)}${edit.addedPreview ? ` (${edit.addedPreview})` : ""}`,
+      `${text("added", edit.added)}${edit.addedPreview ? (locale === "zh-CN" || locale === "zh-TW" ? `（${edit.addedPreview}）` : ` (${edit.addedPreview})`) : ""}`,
     );
   if (edit?.removed) details.push(text("removed", edit.removed));
   if (edit?.otherSections.length) details.push(text("other", edit.otherSections.length));
@@ -68,6 +71,7 @@ export function WorkspacePlanView(props: WorkspacePlanViewProps) {
       : details.length
         ? `${text("edited")}${details.join(text("separator"))}`
         : text(status === "applied" ? "applied" : "synchronizing");
+  const instructionNotes = instructionPlanNotes(changeSet);
   const hasChanges = changeSet.changes.length > 0;
   const readyEmpty = status === "ready" && !hasChanges;
   const awaitingFiles = status === "generating" && !hasChanges;
@@ -162,14 +166,29 @@ export function WorkspacePlanView(props: WorkspacePlanViewProps) {
           </>
         )}
       </p>
-      {status !== "applied" && hasDeepSeekImportLimitation(changeSet) && (
+      {status !== "applied" && instructionNotes.adopted && (
+        <p className="shrink-0 text-sm text-muted-foreground">{text("adoption")}</p>
+      )}
+      {status !== "applied" && instructionNotes.duplicateTargets.length > 0 && (
         <p
           role="note"
           className="shrink-0 rounded-lg border border-warning/30 bg-warning/5 px-3 py-2 text-sm text-warning"
         >
-          {text("compatibility")}
+          {text("overlap")} ·{" "}
+          {instructionNotes.duplicateTargets
+            .map((target) => planFilePath(changeSet.project_root, target) || fileName(target))
+            .join(locale === "en-US" ? ", " : "、")}
         </p>
       )}
+      {status !== "applied" &&
+        (props.literalImportWarning ?? hasDeepSeekImportLimitation(changeSet)) && (
+          <p
+            role="note"
+            className="shrink-0 rounded-lg border border-warning/30 bg-warning/5 px-3 py-2 text-sm text-warning"
+          >
+            {text("compatibility")}
+          </p>
+        )}
       {status !== "applied" && changeSet.changes.some(isClaudeGlobalConfig) && (
         <p
           role="note"
@@ -199,20 +218,21 @@ export function WorkspacePlanView(props: WorkspacePlanViewProps) {
                           "flex w-full items-center gap-2 px-4 py-2 text-left",
                           change.target === selected?.target && "bg-muted",
                         )}
+                        title={change.target}
                         aria-pressed={change.target === selected?.target}
                         onClick={() => setSelection({ plan: changeSet.id, target: change.target })}
                       >
                         <FileCode2 size={15} className="shrink-0 text-muted-foreground" />
                         <span className="min-w-0 flex-1">
                           <strong className="block truncate text-sm font-medium">
-                            {fileName(change.target)}
+                            {planFilePath(changeSet.project_root, change.target) ||
+                              fileName(change.target)}
                           </strong>
-                          <span
-                            className="block truncate text-xs font-normal text-muted-foreground"
-                            title={change.target}
-                          >
-                            {displayPath(change.target)}
-                          </span>
+                          {planFilePath(changeSet.project_root, change.target) === undefined && (
+                            <span className="block truncate text-xs font-normal text-muted-foreground">
+                              {displayPath(change.target)}
+                            </span>
+                          )}
                         </span>
                         {risk(change)}
                       </Button>
@@ -250,7 +270,10 @@ export function WorkspacePlanView(props: WorkspacePlanViewProps) {
             <>
               <div className="flex shrink-0 items-center justify-between gap-2 border-b border-border px-4 py-3">
                 <div className="min-w-0">
-                  <h2 className="truncate text-sm font-medium">{fileName(selected.target)}</h2>
+                  <h2 className="truncate text-sm font-medium" title={selected.target}>
+                    {planFilePath(changeSet.project_root, selected.target) ||
+                      fileName(selected.target)}
+                  </h2>
                   <p className="truncate text-xs text-muted-foreground" title={selected.target}>
                     {displayPath(selected.target)} · {tr(`status.scope.${selected.scope}`)}
                   </p>
@@ -259,7 +282,9 @@ export function WorkspacePlanView(props: WorkspacePlanViewProps) {
               </div>
               <div
                 role="region"
-                aria-label={fileName(selected.target)}
+                aria-label={
+                  planFilePath(changeSet.project_root, selected.target) || fileName(selected.target)
+                }
                 className="min-h-0 flex-1 overflow-auto p-3 text-xs"
               >
                 <WorkspaceChangeDiff

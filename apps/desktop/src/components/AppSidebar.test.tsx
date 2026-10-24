@@ -35,6 +35,39 @@ describe("AppSidebar v8 navigation", () => {
   beforeEach(() => useAppStore.getState().reset());
   afterEach(cleanup);
 
+  it.each([0, 2])(
+    "keeps the pending changes entry but only badges a positive count: %i",
+    (count) => {
+      const workspace: WorkspaceSummary = {
+        id: "fixture",
+        name: "Example",
+        path: "/example",
+        status: "healthy",
+        asset_count: 0,
+        warning_count: 0,
+        sources: [],
+      };
+      useSidebarViewStore.setState({ expandedWorkspaces: { fixture: true } });
+      render(
+        <AppSidebar
+          active="workspaces"
+          activeWorkspaceId="fixture"
+          workspaces={[workspace]}
+          workspacePage="changes"
+          changeCount={count}
+          entries={createGlobalNavigation(0)}
+          onNavigate={vi.fn()}
+          onSettings={vi.fn()}
+          collapsed={false}
+        />,
+      );
+      const entry = screen.getByRole("button", { name: /Pending changes/ });
+      expect(entry).toBeTruthy();
+      expect(entry.querySelector("em")?.textContent ?? null).toBe(count ? String(count) : null);
+      useSidebarViewStore.setState({ expandedWorkspaces: {} });
+    },
+  );
+
   it("toggles the current workspace by name and opens other workspaces expanded", async () => {
     useSidebarViewStore.setState({ expandedWorkspaces: {} });
     const workspace: WorkspaceSummary = {

@@ -265,7 +265,7 @@ function ContextPageContent({
               key={warning}
             >
               <Info size={15} className="mt-0.5 shrink-0" />
-              {contextWarningLabel(warning.slice(NOTE_PREFIX.length))}
+              {contextWarningLabel(warning.slice(NOTE_PREFIX.length), true)}
             </div>
           ) : (
             <div
@@ -352,7 +352,7 @@ const CLAUDE_MESSAGE_KEYS: Record<string, string> = {
     "context.claudeLoadSwitches",
 };
 
-function contextWarningLabel(warning: string) {
+function contextWarningLabel(warning: string, informational = false) {
   if (
     warning ===
     "DeepSeek Harness custom instruction or Skill loading rules were detected; this preview uses the public default rules"
@@ -362,7 +362,7 @@ function contextWarningLabel(warning: string) {
     warning ===
     "DeepSeek Harness reads @AGENTS.md in CLAUDE.md as literal text, not as a Claude Code import"
   )
-    return tr("context.deepseekClaudeImport");
+    return tr(informational ? "context.deepseekClaudeImportNote" : "context.deepseekClaudeImport");
   // 后端静态文案（context-claude.ts）：带 Note: 前缀的在去掉前缀之后匹配，其余本身是警告。
   // 带路径或数量的动态文案保持英文原文。
   const claudeMessage = Object.hasOwn(CLAUDE_MESSAGE_KEYS, warning)

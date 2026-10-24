@@ -1,0 +1,111 @@
+{
+  "checked_at": "2026-10-24T11:04:49.979Z",
+  "fixture_count": 7,
+  "launch_count": 11,
+  "recorded_process_count_total": 57,
+  "forced_termination_count_total": 0,
+  "records": [
+    {
+      "closed": true,
+      "forcedOwnedProcessCount": 0,
+      "checked_at": "2026-10-24T10:30:35.445Z",
+      "recorded_process_count": 5,
+      "additionally_terminated_descendants": 0,
+      "remaining_owned_pids": [],
+      "tmux_sessions_created": 0
+    },
+    {
+      "closed": true,
+      "forcedOwnedProcessCount": 0,
+      "checked_at": "2026-10-24T10:40:47.434Z",
+      "recorded_process_count": 6,
+      "additionally_terminated_descendants": 0,
+      "remaining_owned_pids": [],
+      "tmux_sessions_created": 0
+    },
+    {
+      "closed": true,
+      "forcedOwnedProcessCount": 0,
+      "checked_at": "2026-10-24T10:41:46.962Z",
+      "recorded_process_count": 5,
+      "additionally_terminated_descendants": 0,
+      "remaining_owned_pids": [],
+      "tmux_sessions_created": 0
+    },
+    {
+      "closed": true,
+      "forcedOwnedProcessCount": 0,
+      "checked_at": "2026-10-24T10:42:48.066Z",
+      "recorded_process_count": 5,
+      "additionally_terminated_descendants": 0,
+      "remaining_owned_pids": [],
+      "tmux_sessions_created": 0
+    },
+    {
+      "closed": true,
+      "forcedOwnedProcessCount": 0,
+      "checked_at": "2026-10-24T10:43:18.962Z",
+      "recorded_process_count": 5,
+      "additionally_terminated_descendants": 0,
+      "remaining_owned_pids": [],
+      "tmux_sessions_created": 0
+    },
+    {
+      "closed": true,
+      "forcedOwnedProcessCount": 0,
+      "checked_at": "2026-10-24T10:44:14.979Z",
+      "recorded_process_count": 5,
+      "additionally_terminated_descendants": 0,
+      "remaining_owned_pids": [],
+      "tmux_sessions_created": 0
+    },
+    {
+      "closed": true,
+      "forcedOwnedProcessCount": 0,
+      "checked_at": "2026-10-24T10:59:20.184Z",
+      "recorded_process_count": 5,
+      "additionally_terminated_descendants": 0,
+      "remaining_owned_pids": [],
+      "tmux_sessions_created": 0
+    },
+    {
+      "closed": true,
+      "forcedOwnedProcessCount": 0,
+      "checked_at": "2026-10-24T10:59:33.610Z",
+      "recorded_process_count": 6,
+      "additionally_terminated_descendants": 0,
+      "remaining_owned_pids": [],
+      "tmux_sessions_created": 0
+    },
+    {
+      "closed": true,
+      "forcedOwnedProcessCount": 0,
+      "checked_at": "2026-10-24T11:00:46.685Z",
+      "recorded_process_count": 5,
+      "additionally_terminated_descendants": 0,
+      "remaining_owned_pids": [],
+      "tmux_sessions_created": 0
+    },
+    {
+      "closed": true,
+      "forcedOwnedProcessCount": 0,
+      "checked_at": "2026-10-24T11:04:19.936Z",
+      "recorded_process_count": 5,
+      "additionally_terminated_descendants": 0,
+      "remaining_owned_pids": [],
+      "tmux_sessions_created": 0
+    },
+    {
+      "closed": true,
+      "forcedOwnedProcessCount": 0,
+      "checked_at": "2026-10-24T11:04:49.979Z",
+      "recorded_process_count": 5,
+      "additionally_terminated_descendants": 0,
+      "remaining_owned_pids": [],
+      "tmux_sessions_created": 0
+    }
+  ],
+  "remaining_owned_pids": [],
+  "pageErrors": [],
+  "tmux_sessions_created": 0
+}

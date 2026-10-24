@@ -11,8 +11,11 @@ import { stripBlockComments } from "./context-claude";
 import { CONTEXT_NOTE_PREFIX, isProjectScope } from "./context-files";
 import { effectiveMcp, type McpServer } from "./mcp-config-read";
 import { compareUtf8, utcNow } from "./workspaces";
+import { sharedInstructionOverlap, unmanagedInstructions } from "./instruction-adoption";
+import { MANAGED_START } from "./default-manifest";
 import {
   adapterEnabled,
+  boundedText,
   assetKind,
   fileHash,
   hash,
@@ -367,6 +370,25 @@ export class Doctor {
               section.source,
               `Exact duplicate of ${first}`,
             );
+          if (
+            manifest?.instructions.shared.trim() &&
+            withinLexical(section.source, project) &&
+            safeTarget(project, section.source)
+          ) {
+            const raw = boundedText(section.source),
+              unmanaged = raw?.includes(MANAGED_START) ? unmanagedInstructions(raw) : null;
+            if (unmanaged && sharedInstructionOverlap(manifest.instructions.shared, unmanaged))
+              push(
+                "instruction.unmanaged-duplicate",
+                "warning",
+                agent,
+                "instruction",
+                false,
+                section.source,
+                "Instruction content outside the AgentKib-managed block overlaps shared project instructions",
+                path.join(project, "AGENTS.md"),
+              );
+          }
         }
         if (instructionActual < instructionExpected && !missingReported) {
           const missing = fragments.filter(

@@ -7,6 +7,7 @@ import { api } from "@/core/api";
 import { initializeI18n } from "@/core/i18n";
 import { useWorkspaceStore } from "@/features/workspace/workspace-store";
 import type { DoctorIssueDestination } from "@/features/workspace/doctor-manual-actions";
+import type { AgentKind } from "@/core/types";
 import { Route } from "./doctor";
 
 const navigate = vi.hoisted(() => vi.fn());
@@ -26,12 +27,13 @@ vi.mock("@/features/workspace/WorkspaceDoctorPage", () => ({
     onOpenIssue,
     onRevealPath,
   }: {
-    onOpenIssue: (to: DoctorIssueDestination) => void;
+    onOpenIssue: (to: DoctorIssueDestination, agent?: AgentKind) => void;
     onRevealPath: (path: string) => void | Promise<void>;
   }) => {
     reveal.callback = onRevealPath;
     return (
       <>
+        <button onClick={() => onOpenIssue("context", "grok-build")}>grok context</button>
         {(["context", "skills", "mcp"] as const).map((to) => (
           <button key={to} onClick={() => onOpenIssue(to)}>
             {to}
@@ -80,6 +82,15 @@ describe("doctor issue navigation", () => {
     expect(navigate).toHaveBeenCalledExactlyOnceWith({
       to: "/workspace/$workspaceId/context",
       params: { workspaceId: "workspace" },
+    });
+  });
+  it("opens instruction context with the affected Agent already selected", async () => {
+    await renderDoctor();
+    fireEvent.click(await screen.findByRole("button", { name: "grok context" }));
+    expect(navigate).toHaveBeenCalledExactlyOnceWith({
+      to: "/workspace/$workspaceId/context",
+      params: { workspaceId: "workspace" },
+      search: { agent: "grok-build" },
     });
   });
 

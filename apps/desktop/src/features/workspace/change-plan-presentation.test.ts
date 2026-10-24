@@ -6,6 +6,8 @@ import {
   generatedChecksumLines,
   hasDeepSeekImportLimitation,
   planText,
+  planFilePath,
+  instructionPlanNotes,
   summarizePlanEdit,
 } from "./change-plan-presentation";
 
@@ -40,7 +42,9 @@ describe("change plan presentation", () => {
     expect(planText("en-US", "other", count)).toBe(
       `updated ${count} configuration section${suffix}`,
     );
-    expect(planText("en-US", "writes", count)).toBe(`write ${count} file${suffix} when applied`);
+    expect(planText("en-US", "writes", count)).toBe(
+      `${count} file${suffix} will be written when you apply`,
+    );
     expect(planText("en-US", "apply", count)).toBe(`Apply ${count} change${suffix}`);
     expect(planText("en-US", "checksums", count)).toBe(
       `Automatically generated checksums: ${count} line${suffix} (collapsed)`,
@@ -52,6 +56,16 @@ describe("change plan presentation", () => {
     expect(planText("zh-TW", "writes", 1)).toBe("套用後會寫入 1 個檔案");
     expect(planText("ja-JP", "writes", 1)).toBe("適用すると 1 個のファイルに書き込みます");
     expect(planText("en-US", "files", 1)).toBe("Files to write");
+  });
+
+  it.each([
+    ["/sandbox/project", "/sandbox/project/.codex/config.toml", ".codex/config.toml"],
+    ["/sandbox/project", "/sandbox/project/.grok/config.toml", ".grok/config.toml"],
+    ["/sandbox/project", "/sandbox/home/.codex/config.toml", undefined],
+    ["/sandbox/project", "/sandbox/project-other/config.toml", undefined],
+    ["C:\\Projects\\Demo", "c:\\projects\\demo\\.codex\\config.toml", ".codex/config.toml"],
+  ])("uses a project-relative file path with a real boundary (%s)", (root, target, expected) => {
+    expect(planFilePath(root, target)).toBe(expected);
   });
 
   it("groups by actual file purpose and prefers a changed instruction over internal records", () => {
@@ -115,6 +129,26 @@ describe("change plan presentation", () => {
     expect(hasDeepSeekImportLimitation(plan([imported]))).toBe(true);
     expect(
       hasDeepSeekImportLimitation(
+        plan([imported, change("/sandbox/project/AGENTS.md", { after: "Keep tests" })]),
+      ),
+    ).toBe(false);
+    expect(
+      hasDeepSeekImportLimitation(
+        plan([imported, change("/sandbox/project/AGENTS.md", { after: "" })]),
+      ),
+    ).toBe(true);
+    expect(
+      hasDeepSeekImportLimitation(
+        plan([imported, change("/sandbox/project/AGENTS.md", { after: "A".repeat(65537) })]),
+      ),
+    ).toBe(true);
+    expect(
+      hasDeepSeekImportLimitation(
+        plan([imported, change("/sandbox/other/AGENTS.md", { after: "Keep tests" })]),
+      ),
+    ).toBe(true);
+    expect(
+      hasDeepSeekImportLimitation(
         plan([change(imported.target, { after: "Read @AGENTS.md as an example" })]),
       ),
     ).toBe(false);
@@ -124,6 +158,79 @@ describe("change plan presentation", () => {
       ),
     ).toBe(false);
   });
+
+  it("describes first takeover only when the original instructions were actually moved into the reviewed managed block", () => {
+    const block = (body: string) =>
+      `<!-- agentkib:managed:start -->\n${body}\n<!-- agentkib:managed:end -->\n`;
+    const shared = change("/sandbox/project/AGENTS.md", {
+      before: "- Keep tests\n",
+      after: block("- Keep tests\n- Update CHANGELOG"),
+    });
+    expect(instructionPlanNotes(plan([shared]))).toEqual({ adopted: true, duplicateTargets: [] });
+    expect(
+      instructionPlanNotes(plan([{ ...shared, after: "- Keep tests\n\n" + shared.after }])),
+    ).toEqual({ adopted: false, duplicateTargets: [shared.target] });
+    expect(instructionPlanNotes(plan([{ ...shared, before: block("- Keep tests") }]))).toEqual({
+      adopted: false,
+      duplicateTargets: [],
+    });
+    expect(instructionPlanNotes(plan([{ ...shared, before: "- Different rules" }]))).toEqual({
+      adopted: false,
+      duplicateTargets: [],
+    });
+  });
+
+  it("preannounces retained partial duplicates without treating common headings or file imports as copied instructions", () => {
+    const block = (body: string) =>
+      `<!-- agentkib:managed:start -->\n${body}\n<!-- agentkib:managed:end -->\n`;
+    const shared = change("/sandbox/project/AGENTS.md", {
+      before: "- Keep tests",
+      after: block("- Keep tests\n- Update CHANGELOG"),
+    });
+    const claude = change("/sandbox/project/CLAUDE.md", {
+      before: "- Keep tests\n- Claude-only rule",
+      after: "- Keep tests\n- Claude-only rule\n" + block("@AGENTS.md"),
+    });
+    expect(instructionPlanNotes(plan([shared, claude])).duplicateTargets).toEqual([claude.target]);
+    expect(
+      instructionPlanNotes(
+        plan([
+          shared,
+          { ...claude, after: "# Shared instructions\n@AGENTS.md\n" + block("@AGENTS.md") },
+        ]),
+      ).duplicateTargets,
+    ).toEqual([]);
+  });
+
+  it.each([
+    ["Keep the entire original guideline.\n", "Keep the entire\noriginal guideline.\n", true],
+    ["Keep the entire\noriginal guideline.\n", "Keep the entire original guideline.\n", true],
+    ["Keep the entire original guideline.\n", "Keep the entire\n", false],
+    ["Keep the entire original guideline.\n", "original guideline.\n", false],
+    [
+      "Keep the entire original guideline.\n",
+      "Keep the entire\noriginal guideline.\nPrivate instruction.\n",
+      false,
+    ],
+    ["# Project\n<!-- Keep the entire original guideline. -->\n", "# Project\n@AGENTS.md\n", false],
+  ])(
+    "uses the same complete-sentence overlap evidence as diagnosis (%j, %j)",
+    (sharedBody, outside, duplicate) => {
+      const block = (body: string) =>
+        `<!-- agentkib:managed:start -->\n${body}\n<!-- agentkib:managed:end -->\n`;
+      const shared = change("/sandbox/project/AGENTS.md", {
+        before: sharedBody,
+        after: block(sharedBody),
+      });
+      const claude = change("/sandbox/project/CLAUDE.md", {
+        before: outside,
+        after: outside + block("@AGENTS.md"),
+      });
+      expect(instructionPlanNotes(plan([shared, claude])).duplicateTargets).toEqual(
+        duplicate ? [claude.target] : [],
+      );
+    },
+  );
 
   it("folds only known generated hash fields in the actual manifest, keeping user instructions and adapter settings visible", () => {
     const text = [

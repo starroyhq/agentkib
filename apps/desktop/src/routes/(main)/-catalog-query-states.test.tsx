@@ -226,20 +226,26 @@ it.each([true, false])(
       }),
     );
     expect(doubles.confirm).toHaveBeenCalledExactlyOnceWith({
+      title: tr("workspace.refreshConflictTitle"),
       description: tr("workspace.refreshConflict"),
+      confirmLabel: tr("workspace.refreshLoadDisk"),
+      cancelLabel: tr("workspace.refreshKeepDraft"),
       tone: "warning",
     });
     expect(useWorkspaceStore.getState()).toMatchObject({
       project: workspace.path,
       selectedWorkspace: workspace,
       manifest: loadDisk ? disk : draft,
-      baselineManifest: JSON.stringify(disk),
+      baselineManifest: JSON.stringify(loadDisk ? disk : savedManifest),
       busy: false,
     });
     expect(useWorkspaceStore.getState().workspaceDrafts).toEqual(
       loadDisk ? {} : { [workspace.id]: draft },
     );
     expect(useWorkspaceStore.getState().workspaceDraftBaselines).toEqual(
+      loadDisk ? {} : { [workspace.id]: JSON.stringify(savedManifest) },
+    );
+    expect(useWorkspaceStore.getState().workspaceDraftDisks).toEqual(
       loadDisk ? {} : { [workspace.id]: JSON.stringify(disk) },
     );
   },
@@ -278,15 +284,16 @@ it("ignores an older conflict confirmation after a newer workspace open finishes
   await waitFor(() => expect(doubles.navigate).toHaveBeenCalledOnce());
   const current = useWorkspaceStore.getState();
   expect(current.manifest).toEqual(draft);
-  expect(current.baselineManifest).toBe(JSON.stringify(disk));
+  expect(current.baselineManifest).toBe(JSON.stringify(savedManifest));
   await act(async () => firstConfirmation.resolve(true));
   expect(doubles.confirm).toHaveBeenCalledTimes(2);
   expect(doubles.navigate).toHaveBeenCalledOnce();
   expect(useWorkspaceStore.getState()).toMatchObject({
     manifest: draft,
-    baselineManifest: JSON.stringify(disk),
+    baselineManifest: JSON.stringify(savedManifest),
     workspaceDrafts: { [workspace.id]: draft },
-    workspaceDraftBaselines: { [workspace.id]: JSON.stringify(disk) },
+    workspaceDraftBaselines: { [workspace.id]: JSON.stringify(savedManifest) },
+    workspaceDraftDisks: { [workspace.id]: JSON.stringify(disk) },
     busy: false,
   });
 });

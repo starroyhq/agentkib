@@ -14,6 +14,7 @@ import type {
   RuntimeInfo,
 } from "@/core/types";
 import { useWorkspaceStore } from "@/features/workspace/workspace-store";
+import { resolveRefreshedManifest } from "@/features/workspace/manifest-draft";
 import { Route } from "./changes";
 
 const navigate = vi.hoisted(() => vi.fn());
@@ -300,7 +301,12 @@ describe("E2 reviewed plan safety", () => {
       expect(useWorkspaceStore.getState().manifest).toEqual(
         choice === "disk" ? diskChanged : draft,
       );
-      expect(useWorkspaceStore.getState().baselineManifest).toBe(JSON.stringify(diskChanged));
+      expect(useWorkspaceStore.getState().baselineManifest).toBe(
+        JSON.stringify(choice === "disk" ? diskChanged : baseline),
+      );
+      expect(useWorkspaceStore.getState().workspaceDraftDisks.workspace).toBe(
+        choice === "disk" ? undefined : JSON.stringify(diskChanged),
+      );
       expect(api.plan).not.toHaveBeenCalled();
       expect(screen.getByRole("button", { name: "Apply 2 changes" })).toBeDisabled();
       fireEvent.click(screen.getByRole("button", { name: "Apply 2 changes" }));
@@ -316,6 +322,124 @@ describe("E2 reviewed plan safety", () => {
       );
       expect(screen.getByRole("button", { name: "Apply 2 changes" })).toBeEnabled();
       expect(api.apply).toHaveBeenCalledTimes(1);
+    },
+  );
+
+  it.each(["disk", "draft"] as const)(
+    "records a deleted manifest's prepared source after choosing the %s conflict version",
+    async (choice) => {
+      const prepared = {
+        ...baseline,
+        workspace: { ...baseline.workspace, id: "first-prepared-id" },
+      };
+      vi.mocked(api.apply).mockRejectedValueOnce(
+        new Error("File was modified externally: /workspace/.agentkib/manifest.yaml"),
+      );
+      vi.mocked(api.scan).mockResolvedValue({
+        root: "/workspace",
+        manifest_exists: false,
+        agents: [],
+        assets: [],
+        warnings: [],
+      });
+      vi.mocked(api.manifest).mockResolvedValue(prepared);
+      await view();
+      fireEvent.click(screen.getByRole("button", { name: "Apply 2 changes" }));
+      await waitFor(() => expect(useWorkspaceStore.getState().changeSetConflict).toBe(true));
+      fireEvent.click(
+        screen.getByRole("button", {
+          name: choice === "disk" ? "Use disk version" : "Keep my draft",
+        }),
+      );
+      await waitFor(() => expect(useWorkspaceStore.getState().changeSetInvalidated).toBe(true));
+      const state = useWorkspaceStore.getState();
+      expect(state.manifest).toEqual(choice === "disk" ? prepared : draft);
+      expect(state.baselineManifestIsDefault).toBe(choice === "disk");
+      if (choice === "draft") {
+        expect(state.workspaceDraftDiskDefaults.workspace).toBe(true);
+        expect(state.workspaceDraftBaselineDefaults.workspace).toBe(false);
+      }
+      const confirm = vi.fn().mockResolvedValue(false);
+      const result = await resolveRefreshedManifest({
+        initialManifest: state.manifest,
+        initialBaseline: state.baselineManifest,
+        initialBaselineIsDefault: state.baselineManifestIsDefault,
+        acknowledgedDisk: state.workspaceDraftDisks.workspace,
+        acknowledgedDiskIsDefault: state.workspaceDraftDiskDefaults.workspace,
+        diskManifest: {
+          ...prepared,
+          workspace: { ...prepared.workspace, id: "next-prepared-id" },
+        },
+        diskIsDefault: true,
+        getCurrentManifest: () => state.manifest,
+        confirmDiskVersion: confirm,
+      });
+      expect(confirm).not.toHaveBeenCalled();
+      expect(result?.workspace.id).toBe(choice === "disk" ? "next-prepared-id" : "workspace");
+      expect(api.apply).toHaveBeenCalledTimes(1);
+      expect(api.plan).not.toHaveBeenCalled();
+    },
+  );
+
+  it("retains the conflict and draft when the manifest's source cannot be checked", async () => {
+    vi.mocked(api.apply).mockRejectedValueOnce(
+      new Error("File was modified externally: /workspace/.agentkib/manifest.yaml"),
+    );
+    vi.mocked(api.scan).mockRejectedValueOnce(new Error("Synthetic scan failure"));
+    await view();
+    fireEvent.click(screen.getByRole("button", { name: "Apply 2 changes" }));
+    await waitFor(() => expect(useWorkspaceStore.getState().changeSetConflict).toBe(true));
+    fireEvent.click(screen.getByRole("button", { name: "Use disk version" }));
+    await waitFor(() =>
+      expect(useWorkspaceStore.getState().message).toContain("Synthetic scan failure"),
+    );
+    const state = useWorkspaceStore.getState();
+    expect(state.manifest).toBe(draft);
+    expect(state.baselineManifest).toBe(JSON.stringify(baseline));
+    expect(state.workspaceDraftDisks.workspace).toBeUndefined();
+    expect(state.changeSetConflict).toBe(true);
+    expect(state.changeSetInvalidated).toBe(false);
+    expect(state.planningChanges).toBe(false);
+    expect(api.apply).toHaveBeenCalledTimes(1);
+    expect(api.plan).not.toHaveBeenCalled();
+  });
+
+  it.each(["edit", "leave-workspace"] as const)(
+    "does not accept an old conflict choice after %s while source inspection is pending",
+    async (action) => {
+      const scan = deferred<Awaited<ReturnType<typeof api.scan>>>();
+      vi.mocked(api.apply).mockRejectedValueOnce(
+        new Error("File was modified externally: /workspace/.agentkib/manifest.yaml"),
+      );
+      vi.mocked(api.scan).mockReturnValueOnce(scan.promise);
+      await view();
+      fireEvent.click(screen.getByRole("button", { name: "Apply 2 changes" }));
+      await waitFor(() => expect(useWorkspaceStore.getState().changeSetConflict).toBe(true));
+      fireEvent.click(screen.getByRole("button", { name: "Use disk version" }));
+      await waitFor(() => expect(api.scan).toHaveBeenCalledOnce());
+      const newer = manifest("Newer local draft");
+      act(() => {
+        if (action === "edit") useWorkspaceStore.getState().setManifest(newer);
+        else useWorkspaceStore.getState().setProject("/sandbox/other-workspace");
+      });
+      await act(async () =>
+        scan.resolve({
+          root: "/workspace",
+          manifest_exists: false,
+          agents: [],
+          assets: [],
+          warnings: [],
+        }),
+      );
+      const state = useWorkspaceStore.getState();
+      expect(state.manifest).toBe(action === "edit" ? newer : draft);
+      expect(state.baselineManifest).toBe(JSON.stringify(baseline));
+      expect(state.baselineManifestIsDefault).toBe(false);
+      expect(state.workspaceDraftDisks.workspace).toBeUndefined();
+      expect(state.changeSetConflict).toBe(true);
+      expect(state.planningChanges).toBe(false);
+      expect(api.apply).toHaveBeenCalledTimes(1);
+      expect(api.plan).not.toHaveBeenCalled();
     },
   );
 
@@ -343,7 +467,12 @@ describe("E2 reviewed plan safety", () => {
       expect(useWorkspaceStore.getState().appliedChanges?.diagnosis?.status).toBe("complete"),
     );
     const result = useWorkspaceStore.getState().appliedChanges!;
-    expect(result.diagnosis).toEqual({ status: "complete", resolved: 1, issues: [newIssue] });
+    expect(result.diagnosis).toEqual({
+      status: "complete",
+      resolved: 1,
+      remaining: 2,
+      issues: [newIssue],
+    });
     expect(result.backupDir).toBe("/sandbox/backups/apply");
     expect(result.plannedManifest).toBe(JSON.stringify(draft));
     expect(result.baselineManifest).toBe(JSON.stringify(baseline));

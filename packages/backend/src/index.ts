@@ -60,6 +60,7 @@ import { TYPESCRIPT_SESSION_READ_METHODS } from "./migration";
 import { TYPESCRIPT_INSIGHT_METHODS, TYPESCRIPT_MCP_METHODS } from "./migration";
 import { scanWorkspace, inspectWorkspace } from "./asset-scanner";
 import { defaultManifest, prepareManifest } from "./default-manifest";
+import { InstructionImports } from "./instruction-adoption";
 import { parameters } from "./rpc";
 import { z } from "zod";
 import { BACKEND_INSPECT } from "./migration";
@@ -119,6 +120,7 @@ const HANDOFF_TASK_METHODS = new Set<string>([
 ]);
 
 export class TypeScriptBackend {
+  #instructionImports = new InstructionImports();
   #store?: BackendStore;
   #dataDir?: string;
   #commands = new Commands();
@@ -176,6 +178,7 @@ export class TypeScriptBackend {
   }
 
   #reset(): void {
+    this.#instructionImports.clear();
     this.#sessionStream?.close();
     this.#sessionStream = undefined;
     this.#snapshotHistory?.invalidate();
@@ -982,6 +985,8 @@ export class TypeScriptBackend {
         ensureGateway(manifest, parsed.success ? parsed.data.port : 47653);
         const home = userHome({ ...process.env, ...this.environment });
         return planWorkspace(project, manifest, {
+          instructionImport: this.#instructionImports.get(project, manifest.workspace.id),
+          reconcileImportedInstructions: true,
           skillHomes: [nativeContext({ ...process.env, ...this.environment }).agentkib_home].filter(
             (root): root is string => typeof root === "string",
           ),
@@ -1005,8 +1010,12 @@ export class TypeScriptBackend {
         ).workspaces.map(({ id, path }) => ({ id, inspection: inspectWorkspace(id, path) }));
       case RUNTIME_METHODS.scanWorkspace:
         return scanWorkspace(string(params, "project"));
-      case RUNTIME_METHODS.prepareManifest:
-        return prepareManifest(string(params, "project"));
+      case RUNTIME_METHODS.prepareManifest: {
+        const project = string(params, "project"),
+          manifest = prepareManifest(project);
+        this.#instructionImports.record(project, manifest);
+        return manifest;
+      }
       case BACKEND_DEFAULT_MANIFEST:
         return defaultManifest(string(params, "project"));
       case BACKEND_PLAN_PROJECT_ASSETS: {

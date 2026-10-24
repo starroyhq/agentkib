@@ -1,3 +1,4 @@
+import { AGENT_LABELS } from "@/core/agents";
 import type { DoctorAgentRow, DoctorIssue, SupportedLocale } from "@/core/types";
 import { fileName } from "@/lib/path-display";
 
@@ -6,12 +7,14 @@ const messages = {
     refresh: "Run diagnostics again",
     details: "Details",
     revealFolder: "Open containing folder",
-    warnings: "Warnings: {{count}}",
-    errors: "Errors: {{count}}",
-    repairable: "{{count}} automatically repairable",
-    checked: "Checked {{time}}",
+    warnings: "{{count}} warnings",
+    errors: "{{count}} errors",
+    repairable: "{{count}} auto-fixable",
+    checked: "checked {{time}}",
     issues: "Issues",
-    matrix: "Agents: {{agents}} · Normal: {{normal}} · Needs attention: {{attention}}",
+    matrix: "Agents: {{agents}} · Normal: {{normal}}",
+    matrixAttention: "{{attention}} requiring attention",
+    justNow: "just now",
     expand: "Expand",
     collapse: "Collapse",
     review: "Review changes",
@@ -21,7 +24,11 @@ const messages = {
     duplicateSeparator: " and ",
     readOnlyTitle: "{{agent}} supports diagnostics only",
     unknownTitle: "A configuration issue needs inspection",
-    duplicateImpact: "The same instructions may be read more than once",
+    duplicateImpact: "{{agents}} will read the same instructions twice",
+    duplicateUnknownImpact: "The same instructions may be read more than once",
+    unmanagedTitle: "{{files}} repeat shared instructions outside the managed block",
+    unmanagedImpact:
+      "{{agents}} will read duplicate content from the unmanaged text and shared instructions",
     literalImportTitle: "DeepSeek Harness does not expand the reference in CLAUDE.md",
     literalImportImpact:
       "DeepSeek Harness reads @AGENTS.md in CLAUDE.md as text and does not import its instructions",
@@ -48,7 +55,9 @@ const messages = {
     repairable: "{{count}} 个可自动修复",
     checked: "检查于 {{time}}",
     issues: "问题",
-    matrix: "{{agents}} 个 Agent · {{normal}} 项正常 · {{attention}} 项需处理",
+    matrix: "{{agents}} 个 Agent · {{normal}} 项正常",
+    matrixAttention: "{{attention}} 项需处理",
+    justNow: "刚刚",
     expand: "展开",
     collapse: "收起",
     review: "审查变更",
@@ -58,7 +67,10 @@ const messages = {
     duplicateSeparator: " 与 ",
     readOnlyTitle: "{{agent}} 只支持诊断，不能由 AgentKib 修改配置",
     unknownTitle: "有一项配置问题需要检查",
-    duplicateImpact: "同一段指令可能被重复读取",
+    duplicateImpact: "{{agents}} 会读到两份相同的指令",
+    duplicateUnknownImpact: "同一段指令可能被重复读取",
+    unmanagedTitle: "{{files}} 的区块外正文与共享指令重复",
+    unmanagedImpact: "{{agents}} 会重复读取区块外正文与共享指令中的相同内容",
     literalImportTitle: "CLAUDE.md 的引用不会被 DeepSeek Harness 展开",
     literalImportImpact:
       "DeepSeek Harness 会把 CLAUDE.md 中的 @AGENTS.md 当作普通文字，不会导入其中的指令",
@@ -85,7 +97,9 @@ const messages = {
     repairable: "{{count}} 個可自動修復",
     checked: "檢查於 {{time}}",
     issues: "問題",
-    matrix: "{{agents}} 個 Agent · {{normal}} 項正常 · {{attention}} 項需處理",
+    matrix: "{{agents}} 個 Agent · {{normal}} 項正常",
+    matrixAttention: "{{attention}} 項需處理",
+    justNow: "剛剛",
     expand: "展開",
     collapse: "收合",
     review: "審查變更",
@@ -95,7 +109,10 @@ const messages = {
     duplicateSeparator: " 與 ",
     readOnlyTitle: "{{agent}} 只支援診斷，無法由 AgentKib 修改設定",
     unknownTitle: "有一項設定問題需要檢查",
-    duplicateImpact: "同一段指令可能被重複讀取",
+    duplicateImpact: "{{agents}} 會讀到兩份相同的指令",
+    duplicateUnknownImpact: "同一段指令可能被重複讀取",
+    unmanagedTitle: "{{files}} 的區塊外正文與共用指令重複",
+    unmanagedImpact: "{{agents}} 會重複讀取區塊外正文與共用指令中的相同內容",
     literalImportTitle: "CLAUDE.md 的引用不會被 DeepSeek Harness 展開",
     literalImportImpact:
       "DeepSeek Harness 會把 CLAUDE.md 中的 @AGENTS.md 當作一般文字，不會匯入其中的指令",
@@ -120,9 +137,11 @@ const messages = {
     warnings: "警告 {{count}} 件",
     errors: "エラー {{count}} 件",
     repairable: "自動修復可能 {{count}} 件",
-    checked: "確認 {{time}}",
+    checked: "最終確認：{{time}}",
     issues: "問題",
-    matrix: "Agent {{agents}} 件 · 正常 {{normal}} 件 · 要対応 {{attention}} 件",
+    matrix: "Agent {{agents}} 件 · 正常 {{normal}} 件",
+    matrixAttention: "要対応 {{attention}} 件",
+    justNow: "たった今",
     expand: "展開",
     collapse: "折りたたむ",
     review: "変更を確認",
@@ -132,7 +151,10 @@ const messages = {
     duplicateSeparator: " と ",
     readOnlyTitle: "{{agent}} は診断のみに対応し、AgentKib では設定を変更できません",
     unknownTitle: "設定の問題を確認してください",
-    duplicateImpact: "同じ指示が重複して読み込まれる可能性があります",
+    duplicateImpact: "{{agents}} が同じ指示を 2 回読み込みます",
+    duplicateUnknownImpact: "同じ指示が重複して読み込まれる可能性があります",
+    unmanagedTitle: "{{files}} の管理ブロック外の本文が共通指示と重複しています",
+    unmanagedImpact: "{{agents}} が管理外の本文と共通指示の同じ内容を重複して読み込みます",
     literalImportTitle: "DeepSeek Harness は CLAUDE.md の参照を展開しません",
     literalImportImpact:
       "DeepSeek Harness は CLAUDE.md の @AGENTS.md を文字列として読み取り、参照先の指示を読み込みません",
@@ -159,9 +181,24 @@ export function doctorCopy(
   key: CopyKey,
   values: Record<string, string | number> = {},
 ) {
-  return messages[locale][key].replace(/\{\{(\w+)\}\}/g, (placeholder, name: string) =>
+  let template = messages[locale][key];
+  if (locale === "en-US" && values.count === 1 && (key === "warnings" || key === "errors"))
+    template = template.replace(/s$/, "");
+  return template.replace(/\{\{(\w+)\}\}/g, (placeholder, name: string) =>
     Object.hasOwn(values, name) ? String(values[name]) : placeholder,
   );
+}
+
+/** Keep sub-minute checks natural without changing global relative-time wording. */
+export function doctorCheckedTime(
+  locale: SupportedLocale,
+  checkedAt: string,
+  relativeTime: string,
+  now = Date.now(),
+) {
+  return Math.abs(Date.parse(checkedAt) - now) < 60_000
+    ? doctorCopy(locale, "justNow")
+    : relativeTime;
 }
 
 /** Only the known duplicate diagnostic embeds a second source path in its evidence. */
@@ -213,6 +250,10 @@ export function doctorIssueTitle(
     return doctorCopy(locale, "duplicateTitle", {
       files: files.join(doctorCopy(locale, "duplicateSeparator")),
     });
+  if (issue.code === "instruction.unmanaged-duplicate")
+    return doctorCopy(locale, "unmanagedTitle", {
+      files: files.join(doctorCopy(locale, "duplicateSeparator")),
+    });
   const key = `doctor.issue.${issue.code}`;
   const title = translate?.(key);
   const issueTitle = title && title !== key ? title : doctorCopy(locale, "unknownTitle");
@@ -241,7 +282,33 @@ const impactKeys: Record<string, CopyKey> = {
   "agent.read-only": "readOnlyImpact",
 };
 
-export function doctorImpact(issue: DoctorIssue, locale: SupportedLocale) {
+export function doctorImpact(
+  issue: DoctorIssue,
+  locale: SupportedLocale,
+  relatedIssues: DoctorIssue[] = [],
+) {
+  if (
+    issue.code === "instruction.exact-duplicate" ||
+    issue.code === "instruction.unmanaged-duplicate"
+  ) {
+    const sources = (candidate: DoctorIssue) => JSON.stringify(doctorIssueFiles(candidate).sort());
+    const agents = [
+      ...new Set(
+        [issue, ...relatedIssues]
+          .filter(
+            (candidate) => candidate.code === issue.code && sources(candidate) === sources(issue),
+          )
+          .flatMap((candidate) => (candidate.agent ? [AGENT_LABELS[candidate.agent]] : [])),
+      ),
+    ];
+    if (agents.length)
+      return doctorCopy(
+        locale,
+        issue.code === "instruction.exact-duplicate" ? "duplicateImpact" : "unmanagedImpact",
+        { agents: agents.join(locale === "en-US" ? ", " : "、") },
+      );
+    return doctorCopy(locale, "duplicateUnknownImpact");
+  }
   if (hasLiteralImportWarning(issue)) return doctorCopy(locale, "literalImportImpact");
   return doctorCopy(
     locale,

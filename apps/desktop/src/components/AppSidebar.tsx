@@ -507,9 +507,11 @@ export function AppSidebar(props: {
                                   >
                                     <GitCompareArrows size={15} />
                                     <span>{tr("nav.changes")}</span>
-                                    <em className="app-sidebar-item-badge grid min-w-5 h-5 place-items-center rounded-[0.4375rem] bg-sidebar-primary px-[0.3rem] text-sidebar-primary-foreground text-[0.6875rem] tabular-nums font-[650] leading-none">
-                                      {props.changeCount ?? 0}
-                                    </em>
+                                    {!!props.changeCount && (
+                                      <em className="app-sidebar-item-badge grid min-w-5 h-5 place-items-center rounded-[0.4375rem] bg-sidebar-primary px-[0.3rem] text-sidebar-primary-foreground text-[0.6875rem] tabular-nums font-[650] leading-none">
+                                        {props.changeCount}
+                                      </em>
+                                    )}
                                   </Button>
                                 )}
                               </>

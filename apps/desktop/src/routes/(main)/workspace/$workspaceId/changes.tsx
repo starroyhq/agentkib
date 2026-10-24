@@ -1,3 +1,4 @@
+import { planLiteralImportWarning } from "@/features/workspace/plan-import-context";
 import { AppliedChangesNotice } from "@/features/workspace/AppliedChangesNotice";
 import {
   WorkspacePlanView,
@@ -103,6 +104,7 @@ export function Changes({
   const { localizeMessage, tr } = useI18n();
   const workspaceBusy = useWorkspaceStore((state) => state.busy);
   const workspacePlanning = useWorkspaceStore((state) => state.planningChanges);
+  const literalImportWarning = useWorkspaceStore((state) => state.changeSetImportWarning);
   const [selected, setSelected] = useState(0);
   const [busy, setBusy] = useState(false);
   const [planningHome, setPlanningHome] = useState(false);
@@ -332,6 +334,7 @@ export function Changes({
       <WorkspacePlanView
         changeSet={changeSet}
         origin={origin}
+        literalImportWarning={literalImportWarning}
         status={planStatus}
         plannedManifest={plannedManifest ?? useWorkspaceStore.getState().changeSetManifest}
         baselineManifest={baselineManifest ?? useWorkspaceStore.getState().baselineManifest}
@@ -631,7 +634,12 @@ function WorkspaceChangesRoute() {
     const planningRevision = useWorkspaceStore.getState().setPlanningChanges(true);
     try {
       const nextChangeSet = await api.plan(targetProject, targetManifest, true);
-      if (isCurrentRequest()) setChangeSet(nextChangeSet, targetManifest, true);
+      if (!isCurrentRequest()) return;
+      const literalImportWarning = await planLiteralImportWarning(nextChangeSet, () =>
+        api.context(targetProject, targetProject, "deepseek-harness"),
+      );
+      if (isCurrentRequest())
+        setChangeSet(nextChangeSet, targetManifest, true, literalImportWarning);
       else if (useWorkspaceStore.getState().project === targetProject)
         throw new Error(tr("workspace.planSuperseded"));
     } finally {
@@ -678,11 +686,27 @@ function WorkspaceChangesRoute() {
     state.setMessage("");
     try {
       if (choice) {
-        const disk = await api.manifest(targetProject);
+        const [disk, diskScan] = await Promise.all([
+          api.manifest(targetProject),
+          api.scan(targetProject),
+        ]);
         if (!current() || JSON.stringify(useWorkspaceStore.getState().manifest) !== draftSnapshot)
           return;
-        if (choice === "disk") state.setManifest(disk);
-        state.setBaselineManifest(JSON.stringify(disk));
+        const diskIsDefault = !diskScan.manifest_exists;
+        if (choice === "disk") {
+          state.setManifest(disk);
+          state.setBaselineManifest(JSON.stringify(disk), diskIsDefault);
+        }
+        state.cacheWorkspaceDraft(
+          workspaceId,
+          choice === "disk" ? disk : state.manifest,
+          choice === "disk" ? JSON.stringify(disk) : state.baselineManifest,
+          JSON.stringify(disk),
+          {
+            baselineIsDefault: choice === "disk" ? diskIsDefault : state.baselineManifestIsDefault,
+            diskIsDefault,
+          },
+        );
         state.setChangeSetConflict(false);
         state.setChangeSetInvalidated(true);
         return; // Both choices require a newly reviewed plan before any write.
@@ -692,6 +716,10 @@ function WorkspaceChangesRoute() {
       if (!current()) return;
       const plan = await api.plan(targetProject, source, state.changeSetIncludesHome);
       if (!current()) return;
+      const literalImportWarning = await planLiteralImportWarning(plan, () =>
+        api.context(targetProject, targetProject, "deepseek-harness"),
+      );
+      if (!current()) return;
       if (
         state.changeSetOrigin === "standard" &&
         JSON.stringify(useWorkspaceStore.getState().manifest) !== draftSnapshot
@@ -699,7 +727,7 @@ function WorkspaceChangesRoute() {
         state.setChangeSetInvalidated(true);
         return;
       }
-      state.setChangeSet(plan, source, state.changeSetIncludesHome);
+      state.setChangeSet(plan, source, state.changeSetIncludesHome, literalImportWarning);
     } catch (error) {
       if (current()) state.setMessage(localizeMessage(error));
     } finally {
@@ -849,6 +877,7 @@ function WorkspaceChangesRoute() {
                     diagnosis: {
                       status: "complete",
                       resolved: before?.filter((issue) => !newKeys.has(identity(issue))).length,
+                      remaining: after.length,
                       issues: oldKeys
                         ? after.filter((issue) => !oldKeys.has(identity(issue)))
                         : after,

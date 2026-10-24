@@ -146,8 +146,89 @@ describe("transient workspace notices", () => {
 });
 
 describe("workspace change plans and drafts", () => {
+  it("tracks draft baseline and acknowledged disk origins independently through caching, applying and cleanup", () => {
+    const baseline = JSON.stringify(manifest("original"));
+    const draft = manifest("draft");
+    useWorkspaceStore.getState().setBaselineManifest(baseline, true);
+    expect(useWorkspaceStore.getState().baselineManifestIsDefault).toBe(true);
+    useWorkspaceStore
+      .getState()
+      .cacheWorkspaceDraft(workspace.id, draft, baseline, "deleted disk", {
+        baselineIsDefault: false,
+        diskIsDefault: true,
+      });
+    useWorkspaceStore.getState().cacheWorkspaceDraft(workspace.id, draft, baseline, undefined, {
+      baselineIsDefault: false,
+    });
+    expect(useWorkspaceStore.getState().workspaceDraftBaselineDefaults[workspace.id]).toBe(false);
+    expect(useWorkspaceStore.getState().workspaceDraftDiskDefaults[workspace.id]).toBe(true);
+    useWorkspaceStore.setState({ selectedWorkspace: workspace, manifest: draft });
+    useWorkspaceStore.getState().acceptAppliedManifest(manifest("applied"));
+    expect(useWorkspaceStore.getState().baselineManifestIsDefault).toBe(false);
+    expect(useWorkspaceStore.getState().workspaceDraftBaselineDefaults[workspace.id]).toBe(false);
+    expect(useWorkspaceStore.getState().workspaceDraftDiskDefaults[workspace.id]).toBe(false);
+    useWorkspaceStore.getState().setWorkspaceDrafts({});
+    expect(useWorkspaceStore.getState().workspaceDraftBaselineDefaults).toEqual({});
+    expect(useWorkspaceStore.getState().workspaceDraftDiskDefaults).toEqual({});
+    useWorkspaceStore.getState().setBaselineManifest(baseline);
+    expect(useWorkspaceStore.getState().baselineManifestIsDefault).toBe(false);
+  });
+
   beforeEach(resetStore);
   afterEach(resetStore);
+
+  it("keeps the acknowledged disk separate from the original dirty-draft baseline through further edits and reset", () => {
+    const baseline = JSON.stringify(manifest("original"));
+    const disk = JSON.stringify(manifest("external update already reviewed"));
+    const draft = manifest("unsaved draft");
+    useWorkspaceStore.getState().cacheWorkspaceDraft(workspace.id, draft, baseline, disk);
+    expect(useWorkspaceStore.getState().workspaceDraftBaselines[workspace.id]).toBe(baseline);
+    expect(useWorkspaceStore.getState().workspaceDraftDisks[workspace.id]).toBe(disk);
+    const edited = manifest("more unsaved edits");
+    useWorkspaceStore.getState().cacheWorkspaceDraft(workspace.id, edited, baseline);
+    expect(useWorkspaceStore.getState().workspaceDraftDisks[workspace.id]).toBe(disk);
+    useWorkspaceStore.getState().resetWorkspace();
+    expect(useWorkspaceStore.getState().workspaceDrafts[workspace.id]).toBe(edited);
+    expect(useWorkspaceStore.getState().workspaceDraftDisks[workspace.id]).toBe(disk);
+  });
+
+  it("removes acknowledged disks only for cleaned, discarded or removed drafts", () => {
+    const baseline = manifest("original");
+    const snapshot = JSON.stringify(baseline);
+    const draft = manifest("unsaved");
+    for (const id of [workspace.id, "clean", "removed", "retained"]) {
+      useWorkspaceStore.getState().cacheWorkspaceDraft(id, draft, snapshot, `disk-${id}`);
+    }
+    useWorkspaceStore.getState().cacheWorkspaceDraft("clean", baseline, snapshot);
+    expect(useWorkspaceStore.getState().workspaceDraftDisks.clean).toBeUndefined();
+    useWorkspaceStore.setState({
+      selectedWorkspace: workspace,
+      manifest: draft,
+      baselineManifest: snapshot,
+    });
+    expect(useWorkspaceStore.getState().discardWorkspaceDraft(JSON.stringify(draft))).toBe(true);
+    expect(useWorkspaceStore.getState().workspaceDraftDisks[workspace.id]).toBeUndefined();
+    useWorkspaceStore.getState().setWorkspaceDrafts({ retained: draft });
+    expect(useWorkspaceStore.getState().workspaceDraftDisks).toEqual({ retained: "disk-retained" });
+    useWorkspaceStore.getState().setWorkspaceDrafts({});
+    expect(useWorkspaceStore.getState().workspaceDraftDisks).toEqual({});
+  });
+
+  it("acknowledges the actual applied disk when an unrelated editor draft survives apply", () => {
+    const baseline = JSON.stringify(manifest("original"));
+    const draft = manifest("unrelated unsaved edit");
+    const applied = manifest("doctor update");
+    useWorkspaceStore.setState({
+      selectedWorkspace: workspace,
+      manifest: draft,
+      baselineManifest: baseline,
+    });
+    useWorkspaceStore.getState().cacheWorkspaceDraft(workspace.id, draft, baseline, "older disk");
+    useWorkspaceStore.getState().acceptAppliedManifest(applied);
+    expect(useWorkspaceStore.getState().workspaceDraftDisks[workspace.id]).toBe(
+      JSON.stringify(applied),
+    );
+  });
 
   it.each([
     ["doctor", true],

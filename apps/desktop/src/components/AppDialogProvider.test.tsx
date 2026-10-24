@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 
 import { act, cleanup, fireEvent, render, screen } from "@testing-library/react";
-import { afterEach, beforeAll, describe, expect, it } from "vitest";
+import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import { changeLocale, initializeI18n, tr } from "@/core/i18n";
 import { AppDialogProvider, useAppDialogs } from "./AppDialogProvider";
 import { SidebarSearchButton } from "./SidebarSearchButton";
@@ -15,9 +15,57 @@ function DialogTrigger() {
   );
 }
 
+function ConflictTrigger({ result }: { result: (loadDisk: boolean) => void }) {
+  const dialogs = useAppDialogs();
+  return (
+    <button
+      onClick={() =>
+        void dialogs
+          .confirm({
+            title: tr("workspace.refreshConflictTitle"),
+            description: tr("workspace.refreshConflict"),
+            confirmLabel: tr("workspace.refreshLoadDisk"),
+            cancelLabel: tr("workspace.refreshKeepDraft"),
+          })
+          .then(result)
+      }
+    >
+      Open conflict
+    </button>
+  );
+}
+
 describe("shared component locale subscriptions", () => {
   beforeAll(() => initializeI18n("en-US"));
   afterEach(cleanup);
+
+  it.each(["zh-CN", "zh-TW", "en-US", "ja-JP"] as const)(
+    "names the destructive disk choice in %s",
+    async (locale) => {
+      await act(() => changeLocale(locale));
+      const result = vi.fn();
+      render(
+        <AppDialogProvider>
+          <ConflictTrigger result={result} />
+        </AppDialogProvider>,
+      );
+      fireEvent.click(screen.getByRole("button", { name: "Open conflict" }));
+      await screen.findByRole("alertdialog");
+      expect(
+        screen.getByRole("heading", { name: tr("workspace.refreshConflictTitle") }),
+      ).toBeTruthy();
+      expect(screen.queryByRole("button", { name: tr("common.confirm") })).toBeNull();
+      fireEvent.click(screen.getByRole("button", { name: tr("workspace.refreshKeepDraft") }));
+      await act(async () => undefined);
+      expect(result).toHaveBeenCalledWith(false);
+      fireEvent.click(screen.getByRole("button", { name: "Open conflict" }));
+      await screen.findByRole("alertdialog");
+      fireEvent.click(screen.getByRole("button", { name: tr("workspace.refreshLoadDisk") }));
+      await act(async () => undefined);
+      expect(result).toHaveBeenLastCalledWith(true);
+      await act(() => changeLocale("en-US"));
+    },
+  );
 
   it("updates the loading announcement without replacing the loading state", async () => {
     render(<SettingsSkeleton />);

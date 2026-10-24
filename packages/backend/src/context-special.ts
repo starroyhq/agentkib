@@ -102,7 +102,18 @@ export function deepseekSections(
     let metadata;
     try {
       metadata = statSync(file);
-    } catch {
+    } catch (error) {
+      const absent = (error: unknown) =>
+        ["ENOENT", "ENOTDIR"].includes((error as NodeJS.ErrnoException).code ?? "");
+      if (absent(error))
+        try {
+          // A dangling alias can become readable after this plan creates its
+          // target, consuming the global budget before project instructions.
+          lstatSync(file);
+        } catch (entryError) {
+          if (absent(entryError)) return null;
+        }
+      warnings.push(`Could not read ${file}`);
       return null;
     }
     if (!metadata.isFile()) return null;

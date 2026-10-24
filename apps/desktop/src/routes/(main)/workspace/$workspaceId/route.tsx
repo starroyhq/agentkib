@@ -230,6 +230,9 @@ function WorkspaceLayout() {
     const initialState = useWorkspaceStore.getState();
     const initialBaseline =
       initialState.baselineManifest || initialState.workspaceDraftBaselines[workspaceId] || "";
+    const initialBaselineIsDefault = initialState.baselineManifest
+      ? initialState.baselineManifestIsDefault
+      : initialState.workspaceDraftBaselineDefaults[workspaceId] === true;
     const scanAtStart = initialState.scan;
     const isCurrentRequest = () =>
       requestId === operationRequest.current &&
@@ -269,7 +272,10 @@ function WorkspaceLayout() {
           const resolvedManifest = await resolveRefreshedManifest({
             initialManifest: initialState.manifest,
             initialBaseline,
+            initialBaselineIsDefault,
             acknowledgedDisk: initialState.workspaceDraftDisks[workspaceId],
+            acknowledgedDiskIsDefault:
+              initialState.workspaceDraftDiskDefaults[workspaceId] === true,
             cachedDraft: draft,
             diskManifest: nextManifest,
             diskIsDefault: !nextScan.manifest_exists,
@@ -293,10 +299,18 @@ function WorkspaceLayout() {
           setManifest(resolvedManifest);
           const nextBaseline = nextManifest
             ? conflictRetained
-              ? preparedManifestBaseline(initialBaseline, nextManifest, !nextScan.manifest_exists)
+              ? preparedManifestBaseline(
+                  initialBaseline,
+                  nextManifest,
+                  !nextScan.manifest_exists && initialBaselineIsDefault,
+                )
               : JSON.stringify(nextManifest)
             : initialBaseline;
-          setBaselineManifest(nextBaseline);
+          const nextBaselineIsDefault =
+            nextManifest && !conflictRetained
+              ? !nextScan.manifest_exists
+              : initialBaselineIsDefault;
+          setBaselineManifest(nextBaseline, nextBaselineIsDefault);
           useWorkspaceStore
             .getState()
             .cacheWorkspaceDraft(
@@ -304,6 +318,10 @@ function WorkspaceLayout() {
               resolvedManifest,
               nextBaseline,
               nextManifest ? JSON.stringify(nextManifest) : undefined,
+              {
+                baselineIsDefault: nextBaselineIsDefault,
+                diskIsDefault: !nextScan.manifest_exists,
+              },
             );
           setRuntime(runtimeResult.value);
           setLoadFailure(undefined);

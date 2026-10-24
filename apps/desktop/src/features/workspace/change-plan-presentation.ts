@@ -155,7 +155,12 @@ export function instructionPlanNotes(changeSet: ChangeSet): {
     duplicateTargets: files
       .filter((file) => {
         const after = instructionBlock(file.after);
-        return after && instructions(after.outside).some((line) => expected.has(line));
+        if (!after) return false;
+        const actual = instructions(after.outside);
+        return (
+          actual.some((line) => expected.has(line)) ||
+          (actual.length > 0 && actual.join(" ") === [...expected].join(" "))
+        );
       })
       .map((file) => file.target),
   };

@@ -686,18 +686,26 @@ function WorkspaceChangesRoute() {
     state.setMessage("");
     try {
       if (choice) {
-        const disk = await api.manifest(targetProject);
+        const [disk, diskScan] = await Promise.all([
+          api.manifest(targetProject),
+          api.scan(targetProject),
+        ]);
         if (!current() || JSON.stringify(useWorkspaceStore.getState().manifest) !== draftSnapshot)
           return;
+        const diskIsDefault = !diskScan.manifest_exists;
         if (choice === "disk") {
           state.setManifest(disk);
-          state.setBaselineManifest(JSON.stringify(disk));
+          state.setBaselineManifest(JSON.stringify(disk), diskIsDefault);
         }
         state.cacheWorkspaceDraft(
           workspaceId,
           choice === "disk" ? disk : state.manifest,
           choice === "disk" ? JSON.stringify(disk) : state.baselineManifest,
           JSON.stringify(disk),
+          {
+            baselineIsDefault: choice === "disk" ? diskIsDefault : state.baselineManifestIsDefault,
+            diskIsDefault,
+          },
         );
         state.setChangeSetConflict(false);
         state.setChangeSetInvalidated(true);

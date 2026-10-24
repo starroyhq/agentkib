@@ -202,6 +202,36 @@ describe("change plan presentation", () => {
     ).toEqual([]);
   });
 
+  it.each([
+    ["Keep the entire original guideline.\n", "Keep the entire\noriginal guideline.\n", true],
+    ["Keep the entire\noriginal guideline.\n", "Keep the entire original guideline.\n", true],
+    ["Keep the entire original guideline.\n", "Keep the entire\n", false],
+    ["Keep the entire original guideline.\n", "original guideline.\n", false],
+    [
+      "Keep the entire original guideline.\n",
+      "Keep the entire\noriginal guideline.\nPrivate instruction.\n",
+      false,
+    ],
+    ["# Project\n<!-- Keep the entire original guideline. -->\n", "# Project\n@AGENTS.md\n", false],
+  ])(
+    "uses the same complete-sentence overlap evidence as diagnosis (%j, %j)",
+    (sharedBody, outside, duplicate) => {
+      const block = (body: string) =>
+        `<!-- agentkib:managed:start -->\n${body}\n<!-- agentkib:managed:end -->\n`;
+      const shared = change("/sandbox/project/AGENTS.md", {
+        before: sharedBody,
+        after: block(sharedBody),
+      });
+      const claude = change("/sandbox/project/CLAUDE.md", {
+        before: outside,
+        after: outside + block("@AGENTS.md"),
+      });
+      expect(instructionPlanNotes(plan([shared, claude])).duplicateTargets).toEqual(
+        duplicate ? [claude.target] : [],
+      );
+    },
+  );
+
   it("folds only known generated hash fields in the actual manifest, keeping user instructions and adapter settings visible", () => {
     const text = [
       "instructions:",

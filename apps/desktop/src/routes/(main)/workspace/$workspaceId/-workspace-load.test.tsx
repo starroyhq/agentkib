@@ -216,6 +216,7 @@ describe("workspace load recovery", () => {
       manifest: draft,
       scan: { ...scan, manifest_exists: false },
       baselineManifest: JSON.stringify(manifest),
+      baselineManifestIsDefault: true,
     });
     const transitions = renderHook(() =>
       useWorkspaceTransitions({
@@ -240,6 +241,52 @@ describe("workspace load recovery", () => {
     expect(useWorkspaceStore.getState().workspaceDraftBaselines[workspace.id]).toBe(
       JSON.stringify(disk),
     );
+    expect(useWorkspaceStore.getState().baselineManifestIsDefault).toBe(true);
+    expect(useWorkspaceStore.getState().workspaceDraftBaselineDefaults[workspace.id]).toBe(true);
+    expect(useWorkspaceStore.getState().workspaceDraftDiskDefaults[workspace.id]).toBe(true);
+  });
+
+  it("retains a real manifest's identity and deletion acknowledgment across cached workspace switches", async () => {
+    const draft = {
+      ...manifest,
+      instructions: { ...manifest.instructions, shared: "only draft edit" },
+    };
+    useWorkspaceStore.getState().cacheWorkspaceDraft(workspace.id, draft, JSON.stringify(manifest));
+    vi.mocked(api.scan).mockResolvedValue({ ...scan, manifest_exists: false });
+    vi.mocked(api.manifest).mockResolvedValue({
+      ...manifest,
+      workspace: { ...manifest.workspace, id: "first-prepared-id" },
+    });
+    await renderRoute();
+    await screen.findByRole("textbox", { name: "Workspace draft" });
+    expect(doubles.confirm).toHaveBeenCalledOnce();
+    expect(useWorkspaceStore.getState().manifest).toEqual(draft);
+    expect(useWorkspaceStore.getState().workspaceDraftBaselineDefaults[workspace.id]).toBe(false);
+    expect(useWorkspaceStore.getState().workspaceDraftDiskDefaults[workspace.id]).toBe(true);
+    cleanup();
+    const transitions = renderHook(() =>
+      useWorkspaceTransitions({
+        route: { kind: "workspace", workspaceId: workspace.id, page: "assets" },
+        navigateWorkspacePageFor: doubles.navigate,
+        clearGitSubview: vi.fn(),
+        invalidatePendingLoad: vi.fn(),
+      }),
+    );
+    await act(async () => {
+      await transitions.result.current.openWorkspace(otherWorkspace);
+      await transitions.result.current.openWorkspace(workspace);
+    });
+    transitions.unmount();
+    vi.mocked(api.manifest).mockResolvedValue({
+      ...manifest,
+      workspace: { ...manifest.workspace, id: "second-prepared-id" },
+    });
+    await renderRoute();
+    await screen.findByRole("textbox", { name: "Workspace draft" });
+    expect(doubles.confirm).toHaveBeenCalledOnce();
+    expect(useWorkspaceStore.getState().manifest).toEqual(draft);
+    expect(useWorkspaceStore.getState().baselineManifest).toBe(JSON.stringify(manifest));
+    expect(useWorkspaceStore.getState().baselineManifestIsDefault).toBe(false);
   });
 
   it("asks once for one external version across stable workspace switches and asks again for a new version", async () => {

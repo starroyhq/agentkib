@@ -80,12 +80,16 @@ async function open() {
   fireEvent.click(screen.getByRole("button", { name: "Open fixture workspace" }));
   await waitFor(() => expect(doubles.navigate).toHaveBeenCalledTimes(count + 1));
 }
-function cache(baseline = manifest()) {
+function cache(baseline = manifest(), baselineIsDefault = false) {
   const draft = {
     ...baseline,
     instructions: { ...baseline.instructions, shared: "Unsaved draft" },
   };
-  useWorkspaceStore.getState().cacheWorkspaceDraft(workspace.id, draft, JSON.stringify(baseline));
+  useWorkspaceStore
+    .getState()
+    .cacheWorkspaceDraft(workspace.id, draft, JSON.stringify(baseline), undefined, {
+      baselineIsDefault,
+    });
   return draft;
 }
 function expectOneDraft() {
@@ -117,8 +121,31 @@ afterEach(() => {
 });
 
 describe("catalog workspace draft opening", () => {
+  it("retains a persisted draft and remembers deletion provenance across subsequent opens", async () => {
+    const draft = cache();
+    doubles.scan.mockResolvedValue({
+      root: workspace.path,
+      manifest_exists: false,
+      agents: [],
+      assets: [],
+      warnings: [],
+    });
+    doubles.manifest.mockResolvedValue(manifest("deleted-first-id"));
+    await renderRoute();
+    await open();
+    expect(doubles.confirm).toHaveBeenCalledOnce();
+    expect(useWorkspaceStore.getState().manifest).toEqual(draft);
+    expect(useWorkspaceStore.getState().baselineManifestIsDefault).toBe(false);
+    expect(useWorkspaceStore.getState().workspaceDraftBaselineDefaults[workspace.id]).toBe(false);
+    expect(useWorkspaceStore.getState().workspaceDraftDiskDefaults[workspace.id]).toBe(true);
+    doubles.manifest.mockResolvedValue(manifest("deleted-second-id"));
+    await open();
+    expect(doubles.confirm).toHaveBeenCalledOnce();
+    expect(useWorkspaceStore.getState().manifest).toEqual(draft);
+  });
+
   it("keeps a missing-manifest draft across fresh prepared identities without a false conflict", async () => {
-    cache();
+    cache(manifest(), true);
     doubles.scan.mockResolvedValue({
       root: workspace.path,
       manifest_exists: false,

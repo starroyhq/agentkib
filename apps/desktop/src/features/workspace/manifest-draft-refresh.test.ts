@@ -20,6 +20,67 @@ function manifest(id: string, shared = "original"): Manifest {
 }
 
 describe("default manifest draft refresh", () => {
+  it.each(["original", "external content"])(
+    "treats deletion of a real manifest as a conflict and preserves its identity: %s",
+    async (shared) => {
+      const baseline = manifest("persisted-id");
+      const draft = manifest("persisted-id", "unsaved");
+      const confirm = vi.fn().mockResolvedValue(false);
+      const retained = vi.fn();
+      const result = await resolveRefreshedManifest({
+        initialManifest: draft,
+        initialBaseline: JSON.stringify(baseline),
+        diskManifest: manifest("prepared-after-deletion", shared),
+        diskIsDefault: true,
+        getCurrentManifest: () => draft,
+        confirmDiskVersion: confirm,
+        onConflictRetained: retained,
+      });
+      expect(confirm).toHaveBeenCalledOnce();
+      expect(retained).toHaveBeenCalledOnce();
+      expect(result).toBe(draft);
+      expect(draftSectionCount(result, JSON.stringify(baseline))).toBe(1);
+    },
+  );
+
+  it("recognizes an acknowledged deletion without changing the persisted draft or hiding a new external edit", async () => {
+    const baseline = manifest("persisted-id");
+    const draft = manifest("persisted-id", "unsaved");
+    const acknowledged = manifest("first-prepared-id");
+    const confirm = vi.fn().mockResolvedValue(false);
+    for (const shared of ["original", "a new external edit"]) {
+      const result = await resolveRefreshedManifest({
+        initialManifest: draft,
+        initialBaseline: JSON.stringify(baseline),
+        acknowledgedDisk: JSON.stringify(acknowledged),
+        acknowledgedDiskIsDefault: true,
+        diskManifest: manifest("next-prepared-id", shared),
+        diskIsDefault: true,
+        getCurrentManifest: () => draft,
+        confirmDiskVersion: confirm,
+      });
+      expect(result).toBe(draft);
+    }
+    expect(confirm).toHaveBeenCalledOnce();
+  });
+
+  it("confirms a real manifest appearing even if its contents equal the previous prepared baseline", async () => {
+    const baseline = manifest("prepared-id");
+    const draft = manifest("prepared-id", "unsaved");
+    const confirm = vi.fn().mockResolvedValue(false);
+    expect(
+      await resolveRefreshedManifest({
+        initialManifest: draft,
+        initialBaseline: JSON.stringify(baseline),
+        initialBaselineIsDefault: true,
+        diskManifest: baseline,
+        getCurrentManifest: () => draft,
+        confirmDiskVersion: confirm,
+      }),
+    ).toBe(draft);
+    expect(confirm).toHaveBeenCalledOnce();
+  });
+
   it.each([true, false])(
     "does not ask again for an acknowledged disk while preserving the original draft baseline (default: %s)",
     async (diskIsDefault) => {
@@ -38,7 +99,9 @@ describe("default manifest draft refresh", () => {
       const result = await resolveRefreshedManifest({
         initialManifest: draft,
         initialBaseline: JSON.stringify(baseline),
+        initialBaselineIsDefault: diskIsDefault,
         acknowledgedDisk: JSON.stringify(acknowledged),
+        acknowledgedDiskIsDefault: diskIsDefault,
         diskManifest: disk,
         diskIsDefault,
         getCurrentManifest: () => draft,
@@ -129,6 +192,7 @@ describe("default manifest draft refresh", () => {
     const confirm = vi.fn().mockResolvedValue(true);
     const result = await resolveRefreshedManifest({
       initialBaseline: JSON.stringify(baseline),
+      initialBaselineIsDefault: true,
       cachedDraft: draft,
       diskManifest: disk,
       diskIsDefault: true,
@@ -149,6 +213,7 @@ describe("default manifest draft refresh", () => {
       await resolveRefreshedManifest({
         initialManifest: baseline,
         initialBaseline: JSON.stringify(baseline),
+        initialBaselineIsDefault: true,
         diskManifest: disk,
         diskIsDefault: true,
         getCurrentManifest: () => baseline,
@@ -168,6 +233,7 @@ describe("default manifest draft refresh", () => {
       const retained = vi.fn();
       const result = await resolveRefreshedManifest({
         initialBaseline: JSON.stringify(baseline),
+        initialBaselineIsDefault: true,
         cachedDraft: draft,
         diskManifest: disk,
         diskIsDefault: true,

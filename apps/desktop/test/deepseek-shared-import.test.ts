@@ -1,7 +1,18 @@
-import { afterEach, describe, expect, it } from "vitest";
+import { lstatSync, statSync } from "node:fs";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { deepseekSections } from "../../../packages/backend/src/context-special";
 import { CONTEXT_NOTE_PREFIX } from "../../../packages/backend/src/context-files";
+import { applyChanges } from "../../../packages/backend/src/change-apply";
+import { planWorkspace } from "../../../packages/backend/src/change-plan";
+import { defaultManifest } from "../../../packages/backend/src/default-manifest";
+import { instructionImportProof } from "../../../packages/backend/src/instruction-adoption";
+import { planLiteralImportWarning } from "../src/features/workspace/plan-import-context";
 import { contextFixture, type ContextFixture } from "./fixtures/claude-context";
+
+vi.mock("node:fs", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("node:fs")>();
+  return { ...actual, statSync: vi.fn(actual.statSync), lstatSync: vi.fn(actual.lstatSync) };
+});
 
 const fixtures: ContextFixture[] = [];
 function fixture() {
@@ -21,6 +32,87 @@ const literal =
   "DeepSeek Harness reads @AGENTS.md in CLAUDE.md as literal text, not as a Claude Code import";
 
 describe("DeepSeek independently loaded shared imports", () => {
+  it("keeps an absent optional global file neutral", () => {
+    const f = fixture();
+    f.write("AGENTS.md", "Shared guideline.\n");
+    f.write("CLAUDE.md", "@AGENTS.md\n");
+    expect(read(f).warnings).toEqual([`${CONTEXT_NOTE_PREFIX}${literal}`]);
+  });
+
+  it.each(["stat denied", "entry unavailable"])(
+    "preserves a global read warning when absence cannot be established: %s",
+    (failure) => {
+      const f = fixture();
+      f.write("AGENTS.md", "Shared guideline.\n");
+      f.write("CLAUDE.md", "@AGENTS.md\n");
+      vi.mocked(statSync).mockImplementationOnce(() => {
+        throw Object.assign(new Error("synthetic read failure"), {
+          code: failure === "stat denied" ? "EACCES" : "ENOENT",
+        });
+      });
+      if (failure === "entry unavailable")
+        vi.mocked(lstatSync).mockImplementationOnce(() => {
+          throw Object.assign(new Error("synthetic entry failure"), { code: "EACCES" });
+        });
+      expect(read(f).warnings).toContain(`Could not read ${f.inHome(".dsh/AGENTS.md")}`);
+    },
+  );
+
+  it("does not inspect or expose a filtered dangling global alias", () => {
+    const f = fixture();
+    f.write("AGENTS.md", "Shared guideline.\n");
+    f.write("CLAUDE.md", "@AGENTS.md\n");
+    const global = f.inHome(".dsh/AGENTS.md");
+    f.link(f.at("future-global.md"), global);
+    expect(read(f, [f.project], (source) => source === global).warnings).toEqual([
+      `${CONTEXT_NOTE_PREFIX}${literal}`,
+    ]);
+  });
+
+  it("warns before a reviewed new manifest activates a dangling global alias and exhausts the budget", async () => {
+    const f = fixture();
+    const original = "Follow these rules.\n".repeat(2000);
+    f.write("AGENTS.md", original);
+    f.write("CLAUDE.md", original);
+    f.link(f.at(".agentkib/manifest.yaml"), f.inHome(".dsh/AGENTS.md"));
+    const manifest = defaultManifest(f.project),
+      instructionImport = instructionImportProof(f.project, manifest);
+    manifest.instructions.shared += "Reviewed addition.\n";
+    const plan = planWorkspace(f.project, manifest, {
+      instructionImport,
+      reconcileImportedInstructions: true,
+    });
+    const before = read(f);
+    expect(before.sections.map((section) => section.source)).toEqual([f.at("AGENTS.md")]);
+    expect(before.warnings).toContain(`Could not read ${f.inHome(".dsh/AGENTS.md")}`);
+    expect(
+      await planLiteralImportWarning(plan, async () => ({
+        agent: "deepseek-harness",
+        project: f.project,
+        cwd: f.project,
+        ...before,
+        visible_skills: [],
+        visible_connections: [],
+        approved_memories: [],
+      })),
+    ).toBe(true);
+    applyChanges(plan, f.outside("backups"), {
+      approvedHome: [],
+      protectedHome: [],
+      approvedApplication: [],
+      approveHome: false,
+    });
+    const after = read(f);
+    expect(after.sections[0]?.scope).toBe("agent-home");
+    const shared = after.sections.find((section) => section.source === f.at("AGENTS.md"));
+    const writtenShared = plan.changes.find((change) => change.target === f.at("AGENTS.md"))!;
+    expect(Buffer.byteLength(shared!.content)).toBeLessThan(Buffer.byteLength(writtenShared.after));
+    expect(after.warnings).toContain(
+      `DeepSeek Harness instruction budget of 64 KiB truncated ${f.at("AGENTS.md")}`,
+    );
+    expect(after.warnings).toContain(literal);
+  });
+
   it("keeps literal syntax as a neutral note when the same directory AGENTS body is fully present", () => {
     const f = fixture();
     f.write("AGENTS.md", "Shared guideline.\n");

@@ -146,6 +146,34 @@ describe("transient workspace notices", () => {
 });
 
 describe("workspace change plans and drafts", () => {
+  it("tracks draft baseline and acknowledged disk origins independently through caching, applying and cleanup", () => {
+    const baseline = JSON.stringify(manifest("original"));
+    const draft = manifest("draft");
+    useWorkspaceStore.getState().setBaselineManifest(baseline, true);
+    expect(useWorkspaceStore.getState().baselineManifestIsDefault).toBe(true);
+    useWorkspaceStore
+      .getState()
+      .cacheWorkspaceDraft(workspace.id, draft, baseline, "deleted disk", {
+        baselineIsDefault: false,
+        diskIsDefault: true,
+      });
+    useWorkspaceStore.getState().cacheWorkspaceDraft(workspace.id, draft, baseline, undefined, {
+      baselineIsDefault: false,
+    });
+    expect(useWorkspaceStore.getState().workspaceDraftBaselineDefaults[workspace.id]).toBe(false);
+    expect(useWorkspaceStore.getState().workspaceDraftDiskDefaults[workspace.id]).toBe(true);
+    useWorkspaceStore.setState({ selectedWorkspace: workspace, manifest: draft });
+    useWorkspaceStore.getState().acceptAppliedManifest(manifest("applied"));
+    expect(useWorkspaceStore.getState().baselineManifestIsDefault).toBe(false);
+    expect(useWorkspaceStore.getState().workspaceDraftBaselineDefaults[workspace.id]).toBe(false);
+    expect(useWorkspaceStore.getState().workspaceDraftDiskDefaults[workspace.id]).toBe(false);
+    useWorkspaceStore.getState().setWorkspaceDrafts({});
+    expect(useWorkspaceStore.getState().workspaceDraftBaselineDefaults).toEqual({});
+    expect(useWorkspaceStore.getState().workspaceDraftDiskDefaults).toEqual({});
+    useWorkspaceStore.getState().setBaselineManifest(baseline);
+    expect(useWorkspaceStore.getState().baselineManifestIsDefault).toBe(false);
+  });
+
   beforeEach(resetStore);
   afterEach(resetStore);
 

@@ -158,6 +158,39 @@ afterEach(cleanup);
 
 describe("workspace refresh entry coordination", () => {
   it.each(["local", "global"] as const)(
+    "keeps the persisted identity and separate source metadata after a real manifest is deleted via %s refresh",
+    async (entry) => {
+      const baseline = manifestFor();
+      const draft = { ...baseline, instructions: { ...baseline.instructions, shared: "draft" } };
+      useWorkspaceStore.setState({ manifest: draft });
+      vi.mocked(api.scan).mockResolvedValue({ ...scanFor(), manifest_exists: false });
+      vi.mocked(api.manifest).mockResolvedValue({
+        ...baseline,
+        workspace: { ...baseline.workspace, id: "first-prepared-id" },
+      });
+      await renderWorkspace();
+      await refresh(entry);
+      expect(doubles.confirm).toHaveBeenCalledOnce();
+      expect(useWorkspaceStore.getState().manifest).toEqual(draft);
+      expect(useWorkspaceStore.getState().baselineManifestIsDefault).toBe(false);
+      expect(useWorkspaceStore.getState().workspaceDraftBaselineDefaults[workspace.id]).toBe(false);
+      expect(useWorkspaceStore.getState().workspaceDraftDiskDefaults[workspace.id]).toBe(true);
+      vi.mocked(api.manifest).mockResolvedValue({
+        ...baseline,
+        workspace: { ...baseline.workspace, id: "second-prepared-id" },
+      });
+      await refresh(entry);
+      expect(doubles.confirm).toHaveBeenCalledOnce();
+      expect(useWorkspaceStore.getState().manifest).toEqual(draft);
+      expect(draftSectionCount(draft, useWorkspaceStore.getState().baselineManifest)).toBe(1);
+      vi.mocked(api.scan).mockResolvedValue(scanFor());
+      vi.mocked(api.manifest).mockResolvedValue(baseline);
+      await refresh(entry);
+      expect(doubles.confirm).toHaveBeenCalledTimes(2);
+    },
+  );
+
+  it.each(["local", "global"] as const)(
     "remembers an acknowledged disk version across %s refresh without changing the editor baseline",
     async (entry) => {
       const baseline = manifestFor();
@@ -202,7 +235,7 @@ describe("workspace refresh entry coordination", () => {
         instructions: { ...baseline.instructions, shared: "one-section draft" },
       };
       const disk = { ...baseline, workspace: { ...baseline.workspace, id: "new-server-draft" } };
-      useWorkspaceStore.setState({ manifest: draft });
+      useWorkspaceStore.setState({ manifest: draft, baselineManifestIsDefault: true });
       vi.mocked(api.scan).mockResolvedValue({ ...scanFor(), manifest_exists: false });
       vi.mocked(api.manifest).mockResolvedValue(disk);
       await renderWorkspace();

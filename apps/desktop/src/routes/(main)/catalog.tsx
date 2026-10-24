@@ -187,6 +187,8 @@ function CatalogRoute() {
     const initialState = useWorkspaceStore.getState();
     const initialDraft = initialState.workspaceDrafts[workspace.id];
     const initialBaseline = initialState.workspaceDraftBaselines[workspace.id] ?? "";
+    const initialBaselineIsDefault =
+      initialState.workspaceDraftBaselineDefaults[workspace.id] === true;
     setBusy(true);
     setMessage("");
     return withAsyncCleanup(
@@ -211,7 +213,10 @@ function CatalogRoute() {
           const resolvedManifest = await resolveRefreshedManifest({
             initialManifest: initialDraft,
             initialBaseline,
+            initialBaselineIsDefault,
             acknowledgedDisk: initialState.workspaceDraftDisks[workspace.id],
+            acknowledgedDiskIsDefault:
+              initialState.workspaceDraftDiskDefaults[workspace.id] === true,
             diskManifest: nextManifest,
             diskIsDefault: !nextScan.manifest_exists,
             onConflictRetained: () => {
@@ -236,10 +241,18 @@ function CatalogRoute() {
           setManifest(resolvedManifest);
           const nextBaseline = nextManifest
             ? conflictRetained
-              ? preparedManifestBaseline(initialBaseline, nextManifest, !nextScan.manifest_exists)
+              ? preparedManifestBaseline(
+                  initialBaseline,
+                  nextManifest,
+                  !nextScan.manifest_exists && initialBaselineIsDefault,
+                )
               : JSON.stringify(nextManifest)
             : initialBaseline;
-          setBaselineManifest(nextBaseline);
+          const nextBaselineIsDefault =
+            nextManifest && !conflictRetained
+              ? !nextScan.manifest_exists
+              : initialBaselineIsDefault;
+          setBaselineManifest(nextBaseline, nextBaselineIsDefault);
           useWorkspaceStore
             .getState()
             .cacheWorkspaceDraft(
@@ -247,6 +260,10 @@ function CatalogRoute() {
               resolvedManifest,
               nextBaseline,
               nextManifest ? JSON.stringify(nextManifest) : undefined,
+              {
+                baselineIsDefault: nextBaselineIsDefault,
+                diskIsDefault: !nextScan.manifest_exists,
+              },
             );
           setRuntime(nextRuntime);
           setSelectedWorkspace(workspace);

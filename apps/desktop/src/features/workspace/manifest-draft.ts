@@ -4,7 +4,9 @@ import type { Manifest } from "@/core/types";
 export async function resolveRefreshedManifest({
   initialManifest,
   initialBaseline,
+  initialBaselineIsDefault = false,
   acknowledgedDisk,
+  acknowledgedDiskIsDefault = false,
   cachedDraft,
   diskManifest,
   diskIsDefault = false,
@@ -14,7 +16,9 @@ export async function resolveRefreshedManifest({
 }: {
   initialManifest?: Manifest;
   initialBaseline: string;
+  initialBaselineIsDefault?: boolean;
   acknowledgedDisk?: string;
+  acknowledgedDiskIsDefault?: boolean;
   cachedDraft?: Manifest;
   diskManifest?: Manifest;
   diskIsDefault?: boolean;
@@ -25,26 +29,40 @@ export async function resolveRefreshedManifest({
   const current = getCurrentManifest();
   const editedDuringRefresh = JSON.stringify(current) !== JSON.stringify(initialManifest);
   const originalCandidate = editedDuringRefresh ? current : (initialManifest ?? cachedDraft);
+  // Only two confirmed preparations can exchange temporary IDs. A deleted real
+  // manifest must retain its persisted identity when the user keeps that draft.
+  const refreshPreparedIdentity = diskIsDefault && initialBaselineIsDefault;
   const candidate =
-    diskManifest && diskIsDefault
+    diskManifest && refreshPreparedIdentity
       ? withPreparedIdentity(originalCandidate, diskManifest)
       : originalCandidate;
   if (!diskManifest) return candidate;
   const candidateSnapshot = JSON.stringify(candidate);
   const diskSnapshot = JSON.stringify(diskManifest);
-  const baseline = preparedManifestBaseline(initialBaseline, diskManifest, diskIsDefault);
+  const baseline = preparedManifestBaseline(initialBaseline, diskManifest, refreshPreparedIdentity);
   const acknowledged = acknowledgedDisk ?? initialBaseline;
-  const knownDisk = preparedManifestBaseline(acknowledged, diskManifest, diskIsDefault);
+  const knownIsDefault =
+    acknowledgedDisk !== undefined ? acknowledgedDiskIsDefault : initialBaselineIsDefault;
+  const knownDisk = preparedManifestBaseline(
+    acknowledged,
+    diskManifest,
+    diskIsDefault && knownIsDefault,
+  );
+  const baselineMatches =
+    diskSnapshot === baseline &&
+    diskIsDefault === initialBaselineIsDefault &&
+    diskIsDefault === knownIsDefault;
+  const knownDiskMatches = diskSnapshot === knownDisk && diskIsDefault === knownIsDefault;
   const hasDraft = candidate && (editedDuringRefresh || candidateSnapshot !== baseline);
   if (!hasDraft || candidateSnapshot === diskSnapshot) return diskManifest;
-  let retainedExternal = !!initialBaseline && diskSnapshot !== baseline;
-  if (acknowledged && diskSnapshot !== knownDisk && diskSnapshot !== baseline) {
+  let retainedExternal = !!initialBaseline && !baselineMatches;
+  if (acknowledged && !knownDiskMatches && !baselineMatches) {
     const loadDisk = await confirmDiskVersion();
     const latest = getCurrentManifest();
     // A confirmation only covers the draft shown when the dialog opened.
     if (JSON.stringify(latest) !== JSON.stringify(current)) {
       onConflictRetained?.();
-      return diskIsDefault ? withPreparedIdentity(latest, diskManifest) : latest;
+      return refreshPreparedIdentity ? withPreparedIdentity(latest, diskManifest) : latest;
     }
     if (loadDisk) return diskManifest;
     retainedExternal = true;
@@ -62,8 +80,8 @@ function withPreparedIdentity(manifest: Manifest | undefined, disk: Manifest) {
   return { ...manifest, workspace: { ...manifest.workspace, id: disk.workspace.id } };
 }
 
-export function preparedManifestBaseline(baseline: string, disk: Manifest, diskIsDefault: boolean) {
-  if (!baseline || !diskIsDefault) return baseline;
+export function preparedManifestBaseline(baseline: string, disk: Manifest, bothPrepared: boolean) {
+  if (!baseline || !bothPrepared) return baseline;
   try {
     const previous = JSON.parse(baseline) as Manifest;
     if (!previous?.workspace || typeof previous.workspace.id !== "string") return baseline;

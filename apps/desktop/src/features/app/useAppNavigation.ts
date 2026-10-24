@@ -213,6 +213,10 @@ export function useAppNavigation(activeRoute?: ParsedRoute) {
       initialState.baselineManifest ||
       (targetWorkspaceId && initialState.workspaceDraftBaselines[targetWorkspaceId]) ||
       "";
+    const initialBaselineIsDefault = initialState.baselineManifest
+      ? initialState.baselineManifestIsDefault
+      : !!targetWorkspaceId &&
+        initialState.workspaceDraftBaselineDefaults[targetWorkspaceId] === true;
     const isCurrentRequest = () =>
       requestId === workspaceOpenRequest.current &&
       useWorkspaceStore.getState().project === path &&
@@ -232,9 +236,13 @@ export function useAppNavigation(activeRoute?: ParsedRoute) {
           const resolvedManifest = await resolveRefreshedManifest({
             initialManifest: initialState.manifest,
             initialBaseline,
+            initialBaselineIsDefault,
             acknowledgedDisk: targetWorkspaceId
               ? initialState.workspaceDraftDisks[targetWorkspaceId]
               : undefined,
+            acknowledgedDiskIsDefault:
+              !!targetWorkspaceId &&
+              initialState.workspaceDraftDiskDefaults[targetWorkspaceId] === true,
             cachedDraft:
               draft ??
               (targetWorkspaceId ? initialState.workspaceDrafts[targetWorkspaceId] : undefined),
@@ -259,10 +267,18 @@ export function useAppNavigation(activeRoute?: ParsedRoute) {
           setManifest(resolvedManifest);
           const nextBaseline = nextManifest
             ? conflictRetained
-              ? preparedManifestBaseline(initialBaseline, nextManifest, !nextScan.manifest_exists)
+              ? preparedManifestBaseline(
+                  initialBaseline,
+                  nextManifest,
+                  !nextScan.manifest_exists && initialBaselineIsDefault,
+                )
               : JSON.stringify(nextManifest)
             : initialBaseline;
-          setBaselineManifest(nextBaseline);
+          const nextBaselineIsDefault =
+            nextManifest && !conflictRetained
+              ? !nextScan.manifest_exists
+              : initialBaselineIsDefault;
+          setBaselineManifest(nextBaseline, nextBaselineIsDefault);
           if (targetWorkspaceId)
             useWorkspaceStore
               .getState()
@@ -271,6 +287,10 @@ export function useAppNavigation(activeRoute?: ParsedRoute) {
                 resolvedManifest,
                 nextBaseline,
                 JSON.stringify(nextManifest),
+                {
+                  baselineIsDefault: nextBaselineIsDefault,
+                  diskIsDefault: !nextScan.manifest_exists,
+                },
               );
           useAppStore.getState().setRuntime(nextRuntime);
         } catch (error) {

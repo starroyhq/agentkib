@@ -10,6 +10,9 @@ const mcpLatencyTests = [
   "test/context-skill-visibility.test.ts",
 ];
 const filesystemTests = [
+  // Complete source parsing rebuilds large SQLite/FTS generations with real
+  // commits; competing native/MCP workers can consume its unchanged deadline.
+  "test/history-search-source.test.ts",
   "test/claude-context-memory.test.ts",
   "test/skill-sync-manager.test.ts",
   "test/skills-lifecycle.test.ts",

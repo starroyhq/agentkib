@@ -13,6 +13,7 @@ import {
   sessionSourceLabel,
 } from "./session-labels";
 import { SessionNotice as Notice } from "./SessionNotice";
+import { sessionSourceWasUsed } from "./session-source-status";
 
 export function SessionOverview() {
   const { locale, tr, formatDateTime, localizeMessage } = useI18n();
@@ -144,7 +145,13 @@ export function SessionOverview() {
                           : tr("sessions.neverIndexed")}
                       </small>
                       {(status.error_key || status.error_detail) && (
-                        <p className="text-destructive-text">
+                        <p
+                          className={
+                            sessionSourceWasUsed(status, hub.sessions)
+                              ? "text-destructive-text"
+                              : "text-muted-foreground"
+                          }
+                        >
                           {status.error_key
                             ? tr(status.error_key)
                             : localizeMessage(status.error_detail ?? "")}

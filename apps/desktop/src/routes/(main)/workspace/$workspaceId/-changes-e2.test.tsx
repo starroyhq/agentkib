@@ -300,7 +300,12 @@ describe("E2 reviewed plan safety", () => {
       expect(useWorkspaceStore.getState().manifest).toEqual(
         choice === "disk" ? diskChanged : draft,
       );
-      expect(useWorkspaceStore.getState().baselineManifest).toBe(JSON.stringify(diskChanged));
+      expect(useWorkspaceStore.getState().baselineManifest).toBe(
+        JSON.stringify(choice === "disk" ? diskChanged : baseline),
+      );
+      expect(useWorkspaceStore.getState().workspaceDraftDisks.workspace).toBe(
+        choice === "disk" ? undefined : JSON.stringify(diskChanged),
+      );
       expect(api.plan).not.toHaveBeenCalled();
       expect(screen.getByRole("button", { name: "Apply 2 changes" })).toBeDisabled();
       fireEvent.click(screen.getByRole("button", { name: "Apply 2 changes" }));
@@ -343,7 +348,12 @@ describe("E2 reviewed plan safety", () => {
       expect(useWorkspaceStore.getState().appliedChanges?.diagnosis?.status).toBe("complete"),
     );
     const result = useWorkspaceStore.getState().appliedChanges!;
-    expect(result.diagnosis).toEqual({ status: "complete", resolved: 1, issues: [newIssue] });
+    expect(result.diagnosis).toEqual({
+      status: "complete",
+      resolved: 1,
+      remaining: 2,
+      issues: [newIssue],
+    });
     expect(result.backupDir).toBe("/sandbox/backups/apply");
     expect(result.plannedManifest).toBe(JSON.stringify(draft));
     expect(result.baselineManifest).toBe(JSON.stringify(baseline));

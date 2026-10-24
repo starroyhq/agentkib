@@ -4,7 +4,7 @@ import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 
 import type { ContextDoctorSummary, DoctorIssue } from "@/core/types";
-import { fileName } from "@/lib/path-display";
+import { doctorCheckedTime, doctorIssueTitle } from "./doctor-presentation";
 import { cn } from "cn";
 
 export function WorkspaceContextHealthCard({
@@ -20,33 +20,19 @@ export function WorkspaceContextHealthCard({
   onOpenDoctor: () => void;
   onOpenChanges: () => void;
 }) {
-  const { formatRelativeTime, tr } = useI18n();
+  const { formatRelativeTime, tr, locale } = useI18n();
   const issueCount = (summary?.error_count ?? 0) + (summary?.warning_count ?? 0);
   const healthy = Boolean(summary) && issueCount === 0;
+  const checkedTime = summary
+    ? doctorCheckedTime(locale, summary.checked_at, formatRelativeTime(summary.checked_at))
+    : "";
   const Icon = healthy ? Check : issueCount > 0 ? CircleAlert : ShieldCheck;
   const firstIssue = issues.find((issue) => issue.severity !== "info");
-  const files = [
-    ...new Set(
-      firstIssue?.evidence.flatMap((item) =>
-        [
-          item.path,
-          item.detail.startsWith("Exact duplicate of ")
-            ? item.detail.slice("Exact duplicate of ".length)
-            : undefined,
-        ].flatMap((path) => (path ? [fileName(path)] : [])),
-      ) ?? [],
-    ),
-  ];
-  const problem =
-    firstIssue?.code === "instruction.exact-duplicate" && files.length > 1
-      ? tr("overview.exactDuplicate", { files: files.join(tr("overview.duplicateFileSeparator")) })
-      : firstIssue
-        ? tr(`doctor.issue.${firstIssue.code}`)
-        : undefined;
+  const problem = firstIssue ? doctorIssueTitle(firstIssue, locale, tr) : undefined;
   const title = !summary
     ? tr("overview.contextHealthUnchecked")
     : healthy
-      ? tr("overview.diagnosisHealthy", { time: formatRelativeTime(summary.checked_at) })
+      ? tr("overview.diagnosisHealthy", { time: checkedTime })
       : problem
         ? tr("overview.diagnosisProblem", { count: issueCount, problem })
         : tr("overview.diagnosisIssues", { count: issueCount });
@@ -85,7 +71,7 @@ export function WorkspaceContextHealthCard({
                 .join(" · ")}
               {" · "}
               {tr("overview.contextHealthChecked", {
-                time: formatRelativeTime(summary.checked_at),
+                time: checkedTime,
               })}
             </p>
           )}

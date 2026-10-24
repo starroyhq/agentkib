@@ -38,6 +38,8 @@ interface DialogOptions {
   description: string;
   title?: string;
   tone?: DialogTone;
+  confirmLabel?: string;
+  cancelLabel?: string;
 }
 
 interface DialogRequest extends DialogOptions {
@@ -164,7 +166,7 @@ export function AppDialogProvider({ children }: { children: ReactNode }) {
             <AlertDialogFooter>
               {active.kind === "confirm" && (
                 <AlertDialogCancel onClick={() => finish(false, active.id)}>
-                  {tr("common.cancel")}
+                  {active.cancelLabel ?? tr("common.cancel")}
                 </AlertDialogCancel>
               )}
               <AlertDialogAction
@@ -176,7 +178,8 @@ export function AppDialogProvider({ children }: { children: ReactNode }) {
                 variant={active.tone === "destructive" ? "destructive" : "default"}
                 onClick={() => finish(true, active.id)}
               >
-                {tr(active.kind === "notify" ? "common.ok" : "common.confirm")}
+                {active.confirmLabel ??
+                  tr(active.kind === "notify" ? "common.ok" : "common.confirm")}
               </AlertDialogAction>
             </AlertDialogFooter>
           </AlertDialogContent>

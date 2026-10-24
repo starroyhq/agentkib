@@ -1,4 +1,4 @@
-import { readFileSync } from "node:fs";
+import { readFileSync, rmSync } from "node:fs";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { applyChanges } from "../../../packages/backend/src/change-apply";
@@ -50,7 +50,7 @@ describe("workspace instruction plan compatibility", () => {
     );
   });
 
-  it("keeps the cross-Agent import incompatibility visible before and after apply", async () => {
+  it("keeps literal imports as notes when shared instructions are independently loaded, and warns when they are missing", async () => {
     const f = fixture();
     f.write("AGENTS.md", "# Project\nUse pnpm.\n");
     f.write(".grok/config.toml", "");
@@ -59,8 +59,8 @@ describe("workspace instruction plan compatibility", () => {
 
     const plan = planWorkspace(f.project, manifest);
     const claude = plan.changes.find((change) => change.target === f.at("CLAUDE.md"));
-    // The review UI can predict the limitation from the exact reviewed content;
-    // no protocol field or weaker DeepSeek reader is needed to hide the warning.
+    // Literal syntax is retained: the complete independently read AGENTS.md
+    // determines whether this is a neutral note or an actual missing-import warning.
     expect(claude?.after.split(/\r?\n/)).toContain("@AGENTS.md");
     const result = applyChanges(plan, f.outside("backups"), {
       approvedHome: [],
@@ -74,10 +74,27 @@ describe("workspace instruction plan compatibility", () => {
     const incompatible = report.issues.filter(
       (issue) => issue.agent === "deepseek-harness" && issue.code === "context.warning",
     );
-    expect(incompatible.map((issue) => issue.evidence[0]?.detail)).toContain(
-      "DeepSeek Harness reads @AGENTS.md in CLAUDE.md as literal text, not as a Claude Code import",
+    expect(incompatible).toEqual([]);
+    const preview = await f.context.resolve(f.project, f.project, "deepseek-harness", null, []);
+    expect(preview.warnings).toContain(
+      "Note: DeepSeek Harness reads @AGENTS.md in CLAUDE.md as literal text, not as a Claude Code import",
     );
     expect(report.issues.filter((issue) => issue.code === "managed.drift")).toEqual([]);
+
+    rmSync(f.at("AGENTS.md"));
+    const missing = await new Doctor(f.context, () => f.project).report("fixture");
+    expect(missing.issues).toContainEqual(
+      expect.objectContaining({
+        code: "context.warning",
+        agent: "deepseek-harness",
+        evidence: [
+          expect.objectContaining({
+            detail:
+              "DeepSeek Harness reads @AGENTS.md in CLAUDE.md as literal text, not as a Claude Code import",
+          }),
+        ],
+      }),
+    );
 
     f.write("CLAUDE.md", "external modification\n");
     const changed = await new Doctor(f.context, () => f.project).report("fixture");

@@ -14,6 +14,7 @@ import {
   readContext,
   readContextText,
   TOTAL_CHARS,
+  CONTEXT_NOTE_PREFIX,
   type Budget,
 } from "./context-files";
 import { userHome } from "./mcp-config-read";
@@ -76,10 +77,10 @@ export function deepseekSections(
   const output: Section[] = [],
     home = environment.DSH_HOME ?? path.join(userHome(environment), ".dsh");
   let remaining = 65536;
-  const push = (file: string, scope: string, content: string) => {
+  const push = (file: string, scope: string, content: string): boolean => {
     if (!remaining) {
       warnings.push("DeepSeek Harness instruction budget of 64 KiB was exhausted");
-      return;
+      return false;
     }
     const bytes = Buffer.from(content),
       take = Math.min(bytes.length, remaining);
@@ -94,6 +95,7 @@ export function deepseekSections(
     remaining -= end;
     if (end < bytes.length)
       warnings.push(`DeepSeek Harness instruction budget of 64 KiB truncated ${file}`);
+    return end === bytes.length;
   };
   const read = (file: string): string | null => {
     if (skipSource(file)) return null;
@@ -139,6 +141,7 @@ export function deepseekSections(
     );
   for (const dir of dirs) {
     const seen = new Set<string>();
+    let sharedPresent = false;
     for (const name of ["AGENTS.md", "CLAUDE.md", "AGENTS.local.md", "CLAUDE.local.md"]) {
       const file = path.join(dir, name),
         content = read(file);
@@ -146,9 +149,10 @@ export function deepseekSections(
       seen.add(content.trim());
       if (name === "CLAUDE.md" && lines(content).some((line) => line.trim() === "@AGENTS.md"))
         warnings.push(
-          "DeepSeek Harness reads @AGENTS.md in CLAUDE.md as literal text, not as a Claude Code import",
+          `${sharedPresent ? CONTEXT_NOTE_PREFIX : ""}DeepSeek Harness reads @AGENTS.md in CLAUDE.md as literal text, not as a Claude Code import`,
         );
-      push(file, path.relative(root, dir), content);
+      const complete = push(file, path.relative(root, dir), content);
+      if (name === "AGENTS.md") sharedPresent = complete && !!content.trim();
     }
   }
   return output;

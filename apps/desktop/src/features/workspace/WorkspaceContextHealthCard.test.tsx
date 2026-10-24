@@ -1,10 +1,11 @@
 // @vitest-environment jsdom
 
 import { cleanup, fireEvent, render, screen } from "@testing-library/react";
-import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
-import { initializeI18n } from "@/core/i18n";
-import type { ContextDoctorSummary } from "@/core/types";
+import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
+import { changeLocale, initializeI18n, tr } from "@/core/i18n";
+import type { ContextDoctorSummary, DoctorIssue } from "@/core/types";
 import { WorkspaceContextHealthCard } from "./WorkspaceContextHealthCard";
+import { doctorIssueTitle } from "./doctor-presentation";
 
 const healthy: ContextDoctorSummary = {
   workspace_id: "workspace-1",
@@ -31,7 +32,75 @@ function renderCard(summary?: ContextDoctorSummary, pendingReview = false) {
 
 describe("WorkspaceContextHealthCard", () => {
   beforeAll(() => initializeI18n("en-US"));
-  afterEach(cleanup);
+  beforeEach(() => changeLocale("en-US"));
+  afterEach(() => {
+    cleanup();
+    vi.restoreAllMocks();
+  });
+
+  it.each(["zh-CN", "zh-TW", "en-US", "ja-JP"] as const)(
+    "uses the Doctor issue title for context and unmanaged duplicates in %s",
+    async (locale) => {
+      await changeLocale(locale);
+      for (const code of ["context.warning", "instruction.unmanaged-duplicate"]) {
+        const issue: DoctorIssue = {
+          id: code,
+          code,
+          severity: "warning",
+          agent: "deepseek-harness",
+          repairable: false,
+          evidence: [
+            {
+              path: "/workspace/CLAUDE.md",
+              detail:
+                "DeepSeek Harness reads @AGENTS.md in CLAUDE.md as literal text, not as a Claude Code import",
+            },
+          ],
+        };
+        const view = render(
+          <WorkspaceContextHealthCard
+            summary={{ ...healthy, warning_count: 1 }}
+            issues={[issue]}
+            pendingReview={false}
+            onOpenDoctor={vi.fn()}
+            onOpenChanges={vi.fn()}
+          />,
+        );
+        expect(screen.getByRole("heading", { level: 2 }).textContent).toContain(
+          doctorIssueTitle(issue, locale, tr),
+        );
+        view.unmount();
+      }
+      await changeLocale("en-US");
+    },
+  );
+
+  it.each([
+    ["zh-CN", "诊断正常 · 检查于 刚刚", "检查于 刚刚"],
+    ["zh-TW", "診斷正常 · 檢查於 剛剛", "檢查於 剛剛"],
+    ["en-US", "Diagnostics healthy · Checked just now", "Checked just now"],
+    ["ja-JP", "診断は正常 · 最終確認：たった今", "最終確認：たった今"],
+  ] as const)(
+    "uses the Doctor recent check time for healthy and problematic results in %s",
+    async (locale, healthyText, checkedText) => {
+      await changeLocale(locale);
+      const now = Date.parse("2026-10-24T12:00:00Z");
+      vi.spyOn(Date, "now").mockReturnValue(now);
+      const summary = { ...healthy, checked_at: new Date(now).toISOString() };
+      const props = { pendingReview: false, onOpenDoctor: vi.fn(), onOpenChanges: vi.fn() };
+      const view = render(<WorkspaceContextHealthCard {...props} summary={summary} />);
+      expect(screen.getByRole("heading", { level: 2 }).textContent).toBe(healthyText);
+      view.rerender(
+        <WorkspaceContextHealthCard {...props} summary={{ ...summary, warning_count: 1 }} />,
+      );
+      expect(
+        screen.getByText(
+          (content, element) => element?.tagName === "P" && content.endsWith(checkedText),
+        ),
+      ).toBeTruthy();
+      await changeLocale("en-US");
+    },
+  );
 
   it("offers a diagnosis when no summary is available", () => {
     const { onOpenDoctor } = renderCard();

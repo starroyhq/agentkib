@@ -104,7 +104,7 @@ describe("E2 change plan view", () => {
       const summary = screen.getByText((content) => content.startsWith("You changed:"));
       expect(summary).toHaveTextContent(`added ${count} shared instruction line${suffix}`);
       expect(summary).toHaveTextContent(
-        `updated ${count} configuration section${suffix}; write ${count} file${suffix} when applied`,
+        `updated ${count} configuration section${suffix}; ${count} file${suffix} will be written when you apply`,
       );
       if (count === 1)
         expect(summary).toHaveTextContent("Keep files, sections and changes exactly 1");
@@ -115,7 +115,13 @@ describe("E2 change plan view", () => {
   it.each([
     ["zh-CN", "本次变更的文件", "你改了：", "应用后会写入", "返回"],
     ["zh-TW", "本次變更的檔案", "你修改了：", "套用後會寫入", "返回"],
-    ["en-US", "Files in this change", "You changed:", "write 3 files when applied", "Back"],
+    [
+      "en-US",
+      "Files in this change",
+      "You changed:",
+      "3 files will be written when you apply",
+      "Back",
+    ],
     ["ja-JP", "今回変更したファイル", "変更内容：", "適用すると", "戻る"],
   ] as const)(
     "preserves the reviewed edit summary while showing a completed read-only operation in %s",
@@ -155,7 +161,7 @@ describe("E2 change plan view", () => {
     ).toBeNull();
     expect(screen.getByRole("button", { name: "Include global configuration" })).toBeDisabled();
     expect(
-      screen.queryByText(/will still report a compatibility warning after applying/),
+      screen.queryByText(/complete independent reading of AGENTS.md could not be confirmed/),
     ).toBeNull();
     fireEvent.click(screen.getByRole("button", { name: "Back" }));
     expect(values.onReject).toHaveBeenCalledTimes(1);
@@ -218,7 +224,7 @@ describe("E2 change plan view", () => {
   it("chooses the first changed file again for a new plan and displays errors", () => {
     const { rerender } = render(<WorkspacePlanView {...props()} />);
     fireEvent.click(screen.getByRole("button", { name: /manifest.yaml.*Low/ }));
-    expect(screen.getByRole("region", { name: "manifest.yaml" })).toBeVisible();
+    expect(screen.getByRole("region", { name: ".agentkib/manifest.yaml" })).toBeVisible();
     rerender(
       <WorkspacePlanView
         {...props({
@@ -237,28 +243,28 @@ describe("E2 change plan view", () => {
       "将写入的文件",
       "共享项目指令",
       "应用 3 个变更",
-      "DeepSeek Harness 不解析 CLAUDE.md 中的 @AGENTS.md 引用，应用后仍会报告兼容性警告",
+      "DeepSeek Harness 不解析 CLAUDE.md 中的 @AGENTS.md 引用，尚未确认它会独立读完 AGENTS.md，应用后可能仍有警告",
     ],
     [
       "zh-TW",
       "將寫入的檔案",
       "共用專案指令",
       "套用 3 項變更",
-      "DeepSeek Harness 不解析 CLAUDE.md 中的 @AGENTS.md 引用，套用後仍會回報相容性警告",
+      "DeepSeek Harness 不解析 CLAUDE.md 中的 @AGENTS.md 引用，尚未確認它會獨立讀完整份 AGENTS.md，套用後可能仍有警告",
     ],
     [
       "en-US",
       "Files to write",
       "Shared project instructions",
       "Apply 3 changes",
-      "DeepSeek Harness does not resolve @AGENTS.md imports in CLAUDE.md and will still report a compatibility warning after applying",
+      "DeepSeek Harness does not resolve @AGENTS.md imports in CLAUDE.md; complete independent reading of AGENTS.md could not be confirmed, so a warning may remain after applying",
     ],
     [
       "ja-JP",
       "書き込み対象のファイル",
       "共通のプロジェクト指示",
       "3 件の変更を適用",
-      "DeepSeek Harness は CLAUDE.md 内の @AGENTS.md 参照を解決しないため、適用後も互換性の警告が表示されます",
+      "DeepSeek Harness は CLAUDE.md 内の @AGENTS.md 参照を展開しません。AGENTS.md を単独で最後まで読めることを確認できないため、適用後も警告が残る可能性があります",
     ],
   ] as const)(
     "renders the plan and compatibility limit in %s",
@@ -268,7 +274,7 @@ describe("E2 change plan view", () => {
       expect(screen.getByRole("heading", { name: files })).toBeVisible();
       expect(screen.getByRole("heading", { name: shared })).toBeVisible();
       expect(screen.getByRole("button", { name: apply })).toBeEnabled();
-      expect(screen.getByText(compatibility)).toBeVisible();
+      expect(screen.queryByText(compatibility)).toBeNull();
       const diff = screen.getByRole("region", { name: "AGENTS.md" });
       expect(diff.textContent).toContain("Update CHANGELOG");
       expect(diff.textContent).not.toContain("schema_version");
@@ -276,6 +282,101 @@ describe("E2 change plan view", () => {
       expect(screen.getByTestId("plan-files").className).toContain("overflow-y-auto");
     },
   );
+
+  it("keeps same-named project files distinguishable by their workspace-relative paths", () => {
+    render(
+      <WorkspacePlanView
+        {...props({
+          changeSet: {
+            ...changeSet,
+            changes: [
+              { ...changeSet.changes[1]!, target: "/sandbox/project/.codex/config.toml" },
+              { ...changeSet.changes[1]!, target: "/sandbox/project/.grok/config.toml" },
+              { ...changeSet.changes[1]!, target: "/sandbox/project/.cursor/mcp.json" },
+            ],
+          },
+        })}
+      />,
+    );
+    const codex = screen.getByRole("button", { name: /^\.codex\/config\.toml.*Medium$/ });
+    const grok = screen.getByRole("button", { name: /^\.grok\/config\.toml.*Medium$/ });
+    expect(codex).toHaveAttribute("title", "/sandbox/project/.codex/config.toml");
+    expect(grok).toHaveAttribute("title", "/sandbox/project/.grok/config.toml");
+    expect(codex.textContent).not.toContain("/sandbox/project/");
+    fireEvent.click(grok);
+    expect(screen.getByRole("region", { name: ".grok/config.toml" })).toBeVisible();
+  });
+
+  it.each([
+    ["zh-CN", "你改了：共享项目指令新增 1 行（发布前更新 CHANGELOG）"],
+    ["zh-TW", "你修改了：共用專案指令新增 1 行（发布前更新 CHANGELOG）"],
+  ] as const)(
+    "removes only a Markdown list marker from the preview and uses full-width parentheses in %s",
+    async (locale, summary) => {
+      await changeLocale(locale);
+      render(
+        <WorkspacePlanView
+          {...props({
+            baselineManifest: JSON.stringify({ instructions: { shared: "Keep tests\n" } }),
+            plannedManifest: JSON.stringify({
+              instructions: { shared: "Keep tests\n- 发布前更新 CHANGELOG\n" },
+            }),
+          })}
+        />,
+      );
+      expect(screen.getByText((text) => text.startsWith(summary))).toBeVisible();
+    },
+  );
+
+  it.each([
+    ["zh-CN", "原有内容会移进 AgentKib 托管的区块", "这段会和共享指令重复"],
+    ["zh-TW", "原有內容會移進 AgentKib 託管的區塊", "這段會和共用指令重複"],
+    [
+      "en-US",
+      "Existing content will move into the AgentKib-managed block",
+      "This retained text will duplicate shared instructions",
+    ],
+    [
+      "ja-JP",
+      "既存の内容を AgentKib の管理ブロック内へ移動します",
+      "保持するこの本文は共通指示と重複します",
+    ],
+  ] as const)(
+    "explains the reviewed migration and retained duplicates in %s",
+    async (locale, adopted, duplicate) => {
+      await changeLocale(locale);
+      const block = (body: string) =>
+        `<!-- agentkib:managed:start -->\n${body}\n<!-- agentkib:managed:end -->\n`;
+      const shared = {
+        ...changeSet.changes[1]!,
+        before: "- Keep tests",
+        after: block("- Keep tests\n- Update CHANGELOG"),
+      };
+      const claude = {
+        ...changeSet.changes[2]!,
+        after: "- Keep tests\n- Claude-only rule\n" + block("@AGENTS.md"),
+      };
+      render(
+        <WorkspacePlanView
+          {...props({ changeSet: { ...changeSet, changes: [shared, claude] } })}
+        />,
+      );
+      expect(screen.getByText(adopted)).toBeVisible();
+      expect(
+        screen.getByText((text) => text.startsWith(duplicate) && text.includes("CLAUDE.md")),
+      ).toBeVisible();
+    },
+  );
+
+  it("preserves a real CLAUDE-only compatibility warning and honors a verified context result", () => {
+    const values = props({ changeSet: { ...changeSet, changes: [changeSet.changes[2]!] } });
+    const { rerender } = render(<WorkspacePlanView {...values} />);
+    expect(screen.getByRole("note")).toHaveTextContent("DeepSeek Harness");
+    rerender(<WorkspacePlanView {...values} literalImportWarning={false} />);
+    expect(screen.queryByRole("note")).toBeNull();
+    rerender(<WorkspacePlanView {...props()} literalImportWarning />);
+    expect(screen.getByRole("note")).toHaveTextContent("DeepSeek Harness");
+  });
 
   it("describes a real edit, groups records last, and preserves high risk and home approval", () => {
     const high = {

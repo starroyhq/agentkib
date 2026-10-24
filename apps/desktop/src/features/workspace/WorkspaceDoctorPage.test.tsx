@@ -317,7 +317,7 @@ describe("WorkspaceDoctorPage", () => {
 
     render(<WorkspaceDoctorPage workspace={workspace} onRepair={vi.fn()} onDiagnosed={vi.fn()} />);
 
-    expect(await screen.findByText("1 automatically repairable")).toBeTruthy();
+    expect(await screen.findByText("1 auto-fixable")).toBeTruthy();
     expect(screen.getAllByRole("button", { name: "Review changes" })).toHaveLength(1);
     expect(screen.getByText(tr("doctor.manual.readOnly"))).toBeTruthy();
   });

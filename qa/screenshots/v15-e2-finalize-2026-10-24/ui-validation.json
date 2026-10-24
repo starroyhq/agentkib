@@ -1,0 +1,587 @@
+{
+  "checks": [
+    {
+      "id": "no-manifest-draft-round-trip",
+      "passed": true,
+      "dirtySections": 1,
+      "dialogCount": 0
+    },
+    {
+      "id": "real-external-edit-discard",
+      "passed": true,
+      "draftDropped": true,
+      "diskLoaded": true,
+      "dirtySections": 0
+    },
+    {
+      "id": "doctor-agent-and-matrix",
+      "passed": true,
+      "matrixColor": {
+        "color": "lab(47.1988 15.9568 54.8911)",
+        "themeWarning": ""
+      }
+    },
+    {
+      "id": "first-adoption-plan-zh-CN",
+      "passed": true,
+      "summary": "新增1行（发布前更新CHANGELOG）",
+      "advanceDeepSeekWarning": false,
+      "applyRect": {
+        "x": 1210.296875,
+        "y": 728,
+        "width": 108.703125,
+        "height": 36
+      }
+    },
+    {
+      "id": "first-adoption-apply-zh-CN",
+      "passed": true,
+      "writtenFiles": 9,
+      "resolved": 1,
+      "newIssues": 0,
+      "diagnosis": {
+        "workspace_id": "342306b2-c1f9-4059-be94-ab0ec0a4509a",
+        "error_count": 0,
+        "warning_count": 0,
+        "info_count": 1,
+        "repairable_count": 0,
+        "checked_at": "2026-10-24T10:29:57.094Z"
+      },
+      "pendingChangeNav": "待审变更"
+    },
+    {
+      "id": "first-adoption-written-files",
+      "passed": true,
+      "eachRuleCountInAgents": 1,
+      "sharedRuleCountInClaude": 0,
+      "claudeReferenceCount": 1
+    },
+    {
+      "id": "unused-index-source-neutral",
+      "passed": true,
+      "statuses": [
+        {
+          "agent": "Antigravity",
+          "error": "会话来源不可用",
+          "color": "rgb(98, 106, 126)",
+          "className": "text-muted-foreground"
+        },
+        {
+          "agent": "Antigravity",
+          "error": "会话来源不可用",
+          "color": "rgb(98, 106, 126)",
+          "className": "text-muted-foreground"
+        },
+        {
+          "agent": "Antigravity",
+          "error": "会话来源不可用",
+          "color": "rgb(98, 106, 126)",
+          "className": "text-muted-foreground"
+        },
+        {
+          "agent": "Antigravity",
+          "error": "会话来源不可用",
+          "color": "rgb(98, 106, 126)",
+          "className": "text-muted-foreground"
+        }
+      ]
+    },
+    {
+      "id": "real-external-edit-keep-and-revisit",
+      "passed": true,
+      "build": "acknowledged-disk",
+      "keepClicks": 1,
+      "repeatDialogCount": 0,
+      "dirtySections": 1
+    },
+    {
+      "id": "new-external-edit-prompts-again-then-discard",
+      "passed": true,
+      "newEditConfirmed": true,
+      "discardClicks": 1,
+      "dirtySections": 0
+    },
+    {
+      "id": "overview-diagnostic-title-and-just-now",
+      "passed": true,
+      "matrix": {
+        "text": "1 项需处理",
+        "className": "text-warning",
+        "color": "lab(47.1988 15.9568 54.8911)"
+      }
+    },
+    {
+      "id": "applied-zero-resolved-zero-new",
+      "passed": true,
+      "copy": "重新诊断：没有新问题",
+      "zeroResolvedClaim": false
+    },
+    {
+      "id": "view-applied-read-only",
+      "passed": true,
+      "applyButtons": 0,
+      "escapeRestoresPage": true
+    },
+    {
+      "id": "legacy-duplicate-and-doctor-repair",
+      "passed": true,
+      "faultInjection": "synthetic unmanaged shared prefix",
+      "before": {
+        "workspace_id": "443147f6-00df-4173-9a59-888521637301",
+        "error_count": 0,
+        "warning_count": 15,
+        "info_count": 1,
+        "repairable_count": 7,
+        "checked_at": "2026-10-24T10:40:15.669Z"
+      },
+      "after": {
+        "workspace_id": "443147f6-00df-4173-9a59-888521637301",
+        "error_count": 0,
+        "warning_count": 8,
+        "info_count": 1,
+        "repairable_count": 0,
+        "checked_at": "2026-10-24T10:40:47.106Z"
+      },
+      "doctorPlanAppliedFiles": 1,
+      "remaining": 8
+    },
+    {
+      "id": "final-clean-zh-CN-paired",
+      "passed": true,
+      "before": {
+        "workspace_id": "dd6b3bb5-fe15-42f7-a5d5-4f7d85feeea7",
+        "error_count": 0,
+        "warning_count": 1,
+        "info_count": 1,
+        "repairable_count": 0,
+        "checked_at": "2026-10-24T10:41:35.756Z"
+      },
+      "after": {
+        "workspace_id": "dd6b3bb5-fe15-42f7-a5d5-4f7d85feeea7",
+        "error_count": 0,
+        "warning_count": 0,
+        "info_count": 1,
+        "repairable_count": 0,
+        "checked_at": "2026-10-24T10:41:36.730Z"
+      },
+      "appliedFiles": 9,
+      "fullViewport": {
+        "width": 1360,
+        "height": 860,
+        "scrollWidth": 1360
+      }
+    },
+    {
+      "id": "final-clean-zh-TW",
+      "passed": true,
+      "before": {
+        "workspace_id": "11b221ee-adbc-43de-a6e2-d5cfd6aa1d83",
+        "error_count": 0,
+        "warning_count": 1,
+        "info_count": 1,
+        "repairable_count": 0,
+        "checked_at": "2026-10-24T10:42:01.413Z"
+      },
+      "after": {
+        "workspace_id": "11b221ee-adbc-43de-a6e2-d5cfd6aa1d83",
+        "error_count": 0,
+        "warning_count": 0,
+        "info_count": 1,
+        "repairable_count": 0,
+        "checked_at": "2026-10-24T10:42:47.742Z"
+      },
+      "appliedFiles": 9
+    },
+    {
+      "id": "en-US-relative-config-paths",
+      "passed": true,
+      "rows": [
+        {
+          "text": ".codex/config.tomlMedium",
+          "title": "~/projects/northstar-api/.codex/config.toml",
+          "rect": {
+            "x": 347,
+            "y": 477.75,
+            "width": 256.875,
+            "height": 36
+          }
+        },
+        {
+          "text": ".grok/config.tomlMedium",
+          "title": "~/projects/northstar-api/.grok/config.toml",
+          "rect": {
+            "x": 347,
+            "y": 513.75,
+            "width": 256.875,
+            "height": 36
+          }
+        }
+      ],
+      "applyRect": {
+        "x": 1190.9609375,
+        "y": 728,
+        "width": 128.0390625,
+        "height": 36
+      }
+    },
+    {
+      "id": "final-clean-en-US",
+      "passed": true,
+      "before": {
+        "workspace_id": "f53eb5ac-be42-491b-b637-60f7cfc38de3",
+        "error_count": 0,
+        "warning_count": 1,
+        "info_count": 1,
+        "repairable_count": 0,
+        "checked_at": "2026-10-24T10:43:17.839Z"
+      },
+      "after": {
+        "workspace_id": "f53eb5ac-be42-491b-b637-60f7cfc38de3",
+        "error_count": 0,
+        "warning_count": 0,
+        "info_count": 1,
+        "repairable_count": 0,
+        "checked_at": "2026-10-24T10:43:18.637Z"
+      },
+      "appliedFiles": 9
+    },
+    {
+      "id": "final-clean-ja-JP",
+      "passed": true,
+      "before": {
+        "workspace_id": "9f66139f-baa7-417b-89aa-3bcf25f20183",
+        "error_count": 0,
+        "warning_count": 1,
+        "info_count": 1,
+        "repairable_count": 0,
+        "checked_at": "2026-10-24T10:43:35.132Z"
+      },
+      "after": {
+        "workspace_id": "9f66139f-baa7-417b-89aa-3bcf25f20183",
+        "error_count": 0,
+        "warning_count": 0,
+        "info_count": 1,
+        "repairable_count": 0,
+        "checked_at": "2026-10-24T10:44:14.614Z"
+      },
+      "appliedFiles": 9
+    },
+    {
+      "id": "final-navigation-guard-and-acknowledged-disk",
+      "passed": true,
+      "fastSwitchActions": 2,
+      "keepClicks": 1,
+      "repeatDialogCount": 0,
+      "dirtySections": 1
+    },
+    {
+      "id": "final-navigation-new-edit-and-context",
+      "passed": true,
+      "newDiskEditConfirmed": true,
+      "discardClicks": 1,
+      "selectedAgent": "grok-build"
+    },
+    {
+      "id": "final-ja-JP-checked-label",
+      "passed": true,
+      "doctorLabel": "最終確認：たった今",
+      "overviewLabel": "最終確認：たった今"
+    },
+    {
+      "id": "final-zh-TW-context-copy-and-agent",
+      "passed": true,
+      "navPage": "指令內容",
+      "button": "查看指令內容",
+      "agent": "grok-build"
+    },
+    {
+      "id": "final-partial-overlap-preserved-and-diagnosed",
+      "passed": true,
+      "advanceCopy": "這段會和共用指令重複 · CLAUDE.md",
+      "before": {
+        "workspace_id": "605e87ac-fd71-4d98-afe9-ae58b4081b73",
+        "error_count": 0,
+        "warning_count": 0,
+        "info_count": 1,
+        "repairable_count": 0,
+        "checked_at": "2026-10-24T11:00:24.318Z"
+      },
+      "after": {
+        "workspace_id": "605e87ac-fd71-4d98-afe9-ae58b4081b73",
+        "error_count": 0,
+        "warning_count": 3,
+        "info_count": 1,
+        "repairable_count": 0,
+        "checked_at": "2026-10-24T11:00:24.800Z"
+      },
+      "privateInstructionCount": 1,
+      "unmanagedOriginalPreserved": true,
+      "falseResolvedClaim": false
+    },
+    {
+      "id": "context-screenshot-relative-cwd-and-privacy",
+      "passed": true,
+      "cwd": ".",
+      "actualReparse": true,
+      "languages": [
+        "zh-CN",
+        "zh-TW"
+      ],
+      "visibleInputGuard": true
+    }
+  ],
+  "screenshots": {
+    "zh-CN-draft-round-trip": {
+      "width": 1360,
+      "height": 860,
+      "scrollWidth": 1360
+    },
+    "zh-CN-real-disk-conflict": {
+      "width": 1360,
+      "height": 860,
+      "scrollWidth": 1360
+    },
+    "zh-CN-doctor-before": {
+      "width": 1360,
+      "height": 860,
+      "scrollWidth": 1360
+    },
+    "zh-CN-context-agent": {
+      "width": 1360,
+      "height": 860,
+      "scrollWidth": 1360
+    },
+    "zh-CN-plan-first-adoption": {
+      "width": 1360,
+      "height": 860,
+      "scrollWidth": 1360
+    },
+    "zh-CN-plan-claude": {
+      "width": 1360,
+      "height": 860,
+      "scrollWidth": 1360
+    },
+    "zh-CN-applied-clean": {
+      "width": 1360,
+      "height": 860,
+      "scrollWidth": 1360
+    },
+    "zh-CN-doctor-after": {
+      "width": 1360,
+      "height": 860,
+      "scrollWidth": 1360
+    },
+    "zh-CN-session-index": {
+      "width": 1360,
+      "height": 860,
+      "scrollWidth": 1360
+    },
+    "zh-CN-kept-draft": {
+      "width": 1360,
+      "height": 860,
+      "scrollWidth": 1360
+    },
+    "zh-CN-disk-version-loaded": {
+      "width": 1360,
+      "height": 860,
+      "scrollWidth": 1360
+    },
+    "zh-CN-overview-title-time": {
+      "width": 1360,
+      "height": 860,
+      "scrollWidth": 1360
+    },
+    "zh-CN-applied-no-new-issues": {
+      "width": 1360,
+      "height": 860,
+      "scrollWidth": 1360
+    },
+    "zh-CN-existing-duplicate-doctor": {
+      "width": 1360,
+      "height": 860,
+      "scrollWidth": 1360
+    },
+    "zh-CN-existing-duplicate-plan": {
+      "width": 1360,
+      "height": 860,
+      "scrollWidth": 1360
+    },
+    "zh-CN-applied-remaining": {
+      "width": 1360,
+      "height": 860,
+      "scrollWidth": 1360
+    },
+    "zh-TW-doctor": {
+      "width": 1360,
+      "height": 860,
+      "scrollWidth": 1360
+    },
+    "zh-TW-plan": {
+      "width": 1360,
+      "height": 860,
+      "scrollWidth": 1360
+    },
+    "zh-TW-applied": {
+      "width": 1360,
+      "height": 860,
+      "scrollWidth": 1360
+    },
+    "en-US-doctor": {
+      "width": 1360,
+      "height": 860,
+      "scrollWidth": 1360
+    },
+    "en-US-plan": {
+      "width": 1360,
+      "height": 860,
+      "scrollWidth": 1360
+    },
+    "en-US-applied": {
+      "width": 1360,
+      "height": 860,
+      "scrollWidth": 1360
+    },
+    "ja-JP-doctor": {
+      "width": 1360,
+      "height": 860,
+      "scrollWidth": 1360
+    },
+    "ja-JP-plan": {
+      "width": 1360,
+      "height": 860,
+      "scrollWidth": 1360
+    },
+    "ja-JP-applied": {
+      "width": 1360,
+      "height": 860,
+      "scrollWidth": 1360
+    },
+    "ja-JP-overview": {
+      "width": 1360,
+      "height": 860,
+      "scrollWidth": 1360
+    },
+    "zh-TW-context-agent": {
+      "width": 1360,
+      "height": 860,
+      "scrollWidth": 1360
+    },
+    "zh-TW-partial-overlap-plan": {
+      "width": 1360,
+      "height": 860,
+      "scrollWidth": 1360
+    },
+    "zh-TW-partial-overlap-applied": {
+      "width": 1360,
+      "height": 860,
+      "scrollWidth": 1360
+    },
+    "zh-TW-partial-overlap-doctor": {
+      "width": 1360,
+      "height": 860,
+      "scrollWidth": 1360
+    }
+  },
+  "pageErrors": [],
+  "cleanup": [
+    {
+      "closed": true,
+      "forcedOwnedProcessCount": 0,
+      "checked_at": "2026-10-24T10:30:35.445Z",
+      "recorded_process_count": 5,
+      "additionally_terminated_descendants": 0,
+      "remaining_owned_pids": [],
+      "tmux_sessions_created": 0
+    },
+    {
+      "closed": true,
+      "forcedOwnedProcessCount": 0,
+      "checked_at": "2026-10-24T10:40:47.434Z",
+      "recorded_process_count": 6,
+      "additionally_terminated_descendants": 0,
+      "remaining_owned_pids": [],
+      "tmux_sessions_created": 0
+    },
+    {
+      "closed": true,
+      "forcedOwnedProcessCount": 0,
+      "checked_at": "2026-10-24T10:41:46.962Z",
+      "recorded_process_count": 5,
+      "additionally_terminated_descendants": 0,
+      "remaining_owned_pids": [],
+      "tmux_sessions_created": 0
+    },
+    {
+      "closed": true,
+      "forcedOwnedProcessCount": 0,
+      "checked_at": "2026-10-24T10:42:48.066Z",
+      "recorded_process_count": 5,
+      "additionally_terminated_descendants": 0,
+      "remaining_owned_pids": [],
+      "tmux_sessions_created": 0
+    },
+    {
+      "closed": true,
+      "forcedOwnedProcessCount": 0,
+      "checked_at": "2026-10-24T10:43:18.962Z",
+      "recorded_process_count": 5,
+      "additionally_terminated_descendants": 0,
+      "remaining_owned_pids": [],
+      "tmux_sessions_created": 0
+    },
+    {
+      "closed": true,
+      "forcedOwnedProcessCount": 0,
+      "checked_at": "2026-10-24T10:44:14.979Z",
+      "recorded_process_count": 5,
+      "additionally_terminated_descendants": 0,
+      "remaining_owned_pids": [],
+      "tmux_sessions_created": 0
+    },
+    {
+      "closed": true,
+      "forcedOwnedProcessCount": 0,
+      "checked_at": "2026-10-24T10:59:20.184Z",
+      "recorded_process_count": 5,
+      "additionally_terminated_descendants": 0,
+      "remaining_owned_pids": [],
+      "tmux_sessions_created": 0
+    },
+    {
+      "closed": true,
+      "forcedOwnedProcessCount": 0,
+      "checked_at": "2026-10-24T10:59:33.610Z",
+      "recorded_process_count": 6,
+      "additionally_terminated_descendants": 0,
+      "remaining_owned_pids": [],
+      "tmux_sessions_created": 0
+    },
+    {
+      "closed": true,
+      "forcedOwnedProcessCount": 0,
+      "checked_at": "2026-10-24T11:00:46.685Z",
+      "recorded_process_count": 5,
+      "additionally_terminated_descendants": 0,
+      "remaining_owned_pids": [],
+      "tmux_sessions_created": 0
+    },
+    {
+      "closed": true,
+      "forcedOwnedProcessCount": 0,
+      "checked_at": "2026-10-24T11:04:19.936Z",
+      "recorded_process_count": 5,
+      "additionally_terminated_descendants": 0,
+      "remaining_owned_pids": [],
+      "tmux_sessions_created": 0
+    },
+    {
+      "closed": true,
+      "forcedOwnedProcessCount": 0,
+      "checked_at": "2026-10-24T11:04:49.979Z",
+      "recorded_process_count": 5,
+      "additionally_terminated_descendants": 0,
+      "remaining_owned_pids": [],
+      "tmux_sessions_created": 0
+    }
+  ]
+}

@@ -19,6 +19,7 @@ import type {
 import { useAppNavigation } from "./useAppNavigation";
 import type { AppHistoryEntry } from "./useAppHistory";
 import { SESSION_REFRESH_EVENT } from "@/features/sessions/session-refresh";
+import { homeKeys } from "@/features/home/home-query";
 
 const testDoubles = vi.hoisted(() => ({
   navigate: vi.fn(),
@@ -576,7 +577,11 @@ describe("useAppNavigation guards", () => {
     expect(useWorkspaceStore.getState().manifest).toEqual(
       timing === "before the disk read starts" && text === "baseline" ? disk : newer,
     );
-    expect(useWorkspaceStore.getState().baselineManifest).toBe(JSON.stringify(disk));
+    expect(useWorkspaceStore.getState().baselineManifest).toBe(
+      JSON.stringify(
+        timing === "before the disk read starts" && text === "baseline" ? disk : baseline,
+      ),
+    );
     expect(useWorkspaceStore.getState().busy).toBe(false);
   });
 
@@ -634,8 +639,317 @@ describe("useAppNavigation guards", () => {
       expect(testDoubles.confirm).toHaveBeenCalledOnce();
       expect(useWorkspaceStore.getState().manifest).toEqual(loadDisk ? disk : draft);
       expect(useWorkspaceStore.getState().workspaceDraftBaselines[workspace.id]).toBe(
-        loadDisk ? undefined : JSON.stringify(disk),
+        loadDisk ? undefined : JSON.stringify(baseline),
       );
+    },
+  );
+
+  it("does not reopen the old workspace while an explicit workspace navigation is pending", async () => {
+    const current: WorkspaceSummary = {
+      id: "atlas",
+      path: "/synthetic/atlas",
+      name: "Atlas",
+      status: "healthy",
+      asset_count: 0,
+      warning_count: 0,
+      sources: [],
+    };
+    const next: WorkspaceSummary = {
+      ...current,
+      id: "design",
+      path: "/synthetic/design",
+      name: "Design",
+    };
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    queryClient.setQueryData(homeKeys.workspaces(), [current, next]);
+    queryClient.setQueryData(homeKeys.memories(), []);
+    queryClient.setQueryData(homeKeys.refreshJobs(), []);
+    let finishNavigation!: () => void;
+    const pendingNavigation = new Promise<void>((resolve) => {
+      finishNavigation = resolve;
+    });
+    testDoubles.navigate.mockReturnValue(pendingNavigation);
+    testDoubles.location.pathname = "/workspace/atlas/assets";
+    let activeRoute = {
+      kind: "workspace" as const,
+      workspaceId: current.id,
+      page: "assets" as const,
+    };
+    useWorkspaceStore.setState({ selectedWorkspace: current, project: current.path });
+    const { result, rerender, unmount } = renderHook(() => useAppNavigation(activeRoute), {
+      wrapper: ({ children }) => (
+        <QueryClientProvider client={queryClient}>{children}</QueryClientProvider>
+      ),
+    });
+    try {
+      await act(async () => {
+        expect(await result.current.openWorkspace(next, "assets")).toBe(true);
+      });
+      // The router may keep the old location and committed matches while its
+      // asynchronous navigation is pending, after the store selected the target.
+      await act(async () => Promise.resolve());
+      expect(testDoubles.location.pathname).toBe("/workspace/atlas/assets");
+      expect(testDoubles.navigate).toHaveBeenCalledExactlyOnceWith({
+        to: "/workspace/$workspaceId/assets",
+        params: { workspaceId: next.id },
+        search: {},
+      });
+      expect(useWorkspaceStore.getState().selectedWorkspace?.id).toBe(next.id);
+      expect(useWorkspaceStore.getState().project).toBe(next.path);
+    } finally {
+      // Complete the same navigation so neither the test nor a future pending
+      // navigation guard leaks state into the next test.
+      activeRoute = { ...activeRoute, workspaceId: next.id };
+      testDoubles.location.pathname = "/workspace/design/assets";
+      await act(async () => {
+        rerender();
+        finishNavigation();
+        await pendingNavigation;
+      });
+      unmount();
+      queryClient.clear();
+    }
+  });
+
+  function renderPendingWorkspaceNavigation() {
+    const [atlas, design, northstar] = ["atlas", "design", "northstar"].map(
+      (id): WorkspaceSummary => ({
+        id,
+        path: `/synthetic/${id}`,
+        name: id,
+        status: "healthy",
+        asset_count: 0,
+        warning_count: 0,
+        sources: [],
+      }),
+    );
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    queryClient.setQueryData(homeKeys.workspaces(), [atlas, design, northstar]);
+    queryClient.setQueryData(homeKeys.memories(), []);
+    queryClient.setQueryData(homeKeys.refreshJobs(), []);
+    const navigations: Array<{
+      workspaceId: string;
+      promise: Promise<void>;
+      resolve: () => void;
+      reject: (reason: Error) => void;
+    }> = [];
+    testDoubles.navigate.mockImplementation((options: { params: { workspaceId: string } }) => {
+      let resolve!: () => void;
+      let reject!: (reason: Error) => void;
+      const promise = new Promise<void>((yes, no) => {
+        resolve = yes;
+        reject = no;
+      });
+      navigations.push({ workspaceId: options.params.workspaceId, promise, resolve, reject });
+      return promise;
+    });
+    testDoubles.location.pathname = `/workspace/${atlas!.id}/assets`;
+    let activeRoute = {
+      kind: "workspace" as const,
+      workspaceId: atlas!.id,
+      page: "assets" as const,
+    };
+    useWorkspaceStore.setState({ selectedWorkspace: atlas, project: atlas!.path });
+    const hook = renderHook(() => useAppNavigation(activeRoute), {
+      wrapper: ({ children }) => (
+        <QueryClientProvider client={queryClient}>{children}</QueryClientProvider>
+      ),
+    });
+    return {
+      atlas: atlas!,
+      design: design!,
+      northstar: northstar!,
+      navigations,
+      result: hook.result,
+      commit(workspace: WorkspaceSummary) {
+        activeRoute = { ...activeRoute, workspaceId: workspace.id };
+        testDoubles.location.pathname = `/workspace/${workspace.id}/assets`;
+        hook.rerender();
+      },
+      async cleanup() {
+        await act(async () => {
+          hook.unmount();
+          navigations.forEach((entry) => entry.resolve());
+          await Promise.allSettled(navigations.map((entry) => entry.promise));
+        });
+        queryClient.clear();
+      },
+    };
+  }
+
+  it.each(["cancelled", "failed"] as const)(
+    "reconciles the actual workspace after the current navigation is %s",
+    async (outcome) => {
+      const fixture = renderPendingWorkspaceNavigation();
+      try {
+        await act(async () => {
+          await fixture.result.current.openWorkspace(fixture.design, "assets");
+        });
+        expect(fixture.navigations.map((entry) => entry.workspaceId)).toEqual([fixture.design.id]);
+        await act(async () => {
+          if (outcome === "failed") fixture.navigations[0]!.reject(new Error("Navigation failed"));
+          else fixture.navigations[0]!.resolve();
+        });
+        expect(useWorkspaceStore.getState().selectedWorkspace?.id).toBe(fixture.atlas.id);
+        expect(useWorkspaceStore.getState().project).toBe(fixture.atlas.path);
+        expect(fixture.navigations.map((entry) => entry.workspaceId)).toEqual([
+          fixture.design.id,
+          fixture.atlas.id,
+        ]);
+        await act(async () => {
+          fixture.navigations[1]!.resolve();
+        });
+        expect(useWorkspaceStore.getState().message).toBe(
+          outcome === "failed" ? "Error: Navigation failed" : "",
+        );
+      } finally {
+        await fixture.cleanup();
+      }
+    },
+  );
+
+  it("reports the current navigation failure after the restored workspace's load clears old notices", async () => {
+    const fixture = renderPendingWorkspaceNavigation();
+    try {
+      await act(async () => {
+        await fixture.result.current.openWorkspace(fixture.design, "assets");
+      });
+      await act(async () => {
+        fixture.navigations[0]!.reject(new Error("Unable to open workspace"));
+      });
+      expect(useWorkspaceStore.getState().selectedWorkspace?.id).toBe(fixture.atlas.id);
+      await act(async () => {
+        useWorkspaceStore.getState().setBusy(true);
+        useWorkspaceStore.getState().setMessage("");
+        fixture.navigations[1]!.resolve();
+      });
+      expect(useWorkspaceStore.getState().message).toBe("");
+      await act(async () => {
+        useWorkspaceStore.getState().setBusy(false);
+      });
+      expect(useWorkspaceStore.getState().message).toBe("Error: Unable to open workspace");
+      expect(testDoubles.notify).not.toHaveBeenCalled();
+    } finally {
+      await fixture.cleanup();
+    }
+  });
+
+  it.each([false, true])(
+    "keeps newer feedback priority when the current navigation fails (dismissed: %s)",
+    async (dismissed) => {
+      const fixture = renderPendingWorkspaceNavigation();
+      try {
+        await act(async () => {
+          await fixture.result.current.openWorkspace(fixture.design, "assets");
+        });
+        act(() => {
+          const state = useWorkspaceStore.getState();
+          state.setMessage("Newer page feedback");
+          if (dismissed) state.dismissMessage(useWorkspaceStore.getState().messageRevision);
+        });
+        await act(async () => {
+          fixture.navigations[0]!.reject(new Error("Outdated failure"));
+        });
+        await act(async () => {
+          fixture.navigations[1]!.resolve();
+        });
+        expect(useWorkspaceStore.getState().message).toBe(dismissed ? "" : "Newer page feedback");
+      } finally {
+        await fixture.cleanup();
+      }
+    },
+  );
+
+  it("does not replace newer page feedback with an older navigation rejection", async () => {
+    const fixture = renderPendingWorkspaceNavigation();
+    try {
+      await act(async () => {
+        await fixture.result.current.openWorkspace(fixture.design, "assets");
+      });
+      await act(async () => {
+        await fixture.result.current.openWorkspace(fixture.northstar, "assets");
+      });
+      await act(async () => {
+        fixture.commit(fixture.northstar);
+        fixture.navigations[1]!.resolve();
+      });
+      act(() => useWorkspaceStore.getState().setMessage("Current workspace feedback"));
+      await act(async () => {
+        fixture.navigations[0]!.reject(new Error("Obsolete navigation failed"));
+      });
+      expect(useWorkspaceStore.getState().message).toBe("Current workspace feedback");
+      expect(useWorkspaceStore.getState().messageDismissed).toBe(false);
+      expect(useWorkspaceStore.getState().selectedWorkspace?.id).toBe(fixture.northstar.id);
+    } finally {
+      await fixture.cleanup();
+    }
+  });
+
+  it.each(["completed", "failed"] as const)(
+    "keeps a newer workspace intent pending when an older navigation %s first",
+    async (outcome) => {
+      const fixture = renderPendingWorkspaceNavigation();
+      try {
+        await act(async () => {
+          await fixture.result.current.openWorkspace(fixture.design, "assets");
+        });
+        await act(async () => {
+          await fixture.result.current.openWorkspace(fixture.northstar, "assets");
+        });
+        await act(async () => {
+          fixture.commit(fixture.design);
+        });
+        await act(async () => {
+          if (outcome === "failed")
+            fixture.navigations[0]!.reject(new Error("Older navigation failed"));
+          else fixture.navigations[0]!.resolve();
+        });
+        expect(useWorkspaceStore.getState().selectedWorkspace?.id).toBe(fixture.northstar.id);
+        expect(fixture.navigations.map((entry) => entry.workspaceId)).toEqual([
+          fixture.design.id,
+          fixture.northstar.id,
+        ]);
+        await act(async () => {
+          fixture.commit(fixture.northstar);
+          fixture.navigations[1]!.resolve();
+        });
+        expect(useWorkspaceStore.getState().selectedWorkspace?.id).toBe(fixture.northstar.id);
+        expect(fixture.navigations).toHaveLength(2);
+      } finally {
+        await fixture.cleanup();
+      }
+    },
+  );
+
+  it.each(["completed", "failed"] as const)(
+    "keeps the newer committed workspace when an older navigation %s afterward",
+    async (outcome) => {
+      const fixture = renderPendingWorkspaceNavigation();
+      try {
+        await act(async () => {
+          await fixture.result.current.openWorkspace(fixture.design, "assets");
+        });
+        await act(async () => {
+          await fixture.result.current.openWorkspace(fixture.northstar, "assets");
+        });
+        await act(async () => {
+          fixture.commit(fixture.northstar);
+          fixture.navigations[1]!.resolve();
+        });
+        await act(async () => {
+          if (outcome === "failed")
+            fixture.navigations[0]!.reject(new Error("Older navigation failed"));
+          else fixture.navigations[0]!.resolve();
+        });
+        expect(useWorkspaceStore.getState().selectedWorkspace?.id).toBe(fixture.northstar.id);
+        expect(useWorkspaceStore.getState().project).toBe(fixture.northstar.path);
+        expect(fixture.navigations.map((entry) => entry.workspaceId)).toEqual([
+          fixture.design.id,
+          fixture.northstar.id,
+        ]);
+      } finally {
+        await fixture.cleanup();
+      }
     },
   );
 

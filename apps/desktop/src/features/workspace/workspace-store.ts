@@ -21,6 +21,7 @@ export interface AppliedWorkspaceChanges {
   diagnosis?: {
     status: "checking" | "complete" | "failed";
     resolved?: number;
+    remaining?: number;
     issues: DoctorIssue[];
   };
 }
@@ -33,6 +34,7 @@ interface WorkspaceState {
   manifest?: Manifest;
   changeSet?: ChangeSet;
   changeSetManifest?: string;
+  changeSetImportWarning?: boolean;
   changeSetIncludesHome: boolean;
   changeSetInvalidated: boolean;
   changeSetConflict: boolean;
@@ -44,6 +46,7 @@ interface WorkspaceState {
   baselineManifest: string;
   workspaceDrafts: Record<string, Manifest>;
   workspaceDraftBaselines: Record<string, string>;
+  workspaceDraftDisks: Record<string, string>;
   busy: boolean;
   message: string;
   messageRevision: number;
@@ -61,6 +64,7 @@ interface WorkspaceActions {
     value: Updater<ChangeSet | undefined>,
     plannedManifest?: Manifest,
     includesHome?: boolean,
+    literalImportWarning?: boolean,
   ) => void;
   acceptAppliedManifest: (
     manifest: Manifest,
@@ -76,6 +80,7 @@ interface WorkspaceActions {
     workspaceId: string,
     manifest: Manifest | undefined,
     baseline: string,
+    diskSnapshot?: string,
   ) => void;
   setBusy: (value: Updater<boolean>) => void;
   setMessage: (value: Updater<string>) => void;
@@ -98,18 +103,22 @@ function cachedDraftState(
   workspaceId: string,
   manifest: Manifest | undefined,
   baseline: string,
+  diskSnapshot?: string,
 ) {
   const workspaceDrafts = { ...state.workspaceDrafts };
   const workspaceDraftBaselines = { ...state.workspaceDraftBaselines };
+  const workspaceDraftDisks = { ...state.workspaceDraftDisks };
   if (manifest && JSON.stringify(manifest) !== baseline) {
     workspaceDrafts[workspaceId] = manifest;
     if (baseline) workspaceDraftBaselines[workspaceId] = baseline;
     else delete workspaceDraftBaselines[workspaceId];
+    if (diskSnapshot !== undefined) workspaceDraftDisks[workspaceId] = diskSnapshot;
   } else {
     delete workspaceDrafts[workspaceId];
     delete workspaceDraftBaselines[workspaceId];
+    delete workspaceDraftDisks[workspaceId];
   }
-  return { workspaceDrafts, workspaceDraftBaselines };
+  return { workspaceDrafts, workspaceDraftBaselines, workspaceDraftDisks };
 }
 
 export const useWorkspaceStore = create<WorkspaceState & WorkspaceActions>((set) => ({
@@ -123,6 +132,7 @@ export const useWorkspaceStore = create<WorkspaceState & WorkspaceActions>((set)
   baselineManifest: "",
   workspaceDrafts: {},
   workspaceDraftBaselines: {},
+  workspaceDraftDisks: {},
   busy: false,
   message: "",
   messageRevision: 0,
@@ -149,11 +159,12 @@ export const useWorkspaceStore = create<WorkspaceState & WorkspaceActions>((set)
       }
       return { manifest };
     }),
-  setChangeSet: (value, plannedManifest, includesHome = false) =>
+  setChangeSet: (value, plannedManifest, includesHome = false, literalImportWarning) =>
     set((state) => {
       const changeSet = resolve(value, state.changeSet);
       return {
         changeSet,
+        changeSetImportWarning: changeSet ? literalImportWarning : undefined,
         changeSetInvalidated: false,
         changeSetConflict: false,
         changeSetManifest: plannedManifest ? JSON.stringify(plannedManifest) : undefined,
@@ -178,7 +189,13 @@ export const useWorkspaceStore = create<WorkspaceState & WorkspaceActions>((set)
         manifest,
         baselineManifest,
         ...(state.selectedWorkspace
-          ? cachedDraftState(state, state.selectedWorkspace.id, manifest, baselineManifest)
+          ? cachedDraftState(
+              state,
+              state.selectedWorkspace.id,
+              manifest,
+              baselineManifest,
+              baselineManifest,
+            )
           : {}),
       };
     }),
@@ -203,10 +220,13 @@ export const useWorkspaceStore = create<WorkspaceState & WorkspaceActions>((set)
       const workspaceDraftBaselines = Object.fromEntries(
         Object.entries(state.workspaceDraftBaselines).filter(([id]) => id in workspaceDrafts),
       );
-      return { workspaceDrafts, workspaceDraftBaselines };
+      const workspaceDraftDisks = Object.fromEntries(
+        Object.entries(state.workspaceDraftDisks).filter(([id]) => id in workspaceDrafts),
+      );
+      return { workspaceDrafts, workspaceDraftBaselines, workspaceDraftDisks };
     }),
-  cacheWorkspaceDraft: (workspaceId, manifest, baseline) =>
-    set((state) => cachedDraftState(state, workspaceId, manifest, baseline)),
+  cacheWorkspaceDraft: (workspaceId, manifest, baseline, diskSnapshot) =>
+    set((state) => cachedDraftState(state, workspaceId, manifest, baseline, diskSnapshot)),
   setBusy: (value) => set((state) => ({ busy: resolve(value, state.busy) })),
   setMessage: (value) =>
     set((state) => {
@@ -269,6 +289,7 @@ export const useWorkspaceStore = create<WorkspaceState & WorkspaceActions>((set)
           ? {
               changeSet: undefined,
               changeSetManifest: undefined,
+              changeSetImportWarning: undefined,
               changeSetIncludesHome: false,
               // A completed/unknown import still needs its recovery request.
               handoffLaunchRequest: state.changeSet ? undefined : state.handoffLaunchRequest,
@@ -287,6 +308,7 @@ export const useWorkspaceStore = create<WorkspaceState & WorkspaceActions>((set)
       manifest: undefined,
       changeSet: undefined,
       changeSetManifest: undefined,
+      changeSetImportWarning: undefined,
       changeSetIncludesHome: false,
       changeSetInvalidated: false,
       changeSetConflict: false,

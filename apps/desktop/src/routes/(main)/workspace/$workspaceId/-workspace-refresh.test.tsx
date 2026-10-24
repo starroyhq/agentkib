@@ -11,6 +11,7 @@ import type { Manifest, RuntimeInfo, WorkspaceScan, WorkspaceSummary } from "@/c
 import { useAppNavigation } from "@/features/app/useAppNavigation";
 import { useWorkspaceStore } from "@/features/workspace/workspace-store";
 import { useAppStore } from "@/stores/app-store";
+import { draftSectionCount } from "@/features/workspace/manifest-draft";
 import { Route } from "./route";
 
 const doubles = vi.hoisted(() => ({
@@ -18,6 +19,7 @@ const doubles = vi.hoisted(() => ({
   pathname: "/workspace/workspace/assets",
   navigate: vi.fn(),
   notify: vi.fn().mockResolvedValue(undefined),
+  confirm: vi.fn().mockResolvedValue(false),
   workspaces: vi.fn(),
   emptyQuery: { data: [], isPending: false },
 }));
@@ -40,7 +42,7 @@ vi.mock("@/features/home/home-query", async (importOriginal) => ({
 vi.mock("@/components/AppDialogProvider", () => ({
   useAppDialogs: () => ({
     notify: doubles.notify,
-    confirm: vi.fn().mockResolvedValue(false),
+    confirm: doubles.confirm,
   }),
 }));
 vi.mock("@/features/workspace/WorkspaceOpenWith", () => ({ WorkspaceOpenWith: () => null }));
@@ -133,6 +135,7 @@ beforeEach(() => {
   doubles.workspaces.mockReturnValue([workspace, otherWorkspace]);
   doubles.navigate.mockResolvedValue(undefined);
   doubles.notify.mockResolvedValue(undefined);
+  doubles.confirm.mockResolvedValue(false);
   useAppStore.setState(useAppStore.getInitialState(), true);
   useWorkspaceStore.setState(useWorkspaceStore.getInitialState(), true);
   const manifest = manifestFor();
@@ -154,6 +157,96 @@ beforeEach(() => {
 afterEach(cleanup);
 
 describe("workspace refresh entry coordination", () => {
+  it.each(["local", "global"] as const)(
+    "remembers an acknowledged disk version across %s refresh without changing the editor baseline",
+    async (entry) => {
+      const baseline = manifestFor();
+      const draft = { ...baseline, instructions: { ...baseline.instructions, shared: "draft" } };
+      const disk = { ...baseline, workspace: { ...baseline.workspace, name: "external name" } };
+      useWorkspaceStore.setState({ manifest: draft });
+      vi.mocked(api.manifest).mockResolvedValue(disk);
+      await renderWorkspace();
+      await refresh(entry);
+      expect(doubles.confirm).toHaveBeenCalledOnce();
+      expect(
+        draftSectionCount(
+          useWorkspaceStore.getState().manifest,
+          useWorkspaceStore.getState().baselineManifest,
+        ),
+      ).toBe(1);
+      await refresh(entry);
+      expect(doubles.confirm).toHaveBeenCalledOnce();
+      expect(useWorkspaceStore.getState().baselineManifest).toBe(JSON.stringify(baseline));
+      expect(useWorkspaceStore.getState().manifest).toEqual(draft);
+      expect(
+        draftSectionCount(
+          useWorkspaceStore.getState().manifest,
+          useWorkspaceStore.getState().baselineManifest,
+        ),
+      ).toBe(1);
+      vi.mocked(api.manifest).mockResolvedValue({
+        ...disk,
+        workspace: { ...disk.workspace, name: "external again" },
+      });
+      await refresh(entry);
+      expect(doubles.confirm).toHaveBeenCalledTimes(2);
+    },
+  );
+
+  it.each(["local", "global"] as const)(
+    "preserves a default-manifest draft through %s refresh without a false conflict",
+    async (entry) => {
+      const baseline = manifestFor();
+      const draft = {
+        ...baseline,
+        instructions: { ...baseline.instructions, shared: "one-section draft" },
+      };
+      const disk = { ...baseline, workspace: { ...baseline.workspace, id: "new-server-draft" } };
+      useWorkspaceStore.setState({ manifest: draft });
+      vi.mocked(api.scan).mockResolvedValue({ ...scanFor(), manifest_exists: false });
+      vi.mocked(api.manifest).mockResolvedValue(disk);
+      await renderWorkspace();
+      await refresh(entry);
+      await waitFor(() => expect(useWorkspaceStore.getState().busy).toBe(false));
+      expect(doubles.confirm).not.toHaveBeenCalled();
+      const current = useWorkspaceStore.getState();
+      expect(current.manifest?.instructions.shared).toBe("one-section draft");
+      expect(current.manifest?.workspace.id).toBe("new-server-draft");
+      expect(draftSectionCount(current.manifest, current.baselineManifest)).toBe(1);
+    },
+  );
+
+  it.each(["local", "global"] as const)(
+    "keeps the original dirty-section count after declining a real %s refresh conflict",
+    async (entry) => {
+      const baseline = manifestFor();
+      const draft = {
+        ...baseline,
+        instructions: { ...baseline.instructions, shared: "one-section draft" },
+      };
+      const disk = {
+        ...manifestFor(),
+        workspace: { id: "externally-replaced", name: "External" },
+        instructions: { ...baseline.instructions, shared: "external source edit" },
+      };
+      useWorkspaceStore.setState({ manifest: draft });
+      vi.mocked(api.manifest).mockResolvedValue(disk);
+      await renderWorkspace();
+      await refresh(entry);
+      await waitFor(() => expect(useWorkspaceStore.getState().busy).toBe(false));
+      expect(doubles.confirm).toHaveBeenCalledExactlyOnceWith(
+        expect.objectContaining({
+          title: "Configuration changed on disk",
+          confirmLabel: "Discard draft and load disk version",
+          cancelLabel: "Keep draft",
+        }),
+      );
+      const current = useWorkspaceStore.getState();
+      expect(current.manifest).toEqual(draft);
+      expect(current.baselineManifest).toBe(JSON.stringify(baseline));
+      expect(draftSectionCount(current.manifest, current.baselineManifest)).toBe(1);
+    },
+  );
   it.each(["local", "global"] as const)(
     "keeps one pending scan and its busy state when %s starts before the other entry",
     async (first) => {

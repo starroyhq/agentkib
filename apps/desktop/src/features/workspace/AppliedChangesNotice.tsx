@@ -45,8 +45,19 @@ export function AppliedChangesNotice({
                     ? copy.failed
                     : result.diagnosis.resolved === undefined
                       ? copy.checked
-                      : copy.complete(result.diagnosis.resolved)}
+                      : result.diagnosis.resolved > 0
+                        ? copy.complete(result.diagnosis.resolved)
+                        : result.diagnosis.issues.length === 0 && !result.diagnosis.remaining
+                          ? copy.noNewIssues
+                          : copy.checked}
               </span>
+              {result.diagnosis.status === "complete" &&
+                result.diagnosis.remaining !== undefined &&
+                result.diagnosis.remaining > result.diagnosis.issues.length && (
+                  <span className="text-warning">
+                    {copy.remainingIssues(result.diagnosis.remaining)}
+                  </span>
+                )}
               {result.diagnosis.issues.length > 0 && (
                 <div className="grid gap-1 text-warning">
                   <span>

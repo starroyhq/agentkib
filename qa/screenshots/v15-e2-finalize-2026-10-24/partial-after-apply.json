@@ -1,0 +1,48 @@
+{
+  "summary": {
+    "workspace_id": "605e87ac-fd71-4d98-afe9-ae58b4081b73",
+    "error_count": 0,
+    "warning_count": 3,
+    "info_count": 1,
+    "repairable_count": 0,
+    "checked_at": "2026-10-24T11:00:24.800Z"
+  },
+  "issues": [
+    {
+      "code": "instruction.unmanaged-duplicate",
+      "severity": "warning",
+      "agent": "deepseek-harness",
+      "evidence": [
+        {
+          "path": "~/projects/atlas-studio/CLAUDE.md",
+          "detail": "Instruction content outside the AgentKib-managed block overlaps shared project instructions",
+          "expected": "~/projects/atlas-studio/AGENTS.md"
+        }
+      ]
+    },
+    {
+      "code": "instruction.unmanaged-duplicate",
+      "severity": "warning",
+      "agent": "claude-code",
+      "evidence": [
+        {
+          "path": "~/projects/atlas-studio/CLAUDE.md",
+          "detail": "Instruction content outside the AgentKib-managed block overlaps shared project instructions",
+          "expected": "~/projects/atlas-studio/AGENTS.md"
+        }
+      ]
+    },
+    {
+      "code": "instruction.unmanaged-duplicate",
+      "severity": "warning",
+      "agent": "grok-build",
+      "evidence": [
+        {
+          "path": "~/projects/atlas-studio/CLAUDE.md",
+          "detail": "Instruction content outside the AgentKib-managed block overlaps shared project instructions",
+          "expected": "~/projects/atlas-studio/AGENTS.md"
+        }
+      ]
+    }
+  ]
+}

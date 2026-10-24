@@ -1,6 +1,7 @@
 import type { ChangeSet, FileChange, SupportedLocale } from "@/core/types";
 import { fileName } from "@/lib/path-display";
 import { diffLines } from "./diff";
+import { doctorWorkspaceRelativePath } from "./doctor-presentation";
 
 export type PlanFileGroup = "shared" | "agents" | "records";
 export function changeGroup(change: FileChange): PlanFileGroup {
@@ -19,6 +20,11 @@ export function defaultPlanTarget(changeSet: ChangeSet): string | undefined {
     changeSet.changes.find((change) => change.before !== change.after) ??
     changeSet.changes[0]
   )?.target;
+}
+
+/** Display-only label; file actions and tooltips continue using the full path. */
+export function planFilePath(workspace: string, target: string): string | undefined {
+  return doctorWorkspaceRelativePath(workspace, target);
 }
 
 interface PlanEdit {
@@ -70,7 +76,12 @@ export function summarizePlanEdit(planned?: string, baseline?: string): PlanEdit
     return {
       added: added.length,
       removed: removed.length,
-      addedPreview: added.length === 1 ? Array.from(added[0]!.content).slice(0, 120).join("") : "",
+      addedPreview:
+        added.length === 1
+          ? Array.from(added[0]!.content.replace(/^\s*[-*+]\s+/, ""))
+              .slice(0, 120)
+              .join("")
+          : "",
       otherSections: [...new Set([...Object.keys(previous), ...Object.keys(next)])].filter(
         (key) =>
           key !== "schema_version" &&
@@ -84,13 +95,88 @@ export function summarizePlanEdit(planned?: string, baseline?: string): PlanEdit
   }
 }
 
-export function hasDeepSeekImportLimitation(changeSet: ChangeSet): boolean {
-  return changeSet.changes.some(
-    (change) =>
-      change.scope === "project" &&
-      fileName(change.target) === "CLAUDE.md" &&
-      /^\s*@AGENTS\.md\s*$/m.test(change.after),
+const managedStart = "<!-- agentkib:managed:start -->";
+const managedEnd = "<!-- agentkib:managed:end -->";
+function instructionBlock(content: string) {
+  const start = content.indexOf(managedStart);
+  const end = content.indexOf(managedEnd);
+  if (
+    start < 0 ||
+    end < start ||
+    content.indexOf(managedStart, start + managedStart.length) >= 0 ||
+    content.indexOf(managedEnd, end + managedEnd.length) >= 0
+  )
+    return;
+  return {
+    managed: content.slice(start + managedStart.length, end).trim(),
+    outside: `${content.slice(0, start)}\n${content.slice(end + managedEnd.length)}`.trim(),
+  };
+}
+
+/** A display summary of the reviewed file bytes, never a permission to delete user text. */
+export function instructionPlanNotes(changeSet: ChangeSet): {
+  adopted: boolean;
+  duplicateTargets: string[];
+} {
+  const files = changeSet.changes.filter(
+    (file) =>
+      file.scope === "project" && ["AGENTS.md", "CLAUDE.md"].includes(fileName(file.target)),
   );
+  const sharedFile = files.find(
+    (file) => planFilePath(changeSet.project_root, file.target) === "AGENTS.md",
+  );
+  const shared = sharedFile ? instructionBlock(sharedFile.after)?.managed : undefined;
+  if (!shared) return { adopted: false, duplicateTargets: [] };
+  const normalized = (content: string) => content.replace(/\r\n/g, "\n").trim();
+  const adopted = files.some((file) => {
+    const after = instructionBlock(file.after);
+    const before = normalized(file.before);
+    return (
+      !!after &&
+      !after.outside &&
+      !!before &&
+      !file.before.includes(managedStart) &&
+      `\n${normalized(shared)}\n`.includes(`\n${before}\n`)
+    );
+  });
+  // Match the backend's instruction-adoption evidence: whole nonempty instruction
+  // lines, excluding comments, headings, imports and punctuation-only text.
+  const instructions = (content: string) =>
+    content
+      .replace(/<!--[\s\S]*?-->/g, "")
+      .split(/\r?\n/)
+      .map((line) => line.trim())
+      .filter((line) => line && !/^(?:#{1,6}\s|```|~~~|@\S+$)/.test(line))
+      .map((line) => line.replace(/^(?:[-*+]\s+|\d+[.)]\s+)/, "").replace(/\s+/g, " "))
+      .filter((line) => /[\p{L}\p{N}]/u.test(line));
+  const expected = new Set(instructions(shared));
+  return {
+    adopted,
+    duplicateTargets: files
+      .filter((file) => {
+        const after = instructionBlock(file.after);
+        return after && instructions(after.outside).some((line) => expected.has(line));
+      })
+      .map((file) => file.target),
+  };
+}
+
+export function hasDeepSeekImportLimitation(changeSet: ChangeSet): boolean {
+  return changeSet.changes.some((change) => {
+    if (
+      change.scope !== "project" ||
+      fileName(change.target) !== "CLAUDE.md" ||
+      !/^\s*@AGENTS\.md\s*$/m.test(change.after)
+    )
+      return false;
+    const directory = change.target.slice(0, -"CLAUDE.md".length);
+    const shared = changeSet.changes.find(
+      (file) => file.scope === "project" && file.target === `${directory}AGENTS.md`,
+    );
+    // This is the conservative local fallback. The route can pass the actual
+    // context result when existing, unchanged or filtered sources are involved.
+    return !shared?.after.trim() || new TextEncoder().encode(shared.after).byteLength > 64 * 1024;
+  });
 }
 
 const managedAgents = new Set([
@@ -153,7 +239,7 @@ const en = {
   other: "updated {count} configuration sections",
   synchronizing: "Synchronize workspace configuration",
   repairing: "Repair the listed configuration files",
-  writes: "write {count} files when applied",
+  writes: "{count} files will be written when you apply",
   separator: "; ",
   low: "Low",
   medium: "Medium",
@@ -167,8 +253,10 @@ const en = {
   includedHome: "Global configuration included",
   homeHint: "Required by OpenClaw and Hermes",
   homeApproval: "I authorize changes to the Agent Home files listed above",
+  adoption: "Existing content will move into the AgentKib-managed block",
+  overlap: "This retained text will duplicate shared instructions",
   compatibility:
-    "DeepSeek Harness does not resolve @AGENTS.md imports in CLAUDE.md and will still report a compatibility warning after applying",
+    "DeepSeek Harness does not resolve @AGENTS.md imports in CLAUDE.md; complete independent reading of AGENTS.md could not be confirmed, so a warning may remain after applying",
   generating: "Generating change plan…",
   stale: "The draft has changed since this plan was generated",
   regenerate: "Regenerate",
@@ -214,8 +302,10 @@ const copy: Record<SupportedLocale, PlanCopy> = {
     includedHome: "已包含全局配置",
     homeHint: "OpenClaw、Hermes 需要",
     homeApproval: "我允许修改以上 Agent Home 文件",
+    adoption: "原有内容会移进 AgentKib 托管的区块",
+    overlap: "这段会和共享指令重复",
     compatibility:
-      "DeepSeek Harness 不解析 CLAUDE.md 中的 @AGENTS.md 引用，应用后仍会报告兼容性警告",
+      "DeepSeek Harness 不解析 CLAUDE.md 中的 @AGENTS.md 引用，尚未确认它会独立读完 AGENTS.md，应用后可能仍有警告",
     generating: "正在生成变更计划…",
     stale: "生成计划后，草稿又有修改",
     regenerate: "重新生成",
@@ -258,8 +348,10 @@ const copy: Record<SupportedLocale, PlanCopy> = {
     includedHome: "已包含全域設定",
     homeHint: "OpenClaw、Hermes 需要",
     homeApproval: "我允許修改以上 Agent Home 檔案",
+    adoption: "原有內容會移進 AgentKib 託管的區塊",
+    overlap: "這段會和共用指令重複",
     compatibility:
-      "DeepSeek Harness 不解析 CLAUDE.md 中的 @AGENTS.md 引用，套用後仍會回報相容性警告",
+      "DeepSeek Harness 不解析 CLAUDE.md 中的 @AGENTS.md 引用，尚未確認它會獨立讀完整份 AGENTS.md，套用後可能仍有警告",
     generating: "正在產生變更計畫…",
     stale: "產生計畫後，草稿又有修改",
     regenerate: "重新產生",
@@ -303,8 +395,10 @@ const copy: Record<SupportedLocale, PlanCopy> = {
     includedHome: "グローバル設定を含む",
     homeHint: "OpenClaw と Hermes に必要",
     homeApproval: "上記の Agent Home ファイルの変更を許可します",
+    adoption: "既存の内容を AgentKib の管理ブロック内へ移動します",
+    overlap: "保持するこの本文は共通指示と重複します",
     compatibility:
-      "DeepSeek Harness は CLAUDE.md 内の @AGENTS.md 参照を解決しないため、適用後も互換性の警告が表示されます",
+      "DeepSeek Harness は CLAUDE.md 内の @AGENTS.md 参照を展開しません。AGENTS.md を単独で最後まで読めることを確認できないため、適用後も警告が残る可能性があります",
     generating: "変更プランを生成中…",
     stale: "変更プランの生成後に下書きが変更されました",
     regenerate: "再生成",

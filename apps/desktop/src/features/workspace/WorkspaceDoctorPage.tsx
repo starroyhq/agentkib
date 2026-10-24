@@ -35,6 +35,7 @@ import { useWorkspaceStore } from "./workspace-store";
 import { AppliedChangesNotice } from "./AppliedChangesNotice";
 import {
   doctorCopy,
+  doctorCheckedTime,
   doctorImpact,
   doctorIssueFiles,
   doctorIssueTitle,
@@ -54,7 +55,7 @@ export function WorkspaceDoctorPage({
   onRepair: () => Promise<void>;
   verification?: "applied";
   onDiagnosed: (summary: ContextDoctorSummary) => void | Promise<void>;
-  onOpenIssue?: (destination: DoctorIssueDestination) => void;
+  onOpenIssue?: (destination: DoctorIssueDestination, agent?: AgentKind) => void;
   onRevealPath?: (path: string) => void;
 }) {
   const { locale, formatRelativeTime, localizeMessage, tr } = useI18n();
@@ -173,7 +174,11 @@ export function WorkspaceDoctorPage({
           {activeReport && (
             <span className="text-muted-foreground">
               {doctorCopy(locale, "checked", {
-                time: formatRelativeTime(activeReport.summary.checked_at),
+                time: doctorCheckedTime(
+                  locale,
+                  activeReport.summary.checked_at,
+                  formatRelativeTime(activeReport.summary.checked_at),
+                ),
               })}
             </span>
           )}
@@ -219,6 +224,7 @@ export function WorkspaceDoctorPage({
               <IssueCard
                 key={`${workspace.id}:${issue.id}`}
                 issue={issue}
+                relatedIssues={activeReport.issues}
                 workspacePath={workspace.path}
                 onRepair={repair}
                 repairing={repairing}
@@ -251,7 +257,10 @@ export function WorkspaceDoctorPage({
             <Table2 size={16} className="text-muted-foreground" />
             <strong>{tr("doctor.matrix")}</strong>
             <span className="text-muted-foreground">
-              {doctorCopy(locale, "matrix", matrixCounts)}
+              {doctorCopy(locale, "matrix", matrixCounts)} ·{" "}
+              <span className={matrixCounts.attention > 0 ? "text-warning" : undefined}>
+                {doctorCopy(locale, "matrixAttention", matrixCounts)}
+              </span>
             </span>
             <span className="ml-auto inline-flex items-center gap-2 text-xs">
               {doctorCopy(locale, matrixExpanded ? "collapse" : "expand")}
@@ -303,12 +312,14 @@ export function WorkspaceDoctorPage({
 
 type IssueActions = {
   issue: DoctorIssue;
+  relatedIssues?: DoctorIssue[];
   workspacePath: string;
-  onOpenIssue?: (destination: DoctorIssueDestination) => void;
+  onOpenIssue?: (destination: DoctorIssueDestination, agent?: AgentKind) => void;
   onRevealPath?: (path: string) => void;
 };
 function IssueCard({
   issue,
+  relatedIssues,
   workspacePath,
   onRepair,
   repairing,
@@ -365,7 +376,7 @@ function IssueCard({
             ))}
           </div>
         )}
-        <p className="mt-2 text-sm">{doctorImpact(issue, locale)}</p>
+        <p className="mt-2 text-sm">{doctorImpact(issue, locale, relatedIssues)}</p>
         {issue.repairable ? (
           <div className="mt-2 grid justify-items-start gap-2 text-xs">
             <p className="text-muted-foreground">{doctorCopy(locale, "reviewAdvice")}</p>
@@ -440,7 +451,15 @@ function ManualIssueAction({ issue, workspacePath, onOpenIssue, onRevealPath }: 
       <p className="text-muted-foreground">{tr(guidanceKey)}</p>
       <div className="flex flex-wrap gap-2">
         {destination && onOpenIssue && (
-          <Button variant="outline" size="sm" onClick={() => onOpenIssue(destination)}>
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={() =>
+              destination === "context" && issue.agent
+                ? onOpenIssue(destination, issue.agent)
+                : onOpenIssue(destination)
+            }
+          >
             {tr(
               destination === "context"
                 ? "doctor.openContext"

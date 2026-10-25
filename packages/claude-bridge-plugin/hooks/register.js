@@ -15,6 +15,24 @@ const MAX_EVENTS = 256;
 // The existing 250ms pump skips these ticks before retrying: about 1/2/4/8s.
 const RECONNECT_BACKOFF_TICKS = [3, 7, 15, 31];
 const PREVIEW_MARKER = "\n[AgentKib preview truncated; read the original history for full content]";
+// A new session is pairable only after AgentKib indexes its transcript, so
+// automatic pairing retries after later turns, a bounded number of times.
+const AUTO_RETRY_LIMIT = 20;
+// Versions AgentKib rejects; /agentkib-status explains them.
+const INCOMPATIBLE_ERRORS = [
+  "bridge-cli-too-old",
+  "bridge-cli-unsupported",
+  "bridge-capabilities-missing",
+  "bridge-plugin-update-required",
+];
+// Refusals that a retry cannot change for this session. A workspace with
+// automatic connection off is not final: switching it back on lets the next
+// turn connect.
+const AUTO_FINAL_ERRORS = [
+  "bridge-auto-declined",
+  ...INCOMPATIBLE_ERRORS,
+  "unsupported-native-identity",
+];
 function utf8Prefix(value, budget) {
   let read = 0;
   let written = 0;
@@ -186,6 +204,9 @@ export function initialState() {
     lastSnapshot: null,
     termination: null,
     terminating: false,
+    autoConnecting: false,
+    autoTries: new Map(),
+    autoDone: new Set(),
   };
 }
 
@@ -940,6 +961,10 @@ async function connectOnce($, state, ticket, generation) {
     false,
   );
   if (state.generation !== generation) throw new Error("stale-connect");
+  await adopt($, state, observed, response);
+}
+
+async function adopt($, state, observed, response) {
   state.connection = connectionFrom(response);
   state.credentialPath = response.credentialPath;
   state.closed = false;
@@ -1041,12 +1066,7 @@ async function reconnect($, state) {
     if (
       state.generation === generation &&
       !state.closed &&
-      [
-        "bridge-cli-too-old",
-        "bridge-cli-unsupported",
-        "bridge-capabilities-missing",
-        "bridge-plugin-update-required",
-      ].includes(error?.message)
+      INCOMPATIBLE_ERRORS.includes(error?.message)
     ) {
       const failure = {
         reason: error.message,
@@ -1130,6 +1150,129 @@ async function reconnectOnce($, state) {
   }
 }
 
+function safeAbsolute(path) {
+  return (
+    typeof path === "string" &&
+    path.startsWith("/") &&
+    !path.includes("\0") &&
+    !path.split("/").includes("..")
+  );
+}
+
+/** AgentKib's 0600 discovery files, production first. Missing or invalid files are skipped. */
+export async function discoverAgentKib($) {
+  const roots = [];
+  try {
+    const custom = await $.env.get("AGENTKIB_HOME");
+    if (safeAbsolute(custom)) roots.push(custom);
+    const home = await $.env.get("HOME");
+    if (safeAbsolute(home)) roots.push(`${home}/.agentkib`, `${home}/.agentkib-dev`);
+  } catch {
+    return [];
+  }
+  const found = [];
+  for (const root of roots) {
+    const file = `${root.replace(/\/+$/, "")}/claude-bridge/auto-v1.json`;
+    try {
+      if (!(await $.fs.exists(file))) continue;
+      const value = JSON.parse(await $.fs.read(file));
+      if (
+        value?.protocol === 1 &&
+        safeSocket(value.socketPath) &&
+        typeof value.autoKey === "string" &&
+        /^[a-f0-9]{64}$/.test(value.autoKey) &&
+        !found.some((item) => item.socketPath === value.socketPath)
+      )
+        found.push({ socketPath: value.socketPath, autoKey: value.autoKey });
+    } catch {
+      // An unreadable discovery file means that AgentKib is not available here.
+    }
+  }
+  return found;
+}
+
+/**
+ * Pairs this terminal's own session without a code when AgentKib allows it for
+ * the session's workspace. A saved binding, an explicit code or a disconnect in
+ * AgentKib always takes precedence.
+ */
+export async function autoConnect($, state) {
+  if (state.connection || state.needsReconnect || state.autoConnecting || state.pendingSend) return;
+  state.autoConnecting = true;
+  let nativeId;
+  try {
+    nativeId = await $.session.id();
+    if (typeof nativeId !== "string" || state.autoDone.has(nativeId)) return;
+    // A session revoked in this terminal stays disconnected until a new code.
+    if (state.closed && state.identity?.nativeId === nativeId) {
+      state.autoDone.add(nativeId);
+      return;
+    }
+    const tries = state.autoTries.get(nativeId) ?? 0;
+    if (tries >= AUTO_RETRY_LIMIT) return;
+    state.autoTries.set(nativeId, tries + 1);
+    // A session paired earlier reconnects with its own credential instead.
+    if (typeof (await $.store.get(`credentialPath:${nativeId}`)) === "string") {
+      state.autoDone.add(nativeId);
+      if (state.closed) {
+        state.identity = null;
+        state.closed = false;
+        state.sendDisabled = false;
+        state.needsReconnect = true;
+      }
+      return;
+    }
+    const sources = await discoverAgentKib($);
+    if (!sources.length) return;
+    // After /clear or /resume the previous conversation's identity no longer applies.
+    if (state.closed) state.identity = null;
+    const generation = ++state.generation;
+    const observed = await probeCapabilities($, state);
+    for (const source of sources) {
+      let response;
+      try {
+        response = await $.http.fetch("http://localhost/v1/auto-pair", {
+          socketPath: source.socketPath,
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ ...observed, autoKey: source.autoKey }),
+        });
+      } catch {
+        continue;
+      }
+      if (state.generation !== generation || state.connection) return;
+      let decoded = null;
+      try {
+        decoded = typeof response?.text === "string" ? JSON.parse(response.text) : null;
+      } catch {
+        decoded = null;
+      }
+      if (response?.ok) {
+        state.socketPath = source.socketPath;
+        state.connectionFailure = null;
+        state.needsReconnect = false;
+        await adopt($, state, observed, decoded);
+        state.autoDone.add(nativeId);
+        return;
+      }
+      if (AUTO_FINAL_ERRORS.includes(decoded?.error)) {
+        state.autoDone.add(nativeId);
+        if (INCOMPATIBLE_ERRORS.includes(decoded.error))
+          state.connectionFailure = {
+            reason: decoded.error,
+            ...(typeof decoded.cliVersion === "string" ? { cliVersion: decoded.cliVersion } : {}),
+          };
+        return;
+      }
+      // A stale key or a session not indexed yet: try the next source, then a later turn.
+    }
+  } catch (error) {
+    if (nativeId && AUTO_FINAL_ERRORS.includes(error?.message)) state.autoDone.add(nativeId);
+  } finally {
+    state.autoConnecting = false;
+  }
+}
+
 export function connectionFailureText(reason, cliVersion) {
   const version =
     claudeBridgeCompatibility(cliVersion) === "invalid" ? "(unknown version)" : cliVersion;
@@ -1179,7 +1322,11 @@ export function register(on) {
     $.clock.every(250, () => pump($, state));
     // Offline Runtime must not delay startup of the original terminal. A later
     // session.end or explicit pairing invalidates this background generation.
-    void reconnect($, state).catch(() => {});
+    // Without a saved binding, try automatic pairing for this workspace.
+    void reconnect($, state)
+      .catch(() => {})
+      .then(() => autoConnect($, state))
+      .catch(() => {});
     return next(e);
   });
   on("command.run", { command: "agentkib-connect" }, async ($, e) => {
@@ -1362,6 +1509,8 @@ export function register(on) {
       revision: state.revision,
     });
     state.dirty = true;
+    // A new session's transcript exists after its first turn, so AgentKib can index it now.
+    if (!state.connection && !state.needsReconnect) void autoConnect($, state).catch(() => {});
     return next(e);
   });
   on("tool.call", async ($, e, next) => {

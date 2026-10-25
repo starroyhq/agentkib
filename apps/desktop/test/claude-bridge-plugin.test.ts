@@ -181,14 +181,14 @@ async function fixture(
     fs: {
       read: async (path: string) =>
         path === "/synthetic/plugin/package.json"
-          ? JSON.stringify({ version: "0.2.0" })
+          ? JSON.stringify({ version: "0.3.0" })
           : JSON.stringify({
               ...connection,
               socketPath: "/private/bridge.sock",
               nativeId,
               cwd,
               cliVersion: options.credentialVersion ?? version,
-              pluginVersion: "0.2.0",
+              pluginVersion: "0.3.0",
             }),
     },
     clock: { every: (_ms: number, callback: () => Promise<void>) => timers.push(callback) },
@@ -353,7 +353,7 @@ describe("Claude Code native session plugin", () => {
       const f = await fixture({ experiment: false, version });
       expect(f.calls.find((call) => call.url.endsWith("/pair"))?.body).toMatchObject({
         cliVersion: version,
-        pluginVersion: "0.2.0",
+        pluginVersion: "0.3.0",
         nativeCapabilities: {
           version: 1,
           available: [
@@ -526,7 +526,7 @@ describe("Claude Code native session plugin", () => {
         bindingId: f.connection.bindingId,
         nativeId: f.nativeId,
         cwd: "/isolated/workspace",
-        pluginVersion: "0.2.0",
+        pluginVersion: "0.3.0",
       });
       expect(report.body).not.toHaveProperty("nativeCapabilities");
       expect(report.body).not.toHaveProperty("token");
@@ -990,7 +990,7 @@ describe("Claude Code native session plugin", () => {
       ).toHaveLength(1);
       expect(set).toHaveBeenCalledWith(
         "compatibility:credential-store:1",
-        "agentkib-bridge:0.2.0:capabilities:1",
+        "agentkib-bridge:0.3.0:capabilities:1",
       );
       expect((await f.run("command.run", { command: "agentkib-status", args: "" })).text).toContain(
         "is connected",
@@ -1811,7 +1811,7 @@ describe("Claude Code native session plugin", () => {
     });
     expect(pair.init.headers.Authorization).toBeUndefined();
     expect([...f.stored]).toEqual([
-      ["compatibility:credential-store:1", "agentkib-bridge:0.2.0:capabilities:1"],
+      ["compatibility:credential-store:1", "agentkib-bridge:0.3.0:capabilities:1"],
       [`credentialPath:${f.nativeId}`, f.connection.credentialPath],
     ]);
     expect(JSON.stringify([...f.stored])).not.toContain(f.connection.token);

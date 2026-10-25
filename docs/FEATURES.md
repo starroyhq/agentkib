@@ -14,14 +14,14 @@ Native acceptance is tied to each QA report's revision and Agent version. Curren
 
 | Surface | Version / platform | Boundary |
 | --- | --- | --- |
-| Claude native terminal → desktop / Web | CLI 2.1.301 or later, macOS, opt-in Mods plugin 0.2.0; required capability checks | Existing executor; observation and current-turn cancellation are enabled. Only CLI 2.1.301 is currently verified; higher stable versions that pass the checks may connect read-only with a neutral unverified-version notice. Text sending stays disabled because atomic no-queue admission is unverified. Approvals/questions stay in the terminal; attachments and advanced orchestration are disabled. |
+| Claude native terminal → desktop / Web | CLI 2.1.301 or later, macOS, opt-in Mods plugin 0.3.0; required capability checks | Existing executor; observation and current-turn cancellation are enabled. Only CLI 2.1.301 is currently verified; higher stable versions that pass the checks may connect read-only with a neutral unverified-version notice. Text sending stays disabled because atomic no-queue admission is unverified. Approvals/questions stay in the terminal; attachments and advanced orchestration are disabled. |
 | Claude managed | Existing compatibility gates unchanged | AgentKib owns the process; explicit history handoff and existing controls remain separate. |
 | Codex Desktop follower / managed | Existing compatibility gates unchanged | Current production paths retained. |
 | Codex shared app-server | CLI 0.155.1, isolated macOS probe | Verification only; no new production mode or daemon installation. |
 
 Current native and synthetic results are recorded separately in [connection QA](../qa/native-session-connection-2026-10-16.md). Subsequent Haiku 5.5 and Luna6 checks distinguish model responses from complete-chain acceptance in [real-model QA](../qa/native-session-real-model-2026-10-16.md). See [Claude connection instructions](CLAUDE-NATIVE-CONNECTION.md).
 
-原会话连接与托管执行分别验收。Claude 原连接限 macOS，最低 CLI 2.1.301，需主动安装合约 0.2.0 的插件并通过必需能力检查；目前仅 2.1.301 已验证，更高稳定版通过检查后允许只读连接并显示中性未验证提示，发送仍关闭，审批和问题在原终端处理。Codex 共享 app-server 本轮只验证，不替换现有生产链路。
+原会话连接与托管执行分别验收。Claude 原连接限 macOS，最低 CLI 2.1.301，需主动安装合约 0.3.0 的插件并通过必需能力检查；目前仅 2.1.301 已验证，更高稳定版通过检查后允许只读连接并显示中性未验证提示，发送仍关闭，审批和问题在原终端处理。Codex 共享 app-server 本轮只验证，不替换现有生产链路。
 
 ### Across your machine
 

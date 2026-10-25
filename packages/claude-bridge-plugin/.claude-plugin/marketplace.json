@@ -6,8 +6,8 @@
     {
       "name": "agentkib-bridge",
       "source": "./",
-      "description": "Connect your existing Claude Code session to the local AgentKib application.",
-      "version": "0.2.0"
+      "description": "Connect Claude Code sessions in your AgentKib workspaces to AgentKib on this Mac.",
+      "version": "0.3.0"
     }
   ]
 }

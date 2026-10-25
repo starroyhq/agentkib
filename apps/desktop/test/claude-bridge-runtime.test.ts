@@ -170,7 +170,7 @@ describe.skipIf(process.platform !== "darwin")(
         nativeId,
         cwd: workspace,
         cliVersion: "2.1.301",
-        pluginVersion: "0.2.0",
+        pluginVersion: "0.3.0",
         nativeCapabilities: {
           version: 1 as const,
           available: [
@@ -194,7 +194,7 @@ describe.skipIf(process.platform !== "darwin")(
         ...identity,
         protocol: 1,
         cliVersion: "2.1.301",
-        pluginVersion: "0.2.0",
+        pluginVersion: "0.3.0",
         nativeCapabilities: {
           version: 1 as const,
           available: [

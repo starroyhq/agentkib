@@ -111,6 +111,16 @@ const reconnectFailureSchema = z
     missingCapabilities: reportedMissingCapabilities,
   })
   .strict();
+const AUTO_STATE_LIMIT = 512;
+// Kept beside, not inside, bindings-v1.json so an older Runtime can still read its registry.
+const autoStateSchema = z
+  .object({
+    version: z.literal(1),
+    disabledWorkspaces: z.array(z.string().min(1).max(256)).max(AUTO_STATE_LIMIT),
+    declined: z.array(uuid).max(AUTO_STATE_LIMIT),
+    autoBindings: z.array(uuid).max(64),
+  })
+  .strict();
 type Pending = {
   command: ClaudeBridgeCommand;
   requestId: string;
@@ -141,6 +151,13 @@ interface BridgeOptions {
   target(sessionId: string, nativeId?: string): Promise<ClaudeBridgeTarget>;
   /** The binding ID only accompanies an existing row's authenticated execution or recovery. */
   validate(target: ClaudeBridgeTarget, forControl: boolean, bindingId?: string): void;
+  /**
+   * Resolves a terminal's own native identity to its registered workspace session.
+   * Absent means automatic pairing is unavailable; one-time codes keep working.
+   */
+  autoTarget?(nativeId: string, cwd: string): Promise<ClaudeBridgeTarget>;
+  /** Fixed per-user path where terminals find the broker and the current auto-pair key. */
+  discoveryFile?: string;
   publish(
     sessionId: string,
     type: SessionStreamEvent["type"],
@@ -234,6 +251,12 @@ export class ClaudeBridge {
   #registryInvalid = false;
   #revision = 0;
   #timer: ReturnType<typeof setInterval>;
+  // Rotates per Runtime start; only the 0600 discovery file carries it to terminals.
+  readonly #autoKey = randomBytes(32).toString("hex");
+  #disabledWorkspaces = new Set<string>();
+  // Sessions the user disconnected. Only an explicit one-time code pairs them again.
+  #declined = new Set<string>();
+  #autoBindings = new Set<string>();
 
   constructor(readonly options: BridgeOptions) {
     this.root = path.join(options.dataDir, "claude-bridge");
@@ -263,6 +286,26 @@ export class ClaudeBridge {
       this.#bindings.clear();
       this.#registryInvalid = true;
     }
+    try {
+      const file = path.join(this.root, "auto-v1.json");
+      privatePath(file);
+      if (existsSync(file)) {
+        const stat = lstatSync(file);
+        if (
+          stat.isFile() &&
+          stat.size <= MAX_BODY &&
+          (!process.getuid || stat.uid === process.getuid())
+        ) {
+          const state = autoStateSchema.parse(JSON.parse(readFileSync(file, "utf8")));
+          this.#disabledWorkspaces = new Set(state.disabledWorkspaces);
+          this.#declined = new Set(state.declined);
+          const bound = new Set([...this.#bindings.values()].map((row) => row.bindingId));
+          this.#autoBindings = new Set(state.autoBindings.filter((id) => bound.has(id)));
+        }
+      }
+    } catch {
+      // Unreadable preferences fall back to the default: automatic connection on.
+    }
     this.#timer = setInterval(() => {
       for (const [id, connection] of this.#connections)
         if (Date.now() - connection.lastSeen > HEARTBEAT_MS) this.#disconnect(id);
@@ -272,6 +315,53 @@ export class ClaudeBridge {
 
   get supported(): boolean {
     return (this.options.platform ?? process.platform) === "darwin";
+  }
+  get autoAvailable(): boolean {
+    return (
+      this.supported &&
+      !this.#registryInvalid &&
+      !!this.options.autoTarget &&
+      !!this.options.discoveryFile
+    );
+  }
+  #autoStatus(target: ClaudeBridgeTarget) {
+    return {
+      available: this.autoAvailable,
+      enabled: !this.#disabledWorkspaces.has(target.workspaceId),
+      // This session was disconnected by the user and needs a code to connect again.
+      declined: this.#declined.has(target.nativeId),
+    };
+  }
+  #saveAuto(): void {
+    const bound = new Set([...this.#bindings.values()].map((row) => row.bindingId));
+    for (const id of this.#autoBindings) if (!bound.has(id)) this.#autoBindings.delete(id);
+    const recent = (values: Set<string>) => [...values].slice(-AUTO_STATE_LIMIT);
+    privateJson(path.join(this.root, "auto-v1.json"), {
+      version: 1,
+      disabledWorkspaces: recent(this.#disabledWorkspaces),
+      declined: recent(this.#declined),
+      autoBindings: [...this.#autoBindings],
+    });
+  }
+  #writeDiscovery(): void {
+    const file = this.options.discoveryFile;
+    if (!file || !this.autoAvailable || !this.#socketPath) return;
+    try {
+      privateJson(file, { protocol: 1, socketPath: this.#socketPath, autoKey: this.#autoKey });
+    } catch {
+      // Without discovery, terminals simply fall back to one-time codes.
+    }
+  }
+  #removeDiscovery(): void {
+    const file = this.options.discoveryFile;
+    if (!file) return;
+    try {
+      // Another AgentKib instance may own the file by now; remove only our own key.
+      if (JSON.parse(readFileSync(file, "utf8"))?.autoKey === this.#autoKey)
+        rmSync(file, { force: true });
+    } catch {
+      /* Missing or foreign discovery files are left alone. */
+    }
   }
   assertCanAdopt(): void {
     if (this.#registryInvalid) throw new Error("claude-bridge-registry-invalid");
@@ -301,7 +391,7 @@ export class ClaudeBridge {
     if (
       this.supported &&
       !this.#registryInvalid &&
-      [...this.#bindings.values()].some((row) => !row.revoked)
+      (this.autoAvailable || [...this.#bindings.values()].some((row) => !row.revoked))
     )
       void this.#listen().catch(() => {
         this.#startupFailed = true;
@@ -311,11 +401,18 @@ export class ClaudeBridge {
   async management(value: Record<string, unknown>): Promise<unknown> {
     const input = z
       .object({
-        operation: z.enum(["bridge-status", "bridge-challenge", "bridge-disconnect"]),
+        operation: z.enum([
+          "bridge-status",
+          "bridge-challenge",
+          "bridge-disconnect",
+          "bridge-auto-connect",
+        ]),
         sessionId: z.string().min(1).max(256),
         deviceId: z.literal(LOCAL_OWNER),
+        enabled: z.boolean().optional(),
       })
       .strict()
+      .refine((row) => (row.operation === "bridge-auto-connect") === (row.enabled !== undefined))
       .parse(value);
     if (this.#closed) throw new Error("claude-bridge-unavailable");
     if (this.#registryInvalid) {
@@ -340,6 +437,10 @@ export class ClaudeBridge {
         row.revoked = true;
         this.#save();
         rmSync(this.#credentialPath(row.bindingId), { force: true });
+        // Respect the disconnect: automatic pairing must not reconnect this session.
+        this.#declined.delete(row.target.nativeId);
+        this.#declined.add(row.target.nativeId);
+        this.#saveAuto();
       }
       this.#disconnect(input.sessionId);
       return { disconnected: true };
@@ -362,6 +463,13 @@ export class ClaudeBridge {
       };
     }
     this.options.validate(target, false);
+    if (input.operation === "bridge-auto-connect") {
+      // Default on: only workspaces the user switched off are recorded.
+      this.#disabledWorkspaces.delete(target.workspaceId);
+      if (!input.enabled) this.#disabledWorkspaces.add(target.workspaceId);
+      this.#saveAuto();
+      return { sessionId: input.sessionId, autoConnect: this.#autoStatus(target) };
+    }
     if (input.operation === "bridge-status") {
       const row = this.#bindings.get(input.sessionId);
       let hasBinding = false;
@@ -387,6 +495,7 @@ export class ClaudeBridge {
         bridgeCompatibility: hasBinding
           ? (compatibilityStatus(this.#connections.get(input.sessionId)) ?? null)
           : null,
+        autoConnect: this.#autoStatus(target),
         reason: this.supported
           ? this.#startupFailed
             ? "claude-bridge-unavailable"
@@ -848,6 +957,76 @@ export class ClaudeBridge {
   #credentialPath(bindingId: string): string {
     return path.join(this.root, `${bindingId}.credential.json`);
   }
+  /** Creates the binding for a verified pairing, by one-time code or automatically. */
+  #bind(target: ClaudeBridgeTarget, hello: ClaudeBridgeIdentity, auto: boolean) {
+    const old = this.#bindings.get(target.sessionId);
+    if (
+      old?.inflight ||
+      readUnknownManagedCommands(this.options.dataDir, target.sessionId).length > 0
+    )
+      throw new Error("control-outcome-unconfirmed");
+    // The limit bounds retained active or unresolved bindings, not every
+    // session ever connected. Never discard evidence for an unknown command.
+    for (const [id, binding] of this.#bindings) {
+      if (
+        binding.revoked &&
+        !binding.inflight &&
+        readUnknownManagedCommands(this.options.dataDir, id).length === 0
+      ) {
+        this.#bindings.delete(id);
+        rmSync(this.#credentialPath(binding.bindingId), { force: true });
+      }
+    }
+    if (auto && !old && this.#bindings.size >= 64) this.#evictAutoBinding();
+    this.#disconnect(target.sessionId);
+    const row: Binding = {
+      version: 1,
+      bindingId: randomUUID(),
+      target,
+      token: randomBytes(32).toString("hex"),
+      revoked: false,
+      cliVersion: hello.cliVersion,
+      inflight: null,
+    };
+    if (this.#bindings.size >= 64 && !old) throw new Error("claude-bridge-binding-limit");
+    this.#bindings.set(target.sessionId, row);
+    this.#save();
+    this.#writeCredential(row);
+    if (old) {
+      rmSync(this.#credentialPath(old.bindingId), { force: true });
+      this.#autoBindings.delete(old.bindingId);
+    }
+    if (auto) this.#autoBindings.add(row.bindingId);
+    // A new one-time code is explicit consent again after a disconnect.
+    else this.#declined.delete(target.nativeId);
+    this.#saveAuto();
+    this.#connectionAttempts.delete(target.sessionId);
+    const connection = this.#newConnection(row, hello);
+    return {
+      protocol: 1,
+      bindingId: row.bindingId,
+      token: row.token,
+      leaseId: connection.leaseId,
+      credentialPath: this.#credentialPath(row.bindingId),
+    };
+  }
+  /** Frees room for a new automatic binding by dropping the oldest idle automatic one. */
+  #evictAutoBinding(): void {
+    for (const [id, row] of this.#bindings) {
+      if (
+        !this.#autoBindings.has(row.bindingId) ||
+        row.inflight ||
+        this.#connections.has(id) ||
+        readUnknownManagedCommands(this.options.dataDir, id).length > 0
+      )
+        continue;
+      // Resuming that terminal later pairs it again automatically.
+      this.#bindings.delete(id);
+      this.#autoBindings.delete(row.bindingId);
+      rmSync(this.#credentialPath(row.bindingId), { force: true });
+      return;
+    }
+  }
   async #listen(): Promise<void> {
     if (this.#closed) throw new Error("claude-bridge-unavailable");
     if (this.#server?.listening) return;
@@ -888,6 +1067,7 @@ export class ClaudeBridge {
       this.#startupFailed = false;
       // A Runtime restart keeps the native executor and credential identity, but not its lease.
       for (const row of this.#bindings.values()) if (!row.revoked) this.#writeCredential(row);
+      this.#writeDiscovery();
     })()
       .catch((error) => {
         this.#startupFailed = true;
@@ -1001,48 +1181,40 @@ export class ClaudeBridge {
         )
           throw new Error("bridge-identity-mismatch");
         this.#challenges.delete(hello.ticket);
-        const old = this.#bindings.get(target.sessionId);
+        reply(200, this.#bind(target, hello, false));
+        return;
+      }
+      if (request.url === CLAUDE_BRIDGE_PATHS.autoPair) {
+        const key = z
+          .object({ autoKey: z.string().regex(/^[a-f0-9]{64}$/) })
+          .passthrough()
+          .safeParse(value);
         if (
-          old?.inflight ||
-          readUnknownManagedCommands(this.options.dataDir, target.sessionId).length > 0
-        )
-          throw new Error("control-outcome-unconfirmed");
-        // The limit bounds retained active or unresolved bindings, not every
-        // session ever connected. Never discard evidence for an unknown command.
-        for (const [id, binding] of this.#bindings) {
-          if (
-            binding.revoked &&
-            !binding.inflight &&
-            readUnknownManagedCommands(this.options.dataDir, id).length === 0
-          ) {
-            this.#bindings.delete(id);
-            rmSync(this.#credentialPath(binding.bindingId), { force: true });
-          }
+          !this.autoAvailable ||
+          !key.success ||
+          !timingSafeEqual(digest(key.data.autoKey), digest(this.#autoKey))
+        ) {
+          reply(401, { error: "bridge-authorization-required" });
+          return;
         }
-        this.#disconnect(target.sessionId);
-        const row: Binding = {
-          version: 1,
-          bindingId: randomUUID(),
-          target,
-          token: randomBytes(32).toString("hex"),
-          revoked: false,
-          cliVersion: hello.cliVersion,
-          inflight: null,
-        };
-        if (this.#bindings.size >= 64 && !old) throw new Error("claude-bridge-binding-limit");
-        this.#bindings.set(target.sessionId, row);
-        this.#save();
-        this.#writeCredential(row);
-        if (old) rmSync(this.#credentialPath(old.bindingId), { force: true });
-        this.#connectionAttempts.delete(target.sessionId);
-        const connection = this.#newConnection(row, hello);
-        reply(200, {
-          protocol: 1,
-          bindingId: row.bindingId,
-          token: row.token,
-          leaseId: connection.leaseId,
-          credentialPath: this.#credentialPath(row.bindingId),
-        });
+        requireCompatibility(value);
+        const hello = bridgeIdentitySchema.extend({ autoKey: z.string() }).strict().parse(value);
+        if (this.#declined.has(hello.nativeId)) throw new Error("bridge-auto-declined");
+        let target: ClaudeBridgeTarget;
+        try {
+          // A brand-new session may not be indexed yet; the terminal retries later.
+          target = await this.options.autoTarget!(hello.nativeId, hello.cwd);
+        } catch {
+          throw new Error("bridge-auto-unavailable");
+        }
+        if (this.#disabledWorkspaces.has(target.workspaceId))
+          throw new Error("bridge-auto-disabled");
+        this.options.validate(target, false);
+        if (hello.nativeId !== target.nativeId || hello.cwd !== target.workspace)
+          throw new Error("bridge-identity-mismatch");
+        const existing = this.#bindings.get(target.sessionId);
+        if (existing?.revoked) throw new Error("bridge-auto-declined");
+        reply(200, this.#bind(target, hello, true));
         return;
       }
       const token = /^Bearer ([a-f0-9]{64})$/.exec(
@@ -1309,6 +1481,9 @@ export class ClaudeBridge {
           "bridge-identity-mismatch",
           "control-outcome-unconfirmed",
           "claude-bridge-binding-limit",
+          "bridge-auto-unavailable",
+          "bridge-auto-disabled",
+          "bridge-auto-declined",
         ].includes(error.message)
           ? error.message
           : "bridge-request-rejected";
@@ -1524,6 +1699,7 @@ export class ClaudeBridge {
     clearInterval(this.#timer);
     this.#challenges.clear();
     await this.#listening?.catch(() => undefined);
+    this.#removeDiscovery();
     for (const id of this.#connections.keys()) this.#disconnect(id);
     const server = this.#server;
     this.#server = undefined;

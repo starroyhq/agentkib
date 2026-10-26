@@ -14,6 +14,7 @@ import type { ClaudeBridgeChallenge, ClaudeBridgeStatus } from "../../../../../.
 import { desktopApi } from "@/core/desktop";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
+import { Switch } from "@/components/ui/switch";
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
 import { Dialog } from "../../components/dialog";
 import { useSession } from "./session-context";
@@ -102,10 +103,28 @@ function statusResponse(value: unknown, sessionId: string): ClaudeBridgeStatus {
         !("cliVersion" in row.bridgeCompatibility) ||
         typeof row.bridgeCompatibility.cliVersion !== "string" ||
         !("status" in row.bridgeCompatibility) ||
-        !["verified", "unverified"].includes(String(row.bridgeCompatibility.status))))
+        !["verified", "unverified"].includes(String(row.bridgeCompatibility.status)))) ||
+    (row.autoConnect !== undefined && !autoConnectResponse(row.autoConnect))
   )
     throw new Error("invalid_bridge_status");
   return value as ClaudeBridgeStatus;
+}
+function autoConnectResponse(value: unknown): ClaudeBridgeStatus["autoConnect"] {
+  if (
+    !value ||
+    typeof value !== "object" ||
+    !("available" in value) ||
+    typeof value.available !== "boolean" ||
+    !("enabled" in value) ||
+    typeof value.enabled !== "boolean" ||
+    ("declined" in value && typeof value.declined !== "boolean")
+  )
+    return undefined;
+  return {
+    available: value.available,
+    enabled: value.enabled,
+    declined: "declined" in value && value.declined === true,
+  };
 }
 function challengeResponse(value: unknown): ClaudeBridgeChallenge {
   if (!value || typeof value !== "object") throw new Error("invalid_bridge_challenge");
@@ -496,6 +515,42 @@ export function ClaudeBridgePanel({ active, onClose }: { active: boolean; onClos
       }
     }
   }
+  const [autoChange, setAutoChange] = useState<{ sessionId: string; enabled: boolean }>();
+  const [autoFailed, setAutoFailed] = useState(false);
+  // The setting belongs to the workspace; the selected session only names it.
+  async function changeAutoConnect(enabled: boolean) {
+    if (!canRevoke || autoChange) return;
+    const target = selected;
+    setAutoFailed(false);
+    setAutoChange({ sessionId: target, enabled });
+    try {
+      const result = await desktopApi().claude.request({
+        operation: "bridge-auto-connect",
+        sessionId: target,
+        enabled,
+      });
+      const value = autoConnectResponse(
+        result && typeof result === "object" && "autoConnect" in result
+          ? result.autoConnect
+          : undefined,
+      );
+      if (!value) throw new Error("invalid_bridge_auto_connect");
+      setStatusObservation((previous) =>
+        previous?.status.sessionId === target
+          ? { ...previous, status: { ...previous.status, autoConnect: value } }
+          : previous,
+      );
+    } catch {
+      setAutoFailed(true);
+    } finally {
+      setAutoChange(undefined);
+    }
+  }
+  const autoConnect = status?.autoConnect;
+  const autoEnabled =
+    autoChange?.sessionId === selected ? autoChange.enabled : autoConnect?.enabled === true;
+  // This session connects by itself once the terminal can reach AgentKib with a current plugin.
+  const autoApplies = !!autoConnect?.available && autoEnabled && !autoConnect.declined;
   const platformUnsupported = status?.reason === "platform-unsupported";
   // The live fallback still guards code generation, but only a fresh status can
   // promise that the terminal is connected in this dialog.
@@ -523,9 +578,13 @@ export function ClaudeBridgePanel({ active, onClose }: { active: boolean; onClos
           : status?.connectionError && status.connectionError !== "expired-bridge-challenge"
             ? status.connectionError === "control-outcome-unconfirmed"
               ? copy.connectionUnconfirmed
-              : (claudeConnectionReason(locale, status.connectionError, "desktop", {
-                  cliVersion: status.connectionCliVersion,
-                }) ?? copy.failed)
+              : autoApplies &&
+                  (status.connectionError === "bridge-plugin-update-required" ||
+                    status.connectionError === "bridge-version-mismatch")
+                ? copy.pluginOutdatedAuto
+                : (claudeConnectionReason(locale, status.connectionError, "desktop", {
+                    cliVersion: status.connectionCliVersion,
+                  }) ?? copy.failed)
             : status && !status.supported
               ? (claudeConnectionReason(locale, status.reason) ?? copy.failed)
               : undefined;
@@ -801,7 +860,10 @@ export function ClaudeBridgePanel({ active, onClose }: { active: boolean; onClos
                     {checkConnection}
                   </div>
                 ) : (
-                  <p className="text-sm text-muted-foreground">{copy.pasteHint}</p>
+                  <p className="text-sm text-muted-foreground">
+                    {copy.pasteHint}
+                    {autoApplies && <span className="mt-1 block">{copy.autoConnectHint}</span>}
+                  </p>
                 )}
               </li>
             </>
@@ -891,6 +953,25 @@ export function ClaudeBridgePanel({ active, onClose }: { active: boolean; onClos
             </li>
           )}
         </ol>
+      )}
+      {!platformUnsupported && autoConnect?.available && (
+        <div className="flex items-start justify-between gap-4 border-t pt-4">
+          <div className="min-w-0 space-y-1">
+            <p className="text-sm font-medium">{copy.autoConnect}</p>
+            <p className="text-xs text-muted-foreground">{copy.autoConnectInfo}</p>
+            {autoFailed && (
+              <p role="alert" className="text-xs text-destructive-text">
+                {copy.autoConnectFailed}
+              </p>
+            )}
+          </div>
+          <Switch
+            aria-label={copy.autoConnect}
+            checked={autoEnabled}
+            disabled={!canRevoke || !!autoChange}
+            onCheckedChange={(checked) => void changeAutoConnect(checked)}
+          />
+        </div>
       )}
       {copied && (
         <p role="status" className="text-xs text-muted-foreground">

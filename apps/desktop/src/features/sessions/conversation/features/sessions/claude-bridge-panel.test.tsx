@@ -75,6 +75,73 @@ afterEach(() => {
 });
 
 describe("Claude terminal connection management", () => {
+  it("shows the workspace automatic connection switch on by default and saves a change", async () => {
+    let enabled = true;
+    state.request.mockImplementation(async (input) =>
+      input.operation === "bridge-auto-connect"
+        ? ((enabled = input.enabled),
+          { sessionId: input.sessionId, autoConnect: { available: true, enabled } })
+        : { ...status(input.sessionId), autoConnect: { available: true, enabled } },
+    );
+    render(<ClaudeBridgePanel active />);
+    const toggle = await screen.findByRole("switch", { name: "自动连接这个工作区的新对话" });
+    expect(toggle).toBeChecked();
+    expect(
+      screen.getByText("装好最新插件后，直接在终端里继续这条会话也会自动连接。"),
+    ).toBeVisible();
+    fireEvent.click(toggle);
+    await waitFor(() =>
+      expect(state.request).toHaveBeenCalledWith({
+        operation: "bridge-auto-connect",
+        sessionId: "s",
+        enabled: false,
+      }),
+    );
+    await waitFor(() => expect(toggle).not.toBeChecked());
+    expect(
+      screen.queryByText("装好最新插件后，直接在终端里继续这条会话也会自动连接。"),
+    ).not.toBeInTheDocument();
+  });
+
+  it("hides the automatic connection switch when the runtime cannot offer it", async () => {
+    state.request.mockResolvedValue({
+      ...status(),
+      autoConnect: { available: false, enabled: true },
+    });
+    render(<ClaudeBridgePanel active />);
+    await screen.findByText("Install isolated plugin");
+    expect(screen.queryByRole("switch")).not.toBeInTheDocument();
+  });
+
+  it("does not promise automatic connection for a session the user disconnected", async () => {
+    state.request.mockResolvedValue({
+      ...status(),
+      autoConnect: { available: true, enabled: true, declined: true },
+    });
+    render(<ClaudeBridgePanel active />);
+    expect(await screen.findByRole("switch")).toBeChecked();
+    expect(
+      screen.queryByText("装好最新插件后，直接在终端里继续这条会话也会自动连接。"),
+    ).not.toBeInTheDocument();
+  });
+
+  it("says an outdated plugin needs no new code when this session connects by itself", async () => {
+    for (const declined of [false, true]) {
+      state.request.mockResolvedValue({
+        ...status(),
+        connectionError: "bridge-plugin-update-required",
+        autoConnect: { available: true, enabled: true, declined },
+      });
+      const { unmount } = render(<ClaudeBridgePanel active />);
+      expect(await screen.findByRole("alert")).toHaveTextContent(
+        declined
+          ? "终端里的连接插件需要更新。按第 1 步重新安装后，重新生成连接码。"
+          : "终端里的连接插件需要更新。按第 1 步更新后，这条会话会自动连接，不需要新的连接码。",
+      );
+      unmount();
+    }
+  });
+
   it("keeps a validated offline binding waiting for terminal reconnection after a restart", async () => {
     state.request.mockResolvedValue({ ...status(), hasBinding: true });
     render(<ClaudeBridgePanel active />);

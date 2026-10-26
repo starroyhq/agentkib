@@ -171,6 +171,8 @@ export interface ClaudeBridgeStatus {
   reason?: string;
   pluginDirectory: string;
   installInstructions: string;
+  /** Automatic pairing for new sessions in this session's workspace; on by default. */
+  autoConnect?: { available: boolean; enabled: boolean; declined?: boolean };
 }
 export interface ClaudeBridgeChallenge {
   challenge: string;

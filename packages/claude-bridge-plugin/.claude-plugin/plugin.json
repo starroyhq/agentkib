@@ -1,6 +1,6 @@
 {
   "name": "agentkib-bridge",
-  "version": "0.2.0",
-  "description": "Connect an explicitly paired Claude Code session to AgentKib on this Mac.",
+  "version": "0.3.0",
+  "description": "Connect Claude Code sessions in your AgentKib workspaces to AgentKib on this Mac.",
   "author": { "name": "AgentKib" }
 }

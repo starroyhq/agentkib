@@ -81,6 +81,7 @@ import {
 import { SessionStreamHub } from "./session-stream";
 import { SessionSnapshotHistory } from "./session-snapshot-history";
 import { BackendStore } from "./store";
+import { canonicalize } from "./paths";
 import {
   preferenceSnapshot,
   writePreference,
@@ -503,6 +504,31 @@ export class TypeScriptBackend {
           bootId: claudeOwner.bootId,
           pluginDirectory: this.environment.AGENTKIB_CLAUDE_PLUGIN_DIR ?? "",
           target: (id, nativeId) => claudeOwner.nativeBridgeTarget(id, nativeId),
+          discoveryFile: path.join(
+            this.environment.AGENTKIB_HOME ??
+              path.join(
+                userHome({ ...process.env, ...this.environment }),
+                this.environment.AGENTKIB_APP_FLAVOR === "ai.agentkib.dev"
+                  ? ".agentkib-dev"
+                  : ".agentkib",
+              ),
+            "claude-bridge",
+            "auto-v1.json",
+          ),
+          autoTarget: async (nativeId, cwd) => {
+            // The terminal's directory selects the innermost registered workspace.
+            const directory = canonicalize(cwd);
+            const workspace = (store.listWorkspaces() as { id: string; path: string }[])
+              .filter(
+                (row) => directory === row.path || directory.startsWith(`${row.path}${path.sep}`),
+              )
+              .sort((a, b) => b.path.length - a.path.length)[0];
+            if (!workspace) throw new Error("workspace-not-registered");
+            const id = store.sessions.id("claude-code", nativeId);
+            if (!store.sessions.get(id))
+              await this.#sessionIndex?.refresh({ workspaceId: workspace.id, force: true });
+            return claudeOwner.nativeBridgeTarget(id, nativeId);
+          },
           validate: (target, forControl, bindingId) => {
             if (readPreferences(dataDir).session_index_enabled === false)
               throw new Error("session-index-disabled");
@@ -1684,7 +1710,7 @@ export class TypeScriptBackend {
         );
       if (params.operation === "adopt") this.#claudeBridge?.assertCanAdopt();
       if (
-        ["bridge-status", "bridge-challenge", "bridge-disconnect"].includes(
+        ["bridge-status", "bridge-challenge", "bridge-disconnect", "bridge-auto-connect"].includes(
           String(params.operation),
         )
       )

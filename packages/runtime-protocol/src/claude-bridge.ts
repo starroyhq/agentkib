@@ -25,6 +25,7 @@ export interface ClaudeBridgeConnectionFailure {
 }
 export const CLAUDE_BRIDGE_PATHS = {
   pair: "/v1/pair",
+  autoPair: "/v1/auto-pair",
   reconnect: "/v1/reconnect",
   events: "/v1/events",
   commands: "/v1/commands",
@@ -49,6 +50,21 @@ export interface ClaudeBridgeIdentity {
 
 export interface ClaudeBridgePairRequest extends ClaudeBridgeIdentity {
   ticket: string;
+}
+
+/**
+ * Per-user discovery file for automatic pairing, written by Backend with mode 0600.
+ * The key rotates with every Runtime start and only pairs sessions of registered
+ * workspaces whose automatic connection is enabled.
+ */
+export interface ClaudeBridgeDiscovery {
+  protocol: 1;
+  socketPath: string;
+  autoKey: string;
+}
+
+export interface ClaudeBridgeAutoPairRequest extends ClaudeBridgeIdentity {
+  autoKey: string;
 }
 
 export interface ClaudeBridgeConnection {

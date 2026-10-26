@@ -154,6 +154,10 @@ async function localClaudeRequestInner(
     throw new Error("claude_session_unavailable");
   if (["bridge-status", "bridge-challenge", "bridge-disconnect"].includes(operation))
     return deps.managed({ operation, sessionId, deviceId: OWNER });
+  if (operation === "bridge-auto-connect") {
+    if (typeof input.enabled !== "boolean") throw new Error("invalid_request");
+    return deps.managed({ operation, sessionId, deviceId: OWNER, enabled: input.enabled });
+  }
   if (["inspect", "capabilities"].includes(operation))
     return deps.managed({ operation, sessionId, experimentalEnabled: true });
   if (operation === "events")

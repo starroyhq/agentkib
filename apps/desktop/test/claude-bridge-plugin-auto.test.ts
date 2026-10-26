@@ -17,6 +17,7 @@ async function fixture(
     discovery?: boolean;
     storedCredential?: boolean;
     autoReplies?: Array<{ status: number; body: Value }>;
+    packageVersion?: string;
   } = {},
 ) {
   const hooks = new Map<string, Array<{ match: Value; hook: Hook }>>();
@@ -39,7 +40,10 @@ async function fixture(
     credentialPath: "/Users/demo/Library/AgentKib/claude-bridge/credential.json",
   };
   const files = new Map<string, string>([
-    ["/synthetic/plugin/package.json", JSON.stringify({ version: "0.3.0" })],
+    [
+      "/synthetic/plugin/package.json",
+      JSON.stringify({ version: options.packageVersion ?? "0.3.0" }),
+    ],
     [
       connection.credentialPath,
       JSON.stringify({
@@ -180,7 +184,7 @@ describe("Claude bridge plugin automatic pairing", () => {
     expect(await f.status()).toContain("is connected");
   });
 
-  it("explains an outdated plugin and stops trying", async () => {
+  it("explains an outdated plugin and keeps reporting it after later turns", async () => {
     const f = await fixture({
       autoReplies: [
         {
@@ -189,8 +193,16 @@ describe("Claude bridge plugin automatic pairing", () => {
         },
       ],
     });
+    expect(await f.status()).toContain("plugin needs updating");
     await f.completeTurn();
-    expect(f.autoPairs()).toHaveLength(1);
+    // A new session is indexed after its first turn, so AgentKib can show the reason.
+    expect(f.autoPairs()).toHaveLength(2);
+  });
+
+  it("explains a plugin whose installed files are out of step without calling AgentKib", async () => {
+    const f = await fixture({ packageVersion: "0.2.0" });
+    await f.completeTurn();
+    expect(f.autoPairs()).toHaveLength(0);
     expect(await f.status()).toContain("plugin needs updating");
   });
 

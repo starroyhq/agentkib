@@ -25,14 +25,10 @@ const INCOMPATIBLE_ERRORS = [
   "bridge-capabilities-missing",
   "bridge-plugin-update-required",
 ];
-// Refusals that a retry cannot change for this session. A workspace with
-// automatic connection off is not final: switching it back on lets the next
-// turn connect.
-const AUTO_FINAL_ERRORS = [
-  "bridge-auto-declined",
-  ...INCOMPATIBLE_ERRORS,
-  "unsupported-native-identity",
-];
+// Refusals that a retry cannot change for this session. Other refusals retry
+// after later turns: a workspace switched back on connects, and a version
+// refusal reaches the AgentKib dialog once the new session is indexed.
+const AUTO_FINAL_ERRORS = ["bridge-auto-declined", "unsupported-native-identity"];
 function utf8Prefix(value, budget) {
   let read = 0;
   let written = 0;
@@ -1255,18 +1251,28 @@ export async function autoConnect($, state) {
         state.autoDone.add(nativeId);
         return;
       }
+      if (INCOMPATIBLE_ERRORS.includes(decoded?.error)) {
+        state.connectionFailure = {
+          reason: decoded.error,
+          ...(typeof decoded.cliVersion === "string" ? { cliVersion: decoded.cliVersion } : {}),
+        };
+        return;
+      }
       if (AUTO_FINAL_ERRORS.includes(decoded?.error)) {
         state.autoDone.add(nativeId);
-        if (INCOMPATIBLE_ERRORS.includes(decoded.error))
-          state.connectionFailure = {
-            reason: decoded.error,
-            ...(typeof decoded.cliVersion === "string" ? { cliVersion: decoded.cliVersion } : {}),
-          };
         return;
       }
       // A stale key or a session not indexed yet: try the next source, then a later turn.
     }
   } catch (error) {
+    // The local probe found this plugin or CLI unusable; retrying cannot change that.
+    if (nativeId && INCOMPATIBLE_ERRORS.includes(error?.message)) {
+      state.connectionFailure = {
+        reason: error.message,
+        ...(error.cliVersion ? { cliVersion: error.cliVersion } : {}),
+      };
+      state.autoDone.add(nativeId);
+    }
     if (nativeId && AUTO_FINAL_ERRORS.includes(error?.message)) state.autoDone.add(nativeId);
   } finally {
     state.autoConnecting = false;

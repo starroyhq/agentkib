@@ -10,6 +10,7 @@ import {
 describe("Claude terminal compatibility policy", () => {
   it.each([
     ["2.1.301", "verified"],
+    ["2.1.310", "verified"],
     ["2.1.300", "too-old"],
     ["2.1.30", "too-old"],
     ["1.99.999", "too-old"],

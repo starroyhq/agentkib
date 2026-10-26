@@ -31,14 +31,15 @@ connects again only with a new one-time code. A workspace switched off keeps its
 open terminals retrying, so they connect on their next turn once it is switched
 back on. A saved binding still reconnects with its own credential. The same
 version, capability and identity checks apply as for a code; when they fail,
-`/agentkib-status` explains why. Updating the plugin and running `/reload-plugins`
+`/agentkib-status` explains why and AgentKib shows the same reason in that
+session's connection dialog. Updating the plugin and running `/reload-plugins`
 starts the session hooks again, so the session connects without a new code.
 
 Only the native session UUID and working directory selected in AgentKib can pair.
 Each pairing and reconnect checks the minimum stable CLI version and required
 native capabilities: session identity, messages, usage, credential storage, and
 plugin-file reads. Older or unrecognized versions and missing required capabilities
-are rejected. Only **2.1.301** is currently listed as verified; higher stable
+are rejected. Only **2.1.301** and **2.1.310** are currently listed as verified; higher stable
 versions that pass these checks may connect read-only. The connection dialog shows
 a neutral notice that the version has not been verified and synchronized content
 may be incomplete; the session page does not repeat it. Production sending remains disabled. `/agentkib-status` is a local

@@ -2,7 +2,7 @@
 // version after recording native read-only acceptance evidence in QA.
 export const CLAUDE_BRIDGE_COMPATIBILITY = Object.freeze({
   minimumCliVersion: "2.1.301",
-  verifiedCliVersions: Object.freeze(["2.1.301"]),
+  verifiedCliVersions: Object.freeze(["2.1.301", "2.1.310"]),
   pluginVersion: "0.3.0",
   capabilityVersion: 1,
 });

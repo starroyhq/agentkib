@@ -77,8 +77,9 @@ const bindingSchema = z
 type Binding = z.infer<typeof bindingSchema>;
 type Challenge = { target: ClaudeBridgeTarget; expires: number };
 type ConnectionAttempt = (
-  | { challenge: Challenge; bindingId?: never }
-  | { bindingId: string; challenge?: never }
+  | { challenge: Challenge; bindingId?: never; auto?: never }
+  | { bindingId: string; challenge?: never; auto?: never }
+  | { auto: true; challenge?: never; bindingId?: never }
 ) & {
   error?: string;
   cliVersion?: string;
@@ -331,6 +332,41 @@ export class ClaudeBridge {
       // This session was disconnected by the user and needs a code to connect again.
       declined: this.#declined.has(target.nativeId),
     };
+  }
+  /**
+   * A terminal whose plugin or CLI is rejected stops pairing by itself, so the
+   * connection dialog is the only place that can ask for an update.
+   */
+  async #recordAutoFailure(value: unknown, error: CompatibilityError): Promise<void> {
+    const identity = z
+      .object({ nativeId: z.string().uuid(), cwd: z.string().min(1).max(4096) })
+      .safeParse(value);
+    if (!identity.success || this.#declined.has(identity.data.nativeId)) return;
+    let target: ClaudeBridgeTarget;
+    try {
+      target = await this.options.autoTarget!(identity.data.nativeId, identity.data.cwd);
+    } catch {
+      return;
+    }
+    const { sessionId } = target;
+    if (
+      target.nativeId !== identity.data.nativeId ||
+      target.workspace !== identity.data.cwd ||
+      this.#disabledWorkspaces.has(target.workspaceId) ||
+      this.#connections.has(sessionId) ||
+      this.#connectionAttempts.get(sessionId)?.challenge
+    )
+      return;
+    const attempt: ConnectionAttempt = {
+      auto: true,
+      error: error.message,
+      cliVersion: error.cliVersion,
+      missingCapabilities: error.missingCapabilities,
+    };
+    if (stable(this.#connectionAttempts.get(sessionId)) === stable(attempt)) return;
+    this.#connectionAttempts.set(sessionId, attempt);
+    ++this.#revision;
+    this.#publish(sessionId);
   }
   #saveAuto(): void {
     const bound = new Set([...this.#bindings.values()].map((row) => row.bindingId));
@@ -1197,7 +1233,12 @@ export class ClaudeBridge {
           reply(401, { error: "bridge-authorization-required" });
           return;
         }
-        requireCompatibility(value);
+        try {
+          requireCompatibility(value);
+        } catch (error) {
+          if (error instanceof CompatibilityError) await this.#recordAutoFailure(value, error);
+          throw error;
+        }
         const hello = bridgeIdentitySchema.extend({ autoKey: z.string() }).strict().parse(value);
         if (this.#declined.has(hello.nativeId)) throw new Error("bridge-auto-declined");
         let target: ClaudeBridgeTarget;

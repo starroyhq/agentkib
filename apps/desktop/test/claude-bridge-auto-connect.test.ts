@@ -210,6 +210,26 @@ describe("Claude bridge automatic pairing", () => {
     expect((await f.autoPair()).body.error).toBe("bridge-auto-declined");
   });
 
+  it("tells the connection dialog when an outdated plugin is refused", async () => {
+    const f = await fixture();
+    expect(await f.autoPair({ pluginVersion: "0.2.9" })).toMatchObject({
+      status: 409,
+      body: { error: "bridge-plugin-update-required" },
+    });
+    expect((await f.manage("bridge-status")).connectionError).toBe("bridge-plugin-update-required");
+    // After the update the session pairs and the stale failure disappears.
+    expect((await f.autoPair()).status).toBe(200);
+    expect((await f.manage("bridge-status")).connectionError).toBeUndefined();
+  });
+
+  it("keeps a declined session's refusal out of the dialog", async () => {
+    const f = await fixture();
+    expect((await f.autoPair()).status).toBe(200);
+    await f.manage("bridge-disconnect");
+    await f.autoPair({ pluginVersion: "0.2.9" });
+    expect((await f.manage("bridge-status")).connectionError).toBeUndefined();
+  });
+
   it("rejects a terminal whose identity does not match the resolved session", async () => {
     const f = await fixture();
     f.autoTarget.mockResolvedValueOnce({ ...f.target, workspace: path.join(f.root, "other") });

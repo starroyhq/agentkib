@@ -33,6 +33,12 @@ test("native permission and tool results pass through unchanged", async ($, on) 
   expect(permission).toEqual({});
 });
 
+test("a native tool.check verdict passes through unchanged", async ($, on) => {
+  on("tool.check", () => ({ decision: "ask", reason: "fixture rule" }));
+  const verdict = await $.tool.check({ tool: "Bash", input: { command: "echo fixture" } });
+  expect(verdict).toMatchObject({ decision: "ask", reason: "fixture rule" });
+});
+
 test("the native stream and final result pass through unchanged", async ($, on) => {
   on("turn.step", async function* (_$, e) {
     yield { kind: "text", index: 0, text: "fixture answer" };

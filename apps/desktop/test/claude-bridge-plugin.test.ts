@@ -2233,6 +2233,121 @@ describe("Claude Code native session plugin", () => {
     await tools[1];
   });
 
+  // sec-default (managed settings, Team or Enterprise login) skips the classic hook, so an ask is
+  // seen only as the tool.check verdict. Event fields follow the 2.1.311 type declarations.
+  it.each(["completes", "progress", "turn-ends"] as const)(
+    "notices an ask from tool.check without the classic hook, until the tool %s",
+    async (end) => {
+      const f = await fixture();
+      const turnId = randomUUID();
+      await f.run("turn.start", { text: "terminal", turnId });
+      const toolId = randomUUID();
+      const verdict = { decision: "ask", reason: "Bash commands need approval" };
+      const check = {
+        tool: "Bash",
+        input: { command: "npm publish" },
+        tool_use_id: toolId,
+        approver: "person",
+      };
+      const toolGate = deferred<void>();
+      const checked = deferred<void>();
+      let returned: unknown;
+      const nativeResult = { content: [{ type: "text", text: "native tool output" }] };
+      const tool = f.run("tool.call", { tool: "Bash", tool_use_id: toolId }, async () => {
+        returned = await f.run("tool.check", check, (value) => {
+          expect(value).toBe(check);
+          return verdict;
+        });
+        checked.resolve();
+        await toolGate.promise;
+        return nativeResult;
+      });
+      await checked.promise;
+      await f.flush();
+      expect(returned).toBe(verdict);
+      expect(f.snapshots().at(-1)).toMatchObject({ status: "running", waiting: "unknown" });
+      if (end === "progress") {
+        await f.run("ui.render", {
+          component: "ToolProgress",
+          props: { kind: "background_hint", tool_use_id: toolId },
+        });
+        await f.flush();
+        expect(f.snapshots().at(-1).waiting).toBeNull();
+      }
+      if (end === "turn-ends") {
+        await f.run("turn.complete", { turnId, answer: "done" });
+        await f.flush();
+        expect(f.snapshots().at(-1)).toMatchObject({ status: "idle", waiting: null });
+      }
+      toolGate.resolve();
+      expect(await tool).toBe(nativeResult);
+      await f.flush();
+      expect(f.snapshots().at(-1).waiting).toBeNull();
+    },
+  );
+
+  it("leaves verdicts nobody in the terminal answers alone", async () => {
+    const f = await fixture();
+    await f.run("turn.start", { text: "terminal", turnId: randomUUID() });
+    const cases: Array<[Value, Value]> = [
+      [{}, { decision: "allow" }],
+      [{}, { decision: "deny", reason: "rule" }],
+      [{ approver: "host" }, { decision: "ask" }],
+      [{ agentId: "agent-1" }, { decision: "ask" }],
+      // A $.tool.check query carries no call.
+      [{ tool_use_id: undefined }, { decision: "ask" }],
+      // A call the plugin does not follow.
+      [{ tool_use_id: randomUUID() }, { decision: "ask" }],
+    ];
+    for (const [patch, verdict] of cases) {
+      const toolId = randomUUID();
+      const gate = deferred<void>();
+      const checked = deferred<void>();
+      const tool = f.run("tool.call", { tool: "Bash", tool_use_id: toolId }, async () => {
+        const result = await f.run(
+          "tool.check",
+          { tool: "Bash", input: { command: "ls" }, tool_use_id: toolId, ...patch },
+          () => verdict,
+        );
+        expect(result).toBe(verdict);
+        checked.resolve();
+        await gate.promise;
+        return {};
+      });
+      await checked.promise;
+      await f.flush();
+      expect(f.snapshots().at(-1).waiting).toBeNull();
+      gate.resolve();
+      await tool;
+    }
+  });
+
+  it("passes a failing check through unchanged and marks nothing", async () => {
+    const f = await fixture();
+    await f.run("turn.start", { text: "terminal", turnId: randomUUID() });
+    const toolId = randomUUID();
+    const failure = new Error("native check failed");
+    let caught: unknown;
+    await f.run("tool.call", { tool: "Bash", tool_use_id: toolId }, async () => {
+      try {
+        await f.run(
+          "tool.check",
+          { tool: "Bash", input: {}, tool_use_id: toolId, approver: "person" },
+          () => {
+            throw failure;
+          },
+        );
+      } catch (error) {
+        caught = error;
+      }
+      expect(f.snapshots().at(-1)?.waiting ?? null).toBeNull();
+      return {};
+    });
+    await f.flush();
+    expect(caught).toBe(failure);
+    expect(f.snapshots().at(-1).waiting).toBeNull();
+  });
+
   it("does not clear a pending native question when an unrelated tool progresses or completes", async () => {
     const f = await fixture();
     await f.run("turn.start", { text: "terminal", turnId: randomUUID() });

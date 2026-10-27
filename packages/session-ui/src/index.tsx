@@ -21,6 +21,17 @@ export {
 } from "./session-continuation";
 
 export {
+  agentKibCommand,
+  claudeSlashOptions,
+  matchSlashCommands,
+  slashCommandCopy,
+  slashCommandQuery,
+  useSlashCommandMenu,
+  type AgentKibCommand,
+  type SlashCommandOption,
+} from "./slash-commands";
+
+export {
   DiffPreview,
   ToolDetailBody,
   ToolDetailRow,

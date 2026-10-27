@@ -1,8 +1,11 @@
 import { continuationResources } from "./continuation-draft";
 import {
+  agentKibCommand,
+  claudeSlashOptions,
   sessionContinuationCopy,
   SessionContinuationReturned,
   SessionContinuationTerminal,
+  useSlashCommandMenu,
 } from "@agentkib/session-ui";
 import { SessionBusyChoice } from "./session-busy-choice";
 import { SessionReadOnly } from "./session-read-only";
@@ -10,7 +13,7 @@ import { isSendEnter, useEnterSends } from "./composer-shortcuts";
 import { claudeConnectionCopyForSurface } from "./claude-connection-copy";
 import { HistoryReferenceChips } from "../history/history-search-controls";
 import { validHistoryMessage } from "../history/history-reference-model";
-import { useEffect, useId, useRef, useState } from "react";
+import { useEffect, useId, useMemo, useRef, useState } from "react";
 import { toast } from "sonner";
 import {
   ArrowUp,
@@ -22,7 +25,11 @@ import {
   Square,
   X,
 } from "lucide-react";
-import { type UploadedAttachment } from "@agentkib/web-client";
+import {
+  claudeCommandDecision,
+  claudeMenuCommands,
+  type UploadedAttachment,
+} from "@agentkib/web-client";
 import { Button } from "../../components/ui/button";
 import { Textarea } from "../../components/ui/textarea";
 import { Disclosure, DisclosureSummary } from "../../components/ui/disclosure";
@@ -57,6 +64,8 @@ type Upload = {
   failed?: boolean;
   previewUrl?: string;
 };
+// A paired browser is a remote device, which may run only some Claude Code commands.
+const COMMAND_OWNER = false;
 export function SessionComposer({
   connectionStatusInBanner = false,
 }: {
@@ -114,6 +123,25 @@ export function SessionComposer({
     capabilities?.sessionId === selected &&
     capabilities.features.attachments?.available
   );
+  const commandCatalog =
+    isClaude && capabilities?.sessionId === selected ? capabilities.commands : undefined;
+  const commandOptions = useMemo(
+    () =>
+      commandCatalog
+        ? claudeSlashOptions(claudeMenuCommands(commandCatalog, COMMAND_OWNER), locale)
+        : [],
+    [commandCatalog, locale],
+  );
+  // A refused command keeps its draft; the explanation goes once the draft changes.
+  const [commandNotice, setCommandNotice] = useState<{ draft: string; reason: string }>();
+  const slash = useSlashCommandMenu({
+    value: composerValue,
+    options: commandOptions,
+    enabled: isClaude && online && controlReady && !busy && !submitted,
+    catalogKnown: !!commandCatalog?.length,
+    locale,
+    onChoose: setMessage,
+  });
   useEffect(() => {
     const controllers = active.current;
     const urls = previewUrls.current;
@@ -123,6 +151,7 @@ export function SessionComposer({
     submitPending.current = false;
     composing.current = false;
     setError("");
+    setCommandNotice(undefined);
     setPreviewKey(undefined);
     count.current = 0;
     return () => {
@@ -288,12 +317,31 @@ export function SessionComposer({
       (live?.activity === "compacting" && action !== "queue-add")
     )
       return;
+    // The host refuses these too; deciding here keeps the draft and explains it without a
+    // round trip, and runs AgentKib's own action for the commands it has one for.
+    const decision = isClaude
+      ? claudeCommandDecision(draft, { owner: COMMAND_OWNER, commands: commandCatalog })
+      : null;
+    const mapped =
+      decision?.refusal &&
+      action === "send" &&
+      !attachmentIds.length &&
+      !resourceIds.length &&
+      !historyReferences.length
+        ? agentKibCommand(decision)
+        : null;
+    if (decision?.refusal && !(mapped && capabilities?.features[mapped.action]?.available)) {
+      setCommandNotice({ draft, reason: decision.refusal });
+      return;
+    }
+    setCommandNotice(undefined);
     const requestGeneration = generation.current;
     submitPending.current = true;
     setSubmitted(true);
     try {
-      const result =
-        action === "send"
+      const result = mapped
+        ? await codexAction(mapped.action, mapped.fields)
+        : action === "send"
           ? await control("send", undefined, undefined, undefined, undefined, {
               attachmentIds,
               ...(resourceIds.length ? { resourceIds } : {}),
@@ -447,7 +495,7 @@ export function SessionComposer({
       {isClaude && <PermissionModeNotice permission={live?.permission} locale={locale} compact />}
       {isClaude && <ClaudeTurnNotice live={live} locale={locale} surface="web" />}
       <form
-        className="w-full space-y-2 rounded-3xl border border-border bg-background p-2 shadow-sm transition-colors focus-within:border-ring/40 md:p-3"
+        className="relative w-full space-y-2 rounded-3xl border border-border bg-background p-2 shadow-sm transition-colors focus-within:border-ring/40 md:p-3"
         onSubmit={(event) => {
           event.preventDefault();
           if (canSubmit && !compacting) void send("send");
@@ -468,6 +516,7 @@ export function SessionComposer({
             if (isCodex || isClaude) void session.checkContinuation?.();
           }}
           disabled={busy || submitted}
+          {...slash.inputProps}
           onCompositionStart={() => {
             composing.current = true;
           }}
@@ -478,6 +527,7 @@ export function SessionComposer({
             composing.current = false;
           }}
           onKeyDown={(event) => {
+            if (slash.onKeyDown(event, composing.current)) return;
             if (!enterSends || !isSendEnter(event, composing.current)) return;
             event.preventDefault();
             if (
@@ -498,6 +548,7 @@ export function SessionComposer({
             }
           }}
         />
+        {slash.menu}
         <HistoryReferenceChips />
         {uploads.length > 0 && (
           <ul className="space-y-2">
@@ -621,6 +672,11 @@ export function SessionComposer({
       {error && (
         <p role="alert" className="px-3 text-xs text-destructive-text">
           {error}
+        </p>
+      )}
+      {commandNotice?.draft === draft && (
+        <p role="status" className="px-3 text-xs leading-5 text-muted-foreground">
+          {codexReason(locale, commandNotice.reason, "web").text}
         </p>
       )}
       {compacting && (

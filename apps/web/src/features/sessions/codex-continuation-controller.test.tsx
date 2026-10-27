@@ -596,6 +596,29 @@ describe("Codex next-turn settings recovery", () => {
     expect(result.current.notice).toBe("notDispatched");
     expect(result.current.noticeReason).toBeUndefined();
   });
+
+  it("names the slash-command rule the host refused a Claude message with", async () => {
+    const host = baseFixture(baseIdle("original", "claude-code"), "claude-code");
+    const { result } = await open(host);
+    await act(async () => result.current.setMessage("/fixture-new"));
+    host.request.mockRejectedValueOnce(
+      new ApiError(409, "claude-command-owner-only", "not-dispatched"),
+    );
+    await act(async () => result.current.control("send"));
+    expect(result.current.notice).toBe("notDispatched");
+    expect(result.current.noticeReason).toBe("claude-command-owner-only");
+    expect(result.current.message).toBe("/fixture-new");
+    expect(readPending(host.scope)).toEqual([]);
+    // Codex never receives these codes; they stay out of its recovery.
+    const codex = baseFixture(baseIdle("original"), "codex");
+    const other = await open(codex);
+    await act(async () => other.result.current.setMessage("Draft"));
+    codex.request.mockRejectedValueOnce(
+      new ApiError(409, "claude-command-owner-only", "not-dispatched"),
+    );
+    await act(async () => other.result.current.control("send"));
+    expect(other.result.current.noticeReason).toBeUndefined();
+  });
 });
 
 describe.each(["codex", "claude-code"] as const)(

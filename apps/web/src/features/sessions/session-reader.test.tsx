@@ -242,6 +242,20 @@ describe("conversation reading position", () => {
     view.rerender(<SessionReader />);
     expect(screen.getByText(dictionaries["zh-CN"].notDispatched)).toBeVisible();
   });
+  it.each(["claude-command-owner-only", "claude-command-clear"] as const)(
+    "explains a Claude message refused as %s instead of the generic rejection",
+    (reason) => {
+      state = {
+        ...state,
+        current: { ...state.current!, agent: "claude-code" },
+        notice: "notDispatched",
+        noticeReason: reason,
+      };
+      render(<SessionReader />);
+      expect(screen.getByText(codexReason("zh-CN", reason, "web").text)).toBeVisible();
+      expect(screen.queryByText(dictionaries["zh-CN"].notDispatched)).not.toBeInTheDocument();
+    },
+  );
 
   it("uses the same live usage gauge for an ACP composer without settings", () => {
     state = {

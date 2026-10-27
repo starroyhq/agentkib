@@ -33,9 +33,11 @@ import {
 } from "react";
 import {
   ApiError,
+  isClaudeCommandRefusal,
   isLegacyPreparedReceipt,
   WebClient,
   type Access,
+  type ClaudeCommandRefusal,
   type WebConnection,
   type SessionAction,
   type SessionActionBody,
@@ -90,10 +92,14 @@ type CodexSettingsRecoveryReason =
   | "unsupported-effort"
   | "native-model-unconfirmed"
   | "native-effort-unconfirmed";
+/** A reason a rejected request is explained with instead of the generic notice. */
+type NotDispatchedReason = CodexSettingsRecoveryReason | ClaudeCommandRefusal;
 function codexSettingsRecoveryReason(
   agent: string | undefined,
   ...reasons: (string | undefined)[]
-): CodexSettingsRecoveryReason | undefined {
+): NotDispatchedReason | undefined {
+  // A slash command Claude Code was not sent; the host names which rule refused it.
+  if (agent === "claude-code") return reasons.find(isClaudeCommandRefusal);
   if (agent !== "codex") return;
   return reasons.find(
     (reason): reason is CodexSettingsRecoveryReason =>
@@ -173,7 +179,7 @@ export function useSessionController({
     [connectionNotice, setConnectionNotice] = useState<{
       online: boolean;
       notice?: ControlNotice;
-      reason?: CodexSettingsRecoveryReason;
+      reason?: NotDispatchedReason;
     }>({ online: false }),
     [code, setCode] = useState(""),
     [name, setName] = useState(""),
@@ -222,7 +228,7 @@ export function useSessionController({
     publishLive(next);
   }, []);
   const { online, notice, reason: noticeReason } = connectionNotice;
-  const setNotice = useCallback((notice?: ControlNotice, reason?: CodexSettingsRecoveryReason) => {
+  const setNotice = useCallback((notice?: ControlNotice, reason?: NotDispatchedReason) => {
     setConnectionNotice((value) => ({
       ...value,
       notice,

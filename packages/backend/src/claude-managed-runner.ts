@@ -8,6 +8,7 @@ import { MacOwnedProcessTree } from "./mac-owned-process-tree";
 import { acquirePortableFileLease } from "./managed-session-lock";
 import { truncateUtf8 } from "./session-events";
 import { claudeToolDetail, claudeToolResult, compactClaudeInput } from "./conversation-tools";
+import { claudeCommandInvocation, claudeCommandOutput } from "./claude-command-records";
 import {
   boundedUnknownFields,
   ClaudeProtocolDiagnostics,
@@ -624,9 +625,11 @@ export class ClaudeRunnerState {
             ];
           });
           this.finalizedTextBlocks = textBlocks;
+          // A frame that was not streamed (a local command's output) adds its text here. Do it
+          // before naming the item: appending extends the current item's text as well.
+          if (!this.partial) for (const block of textBlocks) this.#append(block.text);
           this.streamItemId = textBlocks[0]?.id ?? nativeId;
           this.streamItemText = textBlocks[0]?.text ?? "";
-          if (!this.partial) for (const block of textBlocks) this.#append(block.text);
         }
         this.partial = false;
         break;
@@ -2178,7 +2181,13 @@ export class ClaudeManagedRunnerProcess {
           uuidPattern.test(frame.message.id) &&
           frame.message.id) ||
         "";
-      if (id && frame.isCompactSummary !== true) {
+      // `/compact` sends its summary as a synthetic user frame; it is context, not the user's.
+      if (
+        id &&
+        frame.isCompactSummary !== true &&
+        frame.isSynthetic !== true &&
+        frame.isMeta !== true
+      ) {
         const content = frame.message?.content;
         const text =
           typeof content === "string"
@@ -2193,13 +2202,31 @@ export class ClaudeManagedRunnerProcess {
         const attachmentCount = blocks.filter((block: JsonObject) =>
           ["image", "document"].includes(String(block?.type)),
         ).length;
-        if (text || attachmentCount)
+        // A replayed local command result (`<local-command-stdout>Compacted</…>`) is the CLI's
+        // reply, read the same way as the history row with this uuid.
+        const invocation = claudeCommandInvocation(text);
+        const output = invocation === null ? claudeCommandOutput(text) : null;
+        if (output) {
+          const clipped = truncateUtf8(output);
+          items.push({
+            index: -1,
+            item: {
+              id,
+              kind: "agent-message",
+              turn_id: this.state.turnId,
+              content: clipped.content,
+              attachment_count: 0,
+              truncated: clipped.truncated,
+              ephemeral: false,
+            },
+          });
+        } else if (output === null && (text || attachmentCount))
           items.push({
             index: -1,
             item: {
               id,
               kind: "user-message",
-              content: text,
+              content: invocation ?? text,
               attachment_count: attachmentCount,
               truncated: false,
             },

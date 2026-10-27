@@ -13,6 +13,11 @@ import {
 } from "./conversation-tools";
 import { jsonTimestamp } from "./session-history";
 import {
+  claudeCommandInvocation,
+  claudeCommandOutput,
+  claudeLocalCommandText,
+} from "./claude-command-records";
+import {
   compatibleEvents,
   hasText,
   messageText,
@@ -517,6 +522,48 @@ function parseRecord(state: EventState, offset: number, row: any, page: Conversa
       state.turnMeta = { turn: null, meta: turnEnd(row, "completed") };
       return;
     }
+    // The CLI's own context: a skill's expanded prompt, the caveat before a local command.
+    if (row?.isMeta === true) return;
+    if (row?.type === "system" && row?.subtype === "local_command") {
+      // A local command's output, with the uuid of its live frame, or a command the CLI does
+      // not offer in print mode, recorded as typed (`/help`).
+      const text = claudeLocalCommandText(row);
+      const output = claudeCommandOutput(text);
+      const typed = output === null ? (claudeCommandInvocation(text) ?? text.trim()) : null;
+      const id =
+        typeof row.uuid === "string" && claudeMessageIdPattern.test(row.uuid)
+          ? row.uuid
+          : `event-${offset}`;
+      if (output)
+        message(
+          state,
+          offset,
+          "agent-message",
+          timestamp,
+          output,
+          0,
+          true,
+          null,
+          undefined,
+          page,
+          id,
+        );
+      else if (typed?.startsWith("/"))
+        message(
+          state,
+          offset,
+          "user-message",
+          timestamp,
+          typed,
+          0,
+          true,
+          null,
+          undefined,
+          page,
+          id,
+        );
+      return;
+    }
     if (!["user", "assistant"].includes(row?.type) || row?.isCompactSummary === true) return;
     const content = row?.message?.content;
     const rowEvents: Array<{ index: number; event: ConversationEvent }> = [];
@@ -600,7 +647,25 @@ function parseRecord(state: EventState, offset: number, row: any, page: Conversa
           rowEvents.push({ index, event: state.pending.pop()! });
       }
     } else {
-      if (hasText(text) && !hiddenCommand(text))
+      // A slash command reads as typed; `/compact` records its output as a user row.
+      const invocation = kind === "user-message" && text ? claudeCommandInvocation(text) : null;
+      const output =
+        kind === "user-message" && text && !invocation ? claudeCommandOutput(text) : null;
+      if (invocation || output)
+        message(
+          state,
+          offset,
+          invocation ? "user-message" : "agent-message",
+          timestamp,
+          (invocation ?? output)!,
+          0,
+          true,
+          null,
+          undefined,
+          page,
+          nativeId ?? `event-${offset}`,
+        );
+      else if (output === null && hasText(text) && !hiddenCommand(text))
         message(
           state,
           offset,

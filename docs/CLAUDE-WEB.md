@@ -114,6 +114,21 @@ Windows x64 使用的 Win-CodexBar 是独立的 Windows 移植版，有自己的
 
 目标预算按对应原生结果的 `input_tokens + output_tokens + cache_creation_input_tokens + cache_read_input_tokens` 累计，与上方上下文占用百分比不同；不按输出文本长度估算。它限制是否启动下一步，不是正在运行一轮的硬 token 截断。预算已耗尽时停止下一步，有预算而缺少合法用量时暂停；用量缺口跨重启和目标更新保留，不能通过恢复或提高预算绕过。后续取得原步骤的实际用量可去重补账；否则只有明确移除预算才能恢复自动推进。仅更新目标文字不移除原预算，调整预算仍保留已累计用量。
 
+## 斜杠命令
+
+托管会话里以 `/名称` 开头的消息由 Claude Code 当作命令执行：内置命令作用于 CLI、它的设置或这台电脑，技能、自定义命令和插件命令展开为给模型的提示词。AgentKib 照常转发，限制只有两条，由共享规则 `packages/runtime-protocol/src/claude-commands.ts` 决定：
+
+- 所有设备都不发送 AgentKib 跟不上的命令。`/clear`（别名 `/reset`、`/new`）让 CLI 换一个原生会话 ID，此前会被当作协议错误而停止会话；`/loop`、`/batch` 启动后台工作；`/goal`、`/rename` 和带参数的 `/model`、`/effort` 改的是 AgentKib 自己保存的状态。输入框把 `/model <名称>`、`/effort <级别>` 改为下一轮设置，`/rename <名称>` 改为重命名，`/goal <目标>` 改为持续目标；消息带附件，或这项操作此时不可用时，只显示说明。
+- 远程设备（配对的浏览器）只能用一组只汇报会话、或展开为提示词的内置命令：`/compact`、`/context`、`/usage`、`/init`、`/code-review`、`/security-review`、`/simplify`、`/verify`、`/recap`、`/deep-research`、`/dataviz`、`/claude-api`、`/run`、`/color`、`/focus`、`/fast`、`/agents`、`/reload-skills`，以及不带参数的 `/model`、`/effort`、`/output-style`、`/autocompact`、`/mcp`。其余内置命令可能不经审批就改动这台电脑。用 CLI 2.1.311 对本地 API 桩实测：`/config permissionMode=auto` 写入 `~/.claude/settings.json`，此后新会话以 auto 模式启动；`/autocompact 200000` 写用户设置；`/output-style Concise` 写项目的 `.claude/settings.local.json`；`/heapdump` 往桌面写约 23 MB 的堆快照。这些命令只能在这台电脑上的 AgentKib 或终端里使用。技能、自定义命令和插件命令照常发送；CLI 不认识的名称作为普通文字交给模型。
+
+去掉开头空白后，以 `/` 加名称开头、名称后是空白或结尾的消息算作命令，`/private/tmp` 这样的路径不算。名称不区分大小写；别名按 CLI 目录的 `aliases` 和 2.1.311 的内置别名解析，一个名称可能对应多个命令时（例如项目里有同名命令）按更严格的规则处理。消息的每个文字块都检查。
+
+后端在接受 send、steer、queue-add、queue-update、goal-set 时检查。目标每一步的输入以目标文字开头，按目标所属设备检查；编辑队列项时同时按编辑者和原设备检查。新进程初始化后、消息写入 CLI 之前，再按它刚报告的命令目录检查一次，覆盖 2.1.311 之后新增的内置命令。拒绝的请求记为 not-dispatched，原因码为 `claude-command-clear`、`claude-command-background`、`claude-command-goal`、`claude-command-rename`、`claude-command-settings`、`claude-command-owner-only`，客户端用四种语言说明原因并保留草稿。加入队列时还能发送、轮到时被新目录拒绝的条目不会发出，宿主暂停队列，与压缩中时的处理相同；删除该条目后恢复。
+
+capabilities 附带 CLI 在 initialize 时报告的命令目录（含 `builtin`、`aliases`），没有进程时用上次确认的目录，不为读取目录启动进程；不能发送的设备拿不到目录。输入 `/` 时列出这台设备能用的命令：后台命令和内部命令不列出，远程设备也不列出只能在本机使用的命令，并去掉只能无参使用的命令的参数提示。会话还没运行过 Claude Code 时，菜单说明命令稍后出现。
+
+历史里的命令按输入显示（`/hello world`）；本地命令的输出（`/context` 的用量表、`/compact` 的 “Compacted”）显示为 Agent 回复，与实时帧使用相同 ID。CLI 自己附加的上下文不显示：`isMeta` 行（技能展开后的提示词、本地命令前的说明）和压缩摘要。连接终端插件目前不能发送消息，不受这些规则影响；以后开放发送时也须经过同一检查。
+
 ## HTTP、SSE 与 WebSocket
 
 浏览器现有 HTTP 操作和 SSE 实时订阅保持兼容。新增 `/api/web/v1/socket` 是可选的有界 JSON 请求适配层，不替代 SSE，也不转发任意 Backend RPC。它仅用于同源 Web 服务及其桌面 TLS/反向代理入口；托管网页到 LAN HTTP 的连接继续保留原有基础能力，不开放此 socket 或新增高级控制。原生桌面连接另一台主机的配对和能力范围见 [REMOTE.md](REMOTE.md)，不因本次 Web 改动自动扩展。
@@ -142,7 +157,7 @@ Windows x64 使用的 Win-CodexBar 是独立的 Windows 移植版，有自己的
 - 本次通用协议、前端、宿主调度和 WebSocket 的验收见 [2026-10-09 QA](../qa/claude-remote-parity-2026-10-09.md)；早期原生执行证据保留在 [2026-09-30 QA](../qa/claude-managed-2026-09-30.md)，不外推到新增能力。代码测试通过不等于真实模型、桌面/Web 全工作流、生产中继或实体手机已验收。
 - 公网 Relay 转发的两仓库同步另见 [Relay 离线验收](../qa/claude-relay-sync-2026-10-09.md)，包括真实 frp、桌面 TLS、WebAccessService、Backend 与合成 CLI。跨仓测试显式启用，默认测试中的跳过不计为真实隧道通过。
 - 真实测试每例单轮，保留 attempt 记录；超时或结果未知后不自动重试、切换模型或复制凭据。
-- 不调用模型也能核对 CLI 的实际帧：本地 Anthropic API 桩加 `ANTHROPIC_BASE_URL`、假 key、隔离的 `HOME` 与 `CLAUDE_CONFIG_DIR`，再用只放行 localhost 的 `sandbox-exec` 配置运行 CLI。做法和结果见 [2026-10-27 QA](../qa/claude-code-followups-2026-10-27.md)。
+- 不调用模型也能核对 CLI 的实际帧：本地 Anthropic API 桩加 `ANTHROPIC_BASE_URL`、假 key、隔离的 `HOME` 与 `CLAUDE_CONFIG_DIR`，再用只放行 localhost 的 `sandbox-exec` 配置运行 CLI。做法和结果见 [2026-10-27 QA](../qa/claude-code-followups-2026-10-27.md)；斜杠命令的探测与验收见 [斜杠命令 QA](../qa/claude-code-slash-commands-2026-10-27.md)。
 - 公开分发前仍需另行确认第三方接入边界。本机 CLI 验证不表示已获得订阅额度接入许可。
 
 参考：[Claude 官方 SDK 控制协议](https://github.com/anthropics/claude-agent-sdk-python/blob/main/src/claude_agent_sdk/_internal/query.py)。未引入 SDK 或新生产依赖。

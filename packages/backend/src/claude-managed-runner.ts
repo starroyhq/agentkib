@@ -7,6 +7,7 @@ import { homedir } from "node:os";
 import { MacOwnedProcessTree } from "./mac-owned-process-tree";
 import { acquirePortableFileLease } from "./managed-session-lock";
 import { truncateUtf8 } from "./session-events";
+import { claudeToolDetail, claudeToolResult, compactClaudeInput } from "./conversation-tools";
 import {
   boundedUnknownFields,
   ClaudeProtocolDiagnostics,
@@ -1184,6 +1185,8 @@ export class ClaudeManagedRunnerProcess {
   #startupDispatched = false;
   #startupCleanupKind?: ClaudeStartupCleanupKind;
   #toolItems = new Map<string, Record<string, unknown>>();
+  /** Compact tool_use inputs kept until their result arrives. */
+  #toolInputs = new Map<string, unknown>();
   #controls = new Map<
     string,
     {
@@ -2069,11 +2072,24 @@ export class ClaudeManagedRunnerProcess {
             },
           });
       }
+      const results = blocks.filter((block: JsonObject) => block?.type === "tool_result").length;
       for (const block of blocks) {
         const toolId = typeof block?.tool_use_id === "string" ? block.tool_use_id : "";
         const item = toolId ? this.#toolItems.get(toolId) : undefined;
         if (block?.type === "tool_result" && item) {
           item.tool_status = block.is_error === true ? "failed" : "completed";
+          // The structured result is unverified on this stream; it is used
+          // only when present and only for a frame's sole tool result.
+          const structured =
+            results === 1 ? (frame.tool_use_result ?? frame.toolUseResult) : undefined;
+          const detail = claudeToolDetail(
+            typeof item.tool_name === "string" ? item.tool_name : "",
+            this.#toolInputs.get(toolId),
+            claudeToolResult(structured, block.content),
+            { workspace: this.workspace },
+          );
+          if (detail) item.tool = detail;
+          this.#toolInputs.delete(toolId);
           items.push({ index: blocks.indexOf(block), item: { ...item } });
         }
       }
@@ -2082,7 +2098,7 @@ export class ClaudeManagedRunnerProcess {
         const id = typeof block?.id === "string" ? block.id : "";
         if (block?.type !== "tool_use" || !id || id.length > 256) continue;
         if (this.#toolItems.size >= 1024 && !this.#toolItems.has(id)) continue;
-        const item = {
+        const item: Record<string, unknown> = {
           id,
           kind: "tool-summary",
           turn_id: this.state.turnId,
@@ -2091,7 +2107,15 @@ export class ClaudeManagedRunnerProcess {
           attachment_count: 0,
           truncated: false,
         };
+        const detail = claudeToolDetail(
+          typeof block.name === "string" ? block.name : "",
+          block.input,
+          undefined,
+          { workspace: this.workspace },
+        );
+        if (detail) item.tool = detail;
         this.#toolItems.set(id, item);
+        if (this.#toolInputs.size < 256) this.#toolInputs.set(id, compactClaudeInput(block.input));
         items.push({ index: blocks.indexOf(block), item });
       }
     }

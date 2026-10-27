@@ -1,6 +1,7 @@
 import type { CodexAppServerSession } from "./codex-app-server";
 import { isDeepStrictEqual } from "node:util";
 import { createContextUsageGeneration, projectContextUsage } from "./context-usage";
+import { codexItemTool, type ToolContext } from "./conversation-tools";
 
 type JsonObject = Record<string, unknown>;
 type ManagedRecord = JsonObject & {
@@ -97,6 +98,12 @@ export class ManagedCodexState {
 
   get record(): Readonly<ManagedRecord> {
     return this.#record;
+  }
+
+  #toolContext(): ToolContext {
+    return {
+      workspace: typeof this.#record.workspace === "string" ? this.#record.workspace : null,
+    };
   }
 
   snapshot(runtimeBootId: string, controls: boolean): JsonObject {
@@ -263,7 +270,7 @@ export class ManagedCodexState {
           throw new Error("too-many-items");
         this.#items.set(id, structuredClone(params.item));
         if (method === "item/completed") {
-          const event = projectItem(params.item, this.#turn);
+          const event = projectItem(params.item, this.#turn, this.#toolContext());
           this.#mutationRevision = ++this.#revision;
           return { changed: true, ...(event ? { event } : {}) };
         }
@@ -395,7 +402,7 @@ export class ManagedCodexState {
       }
       for (const item of Array.isArray(turn.items) ? turn.items : []) {
         if (!isObject(item) || typeof turn.id !== "string") continue;
-        const event = projectItem(item, turn.id);
+        const event = projectItem(item, turn.id, this.#toolContext());
         if (event) events.push(event);
       }
     }
@@ -652,13 +659,15 @@ function policyIdFromSettings(settings: JsonObject, workspace: string): string |
   return null;
 }
 
-function projectItem(item: JsonObject, turnId: string): JsonObject | undefined {
+function projectItem(
+  item: JsonObject,
+  turnId: string,
+  context: ToolContext = {},
+): JsonObject | undefined {
   const id = typeof item.id === "string" ? item.id : null;
   if (!id) throw new Error("invalid-item");
   let kind: string;
   let content = "";
-  let toolName: string | null = null;
-  let toolStatus: string | null = null;
   switch (item.type) {
     case "agentMessage":
     case "plan":
@@ -674,16 +683,25 @@ function projectItem(item: JsonObject, turnId: string): JsonObject | undefined {
             .join("\n")
         : "";
       break;
-    case "commandExecution":
-    case "fileChange":
-    case "mcpToolCall":
-    case "webSearch":
-      kind = "tool-summary";
-      toolName = item.type;
-      toolStatus = typeof item.status === "string" ? item.status : null;
-      break;
-    default:
-      return;
+    default: {
+      // Same normalizer as rollout history, so the history that replaces this
+      // turn's live rows shows them the same way.
+      const tool = codexItemTool(item, context);
+      if (!tool) return;
+      return {
+        id,
+        kind: "tool-summary",
+        turn_id: turnId,
+        timestamp: new Date().toISOString(),
+        content: "",
+        tool_name: tool.name,
+        tool_status: tool.status,
+        duration_ms: tool.durationMs,
+        attachment_count: 0,
+        truncated: false,
+        tool: tool.detail,
+      };
+    }
   }
   const truncated = Buffer.byteLength(content, "utf8") > 128 * 1024;
   const boundedContent = [...content].slice(0, 32768).join("");
@@ -693,8 +711,8 @@ function projectItem(item: JsonObject, turnId: string): JsonObject | undefined {
     turn_id: turnId,
     timestamp: new Date().toISOString(),
     content: boundedContent,
-    tool_name: toolName,
-    tool_status: toolStatus,
+    tool_name: null,
+    tool_status: null,
     attachment_count: 0,
     truncated,
   };

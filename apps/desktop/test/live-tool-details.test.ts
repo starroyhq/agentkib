@@ -1,8 +1,15 @@
 import { randomUUID } from "node:crypto";
-import { rmSync } from "node:fs";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { ClaudeManagedRunnerProcess } from "../../../packages/backend/src/claude-managed-runner";
 import { ManagedCodexState } from "../../../packages/backend/src/managed-codex-state";
+import {
+  createManagedSnapshotWriter,
+  readManagedEvents,
+  saveManagedRecord,
+} from "../../../packages/backend/src/managed-ledger";
 import { createFakeClaude } from "./fixtures/claude-fake-cli";
 
 // Live projections must produce the same detail shape as history. Codex frames
@@ -120,6 +127,63 @@ describe("live Codex projection", () => {
     ).toBeUndefined();
   });
 
+  // Found with a real gpt-6-luna turn: turn/completed carries durationMs (38584 there),
+  // but connected managed sessions read history from these live rows.
+  it("adds the reported turn duration to the turn's last live row", () => {
+    const state = codex();
+    state.apply({
+      method: "item/completed",
+      params: { threadId, turnId: "turn-a", item: commandItem, completedAtMs: 1 },
+    });
+    const reply = state.apply({
+      method: "item/completed",
+      params: {
+        threadId,
+        turnId: "turn-a",
+        item: { type: "agentMessage", id: "msg-final", text: "Fixed.", phase: "final_answer" },
+        completedAtMs: 2,
+      },
+    }).event!;
+    expect(reply.turn_meta).toBeUndefined();
+    // The phase groups commentary inside the turn's process, as rollout history does.
+    expect(reply.message_phase).toBe("final_answer");
+    const completed = state.apply({
+      method: "turn/completed",
+      params: {
+        threadId,
+        turn: { id: "turn-a", status: "completed", error: null, durationMs: 38_584, items: [] },
+      },
+    });
+    expect(completed.changed).toBe(true);
+    expect(completed.event).toMatchObject({
+      id: "msg-final",
+      kind: "agent-message",
+      content: "Fixed.",
+      turn_meta: { outcome: "completed", duration_ms: 38_584 },
+    });
+    expect(state.status).toBe("idle");
+
+    const interrupted = codex();
+    interrupted.apply({
+      method: "item/completed",
+      params: { threadId, turnId: "turn-a", item: commandItem, completedAtMs: 1 },
+    });
+    expect(
+      interrupted.apply({
+        method: "turn/completed",
+        params: { threadId, turn: { id: "turn-a", status: "interrupted", durationMs: 900 } },
+      }).event,
+    ).toMatchObject({ id: "item-cmd", turn_meta: { outcome: "aborted", duration_ms: 900 } });
+
+    const empty = codex();
+    expect(
+      empty.apply({
+        method: "turn/completed",
+        params: { threadId, turn: { id: "turn-a", status: "completed", durationMs: 5 } },
+      }).event,
+    ).toBeUndefined();
+  });
+
   it("hydrates thread/read turns the same way", () => {
     const state = new ManagedCodexState({
       id: "managed",
@@ -137,6 +201,82 @@ describe("live Codex projection", () => {
         ["apply_patch", "edit"],
       ],
     );
+    // Like the rollout reader: a finished turn without a duration still records its outcome.
+    expect(events.map((event) => event.turn_meta)).toEqual([undefined, { outcome: "completed" }]);
+  });
+
+  it("hydrates each finished turn's duration onto its last row", () => {
+    const state = new ManagedCodexState({
+      id: "managed",
+      workspace_id: "workspace",
+      workspace,
+      native_id: threadId,
+    });
+    const { events } = state.hydrate({
+      id: threadId,
+      turns: [
+        {
+          id: "turn-1",
+          status: "completed",
+          error: null,
+          durationMs: 1200,
+          items: [commandItem, fileItem],
+        },
+        {
+          id: "turn-2",
+          status: "inProgress",
+          durationMs: null,
+          items: [{ ...commandItem, id: "c2" }],
+        },
+      ],
+    });
+    expect(events.map((event) => [event.id, event.turn_meta ?? null])).toEqual([
+      ["item-cmd", null],
+      ["item-patch", { outcome: "completed", duration_ms: 1200 }],
+      ["c2", null],
+    ]);
+    // The running turn it attached to can still finish with a duration.
+    expect(
+      state.apply({
+        method: "turn/completed",
+        params: { threadId, turn: { id: "turn-2", status: "completed", durationMs: 40 } },
+      }).event,
+    ).toMatchObject({ id: "c2", turn_meta: { outcome: "completed", duration_ms: 40 } });
+  });
+});
+
+describe("managed ledger turn duration", () => {
+  it("adds turn_meta to an item that is already stored without rewriting it", () => {
+    const root = mkdtempSync(join(tmpdir(), "agentkib-ledger-turn-"));
+    cleanups.push(() => rmSync(root, { recursive: true, force: true }));
+    const record = {
+      id: "managed",
+      workspace_id: "workspace",
+      workspace,
+      home: "/home/tester/.codex",
+      native_id: threadId,
+      title: "Fixture",
+      created_at: "2026-10-27T00:00:00Z",
+      released: false,
+      archived: false,
+      policy_id: "workspace-write-on-request",
+      snapshot: { revision: 0, status: "idle" },
+    };
+    saveManagedRecord(root, record);
+    const persist = createManagedSnapshotWriter(root, record);
+    const state = codex();
+    const first = { id: "msg-final", kind: "agent-message", turn_id: "turn-a", content: "Fixed." };
+    persist(state, first);
+    // A repeated write keeps the first-written row.
+    persist(state, { ...first, content: "Changed." });
+    persist(state, {
+      ...first,
+      content: "Changed.",
+      turn_meta: { outcome: "completed", duration_ms: 7 },
+    });
+    expect(readManagedEvents(root, "managed", null, 50).events).toEqual([
+      { ...first, turn_meta: { outcome: "completed", duration_ms: 7 } },
+    ]);
   });
 });
 

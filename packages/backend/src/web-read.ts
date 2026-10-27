@@ -3319,7 +3319,9 @@ export class WebReadRequests {
           previousStreamText = typeof live.streamText === "string" ? live.streamText : "";
           if (result.event) {
             this.publishConversationEvent?.(record.id, "item-upsert", result.event, live);
-            return;
+            // turn/completed returns the last row with its duration; subscribers
+            // still need the idle state that the same notification produced.
+            if (method !== "turn/completed") return;
           }
           this.publishConversationEvent?.(record.id, "state", live, live);
         },

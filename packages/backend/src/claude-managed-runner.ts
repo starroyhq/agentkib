@@ -1211,6 +1211,8 @@ export class ClaudeManagedRunnerProcess {
   #configuring = false;
   #steeringIds = new Set<string>();
   #reportedResult?: ClaudeRunnerTerminalResult;
+  /** The current turn's last native agent message, which carries the turn end when it comes. */
+  #lastAgentItem: Record<string, unknown> | null = null;
 
   constructor(
     readonly workspace: string,
@@ -1513,6 +1515,7 @@ export class ClaudeManagedRunnerProcess {
     if (this.#child && !this.state.initialized) throw new Error("Claude initialize is incomplete");
     const user = this.state.begin(content, requestId);
     this.#steeringIds.clear();
+    this.#lastAgentItem = null;
     // The ledger callback may be absent, or may throw before dispatch. Neither the callback's
     // presence nor its later removal proves whether the user frame reached stdin.
     let dispatched = false;
@@ -1869,6 +1872,7 @@ export class ClaudeManagedRunnerProcess {
           if (result && result !== this.#reportedResult) {
             this.#reportedResult = result;
             this.options.onResult?.(structuredClone(result));
+            this.#emitTurnEnd(frame, result);
           }
         }
         if (!wasInitialized && this.state.initialized) {
@@ -1921,7 +1925,7 @@ export class ClaudeManagedRunnerProcess {
             }),
             ...conversationItems.map(({ index, item }) => ({ index, previousId: "", item })),
           ].sort((left, right) => left.index - right.index);
-          this.onConversationEvent?.(
+          this.#emit(
             "snapshot",
             {
               items: ordered.map(({ item }) => item),
@@ -1938,12 +1942,8 @@ export class ClaudeManagedRunnerProcess {
           for (const block of this.state.finalizedTextBlocks) {
             const clipped = truncateUtf8(block.text);
             if (block.temporaryId && block.temporaryId !== block.id)
-              this.onConversationEvent?.(
-                "item-alias",
-                { previousId: block.temporaryId, itemId: block.id },
-                live,
-              );
-            this.onConversationEvent?.(
+              this.#emit("item-alias", { previousId: block.temporaryId, itemId: block.id }, live);
+            this.#emit(
               "item-upsert",
               {
                 id: block.id,
@@ -1957,8 +1957,7 @@ export class ClaudeManagedRunnerProcess {
               live,
             );
           }
-          for (const item of conversationItems)
-            this.onConversationEvent?.("item-upsert", item.item, live);
+          for (const item of conversationItems) this.#emit("item-upsert", item.item, live);
         }
         if (
           itemId &&
@@ -1966,7 +1965,7 @@ export class ClaudeManagedRunnerProcess {
           itemText.startsWith(previousItemText) &&
           itemText.length > previousItemText.length
         ) {
-          this.onConversationEvent?.(
+          this.#emit(
             "text-delta",
             {
               itemId,
@@ -1985,7 +1984,7 @@ export class ClaudeManagedRunnerProcess {
           itemId &&
           itemText
         ) {
-          this.onConversationEvent?.(
+          this.#emit(
             "item-upsert",
             {
               id: itemId,
@@ -2024,6 +2023,51 @@ export class ClaudeManagedRunnerProcess {
         this.#queuedFrames--;
         if (this.#queuedFrames < 16 && this.#acceptsFrames(child)) child.stdout?.resume();
       });
+  }
+
+  /** Every frame-path conversation event; the last native agent message is remembered. */
+  #emit(
+    type: "text-delta" | "item-upsert" | "item-alias" | "snapshot",
+    payload: Record<string, unknown>,
+    live: ClaudeRunnerSnapshot,
+  ): void {
+    const items =
+      type === "snapshot" && Array.isArray(payload.items)
+        ? (payload.items as Array<Record<string, unknown>>)
+        : type === "item-upsert"
+          ? [payload]
+          : [];
+    for (const item of items)
+      if (
+        item.kind === "agent-message" &&
+        item.ephemeral !== true &&
+        typeof item.id === "string" &&
+        !item.id.startsWith("live:")
+      )
+        this.#lastAgentItem = { ...item };
+    this.onConversationEvent?.(type, payload, live);
+  }
+
+  /**
+   * Re-sends the turn's last agent message with the turn end, which history readers attach to the
+   * same item (`turn_meta`). Only `result` carries the duration in print mode. Display only: a
+   * turn without a native agent message gets none, and a failed delivery never changes the turn.
+   */
+  #emitTurnEnd(frame: JsonObject, result: ClaudeRunnerTerminalResult): void {
+    const item = this.#lastAgentItem;
+    if (frame.type !== "result" || !item || item.turn_id !== result.turnId) return;
+    const meta: Record<string, unknown> = {
+      outcome: frame.is_error === true ? "failed" : result.success ? "completed" : "aborted",
+    };
+    if (Number.isSafeInteger(frame.duration_ms) && frame.duration_ms >= 0)
+      meta.duration_ms = frame.duration_ms;
+    const ended = { ...item, turn_meta: meta };
+    this.#lastAgentItem = null;
+    try {
+      this.onConversationEvent?.("item-upsert", ended, this.state.snapshot());
+    } catch {
+      // The turn already ended; its duration is presentation only.
+    }
   }
 
   #conversationItems(frame: JsonObject): Array<{ index: number; item: Record<string, unknown> }> {

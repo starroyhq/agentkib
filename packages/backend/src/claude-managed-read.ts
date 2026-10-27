@@ -30,7 +30,10 @@ import { canonicalize, pathIdentity } from "./paths";
 import { restrictRemotePath } from "./remote-tls";
 import { acquirePortableFileLease } from "./managed-session-lock";
 import { readClaudeVersion, supportsClaudeVersion } from "./claude-version";
+import type { ConversationTurnMeta } from "@agentkib/runtime-protocol";
 import { terminationCodeOf } from "./claude-frame-policy";
+import { ClaudeTurnMetaStore } from "./claude-turn-meta";
+import type { ConversationEventPage } from "./session-events";
 import {
   assertClaudeConfigWritable,
   isClaudeConfigDirSet,
@@ -144,6 +147,9 @@ export class ClaudeManagedReadOwner {
   #version?: { at: number; value: string | null };
   #runners = new Map<string, ClaudeManagedRunnerProcess>();
   #hostState: ClaudeHostStateStore;
+  #turnMeta: ClaudeTurnMetaStore;
+  // Bumped when a turn end is stored, so cached history projections are read again with it.
+  #turnMetaRevisions = new Map<string, number>();
   #scheduleEpoch = 0;
   #sessionScheduleEpochs = new Map<string, number>();
   #deviceScheduleEpochs = new Map<string, number>();
@@ -195,6 +201,7 @@ export class ClaudeManagedReadOwner {
     readonly continuation: ClaudeContinuationOptions = {},
   ) {
     this.#hostState = new ClaudeHostStateStore(dataDir, bootId);
+    this.#turnMeta = new ClaudeTurnMetaStore(dataDir);
     this.#publishConversationEvent = publishers?.publish;
     this.#aliasConversationItem = publishers?.alias;
     this.#catalogChanged = publishers?.catalogChanged;
@@ -1156,6 +1163,7 @@ export class ClaudeManagedReadOwner {
             this.#streamLive(id, live),
           );
         else {
+          if (type === "item-upsert") this.#rememberTurnEnd(id, record.nativeId, payload);
           const streamLive = this.#streamLive(id, live);
           this.#publishConversationEvent?.(id, type, payload, streamLive);
         }
@@ -1186,6 +1194,43 @@ export class ClaudeManagedReadOwner {
     if (this.continuation.isSessionObserved?.(id)) this.#observed.add(id);
     if (options.mcpConfig) this.#goalRunners.add(id);
     return runner;
+  }
+
+  /** Keeps a turn end the transcript will not have, so history shows it after the live rows go. */
+  #rememberTurnEnd(id: string, nativeId: string, item: Record<string, unknown>): void {
+    if (item.kind !== "agent-message" || typeof item.id !== "string" || !isObject(item.turn_meta))
+      return;
+    try {
+      if (this.#turnMeta.record(nativeId, item.id, item.turn_meta))
+        this.#turnMetaRevisions.set(id, (this.#turnMetaRevisions.get(id) ?? 0) + 1);
+    } catch (error) {
+      // Display metadata only: the live row still shows it, and the turn is unaffected.
+      console.warn(
+        `Claude turn duration not stored: ${error instanceof Error ? error.message : String(error)}`,
+      );
+    }
+  }
+
+  /** History pages with the stored turn ends added; a duration the transcript has is kept. */
+  #withTurnEnds(nativeId: string, page: ConversationEventPage): ConversationEventPage {
+    const ids = page.events.flatMap((event) =>
+      event.kind === "agent-message" && !event.turn_meta ? [event.id] : [],
+    );
+    if (!ids.length) return page;
+    let stored: Map<string, ConversationTurnMeta>;
+    try {
+      stored = this.#turnMeta.read(nativeId, ids);
+    } catch {
+      return page;
+    }
+    if (!stored.size) return page;
+    return {
+      ...page,
+      events: page.events.map((event) => {
+        const meta = event.turn_meta ? undefined : stored.get(event.id);
+        return meta ? { ...event, turn_meta: meta } : event;
+      }),
+    };
   }
 
   async #retireGoalRunner(id: string): Promise<void> {
@@ -4176,13 +4221,14 @@ export class ClaudeManagedReadOwner {
       this.#validate(record);
       if (record.fresh) return { events: [], next_cursor: null, warnings: [] };
       const count = Number.isSafeInteger(limit) ? Math.max(1, Math.min(100, Number(limit))) : 50;
-      return this.sessions.eventsForNative(
+      const page = await this.sessions.eventsForNative(
         "claude-code",
         record.nativeId,
         record.workspace,
         typeof cursor === "string" ? cursor : null,
         count,
       );
+      return this.#withTurnEnds(record.nativeId, page);
     }
     const count = Number.isSafeInteger(limit) ? Math.max(1, Math.min(100, Number(limit))) : 50;
     return this.sessions.claudeEventsForSession(
@@ -4217,6 +4263,8 @@ export class ClaudeManagedReadOwner {
         record.fresh,
       ];
       if (record.fresh) return JSON.stringify([id, indexedIdentity, identity, "empty"]);
+      // Stored turn ends are part of what a history read returns.
+      identity.push(this.#turnMetaRevisions.get(id) ?? 0);
       transcript = this.sessions.verifiedClaudeControlTarget(record.nativeId, record.workspace);
     } else {
       const source = this.sessions.verifiedClaudeReadSource(id);

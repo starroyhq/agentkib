@@ -1309,6 +1309,8 @@ export interface ConversationEvent {
   duration_ms?: number | null;
   attachment_count: number;
   truncated: boolean;
+  tool?: import("@agentkib/runtime-protocol").ConversationToolDetail;
+  turn_meta?: import("@agentkib/runtime-protocol").ConversationTurnMeta;
 }
 export interface ConversationEventPage {
   events: ConversationEvent[];

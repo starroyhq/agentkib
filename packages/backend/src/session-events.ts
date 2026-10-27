@@ -1,3 +1,4 @@
+import type { ConversationToolDetail, ConversationTurnMeta } from "@agentkib/runtime-protocol";
 import { sessionTitle } from "./codex-sessions";
 import { jsonTimestamp } from "./session-history";
 export const MAX_MESSAGE_BYTES = 256 * 1024;
@@ -17,6 +18,9 @@ export interface ConversationEvent {
   duration_ms: number | null;
   attachment_count: number;
   truncated: boolean;
+  /** Bounded, redacted detail for `tool-summary` items. */
+  tool?: ConversationToolDetail;
+  turn_meta?: ConversationTurnMeta;
 }
 export interface ConversationEventPage {
   events: ConversationEvent[];
@@ -66,7 +70,10 @@ export function toolStatus(value: unknown): string | null {
     case "started":
     case "running":
     case "in_progress":
+    case "inprogress":
       return "running";
+    case "declined":
+      return "declined";
     default:
       return "unknown";
   }

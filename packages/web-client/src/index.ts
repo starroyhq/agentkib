@@ -1,4 +1,6 @@
 import type {
+  ConversationToolDetail,
+  ConversationTurnMeta,
   HistorySearchQuery,
   HistorySearchResult,
   HistoryLocation,
@@ -8,6 +10,10 @@ import type {
   HistorySearchStatus,
 } from "@agentkib/runtime-protocol";
 export type {
+  ConversationToolContent,
+  ConversationToolDetail,
+  ConversationToolKind,
+  ConversationTurnMeta,
   ClaudeBridgeCompatibilityStatus,
   ClaudeBridgeConnectionFailure,
   HistorySearchQuery,
@@ -101,6 +107,9 @@ export interface ConversationEvent {
   duration_ms?: number | null;
   attachment_count: number;
   truncated: boolean;
+  /** Absent on older hosts; clients then show the tool name and status. */
+  tool?: ConversationToolDetail;
+  turn_meta?: ConversationTurnMeta;
 }
 export interface ConversationEventPage {
   events: ConversationEvent[];

@@ -2273,7 +2273,7 @@
   "conversation.status": "状态",
   "conversation.warnings": "读取警告",
   "conversation.tool": "工具摘要",
-  "conversation.toolSummaryUnavailable": "历史记录未提供工具输入与输出。",
+  "conversation.toolSummaryUnavailable": "这条记录没有可显示的详情。",
   "conversation.readOnly": "当前浏览器仅可读取",
   "conversation.noSendPermission": "当前浏览器未获发送权限",
   "conversation.device": "已授权浏览器",

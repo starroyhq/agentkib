@@ -5,6 +5,7 @@ import { PreferencesDialog } from "../preferences/preferences-dialog";
 import { SessionDetailsDialog } from "../catalog/session-details-dialog";
 import { Button } from "@/components/ui/button";
 import { Check } from "lucide-react";
+import { ToolDetailBody } from "@agentkib/session-ui";
 import { toolStatusLabel } from "./tool-status";
 import { QuestionForm, interactionCopy } from "../interactions/question-form";
 import { Dialog } from "../../components/dialog";
@@ -33,7 +34,11 @@ export function SessionDialogs() {
           <h3>{modal.tool_name || t.unknownTool}</h3>
           <p>{toolStatusLabel(modal.tool_status, locale)}</p>
           {modal.timestamp && <time>{new Date(modal.timestamp).toLocaleString(locale)}</time>}
-          <pre>{modal.content?.trim() ? modal.content : t.toolSummaryUnavailable}</pre>
+          {modal.tool ? (
+            <ToolDetailBody tool={modal.tool} locale={locale} />
+          ) : (
+            <pre>{modal.content?.trim() ? modal.content : t.toolSummaryUnavailable}</pre>
+          )}
           {modal.truncated && <p>{t.truncated}</p>}
         </Dialog>
       )}

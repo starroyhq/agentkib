@@ -25,6 +25,7 @@ import {
   associationBytes,
   type EventState,
 } from "./session-event-parser";
+import { toolEventBytes, type ToolContext } from "./conversation-tools";
 const SCAN_BYTES = 16 * 1024 * 1024,
   SCAN_LINES = 20_000,
   BLOCK_BYTES = 64 * 1024,
@@ -118,6 +119,10 @@ class ReverseReader {
     }
   }
 }
+/** Bytes an event adds to a page: its text plus any tool detail and turn data. */
+function eventPageBytes(event: ConversationEvent): number {
+  return (event.content ? Buffer.byteLength(event.content) : 0) + toolEventBytes(event);
+}
 function estimatedBytes(state: State): number {
   return (
     state.fragmentBytes +
@@ -126,6 +131,7 @@ function estimatedBytes(state: State): number {
       (sum, event) =>
         sum +
         256 +
+        toolEventBytes(event) +
         [event.id, event.content, event.turn_id, event.tool_name, event.tool_status].reduce<number>(
           (size, value) => size + (value ? Buffer.byteLength(value) : 0),
           0,
@@ -149,11 +155,13 @@ export class SessionPaging {
   clear(): void {
     this.#states.clear();
   }
+  /** `context` only changes how tool paths are shown; cursors keep the first read's. */
   read(
     file: string,
     cursor: string | null,
     limit: number,
     format: HistoryFormat,
+    context: ToolContext = {},
   ): ConversationEventPage {
     if (!Number.isSafeInteger(limit) || limit < 0) throw new Error("Invalid event limit");
     let fd: number;
@@ -180,7 +188,7 @@ export class SessionPaging {
       } else {
         const length = Number(metadata.size);
         state = {
-          ...initialEventState(format),
+          ...initialEventState(format, context),
           snapshot: {
             path: file,
             length,
@@ -205,7 +213,7 @@ export class SessionPaging {
       for (;;) {
         if (state.pending.length) {
           const next = state.pending[0]!,
-            bytes = next.content ? Buffer.byteLength(next.content) : 0;
+            bytes = eventPageBytes(next);
           if (
             events.length >= Math.min(100, Math.max(1, limit)) ||
             eventBytes + bytes > MAX_PAGE_BYTES
@@ -257,11 +265,7 @@ export class SessionPaging {
         parseEventRecord(state, record.offset, value, events);
         if (
           associationCount(state) > 20_000 ||
-          state.pending.reduce(
-            (sum, event) => sum + (event.content ? Buffer.byteLength(event.content) : 0),
-            0,
-          ) >
-            8 * MAX_PAGE_BYTES
+          state.pending.reduce((sum, event) => sum + eventPageBytes(event), 0) > 8 * MAX_PAGE_BYTES
         )
           throw new Error("TRANSCRIPT_SCAN_STATE_LIMIT");
       }

@@ -14,14 +14,24 @@
 - 没有有效原生用量报告时，上下文用量显示“暂无数据”。这不代表额度耗尽；执行后的用量以 CLI 实际报告为准，AgentKib 不估算比例。
 - Claude 目录标题优先级：匹配会话身份的 `custom-title`（用户改名）→ `ai-title`（CLI 自动生成）→ 有效索引标题 → 首条有效用户文本；工具结果、内部消息和附件不会成为标题。同类记录取最新一条。读取范围固定为日志头部最多 2 MiB／256 行，加上文件尾部最后 256 KiB（尾部的记录晚于头部，会覆盖头部）；每个文件的读取量有上限，并按修改时间与大小缓存，文件未变化时刷新目录不会重读。两段范围之外的原生改名或自动标题不保证同步，此时回退到下一级标题。刷新目录即可更新，无需修改原生日志。
 
-- 基础托管执行支持 macOS/Linux，保留 Claude Code `2.1.263` 起的兼容检查；Windows 仅可查看。2026-10-09 新增高级控制要求 `2.1.286` 或更新版本。版本需完整匹配原生版本输出格式。版本门槛只决定是否尝试，实际帧、会话身份、模型选项及权限契约仍逐次校验，不代表所有后续 CLI 版本均完成真实验收：托管会话对 CLI 帧的处理验证到 `2.1.299`（2026-10-14 真机验收，见 `qa/claude-live-acceptance-2026-10-14.md`），更新的版本通过门槛不代表已验证，失败原因里会注明 CLI 版本。用户需自行安装并完成 Claude 登录或供应商配置；托管执行不读取、复制或下发登录凭据。额度采集是另一条路径，由第三方 sidecar 完成，可能读取凭据，见下文“额度采集与凭据”。
+- 基础托管执行支持 macOS/Linux，保留 Claude Code `2.1.263` 起的兼容检查；Windows 仅可查看。2026-10-09 新增高级控制要求 `2.1.286` 或更新版本。版本需完整匹配原生版本输出格式。版本门槛只决定是否尝试，实际帧、会话身份、模型选项及权限契约仍逐次校验，不代表所有后续 CLI 版本均完成真实验收：托管会话对 CLI 帧的处理验证到 `2.1.299`（2026-10-14 真机验收，见 `qa/claude-live-acceptance-2026-10-14.md`），更新的版本通过门槛不代表已验证，失败原因里会注明 CLI 版本。用户需自行安装并完成 Claude 登录或供应商配置（claude.ai 登录与 API key 都可以，见下文“登录与 API key”）；托管执行不读取、复制或下发登录凭据。额度采集是另一条路径，由第三方 sidecar 完成，可能读取凭据，见下文“额度采集与凭据”。
 - 桌面启动时按项目统一的 CLI 发现规则查找 Claude（包括 macOS 的 `~/.local/bin`、Homebrew 等安装目录），并用同一解析路径完成版本验证和启动，不要求从终端启动 AgentKib，也不修改全局 PATH。找不到 CLI 或版本未经验证时仍禁用控制；不会跳过版本检查或自动安装 CLI。
 - 在桌面开启 Web 与实验控制，再按需授予浏览器发送、审批、管理、组织、设置及高级控制权限。默认关闭，读取授权不包含工具审批；高级设置/目标/资源读取仍受 full access 和高级控制权限约束。
 - 新建先保存工作区、请求身份和原生 UUID，新 CLI 使用 `--session-id=<UUID>`；续接已有会话使用 `--resume=<UUID>`。UUID、工作区及日志指纹仍在内部核对；外部历史变化后只在确认无占用、无未知回执且安全的空闲边界更新基线，不要求用户手动交接，也不会通过“最新会话”猜测身份。
 - 后台续接启动前合并核对 `claude agents --json`、PID 登记与 `procStart`、进程命令行，并在运行中巡检；无法确认时保守拒绝。私有操作锁只约束 AgentKib 实例，无法原子约束官方 CLI；检测和停止不等于 Claude CLI 自带了写入锁。已连接终端由插件控制，不启动同 UUID 的后台执行者。
 - CLI 会加载其正常配置、CLAUDE.md、MCP 与 hooks；只对可信项目启用托管执行。AgentKib 启动 CLI 时唯一覆盖的环境变量是 `CLAUDE_CODE_DISABLE_BACKGROUND_TASKS=1`（理由与后果见下文“对 CLI 行为漂移的容错”）。保留 CLI 的权限配置，不启用跳过权限；CLI 自动允许的操作可能不会弹出审批，只有 CLI 实际请求的审批才展示。
 - 未选择权限模式时，AgentKib 不传 `--permission-mode`，会话沿用 CLI 自己的配置；用户设置、供应商和组织策略都可能让实际模式是 `auto`、`dontAsk` 或 `bypassPermissions`。AgentKib 只读取 CLI 在 `system/init` 与 `system/status` 帧里报告的 `permissionMode`（`manual` 视为 `default`）并如实显示：这三种模式下不会再逐项审批，桌面端和 Web 的会话输入区会显示带图标的文字提示（`bypassPermissions` 样式更醒目），只提示、不阻止发送。它们不是可选项，不进入权限选择控件，也不出现在“当前值”里。CLI 没有报告模式时保持未知，不推断；若检测到的 Claude Code 为 2.1.285 或更新、该会话在本次 Backend 运行中从未观察到模式、用户也没有选过权限，则补一句“可能以 auto 模式启动”的警示。依据是官方说明：拿不到功能开关的 `-p`/SDK 会话（例如第三方 provider 或关闭遥测）从 2.1.285 起默认 `auto`；组织策略也可能改变起始模式，所以这是提示，不是判定。Worker 空闲退休后继续显示上次观察到的模式并标注“上次观察”，会话释放或 Backend 重启后清除，不持久化。真机（2.1.299）确认：未传 `--permission-mode` 时 `system/init` 带 `permissionMode: "default"`，它出现在对 `initialize` 的控制响应之后，也晚于首条用户帧的写入，所以第一轮开始时的模式短暂是未知；AgentKib 取到后显示 `default`。其他版本、provider 与组织策略下是否总带该字段仍未验证。
+- 轮次用时：stream-json（`--print`）的会话记录不写 `system/turn_duration`，用时只在 `result.duration_ms` 里。AgentKib 在 `result` 到达时把它随本轮最后一条 Agent 回复下发，并存进应用数据的执行账本（`claude_turn_meta` 表，按原生会话与消息 ID，每个会话保留最新 1000 条），读取历史时补回；会话记录自带用时（在终端里运行的轮次）时以记录为准。本期之前托管的轮次没有存下用时，仍不显示。
 - 浏览器断线不等于终止模型执行；重连只同步快照，不重发请求。macOS 取消或退出会按父子关系捕获自有 Claude 进程树，核对 PID 与启动时间后清理，覆盖使用独立进程组的前台 Bash。无法确认完整清理时保留“结果待核对”，不报告安全释放；已脱离父子关系成为独立外部服务的进程不在清理保证内。
+
+## 登录与 API key
+
+托管执行用的就是本机 `claude` 自己的认证，协议与登录方式无关：claude.ai 登录（`/login`）、Console API key、`ANTHROPIC_API_KEY`、`apiKeyHelper` 和第三方供应商配置都按 CLI 自己的规则生效。AgentKib 不读取这些凭据，也不替 CLI 选择。
+
+- **环境变量只有 AgentKib 进程自己的那一份。** 托管 CLI 继承 AgentKib 启动时的环境，只覆盖上文那一个变量。从程序坞、访达、`open -a` 或桌面启动器打开的 AgentKib 不经过登录 shell，`~/.zshrc` 等文件里 `export` 的 `ANTHROPIC_API_KEY` 传不过来；只有在终端里直接运行 AgentKib 的可执行文件时才会继承。AgentKib 不会为此读取或执行登录 shell。可靠的做法是在终端运行 `claude` 用 `/login` 登录（凭据由 CLI 存进钥匙串），或把 key 写进 `~/.claude/settings.json` 的 `env`，或配置 `apiKeyHelper`。设置里的 `apiKeyHelper` 在设置预览中只显示“已配置”。
+- **重试可见。** 请求失败时 CLI 自己按退避重试，并为每次重试发出 `system/api_retry`；AgentKib 把最新一次放进实时状态的 `apiRetry`（次数、上限、HTTP 状态、错误类别），桌面与 Web 的输入区显示“正在重试（第 3/10 次，HTTP 401）”，401 时附认证提示，可以随时停止本轮。2.1.311 对被拒的 key 会重试 10 次、约 3 分钟才结束本轮。
+- **认证失败可恢复。** 未登录时 CLI 立即以“Not logged in · Please run /login”结束本轮，key 被拒时最后是“Invalid API key · Fix external API key”；这两条都作为 Agent 消息留在会话里。AgentKib 把本轮记为失败、会话保持可发送，输入区说明可行的修复方式，技术详情保留 CLI 原文和 `system/init` 报告的 `apiKeySource`（claude.ai 登录时为 `none`）。后台巡检随即回收这个进程，下次发送用新进程重新读取登录和设置，不需要新建会话。
+- 真实 API key 和第三方供应商没有在本期验收；上面的帧形态来自 2.1.311 对本地 API 桩的离线核对，见 `qa/claude-code-followups-2026-10-27.md`。
 
 ## 额度采集与凭据
 
@@ -72,10 +82,14 @@ Windows x64 使用的 Win-CodexBar 是独立的 Windows 移植版，有自己的
 | 后台 Bash、`local_agent` 以外的任务类型 | 停止会话（原因码 `claude-background-task`） |
 | AgentKib 发起的轮次结束后 CLI 自行继续（轮次外的 `result`、空闲时的主线程内容帧、轮次外的审批请求） | 停止会话（`claude-unrequested-turn`） |
 | 其余无法解析或前后矛盾的输出 | 停止会话（`claude-protocol-violation`） |
+| `system/api_retry` | 只显示，不改变会话状态；新的流式回复、`assistant` 或 `result` 到达后清除 |
+| 主线程 `authentication_failed` 或 HTTP 401 的错误 `result` | 本轮记为失败，会话保持可用（`claude-auth-failed`），进程随即回收 |
 
 为了让正常路径不出现后台任务与自发轮次，AgentKib 启动托管会话的 CLI 时设置 `CLAUDE_CODE_DISABLE_BACKGROUND_TASKS=1`，并覆盖用户环境里的同名值。后果：模型不能再用 `run_in_background` 把命令或子代理放到后台，也没有自动转入后台；长命令按 `BASH_DEFAULT_TIMEOUT_MS`（默认 2 分钟）超时。用户在 Claude Code 的 settings `env` 里设置同名变量可能反过来覆盖它，所以上表的帧级处理独立成立，不依赖这个变量。
 
 停止之后，会话进入“结果待核对”，在 AgentKib 中保持只读，没有应用内恢复入口。Claude Code 自己保存着此前的对话（最后几条消息可能缺失），要继续请在 Claude Code 终端里继续同一会话。原因显示在会话状态里，后端重启后仍保留（同时有未决命令时显示通用的“结果待核对”）。
+
+认证失败是例外：它不停止会话。主线程 `assistant` 帧带 `error: "authentication_failed"`，或错误 `result` 的 `api_error_status` 为 401 时，本轮按已知失败结束，会话保持空闲、可以发送，原因码 `claude-auth-failed` 后附 CLI 原文、HTTP 状态和 `apiKeySource`（见下文“登录与 API key”）。其他带 `is_error` 的 `result` 仍按上面的规则进入“结果待核对”。
 
 托管会话对帧的处理验证到 `2.1.299`；更新版本只作说明，不作门控，失败原因会注明 CLI 版本。2026-10-14 用真实 CLI 2.1.299 和 Haiku 5.5 做了真机验收（启动、一轮后空闲 20 秒、Bash 审批、前台子代理、MCP 工具审批、释放后用同一 UUID 续接），结果见 `qa/claude-live-acceptance-2026-10-14.md`。已确认：设置该变量后子代理前台运行；子代理帧的 `parent_tool_use_id` 形态；`can_use_tool` 的真实字段（`tool_name`、`display_name`、`input`、`description`、`permission_suggestions`、`blocked_path`、`tool_use_id`，子代理另有 `agent_id`，MCP 工具另有 `mcp_server: {name, source}` 与 `server_policy_ask_only`）；`echo` 等只读命令由 CLI 自己放行，不会发出 `can_use_tool`，要写文件的命令才会；一轮结束后空闲 20 秒内没有任何帧，也没有 `background_tasks_changed`；真实运行里出现过 `command_lifecycle`、`rate_limit_event`、`hook_started`/`hook_response` 等帧，均未影响会话。仍待确认：CLI 对 `error` 类型控制响应的反应、`requires_user_interaction` 的工具被拒绝之后的表现、stdin 保持打开时后台任务完成后的自发轮次，以及 `ambient` 类后台任务是否会在更长的会话里出现（本次只跑了短会话）。
 
@@ -128,6 +142,7 @@ Windows x64 使用的 Win-CodexBar 是独立的 Windows 移植版，有自己的
 - 本次通用协议、前端、宿主调度和 WebSocket 的验收见 [2026-10-09 QA](../qa/claude-remote-parity-2026-10-09.md)；早期原生执行证据保留在 [2026-09-30 QA](../qa/claude-managed-2026-09-30.md)，不外推到新增能力。代码测试通过不等于真实模型、桌面/Web 全工作流、生产中继或实体手机已验收。
 - 公网 Relay 转发的两仓库同步另见 [Relay 离线验收](../qa/claude-relay-sync-2026-10-09.md)，包括真实 frp、桌面 TLS、WebAccessService、Backend 与合成 CLI。跨仓测试显式启用，默认测试中的跳过不计为真实隧道通过。
 - 真实测试每例单轮，保留 attempt 记录；超时或结果未知后不自动重试、切换模型或复制凭据。
+- 不调用模型也能核对 CLI 的实际帧：本地 Anthropic API 桩加 `ANTHROPIC_BASE_URL`、假 key、隔离的 `HOME` 与 `CLAUDE_CONFIG_DIR`，再用只放行 localhost 的 `sandbox-exec` 配置运行 CLI。做法和结果见 [2026-10-27 QA](../qa/claude-code-followups-2026-10-27.md)。
 - 公开分发前仍需另行确认第三方接入边界。本机 CLI 验证不表示已获得订阅额度接入许可。
 
 参考：[Claude 官方 SDK 控制协议](https://github.com/anthropics/claude-agent-sdk-python/blob/main/src/claude_agent_sdk/_internal/query.py)。未引入 SDK 或新生产依赖。

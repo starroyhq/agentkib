@@ -28,6 +28,7 @@ type Setter<T> = Dispatch<SetStateAction<T>>;
 // Unknown fields conservatively count as control boundaries.
 // `permission` only describes the mode the CLI reports: it is shown to the user and neither
 // grants nor revokes control, so a permission-only patch must not force a control re-read.
+// `apiRetry` is the same kind of report: which request the CLI is retrying.
 const nativeProgressFields = new Set([
   "revision",
   "streamText",
@@ -36,6 +37,7 @@ const nativeProgressFields = new Set([
   "usage",
   "tokenUsage",
   "activity",
+  "apiRetry",
   "goal",
   "permission",
 ]);

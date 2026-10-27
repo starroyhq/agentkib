@@ -3024,11 +3024,13 @@ export class ClaudeManagedReadOwner {
           const since = this.#idleSince.get(id) ?? Date.now();
           this.#idleSince.set(id, since);
           const left = this.#observed.has(id) && !observed;
-          if (!left && Date.now() - since < this.#idleTimeoutMs) return;
+          // After a rejected login or key the next send must start a worker that reads it again.
+          const requested = runner.retireRequested;
+          if (!left && !requested && Date.now() - since < this.#idleTimeoutMs) return;
           const retirement = runner.retireIfInactive();
           if (retirement && (await retirement)) {
             this.#idleSince.delete(id);
-            if (observed && this.continuation.isSessionObserved?.(id) === true) {
+            if (!requested && observed && this.continuation.isSessionObserved?.(id) === true) {
               this.#continuationNotices.set(id, "background-ended");
               this.#continuationNoticeIds.set(id, randomUUID());
             } else {

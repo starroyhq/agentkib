@@ -135,6 +135,15 @@ export class ClaudeUndispatchedError extends Error {
 }
 const object = (value: unknown): value is JsonObject =>
   value !== null && typeof value === "object" && !Array.isArray(value);
+/** The CLI's latest `system/api_retry` in the running turn, for display only. */
+export type ClaudeApiRetry = {
+  attempt: number;
+  maxRetries: number | null;
+  /** HTTP status of the failed request, when the CLI reported one. */
+  status: number | null;
+  /** The CLI's error category, e.g. `authentication_failed`. */
+  error: string | null;
+};
 export type ClaudeRunnerSnapshot = {
   terminalResult: ClaudeRunnerTerminalResult | null;
   lastOutcome: string | null;
@@ -142,6 +151,7 @@ export type ClaudeRunnerSnapshot = {
   tokenUsage: unknown;
   usage: ContextUsage;
   activity: "compacting" | null;
+  apiRetry: ClaudeApiRetry | null;
   status: string;
   sendEnabled: boolean;
   stopEnabled: boolean;
@@ -197,6 +207,14 @@ export class ClaudeRunnerState {
   subagentBashToolIds = new Map<string, string>();
   subagentTasks = new Map<string, string>();
   terminalResult: ClaudeRunnerTerminalResult | null = null;
+  apiRetry: ClaudeApiRetry | null = null;
+  // Where the worker's API key comes from, as its system/init reports it (`none` with a
+  // claude.ai login). Diagnostic text only; never a credential.
+  apiKeySource: string | null = null;
+  // The running turn's main-thread assistant frame reported `authentication_failed`.
+  authFailed = false;
+  // The turn ended on an authentication failure: the next worker must read the login afresh.
+  retireRequested = false;
   // Control requests refused in the current turn; a stream that keeps sending them is broken.
   unknownRequests = 0;
   // What was ignored or refused, by category. Not part of any snapshot or checkpoint.
@@ -238,6 +256,7 @@ export class ClaudeRunnerState {
       subagentBashToolIds: new Map(this.subagentBashToolIds),
       subagentTasks: new Map(this.subagentTasks),
       terminalResult: this.terminalResult ? structuredClone(this.terminalResult) : null,
+      apiRetry: this.apiRetry ? { ...this.apiRetry } : null,
       unknownRequests: this.unknownRequests,
     };
   }
@@ -295,6 +314,7 @@ export class ClaudeRunnerState {
         this.revision,
       )!,
       activity: this.activity,
+      apiRetry: this.apiRetry ? { ...this.apiRetry } : null,
       status: this.status,
       sendEnabled: this.status === "idle" && this.activity !== "compacting",
       stopEnabled: this.status !== "idle" && this.turnId.length > 0 && this.reason === null,
@@ -325,6 +345,9 @@ export class ClaudeRunnerState {
     this.reason = null;
     this.lastOutcome = null;
     this.terminalResult = null;
+    this.apiRetry = null;
+    this.authFailed = false;
+    this.retireRequested = false;
     this.bashToolIds.clear();
     this.foregroundTasks.clear();
     this.subagentBashToolIds.clear();
@@ -468,6 +491,7 @@ export class ClaudeRunnerState {
     this.pendingUser = null;
     this.reason = null;
     this.activity = null;
+    this.apiRetry = null;
     this.#pendingUsage();
     this.revision++;
   }
@@ -475,6 +499,7 @@ export class ClaudeRunnerState {
   fail(reason: string): void {
     this.status = "outcome-unknown";
     this.activity = null;
+    this.apiRetry = null;
     this.contextUsage = {
       ...this.contextUsage,
       state: this.contextUsage.available ? "stale" : "unavailable",
@@ -532,6 +557,8 @@ export class ClaudeRunnerState {
           return null;
         }
         this.#assertTurnActive("stream_event");
+        // A streamed response means the request a retry was waiting for got through.
+        this.apiRetry = null;
         const event = frame.event;
         if (event?.type === "message_start") {
           if (this.activity !== "compacting") this.#pendingUsage();
@@ -566,6 +593,10 @@ export class ClaudeRunnerState {
           return null;
         }
         this.#assertTurnActive("assistant");
+        this.apiRetry = null;
+        // The CLI's own message for a rejected login or key (2.1.311: `Not logged in · Please
+        // run /login`, `Invalid API key · Fix external API key`), followed by an error result.
+        if (frame.error === "authentication_failed") this.authFailed = true;
         if (frame.isUnmetered !== true) this.#observeUsage(frame.message);
         const blocks = frame.message?.content;
         const nativeId =
@@ -648,6 +679,30 @@ export class ClaudeRunnerState {
           const detail = Array.isArray(frame.errors)
             ? frame.errors.filter((item: unknown) => typeof item === "string").join("; ")
             : "";
+          const status = Number.isSafeInteger(frame.api_error_status)
+            ? Number(frame.api_error_status)
+            : null;
+          if (this.authFailed || status === 401) {
+            // The CLI ended the turn itself before doing anything on a rejected login or key, so
+            // the outcome is known and nothing is left running. The session stays usable once
+            // the login or key is fixed; the worker is retired so the next one reads it afresh.
+            const text = (typeof frame.result === "string" && frame.result) || detail;
+            this.reason = formatTermination(
+              "claude-auth-failed",
+              [
+                text || "authentication failed",
+                status === null ? "" : ` (HTTP ${status})`,
+                this.apiKeySource ? `; key source: ${this.apiKeySource}` : "",
+              ].join(""),
+            );
+            this.status = "idle";
+            this.lastOutcome = "failed";
+            this.activity = null;
+            this.apiRetry = null;
+            this.streamText = "";
+            this.retireRequested = true;
+            break;
+          }
           throw new ClaudeTurnFailure(
             `Claude turn failed: ${detail || frame.result || "unknown execution error"}`,
           );
@@ -657,10 +712,37 @@ export class ClaudeRunnerState {
         this.lastOutcome = this.terminalResult.success ? "succeeded" : "cancelled";
         if (this.activity === "compacting") this.#staleUsage();
         this.activity = null;
+        this.apiRetry = null;
         this.streamText = "";
         break;
       case "system":
         if (frame.subtype === "init" && typeof frame.model === "string") this.model = frame.model;
+        if (frame.subtype === "init")
+          this.apiKeySource =
+            typeof frame.apiKeySource === "string" &&
+            /^[A-Za-z0-9_.:-]{1,64}$/.test(frame.apiKeySource)
+              ? frame.apiKeySource
+              : null;
+        // 2.1.311 retries a rejected request with backoff (ten times over about three minutes
+        // for a 401) and reports each attempt; without this the turn looks stuck.
+        if (frame.subtype === "api_retry" && this.status !== "idle")
+          this.apiRetry = {
+            attempt: Number.isSafeInteger(frame.attempt) && frame.attempt > 0 ? frame.attempt : 1,
+            maxRetries:
+              Number.isSafeInteger(frame.max_retries) && frame.max_retries > 0
+                ? frame.max_retries
+                : null,
+            status:
+              Number.isSafeInteger(frame.error_status) &&
+              frame.error_status >= 100 &&
+              frame.error_status <= 599
+                ? frame.error_status
+                : null,
+            error:
+              typeof frame.error === "string" && /^[a-z_]{1,64}$/.test(frame.error)
+                ? frame.error
+                : null,
+          };
         if (frame.subtype === "status") {
           if (frame.status === "compacting") {
             this.activity = "compacting";
@@ -1464,6 +1546,11 @@ export class ClaudeManagedRunnerProcess {
     return this.#retiring;
   }
 
+  /** The last turn ended on a rejected login or key; the idle worker should go now. */
+  get retireRequested(): boolean {
+    return this.state.retireRequested && this.state.status === "idle";
+  }
+
   retireIfInactive(): Promise<boolean> | null {
     if (
       !this.#child ||
@@ -1477,6 +1564,7 @@ export class ClaudeManagedRunnerProcess {
     return (async () => {
       try {
         await this.shutdown();
+        this.state.retireRequested = false;
         this.state.initialized = false;
         this.state.initId = "";
         this.state.seenRequests.clear();

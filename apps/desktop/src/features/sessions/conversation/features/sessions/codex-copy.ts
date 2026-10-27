@@ -438,6 +438,8 @@ const reasons: Record<Locale, Record<string, string>> = {
       "AgentKib 发起的这一轮结束后，Claude 仍在继续工作（例如后台子代理完成）。AgentKib 只跟踪自己发起的轮次，所以 AgentKib 停止了会话，以保持此处显示与已保存的会话一致。该会话在 AgentKib 中保持只读，请在 Claude Code 终端里继续。",
     "claude-protocol-violation":
       "AgentKib 无法解析 Claude Code 的输出，为安全起见已停止会话。Claude Code 自己保存着此前的会话（最后几条消息可能缺失）。该会话在 AgentKib 中保持只读，请在 Claude Code 终端里继续。若反复出现，请更新 AgentKib 并反馈 Claude Code 的版本。",
+    "claude-auth-failed":
+      "Claude Code 未通过认证：还没有登录，或 API key 被拒绝。请在这台电脑的终端里运行 claude，用 /login 登录；使用 API key 时，把它写进 ~/.claude/settings.json 的 env，或配置 apiKeyHelper。不是从终端启动的 AgentKib（例如从程序坞打开）读不到 shell 里 export 的变量。修好后直接重新发送，AgentKib 会用新的设置启动 Claude Code。",
     permission_denied: "此浏览器尚未获得对应权限，请在这台电脑上的 AgentKib 授权。",
   },
   "zh-TW": {
@@ -501,6 +503,8 @@ const reasons: Record<Locale, Record<string, string>> = {
       "AgentKib 發起的這一輪結束後，Claude 仍在繼續工作（例如背景子代理完成）。AgentKib 只追蹤自己發起的回合，所以 AgentKib 停止了對話，以保持此處顯示與已儲存的對話一致。該對話在 AgentKib 中保持唯讀，請在 Claude Code 終端機裡繼續。",
     "claude-protocol-violation":
       "AgentKib 無法解析 Claude Code 的輸出，為安全起見已停止對話。Claude Code 自己保存著先前的對話（最後幾則訊息可能缺失）。該對話在 AgentKib 中保持唯讀，請在 Claude Code 終端機裡繼續。若反覆出現，請更新 AgentKib 並回報 Claude Code 的版本。",
+    "claude-auth-failed":
+      "Claude Code 未通過驗證：尚未登入，或 API key 遭到拒絕。請在這台電腦的終端機執行 claude，用 /login 登入；使用 API key 時，請寫進 ~/.claude/settings.json 的 env，或設定 apiKeyHelper。不是從終端機啟動的 AgentKib（例如從 Dock 開啟）讀不到 shell 中 export 的變數。修正後直接重新傳送，AgentKib 會用新的設定啟動 Claude Code。",
     permission_denied: "此瀏覽器尚未取得對應權限，請在這台電腦上的 AgentKib 授權。",
   },
   "en-US": {
@@ -573,6 +577,8 @@ const reasons: Record<Locale, Record<string, string>> = {
       "Claude kept working after the turn AgentKib started had ended (for example a background sub-agent finished). AgentKib only follows turns it starts, so AgentKib stopped the session to keep this view consistent with the saved session. This session is read-only in AgentKib; continue it in the Claude Code terminal.",
     "claude-protocol-violation":
       "AgentKib could not follow Claude Code's output and stopped the session to stay safe. Claude Code keeps the session up to that point (the last messages may be missing). This session is read-only in AgentKib; continue it in the Claude Code terminal. If this keeps happening, update AgentKib and report the Claude Code version.",
+    "claude-auth-failed":
+      "Claude Code could not authenticate: it is not logged in, or the API key was rejected. Run claude in a terminal on this computer and log in with /login. For an API key, put it in the env block of ~/.claude/settings.json or configure apiKeyHelper. AgentKib started outside a terminal (for example from the Dock) does not see variables exported in your shell. After fixing it, send again; AgentKib starts Claude Code with the new settings.",
     permission_denied:
       "This browser needs the corresponding permission. Grant it in AgentKib on this computer.",
   },
@@ -646,14 +652,19 @@ const reasons: Record<Locale, Record<string, string>> = {
       "AgentKib が開始したターンが終わった後も Claude が作業を続けました（例: バックグラウンドのサブエージェントの完了）。AgentKib は自分で開始したターンだけを追うため、保存済みの会話と表示を一致させるために AgentKib が会話を停止しました。この会話は AgentKib では読み取り専用です。続きは Claude Code のターミナルで行ってください。",
     "claude-protocol-violation":
       "AgentKib は Claude Code の出力を解釈できなかったため、安全のため会話を停止しました。Claude Code はそれまでの会話を保存しています（最後の数件は欠けている可能性があります）。この会話は AgentKib では読み取り専用です。続きは Claude Code のターミナルで行ってください。繰り返し発生する場合は、AgentKib を更新し、Claude Code のバージョンを報告してください。",
+    "claude-auth-failed":
+      "Claude Code の認証に失敗しました。ログインしていないか、API キーが拒否されています。このコンピューターのターミナルで claude を実行し、/login でログインしてください。API キーを使う場合は ~/.claude/settings.json の env に書くか、apiKeyHelper を設定してください。ターミナル以外（Dock など）から起動した AgentKib は、シェルで export した変数を読み取れません。修正したらそのまま再送信してください。AgentKib が新しい設定で Claude Code を起動します。",
     permission_denied:
       "このブラウザーには対応する権限が必要です。このコンピューター上の AgentKib で権限を付与してください。",
   },
 };
+// Reasons stored as `<code>: <detail>`. The first three stop the session; an authentication
+// failure leaves it idle and usable.
 const claudeStopCodes = [
   "claude-background-task",
   "claude-unrequested-turn",
   "claude-protocol-violation",
+  "claude-auth-failed",
 ];
 export function codexReason(
   locale: Locale,
@@ -672,8 +683,8 @@ export function codexReason(
   ) {
     return { text: surfaceText(localizedUnavailableReasonText(reason, locale), surface, locale) };
   }
-  // A stopped Claude session stores `<code>: <detail>`; the code is explained, the detail is
-  // shown as the technical text.
+  // A coded Claude reason is `<code>: <detail>`; the code is explained, the detail is shown as
+  // the technical text.
   const separator = reason?.indexOf(": ") ?? -1;
   const code = reason && separator > 0 ? reason.slice(0, separator) : undefined;
   if (reason && code && claudeStopCodes.includes(code))

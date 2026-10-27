@@ -261,6 +261,13 @@ export interface Live {
   connectionGeneration?: string;
   model?: string;
   activity?: "compacting" | null;
+  /** Managed Claude only: the CLI's latest retry of a failed request in the running turn. */
+  apiRetry?: {
+    attempt: number;
+    maxRetries: number | null;
+    status: number | null;
+    error: string | null;
+  } | null;
   tokenUsage?: unknown;
   streamText?: string;
   streamTextTruncated?: boolean;

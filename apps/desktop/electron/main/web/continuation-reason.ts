@@ -1,10 +1,14 @@
+import { CLAUDE_COMMAND_REFUSALS } from "@agentkib/runtime-protocol";
+
 /** Only these owner diagnostics may cross the host boundary as public reasons. */
 export function continuationPreflightReason(
   reason: unknown,
   fallback = "control_preflight_rejected",
 ): string {
   return typeof reason === "string" &&
-    new Set([
+    new Set<string>([
+      // A slash command AgentKib did not send; clients explain each one.
+      ...CLAUDE_COMMAND_REFUSALS,
       "session-compacting",
       "codex-owner-busy",
       "codex-cli-version-too-old",

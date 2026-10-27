@@ -27,6 +27,7 @@ import {
   projectContextUsage,
   type ContextUsage,
 } from "./context-usage";
+import type { ClaudeCommandEntry } from "@agentkib/runtime-protocol";
 
 const MAX_TEXT = 4 * 1024 * 1024;
 const MAX_LINE = 6 * MAX_TEXT + 1024 * 1024;
@@ -85,7 +86,7 @@ export type ClaudeModelOption = {
 };
 export type ClaudeRunnerOptionsSnapshot = {
   models: ClaudeModelOption[];
-  commands: Array<{ name: string; description?: string; argumentHint?: string }>;
+  commands: ClaudeCommandEntry[];
   settings: ClaudeRunnerEffectiveSettings;
   settingsAcknowledged: boolean;
 };
@@ -2595,10 +2596,16 @@ function projectCommands(value: unknown): ClaudeRunnerOptionsSnapshot["commands"
     throw new Error("invalid Claude command catalog");
   return value.map((entry: unknown) => {
     if (!object(entry) || !shortString(entry.name, 256)) throw new Error("invalid Claude command");
+    // `builtin` and `aliases` decide which commands a remote device may run (claude-commands).
+    const aliases = Array.isArray(entry.aliases)
+      ? entry.aliases.filter((alias: unknown) => shortString(alias, 256)).slice(0, 16)
+      : [];
     return {
       name: entry.name,
       ...(shortString(entry.description, 4096) ? { description: entry.description } : {}),
       ...(shortString(entry.argumentHint, 1024) ? { argumentHint: entry.argumentHint } : {}),
+      ...(entry.builtin === true ? { builtin: true } : {}),
+      ...(aliases.length ? { aliases } : {}),
     };
   });
 }

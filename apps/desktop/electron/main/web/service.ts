@@ -2537,7 +2537,10 @@ export class WebAccessService {
     return operation === "send" || operation === "inspect" ? "send" : "advancedControl";
   }
   private projectClaudeCapabilities(result: unknown, device: WebDevice, sessionId: string) {
-    const data = result as { features?: Record<string, { available: boolean; reason?: string }> };
+    const data = result as {
+      features?: Record<string, { available: boolean; reason?: string }>;
+      commands?: unknown;
+    };
     const roles: Record<string, keyof WebDevice> = {
       send: "send",
       stop: "send",
@@ -2572,8 +2575,11 @@ export class WebAccessService {
       archive: "organize",
       unarchive: "organize",
     };
+    // The command catalog serves composing messages; clients filter it per device.
+    const { commands, ...rest } = data;
     return {
-      ...data,
+      ...rest,
+      ...(device.send === true && Array.isArray(commands) ? { commands } : {}),
       features: Object.fromEntries(
         Object.entries(data.features ?? {}).map(([operation, feature]) => {
           const permission = roles[operation];

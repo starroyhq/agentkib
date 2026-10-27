@@ -894,6 +894,61 @@ describe("Claude host control boundary", () => {
       ).toHaveLength(0);
     },
   );
+  it.each([
+    "claude-command-clear",
+    "claude-command-background",
+    "claude-command-goal",
+    "claude-command-rename",
+    "claude-command-settings",
+    "claude-command-owner-only",
+  ])("passes the slash-command refusal %s on to the browser", async (reason) => {
+    const implementation = runtime.getMockImplementation()!;
+    runtime.mockImplementation(async (value) => {
+      const params = value as Record<string, unknown>;
+      // The Claude backend reports a refusal in `error`.
+      return params.operation === "send"
+        ? {
+            accepted: false,
+            completed: false,
+            requestId: params.requestId,
+            runtimeBootId: "runtime-one",
+            controlOutcome: "not-dispatched",
+            error: reason,
+          }
+        : implementation(value);
+    });
+    expect(
+      await http("/send", {
+        bootId,
+        sessionId: "claude-session",
+        requestId: randomUUID(),
+        expectedRevision: 4,
+        text: "/config permissionMode=auto",
+      }),
+    ).toMatchObject({ status: 409, body: { error: reason, controlOutcome: "not-dispatched" } });
+  });
+  it("gives the command catalog only to a device that can send", async () => {
+    const commands = [
+      { name: "config", builtin: true, aliases: ["settings"] },
+      { name: "probe-skill", description: "A probe skill (project)" },
+    ];
+    managed.mockResolvedValue({
+      sessionId: "claude-session",
+      executionMode: "claude-managed",
+      commands,
+      features: { send: { available: true } },
+    });
+    const sending = await http("/managed/capabilities?agent=claude-code&sessionId=claude-session");
+    expect(sending).toMatchObject({ status: 200, body: { commands } });
+    cookie = "";
+    const access = await http("/access");
+    cookie = access.cookies![0].split(";")[0];
+    csrf = String(access.body.csrfToken);
+    await approveLegacyBrowser(service, cookie, { send: false, approve: true });
+    const reading = await http("/managed/capabilities?agent=claude-code&sessionId=claude-session");
+    expect(reading.status).toBe(200);
+    expect(reading.body).not.toHaveProperty("commands");
+  });
   it("projects Claude capabilities through actual device roles and LAN transport restrictions", async () => {
     const features = Object.fromEntries(
       ["send", "approve", "adopt", "release", "files", "attachments"].map((name) => [

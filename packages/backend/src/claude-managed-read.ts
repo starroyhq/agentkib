@@ -30,7 +30,13 @@ import { canonicalize, pathIdentity } from "./paths";
 import { restrictRemotePath } from "./remote-tls";
 import { acquirePortableFileLease } from "./managed-session-lock";
 import { readClaudeVersion, supportsClaudeVersion } from "./claude-version";
-import type { ConversationTurnMeta } from "@agentkib/runtime-protocol";
+import {
+  CLAUDE_COMMAND_REFUSALS,
+  claudeInputCommandRefusal,
+  isClaudeCommandRefusal,
+  type ClaudeCommandEntry,
+  type ConversationTurnMeta,
+} from "@agentkib/runtime-protocol";
 import { terminationCodeOf } from "./claude-frame-policy";
 import { ClaudeTurnMetaStore } from "./claude-turn-meta";
 import type { ConversationEventPage } from "./session-events";
@@ -68,6 +74,33 @@ import {
 
 // Defined in claude-version.ts (imported above for this file's own checks); still exported from here.
 export { supportsClaudeVersion } from "./claude-version";
+
+/**
+ * Devices that act for the person at this computer, as the terminal does: the desktop app,
+ * through its own Web view or the local bridge. Paired browsers are remote devices.
+ */
+const CLAUDE_OWNER_DEVICES: ReadonlySet<string> = new Set([
+  "desktop-local",
+  "agentkib-local-owner",
+]);
+
+/** Throws why AgentKib does not send this input for the device (see claude-commands). */
+function assertClaudeCommandAllowed(
+  input: unknown,
+  deviceId: string,
+  commands: readonly ClaudeCommandEntry[],
+): void {
+  const refusal = claudeInputCommandRefusal(input, {
+    owner: CLAUDE_OWNER_DEVICES.has(deviceId),
+    commands,
+  });
+  if (refusal) throw new Error(refusal);
+}
+
+/** What every goal step sends: the objective, then how to report the step. */
+function goalStepInput(objective: string, stepId: string): string {
+  return `${objective}\n\nContinue the authorized goal. Before finishing this step, call the AgentKib report_goal_step MCP tool for step ${stepId}. Report continue, complete, or blocked with evidence and remaining work. A normal text reply does not complete the goal.`;
+}
 
 /** The requested mutation is durably rejected before any external effect. */
 export class ClaudeHostControlPreflightError extends Error {
@@ -472,6 +505,7 @@ export class ClaudeManagedReadOwner {
           "claude-owner-check-unavailable",
           "session-already-bridged",
           "claude-bridge-registry-invalid",
+          ...CLAUDE_COMMAND_REFUSALS,
         ].includes(reason) ||
         managedSessionHasUnknownCommands(this.dataDir, id)
       )
@@ -566,6 +600,13 @@ export class ClaudeManagedReadOwner {
       !supportsClaudeVersion((await this.#installationVersion()) ?? "", "2.1.286")
     )
       throw new Error("unsupported-Claude-version");
+    // Before adopting the session or pausing its goal, so a refused command changes nothing.
+    if (operation === "send" || operation === "steer")
+      assertClaudeCommandAllowed(
+        value.input ?? (typeof value.text === "string" ? value.text : undefined),
+        value.deviceId,
+        this.#commandCatalog(id),
+      );
 
     let record = this.#load(id);
     let adopted = false;
@@ -738,6 +779,13 @@ export class ClaudeManagedReadOwner {
               () => {
                 if (runner.snapshot().activity === "compacting")
                   throw new ClaudeUndispatchedError();
+                // A new worker has just reported its catalog at initialize. A command it marks
+                // built-in may have been unknown when this message was accepted.
+                const refusal = claudeInputCommandRefusal(content, {
+                  owner: CLAUDE_OWNER_DEVICES.has(value.deviceId),
+                  commands: runner.optionsSnapshot.commands,
+                });
+                if (refusal) throw new ClaudeUndispatchedError(refusal);
                 if (value.schedulePermitId) {
                   const permit = this.#permits.get(value.schedulePermitId);
                   if (
@@ -1440,11 +1488,13 @@ export class ClaudeManagedReadOwner {
         const record = this.#load(id);
         if (!record || record.released || !this.#ownerLocks.has(id)) throw error;
         this.#validate(record);
+        const reason = error instanceof Error ? error.message : "";
         const result = this.#hostState.command(id, value, record.workspaceId, () => ({
           accepted: false,
           completed: false,
           controlOutcome: "not-dispatched",
-          error: "control-preflight-rejected",
+          // A refused command is explained to the user; other preflight details stay inside.
+          error: isClaudeCommandRefusal(reason) ? reason : "control-preflight-rejected",
         }));
         if (result.controlOutcome !== "not-dispatched") throw error;
         throw new ClaudeHostControlPreflightError(
@@ -1736,6 +1786,10 @@ export class ClaudeManagedReadOwner {
         target.settings = { ...state.settings };
       });
     }
+    // Read before the host-state transaction below, which must not open another one.
+    const commands = ["queue-add", "queue-update", "goal-set"].includes(operation)
+      ? this.#commandCatalog(id)
+      : [];
     const result = this.#hostState.command(
       id,
       value,
@@ -1782,6 +1836,7 @@ export class ClaudeManagedReadOwner {
               value.resourceRefs,
             );
             validateClaudeContent(input);
+            assertClaudeCommandAllowed(input, value.deviceId, commands);
             const item: ClaudeHostWork = {
               id: randomUUID(),
               requestId: randomUUID(),
@@ -1835,6 +1890,9 @@ export class ClaudeManagedReadOwner {
               value.resourceRefs,
             );
             validateClaudeContent(input);
+            // The item is still sent as the device that queued it, so the edit must suit both.
+            assertClaudeCommandAllowed(input, value.deviceId, commands);
+            assertClaudeCommandAllowed(input, item.deviceId, commands);
             item.input = input;
             item.originRequestId = value.requestId;
             if (Buffer.byteLength(JSON.stringify(host.work)) > 64 * 1024 * 1024)
@@ -1905,6 +1963,11 @@ export class ClaudeManagedReadOwner {
             if (intent !== "start" && intent !== "update") throw new Error("invalid-goal-intent");
             if (intent === "start" && host.goal) throw new Error("goal-already-exists");
             if (intent === "update" && !host.goal) throw new Error("goal-unavailable");
+            // Each step starts with the objective and is sent as the goal's device.
+            const step = goalStepInput(value.goal.objective, "pending");
+            assertClaudeCommandAllowed(step, value.deviceId, commands);
+            if (intent === "update")
+              assertClaudeCommandAllowed(step, host.goal!.deviceId, commands);
             const budget =
               intent === "update" && value.goal.tokenBudget === undefined
                 ? host.goal!.tokenBudget
@@ -2146,7 +2209,7 @@ export class ClaudeManagedReadOwner {
         );
         this.#goalEndpoints.set(id, endpoint);
         options = { mcpConfig: endpoint.mcpConfig };
-        item.input = `${goal.objective}\n\nContinue the authorized goal. Before finishing this step, call the AgentKib report_goal_step MCP tool for step ${item.id}. Report continue, complete, or blocked with evidence and remaining work. A normal text reply does not complete the goal.`;
+        item.input = goalStepInput(goal.objective, item.id);
       }
       await this.#prepareRunner(this.#load(id)!, options);
       const latest = await this.#live(id, true);
@@ -2180,6 +2243,16 @@ export class ClaudeManagedReadOwner {
       this.#goalEndpoints.delete(id);
       throw error;
     }
+  }
+
+  /**
+   * The slash-command catalog the CLI reported: the worker's, else the last one a worker
+   * confirmed, else empty. Reading never starts a worker.
+   */
+  #commandCatalog(id: string): ClaudeCommandEntry[] {
+    const options = this.#runners.get(id)?.optionsSnapshot;
+    if (options?.settingsAcknowledged) return options.commands;
+    return this.#hostState.peek(id)?.lastConfirmedOptions?.options.commands ?? [];
   }
 
   #resourceInput(record: ClaudeRecord, content: unknown, references: unknown): unknown {
@@ -4123,6 +4196,8 @@ export class ClaudeManagedReadOwner {
       executionMode: live.executionMode,
       status: live.status,
       reason: live.reason,
+      // For the `/` menu. Clients filter it with the rules the backend enforces on send.
+      commands: this.#commandCatalog(id),
       features: Object.fromEntries(
         Object.entries(map).map(([key, available]) => [
           key,

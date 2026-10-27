@@ -1,4 +1,5 @@
 import type {
+  ClaudeCommandEntry,
   ConversationToolDetail,
   ConversationTurnMeta,
   HistorySearchQuery,
@@ -10,6 +11,11 @@ import type {
   HistorySearchStatus,
 } from "@agentkib/runtime-protocol";
 export type {
+  ClaudeCommandAccess,
+  ClaudeCommandDecision,
+  ClaudeCommandEntry,
+  ClaudeCommandRefusal,
+  ClaudeMenuCommand,
   ConversationToolContent,
   ConversationToolDetail,
   ConversationToolKind,
@@ -28,6 +34,12 @@ export type {
 } from "@agentkib/runtime-protocol";
 export {
   CLAUDE_BRIDGE_CLI_VERSION,
+  CLAUDE_COMMAND_REFUSALS,
+  claudeCommandDecision,
+  claudeCommandRefusal,
+  claudeMenuCommands,
+  isClaudeCommandRefusal,
+  parseClaudeSlashCommand,
   claudeBridgeCompatibility,
   formatHistoryReferences,
   literalHistoryMatchRanges,
@@ -398,6 +410,11 @@ export interface CodexCapabilities {
       { available: boolean; reason?: string }
     >
   >;
+  /**
+   * Claude Code's slash-command catalog, as its last worker reported it. Absent for devices
+   * that cannot send, and empty before any worker has run in the session.
+   */
+  commands?: ClaudeCommandEntry[];
 }
 export type ManagedAgent = "codex" | "claude-code";
 export type SessionCapabilities = CodexCapabilities;

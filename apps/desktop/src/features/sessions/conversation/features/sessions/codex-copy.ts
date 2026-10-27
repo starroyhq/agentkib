@@ -440,6 +440,18 @@ const reasons: Record<Locale, Record<string, string>> = {
       "AgentKib 无法解析 Claude Code 的输出，为安全起见已停止会话。Claude Code 自己保存着此前的会话（最后几条消息可能缺失）。该会话在 AgentKib 中保持只读，请在 Claude Code 终端里继续。若反复出现，请更新 AgentKib 并反馈 Claude Code 的版本。",
     "claude-auth-failed":
       "Claude Code 未通过认证：还没有登录，或 API key 被拒绝。请在这台电脑的终端里运行 claude，用 /login 登录；使用 API key 时，把它写进 ~/.claude/settings.json 的 env，或配置 apiKeyHelper。shell 配置文件里 export 的变量通常传不到 AgentKib（例如从程序坞打开时）。修好后直接重新发送，AgentKib 会用新的设置启动 Claude Code。",
+    "claude-command-clear":
+      "/clear 会让 Claude Code 改用一条新会话，AgentKib 无法跟随，本次消息尚未发送。需要空白上下文时请新建会话，这条会话会保留；只想腾出上下文可以用 /compact。",
+    "claude-command-background":
+      "/loop 和 /batch 会启动 AgentKib 无法监管的后台任务，本次消息尚未发送。要接着执行的消息可以加入待发队列，或使用持续目标。",
+    "claude-command-goal":
+      "Claude Code 的 /goal 会在 AgentKib 不知情时继续运行，本次消息尚未发送。请使用 AgentKib 的持续目标。",
+    "claude-command-rename":
+      "/rename 只更改 Claude Code 中的名称，AgentKib 中的名称不会随之改变，本次消息尚未发送。请在 AgentKib 中重命名会话。",
+    "claude-command-settings":
+      "带参数的 /model 和 /effort 只影响当前进程，AgentKib 无法保留，本次消息尚未发送。请在下一轮设置中更改模型或思考强度。",
+    "claude-command-owner-only":
+      "这条命令可能更改这台电脑上的 Claude Code 设置或文件，只能在这台电脑上的 AgentKib 或终端中使用，本次消息尚未发送。",
     permission_denied: "此浏览器尚未获得对应权限，请在这台电脑上的 AgentKib 授权。",
   },
   "zh-TW": {
@@ -505,6 +517,18 @@ const reasons: Record<Locale, Record<string, string>> = {
       "AgentKib 無法解析 Claude Code 的輸出，為安全起見已停止對話。Claude Code 自己保存著先前的對話（最後幾則訊息可能缺失）。該對話在 AgentKib 中保持唯讀，請在 Claude Code 終端機裡繼續。若反覆出現，請更新 AgentKib 並回報 Claude Code 的版本。",
     "claude-auth-failed":
       "Claude Code 未通過驗證：尚未登入，或 API key 遭到拒絕。請在這台電腦的終端機執行 claude，用 /login 登入；使用 API key 時，請寫進 ~/.claude/settings.json 的 env，或設定 apiKeyHelper。shell 設定檔中 export 的變數通常傳不到 AgentKib（例如從 Dock 開啟時）。修正後直接重新傳送，AgentKib 會用新的設定啟動 Claude Code。",
+    "claude-command-clear":
+      "/clear 會讓 Claude Code 改用一段新對話，AgentKib 無法跟隨，本次訊息尚未傳送。需要空白上下文時請建立新對話，這段對話會保留；只想騰出上下文可以使用 /compact。",
+    "claude-command-background":
+      "/loop 和 /batch 會啟動 AgentKib 無法監管的背景任務，本次訊息尚未傳送。要接著執行的訊息可以加入待發佇列，或使用持續目標。",
+    "claude-command-goal":
+      "Claude Code 的 /goal 會在 AgentKib 不知情時繼續執行，本次訊息尚未傳送。請使用 AgentKib 的持續目標。",
+    "claude-command-rename":
+      "/rename 只變更 Claude Code 中的名稱，AgentKib 中的名稱不會隨之改變，本次訊息尚未傳送。請在 AgentKib 中重新命名對話。",
+    "claude-command-settings":
+      "帶參數的 /model 和 /effort 只影響目前的程序，AgentKib 無法保留，本次訊息尚未傳送。請在下一輪設定中變更模型或思考強度。",
+    "claude-command-owner-only":
+      "這個指令可能變更這台電腦上的 Claude Code 設定或檔案，只能在這台電腦上的 AgentKib 或終端機中使用，本次訊息尚未傳送。",
     permission_denied: "此瀏覽器尚未取得對應權限，請在這台電腦上的 AgentKib 授權。",
   },
   "en-US": {
@@ -579,6 +603,18 @@ const reasons: Record<Locale, Record<string, string>> = {
       "AgentKib could not follow Claude Code's output and stopped the session to stay safe. Claude Code keeps the session up to that point (the last messages may be missing). This session is read-only in AgentKib; continue it in the Claude Code terminal. If this keeps happening, update AgentKib and report the Claude Code version.",
     "claude-auth-failed":
       "Claude Code could not authenticate: it is not logged in, or the API key was rejected. Run claude in a terminal on this computer and log in with /login. For an API key, put it in the env block of ~/.claude/settings.json or configure apiKeyHelper. Variables exported in your shell profile usually do not reach AgentKib (for example when it is opened from the Dock). After fixing it, send again; AgentKib starts Claude Code with the new settings.",
+    "claude-command-clear":
+      "/clear moves Claude Code to a new session that AgentKib cannot follow. This message was not sent. For an empty context, start a new session; this one is kept. To free up context, use /compact.",
+    "claude-command-background":
+      "/loop and /batch start background work that AgentKib cannot supervise. This message was not sent. Add follow-up messages to Queued messages, or use a persistent goal.",
+    "claude-command-goal":
+      "Claude Code's /goal keeps working without AgentKib knowing. This message was not sent. Use AgentKib's persistent goal instead.",
+    "claude-command-rename":
+      "/rename changes only the name in Claude Code, not the one in AgentKib. This message was not sent. Rename the session in AgentKib instead.",
+    "claude-command-settings":
+      "/model and /effort with an argument change only the running process, which AgentKib cannot keep. This message was not sent. Change the model or reasoning effort in Next-turn settings.",
+    "claude-command-owner-only":
+      "This command can change Claude Code settings or files on this computer, so it only runs from AgentKib on this computer or a terminal. This message was not sent.",
     permission_denied:
       "This browser needs the corresponding permission. Grant it in AgentKib on this computer.",
   },
@@ -654,6 +690,18 @@ const reasons: Record<Locale, Record<string, string>> = {
       "AgentKib は Claude Code の出力を解釈できなかったため、安全のため会話を停止しました。Claude Code はそれまでの会話を保存しています（最後の数件は欠けている可能性があります）。この会話は AgentKib では読み取り専用です。続きは Claude Code のターミナルで行ってください。繰り返し発生する場合は、AgentKib を更新し、Claude Code のバージョンを報告してください。",
     "claude-auth-failed":
       "Claude Code の認証に失敗しました。ログインしていないか、API キーが拒否されています。このコンピューターのターミナルで claude を実行し、/login でログインしてください。API キーを使う場合は ~/.claude/settings.json の env に書くか、apiKeyHelper を設定してください。シェルの設定ファイルで export した変数は、通常 AgentKib には届きません（Dock から開いた場合など）。修正したらそのまま再送信してください。AgentKib が新しい設定で Claude Code を起動します。",
+    "claude-command-clear":
+      "/clear を実行すると Claude Code は新しい会話に切り替わり、AgentKib は追従できません。このメッセージは送信されていません。空のコンテキストが必要な場合は新しい会話を開始してください（この会話は残ります）。コンテキストを空けるだけなら /compact を使えます。",
+    "claude-command-background":
+      "/loop と /batch は AgentKib が監督できないバックグラウンド作業を開始します。このメッセージは送信されていません。続けて実行したいメッセージは送信待ちキューに追加するか、継続目標を使ってください。",
+    "claude-command-goal":
+      "Claude Code の /goal は AgentKib の知らないところで作業を続けます。このメッセージは送信されていません。AgentKib の継続目標を使ってください。",
+    "claude-command-rename":
+      "/rename は Claude Code 内の名前だけを変更し、AgentKib の名前は変わりません。このメッセージは送信されていません。AgentKib で会話の名前を変更してください。",
+    "claude-command-settings":
+      "引数付きの /model と /effort は実行中のプロセスだけを変更し、AgentKib には保持されません。このメッセージは送信されていません。次のターンの設定でモデルまたは推論の強度を変更してください。",
+    "claude-command-owner-only":
+      "このコマンドはこのコンピューター上の Claude Code の設定やファイルを変更する可能性があるため、このコンピューター上の AgentKib またはターミナルからのみ実行できます。このメッセージは送信されていません。",
     permission_denied:
       "このブラウザーには対応する権限が必要です。このコンピューター上の AgentKib で権限を付与してください。",
   },

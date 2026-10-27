@@ -27,6 +27,8 @@ export type FakeClaudePlan = {
   noResult?: boolean;
   /** Never answer initialize, so the runner's initialization times out. */
   silentInitialize?: boolean;
+  /** The slash-command catalog the initialize response reports; empty by default. */
+  commands?: unknown[];
 };
 
 export function createFakeClaude(prefix = "agentkib-claude-drift-") {
@@ -84,7 +86,7 @@ readline.createInterface({input: process.stdin}).on('line', (line) => {
       subtype: 'success', request_id: frame.request_id,
       response: initialize ? {
         models: [{value: 'fixture-model', displayName: 'Fixture', supportedEffortLevels: ['low', 'high']}],
-        commands: [],
+        commands: plan().commands || [],
       } : {},
     }});
     if (initialize) { queue = (plan().afterInitialize || []).slice(); run(); }

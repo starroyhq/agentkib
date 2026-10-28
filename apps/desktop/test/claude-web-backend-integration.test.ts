@@ -919,6 +919,35 @@ describe.skipIf(process.platform !== "darwin")(
       }
     });
 
+    it("takes /model's name in any case or as a full model ID and refuses an unlisted model or effort", async () => {
+      const sessionId = await create();
+      await prepareSettings(sessionId);
+      const selected = async () =>
+        (await http(`/managed/settings?sessionId=${sessionId}`)).body.selected;
+      // `/model` sends the name as typed; the listed alias is what is kept.
+      const byCase = await action(sessionId, "settings", { model: "LOW-MODEL" });
+      expect(byCase.status, JSON.stringify(byCase.body)).toBe(200);
+      expect(await selected()).toMatchObject({ modelId: "low-model" });
+      const byId = await action(sessionId, "settings", {
+        model: "Fixture-Resolved-Model",
+        effort: "high",
+      });
+      expect(byId.status, JSON.stringify(byId.body)).toBe(200);
+      expect(await selected()).toMatchObject({ modelId: "fixture-model", effort: "high" });
+      const controls = frames().filter((row) => row.type === "control_request").length;
+      for (const [payload, error] of [
+        [{ model: "no-such-model" }, "unsupported_model"],
+        [{ model: "low-model", effort: "high" }, "unsupported_effort"],
+        [{ effort: "max" }, "unsupported_effort"],
+      ] as const) {
+        const refused = await action(sessionId, "settings", payload);
+        expect(refused.status, JSON.stringify(refused.body)).toBe(400);
+        expect(refused.body).toMatchObject({ error, controlOutcome: "not-dispatched" });
+      }
+      expect(frames().filter((row) => row.type === "control_request")).toHaveLength(controls);
+      expect(await selected()).toMatchObject({ modelId: "fixture-model", effort: "high" });
+    });
+
     it.each(["inherited-plan", "inherited-alias"])(
       "applies effort alone for a native inherited model (%s)",
       async (mode) => {

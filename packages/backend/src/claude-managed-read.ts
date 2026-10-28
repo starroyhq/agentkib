@@ -33,6 +33,7 @@ import { readClaudeVersion, supportsClaudeVersion } from "./claude-version";
 import {
   CLAUDE_COMMAND_REFUSALS,
   claudeInputCommandRefusal,
+  claudeModelOption,
   isClaudeCommandRefusal,
   type ClaudeCommandEntry,
   type ConversationTurnMeta,
@@ -60,7 +61,6 @@ import {
   type ClaudeObservedPermissionMode,
   type ClaudeRunnerSnapshot,
   type ClaudeStartupCleanupProof,
-  claudeModelOption,
   validateClaudeContent,
 } from "./claude-managed-runner";
 import {

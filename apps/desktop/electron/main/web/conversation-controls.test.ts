@@ -276,6 +276,25 @@ describe("Codex conversation controls", () => {
     expect(dispatched).not.toHaveProperty("serviceTierId");
   });
 
+  it("takes a Codex model only by its exact id", async () => {
+    // Claude's `/model` matching (any case, full model ID) is not applied to Codex.
+    const client = await fullBrowser();
+    const result = await client.api("codex/settings", {
+      bootId: client.bootId,
+      requestId: randomUUID(),
+      sessionId: "session",
+      expectedRevision: 7,
+      model: "MODEL-A",
+    });
+    expect(result.response.status).toBe(400);
+    expect(result.data).toMatchObject({ error: "unsupported_model" });
+    expect(
+      runtime.mock.calls.some(
+        ([value]) => (value as Record<string, unknown>).operation === "settings",
+      ),
+    ).toBe(false);
+  });
+
   it("dispatches goal changes through the normal request fence", async () => {
     const client = await fullBrowser();
     const requestId = randomUUID();

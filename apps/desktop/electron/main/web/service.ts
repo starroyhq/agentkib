@@ -1,6 +1,7 @@
 import { createHash, randomBytes, randomInt, randomUUID } from "node:crypto";
 import {
   HISTORY_SEARCH_METHODS,
+  claudeModelOption,
   type HistoryReference,
   type ResolvedHistoryReference,
 } from "@agentkib/runtime-protocol";
@@ -2956,7 +2957,18 @@ export class WebAccessService {
           if (!this.availability(writable?.[key]).available)
             throw new HttpError(409, "setting_unavailable");
         };
-        const model = body.model === undefined ? undefined : this.field(body.model, 128);
+        const typedModel = body.model === undefined ? undefined : this.field(body.model, 128);
+        // `/model` sends a Claude model as typed: an alias in any case or a full model ID. The
+        // listed alias it means is what gets checked and kept, as the backend does.
+        const model =
+          typedModel && capabilities.executionMode === "claude-managed"
+            ? (claudeModelOption(
+                (state.models ?? []).flatMap((item) =>
+                  item.id ? [{ ...item, value: item.id }] : [],
+                ),
+                typedModel,
+              )?.value ?? typedModel)
+            : typedModel;
         const effort =
           body.effort === null && capabilities.executionMode === "claude-managed"
             ? null

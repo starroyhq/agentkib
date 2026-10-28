@@ -452,11 +452,14 @@ describe("a command button's message", () => {
 });
 
 describe("a Claude settings change Claude Code refuses", () => {
+  // The Service answers 400 with its own codes before the backend checks; the backend answers 409.
   it.each([
-    ["unsupported-model", "claude-model-unsupported"],
-    ["unsupported-effort", "claude-effort-unsupported"],
-    ["session-busy", undefined],
-  ] as const)("is explained as %s with Claude's own reason", async (code, reason) => {
+    [409, "unsupported-model", "claude-model-unsupported"],
+    [409, "unsupported-effort", "claude-effort-unsupported"],
+    [400, "unsupported_model", "claude-model-unsupported"],
+    [400, "unsupported_effort", "claude-effort-unsupported"],
+    [409, "session-busy", undefined],
+  ] as const)("is explained (%i %s) with Claude's own reason", async (status, code, reason) => {
     const host = baseFixture(baseIdle("original", "claude-code"), "claude-code");
     vi.mocked(host.client.sessionCapabilities).mockImplementation(async (sessionId) => ({
       sessionId,
@@ -465,7 +468,7 @@ describe("a Claude settings change Claude Code refuses", () => {
       features: { fork: { available: true }, settings: { available: true } },
     }));
     const { result } = await open(host);
-    host.request.mockRejectedValueOnce(new ApiError(409, code, "not-dispatched"));
+    host.request.mockRejectedValueOnce(new ApiError(status, code, "not-dispatched"));
     await act(async () => result.current.codexAction("settings", { model: "no-such-model" }));
     expect(host.request).toHaveBeenCalledWith(
       "managed/action",

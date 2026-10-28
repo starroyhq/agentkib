@@ -85,24 +85,6 @@ export type ClaudeModelOption = {
   description?: string;
   supportedEffortLevels?: ClaudeEffort[];
 };
-/**
- * The listed model a typed name means, as `/model` accepts it: an alias in any case, or the full
- * model ID an alias resolves to. A full ID prefers a named alias over `default`, which follows
- * Claude Code's recommendation rather than naming one model.
- */
-export function claudeModelOption(
-  models: readonly ClaudeModelOption[],
-  name: string,
-): ClaudeModelOption | undefined {
-  const wanted = name.trim().toLowerCase();
-  const resolves = (model: ClaudeModelOption) => model.resolvedModel?.toLowerCase() === wanted;
-  return (
-    models.find((model) => model.value === name) ??
-    models.find((model) => model.value.toLowerCase() === wanted) ??
-    models.find((model) => model.value !== "default" && resolves(model)) ??
-    models.find(resolves)
-  );
-}
 export type ClaudeRunnerOptionsSnapshot = {
   models: ClaudeModelOption[];
   commands: ClaudeCommandEntry[];

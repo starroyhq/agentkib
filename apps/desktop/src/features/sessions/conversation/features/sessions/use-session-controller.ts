@@ -108,8 +108,14 @@ function codexSettingsRecoveryReason(
     // A slash command Claude Code was not sent; the host names which rule refused it.
     const refusal = reasons.find(isClaudeCommandRefusal);
     if (refusal) return refusal;
-    if (reasons.includes("unsupported-model")) return "claude-model-unsupported";
-    if (reasons.includes("unsupported-effort")) return "claude-effort-unsupported";
+    // The Service checks a settings request first and answers `unsupported_model`; the backend
+    // checks again and names the same rejection `unsupported-model`.
+    if (reasons.some((reason) => reason === "unsupported-model" || reason === "unsupported_model"))
+      return "claude-model-unsupported";
+    if (
+      reasons.some((reason) => reason === "unsupported-effort" || reason === "unsupported_effort")
+    )
+      return "claude-effort-unsupported";
     return;
   }
   if (agent !== "codex") return;

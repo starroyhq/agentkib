@@ -339,6 +339,74 @@ describe("Claude host control boundary", () => {
       expect(forwarded).not.toHaveProperty("handoffConfirmed");
     },
   );
+  describe("a Claude next-turn settings request", () => {
+    // The list CLI 2.1.311 reports at initialize, as the backend's settings-state carries it.
+    const models = [
+      { id: "default", resolvedModel: "claude-opus-5-5", efforts: ["low", "high", "max"] },
+      { id: "opus", resolvedModel: "claude-opus-5-5", efforts: ["low", "high", "max"] },
+      { id: "haiku", resolvedModel: "claude-haiku-5-5", efforts: [] },
+    ];
+    beforeEach(() => {
+      const implementation = runtime.getMockImplementation()!;
+      runtime.mockImplementation(async (value) => {
+        const operation = (value as Record<string, unknown>).operation;
+        if (operation === "capabilities")
+          return { executionMode: "claude-managed", features: { settings: { available: true } } };
+        if (operation === "settings-state")
+          return {
+            available: true,
+            executionMode: "claude-managed",
+            revision: 4,
+            current: { model: "opus" },
+            selected: { model: null, effort: null, permissionMode: null },
+            models,
+            writable: { model: { available: true }, effort: { available: true } },
+          };
+        return implementation(value);
+      });
+    });
+    async function settings(fields: Record<string, unknown>) {
+      const desktop = await service.localRequest("/access");
+      return service.localRequest("/managed/action", {
+        operation: "settings",
+        bootId: (desktop.body as { bootId: string }).bootId,
+        sessionId: "claude-session",
+        requestId: randomUUID(),
+        expectedRevision: 4,
+        ...fields,
+      });
+    }
+    const forwarded = () =>
+      runtime.mock.calls
+        .map(([value]) => value as Record<string, unknown>)
+        .filter((value) => value.operation === "settings");
+
+    it.each([
+      ["OPUS", "opus"],
+      ["Claude-Haiku-5-5", "haiku"],
+      // A full ID two aliases resolve to means the named one, not the moving default.
+      ["claude-opus-5-5", "opus"],
+      ["default", "default"],
+    ])("forwards /model %s as the listed %s", async (typed, model) => {
+      expect(
+        await settings({ model: typed, effort: model === "haiku" ? undefined : "high" }),
+      ).toMatchObject({ status: 200 });
+      expect(forwarded()).toEqual([expect.objectContaining({ model })]);
+    });
+
+    it.each([
+      [{ model: "no-such-model" }, "unsupported_model"],
+      [{ model: "best" }, "unsupported_model"],
+      [{ model: "HAIKU", effort: "high" }, "unsupported_effort"],
+      [{ effort: "xhigh" }, "unsupported_effort"],
+    ])("refuses %j before the backend as %s", async (fields, error) => {
+      expect(await settings(fields)).toMatchObject({
+        status: 400,
+        body: { error, controlOutcome: "not-dispatched" },
+      });
+      expect(forwarded()).toEqual([]);
+    });
+  });
   it.each([
     "claude-owner-busy",
     "claude-background-session-running",

@@ -74,6 +74,7 @@ export function CodexTools({
   const [queueError, setQueueError] = useState("");
   const [revision, setRevision] = useState(0);
   const [operation, setOperation] = useState(false);
+  const [confirmDelete, setConfirmDelete] = useState(false);
   useEffect(() => {
     setContext(undefined);
     setQueue(undefined);
@@ -83,6 +84,7 @@ export function CodexTools({
     setMode("");
     setEditing("");
     setText("");
+    setConfirmDelete(false);
   }, [selected]);
   useEffect(() => {
     setName(current?.title ?? "");
@@ -187,6 +189,7 @@ export function CodexTools({
     rename: copy.rename,
     archive: copy.archive,
     unarchive: copy.unarchive,
+    delete: copy.delete,
     fork: copy.fork,
     settings: copy.settings,
     attachments: copy.attachment,
@@ -194,8 +197,11 @@ export function CodexTools({
   const reason = (action: SessionAction) =>
     live?.activity === "compacting" && blockedWhileCompacting(action)
       ? contextUsageCopyForSurface(locale, "web").compactingDetail
-      : codexReason(locale, capabilities?.features[action]?.reason || capabilities?.reason, "web")
-          .text;
+      : // Only quitting the other Codex process frees the thread for deletion.
+        action === "delete" && capabilities?.features.delete?.reason === "codex-owner-busy"
+        ? copy.deleteOwnerBusy
+        : codexReason(locale, capabilities?.features[action]?.reason || capabilities?.reason, "web")
+            .text;
   async function run(
     action: SessionAction,
     fields: Omit<
@@ -213,7 +219,8 @@ export function CodexTools({
           setOpen(false);
           void navigate({ to: "/sessions/$sessionId", params: { sessionId: result.sessionId } });
         }
-        if (action === "archive") {
+        if (action === "archive" || action === "delete") {
+          setConfirmDelete(false);
           setOpen(false);
           void navigate({ to: "/sessions" });
         }
@@ -282,7 +289,59 @@ export function CodexTools({
                 current.archived ? copy.unarchive : copy.archive,
               )}
               {actionButton("fork", copy.fork)}
+              {capabilities?.features.delete && (
+                <div className="min-w-0 max-w-full space-y-1">
+                  <Button
+                    type="button"
+                    variant="outline"
+                    size="sm"
+                    disabled={!enabled("delete") || confirmDelete}
+                    title={enabled("delete") ? undefined : reason("delete")}
+                    onClick={() => setConfirmDelete(true)}
+                  >
+                    {copy.delete}
+                  </Button>
+                  {!enabled("delete") && (
+                    <p className="max-w-64 text-xs text-muted-foreground">{reason("delete")}</p>
+                  )}
+                </div>
+              )}
             </div>
+            {confirmDelete && (
+              <div
+                role="group"
+                aria-labelledby="session-delete-title"
+                aria-describedby="session-delete-detail"
+                className="space-y-2 rounded-md border border-destructive/40 p-3"
+              >
+                <p id="session-delete-title" className="text-sm font-medium">
+                  {copy.deleteTitle}
+                </p>
+                <p id="session-delete-detail" className="text-sm text-muted-foreground">
+                  {isClaude ? copy.deleteClaudeDetail : copy.deleteCodexDetail}
+                </p>
+                <div className="flex flex-wrap gap-2">
+                  <Button
+                    type="button"
+                    variant="destructive"
+                    size="sm"
+                    disabled={!enabled("delete")}
+                    onClick={() => void run("delete")}
+                  >
+                    {copy.deleteConfirm}
+                  </Button>
+                  <Button
+                    type="button"
+                    variant="outline"
+                    size="sm"
+                    disabled={operation}
+                    onClick={() => setConfirmDelete(false)}
+                  >
+                    {copy.cancel}
+                  </Button>
+                </div>
+              </div>
+            )}
           </section>
           {isClaude && ownership}
           {!isClaude && access?.device?.accessMode !== "full" && (

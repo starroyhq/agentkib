@@ -384,6 +384,7 @@ export type CodexAction =
   | "rename"
   | "archive"
   | "unarchive"
+  | "delete"
   | "fork"
   | "settings"
   | "goal-set"

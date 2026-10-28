@@ -407,6 +407,43 @@ describe.each(["codex", "claude-code"] as const)("%s completed fork navigation",
   );
 });
 
+describe.each(["codex", "claude-code"] as const)("a deleted %s session", (agent) => {
+  it("leaves the catalog at once and is never read again", async () => {
+    const host = baseFixture(baseIdle("original", agent), agent);
+    vi.spyOn(host.client, "sessionCapabilities").mockImplementation(async (sessionId) => ({
+      sessionId,
+      executionMode: agent === "codex" ? "codex-managed" : "claude-managed",
+      status: "idle",
+      features: { fork: { available: true }, delete: { available: true } },
+    }));
+    const path = agent === "codex" ? "codex/delete" : "managed/action";
+    host.request.mockImplementation(async (requested) =>
+      requested === path
+        ? { accepted: true, completed: true, deleted: true, sessionId: "original" }
+        : { accepted: true },
+    );
+    const view = await open(host);
+    const liveReads = host.live.mock.calls.length;
+    const historyReads = host.events.mock.calls.length;
+    await act(async () => {
+      await view.result.current.codexAction("delete");
+    });
+    expect(host.request).toHaveBeenCalledWith(
+      path,
+      expect.objectContaining({
+        sessionId: "original",
+        ...(agent === "claude-code" ? { operation: "delete", agent } : {}),
+      }),
+    );
+    expect(view.result.current.sessions.map((session) => session.id)).toEqual(["other"]);
+    expect(view.result.current.excludedSessionIds.has("original")).toBe(true);
+    await act(async () => {});
+    expect(host.live.mock.calls.length).toBe(liveReads);
+    expect(host.events.mock.calls.length).toBe(historyReads);
+    expect(readPending(host.scope)).toEqual([]);
+  });
+});
+
 describe("a command button's message", () => {
   it("is sent on its own and leaves the draft as it is", async () => {
     const host = baseFixture(baseIdle("original", "claude-code"), "claude-code");

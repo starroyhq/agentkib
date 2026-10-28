@@ -26,6 +26,15 @@ const zh = {
   archive: "归档",
   unarchive: "取消归档",
   fork: "分支会话",
+  delete: "删除",
+  deleteTitle: "永久删除这个会话？",
+  deleteCodexDetail:
+    "会话会从 Codex 中删除，Codex Desktop 和终端里也不再显示，不能恢复。AgentKib 里的记录和这个会话的上传文件一并删除。",
+  deleteClaudeDetail:
+    "会话记录会从 Claude Code 中删除，claude --resume 里也不再显示，不能恢复。AgentKib 里的记录和这个会话的上传文件一并删除。",
+  deleteConfirm: "永久删除",
+  deleteOwnerBusy: "Codex Desktop 或终端里的 Codex 正占用这个会话，退出那边后再删除。",
+  cancel: "取消",
   name: "会话名称",
   settings: "下一轮设置",
   changeNextTurnModel: "更改下一轮模型",
@@ -122,6 +131,15 @@ export const codexCopy: Record<Locale, Copy> = {
     archive: "封存",
     unarchive: "取消封存",
     fork: "分支對話",
+    delete: "刪除",
+    deleteTitle: "永久刪除這段對話？",
+    deleteCodexDetail:
+      "對話會從 Codex 中刪除，Codex Desktop 與終端機裡也不再顯示，無法復原。AgentKib 裡的紀錄和這段對話的上傳檔案一併刪除。",
+    deleteClaudeDetail:
+      "對話紀錄會從 Claude Code 中刪除，claude --resume 裡也不再顯示，無法復原。AgentKib 裡的紀錄和這段對話的上傳檔案一併刪除。",
+    deleteConfirm: "永久刪除",
+    deleteOwnerBusy: "Codex Desktop 或終端機裡的 Codex 正占用這段對話，結束那邊後再刪除。",
+    cancel: "取消",
     name: "對話名稱",
     settings: "下一輪設定",
     changeNextTurnModel: "變更下一輪模型",
@@ -217,6 +235,16 @@ export const codexCopy: Record<Locale, Copy> = {
     archive: "Archive",
     unarchive: "Unarchive",
     fork: "Fork session",
+    delete: "Delete",
+    deleteTitle: "Delete this session permanently?",
+    deleteCodexDetail:
+      "The session is deleted in Codex, so Codex Desktop and the terminal no longer show it. This can't be undone. AgentKib's records and this session's uploads are deleted too.",
+    deleteClaudeDetail:
+      "The session's transcript is deleted from Claude Code, so claude --resume no longer lists it. This can't be undone. AgentKib's records and this session's uploads are deleted too.",
+    deleteConfirm: "Delete permanently",
+    deleteOwnerBusy:
+      "Codex Desktop or Codex in a terminal is using this session. Quit it there, then delete.",
+    cancel: "Cancel",
     name: "Session name",
     settings: "Next-turn settings",
     changeNextTurnModel: "Change next-turn model",
@@ -314,6 +342,16 @@ export const codexCopy: Record<Locale, Copy> = {
     archive: "アーカイブ",
     unarchive: "アーカイブ解除",
     fork: "会話を分岐",
+    delete: "削除",
+    deleteTitle: "この会話を完全に削除しますか？",
+    deleteCodexDetail:
+      "会話は Codex から削除され、Codex Desktop やターミナルにも表示されなくなります。元に戻せません。AgentKib の記録とこの会話のアップロードも削除されます。",
+    deleteClaudeDetail:
+      "会話の記録は Claude Code から削除され、claude --resume にも表示されなくなります。元に戻せません。AgentKib の記録とこの会話のアップロードも削除されます。",
+    deleteConfirm: "完全に削除",
+    deleteOwnerBusy:
+      "Codex Desktop またはターミナルの Codex がこの会話を使用中です。そちらを終了してから削除してください。",
+    cancel: "キャンセル",
     name: "会話名",
     settings: "次のターンの設定",
     changeNextTurnModel: "次のターンのモデルを変更",

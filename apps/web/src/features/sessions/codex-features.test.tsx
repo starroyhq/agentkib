@@ -488,6 +488,56 @@ it.each(["zh-CN", "zh-TW", "en-US", "ja-JP"] as const)(
   },
 );
 
+describe("Session delete", () => {
+  const copy = codexCopyForSurface("zh-CN", "web");
+  function prepare(features: Record<string, { available: boolean; reason?: string }>) {
+    state = {
+      ...state,
+      current: {
+        id: "s",
+        agent: "codex",
+        title: "Codex",
+        workspace_id: "w",
+        archived: false,
+        sidechain: false,
+        availability: "readable",
+      },
+      access: { ...state.access!, experimentalEnabled: true },
+      capabilities: { sessionId: "s", executionMode: "codex-managed", status: "idle", features },
+      client: Object.assign(state.client, {
+        codexQueue: vi.fn().mockResolvedValue({ data: [] }),
+        request: vi.fn().mockResolvedValue({ available: true, workspaces: [] }),
+      }),
+      refresh: vi.fn(),
+    } as ReturnType<typeof useSession>;
+  }
+  it("asks before deleting permanently, and deletes only once confirmed", async () => {
+    prepare({ delete: { available: true } });
+    render(<CodexTools open />);
+    fireEvent.click(screen.getByRole("button", { name: copy.delete }));
+    expect(state.codexAction).not.toHaveBeenCalled();
+    const confirm = screen.getByRole("group", { name: copy.deleteTitle });
+    expect(confirm).toHaveAccessibleDescription(copy.deleteCodexDetail);
+    fireEvent.click(screen.getByRole("button", { name: copy.cancel }));
+    expect(screen.queryByRole("group", { name: copy.deleteTitle })).not.toBeInTheDocument();
+    expect(state.codexAction).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByRole("button", { name: copy.delete }));
+    fireEvent.click(screen.getByRole("button", { name: copy.deleteConfirm }));
+    await waitFor(() => expect(state.codexAction).toHaveBeenCalledExactlyOnceWith("delete", {}));
+  });
+  it("says another Codex process has to quit first", () => {
+    prepare({ delete: { available: false, reason: "codex-owner-busy" } });
+    render(<CodexTools open />);
+    expect(screen.getByRole("button", { name: copy.delete })).toBeDisabled();
+    expect(screen.getByText(copy.deleteOwnerBusy)).toBeVisible();
+  });
+  it("offers no delete where the computer reports none", () => {
+    prepare({ rename: { available: true } });
+    render(<CodexTools open />);
+    expect(screen.queryByRole("button", { name: copy.delete })).not.toBeInTheDocument();
+  });
+});
+
 it("retains Claude's existing ownership content", () => {
   state = {
     ...state,

@@ -39,6 +39,7 @@ const pendingKinds = {
   rename: true,
   archive: true,
   unarchive: true,
+  delete: true,
   fork: true,
   settings: true,
   "goal-set": true,

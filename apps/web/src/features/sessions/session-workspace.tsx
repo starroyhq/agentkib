@@ -12,6 +12,7 @@ import {
   Monitor,
 } from "lucide-react";
 import { SessionCatalog } from "@/features/conversation/features/catalog/session-catalog";
+import { SessionRowMenu } from "@/features/conversation/features/catalog/session-row-menu";
 import { Button } from "@/features/conversation/components/ui/button";
 import {
   Dialog,
@@ -276,6 +277,10 @@ export function SessionWorkspace() {
               locale={locale}
               indexEnabled={indexEnabled}
               status={session.catalogStatus}
+              // Rename, archive and delete need this browser's organize permission.
+              rowMenu={
+                access?.device?.organize ? (row) => <SessionRowMenu session={row} /> : undefined
+              }
             />
             <footer className="flex items-center gap-3 border-t p-4">
               <span className="grid size-9 place-items-center rounded-lg border bg-background">

@@ -39,6 +39,11 @@ import {
   type ConversationTurnMeta,
 } from "@agentkib/runtime-protocol";
 import { terminationCodeOf } from "./claude-frame-policy";
+import {
+  claudeDesktopClaims,
+  claudeDesktopSessionRecords,
+  removeClaudeSessionFiles,
+} from "./claude-session-files";
 import { ClaudeTurnMetaStore } from "./claude-turn-meta";
 import type { ConversationEventPage } from "./session-events";
 import {
@@ -206,6 +211,9 @@ export class ClaudeManagedReadOwner {
   #publishConversationEvent?: ClaudeConversationPublisher;
   #aliasConversationItem?: ClaudeConversationAliaser;
   #catalogChanged?: () => void;
+  #forgetIndexed?: (ids: string[]) => void;
+  // Claude Desktop's session records, read for the delete capability at most every 10 s.
+  #desktopClaims?: { at: number; claims: Set<string> | null };
   #ownership: ClaudeSessionOwnerProbe;
   #ownershipReasons = new Map<string, { at: number; reason: string | null }>();
   // A live read can fence an otherwise idle runner because another host command
@@ -233,6 +241,8 @@ export class ClaudeManagedReadOwner {
       publish: ClaudeConversationPublisher;
       alias: ClaudeConversationAliaser;
       catalogChanged?: () => void;
+      /** Drops deleted sessions from the conversation index (and what it feeds). */
+      forgetIndexed?: (ids: string[]) => void;
     },
     readonly continuation: ClaudeContinuationOptions = {},
   ) {
@@ -241,6 +251,7 @@ export class ClaudeManagedReadOwner {
     this.#publishConversationEvent = publishers?.publish;
     this.#aliasConversationItem = publishers?.alias;
     this.#catalogChanged = publishers?.catalogChanged;
+    this.#forgetIndexed = publishers?.forgetIndexed;
     this.#ownership = new ClaudeSessionOwnerProbe(commands, environment);
     const configuredIdle =
       continuation.idleTimeoutMs ??
@@ -467,8 +478,6 @@ export class ClaudeManagedReadOwner {
       case "queue-resume":
       case "queue-pause":
       case "rename":
-      case "archive":
-      case "unarchive":
       case "goal-set":
       case "goal-pause":
       case "goal-resume":
@@ -490,6 +499,9 @@ export class ClaudeManagedReadOwner {
       case "reconcile":
         if (!id) throw new Error("missing-session");
         return this.#reconcile(value, id);
+      case "delete":
+        if (!id) throw new Error("missing-session");
+        return this.#delete(value, id);
       default:
         throw new Error(`unsupported-Claude-managed-operation:${value.operation}`);
     }
@@ -640,7 +652,6 @@ export class ClaudeManagedReadOwner {
       throw new Error("control-outcome-unconfirmed");
     this.#ownershipReasons.delete(id);
     let live = await this.#live(id, true);
-    if (live.status === "archived") throw new Error("session-archived");
     if (live.status === "outcome-unknown") throw new Error("control-outcome-unconfirmed");
     if (
       operation !== "stop" &&
@@ -1609,19 +1620,11 @@ export class ClaudeManagedReadOwner {
       throw new Error("control-outcome-unconfirmed");
     if (live.revision !== value.expectedRevision) throw new Error("stale-Claude-revision");
     const state = this.#hostState.read(id);
-    if (state.archived && operation !== "unarchive") throw new Error("session-archived");
     if (
-      [
-        "settings",
-        "rename",
-        "archive",
-        "unarchive",
-        "fork",
-        "goal-set",
-        "goal-resume",
-        "queue-resume",
-      ].includes(operation) &&
-      ((live.status !== "idle" && live.status !== "archived") || live.activity === "compacting")
+      ["settings", "rename", "fork", "goal-set", "goal-resume", "queue-resume"].includes(
+        operation,
+      ) &&
+      (live.status !== "idle" || live.activity === "compacting")
     )
       throw new Error("session-busy");
     let nextSettings: ClaudeSettings | undefined;
@@ -1818,20 +1821,6 @@ export class ClaudeManagedReadOwner {
             host.title = renamedTitle!;
             return { name: renamedTitle };
           }
-          case "archive":
-            host.archived = true;
-            host.paused = true;
-            host.reason = "archived";
-            if (host.goal?.status === "active") {
-              host.goal.status = "paused";
-              host.goal.reason = "archived";
-            }
-            return {};
-          case "unarchive":
-            host.archived = false;
-            host.paused = true;
-            host.reason = "resume-confirmation-required";
-            return {};
           case "fork":
             return {
               sessionId: fork!.id,
@@ -2035,7 +2024,7 @@ export class ClaudeManagedReadOwner {
       externallyDispatched,
     );
     this.invalidateSchedulePermits(id);
-    if (["goal-pause", "goal-clear", "archive"].includes(operation)) {
+    if (["goal-pause", "goal-clear"].includes(operation)) {
       await this.#goalEndpoints.get(id)?.close();
       this.#goalEndpoints.delete(id);
     }
@@ -2823,6 +2812,219 @@ export class ClaudeManagedReadOwner {
     }
   }
 
+  /**
+   * Permanently deletes a Claude Code session: its transcript, its folder and the per-session
+   * files Claude Desktop's own delete removes, then AgentKib's records of it. Refused while a
+   * Claude Code process or the terminal bridge has the session, or a Claude Desktop record
+   * names it (deleting the transcript would break Desktop's session).
+   */
+  async #delete(value: Record<string, any>, id: string): Promise<Record<string, unknown>> {
+    const allowed = new Set([
+      "operation",
+      "sessionId",
+      "requestId",
+      "deviceId",
+      "runtimeBootId",
+      "expectedRevision",
+      "experimentalEnabled",
+      "publicInputHash",
+    ]);
+    const requestId = value.requestId;
+    if (
+      !sessionIdPattern.test(id) ||
+      !validClaudeDeviceId(value.deviceId) ||
+      typeof requestId !== "string" ||
+      !uuidPattern.test(requestId) ||
+      value.experimentalEnabled !== true ||
+      !Number.isSafeInteger(value.expectedRevision) ||
+      Number(value.expectedRevision) < 0 ||
+      (value.publicInputHash !== undefined &&
+        (typeof value.publicInputHash !== "string" ||
+          !/^[a-f0-9]{64}$/.test(value.publicInputHash))) ||
+      Object.keys(value).some((key) => !allowed.has(key))
+    )
+      throw new Error("invalid-managed-control");
+    const fingerprint = claudeCommandFingerprint(value);
+    const prior = replayManagedCommand(this.dataDir, requestId, fingerprint);
+    if (prior) return prior;
+    if (value.runtimeBootId !== this.bootId) throw new Error("stale-runtime-boot");
+    let workspaceId: string | null = null;
+    const outcome = (fields: Record<string, unknown>, request = requestId) => ({
+      ...fields,
+      requestId: request,
+      sessionId: id,
+      runtimeBootId: this.bootId,
+    });
+    const claim = () =>
+      claimManagedCommand(this.dataDir, requestId, id, fingerprint, value.deviceId, {
+        operation: "delete",
+        workspaceId,
+        executionMode: "claude-managed",
+        runtimeBootId: this.bootId,
+        expectedRevision: value.expectedRevision,
+        turnId: null,
+        ...(value.publicInputHash ? { publicInputHash: value.publicInputHash } : {}),
+      });
+    // Refusals keep a receipt as well, so a lost answer replays instead of looking unknown.
+    const reject = (reason: string) => {
+      const result = outcome({
+        accepted: false,
+        completed: false,
+        controlOutcome: "not-dispatched",
+        error: reason,
+        reason,
+      });
+      const claimed = claim();
+      if (claimed) return claimed;
+      finishManagedCommand(this.dataDir, requestId, result);
+      return result;
+    };
+    if (!supportsClaudeManagedRunner()) return reject("platform-unsupported");
+    this.#privateDirectory(true);
+    const held = this.#ownerLocks.get(id);
+    const lock = held ? null : this.#tryLock(id);
+    if (!held && !lock) return reject("session-managed-by-another-runtime");
+    let deleted = false;
+    try {
+      const record = this.#load(id);
+      let nativeId: string;
+      let workspace: string;
+      try {
+        if (record) {
+          this.#validate(record);
+          ({ nativeId, workspace, workspaceId } = record);
+        } else ({ nativeId, workspace, workspaceId } = await this.#resolveNative(id));
+      } catch (error) {
+        return reject(error instanceof Error ? error.message : "session-unavailable");
+      }
+      const home = this.#home();
+      // Only an earlier delete may still be unconfirmed: retrying it is how that outcome resolves.
+      const unconfirmed = readUnknownManagedCommands(this.dataDir, id);
+      if (unconfirmed.some((command) => command.evidence?.operation !== "delete"))
+        return reject("control-outcome-unconfirmed");
+      if ((await this.#installationVersion()) === null) return reject("claude-cli-unavailable");
+      const live = await this.#live(id, true);
+      if (live.revision !== value.expectedRevision) return reject("stale-Claude-revision");
+      const runner = this.#runners.get(id);
+      if (
+        this.#starting.has(id) ||
+        (runner && (live.status !== "idle" || live.activity === "compacting"))
+      )
+        return reject("session-busy");
+      try {
+        await this.#ensureNoExternalOwner(nativeId, runner?.processId ?? null);
+      } catch (error) {
+        return reject(error instanceof Error ? error.message : "claude-owner-check-unavailable");
+      }
+      const target = record ?? ({ id, nativeId, home, workspace } as ClaudeRecord);
+      if (this.#isSessionBridged(target)) return reject("session-already-bridged");
+      let claims: Set<string>;
+      try {
+        claims = claudeDesktopClaims(claudeDesktopSessionRecords(this.environment));
+      } catch {
+        return reject("claude-desktop-check-unavailable");
+      }
+      if (claims.has(nativeId.toLowerCase())) return reject("claude-desktop-session");
+      let transcript: string | null;
+      try {
+        transcript = this.sessions.verifiedClaudeControlTarget(nativeId, workspace);
+      } catch (error) {
+        // A session AgentKib created that Claude Code never wrote has no transcript yet; an
+        // earlier unconfirmed delete may have removed it already.
+        if (!record?.fresh && unconfirmed.length === 0)
+          return reject(error instanceof Error ? error.message : "session-unavailable");
+        transcript = null;
+      }
+      const claimed = claim();
+      if (claimed) return claimed;
+      dispatchManagedCommand(this.dataDir, requestId);
+      // AgentKib's own worker and its scheduled work end first; nothing writes the session after.
+      this.invalidateSchedulePermits(id);
+      if (record) this.#hostState.pause(id, "delete-requested");
+      await this.#goalEndpoints.get(id)?.close();
+      this.#goalEndpoints.delete(id);
+      if (runner) {
+        await runner.shutdown();
+        this.#runners.delete(id);
+        this.#goalRunners.delete(id);
+      }
+      let removal: ReturnType<typeof removeClaudeSessionFiles>;
+      try {
+        removal = removeClaudeSessionFiles(home, transcript, nativeId);
+      } catch {
+        removal = { transcriptGone: false, leftBehind: [] };
+      }
+      if (!removal.transcriptGone) {
+        const result = outcome({
+          accepted: false,
+          completed: false,
+          controlOutcome: "not-dispatched",
+          error: "claude-delete-failed",
+          reason: "claude-delete-failed",
+        });
+        finishManagedCommand(this.dataDir, requestId, result);
+        return result;
+      }
+      deleted = true;
+      this.#forgetDeletedSession(id, nativeId, home);
+      const result = outcome({
+        accepted: true,
+        completed: true,
+        deleted: true,
+        controlOutcome: "accepted",
+      });
+      finishManagedCommand(this.dataDir, requestId, result);
+      for (const earlier of unconfirmed)
+        finishManagedCommand(
+          this.dataDir,
+          earlier.requestId,
+          outcome({ accepted: true, completed: true, deleted: true }, earlier.requestId),
+        );
+      return result;
+    } finally {
+      if (deleted) {
+        this.#ownerLocks.get(id)?.();
+        this.#ownerLocks.delete(id);
+      }
+      lock?.();
+      if (deleted)
+        try {
+          unlinkSync(this.#path(id).replace(/\.json$/, ".lock"));
+        } catch {
+          // A lock file left behind names no session and is reused by none.
+        }
+    }
+  }
+
+  /** Every AgentKib copy of a deleted session: its records, aliases, host state and index rows. */
+  #forgetDeletedSession(id: string, nativeId: string, home: string): void {
+    const ids = new Set([id]);
+    for (const alias of this.#listRecords())
+      if (alias.nativeId.toLowerCase() === nativeId.toLowerCase() && alias.home === home)
+        ids.add(alias.id);
+    for (const sessionId of ids) {
+      try {
+        unlinkSync(this.#path(sessionId));
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+      }
+      this.#hostState.forget(sessionId);
+      this.#ownershipReasons.delete(sessionId);
+      this.#catalogUnconfirmed.delete(sessionId);
+      this.#idleSince.delete(sessionId);
+      this.#observed.delete(sessionId);
+      this.#continuationNotices.delete(sessionId);
+      this.#continuationNoticeIds.delete(sessionId);
+      this.#lastPermission.delete(sessionId);
+      this.#turnMetaRevisions.delete(sessionId);
+    }
+    this.#turnMeta.forget(nativeId);
+    const indexed = [...ids, this.store.sessions.id("claude-code", nativeId)];
+    if (this.#forgetIndexed) this.#forgetIndexed(indexed);
+    else this.store.sessions.forget(indexed);
+    this.#catalogChanged?.();
+  }
+
   #emptyFingerprint(record: ClaudeRecord): string {
     return createHash("sha256")
       .update(
@@ -3372,7 +3574,8 @@ export class ClaudeManagedReadOwner {
             spawned_by_session_id: null,
             message_count: null,
             git_branch: null,
-            archived: this.#hostState.peek(record.id)?.archived ?? false,
+            // Only Claude Desktop archives Claude sessions, in its own list.
+            archived: false,
             sidechain: false,
             availability: "readable",
             executionMode: "claude-managed",
@@ -3609,7 +3812,7 @@ export class ClaudeManagedReadOwner {
         status: version ? "idle" : "unsupported",
         revision: this.#hostState.read(id).revision,
         turnId: null,
-        sendEnabled: controls && !reason && !this.#hostState.read(id).archived,
+        sendEnabled: controls && !reason,
         stopEnabled: false,
         approvals: [],
         questions: [],
@@ -3769,7 +3972,6 @@ export class ClaudeManagedReadOwner {
     const host = this.#hostState.read(id);
     live.revision = Number(live.revision ?? 0) + host.revision;
     live.goal = host.goal;
-    live.archived = host.archived;
     live.schedule = { paused: host.paused, reason: host.reason, revision: host.revision };
     const options = runner?.optionsSnapshot.settingsAcknowledged
       ? runner.optionsSnapshot
@@ -3788,11 +3990,6 @@ export class ClaudeManagedReadOwner {
       ? this.#releasedPermission(id)
       : this.#permissionView(id, version, () => host.settings.permissionMode);
     if (permission) live.permission = permission;
-    if (host.archived) {
-      live.status = "archived";
-      live.sendEnabled = false;
-      live.stopEnabled = false;
-    }
     return live;
   }
 
@@ -4106,13 +4303,9 @@ export class ClaudeManagedReadOwner {
     const record = this.#load(id);
     const version = supportsClaudeManagedRunner() && (await this.#installationVersion()) !== null;
     const owned = Boolean(record && !record.released);
-    const continuable =
-      !this.#hostState.read(id).archived &&
-      !live.ownershipReason &&
-      live.status !== "outcome-unknown";
+    const continuable = !live.ownershipReason && live.status !== "outcome-unknown";
     const host = owned ? this.#hostState.read(id) : null;
-    const writable =
-      version && controls && owned && !host?.archived && live.status !== "outcome-unknown";
+    const writable = version && controls && owned && live.status !== "outcome-unknown";
     const idle = writable && live.status === "idle" && live.activity !== "compacting";
     const goalBudgetReason =
       host?.goal && host.goal.tokenBudget !== null
@@ -4162,12 +4355,9 @@ export class ClaudeManagedReadOwner {
       fork:
         version &&
         controls &&
-        !this.#hostState.read(id).archived &&
         live.status === "idle" &&
         live.activity !== "compacting" &&
         record?.fresh !== true,
-      archive: idle,
-      unarchive: version && controls && host?.archived === true,
       rename: idle,
       goal: owned,
       "goal-set": idle,
@@ -4194,8 +4384,6 @@ export class ClaudeManagedReadOwner {
         "queue-pause",
         "fork",
         "rename",
-        "archive",
-        "unarchive",
         "goal",
         "goal-set",
         "goal-pause",
@@ -4206,6 +4394,53 @@ export class ClaudeManagedReadOwner {
       ])
         map[feature] = false;
     }
+    const features: Record<string, { available: boolean; reason?: unknown }> = Object.fromEntries(
+      Object.entries(map).map(([key, available]) => [
+        key,
+        available
+          ? { available: true }
+          : {
+              available: false,
+              reason:
+                key === "goal-resume" && goalBudgetReason
+                  ? goalBudgetReason
+                  : !version
+                    ? "unverified-installation"
+                    : !owned
+                      ? (live.reason ?? "operation-unavailable")
+                      : (live.ownershipReason ?? "operation-unavailable"),
+            },
+      ]),
+    );
+    // Deleting needs no worker. It waits for AgentKib's own to be idle, and refuses while
+    // Claude Code or Claude Desktop still has the session.
+    const nativeId = record?.nativeId ?? live.sourceSessionId;
+    const desktopClaimed = this.#desktopClaimed(nativeId);
+    const deleteReason = !supportsClaudeManagedRunner()
+      ? "platform-unsupported"
+      : !version
+        ? "unverified-installation"
+        : !controls
+          ? "control-disabled"
+          : live.status === "outcome-unknown" ||
+              readUnknownManagedCommands(this.dataDir, id).some(
+                (command) => command.evidence?.operation !== "delete",
+              )
+            ? "control-outcome-unconfirmed"
+            : typeof live.ownershipReason === "string"
+              ? live.ownershipReason
+              : this.#starting.has(id) ||
+                  (this.#runners.has(id) &&
+                    (live.status !== "idle" || live.activity === "compacting"))
+                ? "session-busy"
+                : desktopClaimed === null
+                  ? "claude-desktop-check-unavailable"
+                  : desktopClaimed
+                    ? "claude-desktop-session"
+                    : null;
+    features.delete = deleteReason
+      ? { available: false, reason: deleteReason }
+      : { available: true };
     return {
       sessionId: id,
       executionMode: live.executionMode,
@@ -4213,25 +4448,23 @@ export class ClaudeManagedReadOwner {
       reason: live.reason,
       // For the `/` menu. Clients filter it with the rules the backend enforces on send.
       commands: this.#commandCatalog(id),
-      features: Object.fromEntries(
-        Object.entries(map).map(([key, available]) => [
-          key,
-          available
-            ? { available: true }
-            : {
-                available: false,
-                reason:
-                  key === "goal-resume" && goalBudgetReason
-                    ? goalBudgetReason
-                    : !version
-                      ? "unverified-installation"
-                      : !owned
-                        ? (live.reason ?? "operation-unavailable")
-                        : (live.ownershipReason ?? "operation-unavailable"),
-              },
-        ]),
-      ),
+      features,
     };
+  }
+
+  /** Whether a Claude Desktop record names this session; null when its records cannot be read. */
+  #desktopClaimed(nativeId: unknown): boolean | null {
+    if (typeof nativeId !== "string") return null;
+    if (!this.#desktopClaims || Date.now() - this.#desktopClaims.at >= 10_000) {
+      let claims: Set<string> | null;
+      try {
+        claims = claudeDesktopClaims(claudeDesktopSessionRecords(this.environment));
+      } catch {
+        claims = null;
+      }
+      this.#desktopClaims = { at: Date.now(), claims };
+    }
+    return this.#desktopClaims.claims?.has(nativeId.toLowerCase()) ?? null;
   }
 
   async inspect(id: string, controls = false): Promise<Record<string, unknown>> {
@@ -4438,7 +4671,6 @@ export class ClaudeManagedReadOwner {
       if (live.status === "outcome-unknown" || managedSessionHasUnknownCommands(this.dataDir, id))
         throw new Error("control-outcome-unconfirmed");
       if (live.revision !== value.expectedRevision) throw new Error("stale-Claude-revision");
-      if (this.#hostState.read(id).archived) throw new Error("session-archived");
       if (live.status !== "idle" || live.activity === "compacting") throw new Error("session-busy");
       if (live.ownershipReason) throw new Error(String(live.ownershipReason));
       // The live read can recover a proved, interrupted startup. Prepare from that durable
@@ -4498,8 +4730,7 @@ export class ClaudeManagedReadOwner {
       this.#load(id)?.released === false &&
       live.status === "idle" &&
       live.activity !== "compacting" &&
-      !live.ownershipReason &&
-      !state.archived;
+      !live.ownershipReason;
     return {
       available: true,
       executionMode: "claude-managed",

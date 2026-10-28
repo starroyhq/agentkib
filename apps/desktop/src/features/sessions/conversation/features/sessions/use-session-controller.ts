@@ -1809,7 +1809,14 @@ export function useSessionController({
       if (generation.current !== g) return;
       setNotice("accepted");
       if (["steer", "queue-add"].includes(action)) setHistoryReferences([]);
-      if (action === "fork") void refresh(true);
+      if (action === "delete") {
+        // Nothing of a deleted conversation can be read again. Fence it and drop its row until
+        // the catalog, which the host invalidates, arrives without it.
+        excludedIds.current = new Set([...excludedIds.current, id]);
+        catalogSessions.current = catalogSessions.current.filter((session) => session.id !== id);
+        setExcludedSessionIds(excludedIds.current);
+        setSessions(catalogSessions.current);
+      } else if (action === "fork") void refresh(true);
       else await refresh(true);
       return result;
     } catch (error) {

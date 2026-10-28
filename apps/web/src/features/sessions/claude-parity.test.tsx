@@ -155,8 +155,6 @@ function createHost({
         "context",
         "resources",
         "rename",
-        "archive",
-        "unarchive",
         "fork",
         "send",
         "inspect",

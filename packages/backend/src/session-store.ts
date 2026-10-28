@@ -347,6 +347,34 @@ export class SessionStore {
       }
     });
   }
+  /** Drop the cached rows of conversations deleted at their source; the next scan agrees. */
+  forget(ids: readonly string[]): void {
+    this.sql.transaction(() => {
+      for (const id of new Set(ids)) {
+        const owners = this.sql.rows(
+          `SELECT workspace_id,agent FROM (${cachedSessionAgents}) WHERE id=?`,
+          id,
+        );
+        this.sql.run("DELETE FROM conversation_sessions WHERE id=?", id);
+        this.sql.run("DELETE FROM conversation_collection_sessions WHERE id=?", id);
+        this.sql.run(
+          "DELETE FROM schema_meta WHERE key=?",
+          `codex_session_classification_stale:${id}`,
+        );
+        for (const owner of owners) {
+          const workspace = String(owner.workspace_id);
+          const agent = String(owner.agent);
+          this.sql.run(
+            `UPDATE ${statusTable(workspace)} SET session_count=(SELECT COUNT(*) FROM ${sessionTable(workspace)} WHERE workspace_id=? AND agent=?) WHERE workspace_id=? AND agent=?`,
+            workspace,
+            agent,
+            workspace,
+            agent,
+          );
+        }
+      }
+    });
+  }
   failure(workspace: string, agent: Agent, detail: string): void {
     this.sql.run(
       `INSERT INTO ${statusTable(workspace)}(workspace_id,agent,session_count,last_attempt_at,last_success_at,error_key,error_detail) VALUES (?,?,0,?,NULL,?,?) ON CONFLICT(workspace_id,agent) DO UPDATE SET last_attempt_at=excluded.last_attempt_at,error_key=excluded.error_key,error_detail=excluded.error_detail`,
@@ -360,6 +388,8 @@ export class SessionStore {
 }
 const cachedSessionOwners =
   "SELECT id,workspace_id FROM conversation_sessions UNION ALL SELECT id,workspace_id FROM conversation_collection_sessions";
+const cachedSessionAgents =
+  "SELECT id,workspace_id,agent FROM conversation_sessions UNION ALL SELECT id,workspace_id,agent FROM conversation_collection_sessions";
 function sessionTable(id: string): string {
   return sessionCollection(id) ? "conversation_collection_sessions" : "conversation_sessions";
 }

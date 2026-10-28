@@ -9,6 +9,7 @@ import {
   type ClaudeHostGoal,
   type ClaudeHostWork,
 } from "../../../packages/backend/src/claude-host-state";
+import { openManagedLedger } from "../../../packages/backend/src/managed-ledger";
 
 const directories: string[] = [];
 afterEach(async () => {
@@ -70,6 +71,79 @@ function pendingReport(stepId: string, outcome: "continue" | "complete" | "block
     remainingWork: outcome === "complete" ? [] : ["Next check"],
   };
 }
+
+describe("Claude sessions an earlier release archived in AgentKib", () => {
+  function legacy(directory: string, sessionId: string, state: Record<string, unknown>) {
+    const database = openManagedLedger(directory, true)!;
+    try {
+      database.exec(
+        "CREATE TABLE IF NOT EXISTS claude_host_states(session_id TEXT PRIMARY KEY, record TEXT NOT NULL)",
+      );
+      database
+        .prepare("INSERT INTO claude_host_states(session_id,record) VALUES(?,?)")
+        .run(sessionId, JSON.stringify(state));
+    } finally {
+      database.close();
+    }
+  }
+  // Archive always paused; the flag alone is enough to stay paused.
+  const archived = (bootId: string) => ({
+    version: 1,
+    bootId,
+    revision: 4,
+    title: null,
+    archived: true,
+    settings: {},
+    paused: false,
+    reason: "archived",
+    goal: goal({ status: "paused", reason: "archived" }),
+    work: [queued()],
+    settledRequests: [],
+  });
+
+  it("come back as unarchive left them: paused until the user resumes", async () => {
+    const { directory, sessionId } = await fixture();
+    const bootId = randomUUID();
+    legacy(directory, sessionId, archived(bootId));
+    const store = new ClaudeHostStateStore(directory, bootId);
+    // A catalog peek sees the same, without writing.
+    expect(store.peek(sessionId)).not.toHaveProperty("archived");
+    const state = store.read(sessionId);
+    expect(state).not.toHaveProperty("archived");
+    expect(state).toMatchObject({
+      paused: true,
+      reason: "resume-confirmation-required",
+      goal: { status: "paused", reason: "resume-confirmation-required" },
+      revision: 5,
+    });
+    // Nothing runs until the user resumes.
+    expect(store.next(sessionId)).toBeNull();
+    expect(store.read(sessionId).revision).toBe(5);
+  });
+
+  it("are left as they were when they were not archived", async () => {
+    const { directory, sessionId } = await fixture();
+    const bootId = randomUUID();
+    legacy(directory, sessionId, {
+      ...archived(bootId),
+      archived: false,
+      paused: false,
+      reason: null,
+      goal: null,
+    });
+    const state = new ClaudeHostStateStore(directory, bootId).read(sessionId);
+    expect(state).not.toHaveProperty("archived");
+    expect(state).toMatchObject({ paused: false, reason: null, revision: 4 });
+  });
+
+  it("forget a deleted session's state", async () => {
+    const { store, sessionId } = await fixture();
+    store.pause(sessionId, "delete-requested");
+    expect(store.peek(sessionId)).toMatchObject({ paused: true });
+    store.forget(sessionId);
+    expect(store.peek(sessionId)).toBeNull();
+  });
+});
 
 describe("Claude host orchestration persistence", () => {
   it("commits receipts with mutations and rejects cross-device request ID reuse", async () => {

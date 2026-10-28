@@ -70,6 +70,18 @@ export class ClaudeTurnMetaStore {
     }
   }
 
+  /** A deleted session's turn ends go with it. */
+  forget(nativeId: string): void {
+    const database = openManagedLedger(this.dataDir);
+    if (!database) return;
+    try {
+      database.exec(TABLE);
+      database.prepare("DELETE FROM claude_turn_meta WHERE native_id=?").run(nativeId);
+    } finally {
+      database.close();
+    }
+  }
+
   /** The stored turn ends for these items; rows that no longer validate are skipped. */
   read(nativeId: string, itemIds: readonly string[]): Map<string, ConversationTurnMeta> {
     const found = new Map<string, ConversationTurnMeta>();

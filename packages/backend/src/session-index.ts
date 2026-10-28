@@ -34,6 +34,12 @@ export class SessionIndex {
     this.store.clear(workspaceId ?? null);
     return null;
   }
+  /** A deleted conversation leaves the index at once; scans already reading it are discarded. */
+  forget(ids: readonly string[]): void {
+    this.invalidate();
+    this.store.forget(ids);
+    this.refreshed();
+  }
   read(workspaceId: string) {
     // A directory read only rescans the pending Codex classification, leaving
     // other providers and the normal refresh schedule unchanged.

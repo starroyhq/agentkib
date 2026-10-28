@@ -5,6 +5,10 @@
 @source "../../../packages/agent-identity/src";
 
 @custom-variant dark (&:is(.dark *));
+/* Base UI marks orientation with data-orientation. The shared Tabs styles it through these
+   variants; the desktop gets the same definitions from shadcn/tailwind.css. */
+@custom-variant data-horizontal (&:where([data-orientation="horizontal"]));
+@custom-variant data-vertical (&:where([data-orientation="vertical"]));
 
 @theme inline {
   --font-sans: "Geist Variable", -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;

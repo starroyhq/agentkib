@@ -26,6 +26,17 @@ const zh = {
   archive: "归档",
   unarchive: "取消归档",
   fork: "分支会话",
+  delete: "删除",
+  deleteTitle: "永久删除这个会话？",
+  deleteCodexDetail:
+    "会话会从 Codex 中删除，Codex Desktop 和终端里也不再显示，不能恢复。AgentKib 里的记录和这个会话的上传文件一并删除。",
+  deleteClaudeDetail:
+    "会话记录会从 Claude Code 中删除，claude --resume 里也不再显示，不能恢复。AgentKib 里的记录和这个会话的上传文件一并删除。",
+  deleteConfirm: "永久删除",
+  deleteOwnerBusy: "Codex Desktop 或终端里的 Codex 正占用这个会话，退出那边后再删除。",
+  deleteClaudeOwnerBusy: "终端里的 Claude Code 正在使用这个会话，退出后再删除。",
+  cancel: "取消",
+  rowMenu: "会话菜单",
   name: "会话名称",
   settings: "下一轮设置",
   changeNextTurnModel: "更改下一轮模型",
@@ -122,6 +133,17 @@ export const codexCopy: Record<Locale, Copy> = {
     archive: "封存",
     unarchive: "取消封存",
     fork: "分支對話",
+    delete: "刪除",
+    deleteTitle: "永久刪除這段對話？",
+    deleteCodexDetail:
+      "對話會從 Codex 中刪除，Codex Desktop 與終端機裡也不再顯示，無法復原。AgentKib 裡的紀錄和這段對話的上傳檔案一併刪除。",
+    deleteClaudeDetail:
+      "對話紀錄會從 Claude Code 中刪除，claude --resume 裡也不再顯示，無法復原。AgentKib 裡的紀錄和這段對話的上傳檔案一併刪除。",
+    deleteConfirm: "永久刪除",
+    deleteOwnerBusy: "Codex Desktop 或終端機裡的 Codex 正占用這段對話，結束那邊後再刪除。",
+    deleteClaudeOwnerBusy: "終端機裡的 Claude Code 正在使用這段對話，結束後再刪除。",
+    cancel: "取消",
+    rowMenu: "對話選單",
     name: "對話名稱",
     settings: "下一輪設定",
     changeNextTurnModel: "變更下一輪模型",
@@ -217,6 +239,18 @@ export const codexCopy: Record<Locale, Copy> = {
     archive: "Archive",
     unarchive: "Unarchive",
     fork: "Fork session",
+    delete: "Delete",
+    deleteTitle: "Delete this session permanently?",
+    deleteCodexDetail:
+      "The session is deleted in Codex, so Codex Desktop and the terminal no longer show it. This can't be undone. AgentKib's records and this session's uploads are deleted too.",
+    deleteClaudeDetail:
+      "The session's transcript is deleted from Claude Code, so claude --resume no longer lists it. This can't be undone. AgentKib's records and this session's uploads are deleted too.",
+    deleteConfirm: "Delete permanently",
+    deleteOwnerBusy:
+      "Codex Desktop or Codex in a terminal is using this session. Quit it there, then delete.",
+    deleteClaudeOwnerBusy: "Claude Code in a terminal is using this session. Quit it, then delete.",
+    cancel: "Cancel",
+    rowMenu: "Session menu",
     name: "Session name",
     settings: "Next-turn settings",
     changeNextTurnModel: "Change next-turn model",
@@ -314,6 +348,19 @@ export const codexCopy: Record<Locale, Copy> = {
     archive: "アーカイブ",
     unarchive: "アーカイブ解除",
     fork: "会話を分岐",
+    delete: "削除",
+    deleteTitle: "この会話を完全に削除しますか？",
+    deleteCodexDetail:
+      "会話は Codex から削除され、Codex Desktop やターミナルにも表示されなくなります。元に戻せません。AgentKib の記録とこの会話のアップロードも削除されます。",
+    deleteClaudeDetail:
+      "会話の記録は Claude Code から削除され、claude --resume にも表示されなくなります。元に戻せません。AgentKib の記録とこの会話のアップロードも削除されます。",
+    deleteConfirm: "完全に削除",
+    deleteOwnerBusy:
+      "Codex Desktop またはターミナルの Codex がこの会話を使用中です。そちらを終了してから削除してください。",
+    deleteClaudeOwnerBusy:
+      "ターミナルの Claude Code がこの会話を使用中です。終了してから削除してください。",
+    cancel: "キャンセル",
+    rowMenu: "会話メニュー",
     name: "会話名",
     settings: "次のターンの設定",
     changeNextTurnModel: "次のターンのモデルを変更",
@@ -430,6 +477,12 @@ const reasons: Record<Locale, Record<string, string>> = {
     "session-already-managed": "这条会话已可在 AgentKib 中继续，无需重复操作。",
     "session-not-archived": "此会话尚未归档，无需取消归档。",
     "session-archived": "此会话已归档，请先取消归档。",
+    "claude-desktop-session":
+      "Claude Desktop 里也有这个会话（可能在已归档里）。请在 Claude Desktop 中删除，AgentKib 不改动 Desktop 的会话记录。",
+    "claude-desktop-check-unavailable":
+      "无法读取 Claude Desktop 的会话记录，不能确认它没有在用这个会话，所以没有删除。",
+    "claude-delete-failed":
+      "没能删除 Claude Code 的会话文件，会话保持原样。检查这台电脑上 Claude 配置目录的权限后再试。",
     "session-released": "后台进程已结束，请刷新会话状态后重试。",
     "recovery-required": "暂时无法继续这条会话，请刷新状态后重试。",
     "native-session-unconfirmed": "无法确认这条会话的身份，请刷新状态后重试。",
@@ -520,6 +573,12 @@ const reasons: Record<Locale, Record<string, string>> = {
     "session-already-managed": "這段對話已可在 AgentKib 中繼續，無需重複操作。",
     "session-not-archived": "此對話尚未封存，無需取消封存。",
     "session-archived": "此對話已封存，請先取消封存。",
+    "claude-desktop-session":
+      "Claude Desktop 裡也有這段對話（可能在已封存中）。請在 Claude Desktop 中刪除，AgentKib 不改動 Desktop 的對話紀錄。",
+    "claude-desktop-check-unavailable":
+      "無法讀取 Claude Desktop 的對話紀錄，不能確認它沒有在使用這段對話，因此沒有刪除。",
+    "claude-delete-failed":
+      "未能刪除 Claude Code 的對話檔案，對話保持原狀。請檢查這台電腦上 Claude 設定目錄的權限後再試。",
     "session-released": "背景程序已結束，請重新整理對話狀態後重試。",
     "recovery-required": "暫時無法繼續這段對話，請重新整理狀態後重試。",
     "native-session-unconfirmed": "無法確認這段對話的身分，請重新整理狀態後重試。",
@@ -615,6 +674,12 @@ const reasons: Record<Locale, Record<string, string>> = {
       "This session is already available in AgentKib. No additional action is needed.",
     "session-not-archived": "This session is not archived, so there is nothing to unarchive.",
     "session-archived": "This session is archived. Unarchive it first.",
+    "claude-desktop-session":
+      "Claude Desktop also lists this session (perhaps among its archived ones). Delete it in Claude Desktop; AgentKib does not change Desktop's records.",
+    "claude-desktop-check-unavailable":
+      "Claude Desktop's session records could not be read, so AgentKib could not confirm Desktop does not use this session. Nothing was deleted.",
+    "claude-delete-failed":
+      "Claude Code's session file could not be deleted, so the session is unchanged. Check the permissions of the Claude config folder on this computer, then retry.",
     "session-released": "The background process ended. Refresh the session state and retry.",
     "recovery-required": "This session cannot continue yet. Refresh its state and retry.",
     "native-session-unconfirmed":
@@ -716,6 +781,12 @@ const reasons: Record<Locale, Record<string, string>> = {
     "session-already-managed": "この会話はすでに AgentKib で続けられます。追加の操作は不要です。",
     "session-not-archived": "この会話はアーカイブされていないため、解除する必要はありません。",
     "session-archived": "この会話はアーカイブされています。先にアーカイブを解除してください。",
+    "claude-desktop-session":
+      "この会話は Claude Desktop にもあります（アーカイブ済みの可能性があります）。Claude Desktop で削除してください。AgentKib は Desktop の記録を変更しません。",
+    "claude-desktop-check-unavailable":
+      "Claude Desktop の会話記録を読み取れず、Desktop がこの会話を使っていないことを確認できないため、削除していません。",
+    "claude-delete-failed":
+      "Claude Code の会話ファイルを削除できなかったため、会話はそのままです。このコンピューターの Claude 設定フォルダーの権限を確認してから再試行してください。",
     "session-released":
       "バックグラウンドプロセスは終了しました。会話の状態を更新して再試行してください。",
     "recovery-required": "この会話はまだ続けられません。状態を更新して再試行してください。",

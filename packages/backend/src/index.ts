@@ -488,6 +488,8 @@ export class TypeScriptBackend {
               this.#sessionStream?.aliasItem(sessionId, previousId, itemId, live),
             catalogChanged: () =>
               this.#sessionStream?.publish("", "invalidate", { domains: ["catalog"] }),
+            forgetIndexed: (ids) =>
+              this.#sessionIndex ? this.#sessionIndex.forget(ids) : store.sessions.forget(ids),
           },
           {
             isSessionObserved: (sessionId) =>
@@ -685,6 +687,8 @@ export class TypeScriptBackend {
       return this.#withWebRead((owner) => owner.managedQueueList(params));
     if (method === RUNTIME_METHODS.codexManaged && params.operation === "unarchive")
       return this.#withWebRead((owner) => owner.managedUnarchive(params));
+    if (method === RUNTIME_METHODS.codexManaged && params.operation === "delete")
+      return this.#withWebRead((owner) => owner.managedDelete(params));
     if (method === RUNTIME_METHODS.codexManaged && params.operation === "settings-state")
       return this.#withWebRead((owner) => owner.managedSettingsState(params));
     if (
@@ -768,6 +772,8 @@ export class TypeScriptBackend {
         return this.#withWebRead((owner) => owner.managedResume(params));
       if (params.operation === "unarchive")
         return this.#withWebRead((owner) => owner.managedUnarchive(params));
+      if (params.operation === "delete")
+        return this.#withWebRead((owner) => owner.managedDelete(params));
       if (
         [
           "send",

@@ -85,7 +85,7 @@ export function isConversationPath(path: string, post: boolean) {
         "/managed/settings-prepare",
       ].includes(name) ||
         // Keep in step with the operations WebAccessService.codexAction accepts.
-        /^\/codex\/(steer|queue-add|queue-update|queue-delete|queue-reorder|queue-start|rename|archive|unarchive|fork|settings|goal-set|goal-pause|goal-resume|goal-clear|resume|inspect|compact|terminals-clean)$/.test(
+        /^\/codex\/(steer|queue-add|queue-update|queue-delete|queue-reorder|queue-start|rename|archive|unarchive|fork|settings|goal-set|goal-pause|goal-resume|goal-clear|resume|inspect|compact|terminals-clean|delete)$/.test(
           name,
         )
     : [

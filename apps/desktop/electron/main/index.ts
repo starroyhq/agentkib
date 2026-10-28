@@ -18,6 +18,7 @@ import {
   nativeTheme,
   protocol,
   powerMonitor,
+  session,
   shell,
   safeStorage,
   type IpcMainInvokeEvent,
@@ -38,6 +39,7 @@ import { StartupBenchmark } from "./startup-benchmark";
 import { firstCloseDecision } from "./close-behavior";
 import { createQuitGuard } from "./quit-guard";
 import { normalizeReleaseNotes } from "./release-notes";
+import { LOCAL_PREVIEW_FRAME_SOURCES, allowLocalPreviewFraming } from "./live-preview-frames";
 import {
   optionalCloseBehavior,
   optionalPositiveInteger,
@@ -182,6 +184,10 @@ nativeTheme.on("updated", () => {
 async function startApplication(): Promise<void> {
   startupBenchmark.mark("app-ready");
   await registerRendererProtocol();
+  allowLocalPreviewFraming(
+    session.defaultSession,
+    (contents) => !!mainWindow && !mainWindow.isDestroyed() && contents === mainWindow.webContents,
+  );
 
   const backendEnvironment = {
     AGENTKIB_APP_FLAVOR: appFlavor,
@@ -1177,8 +1183,7 @@ async function registerRendererProtocol(): Promise<void> {
     return new Response(contents as unknown as BodyInit, {
       headers: {
         "content-type": contentType(assetPath),
-        "content-security-policy":
-          "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob: http://127.0.0.1:*; media-src blob: http://127.0.0.1:*; frame-src http://127.0.0.1:*; font-src 'self' data:; connect-src 'self'; object-src 'none'",
+        "content-security-policy": `default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob: http://127.0.0.1:*; media-src blob: http://127.0.0.1:*; frame-src http://127.0.0.1:* ${LOCAL_PREVIEW_FRAME_SOURCES}; font-src 'self' data:; connect-src 'self'; object-src 'none'`,
       },
     });
   });

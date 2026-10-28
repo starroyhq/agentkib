@@ -147,11 +147,13 @@ Web 将 Codex 控制和管理操作的 requestId、sessionId/workspaceId、kind 
 
 `GET /api/web/v1/codex/capabilities?sessionId=…` 返回每项原生能力的可用性与禁用原因，桌面服务再次与设备权限、工作区、实验执行开关求交集。app-server 各项能力独立核验，不从保留的 follower 继承未经验证的操作。工作树创建、Git 分支切换继续不可用，不能以自行运行 Git 替代官方语义。
 
-`POST /api/web/v1/codex/<action>` 保留兼容 `inspect`、`resume`、`steer`、原生 `queue-add/update/delete/reorder`、`rename/archive/unarchive/fork/settings`，另有 `compact`（`thread/compact/start`）和 `terminals-clean`（`thread/backgroundTerminals/clean`），两者按发送权限授权。写操作携带唯一 requestId、bootId 和适用的 expectedRevision。inspect 只读核对，不发送模型消息；内部 resume 不要求用户勾选，仍由官方 writer 锁决定是否成功。正常输入区不再提供手动 resume 入口。
+`POST /api/web/v1/codex/<action>` 保留兼容 `inspect`、`resume`、`steer`、原生 `queue-add/update/delete/reorder`、`rename/archive/unarchive/fork/settings`，另有 `compact`（`thread/compact/start`）和 `terminals-clean`（`thread/backgroundTerminals/clean`），两者按发送权限授权；`delete`（`thread/delete`）与重命名、归档一样按整理权限授权。写操作携带唯一 requestId、bootId 和适用的 expectedRevision。inspect 只读核对，不发送模型消息；内部 resume 不要求用户勾选，仍由官方 writer 锁决定是否成功。正常输入区不再提供手动 resume 入口。
 
 原生队列在空闲时添加消息会立即执行，任务完成后自动消费下一条。因此网页只在运行中开放加入队列；CLI 没有原生队列时（0.147.0）队列操作全部关闭；不提供自建离线发送队列，也不自动重放未确认队列操作。`queue-start` 的成功路径尚未验证，能力保持关闭。含附件的原生队列消息暂不支持正文编辑，避免替换输入时静默丢失附件；可删除后重新添加。只读队列投影不返回本机绝对附件路径。
 
-归档使用官方 thread/archive；取消归档恢复历史可见性，下次发送仍须通过自动续接校验。fork 创建新的官方 thread ID，只在用户明确分支时执行，不能作为同 ID 续接失败的自动回退。下一轮模型、思考强度和计划/普通模式使用官方 settings 更新；省略字段表示保持当前设置。
+归档使用官方 thread/archive；取消归档恢复历史可见性，下次发送仍须通过自动续接校验。AgentKib 没有自己的归档，归档的会话出现在 Codex Desktop 的归档里。
+
+删除使用官方 thread/delete（0.147.0 起就有），永久删除 rollout 和线程记录，已归档的会话也能删；0.163.0 在隔离 CODEX_HOME 里实测返回 `{}` 并发出 `thread/deleted`。删除前检查 `thread-writer-locks/<id>.lock`，别的进程持有时返回 `codex-owner-busy`；AgentKib 自己的 runner 持有时要求空闲，先关闭 runner（进程退出即释放锁），再由临时 app-server 删除。Codex 回复 `no rollout found` 视为已删除，此前结果未知的删除可以重试；还没有原生 ID 的草稿只删本地记录。删除后从执行账本、会话索引和目录里去掉它，主机移除它的上传文件；用量统计只有 token 数，保留。子代理线程是否随父线程删除尚未验证。fork 创建新的官方 thread ID，只在用户明确分支时执行，不能作为同 ID 续接失败的自动回退。下一轮模型、思考强度和计划/普通模式使用官方 settings 更新；省略字段表示保持当前设置。
 
 扩展审批保留原生提供的完整决定与作用范围。结构化决定必须精确匹配当前请求的候选，包括拟议命令规则、网络规则及权限配置；未知作用域关闭操作。基本浏览器授权不会获得会话级或持久权限决定。秘密问答以密码输入显示，只按请求 ID 和 turn ID 向原生引擎回答；本地命令账本和浏览器回执不保存答案正文。
 

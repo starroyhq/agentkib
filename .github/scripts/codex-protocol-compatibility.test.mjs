@@ -94,7 +94,12 @@ test("the minimum version is held to what every supported CLI offers", async () 
   }
   for (const method of ["thread/queue/add", "thread/queue/list", "collaborationMode/list"])
     assert.ok(!CODEX_PROTOCOL_CONTRACT.required.clientRequests.includes(method), method);
-  for (const method of ["thread/compact/start", "thread/backgroundTerminals/clean", "turn/start"])
+  for (const method of [
+    "thread/compact/start",
+    "thread/backgroundTerminals/clean",
+    "thread/delete",
+    "turn/start",
+  ])
     assert.ok(CODEX_PROTOCOL_CONTRACT.required.clientRequests.includes(method), method);
 });
 

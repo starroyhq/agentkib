@@ -59,7 +59,6 @@ export type ClaudeHostState = {
   bootId: string;
   revision: number;
   title: string | null;
-  archived: boolean;
   settings: ClaudeSettings;
   lastConfirmedOptions?: {
     options: Omit<ClaudeRunnerOptionsSnapshot, "settingsAcknowledged">;
@@ -77,7 +76,6 @@ const fresh = (bootId: string): ClaudeHostState => ({
   bootId,
   revision: 0,
   title: null,
-  archived: false,
   settings: {},
   paused: false,
   reason: null,
@@ -87,6 +85,22 @@ const fresh = (bootId: string): ClaudeHostState => ({
 });
 const active = (item: ClaudeHostWork) =>
   ["pending", "claimed", "dispatched", "unknown"].includes(item.status);
+
+/**
+ * AgentKib no longer archives Claude sessions: only Claude Desktop can, in its own list. A
+ * session an earlier release archived comes back as its unarchive did, paused until resumed.
+ * Returns whether the state changed in a way readers must see.
+ */
+function retireLegacyArchive(state: ClaudeHostState & { archived?: unknown }): boolean {
+  if (!Object.hasOwn(state, "archived")) return false;
+  const archived = state.archived === true;
+  delete state.archived;
+  if (!archived) return false;
+  state.paused = true;
+  state.reason = "resume-confirmation-required";
+  if (state.goal?.reason === "archived") state.goal.reason = "resume-confirmation-required";
+  return true;
+}
 
 function recoverGoalUsage(state: ClaudeHostState): void {
   const goal = state.goal;
@@ -151,6 +165,7 @@ export class ClaudeHostStateStore {
         !Number.isSafeInteger(state.revision)
       )
         throw new Error("invalid-Claude-host-state");
+      if (retireLegacyArchive(state)) state.revision++;
       if (state.bootId !== this.bootId) {
         const unfinished = state.work.some(active) || state.goal?.status === "active";
         for (const item of state.work) {
@@ -194,6 +209,20 @@ export class ClaudeHostStateStore {
     return this.#transaction(sessionId, (state) => structuredClone(state));
   }
 
+  /** A deleted session's queue, goal and settings go with it. */
+  forget(sessionId: string): void {
+    const database = openManagedLedger(this.dataDir);
+    if (!database) return;
+    try {
+      database.exec(
+        "CREATE TABLE IF NOT EXISTS claude_host_states(session_id TEXT PRIMARY KEY, record TEXT NOT NULL)",
+      );
+      database.prepare("DELETE FROM claude_host_states WHERE session_id=?").run(sessionId);
+    } finally {
+      database.close();
+    }
+  }
+
   /** Catalog readers must not take over another process's recovery generation. */
   peek(sessionId: string): ClaudeHostState | null {
     const database = openManagedLedger(this.dataDir);
@@ -210,7 +239,10 @@ export class ClaudeHostStateStore {
       const row = database
         .prepare("SELECT record FROM claude_host_states WHERE session_id=?")
         .get(sessionId) as { record: string } | undefined;
-      return row ? (JSON.parse(row.record) as ClaudeHostState) : null;
+      if (!row) return null;
+      const state = JSON.parse(row.record) as ClaudeHostState;
+      retireLegacyArchive(state);
+      return state;
     } finally {
       database.close();
     }
@@ -291,7 +323,6 @@ export class ClaudeHostStateStore {
     return this.#transaction(sessionId, (state) => {
       if (
         state.paused ||
-        state.archived ||
         state.work.some((item) => ["claimed", "dispatched", "unknown"].includes(item.status))
       )
         return null;
@@ -345,7 +376,6 @@ export class ClaudeHostStateStore {
     return this.update(sessionId, (state) => {
       if (
         state.paused ||
-        state.archived ||
         state.work.some((item) => ["claimed", "dispatched", "unknown"].includes(item.status))
       )
         throw new Error("schedule-paused");
@@ -371,8 +401,7 @@ export class ClaudeHostStateStore {
   dispatched(sessionId: string, itemId: string): void {
     this.update(sessionId, (state) => {
       const item = state.work.find((work) => work.id === itemId);
-      if (!item || item.status !== "claimed" || state.paused || state.archived)
-        throw new Error("schedule-paused");
+      if (!item || item.status !== "claimed" || state.paused) throw new Error("schedule-paused");
       if (item.kind === "goal" && state.goal?.tokenBudget !== null && state.goal?.usageIncomplete)
         throw new Error("usage-unavailable");
       item.status = "dispatched";

@@ -1,0 +1,98 @@
+import { surfaceCopy, type SessionSurface } from "./session-surface-copy";
+
+const en = {
+  intro: "Pages served on this computer, such as a dev server started in this conversation.",
+  found: "Addresses in this conversation",
+  none: "No local page addresses in this conversation yet.",
+  address: "Port or local address",
+  placeholder: "5173 or localhost:5173/path",
+  open: "Open",
+  invalid: "Enter a port, or an address on localhost or 127.0.0.1.",
+  back: "Other pages",
+  reload: "Reload",
+  external: "Open in browser",
+  newTab: "Open in new tab",
+  frame: "Web preview",
+  blank: "If the page stays blank, check that its server is still running.",
+  opening: "Opening…",
+  remoteNote: "Changes may not show up here on their own: reload the preview to see them.",
+  unreachable: "Nothing is answering on port {port} on this computer.",
+  reserved: "This port belongs to AgentKib itself.",
+  blocked: "Browsers do not open web pages on this port.",
+  denied: "Web preview needs full control for this browser.",
+  failed: "Unable to open the preview. Try again.",
+};
+type Copy = typeof en;
+const zh: Copy = {
+  intro: "这台电脑上开着的网页，例如这个会话启动的开发服务器。",
+  found: "会话里出现的地址",
+  none: "这个会话里还没有本机网页地址。",
+  address: "端口或本机地址",
+  placeholder: "5173 或 localhost:5173/path",
+  open: "打开",
+  invalid: "请输入端口，或 localhost、127.0.0.1 上的地址。",
+  back: "其他网页",
+  reload: "重新加载",
+  external: "在浏览器中打开",
+  newTab: "在新标签页中打开",
+  frame: "网页预览",
+  blank: "如果页面一直空白，请确认它的服务器仍在运行。",
+  opening: "正在打开…",
+  remoteNote: "改动不一定会自动显示在这里，请重新加载预览查看。",
+  unreachable: "这台电脑上的端口 {port} 没有响应。",
+  reserved: "这个端口是 AgentKib 自己在用的。",
+  blocked: "浏览器不会在这个端口上打开网页。",
+  denied: "网页预览需要这个浏览器有完整控制权限。",
+  failed: "无法打开预览，请重试。",
+};
+const tw: Copy = {
+  intro: "這台電腦上開著的網頁，例如這段對話啟動的開發伺服器。",
+  found: "對話中出現的位址",
+  none: "這段對話中還沒有本機網頁位址。",
+  address: "連接埠或本機位址",
+  placeholder: "5173 或 localhost:5173/path",
+  open: "開啟",
+  invalid: "請輸入連接埠，或 localhost、127.0.0.1 上的位址。",
+  back: "其他網頁",
+  reload: "重新載入",
+  external: "在瀏覽器中開啟",
+  newTab: "在新分頁中開啟",
+  frame: "網頁預覽",
+  blank: "如果頁面一直空白，請確認它的伺服器仍在執行。",
+  opening: "正在開啟…",
+  remoteNote: "改動不一定會自動顯示在這裡，請重新載入預覽查看。",
+  unreachable: "這台電腦上的連接埠 {port} 沒有回應。",
+  reserved: "這個連接埠是 AgentKib 自己在用的。",
+  blocked: "瀏覽器不會在這個連接埠上開啟網頁。",
+  denied: "網頁預覽需要這個瀏覽器有完整控制權限。",
+  failed: "無法開啟預覽，請重試。",
+};
+const ja: Copy = {
+  intro: "このコンピューターで動いている Web ページです。この会話で起動した開発サーバーなど。",
+  found: "会話に出てきたアドレス",
+  none: "この会話にはまだローカルのアドレスがありません。",
+  address: "ポートまたはローカルアドレス",
+  placeholder: "5173 または localhost:5173/path",
+  open: "開く",
+  invalid: "ポート番号、または localhost か 127.0.0.1 のアドレスを入力してください。",
+  back: "ほかのページ",
+  reload: "再読み込み",
+  external: "ブラウザーで開く",
+  newTab: "新しいタブで開く",
+  frame: "Web プレビュー",
+  blank: "ページが空白のままなら、サーバーが動いているか確認してください。",
+  opening: "開いています…",
+  remoteNote: "変更はここに自動で反映されないことがあります。プレビューを再読み込みしてください。",
+  unreachable: "このコンピューターのポート {port} が応答しません。",
+  reserved: "このポートは AgentKib 自身が使っています。",
+  blocked: "このポートではブラウザーが Web ページを開きません。",
+  denied: "Web プレビューには、このブラウザーのフルコントロール権限が必要です。",
+  failed: "プレビューを開けません。再試行してください。",
+};
+export function livePreviewCopy(locale: string, surface: SessionSurface = "desktop"): Copy {
+  const language =
+    locale === "en-US" || locale === "zh-TW" || locale === "ja-JP" ? locale : "zh-CN";
+  const copy =
+    language === "en-US" ? en : language === "zh-TW" ? tw : language === "ja-JP" ? ja : zh;
+  return surfaceCopy(copy, surface, language);
+}

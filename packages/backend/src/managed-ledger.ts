@@ -266,6 +266,29 @@ export function claimManagedCommand(
   }
 }
 
+/** Remove deleted conversations' records and events; command receipts stay replayable. */
+export function deleteManagedSessions(dataDir: string, ids: readonly string[]): void {
+  const database = openManagedLedger(dataDir);
+  if (!database) return;
+  try {
+    database.exec("BEGIN IMMEDIATE");
+    for (const id of new Set(ids)) {
+      database.prepare("DELETE FROM managed_sessions WHERE id=?").run(id);
+      database.prepare("DELETE FROM managed_events WHERE session_id=?").run(id);
+    }
+    database.exec("COMMIT");
+  } catch (error) {
+    try {
+      database.exec("ROLLBACK");
+    } catch {
+      // Keep the delete failure if SQLite already ended the transaction.
+    }
+    throw error;
+  } finally {
+    database.close();
+  }
+}
+
 export function dispatchManagedCommand(dataDir: string, requestId: string): void {
   const database = openManagedLedger(dataDir);
   if (!database) throw new Error("session-unavailable");

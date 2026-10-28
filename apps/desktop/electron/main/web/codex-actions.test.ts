@@ -388,6 +388,32 @@ it("keeps uploads when the backend did not delete", async () => {
   });
   expect((await http("/attachments?sessionId=session")).data.attachments).toHaveLength(1);
 });
+it("deletes a Claude session through the generic action with its public input hash", async () => {
+  await pair({ organize: true });
+  executionMode = "claude-managed";
+  runtime.mockImplementation(async (input) =>
+    (input as { operation: string }).operation === "delete"
+      ? {
+          accepted: true,
+          completed: true,
+          deleted: true,
+          sessionId: "session",
+          requestId: (input as { requestId: string }).requestId,
+        }
+      : runtimeHandler(input),
+  );
+  const result = await http("/managed/action", {
+    ...deletion(),
+    operation: "delete",
+    agent: "claude-code",
+  });
+  expect(result.status).toBe(200);
+  const dispatched = runtime.mock.calls.find(
+    ([p]) => (p as { operation: string }).operation === "delete",
+  )![0] as Record<string, unknown>;
+  expect(dispatched).toMatchObject({ operation: "delete", sessionId: "session" });
+  expect(dispatched.publicInputHash).toMatch(/^[a-f0-9]{64}$/);
+});
 it("keeps delete behind organize permission", async () => {
   await pair({ attachments: true });
   expect((await http("/codex/delete", deletion())).status).toBe(403);

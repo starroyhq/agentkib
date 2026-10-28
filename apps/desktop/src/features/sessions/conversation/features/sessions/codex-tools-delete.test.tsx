@@ -3,7 +3,7 @@ import "@testing-library/jest-dom/vitest";
 import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { CodexTools } from "./codex-tools";
-import { codexCopy } from "./codex-copy";
+import { codexCopy, codexReason } from "./codex-copy";
 import { useSession } from "./session-context";
 
 const { navigate } = vi.hoisted(() => ({ navigate: vi.fn() }));
@@ -89,5 +89,16 @@ describe("deleting a session from its actions on the desktop", () => {
     render(<CodexTools open />);
     expect(screen.getByRole("button", { name: copy.delete })).toBeDisabled();
     expect(screen.getByText(copy.deleteOwnerBusy)).toBeVisible();
+  });
+
+  it.each([
+    ["claude-owner-busy", copy.deleteClaudeOwnerBusy],
+    ["claude-desktop-session", codexReason("en-US", "claude-desktop-session").text],
+  ])("explains a Claude session it cannot delete (%s)", (reason, text) => {
+    prepare({ delete: { available: false, reason } }, "claude-code");
+    render(<CodexTools open />);
+    expect(screen.getByRole("button", { name: copy.delete })).toBeDisabled();
+    expect(screen.getByText(text)).toBeVisible();
+    expect(text).toMatch(/Claude/);
   });
 });

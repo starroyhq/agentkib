@@ -199,10 +199,16 @@ export function CodexTools({
   const reason = (action: SessionAction) =>
     live?.activity === "compacting" && blockedWhileCompacting(action)
       ? contextUsageCopy[locale].compactingDetail
-      : // Only quitting the other Codex process frees the thread for deletion.
+      : // Only quitting the other process frees the session for deletion.
         action === "delete" && capabilities?.features.delete?.reason === "codex-owner-busy"
         ? copy.deleteOwnerBusy
-        : codexReason(locale, capabilities?.features[action]?.reason || capabilities?.reason).text;
+        : action === "delete" &&
+            ["claude-owner-busy", "claude-background-session-running"].includes(
+              capabilities?.features.delete?.reason ?? "",
+            )
+          ? copy.deleteClaudeOwnerBusy
+          : codexReason(locale, capabilities?.features[action]?.reason || capabilities?.reason)
+              .text;
   async function run(
     action: SessionAction,
     fields: Omit<

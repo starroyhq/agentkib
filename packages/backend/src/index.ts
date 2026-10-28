@@ -488,6 +488,8 @@ export class TypeScriptBackend {
               this.#sessionStream?.aliasItem(sessionId, previousId, itemId, live),
             catalogChanged: () =>
               this.#sessionStream?.publish("", "invalidate", { domains: ["catalog"] }),
+            forgetIndexed: (ids) =>
+              this.#sessionIndex ? this.#sessionIndex.forget(ids) : store.sessions.forget(ids),
           },
           {
             isSessionObserved: (sessionId) =>

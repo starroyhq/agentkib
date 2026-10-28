@@ -194,6 +194,20 @@ export class ClaudeHostStateStore {
     return this.#transaction(sessionId, (state) => structuredClone(state));
   }
 
+  /** A deleted session's queue, goal and settings go with it. */
+  forget(sessionId: string): void {
+    const database = openManagedLedger(this.dataDir);
+    if (!database) return;
+    try {
+      database.exec(
+        "CREATE TABLE IF NOT EXISTS claude_host_states(session_id TEXT PRIMARY KEY, record TEXT NOT NULL)",
+      );
+      database.prepare("DELETE FROM claude_host_states WHERE session_id=?").run(sessionId);
+    } finally {
+      database.close();
+    }
+  }
+
   /** Catalog readers must not take over another process's recovery generation. */
   peek(sessionId: string): ClaudeHostState | null {
     const database = openManagedLedger(this.dataDir);

@@ -54,4 +54,4 @@ Worker 不处理其他源、产物票据 `/p/` 和它自己。顶层页面需要
 - 所有远程预览共用一个预览源：不同开发服务器的 localStorage 和 Cookie 互相可见，页面也不能注册自己的 Service Worker。
 - 需要 Service Worker：中继（HTTPS）和本机 127.0.0.1 可用。浏览器不允许时引导页提示在新标签页打开。
 - 本机模式下页面脚本能写 127.0.0.1 的 Cookie；AgentKib 的会话 Cookie 是 HttpOnly，不能被覆盖。
-- 已在 Chrome 实测，Safari、Firefox 未测；电脑端在 Electron 44 实测了嵌入规则。记录见 [会话管理与网页预览 QA](../qa/session-management-2026-10-28.md)。
+- 电脑端和远程浏览器（Chrome）都在真实运行的 AgentKib 里核对过；Safari、Firefox 未测。记录见 [会话管理与网页预览 QA](../qa/session-management-2026-10-28.md)。

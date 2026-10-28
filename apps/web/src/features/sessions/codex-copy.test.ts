@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import { dictionaries, type Locale } from "@/features/conversation/i18n";
 import { codexCopy, codexReason } from "@/features/conversation/features/sessions/codex-copy";
 import { sessionContinuationCopy, sessionContinuationListState } from "@agentkib/session-ui";
+import { CLAUDE_COMMAND_REFUSALS } from "@agentkib/web-client";
 import { managedControlCopy } from "@/features/conversation/features/sessions/managed-control-copy";
 
 describe("Codex capability reasons", () => {
@@ -248,5 +249,65 @@ describe("reasons a Claude session was stopped for", () => {
     expect(codexReason("en-US", "Claude process exited (1)").technical).toBe(
       "Claude process exited (1)",
     );
+  });
+});
+
+describe("a managed Claude turn that failed authentication", () => {
+  const locales: Locale[] = ["zh-CN", "zh-TW", "en-US", "ja-JP"];
+  // The session stays usable, so the copy must not say read-only; it names the fixes that work
+  // for a managed process: logging in, the settings env block, and apiKeyHelper.
+  const readOnly = /只读|唯讀|read-only|読み取り専用/;
+  const sendAgain: Record<Locale, string> = {
+    "zh-CN": "重新发送",
+    "zh-TW": "重新傳送",
+    "en-US": "send again",
+    "ja-JP": "再送信",
+  };
+
+  it.each(locales)("explains the fixes and that sending again works in %s", (locale) => {
+    const { text, technical } = codexReason(locale, "claude-auth-failed");
+    expect(technical).toBeUndefined();
+    expect(text).not.toBe(codexReason(locale).text);
+    for (const part of ["/login", "~/.claude/settings.json", "env", "apiKeyHelper", "export"])
+      expect(text).toContain(part);
+    expect(text).toContain(sendAgain[locale]);
+    expect(text).not.toMatch(readOnly);
+  });
+
+  it("keeps the CLI's detail as is, underscores included", () => {
+    const reason =
+      "claude-auth-failed: Invalid API key · Fix external API key (HTTP 401); key source: ANTHROPIC_API_KEY";
+    expect(codexReason("en-US", reason)).toEqual({
+      text: codexReason("en-US", "claude-auth-failed").text,
+      technical: "Invalid API key · Fix external API key (HTTP 401); key source: ANTHROPIC_API_KEY",
+    });
+  });
+
+  it("refers to the computer running AgentKib on the Web", () => {
+    expect(codexReason("zh-CN", "claude-auth-failed", "web").text).toContain(
+      "运行 AgentKib 的电脑的终端",
+    );
+    expect(codexReason("en-US", "claude-auth-failed", "web").text).toContain(
+      "in a terminal on the computer running AgentKib",
+    );
+  });
+});
+
+describe("a Claude Code command AgentKib did not send", () => {
+  const locales: Locale[] = ["zh-CN", "zh-TW", "en-US", "ja-JP"];
+  it.each(locales)("explains each refusal in its own words in %s", (locale) => {
+    const texts = CLAUDE_COMMAND_REFUSALS.map((code) => {
+      const { text, technical } = codexReason(locale, code);
+      expect(technical).toBeUndefined();
+      expect(text).not.toBe(codexReason(locale).text);
+      return text;
+    });
+    expect(new Set(texts).size).toBe(CLAUDE_COMMAND_REFUSALS.length);
+  });
+
+  it("points /clear to a new session and to compacting", () => {
+    const text = codexReason("en-US", "claude-command-clear").text;
+    expect(text).toContain("start a new session");
+    expect(text).toContain("Compact context");
   });
 });

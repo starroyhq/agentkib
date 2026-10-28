@@ -7,6 +7,10 @@ type Palette = Record<string, string>;
 
 const desktopCss = readFileSync(new URL("../styles.css", import.meta.url), "utf8");
 const webCss = readFileSync(new URL("../../../web/src/style.css", import.meta.url), "utf8");
+const conversationCss = readFileSync(
+  new URL("../features/sessions/conversation/conversation.css", import.meta.url),
+  "utf8",
+);
 
 function declarations(body: string): Palette {
   return Object.fromEntries(
@@ -19,6 +23,21 @@ function blocks(css: string) {
     selector: match[1].trim(),
     values: declarations(match[2]),
   }));
+}
+
+/** Plain declarations of the rule whose selector list contains `selector`. */
+function rule(css: string, selector: string): Record<string, string> {
+  for (const match of css.matchAll(/([^{}]+)\{([^{}]*)\}/g)) {
+    const selectors = match[1]
+      .replace(/\/\*[\s\S]*?\*\//g, "")
+      .split(",")
+      .map((item) => item.trim());
+    if (selectors.includes(selector))
+      return Object.fromEntries(
+        [...match[2].matchAll(/([\w-]+):\s*([^;]+);/g)].map((item) => [item[1], item[2].trim()]),
+      );
+  }
+  throw new Error(`Missing rule ${selector}`);
 }
 
 const desktopBlocks = blocks(desktopCss);
@@ -312,4 +331,51 @@ it("uses the approved VTRON text tones without changing the primary button backg
   expect(palette["--destructive-icon"]).toBe("#ff6c35");
   expect(contrast(color("#285ae0", palette), color("#ebf0ff", palette))).toBeCloseTo(5.081, 2);
   expect(contrast(color("white", palette), color("#2e67ff", palette))).toBeCloseTo(4.667, 2);
+});
+
+// User messages put Markdown on --primary in --primary-foreground. The Markdown fills and colours
+// for code, quotes and links suit page surfaces, so each user-message scope overrides them.
+describe.each([
+  {
+    name: "Web transcript",
+    css: webCss,
+    palettes: webPalettes,
+    scope: '[data-message-role="user"] .aui-markdown',
+  },
+  {
+    name: "desktop transcript",
+    css: conversationCss,
+    palettes: desktopPalettes,
+    scope: '.agentkib-conversation [data-message-role="user"] .aui-markdown',
+  },
+  {
+    name: "desktop session list",
+    css: desktopCss,
+    palettes: desktopPalettes,
+    scope: ".markdown-on-primary",
+  },
+])("$name user messages", ({ css, palettes, scope }) => {
+  it.each(palettes)("$name keeps code, quotes and links readable", ({ palette }) => {
+    const get = (token: string) => color(palette[token], palette);
+    const bubble = over(get("--primary"), get("--background"));
+    const resolve = (value: string) =>
+      value === "inherit" ? get("--primary-foreground") : color(value, palette);
+    // Code and code blocks are filled on page surfaces; quotes and links are coloured there.
+    for (const [element, property] of [
+      [":not(pre) > code", "background-color"],
+      ["pre", "background-color"],
+      ["blockquote", "color"],
+      ["a", "color"],
+    ]) {
+      const values = rule(css, `${scope} ${element}`);
+      expect(values[property], `${element} ${property}`).toBeDefined();
+      const fill = values["background-color"]
+        ? over(resolve(values["background-color"]), bubble)
+        : bubble;
+      expect(
+        contrast(resolve(values.color ?? "inherit"), fill),
+        `${scope} ${element}`,
+      ).toBeGreaterThanOrEqual(4.5);
+    }
+  });
 });

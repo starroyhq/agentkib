@@ -1,5 +1,13 @@
 import type { ConversationEvent } from "@agentkib/web-client";
-import { SafeMarkdown } from "@agentkib/session-ui";
+import {
+  SafeMarkdown,
+  ToolDetailRow,
+  TurnFileChanges,
+  formatToolDuration,
+  isHiddenWrapperTool,
+  toolDetailCopy,
+  turnDurationOf,
+} from "@agentkib/session-ui";
 import { Button } from "@/components/ui/button";
 import { groupConversationEvents } from "@/features/sessions/conversation-groups";
 import type { ConversationEvent as DesktopConversationEvent } from "@/core/types";
@@ -54,7 +62,9 @@ function splitSegments(
 }
 
 function projectMessages(events: ConversationEvent[], incomplete: boolean): TranscriptMessage[] {
-  const groups = groupConversationEvents(events.map(normalizeEvent), { incomplete });
+  // A wrapper call is shown through the items it recorded, not as its own row.
+  const visible = events.filter((event) => !isHiddenWrapperTool(event));
+  const groups = groupConversationEvents(visible.map(normalizeEvent), { incomplete });
   const messages: TranscriptMessage[] = [];
   for (const group of groups) {
     let start = 0;
@@ -148,6 +158,14 @@ function EventRow({
   onTool: (event: ConversationEvent) => void;
 }) {
   const isTool = event.kind === "tool-summary";
+  if (isTool && event.tool)
+    return (
+      <ToolDetailRow
+        event={{ ...event, tool: event.tool }}
+        locale={locale}
+        statusLabel={toolStatusLabel(event.tool_status, locale)}
+      />
+    );
   return (
     <div
       data-event-id={event.id}
@@ -210,6 +228,12 @@ function MessageBlock({
 }) {
   const processIdPrefix = useId();
   const isUser = message.role === "user";
+  const turnDuration = isUser ? undefined : turnDurationOf(message.events);
+  const firstProcess = message.segments.find((segment) => segment.kind === "process")?.key;
+  const processLabel = (key: string) =>
+    turnDuration !== undefined && key === firstProcess
+      ? toolDetailCopy(locale).worked(formatToolDuration(turnDuration, locale))
+      : labels.process;
   return (
     <article
       data-message-role={message.role}
@@ -259,7 +283,7 @@ function MessageBlock({
                     variant="ghost"
                     aria-expanded={open}
                     aria-controls={bodyId}
-                    aria-label={`${labels.process} ${segment.toolCount} ${labels.tools}${segment.failedToolCount > 0 ? ` · ${segment.failedToolCount} ${labels.failed}` : ""}`}
+                    aria-label={`${processLabel(segment.key)} ${segment.toolCount} ${labels.tools}${segment.failedToolCount > 0 ? ` · ${segment.failedToolCount} ${labels.failed}` : ""}`}
                     className="flex h-auto min-h-10 w-full items-center justify-start gap-2 rounded-none px-3 py-2 text-left text-xs font-normal transition-colors hover:bg-muted/50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-inset"
                     onClick={() => onToggleProcess(segment.key, open)}
                   >
@@ -267,7 +291,7 @@ function MessageBlock({
                       aria-hidden="true"
                       className={`size-4 shrink-0 text-muted-foreground transition-transform ${open ? "rotate-90" : ""}`}
                     />
-                    <span className="font-medium text-foreground">{labels.process}</span>
+                    <span className="font-medium text-foreground">{processLabel(segment.key)}</span>
                     <span className="text-muted-foreground">
                       {segment.toolCount} {labels.tools}
                     </span>
@@ -294,6 +318,7 @@ function MessageBlock({
               );
             })}
           </div>
+          {!isUser && <TurnFileChanges events={message.events} locale={locale} />}
         </div>
         {message.running && (
           <span className="mt-2 px-1 text-[11px] text-muted-foreground">{labels.incomplete}</span>

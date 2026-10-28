@@ -1,6 +1,22 @@
 import { createHash } from "node:crypto";
+import type { ConversationTurnMeta } from "@agentkib/runtime-protocol";
 import { sessionTitle } from "./codex-sessions";
+import {
+  claudeToolDetail,
+  claudeToolResult,
+  claudeToolResultBytes,
+  codexItemTool,
+  jsonBytes,
+  type ClaudeToolResult,
+  type NormalizedToolCall,
+  type ToolContext,
+} from "./conversation-tools";
 import { jsonTimestamp } from "./session-history";
+import {
+  claudeCommandInvocation,
+  claudeCommandOutput,
+  claudeLocalCommandText,
+} from "./claude-command-records";
 import {
   compatibleEvents,
   hasText,
@@ -24,6 +40,13 @@ interface ToolResult {
   status: string | null;
   duration: number | null;
   turn: string | null;
+  /** A Codex item with the same identity as the call (MCP, sub-agents, waits). */
+  detail?: NormalizedToolCall;
+  /** Claude Code's structured result, bounded and redacted. */
+  claude?: ClaudeToolResult;
+  /** Codex items recorded inside this call, such as code-mode `exec`. */
+  children?: number;
+  bytes?: number;
 }
 export interface EventState {
   format: HistoryFormat;
@@ -37,8 +60,22 @@ export interface EventState {
   associationWarning: boolean;
   candidateTurn: string | null;
   turnRangeStart: number;
+  /** How tool paths are shown; fixed for one transcript read. */
+  context: ToolContext;
+  /**
+   * Codex call outputs whose call is not read yet (reading is newest-first),
+   * by turn. Bounded on its own: losing an entry only loses nesting, so it
+   * never raises the association warning.
+   */
+  openCalls: Map<string, string | null>;
+  /** Codex item rows already emitted, bounded the same way. */
+  itemRows: Set<string>;
+  /** A turn end read before the turn's last item; attached to that item. */
+  turnMeta: { turn: string | null; meta: ConversationTurnMeta } | null;
 }
-export function initialEventState(format: HistoryFormat): EventState {
+const MAX_OPEN_CALLS = 256;
+const MAX_ITEM_ROWS = 2048;
+export function initialEventState(format: HistoryFormat, context: ToolContext = {}): EventState {
   return {
     format,
     pending: [],
@@ -51,6 +88,10 @@ export function initialEventState(format: HistoryFormat): EventState {
     associationWarning: false,
     candidateTurn: null,
     turnRangeStart: 0,
+    context,
+    openCalls: new Map(),
+    itemRows: new Set(),
+    turnMeta: null,
   };
 }
 export function associationCount(state: EventState): number {
@@ -59,6 +100,8 @@ export function associationCount(state: EventState): number {
     state.tools.size +
     state.finishedTools.size +
     state.visibleTurns.size +
+    state.openCalls.size +
+    state.itemRows.size +
     state.pending.length
   );
 }
@@ -67,9 +110,12 @@ export function associationBytes(state: EventState): number {
     [...state.mirrors.values()].reduce((sum, values) => sum + 256 + values.length * 448, 0) +
     (state.tools.size + state.finishedTools.size + state.visibleTurns.size) * 256 +
     [...state.tools.values()].reduce(
-      (sum, value) => sum + (value.turn ? Buffer.byteLength(value.turn) : 0),
+      (sum, value) => sum + (value.turn ? Buffer.byteLength(value.turn) : 0) + (value.bytes ?? 0),
       0,
     ) +
+    state.openCalls.size * 320 +
+    state.itemRows.size * 128 +
+    (state.turnMeta ? 256 : 0) +
     (state.candidateTurn ? Buffer.byteLength(state.candidateTurn) : 0) +
     state.associationOrder.length * 128
   );
@@ -231,6 +277,7 @@ function tool(
   status: string | null,
   turn: string | null,
   eventId?: string,
+  input?: unknown,
 ): void {
   const key = hash(id);
   if (id) {
@@ -240,6 +287,7 @@ function tool(
   remember(state, 2, key);
   const result = state.tools.get(key);
   state.tools.delete(key);
+  state.openCalls.delete(key);
   const merged = mergeTurns(state, turn, result?.turn ?? null),
     event: ConversationEvent = {
       id: eventId ?? `tool-${offset}-${index}`,
@@ -253,6 +301,16 @@ function tool(
       truncated: false,
     };
   if (merged !== null) event.turn_id = merged;
+  if (result?.detail) {
+    event.tool = result.detail.detail;
+    // `js` names a transport for MCP calls; the MCP tool name says what ran.
+    if (result.detail.detail.mcp) event.tool_name = result.detail.name;
+  } else if (state.format === "claude-code") {
+    const detail = claudeToolDetail(name, input, result?.claude, state.context);
+    if (detail) event.tool = detail;
+  }
+  if (result?.children)
+    event.tool = { ...(event.tool ?? { kind: "other" }), children: result.children };
   state.pending.push(event);
 }
 function result(
@@ -261,7 +319,8 @@ function result(
   status: string | null,
   duration: number | null,
   turn: string | null,
-): void {
+  claude?: ClaudeToolResult,
+): ToolResult | undefined {
   if (!id) return;
   const key = hash(id),
     previous = state.tools.get(key),
@@ -270,8 +329,118 @@ function result(
   entry.status ??= toolStatus(status);
   entry.duration ??= duration;
   entry.turn = merged;
+  if (claude && !entry.claude) {
+    entry.claude = claude;
+    entry.bytes = (entry.bytes ?? 0) + claudeToolResultBytes(claude);
+  }
   state.tools.set(key, entry);
   remember(state, 1, key);
+  return entry;
+}
+function openCall(state: EventState, key: string, turn: string | null): void {
+  state.openCalls.delete(key);
+  state.openCalls.set(key, turn);
+  while (state.openCalls.size > MAX_OPEN_CALLS)
+    state.openCalls.delete(state.openCalls.keys().next().value!);
+}
+function itemMilliseconds(value: unknown): number | null {
+  return typeof value === "number" && Number.isSafeInteger(value) && value >= 0 ? value : null;
+}
+/**
+ * One completed Codex thread item. An item with its call's identity
+ * describes that call. Otherwise it is its own row; when exactly one call of
+ * the same turn is still open (its output read, its start not yet), it ran
+ * inside that call and is counted as its child. Ambiguity never guesses.
+ */
+function codexItem(
+  state: EventState,
+  offset: number,
+  payload: any,
+  timestamp: string | null,
+  turn: string | null,
+): void {
+  const item = payload?.item;
+  const normalized = codexItemTool(item, state.context);
+  if (!normalized) return;
+  const itemId = stringValue(item?.id) ?? "";
+  const key = itemId ? hash(itemId) : "";
+  const parent = key && state.openCalls.has(key) ? state.tools.get(key) : undefined;
+  if (parent) {
+    if (!parent.detail) {
+      parent.detail = normalized;
+      parent.status = normalized.status ?? parent.status;
+      parent.duration ??= normalized.durationMs;
+      parent.bytes = (parent.bytes ?? 0) + jsonBytes(normalized.detail);
+    }
+    return;
+  }
+  const rowId =
+    itemId && Buffer.byteLength(itemId) <= 200 ? `codex-item:${itemId}` : `tool-${offset}-0`;
+  const rowKey = hash(rowId);
+  if (state.itemRows.has(rowKey)) return;
+  state.itemRows.add(rowKey);
+  while (state.itemRows.size > MAX_ITEM_ROWS)
+    state.itemRows.delete(state.itemRows.values().next().value!);
+  if (turn !== null) {
+    let wrapper: string | undefined;
+    let count = 0;
+    for (const [callKey, callTurn] of state.openCalls)
+      if (callTurn === turn && ++count === 1) wrapper = callKey;
+    const entry = count === 1 && wrapper ? state.tools.get(wrapper) : undefined;
+    if (entry) entry.children = (entry.children ?? 0) + 1;
+  }
+  const started = itemMilliseconds(payload?.started_at_ms),
+    completed = itemMilliseconds(payload?.completed_at_ms);
+  const event: ConversationEvent = {
+    id: rowId,
+    kind: "tool-summary",
+    timestamp: timestamp ?? (completed !== null ? new Date(completed).toISOString() : null),
+    content: null,
+    tool_name: normalized.name,
+    tool_status: normalized.status,
+    duration_ms:
+      normalized.durationMs ??
+      (started !== null && completed !== null && completed >= started ? completed - started : null),
+    attachment_count: 0,
+    truncated: false,
+    tool: normalized.detail,
+  };
+  if (turn !== null) event.turn_id = turn;
+  state.pending.push(event);
+}
+function turnEnd(payload: any, outcome: ConversationTurnMeta["outcome"]): ConversationTurnMeta {
+  const meta: ConversationTurnMeta = {
+    outcome:
+      outcome === "completed" && payload?.error !== undefined && payload?.error !== null
+        ? "failed"
+        : outcome,
+  };
+  const duration = payload?.duration_ms ?? payload?.durationMs;
+  if (typeof duration === "number" && Number.isSafeInteger(duration) && duration >= 0)
+    meta.duration_ms = duration;
+  return meta;
+}
+/** Attach a pending turn end to the turn's last item, the first one read after it. */
+function attachTurnMeta(state: EventState, from: number): void {
+  const pending = state.turnMeta;
+  if (!pending) return;
+  for (let index = from; index < state.pending.length; index++) {
+    const event = state.pending[index]!;
+    if (state.format === "claude-code") {
+      // Claude records the duration after the turn's final reply.
+      if (event.kind === "user-message") {
+        state.turnMeta = null;
+        return;
+      }
+      if (event.kind !== "agent-message") continue;
+    } else if (pending.turn && event.turn_id && event.turn_id !== pending.turn) {
+      state.turnMeta = null;
+      return;
+    }
+    event.turn_meta = pending.meta;
+    state.turnMeta = null;
+    return;
+  }
 }
 function applyTurn(state: EventState, page: ConversationEvent[], turn: string): void {
   if (state.associationWarning) return;
@@ -338,15 +507,70 @@ export function parseEventRecord(
   row: any,
   page: ConversationEvent[],
 ): void {
+  const from = state.pending.length;
+  parseRecord(state, offset, row, page);
+  attachTurnMeta(state, from);
+}
+function parseRecord(state: EventState, offset: number, row: any, page: ConversationEvent[]): void {
   if (state.format !== "codex" && state.format !== "claude-code") {
     for (const event of compatibleEvents(state.format, offset, row)) state.pending.push(event);
     return;
   }
   const timestamp = jsonTimestamp(row?.timestamp);
   if (state.format === "claude-code") {
+    if (row?.type === "system" && row?.subtype === "turn_duration") {
+      state.turnMeta = { turn: null, meta: turnEnd(row, "completed") };
+      return;
+    }
+    // The CLI's own context: a skill's expanded prompt, the caveat before a local command.
+    if (row?.isMeta === true) return;
+    if (row?.type === "system" && row?.subtype === "local_command") {
+      // A local command's output, with the uuid of its live frame, or a command the CLI does
+      // not offer in print mode, recorded as typed (`/help`).
+      const text = claudeLocalCommandText(row);
+      const output = claudeCommandOutput(text);
+      const typed = output === null ? (claudeCommandInvocation(text) ?? text.trim()) : null;
+      const id =
+        typeof row.uuid === "string" && claudeMessageIdPattern.test(row.uuid)
+          ? row.uuid
+          : `event-${offset}`;
+      if (output)
+        message(
+          state,
+          offset,
+          "agent-message",
+          timestamp,
+          output,
+          0,
+          true,
+          null,
+          undefined,
+          page,
+          id,
+        );
+      else if (typed?.startsWith("/"))
+        message(
+          state,
+          offset,
+          "user-message",
+          timestamp,
+          typed,
+          0,
+          true,
+          null,
+          undefined,
+          page,
+          id,
+        );
+      return;
+    }
     if (!["user", "assistant"].includes(row?.type) || row?.isCompactSummary === true) return;
     const content = row?.message?.content;
     const rowEvents: Array<{ index: number; event: ConversationEvent }> = [];
+    // The structured result describes the row's only tool result.
+    const results = Array.isArray(content)
+      ? content.filter((block) => block?.type === "tool_result").length
+      : 0;
     if (Array.isArray(content))
       // History is parsed newest-first and reversed before delivery, so queue
       // this message's blocks in reverse to preserve their native order.
@@ -359,6 +583,7 @@ export function parseEventRecord(
             block.is_error === true ? "failed" : "completed",
             null,
             null,
+            claudeToolResult(results === 1 ? row?.toolUseResult : undefined, block.content),
           );
         else if (block?.type === "tool_use") {
           const pendingCount = state.pending.length;
@@ -373,6 +598,7 @@ export function parseEventRecord(
             "started",
             null,
             id && id.length <= 256 ? id : undefined,
+            block.input,
           );
           if (state.pending.length > pendingCount)
             rowEvents.push({ index, event: state.pending.pop()! });
@@ -421,7 +647,25 @@ export function parseEventRecord(
           rowEvents.push({ index, event: state.pending.pop()! });
       }
     } else {
-      if (hasText(text) && !hiddenCommand(text))
+      // A slash command reads as typed; `/compact` records its output as a user row.
+      const invocation = kind === "user-message" && text ? claudeCommandInvocation(text) : null;
+      const output =
+        kind === "user-message" && text && !invocation ? claudeCommandOutput(text) : null;
+      if (invocation || output)
+        message(
+          state,
+          offset,
+          invocation ? "user-message" : "agent-message",
+          timestamp,
+          (invocation ?? output)!,
+          0,
+          true,
+          null,
+          undefined,
+          page,
+          nativeId ?? `event-${offset}`,
+        );
+      else if (output === null && hasText(text) && !hiddenCommand(text))
         message(
           state,
           offset,
@@ -451,7 +695,20 @@ export function parseEventRecord(
     return;
   }
   if (row?.type === "event_msg" && ["task_complete", "task_started"].includes(payload?.type)) {
+    if (payload.type === "task_complete")
+      state.turnMeta = { turn, meta: turnEnd(payload, "completed") };
+    // A turn with no item left to carry its end keeps none.
+    else if (state.turnMeta && (state.turnMeta.turn === null || state.turnMeta.turn === turn))
+      state.turnMeta = null;
     boundary(state, payload.type === "task_complete" ? "complete" : "start", turn, page);
+    return;
+  }
+  if (row?.type === "event_msg" && payload?.type === "turn_aborted") {
+    state.turnMeta = { turn, meta: turnEnd(payload, "aborted") };
+    return;
+  }
+  if (row?.type === "event_msg" && payload?.type === "item_completed") {
+    codexItem(state, offset, payload, timestamp, normalizedTurn(payload.turn_id) ?? turn);
     return;
   }
   if (row?.type === "event_msg" && ["user_message", "agent_message"].includes(payload?.type)) {
@@ -517,9 +774,10 @@ export function parseEventRecord(
   } else if (
     row?.type === "response_item" &&
     ["function_call_output", "custom_tool_call_output"].includes(payload?.type)
-  )
+  ) {
     result(state, id, "completed", null, turn);
-  else if (
+    if (id) openCall(state, hash(id), turn);
+  } else if (
     row?.type === "event_msg" &&
     ["exec_command_end", "patch_apply_end"].includes(payload?.type)
   ) {

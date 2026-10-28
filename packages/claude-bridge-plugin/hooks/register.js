@@ -1550,6 +1550,30 @@ export function register(on) {
     if (next.called) throw new Error(next.error.message);
     return next(e);
   });
+  // Managed settings or a Team or Enterprise login load sec-default, which skips classic hooks of
+  // user-installed plugins, so the PermissionRequest hook below never runs there. tool.check still
+  // does, after tool.call: an `ask` verdict that a person answers (not a host) means the mode's
+  // decider takes the call, normally the terminal's approval dialog. When that is answered is not
+  // observable here, so the wait is the unconfirmed kind; it ends with the tool, its progress hint
+  // or the turn, like the classic one. The verdict passes on unchanged.
+  on("tool.check", async ($, e, next) => {
+    const result = await next(e);
+    const tool =
+      e.agentId === undefined &&
+      result?.decision === "ask" &&
+      e.approver !== "host" &&
+      typeof e.tool_use_id === "string"
+        ? state.activeTools.get(e.tool_use_id)
+        : undefined;
+    if (tool && state.currentTurnId && tool.turnId === state.currentTurnId) {
+      state.waits.set({ tool, turnId: state.currentTurnId }, "unknown");
+      state.dirty = true;
+    }
+    return result;
+  }).catch(async ($, e, next) => {
+    if (next.called) throw new Error(next.error.message);
+    return next(e);
+  });
   on("classic.PermissionRequest", async ($, e, next) => {
     const owner = { tool: permissionTool(state, e), turnId: state.currentTurnId };
     state.waits.set(owner, "permission");

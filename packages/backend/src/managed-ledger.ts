@@ -594,6 +594,14 @@ export function persistManagedSnapshot(
       database
         .prepare("INSERT OR IGNORE INTO managed_events(session_id,event_id,event) VALUES(?,?,?)")
         .run(expected.id, id, JSON.stringify(payload));
+      // A finished turn adds its duration to an item that is already stored.
+      // Only that key changes; the first-written item otherwise stays as is.
+      if (isObject(payload.turn_meta))
+        database
+          .prepare(
+            "UPDATE managed_events SET event=json_set(event,'$.turn_meta',json(?)) WHERE session_id=? AND event_id=?",
+          )
+          .run(JSON.stringify(payload.turn_meta), expected.id, id);
     }
     database.exec("COMMIT");
     return nextRevision;

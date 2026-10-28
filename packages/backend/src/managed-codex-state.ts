@@ -1,6 +1,7 @@
 import type { CodexAppServerSession } from "./codex-app-server";
 import { isDeepStrictEqual } from "node:util";
 import { createContextUsageGeneration, projectContextUsage } from "./context-usage";
+import { codexItemTool, type ToolContext } from "./conversation-tools";
 
 type JsonObject = Record<string, unknown>;
 type ManagedRecord = JsonObject & {
@@ -38,6 +39,8 @@ export class ManagedCodexState {
   #finishedCompactions = new Set<string>();
   #closedTurns = new Set<string>();
   #lastTurn: string | null = null;
+  /** Last item projected in the running turn; turn/completed adds the turn duration to it. */
+  #lastTurnEvent: JsonObject | null = null;
   readonly #usageGeneration = createContextUsageGeneration();
   #usageReport = 0;
   #usageUpdatedAt: string | undefined;
@@ -97,6 +100,12 @@ export class ManagedCodexState {
 
   get record(): Readonly<ManagedRecord> {
     return this.#record;
+  }
+
+  #toolContext(): ToolContext {
+    return {
+      workspace: typeof this.#record.workspace === "string" ? this.#record.workspace : null,
+    };
   }
 
   snapshot(runtimeBootId: string, controls: boolean): JsonObject {
@@ -184,6 +193,7 @@ export class ManagedCodexState {
         this.#status = "running";
         this.#stream = "";
         this.#reason = null;
+        this.#lastTurnEvent = null;
         break;
       }
       case "turn/completed": {
@@ -201,6 +211,13 @@ export class ManagedCodexState {
         this.#approvals.clear();
         this.#questions.clear();
         this.#items.clear();
+        // The native turn reports its duration; history readers attach the same
+        // value to the turn's last item, so the live row carries it too.
+        const meta = turnMeta(params.turn);
+        const last = this.#lastTurnEvent;
+        this.#lastTurnEvent = null;
+        if (meta && last?.turn_id === id)
+          return { ...this.#changed(runtimeChanged), event: { ...last, turn_meta: meta } };
         break;
       }
       case "item/agentMessage/delta":
@@ -263,7 +280,8 @@ export class ManagedCodexState {
           throw new Error("too-many-items");
         this.#items.set(id, structuredClone(params.item));
         if (method === "item/completed") {
-          const event = projectItem(params.item, this.#turn);
+          const event = projectItem(params.item, this.#turn, this.#toolContext());
+          if (event) this.#lastTurnEvent = event;
           this.#mutationRevision = ++this.#revision;
           return { changed: true, ...(event ? { event } : {}) };
         }
@@ -393,11 +411,14 @@ export class ManagedCodexState {
       if (turn.status === "inProgress") {
         active = typeof turn.id === "string" ? turn.id : null;
       }
+      const first = events.length;
       for (const item of Array.isArray(turn.items) ? turn.items : []) {
         if (!isObject(item) || typeof turn.id !== "string") continue;
-        const event = projectItem(item, turn.id);
+        const event = projectItem(item, turn.id, this.#toolContext());
         if (event) events.push(event);
       }
+      const meta = turnMeta(turn);
+      if (meta && events.length > first) events[events.length - 1]!.turn_meta = meta;
     }
     // History reads can finish after newer lifecycle notifications were applied.
     // Those events, including compaction, own the current live state.
@@ -419,6 +440,11 @@ export class ManagedCodexState {
     this.#approvals.clear();
     this.#questions.clear();
     this.#items.clear();
+    // An attached running turn can still end with a duration; keep its last row.
+    this.#lastTurnEvent =
+      active === null
+        ? null
+        : ([...events].reverse().find((event) => event.turn_id === active) ?? null);
     if (this.#compactionRecoveryTurn !== undefined) {
       if (
         active !== null &&
@@ -652,13 +678,15 @@ function policyIdFromSettings(settings: JsonObject, workspace: string): string |
   return null;
 }
 
-function projectItem(item: JsonObject, turnId: string): JsonObject | undefined {
+function projectItem(
+  item: JsonObject,
+  turnId: string,
+  context: ToolContext = {},
+): JsonObject | undefined {
   const id = typeof item.id === "string" ? item.id : null;
   if (!id) throw new Error("invalid-item");
   let kind: string;
   let content = "";
-  let toolName: string | null = null;
-  let toolStatus: string | null = null;
   switch (item.type) {
     case "agentMessage":
     case "plan":
@@ -674,27 +702,43 @@ function projectItem(item: JsonObject, turnId: string): JsonObject | undefined {
             .join("\n")
         : "";
       break;
-    case "commandExecution":
-    case "fileChange":
-    case "mcpToolCall":
-    case "webSearch":
-      kind = "tool-summary";
-      toolName = item.type;
-      toolStatus = typeof item.status === "string" ? item.status : null;
-      break;
-    default:
-      return;
+    default: {
+      // Same normalizer as rollout history, so the history that replaces this
+      // turn's live rows shows them the same way.
+      const tool = codexItemTool(item, context);
+      if (!tool) return;
+      return {
+        id,
+        kind: "tool-summary",
+        turn_id: turnId,
+        timestamp: new Date().toISOString(),
+        content: "",
+        tool_name: tool.name,
+        tool_status: tool.status,
+        duration_ms: tool.durationMs,
+        attachment_count: 0,
+        truncated: false,
+        tool: tool.detail,
+      };
+    }
   }
   const truncated = Buffer.byteLength(content, "utf8") > 128 * 1024;
   const boundedContent = [...content].slice(0, 32768).join("");
+  // app-server agent messages carry the same phase as rollout messages; without it
+  // a connected session groups commentary and tools differently from its history.
+  const phase =
+    item.type === "agentMessage" && (item.phase === "commentary" || item.phase === "final_answer")
+      ? item.phase
+      : undefined;
   return {
     id,
     kind,
     turn_id: turnId,
+    ...(phase ? { message_phase: phase } : {}),
     timestamp: new Date().toISOString(),
     content: boundedContent,
-    tool_name: toolName,
-    tool_status: toolStatus,
+    tool_name: null,
+    tool_status: null,
     attachment_count: 0,
     truncated,
   };
@@ -1196,4 +1240,28 @@ function valueType(value: unknown): string {
 
 function isObject(value: unknown): value is JsonObject {
   return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+/**
+ * The `turn_meta` of a finished app-server turn, matching what the rollout
+ * reader derives from task_complete / turn_aborted. Unfinished turns have none.
+ */
+function turnMeta(turn: unknown): JsonObject | undefined {
+  if (!isObject(turn)) return undefined;
+  const outcome =
+    turn.status === "completed"
+      ? turn.error !== undefined && turn.error !== null
+        ? "failed"
+        : "completed"
+      : turn.status === "interrupted"
+        ? "aborted"
+        : turn.status === "failed"
+          ? "failed"
+          : undefined;
+  if (!outcome) return undefined;
+  const meta: JsonObject = { outcome };
+  const duration = turn.durationMs;
+  if (typeof duration === "number" && Number.isSafeInteger(duration) && duration >= 0)
+    meta.duration_ms = duration;
+  return meta;
 }

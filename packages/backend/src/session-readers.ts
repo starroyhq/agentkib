@@ -395,6 +395,8 @@ export class SessionReaders {
             offset,
             count,
             agent,
+            // Collections pass an ID here; only an absolute root shortens paths.
+            { workspace },
           );
         if (transcript) return page(transcript);
         const provider = agent === "codex" ? this.#codex : this.#claude;

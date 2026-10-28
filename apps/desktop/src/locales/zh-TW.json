@@ -2273,7 +2273,7 @@
   "conversation.status": "狀態",
   "conversation.warnings": "讀取警告",
   "conversation.tool": "工具摘要",
-  "conversation.toolSummaryUnavailable": "歷史記錄未提供工具輸入與輸出。",
+  "conversation.toolSummaryUnavailable": "此記錄沒有可顯示的詳情。",
   "conversation.readOnly": "目前瀏覽器僅可讀取",
   "conversation.noSendPermission": "目前瀏覽器未獲傳送權限",
   "conversation.device": "已授權瀏覽器",

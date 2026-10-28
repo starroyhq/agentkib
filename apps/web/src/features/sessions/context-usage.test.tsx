@@ -398,3 +398,93 @@ describe("native context usage", () => {
     },
   );
 });
+
+describe("compacting a managed Claude session from the usage dialog", () => {
+  const copy = contextUsageCopy["zh-CN"];
+  let control: ReturnType<typeof vi.fn>;
+  const claude = () => {
+    control = vi.fn();
+    state.current = { id: "s", agent: "claude-code" } as typeof state.current;
+    state.live = { ...state.live!, executionMode: "claude-managed", status: "idle" };
+    state.access = { ...state.access!, device: { ...state.access!.device!, send: true } };
+    state.canSend = true;
+    state.page = {
+      events: [
+        { id: "u", kind: "user-message", content: "hi", attachment_count: 0, truncated: false },
+      ],
+      warnings: [],
+    } as unknown as typeof state.page;
+    state.control = control as unknown as typeof state.control;
+  };
+  const compact = () => screen.queryByRole("button", { name: copy.compactAction });
+
+  it("sends /compact as a message of its own and closes the dialog", () => {
+    claude();
+    render(<ContextUsageGauge />);
+    fireEvent.click(gauge());
+    expect(screen.getByRole("dialog")).toHaveTextContent(copy.compactDetail);
+    fireEvent.click(compact()!);
+    // The draft and its attachments stay in the composer.
+    expect(control).toHaveBeenCalledExactlyOnceWith(
+      "send",
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      { command: "/compact" },
+    );
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+  });
+
+  it("waits for the running turn to end, and for a first message", () => {
+    claude();
+    state.canSend = false;
+    state.live = { ...state.live!, status: "running" };
+    const view = render(<ContextUsageGauge />);
+    fireEvent.click(gauge());
+    expect(compact()).toBeDisabled();
+    expect(screen.getByRole("dialog")).toHaveTextContent(copy.compactAfterTurn);
+    state.canSend = true;
+    state.live = { ...state.live!, status: "idle" };
+    state.page = { events: [], warnings: [] } as unknown as typeof state.page;
+    view.rerender(<ContextUsageGauge />);
+    expect(compact()).toBeDisabled();
+    expect(screen.getByRole("dialog")).not.toHaveTextContent(copy.compactAfterTurn);
+    fireEvent.click(compact()!);
+    expect(control).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    [
+      "Codex",
+      () => {
+        state.current = { id: "s", agent: "codex" } as typeof state.current;
+      },
+    ],
+    [
+      "a terminal-connected session",
+      () => {
+        state.live = { ...state.live!, executionMode: "claude-follower" };
+      },
+    ],
+    [
+      "a device that cannot send",
+      () => {
+        state.access = { ...state.access!, device: { ...state.access!.device!, send: false } };
+      },
+    ],
+    [
+      "another session's live state",
+      () => {
+        state.live = { ...state.live!, sessionId: "other" };
+      },
+    ],
+  ])("is not offered for %s", (_label, change) => {
+    claude();
+    change();
+    render(<ContextUsageGauge />);
+    fireEvent.click(gauge());
+    expect(screen.getByRole("dialog")).toBeVisible();
+    expect(compact()).not.toBeInTheDocument();
+  });
+});

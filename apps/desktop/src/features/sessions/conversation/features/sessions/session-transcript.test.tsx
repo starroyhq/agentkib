@@ -283,6 +283,64 @@ describe("production transcript identity", () => {
     ).toEqual(["question", "tool", "answer"]);
   });
 
+  it("shows typed tool rows inline, hides wrappers with recorded items and summarizes edits", () => {
+    const question = event("question", "user-message");
+    const wrapper: ConversationEvent = {
+      ...event("wrapper"),
+      tool_name: "exec",
+      tool: { kind: "other", children: 2 },
+    };
+    const shell: ConversationEvent = {
+      ...event("shell"),
+      tool_name: "shell",
+      tool_status: "failed",
+      tool: {
+        kind: "execute",
+        title: "pnpm test",
+        content: [{ type: "terminal", command: "pnpm test", output: "1 failed", exit_code: 1 }],
+      },
+    };
+    const edit: ConversationEvent = {
+      ...event("edit"),
+      tool_name: "apply_patch",
+      tool: {
+        kind: "edit",
+        title: "src/app.ts",
+        content: [
+          {
+            type: "diff",
+            path: "src/app.ts",
+            change: "update",
+            added: 2,
+            removed: 1,
+            preview: "+b",
+          },
+        ],
+      },
+    };
+    const answer: ConversationEvent = {
+      ...event("answer", "agent-message"),
+      content: "Fixed.",
+      message_phase: "final_answer",
+      turn_meta: { duration_ms: 127_000, outcome: "completed" },
+    };
+    const view = render(
+      <SessionTranscript {...props} events={[question, wrapper, shell, edit, answer]} />,
+    );
+    const process = screen.getByRole("button", { name: /^Worked 2m 7s 2 tools · 1 failed$/ });
+    expect(process).toHaveAttribute("aria-expanded", "true");
+    expect(view.container.querySelector('[data-event-id="wrapper"]')).toBeNull();
+    const shellToggle = screen.getByRole("button", { name: /pnpm test/ });
+    expect(shellToggle).toHaveAttribute("aria-expanded", "true");
+    expect(document.getElementById(shellToggle.getAttribute("aria-controls")!)).toHaveTextContent(
+      "1 failed",
+    );
+    expect(screen.getByRole("heading", { name: /Edited 1 file/ })).toBeVisible();
+    fireEvent.click(screen.getByRole("button", { name: /Show diff: src\/app\.ts/ }));
+    expect(screen.getAllByText("+b")[0]).toBeVisible();
+    expect(props.onTool).not.toHaveBeenCalled();
+  });
+
   it("associates each process toggle with its own body across transcript instances", () => {
     const sharedTool = event("shared-tool");
     render(

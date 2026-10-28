@@ -1,9 +1,10 @@
 // @vitest-environment jsdom
 import "@testing-library/jest-dom/vitest";
+import { createRef, type RefObject } from "react";
 import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { CodexSessionSettings } from "@agentkib/web-client";
-import { CodexComposerControls } from "./codex-session-controls";
+import { CodexComposerControls, type ComposerControlsHandle } from "./codex-session-controls";
 import { useSession } from "./session-context";
 import { sessionAgentCopy } from "./session-agent-copy";
 import { codexCopy } from "./codex-copy";
@@ -175,4 +176,37 @@ describe("Claude settings preparation", () => {
       expect(state.codexAction).not.toHaveBeenCalled();
     },
   );
+});
+
+describe("opening the composer's dialogs for a bare command", () => {
+  const open = (ref: RefObject<ComposerControlsHandle | null>, dialog: "settings" | "goal") => {
+    let opened: boolean | undefined;
+    act(() => {
+      opened = ref.current!.open(dialog);
+    });
+    return opened;
+  };
+
+  it("opens the settings, and declines the goal this device cannot read", async () => {
+    const ref = createRef<ComposerControlsHandle>();
+    render(<CodexComposerControls {...props} controlsRef={ref} />);
+    expect(open(ref, "goal")).toBe(false);
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+    expect(open(ref, "settings")).toBe(true);
+    expect(await screen.findByRole("dialog")).toBeVisible();
+    expect(state.client.prepareSessionSettings).toHaveBeenCalledTimes(1);
+  });
+
+  it("declines while the composer is disabled or the device lacks full access", () => {
+    const ref = createRef<ComposerControlsHandle>();
+    const view = render(<CodexComposerControls {...props} disabled controlsRef={ref} />);
+    expect(open(ref, "settings")).toBe(false);
+    view.unmount();
+    state.access = { bootId: "boot", device: { id: "device" } } as typeof state.access;
+    const partial = createRef<ComposerControlsHandle>();
+    render(<CodexComposerControls {...props} controlsRef={partial} />);
+    expect(open(partial, "settings")).toBe(false);
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+    expect(state.client.prepareSessionSettings).not.toHaveBeenCalled();
+  });
 });

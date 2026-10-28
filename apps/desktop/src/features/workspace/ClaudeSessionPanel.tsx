@@ -28,6 +28,7 @@ import {
 } from "@agentkib/session-ui";
 import { contextUsageCopy } from "@/features/sessions/conversation/features/sessions/context-usage-copy";
 import { PermissionModeNotice } from "@/features/sessions/conversation/features/sessions/permission-mode-notice";
+import { ClaudeTurnNotice } from "@/features/sessions/conversation/features/sessions/claude-turn-notice";
 import { ClaudeFilesPanel } from "./ClaudeFilesPanel";
 import { api } from "@/core/api";
 import {
@@ -150,7 +151,13 @@ export function ClaudeSessionPanel({
     ({ "zh-CN": zh, "en-US": en, "zh-TW": tw, "ja-JP": ja })[locale];
   const detailsLabel = text("技术详情", "Technical details", "技術詳情", "技術的な詳細");
   const explainError = (reason: string) => {
-    const normalized = reason.replaceAll("_", "-");
+    // Only the code is normalized: a coded reason's detail (`<code>: <detail>`) is the CLI's
+    // own text, such as an environment variable name, and is shown as is.
+    const separator = reason.indexOf(": ");
+    const normalized =
+      separator > 0
+        ? `${reason.slice(0, separator).replaceAll("_", "-")}${reason.slice(separator)}`
+        : reason.replaceAll("_", "-");
     const messages: Record<string, string> = {
       "attachment-limit": text(
         "最多添加 10 个附件，请移除后重试。",
@@ -1014,6 +1021,8 @@ export function ClaudeSessionPanel({
           </>
         )}
         <PermissionModeNotice permission={live?.permission} locale={locale} />
+        {/* The session's reason, an authentication failure included, is shown below. */}
+        <ClaudeTurnNotice live={live} locale={locale} retriesOnly />
         {optionsReason && (!sessionId || options?.reason !== live?.reason) && (
           <div role="status">
             <p>{optionsReason.text}</p>

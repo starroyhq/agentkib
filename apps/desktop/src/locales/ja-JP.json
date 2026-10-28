@@ -2273,7 +2273,7 @@
   "conversation.status": "状態",
   "conversation.warnings": "読み取りの警告",
   "conversation.tool": "ツールの概要",
-  "conversation.toolSummaryUnavailable": "履歴にはツールの入力と出力が含まれていません。",
+  "conversation.toolSummaryUnavailable": "この記録には表示できる詳細がありません。",
   "conversation.readOnly": "このブラウザーは読み取り専用です",
   "conversation.noSendPermission": "このブラウザーにはメッセージの送信権限がありません",
   "conversation.device": "承認済みブラウザー",

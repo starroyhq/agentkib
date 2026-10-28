@@ -1,4 +1,12 @@
-import { useCallback, useEffect, useState, useRef, type ReactNode } from "react";
+import {
+  useCallback,
+  useEffect,
+  useImperativeHandle,
+  useState,
+  useRef,
+  type ReactNode,
+  type Ref,
+} from "react";
 import { ArrowLeft, ChevronRight, Goal, Plus, RotateCcw, Settings2, X } from "lucide-react";
 import {
   ApiError,
@@ -22,6 +30,9 @@ import { sessionAgentCopy } from "./session-agent-copy";
 
 export type CodexResource = CodexContextResource;
 
+/** Opens one of the composer's dialogs; false when this device or session cannot show it now. */
+export type ComposerControlsHandle = { open(dialog: "settings" | "goal"): boolean };
+
 type CodexComposerControlsProps = {
   resources: CodexResource[];
   setResources: (resources: CodexResource[]) => void;
@@ -29,6 +40,8 @@ type CodexComposerControlsProps = {
   disabled: boolean;
   action?: ReactNode;
   advancedActions?: ReactNode;
+  /** Lets the composer open the settings or goal dialog, for a bare `/model` or `/goal`. */
+  controlsRef?: Ref<ComposerControlsHandle>;
 };
 
 const selectClass =
@@ -63,6 +76,7 @@ export function CodexComposerControls({
   disabled,
   action,
   advancedActions,
+  controlsRef,
 }: CodexComposerControlsProps) {
   const {
     current,
@@ -501,28 +515,9 @@ export function CodexComposerControls({
     }
   }
 
-  if (!full) return null;
-  const selectedModel = modelOption(settings, model);
-  const availableResources = (context?.resources ?? []).filter((item) => {
-    const needle = query.trim().toLocaleLowerCase();
-    return !needle || `${item.name} ${item.description ?? ""}`.toLocaleLowerCase().includes(needle);
-  });
-  const resourceGroups = [
-    {
-      label: copy.computerFiles,
-      items: availableResources.filter((item) => item.kind === "file" || item.kind === "directory"),
-    },
-    {
-      label: copy.skillsPlugins,
-      items: availableResources.filter(
-        (item) => item.kind === "skill" || item.kind === "plugin" || item.kind === "app",
-      ),
-    },
-  ];
-  const settingsChanged = settingsDirty && settingsDraftRevision.current !== settings?.revision;
-  const goalChanged = goalDirty && goalDraftRevision.current !== goal?.revision;
   const settingsReadStale = live?.revision !== undefined && settings?.revision !== live.revision;
   const goalReadStale = live?.revision !== undefined && goal?.revision !== live.revision;
+  // Declared above the early return so the composer's handle below can call it.
   const openControls = (next: "settings" | "goal") => {
     setDialog(next);
     if (
@@ -564,6 +559,35 @@ export function CodexComposerControls({
     // Ordinary refreshes and opening a running panel only read the cached CAS view.
     if (next === "settings" ? settingsReadStale : goalReadStale) void load();
   };
+  useImperativeHandle(controlsRef, () => ({
+    open: (next) => {
+      if (!full || disabled || !(next === "settings" ? settingsReadable : goalReadable))
+        return false;
+      openControls(next);
+      return true;
+    },
+  }));
+
+  if (!full) return null;
+  const selectedModel = modelOption(settings, model);
+  const availableResources = (context?.resources ?? []).filter((item) => {
+    const needle = query.trim().toLocaleLowerCase();
+    return !needle || `${item.name} ${item.description ?? ""}`.toLocaleLowerCase().includes(needle);
+  });
+  const resourceGroups = [
+    {
+      label: copy.computerFiles,
+      items: availableResources.filter((item) => item.kind === "file" || item.kind === "directory"),
+    },
+    {
+      label: copy.skillsPlugins,
+      items: availableResources.filter(
+        (item) => item.kind === "skill" || item.kind === "plugin" || item.kind === "app",
+      ),
+    },
+  ];
+  const settingsChanged = settingsDirty && settingsDraftRevision.current !== settings?.revision;
+  const goalChanged = goalDirty && goalDraftRevision.current !== goal?.revision;
   const editSettings = (field?: "model" | "effort" | "permissionMode") => {
     settingsDraftRevision.current ??= settings?.revision;
     if (isClaude && field) editedClaudeSettings.current.add(field);

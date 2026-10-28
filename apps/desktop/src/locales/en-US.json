@@ -2273,7 +2273,7 @@
   "conversation.status": "Status",
   "conversation.warnings": "Read warnings",
   "conversation.tool": "Tool summary",
-  "conversation.toolSummaryUnavailable": "The history does not provide tool input or output.",
+  "conversation.toolSummaryUnavailable": "This record has no details to show.",
   "conversation.readOnly": "This browser has read-only access",
   "conversation.noSendPermission": "This browser does not have permission to send messages",
   "conversation.device": "Authorized browser",

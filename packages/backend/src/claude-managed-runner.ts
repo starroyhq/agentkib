@@ -7,6 +7,8 @@ import { homedir } from "node:os";
 import { MacOwnedProcessTree } from "./mac-owned-process-tree";
 import { acquirePortableFileLease } from "./managed-session-lock";
 import { truncateUtf8 } from "./session-events";
+import { claudeToolDetail, claudeToolResult, compactClaudeInput } from "./conversation-tools";
+import { claudeCommandInvocation, claudeCommandOutput } from "./claude-command-records";
 import {
   boundedUnknownFields,
   ClaudeProtocolDiagnostics,
@@ -26,6 +28,7 @@ import {
   projectContextUsage,
   type ContextUsage,
 } from "./context-usage";
+import type { ClaudeCommandEntry } from "@agentkib/runtime-protocol";
 
 const MAX_TEXT = 4 * 1024 * 1024;
 const MAX_LINE = 6 * MAX_TEXT + 1024 * 1024;
@@ -84,7 +87,7 @@ export type ClaudeModelOption = {
 };
 export type ClaudeRunnerOptionsSnapshot = {
   models: ClaudeModelOption[];
-  commands: Array<{ name: string; description?: string; argumentHint?: string }>;
+  commands: ClaudeCommandEntry[];
   settings: ClaudeRunnerEffectiveSettings;
   settingsAcknowledged: boolean;
 };
@@ -134,6 +137,15 @@ export class ClaudeUndispatchedError extends Error {
 }
 const object = (value: unknown): value is JsonObject =>
   value !== null && typeof value === "object" && !Array.isArray(value);
+/** The CLI's latest `system/api_retry` in the running turn, for display only. */
+export type ClaudeApiRetry = {
+  attempt: number;
+  maxRetries: number | null;
+  /** HTTP status of the failed request, when the CLI reported one. */
+  status: number | null;
+  /** The CLI's error category, e.g. `authentication_failed`. */
+  error: string | null;
+};
 export type ClaudeRunnerSnapshot = {
   terminalResult: ClaudeRunnerTerminalResult | null;
   lastOutcome: string | null;
@@ -141,6 +153,7 @@ export type ClaudeRunnerSnapshot = {
   tokenUsage: unknown;
   usage: ContextUsage;
   activity: "compacting" | null;
+  apiRetry: ClaudeApiRetry | null;
   status: string;
   sendEnabled: boolean;
   stopEnabled: boolean;
@@ -196,6 +209,14 @@ export class ClaudeRunnerState {
   subagentBashToolIds = new Map<string, string>();
   subagentTasks = new Map<string, string>();
   terminalResult: ClaudeRunnerTerminalResult | null = null;
+  apiRetry: ClaudeApiRetry | null = null;
+  // Where the worker's API key comes from, as its system/init reports it (`none` with a
+  // claude.ai login). Diagnostic text only; never a credential.
+  apiKeySource: string | null = null;
+  // The running turn's main-thread assistant frame reported `authentication_failed`.
+  authFailed = false;
+  // The turn ended on an authentication failure: the next worker must read the login afresh.
+  retireRequested = false;
   // Control requests refused in the current turn; a stream that keeps sending them is broken.
   unknownRequests = 0;
   // What was ignored or refused, by category. Not part of any snapshot or checkpoint.
@@ -237,6 +258,7 @@ export class ClaudeRunnerState {
       subagentBashToolIds: new Map(this.subagentBashToolIds),
       subagentTasks: new Map(this.subagentTasks),
       terminalResult: this.terminalResult ? structuredClone(this.terminalResult) : null,
+      apiRetry: this.apiRetry ? { ...this.apiRetry } : null,
       unknownRequests: this.unknownRequests,
     };
   }
@@ -294,6 +316,7 @@ export class ClaudeRunnerState {
         this.revision,
       )!,
       activity: this.activity,
+      apiRetry: this.apiRetry ? { ...this.apiRetry } : null,
       status: this.status,
       sendEnabled: this.status === "idle" && this.activity !== "compacting",
       stopEnabled: this.status !== "idle" && this.turnId.length > 0 && this.reason === null,
@@ -324,6 +347,9 @@ export class ClaudeRunnerState {
     this.reason = null;
     this.lastOutcome = null;
     this.terminalResult = null;
+    this.apiRetry = null;
+    this.authFailed = false;
+    this.retireRequested = false;
     this.bashToolIds.clear();
     this.foregroundTasks.clear();
     this.subagentBashToolIds.clear();
@@ -467,6 +493,7 @@ export class ClaudeRunnerState {
     this.pendingUser = null;
     this.reason = null;
     this.activity = null;
+    this.apiRetry = null;
     this.#pendingUsage();
     this.revision++;
   }
@@ -474,6 +501,7 @@ export class ClaudeRunnerState {
   fail(reason: string): void {
     this.status = "outcome-unknown";
     this.activity = null;
+    this.apiRetry = null;
     this.contextUsage = {
       ...this.contextUsage,
       state: this.contextUsage.available ? "stale" : "unavailable",
@@ -531,6 +559,8 @@ export class ClaudeRunnerState {
           return null;
         }
         this.#assertTurnActive("stream_event");
+        // A streamed response means the request a retry was waiting for got through.
+        this.apiRetry = null;
         const event = frame.event;
         if (event?.type === "message_start") {
           if (this.activity !== "compacting") this.#pendingUsage();
@@ -565,6 +595,10 @@ export class ClaudeRunnerState {
           return null;
         }
         this.#assertTurnActive("assistant");
+        this.apiRetry = null;
+        // The CLI's own message for a rejected login or key (2.1.311: `Not logged in · Please
+        // run /login`, `Invalid API key · Fix external API key`), followed by an error result.
+        if (frame.error === "authentication_failed") this.authFailed = true;
         if (frame.isUnmetered !== true) this.#observeUsage(frame.message);
         const blocks = frame.message?.content;
         const nativeId =
@@ -591,9 +625,11 @@ export class ClaudeRunnerState {
             ];
           });
           this.finalizedTextBlocks = textBlocks;
+          // A frame that was not streamed (a local command's output) adds its text here. Do it
+          // before naming the item: appending extends the current item's text as well.
+          if (!this.partial) for (const block of textBlocks) this.#append(block.text);
           this.streamItemId = textBlocks[0]?.id ?? nativeId;
           this.streamItemText = textBlocks[0]?.text ?? "";
-          if (!this.partial) for (const block of textBlocks) this.#append(block.text);
         }
         this.partial = false;
         break;
@@ -647,6 +683,30 @@ export class ClaudeRunnerState {
           const detail = Array.isArray(frame.errors)
             ? frame.errors.filter((item: unknown) => typeof item === "string").join("; ")
             : "";
+          const status = Number.isSafeInteger(frame.api_error_status)
+            ? Number(frame.api_error_status)
+            : null;
+          if (this.authFailed || status === 401) {
+            // The CLI ended the turn itself before doing anything on a rejected login or key, so
+            // the outcome is known and nothing is left running. The session stays usable once
+            // the login or key is fixed; the worker is retired so the next one reads it afresh.
+            const text = (typeof frame.result === "string" && frame.result) || detail;
+            this.reason = formatTermination(
+              "claude-auth-failed",
+              [
+                text || "authentication failed",
+                status === null ? "" : ` (HTTP ${status})`,
+                this.apiKeySource ? `; key source: ${this.apiKeySource}` : "",
+              ].join(""),
+            );
+            this.status = "idle";
+            this.lastOutcome = "failed";
+            this.activity = null;
+            this.apiRetry = null;
+            this.streamText = "";
+            this.retireRequested = true;
+            break;
+          }
           throw new ClaudeTurnFailure(
             `Claude turn failed: ${detail || frame.result || "unknown execution error"}`,
           );
@@ -656,10 +716,37 @@ export class ClaudeRunnerState {
         this.lastOutcome = this.terminalResult.success ? "succeeded" : "cancelled";
         if (this.activity === "compacting") this.#staleUsage();
         this.activity = null;
+        this.apiRetry = null;
         this.streamText = "";
         break;
       case "system":
         if (frame.subtype === "init" && typeof frame.model === "string") this.model = frame.model;
+        if (frame.subtype === "init")
+          this.apiKeySource =
+            typeof frame.apiKeySource === "string" &&
+            /^[A-Za-z0-9_.:-]{1,64}$/.test(frame.apiKeySource)
+              ? frame.apiKeySource
+              : null;
+        // 2.1.311 retries a rejected request with backoff (ten times over about three minutes
+        // for a 401) and reports each attempt; without this the turn looks stuck.
+        if (frame.subtype === "api_retry" && this.status !== "idle")
+          this.apiRetry = {
+            attempt: Number.isSafeInteger(frame.attempt) && frame.attempt > 0 ? frame.attempt : 1,
+            maxRetries:
+              Number.isSafeInteger(frame.max_retries) && frame.max_retries > 0
+                ? frame.max_retries
+                : null,
+            status:
+              Number.isSafeInteger(frame.error_status) &&
+              frame.error_status >= 100 &&
+              frame.error_status <= 599
+                ? frame.error_status
+                : null,
+            error:
+              typeof frame.error === "string" && /^[a-z_]{1,64}$/.test(frame.error)
+                ? frame.error
+                : null,
+          };
         if (frame.subtype === "status") {
           if (frame.status === "compacting") {
             this.activity = "compacting";
@@ -1184,6 +1271,8 @@ export class ClaudeManagedRunnerProcess {
   #startupDispatched = false;
   #startupCleanupKind?: ClaudeStartupCleanupKind;
   #toolItems = new Map<string, Record<string, unknown>>();
+  /** Compact tool_use inputs kept until their result arrives. */
+  #toolInputs = new Map<string, unknown>();
   #controls = new Map<
     string,
     {
@@ -1208,6 +1297,8 @@ export class ClaudeManagedRunnerProcess {
   #configuring = false;
   #steeringIds = new Set<string>();
   #reportedResult?: ClaudeRunnerTerminalResult;
+  /** The current turn's last native agent message, which carries the turn end when it comes. */
+  #lastAgentItem: Record<string, unknown> | null = null;
 
   constructor(
     readonly workspace: string,
@@ -1459,6 +1550,11 @@ export class ClaudeManagedRunnerProcess {
     return this.#retiring;
   }
 
+  /** The last turn ended on a rejected login or key; the idle worker should go now. */
+  get retireRequested(): boolean {
+    return this.state.retireRequested && this.state.status === "idle";
+  }
+
   retireIfInactive(): Promise<boolean> | null {
     if (
       !this.#child ||
@@ -1472,6 +1568,7 @@ export class ClaudeManagedRunnerProcess {
     return (async () => {
       try {
         await this.shutdown();
+        this.state.retireRequested = false;
         this.state.initialized = false;
         this.state.initId = "";
         this.state.seenRequests.clear();
@@ -1510,6 +1607,7 @@ export class ClaudeManagedRunnerProcess {
     if (this.#child && !this.state.initialized) throw new Error("Claude initialize is incomplete");
     const user = this.state.begin(content, requestId);
     this.#steeringIds.clear();
+    this.#lastAgentItem = null;
     // The ledger callback may be absent, or may throw before dispatch. Neither the callback's
     // presence nor its later removal proves whether the user frame reached stdin.
     let dispatched = false;
@@ -1866,6 +1964,7 @@ export class ClaudeManagedRunnerProcess {
           if (result && result !== this.#reportedResult) {
             this.#reportedResult = result;
             this.options.onResult?.(structuredClone(result));
+            this.#emitTurnEnd(frame, result);
           }
         }
         if (!wasInitialized && this.state.initialized) {
@@ -1918,7 +2017,7 @@ export class ClaudeManagedRunnerProcess {
             }),
             ...conversationItems.map(({ index, item }) => ({ index, previousId: "", item })),
           ].sort((left, right) => left.index - right.index);
-          this.onConversationEvent?.(
+          this.#emit(
             "snapshot",
             {
               items: ordered.map(({ item }) => item),
@@ -1935,12 +2034,8 @@ export class ClaudeManagedRunnerProcess {
           for (const block of this.state.finalizedTextBlocks) {
             const clipped = truncateUtf8(block.text);
             if (block.temporaryId && block.temporaryId !== block.id)
-              this.onConversationEvent?.(
-                "item-alias",
-                { previousId: block.temporaryId, itemId: block.id },
-                live,
-              );
-            this.onConversationEvent?.(
+              this.#emit("item-alias", { previousId: block.temporaryId, itemId: block.id }, live);
+            this.#emit(
               "item-upsert",
               {
                 id: block.id,
@@ -1954,8 +2049,7 @@ export class ClaudeManagedRunnerProcess {
               live,
             );
           }
-          for (const item of conversationItems)
-            this.onConversationEvent?.("item-upsert", item.item, live);
+          for (const item of conversationItems) this.#emit("item-upsert", item.item, live);
         }
         if (
           itemId &&
@@ -1963,7 +2057,7 @@ export class ClaudeManagedRunnerProcess {
           itemText.startsWith(previousItemText) &&
           itemText.length > previousItemText.length
         ) {
-          this.onConversationEvent?.(
+          this.#emit(
             "text-delta",
             {
               itemId,
@@ -1982,7 +2076,7 @@ export class ClaudeManagedRunnerProcess {
           itemId &&
           itemText
         ) {
-          this.onConversationEvent?.(
+          this.#emit(
             "item-upsert",
             {
               id: itemId,
@@ -2023,6 +2117,51 @@ export class ClaudeManagedRunnerProcess {
       });
   }
 
+  /** Every frame-path conversation event; the last native agent message is remembered. */
+  #emit(
+    type: "text-delta" | "item-upsert" | "item-alias" | "snapshot",
+    payload: Record<string, unknown>,
+    live: ClaudeRunnerSnapshot,
+  ): void {
+    const items =
+      type === "snapshot" && Array.isArray(payload.items)
+        ? (payload.items as Array<Record<string, unknown>>)
+        : type === "item-upsert"
+          ? [payload]
+          : [];
+    for (const item of items)
+      if (
+        item.kind === "agent-message" &&
+        item.ephemeral !== true &&
+        typeof item.id === "string" &&
+        !item.id.startsWith("live:")
+      )
+        this.#lastAgentItem = { ...item };
+    this.onConversationEvent?.(type, payload, live);
+  }
+
+  /**
+   * Re-sends the turn's last agent message with the turn end, which history readers attach to the
+   * same item (`turn_meta`). Only `result` carries the duration in print mode. Display only: a
+   * turn without a native agent message gets none, and a failed delivery never changes the turn.
+   */
+  #emitTurnEnd(frame: JsonObject, result: ClaudeRunnerTerminalResult): void {
+    const item = this.#lastAgentItem;
+    if (frame.type !== "result" || !item || item.turn_id !== result.turnId) return;
+    const meta: Record<string, unknown> = {
+      outcome: frame.is_error === true ? "failed" : result.success ? "completed" : "aborted",
+    };
+    if (Number.isSafeInteger(frame.duration_ms) && frame.duration_ms >= 0)
+      meta.duration_ms = frame.duration_ms;
+    const ended = { ...item, turn_meta: meta };
+    this.#lastAgentItem = null;
+    try {
+      this.onConversationEvent?.("item-upsert", ended, this.state.snapshot());
+    } catch {
+      // The turn already ended; its duration is presentation only.
+    }
+  }
+
   #conversationItems(frame: JsonObject): Array<{ index: number; item: Record<string, unknown> }> {
     const items: Array<{ index: number; item: Record<string, unknown> }> = [];
     const origin = frameOrigin(frame);
@@ -2042,7 +2181,13 @@ export class ClaudeManagedRunnerProcess {
           uuidPattern.test(frame.message.id) &&
           frame.message.id) ||
         "";
-      if (id && frame.isCompactSummary !== true) {
+      // `/compact` sends its summary as a synthetic user frame; it is context, not the user's.
+      if (
+        id &&
+        frame.isCompactSummary !== true &&
+        frame.isSynthetic !== true &&
+        frame.isMeta !== true
+      ) {
         const content = frame.message?.content;
         const text =
           typeof content === "string"
@@ -2057,23 +2202,54 @@ export class ClaudeManagedRunnerProcess {
         const attachmentCount = blocks.filter((block: JsonObject) =>
           ["image", "document"].includes(String(block?.type)),
         ).length;
-        if (text || attachmentCount)
+        // A replayed local command result (`<local-command-stdout>Compacted</…>`) is the CLI's
+        // reply, read the same way as the history row with this uuid.
+        const invocation = claudeCommandInvocation(text);
+        const output = invocation === null ? claudeCommandOutput(text) : null;
+        if (output) {
+          const clipped = truncateUtf8(output);
+          items.push({
+            index: -1,
+            item: {
+              id,
+              kind: "agent-message",
+              turn_id: this.state.turnId,
+              content: clipped.content,
+              attachment_count: 0,
+              truncated: clipped.truncated,
+              ephemeral: false,
+            },
+          });
+        } else if (output === null && (text || attachmentCount))
           items.push({
             index: -1,
             item: {
               id,
               kind: "user-message",
-              content: text,
+              content: invocation ?? text,
               attachment_count: attachmentCount,
               truncated: false,
             },
           });
       }
+      const results = blocks.filter((block: JsonObject) => block?.type === "tool_result").length;
       for (const block of blocks) {
         const toolId = typeof block?.tool_use_id === "string" ? block.tool_use_id : "";
         const item = toolId ? this.#toolItems.get(toolId) : undefined;
         if (block?.type === "tool_result" && item) {
           item.tool_status = block.is_error === true ? "failed" : "completed";
+          // The structured result is unverified on this stream; it is used
+          // only when present and only for a frame's sole tool result.
+          const structured =
+            results === 1 ? (frame.tool_use_result ?? frame.toolUseResult) : undefined;
+          const detail = claudeToolDetail(
+            typeof item.tool_name === "string" ? item.tool_name : "",
+            this.#toolInputs.get(toolId),
+            claudeToolResult(structured, block.content),
+            { workspace: this.workspace },
+          );
+          if (detail) item.tool = detail;
+          this.#toolInputs.delete(toolId);
           items.push({ index: blocks.indexOf(block), item: { ...item } });
         }
       }
@@ -2082,7 +2258,7 @@ export class ClaudeManagedRunnerProcess {
         const id = typeof block?.id === "string" ? block.id : "";
         if (block?.type !== "tool_use" || !id || id.length > 256) continue;
         if (this.#toolItems.size >= 1024 && !this.#toolItems.has(id)) continue;
-        const item = {
+        const item: Record<string, unknown> = {
           id,
           kind: "tool-summary",
           turn_id: this.state.turnId,
@@ -2091,7 +2267,15 @@ export class ClaudeManagedRunnerProcess {
           attachment_count: 0,
           truncated: false,
         };
+        const detail = claudeToolDetail(
+          typeof block.name === "string" ? block.name : "",
+          block.input,
+          undefined,
+          { workspace: this.workspace },
+        );
+        if (detail) item.tool = detail;
         this.#toolItems.set(id, item);
+        if (this.#toolInputs.size < 256) this.#toolInputs.set(id, compactClaudeInput(block.input));
         items.push({ index: blocks.indexOf(block), item });
       }
     }
@@ -2439,10 +2623,16 @@ function projectCommands(value: unknown): ClaudeRunnerOptionsSnapshot["commands"
     throw new Error("invalid Claude command catalog");
   return value.map((entry: unknown) => {
     if (!object(entry) || !shortString(entry.name, 256)) throw new Error("invalid Claude command");
+    // `builtin` and `aliases` decide which commands a remote device may run (claude-commands).
+    const aliases = Array.isArray(entry.aliases)
+      ? entry.aliases.filter((alias: unknown) => shortString(alias, 256)).slice(0, 16)
+      : [];
     return {
       name: entry.name,
       ...(shortString(entry.description, 4096) ? { description: entry.description } : {}),
       ...(shortString(entry.argumentHint, 1024) ? { argumentHint: entry.argumentHint } : {}),
+      ...(entry.builtin === true ? { builtin: true } : {}),
+      ...(aliases.length ? { aliases } : {}),
     };
   });
 }

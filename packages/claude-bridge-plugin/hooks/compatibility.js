@@ -3,7 +3,7 @@
 export const CLAUDE_BRIDGE_COMPATIBILITY = Object.freeze({
   minimumCliVersion: "2.1.301",
   verifiedCliVersions: Object.freeze(["2.1.301", "2.1.310"]),
-  pluginVersion: "0.3.0",
+  pluginVersion: "0.3.1",
   capabilityVersion: 1,
 });
 

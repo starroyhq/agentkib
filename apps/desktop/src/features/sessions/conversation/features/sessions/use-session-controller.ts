@@ -33,9 +33,11 @@ import {
 } from "react";
 import {
   ApiError,
+  isClaudeCommandRefusal,
   isLegacyPreparedReceipt,
   WebClient,
   type Access,
+  type ClaudeCommandRefusal,
   type WebConnection,
   type SessionAction,
   type SessionActionBody,
@@ -91,10 +93,14 @@ type CodexSettingsRecoveryReason =
   | "unsupported-effort"
   | "native-model-unconfirmed"
   | "native-effort-unconfirmed";
+/** A reason a rejected request is explained with instead of the generic notice. */
+type NotDispatchedReason = CodexSettingsRecoveryReason | ClaudeCommandRefusal;
 function codexSettingsRecoveryReason(
   agent: string | undefined,
   ...reasons: (string | undefined)[]
-): CodexSettingsRecoveryReason | undefined {
+): NotDispatchedReason | undefined {
+  // A slash command Claude Code was not sent; the host names which rule refused it.
+  if (agent === "claude-code") return reasons.find(isClaudeCommandRefusal);
   if (agent !== "codex") return;
   return reasons.find(
     (reason): reason is CodexSettingsRecoveryReason =>
@@ -173,7 +179,7 @@ export function useSessionController({
     [connectionNotice, setConnectionNotice] = useState<{
       online: boolean;
       notice?: ControlNotice;
-      reason?: CodexSettingsRecoveryReason;
+      reason?: NotDispatchedReason;
     }>({ online: false }),
     [code, setCode] = useState(""),
     [name, setName] = useState(""),
@@ -222,7 +228,7 @@ export function useSessionController({
     publishLive(next);
   }, []);
   const { online, notice, reason: noticeReason } = connectionNotice;
-  const setNotice = useCallback((notice?: ControlNotice, reason?: CodexSettingsRecoveryReason) => {
+  const setNotice = useCallback((notice?: ControlNotice, reason?: NotDispatchedReason) => {
     setConnectionNotice((value) => ({
       ...value,
       notice,
@@ -1825,7 +1831,16 @@ export function useSessionController({
     decision?: Decision,
     question?: UserQuestionRequest,
     answers?: Record<string, string[]>,
-    extra?: { attachmentIds?: string[]; resourceIds?: string[]; nativeDecision?: unknown },
+    extra?: {
+      attachmentIds?: string[];
+      resourceIds?: string[];
+      nativeDecision?: unknown;
+      /**
+       * A slash command sent as a message of its own (the compact button). The draft, its
+       * attachments and history quotes stay as they are.
+       */
+      command?: string;
+    },
   ) {
     if (
       mutating.current ||
@@ -1838,14 +1853,20 @@ export function useSessionController({
       hasDurablePending(selected)
     )
       return;
-    const text = message.trim();
+    const command = kind === "send" ? extra?.command : undefined;
+    const text = command ?? message.trim();
     if (
       kind === "send" &&
       (live.activity === "compacting" ||
-        !isValidMessage(
-          historyMessageText(message, historyReferencesValue.current),
-          !!extra?.attachmentIds?.length,
-        ))
+        (command !== undefined
+          ? !command.startsWith("/") ||
+            !isValidMessage(command, false) ||
+            !!extra?.attachmentIds?.length ||
+            !!extra?.resourceIds?.length
+          : !isValidMessage(
+              historyMessageText(message, historyReferencesValue.current),
+              !!extra?.attachmentIds?.length,
+            )))
     )
       return;
     if (
@@ -1966,7 +1987,7 @@ export function useSessionController({
         ...(kind === "send"
           ? {
               text,
-              ...(historyReferencesValue.current.length
+              ...(command === undefined && historyReferencesValue.current.length
                 ? {
                     historyReferences: historyReferencesValue.current.map((item) => item.reference),
                   }
@@ -2012,7 +2033,7 @@ export function useSessionController({
         observedActive: kind !== "send",
       };
       setNotice("accepted");
-      if (kind === "send") {
+      if (kind === "send" && command === undefined) {
         setMessage("");
         setHistoryReferences([]);
       }

@@ -37,6 +37,12 @@ export const CLAUDE_TERMINATION_CODES: readonly ClaudeTerminationCode[] = [
   "claude-protocol-violation",
 ];
 
+/**
+ * A turn the CLI ended itself for a reason the user can fix. Unlike a termination code it does
+ * not stop the session: the reason is shown while the session stays idle and usable.
+ */
+export type ClaudeTurnFailureCode = "claude-auth-failed";
+
 /** A reason that stops the session. `message` stays the English text tests and logs rely on. */
 export class ClaudeProtocolError extends Error {
   constructor(
@@ -69,7 +75,7 @@ const stripControl = (value: string) =>
 
 /** `<code>: <detail>`, with the detail cleaned and bounded; `version` is added only when newer. */
 export function formatTermination(
-  code: ClaudeTerminationCode,
+  code: ClaudeTerminationCode | ClaudeTurnFailureCode,
   detail: string,
   newerThanVerified?: { version: string; verified: string },
 ): string {

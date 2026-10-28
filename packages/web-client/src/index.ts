@@ -1,4 +1,7 @@
 import type {
+  ClaudeCommandEntry,
+  ConversationToolDetail,
+  ConversationTurnMeta,
   HistorySearchQuery,
   HistorySearchResult,
   HistoryLocation,
@@ -8,6 +11,15 @@ import type {
   HistorySearchStatus,
 } from "@agentkib/runtime-protocol";
 export type {
+  ClaudeCommandAccess,
+  ClaudeCommandDecision,
+  ClaudeCommandEntry,
+  ClaudeCommandRefusal,
+  ClaudeMenuCommand,
+  ConversationToolContent,
+  ConversationToolDetail,
+  ConversationToolKind,
+  ConversationTurnMeta,
   ClaudeBridgeCompatibilityStatus,
   ClaudeBridgeConnectionFailure,
   HistorySearchQuery,
@@ -22,6 +34,12 @@ export type {
 } from "@agentkib/runtime-protocol";
 export {
   CLAUDE_BRIDGE_CLI_VERSION,
+  CLAUDE_COMMAND_REFUSALS,
+  claudeCommandDecision,
+  claudeCommandRefusal,
+  claudeMenuCommands,
+  isClaudeCommandRefusal,
+  parseClaudeSlashCommand,
   claudeBridgeCompatibility,
   formatHistoryReferences,
   literalHistoryMatchRanges,
@@ -101,6 +119,9 @@ export interface ConversationEvent {
   duration_ms?: number | null;
   attachment_count: number;
   truncated: boolean;
+  /** Absent on older hosts; clients then show the tool name and status. */
+  tool?: ConversationToolDetail;
+  turn_meta?: ConversationTurnMeta;
 }
 export interface ConversationEventPage {
   events: ConversationEvent[];
@@ -252,6 +273,13 @@ export interface Live {
   connectionGeneration?: string;
   model?: string;
   activity?: "compacting" | null;
+  /** Managed Claude only: the CLI's latest retry of a failed request in the running turn. */
+  apiRetry?: {
+    attempt: number;
+    maxRetries: number | null;
+    status: number | null;
+    error: string | null;
+  } | null;
   tokenUsage?: unknown;
   streamText?: string;
   streamTextTruncated?: boolean;
@@ -382,6 +410,11 @@ export interface CodexCapabilities {
       { available: boolean; reason?: string }
     >
   >;
+  /**
+   * Claude Code's slash-command catalog, as its last worker reported it. Absent for devices
+   * that cannot send, and empty before any worker has run in the session.
+   */
+  commands?: ClaudeCommandEntry[];
 }
 export type ManagedAgent = "codex" | "claude-code";
 export type SessionCapabilities = CodexCapabilities;

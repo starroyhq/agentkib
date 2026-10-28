@@ -59,7 +59,7 @@ export function ConversationEventRow({
       )}
       <MarkdownContent
         content={event.content ?? ""}
-        className="select-text text-sm leading-7 [overflow-wrap:anywhere]"
+        className={`select-text text-sm leading-7 [overflow-wrap:anywhere]${coloredUser ? " markdown-on-primary" : ""}`}
       />
       {(event.attachment_count > 0 || event.truncated) && (
         <footer

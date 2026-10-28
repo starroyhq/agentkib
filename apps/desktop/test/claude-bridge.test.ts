@@ -73,7 +73,7 @@ async function fixture(timeout = 1000) {
     cwd: workspace,
     cliVersion: "2.1.301",
     instanceId,
-    pluginVersion: "0.3.0",
+    pluginVersion: "0.3.1",
     nativeCapabilities: {
       version: 1 as const,
       available: [
@@ -134,7 +134,7 @@ async function fixture(timeout = 1000) {
   const snapshot: ClaudeBridgeSnapshot = {
     ...hello,
     cliVersion: "2.1.301",
-    pluginVersion: "0.3.0",
+    pluginVersion: "0.3.1",
     nativeCapabilities: {
       version: 1 as const,
       available: [
@@ -173,7 +173,7 @@ async function fixture(timeout = 1000) {
   const poll = () => post("/v1/commands", { afterCommandId: null, waitMs: 0 });
   const reconnectFailure = {
     protocol: 1,
-    pluginVersion: "0.3.0",
+    pluginVersion: "0.3.1",
     bindingId: connection.bindingId,
     nativeId: target.nativeId,
     cwd: workspace,
@@ -249,7 +249,7 @@ describe.skipIf(process.platform === "win32")("native Claude borrowed-host broke
     const store = new Map<string, unknown>();
     const api = {
       plugin: { root: "/synthetic/plugin" },
-      fs: { read: async () => JSON.stringify({ version: "0.3.0" }) },
+      fs: { read: async () => JSON.stringify({ version: "0.3.1" }) },
       session: {
         id: async () => f.target.nativeId,
         cwd: async () => f.target.workspace,

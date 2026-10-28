@@ -122,6 +122,11 @@ export interface ConversationEvent {
   /** Absent on older hosts; clients then show the tool name and status. */
   tool?: ConversationToolDetail;
   turn_meta?: ConversationTurnMeta;
+  /**
+   * Text Claude Code wrote itself (a local command's output, an API error), shown with its line
+   * breaks and `<name>` placeholders as written. Absent on older hosts.
+   */
+  cli_output?: boolean;
 }
 export interface ConversationEventPage {
   events: ConversationEvent[];

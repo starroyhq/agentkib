@@ -646,9 +646,11 @@ export function CodexComposerControls({
 
   return (
     <>
-      {!isClaude &&
-        notice === "notDispatched" &&
-        (noticeReason === "unsupported-model" || noticeReason === "unsupported-effort") && (
+      {notice === "notDispatched" &&
+        (isClaude
+          ? noticeReason === "claude-model-unsupported" ||
+            noticeReason === "claude-effort-unsupported"
+          : noticeReason === "unsupported-model" || noticeReason === "unsupported-effort") && (
           <div role="status" className="space-y-1 px-1 text-xs leading-5 text-muted-foreground">
             <p>{reason(noticeReason)}</p>
             <Button

@@ -591,11 +591,39 @@ describe("Codex next-turn settings recovery", () => {
     const host = baseFixture(baseIdle("original", "claude-code"), "claude-code");
     const { result } = await open(host);
     await act(async () => result.current.setMessage("Claude draft"));
-    host.request.mockRejectedValueOnce(new ApiError(409, "unsupported-model", "not-dispatched"));
+    host.request.mockRejectedValueOnce(new ApiError(409, "session-busy", "not-dispatched"));
     await act(async () => result.current.control("send"));
     expect(result.current.notice).toBe("notDispatched");
     expect(result.current.noticeReason).toBeUndefined();
   });
+
+  // The Service answers 400 with its own codes before the backend checks; the backend answers 409.
+  it.each([
+    [409, "unsupported-model", "claude-model-unsupported"],
+    [409, "unsupported-effort", "claude-effort-unsupported"],
+    [400, "unsupported_model", "claude-model-unsupported"],
+    [400, "unsupported_effort", "claude-effort-unsupported"],
+  ] as const)(
+    "names a Claude settings change refused (%i %s) with Claude's own reason",
+    async (status, code, reason) => {
+      const host = baseFixture(baseIdle("original", "claude-code"), "claude-code");
+      vi.mocked(host.client.sessionCapabilities).mockImplementation(async (sessionId) => ({
+        sessionId,
+        executionMode: "claude-managed",
+        status: "idle",
+        features: { fork: { available: true }, settings: { available: true } },
+      }));
+      const { result } = await open(host);
+      host.request.mockRejectedValueOnce(new ApiError(status, code, "not-dispatched"));
+      await act(async () => result.current.codexAction("settings", { model: "no-such-model" }));
+      expect(host.request).toHaveBeenCalledWith(
+        "managed/action",
+        expect.objectContaining({ operation: "settings", model: "no-such-model" }),
+      );
+      expect(result.current.notice).toBe("notDispatched");
+      expect(result.current.noticeReason).toBe(reason);
+    },
+  );
 
   it("sends a command button's message and leaves the draft and quotes as they are", async () => {
     const host = baseFixture(baseIdle("original", "claude-code"), "claude-code");

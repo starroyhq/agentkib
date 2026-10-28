@@ -1,5 +1,6 @@
 // Shared runtime protocol source of truth; the Electron compatibility entry is generated.
 export * from "./claude-commands";
+export * from "./claude-models";
 export * from "./conversation-tools";
 export * from "./history-search";
 export * from "./mcp-management";

@@ -36,6 +36,13 @@ const catalog: ClaudeCommandEntry[] = [
   { name: "usage", builtin: true, aliases: ["cost", "stats"] },
   { name: "goal", builtin: true },
   { name: "list-agents", builtin: true, aliases: ["peers"] },
+  {
+    name: "color",
+    builtin: true,
+    argumentHint: "[red|blue|green|yellow|purple|orange|pink|cyan|default]",
+  },
+  { name: "fast", builtin: true, argumentHint: "[on|off]" },
+  { name: "focus", builtin: true, argumentHint: "[on|off]" },
 ];
 const owner = { owner: true, commands: catalog };
 const remote = { owner: false, commands: catalog };
@@ -352,6 +359,17 @@ describe("the / menu", () => {
       aliases: [],
     });
     expect(byName.usage?.aliases).toEqual(["cost", "stats"]);
+  });
+
+  it("leaves out /fast, /focus and /color, which do nothing here, but still sends them", () => {
+    // 2.1.311 answers "Fast mode is not available in the Agent SDK" and "/focus isn't available
+    // here yet"; /color colors the terminal's prompt bar. The menu tests above list neither.
+    for (const device of [owner, remote]) {
+      const names = claudeMenuCommands(catalog, device.owner).map((entry) => entry.name);
+      expect(names.filter((name) => ["fast", "focus", "color"].includes(name))).toEqual([]);
+      for (const text of ["/fast", "/focus on", "/color pink"])
+        expect(claudeCommandRefusal(text, device)).toBeNull();
+    }
   });
 
   it("lists a name once, keeping the first entry", () => {

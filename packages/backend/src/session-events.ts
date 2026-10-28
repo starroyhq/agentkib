@@ -22,6 +22,12 @@ export interface ConversationEvent {
   /** Bounded, redacted detail for `tool-summary` items. */
   tool?: ConversationToolDetail;
   turn_meta?: ConversationTurnMeta;
+  /**
+   * Text Claude Code wrote itself rather than the model: a local command's output, or its own
+   * message for an API or login error. Clients keep its line breaks and show `<name>`
+   * placeholders as written.
+   */
+  cli_output?: true;
 }
 export interface ConversationEventPage {
   events: ConversationEvent[];

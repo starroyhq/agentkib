@@ -120,8 +120,8 @@ Windows x64 使用的 Win-CodexBar 是独立的 Windows 移植版，有自己的
 
 - 所有设备都不发送 AgentKib 跟不上的命令。`/clear`（别名 `/reset`、`/new`）让 CLI 换一个原生会话 ID，此前会被当作协议错误而停止会话；`/loop`、`/batch` 启动后台工作；`/goal`、`/rename` 和带参数的 `/model`、`/effort` 改的是 AgentKib 自己保存的状态。这些命令在 AgentKib 里都有对应的操作：
   - `/clear`：新建会话即可得到空白上下文，这条会话保留；`/clear` 不出现在 `/` 菜单里。
-  - 腾出上下文：上下文用量对话框里有“压缩上下文”按钮，等同于单独发送一条 `/compact`，草稿、附件和历史引用保持不变；轮次运行中、会话还没有消息时不可用，只发给托管会话。
-  - 带参数时：输入框把 `/model <名称>`、`/effort <级别>` 改为下一轮设置，`/rename <名称>` 改为重命名，`/goal <目标>` 改为持续目标。
+  - 腾出上下文：上下文用量对话框里有“压缩上下文”按钮，等同于单独发送一条 `/compact`，草稿、附件和历史引用保持不变；轮次运行中、会话还没有消息时不可用，只发给托管会话。会话页和桌面工作区的 Claude 面板都有这个按钮。
+  - 带参数时：输入框把 `/model <名称>`、`/effort <级别>` 改为下一轮设置，`/rename <名称>` 改为重命名，`/goal <目标>` 改为持续目标。`/model` 的名称按 CLI 在 initialize 时报告的模型列表匹配，电脑上的 AgentKib 服务和宿主用同一规则（`runtime-protocol` 的 `claudeModelOption`）各查一次：别名不区分大小写，也可以写完整模型 ID（例如 `claude-haiku-5-5`），保存为对应的别名；几个别名指向同一个 ID 时取具名的别名而不是 `default`。CLI 自己的 `/model` 还接受 `best`、`opusplan`、`sonnet[1m]` 等列表之外的名称，下一轮设置不接受：2.1.311 的 `set_model` 收到别名以外的名称时，会先用它向 API 发一次请求，名称无效时回复 `Model '…' not found`，这时设置已无法确认；完整模型 ID 换成别名后也不再发出这次请求。`/effort` 只接受 low、medium、high、xhigh、max；CLI 另有的 `auto`、`ultracode` 和拼错的级别由输入框说明可用的级别，不发请求。列表里没有的模型、所选模型不支持的思考强度不会改动设置：服务先拒绝，错误码为 `unsupported_model`、`unsupported_effort`，宿主再检查时回执原因为 `unsupported-model`、`unsupported-effort`。客户端都说明原因并保留草稿；完整访问的设备还显示“更改下一轮模型”，直接打开下一轮设置。
   - 不带参数时：打开对应界面。`/model`、`/effort` 打开下一轮设置，`/goal` 打开持续目标，这两处需要完整访问；`/rename` 打开会话操作面板。打不开时，`/model`、`/effort` 照常交给 Claude Code 报告当前值，`/goal`、`/rename` 显示说明。
   - 消息带附件、上下文引用或历史引用，或这项操作此时不可用时，只显示说明，不会丢掉附件。
   - `/loop`、`/batch` 没有对应按钮，要接着执行的消息请用待发队列或持续目标。
@@ -131,9 +131,9 @@ Windows x64 使用的 Win-CodexBar 是独立的 Windows 移植版，有自己的
 
 后端在接受 send、steer、queue-add、queue-update、goal-set 时检查。目标每一步的输入以目标文字开头，按目标所属设备检查；编辑队列项时同时按编辑者和原设备检查。新进程初始化后、消息写入 CLI 之前，再按它刚报告的命令目录检查一次，覆盖 2.1.311 之后新增的内置命令。拒绝的请求记为 not-dispatched，原因码为 `claude-command-clear`、`claude-command-background`、`claude-command-goal`、`claude-command-rename`、`claude-command-settings`、`claude-command-owner-only`，客户端用四种语言说明原因并保留草稿。加入队列时还能发送、轮到时被新目录拒绝的条目不会发出，宿主暂停队列，与压缩中时的处理相同；删除该条目后恢复。
 
-capabilities 附带 CLI 在 initialize 时报告的命令目录（含 `builtin`、`aliases`），没有进程时用上次确认的目录，不为读取目录启动进程；不能发送的设备拿不到目录。输入 `/` 时列出这台设备能用的命令：后台命令、`/clear` 和内部命令不列出，远程设备也不列出只能在本机使用的命令，并去掉只能无参使用的命令的参数提示。`/model`、`/effort`、`/rename`、`/goal` 显示 AgentKib 的说明和可选参数。会话还没运行过 Claude Code 时，菜单说明命令稍后出现。
+capabilities 附带 CLI 在 initialize 时报告的命令目录（含 `builtin`、`aliases`），没有进程时用上次确认的目录，不为读取目录启动进程；不能发送的设备拿不到目录。输入 `/` 时列出这台设备能用的命令：后台命令、`/clear` 和内部命令不列出，远程设备也不列出只能在本机使用的命令，并去掉只能无参使用的命令的参数提示。`/fast`、`/focus`、`/color` 也不列出：2.1.311 在托管会话里回复前两个不可用（`Fast mode is not available in the Agent SDK`、`/focus isn't available here yet`），`/color` 只改终端提示栏的颜色，AgentKib 里看不到。直接输入仍会发送，由 Claude Code 的回复说明。`/model`、`/effort`、`/rename`、`/goal` 显示 AgentKib 的说明和可选参数。会话还没运行过 Claude Code 时，菜单说明命令稍后出现。
 
-历史里的命令按输入显示（`/hello world`）；本地命令的输出（`/context` 的用量表、`/compact` 的 “Compacted”）显示为 Agent 回复，与实时帧使用相同 ID。CLI 自己附加的上下文不显示：`isMeta` 行（技能展开后的提示词、本地命令前的说明）和压缩摘要。连接终端插件目前不能发送消息，不受这些规则影响；以后开放发送时也须经过同一检查。
+历史里的命令按输入显示（`/hello world`）；本地命令的输出（`/context` 的用量表、`/compact` 的 “Compacted”）显示为 Agent 回复，与实时帧使用相同 ID。Claude Code 自己写的文字带 `cli_output`：本地命令的输出，以及 model 为 `<synthetic>` 的助手消息（例如 API 或登录错误的说明），历史和实时轮次都标记。客户端按原样显示这类消息：每个换行都换行，`<name>` 这类占位显示为文字，代码、标题和表格照常渲染；模型的回复仍按 Markdown 显示，原始 HTML 照旧去掉。CLI 自己附加的上下文不显示：`isMeta` 行（技能展开后的提示词、本地命令前的说明）和压缩摘要。连接终端插件目前不能发送消息，不受这些规则影响；以后开放发送时也须经过同一检查。
 
 ## HTTP、SSE 与 WebSocket
 

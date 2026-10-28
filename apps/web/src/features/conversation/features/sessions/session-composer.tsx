@@ -6,6 +6,7 @@ import {
   sessionContinuationCopy,
   SessionContinuationReturned,
   SessionContinuationTerminal,
+  unsupportedEffortReason,
   useSlashCommandMenu,
   type AgentKibPanel,
 } from "@agentkib/session-ui";
@@ -351,7 +352,7 @@ export function SessionComposer({
     }
     const mapped = decision?.refusal && plain ? agentKibCommand(decision) : null;
     if (decision?.refusal && !(mapped && capabilities?.features[mapped.action]?.available)) {
-      setCommandNotice({ draft, reason: decision.refusal });
+      setCommandNotice({ draft, reason: unsupportedEffortReason(decision) ?? decision.refusal });
       return;
     }
     setCommandNotice(undefined);

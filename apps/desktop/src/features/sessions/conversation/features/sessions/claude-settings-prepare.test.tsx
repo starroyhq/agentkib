@@ -210,3 +210,35 @@ describe("opening the composer's dialogs for a bare command", () => {
     expect(state.client.prepareSessionSettings).not.toHaveBeenCalled();
   });
 });
+
+describe("Claude settings rejection", () => {
+  it.each([
+    ["claude-model-unsupported", /support only the models they list/],
+    ["claude-effort-unsupported", /can be only low, medium, high, xhigh, or max/],
+  ] as const)(
+    "explains %s and opens next-turn settings without submitting",
+    async (reason, text) => {
+      state.notice = "notDispatched";
+      state.noticeReason = reason;
+      render(<CodexComposerControls {...props} />);
+      expect(await screen.findByText(text)).toBeVisible();
+      fireEvent.click(screen.getByRole("button", { name: "Change next-turn model" }));
+      expect(await screen.findByLabelText(codexCopy["en-US"].model)).toBeVisible();
+      await waitFor(() => expect(state.client.prepareSessionSettings).toHaveBeenCalledTimes(1));
+      expect(state.codexAction).not.toHaveBeenCalled();
+      expect(state.control).not.toHaveBeenCalled();
+    },
+  );
+
+  it.each(["unsupported-model", "claude-command-settings"] as const)(
+    "offers no settings shortcut for %s",
+    (reason) => {
+      state.notice = "notDispatched";
+      state.noticeReason = reason;
+      render(<CodexComposerControls {...props} />);
+      expect(
+        screen.queryByRole("button", { name: "Change next-turn model" }),
+      ).not.toBeInTheDocument();
+    },
+  );
+});

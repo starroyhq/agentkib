@@ -93,14 +93,31 @@ type CodexSettingsRecoveryReason =
   | "unsupported-effort"
   | "native-model-unconfirmed"
   | "native-effort-unconfirmed";
+/** A model or effort Claude Code does not offer; worded apart from Codex's unsent message. */
+type ClaudeSettingsReason = "claude-model-unsupported" | "claude-effort-unsupported";
 /** A reason a rejected request is explained with instead of the generic notice. */
-type NotDispatchedReason = CodexSettingsRecoveryReason | ClaudeCommandRefusal;
+type NotDispatchedReason =
+  | CodexSettingsRecoveryReason
+  | ClaudeCommandRefusal
+  | ClaudeSettingsReason;
 function codexSettingsRecoveryReason(
   agent: string | undefined,
   ...reasons: (string | undefined)[]
 ): NotDispatchedReason | undefined {
-  // A slash command Claude Code was not sent; the host names which rule refused it.
-  if (agent === "claude-code") return reasons.find(isClaudeCommandRefusal);
+  if (agent === "claude-code") {
+    // A slash command Claude Code was not sent; the host names which rule refused it.
+    const refusal = reasons.find(isClaudeCommandRefusal);
+    if (refusal) return refusal;
+    // The Service checks a settings request first and answers `unsupported_model`; the backend
+    // checks again and names the same rejection `unsupported-model`.
+    if (reasons.some((reason) => reason === "unsupported-model" || reason === "unsupported_model"))
+      return "claude-model-unsupported";
+    if (
+      reasons.some((reason) => reason === "unsupported-effort" || reason === "unsupported_effort")
+    )
+      return "claude-effort-unsupported";
+    return;
+  }
   if (agent !== "codex") return;
   return reasons.find(
     (reason): reason is CodexSettingsRecoveryReason =>

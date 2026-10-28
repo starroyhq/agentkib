@@ -150,6 +150,29 @@ describe("slash commands in the desktop composer", () => {
     expect(doubles.control).not.toHaveBeenCalled();
   });
 
+  it("runs /effort with a level next-turn settings take and explains the others", async () => {
+    doubles.session.capabilities = {
+      ...doubles.session.capabilities!,
+      features: { settings: { available: true } },
+    } as SessionController["capabilities"];
+    // CLI 2.1.311 also takes auto and ultracode [on|off]; next-turn settings take low to max.
+    for (const text of ["/effort auto", "/effort ultracode on"]) {
+      const { form, input, unmount } = renderComposer(text);
+      fireEvent.submit(form);
+      expect(
+        screen.getByText(codexReason("en-US", "claude-effort-unsupported").text),
+      ).toBeVisible();
+      expect(input).toHaveValue(text);
+      unmount();
+    }
+    expect(doubles.codexAction).not.toHaveBeenCalled();
+    const { form, input } = renderComposer("/effort Max");
+    fireEvent.submit(form);
+    await waitFor(() => expect(input).toHaveValue(""));
+    expect(doubles.codexAction).toHaveBeenCalledExactlyOnceWith("settings", { effort: "max" });
+    expect(doubles.control).not.toHaveBeenCalled();
+  });
+
   it("still explains /clear and /loop", () => {
     for (const [text, code] of [
       ["/new", "claude-command-clear"],

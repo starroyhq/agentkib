@@ -242,10 +242,16 @@ export function SessionReader() {
               ))}
             </div>
             {notice &&
+              // The composer's controls explain these beside a way into next-turn settings.
               !(
-                current?.agent === "codex" &&
                 notice === "notDispatched" &&
-                (noticeReason === "unsupported-model" || noticeReason === "unsupported-effort")
+                ((current?.agent === "codex" &&
+                  (noticeReason === "unsupported-model" ||
+                    noticeReason === "unsupported-effort")) ||
+                  (current?.agent === "claude-code" &&
+                    access?.device?.accessMode === "full" &&
+                    (noticeReason === "claude-model-unsupported" ||
+                      noticeReason === "claude-effort-unsupported")))
               ) &&
               !(current?.agent === "claude-code" && banner && notice === "uncertain") && (
                 <p

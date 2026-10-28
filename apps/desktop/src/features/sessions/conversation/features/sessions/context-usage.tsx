@@ -227,7 +227,7 @@ export function ContextUsageDetails({
 }
 
 /** Claude Code's `/compact` as a button. It is sent as a message of its own; the draft stays. */
-type CompactAction = { enabled: boolean; afterTurn: boolean; run: () => void };
+export type CompactAction = { enabled: boolean; afterTurn: boolean; run: () => void };
 
 function useCompactAction(): CompactAction | undefined {
   const { current, selected, live, access, canSend, page, control } = useSession();

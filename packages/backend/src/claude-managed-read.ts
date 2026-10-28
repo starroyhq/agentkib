@@ -33,6 +33,7 @@ import { readClaudeVersion, supportsClaudeVersion } from "./claude-version";
 import {
   CLAUDE_COMMAND_REFUSALS,
   claudeInputCommandRefusal,
+  claudeModelOption,
   isClaudeCommandRefusal,
   type ClaudeCommandEntry,
   type ConversationTurnMeta,
@@ -112,6 +113,8 @@ export class ClaudeHostControlPreflightError extends Error {
     this.name = "ClaudeHostControlPreflightError";
   }
 }
+/** Settings rejections clients explain: the receipt names them instead of a generic reason. */
+const EXPLAINED_SETTINGS_REASONS = new Set(["unsupported-model", "unsupported-effort"]);
 const FILE_LIMIT = 2 * 1024 * 1024;
 type ClaudeRecord = {
   version: 1;
@@ -1493,8 +1496,12 @@ export class ClaudeManagedReadOwner {
           accepted: false,
           completed: false,
           controlOutcome: "not-dispatched",
-          // A refused command is explained to the user; other preflight details stay inside.
-          error: isClaudeCommandRefusal(reason) ? reason : "control-preflight-rejected",
+          // A refused command, or a model or effort Claude Code does not offer, is explained to
+          // the user; other preflight details stay inside.
+          error:
+            isClaudeCommandRefusal(reason) || EXPLAINED_SETTINGS_REASONS.has(reason)
+              ? reason
+              : "control-preflight-rejected",
         }));
         if (result.controlOutcome !== "not-dispatched") throw error;
         throw new ClaudeHostControlPreflightError(
@@ -1645,6 +1652,14 @@ export class ClaudeManagedReadOwner {
       nextSettings = this.#settings(value, state.settings);
       let runner = await this.#prepareRunner(record);
       const models = runner.optionsSnapshot.models;
+      // `/model` passes the name as typed; keep the listed value it means.
+      let requested = value;
+      if (typeof value.model === "string" && value.resetDefaults !== true) {
+        const option = claudeModelOption(models, value.model);
+        if (!option) throw new Error("unsupported-model");
+        requested = { ...value, model: option.value };
+        nextSettings = this.#settings(requested, state.settings);
+      }
       const model = nextSettings.model ?? runner.optionsSnapshot.settings.model;
       if (nextSettings.model && !models.some((model) => model.value === nextSettings!.model))
         throw new Error("unsupported-model");
@@ -1663,7 +1678,7 @@ export class ClaudeManagedReadOwner {
         this.#runners.delete(id);
         runner = await this.#prepareRunner(this.#load(id)!, {}, nextSettings);
       } else {
-        await runner.configure(this.#settings(value), runner.snapshot().revision);
+        await runner.configure(this.#settings(requested), runner.snapshot().revision);
       }
     }
     if (operation === "rename") {

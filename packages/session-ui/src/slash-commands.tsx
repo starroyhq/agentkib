@@ -119,6 +119,25 @@ export function agentKibCommand(decision: {
 }
 
 /**
+ * The explanation for `/effort` with a level next-turn settings do not take (`auto`,
+ * `ultracode`, a typo), or null. Composers show it instead of the refusal, which reads as if
+ * AgentKib kept no effort at all.
+ */
+export function unsupportedEffortReason(decision: {
+  command: string;
+  args: string;
+  refusal: string | null;
+}): "claude-effort-unsupported" | null {
+  const { command, args, refusal } = decision;
+  // `/effort` is refused only with an argument, so the level is never empty here.
+  return refusal === "claude-command-settings" &&
+    command === "effort" &&
+    !EFFORTS.includes(args.toLowerCase())
+    ? "claude-effort-unsupported"
+    : null;
+}
+
+/**
  * Where AgentKib's own control for a command lives: next-turn settings for `/model` and
  * `/effort`, the persistent goal for `/goal`, and the session actions, which hold rename, for
  * `/rename`.

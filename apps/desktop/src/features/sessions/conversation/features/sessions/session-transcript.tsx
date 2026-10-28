@@ -190,7 +190,7 @@ function EventRow({
           />
         </Button>
       ) : (
-        event.content && <SafeMarkdown text={event.content} />
+        event.content && <SafeMarkdown text={event.content} literal={event.cli_output === true} />
       )}
       {(event.attachment_count > 0 || event.truncated) && (
         <div className="mt-2 flex flex-wrap gap-2 text-[11px] text-muted-foreground">

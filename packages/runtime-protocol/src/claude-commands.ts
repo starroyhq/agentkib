@@ -171,6 +171,14 @@ const REMOTE_WITHOUT_ARGUMENTS = new Set(["autocompact", "effort", "mcp", "model
 /** Commands that only serve the CLI's own server-launched sessions. */
 const INTERNAL = new Set(["workflow-launch-exec"]);
 
+/**
+ * Commands that do nothing in a managed session, as 2.1.311 answers them: `/fast` replies that
+ * fast mode is not available in the Agent SDK, `/focus` that it is not available here yet, and
+ * `/color` colors the terminal's prompt bar, which AgentKib does not show. The menu leaves them
+ * out; typed, they are still sent and Claude Code's reply explains.
+ */
+const NO_EFFECT = new Set(["fast", "focus", "color"]);
+
 export function parseClaudeSlashCommand(text: string): ClaudeSlashCommand | null {
   const match = COMMAND.exec(text.trimStart());
   return match ? { name: match[1]!.toLowerCase(), args: match[2]!.trim() } : null;
@@ -271,10 +279,10 @@ export function claudeInputCommandRefusal(
 
 /**
  * The commands a `/` menu offers, in catalog order. Background commands, `/clear` (AgentKib
- * starts a new session instead) and internal ones are left out for everyone; a remote device
- * also loses the built-ins it may not run, and the argument hint of those it may only run
- * without an argument. `/goal`, `/rename`, `/model` and `/effort` stay: clients run or open
- * AgentKib's own control for them.
+ * starts a new session instead), internal ones and those that do nothing here (`/fast`,
+ * `/focus`, `/color`) are left out for everyone; a remote device also loses the built-ins it may
+ * not run, and the argument hint of those it may only run without an argument. `/goal`,
+ * `/rename`, `/model` and `/effort` stay: clients run or open AgentKib's own control for them.
  */
 export function claudeMenuCommands(
   commands: readonly ClaudeCommandEntry[],
@@ -284,7 +292,14 @@ export function claudeMenuCommands(
   const menu: ClaudeMenuCommand[] = [];
   for (const entry of commands) {
     const name = entryName(entry);
-    if (!name || seen.has(name) || name.startsWith("_") || INTERNAL.has(name)) continue;
+    if (
+      !name ||
+      seen.has(name) ||
+      name.startsWith("_") ||
+      INTERNAL.has(name) ||
+      NO_EFFECT.has(name)
+    )
+      continue;
     seen.add(name);
     // Offered exactly when typing it bare would not be refused for this reason.
     const bare = claudeCommandDecision(`/${name}`, { owner, commands });

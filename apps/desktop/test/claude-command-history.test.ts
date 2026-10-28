@@ -138,6 +138,35 @@ describe("slash commands in Claude Code history", () => {
     expect(byContent("## Context Usage\n\n**Tokens:** 3.4k / 1m (0%)").id).toBe(contextOutput.uuid);
     expect(byContent("/help").id).toBe(helpEcho.uuid);
     expect(byContent("Compacted").id).toBe(compacted.uuid);
+    // Only the CLI's own output is marked; clients keep its line breaks.
+    expect(events.filter((event) => event.cli_output).map(({ content }) => content)).toEqual([
+      "## Context Usage\n\n**Tokens:** 3.4k / 1m (0%)",
+      "/help isn't available in this environment.",
+      "Set model to `Haiku 5.5` for this session only",
+      "Compacted",
+    ]);
+  });
+
+  it("marks the CLI's own assistant text, such as an API error, and not the model's", () => {
+    const synthetic = (content: unknown, id = uuid()) => ({
+      ...base(),
+      type: "assistant",
+      isApiErrorMessage: true,
+      message: { id, model: "<synthetic>", role: "assistant", content },
+    });
+    const events = read([
+      user([{ type: "text", text: "hi" }]),
+      synthetic([{ type: "text", text: "API Error: 500 Internal server error" }]),
+      // Without a native id the row is read as one message.
+      { ...synthetic("Prompt is too long", "not-a-uuid"), uuid: "not-a-uuid" },
+      assistant("Usage: /model <name>"),
+    ]);
+    expect(events.map(({ kind, content, cli_output }) => [kind, content, cli_output])).toEqual([
+      ["user-message", "hi", undefined],
+      ["agent-message", "API Error: 500 Internal server error", true],
+      ["agent-message", "Prompt is too long", true],
+      ["agent-message", "Usage: /model <name>", undefined],
+    ]);
   });
 
   it("keeps text that only quotes the tags, and drops empty output", () => {
@@ -278,10 +307,12 @@ describe.skipIf(!["darwin", "linux"].includes(process.platform))(
         content: "Compacted",
         turn_id: turnId,
         ephemeral: false,
+        cli_output: true,
       });
       expect(items.find((item) => item.id === local)).toMatchObject({
         kind: "agent-message",
         content: "Set model to `Haiku 5.5` for this session only",
+        cli_output: true,
       });
       // The turn ends on the CLI's last reply.
       expect(items.at(-1)).toMatchObject({
@@ -313,6 +344,7 @@ describe.skipIf(!["darwin", "linux"].includes(process.platform))(
         ],
       });
       const contents: string[] = [];
+      const marks: unknown[] = [];
       const runner = new ClaudeManagedRunnerProcess(
         f.workspace,
         randomUUID(),
@@ -325,7 +357,10 @@ describe.skipIf(!["darwin", "linux"].includes(process.platform))(
           const items =
             type === "item-upsert" ? [payload] : type === "snapshot" ? (payload.items ?? []) : [];
           for (const item of items as Array<Record<string, unknown>>)
-            if (item.id === local) contents.push(String(item.content));
+            if (item.id === local) {
+              contents.push(String(item.content));
+              marks.push(item.cli_output);
+            }
         },
         {},
       );
@@ -341,6 +376,71 @@ describe.skipIf(!["darwin", "linux"].includes(process.platform))(
       await expect.poll(() => runner.snapshot().status, { timeout: 15_000 }).toBe("idle");
       expect(contents.length).toBeGreaterThan(1);
       expect(new Set(contents)).toEqual(new Set([text]));
+      // Every copy says the CLI wrote it, including the one re-sent after the next frame.
+      expect(new Set(marks)).toEqual(new Set([true]));
+    }, 30_000);
+
+    it("marks the CLI's own replies and not the model's", async () => {
+      const f = createFakeClaude("agentkib-claude-cli-output-");
+      cleanups.push(() => rmSync(f.root, { recursive: true, force: true }));
+      const reply = randomUUID();
+      const local = randomUUID();
+      const frame = (id: string, model: string, text: string) => ({
+        type: "assistant",
+        uuid: id,
+        parent_tool_use_id: null,
+        message: { id, model, role: "assistant", content: [{ type: "text", text }] },
+      });
+      const stream = (event: Record<string, unknown>) => ({ type: "stream_event", event });
+      f.setPlan({
+        onUser: [
+          frame(reply, "claude-haiku-5-5", "A reply from the model.\nIt has two lines."),
+          frame(local, "<synthetic>", "Usage: /rename <name>"),
+          // Text the model streams afterwards; the fake's closing frame re-sends it without text.
+          stream({
+            type: "content_block_start",
+            index: 0,
+            content_block: { type: "text", text: "" },
+          }),
+          stream({
+            type: "content_block_delta",
+            index: 0,
+            delta: { type: "text_delta", text: "Streamed" },
+          }),
+        ],
+      });
+      const streamed: Array<Record<string, unknown>> = [];
+      const items = new Map<string, Record<string, unknown>>();
+      const runner = new ClaudeManagedRunnerProcess(
+        f.workspace,
+        randomUUID(),
+        true,
+        0,
+        f.environment,
+        () => undefined,
+        true,
+        (type, payload) => {
+          const emitted =
+            type === "item-upsert" ? [payload] : type === "snapshot" ? (payload.items ?? []) : [];
+          for (const item of emitted as Array<Record<string, unknown>>) {
+            if (item.id === reply || item.id === local) items.set(String(item.id), item);
+            if (item.content === "Streamed") streamed.push(item);
+          }
+        },
+        {},
+      );
+      cleanups.push(async () => {
+        await runner.shutdown().catch(() => undefined);
+      });
+      await runner.send(f.executable, "/rename", randomUUID(), runner.snapshot().revision);
+      await expect.poll(() => runner.snapshot().status, { timeout: 15_000 }).toBe("idle");
+      expect(items.get(reply)).not.toHaveProperty("cli_output");
+      expect(items.get(local)).toMatchObject({
+        content: "Usage: /rename <name>",
+        cli_output: true,
+      });
+      expect(streamed.length).toBeGreaterThan(0);
+      for (const item of streamed) expect(item).not.toHaveProperty("cli_output");
     }, 30_000);
   },
 );

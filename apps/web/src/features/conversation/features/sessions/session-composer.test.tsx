@@ -161,6 +161,23 @@ describe("composer sending shortcuts", () => {
     await waitFor(() => expect(doubles.control).toHaveBeenCalledTimes(2));
   });
 
+  it("explains an unavailable attachment button in words, not its reason code", () => {
+    doubles.session = {
+      ...doubles.session,
+      capabilities: {
+        ...doubles.session.capabilities!,
+        features: { attachments: { available: false, reason: "session-busy" } },
+      },
+    };
+    renderComposer();
+    const button = screen.getByRole("button", { name: codexCopy["en-US"].attachment });
+    expect(button).toBeDisabled();
+    expect(button).toHaveAttribute(
+      "title",
+      "This operation requires an idle session. Wait for the current turn to finish.",
+    );
+  });
+
   it("keeps coarse-pointer Enter as a newline and sends only with the button", async () => {
     vi.stubGlobal(
       "matchMedia",

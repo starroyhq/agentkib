@@ -1593,8 +1593,9 @@ export class WebReadRequests {
           !managedSessionHasUnknownCommands(this.dataDir, source.id)
             ? { available: true }
             : { available: false, reason: checked.reason ?? "session-not-archived" };
-        // Settings can be applied before the first turn by starting our own runner.
-        for (const operation of ["settings", "rename", "archive"])
+        // Settings can be applied before the first turn by starting our own runner, and a
+        // send with attachments starts it the same way.
+        for (const operation of ["settings", "rename", "archive", "attachments"])
           features[operation] = allowed ? { available: true } : features.send!;
         return {
           sessionId: source.id,
@@ -1742,7 +1743,13 @@ export class WebReadRequests {
         set(operation, false, "native-operation-not-integrated");
       set("approve", managed && verified && healthy && runnerConnected && !unknown, controlReason);
       set("answer", managed && verified && healthy && runnerConnected && !unknown, controlReason);
-      set("attachments", false, "native-operation-not-integrated");
+      // Uploads go with send, steer or queue-add, which each check their own state again.
+      // Images become native localImage input; other files a path the turn may read.
+      set(
+        "attachments",
+        managed && verified && healthy && runnerConnected && !unknown && !record.archived,
+        controlReason,
+      );
       return {
         sessionId: request.sessionId,
         executionMode: "codex-managed",

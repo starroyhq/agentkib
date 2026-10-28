@@ -665,7 +665,9 @@ export function SessionComposer({
                     ? copy.attachmentNote
                     : isClaude && live?.executionMode === "claude-follower"
                       ? claudeConnectionCopy[locale].attachments
-                      : capabilities?.features.attachments?.reason || copy.permission
+                      : capabilities?.features.attachments?.reason
+                        ? codexReason(locale, capabilities.features.attachments.reason).text
+                        : copy.permission
                 }
                 onClick={() => fileInput.current?.click()}
               >

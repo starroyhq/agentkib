@@ -374,6 +374,69 @@ function fixture(
   };
 }
 
+describe("Codex attachments", () => {
+  const capabilities = (f: ReturnType<typeof fixture>, experimentalEnabled = true) =>
+    f.web.managedQuery({
+      operation: "capabilities",
+      sessionId: f.summary.id,
+      experimentalEnabled,
+    }) as Promise<{ features: Record<string, { available: boolean; reason?: string }> }>;
+
+  it("opens uploads with send and passes an image to Codex as native image input", async () => {
+    const f = fixture();
+    // Before any runner, a send with attachments starts one, as a plain send does.
+    const inactive = await capabilities(f);
+    expect(inactive.features.attachments).toEqual({ available: true });
+    expect((await capabilities(f, false)).features.attachments).toEqual(
+      (await capabilities(f, false)).features.send,
+    );
+    const image = path.join(f.root, "attachment.png");
+    writeFileSync(image, Buffer.from("89504e470d0a1a0a", "hex"));
+    // The host turns uploads into these rows (AttachmentStore.input for Codex).
+    expect(
+      await f.send({
+        text: undefined,
+        input: [
+          { type: "text", text: "What is in this image?", text_elements: [] },
+          { type: "localImage", path: image },
+          {
+            type: "text",
+            text: `User attached file "notes.txt": ${f.root}/notes`,
+            text_elements: [],
+          },
+        ],
+      }),
+    ).toMatchObject({ accepted: true });
+    expect(f.requests.find(({ method }) => method === "turn/start")?.params).toMatchObject({
+      input: [
+        { type: "text", text: "What is in this image?" },
+        { type: "localImage", path: image },
+        { type: "text", text: `User attached file "notes.txt": ${f.root}/notes` },
+      ],
+    });
+    // Steer and queue-add take attachments while the turn runs.
+    expect((await capabilities(f)).features.attachments).toEqual({ available: true });
+    expect((await capabilities(f, false)).features.attachments).toMatchObject({
+      available: false,
+      reason: "control-disabled",
+    });
+  });
+
+  it("rejects an image that is no longer a file before sending anything", async () => {
+    const f = fixture();
+    expect(
+      await f.send({
+        text: undefined,
+        input: [
+          { type: "text", text: "Look", text_elements: [] },
+          { type: "localImage", path: path.join(f.root, "missing.png") },
+        ],
+      }),
+    ).toMatchObject({ accepted: false, controlOutcome: "not-dispatched" });
+    expect(f.methods).not.toContain("turn/start");
+  });
+});
+
 describe("Codex Plan mode", () => {
   async function control(
     f: ReturnType<typeof fixture>,

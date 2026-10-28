@@ -19,6 +19,7 @@ export type {
   CodexCommandAction,
   CodexCommandDecision,
   CodexCommandPanel,
+  CodexCommandPrompt,
   CodexCommandRefusal,
   CodexMenuCommand,
   ConversationToolContent,

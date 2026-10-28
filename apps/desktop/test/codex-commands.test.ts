@@ -50,6 +50,16 @@ describe("slash commands in a managed Codex session", () => {
     ],
     ["/goal", { panel: "goal" }],
     ["/diff", { panel: "files" }],
+    // Sent as a message AgentKib writes, as Codex Desktop does.
+    ["/review", { action: { action: "send", prompt: { kind: "review", base: null } } }],
+    ["/review main", { action: { action: "send", prompt: { kind: "review", base: "main" } } }],
+    [
+      "/REVIEW  origin/release-1.2 ",
+      { action: { action: "send", prompt: { kind: "review", base: "origin/release-1.2" } } },
+    ],
+    ["/review HEAD~3", { action: { action: "send", prompt: { kind: "review", base: "HEAD~3" } } }],
+    ["/review 发布", { action: { action: "send", prompt: { kind: "review", base: "发布" } } }],
+    ["/init", { action: { action: "send", prompt: { kind: "init" } } }],
   ] as const)("stands in for %j with AgentKib's own control", (text, outcome) => {
     const decision = codexCommandDecision(text)!;
     expect(decision).toEqual({
@@ -60,23 +70,33 @@ describe("slash commands in a managed Codex session", () => {
     });
   });
 
-  it.each(["/compact now", "/fork here", "/archive it", "/status please", "/diff src"])(
-    "does not drop the argument of %j",
-    (text) => {
-      expect(codexCommandDecision(text)).toEqual({
-        command: text.slice(1).split(" ")[0],
-        args: text.split(" ").slice(1).join(" "),
-        refusal: "codex-command-arguments",
-      });
-    },
-  );
+  it.each([
+    "/compact now",
+    "/fork here",
+    "/archive it",
+    "/status please",
+    "/diff src",
+    "/init here",
+  ])("does not drop the argument of %j", (text) => {
+    expect(codexCommandDecision(text)).toEqual({
+      command: text.slice(1).split(" ")[0],
+      args: text.split(" ").slice(1).join(" "),
+      refusal: "codex-command-arguments",
+    });
+  });
 
   it.each([
     ["/new", "codex-command-new"],
     ["/clear", "codex-command-new"],
-    ["/review", "codex-command-review"],
+    // Only one revision, and nothing a shell or git reads as more than a name.
     ["/review focus on auth", "codex-command-review"],
-    ["/init", "codex-command-init"],
+    ["/review main;id", "codex-command-review"],
+    ["/review $(id)", "codex-command-review"],
+    ["/review `id`", "codex-command-review"],
+    ["/review --output=x", "codex-command-review"],
+    ["/review ./main", "codex-command-review"],
+    ["/review main\nmore", "codex-command-review"],
+    [`/review ${"x".repeat(201)}`, "codex-command-review"],
     ["/quit", "codex-command-terminal"],
     ["/vim", "codex-command-terminal"],
     ["/mcp", "codex-command-terminal"],

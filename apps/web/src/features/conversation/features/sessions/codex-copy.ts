@@ -471,9 +471,7 @@ const reasons: Record<Locale, Record<string, string>> = {
     "codex-command-new":
       "/new 和 /clear 会让 Codex 终端改用新对话。需要空白上下文时请在 AgentKib 中新建会话，这条会话会保留。本次消息尚未发送。",
     "codex-command-review":
-      "/review 只在 Codex 终端里起作用，本次消息尚未发送。可以直接请 Codex 审查，例如“审查当前未提交的改动”。",
-    "codex-command-init":
-      "/init 只在 Codex 终端里起作用，本次消息尚未发送。可以直接请 Codex 为这个项目写一份 AGENTS.md。",
+      "/review 后面只能跟一个分支、标签或提交，例如 /review main；不带参数时审查未提交的改动。本次消息尚未发送。",
     "codex-command-terminal": "这条命令只在 Codex 的终端界面里起作用，本次消息尚未发送。",
     permission_denied: "此浏览器尚未获得对应权限，请在这台电脑上的 AgentKib 授权。",
   },
@@ -563,9 +561,7 @@ const reasons: Record<Locale, Record<string, string>> = {
     "codex-command-new":
       "/new 和 /clear 會讓 Codex 終端機改用新對話。需要空白上下文時請在 AgentKib 中建立新對話，這段對話會保留。本次訊息尚未傳送。",
     "codex-command-review":
-      "/review 只在 Codex 終端機中有作用，本次訊息尚未傳送。可以直接請 Codex 審查，例如「審查目前未提交的變更」。",
-    "codex-command-init":
-      "/init 只在 Codex 終端機中有作用，本次訊息尚未傳送。可以直接請 Codex 為這個專案寫一份 AGENTS.md。",
+      "/review 後面只能接一個分支、標籤或提交，例如 /review main；不帶參數時審查尚未提交的變更。本次訊息尚未傳送。",
     "codex-command-terminal": "這個指令只在 Codex 的終端機介面中有作用，本次訊息尚未傳送。",
     permission_denied: "此瀏覽器尚未取得對應權限，請在這台電腦上的 AgentKib 授權。",
   },
@@ -664,9 +660,7 @@ const reasons: Record<Locale, Record<string, string>> = {
     "codex-command-new":
       "/new and /clear move the Codex terminal to a new conversation. For an empty context, start a new session in AgentKib; this one is kept. This message was not sent.",
     "codex-command-review":
-      '/review works only in the Codex terminal. This message was not sent. Ask Codex for a review instead, for example "Review my uncommitted changes".',
-    "codex-command-init":
-      "/init works only in the Codex terminal. This message was not sent. Ask Codex to write an AGENTS.md for this project instead.",
+      "/review takes one branch, tag or commit, such as /review main, or nothing to review the uncommitted changes. This message was not sent.",
     "codex-command-terminal":
       "This command works only in Codex's terminal interface. This message was not sent.",
     permission_denied:
@@ -767,9 +761,7 @@ const reasons: Record<Locale, Record<string, string>> = {
     "codex-command-new":
       "/new と /clear は Codex のターミナルを新しい会話に切り替えます。空のコンテキストが必要な場合は AgentKib で新しい会話を開始してください（この会話は残ります）。このメッセージは送信されていません。",
     "codex-command-review":
-      "/review は Codex のターミナルでのみ機能します。このメッセージは送信されていません。代わりに「未コミットの変更をレビューして」のように Codex に依頼してください。",
-    "codex-command-init":
-      "/init は Codex のターミナルでのみ機能します。このメッセージは送信されていません。代わりにこのプロジェクトの AGENTS.md を書くよう Codex に依頼してください。",
+      "/review に指定できるのはブランチ、タグ、コミットのどれか 1 つです（例：/review main）。何も指定しなければ未コミットの変更をレビューします。このメッセージは送信されていません。",
     "codex-command-terminal":
       "このコマンドは Codex のターミナル画面でのみ機能します。このメッセージは送信されていません。",
     permission_denied:

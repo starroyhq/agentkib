@@ -5,7 +5,7 @@ import { useImperativeHandle, useState, type ReactNode, type Ref } from "react";
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { ClaudeCommandEntry } from "@agentkib/web-client";
-import { slashCommandCopy } from "@agentkib/session-ui";
+import { codexCommandPrompt, slashCommandCopy } from "@agentkib/session-ui";
 import { SessionComposer } from "./session-composer";
 import { codexCopy, codexReason } from "./codex-copy";
 import type { ComposerControlsHandle } from "./codex-session-controls";
@@ -451,6 +451,7 @@ describe("Codex slash commands in the composer", () => {
     renderComposer("/");
     expect(codexOptions()).toEqual([
       "/compactCompact the context",
+      "/review[branch]Review uncommitted changes, or against a branch",
       "/plan[message]Use Plan mode for the next turn",
       "/model[model]Change the next-turn model",
       "/permissionsChange the execution policy",
@@ -461,7 +462,44 @@ describe("Codex slash commands in the composer", () => {
       "/stopStop background terminals",
       "/archiveArchive the session",
       "/diffShow files and diffs",
+      "/initWrite an AGENTS.md for this directory",
     ]);
+  });
+
+  it.each([
+    ["/review", { kind: "review", base: null }, "en-US"],
+    ["/review main", { kind: "review", base: "main" }, "en-US"],
+    ["/init", { kind: "init" }, "en-US"],
+    // Worded in the reader's language.
+    ["/review main", { kind: "review", base: "main" }, "zh-CN"],
+  ] as const)("sends AgentKib's message for %s (%j) in %s", async (text, prompt, locale) => {
+    doubles.session.locale = locale;
+    const { input, form } = renderComposer(text);
+    fireEvent.submit(form);
+    await waitFor(() => expect(doubles.control).toHaveBeenCalledOnce());
+    expect(doubles.control).toHaveBeenCalledExactlyOnceWith(
+      "send",
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      { prompt: codexCommandPrompt(locale, prompt) },
+    );
+    await waitFor(() => expect(input).toHaveValue(""));
+    expect(doubles.codexAction).not.toHaveBeenCalled();
+  });
+
+  it("keeps /review while the session cannot send", async () => {
+    doubles.session.capabilities = {
+      ...doubles.session.capabilities!,
+      features: { send: { available: false, reason: "session-busy" } },
+    };
+    const { input, form } = renderComposer("/review main");
+    fireEvent.submit(form);
+    expect(screen.getByText(reason("codex-command-agentkib"))).toBeVisible();
+    expect(input).toHaveValue("/review main");
+    await act(async () => {});
+    expect(doubles.control).not.toHaveBeenCalled();
   });
 
   it.each([
@@ -505,8 +543,8 @@ describe("Codex slash commands in the composer", () => {
     ["/quit", "codex-command-terminal"],
     ["/mcp", "codex-command-terminal"],
     ["/new", "codex-command-new"],
-    ["/review", "codex-command-review"],
-    ["/init", "codex-command-init"],
+    ["/review focus on auth", "codex-command-review"],
+    ["/init now", "codex-command-arguments"],
     ["/compact now", "codex-command-arguments"],
   ])("explains %s instead of sending it, and keeps the draft", async (text, code) => {
     const { input, form } = renderComposer(text);

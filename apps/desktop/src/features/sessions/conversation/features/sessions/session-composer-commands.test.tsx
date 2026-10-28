@@ -5,7 +5,7 @@ import { useState } from "react";
 import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { ClaudeCommandEntry } from "@agentkib/web-client";
-import { slashCommandCopy } from "@agentkib/session-ui";
+import { codexCommandPrompt, slashCommandCopy } from "@agentkib/session-ui";
 import { SessionComposer } from "./session-composer";
 import { codexCopy, codexReason } from "./codex-copy";
 import type { SessionPanels } from "./session-panels";
@@ -247,6 +247,44 @@ describe("Codex slash commands in the desktop composer", () => {
     expect(doubles.control).not.toHaveBeenCalled();
   });
 
+  it.each([
+    ["/review", { kind: "review", base: null }],
+    ["/review origin/main", { kind: "review", base: "origin/main" }],
+    ["/init", { kind: "init" }],
+  ] as const)("sends AgentKib's message for %s", async (text, prompt) => {
+    doubles.session.capabilities = {
+      ...doubles.session.capabilities!,
+      features: { send: { available: true } },
+    };
+    const { input, form } = renderComposer(text);
+    fireEvent.submit(form);
+    await waitFor(() =>
+      expect(doubles.control).toHaveBeenCalledExactlyOnceWith(
+        "send",
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        { prompt: codexCommandPrompt("en-US", prompt) },
+      ),
+    );
+    await waitFor(() => expect(input).toHaveValue(""));
+    expect(doubles.codexAction).not.toHaveBeenCalled();
+  });
+  it.each([
+    ["/review two words", "codex-command-review"],
+    ["/init now", "codex-command-arguments"],
+  ])("explains %s and keeps the draft", (text, code) => {
+    doubles.session.capabilities = {
+      ...doubles.session.capabilities!,
+      features: { send: { available: true } },
+    };
+    const { input, form } = renderComposer(text);
+    fireEvent.submit(form);
+    expect(screen.getByText(codexReason("en-US", code).text)).toBeVisible();
+    expect(input).toHaveValue(text);
+    expect(doubles.control).not.toHaveBeenCalled();
+  });
   it("explains a terminal-only command and keeps the draft", () => {
     const { input, form } = renderComposer("/quit");
     fireEvent.submit(form);

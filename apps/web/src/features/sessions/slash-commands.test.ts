@@ -3,6 +3,7 @@ import {
   agentKibCommand,
   agentKibPanel,
   claudeSlashOptions,
+  codexCommandPrompt,
   matchSlashCommands,
   slashCommandCopy,
   slashCommandQuery,
@@ -159,4 +160,34 @@ describe("menu descriptions", () => {
       expect(new Set(Object.values(copy)).size).toBe(Object.keys(copy).length);
     },
   );
+});
+
+describe("messages AgentKib writes for Codex's /review and /init", () => {
+  const locales = ["zh-CN", "zh-TW", "en-US", "ja-JP"];
+  it.each(locales)("reviews without changes and keeps an existing AGENTS.md, in %s", (locale) => {
+    const uncommitted = codexCommandPrompt(locale, { kind: "review", base: null });
+    const branch = codexCommandPrompt(locale, { kind: "review", base: "origin/main" });
+    const init = codexCommandPrompt(locale, { kind: "init" });
+    // git diff leaves out untracked files, so the uncommitted review names git status too.
+    expect(uncommitted).toContain("`git status`");
+    expect(uncommitted).toContain("`git diff --staged`");
+    expect(uncommitted).not.toContain("merge-base");
+    // A branch review starts where the current branch left the base.
+    expect(branch).toContain("`origin/main`");
+    expect(branch).toContain("`git merge-base HEAD origin/main`");
+    expect(branch).not.toContain("--staged");
+    // Both follow the repository's own instructions; init writes them.
+    for (const prompt of [uncommitted, branch, init]) expect(prompt).toContain("AGENTS.md");
+    expect(new Set([uncommitted, branch, init]).size).toBe(3);
+  });
+  it("writes in the reader's language, English for the others", () => {
+    const init = (locale: string) => codexCommandPrompt(locale, { kind: "init" });
+    expect(new Set(locales.map(init)).size).toBe(4);
+    expect(init("fr-FR")).toBe(init("en-US"));
+    expect(init("zh-HK")).toBe(init("zh-CN"));
+    expect(init("ja")).toBe(init("ja-JP"));
+    expect(codexCommandPrompt("zh-CN", { kind: "review", base: "HEAD~3" })).toContain(
+      "`git merge-base HEAD HEAD~3`",
+    );
+  });
 });

@@ -8,6 +8,7 @@ import {
   type ConversationEventPage,
   type ConversationSessionSummary,
   type Live,
+  type ResolvedHistoryReference,
 } from "@agentkib/web-client";
 import { useSessionController } from "@/features/sessions/conversation/features/sessions/use-session-controller";
 import {
@@ -443,6 +444,73 @@ describe("a command button's message", () => {
       { command: "compact" },
       { command: "/compact", attachmentIds: ["attachment"] },
       { command: "/compact", resourceIds: ["resource"] },
+    ])
+      await act(async () =>
+        result.current.control("send", undefined, undefined, undefined, undefined, extra),
+      );
+    expect(host.request).not.toHaveBeenCalled();
+  });
+});
+
+describe("a message AgentKib wrote for a Codex command", () => {
+  it("is sent in place of the draft, without its quotes, and clears it", async () => {
+    const host = baseFixture(baseIdle("original"), "codex");
+    const approved = await host.client.access();
+    vi.mocked(host.client.access).mockResolvedValue({
+      ...approved,
+      historySearch: true,
+      historySearchScope: "quotes",
+      device: { ...approved.device!, attachments: true },
+    });
+    vi.mocked(host.client.sessionCapabilities).mockImplementation(async (sessionId) => ({
+      sessionId,
+      executionMode: "codex-managed",
+      status: "idle",
+      features: {
+        fork: { available: true },
+        attachments: { available: true },
+        context: { available: true },
+      },
+    }));
+    const { result } = await open(host);
+    const reference: ResolvedHistoryReference = {
+      reference: {
+        sessionId: "original",
+        recordId: "record",
+        chunkId: "chunk",
+        sourceRevision: "revision",
+        start: 0,
+        end: 5,
+        contentHash: "hash",
+      },
+      title: "Quoted history",
+      agent: "codex",
+      kind: "assistant",
+      toolName: null,
+      content: "quote",
+    };
+    await act(async () => {
+      result.current.setMessage("/init");
+      result.current.setHistoryReferences([reference]);
+    });
+    expect(result.current.historyReferences).toEqual([reference]);
+    await act(async () =>
+      result.current.control("send", undefined, undefined, undefined, undefined, {
+        prompt: "Write an AGENTS.md.",
+      }),
+    );
+    expect(host.request).toHaveBeenCalledExactlyOnceWith(
+      "send",
+      expect.objectContaining({ sessionId: "original", text: "Write an AGENTS.md." }),
+    );
+    expect(host.request.mock.lastCall?.[1]).not.toHaveProperty("historyReferences");
+    expect(result.current.notice).toBe("accepted");
+    expect(result.current.message).toBe("");
+    host.request.mockClear();
+    for (const extra of [
+      { prompt: "" },
+      { prompt: "Write", attachmentIds: ["attachment"] },
+      { prompt: "Write", resourceIds: ["resource"] },
     ])
       await act(async () =>
         result.current.control("send", undefined, undefined, undefined, undefined, extra),

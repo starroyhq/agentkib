@@ -10,6 +10,9 @@
  *   `/fork`, `/stop`, `/plan`, `/model <model>`, `/rename <name>`, `/goal <objective>`) or, without an
  *   argument, opens the control for it (`/model`, `/permissions`, `/status`, `/rename`, `/goal`,
  *   `/archive`, `/diff`).
+ * - `/review [branch]` and `/init` send a message AgentKib writes, as an ordinary turn. Codex
+ *   Desktop (26.1023) does the same: `review/start` reports one turn id in `turn/started` and
+ *   another for its items and `turn/completed` (0.163.0), and init has no method at all.
  * - The other commands only work in the terminal UI. They are not sent, and the composer says why.
  * - Any other `/name` is sent as text, like every message.
  *
@@ -24,8 +27,8 @@ export const CODEX_COMMAND_REFUSALS = [
   /** AgentKib's action for it takes no argument. */
   "codex-command-arguments",
   "codex-command-new",
+  /** `/review` takes one branch, tag or commit, or nothing. */
   "codex-command-review",
-  "codex-command-init",
   /** It works only in Codex's terminal UI. */
   "codex-command-terminal",
 ] as const;
@@ -38,8 +41,16 @@ export function isCodexCommandRefusal(value: unknown): value is CodexCommandRefu
 /** The AgentKib control a command opens. */
 export type CodexCommandPanel = "settings" | "goal" | "actions" | "files";
 
+/**
+ * A message AgentKib writes for a command; composers word it in the reader's language. `base` is
+ * what `/review` compares with, or null for the uncommitted changes.
+ */
+export type CodexCommandPrompt = { kind: "review"; base: string | null } | { kind: "init" };
+
 /** The session action a command runs, with its fields. */
 export type CodexCommandAction =
+  /** Sent as an ordinary message, in place of the command. */
+  | { action: "send"; prompt: CodexCommandPrompt }
   | { action: "compact" }
   | { action: "fork" }
   | { action: "terminals-clean" }
@@ -62,6 +73,10 @@ export interface CodexCommandDecision {
 // As in Claude Code: `/name` is a command only when whitespace or the end follows the name, so a
 // path such as `/private/tmp` stays text.
 const COMMAND = /^\/([A-Za-z0-9_][A-Za-z0-9_:.-]{0,127})(?=\s|$)([\s\S]*)$/;
+
+// One revision such as `main`, `origin/main`, `v1.2` or `HEAD~3`. The message asks Codex to run
+// `git merge-base HEAD <base>`, so nothing a shell reads specially, and no leading `-`.
+const REVIEW_BASE = /^(?![-./])[\p{L}\p{N}._/@{}~^+-]{1,200}$/u;
 
 /** `SlashCommand` of Codex 0.163.0, by the names its terminal UI accepts. */
 const TERMINAL_COMMANDS = new Set([
@@ -184,9 +199,14 @@ export function codexCommandDecision(text: string): CodexCommandDecision | null 
     case "clear":
       return { command, args, refusal: "codex-command-new" };
     case "review":
-      return { command, args, refusal: "codex-command-review" };
+      if (args && !REVIEW_BASE.test(args))
+        return { command, args, refusal: "codex-command-review" };
+      return {
+        ...own,
+        action: { action: "send", prompt: { kind: "review", base: args || null } },
+      };
     case "init":
-      return { command, args, refusal: "codex-command-init" };
+      return bare({ action: { action: "send", prompt: { kind: "init" } } });
     default:
       return { command, args, refusal: "codex-command-terminal" };
   }
@@ -195,6 +215,7 @@ export function codexCommandDecision(text: string): CodexCommandDecision | null 
 /** The commands a Codex `/` menu offers: those AgentKib runs or opens a control for. */
 export const CODEX_MENU_COMMANDS = [
   "compact",
+  "review",
   "plan",
   "model",
   "permissions",
@@ -205,5 +226,6 @@ export const CODEX_MENU_COMMANDS = [
   "stop",
   "archive",
   "diff",
+  "init",
 ] as const;
 export type CodexMenuCommand = (typeof CODEX_MENU_COMMANDS)[number];

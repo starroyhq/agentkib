@@ -20,6 +20,7 @@ export {
   type SessionContinuationTerminalProps,
 } from "./session-continuation";
 
+export { codexCommandPrompt, type CodexCommandPromptRequest } from "./codex-prompts";
 export {
   agentKibCommand,
   agentKibPanel,

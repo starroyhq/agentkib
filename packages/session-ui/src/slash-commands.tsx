@@ -23,6 +23,8 @@ const copies = {
     goal: "设置持续目标",
     codexLabel: "Codex 命令",
     codexCompact: "压缩上下文",
+    codexReview: "审查未提交的改动，或对比某个分支",
+    codexInit: "为这个目录写一份 AGENTS.md",
     codexPlan: "下一轮使用计划模式",
     codexPermissions: "更改执行策略",
     codexStatus: "查看下一轮设置",
@@ -40,6 +42,8 @@ const copies = {
     goal: "設定持續目標",
     codexLabel: "Codex 指令",
     codexCompact: "壓縮上下文",
+    codexReview: "審查尚未提交的變更，或與某個分支比較",
+    codexInit: "為這個目錄寫一份 AGENTS.md",
     codexPlan: "下一輪使用計畫模式",
     codexPermissions: "變更執行策略",
     codexStatus: "查看下一輪設定",
@@ -57,6 +61,8 @@ const copies = {
     goal: "Set a persistent goal",
     codexLabel: "Codex commands",
     codexCompact: "Compact the context",
+    codexReview: "Review uncommitted changes, or against a branch",
+    codexInit: "Write an AGENTS.md for this directory",
     codexPlan: "Use Plan mode for the next turn",
     codexPermissions: "Change the execution policy",
     codexStatus: "Show next-turn settings",
@@ -74,6 +80,8 @@ const copies = {
     goal: "継続目標を設定",
     codexLabel: "Codex のコマンド",
     codexCompact: "コンテキストを圧縮",
+    codexReview: "未コミットの変更、またはブランチとの差分をレビュー",
+    codexInit: "このディレクトリの AGENTS.md を作成",
     codexPlan: "次のターンを計画モードにする",
     codexPermissions: "実行ポリシーを変更",
     codexStatus: "次のターンの設定を表示",
@@ -128,6 +136,7 @@ const CODEX_OPTIONS: Record<
   { key: keyof ReturnType<typeof slashCommandCopy>; hint?: string }
 > = {
   compact: { key: "codexCompact" },
+  review: { key: "codexReview", hint: "[branch]" },
   plan: { key: "codexPlan", hint: "[message]" },
   model: { key: "model", hint: "[model]" },
   permissions: { key: "codexPermissions" },
@@ -138,6 +147,7 @@ const CODEX_OPTIONS: Record<
   stop: { key: "codexStop" },
   archive: { key: "codexArchive" },
   diff: { key: "codexDiff" },
+  init: { key: "codexInit" },
 };
 
 /**

@@ -3,6 +3,7 @@ import {
   agentKibCommand,
   agentKibPanel,
   claudeSlashOptions,
+  codexCommandPrompt,
   codexSlashOptions,
   slashCommandCopy,
   sessionContinuationCopy,
@@ -386,22 +387,28 @@ export function SessionComposer({
     submitPending.current = true;
     setSubmitted(true);
     try {
-      const result = mapped
-        ? await codexAction(mapped.action, "fields" in mapped ? mapped.fields : undefined)
-        : action === "send"
+      // `/review` and `/init` go out as a message AgentKib writes, in the reader's language.
+      const result =
+        mapped?.action === "send"
           ? await control("send", undefined, undefined, undefined, undefined, {
-              attachmentIds,
-              ...(resourceIds.length ? { resourceIds } : {}),
+              prompt: codexCommandPrompt(locale, mapped.prompt),
             })
-          : await codexAction(action, {
-              text: draft.trim(),
-              ...(historyReferences.length
-                ? { historyReferences: historyReferences.map((item) => item.reference) }
-                : {}),
-              ...(attachmentIds.length ? { attachmentIds } : {}),
-              ...(resourceIds.length ? { resourceIds } : {}),
-              ...(action === "steer" ? { turnId: live?.turnId } : {}),
-            });
+          : mapped
+            ? await codexAction(mapped.action, "fields" in mapped ? mapped.fields : undefined)
+            : action === "send"
+              ? await control("send", undefined, undefined, undefined, undefined, {
+                  attachmentIds,
+                  ...(resourceIds.length ? { resourceIds } : {}),
+                })
+              : await codexAction(action, {
+                  text: draft.trim(),
+                  ...(historyReferences.length
+                    ? { historyReferences: historyReferences.map((item) => item.reference) }
+                    : {}),
+                  ...(attachmentIds.length ? { attachmentIds } : {}),
+                  ...(resourceIds.length ? { resourceIds } : {}),
+                  ...(action === "steer" ? { turnId: live?.turnId } : {}),
+                });
       if (result && requestGeneration === generation.current) {
         for (const url of previewUrls.current.values()) URL.revokeObjectURL(url);
         previewUrls.current.clear();

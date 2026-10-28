@@ -100,11 +100,16 @@ reconcile 读取原生 thread/read。send/steer/queue-add 必须找到对应 `us
 
 `/stop` 调用 `thread/backgroundTerminals/clean`，结束仍在后台运行的命令。停止按钮仍只中断当前轮次（`turn/interrupt`），与终端里按 Esc 一致。后台终端随 runner 进程结束，所以 `terminals-clean` 只在 runner 运行时开放。
 
-app-server 没有斜杠命令：`/compact` 这样的文字只会作为消息交给模型。Codex 会话的输入区输入 `/` 时列出 AgentKib 能代为执行的命令：`/compact`、`/plan`、`/model`、`/permissions`、`/status`、`/rename`、`/goal`、`/fork`、`/stop`、`/archive`、`/diff`。`/plan <提示>`、`/model <模型>`、`/rename <名称>`、`/goal <目标>` 直接执行，`/plan` 切换后把提示留在输入框；不带参数时打开对应界面；当前不可用时保留草稿并说明原因。运行中追加指令或加入队列时不执行这些命令，同样保留草稿并说明原因，与带附件的消息一样。其余 Codex 终端命令（按 0.163.0 的 `SlashCommand`，含别名）不发送，说明只能在终端使用；`/new`、`/clear` 提示新建会话，`/init` 只说明用途。其他 `/名称` 照常作为文字发送。规则只在客户端：这些文字交给模型不会造成损害，主机不拦截。命令表在 `packages/runtime-protocol/src/codex-commands.ts`。
+app-server 没有斜杠命令：`/compact` 这样的文字只会作为消息交给模型。Codex 会话的输入区输入 `/` 时列出 AgentKib 能代为执行的命令：`/compact`、`/review`、`/plan`、`/model`、`/permissions`、`/status`、`/rename`、`/goal`、`/fork`、`/stop`、`/archive`、`/diff`、`/init`。`/plan <提示>`、`/model <模型>`、`/rename <名称>`、`/goal <目标>` 直接执行，`/plan` 切换后把提示留在输入框；不带参数时打开对应界面；当前不可用时保留草稿并说明原因。运行中追加指令或加入队列时不执行这些命令，同样保留草稿并说明原因，与带附件的消息一样。其余 Codex 终端命令（按 0.163.0 的 `SlashCommand`，含别名）不发送，说明只能在终端使用；`/new`、`/clear` 提示新建会话。其他 `/名称` 照常作为文字发送。规则只在客户端：这些文字交给模型不会造成损害，主机不拦截。命令表在 `packages/runtime-protocol/src/codex-commands.ts`。
+
+`/review [分支]` 和 `/init` 发出 AgentKib 写好的一条普通消息，和 Codex Desktop 的做法一样，不调用 `review/start`：0.163.0 的 `review/start` 返回的轮次 ID 与 `turn/started` 通知里的不同，项目和 `turn/completed` 用前者，按现有状态机会停在运行中。
+
+- `/review` 审查未提交的改动（已暂存、未暂存和未跟踪的文件）。`/review <分支>` 让 Codex 先用 `git merge-base HEAD <分支>` 找到分叉点，再看与它的差异。分支只接受一个修订名，例如 `main`、`origin/main`、`HEAD~3`：不含空白和 shell 会特殊处理的字符，不以 `-`、`.`、`/` 开头，最长 200 个字符；其他写法保留草稿并说明用法。两种都要求只读不改，只报告值得修改的问题。
+- `/init` 让 Codex 在当前目录写 AGENTS.md，已经存在时不改动。是否存在由 Codex 自己检查；Desktop 是发出前先查。
+- 消息按界面语言书写，原样显示在会话里，并按当前的下一轮设置运行，包括 Plan 模式。说明文字是 AgentKib 自己写的，没有沿用 Desktop 的提示词。
 
 暂不支持：
 
-- `/review`：0.163.0 `review/start` 返回的轮次 ID 与 `turn/started` 通知里的不同，项目和 `turn/completed` 用前者，现有状态机会停在运行中。
 - `!命令`（`thread/shellCommand`）。
 - MCP 表单与 URL 请求只能拒绝；不提供“始终允许”。
 

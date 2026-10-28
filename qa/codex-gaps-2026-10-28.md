@@ -1,6 +1,6 @@
 # Codex 接入补齐（2026-10-28）
 
-分支 `feat/codex-gaps`，基于 `main` 的 `4e4f8a6b2`。补齐上一轮 Codex 接入分析找出的缺口：失败与重试、Plan、附件、MCP 请求、手动压缩、`/` 菜单、后台终端，以及最低版本上的待发队列，并加上 CI 协议检查。行为与规则见 [Codex 托管执行](../docs/CODEX-MANAGED.md)。
+分支 `feat/codex-gaps`，基于 `main` 的 `4e4f8a6b2`。补齐上一轮 Codex 接入分析找出的缺口：失败与重试、Plan、附件、MCP 请求、手动压缩、`/` 菜单、后台终端，以及最低版本上的待发队列，并加上 CI 协议检查。之后对照 Codex Desktop 的做法，把 `/review` 和 `/init` 做成普通消息。行为与规则见 [Codex 托管执行](../docs/CODEX-MANAGED.md)。
 
 | 提交 | 内容 |
 | --- | --- |
@@ -14,6 +14,7 @@
 | `a5d2c03bd` | 没有 `thread/queue` 的 CLI（0.147.0）不开放待发队列 |
 | `ff5c8994b` | CI：检查 Codex app-server 协议与 AgentKib 依赖的方法和字段 |
 | `168639768` | 运行中追加指令或加入队列时，Codex 命令也不作为文字发出 |
+| `491a578fd` | `/review [分支]` 与 `/init` 发出 AgentKib 写好的普通消息，与 Codex Desktop 一致 |
 
 本轮没有调用模型，也没有使用真实账号或 API key。CLI 行为来自真实 CLI 对本地桩的离线运行：Responses API 桩和一个 MCP 桩只监听 `127.0.0.1`；`codex app-server --stdio` 在只放行 localhost 的 `sandbox-exec` 里运行，`CODEX_HOME` 是只配置了桩 provider 的临时目录，`HOME` 是空目录，用假 key，工作区是临时 Git 仓库。版本为 Homebrew 的 0.163.0，以及从 npm 装到临时目录的 0.163.0 与 0.147.0。
 
@@ -49,6 +50,18 @@
 
 协议检查脚本用 `--cli` 指定本机的两个二进制运行：0.147.0 按 `required` 通过，0.163.0 按全部契约通过；0.147.0 按全部契约报出 7 处缺口（`thread/queue/*` 五个方法、`ThreadQueueAddParams`、`ThreadResumeResponse.collaborationMode`）。
 
+## `/review` 与 `/init`
+
+本机 Codex Desktop（26.1023.50603，内置 CLI 0.165.0-alpha.1.2）的 `/review` 不调用 `review/start`：它在当前线程发普通 `turn/start`，附自带的审查说明，可选未提交的改动或对比某个分支（自己算 merge-base），也可以设置为另开线程。`/init` 先查 AGENTS.md 是否存在，再发自带的提示。这些来自安装包里代码的静态分析，没有在 Desktop 里实际操作。
+
+AgentKib 按同样的思路做（`491a578fd`），主机没有改动：
+
+- 命令判定：`/review`、`/review <分支>`、`/init` 判为“发出一条 AgentKib 写好的消息”。分支只接受一个修订名，例如 `main`、`origin/main`、`HEAD~3`、中文分支名；含空白、`;`、`$()`、反引号等 shell 会特殊处理的字符，以 `-`、`.`、`/` 开头，或超过 200 个字符时保留草稿并说明用法。`/init` 带参数时说明它不带参数。
+- 消息：session-ui 的 `codexCommandPrompt` 按界面语言（四种）生成，文字是 AgentKib 自己写的，没有沿用 Desktop 的提示词。审查要求只读不改，只报告值得修改的问题，按严重程度排序，每条写文件和行号、出错的情况与原因以及改法，并遵守 AGENTS.md；未提交改动用 `git status`、`git diff`（含 `--staged`），未跟踪的文件直接读；分支先 `git merge-base HEAD <分支>`。`/init` 在当前目录写 AGENTS.md，已存在时不改动并说明。
+- 发送：两端控制器的新参数 `prompt` 代替草稿发出，与普通发送同一条路径（`turn/start`、持久回执），不带附件和历史引用，成功后清空草稿；发送不可用时保留草稿并说明原因。
+
+测试：命令判定（参数、注入写法、长度、大小写）、四种语言的消息、两端输入区（发送内容、界面语言、不可发送、参数错误）、两端控制器（发送文本、不带引用和附件、清空草稿）。变异检查 15 处全部被发现；其中“控制器把历史引用一起发出”起初没被发现（测试没有设引用），两端补上引用后被发现。之后重跑三处类型检查、改动文件的格式与 lint、桌面 `test/codex-commands.test.ts` 与 `src/features/sessions`、`src/features/workspace`（90 个文件 1542 项）和 Web `src/features/conversation`、`src/features/sessions`（58 个文件 1241 项），全部通过。
+
 ## 验证
 
 - 新增或更新的测试：
@@ -70,4 +83,5 @@
 - 0.147.0 只核对了 Plan 与队列的协议行为，没有经 AgentKib 后端跑完整流程。
 - 没有截图核对新的显示（错误行、重试提示、MCP 审批、`/` 菜单），只在 jsdom 里核对了 DOM。桌面的 `managed-turn-notice.tsx` 与 Web 版只差导入，组件测试只在 Web。
 - CI 工作流还没有在 GitHub 上运行；本机没有重跑其中从 npm 安装 CLI 的一步。
-- 暂不支持：`/review`、`!命令`（`thread/shellCommand`）、MCP 表单与 URL 请求（只能拒绝）、MCP 工具的“始终允许”。
+- 没有用真实模型看 `/review` 的审查与 `/init` 写出的 AGENTS.md；`/init` 的“已存在时不改动”靠 Codex 遵守说明，不是发出前的检查；Plan 模式下 `/init` 只会给出计划，不写文件。
+- 暂不支持：`!命令`（`thread/shellCommand`）、MCP 表单与 URL 请求（只能拒绝）、MCP 工具的“始终允许”。

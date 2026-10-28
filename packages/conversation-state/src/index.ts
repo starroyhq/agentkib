@@ -13,7 +13,7 @@ export interface ConversationItem {
   truncated: boolean;
   /** Live-only identity that an authoritative native history response may replace. */
   ephemeral?: boolean;
-  /** Text Claude Code wrote itself (a local command's output, an API error). */
+  /** Text the CLI wrote itself (a local command's output, an API or failed-turn error). */
   cli_output?: boolean;
 }
 

@@ -10,9 +10,11 @@ import { codexCopy } from "./codex-copy";
 vi.mock("./session-context", () => ({ useSession: vi.fn() }));
 let state: ReturnType<typeof useSession>;
 let control: ReturnType<typeof vi.fn>;
+let codexAction: ReturnType<typeof vi.fn>;
 const copy = contextUsageCopy["en-US"];
 beforeEach(() => {
   control = vi.fn();
+  codexAction = vi.fn();
   state = {
     selected: "s",
     locale: "en-US",
@@ -37,6 +39,7 @@ beforeEach(() => {
       usage: { available: true, state: "ready", reportId: 1, usedTokens: 20, contextWindow: 100 },
     },
     control,
+    codexAction,
   } as unknown as ReturnType<typeof useSession>;
   vi.mocked(useSession).mockImplementation(() => state);
 });
@@ -75,9 +78,10 @@ describe("compacting a managed Claude session on the desktop", () => {
 
   it.each([
     [
-      "Codex",
+      "a Codex session whose host offers no compaction",
       () => {
         state.current = { id: "s", agent: "codex" } as typeof state.current;
+        state.live = { ...state.live!, executionMode: "codex-managed" };
       },
     ],
     [
@@ -98,5 +102,41 @@ describe("compacting a managed Claude session on the desktop", () => {
     openDialog();
     expect(screen.getByRole("dialog")).toBeVisible();
     expect(compact()).not.toBeInTheDocument();
+  });
+});
+
+describe("compacting a managed Codex session on the desktop", () => {
+  beforeEach(() => {
+    state.current = { id: "s", agent: "codex" } as typeof state.current;
+    state.live = { ...state.live!, executionMode: "codex-managed" };
+    state.capabilities = {
+      sessionId: "s",
+      executionMode: "codex-managed",
+      status: "idle",
+      features: { compact: { available: true } },
+    } as typeof state.capabilities;
+  });
+
+  it("starts Codex's own compaction and closes the dialog", () => {
+    render(<ContextUsageGauge />);
+    openDialog();
+    expect(screen.getByRole("dialog")).toHaveTextContent(copy.compactDetailCodex);
+    fireEvent.click(compact()!);
+    expect(codexAction).toHaveBeenCalledExactlyOnceWith("compact");
+    expect(control).not.toHaveBeenCalled();
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+  });
+
+  it("waits for the running turn to end", () => {
+    state.canSend = false;
+    state.live = { ...state.live!, status: "running" };
+    state.capabilities = {
+      ...state.capabilities!,
+      features: { compact: { available: false, reason: "session-busy" } },
+    };
+    render(<ContextUsageGauge />);
+    openDialog();
+    expect(compact()).toBeDisabled();
+    expect(screen.getByRole("dialog")).toHaveTextContent(copy.compactAfterTurn);
   });
 });

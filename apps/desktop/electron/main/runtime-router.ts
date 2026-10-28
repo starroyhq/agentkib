@@ -228,6 +228,8 @@ export class RuntimeRouter extends EventEmitter implements RuntimeHost {
         "goal-resume",
         "goal-clear",
         "fork",
+        "compact",
+        "terminals-clean",
       ].includes(String(params.operation))
     ) {
       return this.typescript.request<TResult>(method, params);
@@ -263,6 +265,8 @@ export class RuntimeRouter extends EventEmitter implements RuntimeHost {
         "goal-resume",
         "goal-clear",
         "fork",
+        "compact",
+        "terminals-clean",
       ].includes(String(params.operation))
     ) {
       return this.typescript.request<TResult>(method, params);

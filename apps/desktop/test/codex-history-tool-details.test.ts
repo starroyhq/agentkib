@@ -225,6 +225,67 @@ describe("Codex history tool details", () => {
     expect(events.filter((event) => event.kind === "tool-summary")).toHaveLength(4);
   });
 
+  it("ends a failed turn with Codex's own error text, as the live view does", () => {
+    const turn = "t-failed";
+    const text =
+      "unexpected status 401 Unauthorized: invalid key, url: http://127.0.0.1:1/v1/responses";
+    const page = read(
+      rollout([
+        row("turn_context", { turn_id: turn }),
+        row("event_msg", { type: "task_started", turn_id: turn }),
+        user(turn, "Hello"),
+        // The layout CLI 0.163.0 wrote while a local stub answered 401.
+        row("event_msg", {
+          type: "task_complete",
+          turn_id: turn,
+          last_agent_message: null,
+          error: {
+            message: text,
+            codex_error_info: { http_connection_failed: { http_status_code: 401 } },
+          },
+          duration_ms: 783,
+        }),
+        ...turnRows("t-next", 1_000),
+      ]),
+    );
+    const index = page.events.findIndex((event) => event.id === `codex-turn-error:${turn}`);
+    expect(page.events[index]).toMatchObject({
+      kind: "agent-message",
+      turn_id: turn,
+      content: text,
+      cli_output: true,
+      turn_meta: { outcome: "failed", duration_ms: 783 },
+    });
+    expect(page.events[index - 1]).toMatchObject({ kind: "user-message", content: "Hello" });
+    expect(page.events[index - 1]?.turn_meta).toBeUndefined();
+    // A turn that ends normally gets no error row.
+    expect(page.events.filter((event) => event.id.startsWith("codex-turn-error:"))).toHaveLength(1);
+  });
+
+  it("shows a Plan-mode reply without its plan tags, as the live view does", () => {
+    const turn = "t-plan";
+    // As CLI 0.163.0 wrote a Plan turn: the plan item, then the reply with the tags.
+    const page = read(
+      rollout([
+        row("turn_context", { turn_id: turn }),
+        row("event_msg", { type: "task_started", turn_id: turn }),
+        user(turn, "Plan it"),
+        item(turn, { type: "Plan", id: `${turn}-plan`, text: "1. Step one\n2. Step two\n" }),
+        agent(
+          turn,
+          "Here is the plan.\n<proposed_plan>\n1. Step one\n2. Step two\n</proposed_plan>",
+          "final_answer",
+        ),
+        row("event_msg", { type: "task_complete", turn_id: turn, duration_ms: 132 }),
+      ]),
+    );
+    expect(page.events.map((event) => [event.kind, event.content])).toEqual([
+      ["user-message", "Plan it"],
+      ["agent-message", "Here is the plan.\n1. Step one\n2. Step two"],
+    ]);
+    expect(page.events.at(-1)?.turn_meta).toEqual({ outcome: "completed", duration_ms: 132 });
+  });
+
   it("marks an aborted turn on its last item", () => {
     const turn = "t4";
     const page = read(

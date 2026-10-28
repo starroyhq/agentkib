@@ -20,11 +20,13 @@ export {
   type SessionContinuationTerminalProps,
 } from "./session-continuation";
 
+export { codexCommandPrompt, type CodexCommandPromptRequest } from "./codex-prompts";
 export {
   agentKibCommand,
   agentKibPanel,
   claudeSlashOptions,
   matchSlashCommands,
+  codexSlashOptions,
   slashCommandCopy,
   slashCommandQuery,
   unsupportedEffortReason,

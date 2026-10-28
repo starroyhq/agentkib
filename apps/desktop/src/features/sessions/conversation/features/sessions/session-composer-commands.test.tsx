@@ -5,6 +5,7 @@ import { useState } from "react";
 import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { ClaudeCommandEntry } from "@agentkib/web-client";
+import { codexCommandPrompt, slashCommandCopy } from "@agentkib/session-ui";
 import { SessionComposer } from "./session-composer";
 import { codexCopy, codexReason } from "./codex-copy";
 import type { SessionPanels } from "./session-panels";
@@ -186,4 +187,147 @@ describe("slash commands in the desktop composer", () => {
     }
     expect(doubles.control).not.toHaveBeenCalled();
   });
+});
+
+describe("Codex slash commands in the desktop composer", () => {
+  beforeEach(() => {
+    vi.resetAllMocks();
+    doubles.panels = null;
+    doubles.control.mockResolvedValue(true);
+    doubles.codexAction.mockResolvedValue({ accepted: true });
+    doubles.session = {
+      selected: "session",
+      current: { id: "session", agent: "codex" } as SessionController["current"],
+      locale: "en-US",
+      t: { message: "Message", send: "Send", stop: "Stop" } as SessionController["t"],
+      online: true,
+      busy: false,
+      controlReady: true,
+      canSend: true,
+      canStop: false,
+      live: {
+        sessionId: "session",
+        revision: 1,
+        sendEnabled: true,
+        status: "idle",
+        executionMode: "codex-managed",
+        approvals: [],
+        questions: [],
+      } as SessionController["live"],
+      access: {
+        protocolVersion: 2,
+        experimentalEnabled: true,
+        device: { send: true },
+      } as SessionController["access"],
+      capabilities: {
+        sessionId: "session",
+        executionMode: "codex-managed",
+        status: "idle",
+        features: { compact: { available: true } },
+      } as SessionController["capabilities"],
+      control: doubles.control,
+      codexAction: doubles.codexAction,
+      client: { request: vi.fn() } as unknown as SessionController["client"],
+    };
+  });
+  afterEach(cleanup);
+
+  it("offers AgentKib's Codex commands and runs /compact", async () => {
+    const { input, form } = renderComposer("/co");
+    expect(
+      within(screen.getByRole("listbox", { name: slashCommandCopy("en-US").codexLabel }))
+        .getAllByRole("option")
+        .map((option) => option.textContent),
+    ).toEqual(["/compactCompact the context"]);
+    fireEvent.change(input, { target: { value: "/compact" } });
+    fireEvent.submit(form);
+    await waitFor(() =>
+      expect(doubles.codexAction).toHaveBeenCalledExactlyOnceWith("compact", undefined),
+    );
+    expect(doubles.control).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ["/review", { kind: "review", base: null }],
+    ["/review origin/main", { kind: "review", base: "origin/main" }],
+    ["/init", { kind: "init" }],
+  ] as const)("sends AgentKib's message for %s", async (text, prompt) => {
+    doubles.session.capabilities = {
+      ...doubles.session.capabilities!,
+      features: { send: { available: true } },
+    };
+    const { input, form } = renderComposer(text);
+    fireEvent.submit(form);
+    await waitFor(() =>
+      expect(doubles.control).toHaveBeenCalledExactlyOnceWith(
+        "send",
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        { prompt: codexCommandPrompt("en-US", prompt) },
+      ),
+    );
+    await waitFor(() => expect(input).toHaveValue(""));
+    expect(doubles.codexAction).not.toHaveBeenCalled();
+  });
+  it.each([
+    ["/review two words", "codex-command-review"],
+    ["/init now", "codex-command-arguments"],
+  ])("explains %s and keeps the draft", (text, code) => {
+    doubles.session.capabilities = {
+      ...doubles.session.capabilities!,
+      features: { send: { available: true } },
+    };
+    const { input, form } = renderComposer(text);
+    fireEvent.submit(form);
+    expect(screen.getByText(codexReason("en-US", code).text)).toBeVisible();
+    expect(input).toHaveValue(text);
+    expect(doubles.control).not.toHaveBeenCalled();
+  });
+  it("explains a terminal-only command and keeps the draft", () => {
+    const { input, form } = renderComposer("/quit");
+    fireEvent.submit(form);
+    expect(screen.getByText(codexReason("en-US", "codex-command-terminal").text)).toBeVisible();
+    expect(input).toHaveValue("/quit");
+    expect(doubles.control).not.toHaveBeenCalled();
+  });
+  it.each(["steer", "queue-add"] as const)(
+    "does not %s a Codex command into the running turn",
+    async (action) => {
+      doubles.session.access = {
+        ...doubles.session.access,
+        device: { send: true, advancedControl: true },
+      } as SessionController["access"];
+      doubles.session.canSend = false;
+      doubles.session.canStop = true;
+      doubles.session.live = {
+        ...doubles.session.live,
+        sendEnabled: false,
+        status: "running",
+        turnId: "turn",
+      } as SessionController["live"];
+      doubles.session.capabilities = {
+        ...doubles.session.capabilities!,
+        features: {
+          steer: { available: true },
+          "queue-add": { available: true },
+          "terminals-clean": { available: true },
+        },
+      };
+      const { input } = renderComposer("/stop");
+      fireEvent.click(screen.getByRole("button", { name: codexCopy["en-US"].advanced }));
+      fireEvent.click(
+        await screen.findByRole("menuitem", {
+          name: action === "steer" ? codexCopy["en-US"].steer : codexCopy["en-US"].queueAdd,
+        }),
+      );
+      expect(
+        await screen.findByText(codexReason("en-US", "codex-command-agentkib").text),
+      ).toBeVisible();
+      expect(input).toHaveValue("/stop");
+      expect(doubles.codexAction).not.toHaveBeenCalled();
+      expect(doubles.control).not.toHaveBeenCalled();
+    },
+  );
 });

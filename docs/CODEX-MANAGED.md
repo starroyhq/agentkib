@@ -26,15 +26,15 @@ HTTP 另外携带 Electron `bootId`，由 Electron 验证，不直接传给 Runt
 
 新建托管会话默认使用 `workspace-write-on-request`：`workspace-write`、`on-request`、人工 reviewer、sandbox network=false。完整授权浏览器可在主机返回的映射策略中显式切换为完全访问（不弹审批）或工作区写入／自动审核；浏览器不能提交任意 sandbox 对象、cwd、CLI 参数、额外可写根或审核器参数。策略更新必须在空闲时携带当前 revision，由原生 settings 通知和 `thread/read` 回读确认后写入账本；后续 turn/start 从账本使用已确认策略，不再被固定默认值覆盖。旧记录缺少策略字段时仍使用原受限默认。
 
-模型、思考强度和服务档位来自 `model/list`；Plan／执行模式来自实验协议 `collaborationMode/list`，按当前原生能力及返回结构校验，`0.155.1` 是既有隔离验证版本。空闲时保存设置只改变 `selected`，不启动轮次；`current` 保留原生确认值，`applicationStatus` 区分 `pending`、`confirmed` 和 `unknown`。下一次显式发送在 `turn/start.collaborationMode` 传入选择，内外模型和强度一致，`developer_instructions:null` 由 Codex 加载内置指令。没有自定义计划提示词、隐藏空轮次或自动执行计划。
+模型、思考强度和服务档位来自 `model/list`；Plan／执行模式来自实验协议 `collaborationMode/list`：runner 启动时读取一次，同时列出 `plan` 与 `default` 两个预设（按 `mode` 字段识别）才开放 Plan；读取失败或结构不符时 Plan 保持不可用，会话照常使用。0.163.0 与 0.147.0 都已对本地桩核对，见 [Codex 接入补齐验收](../qa/codex-gaps-2026-10-28.md)。空闲时保存设置只改变 `selected`，不启动轮次；`current` 保留原生确认值，`applicationStatus` 区分 `pending`、`confirmed` 和 `unknown`。下一次显式发送在 `turn/start.collaborationMode` 传入选择，内外模型和强度一致，`developer_instructions:null` 由 Codex 加载内置指令。没有自定义计划提示词、隐藏空轮次或自动执行计划。实时链路里计划是原生 `plan` 项；原生记录里计划写在 Agent 回复的 `<proposed_plan>` 标签内，读历史时去掉这对标签，只显示计划正文。
 
 分支从已验证身份的 `thread/read` 继承源模型与思考强度，不回退到 CLI 当前配置的默认值。原生未提供有效强度时，只接受模型匹配的已有托管值；仍无法核实时明确拒绝分支。`reasoningEffort:null` 不能当作“无思考”或覆盖配置默认值的证据。单纯恢复/分支可挂接保留已不在选项列表中的源模型，方便查看和修改下一轮设置；真正发起推理前及显式新建/选择模型时仍核对选项。模型或强度不受支持时，主机只透传白名单原因，两端保留草稿、说明具体原因并提供“更改下一轮模型”；源设置未确认则说明如何先核实源会话，不把它变成未知派发或虚构选模入口。
 
-切换模型会重新校验 effort 与 service tier；恢复默认只在主机能给出明确默认模型时开放，且不改变计划模式或执行策略。重启保留选择但不把旧 mode 当作原生事实；`0.155.1` 恢复响应缺少模式时，等待下一轮原生事件确认。执行期间原生明确请求的额外权限，只有单独获扩展审批授权的浏览器才能按原生候选决定；完整浏览器授权不等于自动批准。一次最多持有 8 个托管进程，每个会话一个专用 app-server。
+切换模型会重新校验 effort 与 service tier；恢复默认只在主机能给出明确默认模型时开放，且不改变计划模式或执行策略。重启保留选择但不把旧 mode 当作原生事实；恢复响应缺少模式时（0.147.0、0.155.1），等待下一轮原生事件确认。执行期间原生明确请求的额外权限，只有单独获扩展审批授权的浏览器才能按原生候选决定；完整浏览器授权不等于自动批准。一次最多持有 8 个托管进程，每个会话一个专用 app-server。
 
 Goal 使用 `thread/goal/get/set/clear` 和原生事件。`goal-set` 的 `intent:update` 不传原生 status，保留暂停、阻塞或受限状态；`intent:start`（旧请求缺省值）仅创建不存在的目标并明确激活。已有目标的旧缺省请求拒绝，避免意外恢复。预算字段缺省保留、`null` 清空，修改不重置消耗。仅活动目标可暂停；暂停／阻塞可显式恢复，预算或用量受限可尝试恢复，仍以 Codex 返回的最终状态为准。完成目标须清除后新建。设置尚未原生确认时阻止目标启动／恢复；不发送隐藏消息补偿，不新增目标调度器。
 
-通过已有平台发现解析 codex，再读取严格格式的 `--version`，要求不低于写锁起始版本 `0.147.0`；无法取得可信版本、版本过低或格式无效时保守拒绝。最低版本实测及能力限制见[第 1 阶段 QA](../qa/session-continue-stage-1-validation-2026-10-19.md)。官方 thread/start/resume 回包还必须确认 cwd、sandbox、reviewer、可写根及本地环境。版本门槛不表示每个版本或可选能力都已验收；模型、Plan、Goal 等仍分别核验原生能力。
+通过已有平台发现解析 codex，再读取严格格式的 `--version`，要求不低于写锁起始版本 `0.147.0`；无法取得可信版本、版本过低或格式无效时保守拒绝。最低版本实测及能力限制见[第 1 阶段 QA](../qa/session-continue-stage-1-validation-2026-10-19.md)。官方 thread/start/resume 回包还必须确认 cwd、sandbox、reviewer、可写根及本地环境。版本门槛不表示每个版本或可选能力都已验收；模型、Plan、Goal 等仍分别核验原生能力。Plan 和原生待发队列在 runner 启动时探测：0.147.0 没有 `thread/queue/*`（0.148.0 加入），对 `thread/queue/list` 回 -32600 “unknown variant” 并保持连接，此时队列各项能力显示 `unsupported-codex-cli-version`，追加指令（`turn/steer`）不受影响。探测在 thread/resume 之后进行，因为 0.163.0 不能列出未加载线程的队列。CI 每天检查最低版本与最新版的协议，见下文“协议检查”。
 
 目录刷新共享已有的全局 CLI 版本探测与缓存，不逐条会话启动探针。已核实版本过低时，桌面和 Web 列表标记“仅可查看”；全局版本原因不携带原生路径，也不将未登记集合加入 Web 历史授权范围。“设置是否生效尚未确认”仅在当前页面确实发起过设置更改后显示，不将未更改设置的初始 unknown 状态作为失败提示。
 
@@ -84,7 +84,42 @@ reconcile 读取原生 thread/read。send/steer/queue-add 必须找到对应 `us
 
 没有足够原生证据的任务会保持只读；不得用新请求 ID 重放猜测已执行的操作。
 
+## 失败、重试与服务端请求（2026-10-28）
+
+失败的轮次以 Codex 自己的错误文字结束：`turn/completed` 的 `turn.error`（缺失时取该轮最后一条 `error` 通知）成为该轮最后一行，ID 为 `codex-turn-error:<turnId>`，标记 `cli_output`，客户端按原样显示；读原生记录时，`task_complete.error` 得到同一行。`thread/status/changed` 的 `systemError` 只表示上一轮出错，直到下一轮开始，不再让会话进入错误状态，轮次结束后可以照常发送。
+
+`error` 通知带 `willRetry:true` 时，实时状态的 `apiRetry` 记录第几次（取自 “Reconnecting... 1/2”）、HTTP 状态、错误类别和 Codex 的附加说明；输入区显示“Codex 的请求失败了，正在重试（第 1/2 次，HTTP 401）”，401 时附认证提示，可以随时停止本轮。Codex 有新输出、报出最终错误或轮次结束时清除。
+
+`mcpServer/elicitation/request` 显示为审批。非只读 MCP 工具的审批（`_meta.codex_approval_kind` 为 `mcp_tool_call`，空表单）可以允许、拒绝或取消本轮，CLI 提供 `persist: "session"` 时另有“本会话内允许”；不提供“始终允许”，因为它会写入用户的 Codex 配置。其他确认只有允许和拒绝；带字段的表单、URL 和其他类型目前只能拒绝。与当前轮次不符的请求自动回复 `decline`。其他没有处理的服务端请求回 JSON-RPC -32601 `AgentKib does not handle <method>`，轮次不再停在等待输入。
+
+附件与发送使用同一条件开放：图片作为原生 `localImage`，其他文件作为文件引用文本。附件按钮不可用时说明原因。
+
+## 压缩、后台终端与斜杠命令（2026-10-28）
+
+上下文用量对话框里的“压缩上下文”调用 `thread/compact/start`，与终端的 `/compact` 相同，只在空闲且可发送时开放。Codex 先回 `{}`，再开始压缩自己的轮次；主机最多等 5 秒，看到该轮开始后返回，之后按 `activity: compacting` 处理。
+
+`/stop` 调用 `thread/backgroundTerminals/clean`，结束仍在后台运行的命令。停止按钮仍只中断当前轮次（`turn/interrupt`），与终端里按 Esc 一致。后台终端随 runner 进程结束，所以 `terminals-clean` 只在 runner 运行时开放。
+
+app-server 没有斜杠命令：`/compact` 这样的文字只会作为消息交给模型。Codex 会话的输入区输入 `/` 时列出 AgentKib 能代为执行的命令：`/compact`、`/review`、`/plan`、`/model`、`/permissions`、`/status`、`/rename`、`/goal`、`/fork`、`/stop`、`/archive`、`/diff`、`/init`。`/plan <提示>`、`/model <模型>`、`/rename <名称>`、`/goal <目标>` 直接执行，`/plan` 切换后把提示留在输入框；不带参数时打开对应界面；当前不可用时保留草稿并说明原因。运行中追加指令或加入队列时不执行这些命令，同样保留草稿并说明原因，与带附件的消息一样。其余 Codex 终端命令（按 0.163.0 的 `SlashCommand`，含别名）不发送，说明只能在终端使用；`/new`、`/clear` 提示新建会话。其他 `/名称` 照常作为文字发送。规则只在客户端：这些文字交给模型不会造成损害，主机不拦截。命令表在 `packages/runtime-protocol/src/codex-commands.ts`。
+
+`/review [分支]` 和 `/init` 发出 AgentKib 写好的一条普通消息，和 Codex Desktop 的做法一样，不调用 `review/start`：0.163.0 的 `review/start` 返回的轮次 ID 与 `turn/started` 通知里的不同，项目和 `turn/completed` 用前者，按现有状态机会停在运行中。
+
+- `/review` 审查未提交的改动（已暂存、未暂存和未跟踪的文件）。`/review <分支>` 让 Codex 先用 `git merge-base HEAD <分支>` 找到分叉点，再看与它的差异。分支只接受一个修订名，例如 `main`、`origin/main`、`HEAD~3`：不含空白和 shell 会特殊处理的字符，不以 `-`、`.`、`/` 开头，最长 200 个字符；其他写法保留草稿并说明用法。两种都要求只读不改，只报告值得修改的问题。
+- `/init` 让 Codex 在当前目录写 AGENTS.md，已经存在时不改动。是否存在由 Codex 自己检查；Desktop 是发出前先查。
+- 消息按界面语言书写，原样显示在会话里，并按当前的下一轮设置运行，包括 Plan 模式。说明文字是 AgentKib 自己写的，没有沿用 Desktop 的提示词。
+
+暂不支持：
+
+- `!命令`（`thread/shellCommand`）。
+- MCP 表单与 URL 请求只能拒绝；不提供“始终允许”。
+
+## 协议检查（CI）
+
+`.github/workflows/codex-protocol-compatibility.yml` 每天、手动或相关文件改动的 PR 时，在 macos-15 上分别检查最低版本（`MINIMUM_CODEX_WRITER_VERSION`）与最新版。脚本从 npm 官方源安装 `@openai/codex`，在 `sandbox-exec` 里运行 `codex app-server generate-json-schema --experimental`（无网络、不读个人目录、不登录、不调模型），核对 AgentKib 调用、处理和读取的方法与字段。`required` 层是每个受支持版本都必须有的，两端都查；`current` 层是缺了会降级的功能（Plan、待发队列、MCP 请求、设置与目标通知等），只查最新版。输出只有固定标签，不转发 CLI 输出。脚本的单元测试也在 Linux 与 Windows 的辅助任务里运行。
+
 ## 验证
+
+本轮的真实 CLI 核对、变异检查与未验证项见 [Codex 接入补齐验收](../qa/codex-gaps-2026-10-28.md)。
 
 运行桌面验证套件：
 
@@ -112,9 +147,9 @@ Web 将 Codex 控制和管理操作的 requestId、sessionId/workspaceId、kind 
 
 `GET /api/web/v1/codex/capabilities?sessionId=…` 返回每项原生能力的可用性与禁用原因，桌面服务再次与设备权限、工作区、实验执行开关求交集。app-server 各项能力独立核验，不从保留的 follower 继承未经验证的操作。工作树创建、Git 分支切换继续不可用，不能以自行运行 Git 替代官方语义。
 
-`POST /api/web/v1/codex/<action>` 保留兼容 `inspect`、`resume`、`steer`、原生 `queue-add/update/delete/reorder`、`rename/archive/unarchive/fork/settings`。写操作携带唯一 requestId、bootId 和适用的 expectedRevision。inspect 只读核对，不发送模型消息；内部 resume 不要求用户勾选，仍由官方 writer 锁决定是否成功。正常输入区不再提供手动 resume 入口。
+`POST /api/web/v1/codex/<action>` 保留兼容 `inspect`、`resume`、`steer`、原生 `queue-add/update/delete/reorder`、`rename/archive/unarchive/fork/settings`，另有 `compact`（`thread/compact/start`）和 `terminals-clean`（`thread/backgroundTerminals/clean`），两者按发送权限授权。写操作携带唯一 requestId、bootId 和适用的 expectedRevision。inspect 只读核对，不发送模型消息；内部 resume 不要求用户勾选，仍由官方 writer 锁决定是否成功。正常输入区不再提供手动 resume 入口。
 
-原生队列在空闲时添加消息会立即执行，任务完成后自动消费下一条。因此网页只在运行中开放加入队列；不提供自建离线发送队列，也不自动重放未确认队列操作。`queue-start` 的成功路径尚未验证，能力保持关闭。含附件的原生队列消息暂不支持正文编辑，避免替换输入时静默丢失附件；可删除后重新添加。只读队列投影不返回本机绝对附件路径。
+原生队列在空闲时添加消息会立即执行，任务完成后自动消费下一条。因此网页只在运行中开放加入队列；CLI 没有原生队列时（0.147.0）队列操作全部关闭；不提供自建离线发送队列，也不自动重放未确认队列操作。`queue-start` 的成功路径尚未验证，能力保持关闭。含附件的原生队列消息暂不支持正文编辑，避免替换输入时静默丢失附件；可删除后重新添加。只读队列投影不返回本机绝对附件路径。
 
 归档使用官方 thread/archive；取消归档恢复历史可见性，下次发送仍须通过自动续接校验。fork 创建新的官方 thread ID，只在用户明确分支时执行，不能作为同 ID 续接失败的自动回退。下一轮模型、思考强度和计划/普通模式使用官方 settings 更新；省略字段表示保持当前设置。
 

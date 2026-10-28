@@ -408,7 +408,9 @@ export function CodexComposer() {
               title={
                 uploadPermission
                   ? copy.attachmentNote
-                  : capabilities?.features.attachments?.reason || copy.permission
+                  : capabilities?.features.attachments?.reason
+                    ? codexReason(locale, capabilities.features.attachments.reason, "web").text
+                    : copy.permission
               }
               onClick={() => fileInput.current?.click()}
             >

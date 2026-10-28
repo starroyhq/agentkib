@@ -12,6 +12,7 @@ import {
   type ToolContext,
 } from "./conversation-tools";
 import { jsonTimestamp } from "./session-history";
+import { codexErrorText, codexTurnErrorEvent } from "./codex-turn-error";
 import {
   claudeCommandInvocation,
   claudeCommandOutput,
@@ -412,6 +413,15 @@ function codexItem(
   if (turn !== null) event.turn_id = turn;
   state.pending.push(event);
 }
+/**
+ * Codex in Plan mode wraps the plan in `<proposed_plan>` lines. The live view gets the plan as
+ * its own item without them; history would otherwise show the tags as text.
+ */
+function withoutPlanTags(text: string): string {
+  if (!text.includes("<proposed_plan>")) return text;
+  const stripped = text.replace(/^[ \t]*<\/?proposed_plan>[ \t]*(?:\r?\n|$)/gm, "").trim();
+  return stripped || text;
+}
 function turnEnd(payload: any, outcome: ConversationTurnMeta["outcome"]): ConversationTurnMeta {
   const meta: ConversationTurnMeta = {
     outcome:
@@ -711,8 +721,12 @@ function parseRecord(state: EventState, offset: number, row: any, page: Conversa
     return;
   }
   if (row?.type === "event_msg" && ["task_complete", "task_started"].includes(payload?.type)) {
-    if (payload.type === "task_complete")
+    if (payload.type === "task_complete") {
       state.turnMeta = { turn, meta: turnEnd(payload, "completed") };
+      // A failed turn ends with Codex's own error text, its last row; the turn end goes on it.
+      const text = turn !== null ? codexErrorText(payload.error) : null;
+      if (text) state.pending.push(codexTurnErrorEvent(turn!, text, timestamp));
+    }
     // A turn with no item left to carry its end keeps none.
     else if (state.turnMeta && (state.turnMeta.turn === null || state.turnMeta.turn === turn))
       state.turnMeta = null;
@@ -734,7 +748,7 @@ function parseRecord(state: EventState, offset: number, row: any, page: Conversa
         offset,
         payload.type === "user_message" ? "user-message" : "agent-message",
         timestamp,
-        payload.message,
+        payload.type === "agent_message" ? withoutPlanTags(payload.message) : payload.message,
         (Array.isArray(payload.images) ? payload.images.length : 0) +
           (Array.isArray(payload.local_images) ? payload.local_images.length : 0),
         true,
@@ -745,7 +759,8 @@ function parseRecord(state: EventState, offset: number, row: any, page: Conversa
   } else if (row?.type === "response_item" && payload?.type === "message") {
     if (!["user", "assistant"].includes(payload.role)) return;
     const content = payload.content,
-      text = messageText(content);
+      raw = messageText(content),
+      text = raw !== null && payload.role === "assistant" ? withoutPlanTags(raw) : raw;
     if (text === null) return;
     const injectedTurn = payload.internal_chat_message_metadata_passthrough?.turn_id;
     if (payload.role === "user" && typeof injectedTurn === "string") {

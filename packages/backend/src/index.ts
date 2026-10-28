@@ -717,6 +717,8 @@ export class TypeScriptBackend {
         "goal-resume",
         "goal-clear",
         "fork",
+        "compact",
+        "terminals-clean",
       ].includes(String(params.operation))
     )
       return this.#withWebRead((owner) => owner.managedControl(params));
@@ -785,6 +787,8 @@ export class TypeScriptBackend {
           "goal-resume",
           "goal-clear",
           "fork",
+          "compact",
+          "terminals-clean",
         ].includes(String(params.operation))
       )
         return this.#withWebRead((owner) => owner.managedControl(params));

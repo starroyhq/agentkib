@@ -16,6 +16,12 @@ export type {
   ClaudeCommandEntry,
   ClaudeCommandRefusal,
   ClaudeMenuCommand,
+  CodexCommandAction,
+  CodexCommandDecision,
+  CodexCommandPanel,
+  CodexCommandPrompt,
+  CodexCommandRefusal,
+  CodexMenuCommand,
   ConversationToolContent,
   ConversationToolDetail,
   ConversationToolKind,
@@ -40,6 +46,10 @@ export {
   claudeMenuCommands,
   isClaudeCommandRefusal,
   parseClaudeSlashCommand,
+  CODEX_COMMAND_REFUSALS,
+  CODEX_MENU_COMMANDS,
+  codexCommandDecision,
+  isCodexCommandRefusal,
   claudeBridgeCompatibility,
   formatHistoryReferences,
   literalHistoryMatchRanges,
@@ -123,8 +133,9 @@ export interface ConversationEvent {
   tool?: ConversationToolDetail;
   turn_meta?: ConversationTurnMeta;
   /**
-   * Text Claude Code wrote itself (a local command's output, an API error), shown with its line
-   * breaks and `<name>` placeholders as written. Absent on older hosts.
+   * Text the CLI wrote itself (a Claude Code local command's output, an API or failed-turn error
+   * from Claude Code or Codex), shown with its line breaks and `<name>` placeholders as written.
+   * Absent on older hosts.
    */
   cli_output?: boolean;
 }
@@ -278,12 +289,17 @@ export interface Live {
   connectionGeneration?: string;
   model?: string;
   activity?: "compacting" | null;
-  /** Managed Claude only: the CLI's latest retry of a failed request in the running turn. */
+  /**
+   * Managed Claude and Codex: the CLI's latest retry of a failed request in the running turn.
+   * `error` is the CLI's error kind (Claude `authentication_failed`, Codex `unauthorized`, …);
+   * `detail` is Codex's own text about what failed.
+   */
   apiRetry?: {
     attempt: number;
     maxRetries: number | null;
     status: number | null;
     error: string | null;
+    detail?: string | null;
   } | null;
   tokenUsage?: unknown;
   streamText?: string;
@@ -373,7 +389,9 @@ export type CodexAction =
   | "goal-set"
   | "goal-pause"
   | "goal-resume"
-  | "goal-clear";
+  | "goal-clear"
+  | "compact"
+  | "terminals-clean";
 export type SessionAction = CodexAction | "queue-pause" | "queue-resume";
 export type ClaudePermissionMode = "default" | "plan" | "acceptEdits";
 /**

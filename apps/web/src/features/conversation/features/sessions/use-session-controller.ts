@@ -1886,6 +1886,11 @@ export function useSessionController({
        * attachments and history quotes stay as they are.
        */
       command?: string;
+      /**
+       * A message AgentKib wrote in place of the draft (Codex `/review`, `/init`). It is sent
+       * without attachments or history quotes, and clears the draft like any send.
+       */
+      prompt?: string;
     },
   ) {
     if (
@@ -1900,7 +1905,8 @@ export function useSessionController({
     )
       return;
     const command = kind === "send" ? extra?.command : undefined;
-    const text = command ?? message.trim();
+    const prompt = kind === "send" && command === undefined ? extra?.prompt : undefined;
+    const text = command ?? prompt ?? message.trim();
     if (
       kind === "send" &&
       (live.activity === "compacting" ||
@@ -1909,10 +1915,14 @@ export function useSessionController({
             !isValidMessage(command, false) ||
             !!extra?.attachmentIds?.length ||
             !!extra?.resourceIds?.length
-          : !isValidMessage(
-              historyMessageText(message, historyReferencesValue.current),
-              !!extra?.attachmentIds?.length,
-            )))
+          : prompt !== undefined
+            ? !isValidMessage(prompt, false) ||
+              !!extra?.attachmentIds?.length ||
+              !!extra?.resourceIds?.length
+            : !isValidMessage(
+                historyMessageText(message, historyReferencesValue.current),
+                !!extra?.attachmentIds?.length,
+              )))
     )
       return;
     if (
@@ -2033,7 +2043,9 @@ export function useSessionController({
         ...(kind === "send"
           ? {
               text,
-              ...(command === undefined && historyReferencesValue.current.length
+              ...(command === undefined &&
+              prompt === undefined &&
+              historyReferencesValue.current.length
                 ? {
                     historyReferences: historyReferencesValue.current.map((item) => item.reference),
                   }

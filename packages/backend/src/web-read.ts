@@ -24,7 +24,7 @@ import { codexResumeCommand } from "./codex-resume-command";
 import { CodexFollowerBridge } from "./codex-follower-bridge";
 import type { CodexFollowerState } from "./codex-follower-state";
 import { AntigravityManagedRunner } from "./antigravity-managed-runner";
-import { ManagedCodexState } from "./managed-codex-state";
+import { ManagedCodexState, elicitationResponse } from "./managed-codex-state";
 import { ManagedCodexEventBridge } from "./managed-codex-state";
 import { projectContextUsage } from "./context-usage";
 import { activityBlocks, assertActivityAllows } from "./session-activity";
@@ -209,6 +209,8 @@ const managedControlSchema = z
       "goal-resume",
       "goal-clear",
       "fork",
+      "compact",
+      "terminals-clean",
     ]),
     sessionId: z.string().min(1).max(256),
     requestId: z.string().uuid(),
@@ -274,6 +276,11 @@ type ManagedRunner = {
   persist: ReturnType<typeof createManagedSnapshotWriter>;
   release: () => void;
   planVerified: boolean;
+  /**
+   * Whether thread/queue/* answered at start; null until then. 0.147.0, the writer-lock
+   * minimum, has no native queue.
+   */
+  queueVerified: boolean | null;
   idleSince: number | null;
   observed: boolean;
   retiring?: boolean;
@@ -1112,6 +1119,7 @@ export class WebReadRequests {
     }
     if (runner?.session.connected) {
       if (record.native_id !== runner.state.nativeId) throw new Error("native-session-unconfirmed");
+      if (runner.queueVerified === false) throw new Error("unsupported-codex-cli-version");
       return readManagedQueue(runner.session, record.native_id, request.limit ?? 100);
     }
 
@@ -1336,21 +1344,30 @@ export class WebReadRequests {
           reason: checked.reason,
           settings: settingsObject,
         };
-      const models = projectManagedModels(
-        await this.#codex.request(
-          checked.executable,
-          this.#managedCwd(record),
-          this.#assertManagedHome(record),
-          "model/list",
-          { limit: 100 },
-        ),
-      );
+      const cwd = this.#managedCwd(record);
+      const home = this.#assertManagedHome(record);
+      let catalog: unknown[];
+      try {
+        catalog = await this.#codex.requestMany(checked.executable, cwd, home, [
+          ["model/list", { limit: 100 }],
+          ["collaborationMode/list", {}],
+        ]);
+      } catch {
+        // A CLI that rejects the presets still lists its models; Plan stays unavailable.
+        catalog = [
+          await this.#codex.request(checked.executable, cwd, home, "model/list", { limit: 100 }),
+          null,
+        ];
+      }
+      const models = projectManagedModels(catalog[0]);
+      // Sending or saving settings starts the runner, which checks the presets again.
+      const collaborationModes = verifiedCollaborationModes(catalog[1]);
       return {
         available: true,
         executionMode: "codex-managed",
         models,
         policies: managedPolicyCatalog(),
-        collaborationModes: [],
+        collaborationModes,
         revision: record.snapshot?.revision ?? 0,
         runtimeBootId: this.#bootId,
         settings: {
@@ -1358,7 +1375,9 @@ export class WebReadRequests {
           writable: {
             model: true,
             effort: true,
-            mode: { available: false, reason: "native-collaboration-modes-unavailable" },
+            mode: collaborationModes.length
+              ? { available: true }
+              : { available: false, reason: "native-collaboration-modes-unavailable" },
             serviceTier: true,
             policy: true,
           },
@@ -1381,24 +1400,15 @@ export class WebReadRequests {
     this.#assertManagedHome(record);
     this.#managedCwd(record);
     const models = projectManagedModels(await runner.session.request("model/list", { limit: 100 }));
-    let collaborationModes: Array<{ id: string; name: string }> = [];
+    let collaborationModes: CollaborationModeOption[] = [];
     let modeWritable: Record<string, unknown> = {
       available: false,
       reason: "native-collaboration-modes-unavailable",
     };
     if (runner.planVerified) {
-      const value = await runner.session.request("collaborationMode/list", {});
-      const rows = isObject(value) && Array.isArray(value.data) ? value.data : [];
-      collaborationModes = rows
-        .filter(
-          (row): row is Record<string, unknown> =>
-            isObject(row) &&
-            (row.mode === "default" || row.mode === "plan") &&
-            typeof row.name === "string" &&
-            row.name.length > 0 &&
-            Buffer.byteLength(row.name, "utf8") <= 256,
-        )
-        .map((row) => ({ id: row.mode as string, name: row.name as string }));
+      collaborationModes = verifiedCollaborationModes(
+        await runner.session.request("collaborationMode/list", {}),
+      );
       if (collaborationModes.length > 0) modeWritable = { available: true };
     }
     const live = await runner.bridge.snapshot(this.#bootId, false);
@@ -1559,6 +1569,7 @@ export class WebReadRequests {
           "worktree-create",
           "branch-switch",
           "usage",
+          "terminals-clean",
         ])
           features[operation] = { available: false, reason: unavailableReason };
         features.send = allowed
@@ -1591,8 +1602,9 @@ export class WebReadRequests {
           !managedSessionHasUnknownCommands(this.dataDir, source.id)
             ? { available: true }
             : { available: false, reason: checked.reason ?? "session-not-archived" };
-        // Settings can be applied before the first turn by starting our own runner.
-        for (const operation of ["settings", "rename", "archive"])
+        // Settings can be applied before the first turn by starting our own runner, and a
+        // send with attachments starts it the same way.
+        for (const operation of ["settings", "rename", "archive", "attachments", "compact"])
           features[operation] = allowed ? { available: true } : features.send!;
         return {
           sessionId: source.id,
@@ -1670,7 +1682,7 @@ export class WebReadRequests {
       );
       const idleControls =
         managed && verified && healthy && idle && !compacting && !unknown && !record.archived;
-      for (const operation of ["send", "rename", "archive", "fork"])
+      for (const operation of ["send", "rename", "archive", "fork", "compact"])
         set(operation, idleControls, controlReason);
       set("settings", idleControls, controlReason);
       set(
@@ -1724,23 +1736,42 @@ export class WebReadRequests {
         compacting ? "session-compacting" : "session-requires-running-turn",
       );
       set("stop", live.stopEnabled === true, "no-active-turn");
-      set("queue-list", managed && verified && healthy && runnerConnected, controlReason);
+      // false once this runner's CLI declined thread/queue/list; null before it was asked.
+      const queueMissing = runner?.queueVerified === false;
+      const queueReason = queueMissing ? "unsupported-codex-cli-version" : controlReason;
+      set(
+        "queue-list",
+        managed && verified && healthy && runnerConnected && !queueMissing,
+        queueReason,
+      );
       set(
         "queue-add",
-        managed && verified && healthy && running && !unknown,
-        "session-requires-running-turn",
+        managed && verified && healthy && running && !unknown && !queueMissing,
+        queueMissing ? queueReason : "session-requires-running-turn",
       );
       for (const operation of ["queue-update", "queue-delete", "queue-reorder"])
         set(
           operation,
-          managed && verified && healthy && runnerConnected && !unknown,
-          controlReason,
+          managed && verified && healthy && runnerConnected && !unknown && !queueMissing,
+          queueReason,
         );
       for (const operation of ["queue-start", "worktree-create", "branch-switch"])
         set(operation, false, "native-operation-not-integrated");
       set("approve", managed && verified && healthy && runnerConnected && !unknown, controlReason);
+      // Background terminals end with the runner's process, so only a running one has any.
+      set(
+        "terminals-clean",
+        managed && verified && healthy && runnerConnected && !unknown,
+        controlReason,
+      );
       set("answer", managed && verified && healthy && runnerConnected && !unknown, controlReason);
-      set("attachments", false, "native-operation-not-integrated");
+      // Uploads go with send, steer or queue-add, which each check their own state again.
+      // Images become native localImage input; other files a path the turn may read.
+      set(
+        "attachments",
+        managed && verified && healthy && runnerConnected && !unknown && !record.archived,
+        controlReason,
+      );
       return {
         sessionId: request.sessionId,
         executionMode: "codex-managed",
@@ -1989,7 +2020,7 @@ export class WebReadRequests {
         return reject("control-outcome-unconfirmed");
       if (request.expectedRevision !== (inactive.snapshot?.revision ?? 0))
         return reject("stale-or-disabled-control");
-      if (!["send", "settings", "rename", "archive"].includes(request.operation))
+      if (!["send", "settings", "rename", "archive", "compact"].includes(request.operation))
         return reject("session-not-running");
       const checked = await this.#preflight.check();
       if (checked.reason) return reject(checked.reason);
@@ -2093,9 +2124,15 @@ export class WebReadRequests {
       // user can inspect it or change next-turn settings without running it.
       // Operations that can request inference still validate before dispatch.
       if (
-        ["send", "steer", "queue-add", "queue-start", "goal-set", "goal-resume"].includes(
-          request.operation,
-        )
+        [
+          "send",
+          "steer",
+          "queue-add",
+          "queue-start",
+          "goal-set",
+          "goal-resume",
+          "compact",
+        ].includes(request.operation)
       )
         validateManagedModelSelection(
           record,
@@ -2124,13 +2161,13 @@ export class WebReadRequests {
           throw new Error("session-busy");
         if (record.mode) {
           if (!runner.planVerified) throw new Error("native-collaboration-modes-unavailable");
-          const modesResult = await runner.session.request("collaborationMode/list", {});
-          const modes =
-            isObject(modesResult) && Array.isArray(modesResult.data)
-              ? modesResult.data.filter(isObject)
-              : [];
-          if (!modes.some((mode) => mode.mode === record.mode))
+          const modes = verifiedCollaborationModes(
+            await runner.session.request("collaborationMode/list", {}),
+          );
+          if (!modes.some((mode) => mode.id === record.mode))
             throw new Error("unsupported-collaboration-mode");
+          // The preset's settings name the turn's model, which the runner always confirms.
+          if (!record.model) throw new Error("native-model-unconfirmed");
         }
         const input = await this.#managedInput(request, record, runner);
         params = {
@@ -2140,6 +2177,17 @@ export class WebReadRequests {
           ...managedTurnSettings(record, cwd),
         };
         method = "turn/start";
+      } else if (request.operation === "compact") {
+        // Manual compaction runs as a turn of its own, like the TUI's /compact.
+        if (snapshot.status !== "idle" || snapshot.sendEnabled !== true)
+          throw new Error("session-busy");
+        params = { threadId: record.native_id };
+        method = "thread/compact/start";
+      } else if (request.operation === "terminals-clean") {
+        // The TUI's /stop: ends the commands still running in the background. Stopping a turn
+        // leaves them running, as Esc does in the terminal.
+        params = { threadId: record.native_id };
+        method = "thread/backgroundTerminals/clean";
       } else if (request.operation === "stop") {
         if (
           request.turnId !== runner.state.turnId ||
@@ -2150,6 +2198,8 @@ export class WebReadRequests {
         params = { threadId: record.native_id, turnId: request.turnId };
         method = "turn/interrupt";
       } else if (request.operation === "steer" || request.operation === "queue-add") {
+        if (request.operation === "queue-add" && !runner.queueVerified)
+          throw new Error("unsupported-codex-cli-version");
         const allowedStatus =
           request.operation === "steer"
             ? snapshot.status === "running"
@@ -2172,6 +2222,7 @@ export class WebReadRequests {
               };
         method = request.operation === "steer" ? "turn/steer" : "thread/queue/add";
       } else if (["queue-update", "queue-delete", "queue-reorder"].includes(request.operation)) {
+        if (!runner.queueVerified) throw new Error("unsupported-codex-cli-version");
         const queue = await readManagedQueue(runner.session, record.native_id!, 100);
         const rows = queue.data.filter(isObject);
         if (!queue.complete) throw new Error("queue-too-large");
@@ -2312,9 +2363,12 @@ export class WebReadRequests {
         const mode = request.mode ?? record.mode ?? null;
         if (request.mode) {
           if (!runner.planVerified) throw new Error("native-collaboration-modes-unavailable");
-          const catalog = await runner.session.request("collaborationMode/list", {});
-          const modes = isObject(catalog) && Array.isArray(catalog.data) ? catalog.data : [];
-          if (!modes.some((entry) => isObject(entry) && entry.id === request.mode))
+          // The presets are `{mode, name}` rows (0.163.0 CollaborationModeMask); AgentKib's
+          // option id is the native mode.
+          const modes = verifiedCollaborationModes(
+            await runner.session.request("collaborationMode/list", {}),
+          );
+          if (!modes.some((entry) => entry.id === request.mode))
             throw new Error("unsupported-collaboration-mode");
         }
         localMutation = {
@@ -2350,7 +2404,12 @@ export class WebReadRequests {
           approval.availableDecisions.includes(decision);
         if (!offered && !legacy) throw new Error("unsupported-decision");
         responseId = approvalId;
-        params = approval.method === "item/permissions/requestApproval" ? decision : { decision };
+        params =
+          approval.method === "item/permissions/requestApproval"
+            ? decision
+            : approval.method === "mcpServer/elicitation/request"
+              ? elicitationResponse(decision)
+              : { decision };
         method = "";
       } else {
         const questionId = request.questionId;
@@ -2409,7 +2468,8 @@ export class WebReadRequests {
         if (
           currentSnapshot.reason ||
           currentSnapshot.revision !== request.expectedRevision ||
-          (request.operation === "send" && currentSnapshot.sendEnabled !== true) ||
+          (["send", "compact"].includes(request.operation) &&
+            currentSnapshot.sendEnabled !== true) ||
           (request.operation === "stop" &&
             (currentSnapshot.stopEnabled !== true || currentSnapshot.turnId !== request.turnId)) ||
           (["steer", "approve", "answer"].includes(request.operation) &&
@@ -2436,7 +2496,22 @@ export class WebReadRequests {
         runner.persist(runner.state);
         response = { appliesTo: "next-turn" };
       } else {
+        const turnsBefore = runner.state.turnsStarted;
         response = await runner.session.request(method, params, beforeDispatch);
+        // thread/compact/start answers before its turn starts (0.163.0). Hold this operation,
+        // which the host does not overlap with others, until that turn shows; no send can
+        // then start in between. A later start is still followed as usual.
+        const until = Date.now() + 5_000;
+        while (
+          request.operation === "compact" &&
+          runner.state.turnsStarted === turnsBefore &&
+          !runner.state.reason &&
+          Date.now() < until
+        ) {
+          await runner.bridge.flush();
+          if (runner.state.turnsStarted !== turnsBefore) break;
+          await new Promise((resolve) => setTimeout(resolve, 15));
+        }
       }
       await runner.bridge.flush();
       if (runner.state.reason) throw new Error("control-outcome-unconfirmed");
@@ -2512,7 +2587,7 @@ export class WebReadRequests {
       }
       const result = {
         accepted: true,
-        completed: !["send", "stop", "steer"].includes(request.operation),
+        completed: !["send", "stop", "steer", "compact"].includes(request.operation),
         ...(request.operation === "settings" ? { appliesTo: "next-turn" } : {}),
         sessionId: request.sessionId,
         requestId: request.requestId,
@@ -3333,6 +3408,7 @@ export class WebReadRequests {
         persist,
         release: release ?? (() => {}),
         planVerified: false,
+        queueVerified: null,
         idleSince: null,
         observed: observedAtStart,
       };
@@ -3353,6 +3429,17 @@ export class WebReadRequests {
       this.#assertOpen();
       const modelsResult = await session.request("model/list", { limit: 100 });
       const models = projectManagedModels(modelsResult);
+      // Plan uses the native presets. Their turn/start mapping and the confirming
+      // thread/settings/updated were checked with CLI 0.163.0; a CLI without them keeps
+      // the mode unavailable rather than failing the session.
+      try {
+        runner.planVerified =
+          verifiedCollaborationModes(await session.request("collaborationMode/list", {})).length ===
+          2;
+      } catch (error) {
+        if (!session.connected) throw error;
+        runner.planVerified = false;
+      }
       const requestedModel = record.model ?? null;
       const requestedEffort = record.effort ?? null;
       // Creating a new thread is an explicit model choice. Attaching an existing
@@ -3440,13 +3527,25 @@ export class WebReadRequests {
         approvalPolicy: response.approvalPolicy,
         approvalsReviewer: response.approvalsReviewer,
         sandboxPolicy: response.sandbox,
-        collaborationMode: null,
+        // thread/resume reports the effective mode; start and fork apply one with the next turn.
+        collaborationMode: isObject(response.collaborationMode) ? response.collaborationMode : null,
       };
       mutableRecord.goal = goal;
       const defaultModel = models.find((entry) => entry.isDefault === true);
       mutableRecord.default_model = defaultModel?.id ?? null;
       mutableRecord.default_effort = defaultModel?.defaultEffort ?? null;
       mutableRecord.default_service_tier = defaultModel?.defaultServiceTier ?? null;
+      // Queued messages use thread/queue/*, which 0.148.0 adds after the writer-lock minimum:
+      // 0.147.0 answers this read with -32600 "unknown variant" and stays connected. Only a
+      // read is tried, since a write to a missing method would leave its outcome unknown.
+      // It needs the loaded thread: 0.163.0 cannot list an unloaded one's queue.
+      try {
+        await session.request("thread/queue/list", { threadId: attachedId, limit: 1 });
+        runner.queueVerified = true;
+      } catch (error) {
+        if (!session.connected) throw error;
+        runner.queueVerified = false;
+      }
       await bridge.flush();
       this.#assertOpen();
       const hydrated = state.hydrate(nativeThread, true, readRevision);
@@ -4939,6 +5038,25 @@ function isObject(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
+type CollaborationModeOption = { id: "plan" | "default"; name: string };
+
+/**
+ * The native Plan and Default presets (`collaborationMode/list`), or none unless both are listed:
+ * a turn in either mode must be able to return to the other.
+ */
+function verifiedCollaborationModes(value: unknown): CollaborationModeOption[] {
+  const rows = isObject(value) && Array.isArray(value.data) ? value.data : [];
+  const modes: CollaborationModeOption[] = [];
+  for (const row of rows) {
+    if (!isObject(row) || (row.mode !== "plan" && row.mode !== "default")) continue;
+    if (modes.some((mode) => mode.id === row.mode)) continue;
+    if (typeof row.name !== "string" || !row.name || Buffer.byteLength(row.name, "utf8") > 256)
+      continue;
+    modes.push({ id: row.mode, name: row.name });
+  }
+  return modes.length === 2 ? modes : [];
+}
+
 /** A resume-local guard; public revisions and native settings ACKs stay intact. */
 function managedControlState(state: ManagedCodexState): string {
   const live = state.snapshot("", true);
@@ -4946,6 +5064,7 @@ function managedControlState(state: ManagedCodexState): string {
   delete live.tokenUsage;
   delete live.usage;
   delete live.streamText;
+  delete live.apiRetry;
   const record = { ...state.record };
   delete record.snapshot;
   delete record.token_usage;

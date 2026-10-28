@@ -2,9 +2,9 @@ import { useEffect, useId, useMemo, useRef, useState, type KeyboardEvent } from 
 
 /**
  * The `/` menu of a session composer. Composers pass the commands their device may use
- * (runtime-protocol's `claudeMenuCommands`); this module matches what was typed, handles the
- * keyboard and renders the list. The textarea keeps focus and points at the active option
- * through `aria-activedescendant`.
+ * (runtime-protocol's `claudeMenuCommands`, or its `CODEX_MENU_COMMANDS` through
+ * `codexSlashOptions`); this module matches what was typed, handles the keyboard and renders the
+ * list. The textarea keeps focus and points at the active option through `aria-activedescendant`.
  */
 export interface SlashCommandOption {
   name: string;
@@ -21,6 +21,17 @@ const copies = {
     effort: "更改下一轮思考强度",
     rename: "在 AgentKib 中重命名会话",
     goal: "设置持续目标",
+    codexLabel: "Codex 命令",
+    codexCompact: "压缩上下文",
+    codexReview: "审查未提交的改动，或对比某个分支",
+    codexInit: "为这个目录写一份 AGENTS.md",
+    codexPlan: "下一轮使用计划模式",
+    codexPermissions: "更改执行策略",
+    codexStatus: "查看下一轮设置",
+    codexFork: "分支会话",
+    codexStop: "结束后台终端",
+    codexArchive: "归档会话",
+    codexDiff: "查看文件与差异",
   },
   "zh-TW": {
     label: "Claude Code 指令",
@@ -29,6 +40,17 @@ const copies = {
     effort: "變更下一輪思考強度",
     rename: "在 AgentKib 中重新命名對話",
     goal: "設定持續目標",
+    codexLabel: "Codex 指令",
+    codexCompact: "壓縮上下文",
+    codexReview: "審查尚未提交的變更，或與某個分支比較",
+    codexInit: "為這個目錄寫一份 AGENTS.md",
+    codexPlan: "下一輪使用計畫模式",
+    codexPermissions: "變更執行策略",
+    codexStatus: "查看下一輪設定",
+    codexFork: "分支對話",
+    codexStop: "結束背景終端機",
+    codexArchive: "封存對話",
+    codexDiff: "查看檔案與差異",
   },
   "en-US": {
     label: "Claude Code commands",
@@ -37,6 +59,17 @@ const copies = {
     effort: "Change the next-turn reasoning effort",
     rename: "Rename the session in AgentKib",
     goal: "Set a persistent goal",
+    codexLabel: "Codex commands",
+    codexCompact: "Compact the context",
+    codexReview: "Review uncommitted changes, or against a branch",
+    codexInit: "Write an AGENTS.md for this directory",
+    codexPlan: "Use Plan mode for the next turn",
+    codexPermissions: "Change the execution policy",
+    codexStatus: "Show next-turn settings",
+    codexFork: "Fork the session",
+    codexStop: "Stop background terminals",
+    codexArchive: "Archive the session",
+    codexDiff: "Show files and diffs",
   },
   "ja-JP": {
     label: "Claude Code のコマンド",
@@ -45,6 +78,17 @@ const copies = {
     effort: "次のターンの推論の強度を変更",
     rename: "AgentKib で会話の名前を変更",
     goal: "継続目標を設定",
+    codexLabel: "Codex のコマンド",
+    codexCompact: "コンテキストを圧縮",
+    codexReview: "未コミットの変更、またはブランチとの差分をレビュー",
+    codexInit: "このディレクトリの AGENTS.md を作成",
+    codexPlan: "次のターンを計画モードにする",
+    codexPermissions: "実行ポリシーを変更",
+    codexStatus: "次のターンの設定を表示",
+    codexFork: "会話を分岐",
+    codexStop: "バックグラウンドのターミナルを終了",
+    codexArchive: "会話をアーカイブ",
+    codexDiff: "ファイルと差分を表示",
   },
 };
 
@@ -83,6 +127,47 @@ export function claudeSlashOptions(
     const name = command.name.toLowerCase();
     if (!handled(name)) return command;
     return { ...command, argumentHint: HANDLED[name], description: copy[name] };
+  });
+}
+
+/** What each Codex menu command does in AgentKib, with the argument it takes. */
+const CODEX_OPTIONS: Record<
+  string,
+  { key: keyof ReturnType<typeof slashCommandCopy>; hint?: string }
+> = {
+  compact: { key: "codexCompact" },
+  review: { key: "codexReview", hint: "[branch]" },
+  plan: { key: "codexPlan", hint: "[message]" },
+  model: { key: "model", hint: "[model]" },
+  permissions: { key: "codexPermissions" },
+  status: { key: "codexStatus" },
+  rename: { key: "rename", hint: "[name]" },
+  goal: { key: "goal", hint: "[objective]" },
+  fork: { key: "codexFork" },
+  stop: { key: "codexStop" },
+  archive: { key: "codexArchive" },
+  diff: { key: "codexDiff" },
+  init: { key: "codexInit" },
+};
+
+/**
+ * Menu options for a Codex session from runtime-protocol's `CODEX_MENU_COMMANDS`: each runs or
+ * opens AgentKib's own control, so it is described in AgentKib's terms.
+ */
+export function codexSlashOptions(names: readonly string[], locale: string): SlashCommandOption[] {
+  const copy = slashCommandCopy(locale);
+  return names.flatMap((name) => {
+    const option = CODEX_OPTIONS[name];
+    return option
+      ? [
+          {
+            name,
+            description: copy[option.key],
+            ...(option.hint ? { argumentHint: option.hint } : {}),
+            aliases: [],
+          },
+        ]
+      : [];
   });
 }
 
@@ -139,10 +224,10 @@ export function unsupportedEffortReason(decision: {
 
 /**
  * Where AgentKib's own control for a command lives: next-turn settings for `/model` and
- * `/effort`, the persistent goal for `/goal`, and the session actions, which hold rename, for
- * `/rename`.
+ * `/effort`, the persistent goal for `/goal`, the session actions, which hold rename, for
+ * `/rename`, and, in Codex sessions, files and diffs for `/diff`.
  */
-export type AgentKibPanel = "settings" | "goal" | "actions";
+export type AgentKibPanel = "settings" | "goal" | "actions" | "files";
 
 /** The control a command typed without an argument opens, or null when it opens none. */
 export function agentKibPanel(decision: { command: string; args: string }): AgentKibPanel | null {
@@ -183,6 +268,7 @@ export function useSlashCommandMenu({
   enabled,
   catalogKnown,
   locale,
+  label,
   onChoose,
 }: {
   value: string;
@@ -192,6 +278,8 @@ export function useSlashCommandMenu({
   /** Whether the session has reported a catalog. Before that the menu says why it is empty. */
   catalogKnown: boolean;
   locale: string;
+  /** The list's accessible name; Claude Code's commands by default. */
+  label?: string;
   /** Receives the draft with the chosen command, followed by a space. */
   onChoose: (text: string) => void;
 }) {
@@ -247,7 +335,7 @@ export function useSlashCommandMenu({
           ref={list}
           id={listboxId}
           role="listbox"
-          aria-label={copy.label}
+          aria-label={label ?? copy.label}
           className="max-h-64 overflow-y-auto"
         >
           {matches.map((option, position) => (

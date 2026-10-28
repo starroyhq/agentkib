@@ -226,20 +226,38 @@ export function ContextUsageDetails({
   );
 }
 
-/** Claude Code's `/compact` as a button. It is sent as a message of its own; the draft stays. */
-export type CompactAction = { enabled: boolean; afterTurn: boolean; run: () => void };
+/**
+ * Compacting the context as a button: Claude Code's `/compact`, sent as a message of its own, or
+ * Codex's own compaction (thread/compact/start), a turn of its own. The draft stays.
+ */
+export type CompactAction = {
+  agent: "Claude Code" | "Codex";
+  enabled: boolean;
+  afterTurn: boolean;
+  run: () => void;
+};
 
 function useCompactAction(): CompactAction | undefined {
-  const { current, selected, live, access, canSend, page, control } = useSession();
-  if (
-    current?.id !== selected ||
-    current.agent !== "claude-code" ||
-    live?.sessionId !== selected ||
-    live.executionMode !== "claude-managed" ||
-    !access?.device?.send
-  )
+  const { current, selected, live, access, canSend, page, control, capabilities, codexAction } =
+    useSession();
+  if (current?.id !== selected || live?.sessionId !== selected || !access?.device?.send)
     return undefined;
+  if (current.agent === "codex" && live.executionMode === "codex-managed") {
+    const feature =
+      capabilities?.sessionId === selected ? capabilities.features.compact : undefined;
+    if (!feature) return undefined;
+    return {
+      agent: "Codex",
+      // Codex compacts only while the session is idle; there is nothing to summarize before the
+      // first message.
+      enabled: feature.available && !!canSend && !!page?.events.length,
+      afterTurn: live.status === "running",
+      run: () => void codexAction("compact"),
+    };
+  }
+  if (current.agent !== "claude-code" || live.executionMode !== "claude-managed") return undefined;
   return {
+    agent: "Claude Code",
     // There is nothing to summarize before the first message.
     enabled: !!canSend && !!page?.events.length,
     afterTurn: live.status === "running",
@@ -313,7 +331,9 @@ export function ContextUsageIndicator({
           <ContextUsageDetails {...view} locale={locale} online={online} />
           {compact && (
             <div className="mt-4 space-y-2 border-t pt-4">
-              <p className="text-xs leading-5 text-muted-foreground">{copy.compactDetail}</p>
+              <p className="text-xs leading-5 text-muted-foreground">
+                {compact.agent === "Codex" ? copy.compactDetailCodex : copy.compactDetail}
+              </p>
               <Button
                 type="button"
                 variant="outline"

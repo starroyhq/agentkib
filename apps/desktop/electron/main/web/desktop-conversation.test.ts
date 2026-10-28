@@ -1,5 +1,6 @@
 // @vitest-environment node
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { randomUUID } from "node:crypto";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -78,6 +79,35 @@ describe("trusted desktop conversation routes", () => {
     expect(await service.localRequest("//external.test/events")).toMatchObject({ status: 404 });
     expect(await service.localRequest("/pair", {})).toMatchObject({ status: 404 });
   });
+
+  it.each(["compact", "terminals-clean"])(
+    "sends the Codex %s action over the desktop route",
+    async (operation) => {
+      runtime.mockImplementation(async (params: unknown) =>
+        (params as { operation: string }).operation === "capabilities"
+          ? {
+              sessionId: "s",
+              executionMode: "codex-managed",
+              features: { [operation]: { available: true } },
+            }
+          : defaultRuntime(params),
+      );
+      const access = await service.localRequest("/access");
+      expect(
+        await service.localRequest(`/codex/${operation}`, {
+          sessionId: "s",
+          bootId: (access.body as { bootId: string }).bootId,
+          expectedRevision: 4,
+          requestId: randomUUID(),
+        }),
+      ).toMatchObject({ status: 200, body: { accepted: true } });
+      expect(
+        runtime.mock.calls.some(
+          ([params]) => (params as { operation: string }).operation === operation,
+        ),
+      ).toBe(true);
+    },
+  );
 
   it("prepares Claude settings over the closed desktop route without fencing later preparation on failure", async () => {
     await service.shutdown();

@@ -1,0 +1,51 @@
+name: Codex protocol compatibility
+
+on:
+  # Daily at 04:47 UTC, off the top-of-hour Actions scheduling peak.
+  schedule:
+    - cron: "47 4 * * *"
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - .github/workflows/codex-protocol-compatibility.yml
+      - .github/scripts/codex-protocol-compatibility*.mjs
+      - packages/backend/src/managed-codex-state.ts
+      - packages/backend/src/web-read.ts
+      - packages/backend/src/codex-app-server.ts
+      - packages/backend/src/codex-runtime-preflight.ts
+
+permissions:
+  contents: read
+
+concurrency:
+  group: codex-protocol-compatibility-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  compatibility:
+    name: App-server protocol (${{ matrix.version }})
+    runs-on: macos-15
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        version: [minimum, latest]
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v7
+        with:
+          node-version: 22
+
+      - name: Verify the contract checker
+        run: node --test .github/scripts/codex-protocol-compatibility.test.mjs
+
+      # npm reaches the official registry only to install the CLI. The CLI then writes its own
+      # app-server JSON Schema sandboxed, with no network or personal directories; nothing logs
+      # in, starts a session or calls a model.
+      - name: Check the official CLI's app-server protocol
+        run: node .github/scripts/codex-protocol-compatibility.mjs --version '${{ matrix.version }}'

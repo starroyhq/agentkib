@@ -159,6 +159,15 @@ function fixture(
   let models: Array<Record<string, unknown>> = [
     { model: "model-a", isDefault: true, supportedReasoningEfforts: [{ reasoningEffort: "low" }] },
   ];
+  // The presets CLI 0.163.0 lists (CollaborationModeMask rows).
+  let collaborationModes: unknown = {
+    data: [
+      { name: "Plan", mode: "plan", model: null, reasoning_effort: "medium" },
+      { name: "Default", mode: "default", model: null, reasoning_effort: null },
+    ],
+  };
+  let queueSupported = true;
+  let exitOn: string | undefined;
   const servers: OfflineServer[] = [];
   class OfflineServer extends EventEmitter {
     connected = true;
@@ -168,8 +177,18 @@ function fixture(
       dispatch?.();
       methods.push(method);
       requests.push({ method, params });
+      if (method === exitOn) {
+        // The CLI exits before it answers.
+        this.connected = false;
+        this.emit("close");
+        throw new Error("app-server exited");
+      }
       if (method === "thread/resume" && nativeFailure) throw nativeFailure;
       if (method === "model/list") return { data: models };
+      if (method === "collaborationMode/list") {
+        if (collaborationModes instanceof Error) throw collaborationModes;
+        return collaborationModes;
+      }
       if (method === "thread/goal/get") return { goal: null };
       if (method === "skills/list") return { data: [] };
       if (method === "thread/read")
@@ -188,6 +207,19 @@ function fixture(
         return { turn: { id: "new-turn", status: "inProgress" } };
       }
       if (method === "turn/steer") return { turnId: "new-turn" };
+      if (method === "thread/backgroundTerminals/clean") return {};
+      if (method === "thread/compact/start") {
+        // CLI 0.163.0 answers first, then starts the compaction's own turn.
+        setTimeout(
+          () =>
+            this.emit("notification", {
+              method: "turn/started",
+              params: { threadId: nativeId, turn: { id: "compact-turn", status: "inProgress" } },
+            }),
+          30,
+        );
+        return {};
+      }
       if (method === "thread/queue/add")
         return {
           queuedSubmission: {
@@ -195,7 +227,15 @@ function fixture(
             clientUserMessageId: (params as Record<string, unknown>).clientUserMessageId,
           },
         };
-      if (method === "thread/queue/list") return { data: [], nextCursor: null };
+      if (method === "thread/queue/list") {
+        // CLI 0.147.0's answer; the connection stays open.
+        if (!queueSupported)
+          throw new CodexAppServerError({
+            code: -32600,
+            message: "Invalid request: unknown variant `thread/queue/list`, expected one of …",
+          });
+        return { data: [], nextCursor: null };
+      }
       if (["thread/resume", "thread/start", "thread/fork", "thread/unarchive"].includes(method))
         return {
           thread: {
@@ -333,6 +373,15 @@ function fixture(
     setModels: (value: Array<Record<string, unknown>>) => {
       models = value;
     },
+    setCollaborationModes: (value: unknown) => {
+      collaborationModes = value;
+    },
+    withoutQueue: () => {
+      queueSupported = false;
+    },
+    exitOn: (method: string) => {
+      exitOn = method;
+    },
     mismatchReply: (field: "top" | "thread") => {
       wrongReplyCwd = field;
     },
@@ -359,6 +408,504 @@ function fixture(
     },
   };
 }
+
+describe("Codex manual compaction", () => {
+  async function compact(f: ReturnType<typeof fixture>) {
+    const state = await f.live();
+    return f.web.managedControl({
+      operation: "compact",
+      sessionId: f.summary.id,
+      requestId: randomUUID(),
+      deviceId: "fixture",
+      runtimeBootId: state.runtimeBootId,
+      expectedRevision: state.revision,
+      experimentalEnabled: true,
+    });
+  }
+  const capabilities = (f: ReturnType<typeof fixture>) =>
+    f.web.managedQuery({
+      operation: "capabilities",
+      sessionId: f.summary.id,
+      experimentalEnabled: true,
+    }) as Promise<{ features: Record<string, { available: boolean; reason?: string }> }>;
+
+  it("starts Codex's compaction and returns once its turn runs", async () => {
+    const f = fixture();
+    // Like send, it starts the runner for a session that has none.
+    expect((await capabilities(f)).features.compact).toEqual({ available: true });
+    expect(await compact(f)).toMatchObject({ accepted: true, completed: false });
+    expect(f.requests.find(({ method }) => method === "thread/compact/start")?.params).toEqual({
+      threadId: nativeId,
+    });
+    // Nothing can be sent between the reply and the compaction's turn.
+    expect(await f.live()).toMatchObject({
+      status: "running",
+      turnId: "compact-turn",
+      sendEnabled: false,
+    });
+    expect((await capabilities(f)).features.compact).toMatchObject({ available: false });
+    f.servers.at(-1)!.emit("notification", {
+      method: "turn/completed",
+      params: { threadId: nativeId, turn: { id: "compact-turn", status: "completed" } },
+    });
+    await vi.waitFor(async () =>
+      expect((await capabilities(f)).features.compact).toEqual({ available: true }),
+    );
+    expect(readUnknownManagedCommands(f.root, f.summary.id)).toEqual([]);
+  });
+
+  it("is not started while a turn runs", async () => {
+    const f = fixture();
+    expect(await f.send()).toMatchObject({ accepted: true });
+    expect(await compact(f)).toMatchObject({
+      accepted: false,
+      controlOutcome: "not-dispatched",
+    });
+    expect(f.methods).not.toContain("thread/compact/start");
+  });
+});
+
+describe("Codex compaction and background-terminal routing", () => {
+  // The browser and the desktop window reach these through web.request; the IPC path uses
+  // codex.managed. Both must hand them to the managed control, as they do send.
+  it.each([
+    ["web.request", "compact"],
+    ["web.request", "terminals-clean"],
+    ["codex.managed", "compact"],
+    ["codex.managed", "terminals-clean"],
+  ])("routes %s %s to the managed control", async (method, operation) => {
+    const f = fixture();
+    await f.web.closeAsync();
+    writeFileSync(
+      path.join(f.root, "preferences.json"),
+      JSON.stringify({ session_index_enabled: false, session_content_search_enabled: false }),
+    );
+    vi.spyOn(McpHub.prototype, "start").mockResolvedValue();
+    vi.spyOn(RemoteAgent.prototype, "start").mockResolvedValue();
+    const control = vi
+      .spyOn(WebReadRequests.prototype, "managedControl")
+      .mockResolvedValue({ accepted: true, operation } as never);
+    const backend = new TypeScriptBackend({
+      HOME: f.home,
+      CODEX_HOME: f.home,
+      PATH: path.join(f.root, "bin"),
+    });
+    cleanups.push(() => backend.closeAsync());
+    const rpc = (name: string, params: unknown) =>
+      backend.handleAsync({ jsonrpc: "2.0", id: randomUUID(), method: name, params });
+    expect((await rpc("backend.initialize", { dataDir: f.root })).error).toBeUndefined();
+    const params = {
+      operation,
+      sessionId: f.summary.id,
+      requestId: randomUUID(),
+      deviceId: "fixture",
+      runtimeBootId: "boot",
+      expectedRevision: 0,
+      experimentalEnabled: true,
+    };
+    const response = await rpc(method, params);
+    expect(response.error).toBeUndefined();
+    expect(response.result).toEqual({ accepted: true, operation });
+    expect(control).toHaveBeenCalledExactlyOnceWith(params);
+  });
+});
+
+describe("Codex start probes", () => {
+  it.each(["collaborationMode/list", "thread/queue/list"])(
+    "fail the start, without a turn, when the CLI exits answering %s",
+    async (method) => {
+      const f = fixture();
+      f.exitOn(method);
+      expect(await f.send()).toMatchObject({ accepted: false, controlOutcome: "not-dispatched" });
+      expect(f.methods).toContain(method);
+      expect(f.methods).not.toContain("turn/start");
+      // The queue is asked after thread/resume, so that adoption's outcome is unconfirmed, as
+      // with any failure after the resume was sent.
+      expect(readUnknownManagedCommands(f.root, f.summary.id)).toEqual(
+        method === "thread/queue/list"
+          ? [expect.objectContaining({ evidence: expect.objectContaining({ operation: "adopt" }) })]
+          : [],
+      );
+    },
+  );
+});
+
+describe("Codex queued messages", () => {
+  it("are not offered by a CLI without thread/queue, such as 0.147.0", async () => {
+    const f = fixture();
+    f.withoutQueue();
+    const features = async () =>
+      (
+        (await f.web.managedQuery({
+          operation: "capabilities",
+          sessionId: f.summary.id,
+          experimentalEnabled: true,
+        })) as { features: Record<string, { available: boolean; reason?: string }> }
+      ).features;
+    expect(await f.send()).toMatchObject({ accepted: true });
+    const capabilities = { features: await features() };
+    for (const operation of [
+      "queue-list",
+      "queue-add",
+      "queue-update",
+      "queue-delete",
+      "queue-reorder",
+    ])
+      expect(capabilities.features[operation]).toEqual({
+        available: false,
+        reason: "unsupported-codex-cli-version",
+      });
+    // Steering stays: it is turn/steer.
+    expect(capabilities.features.steer).toEqual({ available: true });
+    await expect(
+      f.web.managedQueueList({ operation: "queue-list", sessionId: f.summary.id }),
+    ).rejects.toThrow("unsupported-codex-cli-version");
+    const state = await f.live();
+    const before = f.methods.filter((method) => method === "thread/queue/add").length;
+    expect(
+      await f.web.managedControl({
+        operation: "queue-add",
+        sessionId: f.summary.id,
+        requestId: randomUUID(),
+        deviceId: "fixture",
+        runtimeBootId: state.runtimeBootId,
+        expectedRevision: state.revision,
+        experimentalEnabled: true,
+        turnId: "new-turn",
+        text: "Later",
+      }),
+    ).toMatchObject({
+      accepted: false,
+      controlOutcome: "not-dispatched",
+      error: "unsupported-codex-cli-version",
+    });
+    expect(f.methods.filter((method) => method === "thread/queue/add")).toHaveLength(before);
+    const latest = await f.live();
+    expect(
+      await f.web.managedControl({
+        operation: "queue-delete",
+        sessionId: f.summary.id,
+        requestId: randomUUID(),
+        deviceId: "fixture",
+        runtimeBootId: latest.runtimeBootId,
+        expectedRevision: latest.revision,
+        experimentalEnabled: true,
+        queuedSubmissionId: "queued-1",
+      }),
+    ).toMatchObject({
+      accepted: false,
+      controlOutcome: "not-dispatched",
+      error: "unsupported-codex-cli-version",
+    });
+    expect(readUnknownManagedCommands(f.root, f.summary.id)).toEqual([]);
+  });
+});
+
+describe("Codex background terminals", () => {
+  it("ends them while the runner has any, as the terminal's /stop does", async () => {
+    const f = fixture();
+    const clean = async () => {
+      const state = await f.live();
+      return f.web.managedControl({
+        operation: "terminals-clean",
+        sessionId: f.summary.id,
+        requestId: randomUUID(),
+        deviceId: "fixture",
+        runtimeBootId: state.runtimeBootId,
+        expectedRevision: state.revision,
+        experimentalEnabled: true,
+      });
+    };
+    // Without a runner there is nothing to end, and nothing is started for it.
+    expect(await clean()).toMatchObject({
+      accepted: false,
+      controlOutcome: "not-dispatched",
+      reason: "session-not-running",
+    });
+    expect(f.start).not.toHaveBeenCalled();
+    expect(await f.send()).toMatchObject({ accepted: true });
+    expect(await clean()).toMatchObject({ accepted: true, completed: true });
+    expect(
+      f.requests.find(({ method }) => method === "thread/backgroundTerminals/clean")?.params,
+    ).toEqual({ threadId: nativeId });
+    // The turn keeps running.
+    expect(await f.live()).toMatchObject({ status: "running", turnId: "new-turn" });
+  });
+});
+
+describe("Codex MCP requests", () => {
+  // The approval CLI 0.163.0 asks before a non-read-only MCP tool runs.
+  const toolApproval = {
+    id: 41,
+    method: "mcpServer/elicitation/request",
+    params: {
+      threadId: nativeId,
+      turnId: "new-turn",
+      serverName: "stubmcp",
+      mode: "form",
+      _meta: {
+        codex_approval_kind: "mcp_tool_call",
+        persist: ["session", "always"],
+        tool_title: "Write stub record",
+      },
+      message: 'Allow the stubmcp MCP server to run tool "write"?',
+      requestedSchema: { type: "object", properties: {} },
+    },
+  };
+  async function running(request: Record<string, unknown> = toolApproval) {
+    const f = fixture();
+    expect(await f.send()).toMatchObject({ accepted: true });
+    const server = f.servers.at(-1)!;
+    const replies: unknown[] = [];
+    (server as unknown as { respond: (id: unknown, result: unknown) => void }).respond = (
+      id,
+      result,
+    ) => {
+      replies.push([id, result]);
+      server.emit("notification", {
+        method: "serverRequest/resolved",
+        params: { threadId: nativeId, requestId: id },
+      });
+    };
+    server.emit("serverRequest", request);
+    await vi.waitFor(async () => expect((await f.live()).approvals).toHaveLength(1));
+    return { f, replies };
+  }
+  async function approve(f: ReturnType<typeof fixture>, fields: Record<string, unknown>) {
+    const state = await f.live();
+    return f.web.managedControl({
+      operation: "approve",
+      sessionId: f.summary.id,
+      requestId: randomUUID(),
+      deviceId: "fixture",
+      runtimeBootId: state.runtimeBootId,
+      expectedRevision: state.revision,
+      experimentalEnabled: true,
+      turnId: "new-turn",
+      approvalId: 41,
+      ...fields,
+    });
+  }
+
+  it.each([
+    ["allow once", { decision: "accept" }, { action: "accept", content: {} }],
+    [
+      "allow for this session",
+      { nativeDecision: { action: "accept", content: {}, _meta: { persist: "session" } } },
+      { action: "accept", content: {}, _meta: { persist: "session" } },
+    ],
+    ["decline", { decision: "decline" }, { action: "decline" }],
+    ["cancel the turn", { decision: "cancel" }, { action: "cancel" }],
+  ])("answers the MCP tool approval: %s", async (_name, fields, reply) => {
+    const { f, replies } = await running();
+    expect(await approve(f, fields)).toMatchObject({ accepted: true });
+    expect(replies).toEqual([[41, reply]]);
+    expect(await f.live()).toMatchObject({ status: "running", approvals: [] });
+  });
+
+  it("does not accept a form it cannot fill in, or always-allow", async () => {
+    const { f, replies } = await running({
+      ...toolApproval,
+      params: {
+        ...toolApproval.params,
+        _meta: null,
+        message: "Pick a color.",
+        requestedSchema: { type: "object", properties: { color: { type: "string" } } },
+      },
+    });
+    for (const fields of [
+      { decision: "accept" },
+      { nativeDecision: { action: "accept", content: {}, _meta: { persist: "always" } } },
+    ])
+      expect(await approve(f, fields)).toMatchObject({
+        accepted: false,
+        controlOutcome: "not-dispatched",
+        error: "unsupported-decision",
+      });
+    expect(replies).toEqual([]);
+    expect(await approve(f, { decision: "decline" })).toMatchObject({ accepted: true });
+    expect(replies).toEqual([[41, { action: "decline" }]]);
+  });
+});
+
+describe("Codex attachments", () => {
+  const capabilities = (f: ReturnType<typeof fixture>, experimentalEnabled = true) =>
+    f.web.managedQuery({
+      operation: "capabilities",
+      sessionId: f.summary.id,
+      experimentalEnabled,
+    }) as Promise<{ features: Record<string, { available: boolean; reason?: string }> }>;
+
+  it("opens uploads with send and passes an image to Codex as native image input", async () => {
+    const f = fixture();
+    // Before any runner, a send with attachments starts one, as a plain send does.
+    const inactive = await capabilities(f);
+    expect(inactive.features.attachments).toEqual({ available: true });
+    expect((await capabilities(f, false)).features.attachments).toEqual(
+      (await capabilities(f, false)).features.send,
+    );
+    const image = path.join(f.root, "attachment.png");
+    writeFileSync(image, Buffer.from("89504e470d0a1a0a", "hex"));
+    // The host turns uploads into these rows (AttachmentStore.input for Codex).
+    expect(
+      await f.send({
+        text: undefined,
+        input: [
+          { type: "text", text: "What is in this image?", text_elements: [] },
+          { type: "localImage", path: image },
+          {
+            type: "text",
+            text: `User attached file "notes.txt": ${f.root}/notes`,
+            text_elements: [],
+          },
+        ],
+      }),
+    ).toMatchObject({ accepted: true });
+    expect(f.requests.find(({ method }) => method === "turn/start")?.params).toMatchObject({
+      input: [
+        { type: "text", text: "What is in this image?" },
+        { type: "localImage", path: image },
+        { type: "text", text: `User attached file "notes.txt": ${f.root}/notes` },
+      ],
+    });
+    // Steer and queue-add take attachments while the turn runs.
+    expect((await capabilities(f)).features.attachments).toEqual({ available: true });
+    expect((await capabilities(f, false)).features.attachments).toMatchObject({
+      available: false,
+      reason: "control-disabled",
+    });
+  });
+
+  it("rejects an image that is no longer a file before sending anything", async () => {
+    const f = fixture();
+    expect(
+      await f.send({
+        text: undefined,
+        input: [
+          { type: "text", text: "Look", text_elements: [] },
+          { type: "localImage", path: path.join(f.root, "missing.png") },
+        ],
+      }),
+    ).toMatchObject({ accepted: false, controlOutcome: "not-dispatched" });
+    expect(f.methods).not.toContain("turn/start");
+  });
+});
+
+describe("Codex Plan mode", () => {
+  async function control(
+    f: ReturnType<typeof fixture>,
+    operation: "send" | "settings",
+    fields: Record<string, unknown> = {},
+  ) {
+    const state = await f.live();
+    return f.web.managedControl({
+      operation,
+      sessionId: f.summary.id,
+      requestId: randomUUID(),
+      deviceId: "fixture",
+      runtimeBootId: state.runtimeBootId,
+      expectedRevision: state.revision,
+      experimentalEnabled: true,
+      ...(operation === "send" ? { text: "Plan this" } : {}),
+      ...fields,
+    });
+  }
+  const settingsState = (f: ReturnType<typeof fixture>) =>
+    f.web.managedSettingsState({ operation: "settings-state", sessionId: f.summary.id }) as Promise<
+      Record<string, any>
+    >;
+
+  it("offers the native presets, sends the turn in Plan, and confirms it from the CLI", async () => {
+    const f = fixture();
+    // Before any runner: read with a metadata-only reader.
+    const inactive = await settingsState(f);
+    expect(inactive.collaborationModes).toEqual([
+      { id: "plan", name: "Plan" },
+      { id: "default", name: "Default" },
+    ]);
+    expect(inactive.settings.writable.mode).toEqual({ available: true });
+    expect(await control(f, "settings", { mode: "plan" })).toMatchObject({ accepted: true });
+    expect(await control(f, "send")).toMatchObject({ accepted: true });
+    expect(f.requests.find(({ method }) => method === "turn/start")?.params).toMatchObject({
+      collaborationMode: {
+        mode: "plan",
+        // Null asks Codex for its own Plan instructions; AgentKib never copies them.
+        settings: { model: "model-a", developer_instructions: null },
+      },
+    });
+    expect((await settingsState(f)).settings).toMatchObject({
+      selected: { mode: "plan" },
+      current: { mode: null },
+      applicationStatus: "pending",
+    });
+    // CLI 0.163.0 reports the applied mode before turn/started.
+    f.servers.at(-1)!.emit("notification", {
+      method: "thread/settings/updated",
+      params: {
+        threadId: nativeId,
+        threadSettings: {
+          model: "model-a",
+          modelProvider: "openai",
+          effort: null,
+          serviceTier: null,
+          cwd: f.workspace,
+          approvalPolicy: "on-request",
+          approvalsReviewer: "user",
+          sandboxPolicy: {
+            type: "workspaceWrite",
+            writableRoots: [f.workspace],
+            networkAccess: false,
+          },
+          collaborationMode: {
+            mode: "plan",
+            settings: { model: "model-a", reasoning_effort: null, developer_instructions: "…" },
+          },
+        },
+      },
+    });
+    await vi.waitFor(async () =>
+      expect((await settingsState(f)).settings).toMatchObject({
+        current: { mode: "plan" },
+        applicationStatus: "confirmed",
+      }),
+    );
+    f.servers.at(-1)!.complete();
+    const active = await settingsState(f);
+    expect(active.collaborationModes).toHaveLength(2);
+    expect(active.settings.writable.mode).toEqual({ available: true });
+    expect(await control(f, "settings", { mode: "default" })).toMatchObject({ accepted: true });
+    expect(await control(f, "send")).toMatchObject({ accepted: true });
+    expect(f.requests.filter(({ method }) => method === "turn/start").at(-1)?.params).toMatchObject(
+      { collaborationMode: { mode: "default" } },
+    );
+  });
+
+  it.each([
+    ["a CLI without presets", new Error("Method not found")],
+    ["a catalog without Default", { data: [{ name: "Plan", mode: "plan" }] }],
+    ["an unknown mode only", { data: [{ name: "Pair", mode: "pair_programming" }] }],
+  ])("keeps Plan unavailable for %s", async (_name, catalog) => {
+    const f = fixture();
+    f.setCollaborationModes(catalog);
+    const inactive = await settingsState(f);
+    expect(inactive.collaborationModes).toEqual([]);
+    expect(inactive.settings.writable.mode).toEqual({
+      available: false,
+      reason: "native-collaboration-modes-unavailable",
+    });
+    // Models stay readable, and the session still starts.
+    expect(inactive.models).toHaveLength(1);
+    expect(await control(f, "settings", { mode: "plan" })).toMatchObject({
+      accepted: false,
+      controlOutcome: "not-dispatched",
+      error: "native-collaboration-modes-unavailable",
+    });
+    expect(await control(f, "send")).toMatchObject({ accepted: true });
+    expect(f.requests.find(({ method }) => method === "turn/start")?.params).not.toHaveProperty(
+      "collaborationMode",
+    );
+  });
+});
 
 describe("Codex fork model recovery", () => {
   const catalog = [

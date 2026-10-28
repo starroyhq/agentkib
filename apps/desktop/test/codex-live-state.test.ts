@@ -1,8 +1,13 @@
+import { EventEmitter } from "node:events";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import type { CodexAppServerSession } from "../../../packages/backend/src/codex-app-server";
 import { CodexFollowerConnection } from "../../../packages/backend/src/codex-follower-connection";
 import { CodexFollowerBridge } from "../../../packages/backend/src/codex-follower-bridge";
 import { CodexFollowerState } from "../../../packages/backend/src/codex-follower-state";
-import { ManagedCodexState } from "../../../packages/backend/src/managed-codex-state";
+import {
+  ManagedCodexEventBridge,
+  ManagedCodexState,
+} from "../../../packages/backend/src/managed-codex-state";
 import { versionAtLeast } from "../../../packages/backend/src/native-version";
 
 const threadId = "01234567-89ab-cdef-0123-456789abcdef";
@@ -374,6 +379,335 @@ describe("managed Codex activity and context usage", () => {
       sendEnabled: false,
       stopEnabled: false,
     });
+  });
+});
+
+// The order and shape of what CLI 0.163.0 sent while a local stub failed every request: each
+// retry, the thread's idle error flag, the final error, then the failed completion.
+describe("managed Codex failed turns", () => {
+  const retry = (attempt: number, detail: string, status: number | null = null) => ({
+    error: {
+      message: `Reconnecting... ${attempt}/2`,
+      codexErrorInfo: { responseStreamDisconnected: { httpStatusCode: status } },
+      additionalDetails: detail,
+      misalignment: null,
+    },
+    willRetry: true,
+    turnId: "turn-a",
+  });
+  const unauthorized =
+    "unexpected status 401 Unauthorized: invalid key, url: http://127.0.0.1:1/v1/responses";
+  const failedTurn = (error: unknown = { message: unauthorized }) => ({
+    turn: {
+      id: "turn-a",
+      status: "failed",
+      error,
+      completedAt: 1_793_174_557,
+      durationMs: 783,
+    },
+  });
+
+  it("reports retries, then ends the turn with the CLI's error and stays usable", () => {
+    const state = managed();
+    start(state);
+    const before = state.mutationRevision;
+    notify(state, "error", retry(1, unauthorized, 401));
+    expect(state.snapshot("boot", true).apiRetry).toEqual({
+      attempt: 1,
+      maxRetries: 2,
+      status: 401,
+      error: "responseStreamDisconnected",
+      detail: unauthorized,
+    });
+    notify(state, "error", retry(2, unauthorized, 401));
+    expect(state.snapshot("boot", true).apiRetry).toMatchObject({ attempt: 2, maxRetries: 2 });
+    // Retries are observations, not control changes.
+    expect(state.mutationRevision).toBe(before);
+    expect(notify(state, "thread/status/changed", { status: { type: "systemError" } })).toEqual({
+      changed: false,
+    });
+    notify(state, "error", {
+      error: {
+        message: unauthorized,
+        codexErrorInfo: { httpConnectionFailed: { httpStatusCode: 401 } },
+      },
+      willRetry: false,
+      turnId: "turn-a",
+    });
+    expect(state.snapshot("boot", true).apiRetry).toBeNull();
+    const ended = notify(state, "turn/completed", failedTurn());
+    expect(ended.event).toEqual({
+      id: "codex-turn-error:turn-a",
+      kind: "agent-message",
+      turn_id: "turn-a",
+      timestamp: expect.any(String),
+      content: unauthorized,
+      tool_name: null,
+      tool_status: null,
+      duration_ms: null,
+      attachment_count: 0,
+      truncated: false,
+      cli_output: true,
+      turn_meta: { outcome: "failed", duration_ms: 783 },
+    });
+    expect(state.snapshot("boot", true)).toMatchObject({
+      status: "idle",
+      reason: null,
+      sendEnabled: true,
+      apiRetry: null,
+    });
+  });
+
+  it("clears a retry once output arrives", () => {
+    const state = managed();
+    start(state);
+    notify(state, "error", retry(1, "We’re currently experiencing high demand."));
+    expect(state.snapshot("boot", true).apiRetry).toMatchObject({ attempt: 1, status: null });
+    notify(state, "item/started", {
+      turnId: "turn-a",
+      item: { type: "userMessage", id: "u", content: [] },
+    });
+    expect(state.snapshot("boot", true).apiRetry).not.toBeNull();
+    notify(state, "item/agentMessage/delta", { turnId: "turn-a", itemId: "m", delta: "Hi" });
+    expect(state.snapshot("boot", true).apiRetry).toBeNull();
+    notify(state, "error", retry(1, "again"));
+    notify(state, "item/started", {
+      turnId: "turn-a",
+      item: { type: "reasoning", id: "r", summary: [], content: [] },
+    });
+    expect(state.snapshot("boot", true).apiRetry).toBeNull();
+    // Another turn's report is not this turn's retry.
+    expect(notify(state, "error", { ...retry(1, "x"), turnId: "turn-b" }).changed).toBe(false);
+    expect(state.snapshot("boot", true).apiRetry).toBeNull();
+  });
+
+  it("uses the final error when the completion carries none, and keeps details", () => {
+    const state = managed();
+    start(state);
+    notify(state, "error", {
+      error: {
+        message: "Stream failed.",
+        additionalDetails: "upstream closed",
+        codexErrorInfo: "other",
+      },
+      willRetry: false,
+      turnId: "turn-a",
+    });
+    expect(notify(state, "turn/completed", failedTurn(null)).event).toMatchObject({
+      id: "codex-turn-error:turn-a",
+      content: "Stream failed.\nupstream closed",
+      turn_meta: { outcome: "failed" },
+    });
+    // A completed or interrupted turn ends as before.
+    start(state, "turn-b");
+    notify(state, "item/completed", {
+      turnId: "turn-b",
+      item: { type: "agentMessage", id: "m", text: "Done." },
+    });
+    expect(
+      notify(state, "turn/completed", {
+        turn: { id: "turn-b", status: "completed", durationMs: 5 },
+      }).event,
+    ).toMatchObject({ id: "m", turn_meta: { outcome: "completed", duration_ms: 5 } });
+  });
+
+  it("restores the error row of a failed turn from the native thread", () => {
+    const state = managed();
+    const { events } = state.hydrate({
+      id: threadId,
+      status: { type: "systemError" },
+      turns: [
+        {
+          id: "turn-a",
+          status: "failed",
+          error: { message: unauthorized, codexErrorInfo: "unauthorized" },
+          completedAt: 1_793_174_557,
+          durationMs: 783,
+          items: [{ type: "userMessage", id: "u", content: [{ type: "text", text: "Hello" }] }],
+        },
+      ],
+    });
+    expect(events.map((event) => [event.id, event.turn_meta ?? null])).toEqual([
+      ["u", null],
+      ["codex-turn-error:turn-a", { outcome: "failed", duration_ms: 783 }],
+    ]);
+    expect(state.snapshot("boot", true)).toMatchObject({ status: "idle", reason: null });
+  });
+});
+
+// Requests as CLI 0.163.0 sent them while a local MCP stub ran its tools.
+describe("managed Codex server requests", () => {
+  const elicitation = (id: number | string, params: Record<string, unknown>) => ({
+    id,
+    method: "mcpServer/elicitation/request",
+    params: { threadId, turnId: "turn-a", serverName: "stubmcp", _meta: null, ...params },
+  });
+  const toolApproval = elicitation(7, {
+    mode: "form",
+    _meta: {
+      codex_approval_kind: "mcp_tool_call",
+      persist: ["session", "always"],
+      tool_title: "Write stub record",
+      tool_description: "Stub tool that changes a stub record.",
+      tool_params: { name: "x" },
+      tool_params_display: [],
+    },
+    message: 'Allow the stubmcp MCP server to run tool "write"?',
+    requestedSchema: { type: "object", properties: {} },
+  });
+
+  it("shows the approval Codex asks before an MCP tool runs", () => {
+    const state = managed();
+    start(state);
+    expect(state.apply(toolApproval)).toEqual({ changed: true });
+    const live = state.snapshot("boot", true);
+    expect(live).toMatchObject({ status: "awaiting-approval", stopEnabled: true });
+    const [approval] = live.approvals as Record<string, unknown>[];
+    expect(approval).toMatchObject({
+      requestId: 7,
+      turnId: "turn-a",
+      method: "mcpServer/elicitation/request",
+      toolName: "stubmcp · Write stub record",
+      input: {
+        kind: "tool-approval",
+        server: "stubmcp",
+        message: 'Allow the stubmcp MCP server to run tool "write"?',
+        tool: "Write stub record",
+        description: "Stub tool that changes a stub record.",
+        params: { name: "x" },
+      },
+      availableDecisions: ["accept", "decline", "cancel"],
+      supported: true,
+      requiresExtendedApproval: false,
+    });
+    // "Always" would write the user's Codex config; only this session is offered.
+    expect(approval!.decisionOptions).toEqual([
+      expect.objectContaining({ label: "accept", decision: { action: "accept", content: {} } }),
+      expect.objectContaining({
+        label: "acceptForSession",
+        scope: "session",
+        decision: { action: "accept", content: {}, _meta: { persist: "session" } },
+      }),
+      expect.objectContaining({ label: "decline", decision: { action: "decline" } }),
+      expect.objectContaining({ label: "cancel", decision: { action: "cancel" } }),
+    ]);
+    notify(state, "serverRequest/resolved", { requestId: 7 });
+    expect(state.snapshot("boot", true)).toMatchObject({ status: "running", approvals: [] });
+    expect(state.hasResolvedRequest("turn-a", 7)).toBe(true);
+  });
+
+  it("offers only declining for a form with fields or a link", () => {
+    const state = managed();
+    start(state);
+    state.apply(
+      elicitation("form", {
+        mode: "form",
+        message: "Pick a color for the stub.",
+        requestedSchema: {
+          type: "object",
+          properties: { color: { type: "string", enum: ["red", "blue"], title: "Color" } },
+          required: ["color"],
+        },
+      }),
+    );
+    state.apply(
+      elicitation("link", {
+        mode: "url",
+        message: "Open the stub page to finish.",
+        url: "https://example.invalid/stub",
+        elicitationId: "stub-elicitation-1",
+      }),
+    );
+    state.apply(
+      elicitation("confirm", {
+        mode: "form",
+        message: "Continue?",
+        requestedSchema: { type: "object", properties: {} },
+      }),
+    );
+    expect(
+      (state.snapshot("boot", true).approvals as Record<string, unknown>[]).map((approval) => [
+        approval.requestId,
+        (approval.input as Record<string, unknown>).kind,
+        approval.availableDecisions,
+        approval.decisionOptions,
+      ]),
+    ).toEqual([
+      ["form", "form", ["decline"], undefined],
+      ["link", "url", ["decline"], undefined],
+      // A server's own confirmation; cancelling only dismisses it, so it is not offered.
+      ["confirm", "confirmation", ["accept", "decline"], undefined],
+    ]);
+    const [form, link] = state.snapshot("boot", true).approvals as Record<string, any>[];
+    expect(form!.input.fields).toEqual([{ name: "color", title: "Color" }]);
+    expect(link!.input.url).toBe("https://example.invalid/stub");
+  });
+
+  it("declines a request it cannot show with the running turn", () => {
+    const state = managed();
+    expect(state.apply(toolApproval)).toEqual({
+      changed: false,
+      reply: { id: 7, result: { action: "decline" } },
+    });
+    start(state);
+    expect(
+      state.apply({ ...toolApproval, params: { ...toolApproval.params, turnId: "turn-b" } }),
+    ).toMatchObject({ reply: { result: { action: "decline" } } });
+    expect(state.snapshot("boot", true).approvals).toEqual([]);
+  });
+
+  it("answers any other request with an error instead of waiting forever", () => {
+    const state = managed();
+    start(state);
+    const revision = state.revision;
+    expect(
+      state.apply({
+        id: 9,
+        method: "item/tool/call",
+        params: { threadId, turnId: "turn-a", callId: "c", tool: "x", arguments: {} },
+      }),
+    ).toEqual({
+      changed: false,
+      reply: {
+        id: 9,
+        error: { code: -32601, message: "AgentKib does not handle item/tool/call" },
+      },
+    });
+    expect(state.revision).toBe(revision);
+    expect(state.snapshot("boot", true)).toMatchObject({
+      status: "running",
+      reason: null,
+      approvals: [],
+    });
+  });
+
+  it("sends those replies through the app-server session", async () => {
+    const session = Object.assign(new EventEmitter(), {
+      connected: true,
+      respond: vi.fn(),
+      respondError: vi.fn(),
+      close: vi.fn(async () => {}),
+    });
+    const state = managed();
+    const bridge = new ManagedCodexEventBridge(
+      session as unknown as CodexAppServerSession,
+      state,
+      () => {},
+    );
+    session.emit("serverRequest", toolApproval);
+    session.emit("notification", {
+      method: "turn/started",
+      params: { threadId, turn: { id: "turn-a", status: "inProgress" } },
+    });
+    session.emit("serverRequest", { id: 9, method: "attestation/generate", params: {} });
+    await bridge.flush();
+    expect(session.respond).toHaveBeenCalledExactlyOnceWith(7, { action: "decline" });
+    expect(session.respondError).toHaveBeenCalledExactlyOnceWith(
+      9,
+      -32601,
+      "AgentKib does not handle attestation/generate",
+    );
+    expect(state.snapshot("boot", true)).toMatchObject({ status: "running", reason: null });
   });
 });
 

@@ -494,12 +494,13 @@ describe("Codex writer lock replaces Desktop ownership observations", () => {
               experimentalEnabled: true,
             });
       expect(result).toMatchObject({ accepted: true, completed: true });
-      // The preset probe fails on this fixture, as on a CLI without collaboration modes.
+      // The preset and queue probes fail on this fixture, as on a CLI without those methods.
       expect(f.app.sent).toEqual([
         "model/list",
         "collaborationMode/list",
         "thread/goal/get",
         "thread/resume",
+        "thread/queue/list",
       ]);
       expect(readManagedRecord(f.root, f.indexedId)?.released).toBe(false);
       expect(f.command).not.toHaveBeenCalled();
@@ -551,12 +552,13 @@ describe("Codex writer lock replaces Desktop ownership observations", () => {
             });
       expect(result).toMatchObject({ accepted: true, completed: true });
       expect(f.start).toHaveBeenCalledOnce();
-      // The preset probe fails on this fixture, as on a CLI without collaboration modes.
+      // The preset and queue probes fail on this fixture, as on a CLI without those methods.
       expect(f.app.sent).toEqual([
         "model/list",
         "collaborationMode/list",
         "thread/goal/get",
         "thread/resume",
+        "thread/queue/list",
       ]);
       expect(readManagedRecord(f.root, f.indexedId)?.released).toBe(false);
       expect(f.command).not.toHaveBeenCalled();
@@ -596,7 +598,7 @@ describe("Codex writer lock replaces Desktop ownership observations", () => {
         controlOutcome: "not-dispatched",
         reason: "codex-owner-busy",
       });
-      // The preset probe fails on this fixture, as on a CLI without collaboration modes.
+      // The preset probe fails on this fixture; the rejected resume ends startup before the queue probe.
       expect(f.app.sent).toEqual([
         "model/list",
         "collaborationMode/list",
@@ -645,7 +647,7 @@ describe("Codex writer lock replaces Desktop ownership observations", () => {
         controlOutcome: "not-dispatched",
         reason: "codex-owner-busy",
       });
-      // The preset probe fails on this fixture, as on a CLI without collaboration modes.
+      // The preset probe fails on this fixture; the rejected resume ends startup before the queue probe.
       expect(f.app.sent).toEqual([
         "model/list",
         "collaborationMode/list",
@@ -681,12 +683,13 @@ describe("Codex writer lock replaces Desktop ownership observations", () => {
               experimentalEnabled: true,
             });
       expect(result).toMatchObject({ accepted: true, completed: true });
-      // The preset probe fails on this fixture, as on a CLI without collaboration modes.
+      // The preset and queue probes fail on this fixture, as on a CLI without those methods.
       expect(f.app.sent).toEqual([
         "model/list",
         "collaborationMode/list",
         "thread/goal/get",
         "thread/resume",
+        "thread/queue/list",
       ]);
       expect(readUnknownManagedCommands(f.root, f.indexedId)).toEqual([]);
     },

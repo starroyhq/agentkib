@@ -166,6 +166,8 @@ function fixture(
       { name: "Default", mode: "default", model: null, reasoning_effort: null },
     ],
   };
+  let queueSupported = true;
+  let exitOn: string | undefined;
   const servers: OfflineServer[] = [];
   class OfflineServer extends EventEmitter {
     connected = true;
@@ -175,6 +177,12 @@ function fixture(
       dispatch?.();
       methods.push(method);
       requests.push({ method, params });
+      if (method === exitOn) {
+        // The CLI exits before it answers.
+        this.connected = false;
+        this.emit("close");
+        throw new Error("app-server exited");
+      }
       if (method === "thread/resume" && nativeFailure) throw nativeFailure;
       if (method === "model/list") return { data: models };
       if (method === "collaborationMode/list") {
@@ -219,7 +227,15 @@ function fixture(
             clientUserMessageId: (params as Record<string, unknown>).clientUserMessageId,
           },
         };
-      if (method === "thread/queue/list") return { data: [], nextCursor: null };
+      if (method === "thread/queue/list") {
+        // CLI 0.147.0's answer; the connection stays open.
+        if (!queueSupported)
+          throw new CodexAppServerError({
+            code: -32600,
+            message: "Invalid request: unknown variant `thread/queue/list`, expected one of …",
+          });
+        return { data: [], nextCursor: null };
+      }
       if (["thread/resume", "thread/start", "thread/fork", "thread/unarchive"].includes(method))
         return {
           thread: {
@@ -360,6 +376,12 @@ function fixture(
     setCollaborationModes: (value: unknown) => {
       collaborationModes = value;
     },
+    withoutQueue: () => {
+      queueSupported = false;
+    },
+    exitOn: (method: string) => {
+      exitOn = method;
+    },
     mismatchReply: (field: "top" | "thread") => {
       wrongReplyCwd = field;
     },
@@ -440,6 +462,97 @@ describe("Codex manual compaction", () => {
       controlOutcome: "not-dispatched",
     });
     expect(f.methods).not.toContain("thread/compact/start");
+  });
+});
+
+describe("Codex start probes", () => {
+  it.each(["collaborationMode/list", "thread/queue/list"])(
+    "fail the start, without a turn, when the CLI exits answering %s",
+    async (method) => {
+      const f = fixture();
+      f.exitOn(method);
+      expect(await f.send()).toMatchObject({ accepted: false, controlOutcome: "not-dispatched" });
+      expect(f.methods).toContain(method);
+      expect(f.methods).not.toContain("turn/start");
+      // The queue is asked after thread/resume, so that adoption's outcome is unconfirmed, as
+      // with any failure after the resume was sent.
+      expect(readUnknownManagedCommands(f.root, f.summary.id)).toEqual(
+        method === "thread/queue/list"
+          ? [expect.objectContaining({ evidence: expect.objectContaining({ operation: "adopt" }) })]
+          : [],
+      );
+    },
+  );
+});
+
+describe("Codex queued messages", () => {
+  it("are not offered by a CLI without thread/queue, such as 0.147.0", async () => {
+    const f = fixture();
+    f.withoutQueue();
+    const features = async () =>
+      (
+        (await f.web.managedQuery({
+          operation: "capabilities",
+          sessionId: f.summary.id,
+          experimentalEnabled: true,
+        })) as { features: Record<string, { available: boolean; reason?: string }> }
+      ).features;
+    expect(await f.send()).toMatchObject({ accepted: true });
+    const capabilities = { features: await features() };
+    for (const operation of [
+      "queue-list",
+      "queue-add",
+      "queue-update",
+      "queue-delete",
+      "queue-reorder",
+    ])
+      expect(capabilities.features[operation]).toEqual({
+        available: false,
+        reason: "unsupported-codex-cli-version",
+      });
+    // Steering stays: it is turn/steer.
+    expect(capabilities.features.steer).toEqual({ available: true });
+    await expect(
+      f.web.managedQueueList({ operation: "queue-list", sessionId: f.summary.id }),
+    ).rejects.toThrow("unsupported-codex-cli-version");
+    const state = await f.live();
+    const before = f.methods.filter((method) => method === "thread/queue/add").length;
+    expect(
+      await f.web.managedControl({
+        operation: "queue-add",
+        sessionId: f.summary.id,
+        requestId: randomUUID(),
+        deviceId: "fixture",
+        runtimeBootId: state.runtimeBootId,
+        expectedRevision: state.revision,
+        experimentalEnabled: true,
+        turnId: "new-turn",
+        text: "Later",
+      }),
+    ).toMatchObject({
+      accepted: false,
+      controlOutcome: "not-dispatched",
+      error: "unsupported-codex-cli-version",
+    });
+    expect(f.methods.filter((method) => method === "thread/queue/add")).toHaveLength(before);
+    const latest = await f.live();
+    expect(
+      await f.web.managedControl({
+        operation: "queue-delete",
+        sessionId: f.summary.id,
+        requestId: randomUUID(),
+        deviceId: "fixture",
+        runtimeBootId: latest.runtimeBootId,
+        expectedRevision: latest.revision,
+        experimentalEnabled: true,
+        queuedSubmissionId: "queued-1",
+      }),
+    ).toMatchObject({
+      accepted: false,
+      controlOutcome: "not-dispatched",
+      error: "unsupported-codex-cli-version",
+    });
+    expect(readUnknownManagedCommands(f.root, f.summary.id)).toEqual([]);
   });
 });
 

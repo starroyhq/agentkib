@@ -276,6 +276,11 @@ type ManagedRunner = {
   persist: ReturnType<typeof createManagedSnapshotWriter>;
   release: () => void;
   planVerified: boolean;
+  /**
+   * Whether thread/queue/* answered at start; null until then. 0.147.0, the writer-lock
+   * minimum, has no native queue.
+   */
+  queueVerified: boolean | null;
   idleSince: number | null;
   observed: boolean;
   retiring?: boolean;
@@ -1114,6 +1119,7 @@ export class WebReadRequests {
     }
     if (runner?.session.connected) {
       if (record.native_id !== runner.state.nativeId) throw new Error("native-session-unconfirmed");
+      if (runner.queueVerified === false) throw new Error("unsupported-codex-cli-version");
       return readManagedQueue(runner.session, record.native_id, request.limit ?? 100);
     }
 
@@ -1730,17 +1736,24 @@ export class WebReadRequests {
         compacting ? "session-compacting" : "session-requires-running-turn",
       );
       set("stop", live.stopEnabled === true, "no-active-turn");
-      set("queue-list", managed && verified && healthy && runnerConnected, controlReason);
+      // false once this runner's CLI declined thread/queue/list; null before it was asked.
+      const queueMissing = runner?.queueVerified === false;
+      const queueReason = queueMissing ? "unsupported-codex-cli-version" : controlReason;
+      set(
+        "queue-list",
+        managed && verified && healthy && runnerConnected && !queueMissing,
+        queueReason,
+      );
       set(
         "queue-add",
-        managed && verified && healthy && running && !unknown,
-        "session-requires-running-turn",
+        managed && verified && healthy && running && !unknown && !queueMissing,
+        queueMissing ? queueReason : "session-requires-running-turn",
       );
       for (const operation of ["queue-update", "queue-delete", "queue-reorder"])
         set(
           operation,
-          managed && verified && healthy && runnerConnected && !unknown,
-          controlReason,
+          managed && verified && healthy && runnerConnected && !unknown && !queueMissing,
+          queueReason,
         );
       for (const operation of ["queue-start", "worktree-create", "branch-switch"])
         set(operation, false, "native-operation-not-integrated");
@@ -2185,6 +2198,8 @@ export class WebReadRequests {
         params = { threadId: record.native_id, turnId: request.turnId };
         method = "turn/interrupt";
       } else if (request.operation === "steer" || request.operation === "queue-add") {
+        if (request.operation === "queue-add" && !runner.queueVerified)
+          throw new Error("unsupported-codex-cli-version");
         const allowedStatus =
           request.operation === "steer"
             ? snapshot.status === "running"
@@ -2207,6 +2222,7 @@ export class WebReadRequests {
               };
         method = request.operation === "steer" ? "turn/steer" : "thread/queue/add";
       } else if (["queue-update", "queue-delete", "queue-reorder"].includes(request.operation)) {
+        if (!runner.queueVerified) throw new Error("unsupported-codex-cli-version");
         const queue = await readManagedQueue(runner.session, record.native_id!, 100);
         const rows = queue.data.filter(isObject);
         if (!queue.complete) throw new Error("queue-too-large");
@@ -3392,6 +3408,7 @@ export class WebReadRequests {
         persist,
         release: release ?? (() => {}),
         planVerified: false,
+        queueVerified: null,
         idleSince: null,
         observed: observedAtStart,
       };
@@ -3518,6 +3535,17 @@ export class WebReadRequests {
       mutableRecord.default_model = defaultModel?.id ?? null;
       mutableRecord.default_effort = defaultModel?.defaultEffort ?? null;
       mutableRecord.default_service_tier = defaultModel?.defaultServiceTier ?? null;
+      // Queued messages use thread/queue/*, which 0.148.0 adds after the writer-lock minimum:
+      // 0.147.0 answers this read with -32600 "unknown variant" and stays connected. Only a
+      // read is tried, since a write to a missing method would leave its outcome unknown.
+      // It needs the loaded thread: 0.163.0 cannot list an unloaded one's queue.
+      try {
+        await session.request("thread/queue/list", { threadId: attachedId, limit: 1 });
+        runner.queueVerified = true;
+      } catch (error) {
+        if (!session.connected) throw error;
+        runner.queueVerified = false;
+      }
       await bridge.flush();
       this.#assertOpen();
       const hydrated = state.hydrate(nativeThread, true, readRevision);

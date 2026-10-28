@@ -453,9 +453,9 @@ const reasons: Record<Locale, Record<string, string>> = {
     "claude-command-owner-only":
       "这条命令可能更改这台电脑上的 Claude Code 设置或文件，只能在这台电脑上的 AgentKib 或终端中使用，本次消息尚未发送。",
     "claude-model-unsupported":
-      "Claude Code 的模型列表里没有这个模型，下一轮模型没有改动。请使用下一轮设置里列出的模型，名称或完整模型 ID 都可以。",
+      "下一轮设置只支持其中列出的模型，这个模型不在列表里，下一轮模型没有改动。请改用列出的模型，名称或完整模型 ID 都可以。",
     "claude-effort-unsupported":
-      "所选模型不支持这个思考强度，或没有这个级别，下一轮设置没有改动。思考强度可以是 low、medium、high、xhigh 或 max，请在下一轮设置里调整。",
+      "下一轮设置的思考强度只能是 low、medium、high、xhigh 或 max，而且要是所选模型支持的级别。下一轮设置没有改动，请在下一轮设置里选择。",
     permission_denied: "此浏览器尚未获得对应权限，请在这台电脑上的 AgentKib 授权。",
   },
   "zh-TW": {
@@ -534,9 +534,9 @@ const reasons: Record<Locale, Record<string, string>> = {
     "claude-command-owner-only":
       "這個指令可能變更這台電腦上的 Claude Code 設定或檔案，只能在這台電腦上的 AgentKib 或終端機中使用，本次訊息尚未傳送。",
     "claude-model-unsupported":
-      "Claude Code 的模型清單中沒有這個模型，下一輪模型沒有變更。請使用下一輪設定中列出的模型，名稱或完整模型 ID 都可以。",
+      "下一輪設定只支援其中列出的模型，這個模型不在清單中，下一輪模型沒有變更。請改用列出的模型，名稱或完整模型 ID 都可以。",
     "claude-effort-unsupported":
-      "所選模型不支援這個思考強度，或沒有這個等級，下一輪設定沒有變更。思考強度可以是 low、medium、high、xhigh 或 max，請在下一輪設定中調整。",
+      "下一輪設定的思考強度只能是 low、medium、high、xhigh 或 max，而且要是所選模型支援的等級。下一輪設定沒有變更，請在下一輪設定中選擇。",
     permission_denied: "此瀏覽器尚未取得對應權限，請在這台電腦上的 AgentKib 授權。",
   },
   "en-US": {
@@ -624,9 +624,9 @@ const reasons: Record<Locale, Record<string, string>> = {
     "claude-command-owner-only":
       "This command can change Claude Code settings or files on this computer, so it only runs from AgentKib on this computer or a terminal. This message was not sent.",
     "claude-model-unsupported":
-      "This model is not in Claude Code's model list. The next-turn model was not changed. Use a model listed in Next-turn settings, by its name or full model ID.",
+      "Next-turn settings support only the models they list, and this one is not listed. The next-turn model was not changed. Use a listed model, by its name or full model ID.",
     "claude-effort-unsupported":
-      "The model does not support this reasoning effort, or the level does not exist. Next-turn settings were not changed. Reasoning effort can be low, medium, high, xhigh, or max; adjust it in Next-turn settings.",
+      "Next-turn reasoning effort can be only low, medium, high, xhigh, or max, and only a level the selected model supports. Next-turn settings were not changed; choose a level in Next-turn settings.",
     permission_denied:
       "This browser needs the corresponding permission. Grant it in AgentKib on this computer.",
   },
@@ -715,9 +715,9 @@ const reasons: Record<Locale, Record<string, string>> = {
     "claude-command-owner-only":
       "このコマンドはこのコンピューター上の Claude Code の設定やファイルを変更する可能性があるため、このコンピューター上の AgentKib またはターミナルからのみ実行できます。このメッセージは送信されていません。",
     "claude-model-unsupported":
-      "このモデルは Claude Code のモデル一覧にありません。次のターンのモデルは変更されていません。次のターンの設定に表示されるモデルを、名前か完全なモデル ID で指定してください。",
+      "次のターンの設定で使えるのは一覧にあるモデルだけで、このモデルは一覧にありません。次のターンのモデルは変更されていません。一覧にあるモデルを、名前か完全なモデル ID で指定してください。",
     "claude-effort-unsupported":
-      "選択したモデルはこの推論の強度に対応していないか、その強度がありません。次のターンの設定は変更されていません。推論の強度は low、medium、high、xhigh、max のいずれかです。次のターンの設定で調整してください。",
+      "次のターンの推論の強度は low、medium、high、xhigh、max のいずれかで、選択したモデルが対応しているものに限られます。次のターンの設定は変更されていません。次のターンの設定で選んでください。",
     permission_denied:
       "このブラウザーには対応する権限が必要です。このコンピューター上の AgentKib で権限を付与してください。",
   },

@@ -80,7 +80,7 @@ describe("trusted desktop conversation routes", () => {
     expect(await service.localRequest("/pair", {})).toMatchObject({ status: 404 });
   });
 
-  it.each(["compact", "terminals-clean"])(
+  it.each(["compact", "terminals-clean", "delete"])(
     "sends the Codex %s action over the desktop route",
     async (operation) => {
       runtime.mockImplementation(async (params: unknown) =>

@@ -12,6 +12,7 @@ import type {
   UserQuestionRequest,
 } from "../../../../../packages/web-client/src/index";
 import {
+  type CompactAction,
   ContextUsageIndicator,
   useObservedContextUsage,
 } from "@/features/sessions/conversation/features/sessions/context-usage";
@@ -568,7 +569,8 @@ export function ClaudeSessionPanel({
     }
   }, [live, interaction, online, sessionId]);
 
-  async function mutate(operation: string, body: Record<string, unknown> = {}) {
+  /** A `command` send is a slash command sent on its own, so the draft and attachments stay. */
+  async function mutate(operation: string, body: Record<string, unknown> = {}, command = false) {
     if (
       flight.current ||
       pending ||
@@ -601,7 +603,7 @@ export function ClaudeSessionPanel({
           setSubmittedDraft({
             requestId: entry.requestId,
             sessionId,
-            text: draft.trim(),
+            text: command ? String(body.text) : draft.trim(),
             priorUserIds: new Set(
               history?.events
                 .filter((event) => event.kind === "user-message")
@@ -644,8 +646,10 @@ export function ClaudeSessionPanel({
             setInteraction(undefined);
             if (operation === "create" && result.sessionId) setSessionId(result.sessionId);
             if (operation === "send") {
-              setDraft("");
-              setAttachments([]);
+              if (!command) {
+                setDraft("");
+                setAttachments([]);
+              }
               setSubmittedDraft((current) =>
                 current?.requestId === entry.requestId ? { ...current, accepted: true } : current,
               );
@@ -911,6 +915,21 @@ export function ClaudeSessionPanel({
     !controlReady ||
     !!continuationError ||
     sessionId !== observedSessionId;
+  // Claude Code's /compact as in the conversation page: a message of its own, the draft stays.
+  const compact: CompactAction | undefined =
+    live?.executionMode === "claude-managed" && live.sessionId === sessionId
+      ? {
+          // There is nothing to summarize before the first message.
+          enabled:
+            !blocked &&
+            !compacting &&
+            !!live.sendEnabled &&
+            live.status === "idle" &&
+            !!history?.events.length,
+          afterTurn: live.status === "running",
+          run: () => void mutate("send", { text: "/compact", attachmentIds: [] }, true),
+        }
+      : undefined;
   const interactionCurrent =
     !!interaction &&
     interaction.supported &&
@@ -1416,6 +1435,7 @@ export function ClaudeSessionPanel({
                     locale={locale}
                     online={online}
                     view={usageView}
+                    compact={compact}
                   />
                   <Button
                     disabled={

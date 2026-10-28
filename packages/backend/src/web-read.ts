@@ -18,7 +18,12 @@ import {
 import { canonicalize, pathIdentity } from "./paths";
 import { within } from "./files";
 import { resolveCommand } from "./command-resolution";
-import { CodexAppServerReader, CodexAppServerSession, codexWriterBusy } from "./codex-app-server";
+import {
+  CodexAppServerReader,
+  CodexAppServerSession,
+  codexThreadMissing,
+  codexWriterBusy,
+} from "./codex-app-server";
 import { CodexRuntimePreflight } from "./codex-runtime-preflight";
 import { codexResumeCommand } from "./codex-resume-command";
 import { CodexFollowerBridge } from "./codex-follower-bridge";
@@ -33,8 +38,10 @@ import { acquireCodexFollowerOperationLock } from "./codex-follower-operation-lo
 import {
   claimManagedCommand,
   createManagedSnapshotWriter,
+  deleteManagedSessions,
   dispatchManagedCommand,
   finishManagedCommand,
+  listManagedRecords,
   managedSessionHasUnknownCommands,
   openManagedLedger,
   persistManagedGoal,
@@ -111,6 +118,22 @@ const managedQueueSchema = z
 const managedUnarchiveSchema = z
   .object({
     operation: z.literal("unarchive"),
+    requestId: z.string().uuid(),
+    deviceId: z
+      .string()
+      .min(1)
+      .max(256)
+      .regex(/^[A-Za-z0-9_:-]+$/),
+    sessionId: z.string().min(1).max(256),
+    runtimeBootId: z.string().min(1).max(256),
+    expectedRevision: z.number().int().nonnegative(),
+    experimentalEnabled: z.boolean(),
+  })
+  .strict();
+
+const managedDeleteSchema = z
+  .object({
+    operation: z.literal("delete"),
     requestId: z.string().uuid(),
     deviceId: z
       .string()
@@ -1311,6 +1334,267 @@ export class WebReadRequests {
     }
   }
 
+  /** Permanently deletes the conversation in Codex (thread/delete) and AgentKib's copies of it. */
+  managedDelete(value: unknown) {
+    return this.#runOperation(async () => {
+      const request = managedDeleteSchema.parse(value);
+      const fingerprint = createHash("sha256").update(stableJson(value)).digest("hex");
+      // Like a control, this keeps idle retirement away from a runner the delete closes itself.
+      const admission = this.#controlSessions.get(request.sessionId) ?? {
+        count: 0,
+        observed: false,
+      };
+      admission.count += 1;
+      this.#controlSessions.set(request.sessionId, admission);
+      try {
+        return await this.#managedDelete(request, fingerprint);
+      } finally {
+        admission.count -= 1;
+        if (admission.count === 0) this.#controlSessions.delete(request.sessionId);
+      }
+    });
+  }
+
+  async #managedDelete(request: z.infer<typeof managedDeleteSchema>, fingerprint: string) {
+    const previous = replayManagedCommand(this.dataDir, request.requestId, fingerprint);
+    if (previous) return previous;
+    if (!request.experimentalEnabled || request.runtimeBootId !== this.#bootId)
+      throw new Error("stale-or-disabled-control");
+    let workspaceId: string | null = null;
+    const evidence = () => ({
+      operation: "delete",
+      workspaceId,
+      runtimeBootId: request.runtimeBootId,
+      expectedRevision: request.expectedRevision,
+      executionMode: "codex-managed",
+      turnId: null,
+      nativeRequestId: null,
+    });
+    const outcome = (fields: Record<string, unknown>, requestId = request.requestId) => ({
+      sessionId: request.sessionId,
+      ...fields,
+      requestId,
+      runtimeBootId: this.#bootId,
+    });
+    // Refusals keep a receipt as well, so a lost answer replays instead of looking unknown.
+    const reject = (reason: string) => {
+      const result = outcome({
+        accepted: false,
+        completed: false,
+        controlOutcome: "not-dispatched",
+        reason,
+      });
+      const claimed = claimManagedCommand(
+        this.dataDir,
+        request.requestId,
+        request.sessionId,
+        fingerprint,
+        request.deviceId,
+        evidence(),
+      );
+      if (claimed) return claimed;
+      finishManagedCommand(this.dataDir, request.requestId, result);
+      return result;
+    };
+    let source: ManagedRecord;
+    let home: string;
+    let workspace: string;
+    try {
+      source = await this.#inactiveRecord(request.sessionId);
+      home = this.#assertManagedHome(source);
+      workspace = canonicalize(this.store.workspacePath(source.workspace_id));
+    } catch (error) {
+      return reject(error instanceof Error ? error.message : "session-unavailable");
+    }
+    workspaceId = source.workspace_id;
+    const nativeId = source.native_id ?? null;
+    // Only an earlier delete may still be unconfirmed: retrying it is how that outcome resolves.
+    const unconfirmed = readUnknownManagedCommands(this.dataDir, source.id);
+    if (unconfirmed.some((command) => command.evidence?.operation !== "delete"))
+      return reject("control-outcome-unconfirmed");
+    if (nativeId) {
+      const checked = await this.#preflight.check();
+      if (checked.reason) return reject(checked.reason);
+    }
+    if (this.#startingRunners.has(source.id)) return reject("session-busy");
+    const runner = this.#managedRunners.get(source.id);
+    if (runner?.retiring || (runner && !runner.session.connected))
+      return reject(runner.retirementFailed ? "control-outcome-unconfirmed" : "session-retiring");
+    if (runner) {
+      const snapshot = await runner.bridge.snapshot(this.#bootId, true);
+      if (activityBlocks(snapshot, "delete")) return reject("session-compacting");
+      if (snapshot.reason || snapshot.status !== "idle") return reject("session-busy");
+      if (snapshot.revision !== request.expectedRevision)
+        return reject("stale-or-disabled-control");
+    } else if (request.expectedRevision !== (source.snapshot?.revision ?? 0))
+      return reject("stale-or-disabled-control");
+    // Codex lets one process write a thread. Another one holding it (Codex Desktop, a terminal)
+    // refuses the delete, so say so before starting anything.
+    const lock = nativeId ? path.join(home, "thread-writer-locks", `${nativeId}.lock`) : null;
+    const ownerBusy = () => {
+      try {
+        return lock !== null && existingFileLeaseBusy(lock);
+      } catch {
+        throw new Error("codex-owner-check-unavailable");
+      }
+    };
+    if (!runner) {
+      try {
+        if (ownerBusy()) {
+          this.#ownership.set(source.id, { checkedAt: Date.now(), reason: "codex-owner-busy" });
+          return reject("codex-owner-busy");
+        }
+      } catch (error) {
+        return reject(error instanceof Error ? error.message : "codex-owner-check-unavailable");
+      }
+    }
+    const claimed = claimManagedCommand(
+      this.dataDir,
+      request.requestId,
+      source.id,
+      fingerprint,
+      request.deviceId,
+      evidence(),
+    );
+    if (claimed) return claimed;
+    let dispatched = false;
+    let session: CodexAppServerSession | undefined;
+    let release: (() => void) | undefined;
+    try {
+      if (runner) {
+        await runner.bridge.flush();
+        const current = await runner.bridge.snapshot(this.#bootId, true);
+        assertActivityAllows(current, "delete");
+        if (
+          current.reason ||
+          current.status !== "idle" ||
+          current.revision !== request.expectedRevision
+        )
+          throw new Error("session-busy");
+        // AgentKib's own app-server holds the thread; its lock frees once that process exits.
+        await this.#closeManagedRunner(source.id, runner, () => {
+          const latest = readManagedRecords(this.dataDir, this.store).find(
+            (item) => item.id === source.id,
+          );
+          if (!latest || latest.native_id !== source.native_id)
+            throw new Error("session-unavailable");
+          latest.released = true;
+          latest.snapshot = {
+            ...(isObject(latest.snapshot) ? latest.snapshot : {}),
+            status: "released",
+            sendEnabled: false,
+          };
+          saveManagedRecord(this.dataDir, latest as unknown as Record<string, unknown>);
+        });
+        if (ownerBusy()) throw new Error("codex-owner-busy");
+      }
+      release = acquireManagedSessionLease(this.dataDir, source.id);
+      if (nativeId) {
+        const executable = resolveCommand("codex", this.environment);
+        if (!executable) throw new Error("codex-cli-unavailable");
+        this.#assertOpen();
+        session = await CodexAppServerSession.start(
+          executable,
+          workspace,
+          home,
+          { ...process.env, ...this.environment },
+          undefined,
+          (started) => {
+            session = started;
+            this.#trackTransientSession(started);
+          },
+        );
+        this.#assertOpen();
+        try {
+          await session.request("thread/delete", { threadId: nativeId }, () => {
+            this.#assertOpen();
+            dispatchManagedCommand(this.dataDir, request.requestId);
+            dispatched = true;
+          });
+        } catch (error) {
+          // A retry after an unconfirmed delete, or a thread already deleted in Codex, finds
+          // no rollout: the conversation is gone either way.
+          if (!dispatched || !codexThreadMissing(error)) throw error;
+        }
+      } else {
+        // No thread was ever confirmed and no command is unconfirmed: nothing exists in Codex.
+        dispatchManagedCommand(this.dataDir, request.requestId);
+        dispatched = true;
+      }
+      this.#forgetDeletedSession(source, home);
+      const result = outcome({ accepted: true, completed: true, deleted: true });
+      finishManagedCommand(this.dataDir, request.requestId, result);
+      for (const prior of unconfirmed)
+        finishManagedCommand(
+          this.dataDir,
+          prior.requestId,
+          outcome({ accepted: true, completed: true, deleted: true }, prior.requestId),
+        );
+      return result;
+    } catch (error) {
+      const busy =
+        codexWriterBusy(error) || (error instanceof Error && error.message === "codex-owner-busy");
+      if (busy)
+        this.#ownership.set(source.id, { checkedAt: Date.now(), reason: "codex-owner-busy" });
+      const definite = !dispatched || codexWriterBusy(error);
+      const result = outcome({
+        accepted: false,
+        completed: false,
+        controlOutcome: definite ? "not-dispatched" : "unknown",
+        reason: definite
+          ? busy
+            ? "codex-owner-busy"
+            : error instanceof Error
+              ? error.message
+              : "control-preflight-rejected"
+          : "control-outcome-unconfirmed",
+      });
+      if (definite) finishManagedCommand(this.dataDir, request.requestId, result);
+      return result;
+    } finally {
+      try {
+        await session?.close();
+      } finally {
+        if (!session || session.closed) release?.();
+        else session.once("close", () => release?.());
+      }
+    }
+  }
+
+  /** Remove every AgentKib copy of a deleted conversation: ledger, index and its aliases. */
+  #forgetDeletedSession(source: ManagedRecord, home: string) {
+    const nativeId = source.native_id?.toLowerCase() ?? null;
+    const ids = new Set([source.id]);
+    if (nativeId)
+      for (const record of listManagedRecords(this.dataDir)) {
+        if (
+          typeof record.id !== "string" ||
+          typeof record.native_id !== "string" ||
+          record.native_id.toLowerCase() !== nativeId
+        )
+          continue;
+        try {
+          if (
+            typeof record.home === "string" &&
+            pathIdentity(canonicalize(record.home)) === pathIdentity(home)
+          )
+            ids.add(record.id);
+        } catch {
+          // A record for a home that no longer exists names another Codex install.
+        }
+      }
+    deleteManagedSessions(this.dataDir, [...ids]);
+    const refs = new Set([source.native_id, nativeId].filter((ref): ref is string => !!ref));
+    const indexed = [...ids, ...[...refs].map((ref) => this.store.sessions.id("codex", ref))];
+    if (this.sessionIndex) this.sessionIndex.forget(indexed);
+    else this.store.sessions.forget(indexed);
+    for (const id of ids) {
+      this.#ownership.delete(id);
+      this.#catalogObservations.delete(id);
+    }
+    this.catalogChanged?.();
+  }
+
   managedSettingsState(value: unknown) {
     return this.#runOperation(() => this.#managedSettingsState(value));
   }
@@ -1602,6 +1886,25 @@ export class WebReadRequests {
           !managedSessionHasUnknownCommands(this.dataDir, source.id)
             ? { available: true }
             : { available: false, reason: checked.reason ?? "session-not-archived" };
+        // Deleting starts no runner and includes archived conversations, as Codex's own does.
+        // Only another process holding the thread blocks it; an unconfirmed earlier delete
+        // is retried by the next one.
+        const deleteReason = !controls
+          ? "control-disabled"
+          : checked.reason && source.native_id
+            ? checked.reason
+            : readUnknownManagedCommands(this.dataDir, source.id).some(
+                  (command) => command.evidence?.operation !== "delete",
+                )
+              ? "control-outcome-unconfirmed"
+              : this.#managedRunners.get(source.id)?.retiring
+                ? "session-retiring"
+                : live.ownershipReason === "codex-owner-busy"
+                  ? "codex-owner-busy"
+                  : null;
+        features.delete = deleteReason
+          ? { available: false, reason: deleteReason }
+          : { available: true };
         // Settings can be applied before the first turn by starting our own runner, and a
         // send with attachments starts it the same way.
         for (const operation of ["settings", "rename", "archive", "attachments", "compact"])
@@ -1682,7 +1985,7 @@ export class WebReadRequests {
       );
       const idleControls =
         managed && verified && healthy && idle && !compacting && !unknown && !record.archived;
-      for (const operation of ["send", "rename", "archive", "fork", "compact"])
+      for (const operation of ["send", "rename", "archive", "fork", "compact", "delete"])
         set(operation, idleControls, controlReason);
       set("settings", idleControls, controlReason);
       set(

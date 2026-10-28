@@ -685,6 +685,8 @@ export class TypeScriptBackend {
       return this.#withWebRead((owner) => owner.managedQueueList(params));
     if (method === RUNTIME_METHODS.codexManaged && params.operation === "unarchive")
       return this.#withWebRead((owner) => owner.managedUnarchive(params));
+    if (method === RUNTIME_METHODS.codexManaged && params.operation === "delete")
+      return this.#withWebRead((owner) => owner.managedDelete(params));
     if (method === RUNTIME_METHODS.codexManaged && params.operation === "settings-state")
       return this.#withWebRead((owner) => owner.managedSettingsState(params));
     if (
@@ -768,6 +770,8 @@ export class TypeScriptBackend {
         return this.#withWebRead((owner) => owner.managedResume(params));
       if (params.operation === "unarchive")
         return this.#withWebRead((owner) => owner.managedUnarchive(params));
+      if (params.operation === "delete")
+        return this.#withWebRead((owner) => owner.managedDelete(params));
       if (
         [
           "send",

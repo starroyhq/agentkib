@@ -140,12 +140,14 @@ describe("RuntimeRouter read-only Codex continuation", () => {
   });
 });
 
-describe("RuntimeRouter Codex compaction and background terminals", () => {
+describe("RuntimeRouter Codex controls", () => {
   it.each([
     [RUNTIME_METHODS.webRequest, "compact"],
     [RUNTIME_METHODS.webRequest, "terminals-clean"],
+    [RUNTIME_METHODS.webRequest, "delete"],
     [RUNTIME_METHODS.codexManaged, "compact"],
     [RUNTIME_METHODS.codexManaged, "terminals-clean"],
+    [RUNTIME_METHODS.codexManaged, "delete"],
   ])("forwards %s %s to the TypeScript backend once", async (method, operation) => {
     const host = new Host();
     const router = new RuntimeRouter(host);

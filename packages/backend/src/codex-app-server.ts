@@ -34,6 +34,15 @@ export function codexWriterBusy(error: unknown): boolean {
   );
 }
 
+/** CLI 0.163.0's thread/delete answer for a thread whose rollout is already gone. */
+export function codexThreadMissing(error: unknown): boolean {
+  return (
+    error instanceof CodexAppServerError &&
+    error.code === -32600 &&
+    /^no rollout found for thread id\b/i.test(error.message)
+  );
+}
+
 /** A bounded, persistent app-server connection for managed AgentKib sessions. */
 export class CodexAppServerSession extends EventEmitter {
   #child: ChildProcess;

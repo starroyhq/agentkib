@@ -24,6 +24,8 @@ import { readControlReceipt } from "../../../packages/backend/src/control-receip
 import {
   claimManagedCommand,
   dispatchManagedCommand,
+  openManagedLedger,
+  readManagedEvents,
   readManagedRecord,
   readUnknownManagedCommands,
   saveManagedRecord,
@@ -168,6 +170,8 @@ function fixture(
   };
   let queueSupported = true;
   let exitOn: string | undefined;
+  let deleteFailure: unknown;
+  const deletes: Array<{ server: number; othersOpen: number }> = [];
   const servers: OfflineServer[] = [];
   class OfflineServer extends EventEmitter {
     connected = true;
@@ -208,6 +212,15 @@ function fixture(
       }
       if (method === "turn/steer") return { turnId: "new-turn" };
       if (method === "thread/backgroundTerminals/clean") return {};
+      if (method === "thread/delete") {
+        deletes.push({
+          server: servers.indexOf(this),
+          othersOpen: servers.filter((server) => server !== this && !server.closed).length,
+        });
+        if (deleteFailure) throw deleteFailure;
+        // CLI 0.163.0 answers {} and removes the rollout and the state row.
+        return {};
+      }
       if (method === "thread/compact/start") {
         // CLI 0.163.0 answers first, then starts the compaction's own turn.
         setTimeout(
@@ -379,8 +392,12 @@ function fixture(
     withoutQueue: () => {
       queueSupported = false;
     },
-    exitOn: (method: string) => {
+    exitOn: (method: string | undefined) => {
       exitOn = method;
+    },
+    deletes,
+    setDeleteFailure: (error: unknown) => {
+      deleteFailure = error;
     },
     mismatchReply: (field: "top" | "thread") => {
       wrongReplyCwd = field;
@@ -465,15 +482,17 @@ describe("Codex manual compaction", () => {
   });
 });
 
-describe("Codex compaction and background-terminal routing", () => {
+describe("Codex control routing", () => {
   // The browser and the desktop window reach these through web.request; the IPC path uses
-  // codex.managed. Both must hand them to the managed control, as they do send.
+  // codex.managed. Both must hand them to their owner, as they do send.
   it.each([
-    ["web.request", "compact"],
-    ["web.request", "terminals-clean"],
-    ["codex.managed", "compact"],
-    ["codex.managed", "terminals-clean"],
-  ])("routes %s %s to the managed control", async (method, operation) => {
+    ["web.request", "compact", "managedControl"],
+    ["web.request", "terminals-clean", "managedControl"],
+    ["web.request", "delete", "managedDelete"],
+    ["codex.managed", "compact", "managedControl"],
+    ["codex.managed", "terminals-clean", "managedControl"],
+    ["codex.managed", "delete", "managedDelete"],
+  ] as const)("routes %s %s to %s", async (method, operation, owner) => {
     const f = fixture();
     await f.web.closeAsync();
     writeFileSync(
@@ -483,7 +502,7 @@ describe("Codex compaction and background-terminal routing", () => {
     vi.spyOn(McpHub.prototype, "start").mockResolvedValue();
     vi.spyOn(RemoteAgent.prototype, "start").mockResolvedValue();
     const control = vi
-      .spyOn(WebReadRequests.prototype, "managedControl")
+      .spyOn(WebReadRequests.prototype, owner)
       .mockResolvedValue({ accepted: true, operation } as never);
     const backend = new TypeScriptBackend({
       HOME: f.home,
@@ -630,6 +649,216 @@ describe("Codex background terminals", () => {
     ).toEqual({ threadId: nativeId });
     // The turn keeps running.
     expect(await f.live()).toMatchObject({ status: "running", turnId: "new-turn" });
+  });
+});
+
+describe("Codex delete", () => {
+  async function remove(
+    f: ReturnType<typeof fixture>,
+    requestId = randomUUID(),
+    sessionId = f.summary.id,
+  ) {
+    const state = await f.live();
+    return f.web.managedDelete({
+      operation: "delete",
+      sessionId,
+      requestId,
+      deviceId: "fixture",
+      runtimeBootId: state.runtimeBootId,
+      expectedRevision: sessionId === f.summary.id ? state.revision : 0,
+      experimentalEnabled: true,
+    });
+  }
+  const features = async (f: ReturnType<typeof fixture>) =>
+    (
+      (await f.web.managedQuery({
+        operation: "capabilities",
+        sessionId: f.summary.id,
+        experimentalEnabled: true,
+      })) as { features: Record<string, { available: boolean; reason?: string }> }
+    ).features;
+  const gone = (message: string) => new CodexAppServerError({ code: -32600, message });
+
+  it("deletes the thread in Codex and drops the conversation from AgentKib's index", async () => {
+    const f = fixture(true);
+    expect(f.store.sessions.get(f.summary.id)).toMatchObject({ agent: "codex" });
+    expect((await features(f)).delete).toEqual({ available: true });
+    expect(await remove(f)).toMatchObject({ accepted: true, completed: true, deleted: true });
+    // One process of its own, which asked for nothing else: no resume, no turn.
+    expect(f.methods).toEqual(["thread/delete"]);
+    expect(f.requests).toEqual([{ method: "thread/delete", params: { threadId: nativeId } }]);
+    expect(f.servers).toHaveLength(1);
+    expect(f.servers[0]!.closed).toBe(true);
+    expect(f.store.sessions.get(f.summary.id)).toBeNull();
+    expect(readUnknownManagedCommands(f.root, f.summary.id)).toEqual([]);
+  });
+
+  it("closes AgentKib's own runner first and deletes from a process of its own", async () => {
+    const f = fixture();
+    expect(await f.send()).toMatchObject({ accepted: true });
+    f.servers.at(-1)!.complete();
+    await vi.waitFor(async () => expect(await f.live()).toMatchObject({ status: "idle" }));
+    expect((await features(f)).delete).toEqual({ available: true });
+    expect(readManagedRecord(f.root, f.summary.id)).not.toBeNull();
+    // The ledger's copy of the transcript goes too.
+    const ledger = openManagedLedger(f.root)!;
+    try {
+      ledger
+        .prepare("INSERT INTO managed_events(session_id,event_id,event) VALUES(?,?,?)")
+        .run(
+          f.summary.id,
+          "synthetic-item",
+          JSON.stringify({ type: "message", text: "Synthetic" }),
+        );
+    } finally {
+      ledger.close();
+    }
+    expect(readManagedEvents(f.root, f.summary.id, null, 100).events).toHaveLength(1);
+    expect(await remove(f)).toMatchObject({ accepted: true, completed: true, deleted: true });
+    // Codex lets one process write a thread: the runner had exited before the delete was sent.
+    expect(f.deletes).toEqual([{ server: 1, othersOpen: 0 }]);
+    expect(f.servers.every((server) => server.closed)).toBe(true);
+    expect(readManagedRecord(f.root, f.summary.id)).toBeNull();
+    expect(readManagedEvents(f.root, f.summary.id, null, 100).events).toEqual([]);
+  });
+
+  it("waits for a running turn", async () => {
+    const f = fixture();
+    expect(await f.send()).toMatchObject({ accepted: true });
+    expect((await features(f)).delete).toMatchObject({ available: false });
+    expect(await remove(f)).toMatchObject({
+      accepted: false,
+      controlOutcome: "not-dispatched",
+      reason: "session-busy",
+    });
+    expect(f.methods).not.toContain("thread/delete");
+    expect(f.servers.at(-1)!.closed).toBe(false);
+  });
+
+  it("says another Codex process holds the thread and starts nothing", async () => {
+    const f = fixture();
+    const directory = path.join(f.home, "thread-writer-locks");
+    mkdirSync(directory, { recursive: true });
+    cleanups.push(acquirePortableFileLease(path.join(directory, `${nativeId}.lock`)));
+    expect((await features(f)).delete).toEqual({ available: false, reason: "codex-owner-busy" });
+    expect(await remove(f)).toMatchObject({
+      accepted: false,
+      controlOutcome: "not-dispatched",
+      reason: "codex-owner-busy",
+    });
+    expect(f.start).not.toHaveBeenCalled();
+  });
+
+  it("keeps the conversation when Codex answers that another process writes it", async () => {
+    const f = fixture(true);
+    f.setDeleteFailure(gone(`thread ${nativeId} already has an active writer`));
+    expect(await remove(f)).toMatchObject({
+      accepted: false,
+      controlOutcome: "not-dispatched",
+      reason: "codex-owner-busy",
+    });
+    expect(f.store.sessions.get(f.summary.id)).toMatchObject({ agent: "codex" });
+    expect(readUnknownManagedCommands(f.root, f.summary.id)).toEqual([]);
+  });
+
+  it("clears AgentKib's copies of a thread already deleted in Codex", async () => {
+    const f = fixture(true);
+    f.setDeleteFailure(gone(`no rollout found for thread id ${nativeId}`));
+    expect(await remove(f)).toMatchObject({ accepted: true, deleted: true });
+    expect(f.store.sessions.get(f.summary.id)).toBeNull();
+  });
+
+  it("offers and deletes an archived conversation, as Codex Desktop's archived list does", async () => {
+    const f = fixture();
+    f.summary.archived = true;
+    expect((await features(f)).delete).toEqual({ available: true });
+    expect(await remove(f)).toMatchObject({ accepted: true, deleted: true });
+    expect(f.deletes).toEqual([{ server: 0, othersOpen: 0 }]);
+  });
+
+  it("resolves an unconfirmed delete by deleting again", async () => {
+    const f = fixture(true);
+    f.exitOn("thread/delete");
+    const first = randomUUID();
+    expect(await remove(f, first)).toMatchObject({
+      accepted: false,
+      controlOutcome: "unknown",
+      reason: "control-outcome-unconfirmed",
+    });
+    expect(readUnknownManagedCommands(f.root, f.summary.id)).toHaveLength(1);
+    // Only another delete is offered: it is how that outcome resolves.
+    const offered = await features(f);
+    expect(offered.delete).toEqual({ available: true });
+    expect(offered.send).toMatchObject({ available: false });
+    f.exitOn(undefined);
+    f.setDeleteFailure(gone(`no rollout found for thread id ${nativeId}`));
+    expect(await remove(f)).toMatchObject({ accepted: true, deleted: true });
+    expect(readUnknownManagedCommands(f.root, f.summary.id)).toEqual([]);
+    expect(readControlReceipt(f.root, { requestId: first, deviceId: "fixture" })).toMatchObject({
+      status: "accepted",
+      operation: "delete",
+    });
+  });
+
+  it("refuses while another operation's outcome is unconfirmed", async () => {
+    const f = fixture();
+    const requestId = randomUUID();
+    claimManagedCommand(f.root, requestId, f.summary.id, "synthetic-unknown", "fixture", {
+      operation: "send",
+    });
+    dispatchManagedCommand(f.root, requestId);
+    expect((await features(f)).delete).toEqual({
+      available: false,
+      reason: "control-outcome-unconfirmed",
+    });
+    expect(await remove(f)).toMatchObject({
+      accepted: false,
+      controlOutcome: "not-dispatched",
+      reason: "control-outcome-unconfirmed",
+    });
+    expect(f.start).not.toHaveBeenCalled();
+  });
+
+  it("deletes a conversation that never reached Codex without starting anything", async () => {
+    const f = fixture();
+    saveManagedRecord(f.root, {
+      id: "draft-session",
+      workspace_id: "workspace",
+      workspace: f.workspace,
+      home: f.home,
+      native_id: null,
+      title: "Draft",
+      created_at: "2026-10-28T00:00:00Z",
+      released: true,
+      adopted: false,
+      archived: false,
+      snapshot: { revision: 0 },
+    });
+    expect(await remove(f, randomUUID(), "draft-session")).toMatchObject({
+      accepted: true,
+      deleted: true,
+    });
+    expect(f.start).not.toHaveBeenCalled();
+    expect(readManagedRecord(f.root, "draft-session")).toBeNull();
+  });
+
+  it("replays the answer for a repeated request", async () => {
+    const f = fixture(true);
+    const state = await f.live();
+    const request = {
+      operation: "delete",
+      sessionId: f.summary.id,
+      requestId: randomUUID(),
+      deviceId: "fixture",
+      runtimeBootId: state.runtimeBootId,
+      expectedRevision: state.revision,
+      experimentalEnabled: true,
+    };
+    const first = await f.web.managedDelete(request);
+    expect(first).toMatchObject({ accepted: true, deleted: true });
+    // The conversation is gone, but its answer is not.
+    expect(await f.web.managedDelete(request)).toEqual(first);
+    expect(f.methods).toEqual(["thread/delete"]);
   });
 });
 

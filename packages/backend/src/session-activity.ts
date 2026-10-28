@@ -8,6 +8,7 @@ export function activityBlocks(snapshot: Record<string, unknown>, operation: str
       "steer",
       "settings",
       "release",
+      "delete",
       "fork",
       "adopt",
       "resume",

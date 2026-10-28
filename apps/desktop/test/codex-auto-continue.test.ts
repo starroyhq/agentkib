@@ -199,6 +199,7 @@ function fixture(
         return { turn: { id: "new-turn", status: "inProgress" } };
       }
       if (method === "turn/steer") return { turnId: "new-turn" };
+      if (method === "thread/backgroundTerminals/clean") return {};
       if (method === "thread/compact/start") {
         // CLI 0.163.0 answers first, then starts the compaction's own turn.
         setTimeout(
@@ -439,6 +440,38 @@ describe("Codex manual compaction", () => {
       controlOutcome: "not-dispatched",
     });
     expect(f.methods).not.toContain("thread/compact/start");
+  });
+});
+
+describe("Codex background terminals", () => {
+  it("ends them while the runner has any, as the terminal's /stop does", async () => {
+    const f = fixture();
+    const clean = async () => {
+      const state = await f.live();
+      return f.web.managedControl({
+        operation: "terminals-clean",
+        sessionId: f.summary.id,
+        requestId: randomUUID(),
+        deviceId: "fixture",
+        runtimeBootId: state.runtimeBootId,
+        expectedRevision: state.revision,
+        experimentalEnabled: true,
+      });
+    };
+    // Without a runner there is nothing to end, and nothing is started for it.
+    expect(await clean()).toMatchObject({
+      accepted: false,
+      controlOutcome: "not-dispatched",
+      reason: "session-not-running",
+    });
+    expect(f.start).not.toHaveBeenCalled();
+    expect(await f.send()).toMatchObject({ accepted: true });
+    expect(await clean()).toMatchObject({ accepted: true, completed: true });
+    expect(
+      f.requests.find(({ method }) => method === "thread/backgroundTerminals/clean")?.params,
+    ).toEqual({ threadId: nativeId });
+    // The turn keeps running.
+    expect(await f.live()).toMatchObject({ status: "running", turnId: "new-turn" });
   });
 });
 

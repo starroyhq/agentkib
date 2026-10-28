@@ -25,6 +25,8 @@ describe("slash commands in a managed Codex session", () => {
   it.each([
     ["/compact", { action: { action: "compact" } }],
     ["/fork", { action: { action: "fork" } }],
+    ["/stop", { action: { action: "terminals-clean" } }],
+    ["/clean", { action: { action: "terminals-clean" } }],
     ["/plan", { action: { action: "settings", fields: { mode: "plan" } } }],
     [
       "/plan  sketch the migration ",
@@ -78,8 +80,6 @@ describe("slash commands in a managed Codex session", () => {
     ["/quit", "codex-command-terminal"],
     ["/vim", "codex-command-terminal"],
     ["/mcp", "codex-command-terminal"],
-    ["/stop", "codex-command-terminal"],
-    ["/clean", "codex-command-terminal"],
     ["/CWD", "codex-command-terminal"],
     ["  /resume", "codex-command-terminal"],
   ])("explains %j instead of sending it", (text, refusal) => {

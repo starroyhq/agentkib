@@ -210,6 +210,7 @@ const managedControlSchema = z
       "goal-clear",
       "fork",
       "compact",
+      "terminals-clean",
     ]),
     sessionId: z.string().min(1).max(256),
     requestId: z.string().uuid(),
@@ -1562,6 +1563,7 @@ export class WebReadRequests {
           "worktree-create",
           "branch-switch",
           "usage",
+          "terminals-clean",
         ])
           features[operation] = { available: false, reason: unavailableReason };
         features.send = allowed
@@ -1743,6 +1745,12 @@ export class WebReadRequests {
       for (const operation of ["queue-start", "worktree-create", "branch-switch"])
         set(operation, false, "native-operation-not-integrated");
       set("approve", managed && verified && healthy && runnerConnected && !unknown, controlReason);
+      // Background terminals end with the runner's process, so only a running one has any.
+      set(
+        "terminals-clean",
+        managed && verified && healthy && runnerConnected && !unknown,
+        controlReason,
+      );
       set("answer", managed && verified && healthy && runnerConnected && !unknown, controlReason);
       // Uploads go with send, steer or queue-add, which each check their own state again.
       // Images become native localImage input; other files a path the turn may read.
@@ -2162,6 +2170,11 @@ export class WebReadRequests {
           throw new Error("session-busy");
         params = { threadId: record.native_id };
         method = "thread/compact/start";
+      } else if (request.operation === "terminals-clean") {
+        // The TUI's /stop: ends the commands still running in the background. Stopping a turn
+        // leaves them running, as Esc does in the terminal.
+        params = { threadId: record.native_id };
+        method = "thread/backgroundTerminals/clean";
       } else if (request.operation === "stop") {
         if (
           request.turnId !== runner.state.turnId ||

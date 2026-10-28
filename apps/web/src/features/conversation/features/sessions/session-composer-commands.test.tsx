@@ -458,6 +458,7 @@ describe("Codex slash commands in the composer", () => {
       "/rename[name]Rename the session in AgentKib",
       "/goal[objective]Set a persistent goal",
       "/forkFork the session",
+      "/stopStop background terminals",
       "/archiveArchive the session",
       "/diffShow files and diffs",
     ]);

@@ -7,7 +7,7 @@
  * decides what such a message does instead:
  *
  * - For a command AgentKib has its own action for, the composer runs that action (`/compact`,
- *   `/fork`, `/plan`, `/model <model>`, `/rename <name>`, `/goal <objective>`) or, without an
+ *   `/fork`, `/stop`, `/plan`, `/model <model>`, `/rename <name>`, `/goal <objective>`) or, without an
  *   argument, opens the control for it (`/model`, `/permissions`, `/status`, `/rename`, `/goal`,
  *   `/archive`, `/diff`).
  * - The other commands only work in the terminal UI. They are not sent, and the composer says why.
@@ -42,6 +42,7 @@ export type CodexCommandPanel = "settings" | "goal" | "actions" | "files";
 export type CodexCommandAction =
   | { action: "compact" }
   | { action: "fork" }
+  | { action: "terminals-clean" }
   | { action: "rename"; fields: { name: string } }
   | { action: "goal-set"; fields: { objective: string; intent: "start" } }
   /** `draft` is what the composer keeps once the setting is saved. */
@@ -151,6 +152,9 @@ export function codexCommandDecision(text: string): CodexCommandDecision | null 
       return bare({ action: { action: "compact" } });
     case "fork":
       return bare({ action: { action: "fork" } });
+    case "stop":
+      // Ends the commands still running in the background, as in the terminal.
+      return bare({ action: { action: "terminals-clean" } });
     case "permissions":
     case "status":
       return bare({ panel: "settings" });
@@ -198,6 +202,7 @@ export const CODEX_MENU_COMMANDS = [
   "rename",
   "goal",
   "fork",
+  "stop",
   "archive",
   "diff",
 ] as const;

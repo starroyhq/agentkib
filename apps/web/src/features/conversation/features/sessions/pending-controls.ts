@@ -46,6 +46,7 @@ const pendingKinds = {
   "goal-resume": true,
   "goal-clear": true,
   compact: true,
+  "terminals-clean": true,
 } satisfies Record<PendingControl["kind"], true>;
 const prefix = "agentkib:codex-pending:v1:";
 const listeners = new Set<() => void>();

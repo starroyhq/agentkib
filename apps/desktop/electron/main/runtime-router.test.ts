@@ -140,6 +140,26 @@ describe("RuntimeRouter read-only Codex continuation", () => {
   });
 });
 
+describe("RuntimeRouter Codex compaction and background terminals", () => {
+  it.each([
+    [RUNTIME_METHODS.webRequest, "compact"],
+    [RUNTIME_METHODS.webRequest, "terminals-clean"],
+    [RUNTIME_METHODS.codexManaged, "compact"],
+    [RUNTIME_METHODS.codexManaged, "terminals-clean"],
+  ])("forwards %s %s to the TypeScript backend once", async (method, operation) => {
+    const host = new Host();
+    const router = new RuntimeRouter(host);
+    await router.start();
+    const params = { operation, sessionId: "session", requestId: "request" };
+    const result = { accepted: true, completed: operation === "terminals-clean" };
+    const received = vi.fn(() => result);
+    host.handler = received;
+    expect(await router.request(method, params)).toBe(result);
+    expect(received).toHaveBeenCalledExactlyOnceWith(method, params);
+    await router.stop();
+  });
+});
+
 describe("RuntimeRouter history search ownership", () => {
   it.each(historyRequests)(
     "forwards $method and its exact parameters once",

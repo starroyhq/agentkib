@@ -465,6 +465,51 @@ describe("Codex manual compaction", () => {
   });
 });
 
+describe("Codex compaction and background-terminal routing", () => {
+  // The browser and the desktop window reach these through web.request; the IPC path uses
+  // codex.managed. Both must hand them to the managed control, as they do send.
+  it.each([
+    ["web.request", "compact"],
+    ["web.request", "terminals-clean"],
+    ["codex.managed", "compact"],
+    ["codex.managed", "terminals-clean"],
+  ])("routes %s %s to the managed control", async (method, operation) => {
+    const f = fixture();
+    await f.web.closeAsync();
+    writeFileSync(
+      path.join(f.root, "preferences.json"),
+      JSON.stringify({ session_index_enabled: false, session_content_search_enabled: false }),
+    );
+    vi.spyOn(McpHub.prototype, "start").mockResolvedValue();
+    vi.spyOn(RemoteAgent.prototype, "start").mockResolvedValue();
+    const control = vi
+      .spyOn(WebReadRequests.prototype, "managedControl")
+      .mockResolvedValue({ accepted: true, operation } as never);
+    const backend = new TypeScriptBackend({
+      HOME: f.home,
+      CODEX_HOME: f.home,
+      PATH: path.join(f.root, "bin"),
+    });
+    cleanups.push(() => backend.closeAsync());
+    const rpc = (name: string, params: unknown) =>
+      backend.handleAsync({ jsonrpc: "2.0", id: randomUUID(), method: name, params });
+    expect((await rpc("backend.initialize", { dataDir: f.root })).error).toBeUndefined();
+    const params = {
+      operation,
+      sessionId: f.summary.id,
+      requestId: randomUUID(),
+      deviceId: "fixture",
+      runtimeBootId: "boot",
+      expectedRevision: 0,
+      experimentalEnabled: true,
+    };
+    const response = await rpc(method, params);
+    expect(response.error).toBeUndefined();
+    expect(response.result).toEqual({ accepted: true, operation });
+    expect(control).toHaveBeenCalledExactlyOnceWith(params);
+  });
+});
+
 describe("Codex start probes", () => {
   it.each(["collaborationMode/list", "thread/queue/list"])(
     "fail the start, without a turn, when the CLI exits answering %s",

@@ -4,6 +4,7 @@ import {
   ApiError,
   localPreviewLabel,
   localPreviewTargets,
+  localPreviewTexts,
   parseLocalPreviewTarget,
   type LivePreviewTicket,
   type LocalPreviewTarget,
@@ -36,7 +37,7 @@ export function LivePreview() {
   const detected = useMemo(
     () =>
       localPreviewTargets([
-        ...(events ?? []).slice(-SCANNED_EVENTS).map((event) => event.content ?? ""),
+        ...localPreviewTexts((events ?? []).slice(-SCANNED_EVENTS)),
         streamText ?? "",
       ]),
     [events, streamText],

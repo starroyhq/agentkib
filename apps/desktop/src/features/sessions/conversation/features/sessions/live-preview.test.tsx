@@ -5,7 +5,9 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   localPreviewLabel,
   localPreviewTargets,
+  localPreviewTexts,
   parseLocalPreviewTarget,
+  type ConversationEvent,
 } from "@agentkib/web-client";
 import { api } from "@/core/api";
 import { ArtifactBrowser } from "./artifact-browser";
@@ -77,6 +79,53 @@ describe("finding local pages in conversation text", () => {
     ).toEqual([
       { secure: false, port: 8888, path: "/lab", url: "http://localhost:8888/lab" },
       { secure: true, port: 5174, path: "/app", url: "https://localhost:5174/app" },
+    ]);
+  });
+  it("reads a tool's command and output, which carry a dev server's address, but not diffs", () => {
+    const tool = (detail: NonNullable<ConversationEvent["tool"]>): ConversationEvent => ({
+      id: detail.title ?? detail.kind,
+      kind: "tool-summary",
+      content: "",
+      attachment_count: 0,
+      truncated: false,
+      tool: detail,
+    });
+    const texts = localPreviewTexts([
+      tool({
+        kind: "execute",
+        title: "npm run dev",
+        content: [
+          {
+            type: "terminal",
+            command: "npm run dev",
+            output: "  VITE v7.0.0  ready in 312 ms\n  ➜  Local:   http://localhost:5173/\n",
+          },
+        ],
+      }),
+      tool({
+        kind: "edit",
+        title: ".env",
+        content: [
+          {
+            type: "diff",
+            path: ".env",
+            change: "update",
+            added: 1,
+            removed: 0,
+            preview: "+API=http://localhost:8080/",
+          },
+        ],
+      }),
+      tool({
+        kind: "fetch",
+        content: [{ type: "text", label: "output", text: "Serving at http://127.0.0.1:8000/docs" }],
+      }),
+      { ...event("Open http://localhost:3000/"), kind: "agent-message" },
+    ]);
+    expect(localPreviewTargets(texts).map((target) => target.url)).toEqual([
+      "http://localhost:3000/",
+      "http://localhost:8000/docs",
+      "http://localhost:5173/",
     ]);
   });
   it("stops at the limit", () => {

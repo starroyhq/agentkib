@@ -1380,6 +1380,23 @@ function previewTarget(secure: boolean, port: number, rest = ""): LocalPreviewTa
   return { secure, port, path, url };
 }
 
+/**
+ * Where a page address can appear in these events, oldest first: the message text, and a tool's
+ * command and output (a dev server prints its URL there; tool rows often have no text of their
+ * own). Diff previews are left out: an address in changed source is not a running page.
+ */
+export function localPreviewTexts(events: readonly ConversationEvent[]): string[] {
+  const texts: string[] = [];
+  for (const event of events) {
+    if (event.content) texts.push(event.content);
+    if (event.tool?.title) texts.push(event.tool.title);
+    for (const part of event.tool?.content ?? [])
+      if (part.type === "terminal") texts.push(part.command ?? "", part.output ?? "");
+      else if (part.type === "text") texts.push(part.text);
+  }
+  return texts;
+}
+
 /** Loopback URLs in these texts, newest first (later texts and later matches win), one per port. */
 export function localPreviewTargets(texts: readonly string[], limit = 8): LocalPreviewTarget[] {
   const found: LocalPreviewTarget[] = [];

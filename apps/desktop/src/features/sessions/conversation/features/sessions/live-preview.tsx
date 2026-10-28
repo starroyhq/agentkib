@@ -3,6 +3,7 @@ import { ArrowLeft, ExternalLink, Globe, RotateCw } from "lucide-react";
 import {
   localPreviewLabel,
   localPreviewTargets,
+  localPreviewTexts,
   parseLocalPreviewTarget,
   type LocalPreviewTarget,
 } from "@agentkib/web-client";
@@ -31,7 +32,7 @@ export function LivePreview() {
   const detected = useMemo(
     () =>
       localPreviewTargets([
-        ...(events ?? []).slice(-SCANNED_EVENTS).map((event) => event.content ?? ""),
+        ...localPreviewTexts((events ?? []).slice(-SCANNED_EVENTS)),
         streamText ?? "",
       ]),
     [events, streamText],

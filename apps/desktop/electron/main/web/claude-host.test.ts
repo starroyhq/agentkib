@@ -1017,6 +1017,29 @@ describe("Claude host control boundary", () => {
     expect(reading.status).toBe(200);
     expect(reading.body).not.toHaveProperty("commands");
   });
+  it("offers Claude deletion to a device that may organize sessions, and only to it", async () => {
+    managed.mockResolvedValue({
+      sessionId: "claude-session",
+      executionMode: "claude-managed",
+      features: { delete: { available: true }, rename: { available: true } },
+    });
+    const capabilities = async () =>
+      (await http("/managed/capabilities?agent=claude-code&sessionId=claude-session")).body
+        .features as Record<string, unknown>;
+    expect(await capabilities()).toEqual({
+      delete: { available: false, reason: "permission_denied" },
+      rename: { available: false, reason: "permission_denied" },
+    });
+    cookie = "";
+    const access = await http("/access");
+    cookie = access.cookies![0].split(";")[0];
+    csrf = String(access.body.csrfToken);
+    await approveLegacyBrowser(service, cookie, { send: true, organize: true });
+    expect(await capabilities()).toEqual({
+      delete: { available: true },
+      rename: { available: true },
+    });
+  });
   it("projects Claude capabilities through actual device roles and LAN transport restrictions", async () => {
     const features = Object.fromEntries(
       ["send", "approve", "adopt", "release", "files", "attachments"].map((name) => [

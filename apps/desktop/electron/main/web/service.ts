@@ -2627,6 +2627,7 @@ export class WebAccessService {
       rename: "organize",
       archive: "organize",
       unarchive: "organize",
+      delete: "organize",
     };
     // The command catalog serves composing messages; clients filter it per device.
     const { commands, ...rest } = data;

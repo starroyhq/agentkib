@@ -23,9 +23,9 @@ export interface ConversationEvent {
   tool?: ConversationToolDetail;
   turn_meta?: ConversationTurnMeta;
   /**
-   * Text Claude Code wrote itself rather than the model: a local command's output, or its own
-   * message for an API or login error. Clients keep its line breaks and show `<name>`
-   * placeholders as written.
+   * Text the CLI wrote itself rather than the model: a Claude Code local command's output, or
+   * the CLI's own message for an API, login or failed-turn error (Claude Code and Codex). Clients
+   * keep its line breaks and show `<name>` placeholders as written.
    */
   cli_output?: true;
 }

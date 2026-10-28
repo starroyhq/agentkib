@@ -29,7 +29,7 @@ import {
 } from "@agentkib/session-ui";
 import { contextUsageCopy } from "@/features/sessions/conversation/features/sessions/context-usage-copy";
 import { PermissionModeNotice } from "@/features/sessions/conversation/features/sessions/permission-mode-notice";
-import { ClaudeTurnNotice } from "@/features/sessions/conversation/features/sessions/claude-turn-notice";
+import { ManagedTurnNotice } from "@/features/sessions/conversation/features/sessions/managed-turn-notice";
 import { ClaudeFilesPanel } from "./ClaudeFilesPanel";
 import { api } from "@/core/api";
 import {
@@ -1041,7 +1041,7 @@ export function ClaudeSessionPanel({
         )}
         <PermissionModeNotice permission={live?.permission} locale={locale} />
         {/* The session's reason, an authentication failure included, is shown below. */}
-        <ClaudeTurnNotice live={live} locale={locale} retriesOnly />
+        <ManagedTurnNotice live={live} locale={locale} retriesOnly />
         {optionsReason && (!sessionId || options?.reason !== live?.reason) && (
           <div role="status">
             <p>{optionsReason.text}</p>

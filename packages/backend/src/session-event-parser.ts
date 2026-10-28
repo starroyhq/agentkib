@@ -12,6 +12,7 @@ import {
   type ToolContext,
 } from "./conversation-tools";
 import { jsonTimestamp } from "./session-history";
+import { codexErrorText, codexTurnErrorEvent } from "./codex-turn-error";
 import {
   claudeCommandInvocation,
   claudeCommandOutput,
@@ -711,8 +712,12 @@ function parseRecord(state: EventState, offset: number, row: any, page: Conversa
     return;
   }
   if (row?.type === "event_msg" && ["task_complete", "task_started"].includes(payload?.type)) {
-    if (payload.type === "task_complete")
+    if (payload.type === "task_complete") {
       state.turnMeta = { turn, meta: turnEnd(payload, "completed") };
+      // A failed turn ends with Codex's own error text, its last row; the turn end goes on it.
+      const text = turn !== null ? codexErrorText(payload.error) : null;
+      if (text) state.pending.push(codexTurnErrorEvent(turn!, text, timestamp));
+    }
     // A turn with no item left to carry its end keeps none.
     else if (state.turnMeta && (state.turnMeta.turn === null || state.turnMeta.turn === turn))
       state.turnMeta = null;

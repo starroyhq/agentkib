@@ -2,6 +2,7 @@ import type { CodexAppServerSession } from "./codex-app-server";
 import { isDeepStrictEqual } from "node:util";
 import { createContextUsageGeneration, projectContextUsage } from "./context-usage";
 import { codexItemTool, type ToolContext } from "./conversation-tools";
+import { codexErrorText, codexTurnErrorEvent } from "./codex-turn-error";
 
 type JsonObject = Record<string, unknown>;
 type ManagedRecord = JsonObject & {
@@ -18,6 +19,18 @@ type ManagedRecord = JsonObject & {
 const MAX_STREAM_BYTES = 128 * 1024;
 const MAX_ITEMS = 1024;
 const MAX_PENDING = 32;
+
+/**
+ * The CLI's latest retry of a failed model request in the running turn, for display only. Same
+ * shape as Claude's report; `detail` is the CLI's own text about what failed.
+ */
+export type CodexApiRetry = {
+  attempt: number;
+  maxRetries: number | null;
+  status: number | null;
+  error: string | null;
+  detail: string | null;
+};
 
 /** Mutable projection of one AgentKib-owned app-server thread. */
 export class ManagedCodexState {
@@ -47,6 +60,9 @@ export class ManagedCodexState {
   #usageState: "ready" | "pending" | "stale" = "pending";
   #usageBarrierTurn: string | null | undefined;
   #compactionRecoveryTurn: string | null | undefined;
+  #retry: CodexApiRetry | null = null;
+  /** The final `error` of the running turn, for a completion that carries none itself. */
+  #turnError: { turnId: string; text: string } | null = null;
 
   constructor(record: ManagedRecord, initialRevision = 0) {
     this.#record = structuredClone(record);
@@ -153,6 +169,7 @@ export class ManagedCodexState {
         this.#revision,
       ),
       goal: this.#record.goal ?? null,
+      apiRetry: this.#retry && this.#turn !== null ? { ...this.#retry } : null,
       reason: this.#reason,
     };
   }
@@ -194,6 +211,8 @@ export class ManagedCodexState {
         this.#stream = "";
         this.#reason = null;
         this.#lastTurnEvent = null;
+        this.#retry = null;
+        this.#turnError = null;
         break;
       }
       case "turn/completed": {
@@ -211,19 +230,47 @@ export class ManagedCodexState {
         this.#approvals.clear();
         this.#questions.clear();
         this.#items.clear();
+        this.#retry = null;
+        const reported = this.#turnError?.turnId === id ? this.#turnError.text : null;
+        this.#turnError = null;
         // The native turn reports its duration; history readers attach the same
         // value to the turn's last item, so the live row carries it too.
         const meta = turnMeta(params.turn);
         const last = this.#lastTurnEvent;
         this.#lastTurnEvent = null;
+        // A failed turn ends with the CLI's own error text, which the rollout keeps as well.
+        const failure = turnErrorEvent(params.turn, reported);
+        if (failure)
+          return {
+            ...this.#changed(runtimeChanged),
+            event: meta ? { ...failure, turn_meta: meta } : failure,
+          };
         if (meta && last?.turn_id === id)
           return { ...this.#changed(runtimeChanged), event: { ...last, turn_meta: meta } };
         break;
+      }
+      case "error": {
+        // The CLI reports each retry of a failed model request, then the final error before the
+        // turn completes (0.163.0). Retries are shown while the turn runs; neither is a control
+        // change.
+        if (this.#turn === null || params.turnId !== this.#turn || !isObject(params.error))
+          return { changed: false };
+        if (params.willRetry === true) {
+          this.#retry = codexRetry(params.error, this.#retry);
+          return this.#changed(false, true);
+        }
+        const text = codexErrorText(params.error);
+        if (text) this.#turnError = { turnId: this.#turn, text };
+        if (this.#retry === null) return { changed: false };
+        this.#retry = null;
+        return this.#changed(false, true);
       }
       case "item/agentMessage/delta":
       case "item/plan/delta": {
         if (params.turnId !== this.#turn || typeof params.delta !== "string")
           return { changed: false };
+        // Streamed output means the request a retry was waiting for got through.
+        this.#retry = null;
         if (Buffer.byteLength(this.#stream + params.delta, "utf8") <= MAX_STREAM_BYTES)
           this.#stream += params.delta;
         break;
@@ -278,6 +325,8 @@ export class ManagedCodexState {
         const id = requiredString(params.item.id, "invalid-item");
         if (this.#items.size >= MAX_ITEMS && !this.#items.has(id))
           throw new Error("too-many-items");
+        // Only the user's own message precedes the model's first reply.
+        if (params.item.type !== "userMessage") this.#retry = null;
         this.#items.set(id, structuredClone(params.item));
         if (method === "item/completed") {
           const event = projectItem(params.item, this.#turn, this.#toolContext());
@@ -337,10 +386,10 @@ export class ManagedCodexState {
         break;
       }
       case "thread/status/changed":
-        if (isObject(params.status) && params.status.type === "systemError")
-          this.fail("codex-thread-error");
-        else return { changed: false };
-        break;
+        // `systemError` marks a thread whose last turn ended on an error, until the next turn
+        // starts (0.163.0 thread_status.rs). That turn's completion carries the error and the
+        // thread stays usable, so the status itself changes nothing here.
+        return { changed: false };
       case "thread/settings/updated": {
         if (!isObject(params.threadSettings)) throw new Error("invalid-thread-settings");
         if (isDeepStrictEqual(this.#record.native_settings, params.threadSettings))
@@ -417,6 +466,8 @@ export class ManagedCodexState {
         const event = projectItem(item, turn.id, this.#toolContext());
         if (event) events.push(event);
       }
+      const failure = turnErrorEvent(turn, null);
+      if (failure) events.push(failure);
       const meta = turnMeta(turn);
       if (meta && events.length > first) events[events.length - 1]!.turn_meta = meta;
     }
@@ -440,6 +491,8 @@ export class ManagedCodexState {
     this.#approvals.clear();
     this.#questions.clear();
     this.#items.clear();
+    this.#retry = null;
+    if (this.#turnError?.turnId !== active) this.#turnError = null;
     // An attached running turn can still end with a duration; keep its last row.
     this.#lastTurnEvent =
       active === null
@@ -477,6 +530,7 @@ export class ManagedCodexState {
     this.#reason = reason;
     this.#record.native_settings = null;
     this.#compactions.clear();
+    this.#retry = null;
     this.#usageState = "stale";
     this.#runtimeRevision = this.#mutationRevision = ++this.#revision;
   }
@@ -1240,6 +1294,51 @@ function valueType(value: unknown): string {
 
 function isObject(value: unknown): value is JsonObject {
   return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+/** `{responseStreamDisconnected: {httpStatusCode}}` and its siblings carry the HTTP status. */
+function codexErrorStatus(info: unknown): number | null {
+  if (!isObject(info)) return null;
+  for (const value of Object.values(info)) {
+    const status = isObject(value) ? value.httpStatusCode : undefined;
+    if (Number.isSafeInteger(status) && Number(status) >= 100 && Number(status) <= 599)
+      return Number(status);
+  }
+  return null;
+}
+
+/** The `CodexErrorInfo` variant: a string, or the single key of an object variant. */
+function codexErrorKind(info: unknown): string | null {
+  const kind = typeof info === "string" ? info : isObject(info) ? Object.keys(info)[0] : undefined;
+  return typeof kind === "string" && /^[A-Za-z_]{1,64}$/.test(kind) ? kind : null;
+}
+
+function codexRetry(error: JsonObject, previous: CodexApiRetry | null): CodexApiRetry {
+  const message = typeof error.message === "string" ? error.message : "";
+  // 0.163.0 words each retry `Reconnecting... <attempt>/<max>`; otherwise count the reports.
+  const counted = /(\d{1,4})\s*\/\s*(\d{1,4})/.exec(message);
+  const attempt = counted ? Number(counted[1]) : (previous?.attempt ?? 0) + 1;
+  const maxRetries = counted ? Number(counted[2]) : (previous?.maxRetries ?? null);
+  const detail = typeof error.additionalDetails === "string" ? error.additionalDetails.trim() : "";
+  return {
+    attempt: attempt > 0 ? attempt : 1,
+    maxRetries: maxRetries !== null && maxRetries > 0 ? maxRetries : null,
+    status: codexErrorStatus(error.codexErrorInfo),
+    error: codexErrorKind(error.codexErrorInfo),
+    detail: detail ? [...detail].slice(0, 1024).join("") : null,
+  };
+}
+
+/**
+ * The CLI's own error text for a failed turn, as the last row of that turn. The rollout keeps the
+ * same text in `task_complete.error`, and its reader shows the same row.
+ */
+function turnErrorEvent(turn: JsonObject, reported: string | null): JsonObject | undefined {
+  if (typeof turn.id !== "string" || !turn.id) return undefined;
+  const failed = turn.status === "failed" || (turn.status === "completed" && turn.error != null);
+  const text = failed ? (codexErrorText(turn.error) ?? reported) : null;
+  // Stamped like the other live rows: `completedAt` has whole seconds and can precede them.
+  return text ? codexTurnErrorEvent(turn.id, text, new Date().toISOString()) : undefined;
 }
 
 /**

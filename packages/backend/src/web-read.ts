@@ -4946,6 +4946,7 @@ function managedControlState(state: ManagedCodexState): string {
   delete live.tokenUsage;
   delete live.usage;
   delete live.streamText;
+  delete live.apiRetry;
   const record = { ...state.record };
   delete record.snapshot;
   delete record.token_usage;

@@ -377,6 +377,159 @@ describe("managed Codex activity and context usage", () => {
   });
 });
 
+// The order and shape of what CLI 0.163.0 sent while a local stub failed every request: each
+// retry, the thread's idle error flag, the final error, then the failed completion.
+describe("managed Codex failed turns", () => {
+  const retry = (attempt: number, detail: string, status: number | null = null) => ({
+    error: {
+      message: `Reconnecting... ${attempt}/2`,
+      codexErrorInfo: { responseStreamDisconnected: { httpStatusCode: status } },
+      additionalDetails: detail,
+      misalignment: null,
+    },
+    willRetry: true,
+    turnId: "turn-a",
+  });
+  const unauthorized =
+    "unexpected status 401 Unauthorized: invalid key, url: http://127.0.0.1:1/v1/responses";
+  const failedTurn = (error: unknown = { message: unauthorized }) => ({
+    turn: {
+      id: "turn-a",
+      status: "failed",
+      error,
+      completedAt: 1_793_174_557,
+      durationMs: 783,
+    },
+  });
+
+  it("reports retries, then ends the turn with the CLI's error and stays usable", () => {
+    const state = managed();
+    start(state);
+    const before = state.mutationRevision;
+    notify(state, "error", retry(1, unauthorized, 401));
+    expect(state.snapshot("boot", true).apiRetry).toEqual({
+      attempt: 1,
+      maxRetries: 2,
+      status: 401,
+      error: "responseStreamDisconnected",
+      detail: unauthorized,
+    });
+    notify(state, "error", retry(2, unauthorized, 401));
+    expect(state.snapshot("boot", true).apiRetry).toMatchObject({ attempt: 2, maxRetries: 2 });
+    // Retries are observations, not control changes.
+    expect(state.mutationRevision).toBe(before);
+    expect(notify(state, "thread/status/changed", { status: { type: "systemError" } })).toEqual({
+      changed: false,
+    });
+    notify(state, "error", {
+      error: {
+        message: unauthorized,
+        codexErrorInfo: { httpConnectionFailed: { httpStatusCode: 401 } },
+      },
+      willRetry: false,
+      turnId: "turn-a",
+    });
+    expect(state.snapshot("boot", true).apiRetry).toBeNull();
+    const ended = notify(state, "turn/completed", failedTurn());
+    expect(ended.event).toEqual({
+      id: "codex-turn-error:turn-a",
+      kind: "agent-message",
+      turn_id: "turn-a",
+      timestamp: expect.any(String),
+      content: unauthorized,
+      tool_name: null,
+      tool_status: null,
+      duration_ms: null,
+      attachment_count: 0,
+      truncated: false,
+      cli_output: true,
+      turn_meta: { outcome: "failed", duration_ms: 783 },
+    });
+    expect(state.snapshot("boot", true)).toMatchObject({
+      status: "idle",
+      reason: null,
+      sendEnabled: true,
+      apiRetry: null,
+    });
+  });
+
+  it("clears a retry once output arrives", () => {
+    const state = managed();
+    start(state);
+    notify(state, "error", retry(1, "We’re currently experiencing high demand."));
+    expect(state.snapshot("boot", true).apiRetry).toMatchObject({ attempt: 1, status: null });
+    notify(state, "item/started", {
+      turnId: "turn-a",
+      item: { type: "userMessage", id: "u", content: [] },
+    });
+    expect(state.snapshot("boot", true).apiRetry).not.toBeNull();
+    notify(state, "item/agentMessage/delta", { turnId: "turn-a", itemId: "m", delta: "Hi" });
+    expect(state.snapshot("boot", true).apiRetry).toBeNull();
+    notify(state, "error", retry(1, "again"));
+    notify(state, "item/started", {
+      turnId: "turn-a",
+      item: { type: "reasoning", id: "r", summary: [], content: [] },
+    });
+    expect(state.snapshot("boot", true).apiRetry).toBeNull();
+    // Another turn's report is not this turn's retry.
+    expect(notify(state, "error", { ...retry(1, "x"), turnId: "turn-b" }).changed).toBe(false);
+    expect(state.snapshot("boot", true).apiRetry).toBeNull();
+  });
+
+  it("uses the final error when the completion carries none, and keeps details", () => {
+    const state = managed();
+    start(state);
+    notify(state, "error", {
+      error: {
+        message: "Stream failed.",
+        additionalDetails: "upstream closed",
+        codexErrorInfo: "other",
+      },
+      willRetry: false,
+      turnId: "turn-a",
+    });
+    expect(notify(state, "turn/completed", failedTurn(null)).event).toMatchObject({
+      id: "codex-turn-error:turn-a",
+      content: "Stream failed.\nupstream closed",
+      turn_meta: { outcome: "failed" },
+    });
+    // A completed or interrupted turn ends as before.
+    start(state, "turn-b");
+    notify(state, "item/completed", {
+      turnId: "turn-b",
+      item: { type: "agentMessage", id: "m", text: "Done." },
+    });
+    expect(
+      notify(state, "turn/completed", {
+        turn: { id: "turn-b", status: "completed", durationMs: 5 },
+      }).event,
+    ).toMatchObject({ id: "m", turn_meta: { outcome: "completed", duration_ms: 5 } });
+  });
+
+  it("restores the error row of a failed turn from the native thread", () => {
+    const state = managed();
+    const { events } = state.hydrate({
+      id: threadId,
+      status: { type: "systemError" },
+      turns: [
+        {
+          id: "turn-a",
+          status: "failed",
+          error: { message: unauthorized, codexErrorInfo: "unauthorized" },
+          completedAt: 1_793_174_557,
+          durationMs: 783,
+          items: [{ type: "userMessage", id: "u", content: [{ type: "text", text: "Hello" }] }],
+        },
+      ],
+    });
+    expect(events.map((event) => [event.id, event.turn_meta ?? null])).toEqual([
+      ["u", null],
+      ["codex-turn-error:turn-a", { outcome: "failed", duration_ms: 783 }],
+    ]);
+    expect(state.snapshot("boot", true)).toMatchObject({ status: "idle", reason: null });
+  });
+});
+
 describe("Codex follower activity and usage", () => {
   it("separates fresh observer reports from the prior report counter", () => {
     const prior = new CodexFollowerState(threadId, "owner");

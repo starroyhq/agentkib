@@ -61,7 +61,7 @@ import {
 } from "./codex-session-controls";
 import { useSessionPanels } from "./session-panels";
 import { PermissionModeNotice } from "./permission-mode-notice";
-import { ClaudeTurnNotice } from "./claude-turn-notice";
+import { ManagedTurnNotice } from "./managed-turn-notice";
 
 type Upload = {
   key: string;
@@ -514,7 +514,7 @@ export function SessionComposer({
         <p className="px-3 text-xs leading-5 text-muted-foreground">{continuation.terminalHint}</p>
       )}
       {isClaude && <PermissionModeNotice permission={live?.permission} locale={locale} compact />}
-      {isClaude && <ClaudeTurnNotice live={live} locale={locale} surface="web" />}
+      {(isClaude || isCodex) && <ManagedTurnNotice live={live} locale={locale} surface="web" />}
       <form
         className="relative w-full space-y-2 rounded-3xl border border-border bg-background p-2 shadow-sm transition-colors focus-within:border-ring/40 md:p-3"
         onSubmit={(event) => {

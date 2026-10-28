@@ -478,8 +478,6 @@ export class ClaudeManagedReadOwner {
       case "queue-resume":
       case "queue-pause":
       case "rename":
-      case "archive":
-      case "unarchive":
       case "goal-set":
       case "goal-pause":
       case "goal-resume":
@@ -654,7 +652,6 @@ export class ClaudeManagedReadOwner {
       throw new Error("control-outcome-unconfirmed");
     this.#ownershipReasons.delete(id);
     let live = await this.#live(id, true);
-    if (live.status === "archived") throw new Error("session-archived");
     if (live.status === "outcome-unknown") throw new Error("control-outcome-unconfirmed");
     if (
       operation !== "stop" &&
@@ -1623,19 +1620,11 @@ export class ClaudeManagedReadOwner {
       throw new Error("control-outcome-unconfirmed");
     if (live.revision !== value.expectedRevision) throw new Error("stale-Claude-revision");
     const state = this.#hostState.read(id);
-    if (state.archived && operation !== "unarchive") throw new Error("session-archived");
     if (
-      [
-        "settings",
-        "rename",
-        "archive",
-        "unarchive",
-        "fork",
-        "goal-set",
-        "goal-resume",
-        "queue-resume",
-      ].includes(operation) &&
-      ((live.status !== "idle" && live.status !== "archived") || live.activity === "compacting")
+      ["settings", "rename", "fork", "goal-set", "goal-resume", "queue-resume"].includes(
+        operation,
+      ) &&
+      (live.status !== "idle" || live.activity === "compacting")
     )
       throw new Error("session-busy");
     let nextSettings: ClaudeSettings | undefined;
@@ -1832,20 +1821,6 @@ export class ClaudeManagedReadOwner {
             host.title = renamedTitle!;
             return { name: renamedTitle };
           }
-          case "archive":
-            host.archived = true;
-            host.paused = true;
-            host.reason = "archived";
-            if (host.goal?.status === "active") {
-              host.goal.status = "paused";
-              host.goal.reason = "archived";
-            }
-            return {};
-          case "unarchive":
-            host.archived = false;
-            host.paused = true;
-            host.reason = "resume-confirmation-required";
-            return {};
           case "fork":
             return {
               sessionId: fork!.id,
@@ -2049,7 +2024,7 @@ export class ClaudeManagedReadOwner {
       externallyDispatched,
     );
     this.invalidateSchedulePermits(id);
-    if (["goal-pause", "goal-clear", "archive"].includes(operation)) {
+    if (["goal-pause", "goal-clear"].includes(operation)) {
       await this.#goalEndpoints.get(id)?.close();
       this.#goalEndpoints.delete(id);
     }
@@ -3599,7 +3574,8 @@ export class ClaudeManagedReadOwner {
             spawned_by_session_id: null,
             message_count: null,
             git_branch: null,
-            archived: this.#hostState.peek(record.id)?.archived ?? false,
+            // Only Claude Desktop archives Claude sessions, in its own list.
+            archived: false,
             sidechain: false,
             availability: "readable",
             executionMode: "claude-managed",
@@ -3836,7 +3812,7 @@ export class ClaudeManagedReadOwner {
         status: version ? "idle" : "unsupported",
         revision: this.#hostState.read(id).revision,
         turnId: null,
-        sendEnabled: controls && !reason && !this.#hostState.read(id).archived,
+        sendEnabled: controls && !reason,
         stopEnabled: false,
         approvals: [],
         questions: [],
@@ -3996,7 +3972,6 @@ export class ClaudeManagedReadOwner {
     const host = this.#hostState.read(id);
     live.revision = Number(live.revision ?? 0) + host.revision;
     live.goal = host.goal;
-    live.archived = host.archived;
     live.schedule = { paused: host.paused, reason: host.reason, revision: host.revision };
     const options = runner?.optionsSnapshot.settingsAcknowledged
       ? runner.optionsSnapshot
@@ -4015,11 +3990,6 @@ export class ClaudeManagedReadOwner {
       ? this.#releasedPermission(id)
       : this.#permissionView(id, version, () => host.settings.permissionMode);
     if (permission) live.permission = permission;
-    if (host.archived) {
-      live.status = "archived";
-      live.sendEnabled = false;
-      live.stopEnabled = false;
-    }
     return live;
   }
 
@@ -4333,13 +4303,9 @@ export class ClaudeManagedReadOwner {
     const record = this.#load(id);
     const version = supportsClaudeManagedRunner() && (await this.#installationVersion()) !== null;
     const owned = Boolean(record && !record.released);
-    const continuable =
-      !this.#hostState.read(id).archived &&
-      !live.ownershipReason &&
-      live.status !== "outcome-unknown";
+    const continuable = !live.ownershipReason && live.status !== "outcome-unknown";
     const host = owned ? this.#hostState.read(id) : null;
-    const writable =
-      version && controls && owned && !host?.archived && live.status !== "outcome-unknown";
+    const writable = version && controls && owned && live.status !== "outcome-unknown";
     const idle = writable && live.status === "idle" && live.activity !== "compacting";
     const goalBudgetReason =
       host?.goal && host.goal.tokenBudget !== null
@@ -4389,12 +4355,9 @@ export class ClaudeManagedReadOwner {
       fork:
         version &&
         controls &&
-        !this.#hostState.read(id).archived &&
         live.status === "idle" &&
         live.activity !== "compacting" &&
         record?.fresh !== true,
-      archive: idle,
-      unarchive: version && controls && host?.archived === true,
       rename: idle,
       goal: owned,
       "goal-set": idle,
@@ -4421,8 +4384,6 @@ export class ClaudeManagedReadOwner {
         "queue-pause",
         "fork",
         "rename",
-        "archive",
-        "unarchive",
         "goal",
         "goal-set",
         "goal-pause",
@@ -4710,7 +4671,6 @@ export class ClaudeManagedReadOwner {
       if (live.status === "outcome-unknown" || managedSessionHasUnknownCommands(this.dataDir, id))
         throw new Error("control-outcome-unconfirmed");
       if (live.revision !== value.expectedRevision) throw new Error("stale-Claude-revision");
-      if (this.#hostState.read(id).archived) throw new Error("session-archived");
       if (live.status !== "idle" || live.activity === "compacting") throw new Error("session-busy");
       if (live.ownershipReason) throw new Error(String(live.ownershipReason));
       // The live read can recover a proved, interrupted startup. Prepare from that durable
@@ -4770,8 +4730,7 @@ export class ClaudeManagedReadOwner {
       this.#load(id)?.released === false &&
       live.status === "idle" &&
       live.activity !== "compacting" &&
-      !live.ownershipReason &&
-      !state.archived;
+      !live.ownershipReason;
     return {
       available: true,
       executionMode: "claude-managed",

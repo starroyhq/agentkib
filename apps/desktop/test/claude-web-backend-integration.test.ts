@@ -1506,7 +1506,7 @@ describe.skipIf(process.platform !== "darwin")(
       expect(frames().filter((row) => row.type === "user")).toHaveLength(0);
     });
 
-    it("references actual workspace files, renames native history, forks lazily and keeps archive scheduling paused", async () => {
+    it("references actual workspace files, renames native history, forks lazily and offers no archive", async () => {
       const sessionId = await create();
       const resources = await http(`/managed/resources?sessionId=${sessionId}`);
       expect(resources.status, JSON.stringify(resources.body)).toBe(200);
@@ -1586,10 +1586,13 @@ describe.skipIf(process.platform !== "darwin")(
         `${fork.body.sourceSessionId}.jsonl`,
       );
       expect(readFileSync(childTranscript, "utf8")).toContain('"customTitle":"Renamed fixture"');
-      expect((await action(sessionId, "archive")).status).toBe(200);
-      expect((await live(sessionId)).status).toBe("archived");
-      expect((await action(sessionId, "unarchive")).status).toBe(200);
-      expect((await http(`/managed/queue?sessionId=${sessionId}`)).body.requiresResume).toBe(true);
+      // AgentKib keeps no archive of its own: only Claude Desktop archives Claude sessions.
+      for (const operation of ["archive", "unarchive"]) {
+        const refused = await action(sessionId, operation);
+        expect(refused.status).toBe(409);
+        expect(refused.body.controlOutcome).toBe("not-dispatched");
+      }
+      expect((await live(sessionId)).status).toBe("idle");
       expect(existsSync(transcript)).toBe(true);
     });
 

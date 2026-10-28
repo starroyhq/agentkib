@@ -292,10 +292,12 @@ export function CodexTools({
               >
                 {copy.rename}
               </Button>
-              {actionButton(
-                current.archived ? "unarchive" : "archive",
-                current.archived ? copy.unarchive : copy.archive,
-              )}
+              {/* Archiving is the agent's own (Codex); AgentKib keeps no archive of its own. */}
+              {(capabilities?.features.archive || capabilities?.features.unarchive) &&
+                actionButton(
+                  current.archived ? "unarchive" : "archive",
+                  current.archived ? copy.unarchive : copy.archive,
+                )}
               {actionButton("fork", copy.fork)}
               {capabilities?.features.delete && (
                 <div className="min-w-0 max-w-full space-y-1">

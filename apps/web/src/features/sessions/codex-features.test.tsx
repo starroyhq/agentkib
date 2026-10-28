@@ -536,6 +536,21 @@ describe("Session delete", () => {
     render(<CodexTools open />);
     expect(screen.queryByRole("button", { name: copy.delete })).not.toBeInTheDocument();
   });
+  it("offers archive only where the agent archives natively, as Codex does", () => {
+    prepare({ archive: { available: true }, delete: { available: true } });
+    const view = render(<CodexTools open />);
+    expect(screen.getByRole("button", { name: copy.archive })).toBeEnabled();
+    // A Claude session reports no archive: AgentKib keeps none of its own.
+    state = {
+      ...state,
+      current: { ...state.current!, agent: "claude-code" },
+      capabilities: { ...state.capabilities!, features: { delete: { available: true } } },
+    } as ReturnType<typeof useSession>;
+    view.rerender(<CodexTools open />);
+    expect(screen.queryByRole("button", { name: copy.archive })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: copy.unarchive })).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: copy.delete })).toBeEnabled();
+  });
 });
 
 it("retains Claude's existing ownership content", () => {

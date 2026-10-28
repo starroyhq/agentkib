@@ -1336,21 +1336,30 @@ export class WebReadRequests {
           reason: checked.reason,
           settings: settingsObject,
         };
-      const models = projectManagedModels(
-        await this.#codex.request(
-          checked.executable,
-          this.#managedCwd(record),
-          this.#assertManagedHome(record),
-          "model/list",
-          { limit: 100 },
-        ),
-      );
+      const cwd = this.#managedCwd(record);
+      const home = this.#assertManagedHome(record);
+      let catalog: unknown[];
+      try {
+        catalog = await this.#codex.requestMany(checked.executable, cwd, home, [
+          ["model/list", { limit: 100 }],
+          ["collaborationMode/list", {}],
+        ]);
+      } catch {
+        // A CLI that rejects the presets still lists its models; Plan stays unavailable.
+        catalog = [
+          await this.#codex.request(checked.executable, cwd, home, "model/list", { limit: 100 }),
+          null,
+        ];
+      }
+      const models = projectManagedModels(catalog[0]);
+      // Sending or saving settings starts the runner, which checks the presets again.
+      const collaborationModes = verifiedCollaborationModes(catalog[1]);
       return {
         available: true,
         executionMode: "codex-managed",
         models,
         policies: managedPolicyCatalog(),
-        collaborationModes: [],
+        collaborationModes,
         revision: record.snapshot?.revision ?? 0,
         runtimeBootId: this.#bootId,
         settings: {
@@ -1358,7 +1367,9 @@ export class WebReadRequests {
           writable: {
             model: true,
             effort: true,
-            mode: { available: false, reason: "native-collaboration-modes-unavailable" },
+            mode: collaborationModes.length
+              ? { available: true }
+              : { available: false, reason: "native-collaboration-modes-unavailable" },
             serviceTier: true,
             policy: true,
           },
@@ -1381,24 +1392,15 @@ export class WebReadRequests {
     this.#assertManagedHome(record);
     this.#managedCwd(record);
     const models = projectManagedModels(await runner.session.request("model/list", { limit: 100 }));
-    let collaborationModes: Array<{ id: string; name: string }> = [];
+    let collaborationModes: CollaborationModeOption[] = [];
     let modeWritable: Record<string, unknown> = {
       available: false,
       reason: "native-collaboration-modes-unavailable",
     };
     if (runner.planVerified) {
-      const value = await runner.session.request("collaborationMode/list", {});
-      const rows = isObject(value) && Array.isArray(value.data) ? value.data : [];
-      collaborationModes = rows
-        .filter(
-          (row): row is Record<string, unknown> =>
-            isObject(row) &&
-            (row.mode === "default" || row.mode === "plan") &&
-            typeof row.name === "string" &&
-            row.name.length > 0 &&
-            Buffer.byteLength(row.name, "utf8") <= 256,
-        )
-        .map((row) => ({ id: row.mode as string, name: row.name as string }));
+      collaborationModes = verifiedCollaborationModes(
+        await runner.session.request("collaborationMode/list", {}),
+      );
       if (collaborationModes.length > 0) modeWritable = { available: true };
     }
     const live = await runner.bridge.snapshot(this.#bootId, false);
@@ -2124,13 +2126,13 @@ export class WebReadRequests {
           throw new Error("session-busy");
         if (record.mode) {
           if (!runner.planVerified) throw new Error("native-collaboration-modes-unavailable");
-          const modesResult = await runner.session.request("collaborationMode/list", {});
-          const modes =
-            isObject(modesResult) && Array.isArray(modesResult.data)
-              ? modesResult.data.filter(isObject)
-              : [];
-          if (!modes.some((mode) => mode.mode === record.mode))
+          const modes = verifiedCollaborationModes(
+            await runner.session.request("collaborationMode/list", {}),
+          );
+          if (!modes.some((mode) => mode.id === record.mode))
             throw new Error("unsupported-collaboration-mode");
+          // The preset's settings name the turn's model, which the runner always confirms.
+          if (!record.model) throw new Error("native-model-unconfirmed");
         }
         const input = await this.#managedInput(request, record, runner);
         params = {
@@ -2312,9 +2314,12 @@ export class WebReadRequests {
         const mode = request.mode ?? record.mode ?? null;
         if (request.mode) {
           if (!runner.planVerified) throw new Error("native-collaboration-modes-unavailable");
-          const catalog = await runner.session.request("collaborationMode/list", {});
-          const modes = isObject(catalog) && Array.isArray(catalog.data) ? catalog.data : [];
-          if (!modes.some((entry) => isObject(entry) && entry.id === request.mode))
+          // The presets are `{mode, name}` rows (0.163.0 CollaborationModeMask); AgentKib's
+          // option id is the native mode.
+          const modes = verifiedCollaborationModes(
+            await runner.session.request("collaborationMode/list", {}),
+          );
+          if (!modes.some((entry) => entry.id === request.mode))
             throw new Error("unsupported-collaboration-mode");
         }
         localMutation = {
@@ -3353,6 +3358,17 @@ export class WebReadRequests {
       this.#assertOpen();
       const modelsResult = await session.request("model/list", { limit: 100 });
       const models = projectManagedModels(modelsResult);
+      // Plan uses the native presets. Their turn/start mapping and the confirming
+      // thread/settings/updated were checked with CLI 0.163.0; a CLI without them keeps
+      // the mode unavailable rather than failing the session.
+      try {
+        runner.planVerified =
+          verifiedCollaborationModes(await session.request("collaborationMode/list", {})).length ===
+          2;
+      } catch (error) {
+        if (!session.connected) throw error;
+        runner.planVerified = false;
+      }
       const requestedModel = record.model ?? null;
       const requestedEffort = record.effort ?? null;
       // Creating a new thread is an explicit model choice. Attaching an existing
@@ -3440,7 +3456,8 @@ export class WebReadRequests {
         approvalPolicy: response.approvalPolicy,
         approvalsReviewer: response.approvalsReviewer,
         sandboxPolicy: response.sandbox,
-        collaborationMode: null,
+        // thread/resume reports the effective mode; start and fork apply one with the next turn.
+        collaborationMode: isObject(response.collaborationMode) ? response.collaborationMode : null,
       };
       mutableRecord.goal = goal;
       const defaultModel = models.find((entry) => entry.isDefault === true);
@@ -4937,6 +4954,25 @@ export class WebReadRequests {
 
 function isObject(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+type CollaborationModeOption = { id: "plan" | "default"; name: string };
+
+/**
+ * The native Plan and Default presets (`collaborationMode/list`), or none unless both are listed:
+ * a turn in either mode must be able to return to the other.
+ */
+function verifiedCollaborationModes(value: unknown): CollaborationModeOption[] {
+  const rows = isObject(value) && Array.isArray(value.data) ? value.data : [];
+  const modes: CollaborationModeOption[] = [];
+  for (const row of rows) {
+    if (!isObject(row) || (row.mode !== "plan" && row.mode !== "default")) continue;
+    if (modes.some((mode) => mode.id === row.mode)) continue;
+    if (typeof row.name !== "string" || !row.name || Buffer.byteLength(row.name, "utf8") > 256)
+      continue;
+    modes.push({ id: row.mode, name: row.name });
+  }
+  return modes.length === 2 ? modes : [];
 }
 
 /** A resume-local guard; public revisions and native settings ACKs stay intact. */

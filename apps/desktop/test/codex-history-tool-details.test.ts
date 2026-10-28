@@ -262,6 +262,30 @@ describe("Codex history tool details", () => {
     expect(page.events.filter((event) => event.id.startsWith("codex-turn-error:"))).toHaveLength(1);
   });
 
+  it("shows a Plan-mode reply without its plan tags, as the live view does", () => {
+    const turn = "t-plan";
+    // As CLI 0.163.0 wrote a Plan turn: the plan item, then the reply with the tags.
+    const page = read(
+      rollout([
+        row("turn_context", { turn_id: turn }),
+        row("event_msg", { type: "task_started", turn_id: turn }),
+        user(turn, "Plan it"),
+        item(turn, { type: "Plan", id: `${turn}-plan`, text: "1. Step one\n2. Step two\n" }),
+        agent(
+          turn,
+          "Here is the plan.\n<proposed_plan>\n1. Step one\n2. Step two\n</proposed_plan>",
+          "final_answer",
+        ),
+        row("event_msg", { type: "task_complete", turn_id: turn, duration_ms: 132 }),
+      ]),
+    );
+    expect(page.events.map((event) => [event.kind, event.content])).toEqual([
+      ["user-message", "Plan it"],
+      ["agent-message", "Here is the plan.\n1. Step one\n2. Step two"],
+    ]);
+    expect(page.events.at(-1)?.turn_meta).toEqual({ outcome: "completed", duration_ms: 132 });
+  });
+
   it("marks an aborted turn on its last item", () => {
     const turn = "t4";
     const page = read(

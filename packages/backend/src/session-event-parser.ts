@@ -413,6 +413,15 @@ function codexItem(
   if (turn !== null) event.turn_id = turn;
   state.pending.push(event);
 }
+/**
+ * Codex in Plan mode wraps the plan in `<proposed_plan>` lines. The live view gets the plan as
+ * its own item without them; history would otherwise show the tags as text.
+ */
+function withoutPlanTags(text: string): string {
+  if (!text.includes("<proposed_plan>")) return text;
+  const stripped = text.replace(/^[ \t]*<\/?proposed_plan>[ \t]*(?:\r?\n|$)/gm, "").trim();
+  return stripped || text;
+}
 function turnEnd(payload: any, outcome: ConversationTurnMeta["outcome"]): ConversationTurnMeta {
   const meta: ConversationTurnMeta = {
     outcome:
@@ -739,7 +748,7 @@ function parseRecord(state: EventState, offset: number, row: any, page: Conversa
         offset,
         payload.type === "user_message" ? "user-message" : "agent-message",
         timestamp,
-        payload.message,
+        payload.type === "agent_message" ? withoutPlanTags(payload.message) : payload.message,
         (Array.isArray(payload.images) ? payload.images.length : 0) +
           (Array.isArray(payload.local_images) ? payload.local_images.length : 0),
         true,
@@ -750,7 +759,8 @@ function parseRecord(state: EventState, offset: number, row: any, page: Conversa
   } else if (row?.type === "response_item" && payload?.type === "message") {
     if (!["user", "assistant"].includes(payload.role)) return;
     const content = payload.content,
-      text = messageText(content);
+      raw = messageText(content),
+      text = raw !== null && payload.role === "assistant" ? withoutPlanTags(raw) : raw;
     if (text === null) return;
     const injectedTurn = payload.internal_chat_message_metadata_passthrough?.turn_id;
     if (payload.role === "user" && typeof injectedTurn === "string") {

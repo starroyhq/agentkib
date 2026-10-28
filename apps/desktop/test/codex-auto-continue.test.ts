@@ -159,6 +159,13 @@ function fixture(
   let models: Array<Record<string, unknown>> = [
     { model: "model-a", isDefault: true, supportedReasoningEfforts: [{ reasoningEffort: "low" }] },
   ];
+  // The presets CLI 0.163.0 lists (CollaborationModeMask rows).
+  let collaborationModes: unknown = {
+    data: [
+      { name: "Plan", mode: "plan", model: null, reasoning_effort: "medium" },
+      { name: "Default", mode: "default", model: null, reasoning_effort: null },
+    ],
+  };
   const servers: OfflineServer[] = [];
   class OfflineServer extends EventEmitter {
     connected = true;
@@ -170,6 +177,10 @@ function fixture(
       requests.push({ method, params });
       if (method === "thread/resume" && nativeFailure) throw nativeFailure;
       if (method === "model/list") return { data: models };
+      if (method === "collaborationMode/list") {
+        if (collaborationModes instanceof Error) throw collaborationModes;
+        return collaborationModes;
+      }
       if (method === "thread/goal/get") return { goal: null };
       if (method === "skills/list") return { data: [] };
       if (method === "thread/read")
@@ -333,6 +344,9 @@ function fixture(
     setModels: (value: Array<Record<string, unknown>>) => {
       models = value;
     },
+    setCollaborationModes: (value: unknown) => {
+      collaborationModes = value;
+    },
     mismatchReply: (field: "top" | "thread") => {
       wrongReplyCwd = field;
     },
@@ -359,6 +373,122 @@ function fixture(
     },
   };
 }
+
+describe("Codex Plan mode", () => {
+  async function control(
+    f: ReturnType<typeof fixture>,
+    operation: "send" | "settings",
+    fields: Record<string, unknown> = {},
+  ) {
+    const state = await f.live();
+    return f.web.managedControl({
+      operation,
+      sessionId: f.summary.id,
+      requestId: randomUUID(),
+      deviceId: "fixture",
+      runtimeBootId: state.runtimeBootId,
+      expectedRevision: state.revision,
+      experimentalEnabled: true,
+      ...(operation === "send" ? { text: "Plan this" } : {}),
+      ...fields,
+    });
+  }
+  const settingsState = (f: ReturnType<typeof fixture>) =>
+    f.web.managedSettingsState({ operation: "settings-state", sessionId: f.summary.id }) as Promise<
+      Record<string, any>
+    >;
+
+  it("offers the native presets, sends the turn in Plan, and confirms it from the CLI", async () => {
+    const f = fixture();
+    // Before any runner: read with a metadata-only reader.
+    const inactive = await settingsState(f);
+    expect(inactive.collaborationModes).toEqual([
+      { id: "plan", name: "Plan" },
+      { id: "default", name: "Default" },
+    ]);
+    expect(inactive.settings.writable.mode).toEqual({ available: true });
+    expect(await control(f, "settings", { mode: "plan" })).toMatchObject({ accepted: true });
+    expect(await control(f, "send")).toMatchObject({ accepted: true });
+    expect(f.requests.find(({ method }) => method === "turn/start")?.params).toMatchObject({
+      collaborationMode: {
+        mode: "plan",
+        // Null asks Codex for its own Plan instructions; AgentKib never copies them.
+        settings: { model: "model-a", developer_instructions: null },
+      },
+    });
+    expect((await settingsState(f)).settings).toMatchObject({
+      selected: { mode: "plan" },
+      current: { mode: null },
+      applicationStatus: "pending",
+    });
+    // CLI 0.163.0 reports the applied mode before turn/started.
+    f.servers.at(-1)!.emit("notification", {
+      method: "thread/settings/updated",
+      params: {
+        threadId: nativeId,
+        threadSettings: {
+          model: "model-a",
+          modelProvider: "openai",
+          effort: null,
+          serviceTier: null,
+          cwd: f.workspace,
+          approvalPolicy: "on-request",
+          approvalsReviewer: "user",
+          sandboxPolicy: {
+            type: "workspaceWrite",
+            writableRoots: [f.workspace],
+            networkAccess: false,
+          },
+          collaborationMode: {
+            mode: "plan",
+            settings: { model: "model-a", reasoning_effort: null, developer_instructions: "…" },
+          },
+        },
+      },
+    });
+    await vi.waitFor(async () =>
+      expect((await settingsState(f)).settings).toMatchObject({
+        current: { mode: "plan" },
+        applicationStatus: "confirmed",
+      }),
+    );
+    f.servers.at(-1)!.complete();
+    const active = await settingsState(f);
+    expect(active.collaborationModes).toHaveLength(2);
+    expect(active.settings.writable.mode).toEqual({ available: true });
+    expect(await control(f, "settings", { mode: "default" })).toMatchObject({ accepted: true });
+    expect(await control(f, "send")).toMatchObject({ accepted: true });
+    expect(f.requests.filter(({ method }) => method === "turn/start").at(-1)?.params).toMatchObject(
+      { collaborationMode: { mode: "default" } },
+    );
+  });
+
+  it.each([
+    ["a CLI without presets", new Error("Method not found")],
+    ["a catalog without Default", { data: [{ name: "Plan", mode: "plan" }] }],
+    ["an unknown mode only", { data: [{ name: "Pair", mode: "pair_programming" }] }],
+  ])("keeps Plan unavailable for %s", async (_name, catalog) => {
+    const f = fixture();
+    f.setCollaborationModes(catalog);
+    const inactive = await settingsState(f);
+    expect(inactive.collaborationModes).toEqual([]);
+    expect(inactive.settings.writable.mode).toEqual({
+      available: false,
+      reason: "native-collaboration-modes-unavailable",
+    });
+    // Models stay readable, and the session still starts.
+    expect(inactive.models).toHaveLength(1);
+    expect(await control(f, "settings", { mode: "plan" })).toMatchObject({
+      accepted: false,
+      controlOutcome: "not-dispatched",
+      error: "native-collaboration-modes-unavailable",
+    });
+    expect(await control(f, "send")).toMatchObject({ accepted: true });
+    expect(f.requests.find(({ method }) => method === "turn/start")?.params).not.toHaveProperty(
+      "collaborationMode",
+    );
+  });
+});
 
 describe("Codex fork model recovery", () => {
   const catalog = [

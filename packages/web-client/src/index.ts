@@ -174,6 +174,11 @@ export interface ArtifactTicket {
   revision: string;
   kind: ArtifactPreviewKind;
 }
+/** A web preview of a local port, on the host's preview origin; it lapses when left idle. */
+export interface LivePreviewTicket {
+  url: string;
+  expiresAt: number;
+}
 export interface Access {
   /** Additive capability; absent on older hosts. */
   historySearch?: true;

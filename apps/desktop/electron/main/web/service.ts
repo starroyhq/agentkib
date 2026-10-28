@@ -19,6 +19,7 @@ import { extname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { networkInterfaces } from "node:os";
 import { ArtifactService, ArtifactError } from "./artifacts";
 import { AttachmentStore, AttachmentError } from "./attachments";
+import { LivePreviewError, LivePreviewService } from "./live-preview";
 import { dispatchClaude } from "./claude-dispatch";
 import { ClaudeHostScheduler, type ClaudeScheduledSession } from "./claude-scheduler";
 import { attachManagedWebSocket, type ConversationDispatchControl } from "./managed-websocket";
@@ -365,6 +366,8 @@ const API_ROUTES: Record<"GET" | "POST", Record<string, RouteSpec>> = {
     // Explicit capability discovery starts a worker but never dispatches a command receipt.
     "/managed/settings-prepare": {},
     "/artifact-tickets": { lan: true },
+    // Full access only, so never on LAN.
+    "/live-preview-tickets": {},
     "/attachments": { lan: true },
     "/attachments/delete": { lan: true },
   },
@@ -478,6 +481,8 @@ export class WebAccessService {
   private previewOrigin = "";
   private previewServer?: Server;
   private desktopPreviewServer?: Server;
+  /** Remote browsers' web preview, on the same isolated origin as artifact previews. */
+  private livePreview?: LivePreviewService;
   private relay?: RelayManager;
   private relayEpoch = 0;
   private disposed = false;
@@ -1182,6 +1187,7 @@ export class WebAccessService {
           this.code = undefined;
           this.endStreams();
           this.artifacts?.clear();
+          this.livePreview?.clear();
         }
         this.error = undefined;
         if (!this.server?.listening) await this.start(false);
@@ -1247,6 +1253,7 @@ export class WebAccessService {
         // 已连接的浏览器还拿着旧的 /access 快照（控件按旧权限显示）。断开它的流让它重连，
         // 重连时会重新同步权限；不发 access-ended，否则客户端会当成被注销。
         this.endStreams(credential.hash, null);
+        this.livePreview?.revokeDevice(input.id);
         break;
       }
       case "approve": {
@@ -1299,6 +1306,7 @@ export class WebAccessService {
           if (b) b.ended = true;
           this.endStreams(c.hash);
           this.artifacts?.revokeDevice(c.device.id);
+          this.livePreview?.revokeDevice(c.device.id);
           for (const [id, reference] of this.contextArtifactRefs)
             if (reference.deviceId === c.device.id) this.contextArtifactRefs.delete(id);
         }
@@ -1592,12 +1600,14 @@ export class WebAccessService {
     await Promise.all([this.previewStarting, this.desktopPreviewStarting]).catch(() => undefined);
     this.artifacts?.clear();
     this.desktopArtifacts?.clear();
+    this.livePreview?.close();
     this.endStreams();
     const previews = [this.previewServer, this.desktopPreviewServer];
     this.previewServer = undefined;
     this.desktopPreviewServer = undefined;
     this.artifacts = undefined;
     this.desktopArtifacts = undefined;
+    this.livePreview = undefined;
     for (const preview of previews)
       if (preview) {
         preview.closeAllConnections();
@@ -1793,12 +1803,27 @@ export class WebAccessService {
   }
   private async createPreview(desktop = false) {
     let artifacts: ArtifactService;
+    // The desktop app frames local pages directly; only remote browsers need the proxy.
+    const live = desktop
+      ? undefined
+      : new LivePreviewService({
+          origins: () => ({
+            preview: artifacts.previewOrigin,
+            ancestors: artifacts.frameAncestors(),
+          }),
+          authorize: (deviceId) => this.livePreviewAllowed(deviceId),
+          reservedPorts: () => this.ownPorts(),
+        });
     const server = createServer((req, res) => {
-      void artifacts.handle(req, res).catch((error: unknown) => {
+      const handled =
+        live && LivePreviewService.owns(req.url)
+          ? live.handle(req, res)
+          : artifacts.handle(req, res);
+      void handled.catch((error: unknown) => {
+        const known =
+          error instanceof ArtifactError || error instanceof LivePreviewError ? error : undefined;
         if (!res.headersSent)
-          this.json(res, error instanceof ArtifactError ? error.status : 500, {
-            error: error instanceof ArtifactError ? error.message : "preview_failed",
-          });
+          this.json(res, known?.status ?? 500, { error: known?.message ?? "preview_failed" });
         else res.destroy();
       });
     });
@@ -1865,7 +1890,30 @@ export class WebAccessService {
       this.previewServer = server;
       this.previewOrigin = previewOrigin;
       this.artifacts = artifacts;
+      this.livePreview = live;
     }
+  }
+  /** Loopback ports of AgentKib's own listeners, which the web preview never opens. */
+  private ownPorts(): number[] {
+    const ports = [this.config.port];
+    for (const server of [this.previewServer, this.desktopPreviewServer]) {
+      const address = server?.address();
+      if (address && typeof address !== "string") ports.push(address.port);
+    }
+    return ports;
+  }
+  /** Checked again on every proxied request: full access with advanced control. */
+  private livePreviewAllowed(deviceId: string) {
+    const credential = this.credentials.find(
+      (c) => c.device.id === deviceId && c.expiresAt > Date.now(),
+    );
+    if (!this.server || !credential || this.browsers.get(credential.hash)?.ended) return false;
+    const device = credential.device;
+    return (
+      this.isFullAccess(device) &&
+      device.advancedControl === true &&
+      this.controlsEnabled(undefined, device)
+    );
   }
   private async fileRoots(device?: WebDevice) {
     const workspaces = await this.registeredWorkspaces();
@@ -4221,6 +4269,7 @@ export class WebAccessService {
           if (loggedOut)
             await this.invalidateScheduledDevice(loggedOut.device.id, "authorization-revoked");
           if (loggedOut) this.artifacts?.revokeDevice(loggedOut.device.id);
+          if (loggedOut) this.livePreview?.revokeDevice(loggedOut.device.id);
           this.credentials = this.credentials.filter((c) => c.hash !== hash);
           browser.ended = true;
           this.endStreams(hash);
@@ -4257,6 +4306,20 @@ export class WebAccessService {
         });
         this.grant(hash, "files");
         return this.json(res, 200, result);
+      }
+      if (path === "/live-preview-tickets") {
+        const device = this.fullAccess(hash, "advancedControl");
+        const live = this.livePreview;
+        if (!live) throw new HttpError(503, "preview_unavailable");
+        const ticket = await live
+          .issue(device.id, { port: body.port, path: body.path, secure: body.secure })
+          .catch((error: unknown) => {
+            if (error instanceof LivePreviewError) throw new HttpError(error.status, error.code);
+            throw error;
+          });
+        // Access can end while the port is probed; the ticket then dies on first use.
+        this.fullAccess(hash, "advancedControl");
+        return this.json(res, 200, ticket);
       }
       if (!["/send", "/stop", "/approve", "/answer"].includes(path))
         throw new HttpError(404, "not_found");

@@ -31,9 +31,11 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "../../components/ui/ta
 import { SheetClose, SheetTitle } from "../../components/ui/sheet";
 import { artifactCopy } from "./artifact-copy";
 import { ArtifactPanel } from "./artifact-panel";
+import { LivePreview } from "./live-preview";
 import { useSession } from "./session-context";
 
 type Root = { id: string; name: string };
+const VIEWS = ["artifacts", "files", "diff", "preview"] as const;
 type Diff = {
   patch: string;
   binary: boolean;
@@ -75,7 +77,15 @@ export function ArtifactBrowser({
   );
   const [roots, setRoots] = useState<Root[]>([]);
   const [workspaceId, setWorkspaceId] = useState("");
-  const [tab, setTab] = useState<"files" | "artifacts" | "diff">("artifacts");
+  // The host proxies local pages only for full control (it checks again on every request).
+  const previewAllowed =
+    access?.device?.accessMode === "full" &&
+    access.device.advancedControl === true &&
+    access.experimentalEnabled;
+  const views = previewAllowed ? VIEWS : VIEWS.filter((view) => view !== "preview");
+  const [selectedTab, setTab] = useState<(typeof VIEWS)[number]>("artifacts");
+  const tab = selectedTab === "preview" && !previewAllowed ? "artifacts" : selectedTab;
+  const fileView = tab === "artifacts" || tab === "files";
   const [listing, setListing] = useState<ArtifactListing>();
   const [artifacts, setArtifacts] = useState<ArtifactEntry[]>([]);
   const [cursor, setCursor] = useState<string>();
@@ -153,9 +163,11 @@ export function ArtifactBrowser({
       const abort = new AbortController();
       requests.current = abort;
       const g = ++generation.current;
-      setLoading(true);
       setError("");
       resetPreview();
+      // The web preview reads nothing from the authorized directories.
+      setLoading(tab !== "preview");
+      if (tab === "preview") return;
       try {
         const query = new URLSearchParams({ workspaceId });
         if (tab === "files") {
@@ -363,7 +375,7 @@ export function ArtifactBrowser({
             <SheetTitle id={titleId} className="min-w-0 flex-1 truncate text-[13px] font-semibold">
               {copy.title}
             </SheetTitle>
-            {!entry && (
+            {!entry && tab !== "preview" && (
               <Button
                 variant="ghost"
                 size="icon"
@@ -433,24 +445,30 @@ export function ArtifactBrowser({
               )}
               <TabsList
                 variant="line"
-                className="mt-2 grid h-9 w-full grid-cols-3 gap-0 p-0"
+                className={`mt-2 grid h-9 w-full gap-0 p-0 ${views.length === 4 ? "grid-cols-4" : "grid-cols-3"}`}
                 aria-label={copy.views}
               >
-                {(["artifacts", "files", "diff"] as const).map((value) => (
+                {views.map((value) => (
                   <TabsTrigger
                     key={value}
                     value={value}
+                    title={copy[value]}
                     className="h-9 min-w-0 px-1 text-xs after:bg-primary group-data-horizontal/tabs:after:inset-x-3 group-data-horizontal/tabs:after:bottom-0 group-data-horizontal/tabs:after:h-px group-data-[variant=line]/tabs-list:focus-visible:bg-accent"
                   >
-                    {copy[value]}
+                    <span className="min-w-0 truncate">{copy[value]}</span>
                   </TabsTrigger>
                 ))}
               </TabsList>
             </div>
             <TabsContent
               value={tab}
-              className="min-h-0 flex-1 space-y-3 overflow-y-auto overscroll-contain p-4 pb-[max(1rem,env(safe-area-inset-bottom))]"
+              className={
+                tab === "preview"
+                  ? "flex min-h-0 flex-1 flex-col"
+                  : "min-h-0 flex-1 space-y-3 overflow-y-auto overscroll-contain p-4 pb-[max(1rem,env(safe-area-inset-bottom))]"
+              }
             >
+              {tab === "preview" && <LivePreview />}
               {tab === "diff" && (
                 <>
                   <p className="text-xs text-muted-foreground">{copy.diffNote}</p>
@@ -505,12 +523,12 @@ export function ArtifactBrowser({
                   {diff === null && <p className="text-sm">{copy.noDiff}</p>}
                 </>
               )}
-              {error && (
+              {error && tab !== "preview" && (
                 <p role="alert" className="break-words text-sm text-destructive-text">
                   {error}
                 </p>
               )}
-              {loading && (
+              {loading && tab !== "preview" && (
                 <p role="status" className="flex items-center gap-2 text-xs text-muted-foreground">
                   <LoaderCircle
                     className="size-3.5 animate-spin motion-reduce:animate-none"
@@ -519,7 +537,7 @@ export function ArtifactBrowser({
                   {copy.loading}
                 </p>
               )}
-              {tab !== "diff" && !entry && (
+              {fileView && !entry && (
                 <div className="min-w-0 space-y-3">
                   {tab === "files" && listing?.parentId && (
                     <Button
@@ -596,7 +614,7 @@ export function ArtifactBrowser({
                   )}
                 </div>
               )}
-              {tab !== "diff" && entry && (
+              {fileView && entry && (
                 <div className="min-w-0 space-y-3 [&_audio]:max-w-full">
                   <Button
                     variant="ghost"

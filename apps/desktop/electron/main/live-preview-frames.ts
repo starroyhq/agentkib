@@ -76,8 +76,11 @@ export function framableHeaders(
 
 const FRAME_ANCESTORS = /(?:^|[;,])\s*frame-ancestors(?:[\s;,]|$)/i;
 
-/** A header value is a comma-separated list of policies, each a semicolon-separated list. */
-function withoutFrameAncestors(value: string): string {
+/**
+ * One CSP header value without its frame-ancestors directives; "" when nothing else remains.
+ * A value is a comma-separated list of policies, each a semicolon-separated list.
+ */
+export function withoutFrameAncestors(value: string): string {
   if (!FRAME_ANCESTORS.test(value)) return value;
   return value
     .split(",")

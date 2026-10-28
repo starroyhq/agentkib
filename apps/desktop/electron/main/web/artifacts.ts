@@ -387,6 +387,10 @@ export class ArtifactService {
     if (validated.includes(previewOrigin)) throw new Error("artifact_origin_must_be_isolated");
     return validated;
   }
+  /** The app origins that may frame this preview origin. */
+  frameAncestors(): string[] {
+    return [this.appOrigin, ...this.additionalAppOrigins];
+  }
   setOrigins(appOrigin: string, previewOrigin: string, additionalAppOrigins: string[] = []) {
     validOrigin(appOrigin, !!this.options.allowHttpLoopback);
     validOrigin(previewOrigin, !!this.options.allowHttpLoopback);
@@ -891,7 +895,7 @@ export class ArtifactService {
     if (ticket.bundle ? !bundleFile : path !== ticket.entryPath) reject(404, "artifact_not_found");
     const mime = bundleFile?.mime ?? ticket.mime;
     const base = `${this.previewOrigin}/p/${match[1]}/`;
-    const ancestors = [this.appOrigin, ...this.additionalAppOrigins].join(" ");
+    const ancestors = this.frameAncestors().join(" ");
     const headers: Record<string, string> = {
       "Cache-Control": "no-store",
       "Referrer-Policy": "no-referrer",

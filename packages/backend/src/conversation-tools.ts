@@ -12,7 +12,7 @@ import {
   sanitizeHandoffExport,
   sanitizeSessionText,
 } from "./session-handoff";
-import { toolStatus, truncateUtf8 } from "./session-events";
+import { toolStatus, truncateUtf8 } from "./session-event-values";
 
 /**
  * Normalizes native tool records into the bounded `ConversationToolDetail`

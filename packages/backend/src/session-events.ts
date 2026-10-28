@@ -1,7 +1,8 @@
 import type { ConversationToolDetail, ConversationTurnMeta } from "@agentkib/runtime-protocol";
 import { sessionTitle } from "./codex-sessions";
+import { MAX_MESSAGE_BYTES, toolStatus, truncateUtf8 } from "./session-event-values";
 import { jsonTimestamp } from "./session-history";
-export const MAX_MESSAGE_BYTES = 256 * 1024;
+export { MAX_MESSAGE_BYTES, toolStatus, truncateUtf8 };
 export const MAX_PAGE_BYTES = 2 * 1024 * 1024;
 export const MAX_LINE_BYTES = 4 * 1024 * 1024;
 export type CompatibleFormat = "open-claw" | "hermes" | "grok-build";
@@ -49,34 +50,6 @@ export function messageText(value: unknown): string | null {
       .filter((value) => value !== null)
       .join("\n") || null
   );
-}
-export function truncateUtf8(content: string, maximum = MAX_MESSAGE_BYTES) {
-  const bytes = Buffer.from(content);
-  if (bytes.length <= maximum) return { content, truncated: false };
-  let end = maximum;
-  while (end > 0 && (bytes[end]! & 0xc0) === 0x80) end--;
-  return { content: bytes.subarray(0, end).toString("utf8"), truncated: true };
-}
-export function toolStatus(value: unknown): string | null {
-  if (typeof value !== "string") return null;
-  switch (value.replace(/[A-Z]/g, (char) => char.toLowerCase())) {
-    case "completed":
-    case "success":
-    case "succeeded":
-      return "completed";
-    case "failed":
-    case "error":
-      return "failed";
-    case "started":
-    case "running":
-    case "in_progress":
-    case "inprogress":
-      return "running";
-    case "declined":
-      return "declined";
-    default:
-      return "unknown";
-  }
 }
 export function unsignedValue(value: unknown): number | null {
   return typeof value === "number" &&

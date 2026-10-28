@@ -103,7 +103,8 @@ Windows x64 使用的 Win-CodexBar 是独立的 Windows 移植版，有自己的
 | 执行中插入 | 用原生 `priority: "next"` 用户帧绑定当前轮次及 revision；它不等于 Codex 的原生 steering 契约，也不等于 AgentKib 的持久队列。 |
 | 重命名 | 更新 AgentKib 标题，并向已验证的原生主会话日志追加 `custom-title`。新建空会话在产生原生日志后再同步标题。 |
 | 分叉 | 从已验证的原生主会话及已结束的 assistant 截止点，使用 `--resume`、`--fork-session`、`--resume-session-at` 准备新 UUID。准备后释放、重新接管或重启仍保留来源及截止点；接管指纹绑定这些信息。未产生历史的空会话、无法验证的截止点不开放分叉。 |
-| 归档与取消归档 | 归档属于 AgentKib 的持久状态，不删除 Claude 原生历史。归档暂停后续调度；取消归档后仍需显式恢复队列或目标。 |
+| 删除 | 永久删除，需要整理权限。按 Claude Desktop 2.37337 的删除做法移除会话日志 `<id>.jsonl`、同名目录和旁边的 `<id>.ccr-tip.json`、`<id>.precompact.json`、`<id>.desktop-released.json`，以及配置目录里 `file-history`、`session-env`、`uploads`、`tasks`、`image-cache`、`debug`、`usage-data`、`startup-perf` 下属于这个会话的内容；不跟随也不删除符号链接，先删日志，日志删不掉时什么都不动（`claude-delete-failed`）。macOS 上 Claude Desktop 也有这个会话（`~/Library/Application Support/Claude/claude-code-sessions` 里的记录，含已归档）时拒绝（`claude-desktop-session`），请在 Claude Desktop 里删；读不到这些记录时同样拒绝（`claude-desktop-check-unavailable`）；其他系统不做这项检查。别的进程或终端桥接正在用时不删。删除后主机移除它的上传文件。 |
+| 归档 | AgentKib 不再有自己的归档，Claude 会话只能删除；Claude Desktop 的归档是它私有的记录，不改。以前在 AgentKib 归档过的会话读出时按原来的取消归档处理：暂停，需要显式恢复队列或目标。 |
 | 队列 | AgentKib 持久保存待办，支持添加、编辑、删除、重排、暂停和恢复。只编辑尚未派发的纯文本条目，附件引用保持固定；已领取、已派发及结果未知的条目不能编辑、删除或参与重排。编辑保留原设备归属；进入空闲后由宿主串行调度，优先处理用户队列，再继续目标。 |
 | 目标 | AgentKib 持久保存目标、预算、步骤、执行身份、报告及用量；不是 Claude 的原生 goal API。可创建、更新、暂停、恢复、清除。 |
 | 资源与历史 | 复用工作区文件/产物、只读 Git diff 和历史引用服务，每次读取和发送继续校验工作区及设备授权。浏览器提交主机签发的引用 ID，不提交任意本机路径；已验证会话上下文与工作区文件浏览是两种作用域。 |

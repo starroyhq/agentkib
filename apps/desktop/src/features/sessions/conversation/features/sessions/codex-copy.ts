@@ -48,6 +48,8 @@ const zh = {
   refresh: "刷新",
   advanced: "更多操作",
   native: "原客户端审批选项",
+  mcpDeclineOnly:
+    "这个 MCP 请求需要填写内容或打开链接，AgentKib 还不支持，只能拒绝。拒绝后 Codex 会继续本轮。",
   once: "仅本次",
   session: "本会话",
   persistent: "持久规则",
@@ -141,6 +143,8 @@ export const codexCopy: Record<Locale, Copy> = {
     refresh: "重新整理",
     advanced: "更多操作",
     native: "原客戶端審批選項",
+    mcpDeclineOnly:
+      "這個 MCP 請求需要填寫內容或開啟連結，AgentKib 尚不支援，只能拒絕。拒絕後 Codex 會繼續這一輪。",
     once: "僅本次",
     session: "本對話",
     persistent: "持久規則",
@@ -235,6 +239,8 @@ export const codexCopy: Record<Locale, Copy> = {
     refresh: "Refresh",
     advanced: "More actions",
     native: "Original-client approval options",
+    mcpDeclineOnly:
+      "This MCP request needs a form filled in or a link opened, which AgentKib does not support yet, so it can only be declined. Codex continues the turn after you decline.",
     once: "This time",
     session: "This session",
     persistent: "Persistent rule",
@@ -330,6 +336,8 @@ export const codexCopy: Record<Locale, Copy> = {
     refresh: "更新",
     advanced: "その他の操作",
     native: "元のクライアントの承認の選択肢",
+    mcpDeclineOnly:
+      "この MCP リクエストはフォームの入力またはリンクを開く必要があり、AgentKib はまだ対応していないため拒否のみできます。拒否すると Codex はこのターンを続けます。",
     once: "今回のみ",
     session: "この会話",
     persistent: "永続ルール",

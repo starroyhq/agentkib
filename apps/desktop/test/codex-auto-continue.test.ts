@@ -374,6 +374,101 @@ function fixture(
   };
 }
 
+describe("Codex MCP requests", () => {
+  // The approval CLI 0.163.0 asks before a non-read-only MCP tool runs.
+  const toolApproval = {
+    id: 41,
+    method: "mcpServer/elicitation/request",
+    params: {
+      threadId: nativeId,
+      turnId: "new-turn",
+      serverName: "stubmcp",
+      mode: "form",
+      _meta: {
+        codex_approval_kind: "mcp_tool_call",
+        persist: ["session", "always"],
+        tool_title: "Write stub record",
+      },
+      message: 'Allow the stubmcp MCP server to run tool "write"?',
+      requestedSchema: { type: "object", properties: {} },
+    },
+  };
+  async function running(request: Record<string, unknown> = toolApproval) {
+    const f = fixture();
+    expect(await f.send()).toMatchObject({ accepted: true });
+    const server = f.servers.at(-1)!;
+    const replies: unknown[] = [];
+    (server as unknown as { respond: (id: unknown, result: unknown) => void }).respond = (
+      id,
+      result,
+    ) => {
+      replies.push([id, result]);
+      server.emit("notification", {
+        method: "serverRequest/resolved",
+        params: { threadId: nativeId, requestId: id },
+      });
+    };
+    server.emit("serverRequest", request);
+    await vi.waitFor(async () => expect((await f.live()).approvals).toHaveLength(1));
+    return { f, replies };
+  }
+  async function approve(f: ReturnType<typeof fixture>, fields: Record<string, unknown>) {
+    const state = await f.live();
+    return f.web.managedControl({
+      operation: "approve",
+      sessionId: f.summary.id,
+      requestId: randomUUID(),
+      deviceId: "fixture",
+      runtimeBootId: state.runtimeBootId,
+      expectedRevision: state.revision,
+      experimentalEnabled: true,
+      turnId: "new-turn",
+      approvalId: 41,
+      ...fields,
+    });
+  }
+
+  it.each([
+    ["allow once", { decision: "accept" }, { action: "accept", content: {} }],
+    [
+      "allow for this session",
+      { nativeDecision: { action: "accept", content: {}, _meta: { persist: "session" } } },
+      { action: "accept", content: {}, _meta: { persist: "session" } },
+    ],
+    ["decline", { decision: "decline" }, { action: "decline" }],
+    ["cancel the turn", { decision: "cancel" }, { action: "cancel" }],
+  ])("answers the MCP tool approval: %s", async (_name, fields, reply) => {
+    const { f, replies } = await running();
+    expect(await approve(f, fields)).toMatchObject({ accepted: true });
+    expect(replies).toEqual([[41, reply]]);
+    expect(await f.live()).toMatchObject({ status: "running", approvals: [] });
+  });
+
+  it("does not accept a form it cannot fill in, or always-allow", async () => {
+    const { f, replies } = await running({
+      ...toolApproval,
+      params: {
+        ...toolApproval.params,
+        _meta: null,
+        message: "Pick a color.",
+        requestedSchema: { type: "object", properties: { color: { type: "string" } } },
+      },
+    });
+    for (const fields of [
+      { decision: "accept" },
+      { nativeDecision: { action: "accept", content: {}, _meta: { persist: "always" } } },
+    ])
+      expect(await approve(f, fields)).toMatchObject({
+        accepted: false,
+        controlOutcome: "not-dispatched",
+        error: "unsupported-decision",
+      });
+    expect(replies).toEqual([]);
+    expect(await approve(f, { decision: "decline" })).toMatchObject({ accepted: true });
+    expect(replies).toEqual([[41, { action: "decline" }]]);
+  });
+});
+
 describe("Codex attachments", () => {
   const capabilities = (f: ReturnType<typeof fixture>, experimentalEnabled = true) =>
     f.web.managedQuery({

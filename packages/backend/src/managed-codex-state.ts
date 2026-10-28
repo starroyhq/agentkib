@@ -20,6 +20,11 @@ const MAX_STREAM_BYTES = 128 * 1024;
 const MAX_ITEMS = 1024;
 const MAX_PENDING = 32;
 
+/** The JSON-RPC reply to a server request, sent by the event bridge. */
+export type ServerRequestReply =
+  | { id: unknown; result: unknown }
+  | { id: unknown; error: { code: number; message: string } };
+
 /**
  * The CLI's latest retry of a failed model request in the running turn, for display only. Same
  * shape as Claude's report; `detail` is the CLI's own text about what failed.
@@ -174,8 +179,11 @@ export class ManagedCodexState {
     };
   }
 
-  /** Apply one app-server notification or request; return the ledger event to persist. */
-  apply(value: unknown): { changed: boolean; event?: JsonObject } {
+  /**
+   * Apply one app-server notification or request; return the ledger event to persist, and the
+   * reply a request gets at once when AgentKib does not show it to the user.
+   */
+  apply(value: unknown): { changed: boolean; event?: JsonObject; reply?: ServerRequestReply } {
     if (!isObject(value)) throw new Error("invalid-codex-notification");
     const method = typeof value.method === "string" ? value.method : "";
     const params = isObject(value.params) ? value.params : {};
@@ -354,6 +362,23 @@ export class ManagedCodexState {
         runtimeChanged = true;
         break;
       }
+      case "mcpServer/elicitation/request": {
+        const requestId = requiredRequestId(value.id);
+        // The request may name no turn; one that cannot be shown with the running turn is
+        // declined at once, which lets the MCP call, and the turn, go on.
+        const turnId = this.#turn;
+        if (
+          turnId === null ||
+          (params.turnId != null && params.turnId !== turnId) ||
+          this.#approvals.size >= MAX_PENDING
+        )
+          return { changed: false, reply: { id: value.id, result: { action: "decline" } } };
+        this.#pendingTurns.set(requestId, turnId);
+        this.#approvals.set(requestId, projectElicitation(value.id, turnId, params));
+        this.#status = "awaiting-approval";
+        runtimeChanged = true;
+        break;
+      }
       case "item/tool/requestUserInput": {
         if (this.#turn === null || params.turnId !== this.#turn) return { changed: false };
         if (this.#questions.size >= MAX_PENDING) throw new Error("too-many-questions");
@@ -433,13 +458,21 @@ export class ManagedCodexState {
         this.#goalRevision += 1;
         break;
       default:
-        if ("id" in value) {
-          this.#status = "waiting-input";
-          this.#reason = "unsupported-codex-request";
-          runtimeChanged = true;
-        } else {
-          return { changed: false };
-        }
+        // A request AgentKib has no answer for gets an error at once, so the turn goes on instead
+        // of waiting for a reply that never comes (0.163.0: item/tool/call, attestation/generate,
+        // account/chatgptAuthTokens/refresh, currentTime/read and the v1 approvals).
+        if ("id" in value)
+          return {
+            changed: false,
+            reply: {
+              id: value.id,
+              error: {
+                code: -32601,
+                message: `AgentKib does not handle ${[...(method || "this request")].slice(0, 128).join("")}`,
+              },
+            },
+          };
+        return { changed: false };
     }
     return this.#changed(runtimeChanged);
   }
@@ -639,10 +672,22 @@ export class ManagedCodexEventBridge {
     await this.session.close();
   }
 
+  #reply(reply: ServerRequestReply): void {
+    if (!this.session.connected) return;
+    try {
+      if ("error" in reply)
+        this.session.respondError(reply.id, reply.error.code, reply.error.message);
+      else this.session.respond(reply.id, reply.result);
+    } catch {
+      // A closed connection drops its pending requests; the close itself is handled below.
+    }
+  }
+
   #enqueue(value: unknown): void {
     if (this.#closed) return;
     this.#pending = this.#pending.then(async () => {
       const result = this.state.apply(value);
+      if (result.reply) this.#reply(result.reply);
       if (result.changed) {
         await this.persist(this.state, result.event);
         this.onApplied?.(value, result, this.state);
@@ -954,6 +999,121 @@ function projectApproval(
       command && validMetadata ? (details.proposedExecpolicyAmendment ?? null) : null,
     environmentId: command && validMetadata ? (details.environmentId ?? null) : null,
   };
+}
+
+/**
+ * An MCP request for the user (`mcpServer/elicitation/request`), as an approval. Codex 0.163.0
+ * asks this way before a non-read-only MCP tool runs: `_meta.codex_approval_kind` is
+ * `mcp_tool_call` and the form is empty. MCP servers ask for their own input the same way. An
+ * empty form is a confirmation that can be accepted; a form with fields, a link or another mode
+ * can only be declined here, which lets the MCP call and the turn go on.
+ */
+function projectElicitation(requestId: unknown, turnId: string, params: JsonObject): JsonObject {
+  const meta = isObject(params._meta) ? params._meta : {};
+  const schema = isObject(params.requestedSchema) ? params.requestedSchema : null;
+  const fields = schema && isObject(schema.properties) ? Object.entries(schema.properties) : null;
+  const confirmation = params.mode === "form" && fields !== null && fields.length === 0;
+  const toolApproval = confirmation && meta.codex_approval_kind === "mcp_tool_call";
+  const kind = toolApproval
+    ? "tool-approval"
+    : confirmation
+      ? "confirmation"
+      : params.mode === "form"
+        ? "form"
+        : params.mode === "url"
+          ? "url"
+          : "other";
+  const server = boundedText(params.serverName, 256) ?? "MCP";
+  const tool = toolApproval ? boundedText(meta.tool_title, 256) : null;
+  const toolParams =
+    toolApproval && meta.tool_params !== undefined && jsonSize(meta.tool_params) <= 16 * 1024
+      ? meta.tool_params
+      : undefined;
+  const accept = { action: "accept", content: {} };
+  // Cancel aborts the turn for a tool approval; for a server's own request it only dismisses
+  // it, which the user can do by declining.
+  const availableDecisions = confirmation
+    ? toolApproval
+      ? ["accept", "decline", "cancel"]
+      : ["accept", "decline"]
+    : ["decline"];
+  const persist = Array.isArray(meta.persist) ? meta.persist : [];
+  return {
+    requestId,
+    turnId,
+    method: "mcpServer/elicitation/request",
+    toolName: tool ? `${server} · ${tool}` : server,
+    input: {
+      kind,
+      server,
+      message: boundedText(params.message, 16_384),
+      ...(tool ? { tool } : {}),
+      ...(toolApproval && boundedText(meta.tool_description, 4096)
+        ? { description: boundedText(meta.tool_description, 4096) }
+        : {}),
+      ...(toolParams !== undefined ? { params: structuredClone(toolParams) } : {}),
+      ...(kind === "url" && boundedText(params.url, 4096) ? { url: params.url } : {}),
+      ...(kind === "form"
+        ? {
+            fields: fields!.slice(0, 32).map(([name, field]) => ({
+              name: [...name].slice(0, 128).join(""),
+              ...(isObject(field) && boundedText(field.title, 256) ? { title: field.title } : {}),
+            })),
+          }
+        : {}),
+    },
+    command: null,
+    cwd: null,
+    changes: null,
+    availableDecisions,
+    ...(toolApproval && persist.includes("session")
+      ? {
+          decisionOptions: [
+            { id: "native-accept", label: "accept", scope: "once", decision: accept },
+            {
+              id: "native-session",
+              label: "acceptForSession",
+              scope: "session",
+              decision: { ...accept, _meta: { persist: "session" } },
+            },
+            {
+              id: "native-decline",
+              label: "decline",
+              scope: "once",
+              decision: { action: "decline" },
+            },
+            { id: "native-cancel", label: "cancel", scope: "once", decision: { action: "cancel" } },
+          ],
+          requiresExtendedApproval: false,
+        }
+      : {}),
+    supported: true,
+    unsupportedReason: null,
+    unsupportedMetadata: [],
+    proposedExecpolicyAmendment: null,
+    environmentId: null,
+  };
+}
+
+/** The `McpServerElicitationRequestResponse` for a decision offered by `projectElicitation`. */
+export function elicitationResponse(decision: unknown): unknown {
+  if (decision === "accept") return { action: "accept", content: {} };
+  if (decision === "decline" || decision === "cancel") return { action: decision };
+  return decision;
+}
+
+function boundedText(value: unknown, max: number): string | null {
+  return typeof value === "string" && value.trim() && value.length <= max && !value.includes("\0")
+    ? value
+    : null;
+}
+
+function jsonSize(value: unknown): number {
+  try {
+    return Buffer.byteLength(JSON.stringify(value) ?? "", "utf8");
+  } catch {
+    return Number.POSITIVE_INFINITY;
+  }
 }
 
 function nativeApprovalOptions(method: string, details: JsonObject): JsonObject[] {

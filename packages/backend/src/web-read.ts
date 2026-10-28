@@ -24,7 +24,7 @@ import { codexResumeCommand } from "./codex-resume-command";
 import { CodexFollowerBridge } from "./codex-follower-bridge";
 import type { CodexFollowerState } from "./codex-follower-state";
 import { AntigravityManagedRunner } from "./antigravity-managed-runner";
-import { ManagedCodexState } from "./managed-codex-state";
+import { ManagedCodexState, elicitationResponse } from "./managed-codex-state";
 import { ManagedCodexEventBridge } from "./managed-codex-state";
 import { projectContextUsage } from "./context-usage";
 import { activityBlocks, assertActivityAllows } from "./session-activity";
@@ -2362,7 +2362,12 @@ export class WebReadRequests {
           approval.availableDecisions.includes(decision);
         if (!offered && !legacy) throw new Error("unsupported-decision");
         responseId = approvalId;
-        params = approval.method === "item/permissions/requestApproval" ? decision : { decision };
+        params =
+          approval.method === "item/permissions/requestApproval"
+            ? decision
+            : approval.method === "mcpServer/elicitation/request"
+              ? elicitationResponse(decision)
+              : { decision };
         method = "";
       } else {
         const questionId = request.questionId;

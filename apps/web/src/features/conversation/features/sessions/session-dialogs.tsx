@@ -9,6 +9,19 @@ import { ToolDetailBody, toolStatusLabel } from "@agentkib/session-ui";
 import { QuestionForm, interactionCopy } from "../interactions/question-form";
 import { Dialog } from "../../components/dialog";
 import { useSession } from "./session-context";
+const MCP_REQUEST = "mcpServer/elicitation/request";
+/** The text an MCP server or Codex asks the user, shown as written. */
+function mcpMessage(input: unknown): string | null {
+  const message =
+    input && typeof input === "object" ? (input as { message?: unknown }).message : null;
+  return typeof message === "string" && message.trim() ? message : null;
+}
+/** Everything else the request names: server, tool, its arguments, a link or form fields. */
+function mcpDetails(input: unknown): unknown {
+  if (!input || typeof input !== "object") return null;
+  const { message: _message, kind: _kind, ...details } = input as Record<string, unknown>;
+  return details;
+}
 export function SessionDialogs() {
   const {
     modal,
@@ -81,7 +94,12 @@ export function SessionDialogs() {
                 ? t.claudeDecisionInfo
                 : t.decisionInfo}
           </p>
-          {modal.method === "claude/can_use_tool" && <h3>{modal.toolName || t.unknownTool}</h3>}
+          {(modal.method === "claude/can_use_tool" || modal.method === MCP_REQUEST) && (
+            <h3>{modal.toolName || t.unknownTool}</h3>
+          )}
+          {modal.method === MCP_REQUEST && mcpMessage(modal.input) && (
+            <p className="whitespace-pre-wrap break-words">{mcpMessage(modal.input)}</p>
+          )}
           {modal.environmentId === "local" && <p>{t.localExecution}</p>}
           {modal.cwd && (
             <dl>
@@ -93,9 +111,11 @@ export function SessionDialogs() {
             {JSON.stringify(
               modal.method === "claude/can_use_tool"
                 ? (modal.input ?? null)
-                : modal.method === "session/request_permission"
-                  ? (modal.toolCall ?? null)
-                  : (modal.command ?? modal.changes ?? null),
+                : modal.method === MCP_REQUEST
+                  ? mcpDetails(modal.input)
+                  : modal.method === "session/request_permission"
+                    ? (modal.toolCall ?? null)
+                    : (modal.command ?? modal.changes ?? null),
               null,
               2,
             )}
@@ -121,6 +141,9 @@ export function SessionDialogs() {
               void control("approve", modal, undefined, undefined, undefined, { nativeDecision })
             }
           />
+          {modal.method === MCP_REQUEST && !modal.availableDecisions.includes("accept") && (
+            <aside className="info">{codexCopyForSurface(locale, "web").mcpDeclineOnly}</aside>
+          )}
           {modal.method === "claude/can_use_tool" && modal.context && (
             <aside className="info">
               <p>{t.claudeContextInfo}</p>

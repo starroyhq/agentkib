@@ -1343,3 +1343,66 @@ export async function runSessionManagement(
     agent,
   );
 }
+
+/** A page on this computer to preview: a dev server a session printed, or one the user typed. */
+export interface LocalPreviewTarget {
+  /** Dev servers started with HTTPS keep it. */
+  secure: boolean;
+  port: number;
+  /** Path, query and fragment, starting with "/". */
+  path: string;
+  /** How this computer itself reaches the page; the host is always localhost. */
+  url: string;
+}
+
+// http(s)://<loopback>:<port>[/path]; a port is required.
+const LOOPBACK_URL =
+  /\b(https?):\/\/(?:localhost|127\.0\.0\.1|0\.0\.0\.0|\[::1\]):(\d{1,5})(?!\d)(\/[^\s"'<>`\\)\]}]*)?/gi;
+const TYPED_LOOPBACK =
+  /^(?:(https?):\/\/)?(?:localhost|127\.0\.0\.1|0\.0\.0\.0|\[::1\]):(\d{1,5})([/?#]\S*)?$/i;
+// Terminal colors can split a printed URL ("localhost:" ESC[1m "5173").
+// oxlint-disable-next-line no-control-regex
+const TERMINAL_STYLE = /\u001b\[[0-?]*[ -/]*[@-~]/g;
+
+function previewTarget(secure: boolean, port: number, rest = ""): LocalPreviewTarget | null {
+  if (!Number.isSafeInteger(port) || port < 1 || port > 65_535) return null;
+  let path = (rest.startsWith("/") ? rest : `/${rest}`).slice(0, 2048);
+  // Tool output has secret query values redacted; such a query cannot be reused.
+  if (path.includes("[REDACTED")) path = path.split("?")[0]!;
+  // Dev servers print punctuation after their URL ("ready at http://…/.").
+  path = path.replace(/[.,;:!?]+$/, "") || "/";
+  const url = `${secure ? "https" : "http"}://localhost:${port}${path}`;
+  return { secure, port, path, url };
+}
+
+/** Loopback URLs in these texts, newest first (later texts and later matches win), one per port. */
+export function localPreviewTargets(texts: readonly string[], limit = 8): LocalPreviewTarget[] {
+  const found: LocalPreviewTarget[] = [];
+  const seen = new Set<number>();
+  for (let index = texts.length - 1; index >= 0 && found.length < limit; index--) {
+    const text = texts[index]!.replace(TERMINAL_STYLE, "");
+    for (const match of [...text.matchAll(LOOPBACK_URL)].reverse()) {
+      const target = previewTarget(match[1]!.toLowerCase() === "https", Number(match[2]), match[3]);
+      if (!target || seen.has(target.port)) continue;
+      seen.add(target.port);
+      found.push(target);
+      if (found.length >= limit) break;
+    }
+  }
+  return found;
+}
+
+/** "5173", "localhost:5173/app" or "http://127.0.0.1:5173/app"; any other host is refused. */
+export function parseLocalPreviewTarget(input: string): LocalPreviewTarget | null {
+  const value = input.trim();
+  if (/^\d{1,5}$/.test(value)) return previewTarget(false, Number(value));
+  const match = TYPED_LOOPBACK.exec(value);
+  return match
+    ? previewTarget(match[1]?.toLowerCase() === "https", Number(match[2]), match[3])
+    : null;
+}
+
+/** "localhost:5173/app", with the scheme only when it is HTTPS. */
+export function localPreviewLabel(target: LocalPreviewTarget): string {
+  return target.secure ? target.url : target.url.slice("http://".length);
+}

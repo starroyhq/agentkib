@@ -2,7 +2,7 @@ import { sessionContinuationListState, SessionContinuationDot } from "@agentkib/
 import { NativeSelect } from "../../components/ui/native-select";
 import { Input } from "../../components/ui/input";
 import { Button } from "../../components/ui/button";
-import { useState } from "react";
+import { useState, type ReactNode } from "react";
 import {
   ChevronDown,
   ChevronRight,
@@ -39,6 +39,7 @@ export function SessionCatalog({
   indexEnabled = true,
   pendingSessions = {},
   status = "ready",
+  rowMenu,
 }: {
   sessions: ConversationSessionSummary[];
   workspaces?: CatalogWorkspace[];
@@ -48,6 +49,8 @@ export function SessionCatalog({
   indexEnabled?: boolean;
   pendingSessions?: Record<string, boolean>;
   status?: CatalogStatus;
+  /** Per-row management (rename, archive, delete); rendered beside the row, never inside it. */
+  rowMenu?: (session: ConversationSessionSummary) => ReactNode;
 }) {
   const t = dictionaries[locale],
     c = catalogCopyForSurface(locale, "web");
@@ -140,38 +143,43 @@ export function SessionCatalog({
                       const fork = s.origin === "interactive" && !!s.forked_from_session_id;
                       const description = `${agentName(s.agent)} · ${title}${s.availability !== "readable" ? ` · ${t.metadataOnly}` : ""}${s.archived ? ` · ${c.archived}` : ""}${fork ? ` · ${c.fork}` : ""}`;
                       return (
-                        <Button
-                          variant="ghost"
-                          key={s.id}
-                          className={`h-auto min-h-11 w-full justify-start gap-2.5 rounded-lg px-3 py-2.5 text-left [&>strong]:min-w-0 [&>strong]:flex-1 [&>strong]:truncate [&>strong]:text-[13px] [&>strong]:font-normal ${s.id === selected ? "selected bg-accent text-accent-foreground shadow-xs ring-1 ring-border" : "text-muted-foreground"}`}
-                          aria-label={`${description}${runtime?.dot ? ` · ${runtime.label}` : ""}`}
-                          title={description}
-                          aria-current={s.id === selected ? "page" : undefined}
-                          disabled={s.availability !== "readable"}
-                          onClick={() => onSelect(s.id)}
-                        >
-                          <AgentMark agent={s.agent} />
-                          <strong>{title}</strong>
-                          {runtime?.dot && (
-                            <SessionContinuationDot label={runtime.label} active={runtime.active} />
-                          )}
-                          {runtime &&
-                            !runtime.dot &&
-                            s.continuation?.reason === "codex-cli-version-too-old" && (
-                              <span className="shrink-0 text-xs text-muted-foreground">
-                                {runtime.label}
+                        <div key={s.id} className="group/session flex items-center gap-1">
+                          <Button
+                            variant="ghost"
+                            className={`h-auto min-h-11 min-w-0 flex-1 justify-start gap-2.5 rounded-lg px-3 py-2.5 text-left [&>strong]:min-w-0 [&>strong]:flex-1 [&>strong]:truncate [&>strong]:text-[13px] [&>strong]:font-normal ${s.id === selected ? "selected bg-accent text-accent-foreground shadow-xs ring-1 ring-border" : "text-muted-foreground"}`}
+                            aria-label={`${description}${runtime?.dot ? ` · ${runtime.label}` : ""}`}
+                            title={description}
+                            aria-current={s.id === selected ? "page" : undefined}
+                            disabled={s.availability !== "readable"}
+                            onClick={() => onSelect(s.id)}
+                          >
+                            <AgentMark agent={s.agent} />
+                            <strong>{title}</strong>
+                            {runtime?.dot && (
+                              <SessionContinuationDot
+                                label={runtime.label}
+                                active={runtime.active}
+                              />
+                            )}
+                            {runtime &&
+                              !runtime.dot &&
+                              s.continuation?.reason === "codex-cli-version-too-old" && (
+                                <span className="shrink-0 text-xs text-muted-foreground">
+                                  {runtime.label}
+                                </span>
+                              )}
+                            {pendingSessions[s.id] && (
+                              <span
+                                aria-label={interactionCopy[locale].pending}
+                                title={interactionCopy[locale].pending}
+                              >
+                                ●
                               </span>
                             )}
-                          {pendingSessions[s.id] && (
-                            <span
-                              aria-label={interactionCopy[locale].pending}
-                              title={interactionCopy[locale].pending}
-                            >
-                              ●
-                            </span>
-                          )}
-                          {fork && <GitBranch size={14} aria-hidden="true" />}
-                        </Button>
+                            {fork && <GitBranch size={14} aria-hidden="true" />}
+                          </Button>
+                          {rowMenu?.(s)}
+                        </div>
                       );
                     })}
                 </section>

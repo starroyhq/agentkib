@@ -13,6 +13,7 @@ import { sessionAgentNames, sessionRecordLabel, sessionSourceLabel } from "./ses
 import { SessionDirectoryControls } from "./SessionDirectoryControls";
 import { sessionOrder, useSessionDirectoryOrder } from "./useSessionDirectoryOrder";
 import { SessionDirectoryEntry } from "./SessionDirectoryEntry";
+import { SessionRowMenu } from "./SessionRowMenu";
 import { SessionDirectorySourceNotices } from "./SessionSourceNotices";
 
 export function SessionDirectory({
@@ -150,69 +151,81 @@ export function SessionDirectory({
                 >
                   {sessions.map((session) => {
                     return (
-                      <Button
-                        variant="bare"
-                        size="content"
-                        key={session.id}
-                        data-session-entry
-                        draggable
-                        className={cn(
-                          "session-directory-item session-directory-draggable flex min-h-10 w-full items-center gap-2 rounded-lg px-3 py-2 text-left transition-colors hover:bg-sidebar-accent/70 cursor-grab active:cursor-grabbing [&>div]:shrink-0 [&>span]:grid [&>span]:min-w-0 [&>span]:flex-1 [&_strong]:truncate aria-[current=page]:bg-sidebar-accent aria-[current=page]:font-medium",
-                          draggingId === `session:${session.id}` &&
-                            "session-directory-dragging opacity-[0.45]",
-                          dropTargetId === session.id &&
-                            (dropAfter
-                              ? "session-directory-drop-after bg-sidebar-accent shadow-[inset_0_-2px_0_var(--ring)]"
-                              : "session-directory-drop-before bg-sidebar-accent shadow-[inset_0_2px_0_var(--ring)]"),
+                      <div key={session.id} className="group/session flex items-center gap-1">
+                        <Button
+                          variant="bare"
+                          size="content"
+                          data-session-entry
+                          draggable
+                          className={cn(
+                            "session-directory-item session-directory-draggable flex min-h-10 min-w-0 flex-1 items-center gap-2 rounded-lg px-3 py-2 text-left transition-colors hover:bg-sidebar-accent/70 cursor-grab active:cursor-grabbing [&>div]:shrink-0 [&>span]:grid [&>span]:min-w-0 [&>span]:flex-1 [&_strong]:truncate aria-[current=page]:bg-sidebar-accent aria-[current=page]:font-medium",
+                            draggingId === `session:${session.id}` &&
+                              "session-directory-dragging opacity-[0.45]",
+                            dropTargetId === session.id &&
+                              (dropAfter
+                                ? "session-directory-drop-after bg-sidebar-accent shadow-[inset_0_-2px_0_var(--ring)]"
+                                : "session-directory-drop-before bg-sidebar-accent shadow-[inset_0_2px_0_var(--ring)]"),
+                          )}
+                          onDragStart={(event) =>
+                            startDrag(
+                              event,
+                              { kind: "session", workspaceId: workspace.id, sessionId: session.id },
+                              `session:${session.id}`,
+                            )
+                          }
+                          onDragEnd={finishDrag}
+                          onDragOver={(event) =>
+                            allowDrop(event, {
+                              kind: "session",
+                              workspaceId: workspace.id,
+                              sessionId: session.id,
+                            })
+                          }
+                          onDrop={(event) =>
+                            dropBefore(event, {
+                              kind: "session",
+                              workspaceId: workspace.id,
+                              sessionId: session.id,
+                            })
+                          }
+                          onKeyDown={(event) =>
+                            moveByKeyboard(event, {
+                              kind: "session",
+                              workspaceId: workspace.id,
+                              sessionId: session.id,
+                            })
+                          }
+                          aria-describedby="session-directory-reorder-hint"
+                          aria-keyshortcuts="Alt+ArrowUp Alt+ArrowDown"
+                          aria-current={hub.selected?.id === session.id ? "page" : undefined}
+                          onClick={() => hub.select(session.id)}
+                          title={[
+                            displaySessionTitle(session.title, tr),
+                            `${sessionAgentNames[session.agent]} · ${sessionRecordLabel(session, tr)}`,
+                            workspace.path,
+                            sessionSourceLabel(session, hub.sessions, tr, formatDateTime),
+                          ]
+                            .filter(Boolean)
+                            .join("\n")}
+                        >
+                          <SessionDirectoryEntry
+                            session={session}
+                            sessions={hub.sessions}
+                            selected={hub.selected?.id === session.id}
+                          />
+                        </Button>
+                        {/* A paired host's sessions are managed on that host. */}
+                        {!workspace.remote && (
+                          <SessionRowMenu
+                            session={session}
+                            onChanged={() => void hub.refresh()}
+                            onDeleted={() => {
+                              if (hub.selected?.id === session.id) hub.select(undefined, true);
+                              void hub.refresh();
+                            }}
+                          />
                         )}
-                        onDragStart={(event) =>
-                          startDrag(
-                            event,
-                            { kind: "session", workspaceId: workspace.id, sessionId: session.id },
-                            `session:${session.id}`,
-                          )
-                        }
-                        onDragEnd={finishDrag}
-                        onDragOver={(event) =>
-                          allowDrop(event, {
-                            kind: "session",
-                            workspaceId: workspace.id,
-                            sessionId: session.id,
-                          })
-                        }
-                        onDrop={(event) =>
-                          dropBefore(event, {
-                            kind: "session",
-                            workspaceId: workspace.id,
-                            sessionId: session.id,
-                          })
-                        }
-                        onKeyDown={(event) =>
-                          moveByKeyboard(event, {
-                            kind: "session",
-                            workspaceId: workspace.id,
-                            sessionId: session.id,
-                          })
-                        }
-                        aria-describedby="session-directory-reorder-hint"
-                        aria-keyshortcuts="Alt+ArrowUp Alt+ArrowDown"
-                        aria-current={hub.selected?.id === session.id ? "page" : undefined}
-                        onClick={() => hub.select(session.id)}
-                        title={[
-                          displaySessionTitle(session.title, tr),
-                          `${sessionAgentNames[session.agent]} · ${sessionRecordLabel(session, tr)}`,
-                          workspace.path,
-                          sessionSourceLabel(session, hub.sessions, tr, formatDateTime),
-                        ]
-                          .filter(Boolean)
-                          .join("\n")}
-                      >
-                        <SessionDirectoryEntry
-                          session={session}
-                          sessions={hub.sessions}
-                          selected={hub.selected?.id === session.id}
-                        />
-                      </Button>
+                      </div>
                     );
                   })}
                 </CollapsibleContent>

@@ -18,6 +18,8 @@ vi.mock("@/features/home/home-query", async (original) => ({
   useHomeInstallations: () => ({ data: [{ agent: "antigravity", installed: true }] }),
 }));
 vi.mock("./SessionHubContext", () => ({ useSessionHub: vi.fn() }));
+// Row menus have their own tests (SessionRowMenu.test.tsx); they read the host on open only.
+vi.mock("./SessionRowMenu", () => ({ SessionRowMenu: () => null }));
 vi.mock("@/features/agents/AgentIcon", () => ({
   AgentIcon: ({ agent }: { agent: string }) => <span aria-hidden="true">{agent} icon</span>,
 }));

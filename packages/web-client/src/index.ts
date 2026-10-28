@@ -1279,3 +1279,67 @@ export class SseParser {
     }
   }
 }
+
+/** What the session list offers for a session without opening it. */
+export type SessionManagementAction = "rename" | "archive" | "unarchive" | "delete";
+export type SessionManagementFeatures = Partial<
+  Record<SessionManagementAction, { available: boolean; reason?: string }>
+>;
+const SESSION_MANAGEMENT_ACTIONS: readonly SessionManagementAction[] = [
+  "rename",
+  "archive",
+  "unarchive",
+  "delete",
+];
+
+export function managedAgentOf(agent: string): ManagedAgent | null {
+  return agent === "codex" || agent === "claude-code" ? agent : null;
+}
+
+/**
+ * The management actions the host reports for a session, read as its own view would. Only the
+ * actions the host names are returned: an agent that cannot archive reports none.
+ */
+export async function sessionManagementFeatures(
+  client: WebClient,
+  session: { id: string; agent: string },
+  signal?: AbortSignal,
+): Promise<SessionManagementFeatures> {
+  const agent = managedAgentOf(session.agent);
+  if (!agent) return {};
+  const capabilities = await client.sessionCapabilities(session.id, agent, signal);
+  const features: SessionManagementFeatures = {};
+  for (const action of SESSION_MANAGEMENT_ACTIONS) {
+    const feature = capabilities.features[action];
+    if (feature) features[action] = feature;
+  }
+  return features;
+}
+
+/**
+ * Runs one management action against the session's current revision, as its own view does, with
+ * a fresh request ID. A refusal arrives as an ApiError with the host's reason.
+ */
+export async function runSessionManagement(
+  client: WebClient,
+  session: { id: string; agent: string },
+  action: SessionManagementAction,
+  fields: { name?: string } = {},
+): Promise<SessionActionResult> {
+  const agent = managedAgentOf(session.agent);
+  if (!agent) throw new ApiError(409, "capability_unavailable", "not-dispatched");
+  const access = await client.access();
+  if (access.status !== "approved") throw new ApiError(401, "access_ended", "not-dispatched");
+  const live = await client.live(session.id);
+  return client.sessionAction(
+    action,
+    {
+      ...fields,
+      sessionId: session.id,
+      bootId: access.bootId,
+      expectedRevision: live.revision ?? 0,
+      requestId: crypto.randomUUID(),
+    },
+    agent,
+  );
+}

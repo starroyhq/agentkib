@@ -108,7 +108,7 @@ Claude 托管服务与原有 managed-resume 链路使用同一会话事件流。
 
 本机 Codex 与 Claude Code 会话的工具条目（`tool-summary`）可带可选的 `tool` 详情，形状参照 ACP 工具调用：`kind`、`title`、`locations`、`content`，另有 MCP 名称、子代理动作和包装调用的子条目数（`children`）。`content` 只放有界预览：命令与输出末尾、文件的增删行数与缩短的统一 diff、MCP 参数与结果的文字。工具名、状态和耗时沿用 `tool_name`、`tool_status`、`duration_ms`；状态新增 `declined`，原生的 inProgress 记为 running。条目类型仍只有用户消息、Agent 消息和工具摘要三种。旧客户端忽略新字段，照旧显示工具名和状态；新客户端连接旧主机时没有详情，工具行保持原样；条目也没有正文时，工具对话框提示“这条记录没有可显示的详情”。
 
-Codex 历史解析当前持久格式中的 `event_msg/item_completed`：命令、文件改动、MCP、网页搜索、子代理和图片查看各成一行；条目 ID 与某次调用一致时（MCP、子代理、等待）并入该调用的行。代码模式下 `exec` 产生的条目与调用 ID 不一致：同一轮中恰好只有一个尚未配对的调用时，该调用的子条目数加一；没有或有多个时不标父子，宁可多显示一行。消息仍取自 `response_item/message`，推理和计划条目不生成工具行；旧格式的 `exec_command_end`、`patch_apply_end` 照旧解析。Claude Code 历史由 `tool_use.input` 生成标题与类型，再合并 `toolUseResult`：Bash 取 stdout、stderr 的末尾，Edit、Write 由 `structuredPatch` 计数并生成预览，Read 只取路径与行数，不读取 `originalFile`。实时链路使用同一套归一化：Codex managed 处理 `item/completed` 与 `thread/read` 恢复，Agent 消息保留 app-server 给出的 `phase`；Claude managed 处理 `tool_use` 输入，并合并 stream-json user 帧里的 `tool_use_result`（2.1.311 真机确认带有），帧里没有时退回 `tool_result` 文本预览。托管 Codex 会话连接期间，历史就是这些实时条目，断开后改读原生记录。
+Codex 历史解析当前持久格式中的 `event_msg/item_completed`：命令、文件改动、MCP、网页搜索、子代理和图片查看各成一行；条目 ID 与某次调用一致时（MCP、子代理、等待）并入该调用的行。代码模式下 `exec` 产生的条目与调用 ID 不一致：同一轮中恰好只有一个尚未配对的调用时，该调用的子条目数加一；没有或有多个时不标父子，宁可多显示一行。消息仍取自 `response_item/message`，推理和计划条目不生成工具行；旧格式的 `exec_command_end`、`patch_apply_end` 照旧解析。Claude Code 历史由 `tool_use.input` 生成标题与类型，再合并 `toolUseResult`：Bash 取 stdout、stderr 的末尾，Edit、Write 由 `structuredPatch` 计数并生成预览，Read 只取路径与行数，不读取 `originalFile`。实时链路使用同一套归一化：Codex managed 处理 `item/completed` 与 `thread/read` 恢复，Agent 消息保留 app-server 给出的 `phase`；Claude managed 处理 `tool_use` 输入，并合并 stream-json user 帧里的 `tool_use_result`（2.1.311 真机确认带有），帧里没有时退回 `tool_result` 文本预览。托管 Codex 会话连接期间，历史就是这些实时条目，断开后改读原生记录。失败的 Codex 轮次以 Codex 的错误文字作为该轮最后一行（带 `cli_output`，按原样显示），实时取 `turn.error`，原生记录取 `task_complete.error`；Plan 回复里的 `<proposed_plan>` 标签在历史中去掉。
 
 轮次时长取自 Codex `task_complete`、`turn_aborted` 的 `duration_ms`（托管会话连接期间取 app-server `turn/completed` 的 `durationMs`）和 Claude Code `system/turn_duration` 的 `durationMs`，以 `turn_meta` 记录：Codex 挂在该轮最后一个条目上，Claude Code 挂在该轮最后一条 Agent 回复上，该轮没有回复时不记录。Claude Code 以 stream-json 运行时会话记录里没有 `system/turn_duration`，AgentKib 托管的轮次改取 `result.duration_ms`：实时随该轮最后一条 Agent 回复下发，同时存进应用数据的执行账本，读取历史时补回，会话记录自带的用时优先（详见 [Claude Code 托管执行](CLAUDE-WEB.md)）。本期之前托管的轮次没有存下用时，仍不显示。
 
@@ -119,6 +119,8 @@ Codex 历史解析当前持久格式中的 `event_msg/item_completed`：命令�
 ## Claude Code 斜杠命令
 
 Claude 托管会话的输入框在输入 `/` 时列出命令，来自 CLI 报告、随 capabilities 下发的命令目录，按设备过滤：桌面按这台电脑的用户处理，Web 按远程设备处理。菜单是 `@agentkib/session-ui` 的共享组件，名称和别名都可筛选，方向键选择，Tab 或 Enter 补全，Esc 关闭；输入框始终保留焦点，用 `aria-activedescendant` 指向当前选项。发送前按与后端相同的规则判断：AgentKib 有对应操作的命令（下一轮模型与思考强度、重命名、持续目标）带参数时直接执行，不带参数时打开对应界面；不能发送的命令保留草稿并说明原因。`/model` 接受不分大小写的别名或完整模型 ID，`/effort` 接受 low 到 max 五档；列表里没有的模型、其他级别或所选模型不支持的级别不改设置，保留草稿并说明原因。`/fast`、`/focus`、`/color` 在托管会话里不起作用，不列在菜单里。`/clear` 不出现在菜单里，需要空白上下文时新建会话；上下文用量对话框里的“压缩上下文”按钮单独发送 `/compact`，不动草稿，桌面工作区的 Claude 面板也有。会话记录里命令按输入显示，本地命令的输出显示为 Agent 回复，保留换行和 `<名称>` 这类占位。规则与原因码见 [Claude Code 托管执行](CLAUDE-WEB.md#斜杠命令)。
+## Codex 斜杠命令
+Codex 的 app-server 没有斜杠命令，`/compact` 这样的文字只会作为消息交给模型。Codex 托管会话的输入区输入 `/` 时列出 AgentKib 能代为执行的命令（压缩、Plan、下一轮模型、权限与状态、重命名、目标、分支、结束后台终端、归档、文件改动），使用同一个共享菜单组件：带参数时直接执行，不带参数时打开对应界面，当前不可用时保留草稿并说明原因；追加指令和加入队列不执行命令，也不把它们作为文字发出。其余 Codex 终端命令不发送，说明只能在终端使用；其他 `/名称` 照常作为文字发送。规则只在客户端，主机不拦截。`/review` 和 `!命令` 暂不支持。命令表与原因见 [Codex 托管执行](CODEX-MANAGED.md#压缩后台终端与斜杠命令2026-10-28)。
 
 ## 附件与产物
 

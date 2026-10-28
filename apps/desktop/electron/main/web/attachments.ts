@@ -236,6 +236,24 @@ export class AttachmentStore {
       await rm(join(this.directory, item.id), { force: true });
     });
   }
+  /**
+   * A deleted conversation takes its uploads with it, sent or not, from every device. Its
+   * request records go first: a manifest never names a file the index no longer has.
+   */
+  removeSession(sessionId: string) {
+    return this.serialize(async () => {
+      const items = await this.load();
+      const requests = await this.requests();
+      const keptRequests = requests.filter((request) => request.sessionId !== sessionId);
+      if (keptRequests.length !== requests.length) await this.saveRequests(keptRequests);
+      const removed = items.filter((item) => item.sessionId === sessionId);
+      if (removed.length) {
+        await this.save(items.filter((item) => item.sessionId !== sessionId));
+        for (const item of removed) await rm(join(this.directory, item.id), { force: true });
+      }
+      return removed.length;
+    });
+  }
   /** Mark before dispatch: unknown execution outcomes retain referenced files. */
   input(deviceId: string, sessionId: string, ids: unknown, text: string) {
     return this.prepareInput(deviceId, sessionId, ids, text, "codex");

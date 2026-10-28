@@ -2534,7 +2534,7 @@ export class WebAccessService {
       return "send";
     if (operation === "attachments") return "attachments";
     if (["resume", "fork"].includes(operation)) return "manage";
-    if (["rename", "archive", "unarchive"].includes(operation)) return "organize";
+    if (["rename", "archive", "unarchive", "delete"].includes(operation)) return "organize";
     if (operation === "settings") return "settings";
     // Compaction is a turn the user starts, as a message is.
     return operation === "send" || operation === "inspect" || operation === "compact"
@@ -2690,6 +2690,7 @@ export class WebAccessService {
       "rename",
       "archive",
       "unarchive",
+      "delete",
       "fork",
       "settings",
       "goal-set",
@@ -3132,6 +3133,7 @@ export class WebAccessService {
         }
         throw new HttpError(502, "outcome_unknown");
       }
+      if (operation === "delete") await this.forgetDeletedSession(sessionId);
       res.once("finish", () => {
         if (!res.destroyed && res.statusCode === 200) this.clearUnconfirmed(sessionId);
       });
@@ -3143,6 +3145,14 @@ export class WebAccessService {
         if (newlyPinnedDevice)
           await this.attachmentStore.settle(newlyPinnedDevice, sessionId, requestId);
       }
+    }
+  }
+  /** A deleted conversation takes its uploads with it, sent or not. */
+  private async forgetDeletedSession(sessionId: string) {
+    try {
+      await this.attachmentStore.removeSession(sessionId);
+    } catch {
+      // The conversation is already gone. Files left behind name no conversation anyone can open.
     }
   }
   private async prepareClaudeSettings(
@@ -4883,6 +4893,7 @@ export class WebAccessService {
                     "rename",
                     "archive",
                     "unarchive",
+                    "delete",
                     "fork",
                     "settings",
                     "goal-set",

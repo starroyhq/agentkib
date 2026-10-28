@@ -34,6 +34,7 @@ const runtimeHandler = async (input: unknown): Promise<unknown> => {
           "inspect",
           "resume",
           "fork",
+          "delete",
         ].map((name) => [name, { available: true }]),
       ),
     };
@@ -146,6 +147,12 @@ const action = (text = "append") => ({
   expectedRevision: 1,
   turnId: "turn",
   text,
+});
+const deletion = () => ({
+  sessionId: "session",
+  bootId,
+  requestId: randomUUID(),
+  expectedRevision: 1,
 });
 it("old grants do not gain new capabilities and cannot upload", async () => {
   await pair();
@@ -322,6 +329,72 @@ it("forwards an exact advertised native decision separately from the legacy stri
   ).toMatchObject({ decision: "native", nativeDecision: decision });
 });
 
+it("deletes with organize permission and takes the conversation's uploads with it", async () => {
+  await pair({ organize: true, attachments: true });
+  const upload = await http(
+    "/attachments?sessionId=session&name=a.txt&mime=text%2Fplain",
+    "bytes",
+    true,
+  );
+  expect(upload.status).toBe(201);
+  runtime.mockImplementation(async (input) =>
+    (input as { operation: string }).operation === "delete"
+      ? {
+          accepted: true,
+          completed: true,
+          deleted: true,
+          sessionId: "session",
+          requestId: (input as { requestId: string }).requestId,
+        }
+      : runtimeHandler(input),
+  );
+  const result = await http("/codex/delete", deletion());
+  expect(result.status).toBe(200);
+  expect(result.data).toMatchObject({ accepted: true, deleted: true });
+  const dispatched = runtime.mock.calls.filter(
+    ([p]) => (p as { operation: string }).operation === "delete",
+  );
+  expect(dispatched).toHaveLength(1);
+  // Only the public fields reach the backend.
+  expect(Object.keys(dispatched[0]![0] as object).sort()).toEqual([
+    "deviceId",
+    "expectedRevision",
+    "experimentalEnabled",
+    "operation",
+    "requestId",
+    "runtimeBootId",
+    "sessionId",
+  ]);
+  expect((await http("/attachments?sessionId=session")).data.attachments).toEqual([]);
+});
+it("keeps uploads when the backend did not delete", async () => {
+  await pair({ organize: true, attachments: true });
+  await http("/attachments?sessionId=session&name=a.txt&mime=text%2Fplain", "bytes", true);
+  runtime.mockImplementation(async (input) =>
+    (input as { operation: string }).operation === "delete"
+      ? {
+          accepted: false,
+          controlOutcome: "not-dispatched",
+          reason: "codex-owner-busy",
+          requestId: (input as { requestId: string }).requestId,
+        }
+      : runtimeHandler(input),
+  );
+  const result = await http("/codex/delete", deletion());
+  expect(result.status).toBe(409);
+  expect(result.data).toMatchObject({
+    error: "codex-owner-busy",
+    controlOutcome: "not-dispatched",
+  });
+  expect((await http("/attachments?sessionId=session")).data.attachments).toHaveLength(1);
+});
+it("keeps delete behind organize permission", async () => {
+  await pair({ attachments: true });
+  expect((await http("/codex/delete", deletion())).status).toBe(403);
+  expect(
+    runtime.mock.calls.some(([p]) => (p as { operation: string }).operation === "delete"),
+  ).toBe(false);
+});
 it("allows a scoped managed resume without a handoff confirmation", async () => {
   await pair({ manage: true });
   const result = await http("/codex/resume", action());

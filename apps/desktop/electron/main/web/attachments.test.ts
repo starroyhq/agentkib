@@ -48,6 +48,37 @@ describe("private attachment input storage", () => {
     await store.remove("phone", "task", uploaded.id, uploaded.version);
     expect(await store.list("phone", "task")).toEqual([]);
   });
+  it("removes a deleted conversation's uploads from every device, sent or pinned", async () => {
+    const sent = await store.upload(bytes(), owner, "sent.txt", "text/plain", () => {});
+    await store.input("phone", "task", [sent.id], "Read this");
+    const pinned = await store.upload(
+      bytes(),
+      { deviceId: "laptop", sessionId: "task" },
+      "pinned.txt",
+      "text/plain",
+      () => {},
+    );
+    await store.inputForAgent("laptop", "task", [pinned.id], "", "codex", "request-1");
+    expect(await store.pendingRequests("task")).toEqual([
+      { deviceId: "laptop", requestId: "request-1" },
+    ]);
+    const other = await store.upload(
+      bytes(),
+      { deviceId: "phone", sessionId: "other" },
+      "other.txt",
+      "text/plain",
+      () => {},
+    );
+    expect(await store.removeSession("task")).toBe(2);
+    expect(await store.list("phone", "task")).toEqual([]);
+    expect(await store.list("laptop", "task")).toEqual([]);
+    expect(await store.pendingRequests("task")).toEqual([]);
+    for (const id of [sent.id, pinned.id])
+      await expect(readFile(join(dir, id))).rejects.toMatchObject({ code: "ENOENT" });
+    // Another conversation's upload stays, and a restart reads a consistent index.
+    store = new AttachmentStore(dir);
+    expect((await store.list("phone", "other")).map((item) => item.id)).toEqual([other.id]);
+  });
   it("fails on revocation during transfer and removes partial data", async () => {
     await expect(
       store.upload(bytes(), owner, "n.txt", "text/plain", () => {

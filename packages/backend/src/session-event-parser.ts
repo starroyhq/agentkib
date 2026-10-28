@@ -180,6 +180,10 @@ function mergeMetadata(
   event.attachment_count = Math.max(event.attachment_count, attachments);
   return conflict;
 }
+/** Marks messages Claude Code wrote itself, which clients show with their line breaks. */
+function markCliOutput(events: ConversationEvent[]): void {
+  for (const event of events) event.cli_output = true;
+}
 function message(
   state: EventState,
   offset: number,
@@ -534,7 +538,8 @@ function parseRecord(state: EventState, offset: number, row: any, page: Conversa
         typeof row.uuid === "string" && claudeMessageIdPattern.test(row.uuid)
           ? row.uuid
           : `event-${offset}`;
-      if (output)
+      if (output) {
+        const from = state.pending.length;
         message(
           state,
           offset,
@@ -548,7 +553,8 @@ function parseRecord(state: EventState, offset: number, row: any, page: Conversa
           page,
           id,
         );
-      else if (typed?.startsWith("/"))
+        markCliOutput(state.pending.slice(from));
+      } else if (typed?.startsWith("/"))
         message(
           state,
           offset,
@@ -619,6 +625,8 @@ function parseRecord(state: EventState, offset: number, row: any, page: Conversa
         text.replace(/^\p{White_Space}+/u, "").startsWith(prefix),
       );
     const text = messageText(content);
+    // The CLI's own assistant text, such as an API error, names this model.
+    const synthetic = kind === "agent-message" && row?.message?.model === "<synthetic>";
     if (
       kind === "agent-message" &&
       nativeId &&
@@ -643,15 +651,19 @@ function parseRecord(state: EventState, offset: number, row: any, page: Conversa
           page,
           index === 0 ? nativeId : `${nativeId}:text:${index}`,
         );
-        if (state.pending.length > pendingCount)
-          rowEvents.push({ index, event: state.pending.pop()! });
+        if (state.pending.length > pendingCount) {
+          const event = state.pending.pop()!;
+          if (synthetic) markCliOutput([event]);
+          rowEvents.push({ index, event });
+        }
       }
     } else {
       // A slash command reads as typed; `/compact` records its output as a user row.
       const invocation = kind === "user-message" && text ? claudeCommandInvocation(text) : null;
       const output =
         kind === "user-message" && text && !invocation ? claudeCommandOutput(text) : null;
-      if (invocation || output)
+      if (invocation || output) {
+        const from = state.pending.length;
         message(
           state,
           offset,
@@ -665,7 +677,9 @@ function parseRecord(state: EventState, offset: number, row: any, page: Conversa
           page,
           nativeId ?? `event-${offset}`,
         );
-      else if (output === null && hasText(text) && !hiddenCommand(text))
+        if (output) markCliOutput(state.pending.slice(from));
+      } else if (output === null && hasText(text) && !hiddenCommand(text)) {
+        const from = state.pending.length;
         message(
           state,
           offset,
@@ -679,6 +693,8 @@ function parseRecord(state: EventState, offset: number, row: any, page: Conversa
           page,
           nativeId ?? `event-${offset}`,
         );
+        if (synthetic) markCliOutput(state.pending.slice(from));
+      }
     }
     // The file is read newest-first and the page is reversed before return.
     // Queue this row in reverse block order so text and tool items retain the

@@ -59,6 +59,7 @@ export function ConversationEventRow({
       )}
       <MarkdownContent
         content={event.content ?? ""}
+        literal={event.cli_output === true}
         className={`select-text text-sm leading-7 [overflow-wrap:anywhere]${coloredUser ? " markdown-on-primary" : ""}`}
       />
       {(event.attachment_count > 0 || event.truncated) && (

@@ -1135,7 +1135,10 @@ export function ClaudeSessionPanel({
                       ? text("你", "You", "你", "あなた")
                       : event.tool_name || "Claude"}
                   </strong>
-                  <MarkdownContent content={event.content ?? event.tool_status ?? ""} />
+                  <MarkdownContent
+                    content={event.content ?? event.tool_status ?? ""}
+                    literal={event.cli_output === true}
+                  />
                 </article>
               ))}
               {live?.status !== "idle" &&

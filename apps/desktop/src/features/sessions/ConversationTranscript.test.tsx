@@ -204,4 +204,42 @@ describe("ConversationTranscript", () => {
       "Sep 7, 2026",
     );
   });
+
+  it("keeps the line breaks and placeholders of text Claude Code wrote itself", () => {
+    // Replies CLI 2.1.311 wrote for bare /usage and /model, run offline against a local API
+    // stub; shortened.
+    const usage =
+      "Total cost:            $0.0000\nTotal duration (API):  0s\nTotal duration (wall): 0s";
+    const model =
+      "Current model: `Haiku 5.5`\nUsage: /model <name>. Available: sonnet, opus, or a full model ID.";
+    const { container } = render(
+      <>
+        <ConversationEventRow
+          event={event("usage", "agent-message", {}, { content: usage, cli_output: true })}
+        />
+        <ConversationEventRow
+          event={event("model", "agent-message", {}, { content: model, cli_output: true })}
+        />
+        <ConversationEventRow
+          event={event(
+            "nested",
+            "agent-message",
+            {},
+            { content: "**two\nlines**", cli_output: true },
+          )}
+        />
+        <ConversationEventRow event={event("reply", "agent-message", {}, { content: usage })} />
+      </>,
+    );
+    const body = (id: string) =>
+      container.querySelector(`[data-event-id="${id}"] .markdown-content`)!;
+    expect(body("usage").querySelectorAll("br")).toHaveLength(2);
+    expect(body("model").querySelectorAll("br")).toHaveLength(1);
+    expect(body("model").querySelector("code")).toHaveTextContent("Haiku 5.5");
+    expect(body("model")).toHaveTextContent("Usage: /model <name>. Available:");
+    // Inside emphasis too.
+    expect(body("nested").querySelectorAll("strong > br")).toHaveLength(1);
+    // A model's reply is Markdown as before.
+    expect(body("reply").querySelectorAll("br")).toHaveLength(0);
+  });
 });

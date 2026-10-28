@@ -208,7 +208,12 @@ describe.skipIf(!["darwin", "linux"].includes(process.platform))(
       expect(
         events.filter(({ payload }) => payload.turn_meta).map(({ payload }) => payload),
       ).toMatchObject([
-        { content: notLoggedIn, turn_meta: { outcome: "failed", duration_ms: 40 } },
+        {
+          content: notLoggedIn,
+          // Claude Code wrote it, not the model; clients show it as written.
+          cli_output: true,
+          turn_meta: { outcome: "failed", duration_ms: 40 },
+        },
       ]);
       await expect(runner.retireIfInactive()).resolves.toBe(true);
       expect(runner.hasWorker).toBe(false);

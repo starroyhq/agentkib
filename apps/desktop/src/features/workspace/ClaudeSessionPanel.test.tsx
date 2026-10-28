@@ -13,7 +13,9 @@ import type { SupportedLocale as Locale } from "@/core/types";
 vi.mock("@/core/api", () => ({ api: { claudeRequest: vi.fn() } }));
 vi.mock("@/core/useI18n", () => ({ useI18n: () => ({ locale }) }));
 vi.mock("@/components/MarkdownContent", () => ({
-  MarkdownContent: ({ content }: { content: string }) => <p>{content}</p>,
+  MarkdownContent: ({ content, literal }: { content: string; literal?: boolean }) => (
+    <p data-literal={literal ? "true" : undefined}>{content}</p>
+  ),
 }));
 vi.mock("@/core/conversation-bridge", () => ({
   hasDesktopConversation: () => true,
@@ -213,6 +215,31 @@ describe("Claude local owner panel", () => {
     fireEvent.click(screen.getByRole("button", { name: "Technical details" }));
     expect(screen.getByText("unverified-installation")).toBeVisible();
     expect(screen.getByRole("button", { name: "New Claude task" })).toBeDisabled();
+  });
+  it("shows text Claude Code wrote itself as written, and the model's replies as Markdown", async () => {
+    const original = vi.mocked(api.claudeRequest).getMockImplementation()!;
+    vi.mocked(api.claudeRequest).mockImplementation((value) =>
+      value.operation === "events"
+        ? Promise.resolve({
+            events: [
+              {
+                id: "output",
+                kind: "agent-message",
+                content: "Usage: /rename <name>",
+                cli_output: true,
+              },
+              { id: "message", kind: "agent-message", content: "Synthetic history" },
+            ],
+            warnings: [],
+          })
+        : original(value),
+    );
+    mount();
+    expect(await screen.findByText("Usage: /rename <name>")).toHaveAttribute(
+      "data-literal",
+      "true",
+    );
+    expect(screen.getByText("Synthetic history")).not.toHaveAttribute("data-literal");
   });
   it("keeps a failed focus precheck actionable and never dispatches a command", async () => {
     mount();

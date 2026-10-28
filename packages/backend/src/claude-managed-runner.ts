@@ -177,6 +177,9 @@ export class ClaudeRunnerState {
   streamText = "";
   streamItemId = "";
   streamItemText = "";
+  // Whether the CLI wrote the item `streamItemId` names itself (a local command's output, an API
+  // error) rather than the model. Set wherever that id is set to an item.
+  streamItemCliOutput = false;
   textBlockSerial = 0;
   activeTextBlockIndex = -1;
   textBlocks = new Map<number, { id: string; text: string }>();
@@ -235,6 +238,7 @@ export class ClaudeRunnerState {
       streamText: this.streamText,
       streamItemId: this.streamItemId,
       streamItemText: this.streamItemText,
+      streamItemCliOutput: this.streamItemCliOutput,
       textBlockSerial: this.textBlockSerial,
       activeTextBlockIndex: this.activeTextBlockIndex,
       textBlocks: structuredClone(this.textBlocks),
@@ -630,6 +634,8 @@ export class ClaudeRunnerState {
           if (!this.partial) for (const block of textBlocks) this.#append(block.text);
           this.streamItemId = textBlocks[0]?.id ?? nativeId;
           this.streamItemText = textBlocks[0]?.text ?? "";
+          // The CLI's own text (a local command's output, an API error) names this model.
+          this.streamItemCliOutput = frame.message?.model === "<synthetic>";
         }
         this.partial = false;
         break;
@@ -973,6 +979,7 @@ export class ClaudeRunnerState {
     this.activeTextBlockIndex = index;
     this.streamItemId = `live:${this.turnId}:assistant:${this.textBlockSerial}`;
     this.streamItemText = "";
+    this.streamItemCliOutput = false;
     this.textBlocks.set(index, { id: this.streamItemId, text: "" });
   }
 
@@ -1997,6 +2004,8 @@ export class ClaudeManagedRunnerProcess {
         const itemText = this.state.streamItemText;
         const conversationItems = this.#conversationItems(frame);
         const hasFinalizedText = this.state.finalizedTextBlocks.length > 0;
+        // Kept on every copy of the item, including the one re-sent after a later frame.
+        const cliOutput = this.state.streamItemCliOutput ? { cli_output: true as const } : {};
         if (frame.type === "assistant" && hasFinalizedText) {
           const ordered = [
             ...this.state.finalizedTextBlocks.map((block) => {
@@ -2012,6 +2021,7 @@ export class ClaudeManagedRunnerProcess {
                   attachment_count: 0,
                   truncated: clipped.truncated,
                   ephemeral: false,
+                  ...cliOutput,
                 } satisfies Record<string, unknown>,
               };
             }),
@@ -2045,6 +2055,7 @@ export class ClaudeManagedRunnerProcess {
                 attachment_count: 0,
                 truncated: clipped.truncated,
                 ephemeral: false,
+                ...cliOutput,
               },
               live,
             );
@@ -2086,6 +2097,7 @@ export class ClaudeManagedRunnerProcess {
               attachment_count: 0,
               truncated: false,
               ephemeral: itemId.startsWith("live:"),
+              ...cliOutput,
             },
             live,
           );
@@ -2218,6 +2230,7 @@ export class ClaudeManagedRunnerProcess {
               attachment_count: 0,
               truncated: clipped.truncated,
               ephemeral: false,
+              cli_output: true,
             },
           });
         } else if (output === null && (text || attachmentCount))

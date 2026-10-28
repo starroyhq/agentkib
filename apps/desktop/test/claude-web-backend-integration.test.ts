@@ -61,8 +61,15 @@ const finish = async () => {
     const text = await result.text(); log({report:JSON.parse(text)});
   }
   const uuid=crypto.randomUUID();
+  if (m === 'cli-output') {
+    // A local command, as 2.1.311 records it: a system row, and a live frame naming <synthetic>.
+    const output = 'No MCP servers are configured.\nUsage: /mcp [reconnect|enable|disable [<server>|all]].';
+    append({type:'system',subtype:'local_command',uuid,parentUuid:first,content:'<local-command-stdout>'+output+'</local-command-stdout>',level:'info',isMeta:false});
+    send({type:'assistant',uuid,parent_tool_use_id:null,message:{id:uuid,role:'assistant',model:'<synthetic>',stop_reason:'stop_sequence',content:[{type:'text',text:output}],usage:{input_tokens:0,output_tokens:0}}});
+  } else {
   append({type:'assistant',uuid,parentUuid:first,message:{id:uuid,role:'assistant',model:'fixture-model',stop_reason:'end_turn',content:[{type:'text',text:'Offline response'}],usage:{input_tokens:3,output_tokens:2}}});
   send({type:'assistant',uuid,parent_tool_use_id:null,message:{id:uuid,role:'assistant',model:'fixture-model',stop_reason:'end_turn',content:[{type:'text',text:'Offline response'}],usage:{input_tokens:3,output_tokens:2}}});
+  }
   if (m === 'terminal-lost') { process.exit(0); return; }
   send({type:'result',subtype:m.includes('error')?'error_during_execution':'success',is_error:m.includes('error'),usage:m.includes('missing-usage')?undefined:{input_tokens:11,output_tokens:7,cache_read_input_tokens:2},terminal_reason:'completed'});
   first=undefined;
@@ -946,6 +953,41 @@ describe.skipIf(process.platform !== "darwin")(
       }
       expect(frames().filter((row) => row.type === "control_request")).toHaveLength(controls);
       expect(await selected()).toMatchObject({ modelId: "fixture-model", effort: "high" });
+    });
+
+    it("marks a local command's output, live and in history read through the Service", async () => {
+      writeFileSync(modeFile, "cli-output");
+      const sessionId = await create();
+      const subscription = await rpc("sessions.subscribe", { sessionId });
+      const live: Array<Record<string, unknown>> = [];
+      sessionNotifications = (event) => {
+        const value = event as { sessionId?: unknown; type?: unknown; payload?: any };
+        if (value?.sessionId !== sessionId || !value.payload) return;
+        if (value.type === "item-upsert") live.push(structuredClone(value.payload));
+        if (value.type === "snapshot") live.push(...structuredClone(value.payload.items ?? []));
+      };
+      const output =
+        "No MCP servers are configured.\nUsage: /mcp [reconnect|enable|disable [<server>|all]].";
+      try {
+        expect((await send(sessionId, "/mcp")).status).toBe(200);
+        await idle(sessionId);
+        const replies = live.filter((item) => item.kind === "agent-message");
+        expect(replies.length).toBeGreaterThan(0);
+        expect(replies.every((item) => item.content === output && item.cli_output === true)).toBe(
+          true,
+        );
+      } finally {
+        sessionNotifications = undefined;
+        await rpc("sessions.unsubscribe", { subscriptionId: subscription.subscriptionId });
+      }
+      const history = await http(`/events?sessionId=${sessionId}`);
+      expect(history.status, JSON.stringify(history.body)).toBe(200);
+      expect(
+        history.body.events.map((event: any) => [event.kind, event.content, event.cli_output]),
+      ).toEqual([
+        ["user-message", "/mcp", undefined],
+        ["agent-message", output, true],
+      ]);
     });
 
     it.each(["inherited-plan", "inherited-alias"])(

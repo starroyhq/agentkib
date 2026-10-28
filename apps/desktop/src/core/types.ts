@@ -1311,6 +1311,8 @@ export interface ConversationEvent {
   truncated: boolean;
   tool?: import("@agentkib/runtime-protocol").ConversationToolDetail;
   turn_meta?: import("@agentkib/runtime-protocol").ConversationTurnMeta;
+  /** Text Claude Code wrote itself (a local command's output, an API error). */
+  cli_output?: boolean;
 }
 export interface ConversationEventPage {
   events: ConversationEvent[];

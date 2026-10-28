@@ -91,10 +91,54 @@ const markdownComponents: Components = {
     ),
 };
 
-export function SafeMarkdown({ text }: { text: string }) {
+/** A Markdown tree node, as far as `remarkLiteral` reads it. */
+interface MarkdownNode {
+  type: string;
+  value?: string;
+  children?: MarkdownNode[];
+}
+// Nodes whose children are blocks: an HTML block there becomes a paragraph of its text.
+const FLOW_PARENTS = new Set(["root", "blockquote", "listItem", "footnoteDefinition"]);
+
+/**
+ * For text Claude Code wrote itself: HTML shows as written, so a usage line keeps `<name>`
+ * rather than losing it to the sanitizer, and each line break stays one. Code, tables and
+ * headings still render.
+ */
+function remarkLiteral() {
+  return (tree: MarkdownNode) => keepAsWritten(tree);
+}
+function keepAsWritten(node: MarkdownNode): void {
+  if (!node.children) return;
+  node.children = node.children.map((child) => {
+    if (child.type !== "html") return child;
+    const text = { type: "text", value: child.value ?? "" };
+    return FLOW_PARENTS.has(node.type) ? { type: "paragraph", children: [text] } : text;
+  });
+  for (const child of node.children) keepAsWritten(child);
+  node.children = node.children.flatMap((child) =>
+    child.type === "text" && child.value?.includes("\n")
+      ? child.value
+          .split("\n")
+          .flatMap((line, index) => [
+            ...(index ? [{ type: "break" }] : []),
+            { type: "text", value: line },
+          ])
+      : [child],
+  );
+}
+
+const remarkPlugins = [remarkGfm];
+const literalRemarkPlugins = [remarkGfm, remarkLiteral];
+
+/**
+ * Markdown with raw HTML, scripts and remote images removed. `literal` is for text Claude Code
+ * wrote itself (`cli_output`), such as a local command's output.
+ */
+export function SafeMarkdown({ text, literal = false }: { text: string; literal?: boolean }) {
   return (
     <Markdown
-      remarkPlugins={[remarkGfm]}
+      remarkPlugins={literal ? literalRemarkPlugins : remarkPlugins}
       rehypePlugins={[rehypeSanitize]}
       components={markdownComponents}
     >

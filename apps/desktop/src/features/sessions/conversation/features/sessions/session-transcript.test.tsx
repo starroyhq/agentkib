@@ -140,6 +140,29 @@ describe("production transcript identity", () => {
     }
   });
 
+  it("shows text Claude Code wrote itself with its line breaks and placeholders", () => {
+    // CLI 2.1.311's reply to a bare /model, run offline against a local API stub; shortened.
+    const content =
+      "Current model: `Haiku 5.5`\nUsage: /model <name>. Available: sonnet, opus, or a full model ID.";
+    const view = render(
+      <SessionTranscript
+        {...props}
+        events={[
+          { ...event("output", "agent-message", "turn-1"), content, cli_output: true },
+          { ...event("reply", "agent-message", "turn-2"), content },
+        ]}
+      />,
+    );
+    const output = view.container.querySelector('[data-event-id="output"]')!;
+    expect(output.querySelectorAll("br")).toHaveLength(1);
+    expect(output).toHaveTextContent("Usage: /model <name>. Available:");
+    expect(output.querySelector("code")).toHaveTextContent("Haiku 5.5");
+    // A model's reply is Markdown as before.
+    const reply = view.container.querySelector('[data-event-id="reply"]')!;
+    expect(reply.querySelectorAll("br")).toHaveLength(0);
+    expect(reply).not.toHaveTextContent("<name>");
+  });
+
   it("keeps a text row and its focused link when earlier text is prepended", () => {
     const current = {
       ...event("current", "agent-message"),

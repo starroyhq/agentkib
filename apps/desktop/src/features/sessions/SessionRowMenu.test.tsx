@@ -55,6 +55,16 @@ function open(session: ConversationSessionSummary, handlers = {}) {
 }
 
 describe("a session row's menu on the desktop", () => {
+  it("names an untitled session as its row does", () => {
+    render(
+      <AppDialogProvider>
+        <SessionRowMenu session={{ ...summary("codex"), title: undefined }} />
+      </AppDialogProvider>,
+    );
+    expect(screen.getByRole("button", { name: copy.rowMenu })).toHaveAccessibleDescription(
+      "Untitled session",
+    );
+  });
   it("deletes only after the destructive confirmation, against the current revision", async () => {
     features({ rename: { available: true }, delete: { available: true } });
     const onDeleted = vi.fn();

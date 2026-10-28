@@ -19,6 +19,8 @@ import {
   DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from "../../components/ui/dropdown-menu";
+import { displaySessionTitle } from "@agentkib/session-catalog";
+import { dictionaries } from "../../i18n";
 import { useSession } from "../sessions/session-context";
 import { codexCopyForSurface, codexReason } from "../sessions/codex-copy";
 
@@ -111,7 +113,8 @@ export function SessionRowMenu({ session }: { session: ConversationSessionSummar
           }
           // Named for what it does; the title (its accessible description) names the session.
           aria-label={copy.rowMenu}
-          title={session.title ?? undefined}
+          // An untitled session is named as its row shows it.
+          title={displaySessionTitle(session.title, dictionaries[locale].untitled)}
         >
           <MoreHorizontal size={16} aria-hidden="true" />
         </DropdownMenuTrigger>

@@ -28,6 +28,7 @@ import { Input } from "@/components/ui/input";
 import { createDesktopConversationClient } from "@/core/conversation-bridge";
 import type { ConversationSessionSummary } from "@/core/types";
 import { useI18n } from "@/core/useI18n";
+import { displaySessionTitle } from "@/features/workspace/session-title";
 import { codexCopy, codexReason } from "./conversation/features/sessions/codex-copy";
 
 /**
@@ -43,7 +44,7 @@ export function SessionRowMenu({
   onChanged?: () => void;
   onDeleted?: () => void;
 }) {
-  const { locale } = useI18n();
+  const { locale, tr } = useI18n();
   const copy = codexCopy[locale];
   const dialogs = useAppDialogs();
   const [client] = useState(createDesktopConversationClient);
@@ -141,7 +142,8 @@ export function SessionRowMenu({
           }
           // Named for what it does; the title (its accessible description) names the session.
           aria-label={copy.rowMenu}
-          title={session.title ?? undefined}
+          // An untitled session is named as its row shows it.
+          title={displaySessionTitle(session.title ?? undefined, tr)}
         >
           <MoreHorizontal size={15} aria-hidden="true" />
         </DropdownMenuTrigger>

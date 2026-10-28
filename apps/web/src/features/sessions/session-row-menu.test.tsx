@@ -41,6 +41,13 @@ afterEach(cleanup);
 const openMenu = () => fireEvent.click(screen.getByRole("button", { name: copy.rowMenu }));
 
 describe("a session row's menu in the browser", () => {
+  it("names an untitled session as its row does", () => {
+    render(<SessionRowMenu session={{ ...summary("codex"), title: undefined }} />);
+    expect(screen.getByRole("button", { name: copy.rowMenu })).toHaveAttribute(
+      "title",
+      "Untitled session",
+    );
+  });
   it("deletes after confirming and drops the row at once", async () => {
     features({ delete: { available: true } });
     render(<SessionRowMenu session={summary("codex")} />);

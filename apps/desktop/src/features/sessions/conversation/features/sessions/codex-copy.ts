@@ -464,6 +464,17 @@ const reasons: Record<Locale, Record<string, string>> = {
       "下一轮设置只支持其中列出的模型，这个模型不在列表里，下一轮模型没有改动。请改用列出的模型，名称或完整模型 ID 都可以。",
     "claude-effort-unsupported":
       "下一轮设置的思考强度只能是 low、medium、high、xhigh 或 max，而且要是所选模型支持的级别。下一轮设置没有改动，请在下一轮设置里选择。",
+    "codex-command-agentkib":
+      "AgentKib 用自己的操作代替这条 Codex 命令，但它现在不可用，本次消息尚未发送。请等当前轮次结束，或在这台电脑上检查这台设备的权限。",
+    "codex-command-arguments":
+      "这条命令在 AgentKib 中不带参数，本次消息尚未发送。去掉参数后再发送。",
+    "codex-command-new":
+      "/new 和 /clear 会让 Codex 终端改用新对话。需要空白上下文时请在 AgentKib 中新建会话，这条会话会保留。本次消息尚未发送。",
+    "codex-command-review":
+      "/review 只在 Codex 终端里起作用，本次消息尚未发送。可以直接请 Codex 审查，例如“审查当前未提交的改动”。",
+    "codex-command-init":
+      "/init 只在 Codex 终端里起作用，本次消息尚未发送。可以直接请 Codex 为这个项目写一份 AGENTS.md。",
+    "codex-command-terminal": "这条命令只在 Codex 的终端界面里起作用，本次消息尚未发送。",
     permission_denied: "此浏览器尚未获得对应权限，请在这台电脑上的 AgentKib 授权。",
   },
   "zh-TW": {
@@ -545,6 +556,17 @@ const reasons: Record<Locale, Record<string, string>> = {
       "下一輪設定只支援其中列出的模型，這個模型不在清單中，下一輪模型沒有變更。請改用列出的模型，名稱或完整模型 ID 都可以。",
     "claude-effort-unsupported":
       "下一輪設定的思考強度只能是 low、medium、high、xhigh 或 max，而且要是所選模型支援的等級。下一輪設定沒有變更，請在下一輪設定中選擇。",
+    "codex-command-agentkib":
+      "AgentKib 以自己的操作取代這個 Codex 指令，但它目前無法使用，本次訊息尚未傳送。請等目前輪次結束，或在這台電腦上檢查這台裝置的權限。",
+    "codex-command-arguments":
+      "這個指令在 AgentKib 中不帶參數，本次訊息尚未傳送。移除參數後再傳送。",
+    "codex-command-new":
+      "/new 和 /clear 會讓 Codex 終端機改用新對話。需要空白上下文時請在 AgentKib 中建立新對話，這段對話會保留。本次訊息尚未傳送。",
+    "codex-command-review":
+      "/review 只在 Codex 終端機中有作用，本次訊息尚未傳送。可以直接請 Codex 審查，例如「審查目前未提交的變更」。",
+    "codex-command-init":
+      "/init 只在 Codex 終端機中有作用，本次訊息尚未傳送。可以直接請 Codex 為這個專案寫一份 AGENTS.md。",
+    "codex-command-terminal": "這個指令只在 Codex 的終端機介面中有作用，本次訊息尚未傳送。",
     permission_denied: "此瀏覽器尚未取得對應權限，請在這台電腦上的 AgentKib 授權。",
   },
   "en-US": {
@@ -635,6 +657,18 @@ const reasons: Record<Locale, Record<string, string>> = {
       "Next-turn settings support only the models they list, and this one is not listed. The next-turn model was not changed. Use a listed model, by its name or full model ID.",
     "claude-effort-unsupported":
       "Next-turn reasoning effort can be only low, medium, high, xhigh, or max, and only a level the selected model supports. Next-turn settings were not changed; choose a level in Next-turn settings.",
+    "codex-command-agentkib":
+      "AgentKib stands in for this Codex command with its own action, which is not available right now. This message was not sent. Wait for the current turn to end, or check this device's permissions on this computer.",
+    "codex-command-arguments":
+      "In AgentKib this command takes no argument. This message was not sent. Send it without the argument.",
+    "codex-command-new":
+      "/new and /clear move the Codex terminal to a new conversation. For an empty context, start a new session in AgentKib; this one is kept. This message was not sent.",
+    "codex-command-review":
+      '/review works only in the Codex terminal. This message was not sent. Ask Codex for a review instead, for example "Review my uncommitted changes".',
+    "codex-command-init":
+      "/init works only in the Codex terminal. This message was not sent. Ask Codex to write an AGENTS.md for this project instead.",
+    "codex-command-terminal":
+      "This command works only in Codex's terminal interface. This message was not sent.",
     permission_denied:
       "This browser needs the corresponding permission. Grant it in AgentKib on this computer.",
   },
@@ -726,6 +760,18 @@ const reasons: Record<Locale, Record<string, string>> = {
       "次のターンの設定で使えるのは一覧にあるモデルだけで、このモデルは一覧にありません。次のターンのモデルは変更されていません。一覧にあるモデルを、名前か完全なモデル ID で指定してください。",
     "claude-effort-unsupported":
       "次のターンの推論の強度は low、medium、high、xhigh、max のいずれかで、選択したモデルが対応しているものに限られます。次のターンの設定は変更されていません。次のターンの設定で選んでください。",
+    "codex-command-agentkib":
+      "AgentKib はこの Codex のコマンドを独自の操作で代わりに行いますが、今は使えません。このメッセージは送信されていません。現在のターンが終わるのを待つか、このコンピューターでこのデバイスの権限を確認してください。",
+    "codex-command-arguments":
+      "AgentKib ではこのコマンドは引数を取りません。このメッセージは送信されていません。引数を外して送信してください。",
+    "codex-command-new":
+      "/new と /clear は Codex のターミナルを新しい会話に切り替えます。空のコンテキストが必要な場合は AgentKib で新しい会話を開始してください（この会話は残ります）。このメッセージは送信されていません。",
+    "codex-command-review":
+      "/review は Codex のターミナルでのみ機能します。このメッセージは送信されていません。代わりに「未コミットの変更をレビューして」のように Codex に依頼してください。",
+    "codex-command-init":
+      "/init は Codex のターミナルでのみ機能します。このメッセージは送信されていません。代わりにこのプロジェクトの AGENTS.md を書くよう Codex に依頼してください。",
+    "codex-command-terminal":
+      "このコマンドは Codex のターミナル画面でのみ機能します。このメッセージは送信されていません。",
     permission_denied:
       "このブラウザーには対応する権限が必要です。このコンピューター上の AgentKib で権限を付与してください。",
   },

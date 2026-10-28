@@ -3,6 +3,8 @@ import {
   agentKibCommand,
   agentKibPanel,
   claudeSlashOptions,
+  codexSlashOptions,
+  slashCommandCopy,
   sessionContinuationCopy,
   SessionContinuationReturned,
   SessionContinuationTerminal,
@@ -29,8 +31,10 @@ import {
   X,
 } from "lucide-react";
 import {
+  CODEX_MENU_COMMANDS,
   claudeCommandDecision,
   claudeMenuCommands,
+  codexCommandDecision,
   type UploadedAttachment,
 } from "@agentkib/web-client";
 import { Button } from "../../components/ui/button";
@@ -135,28 +139,33 @@ export function SessionComposer({
     isClaude && capabilities?.sessionId === selected ? capabilities.commands : undefined;
   const commandOptions = useMemo(
     () =>
-      commandCatalog
-        ? claudeSlashOptions(claudeMenuCommands(commandCatalog, COMMAND_OWNER), locale)
-        : [],
-    [commandCatalog, locale],
+      isCodex
+        ? codexSlashOptions(CODEX_MENU_COMMANDS, locale)
+        : commandCatalog
+          ? claudeSlashOptions(claudeMenuCommands(commandCatalog, COMMAND_OWNER), locale)
+          : [],
+    [isCodex, commandCatalog, locale],
   );
   // A refused command keeps its draft; the explanation goes once the draft changes.
   const [commandNotice, setCommandNotice] = useState<{ draft: string; reason: string }>();
   const slash = useSlashCommandMenu({
     value: composerValue,
     options: commandOptions,
-    enabled: isClaude && online && controlReady && !busy && !submitted,
-    catalogKnown: !!commandCatalog?.length,
+    enabled: (isClaude || isCodex) && online && controlReady && !busy && !submitted,
+    // Codex's menu is AgentKib's own list; Claude Code's comes from the CLI.
+    catalogKnown: isCodex || !!commandCatalog?.length,
     locale,
+    label: isCodex ? slashCommandCopy(locale).codexLabel : undefined,
     onChoose: setMessage,
   });
   // A command typed without an argument opens AgentKib's control for it, as a button would.
   const controls = useRef<ComposerControlsHandle>(null);
   const panels = useSessionPanels();
   const openPanel = (panel: AgentKibPanel) => {
-    if (panel !== "actions") return controls.current?.open(panel) ?? false;
+    if (panel === "settings" || panel === "goal") return controls.current?.open(panel) ?? false;
     if (!panels) return false;
-    panels.setActionsOpen(true);
+    if (panel === "files") panels.setFilesOpen(true);
+    else panels.setActionsOpen(true);
     return true;
   };
   useEffect(() => {
@@ -339,29 +348,45 @@ export function SessionComposer({
     const decision = isClaude
       ? claudeCommandDecision(draft, { owner: COMMAND_OWNER, commands: commandCatalog })
       : null;
+    // Codex's own commands work only in its terminal UI; nothing is sent for them.
+    const codexCommand = isCodex && action === "send" ? codexCommandDecision(draft) : null;
     const plain =
       action === "send" &&
       !attachmentIds.length &&
       !resourceIds.length &&
       !historyReferences.length;
-    const panel = decision && plain ? agentKibPanel(decision) : null;
+    const panel = plain
+      ? decision
+        ? agentKibPanel(decision)
+        : (codexCommand?.panel ?? null)
+      : null;
     if (panel && openPanel(panel)) {
       setCommandNotice(undefined);
       setMessage("");
       return;
     }
-    const mapped = decision?.refusal && plain ? agentKibCommand(decision) : null;
-    if (decision?.refusal && !(mapped && capabilities?.features[mapped.action]?.available)) {
-      setCommandNotice({ draft, reason: unsupportedEffortReason(decision) ?? decision.refusal });
+    const mapped = plain
+      ? decision?.refusal
+        ? agentKibCommand(decision)
+        : (codexCommand?.action ?? null)
+      : null;
+    const refusal = decision?.refusal ?? codexCommand?.refusal;
+    if (refusal && !(mapped && capabilities?.features[mapped.action]?.available)) {
+      setCommandNotice({
+        draft,
+        reason: (decision && unsupportedEffortReason(decision)) ?? refusal,
+      });
       return;
     }
+    // `/plan <message>` keeps the message for the turn that runs in Plan mode.
+    const keptDraft = mapped && "draft" in mapped ? mapped.draft : undefined;
     setCommandNotice(undefined);
     const requestGeneration = generation.current;
     submitPending.current = true;
     setSubmitted(true);
     try {
       const result = mapped
-        ? await codexAction(mapped.action, mapped.fields)
+        ? await codexAction(mapped.action, "fields" in mapped ? mapped.fields : undefined)
         : action === "send"
           ? await control("send", undefined, undefined, undefined, undefined, {
               attachmentIds,
@@ -385,7 +410,7 @@ export function SessionComposer({
         setHistoryReferences?.([]);
         count.current = 0;
         setComposerText("");
-        setMessage("");
+        setMessage(keptDraft ?? "");
         setSubmitted(false);
       }
     } finally {

@@ -25,6 +25,7 @@ export {
   agentKibPanel,
   claudeSlashOptions,
   matchSlashCommands,
+  codexSlashOptions,
   slashCommandCopy,
   slashCommandQuery,
   unsupportedEffortReason,

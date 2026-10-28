@@ -233,8 +233,8 @@ describe("opening the composer's dialogs for a bare command", () => {
 
 describe("Claude settings rejection", () => {
   it.each([
-    ["claude-model-unsupported", /not in Claude Code's model list/],
-    ["claude-effort-unsupported", /does not support this reasoning effort/],
+    ["claude-model-unsupported", /support only the models they list/],
+    ["claude-effort-unsupported", /can be only low, medium, high, xhigh, or max/],
   ] as const)(
     "explains %s and opens next-turn settings without submitting",
     async (reason, text) => {

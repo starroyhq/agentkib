@@ -68,6 +68,7 @@ export class ManagedCodexState {
   #retry: CodexApiRetry | null = null;
   /** The final `error` of the running turn, for a completion that carries none itself. */
   #turnError: { turnId: string; text: string } | null = null;
+  #turnsStarted = 0;
 
   constructor(record: ManagedRecord, initialRevision = 0) {
     this.#record = structuredClone(record);
@@ -105,6 +106,11 @@ export class ManagedCodexState {
 
   get turnId(): string | null {
     return this.#turn;
+  }
+
+  /** Native turns seen starting, for an operation whose reply precedes its turn. */
+  get turnsStarted(): number {
+    return this.#turnsStarted;
   }
 
   get reason(): string | null {
@@ -211,6 +217,7 @@ export class ManagedCodexState {
         if (typeof turn.id === "string" && this.#closedTurns.has(turn.id))
           return { changed: false };
         this.#turn = requiredString(turn.id, "invalid-turn");
+        this.#turnsStarted += 1;
         this.#lastTurn = this.#turn;
         for (const [key, id] of this.#compactions)
           if (id !== this.#turn) this.#compactions.delete(key);

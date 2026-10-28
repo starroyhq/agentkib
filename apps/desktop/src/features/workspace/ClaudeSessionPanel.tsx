@@ -919,6 +919,7 @@ export function ClaudeSessionPanel({
   const compact: CompactAction | undefined =
     live?.executionMode === "claude-managed" && live.sessionId === sessionId
       ? {
+          agent: "Claude Code",
           // There is nothing to summarize before the first message.
           enabled:
             !blocked &&

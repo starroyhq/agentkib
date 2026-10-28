@@ -4,6 +4,7 @@ export function activityBlocks(snapshot: Record<string, unknown>, operation: str
     snapshot.activity === "compacting" &&
     ([
       "send",
+      "compact",
       "steer",
       "settings",
       "release",

@@ -209,6 +209,7 @@ const managedControlSchema = z
       "goal-resume",
       "goal-clear",
       "fork",
+      "compact",
     ]),
     sessionId: z.string().min(1).max(256),
     requestId: z.string().uuid(),
@@ -1595,7 +1596,7 @@ export class WebReadRequests {
             : { available: false, reason: checked.reason ?? "session-not-archived" };
         // Settings can be applied before the first turn by starting our own runner, and a
         // send with attachments starts it the same way.
-        for (const operation of ["settings", "rename", "archive", "attachments"])
+        for (const operation of ["settings", "rename", "archive", "attachments", "compact"])
           features[operation] = allowed ? { available: true } : features.send!;
         return {
           sessionId: source.id,
@@ -1673,7 +1674,7 @@ export class WebReadRequests {
       );
       const idleControls =
         managed && verified && healthy && idle && !compacting && !unknown && !record.archived;
-      for (const operation of ["send", "rename", "archive", "fork"])
+      for (const operation of ["send", "rename", "archive", "fork", "compact"])
         set(operation, idleControls, controlReason);
       set("settings", idleControls, controlReason);
       set(
@@ -1998,7 +1999,7 @@ export class WebReadRequests {
         return reject("control-outcome-unconfirmed");
       if (request.expectedRevision !== (inactive.snapshot?.revision ?? 0))
         return reject("stale-or-disabled-control");
-      if (!["send", "settings", "rename", "archive"].includes(request.operation))
+      if (!["send", "settings", "rename", "archive", "compact"].includes(request.operation))
         return reject("session-not-running");
       const checked = await this.#preflight.check();
       if (checked.reason) return reject(checked.reason);
@@ -2102,9 +2103,15 @@ export class WebReadRequests {
       // user can inspect it or change next-turn settings without running it.
       // Operations that can request inference still validate before dispatch.
       if (
-        ["send", "steer", "queue-add", "queue-start", "goal-set", "goal-resume"].includes(
-          request.operation,
-        )
+        [
+          "send",
+          "steer",
+          "queue-add",
+          "queue-start",
+          "goal-set",
+          "goal-resume",
+          "compact",
+        ].includes(request.operation)
       )
         validateManagedModelSelection(
           record,
@@ -2149,6 +2156,12 @@ export class WebReadRequests {
           ...managedTurnSettings(record, cwd),
         };
         method = "turn/start";
+      } else if (request.operation === "compact") {
+        // Manual compaction runs as a turn of its own, like the TUI's /compact.
+        if (snapshot.status !== "idle" || snapshot.sendEnabled !== true)
+          throw new Error("session-busy");
+        params = { threadId: record.native_id };
+        method = "thread/compact/start";
       } else if (request.operation === "stop") {
         if (
           request.turnId !== runner.state.turnId ||
@@ -2426,7 +2439,8 @@ export class WebReadRequests {
         if (
           currentSnapshot.reason ||
           currentSnapshot.revision !== request.expectedRevision ||
-          (request.operation === "send" && currentSnapshot.sendEnabled !== true) ||
+          (["send", "compact"].includes(request.operation) &&
+            currentSnapshot.sendEnabled !== true) ||
           (request.operation === "stop" &&
             (currentSnapshot.stopEnabled !== true || currentSnapshot.turnId !== request.turnId)) ||
           (["steer", "approve", "answer"].includes(request.operation) &&
@@ -2453,7 +2467,22 @@ export class WebReadRequests {
         runner.persist(runner.state);
         response = { appliesTo: "next-turn" };
       } else {
+        const turnsBefore = runner.state.turnsStarted;
         response = await runner.session.request(method, params, beforeDispatch);
+        // thread/compact/start answers before its turn starts (0.163.0). Hold this operation,
+        // which the host does not overlap with others, until that turn shows; no send can
+        // then start in between. A later start is still followed as usual.
+        const until = Date.now() + 5_000;
+        while (
+          request.operation === "compact" &&
+          runner.state.turnsStarted === turnsBefore &&
+          !runner.state.reason &&
+          Date.now() < until
+        ) {
+          await runner.bridge.flush();
+          if (runner.state.turnsStarted !== turnsBefore) break;
+          await new Promise((resolve) => setTimeout(resolve, 15));
+        }
       }
       await runner.bridge.flush();
       if (runner.state.reason) throw new Error("control-outcome-unconfirmed");
@@ -2529,7 +2558,7 @@ export class WebReadRequests {
       }
       const result = {
         accepted: true,
-        completed: !["send", "stop", "steer"].includes(request.operation),
+        completed: !["send", "stop", "steer", "compact"].includes(request.operation),
         ...(request.operation === "settings" ? { appliesTo: "next-turn" } : {}),
         sessionId: request.sessionId,
         requestId: request.requestId,

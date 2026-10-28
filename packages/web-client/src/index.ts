@@ -379,7 +379,8 @@ export type CodexAction =
   | "goal-set"
   | "goal-pause"
   | "goal-resume"
-  | "goal-clear";
+  | "goal-clear"
+  | "compact";
 export type SessionAction = CodexAction | "queue-pause" | "queue-resume";
 export type ClaudePermissionMode = "default" | "plan" | "acceptEdits";
 /**

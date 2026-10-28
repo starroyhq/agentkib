@@ -2535,7 +2535,10 @@ export class WebAccessService {
     if (["resume", "fork"].includes(operation)) return "manage";
     if (["rename", "archive", "unarchive"].includes(operation)) return "organize";
     if (operation === "settings") return "settings";
-    return operation === "send" || operation === "inspect" ? "send" : "advancedControl";
+    // Compaction is a turn the user starts, as a message is.
+    return operation === "send" || operation === "inspect" || operation === "compact"
+      ? "send"
+      : "advancedControl";
   }
   private projectClaudeCapabilities(result: unknown, device: WebDevice, sessionId: string) {
     const data = result as {
@@ -2692,6 +2695,7 @@ export class WebAccessService {
       "goal-pause",
       "goal-resume",
       "goal-clear",
+      "compact",
     ];
     if (!actions.includes(operation)) throw new HttpError(404, "not_found");
     if (this.options.mode === "lan") throw new HttpError(403, "capability_unavailable");

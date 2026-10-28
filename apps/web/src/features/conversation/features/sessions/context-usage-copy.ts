@@ -25,6 +25,8 @@ export const contextUsageCopy = {
     compactDetail:
       "让 Claude Code 总结此前的对话，为后续轮次腾出上下文；此前的消息仍会显示在这里。",
     compactAfterTurn: "当前轮次结束后可以压缩。",
+    compactDetailCodex:
+      "让 Codex 总结此前的对话，为后续轮次腾出上下文；压缩作为单独的一轮运行，此前的消息仍会显示在这里。",
   },
   "zh-TW": {
     pending: "等待用量",
@@ -49,6 +51,8 @@ export const contextUsageCopy = {
     compactDetail:
       "讓 Claude Code 總結先前的對話，為後續回合騰出上下文；先前的訊息仍會顯示在這裡。",
     compactAfterTurn: "目前回合結束後可以壓縮。",
+    compactDetailCodex:
+      "讓 Codex 總結先前的對話，為後續回合騰出上下文；壓縮會作為單獨的一回合執行，先前的訊息仍會顯示在這裡。",
   },
   "en-US": {
     pending: "Awaiting usage",
@@ -75,6 +79,8 @@ export const contextUsageCopy = {
     compactDetail:
       "Claude Code summarizes the conversation so far to free up context for later turns. Earlier messages still show here.",
     compactAfterTurn: "You can compact once the current turn ends.",
+    compactDetailCodex:
+      "Codex summarizes the conversation so far to free up context for later turns. Compaction runs as a turn of its own; earlier messages still show here.",
   },
   "ja-JP": {
     pending: "使用量を待機中",
@@ -100,6 +106,8 @@ export const contextUsageCopy = {
     compactDetail:
       "Claude Code がこれまでの会話を要約し、以降のターンのためにコンテキストを空けます。以前のメッセージは引き続きここに表示されます。",
     compactAfterTurn: "現在のターンが終わると圧縮できます。",
+    compactDetailCodex:
+      "Codex がこれまでの会話を要約し、以降のターンのためにコンテキストを空けます。圧縮は独立したターンとして実行され、以前のメッセージは引き続きここに表示されます。",
   },
 } satisfies Record<Locale, Record<string, string>>;
 

@@ -199,6 +199,18 @@ function fixture(
         return { turn: { id: "new-turn", status: "inProgress" } };
       }
       if (method === "turn/steer") return { turnId: "new-turn" };
+      if (method === "thread/compact/start") {
+        // CLI 0.163.0 answers first, then starts the compaction's own turn.
+        setTimeout(
+          () =>
+            this.emit("notification", {
+              method: "turn/started",
+              params: { threadId: nativeId, turn: { id: "compact-turn", status: "inProgress" } },
+            }),
+          30,
+        );
+        return {};
+      }
       if (method === "thread/queue/add")
         return {
           queuedSubmission: {
@@ -373,6 +385,62 @@ function fixture(
     },
   };
 }
+
+describe("Codex manual compaction", () => {
+  async function compact(f: ReturnType<typeof fixture>) {
+    const state = await f.live();
+    return f.web.managedControl({
+      operation: "compact",
+      sessionId: f.summary.id,
+      requestId: randomUUID(),
+      deviceId: "fixture",
+      runtimeBootId: state.runtimeBootId,
+      expectedRevision: state.revision,
+      experimentalEnabled: true,
+    });
+  }
+  const capabilities = (f: ReturnType<typeof fixture>) =>
+    f.web.managedQuery({
+      operation: "capabilities",
+      sessionId: f.summary.id,
+      experimentalEnabled: true,
+    }) as Promise<{ features: Record<string, { available: boolean; reason?: string }> }>;
+
+  it("starts Codex's compaction and returns once its turn runs", async () => {
+    const f = fixture();
+    // Like send, it starts the runner for a session that has none.
+    expect((await capabilities(f)).features.compact).toEqual({ available: true });
+    expect(await compact(f)).toMatchObject({ accepted: true, completed: false });
+    expect(f.requests.find(({ method }) => method === "thread/compact/start")?.params).toEqual({
+      threadId: nativeId,
+    });
+    // Nothing can be sent between the reply and the compaction's turn.
+    expect(await f.live()).toMatchObject({
+      status: "running",
+      turnId: "compact-turn",
+      sendEnabled: false,
+    });
+    expect((await capabilities(f)).features.compact).toMatchObject({ available: false });
+    f.servers.at(-1)!.emit("notification", {
+      method: "turn/completed",
+      params: { threadId: nativeId, turn: { id: "compact-turn", status: "completed" } },
+    });
+    await vi.waitFor(async () =>
+      expect((await capabilities(f)).features.compact).toEqual({ available: true }),
+    );
+    expect(readUnknownManagedCommands(f.root, f.summary.id)).toEqual([]);
+  });
+
+  it("is not started while a turn runs", async () => {
+    const f = fixture();
+    expect(await f.send()).toMatchObject({ accepted: true });
+    expect(await compact(f)).toMatchObject({
+      accepted: false,
+      controlOutcome: "not-dispatched",
+    });
+    expect(f.methods).not.toContain("thread/compact/start");
+  });
+});
 
 describe("Codex MCP requests", () => {
   // The approval CLI 0.163.0 asks before a non-read-only MCP tool runs.

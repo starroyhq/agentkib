@@ -348,8 +348,9 @@ export function SessionComposer({
     const decision = isClaude
       ? claudeCommandDecision(draft, { owner: COMMAND_OWNER, commands: commandCatalog })
       : null;
-    // Codex's own commands work only in its terminal UI; nothing is sent for them.
-    const codexCommand = isCodex && action === "send" ? codexCommandDecision(draft) : null;
+    // Codex's own commands work only in its terminal UI; nothing is sent for them. Steering or
+    // queueing one is refused like sending one with attachments: its action runs only on send.
+    const codexCommand = isCodex ? codexCommandDecision(draft) : null;
     const plain =
       action === "send" &&
       !attachmentIds.length &&

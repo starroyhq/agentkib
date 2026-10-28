@@ -531,7 +531,44 @@ describe("Codex slash commands in the composer", () => {
     expect(doubles.codexAction).not.toHaveBeenCalled();
   });
 
-  it("sends other text, and steering, as written", async () => {
+  it.each(["steer", "queue-add"] as const)(
+    "does not %s a Codex command into the running turn",
+    async (action) => {
+      doubles.session.access = {
+        ...doubles.session.access,
+        device: { send: true, advancedControl: true },
+      } as SessionController["access"];
+      doubles.session.canSend = false;
+      doubles.session.canStop = true;
+      doubles.session.live = {
+        ...doubles.session.live,
+        sendEnabled: false,
+        status: "running",
+        turnId: "turn",
+      } as SessionController["live"];
+      doubles.session.capabilities = {
+        ...doubles.session.capabilities!,
+        features: {
+          steer: { available: true },
+          "queue-add": { available: true },
+          "terminals-clean": { available: true },
+        },
+      };
+      const { input } = renderComposer("/stop");
+      fireEvent.click(screen.getByRole("button", { name: codexCopy["en-US"].advanced }));
+      fireEvent.click(
+        await screen.findByRole("menuitem", {
+          name: action === "steer" ? codexCopy["en-US"].steer : codexCopy["en-US"].queueAdd,
+        }),
+      );
+      expect(await screen.findByText(reason("codex-command-agentkib"))).toBeVisible();
+      expect(input).toHaveValue("/stop");
+      await act(async () => {});
+      expect(doubles.codexAction).not.toHaveBeenCalled();
+      expect(doubles.control).not.toHaveBeenCalled();
+    },
+  );
+  it("sends other text as written", async () => {
     for (const text of ["/effort high", "/private/tmp is a path", "fix /compact docs"]) {
       doubles.control.mockClear();
       const { form, unmount } = renderComposer(text);

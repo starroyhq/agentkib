@@ -7,7 +7,7 @@
       "name": "agentkib-bridge",
       "source": "./",
       "description": "Connect Claude Code sessions in your AgentKib workspaces to AgentKib on this Mac.",
-      "version": "0.3.0"
+      "version": "0.3.1"
     }
   ]
 }

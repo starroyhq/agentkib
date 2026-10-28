@@ -98,7 +98,7 @@ test("the native engine bounds a connected register stream without changing nati
       },
     },
     plugin: { root: "/synthetic/plugin" },
-    fs: { read: async () => JSON.stringify({ version: "0.3.0" }) },
+    fs: { read: async () => JSON.stringify({ version: "0.3.1" }) },
     clock: { every: (_ms: number, callback: () => Promise<void>) => timers.push(callback) },
     http: {
       fetch: async (url: string, init: Value) => {
@@ -198,14 +198,14 @@ test("the native engine recovers a running terminal on its next prompt after an 
       read: async (path: string) =>
         JSON.stringify(
           path.endsWith("package.json")
-            ? { version: "0.3.0" }
+            ? { version: "0.3.1" }
             : {
                 ...connection,
                 socketPath: "/synthetic/bridge.sock",
                 nativeId,
                 cwd: "/synthetic/workspace",
                 cliVersion: "2.1.307",
-                pluginVersion: "0.3.0",
+                pluginVersion: "0.3.1",
               },
         ),
     },
@@ -285,7 +285,7 @@ function capabilityApi(version: string) {
       },
     },
     plugin: { root: "/synthetic/plugin" },
-    fs: { read: async () => JSON.stringify({ version: "0.3.0" }) },
+    fs: { read: async () => JSON.stringify({ version: "0.3.1" }) },
   };
 }
 

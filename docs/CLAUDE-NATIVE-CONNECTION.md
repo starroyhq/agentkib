@@ -4,10 +4,10 @@ AgentKib 的终端连接和后台续接是两条独立路径。终端连接通�
 
 ## 首次连接
 
-本期原生连接限 macOS，最低 Claude Code **2.1.301**，插件合约版本为 **0.3.0**。CLI 使用最低稳定版本与显式能力检查，不再要求精确锁版。已完成原生验收的版本正常连接；更高但尚未验证的版本通过能力检查后允许只读同步，只在“连接终端”对话框显示中性提示“Claude Code {版本} 还没有验证过，同步显示可能不完整”，会话页不重复显示。不把放宽版本解释为开放发送或保证所有未来版本兼容。Windows/Linux 不开放终端连接；组织策略、safe mode 或禁用 hooks 仍可能阻止插件加载。托管设置或 Team、Enterprise 登录会让 Claude Code 加载 sec-default，它跳过用户安装插件的 `classic.*` hooks（包括 PermissionRequest），插件本身照常加载，等待审批改由 `tool.check` 发现（见“能力和状态”）。
+本期原生连接限 macOS，最低 Claude Code **2.1.301**，插件合约版本为 **0.3.1**。CLI 使用最低稳定版本与显式能力检查，不再要求精确锁版。已完成原生验收的版本正常连接；更高但尚未验证的版本通过能力检查后允许只读同步，只在“连接终端”对话框显示中性提示“Claude Code {版本} 还没有验证过，同步显示可能不完整”，会话页不重复显示。不把放宽版本解释为开放发送或保证所有未来版本兼容。Windows/Linux 不开放终端连接；组织策略、safe mode 或禁用 hooks 仍可能阻止插件加载。托管设置或 Team、Enterprise 登录会让 Claude Code 加载 sec-default，它跳过用户安装插件的 `classic.*` hooks（包括 PermissionRequest），插件本身照常加载，等待审批改由 `tool.check` 发现（见“能力和状态”）。
 
 1. 在桌面打开所选 Claude 会话的“更多操作 → 连接终端…”。生产插件能接收从 AgentKib 发出的消息之前，外部占用选择条不显示插件链接。
-2. 按面板显示的路径添加本地 `agentkib-local` marketplace，主动安装并更新 `agentkib-bridge`。已安装时单独执行 `plugin install` 不会更新，因此指令还包含 `claude plugin update agentkib-bridge@agentkib-local`。AgentKib 不自动安装或修改个人配置。
+2. 按面板显示的路径添加本地 `agentkib-local` marketplace，主动安装并更新 `agentkib-bridge`。已安装时单独执行 `plugin install` 不会更新，因此指令还包含 `claude plugin update agentkib-bridge@agentkib-local`。AgentKib 不自动安装或修改个人配置。实测 CLI 2.1.311 从这个目录原地加载插件：AgentKib 更新后，新开的会话和 `/reload-plugins` 直接使用新代码；`plugin update` 更新安装记录，`claude plugin list` 随之显示新版本。
 3. 已打开的终端执行 `/reload-plugins`。新建隔离测试会话也可用 `--plugin-dir` 加载随应用提供的插件目录。
 4. 在 AgentKib 生成一次性连接指令，在对应终端执行 `/agentkib-connect …`。挑战只绑定所选 UUID 和工作区，120 秒有效，成功消费或断开后失效。
 

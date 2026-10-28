@@ -42,7 +42,7 @@ async function fixture(
   const files = new Map<string, string>([
     [
       "/synthetic/plugin/package.json",
-      JSON.stringify({ version: options.packageVersion ?? "0.3.0" }),
+      JSON.stringify({ version: options.packageVersion ?? "0.3.1" }),
     ],
     [
       connection.credentialPath,
@@ -52,7 +52,7 @@ async function fixture(
         nativeId,
         cwd,
         cliVersion: "2.1.301",
-        pluginVersion: "0.3.0",
+        pluginVersion: "0.3.1",
       }),
     ],
   ]);

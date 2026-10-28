@@ -53,5 +53,30 @@
 
 - 真实 Anthropic API key、第三方供应商和 `apiKeyHelper` 的实际刷新；401 之外的认证错误（如 403）不归为认证失败。
 - 没有 Team/Enterprise 账号或托管设置，真实 sec-default 终端里的审批提示未验收；子代理调用的审批在 sec-default 下不提示。
-- 已安装 0.3.0 插件的用户是否能通过 `claude plugin update` 拿到新 hook：插件合约版本没有改。
+- 已安装 0.3.0 插件的用户是否能通过 `claude plugin update` 拿到新 hook：插件合约版本没有改。补充（2026-10-28）：已实测，不升版本也能拿到；插件已升到 0.3.1，见下文。
 - 终端会话的远程审批仍未开放；Linux 只做了单元与进程测试。
+
+## 补充（2026-10-28）：插件升到 0.3.1
+
+做法：
+
+- CLI 2.1.311 的副本放在 `/private/tmp`。`HOME` 与 `CLAUDE_CONFIG_DIR` 指向空的临时目录，CLI 在只放行 localhost 的 `sandbox-exec` 里运行。
+- marketplace 目录里只放 `stage-claude-bridge.mjs` 打包的 6 个文件，依次执行连接面板显示的三条命令：`plugin marketplace add`、`plugin install`、`plugin update`。
+- 会话加载了哪份代码，用 `-p "/agentkib-status" --debug-file` 查看。`/agentkib-status` 是本地命令，本地 API 桩没有收到请求。
+
+| 情形 | 结果 |
+| --- | --- |
+| 安装 origin/main 的 0.3.0 | 安装记录为 0.3.0，缓存副本里没有 `tool.check`。`plugin update` 回答插件从目录读取、没有可更新的内容 |
+| 目录换成同为 0.3.0、带 `tool.check` 的代码 | `plugin install`、`plugin update` 都不改安装记录。新会话从目录读取 `hooks.json`，加载的事件里有 `tool.check` |
+| 目录换成 0.3.1，不执行命令 | 新会话同样从目录加载 0.3.1 的代码 |
+| 目录换成 0.3.1，执行三条命令 | `plugin update` 报告从 0.3.0 更新到 0.3.1，安装记录和 `plugin list` 都是 0.3.1 |
+
+结论：CLI 2.1.311 从 AgentKib 自带的目录原地加载插件，上面“版本号不变就拿不到新 hook”的担心不成立。插件仍升到 0.3.1，让 `plugin list` 和连接信息能区分带 `tool.check` 的版本。
+
+代价：Runtime 要求插件版本完全一致。更新 AgentKib 之前就已连接的终端，重连时会提示插件需要更新；执行 `/reload-plugins` 后，旧版本保存的凭据作废。开着自动连接的已登记工作区会自动重新配对，其余会话需要新的连接码，与 `docs/CLAUDE-NATIVE-CONNECTION.md` 的“自动连接”一节一致。这一段是按代码判断的，没有实测。Runtime 保存的绑定不含插件版本，升级不会让绑定文件失效。
+
+验证：
+
+- 官方插件引擎（compatibility 脚本，做法同上文）：`plugin validate --strict` 通过，`plugin test` 10 通过 / 0 失败。
+- 桌面桥接测试 7 个文件，268 项通过。
+- 全量：后端构建，后端、桌面、Web 类型检查，`oxfmt --check`、`git diff --check` 通过；`oxlint` 警告数与基线相同（276）；桌面 449 个文件中 448 个通过、1 个跳过，8967 项通过、3 项跳过；Web 72 个文件 1590 项通过。

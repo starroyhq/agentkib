@@ -1,19 +1,24 @@
 // @vitest-environment jsdom
 
 import "@testing-library/jest-dom/vitest";
-import { useState } from "react";
+import { useImperativeHandle, useState, type ReactNode, type Ref } from "react";
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { ClaudeCommandEntry } from "@agentkib/web-client";
 import { slashCommandCopy } from "@agentkib/session-ui";
 import { SessionComposer } from "./session-composer";
 import { codexCopy, codexReason } from "./codex-copy";
+import type { ComposerControlsHandle } from "./codex-session-controls";
+import type { SessionPanels } from "./session-panels";
 import type { SessionController } from "./use-session-controller";
 
 const doubles = vi.hoisted(() => ({
   session: {} as Partial<SessionController>,
   control: vi.fn(),
   codexAction: vi.fn(),
+  panels: null as SessionPanels | null,
+  // Opens the composer's settings or goal dialog; rendered only with full access.
+  open: vi.fn<(dialog: "settings" | "goal") => boolean>(),
 }));
 vi.mock("./session-navigation", () => ({ useSessionNavigate: () => vi.fn() }));
 vi.mock("./session-context", () => ({
@@ -22,7 +27,19 @@ vi.mock("./session-context", () => ({
     return { ...doubles.session, message, setMessage } as SessionController;
   },
 }));
-vi.mock("./session-panels", () => ({ useSessionPanels: () => null }));
+vi.mock("./session-panels", () => ({ useSessionPanels: () => doubles.panels }));
+vi.mock("./codex-session-controls", () => ({
+  CodexComposerControls: ({
+    action,
+    controlsRef,
+  }: {
+    action: ReactNode;
+    controlsRef?: Ref<ComposerControlsHandle>;
+  }) => {
+    useImperativeHandle(controlsRef, () => ({ open: doubles.open }));
+    return <>{action}</>;
+  },
+}));
 vi.mock("./context-usage", () => ({ ContextUsageGauge: () => null }));
 vi.mock("../history/history-search-controls", () => ({ HistoryReferenceChips: () => null }));
 
@@ -53,10 +70,15 @@ const options = () =>
     .getAllByRole("option")
     .map((option) => option.textContent);
 const reason = (code: string) => codexReason("en-US", code, "web").text;
+// With full access the composer renders its settings and goal controls.
+const fullDevice = { send: true, accessMode: "full" } as NonNullable<
+  SessionController["access"]
+>["device"];
 
 describe("slash commands in the Web composer", () => {
   beforeEach(() => {
     vi.resetAllMocks();
+    doubles.panels = null;
     doubles.control.mockResolvedValue(true);
     doubles.codexAction.mockResolvedValue({ accepted: true });
     doubles.session = {
@@ -103,17 +125,17 @@ describe("slash commands in the Web composer", () => {
 
   it("lists only what a paired browser may run, and points the textarea at the active one", () => {
     const { input } = renderComposer("/");
-    // No /config, /heapdump or /loop. /clear, /goal and /rename run AgentKib's own action.
+    // No /config, /heapdump or /loop, and no /clear: AgentKib starts a new session instead.
+    // /model, /goal and /rename run or open AgentKib's own control.
     expect(options()).toEqual([
       "/probe-skillA probe skill (project)",
       "/code-reviewReview the diff",
-      "/clearFor an empty context, start a new session; this one is kept",
       "/compactFree up context",
       "/output-style",
-      "/model<model>Change the next-turn model",
-      "/rename<name>Rename the session in AgentKib",
+      "/model[model]Change the next-turn model",
+      "/rename[name]Rename the session in AgentKib",
       "/usageShow usage",
-      "/goal<objective>Set a persistent goal",
+      "/goal[objective]Set a persistent goal",
     ]);
     const listbox = screen.getByRole("listbox");
     const [first, second] = within(listbox).getAllByRole("option");
@@ -291,6 +313,62 @@ describe("slash commands in the Web composer", () => {
     expect(input).toHaveValue("/rename Probe title");
     await act(async () => {});
     expect(doubles.codexAction).not.toHaveBeenCalled();
+  });
+
+  it.each(["/rename", "/NAME  "])("opens the session actions, where rename is, for %j", (text) => {
+    const setActionsOpen = vi.fn();
+    doubles.panels = {
+      filesOpen: false,
+      setFilesOpen: vi.fn(),
+      actionsOpen: false,
+      setActionsOpen,
+    };
+    const { input, form } = renderComposer(text);
+    fireEvent.submit(form);
+    expect(setActionsOpen).toHaveBeenCalledExactlyOnceWith(true);
+    expect(input).toHaveValue("");
+    expect(screen.queryByText(reason("claude-command-rename"))).not.toBeInTheDocument();
+    expect(doubles.control).not.toHaveBeenCalled();
+    expect(doubles.codexAction).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ["/goal", "goal"],
+    ["/model", "settings"],
+    ["/effort", "settings"],
+  ] as const)("opens AgentKib's control for %s without an argument", (text, dialog) => {
+    doubles.session.access = { ...doubles.session.access!, device: fullDevice };
+    doubles.open.mockReturnValue(true);
+    const { input, form } = renderComposer(text);
+    fireEvent.submit(form);
+    expect(doubles.open).toHaveBeenCalledExactlyOnceWith(dialog);
+    expect(input).toHaveValue("");
+    expect(doubles.control).not.toHaveBeenCalled();
+    expect(doubles.codexAction).not.toHaveBeenCalled();
+  });
+
+  it("falls back when AgentKib's control cannot open here", async () => {
+    // Without full access there is no settings dialog; Claude Code reports the model instead.
+    const first = renderComposer("/model");
+    fireEvent.submit(first.form);
+    await waitFor(() => expect(doubles.control).toHaveBeenCalledOnce());
+    expect(doubles.control.mock.lastCall?.[0]).toBe("send");
+    first.unmount();
+    // The dialog can decline, for example while this device cannot read the goal.
+    doubles.session.access = { ...doubles.session.access!, device: fullDevice };
+    doubles.open.mockReturnValue(false);
+    const { input, form } = renderComposer("/goal");
+    fireEvent.submit(form);
+    expect(doubles.open).toHaveBeenCalledExactlyOnceWith("goal");
+    expect(screen.getByText(reason("claude-command-goal"))).toBeVisible();
+    expect(input).toHaveValue("/goal");
+    // With an argument the command runs AgentKib's action instead of opening the dialog.
+    fireEvent.change(input, { target: { value: "/model opus" } });
+    fireEvent.submit(form);
+    await waitFor(() =>
+      expect(doubles.codexAction).toHaveBeenCalledExactlyOnceWith("settings", { model: "opus" }),
+    );
+    expect(doubles.open).toHaveBeenCalledOnce();
   });
 
   it("sends skills, allowed commands and plain text as messages", async () => {

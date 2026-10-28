@@ -597,6 +597,74 @@ describe("Codex next-turn settings recovery", () => {
     expect(result.current.noticeReason).toBeUndefined();
   });
 
+  it("sends a command button's message and leaves the draft and quotes as they are", async () => {
+    const host = baseFixture(baseIdle("original", "claude-code"), "claude-code");
+    // Quotes survive the refresh after a send only while history search stays granted. The
+    // device may attach files and context, so only the command rule stops those below.
+    const approved = await host.client.access();
+    vi.mocked(host.client.access).mockResolvedValue({
+      ...approved,
+      historySearch: true,
+      historySearchScope: "quotes",
+      device: { ...approved.device!, attachments: true },
+    });
+    vi.mocked(host.client.sessionCapabilities).mockImplementation(async (sessionId) => ({
+      sessionId,
+      executionMode: "claude-managed",
+      status: "idle",
+      features: {
+        fork: { available: true },
+        attachments: { available: true },
+        context: { available: true },
+      },
+    }));
+    const { result } = await open(host);
+    const reference: ResolvedHistoryReference = {
+      reference: {
+        sessionId: "original",
+        recordId: "record",
+        chunkId: "chunk",
+        sourceRevision: "revision",
+        start: 0,
+        end: 5,
+        contentHash: "hash",
+      },
+      title: "Quoted history",
+      agent: "claude-code",
+      kind: "assistant",
+      toolName: null,
+      content: "quote",
+    };
+    await act(async () => {
+      result.current.setMessage("Keep this draft");
+      result.current.setHistoryReferences([reference]);
+    });
+    await act(async () =>
+      result.current.control("send", undefined, undefined, undefined, undefined, {
+        command: "/compact",
+      }),
+    );
+    expect(host.request).toHaveBeenCalledExactlyOnceWith(
+      "send",
+      expect.objectContaining({ sessionId: "original", text: "/compact" }),
+    );
+    expect(host.request.mock.lastCall?.[1]).not.toHaveProperty("historyReferences");
+    expect(result.current.notice).toBe("accepted");
+    expect(result.current.message).toBe("Keep this draft");
+    expect(result.current.historyReferences).toEqual([reference]);
+    // Only a slash command, with nothing attached, goes this way.
+    host.request.mockClear();
+    for (const extra of [
+      { command: "hello" },
+      { command: "/compact", attachmentIds: ["attachment"] },
+      { command: "/compact", resourceIds: ["resource"] },
+    ])
+      await act(async () =>
+        result.current.control("send", undefined, undefined, undefined, undefined, extra),
+      );
+    expect(host.request).not.toHaveBeenCalled();
+  });
+
   it("names the slash-command rule the host refused a Claude message with", async () => {
     const host = baseFixture(baseIdle("original", "claude-code"), "claude-code");
     const { result } = await open(host);

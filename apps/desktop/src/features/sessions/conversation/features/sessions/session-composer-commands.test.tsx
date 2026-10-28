@@ -6,13 +6,15 @@ import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-li
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { ClaudeCommandEntry } from "@agentkib/web-client";
 import { SessionComposer } from "./session-composer";
-import { codexReason } from "./codex-copy";
+import { codexCopy, codexReason } from "./codex-copy";
+import type { SessionPanels } from "./session-panels";
 import type { SessionController } from "./use-session-controller";
 
 const doubles = vi.hoisted(() => ({
   session: {} as Partial<SessionController>,
   control: vi.fn(),
   codexAction: vi.fn(),
+  panels: null as SessionPanels | null,
 }));
 vi.mock("./session-navigation", () => ({ useSessionNavigate: () => vi.fn() }));
 vi.mock("./session-context", () => ({
@@ -21,7 +23,7 @@ vi.mock("./session-context", () => ({
     return { ...doubles.session, message, setMessage } as SessionController;
   },
 }));
-vi.mock("./session-panels", () => ({ useSessionPanels: () => null }));
+vi.mock("./session-panels", () => ({ useSessionPanels: () => doubles.panels }));
 vi.mock("./context-usage", () => ({ ContextUsageGauge: () => null }));
 vi.mock("../history/history-search-controls", () => ({ HistoryReferenceChips: () => null }));
 
@@ -45,6 +47,7 @@ function renderComposer(message: string) {
 describe("slash commands in the desktop composer", () => {
   beforeEach(() => {
     vi.resetAllMocks();
+    doubles.panels = null;
     doubles.control.mockResolvedValue(true);
     doubles.codexAction.mockResolvedValue({ accepted: true });
     doubles.session = {
@@ -85,18 +88,13 @@ describe("slash commands in the desktop composer", () => {
   });
   afterEach(cleanup);
 
-  it("offers the person at this computer every command but background and internal ones", () => {
+  it("offers the person at this computer every command but background, /clear and internal ones", () => {
     renderComposer("/");
     expect(
       within(screen.getByRole("listbox", { name: "Claude Code commands" }))
         .getAllByRole("option")
         .map((option) => option.textContent),
-    ).toEqual([
-      "/clearFor an empty context, start a new session; this one is kept",
-      "/configkey=value",
-      "/heapdumpDump the JS heap",
-      "/output-style[style]",
-    ]);
+    ).toEqual(["/configkey=value", "/heapdumpDump the JS heap", "/output-style[style]"]);
   });
 
   it("sends a settings command, as the terminal would", async () => {
@@ -104,6 +102,52 @@ describe("slash commands in the desktop composer", () => {
     fireEvent.submit(form);
     await waitFor(() => expect(doubles.control).toHaveBeenCalledOnce());
     expect(doubles.codexAction).not.toHaveBeenCalled();
+  });
+
+  it("does not run AgentKib's action for a message with attachments, which would drop them", async () => {
+    doubles.session.access = {
+      ...doubles.session.access!,
+      device: { send: true, attachments: true },
+    } as SessionController["access"];
+    doubles.session.capabilities = {
+      ...doubles.session.capabilities!,
+      features: { rename: { available: true }, attachments: { available: true } },
+    } as SessionController["capabilities"];
+    doubles.session.client = {
+      request: vi.fn(),
+      uploadAttachment: vi.fn().mockResolvedValue({
+        id: "attachment",
+        name: "note.txt",
+        mime: "text/plain",
+        size: 3,
+        version: "1",
+      }),
+    } as unknown as SessionController["client"];
+    const { input, form } = renderComposer("/rename Probe title");
+    fireEvent.change(screen.getByLabelText(codexCopy["en-US"].attachment, { selector: "input" }), {
+      target: { files: [new File(["abc"], "note.txt", { type: "text/plain" })] },
+    });
+    await screen.findByText("100%");
+    fireEvent.submit(form);
+    expect(screen.getByText(codexReason("en-US", "claude-command-rename").text)).toBeVisible();
+    expect(input).toHaveValue("/rename Probe title");
+    expect(doubles.codexAction).not.toHaveBeenCalled();
+    expect(doubles.control).not.toHaveBeenCalled();
+  });
+
+  it("opens the session actions for /rename without an argument", () => {
+    const setActionsOpen = vi.fn();
+    doubles.panels = {
+      filesOpen: false,
+      setFilesOpen: vi.fn(),
+      actionsOpen: false,
+      setActionsOpen,
+    };
+    const { input, form } = renderComposer("/rename");
+    fireEvent.submit(form);
+    expect(setActionsOpen).toHaveBeenCalledExactlyOnceWith(true);
+    expect(input).toHaveValue("");
+    expect(doubles.control).not.toHaveBeenCalled();
   });
 
   it("still explains /clear and /loop", () => {

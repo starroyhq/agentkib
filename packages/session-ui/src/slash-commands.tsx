@@ -21,7 +21,6 @@ const copies = {
     effort: "更改下一轮思考强度",
     rename: "在 AgentKib 中重命名会话",
     goal: "设置持续目标",
-    clear: "需要空白上下文时请新建会话，这条会话会保留",
   },
   "zh-TW": {
     label: "Claude Code 指令",
@@ -30,7 +29,6 @@ const copies = {
     effort: "變更下一輪思考強度",
     rename: "在 AgentKib 中重新命名對話",
     goal: "設定持續目標",
-    clear: "需要空白上下文時請建立新對話，這段對話會保留",
   },
   "en-US": {
     label: "Claude Code commands",
@@ -39,7 +37,6 @@ const copies = {
     effort: "Change the next-turn reasoning effort",
     rename: "Rename the session in AgentKib",
     goal: "Set a persistent goal",
-    clear: "For an empty context, start a new session; this one is kept",
   },
   "ja-JP": {
     label: "Claude Code のコマンド",
@@ -48,7 +45,6 @@ const copies = {
     effort: "次のターンの推論の強度を変更",
     rename: "AgentKib で会話の名前を変更",
     goal: "継続目標を設定",
-    clear: "空のコンテキストが必要な場合は新しい会話を開始してください（この会話は残ります）",
   },
 };
 
@@ -65,17 +61,15 @@ export function slashCommandCopy(locale: string) {
 }
 
 /**
- * Commands AgentKib runs itself instead of sending them, with the argument AgentKib takes.
- * `undefined` keeps the CLI's hint; `null` removes it.
+ * Commands AgentKib handles itself, with the argument AgentKib takes. Without one they open
+ * AgentKib's control for the same thing (`agentKibPanel`), so the argument is optional.
  */
-const HANDLED: Record<"model" | "effort" | "rename" | "goal" | "clear", string | null | undefined> =
-  {
-    model: undefined,
-    effort: "<low|medium|high|xhigh|max>",
-    rename: "<name>",
-    goal: "<objective>",
-    clear: null,
-  };
+const HANDLED: Record<"model" | "effort" | "rename" | "goal", string> = {
+  model: "[model]",
+  effort: "[low|medium|high|xhigh|max]",
+  rename: "[name]",
+  goal: "[objective]",
+};
 const handled = (name: string): name is keyof typeof HANDLED =>
   Object.prototype.hasOwnProperty.call(HANDLED, name);
 
@@ -88,9 +82,7 @@ export function claudeSlashOptions(
   return commands.map((command) => {
     const name = command.name.toLowerCase();
     if (!handled(name)) return command;
-    const { argumentHint: _cli, ...rest } = command;
-    const hint = HANDLED[name] === undefined ? command.argumentHint : HANDLED[name];
-    return { ...rest, ...(hint ? { argumentHint: hint } : {}), description: copy[name] };
+    return { ...command, argumentHint: HANDLED[name], description: copy[name] };
   });
 }
 
@@ -104,8 +96,8 @@ const EFFORTS = ["low", "medium", "high", "xhigh", "max"];
 
 /**
  * AgentKib's own action for `/model <name>`, `/effort <level>`, `/rename <name>` and
- * `/goal <objective>`. Anything else, including these without an argument, only gets the
- * refusal explained.
+ * `/goal <objective>`. Without an argument these open AgentKib's control instead
+ * (`agentKibPanel`); anything else only gets the refusal explained.
  */
 export function agentKibCommand(decision: {
   command: string;
@@ -123,6 +115,22 @@ export function agentKibCommand(decision: {
   if (refusal === "claude-command-rename") return { action: "rename", fields: { name: args } };
   if (refusal === "claude-command-goal")
     return { action: "goal-set", fields: { objective: args, intent: "start" } };
+  return null;
+}
+
+/**
+ * Where AgentKib's own control for a command lives: next-turn settings for `/model` and
+ * `/effort`, the persistent goal for `/goal`, and the session actions, which hold rename, for
+ * `/rename`.
+ */
+export type AgentKibPanel = "settings" | "goal" | "actions";
+
+/** The control a command typed without an argument opens, or null when it opens none. */
+export function agentKibPanel(decision: { command: string; args: string }): AgentKibPanel | null {
+  if (decision.args) return null;
+  if (decision.command === "model" || decision.command === "effort") return "settings";
+  if (decision.command === "goal") return "goal";
+  if (decision.command === "rename") return "actions";
   return null;
 }
 

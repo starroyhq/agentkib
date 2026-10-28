@@ -405,3 +405,48 @@ describe.each(["codex", "claude-code"] as const)("%s completed fork navigation",
     },
   );
 });
+
+describe("a command button's message", () => {
+  it("is sent on its own and leaves the draft as it is", async () => {
+    const host = baseFixture(baseIdle("original", "claude-code"), "claude-code");
+    // The device may attach files and context, so only the command rule stops those below.
+    const approved = await host.client.access();
+    vi.mocked(host.client.access).mockResolvedValue({
+      ...approved,
+      device: { ...approved.device!, attachments: true },
+    });
+    vi.mocked(host.client.sessionCapabilities).mockImplementation(async (sessionId) => ({
+      sessionId,
+      executionMode: "claude-managed",
+      status: "idle",
+      features: {
+        fork: { available: true },
+        attachments: { available: true },
+        context: { available: true },
+      },
+    }));
+    const { result } = await open(host);
+    await act(async () => result.current.setMessage("Keep this draft"));
+    await act(async () =>
+      result.current.control("send", undefined, undefined, undefined, undefined, {
+        command: "/compact",
+      }),
+    );
+    expect(host.request).toHaveBeenCalledExactlyOnceWith(
+      "send",
+      expect.objectContaining({ sessionId: "original", text: "/compact" }),
+    );
+    expect(result.current.notice).toBe("accepted");
+    expect(result.current.message).toBe("Keep this draft");
+    host.request.mockClear();
+    for (const extra of [
+      { command: "compact" },
+      { command: "/compact", attachmentIds: ["attachment"] },
+      { command: "/compact", resourceIds: ["resource"] },
+    ])
+      await act(async () =>
+        result.current.control("send", undefined, undefined, undefined, undefined, extra),
+      );
+    expect(host.request).not.toHaveBeenCalled();
+  });
+});

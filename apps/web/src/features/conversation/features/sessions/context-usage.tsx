@@ -226,11 +226,42 @@ export function ContextUsageDetails({
   );
 }
 
+/** Claude Code's `/compact` as a button. It is sent as a message of its own; the draft stays. */
+type CompactAction = { enabled: boolean; afterTurn: boolean; run: () => void };
+
+function useCompactAction(): CompactAction | undefined {
+  const { current, selected, live, access, canSend, page, control } = useSession();
+  if (
+    current?.id !== selected ||
+    current.agent !== "claude-code" ||
+    live?.sessionId !== selected ||
+    live.executionMode !== "claude-managed" ||
+    !access?.device?.send
+  )
+    return undefined;
+  return {
+    // There is nothing to summarize before the first message.
+    enabled: !!canSend && !!page?.events.length,
+    afterTurn: live.status === "running",
+    run: () =>
+      void control("send", undefined, undefined, undefined, undefined, { command: "/compact" }),
+  };
+}
+
 export function ContextUsageGauge({ fallback }: { fallback?: ContextUsage } = {}) {
   const { selected, locale, access, live, online, usageEpoch } = useSession();
   const scope = `${selected}\0${access?.bootId ?? ""}\0${access?.device?.id ?? ""}\0${usageEpoch ?? ""}\0${live?.connectionGeneration ?? ""}`;
   const view = useContextUsage(fallback);
-  return <ContextUsageIndicator scope={scope} locale={locale} online={online} view={view} />;
+  const compact = useCompactAction();
+  return (
+    <ContextUsageIndicator
+      scope={scope}
+      locale={locale}
+      online={online}
+      view={view}
+      compact={compact}
+    />
+  );
 }
 
 export function ContextUsageIndicator({
@@ -238,11 +269,13 @@ export function ContextUsageIndicator({
   locale,
   online,
   view,
+  compact,
 }: {
   scope: string;
   locale: Locale;
   online: boolean;
   view: ContextUsageView;
+  compact?: CompactAction;
 }) {
   const copy = contextUsageCopyForSurface(locale, "web");
   const [opened, setOpened] = useState<string>();
@@ -278,6 +311,28 @@ export function ContextUsageIndicator({
           onClose={() => setOpened(undefined)}
         >
           <ContextUsageDetails {...view} locale={locale} online={online} />
+          {compact && (
+            <div className="mt-4 space-y-2 border-t pt-4">
+              <p className="text-xs leading-5 text-muted-foreground">{copy.compactDetail}</p>
+              <Button
+                type="button"
+                variant="outline"
+                className="min-h-11"
+                disabled={!compact.enabled}
+                onClick={() => {
+                  setOpened(undefined);
+                  compact.run();
+                }}
+              >
+                {copy.compactAction}
+              </Button>
+              {compact.afterTurn && (
+                <p role="status" className="text-xs leading-5 text-muted-foreground">
+                  {copy.compactAfterTurn}
+                </p>
+              )}
+            </div>
+          )}
         </Dialog>
       )}
     </>

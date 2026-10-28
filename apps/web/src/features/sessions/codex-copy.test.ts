@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import { dictionaries, type Locale } from "@/features/conversation/i18n";
 import { codexCopy, codexReason } from "@/features/conversation/features/sessions/codex-copy";
 import { sessionContinuationCopy, sessionContinuationListState } from "@agentkib/session-ui";
+import { CLAUDE_COMMAND_REFUSALS } from "@agentkib/web-client";
 import { managedControlCopy } from "@/features/conversation/features/sessions/managed-control-copy";
 
 describe("Codex capability reasons", () => {
@@ -289,5 +290,24 @@ describe("a managed Claude turn that failed authentication", () => {
     expect(codexReason("en-US", "claude-auth-failed", "web").text).toContain(
       "in a terminal on the computer running AgentKib",
     );
+  });
+});
+
+describe("a Claude Code command AgentKib did not send", () => {
+  const locales: Locale[] = ["zh-CN", "zh-TW", "en-US", "ja-JP"];
+  it.each(locales)("explains each refusal in its own words in %s", (locale) => {
+    const texts = CLAUDE_COMMAND_REFUSALS.map((code) => {
+      const { text, technical } = codexReason(locale, code);
+      expect(technical).toBeUndefined();
+      expect(text).not.toBe(codexReason(locale).text);
+      return text;
+    });
+    expect(new Set(texts).size).toBe(CLAUDE_COMMAND_REFUSALS.length);
+  });
+
+  it("points /clear to a new session and to compacting", () => {
+    const text = codexReason("en-US", "claude-command-clear").text;
+    expect(text).toContain("start a new session");
+    expect(text).toContain("Compact context");
   });
 });

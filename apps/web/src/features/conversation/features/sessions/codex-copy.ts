@@ -441,7 +441,7 @@ const reasons: Record<Locale, Record<string, string>> = {
     "claude-auth-failed":
       "Claude Code 未通过认证：还没有登录，或 API key 被拒绝。请在这台电脑的终端里运行 claude，用 /login 登录；使用 API key 时，把它写进 ~/.claude/settings.json 的 env，或配置 apiKeyHelper。shell 配置文件里 export 的变量通常传不到 AgentKib（例如从程序坞打开时）。修好后直接重新发送，AgentKib 会用新的设置启动 Claude Code。",
     "claude-command-clear":
-      "/clear 会让 Claude Code 改用一条新会话，AgentKib 无法跟随，本次消息尚未发送。需要空白上下文时请新建会话，这条会话会保留；只想腾出上下文可以用 /compact。",
+      "/clear 会让 Claude Code 改用一条新会话，AgentKib 无法跟随，本次消息尚未发送。需要空白上下文时请新建会话，这条会话会保留；只想腾出上下文可以用 /compact，或在上下文用量里压缩上下文。",
     "claude-command-background":
       "/loop 和 /batch 会启动 AgentKib 无法监管的后台任务，本次消息尚未发送。要接着执行的消息可以加入待发队列，或使用持续目标。",
     "claude-command-goal":
@@ -518,7 +518,7 @@ const reasons: Record<Locale, Record<string, string>> = {
     "claude-auth-failed":
       "Claude Code 未通過驗證：尚未登入，或 API key 遭到拒絕。請在這台電腦的終端機執行 claude，用 /login 登入；使用 API key 時，請寫進 ~/.claude/settings.json 的 env，或設定 apiKeyHelper。shell 設定檔中 export 的變數通常傳不到 AgentKib（例如從 Dock 開啟時）。修正後直接重新傳送，AgentKib 會用新的設定啟動 Claude Code。",
     "claude-command-clear":
-      "/clear 會讓 Claude Code 改用一段新對話，AgentKib 無法跟隨，本次訊息尚未傳送。需要空白上下文時請建立新對話，這段對話會保留；只想騰出上下文可以使用 /compact。",
+      "/clear 會讓 Claude Code 改用一段新對話，AgentKib 無法跟隨，本次訊息尚未傳送。需要空白上下文時請建立新對話，這段對話會保留；只想騰出上下文可以使用 /compact，或在上下文用量裡壓縮上下文。",
     "claude-command-background":
       "/loop 和 /batch 會啟動 AgentKib 無法監管的背景任務，本次訊息尚未傳送。要接著執行的訊息可以加入待發佇列，或使用持續目標。",
     "claude-command-goal":
@@ -604,7 +604,7 @@ const reasons: Record<Locale, Record<string, string>> = {
     "claude-auth-failed":
       "Claude Code could not authenticate: it is not logged in, or the API key was rejected. Run claude in a terminal on this computer and log in with /login. For an API key, put it in the env block of ~/.claude/settings.json or configure apiKeyHelper. Variables exported in your shell profile usually do not reach AgentKib (for example when it is opened from the Dock). After fixing it, send again; AgentKib starts Claude Code with the new settings.",
     "claude-command-clear":
-      "/clear moves Claude Code to a new session that AgentKib cannot follow. This message was not sent. For an empty context, start a new session; this one is kept. To free up context, use /compact.",
+      "/clear moves Claude Code to a new session that AgentKib cannot follow. This message was not sent. For an empty context, start a new session; this one is kept. To free up context, use /compact or Compact context under Context usage.",
     "claude-command-background":
       "/loop and /batch start background work that AgentKib cannot supervise. This message was not sent. Add follow-up messages to Queued messages, or use a persistent goal.",
     "claude-command-goal":
@@ -691,7 +691,7 @@ const reasons: Record<Locale, Record<string, string>> = {
     "claude-auth-failed":
       "Claude Code の認証に失敗しました。ログインしていないか、API キーが拒否されています。このコンピューターのターミナルで claude を実行し、/login でログインしてください。API キーを使う場合は ~/.claude/settings.json の env に書くか、apiKeyHelper を設定してください。シェルの設定ファイルで export した変数は、通常 AgentKib には届きません（Dock から開いた場合など）。修正したらそのまま再送信してください。AgentKib が新しい設定で Claude Code を起動します。",
     "claude-command-clear":
-      "/clear を実行すると Claude Code は新しい会話に切り替わり、AgentKib は追従できません。このメッセージは送信されていません。空のコンテキストが必要な場合は新しい会話を開始してください（この会話は残ります）。コンテキストを空けるだけなら /compact を使えます。",
+      "/clear を実行すると Claude Code は新しい会話に切り替わり、AgentKib は追従できません。このメッセージは送信されていません。空のコンテキストが必要な場合は新しい会話を開始してください（この会話は残ります）。コンテキストを空けるだけなら /compact か、コンテキスト使用量の「コンテキストを圧縮」を使えます。",
     "claude-command-background":
       "/loop と /batch は AgentKib が監督できないバックグラウンド作業を開始します。このメッセージは送信されていません。続けて実行したいメッセージは送信待ちキューに追加するか、継続目標を使ってください。",
     "claude-command-goal":

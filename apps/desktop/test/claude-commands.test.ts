@@ -297,7 +297,8 @@ describe("what a command resolves to", () => {
 });
 
 describe("the / menu", () => {
-  it("offers the owner everything but background and internal commands", () => {
+  it("offers the owner everything but background, /clear and internal commands", () => {
+    // AgentKib starts a new session instead of /clear.
     const names = claudeMenuCommands(catalog, true).map((entry) => entry.name);
     expect(names).toEqual([
       "probe-skill",
@@ -305,7 +306,6 @@ describe("the / menu", () => {
       "code-review",
       "doctor",
       "autocompact",
-      "clear",
       "compact",
       "config",
       "output-style",
@@ -328,7 +328,6 @@ describe("the / menu", () => {
       "hello",
       "code-review",
       "autocompact",
-      "clear",
       "compact",
       "output-style",
       "context",

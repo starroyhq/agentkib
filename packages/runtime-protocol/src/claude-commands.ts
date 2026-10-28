@@ -270,10 +270,11 @@ export function claudeInputCommandRefusal(
 }
 
 /**
- * The commands a `/` menu offers, in catalog order. Background commands and internal ones are
- * left out for everyone; a remote device also loses the built-ins it may not run, and the
- * argument hint of those it may only run without an argument. `/clear`, `/goal`, `/rename`,
- * `/model` and `/effort` stay: clients run AgentKib's action for them.
+ * The commands a `/` menu offers, in catalog order. Background commands, `/clear` (AgentKib
+ * starts a new session instead) and internal ones are left out for everyone; a remote device
+ * also loses the built-ins it may not run, and the argument hint of those it may only run
+ * without an argument. `/goal`, `/rename`, `/model` and `/effort` stay: clients run or open
+ * AgentKib's own control for them.
  */
 export function claudeMenuCommands(
   commands: readonly ClaudeCommandEntry[],
@@ -290,6 +291,7 @@ export function claudeMenuCommands(
     if (
       !bare ||
       bare.refusal === "claude-command-background" ||
+      bare.refusal === "claude-command-clear" ||
       bare.refusal === "claude-command-owner-only"
     )
       continue;

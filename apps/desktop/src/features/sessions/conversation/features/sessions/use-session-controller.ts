@@ -1831,7 +1831,16 @@ export function useSessionController({
     decision?: Decision,
     question?: UserQuestionRequest,
     answers?: Record<string, string[]>,
-    extra?: { attachmentIds?: string[]; resourceIds?: string[]; nativeDecision?: unknown },
+    extra?: {
+      attachmentIds?: string[];
+      resourceIds?: string[];
+      nativeDecision?: unknown;
+      /**
+       * A slash command sent as a message of its own (the compact button). The draft, its
+       * attachments and history quotes stay as they are.
+       */
+      command?: string;
+    },
   ) {
     if (
       mutating.current ||
@@ -1844,14 +1853,20 @@ export function useSessionController({
       hasDurablePending(selected)
     )
       return;
-    const text = message.trim();
+    const command = kind === "send" ? extra?.command : undefined;
+    const text = command ?? message.trim();
     if (
       kind === "send" &&
       (live.activity === "compacting" ||
-        !isValidMessage(
-          historyMessageText(message, historyReferencesValue.current),
-          !!extra?.attachmentIds?.length,
-        ))
+        (command !== undefined
+          ? !command.startsWith("/") ||
+            !isValidMessage(command, false) ||
+            !!extra?.attachmentIds?.length ||
+            !!extra?.resourceIds?.length
+          : !isValidMessage(
+              historyMessageText(message, historyReferencesValue.current),
+              !!extra?.attachmentIds?.length,
+            )))
     )
       return;
     if (
@@ -1972,7 +1987,7 @@ export function useSessionController({
         ...(kind === "send"
           ? {
               text,
-              ...(historyReferencesValue.current.length
+              ...(command === undefined && historyReferencesValue.current.length
                 ? {
                     historyReferences: historyReferencesValue.current.map((item) => item.reference),
                   }
@@ -2018,7 +2033,7 @@ export function useSessionController({
         observedActive: kind !== "send",
       };
       setNotice("accepted");
-      if (kind === "send") {
+      if (kind === "send" && command === undefined) {
         setMessage("");
         setHistoryReferences([]);
       }

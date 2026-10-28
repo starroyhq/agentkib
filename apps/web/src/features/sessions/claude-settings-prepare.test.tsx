@@ -1,9 +1,13 @@
 // @vitest-environment jsdom
 import "@testing-library/jest-dom/vitest";
+import { createRef, type RefObject } from "react";
 import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { CodexSessionSettings } from "@agentkib/web-client";
-import { CodexComposerControls } from "../conversation/features/sessions/codex-session-controls";
+import {
+  CodexComposerControls,
+  type ComposerControlsHandle,
+} from "../conversation/features/sessions/codex-session-controls";
 import { useSession } from "../conversation/features/sessions/session-context";
 import { sessionAgentCopy } from "../conversation/features/sessions/session-agent-copy";
 import { codexCopy } from "../conversation/features/sessions/codex-copy";
@@ -177,4 +181,52 @@ describe("Claude settings preparation", () => {
       expect(state.codexAction).not.toHaveBeenCalled();
     },
   );
+});
+
+describe("opening the composer's dialogs for a bare command", () => {
+  const open = (ref: RefObject<ComposerControlsHandle | null>, dialog: "settings" | "goal") => {
+    let opened: boolean | undefined;
+    act(() => {
+      opened = ref.current!.open(dialog);
+    });
+    return opened;
+  };
+
+  it("opens the settings, and the goal only where this device can read it", async () => {
+    const copy = codexCopy["en-US"];
+    const ref = createRef<ComposerControlsHandle>();
+    const view = render(<CodexComposerControls {...props} controlsRef={ref} />);
+    // No goal feature reaches this device.
+    expect(open(ref, "goal")).toBe(false);
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+    expect(open(ref, "settings")).toBe(true);
+    expect(await screen.findByLabelText(copy.model)).toBeVisible();
+    expect(state.client.prepareSessionSettings).toHaveBeenCalledTimes(1);
+    view.unmount();
+    state.capabilities = {
+      sessionId: "session",
+      features: { goal: { available: true }, "goal-set": { available: true } },
+    } as typeof state.capabilities;
+    state.client = {
+      ...state.client,
+      sessionGoals: vi.fn(async () => ({ available: true, revision: 1, actions: {} })),
+    } as unknown as typeof state.client;
+    const goal = createRef<ComposerControlsHandle>();
+    render(<CodexComposerControls {...props} controlsRef={goal} />);
+    expect(open(goal, "goal")).toBe(true);
+    expect(await screen.findByLabelText(copy.goalObjective)).toBeVisible();
+  });
+
+  it("declines while the composer is disabled or the device lacks full access", () => {
+    const ref = createRef<ComposerControlsHandle>();
+    const view = render(<CodexComposerControls {...props} disabled controlsRef={ref} />);
+    expect(open(ref, "settings")).toBe(false);
+    view.unmount();
+    state.access = { bootId: "boot", device: { id: "device" } } as typeof state.access;
+    const partial = createRef<ComposerControlsHandle>();
+    render(<CodexComposerControls {...props} controlsRef={partial} />);
+    expect(open(partial, "settings")).toBe(false);
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+    expect(state.client.prepareSessionSettings).not.toHaveBeenCalled();
+  });
 });

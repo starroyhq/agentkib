@@ -22,12 +22,14 @@ export {
 
 export {
   agentKibCommand,
+  agentKibPanel,
   claudeSlashOptions,
   matchSlashCommands,
   slashCommandCopy,
   slashCommandQuery,
   useSlashCommandMenu,
   type AgentKibCommand,
+  type AgentKibPanel,
   type SlashCommandOption,
 } from "./slash-commands";
 

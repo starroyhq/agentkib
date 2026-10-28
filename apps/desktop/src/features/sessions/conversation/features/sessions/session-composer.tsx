@@ -1,11 +1,13 @@
 import { continuationResources } from "./continuation-draft";
 import {
   agentKibCommand,
+  agentKibPanel,
   claudeSlashOptions,
   sessionContinuationCopy,
   SessionContinuationReturned,
   SessionContinuationTerminal,
   useSlashCommandMenu,
+  type AgentKibPanel,
 } from "@agentkib/session-ui";
 import { SessionBusyChoice } from "./session-busy-choice";
 import { SessionReadOnly } from "./session-read-only";
@@ -50,7 +52,12 @@ import { sessionDisplayState } from "./session-display-state";
 import { composerLayoutCopy } from "./composer-layout-copy";
 import { codexCopy, codexReason } from "./codex-copy";
 import { MAX_MESSAGE_LENGTH } from "./session-model";
-import { CodexComposerControls, type CodexResource } from "./codex-session-controls";
+import {
+  CodexComposerControls,
+  type CodexResource,
+  type ComposerControlsHandle,
+} from "./codex-session-controls";
+import { useSessionPanels } from "./session-panels";
 import { PermissionModeNotice } from "./permission-mode-notice";
 import { ClaudeTurnNotice } from "./claude-turn-notice";
 import { claudeConnectionCopy } from "./claude-connection-copy";
@@ -142,6 +149,15 @@ export function SessionComposer({
     locale,
     onChoose: setMessage,
   });
+  // A command typed without an argument opens AgentKib's control for it, as a button would.
+  const controls = useRef<ComposerControlsHandle>(null);
+  const panels = useSessionPanels();
+  const openPanel = (panel: AgentKibPanel) => {
+    if (panel !== "actions") return controls.current?.open(panel) ?? false;
+    if (!panels) return false;
+    panels.setActionsOpen(true);
+    return true;
+  };
   useEffect(() => {
     const controllers = active.current;
     const urls = previewUrls.current;
@@ -318,18 +334,22 @@ export function SessionComposer({
     )
       return;
     // The host refuses these too; deciding here keeps the draft and explains it without a
-    // round trip, and runs AgentKib's own action for the commands it has one for.
+    // round trip, and runs or opens AgentKib's own control for the commands it has one for.
     const decision = isClaude
       ? claudeCommandDecision(draft, { owner: COMMAND_OWNER, commands: commandCatalog })
       : null;
-    const mapped =
-      decision?.refusal &&
+    const plain =
       action === "send" &&
       !attachmentIds.length &&
       !resourceIds.length &&
-      !historyReferences.length
-        ? agentKibCommand(decision)
-        : null;
+      !historyReferences.length;
+    const panel = decision && plain ? agentKibPanel(decision) : null;
+    if (panel && openPanel(panel)) {
+      setCommandNotice(undefined);
+      setMessage("");
+      return;
+    }
+    const mapped = decision?.refusal && plain ? agentKibCommand(decision) : null;
     if (decision?.refusal && !(mapped && capabilities?.features[mapped.action]?.available)) {
       setCommandNotice({ draft, reason: decision.refusal });
       return;
@@ -622,6 +642,7 @@ export function SessionComposer({
           />
           {access?.device?.accessMode === "full" && (
             <CodexComposerControls
+              controlsRef={controls}
               resources={resources}
               setResources={setResources}
               openPhoneFiles={() => fileInput.current?.click()}

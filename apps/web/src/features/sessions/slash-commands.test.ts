@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   agentKibCommand,
+  agentKibPanel,
   claudeSlashOptions,
   matchSlashCommands,
   slashCommandCopy,
@@ -82,6 +83,28 @@ describe("AgentKib's own action for a refused command", () => {
   });
 });
 
+describe("the AgentKib control a bare command opens", () => {
+  it.each([
+    [{ command: "model", args: "" }, "settings"],
+    [{ command: "effort", args: "" }, "settings"],
+    [{ command: "goal", args: "" }, "goal"],
+    [{ command: "rename", args: "" }, "actions"],
+  ] as const)("opens %j in %s", (decision, panel) => {
+    expect(agentKibPanel(decision)).toBe(panel);
+  });
+
+  it.each([
+    { command: "model", args: "opus" },
+    { command: "rename", args: "Probe title" },
+    { command: "goal", args: "tests pass" },
+    { command: "clear", args: "" },
+    { command: "compact", args: "" },
+    { command: "config", args: "" },
+  ])("opens nothing for %j", (decision) => {
+    expect(agentKibPanel(decision)).toBeNull();
+  });
+});
+
 describe("menu descriptions", () => {
   it.each(["zh-CN", "zh-TW", "en-US", "ja-JP"])(
     "describes AgentKib's action for the commands it handles in %s",
@@ -90,23 +113,26 @@ describe("menu descriptions", () => {
       const options = claudeSlashOptions(
         [
           { name: "model", description: "Set the AI model", argumentHint: "<model>", aliases: [] },
-          { name: "Clear", argumentHint: "[name]", aliases: ["reset"] },
           { name: "effort", argumentHint: "<low|…|auto|ultracode [on|off]>", aliases: [] },
+          { name: "Rename", argumentHint: "[name]", aliases: ["name"] },
+          { name: "goal", aliases: [] },
           { name: "compact", description: "Free up context", argumentHint: "<text>", aliases: [] },
           { name: "constructor", aliases: [] },
         ],
         locale,
       );
+      // The argument is optional: without one the command opens AgentKib's control. /effort
+      // takes only the levels AgentKib can set.
       expect(options).toEqual([
-        { name: "model", description: copy.model, argumentHint: "<model>", aliases: [] },
-        // AgentKib starts no session with a name, and takes only the levels it can set.
-        { name: "Clear", description: copy.clear, aliases: ["reset"] },
+        { name: "model", description: copy.model, argumentHint: "[model]", aliases: [] },
         {
           name: "effort",
           description: copy.effort,
-          argumentHint: "<low|medium|high|xhigh|max>",
+          argumentHint: "[low|medium|high|xhigh|max]",
           aliases: [],
         },
+        { name: "Rename", description: copy.rename, argumentHint: "[name]", aliases: ["name"] },
+        { name: "goal", description: copy.goal, argumentHint: "[objective]", aliases: [] },
         { name: "compact", description: "Free up context", argumentHint: "<text>", aliases: [] },
         { name: "constructor", aliases: [] },
       ]);

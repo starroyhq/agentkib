@@ -241,7 +241,10 @@ describe("slash commands in the Web composer", () => {
     ["/loop 5m check", "claude-command-background"],
     ["/goal", "claude-command-goal"],
     ["/rename", "claude-command-rename"],
-    ["/effort turbo", "claude-command-settings"],
+    // Next-turn settings take low to max; the CLI's auto and ultracode are explained by those.
+    ["/effort turbo", "claude-effort-unsupported"],
+    ["/effort auto", "claude-effort-unsupported"],
+    ["/effort ultracode on", "claude-effort-unsupported"],
   ])("explains %s instead of sending it, and keeps the draft", (text, code) => {
     const { input, form } = renderComposer(text);
     fireEvent.submit(form);
@@ -311,6 +314,19 @@ describe("slash commands in the Web composer", () => {
     fireEvent.submit(form);
     expect(screen.getByText(reason("claude-command-rename"))).toBeVisible();
     expect(input).toHaveValue("/rename Probe title");
+    await act(async () => {});
+    expect(doubles.codexAction).not.toHaveBeenCalled();
+  });
+
+  it("explains /effort with a level it takes as a settings command when settings are unavailable", async () => {
+    doubles.session.capabilities = {
+      ...doubles.session.capabilities!,
+      features: { settings: { available: false, reason: "session-busy" } },
+    };
+    const { input, form } = renderComposer("/effort high");
+    fireEvent.submit(form);
+    expect(screen.getByText(reason("claude-command-settings"))).toBeVisible();
+    expect(input).toHaveValue("/effort high");
     await act(async () => {});
     expect(doubles.codexAction).not.toHaveBeenCalled();
   });

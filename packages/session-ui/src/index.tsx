@@ -27,6 +27,7 @@ export {
   matchSlashCommands,
   slashCommandCopy,
   slashCommandQuery,
+  unsupportedEffortReason,
   useSlashCommandMenu,
   type AgentKibCommand,
   type AgentKibPanel,

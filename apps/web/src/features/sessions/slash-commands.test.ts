@@ -6,6 +6,7 @@ import {
   matchSlashCommands,
   slashCommandCopy,
   slashCommandQuery,
+  unsupportedEffortReason,
   type SlashCommandOption,
 } from "@agentkib/session-ui";
 
@@ -80,6 +81,25 @@ describe("AgentKib's own action for a refused command", () => {
     { command: "compact", args: "now", refusal: null },
   ])("only explains %j", (decision) => {
     expect(agentKibCommand(decision)).toBeNull();
+  });
+
+  // CLI 2.1.311 also takes auto and ultracode [on|off]; next-turn settings take low to max.
+  it.each(["auto", "Ultracode on", "turbo"])(
+    "explains /effort %s by the levels it takes",
+    (args) => {
+      expect(
+        unsupportedEffortReason({ command: "effort", args, refusal: "claude-command-settings" }),
+      ).toBe("claude-effort-unsupported");
+    },
+  );
+
+  it.each([
+    { command: "effort", args: "HIGH", refusal: "claude-command-settings" },
+    { command: "effort", args: "", refusal: null },
+    { command: "model", args: "auto", refusal: "claude-command-settings" },
+    { command: "effort", args: "auto", refusal: "claude-command-owner-only" },
+  ])("keeps the refusal for %j", (decision) => {
+    expect(unsupportedEffortReason(decision)).toBeNull();
   });
 });
 

@@ -242,6 +242,30 @@ describe("conversation reading position", () => {
     view.rerender(<SessionReader />);
     expect(screen.getByText(dictionaries["zh-CN"].notDispatched)).toBeVisible();
   });
+  it.each(["claude-model-unsupported", "claude-effort-unsupported"] as const)(
+    "leaves %s to the composer's controls on a full-access device and explains it otherwise",
+    (reason) => {
+      const text = codexReason("zh-CN", reason, "web").text;
+      state = {
+        ...state,
+        current: { ...state.current!, agent: "claude-code" },
+        notice: "notDispatched",
+        noticeReason: reason,
+        access: { ...state.access!, device: { id: "device", accessMode: "full" } },
+      } as unknown as typeof state;
+      const view = render(<SessionReader />);
+      expect(screen.queryByText(text)).not.toBeInTheDocument();
+      expect(screen.queryByText(dictionaries["zh-CN"].notDispatched)).not.toBeInTheDocument();
+      // A device without full access has no composer controls to show it.
+      state = {
+        ...state,
+        access: { ...state.access!, device: { id: "device" } },
+      } as unknown as typeof state;
+      view.rerender(<SessionReader />);
+      expect(screen.getByText(text)).toBeVisible();
+      expect(screen.queryByText(dictionaries["zh-CN"].notDispatched)).not.toBeInTheDocument();
+    },
+  );
   it.each(["claude-command-owner-only", "claude-command-clear"] as const)(
     "explains a Claude message refused as %s instead of the generic rejection",
     (reason) => {

@@ -6,6 +6,7 @@ import type { Approval } from "@agentkib/web-client";
 import { conversationWords } from "@/core/i18n";
 import { SessionReader } from "./session-reader";
 import { useSession } from "./session-context";
+import { codexReason } from "./codex-copy";
 
 vi.mock("./session-context", () => ({ useSession: vi.fn() }));
 vi.mock("./session-operations", () => ({ SessionOperations: () => null }));
@@ -250,4 +251,31 @@ describe("ACP disconnected draft", () => {
     expect(screen.queryByRole("textbox", { name: state.t.message })).not.toBeInTheDocument();
     expect(state.control).not.toHaveBeenCalled();
   });
+});
+
+describe("a Claude settings change Claude Code refuses", () => {
+  it.each(["claude-model-unsupported", "claude-effort-unsupported"] as const)(
+    "leaves %s to the composer's controls on a full-access device and explains it otherwise",
+    (reason) => {
+      const text = codexReason("en-US", reason).text;
+      state = {
+        ...state,
+        current: { ...state.current!, agent: "claude-code" },
+        notice: "notDispatched",
+        noticeReason: reason,
+        access: { ...state.access!, device: { id: "device", accessMode: "full" } },
+      } as unknown as typeof state;
+      const view = render(<SessionReader />);
+      expect(screen.queryByText(text)).not.toBeInTheDocument();
+      expect(screen.queryByText(state.t.notDispatched)).not.toBeInTheDocument();
+      // A device without full access has no composer controls to show it.
+      state = {
+        ...state,
+        access: { ...state.access!, device: { id: "device" } },
+      } as unknown as typeof state;
+      view.rerender(<SessionReader />);
+      expect(screen.getByText(text)).toBeVisible();
+      expect(screen.queryByText(state.t.notDispatched)).not.toBeInTheDocument();
+    },
+  );
 });

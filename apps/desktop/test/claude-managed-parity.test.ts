@@ -739,6 +739,75 @@ describe.skipIf(!["darwin", "linux"].includes(process.platform))(
       ).toEqual([]);
     });
 
+    it.each(["fixture-actual-model", "FIXTURE-ALIAS", "Fixture-Actual-Model"])(
+      "takes /model %s as the listed alias it names",
+      async (typed) => {
+        const f = fixture("2.1.286", 0, "model-alias");
+        const created = await create(f.owner);
+        await control(f.owner, created.sessionId, "settings", { model: typed });
+        expect(
+          f
+            .frames()
+            .filter((frame) => frame.request?.subtype === "set_model")
+            .map((frame) => frame.request.model),
+        ).toEqual(["fixture-alias"]);
+        expect(await f.owner.settingsState(created.sessionId)).toMatchObject({
+          selected: { model: "fixture-alias" },
+          applicationStatus: "confirmed",
+        });
+        expect(
+          new ClaudeHostStateStore(f.root, f.owner.bootId).read(created.sessionId).settings,
+        ).toEqual({ model: "fixture-alias" });
+      },
+    );
+
+    it("still restores defaults when the request also names an unlisted model", async () => {
+      const f = fixture();
+      const created = await create(f.owner, { model: "fixture-model", effort: "high" });
+      await control(f.owner, created.sessionId, "settings", {
+        resetDefaults: true,
+        model: "no-such-model",
+      });
+      expect(
+        new ClaudeHostStateStore(f.root, f.owner.bootId).read(created.sessionId).settings,
+      ).toEqual({});
+    });
+
+    it.each([
+      ["a model Claude Code does not list", { model: "no-such-model" }, "unsupported-model"],
+      [
+        "an effort the model does not support",
+        { model: "fixture-low-model", effort: "high" },
+        "unsupported-effort",
+      ],
+      ["an effort level that does not exist", { effort: "turbo" }, "unsupported-effort"],
+    ])("names %s in the receipt and changes nothing", async (_case, fields, reason) => {
+      const f = fixture("2.1.286", 0, "effort-models");
+      const created = await create(f.owner, { model: "fixture-model" });
+      const before = new ClaudeHostStateStore(f.root, f.owner.bootId).read(
+        created.sessionId,
+      ).settings;
+      const error = await control(f.owner, created.sessionId, "settings", fields).catch(
+        (caught: unknown) => caught,
+      );
+      expect(error).toBeInstanceOf(ClaudeHostControlPreflightError);
+      expect((error as ClaudeHostControlPreflightError).result).toMatchObject({
+        accepted: false,
+        controlOutcome: "not-dispatched",
+        error: reason,
+      });
+      expect(
+        f
+          .frames()
+          .filter((frame) =>
+            ["set_model", "apply_flag_settings"].includes(String(frame.request?.subtype)),
+          ),
+      ).toEqual([]);
+      expect(
+        new ClaudeHostStateStore(f.root, f.owner.bootId).read(created.sessionId).settings,
+      ).toEqual(before);
+    });
+
     it("clears only the effort selection when switching to a model with incompatible effort", async () => {
       const f = fixture("2.1.286", 0, "effort-models");
       const created = await create(f.owner, {

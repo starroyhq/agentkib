@@ -450,3 +450,28 @@ describe("a command button's message", () => {
     expect(host.request).not.toHaveBeenCalled();
   });
 });
+
+describe("a Claude settings change Claude Code refuses", () => {
+  it.each([
+    ["unsupported-model", "claude-model-unsupported"],
+    ["unsupported-effort", "claude-effort-unsupported"],
+    ["session-busy", undefined],
+  ] as const)("is explained as %s with Claude's own reason", async (code, reason) => {
+    const host = baseFixture(baseIdle("original", "claude-code"), "claude-code");
+    vi.mocked(host.client.sessionCapabilities).mockImplementation(async (sessionId) => ({
+      sessionId,
+      executionMode: "claude-managed",
+      status: "idle",
+      features: { fork: { available: true }, settings: { available: true } },
+    }));
+    const { result } = await open(host);
+    host.request.mockRejectedValueOnce(new ApiError(409, code, "not-dispatched"));
+    await act(async () => result.current.codexAction("settings", { model: "no-such-model" }));
+    expect(host.request).toHaveBeenCalledWith(
+      "managed/action",
+      expect.objectContaining({ operation: "settings", model: "no-such-model" }),
+    );
+    expect(result.current.notice).toBe("notDispatched");
+    expect(result.current.noticeReason).toBe(reason);
+  });
+});

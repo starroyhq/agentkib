@@ -90,6 +90,27 @@ describe("nested workspace session ownership", () => {
     expect(f.owners()).toEqual({ shared: "home" });
   });
 
+  it("records each session's directory and Codex remote without listing them", () => {
+    const f = fixture();
+    f.store.sync("repo", "codex", [
+      {
+        ...native("thread", "codex"),
+        cwd: "/fixture/home/repo/app",
+        git_origin_url: " https://example.invalid/r.git ",
+      },
+      { ...native("relative", "codex"), cwd: "relative/dir", git_origin_url: " " },
+    ]);
+    const id = f.store.id("codex", "thread");
+    expect(f.store.directories([id, f.store.id("codex", "relative"), "missing"])).toEqual(
+      new Map([
+        [id, { cwd: "/fixture/home/repo/app", git_origin_url: "https://example.invalid/r.git" }],
+      ]),
+    );
+    expect(f.store.list("repo")[0]).not.toHaveProperty("cwd");
+    f.store.sync("home", "codex", [{ ...native("thread", "codex"), cwd: "/elsewhere" }]);
+    expect(f.store.directories([id]).get(id)?.cwd).toBe("/fixture/home/repo/app");
+  });
+
   it("keeps the Codex reclassification marker on rows it did not rewrite", () => {
     const f = fixture();
     f.store.sync("repo", "codex", [native("thread", "codex")]);

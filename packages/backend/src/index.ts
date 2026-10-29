@@ -20,6 +20,7 @@ import { planSessionHandoff } from "./session-handoff-plan";
 import { applySessionHandoff } from "./session-handoff-apply";
 import { launchPreparedHandoff, prepareHandoffLaunch } from "./session-handoff-launch";
 import { SessionIndex } from "./session-index";
+import { catalogCheckouts } from "./git-checkouts";
 import { HistorySearch } from "./history-search";
 import { InsightRefresh } from "./insight-refresh";
 import { ObsidianIntegration } from "./obsidian";
@@ -867,7 +868,7 @@ export class TypeScriptBackend {
                 !Array.isArray(session) &&
                 !("id" in session && aliases.has(String(session.id))),
             ),
-            ...records,
+            ...this.#withWorktrees(records),
           ].map(continuation),
         };
       });
@@ -975,7 +976,7 @@ export class TypeScriptBackend {
     }
     if (method === RUNTIME_METHODS.workspaceSessions) {
       const { workspaceId } = parameters(z.object({ workspaceId: z.string() }), params);
-      return this.#sessionIndex!.read(workspaceId);
+      return this.#sessionIndex!.read(workspaceId).then((rows) => this.#withWorktrees(rows));
     }
     if (TYPESCRIPT_SESSION_READ_METHODS.has(method))
       return this.#store.sessions.request(method, params);
@@ -986,7 +987,7 @@ export class TypeScriptBackend {
       case NATIVE_CONTEXT:
         return nativeContext({ ...process.env, ...this.environment });
       case RUNTIME_METHODS.refreshWorkspaceSessions:
-        return this.#sessionIndex!.refresh(params);
+        return this.#sessionIndex!.refresh(params).then((rows) => this.#withWorktrees(rows));
       case RUNTIME_METHODS.clearSessionIndex:
         this.#snapshotHistory?.invalidate();
         this.#sessionIndex!.clear(params);
@@ -1221,7 +1222,9 @@ export class TypeScriptBackend {
         return this.#preferences();
       }
       case RUNTIME_METHODS.listWorkspaces:
-        return this.#store.listWorkspaces();
+        return catalogCheckouts(this.#store, { ...process.env, ...this.environment }).workspaces(
+          this.#store.listWorkspaces() as Array<{ id: unknown }>,
+        );
       case RUNTIME_METHODS.listScanRoots:
         return this.#store.listScanRoots();
       case RUNTIME_METHODS.listExcludedWorkspaces:
@@ -1683,6 +1686,12 @@ export class TypeScriptBackend {
         },
       };
     }
+  }
+
+  /** Marks indexed sessions that ran in a git worktree; the index itself stores only directories. */
+  #withWorktrees<T>(rows: T[]): T[] {
+    if (!this.#store) return rows;
+    return catalogCheckouts(this.#store, { ...process.env, ...this.environment }).sessions(rows);
   }
 
   async #withWebRead<T>(operation: (owner: WebReadRequests) => T): Promise<Awaited<T>> {

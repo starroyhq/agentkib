@@ -220,11 +220,16 @@ export class SessionReaders {
   }
   async list(agent: SessionAgent, workspace: string): Promise<NativeListing> {
     const collection = sessionCollection(workspace);
+    // The index keeps each session's directory so the catalog can recognize git worktrees.
+    const withDirectory = (source: { cwd: string | null; session: NativeSession }) => ({
+      ...source.session,
+      cwd: source.cwd,
+    });
     if (collection) {
       if (agent !== "codex") return { sessions: [], incomplete: false };
       const listing = this.#codex.list(null, { collection });
       return {
-        sessions: listing.sessions.map((source) => source.session),
+        sessions: listing.sessions.map(withDirectory),
         incomplete: listing.incomplete,
       };
     }
@@ -258,7 +263,7 @@ export class SessionReaders {
                   : this.#hermes;
         const listing = provider.list(workspace);
         return {
-          sessions: listing.sessions.map((source) => source.session),
+          sessions: listing.sessions.map(withDirectory),
           incomplete: listing.incomplete,
         };
       }

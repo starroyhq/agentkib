@@ -45,6 +45,14 @@ export interface NativeSession {
   origin: "interactive" | "auxiliary" | "execution" | "unknown";
   spawned_by_session_id?: string | null;
   forked_from_session_id?: string | null;
+  /** The session's working directory; the catalog derives its git worktree from it. */
+  cwd?: string | null;
+  /** Codex records the origin remote, which places a deleted Codex worktree's sessions. */
+  git_origin_url?: string | null;
+}
+export interface SessionDirectory {
+  cwd: string | null;
+  git_origin_url: string | null;
 }
 function time(value: unknown): string | null {
   if (value === null) return null;
@@ -114,6 +122,28 @@ export class SessionStore {
         id,
       )
       .map(sessionRow);
+  }
+  /** Working directories for catalog presentation; listings never expose them directly. */
+  directories(ids: Iterable<string>): Map<string, SessionDirectory> {
+    const wanted = JSON.stringify([...new Set(ids)]);
+    return new Map(
+      this.sql
+        .rows(
+          `SELECT id,cwd,git_origin_url FROM conversation_sessions
+             WHERE cwd IS NOT NULL AND id IN (SELECT value FROM json_each(?))
+           UNION ALL SELECT id,cwd,git_origin_url FROM conversation_collection_sessions
+             WHERE cwd IS NOT NULL AND id IN (SELECT value FROM json_each(?))`,
+          wanted,
+          wanted,
+        )
+        .map((row) => [
+          String(row.id),
+          {
+            cwd: row.cwd as string | null,
+            git_origin_url: row.git_origin_url as string | null,
+          },
+        ]),
+    );
   }
   codexClassificationPending(id: string): boolean {
     return !!this.sql.one(
@@ -284,7 +314,7 @@ export class SessionStore {
           session.id,
         );
         this.sql.run(
-          `INSERT INTO ${table}(${columns},last_indexed_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET workspace_id=excluded.workspace_id,agent=excluded.agent,title=excluded.title,created_at=excluded.created_at,updated_at=excluded.updated_at,message_count=excluded.message_count,git_branch=excluded.git_branch,archived=excluded.archived,sidechain=excluded.sidechain,availability=excluded.availability,origin=excluded.origin,spawned_by_session_id=excluded.spawned_by_session_id,forked_from_session_id=excluded.forked_from_session_id,last_indexed_at=excluded.last_indexed_at WHERE ${table}.workspace_id NOT IN (SELECT value FROM json_each(?))`,
+          `INSERT INTO ${table}(${columns},cwd,git_origin_url,last_indexed_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET workspace_id=excluded.workspace_id,agent=excluded.agent,title=excluded.title,created_at=excluded.created_at,updated_at=excluded.updated_at,message_count=excluded.message_count,git_branch=excluded.git_branch,archived=excluded.archived,sidechain=excluded.sidechain,availability=excluded.availability,origin=excluded.origin,spawned_by_session_id=excluded.spawned_by_session_id,forked_from_session_id=excluded.forked_from_session_id,cwd=excluded.cwd,git_origin_url=excluded.git_origin_url,last_indexed_at=excluded.last_indexed_at WHERE ${table}.workspace_id NOT IN (SELECT value FROM json_each(?))`,
           session.id,
           owner.id,
           agent,
@@ -299,6 +329,10 @@ export class SessionStore {
           session.origin,
           session.spawned_by_session_id,
           session.forked_from_session_id,
+          typeof session.cwd === "string" && path.isAbsolute(session.cwd) ? session.cwd : null,
+          typeof session.git_origin_url === "string" && session.git_origin_url.trim()
+            ? session.git_origin_url.trim()
+            : null,
           indexed,
           nested,
         );

@@ -270,6 +270,17 @@ export function useSessionController({
     pageValue.current = next;
     publishPage(next);
   }, []);
+  // Remember the history of the few most recently viewed sessions so reopening one shows its
+  // transcript immediately instead of clearing to a spinner. The fresh read still runs on every
+  // open and reconciles through the normal merge, so stale content is corrected within the read.
+  const pageCache = useRef(new Map<string, ConversationEventPage>());
+  useEffect(() => {
+    if (!selected || !page) return;
+    const cache = pageCache.current;
+    cache.delete(selected);
+    cache.set(selected, page);
+    if (cache.size > 10) cache.delete(cache.keys().next().value as string);
+  }, [selected, page]);
   const shownInteractions = useRef(new Set<string>());
   const catalogSessions = useRef<ConversationSessionSummary[]>([]);
   // The last accepted catalog, so the program-started sessions option can re-filter it.
@@ -440,6 +451,7 @@ export function useSessionController({
     setOnline(false);
     setControlReady(false);
     setCatalogObservationFailed(false);
+    pageCache.current.clear();
     streamReady.current = false;
     nativeCoverage.current = { items: [], authoritativeTurnIds: [], removedTurnIds: [] };
     refreshRequired.current = false;
@@ -1328,7 +1340,8 @@ export function useSessionController({
       manualRefreshRequired.current = false;
       selection.current = id;
       setSelected(id);
-      setPage(undefined);
+      // Seed from cache for an instant reopen; an unseen session stays undefined and shows the spinner.
+      setPage(pageCache.current.get(id));
       setLive(undefined);
       setModal(undefined);
       setMessage(initialDraft ?? "");

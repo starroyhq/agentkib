@@ -156,6 +156,34 @@ describe("independent history display", () => {
     expect(host.result.current.page?.events[0].content).toBe("Fast history");
   });
 
+  it("reopens a recently viewed session from cache instead of clearing to a spinner", async () => {
+    const host = await fixture();
+    const events = vi.spyOn(host.client, "events");
+    await act(async () => void (await host.result.current.choose("first")));
+    await waitFor(() => expect(host.result.current.page?.events[0].content).toBe("first history"));
+    await act(async () => void (await host.result.current.choose("second")));
+    await waitFor(() => expect(host.result.current.page?.events[0].content).toBe("second history"));
+    const readsBeforeReopen = events.mock.calls.length;
+
+    // Reopening "first" shows its cached transcript synchronously; it never clears to undefined
+    // (which is what renders the loading spinner).
+    const revalidation = deferred<ConversationEventPage>();
+    events.mockReturnValueOnce(revalidation.promise);
+    let reopening!: Promise<void>;
+    act(() => {
+      reopening = host.result.current.choose("first");
+    });
+    expect(host.result.current.page?.events[0].content).toBe("first history");
+
+    // It still reads fresh history in the background rather than trusting the cache forever.
+    await waitFor(() => expect(events.mock.calls.length).toBeGreaterThan(readsBeforeReopen));
+    await act(async () => {
+      revalidation.resolve(page("first history", "first history"));
+      await reopening;
+    });
+    expect(host.result.current.page?.events[0].content).toBe("first history");
+  });
+
   it.each(["choose", "refresh"] as const)(
     "keeps readable history when %s live checks fail before history completes",
     async (operation) => {

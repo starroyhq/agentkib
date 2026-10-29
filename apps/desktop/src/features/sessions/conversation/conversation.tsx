@@ -46,6 +46,8 @@ export interface EmbeddedConversationProps {
   refreshRevision?: number;
   locale: Locale;
   create?: boolean;
+  /** Also open program-started sessions, as the directory option allows. */
+  showExecution?: boolean;
   onSessionChange: (sessionId?: string) => void;
   onCatalogChange?: () => void;
   onCreateClosed?: () => void;
@@ -62,9 +64,9 @@ function useEmbedded() {
   return value;
 }
 function EmbeddedRoot() {
-  const { client, locale } = useEmbedded();
+  const { client, locale, showExecution } = useEmbedded();
   return (
-    <SessionProvider client={client} embedded initialLocale={locale}>
+    <SessionProvider client={client} embedded initialLocale={locale} showExecution={showExecution}>
       <EmbeddedShell />
     </SessionProvider>
   );

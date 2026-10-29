@@ -6,7 +6,14 @@ import { DEFAULT_SESSION_PAGE_SIZE } from "@/core/session-history";
 import type { ConversationSessionSummary } from "@/core/types";
 import { useSessionHub } from "./SessionHubContext";
 import { useSessionViewStore } from "./session-view-store";
-import { sessionAgentNames, sessionRecordLabel, sessionSourceDetails } from "./session-labels";
+import {
+  sessionAgentNames,
+  sessionRecordLabel,
+  sessionSourceDetails,
+  worktreeChip,
+  worktreeLabel,
+} from "./session-labels";
+import { WorktreeMark } from "./WorktreeMark";
 import { ConversationTranscript } from "./ConversationTranscript";
 import { HistoryError, HistoryWarning } from "./HistoryFeedback";
 import type { useSessionHistory } from "./useSessionHistory";
@@ -104,7 +111,20 @@ export function SessionHistoryContent({
                 ? formatDateTime(selected.updated_at)
                 : tr("conversations.unknownTime")}
             </span>
-            {selected.git_branch && <span>{selected.git_branch}</span>}
+            {selected.worktree ? (
+              <span
+                className="inline-flex items-center gap-1"
+                title={worktreeLabel(selected.worktree, tr)}
+              >
+                <WorktreeMark
+                  label={worktreeLabel(selected.worktree, tr)}
+                  deleted={selected.worktree.status === "deleted"}
+                />
+                {worktreeChip(selected.worktree, tr)}
+              </span>
+            ) : (
+              selected.git_branch && <span>{selected.git_branch}</span>
+            )}
           </div>
           <div className="session-reading-description leading-[1.7]">
             {tr(selected.remote ? "remote.sessionsReadonly" : "sessions.historyOnly")}

@@ -101,11 +101,31 @@ export interface ConversationSessionSummary {
   sidechain: boolean;
   /** Present only when the host has a live observation for this session. */
   pendingInteraction?: boolean;
+  /** The linked git worktree the session ran in; absent for a main checkout and older hosts. */
+  worktree?: SessionWorktree | null;
+}
+export type CheckoutStatus = "present" | "deleted" | "unknown";
+export interface SessionWorktree {
+  repository_group_id: string | null;
+  name: string;
+  path: string;
+  branch: string | null;
+  status: CheckoutStatus;
+}
+/** Shared by every checkout of one repository; absent outside a repository and on older hosts. */
+export interface WorkspaceCheckout {
+  repository_group_id: string;
+  kind: "primary" | "worktree";
+  primary_path: string | null;
+  name: string | null;
+  branch: string | null;
+  status: CheckoutStatus;
 }
 export interface ConversationWorkspaceSummary {
   id: string;
   name: string;
   path: string;
+  checkout?: WorkspaceCheckout | null;
 }
 export interface ConversationCatalog {
   sessions: ConversationSessionSummary[];

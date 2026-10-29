@@ -35,6 +35,7 @@ export function DesktopConversationPane({
   );
   const controlsRef = useRef<EmbeddedConversationHandle>(null);
   const requestedPanel = useSessionViewStore((state) => state.requestedPanel);
+  const showExecution = useSessionViewStore((state) => state.execution);
   const initialPanel =
     requestedPanel &&
     (requestedPanel.sessionId === sessionId ||
@@ -156,6 +157,7 @@ export function DesktopConversationPane({
           create={create}
           refreshRevision={conversationRefreshRevision}
           locale={locale}
+          showExecution={showExecution}
           onSessionChange={onSessionChange}
           onCatalogChange={onCatalogChange}
           onCreateClosed={onCreateClosed}

@@ -295,6 +295,54 @@ describe("GlobalHome", () => {
     expect(onOpenDoctor).toHaveBeenCalledWith(workspace);
   });
 
+  it("names a recent worktree session after its repository, as the directory does", () => {
+    const checkout = {
+      repository_group_id: "repo",
+      kind: "primary" as const,
+      primary_path: "/work/atlas",
+      name: null,
+      branch: "main",
+      status: "present" as const,
+    };
+    const repository = { ...workspace, id: "atlas", name: "atlas", path: "/work/atlas", checkout };
+    const work = { ...workspace, id: "work", name: "work", path: "/work" };
+    const session = {
+      id: "gone",
+      workspace_id: "work",
+      agent: "claude-code",
+      title: "Old experiment",
+      updated_at: "2026-09-03T00:00:00.000Z",
+      archived: false,
+      sidechain: false,
+      availability: "readable",
+      worktree: {
+        repository_group_id: "repo",
+        name: "gone",
+        path: "/work/atlas-worktrees/gone",
+        branch: null,
+        status: "deleted",
+      },
+    } as ConversationSessionSummary;
+    const notes = { ...session, id: "notes", title: "Tidy notes", worktree: undefined };
+    render(
+      <GlobalHome
+        {...homeProps()}
+        workspaces={[repository, work]}
+        recentContinuations={[
+          { workspace: work, session },
+          { workspace: work, session: notes },
+        ]}
+        continuationState="ready"
+      />,
+    );
+    expect(screen.getByRole("button", { name: /Old experiment/ })).toHaveTextContent(
+      "Claude Code · atlas ·",
+    );
+    expect(screen.getByRole("button", { name: /Tidy notes/ })).toHaveTextContent(
+      "Claude Code · work ·",
+    );
+  });
+
   it("shows a concrete recent session and opens that session", () => {
     const onContinue = vi.fn().mockResolvedValue(undefined);
     const session = {

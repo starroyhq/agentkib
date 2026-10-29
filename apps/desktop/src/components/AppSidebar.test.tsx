@@ -107,6 +107,74 @@ describe("AppSidebar v8 navigation", () => {
     useSidebarViewStore.setState({ expandedWorkspaces: {} });
   });
 
+  it("lists a worktree under its main checkout and says whose worktree it is", () => {
+    useSidebarViewStore.setState({ expandedWorkspaces: {} });
+    const checkout = {
+      repository_group_id: "repo",
+      kind: "primary" as const,
+      primary_path: "/work/atlas",
+      name: null,
+      branch: "main",
+      status: "present" as const,
+    };
+    const base = { status: "healthy" as const, asset_count: 0, warning_count: 0, sources: [] };
+    const main: WorkspaceSummary = {
+      ...base,
+      id: "main",
+      name: "atlas",
+      path: "/work/atlas",
+      checkout,
+    };
+    const worktree: WorkspaceSummary = {
+      ...base,
+      id: "feature",
+      name: "atlas",
+      path: "/work/atlas-feature",
+      checkout: { ...checkout, kind: "worktree", name: "feature", branch: "qa/feature" },
+    };
+    const gone: WorkspaceSummary = {
+      ...base,
+      id: "gone",
+      name: "gone",
+      path: "/work/atlas/.claude/worktrees/gone",
+      checkout: { ...checkout, kind: "worktree", name: "gone", status: "deleted" },
+    };
+    const other: WorkspaceSummary = { ...base, id: "other", name: "Other", path: "/other" };
+    const { container } = render(
+      <AppSidebar
+        active="workspaces"
+        workspaces={[worktree, other, gone, main]}
+        entries={createGlobalNavigation(0)}
+        onNavigate={vi.fn()}
+        onSettings={vi.fn()}
+        collapsed={false}
+      />,
+    );
+    const groups = [...container.querySelectorAll<HTMLElement>(".workspace-sidebar-group")];
+    expect(groups.map((group) => [group.textContent, group.dataset.worktreeOf ?? null])).toEqual([
+      ["Other", null],
+      ["atlas", null],
+      ["atlas", "main"],
+      ["gone", "main"],
+    ]);
+    const label = tr("workspace.worktree.present", {
+      name: "feature",
+      primary: "atlas",
+      branch: "qa/feature",
+    });
+    const nested = within(groups[2]).getByRole("button", { name: "atlas" });
+    expect(nested.getAttribute("aria-description")).toBe(label);
+    expect(nested.getAttribute("title")).toBe(`atlas\n${label}`);
+    const primary = within(groups[1]).getByRole("button", { name: "atlas" });
+    expect(primary.getAttribute("aria-description")).toBeNull();
+    expect(primary.getAttribute("title")).toBe("atlas");
+    expect(
+      within(groups[3]).getByRole("button", { name: "gone" }).getAttribute("aria-description"),
+    ).toBe(tr("workspace.worktree.deleted", { name: "gone" }));
+    expect(groups[3].querySelector("svg.opacity-45")).toBeTruthy();
+    expect(groups[2].querySelector("svg.opacity-45")).toBeNull();
+  });
+
   it.each([
     ["zh-CN", "设置", "远程连接"],
     ["zh-TW", "設定", "遠端連線"],

@@ -4,6 +4,10 @@ import { timestamp } from "./timestamps";
 // The TypeScript classifier also covers conversation-only collections. Advance
 // once from the prior Rust revision so both caches use the same source rules.
 export const CODEX_SESSION_CLASSIFICATION_REVISION = "3";
+// Revision 1 recognizes Claude Code's programmatic sessions (SDK, `-p`, daemons and `/loop`).
+export const CLAUDE_SESSION_CLASSIFICATION_REVISION = "1";
+// Revision 1 records each session's working directory and Codex origin remote.
+export const SESSION_DIRECTORY_REVISION = "1";
 
 /** Keep the shared on-disk schema readable by both prior and current AgentKib releases. */
 export function migrateSharedSchema(database: DatabaseSync): void {
@@ -82,6 +86,38 @@ export function migrateSharedSchema(database: DatabaseSync): void {
           "INSERT INTO schema_meta(key,value) VALUES ('codex_session_classification_revision',?) ON CONFLICT(key) DO UPDATE SET value=excluded.value",
         )
         .run(CODEX_SESSION_CLASSIFICATION_REVISION);
+    }
+    // Cached Claude rows stay listed; the next refresh reclassifies them from their transcripts.
+    const claudeClassification = database
+      .prepare("SELECT value FROM schema_meta WHERE key='claude_session_classification_revision'")
+      .get()?.value;
+    if (claudeClassification !== CLAUDE_SESSION_CLASSIFICATION_REVISION) {
+      database.exec(
+        "UPDATE conversation_index_status SET last_success_at=NULL WHERE agent='claude-code'",
+      );
+      database
+        .prepare(
+          "INSERT INTO schema_meta(key,value) VALUES ('claude_session_classification_revision',?) ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+        )
+        .run(CLAUDE_SESSION_CLASSIFICATION_REVISION);
+    }
+    // Additive columns: earlier releases neither read nor write them.
+    for (const table of ["conversation_sessions", "conversation_collection_sessions"])
+      for (const column of ["cwd", "git_origin_url"])
+        if (!columnExists(database, table, column))
+          database.exec(`ALTER TABLE ${table} ADD COLUMN ${column} TEXT`);
+    const directories = database
+      .prepare("SELECT value FROM schema_meta WHERE key='session_directory_revision'")
+      .get()?.value;
+    if (directories !== SESSION_DIRECTORY_REVISION) {
+      // Cached rows stay listed; the next refresh fills in their directories.
+      for (const table of ["conversation_index_status", "conversation_collection_status"])
+        database.exec(`UPDATE ${table} SET last_success_at=NULL`);
+      database
+        .prepare(
+          "INSERT INTO schema_meta(key,value) VALUES ('session_directory_revision',?) ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+        )
+        .run(SESSION_DIRECTORY_REVISION);
     }
     if (tableExists(database, "usage_events"))
       database.exec(

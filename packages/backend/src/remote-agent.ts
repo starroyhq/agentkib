@@ -27,6 +27,7 @@ import type { BackendStore } from "./store";
 import type { SessionReaders } from "./session-readers";
 import type { SessionIndex } from "./session-index";
 import { projectPairedManagedSessions } from "./managed-session-catalog";
+import { catalogCheckouts } from "./git-checkouts";
 
 type Device = {
   id: string;
@@ -799,20 +800,25 @@ export class RemoteAgent {
         (workspace) => workspace.id,
       ),
     );
+    const checkouts = catalogCheckouts(this.store, this.readers.env);
     return {
-      workspaces: workspaces
-        .filter((workspace) => registered.has(workspace.id))
-        .map((workspace) => ({
-          id: workspace.id,
-          path: workspace.path,
-          name: workspace.name,
-          status: workspace.status,
-          asset_count: workspace.asset_count,
-          warning_count: workspace.warning_count,
-          last_active_at: workspace.last_active_at,
-          last_scanned_at: workspace.last_scanned_at,
-        })),
-      sessions: sessions.filter((session) => registered.has(session.workspace_id)),
+      workspaces: checkouts.workspaces(
+        workspaces
+          .filter((workspace) => registered.has(workspace.id))
+          .map((workspace) => ({
+            id: workspace.id,
+            path: workspace.path,
+            name: workspace.name,
+            status: workspace.status,
+            asset_count: workspace.asset_count,
+            warning_count: workspace.warning_count,
+            last_active_at: workspace.last_active_at,
+            last_scanned_at: workspace.last_scanned_at,
+          })),
+      ),
+      sessions: checkouts.sessions(
+        sessions.filter((session) => registered.has(session.workspace_id)),
+      ),
     };
   }
   async #events(request: Record<string, unknown>) {

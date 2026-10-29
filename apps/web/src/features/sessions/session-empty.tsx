@@ -1,6 +1,11 @@
 import { MessagesSquare } from "lucide-react";
 import { AgentMark } from "@agentkib/agent-identity";
-import { displaySessionTitle, isSessionVisible, sortSessions } from "@agentkib/session-catalog";
+import {
+  displaySessionTitle,
+  isSessionVisible,
+  sessionGroupLabels,
+  sortSessions,
+} from "@agentkib/session-catalog";
 import { sessionContinuationListState, SessionContinuationStatus } from "@agentkib/session-ui";
 import { Link } from "@tanstack/react-router";
 import { useSession } from "@/features/conversation/features/sessions/session-context";
@@ -20,6 +25,8 @@ export function SessionEmpty() {
         isSessionVisible(session) && !session.archived && session.availability === "readable",
     ),
   ).slice(0, 12);
+  // A worktree session is named after its repository's directory group, not a wider workspace.
+  const groupLabels = sessionGroupLabels(recent, workspaces ?? []);
   return (
     <div className="flex flex-1 flex-col items-center gap-4 overflow-y-auto px-4 py-8 text-center sm:px-8">
       <div className="mb-2 grid size-16 place-items-center rounded-2xl border bg-muted/40">
@@ -51,7 +58,8 @@ export function SessionEmpty() {
                     {displaySessionTitle(session.title, t.untitled)}
                   </strong>
                   <small className="text-xs text-muted-foreground">
-                    {workspaces?.find((workspace) => workspace.id === session.workspace_id)?.name}
+                    {groupLabels.get(session.id) ??
+                      workspaces?.find((workspace) => workspace.id === session.workspace_id)?.name}
                   </small>
                 </span>
                 {status && (

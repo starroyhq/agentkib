@@ -11,6 +11,36 @@ const session = {
   availability: "readable",
 };
 describe("remote payload validation", () => {
+  it("keeps valid git worktree facts and drops malformed ones without rejecting the catalog", () => {
+    const checkout = {
+      repository_group_id: "repo",
+      kind: "worktree",
+      primary_path: "/work/app",
+      name: "h1a",
+      branch: null,
+      status: "present",
+    };
+    const worktree = {
+      repository_group_id: "repo",
+      name: "h1a",
+      path: "/w/h1a",
+      branch: "b",
+      status: "deleted",
+    };
+    const result = parseRemoteCatalog({
+      workspaces: [
+        { ...workspace, checkout },
+        { ...workspace, id: "x", checkout: { ...checkout, kind: "fork" } },
+      ],
+      sessions: [
+        { ...session, worktree },
+        { ...session, id: "s2", worktree: { ...worktree, status: "lost" } },
+        { ...session, id: "s3", worktree: null },
+      ],
+    });
+    expect(result.workspaces.map((item) => item.checkout)).toEqual([checkout, undefined]);
+    expect(result.sessions.map((item) => item.worktree)).toEqual([worktree, undefined, undefined]);
+  });
   it.each([
     "not-a-date",
     "",

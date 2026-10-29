@@ -6,6 +6,7 @@ import type { AgentKind } from "@/core/types";
 import { Button } from "@/components/ui/button";
 import {
   DropdownMenu,
+  DropdownMenuCheckboxItem,
   DropdownMenuContent,
   DropdownMenuItem,
   DropdownMenuRadioGroup,
@@ -32,15 +33,21 @@ export function SessionDirectoryControls({
       agent: state.agent,
       filter: state.filter,
       host: state.host,
+      execution: state.execution,
       setAgent: state.setAgent,
       setFilter: state.setFilter,
       setHost: state.setHost,
+      setExecution: state.setExecution,
       resetFilters: state.resetFilters,
     })),
   );
   const agents = [...new Set(hub.sessions.map((session) => session.agent))];
   const activeFilterCount =
-    Number(view.agent !== "all") + Number(view.filter !== "current") + Number(view.host !== "all");
+    Number(view.agent !== "all") +
+    Number(view.filter !== "current") +
+    Number(view.host !== "all") +
+    Number(view.execution);
+  const filtersActive = activeFilterCount > 0;
   return (
     <div className="session-directory-controls grid gap-3 px-1 pt-3 pb-2">
       <DesktopHistorySearch />
@@ -135,18 +142,21 @@ export function SessionDirectoryControls({
                   </DropdownMenuRadioGroup>
                 </DropdownMenuSubContent>
               </DropdownMenuSub>
-              <DropdownMenuSeparator />
-              <DropdownMenuItem
-                disabled={view.agent === "all" && view.filter === "current" && view.host === "all"}
-                onClick={view.resetFilters}
+              <DropdownMenuCheckboxItem
+                checked={view.execution}
+                onCheckedChange={(checked) => view.setExecution(checked)}
               >
+                {tr("sessions.showExecution")}
+              </DropdownMenuCheckboxItem>
+              <DropdownMenuSeparator />
+              <DropdownMenuItem disabled={!filtersActive} onClick={view.resetFilters}>
                 {tr("sessions.clearFilters")}
               </DropdownMenuItem>
             </DropdownMenuContent>
           </DropdownMenu>
         </div>
       </div>
-      {(view.agent !== "all" || view.filter !== "current" || view.host !== "all") && (
+      {filtersActive && (
         <div className="flex flex-wrap gap-1.5 px-1.5">
           {view.host !== "all" && (
             <Button
@@ -186,6 +196,19 @@ export function SessionDirectoryControls({
               onClick={() => view.setFilter("current")}
             >
               {tr(`conversations.filter.${view.filter}`)}
+              <X size={12} aria-hidden="true" />
+            </Button>
+          )}
+          {view.execution && (
+            <Button
+              variant="outline"
+              size="sm"
+              className="h-7 gap-1 rounded-full px-2 text-xs"
+              aria-label={`${tr("sessions.hideExecution")}: ${tr("sessions.executionSession")}`}
+              disabled={!hub.enabled}
+              onClick={() => view.setExecution(false)}
+            >
+              {tr("sessions.executionSession")}
               <X size={12} aria-hidden="true" />
             </Button>
           )}

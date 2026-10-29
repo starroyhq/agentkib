@@ -17,6 +17,7 @@ import {
 } from "./managed-session-catalog";
 import { canonicalize, pathIdentity } from "./paths";
 import { within } from "./files";
+import { catalogCheckouts } from "./git-checkouts";
 import { resolveCommand } from "./command-resolution";
 import {
   CodexAppServerReader,
@@ -4071,12 +4072,15 @@ export class WebReadRequests {
       const runtime = needsRuntime ? await this.#preflight.check() : null;
       if (this.indexGeneration() !== generation || indexEnabled(this.dataDir) !== enabled)
         return { workspaces: [], sessions: [], indexEnabled: false };
+      const checkouts = catalogCheckouts(this.store, this.environment);
       return {
         codexRuntimeReason: runtime?.reason === "codex-cli-version-too-old" ? runtime.reason : null,
-        workspaces: workspaces
-          .filter((workspace) => registered.has(workspace.id))
-          .map(({ id, name, path }) => ({ id, name, path })),
-        sessions: sessions.map((session) => {
+        workspaces: checkouts.workspaces(
+          workspaces
+            .filter((workspace) => registered.has(workspace.id))
+            .map(({ id, name, path }) => ({ id, name, path })),
+        ),
+        sessions: checkouts.sessions(sessions).map((session) => {
           if (!isSessionSummary(session) || !("agent" in session) || session.agent !== "codex")
             return session;
           const runner = this.#managedRunners.get(session.id);

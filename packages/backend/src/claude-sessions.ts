@@ -98,6 +98,10 @@ const HEADER_LINES = 256;
 /** Claude appends renames and generated titles late, so the newest values live near the end. */
 const TAIL_BYTES = 256 * 1024;
 const SCAN_CACHE_LIMIT = 4096;
+/** Claude Code leaves these out of `/resume` and `--continue`: SDK and `-p` runs, and daemons. */
+const PROGRAMMATIC_ENTRYPOINTS = new Set(["sdk-cli", "sdk-ts", "sdk-py"]);
+const DAEMON_SESSION_KINDS = new Set(["daemon", "daemon-worker"]);
+const LOOP_COMMAND = "<command-name>/loop</command-name>";
 interface TranscriptScan {
   nativeRef: string;
   cwd: string | null;
@@ -105,9 +109,37 @@ interface TranscriptScan {
   updated: string | null;
   branch: string | null;
   sidechain: boolean | null;
+  /** The first record's launch surface decides, as in Claude Code; later resumes do not. */
+  entrypoint: string | null;
+  sessionKind: string | null;
+  /** Whether the first prompt is `/loop`; null until the header reaches a prompt. */
+  loop: boolean | null;
   customTitles: Map<string, string>;
   aiTitles: Map<string, string>;
   firstPrompts: Map<string, string>;
+}
+/** Mirrors Claude Code's session picker, which hides these from `/resume`. */
+function programmatic(scan: TranscriptScan): boolean {
+  return (
+    (scan.entrypoint !== null && PROGRAMMATIC_ENTRYPOINTS.has(scan.entrypoint)) ||
+    (scan.sessionKind !== null && DAEMON_SESSION_KINDS.has(scan.sessionKind)) ||
+    scan.loop === true
+  );
+}
+/** Claude Code reads the first prompt that is not metadata, a compaction or a tool result. */
+function loopPrompt(row: Record<string, unknown>): boolean | null {
+  if (row.type !== "user" || row.isMeta === true || row.isCompactSummary === true) return null;
+  const message = record(row.message);
+  if (!message) return null;
+  const texts: string[] = [];
+  if (typeof message.content === "string") texts.push(message.content);
+  else if (Array.isArray(message.content))
+    for (const value of message.content) {
+      const block = record(value);
+      if (block?.type === "tool_result") return null;
+      if (block?.type === "text" && typeof block.text === "string") texts.push(block.text);
+    }
+  return texts.some((value) => value.includes(LOOP_COMMAND));
 }
 // These caches contain display metadata, never control or ownership evidence.
 // File replacement and in-place writes must invalidate even if size/mtime match.
@@ -162,15 +194,11 @@ function noteTitle(
   if (!internal && id && title) (custom ? customTitles : aiTitles).set(id, title);
 }
 /** Reads at most TAIL_BYTES from the end; the first (possibly partial) line is dropped. */
-function tailTitles(
-  file: string,
-  customTitles: Map<string, string>,
-  aiTitles: Map<string, string>,
-) {
+function tailLines(file: string): string[] {
   const fd = openSync(file, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0));
   try {
     const metadata = fstatSync(fd);
-    if (!metadata.isFile() || metadata.size === 0) return;
+    if (!metadata.isFile() || metadata.size === 0) return [];
     const start = Math.max(0, metadata.size - TAIL_BYTES),
       buffer = Buffer.allocUnsafe(metadata.size - start);
     let filled = 0;
@@ -182,20 +210,39 @@ function tailTitles(
     let from = 0;
     if (start > 0) {
       const newline = buffer.subarray(0, filled).indexOf(10);
-      if (newline < 0) return;
+      if (newline < 0) return [];
       from = newline + 1;
     }
-    for (const line of buffer.subarray(from, filled).toString("utf8").split("\n")) {
-      if (!line.includes('"custom-title"') && !line.includes('"ai-title"')) continue;
-      try {
-        const row = record(JSON.parse(line));
-        if (row && (row.type === "custom-title" || row.type === "ai-title"))
-          noteTitle(row, customTitles, aiTitles);
-      } catch {}
-    }
+    return buffer.subarray(from, filled).toString("utf8").split("\n");
   } finally {
     closeSync(fd);
   }
+}
+function tailTitles(
+  lines: string[],
+  customTitles: Map<string, string>,
+  aiTitles: Map<string, string>,
+) {
+  for (const line of lines) {
+    if (!line.includes('"custom-title"') && !line.includes('"ai-title"')) continue;
+    try {
+      const row = record(JSON.parse(line));
+      if (row && (row.type === "custom-title" || row.type === "ai-title"))
+        noteTitle(row, customTitles, aiTitles);
+    } catch {}
+  }
+}
+/** Claude Code falls back to the newest entrypoint when the header has none. */
+function tailEntrypoint(lines: string[]): string | null {
+  for (let index = lines.length - 1; index >= 0; index--) {
+    const line = lines[index]!;
+    if (!line.includes('"entrypoint"')) continue;
+    try {
+      const value = text(record(JSON.parse(line))?.entrypoint);
+      if (value !== null) return value;
+    } catch {}
+  }
+  return null;
 }
 function scanTranscript(file: string): TranscriptScan {
   const stat = lstatSync(file, { bigint: true });
@@ -210,13 +257,24 @@ function scanTranscript(file: string): TranscriptScan {
     updated: fileTime(file),
     branch: null,
     sidechain: null,
+    entrypoint: null,
+    sessionKind: null,
+    loop: null,
     customTitles: new Map(),
     aiTitles: new Map(),
     firstPrompts: new Map(),
   };
+  // Claude Code reads the session kind from the first message record, else from any record.
+  let messageKind = false;
   for (const { value } of jsonLines(file, { bytes: HEADER_BYTES, lines: HEADER_LINES })) {
     const row = record(value);
     if (!row) continue;
+    scan.entrypoint ??= text(row.entrypoint);
+    if (!messageKind && "parentUuid" in row) {
+      messageKind = true;
+      scan.sessionKind = text(row.sessionKind);
+    } else if (!messageKind) scan.sessionKind ??= text(row.sessionKind);
+    if (scan.loop === null) scan.loop = loopPrompt(row);
     const internal =
       row.isMeta === true || row.isCompactSummary === true || row.isSidechain === true;
     if (row.type === "custom-title" || row.type === "ai-title") {
@@ -237,7 +295,9 @@ function scanTranscript(file: string): TranscriptScan {
     }
   }
   // Tail records are newer than anything in the header, so they overwrite it.
-  tailTitles(file, scan.customTitles, scan.aiTitles);
+  const tail = tailLines(file);
+  tailTitles(tail, scan.customTitles, scan.aiTitles);
+  scan.entrypoint ??= tailEntrypoint(tail);
   scans.delete(file);
   if (fileVersion(lstatSync(file, { bigint: true })) === version)
     scans.set(file, { version, scan });
@@ -262,7 +322,13 @@ function transcriptHeader(
       native_ref: nativeRef,
       agent: "claude-code",
       title: sidechain ? null : (explicitTitle(scan) ?? scan.firstPrompts.get(nativeRef) ?? null),
-      origin: sidechain === null ? "unknown" : sidechain ? "auxiliary" : "interactive",
+      origin: sidechain
+        ? "auxiliary"
+        : programmatic(scan)
+          ? "execution"
+          : sidechain === null
+            ? "unknown"
+            : "interactive",
       created_at: scan.created,
       updated_at: scan.updated,
       message_count: null,
@@ -366,12 +432,15 @@ export class ClaudeSessions {
         try {
           // custom-title and ai-title outrank the indexed title; the index and first prompt fill in.
           const scan = scanTranscript(file);
-          if (scan.nativeRef === session.session.native_ref)
+          if (scan.nativeRef === session.session.native_ref) {
             session.session.title =
               explicitTitle(scan) ??
               session.session.title ??
               scan.firstPrompts.get(scan.nativeRef) ??
               null;
+            // The index carries no launch surface; the transcript's first record does.
+            if (programmatic(scan)) session.session.origin = "execution";
+          }
         } catch (error) {
           errors.push(String(error));
         }

@@ -437,6 +437,7 @@ export class CodexSessions {
           first(["agent_path"]),
           first(["agent_nickname"]),
           first(["project_id"]),
+          first(["git_origin_url"]),
         ];
         for (const row of sql.rows(
           `SELECT ${expressions.map((expression, index) => `${expression} AS k${index}`).join(",")} FROM threads`,
@@ -519,6 +520,7 @@ export class CodexSessions {
               archived: Boolean(row.k7),
               sidechain: false,
               availability: readable(transcript) ? "readable" : "metadata-only",
+              git_origin_url: nonempty(row.k15),
             },
           });
         }

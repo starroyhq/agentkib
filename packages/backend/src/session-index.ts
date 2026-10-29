@@ -14,6 +14,8 @@ export class SessionIndex {
     readonly readers: Pick<SessionReaders, "list">,
     readonly enabled: () => boolean,
     readonly refreshed: () => void = () => {},
+    /** Native IDs (lowercase) of Claude sessions AgentKib runs through `--print` itself. */
+    readonly managedClaudeIds: () => ReadonlySet<string> = () => new Set(),
   ) {}
   invalidate(): void {
     this.#epoch++;
@@ -103,7 +105,13 @@ export class SessionIndex {
       const owner = ["open-claw", "hermes", "grok-build"].includes(agent)
         ? (normalizedOwner ??= this.store.owner(workspaceId))
         : undefined;
-      this.store.sync(workspaceId, agent, listing.sessions, !listing.incomplete, owner);
+      this.store.sync(
+        workspaceId,
+        agent,
+        agent === "claude-code" ? this.#managed(listing.sessions) : listing.sessions,
+        !listing.incomplete,
+        owner,
+      );
       if (listing.incomplete)
         this.store.failure(
           workspaceId,
@@ -116,5 +124,20 @@ export class SessionIndex {
       return this.store.list(workspaceId);
     }
     return [];
+  }
+  /** AgentKib's own Claude runs start in print mode, yet they are the user's conversations. */
+  #managed(sessions: NativeListing["sessions"]): NativeListing["sessions"] {
+    if (!sessions.some((session) => session.origin === "execution")) return sessions;
+    let managed: ReadonlySet<string>;
+    try {
+      managed = this.managedClaudeIds();
+    } catch {
+      return sessions;
+    }
+    return sessions.map((session) =>
+      session.origin === "execution" && managed.has(session.native_ref.toLowerCase())
+        ? { ...session, origin: "interactive" as const }
+        : session,
+    );
   }
 }

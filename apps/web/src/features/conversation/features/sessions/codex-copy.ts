@@ -444,6 +444,7 @@ const reasons: Record<Locale, Record<string, string>> = {
       "当前模型不支持所选思考强度，本次消息尚未发送。请调整下一轮模型或思考强度后再发送。",
     "codex-session-directory-unsafe":
       "会话目录是文件系统根目录或用户主目录，为保护文件，目前仅可查看。请在具体项目目录中使用 Codex 新建会话。",
+    "session-directory-missing": "会话目录已不存在，目前仅可查看。请恢复该目录后刷新重试。",
     "codex-session-directory-missing": "会话目录已不存在，目前仅可查看。请恢复该目录后刷新重试。",
     "codex-session-directory-not-directory":
       "会话路径不是目录，目前仅可查看。请在这台电脑上检查该路径。",
@@ -539,6 +540,7 @@ const reasons: Record<Locale, Record<string, string>> = {
       "目前模型不支援所選思考強度，本次訊息尚未傳送。請調整下一輪模型或思考強度後再傳送。",
     "codex-session-directory-unsafe":
       "對話目錄是檔案系統根目錄或使用者主目錄，為保護檔案，目前僅可查看。請在具體專案目錄中使用 Codex 建立新對話。",
+    "session-directory-missing": "對話目錄已不存在，目前僅可查看。請還原該目錄後重新整理再試。",
     "codex-session-directory-missing":
       "對話目錄已不存在，目前僅可查看。請還原該目錄後重新整理再試。",
     "codex-session-directory-not-directory":
@@ -635,6 +637,8 @@ const reasons: Record<Locale, Record<string, string>> = {
       "The current model does not support the selected reasoning effort. This message was not sent. Adjust the next-turn model or reasoning effort before sending again.",
     "codex-session-directory-unsafe":
       "The session directory is a filesystem root or your home directory. This session is view only to protect your files. Start a new Codex session from a specific project directory.",
+    "session-directory-missing":
+      "The session directory no longer exists. This session is view only. Restore the directory, then refresh to retry.",
     "codex-session-directory-missing":
       "The session directory no longer exists. This session is view only. Restore the directory, then refresh to retry.",
     "codex-session-directory-not-directory":
@@ -742,6 +746,8 @@ const reasons: Record<Locale, Record<string, string>> = {
       "現在のモデルは選択した思考強度に対応していません。このメッセージは送信されていません。次のターンのモデルまたは思考強度を調整してから送信してください。",
     "codex-session-directory-unsafe":
       "会話のディレクトリがファイルシステムのルートまたはホームディレクトリのため、ファイルを保護するために閲覧のみになっています。個別のプロジェクトディレクトリで Codex の新しい会話を開始してください。",
+    "session-directory-missing":
+      "会話のディレクトリが存在しないため、閲覧のみです。ディレクトリを復元してから再読み込みしてください。",
     "codex-session-directory-missing":
       "会話のディレクトリが存在しないため、閲覧のみです。ディレクトリを復元してから再読み込みしてください。",
     "codex-session-directory-not-directory":

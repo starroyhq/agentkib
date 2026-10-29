@@ -1,8 +1,7 @@
 import { lstatSync, readdirSync, statSync } from "node:fs";
-import { readFileSync } from "node:fs";
-import { createHash } from "node:crypto";
 import { homedir } from "node:os";
 import path from "node:path";
+import { readCheckout, repositoryGroupId as checkoutGroupId } from "./git-checkouts";
 import { canonicalize, pathIdentity } from "./paths";
 import { isReparseOrSymlink } from "./native-files";
 import { fileTime } from "./asset-scanner";
@@ -200,25 +199,11 @@ function sessionWorkspaceRoot(value: string, home: string | null): string | null
   return cwd;
 }
 
+/** Every worktree of one repository shares the group, so the catalog can merge them. */
 function repositoryGroupId(workspace: string): string | null {
   try {
-    const marker = path.join(workspace, ".git"),
-      metadata = lstatSync(marker);
-    let gitDirectory: string;
-    if (metadata.isDirectory()) gitDirectory = canonicalize(marker);
-    else {
-      if (isReparseOrSymlink(marker, metadata) || !metadata.isFile()) return null;
-      const pointer = readFileSync(marker, "utf8")
-        .trim()
-        .match(/^gitdir:\s*(.+)$/i);
-      if (!pointer) return null;
-      gitDirectory = canonicalize(path.resolve(workspace, pointer[1]!));
-    }
-    try {
-      const common = readFileSync(path.join(gitDirectory, "commondir"), "utf8").trim();
-      gitDirectory = canonicalize(path.resolve(gitDirectory, common));
-    } catch {}
-    return createHash("sha256").update(pathIdentity(gitDirectory)).digest("hex");
+    const checkout = readCheckout(workspace);
+    return checkout ? checkoutGroupId(checkout.commonDir) : null;
   } catch {
     return null;
   }

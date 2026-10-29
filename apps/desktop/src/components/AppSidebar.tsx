@@ -12,6 +12,7 @@ import {
   RefreshCw,
   Settings,
   SlidersHorizontal,
+  Split,
   Star,
   X,
 } from "lucide-react";
@@ -35,6 +36,7 @@ import {
   workspaceTaskEntries,
   workspaceDevelopmentEntries,
 } from "@/features/workspace/workspace-navigation";
+import { workspaceTreeEntries, workspaceWorktreeLabel } from "@/features/workspace/workspace-tree";
 import { SessionDirectory } from "@/features/sessions/SessionDirectory";
 import { RemoteConnectionPanel } from "@/features/remote/RemoteConnectionPanel";
 import logo from "../../resources/assets/agentkib-icon-mark.png";
@@ -428,11 +430,17 @@ export function AppSidebar(props: {
                   className="workspace-sidebar-directory grid gap-1.5"
                   aria-label={tr("sidebar.allWorkspaces")}
                 >
-                  {(props.workspaces ?? []).map((workspace) => {
+                  {workspaceTreeEntries(props.workspaces ?? []).map(({ workspace, primary }) => {
                     const selected = props.activeWorkspaceId === workspace.id;
                     const expanded = expandedWorkspaces[workspace.id] ?? selected;
+                    // A worktree sits under its main checkout and says whose it is.
+                    const worktreeText = workspaceWorktreeLabel(workspace, primary, tr);
                     return (
-                      <div key={workspace.id} className="workspace-sidebar-group">
+                      <div
+                        key={workspace.id}
+                        className={cn("workspace-sidebar-group", primary && "ml-4")}
+                        data-worktree-of={primary?.id}
+                      >
                         <div
                           className={cn(
                             "workspace-sidebar-row flex items-center rounded-[8px]",
@@ -461,13 +469,26 @@ export function AppSidebar(props: {
                               "workspace-sidebar-name min-w-0 gap-[7px] pl-0.5 pr-1.5",
                             )}
                             data-sidebar-navigate
-                            title={workspace.name}
+                            title={
+                              worktreeText ? `${workspace.name}\n${worktreeText}` : workspace.name
+                            }
+                            aria-description={worktreeText ?? undefined}
                             onClick={() => {
                               setWorkspaceExpanded(workspace.id, selected ? !expanded : true);
                               if (!selected) props.onOpenWorkspace?.(workspace);
                             }}
                           >
-                            <FolderGit2 size={16} />
+                            {worktreeText ? (
+                              <Split
+                                size={16}
+                                aria-hidden="true"
+                                className={cn(
+                                  workspace.checkout?.status === "deleted" && "opacity-45",
+                                )}
+                              />
+                            ) : (
+                              <FolderGit2 size={16} />
+                            )}
                             <span className="min-w-0 flex-1 truncate text-left">
                               {workspace.name}
                             </span>

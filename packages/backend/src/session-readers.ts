@@ -31,6 +31,34 @@ import { canonicalize, pathIdentity } from "./paths";
 import { within } from "./files";
 import { handoffActive, handoffCheckpoint, readHandoff } from "./handoff-work";
 
+const canonicalizePath = canonicalize;
+
+/**
+ * The real path of a session directory, or for a deleted one, its nearest existing ancestor's
+ * real path joined with the missing part. Other failures (such as permissions) still throw.
+ */
+export function recordedDirectory(value: string): { path: string; missing: boolean } {
+  const absent = (error: unknown) =>
+    ["ENOENT", "ENOTDIR"].includes((error as NodeJS.ErrnoException).code ?? "");
+  try {
+    return { path: canonicalize(value), missing: false };
+  } catch (error) {
+    if (!absent(error)) throw error;
+  }
+  const missing: string[] = [];
+  for (let current = path.resolve(value); ;) {
+    const parent = path.dirname(current);
+    missing.unshift(path.basename(current));
+    if (parent === current) return { path: path.resolve(value), missing: true };
+    try {
+      return { path: path.join(canonicalize(parent), ...missing), missing: true };
+    } catch (error) {
+      if (!absent(error)) throw error;
+    }
+    current = parent;
+  }
+}
+
 export const SESSION_AGENTS = [
   "codex",
   "claude-code",
@@ -122,14 +150,21 @@ export class SessionReaders {
       (candidate) => this.store.id("claude-code", candidate.session.native_ref) === id,
     );
     if (!source) throw new Error("session-unavailable");
-    const workspace = canonicalize(source.cwd);
+    // A deleted worktree leaves only the path its transcript recorded; its history stays readable.
+    const directory = recordedDirectory(source.cwd);
+    const workspace = directory.path;
     if (!within(workspace, root)) throw new Error("session-workspace-mismatch");
-    const verified = this.#verifiedClaudeControlSource(source.session.native_ref, workspace, {
-      current: listing,
-    });
+    const verified = this.#verifiedClaudeControlSource(
+      source.session.native_ref,
+      workspace,
+      { current: listing },
+      directory.missing,
+    );
     return {
       workspaceId: summary.workspace_id,
       workspace,
+      /** Reading still works; continuing needs the folder back. */
+      directoryMissing: directory.missing,
       nativeId: verified.session.native_ref,
       transcript: verified.transcript,
       native: verified.session,
@@ -143,14 +178,19 @@ export class SessionReaders {
     const source = this.verifiedClaudeReadSource(id);
     return this.#readEvents(source.native, source.workspace, cursor, count, source.transcript);
   }
+  /** Control needs the directory to exist; a read may name a deleted one by its recorded path. */
   #verifiedClaudeControlSource(
     nativeRef: string,
     workspace: string,
     share?: ClaudeControlMetadataShare,
+    allowMissingDirectory = false,
   ) {
     if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(nativeRef))
       throw new Error("unverified-session-identity");
     const sessionId = nativeRef.toLowerCase();
+    const canonicalize = allowMissingDirectory
+      ? (value: string) => recordedDirectory(value).path
+      : canonicalizePath;
     const expectedWorkspace = canonicalize(workspace);
     const listing = share ? (share.current ??= this.#claude.list(null)) : this.#claude.list(null);
     const source = listing.sessions.find(
@@ -220,11 +260,16 @@ export class SessionReaders {
   }
   async list(agent: SessionAgent, workspace: string): Promise<NativeListing> {
     const collection = sessionCollection(workspace);
+    // The index keeps each session's directory so the catalog can recognize git worktrees.
+    const withDirectory = (source: { cwd: string | null; session: NativeSession }) => ({
+      ...source.session,
+      cwd: source.cwd,
+    });
     if (collection) {
       if (agent !== "codex") return { sessions: [], incomplete: false };
       const listing = this.#codex.list(null, { collection });
       return {
-        sessions: listing.sessions.map((source) => source.session),
+        sessions: listing.sessions.map(withDirectory),
         incomplete: listing.incomplete,
       };
     }
@@ -258,7 +303,7 @@ export class SessionReaders {
                   : this.#hermes;
         const listing = provider.list(workspace);
         return {
-          sessions: listing.sessions.map((source) => source.session),
+          sessions: listing.sessions.map(withDirectory),
           incomplete: listing.incomplete,
         };
       }

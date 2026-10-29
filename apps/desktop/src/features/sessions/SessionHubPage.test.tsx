@@ -103,6 +103,7 @@ function defaultHub(): ReturnType<typeof useSessionHub> {
     workspacesError: "",
     catalogError: "",
     hiddenSessionNotice: false,
+    visibility: { execution: false },
     select: vi.fn(),
     selectionVersion: () => 0,
     refresh: vi.fn().mockResolvedValue(undefined),
@@ -569,6 +570,66 @@ describe("SessionHubPage", () => {
     expect(screen.getByText(workspace.path)).not.toBeVisible();
     fireEvent.click(screen.getByRole("button", { name: "Refresh history" }));
     expect(hub.refresh).toHaveBeenCalledOnce();
+  });
+
+  it("names a worktree session after its repository in the overview", () => {
+    const repository = {
+      ...workspace,
+      id: "atlas",
+      name: "atlas",
+      path: "/projects/atlas",
+      checkout: {
+        repository_group_id: "repo",
+        kind: "primary" as const,
+        primary_path: "/projects/atlas",
+        name: null,
+        branch: "main",
+        status: "present" as const,
+      },
+    };
+    const home = { ...workspace, id: "home", name: "home", path: "/Users/qa" };
+    const worktree = {
+      repository_group_id: "repo",
+      name: "h1a",
+      path: "/Users/qa/.codex/worktrees/h1a/atlas",
+      branch: "codex/h1a",
+      status: "present" as const,
+    };
+    const inWorktree = { ...readable, workspace_id: "home", worktree };
+    const atHome = { ...readable, id: "home-session", title: "Tidy notes", workspace_id: "home" };
+    hub = {
+      ...hub,
+      workspaces: [repository, home],
+      sessions: [inWorktree, atHome],
+      filtered: [inWorktree, atHome],
+    };
+    render(sessionSurface());
+    expect(screen.getByRole("button", { name: /Review theme switching/ })).toHaveTextContent(
+      "atlas · Codex",
+    );
+    expect(screen.getByRole("button", { name: /Tidy notes/ })).toHaveTextContent("home · Codex");
+  });
+
+  it("shows a deleted worktree's status in the session details without a second notice", async () => {
+    const worktree = {
+      repository_group_id: "repo",
+      name: "h2",
+      path: "/projects/.codex/worktrees/h2/design-kit",
+      branch: "codex/h2",
+      status: "deleted" as const,
+    };
+    hub = { ...hub, selected: { ...readable, worktree }, selectedWorkspace: workspace };
+    render(sessionSurface());
+    await screen.findByText("Saved theme review");
+    fireEvent.click(screen.getByText("Session details"));
+    expect(screen.getByText(tr("sessions.worktree.chipDeleted", { name: "h2" }))).toBeVisible();
+    expect(screen.queryByText("codex/h2")).toBeNull();
+    expect(
+      screen.getByRole("img", {
+        name: tr("sessions.worktree.deleted", { name: "h2", path: worktree.path }),
+      }),
+    ).toHaveClass("opacity-45");
+    expect(screen.queryByRole("note")).toBeNull();
   });
 
   it("anchors a visible record when earlier records prepend and resets on selection change", async () => {

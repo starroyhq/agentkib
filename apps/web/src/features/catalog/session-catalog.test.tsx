@@ -296,3 +296,96 @@ describe("SessionCatalog", () => {
     expect(screen.getByText(noResults)).toBeVisible();
   });
 });
+
+describe("git worktrees and program-started sessions", () => {
+  const checkout = {
+    repository_group_id: "repo",
+    kind: "primary" as const,
+    primary_path: "/work/atlas",
+    name: null,
+    branch: "main",
+    status: "present" as const,
+  };
+  const repository = [
+    { id: "main", name: "atlas", path: "/work/atlas", checkout },
+    {
+      id: "h1a",
+      name: "atlas",
+      path: "/codex/worktrees/h1a/atlas",
+      checkout: { ...checkout, kind: "worktree" as const, name: "h1a" },
+    },
+  ];
+  const row = (
+    id: string,
+    workspace_id: string,
+    extra: Partial<ConversationSessionSummary> = {},
+  ): ConversationSessionSummary => ({
+    id,
+    workspace_id,
+    title: `${id} session`,
+    agent: "codex",
+    availability: "readable",
+    archived: false,
+    sidechain: false,
+    updated_at: "2026-09-08T00:00:00Z",
+    ...extra,
+  });
+
+  it("merges a repository's worktrees into one group and marks worktree rows with an icon", () => {
+    const worktree = {
+      repository_group_id: "repo",
+      name: "h1a",
+      path: "/codex/worktrees/h1a/atlas",
+      branch: "codex/h1a",
+      status: "present" as const,
+    };
+    render(
+      <SessionCatalog
+        sessions={[row("main", "main"), row("wt", "h1a", { worktree })]}
+        workspaces={repository}
+        selected=""
+        onSelect={vi.fn()}
+        locale="zh-CN"
+      />,
+    );
+    expect(screen.getAllByRole("region")).toHaveLength(1);
+    const label = "在 git 工作树 h1a 中运行 · 分支 codex/h1a · /codex/worktrees/h1a/atlas";
+    expect(screen.getByRole("img", { name: label })).toHaveAttribute("title", label);
+    expect(screen.getByRole("button", { name: /wt session/ })).toHaveAccessibleName(
+      expect.stringContaining(label),
+    );
+    expect(screen.getByRole("button", { name: /atlas · 1 个工作树: h1a · 2/ })).toBeVisible();
+  });
+
+  it("lists program-started sessions only when the option is on", () => {
+    const onExecutionChange = vi.fn();
+    const records = [row("ordinary", "main"), row("pen", "main", { origin: "execution" })];
+    const { rerender } = render(
+      <SessionCatalog
+        sessions={records}
+        workspaces={repository}
+        selected=""
+        onSelect={vi.fn()}
+        locale="en-US"
+        onExecutionChange={onExecutionChange}
+      />,
+    );
+    expect(screen.queryByText("pen session")).toBeNull();
+    fireEvent.click(screen.getByRole("checkbox", { name: "Show program-started sessions" }));
+    expect(onExecutionChange).toHaveBeenCalledWith(true);
+    rerender(
+      <SessionCatalog
+        sessions={records}
+        workspaces={repository}
+        selected=""
+        onSelect={vi.fn()}
+        locale="en-US"
+        execution
+        onExecutionChange={onExecutionChange}
+      />,
+    );
+    expect(
+      screen.getByRole("button", { name: /pen session · Started by a program/ }),
+    ).toBeVisible();
+  });
+});

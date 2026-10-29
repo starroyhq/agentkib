@@ -30,6 +30,7 @@ export function DesktopHistorySearch() {
           git_branch: source.git_branch ?? undefined,
           forked_from_session_id: source.forked_from_session_id ?? undefined,
           spawned_by_session_id: source.spawned_by_session_id ?? undefined,
+          worktree: source.worktree ?? undefined,
         });
         select(source.id);
       }}

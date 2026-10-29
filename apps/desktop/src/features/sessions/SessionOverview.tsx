@@ -11,8 +11,11 @@ import {
   sessionAgentNames,
   sessionRecordLabel,
   sessionSourceLabel,
+  worktreeLabel,
 } from "./session-labels";
 import { SessionNotice as Notice } from "./SessionNotice";
+import { sessionGroupLabels } from "./session-catalog";
+import { WorktreeMark } from "./WorktreeMark";
 import { sessionSourceWasUsed } from "./session-source-status";
 
 export function SessionOverview() {
@@ -25,6 +28,8 @@ export function SessionOverview() {
     ["archived", hub.filtered.filter((session) => session.archived).length],
     ["metadata", hub.filtered.filter((session) => session.availability === "metadata-only").length],
   ] as const;
+  // Name each session after the directory group it is listed in (its repository's, for a worktree).
+  const groupLabels = sessionGroupLabels(hub.filtered, hub.workspaces, hub.visibility);
   const visibleWorkspaceIds = new Set(hub.filtered.map((session) => session.workspace_id));
   const statusWorkspaces = hub.workspaces
     .filter((item) => !item.remote)
@@ -65,7 +70,7 @@ export function SessionOverview() {
                   key={session.id}
                   onClick={() => hub.select(session.id)}
                   title={[
-                    source?.path,
+                    session.worktree ? worktreeLabel(session.worktree, tr) : source?.path,
                     sessionSourceLabel(session, hub.sessions, tr, formatDateTime),
                   ]
                     .filter(Boolean)
@@ -75,6 +80,12 @@ export function SessionOverview() {
                   <span className="grid min-w-0 flex-1 gap-[5px]">
                     <strong className="inline-flex items-center gap-1 font-[550] [overflow-wrap:anywhere]">
                       {displaySessionTitle(session.title, tr)}
+                      {session.worktree && (
+                        <WorktreeMark
+                          label={worktreeLabel(session.worktree, tr)}
+                          deleted={session.worktree.status === "deleted"}
+                        />
+                      )}
                       {isInteractiveFork(session) && (
                         <GitBranch
                           size={12}
@@ -84,8 +95,8 @@ export function SessionOverview() {
                     </strong>
                     <small className="text-sm text-muted-foreground [overflow-wrap:anywhere]">
                       {session.remote && `${session.remote.host_name} · `}
-                      {source?.name} · {sessionAgentNames[session.agent]} ·{" "}
-                      {sessionRecordLabel(session, tr)}
+                      {groupLabels.get(session.id) ?? source?.name} ·{" "}
+                      {sessionAgentNames[session.agent]} · {sessionRecordLabel(session, tr)}
                     </small>
                   </span>
                   {status && (

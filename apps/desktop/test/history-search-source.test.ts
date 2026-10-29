@@ -594,6 +594,32 @@ describe("complete history search source extraction", () => {
     );
   });
 
+  it("reads AgentKib's own print-mode Claude sessions only while the index keeps them", async () => {
+    const f = fixture("claude-code");
+    f.resolve();
+    f.native.origin = "execution";
+    f.write([
+      {
+        type: "user",
+        uuid: "u",
+        parentUuid: null,
+        entrypoint: "sdk-cli",
+        message: { role: "user", content: "MANAGED_BODY" },
+      },
+    ]);
+    expect((await f.read()).records.map((row) => row.content)).toEqual(["MANAGED_BODY"]);
+    f.input.summary.origin = "unknown";
+    await expect(f.read()).rejects.toThrow("history-source-owner-changed");
+  });
+
+  it("still rejects a Codex exec session behind an interactive index row", async () => {
+    const f = fixture("codex");
+    f.resolve();
+    f.native.origin = "execution";
+    f.write([codexText("user_message", "EXEC_BODY")]);
+    await expect(f.read()).rejects.toThrow("history-source-owner-changed");
+  });
+
   it("excludes Claude string and rich-text command echoes from native discovery, search and locations", async () => {
     const f = fixture("claude-code", randomUUID());
     f.input.environment.CLAUDE_CONFIG_DIR = path.join(f.root, ".claude");

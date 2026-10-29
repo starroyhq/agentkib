@@ -19,6 +19,7 @@ import { tr as i18nTr } from "@/core/i18n";
 import { WorkspaceFilters, WorkspacePageHeader } from "./WorkspaceFilters";
 import { WorkspaceListPanel } from "./WorkspaceListPanel";
 import type { WorkspaceView } from "./workspace-page-types";
+import { workspaceTree } from "./workspace-tree";
 
 const WORKSPACES_PER_PAGE = 8;
 
@@ -87,13 +88,15 @@ export function WorkspacesPage({
     [agent, query, status, workspaces, statuses],
   );
   useEffect(() => setPage(1), [agent, query, status]);
-  const totalPages = Math.max(1, Math.ceil(filtered.length / WORKSPACES_PER_PAGE));
+  // Pages count repositories; a main checkout's worktrees stay on its page, listed under it.
+  const tree = useMemo(() => workspaceTree(filtered), [filtered]);
+  const totalPages = Math.max(1, Math.ceil(tree.length / WORKSPACES_PER_PAGE));
   const activePage = Math.min(page, totalPages);
-  const pageStart = filtered.length ? (activePage - 1) * WORKSPACES_PER_PAGE + 1 : 0;
-  const pageEnd = Math.min(activePage * WORKSPACES_PER_PAGE, filtered.length);
+  const pageStart = tree.length ? (activePage - 1) * WORKSPACES_PER_PAGE + 1 : 0;
+  const pageEnd = Math.min(activePage * WORKSPACES_PER_PAGE, tree.length);
   const paginatedWorkspaces = useMemo(
-    () => filtered.slice((activePage - 1) * WORKSPACES_PER_PAGE, activePage * WORKSPACES_PER_PAGE),
-    [activePage, filtered],
+    () => tree.slice((activePage - 1) * WORKSPACES_PER_PAGE, activePage * WORKSPACES_PER_PAGE),
+    [activePage, tree],
   );
   const discoveryStatus = discoveryStatusSummary(discovery, discoveryRefreshing, tr, relativeTime);
 
@@ -165,12 +168,13 @@ export function WorkspacesPage({
         </Button>
       </div>
       <WorkspaceListPanel
-        workspaces={paginatedWorkspaces}
+        rows={paginatedWorkspaces}
         totalCount={workspaces.length}
         statuses={statuses}
         pageStart={pageStart}
         pageEnd={pageEnd}
         filteredCount={filtered.length}
+        rowCount={tree.length}
         activePage={activePage}
         totalPages={totalPages}
         favoriteWorkspaceIds={favoriteWorkspaceIds}

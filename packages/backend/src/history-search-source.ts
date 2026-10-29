@@ -182,10 +182,17 @@ export async function readHistorySearchSource(
   options.signal?.addEventListener("abort", abort, { once: true });
   try {
     const verifyNative = (native: NativeSession) => {
+      // The index keeps AgentKib's own `--print` Claude runs as conversations. A fresh read
+      // still sees their `sdk-cli` entrypoint, so only that indexed decision admits them.
+      const managedClaude =
+        native.agent === "claude-code" &&
+        native.origin === "execution" &&
+        input.summary.origin === "interactive";
       if (
         sessionIdentity(input.identitySalt, native.agent, native.native_ref) !== input.sessionId ||
         native.sidechain ||
-        ["auxiliary", "execution"].includes(native.origin)
+        native.origin === "auxiliary" ||
+        (native.origin === "execution" && !managedClaude)
       )
         throw new Error("history-source-owner-changed");
       if (native.availability !== "readable") throw new Error("history-source-unavailable");

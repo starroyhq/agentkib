@@ -458,7 +458,8 @@ export class WebAccessService {
   private code?: PairingCode;
   private credentials: Credential[] = [];
   private browsers = new Map<string, Browser>();
-  private streams = new Map<ConversationResponse, string>();
+  // 按建立顺序登记；evict 走该流自己的 unavailable 清理路径。
+  private streams = new Map<ConversationResponse, { hash: string; evict: () => void }>();
   private active = new Set<string>();
   // One runtime worker serves all Web sessions. Reserve its admission across
   // preflight and mutation; new reads must not queue behind that preflight.
@@ -475,6 +476,7 @@ export class WebAccessService {
   private persistence: Promise<void> = Promise.resolve();
   private bootId = token();
   private addressTimer?: ReturnType<typeof setInterval>;
+  private lanAddressMisses = 0;
   private artifacts?: ArtifactService;
   private desktopArtifacts?: ArtifactService;
   private attachmentStore: AttachmentStore;
@@ -1539,6 +1541,7 @@ export class WebAccessService {
       if (this.options.mode !== "lan") await this.startPreview();
       if (connectRelay && this.config.relay?.enabled) this.startRelay();
       if (this.options.mode === "lan") {
+        this.lanAddressMisses = 0;
         this.addressTimer = setInterval(() => {
           void this.checkLanAddress();
         }, 30_000);
@@ -1580,10 +1583,14 @@ export class WebAccessService {
   /** Also called on OS resume and when settings request their current status. */
   async checkLanAddress(): Promise<void> {
     if (this.options.mode !== "lan" || !this.server) return;
-    if (!this.addresses.some((entry) => entry.address === this.config.lanAddress)) {
-      this.error = "lan_address_unavailable";
-      await this.shutdown();
+    if (this.addresses.some((entry) => entry.address === this.config.lanAddress)) {
+      this.lanAddressMisses = 0;
+      return;
     }
+    // VPN/TUN 代理切换时网卡列表可能短暂缺少该地址；连续 3 次检查都缺失才停止监听。
+    if (++this.lanAddressMisses < 3) return;
+    this.error = "lan_address_unavailable";
+    await this.shutdown();
   }
   async shutdown() {
     this.managedSocket?.close();
@@ -3863,8 +3870,8 @@ export class WebAccessService {
    * 从而拿到新的权限（与工作区授权撤销时关闭流的做法一致）。
    */
   private endStreams(hash?: string, event: "access-ended" | "unavailable" | null = "access-ended") {
-    for (const [res, owner] of this.streams)
-      if (!hash || hash === owner) {
+    for (const [res, stream] of this.streams)
+      if (!hash || hash === stream.hash) {
         if (event && !res.write(`event: ${event}\ndata: {}\n\n`)) res.destroy();
         else res.end();
         this.streams.delete(res);
@@ -3963,11 +3970,9 @@ export class WebAccessService {
     );
     this.expire();
     const lan = this.options.mode === "lan";
-    if (lan && !this.addresses.some((entry) => entry.address === this.config.lanAddress)) {
-      this.error = "lan_address_unavailable";
-      void this.shutdown();
+    // 地址暂时不在网卡列表里时只拒绝本次请求；是否停止监听由 checkLanAddress 的连续缺失计数决定。
+    if (lan && !this.addresses.some((entry) => entry.address === this.config.lanAddress))
       throw new HttpError(503, "lan_address_unavailable");
-    }
     const localOrigin = `http://${lan ? this.config.lanAddress : "127.0.0.1"}:${this.config.port}`;
     const host = req.headers.host;
     const external =
@@ -5096,22 +5101,27 @@ export class WebAccessService {
     if (path === "/stream") {
       if (url.searchParams.get("protocolVersion") !== "2" || !this.options.conversationHub)
         throw new HttpError(409, "incompatible_protocol");
-      if (
-        this.streams.size >= 16 ||
-        [...this.streams.values()].filter((h) => h === hash).length >= 2
-      )
-        throw new HttpError(429, "stream_limit");
       const afterCursor =
         url.searchParams.get("afterCursor") ||
         String(req.headers["last-event-id"] ?? "") ||
         undefined;
       if (afterCursor && afterCursor.length > 1024) throw new HttpError(400, "invalid_cursor");
+      // 网络切换后旧连接可能半开，心跳仍能写入，名额迟迟不释放。同一凭据重连就是同一客户端：
+      // 达到每设备 2 条上限时淘汰它自己最早的流，接纳新流。只淘汰本凭据的流，不影响其他设备；
+      // 全局 16 条仍是硬上限，替换自己的流不增加总数，所以表满时也允许。
+      const owned = [...this.streams.values()].filter((stream) => stream.hash === hash);
+      if (owned.length < 2 && this.streams.size >= 16) {
+        res.setHeader("Retry-After", "3");
+        throw new HttpError(429, "stream_limit");
+      }
+      if (owned.length >= 2) owned[0].evict();
       res.writeHead(200, {
         "Content-Type": "text/event-stream",
         "Cache-Control": "no-store",
         "X-Accel-Buffering": "no",
       });
-      this.streams.set(res, hash);
+      // unavailable 定义在下方；首个 await 之前不会有其他请求调用 evict。
+      this.streams.set(res, { hash, evict: () => unavailable() });
       const hub = this.options.conversationHub;
       let subscriptionId: string | undefined;
       let closed = false;

@@ -221,7 +221,7 @@ describe("SSE socket backpressure cleanup", () => {
   async function expectReleased(hard: boolean) {
     await vi.waitFor(() => {
       expect(subscriptions.size).toBe(0);
-      expect((service as unknown as { streams: Map<ServerResponse, string> }).streams.size).toBe(0);
+      expect((service as unknown as { streams: Map<unknown, unknown> }).streams.size).toBe(0);
       expect(response?.listenerCount("drain")).toBe(0);
       expect(activeTimeouts.size).toBe(0);
       expect(activeIntervals.size).toBe(0);

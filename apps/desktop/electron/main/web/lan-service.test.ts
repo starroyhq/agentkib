@@ -346,19 +346,34 @@ describe("hosted LAN transport", () => {
       }),
     ).rejects.toThrow("plaintext_confirmation_required");
     addresses = [];
+    // Each status read is one address check; the first two misses keep the listener.
+    for (let check = 1; check < 3; check++)
+      expect((await service.request({ operation: "status" })).running).toBe(true);
     const status = await service.request({ operation: "status" });
     expect(status.running).toBe(false);
     expect(status.error).toBe("lan_address_unavailable");
     expect(status.connectionUrl).toBeUndefined();
   });
-  it("checks LAN addresses every 30 seconds and releases the timer when the address disappears", async () => {
+  it("checks LAN addresses every 30 seconds and releases the timer after three consecutive misses", async () => {
     const config = (await service.request({ operation: "status" })).config;
     const schedule = vi.spyOn(globalThis, "setInterval");
     const cancel = vi.spyOn(globalThis, "clearInterval");
     await service.request({ operation: "configure", ...config });
     expect(schedule).toHaveBeenCalledWith(expect.any(Function), 30_000);
     const timer = schedule.mock.results[0].value;
+    // A VPN/TUN switch can briefly drop the address from the interface list.
     addresses = [];
+    await service.checkLanAddress();
+    await service.checkLanAddress();
+    // Requests in the gap are refused, but they do not stop the listener either.
+    expect((await http("/info")).status).toBe(503);
+    expect(cancel).not.toHaveBeenCalledWith(timer);
+    addresses = [{ name: "fixture", address: "192.168.20.10" }];
+    await service.checkLanAddress();
+    addresses = [];
+    await service.checkLanAddress();
+    await service.checkLanAddress();
+    expect(cancel).not.toHaveBeenCalledWith(timer);
     await service.checkLanAddress();
     expect(cancel).toHaveBeenCalledWith(timer);
     const status = await service.request({ operation: "status" });

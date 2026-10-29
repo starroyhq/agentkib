@@ -2,9 +2,9 @@
 
 ## 源码与范围
 
-- 工作树：`/Users/kouzen/.codex/worktrees/all-agent-continuation/agentkib`。
+- 工作树：`/Users/user/.codex/worktrees/all-agent-continuation/agentkib`。
 - revision：`057da8b81a3f3c9536a568287175af8e50c12176`，dirty；保留前轮互通实现及所有原有改动。本记录只覆盖本批门槛修复，不代表全部互通方向已完成原生验收。
-- Node：`22.23.2`（`/Users/kouzen/Library/pnpm/nodejs/22.23.2/bin`），pnpm：`10.8.1`。
+- Node：`22.23.2`（`/Users/user/Library/pnpm/nodejs/22.23.2/bin`），pnpm：`10.8.1`。
 - 未修改依赖及锁文件，未提交、推送或发布。
 
 ## 修改

@@ -24,7 +24,7 @@ from urllib.parse import urlsplit
 
 MODEL = 'deepseek-v4-pro'
 ENDPOINT = 'https://api.deepseek.com/anthropic'
-DATABASE = Path('/Users/kouzen/.cc-switch/cc-switch.db')
+DATABASE = Path('/Users/user/.cc-switch/cc-switch.db')
 ROUTES = {'anthropic': ('/anthropic', '/v1/messages', '/anthropic/v1/messages'),
           'chat': ('/v1', '/chat/completions', '/chat/completions'),
           'responses': ('/v1', '/responses', '/responses')}

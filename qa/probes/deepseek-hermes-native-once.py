@@ -33,7 +33,7 @@ spec.loader.exec_module(native_offline)
 PROMPT = 'Recall the exact random marker and complete project storage decision from our previous history. Reply with those values only. Do not use tools.'
 PROVIDER = 'agentkib-deepseek-once'
 KEY_ENV = 'AGENTKIB_QA_LOOPBACK_KEY'
-CA_FILE = Path('/Users/kouzen/Library/Python/3.11/lib/python/site-packages/certifi/cacert.pem')
+CA_FILE = Path('/Users/user/Library/Python/3.11/lib/python/site-packages/certifi/cacert.pem')
 CA_SHA256 = 'c55b21f907f7f86d48add093552fb5651749ff5f860508ccbb423d6c1fbd80c7'
 
 

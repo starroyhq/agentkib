@@ -2,7 +2,7 @@
 
 ## 基线与边界
 
-- 实施目录：`/Users/kouzen/.codex/worktrees/all-agent-continuation/agentkib`，新建的独立 managed worktree。
+- 实施目录：`/Users/user/.codex/worktrees/all-agent-continuation/agentkib`，新建的独立 managed worktree。
 - 基础 revision：`057da8b81a3f3c9536a568287175af8e50c12176`，detached HEAD。本轮没有 commit、push、PR、tag、安装覆盖或发布。
 - 开始时主目录有 57 个 tracked 修改及 559 个 nonignored untracked 文件，全部复制到新工作树作为输入基线。基线文件哈希位于 `/tmp/agentkib-all-agent-baseline/files.json`，另有 `tracked.patch`、`status.txt`。本轮没有在主目录实施修改。
 - 版本号保留输入基线的 `0.11.0`；不能因对话曾提及 release 推断当前脏工作树已是发布源码。
@@ -43,7 +43,7 @@ OpenCode/Hermes 新目标使用官方导入格式及命令；OpenClaw 新目标�
 前端命令均在上述 worktree 执行，并先设置：
 
 ```sh
-export PATH=/Users/kouzen/Library/pnpm/nodejs/22.23.2/bin:$PATH
+export PATH=/Users/user/Library/pnpm/nodejs/22.23.2/bin:$PATH
 ```
 
 | 命令 | 实际结果 |

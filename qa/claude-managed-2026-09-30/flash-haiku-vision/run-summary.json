@@ -1,6 +1,6 @@
 {
-  "command": "PATH=/Users/kouzen/Library/pnpm/nodejs/22.23.2/bin:$PATH AGENTKIB_CLAUDE_NATIVE_DIR=/private/tmp/agentkib-claude-v1-native-2026-09-30-flash-haiku-vision AGENTKIB_CLAUDE_NATIVE_MODEL=claude-haiku-4-5 pnpm --filter @agentkib/desktop exec vitest run electron/main/web/claude-managed-real.test.ts",
-  "workdir": "/Users/kouzen/.codex/worktrees/all-agent-continuation/agentkib",
+  "command": "PATH=/Users/user/Library/pnpm/nodejs/22.23.2/bin:$PATH AGENTKIB_CLAUDE_NATIVE_DIR=/private/tmp/agentkib-claude-v1-native-2026-09-30-flash-haiku-vision AGENTKIB_CLAUDE_NATIVE_MODEL=claude-haiku-4-5 pnpm --filter @agentkib/desktop exec vitest run electron/main/web/claude-managed-real.test.ts",
+  "workdir": "/Users/user/.codex/worktrees/all-agent-continuation/agentkib",
   "exitCode": 1,
   "runtimeSha256": "7c7512ea06ee732ea98a67ecc9f57d3afbec79104490bf0b9ae577cf2b9cf198",
   "settingsSha256After": "671d73e5f5248a5e86c220714c6c724baad6e78e49854622a22c0fb17846eb89",

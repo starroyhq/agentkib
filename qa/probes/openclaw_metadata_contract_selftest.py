@@ -7,7 +7,7 @@ import sqlite3
 import tempfile
 from openclaw_metadata_contract import validate_metadata
 
-ROOT=Path('/Users/kouzen/Documents/AgentKib-archives/2026-10-01/provider-retest/OpenClaw/grok-native-live-01')
+ROOT=Path('/Users/user/Documents/AgentKib-archives/2026-10-01/provider-retest/OpenClaw/grok-native-live-01')
 OLD=ROOT/'offline-restart-fixed-v3'
 summary=json.loads((OLD/'result.json').read_text())
 with sqlite3.connect(OLD/'after-state.sqlite') as db:
@@ -50,7 +50,7 @@ for statement in ["UPDATE session_key_contract SET main_key='other'","UPDATE ses
     try:test(lambda db:db.execute(statement),'agent')
     except (AssertionError,KeyError,FileNotFoundError):pass
     else:raise AssertionError('Canonical receipt drift accepted')
-NEW=Path('/Users/kouzen/Documents/AgentKib-archives/2026-10-01/provider-retest/OpenClaw/completion-v2/mock-03/offline-restarts')
+NEW=Path('/Users/user/Documents/AgentKib-archives/2026-10-01/provider-retest/OpenClaw/completion-v2/mock-03/offline-restarts')
 new_summary=json.loads((NEW/'result.json').read_text())
 new_raw=(NEW.parent/'isolated-config-before.json').read_bytes()
 new_config=NEW.parent/'openclaw/openclaw.json'

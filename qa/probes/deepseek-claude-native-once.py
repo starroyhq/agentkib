@@ -26,10 +26,10 @@ from deepseek_once_relay import (MODEL, digest, load_current_provider, private_j
                                 start_relay, synthetic_provider)
 
 HERE = Path(__file__).resolve().parent
-CLI = Path('/Users/kouzen/.local/share/claude/versions/2.1.285')
+CLI = Path('/Users/user/.local/share/claude/versions/2.1.285')
 CLI_SHA = '51f09bd1e021d9fa8a1864c179799bd37cb39962a937935c5cf6823398e86db4'
-ROOT = Path('/Users/kouzen/Documents/AgentKib-archives/2026-10-01/provider-retest/Claude')
-TRUSTED_CA = Path('/Users/kouzen/Library/Python/3.11/lib/python/site-packages/certifi/cacert.pem')
+ROOT = Path('/Users/user/Documents/AgentKib-archives/2026-10-01/provider-retest/Claude')
+TRUSTED_CA = Path('/Users/user/Library/Python/3.11/lib/python/site-packages/certifi/cacert.pem')
 TRUSTED_CA_SHA = 'c55b21f907f7f86d48add093552fb5651749ff5f860508ccbb423d6c1fbd80c7'
 PROMPT = 'What exact random marker and project storage decision did we agree in the imported history? Quote both, without using any tools.'
 SPEC = importlib.util.spec_from_file_location('owned_native', HERE / 'native-offline-tui.py')

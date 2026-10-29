@@ -23,10 +23,10 @@ import time
 import tempfile
 import yaml
 
-CPA = Path('/Users/kouzen/proxy/CLIProxyAPI/config.yaml')
-CC = Path('/Users/kouzen/.cc-switch/cc-switch.db')
-AUTH = Path('/Users/kouzen/proxy/CLIProxyAPI/auths')
-LOCK = Path('/Users/kouzen/Documents/AgentKib-archives/2026-09-30/full-interop/.global-retry-window.lock')
+CPA = Path('/Users/user/proxy/CLIProxyAPI/config.yaml')
+CC = Path('/Users/user/.cc-switch/cc-switch.db')
+AUTH = Path('/Users/user/proxy/CLIProxyAPI/auths')
+LOCK = Path('/Users/user/Documents/AgentKib-archives/2026-09-30/full-interop/.global-retry-window.lock')
 FIELDS = {('routing', 'retry', 'request-retry'): 0,
           ('routing', 'retry', 'max-retry-credentials'): 1,
           ('requests', 'streaming', 'bootstrap-retries'): 0}
@@ -163,7 +163,7 @@ def check_overrides():
     if len(files) != 1:
         raise RuntimeError('Expected exactly one existing provider auth')
     auth = json.loads(files[0].read_text())
-    if auth.get('type') != 'devin' or auth.get('disabled') is True:
+    if auth.get('type') != 'relay' or auth.get('disabled') is True:
         raise RuntimeError('Existing provider identity changed')
     for field in ('request_retry', 'request-retry'):
         if field in auth and auth[field] not in (0, None):
@@ -291,7 +291,7 @@ def run(directory, command):
         out.flush()
         os.fsync(out.fileno())
     state = {'schemaVersion': 1, 'status': 'prepared', 'endpoint': 'http://127.0.0.1:8317',
-             'model': 'devin/claude-opus-5-5', 'configSha256': hashlib.sha256(raw).hexdigest(),
+             'model': 'relay/claude-opus-5-5', 'configSha256': hashlib.sha256(raw).hexdigest(),
              'ccOriginal': cc_read(),
              'cpaOriginal': {'.'.join(path): lookup(data, path) for path in FIELDS},
              'streamingOriginallyAbsent': lookup(data, ('requests', 'streaming')) == MISSING,

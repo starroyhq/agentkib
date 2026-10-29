@@ -2,72 +2,72 @@
   "sessionId": "74df4cdc-61e2-4637-851b-210727848045",
   "requests": [
     {
-      "requestModel": "devin/claude-opus-5-5",
-      "upstreamModel": "devin/claude-opus-5-5",
+      "requestModel": "relay/claude-opus-5-5",
+      "upstreamModel": "relay/claude-opus-5-5",
       "status": 200,
       "createdAt": 1790747562,
       "authUnavailable": false,
       "permissionDenied": false
     },
     {
-      "requestModel": "devin/claude-opus-5-5",
-      "upstreamModel": "devin/claude-opus-5-5",
+      "requestModel": "relay/claude-opus-5-5",
+      "upstreamModel": "relay/claude-opus-5-5",
       "status": 503,
       "createdAt": 1790747562,
       "authUnavailable": true,
       "permissionDenied": true
     },
     {
-      "requestModel": "devin/claude-opus-5-5",
-      "upstreamModel": "devin/claude-opus-5-5",
+      "requestModel": "relay/claude-opus-5-5",
+      "upstreamModel": "relay/claude-opus-5-5",
       "status": 503,
       "createdAt": 1790747562,
       "authUnavailable": true,
       "permissionDenied": true
     },
     {
-      "requestModel": "devin/claude-opus-5-5",
-      "upstreamModel": "devin/claude-opus-5-5",
+      "requestModel": "relay/claude-opus-5-5",
+      "upstreamModel": "relay/claude-opus-5-5",
       "status": 503,
       "createdAt": 1790747563,
       "authUnavailable": true,
       "permissionDenied": true
     },
     {
-      "requestModel": "devin/claude-opus-5-5",
-      "upstreamModel": "devin/claude-opus-5-5",
+      "requestModel": "relay/claude-opus-5-5",
+      "upstreamModel": "relay/claude-opus-5-5",
       "status": 503,
       "createdAt": 1790747566,
       "authUnavailable": true,
       "permissionDenied": true
     },
     {
-      "requestModel": "devin/claude-opus-5-5",
-      "upstreamModel": "devin/claude-opus-5-5",
+      "requestModel": "relay/claude-opus-5-5",
+      "upstreamModel": "relay/claude-opus-5-5",
       "status": 503,
       "createdAt": 1790747570,
       "authUnavailable": true,
       "permissionDenied": true
     },
     {
-      "requestModel": "devin/claude-opus-5-5",
-      "upstreamModel": "devin/claude-opus-5-5",
+      "requestModel": "relay/claude-opus-5-5",
+      "upstreamModel": "relay/claude-opus-5-5",
       "status": 503,
       "createdAt": 1790747579,
       "authUnavailable": true,
       "permissionDenied": true
     },
     {
-      "requestModel": "devin/claude-opus-5-5",
-      "upstreamModel": "devin/claude-opus-5-5",
+      "requestModel": "relay/claude-opus-5-5",
+      "upstreamModel": "relay/claude-opus-5-5",
       "status": 503,
       "createdAt": 1790747597,
       "authUnavailable": true,
       "permissionDenied": true
     },
     {
-      "requestModel": "devin/claude-opus-5-5",
-      "upstreamModel": "devin/claude-opus-5-5",
+      "requestModel": "relay/claude-opus-5-5",
+      "upstreamModel": "relay/claude-opus-5-5",
       "status": 503,
       "createdAt": 1790747634,
       "authUnavailable": true,

@@ -44,7 +44,7 @@ attempt.mkdir(mode=0o700);write_snapshot(attempt/'before-native.json',before)
 prompt='Recall the exact random marker and complete project storage decision from our previous history. Reply with those values only. Do not use tools.'
 assert prior['marker'] not in prompt and prior['decision'] not in prompt
 contract=attempt/'contract.json';contract.write_text(json.dumps({'endpoint':'http://127.0.0.1:8317/v1/chat/completions','model':MODEL,'stream':True,'sessionId':sid,'route':f'/session/{sid}/v1/chat/completions','history':expected,'prompt':prompt,'retryWindow':str(window)}))
-try:cpa=yaml.safe_load(Path('/Users/kouzen/proxy/CLIProxyAPI/config.yaml').read_text())
+try:cpa=yaml.safe_load(Path('/Users/user/proxy/CLIProxyAPI/config.yaml').read_text())
 except yaml.YAMLError:raise SystemExit('CPA configuration is not valid YAML; refusing request') from None
 keys=cpa['access']['api-keys'];assert isinstance(keys,list) and len(keys)==1 and isinstance(keys[0],str) and keys[0]
 key=keys[0];del keys,cpa

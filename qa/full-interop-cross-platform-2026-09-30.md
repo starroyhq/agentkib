@@ -17,7 +17,7 @@
 
 ## 实际命令与结果
 
-以下命令均在 `/Users/kouzen/.codex/worktrees/main-acceptance-20260930/agentkib` 执行，UTC 15:02:41—15:02:52（北京时间 23:02:41—23:02:52）。`--locked` 保持锁文件解析约束。
+以下命令均在 `/Users/user/.codex/worktrees/main-acceptance-20260930/agentkib` 执行，UTC 15:02:41—15:02:52（北京时间 23:02:41—23:02:52）。`--locked` 保持锁文件解析约束。
 
 | 实际命令 | 退出码 | 阻塞证据 |
 | --- | --- | --- |
@@ -29,7 +29,7 @@
 
 ## 可核对证据
 
-私有证据目录：`/Users/kouzen/Documents/AgentKib-archives/2026-09-30/full-interop/cross-platform-checks/`，目录权限 0700，文件 0600。每个目标的 JSON 记录实际命令、工作目录、起止时间、退出码、日志位置与 SHA256；完整日志独立保存。
+私有证据目录：`/Users/user/Documents/AgentKib-archives/2026-09-30/full-interop/cross-platform-checks/`，目录权限 0700，文件 0600。每个目标的 JSON 记录实际命令、工作目录、起止时间、退出码、日志位置与 SHA256；完整日志独立保存。
 
 | 日志文件 | SHA256 |
 | --- | --- |

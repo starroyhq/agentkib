@@ -12,12 +12,12 @@ from pathlib import Path
 
 from deepseek_once_relay import MODEL, OnceRelay, digest, private_json
 
-REFERENCE = Path('/Users/kouzen/Documents/AgentKib-archives/2026-10-01/provider-retest/Codex/native-mock-03/native-request.json')
+REFERENCE = Path('/Users/user/Documents/AgentKib-archives/2026-10-01/provider-retest/Codex/native-mock-03/native-request.json')
 REFERENCE_SHA = '5474b2284c026a2d06d022a3a15626b1d68fc9b2aaee6cb93be1f50f022d2fb4'
 TOOLS_SHA = 'c02c1f46148c20f253d78c3ef8ce36621125b5270545e5fde673dd253da50e7a'
 POLICY = 'codex-fixed-functions'
 UUID = r'[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}'
-REFERENCE_155 = Path('/Users/kouzen/Documents/AgentKib-archives/2026-10-01/codex-completion-batch/compat-155-native-capture/native-request.json')
+REFERENCE_155 = Path('/Users/user/Documents/AgentKib-archives/2026-10-01/codex-completion-batch/compat-155-native-capture/native-request.json')
 REFERENCE_155_SHA = 'c2a932fc39ee6996010862af76c39d4559afeb36c70d2aaa59c60f7f666a97fd'
 
 
@@ -58,7 +58,7 @@ def make_projection(history, prompt, workspace, codex_home, date, version='0.146
     reference = strict_json(raw)
     assert digest(canonical(reference['tools'])) == TOOLS_SHA
     assert len(history) == 3 and [m['role'] for m in history] == ['user', 'user', 'assistant']
-    old_workspace = '/Users/kouzen/Documents/AgentKib-archives/2026-09-30/full-interop/claude-to-codex-public-fixed-v2/workspace'
+    old_workspace = '/Users/user/Documents/AgentKib-archives/2026-09-30/full-interop/claude-to-codex-public-fixed-v2/workspace'
     old_home = str(reference_path.parent / 'codex')
     extras = [normalize_message(m) for m in reference['input'][3:-1]]
     assert [m['role'] for m in extras] == ['developer', 'user']

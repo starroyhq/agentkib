@@ -89,7 +89,7 @@ POSIX 权限和软链接测试仅在适用平台执行；Windows 路径测试使
 命令通过以下 PATH 使用已准备的固定工具链：
 
 ```sh
-export PATH=/Users/kouzen/.codex/tmp/agentkib-quota-tools-20261009:/Users/kouzen/.codex/tmp/node-v22.23.3-darwin-arm64/bin:$PATH
+export PATH=/Users/user/.codex/tmp/agentkib-quota-tools-20261009:/Users/user/.codex/tmp/node-v22.23.3-darwin-arm64/bin:$PATH
 ```
 
 以下命令在最终快照中按顺序执行，整体 exit 0；测试与构建没有并行修改同一输出目录：
@@ -105,7 +105,7 @@ export PATH=/Users/kouzen/.codex/tmp/agentkib-quota-tools-20261009:/Users/kouzen
 | `pnpm test`                                                                                                                                                                                      | 桌面 288 文件、5,450 项通过、2 项跳过；Web 37 文件、765 项通过                                                 |
 | `pnpm build`                                                                                                                                                                                     | 桌面、Electron、Backend 及随附 Web 构建通过                                                                    |
 | `pnpm build:web:hosted`                                                                                                                                                                          | 通过                                                                                                           |
-| `env -u ELECTRON_RUN_AS_NODE /Users/kouzen/Documents/data/agentkib/apps/desktop/node_modules/electron/dist/Electron.app/Contents/MacOS/Electron apps/desktop/scripts/verify-backend-workers.cjs` | Electron `44.0.0`／Node `24.18.1` 下三项 PASS：FTS5 索引／查询 Worker、持久 Skills Worker、Handoff 只读 Worker |
+| `env -u ELECTRON_RUN_AS_NODE /Users/user/Documents/data/agentkib/apps/desktop/node_modules/electron/dist/Electron.app/Contents/MacOS/Electron apps/desktop/scripts/verify-backend-workers.cjs` | Electron `44.0.0`／Node `24.18.1` 下三项 PASS：FTS5 索引／查询 Worker、持久 Skills Worker、Handoff 只读 Worker |
 | `pnpm exec oxfmt --check qa/review-loop-2026-10-16.md`                                                                                                                                           | 通过（报告另行格式化检查）                                                                                     |
 | `git diff --check`                                                                                                                                                                               | 通过                                                                                                           |
 | 冻结源码 SHA256 核对                                                                                                                                                                             | 1,370 文件、副本及主目录全部一致                                                                               |

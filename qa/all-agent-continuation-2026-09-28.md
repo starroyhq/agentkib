@@ -2,7 +2,7 @@
 
 ## 源码与约束
 
-工作树 `/Users/kouzen/.codex/worktrees/all-agent-continuation/agentkib`，revision `057da8b81a3f3c9536a568287175af8e50c12176`，dirty。保留初始复制的全部用户改动；本日开始快照 `/tmp/agentkib-interop-2026-09-28/files.json`，最初基线 `/tmp/agentkib-all-agent-baseline/files.json`。未提交、推送、发布、升级用户 Agent 或迁移凭据。
+工作树 `/Users/user/.codex/worktrees/all-agent-continuation/agentkib`，revision `057da8b81a3f3c9536a568287175af8e50c12176`，dirty。保留初始复制的全部用户改动；本日开始快照 `/tmp/agentkib-interop-2026-09-28/files.json`，最初基线 `/tmp/agentkib-all-agent-baseline/files.json`。未提交、推送、发布、升级用户 Agent 或迁移凭据。
 
 [本日增量文件清单](all-agent-continuation-2026-09-28-files.json)按本日开始时的实际文件 SHA 比较；[全批清单](all-agent-continuation-2026-09-27-files.json)按最初复制的 dirty 基线比较，均排除清单自身。不能用相对 HEAD 的全部 diff 归因本次改动；基线文件缺失数为 0。
 
@@ -33,7 +33,7 @@ Node 22.23.2 / pnpm 10.8.1 / cargo 1.92.0。下表本次整合日志在 `/tmp/ag
 node qa/probes/claude-native-reply.mjs \
   /tmp/agentkib-live-matrix-2026-09-28/manifest.json \
   /private/tmp/agentkib-interop-2026-09-28/claude-reply-1 \
-  /Users/kouzen/.claude/settings.json /Users/kouzen/.local/bin/claude
+  /Users/user/.claude/settings.json /Users/user/.local/bin/claude
 ```
 
 仅一轮，模型 `claude-sonnet-5`，输入 4322 / 输出 446 tokens，报告费用 USD 0.013104。回复准确包含历史中的随机 marker `bcfda855-8982-4e6d-926f-4a9c134811d5` 及决策 namespace `56c7e90f-d85f-4c94-aeec-2f83d5884ed1`。问句没有包含这两个值。原探针 `decision_present` 按完整自然语言句子比较为 false，因为模型改变了标签措辞；不改写该回执为 true，决策 UUID 精确一致单独记为人工语义核验。

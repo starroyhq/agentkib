@@ -2,7 +2,7 @@
 
 已使用归档旧 Runtime（二进制 SHA256 `18f225c179dfc891553a182fd1e922b363ff0a5b4414d809738106236489de16`）从公共 `prepareHandoff → planHandoff → continueHandoff` 流程新建 `full-interop/claude-to-hermes-cpa`。重复请求及 Runtime 重启后仍是同 operation/目标会话 `20260930_224229_202641`。独立原生 SQLite 完整投影、来源 SHA、目标唯一性通过。后续新 v2 用例实际请求被上游拒绝，见文末；不提升原生真实回复等级。
 
-Hermes 固定 `0.21.5` / release `v2026.9.24`。产品 plan 固定版本、home/profile 和目标历史，**不固定 Hermes 的 provider/model 配置**（`native_import.rs::target_settings` 的 Hermes 分支 model=None）。本轮模型 `devin/claude-opus-5-5` 属于用户选定的独立验收配置，不宣称预览已绑定模型。启动前已经核对完整命令和工作目录，只停止本例 TUI PID 39133。
+Hermes 固定 `0.21.5` / release `v2026.9.24`。产品 plan 固定版本、home/profile 和目标历史，**不固定 Hermes 的 provider/model 配置**（`native_import.rs::target_settings` 的 Hermes 分支 model=None）。本轮模型 `relay/claude-opus-5-5` 属于用户选定的独立验收配置，不宣称预览已绑定模型。启动前已经核对完整命令和工作目录，只停止本例 TUI PID 39133。
 
 ## 原生接入与单次上游请求
 
@@ -34,8 +34,8 @@ Hermes 固定 `0.21.5` / release `v2026.9.24`。产品 plan 固定版本、home/
 
 新 `full-interop/claude-to-hermes-cpa-v2` 先完成公开 RPC 导入、完整原生回读与实际 BLOB 编码预检；停止同 UUID 的自有 TUI PID 93495 后，经独立审查和 `retry-window-hermes-cpa-2` 单独监督窗口执行一次。
 
-- 原生 session `20260930_225301_1d8200`；选定模型仍为 `devin/claude-opus-5-5`，未换模型。
-- relay **1 次**上游派发，HTTP **503**。CPA 返回 `auth_unavailable: no auth available`，provider 为 devin，并记录最近上游 `permission_denied` / content policy 拒绝。该错误不能被当作目标上下文成功续接；没有按错误文案重试或自动换模型。
+- 原生 session `20260930_225301_1d8200`；选定模型仍为 `relay/claude-opus-5-5`，未换模型。
+- relay **1 次**上游派发，HTTP **503**。CPA 返回 `auth_unavailable: no auth available`，provider 为 relay，并记录最近上游 `permission_denied` / content policy 拒绝。该错误不能被当作目标上下文成功续接；没有按错误文案重试或自动换模型。
 - CLI exit 1，input/output/total/cache tokens 均为 0。原生历史追加了“请求未处理”的失败说明；这是客户端失败记录，不是模型继承上下文的证明。`realReplyPassed=false`。
 - 原有原生消息（包括两个 BLOB 所有字节）前缀完全不变；来源 SHA 不变、目标仍 1 个。正常重启 Runtime 核对同 operation，重复恢复没有新增消息或会话。
 - `ownedCliCleanupCompleted=true`、`isolatedConfigRestored=true`，relay 已关闭，监督窗口已恢复。独立子代理再次只读核对当前 SQLite 与 after 快照完全一致、dispatch/status、源 SHA 与所有恢复字段；未新增模型请求。

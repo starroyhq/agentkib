@@ -9,7 +9,7 @@
 
 ## 备份、审计与归档
 
-私有档案：`/Users/kouzen/Documents/AgentKib-archives/2026-09-30/`，根目录权限 0700。`README.md` 说明恢复步骤，`archive-index.json` 记录来源、HEAD、分支及文件数量；包内全部文件均按 SHA256 核验。每份源码从原 HEAD 解包并重新应用 staged/unstaged binary patch 后，逐个已跟踪文件与原工作树核对成功；另外抽样提取并核验实际文件。Git bundle 已验证，归档后新增 Codex snapshot refs 另存独立 bundle。
+私有档案：`/Users/user/Documents/AgentKib-archives/2026-09-30/`，根目录权限 0700。`README.md` 说明恢复步骤，`archive-index.json` 记录来源、HEAD、分支及文件数量；包内全部文件均按 SHA256 核验。每份源码从原 HEAD 解包并重新应用 staged/unstaged binary patch 后，逐个已跟踪文件与原工作树核对成功；另外抽样提取并核验实际文件。Git bundle 已验证，归档后新增 Codex snapshot refs 另存独立 bundle。
 
 五个本聊天旧工作树已通过 Codex 可恢复归档：`stability-pr`、`release-v0-12-0`、`antigravity-icon-lobehub`、`claude-managed-commit`、`all-agent-continuation`。归档前复查源码哈希、Git status 和 HEAD 均未变化，未发现 cwd/可执行文件位于旧树的运行进程，也未发现其他活动聊天使用旧路径。最终 Git worktree list 仅保留原主目录、其他任务的 hosted-v013-deploy 和本轮验收树。原主目录及 prototypes 已额外备份，未改动；分支和远端分支保留。
 

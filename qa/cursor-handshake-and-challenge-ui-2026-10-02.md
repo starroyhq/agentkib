@@ -2,7 +2,7 @@
 
 ## 源码与证据
 
-- 工作树：`/Users/kouzen/.codex/worktrees/main-acceptance-20260930/agentkib`。
+- 工作树：`/Users/user/.codex/worktrees/main-acceptance-20260930/agentkib`。
 - 分支：`codex/main-acceptance-20260930`；HEAD：`f706abaffac9950d616121f4dc86ef830a41aa09`。实际验证对象为 dirty 源码。
 - 保留前两轮未提交修改；原 QA 和证据不改写，参见 [登记隔离与首次连接](cursor-connection-p2-2026-10-02.md)、[撤销重连码与重复正文](cursor-reconnect-recovery-p2-2026-10-02.md)。
 - 本轮增量：Runtime `cursor_bridge.rs`、其集成测试，桌面 `CursorBridgePanel.tsx` 和组件测试，以及使用说明与本记录。没有新增依赖、RPC 或持久化格式变更。
@@ -35,7 +35,7 @@
 
 ## 实际命令与结果
 
-前端命令均设置 `PATH=/Users/kouzen/Library/pnpm/nodejs/22.23.2/bin:$PATH`。
+前端命令均设置 `PATH=/Users/user/Library/pnpm/nodejs/22.23.2/bin:$PATH`。
 
 | 命令                                                                                                                                                                                                           | 结果                                                                                 |
 | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------ |

@@ -6,7 +6,7 @@ import path from "node:path";
 import { createHash } from "node:crypto";
 
 export const CPA_ENDPOINT = "http://127.0.0.1:8317/v1/chat/completions";
-export const CPA_MODEL = "devin/claude-opus-5-5";
+export const CPA_MODEL = "relay/claude-opus-5-5";
 const fail = (message) => { throw new Error(`AgentKib single-dispatch guard: ${message}`); };
 const hash = (value) => createHash("sha256").update(value).digest("hex");
 

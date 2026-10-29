@@ -8,7 +8,7 @@ import { createInterface } from "node:readline";
 import { resolve, join } from "node:path";
 const repo = resolve(import.meta.dirname, "../..");
 const root = "/private/tmp/agentkib-claude-desktop-interaction-ui-2026-09-30";
-const settings = "/Users/kouzen/.claude/settings.json";
+const settings = "/Users/user/.claude/settings.json";
 const sha = (bytes) => createHash("sha256").update(bytes).digest("hex");
 const paths = {
   root,
@@ -50,7 +50,7 @@ if (process.argv[2] === "prepare") {
   const output = join(paths.workspace, "ui-approved-marker.txt");
   const prompt = `This is a synthetic desktop UI tool test. In this single turn: (1) Use Write exactly once to create ${output} containing exactly ${marker}. Do not use Bash or Edit. Wait for the tool result. (2) Use AskUserQuestion exactly once with a single-select question "Which synthetic namespace should this desktop test use?", header "Namespace", and choices "cobalt-lake" and "amber-ridge" with short descriptions. Wait for the user's tool answer, do not answer yourself. (3) Reply briefly with the exact marker and selected namespace. Do not use further tools or inspect unrelated files.`;
   await writeFile(join(root, "prompt.txt"), prompt, { mode: 0o600 });
-  const wrapper = `#!/bin/sh\nif [ "$1" = "--version" ]; then exec '/Users/kouzen/.local/bin/claude' "$@"; fi\nif ! (set -C; : > '${root}/launch.once') 2>/dev/null; then exit 76; fi\nprintf 'launch\\n' >> '${root}/model-launches'\nexec '/Users/kouzen/.local/bin/claude' --settings '${settings}' --safe-mode --setting-sources local --strict-mcp-config --permission-mode default --max-budget-usd 0.50 --model deepseek-v4-pro "$@"\n`;
+  const wrapper = `#!/bin/sh\nif [ "$1" = "--version" ]; then exec '/Users/user/.local/bin/claude' "$@"; fi\nif ! (set -C; : > '${root}/launch.once') 2>/dev/null; then exit 76; fi\nprintf 'launch\\n' >> '${root}/model-launches'\nexec '/Users/user/.local/bin/claude' --settings '${settings}' --safe-mode --setting-sources local --strict-mcp-config --permission-mode default --max-budget-usd 0.50 --model deepseek-v4-pro "$@"\n`;
   await writeFile(join(paths.bin, "claude"), wrapper, { mode: 0o700 });
   const runtime = join(repo, "target/debug/agentkib-runtime");
   const env = {

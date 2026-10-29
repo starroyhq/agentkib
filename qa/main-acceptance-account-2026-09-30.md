@@ -38,8 +38,8 @@ pnpm 的锁定安装仍自动添加了没有依赖的 account-web 空 importer�
 在 AgentKib 验收工作树执行：
 
 ```sh
-AGENTKIB_ACCOUNT_TEST_BACKEND=/Users/kouzen/Documents/data/agentkib-backend \
-AGENTKIB_ACCOUNT_TEST_RUNTIME=/Users/kouzen/.codex/worktrees/main-acceptance-20260930/agentkib/target/debug/agentkib-runtime \
+AGENTKIB_ACCOUNT_TEST_BACKEND=/Users/user/Documents/data/agentkib-backend \
+AGENTKIB_ACCOUNT_TEST_RUNTIME=/Users/user/.codex/worktrees/main-acceptance-20260930/agentkib/target/debug/agentkib-runtime \
 pnpm --filter @agentkib/desktop exec vitest run electron/main/account/remote-runtime.integration.test.ts
 ```
 

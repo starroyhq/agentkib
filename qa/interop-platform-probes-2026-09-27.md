@@ -2,7 +2,7 @@
 
 日期：2026-09-27。源码基线：`057da8b81a3f3c9536a568287175af8e50c12176`。
 
-工作目录：`/Users/kouzen/.codex/worktrees/all-agent-continuation/agentkib`。本记录对应该基线之上的未提交互通改动，不代表已发布版本。测试安装和原始程序包仅位于 `/tmp/agentkib-interop-probes`，未升级或覆盖原安装；未读取真实用户会话、数据库或凭据。本文仅记录此子任务实际完成的探测和测试，全仓库验收由主 QA 记录汇总。
+工作目录：`/Users/user/.codex/worktrees/all-agent-continuation/agentkib`。本记录对应该基线之上的未提交互通改动，不代表已发布版本。测试安装和原始程序包仅位于 `/tmp/agentkib-interop-probes`，未升级或覆盖原安装；未读取真实用户会话、数据库或凭据。本文仅记录此子任务实际完成的探测和测试，全仓库验收由主 QA 记录汇总。
 
 ## 版本与证据
 

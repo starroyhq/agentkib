@@ -21,7 +21,7 @@ assert hashlib.sha256(json.dumps(params, sort_keys=True, separators=(',', ':')).
 bin_dir = root / 'readonly-bin'
 bin_dir.mkdir(exist_ok=True)
 wrapper = bin_dir / 'claude'
-wrapper.write_text('#!/bin/sh\nif [ "$1" = "--version" ]; then exec /Users/kouzen/.local/bin/claude "$@"; fi\nexit 125\n')
+wrapper.write_text('#!/bin/sh\nif [ "$1" = "--version" ]; then exec /Users/user/.local/bin/claude "$@"; fi\nexit 125\n')
 wrapper.chmod(0o700)
 with socket.socket() as sock:
     sock.bind(('127.0.0.1',0)); port=sock.getsockname()[1]

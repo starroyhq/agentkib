@@ -10,8 +10,8 @@ import subprocess
 import sys
 
 HERE = Path(__file__).resolve().parent
-ROOT = Path('/Users/kouzen/Documents/AgentKib-archives/2026-10-01/provider-retest/OpenClaw/completion-v2')
-TOOLS = Path('/Users/kouzen/Documents/AgentKib-archives/2026-09-30/native-interop/tools')
+ROOT = Path('/Users/user/Documents/AgentKib-archives/2026-10-01/provider-retest/OpenClaw/completion-v2')
+TOOLS = Path('/Users/user/Documents/AgentKib-archives/2026-09-30/native-interop/tools')
 NODE = Path('/opt/homebrew/Cellar/node/26.9.0/bin/node')
 spec = importlib.util.spec_from_file_location('owned', HERE / 'native-offline-tui.py')
 owned = importlib.util.module_from_spec(spec); spec.loader.exec_module(owned)

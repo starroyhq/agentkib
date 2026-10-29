@@ -4,7 +4,7 @@
 
 ## 范围和环境
 
-工作树 `/Users/kouzen/.codex/worktrees/all-agent-continuation/agentkib`，源码 revision `057da8b81a3f3c9536a568287175af8e50c12176`、dirty。新增 opt-in 测试 `apps/desktop/electron/main/web/claude-managed-external-adopt-real.test.ts`，不修改已有 resume-real 测试。
+工作树 `/Users/user/.codex/worktrees/all-agent-continuation/agentkib`，源码 revision `057da8b81a3f3c9536a568287175af8e50c12176`、dirty。新增 opt-in 测试 `apps/desktop/electron/main/web/claude-managed-external-adopt-real.test.ts`，不修改已有 resume-real 测试。
 
 Claude Code `2.1.285`，模型 `deepseek-v4-pro`。源创建和接管续接各最多一次模型 user turn，单 CLI `--max-budget-usd 0.50`。原 settings 通过路径只读引用，前后 hash 一致，不复制凭据、不修改用户安装、HOME 或 CODEX_HOME。
 
@@ -34,7 +34,7 @@ Claude Code `2.1.285`，模型 `deepseek-v4-pro`。源创建和接管续接各�
 ## 实际命令
 
 ```sh
-export PATH=/Users/kouzen/Library/pnpm/nodejs/22.23.2/bin:$PATH
+export PATH=/Users/user/Library/pnpm/nodejs/22.23.2/bin:$PATH
 pnpm --filter @agentkib/desktop typecheck
 pnpm --filter @agentkib/desktop exec vitest run electron/main/web/claude-managed-external-adopt-real.test.ts electron/main/web/claude-managed-interaction-real.test.ts
 AGENTKIB_CLAUDE_EXTERNAL_ADOPT_DIR=/private/tmp/agentkib-claude-external-adopt-2026-09-30-pro-once pnpm --filter @agentkib/desktop exec vitest run electron/main/web/claude-managed-external-adopt-real.test.ts

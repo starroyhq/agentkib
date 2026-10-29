@@ -4,9 +4,9 @@
 
 ## 源码和范围
 
-- 工作树：`/Users/kouzen/.codex/worktrees/main-acceptance-20260930/agentkib`。
+- 工作树：`/Users/user/.codex/worktrees/main-acceptance-20260930/agentkib`。
 - HEAD：`0440d049647c3862b8e79a06ea14e9b0bbab39dc`，分支 `codex/main-acceptance-20260930`；起点已有 75 条 dirty/untracked 状态，不是干净 main 验收。
-- 证据目录：`/Users/kouzen/Documents/AgentKib-archives/2026-10-01/interop-closeout`。修改前保存 `baseline-status.txt`、`baseline.patch` 和 `revision.txt`；状态 SHA256 `ea18514c35972d5168f343616f64b2288719bfc226bfe404dac43b75de4451fd`，patch SHA256 `5db389e3c7eecf2a5a0144ecb26bcb8d3602166fd1aa0ced269ede1ae65424a0`。
+- 证据目录：`/Users/user/Documents/AgentKib-archives/2026-10-01/interop-closeout`。修改前保存 `baseline-status.txt`、`baseline.patch` 和 `revision.txt`；状态 SHA256 `ea18514c35972d5168f343616f64b2288719bfc226bfe404dac43b75de4451fd`，patch SHA256 `5db389e3c7eecf2a5a0144ecb26bcb8d3602166fd1aa0ced269ede1ae65424a0`。
 - 保留已有 Antigravity、互通、离线 QA 和其他 dirty 工作；本轮生产增量是 Codex 精确 gate、Cursor IDE provider/codec/桥接/导入恢复、桌面 IPC/预览/连接 UI、固定 VSIX 打包，以及版本/方向文档。OpenClaw 本轮仅修改验收执行器与合约，没有调整生产导入逻辑。
 - 无提交、推送、部署、发布、用户 Agent 替换、生产依赖新增、数据库迁移、远程控制或鉴权协议修改。
 
@@ -54,8 +54,8 @@ Runtime 集成 fixture 8 项通过：真实 Runtime 公共预览/Changes/导入�
 官方 CLI 实际成功安装 VSIX 到独立 extensions 目录，`--list-extensions --show-versions` 返回 `agentkib.cursor-bridge@0.1.0`。安装/启动命令记录在 `cursor-vsix-install.log`、`cursor-window-a-launch.log`、`cursor-window-b-launch.log`：
 
 ```sh
-/Applications/Cursor.app/Contents/Resources/app/bin/cursor --user-data-dir /Users/kouzen/.codex/tmp/cursor-bridge-1001 --extensions-dir /Users/kouzen/.codex/tmp/cursor-bridge-ext-1001 --install-extension apps/desktop/build/cursor-bridge/agentkib.cursor-bridge.vsix
-/Applications/Cursor.app/Contents/Resources/app/bin/cursor --classic --new-window --user-data-dir /Users/kouzen/.codex/tmp/cursor-bridge-1001 --extensions-dir /Users/kouzen/.codex/tmp/cursor-bridge-ext-1001 --use-inmemory-secretstorage --sync off /Users/kouzen/.codex/tmp/cursor-bridge-1001/workspace-a
+/Applications/Cursor.app/Contents/Resources/app/bin/cursor --user-data-dir /Users/user/.codex/tmp/cursor-bridge-1001 --extensions-dir /Users/user/.codex/tmp/cursor-bridge-ext-1001 --install-extension apps/desktop/build/cursor-bridge/agentkib.cursor-bridge.vsix
+/Applications/Cursor.app/Contents/Resources/app/bin/cursor --classic --new-window --user-data-dir /Users/user/.codex/tmp/cursor-bridge-1001 --extensions-dir /Users/user/.codex/tmp/cursor-bridge-ext-1001 --use-inmemory-secretstorage --sync off /Users/user/.codex/tmp/cursor-bridge-1001/workspace-a
 # 第二个窗口使用相同隔离参数与 workspace-b。
 ```
 

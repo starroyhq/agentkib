@@ -26,11 +26,11 @@ from deepseek_codex_guard import (CodexRelay, POLICY, TOOLS_SHA, make_projection
 from codex_qa_profiles import BATCH, PROFILES, binary_profile, public_snapshot
 
 HERE = Path(__file__).resolve().parent
-ROOT = Path('/Users/kouzen/Documents/AgentKib-archives/2026-10-01/provider-retest/Codex')
-CASE = Path('/Users/kouzen/Documents/AgentKib-archives/2026-09-30/full-interop/offline-grok-build-to-codex')
-BINARY = Path('/Users/kouzen/Documents/AgentKib-archives/2026-09-30/full-interop/tools-codex146/node_modules/@openai/codex-darwin-arm64/vendor/aarch64-apple-darwin/bin/codex')
+ROOT = Path('/Users/user/Documents/AgentKib-archives/2026-10-01/provider-retest/Codex')
+CASE = Path('/Users/user/Documents/AgentKib-archives/2026-09-30/full-interop/offline-grok-build-to-codex')
+BINARY = Path('/Users/user/Documents/AgentKib-archives/2026-09-30/full-interop/tools-codex146/node_modules/@openai/codex-darwin-arm64/vendor/aarch64-apple-darwin/bin/codex')
 BINARY_SHA = '35d248101b211d6248ad4e6b8c1d441fe81236da87afb9f3e9ea51a049e9f179'
-CA = Path('/Users/kouzen/Library/Python/3.11/lib/python/site-packages/certifi/cacert.pem')
+CA = Path('/Users/user/Library/Python/3.11/lib/python/site-packages/certifi/cacert.pem')
 CA_SHA = 'c55b21f907f7f86d48add093552fb5651749ff5f860508ccbb423d6c1fbd80c7'
 PROMPT = 'Recall the exact random marker and complete project storage decision from our previous history. Reply with those values only. Do not use tools.'
 SPEC = importlib.util.spec_from_file_location('codex_owned', HERE / 'native-offline-tui.py')

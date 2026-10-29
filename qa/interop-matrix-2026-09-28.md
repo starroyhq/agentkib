@@ -1,6 +1,6 @@
 # 原生来源方向矩阵与终端验收（2026-09-28）
 
-本轮在 `/Users/kouzen/.codex/worktrees/all-agent-continuation/agentkib` 实施；源码基线 `057da8b81a3f3c9536a568287175af8e50c12176`，工作区 dirty，保留此前所有改动。没有提交、推送、依赖升级或覆盖用户安装。
+本轮在 `/Users/user/.codex/worktrees/all-agent-continuation/agentkib` 实施；源码基线 `057da8b81a3f3c9536a568287175af8e50c12176`，工作区 dirty，保留此前所有改动。没有提交、推送、依赖升级或覆盖用户安装。
 
 ## 自动化范围
 
@@ -39,8 +39,8 @@ Claude 命令：
 
 ```sh
 CLAUDE_CONFIG_DIR=/private/tmp/agentkib-interop-2026-09-28/claude-reply-1 \
-  /Users/kouzen/.local/bin/claude --safe-mode \
-  --settings /Users/kouzen/.claude/settings.json --setting-sources '' \
+  /Users/user/.local/bin/claude --safe-mode \
+  --settings /Users/user/.claude/settings.json --setting-sources '' \
   --strict-mcp-config --tools '' \
   --resume c8b6dbf7-116d-405c-930d-67a213e3aa4a
 ```

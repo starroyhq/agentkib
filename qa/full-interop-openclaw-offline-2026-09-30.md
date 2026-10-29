@@ -4,11 +4,11 @@
 
 ## 输入与版本
 
-工作树 `/Users/kouzen/.codex/worktrees/main-acceptance-20260930/agentkib`，基线 `0440d04`，本轮处于 dirty 状态。只新增 QA 脚本与记录，没有修改第三方 CLI、用户 Agent 安装或产品协议。
+工作树 `/Users/user/.codex/worktrees/main-acceptance-20260930/agentkib`，基线 `0440d04`，本轮处于 dirty 状态。只新增 QA 脚本与记录，没有修改第三方 CLI、用户 Agent 安装或产品协议。
 
 从既有公共 RPC 导入用例 `native-interop/openclaw-rpc-v2` 制作独立 SQLite backup 副本；目标 session 为 `d8121789-4e47-4b46-b0ca-c459497c0360`。原始安装固定于 `native-interop/tools/openclaw/node_modules/openclaw`，Node `v26.9.0`。每个故障有新的私有目录，不复用已消费的 token。
 
-正式 custom provider 使用 `api: openai-completions` 和 `apiKey: {source: env, provider: default, id: AGENTKIB_QA_CPA_KEY}`。只有进程环境持有明显的假测试值，关闭插件、工具与 bootstrap。模型名称保持选定的 `devin/claude-opus-5-5`，mock 返回合成错误，没有生成模型内容。
+正式 custom provider 使用 `api: openai-completions` 和 `apiKey: {source: env, provider: default, id: AGENTKIB_QA_CPA_KEY}`。只有进程环境持有明显的假测试值，关闭插件、工具与 bootstrap。模型名称保持选定的 `relay/claude-opus-5-5`，mock 返回合成错误，没有生成模型内容。
 
 ## 原生传输投影
 

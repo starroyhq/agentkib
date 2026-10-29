@@ -20,7 +20,7 @@ import uuid
 
 sys.dont_write_bytecode = True
 HERE = Path(__file__).resolve().parent
-ROOT = Path('/Users/kouzen/Documents/AgentKib-archives/2026-10-01/interop-closeout/cursor-native')
+ROOT = Path('/Users/user/Documents/AgentKib-archives/2026-10-01/interop-closeout/cursor-native')
 LEGACY = ROOT / 'reverse-claude'
 DEFAULT_CASE = ROOT / 'reverse-claude-recovery'
 ORIGINAL_SHA = '0df33e2a924aa8f0a221afa7eb84158bd8c11b9e0a7b9330464750b86f5fa44e'

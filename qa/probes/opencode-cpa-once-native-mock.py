@@ -76,7 +76,7 @@ history = [{"role": m["info"]["role"], "text": "\n".join(p["text"] for p in m["p
            for m in native["messages"]]
 prompt = "Recall the random marker and project decision from the previous history. Answer only those values. Do not use tools."
 contract = case / "contract.json"
-contract.write_text(json.dumps(dict(endpoint=endpoint, model="devin/claude-opus-5-5", sessionId=native["info"]["id"], history=history, prompt=prompt)))
+contract.write_text(json.dumps(dict(endpoint=endpoint, model="relay/claude-opus-5-5", sessionId=native["info"]["id"], history=history, prompt=prompt)))
 env = {"PATH": "/opt/homebrew/bin:/usr/bin:/bin", "HOME": str(case / "home"), "TERM": "xterm-256color",
        "OPENCODE_DISABLE_AUTOUPDATE": "true", "OPENCODE_DISABLE_DEFAULT_PLUGINS": "true",
        "OPENCODE_DISABLE_MODELS_FETCH": "true", "AGENTKIB_QA_ONCE_CONTRACT": str(contract),
@@ -85,9 +85,9 @@ for name in ("DATA", "CONFIG", "STATE", "CACHE"):
     env[f"XDG_{name}_HOME"] = str(case / name.lower())
 config = case / "config/opencode/opencode.json"
 config.parent.mkdir(parents=True)
-config.write_text(json.dumps({"model": "agentkib-cpa/devin/claude-opus-5-5", "enabled_providers": ["agentkib-cpa"], "autoupdate": False, "share": "disabled",
+config.write_text(json.dumps({"model": "agentkib-cpa/relay/claude-opus-5-5", "enabled_providers": ["agentkib-cpa"], "autoupdate": False, "share": "disabled",
     "permission": "deny", "plugin": [str(Path(__file__).with_name("opencode-cpa-once-plugin.mjs"))],
-    "provider": {"agentkib-cpa": {"npm": "@ai-sdk/openai-compatible", "name": "QA authorized CPA", "models": {"devin/claude-opus-5-5": {"name": "Selected Opus mapping", "limit": {"context": 200000,"output":4096}}}, "options": {"baseURL": "http://127.0.0.1:9/blocked"}}},
+    "provider": {"agentkib-cpa": {"npm": "@ai-sdk/openai-compatible", "name": "QA authorized CPA", "models": {"relay/claude-opus-5-5": {"name": "Selected Opus mapping", "limit": {"context": 200000,"output":4096}}}, "options": {"baseURL": "http://127.0.0.1:9/blocked"}}},
     "agent": {"title": {"disable": True}, "compaction": {"disable": True},
               "build": {"tools": {"*": False}}}, "compaction": {"auto": False, "prune": False}}))
 subprocess.run([str(cli), "import", str(payload)], env=env, cwd=workspace, check=True,
@@ -99,7 +99,7 @@ if mode in ("missing-plugin", "throw-plugin", "throw-config"):
     elif mode == "throw-config":
         bad.write_text('export const Bad = async () => ({config: async () => { throw Error("fixture config failure"); }});')
     changed = json.loads(config.read_text()); changed["plugin"] = [str(bad)]; config.write_text(json.dumps(changed))
-child = subprocess.Popen([str(cli), "run", "--session", native["info"]["id"], "--model", "agentkib-cpa/devin/claude-opus-5-5", "--format", "json"],
+child = subprocess.Popen([str(cli), "run", "--session", native["info"]["id"], "--model", "agentkib-cpa/relay/claude-opus-5-5", "--format", "json"],
     env=env, cwd=workspace, stdin=subprocess.PIPE, stdout=(case / "run.stdout").open("w"), stderr=(case / "run.stderr").open("w"), start_new_session=True)
 child.stdin.write(prompt.encode()); child.stdin.close()
 deadline = time.monotonic() + 25

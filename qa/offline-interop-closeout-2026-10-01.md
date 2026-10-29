@@ -4,7 +4,7 @@
 
 按用户收紧后的目标，仅收尾 Claude Code、Codex、OpenCode、Hermes、OpenClaw 五个已有目标、七个可用来源的35个代表纯文本方向。沿用固定版本和已通过证据；剩余用例执行一轮，确定缺陷最多一轮最小修复及针对性复验。Grok、Cursor、Antigravity 目标端保持既有禁用门限。没有新模型请求、登录、供应商配置修改或版本扩展。
 
-工作树 `/Users/kouzen/.codex/worktrees/main-acceptance-20260930/agentkib`，分支 `codex/main-acceptance-20260930`，HEAD `0440d049647c3862b8e79a06ea14e9b0bbab39dc`，保留已有dirty改动。HEAD不能独自代表本轮源码，最终文件SHA清单另存私有证据。没有提交、推送、合并、部署、发布或覆盖已安装应用。
+工作树 `/Users/user/.codex/worktrees/main-acceptance-20260930/agentkib`，分支 `codex/main-acceptance-20260930`，HEAD `0440d049647c3862b8e79a06ea14e9b0bbab39dc`，保留已有dirty改动。HEAD不能独自代表本轮源码，最终文件SHA清单另存私有证据。没有提交、推送、合并、部署、发布或覆盖已安装应用。
 
 | 目标 | 本机固定版本 | 原生核对方式 |
 | --- | --- | --- |

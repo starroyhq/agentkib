@@ -1,6 +1,6 @@
 {
   "provider": "cpa",
-  "selectedOpus": "devin/claude-opus-5-5",
+  "selectedOpus": "relay/claude-opus-5-5",
   "cliModel": "opus",
   "cliOpus": "claude-opus-5",
   "loopback": true,

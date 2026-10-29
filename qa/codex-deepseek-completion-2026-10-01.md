@@ -2,7 +2,7 @@
 
 2026-10-01，本批次两个新公共目标均通过一次官方 DeepSeek `deepseek-v4-pro` 请求、CLI 完整回复及两个独立禁网原生恢复。共两次上游 POST，没有自动重试、换模型、登录、安装或复制凭据。旧失败记录不覆盖。
 
-证据根：`/Users/kouzen/Documents/AgentKib-archives/2026-10-01/codex-completion-batch`。主执行器与 guard 经 OpenClaw 子代理交叉审查、主代理抽查后才发送真实请求；本子代理随后直接重算原始 SSE、持久化全文、公共计划、来源和两个 app-server RPC 日志，结果另存 `independent-audit.json`。
+证据根：`/Users/user/Documents/AgentKib-archives/2026-10-01/codex-completion-batch`。主执行器与 guard 经 OpenClaw 子代理交叉审查、主代理抽查后才发送真实请求；本子代理随后直接重算原始 SSE、持久化全文、公共计划、来源和两个 app-server RPC 日志，结果另存 `independent-audit.json`。
 
 | 方向 | 固定版本 | 新目标 ID | 唯一请求 | 原生完整恢复 |
 | --- | --- | --- | --- | --- |

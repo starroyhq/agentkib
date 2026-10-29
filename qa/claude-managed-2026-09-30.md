@@ -8,10 +8,10 @@
 
 ## 源码及环境
 
-- 工作树：`/Users/kouzen/.codex/worktrees/all-agent-continuation/agentkib`。
+- 工作树：`/Users/user/.codex/worktrees/all-agent-continuation/agentkib`。
 - HEAD：`057da8b81a3f3c9536a568287175af8e50c12176`，detached / dirty；原有互通、Antigravity、Codex、远控等改动全部保留。
 - 本轮前 1151 文件 SHA256 基线：`/tmp/agentkib-claude-v1-2026-09-30/baseline.json`；原始 status 同目录 `status.txt`。本轮增量文件清单另存 `claude-managed-2026-09-30-files.json`，不能把整个 HEAD diff 当作本轮改动。
-- macOS arm64；Node `22.23.2`、pnpm `10.8.1`、Cargo `1.92.0`；CLI `/Users/kouzen/.local/bin/claude` = `2.1.285 (Claude Code)`。
+- macOS arm64；Node `22.23.2`、pnpm `10.8.1`、Cargo `1.92.0`；CLI `/Users/user/.local/bin/claude` = `2.1.285 (Claude Code)`。
 - 无生产依赖新增、凭据复制、用户 CLI 更新、数据库表结构迁移、提交、推送、打 tag 或发布。
 
 ## 能力与兼容矩阵
@@ -118,7 +118,7 @@ AGENTKIB_CLAUDE_NATIVE_DIR=/private/tmp/agentkib-claude-v1-native-2026-09-30-use
 
 ## CC Switch 映射核对与连接阻塞定位
 
-用户说明通过 CC Switch 修改映射后，只读查询其本地 SQLite 当前 Claude provider。确认 `windsurfapi` 的 Opus 映射已为 `claude-opus-5-5-medium`；因此此前仅根据 Claude settings 判定“模型未修改”不完整。Claude settings 仍保存 `claude-opus-5`，前次代理日志也确实以旧名转发，不能单凭 CLI 展示推断 CC Switch 中的配置。
+用户说明通过 CC Switch 修改映射后，只读查询其本地 SQLite 当前 Claude provider。确认 `relay-provider` 的 Opus 映射已为 `claude-opus-5-5-medium`；因此此前仅根据 Claude settings 判定“模型未修改”不完整。Claude settings 仍保存 `claude-opus-5`，前次代理日志也确实以旧名转发，不能单凭 CLI 展示推断 CC Switch 中的配置。
 
 在用户已选定的新映射下执行一次独立用例：
 
@@ -136,11 +136,11 @@ AGENTKIB_CLAUDE_NATIVE_MODEL=claude-opus-5-5-medium \
 
 ## 用户再次切换 provider 后验收：cpa
 
-用户再次授权重试。只读核对 CC Switch 当前 provider 为 `cpa`，Opus 映射为 `devin/claude-opus-5-5`，本机 HTTP 8317 端口 TCP 连通。使用新隔离目录，验收脚本显式采用这一用户选定模型；仅放宽测试模型名字符集以接受 provider/model 形式，仍拒绝 shell 元字符，不修改生产逻辑或用户配置。
+用户再次授权重试。只读核对 CC Switch 当前 provider 为 `cpa`，Opus 映射为 `relay/claude-opus-5-5`，本机 HTTP 8317 端口 TCP 连通。使用新隔离目录，验收脚本显式采用这一用户选定模型；仅放宽测试模型名字符集以接受 provider/model 形式，仍拒绝 shell 元字符，不修改生产逻辑或用户配置。
 
 ```sh
 AGENTKIB_CLAUDE_NATIVE_DIR=/private/tmp/agentkib-claude-v1-native-2026-09-30-cpa \
-AGENTKIB_CLAUDE_NATIVE_MODEL=devin/claude-opus-5-5 \
+AGENTKIB_CLAUDE_NATIVE_MODEL=relay/claude-opus-5-5 \
   pnpm --filter @agentkib/desktop exec vitest run electron/main/web/claude-managed-real.test.ts
 ```
 

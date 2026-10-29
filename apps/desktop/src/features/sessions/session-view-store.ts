@@ -1,6 +1,7 @@
 import { create } from "zustand";
 import type { AgentKind, ConversationSessionSummary, WorkspaceSummary } from "@/core/types";
 import type { ConversationPanel } from "./conversation-panel-commands";
+import { sessionCollection } from "@agentkib/runtime-protocol";
 import { isSessionListed } from "./session-catalog";
 
 export type RequestedConversationPanel = { sessionId: string; panel: ConversationPanel };
@@ -85,6 +86,8 @@ export const useSessionViewStore = create<{
   filter: SessionRecordFilter;
   /** Also list sessions a program started (SDK and `-p` runs, Codex `exec`). */
   execution: boolean;
+  /** Also list conversation-only sessions with no project folder (Codex projectless/rootless). */
+  collections: boolean;
   collapsed: Record<string, boolean>;
   workspaceOrder: string[];
   sessionOrder: Record<string, string[]>;
@@ -105,6 +108,7 @@ export const useSessionViewStore = create<{
   setHost: (host: string) => void;
   setFilter: (filter: SessionRecordFilter) => void;
   setExecution: (execution: boolean) => void;
+  setCollections: (collections: boolean) => void;
   toggleWorkspace: (id: string) => void;
   /** A session the directory still has to reveal; its group may be its repository's. */
   revealedSessionId?: string;
@@ -118,6 +122,7 @@ export const useSessionViewStore = create<{
   host: "all",
   filter: "current",
   execution: false,
+  collections: false,
   collapsed: {},
   ...initialDirectoryOrder,
   scrollTop: 0,
@@ -136,6 +141,7 @@ export const useSessionViewStore = create<{
   setCreatingConversation: (creatingConversation) => set({ creatingConversation }),
   revealSession: (session) => {
     if (!isSessionListed(session, { execution: get().execution })) return;
+    if (!get().collections && sessionCollection(session.workspace_id)) return;
     set((state) => ({
       host:
         state.host === "all" || state.host === (session.remote?.host_id ?? "local")
@@ -156,6 +162,7 @@ export const useSessionViewStore = create<{
   setHost: (host) => set({ host }),
   setFilter: (filter) => set({ filter }),
   setExecution: (execution) => set({ execution }),
+  setCollections: (collections) => set({ collections }),
   toggleWorkspace: (id) =>
     set((state) => ({ collapsed: { ...state.collapsed, [id]: !state.collapsed[id] } })),
   expandRevealed: (groupId) =>
@@ -177,7 +184,8 @@ export const useSessionViewStore = create<{
       return { sessionOrder };
     }),
   setScrollTop: (scrollTop) => set({ scrollTop }),
-  resetFilters: () => set({ agent: "all", filter: "current", host: "all", execution: false }),
+  resetFilters: () =>
+    set({ agent: "all", filter: "current", host: "all", execution: false, collections: false }),
 }));
 
 /** Make a deep-linked session visible without discarding already compatible filters. */

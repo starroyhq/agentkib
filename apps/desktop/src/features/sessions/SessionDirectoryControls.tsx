@@ -34,10 +34,12 @@ export function SessionDirectoryControls({
       filter: state.filter,
       host: state.host,
       execution: state.execution,
+      collections: state.collections,
       setAgent: state.setAgent,
       setFilter: state.setFilter,
       setHost: state.setHost,
       setExecution: state.setExecution,
+      setCollections: state.setCollections,
       resetFilters: state.resetFilters,
     })),
   );
@@ -46,7 +48,8 @@ export function SessionDirectoryControls({
     Number(view.agent !== "all") +
     Number(view.filter !== "current") +
     Number(view.host !== "all") +
-    Number(view.execution);
+    Number(view.execution) +
+    Number(view.collections);
   const filtersActive = activeFilterCount > 0;
   return (
     <div className="session-directory-controls grid gap-3 px-1 pt-3 pb-2">
@@ -148,6 +151,12 @@ export function SessionDirectoryControls({
               >
                 {tr("sessions.showExecution")}
               </DropdownMenuCheckboxItem>
+              <DropdownMenuCheckboxItem
+                checked={view.collections}
+                onCheckedChange={(checked) => view.setCollections(checked)}
+              >
+                {tr("sessions.showCollections")}
+              </DropdownMenuCheckboxItem>
               <DropdownMenuSeparator />
               <DropdownMenuItem disabled={!filtersActive} onClick={view.resetFilters}>
                 {tr("sessions.clearFilters")}
@@ -209,6 +218,19 @@ export function SessionDirectoryControls({
               onClick={() => view.setExecution(false)}
             >
               {tr("sessions.executionSession")}
+              <X size={12} aria-hidden="true" />
+            </Button>
+          )}
+          {view.collections && (
+            <Button
+              variant="outline"
+              size="sm"
+              className="h-7 gap-1 rounded-full px-2 text-xs"
+              aria-label={`${tr("sessions.hideCollections")}: ${tr("sessions.collectionSession")}`}
+              disabled={!hub.enabled}
+              onClick={() => view.setCollections(false)}
+            >
+              {tr("sessions.collectionSession")}
               <X size={12} aria-hidden="true" />
             </Button>
           )}

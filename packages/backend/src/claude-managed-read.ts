@@ -3601,6 +3601,18 @@ export class ClaudeManagedReadOwner {
     );
   }
 
+  /**
+   * Native IDs this catalog lists. They run with `--print`, so Claude Code records them as
+   * `sdk-cli`; the index keeps them as conversations instead of hiding them like other SDK runs.
+   */
+  managedNativeIds(): Set<string> {
+    return new Set(
+      this.#listRecords().flatMap((record) =>
+        record.released && record.adopted ? [] : [record.nativeId.toLowerCase()],
+      ),
+    );
+  }
+
   #directory(): string {
     return path.join(this.dataDir, "claude-managed");
   }

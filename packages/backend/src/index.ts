@@ -553,6 +553,7 @@ export class TypeScriptBackend {
             return typeof value === "boolean" ? value : true;
           },
           () => this.#historySearch?.refresh(),
+          () => this.#claudeManaged?.managedNativeIds() ?? new Set(),
         );
         this.#stopping = false;
         const runtimeBootId = randomUUID();

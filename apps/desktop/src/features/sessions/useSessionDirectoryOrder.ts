@@ -1,5 +1,6 @@
 import { useRef, useState, type DragEvent, type KeyboardEvent } from "react";
 import { useShallow } from "zustand/react/shallow";
+import type { SessionVisibility } from "@agentkib/session-catalog";
 import type { ConversationSessionSummary, WorkspaceSummary } from "@/core/types";
 import { groupSessions } from "./session-catalog";
 import {
@@ -8,6 +9,7 @@ import {
   useSessionViewStore,
 } from "./session-view-store";
 
+/** `workspaceId` names a directory group (see `SessionGroup.id`). */
 type DirectoryDragEntry =
   | { kind: "workspace"; workspaceId: string }
   | { kind: "session"; workspaceId: string; sessionId: string };
@@ -40,11 +42,15 @@ export function sessionOrder(sessions: ConversationSessionSummary[], ids: string
   });
 }
 
-/** Keep full catalog ordering while dragging a filtered directory. */
+/**
+ * Keep full catalog ordering while dragging a filtered directory. Order and collapse state are
+ * keyed by group: a repository's checkouts share one group, named by its main checkout.
+ */
 export function useSessionDirectoryOrder(hub: {
   sessions: ConversationSessionSummary[];
   filtered: ConversationSessionSummary[];
   workspaces: WorkspaceSummary[];
+  visibility?: SessionVisibility;
 }) {
   const view = useSessionViewStore(
     useShallow((state) => ({
@@ -58,20 +64,24 @@ export function useSessionDirectoryOrder(hub: {
   const [draggingId, setDraggingId] = useState<string>();
   const [dropTargetId, setDropTargetId] = useState<string>();
   const [dropAfter, setDropAfter] = useState(false);
-  const groups = groupSessions(hub.filtered, hub.workspaces);
-  const allGroups = groupSessions(hub.sessions, hub.workspaces);
-  const completeWorkspaceOrder = normalizeDirectoryOrder(
-    view.workspaceOrder,
-    hub.workspaces.map((workspace) => workspace.id),
-  );
+  const groups = groupSessions(hub.filtered, hub.workspaces, hub.visibility);
+  const allGroups = groupSessions(hub.sessions, hub.workspaces, hub.visibility);
+  // Saved positions of workspaces without sessions survive until they reappear.
+  const orderIds = [
+    ...new Set([...hub.workspaces.map((workspace) => workspace.id), ...allGroups.map((g) => g.id)]),
+  ];
+  const completeWorkspaceOrder = normalizeDirectoryOrder(view.workspaceOrder, orderIds);
+  const groupHost = (id: string) =>
+    (allGroups.find((group) => group.id === id) ?? groups.find((group) => group.id === id))
+      ?.workspace.remote?.host_id ?? "local";
   const workspacePositions = new Map(completeWorkspaceOrder.map((id, index) => [id, index]));
   const orderedGroups = [...groups].sort((left, right) => {
     const leftHost = left.workspace.remote?.host_id ?? "";
     const rightHost = right.workspace.remote?.host_id ?? "";
     const hostOrder = leftHost.localeCompare(rightHost);
     if (hostOrder !== 0) return hostOrder;
-    const leftPosition = workspacePositions.get(left.workspace.id);
-    const rightPosition = workspacePositions.get(right.workspace.id);
+    const leftPosition = workspacePositions.get(left.id);
+    const rightPosition = workspacePositions.get(right.id);
     if (leftPosition === undefined) return rightPosition === undefined ? 0 : 1;
     if (rightPosition === undefined) return -1;
     return leftPosition - rightPosition;
@@ -92,15 +102,11 @@ export function useSessionDirectoryOrder(hub: {
     const source = draggedEntry.current;
     if (!source || source.kind !== target.kind) return;
     if (target.kind === "session" && source.workspaceId !== target.workspaceId) return;
-    if (target.kind === "workspace") {
-      const sourceWorkspace = hub.workspaces.find((item) => item.id === source.workspaceId);
-      const targetWorkspace = hub.workspaces.find((item) => item.id === target.workspaceId);
-      if (
-        (sourceWorkspace?.remote?.host_id ?? "local") !==
-        (targetWorkspace?.remote?.host_id ?? "local")
-      )
-        return;
-    }
+    if (
+      target.kind === "workspace" &&
+      groupHost(source.workspaceId) !== groupHost(target.workspaceId)
+    )
+      return;
     const sourceId = source.kind === "workspace" ? source.workspaceId : source.sessionId;
     const targetId = target.kind === "workspace" ? target.workspaceId : target.sessionId;
     if (sourceId === targetId) return;
@@ -119,28 +125,25 @@ export function useSessionDirectoryOrder(hub: {
     const source = draggedEntry.current;
     if (!source || source.kind !== target.kind) return;
     if (source.kind === "workspace" && target.kind === "workspace") {
-      const sourceWorkspace = hub.workspaces.find((item) => item.id === source.workspaceId);
-      const targetWorkspace = hub.workspaces.find((item) => item.id === target.workspaceId);
-      if (
-        (sourceWorkspace?.remote?.host_id ?? "local") !==
-        (targetWorkspace?.remote?.host_id ?? "local")
-      ) {
+      if (groupHost(source.workspaceId) !== groupHost(target.workspaceId)) {
         finishDrag();
         return;
       }
-      const completeOrder = normalizeDirectoryOrder(
-        view.workspaceOrder,
-        hub.workspaces.map((workspace) => workspace.id),
-      );
       view.setWorkspaceOrder(
-        moveRelative(completeOrder, source.workspaceId, target.workspaceId, dropAfter, (id) => id),
+        moveRelative(
+          completeWorkspaceOrder,
+          source.workspaceId,
+          target.workspaceId,
+          dropAfter,
+          (id) => id,
+        ),
       );
     } else if (
       source.kind === "session" &&
       target.kind === "session" &&
       source.workspaceId === target.workspaceId
     ) {
-      const group = allGroups.find((item) => item.workspace.id === source.workspaceId);
+      const group = allGroups.find((item) => item.id === source.workspaceId);
       if (group) {
         const completeOrder = normalizeSessionDirectoryOrder(
           view.sessionOrder[source.workspaceId] ?? [],
@@ -160,12 +163,10 @@ export function useSessionDirectoryOrder(hub: {
     const after = event.key === "ArrowDown";
 
     if (target.kind === "workspace") {
-      const hostId =
-        hub.workspaces.find((workspace) => workspace.id === target.workspaceId)?.remote?.host_id ??
-        "local";
+      const hostId = groupHost(target.workspaceId);
       const siblings = orderedGroups
         .filter((group) => (group.workspace.remote?.host_id ?? "local") === hostId)
-        .map((group) => group.workspace.id);
+        .map((group) => group.id);
       const index = siblings.indexOf(target.workspaceId);
       const neighbor = siblings[index + (after ? 1 : -1)];
       if (!neighbor) return;
@@ -175,8 +176,8 @@ export function useSessionDirectoryOrder(hub: {
       return;
     }
 
-    const visibleGroup = groups.find((group) => group.workspace.id === target.workspaceId);
-    const allGroup = allGroups.find((group) => group.workspace.id === target.workspaceId);
+    const visibleGroup = groups.find((group) => group.id === target.workspaceId);
+    const allGroup = allGroups.find((group) => group.id === target.workspaceId);
     if (!visibleGroup || !allGroup) return;
     const visibleIds = sessionOrder(
       visibleGroup.sessions,

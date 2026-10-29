@@ -80,6 +80,7 @@ export function refreshConversationCatalog(): Promise<ConversationSessionSummary
         git_branch: session.git_branch ?? undefined,
         forked_from_session_id: session.forked_from_session_id ?? undefined,
         spawned_by_session_id: session.spawned_by_session_id ?? undefined,
+        worktree: session.worktree ?? undefined,
       }));
       if (generation !== request) return sessions;
       if (version === invalidation) {

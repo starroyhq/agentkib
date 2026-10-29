@@ -11,8 +11,10 @@ import {
   sessionAgentNames,
   sessionRecordLabel,
   sessionSourceLabel,
+  worktreeLabel,
 } from "./session-labels";
 import { SessionNotice as Notice } from "./SessionNotice";
+import { WorktreeMark } from "./WorktreeMark";
 import { sessionSourceWasUsed } from "./session-source-status";
 
 export function SessionOverview() {
@@ -65,7 +67,7 @@ export function SessionOverview() {
                   key={session.id}
                   onClick={() => hub.select(session.id)}
                   title={[
-                    source?.path,
+                    session.worktree ? worktreeLabel(session.worktree, tr) : source?.path,
                     sessionSourceLabel(session, hub.sessions, tr, formatDateTime),
                   ]
                     .filter(Boolean)
@@ -75,6 +77,12 @@ export function SessionOverview() {
                   <span className="grid min-w-0 flex-1 gap-[5px]">
                     <strong className="inline-flex items-center gap-1 font-[550] [overflow-wrap:anywhere]">
                       {displaySessionTitle(session.title, tr)}
+                      {session.worktree && (
+                        <WorktreeMark
+                          label={worktreeLabel(session.worktree, tr)}
+                          deleted={session.worktree.status === "deleted"}
+                        />
+                      )}
                       {isInteractiveFork(session) && (
                         <GitBranch
                           size={12}

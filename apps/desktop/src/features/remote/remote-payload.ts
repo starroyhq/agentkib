@@ -22,6 +22,31 @@ const origin = z
   .transform((value) =>
     value === "interactive" || value === "auxiliary" || value === "execution" ? value : "unknown",
   );
+// Checkout facts only group and label rows; an invalid value drops the fact, not the record.
+const checkoutText = z.string().min(1).max(4096);
+const checkoutStatus = z.enum(["present", "deleted", "unknown"]);
+const checkout = z
+  .object({
+    repository_group_id: checkoutText,
+    kind: z.enum(["primary", "worktree"]),
+    primary_path: checkoutText.nullable(),
+    name: checkoutText.nullable(),
+    branch: checkoutText.nullable(),
+    status: checkoutStatus,
+  })
+  .optional()
+  .catch(undefined);
+const worktree = z
+  .object({
+    repository_group_id: checkoutText.nullable(),
+    name: checkoutText,
+    path: checkoutText,
+    branch: checkoutText.nullable(),
+    status: checkoutStatus,
+  })
+  .nullish()
+  .catch(undefined)
+  .transform((value) => value ?? undefined);
 const catalog = z.object({
   workspaces: z
     .array(
@@ -34,6 +59,7 @@ const catalog = z.object({
         warning_count: count.default(0),
         last_active_at: optionalTimestamp,
         last_scanned_at: optionalTimestamp,
+        checkout,
       }),
     )
     .max(20_000),
@@ -62,6 +88,7 @@ const catalog = z.object({
         spawned_by_session_id: relationshipId,
         forked_from_session_id: relationshipId,
         availability: z.enum(["readable", "metadata-only"]),
+        worktree,
       }),
     )
     .max(20_000),

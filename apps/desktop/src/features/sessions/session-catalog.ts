@@ -5,9 +5,12 @@ import {
 } from "@agentkib/session-catalog";
 export {
   isAuxiliarySession,
+  isExecutionSession,
+  isSessionListed,
   isSessionVisible,
   sortSessions,
   groupSessions,
+  type SessionGroup,
 } from "@agentkib/session-catalog";
 import { tr } from "@/core/i18n";
 
@@ -17,6 +20,8 @@ export interface SessionCatalogFilter {
   query: string;
   agent: AgentKind | "all";
   filter: SessionRecordFilter;
+  /** Also list sessions a program started. */
+  execution?: boolean;
 }
 
 export function filterSessions(

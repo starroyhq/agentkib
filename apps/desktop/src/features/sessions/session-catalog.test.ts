@@ -281,6 +281,141 @@ describe("session catalog", () => {
     expect(groups[0].sessions.map(({ id }) => id)).toEqual(["archived"]);
   });
 
+  describe("git worktrees", () => {
+    const checkout = (
+      kind: "primary" | "worktree",
+      extra: Partial<NonNullable<WorkspaceSummary["checkout"]>> = {},
+    ) => ({
+      repository_group_id: "repo",
+      kind,
+      primary_path: "/work/app",
+      name: kind === "worktree" ? "feature" : null,
+      branch: "main",
+      status: "present" as const,
+      ...extra,
+    });
+    const worktree = (name: string, status: "present" | "deleted" | "unknown" = "present") => ({
+      repository_group_id: "repo",
+      name,
+      path: `/worktrees/${name}/app`,
+      branch: `codex/${name}`,
+      status,
+    });
+    const at = (id: string, workspace_id: string, day: number, extra = {}) => ({
+      ...sessions[0],
+      id,
+      workspace_id,
+      updated_at: `2026-09-${String(day).padStart(2, "0")}T00:00:00Z`,
+      ...extra,
+    });
+
+    it("merges a repository's checkouts under its main checkout and marks worktree sessions", () => {
+      const projects = [
+        { id: "main", name: "app", path: "/work/app", checkout: checkout("primary") },
+        {
+          id: "wt",
+          name: "app",
+          path: "/worktrees/feature/app",
+          checkout: checkout("worktree"),
+        },
+        { id: "home", name: "home", path: "/home" },
+        { id: "other", name: "other", path: "/other" },
+      ] as WorkspaceSummary[];
+      const records = [
+        at("primary", "main", 1),
+        at("registered", "wt", 2, { worktree: worktree("feature") }),
+        at("deleted", "home", 3, { worktree: worktree("h2", "deleted") }),
+        at("plain", "home", 4),
+        at("foreign", "other", 5, { worktree: { ...worktree("x"), repository_group_id: "else" } }),
+      ];
+      const groups = groupSessions(records, projects);
+      expect(groups.map((group) => [group.id, group.sessions.map(({ id }) => id)])).toEqual([
+        ["other", ["foreign"]],
+        ["home", ["plain"]],
+        ["main", ["deleted", "registered", "primary"]],
+      ]);
+      const repository = groups[2];
+      expect(repository).toMatchObject({
+        label: "app",
+        path: "/work/app",
+        workspaceIds: ["main", "wt"],
+        worktrees: ["feature", "h2"],
+        worktree: false,
+      });
+      expect(repository.workspace.id).toBe("main");
+    });
+
+    it("names a repository without a registered main checkout after its main folder", () => {
+      const projects = [
+        {
+          id: "wt",
+          name: "app",
+          path: "/worktrees/feature/app",
+          checkout: checkout("worktree", { primary_path: "/work/app-main" }),
+        },
+      ] as WorkspaceSummary[];
+      const [group] = groupSessions([at("one", "wt", 1)], projects);
+      expect(group).toMatchObject({
+        name: "app-main",
+        path: "/work/app-main",
+        worktree: false,
+        workspaceIds: ["wt"],
+      });
+      expect(group.id).not.toBe("wt");
+      const [bare] = groupSessions(
+        [at("one", "wt", 1)],
+        [{ ...projects[0], checkout: checkout("worktree", { primary_path: null }) }],
+      );
+      expect(bare).toMatchObject({ name: "app", path: "/worktrees/feature/app", worktree: true });
+    });
+
+    it("keeps sessions of another host or an unregistered repository where they are", () => {
+      const projects = [
+        { id: "main", name: "app", path: "/work/app", checkout: checkout("primary") },
+        {
+          id: "remote-home",
+          name: "home",
+          path: "/home",
+          remote: { host_id: "mac", online: true },
+        },
+      ] as WorkspaceSummary[];
+      const groups = groupSessions(
+        [at("remote", "remote-home", 1, { worktree: worktree("feature") })],
+        projects,
+      );
+      expect(groups.map(({ id }) => id)).toEqual(["remote-home"]);
+    });
+
+    it("lists program-started sessions only when asked and searches worktree names", () => {
+      const projects = [{ id: "one", name: "app", path: "/app" }] as WorkspaceSummary[];
+      const records = [
+        at("ordinary", "one", 1, { worktree: worktree("app-h1a") }),
+        at("pen", "one", 2, { origin: "execution" as const }),
+        at("helper", "one", 3, { origin: "auxiliary" as const }),
+      ];
+      const ids = (execution?: boolean) =>
+        filterSessions(records, projects, {
+          query: "",
+          agent: "all",
+          filter: "all",
+          execution,
+        }).map(({ id }) => id);
+      expect(ids()).toEqual(["ordinary"]);
+      expect(ids(true)).toEqual(["pen", "ordinary"]);
+      expect(groupSessions(records, projects)[0].sessions.map(({ id }) => id)).toEqual([
+        "ordinary",
+      ]);
+      expect(
+        groupSessions(records, projects, { execution: true })[0].sessions.map(({ id }) => id),
+      ).toEqual(["pen", "ordinary"]);
+      expect(
+        filterSessions(records, projects, { query: "H1A", agent: "all", filter: "all" }).map(
+          ({ id }) => id,
+        ),
+      ).toEqual(["ordinary"]);
+    });
+  });
+
   it("keeps remote host groups contiguous and equal timestamps stable", () => {
     const projects = [
       { id: "one", name: "One", path: "/one" },

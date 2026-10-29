@@ -1,7 +1,7 @@
 import { create } from "zustand";
 import type { AgentKind, ConversationSessionSummary, WorkspaceSummary } from "@/core/types";
 import type { ConversationPanel } from "./conversation-panel-commands";
-import { isSessionVisible } from "./session-catalog";
+import { isSessionListed } from "./session-catalog";
 
 export type RequestedConversationPanel = { sessionId: string; panel: ConversationPanel };
 export type HistoryContinuationRequest = {
@@ -83,6 +83,8 @@ export const useSessionViewStore = create<{
   agent: AgentKind | "all";
   host: string;
   filter: SessionRecordFilter;
+  /** Also list sessions a program started (SDK and `-p` runs, Codex `exec`). */
+  execution: boolean;
   collapsed: Record<string, boolean>;
   workspaceOrder: string[];
   sessionOrder: Record<string, string[]>;
@@ -102,15 +104,20 @@ export const useSessionViewStore = create<{
   setAgent: (agent: AgentKind | "all") => void;
   setHost: (host: string) => void;
   setFilter: (filter: SessionRecordFilter) => void;
+  setExecution: (execution: boolean) => void;
   toggleWorkspace: (id: string) => void;
+  /** A session the directory still has to reveal; its group may be its repository's. */
+  revealedSessionId?: string;
+  expandRevealed: (groupId: string) => void;
   setWorkspaceOrder: (workspaceOrder: string[]) => void;
   setSessionOrder: (workspaceId: string, sessionOrder: string[]) => void;
   setScrollTop: (scrollTop: number) => void;
   resetFilters: () => void;
-}>((set) => ({
+}>((set, get) => ({
   agent: "all",
   host: "all",
   filter: "current",
+  execution: false,
   collapsed: {},
   ...initialDirectoryOrder,
   scrollTop: 0,
@@ -128,7 +135,7 @@ export const useSessionViewStore = create<{
     set((state) => (state.terminalEntry === entry ? { terminalEntry: undefined } : {})),
   setCreatingConversation: (creatingConversation) => set({ creatingConversation }),
   revealSession: (session) => {
-    if (!isSessionVisible(session)) return;
+    if (!isSessionListed(session, { execution: get().execution })) return;
     set((state) => ({
       host:
         state.host === "all" || state.host === (session.remote?.host_id ?? "local")
@@ -142,13 +149,22 @@ export const useSessionViewStore = create<{
           ? "all"
           : state.filter,
       collapsed: { ...state.collapsed, [session.workspace_id]: false },
+      revealedSessionId: session.id,
     }));
   },
   setAgent: (agent) => set({ agent }),
   setHost: (host) => set({ host }),
   setFilter: (filter) => set({ filter }),
+  setExecution: (execution) => set({ execution }),
   toggleWorkspace: (id) =>
     set((state) => ({ collapsed: { ...state.collapsed, [id]: !state.collapsed[id] } })),
+  expandRevealed: (groupId) =>
+    set((state) => ({
+      revealedSessionId: undefined,
+      collapsed: state.collapsed[groupId]
+        ? { ...state.collapsed, [groupId]: false }
+        : state.collapsed,
+    })),
   setWorkspaceOrder: (workspaceOrder) =>
     set((state) => {
       persistSessionDirectoryOrder(workspaceOrder, state.sessionOrder);
@@ -161,7 +177,7 @@ export const useSessionViewStore = create<{
       return { sessionOrder };
     }),
   setScrollTop: (scrollTop) => set({ scrollTop }),
-  resetFilters: () => set({ agent: "all", filter: "current", host: "all" }),
+  resetFilters: () => set({ agent: "all", filter: "current", host: "all", execution: false }),
 }));
 
 /** Make a deep-linked session visible without discarding already compatible filters. */

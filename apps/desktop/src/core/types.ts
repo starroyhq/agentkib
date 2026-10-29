@@ -377,6 +377,27 @@ export interface RemoteRecordSource {
   online: boolean;
   last_synced_at: string;
 }
+export type CheckoutStatus = "present" | "deleted" | "unknown";
+/** A workspace's git checkout, read from git's files; absent outside a repository. */
+export interface WorkspaceCheckout {
+  /** Shared by every checkout of one repository. */
+  repository_group_id: string;
+  kind: "primary" | "worktree";
+  /** The repository's main checkout; null when it is unknown. */
+  primary_path: string | null;
+  /** Worktree name; null for the main checkout. */
+  name: string | null;
+  branch: string | null;
+  status: CheckoutStatus;
+}
+/** The linked git worktree a session ran in; absent for a main checkout. */
+export interface SessionWorktree {
+  repository_group_id: string | null;
+  name: string;
+  path: string;
+  branch: string | null;
+  status: CheckoutStatus;
+}
 export interface WorkspaceSummary {
   remote?: RemoteRecordSource;
   id: string;
@@ -390,6 +411,7 @@ export interface WorkspaceSummary {
   last_active_at?: string;
   last_scanned_at?: string;
   sources: WorkspaceSource[];
+  checkout?: WorkspaceCheckout;
 }
 export interface AgentInstallation {
   agent: AgentKind;
@@ -1286,6 +1308,7 @@ export interface ConversationSessionSummary {
   spawned_by_session_id?: string;
   forked_from_session_id?: string;
   availability: SessionAvailability;
+  worktree?: SessionWorktree;
 }
 export interface ConversationIndexStatus {
   workspace_id: string;

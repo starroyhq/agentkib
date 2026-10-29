@@ -49,7 +49,7 @@ import {
   type Live,
   type UserQuestionRequest,
 } from "@agentkib/web-client";
-import { displaySessionTitle, isSessionVisible } from "@agentkib/session-catalog";
+import { displaySessionTitle, isSessionListed } from "@agentkib/session-catalog";
 import { answerRequestBody, interactionCopy } from "../interactions/question-form";
 import type { CatalogWorkspace } from "../catalog/session-catalog";
 import { catalogCopy } from "../catalog/catalog-copy";
@@ -135,6 +135,7 @@ export function useSessionController({
   initialTheme = "system",
   client: providedClient,
   embedded = false,
+  showExecution: controlledShowExecution,
 }: {
   origin?: string;
   connection?: WebConnection;
@@ -143,6 +144,8 @@ export function useSessionController({
   initialTheme?: string;
   client?: WebClient;
   embedded?: boolean;
+  /** Also list and open program-started sessions (the directory option). */
+  showExecution?: boolean;
 }) {
   const [historySearchOpen, setHistorySearchOpen] = useState(false);
   const [historyReferences, publishHistoryReferences] = useState<ResolvedHistoryReference[]>([]);
@@ -269,6 +272,12 @@ export function useSessionController({
   }, []);
   const shownInteractions = useRef(new Set<string>());
   const catalogSessions = useRef<ConversationSessionSummary[]>([]);
+  // The last accepted catalog, so the program-started sessions option can re-filter it.
+  const catalogRecords = useRef<ConversationSessionSummary[] | undefined>(undefined);
+  const [ownShowExecution, setShowExecution] = useState(false);
+  // A host that owns the directory option passes it in; the Web catalog keeps its own.
+  const showExecution = controlledShowExecution ?? ownShowExecution;
+  const showExecutionValue = useRef(showExecution);
   const excludedIds = useRef<ReadonlySet<string>>(new Set());
   // Manual refresh and catalog notifications share this order. An older
   // response cannot undo a newer directory classification or dispatch guard.
@@ -408,6 +417,7 @@ export function useSessionController({
     setSelected("");
     setSessions([]);
     catalogSessions.current = [];
+    catalogRecords.current = undefined;
     excludedIds.current = new Set();
     setExcludedSessionIds(excludedIds.current);
     setCatalogNotice(false);
@@ -476,10 +486,11 @@ export function useSessionController({
   ]);
   const acceptCatalog = useCallback(
     (records: ConversationSessionSummary[]) => {
-      const excluded = new Set(
-        records.filter((record) => !isSessionVisible(record)).map((s) => s.id),
-      );
-      const visible = records.filter(isSessionVisible);
+      catalogRecords.current = records;
+      const listed = (record: ConversationSessionSummary) =>
+        isSessionListed(record, { execution: showExecutionValue.current });
+      const excluded = new Set(records.filter((record) => !listed(record)).map((s) => s.id));
+      const visible = records.filter(listed);
       // Update the dispatch guard before publishing React state. A callback from
       // the previous render must not reopen a record the new catalog excludes.
       excludedIds.current = excluded;
@@ -494,6 +505,11 @@ export function useSessionController({
     },
     [leaveSession, observeForkNavigation],
   );
+  useEffect(() => {
+    if (showExecutionValue.current === showExecution) return;
+    showExecutionValue.current = showExecution;
+    if (catalogRecords.current) acceptCatalog(catalogRecords.current);
+  }, [showExecution, acceptCatalog]);
   const fail = useCallback(
     (e: unknown, g = generation.current) => {
       if (g !== generation.current) return;
@@ -1814,6 +1830,7 @@ export function useSessionController({
         // the catalog, which the host invalidates, arrives without it.
         excludedIds.current = new Set([...excludedIds.current, id]);
         catalogSessions.current = catalogSessions.current.filter((session) => session.id !== id);
+        catalogRecords.current = catalogRecords.current?.filter((session) => session.id !== id);
         setExcludedSessionIds(excludedIds.current);
         setSessions(catalogSessions.current);
       } else if (action === "fork") void refresh(true);
@@ -2357,6 +2374,8 @@ export function useSessionController({
     access,
     sessions,
     excludedSessionIds,
+    showExecution,
+    setShowExecution,
     catalogNotice,
     workspaces,
     selected,

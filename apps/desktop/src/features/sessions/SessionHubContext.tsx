@@ -18,7 +18,7 @@ import { useNavigate, useSearch } from "@tanstack/react-router";
 import { useHomeWorkspaces } from "@/features/home/home-query";
 import { useAppStore } from "@/stores/app-store";
 import { useSessionCatalog } from "./useSessionCatalog";
-import { filterSessions, isSessionVisible } from "./session-catalog";
+import { filterSessions, isSessionListed } from "./session-catalog";
 import { useSessionViewStore } from "./session-view-store";
 import { SESSION_REFRESH_EVENT } from "./session-refresh";
 import { refreshConversationCatalog, useConversationCatalog } from "./conversation-catalog";
@@ -124,7 +124,12 @@ function useHub(active: boolean) {
     () => [...localSessions, ...remote.sessions],
     [localSessions, remote.sessions],
   );
-  const sessions = useMemo(() => allSessions.filter(isSessionVisible), [allSessions]);
+  const execution = useSessionViewStore((state) => state.execution);
+  const visibility = useMemo(() => ({ execution }), [execution]);
+  const sessions = useMemo(
+    () => allSessions.filter((session) => isSessionListed(session, visibility)),
+    [allSessions, visibility],
+  );
   const [hiddenSessionNotice, setHiddenSessionNotice] = useState(false);
   const refreshCatalog = catalog.refresh;
   const [historyRevision, setHistoryRevision] = useState(0);
@@ -157,10 +162,10 @@ function useHub(active: boolean) {
   const [creationSelection, setCreationSelection] = useState<string>();
   const filtered = useMemo(
     () =>
-      filterSessions(sessions, workspaces, { query: "", agent, filter }).filter(
+      filterSessions(sessions, workspaces, { query: "", agent, filter, execution }).filter(
         (session) => host === "all" || host === (session.remote?.host_id ?? "local"),
       ),
-    [sessions, workspaces, agent, filter, host],
+    [sessions, workspaces, agent, filter, host, execution],
   );
   const navigate = useNavigate();
   const { sessionId } = useSearch({ strict: false }) as { sessionId?: string };
@@ -209,7 +214,7 @@ function useHub(active: boolean) {
     if (!sessionId || !enabled) return;
     const target = allSessions.find((session) => session.id === canonicalId);
     if (!target) return;
-    if (isSessionVisible(target)) {
+    if (isSessionListed(target, visibility)) {
       setHiddenSessionNotice(false);
       return;
     }
@@ -220,10 +225,10 @@ function useHub(active: boolean) {
       replace: true,
       search: (current) => ({ ...current, sessionId: undefined }),
     });
-  }, [sessionId, canonicalId, allSessions, enabled, navigate]);
+  }, [sessionId, canonicalId, allSessions, enabled, navigate, visibility]);
   useEffect(() => {
     const target = allSessions.find((session) => session.id === canonicalId);
-    if (target && !isSessionVisible(target)) return;
+    if (target && !isSessionListed(target, visibility)) return;
     // Wait until every workspace cache has been read before validating a deep link.
     if (
       sessionId &&
@@ -260,6 +265,7 @@ function useHub(active: boolean) {
     workspaceQuery.isPending,
     workspaceQuery.error,
     navigate,
+    visibility,
   ]);
   return {
     statuses: catalog.statuses,
@@ -270,6 +276,8 @@ function useHub(active: boolean) {
     catalogError,
     hiddenSessionNotice,
     sessions,
+    /** The directory's visibility rules; `sessions` and `filtered` already apply them. */
+    visibility,
     remoteHosts: remote.hosts,
     remoteErrors: remote.errors,
     localEnabled,

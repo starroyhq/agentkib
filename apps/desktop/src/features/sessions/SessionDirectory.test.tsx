@@ -94,6 +94,7 @@ describe("SessionDirectory", () => {
       agent: "all",
       host: "all",
       filter: "current",
+      execution: false,
       collapsed: {},
       workspaceOrder: [],
       sessionOrder: {},
@@ -121,6 +122,7 @@ describe("SessionDirectory", () => {
       workspacesError: "",
       catalogError: "",
       hiddenSessionNotice: false,
+      visibility: { execution: false },
       select: vi.fn(),
       selectionVersion: () => 0,
       refresh: vi.fn().mockResolvedValue(undefined),
@@ -336,6 +338,123 @@ describe("SessionDirectory", () => {
     expect(other).not.toHaveAttribute("aria-current");
     fireEvent.click(other);
     expect(hub.select).toHaveBeenCalledWith(second.id);
+  });
+
+  it("groups a repository's worktrees under its main checkout with an icon-only mark", () => {
+    const checkout = {
+      repository_group_id: "repo",
+      kind: "primary" as const,
+      primary_path: "/projects/atlas",
+      name: null,
+      branch: "main",
+      status: "present" as const,
+    };
+    hub.workspaces = [
+      { ...workspaces[0], id: "main", name: "atlas", path: "/projects/atlas", checkout },
+      {
+        ...workspaces[1],
+        id: "h1a",
+        name: "atlas",
+        path: "/codex/worktrees/h1a/atlas",
+        checkout: { ...checkout, kind: "worktree", name: "h1a", branch: "codex/h1a" },
+      },
+    ];
+    const worktree = {
+      repository_group_id: "repo",
+      name: "h1a",
+      path: "/codex/worktrees/h1a/atlas",
+      branch: "codex/h1a",
+      status: "present" as const,
+    };
+    hub.sessions = [
+      { ...first, workspace_id: "main" },
+      { ...second, workspace_id: "h1a", worktree },
+      {
+        ...second,
+        id: "gone",
+        title: "Old harness run",
+        workspace_id: "h1a",
+        worktree: { ...worktree, name: "h2", path: "/codex/worktrees/h2/atlas", status: "deleted" },
+      },
+    ];
+    hub.selected = undefined;
+    const { container } = render(<SessionDirectory />);
+    const headings = container.querySelectorAll(".session-workspace-heading");
+    expect(headings).toHaveLength(1);
+    expect(headings[0]).toHaveTextContent("atlas");
+    expect(headings[0]).toHaveTextContent(`· ${tr("workspace.worktrees", { count: 2 })}`);
+    expect(headings[0].getAttribute("title")).toContain("h1a\nh2");
+    const present = tr("sessions.worktree.present", {
+      name: "h1a",
+      branch: "codex/h1a",
+      path: worktree.path,
+    });
+    const mark = screen.getByRole("img", { name: present });
+    expect(mark).toHaveAttribute("title", present);
+    expect(mark).not.toHaveTextContent("h1a");
+    expect(screen.getByRole("button", { name: /Inspect token layout/ })).toHaveAttribute(
+      "title",
+      expect.stringContaining(present),
+    );
+    const deleted = screen.getByRole("img", {
+      name: tr("sessions.worktree.deleted", { name: "h2", path: "/codex/worktrees/h2/atlas" }),
+    });
+    expect(deleted).toHaveClass("opacity-45");
+    expect(
+      screen
+        .getByRole("button", { name: /Check sidebar selection/ })
+        .querySelector("[data-worktree-mark]"),
+    ).toBeNull();
+    // Revealing a worktree session opens its repository's group, not its own workspace's.
+    act(() => useSessionViewStore.setState({ collapsed: { main: true } }));
+    expect(headings[0]).toHaveAttribute("aria-expanded", "false");
+    act(() => useSessionViewStore.getState().revealSession(hub.sessions[2]));
+    expect(container.querySelector(".session-workspace-heading")).toHaveAttribute(
+      "aria-expanded",
+      "true",
+    );
+    expect(useSessionViewStore.getState().revealedSessionId).toBeUndefined();
+  });
+
+  it("shows program-started sessions only after the directory option is turned on", async () => {
+    const user = userEvent.setup();
+    const pen = { ...second, id: "pen", title: "Pen design run", origin: "execution" as const };
+    hub.sessions = [first, pen];
+    vi.mocked(useSessionHub).mockImplementation(() => {
+      const visibility = { execution: useSessionViewStore.getState().execution };
+      const sessions = hub.sessions.filter(
+        (session) => session.origin !== "execution" || visibility.execution,
+      );
+      return {
+        ...hub,
+        visibility,
+        sessions,
+        filtered: filterSessions(sessions, hub.workspaces, {
+          ...useSessionViewStore.getState(),
+          query: "",
+        }),
+      };
+    });
+    const { rerender } = render(<SessionDirectory />);
+    expect(screen.queryByText("Pen design run")).toBeNull();
+    await user.click(screen.getByRole("button", { name: tr("sessions.directoryOptions") }));
+    await user.click(
+      await screen.findByRole("menuitemcheckbox", { name: tr("sessions.showExecution") }),
+    );
+    rerender(<SessionDirectory />);
+    expect(useSessionViewStore.getState().execution).toBe(true);
+    expect(screen.getByRole("button", { name: /Pen design run/ })).toBeInTheDocument();
+    expect(
+      screen.getAllByRole("img", { name: tr("sessions.executionSession") }).length,
+    ).toBeGreaterThan(0);
+    await user.click(
+      screen.getByRole("button", {
+        name: `${tr("sessions.hideExecution")}: ${tr("sessions.executionSession")}`,
+      }),
+    );
+    rerender(<SessionDirectory />);
+    expect(useSessionViewStore.getState().execution).toBe(false);
+    expect(screen.queryByText("Pen design run")).toBeNull();
   });
 
   it("keeps search and filter fields out of the directory and exposes filters in its menu", async () => {

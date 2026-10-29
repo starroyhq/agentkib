@@ -368,7 +368,10 @@ describe("Claude history continuation", () => {
     fireEvent.change(draft, { target: { value: "Keep this draft" } });
     expect(screen.getByRole("button", { name: "发送" })).toBeEnabled();
     expect(screen.queryByRole("button", { name: "交给 AgentKib" })).not.toBeInTheDocument();
-    expect(screen.queryByRole("checkbox")).not.toBeInTheDocument();
+    // Continuing asks for no confirmation; the only checkbox is the catalog's own option.
+    expect(
+      screen.queryAllByRole("checkbox").map((box) => box.closest("label")?.textContent),
+    ).toEqual(["显示程序启动的会话"]);
     expect(state.mutations).toEqual([]);
     state.live = {
       ...state.live,

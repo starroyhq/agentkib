@@ -281,6 +281,8 @@ export function SessionWorkspace() {
               rowMenu={
                 access?.device?.organize ? (row) => <SessionRowMenu session={row} /> : undefined
               }
+              execution={session.showExecution}
+              onExecutionChange={session.setShowExecution}
             />
             <footer className="flex items-center gap-3 border-t p-4">
               <span className="grid size-9 place-items-center rounded-lg border bg-background">

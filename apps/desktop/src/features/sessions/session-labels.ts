@@ -1,4 +1,4 @@
-import type { ConversationSessionSummary } from "@/core/types";
+import type { ConversationSessionSummary, SessionWorktree } from "@/core/types";
 import { tr as defaultTranslate } from "@/core/i18n";
 import { isSessionVisible } from "./session-catalog";
 import { displaySessionTitle } from "@/features/workspace/session-title";
@@ -74,4 +74,21 @@ export function sessionSourceLabel(
 
 export function isInteractiveFork(session: ConversationSessionSummary) {
   return session.origin === "interactive" && Boolean(session.forked_from_session_id);
+}
+
+/** The session page's worktree chip: "工作树 <名称> · <分支>". */
+export function worktreeChip(worktree: SessionWorktree, tr = defaultTranslate) {
+  return worktree.branch
+    ? tr("sessions.worktree.chip", { name: worktree.name, branch: worktree.branch })
+    : tr("sessions.worktree.chipNoBranch", { name: worktree.name });
+}
+
+/** The worktree mark's hover text and accessible name; status is spelled out, not colored. */
+export function worktreeLabel(worktree: SessionWorktree, tr = defaultTranslate) {
+  const { name, branch, path, status } = worktree;
+  if (status === "deleted") return tr("sessions.worktree.deleted", { name, path });
+  if (status === "unknown") return tr("sessions.worktree.unknown", { name, path });
+  return branch
+    ? tr("sessions.worktree.present", { name, branch, path })
+    : tr("sessions.worktree.presentNoBranch", { name, path });
 }

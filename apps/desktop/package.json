@@ -1,7 +1,7 @@
 {
   "name": "@agentkib/desktop",
   "private": true,
-  "version": "0.21.0",
+  "version": "0.22.0",
   "description": "Desktop app for discovering, diagnosing, and synchronizing coding agent configuration.",
   "homepage": "https://github.com/starroyhq/agentkib",
   "author": "AgentKib contributors",

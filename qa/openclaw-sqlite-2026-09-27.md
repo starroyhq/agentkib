@@ -4,7 +4,7 @@
 
 ## 环境与隔离
 
-- 工作树：`/Users/kouzen/.codex/worktrees/all-agent-continuation/agentkib`，源码基线 `057da8b81a3f3c9536a568287175af8e50c12176`，dirty 工作区，未提交。
+- 工作树：`/Users/user/.codex/worktrees/all-agent-continuation/agentkib`，源码基线 `057da8b81a3f3c9536a568287175af8e50c12176`，dirty 工作区，未提交。
 - 官方 npm 包：`openclaw@2026.9.6`，CLI 显示 `OpenClaw 2026.9.6 (eb377ac)`。
 - 临时完整安装：`/tmp/agentkib-openclaw-probe-install/node_modules/openclaw`。
 - 安装命令：`npm install --prefix /tmp/agentkib-openclaw-probe-install openclaw@2026.9.6 --omit=dev --no-audit --no-fund`。Node `v26.9.0` 满足产品自身 engines；未改变 AgentKib Node 22 工具链。
@@ -106,4 +106,4 @@ cargo test -p agentkib-runtime --bin agentkib-runtime \
 
 独立非作者子代理复核了官方源代码和最终适配器：上述发现均已关闭，未发现剩余明确阻断问题；这不代替真实模型回复验收。全量构建与既有失败见总 QA 的补充记录。
 
-同一生产 Rust 目标用例使用项目 Node `22.23.2` 复测通过（7.93 秒），将上面 state/data 路径的 `-5` 改为 `-6`，命令前设置 `PATH=/Users/kouzen/Library/pnpm/nodejs/22.23.2/bin:$PATH`。
+同一生产 Rust 目标用例使用项目 Node `22.23.2` 复测通过（7.93 秒），将上面 state/data 路径的 `-5` 改为 `-6`，命令前设置 `PATH=/Users/user/Library/pnpm/nodejs/22.23.2/bin:$PATH`。

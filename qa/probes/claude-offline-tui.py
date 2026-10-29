@@ -28,9 +28,9 @@ HERE = Path(__file__).resolve().parent
 SPEC = importlib.util.spec_from_file_location('owned_native', HERE / 'native-offline-tui.py')
 OWNED = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(OWNED)
-CLI = Path('/Users/kouzen/.local/share/claude/versions/2.1.285')
+CLI = Path('/Users/user/.local/share/claude/versions/2.1.285')
 CLI_SHA = '51f09bd1e021d9fa8a1864c179799bd37cb39962a937935c5cf6823398e86db4'
-ARCHIVE = Path('/Users/kouzen/Documents/AgentKib-archives/2026-09-30/full-interop')
+ARCHIVE = Path('/Users/user/Documents/AgentKib-archives/2026-09-30/full-interop')
 CASES = {'offline-claude-code-to-claude-code', 'codex-to-claude-public-v3',
          'offline-cursor-to-claude-code', 'offline-hermes-to-claude-code',
          'offline-opencode-to-claude-code', 'offline-open-claw-to-claude-code'}

@@ -17,7 +17,7 @@ import importlib.util
 import stat
 from urllib.parse import urlparse
 
-MODEL = 'devin/claude-opus-5-5'
+MODEL = 'relay/claude-opus-5-5'
 POLICY = {'requestRetry': 0, 'maxRetryCredentials': 1, 'streamBootstrapRetries': 0,
           'credentialOverrides': False, 'ccSwitchRectifierEnabled': False, 'ccSwitchAutoFailoverEnabled': False,
           'quotaSwitchProject': False, 'quotaSwitchPreviewModel': False}

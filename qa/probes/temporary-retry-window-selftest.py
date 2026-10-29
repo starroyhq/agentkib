@@ -32,7 +32,7 @@ class WindowTests(unittest.TestCase):
         self.root = Path(self.temp.name)
         w.CPA, w.CC, w.AUTH = (self.root / name for name in ('config.yaml', 'cc.db', 'auths'))
         w.AUTH.mkdir()
-        (w.AUTH / 'synthetic.json').write_text('{"type":"devin","disabled":false}')
+        (w.AUTH / 'synthetic.json').write_text('{"type":"relay","disabled":false}')
         w.CPA.write_text(ORIGINAL)
         with sqlite3.connect(w.CC) as db:
             db.execute('create table settings(key text primary key,value text)')

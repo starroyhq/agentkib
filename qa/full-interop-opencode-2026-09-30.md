@@ -57,7 +57,7 @@ mode 为 `500`、`429`、`redirect`、`stream`、`network`、`missing-plugin`、
 ```text
 python3 qa/probes/opencode-native-once-live.py \
   ~/Documents/AgentKib-archives/2026-09-30/native-interop/opencode-rpc-v2 \
-  /Users/kouzen/.codex/worktrees/main-acceptance-20260930/agentkib/target/debug/agentkib-runtime
+  /Users/user/.codex/worktrees/main-acceptance-20260930/agentkib/target/debug/agentkib-runtime
 ```
 
 - 执行时间：`2026-09-30T14:12:02Z`。模型固定 `opencode/big-pickle`；原生 session `ses_256d96587f6e4e29b339a5f3c0d74cf5`。没有重新导入，没有切换模型，没有重试。

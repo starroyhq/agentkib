@@ -1,7 +1,7 @@
 {
   "revision": "057da8b81a3f3c9536a568287175af8e50c12176",
   "dirty": true,
-  "workspace": "/Users/kouzen/.codex/worktrees/all-agent-continuation/agentkib",
+  "workspace": "/Users/user/.codex/worktrees/all-agent-continuation/agentkib",
   "comparison": "/tmp/agentkib-interop-2026-09-28/files.json",
   "excluded_manifests": [
     "qa/all-agent-continuation-2026-09-27-files.json",

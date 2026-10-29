@@ -4,7 +4,7 @@
 
 用户更换 provider 后重新授权验收，沿用“已有授权、每例单轮、不自动重试或换模型”。当前 CC Switch 选中官方 DeepSeek，文本模型为 `deepseek-v4-pro`。只在验收父进程内读取现有授权，直接连接官方 Anthropic、Chat Completions 或 Responses 接口；原生 CLI 只接收短期 loopback token。没有修改 CC Switch/CPA 的全局配置，没有复制 Agent 凭据文件，没有提交、推送、合并、部署或发布。
 
-工作树 `/Users/kouzen/.codex/worktrees/main-acceptance-20260930/agentkib`，HEAD `0440d049647c3862b8e79a06ea14e9b0bbab39dc`，保留原 dirty 状态。本次只调整 QA 执行器及文档，未再修改产品代码。原有 continuation、Antigravity 测试及 Runtime 测试源码 SHA 与上一阶段相同；上一阶段产品回归的复用边界见[离线收尾](offline-interop-closeout-2026-10-01.md)。
+工作树 `/Users/user/.codex/worktrees/main-acceptance-20260930/agentkib`，HEAD `0440d049647c3862b8e79a06ea14e9b0bbab39dc`，保留原 dirty 状态。本次只调整 QA 执行器及文档，未再修改产品代码。原有 continuation、Antigravity 测试及 Runtime 测试源码 SHA 与上一阶段相同；上一阶段产品回归的复用边界见[离线收尾](offline-interop-closeout-2026-10-01.md)。
 
 新证据根 `~/Documents/AgentKib-archives/2026-10-01/provider-retest/`，入口目录0700；探针保存的回执和原始输出0600，原生CLI生成的测试文件/缓存权限另记，不声称所有嵌套文件均为0600。历史403/503、旧模型回复和本次执行器失败均保留，追加审计另建文件。
 

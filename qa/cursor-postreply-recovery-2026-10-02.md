@@ -23,20 +23,20 @@ Cursor IDE → Claude 的既有一次原生文件导入及两次禁网 TUI 恢�
 
 ## 冻结身份
 
-- 工作树：`/Users/kouzen/.codex/worktrees/main-acceptance-20260930/agentkib`。
-- Cursor 官方签名副本：`/Users/kouzen/.codex/tmp/cursor-native-app-1001/Cursor.app`；固定 `3.22.12`，主二进制 SHA256 `7c85e27a23b7dbe8fbfc738a8876550b10cd57173df7cf7d060de69bb216a075`。
+- 工作树：`/Users/user/.codex/worktrees/main-acceptance-20260930/agentkib`。
+- Cursor 官方签名副本：`/Users/user/.codex/tmp/cursor-native-app-1001/Cursor.app`；固定 `3.22.12`，主二进制 SHA256 `7c85e27a23b7dbe8fbfc738a8876550b10cd57173df7cf7d060de69bb216a075`。
 - 生产 `cursor_ide.rs` SHA256 `ebe5b34cca53e321923252bbf1bd82a512d06316f03bc4ffabfd48078c73b56c`。
 - 实际 debug Runtime SHA256 `5d18e7fc36a4e0a6eb3766e28b4ca27e8914dfd7febf4bc6ee2d80bd04c46abc`，与 10 月 1 日已验证二进制精确一致。
 - 原 manifest SHA256 `bf80ee0c28edddc121367e639a8229280f50f72bc33d29ef1ca2e45f05f99407`；没有重写 manifest、计划或旧回执。
 - QA harness SHA256 `25bacea881a7a3834f690d11042c1272781f33ed96bd88cf083d4186731e98d3`；回复后只读探针 SHA256 `c24a54bcfcda9a76a164984c19ed9de29c225dc8adf032148496e49e3a80bedf`。
 - A operation `55fedfe0-b010-4c27-8f91-79addf62f01a` / native UUID `783272bb-80cf-4c5b-8560-60599dca6402`。
 - B operation `687ba192-eba5-4ef5-9aa5-56e06737c6e1` / native UUID `47ee1557-d797-4ba1-a9e7-d03bf4f5ce72`。
-- 证据继续保存在 `/Users/kouzen/Documents/AgentKib-archives/2026-10-01/interop-closeout/cursor-contextfix-v2/`，新增文件使用 `date1002`，不覆盖旧失败。
+- 证据继续保存在 `/Users/user/Documents/AgentKib-archives/2026-10-01/interop-closeout/cursor-contextfix-v2/`，新增文件使用 `date1002`，不覆盖旧失败。
 
 ## 实际执行
 
 ```sh
-python3 qa/probes/cursor-bridge-native-acceptance.py --evidence /Users/kouzen/Documents/AgentKib-archives/2026-10-01/interop-closeout/cursor-contextfix-v2 serve --runtime-update target/debug/agentkib-runtime
+python3 qa/probes/cursor-bridge-native-acceptance.py --evidence /Users/user/Documents/AgentKib-archives/2026-10-01/interop-closeout/cursor-contextfix-v2 serve --runtime-update target/debug/agentkib-runtime
 ```
 
 通过同一 harness 的 `send --json` 顺序执行如下动作。挑战仅在本机安全输入使用，不进入日志、命令行或截图。

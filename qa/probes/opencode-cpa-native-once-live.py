@@ -27,7 +27,7 @@ window = json.loads(window_path.read_text())
 policy = {"requestRetry": 0, "maxRetryCredentials": 1, "streamBootstrapRetries": 0,
           "credentialOverrides": False, "ccSwitchRectifierEnabled": False, "ccSwitchAutoFailoverEnabled": False}
 assert window["schemaVersion"] == 1 and window["status"] == "open"
-assert window["endpoint"] == "http://127.0.0.1:8317" and window["model"] == "devin/claude-opus-5-5"
+assert window["endpoint"] == "http://127.0.0.1:8317" and window["model"] == "relay/claude-opus-5-5"
 assert all(window["retryPolicy"].get(key) == value for key, value in policy.items())
 assert (datetime.fromisoformat(window["expiresAt"].replace("Z", "+00:00")) - datetime.now(timezone.utc)).total_seconds() > 180
 case, runtime = map(lambda p: Path(p).resolve(), sys.argv[1:])
@@ -41,7 +41,7 @@ operation, = prior["operations"]
 session = operation["target_session_id"]
 plan_file, = (case / "data/continuations").rglob("plan.json")
 plan = validate_plan(prior, plan_file.read_bytes(), json.loads(plan_file.with_name("receipt.json").read_text()),
-    expected_model={"provider_id": "agentkib-cpa", "model_id": "devin/claude-opus-5-5"})
+    expected_model={"provider_id": "agentkib-cpa", "model_id": "relay/claude-opus-5-5"})
 cli = plan["executable"]
 workspace = Path(plan["workspace"])
 env = json.loads((case / "environment.json").read_text())
@@ -54,7 +54,7 @@ for metadata in prior.get("sourceMetadata", []):
 config = Path(env["XDG_CONFIG_HOME"]) / "opencode/opencode.json"
 original_config = config.read_bytes()
 (attempt / "original-config.json").write_bytes(original_config)
-result = {"model": "agentkib-cpa/devin/claude-opus-5-5", "sessionId": session,
+result = {"model": "agentkib-cpa/relay/claude-opus-5-5", "sessionId": session,
           "runtimeSha256": hashlib.sha256(runtime.read_bytes()).hexdigest(), "automaticRetriesPermitted": False}
 
 
@@ -72,12 +72,12 @@ history = validate_export(plan, before)
 prompt = "Recall the exact random marker and the complete project storage decision from our previous conversation. Reply with those two values only. Do not read files or use tools. The answers are intentionally absent from this message."
 assert prior["marker"] not in prompt and prior["decision"] not in prompt
 contract = attempt / "contract.json"
-contract.write_text(json.dumps({"endpoint": "http://127.0.0.1:8317/v1/chat/completions", "model": "devin/claude-opus-5-5",
+contract.write_text(json.dumps({"endpoint": "http://127.0.0.1:8317/v1/chat/completions", "model": "relay/claude-opus-5-5",
     "sessionId": session, "history": history, "prompt": prompt, "retryWindow": str(window_path)}, indent=2))
-isolated_config = {"$schema": "https://opencode.ai/config.json", "model": "agentkib-cpa/devin/claude-opus-5-5", "small_model": "agentkib-cpa/devin/claude-opus-5-5",
+isolated_config = {"$schema": "https://opencode.ai/config.json", "model": "agentkib-cpa/relay/claude-opus-5-5", "small_model": "agentkib-cpa/relay/claude-opus-5-5",
     "enabled_providers": ["agentkib-cpa"], "autoupdate": False, "share": "disabled", "permission": "deny",
     "plugin": [str(Path(__file__).with_name("opencode-cpa-once-plugin.mjs"))],
-    "provider": {"agentkib-cpa": {"npm": "@ai-sdk/openai-compatible", "name": "QA authorized CPA", "models": {"devin/claude-opus-5-5": {"name": "Selected Opus mapping", "limit": {"context": 200000, "output": 4096}}}, "options": {"baseURL": "http://127.0.0.1:9/blocked"}}},
+    "provider": {"agentkib-cpa": {"npm": "@ai-sdk/openai-compatible", "name": "QA authorized CPA", "models": {"relay/claude-opus-5-5": {"name": "Selected Opus mapping", "limit": {"context": 200000, "output": 4096}}}, "options": {"baseURL": "http://127.0.0.1:9/blocked"}}},
     "agent": {"title": {"disable": True}, "compaction": {"disable": True}, "build": {"tools": {"*": False}}},
     "compaction": {"auto": False, "prune": False}}
 modified = json.dumps(isolated_config).encode()
@@ -86,7 +86,7 @@ live_env.pop("AGENTKIB_QA_ONCE_OFFLINE", None)
 # Read only the already-authorized client key, never provider auths or another Agent's credentials.
 # This dictionary is never serialized. Actual source-key paths are checked against the active window.
 try:
-    cpa = yaml.safe_load(Path("/Users/kouzen/proxy/CLIProxyAPI/config.yaml").read_text())
+    cpa = yaml.safe_load(Path("/Users/user/proxy/CLIProxyAPI/config.yaml").read_text())
 except yaml.YAMLError:
     raise SystemExit("CPA configuration is not valid YAML; refusing request") from None
 assert cpa["routing"]["retry"]["request-retry"] == 0
@@ -104,7 +104,7 @@ def guard_blocked():
 
 try:
     with (attempt / "run.stdout").open("w") as stdout, (attempt / "run.stderr").open("w") as stderr:
-        run_owned_cli([cli, "run", "--session", session, "--model", "agentkib-cpa/devin/claude-opus-5-5", "--format", "json"],
+        run_owned_cli([cli, "run", "--session", session, "--model", "agentkib-cpa/relay/claude-opus-5-5", "--format", "json"],
             env=live_env, cwd=workspace, config=config, original=original_config, modified=modified, prompt=prompt,
             stdout=stdout, stderr=stderr, result=result, should_stop=guard_blocked)
 finally:

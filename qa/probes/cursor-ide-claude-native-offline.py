@@ -22,9 +22,9 @@ import time
 import uuid
 
 HERE = Path(__file__).resolve().parent
-SOURCE_EVIDENCE = Path('/Users/kouzen/Documents/AgentKib-archives/2026-10-01/interop-closeout/cursor-native')
+SOURCE_EVIDENCE = Path('/Users/user/Documents/AgentKib-archives/2026-10-01/interop-closeout/cursor-native')
 DEFAULT_CASE = SOURCE_EVIDENCE / 'reverse-claude'
-CLI = Path('/Users/kouzen/.local/share/claude/versions/2.1.285')
+CLI = Path('/Users/user/.local/share/claude/versions/2.1.285')
 CLI_SHA = '51f09bd1e021d9fa8a1864c179799bd37cb39962a937935c5cf6823398e86db4'
 HARNESS_SHA = '7e0d9a54a2fcd51534786d115031cca47a18d0a5faa712ff1a587b8622b641b9'
 SANDBOX_PROFILE = '(version 1)(allow default)(deny network*)'

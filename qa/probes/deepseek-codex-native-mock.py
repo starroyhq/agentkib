@@ -20,7 +20,7 @@ import time
 from deepseek_once_relay import MODEL, private_json, start_relay, synthetic_provider
 from codex_qa_profiles import PROFILES, binary_profile, public_snapshot
 
-BINARY = Path('/Users/kouzen/Documents/AgentKib-archives/2026-09-30/full-interop/tools-codex146/node_modules/@openai/codex-darwin-arm64/vendor/aarch64-apple-darwin/bin/codex')
+BINARY = Path('/Users/user/Documents/AgentKib-archives/2026-09-30/full-interop/tools-codex146/node_modules/@openai/codex-darwin-arm64/vendor/aarch64-apple-darwin/bin/codex')
 BINARY_SHA = '35d248101b211d6248ad4e6b8c1d441fe81236da87afb9f3e9ea51a049e9f179'
 PROMPT = 'Recall the exact random marker and complete project storage decision from our previous history. Reply with those values only. Do not use tools.'
 spec=importlib.util.spec_from_file_location('owned_native',Path(__file__).parent/'native-offline-tui.py')

@@ -1,6 +1,6 @@
 {
   "cliVersion": "2.1.285",
-  "binary": "/Users/kouzen/.local/share/claude/versions/2.1.285",
+  "binary": "/Users/user/.local/share/claude/versions/2.1.285",
   "sha256": "51f09bd1e021d9fa8a1864c179799bd37cb39962a937935c5cf6823398e86db4",
   "method": "Read-only byte search of embedded bundled JavaScript; no CLI/model execution",
   "evidence": [

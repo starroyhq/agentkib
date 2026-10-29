@@ -27,8 +27,8 @@ import importlib.util
 from claude_import_validation import verify as verify_public_import
 from qa_owned_cli import run_owned_cli
 
-CLAUDE = Path('/Users/kouzen/.local/share/claude/versions/2.1.285')
-SETTINGS = Path('/Users/kouzen/.claude/settings.json')
+CLAUDE = Path('/Users/user/.local/share/claude/versions/2.1.285')
+SETTINGS = Path('/Users/user/.claude/settings.json')
 CLI_FLAGS = ['--safe-mode', '--setting-sources', '', '--strict-mcp-config', '--tools', '',
              '--permission-mode', 'dontAsk', '--max-turns', '1', '--max-budget-usd', '0.50',
              '--print', '--output-format', 'json']
@@ -66,15 +66,15 @@ def _check_window():
         raise RuntimeError('Retry window expires too soon')
     if proof.get('endpoint') != 'http://127.0.0.1:8317':
         raise RuntimeError('Retry window endpoint mismatch')
-    if proof.get('model') != 'devin/claude-opus-5-5' or proof.get('retryPolicy') != {
+    if proof.get('model') != 'relay/claude-opus-5-5' or proof.get('retryPolicy') != {
         'requestRetry': 0, 'maxRetryCredentials': 1, 'streamBootstrapRetries': 0,
         'credentialOverrides': False, 'ccSwitchRectifierEnabled': False,
         'ccSwitchAutoFailoverEnabled': False, 'quotaSwitchProject': False, 'quotaSwitchPreviewModel': False}:
         raise RuntimeError('Retry window policy mismatch')
-    config = yaml.safe_load(Path('/Users/kouzen/proxy/CLIProxyAPI/config.yaml').read_text())
+    config = yaml.safe_load(Path('/Users/user/proxy/CLIProxyAPI/config.yaml').read_text())
     if config['routing']['retry']['request-retry'] != 0 or config['routing']['retry']['max-retry-credentials'] != 1 or config['requests']['streaming']['bootstrap-retries'] != 0:
         raise RuntimeError('CPA actual retry fields changed')
-    with sqlite3.connect('file:/Users/kouzen/.cc-switch/cc-switch.db?mode=ro', uri=True) as db:
+    with sqlite3.connect('file:/Users/user/.cc-switch/cc-switch.db?mode=ro', uri=True) as db:
         rectifier = db.execute("select value from settings where key='rectifier_config'").fetchone()
         failover = db.execute("select auto_failover_enabled from proxy_config where app_type='claude'").fetchone()
         provider = db.execute("select settings_config from providers where app_type='claude' and is_current=1").fetchall()
@@ -83,7 +83,7 @@ def _check_window():
     if len(provider) != 1:
         raise RuntimeError('CC Switch provider selection changed')
     provider_env = json.loads(provider[0][0]).get('env', {})
-    if provider_env.get('ANTHROPIC_BASE_URL') not in ('http://localhost:8317', 'http://127.0.0.1:8317') or provider_env.get('ANTHROPIC_DEFAULT_OPUS_MODEL') != 'devin/claude-opus-5-5':
+    if provider_env.get('ANTHROPIC_BASE_URL') not in ('http://localhost:8317', 'http://127.0.0.1:8317') or provider_env.get('ANTHROPIC_DEFAULT_OPUS_MODEL') != 'relay/claude-opus-5-5':
         raise RuntimeError('CC Switch provider or model mapping changed')
     return proof
 

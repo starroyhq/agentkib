@@ -10,7 +10,7 @@
 
 | 项目 | 实际结果 |
 | --- | --- |
-| Claude 可执行文件 | `/Users/kouzen/.local/share/claude/versions/2.1.285`，版本输出 `2.1.285 (Claude Code)` |
+| Claude 可执行文件 | `/Users/user/.local/share/claude/versions/2.1.285`，版本输出 `2.1.285 (Claude Code)` |
 | Codex 可执行文件 | `/opt/homebrew/Caskroom/codex/0.155.1/bin/codex`，版本输出 `codex-cli 0.155.1` |
 | AgentKib 原生写入 gate | Claude major/minor `2.1`；Codex `0.146`；要求版本匹配，已有 schema 匹配不能绕过版本 |
 | 本机 Codex app-server schema | `generate-json-schema --experimental` 成功；其 0.155.1 未启动 app-server；随后独立安装 0.146.1 进行离线原生实验 |
@@ -20,9 +20,9 @@
 
 以下记录首次只读调查时的状态；后续临时窗口已执行并恢复，正式 guard 的设置读取方式与实际 403 结果见后文。
 
-初始候选使用的方式：独立 `CLAUDE_CONFIG_DIR`，通过 CLI 的 `--settings /Users/kouzen/.claude/settings.json` 只读引用原设置。由原生 CLI 读取所需身份，无需导出 key 或复制配置。安全模式、空 setting sources、关闭工具/MCP 可限制合成验收上下文；原设置文件需在前后核对 SHA。
+初始候选使用的方式：独立 `CLAUDE_CONFIG_DIR`，通过 CLI 的 `--settings /Users/user/.claude/settings.json` 只读引用原设置。由原生 CLI 读取所需身份，无需导出 key 或复制配置。安全模式、空 setting sources、关闭工具/MCP 可限制合成验收上下文；原设置文件需在前后核对 SHA。
 
-只输出允许的配置元信息后发现：当前配置已经不是旧 DeepSeek。原 settings 的 `model=opus`，请求指向 `http://127.0.0.1:15721`；CC Switch `3.20.4` 当前 Claude provider 名为 `cpa`，上游为本机 `8317`，Opus 映射为 `devin/claude-opus-5-5`，Sonnet 映射为 `devin/claude-sonnet-5`。此映射不证明上游可用或会完成真实回复，本轮未请求验证。
+只输出允许的配置元信息后发现：当前配置已经不是旧 DeepSeek。原 settings 的 `model=opus`，请求指向 `http://127.0.0.1:15721`；CC Switch `3.20.4` 当前 Claude provider 名为 `cpa`，上游为本机 `8317`，Opus 映射为 `relay/claude-opus-5-5`，Sonnet 映射为 `relay/claude-sonnet-5`。此映射不证明上游可用或会完成真实回复，本轮未请求验证。
 
 重试必须分层判断：
 
@@ -42,8 +42,8 @@ CLAUDE_CODE_MAX_RETRIES=0 \
 CLAUDE_CODE_NONSTREAMING_TIMEOUT_RETRIES=0 \
 CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1 \
 DISABLE_AUTOUPDATER=1 \
-/Users/kouzen/.local/bin/claude \
-  --settings /Users/kouzen/.claude/settings.json \
+/Users/user/.local/bin/claude \
+  --settings /Users/user/.claude/settings.json \
   --safe-mode --setting-sources '' --strict-mcp-config --tools '' \
   --permission-mode plan --max-turns 1 --max-budget-usd 0.50 \
   --resume <已核验目标UUID> --print --output-format json \
@@ -120,7 +120,7 @@ cargo clippy -p agentkib-conversations --all-targets -- -D warnings
 
 ## 临时禁重试窗口准备与首窗恢复实证
 
-运行容器本身执行无效 `--version` 旗标时先输出 `CLIProxyAPI Version: v8.0.4, Commit: d33f63f, BuiltAt: 2026-09-29T00:13:12Z`，随后 usage 退出 2，没有启动另一服务。已下载对应公开 commit 的管理/重载/执行器源码，后续不再用宿主 HEAD 代替镜像证据。只读扫描 auths 的允许元字段：仅一份 `type=devin`、`disabled=false`，无 request_retry 或 request-retry 覆盖；未输出令牌内容或身份文件名。现有管理 secret 为 bcrypt，容器无 MANAGEMENT_PASSWORD，不能拿客户端 key 冒充管理 key。
+运行容器本身执行无效 `--version` 旗标时先输出 `CLIProxyAPI Version: v8.0.4, Commit: d33f63f, BuiltAt: 2026-09-29T00:13:12Z`，随后 usage 退出 2，没有启动另一服务。已下载对应公开 commit 的管理/重载/执行器源码，后续不再用宿主 HEAD 代替镜像证据。只读扫描 auths 的允许元字段：仅一份 `type=relay`、`disabled=false`，无 request_retry 或 request-retry 覆盖；未输出令牌内容或身份文件名。现有管理 secret 为 bcrypt，容器无 MANAGEMENT_PASSWORD，不能拿客户端 key 冒充管理 key。
 
 准备 `qa/probes/temporary-retry-window.py`：由 root 授权的正式窗口命令调用，子进程取得 AGENTKIB_RETRY_WINDOW 指向 0600 journal；status=open 仅在 Docker 挂载内容及当前 watcher 字段变化+成功 reload 日志核对完成后写出。只改 CC Switch rectifier.enabled 与 CPA 三个 retry 字段；完整私有配置备份不入仓库。CPA 保持文件 inode（单文件 Docker bind），SQLite 用事务。恢复只还原自身字段，保留其他并发修改；自身字段被外部改动则保留并报告。独立恢复命令使用持久 journal；不承诺 SIGKILL/断电后自动恢复。
 
@@ -143,7 +143,7 @@ cargo clippy -p agentkib-conversations --all-targets -- -D warnings
 | 不完整 SSE | 即使 MAX_RETRIES=0，CLI仍产生额外恢复尝试；guard仅接受第1次、后续拒绝。不能声称CLI开关已禁用全部恢复 |
 | 实际合成续接（production导入内容复制到另一隔离case） | 完整 notice/用户/助手/新提示的角色、顺序与正文经真实请求逐项校验，模型alias为claude-opus-5，tools为空，1次请求命中合成500，0重复；原public-v3不改动 |
 
-唯一格式归一化由实测限定：固定CLI把相邻user消息合并时，给第一条导入notice加一个换行；其他正文不trim、不容忍缺失/增文/改角色。CC Switch v3.20.4 `model_mapper.rs:88-91` 对包含opus的alias优先映射当前provider DEFAULT_OPUS_MODEL；真实preflight同时固定原alias=claude-opus-5与目标映射=devin/claude-opus-5-5，避免映射漂移。
+唯一格式归一化由实测限定：固定CLI把相邻user消息合并时，给第一条导入notice加一个换行；其他正文不trim、不容忍缺失/增文/改角色。CC Switch v3.20.4 `model_mapper.rs:88-91` 对包含opus的alias优先映射当前provider DEFAULT_OPUS_MODEL；真实preflight同时固定原alias=claude-opus-5与目标映射=relay/claude-opus-5-5，避免映射漂移。
 
 最终合成CLI证据目录 `full-interop/claude-once-mock-resume-final-v2`，probe SHA256 `91a45da6fa2d949b8632a3bc868d072c5d56566ded63dfa7ab1cbf2ef0d2afe2`。guard还通过纯mock：7个错误模型/工具/正文/角色/提示负例，connect迟返时禁止派发，HTTPResponse持有socket时仍可取消。使用共享 `qa_owned_cli` 清理仅自有进程组（含leader先退出留下的后代），额外graceful信号不能跳过清理。
 
@@ -161,11 +161,11 @@ cargo clippy -p agentkib-conversations --all-targets -- -D warnings
 实际结果：
 
 - 请求完整历史、原生 UUID、workspace、模型 alias `claude-opus-5` 与空工具集合均通过派发前校验。真实上游派发1次；CLI随后尝试恢复1次，guard拒绝且没有额外上游派发。CLI exit 1；marker/decision没有回复，不通过。
-- 不能用最终 CLI 的 `400 One-shot guard rejected...` 冒充第一次失败原因。只读追查同一 UUID/时间窗口：CC Switch记录外层HTTP200、模型映射 `devin/claude-opus-5-5`；CPA对应原始错误日志 RESPONSE 为 **403**，SSE `event:error` / `permission_error`，原因是 `devin upstream error (permission_denied): Your request was blocked by our content policy`。是渠道对该原生请求的拒绝，当前证据不支持归因于模型回答能力，也不是正文guard失配。
+- 不能用最终 CLI 的 `400 One-shot guard rejected...` 冒充第一次失败原因。只读追查同一 UUID/时间窗口：CC Switch记录外层HTTP200、模型映射 `relay/claude-opus-5-5`；CPA对应原始错误日志 RESPONSE 为 **403**，SSE `event:error` / `permission_error`，原因是 `relay upstream error (permission_denied): Your request was blocked by our content policy`。是渠道对该原生请求的拒绝，当前证据不支持归因于模型回答能力，也不是正文guard失配。
 - CLI `modelUsage={}`，原生usage全0；代理日志input_tokens=1743、output_tokens=0。这两种计量分别记录，不把代理输入统计当已确认生成用量或账单。未更换模型、调整提示绕过拒绝、重置auth健康或自动重试。
 - 原 UUID `14bd1bbc-4361-452f-aad2-e0f9c85ac668` 保持；所有source SHA不变、原target字节前缀保持、仅1份原生会话文件、原settings SHA不变，自有CLI进程组清理完成。
 - `retry-window-claude-1` 的status=restored、errors=[]；只读独立核对CPA完整文件SHA等于原始，CC rectifier行恢复原先不存在；运行reload日志确认0→3、1→0及success。原started token保留，禁止重跑此case。
 
-脱敏首失败证据保存在 `codex-to-claude-public-v3/first-upstream-diagnosis.json`，只提取403/error事件与代理计量，并记录原始日志SHA；**没有复制包含Authorization的完整请求日志**。`provider-metadata-readonly.json` 仅记录允许元字段：一份devin身份、disabled=false，磁盘无可读cooldown字段。磁盘元信息不能替代运行中scheduler状态，也不能从这一个403推断整条渠道永久不可用。后续所有真实CPA尝试由主任务暂缓，等待授权/渠道条件解决；本次失败不会被另一个来源成功掩盖。
+脱敏首失败证据保存在 `codex-to-claude-public-v3/first-upstream-diagnosis.json`，只提取403/error事件与代理计量，并记录原始日志SHA；**没有复制包含Authorization的完整请求日志**。`provider-metadata-readonly.json` 仅记录允许元字段：一份relay身份、disabled=false，磁盘无可读cooldown字段。磁盘元信息不能替代运行中scheduler状态，也不能从这一个403推断整条渠道永久不可用。后续所有真实CPA尝试由主任务暂缓，等待授权/渠道条件解决；本次失败不会被另一个来源成功掩盖。
 
 按用户最新要求，所有真实模型与登录操作现已停止；保留上述未通过结果，后续仅做离线验收。

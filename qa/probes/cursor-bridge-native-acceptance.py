@@ -25,15 +25,15 @@ import time
 import urllib.parse
 import uuid
 
-ROOT = Path("/Users/kouzen/.codex/tmp/cursor-bridge-1001")
-EVIDENCE = Path("/Users/kouzen/Documents/AgentKib-archives/2026-10-01/interop-closeout/cursor-native")
+ROOT = Path("/Users/user/.codex/tmp/cursor-bridge-1001")
+EVIDENCE = Path("/Users/user/Documents/AgentKib-archives/2026-10-01/interop-closeout/cursor-native")
 MAX_FRAME = 128 * 1024 * 1024
 SENSITIVE = {"challenge", "ticket", "credential", "credentialhash", "authorization", "apikey", "password", "token"}
 CURSOR_PACKAGE_SHA256 = "0f043db2fd6975bb60045dcc93a8e402e3dfc1d55aa753e0433067f8b79563fb"
 CURSOR_BINARY_SHA256 = "7c85e27a23b7dbe8fbfc738a8876550b10cd57173df7cf7d060de69bb216a075"
 VERIFIED_APP_ROOTS = (
     "/Applications/Cursor.app/Contents/Resources/app",
-    "/Users/kouzen/.codex/tmp/cursor-native-app-1001/Cursor.app/Contents/Resources/app",
+    "/Users/user/.codex/tmp/cursor-native-app-1001/Cursor.app/Contents/Resources/app",
 )
 
 
@@ -178,7 +178,7 @@ def prepare(args):
                         "source_sha256": sha(source.read_bytes()), "marker": marker, "messages": messages}
     manifest = {"root": str(root), "evidence": str(evidence), "fixture": str(fixture), "runtime": str(frozen),
                 "runtime_original": str(runtime), "runtime_sha256": runtime_hash, "env": env, "cases": cases,
-                "cursor_userdata": str(root), "cursor_extensions": "/Users/kouzen/.codex/tmp/cursor-bridge-ext-1001",
+                "cursor_userdata": str(root), "cursor_extensions": "/Users/user/.codex/tmp/cursor-bridge-ext-1001",
                 "control_socket": str(fixture / "control.sock"), "no_model_calls": True, "no_cursor_database_writes": True}
     private_json(evidence / "manifest.json", manifest, True)
     private_json(evidence / "state.json", {"cases": cases, "attempts": {}}, True)

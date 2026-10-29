@@ -15,7 +15,7 @@
 实际命令（MODE 分别为 cancel、crash、cancel-question，DIR 与上文一一对应）：
 
 ```
-PATH=/Users/kouzen/Library/pnpm/nodejs/22.23.2/bin:$PATH AGENTKIB_CLAUDE_LIFECYCLE_DIR=$DIR AGENTKIB_CLAUDE_LIFECYCLE_MODE=$MODE pnpm --filter @agentkib/desktop exec vitest run electron/main/web/claude-managed-lifecycle-real.test.ts
+PATH=/Users/user/Library/pnpm/nodejs/22.23.2/bin:$PATH AGENTKIB_CLAUDE_LIFECYCLE_DIR=$DIR AGENTKIB_CLAUDE_LIFECYCLE_MODE=$MODE pnpm --filter @agentkib/desktop exec vitest run electron/main/web/claude-managed-lifecycle-real.test.ts
 ```
 
 取消问题 1/1（5.88 秒），异常重启 1/1（3.72 秒），Bash 0/1（7.89 秒）。新增两个原生脚本的 oxfmt、oxlint 与 desktop `tsc -b --pretty false` 通过。没有启用环境变量时两脚本跳过，不调用模型。
@@ -44,7 +44,7 @@ stop/release/容量回收/退出均传播清理失败；容量回收和 Drop 在
 
 实际命令：
 ```
-PATH=/Users/kouzen/Library/pnpm/nodejs/22.23.2/bin:$PATH AGENTKIB_CLAUDE_LIFECYCLE_DIR=/private/tmp/agentkib-claude-lifecycle-2026-09-30-cancel-tree AGENTKIB_CLAUDE_LIFECYCLE_MODE=cancel pnpm --filter @agentkib/desktop exec vitest run electron/main/web/claude-managed-lifecycle-real.test.ts
+PATH=/Users/user/Library/pnpm/nodejs/22.23.2/bin:$PATH AGENTKIB_CLAUDE_LIFECYCLE_DIR=/private/tmp/agentkib-claude-lifecycle-2026-09-30-cancel-tree AGENTKIB_CLAUDE_LIFECYCLE_MODE=cancel pnpm --filter @agentkib/desktop exec vitest run electron/main/web/claude-managed-lifecycle-real.test.ts
 ```
 
 全量 workspace 随后发现退出观察竞态：libproc 已显示 root 为 zombie，但紧接的一次 `Child::try_wait` 尚无退出状态。已改为在同一 2 秒退出期限内同时确认“所有捕获身份已不执行”和“root 已可回收”，不降低任何退出证明。新增确定性注入首次 reap=false、第二次=true，以及期限到仍不可回收必须失败的回归；平台 owned_tree 现 5/5 通过，platform all-targets Clippy 通过，`git diff --check` 通过。该修改不改变进程身份、冻结或发信号范围，没有重新调用模型；上面的原生取消证据仍对应记录中的二进制 SHA，最终源码较该二进制多此等待竞态修复。

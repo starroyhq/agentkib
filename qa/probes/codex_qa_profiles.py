@@ -2,9 +2,9 @@
 from pathlib import Path
 from deepseek_once_relay import digest
 
-BATCH = Path('/Users/kouzen/Documents/AgentKib-archives/2026-10-01/codex-completion-batch')
+BATCH = Path('/Users/user/Documents/AgentKib-archives/2026-10-01/codex-completion-batch')
 PROFILES = {
-    '0.146.1': (Path('/Users/kouzen/Documents/AgentKib-archives/2026-09-30/full-interop/tools-codex146/node_modules/@openai/codex-darwin-arm64/vendor/aarch64-apple-darwin/bin/codex'),
+    '0.146.1': (Path('/Users/user/Documents/AgentKib-archives/2026-09-30/full-interop/tools-codex146/node_modules/@openai/codex-darwin-arm64/vendor/aarch64-apple-darwin/bin/codex'),
                 '35d248101b211d6248ad4e6b8c1d441fe81236da87afb9f3e9ea51a049e9f179'),
     '0.155.1': (BATCH / 'tools/codex-0.155.1',
                 '8eaf1ad12fe6bf89b1710330f58900014322c7c5af677e43be116d8ac5fc0a9e'),

@@ -17,11 +17,11 @@
 ## 身份与环境
 
 - 原安装：`/Applications/Cursor.app`；官方 `3.22.12` / commit `3a92974361033b2051526321308c2740fe5912c0` / arm64。
-- 为解决电脑操作工具无法选择同名不同进程的问题，将官方应用完整复制到 `/Users/kouzen/.codex/tmp/cursor-native-app-1001/Cursor.app`，未修改 bundle 或资源。两个主二进制 SHA256 均为 `7c85e27a23b7dbe8fbfc738a8876550b10cd57173df7cf7d060de69bb216a075`，两个 package SHA256 均为 `0f043db2fd6975bb60045dcc93a8e402e3dfc1d55aa753e0433067f8b79563fb`，副本 `codesign --verify --deep --strict` exit0。
-- 独立 user data：`/Users/kouzen/.codex/tmp/cursor-bridge-1001`；extensions：`/Users/kouzen/.codex/tmp/cursor-bridge-ext-1001`。固定第一方 `agentkib.cursor-bridge@0.1.0`，VSIX SHA256 `671fb182fabc0c086380968b9600bd66f24e4ee73cbfadc7121447beec6ba1ee`；目录亦存在 Cursor 自身的 remote-containers / remote-ssh 扩展，不将目录描述为只含第一方扩展。
+- 为解决电脑操作工具无法选择同名不同进程的问题，将官方应用完整复制到 `/Users/user/.codex/tmp/cursor-native-app-1001/Cursor.app`，未修改 bundle 或资源。两个主二进制 SHA256 均为 `7c85e27a23b7dbe8fbfc738a8876550b10cd57173df7cf7d060de69bb216a075`，两个 package SHA256 均为 `0f043db2fd6975bb60045dcc93a8e402e3dfc1d55aa753e0433067f8b79563fb`，副本 `codesign --verify --deep --strict` exit0。
+- 独立 user data：`/Users/user/.codex/tmp/cursor-bridge-1001`；extensions：`/Users/user/.codex/tmp/cursor-bridge-ext-1001`。固定第一方 `agentkib.cursor-bridge@0.1.0`，VSIX SHA256 `671fb182fabc0c086380968b9600bd66f24e4ee73cbfadc7121447beec6ba1ee`；目录亦存在 Cursor 自身的 remote-containers / remote-ssh 扩展，不将目录描述为只含第一方扩展。
 - 使用 `--use-inmemory-secretstorage --sync off`；每次完整客户端退出后明确沿用原 binding 生成新挑战。因此本轮不证明实际 OS SecretStorage 跨客户端进程重启的凭据持久性。
 - 冻结 debug Runtime SHA256 `88da0d5ac0e76ae46301287c39d8bdc3475c6a64434db0be8756fb9121b0c42b`。独立审计确认它与最终 debug `9b346183…` 的 18 个 section、加载命令、符号表及函数入口完全相同；8,151 个差异字节只属于 N_OSO 调试对象路径及签名。debug 实际验收不能替代 release 二进制验收，详见 `runtime-binary-equivalence.json`。
-- 证据：`/Users/kouzen/Documents/AgentKib-archives/2026-10-01/interop-closeout/cursor-native`。原脚本及原始证据保留在新增唯一备份 ZIP；没有重建来源、覆盖旧失败或重新生成已消费操作。
+- 证据：`/Users/user/Documents/AgentKib-archives/2026-10-01/interop-closeout/cursor-native`。原脚本及原始证据保留在新增唯一备份 ZIP；没有重建来源、覆盖旧失败或重新生成已消费操作。
 
 ## 两个实际操作
 
@@ -49,9 +49,9 @@ Changes 只准备应用数据目录中的冻结 `plan.json`；扩展调用 Curso
 ## 命令与检查
 
 ```sh
-cp -cR /Applications/Cursor.app /Users/kouzen/.codex/tmp/cursor-native-app-1001/Cursor.app
-codesign --verify --deep --strict /Users/kouzen/.codex/tmp/cursor-native-app-1001/Cursor.app
-/Users/kouzen/.codex/tmp/cursor-native-app-1001/Cursor.app/Contents/Resources/app/bin/cursor --classic --new-window --user-data-dir /Users/kouzen/.codex/tmp/cursor-bridge-1001 --extensions-dir /Users/kouzen/.codex/tmp/cursor-bridge-ext-1001 --use-inmemory-secretstorage --sync off /Users/kouzen/.codex/tmp/cursor-bridge-1001/workspace-a
+cp -cR /Applications/Cursor.app /Users/user/.codex/tmp/cursor-native-app-1001/Cursor.app
+codesign --verify --deep --strict /Users/user/.codex/tmp/cursor-native-app-1001/Cursor.app
+/Users/user/.codex/tmp/cursor-native-app-1001/Cursor.app/Contents/Resources/app/bin/cursor --classic --new-window --user-data-dir /Users/user/.codex/tmp/cursor-bridge-1001 --extensions-dir /Users/user/.codex/tmp/cursor-bridge-ext-1001 --use-inmemory-secretstorage --sync off /Users/user/.codex/tmp/cursor-bridge-1001/workspace-a
 # workspace-b 使用相同隔离参数。
 python3 qa/probes/cursor-bridge-native-acceptance.py serve
 python3 qa/probes/cursor-bridge-native-acceptance.py send --json '{"action":"status","workspace":"a"}'

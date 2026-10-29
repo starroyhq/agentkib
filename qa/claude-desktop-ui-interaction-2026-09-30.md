@@ -8,7 +8,7 @@
 
 - CLI `2.1.285`，实际模型 `deepseek-v4-pro`。
 - 最终 debug Runtime SHA256：`66fa91d437dd36f4532017a3a3bb32303002b7f1f02a6edcfb8469c738c24895`。
-- 源码 revision `057da8b81a3f3c9536a568287175af8e50c12176`，dirty 工作树 `/Users/kouzen/.codex/worktrees/all-agent-continuation/agentkib`。
+- 源码 revision `057da8b81a3f3c9536a568287175af8e50c12176`，dirty 工作树 `/Users/user/.codex/worktrees/all-agent-continuation/agentkib`。
 - 1 次 UI 发送、1 次 CLI 启动、1 个原生 user turn、1 个原生会话，0 个原生 API error。
 - Write 和 AskUserQuestion 各一次，每项 tool_use 都有匹配的成功 tool_result。
 - 合成文件精确包含 `00ea3334-f386-4e64-9248-c660638b35df`；最终新回复包含该 marker 与 `cobalt-lake`，界面空闲、两项工具 completed。
@@ -37,11 +37,11 @@
 隔离 wrapper 引用原 settings 路径，显式 Pro、`--safe-mode --setting-sources local --strict-mcp-config --permission-mode default --max-budget-usd 0.50`。仅隔离工作区 `.claude/settings.local.json` 设置 ask Write/Edit/Bash，可靠触发本次工具审批；此为测试约束，不是生产权限变更。wrapper 拒绝第二次模型 CLI 启动。测试应用初次自动发现本机已有工作区，这是应用既有启动行为；没有打开或向模型发送其他工作区内容。
 
 ```sh
-export PATH=/Users/kouzen/Library/pnpm/nodejs/22.23.2/bin:$PATH
+export PATH=/Users/user/Library/pnpm/nodejs/22.23.2/bin:$PATH
 node qa/probes/claude-desktop-interaction-ui-2026-09-30.mjs prepare
 # 从 apps/desktop 启动，PATH 首项为该隔离根的 bin：
 AGENTKIB_DEV=1 \
-AGENTKIB_RUNTIME_PATH=/Users/kouzen/.codex/worktrees/all-agent-continuation/agentkib/target/debug/agentkib-runtime \
+AGENTKIB_RUNTIME_PATH=/Users/user/.codex/worktrees/all-agent-continuation/agentkib/target/debug/agentkib-runtime \
 AGENTKIB_BENCHMARK_DATA_DIR=/private/tmp/agentkib-claude-desktop-interaction-ui-2026-09-30/runtime-data \
 AGENTKIB_BENCHMARK_USER_DATA=/private/tmp/agentkib-claude-desktop-interaction-ui-2026-09-30/electron-profile \
 CLAUDE_CONFIG_DIR=/private/tmp/agentkib-claude-desktop-interaction-ui-2026-09-30/claude-config \

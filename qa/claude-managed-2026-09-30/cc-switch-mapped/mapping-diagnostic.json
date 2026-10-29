@@ -1,5 +1,5 @@
 {
-  "providerName": "windsurfapi",
+  "providerName": "relay-provider",
   "ccSwitchOpusMapping": "claude-opus-5-5-medium",
   "cliSettingsModel": "opus",
   "cliSettingsOpusMapping": "claude-opus-5",

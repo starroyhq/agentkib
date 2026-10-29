@@ -2,7 +2,7 @@
 
 本轮使用新隔离 Grok→OpenClaw 公共导入，完成一次真实模型请求和两次禁网原生 TUI 恢复。严格原始结果为 `false`：原决策中的 `with namespace` 被模型表述为 `, namespace`。原结果及执行错误文件均保留；独立整句审计通过，未修改 runner 的答案判定，也未重试模型。
 
-证据根：`/Users/kouzen/Documents/AgentKib-archives/2026-10-01/provider-retest/OpenClaw/completion-v2`。
+证据根：`/Users/user/Documents/AgentKib-archives/2026-10-01/provider-retest/OpenClaw/completion-v2`。
 
 ## 固定环境与公共导入
 
@@ -52,8 +52,8 @@ python3 qa/probes/openclaw-public-prepare.py
 python3 qa/probes/deepseek-openclaw-native-once.py --selftest
 python3 qa/probes/openclaw_metadata_contract_selftest.py
 python3 qa/probes/openclaw-postreply-offline-selftest.py
-SSL_CERT_FILE=/Users/kouzen/Library/Python/3.11/lib/python/site-packages/certifi/cacert.pem python3 qa/probes/deepseek-openclaw-native-once.py /Users/kouzen/Documents/AgentKib-archives/2026-10-01/provider-retest/OpenClaw/completion-v2/public-case /Users/kouzen/Documents/AgentKib-archives/2026-10-01/provider-retest/OpenClaw/completion-v2/live-01
-python3 qa/probes/openclaw-postreply-offline.py /Users/kouzen/Documents/AgentKib-archives/2026-10-01/provider-retest/OpenClaw/completion-v2/live-01 /Users/kouzen/Documents/AgentKib-archives/2026-10-01/provider-retest/OpenClaw/completion-v2/live-01/offline-restarts
+SSL_CERT_FILE=/Users/user/Library/Python/3.11/lib/python/site-packages/certifi/cacert.pem python3 qa/probes/deepseek-openclaw-native-once.py /Users/user/Documents/AgentKib-archives/2026-10-01/provider-retest/OpenClaw/completion-v2/public-case /Users/user/Documents/AgentKib-archives/2026-10-01/provider-retest/OpenClaw/completion-v2/live-01
+python3 qa/probes/openclaw-postreply-offline.py /Users/user/Documents/AgentKib-archives/2026-10-01/provider-retest/OpenClaw/completion-v2/live-01 /Users/user/Documents/AgentKib-archives/2026-10-01/provider-retest/OpenClaw/completion-v2/live-01/offline-restarts
 ```
 
 上述目录与单次 token 已消耗；命令仅作执行记录，不可重新执行真实请求。本轮无生产代码修改、依赖变更、提交或推送。

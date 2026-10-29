@@ -3,7 +3,7 @@
 ## 来源与提交范围
 
 - 实施来源：`all-agent-continuation/agentkib`，HEAD `057da8b81a3f3c9536a568287175af8e50c12176`，detached / dirty。来源有全 Agent 互通、Codex 和远控等已有改动，不能整体提交。
-- 本次提交工作树：`/Users/kouzen/.codex/worktrees/claude-managed-commit/agentkib`；分支 `codex/claude-managed-desktop-web`；从本机已存在的 `origin/main` `b366d18` 创建，创建时 clean。
+- 本次提交工作树：`/Users/user/.codex/worktrees/claude-managed-commit/agentkib`；分支 `codex/claude-managed-desktop-web`；从本机已存在的 `origin/main` `b366d18` 创建，创建时 clean。
 - 依据本轮 116 文件清单及起始 SHA256 基线提取 Claude 增量：新增文件直接迁移；21 个修改文件的起始内容匹配历史 `9b585d3`，以三方补丁应用；其余 11 个混合文件仅提取 Claude 入口、类型及文档。不复制全 Agent 来源/目标适配、导入 worker 或旧 Codex ledger。
 - `claude-managed-2026-09-30-files.json` 保留为来源工作树历史证据，**不是本提交内容的哈希清单**。本提交的实际文件由 Git diff / commit 确定。
 - 新主线将 ledger claim 升级为一次性写入设备身份和恢复证据。本轮四条 Claude claim 路径适配该接口，并测试回执丢失后仍保留操作身份、工作区和执行模式，其他设备无法读取。Codex ledger 及其生产实现无改动。

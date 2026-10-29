@@ -31,14 +31,14 @@ await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
 const endpoint = `http://127.0.0.1:${server.address().port}/v1/chat/completions`;
 const history = [{ role: "user", text: "marker M7, decision SQLite WAL" }, { role: "assistant", text: "Confirmed M7 and SQLite WAL" }];
 const prompt = "Recall the previous marker and decision, without tools.";
-const body = JSON.stringify({ model: "devin/claude-opus-5-5", stream: true, messages: history.map((row) => ({ role: row.role, content: row.text })).concat({ role: "user", content: prompt }) });
+const body = JSON.stringify({ model: "relay/claude-opus-5-5", stream: true, messages: history.map((row) => ({ role: row.role, content: row.text })).concat({ role: "user", content: prompt }) });
 const options = { method: "POST", headers: { "content-type": "application/json", "x-original-client": "fixture", "x-session-id": "ses_mock", "x-session-affinity": "ses_mock" }, body };
 const evidence = [];
 function create(name) {
   const dir = path.join(root, name);
   fs.mkdirSync(dir, { mode: 0o700 });
   const file = path.join(dir, "contract.json");
-  fs.writeFileSync(file, JSON.stringify({ endpoint, model: "devin/claude-opus-5-5", sessionId: "ses_mock", history, prompt }));
+  fs.writeFileSync(file, JSON.stringify({ endpoint, model: "relay/claude-opus-5-5", sessionId: "ses_mock", history, prompt }));
   return file;
 }
 async function attempt(guard) {

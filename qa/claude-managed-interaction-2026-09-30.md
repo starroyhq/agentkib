@@ -5,10 +5,10 @@
 ## 环境与边界
 
 - 源码 revision：`057da8b81a3f3c9536a568287175af8e50c12176`，工作树 dirty，包含此前全 Agent 互通与 Claude 一期改动；本子任务仅新增 opt-in 验收测试及本增量证据。
-- 工作树：`/Users/kouzen/.codex/worktrees/all-agent-continuation/agentkib`。
+- 工作树：`/Users/user/.codex/worktrees/all-agent-continuation/agentkib`。
 - Runtime debug SHA256：`864cd5ee26aa2e6dd1e54a242cccd1875d46bf57c8a7e00f895f860624e37830`。
 - Claude Code `2.1.285`，显式模型 `deepseek-v4-pro`，max-budget-usd `0.50`。
-- 原 settings 仅通过 `--settings /Users/kouzen/.claude/settings.json` 读取，验收前后 SHA 一致；未复制凭据或修改 HOME、CODEX_HOME、用户安装。
+- 原 settings 仅通过 `--settings /Users/user/.claude/settings.json` 读取，验收前后 SHA 一致；未复制凭据或修改 HOME、CODEX_HOME、用户安装。
 - 隔离根目录：`/private/tmp/agentkib-claude-interaction-native-2026-09-30-pro-once`。数据保留，未清理；独立 CLAUDE_CONFIG_DIR、Runtime/Web 数据与工作区、随机本机端口。
 - 测试专属约束：隔离工作区 `.claude/settings.local.json` 使用 `permissions.ask=[Write,Edit,Bash]`，CLI 使用 `--permission-mode default --setting-sources local --safe-mode --strict-mcp-config`。此约束只用于可靠触发合成写入审批，不是生产权限配置变更。Runtime 保持自身 stdio 审批协议。
 - 真实 CLI、Runtime、WebAccessService.localClaude owner 服务、HTTP Web 入口共同参与。配对凭证由既有 legacy 测试 fixture 授予；不将本测试描述为真实手机、renderer 点击或正式配对 UI 验收。
@@ -18,7 +18,7 @@
 在上述工作树，使用 Node 22.23.2 / pnpm 10.8.1：
 
 ```sh
-export PATH=/Users/kouzen/Library/pnpm/nodejs/22.23.2/bin:$PATH
+export PATH=/Users/user/Library/pnpm/nodejs/22.23.2/bin:$PATH
 pnpm --filter @agentkib/desktop typecheck
 pnpm --filter @agentkib/desktop exec vitest run electron/main/web/claude-managed-interaction-real.test.ts
 AGENTKIB_CLAUDE_INTERACTION_DIR=/private/tmp/agentkib-claude-interaction-native-2026-09-30-pro-once pnpm --filter @agentkib/desktop exec vitest run electron/main/web/claude-managed-interaction-real.test.ts

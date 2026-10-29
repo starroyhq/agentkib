@@ -1,13 +1,13 @@
 # OpenCode → 已有 CPA/Opus 授权准备 — 2026-09-30
 
-用户已明确选择后续新用例使用现有 CPA 的 `devin/claude-opus-5-5` 映射，并允许短命验收进程读取已有授权；不向其他 Agent 的凭据文件复制。此前官方 `opencode/big-pickle` 的 403 请求保留，不重试该用例。已完成本地 mock 和一个新的 Claude → OpenCode 真实回复用例；结果通过，其他方向不外推。
+用户已明确选择后续新用例使用现有 CPA 的 `relay/claude-opus-5-5` 映射，并允许短命验收进程读取已有授权；不向其他 Agent 的凭据文件复制。此前官方 `opencode/big-pickle` 的 403 请求保留，不重试该用例。已完成本地 mock 和一个新的 Claude → OpenCode 真实回复用例；结果通过，其他方向不外推。
 
 ## 正式客户端接入
 
 固定官方 OpenCode `1.18.32` 使用正式 custom provider：
 
 - provider ID `agentkib-cpa`，npm `@ai-sdk/openai-compatible`。
-- model `devin/claude-opus-5-5`，真实 endpoint 精确为 `http://127.0.0.1:8317/v1/chat/completions`。
+- model `relay/claude-opus-5-5`，真实 endpoint 精确为 `http://127.0.0.1:8317/v1/chat/completions`。
 - 隔离磁盘配置只启用该 provider，默认 URL 为不可用的 `http://127.0.0.1:9/blocked`。不存 key；只有正式插件成功加载并创建守卫后，内存注入真实 URL、`fetch` 和短命进程环境中的 key。
 - 官方 custom provider 原本生成 `X-Session-Id` 和 `x-session-affinity`，守卫核对两者与原生 session ID 相同。没有设置免费层的 `x-opencode-client`，守卫反而拒绝它；不冒充免费入口或借用其身份。
 - 单次 token 的排他创建、fsync、请求正文/全部历史校验、禁止重定向、并发与重启拒绝重发，复用此前已审查逻辑，但放在独立 CPA 文件，未修改冻结的官方免费实验。
@@ -51,7 +51,7 @@ python3 qa/probes/opencode-cpa-once-native-mock.py <official-cli> <synthetic-exp
   <worktree>/target/debug/agentkib-runtime
 ```
 
-- 原生 session `ses_4935bf8757414ee2bb8c50e53aa4af15`；目标 plan 原本已选定 `agentkib-cpa/devin/claude-opus-5-5`，没有在失败的免费层目标上重试或改模型。
+- 原生 session `ses_4935bf8757414ee2bb8c50e53aa4af15`；目标 plan 原本已选定 `agentkib-cpa/relay/claude-opus-5-5`，没有在失败的免费层目标上重试或改模型。
 - 官方 CLI 通过受审查 custom provider 向本机 CPA 派发 **1 次**，HTTP **200**；CLI 正常退出，工具关闭，没有历史工具重放。
 - 泛化提示中没有答案。新助手正文为 `AKIB-f715d3ce4b3649329d` 和 `append-only SQLite WAL with namespace cobalt-lake`，与导入历史完整一致。
 - 原生回报用量 input 4、output 41、total 45、reasoning 0、cache read/write 0。自定义 provider 原生 cost 字段为 0，**不代表实际账单免费或已核实计费**。

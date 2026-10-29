@@ -13,7 +13,7 @@
 执行命令：
 
 ```
-PATH=/Users/kouzen/Library/pnpm/nodejs/22.23.2/bin:$PATH AGENTKIB_CLAUDE_RESUME_DIR=/private/tmp/agentkib-claude-resume-2026-09-30-once pnpm --filter @agentkib/desktop exec vitest run electron/main/web/claude-managed-resume-real.test.ts
+PATH=/Users/user/Library/pnpm/nodejs/22.23.2/bin:$PATH AGENTKIB_CLAUDE_RESUME_DIR=/private/tmp/agentkib-claude-resume-2026-09-30-once pnpm --filter @agentkib/desktop exec vitest run electron/main/web/claude-managed-resume-real.test.ts
 python3 qa/probes/claude-resume-readonly-recovery.py
 ```
 

@@ -73,7 +73,7 @@ curl -fL https://antigravity-cli-auto-updater-974169037036.us-central1.run.app/m
 
 本轮随后实际执行了两个隔离工作区的普通 IDE 实验，没有使用 `--extensionDevelopmentPath`。临时 fixture 扩展通过官方 `--install-extension <本地VSIX>` 安装到独立 `--extensions-dir`；扩展只调用官方 `developer.bulkImportChats`、`composer.openComposer`、`composer.getOrderedSelectedComposerIds`，未写 Cursor 原生数据库、未发送模型消息。扩展源码为 `qa/probes/cursor-ide-offline-extension.js`。每次动作先独占创建并 fsync 本地 token，同一动作不自动重放；回执保存实际工作区与 `extensionMode`。
 
-证据目录为 `~/Documents/AgentKib-archives/2026-09-30/full-interop/cursor-ide-3.22.12-normal/`。首次以该长路径作为 userdata 启动时，macOS Unix socket 路径超过 103 字符，两个进程在扩展激活之前返回 `listen EINVAL`；没有提交导入动作。随后使用全新的短路径 `/Users/kouzen/.codex/tmp/cursor-ide-0930`，HOME、Cursor 配置与扩展目录仍全部独立，无复制登录。参数包括 `--classic --new-window --use-inmemory-secretstorage --sync off`，关闭隔离配置中的更新、遥测，并使用不可用回环代理；未登录或调用模型。
+证据目录为 `~/Documents/AgentKib-archives/2026-09-30/full-interop/cursor-ide-3.22.12-normal/`。首次以该长路径作为 userdata 启动时，macOS Unix socket 路径超过 103 字符，两个进程在扩展激活之前返回 `listen EINVAL`；没有提交导入动作。随后使用全新的短路径 `/Users/user/.codex/tmp/cursor-ide-0930`，HOME、Cursor 配置与扩展目录仍全部独立，无复制登录。参数包括 `--classic --new-window --use-inmemory-secretstorage --sync off`，关闭隔离配置中的更新、遥测，并使用不可用回环代理；未登录或调用模型。
 
 | 检查 | 实际结果 |
 | --- | --- |

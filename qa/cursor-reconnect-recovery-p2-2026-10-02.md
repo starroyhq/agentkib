@@ -2,7 +2,7 @@
 
 ## 源码与边界
 
-- 工作树：`/Users/kouzen/.codex/worktrees/main-acceptance-20260930/agentkib`。
+- 工作树：`/Users/user/.codex/worktrees/main-acceptance-20260930/agentkib`。
 - 分支：`codex/main-acceptance-20260930`；HEAD：`f706abaffac9950d616121f4dc86ef830a41aa09`。验证对象为 dirty 源码，不能只用 HEAD 代表本轮代码。
 - 保留上一轮登记隔离、空工作区连接入口及其未提交修改；原 QA 与原始证据不改写，见 [上一轮 QA](cursor-connection-p2-2026-10-02.md)。本次代码增量只涉及 `cursor_bridge.rs`、其集成测试与 `cursor_ide.rs`，另更新使用说明和本记录。
 - macOS 本机自动化；`rustc 1.92.0 (ded5c06cf 2025-12-08)`、`cargo 1.92.0`。固定 Cursor `3.22.12` 的格式合约保持不变，未提升其他版本、产品表面或平台能力。

@@ -119,6 +119,12 @@ describe("WebAccessService loopback security boundary", () => {
     req.end();
     return { chunks, close: () => req.destroy() };
   }
+  /** Waits for readiness so streams register in the order they were opened. */
+  async function openReadyStream(streamCookie = cookie, sessionId = "s") {
+    const stream = openStream(streamCookie, sessionId);
+    await vi.waitFor(() => expect(stream.chunks.join("")).toContain("event: session-ready"));
+    return stream;
+  }
   function streamEvents(chunks: string[]): SessionStreamEvent[] {
     return chunks
       .join("")
@@ -1751,6 +1757,90 @@ describe("WebAccessService loopback security boundary", () => {
       finishes.forEach((finish) => finish({}));
       first.close();
       second.close();
+    }
+  });
+
+  it("lets a device's newest stream replace its oldest one at the per-device limit", async () => {
+    await bootstrap();
+    await pair();
+    const registry = (service as unknown as { streams: Map<unknown, unknown> }).streams;
+    const streams: ReturnType<typeof openStream>[] = [];
+    try {
+      // After a network change the oldest connection can stay half-open while the
+      // same device reconnects; the reconnect must not wait for that slot.
+      streams.push(await openReadyStream());
+      streams.push(await openReadyStream(cookie, ""));
+      streams.push(await openReadyStream());
+      const [stale, catalog, replacement] = streams;
+      await vi.waitFor(() => expect(stale.chunks.join("")).toContain("event: unavailable"));
+      expect(catalog.chunks.join("")).not.toContain("event: unavailable");
+      expect(replacement.chunks.join("")).not.toContain("event: unavailable");
+      expect(registry.size).toBe(2);
+      await vi.waitFor(() => expect(subscriptions.size).toBe(2));
+    } finally {
+      streams.forEach((stream) => stream.close());
+    }
+  });
+
+  it("only replaces streams owned by the reconnecting device", async () => {
+    await bootstrap();
+    await pair();
+    const otherCookie = cookie;
+    cookie = "";
+    await bootstrap();
+    await pair();
+    const registry = (service as unknown as { streams: Map<unknown, unknown> }).streams;
+    const streams: ReturnType<typeof openStream>[] = [];
+    try {
+      // The other device holds the oldest streams in the table, yet stays untouched.
+      streams.push(await openReadyStream(otherCookie));
+      streams.push(await openReadyStream(otherCookie, ""));
+      streams.push(await openReadyStream());
+      streams.push(await openReadyStream(cookie, ""));
+      streams.push(await openReadyStream());
+      await vi.waitFor(() => expect(streams[2].chunks.join("")).toContain("event: unavailable"));
+      for (const stream of [streams[0], streams[1], streams[3], streams[4]])
+        expect(stream.chunks.join("")).not.toContain("event: unavailable");
+      expect(registry.size).toBe(4);
+    } finally {
+      streams.forEach((stream) => stream.close());
+    }
+  });
+
+  it("asks clients to retry when the stream table is full, without evicting other devices", async () => {
+    // Every stream listens for hub unavailability; sixteen exceed EventEmitter's warning threshold.
+    hub.setMaxListeners(32);
+    const devices: string[] = [];
+    for (let index = 0; index < 8; index++) {
+      cookie = "";
+      await bootstrap();
+      await pair();
+      devices.push(cookie);
+    }
+    const registry = (service as unknown as { streams: Map<unknown, unknown> }).streams;
+    const streams: ReturnType<typeof openStream>[] = [];
+    try {
+      for (const device of devices) {
+        streams.push(await openReadyStream(device));
+        streams.push(await openReadyStream(device, ""));
+      }
+      expect(registry.size).toBe(16);
+      cookie = "";
+      await bootstrap();
+      await pair();
+      const rejected = await http("/api/web/v1/stream?protocolVersion=2&sessionId=s");
+      expect(rejected.status).toBe(429);
+      expect(rejected.headers["retry-after"]).toBe("3");
+      expect(rejected.json()).toMatchObject({ error: "stream_limit" });
+      expect(registry.size).toBe(16);
+      // A device at its own limit still replaces its oldest stream in a full table.
+      streams.push(await openReadyStream(devices[0]));
+      await vi.waitFor(() => expect(streams[0].chunks.join("")).toContain("event: unavailable"));
+      for (const stream of streams.slice(1))
+        expect(stream.chunks.join("")).not.toContain("event: unavailable");
+      expect(registry.size).toBe(16);
+    } finally {
+      streams.forEach((stream) => stream.close());
     }
   });
 

@@ -208,6 +208,7 @@ describe("desktop authoritative session directory", () => {
   )(
     "keeps ordinary collection conversations visible and excludes internal records (collection: $workspaceId, bridge: $bridge)",
     ({ workspaceId, bridge }) => {
+      useSessionViewStore.getState().setCollections(true);
       mocks.bridge = bridge;
       mocks.search = { sessionId: "ordinary" };
       const records: ConversationSessionSummary[] = [
@@ -245,6 +246,31 @@ describe("desktop authoritative session directory", () => {
     },
   );
 
+  it("hides conversation-only collection sessions until their option is enabled", () => {
+    mocks.indexed = [
+      {
+        ...session("rootless"),
+        workspace_id: SESSION_COLLECTIONS.unclassified,
+        origin: "interactive",
+      },
+      session("indexed-workspace"),
+    ];
+    mocks.controlled = [session("managed-id")];
+    const view = render(
+      <SessionHubProvider>
+        <Directory />
+      </SessionHubProvider>,
+    );
+    expect(screen.queryByRole("button", { name: "rootless" })).toBeNull();
+    act(() => useSessionViewStore.getState().setCollections(true));
+    view.rerender(
+      <SessionHubProvider>
+        <Directory />
+      </SessionHubProvider>,
+    );
+    expect(screen.getByRole("button", { name: "rootless" })).toBeTruthy();
+  });
+
   it("prefers the controlled catalog on a duplicate collection identity", () => {
     const ordinary = { ...session("ordinary"), workspace_id: SESSION_COLLECTIONS.projectless };
     mocks.indexed = [ordinary];
@@ -260,6 +286,7 @@ describe("desktop authoritative session directory", () => {
   });
 
   it("hides only proven native aliases across Codex collections", () => {
+    useSessionViewStore.getState().setCollections(true);
     mocks.indexed = [
       { ...session("proven-native"), workspace_id: SESSION_COLLECTIONS.projectless },
       { ...session("unproven-native"), workspace_id: SESSION_COLLECTIONS.unclassified },
@@ -278,6 +305,7 @@ describe("desktop authoritative session directory", () => {
   it.each([false, true])(
     "does not promote a legacy scalar alias across collections (mixed plural: %s)",
     (mixed) => {
+      useSessionViewStore.getState().setCollections(true);
       mocks.indexed = [
         { ...session("legacy-native"), workspace_id: SESSION_COLLECTIONS.projectless },
       ];
@@ -298,6 +326,7 @@ describe("desktop authoritative session directory", () => {
   );
 
   it("projects a verified global Codex runtime floor onto raw collection rows", () => {
+    useSessionViewStore.getState().setCollections(true);
     mocks.indexed = [{ ...session("raw-native"), workspace_id: SESSION_COLLECTIONS.projectless }];
     mocks.codexRuntimeReason = "codex-cli-version-too-old";
     const view = render(

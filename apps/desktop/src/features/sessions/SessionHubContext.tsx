@@ -2,7 +2,7 @@ import { isBusyRead } from "./conversation/features/sessions/session-read-retry"
 import { codexReason } from "./conversation/features/sessions/codex-copy";
 import { useI18n } from "@/core/useI18n";
 import { SESSION_COLLECTIONS, sessionCollection } from "@agentkib/runtime-protocol";
-import type { WorkspaceSummary } from "@/core/types";
+import type { ConversationSessionSummary, WorkspaceSummary } from "@/core/types";
 import {
   createContext,
   useCallback,
@@ -36,10 +36,11 @@ function useHub(active: boolean) {
   const workspaceQuery = useHomeWorkspaces();
   const runtime = useAppStore((state) => state.runtime);
   const localEnabled = runtime?.session_index_enabled === true;
+  const collections = useSessionViewStore((state) => state.collections);
   const localWorkspaces = useMemo(
     (): WorkspaceSummary[] => [
       ...(workspaceQuery.data ?? []),
-      ...(active && localEnabled
+      ...(active && localEnabled && collections
         ? Object.entries(SESSION_COLLECTIONS).map(([kind, id]) => ({
             id,
             name: tr(kind === "projectless" ? "sessions.projectless" : "sessions.unclassified"),
@@ -51,7 +52,7 @@ function useHub(active: boolean) {
           }))
         : []),
     ],
-    [workspaceQuery.data, active, localEnabled, tr],
+    [workspaceQuery.data, active, localEnabled, collections, tr],
   );
   const remote = useRemoteCatalogEntries();
   const enabled = active && (localEnabled || remote.hosts.length > 0);
@@ -126,10 +127,14 @@ function useHub(active: boolean) {
   );
   const execution = useSessionViewStore((state) => state.execution);
   const visibility = useMemo(() => ({ execution }), [execution]);
-  const sessions = useMemo(
-    () => allSessions.filter((session) => isSessionListed(session, visibility)),
-    [allSessions, visibility],
+  // Conversation-only Codex buckets (projectless/rootless) only list when their option is on.
+  const listed = useCallback(
+    (session: ConversationSessionSummary) =>
+      isSessionListed(session, visibility) &&
+      (collections || !sessionCollection(session.workspace_id)),
+    [visibility, collections],
   );
+  const sessions = useMemo(() => allSessions.filter(listed), [allSessions, listed]);
   const [hiddenSessionNotice, setHiddenSessionNotice] = useState(false);
   const refreshCatalog = catalog.refresh;
   const [historyRevision, setHistoryRevision] = useState(0);
@@ -214,7 +219,7 @@ function useHub(active: boolean) {
     if (!sessionId || !enabled) return;
     const target = allSessions.find((session) => session.id === canonicalId);
     if (!target) return;
-    if (isSessionListed(target, visibility)) {
+    if (listed(target)) {
       setHiddenSessionNotice(false);
       return;
     }
@@ -225,10 +230,10 @@ function useHub(active: boolean) {
       replace: true,
       search: (current) => ({ ...current, sessionId: undefined }),
     });
-  }, [sessionId, canonicalId, allSessions, enabled, navigate, visibility]);
+  }, [sessionId, canonicalId, allSessions, enabled, navigate, listed]);
   useEffect(() => {
     const target = allSessions.find((session) => session.id === canonicalId);
-    if (target && !isSessionListed(target, visibility)) return;
+    if (target && !listed(target)) return;
     // Wait until every workspace cache has been read before validating a deep link.
     if (
       sessionId &&
@@ -265,7 +270,7 @@ function useHub(active: boolean) {
     workspaceQuery.isPending,
     workspaceQuery.error,
     navigate,
-    visibility,
+    listed,
   ]);
   return {
     statuses: catalog.statuses,

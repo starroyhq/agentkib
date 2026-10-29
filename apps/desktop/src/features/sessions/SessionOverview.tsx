@@ -14,6 +14,7 @@ import {
   worktreeLabel,
 } from "./session-labels";
 import { SessionNotice as Notice } from "./SessionNotice";
+import { groupSessions } from "./session-catalog";
 import { WorktreeMark } from "./WorktreeMark";
 import { sessionSourceWasUsed } from "./session-source-status";
 
@@ -27,6 +28,12 @@ export function SessionOverview() {
     ["archived", hub.filtered.filter((session) => session.archived).length],
     ["metadata", hub.filtered.filter((session) => session.availability === "metadata-only").length],
   ] as const;
+  // Name each session after the directory group it is listed in (its repository's, for a worktree).
+  const groupLabels = new Map(
+    groupSessions(hub.filtered, hub.workspaces, hub.visibility).flatMap((group) =>
+      group.sessions.map((session) => [session.id, group.label] as const),
+    ),
+  );
   const visibleWorkspaceIds = new Set(hub.filtered.map((session) => session.workspace_id));
   const statusWorkspaces = hub.workspaces
     .filter((item) => !item.remote)
@@ -92,8 +99,8 @@ export function SessionOverview() {
                     </strong>
                     <small className="text-sm text-muted-foreground [overflow-wrap:anywhere]">
                       {session.remote && `${session.remote.host_name} · `}
-                      {source?.name} · {sessionAgentNames[session.agent]} ·{" "}
-                      {sessionRecordLabel(session, tr)}
+                      {groupLabels.get(session.id) ?? source?.name} ·{" "}
+                      {sessionAgentNames[session.agent]} · {sessionRecordLabel(session, tr)}
                     </small>
                   </span>
                   {status && (

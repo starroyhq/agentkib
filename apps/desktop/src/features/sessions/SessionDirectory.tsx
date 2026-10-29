@@ -193,7 +193,7 @@ export function SessionDirectory({
                           data-session-entry
                           draggable
                           className={cn(
-                            "session-directory-item session-directory-draggable flex min-h-10 min-w-0 flex-1 items-center gap-2 rounded-lg px-3 py-2 text-left transition-colors hover:bg-sidebar-accent/70 cursor-grab active:cursor-grabbing [&>div]:shrink-0 [&>span]:grid [&>span]:min-w-0 [&>span]:flex-1 [&_strong]:truncate aria-[current=page]:bg-sidebar-accent aria-[current=page]:font-medium",
+                            "session-directory-item session-directory-draggable flex min-h-10 min-w-0 flex-1 items-center gap-2 rounded-lg px-3 py-2 text-left transition-colors hover:bg-sidebar-accent/70 cursor-grab active:cursor-grabbing [&>div]:shrink-0 [&_strong]:truncate aria-[current=page]:bg-sidebar-accent aria-[current=page]:font-medium",
                             draggingId === `session:${session.id}` &&
                               "session-directory-dragging opacity-[0.45]",
                             dropTargetId === session.id &&

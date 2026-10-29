@@ -572,6 +572,44 @@ describe("SessionHubPage", () => {
     expect(hub.refresh).toHaveBeenCalledOnce();
   });
 
+  it("names a worktree session after its repository in the overview", () => {
+    const repository = {
+      ...workspace,
+      id: "atlas",
+      name: "atlas",
+      path: "/projects/atlas",
+      checkout: {
+        repository_group_id: "repo",
+        kind: "primary" as const,
+        primary_path: "/projects/atlas",
+        name: null,
+        branch: "main",
+        status: "present" as const,
+      },
+    };
+    const home = { ...workspace, id: "home", name: "home", path: "/Users/qa" };
+    const worktree = {
+      repository_group_id: "repo",
+      name: "h1a",
+      path: "/Users/qa/.codex/worktrees/h1a/atlas",
+      branch: "codex/h1a",
+      status: "present" as const,
+    };
+    const inWorktree = { ...readable, workspace_id: "home", worktree };
+    const atHome = { ...readable, id: "home-session", title: "Tidy notes", workspace_id: "home" };
+    hub = {
+      ...hub,
+      workspaces: [repository, home],
+      sessions: [inWorktree, atHome],
+      filtered: [inWorktree, atHome],
+    };
+    render(sessionSurface());
+    expect(screen.getByRole("button", { name: /Review theme switching/ })).toHaveTextContent(
+      "atlas · Codex",
+    );
+    expect(screen.getByRole("button", { name: /Tidy notes/ })).toHaveTextContent("home · Codex");
+  });
+
   it("shows a deleted worktree's status in the session details without a second notice", async () => {
     const worktree = {
       repository_group_id: "repo",

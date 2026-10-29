@@ -26,26 +26,9 @@ import {
   TriangleAlert,
 } from "lucide-react";
 import { AGENT_LABELS as agentLabels } from "@/core/agents";
-import { tr as defaultTranslate } from "@/core/i18n";
 import { usePathDisplay } from "@/lib/usePathDisplay";
 import { getWorkspaceStatus } from "./workspace-status";
-import { primaryName, type WorkspaceTreeRow } from "./workspace-tree";
-
-/** Says which repository a worktree belongs to; deleted and unknown states are spelled out. */
-function worktreeLabel(
-  workspace: WorkspaceSummary,
-  primary: WorkspaceSummary | undefined,
-  tr = defaultTranslate,
-) {
-  const checkout = workspace.checkout!;
-  const name = checkout.name ?? workspace.name;
-  if (checkout.status === "deleted") return tr("workspace.worktree.deleted", { name });
-  if (checkout.status === "unknown") return tr("workspace.worktree.unknown", { name });
-  const values = { name, primary: primaryName(workspace, primary) };
-  return checkout.branch
-    ? tr("workspace.worktree.present", { ...values, branch: checkout.branch })
-    : tr("workspace.worktree.presentNoBranch", values);
-}
+import { workspaceWorktreeLabel, type WorkspaceTreeRow } from "./workspace-tree";
 
 export function WorkspaceListPanel({
   rows,
@@ -135,7 +118,7 @@ export function WorkspaceListPanel({
                 .map(({ workspace, primary }) => {
                   const worktree =
                     workspace.checkout?.kind === "worktree" ? workspace.checkout : null;
-                  const worktreeText = worktree && worktreeLabel(workspace, primary, tr);
+                  const worktreeText = workspaceWorktreeLabel(workspace, primary, tr);
                   const sourceAgents = workspace.sources
                     .flatMap((source) => (source.agent ? [source.agent] : []))
                     .filter((value, index, values) => values.indexOf(value) === index);

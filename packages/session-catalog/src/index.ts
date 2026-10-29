@@ -301,6 +301,22 @@ export function groupSessions<S extends CatalogSession, W extends CatalogWorkspa
   );
 }
 
+/**
+ * Each listed session's directory group label, so recent-session lists name a worktree session
+ * after its repository, as the directory does, rather than after a wider workspace holding it.
+ */
+export function sessionGroupLabels<S extends CatalogSession, W extends CatalogWorkspace>(
+  sessions: readonly S[],
+  workspaces: readonly W[],
+  visibility: SessionVisibility = {},
+): Map<string, string> {
+  return new Map(
+    groupSessions(sessions, workspaces, visibility).flatMap((group) =>
+      group.sessions.map((session) => [session.id, group.label] as const),
+    ),
+  );
+}
+
 /** The directory group a session appears in, for revealing it. */
 export function sessionGroupId<S extends CatalogSession, W extends CatalogWorkspace>(
   session: S,

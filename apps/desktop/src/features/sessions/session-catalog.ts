@@ -10,6 +10,7 @@ export {
   isSessionVisible,
   sortSessions,
   groupSessions,
+  sessionGroupLabels,
   type SessionGroup,
 } from "@agentkib/session-catalog";
 import { tr } from "@/core/i18n";

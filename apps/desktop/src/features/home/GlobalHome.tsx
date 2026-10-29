@@ -176,6 +176,7 @@ export function GlobalHome({
   const continueWorkCard = (
     <ContinueWorkCard
       state={resolvedContinuationState}
+      workspaces={workspaces}
       recentContinuations={showOnboarding ? recentContinuations.slice(0, 2) : recentContinuations}
       slow={continuationSlow}
       error={continuationError}

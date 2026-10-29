@@ -8,9 +8,11 @@ import { AGENT_LABELS as agentLabels } from "@/core/agents";
 import type { RecentContinuation } from "./home-continuations";
 import type { ContinuationHomeState } from "./GlobalHome";
 import { getWorkspaceStatus } from "@/features/workspace/workspace-status";
+import { sessionGroupLabels } from "@/features/sessions/session-catalog";
 
 export function ContinueWorkCard({
   state,
+  workspaces = [],
   recentContinuations,
   slow,
   error,
@@ -21,6 +23,8 @@ export function ContinueWorkCard({
   onOpenWorkspace,
 }: {
   state: ContinuationHomeState;
+  /** Every registered workspace, so a worktree session is named after its repository's group. */
+  workspaces?: WorkspaceSummary[];
   recentContinuations: RecentContinuation[];
   slow: boolean;
   error?: string;
@@ -31,6 +35,10 @@ export function ContinueWorkCard({
   onOpenWorkspace?: () => Promise<void>;
 }) {
   const { tr, formatRelativeTime } = useI18n();
+  const groupLabels = sessionGroupLabels(
+    recentContinuations.map((item) => item.session),
+    workspaces,
+  );
 
   return (
     <Card className="overflow-hidden rounded-xl border-border bg-card shadow-none">
@@ -54,7 +62,7 @@ export function ContinueWorkCard({
                 <span className="mt-1 block text-xs text-muted-foreground">
                   {tr("home.continueSessionMeta", {
                     agent: agentLabels[item.session.agent],
-                    workspace: item.workspace.name,
+                    workspace: groupLabels.get(item.session.id) ?? item.workspace.name,
                     time: item.session.updated_at
                       ? formatRelativeTime(item.session.updated_at)
                       : tr("conversations.unknownTime"),

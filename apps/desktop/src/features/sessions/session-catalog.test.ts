@@ -8,6 +8,7 @@ import {
   filterSessions,
   groupSessions,
   sessionCatalogStats,
+  sessionGroupLabels,
   projectManagedSessionAliases,
   sortSessions,
 } from "./session-catalog";
@@ -343,6 +344,17 @@ describe("session catalog", () => {
         worktree: false,
       });
       expect(repository.workspace.id).toBe("main");
+      // Recent-session lists use the same names as the directory.
+      expect([...sessionGroupLabels(records, projects)]).toEqual([
+        ["foreign", "other"],
+        ["plain", "home"],
+        ["deleted", "app"],
+        ["registered", "app"],
+        ["primary", "app"],
+      ]);
+      expect(
+        sessionGroupLabels([at("pen", "home", 6, { origin: "execution" as const })], projects).size,
+      ).toBe(0);
     });
 
     it("names a repository without a registered main checkout after its main folder", () => {

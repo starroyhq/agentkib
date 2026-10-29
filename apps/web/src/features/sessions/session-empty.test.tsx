@@ -108,4 +108,43 @@ describe("recent sessions on the Web home", () => {
       expect(screen.getByRole("link", { name: /Idle/ })).toHaveAttribute("href", "/sessions/idle");
     },
   );
+
+  it("names a worktree session after its repository, as the directory does", () => {
+    const checkout = {
+      repository_group_id: "repo",
+      kind: "primary" as const,
+      primary_path: "/work/atlas",
+      name: null,
+      branch: "main",
+      status: "present" as const,
+    };
+    vi.mocked(useSession).mockReturnValue({
+      locale: "zh-CN",
+      t: dictionaries["zh-CN"],
+      choose: doubles.choose,
+      workspaces: [
+        { id: "atlas", name: "atlas", path: "/work/atlas", checkout },
+        { id: "work", name: "work", path: "/work" },
+      ],
+      sessions: [
+        {
+          ...session,
+          id: "gone",
+          title: "旧的实验分支",
+          workspace_id: "work",
+          worktree: {
+            repository_group_id: "repo",
+            name: "gone",
+            path: "/work/atlas-worktrees/gone",
+            branch: null,
+            status: "deleted",
+          },
+        },
+        { ...session, id: "notes", title: "整理笔记", workspace_id: "work" },
+      ],
+    } as unknown as ReturnType<typeof useSession>);
+    render(<SessionEmpty />);
+    expect(screen.getByRole("link", { name: /旧的实验分支/ })).toHaveTextContent("atlas");
+    expect(screen.getByRole("link", { name: /整理笔记/ })).toHaveTextContent("work");
+  });
 });

@@ -258,6 +258,9 @@ export class SessionStore {
       const owner = ["open-claw", "hermes", "grok-build"].includes(agent)
         ? (normalizedOwner ?? this.owner(workspace))
         : { id: workspace, aliases: [] };
+      // The deepest registered workspace owns a session. An enclosing workspace (such as the
+      // home folder) lists the same sessions, but must not take rows a nested one already holds.
+      const nested = JSON.stringify(collection ? [] : this.#nestedWorkspaces(workspace, owner));
       for (const alias of owner.aliases.filter((id) => id !== owner.id)) {
         this.sql.run(
           "UPDATE conversation_sessions SET workspace_id=? WHERE workspace_id=? AND agent=?",
@@ -281,7 +284,7 @@ export class SessionStore {
           session.id,
         );
         this.sql.run(
-          `INSERT INTO ${table}(${columns},last_indexed_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET workspace_id=excluded.workspace_id,agent=excluded.agent,title=excluded.title,created_at=excluded.created_at,updated_at=excluded.updated_at,message_count=excluded.message_count,git_branch=excluded.git_branch,archived=excluded.archived,sidechain=excluded.sidechain,availability=excluded.availability,origin=excluded.origin,spawned_by_session_id=excluded.spawned_by_session_id,forked_from_session_id=excluded.forked_from_session_id,last_indexed_at=excluded.last_indexed_at`,
+          `INSERT INTO ${table}(${columns},last_indexed_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET workspace_id=excluded.workspace_id,agent=excluded.agent,title=excluded.title,created_at=excluded.created_at,updated_at=excluded.updated_at,message_count=excluded.message_count,git_branch=excluded.git_branch,archived=excluded.archived,sidechain=excluded.sidechain,availability=excluded.availability,origin=excluded.origin,spawned_by_session_id=excluded.spawned_by_session_id,forked_from_session_id=excluded.forked_from_session_id,last_indexed_at=excluded.last_indexed_at WHERE ${table}.workspace_id NOT IN (SELECT value FROM json_each(?))`,
           session.id,
           owner.id,
           agent,
@@ -297,11 +300,15 @@ export class SessionStore {
           session.spawned_by_session_id,
           session.forked_from_session_id,
           indexed,
+          nested,
         );
+        // A row kept by a nested workspace was not rewritten, so its marker stays.
         if (agent === "codex")
           this.sql.run(
-            "DELETE FROM schema_meta WHERE key=?",
+            `DELETE FROM schema_meta WHERE key=? AND EXISTS (SELECT 1 FROM ${table} WHERE id=? AND workspace_id=?)`,
             `codex_session_classification_stale:${session.id}`,
+            session.id,
+            owner.id,
           );
       }
       if (owner.id !== workspace)
@@ -346,6 +353,24 @@ export class SessionStore {
           );
       }
     });
+  }
+  /** Registered workspaces strictly inside this one, except those merged into its owner. */
+  #nestedWorkspaces(workspace: string, owner: SessionOwner): string[] {
+    let base: string;
+    try {
+      base = pathIdentity(this.workspacePath(workspace));
+    } catch {
+      return [];
+    }
+    const merged = new Set([workspace, owner.id, ...owner.aliases]);
+    return this.sql
+      .rows("SELECT id,canonical_path FROM workspaces")
+      .filter((row) => {
+        if (merged.has(String(row.id))) return false;
+        const candidate = pathIdentity(String(row.canonical_path));
+        return candidate !== base && withinLexical(candidate, base);
+      })
+      .map((row) => String(row.id));
   }
   /** Drop the cached rows of conversations deleted at their source; the next scan agrees. */
   forget(ids: readonly string[]): void {

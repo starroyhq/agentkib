@@ -140,11 +140,6 @@ export function SessionHistoryContent({
           {tr("remote.catalogSynced")} {formatDateTime(selected.remote.last_synced_at)}
         </p>
       )}
-      {selected.worktree?.status === "deleted" && (
-        <p className="mx-auto max-w-[900px] text-xs text-muted-foreground" role="note">
-          {tr("sessions.worktree.deletedNotice")}
-        </p>
-      )}
       {history.error && (
         <HistoryError error={history.rawError} onRetry={() => void history.retry()} />
       )}

@@ -76,11 +76,14 @@ export function isInteractiveFork(session: ConversationSessionSummary) {
   return session.origin === "interactive" && Boolean(session.forked_from_session_id);
 }
 
-/** The session page's worktree chip: "工作树 <名称> · <分支>". */
+/** The session page's worktree chip: "工作树 <名称> · <分支>", or its status once the folder is gone. */
 export function worktreeChip(worktree: SessionWorktree, tr = defaultTranslate) {
+  const name = worktree.name;
+  if (worktree.status === "deleted") return tr("sessions.worktree.chipDeleted", { name });
+  if (worktree.status === "unknown") return tr("sessions.worktree.chipUnknown", { name });
   return worktree.branch
-    ? tr("sessions.worktree.chip", { name: worktree.name, branch: worktree.branch })
-    : tr("sessions.worktree.chipNoBranch", { name: worktree.name });
+    ? tr("sessions.worktree.chip", { name, branch: worktree.branch })
+    : tr("sessions.worktree.chipNoBranch", { name });
 }
 
 /** The worktree mark's hover text and accessible name; status is spelled out, not colored. */

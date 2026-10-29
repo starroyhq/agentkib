@@ -3800,11 +3800,14 @@ export class ClaudeManagedReadOwner {
       // A status observation needs identity, not a complete history document or
       // a control fingerprint. Mutations retain their fresh #resolveNative proof.
       const target = this.sessions.verifiedClaudeReadSource(id);
-      const reason = !supportsClaudeManagedRunner()
-        ? "platform-unsupported"
-        : !version
-          ? "claude-cli-unavailable"
-          : await this.#ownershipReason(id, target.nativeId, null);
+      // Claude Code resumes in the session's directory, so a deleted worktree is view only.
+      const reason = target.directoryMissing
+        ? "session-directory-missing"
+        : !supportsClaudeManagedRunner()
+          ? "platform-unsupported"
+          : !version
+            ? "claude-cli-unavailable"
+            : await this.#ownershipReason(id, target.nativeId, null);
       if (this.#load(id)) {
         this.#ownershipReasons.delete(id);
         if (ownershipReadAttempt > 0) throw new Error("claude-owner-check-unavailable");

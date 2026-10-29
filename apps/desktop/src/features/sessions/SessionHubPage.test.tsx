@@ -572,6 +572,28 @@ describe("SessionHubPage", () => {
     expect(hub.refresh).toHaveBeenCalledOnce();
   });
 
+  it("shows a deleted worktree's status in the session details without a second notice", async () => {
+    const worktree = {
+      repository_group_id: "repo",
+      name: "h2",
+      path: "/projects/.codex/worktrees/h2/design-kit",
+      branch: "codex/h2",
+      status: "deleted" as const,
+    };
+    hub = { ...hub, selected: { ...readable, worktree }, selectedWorkspace: workspace };
+    render(sessionSurface());
+    await screen.findByText("Saved theme review");
+    fireEvent.click(screen.getByText("Session details"));
+    expect(screen.getByText(tr("sessions.worktree.chipDeleted", { name: "h2" }))).toBeVisible();
+    expect(screen.queryByText("codex/h2")).toBeNull();
+    expect(
+      screen.getByRole("img", {
+        name: tr("sessions.worktree.deleted", { name: "h2", path: worktree.path }),
+      }),
+    ).toHaveClass("opacity-45");
+    expect(screen.queryByRole("note")).toBeNull();
+  });
+
   it("anchors a visible record when earlier records prepend and resets on selection change", async () => {
     hub = { ...hub, selected: readable, selectedWorkspace: workspace };
     let finish!: (page: ConversationEventPage) => void;

@@ -9,9 +9,10 @@ export const worktreeCopy = {
     unknown: (name: string) => `无法检查工作树 ${name} 的状态`,
     branch: "分支",
     chip: (name: string) => `工作树 ${name}`,
+    deletedState: "已删除",
+    unknownState: "状态未知",
     group: "这是 git 工作树",
     count: (count: number) => `${count} 个工作树`,
-    deletedNotice: "这个工作树的文件夹已经不在了。记录仍可查看；要继续这个会话，请先恢复文件夹。",
     showExecution: "显示程序启动的会话",
     execution: "程序启动的会话",
   },
@@ -21,9 +22,10 @@ export const worktreeCopy = {
     unknown: (name: string) => `無法檢查工作樹 ${name} 的狀態`,
     branch: "分支",
     chip: (name: string) => `工作樹 ${name}`,
+    deletedState: "已刪除",
+    unknownState: "狀態未知",
     group: "這是 git 工作樹",
     count: (count: number) => `${count} 個工作樹`,
-    deletedNotice: "這個工作樹的資料夾已經不在了。記錄仍可查看；要繼續這個對話，請先還原資料夾。",
     showExecution: "顯示程式啟動的對話",
     execution: "程式啟動的對話",
   },
@@ -34,10 +36,10 @@ export const worktreeCopy = {
     unknown: (name: string) => `Couldn't check the status of worktree ${name}`,
     branch: "branch",
     chip: (name: string) => `Worktree ${name}`,
+    deletedState: "deleted",
+    unknownState: "status unknown",
     group: "This is a git worktree",
     count: (count: number) => `${count} ${count === 1 ? "worktree" : "worktrees"}`,
-    deletedNotice:
-      "This worktree's folder is gone. The history is still readable; restore the folder before continuing the session.",
     showExecution: "Show program-started sessions",
     execution: "Started by a program",
   },
@@ -48,10 +50,10 @@ export const worktreeCopy = {
     unknown: (name: string) => `ワークツリー ${name} の状態を確認できません`,
     branch: "ブランチ",
     chip: (name: string) => `ワークツリー ${name}`,
+    deletedState: "削除済み",
+    unknownState: "状態不明",
     group: "これは git ワークツリーです",
     count: (count: number) => `${count} 個のワークツリー`,
-    deletedNotice:
-      "このワークツリーのフォルダはもうありません。履歴は読めます。セッションを続けるには、先にフォルダを戻してください。",
     showExecution: "プログラムが起動したセッションを表示",
     execution: "プログラムが起動したセッション",
   },
@@ -71,8 +73,14 @@ export function worktreeLabel(worktree: SessionWorktree, locale: Locale): string
     .join(" · ");
 }
 
-/** The session page's chip: "工作树 <名称> · <分支>". */
+/** The session page's chip: "工作树 <名称> · <分支>", or the status when the folder is gone. */
 export function worktreeChip(worktree: SessionWorktree, locale: Locale): string {
-  const chip = worktreeCopy[locale].chip(worktree.name);
-  return worktree.branch ? `${chip} · ${worktree.branch}` : chip;
+  const c = worktreeCopy[locale];
+  const detail =
+    worktree.status === "deleted"
+      ? c.deletedState
+      : worktree.status === "unknown"
+        ? c.unknownState
+        : worktree.branch;
+  return detail ? `${c.chip(worktree.name)} · ${detail}` : c.chip(worktree.name);
 }

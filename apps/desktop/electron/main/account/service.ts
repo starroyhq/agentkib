@@ -3,6 +3,7 @@ import { createServer, type Server } from "node:http";
 import { mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import type { DesktopAccountProfile, DesktopAccountRequest, DesktopAccountStatus } from "./state";
+import { normalizeComputerName } from "./computer-name";
 
 export const ACCOUNT_ORIGIN = "https://account.agentkib.com";
 export const ACCOUNT_API = "https://api.agentkib.com";
@@ -22,6 +23,8 @@ type Options = {
   bindIdentity(accountId: string): Promise<void>;
   prepareIdentityClaim(accountId: string): Promise<void>;
   onStatus?(status: DesktopAccountStatus): void;
+  /** The computer's display name, sent as the account device name. Failures never block registration. */
+  computerName?(): Promise<string | undefined>;
   fetch?: typeof fetch;
 };
 type TokenResponse = {
@@ -44,6 +47,11 @@ export class DesktopAccountService {
   private refreshWork?: Promise<string>;
   private profileReadAt = 0;
   private loggingOut = false;
+  private nameWork?: Promise<string | undefined>;
+  /** The name the account shows for this computer, as last reported by the broker. */
+  private knownName?: { deviceId: string; name: string };
+  /** `accountId:deviceId` already checked for a missing name in this process. */
+  private nameChecked?: string;
   constructor(private readonly options: Options) {}
   private get tokenFile() {
     return join(this.options.directory, "refresh.enc");
@@ -65,6 +73,7 @@ export class DesktopAccountService {
       if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
       try {
         await this.accessToken();
+        this.backfillNameInBackground();
       } catch (failure) {
         if ((failure as NodeJS.ErrnoException).code !== "ENOENT")
           this.error = "account_login_required";
@@ -87,6 +96,11 @@ export class DesktopAccountService {
                 : identity.accountId === this.profile?.id
                   ? "owned"
                   : "other",
+              ...(identity.accountId &&
+              identity.accountId === this.profile?.id &&
+              this.knownName?.deviceId === identity.deviceId
+                ? { name: this.knownName.name }
+                : {}),
             } as const,
           }
         : {}),
@@ -157,11 +171,10 @@ export class DesktopAccountService {
           this.error = "account_login_required";
           await this.publish();
         }
-        let deviceLimit = false;
-        if (response.status === 409) {
+        let code: unknown;
+        if (response.status === 409 || response.status === 400) {
           try {
-            const body = (await this.readResponse(response)) as { error?: unknown };
-            deviceLimit = body?.error === "device_limit_reached";
+            code = ((await this.readResponse(response)) as { error?: unknown })?.error;
           } catch {
             /* Unrecognized/malformed error bodies keep the generic status mapping. */
           }
@@ -170,17 +183,21 @@ export class DesktopAccountService {
         }
         // Only recognized categories reach IPC, never arbitrary server error text.
         throw new AccountError(
-          response.status === 401
-            ? "account_login_required"
-            : response.status === 403
-              ? "account_forbidden"
-              : response.status === 409
-                ? deviceLimit
-                  ? "account_device_limit"
-                  : "account_device_conflict"
-                : response.status === 429
-                  ? "account_rate_limited"
-                  : "account_request_failed",
+          response.status === 400 && code === "invalid_name"
+            ? "account_invalid_name"
+            : response.status === 401
+              ? "account_login_required"
+              : response.status === 403
+                ? "account_forbidden"
+                : response.status === 409
+                  ? code === "device_limit_reached"
+                    ? "account_device_limit"
+                    : code === "name_already_set"
+                      ? "account_name_already_set"
+                      : "account_device_conflict"
+                  : response.status === 429
+                    ? "account_rate_limited"
+                    : "account_request_failed",
         );
       }
       return await this.readResponse(response);
@@ -345,6 +362,7 @@ export class DesktopAccountService {
             if (identity.accountClaimAccountId === this.profile?.id) await this.claim();
             else this.error = "account_claim_pending";
           }
+          this.backfillNameInBackground();
         } catch (error) {
           this.phase = this.profile ? "signed-in" : "signed-out";
           this.error = error instanceof AccountError ? error.code : "account_login_required";
@@ -381,6 +399,8 @@ export class DesktopAccountService {
   private async clearCredentials() {
     this.access = undefined;
     this.profile = undefined;
+    this.knownName = undefined;
+    this.nameChecked = undefined;
     this.phase = "signed-out";
     await rm(this.tokenFile, { force: true });
     await rm(this.rotationFile, { force: true });
@@ -411,11 +431,11 @@ export class DesktopAccountService {
     if (this.profile?.id !== accountId) throw new AccountError("account_device_conflict");
   }
   async registerDevice(input: { registrationId: string; credential: string }) {
-    const result = (await this.api(
-      "/v1/account/devices",
-      input,
-      await this.accessToken(),
+    const token = await this.accessToken();
+    const result = (await this.withName((name) =>
+      this.api("/v1/account/devices", { ...input, ...name }, token),
     )) as Record<string, unknown>;
+    this.rememberName(result);
     this.profileReadAt = 0;
     void this.refreshProfile()
       .then(() => this.publish())
@@ -463,18 +483,93 @@ export class DesktopAccountService {
     if (identity.accountClaimPending && identity.accountClaimAccountId !== this.profile?.id)
       throw new AccountError("account_claim_pending");
     await this.options.prepareIdentityClaim(this.profile!.id);
-    const result = (await this.api(
-      "/v1/account/devices/claim",
-      { deviceId: identity.deviceId, credential: identity.credential },
-      token,
+    const result = (await this.withName((name) =>
+      this.api(
+        "/v1/account/devices/claim",
+        { deviceId: identity.deviceId, credential: identity.credential, ...name },
+        token,
+      ),
     )) as { accountId?: string; deviceId?: string };
     if (result.accountId !== this.profile?.id || result.deviceId !== identity.deviceId)
       throw new AccountError("account_response_invalid");
     await this.options.bindIdentity(result.accountId!);
+    this.rememberName(result);
+    this.backfillNameInBackground();
     this.profileReadAt = 0;
     await this.refreshProfile().catch(() => {
       this.error = "account_profile_refresh_failed";
     });
+  }
+  private computerName() {
+    this.nameWork ??= Promise.resolve()
+      .then(() => this.options.computerName?.())
+      .then(normalizeComputerName, () => undefined);
+    return this.nameWork;
+  }
+  /**
+   * Sends the computer name with a register or claim body. A broker that rejects the name gets one
+   * retry without it, so naming never blocks registration. (Older brokers ignore the field.)
+   */
+  private async withName(send: (name: { name?: string }) => Promise<unknown>) {
+    const name = await this.computerName();
+    if (!name) return send({});
+    try {
+      return await send({ name });
+    } catch (error) {
+      if (error instanceof AccountError && error.code === "account_invalid_name") return send({});
+      throw error;
+    }
+  }
+  private rememberName(device: unknown) {
+    const { deviceId, name } = (device ?? {}) as { deviceId?: unknown; name?: unknown };
+    if (typeof deviceId === "string" && typeof name === "string" && name)
+      this.knownName = { deviceId, name };
+  }
+  private backfillNameInBackground() {
+    void this.backfillName()
+      .then((changed) => (changed ? this.publish() : undefined))
+      .catch(() => undefined);
+  }
+  /**
+   * Once per account and device in this process: if the account lists this computer without a name,
+   * fill it in. The broker only lets a desktop session set a missing name (409 otherwise), so a
+   * name the user chose is never overwritten. A broker without names omits the field (skip) or
+   * answers PATCH with 404/405; every failure is ignored.
+   */
+  async backfillName(): Promise<boolean> {
+    const accountId = this.profile?.id;
+    const identity = await this.options.identity();
+    if (!accountId || !identity || identity.accountId !== accountId) return false;
+    if (!/^[a-f0-9]{32}$/.test(identity.deviceId)) return false;
+    const key = `${accountId}:${identity.deviceId}`;
+    if (this.nameChecked === key) return false;
+    this.nameChecked = key;
+    const before = this.knownName?.name;
+    try {
+      const token = await this.accessToken();
+      const list = (await this.api("/v1/account/devices", undefined, token)) as {
+        devices?: unknown;
+      };
+      const device = (Array.isArray(list?.devices) ? list.devices : []).find(
+        (row) => (row as { deviceId?: unknown })?.deviceId === identity.deviceId,
+      ) as { name?: unknown } | undefined;
+      if (!device || !("name" in device)) return false;
+      if (device.name === null) {
+        const name = await this.computerName();
+        if (!name) return false;
+        try {
+          this.rememberName(
+            await this.api(`/v1/account/devices/${identity.deviceId}`, { name }, token, "PATCH"),
+          );
+        } catch {
+          // 409 name_already_set (named meanwhile), 404/405 (old broker) and the rest: keep going.
+          return false;
+        }
+      } else this.rememberName({ deviceId: identity.deviceId, name: device.name });
+    } catch {
+      return false;
+    }
+    return this.knownName?.name !== before;
   }
   shutdown() {
     this.cancelLogin();

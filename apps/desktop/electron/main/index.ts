@@ -1,4 +1,5 @@
 import { DesktopAccountService } from "./account/service";
+import { detectComputerName } from "./account/computer-name";
 import type { DesktopAccountRequest } from "./account/state";
 import { readFile, writeFile, mkdir, rename } from "node:fs/promises";
 import path from "node:path";
@@ -326,6 +327,7 @@ async function startApplication(): Promise<void> {
     identity: () => webAccess!.accountIdentity(),
     bindIdentity: (id) => webAccess!.bindAccountIdentity(id),
     prepareIdentityClaim: (id) => webAccess!.prepareAccountClaim(id),
+    computerName: () => detectComputerName(),
     onStatus: (status) => {
       if (mainWindow && !mainWindow.isDestroyed())
         mainWindow.webContents.send("agentkib:account:status", status);

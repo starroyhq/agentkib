@@ -136,6 +136,11 @@ export function RemoteAccountSettings({
                   : c.unclaimed}
             </p>
           )}
+          {status?.device?.ownership === "owned" && status.device.name && (
+            <p className="text-muted-foreground leading-6">
+              {c.appearsAs.replace("{name}", status.device.name)}
+            </p>
+          )}
         </>
       )}
       {status && !status.secureStorage && <p className="text-destructive-text">{c.storage}</p>}

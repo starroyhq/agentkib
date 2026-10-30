@@ -9,7 +9,8 @@ export type DesktopAccountProfile = {
 export type DesktopAccountStatus = {
   phase: "signed-out" | "signing-in" | "signed-in" | "error";
   account?: DesktopAccountProfile;
-  device?: { deviceId: string; ownership: "unclaimed" | "owned" | "other" };
+  /** `name` is how the account lists this computer; present only when owned and known. */
+  device?: { deviceId: string; ownership: "unclaimed" | "owned" | "other"; name?: string };
   error?: string;
   secureStorage: boolean;
 };

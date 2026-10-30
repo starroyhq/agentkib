@@ -26,6 +26,7 @@ import {
   codexWriterBusy,
 } from "./codex-app-server";
 import { CodexRuntimePreflight } from "./codex-runtime-preflight";
+import { CodexCatalogCache } from "./codex-catalog-cache";
 import { codexResumeCommand } from "./codex-resume-command";
 import { CodexFollowerBridge } from "./codex-follower-bridge";
 import type { CodexFollowerState } from "./codex-follower-state";
@@ -340,6 +341,12 @@ type ManagedModelOption = {
 export class WebReadRequests {
   #codex: CodexAppServerReader;
   #preflight: CodexRuntimePreflight;
+  // New-session options and settings without a runner each start an app-server.
+  #optionsCatalog = new CodexCatalogCache<Record<string, unknown>>();
+  #settingsCatalog = new CodexCatalogCache<{
+    models: ManagedModelOption[];
+    collaborationModes: CollaborationModeOption[];
+  }>();
   #ownership = new Map<string, { checkedAt: number; reason: string | null }>();
   #catalogObservations = new Map<string, { at: number; status: string; reason: string | null }>();
   #retirementTimer: ReturnType<typeof setInterval>;
@@ -471,47 +478,49 @@ export class WebReadRequests {
       const home = canonicalize(
         this.environment.CODEX_HOME ?? path.join(this.environment.HOME ?? homedir(), ".codex"),
       );
-      const [response] = await this.#codex.requestMany(executable, home, home, [
-        ["model/list", { limit: 100 }],
-      ]);
-      const rows = isObject(response) && Array.isArray(response.data) ? response.data : null;
-      if (!rows) throw new Error("invalid-model-catalog");
-      const models = rows
-        .filter((model) => isObject(model) && model.hidden !== true)
-        .slice(0, 100)
-        .map((model) => ({
-          id: model.model,
-          name: model.displayName,
-          isDefault: model.isDefault,
-          defaultEffort: model.defaultReasoningEffort,
-          defaultServiceTier: model.defaultServiceTier,
-          efforts: Array.isArray(model.supportedReasoningEfforts)
-            ? model.supportedReasoningEfforts
-                .filter(isObject)
-                .map((effort: Record<string, unknown>) => effort.reasoningEffort)
-            : [],
-          serviceTiers: Array.isArray(model.serviceTiers)
-            ? model.serviceTiers
-                .slice(0, 16)
-                .map((tier: unknown) =>
-                  isObject(tier)
-                    ? { id: tier.id, name: tier.name, description: tier.description }
-                    : {},
-                )
-            : [],
-        }));
-      const defaultModel = models.find((model) => model.isDefault === true);
-      return {
-        available: true,
-        executionMode: "codex-managed",
-        models,
-        defaults: {
-          model: defaultModel?.id ?? null,
-          effort: defaultModel?.defaultEffort ?? null,
-          serviceTier: defaultModel?.defaultServiceTier ?? null,
-        },
-        policies: managedPolicyCatalog(),
-      };
+      return await this.#optionsCatalog.read(codexCatalogKey(executable, home, home), async () => {
+        const [response] = await this.#codex.requestMany(executable, home, home, [
+          ["model/list", { limit: 100 }],
+        ]);
+        const rows = isObject(response) && Array.isArray(response.data) ? response.data : null;
+        if (!rows) throw new Error("invalid-model-catalog");
+        const models = rows
+          .filter((model) => isObject(model) && model.hidden !== true)
+          .slice(0, 100)
+          .map((model) => ({
+            id: model.model,
+            name: model.displayName,
+            isDefault: model.isDefault,
+            defaultEffort: model.defaultReasoningEffort,
+            defaultServiceTier: model.defaultServiceTier,
+            efforts: Array.isArray(model.supportedReasoningEfforts)
+              ? model.supportedReasoningEfforts
+                  .filter(isObject)
+                  .map((effort: Record<string, unknown>) => effort.reasoningEffort)
+              : [],
+            serviceTiers: Array.isArray(model.serviceTiers)
+              ? model.serviceTiers
+                  .slice(0, 16)
+                  .map((tier: unknown) =>
+                    isObject(tier)
+                      ? { id: tier.id, name: tier.name, description: tier.description }
+                      : {},
+                  )
+              : [],
+          }));
+        const defaultModel = models.find((model) => model.isDefault === true);
+        return {
+          available: true,
+          executionMode: "codex-managed",
+          models,
+          defaults: {
+            model: defaultModel?.id ?? null,
+            effort: defaultModel?.defaultEffort ?? null,
+            serviceTier: defaultModel?.defaultServiceTier ?? null,
+          },
+          policies: managedPolicyCatalog(),
+        };
+      });
     } catch (error) {
       return {
         available: false,
@@ -1631,22 +1640,30 @@ export class WebReadRequests {
         };
       const cwd = this.#managedCwd(record);
       const home = this.#assertManagedHome(record);
-      let catalog: unknown[];
-      try {
-        catalog = await this.#codex.requestMany(checked.executable, cwd, home, [
-          ["model/list", { limit: 100 }],
-          ["collaborationMode/list", {}],
-        ]);
-      } catch {
-        // A CLI that rejects the presets still lists its models; Plan stays unavailable.
-        catalog = [
-          await this.#codex.request(checked.executable, cwd, home, "model/list", { limit: 100 }),
-          null,
-        ];
-      }
-      const models = projectManagedModels(catalog[0]);
-      // Sending or saving settings starts the runner, which checks the presets again.
-      const collaborationModes = verifiedCollaborationModes(catalog[1]);
+      const executable = checked.executable;
+      const { models, collaborationModes } = await this.#settingsCatalog.read(
+        codexCatalogKey(executable, home, cwd),
+        async () => {
+          let catalog: unknown[];
+          try {
+            catalog = await this.#codex.requestMany(executable, cwd, home, [
+              ["model/list", { limit: 100 }],
+              ["collaborationMode/list", {}],
+            ]);
+          } catch {
+            // A CLI that rejects the presets still lists its models; Plan stays unavailable.
+            catalog = [
+              await this.#codex.request(executable, cwd, home, "model/list", { limit: 100 }),
+              null,
+            ];
+          }
+          // Sending or saving settings starts the runner, which checks the presets again.
+          return {
+            models: projectManagedModels(catalog[0]),
+            collaborationModes: verifiedCollaborationModes(catalog[1]),
+          };
+        },
+      );
       return {
         available: true,
         executionMode: "codex-managed",
@@ -5422,6 +5439,12 @@ function validateManagedModelSelection(
     throw new Error("unsupported-effort");
   if (record.service_tier && !selected?.serviceTiers.includes(record.service_tier))
     throw new Error("unsupported-service-tier");
+}
+
+/** A catalog belongs to the CLI build that listed it, its CODEX_HOME and its directory. */
+function codexCatalogKey(executable: string, home: string, cwd: string): string {
+  const info = statSync(executable);
+  return JSON.stringify([executable, info.mtimeMs, info.size, home, cwd]);
 }
 
 function projectManagedModels(value: unknown): ManagedModelOption[] {

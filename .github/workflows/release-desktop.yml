@@ -361,7 +361,24 @@ jobs:
             args+=(--linux deb AppImage)
           fi
 
-          pnpm exec electron-builder "${args[@]}"
+          if [[ "$RUNNER_OS" == macOS && "$SHOULD_PUBLISH" == true ]]; then
+            # Stapling downloads the notarization ticket from Apple's CloudKit service,
+            # and the runner's connection to it occasionally drops (stapler Error 68).
+            # @electron/notarize retries only within seconds, so package again after a
+            # pause when stapling is the failure. Any other failure stops at once.
+            log="$RUNNER_TEMP/electron-builder.log"
+            for attempt in 1 2 3; do
+              if pnpm exec electron-builder "${args[@]}" 2>&1 | tee "$log"; then break; fi
+              if (( attempt == 3 )) || ! grep -q "The staple and validate action failed" "$log"; then
+                exit 1
+              fi
+              echo "::warning::Stapling the notarization ticket failed on attempt $attempt; packaging again in 60 seconds"
+              rm -rf release-electron
+              sleep 60
+            done
+          else
+            pnpm exec electron-builder "${args[@]}"
+          fi
 
       - name: Smoke test Linux bundles
         if: runner.os == 'Linux'
@@ -431,7 +448,13 @@ jobs:
           signing_details=$(codesign --display --verbose=4 "$app" 2>&1)
           grep -F "Authority=$APPLE_SIGNING_IDENTITY" <<< "$signing_details"
           grep -F "TeamIdentifier=${APPLE_TEAM_ID}" <<< "$signing_details"
-          xcrun stapler validate "$app"
+          # Validation also looks the ticket up through Apple's CloudKit service.
+          for attempt in 1 2 3 4 5; do
+            if xcrun stapler validate "$app"; then break; fi
+            if (( attempt == 5 )); then exit 1; fi
+            echo "::warning::stapler validate failed on attempt $attempt; retrying in 30 seconds"
+            sleep 30
+          done
           spctl --assess --type execute --verbose=2 "$app"
 
       - name: Smoke test macOS application readiness

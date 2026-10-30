@@ -277,18 +277,19 @@ describe("composer drafts across connection changes", () => {
       reconnected(false);
       rerender(<SessionComposer />);
       expect(input).toHaveValue("Next turn draft");
-      attemptSend(input, form);
-      expectNoDispatch();
       fireEvent.click(screen.getByRole("button", { name: codexCopy["en-US"].advanced }));
       const recoveredQueue = await screen.findByRole("menuitem", {
         name: codexCopy["en-US"].queueAdd,
       });
+      expect(recoveredQueue).not.toHaveAttribute("aria-disabled", "true");
       if (activity === "compacting")
         expect(screen.getByRole("menuitem", { name: codexCopy["en-US"].steer })).toHaveAttribute(
           "aria-disabled",
           "true",
         );
-      fireEvent.click(recoveredQueue);
+      fireEvent.keyDown(recoveredQueue, { key: "Escape" });
+      // Send while the agent runs takes this device's running choice, which queues by default.
+      attemptSend(input, form);
       await waitFor(() =>
         expect(doubles.codexAction).toHaveBeenCalledExactlyOnceWith("queue-add", {
           text: "Next turn draft",

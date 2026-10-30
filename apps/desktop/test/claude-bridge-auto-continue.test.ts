@@ -287,7 +287,7 @@ require("node:readline").createInterface({ input: process.stdin }).on("line", li
             nativeId,
             cwd: workspace,
             cliVersion: "2.1.301",
-            pluginVersion: "0.3.1",
+            pluginVersion: "0.4.0",
             nativeCapabilities: {
               version: 1 as const,
               available: [

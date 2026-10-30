@@ -354,13 +354,22 @@ describe("composer sending shortcuts", () => {
         questions: [],
       } as SessionController["live"];
       const { input } = renderComposer();
-      fireEvent.keyDown(input, { key: "Enter" });
-      expect(doubles.control).not.toHaveBeenCalled();
-      expect(doubles.codexAction).not.toHaveBeenCalled();
       expect(screen.getByRole("button", { name: "Stop" })).toHaveClass("size-11");
       expect(screen.getByRole("button", { name: codexCopy["en-US"].advanced })).toHaveClass(
         "size-11",
       );
+      // Enter while the turn runs takes this device's running choice, which queues by default.
+      fireEvent.keyDown(input, { key: "Enter" });
+      await waitFor(() =>
+        expect(doubles.codexAction).toHaveBeenCalledExactlyOnceWith("queue-add", {
+          text: "Draft message",
+        }),
+      );
+      await waitFor(() => expect(input).toBeEnabled());
+      expect(input).toHaveValue("");
+      expect(doubles.control).not.toHaveBeenCalled();
+      doubles.codexAction.mockClear();
+      fireEvent.change(input, { target: { value: "Draft message" } });
       fireEvent.click(screen.getByRole("button", { name: codexCopy["en-US"].advanced }));
       fireEvent.click(
         await screen.findByRole("menuitem", {

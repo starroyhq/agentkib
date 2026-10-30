@@ -77,7 +77,7 @@ async function fixture() {
     cwd: workspace,
     cliVersion: "2.1.301",
     instanceId: randomUUID(),
-    pluginVersion: "0.3.1",
+    pluginVersion: "0.4.0",
     nativeCapabilities: capabilities,
   };
   function http(

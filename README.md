@@ -55,7 +55,7 @@ These historical native results apply to the source revisions, Agent versions, a
 
 ### Connect existing native sessions
 
-Claude Code also has an opt-in native-session bridge for the fixed macOS CLI 2.1.301. The first-party Mods plugin connects the existing executor to the desktop and Web conversation UI; it does not silently start a second resume process. Observation and current-turn cancellation are enabled. Text sending stays disabled because atomic no-queue admission is unverified; approvals, questions and attachments remain separate from managed execution. See [native Claude connection](docs/CLAUDE-NATIVE-CONNECTION.md) and its current QA boundaries.
+Claude Code also has an opt-in native-session bridge for macOS CLI 2.1.301 or later. The first-party Mods plugin connects the existing executor to the desktop and Web conversation UI; it does not silently start a second resume process. Observation, text messages and current-turn cancellation are enabled: an idle terminal takes a message as a new turn, and a running one queues it for after the turn or adds it to the turn, as each device's "Send while running" setting chooses. Approvals, questions and attachments remain separate from managed execution. See [native Claude connection](docs/CLAUDE-NATIVE-CONNECTION.md) and its current QA boundaries.
 
 ### Manage MCP services and Agent connections
 

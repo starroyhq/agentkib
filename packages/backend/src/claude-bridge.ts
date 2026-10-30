@@ -632,9 +632,14 @@ export class ClaudeBridge {
                   ? "claude-terminal-permission-unconfirmed"
                   : snapshot?.status === "running" && !snapshot.currentTurnId
                     ? "claude-follower-turn-unconfirmed"
-                    : snapshot?.status === "idle" && !snapshot.capabilities.send
+                    : snapshot?.status === "idle" &&
+                        !snapshot.capabilities.send &&
+                        // Waiting messages go out next; a direct send waits for them.
+                        snapshot.outbox.length === 0
                       ? "claude-follower-send-unverified"
                       : undefined;
+    // One command at a time reaches the plugin; every mode also needs a verified lease.
+    const controllable = controls && online && !uncertain && !gap && !connection?.pending;
     const status = uncertain
       ? "outcome-unknown"
       : !online || gap
@@ -654,8 +659,12 @@ export class ClaudeBridge {
       executionMode: "claude-follower",
       executionLocation: online ? "terminal" : null,
       ownershipReason: null,
-      // The plugin's static capability; `sendEnabled` additionally needs an idle terminal.
-      terminalSend: snapshot?.capabilities.send === true,
+      // The plugin takes messages from here. Which mode can go now is in the *Enabled flags:
+      // a send needs an idle terminal, a steer a running turn, a queued message neither.
+      terminalSend:
+        snapshot?.capabilities.send === true ||
+        snapshot?.capabilities.steer === true ||
+        snapshot?.capabilities.queue === true,
       connectionGeneration: connection?.leaseId ?? this.options.bootId,
       cliVersion: connection ? `${connection.identity.cliVersion} (Claude Code)` : undefined,
       bridgeCompatibility: valid ? (compatibilityStatus(connection) ?? null) : null,
@@ -665,14 +674,13 @@ export class ClaudeBridge {
       reason,
       turnId: snapshot?.currentTurnId ?? null,
       sendEnabled:
-        controls &&
-        online &&
-        !uncertain &&
-        !gap &&
-        !connection?.pending &&
-        !row.inflight &&
-        snapshot?.status === "idle" &&
-        snapshot.capabilities.send,
+        controllable && !row.inflight && snapshot?.status === "idle" && snapshot.capabilities.send,
+      steerEnabled:
+        controllable && !!snapshot?.currentTurnId && snapshot.capabilities.steer === true,
+      queueEnabled: controllable && snapshot?.capabilities.queue === true,
+      // Withdrawing needs no writable terminal: an unknown message stays until it is deleted.
+      queueEditEnabled: controllable && (snapshot?.outbox.length ?? 0) > 0,
+      queuedCount: snapshot?.outbox.length ?? 0,
       stopEnabled:
         controls &&
         online &&
@@ -717,15 +725,15 @@ export class ClaudeBridge {
       approve: false,
       answer: false,
       attachments: false,
-      steer: false,
+      steer: live.steerEnabled === true,
       resources: false,
       settings: false,
       "settings-state": false,
-      queue: false,
-      "queue-list": false,
-      "queue-add": false,
+      queue: live.queueEnabled === true,
+      "queue-list": live.executionLocation === "terminal",
+      "queue-add": live.queueEnabled === true,
       "queue-update": false,
-      "queue-delete": false,
+      "queue-delete": live.queueEditEnabled === true,
       "queue-reorder": false,
       "queue-resume": false,
       "queue-pause": false,
@@ -759,7 +767,11 @@ export class ClaudeBridge {
                       : key === "attachments"
                         ? "claude-follower-attachments-unavailable"
                         : key === "send" && !this.#connections.get(id)?.snapshot?.capabilities.send
-                          ? (live.reason ?? "claude-follower-send-unverified")
+                          ? (live.reason ??
+                            (live.status === "idle" &&
+                            !this.#connections.get(id)?.snapshot?.outbox.length
+                              ? "claude-follower-send-unverified"
+                              : "session-busy"))
                           : (live.reason ?? "operation-unavailable"),
               },
         ]),
@@ -803,12 +815,38 @@ export class ClaudeBridge {
           live: this.live(id, controls),
           reason: row.inflight ? "control-outcome-unconfirmed" : "read-only-reconciliation",
         };
+      case "queue-list":
+        return this.#queueList(id);
       case "send":
       case "stop":
+      case "steer":
+      case "queue-add":
+      case "queue-delete":
         return this.#control(value, row);
       default:
         throw new Error("operation-unavailable");
     }
+  }
+  /** The terminal's waiting messages, in the shape of a managed queue; read-only. */
+  #queueList(id: string): Record<string, unknown> {
+    const live = this.live(id, false);
+    const snapshot = this.#online(id) ? this.#connections.get(id)?.snapshot : null;
+    return {
+      available: true,
+      revision: live.revision,
+      paused: false,
+      requiresResume: false,
+      reason: null,
+      data: (snapshot?.outbox ?? []).map((item) => ({
+        id: item.id,
+        kind: item.kind,
+        input: [{ type: "text", text: item.text }],
+        status: item.status === "dispatching" ? "dispatched" : item.status,
+        createdAt: new Date(item.createdAt).toISOString(),
+        requiresAttachments: false,
+      })),
+      nextCursor: null,
+    };
   }
   receipt(value: unknown): unknown {
     if (
@@ -862,6 +900,7 @@ export class ClaudeBridge {
       "historyReferences",
       "historyInputHash",
       "publicInputHash",
+      "queuedSubmissionId",
     ]);
     if (
       Object.keys(value).some((key) => !allowed.has(key)) ||
@@ -897,10 +936,8 @@ export class ClaudeBridge {
       throw new Error("claude-bridge-disconnected");
     if (revision !== live.revision) throw new Error("stale-Claude-revision");
     if (connection.pending) throw new Error("session-busy");
-    let command: ClaudeBridgeCommand;
-    if (value.operation === "send") {
-      if (live.sendEnabled !== true) throw new Error("session-busy");
-      // Follower text goes through the existing history-reference expansion, never attachment paths.
+    // Follower text goes through the existing history-reference expansion, never attachment paths.
+    const messageText = (): string => {
       const text = value.text ?? value.input;
       if (
         typeof text !== "string" ||
@@ -909,11 +946,50 @@ export class ClaudeBridge {
         Buffer.byteLength(text) > 16_384
       )
         throw new Error("invalid-text-input");
+      return text;
+    };
+    let command: ClaudeBridgeCommand;
+    if (value.operation === "send") {
+      if (live.sendEnabled !== true) throw new Error("session-busy");
       command = {
         commandId: randomUUID(),
         kind: "send",
         requestId,
-        text,
+        text: messageText(),
+        expectedRevision: connection.snapshot.revision,
+      };
+    } else if (value.operation === "steer") {
+      // A steer joins the turn the person saw. One that has ended is refused, not resent.
+      if (!connection.snapshot.currentTurnId || value.turnId !== connection.snapshot.currentTurnId)
+        throw new Error("stale-turn");
+      if (live.steerEnabled !== true) throw new Error("session-busy");
+      command = {
+        commandId: randomUUID(),
+        kind: "steer",
+        requestId,
+        text: messageText(),
+        turnId: uuid.parse(value.turnId),
+        expectedRevision: connection.snapshot.revision,
+      };
+    } else if (value.operation === "queue-add") {
+      if (live.queueEnabled !== true) throw new Error("session-busy");
+      command = {
+        commandId: randomUUID(),
+        kind: "queue",
+        requestId,
+        text: messageText(),
+        expectedRevision: connection.snapshot.revision,
+      };
+    } else if (value.operation === "queue-delete") {
+      if (live.queueEditEnabled !== true) throw new Error("session-busy");
+      const itemId = uuid.parse(value.queuedSubmissionId);
+      const item = connection.snapshot.outbox.find((entry) => entry.id === itemId);
+      if (!item || !["pending", "unknown"].includes(item.status))
+        throw new Error("queue-item-unavailable");
+      command = {
+        commandId: randomUUID(),
+        kind: "cancel",
+        itemId,
         expectedRevision: connection.snapshot.revision,
       };
     } else {
@@ -1425,6 +1501,26 @@ export class ClaudeBridge {
           return;
         }
         if (recovering) {
+          // A late receipt settles a message handed to the outbox, or its withdrawal. They
+          // start no turn of their own here, so nothing waits for a completion.
+          if (
+            lateClaim &&
+            ["steer", "queue-add", "queue-delete"].includes(String(lateClaim.evidence?.operation))
+          ) {
+            if (input.status !== "unknown")
+              finishManagedCommand(
+                this.options.dataDir,
+                lateClaim.requestId,
+                this.#result(
+                  row,
+                  lateClaim.requestId,
+                  input.status === "accepted" ? "accepted" : "not-dispatched",
+                ),
+              );
+            this.#publish(row.target.sessionId);
+            reply(200, { ok: true });
+            return;
+          }
           if (lateClaim?.evidence?.operation === "stop") {
             if (input.status === "accepted" && input.turnId !== lateClaim.evidence.turnId)
               throw new Error("bridge-turn-mismatch");
@@ -1473,18 +1569,19 @@ export class ClaudeBridge {
           throw new Error("missing-native-turn");
         if (
           input.status === "accepted" &&
-          pending.command.kind === "stop" &&
+          (pending.command.kind === "stop" || pending.command.kind === "steer") &&
           input.turnId !== pending.command.turnId
         )
           throw new Error("bridge-turn-mismatch");
         if (input.status === "accepted" && row.inflight?.commandId === input.commandId)
           row.inflight.turnId = input.turnId!;
+        // Only a send starts, and a stop ends, a turn whose completion settles the receipt.
         const completed =
           input.status === "accepted" &&
           !!input.turnId &&
           (pending.command.kind === "stop"
             ? connection.completed.get(input.turnId) === true
-            : connection.completed.has(input.turnId));
+            : pending.command.kind === "send" && connection.completed.has(input.turnId));
         if (completed && row.inflight?.commandId === input.commandId) row.inflight = null;
         if (input.status === "rejected" && row.inflight?.commandId === input.commandId)
           row.inflight = null;

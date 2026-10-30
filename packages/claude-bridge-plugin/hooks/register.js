@@ -7,10 +7,16 @@ import {
 
 const CLI_VERSION = CLAUDE_BRIDGE_COMPATIBILITY.minimumCliVersion;
 const PLUGIN_VERSION = CLAUDE_BRIDGE_COMPATIBILITY.pluginVersion;
-// Native prompt.submit has no atomic idle/CAS option. Production sending stays
-// closed; only an isolated test COPY replaces this literal to study the contract.
-const SEND_CONTRACT_EXPERIMENT = false;
+// Native prompt.submit has no atomic idle/CAS option and waits for an idle
+// session. A direct send is dispatched only when the terminal is verified idle,
+// and its own hooks drop it if anything else entered first. Messages sent while
+// a turn runs go through the outbox below instead, in the mode the person chose.
 const MAX_STREAM = 96 * 1024;
+// Messages AgentKib sent while a turn runs. A steer joins the running turn at its
+// next tool call, or opens the next turn if this one ends first; a queued message
+// starts a turn of its own once the terminal is idle, in order.
+const MAX_OUTBOX = 20;
+const OUTBOX_PREVIEW = 2 * 1024;
 const MAX_EVENTS = 256;
 // The existing 250ms pump skips these ticks before retrying: about 1/2/4/8s.
 const RECONNECT_BACKOFF_TICKS = [3, 7, 15, 31];
@@ -188,6 +194,8 @@ export function initialState() {
     snapshotRecovery: null,
     sendDisabled: false,
     pendingSend: null,
+    outbox: [],
+    dispatching: null,
     dirty: true,
     pumping: false,
     flushing: false,
@@ -469,6 +477,9 @@ function permissionTool(state, event) {
 function invalidate(state, reason) {
   state.generation += 1;
   state.sendDisabled = true;
+  // A revoked or ended connection sends nothing more. A prompt already waiting
+  // in the native submit is dropped at dispatch, because the state is closed.
+  state.outbox = [];
   state.activityVerified = false;
   state.nativeWorking = null;
   state.currentTurnId = null;
@@ -489,7 +500,16 @@ function invalidate(state, reason) {
       messages: [],
       toolItems: [],
       usage: null,
-      capabilities: { read: false, send: false, stop: false, approve: false, answer: false },
+      outbox: [],
+      capabilities: {
+        read: false,
+        send: false,
+        steer: false,
+        queue: false,
+        stop: false,
+        approve: false,
+        answer: false,
+      },
     };
     state.termination = {
       socketPath: state.socketPath,
@@ -611,17 +631,23 @@ async function snapshot($, state) {
           observedAt: Date.now(),
         }
       : null,
+    outbox: state.outbox.map((item) => ({
+      id: item.id,
+      kind: item.kind,
+      text: previewText(item.text, OUTBOX_PREVIEW),
+      status: item.status,
+      createdAt: item.createdAt,
+    })),
     capabilities: {
       read: true,
       send:
-        SEND_CONTRACT_EXPERIMENT &&
-        !state.closed &&
-        !state.needsReconnect &&
+        writable(state) &&
         state.activityVerified &&
-        !state.sendDisabled &&
-        !state.bufferPaused &&
         !state.currentTurnId &&
-        !state.pendingSend,
+        !state.pendingSend &&
+        state.outbox.length === 0,
+      steer: writable(state) && Boolean(state.currentTurnId) && state.outbox.length < MAX_OUTBOX,
+      queue: writable(state) && state.outbox.length < MAX_OUTBOX,
       stop:
         !state.closed &&
         !state.needsReconnect &&
@@ -728,6 +754,208 @@ async function flush($, state) {
   }
 }
 
+/** The lease is verified and may carry AgentKib's messages into this terminal. */
+function writable(state) {
+  return !state.closed && !state.needsReconnect && !state.sendDisabled && !state.bufferPaused;
+}
+
+/** Shows the person in the terminal what AgentKib sent; a lost notice changes no delivery. */
+async function note($, text) {
+  try {
+    await $.ui.log(text);
+  } catch {
+    /* The message itself is already on its way. */
+  }
+}
+
+function outboxItem(command, kind, turnId) {
+  return {
+    // The host lists and withdraws the message under the command that sent it.
+    id: command.commandId,
+    kind,
+    text: command.text,
+    // The turn a steer waits for; null once it waits for the next one.
+    turnId,
+    status: "pending",
+    // The revision a refused dispatch was tried at; it is tried again once that changes.
+    retryRevision: null,
+    // A refused append waits for the end of its turn and goes out as the next prompt.
+    appendRefused: false,
+    createdAt: Date.now(),
+  };
+}
+
+function toolRunning(state) {
+  return [...state.activeTools.values()].some((tool) => tool.turnId === state.currentTurnId);
+}
+
+/** Appends a user row to the running turn; the model reads it with the tool's result. */
+async function appendSteer($, state, item) {
+  let appended;
+  try {
+    appended = await $.session.append({
+      message: { type: "user", content: [{ type: "text", text: item.text }] },
+    });
+  } catch {
+    return "unknown";
+  }
+  if (!appended || typeof appended !== "object" || "deny" in appended) return "refused";
+  if (typeof appended.uuid !== "string") return "unknown";
+  await note($, `AgentKib added to this turn: ${previewText(item.text, 512)}`);
+  state.dirty = true;
+  return "delivered";
+}
+
+/** Delivers the steers waiting for the running turn, at a tool call before the tool runs. */
+async function deliverSteers($, state) {
+  const turnId = state.currentTurnId;
+  if (!turnId || !writable(state)) return;
+  // Parallel tool calls run this concurrently: claim each row before any await.
+  const claimed = state.outbox.filter(
+    (item) =>
+      item.kind === "steer" &&
+      item.status === "pending" &&
+      item.turnId === turnId &&
+      !item.appendRefused,
+  );
+  for (const item of claimed) item.status = "dispatching";
+  for (const item of claimed) {
+    const outcome = await appendSteer($, state, item);
+    if (outcome === "delivered") state.outbox = state.outbox.filter((entry) => entry !== item);
+    else if (outcome === "refused") {
+      item.status = "pending";
+      item.appendRefused = true;
+    } else {
+      // The row may have been kept. Never send it again, and stop sending until re-paired.
+      item.status = "unknown";
+      state.sendDisabled = true;
+    }
+    state.dirty = true;
+  }
+}
+
+async function steer($, state, command, result) {
+  if (!validSend(command)) result.reason = "invalid-text";
+  else if (!writable(state)) result.reason = "session-state-unverified";
+  else if (!state.currentTurnId || command.turnId !== state.currentTurnId)
+    result.reason = "turn-conflict";
+  else if (state.outbox.length >= MAX_OUTBOX) result.reason = "outbox-full";
+  else {
+    const item = outboxItem(command, "steer", state.currentTurnId);
+    if (toolRunning(state)) {
+      // A tool is running: its result and this row reach the model together.
+      const outcome = await appendSteer($, state, item);
+      if (outcome === "refused") result.reason = "native-append-refused";
+      else if (outcome === "unknown") {
+        result.status = "unknown";
+        result.reason = "native-append-result-unknown";
+        state.sendDisabled = true;
+        return;
+      }
+    } else {
+      // The model is writing. It reads the row at its next tool call, or, if the
+      // turn ends first, the row opens the next turn.
+      state.outbox.push(item);
+      state.dirty = true;
+      await note($, `AgentKib will add to this turn: ${previewText(item.text, 512)}`);
+    }
+    if (result.reason !== "native-append-refused") {
+      result.status = "accepted";
+      delete result.reason;
+      result.turnId = item.turnId;
+    }
+  }
+}
+
+async function enqueue($, state, command, result) {
+  if (!validSend(command)) result.reason = "invalid-text";
+  else if (!writable(state)) result.reason = "session-state-unverified";
+  else if (state.outbox.length >= MAX_OUTBOX) result.reason = "outbox-full";
+  else {
+    state.outbox.push(outboxItem(command, "queue", null));
+    state.dirty = true;
+    result.status = "accepted";
+    delete result.reason;
+    if (state.currentTurnId)
+      await note(
+        $,
+        `AgentKib queued a message for after this turn: ${previewText(command.text, 512)}`,
+      );
+  }
+}
+
+/** Withdraws a message the terminal has not taken; one of unknown outcome is never retried. */
+function withdraw(state, command, result) {
+  const item = state.outbox.find((entry) => entry.id === command.itemId);
+  if (!item || !["pending", "unknown"].includes(item.status) || state.dispatching === item)
+    result.reason = "outbox-item-unavailable";
+  else {
+    state.outbox = state.outbox.filter((entry) => entry !== item);
+    state.dirty = true;
+    result.status = "accepted";
+    delete result.reason;
+  }
+}
+
+/** Submits the next waiting message once the terminal is verified idle: steers, then the queue. */
+async function dispatchOutbox($, state) {
+  if (
+    state.dispatching ||
+    state.pendingSend ||
+    !writable(state) ||
+    !state.connection ||
+    state.connection.leaseId === "reconnecting" ||
+    state.currentTurnId ||
+    !state.activityVerified ||
+    state.nativeWorking !== false
+  )
+    return;
+  const ready = (item) => item.status === "pending" && item.retryRevision !== state.revision;
+  const item =
+    state.outbox.find((entry) => entry.kind === "steer" && entry.turnId === null && ready(entry)) ??
+    state.outbox.find((entry) => entry.kind === "queue" && ready(entry));
+  if (!item) return;
+  const pending = {
+    text: item.text,
+    expectedRevision: state.revision,
+    observed: false,
+    competing: false,
+    turnId: null,
+  };
+  state.pendingSend = pending;
+  state.dispatching = item;
+  item.status = "dispatching";
+  state.dirty = true;
+  try {
+    const submitted = await $.prompt.submit({ text: item.text, asUser: true });
+    if (submitted?.drop) {
+      // A terminal prompt entered first or a hook refused it. Try again once the
+      // session has changed since this attempt, never in a loop against the same
+      // state. A terminal turn that ran first has already changed it.
+      item.status = "pending";
+      item.retryRevision = pending.expectedRevision;
+    } else if (
+      state.pendingSend === pending &&
+      pending.observed &&
+      !pending.competing &&
+      pending.turnId &&
+      submitted?.text === pending.text
+    ) {
+      state.outbox = state.outbox.filter((entry) => entry !== item);
+    } else {
+      item.status = "unknown";
+      state.sendDisabled = true;
+    }
+  } catch {
+    item.status = "unknown";
+    state.sendDisabled = true;
+  } finally {
+    if (state.pendingSend === pending) state.pendingSend = null;
+    if (state.dispatching === item) state.dispatching = null;
+    state.dirty = true;
+  }
+}
+
 async function reportResult($, state, result) {
   if (!state.connection || state.closed) return;
   await request($, state, "/v1/results", { ...lease(state), ...result });
@@ -768,17 +996,22 @@ async function execute($, state, command) {
     return;
   }
   await identity($, state);
-  if (command.expectedRevision !== state.revision) result.reason = "revision-conflict";
+  // A steer names the turn it joins and a queued message waits for any turn, so
+  // neither depends on the revision a send or stop was decided against.
+  if (command.kind === "steer") await steer($, state, command, result);
+  else if (command.kind === "queue") await enqueue($, state, command, result);
+  else if (command.kind === "cancel") withdraw(state, command, result);
+  else if (command.expectedRevision !== state.revision) result.reason = "revision-conflict";
   else if (command.kind === "send") {
-    if (!SEND_CONTRACT_EXPERIMENT) result.reason = "claude-native-send-experimental-disabled";
-    else if (!validSend(command)) result.reason = "invalid-text";
+    if (!validSend(command)) result.reason = "invalid-text";
     else if (
       state.closed ||
       state.sendDisabled ||
       state.bufferPaused ||
       !state.activityVerified ||
       state.currentTurnId ||
-      state.pendingSend
+      state.pendingSend ||
+      state.outbox.length > 0
     )
       result.reason = "session-not-idle";
     else {
@@ -1326,6 +1559,8 @@ export function register(on) {
     });
     $.clock.every(250, () => flush($, state));
     $.clock.every(250, () => pump($, state));
+    // Never awaited by a hook: the native submit waits for the turn that is ending.
+    $.clock.every(250, () => dispatchOutbox($, state));
     // Offline Runtime must not delay startup of the original terminal. A later
     // session.end or explicit pairing invalidates this background generation.
     // Without a saved binding, try automatic pairing for this workspace.
@@ -1447,6 +1682,10 @@ export function register(on) {
     const pending = state.pendingSend;
     if (pending?.observed && !pending.competing && pending.text === e.text)
       pending.turnId = e.turnId;
+    // Steers waiting for the next turn join whichever turn starts, the terminal's too.
+    for (const item of state.outbox)
+      if (item.kind === "steer" && item.status === "pending" && item.turnId === null)
+        item.turnId = e.turnId;
     record(state, { type: "turn-start", turnId: e.turnId, revision: state.revision });
     state.dirty = true;
     if (state.needsReconnect) void pump($, state, true);
@@ -1505,6 +1744,13 @@ export function register(on) {
       state.activityVerified = true;
       state.revision += 1;
     }
+    // The turn ended before a tool call took its steers: they open the next turn.
+    for (const item of state.outbox)
+      if (item.kind === "steer" && item.status === "pending" && item.turnId === e.turnId) {
+        item.turnId = null;
+        item.appendRefused = false;
+        state.dirty = true;
+      }
     // An end heard without a start is still evidence for the original receipt.
     // A late old end never clears the state of a newer identified turn.
     record(state, {
@@ -1529,6 +1775,8 @@ export function register(on) {
     record(state, { type: "tool-start", tool, revision: state.revision });
     state.dirty = true;
     try {
+      // Rows appended now reach the model with this tool's result, in this turn.
+      await deliverSteers($, state);
       const result = await next(e);
       record(state, {
         type: "tool-complete",

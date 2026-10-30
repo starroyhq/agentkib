@@ -112,8 +112,7 @@ function event(response: ServerResponse, type: string, value: object) {
 describe.skipIf(process.platform !== "darwin" || process.env.AGENTKIB_CLAUDE_BRIDGE_NATIVE !== "1")(
   "installed Claude native borrowed session",
   () => {
-    it("reads and cancels the same TUI executor, preserving the disabled production send gate", async () => {
-      const sendExperiment = process.env.AGENTKIB_CLAUDE_BRIDGE_SEND_EXPERIMENT === "1";
+    it("reads, sends to and cancels the same TUI executor", async () => {
       const executable =
         process.env.AGENTKIB_CLAUDE_EXECUTABLE ?? path.join(homedir(), ".local/bin/claude");
       const version = spawnSync(executable, ["--version"], { encoding: "utf8" });
@@ -129,16 +128,6 @@ describe.skipIf(process.platform !== "darwin" || process.env.AGENTKIB_CLAUDE_BRI
       cpSync(path.resolve(import.meta.dirname, "../../../packages/claude-bridge-plugin"), plugin, {
         recursive: true,
       });
-      if (sendExperiment) {
-        const modulePath = path.join(plugin, "hooks/register.js");
-        writeFileSync(
-          modulePath,
-          readFileSync(modulePath, "utf8").replace(
-            "const SEND_CONTRACT_EXPERIMENT = false;",
-            "const SEND_CONTRACT_EXPERIMENT = true;",
-          ),
-        );
-      }
       writeFileSync(
         path.join(config, ".claude.json"),
         JSON.stringify({
@@ -349,7 +338,7 @@ describe.skipIf(process.platform !== "darwin" || process.env.AGENTKIB_CLAUDE_BRI
             () =>
               bridge.handles(sessionId) &&
               bridge.live(sessionId, true).connectionGeneration !== null &&
-              bridge.live(sessionId, true).sendEnabled === sendExperiment,
+              bridge.live(sessionId, true).sendEnabled === true,
             { timeout: 20_000 },
           )
           .toBe(true);
@@ -357,26 +346,21 @@ describe.skipIf(process.platform !== "darwin" || process.env.AGENTKIB_CLAUDE_BRI
           sourceSessionId: nativeId,
           executionMode: "claude-follower",
         });
-        expect(bridge.live(sessionId, true).sendEnabled).toBe(sendExperiment);
-        if (sendExperiment) {
-          const first = control("bridge-followup");
-          expect(await bridge.request(first)).toMatchObject({ accepted: true });
-          await expect
-            .poll(() => requests.filter((item) => item.text.includes("bridge-followup")).length, {
-              timeout: 12_000,
-            })
-            .toBe(1);
-          await expect
-            .poll(() => bridge.live(sessionId, true).sendEnabled, { timeout: 12_000 })
-            .toBe(true);
-          expect(await bridge.request(first)).toMatchObject({ accepted: true });
-          expect(requests.filter((item) => item.text.includes("bridge-followup"))).toHaveLength(1);
-          expect(await bridge.request(control("bridge-cancel"))).toMatchObject({ accepted: true });
-        } else {
-          // The user starts the turn in the original TUI; AgentKib only observes
-          // and cancels this exact execution, never queues another prompt.
-          tty.write("bridge-cancel\r");
-        }
+        expect(bridge.live(sessionId, true).sendEnabled).toBe(true);
+        const first = control("bridge-followup");
+        expect(await bridge.request(first)).toMatchObject({ accepted: true });
+        await expect
+          .poll(() => requests.filter((item) => item.text.includes("bridge-followup")).length, {
+            timeout: 12_000,
+          })
+          .toBe(1);
+        await expect
+          .poll(() => bridge.live(sessionId, true).sendEnabled, { timeout: 12_000 })
+          .toBe(true);
+        // A repeated request id is answered from the receipt and starts nothing.
+        expect(await bridge.request(first)).toMatchObject({ accepted: true });
+        expect(requests.filter((item) => item.text.includes("bridge-followup"))).toHaveLength(1);
+        expect(await bridge.request(control("bridge-cancel"))).toMatchObject({ accepted: true });
         await expect
           .poll(() => requests.some((item) => item.text.includes("bridge-cancel")), {
             timeout: 12_000,
@@ -548,7 +532,7 @@ describe.skipIf(process.platform !== "darwin" || process.env.AGENTKIB_CLAUDE_BRI
           .poll(
             () =>
               bridge.live(sessionId, true).connectionGeneration !== oldGeneration &&
-              bridge.live(sessionId, true).sendEnabled === sendExperiment,
+              bridge.live(sessionId, true).sendEnabled === true,
             { timeout: 20_000 },
           )
           .toBe(true);
@@ -560,9 +544,7 @@ describe.skipIf(process.platform !== "darwin" || process.env.AGENTKIB_CLAUDE_BRI
         expect(histories).toHaveLength(1);
         expect(requests.filter((item) => item.purpose === "seed")).toHaveLength(1);
         expect(requests.filter((item) => item.purpose === "cancel")).toHaveLength(1);
-        expect(requests.filter((item) => item.purpose === "followup")).toHaveLength(
-          sendExperiment ? 1 : 0,
-        );
+        expect(requests.filter((item) => item.purpose === "followup")).toHaveLength(1);
         const nativeHistory = readFileSync(path.join(config, String(histories[0])), "utf8");
         expect(nativeHistory).toContain("terminal-seed");
         expect(nativeHistory).toContain("bridge-cancel");
@@ -602,8 +584,7 @@ describe.skipIf(process.platform !== "darwin" || process.env.AGENTKIB_CLAUDE_BRI
               summary: {
                 version: version.stdout.trim(),
                 nativeId,
-                productionSend: "experimental-disabled",
-                sendContractExperiment: sendExperiment,
+                productionSend: "enabled",
                 requests,
                 requestCounts: Object.fromEntries(
                   ["native-title", "seed", "followup", "cancel", "other"].map((purpose) => [

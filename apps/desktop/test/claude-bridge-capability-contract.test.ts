@@ -61,7 +61,7 @@ async function fixture() {
     const store = new Map<string, unknown>();
     const api = {
       plugin: { root: "/synthetic/plugin" },
-      fs: { read: async () => JSON.stringify({ version: "0.3.1" }) },
+      fs: { read: async () => JSON.stringify({ version: "0.4.0" }) },
       session: {
         id: async () => target.nativeId,
         cwd: async () => workspace,

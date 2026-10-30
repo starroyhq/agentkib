@@ -2,9 +2,15 @@ import { Languages } from "lucide-react";
 import { NativeSelect } from "@/components/ui/native-select";
 import { Dialog } from "../../components/dialog";
 import { useSession } from "../sessions/session-context";
+import {
+  setSendWhileRunning,
+  useSendWhileRunning,
+  type SendWhileRunning,
+} from "./send-while-running";
 import type { SupportedLocale as Locale } from "@/core/types";
 export function PreferencesDialog() {
   const { t, locale, setLocale, theme, setTheme, accent, setAccent, setModal } = useSession();
+  const sendWhileRunning = useSendWhileRunning();
   return (
     <Dialog closeLabel={t.close} title={t.preferences} onClose={() => setModal(undefined)}>
       <div className="grid gap-5 [&>label]:flex [&>label]:items-center [&>label]:justify-between [&>label]:gap-3 [&>label]:text-sm">
@@ -32,6 +38,16 @@ export function PreferencesDialog() {
             <option value="blue">{t.blue}</option>
             <option value="violet">{t.violet}</option>
             <option value="green">{t.green}</option>
+          </NativeSelect>
+        </label>
+        <label>
+          {t.sendWhileRunning}
+          <NativeSelect
+            value={sendWhileRunning}
+            onChange={(e) => setSendWhileRunning(e.target.value as SendWhileRunning)}
+          >
+            <option value="queue">{t.sendWhileRunningQueue}</option>
+            <option value="steer">{t.sendWhileRunningSteer}</option>
           </NativeSelect>
         </label>
       </div>

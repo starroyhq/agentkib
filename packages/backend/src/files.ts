@@ -34,9 +34,14 @@ export function safeFile(value: string): boolean {
   }
 }
 export function within(value: string, root: string): boolean {
-  const a = pathIdentity(value),
-    b = pathIdentity(root);
-  return a === b || a.startsWith(b.endsWith(path.sep) ? b : b + path.sep);
+  return withinIdentity(pathIdentity(value), pathIdentity(root));
+}
+/** `within` for two values already resolved by `pathIdentity`. */
+export function withinIdentity(identity: string, rootIdentity: string): boolean {
+  return (
+    identity === rootIdentity ||
+    identity.startsWith(rootIdentity.endsWith(path.sep) ? rootIdentity : rootIdentity + path.sep)
+  );
 }
 export function safeAncestors(value: string, root: string): boolean {
   const resolved = path.resolve(value),

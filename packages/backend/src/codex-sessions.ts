@@ -6,7 +6,7 @@ import { isCompressedRollout, readRolloutPrefix, resolveRollout } from "./codex-
 import { homedir } from "node:os";
 import path from "node:path";
 import { Sql, type Row } from "./sql";
-import { within } from "./files";
+import { withinIdentity } from "./files";
 import { pathIdentity } from "./paths";
 import { compareUtf8 } from "./workspaces";
 import { timestamp } from "./timestamps";
@@ -399,6 +399,7 @@ export class CodexSessions {
       databases = current.length ? current : this.databases(path.join(home, "sqlite")),
       sessions = new Map<string, NativeSessionSource>();
     const ownership = new CodexSessionOwnership(home, this.environment);
+    const workspaceIdentity = workspace === null ? null : pathIdentity(workspace);
     let incomplete = false;
     for (const file of databases) {
       const db = new DatabaseSync(file, { readOnly: true });
@@ -442,11 +443,16 @@ export class CodexSessions {
         for (const row of sql.rows(
           `SELECT ${expressions.map((expression, index) => `${expression} AS k${index}`).join(",")} FROM threads`,
         )) {
+          // The cheap ID filter runs first; classification resolves paths on disk.
+          if (selection.matches && !selection.matches(String(row.k0))) continue;
           const cwd = String(row.k2);
           const collection = ownership.collection(String(row.k0), cwd, row.k14);
-          if (workspace !== null && (collection !== null || !within(cwd, workspace))) continue;
+          if (
+            workspaceIdentity !== null &&
+            (collection !== null || !withinIdentity(pathIdentity(cwd), workspaceIdentity))
+          )
+            continue;
           if (selection.collection && collection !== selection.collection) continue;
-          if (selection.matches && !selection.matches(String(row.k0))) continue;
           let transcript = String(row.k1);
           if (!path.isAbsolute(transcript)) transcript = path.join(home, transcript);
           // An idle thread's rollout may only exist compressed.

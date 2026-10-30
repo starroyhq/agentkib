@@ -35,6 +35,7 @@ let identity:
     }
   | undefined;
 let available: boolean;
+let computer: (() => Promise<string | undefined>) | undefined;
 async function setup() {
   service = new DesktopAccountService({
     directory,
@@ -57,6 +58,7 @@ async function setup() {
       delete identity!.accountClaimPending;
       delete identity!.accountClaimAccountId;
     },
+    ...(computer ? { computerName: computer } : {}),
     fetch: network as typeof fetch,
   });
   await service.initialize();
@@ -75,6 +77,7 @@ beforeEach(async () => {
   opened = "";
   available = true;
   identity = undefined;
+  computer = undefined;
   network = vi.fn<typeof fetch>(async () => Response.json(tokens));
   pause = vi.fn(async () => undefined);
   await setup();
@@ -324,5 +327,180 @@ describe("desktop account boundary", () => {
     await expect(
       service.request({ operation: "login", url: "https://attacker.invalid" } as never),
     ).rejects.toThrow("invalid_account_request");
+  });
+});
+
+describe("computer names", () => {
+  const deviceId = "d".repeat(32);
+  const calls = (path: string, method?: string) =>
+    network.mock.calls
+      .filter(
+        ([url, init]) =>
+          (url as URL).pathname === path &&
+          (!method || ((init as RequestInit).method ?? "GET") === method),
+      )
+      .map(([, init]) => {
+        const body = (init as RequestInit).body;
+        return body ? JSON.parse(body as string) : undefined;
+      });
+  /** Routes by path; anything else answers with the token response used by login. */
+  function broker(routes: Record<string, (init: RequestInit) => Response>) {
+    network.mockImplementation(async (url: URL, init: RequestInit) => {
+      const route = routes[`${init.method ?? "GET"} ${url.pathname}`];
+      return route ? route(init) : Response.json(tokens);
+    });
+  }
+  async function signIn() {
+    await service.request({ operation: "login" });
+    await callback();
+  }
+  beforeEach(async () => {
+    service.shutdown();
+    computer = async () => "  Alice’s\tMacBook ";
+    await setup();
+  });
+
+  it("sends the normalised name on register and keeps the name the account reports", async () => {
+    broker({
+      "POST /v1/account/devices": () =>
+        Response.json({ deviceId, accountId: profile.id, name: "Alice’s MacBook (2)" }),
+    });
+    await signIn();
+    const result = await service.registerDevice({
+      registrationId: "r".repeat(16),
+      credential: "c",
+    });
+    expect(result.name).toBe("Alice’s MacBook (2)");
+    expect(calls("/v1/account/devices", "POST")).toEqual([
+      { registrationId: "r".repeat(16), credential: "c", name: "Alice’s MacBook" },
+    ]);
+    identity = { deviceId, credential: "c", accountId: profile.id };
+    expect((await service.status()).device).toEqual({
+      deviceId,
+      ownership: "owned",
+      name: "Alice’s MacBook (2)",
+    });
+  });
+  it("an old broker ignores the name: one register request, no name shown", async () => {
+    broker({
+      "POST /v1/account/devices": () => Response.json({ deviceId, accountId: profile.id }),
+    });
+    await signIn();
+    await service.registerDevice({ registrationId: "r".repeat(16), credential: "c" });
+    expect(calls("/v1/account/devices", "POST")).toHaveLength(1);
+    identity = { deviceId, credential: "c", accountId: profile.id };
+    expect((await service.status()).device).toEqual({ deviceId, ownership: "owned" });
+  });
+  it("retries register and claim once without the name on 400 invalid_name only", async () => {
+    const invalid = (init: RequestInit) =>
+      JSON.parse(init.body as string).name
+        ? Response.json({ error: "invalid_name" }, { status: 400 })
+        : Response.json({ deviceId, accountId: profile.id });
+    broker({ "POST /v1/account/devices": invalid, "POST /v1/account/devices/claim": invalid });
+    await signIn();
+    await service.registerDevice({ registrationId: "r".repeat(16), credential: "c" });
+    expect(calls("/v1/account/devices", "POST").map((body) => body.name)).toEqual([
+      "Alice’s MacBook",
+      undefined,
+    ]);
+    identity = { deviceId, credential: "private" };
+    expect((await service.request({ operation: "claim" })).device?.ownership).toBe("owned");
+    expect(calls("/v1/account/devices/claim")).toEqual([
+      { deviceId, credential: "private", name: "Alice’s MacBook" },
+      { deviceId, credential: "private" },
+    ]);
+    network.mockClear();
+    broker({
+      "POST /v1/account/devices": () =>
+        Response.json({ error: "invalid_registration_identity" }, { status: 400 }),
+    });
+    await expect(
+      service.registerDevice({ registrationId: "bad", credential: "c" }),
+    ).rejects.toThrow("account_request_failed");
+    expect(calls("/v1/account/devices", "POST")).toHaveLength(1);
+  });
+  it("registers without a name when detection fails", async () => {
+    service.shutdown();
+    computer = async () => {
+      throw new Error("scutil missing");
+    };
+    await setup();
+    broker({
+      "POST /v1/account/devices": () => Response.json({ deviceId, accountId: profile.id }),
+    });
+    await signIn();
+    await service.registerDevice({ registrationId: "r".repeat(16), credential: "c" });
+    expect(calls("/v1/account/devices", "POST")).toEqual([
+      { registrationId: "r".repeat(16), credential: "c" },
+    ]);
+  });
+  it("backfills a registered device without a name once after sign-in", async () => {
+    identity = { deviceId, credential: "c", accountId: profile.id };
+    broker({
+      "GET /v1/account/devices": () => Response.json({ devices: [{ deviceId, name: null }] }),
+      [`PATCH /v1/account/devices/${deviceId}`]: (init) =>
+        Response.json({ deviceId, name: JSON.parse(init.body as string).name }),
+    });
+    await signIn();
+    await vi.waitFor(async () =>
+      expect((await service.status()).device?.name).toBe("Alice’s MacBook"),
+    );
+    expect(calls(`/v1/account/devices/${deviceId}`, "PATCH")).toEqual([
+      { name: "Alice’s MacBook" },
+    ]);
+    const request = network.mock.calls.find(
+      ([, init]) => (init as RequestInit).method === "PATCH",
+    )!;
+    expect(((request[1] as RequestInit).headers as Record<string, string>).authorization).toBe(
+      `Bearer ${tokens.accessToken}`,
+    );
+    expect(await service.backfillName()).toBe(false);
+    expect(calls("/v1/account/devices", "GET")).toHaveLength(1);
+  });
+  it("backfills on startup and never patches a device that already has a name", async () => {
+    identity = { deviceId, credential: "c", accountId: profile.id };
+    await signIn();
+    service.shutdown();
+    network.mockClear();
+    broker({
+      "GET /v1/account/devices": () =>
+        Response.json({ devices: [{ deviceId, name: "Renamed by user" }] }),
+    });
+    await setup();
+    await vi.waitFor(async () =>
+      expect((await service.status()).device?.name).toBe("Renamed by user"),
+    );
+    expect(calls(`/v1/account/devices/${deviceId}`, "PATCH")).toHaveLength(0);
+  });
+  it("skips PATCH when the broker does not report names, and ignores 404/405/409", async () => {
+    identity = { deviceId, credential: "c", accountId: profile.id };
+    broker({ "GET /v1/account/devices": () => Response.json({ devices: [{ deviceId }] }) });
+    await signIn();
+    await vi.waitFor(() => expect(calls("/v1/account/devices", "GET")).toHaveLength(1));
+    expect(await service.backfillName()).toBe(false);
+    expect(network.mock.calls.some(([, init]) => (init as RequestInit).method === "PATCH")).toBe(
+      false,
+    );
+    for (const [status, error] of [
+      [404, "not_found"],
+      [405, "method_not_allowed"],
+      [409, "name_already_set"],
+    ] as const) {
+      service.shutdown();
+      network.mockClear();
+      broker({
+        "GET /v1/account/devices": () => Response.json({ devices: [{ deviceId, name: null }] }),
+        [`PATCH /v1/account/devices/${deviceId}`]: () => Response.json({ error }, { status }),
+      });
+      await setup();
+      await vi.waitFor(() =>
+        expect(calls(`/v1/account/devices/${deviceId}`, "PATCH")).toHaveLength(1),
+      );
+      expect(await service.backfillName()).toBe(false);
+      const state = await service.status();
+      expect(state.phase).toBe("signed-in");
+      expect(state.error).toBeUndefined();
+      expect(state.device?.name).toBeUndefined();
+    }
   });
 });

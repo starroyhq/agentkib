@@ -138,3 +138,21 @@ it("cancels an in-progress browser sign-in without changing Web access", async (
   expect(request).toHaveBeenLastCalledWith({ operation: "cancel-login" });
   expect(refresh).not.toHaveBeenCalled();
 });
+it("shows how the account lists this computer once the name is known", async () => {
+  request.mockResolvedValue({
+    ...signedIn,
+    device: { deviceId: "a".repeat(32), ownership: "owned", name: "Alice’s MacBook (2)" },
+  });
+  render(<RemoteAccountSettings />);
+  expect(
+    await screen.findByText("This computer appears as Alice’s MacBook (2) in your account"),
+  ).toBeVisible();
+  cleanup();
+  request.mockResolvedValue({
+    ...signedIn,
+    device: { deviceId: "a".repeat(32), ownership: "owned" },
+  });
+  render(<RemoteAccountSettings />);
+  expect(await screen.findByText(remoteAccountCopy["en-US"].owned)).toBeVisible();
+  expect(screen.queryByText(/appears as/)).toBeNull();
+});

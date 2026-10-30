@@ -15,6 +15,7 @@ export const remoteAccountCopy = {
     unclaimed:
       "这台电脑尚未绑定账号。绑定会暂停远程访问，并保留连接地址和已有手机授权；成功后请手动恢复。",
     owned: "这台电脑已绑定当前账号",
+    appearsAs: "这台电脑在账号中显示为“{name}”",
     other: "这台电脑属于其他账号，请登录原账号。",
     quota: "已登记设备",
     totp: "两步验证",
@@ -50,6 +51,7 @@ export const remoteAccountCopy = {
     unclaimed:
       "這台電腦尚未綁定帳號。綁定會暫停遠端存取，並保留連線位址和既有手機授權；成功後請手動恢復。",
     owned: "這台電腦已綁定目前帳號",
+    appearsAs: "這台電腦在帳號中顯示為「{name}」",
     other: "這台電腦屬於其他帳號，請登入原帳號。",
     quota: "已登記裝置",
     totp: "兩步驟驗證",
@@ -86,6 +88,7 @@ export const remoteAccountCopy = {
     unclaimed:
       "This computer is not linked to an account. Linking pauses public access and preserves its address and browser grants. Enable access again after linking.",
     owned: "This computer is linked to this account",
+    appearsAs: "This computer appears as {name} in your account",
     other: "This computer belongs to another account. Sign in to the original account.",
     quota: "Registered computers",
     totp: "Two-step verification",
@@ -125,6 +128,7 @@ export const remoteAccountCopy = {
     unclaimed:
       "このパソコンはアカウントに未登録です。登録時に公衆接続を一時停止し、接続先と既存のブラウザー認証は保持します。登録後は手動で再開してください。",
     owned: "このパソコンは現在のアカウントに登録済みです",
+    appearsAs: "このパソコンはアカウントで「{name}」と表示されます",
     other: "このパソコンは別のアカウントに属しています。元のアカウントにログインしてください。",
     quota: "登録済み端末",
     totp: "2段階認証",

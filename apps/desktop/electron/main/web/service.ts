@@ -13,7 +13,8 @@ import {
 } from "./history-references";
 import { EventEmitter } from "node:events";
 import { projectContextUsage } from "@agentkib/backend/context-usage";
-import { createServer, type Server } from "node:http";
+import { createServer, ServerResponse, type Server } from "node:http";
+import { gzipSync } from "node:zlib";
 import { mkdir, readFile, realpath, rename, stat, writeFile } from "node:fs/promises";
 import { extname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { networkInterfaces } from "node:os";
@@ -415,6 +416,29 @@ function snapshotField(snapshot: unknown, key: string): unknown {
     ? (snapshot as Record<string, unknown>)[key]
     : undefined;
 }
+/** 小于这个大小的回复不压缩，省下的字节抵不过压缩本身。 */
+const COMPRESSED_REPLY_MIN_BYTES = 16 * 1024;
+/** 客户端是否接受 gzip；显式的 `gzip;q=0` 视为拒绝。 */
+function acceptsGzip(header: string | string[] | undefined): boolean {
+  let wildcard = false;
+  for (const entry of (Array.isArray(header) ? header.join(",") : (header ?? "")).split(",")) {
+    const [name = "", ...parameters] = entry.split(";").map((part) => part.trim().toLowerCase());
+    const quality = parameters.find((part) => part.startsWith("q="));
+    const accepted = quality === undefined || Number(quality.slice(2)) > 0;
+    if (name === "gzip") return accepted;
+    if (name === "*") wildcard = accepted;
+  }
+  return wildcard;
+}
+/** 远程目录从不列出子代理会话（auxiliary），回复里去掉它们，体积约为原来的五分之一。 */
+function withoutAuxiliarySessions(catalog: unknown): unknown {
+  const sessions = snapshotField(catalog, "sessions");
+  if (!Array.isArray(sessions)) return catalog;
+  return {
+    ...(catalog as Record<string, unknown>),
+    sessions: sessions.filter((session) => snapshotField(session, "origin") !== "auxiliary"),
+  };
+}
 const isAccessLevel = (value: unknown): value is WebAccessLevel =>
   value === "read" || value === "full";
 function accessLevelOf(device: WebDevice): WebAccessLevel | undefined {
@@ -470,6 +494,8 @@ export class WebAccessService {
   private unconfirmedRequests = new Map<string, string>();
   private requests = new Set<string>();
   private controlEvents = new EventEmitter().setMaxListeners(64);
+  // 正在进行的目录读取（按 runtime 启动区分）；同时到达的权限检查共用它。
+  private catalogFlight?: { boot: string; read: Promise<unknown> };
   private pendingControlNotifications = new Set<string>();
   private rates = new Map<string, { count: number; until: number }>();
   private adminQueue: Promise<unknown> = Promise.resolve();
@@ -755,7 +781,7 @@ export class WebAccessService {
     }
   }
   private async localArtifactScope(sessionId: string) {
-    const catalog = (await this.runtime({ operation: "catalog" })) as {
+    const catalog = (await this.scopeCatalog()) as {
       sessions: { id: string; agent: string; workspace_id: string }[];
     };
     const session = catalog.sessions.find(
@@ -1937,7 +1963,7 @@ export class WebAccessService {
     // Workspace registration is read by the main runtime worker, independently
     // of the dedicated execution worker's control admission and long requests.
     if (this.options.workspaceRequest) return this.options.workspaceRequest();
-    const catalog = (await this.runtime({ operation: "catalog" }, undefined, reserved)) as {
+    const catalog = (await this.scopeCatalog(reserved)) as {
       workspaces?: { id: string; name: string; path: string }[];
     };
     return catalog.workspaces ?? [];
@@ -1995,7 +2021,7 @@ export class WebAccessService {
         );
       else if (path === "/artifacts") {
         const sessionId = this.field(url.searchParams.get("sessionId"));
-        const catalog = (await this.runtime({ operation: "catalog" })) as {
+        const catalog = (await this.scopeCatalog()) as {
           sessions: { id: string; workspace_id: string }[];
         };
         if (!catalog.sessions.some((s) => s.id === sessionId && s.workspace_id === workspaceId))
@@ -2554,7 +2580,7 @@ export class WebAccessService {
     return resolved;
   }
   private async codexScope(sessionId: string, hash: string, reserved = false, codexOnly = true) {
-    const catalog = (await this.runtime({ operation: "catalog" }, undefined, reserved)) as {
+    const catalog = (await this.scopeCatalog(reserved)) as {
       sessions: { id: string; agent: string; workspace_id: string }[];
     };
     const session = catalog.sessions.find(
@@ -2570,7 +2596,7 @@ export class WebAccessService {
   private async lanCodexScopeAllowed(sessionId: string, workspaceId: string, reserved = false) {
     // LAN has no workspace allowlist; retain its existing registered-session
     // boundary without granting file access or managed lifecycle permissions.
-    const catalog = (await this.runtime({ operation: "catalog" }, undefined, reserved)) as {
+    const catalog = (await this.scopeCatalog(reserved)) as {
       sessions?: { id: string; agent: string; workspace_id: string }[];
     };
     if (
@@ -2784,7 +2810,7 @@ export class WebAccessService {
         this.clearUnconfirmed(sessionId);
         this.unconfirmedRequests.delete(sessionId);
       }
-      const catalog = (await this.runtime({ operation: "catalog" })) as {
+      const catalog = (await this.scopeCatalog()) as {
         sessions: { id: string; workspace_id: string }[];
       };
       this.grant(hash, permission);
@@ -3359,7 +3385,7 @@ export class WebAccessService {
   }
   private async historyScope(hash: string, reserved = false) {
     const access = await this.historyAccessScope(hash, reserved);
-    const catalog = (await this.runtime({ operation: "catalog" }, undefined, reserved)) as {
+    const catalog = (await this.scopeCatalog(reserved)) as {
       sessions?: { id: string; workspace_id: string; indexedSessionIds?: string[] }[];
     };
     if ((await this.historyAccessScope(hash, reserved)).token !== access.token)
@@ -3390,7 +3416,7 @@ export class WebAccessService {
   }
   private async codexResumeCommandScope(sessionId: string, hash: string) {
     const access = await this.historyAccessScope(hash);
-    const catalog = (await this.runtime({ operation: "catalog" })) as {
+    const catalog = (await this.scopeCatalog()) as {
       sessions?: { id: string; workspace_id: string; agent: string; availability: string }[];
     };
     const session = catalog.sessions?.find(
@@ -3666,7 +3692,7 @@ export class WebAccessService {
       throw new HttpError(409, "duplicate_request");
     }
     if (this.requests.size >= 10_000) throw new HttpError(429, "request_capacity");
-    const catalog = (await this.runtime({ operation: "catalog" })) as {
+    const catalog = (await this.scopeCatalog()) as {
       sessions: { id: string; workspace_id: string; agent: string }[];
     };
     const workspaceId =
@@ -3877,13 +3903,24 @@ export class WebAccessService {
         this.streams.delete(res);
       }
   }
-  private json(res: ConversationResponse, status: number, data: unknown) {
+  /**
+   * `compress` 只由确认回复里没有凭据的调用方传入（目录）：同一回复里混有秘密和
+   * 可控内容时，压缩后的长度会泄露秘密（BREACH），所以不对所有回复开压缩。
+   * 只压缩真正的 HTTP 回复；桌面桥和 WebSocket 授权用的内存回复按 JSON 文本读取。
+   */
+  private json(res: ConversationResponse, status: number, data: unknown, compress = false) {
     const body = JSON.stringify(data);
     if (Buffer.byteLength(body) > 4 * 1024 * 1024) throw new HttpError(413, "response_too_large");
-    res.writeHead(status, {
+    const headers: Record<string, string> = {
       "Content-Type": "application/json; charset=utf-8",
       "Cache-Control": "no-store",
-    });
+    };
+    if (compress && res instanceof ServerResponse && body.length >= COMPRESSED_REPLY_MIN_BYTES) {
+      res.writeHead(status, { ...headers, "Content-Encoding": "gzip", Vary: "Accept-Encoding" });
+      res.end(gzipSync(body));
+      return;
+    }
+    res.writeHead(status, headers);
     res.end(body);
   }
   private async body(req: ConversationRequest): Promise<Record<string, unknown>> {
@@ -3947,7 +3984,7 @@ export class WebAccessService {
     let timer: ReturnType<typeof setTimeout>;
     try {
       return await Promise.race([
-        existing ?? this.options.runtimeRequest(params),
+        existing ?? this.runtimeCall(params),
         new Promise<never>((_, reject) => {
           timer = setTimeout(() => reject(new HttpError(504, "outcome_unknown")), 20_000);
         }),
@@ -3955,6 +3992,34 @@ export class WebAccessService {
     } finally {
       clearTimeout(timer!);
     }
+  }
+  /** 发出 runtime 请求；整份目录的读取登记为进行中，供权限检查共用。 */
+  private runtimeCall(params: unknown): Promise<unknown> {
+    const read = this.options.runtimeRequest(params);
+    if (
+      snapshotField(params, "operation") === "catalog" &&
+      Object.keys(params as object).length === 1
+    ) {
+      const flight = { boot: this.bootId, read };
+      this.catalogFlight = flight;
+      const release = () => {
+        if (this.catalogFlight === flight) this.catalogFlight = undefined;
+      };
+      read.then(release, release);
+    }
+    return read;
+  }
+  /**
+   * 权限检查只用目录把会话对到工作区。已有目录读取在进行时，它的结果同样能回答，
+   * 所以直接共用，不在宿主唯一的 runtime 上再排一次整份读取。目录接口本身
+   * （/catalog）始终发起新的读取，删除或改名之后看到的目录不会是旧的。
+   */
+  private async scopeCatalog(reserved = false): Promise<unknown> {
+    const flight = this.catalogFlight;
+    if (!flight || flight.boot !== this.bootId)
+      return this.runtime({ operation: "catalog" }, undefined, reserved);
+    if (!reserved && this.admission) throw new HttpError(409, "operation_busy");
+    return this.runtime({ operation: "catalog" }, flight.read, reserved);
   }
   private async handle(
     req: ConversationRequest,
@@ -4849,7 +4914,7 @@ export class WebAccessService {
       });
       this.grant(hash);
       if (path.endsWith("capabilities")) {
-        const catalog = (await this.runtime({ operation: "catalog" })) as {
+        const catalog = (await this.scopeCatalog()) as {
           sessions: { id: string; workspace_id: string }[];
         };
         this.grant(hash);
@@ -5074,7 +5139,7 @@ export class WebAccessService {
     if (path === "/managed/context") {
       const id = this.field(url.searchParams.get("sessionId"));
       const device = this.grant(hash);
-      const catalog = (await this.runtime({ operation: "catalog" })) as {
+      const catalog = (await this.scopeCatalog()) as {
         sessions: { id: string; workspace_id: string; agent: string }[];
       };
       const session = catalog.sessions.find(
@@ -5415,7 +5480,16 @@ export class WebAccessService {
     if (path === "/live") result = await this.projectLive(sessionId, result, device);
     this.grant(hash);
     if (boot !== this.bootId) throw new HttpError(409, "stale_boot");
-    return this.json(res, 200, result);
+    // 桌面内嵌会话页走可信本地桥，仍拿完整目录；远程（中继、局域网）客户端从不列出
+    // 子代理会话，去掉它们并压缩，目录回复从约 800 KiB 降到几十 KiB。
+    const remoteCatalog = path === "/catalog" && !trustedLocal;
+    if (remoteCatalog) result = withoutAuxiliarySessions(result);
+    return this.json(
+      res,
+      200,
+      result,
+      remoteCatalog && acceptsGzip(req.headers["accept-encoding"]),
+    );
   }
   private async static(req: ConversationRequest, res: ConversationResponse) {
     if (req.method !== "GET" && req.method !== "HEAD")

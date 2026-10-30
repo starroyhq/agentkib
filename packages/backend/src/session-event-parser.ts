@@ -515,6 +515,16 @@ function injected(content: any): boolean {
     )
   );
 }
+/** A user row AgentKib's Claude Code plugin appended into a running turn, as the person's. */
+function agentKibTurnMessage(row: any): boolean {
+  return (
+    row?.type === "user" &&
+    row?.origin?.kind === "plugin" &&
+    row.origin.name === "agentkib-bridge" &&
+    Array.isArray(row?.message?.content) &&
+    row.message.content.every((block: any) => block?.type === "text")
+  );
+}
 export function parseEventRecord(
   state: EventState,
   offset: number,
@@ -537,7 +547,9 @@ function parseRecord(state: EventState, offset: number, row: any, page: Conversa
       return;
     }
     // The CLI's own context: a skill's expanded prompt, the caveat before a local command.
-    if (row?.isMeta === true) return;
+    // A message the person sent from AgentKib into a running terminal turn is meta to the
+    // CLI, which stamps the plugin that added it, but the person wrote it.
+    if (row?.isMeta === true && !agentKibTurnMessage(row)) return;
     if (row?.type === "system" && row?.subtype === "local_command") {
       // A local command's output, with the uuid of its live frame, or a command the CLI does
       // not offer in print mode, recorded as typed (`/help`).

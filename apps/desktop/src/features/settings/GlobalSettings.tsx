@@ -81,6 +81,11 @@ import appIconBlack from "../../../resources/icons/app-icon-black.png";
 import appIconWhite from "../../../resources/icons/app-icon-white.png";
 import { KeyboardShortcutsSettings } from "./KeyboardShortcutsSettings";
 import { AGENT_LABELS as agentLabels } from "@/core/agents";
+import {
+  setSendWhileRunning,
+  useSendWhileRunning,
+  type SendWhileRunning,
+} from "@/features/sessions/conversation/features/preferences/send-while-running";
 
 const buildPlatform = desktopApi().platform;
 const appPlatform = normalizePlatform(buildPlatform);
@@ -176,6 +181,7 @@ export function GlobalSettings({
               onChange={onCloseBehaviorChanged}
             />
           </SettingsRow>
+          <SendWhileRunningSetting />
           <SettingsRow>
             <SettingsCopy>
               <strong>{tr("settings.onboarding")}</strong>
@@ -890,6 +896,48 @@ function AppIconSetting({
           </ToggleGroupItem>
         ))}
       </ToggleGroup>
+    </SettingsRow>
+  );
+}
+
+/** What Send does in a conversation while the agent runs; kept on this computer. */
+function SendWhileRunningSetting() {
+  const { t: tr } = useTranslation();
+  const selected = useSendWhileRunning();
+  const label = (mode: SendWhileRunning) =>
+    tr(
+      mode === "steer"
+        ? "conversation.sendWhileRunningSteer"
+        : "conversation.sendWhileRunningQueue",
+    );
+  return (
+    <SettingsRow>
+      <SettingsCopy>
+        <strong>{tr("conversation.sendWhileRunning")}</strong>
+      </SettingsCopy>
+      <Select
+        value={selected}
+        onValueChange={(value) => {
+          if (value === "queue" || value === "steer") setSendWhileRunning(value);
+        }}
+      >
+        <SelectTrigger
+          className={settingsControlClass}
+          aria-label={tr("conversation.sendWhileRunning")}
+        >
+          <SelectValue>{label(selected)}</SelectValue>
+        </SelectTrigger>
+        <SelectContent>
+          <SelectGroup>
+            <SelectLabel>{tr("conversation.sendWhileRunning")}</SelectLabel>
+            {(["queue", "steer"] as const).map((mode) => (
+              <SelectItem key={mode} value={mode}>
+                {label(mode)}
+              </SelectItem>
+            ))}
+          </SelectGroup>
+        </SelectContent>
+      </Select>
     </SettingsRow>
   );
 }

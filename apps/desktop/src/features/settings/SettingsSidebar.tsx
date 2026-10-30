@@ -100,7 +100,12 @@ const searchEntries: Array<{
     section: "general",
     target: "general-interface",
     label: "settings.interface",
-    keywords: ["settings.appIcon", "settings.language", "settings.closeBehavior"],
+    keywords: [
+      "settings.appIcon",
+      "settings.language",
+      "settings.closeBehavior",
+      "conversation.sendWhileRunning",
+    ],
   },
   {
     section: "appearance",

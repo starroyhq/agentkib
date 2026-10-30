@@ -1,7 +1,7 @@
 # AgentKib Claude Code session bridge
 
 First-party local Mods plugin for Claude Code **2.1.301 or later**, using AgentKib
-bridge contract **0.3.1**. It connects AgentKib's existing chat interface to the
+bridge contract **0.4.0**. It connects AgentKib's existing chat interface to the
 terminal's original execution process. It never starts a replacement Claude
 process, resumes another UUID, calls a model itself, or changes the user's
 permission rules.
@@ -40,19 +40,41 @@ Each pairing and reconnect checks the minimum stable CLI version and required
 native capabilities: session identity, messages, usage, credential storage, and
 plugin-file reads. Older or unrecognized versions and missing required capabilities
 are rejected. Only **2.1.301** and **2.1.310** are currently listed as verified; higher stable
-versions that pass these checks may connect read-only. The connection dialog shows
+versions that pass these checks may connect too. The connection dialog shows
 a neutral notice that the version has not been verified and synchronized content
-may be incomplete; the session page does not repeat it. Production sending remains disabled. `/agentkib-status` is a local
+may be incomplete; the session page does not repeat it. Messages sent from AgentKib
+go through the same plugin checks on every version. `/agentkib-status` is a local
 command and does not call a model.
 
 ## Current capabilities
 
 - Read bounded native messages, tool activity, stream text and reported usage.
-- Production text sending is **experimental-disabled**. Native `$.prompt.submit`
-  has no atomic idle/CAS contract and skips this plugin's own hook by re-entry;
-  a competing terminal submission cannot be guaranteed never to queue. The
-  retained correlation implementation is an isolated protocol experiment only.
-  Renderer, Web and plugin configuration cannot enable it.
+- Take text messages sent from AgentKib, in three modes. Each needs a verified,
+  writable lease. After any outcome the plugin cannot confirm, that message is
+  marked unknown and never sent again, and the plugin takes no more messages
+  until it is paired again or the session is reopened in the terminal.
+  - **Send** while the terminal is verified idle and nothing waits in the outbox,
+    with `$.prompt.submit` as the user. Native submit has no atomic idle/CAS
+    option, so this plugin's own `prompt.submit` hook admits the prompt only while
+    the session is unchanged and drops it when a terminal prompt entered first;
+    it never queues in the terminal. A send is accepted once `turn.start` reports
+    the turn it opened.
+  - **Steer** into the running turn. While a main-loop tool runs, the message is
+    appended with `$.session.append` and the model reads it with the tool's
+    result. Otherwise the plugin holds it and appends it at the turn's next
+    main-loop `tool.call`; if the turn ends first, it opens the next turn. A steer
+    that arrives after its turn ended is refused as `turn-conflict`.
+  - **Queue** for after the running turn. Messages wait in order and each is
+    submitted as its own turn once the terminal is verified idle; steers that
+    missed their turn go first. A dispatch dropped because the terminal moved
+    first is tried again only after the session changes.
+
+  The outbox holds up to 20 messages and lists them in snapshots. A message the
+  terminal has not taken, or one of unknown outcome, can be withdrawn with
+  `cancel`. The terminal shows a line for each message AgentKib adds or queues.
+  The outbox lives in plugin memory: a plugin reload, an identity change or the
+  end of the session discards it.
+
 - Cancel the exact native turn observed by `turn.start` using `$.turn.abort`.
 - Keep approvals and questions in the original terminal. No permission override,
   synthetic question response, or remote approval capability is provided.
@@ -61,8 +83,7 @@ Snapshots are previews of the latest 80 text rows and 100 tool records, subject 
 a byte budget. Clipped text has an explicit marker. Complete history continues to
 use AgentKib's original history provider. Hidden thinking is never forwarded.
 
-Native cancellation and reading are verified separately from experimental send
-correlation. Approval and question completion remain unavailable in AgentKib.
+Approval and question completion remain unavailable in AgentKib.
 A bounded event buffer retains turn-completion evidence until ACK, including
 across reconnect; an unknown send is never unlocked merely because the TUI is idle.
 
@@ -113,10 +134,7 @@ AGENTKIB_CLAUDE_BRIDGE_NATIVE=1 \
 
 Set `AGENTKIB_CLAUDE_EXECUTABLE` when the installed binary is elsewhere, and
 `AGENTKIB_NATIVE_BRIDGE_EVIDENCE_DIR` to retain redacted terminal output and the
-binary/type identity. For the separate send-correlation experiment only, set
-`AGENTKIB_CLAUDE_BRIDGE_SEND_EXPERIMENT=1` on this test command: the test changes
-one literal in its temporary plugin copy, never the shipped plugin. Passing
-that experiment does not open production send capability. This verifies transport and native execution contracts;
+binary/type identity. This verifies transport and native execution contracts;
 it does not substitute for real provider or physical phone acceptance.
 
 Official references: [Mods](https://code.claude.com/docs/en/plugins/mods/overview),

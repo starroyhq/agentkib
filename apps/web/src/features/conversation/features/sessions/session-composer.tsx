@@ -16,6 +16,7 @@ import {
 import { SessionBusyChoice } from "./session-busy-choice";
 import { SessionReadOnly } from "./session-read-only";
 import { isSendEnter, useEnterSends } from "./composer-shortcuts";
+import { runningSendAction, useSendWhileRunning } from "../preferences/send-while-running";
 import { claudeConnectionCopyForSurface } from "./claude-connection-copy";
 import { HistoryReferenceChips } from "../history/history-search-controls";
 import { validHistoryMessage } from "../history/history-reference-model";
@@ -123,6 +124,9 @@ export function SessionComposer({
   const submitPending = useRef(false);
   const composing = useRef(false);
   const enterSends = useEnterSends();
+  // While the agent runs, Send queues the message or adds it to the running turn, as this
+  // device chose in preferences; the menu beside Send offers both either way.
+  const runningAction = runningSendAction(useSendWhileRunning());
   const [error, setError] = useState("");
   const [resources, setResources] = useState<CodexResource[]>([]);
   const [previewKey, setPreviewKey] = useState<string>();
@@ -443,6 +447,16 @@ export function SessionComposer({
   }, [connectionFailure, connectionToastId, display.reason, selected]);
   const canSubmit = online && controlReady && canSend;
   const canAdvanced = !!(access?.device?.advancedControl && controlReady && online && !busy);
+  // Send, and Enter, take the device's running choice when a direct send cannot go now.
+  const runningReady =
+    (running || compacting) &&
+    !(canSubmit && !compacting) &&
+    canAdvanced &&
+    !!capabilities?.features[runningAction]?.available &&
+    !(compacting && runningAction === "steer") &&
+    valid &&
+    !submitted;
+  const runningLabel = runningAction === "steer" ? copy.steer : copy.queueAdd;
   const primaryAction =
     canStop && live?.executionMode !== "claude-follower" ? (
       <Button
@@ -458,8 +472,9 @@ export function SessionComposer({
       <Button
         type="submit"
         className="inline-flex size-11 shrink-0 items-center justify-center rounded-full p-0"
-        aria-label={t.send}
-        disabled={!canSubmit || compacting || !valid || submitted}
+        aria-label={runningReady ? runningLabel : t.send}
+        title={runningReady ? runningLabel : undefined}
+        disabled={((!canSubmit || compacting) && !runningReady) || !valid || submitted}
       >
         <ArrowUp size={20} />
       </Button>
@@ -553,6 +568,7 @@ export function SessionComposer({
         onSubmit={(event) => {
           event.preventDefault();
           if (canSubmit && !compacting) void send("send");
+          else if (runningReady) void send(runningAction);
         }}
       >
         <label className="sr-only" htmlFor="message">
@@ -587,8 +603,7 @@ export function SessionComposer({
             if (
               !event.repeat &&
               !event.currentTarget.disabled &&
-              canSubmit &&
-              !compacting &&
+              ((canSubmit && !compacting) || runningReady) &&
               valid &&
               !submitPending.current
             )

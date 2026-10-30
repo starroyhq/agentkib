@@ -170,7 +170,7 @@ describe.skipIf(process.platform !== "darwin")(
         nativeId,
         cwd: workspace,
         cliVersion: "2.1.301",
-        pluginVersion: "0.3.1",
+        pluginVersion: "0.4.0",
         nativeCapabilities: {
           version: 1 as const,
           available: [
@@ -194,7 +194,7 @@ describe.skipIf(process.platform !== "darwin")(
         ...identity,
         protocol: 1,
         cliVersion: "2.1.301",
-        pluginVersion: "0.3.1",
+        pluginVersion: "0.4.0",
         nativeCapabilities: {
           version: 1 as const,
           available: [
@@ -213,7 +213,16 @@ describe.skipIf(process.platform !== "darwin")(
         toolItems: [],
         streamText: "",
         usage: null,
-        capabilities: { read: true, send: true, stop: true, approve: false, answer: false },
+        outbox: [],
+        capabilities: {
+          read: true,
+          send: true,
+          steer: true,
+          queue: true,
+          stop: true,
+          approve: false,
+          answer: false,
+        },
       };
       seq = 0;
       await events({ type: "snapshot", snapshot });

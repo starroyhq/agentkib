@@ -53,7 +53,7 @@ AgentKib 把这些状态汇集到一个本地、可检查的桌面界面中。�
 
 ### 连接原 Claude Code 会话
 
-macOS 的 Claude Code `2.1.301` 可主动安装第一方 Mods 插件，将原执行会话连接到桌面及获授权的 Web 聊天界面，支持同步观察和取消当前轮次，不另起续接进程。原生接口尚无法保证并发输入时不排队，因此本期不开放原会话发送；审批和问答仍在原终端处理，托管执行保持独立。参见[原会话连接说明](docs/CLAUDE-NATIVE-CONNECTION.md)与[本轮 QA](qa/native-session-connection-2026-10-16.md)。
+macOS 的 Claude Code `2.1.301` 及更新版本可主动安装第一方 Mods 插件，将原执行会话连接到桌面及获授权的 Web 聊天界面，支持同步观察、发送消息和取消当前轮次，不另起续接进程。终端空闲时消息开始新一轮；运行中按各设备的“运行中发送”设置排到本轮之后或加入本轮。审批和问答仍在原终端处理，托管执行保持独立。参见[原会话连接说明](docs/CLAUDE-NATIVE-CONNECTION.md)与[本轮 QA](qa/native-session-connection-2026-10-16.md)。
 
 ### 维护本地工具链
 

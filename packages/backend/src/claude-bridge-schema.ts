@@ -40,6 +40,15 @@ export const bridgeToolSchema = z
     status: z.enum(["running", "completed", "failed"]),
   })
   .strict();
+export const bridgeOutboxItemSchema = z
+  .object({
+    id,
+    kind: z.enum(["steer", "queue"]),
+    text: z.string().max(8 * 1024),
+    status: z.enum(["pending", "dispatching", "unknown"]),
+    createdAt: z.number().int().min(0).max(8_640_000_000_000_000),
+  })
+  .strict();
 export const bridgeSnapshotSchema = bridgeIdentitySchema
   .extend({
     revision,
@@ -58,10 +67,13 @@ export const bridgeSnapshotSchema = bridgeIdentitySchema
       })
       .strict()
       .nullable(),
+    outbox: z.array(bridgeOutboxItemSchema).max(32),
     capabilities: z
       .object({
         read: z.boolean(),
         send: z.boolean(),
+        steer: z.boolean(),
+        queue: z.boolean(),
         stop: z.boolean(),
         approve: z.literal(false),
         answer: z.literal(false),

@@ -2881,9 +2881,15 @@ export class WebAccessService {
         features?: Record<string, { available: boolean; reason?: string }>;
         executionMode?: string;
       };
+      // A connected Claude terminal takes messages while it runs: added to the turn or queued
+      // after it, and a waiting one can be withdrawn. It offers none of the other actions.
+      const terminal =
+        generic &&
+        capabilities.executionMode === "claude-follower" &&
+        ["steer", "queue-add", "queue-delete"].includes(operation);
+      const claude = generic && capabilities.executionMode === "claude-managed";
       if (
-        (capabilities.executionMode !== "codex-managed" &&
-          !(generic && capabilities.executionMode === "claude-managed")) ||
+        (capabilities.executionMode !== "codex-managed" && !claude && !terminal) ||
         capabilities.features?.[operation]?.available !== true
       )
         throw new HttpError(
@@ -2915,7 +2921,7 @@ export class WebAccessService {
         expectedRevision: body.expectedRevision,
         runtimeBootId: snapshot.runtimeBootId,
         experimentalEnabled: true,
-        ...(generic && capabilities.executionMode === "claude-managed" ? { publicInputHash } : {}),
+        ...(claude || terminal ? { publicInputHash } : {}),
       };
       // Every operation has an explicit public-field projection. Paths and raw RPC input never pass through.
       if (["steer", "queue-add", "queue-update"].includes(operation)) {
@@ -2962,10 +2968,7 @@ export class WebAccessService {
           delete params.text;
         }
       }
-      if (
-        operation === "queue-update" ||
-        (operation === "queue-delete" && capabilities.executionMode === "claude-managed")
-      ) {
+      if (operation === "queue-update" || (operation === "queue-delete" && (claude || terminal))) {
         const queued = (await this.runtime(
           { operation: "queue-list", sessionId, limit: 100 },
           undefined,
@@ -2979,7 +2982,9 @@ export class WebAccessService {
         )
           throw new HttpError(409, "queue_too_large");
         const target = queued.data?.find((item) => item.id === body.queuedSubmissionId);
-        if (!target || (target.status !== undefined && target.status !== "pending"))
+        // A terminal message of unknown outcome is never resent; deleting it is how it ends.
+        const removable = terminal ? ["pending", "unknown"] : ["pending"];
+        if (!target || (target.status !== undefined && !removable.includes(target.status)))
           throw new HttpError(409, "queue_item_unavailable");
         if (
           operation === "queue-update" &&

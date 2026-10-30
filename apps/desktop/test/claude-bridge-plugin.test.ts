@@ -1,6 +1,5 @@
 // @vitest-environment node
 import { randomUUID } from "node:crypto";
-import { readFileSync } from "node:fs";
 import { describe, expect, it, vi } from "vitest";
 import {
   decodeTicket,
@@ -102,27 +101,8 @@ function expectedUtf8Preview(value: string, budget: number) {
   throw new Error("invalid UTF-8 preview prefix");
 }
 
-const experimentalSource = readFileSync(
-  new URL("../../../packages/claude-bridge-plugin/hooks/register.js", import.meta.url),
-  "utf8",
-)
-  .replace("const SEND_CONTRACT_EXPERIMENT = false;", "const SEND_CONTRACT_EXPERIMENT = true;")
-  .replace(
-    '"./compatibility.js"',
-    JSON.stringify(
-      `data:text/javascript;base64,${Buffer.from(readFileSync(new URL("../../../packages/claude-bridge-plugin/hooks/compatibility.js", import.meta.url), "utf8")).toString("base64")}`,
-    ),
-  );
-const experimentalRegister = (
-  await import(
-    /* @vite-ignore */
-    `data:text/javascript;base64,${Buffer.from(experimentalSource).toString("base64")}`
-  )
-).register;
-
 async function fixture(
   options: {
-    experiment?: boolean;
     connect?: boolean;
     activeAtStart?: boolean;
     storedCredential?: boolean;
@@ -134,7 +114,7 @@ async function fixture(
   } = {},
 ) {
   const hooks = new Map<string, Array<{ match: Value; hook: Hook }>>();
-  const register = options.experiment === false ? productionRegister : experimentalRegister;
+  const register = productionRegister;
   register((name: string, matcher: Value | Hook, handler?: Hook) => {
     const hook = typeof matcher === "function" ? matcher : handler!;
     const match = typeof matcher === "function" ? {} : matcher;
@@ -181,14 +161,14 @@ async function fixture(
     fs: {
       read: async (path: string) =>
         path === "/synthetic/plugin/package.json"
-          ? JSON.stringify({ version: "0.3.1" })
+          ? JSON.stringify({ version: "0.4.0" })
           : JSON.stringify({
               ...connection,
               socketPath: "/private/bridge.sock",
               nativeId,
               cwd,
               cliVersion: options.credentialVersion ?? version,
-              pluginVersion: "0.3.1",
+              pluginVersion: "0.4.0",
             }),
     },
     clock: { every: (_ms: number, callback: () => Promise<void>) => timers.push(callback) },
@@ -348,12 +328,12 @@ describe("Claude Code native session plugin", () => {
     );
   });
   it.each(["2.1.301", "2.1.307", "2.2.0"])(
-    "reports the actual compatible CLI version %s without enabling production sending",
+    "reports the actual compatible CLI version %s and takes messages only once idle is verified",
     async (version) => {
-      const f = await fixture({ experiment: false, version });
+      const f = await fixture({ version });
       expect(f.calls.find((call) => call.url.endsWith("/pair"))?.body).toMatchObject({
         cliVersion: version,
-        pluginVersion: "0.3.1",
+        pluginVersion: "0.4.0",
         nativeCapabilities: {
           version: 1,
           available: [
@@ -367,7 +347,8 @@ describe("Claude Code native session plugin", () => {
       });
       expect(f.snapshots().at(-1)).toMatchObject({
         cliVersion: version,
-        capabilities: { read: true, send: false },
+        outbox: [],
+        capabilities: { read: true, send: true, steer: false, queue: true },
       });
       expect(f.dispatches).toBe(0);
     },
@@ -461,7 +442,6 @@ describe("Claude Code native session plugin", () => {
   );
   it("rechecks capabilities before automatic reconnect instead of trusting saved version metadata", async () => {
     const f = await fixture({
-      experiment: false,
       connect: false,
       storedCredential: true,
       version: "2.1.307",
@@ -496,7 +476,6 @@ describe("Claude Code native session plugin", () => {
     "reports authenticated startup failure %s and explains it in terminal status",
     async (reason, version) => {
       const f = await fixture({
-        experiment: false,
         connect: false,
         storedCredential: true,
         version,
@@ -526,7 +505,7 @@ describe("Claude Code native session plugin", () => {
         bindingId: f.connection.bindingId,
         nativeId: f.nativeId,
         cwd: "/isolated/workspace",
-        pluginVersion: "0.3.1",
+        pluginVersion: "0.4.0",
       });
       expect(report.body).not.toHaveProperty("nativeCapabilities");
       expect(report.body).not.toHaveProperty("token");
@@ -549,7 +528,6 @@ describe("Claude Code native session plugin", () => {
     "does not publish a reconnect diagnostic without verified credentials: %s",
     async (invalid) => {
       const f = await fixture({
-        experiment: false,
         connect: false,
         storedCredential: invalid !== "no-binding",
         version: "2.1.300",
@@ -581,7 +559,6 @@ describe("Claude Code native session plugin", () => {
     const reading = deferred<void>();
     const release = deferred<void>();
     const f = await fixture({
-      experiment: false,
       connect: false,
       storedCredential: true,
       version: "2.1.300",
@@ -614,7 +591,6 @@ describe("Claude Code native session plugin", () => {
     const credentialRead = deferred<void>();
     const credentialContinue = deferred<void>();
     const f = await fixture({
-      experiment: false,
       connect: false,
       storedCredential: true,
       storeGetInterceptor: async (key) => {
@@ -651,7 +627,6 @@ describe("Claude Code native session plugin", () => {
     const credentialRead = deferred<void>();
     const credentialContinue = deferred<void>();
     const f = await fixture({
-      experiment: false,
       connect: false,
       storedCredential: true,
       storeGetInterceptor: async (key) => {
@@ -694,7 +669,7 @@ describe("Claude Code native session plugin", () => {
   it.each(["version", "id", "cwd"])(
     "discards a superseded identity read after session.%s resolves",
     async (method) => {
-      const f = await fixture({ experiment: false, connect: false });
+      const f = await fixture({ connect: false });
       const state: Value = initialState();
       const read = deferred<void>();
       const resume = deferred<void>();
@@ -724,7 +699,7 @@ describe("Claude Code native session plugin", () => {
     ["tokens", Number.MAX_SAFE_INTEGER + 1],
     ["window", Number.MAX_SAFE_INTEGER + 1],
   ])("rejects a session-usage %s count of %s before pairing", async (key, value) => {
-    const f = await fixture({ experiment: false, connect: false, version: "2.1.307" });
+    const f = await fixture({ connect: false, version: "2.1.307" });
     f.api.session.usage = async () => ({ context: { tokens: 1, window: 100, [key]: value } });
     const result = await f.run("command.run", { command: "agentkib-connect", args: f.ticket });
     expect(result.text).toContain("does not currently support");
@@ -740,7 +715,7 @@ describe("Claude Code native session plugin", () => {
     ["tool", 257],
     ["tool_use_id", 257],
   ])("rejects a projected %s of length %s before pairing", async (key, length) => {
-    const f = await fixture({ experiment: false, connect: false, version: "2.1.307" });
+    const f = await fixture({ connect: false, version: "2.1.307" });
     f.setMessages([
       {
         role: "assistant",
@@ -759,7 +734,7 @@ describe("Claude Code native session plugin", () => {
     expect(f.snapshots()).toEqual([]);
   });
   it("accepts projected tool identity and name at the snapshot length limit", async () => {
-    const f = await fixture({ experiment: false, connect: false, version: "2.1.307" });
+    const f = await fixture({ connect: false, version: "2.1.307" });
     const id = "i".repeat(256);
     const name = "n".repeat(256);
     f.setMessages([{ role: "assistant", text: "", toolUses: [{ tool_use_id: id, tool: name }] }]);
@@ -805,7 +780,7 @@ describe("Claude Code native session plugin", () => {
     },
   );
   it("does not repeat filesystem and credential-store probes on ordinary snapshots and idle polls", async () => {
-    const f = await fixture({ experiment: false });
+    const f = await fixture();
     const read = vi.fn(f.api.fs.read);
     const set = vi.fn(f.api.store.set);
     f.api.fs.read = read;
@@ -818,23 +793,6 @@ describe("Claude Code native session plugin", () => {
     expect(read).not.toHaveBeenCalled();
     expect(set).not.toHaveBeenCalled();
   });
-  it("keeps production sending disabled even when an idle session receives a forged send command", async () => {
-    const f = await fixture({ experiment: false });
-    expect(f.snapshots().at(-1).capabilities).toMatchObject({ read: true, send: false });
-    await f.deliver({
-      commandId: randomUUID(),
-      kind: "send",
-      requestId: randomUUID(),
-      text: "no dispatch",
-      expectedRevision: 0,
-    });
-    expect(f.results().at(-1)).toMatchObject({
-      status: "rejected",
-      reason: "claude-native-send-experimental-disabled",
-    });
-    expect(f.dispatches).toBe(0);
-  });
-
   it("does not block terminal startup or revive an ended session after a delayed reconnect", async () => {
     let release!: () => void;
     const held = new Promise<void>((resolve) => {
@@ -880,9 +838,9 @@ describe("Claude Code native session plugin", () => {
   });
 
   it.each(["timer", "prompt.submit", "turn.start"])(
-    "recovers a running terminal after Runtime returns using %s without enabling sends",
+    "recovers a running terminal after Runtime returns using %s without dispatching anything",
     async (wake) => {
-      const f = await fixture({ experiment: false });
+      const f = await fixture();
       f.nextHttpResponse("/v1/commands", { status: 409, body: { error: "bridge-lease-expired" } });
       await f.tick();
       let offline = true;
@@ -919,14 +877,17 @@ describe("Claude Code native session plugin", () => {
       expect((await f.run("command.run", { command: "agentkib-status", args: "" })).text).toContain(
         "is connected",
       );
-      expect(f.snapshots().at(-1).capabilities).toMatchObject({ read: true, send: false });
+      expect(f.snapshots().at(-1).capabilities).toMatchObject({
+        read: true,
+        send: wake !== "turn.start",
+      });
       expect(f.dispatches).toBe(0);
       expect(f.stops).toBe(0);
     },
   );
 
   it("backs off repeated offline reconnects while repeating the credential and capability checks", async () => {
-    const f = await fixture({ experiment: false });
+    const f = await fixture();
     const messages = vi.spyOn(f.api.session, "messages");
     const reads = vi.spyOn(f.api.fs, "read");
     const attempts: number[] = [];
@@ -959,7 +920,7 @@ describe("Claude Code native session plugin", () => {
   it.each(["timer", "prompt.submit", "turn.start"])(
     "retains saved-binding recovery after an expired replacement pairing using %s",
     async (wake) => {
-      const f = await fixture({ experiment: false });
+      const f = await fixture();
       f.nextHttpResponse("/v1/commands", { status: 409, body: { error: "bridge-lease-expired" } });
       await f.tick();
       let offline = true;
@@ -990,19 +951,19 @@ describe("Claude Code native session plugin", () => {
       ).toHaveLength(1);
       expect(set).toHaveBeenCalledWith(
         "compatibility:credential-store:1",
-        "agentkib-bridge:0.3.1:capabilities:1",
+        "agentkib-bridge:0.4.0:capabilities:1",
       );
       expect((await f.run("command.run", { command: "agentkib-status", args: "" })).text).toContain(
         "is connected",
       );
-      expect(f.snapshots().at(-1).capabilities.send).toBe(false);
+      expect(f.snapshots().at(-1).capabilities.send).toBe(wake !== "turn.start");
       expect(f.dispatches).toBe(0);
       expect(f.stops).toBe(0);
     },
   );
 
   it("pauses saved-binding recovery during replacement pairing and resumes its bounded backoff after rejection", async () => {
-    const f = await fixture({ experiment: false });
+    const f = await fixture();
     f.nextHttpResponse("/v1/commands", { status: 409, body: { error: "bridge-lease-expired" } });
     await f.tick();
     const held = deferred<void>();
@@ -1036,7 +997,7 @@ describe("Claude Code native session plugin", () => {
   ])(
     "retains recovery through overlapping rejected replacement pairings using $wake when $order",
     async ({ wake, order }) => {
-      const f = await fixture({ experiment: false });
+      const f = await fixture();
       f.nextHttpResponse("/v1/commands", { status: 409, body: { error: "bridge-lease-expired" } });
       await f.tick();
       f.setHttpInterceptor(async (url) => {
@@ -1078,7 +1039,7 @@ describe("Claude Code native session plugin", () => {
       expect((await f.run("command.run", { command: "agentkib-status", args: "" })).text).toContain(
         "is connected",
       );
-      expect(f.snapshots().at(-1).capabilities.send).toBe(false);
+      expect(f.snapshots().at(-1).capabilities.send).toBe(wake !== "turn.start");
       expect(f.dispatches).toBe(0);
       expect(f.stops).toBe(0);
     },
@@ -1087,7 +1048,7 @@ describe("Claude Code native session plugin", () => {
   it.each(["end", "new-pair"])(
     "does not restore recovery from a replacement pairing failure after %s",
     async (action) => {
-      const f = await fixture({ experiment: false });
+      const f = await fixture();
       f.nextHttpResponse("/v1/commands", { status: 409, body: { error: "bridge-lease-expired" } });
       await f.tick();
       f.setHttpInterceptor(async (url) => {
@@ -1125,7 +1086,7 @@ describe("Claude Code native session plugin", () => {
   it.each(["end", 401, 410])(
     "does not retain overlapping pairings' recovery intent after %s",
     async (invalidation) => {
-      const f = await fixture({ experiment: false });
+      const f = await fixture();
       f.nextHttpResponse("/v1/commands", { status: 409, body: { error: "bridge-lease-expired" } });
       await f.tick();
       f.setHttpInterceptor(async (url) => {
@@ -1167,7 +1128,7 @@ describe("Claude Code native session plugin", () => {
   );
 
   it("does not invent saved-binding recovery for overlapping first-time pairings", async () => {
-    const f = await fixture({ experiment: false, connect: false });
+    const f = await fixture({ connect: false });
     // Finish the startup lookup so it has established that no saved path exists.
     for (let tick = 0; tick < 8; tick++) await f.tick();
     const held = deferred<void>();
@@ -1198,7 +1159,7 @@ describe("Claude Code native session plugin", () => {
   it.each([401, 410, "identity-change"])(
     "keeps saved-binding recovery closed after replacement pairing fails with %s",
     async (failure) => {
-      const f = await fixture({ experiment: false });
+      const f = await fixture();
       f.nextHttpResponse("/v1/commands", { status: 409, body: { error: "bridge-lease-expired" } });
       await f.tick();
       f.setHttpInterceptor(async (url) => {
@@ -1225,7 +1186,7 @@ describe("Claude Code native session plugin", () => {
   it.each(["success", "revoked"])(
     "ignores a prior handshake's late %s after replacement pairing fails",
     async (outcome) => {
-      const f = await fixture({ experiment: false });
+      const f = await fixture();
       f.nextHttpResponse("/v1/commands", { status: 409, body: { error: "bridge-lease-expired" } });
       await f.tick();
       const held = deferred<void>();
@@ -1248,14 +1209,14 @@ describe("Claude Code native session plugin", () => {
       expect((await f.run("command.run", { command: "agentkib-status", args: "" })).text).toContain(
         "is connected",
       );
-      expect(f.snapshots().at(-1).capabilities.send).toBe(false);
+      expect(f.snapshots().at(-1).capabilities.send).toBe(true);
       expect(f.dispatches).toBe(0);
       expect(f.stops).toBe(0);
     },
   );
 
   it("does not reuse cached credentials after a failed replacement pairing and credential removal", async () => {
-    const f = await fixture({ experiment: false });
+    const f = await fixture();
     f.nextHttpResponse("/v1/commands", { status: 409, body: { error: "bridge-lease-expired" } });
     await f.tick();
     f.setHttpInterceptor(async (url) => {
@@ -1282,7 +1243,7 @@ describe("Claude Code native session plugin", () => {
   });
 
   it("does not block native events or start overlapping reconnects while a handshake is pending", async () => {
-    const f = await fixture({ experiment: false });
+    const f = await fixture();
     f.nextHttpResponse("/v1/commands", { status: 409, body: { error: "bridge-lease-expired" } });
     await f.tick();
     const held = deferred<void>();
@@ -1312,7 +1273,7 @@ describe("Claude Code native session plugin", () => {
   it.each(["revoked", "deleted-credential"])(
     "does not recover through cached credentials after %s",
     async (reason) => {
-      const f = await fixture({ experiment: false });
+      const f = await fixture();
       f.nextHttpResponse("/v1/commands", { status: 409, body: { error: "bridge-lease-expired" } });
       await f.tick();
       if (reason === "revoked") {
@@ -1355,7 +1316,7 @@ describe("Claude Code native session plugin", () => {
   it.each(["pair", "end", "identity"])(
     "isolates an in-session reconnect failure from a later %s",
     async (action) => {
-      const f = await fixture({ experiment: false });
+      const f = await fixture();
       f.nextHttpResponse("/v1/commands", { status: 409, body: { error: "bridge-lease-expired" } });
       await f.tick();
       const held = deferred<void>();
@@ -1811,7 +1772,7 @@ describe("Claude Code native session plugin", () => {
     });
     expect(pair.init.headers.Authorization).toBeUndefined();
     expect([...f.stored]).toEqual([
-      ["compatibility:credential-store:1", "agentkib-bridge:0.3.1:capabilities:1"],
+      ["compatibility:credential-store:1", "agentkib-bridge:0.4.0:capabilities:1"],
       [`credentialPath:${f.nativeId}`, f.connection.credentialPath],
     ]);
     expect(JSON.stringify([...f.stored])).not.toContain(f.connection.token);
@@ -1962,7 +1923,7 @@ describe("Claude Code native session plugin", () => {
   });
 
   it("cancels a streaming turn once even when text advances before command execution", async () => {
-    const f = await fixture({ experiment: false });
+    const f = await fixture();
     const turnId = randomUUID();
     await f.run("turn.start", { text: "terminal input", turnId });
     await f.flush();

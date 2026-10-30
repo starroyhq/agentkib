@@ -102,10 +102,27 @@ export interface ClaudeBridgeLease {
 
 export interface ClaudeBridgeCapabilities {
   read: boolean;
+  /** A message that starts a turn now: the terminal is verified idle. */
   send: boolean;
+  /** A message joining the running turn at its next tool call, or opening the next turn. */
+  steer: boolean;
+  /** A message that starts a turn of its own after the running one, in order. */
+  queue: boolean;
   stop: boolean;
   approve: false;
   answer: false;
+}
+
+/** A message AgentKib sent that the terminal has not taken into a turn yet. */
+export interface ClaudeBridgeOutboxItem {
+  /** The command that sent it, which also withdraws it. */
+  id: string;
+  kind: "steer" | "queue";
+  /** A bounded preview; the full text stays in the terminal. */
+  text: string;
+  /** `unknown` was handed over without confirmation and is never sent again. */
+  status: "pending" | "dispatching" | "unknown";
+  createdAt: number;
 }
 
 export interface ClaudeBridgeMessage {
@@ -137,6 +154,7 @@ export interface ClaudeBridgeSnapshot extends ClaudeBridgeIdentity {
   toolItems: ClaudeBridgeTool[];
   streamText: string;
   usage: ClaudeBridgeUsage | null;
+  outbox: ClaudeBridgeOutboxItem[];
   capabilities: ClaudeBridgeCapabilities;
 }
 
@@ -180,6 +198,28 @@ export type ClaudeBridgeCommand =
       commandId: string;
       kind: "stop";
       turnId: string;
+      expectedRevision: number;
+    }
+  | {
+      commandId: string;
+      kind: "steer";
+      requestId: string;
+      text: string;
+      turnId: string;
+      expectedRevision: number;
+    }
+  | {
+      commandId: string;
+      kind: "queue";
+      requestId: string;
+      text: string;
+      expectedRevision: number;
+    }
+  | {
+      commandId: string;
+      kind: "cancel";
+      /** The outbox item, which is the command ID that sent it. */
+      itemId: string;
       expectedRevision: number;
     };
 

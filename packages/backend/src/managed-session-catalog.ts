@@ -136,7 +136,13 @@ export async function managedCatalogProjection(
       scopes.push({ workspace: collection, workspaceOwners: eligible });
   for (const { workspace, workspaceOwners } of scopes) {
     try {
-      const listing = await readers.list("codex", workspace);
+      // Only owned threads can become aliases; skip classifying every other thread.
+      const listing = await readers.list("codex", workspace, {
+        matches: (ref) => {
+          const native = uuid(ref);
+          return native !== null && workspaceOwners.has(native);
+        },
+      });
       for (const candidate of listing.sessions) {
         if (candidate.origin === "auxiliary") continue;
         const native = uuid(candidate.native_ref);

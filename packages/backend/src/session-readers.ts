@@ -258,7 +258,12 @@ export class SessionReaders {
   codexHome(): string {
     return this.#codex.home();
   }
-  async list(agent: SessionAgent, workspace: string): Promise<NativeListing> {
+  /** `matches` narrows a Codex listing by native ID before any thread is classified. */
+  async list(
+    agent: SessionAgent,
+    workspace: string,
+    selection: { matches?: (nativeRef: string) => boolean } = {},
+  ): Promise<NativeListing> {
     const collection = sessionCollection(workspace);
     // The index keeps each session's directory so the catalog can recognize git worktrees.
     const withDirectory = (source: { cwd: string | null; session: NativeSession }) => ({
@@ -267,7 +272,7 @@ export class SessionReaders {
     });
     if (collection) {
       if (agent !== "codex") return { sessions: [], incomplete: false };
-      const listing = this.#codex.list(null, { collection });
+      const listing = this.#codex.list(null, { collection, matches: selection.matches });
       return {
         sessions: listing.sessions.map(withDirectory),
         incomplete: listing.incomplete,
@@ -301,7 +306,10 @@ export class SessionReaders {
                 : agent === "open-claw"
                   ? this.#openclaw
                   : this.#hermes;
-        const listing = provider.list(workspace);
+        const listing =
+          agent === "codex"
+            ? this.#codex.list(workspace, { matches: selection.matches })
+            : provider.list(workspace);
         return {
           sessions: listing.sessions.map(withDirectory),
           incomplete: listing.incomplete,
@@ -340,10 +348,16 @@ export class SessionReaders {
     if (agent === "codex" || agent === "claude-code") {
       // Resolve ownership and the transcript together for this request. Readers
       // still check the file itself, and the next request discovers it afresh.
-      const provider = agent === "codex" ? this.#codex : this.#claude;
-      const source = provider
-        .list(workspace)
-        .sessions.find((candidate) => this.store.id(agent, candidate.session.native_ref) === id);
+      const listing =
+        agent === "codex"
+          ? // Classify and read the header of this one thread, not every thread in the folder.
+            this.#codex.list(workspace, {
+              matches: (nativeRef) => this.store.id(agent, nativeRef) === id,
+            })
+          : this.#claude.list(workspace);
+      const source = listing.sessions.find(
+        (candidate) => this.store.id(agent, candidate.session.native_ref) === id,
+      );
       if (!source) throw new Error("Conversation transcript is no longer available");
       return { summary, native: source.session, workspace, transcript: source.transcript };
     }

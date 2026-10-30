@@ -13,6 +13,7 @@ export class CodexSessionOwnership {
   #projectless = new Set<string>();
   #assigned = new Set<string>();
   #outputs = new Set<string>();
+  #roots?: { home: string; temporary: string[]; sandbox: string };
   constructor(
     codexHome: string,
     readonly environment: NodeJS.ProcessEnv,
@@ -43,24 +44,34 @@ export class CodexSessionOwnership {
   collection(id: string, cwd: string, projectId: unknown): SessionCollection | null {
     if ((typeof projectId === "string" && projectId.trim()) || this.#assigned.has(id)) return null;
     if (this.#projectless.has(id) || this.#outputs.has(id)) return "projectless";
-    const home = this.environment.HOME ?? this.environment.USERPROFILE ?? homedir();
+    const roots = this.#unclassifiedRoots();
     const identity = pathIdentity(cwd);
+    if (
+      !path.isAbsolute(cwd) ||
+      identity === roots.home ||
+      path.dirname(cwd) === cwd ||
+      roots.temporary.includes(identity)
+    )
+      return "unclassified";
+    // A sandbox location alone is insufficient proof of a project or explicit projectlessness.
+    const sandbox = roots.sandbox;
+    if (identity === sandbox || identity.startsWith(sandbox + path.sep)) return "unclassified";
+    return null;
+  }
+  /** Resolved once per instance; a listing classifies thousands of threads against them. */
+  #unclassifiedRoots() {
+    if (this.#roots) return this.#roots;
+    const home = this.environment.HOME ?? this.environment.USERPROFILE ?? homedir();
     const temporary = [
       tmpdir(),
       this.environment.TMPDIR,
       this.environment.TEMP,
       this.environment.TMP,
     ].filter((value): value is string => Boolean(value));
-    if (
-      !path.isAbsolute(cwd) ||
-      identity === pathIdentity(home) ||
-      path.dirname(cwd) === cwd ||
-      temporary.some((directory) => identity === pathIdentity(directory))
-    )
-      return "unclassified";
-    // A sandbox location alone is insufficient proof of a project or explicit projectlessness.
-    const sandbox = pathIdentity(path.join(home, "Documents", "Codex"));
-    if (identity === sandbox || identity.startsWith(sandbox + path.sep)) return "unclassified";
-    return null;
+    return (this.#roots = {
+      home: pathIdentity(home),
+      temporary: temporary.map((directory) => pathIdentity(directory)),
+      sandbox: pathIdentity(path.join(home, "Documents", "Codex")),
+    });
   }
 }

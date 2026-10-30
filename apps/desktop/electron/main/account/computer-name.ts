@@ -8,8 +8,9 @@ const graphemes = new Intl.Segmenter(undefined, { granularity: "grapheme" });
 const codePoints = (text: string) => [...text].length;
 
 /**
- * NFC, whitespace collapsed, control and bidi-override characters removed, trimmed, and cut to
- * at most 64 code points on a grapheme boundary. Returns undefined when nothing usable is left.
+ * Whitespace collapsed, control and bidi-override characters removed, then NFC, trimmed, and cut
+ * to at most 64 code points on a grapheme boundary, in the broker's order. Returns undefined when
+ * nothing usable is left.
  */
 export function normalizeComputerName(value: unknown): string | undefined {
   if (typeof value !== "string") return undefined;
@@ -17,9 +18,10 @@ export function normalizeComputerName(value: unknown): string | undefined {
     .slice(0, 1024)
     // In `u` mode this matches only lone surrogates, which the broker would reject.
     .replace(/[\uD800-\uDFFF]/gu, "")
-    .normalize("NFC")
     .replace(/\s+/gu, " ")
     .replace(/[\p{Cc}\u061C\u200E\u200F\u202A-\u202E\u2066-\u2069]/gu, "")
+    // After the removal, so a stripped character cannot keep a combining mark apart.
+    .normalize("NFC")
     .replace(/ {2,}/g, " ")
     .trim();
   let name = "";

@@ -63,6 +63,9 @@ const requestSchema = z.discriminatedUnion("operation", [
   z.object({ operation: z.literal("goal"), sessionId: z.string().min(1).max(256) }).strict(),
   z.object({ operation: z.literal("resources"), sessionId: z.string().min(1).max(256) }).strict(),
   z
+    .object({ operation: z.literal("session-directory"), sessionId: z.string().min(1).max(256) })
+    .strict(),
+  z
     .object({
       operation: z.literal("live"),
       sessionId: z.string().min(1).max(256),
@@ -3941,6 +3944,7 @@ export class WebReadRequests {
     }
     if (request.operation === "goal") return this.#goal(request.sessionId);
     if (request.operation === "resources") return this.#resources(request.sessionId);
+    if (request.operation === "session-directory") return this.#sessionDirectory(request.sessionId);
     if (request.operation === "events") {
       const managed = readManagedRecords(this.dataDir, this.store).find(
         (record) => record.id === request.sessionId,
@@ -5038,6 +5042,29 @@ export class WebReadRequests {
       throw new Error("session-unavailable");
     // This read deliberately performs no CLI/version check, native RPC, or lock probe.
     return codexResumeCommand(after.cwd, after.home, after.nativeId);
+  }
+
+  /**
+   * The directory a session's relative file references were written against. It only
+   * places those references: callers resolve them inside their own file grant, so this
+   * read neither verifies nor starts anything. Null means the registered root.
+   */
+  #sessionDirectory(sessionId: string): { cwd: string | null } {
+    const managed = readManagedRecords(this.dataDir, this.store).find(
+      (record) => record.id === sessionId,
+    );
+    if (managed) {
+      let cwd = managed.cwd;
+      // Older ledgers kept only the root; the native rollout header has the directory.
+      if (cwd === undefined && managed.native_id)
+        try {
+          cwd = this.sessions.verifiedCodexControlDirectory(managed.native_id)?.cwd;
+        } catch {
+          cwd = undefined;
+        }
+      return { cwd: cwd ?? null };
+    }
+    return { cwd: this.store.sessions.directories([sessionId]).get(sessionId)?.cwd ?? null };
   }
 
   async #context(sessionId: string) {

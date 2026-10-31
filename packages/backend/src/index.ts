@@ -740,6 +740,13 @@ export class TypeScriptBackend {
     }
     if (method === RUNTIME_METHODS.webRequest) {
       if (params.operation === "diff") return webDiff(params, this.#store, this.#git!);
+      // Claude managed sessions run in their registered workspace root, so they have no
+      // narrower directory; every other session reads it from the index or Codex ledger.
+      if (params.operation === "session-directory")
+        return typeof params.sessionId === "string" &&
+          this.#claudeManaged!.hasManagedSession(params.sessionId)
+          ? { cwd: null }
+          : this.#withWebRead((owner) => owner.request(params));
       // Resolve the provider from persisted identity, never from a browser-supplied agent.
       // Fresh Claude sessions are not indexed until their first native transcript exists.
       if (typeof params.sessionId === "string" && params.operation !== "catalog") {

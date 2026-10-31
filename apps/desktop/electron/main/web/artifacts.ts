@@ -2,7 +2,17 @@ import { randomBytes, createHash } from "node:crypto";
 import { constants } from "node:fs";
 import { lstat, open, readdir, realpath, type FileHandle } from "node:fs/promises";
 import type { IncomingMessage, ServerResponse } from "node:http";
-import { basename, dirname, extname, isAbsolute, join, relative, resolve, sep } from "node:path";
+import {
+  basename,
+  dirname,
+  extname,
+  isAbsolute,
+  join,
+  posix,
+  relative,
+  resolve,
+  sep,
+} from "node:path";
 
 export interface ArtifactScope {
   deviceId: string;
@@ -197,6 +207,21 @@ function validateRelative(path: string, allowRoot = false) {
       part.includes(":")
     )
       reject(403, "artifact_sensitive_path");
+  }
+}
+function servable(path: string) {
+  try {
+    validateRelative(path, true);
+    return true;
+  } catch {
+    return false;
+  }
+}
+function percentDecoded(path: string) {
+  try {
+    return decodeURIComponent(path);
+  } catch {
+    return path;
   }
 }
 function validateCanonical(path: string) {
@@ -616,10 +641,23 @@ export class ArtifactService {
       revision,
     };
   }
-  /** Host-extracted references are candidates, never an authorization override. */
-  async resolveReferences(scope: ArtifactScope, references: string[]) {
+  /**
+   * References found in a transcript are candidates, never an authorization override.
+   *
+   * `directory` is the session's working directory, a hint for relative references:
+   * they are tried against it first and then against the root. When it lies outside the
+   * root or in a directory the root never serves (a hidden worktree, for example),
+   * relative references are skipped rather than matched against a different checkout.
+   */
+  async resolveReferences(scope: ArtifactScope, references: string[], directory?: string) {
     if (references.length > 100) reject(413, "artifact_reference_limit");
     const binding = await this.binding(scope);
+    // "" places relative references at the root; undefined means they cannot be placed.
+    let base: string | undefined = "";
+    if (directory !== undefined) {
+      base = isAbsolute(directory) ? this.relativeToRoot(binding, directory) : undefined;
+      if (base && !servable(base)) base = undefined;
+    }
     const results: (ArtifactEntry & { reference: string })[] = [];
     for (const reference of references) {
       if (
@@ -628,41 +666,47 @@ export class ArtifactService {
         /^[a-z]+:\/\//i.test(reference)
       )
         continue;
-      let path = reference;
+      let candidates: string[];
       if (isAbsolute(reference)) {
-        // The registered root itself may be an alias (e.g. /var -> /private/var
-        // on macOS), but resolving a child first would conceal forbidden links.
-        const aliasRelative = relative(binding.sourceRoot, reference);
-        path = (
-          aliasRelative !== ".." &&
-          !aliasRelative.startsWith(`..${sep}`) &&
-          !isAbsolute(aliasRelative)
-            ? aliasRelative
-            : relative(binding.root, reference)
-        )
-          .split(sep)
-          .join("/");
-      }
-      try {
-        const { stat } = await this.inspect(binding, path);
-        if (!stat.isFile() || stat.nlink !== 1) continue;
-        results.push({
-          reference,
-          id: this.remember(binding, path),
-          name: basename(path),
-          revision: revisionOf(stat),
-          kind: "file",
-          mime: mimeFor(path),
-          size: stat.size,
-          modifiedAt: stat.mtime.toISOString(),
-          previewKind: kindFor(path),
-        });
-      } catch (error) {
-        if (!(error instanceof ArtifactError && [403, 404].includes(error.status))) throw error;
+        const path = this.relativeToRoot(binding, reference);
+        if (path === undefined) continue;
+        candidates = [path];
+      } else if (base === undefined) continue;
+      else candidates = base ? [posix.join(base, reference), reference] : [reference];
+      // Markdown destinations may be percent-encoded (`with%20space.txt`).
+      for (const path of new Set(candidates.flatMap((path) => [path, percentDecoded(path)]))) {
+        try {
+          const { stat } = await this.inspect(binding, path);
+          if (!stat.isFile() || stat.nlink !== 1) continue;
+          results.push({
+            reference,
+            id: this.remember(binding, path),
+            name: basename(path),
+            revision: revisionOf(stat),
+            kind: "file",
+            mime: mimeFor(path),
+            size: stat.size,
+            modifiedAt: stat.mtime.toISOString(),
+            previewKind: kindFor(path),
+          });
+          break;
+        } catch (error) {
+          if (!(error instanceof ArtifactError && [403, 404].includes(error.status))) throw error;
+        }
       }
     }
     await this.check(binding);
     return results;
+  }
+  /** An absolute path as a slash-separated path under the root, or undefined outside it. */
+  private relativeToRoot(binding: Binding, absolute: string): string | undefined {
+    const inside = (path: string) =>
+      path !== ".." && !path.startsWith(`..${sep}`) && !isAbsolute(path);
+    // The registered root itself may be an alias (e.g. /var -> /private/var
+    // on macOS), but resolving a child first would conceal forbidden links.
+    const aliasRelative = relative(binding.sourceRoot, absolute);
+    const path = inside(aliasRelative) ? aliasRelative : relative(binding.root, absolute);
+    return inside(path) ? path.split(sep).join("/") : undefined;
   }
   async issueTicket(scope: ArtifactScope, input: ArtifactTicketOptions) {
     // Preparing snapshots also consumes memory before a ticket is published.

@@ -27,7 +27,7 @@ import { attachManagedWebSocket, type ConversationDispatchControl } from "./mana
 import { CLAUDE_LOCAL_OWNER, localClaudeRequest } from "./local-claude";
 import { continuationPreflightReason } from "./continuation-reason";
 import { replayClaudeAttachments, settleClaudeAttachments } from "./claude-attachment-receipts";
-import { markdownLinkTargets } from "./markdown-links";
+import { fileReferencePath, fileReferenceTargets } from "./markdown-links";
 import {
   LocalConversationResponse,
   isConversationPath,
@@ -339,6 +339,7 @@ const API_ROUTES: Record<"GET" | "POST", Record<string, RouteSpec>> = {
     "/files/list": { lan: true },
     "/files/text": { lan: true },
     "/artifacts": { lan: true },
+    "/artifacts/resolve": { lan: true },
     "/diff": { lan: true },
   },
   POST: {
@@ -2019,27 +2020,58 @@ export class WebAccessService {
           this.field(url.searchParams.get("artifactId")),
           url.searchParams.get("revision") ?? undefined,
         );
-      else if (path === "/artifacts") {
+      else if (path === "/artifacts" || path === "/artifacts/resolve") {
         const sessionId = this.field(url.searchParams.get("sessionId"));
         const catalog = (await this.scopeCatalog()) as {
           sessions: { id: string; workspace_id: string }[];
         };
         if (!catalog.sessions.some((s) => s.id === sessionId && s.workspace_id === workspaceId))
           throw new HttpError(403, "session_workspace_mismatch");
-        const page = (await this.runtime({
-          operation: "events",
-          sessionId,
-          limit: 50,
-          cursor: url.searchParams.get("cursor") ?? undefined,
-        })) as { events: { content?: string }[]; next_cursor?: string };
-        const refs = page.events.flatMap((event) => markdownLinkTargets(event.content ?? ""));
-        result = {
-          artifacts: await artifacts.resolveReferences(scope, refs),
-          next_cursor: page.next_cursor,
-        };
+        const directory = await this.sessionDirectory(sessionId);
+        if (path === "/artifacts/resolve") {
+          // 手机点开回复里的一个文件引用。找不到或不允许读取都返回 null，不区分原因。
+          const reference = fileReferencePath(this.field(url.searchParams.get("reference"), 4096));
+          const [artifact] = reference
+            ? await artifacts.resolveReferences(scope, [reference], directory)
+            : [];
+          result = { artifact: artifact ?? null };
+        } else {
+          const page = (await this.runtime({
+            operation: "events",
+            sessionId,
+            limit: 50,
+            cursor: url.searchParams.get("cursor") ?? undefined,
+          })) as { events: { content?: string }[]; next_cursor?: string };
+          // 同一个文件常被反复提到。去重后再截到上限，引用多的一页也不会整页失败。
+          const refs = [
+            ...new Set(page.events.flatMap((event) => fileReferenceTargets(event.content ?? ""))),
+          ].slice(0, 100);
+          const found = await artifacts.resolveReferences(scope, refs, directory);
+          result = {
+            artifacts: found.filter(
+              (item, index) => found.findIndex((other) => other.id === item.id) === index,
+            ),
+            next_cursor: page.next_cursor,
+          };
+        }
       } else throw new HttpError(404, "not_found");
     }
     return result;
+  }
+  /**
+   * 会话的工作目录，只用来摆放回复里的相对路径，不扩大文件授权。
+   * 读不到时返回 undefined，相对路径按工作区根目录解析，与以前一致。
+   */
+  private async sessionDirectory(sessionId: string): Promise<string | undefined> {
+    try {
+      const cwd = snapshotField(
+        await this.runtime({ operation: "session-directory", sessionId }),
+        "cwd",
+      );
+      return typeof cwd === "string" && cwd ? cwd : undefined;
+    } catch {
+      return undefined;
+    }
   }
   private optionalString(value: unknown, max = 256) {
     return typeof value === "string" && value.trim() && value.length <= max ? value : undefined;
@@ -5158,7 +5190,12 @@ export class WebAccessService {
         throw new HttpError(403, "workspace_not_authorized");
       return this.json(res, 200, result);
     }
-    if (path.startsWith("/files/") || path === "/artifacts" || path === "/diff")
+    if (
+      path.startsWith("/files/") ||
+      path === "/artifacts" ||
+      path === "/artifacts/resolve" ||
+      path === "/diff"
+    )
       return this.files(res, hash, path, url);
     const sessionId =
       path === "/catalog" || (path === "/stream" && !url.searchParams.has("sessionId"))

@@ -114,6 +114,7 @@ export function isConversationPath(path: string, post: boolean) {
         "/files/list",
         "/files/text",
         "/artifacts",
+        "/artifacts/resolve",
         "/diff",
       ].includes(name) || /^\/requests\/[A-Za-z0-9_-]{1,128}$/.test(name);
 }

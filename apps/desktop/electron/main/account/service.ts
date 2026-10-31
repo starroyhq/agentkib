@@ -474,6 +474,26 @@ export class DesktopAccountService {
   get accountId() {
     return this.profile?.id;
   }
+  /**
+   * The account's live logins, for paired phones bound to one of them. Only their IDs and kinds
+   * leave this service; tokens never do. Throws when signed out or when the account cannot be read.
+   */
+  async liveSessions(): Promise<{ accountId: string; sessions: { id: string; kind: string }[] }> {
+    const accountId = this.profile?.id;
+    if (!accountId || this.loggingOut) throw new AccountError("account_login_required");
+    const data = (await this.api("/v1/account/sessions", undefined, await this.accessToken())) as {
+      sessions?: unknown;
+    };
+    if (!Array.isArray(data?.sessions) || this.profile?.id !== accountId)
+      throw new AccountError("account_response_invalid");
+    return {
+      accountId,
+      sessions: data.sessions.flatMap((row) => {
+        const { id, kind } = (row ?? {}) as { id?: unknown; kind?: unknown };
+        return typeof id === "string" && typeof kind === "string" ? [{ id, kind }] : [];
+      }),
+    };
+  }
   private async claim() {
     const identity = await this.options.identity();
     if (!identity) throw new AccountError("account_device_missing");

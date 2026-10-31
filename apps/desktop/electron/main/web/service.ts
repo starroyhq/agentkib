@@ -183,7 +183,8 @@ export interface WebAdminStatus {
 }
 /** 授权码配对的权限档位；LAN 确认配对仍按单项权限逐个授予。 */
 export type WebAccessLevel = "read" | "full";
-export type WebAdminDevice = WebDevice & { accessLevel?: WebAccessLevel };
+/** `accountBound`: the pairing ends when the phone's account login ends (and renews meanwhile). */
+export type WebAdminDevice = WebDevice & { accessLevel?: WebAccessLevel; accountBound?: boolean };
 export type WebAdminRequest = { target?: "lan" } & (
   | { operation: "status" }
   | { operation: "generate-code"; access?: WebAccessLevel }
@@ -224,7 +225,35 @@ export type WebAdminRequest = { target?: "lan" } & (
     }
   | { operation: "reject" | "revoke"; id: string }
 );
-type Credential = { hash: string; expiresAt: number; device: WebDevice; binding?: string };
+type Credential = {
+  hash: string;
+  expiresAt: number;
+  device: WebDevice;
+  binding?: string;
+  /**
+   * The account login of the phone, when it paired or later signed in on this computer's account.
+   * The pairing ends with that login and is renewed while it lasts.
+   */
+  account?: AccountBinding;
+};
+type AccountBinding = { accountId: string; sessionId: string };
+export type AccountSessions = { accountId: string; sessions: { id: string; kind: string }[] };
+const SESSION_ID = /^[a-f0-9-]{36}$/;
+const validAccountBinding = (value: unknown): value is AccountBinding => {
+  const binding = value as AccountBinding;
+  return (
+    !!binding &&
+    typeof binding.accountId === "string" &&
+    binding.accountId.length > 0 &&
+    binding.accountId.length <= 128 &&
+    typeof binding.sessionId === "string" &&
+    SESSION_ID.test(binding.sessionId)
+  );
+};
+/** How often bound pairings are checked against the account's live logins. */
+const ACCOUNT_CHECK_MS = 5 * 60_000;
+/** Bound pairings are renewed to the full lifetime at most this often. */
+const RENEW_AFTER_MS = 24 * 60 * 60_000;
 type PairingCode = {
   value: string;
   expiresAt: number;
@@ -351,6 +380,7 @@ const API_ROUTES: Record<"GET" | "POST", Record<string, RouteSpec>> = {
     "/history/rebuild": {},
     "/pair": { lan: true },
     "/pair/cancel": { lan: true },
+    "/account-binding": { lan: true },
     "/logout": { lan: true },
     "/send": { lan: true, control: true },
     "/stop": { lan: true, control: true },
@@ -503,6 +533,7 @@ export class WebAccessService {
   private persistence: Promise<void> = Promise.resolve();
   private bootId = token();
   private addressTimer?: ReturnType<typeof setInterval>;
+  private accountTimer?: ReturnType<typeof setInterval>;
   private lanAddressMisses = 0;
   private artifacts?: ArtifactService;
   private desktopArtifacts?: ArtifactService;
@@ -554,6 +585,11 @@ export class WebAccessService {
           credential: string;
         }): Promise<Record<string, unknown>>;
       };
+      /**
+       * The live logins of the account this computer is signed in to; throws when signed out.
+       * Phones paired during one of those logins lose their pairing when it ends.
+       */
+      accountSessions?: () => Promise<AccountSessions>;
       workspaceRequest?: () => Promise<{ id: string; name: string; path: string }[]>;
       verifiedCodex?: boolean;
       verifiedExperimental?: boolean;
@@ -883,7 +919,9 @@ export class WebAccessService {
           (c.device.accessMode === undefined ||
             (this.options.mode !== "lan" && c.device.accessMode === "full")) &&
           (c.device.manage === undefined || typeof c.device.manage === "boolean") &&
-          (c.device.files === undefined || typeof c.device.files === "boolean"),
+          (c.device.files === undefined || typeof c.device.files === "boolean") &&
+          // A pairing whose login cannot be read could never end with it: drop it.
+          (c.account === undefined || validAccountBinding(c.account)),
       );
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code !== "ENOENT") {
@@ -893,6 +931,13 @@ export class WebAccessService {
       }
     }
     if (this.config.enabled) await this.start();
+    if (this.options.accountSessions && !this.accountTimer) {
+      this.accountTimer = setInterval(
+        () => void this.checkAccountBindings().catch(() => undefined),
+        ACCOUNT_CHECK_MS,
+      );
+      this.accountTimer.unref?.();
+    }
     if (this.scheduler && !this.unregisterScheduler) {
       this.unregisterScheduler = this.scheduler.register({
         owns: (deviceId) => this.ownsScheduledDevice(deviceId),
@@ -1131,6 +1176,8 @@ export class WebAccessService {
    */
   dispose(): Promise<void> {
     this.disposed = true;
+    clearInterval(this.accountTimer);
+    this.accountTimer = undefined;
     this.unregisterScheduler?.();
     this.unregisterScheduler = undefined;
     const result = this.adminQueue.then(() => this.shutdown());
@@ -1328,18 +1375,12 @@ export class WebAccessService {
         break;
       case "revoke": {
         const revoked = this.credentials.filter((c) => c.device.id === input.id);
-        this.credentials = this.credentials.filter((c) => c.device.id !== input.id);
-        await this.invalidateScheduledDevice(input.id, "authorization-revoked");
-        for (const c of revoked) {
-          const b = this.browsers.get(c.hash);
-          if (b) b.ended = true;
-          this.endStreams(c.hash);
-          this.artifacts?.revokeDevice(c.device.id);
-          this.livePreview?.revokeDevice(c.device.id);
-          for (const [id, reference] of this.contextArtifactRefs)
-            if (reference.deviceId === c.device.id) this.contextArtifactRefs.delete(id);
+        if (revoked.length) await this.revokeCredentials(revoked, "authorization-revoked");
+        else {
+          // Unknown IDs keep the old behavior: nothing to end, the device list is saved as is.
+          await this.invalidateScheduledDevice(input.id, "authorization-revoked");
+          await this.save();
         }
-        await this.save();
         break;
       }
       default:
@@ -1490,10 +1531,113 @@ export class WebAccessService {
       pending: [...this.browsers.values()].flatMap((b) => (b.pending ? [{ ...b.pending }] : [])),
       devices: this.credentials.map((c) => {
         const accessLevel = accessLevelOf(c.device);
-        return { ...c.device, ...(accessLevel ? { accessLevel } : {}) };
+        return {
+          ...c.device,
+          ...(accessLevel ? { accessLevel } : {}),
+          ...(c.account ? { accountBound: true } : {}),
+        };
       }),
       relay: this.relay?.status,
     };
+  }
+  /**
+   * A paired phone reports the account login it is in. When that login belongs to the account
+   * this computer is signed in to, the pairing is bound to it: it ends with the login and is
+   * renewed while the login lasts. A bound pairing never moves to another login; asking for one
+   * ends it, and the phone pairs again with a new code. The account only ever ends pairings
+   * here, it cannot create one.
+   */
+  private async bindAccount(hash: string, body: Record<string, unknown>) {
+    if (Object.keys(body).some((key) => key !== "sessionId"))
+      throw new HttpError(400, "invalid_input");
+    const sessionId = this.field(body.sessionId, 64);
+    if (!SESSION_ID.test(sessionId)) throw new HttpError(400, "invalid_input");
+    this.grant(hash);
+    this.rate(`account-binding:${hash}`, 6);
+    if (!this.options.accountSessions) return { bound: false, reason: "account_unavailable" };
+    let live: AccountSessions;
+    try {
+      live = await this.options.accountSessions();
+    } catch {
+      return { bound: false, reason: "computer_signed_out" };
+    }
+    const binding = this.adminQueue.then(async () => {
+      const credential = this.credentials.find((c) => c.hash === hash);
+      if (!credential || this.browsers.get(hash)?.ended) throw new HttpError(401, "access_ended");
+      const session = live.sessions.find((s) => s.id === sessionId && s.kind === "mobile");
+      if (credential.account) {
+        if (
+          credential.account.accountId !== live.accountId ||
+          credential.account.sessionId !== sessionId ||
+          !session
+        ) {
+          await this.revokeCredentials([credential], "authorization-revoked");
+          throw new HttpError(401, "access_ended");
+        }
+      } else {
+        if (!session) return { bound: false, reason: "session_unknown" };
+        credential.account = { accountId: live.accountId, sessionId };
+      }
+      credential.expiresAt = Math.max(credential.expiresAt, Date.now() + MAX_AGE);
+      await this.save();
+      return { bound: true };
+    });
+    this.adminQueue = binding.catch(() => undefined);
+    const result = await binding;
+    this.grant(hash);
+    return result;
+  }
+  /**
+   * Ends bound pairings whose login ended (signed out, revoked, expired) or belongs to another
+   * account than the one this computer is now signed in to, and renews the others. Signed out
+   * or offline, nothing changes: no pairing ends, none is renewed.
+   */
+  async checkAccountBindings() {
+    if (this.disposed || !this.options.accountSessions) return;
+    if (!this.credentials.some((c) => c.account)) return;
+    let live: AccountSessions;
+    try {
+      live = await this.options.accountSessions();
+    } catch {
+      return;
+    }
+    const ids = new Set(
+      live.sessions.flatMap((session) => (session.kind === "mobile" ? [session.id] : [])),
+    );
+    const check = this.adminQueue.then(async () => {
+      if (this.disposed) return;
+      const ended = this.credentials.filter(
+        (c) =>
+          c.account && (c.account.accountId !== live.accountId || !ids.has(c.account.sessionId)),
+      );
+      const now = Date.now();
+      let renewed = false;
+      for (const c of this.credentials)
+        if (c.account && !ended.includes(c) && c.expiresAt < now + MAX_AGE - RENEW_AFTER_MS) {
+          c.expiresAt = now + MAX_AGE;
+          renewed = true;
+        }
+      if (ended.length) await this.revokeCredentials(ended, "authorization-revoked");
+      else if (renewed) await this.save();
+    });
+    this.adminQueue = check.catch(() => undefined);
+    await check;
+  }
+  /** Ends these pairings as if revoked here: streams close and the browsers must pair again. */
+  private async revokeCredentials(revoked: Credential[], reason: string) {
+    if (!revoked.length) return;
+    this.credentials = this.credentials.filter((c) => !revoked.includes(c));
+    for (const c of revoked) {
+      await this.invalidateScheduledDevice(c.device.id, reason);
+      const b = this.browsers.get(c.hash);
+      if (b) b.ended = true;
+      this.endStreams(c.hash);
+      this.artifacts?.revokeDevice(c.device.id);
+      this.livePreview?.revokeDevice(c.device.id);
+      for (const [id, reference] of this.contextArtifactRefs)
+        if (reference.deviceId === c.device.id) this.contextArtifactRefs.delete(id);
+    }
+    await this.save();
   }
   private save(
     config = this.config,
@@ -4195,9 +4339,14 @@ export class WebAccessService {
             `${cookieName}=${raw}; Path=/; HttpOnly; SameSite=Strict; Max-Age=${MAX_AGE / 1000}${external ? "; Secure" : ""}`,
           );
       }
-      const device = trustedLocal
-        ? this.localDevice
-        : this.credentials.find((c) => c.hash === hash)?.device;
+      const credential = trustedLocal ? undefined : this.credentials.find((c) => c.hash === hash);
+      const device = trustedLocal ? this.localDevice : credential?.device;
+      // A pairing bound to an account login is renewed here; its cookie follows the new lifetime.
+      if (!lan && raw && credential?.account && !browser.ended)
+        res.setHeader(
+          "Set-Cookie",
+          `${cookieName}=${raw}; Path=/; HttpOnly; SameSite=Strict; Max-Age=${Math.max(0, Math.floor((credential.expiresAt - Date.now()) / 1000))}${external ? "; Secure" : ""}`,
+        );
       const historyAccess =
         device && !browser.ended && this.options.historyRequest
           ? await this.historyAccessScope(hash)
@@ -4369,6 +4518,8 @@ export class WebAccessService {
         browser.pending = undefined;
         return this.json(res, 200, { ok: true });
       }
+      if (path === "/account-binding")
+        return this.json(res, 200, await this.bindAccount(hash, body));
       if (path === "/logout") {
         // Share the config transaction queue: a logout captured during a provider
         // switch must not overwrite the new config with an old persistence snapshot.

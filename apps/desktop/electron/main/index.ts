@@ -82,6 +82,8 @@ let refreshCoordinator: ElectronRefreshCoordinator | undefined;
 let skillSyncCoordinator: SkillSyncCoordinator | undefined;
 let runtimeHost: RuntimeHost | undefined;
 let accountService: DesktopAccountService | undefined;
+/** The account whose logins the web services last checked their bound pairings against. */
+let checkedAccountId: string | undefined;
 let webAccess: WebAccessService | undefined;
 let lanWebAccess: WebAccessService | undefined;
 let conversationHub: ConversationHub | undefined;
@@ -282,6 +284,10 @@ async function startApplication(): Promise<void> {
     verifiedClaudeManaged: process.platform === "darwin",
     enableClaudeScheduler: process.platform === "darwin",
     verifiedAntigravityManaged: true,
+    accountSessions: () => {
+      if (!accountService) return Promise.reject(new Error("account_unavailable"));
+      return accountService.liveSessions();
+    },
   } satisfies Partial<ConstructorParameters<typeof WebAccessService>[0]>;
   webAccess = new WebAccessService({
     ...sharedWebOptions,
@@ -331,6 +337,13 @@ async function startApplication(): Promise<void> {
     onStatus: (status) => {
       if (mainWindow && !mainWindow.isDestroyed())
         mainWindow.webContents.send("agentkib:account:status", status);
+      // Signing in to another account ends the phones bound to the previous one.
+      const accountId = status.account?.id;
+      if (accountId && accountId !== checkedAccountId) {
+        checkedAccountId = accountId;
+        for (const service of [webAccess, lanWebAccess])
+          void service?.checkAccountBindings().catch(() => undefined);
+      }
     },
   });
   // Account network availability must not delay local conversations or window startup.

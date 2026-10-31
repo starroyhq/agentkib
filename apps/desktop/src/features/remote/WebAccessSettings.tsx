@@ -858,6 +858,7 @@ export function WebAccessSettings({
                         .join(" · ")}
               </small>
             )}
+            {device.accountBound && <small>{c.accountBound}</small>}
           </SettingsCopy>
           <div className="flex flex-wrap items-center justify-end gap-2">
             {codeAccess && device.accessLevel && (

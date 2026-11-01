@@ -52,6 +52,9 @@ export class DesktopAccountService {
   private knownName?: { deviceId: string; name: string };
   /** `accountId:deviceId` already checked for a missing name in this process. */
   private nameChecked?: string;
+  private nameReadAt = 0;
+  private nameGeneration = 0;
+  private nameReadWork?: { key: string; work: Promise<boolean> };
   constructor(private readonly options: Options) {}
   private get tokenFile() {
     return join(this.options.directory, "refresh.enc");
@@ -73,7 +76,7 @@ export class DesktopAccountService {
       if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
       try {
         await this.accessToken();
-        this.backfillNameInBackground();
+        this.refreshNameInBackground();
       } catch (failure) {
         if ((failure as NodeJS.ErrnoException).code !== "ENOENT")
           this.error = "account_login_required";
@@ -130,6 +133,8 @@ export class DesktopAccountService {
           Date.now() - this.profileReadAt > 30_000
         )
           await this.refreshProfile();
+        if (input.operation === "status" && this.profile && Date.now() - this.nameReadAt >= 30_000)
+          await this.refreshDeviceName();
         if (input.operation === "login") await this.login();
         if (input.operation === "cancel-login") {
           this.cancelLogin();
@@ -362,7 +367,7 @@ export class DesktopAccountService {
             if (identity.accountClaimAccountId === this.profile?.id) await this.claim();
             else this.error = "account_claim_pending";
           }
-          this.backfillNameInBackground();
+          this.refreshNameInBackground();
         } catch (error) {
           this.phase = this.profile ? "signed-in" : "signed-out";
           this.error = error instanceof AccountError ? error.code : "account_login_required";
@@ -401,6 +406,8 @@ export class DesktopAccountService {
     this.profile = undefined;
     this.knownName = undefined;
     this.nameChecked = undefined;
+    this.nameReadAt = 0;
+    this.nameGeneration++;
     this.phase = "signed-out";
     await rm(this.tokenFile, { force: true });
     await rm(this.rotationFile, { force: true });
@@ -514,7 +521,7 @@ export class DesktopAccountService {
       throw new AccountError("account_response_invalid");
     await this.options.bindIdentity(result.accountId!);
     this.rememberName(result);
-    this.backfillNameInBackground();
+    this.refreshNameInBackground();
     this.profileReadAt = 0;
     await this.refreshProfile().catch(() => {
       this.error = "account_profile_refresh_failed";
@@ -545,16 +552,14 @@ export class DesktopAccountService {
     if (typeof deviceId === "string" && typeof name === "string" && name)
       this.knownName = { deviceId, name };
   }
-  private backfillNameInBackground() {
-    void this.backfillName()
+  private refreshNameInBackground() {
+    void this.refreshDeviceName()
       .then((changed) => (changed ? this.publish() : undefined))
       .catch(() => undefined);
   }
   /**
-   * Once per account and device in this process: if the account lists this computer without a name,
-   * fill it in. The broker only lets a desktop session set a missing name (409 otherwise), so a
-   * name the user chose is never overwritten. A broker without names omits the field (skip) or
-   * answers PATCH with 404/405; every failure is ignored.
+   * Keep the once-per-process initial check separate from later reads: names chosen in the account
+   * UI must become visible without ever turning a refresh into another automatic rename.
    */
   async backfillName(): Promise<boolean> {
     const accountId = this.profile?.id;
@@ -563,29 +568,81 @@ export class DesktopAccountService {
     if (!/^[a-f0-9]{32}$/.test(identity.deviceId)) return false;
     const key = `${accountId}:${identity.deviceId}`;
     if (this.nameChecked === key) return false;
+    return this.refreshDeviceName();
+  }
+  private async refreshDeviceName(): Promise<boolean> {
+    const accountId = this.profile?.id;
+    const identity = await this.options.identity();
+    if (!accountId || !identity || identity.accountId !== accountId || this.loggingOut)
+      return false;
+    if (!/^[a-f0-9]{32}$/.test(identity.deviceId)) return false;
+    const key = `${accountId}:${identity.deviceId}`;
+    const generation = this.nameGeneration;
+    const workKey = `${generation}:${key}`;
+    if (this.nameReadWork?.key === workKey) return this.nameReadWork.work;
+    const mayBackfill = this.nameChecked !== key;
     this.nameChecked = key;
+    this.nameReadAt = Date.now();
+    const work = this.readDeviceName(accountId, identity.deviceId, generation, mayBackfill);
+    this.nameReadWork = { key: workKey, work };
+    try {
+      return await work;
+    } finally {
+      if (this.nameReadWork?.work === work) this.nameReadWork = undefined;
+    }
+  }
+  private async readDeviceName(
+    accountId: string,
+    deviceId: string,
+    generation: number,
+    mayBackfill: boolean,
+  ): Promise<boolean> {
+    const current = async () => {
+      const identity = await this.options.identity();
+      return (
+        generation === this.nameGeneration &&
+        this.profile?.id === accountId &&
+        identity?.accountId === accountId &&
+        identity.deviceId === deviceId &&
+        !this.loggingOut
+      );
+    };
     const before = this.knownName?.name;
     try {
       const token = await this.accessToken();
-      const list = (await this.api("/v1/account/devices", undefined, token)) as {
-        devices?: unknown;
+      const read = async () => {
+        const list = (await this.api("/v1/account/devices", undefined, token)) as {
+          devices?: unknown;
+        };
+        return (Array.isArray(list?.devices) ? list.devices : []).find(
+          (row) => (row as { deviceId?: unknown })?.deviceId === deviceId,
+        ) as { name?: unknown } | undefined;
       };
-      const device = (Array.isArray(list?.devices) ? list.devices : []).find(
-        (row) => (row as { deviceId?: unknown })?.deviceId === identity.deviceId,
-      ) as { name?: unknown } | undefined;
-      if (!device || !("name" in device)) return false;
-      if (device.name === null) {
+      let device = await read();
+      if (!(await current())) return false;
+      if (mayBackfill && device?.name === null) {
         const name = await this.computerName();
-        if (!name) return false;
-        try {
-          this.rememberName(
-            await this.api(`/v1/account/devices/${identity.deviceId}`, { name }, token, "PATCH"),
-          );
-        } catch {
-          // 409 name_already_set (named meanwhile), 404/405 (old broker) and the rest: keep going.
-          return false;
+        if (name && (await current())) {
+          try {
+            device = (await this.api(
+              `/v1/account/devices/${deviceId}`,
+              { name },
+              token,
+              "PATCH",
+            )) as {
+              name?: unknown;
+            };
+          } catch (error) {
+            if (!(error instanceof AccountError) || error.code !== "account_name_already_set")
+              return false;
+            // A user named the computer after our read. Read that name; never retry the write.
+            device = await read();
+          }
         }
-      } else this.rememberName({ deviceId: identity.deviceId, name: device.name });
+      }
+      if (!(await current())) return false;
+      const name = device?.name;
+      this.knownName = typeof name === "string" && name ? { deviceId, name } : undefined;
     } catch {
       return false;
     }

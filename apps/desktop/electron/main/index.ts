@@ -265,8 +265,16 @@ async function startApplication(): Promise<void> {
     )
       conversationHub?.scopesChanged();
   });
+  // Read again after a while, so a rename in system settings reaches the phones.
+  let computerNameRead: { at: number; name: Promise<string | undefined> } | undefined;
+  const computerName = () => {
+    if (!computerNameRead || Date.now() - computerNameRead.at >= 10 * 60_000)
+      computerNameRead = { at: Date.now(), name: detectComputerName() };
+    return computerNameRead.name;
+  };
   const sharedWebOptions = {
     historyRequest: (method: string, params: unknown) => requestWhenRuntimeReady(method, params),
+    computerName,
     conversationHub,
     desktopOrigin: devServerUrl ? new URL(devServerUrl).origin : "app://bundle",
     sharedControl,
@@ -333,7 +341,7 @@ async function startApplication(): Promise<void> {
     identity: () => webAccess!.accountIdentity(),
     bindIdentity: (id) => webAccess!.bindAccountIdentity(id),
     prepareIdentityClaim: (id) => webAccess!.prepareAccountClaim(id),
-    computerName: () => detectComputerName(),
+    computerName,
     onStatus: (status) => {
       if (mainWindow && !mainWindow.isDestroyed())
         mainWindow.webContents.send("agentkib:account:status", status);

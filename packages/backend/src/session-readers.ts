@@ -170,13 +170,22 @@ export class SessionReaders {
       native: verified.session,
     };
   }
+  /** `retain` false keeps no cursor; see [SessionPaging.read]. */
   async claudeEventsForSession(
     id: string,
     cursor: string | null,
     count: number,
+    retain = true,
   ): Promise<ConversationEventPage> {
     const source = this.verifiedClaudeReadSource(id);
-    return this.#readEvents(source.native, source.workspace, cursor, count, source.transcript);
+    return this.#readEvents(
+      source.native,
+      source.workspace,
+      cursor,
+      count,
+      source.transcript,
+      retain,
+    );
   }
   /** Control needs the directory to exist; a read may name a deleted one by its recorded path. */
   #verifiedClaudeControlSource(
@@ -368,18 +377,28 @@ export class SessionReaders {
     if (!native) throw new Error("Conversation transcript is no longer available");
     return { summary, native, workspace };
   }
+  /** `retainCursor` false keeps no cursor; see [SessionPaging.read]. */
   async events(value: unknown): Promise<ConversationEventPage> {
-    const { sessionId, cursor, limit } = parameters(
+    const { sessionId, cursor, limit, retainCursor } = parameters(
       z.object({
         sessionId: z.string(),
         cursor: optionalString,
         limit: unsigned.nullable().optional(),
+        retainCursor: z.boolean().optional(),
       }),
       value,
     );
     const { native, workspace, transcript } = await this.resolve(sessionId);
-    return this.#readEvents(native, workspace, cursor ?? null, limit ?? 50, transcript);
+    return this.#readEvents(
+      native,
+      workspace,
+      cursor ?? null,
+      limit ?? 50,
+      transcript,
+      retainCursor !== false,
+    );
   }
+  /** `retain` false keeps no cursor; see [SessionPaging.read]. */
   async eventsForNative(
     agent: SessionAgent,
     nativeRef: string,
@@ -387,6 +406,7 @@ export class SessionReaders {
     cursor: string | null,
     limit: number,
     options?: { codexDirectory: string },
+    retain = true,
   ): Promise<ConversationEventPage> {
     if (!nativeRef || nativeRef.length > 4096 || limit < 1 || limit > 100)
       throw new Error("invalid-request");
@@ -419,20 +439,21 @@ export class SessionReaders {
         cursor,
         limit,
         source.transcript,
+        retain,
       );
       verify();
       return page;
     }
     if (agent === "claude-code") {
       const source = this.#verifiedClaudeControlSource(nativeRef, workspace);
-      return this.#readEvents(source.session, workspace, cursor, limit, source.transcript);
+      return this.#readEvents(source.session, workspace, cursor, limit, source.transcript, retain);
     }
     const listing = await this.list(agent, workspace);
     const native = listing.sessions.find(
       (candidate) => candidate.native_ref === nativeRef && candidate.agent === agent,
     );
     if (!native) throw new Error("session-unavailable");
-    return this.#readEvents(native, workspace, cursor, limit);
+    return this.#readEvents(native, workspace, cursor, limit, undefined, retain);
   }
   async #readEvents(
     native: NativeSession,
@@ -440,6 +461,7 @@ export class SessionReaders {
     offset: string | null,
     count: number,
     transcript?: string,
+    retain = true,
   ): Promise<ConversationEventPage> {
     const ref = native.native_ref,
       agent = native.agent;
@@ -456,6 +478,7 @@ export class SessionReaders {
             agent,
             // Collections pass an ID here; only an absolute root shortens paths.
             { workspace },
+            retain,
           );
         if (transcript) return page(transcript);
         const provider = agent === "codex" ? this.#codex : this.#claude;
@@ -471,18 +494,25 @@ export class SessionReaders {
         return page(source.transcript);
       }
       case "grok-build":
-        return this.#paging.read(this.#grok.resolve(ref).transcript, offset, count, agent);
+        return this.#paging.read(
+          this.#grok.resolve(ref).transcript,
+          offset,
+          count,
+          agent,
+          {},
+          retain,
+        );
       case "open-claw": {
         const source = this.#openclaw.resolve(ref);
         return source.sqlite
           ? readOpenClawSqliteEvents(source.sqlite, offset, count)
-          : this.#paging.read(source.transcript, offset, count, agent);
+          : this.#paging.read(source.transcript, offset, count, agent, {}, retain);
       }
       case "hermes": {
         const { source } = this.#hermes.resolve(ref);
         return source.type === "sqlite"
           ? readHermesEvents(source.path, source.sessionId, offset, count)
-          : this.#paging.read(source.path, offset, count, "hermes");
+          : this.#paging.read(source.path, offset, count, "hermes", {}, retain);
       }
       case "opencode":
         return this.#opencode.readEvents(workspace, ref, offset, count);

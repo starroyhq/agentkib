@@ -436,7 +436,7 @@ export class ClaudeManagedReadOwner {
         return this.context(id);
       case "events":
         if (!id) throw new Error("missing-session");
-        return this.events(id, value.cursor, value.limit);
+        return this.events(id, value.cursor, value.limit, value.retainCursor !== false);
       case "settings-state":
         if (!id) throw new Error("missing-session");
         return this.settingsState(id);
@@ -4555,7 +4555,8 @@ export class ClaudeManagedReadOwner {
     return { available: true, cwd: workspace, sourceFile, projectId: null, branchAtCreation: null };
   }
 
-  async events(id: string, cursor: unknown, limit: unknown): Promise<unknown> {
+  /** `retain` false keeps no cursor for the page, for stream snapshots (see SessionPaging.read). */
+  async events(id: string, cursor: unknown, limit: unknown, retain = true): Promise<unknown> {
     const record = this.#load(id);
     if (record) {
       this.#validate(record);
@@ -4567,6 +4568,8 @@ export class ClaudeManagedReadOwner {
         record.workspace,
         typeof cursor === "string" ? cursor : null,
         count,
+        undefined,
+        retain,
       );
       return this.#withTurnEnds(record.nativeId, page);
     }
@@ -4575,6 +4578,7 @@ export class ClaudeManagedReadOwner {
       id,
       typeof cursor === "string" ? cursor : null,
       count,
+      retain,
     );
   }
 

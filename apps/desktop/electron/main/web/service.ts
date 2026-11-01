@@ -2185,11 +2185,13 @@ export class WebAccessService {
             : [];
           result = { artifact: artifact ?? null };
         } else {
+          // 只要这一页的文件引用，不为下一页保留游标，免得挤掉客户端翻页用的游标。
           const page = (await this.runtime({
             operation: "events",
             sessionId,
             limit: 50,
             cursor: url.searchParams.get("cursor") ?? undefined,
+            retainCursor: false,
           })) as { events: { content?: string }[]; next_cursor?: string };
           // 同一个文件常被反复提到。去重后再截到上限，引用多的一页也不会整页失败。
           const refs = [

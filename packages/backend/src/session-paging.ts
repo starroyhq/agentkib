@@ -149,19 +149,27 @@ function clone(state: State): State {
       : [],
   };
 }
+/** A page read with `retain` false: older history exists, but no cursor was kept for it. */
+export const UNRETAINED_CURSOR = "history-v1-unretained";
 /** Snapshot-bound reverse pages remain replayable without loading the whole native transcript. */
 export class SessionPaging {
   #states = new Map<string, { created: number; state: State }>();
   clear(): void {
     this.#states.clear();
   }
-  /** `context` only changes how tool paths are shown; cursors keep the first read's. */
+  /**
+   * `context` only changes how tool paths are shown; cursors keep the first read's.
+   * `retain` false is for readers that only need this page and whether older history exists,
+   * such as stream snapshots polled every 250 ms: they keep no cursor, so they cannot push the
+   * cursors that clients hold out of the cache. Their `next_cursor` is [UNRETAINED_CURSOR].
+   */
   read(
     file: string,
     cursor: string | null,
     limit: number,
     format: HistoryFormat,
     context: ToolContext = {},
+    retain = true,
   ): ConversationEventPage {
     if (!Number.isSafeInteger(limit) || limit < 0) throw new Error("Invalid event limit");
     let fd: number;
@@ -272,7 +280,9 @@ export class SessionPaging {
       this.#validate(fd, file, format, state);
       if (state.associationWarning) warnings.add("TRANSCRIPT_ASSOCIATION_WINDOW");
       let next: string | null = null;
-      if (state.position > 0 || state.pending.length || state.fragmentBytes) {
+      const older = state.position > 0 || state.pending.length > 0 || state.fragmentBytes > 0;
+      if (older && !retain) next = UNRETAINED_CURSOR;
+      else if (older) {
         const now = performance.now(),
           size = estimatedBytes(state);
         if (size > MAX_CACHE_BYTES) throw new Error("TRANSCRIPT_SCAN_STATE_LIMIT");

@@ -590,6 +590,11 @@ export class WebAccessService {
        * Phones paired during one of those logins lose their pairing when it ends.
        */
       accountSessions?: () => Promise<AccountSessions>;
+      /**
+       * The computer's name as its system settings show it. Approved devices get it with their
+       * access, so a phone names the computer without an account.
+       */
+      computerName?: () => Promise<string | undefined>;
       workspaceRequest?: () => Promise<{ id: string; name: string; path: string }[]>;
       verifiedCodex?: boolean;
       verifiedExperimental?: boolean;
@@ -4353,6 +4358,13 @@ export class WebAccessService {
           : undefined;
       const directConnection =
         external && device && !browser.ended ? this.relay?.directConnection : undefined;
+      // Only an approved device learns the name: it can say who owns the computer.
+      const computerName =
+        device && !browser.ended
+          ? await (this.options.computerName?.() ?? Promise.resolve(undefined)).catch(
+              () => undefined,
+            )
+          : undefined;
       return this.json(res, 200, {
         status: browser.ended
           ? "ended"
@@ -4368,6 +4380,7 @@ export class WebAccessService {
         pending: browser.pending,
         pairingMode: lan ? "confirmation" : "code",
         experimentalEnabled: this.controlsEnabled(undefined, device),
+        ...(computerName ? { computerName } : {}),
         ...(historyAccess ? { historySearch: true, historySearchScope: historyAccess.token } : {}),
         ...(directConnection &&
         directConnection.controlOrigin === this.config.externalOrigin &&

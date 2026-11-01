@@ -84,7 +84,7 @@ HTML 以入口所在目录生成明确清单和固定版本快照，默认限制
 | `POST codex/settings` | 按 revision 更新下一轮设置或恢复主机默认 |
 | `POST codex/goal-*` | 设置、暂停、恢复或清除原生目标；`goal-set.intent` 为 `start`／`update`，预算省略保留、null 清除 |
 
-预览 origin 的 `/p/...` 只处理票据内容，`/live/...` 与 `/live-sw.js` 只处理网页预览，都拒绝控制 API；主 API 继续校验设备、Origin 和 CSRF。`GET access` 的 `pairingMode=code` 表示支持授权码直接连接；缺少字段或为 `confirmation` 时保留旧确认流程。新授权凭证含 `device.accessMode=full`；旧凭证不自动增加此标记或扩大授权。执行账本与可重建会话索引分开保存。
+预览 origin 的 `/p/...` 只处理票据内容，`/live/...` 与 `/live-sw.js` 只处理网页预览，都拒绝控制 API；主 API 继续校验设备、Origin 和 CSRF。`GET access` 的 `pairingMode=code` 表示支持授权码直接连接；缺少字段或为 `confirmation` 时保留旧确认流程。新授权凭证含 `device.accessMode=full`；旧凭证不自动增加此标记或扩大授权。已批准的设备还会拿到 `computerName`，即系统设置里的电脑名称（macOS 读 `scutil --get ComputerName`，Linux 读 PRETTY_HOSTNAME，其他平台用主机名，每 10 分钟重读一次），手机在名称还是连接地址时用它称呼这台电脑，账号里的名称仍然优先；未批准、配对中和已结束的请求都不带这个字段。执行账本与可重建会话索引分开保存。
 
 ## 验证边界
 

@@ -100,7 +100,11 @@ export function SessionOverview() {
                     </small>
                   </span>
                   {status && (
-                    <SessionContinuationStatus label={status.label} active={status.active} />
+                    <SessionContinuationStatus
+                      label={status.label}
+                      running={status.active}
+                      waiting={status.waiting}
+                    />
                   )}
                   <time className="w-full pl-7 text-sm text-muted-foreground [overflow-wrap:anywhere]">
                     {session.updated_at

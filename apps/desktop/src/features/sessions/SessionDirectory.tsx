@@ -1,5 +1,6 @@
 import { useI18n } from "@/core/useI18n";
 import { sessionCollection } from "@agentkib/runtime-protocol";
+import { sessionGroupActivity, SessionGroupActivity } from "@agentkib/session-ui";
 import { cn } from "cn";
 import { Fragment, useEffect, useLayoutEffect, useRef } from "react";
 import { useShallow } from "zustand/react/shallow";
@@ -25,7 +26,7 @@ import { WorktreeMark } from "./WorktreeMark";
 export function SessionDirectory({
   onMenuOpenChange,
 }: { onMenuOpenChange?: (open: boolean) => void } = {}) {
-  const { formatDateTime, tr } = useI18n();
+  const { formatDateTime, locale, tr } = useI18n();
   const hub = useSessionHub();
   const view = useSessionViewStore(
     useShallow((state) => ({
@@ -85,6 +86,8 @@ export function SessionDirectory({
           const { workspace, sessions: workspaceSessions, label } = group;
           const sessions = sessionOrder(workspaceSessions, view.sessionOrder[group.id] ?? []);
           const worktreeNames = group.worktrees.join("\n");
+          // What runs and what waits stays in the heading while the group is folded.
+          const activity = sessionGroupActivity(sessions, locale);
           return (
             <Fragment key={group.id}>
               {!!hub.remoteHosts?.length &&
@@ -175,7 +178,8 @@ export function SessionDirectory({
                       · {tr("workspace.worktrees", { count: group.worktrees.length })}
                     </small>
                   )}
-                  <span className="ml-auto">{sessions.length}</span>
+                  <SessionGroupActivity {...activity} className="ml-auto" />
+                  <span className={activity.label ? undefined : "ml-auto"}>{sessions.length}</span>
                 </CollapsibleTrigger>
                 <CollapsibleContent
                   className="session-workspace-items h-[var(--collapsible-panel-height)] overflow-hidden border-l border-sidebar-border/70 pl-3 opacity-100 transition-[height,opacity] duration-[180ms] ease-out motion-reduce:transition-none data-[starting-style]:h-0 data-[starting-style]:opacity-0 data-[ending-style]:h-0 data-[ending-style]:opacity-0"

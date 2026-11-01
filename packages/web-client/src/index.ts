@@ -72,6 +72,8 @@ export interface ConversationSessionSummary {
     ownershipReason?: string | null;
     reason?: string | null;
   };
+  /** A turn that the Codex app or CLI runs now; display only, never a control. */
+  externalTurn?: { status: "running"; startedAt: string | null } | null;
   /** Verified index identities that route to this managed session. */
   indexedSessionIds?: string[];
   id: string;

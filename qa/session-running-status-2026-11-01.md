@@ -9,6 +9,7 @@
 1. 手机显示电脑报告的状态：会话列表的行、工作区分组标题、待处理页的“进行中”、会话页的状态条。
 2. 在这台电脑上安装 Claude Code 连接终端插件。
 3. 桌面后端识别 Codex 应用或 CLI 正在跑的一轮，只用于显示。
+4. 桌面和 Web 的会话列表显示和手机一样的状态。
 
 旧的 Codex follower 桥接没有重新启用。
 
@@ -32,11 +33,25 @@
 
 - 目录给 Codex 会话加 `externalTurn: { status: "running", startedAt }`。托管记录按原生 ID 对应，索引会话按索引 ID 对应，别名归到它的托管记录。AgentKib 自己的 runner 持有的线程不算，有 runner 的会话也不加。读目录不会创建索引用的盐。
 - live 状态在 `ownershipReason` 为 `codex-owner-busy` 时带 `externalTurn`，其他时候为 `null`。
-- `continuation`、发送、分支和占用判断都没有改。桌面和 Web 的界面没有改，列表照旧不显示外部状态。
+- `continuation`、发送、分支和占用判断都没有改。
 
 目录每 2 秒由全局会话流读一次，内容变化时推送 `catalog-invalidated`，所以手机最多晚约 2 秒看到变化。
 
 文档：`docs/CODEX-MANAGED.md`、`docs/REMOTE-CODEX-WEB.md`、`docs/CONVERSATIONS.md`。
+
+## 桌面和 Web 的列表
+
+规则在 `packages/session-ui` 的 `sessionContinuationListState`，桌面侧栏、桌面概览、桌面工作区会话列表、Web 目录和 Web 首页的最近会话共用，结果和手机一致：
+
+- 等待你：`continuation` 为 `awaiting-approval` 或 `waiting-input`，琥珀色圆点。
+- 一轮正在运行：`continuation` 为 `running` 或 `starting`，或有 `externalTurn`。圆点换成转动的圆环，减少动态效果时不转。悬停和读屏写出在哪里运行：在 AgentKib 中运行、在终端中运行、在 Codex 中运行。
+- 终端：连接终端里空闲的 Claude Code，灰色圆点，和以前一样。
+- 仅可查看：和以前一样。
+- 不显示：只在别处打开、结果待核对、已归档的会话，以及 AgentKib 的后台进程空闲驻留。最后这一条是改变：以前侧栏对驻留的进程也显示“在 AgentKib 中运行”，现在只在真的有一轮在跑时显示。会话页里的“在 AgentKib 中运行”没有改。
+
+桌面侧栏和 Web 目录的分组标题在会话数前显示在等和运行中的数量，各带圆点或圆环，收起时仍显示；悬停和读屏读作“2 个在等你, 3 个运行中”。Web 目录里一条会话同时被主机报告在等、又被页面标记为待处理时，只显示琥珀色圆点，不再另加“●”。
+
+文档：`docs/UI-TERMINOLOGY.md` 的术语表和列表规则，`docs/REMOTE-CODEX-WEB.md`。
 
 ## 手机
 
@@ -45,7 +60,7 @@
   - 等待你：`pendingInteraction`，目录 `continuation` 为 `awaiting-approval` 或 `waiting-input`，或待处理页读实时状态时看到的审批和提问。
   - 运行中：`continuation` 为 `running` 或 `starting`，或有 `externalTurn`。详情行开头写“在 Codex 中”或“在终端中”。
   - 终端：连接终端里空闲的 Claude Code。
-  - 不显示：只在别处打开、AgentKib 的进程空闲驻留、结果待核对、已归档、缓存目录。和桌面不同，空闲驻留的 runner 不算运行中。
+  - 不显示：只在别处打开、AgentKib 的进程空闲驻留、结果待核对、已归档、缓存目录。空闲驻留的 runner 不算运行中，桌面和 Web 现在也一样。
 - 工作区分组标题在名称后显示“N 个在等你”“N 个运行中”，放不下时换到第二行，收起时仍显示。
 - 待处理页在“需要你处理”之后加“进行中”，列出目录报告正在运行的会话。目录报告在等的会话优先关注，不再算作“检查”。
 - 会话页状态条：
@@ -90,6 +105,12 @@
   - 待处理的关注顺序和“进行中”；
   - 状态条的五种情况。
 - 手机渲染检查：会话列表、收起的分组、待处理页和状态条，中文，浅色和深色各一张，内容都是合成数据，人工看过。第一次渲染时，“在 Codex 中运行”的标签在行里被截断，于是改成标签只写“运行中”，地点放在详情行开头。
+- 桌面和 Web 列表：
+  - 临时测试：四种语言下各种状态的结果、分组计数和读法；桌面侧栏各行的圆点和圆环、收起后标题仍读出数量、概览写出状态；Web 目录的行、标题读法、收起后仍在、和页面待处理标记不重复。通过后删除。
+  - 原有测试有两处按新行为修改：桌面 `SessionDirectory.test.tsx` 和 Web `session-catalog.test.tsx` 原来断言运行中的圆点是 `bg-primary`，现在断言它是转动的圆环。
+  - 改之前，桌面 `src/features/sessions`、`src/features/workspace`、`src/features/home` 和 Web 全量各有 4 项失败，都是这处断言。删掉临时测试后重跑：桌面这三个目录 102 个文件 1601 项全过，Web 全量 77 个文件 1676 项全过。中间一次只跑 `src/features/catalog` 时，`session-catalog-loading` 有一项超时，单独重跑和全量里都通过。
+  - 类型检查 backend、desktop、web 通过；格式和 oxlint 通过，只有原有的警告。
+  - 桌面和 Web 的列表只经过组件测试，没有在真实界面上看过。
 
 ## 未覆盖
 

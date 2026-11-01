@@ -27,7 +27,13 @@ export function SessionDirectoryEntry({
           {displaySessionTitle(session.title, tr)}
         </strong>
       </span>
-      {status?.dot && <SessionContinuationDot label={status.label} active={status.active} />}
+      {status?.dot && (
+        <SessionContinuationDot
+          label={status.label}
+          active={status.active}
+          waiting={status.waiting}
+        />
+      )}
       {status && !status.dot && session.continuation?.reason === "codex-cli-version-too-old" && (
         <span className="shrink-0 text-xs text-muted-foreground">{status.label}</span>
       )}

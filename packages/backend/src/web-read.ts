@@ -27,6 +27,7 @@ import {
 } from "./codex-app-server";
 import { CodexRuntimePreflight } from "./codex-runtime-preflight";
 import { CodexCatalogCache } from "./codex-catalog-cache";
+import { CodexExternalTurns, type ExternalTurn } from "./codex-external-turns";
 import { codexResumeCommand } from "./codex-resume-command";
 import { CodexFollowerBridge } from "./codex-follower-bridge";
 import type { CodexFollowerState } from "./codex-follower-state";
@@ -351,6 +352,8 @@ export class WebReadRequests {
     collaborationModes: CollaborationModeOption[];
   }>();
   #ownership = new Map<string, { checkedAt: number; reason: string | null }>();
+  /** Turns that the Codex app or CLI runs, for the catalog and live state to show. */
+  #externalTurns = new CodexExternalTurns(() => canonicalize(this.sessions.codexHome()));
   #catalogObservations = new Map<string, { at: number; status: string; reason: string | null }>();
   #retirementTimer: ReturnType<typeof setInterval>;
   #retiring = false;
@@ -4094,6 +4097,7 @@ export class WebReadRequests {
       if (this.indexGeneration() !== generation || indexEnabled(this.dataDir) !== enabled)
         return { workspaces: [], sessions: [], indexEnabled: false };
       const checkouts = catalogCheckouts(this.store, this.environment);
+      const externalTurns = this.#externalTurnsBySession(managed, aliasesByOwner, enabled);
       return {
         codexRuntimeReason: runtime?.reason === "codex-cli-version-too-old" ? runtime.reason : null,
         workspaces: checkouts.workspaces(
@@ -4156,7 +4160,11 @@ export class WebReadRequests {
                         reason,
                       }
                     : observed;
-          return continuation ? { ...session, continuation } : session;
+          // A resident runner reports its own turns, so only a session without one shows a
+          // turn that runs elsewhere.
+          const externalTurn = runner ? undefined : externalTurns.get(session.id);
+          const shown = externalTurn ? { ...session, externalTurn } : session;
+          return continuation ? { ...shown, continuation } : shown;
         }),
         indexEnabled: enabled || managed.length > 0,
       };
@@ -4250,6 +4258,61 @@ export class WebReadRequests {
     };
   }
 
+  /**
+   * The turns that the Codex app or CLI runs now, by catalog session. Display only: controls
+   * still follow the session's continuation.
+   */
+  #externalTurnsBySession(
+    managed: ReturnType<typeof readManagedCatalog>["records"],
+    aliasesByOwner: Map<string, Set<string>>,
+    indexed: boolean,
+  ): Map<string, ExternalTurn> {
+    const bySession = new Map<string, ExternalTurn>();
+    const turns = this.#externalTurns.observe();
+    // AgentKib's own runners hold the writer locks of the threads they run.
+    for (const runner of [...this.#managedRunners.values(), ...this.#startingRunners.values()]) {
+      const native = runner.state.nativeId;
+      if (native)
+        for (const thread of turns.keys())
+          if (thread.toLowerCase() === native.toLowerCase()) turns.delete(thread);
+    }
+    if (!turns.size) return bySession;
+    const byThread = new Map([...turns].map(([thread, turn]) => [thread.toLowerCase(), turn]));
+    for (const record of managed) {
+      const turn = record.native_id ? byThread.get(record.native_id.toLowerCase()) : undefined;
+      if (turn && this.#isCodexHome(record.home)) bySession.set(record.id, turn);
+    }
+    // Indexed IDs derive from native IDs with the index salt. Reading must not create the salt,
+    // and without it nothing is indexed.
+    if (
+      indexed &&
+      typeof this.store.sessions.sql.one(
+        "SELECT value FROM schema_meta WHERE key='conversation_salt'",
+      )?.value === "string"
+    ) {
+      const owners = new Map(
+        [...aliasesByOwner].flatMap(([owner, aliases]) =>
+          [...aliases].map((alias) => [alias, owner] as const),
+        ),
+      );
+      for (const [thread, turn] of turns) {
+        const id = this.store.sessions.id("codex", thread);
+        bySession.set(owners.get(id) ?? id, turn);
+      }
+    }
+    return bySession;
+  }
+
+  #isCodexHome(home: string): boolean {
+    try {
+      return (
+        pathIdentity(canonicalize(home)) === pathIdentity(canonicalize(this.sessions.codexHome()))
+      );
+    } catch {
+      return false;
+    }
+  }
+
   async #inactiveLive(record: ManagedRecord, controls: boolean): Promise<Record<string, unknown>> {
     const checked = await this.#preflight.check();
     let reason = checked.reason;
@@ -4320,6 +4383,10 @@ export class WebReadRequests {
       }),
       executionLocation: starting || retiring ? "agentkib" : ownershipReason ? "external" : null,
       ownershipReason,
+      externalTurn:
+        ownershipReason && record.native_id && this.#isCodexHome(record.home)
+          ? this.#externalTurns.turnOf(record.native_id)
+          : null,
       sendEnabled: controls && reason === null && !starting,
       stopEnabled: false,
       approvals: [],

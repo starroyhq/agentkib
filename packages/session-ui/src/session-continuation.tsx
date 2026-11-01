@@ -11,6 +11,14 @@ export type SessionContinuationCopy = {
   terminalBadge: string;
   terminalHint: string;
   terminalWatch: string;
+  /** A turn that a connected terminal runs now. */
+  terminalRunning: string;
+  /** A turn that another client, such as the Codex app, runs now. */
+  runningIn: (agent: string) => string;
+  /** An approval or a question waits for the person. */
+  waiting: string;
+  groupRunning: (count: number) => string;
+  groupWaiting: (count: number) => string;
   busy: (agent: string) => string;
   choice: (agent: string) => string;
   fork: string;
@@ -49,6 +57,11 @@ const continuationCopy: Record<string, SessionContinuationCopy> = {
     terminalBadge: "终端",
     terminalHint: "审批和提问在终端中处理",
     terminalWatch: "在终端中继续这条会话，这里会同步显示",
+    terminalRunning: "在终端中运行",
+    runningIn: (agent) => `在 ${agent} 中运行`,
+    waiting: "等待你",
+    groupRunning: (count) => `${count} 个运行中`,
+    groupWaiting: (count) => `${count} 个在等你`,
     busy: (agent) => `正在 ${agent} 中使用`,
     choice: (agent) => `这条会话正在 ${agent} 中使用。为避免两边同时写入，请选择：`,
     fork: "分支会话并继续",
@@ -87,6 +100,11 @@ const continuationCopy: Record<string, SessionContinuationCopy> = {
     terminalBadge: "終端",
     terminalHint: "核准和提問在終端中處理",
     terminalWatch: "在終端中繼續這段對話，這裡會同步顯示",
+    terminalRunning: "在終端中執行",
+    runningIn: (agent) => `在 ${agent} 中執行`,
+    waiting: "等待你",
+    groupRunning: (count) => `${count} 個執行中`,
+    groupWaiting: (count) => `${count} 個在等你`,
     busy: (agent) => `正在 ${agent} 中使用`,
     choice: (agent) => `這段對話正在 ${agent} 中使用。為避免兩邊同時寫入，請選擇：`,
     fork: "分支對話並繼續",
@@ -125,6 +143,11 @@ const continuationCopy: Record<string, SessionContinuationCopy> = {
     terminalBadge: "ターミナル",
     terminalHint: "承認と質問はターミナルで対応してください",
     terminalWatch: "この会話はターミナルで続けてください。ここにも同期して表示されます。",
+    terminalRunning: "ターミナルで実行中",
+    runningIn: (agent) => `${agent} で実行中`,
+    waiting: "対応待ち",
+    groupRunning: (count) => `実行中 ${count}`,
+    groupWaiting: (count) => `対応待ち ${count}`,
     busy: (agent) => `${agent} で使用中`,
     choice: (agent) =>
       `この会話は ${agent} で使用中です。同時に書き込まれないよう、操作を選んでください：`,
@@ -169,6 +192,11 @@ const continuationCopy: Record<string, SessionContinuationCopy> = {
     terminalBadge: "Terminal",
     terminalHint: "Handle approvals and questions in the terminal",
     terminalWatch: "Continue this session in the terminal. It stays in sync here.",
+    terminalRunning: "Running in terminal",
+    runningIn: (agent) => `Running in ${agent}`,
+    waiting: "Needs you",
+    groupRunning: (count) => `${count} running`,
+    groupWaiting: (count) => (count === 1 ? "1 needs you" : `${count} need you`),
     busy: (agent) => `In use in ${agent}`,
     choice: (agent) =>
       `This session is in use in ${agent}. To avoid both sides writing at once, choose:`,
@@ -308,6 +336,10 @@ export type SessionContinuationStatusProps = {
   label: string | null | undefined;
   active?: boolean;
   loading?: boolean;
+  /** A turn runs now: the mark turns, as in the session lists. */
+  running?: boolean;
+  /** An approval or a question waits for the person. */
+  waiting?: boolean;
   className?: string;
 };
 
@@ -315,6 +347,8 @@ export function SessionContinuationStatus({
   label,
   active,
   loading,
+  running,
+  waiting,
   className,
 }: SessionContinuationStatusProps) {
   if (!label?.trim()) return null;
@@ -322,14 +356,16 @@ export function SessionContinuationStatus({
     <span
       role="status"
       aria-busy={loading || undefined}
-      className={`inline-flex max-w-full items-center gap-1.5 text-xs ${active || loading ? "text-primary-text" : "text-muted-foreground"} ${className ?? ""}`}
+      className={`inline-flex max-w-full items-center gap-1.5 text-xs ${waiting ? waitingText : active || loading || running ? "text-primary-text" : "text-muted-foreground"} ${className ?? ""}`}
     >
       <span
         aria-hidden="true"
         className={
           loading
             ? "size-3 shrink-0 animate-spin rounded-full border-2 border-current border-t-transparent motion-reduce:animate-none"
-            : "size-1.5 shrink-0 rounded-full bg-current"
+            : running
+              ? runningMark
+              : `size-1.5 shrink-0 rounded-full ${waiting ? "bg-amber-500" : "bg-current"}`
         }
       />
       <span className="min-w-0 break-words">{label}</span>
@@ -548,28 +584,73 @@ export function SessionContinuationReadOnly({
   );
 }
 
-/** List presentation uses observed runtime ownership and never grants controls. */
+/** Statuses in which an approval or a question waits for the person. */
+const WAITING_STATUSES = ["awaiting-approval", "waiting-input"];
+const waitingText = "text-amber-700 dark:text-amber-300";
+/** A three-quarter ring that turns once a second, held still when motion is reduced. */
+const runningMark =
+  "inline-block size-2 shrink-0 animate-spin rounded-full border-[1.5px] border-current border-t-transparent motion-reduce:animate-none";
+
+export type SessionListSession = {
+  agent: string;
+  availability?: string;
+  remote?: unknown;
+  archived?: boolean;
+  continuation?: {
+    status: string;
+    executionLocation?: string | null;
+    ownershipReason?: string | null;
+    reason?: string | null;
+  };
+  /** A turn that the Codex app or CLI runs now, as the host reports it. */
+  externalTurn?: { status: string; startedAt?: string | null } | null;
+};
+
+export type SessionListState = {
+  label: string;
+  /** A turn runs now, in AgentKib, in a connected terminal or in another client. */
+  active?: boolean;
+  /** An approval or a question waits for the person. */
+  waiting?: boolean;
+  /** Compact lists show a mark; the label is its tooltip and accessible name. */
+  dot?: boolean;
+};
+
+/**
+ * List presentation uses observed runtime state and never grants controls. In order: a request
+ * waiting for the person, a turn running in AgentKib, in a connected terminal or in the Codex app,
+ * and an idle connected terminal. A session another client only has open, a runner that stays
+ * after its turn and an outcome to verify show nothing, as on the phone.
+ */
 export function sessionContinuationListState(
-  session: {
-    agent: string;
-    availability?: string;
-    remote?: unknown;
-    continuation?: {
-      status: string;
-      executionLocation?: string | null;
-      ownershipReason?: string | null;
-      reason?: string | null;
-    };
-  },
+  session: SessionListSession,
   locale: string,
-): { label: string; active?: boolean; dot?: boolean } | undefined {
+): SessionListState | undefined {
   const copy = sessionContinuationCopy(locale);
   if (session.remote) return undefined;
   if (session.availability === "metadata-only") return { label: copy.viewOnly };
+  if (!["codex", "claude-code"].includes(session.agent)) return undefined;
   const state = session.continuation;
-  if (!state || !["codex", "claude-code"].includes(session.agent)) return undefined;
-  if (state.status === "outcome-unknown" || state.reason === "control-outcome-unconfirmed")
+  if (state?.status === "outcome-unknown" || state?.reason === "control-outcome-unconfirmed")
     return undefined;
+  // An archived session keeps no live mark.
+  if (!session.archived) {
+    if (state && WAITING_STATUSES.includes(state.status))
+      return { label: copy.waiting, waiting: true, dot: true };
+    if (state?.status === "running" || state?.status === "starting")
+      return {
+        label: state.executionLocation === "terminal" ? copy.terminalRunning : copy.running,
+        active: true,
+        dot: true,
+      };
+    if (session.externalTurn?.status === "running")
+      return {
+        label: copy.runningIn(session.agent === "claude-code" ? "Claude Code" : "Codex"),
+        active: true,
+        dot: true,
+      };
+  }
+  if (!state) return undefined;
   // Lists show only what is known without probing other clients. Use elsewhere is confirmed when
   // the session is opened; a short-lived observation here would flicker in and out.
   if (
@@ -583,9 +664,9 @@ export function sessionContinuationListState(
   )
     return undefined;
   if (state.executionLocation === "terminal" && session.agent === "claude-code")
-    return { label: copy.terminalBadge, dot: true };
-  if (state.executionLocation === "agentkib" || state.status === "starting")
-    return { label: copy.running, active: true, dot: true };
+    return session.archived ? undefined : { label: copy.terminalBadge, dot: true };
+  // A runner that stays after its turn is idle.
+  if (state.executionLocation === "agentkib") return undefined;
   if (
     [
       "platform-unsupported",
@@ -600,15 +681,93 @@ export function sessionContinuationListState(
   return undefined;
 }
 
-export function SessionContinuationDot({ label, active }: { label: string; active?: boolean }) {
+export function SessionContinuationDot({
+  label,
+  active,
+  waiting,
+}: {
+  label: string;
+  active?: boolean;
+  waiting?: boolean;
+}) {
   return (
     <>
       <i
         aria-hidden="true"
         title={label}
-        className={`inline-block size-1.5 shrink-0 rounded-full ${active ? "bg-primary" : "bg-muted-foreground"}`}
+        className={
+          active
+            ? `${runningMark} text-primary`
+            : `inline-block size-1.5 shrink-0 rounded-full ${waiting ? "bg-amber-500" : "bg-muted-foreground"}`
+        }
       />
       <span className="sr-only">{label}</span>
     </>
+  );
+}
+
+/** How many sessions of a group run now and how many wait for the person. */
+export function sessionGroupActivity(
+  sessions: readonly SessionListSession[],
+  locale: string,
+): { running: number; waiting: number; label: string } {
+  let running = 0,
+    waiting = 0;
+  for (const session of sessions) {
+    const state = sessionContinuationListState(session, locale);
+    if (state?.waiting) waiting += 1;
+    else if (state?.active) running += 1;
+  }
+  const copy = sessionContinuationCopy(locale);
+  const label = [
+    waiting ? copy.groupWaiting(waiting) : "",
+    running ? copy.groupRunning(running) : "",
+  ]
+    .filter(Boolean)
+    .join(", ");
+  return { running, waiting, label };
+}
+
+/**
+ * A group heading's marks for what waits and what runs, each with its number, before the group's
+ * count. Stays in the heading while the group is folded. The label is the accessible name.
+ */
+export function SessionGroupActivity({
+  running,
+  waiting,
+  label,
+  className,
+}: {
+  running: number;
+  waiting: number;
+  label: string;
+  className?: string;
+}) {
+  if (!running && !waiting) return null;
+  return (
+    <i
+      title={label}
+      className={`inline-flex shrink-0 items-center gap-2 text-xs not-italic tabular-nums ${className ?? ""}`}
+    >
+      {waiting > 0 && (
+        <i
+          aria-hidden="true"
+          className={`inline-flex items-center gap-1 not-italic ${waitingText}`}
+        >
+          <i className="inline-block size-1.5 rounded-full bg-amber-500" />
+          {waiting}
+        </i>
+      )}
+      {running > 0 && (
+        <i
+          aria-hidden="true"
+          className="inline-flex items-center gap-1 not-italic text-primary-text"
+        >
+          <i className={runningMark} />
+          {running}
+        </i>
+      )}
+      <i className="sr-only">{label}</i>
+    </i>
   );
 }

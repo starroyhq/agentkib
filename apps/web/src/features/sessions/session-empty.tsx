@@ -63,7 +63,11 @@ export function SessionEmpty() {
                   </small>
                 </span>
                 {status && (
-                  <SessionContinuationStatus label={status.label} active={status.active} />
+                  <SessionContinuationStatus
+                    label={status.label}
+                    running={status.active}
+                    waiting={status.waiting}
+                  />
                 )}
               </Link>
             );

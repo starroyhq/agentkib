@@ -588,11 +588,14 @@ export class TypeScriptBackend {
                 ? (liveValue as Record<string, unknown>)
                 : { sessionId, status: "unsupported" };
             const readHistory = async () => {
+              // Polled every 250 ms. A kept cursor per poll would push the cursors that
+              // clients hold for older pages out of the shared cache within seconds.
               const pageValue = await this.#request(RUNTIME_METHODS.webRequest, {
                 operation: "events",
                 sessionId,
                 cursor: null,
                 limit: 100,
+                retainCursor: false,
               });
               const page =
                 pageValue && typeof pageValue === "object" && !Array.isArray(pageValue)

@@ -79,6 +79,8 @@ const requestSchema = z.discriminatedUnion("operation", [
       sessionId: z.string().min(1).max(256),
       cursor: z.string().max(1024).nullable().optional(),
       limit: z.number().int().min(1).max(100).default(50),
+      /** False for stream snapshots: no cursor is kept for the page (see SessionPaging.read). */
+      retainCursor: z.boolean().optional(),
     })
     .strict(),
 ]);
@@ -3978,6 +3980,7 @@ export class WebReadRequests {
             request.cursor?.slice(nativePrefix.length) ?? null,
             request.limit,
             { codexDirectory: cwd },
+            request.retainCursor !== false,
           );
           events = {
             ...page,
@@ -4179,6 +4182,7 @@ export class WebReadRequests {
         sessionId: request.sessionId,
         cursor: request.cursor ?? null,
         limit: request.limit,
+        retainCursor: request.retainCursor !== false,
       });
     } else {
       managedRecord = readManagedRecords(this.dataDir, this.store).find(
@@ -4192,6 +4196,8 @@ export class WebReadRequests {
         workspace,
         request.cursor ?? null,
         request.limit,
+        undefined,
+        request.retainCursor !== false,
       );
     }
     if (

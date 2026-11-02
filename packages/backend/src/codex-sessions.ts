@@ -392,7 +392,12 @@ export class CodexSessions {
   }
   list(
     workspace: string | null,
-    selection: { collection?: SessionCollection; matches?: (nativeRef: string) => boolean; parents?: ReadonlySet<string>; limit?: number } = {},
+    selection: {
+      collection?: SessionCollection;
+      matches?: (nativeRef: string) => boolean;
+      parents?: ReadonlySet<string>;
+      limit?: number;
+    } = {},
   ) {
     const home = this.home(),
       current = this.databases(home),
@@ -464,9 +469,13 @@ export class CodexSessions {
             agentPath = nonempty(row.k12) ?? m.agent_path,
             nickname = nonempty(row.k13) ?? m.agent_nickname;
           // Child discovery filters authoritative metadata before touching unrelated histories.
-          if (selection.parents && (m.spawned_by_session_id
-            ? !selection.parents.has(m.spawned_by_session_id)
-            : m.origin !== "auxiliary")) continue;
+          if (
+            selection.parents &&
+            (m.spawned_by_session_id
+              ? !selection.parents.has(m.spawned_by_session_id)
+              : m.origin !== "auxiliary")
+          )
+            continue;
           const needsOrigin = !nonempty(row.k8),
             needsImportIdentity = m.origin === "execution",
             needsSpawned = !p && !m.spawned_by_session_id,
@@ -500,8 +509,15 @@ export class CodexSessions {
               nickname ??= headerMetadata.agent_nickname;
             }
           }
-          if (selection.parents && (!m.spawned_by_session_id || !selection.parents.has(m.spawned_by_session_id))) continue;
-          if (selection.limit !== undefined && sessions.size >= selection.limit) { incomplete = true; continue; }
+          if (
+            selection.parents &&
+            (!m.spawned_by_session_id || !selection.parents.has(m.spawned_by_session_id))
+          )
+            continue;
+          if (selection.limit !== undefined && sessions.size >= selection.limit) {
+            incomplete = true;
+            continue;
+          }
           const title =
               sessionTitle(row.k3) ??
               (m.origin === "auxiliary"

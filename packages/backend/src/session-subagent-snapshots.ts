@@ -130,7 +130,10 @@ export class SessionSubagentSnapshots {
         scope: identity,
         at: baseline?.at ?? -Infinity,
         value: overlay(baseline?.value, value),
-        publication: overlay(baseline?.publication?.partial ? baseline.publication : undefined, value),
+        publication: overlay(
+          baseline?.publication?.partial ? baseline.publication : undefined,
+          value,
+        ),
       });
     } else if (value)
       this.#entries.set(sessionId, { scope: identity, at: Date.now(), value, publication: value });

@@ -3,6 +3,7 @@ export * from "./claude-commands";
 export * from "./codex-commands";
 export * from "./claude-models";
 export * from "./conversation-tools";
+export * from "./subagents";
 export * from "./history-search";
 export * from "./mcp-management";
 export * from "./skill-sync";

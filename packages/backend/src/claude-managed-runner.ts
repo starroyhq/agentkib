@@ -29,6 +29,8 @@ import {
   type ContextUsage,
 } from "./context-usage";
 import type { ClaudeCommandEntry } from "@agentkib/runtime-protocol";
+import { ClaudeSubagentState, type ClaudeSubagentSnapshot } from "./claude-subagent-state";
+import type { ConversationEvent } from "./session-events";
 
 const MAX_TEXT = 4 * 1024 * 1024;
 const MAX_LINE = 6 * MAX_TEXT + 1024 * 1024;
@@ -147,6 +149,7 @@ export type ClaudeApiRetry = {
   error: string | null;
 };
 export type ClaudeRunnerSnapshot = {
+  subagents?: ClaudeSubagentSnapshot[];
   terminalResult: ClaudeRunnerTerminalResult | null;
   lastOutcome: string | null;
   model: string | null;
@@ -168,6 +171,7 @@ export type ClaudeRunnerSnapshot = {
 
 /** Claude stream-json protocol state shared by the managed process transport. */
 export class ClaudeRunnerState {
+  readonly subagentObservation = new ClaudeSubagentState();
   revision = 0;
   turnId = "";
   status = "idle";
@@ -229,6 +233,7 @@ export class ClaudeRunnerState {
 
   checkpoint() {
     return {
+      subagentCheckpoint: this.subagentObservation.checkpoint(),
       revision: this.revision,
       turnId: this.turnId,
       status: this.status,
@@ -269,7 +274,9 @@ export class ClaudeRunnerState {
 
   restoreStartup(checkpoint: ReturnType<ClaudeRunnerState["checkpoint"]>, reason: string): void {
     const revision = Math.max(this.revision, checkpoint.revision) + 1;
-    Object.assign(this, checkpoint);
+    const { subagentCheckpoint, ...previous } = checkpoint;
+    Object.assign(this, previous);
+    this.subagentObservation.restore(subagentCheckpoint);
     this.revision = revision;
     this.reason = reason;
   }
@@ -288,7 +295,9 @@ export class ClaudeRunnerState {
       pendingUser: null,
       revision: Math.max(this.revision, checkpoint.revision) + 1,
     };
-    Object.assign(this, checkpoint, native);
+    const { subagentCheckpoint, ...previous } = checkpoint;
+    Object.assign(this, previous, native);
+    this.subagentObservation.restore(subagentCheckpoint);
   }
 
   initialize(pendingUser: JsonObject | null = null): JsonObject {
@@ -311,6 +320,7 @@ export class ClaudeRunnerState {
       end = next;
     }
     return {
+      subagents: this.subagentObservation.snapshot(),
       terminalResult: this.terminalResult ? structuredClone(this.terminalResult) : null,
       lastOutcome: this.lastOutcome,
       model: this.model,
@@ -398,6 +408,7 @@ export class ClaudeRunnerState {
     const index = this.approvals.findIndex((item) => item.requestId === requestId);
     if (index < 0) throw new Error("unknown or already answered Claude approval");
     const [approval] = this.approvals.splice(index, 1);
+    this.subagentObservation.resolve(requestId);
     this.revision++;
     this.status = this.questions.length
       ? "waiting-input"
@@ -452,6 +463,7 @@ export class ClaudeRunnerState {
     const input = structuredClone(pending.input) as JsonObject;
     input.answers = native;
     this.questions.splice(index, 1);
+    this.subagentObservation.resolve(requestId);
     this.revision++;
     this.status = this.questions.length
       ? "waiting-input"
@@ -480,6 +492,7 @@ export class ClaudeRunnerState {
 
   stop(turnId: string, revision: number): void {
     this.assertCanStop(turnId, revision);
+    this.subagentObservation.unavailable(true);
     this.bashToolIds.clear();
     this.foregroundTasks.clear();
     this.subagentBashToolIds.clear();
@@ -503,6 +516,7 @@ export class ClaudeRunnerState {
   }
 
   fail(reason: string): void {
+    this.subagentObservation.unavailable();
     this.status = "outcome-unknown";
     this.activity = null;
     this.apiRetry = null;
@@ -530,6 +544,13 @@ export class ClaudeRunnerState {
     this.finalizedTextBlocks = [];
     if (frame.session_id !== undefined && frame.session_id !== this.sessionId)
       throw new Error("Claude session ID changed unexpectedly");
+    // Display-only child state has its own identities and never advances the parent's revision.
+    // In particular, local_agent notifications remain observation-only for pending controls.
+    if (frame.type !== "control_request")
+      this.subagentObservation.observe(
+        frame,
+        this.initialized && ["running", "waiting-input", "waiting-approval"].includes(this.status),
+      );
     switch (frame.type) {
       case "command_lifecycle":
       case "keep_alive":
@@ -547,7 +568,9 @@ export class ClaudeRunnerState {
         this.pendingUser = null;
         return pending;
       case "control_request":
-        return this.#controlRequest(frame);
+        const response = this.#controlRequest(frame);
+        if (response === null) this.subagentObservation.observe(frame, true);
+        return response;
       case "control_cancel_request":
         if (typeof frame.request_id !== "string") throw new Error("invalid Claude cancellation");
         this.approvals = this.approvals.filter((item) => item.requestId !== frame.request_id);
@@ -1306,6 +1329,7 @@ export class ClaudeManagedRunnerProcess {
   #reportedResult?: ClaudeRunnerTerminalResult;
   /** The current turn's last native agent message, which carries the turn end when it comes. */
   #lastAgentItem: Record<string, unknown> | null = null;
+  #subagentEpoch = randomUUID();
 
   constructor(
     readonly workspace: string,
@@ -1358,6 +1382,15 @@ export class ClaudeManagedRunnerProcess {
 
   snapshot(): ClaudeRunnerSnapshot {
     return this.state.snapshot();
+  }
+
+  /** Read-only child transcript observed in this worker; never shares the parent's reducer. */
+  subagentEvents(id: string): ConversationEvent[] | null {
+    return this.state.subagentObservation.events(id);
+  }
+  /** Child transcript generation belongs to the actual worker, not this reusable runner object. */
+  get subagentEpoch(): string {
+    return this.#subagentEpoch;
   }
 
   /** Catalog polling needs only protocol state, without cloning or truncating response text. */
@@ -1583,6 +1616,7 @@ export class ClaudeManagedRunnerProcess {
         this.state.foregroundTasks.clear();
         this.state.subagentBashToolIds.clear();
         this.state.subagentTasks.clear();
+        this.state.subagentObservation.unavailable();
         this.state.contextUsage = {
           ...this.state.contextUsage,
           state: this.state.contextUsage.available ? "stale" : "unavailable",
@@ -1730,6 +1764,7 @@ export class ClaudeManagedRunnerProcess {
   async shutdown(): Promise<void> {
     if (!this.#child) return;
     await this.#terminate();
+    this.state.subagentObservation.unavailable();
   }
 
   get cleanupError(): string | null {
@@ -1796,6 +1831,7 @@ export class ClaudeManagedRunnerProcess {
       throw error;
     }
     this.#child = child;
+    this.#subagentEpoch = randomUUID();
     try {
       this.#tree =
         process.platform === "darwin"

@@ -15,6 +15,7 @@ import { CursorIdeSessions } from "./cursor-ide-sessions";
 import type { CursorBridge } from "./cursor-bridge";
 import { readOpenClawSqliteDocument, readOpenClawSqliteEvents } from "./openclaw-sqlite-sessions";
 import { SessionPaging } from "./session-paging";
+import { SessionSubagents, type CodexSubagentSource, type SubagentObservation, type SubagentParent } from "./session-subagents";
 import { readHermesEvents } from "./hermes-events";
 import { readGrokDocument, readHermesDocument } from "./native-chat-documents";
 import { SessionStore, type NativeSession } from "./session-store";
@@ -90,12 +91,15 @@ export class SessionReaders {
   #cursor: CursorSessions;
   #cursorIde: CursorIdeSessions;
   #paging = new SessionPaging();
+  #subagents: SessionSubagents;
+  #subagentCandidates = new Map<string, { at: number; candidates: CodexSubagentSource[] }>();
   constructor(
     readonly store: Pick<SessionStore, "get" | "id" | "workspacePath" | "identitySalt">,
     commands: Commands,
     readonly env: NodeJS.ProcessEnv,
     readonly cursorBridge: Pick<CursorBridge, "profiles">,
   ) {
+    this.#subagents = new SessionSubagents(store.identitySalt());
     this.#codex = new CodexSessions(env);
     this.#claude = new ClaudeSessions(env);
     this.#grok = new GrokSessions(env);
@@ -109,6 +113,54 @@ export class SessionReaders {
   close(): void {
     this.#antigravity.close();
     this.#paging.clear();
+    this.#subagents.clear();
+    this.#subagentCandidates.clear();
+  }
+  /** Children never pass through the ordinary catalog/control resolver. */
+  async subagentsForNative(parent: SubagentParent, childId?: string, cursor: string | null = null, limit = 50, observations: SubagentObservation[] = []) {
+    const cacheKey = JSON.stringify([parent.sessionId, parent.nativeId, parent.workspace, parent.transcript]);
+    const cached = this.#subagentCandidates.get(cacheKey);
+    const candidates: CodexSubagentSource[] = cached && Date.now() - cached.at < 2_000 ? cached.candidates : [];
+    if (parent.agent === "codex" && candidates !== cached?.candidates) {
+      const seen = new Set([parent.nativeId]);
+      let parents = new Set([parent.nativeId]);
+      for (let depth = 0; depth < 8 && candidates.length < 128; depth++) {
+        const listing = this.#codex.list(parent.workspace, { parents, limit: 128 - candidates.length });
+        const next = new Set<string>();
+        for (const source of listing.sessions) {
+          if (seen.has(source.session.native_ref) || !source.session.spawned_by_session_id) continue;
+          seen.add(source.session.native_ref); next.add(source.session.native_ref);
+          candidates.push({ nativeId: source.session.native_ref, parentNativeId: source.session.spawned_by_session_id, name: source.session.title ?? "Codex", transcript: source.transcript });
+        }
+        if (!next.size) break;
+        parents = next;
+      }
+      this.#subagentCandidates.set(cacheKey, { at: Date.now(), candidates });
+      if (this.#subagentCandidates.size > 64) this.#subagentCandidates.delete(this.#subagentCandidates.keys().next().value!);
+    }
+    return childId
+      ? this.#subagents.events(parent, childId, cursor, limit, candidates, observations)
+      : this.#subagents.list(parent, candidates, observations);
+  }
+  verifiedCodexSubagentParent(sessionId: string, nativeId: string, workspace: string): SubagentParent {
+    const identity = this.verifiedCodexControlDirectory(nativeId);
+    const root = canonicalize(workspace);
+    if (!identity || !within(canonicalize(identity.cwd), root)) throw new Error("session-workspace-mismatch");
+    const source = this.#codex.list(null, { matches: ref => ref === nativeId }).sessions.find(value => value.session.native_ref === nativeId && value.session.origin !== "auxiliary");
+    if (!source) throw new Error("session-unavailable");
+    return { sessionId, nativeId, workspace: root, transcript: source.transcript, agent: "codex" };
+  }
+  subagentObservationId(parent: SubagentParent, id: string, observations: SubagentObservation[]) {
+    return this.#subagents.observationId(parent, id, observations);
+  }
+  async subagentsForSession(sessionId: string, childId?: string, cursor: string | null = null, limit = 50, running = false, turnId: string | null = null, observation?: Pick<SubagentParent, "connected" | "observerId">) {
+    const source = await this.resolve(sessionId);
+    if (!source.transcript || !["codex", "claude-code"].includes(source.native.agent) || source.native.origin === "auxiliary" || source.native.sidechain)
+      throw new Error("session-not-controllable");
+    const parent = source.native.agent === "codex"
+      ? this.verifiedCodexSubagentParent(sessionId, source.native.native_ref, source.workspace)
+      : { sessionId, nativeId: source.native.native_ref, workspace: source.workspace, transcript: source.transcript, agent: "claude-code" as const };
+    return this.subagentsForNative({ ...parent, running, turnId, ...observation }, childId, cursor, limit);
   }
   verifiedCodexControlIds(nativeRefs: Iterable<string>): Set<string> {
     return this.#codex.verifiedControlIds(nativeRefs);

@@ -481,9 +481,12 @@ export function SessionComposer({
     );
   const advancedActions =
     (running || compacting) &&
-    (!isClaude ||
-      capabilities?.features.steer?.available ||
-      capabilities?.features["queue-add"]?.available) ? (
+    (live?.executionMode === "codex-follower"
+      ? capabilities?.features.steer?.available === true ||
+        capabilities?.features["queue-add"]?.available === true
+      : !isClaude ||
+        capabilities?.features.steer?.available ||
+        capabilities?.features["queue-add"]?.available) ? (
       <DropdownMenu>
         <DropdownMenuTrigger
           type="button"
@@ -560,6 +563,9 @@ export function SessionComposer({
     <div className="w-full max-w-3xl shrink-0 self-center space-y-2">
       {isClaude && display.continuation === "terminal" && (
         <p className="px-3 text-xs leading-5 text-muted-foreground">{continuation.terminalHint}</p>
+      )}
+      {isCodex && display.continuation === "codex" && (
+        <p className="px-3 text-xs leading-5 text-muted-foreground">{continuation.codexHint}</p>
       )}
       {isClaude && <PermissionModeNotice permission={live?.permission} locale={locale} compact />}
       {(isClaude || isCodex) && <ManagedTurnNotice live={live} locale={locale} />}

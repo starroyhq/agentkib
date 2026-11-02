@@ -37,6 +37,7 @@ type DisplayState = {
     | "terminal"
     | "terminal-watch"
     | "busy"
+    | "codex"
     | "view-only";
 };
 
@@ -120,6 +121,13 @@ export function sessionDisplayState(
       return { label: c.verifying, reason: c.verifying, tone: "muted", loading: true };
     if (live.ownershipReason === "codex-owner-busy" || reason === "codex-owner-busy")
       return { label: copy.busy("Codex"), reason: "", tone: "muted", continuation: "busy" };
+    if (live.executionMode === "codex-follower")
+      return {
+        label: copy.codexConnected,
+        reason: "",
+        tone: "muted",
+        continuation: "codex",
+      };
     if (
       (state.pendingSend?.sessionId === state.selected &&
         !["agentkib", "terminal"].includes(live.executionLocation ?? "")) ||

@@ -501,6 +501,58 @@ describe("composer sending shortcuts", () => {
       reason: "codex-owner-busy",
     });
   }
+  it("shows the Codex follower hint with an enabled composer and hides the busy bar and advanced menu", () => {
+    continuationFixture();
+    Object.assign(doubles.session.live!, {
+      executionMode: "codex-follower",
+      executionLocation: "external",
+      sendEnabled: true,
+    });
+    doubles.session.capabilities!.features.steer = {
+      available: false,
+      reason: "follower-operation-unverified",
+    };
+    doubles.session.capabilities!.features["queue-add"] = {
+      available: false,
+      reason: "follower-operation-unverified",
+    };
+    const { input } = renderComposer();
+    expect(
+      screen.getByText("Messages run in Codex, using the model and permissions set there"),
+    ).toBeVisible();
+    expect(input).toBeEnabled();
+    expect(
+      screen.queryByRole("button", { name: codexCopy["en-US"].advanced }),
+    ).not.toBeInTheDocument();
+    expect(screen.queryByText(/In use in Codex/)).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Send" })).toBeEnabled();
+  });
+  it("shows the stop button during a followed turn", () => {
+    continuationFixture();
+    doubles.session.canStop = true;
+    Object.assign(doubles.session.live!, {
+      executionMode: "codex-follower",
+      executionLocation: "external",
+      status: "running",
+      turnId: "followed-turn",
+      sendEnabled: false,
+      stopEnabled: true,
+    });
+    doubles.session.capabilities!.features.steer = {
+      available: false,
+      reason: "follower-operation-unverified",
+    };
+    doubles.session.capabilities!.features["queue-add"] = {
+      available: false,
+      reason: "follower-operation-unverified",
+    };
+    renderComposer();
+    expect(screen.getByRole("button", { name: "Stop" })).toBeVisible();
+    expect(
+      screen.queryByRole("button", { name: codexCopy["en-US"].advanced }),
+    ).not.toBeInTheDocument();
+    expect(screen.queryByText(/In use in Codex/)).not.toBeInTheDocument();
+  });
   it("checks Claude on focus and keeps the composer directly available after background retirement", () => {
     continuationFixture();
     doubles.session.current = {

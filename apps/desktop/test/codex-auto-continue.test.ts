@@ -19,6 +19,9 @@ import {
   CodexAppServerSession,
 } from "../../../packages/backend/src/codex-app-server";
 import { CodexFollowerBridge } from "../../../packages/backend/src/codex-follower-bridge";
+import { CodexFollowerConnection } from "../../../packages/backend/src/codex-follower-connection";
+import { CodexFollowerState } from "../../../packages/backend/src/codex-follower-state";
+import * as codexFollowerLocks from "../../../packages/backend/src/codex-follower-operation-lock";
 import { CodexRuntimePreflight } from "../../../packages/backend/src/codex-runtime-preflight";
 import { readControlReceipt } from "../../../packages/backend/src/control-receipt";
 import {
@@ -58,6 +61,12 @@ function fixture(
   compressedHistory = false,
   registeredRoot?: string,
   runtimeEnvironment: NodeJS.ProcessEnv = {},
+  publishConversationEvent?: (
+    sessionId: string,
+    type: "state" | "text-delta" | "item-upsert" | "snapshot",
+    payload: Record<string, unknown>,
+    live: Record<string, unknown>,
+  ) => void,
 ) {
   const root = realpathSync(mkdtempSync(path.join(tmpdir(), "agentkib-codex-auto-")));
   cleanups.push(() => rmSync(root, { recursive: true, force: true }));
@@ -154,6 +163,7 @@ function fixture(
   let sandboxRootsOverride: { value: unknown } | undefined;
   let policyReply: Record<string, unknown> = {};
   let readCwd: string | undefined;
+  let readTurns: unknown[] | undefined;
   let wrongReplyCwd: "top" | "thread" | undefined;
   let sourceModel: string | null = "model-a";
   let sourceEffort: string | null = "low";
@@ -203,7 +213,7 @@ function fixture(
             model: sourceModel,
             reasoningEffort: sourceEffort,
             status: { type: "idle" },
-            turns: [{ id: "finished-turn", status: "completed", items: [] }],
+            turns: readTurns ?? [{ id: "finished-turn", status: "completed", items: [] }],
           },
         };
       if (method === "turn/start") {
@@ -328,7 +338,7 @@ function fixture(
     root,
     () => 0n,
     { CODEX_HOME: home, HOME: root, PATH: bin, ...runtimeEnvironment },
-    undefined,
+    publishConversationEvent,
     () => observed,
   );
   cleanups.push(() => web.closeAsync());
@@ -375,6 +385,9 @@ function fixture(
     },
     setReadCwd: (cwd: string) => {
       readCwd = cwd;
+    },
+    setReadTurns: (turns: unknown[]) => {
+      readTurns = turns;
     },
     setSourceSettings: (model: string | null, effort: string | null) => {
       sourceModel = model;
@@ -2126,6 +2139,7 @@ describe("Codex automatic CLI continuation", () => {
 
   it("keeps native writer conflicts authoritative for compressed history", async () => {
     const f = fixture(true);
+    vi.spyOn(CodexFollowerConnection, "supported").mockReturnValue(false);
     f.setFailure(
       new CodexAppServerError({
         code: -32600,
@@ -2482,6 +2496,7 @@ describe("Codex automatic CLI continuation", () => {
 
   it("reports a definite writer refusal without an unknown command or follower fallback", async () => {
     const f = fixture();
+    vi.spyOn(CodexFollowerConnection, "supported").mockReturnValue(false);
     f.setFailure(
       new CodexAppServerError({
         code: -32600,
@@ -2583,6 +2598,7 @@ describe("Codex automatic CLI continuation", () => {
 
   it("forks a busy source through a reader without resuming or changing the source", async () => {
     const f = fixture();
+    vi.spyOn(CodexFollowerConnection, "supported").mockReturnValue(false);
     const directory = path.join(f.home, "thread-writer-locks");
     mkdirSync(directory);
     const release = acquirePortableFileLease(path.join(directory, `${nativeId}.lock`));
@@ -3125,5 +3141,569 @@ describe("Codex automatic CLI continuation", () => {
       reason: "codex-cli-unavailable",
     });
     expect(f.start).not.toHaveBeenCalled();
+  });
+});
+
+describe("Codex Desktop follow", () => {
+  function holdWriterLock(f: ReturnType<typeof fixture>) {
+    const directory = path.join(f.home, "thread-writer-locks");
+    mkdirSync(directory, { recursive: true });
+    const release = acquirePortableFileLease(path.join(directory, `${nativeId}.lock`));
+    cleanups.push(release);
+    return release;
+  }
+
+  function followerFixture(
+    options: {
+      revision?: number;
+      turn?: boolean;
+      approval?: boolean;
+      question?: boolean;
+      publish?: (
+        sessionId: string,
+        type: "state" | "text-delta" | "item-upsert" | "snapshot",
+        payload: Record<string, unknown>,
+        live: Record<string, unknown>,
+      ) => void;
+    } = {},
+  ) {
+    const f = fixture(false, undefined, {}, options.publish);
+    vi.spyOn(CodexFollowerConnection, "supported").mockReturnValue(true);
+    vi.spyOn(codexFollowerLocks, "acquireCodexFollowerOperationLock").mockReturnValue(
+      () => {},
+    );
+    const release = holdWriterLock(f);
+    const turnId = options.turn || options.approval || options.question ? "followed-turn" : null;
+    const requests = options.approval
+      ? [
+          {
+            id: "approval-1",
+            method: "item/commandExecution/requestApproval",
+            params: {
+              threadId: nativeId,
+              turnId: "followed-turn",
+              command: "ls",
+              cwd: f.workspace,
+              availableDecisions: ["accept", "decline"],
+            },
+          },
+        ]
+      : options.question
+        ? [
+            {
+              id: "question-1",
+              method: "item/tool/requestUserInput",
+              params: {
+                threadId: nativeId,
+                turnId: "followed-turn",
+                questions: [
+                  {
+                    id: "choice",
+                    question: "Pick one",
+                    options: [{ label: "A" }, { label: "B" }],
+                  },
+                ],
+              },
+            },
+          ]
+        : [];
+    const state = new CodexFollowerState(nativeId, "fixture-owner");
+    state.notification({
+      type: "broadcast",
+      sourceClientId: "fixture-owner",
+      method: "thread-stream-state-changed",
+      version: 11,
+      params: {
+        conversationId: nativeId,
+        hostId: "local",
+        change: {
+          type: "snapshot",
+          revision: options.revision ?? 1,
+          conversationState: {
+            id: nativeId,
+            hostId: "local",
+            requests,
+            threadRuntimeStatus: { type: turnId ? "active" : "idle" },
+            turns: turnId ? [{ turnId, status: "inProgress", items: [] }] : [],
+          },
+        },
+      },
+    });
+    const bridge = {
+      connected: true,
+      selectedState: state,
+      connection: {
+        endpoint: path.join(f.home, "ipc", "ipc.sock"),
+        clientId: "fixture-follower",
+      },
+      supportsThreadSettings: false,
+      observeLive: vi.fn(async () => state),
+      refresh: vi.fn(async () => state),
+      mutate: vi.fn(
+        async (
+          _method: string,
+          _params: Record<string, unknown>,
+          _revision: number,
+          onDispatch: () => void,
+        ) => {
+          onDispatch();
+          return {};
+        },
+      ),
+      close: vi.fn(() => {
+        bridge.connected = false;
+      }),
+    };
+    f.follower.mockResolvedValue(bridge as unknown as CodexFollowerBridge);
+    return { f, state, bridge, release };
+  }
+
+  it("follows the Codex owner when the writer lock is held", async () => {
+    const { f, bridge } = followerFixture({ revision: 7 });
+    const live = await f.live();
+    expect(live).toMatchObject({
+      executionMode: "codex-follower",
+      executionLocation: "external",
+      ownershipReason: null,
+      reason: null,
+      sendEnabled: true,
+      revision: 7,
+      workspaceId: "workspace",
+      sessionId: f.summary.id,
+    });
+    expect(f.follower).toHaveBeenCalledWith(
+      path.join(f.home, "ipc", "ipc.sock"),
+      nativeId,
+      expect.any(Function),
+    );
+    expect(bridge.observeLive).toHaveBeenCalled();
+    expect(f.start).not.toHaveBeenCalled();
+    expect(f.methods).not.toContain("thread/resume");
+  });
+
+  it("keeps the busy choice and backs off when no Codex owner is found", async () => {
+    const f = fixture();
+    vi.spyOn(CodexFollowerConnection, "supported").mockReturnValue(true);
+    holdWriterLock(f);
+    f.follower.mockRejectedValue(new Error("no Codex session owner found"));
+    let now = Date.now();
+    vi.spyOn(Date, "now").mockImplementation(() => now);
+    expect(await f.live()).toMatchObject({
+      executionLocation: "external",
+      ownershipReason: "codex-owner-busy",
+      sendEnabled: false,
+    });
+    expect(f.follower).toHaveBeenCalledTimes(1);
+    expect(await f.live()).toMatchObject({ ownershipReason: "codex-owner-busy" });
+    expect(f.follower).toHaveBeenCalledTimes(1);
+    now += 5_001;
+    expect(await f.live()).toMatchObject({ ownershipReason: "codex-owner-busy" });
+    expect(f.follower).toHaveBeenCalledTimes(2);
+    expect(f.start).not.toHaveBeenCalled();
+  });
+
+  it("keeps the busy choice when the platform does not support following", async () => {
+    const f = fixture();
+    vi.spyOn(CodexFollowerConnection, "supported").mockReturnValue(false);
+    holdWriterLock(f);
+    expect(await f.live()).toMatchObject({
+      executionLocation: "external",
+      ownershipReason: "codex-owner-busy",
+      sendEnabled: false,
+    });
+    expect(f.follower).not.toHaveBeenCalled();
+    expect(f.start).not.toHaveBeenCalled();
+  });
+
+  it("forwards a send to the owner instead of resuming", async () => {
+    const { f, bridge } = followerFixture({ revision: 3 });
+    const state = await f.live();
+    const requestId = randomUUID();
+    expect(await f.sendWithState(state, { requestId })).toMatchObject({ accepted: true });
+    expect(bridge.mutate).toHaveBeenCalledWith(
+      "thread-follower-start-turn",
+      {
+        conversationId: nativeId,
+        turnStart: {
+          request: {
+            threadId: nativeId,
+            clientUserMessageId: requestId,
+            input: [{ type: "text", text: "Continue", text_elements: [] }],
+          },
+        },
+      },
+      3,
+      expect.any(Function),
+    );
+    expect(f.methods).not.toContain("thread/resume");
+    expect(f.methods).not.toContain("turn/start");
+    expect(f.start).not.toHaveBeenCalled();
+    const ledger = openManagedLedger(f.root)!;
+    try {
+      const row = ledger
+        .prepare("SELECT evidence FROM managed_commands WHERE request_id=?")
+        .get(requestId) as { evidence: string };
+      expect(JSON.parse(row.evidence)).toMatchObject({
+        executionMode: "codex-follower",
+        workspaceId: "workspace",
+      });
+    } finally {
+      ledger.close();
+    }
+  });
+
+  it("forwards a stop to the owner during a followed turn", async () => {
+    const { f, bridge } = followerFixture({ revision: 2, turn: true });
+    const state = await f.live();
+    expect(state).toMatchObject({ status: "running", turnId: "followed-turn" });
+    bridge.mutate.mockImplementation(async (_m, _p, _r, onDispatch: () => void) => {
+      onDispatch();
+      return { ok: true, interruptedTurnId: "followed-turn" };
+    });
+    const result = await f.web.managedControl({
+      operation: "stop",
+      sessionId: f.summary.id,
+      requestId: randomUUID(),
+      deviceId: "fixture",
+      runtimeBootId: state.runtimeBootId,
+      expectedRevision: state.revision,
+      experimentalEnabled: true,
+      turnId: "followed-turn",
+    });
+    expect(result).toMatchObject({ accepted: true });
+    expect(bridge.mutate).toHaveBeenCalledWith(
+      "thread-follower-interrupt-turn",
+      { conversationId: nativeId, mode: "user-stop", expectedTurnId: "followed-turn" },
+      2,
+      expect.any(Function),
+    );
+    expect(f.start).not.toHaveBeenCalled();
+  });
+
+  it("forwards an approval decision to the owner", async () => {
+    const { f, bridge } = followerFixture({ revision: 4, approval: true });
+    const state = await f.live();
+    expect(state).toMatchObject({ status: "awaiting-approval" });
+    const result = await f.web.managedControl({
+      operation: "approve",
+      sessionId: f.summary.id,
+      requestId: randomUUID(),
+      deviceId: "fixture",
+      runtimeBootId: state.runtimeBootId,
+      expectedRevision: state.revision,
+      experimentalEnabled: true,
+      turnId: "followed-turn",
+      approvalId: "approval-1",
+      decision: "accept",
+    });
+    expect(result).toMatchObject({ accepted: true });
+    expect(bridge.mutate).toHaveBeenCalledWith(
+      "thread-follower-command-approval-decision",
+      { conversationId: nativeId, requestId: "approval-1", decision: "accept" },
+      4,
+      expect.any(Function),
+    );
+    expect(f.start).not.toHaveBeenCalled();
+  });
+
+  it.each(["settings", "rename", "compact", "steer", "answer"])(
+    "rejects %s while following without dispatching",
+    async (operation) => {
+      const { f, bridge } = followerFixture({ revision: 5 });
+      const state = await f.live();
+      const result = await f.web.managedControl({
+        operation,
+        sessionId: f.summary.id,
+        requestId: randomUUID(),
+        deviceId: "fixture",
+        runtimeBootId: state.runtimeBootId,
+        expectedRevision: state.revision,
+        experimentalEnabled: true,
+        turnId: "followed-turn",
+      });
+      expect(result).toMatchObject({
+        controlOutcome: "not-dispatched",
+        reason: "follower-operation-unverified",
+      });
+      expect(bridge.mutate).not.toHaveBeenCalled();
+      expect(f.start).not.toHaveBeenCalled();
+      expect(f.methods).not.toContain("thread/resume");
+    },
+  );
+
+  it("rejects a stale expected revision while following", async () => {
+    const { f, bridge } = followerFixture({ revision: 2 });
+    const state = await f.live();
+    const result = await f.sendWithState({
+      revision: 1,
+      runtimeBootId: state.runtimeBootId,
+    } as Awaited<ReturnType<typeof f.live>>);
+    expect(result).toMatchObject({ controlOutcome: "not-dispatched" });
+    expect(bridge.mutate).not.toHaveBeenCalled();
+    expect(f.start).not.toHaveBeenCalled();
+  });
+
+  it("returns to the managed path once the owner releases the lock", async () => {
+    const { f, bridge, release } = followerFixture();
+    await f.live();
+    expect(f.follower).toHaveBeenCalledTimes(1);
+    bridge.connected = false;
+    bridge.observeLive.mockRejectedValue(new Error("Codex session owner changed"));
+    let now = Date.now();
+    vi.spyOn(Date, "now").mockImplementation(() => now);
+    expect(await f.live()).toMatchObject({ ownershipReason: "codex-owner-busy" });
+    expect(bridge.close).toHaveBeenCalled();
+    now += 4_001;
+    // The owner went away: the writer lock frees and AgentKib manages again.
+    release();
+    expect(await f.live()).toMatchObject({
+      executionLocation: null,
+      sendEnabled: true,
+      ownershipReason: null,
+    });
+    expect(await f.send()).toMatchObject({ accepted: true });
+    expect(f.methods).toContain("thread/resume");
+    expect(f.methods).toContain("turn/start");
+  });
+
+  it("projects follower capabilities", async () => {
+    const { f } = followerFixture();
+    await f.live();
+    const capabilities = (await f.web.managedQuery({
+      operation: "capabilities",
+      sessionId: f.summary.id,
+      experimentalEnabled: true,
+    })) as {
+      executionMode: string;
+      features: Record<string, { available: boolean; reason?: string }>;
+    };
+    expect(capabilities).toMatchObject({
+      executionMode: "codex-follower",
+      executionLocation: "external",
+      ownershipReason: null,
+    });
+    expect(capabilities.features.send).toEqual({ available: true });
+    expect(capabilities.features.stop).toEqual({
+      available: false,
+      reason: "no-active-turn",
+    });
+    expect(capabilities.features.approve).toEqual({
+      available: false,
+      reason: "no-supported-approval",
+    });
+    expect(capabilities.features.fork).toEqual({ available: true });
+    expect(capabilities.features.delete).toEqual({
+      available: false,
+      reason: "codex-owner-busy",
+    });
+    for (const operation of [
+      "answer",
+      "resume",
+      "steer",
+      "queue-add",
+      "rename",
+      "archive",
+      "settings",
+      "compact",
+      "attachments",
+      "goal-set",
+      "terminals-clean",
+    ])
+      expect(capabilities.features[operation]).toEqual({
+        available: false,
+        reason: "follower-operation-unverified",
+      });
+    expect(capabilities.features["settings-state"]).toEqual({ available: true });
+    expect(capabilities.features.goal).toEqual({ available: true });
+    expect(capabilities.features.resources).toEqual({ available: true });
+  });
+
+  it("retires an unwatched follower and reconnects on the next live", async () => {
+    vi.useFakeTimers();
+    const { f, bridge } = followerFixture();
+    await f.live();
+    expect(f.follower).toHaveBeenCalledTimes(1);
+    f.leave();
+    await vi.advanceTimersByTimeAsync(31_000);
+    expect(bridge.close).toHaveBeenCalled();
+    f.observe();
+    await f.live();
+    expect(f.follower).toHaveBeenCalledTimes(2);
+  });
+
+  it("marks a dispatched follower send unknown and reconciles it from the thread", async () => {
+    const { f, bridge } = followerFixture({ revision: 2 });
+    const state = await f.live();
+    const requestId = randomUUID();
+    bridge.mutate.mockImplementation(async (_m, _p, _r, onDispatch: () => void) => {
+      onDispatch();
+      throw new Error("Codex IPC disconnected");
+    });
+    expect(await f.sendWithState(state, { requestId })).toMatchObject({
+      controlOutcome: "unknown",
+      reason: "control-outcome-unconfirmed",
+    });
+    expect(await f.live()).toMatchObject({
+      reason: "control-outcome-unconfirmed",
+      sendEnabled: false,
+    });
+    f.setReadTurns([
+      {
+        id: "followed-turn",
+        status: "completed",
+        items: [{ type: "userMessage", clientId: requestId }],
+      },
+    ]);
+    expect(
+      await f.web.managedReconcile({
+        operation: "reconcile",
+        sessionId: f.summary.id,
+        requestId: randomUUID(),
+        deviceId: "fixture",
+      }),
+    ).toMatchObject({ reconciled: true });
+    expect(readUnknownManagedCommands(f.root, f.summary.id)).toEqual([]);
+  });
+
+  it("reconciles an unknown follower approval once the owner drops the request", async () => {
+    const { f, state, bridge } = followerFixture({ revision: 6, approval: true });
+    const live = await f.live();
+    const requestId = randomUUID();
+    bridge.mutate.mockImplementation(async (_m, _p, _r, onDispatch: () => void) => {
+      onDispatch();
+      throw new Error("Codex IPC disconnected");
+    });
+    const result = await f.web.managedControl({
+      operation: "approve",
+      sessionId: f.summary.id,
+      requestId,
+      deviceId: "fixture",
+      runtimeBootId: live.runtimeBootId,
+      expectedRevision: live.revision,
+      experimentalEnabled: true,
+      turnId: "followed-turn",
+      approvalId: "approval-1",
+      decision: "accept",
+    });
+    expect(result).toMatchObject({ controlOutcome: "unknown" });
+    expect(readUnknownManagedCommands(f.root, f.summary.id)).toHaveLength(1);
+    state.notification({
+      type: "broadcast",
+      sourceClientId: "fixture-owner",
+      method: "thread-stream-state-changed",
+      version: 11,
+      params: {
+        conversationId: nativeId,
+        hostId: "local",
+        change: {
+          type: "snapshot",
+          revision: 7,
+          conversationState: {
+            id: nativeId,
+            hostId: "local",
+            requests: [],
+            threadRuntimeStatus: { type: "idle" },
+            turns: [{ turnId: "followed-turn", status: "completed", items: [] }],
+          },
+        },
+      },
+    });
+    expect(
+      await f.web.managedQuery({
+        operation: "inspect",
+        sessionId: f.summary.id,
+        experimentalEnabled: true,
+      }),
+    ).toMatchObject({ reconciled: true });
+    expect(readUnknownManagedCommands(f.root, f.summary.id)).toEqual([]);
+  });
+
+  it("forks while following using the follower revision", async () => {
+    const { f, bridge } = followerFixture({ revision: 9 });
+    const state = await f.live();
+    const result = await f.web.managedControl({
+      operation: "fork",
+      sessionId: f.summary.id,
+      requestId: randomUUID(),
+      deviceId: "fixture",
+      runtimeBootId: state.runtimeBootId,
+      expectedRevision: state.revision,
+      experimentalEnabled: true,
+    });
+    expect(result).toMatchObject({ accepted: true, sourceSessionId: f.summary.id });
+    expect(f.methods).toContain("thread/read");
+    expect(f.methods).toContain("thread/fork");
+    expect(f.methods).not.toContain("thread/resume");
+    expect(bridge.mutate).not.toHaveBeenCalled();
+  });
+
+  it("rejects a fork with a stale follower revision", async () => {
+    const { f, bridge } = followerFixture({ revision: 9 });
+    const state = await f.live();
+    const result = await f.web.managedControl({
+      operation: "fork",
+      sessionId: f.summary.id,
+      requestId: randomUUID(),
+      deviceId: "fixture",
+      runtimeBootId: state.runtimeBootId,
+      expectedRevision: 1,
+      experimentalEnabled: true,
+    });
+    expect(result).toMatchObject({
+      controlOutcome: "not-dispatched",
+      reason: "stale-or-disabled-control",
+    });
+    expect(bridge.mutate).not.toHaveBeenCalled();
+    expect(f.methods).not.toContain("thread/fork");
+  });
+
+  it("projects followed user-input requests as unsupported", async () => {
+    const { f } = followerFixture({ revision: 3, question: true });
+    const live = await f.live();
+    expect(live).toMatchObject({ status: "waiting-input" });
+    expect(
+      (live.questions as Array<Record<string, unknown>>)[0],
+    ).toMatchObject({ supported: false });
+    const capabilities = (await f.web.managedQuery({
+      operation: "capabilities",
+      sessionId: f.summary.id,
+      experimentalEnabled: true,
+    })) as { features: Record<string, { available: boolean; reason?: string }> };
+    expect(capabilities.features.answer).toEqual({
+      available: false,
+      reason: "follower-operation-unverified",
+    });
+  });
+
+  it("publishes live state without transcript items while following", async () => {
+    const publish = vi.fn();
+    const { f } = followerFixture({ publish });
+    await f.live();
+    const states = publish.mock.calls.filter((call) => call[1] === "state");
+    expect(states.length).toBeGreaterThan(0);
+    for (const [, , payload] of states) {
+      expect(payload).toMatchObject({ executionMode: "codex-follower" });
+      expect(payload).not.toHaveProperty("items");
+    }
+    expect(publish.mock.calls.some((call) => call[1] === "snapshot")).toBe(false);
+    const onSnapshot = f.follower.mock.calls[0]![2]!;
+    publish.mockClear();
+    onSnapshot({
+      live: { streamText: "partial" },
+      items: [
+        {
+          id: "desktop-user-item",
+          kind: "user-message",
+          turn_id: "followed-turn",
+          content: "x",
+        },
+      ],
+    });
+    const updates = publish.mock.calls.filter((call) => call[1] === "state");
+    expect(updates.length).toBeGreaterThan(0);
+    const last = updates.at(-1)![2] as Record<string, unknown>;
+    expect(last.streamText).toBe("partial");
+    expect(last).not.toHaveProperty("items");
+    expect(publish.mock.calls.some((call) => call[1] === "snapshot")).toBe(false);
   });
 });

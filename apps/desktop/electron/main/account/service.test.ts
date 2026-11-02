@@ -347,7 +347,7 @@ describe("computer names", () => {
   function broker(routes: Record<string, (init: RequestInit) => Response>) {
     network.mockImplementation(async (url: URL, init: RequestInit) => {
       const route = routes[`${init.method ?? "GET"} ${url.pathname}`];
-      return route ? route(init) : Response.json(tokens);
+      return route ? route(init) : Response.json(url.pathname === "/v1/account" ? profile : tokens);
     });
   }
   async function signIn() {
@@ -502,5 +502,73 @@ describe("computer names", () => {
       expect(state.error).toBeUndefined();
       expect(state.device?.name).toBeUndefined();
     }
+  });
+
+  it("refreshes account names on status after 30 seconds without repeating the automatic write", async () => {
+    identity = { deviceId, credential: "c", accountId: profile.id };
+    let name = "Original name";
+    broker({
+      "GET /v1/account/devices": () => Response.json({ devices: [{ deviceId, name }] }),
+    });
+    await signIn();
+    await vi.waitFor(async () => expect((await service.status()).device?.name).toBe(name));
+    const timestamp = Date.now();
+    const clock = vi.spyOn(Date, "now").mockReturnValue(timestamp);
+    try {
+      name = "Named from the phone";
+      expect((await service.request({ operation: "status" })).device?.name).toBe("Original name");
+      expect(calls("/v1/account/devices", "GET")).toHaveLength(1);
+      clock.mockReturnValue(timestamp + 30_001);
+      expect((await service.request({ operation: "status" })).device?.name).toBe(name);
+      expect(calls("/v1/account/devices", "GET")).toHaveLength(2);
+      expect(calls(`/v1/account/devices/${deviceId}`, "PATCH")).toHaveLength(0);
+    } finally {
+      clock.mockRestore();
+    }
+  });
+
+  it("reads the winning user name after a backfill conflict without retrying PATCH", async () => {
+    identity = { deviceId, credential: "c", accountId: profile.id };
+    let name: string | null = null;
+    broker({
+      "GET /v1/account/devices": () => Response.json({ devices: [{ deviceId, name }] }),
+      [`PATCH /v1/account/devices/${deviceId}`]: () => {
+        name = "User named this computer";
+        return Response.json({ error: "name_already_set" }, { status: 409 });
+      },
+    });
+    await signIn();
+    await vi.waitFor(async () =>
+      expect((await service.status()).device?.name).toBe("User named this computer"),
+    );
+    expect(calls("/v1/account/devices", "GET")).toHaveLength(2);
+    expect(calls(`/v1/account/devices/${deviceId}`, "PATCH")).toHaveLength(1);
+    expect(await service.backfillName()).toBe(false);
+  });
+
+  it("does not publish an old name read after signing out and signing back in", async () => {
+    identity = { deviceId, credential: "c", accountId: profile.id };
+    let resolveOld!: (response: Response) => void;
+    const old = new Promise<Response>((resolve) => {
+      resolveOld = resolve;
+    });
+    let reads = 0;
+    network.mockImplementation(async (url: URL) => {
+      if (url.pathname === "/v1/account/devices") {
+        if (++reads === 1) return old;
+        return Response.json({ devices: [{ deviceId, name: "Current name" }] });
+      }
+      return Response.json(url.pathname === "/v1/account" ? profile : tokens);
+    });
+    await signIn();
+    await vi.waitFor(() => expect(reads).toBe(1));
+    await service.request({ operation: "logout" });
+    await signIn();
+    await vi.waitFor(async () =>
+      expect((await service.status()).device?.name).toBe("Current name"),
+    );
+    resolveOld(Response.json({ devices: [{ deviceId, name: "Stale name" }] }));
+    await new Promise((resolve) => setImmediate(resolve));
+    expect((await service.status()).device?.name).toBe("Current name");
   });
 });

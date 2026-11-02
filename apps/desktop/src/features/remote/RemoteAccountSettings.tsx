@@ -17,6 +17,7 @@ import {
 } from "@/components/ui/dialog";
 import { requestWebAdmin } from "./web-status";
 import { withAsyncCleanup } from "@/lib/utils";
+import { subscribeVisiblePolling } from "./visible-polling";
 
 export function RemoteAccountSettings({
   variant = "standalone",
@@ -53,18 +54,31 @@ export function RemoteAccountSettings({
         setFailed(false);
       }
     });
-    const initial = revision.current;
-    void account
-      .request({ operation: "status" })
-      .then((value) => {
-        if (alive.current && initial === revision.current) setStatus(value);
-      })
-      .catch(() => {
-        if (alive.current && initial === revision.current) setFailed(true);
-      });
+    let reading = false;
+    const stopPolling = subscribeVisiblePolling({
+      interval: 30_000,
+      enabled: () => !locked.current,
+      run: async () => {
+        if (reading || locked.current) return;
+        reading = true;
+        const initial = revision.current;
+        try {
+          const value = await account.request({ operation: "status" });
+          if (alive.current && initial === revision.current) {
+            setStatus(value);
+            setFailed(false);
+          }
+        } catch {
+          if (alive.current && initial === revision.current) setFailed(true);
+        } finally {
+          reading = false;
+        }
+      },
+    });
     return () => {
       alive.current = false;
       revision.current += 1;
+      stopPolling();
       release();
     };
   }, []);

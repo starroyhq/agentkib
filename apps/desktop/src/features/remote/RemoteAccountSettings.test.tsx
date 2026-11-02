@@ -11,8 +11,17 @@ const request = vi.fn();
 const refresh = vi.fn();
 const release = vi.fn();
 let listener: ((value: DesktopAccountStatus) => void) | undefined;
+let activity: ((active: boolean) => void) | undefined;
 vi.mock("@/core/desktop", () => ({
   desktopApi: () => ({
+    events: {
+      onWindowActivity: (next: typeof activity) => {
+        activity = next;
+        return () => {
+          activity = undefined;
+        };
+      },
+    },
     account: {
       request,
       onStatus: (next: typeof listener) => {
@@ -44,6 +53,7 @@ beforeEach(async () => {
   refresh.mockReset().mockResolvedValue({});
   release.mockReset();
   listener = undefined;
+  activity = undefined;
 });
 afterEach(cleanup);
 
@@ -155,4 +165,24 @@ it("shows how the account lists this computer once the name is known", async () 
   render(<RemoteAccountSettings />);
   expect(await screen.findByText(remoteAccountCopy["en-US"].owned)).toBeVisible();
   expect(screen.queryByText(/appears as/)).toBeNull();
+});
+
+it("refreshes the account name when the window resumes and when settings are reopened", async () => {
+  const withName = (name: string): DesktopAccountStatus => ({
+    ...signedIn,
+    device: { deviceId: "a".repeat(32), ownership: "owned", name },
+  });
+  request.mockResolvedValue(withName("Original name"));
+  const view = render(<RemoteAccountSettings />);
+  await screen.findByText("This computer appears as Original name in your account");
+  act(() => activity?.(false));
+  request.mockResolvedValue(withName("Phone name"));
+  act(() => activity?.(true));
+  await screen.findByText("This computer appears as Phone name in your account");
+  expect(request).toHaveBeenCalledTimes(2);
+  view.unmount();
+  request.mockResolvedValue(withName("Web name"));
+  render(<RemoteAccountSettings />);
+  await screen.findByText("This computer appears as Web name in your account");
+  expect(request).toHaveBeenCalledTimes(3);
 });

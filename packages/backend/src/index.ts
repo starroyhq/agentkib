@@ -1,5 +1,6 @@
 import { Context } from "./context";
 import { SessionReaders } from "./session-readers";
+import { SessionSubagentSnapshots } from "./session-subagent-snapshots";
 import {
   continueCursorNativeImport,
   CursorImportOutcomeUnknownError,
@@ -132,6 +133,7 @@ export class TypeScriptBackend {
   #sessions?: SessionReaders;
   #sessionStream?: SessionStreamHub;
   #snapshotHistory?: SessionSnapshotHistory;
+  #childSnapshots = new SessionSubagentSnapshots();
   #cursorBridge?: CursorBridge;
   #claudeBridge?: ClaudeBridge;
   #catalogContinuation = new Map<string, string>();
@@ -185,6 +187,7 @@ export class TypeScriptBackend {
     this.#sessionStream = undefined;
     this.#snapshotHistory?.invalidate();
     this.#snapshotHistory = undefined;
+    this.#childSnapshots.invalidate();
     this.#storage?.cancel();
     this.#storage = undefined;
     this.#quota = undefined;
@@ -587,6 +590,12 @@ export class TypeScriptBackend {
               liveValue && typeof liveValue === "object" && !Array.isArray(liveValue)
                 ? (liveValue as Record<string, unknown>)
                 : { sessionId, status: "unsupported" };
+            // Keep optional child summaries on the existing parent stream. A failure must not
+            // break the parent conversation or preserve an unverified running count.
+            delete live.subagents;
+            live.subagents = await this.#childSnapshots.read(sessionId, live, async () =>
+              this.#request(RUNTIME_METHODS.webRequest, { operation: "subagents", sessionId }),
+            );
             const readHistory = async () => {
               const pageValue = await this.#request(RUNTIME_METHODS.webRequest, {
                 operation: "events",
@@ -748,6 +757,8 @@ export class TypeScriptBackend {
           this.#store!.sessions.get(sessionId)?.agent === "claude-code" ||
           this.#claudeManaged!.hasManagedSession(sessionId);
         if (claudeSession) {
+          if (params.operation === "subagents" || params.operation === "subagent-events")
+            return this.#claudeManaged!.request(params);
           if (
             params.operation === "events" &&
             this.#store!.sessions.get(sessionId)?.agent === "claude-code" &&
@@ -760,6 +771,8 @@ export class TypeScriptBackend {
       if (
         params.operation === "live" ||
         params.operation === "events" ||
+        params.operation === "subagents" ||
+        params.operation === "subagent-events" ||
         params.operation === "usage"
       ) {
         return this.#withWebRead((owner) => owner.request(params));
@@ -1787,6 +1800,8 @@ export class TypeScriptBackend {
     payload: Record<string, unknown>,
     live?: Record<string, unknown>,
   ) {
+    if (type === "invalidate") this.#childSnapshots.invalidate(sessionId || undefined);
+    else this.#childSnapshots.publish(sessionId, live ?? payload);
     if (type === "invalidate") this.#snapshotHistory?.invalidate(sessionId || undefined);
     this.#sessionStream?.publish(sessionId, type, payload, live);
     if (sessionId && type === "state") {

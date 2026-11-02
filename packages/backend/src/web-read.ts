@@ -66,6 +66,8 @@ const requestSchema = z.discriminatedUnion("operation", [
   z.object({ operation: z.literal("usage"), sessionId: z.string().min(1).max(256) }).strict(),
   z.object({ operation: z.literal("goal"), sessionId: z.string().min(1).max(256) }).strict(),
   z.object({ operation: z.literal("resources"), sessionId: z.string().min(1).max(256) }).strict(),
+  z.object({ operation: z.literal("subagents"), sessionId: z.string().min(1).max(256) }).strict(),
+  z.object({ operation: z.literal("subagent-events"), sessionId: z.string().min(1).max(256), subagentId: z.string().regex(/^[a-f0-9]{64}$/), cursor: z.string().max(1024).nullable().optional(), limit: z.number().int().min(1).max(100).default(50) }).strict(),
   z
     .object({
       operation: z.literal("live"),
@@ -365,6 +367,7 @@ export class WebReadRequests {
   #transientSessions = new Set<CodexAppServerSession>();
   #codexFollowers = new Map<string, CodexFollowerRecord>();
   #codexFollowerFlights = new Map<string, Promise<CodexFollowerRecord>>();
+  #subagentObservers = new WeakMap<object, { identity: string; id: string }>();
   #followerMisses = new Map<string, number>();
   #antigravityRunners = new Map<string, AntigravityRunnerRecord>();
   #antigravityRunnerFlights = new Map<string, Promise<AntigravityRunnerRecord>>();
@@ -4023,6 +4026,20 @@ export class WebReadRequests {
 
   async #request(value: unknown) {
     const request = requestSchema.parse(value);
+    if (request.operation === "subagents" || request.operation === "subagent-events") {
+      const managed = readManagedRecords(this.dataDir, this.store).find(record => record.id === request.sessionId);
+      const child = request.operation === "subagent-events" ? request : null;
+      if (managed) {
+        this.#assertManagedHome(managed);
+        if (!managed.native_id) return { version: 1, sessionId: request.sessionId, agents: [], truncated: false };
+        const parent = this.sessions.verifiedCodexSubagentParent(managed.id, managed.native_id, managed.workspace);
+        Object.assign(parent, this.#subagentObservation(request.sessionId, managed.native_id));
+        return this.sessions.subagentsForNative(parent, child?.subagentId, child?.cursor ?? null, child?.limit ?? 50);
+      }
+      const source = await this.sessions.resolve(request.sessionId);
+      const observation = this.#subagentObservation(request.sessionId, source.native.native_ref);
+      return this.sessions.subagentsForSession(request.sessionId, child?.subagentId, child?.cursor ?? null, child?.limit ?? 50, observation.running, observation.turnId, observation);
+    }
     if (request.operation === "live") {
       const session = this.store.sessions.get(request.sessionId);
       if (session?.agent === "antigravity") return this.#antigravityLive(request.sessionId);
@@ -4315,6 +4332,33 @@ export class WebReadRequests {
     )
       throw new Error("session-unavailable");
     return result;
+  }
+
+  /** A child run belongs to the resident native connection and owner, across parent turns. */
+  #subagentObservation(sessionId: string, nativeId: string) {
+    const resident = this.#managedRunners.get(sessionId);
+    const follower = this.#codexFollowers.get(sessionId);
+    const state = resident?.state.snapshot(this.#bootId, false);
+    const followed = follower?.bridge.selectedState;
+    const residentStatus = String(state?.status);
+    const followedStatus = String(followed?.status);
+    const owned = resident?.session.connected === true && !resident.retiring && resident.state.record.native_id === nativeId && !["unsupported", "disconnected", "outcome-unknown"].includes(residentStatus);
+    const external = !owned && follower?.nativeId === nativeId && follower.bridge.connected && followed != null && followed.revision !== null && !["unsupported", "disconnected", "outcome-unknown", "waiting-for-snapshot"].includes(followedStatus);
+    const connection = owned ? resident.session : external ? follower!.bridge.connection : undefined;
+    const owner = owned ? `managed:${nativeId}` : external ? `${nativeId}:${followed!.ownerClientId}` : "";
+    let observerId: string | undefined;
+    if (connection) {
+      const previous = this.#subagentObservers.get(connection);
+      const current = previous?.identity === owner ? previous : { identity: owner, id: randomUUID() };
+      this.#subagentObservers.set(connection, current);
+      observerId = current.id;
+    }
+    return {
+      connected: !!connection,
+      observerId,
+      running: !!connection && ["running", "awaiting-approval", "waiting-approval", "waiting-input"].includes(owned ? residentStatus : followedStatus),
+      turnId: owned && typeof state?.turnId === "string" ? state.turnId : external ? followed!.activeTurn() : null,
+    };
   }
 
   async #inactiveRecord(sessionId: string): Promise<ManagedRecord> {

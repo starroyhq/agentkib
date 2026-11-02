@@ -5162,6 +5162,79 @@ export class WebAccessService {
     }
     if (path.startsWith("/files/") || path === "/artifacts" || path === "/diff")
       return this.files(res, hash, path, url);
+    if (path === "/subagents" || path === "/subagent/events") {
+      const parentId = this.field(url.searchParams.get("sessionId"));
+      const boot = this.bootId;
+      const device = this.grant(hash);
+      // Children are accessible only through a visible, authorized parent.
+      // This does not make auxiliary records normal, controllable sessions.
+      const parentScope = async () => {
+        const catalog = (await this.scopeCatalog()) as {
+          sessions?: {
+            id: string;
+            agent: string;
+            workspace_id: string;
+            origin?: string;
+            sidechain?: boolean;
+          }[];
+        };
+        const parent = catalog.sessions?.find(
+          (entry) =>
+            entry.id === parentId &&
+            ["codex", "claude-code"].includes(entry.agent) &&
+            !["auxiliary", "execution"].includes(entry.origin ?? "") &&
+            entry.sidechain !== true,
+        );
+        if (!parent || !(await this.workspaceAllowed(parent.workspace_id, this.grant(hash))))
+          throw new HttpError(403, "workspace_not_authorized");
+        return `${parent.agent}:${parent.workspace_id}`;
+      };
+      const scope = await parentScope();
+      const params: Record<string, unknown> = {
+        operation: path === "/subagents" ? "subagents" : "subagent-events",
+        sessionId: parentId,
+      };
+      if (path === "/subagent/events") {
+        const childId = this.field(url.searchParams.get("subagentId"));
+        if (!/^[a-f0-9]{64}$/.test(childId)) throw new HttpError(400, "invalid_subagent_id");
+        params.subagentId = childId;
+        const limit = Number(url.searchParams.get("limit") || 50);
+        if (!Number.isInteger(limit) || limit < 1 || limit > 50)
+          throw new HttpError(400, "invalid_limit");
+        const cursor = url.searchParams.get("cursor");
+        if (cursor && cursor.length > 1024) throw new HttpError(400, "invalid_cursor");
+        params.limit = limit;
+        params.cursor = cursor;
+      }
+      if (this.grant(hash).id !== device.id) throw new HttpError(401, "access_ended");
+      let result: unknown;
+      try {
+        result = await this.runtime(params);
+      } catch (error) {
+        // Only these read errors are public; never expose native paths or arbitrary
+        // runtime exception messages. A missing child does not disable the catalog.
+        const errors: Record<string, [number, string]> = {
+          "invalid-request": [400, "invalid_input"],
+          TRANSCRIPT_CURSOR_INVALID: [400, "invalid_cursor"],
+          TRANSCRIPT_CURSOR_STALE: [409, "stale_cursor"],
+          "subagent-unavailable": [404, "subagent_unavailable"],
+        };
+        const mapped =
+          error instanceof Error && Object.hasOwn(errors, error.message)
+            ? errors[error.message]
+            : undefined;
+        if (mapped && (path === "/subagent/events" || mapped[0] !== 404))
+          throw new HttpError(...mapped);
+        throw error;
+      }
+      if (this.grant(hash).id !== device.id) throw new HttpError(401, "access_ended");
+      if (scope !== (await parentScope())) throw new HttpError(403, "access_changed");
+      // parentScope may await both catalog and workspace registration. Revocation
+      // during either wait must still close this final response window.
+      if (this.grant(hash).id !== device.id) throw new HttpError(401, "access_ended");
+      if (boot !== this.bootId) throw new HttpError(409, "stale_boot");
+      return this.json(res, 200, result);
+    }
     const sessionId =
       path === "/catalog" || (path === "/stream" && !url.searchParams.has("sessionId"))
         ? undefined

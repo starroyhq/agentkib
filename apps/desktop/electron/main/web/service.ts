@@ -416,6 +416,7 @@ function snapshotField(snapshot: unknown, key: string): unknown {
     ? (snapshot as Record<string, unknown>)[key]
     : undefined;
 }
+const isCodexMode = (mode: unknown) => mode === "codex-managed" || mode === "codex-follower";
 /** 小于这个大小的回复不压缩，省下的字节抵不过压缩本身。 */
 const COMPRESSED_REPLY_MIN_BYTES = 16 * 1024;
 /** 客户端是否接受 gzip；显式的 `gzip;q=0` 视为拒绝。 */
@@ -828,11 +829,14 @@ export class WebAccessService {
     reserved = false,
   ) {
     const executionMode = snapshotField(snapshot, "executionMode");
-    if (["codex-managed", "claude-managed", "claude-follower"].includes(String(executionMode))) {
+    if (
+      isCodexMode(executionMode) ||
+      ["claude-managed", "claude-follower"].includes(String(executionMode))
+    ) {
       const workspaceId = snapshotField(snapshot, "workspaceId");
       if (
         typeof workspaceId !== "string" ||
-        !(this.options.mode === "lan" && executionMode === "codex-managed" && sessionId
+        !(this.options.mode === "lan" && isCodexMode(executionMode) && sessionId
           ? await this.lanCodexScopeAllowed(sessionId, workspaceId, reserved)
           : await this.workspaceAllowed(workspaceId, device, reserved))
       )
@@ -846,12 +850,11 @@ export class WebAccessService {
     device?: WebDevice,
   ) {
     const executionMode = snapshotField(snapshot, "executionMode");
-    if (executionMode === "codex-follower") return false;
     return (
       this.controlsEnabled(sessionId, device) &&
       (!!this.options.acceptanceSessionId ||
         this.options.verifiedExperimental === true ||
-        (this.options.verifiedCodex === true && executionMode === "codex-managed") ||
+        (this.options.verifiedCodex === true && isCodexMode(executionMode)) ||
         (this.options.verifiedClaudeManaged === true &&
           (executionMode === "managed-resume" ||
             executionMode === "claude-managed" ||
@@ -2733,7 +2736,7 @@ export class WebAccessService {
           ["context", "resources", "settings-state", "usage", "goal"].includes(operation) ||
           operation.startsWith("goal-");
         const allowed =
-          data.executionMode === "codex-managed" &&
+          isCodexMode(data.executionMode) &&
           (operation === "usage" || this.controlsEnabled(sessionId, device)) &&
           device[this.codexPermission(operation)] === true &&
           (!fullOnly || this.isFullAccess(device)) &&
@@ -2888,8 +2891,9 @@ export class WebAccessService {
         capabilities.executionMode === "claude-follower" &&
         ["steer", "queue-add", "queue-delete"].includes(operation);
       const claude = generic && capabilities.executionMode === "claude-managed";
+      const followerFork = capabilities.executionMode === "codex-follower" && operation === "fork";
       if (
-        (capabilities.executionMode !== "codex-managed" && !claude && !terminal) ||
+        (capabilities.executionMode !== "codex-managed" && !claude && !terminal && !followerFork) ||
         capabilities.features?.[operation]?.available !== true
       )
         throw new HttpError(
@@ -3825,7 +3829,7 @@ export class WebAccessService {
       };
       snapshot = {
         ...state,
-        ...(this.options.mode === "lan" && state.executionMode === "codex-managed" && !device.send
+        ...(this.options.mode === "lan" && isCodexMode(state.executionMode) && !device.send
           ? { sendEnabled: false, stopEnabled: false }
           : {}),
         approvals: state.approvals?.map((approval) => ({
@@ -4730,7 +4734,7 @@ export class WebAccessService {
         if (historyScopeKey) await this.assertHistoryScope(hash, historyScopeKey, true);
         if (
           lan &&
-          snapshotField(snapshot, "executionMode") === "codex-managed" &&
+          isCodexMode(snapshotField(snapshot, "executionMode")) &&
           !(await this.lanCodexScopeAllowed(
             sessionId,
             String(snapshotField(snapshot, "workspaceId")),
@@ -4792,7 +4796,7 @@ export class WebAccessService {
         if (boot !== this.bootId) throw new HttpError(409, "stale_boot");
         if (
           lan &&
-          snapshotField(snapshot, "executionMode") === "codex-managed" &&
+          isCodexMode(snapshotField(snapshot, "executionMode")) &&
           !(await this.lanCodexScopeAllowed(
             sessionId,
             String(snapshotField(snapshot, "workspaceId")),
@@ -4926,7 +4930,7 @@ export class WebAccessService {
         const workspace = catalog.sessions.find((item) => item.id === sessionId)?.workspace_id;
         const workspaceAllowed =
           !!workspace &&
-          (this.options.mode === "lan" && snapshotField(result, "executionMode") === "codex-managed"
+          (this.options.mode === "lan" && isCodexMode(snapshotField(result, "executionMode"))
             ? await this.lanCodexScopeAllowed(sessionId, workspace)
             : await this.workspaceAllowed(workspace, device));
         return this.json(
@@ -5047,9 +5051,7 @@ export class WebAccessService {
         // Receipt recovery enforces the same workspace boundary as managed controls.
         if (
           result.workspaceId &&
-          !(this.options.mode === "lan" &&
-          result.executionMode === "codex-managed" &&
-          result.sessionId
+          !(this.options.mode === "lan" && isCodexMode(result.executionMode) && result.sessionId
             ? await this.lanCodexScopeAllowed(result.sessionId, result.workspaceId)
             : await this.workspaceAllowed(result.workspaceId, device))
         )
@@ -5287,13 +5289,12 @@ export class WebAccessService {
         if ("workspaceId" in patch) controlContext.workspaceId = patch.workspaceId;
         let enabled =
           this.controlsEnabledForProvider(sessionId, controlContext, device) &&
-          (!["codex-managed", "claude-managed", "claude-follower"].includes(
-            String(controlContext.executionMode),
-          ) ||
+          ((!isCodexMode(controlContext.executionMode) &&
+            !["claude-managed", "claude-follower"].includes(
+              String(controlContext.executionMode),
+            )) ||
             (typeof controlContext.workspaceId === "string" &&
-              (this.options.mode === "lan" &&
-              controlContext.executionMode === "codex-managed" &&
-              sessionId
+              (this.options.mode === "lan" && isCodexMode(controlContext.executionMode) && sessionId
                 ? await this.lanCodexScopeAllowed(sessionId, controlContext.workspaceId, true)
                 : this.isFullAccess(device)
                   ? controlContext.workspaceId === streamWorkspaceId

@@ -1,6 +1,7 @@
 import { NativeScope } from "../interactions/native-scope";
 import { NativeDecisions } from "../interactions/native-decisions";
 import { codexCopy } from "./codex-copy";
+import { sessionContinuationCopy } from "@agentkib/session-ui";
 import { PreferencesDialog } from "../preferences/preferences-dialog";
 import { SessionDetailsDialog } from "../catalog/session-details-dialog";
 import { Button } from "@/components/ui/button";
@@ -62,6 +63,9 @@ export function SessionDialogs() {
           title={interactionCopy[locale].title}
           onClose={() => setModal(undefined)}
         >
+          {live?.executionMode === "codex-follower" && !modal.supported && (
+            <aside className="info">{sessionContinuationCopy(locale).codexHandleThere}</aside>
+          )}
           <QuestionForm
             key={`${selected}:${JSON.stringify(modal)}`}
             request={modal}
@@ -122,6 +126,9 @@ export function SessionDialogs() {
             )}
           </pre>
           {modal.requestContext && <NativeScope value={modal.requestContext} locale={locale} />}
+          {live?.executionMode === "codex-follower" && !modal.supported && (
+            <aside className="info">{sessionContinuationCopy(locale).codexHandleThere}</aside>
+          )}
           <NativeDecisions
             key={`${selected}:${JSON.stringify(modal)}`}
             approval={modal}

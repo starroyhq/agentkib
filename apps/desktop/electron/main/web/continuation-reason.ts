@@ -26,6 +26,7 @@ export function continuationPreflightReason(
       "owner-opened-elsewhere",
       "claude-cli-unavailable",
       "platform-unsupported",
+      "follower-operation-unverified",
     ]).has(reason)
     ? reason
     : fallback;

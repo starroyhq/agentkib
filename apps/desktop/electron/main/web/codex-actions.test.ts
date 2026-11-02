@@ -26,6 +26,7 @@ const runtimeHandler = async (input: unknown): Promise<unknown> => {
       status,
       features: Object.fromEntries(
         [
+          "send",
           "steer",
           "queue-add",
           "queue-update",
@@ -638,4 +639,46 @@ it("reports oversized native queues instead of silently hiding later entries", a
     reason: "queue-too-large",
   }));
   expect((await http("/codex/queue?sessionId=session")).data.error).toBe("queue_too_large");
+});
+it("dispatches send for a followed Codex session in an allowed workspace", async () => {
+  await pair();
+  executionMode = "codex-follower";
+  expect((await http("/send", action())).status).toBe(200);
+  expect(runtime.mock.calls.some(([p]) => (p as { operation: string }).operation === "send")).toBe(
+    true,
+  );
+});
+it("rejects send for a followed Codex session in an unauthorized workspace", async () => {
+  await pair();
+  executionMode = "codex-follower";
+  runtime.mockImplementation(async (input) => {
+    const result = await runtimeHandler(input);
+    return (input as { operation: string }).operation === "live"
+      ? { ...(result as object), workspaceId: "outside" }
+      : result;
+  });
+  const result = await http("/send", action());
+  expect(result.status).toBe(403);
+  expect(result.data.error).toBe("provider_control_not_allowed");
+  expect(runtime.mock.calls.some(([p]) => (p as { operation: string }).operation === "send")).toBe(
+    false,
+  );
+});
+it("projects follower capabilities like managed ones", async () => {
+  await pair();
+  executionMode = "codex-follower";
+  const capabilities = await http("/codex/capabilities?sessionId=session");
+  expect(capabilities.data.executionMode).toBe("codex-follower");
+  expect(capabilities.data.features.send).toEqual({ available: true });
+});
+it("allows fork for a followed Codex session but no other codex action", async () => {
+  await pair({ manage: true, advancedControl: true, organize: true });
+  executionMode = "codex-follower";
+  expect((await http("/codex/fork", action())).status).toBe(200);
+  const renamed = await http("/codex/rename", action());
+  expect(renamed.status).toBe(409);
+  expect(renamed.data.error).toBe("capability_unavailable");
+  expect(
+    runtime.mock.calls.some(([p]) => (p as { operation: string }).operation === "rename"),
+  ).toBe(false);
 });

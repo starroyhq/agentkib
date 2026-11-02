@@ -24,6 +24,9 @@ export type SessionContinuationCopy = {
   ownerOpenedElsewhere: string;
   claudeWindowsUnsupported: string;
   codexVersionTooOld: string;
+  codexConnected: string;
+  codexHint: string;
+  codexHandleThere: string;
   viewOnly: string;
   queued: string;
   connectTerminal: string;
@@ -62,6 +65,9 @@ const continuationCopy: Record<string, SessionContinuationCopy> = {
     ownerOpenedElsewhere: "你在 Claude Code 里打开了这条会话，AgentKib 已停止，避免两边同时写入",
     claudeWindowsUnsupported: "Windows 上暂不支持在这里继续 Claude Code 会话",
     codexVersionTooOld: "Codex 版本过低，升级后可以在这里继续",
+    codexConnected: "在 Codex 中运行 · 已连接",
+    codexHint: "消息会交给 Codex 执行，模型和权限沿用 Codex 中的设置",
+    codexHandleThere: "这项请求请在 Codex 中处理",
     viewOnly: "仅可查看",
     queued: "待发队列",
     connectTerminal: "连接终端",
@@ -100,6 +106,9 @@ const continuationCopy: Record<string, SessionContinuationCopy> = {
     ownerOpenedElsewhere: "你在 Claude Code 裡開啟了這段對話，AgentKib 已停止，避免兩邊同時寫入",
     claudeWindowsUnsupported: "Windows 上暫不支援在這裡繼續 Claude Code 對話",
     codexVersionTooOld: "Codex 版本過舊，升級後可以在這裡繼續",
+    codexConnected: "在 Codex 中執行 · 已連線",
+    codexHint: "訊息會交給 Codex 執行，模型和權限沿用 Codex 中的設定",
+    codexHandleThere: "這項請求請在 Codex 中處理",
     viewOnly: "僅可查看",
     queued: "待發佇列",
     connectTerminal: "連接終端",
@@ -144,6 +153,9 @@ const continuationCopy: Record<string, SessionContinuationCopy> = {
       "Claude Code でこの会話が開かれたため、同時に書き込まれないよう AgentKib を停止しました。",
     claudeWindowsUnsupported: "Windows では、ここで Claude Code の会話を続ける機能はまだ使えません",
     codexVersionTooOld: "Codex のバージョンが古いため、更新するとここで続けられます。",
+    codexConnected: "Codex で実行中 · 接続済み",
+    codexHint: "メッセージは Codex で実行され、モデルと権限は Codex 側の設定に従います",
+    codexHandleThere: "このリクエストは Codex で対応してください",
     viewOnly: "閲覧のみ",
     queued: "送信待ちキュー",
     connectTerminal: "ターミナルに接続",
@@ -188,6 +200,9 @@ const continuationCopy: Record<string, SessionContinuationCopy> = {
       "You opened this session in Claude Code. AgentKib stopped to avoid both sides writing at once.",
     claudeWindowsUnsupported: "Continuing Claude Code sessions here isn't supported on Windows yet",
     codexVersionTooOld: "Your Codex version is too old. Update it to continue here.",
+    codexConnected: "Running in Codex · Connected",
+    codexHint: "Messages run in Codex, using the model and permissions set there",
+    codexHandleThere: "Handle this request in Codex",
     viewOnly: "View only",
     queued: "Queued messages",
     connectTerminal: "Connect terminal",

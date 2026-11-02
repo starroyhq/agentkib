@@ -1,6 +1,6 @@
 # Codex 托管执行
 
-Codex 同 Agent 续接统一使用 AgentKib 自己启动的 `codex app-server`，`executionMode` 为 `codex-managed`，支持 macOS、Linux 和 Windows 的这条链路。follower 模块保留，主流程不调用，也不作为占用检查或续接失败后的回退。打开页面只观察，空闲会话发送时自动续接，不再勾选交接。创建与管理仍须对应设备授权；发送继续检查实验控制、工作区和未知回执。Web/Electron 负责授权，TypeScript backend 在每次操作前复核 canonical 路径、会话身份和同一 CODEX_HOME。
+Codex 同 Agent 续接统一使用 AgentKib 自己启动的 `codex app-server`，`executionMode` 为 `codex-managed`，支持 macOS、Linux 和 Windows 的这条链路。会话的写锁被其他进程持有、且 Codex 桌面端的本地 IPC 报告了这条会话的 owner 时，改为跟随该 owner（`codex-follower`，仅 macOS，见下文“跟随 Codex 桌面端”）；无法跟随时仍显示原有选择条，跟随也不作为续接失败后的自动回退。打开页面只观察，空闲会话发送时自动续接，不再勾选交接。创建与管理仍须对应设备授权；发送继续检查实验控制、工作区和未知回执。Web/Electron 负责授权，TypeScript backend 在每次操作前复核 canonical 路径、会话身份和同一 CODEX_HOME。
 
 ## RPC
 
@@ -40,13 +40,17 @@ Goal 使用 `thread/goal/get/set/clear` 和原生事件。`goal-set` 的 `intent
 
 目录刷新共享已有的全局 CLI 版本探测与缓存，不逐条会话启动探针。已核实版本过低时，桌面和 Web 列表标记“仅可查看”；全局版本原因不携带原生路径，也不将未登记集合加入 Web 历史授权范围。“设置是否生效尚未确认”仅在当前页面确实发起过设置更改后显示，不将未更改设置的初始 unknown 状态作为失败提示。
 
-### 保留的 follower 模块（不接入主流程）
+### 跟随 Codex 桌面端（2026-11-02）
 
-Follower 连接 CODEX_HOME 下官方 IPC，使用操作系统核实的实际 peer executable 推导 app bundle，支持移动安装位置和用户 Applications；不再依赖固定 `/Applications/ChatGPT.app` 或必须安装 VS Code 扩展。基础 follower 要求 Desktop `26.917.62051` 或更新版本；owner 的 `thread-follower-update-thread-settings` v2 要求 `26.924.22138` 或更新版本。版本必须恰好包含三段数字，按三段数值组成的元组比较最低门槛；低于对应门槛或格式无效时拒绝。这些历史模块检查不改变当前托管 CLI 的最低门槛、逐项能力校验或其他 Agent 策略。
+Codex 每条会话只允许一个进程写入。ChatGPT 桌面端用自己启动的 app-server 打开会话后会一直持有写锁（不显示的会话约 3 小时后才退订），AgentKib 的 `thread/resume` 因此被拒绝。为了不必分支或退出桌面端，AgentKib 像 VS Code 插件那样作为 follower 加入桌面端的本地 IPC：订阅 owner 的实时状态，把发送、停止和审批交给 owner 执行，写入的始终只有桌面端。
 
-满足 Desktop 最低版本仅允许继续运行时兼容性检查，不表示该版本已通过真实控制验收。各方法仍使用固定协议版本，并继续核对 peer、owner、host、thread、revision 和原生 ACK；超时或回执丢失仍保持 unknown 屏障，版本升级不能清除屏障。当前 `26.930.51102` 仅完成方法映射及关键 payload 字段的静态核对，尚未进行真实 owner 控制或端到端验收；`26.924.22138` 的历史 owner 设置验证也只证明当时记录的操作。
-
-以上保留代码和历史验证说明不代表 D11 主路由会连接 Desktop。旧模块及其测试暂不删除。
+- **何时跟随**：仅在 `live`／`capabilities` 发现写锁被其他进程持有、且没有其他阻断原因时尝试。连接 `<CODEX_HOME>/ipc/ipc.sock`，按原生 ID 做 owner discovery；成功后 `live` 返回 `executionMode: "codex-follower"`、`executionLocation: "external"`、`ownershipReason: null` 和 `workspaceId`。非 macOS、找不到 owner（例如锁在 CLI 或其他进程手里）、版本或协议不符、连接失败时回到原有的 `codex-owner-busy` 选择条，5 秒内不重复尝试，不向界面透出跟随失败的细节。写锁空闲时照常走托管链路。
+- **可用操作**：第一版只开放发送、停止和审批（命令与文件审批，按 owner 提供的决定，例如只给“允许一次”“取消轮次”时不显示“拒绝”）。分支照常可用；删除因写锁在桌面端而不可用（`codex-owner-busy`）。问答、设置、模型、Plan、追加、队列、压缩、目标、附件、重命名、归档等返回 `follower-operation-unverified`（“这项操作请在 Codex 中完成。”），owner 的提问在 AgentKib 中只显示“这项请求请在 Codex 中处理”。执行使用桌面端这条会话的模型、权限和沙箱设置，不使用 AgentKib 的托管策略。
+- **状态与历史**：follower 只推送实时状态（运行状态、轮次、审批、流式文字）；对话内容仍以 250ms 快照从原生 rollout 读取，避免同一消息以两种身份重复出现。
+- **生命周期**：最多同时跟随 8 条会话；有 follower 时桌面端不会退订这条会话，所以没有订阅者且闲置 30 秒后断开跟随。owner 变化或断开时关闭连接，重新核对写锁：锁已释放则回到托管链路，发送时自动续接；不会在两条链路之间自动重发消息。
+- **授权与回执**：主机把 `codex-follower` 与 `codex-managed` 同样对待（工作区、设备权限、LAN 范围和回执查询）。控制回执记录 `executionMode: "codex-follower"` 和 `workspaceId`。结果未知时，发送与停止通过临时 app-server 的 `thread/read` 核对 `clientUserMessageId` 和轮次终态；审批在已连接的 follower 中确认对应请求已不再待处理，不重新建立连接。
+- **版本**：follower 要求 Desktop `26.917.62051` 或更新版本，按三段数字比较；IPC 方法版本固定（discovery 1、start-turn 2、interrupt 4、状态流 11 等），并继续核对 peer、owner、host、thread、revision 和原生 ACK。2026-11-02 已对本机 Desktop `26.1027.51404`（内置 codex-cli `0.166.0-alpha.5.1`）完成静态方法版本核对和真实验收，见 [跟随 Codex 桌面端验收](../qa/codex-desktop-follow-2026-11-02.md)。满足门槛不代表其他版本已验收；内部协议没有兼容承诺。
+- **限制**：只支持 macOS；桌面端必须已经加载这条会话；两端同时发送的竞争（RACE-022）、桌面端中途退出后的真实切换尚未实机验收。旧的 `#reconcileCodexFollower` 等遗留辅助函数暂保留，待单独清理。
 
 ### 原生状态与用量
 
@@ -54,11 +58,11 @@ Follower 连接 CODEX_HOME 下官方 IPC，使用操作系统核实的实际 pee
 
 `usage` 仅投影最近原生报告的上下文占用与累计消费，保留兼容 `tokenUsage`。`reportGeneration` 区分原生观察实例，在当前 backend 进程内递增；`reportId` 只随真实 usage 事件或 follower usage 字段变化递增，普通 revision 或重复快照不算新报告。连接重建后可以重置 `reportId`，即使另一端持续订阅使传输 epoch 不变，两端仍能接受新实例的报告并拒绝旧实例晚到的报告。backend 重启仍通过运行实例作用域重置；没有原生观察实例的持久旧报告不沿用其代次。压缩开始使旧 Gauge 失效；期间到达的报告保留为 pending 候选，结束后同 turn 报告保持 stale，因为压缩调用输入可能仍是压缩前上下文。模型身份或托管模型选择变化也使旧报告失效；明确仍待应用的模型选择不得复用旧窗口。匹配后续新 turn 的报告可恢复 ready；无法归属、重连或恢复时不沿用旧百分比，不通过发送任务补刷新，控制恢复也不等待用量报告。
 
-Web 的模型、服务档位、策略和资源能力取自当前 app-server 的已验证目录及权限，不沿用旧 follower 快照推测能力。保留的 follower 实现缺少相应目录时继续关闭这些操作。
+Web 的模型、服务档位、策略和资源能力取自当前 app-server 的已验证目录及权限，不从 follower 快照推测能力；跟随桌面端时这些操作关闭。
 
 ## 原 ID 自动续接与退出
 
-没有本机活动 runner 时，发送自动准备并续接同一原生 thread ID；源索引与 rollout 元数据共同验证 ID 和工作区。专用 app-server 在同一 canonical CODEX_HOME 上调用官方 thread/resume，由 Codex 自己原子获取每线程 writer lock。原 writer 未退出时返回 `codex-owner-busy`，界面提供显式分支或返回 Codex 的选择，保留草稿并重新检查占用；“找不到 owner”不能作为排他证明。AgentKib 不停止共享 daemon、不删除 native lock、不复制 CODEX_HOME，也不默认 fork。原生 active goal 等恢复风险及未知结果仍按内部规则阻断，不因省去用户确认而放行。
+没有本机活动 runner 时，发送自动准备并续接同一原生 thread ID；源索引与 rollout 元数据共同验证 ID 和工作区。专用 app-server 在同一 canonical CODEX_HOME 上调用官方 thread/resume，由 Codex 自己原子获取每线程 writer lock。原 writer 未退出时，若 Codex 桌面端报告了这条会话的 owner，打开页面即改为跟随（见上文）；否则返回 `codex-owner-busy`，界面提供显式分支或返回 Codex 的选择，保留草稿并重新检查占用；“找不到 owner”不能作为排他证明。AgentKib 不停止共享 daemon、不删除 native lock、不复制 CODEX_HOME，也不默认 fork。原生 active goal 等恢复风险及未知结果仍按内部规则阻断，不因省去用户确认而放行。
 
 旧托管记录缺少执行 cwd 时，自动续接在持锁期间重新核实并保存原生工作目录，与登记工作区边界分开。续接后首条发送可接受迟到的纯用量更新及重复通知，不因观察版本变化误报“本次操作未执行”；身份、设置、目标或轮次发生真实变化时仍拒绝派发，即使字段随后恢复原值也不放行。普通控制继续使用原有 revision 校验。
 

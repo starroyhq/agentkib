@@ -64,8 +64,12 @@ export class CodexFollowerConnection {
     socket.on("close", () => this.#fail(new Error("Codex IPC disconnected")));
   }
 
+  static supported(): boolean {
+    return process.platform === "darwin" && typeof process.getuid === "function";
+  }
+
   static async connectInstalled(endpoint: string): Promise<CodexFollowerConnection> {
-    if (process.platform !== "darwin" || typeof process.getuid !== "function")
+    if (!CodexFollowerConnection.supported())
       throw new Error("Codex follower bridge requires macOS");
     const before = await inspectEndpoint(endpoint);
     const socket = await connectUnix(endpoint);
@@ -73,7 +77,7 @@ export class CodexFollowerConnection {
       const after = await inspectEndpoint(endpoint);
       if (before.dev !== after.dev || before.ino !== after.ino)
         throw new Error("Codex IPC endpoint changed");
-      const peerPath = await realpath(verifyPeer(socket, process.getuid()));
+      const peerPath = await realpath(verifyPeer(socket, process.getuid!()));
       const desktopVersion = await readDesktopVersion(peerPath);
       if (!versionAtLeast(desktopVersion, MINIMUM_DESKTOP_VERSION))
         throw new Error("unverified Codex Desktop installation");

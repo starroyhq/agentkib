@@ -29,6 +29,7 @@ import { CodexRuntimePreflight } from "./codex-runtime-preflight";
 import { CodexCatalogCache } from "./codex-catalog-cache";
 import { codexResumeCommand } from "./codex-resume-command";
 import { CodexFollowerBridge } from "./codex-follower-bridge";
+import { CodexFollowerConnection } from "./codex-follower-connection";
 import type { CodexFollowerState } from "./codex-follower-state";
 import { AntigravityManagedRunner } from "./antigravity-managed-runner";
 import { ManagedCodexState, elicitationResponse } from "./managed-codex-state";
@@ -52,6 +53,9 @@ import {
   replayManagedCommand,
   saveManagedRecord,
 } from "./managed-ledger";
+
+const FOLLOWER_RETRY_MS = 5_000;
+const FOLLOWER_IDLE_MS = 30_000;
 
 const requestSchema = z.discriminatedUnion("operation", [
   z.object({ operation: z.literal("catalog") }).strict(),
@@ -361,6 +365,7 @@ export class WebReadRequests {
   #transientSessions = new Set<CodexAppServerSession>();
   #codexFollowers = new Map<string, CodexFollowerRecord>();
   #codexFollowerFlights = new Map<string, Promise<CodexFollowerRecord>>();
+  #followerMisses = new Map<string, number>();
   #antigravityRunners = new Map<string, AntigravityRunnerRecord>();
   #antigravityRunnerFlights = new Map<string, Promise<AntigravityRunnerRecord>>();
 
@@ -1830,6 +1835,125 @@ export class WebReadRequests {
         const live = await this.#inactiveLive(source, request.experimentalEnabled === true);
         const checked = await this.#preflight.check();
         const controls = request.experimentalEnabled === true;
+        const followed = await this.#desktopFollowerLive(source, live, controls);
+        if (followed) {
+          const f = followed;
+          const unknown = managedSessionHasUnknownCommands(this.dataDir, source.id);
+          const forkable =
+            controls &&
+            !checked.reason &&
+            !source.archived &&
+            (f.reason === null || f.reason === "codex-owner-busy") &&
+            !unknown &&
+            !!source.native_id &&
+            !this.#managedRunners.get(source.id)?.retiring;
+          const followerUnavailable = (operation: string) => [
+            operation,
+            { available: false, reason: "follower-operation-unverified" },
+          ];
+          const deleteReason = !controls
+            ? "control-disabled"
+            : checked.reason && source.native_id
+              ? checked.reason
+              : readUnknownManagedCommands(this.dataDir, source.id).some(
+                    (command) => command.evidence?.operation !== "delete",
+                  )
+                ? "control-outcome-unconfirmed"
+                : this.#managedRunners.get(source.id)?.retiring
+                  ? "session-retiring"
+                  : "codex-owner-busy";
+          const features = Object.fromEntries([
+            followerUnavailable("answer"),
+            followerUnavailable("resume"),
+            followerUnavailable("steer"),
+            followerUnavailable("queue-list"),
+            followerUnavailable("queue-add"),
+            followerUnavailable("queue-update"),
+            followerUnavailable("queue-delete"),
+            followerUnavailable("queue-reorder"),
+            followerUnavailable("queue-start"),
+            followerUnavailable("rename"),
+            followerUnavailable("archive"),
+            followerUnavailable("unarchive"),
+            followerUnavailable("settings"),
+            followerUnavailable("goal-set"),
+            followerUnavailable("goal-pause"),
+            followerUnavailable("goal-resume"),
+            followerUnavailable("goal-clear"),
+            followerUnavailable("attachments"),
+            followerUnavailable("worktree-create"),
+            followerUnavailable("branch-switch"),
+            followerUnavailable("terminals-clean"),
+            followerUnavailable("compact"),
+            [
+              "send",
+              f.sendEnabled === true
+                ? { available: true }
+                : {
+                    available: false,
+                    reason:
+                      typeof f.reason === "string"
+                        ? f.reason
+                        : f.activity === "compacting"
+                          ? "session-compacting"
+                          : !controls
+                            ? "control-disabled"
+                            : "session-busy",
+                  },
+            ],
+            [
+              "stop",
+              f.stopEnabled === true
+                ? { available: true }
+                : { available: false, reason: "no-active-turn" },
+            ],
+            [
+              "approve",
+              controls &&
+              !unknown &&
+              Array.isArray(f.approvals) &&
+              f.approvals.some((item) => isObject(item) && item.supported === true)
+                ? { available: true }
+                : {
+                    available: false,
+                    reason: unknown ? "control-outcome-unconfirmed" : "no-supported-approval",
+                  },
+            ],
+            [
+              "fork",
+              forkable
+                ? { available: true }
+                : {
+                    available: false,
+                    reason:
+                      checked.reason ??
+                      (typeof f.reason === "string" ? f.reason : "codex-owner-busy"),
+                  },
+            ],
+            ["inspect", { available: !!checked.executable, reason: checked.reason ?? undefined }],
+            ...["settings-state", "goal", "resources"].map((operation) => [
+              operation,
+              checked.reason ? { available: false, reason: checked.reason } : { available: true },
+            ]),
+            [
+              "usage",
+              isObject(f.usage) && f.usage.available === true
+                ? { available: true }
+                : { available: false, reason: "usage-not-reported" },
+            ],
+            ["delete", { available: false, reason: deleteReason }],
+          ]);
+          return {
+            sessionId: source.id,
+            executionMode: "codex-follower",
+            runtimeBootId: this.#bootId,
+            status: f.status,
+            reason: f.reason,
+            executionLocation: "external",
+            ownershipReason: null,
+            features,
+          };
+        }
         const unavailableReason =
           typeof live.reason === "string" ? live.reason : "session-not-running";
         const allowed = controls && live.reason === null;
@@ -2175,6 +2299,7 @@ export class WebReadRequests {
           if (ownsQueueSession) await queueSession?.close();
         }
       }
+      const followerState = this.#attachedCodexFollower(record)?.bridge.selectedState ?? null;
       for (const unknown of unknownCommands) {
         const evidence = unknown.evidence;
         const nativeRequestResolved =
@@ -2187,10 +2312,19 @@ export class WebReadRequests {
           evidence?.operation === "queue-add" &&
           queue?.complete === true &&
           queue.data.some((row) => isObject(row) && row.clientUserMessageId === unknown.requestId);
+        const followerApproveResolved =
+          evidence?.executionMode === "codex-follower" &&
+          evidence.operation === "approve" &&
+          evidence.nativeRequestId != null &&
+          typeof evidence.turnId === "string" &&
+          followerState !== null &&
+          followerState.revision !== null &&
+          !followerState.hasPendingRequest(evidence.nativeRequestId, evidence.turnId);
         if (
           !managedSettingsEvidenceMatches(unknown.evidence, latest) &&
           !nativeRequestResolved &&
           !queuedAddResolved &&
+          !followerApproveResolved &&
           !managedCommandReconciles(unknown.requestId, evidence, thread)
         )
           unresolvedCount += 1;
@@ -2207,8 +2341,23 @@ export class WebReadRequests {
     } else {
       // Older Desktop-follower receipts still need a conservative, read-only
       // reconciliation path after that transport leaves the main flow.
+      const followerState =
+        this.#attachedCodexFollower({ id: request.sessionId, native_id: nativeId })?.bridge
+          .selectedState ?? null;
       for (const unknown of readUnknownManagedCommands(this.dataDir, request.sessionId)) {
-        if (managedCommandReconciles(unknown.requestId, unknown.evidence, thread))
+        const evidence = unknown.evidence;
+        const followerApproveResolved =
+          evidence?.executionMode === "codex-follower" &&
+          evidence.operation === "approve" &&
+          evidence.nativeRequestId != null &&
+          typeof evidence.turnId === "string" &&
+          followerState !== null &&
+          followerState.revision !== null &&
+          !followerState.hasPendingRequest(evidence.nativeRequestId, evidence.turnId);
+        if (
+          followerApproveResolved ||
+          managedCommandReconciles(unknown.requestId, unknown.evidence, thread)
+        )
           finishManagedCommand(this.dataDir, unknown.requestId, {
             accepted: true,
             completed: false,
@@ -2339,6 +2488,12 @@ export class WebReadRequests {
       };
       if (runner?.retiring || managedSessionHasUnknownCommands(this.dataDir, request.sessionId))
         return reject("control-outcome-unconfirmed");
+      const follower = this.#attachedCodexFollower(inactive);
+      if (follower) {
+        if (!["send", "stop", "approve"].includes(request.operation))
+          return reject("follower-operation-unverified");
+        return this.#codexFollowerControl(request, fingerprint, follower, inactive.workspace_id);
+      }
       if (request.expectedRevision !== (inactive.snapshot?.revision ?? 0))
         return reject("stale-or-disabled-control");
       if (!["send", "settings", "rename", "archive", "compact"].includes(request.operation))
@@ -2992,7 +3147,10 @@ export class WebReadRequests {
       thread = candidate;
     }
 
-    const follower = await this.#codexFollower(request.sessionId);
+    const managed =
+      readManagedRecords(this.dataDir, this.store).find((item) => item.id === request.sessionId) ??
+      (await this.#inactiveRecord(request.sessionId));
+    const follower = await this.#desktopFollower(managed);
     const state = await follower.bridge.refresh();
     let unresolvedCount = 0;
     for (const command of unknown) {
@@ -3045,11 +3203,11 @@ export class WebReadRequests {
     };
   }
 
-  // Retained for the separately approved Desktop-follower cleanup.
-  // oxlint-disable-next-line no-unused-private-class-members
   async #codexFollowerControl(
     request: z.infer<typeof managedControlSchema>,
     fingerprint: string,
+    follower: CodexFollowerRecord,
+    workspaceId: string,
   ): Promise<Record<string, unknown>> {
     let dispatched = false;
     try {
@@ -3057,7 +3215,6 @@ export class WebReadRequests {
         throw new Error("stale-or-disabled-control");
       if (managedSessionHasUnknownCommands(this.dataDir, request.sessionId))
         throw new Error("control-outcome-unconfirmed");
-      const follower = await this.#codexFollower(request.sessionId);
       const state = await follower.bridge.observeLive();
       if (state.revision !== request.expectedRevision) throw new Error("stale-or-disabled-control");
       const live = state.live(true);
@@ -3066,7 +3223,6 @@ export class WebReadRequests {
       let method: string;
       let params: Record<string, unknown>;
       let responseId: string | number | null = null;
-      let expectedNativeSettings: Record<string, unknown> | undefined;
 
       if (request.operation === "send") {
         if (live.sendEnabled !== true) throw new Error("session-busy");
@@ -3105,10 +3261,15 @@ export class WebReadRequests {
         if (!approval || approval.supported !== true) throw new Error("unsupported-approval");
         const decision = request.nativeDecision ?? request.decision;
         if (decision === undefined) throw new Error("missing-decision");
-        const options = Array.isArray(approval.decisionOptions) ? approval.decisionOptions : [];
+        const options = Array.isArray(approval.decisionOptions)
+          ? approval.decisionOptions
+          : Array.isArray(approval.availableDecisions)
+            ? approval.availableDecisions
+            : [];
         if (
           !options.some(
-            (option) => isObject(option) && stableJson(option.decision) === stableJson(decision),
+            (option) =>
+              stableJson(isObject(option) ? option.decision : option) === stableJson(decision),
           )
         )
           throw new Error("unsupported-decision");
@@ -3121,52 +3282,8 @@ export class WebReadRequests {
               : "";
         if (!method) throw new Error("unsupported-approval");
         params = { conversationId: state.conversationId, requestId: approvalId, decision };
-      } else if (request.operation === "answer") {
-        if (!turnId || state.activeTurn() !== turnId) throw new Error("missing-question");
-        const questionId = request.questionId;
-        if (questionId === undefined) throw new Error("missing-question");
-        const question = state
-          .questions(true)
-          .find(
-            (item) =>
-              managedRequestKey(item.requestId) === managedRequestKey(questionId) &&
-              item.turnId === turnId,
-          );
-        if (!question || question.supported !== true || !Array.isArray(question.questions))
-          throw new Error("unsupported-question");
-        if (!request.answers) throw new Error("missing-answers");
-        responseId = questionId;
-        method = "thread-follower-submit-user-input";
-        params = {
-          conversationId: state.conversationId,
-          requestId: questionId,
-          response: followerAnswerPayload(question.questions, request.answers),
-        };
       } else {
-        if (!follower.bridge.supportsThreadSettings)
-          throw new Error("follower-operation-unverified");
-        if (live.status !== "idle") throw new Error("session-busy");
-        if (request.model || request.effort || request.serviceTier || request.resetDefaults)
-          throw new Error("follower-setting-read-only");
-        const native = state.snapshot();
-        if (!native) throw new Error("state-unavailable");
-        const threadSettings = followerThreadSettings(
-          native,
-          follower.workspace,
-          request.mode,
-          request.policyId,
-        );
-        expectedNativeSettings = threadSettings;
-        method = "thread-follower-update-thread-settings";
-        params = {
-          conversationId: state.conversationId,
-          threadSettings,
-          activeTurnId: null,
-          condition: {
-            ifModelEquals: native.latestModel,
-            ifEffortEquals: native.latestReasoningEffort ?? null,
-          },
-        };
+        throw new Error("follower-operation-unverified");
       }
 
       const claimed = claimManagedCommand(
@@ -3177,9 +3294,9 @@ export class WebReadRequests {
         request.deviceId ?? null,
         {
           operation: request.operation,
+          workspaceId,
           turnId: turnId ?? null,
           nativeRequestId: responseId,
-          expectedNativeSettings: expectedNativeSettings ?? null,
           runtimeBootId: request.runtimeBootId,
           expectedRevision: request.expectedRevision,
           executionMode: "codex-follower",
@@ -3203,8 +3320,6 @@ export class WebReadRequests {
             dispatched = true;
           },
         );
-        if (request.operation === "settings" && (!isObject(result) || result.applied !== true))
-          throw new Error("owner rejected stale settings");
         if (request.operation === "stop") {
           if (!isObject(result) || result.ok !== true || result.interruptedTurnId !== turnId)
             throw new Error("unconfirmed-turn");
@@ -3212,7 +3327,6 @@ export class WebReadRequests {
         const accepted = {
           accepted: true,
           completed: !["send", "stop"].includes(request.operation),
-          ...(request.operation === "settings" ? { appliesTo: "next-turn" } : {}),
           sessionId: request.sessionId,
           requestId: request.requestId,
           runtimeBootId: this.#bootId,
@@ -3239,6 +3353,7 @@ export class WebReadRequests {
             completed: false,
             controlOutcome: "not-dispatched",
             error: error instanceof Error ? error.message : "control-preflight-rejected",
+            reason: error instanceof Error ? error.message : "control-preflight-rejected",
             sessionId: request.sessionId,
             requestId: request.requestId,
             runtimeBootId: this.#bootId,
@@ -3267,7 +3382,10 @@ export class WebReadRequests {
         ? "session-archived"
         : managedSessionHasUnknownCommands(this.dataDir, source.id)
           ? "control-outcome-unconfirmed"
-          : request.expectedRevision !== (source.snapshot?.revision ?? 0)
+          : request.expectedRevision !==
+              (this.#attachedCodexFollower(source)?.bridge.selectedState?.revision ??
+                source.snapshot?.revision ??
+                0)
             ? "stale-or-disabled-control"
             : null);
     if (reason)
@@ -4371,6 +4489,12 @@ export class WebReadRequests {
           // The closing runner stays fenced until its real process-close event.
         }
       }
+      for (const [id, follower] of this.#codexFollowers) {
+        if (!this.isSessionObserved?.(id) && Date.now() - follower.lastUsed >= FOLLOWER_IDLE_MS) {
+          this.#codexFollowers.delete(id);
+          follower.bridge.close();
+        }
+      }
     } finally {
       this.#retiring = false;
     }
@@ -4447,7 +4571,9 @@ export class WebReadRequests {
     );
     if (!managed) {
       try {
-        return await this.#inactiveLive(await this.#inactiveRecord(sessionId), experimentalEnabled);
+        const record = await this.#inactiveRecord(sessionId);
+        const inactive = await this.#inactiveLive(record, experimentalEnabled);
+        return (await this.#desktopFollowerLive(record, inactive, experimentalEnabled)) ?? inactive;
       } catch (error) {
         // Root/home sessions can live in an unregistered native collection.
         // Explain the proven directory failure without granting collection controls.
@@ -4516,7 +4642,8 @@ export class WebReadRequests {
       await this.#closeManagedRunner(sessionId, resident);
     }
 
-    return this.#inactiveLive(managed, experimentalEnabled);
+    const inactive = await this.#inactiveLive(managed, experimentalEnabled);
+    return (await this.#desktopFollowerLive(managed, inactive, experimentalEnabled)) ?? inactive;
   }
 
   async #antigravityLive(sessionId: string): Promise<Record<string, unknown>> {
@@ -4737,26 +4864,20 @@ export class WebReadRequests {
     }
   }
 
-  async #codexFollower(sessionId: string): Promise<CodexFollowerRecord> {
-    if (process.platform !== "darwin") throw new Error("platform-unsupported");
-    const resolved = await this.sessions.resolve(sessionId);
-    if (resolved.summary.agent !== "codex") throw new Error("session-not-codex");
-    const nativeId = resolved.native.native_ref;
-    if (!this.sessions.verifiedCodexControlIds([nativeId]).has(nativeId.toLowerCase()))
-      throw new Error("unverified-session-identity");
-    const workspace = canonicalize(resolved.workspace);
-    const workspaceId = resolved.summary.workspace_id;
-    if (
-      pathIdentity(canonicalize(this.store.workspacePath(workspaceId))) !== pathIdentity(workspace)
-    )
+  async #desktopFollower(record: ManagedRecord): Promise<CodexFollowerRecord> {
+    if (!CodexFollowerConnection.supported()) throw new Error("platform-unsupported");
+    if (!record.native_id) throw new Error("native-session-unconfirmed");
+    const workspace = canonicalize(this.store.workspacePath(record.workspace_id));
+    if (pathIdentity(workspace) !== pathIdentity(canonicalize(record.workspace)))
       throw new Error("session-workspace-mismatch");
-
+    const home = this.#assertManagedHome(record);
+    const nativeId = record.native_id;
+    const sessionId = record.id;
     const cached = this.#codexFollowers.get(sessionId);
     if (
       cached?.bridge.connected &&
       cached.nativeId === nativeId &&
-      cached.workspaceId === workspaceId &&
-      pathIdentity(cached.workspace) === pathIdentity(workspace)
+      cached.workspaceId === record.workspace_id
     ) {
       cached.lastUsed = Date.now();
       return cached;
@@ -4768,7 +4889,7 @@ export class WebReadRequests {
 
     const pending = this.#codexFollowerFlights.get(sessionId);
     if (pending) return pending;
-    const flight = this.#connectCodexFollower(sessionId, workspaceId, workspace, nativeId);
+    const flight = this.#connectCodexFollower(record, workspace, nativeId, home);
     this.#codexFollowerFlights.set(sessionId, flight);
     try {
       return await flight;
@@ -4779,11 +4900,12 @@ export class WebReadRequests {
   }
 
   async #connectCodexFollower(
-    sessionId: string,
-    workspaceId: string,
+    record: ManagedRecord,
     workspace: string,
     nativeId: string,
+    home: string,
   ): Promise<CodexFollowerRecord> {
+    const sessionId = record.id;
     if (this.#codexFollowers.size >= 8) {
       const candidates = [...this.#codexFollowers.entries()]
         .filter(
@@ -4799,203 +4921,106 @@ export class WebReadRequests {
       this.#codexFollowers.delete(retireId);
       retire.bridge.close();
     }
-    const home = canonicalize(this.sessions.codexHome());
-    const endpoint = path.join(home, "ipc", "ipc.sock");
-    const bridge = await CodexFollowerBridge.connect(endpoint, nativeId, (snapshot) => {
+    let bridge: CodexFollowerBridge | undefined;
+    const publish = (snapshot: ReturnType<CodexFollowerState["streamSnapshot"]>) => {
+      const state = bridge?.selectedState;
+      if (!state) return;
       const live = {
-        ...snapshot.live,
-        sessionId,
-        runtimeBootId: this.#bootId,
+        ...this.#followerLive(record, state, true),
+        streamText: snapshot.live.streamText,
       };
-      this.publishConversationEvent?.(
-        sessionId,
-        "snapshot",
-        {
-          live,
-          items: snapshot.items,
-          replaceItems: true,
-          preserveItemsOutsideCoverage: true,
-        },
-        live,
-      );
-    });
+      this.publishConversationEvent?.(sessionId, "state", live, live);
+    };
+    bridge = await CodexFollowerBridge.connect(
+      path.join(home, "ipc", "ipc.sock"),
+      nativeId,
+      publish,
+    );
     try {
-      const latest = await this.sessions.resolve(sessionId);
-      if (
-        latest.summary.agent !== "codex" ||
-        latest.summary.workspace_id !== workspaceId ||
-        latest.native.native_ref !== nativeId ||
-        pathIdentity(canonicalize(latest.workspace)) !== pathIdentity(workspace) ||
-        pathIdentity(canonicalize(this.store.workspacePath(workspaceId))) !==
-          pathIdentity(workspace)
-      )
+      const latest =
+        readManagedRecords(this.dataDir, this.store).find((item) => item.id === sessionId) ??
+        (await this.#inactiveRecord(sessionId));
+      if (latest.native_id !== nativeId || latest.workspace_id !== record.workspace_id)
         throw new Error("session-unavailable");
-      const record = { bridge, workspaceId, workspace, nativeId, lastUsed: Date.now() };
-      this.#codexFollowers.set(sessionId, record);
-      return record;
+      const follower = {
+        bridge,
+        workspaceId: record.workspace_id,
+        workspace,
+        nativeId,
+        lastUsed: Date.now(),
+      };
+      this.#codexFollowers.set(sessionId, follower);
+      if (bridge.selectedState) publish(bridge.selectedState.streamSnapshot());
+      return follower;
     } catch (error) {
       bridge.close();
       throw error;
     }
   }
 
-  // Retained for the separately approved Desktop-follower cleanup.
-  // oxlint-disable-next-line no-unused-private-class-members
-  async #codexFollowerLive(
-    sessionId: string,
-    experimentalEnabled: boolean,
-  ): Promise<Record<string, unknown>> {
-    try {
-      const follower = await this.#codexFollower(sessionId);
-      const state = await follower.bridge.observeLive();
-      follower.lastUsed = Date.now();
-      return {
-        ...state.live(experimentalEnabled),
-        sessionId,
-        runtimeBootId: this.#bootId,
-      };
-    } catch (error) {
-      if (
-        error instanceof Error &&
-        [
-          "session-not-codex",
-          "session-workspace-mismatch",
-          "session-unavailable",
-          "unverified-session-identity",
-        ].includes(error.message)
-      )
-        throw error;
-      return {
-        sessionId,
-        runtimeBootId: this.#bootId,
-        executionMode: "codex-follower",
-        status: "unsupported",
-        revision: null,
-        turnId: null,
-        sendEnabled: false,
-        stopEnabled: false,
-        approvals: [],
-        questions: [],
-        reason: followerReason(error),
-      };
-    }
+  /** A connected follower still tracking the record's native conversation with a valid snapshot. */
+  #attachedCodexFollower(record: {
+    id: string;
+    native_id?: string | null;
+  }): CodexFollowerRecord | undefined {
+    const follower = this.#codexFollowers.get(record.id);
+    return follower?.bridge.connected &&
+      follower.nativeId === record.native_id &&
+      (follower.bridge.selectedState?.revision ?? null) !== null
+      ? follower
+      : undefined;
   }
 
-  // Retained for the separately approved Desktop-follower cleanup.
-  // oxlint-disable-next-line no-unused-private-class-members
-  async #followerCapabilities(
-    sessionId: string,
-    experimentalEnabled: boolean,
-  ): Promise<Record<string, unknown>> {
-    const operations = [
-      "send",
-      "stop",
-      "approve",
-      "answer",
-      "inspect",
-      "resume",
-      "steer",
-      "queue-list",
-      "queue-add",
-      "queue-update",
-      "queue-delete",
-      "queue-reorder",
-      "queue-start",
-      "rename",
-      "archive",
-      "unarchive",
-      "fork",
-      "settings",
-      "settings-state",
-      "usage",
-      "goal",
-      "goal-set",
-      "goal-pause",
-      "goal-resume",
-      "goal-clear",
-      "resources",
-      "attachments",
-      "worktree-create",
-      "branch-switch",
-    ];
-    let follower: CodexFollowerRecord;
-    let state: CodexFollowerState;
-    try {
-      follower = await this.#codexFollower(sessionId);
-      state = await follower.bridge.observeLive();
-    } catch (error) {
-      const reason = followerReason(error);
-      return {
-        sessionId,
-        executionMode: "codex-follower",
-        status: "unsupported",
-        reason,
-        features: Object.fromEntries(
-          operations.map((operation) => [operation, { available: false, reason }]),
-        ),
-      };
-    }
-    const live = state.live(experimentalEnabled);
-    const verified = resolveCommand("codex", this.environment) !== null;
-    const idle = live.status === "idle";
-    const compacting = live.activity === "compacting";
-    const set = (operation: string, available: boolean, reason = "follower-operation-unverified") =>
-      [operation, available ? { available: true } : { available: false, reason }] as const;
-    const controlReason = !verified
-      ? "unsupported-codex-cli-version"
-      : !experimentalEnabled
-        ? "control-disabled"
-        : typeof live.reason === "string"
-          ? live.reason
-          : live.status === "outcome-unknown"
-            ? "control-outcome-unconfirmed"
-            : compacting
-              ? "session-compacting"
-              : "session-busy";
-    const features = Object.fromEntries([
-      set("send", live.sendEnabled === true, controlReason),
-      set("stop", live.stopEnabled === true, controlReason),
-      set(
-        "approve",
-        experimentalEnabled && state.approvals(true).some((item) => item.supported === true),
-        controlReason,
-      ),
-      set(
-        "answer",
-        experimentalEnabled && state.questions(true).some((item) => item.supported === true),
-        controlReason,
-      ),
-      set("inspect", verified, "unsupported-codex-cli-version"),
-      set("resume", experimentalEnabled && verified, controlReason),
-      ...operations
-        .filter(
-          (operation) =>
-            ![
-              "send",
-              "stop",
-              "approve",
-              "answer",
-              "inspect",
-              "resume",
-              "settings",
-              "usage",
-            ].includes(operation),
-        )
-        .map((operation) => set(operation, false)),
-      set(
-        "settings",
-        follower.bridge.supportsThreadSettings && experimentalEnabled && idle && !compacting,
-        follower.bridge.supportsThreadSettings ? controlReason : "follower-operation-unverified",
-      ),
-      set("usage", isObject(live.usage) && live.usage.available === true, "usage-not-reported"),
-    ]);
+  #followerLive(
+    record: ManagedRecord,
+    state: CodexFollowerState,
+    controls: boolean,
+  ): Record<string, unknown> {
+    const unknown = managedSessionHasUnknownCommands(this.dataDir, record.id);
+    const live = state.live(controls && !unknown);
     return {
-      sessionId,
+      ...live,
+      // The follower transport does not forward user-input answers.
+      questions: (Array.isArray(live.questions) ? live.questions : []).map((question) => ({
+        ...question,
+        supported: false,
+      })),
+      sessionId: record.id,
+      runtimeBootId: this.#bootId,
+      workspaceId: record.workspace_id,
       executionMode: "codex-follower",
-      status: live.status,
-      reason: live.reason,
-      features,
+      executionLocation: "external",
+      ownershipReason: null,
+      ...(unknown
+        ? { reason: "control-outcome-unconfirmed", sendEnabled: false, stopEnabled: false }
+        : {}),
     };
+  }
+
+  async #desktopFollowerLive(
+    record: ManagedRecord,
+    inactive: Record<string, unknown>,
+    controls: boolean,
+  ): Promise<Record<string, unknown> | undefined> {
+    if (inactive.reason !== "codex-owner-busy" || inactive.ownershipReason !== "codex-owner-busy")
+      return undefined;
+    if (!CodexFollowerConnection.supported()) return undefined;
+    const miss = this.#followerMisses.get(record.id);
+    if (miss !== undefined && Date.now() - miss < FOLLOWER_RETRY_MS) return undefined;
+    try {
+      const follower = await this.#desktopFollower(record);
+      const state = await follower.bridge.observeLive();
+      follower.lastUsed = Date.now();
+      return this.#followerLive(record, state, controls);
+    } catch {
+      const follower = this.#codexFollowers.get(record.id);
+      if (follower) {
+        this.#codexFollowers.delete(record.id);
+        follower.bridge.close();
+      }
+      this.#followerMisses.set(record.id, Date.now());
+      return undefined;
+    }
   }
 
   async #resumeCommand(sessionId: string) {
@@ -5647,6 +5672,8 @@ function followerInput(
   return projected;
 }
 
+// Retained with the dormant Desktop-follower implementation.
+// oxlint-disable-next-line no-unused-vars
 function followerThreadSettings(
   snapshot: Record<string, unknown>,
   workspace: string,
@@ -5748,6 +5775,8 @@ function managedAnswerPayload(
   return { answers: normalized };
 }
 
+// Retained with the dormant Desktop-follower implementation.
+// oxlint-disable-next-line no-unused-vars
 function followerAnswerPayload(
   questions: unknown[],
   answers: Record<string, string[]>,

@@ -1,4 +1,4 @@
-import { cleanup, fireEvent, render, screen } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { ConversationEvent } from "@agentkib/web-client";
 import { dictionaries } from "@/features/conversation/i18n";
@@ -54,6 +54,8 @@ function viewport(height = 1200) {
 }
 function moveTo(top: number) {
   const node = viewport();
+  node.scrollTop = node.scrollHeight - node.clientHeight;
+  fireEvent.wheel(node, { deltaY: top - node.scrollTop });
   node.scrollTop = top;
   fireEvent.scroll(node);
   return node;
@@ -333,7 +335,7 @@ describe("conversation reading position", () => {
     expect(screen.getByRole("button", { name: "上下文用量" })).toHaveTextContent("5%");
     expect(screen.queryByRole("button", { name: state.t.send })).not.toBeInTheDocument();
   });
-  it("keeps the reading position and offers an accessible jump for an appended reply", () => {
+  it("keeps the reading position and offers an accessible jump for an appended reply", async () => {
     const view = render(<SessionReader />);
     const node = moveTo(250);
     state = {
@@ -348,7 +350,7 @@ describe("conversation reading position", () => {
     jump.focus();
     expect(jump).toHaveFocus();
     fireEvent.click(jump);
-    expect(node.scrollTop).toBe(node.scrollHeight);
+    await waitFor(() => expect(node.scrollTop).toBe(node.scrollHeight - node.clientHeight));
     expect(screen.queryByRole("button", { name: latest })).not.toBeInTheDocument();
     state = {
       ...state,
@@ -357,7 +359,7 @@ describe("conversation reading position", () => {
     };
     viewport(1500);
     view.rerender(<SessionReader />);
-    expect(node.scrollTop).toBe(1500);
+    await waitFor(() => expect(node.scrollTop).toBe(1200));
   });
 
   it("does not report earlier pages or replay of the same tail as new messages", () => {
@@ -377,7 +379,7 @@ describe("conversation reading position", () => {
     expect(screen.queryByRole("button", { name: latest })).not.toBeInTheDocument();
   });
 
-  it("notifies once for incremental text and clears the notice near the bottom", () => {
+  it("notifies once for incremental text and clears the notice near the bottom", async () => {
     const view = render(<SessionReader />);
     const node = moveTo(100);
     state = {
@@ -388,6 +390,7 @@ describe("conversation reading position", () => {
     view.rerender(<SessionReader />);
     expect(screen.getAllByRole("button", { name: latest })).toHaveLength(1);
     expect(node.scrollTop).toBe(100);
+    fireEvent.wheel(node, { deltaY: 750 });
     node.scrollTop = 850;
     fireEvent.scroll(node);
     expect(screen.queryByRole("button", { name: latest })).not.toBeInTheDocument();
@@ -398,7 +401,7 @@ describe("conversation reading position", () => {
       liveContentVersion: state.liveContentVersion + 1,
     };
     view.rerender(<SessionReader />);
-    expect(node.scrollTop).toBe(1400);
+    await waitFor(() => expect(node.scrollTop).toBe(1100));
   });
 
   it("notifies for a text delta even when another tool follows that message", () => {
@@ -420,7 +423,7 @@ describe("conversation reading position", () => {
     expect(node.scrollTop).toBe(100);
   });
 
-  it("handles fallback streaming and resets following when switching conversations", () => {
+  it("handles fallback streaming and resets following when switching conversations", async () => {
     const view = render(<SessionReader />);
     const node = moveTo(100);
     state = {
@@ -446,6 +449,6 @@ describe("conversation reading position", () => {
     };
     view.rerender(<SessionReader />);
     expect(screen.queryByRole("button", { name: latest })).not.toBeInTheDocument();
-    expect(node.scrollTop).toBe(1200);
+    await waitFor(() => expect(node.scrollTop).toBe(900));
   });
 });

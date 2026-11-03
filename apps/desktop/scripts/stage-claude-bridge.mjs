@@ -12,12 +12,18 @@ const entries = [
   "hooks/hooks.json",
   "hooks/register.js",
   "hooks/compatibility.js",
+  "LICENSE",
+  "NOTICE",
 ];
 const hash = createHash("sha256");
 await rm(destination, { recursive: true, force: true });
 await mkdir(destination, { recursive: true });
 for (const entry of entries) {
-  const bytes = await readFile(path.join(source, entry));
+  const bytes = await readFile(
+    entry === "LICENSE" || entry === "NOTICE"
+      ? path.resolve(desktop, "../..", entry)
+      : path.join(source, entry),
+  );
   hash.update(entry).update("\0").update(bytes).update("\0");
   await mkdir(path.dirname(path.join(destination, entry)), { recursive: true });
   await writeFile(path.join(destination, entry), bytes);

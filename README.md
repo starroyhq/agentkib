@@ -16,7 +16,7 @@
   <a href="https://github.com/starroyhq/agentkib/releases/latest"><img alt="Latest release" src="https://img.shields.io/github/v/release/starroyhq/agentkib?label=release" /></a>
   <a href="https://github.com/starroyhq/agentkib/actions/workflows/ci.yml"><img alt="CI" src="https://github.com/starroyhq/agentkib/actions/workflows/ci.yml/badge.svg" /></a>
   <img alt="Local first" src="https://img.shields.io/badge/data-local_first-16a34a" />
-  <a href="LICENSE"><img alt="MIT License" src="https://img.shields.io/badge/license-MIT-111827" /></a>
+  <a href="LICENSE"><img alt="Apache License 2.0" src="https://img.shields.io/badge/license-Apache--2.0-111827" /></a>
 </p>
 
 [![AgentKib home dashboard showing today's actions and recent workspaces](docs/assets/agentkib-home.png)](docs/assets/agentkib-home.png)
@@ -118,4 +118,4 @@ For development-only read-only sources and missing-workspace troubleshooting, se
 - [Third-party notices](THIRD_PARTY_NOTICES.md)
 - [GitHub Issues](https://github.com/starroyhq/agentkib/issues)
 
-Report security vulnerabilities privately according to the [security policy](SECURITY.md), not through a public issue. AgentKib is released under the [MIT License](LICENSE).
+Report security vulnerabilities privately according to the [security policy](SECURITY.md), not through a public issue. AgentKib is released under the [Apache License 2.0](LICENSE).

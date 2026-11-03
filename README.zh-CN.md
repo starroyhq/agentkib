@@ -16,7 +16,7 @@
   <a href="https://github.com/starroyhq/agentkib/releases/latest"><img alt="最新版本" src="https://img.shields.io/github/v/release/starroyhq/agentkib?label=release" /></a>
   <a href="https://github.com/starroyhq/agentkib/actions/workflows/ci.yml"><img alt="CI" src="https://github.com/starroyhq/agentkib/actions/workflows/ci.yml/badge.svg" /></a>
   <img alt="本地优先" src="https://img.shields.io/badge/data-local_first-16a34a" />
-  <a href="LICENSE"><img alt="MIT License" src="https://img.shields.io/badge/license-MIT-111827" /></a>
+  <a href="LICENSE"><img alt="Apache License 2.0" src="https://img.shields.io/badge/license-Apache--2.0-111827" /></a>
 </p>
 
 [![AgentKib 首页，展示今日任务和最近工作区](docs/assets/agentkib-home.png)](docs/assets/agentkib-home.png)
@@ -110,4 +110,4 @@ Claude Remote 现有实现包括实际发现的模型/effort、会话工具权�
 - [第三方许可](THIRD_PARTY_NOTICES.md)
 - [GitHub Issues](https://github.com/starroyhq/agentkib/issues)
 
-安全漏洞必须按照[安全策略](SECURITY.md)私密报告，不要创建公开 Issue。AgentKib 使用 [MIT License](LICENSE) 发布。
+安全漏洞必须按照[安全策略](SECURITY.md)私密报告，不要创建公开 Issue。AgentKib 使用 [Apache License 2.0](LICENSE) 发布。

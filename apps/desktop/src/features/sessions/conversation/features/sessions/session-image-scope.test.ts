@@ -13,6 +13,7 @@ import {
   noteSessionImageBoot,
   readSessionImageAccess,
   sessionImageCacheScope,
+  sessionImageRevision,
   setSessionImageIndexEnabled,
 } from "./session-image-scope";
 import { useAppStore } from "@/stores/app-store";
@@ -82,6 +83,56 @@ afterEach(() => {
 });
 
 describe("session image authority scopes", () => {
+  it("rejects an unmounted partial client without inspecting its connection or reading media", async () => {
+    const inspect = vi.fn(() => {
+      throw new Error("Connection is not ready");
+    });
+    const read = vi.fn().mockResolvedValue(data);
+    const client = {
+      get connection() {
+        return inspect();
+      },
+      sessionImage: read,
+    } as unknown as WebClient;
+    expect(sessionImageRevision(undefined as unknown as WebClient)).toBe(-1);
+    expect(sessionImageCacheScope(client, access, "session", true)).toBeUndefined();
+    const loader = createSessionImageLoader(client, access, "session", true, () => true);
+    expect(loader.cacheScope).toBeUndefined();
+    await expect(loader("image", new AbortController().signal)).rejects.toMatchObject({
+      name: "AbortError",
+    });
+    expect(inspect).not.toHaveBeenCalled();
+    expect(read).not.toHaveBeenCalled();
+  });
+
+  it.each(["foreign", "unverified", "unmounted"] as const)(
+    "rejects a %s client before inspecting its unavailable connection",
+    async (state) => {
+      const current = host();
+      const leave = track(mountSessionImages(current.client));
+      if (state !== "unverified") acceptSessionImageAccess(current.client, access);
+      if (state === "unmounted") leave();
+      const target = state === "foreign" ? host() : current;
+      const inspect = vi.fn(() => {
+        throw new Error("Connection is not ready");
+      });
+      const connection = Object.getOwnPropertyDescriptor(target.client, "connection")!;
+      Object.defineProperty(target.client, "connection", { configurable: true, get: inspect });
+      try {
+        expect(sessionImageCacheScope(target.client, access, "session", true)).toBeUndefined();
+        const loader = createSessionImageLoader(target.client, access, "session", true, () => true);
+        expect(loader.cacheScope).toBeUndefined();
+        await expect(loader("image", new AbortController().signal)).rejects.toMatchObject({
+          name: "AbortError",
+        });
+        expect(inspect).not.toHaveBeenCalled();
+        expect(target.read).not.toHaveBeenCalled();
+      } finally {
+        Object.defineProperty(target.client, "connection", connection);
+      }
+    },
+  );
+
   it("reuses warm images after leaving only after a fresh approved access read", async () => {
     const first = host();
     const leave = enter(first.client);

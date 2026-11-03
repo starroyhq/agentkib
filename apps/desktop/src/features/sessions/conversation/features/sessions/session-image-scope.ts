@@ -158,7 +158,7 @@ export function mountSessionImages(client: WebClient, verify?: () => void) {
   };
 }
 export function sessionImageRevision(client: WebClient) {
-  return owner?.client === client ? revision : -1;
+  return owner && owner.client === client ? revision : -1;
 }
 export async function readSessionImageAccess(client: WebClient): Promise<Access> {
   const current = owner,
@@ -265,18 +265,18 @@ export function sessionImageCacheScope(
   sessionId: string,
   indexEnabled: boolean,
 ) {
-  const base = binding(client, access);
   if (
-    !base ||
-    !sessionId ||
-    !indexEnabled ||
-    owner?.client !== client ||
+    !owner ||
+    owner.client !== client ||
     !owner.mounts ||
     !owner.verified ||
     owner.accessProof !== revision ||
-    owner.binding !== base
+    !sessionId ||
+    !indexEnabled
   )
     return;
+  const base = binding(client, access);
+  if (!base || owner.binding !== base) return;
   const state = sessionScope(base, sessionId);
   return state.blocked ? undefined : state.scope;
 }

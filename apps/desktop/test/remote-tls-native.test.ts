@@ -8,6 +8,8 @@ import * as nativeFiles from "../../../packages/backend/src/native-files";
 import { canonicalize } from "../../../packages/backend/src/paths";
 import {
   loadRemoteTlsIdentity,
+  listenRemoteAgent,
+  exchangeRemotePeer,
   restrictRemotePath,
 } from "../../../packages/backend/src/remote-tls";
 
@@ -74,6 +76,39 @@ $acl = if ($env:AGENTKIB_ACL_DIRECTORY -eq 'true') {
 }
 
 describe("native remote identity protection", () => {
+  it.each(["conflict", "unavailable", "unsupported"])(
+    "preserves the safe read-state %s code across real mutual TLS",
+    async (reason) => {
+      const host = loadRemoteTlsIdentity(directory());
+      const viewer = loadRemoteTlsIdentity(directory());
+      const listener = await listenRemoteAgent(
+        host,
+        "127.0.0.1:0",
+        async () => {
+          throw new Error(`read-state-${reason}`);
+        },
+        { allowLoopback: true },
+      );
+      try {
+        await expect(
+          exchangeRemotePeer(
+            viewer,
+            listener.address,
+            host.id,
+            {
+              op: "read-state-update",
+              session_id: "synthetic",
+              expectedVersion: "v1",
+              seenResultId: null,
+            },
+            { allowLoopback: true },
+          ),
+        ).rejects.toThrow(`REMOTE_READ_STATE_${reason.toUpperCase()}`);
+      } finally {
+        await listener.close();
+      }
+    },
+  );
   it("creates and reloads the same private identity without widening its permissions", () => {
     const root = directory();
     const first = loadRemoteTlsIdentity(root);

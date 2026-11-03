@@ -170,6 +170,7 @@ export function SessionHubPage() {
             history={history}
             sessionKey={sessionKey}
             loadEarlier={loadEarlier}
+            viewportRef={historyRef}
           />
         ) : (
           <SessionOverview />

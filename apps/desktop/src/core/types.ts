@@ -1,3 +1,4 @@
+import type { ConversationReadState } from "@agentkib/runtime-protocol";
 export type {
   PrepareSkillSyncRequest,
   SkillSyncOperation,
@@ -1284,6 +1285,7 @@ export type SessionIndexFreshness = "fresh" | "stale" | "unavailable";
 export type ConversationEventKind = "user-message" | "agent-message" | "tool-summary";
 export type MessagePhase = "commentary" | "final_answer";
 export interface ConversationSessionSummary {
+  readState?: ConversationReadState;
   /** Read-only runtime observation; absent when the host has not observed an owner. */
   continuation?: {
     status: string;

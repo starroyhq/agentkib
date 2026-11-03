@@ -126,6 +126,27 @@ describe("RuntimeRouter Skill ownership", () => {
 });
 
 describe("RuntimeRouter read-only Codex continuation", () => {
+  it.each(["read-state", "read-state-update"])(
+    "forwards %s independently of business controls",
+    async (operation) => {
+      const host = new Host();
+      const router = new RuntimeRouter(host);
+      await router.start();
+      const params = {
+        operation,
+        sessionId: "s",
+        readerScope: "local",
+        expectedVersion: "native:one",
+        seenResultId: null,
+      };
+      const result = { readState: { status: "read" } };
+      const received = vi.fn(() => result);
+      host.handler = received;
+      expect(await router.request(RUNTIME_METHODS.webRequest, params)).toBe(result);
+      expect(received).toHaveBeenCalledExactlyOnceWith(RUNTIME_METHODS.webRequest, params);
+      await router.stop();
+    },
+  );
   it("forwards resume-command as a TypeScript history read without invoking controls", async () => {
     const host = new Host();
     const router = new RuntimeRouter(host);

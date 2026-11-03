@@ -49,6 +49,8 @@ import { QuotaOwner } from "./quota";
 import { ClaudeHostControlPreflightError, ClaudeManagedReadOwner } from "./claude-managed-read";
 import { createRelayCsr } from "./relay-csr";
 import { readControlReceipt } from "./control-receipt";
+import { ConversationReadStates } from "./conversation-read-state";
+import { resolveClaudeConfig } from "./claude-config";
 import { WorkspaceApplications } from "./workspace-applications";
 import { nativeContext } from "./native-context";
 import { discoverScanRoots } from "./discovery-scan-roots";
@@ -138,6 +140,7 @@ export class TypeScriptBackend {
   #claudeBridge?: ClaudeBridge;
   #catalogContinuation = new Map<string, string>();
   #webRead?: WebReadRequests;
+  #readStates?: ConversationReadStates;
   #sessionIndex?: SessionIndex;
   #historySearch?: HistorySearch;
   #insightRefresh?: InsightRefresh;
@@ -215,6 +218,8 @@ export class TypeScriptBackend {
     this.#cursorBridge?.close();
     this.#cursorBridge = undefined;
     this.#webRead = undefined;
+    void this.#readStates?.close();
+    this.#readStates = undefined;
     this.#commands.close();
     this.#git = undefined;
     this.#context = undefined;
@@ -233,6 +238,8 @@ export class TypeScriptBackend {
     const mcpHub = this.#mcpHub;
     const remoteAgent = this.#remoteAgent;
     const webRead = this.#webRead;
+    const readStates = this.#readStates;
+    this.#readStates = undefined;
     this.#claudeManaged = undefined;
     this.#claudeBridge = undefined;
     this.#mcpHub = undefined;
@@ -250,6 +257,7 @@ export class TypeScriptBackend {
         // Native CLI processes must release their workspace before shutdown is
         // acknowledged and the backing stores (or temporary workspace) close.
         Promise.resolve().then(() => webRead?.closeAsync()),
+        Promise.resolve().then(() => readStates?.close()),
       ]);
       this.#reset();
       const failed = results.find((result) => result.status === "rejected");
@@ -505,6 +513,15 @@ export class TypeScriptBackend {
           },
         );
         const claudeOwner = this.#claudeManaged;
+        this.#readStates = new ConversationReadStates(
+          store,
+          this.#sessions,
+          dataDir,
+          { ...process.env, ...this.environment },
+          (id) => claudeOwner.readStateTarget(id),
+          () => this.#sessionStream?.publish("", "invalidate", { domains: ["catalog"] }),
+          () => this.#sessionStream?.hasSubscribers("") ?? false,
+        );
         this.#claudeBridge = new ClaudeBridge({
           dataDir,
           bootId: claudeOwner.bootId,
@@ -541,6 +558,25 @@ export class TypeScriptBackend {
             claudeOwner.validateNativeBridgeTarget(target, forControl, bindingId);
           },
           publish: (id, type, payload, live) => this.#publishSession(id, type, payload, live),
+          completed: (target, turnId, aborted) =>
+            this.#readStates?.recordTerminal(
+              {
+                provider: "claude-code",
+                home: resolveClaudeConfig(
+                  { ...process.env, ...this.environment },
+                  userHome({ ...process.env, ...this.environment }),
+                ).dir,
+                nativeId: target.nativeId,
+                workspace: target.workspace,
+              },
+              {
+                id: `turn:${turnId}`,
+                turnId,
+                itemId: null,
+                outcome: aborted ? "cancelled" : "ended",
+                completedAt: new Date().toISOString(),
+              },
+            ),
         });
         this.#claudeBridge.initialize();
         this.#historySearch = new HistorySearch(
@@ -660,7 +696,13 @@ export class TypeScriptBackend {
             this.#claudeManaged?.observeSession(sessionId);
           },
         );
-        this.#remoteAgent = new RemoteAgent(dataDir, store, this.#sessions, this.#sessionIndex);
+        this.#remoteAgent = new RemoteAgent(
+          dataDir,
+          store,
+          this.#sessions,
+          this.#sessionIndex,
+          this.#readStates,
+        );
         this.#historySearch.refresh();
         return Promise.all([
           this.#mcpHub.start(),
@@ -751,6 +793,39 @@ export class TypeScriptBackend {
       return this.#workspaceApplications!.open(request.workspaceId, request.openerId);
     }
     if (method === RUNTIME_METHODS.webRequest) {
+      if (params.operation === "read-state" || params.operation === "read-state-update") {
+        const input = parameters(
+          z
+            .object({
+              operation: z.enum(["read-state", "read-state-update"]),
+              sessionId: z.string().min(1).max(256),
+              readerScope: z.string().min(1).max(512),
+              expectedVersion: z.string().min(1).max(8192).optional(),
+              seenResultId: z.string().min(1).max(1024).nullable().optional(),
+            })
+            .strict(),
+          params,
+        );
+        if (!this.#readStates) throw new Error("read-state-unavailable");
+        if (input.operation === "read-state")
+          return this.#readStates
+            .get(input.sessionId, input.readerScope)
+            .then((readState) => ({ readState }));
+        if (!input.expectedVersion || input.seenResultId === undefined)
+          throw new Error("read-state-conflict");
+        return this.#readStates
+          .update(input.sessionId, input.readerScope, input.expectedVersion, input.seenResultId)
+          .then((readState) => ({ readState }));
+      }
+      let readerScope: string | undefined;
+      if (params.operation === "catalog" && params.readerScope !== undefined) {
+        readerScope = parameters(
+          z.object({ readerScope: z.string().min(1).max(512) }),
+          params,
+        ).readerScope;
+        const { readerScope: _scope, ...unscoped } = params;
+        params = unscoped;
+      }
       if (params.operation === "diff") return webDiff(params, this.#store, this.#git!);
       // Claude managed sessions run in their registered workspace root, so they have no
       // narrower directory; every other session reads it from the index or Codex ledger.
@@ -881,18 +956,19 @@ export class TypeScriptBackend {
               }
             : row;
         };
+        const merged = [
+          ...sessions.filter(
+            (session) =>
+              !!session &&
+              typeof session === "object" &&
+              !Array.isArray(session) &&
+              !("id" in session && aliases.has(String(session.id))),
+          ),
+          ...this.#withWorktrees(records),
+        ].map(continuation);
         return {
           ...catalog,
-          sessions: [
-            ...sessions.filter(
-              (session) =>
-                !!session &&
-                typeof session === "object" &&
-                !Array.isArray(session) &&
-                !("id" in session && aliases.has(String(session.id))),
-            ),
-            ...this.#withWorktrees(records),
-          ].map(continuation),
+          sessions: readerScope ? this.#readStates!.project(merged, readerScope) : merged,
         };
       });
     }
@@ -998,8 +1074,14 @@ export class TypeScriptBackend {
       return sanitizeHandoffExport(request.editedContent, request.format);
     }
     if (method === RUNTIME_METHODS.workspaceSessions) {
-      const { workspaceId } = parameters(z.object({ workspaceId: z.string() }), params);
-      return this.#sessionIndex!.read(workspaceId).then((rows) => this.#withWorktrees(rows));
+      const { workspaceId, readerScope } = parameters(
+        z.object({ workspaceId: z.string(), readerScope: z.string().min(1).max(512).optional() }),
+        params,
+      );
+      return this.#sessionIndex!.read(workspaceId).then((rows) => {
+        const projected = this.#withWorktrees(rows);
+        return readerScope ? this.#readStates!.project(projected, readerScope) : projected;
+      });
     }
     if (TYPESCRIPT_SESSION_READ_METHODS.has(method))
       return this.#store.sessions.request(method, params);

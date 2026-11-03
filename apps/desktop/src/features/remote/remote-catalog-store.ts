@@ -97,7 +97,10 @@ export async function refreshRemoteCatalog(id: string, force = false): Promise<v
         }
       }
       failures.delete(id);
-      retryAt.set(id, Date.now() + 30_000);
+      retryAt.set(
+        id,
+        Date.now() + (result.sessions.some((session) => session.readState) ? 5_000 : 30_000),
+      );
       useRemoteCatalogStore.setState((state) => {
         const errors = { ...state.errors };
         delete errors[id];

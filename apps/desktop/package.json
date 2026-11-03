@@ -9,6 +9,7 @@
   "type": "module",
   "main": "dist-electron/main.cjs",
   "scripts": {
+    "verify:codex:read-state": "node scripts/verify-codex-read-state.mjs",
     "verify:windows:mcp-cleanup": "pnpm protocol:generate && pnpm backend:build && node scripts/run-windows-mcp-cleanup.mjs",
     "dev": "pnpm dev:typescript",
     "dev:typescript": "pnpm protocol:generate && pnpm cursor:stage && pnpm quota:prepare && pnpm quota:stage && pnpm backend:build && cross-env AGENTKIB_DEV=1 electron-vite dev --watch",

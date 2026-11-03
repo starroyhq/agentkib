@@ -1,4 +1,6 @@
 import type {
+  ConversationReadState,
+  ConversationReadResult,
   ClaudeCommandEntry,
   ConversationToolDetail,
   ConversationTurnMeta,
@@ -13,6 +15,8 @@ import type {
 export type {
   ClaudeCommandAccess,
   ClaudeCommandDecision,
+  ConversationReadState,
+  ConversationReadResult,
   ClaudeCommandEntry,
   ClaudeCommandRefusal,
   ClaudeMenuCommand,
@@ -65,6 +69,8 @@ export function isHistoryReadPath(path: string): boolean {
 }
 
 export interface ConversationSessionSummary {
+  /** Absent on hosts predating shared read state. */
+  readState?: ConversationReadState;
   /** Read-only runtime observation; absent when the host has not observed an owner. */
   continuation?: {
     status: string;
@@ -202,6 +208,7 @@ export interface LivePreviewTicket {
   expiresAt: number;
 }
 export interface Access {
+  readStateVersion?: 1;
   accountLogin?: {
     required: true;
     proofVersion: 1;
@@ -1233,6 +1240,40 @@ export class WebClient {
   }
   catalog(signal?: AbortSignal) {
     return this.request<ConversationCatalog>("catalog", undefined, signal);
+  }
+  readState(sessionId: string, signal?: AbortSignal) {
+    return this.request<{ readState: ConversationReadState }>(
+      `read-state?${new URLSearchParams({ sessionId })}`,
+      undefined,
+      signal,
+    );
+  }
+  /** A lost ACK is resolved by a GET, never by replaying the write. */
+  async acknowledgeReadState(
+    sessionId: string,
+    expectedVersion: string,
+    seenResultId: string | null,
+    signal?: AbortSignal,
+  ) {
+    try {
+      const result = await this.request<{ readState: ConversationReadState }>(
+        "read-state",
+        { sessionId, expectedVersion, seenResultId },
+        signal,
+      );
+      return { ...result, acknowledged: true };
+    } catch (error) {
+      if (signal?.aborted) throw error;
+      if (
+        error instanceof ApiError &&
+        error.status !== 409 &&
+        error.status > 0 &&
+        error.status < 500
+      )
+        throw error;
+      const result = await this.readState(sessionId, signal);
+      return { ...result, acknowledged: false };
+    }
   }
   events(sessionId: string, cursor?: string, signal?: AbortSignal) {
     const q = new URLSearchParams({ sessionId, limit: "50" });

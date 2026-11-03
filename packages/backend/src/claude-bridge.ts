@@ -167,6 +167,7 @@ interface BridgeOptions {
   ): void;
   platform?: NodeJS.Platform;
   commandTimeoutMs?: number;
+  completed?(target: ClaudeBridgeTarget, turnId: string, aborted: boolean): void;
 }
 
 function privatePath(value: string, directory = false): void {
@@ -1734,6 +1735,11 @@ export class ClaudeBridge {
     connection: Connection,
     event: Extract<ClaudeBridgeEvent, { type: "turn-complete" }>,
   ): void {
+    try {
+      this.options.completed?.(row.target, event.turnId, event.aborted);
+    } catch {
+      console.warn("Conversation read-state observation could not be recorded");
+    }
     connection.completed.set(
       event.turnId,
       event.aborted || connection.completed.get(event.turnId) === true,

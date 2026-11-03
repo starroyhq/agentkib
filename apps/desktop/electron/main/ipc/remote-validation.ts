@@ -64,6 +64,20 @@ export function requireRemoteRequest(value: unknown): RemoteRequest {
     case "catalog":
       only("id");
       return { operation: input.operation, id: text("id", 256) };
+    case "read-state":
+      only("id", "sessionId");
+      return { operation: "read-state", id: text("id", 256), sessionId: text("sessionId", 256) };
+    case "read-state-update":
+      only("id", "sessionId", "expectedVersion", "seenResultId");
+      if (!(input.seenResultId === null || typeof input.seenResultId === "string"))
+        throw new TypeError("Invalid remote seenResultId");
+      return {
+        operation: "read-state-update",
+        id: text("id", 256),
+        sessionId: text("sessionId", 256),
+        expectedVersion: text("expectedVersion", 4096),
+        seenResultId: input.seenResultId === null ? null : text("seenResultId", 4096),
+      };
     case "events": {
       only("id", "sessionId", "cursor", "limit");
       if (

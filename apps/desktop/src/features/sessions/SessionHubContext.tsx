@@ -1,3 +1,4 @@
+import { requestReadStateRefresh } from "@agentkib/session-ui";
 import { isBusyRead } from "./conversation/features/sessions/session-read-retry";
 import { codexReason } from "./conversation/features/sessions/codex-copy";
 import { useI18n } from "@/core/useI18n";
@@ -140,6 +141,7 @@ function useHub(active: boolean) {
   const [historyRevision, setHistoryRevision] = useState(0);
   const [conversationRefreshRevision, setConversationRefreshRevision] = useState(0);
   const refresh = useCallback(async () => {
+    for (const host of remote.hosts) requestReadStateRefresh(`remote:${host.id}`);
     await Promise.all([
       localEnabled ? refreshCatalog() : Promise.resolve(),
       ...remote.hosts.map((host) => refreshRemoteCatalog(host.id, true)),

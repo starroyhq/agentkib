@@ -28,6 +28,7 @@ import type { SessionReaders } from "./session-readers";
 import type { SessionIndex } from "./session-index";
 import { projectPairedManagedSessions } from "./managed-session-catalog";
 import { catalogCheckouts } from "./git-checkouts";
+import type { ConversationReadStates } from "./conversation-read-state";
 
 type Device = {
   id: string;
@@ -191,6 +192,7 @@ export class RemoteAgent {
     readonly store: BackendStore,
     readonly readers: SessionReaders,
     readonly index: SessionIndex,
+    readonly readStates?: Pick<ConversationReadStates, "get" | "update" | "project">,
   ) {
     const remoteDirectory = path.join(directory, "remote");
     mkdirSync(remoteDirectory, { recursive: true, mode: 0o700 });
@@ -274,6 +276,8 @@ export class RemoteAgent {
       case "connect":
       case "catalog":
       case "events":
+      case "read-state":
+      case "read-state-update":
         return this.#requestPeer(value);
       default:
         throw new Error("unsupported remote operation");
@@ -639,6 +643,16 @@ export class RemoteAgent {
     if (value.operation !== "connect" && connection.status === "disconnected")
       throw new Error("REMOTE_DISCONNECTED");
     let body: Record<string, unknown> = { op: value.operation === "connect" ? "hello" : "catalog" };
+    if (value.operation === "read-state" || value.operation === "read-state-update") {
+      body = { op: value.operation, session_id: validText(value.sessionId, "sessionId") };
+      if (value.operation === "read-state-update") {
+        if (!(value.seenResultId === null || typeof value.seenResultId === "string"))
+          throw new Error("invalid seenResultId");
+        body.expectedVersion = validText(value.expectedVersion, "expectedVersion");
+        body.seenResultId =
+          value.seenResultId === null ? null : validText(value.seenResultId, "seenResultId");
+      }
+    }
     if (value.operation === "events") {
       const limit = value.limit ?? 50;
       if (!Number.isInteger(limit) || Number(limit) < 1 || Number(limit) > 100)
@@ -654,6 +668,11 @@ export class RemoteAgent {
       result = await exchangeRemotePeer(this.#identity, connection.address, id, body);
     } catch (error) {
       if (this.#stopped || generation !== this.#generation) throw new Error("REMOTE_DISCONNECTED");
+      if (
+        error instanceof Error &&
+        /^REMOTE_READ_STATE_(CONFLICT|UNAVAILABLE|UNSUPPORTED)$/.test(error.message)
+      )
+        throw error;
       const status = this.#errorStatus(error);
       this.#updateConnection(id, status, status);
       if (status !== "offline") {
@@ -721,8 +740,8 @@ export class RemoteAgent {
     }
     const device = this.#config.authorized[peerId];
     if (!device) throw new Error("revoked");
-    if (op === "hello")
-      return { id: this.#identity.id, capabilities: ["catalog", "events"], version: 1 };
+    const capabilities = ["catalog", "events", ...(this.readStates ? ["read-state"] : [])];
+    if (op === "hello") return { id: this.#identity.id, capabilities, version: 1 };
     if (op === "heartbeat") {
       await new Promise<void>((resolve, reject) => {
         const timer = setTimeout(resolve, 5000);
@@ -744,12 +763,27 @@ export class RemoteAgent {
         throw new Error("revoked");
       this.#ensureIndex();
       this.#touchDevice(peerId);
-      return { capabilities: ["catalog", "events"] };
+      return { capabilities };
     }
-    if (op !== "catalog" && op !== "events") throw new Error("unsupported operation");
+    if (!["catalog", "events", "read-state", "read-state-update"].includes(op))
+      throw new Error("unsupported operation");
     this.#ensureIndex();
     const epoch = this.index.generation();
-    const output = op === "catalog" ? await this.#catalog() : await this.#events(request);
+    const output =
+      op === "catalog"
+        ? await this.#catalog()
+        : op === "events"
+          ? await this.#events(request)
+          : await this.#readState(request, op === "read-state-update", () => {
+              if (signal.aborted) throw new Error("REMOTE_DISCONNECTED");
+              this.#ensureIndex();
+              if (this.index.generation() !== epoch) throw new Error("index-disabled");
+              if (
+                !this.#config.enabled ||
+                this.#config.authorized[peerId]?.grant_id !== device.grant_id
+              )
+                throw new Error("revoked");
+            });
     if (signal.aborted) throw new Error("REMOTE_DISCONNECTED");
     this.#ensureIndex();
     if (this.index.generation() !== epoch) throw new Error("index-disabled");
@@ -817,9 +851,39 @@ export class RemoteAgent {
           })),
       ),
       sessions: checkouts.sessions(
-        sessions.filter((session) => registered.has(session.workspace_id)),
+        this.readStates?.project(
+          sessions.filter((session) => registered.has(session.workspace_id)),
+          "local",
+        ) ?? sessions.filter((session) => registered.has(session.workspace_id)),
       ),
     };
+  }
+  async #readState(request: Record<string, unknown>, update: boolean, authorized: () => void) {
+    if (!this.readStates) throw new Error("read-state-unsupported");
+    const allowed = update
+      ? ["op", "session_id", "expectedVersion", "seenResultId"]
+      : ["op", "session_id"];
+    if (Object.keys(request).some((key) => !allowed.includes(key)))
+      throw new Error("invalid read-state request");
+    const sessionId = validText(request.session_id, "session_id");
+    const catalog = await this.#catalog();
+    authorized();
+    if (!catalog.sessions.some((session) => session.id === sessionId))
+      throw new Error("read-state-unsupported");
+    if (update && !(request.seenResultId === null || typeof request.seenResultId === "string"))
+      throw new Error("invalid seenResultId");
+    const readState = update
+      ? await this.readStates.update(
+          sessionId,
+          "local",
+          validText(request.expectedVersion, "expectedVersion"),
+          request.seenResultId === null ? null : validText(request.seenResultId, "seenResultId"),
+        )
+      : await this.readStates.get(sessionId, "local");
+    authorized();
+    if (!(await this.#catalog()).sessions.some((session) => session.id === sessionId))
+      throw new Error("read-state-unsupported");
+    return { readState };
   }
   async #events(request: Record<string, unknown>) {
     const sessionId = validText(request.session_id, "session_id");

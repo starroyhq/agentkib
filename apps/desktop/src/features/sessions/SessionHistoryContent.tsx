@@ -1,3 +1,5 @@
+import type { RefObject } from "react";
+import { HistoryReadState } from "@/features/remote/remote-read-state";
 import { ArrowUpRight, ChevronRight, Clock, FileText, GitBranch, RefreshCw } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
@@ -24,11 +26,13 @@ export function SessionHistoryContent({
   history,
   sessionKey,
   loadEarlier,
+  viewportRef,
 }: {
   selected: ConversationSessionSummary;
   history: ReturnType<typeof useSessionHistory>;
   sessionKey: string;
   loadEarlier: () => void;
+  viewportRef: RefObject<HTMLElement | null>;
 }) {
   const { tr, formatDateTime } = useI18n();
   const hub = useSessionHub();
@@ -185,6 +189,12 @@ export function SessionHistoryContent({
             events={history.events}
             sessionKey={sessionKey}
             incomplete={history.warnings.length > 0}
+          />
+          <HistoryReadState
+            session={selected}
+            events={history.events}
+            ready={!history.error && !history.loading && !history.warnings.length}
+            viewportRef={viewportRef}
           />
         </div>
       )}

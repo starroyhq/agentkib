@@ -1,4 +1,8 @@
-import { sessionContinuationListState, SessionContinuationDot } from "@agentkib/session-ui";
+import {
+  PendingReviewLane,
+  sessionContinuationListState,
+  SessionContinuationDot,
+} from "@agentkib/session-ui";
 import { NativeSelect } from "@/components/ui/native-select";
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
@@ -95,6 +99,12 @@ export function SessionCatalog({
           </NativeSelect>
         </label>
       </Disclosure>
+      <PendingReviewLane
+        sessions={filtered}
+        locale={locale}
+        onSelect={onSelect}
+        context="desktop-local"
+      />
       <div className="min-h-0 flex-1 space-y-3 overflow-y-auto px-3 pb-4">
         {!indexEnabled ? (
           <p>{t.indexDisabled}</p>
@@ -154,6 +164,7 @@ export function SessionCatalog({
                               label={runtime.label}
                               active={runtime.active}
                               waiting={runtime.waiting}
+                              unread={runtime.unread}
                             />
                           )}
                           {runtime &&

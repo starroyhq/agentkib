@@ -1,3 +1,4 @@
+import { readStateCopy, type SessionReadState } from "./read-state";
 import { useEffect, useId, useMemo, useRef, useState } from "react";
 
 export type SessionContinuationAgent = "Codex" | "Claude Code";
@@ -607,6 +608,7 @@ const runningMark =
   "inline-block size-2 shrink-0 animate-spin rounded-full border-[1.5px] border-current border-t-transparent motion-reduce:animate-none";
 
 export type SessionListSession = {
+  readState?: SessionReadState;
   agent: string;
   availability?: string;
   remote?: unknown;
@@ -629,6 +631,7 @@ export type SessionListState = {
   waiting?: boolean;
   /** Compact lists show a mark; the label is its tooltip and accessible name. */
   dot?: boolean;
+  unread?: boolean;
 };
 
 /**
@@ -642,29 +645,45 @@ export function sessionContinuationListState(
   locale: string,
 ): SessionListState | undefined {
   const copy = sessionContinuationCopy(locale);
-  if (session.remote) return undefined;
+  const readCopy = readStateCopy(locale);
+  const unread = session.readState?.status === "unread";
+  const unreadText = session.readState?.latestResult ? readCopy.unread : readCopy.manualUnread;
+  const unreadLabel = unread ? ` · ${unreadText}` : "";
+  if (session.remote) return unread ? { label: unreadText, dot: true, unread: true } : undefined;
   if (session.availability === "metadata-only") return { label: copy.viewOnly };
-  if (!["codex", "claude-code"].includes(session.agent)) return undefined;
+  if (!["codex", "claude-code"].includes(session.agent))
+    return unread ? { label: unreadText, dot: true, unread: true } : undefined;
   const state = session.continuation;
   if (state?.status === "outcome-unknown" || state?.reason === "control-outcome-unconfirmed")
-    return undefined;
+    return unread ? { label: unreadText, dot: true, unread: true } : undefined;
   // An archived session keeps no live mark.
   if (!session.archived) {
     if (state && WAITING_STATUSES.includes(state.status))
-      return { label: copy.waiting, waiting: true, dot: true };
+      return {
+        label: copy.waiting + unreadLabel,
+        waiting: true,
+        dot: true,
+        ...(unread ? { unread: true } : {}),
+      };
     if (state?.status === "running" || state?.status === "starting")
       return {
-        label: state.executionLocation === "terminal" ? copy.terminalRunning : copy.running,
+        label:
+          (state.executionLocation === "terminal" ? copy.terminalRunning : copy.running) +
+          unreadLabel,
+        ...(unread ? { unread: true } : {}),
         active: true,
         dot: true,
       };
     if (session.externalTurn?.status === "running")
       return {
-        label: copy.runningIn(session.agent === "claude-code" ? "Claude Code" : "Codex"),
+        label:
+          copy.runningIn(session.agent === "claude-code" ? "Claude Code" : "Codex") + unreadLabel,
+        ...(unread ? { unread: true } : {}),
         active: true,
         dot: true,
       };
   }
+  if (unread) return { label: unreadText, dot: true, unread: true };
   if (!state) return undefined;
   // Lists show only what is known without probing other clients. Use elsewhere is confirmed when
   // the session is opened; a short-lived observation here would flicker in and out.
@@ -700,20 +719,23 @@ export function SessionContinuationDot({
   label,
   active,
   waiting,
+  unread,
 }: {
   label: string;
   active?: boolean;
   waiting?: boolean;
+  unread?: boolean;
 }) {
   return (
     <>
       <i
         aria-hidden="true"
         title={label}
+        data-unread={unread || undefined}
         className={
           active
-            ? `${runningMark} text-primary`
-            : `inline-block size-1.5 shrink-0 rounded-full ${waiting ? "bg-amber-500" : "bg-muted-foreground"}`
+            ? `${runningMark} text-primary ${unread ? "ring-2 ring-primary/30 ring-offset-2 ring-offset-background" : ""}`
+            : `inline-block size-1.5 shrink-0 rounded-full ${waiting ? "bg-amber-500" : unread ? "bg-primary" : "bg-muted-foreground"}`
         }
       />
       <span className="sr-only">{label}</span>

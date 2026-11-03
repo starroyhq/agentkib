@@ -22,6 +22,7 @@ export const webSettingsCopy = {
     codeScope:
       "有效授权码无需电脑再次确认，即按所选档位授权全部现有及以后新增的 AgentKib 工作区：“只读”可查看会话历史与文件；“完整控制”另含任务控制、审批与上传。只发给你自己的设备；授权后可在已授权的浏览器列表中调整档位或撤销",
     fullAccess: "完整控制",
+    accountBound: "跟随手机的账号登录：手机退出账号或登录失效后自动移除，登录期间自动续期",
     readOnlyAccess: "只读（查看会话与文件）",
     accessLevel: "授权档位",
     acceptance: "本地隔离验收模式：控制仅限以下会话，不代表正式验收通过。",
@@ -87,6 +88,7 @@ export const webSettingsCopy = {
     codeScope:
       "有效授權碼無需電腦再次確認，即依所選等級授權全部既有與日後新增的 AgentKib 工作區：「唯讀」可查看對話紀錄與檔案；「完整控制」另含任務控制、審批與上傳。只傳給你自己的裝置；授權後可在已授權的瀏覽器清單中調整等級或撤銷",
     fullAccess: "完整控制",
+    accountBound: "跟隨手機的帳號登入：手機登出帳號或登入失效後自動移除，登入期間自動續期",
     readOnlyAccess: "唯讀（查看對話與檔案）",
     accessLevel: "授權等級",
     acceptance: "本機隔離驗收模式：操作僅限以下對話，不代表正式驗收通過。",
@@ -156,6 +158,8 @@ export const webSettingsCopy = {
     codeScope:
       "A valid access code authorizes all current and future AgentKib workspaces at the selected level without another confirmation on this computer. Read-only allows session history and files; full control adds task control, approvals and uploads. Share only with your own devices; change the level or revoke access in the authorized browsers list",
     fullAccess: "Full control",
+    accountBound:
+      "Follows the phone’s account sign-in: removed when the phone signs out or its sign-in ends, renewed meanwhile",
     readOnlyAccess: "Read-only (sessions and files)",
     accessLevel: "Access level",
     acceptance:
@@ -228,6 +232,8 @@ export const webSettingsCopy = {
     codeScope:
       "有効な認証コードで、選択したレベルに応じて現在および今後追加されるすべての AgentKib ワークスペースへのアクセスを許可します。このコンピューターでの再確認は不要です。「読み取り専用」は会話履歴とファイルの閲覧、「フルコントロール」はタスク操作・承認・アップロードも含みます。自分の端末にのみ共有してください。レベルの変更や取り消しは認証済みブラウザーの一覧で行えます",
     fullAccess: "フルコントロール",
+    accountBound:
+      "スマートフォンのアカウントのログインに連動：ログアウトやログイン切れで自動的に削除され、ログイン中は自動で更新されます",
     readOnlyAccess: "閲覧のみ（会話とファイル）",
     accessLevel: "アクセスレベル",
     acceptance:

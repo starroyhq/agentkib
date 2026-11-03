@@ -150,7 +150,11 @@ export function SessionCatalog({
                           <AgentMark agent={s.agent} />
                           <strong>{title}</strong>
                           {runtime?.dot && (
-                            <SessionContinuationDot label={runtime.label} active={runtime.active} />
+                            <SessionContinuationDot
+                              label={runtime.label}
+                              active={runtime.active}
+                              waiting={runtime.waiting}
+                            />
                           )}
                           {runtime &&
                             !runtime.dot &&
@@ -159,7 +163,7 @@ export function SessionCatalog({
                                 {runtime.label}
                               </span>
                             )}
-                          {pendingSessions[s.id] && (
+                          {pendingSessions[s.id] && !runtime?.waiting && (
                             <span
                               aria-label={interactionCopy[locale].pending}
                               title={interactionCopy[locale].pending}

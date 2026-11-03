@@ -27,6 +27,7 @@ import {
 } from "./codex-app-server";
 import { CodexRuntimePreflight } from "./codex-runtime-preflight";
 import { CodexCatalogCache } from "./codex-catalog-cache";
+import { CodexExternalTurns, type ExternalTurn } from "./codex-external-turns";
 import { codexResumeCommand } from "./codex-resume-command";
 import { CodexFollowerBridge } from "./codex-follower-bridge";
 import { CodexFollowerConnection } from "./codex-follower-connection";
@@ -67,7 +68,18 @@ const requestSchema = z.discriminatedUnion("operation", [
   z.object({ operation: z.literal("goal"), sessionId: z.string().min(1).max(256) }).strict(),
   z.object({ operation: z.literal("resources"), sessionId: z.string().min(1).max(256) }).strict(),
   z.object({ operation: z.literal("subagents"), sessionId: z.string().min(1).max(256) }).strict(),
-  z.object({ operation: z.literal("subagent-events"), sessionId: z.string().min(1).max(256), subagentId: z.string().regex(/^[a-f0-9]{64}$/), cursor: z.string().max(1024).nullable().optional(), limit: z.number().int().min(1).max(100).default(50) }).strict(),
+  z
+    .object({
+      operation: z.literal("subagent-events"),
+      sessionId: z.string().min(1).max(256),
+      subagentId: z.string().regex(/^[a-f0-9]{64}$/),
+      cursor: z.string().max(1024).nullable().optional(),
+      limit: z.number().int().min(1).max(100).default(50),
+    })
+    .strict(),
+  z
+    .object({ operation: z.literal("session-directory"), sessionId: z.string().min(1).max(256) })
+    .strict(),
   z
     .object({
       operation: z.literal("live"),
@@ -81,6 +93,8 @@ const requestSchema = z.discriminatedUnion("operation", [
       sessionId: z.string().min(1).max(256),
       cursor: z.string().max(1024).nullable().optional(),
       limit: z.number().int().min(1).max(100).default(50),
+      /** False for stream snapshots: no cursor is kept for the page (see SessionPaging.read). */
+      retainCursor: z.boolean().optional(),
     })
     .strict(),
 ]);
@@ -354,6 +368,8 @@ export class WebReadRequests {
     collaborationModes: CollaborationModeOption[];
   }>();
   #ownership = new Map<string, { checkedAt: number; reason: string | null }>();
+  /** Turns that the Codex app or CLI runs, for the catalog and live state to show. */
+  #externalTurns = new CodexExternalTurns(() => canonicalize(this.sessions.codexHome()));
   #catalogObservations = new Map<string, { at: number; status: string; reason: string | null }>();
   #retirementTimer: ReturnType<typeof setInterval>;
   #retiring = false;
@@ -4027,18 +4043,38 @@ export class WebReadRequests {
   async #request(value: unknown) {
     const request = requestSchema.parse(value);
     if (request.operation === "subagents" || request.operation === "subagent-events") {
-      const managed = readManagedRecords(this.dataDir, this.store).find(record => record.id === request.sessionId);
+      const managed = readManagedRecords(this.dataDir, this.store).find(
+        (record) => record.id === request.sessionId,
+      );
       const child = request.operation === "subagent-events" ? request : null;
       if (managed) {
         this.#assertManagedHome(managed);
-        if (!managed.native_id) return { version: 1, sessionId: request.sessionId, agents: [], truncated: false };
-        const parent = this.sessions.verifiedCodexSubagentParent(managed.id, managed.native_id, managed.workspace);
+        if (!managed.native_id)
+          return { version: 1, sessionId: request.sessionId, agents: [], truncated: false };
+        const parent = this.sessions.verifiedCodexSubagentParent(
+          managed.id,
+          managed.native_id,
+          managed.workspace,
+        );
         Object.assign(parent, this.#subagentObservation(request.sessionId, managed.native_id));
-        return this.sessions.subagentsForNative(parent, child?.subagentId, child?.cursor ?? null, child?.limit ?? 50);
+        return this.sessions.subagentsForNative(
+          parent,
+          child?.subagentId,
+          child?.cursor ?? null,
+          child?.limit ?? 50,
+        );
       }
       const source = await this.sessions.resolve(request.sessionId);
       const observation = this.#subagentObservation(request.sessionId, source.native.native_ref);
-      return this.sessions.subagentsForSession(request.sessionId, child?.subagentId, child?.cursor ?? null, child?.limit ?? 50, observation.running, observation.turnId, observation);
+      return this.sessions.subagentsForSession(
+        request.sessionId,
+        child?.subagentId,
+        child?.cursor ?? null,
+        child?.limit ?? 50,
+        observation.running,
+        observation.turnId,
+        observation,
+      );
     }
     if (request.operation === "live") {
       const session = this.store.sessions.get(request.sessionId);
@@ -4076,6 +4112,7 @@ export class WebReadRequests {
     }
     if (request.operation === "goal") return this.#goal(request.sessionId);
     if (request.operation === "resources") return this.#resources(request.sessionId);
+    if (request.operation === "session-directory") return this.#sessionDirectory(request.sessionId);
     if (request.operation === "events") {
       const managed = readManagedRecords(this.dataDir, this.store).find(
         (record) => record.id === request.sessionId,
@@ -4106,6 +4143,7 @@ export class WebReadRequests {
             request.cursor?.slice(nativePrefix.length) ?? null,
             request.limit,
             { codexDirectory: cwd },
+            request.retainCursor !== false,
           );
           events = {
             ...page,
@@ -4225,6 +4263,7 @@ export class WebReadRequests {
       if (this.indexGeneration() !== generation || indexEnabled(this.dataDir) !== enabled)
         return { workspaces: [], sessions: [], indexEnabled: false };
       const checkouts = catalogCheckouts(this.store, this.environment);
+      const externalTurns = this.#externalTurnsBySession(managed, aliasesByOwner, enabled);
       return {
         codexRuntimeReason: runtime?.reason === "codex-cli-version-too-old" ? runtime.reason : null,
         workspaces: checkouts.workspaces(
@@ -4287,7 +4326,11 @@ export class WebReadRequests {
                         reason,
                       }
                     : observed;
-          return continuation ? { ...session, continuation } : session;
+          // A resident runner reports its own turns, so only a session without one shows a
+          // turn that runs elsewhere.
+          const externalTurn = runner ? undefined : externalTurns.get(session.id);
+          const shown = externalTurn ? { ...session, externalTurn } : session;
+          return continuation ? { ...shown, continuation } : shown;
         }),
         indexEnabled: enabled || managed.length > 0,
       };
@@ -4302,6 +4345,7 @@ export class WebReadRequests {
         sessionId: request.sessionId,
         cursor: request.cursor ?? null,
         limit: request.limit,
+        retainCursor: request.retainCursor !== false,
       });
     } else {
       managedRecord = readManagedRecords(this.dataDir, this.store).find(
@@ -4315,6 +4359,8 @@ export class WebReadRequests {
         workspace,
         request.cursor ?? null,
         request.limit,
+        undefined,
+        request.retainCursor !== false,
       );
     }
     if (
@@ -4342,22 +4388,52 @@ export class WebReadRequests {
     const followed = follower?.bridge.selectedState;
     const residentStatus = String(state?.status);
     const followedStatus = String(followed?.status);
-    const owned = resident?.session.connected === true && !resident.retiring && resident.state.record.native_id === nativeId && !["unsupported", "disconnected", "outcome-unknown"].includes(residentStatus);
-    const external = !owned && follower?.nativeId === nativeId && follower.bridge.connected && followed != null && followed.revision !== null && !["unsupported", "disconnected", "outcome-unknown", "waiting-for-snapshot"].includes(followedStatus);
-    const connection = owned ? resident.session : external ? follower!.bridge.connection : undefined;
-    const owner = owned ? `managed:${nativeId}` : external ? `${nativeId}:${followed!.ownerClientId}` : "";
+    const owned =
+      resident?.session.connected === true &&
+      !resident.retiring &&
+      resident.state.record.native_id === nativeId &&
+      !["unsupported", "disconnected", "outcome-unknown"].includes(residentStatus);
+    const external =
+      !owned &&
+      follower?.nativeId === nativeId &&
+      follower.bridge.connected &&
+      followed != null &&
+      followed.revision !== null &&
+      !["unsupported", "disconnected", "outcome-unknown", "waiting-for-snapshot"].includes(
+        followedStatus,
+      );
+    const connection = owned
+      ? resident.session
+      : external
+        ? follower!.bridge.connection
+        : undefined;
+    const owner = owned
+      ? `managed:${nativeId}`
+      : external
+        ? `${nativeId}:${followed!.ownerClientId}`
+        : "";
     let observerId: string | undefined;
     if (connection) {
       const previous = this.#subagentObservers.get(connection);
-      const current = previous?.identity === owner ? previous : { identity: owner, id: randomUUID() };
+      const current =
+        previous?.identity === owner ? previous : { identity: owner, id: randomUUID() };
       this.#subagentObservers.set(connection, current);
       observerId = current.id;
     }
     return {
       connected: !!connection,
       observerId,
-      running: !!connection && ["running", "awaiting-approval", "waiting-approval", "waiting-input"].includes(owned ? residentStatus : followedStatus),
-      turnId: owned && typeof state?.turnId === "string" ? state.turnId : external ? followed!.activeTurn() : null,
+      running:
+        !!connection &&
+        ["running", "awaiting-approval", "waiting-approval", "waiting-input"].includes(
+          owned ? residentStatus : followedStatus,
+        ),
+      turnId:
+        owned && typeof state?.turnId === "string"
+          ? state.turnId
+          : external
+            ? followed!.activeTurn()
+            : null,
     };
   }
 
@@ -4406,6 +4482,61 @@ export class WebReadRequests {
       archived: summary.archived,
       snapshot: { revision: 0 },
     };
+  }
+
+  /**
+   * The turns that the Codex app or CLI runs now, by catalog session. Display only: controls
+   * still follow the session's continuation.
+   */
+  #externalTurnsBySession(
+    managed: ReturnType<typeof readManagedCatalog>["records"],
+    aliasesByOwner: Map<string, Set<string>>,
+    indexed: boolean,
+  ): Map<string, ExternalTurn> {
+    const bySession = new Map<string, ExternalTurn>();
+    const turns = this.#externalTurns.observe();
+    // AgentKib's own runners hold the writer locks of the threads they run.
+    for (const runner of [...this.#managedRunners.values(), ...this.#startingRunners.values()]) {
+      const native = runner.state.nativeId;
+      if (native)
+        for (const thread of turns.keys())
+          if (thread.toLowerCase() === native.toLowerCase()) turns.delete(thread);
+    }
+    if (!turns.size) return bySession;
+    const byThread = new Map([...turns].map(([thread, turn]) => [thread.toLowerCase(), turn]));
+    for (const record of managed) {
+      const turn = record.native_id ? byThread.get(record.native_id.toLowerCase()) : undefined;
+      if (turn && this.#isCodexHome(record.home)) bySession.set(record.id, turn);
+    }
+    // Indexed IDs derive from native IDs with the index salt. Reading must not create the salt,
+    // and without it nothing is indexed.
+    if (
+      indexed &&
+      typeof this.store.sessions.sql.one(
+        "SELECT value FROM schema_meta WHERE key='conversation_salt'",
+      )?.value === "string"
+    ) {
+      const owners = new Map(
+        [...aliasesByOwner].flatMap(([owner, aliases]) =>
+          [...aliases].map((alias) => [alias, owner] as const),
+        ),
+      );
+      for (const [thread, turn] of turns) {
+        const id = this.store.sessions.id("codex", thread);
+        bySession.set(owners.get(id) ?? id, turn);
+      }
+    }
+    return bySession;
+  }
+
+  #isCodexHome(home: string): boolean {
+    try {
+      return (
+        pathIdentity(canonicalize(home)) === pathIdentity(canonicalize(this.sessions.codexHome()))
+      );
+    } catch {
+      return false;
+    }
   }
 
   async #inactiveLive(record: ManagedRecord, controls: boolean): Promise<Record<string, unknown>> {
@@ -4478,6 +4609,10 @@ export class WebReadRequests {
       }),
       executionLocation: starting || retiring ? "agentkib" : ownershipReason ? "external" : null,
       ownershipReason,
+      externalTurn:
+        ownershipReason && record.native_id && this.#isCodexHome(record.home)
+          ? this.#externalTurns.turnOf(record.native_id)
+          : null,
       sendEnabled: controls && reason === null && !starting,
       stopEnabled: false,
       approvals: [],
@@ -5107,6 +5242,29 @@ export class WebReadRequests {
       throw new Error("session-unavailable");
     // This read deliberately performs no CLI/version check, native RPC, or lock probe.
     return codexResumeCommand(after.cwd, after.home, after.nativeId);
+  }
+
+  /**
+   * The directory a session's relative file references were written against. It only
+   * places those references: callers resolve them inside their own file grant, so this
+   * read neither verifies nor starts anything. Null means the registered root.
+   */
+  #sessionDirectory(sessionId: string): { cwd: string | null } {
+    const managed = readManagedRecords(this.dataDir, this.store).find(
+      (record) => record.id === sessionId,
+    );
+    if (managed) {
+      let cwd = managed.cwd;
+      // Older ledgers kept only the root; the native rollout header has the directory.
+      if (cwd === undefined && managed.native_id)
+        try {
+          cwd = this.sessions.verifiedCodexControlDirectory(managed.native_id)?.cwd;
+        } catch {
+          cwd = undefined;
+        }
+      return { cwd: cwd ?? null };
+    }
+    return { cwd: this.store.sessions.directories([sessionId]).get(sessionId)?.cwd ?? null };
   }
 
   async #context(sessionId: string) {

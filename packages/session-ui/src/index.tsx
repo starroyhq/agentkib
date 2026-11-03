@@ -2,6 +2,8 @@ import Markdown, { type Components } from "react-markdown";
 import remarkGfm from "remark-gfm";
 import rehypeSanitize from "rehype-sanitize";
 
+export { useTranscriptFollow } from "./use-transcript-follow";
+
 export {
   sessionContinuationCopy,
   sessionContinuationListState,
@@ -11,6 +13,10 @@ export {
   SessionContinuationReturned,
   SessionContinuationStatus,
   SessionContinuationTerminal,
+  sessionGroupActivity,
+  SessionGroupActivity,
+  type SessionListSession,
+  type SessionListState,
   type SessionContinuationAction,
   type SessionContinuationAgent,
   type SessionContinuationChoiceProps,

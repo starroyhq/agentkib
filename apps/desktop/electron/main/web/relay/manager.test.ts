@@ -130,6 +130,67 @@ async function certificate() {
 }
 
 describe("relay registration and authorization leases", () => {
+  it("pauses exhausted public streams while preserving direct sockets and the safety lease", async () => {
+    const { manager, internal } = setup(await directory());
+    const publicSocket = new Transform({
+      transform(chunk, _encoding, done) {
+        done(null, chunk);
+      },
+    });
+    const directSocket = new Transform({
+      transform(chunk, _encoding, done) {
+        done(null, chunk);
+      },
+    });
+    const listener = {
+      address: "192.168.1.12",
+      servers: new Map<"control" | "preview", Server>(),
+      sockets: new Set<Duplex>([directSocket]),
+      abort: new AbortController(),
+    };
+    internal.sockets.add(publicSocket);
+    internal.sockets.add(directSocket);
+    internal.directListeners.set(listener.address, listener);
+    const reset = Date.now() + 100_000;
+    const fetcher = vi.fn<typeof fetch>(async () =>
+      Response.json({
+        ...assignment,
+        relay: {
+          allowed: false,
+          loginRequired: true,
+          accessProofVersion: 1,
+          reason: "quota_exhausted",
+          resetsAt: reset,
+        },
+      }),
+    );
+    vi.stubGlobal("fetch", fetcher);
+    await internal.authorize(1);
+    expect(publicSocket.destroyed).toBe(true);
+    expect(directSocket.destroyed).toBe(false);
+    expect(internal.directListeners.has(listener.address)).toBe(true);
+    expect(internal.leaseUntil).toBeGreaterThan(performance.now());
+    expect(manager.status).toMatchObject({
+      phase: "offline",
+      reason: "quota-exhausted",
+      resetsAt: reset,
+    });
+    expect(JSON.parse(fetcher.mock.calls[0][1]!.body as string)).toMatchObject({
+      accountAccessProofVersion: 1,
+    });
+    fetcher.mockResolvedValueOnce(
+      Response.json({
+        ...assignment,
+        relay: { allowed: true, loginRequired: true, accessProofVersion: 1 },
+      }),
+    );
+    await internal.authorize(1);
+    expect(directSocket.destroyed).toBe(false);
+    internal.failClosed("revoked", false);
+    expect(directSocket.destroyed).toBe(true);
+    expect(internal.directListeners.size).toBe(0);
+  });
+
   it.each([
     ["ENOTFOUND", "dns"],
     ["EPROTO", "tls"],

@@ -72,6 +72,8 @@ export interface ConversationSessionSummary {
     ownershipReason?: string | null;
     reason?: string | null;
   };
+  /** A turn that the Codex app or CLI runs now; display only, never a control. */
+  externalTurn?: { status: "running"; startedAt: string | null } | null;
   /** Verified index identities that route to this managed session. */
   indexedSessionIds?: string[];
   id: string;
@@ -200,6 +202,14 @@ export interface LivePreviewTicket {
   expiresAt: number;
 }
 export interface Access {
+  accountLogin?: {
+    required: true;
+    proofVersion: 1;
+    deviceId: string;
+    challenge: string;
+    bound: boolean;
+    accountId?: string;
+  };
   /** Additive capability; absent on older hosts. */
   historySearch?: true;
   historySearchScope?: string;
@@ -830,6 +840,19 @@ export class WebClient {
   private async loadAccess(signal?: AbortSignal) {
     if (this.connection.type === "lan-http" && !this.compatible) await this.info(signal);
     const result = await this.request<Access>("access", undefined, signal);
+    if (result.accountLogin !== undefined) {
+      const login = result.accountLogin;
+      if (
+        !login ||
+        login.required !== true ||
+        login.proofVersion !== 1 ||
+        !/^[a-f0-9]{32}$/.test(login.deviceId) ||
+        !/^[A-Za-z0-9_-]{43}$/.test(login.challenge) ||
+        typeof login.bound !== "boolean" ||
+        (login.required && !login.bound && result.status === "approved")
+      )
+        throw new ApiError(502, "invalid_account_login");
+    }
     if (this.connection.type === "lan-http" && !this.bearerToken) {
       if (!result.bearerToken) throw new ApiError(401, "access_ended");
       this.bearerToken = result.bearerToken;

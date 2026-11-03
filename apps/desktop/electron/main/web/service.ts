@@ -27,7 +27,7 @@ import { attachManagedWebSocket, type ConversationDispatchControl } from "./mana
 import { CLAUDE_LOCAL_OWNER, localClaudeRequest } from "./local-claude";
 import { continuationPreflightReason } from "./continuation-reason";
 import { replayClaudeAttachments, settleClaudeAttachments } from "./claude-attachment-receipts";
-import { markdownLinkTargets } from "./markdown-links";
+import { fileReferencePath, fileReferenceTargets } from "./markdown-links";
 import {
   LocalConversationResponse,
   isConversationPath,
@@ -44,6 +44,8 @@ import {
   validateRegistration,
   type Registration,
   type RelayStatus,
+  type RemoteAccountBinding,
+  type AccountLoginProof,
 } from "./relay/manager";
 
 export const HOSTED_ORIGIN = "https://remote.agentkib.com";
@@ -183,7 +185,8 @@ export interface WebAdminStatus {
 }
 /** 授权码配对的权限档位；LAN 确认配对仍按单项权限逐个授予。 */
 export type WebAccessLevel = "read" | "full";
-export type WebAdminDevice = WebDevice & { accessLevel?: WebAccessLevel };
+/** `accountBound`: the pairing ends when the phone's account login ends (and renews meanwhile). */
+export type WebAdminDevice = WebDevice & { accessLevel?: WebAccessLevel; accountBound?: boolean };
 export type WebAdminRequest = { target?: "lan" } & (
   | { operation: "status" }
   | { operation: "generate-code"; access?: WebAccessLevel }
@@ -224,7 +227,48 @@ export type WebAdminRequest = { target?: "lan" } & (
     }
   | { operation: "reject" | "revoke"; id: string }
 );
-type Credential = { hash: string; expiresAt: number; device: WebDevice; binding?: string };
+type Credential = {
+  hash: string;
+  expiresAt: number;
+  device: WebDevice;
+  binding?: string;
+  /**
+   * The account login of the phone, when it paired or later signed in on this computer's account.
+   * The pairing ends with that login and is renewed while it lasts.
+   */
+  account?: AccountBinding;
+};
+type AccountBinding = {
+  accountId: string;
+  sessionId: string;
+  id?: string;
+  expiresAt?: number;
+  hostChallenge?: string;
+};
+export type AccountSessions = { accountId: string; sessions: { id: string; kind: string }[] };
+const SESSION_ID = /^[a-f0-9-]{36}$/;
+const validAccountBinding = (value: unknown): value is AccountBinding => {
+  const binding = value as AccountBinding;
+  return (
+    !!binding &&
+    typeof binding.accountId === "string" &&
+    binding.accountId.length > 0 &&
+    binding.accountId.length <= 128 &&
+    typeof binding.sessionId === "string" &&
+    SESSION_ID.test(binding.sessionId) &&
+    (binding.id === undefined ||
+      (typeof binding.id === "string" &&
+        /^[A-Za-z0-9_-]{32,128}$/.test(binding.id) &&
+        Number.isSafeInteger(binding.expiresAt) &&
+        binding.expiresAt! > 0 &&
+        typeof binding.hostChallenge === "string" &&
+        /^[A-Za-z0-9_-]{43}$/.test(binding.hostChallenge)))
+  );
+};
+/** How often bound pairings are checked against the account's live logins. */
+const ACCOUNT_CHECK_MS = 5 * 60_000;
+/** Bound pairings are renewed to the full lifetime at most this often. */
+const RENEW_AFTER_MS = 24 * 60 * 60_000;
 type PairingCode = {
   value: string;
   expiresAt: number;
@@ -234,7 +278,14 @@ type PairingCode = {
   /** 按浏览器计数：单个客户端猜错只锁死自己，不再让配对码对所有人失效。 */
   failuresByBrowser: Map<string, number>;
 };
-type Browser = { csrf: string; expiresAt: number; pending?: WebPending; ended?: boolean };
+type Browser = {
+  csrf: string;
+  expiresAt: number;
+  pending?: WebPending;
+  ended?: boolean;
+  accountChallenge?: string;
+  account?: AccountBinding;
+};
 type Availability = { available: boolean; reason?: string };
 type ContextResourceReference = {
   kind: "file" | "directory" | "skill" | "plugin" | "app";
@@ -339,6 +390,7 @@ const API_ROUTES: Record<"GET" | "POST", Record<string, RouteSpec>> = {
     "/files/list": { lan: true },
     "/files/text": { lan: true },
     "/artifacts": { lan: true },
+    "/artifacts/resolve": { lan: true },
     "/diff": { lan: true },
   },
   POST: {
@@ -350,6 +402,7 @@ const API_ROUTES: Record<"GET" | "POST", Record<string, RouteSpec>> = {
     "/history/rebuild": {},
     "/pair": { lan: true },
     "/pair/cancel": { lan: true },
+    "/account-binding": { lan: true },
     "/logout": { lan: true },
     "/send": { lan: true, control: true },
     "/stop": { lan: true, control: true },
@@ -503,6 +556,7 @@ export class WebAccessService {
   private persistence: Promise<void> = Promise.resolve();
   private bootId = token();
   private addressTimer?: ReturnType<typeof setInterval>;
+  private accountTimer?: ReturnType<typeof setInterval>;
   private lanAddressMisses = 0;
   private artifacts?: ArtifactService;
   private desktopArtifacts?: ArtifactService;
@@ -554,6 +608,16 @@ export class WebAccessService {
           credential: string;
         }): Promise<Record<string, unknown>>;
       };
+      /**
+       * The live logins of the account this computer is signed in to; throws when signed out.
+       * Phones paired during one of those logins lose their pairing when it ends.
+       */
+      accountSessions?: () => Promise<AccountSessions>;
+      /**
+       * The computer's name as its system settings show it. Approved devices get it with their
+       * access, so a phone names the computer without an account.
+       */
+      computerName?: () => Promise<string | undefined>;
       workspaceRequest?: () => Promise<{ id: string; name: string; path: string }[]>;
       verifiedCodex?: boolean;
       verifiedExperimental?: boolean;
@@ -885,7 +949,9 @@ export class WebAccessService {
           (c.device.accessMode === undefined ||
             (this.options.mode !== "lan" && c.device.accessMode === "full")) &&
           (c.device.manage === undefined || typeof c.device.manage === "boolean") &&
-          (c.device.files === undefined || typeof c.device.files === "boolean"),
+          (c.device.files === undefined || typeof c.device.files === "boolean") &&
+          // A pairing whose login cannot be read could never end with it: drop it.
+          (c.account === undefined || validAccountBinding(c.account)),
       );
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code !== "ENOENT") {
@@ -895,6 +961,13 @@ export class WebAccessService {
       }
     }
     if (this.config.enabled) await this.start();
+    if (this.options.accountSessions && !this.accountTimer) {
+      this.accountTimer = setInterval(
+        () => void this.checkAccountBindings().catch(() => undefined),
+        ACCOUNT_CHECK_MS,
+      );
+      this.accountTimer.unref?.();
+    }
     if (this.scheduler && !this.unregisterScheduler) {
       this.unregisterScheduler = this.scheduler.register({
         owns: (deviceId) => this.ownsScheduledDevice(deviceId),
@@ -1133,6 +1206,8 @@ export class WebAccessService {
    */
   dispose(): Promise<void> {
     this.disposed = true;
+    clearInterval(this.accountTimer);
+    this.accountTimer = undefined;
     this.unregisterScheduler?.();
     this.unregisterScheduler = undefined;
     const result = this.adminQueue.then(() => this.shutdown());
@@ -1292,10 +1367,13 @@ export class WebAccessService {
         if (!entry?.[1].pending) throw new Error("pairing_expired");
         const [hash, browser] = entry;
         const pending = browser.pending!;
+        if (this.accountLoginRequired() && !this.validCloudBinding(browser.account))
+          throw new Error("account_login_required");
         if (this.credentials.length >= 128) throw new Error("device_limit");
         this.credentials.push({
           hash,
           ...(this.options.mode === "lan" ? { binding: this.binding } : {}),
+          ...(this.accountLoginRequired() ? { account: { ...browser.account! } } : {}),
           expiresAt: Date.now() + MAX_AGE,
           device: {
             id: pending.id,
@@ -1330,18 +1408,12 @@ export class WebAccessService {
         break;
       case "revoke": {
         const revoked = this.credentials.filter((c) => c.device.id === input.id);
-        this.credentials = this.credentials.filter((c) => c.device.id !== input.id);
-        await this.invalidateScheduledDevice(input.id, "authorization-revoked");
-        for (const c of revoked) {
-          const b = this.browsers.get(c.hash);
-          if (b) b.ended = true;
-          this.endStreams(c.hash);
-          this.artifacts?.revokeDevice(c.device.id);
-          this.livePreview?.revokeDevice(c.device.id);
-          for (const [id, reference] of this.contextArtifactRefs)
-            if (reference.deviceId === c.device.id) this.contextArtifactRefs.delete(id);
+        if (revoked.length) await this.revokeCredentials(revoked, "authorization-revoked");
+        else {
+          // Unknown IDs keep the old behavior: nothing to end, the device list is saved as is.
+          await this.invalidateScheduledDevice(input.id, "authorization-revoked");
+          await this.save();
         }
-        await this.save();
         break;
       }
       default:
@@ -1492,10 +1564,229 @@ export class WebAccessService {
       pending: [...this.browsers.values()].flatMap((b) => (b.pending ? [{ ...b.pending }] : [])),
       devices: this.credentials.map((c) => {
         const accessLevel = accessLevelOf(c.device);
-        return { ...c.device, ...(accessLevel ? { accessLevel } : {}) };
+        return {
+          ...c.device,
+          ...(accessLevel ? { accessLevel } : {}),
+          ...(c.account ? { accountBound: true } : {}),
+        };
       }),
       relay: this.relay?.status,
     };
+  }
+  /**
+   * A paired phone reports the account login it is in. When that login belongs to the account
+   * this computer is signed in to, the pairing is bound to it: it ends with the login and is
+   * renewed while the login lasts. A bound pairing never moves to another login; asking for one
+   * ends it, and the phone pairs again with a new code. The account only ever ends pairings
+   * here, it cannot create one.
+   */
+  private async bindAccount(hash: string, body: Record<string, unknown>) {
+    if (this.accountLoginRequired()) return this.bindCloudAccount(hash, body);
+    if (Object.keys(body).some((key) => key !== "sessionId"))
+      throw new HttpError(400, "invalid_input");
+    const sessionId = this.field(body.sessionId, 64);
+    if (!SESSION_ID.test(sessionId)) throw new HttpError(400, "invalid_input");
+    this.grant(hash);
+    this.rate(`account-binding:${hash}`, 6);
+    if (!this.options.accountSessions) return { bound: false, reason: "account_unavailable" };
+    let live: AccountSessions;
+    try {
+      live = await this.options.accountSessions();
+    } catch {
+      return { bound: false, reason: "computer_signed_out" };
+    }
+    const binding = this.adminQueue.then(async () => {
+      const credential = this.credentials.find((c) => c.hash === hash);
+      if (!credential || this.browsers.get(hash)?.ended) throw new HttpError(401, "access_ended");
+      const session = live.sessions.find((s) => s.id === sessionId && s.kind === "mobile");
+      if (credential.account) {
+        if (
+          credential.account.accountId !== live.accountId ||
+          credential.account.sessionId !== sessionId ||
+          !session
+        ) {
+          await this.revokeCredentials([credential], "authorization-revoked");
+          throw new HttpError(401, "access_ended");
+        }
+      } else {
+        if (!session) return { bound: false, reason: "session_unknown" };
+        credential.account = { accountId: live.accountId, sessionId };
+      }
+      credential.expiresAt = Math.max(credential.expiresAt, Date.now() + MAX_AGE);
+      await this.save();
+      return { bound: true };
+    });
+    this.adminQueue = binding.catch(() => undefined);
+    const result = await binding;
+    this.grant(hash);
+    return result;
+  }
+  private accountLoginRequired() {
+    return (
+      this.options.mode !== "lan" &&
+      this.config.relay?.enabled === true &&
+      (!!this.relay?.accountLoginContext || this.config.relay.brokerUrl === DEFAULT_RELAY_BROKER)
+    );
+  }
+  private validCloudBinding(binding?: AccountBinding) {
+    const context = this.relay?.accountLoginContext;
+    return (
+      !!context &&
+      !!binding?.id &&
+      binding.accountId === context.accountId &&
+      typeof binding.expiresAt === "number" &&
+      binding.expiresAt > Date.now()
+    );
+  }
+  private async bindCloudAccount(hash: string, body: Record<string, unknown>) {
+    const browser = this.browsers.get(hash);
+    if (!browser || browser.ended) throw new HttpError(401, "access_ended");
+    const fields = ["code", "codeVerifier", "hostChallenge", "redemptionId"] as const;
+    if (
+      Object.keys(body).some((key) => !fields.includes(key as (typeof fields)[number])) ||
+      fields.some(
+        (key) =>
+          typeof body[key] !== "string" || !/^[A-Za-z0-9_-]{32,128}$/.test(body[key] as string),
+      ) ||
+      body.hostChallenge !== browser.accountChallenge
+    )
+      throw new HttpError(400, "invalid_account_proof");
+    if (!this.relay?.accountLoginContext) throw new HttpError(503, "account_login_unavailable");
+    this.rate(`account-binding:${hash}`, 6);
+    let proof: RemoteAccountBinding;
+    try {
+      proof = await this.relay.redeemAccountLogin(body as AccountLoginProof);
+    } catch {
+      throw new HttpError(503, "account_login_unavailable");
+    }
+    const bound: AccountBinding = { ...proof, hostChallenge: browser.accountChallenge };
+    const work = this.adminQueue.then(async () => {
+      if (
+        this.browsers.get(hash) !== browser ||
+        browser.ended ||
+        !this.server ||
+        !this.validCloudBinding(bound)
+      )
+        throw new HttpError(401, "access_ended");
+      const credential = this.credentials.find((row) => row.hash === hash);
+      if (
+        credential?.account?.id &&
+        (credential.account.accountId !== bound.accountId ||
+          credential.account.sessionId !== bound.sessionId)
+      ) {
+        await this.revokeCredentials([credential], "authorization-revoked");
+        throw new HttpError(401, "access_ended");
+      }
+      if (credential) {
+        const next = this.credentials.map((row) =>
+          row === credential ? { ...row, account: bound } : row,
+        );
+        await this.save(this.config, this.remotePairingInitialized, next);
+        this.credentials = next;
+      }
+      browser.account = bound;
+      return { bound: true };
+    });
+    this.adminQueue = work.catch(() => undefined);
+    return work;
+  }
+  /**
+   * Ends bound pairings whose login ended (signed out, revoked, expired) or belongs to another
+   * account than the one this computer is now signed in to, and renews the others. Signed out
+   * or offline, nothing changes: no pairing ends, none is renewed.
+   */
+  async checkAccountBindings() {
+    if (this.disposed) return;
+    const proofCredentials = this.credentials.filter((c) => c.account?.id);
+    if (proofCredentials.length && this.relay?.accountLoginContext) {
+      let results: { id: string; active: boolean; expiresAt?: number }[];
+      try {
+        results = await this.relay.verifyAccountLogins(proofCredentials.map((c) => c.account!.id!));
+      } catch {
+        return;
+      }
+      const check = this.adminQueue.then(async () => {
+        if (this.disposed) return;
+        const ended = this.credentials.filter(
+          (c) =>
+            proofCredentials.includes(c) &&
+            results.some((row) => row.id === c.account?.id && !row.active),
+        );
+        if (ended.length) await this.revokeCredentials(ended, "authorization-revoked");
+        let renewed = false;
+        for (const credential of this.credentials) {
+          if (!proofCredentials.includes(credential)) continue;
+          const result = results.find((row) => row.id === credential.account?.id && row.active);
+          if (
+            result?.expiresAt !== undefined &&
+            result.expiresAt > Date.now() &&
+            credential.account!.expiresAt !== result.expiresAt
+          ) {
+            credential.account!.expiresAt = result.expiresAt;
+            renewed = true;
+          }
+          if (result && credential.expiresAt < Date.now() + MAX_AGE - RENEW_AFTER_MS) {
+            credential.expiresAt = Date.now() + MAX_AGE;
+            renewed = true;
+          }
+        }
+        if (renewed) await this.save();
+      });
+      this.adminQueue = check.catch(() => undefined);
+      await check;
+    }
+    if (!this.options.accountSessions) return;
+    if (!this.credentials.some((c) => c.account)) return;
+    let live: AccountSessions;
+    try {
+      live = await this.options.accountSessions();
+    } catch {
+      return;
+    }
+    const ids = new Set(
+      live.sessions.flatMap((session) => (session.kind === "mobile" ? [session.id] : [])),
+    );
+    const check = this.adminQueue.then(async () => {
+      if (this.disposed) return;
+      const ended = this.credentials.filter(
+        (c) =>
+          c.account &&
+          !c.account.id &&
+          (c.account.accountId !== live.accountId || !ids.has(c.account.sessionId)),
+      );
+      const now = Date.now();
+      let renewed = false;
+      for (const c of this.credentials)
+        if (
+          c.account &&
+          !c.account.id &&
+          !ended.includes(c) &&
+          c.expiresAt < now + MAX_AGE - RENEW_AFTER_MS
+        ) {
+          c.expiresAt = now + MAX_AGE;
+          renewed = true;
+        }
+      if (ended.length) await this.revokeCredentials(ended, "authorization-revoked");
+      else if (renewed) await this.save();
+    });
+    this.adminQueue = check.catch(() => undefined);
+    await check;
+  }
+  /** Ends these pairings as if revoked here: streams close and the browsers must pair again. */
+  private async revokeCredentials(revoked: Credential[], reason: string) {
+    if (!revoked.length) return;
+    this.credentials = this.credentials.filter((c) => !revoked.includes(c));
+    for (const c of revoked) {
+      await this.invalidateScheduledDevice(c.device.id, reason);
+      const b = this.browsers.get(c.hash);
+      if (b) b.ended = true;
+      this.endStreams(c.hash);
+      this.artifacts?.revokeDevice(c.device.id);
+      this.livePreview?.revokeDevice(c.device.id);
+      for (const [id, reference] of this.contextArtifactRefs)
+        if (reference.deviceId === c.device.id) this.contextArtifactRefs.delete(id);
+    }
+    await this.save();
   }
   private save(
     config = this.config,
@@ -2022,27 +2313,60 @@ export class WebAccessService {
           this.field(url.searchParams.get("artifactId")),
           url.searchParams.get("revision") ?? undefined,
         );
-      else if (path === "/artifacts") {
+      else if (path === "/artifacts" || path === "/artifacts/resolve") {
         const sessionId = this.field(url.searchParams.get("sessionId"));
         const catalog = (await this.scopeCatalog()) as {
           sessions: { id: string; workspace_id: string }[];
         };
         if (!catalog.sessions.some((s) => s.id === sessionId && s.workspace_id === workspaceId))
           throw new HttpError(403, "session_workspace_mismatch");
-        const page = (await this.runtime({
-          operation: "events",
-          sessionId,
-          limit: 50,
-          cursor: url.searchParams.get("cursor") ?? undefined,
-        })) as { events: { content?: string }[]; next_cursor?: string };
-        const refs = page.events.flatMap((event) => markdownLinkTargets(event.content ?? ""));
-        result = {
-          artifacts: await artifacts.resolveReferences(scope, refs),
-          next_cursor: page.next_cursor,
-        };
+        const directory = await this.sessionDirectory(sessionId);
+        if (path === "/artifacts/resolve") {
+          // 手机点开回复里的一个文件引用。找不到或不允许读取都返回 null，不区分原因。
+          const reference = fileReferencePath(this.field(url.searchParams.get("reference"), 4096));
+          const [artifact] = reference
+            ? await artifacts.resolveReferences(scope, [reference], directory)
+            : [];
+          result = { artifact: artifact ?? null };
+        } else {
+          // 只要这一页的文件引用，不为下一页保留游标，免得挤掉客户端翻页用的游标。
+          const page = (await this.runtime({
+            operation: "events",
+            sessionId,
+            limit: 50,
+            cursor: url.searchParams.get("cursor") ?? undefined,
+            retainCursor: false,
+          })) as { events: { content?: string }[]; next_cursor?: string };
+          // 同一个文件常被反复提到。去重后再截到上限，引用多的一页也不会整页失败。
+          const refs = [
+            ...new Set(page.events.flatMap((event) => fileReferenceTargets(event.content ?? ""))),
+          ].slice(0, 100);
+          const found = await artifacts.resolveReferences(scope, refs, directory);
+          result = {
+            artifacts: found.filter(
+              (item, index) => found.findIndex((other) => other.id === item.id) === index,
+            ),
+            next_cursor: page.next_cursor,
+          };
+        }
       } else throw new HttpError(404, "not_found");
     }
     return result;
+  }
+  /**
+   * 会话的工作目录，只用来摆放回复里的相对路径，不扩大文件授权。
+   * 读不到时返回 undefined，相对路径按工作区根目录解析，与以前一致。
+   */
+  private async sessionDirectory(sessionId: string): Promise<string | undefined> {
+    try {
+      const cwd = snapshotField(
+        await this.runtime({ operation: "session-directory", sessionId }),
+        "cwd",
+      );
+      return typeof cwd === "string" && cwd ? cwd : undefined;
+    } catch {
+      return undefined;
+    }
   }
   private optionalString(value: unknown, max = 256) {
     return typeof value === "string" && value.trim() && value.length <= max ? value : undefined;
@@ -3969,6 +4293,10 @@ export class WebAccessService {
       this.endStreams(hash);
       throw new HttpError(401, "access_ended");
     }
+    if (this.accountLoginRequired() && !this.validCloudBinding(credential.account)) {
+      this.endStreams(hash);
+      throw new HttpError(401, "account_login_required");
+    }
     if (
       permission &&
       ((permission !== "files" && !this.controlsEnabled(undefined, credential.device)) ||
@@ -4167,15 +4495,37 @@ export class WebAccessService {
             `${cookieName}=${raw}; Path=/; HttpOnly; SameSite=Strict; Max-Age=${MAX_AGE / 1000}${external ? "; Secure" : ""}`,
           );
       }
+      const credential = trustedLocal ? undefined : this.credentials.find((c) => c.hash === hash);
+      const loginRequired = !trustedLocal && this.accountLoginRequired();
+      const loginContext = loginRequired ? this.relay?.accountLoginContext : undefined;
+      if (loginRequired && !loginContext) throw new HttpError(503, "account_login_unavailable");
+      const binding = credential ? credential.account : browser.account;
+      const bound = this.validCloudBinding(binding);
+      browser.accountChallenge ??= binding?.hostChallenge ?? token();
       const device = trustedLocal
         ? this.localDevice
-        : this.credentials.find((c) => c.hash === hash)?.device;
+        : !loginRequired || bound
+          ? credential?.device
+          : undefined;
+      // A pairing bound to an account login is renewed here; its cookie follows the new lifetime.
+      if (!lan && raw && credential?.account && !browser.ended)
+        res.setHeader(
+          "Set-Cookie",
+          `${cookieName}=${raw}; Path=/; HttpOnly; SameSite=Strict; Max-Age=${Math.max(0, Math.floor((credential.expiresAt - Date.now()) / 1000))}${external ? "; Secure" : ""}`,
+        );
       const historyAccess =
         device && !browser.ended && this.options.historyRequest
           ? await this.historyAccessScope(hash)
           : undefined;
       const directConnection =
         external && device && !browser.ended ? this.relay?.directConnection : undefined;
+      // Only an approved device learns the name: it can say who owns the computer.
+      const computerName =
+        device && !browser.ended
+          ? await (this.options.computerName?.() ?? Promise.resolve(undefined)).catch(
+              () => undefined,
+            )
+          : undefined;
       return this.json(res, 200, {
         status: browser.ended
           ? "ended"
@@ -4191,6 +4541,7 @@ export class WebAccessService {
         pending: browser.pending,
         pairingMode: lan ? "confirmation" : "code",
         experimentalEnabled: this.controlsEnabled(undefined, device),
+        ...(computerName ? { computerName } : {}),
         ...(historyAccess ? { historySearch: true, historySearchScope: historyAccess.token } : {}),
         ...(directConnection &&
         directConnection.controlOrigin === this.config.externalOrigin &&
@@ -4198,6 +4549,18 @@ export class WebAccessService {
           ? { directConnection }
           : {}),
         ...(bearerToken ? { bearerToken } : {}),
+        ...(loginRequired && loginContext
+          ? {
+              accountLogin: {
+                required: true,
+                proofVersion: 1,
+                deviceId: loginContext.deviceId,
+                challenge: browser.accountChallenge,
+                bound,
+                ...(bound ? { accountId: loginContext.accountId } : {}),
+              },
+            }
+          : {}),
       });
     }
     if (!browser) throw new HttpError(401, "unpaired");
@@ -4282,6 +4645,17 @@ export class WebAccessService {
             throw new HttpError(409, "already_paired");
           if (this.browsers.get(hash) !== pairingBrowser || !this.server)
             throw new HttpError(401, "access_ended");
+          if (this.accountLoginRequired()) {
+            if (!this.validCloudBinding(pairingBrowser.account))
+              throw new HttpError(401, "account_login_required");
+            let verified;
+            try {
+              verified = await this.relay!.verifyAccountLogins([pairingBrowser.account!.id!]);
+            } catch {
+              throw new HttpError(503, "account_login_unavailable");
+            }
+            if (!verified[0]?.active) throw new HttpError(401, "account_login_required");
+          }
           const name = this.field(body.name, 80);
           if (!this.code) throw new HttpError(403, "invalid_pairing_code");
           const browserFailures = this.code.failuresByBrowser.get(hash) ?? 0;
@@ -4299,6 +4673,7 @@ export class WebAccessService {
             const credential: Credential = {
               hash,
               expiresAt: Date.now() + MAX_AGE,
+              ...(this.accountLoginRequired() ? { account: { ...pairingBrowser.account! } } : {}),
               device: {
                 id: token(),
                 name,
@@ -4341,6 +4716,8 @@ export class WebAccessService {
         browser.pending = undefined;
         return this.json(res, 200, { ok: true });
       }
+      if (path === "/account-binding")
+        return this.json(res, 200, await this.bindAccount(hash, body));
       if (path === "/logout") {
         // Share the config transaction queue: a logout captured during a provider
         // switch must not overwrite the new config with an old persistence snapshot.
@@ -5160,7 +5537,12 @@ export class WebAccessService {
         throw new HttpError(403, "workspace_not_authorized");
       return this.json(res, 200, result);
     }
-    if (path.startsWith("/files/") || path === "/artifacts" || path === "/diff")
+    if (
+      path.startsWith("/files/") ||
+      path === "/artifacts" ||
+      path === "/artifacts/resolve" ||
+      path === "/diff"
+    )
       return this.files(res, hash, path, url);
     if (path === "/subagents" || path === "/subagent/events") {
       const parentId = this.field(url.searchParams.get("sessionId"));

@@ -1,3 +1,5 @@
+import type { RelayUsage } from "./relay-usage";
+
 export type DesktopAccountProfile = {
   id: string;
   username: string;
@@ -13,6 +15,8 @@ export type DesktopAccountStatus = {
   device?: { deviceId: string; ownership: "unclaimed" | "owned" | "other"; name?: string };
   error?: string;
   secureStorage: boolean;
+  relayUsage?: RelayUsage;
+  relayUsageUnavailable?: boolean;
 };
 export type DesktopAccountRequest = {
   operation: "status" | "login" | "cancel-login" | "logout" | "claim" | "manage";

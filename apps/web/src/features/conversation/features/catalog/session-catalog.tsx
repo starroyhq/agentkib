@@ -1,4 +1,9 @@
-import { sessionContinuationListState, SessionContinuationDot } from "@agentkib/session-ui";
+import {
+  sessionContinuationListState,
+  SessionContinuationDot,
+  sessionGroupActivity,
+  SessionGroupActivity,
+} from "@agentkib/session-ui";
 import { NativeSelect } from "../../components/ui/native-select";
 import { Input } from "../../components/ui/input";
 import { Button } from "../../components/ui/button";
@@ -141,6 +146,8 @@ export function SessionCatalog({
               const worktrees = group.worktrees.length
                 ? `${w.count(group.worktrees.length)}: ${group.worktrees.join(", ")}`
                 : "";
+              // What runs and what waits stays in the heading while the group is folded.
+              const activity = sessionGroupActivity(rows, locale);
               return (
                 <section key={group.id} className="space-y-1" aria-label={label}>
                   <div className="relative flex items-center">
@@ -151,7 +158,13 @@ export function SessionCatalog({
                       title={[group.path, group.worktree ? w.group : "", worktrees]
                         .filter(Boolean)
                         .join("\n")}
-                      aria-label={[label, group.worktree ? w.group : "", worktrees, rows.length]
+                      aria-label={[
+                        label,
+                        group.worktree ? w.group : "",
+                        worktrees,
+                        activity.label,
+                        rows.length,
+                      ]
                         .filter((part) => part !== "")
                         .join(" · ")}
                       onClick={() => {
@@ -170,7 +183,10 @@ export function SessionCatalog({
                           · {w.count(group.worktrees.length)}
                         </span>
                       )}
-                      <small className="ml-auto">{rows.length}</small>
+                      <SessionGroupActivity {...activity} className="ml-auto" />
+                      <small className={activity.label ? undefined : "ml-auto"}>
+                        {rows.length}
+                      </small>
                     </Button>
                     <details className="shrink-0 text-muted-foreground [&>summary]:cursor-pointer [&>summary]:list-none [&>summary]:grid [&>summary]:size-11 [&>summary]:place-items-center [&>summary]:rounded-md [&>span]:absolute [&>span]:inset-x-0 [&>span]:top-full [&>span]:z-10 [&>span]:rounded-lg [&>span]:border [&>span]:bg-popover [&>span]:p-3 [&>span]:text-xs [&>span]:break-all [&>span]:shadow-md">
                       <summary aria-label={`${label} · ${c.path}`} title={c.path}>
@@ -202,6 +218,7 @@ export function SessionCatalog({
                               <SessionContinuationDot
                                 label={runtime.label}
                                 active={runtime.active}
+                                waiting={runtime.waiting}
                               />
                             )}
                             {runtime &&
@@ -211,7 +228,7 @@ export function SessionCatalog({
                                   {runtime.label}
                                 </span>
                               )}
-                            {pendingSessions[s.id] && (
+                            {pendingSessions[s.id] && !runtime?.waiting && (
                               <span
                                 aria-label={interactionCopy[locale].pending}
                                 title={interactionCopy[locale].pending}

@@ -263,7 +263,8 @@ describe("SessionCatalog", () => {
       );
       const runningSession = screen.getByRole("button", { name: /Codex · Running/ });
       expect(runningSession).toHaveAccessibleName(new RegExp(copy.running));
-      expect(within(runningSession).getByTitle(copy.running)).toHaveClass("bg-primary");
+      // A running turn turns, as on the phone.
+      expect(within(runningSession).getByTitle(copy.running)).toHaveClass("animate-spin");
       const terminalSession = screen.getByRole("button", { name: /Claude Code · Terminal/ });
       expect(terminalSession).toHaveAccessibleName(new RegExp(copy.terminalBadge));
       expect(within(terminalSession).getByTitle(copy.terminalBadge)).toHaveClass(

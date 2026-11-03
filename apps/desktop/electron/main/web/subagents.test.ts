@@ -19,9 +19,11 @@ describe("parent-scoped read-only subagents", () => {
     { id: "aux", workspace_id: "w", agent: "codex", origin: "auxiliary" },
   ];
   const result = { version: 1, sessionId: "parent", agents: [], truncated: false };
-  const api = (path: string, method = "GET") => fetch(`${origin}/api/web/v1/${path}`, {
-    method, headers: { Cookie: cookie, "X-AgentKib-Protocol": "2" },
-  });
+  const api = (path: string, method = "GET") =>
+    fetch(`${origin}/api/web/v1/${path}`, {
+      method,
+      headers: { Cookie: cookie, "X-AgentKib-Protocol": "2" },
+    });
   beforeEach(async () => {
     runtime.mockReset();
     workspaceRequest.mockReset();
@@ -33,12 +35,24 @@ describe("parent-scoped read-only subagents", () => {
     const port = (reservation.address() as { port: number }).port;
     await new Promise<void>((resolve) => reservation.close(() => resolve()));
     origin = `http://127.0.0.1:${port}`;
-    runtime.mockImplementation(async (input: { operation: string }) => input.operation === "catalog"
-      ? { workspaces: [{ id: "w", path: dir }], sessions }
-      : result);
-    service = new WebAccessService({ dataDir: dir, staticDir: dir, runtimeRequest: runtime, workspaceRequest });
+    runtime.mockImplementation(async (input: { operation: string }) =>
+      input.operation === "catalog" ? { workspaces: [{ id: "w", path: dir }], sessions } : result,
+    );
+    service = new WebAccessService({
+      dataDir: dir,
+      staticDir: dir,
+      runtimeRequest: runtime,
+      workspaceRequest,
+    });
     await service.initialize();
-    await service.request({ operation: "configure", enabled: true, port, externalOrigin: "", experimentalEnabled: false, allowedWorkspaceIds: ["w"] });
+    await service.request({
+      operation: "configure",
+      enabled: true,
+      port,
+      externalOrigin: "",
+      experimentalEnabled: false,
+      allowedWorkspaceIds: ["w"],
+    });
     const access = await api("access");
     cookie = access.headers.get("set-cookie")!.split(";")[0];
     deviceId = await approveLegacyBrowser(service, cookie);
@@ -48,17 +62,32 @@ describe("parent-scoped read-only subagents", () => {
     await rm(dir, { recursive: true, force: true });
   });
 
-  it.each(["parent", "claude-parent"])("allows a read-only grant to inspect %s without control permissions", async (sessionId) => {
-    expect((await api(`subagents?sessionId=${sessionId}`)).status).toBe(200);
-    expect(runtime).toHaveBeenCalledWith({ operation: "subagents", sessionId });
-    expect((await api(`subagent/events?sessionId=${sessionId}&subagentId=${childId}&cursor=page-1`)).status).toBe(200);
-    expect(runtime).toHaveBeenCalledWith({ operation: "subagent-events", sessionId, subagentId: childId, cursor: "page-1", limit: 50 });
-  });
+  it.each(["parent", "claude-parent"])(
+    "allows a read-only grant to inspect %s without control permissions",
+    async (sessionId) => {
+      expect((await api(`subagents?sessionId=${sessionId}`)).status).toBe(200);
+      expect(runtime).toHaveBeenCalledWith({ operation: "subagents", sessionId });
+      expect(
+        (await api(`subagent/events?sessionId=${sessionId}&subagentId=${childId}&cursor=page-1`))
+          .status,
+      ).toBe(200);
+      expect(runtime).toHaveBeenCalledWith({
+        operation: "subagent-events",
+        sessionId,
+        subagentId: childId,
+        cursor: "page-1",
+        limit: 50,
+      });
+    },
+  );
 
-  it.each(["other", "aux", "missing"])("rejects an unauthorized or auxiliary parent %s before reading children", async (sessionId) => {
-    expect((await api(`subagents?sessionId=${sessionId}`)).status).toBe(403);
-    expect(runtime.mock.calls.some(([value]) => value.operation === "subagents")).toBe(false);
-  });
+  it.each(["other", "aux", "missing"])(
+    "rejects an unauthorized or auxiliary parent %s before reading children",
+    async (sessionId) => {
+      expect((await api(`subagents?sessionId=${sessionId}`)).status).toBe(403);
+      expect(runtime.mock.calls.some(([value]) => value.operation === "subagents")).toBe(false);
+    },
+  );
 
   it("validates child IDs, cursors and page bounds before native reads", async () => {
     for (const query of [
@@ -79,15 +108,18 @@ describe("parent-scoped read-only subagents", () => {
     ["TRANSCRIPT_CURSOR_STALE", 409, "stale_cursor"],
     ["subagent-unavailable", 404, "subagent_unavailable"],
     ["private failure /home/synthetic/.claude/secret.jsonl", 500, "request_failed"],
-  ])("projects native child read error %s without leaking runtime details", async (message, status, code) => {
-    runtime.mockImplementation(async (input: { operation: string }) => {
-      if (input.operation === "catalog") return { sessions, workspaces: [] };
-      throw new Error(String(message));
-    });
-    const response = await api(`subagent/events?sessionId=parent&subagentId=${childId}`);
-    expect(response.status).toBe(status);
-    expect(await response.json()).toEqual({ error: code });
-  });
+  ])(
+    "projects native child read error %s without leaking runtime details",
+    async (message, status, code) => {
+      runtime.mockImplementation(async (input: { operation: string }) => {
+        if (input.operation === "catalog") return { sessions, workspaces: [] };
+        throw new Error(String(message));
+      });
+      const response = await api(`subagent/events?sessionId=parent&subagentId=${childId}`);
+      expect(response.status).toBe(status);
+      expect(await response.json()).toEqual({ error: code });
+    },
+  );
 
   it("does not treat a temporarily unavailable parent catalog as an unsupported host", async () => {
     runtime.mockImplementation(async (input: { operation: string }) => {
@@ -102,11 +134,11 @@ describe("parent-scoped read-only subagents", () => {
   it("does not expose a pending read after authorization is revoked", async () => {
     let finish!: (value: unknown) => void;
     let entered!: () => void;
-    const started = new Promise<void>((resolve) => entered = resolve);
+    const started = new Promise<void>((resolve) => (entered = resolve));
     runtime.mockImplementation(async (input: { operation: string }) => {
       if (input.operation === "catalog") return { sessions, workspaces: [] };
       entered();
-      return new Promise((resolve) => finish = resolve);
+      return new Promise((resolve) => (finish = resolve));
     });
     const pending = api("subagents?sessionId=parent");
     await started;
@@ -121,21 +153,26 @@ describe("parent-scoped read-only subagents", () => {
     cookie = "";
     const access = await api("access");
     cookie = access.headers.get("set-cookie")!.split(";")[0];
-    const bootstrap = await access.json() as { csrfToken: string };
+    const bootstrap = (await access.json()) as { csrfToken: string };
     const code = await service.request({ operation: "generate-code" });
     const paired = await fetch(`${origin}/api/web/v1/pair`, {
       method: "POST",
-      headers: { Cookie: cookie, Origin: origin, "X-CSRF-Token": bootstrap.csrfToken, "Content-Type": "application/json" },
+      headers: {
+        Cookie: cookie,
+        Origin: origin,
+        "X-CSRF-Token": bootstrap.csrfToken,
+        "Content-Type": "application/json",
+      },
       body: JSON.stringify({ code: code.code!.value, name: "Synthetic phone" }),
     });
     expect(paired.status).toBe(200);
-    const pairedBody = await paired.json() as { device: { id: string; accessMode: string } };
+    const pairedBody = (await paired.json()) as { device: { id: string; accessMode: string } };
     expect(pairedBody.device.accessMode).toBe("full");
 
     let finish!: () => void;
     let entered!: () => void;
-    const started = new Promise<void>((resolve) => entered = resolve);
-    const release = new Promise<void>((resolve) => finish = resolve);
+    const started = new Promise<void>((resolve) => (entered = resolve));
+    const release = new Promise<void>((resolve) => (finish = resolve));
     let checks = 0;
     workspaceRequest.mockImplementation(async () => {
       if (++checks === 2) {
@@ -144,9 +181,16 @@ describe("parent-scoped read-only subagents", () => {
       }
       return [{ id: "w", name: "Workspace", path: dir }];
     });
-    runtime.mockImplementation(async (input: { operation: string }) => input.operation === "catalog"
-      ? { sessions, workspaces: [] }
-      : { version: 1, sessionId: "parent", subagentId: childId, events: [{ content: "private child report" }] });
+    runtime.mockImplementation(async (input: { operation: string }) =>
+      input.operation === "catalog"
+        ? { sessions, workspaces: [] }
+        : {
+            version: 1,
+            sessionId: "parent",
+            subagentId: childId,
+            events: [{ content: "private child report" }],
+          },
+    );
     const pending = api(`subagent/events?sessionId=parent&subagentId=${childId}`);
     await started;
     await service.request({ operation: "revoke", id: pairedBody.device.id });

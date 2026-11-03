@@ -17,6 +17,9 @@ import {
 } from "@/components/ui/dialog";
 import { requestWebAdmin } from "./web-status";
 import { withAsyncCleanup } from "@/lib/utils";
+import { subscribeVisiblePolling } from "./visible-polling";
+import { relayUsageCopy } from "./relay-usage-copy";
+import { trafficAmount } from "../../../electron/main/account/relay-usage";
 
 export function RemoteAccountSettings({
   variant = "standalone",
@@ -30,6 +33,7 @@ export function RemoteAccountSettings({
   const { locale } = useI18n();
   const c = remoteAccountCopy[locale];
   const p = remotePhoneCopy[locale];
+  const traffic = relayUsageCopy[locale];
   const [manageOpen, setManageOpen] = useState(false);
   const [status, setStatus] = useState<DesktopAccountStatus>();
   const [failed, setFailed] = useState(() => !desktopApi().account);
@@ -53,18 +57,31 @@ export function RemoteAccountSettings({
         setFailed(false);
       }
     });
-    const initial = revision.current;
-    void account
-      .request({ operation: "status" })
-      .then((value) => {
-        if (alive.current && initial === revision.current) setStatus(value);
-      })
-      .catch(() => {
-        if (alive.current && initial === revision.current) setFailed(true);
-      });
+    let reading = false;
+    const stopPolling = subscribeVisiblePolling({
+      interval: 30_000,
+      enabled: () => !locked.current,
+      run: async () => {
+        if (reading || locked.current) return;
+        reading = true;
+        const initial = revision.current;
+        try {
+          const value = await account.request({ operation: "status" });
+          if (alive.current && initial === revision.current) {
+            setStatus(value);
+            setFailed(false);
+          }
+        } catch {
+          if (alive.current && initial === revision.current) setFailed(true);
+        } finally {
+          reading = false;
+        }
+      },
+    });
     return () => {
       alive.current = false;
       revision.current += 1;
+      stopPolling();
       release();
     };
   }, []);
@@ -121,9 +138,41 @@ export function RemoteAccountSettings({
     <>
       {signedIn && (
         <>
-          <p>
-            {c.quota}: {status!.account!.deviceCount} / {status!.account!.deviceLimit}
-          </p>
+          {status?.relayUsage && (
+            <section aria-label={traffic.title} className="space-y-2 break-words">
+              <p className="font-medium">{traffic.title}</p>
+              <p>
+                {trafficAmount(status.relayUsage.usedBytes, locale)} /{" "}
+                {trafficAmount(status.relayUsage.limitBytes, locale)}
+              </p>
+              <progress
+                className="w-full"
+                aria-label={traffic.title}
+                max={1}
+                value={Math.min(1, status.relayUsage.usedBytes / status.relayUsage.limitBytes)}
+              />
+              <p>
+                {traffic.remaining}: {trafficAmount(status.relayUsage.remainingBytes, locale)}
+              </p>
+              <p>
+                {traffic.reset}: {new Date(status.relayUsage.periodEnd).toLocaleString(locale)}
+              </p>
+              <p className="text-muted-foreground">
+                {traffic.updated}: {new Date(status.relayUsage.updatedAt).toLocaleString(locale)}
+              </p>
+              <p className="text-muted-foreground">{traffic.hint}</p>
+              {status.relayUsage.usedBytes >= status.relayUsage.limitBytes * 0.8 && (
+                <p role="status">
+                  {status.relayUsage.exhausted
+                    ? traffic.exhausted
+                    : status.relayUsage.usedBytes >= status.relayUsage.limitBytes * 0.95
+                      ? traffic.almost
+                      : traffic.warning}
+                </p>
+              )}
+            </section>
+          )}
+          {status?.relayUsageUnavailable && <p role="alert">{traffic.unavailable}</p>}
           <p>
             {c.totp}: {status!.account!.totpEnabled ? c.on : c.off}
           </p>

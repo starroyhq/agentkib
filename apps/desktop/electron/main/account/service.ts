@@ -4,6 +4,7 @@ import { mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import type { DesktopAccountProfile, DesktopAccountRequest, DesktopAccountStatus } from "./state";
 import { normalizeComputerName } from "./computer-name";
+import { checkedRelayUsage, type RelayUsage } from "./relay-usage";
 
 export const ACCOUNT_ORIGIN = "https://account.agentkib.com";
 export const ACCOUNT_API = "https://api.agentkib.com";
@@ -52,6 +53,13 @@ export class DesktopAccountService {
   private knownName?: { deviceId: string; name: string };
   /** `accountId:deviceId` already checked for a missing name in this process. */
   private nameChecked?: string;
+  private nameReadAt = 0;
+  private nameGeneration = 0;
+  private nameReadWork?: { key: string; work: Promise<boolean> };
+  private relayUsage?: RelayUsage;
+  private usageUnavailable = false;
+  private usageReadAt = 0;
+  private usageRevision = 0;
   constructor(private readonly options: Options) {}
   private get tokenFile() {
     return join(this.options.directory, "refresh.enc");
@@ -73,7 +81,7 @@ export class DesktopAccountService {
       if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
       try {
         await this.accessToken();
-        this.backfillNameInBackground();
+        this.refreshNameInBackground();
       } catch (failure) {
         if ((failure as NodeJS.ErrnoException).code !== "ENOENT")
           this.error = "account_login_required";
@@ -86,6 +94,8 @@ export class DesktopAccountService {
     return {
       phase: this.phase,
       secureStorage: this.options.storage.available(),
+      ...(this.profile && this.relayUsage ? { relayUsage: { ...this.relayUsage } } : {}),
+      ...(this.profile && this.usageUnavailable ? { relayUsageUnavailable: true } : {}),
       ...(this.profile ? { account: { ...this.profile } } : {}),
       ...(identity
         ? {
@@ -130,6 +140,10 @@ export class DesktopAccountService {
           Date.now() - this.profileReadAt > 30_000
         )
           await this.refreshProfile();
+        if (input.operation === "status" && this.profile && Date.now() - this.nameReadAt >= 30_000)
+          await this.refreshDeviceName();
+        if (input.operation === "status" && this.profile && Date.now() - this.usageReadAt >= 30_000)
+          await this.refreshRelayUsage();
         if (input.operation === "login") await this.login();
         if (input.operation === "cancel-login") {
           this.cancelLogin();
@@ -183,21 +197,23 @@ export class DesktopAccountService {
         }
         // Only recognized categories reach IPC, never arbitrary server error text.
         throw new AccountError(
-          response.status === 400 && code === "invalid_name"
-            ? "account_invalid_name"
-            : response.status === 401
-              ? "account_login_required"
-              : response.status === 403
-                ? "account_forbidden"
-                : response.status === 409
-                  ? code === "device_limit_reached"
-                    ? "account_device_limit"
-                    : code === "name_already_set"
-                      ? "account_name_already_set"
-                      : "account_device_conflict"
-                  : response.status === 429
-                    ? "account_rate_limited"
-                    : "account_request_failed",
+          response.status === 404 && path === "/v1/account/relay-usage"
+            ? "account_usage_unsupported"
+            : response.status === 400 && code === "invalid_name"
+              ? "account_invalid_name"
+              : response.status === 401
+                ? "account_login_required"
+                : response.status === 403
+                  ? "account_forbidden"
+                  : response.status === 409
+                    ? code === "device_limit_reached"
+                      ? "account_device_limit"
+                      : code === "name_already_set"
+                        ? "account_name_already_set"
+                        : "account_device_conflict"
+                    : response.status === 429
+                      ? "account_rate_limited"
+                      : "account_request_failed",
         );
       }
       return await this.readResponse(response);
@@ -268,6 +284,9 @@ export class DesktopAccountService {
     };
     this.profileReadAt = Date.now();
     this.phase = "signed-in";
+    void this.refreshRelayUsage()
+      .then(() => this.publish())
+      .catch(() => undefined);
   }
   async accessToken(): Promise<string> {
     if (this.access && this.access.until > Date.now()) return this.access.value;
@@ -362,7 +381,7 @@ export class DesktopAccountService {
             if (identity.accountClaimAccountId === this.profile?.id) await this.claim();
             else this.error = "account_claim_pending";
           }
-          this.backfillNameInBackground();
+          this.refreshNameInBackground();
         } catch (error) {
           this.phase = this.profile ? "signed-in" : "signed-out";
           this.error = error instanceof AccountError ? error.code : "account_login_required";
@@ -401,6 +420,12 @@ export class DesktopAccountService {
     this.profile = undefined;
     this.knownName = undefined;
     this.nameChecked = undefined;
+    this.nameReadAt = 0;
+    this.nameGeneration++;
+    this.relayUsage = undefined;
+    this.usageUnavailable = false;
+    this.usageReadAt = 0;
+    this.usageRevision++;
     this.phase = "signed-out";
     await rm(this.tokenFile, { force: true });
     await rm(this.rotationFile, { force: true });
@@ -426,9 +451,9 @@ export class DesktopAccountService {
   }
   async ensureDeviceOwner(accountId?: string) {
     if (this.loggingOut) throw new AccountError("account_login_required");
-    if (!accountId) return;
     await this.accessToken();
-    if (this.profile?.id !== accountId) throw new AccountError("account_device_conflict");
+    if (accountId && this.profile?.id !== accountId)
+      throw new AccountError("account_device_conflict");
   }
   async registerDevice(input: { registrationId: string; credential: string }) {
     const token = await this.accessToken();
@@ -468,11 +493,52 @@ export class DesktopAccountService {
     };
     this.profileReadAt = Date.now();
   }
+  private async refreshRelayUsage() {
+    const owner = this.profile?.id;
+    const revision = ++this.usageRevision;
+    if (!owner || this.loggingOut) return;
+    try {
+      const data = checkedRelayUsage(
+        await this.api("/v1/account/relay-usage", undefined, await this.accessToken()),
+      );
+      if (this.profile?.id !== owner || this.loggingOut || this.usageRevision !== revision) return;
+      this.relayUsage = data;
+      this.usageUnavailable = false;
+    } catch (error) {
+      if (this.profile?.id !== owner || this.loggingOut || this.usageRevision !== revision) return;
+      this.usageUnavailable = !(
+        error instanceof AccountError && error.code === "account_usage_unsupported"
+      );
+      if (!this.usageUnavailable) this.relayUsage = undefined;
+    }
+    if (this.profile?.id === owner && this.usageRevision === revision)
+      this.usageReadAt = Date.now();
+  }
   get signedIn() {
     return !!this.profile && !this.loggingOut;
   }
   get accountId() {
     return this.profile?.id;
+  }
+  /**
+   * The account's live logins, for paired phones bound to one of them. Only their IDs and kinds
+   * leave this service; tokens never do. Throws when signed out or when the account cannot be read.
+   */
+  async liveSessions(): Promise<{ accountId: string; sessions: { id: string; kind: string }[] }> {
+    const accountId = this.profile?.id;
+    if (!accountId || this.loggingOut) throw new AccountError("account_login_required");
+    const data = (await this.api("/v1/account/sessions", undefined, await this.accessToken())) as {
+      sessions?: unknown;
+    };
+    if (!Array.isArray(data?.sessions) || this.profile?.id !== accountId)
+      throw new AccountError("account_response_invalid");
+    return {
+      accountId,
+      sessions: data.sessions.flatMap((row) => {
+        const { id, kind } = (row ?? {}) as { id?: unknown; kind?: unknown };
+        return typeof id === "string" && typeof kind === "string" ? [{ id, kind }] : [];
+      }),
+    };
   }
   private async claim() {
     const identity = await this.options.identity();
@@ -494,7 +560,7 @@ export class DesktopAccountService {
       throw new AccountError("account_response_invalid");
     await this.options.bindIdentity(result.accountId!);
     this.rememberName(result);
-    this.backfillNameInBackground();
+    this.refreshNameInBackground();
     this.profileReadAt = 0;
     await this.refreshProfile().catch(() => {
       this.error = "account_profile_refresh_failed";
@@ -525,16 +591,14 @@ export class DesktopAccountService {
     if (typeof deviceId === "string" && typeof name === "string" && name)
       this.knownName = { deviceId, name };
   }
-  private backfillNameInBackground() {
-    void this.backfillName()
+  private refreshNameInBackground() {
+    void this.refreshDeviceName()
       .then((changed) => (changed ? this.publish() : undefined))
       .catch(() => undefined);
   }
   /**
-   * Once per account and device in this process: if the account lists this computer without a name,
-   * fill it in. The broker only lets a desktop session set a missing name (409 otherwise), so a
-   * name the user chose is never overwritten. A broker without names omits the field (skip) or
-   * answers PATCH with 404/405; every failure is ignored.
+   * Keep the once-per-process initial check separate from later reads: names chosen in the account
+   * UI must become visible without ever turning a refresh into another automatic rename.
    */
   async backfillName(): Promise<boolean> {
     const accountId = this.profile?.id;
@@ -543,29 +607,81 @@ export class DesktopAccountService {
     if (!/^[a-f0-9]{32}$/.test(identity.deviceId)) return false;
     const key = `${accountId}:${identity.deviceId}`;
     if (this.nameChecked === key) return false;
+    return this.refreshDeviceName();
+  }
+  private async refreshDeviceName(): Promise<boolean> {
+    const accountId = this.profile?.id;
+    const identity = await this.options.identity();
+    if (!accountId || !identity || identity.accountId !== accountId || this.loggingOut)
+      return false;
+    if (!/^[a-f0-9]{32}$/.test(identity.deviceId)) return false;
+    const key = `${accountId}:${identity.deviceId}`;
+    const generation = this.nameGeneration;
+    const workKey = `${generation}:${key}`;
+    if (this.nameReadWork?.key === workKey) return this.nameReadWork.work;
+    const mayBackfill = this.nameChecked !== key;
     this.nameChecked = key;
+    this.nameReadAt = Date.now();
+    const work = this.readDeviceName(accountId, identity.deviceId, generation, mayBackfill);
+    this.nameReadWork = { key: workKey, work };
+    try {
+      return await work;
+    } finally {
+      if (this.nameReadWork?.work === work) this.nameReadWork = undefined;
+    }
+  }
+  private async readDeviceName(
+    accountId: string,
+    deviceId: string,
+    generation: number,
+    mayBackfill: boolean,
+  ): Promise<boolean> {
+    const current = async () => {
+      const identity = await this.options.identity();
+      return (
+        generation === this.nameGeneration &&
+        this.profile?.id === accountId &&
+        identity?.accountId === accountId &&
+        identity.deviceId === deviceId &&
+        !this.loggingOut
+      );
+    };
     const before = this.knownName?.name;
     try {
       const token = await this.accessToken();
-      const list = (await this.api("/v1/account/devices", undefined, token)) as {
-        devices?: unknown;
+      const read = async () => {
+        const list = (await this.api("/v1/account/devices", undefined, token)) as {
+          devices?: unknown;
+        };
+        return (Array.isArray(list?.devices) ? list.devices : []).find(
+          (row) => (row as { deviceId?: unknown })?.deviceId === deviceId,
+        ) as { name?: unknown } | undefined;
       };
-      const device = (Array.isArray(list?.devices) ? list.devices : []).find(
-        (row) => (row as { deviceId?: unknown })?.deviceId === identity.deviceId,
-      ) as { name?: unknown } | undefined;
-      if (!device || !("name" in device)) return false;
-      if (device.name === null) {
+      let device = await read();
+      if (!(await current())) return false;
+      if (mayBackfill && device?.name === null) {
         const name = await this.computerName();
-        if (!name) return false;
-        try {
-          this.rememberName(
-            await this.api(`/v1/account/devices/${identity.deviceId}`, { name }, token, "PATCH"),
-          );
-        } catch {
-          // 409 name_already_set (named meanwhile), 404/405 (old broker) and the rest: keep going.
-          return false;
+        if (name && (await current())) {
+          try {
+            device = (await this.api(
+              `/v1/account/devices/${deviceId}`,
+              { name },
+              token,
+              "PATCH",
+            )) as {
+              name?: unknown;
+            };
+          } catch (error) {
+            if (!(error instanceof AccountError) || error.code !== "account_name_already_set")
+              return false;
+            // A user named the computer after our read. Read that name; never retry the write.
+            device = await read();
+          }
         }
-      } else this.rememberName({ deviceId: identity.deviceId, name: device.name });
+      }
+      if (!(await current())) return false;
+      const name = device?.name;
+      this.knownName = typeof name === "string" && name ? { deviceId, name } : undefined;
     } catch {
       return false;
     }

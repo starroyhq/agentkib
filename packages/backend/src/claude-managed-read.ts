@@ -60,7 +60,11 @@ import {
 } from "./claude-host-state";
 import { createClaudeGoalReportEndpoint } from "./claude-goal-report";
 import { projectContextUsage } from "./context-usage";
-import { projectSubagentObservations, type SubagentObservation, type SubagentParent } from "./session-subagents";
+import {
+  projectSubagentObservations,
+  type SubagentObservation,
+  type SubagentParent,
+} from "./session-subagents";
 import {
   ClaudeManagedRunnerProcess,
   ClaudeUndispatchedError,
@@ -439,7 +443,7 @@ export class ClaudeManagedReadOwner {
         return this.context(id);
       case "events":
         if (!id) throw new Error("missing-session");
-        return this.events(id, value.cursor, value.limit);
+        return this.events(id, value.cursor, value.limit, value.retainCursor !== false);
       case "subagents":
       case "subagent-events":
         if (!id) throw new Error("missing-session");
@@ -4032,7 +4036,17 @@ export class ClaudeManagedReadOwner {
     return {
       ...snapshot,
       subagents: snapshot.subagents?.length
-        ? projectSubagentObservations({ sessionId: id, nativeId: record?.nativeId ?? "", workspace: record?.workspace ?? "", transcript: "", agent: "claude-code" }, this.store.sessions.identitySalt(), snapshot.subagents)
+        ? projectSubagentObservations(
+            {
+              sessionId: id,
+              nativeId: record?.nativeId ?? "",
+              workspace: record?.workspace ?? "",
+              transcript: "",
+              agent: "claude-code",
+            },
+            this.store.sessions.identitySalt(),
+            snapshot.subagents,
+          )
         : { version: 1, sessionId: id, agents: [], truncated: false, partial: true },
       ...(this.#starting.has(id) && (snapshot.status !== "outcome-unknown" || pendingStartup)
         ? {
@@ -4567,7 +4581,8 @@ export class ClaudeManagedReadOwner {
     return { available: true, cwd: workspace, sourceFile, projectId: null, branchAtCreation: null };
   }
 
-  async events(id: string, cursor: unknown, limit: unknown): Promise<unknown> {
+  /** `retain` false keeps no cursor for the page, for stream snapshots (see SessionPaging.read). */
+  async events(id: string, cursor: unknown, limit: unknown, retain = true): Promise<unknown> {
     const record = this.#load(id);
     if (record) {
       this.#validate(record);
@@ -4579,6 +4594,8 @@ export class ClaudeManagedReadOwner {
         record.workspace,
         typeof cursor === "string" ? cursor : null,
         count,
+        undefined,
+        retain,
       );
       return this.#withTurnEnds(record.nativeId, page);
     }
@@ -4587,54 +4604,106 @@ export class ClaudeManagedReadOwner {
       id,
       typeof cursor === "string" ? cursor : null,
       count,
+      retain,
     );
   }
 
   /** Read-only children are always resolved from this verified parent, never from a supplied path. */
   async subagents(id: string, value: Record<string, unknown>): Promise<unknown> {
     const childId = value.operation === "subagent-events" ? value.subagentId : undefined;
-    if (childId !== undefined && (typeof childId !== "string" || !/^[a-f0-9]{64}$/.test(childId))) throw new Error("invalid-request");
-    if (value.cursor !== undefined && value.cursor !== null && (typeof value.cursor !== "string" || value.cursor.length > 1024)) throw new Error("invalid-request");
-    if (value.limit !== undefined && (!Number.isSafeInteger(value.limit) || Number(value.limit) < 1 || Number(value.limit) > 100)) throw new Error("invalid-request");
+    if (childId !== undefined && (typeof childId !== "string" || !/^[a-f0-9]{64}$/.test(childId)))
+      throw new Error("invalid-request");
+    if (
+      value.cursor !== undefined &&
+      value.cursor !== null &&
+      (typeof value.cursor !== "string" || value.cursor.length > 1024)
+    )
+      throw new Error("invalid-request");
+    if (
+      value.limit !== undefined &&
+      (!Number.isSafeInteger(value.limit) || Number(value.limit) < 1 || Number(value.limit) > 100)
+    )
+      throw new Error("invalid-request");
     const record = this.#load(id);
     const runner = this.#runners.get(id);
     let parent: SubagentParent;
     if (record) {
       this.#validate(record);
-      parent = { sessionId: id, nativeId: record.nativeId, workspace: record.workspace, agent: "claude-code", transcript: record.fresh ? "" : this.sessions.verifiedClaudeControlTarget(record.nativeId, record.workspace) };
+      parent = {
+        sessionId: id,
+        nativeId: record.nativeId,
+        workspace: record.workspace,
+        agent: "claude-code",
+        transcript: record.fresh
+          ? ""
+          : this.sessions.verifiedClaudeControlTarget(record.nativeId, record.workspace),
+      };
     } else {
       const source = this.sessions.verifiedClaudeReadSource(id);
-      parent = { sessionId: id, nativeId: source.nativeId, workspace: source.workspace, transcript: source.transcript, agent: "claude-code" };
+      parent = {
+        sessionId: id,
+        nativeId: source.nativeId,
+        workspace: source.workspace,
+        transcript: source.transcript,
+        agent: "claude-code",
+      };
     }
     const observed = (runner?.snapshot() ?? record?.snapshot)?.subagents;
-    const observations: SubagentObservation[] = Array.isArray(observed) ? observed.map((entry: SubagentObservation) => ({
-      ...entry,
-      // A saved spawn is not proof that its worker survived this backend process.
-      ...(!runner?.hasWorker && ["starting", "running", "waiting-input", "waiting-approval"].includes(entry.status) ? { status: "unknown" as const, readable: false } : {}),
-    })) : [];
+    const observations: SubagentObservation[] = Array.isArray(observed)
+      ? observed.map((entry: SubagentObservation) => ({
+          ...entry,
+          // A saved spawn is not proof that its worker survived this backend process.
+          ...(!runner?.hasWorker &&
+          ["starting", "running", "waiting-input", "waiting-approval"].includes(entry.status)
+            ? { status: "unknown" as const, readable: false }
+            : {}),
+        }))
+      : [];
     const cursor = typeof value.cursor === "string" ? value.cursor : null;
     const limit = typeof value.limit === "number" ? value.limit : 50;
-    if (typeof childId !== "string") return this.sessions.subagentsForNative(parent, undefined, null, limit, observations);
+    if (typeof childId !== "string")
+      return this.sessions.subagentsForNative(parent, undefined, null, limit, observations);
     const callId = this.sessions.subagentObservationId(parent, childId, observations);
     const memory = callId ? runner?.subagentEvents(callId) : null;
     if (!cursor?.startsWith("subagent-memory-v1:")) {
       try {
         return await this.sessions.subagentsForNative(parent, childId, cursor, limit, observations);
       } catch (error) {
-        if (!(error instanceof Error) || error.message !== "subagent-unavailable" || !memory) throw error;
+        if (!(error instanceof Error) || error.message !== "subagent-unavailable" || !memory)
+          throw error;
       }
     }
     if (memory && (cursor === null || cursor.startsWith("subagent-memory-v1:"))) {
-      const epoch = createHmac("sha256", this.store.sessions.identitySalt()).update(JSON.stringify(["subagent-memory", parent.sessionId, parent.nativeId, childId, runner!.subagentEpoch])).digest("hex");
+      const epoch = createHmac("sha256", this.store.sessions.identitySalt())
+        .update(
+          JSON.stringify([
+            "subagent-memory",
+            parent.sessionId,
+            parent.nativeId,
+            childId,
+            runner!.subagentEpoch,
+          ]),
+        )
+        .digest("hex");
       const prefix = `subagent-memory-v1:${childId}:${epoch}:`;
       if (cursor && !cursor.startsWith(prefix)) throw new Error("TRANSCRIPT_CURSOR_STALE");
       const encoded = cursor?.slice(prefix.length);
-      if (encoded !== undefined && !/^[A-Za-z0-9_-]+$/.test(encoded)) throw new Error("TRANSCRIPT_CURSOR_INVALID");
+      if (encoded !== undefined && !/^[A-Za-z0-9_-]+$/.test(encoded))
+        throw new Error("TRANSCRIPT_CURSOR_INVALID");
       const anchor = encoded ? Buffer.from(encoded, "base64url").toString("utf8") : null;
-      const offset = anchor === null ? memory.length : memory.findIndex(item => item.id === anchor);
+      const offset =
+        anchor === null ? memory.length : memory.findIndex((item) => item.id === anchor);
       if (offset < 0) throw new Error("TRANSCRIPT_CURSOR_STALE");
       const start = Math.max(0, offset - limit);
-      return { version: 1, sessionId: id, subagentId: childId, epoch, events: memory.slice(start, offset), next_cursor: start ? prefix + Buffer.from(memory[start].id).toString("base64url") : null, warnings: ["SUBAGENT_LIVE_WINDOW"] };
+      return {
+        version: 1,
+        sessionId: id,
+        subagentId: childId,
+        epoch,
+        events: memory.slice(start, offset),
+        next_cursor: start ? prefix + Buffer.from(memory[start].id).toString("base64url") : null,
+        warnings: ["SUBAGENT_LIVE_WINDOW"],
+      };
     }
     return this.sessions.subagentsForNative(parent, childId, cursor, limit, observations);
   }

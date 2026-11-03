@@ -20,6 +20,7 @@ import { useSession } from "./session-context";
 import { ArtifactBrowser } from "./artifact-browser";
 import { ArtifactWorkspace } from "./artifact-panel";
 import { useLayoutEffect, useRef, useState } from "react";
+import { useTranscriptFollow } from "@agentkib/session-ui";
 import { webLayoutCopy } from "./web-layout-copy";
 import { approvalSummary } from "./approval-summary";
 export function SessionReader() {
@@ -59,17 +60,26 @@ export function SessionReader() {
     !!live?.turnId &&
     page?.events.some((event) => event.kind === "agent-message" && event.turn_id === live.turnId);
   const liveStreamText = live?.status !== "idle" ? live?.streamText : undefined;
-  const following = useRef(true);
+  const pendingMessage =
+    session.pendingSend?.sessionId === selected ? session.pendingSend : undefined;
   const previousSession = useRef(selected);
   const previousContent = useRef({ events: page?.events, streamText: live?.streamText });
   const previousLiveContentVersion = useRef(liveContentVersion);
   const [hasNewMessages, setHasNewMessages] = useState(false);
+  const { following, contentRef, pause, resume } = useTranscriptFollow({
+    viewportRef: scroll,
+    sessionId: selected,
+    enabled: !!access && !!selected,
+    layoutVersion: [page?.events, liveStreamText, liveContentVersion, pendingMessage],
+    onFollowingChange: (value) => {
+      if (value) setHasNewMessages(false);
+    },
+  });
   useLayoutEffect(() => {
     if (previousSession.current !== selected) {
       previousSession.current = selected;
       composing.current = false;
       submitPending.current = false;
-      following.current = true;
       setHasNewMessages(false);
     } else if (!following.current && previousLiveContentVersion.current !== liveContentVersion) {
       const previous = previousContent.current;
@@ -89,8 +99,6 @@ export function SessionReader() {
     }
     previousContent.current = { events: page?.events, streamText: live?.streamText };
     previousLiveContentVersion.current = liveContentVersion;
-    const viewport = scroll.current;
-    if (following.current && viewport) viewport.scrollTop = viewport.scrollHeight;
   }, [selected, page?.events, live?.streamText, liveContentVersion, scroll]);
   if (!access || !selected) return null;
   return (
@@ -112,15 +120,9 @@ export function SessionReader() {
         />
         <section
           className="reader-scroll relative min-h-0 flex flex-1 flex-col overflow-y-auto overscroll-contain px-4 pb-2 pt-4 [scrollbar-gutter:stable] md:px-8"
+          tabIndex={0}
           ref={(element) => {
             scroll.current = element;
-          }}
-          onScroll={() => {
-            const viewport = scroll.current;
-            if (viewport)
-              following.current =
-                viewport.scrollHeight - viewport.scrollTop - viewport.clientHeight < 96;
-            if (following.current) setHasNewMessages(false);
           }}
         >
           {!page ? (
@@ -135,7 +137,7 @@ export function SessionReader() {
               <p className="text-sm text-muted-foreground">{t.loading}</p>
             </div>
           ) : (
-            <>
+            <div ref={contentRef} className="min-w-0 shrink-0">
               {current?.agent === "claude-code" &&
                 banner &&
                 banner.notice !== "background-ended" && (
@@ -163,9 +165,7 @@ export function SessionReader() {
               <SessionTranscript
                 key={selected}
                 events={page.events}
-                pendingMessage={
-                  session.pendingSend?.sessionId === selected ? session.pendingSend : undefined
-                }
+                pendingMessage={pendingMessage}
                 streamText={!hasNativeReply ? liveStreamText : undefined}
                 streamTextTruncated={live?.streamTextTruncated}
                 liveTurnId={live?.turnId}
@@ -177,11 +177,11 @@ export function SessionReader() {
                 loadingEarlier={busy}
                 earlierLabel={t.earlier}
                 onLoadEarlier={async () => {
-                  following.current = false;
+                  pause();
                   await earlier();
                 }}
               />
-            </>
+            </div>
           )}
         </section>
         <div className="shrink-0 bg-background px-3 pb-3 pt-2 md:px-6" role="status">
@@ -191,9 +191,7 @@ export function SessionReader() {
               variant="ghost"
               className="mb-2 flex min-h-9 w-fit mx-auto items-center gap-2 rounded-full border border-border bg-background px-3 text-xs text-muted-foreground shadow-sm transition-colors hover:bg-muted hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
               onClick={() => {
-                following.current = true;
-                const viewport = scroll.current;
-                if (viewport) viewport.scrollTop = viewport.scrollHeight;
+                resume();
                 setHasNewMessages(false);
               }}
             >

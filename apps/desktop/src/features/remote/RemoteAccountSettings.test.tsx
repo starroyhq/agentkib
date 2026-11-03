@@ -6,13 +6,23 @@ import { initializeI18n, changeLocale } from "@/core/i18n";
 import type { DesktopAccountStatus } from "../../../electron/main/account/state";
 import { RemoteAccountSettings } from "./RemoteAccountSettings";
 import { remoteAccountCopy } from "./remote-account-copy";
+import { relayUsageCopy } from "./relay-usage-copy";
 
 const request = vi.fn();
 const refresh = vi.fn();
 const release = vi.fn();
 let listener: ((value: DesktopAccountStatus) => void) | undefined;
+let activity: ((active: boolean) => void) | undefined;
 vi.mock("@/core/desktop", () => ({
   desktopApi: () => ({
+    events: {
+      onWindowActivity: (next: typeof activity) => {
+        activity = next;
+        return () => {
+          activity = undefined;
+        };
+      },
+    },
     account: {
       request,
       onStatus: (next: typeof listener) => {
@@ -44,8 +54,36 @@ beforeEach(async () => {
   refresh.mockReset().mockResolvedValue({});
   release.mockReset();
   listener = undefined;
+  activity = undefined;
 });
 afterEach(cleanup);
+
+it.each(Object.keys(relayUsageCopy) as (keyof typeof relayUsageCopy)[])(
+  "shows monthly usage and an overrun without exposing the computer quota in %s",
+  async (locale) => {
+    await changeLocale(locale);
+    request.mockResolvedValue({
+      ...signedIn,
+      relayUsage: {
+        periodStart: Date.UTC(2026, 10),
+        periodEnd: Date.UTC(2026, 11),
+        limitBytes: 100_000_000_000,
+        usedBytes: 120_000_000_000,
+        remainingBytes: 0,
+        exhausted: true,
+        updatedAt: Date.UTC(2026, 10, 3),
+      },
+    });
+    render(<RemoteAccountSettings />);
+    expect(await screen.findByRole("region", { name: relayUsageCopy[locale].title })).toBeVisible();
+    expect(screen.getByText("120 GB / 100 GB")).toBeVisible();
+    expect(screen.getByText(relayUsageCopy[locale].exhausted)).toBeVisible();
+    expect(screen.getByRole("progressbar")).toHaveValue(1);
+    expect(screen.queryByText(/^1\s*\/\s*3$/)).toBeNull();
+    act(() => listener?.(signedOut));
+    expect(screen.queryByRole("region", { name: relayUsageCopy[locale].title })).toBeNull();
+  },
+);
 
 it("starts browser sign-in without enabling remote access and accepts async completion", async () => {
   render(<RemoteAccountSettings />);
@@ -155,4 +193,24 @@ it("shows how the account lists this computer once the name is known", async () 
   render(<RemoteAccountSettings />);
   expect(await screen.findByText(remoteAccountCopy["en-US"].owned)).toBeVisible();
   expect(screen.queryByText(/appears as/)).toBeNull();
+});
+
+it("refreshes the account name when the window resumes and when settings are reopened", async () => {
+  const withName = (name: string): DesktopAccountStatus => ({
+    ...signedIn,
+    device: { deviceId: "a".repeat(32), ownership: "owned", name },
+  });
+  request.mockResolvedValue(withName("Original name"));
+  const view = render(<RemoteAccountSettings />);
+  await screen.findByText("This computer appears as Original name in your account");
+  act(() => activity?.(false));
+  request.mockResolvedValue(withName("Phone name"));
+  act(() => activity?.(true));
+  await screen.findByText("This computer appears as Phone name in your account");
+  expect(request).toHaveBeenCalledTimes(2);
+  view.unmount();
+  request.mockResolvedValue(withName("Web name"));
+  render(<RemoteAccountSettings />);
+  await screen.findByText("This computer appears as Web name in your account");
+  expect(request).toHaveBeenCalledTimes(3);
 });

@@ -892,7 +892,8 @@ describe("SessionDirectory", () => {
       overview.unmount();
       render(<SessionDirectory />);
       const runningSession = screen.getByRole("button", { name: /^Running/ });
-      expect(within(runningSession).getByTitle(copy.running)).toHaveClass("bg-primary");
+      // A running turn turns, as on the phone.
+      expect(within(runningSession).getByTitle(copy.running)).toHaveClass("animate-spin");
       const terminalSession = screen.getByRole("button", { name: /^Connected/ });
       expect(within(terminalSession).getByTitle(copy.terminalBadge)).toHaveClass(
         "bg-muted-foreground",

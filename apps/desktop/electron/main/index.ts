@@ -82,6 +82,8 @@ let refreshCoordinator: ElectronRefreshCoordinator | undefined;
 let skillSyncCoordinator: SkillSyncCoordinator | undefined;
 let runtimeHost: RuntimeHost | undefined;
 let accountService: DesktopAccountService | undefined;
+/** The account whose logins the web services last checked their bound pairings against. */
+let checkedAccountId: string | undefined;
 let webAccess: WebAccessService | undefined;
 let lanWebAccess: WebAccessService | undefined;
 let conversationHub: ConversationHub | undefined;
@@ -263,8 +265,16 @@ async function startApplication(): Promise<void> {
     )
       conversationHub?.scopesChanged();
   });
+  // Read again after a while, so a rename in system settings reaches the phones.
+  let computerNameRead: { at: number; name: Promise<string | undefined> } | undefined;
+  const computerName = () => {
+    if (!computerNameRead || Date.now() - computerNameRead.at >= 10 * 60_000)
+      computerNameRead = { at: Date.now(), name: detectComputerName() };
+    return computerNameRead.name;
+  };
   const sharedWebOptions = {
     historyRequest: (method: string, params: unknown) => requestWhenRuntimeReady(method, params),
+    computerName,
     conversationHub,
     desktopOrigin: devServerUrl ? new URL(devServerUrl).origin : "app://bundle",
     sharedControl,
@@ -282,6 +292,10 @@ async function startApplication(): Promise<void> {
     verifiedClaudeManaged: process.platform === "darwin",
     enableClaudeScheduler: process.platform === "darwin",
     verifiedAntigravityManaged: true,
+    accountSessions: () => {
+      if (!accountService) return Promise.reject(new Error("account_unavailable"));
+      return accountService.liveSessions();
+    },
   } satisfies Partial<ConstructorParameters<typeof WebAccessService>[0]>;
   webAccess = new WebAccessService({
     ...sharedWebOptions,
@@ -327,10 +341,17 @@ async function startApplication(): Promise<void> {
     identity: () => webAccess!.accountIdentity(),
     bindIdentity: (id) => webAccess!.bindAccountIdentity(id),
     prepareIdentityClaim: (id) => webAccess!.prepareAccountClaim(id),
-    computerName: () => detectComputerName(),
+    computerName,
     onStatus: (status) => {
       if (mainWindow && !mainWindow.isDestroyed())
         mainWindow.webContents.send("agentkib:account:status", status);
+      // Signing in to another account ends the phones bound to the previous one.
+      const accountId = status.account?.id;
+      if (accountId && accountId !== checkedAccountId) {
+        checkedAccountId = accountId;
+        for (const service of [webAccess, lanWebAccess])
+          void service?.checkAccountBindings().catch(() => undefined);
+      }
     },
   });
   // Account network availability must not delay local conversations or window startup.

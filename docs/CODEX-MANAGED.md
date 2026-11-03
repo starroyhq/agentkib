@@ -64,6 +64,8 @@ Web 的模型、服务档位、策略和资源能力取自当前 app-server 的�
 
 没有本机活动 runner 时，发送自动准备并续接同一原生 thread ID；源索引与 rollout 元数据共同验证 ID 和工作区。专用 app-server 在同一 canonical CODEX_HOME 上调用官方 thread/resume，由 Codex 自己原子获取每线程 writer lock。原 writer 未退出时，若 Codex 桌面端报告了这条会话的 owner，打开页面即改为跟随（见上文）；否则返回 `codex-owner-busy`，界面提供显式分支或返回 Codex 的选择，保留草稿并重新检查占用；“找不到 owner”不能作为排他证明。AgentKib 不停止共享 daemon、不删除 native lock、不复制 CODEX_HOME，也不默认 fork。原生 active goal 等恢复风险及未知结果仍按内部规则阻断，不因省去用户确认而放行。
 
+Codex 应用或 CLI 正在执行的轮次只用于显示。目录只看 `thread-writer-locks/` 里有锁文件的线程：锁被持有，并且 rollout 里最后开始的一轮还没有 `task_complete` 或 `turn_aborted`，才给会话加 `externalTurn: { status: "running", startedAt }`。只看最后开始的一轮，是因为分支和子代理线程的 rollout 开头带着父线程没有结束的轮次。锁未被持有，说明打开线程的客户端已经退出；锁文件比这一轮新，说明这一轮属于先前退出的客户端（Codex 释放时删除锁文件，新进程第一次取锁时清掉无人持有的旧文件）；rollout 超过 6 小时没有写入也不算运行。每条 rollout 第一次只读末尾 8 MiB，之后只读新增部分；末尾没有轮次事件时，用新版 Codex 自己的 `thread_history_*.sqlite` 轮次记录补齐，读不到就不显示。AgentKib 自己的 runner 在场时不显示这个字段；live 状态在 `codex-owner-busy` 时带同一字段。它不改变 `continuation`、发送、分支和占用裁决。
+
 旧托管记录缺少执行 cwd 时，自动续接在持锁期间重新核实并保存原生工作目录，与登记工作区边界分开。续接后首条发送可接受迟到的纯用量更新及重复通知，不因观察版本变化误报“本次操作未执行”；身份、设置、目标或轮次发生真实变化时仍拒绝派发，即使字段随后恢复原值也不放行。普通控制继续使用原有 revision 校验。
 
 登记工作区仅作为授权边界。接管和分支的执行目录取 UUID 已核实的 rollout `session_meta.cwd`，经 canonical 路径确认仍在登记工作区内后，单独保存为托管记录的 `cwd`，用于 app-server、恢复、分支、下一轮与工作区写入策略的可写根。登记工作区为 `/` 或用户主目录时，也只允许经过核实的安全子目录；会话自身目录为文件系统根或用户主目录时按“仅可查看”处理。目录缺失、不是目录、无法核实或位于授权范围外时给出具体原因，不回退到登记工作区。旧台账没有 `cwd` 时重新核实原生头部，不能把旧 `workspace` 当成执行目录。原有 ID、HOME、锁、版本和策略回包校验继续生效。

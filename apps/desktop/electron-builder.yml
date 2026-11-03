@@ -26,6 +26,8 @@ extraResources:
     to: cursor-bridge
   - from: ../../LICENSE
     to: licenses/AgentKib-LICENSE
+  - from: ../../NOTICE
+    to: licenses/AgentKib-NOTICE
   - from: resources/quota/resources/licenses
     to: licenses/quota
   - from: ../web/dist

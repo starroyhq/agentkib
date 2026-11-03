@@ -88,6 +88,92 @@ afterEach(async () => {
 });
 
 describe("desktop account boundary", () => {
+  it("reads configured account relay usage without changing the private computer quota", async () => {
+    const usage = {
+      periodStart: 1,
+      periodEnd: 100,
+      limitBytes: 100_000_000_000,
+      usedBytes: 0,
+      remainingBytes: 100_000_000_000,
+      exhausted: false,
+      updatedAt: 10,
+    };
+    network.mockImplementation(async (url: URL) =>
+      Response.json(
+        url.pathname === "/v1/account/relay-usage"
+          ? usage
+          : url.pathname === "/v1/account"
+            ? profile
+            : tokens,
+      ),
+    );
+    await service.request({ operation: "login" });
+    await callback();
+    await vi.waitFor(async () => expect((await service.status()).relayUsage).toEqual(usage));
+    expect((await service.status()).account?.deviceLimit).toBe(3);
+    expect(JSON.stringify((await service.status()).relayUsage)).not.toContain(tokens.accessToken);
+  });
+  it("does not let a pre-logout usage response overwrite a newer login", async () => {
+    let finishOld!: (response: Response) => void;
+    const old = new Promise<Response>((resolve) => {
+      finishOld = resolve;
+    });
+    const fresh = {
+      periodStart: 1,
+      periodEnd: 100,
+      limitBytes: 5_000_000_000,
+      usedBytes: 1,
+      remainingBytes: 4_999_999_999,
+      exhausted: false,
+      updatedAt: 10,
+    };
+    let reads = 0;
+    network.mockImplementation(async (url: URL) =>
+      url.pathname === "/v1/account/relay-usage"
+        ? ++reads === 1
+          ? old
+          : Response.json(fresh)
+        : Response.json(url.pathname === "/v1/account" ? profile : tokens),
+    );
+    await service.request({ operation: "login" });
+    await callback();
+    await vi.waitFor(() => expect(reads).toBe(1));
+    await service.request({ operation: "logout" });
+    await service.request({ operation: "login" });
+    await callback();
+    await vi.waitFor(async () => expect((await service.status()).relayUsage).toEqual(fresh));
+    finishOld(
+      Response.json({ ...fresh, limitBytes: 100_000_000_000, remainingBytes: 99_999_999_999 }),
+    );
+    await new Promise((resolve) => setImmediate(resolve));
+    expect((await service.status()).relayUsage).toEqual(fresh);
+  });
+  it("hides unsupported usage and reports failed reads without inventing an allowance", async () => {
+    network.mockImplementation(async (url: URL) =>
+      url.pathname === "/v1/account/relay-usage"
+        ? Response.json({}, { status: 404 })
+        : Response.json(url.pathname === "/v1/account" ? profile : tokens),
+    );
+    await service.request({ operation: "login" });
+    await callback();
+    await vi.waitFor(() =>
+      expect(
+        network.mock.calls.some(([url]) => (url as URL).pathname === "/v1/account/relay-usage"),
+      ).toBe(true),
+    );
+    expect((await service.status()).relayUsage).toBeUndefined();
+    expect((await service.status()).relayUsageUnavailable).toBeUndefined();
+    network.mockImplementation(async (url: URL) =>
+      url.pathname === "/v1/account/relay-usage"
+        ? Response.json({}, { status: 503 })
+        : Response.json(url.pathname === "/v1/account" ? profile : tokens),
+    );
+    (service as unknown as { usageReadAt: number }).usageReadAt = 0;
+    const status = await service.request({ operation: "status" });
+    expect(status.relayUsageUnavailable).toBe(true);
+    expect(status.relayUsage).toBeUndefined();
+    expect(status.phase).toBe("signed-in");
+  });
   it("uses a real loopback PKCE callback and only publishes safe profile data", async () => {
     expect((await service.request({ operation: "login" })).phase).toBe("signing-in");
     const params = new URLSearchParams(new URL(opened).hash.split("?")[1]);

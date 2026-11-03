@@ -1,5 +1,6 @@
 {
   "name": "@agentkib/desktop",
+  "license": "Apache-2.0",
   "private": true,
   "version": "0.25.0",
   "description": "Desktop app for discovering, diagnosing, and synchronizing coding agent configuration.",

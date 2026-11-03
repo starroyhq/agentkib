@@ -65,6 +65,6 @@ wrangler pages deploy apps/web/dist-hosted --project-name agentkib-remote --bran
 | 版本不兼容 | 安装兼容桌面版本并重新配对，不绕过协议检查 |
 | 控制禁用 | 检查独立权限、实验门槛、owner／轮次；不重试结果不明的请求 |
 
-禁用局域网服务终止连接；关闭网页不等于撤销。升级前按内置文档备份桌面数据，不上传到 Pages。发布保留对应 Git commit/tag 和 MIT 许可，不将开发构建冒充正式版本。
+禁用局域网服务终止连接；关闭网页不等于撤销。升级前按内置文档备份桌面数据，不上传到 Pages。发布保留对应 Git commit/tag 和 Apache-2.0 许可，不将开发构建冒充正式版本。
 
 交付分别记录静态构建、正式域名部署、真实 Chromium 跨设备读取／撤销、指定测试会话串行发送／审批。缺少 Cloudflare 授权或真实设备时列为阻塞，不以模拟测试替代。

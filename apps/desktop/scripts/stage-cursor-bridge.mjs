@@ -10,7 +10,9 @@ const manifest = JSON.parse(readFileSync(path.join(source, 'package.json'), 'utf
 const entries = [
  ['extension/package.json', readFileSync(path.join(source, 'package.json'))],
  ['extension/extension.cjs', readFileSync(path.join(source, 'extension.cjs'))],
- ['[Content_Types].xml', Buffer.from('<?xml version="1.0"?><Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="json" ContentType="application/json"/><Default Extension="cjs" ContentType="application/javascript"/><Default Extension="vsixmanifest" ContentType="text/xml"/></Types>')],
+ ['extension/LICENSE', readFileSync(path.resolve(root, '../../LICENSE'))],
+ ['extension/NOTICE', readFileSync(path.resolve(root, '../../NOTICE'))],
+ ['[Content_Types].xml', Buffer.from('<?xml version="1.0"?><Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="json" ContentType="application/json"/><Default Extension="cjs" ContentType="application/javascript"/><Default Extension="vsixmanifest" ContentType="text/xml"/><Override PartName="/extension/LICENSE" ContentType="text/plain"/><Override PartName="/extension/NOTICE" ContentType="text/plain"/></Types>')],
  ['extension.vsixmanifest', Buffer.from(`<?xml version="1.0"?><PackageManifest Version="2.0.0" xmlns="http://schemas.microsoft.com/developer/vsx-schema/2011"><Metadata><Identity Language="en-US" Id="cursor-bridge" Version="${manifest.version}" Publisher="agentkib"/><DisplayName>AgentKib Session Bridge</DisplayName><Description xml:space="preserve">Local Cursor IDE session interoperability</Description></Metadata><Installation><InstallationTarget Id="Microsoft.VisualStudio.Code"/></Installation><Dependencies/><Assets><Asset Type="Microsoft.VisualStudio.Code.Manifest" Path="extension/package.json" Addressable="true"/></Assets></PackageManifest>`)],
 ];
 const local = [], central = []; let offset = 0;

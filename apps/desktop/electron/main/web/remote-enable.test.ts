@@ -13,6 +13,9 @@ const { relays } = vi.hoisted(() => ({
     status: RelayStatus;
     start: ReturnType<typeof vi.fn>;
     stop: ReturnType<typeof vi.fn>;
+    accountLoginContext: { deviceId: string; accountId: string };
+    redeemAccountLogin: ReturnType<typeof vi.fn>;
+    verifyAccountLogins: ReturnType<typeof vi.fn>;
     report(status: RelayStatus): void;
   }[],
 }));
@@ -20,6 +23,16 @@ vi.mock("./relay/manager", async (importOriginal) => ({
   ...(await importOriginal<typeof import("./relay/manager")>()),
   RelayManager: class {
     status: RelayStatus = { phase: "disabled" };
+    accountLoginContext = { deviceId: "a".repeat(32), accountId: "owner" };
+    redeemAccountLogin = vi.fn(async () => ({
+      id: "b".repeat(36),
+      accountId: "owner",
+      sessionId: "c".repeat(36),
+      expiresAt: Date.now() + 86_400_000,
+    }));
+    verifyAccountLogins = vi.fn(async (ids: string[]) =>
+      ids.map((id) => ({ id, active: true, expiresAt: Date.now() + 86_400_000 })),
+    );
     constructor(readonly options: RelayOptions) {
       relays.push(this);
     }
@@ -55,6 +68,7 @@ async function pairBrowser() {
     "X-CSRF-Token": browser.csrfToken,
     "Content-Type": "application/json",
   };
+  await cloudLogin(headers, browser);
   const code = (await service.request({ operation: "generate-code" })).code!.value;
   const paired = await fetch(`http://127.0.0.1:${port}/api/web/v1/pair`, {
     method: "POST",
@@ -63,6 +77,23 @@ async function pairBrowser() {
   });
   expect((await paired.json()).status).toBe("approved");
   return headers;
+}
+async function cloudLogin(
+  headers: Record<string, string>,
+  browser: { accountLogin?: { required: boolean; challenge: string } },
+) {
+  if (!browser.accountLogin?.required) return;
+  const response = await fetch(`http://127.0.0.1:${port}/api/web/v1/account-binding`, {
+    method: "POST",
+    headers,
+    body: JSON.stringify({
+      code: "p".repeat(43),
+      codeVerifier: "v".repeat(43),
+      hostChallenge: browser.accountLogin.challenge,
+      redemptionId: "r".repeat(43),
+    }),
+  });
+  expect(await response.json()).toEqual({ bound: true });
 }
 function pauseNextSave() {
   const internal = service as unknown as {
@@ -324,6 +355,7 @@ describe("remote enable orchestration", () => {
       "X-CSRF-Token": browser.csrfToken,
       "Content-Type": "application/json",
     };
+    await cloudLogin(headers, browser);
     const code = (await service.request({ operation: "generate-code" })).code!.value;
     const paired = await fetch(`http://127.0.0.1:${port}/api/web/v1/pair`, {
       method: "POST",

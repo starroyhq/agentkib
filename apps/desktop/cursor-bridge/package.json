@@ -3,6 +3,7 @@
   "displayName": "AgentKib Session Bridge",
   "publisher": "agentkib",
   "version": "0.1.0",
+  "license": "Apache-2.0",
   "engines": {"vscode": "^1.100.0"},
   "main": "./extension.cjs",
   "activationEvents": ["onStartupFinished", "onCommand:agentkib.connect"],

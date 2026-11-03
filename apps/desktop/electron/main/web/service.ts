@@ -447,6 +447,7 @@ function snapshotField(snapshot: unknown, key: string): unknown {
     ? (snapshot as Record<string, unknown>)[key]
     : undefined;
 }
+const isCodexMode = (mode: unknown) => mode === "codex-managed" || mode === "codex-follower";
 /** 小于这个大小的回复不压缩，省下的字节抵不过压缩本身。 */
 const COMPRESSED_REPLY_MIN_BYTES = 16 * 1024;
 /** 客户端是否接受 gzip；显式的 `gzip;q=0` 视为拒绝。 */
@@ -870,11 +871,14 @@ export class WebAccessService {
     reserved = false,
   ) {
     const executionMode = snapshotField(snapshot, "executionMode");
-    if (["codex-managed", "claude-managed", "claude-follower"].includes(String(executionMode))) {
+    if (
+      isCodexMode(executionMode) ||
+      ["claude-managed", "claude-follower"].includes(String(executionMode))
+    ) {
       const workspaceId = snapshotField(snapshot, "workspaceId");
       if (
         typeof workspaceId !== "string" ||
-        !(this.options.mode === "lan" && executionMode === "codex-managed" && sessionId
+        !(this.options.mode === "lan" && isCodexMode(executionMode) && sessionId
           ? await this.lanCodexScopeAllowed(sessionId, workspaceId, reserved)
           : await this.workspaceAllowed(workspaceId, device, reserved))
       )
@@ -888,12 +892,11 @@ export class WebAccessService {
     device?: WebDevice,
   ) {
     const executionMode = snapshotField(snapshot, "executionMode");
-    if (executionMode === "codex-follower") return false;
     return (
       this.controlsEnabled(sessionId, device) &&
       (!!this.options.acceptanceSessionId ||
         this.options.verifiedExperimental === true ||
-        (this.options.verifiedCodex === true && executionMode === "codex-managed") ||
+        (this.options.verifiedCodex === true && isCodexMode(executionMode)) ||
         (this.options.verifiedClaudeManaged === true &&
           (executionMode === "managed-resume" ||
             executionMode === "claude-managed" ||
@@ -2916,7 +2919,7 @@ export class WebAccessService {
           ["context", "resources", "settings-state", "usage", "goal"].includes(operation) ||
           operation.startsWith("goal-");
         const allowed =
-          data.executionMode === "codex-managed" &&
+          isCodexMode(data.executionMode) &&
           (operation === "usage" || this.controlsEnabled(sessionId, device)) &&
           device[this.codexPermission(operation)] === true &&
           (!fullOnly || this.isFullAccess(device)) &&
@@ -3071,8 +3074,9 @@ export class WebAccessService {
         capabilities.executionMode === "claude-follower" &&
         ["steer", "queue-add", "queue-delete"].includes(operation);
       const claude = generic && capabilities.executionMode === "claude-managed";
+      const followerFork = capabilities.executionMode === "codex-follower" && operation === "fork";
       if (
-        (capabilities.executionMode !== "codex-managed" && !claude && !terminal) ||
+        (capabilities.executionMode !== "codex-managed" && !claude && !terminal && !followerFork) ||
         capabilities.features?.[operation]?.available !== true
       )
         throw new HttpError(
@@ -4008,7 +4012,7 @@ export class WebAccessService {
       };
       snapshot = {
         ...state,
-        ...(this.options.mode === "lan" && state.executionMode === "codex-managed" && !device.send
+        ...(this.options.mode === "lan" && isCodexMode(state.executionMode) && !device.send
           ? { sendEnabled: false, stopEnabled: false }
           : {}),
         approvals: state.approvals?.map((approval) => ({
@@ -4928,7 +4932,7 @@ export class WebAccessService {
         if (historyScopeKey) await this.assertHistoryScope(hash, historyScopeKey, true);
         if (
           lan &&
-          snapshotField(snapshot, "executionMode") === "codex-managed" &&
+          isCodexMode(snapshotField(snapshot, "executionMode")) &&
           !(await this.lanCodexScopeAllowed(
             sessionId,
             String(snapshotField(snapshot, "workspaceId")),
@@ -4990,7 +4994,7 @@ export class WebAccessService {
         if (boot !== this.bootId) throw new HttpError(409, "stale_boot");
         if (
           lan &&
-          snapshotField(snapshot, "executionMode") === "codex-managed" &&
+          isCodexMode(snapshotField(snapshot, "executionMode")) &&
           !(await this.lanCodexScopeAllowed(
             sessionId,
             String(snapshotField(snapshot, "workspaceId")),
@@ -5124,7 +5128,7 @@ export class WebAccessService {
         const workspace = catalog.sessions.find((item) => item.id === sessionId)?.workspace_id;
         const workspaceAllowed =
           !!workspace &&
-          (this.options.mode === "lan" && snapshotField(result, "executionMode") === "codex-managed"
+          (this.options.mode === "lan" && isCodexMode(snapshotField(result, "executionMode"))
             ? await this.lanCodexScopeAllowed(sessionId, workspace)
             : await this.workspaceAllowed(workspace, device));
         return this.json(
@@ -5245,9 +5249,7 @@ export class WebAccessService {
         // Receipt recovery enforces the same workspace boundary as managed controls.
         if (
           result.workspaceId &&
-          !(this.options.mode === "lan" &&
-          result.executionMode === "codex-managed" &&
-          result.sessionId
+          !(this.options.mode === "lan" && isCodexMode(result.executionMode) && result.sessionId
             ? await this.lanCodexScopeAllowed(result.sessionId, result.workspaceId)
             : await this.workspaceAllowed(result.workspaceId, device))
         )
@@ -5363,6 +5365,79 @@ export class WebAccessService {
       path === "/diff"
     )
       return this.files(res, hash, path, url);
+    if (path === "/subagents" || path === "/subagent/events") {
+      const parentId = this.field(url.searchParams.get("sessionId"));
+      const boot = this.bootId;
+      const device = this.grant(hash);
+      // Children are accessible only through a visible, authorized parent.
+      // This does not make auxiliary records normal, controllable sessions.
+      const parentScope = async () => {
+        const catalog = (await this.scopeCatalog()) as {
+          sessions?: {
+            id: string;
+            agent: string;
+            workspace_id: string;
+            origin?: string;
+            sidechain?: boolean;
+          }[];
+        };
+        const parent = catalog.sessions?.find(
+          (entry) =>
+            entry.id === parentId &&
+            ["codex", "claude-code"].includes(entry.agent) &&
+            !["auxiliary", "execution"].includes(entry.origin ?? "") &&
+            entry.sidechain !== true,
+        );
+        if (!parent || !(await this.workspaceAllowed(parent.workspace_id, this.grant(hash))))
+          throw new HttpError(403, "workspace_not_authorized");
+        return `${parent.agent}:${parent.workspace_id}`;
+      };
+      const scope = await parentScope();
+      const params: Record<string, unknown> = {
+        operation: path === "/subagents" ? "subagents" : "subagent-events",
+        sessionId: parentId,
+      };
+      if (path === "/subagent/events") {
+        const childId = this.field(url.searchParams.get("subagentId"));
+        if (!/^[a-f0-9]{64}$/.test(childId)) throw new HttpError(400, "invalid_subagent_id");
+        params.subagentId = childId;
+        const limit = Number(url.searchParams.get("limit") || 50);
+        if (!Number.isInteger(limit) || limit < 1 || limit > 50)
+          throw new HttpError(400, "invalid_limit");
+        const cursor = url.searchParams.get("cursor");
+        if (cursor && cursor.length > 1024) throw new HttpError(400, "invalid_cursor");
+        params.limit = limit;
+        params.cursor = cursor;
+      }
+      if (this.grant(hash).id !== device.id) throw new HttpError(401, "access_ended");
+      let result: unknown;
+      try {
+        result = await this.runtime(params);
+      } catch (error) {
+        // Only these read errors are public; never expose native paths or arbitrary
+        // runtime exception messages. A missing child does not disable the catalog.
+        const errors: Record<string, [number, string]> = {
+          "invalid-request": [400, "invalid_input"],
+          TRANSCRIPT_CURSOR_INVALID: [400, "invalid_cursor"],
+          TRANSCRIPT_CURSOR_STALE: [409, "stale_cursor"],
+          "subagent-unavailable": [404, "subagent_unavailable"],
+        };
+        const mapped =
+          error instanceof Error && Object.hasOwn(errors, error.message)
+            ? errors[error.message]
+            : undefined;
+        if (mapped && (path === "/subagent/events" || mapped[0] !== 404))
+          throw new HttpError(...mapped);
+        throw error;
+      }
+      if (this.grant(hash).id !== device.id) throw new HttpError(401, "access_ended");
+      if (scope !== (await parentScope())) throw new HttpError(403, "access_changed");
+      // parentScope may await both catalog and workspace registration. Revocation
+      // during either wait must still close this final response window.
+      if (this.grant(hash).id !== device.id) throw new HttpError(401, "access_ended");
+      if (boot !== this.bootId) throw new HttpError(409, "stale_boot");
+      return this.json(res, 200, result);
+    }
     const sessionId =
       path === "/catalog" || (path === "/stream" && !url.searchParams.has("sessionId"))
         ? undefined
@@ -5490,13 +5565,12 @@ export class WebAccessService {
         if ("workspaceId" in patch) controlContext.workspaceId = patch.workspaceId;
         let enabled =
           this.controlsEnabledForProvider(sessionId, controlContext, device) &&
-          (!["codex-managed", "claude-managed", "claude-follower"].includes(
-            String(controlContext.executionMode),
-          ) ||
+          ((!isCodexMode(controlContext.executionMode) &&
+            !["claude-managed", "claude-follower"].includes(
+              String(controlContext.executionMode),
+            )) ||
             (typeof controlContext.workspaceId === "string" &&
-              (this.options.mode === "lan" &&
-              controlContext.executionMode === "codex-managed" &&
-              sessionId
+              (this.options.mode === "lan" && isCodexMode(controlContext.executionMode) && sessionId
                 ? await this.lanCodexScopeAllowed(sessionId, controlContext.workspaceId, true)
                 : this.isFullAccess(device)
                   ? controlContext.workspaceId === streamWorkspaceId

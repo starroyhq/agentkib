@@ -113,6 +113,30 @@ describe("handoff-aware session presentation", () => {
       tone: "muted",
     });
   });
+  it("labels a followed Codex session as connected without a starting hint", () => {
+    const state = codexFixture();
+    Object.assign(state.live!, {
+      executionMode: "codex-follower",
+      executionLocation: "external",
+      ownershipReason: null,
+      reason: undefined,
+      sendEnabled: true,
+    });
+    expect(sessionDisplayState(state)).toMatchObject({
+      label: "Running in Codex · Connected",
+      reason: "",
+      tone: "muted",
+      continuation: "codex",
+    });
+    state.pendingSend = {
+      sessionId: "session",
+      text: "draft",
+    } as SessionController["pendingSend"];
+    expect(sessionDisplayState(state)).toMatchObject({
+      label: "Running in Codex · Connected",
+      continuation: "codex",
+    });
+  });
   it("returns a retired Codex session to idle without asking for resume confirmation", () => {
     const state = codexFixture();
     state.live!.status = "released";

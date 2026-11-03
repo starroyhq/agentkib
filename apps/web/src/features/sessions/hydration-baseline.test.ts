@@ -269,6 +269,8 @@ describe("Codex hydration baselines", () => {
       scrollHeight: { value: 1200, configurable: true },
       clientHeight: { value: 300, configurable: true },
     });
+    viewport.scrollTop = viewport.scrollHeight - viewport.clientHeight;
+    fireEvent.wheel(viewport, { deltaY: -800 });
     viewport.scrollTop = 100;
     fireEvent.scroll(viewport);
     const event = baseline([message("older"), message("newer", "turn", "partial completed")]);

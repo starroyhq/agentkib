@@ -168,6 +168,23 @@ it.each(["zh-CN", "zh-TW", "en-US", "ja-JP"] as const)(
         },
       }),
     ).toMatchObject({ continuation: "busy", label: copy.busy("Codex"), tone: "muted" });
+    const follower = {
+      ...codex,
+      live: {
+        ...codex.live!,
+        executionMode: "codex-follower",
+        executionLocation: "external",
+      },
+    } as SessionController;
+    expect(sessionDisplayState(follower)).toMatchObject({
+      continuation: "codex",
+      label: copy.codexConnected,
+      reason: "",
+      tone: "muted",
+    });
+    expect(
+      sessionDisplayState({ ...follower, pendingSend: { sessionId: "codex", text: "draft" } }),
+    ).toMatchObject({ continuation: "codex", label: copy.codexConnected });
     expect(
       sessionDisplayState({
         ...codex,

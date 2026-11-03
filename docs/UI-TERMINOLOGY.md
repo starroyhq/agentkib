@@ -144,6 +144,7 @@ D10、D11 的同 Agent 续接以“能否继续、在哪里运行”为准。用
 | 发送后后台启动中的过渡状态 | 正在启动… | 正在啟動… | 起動中… | Starting… |
 | AgentKib 后台进程正在运行 | 在 AgentKib 中运行 | 在 AgentKib 中執行 | AgentKib で実行中 | Running in AgentKib |
 | Claude Code 终端已连接 | 在终端中运行 · 已连接 | 在終端中執行 · 已連線 | ターミナルで実行中 · 接続済み | Running in terminal · Connected |
+| 跟随 Codex 桌面端 | 在 Codex 中运行 · 已连接 | 在 Codex 中執行 · 已連線 | Codex で実行中 · 接続済み | Running in Codex · Connected |
 | 已连接终端的列表徽标 | 终端 | 終端 | ターミナル | Terminal |
 | 列表里有审批或提问在等 | 等待你 | 等待你 | 対応待ち | Needs you |
 | 连接的终端正在跑一轮 | 在终端中运行 | 在終端中執行 | ターミナルで実行中 | Running in terminal |
@@ -164,9 +165,9 @@ D10、D11 的同 Agent 续接以“能否继续、在哪里运行”为准。用
 
 “会话”指实体，正文可称消息、内容或历史；用户输入、引用原文与文件正文不做术语替换。繁体界面使用“對話”，日文沿用“会話”，按地区自然表达保持各语言内部一致。英文实体统一为 `Session`，协议名与第三方产品的正式名称保持原样。
 
-空闲时不显示额外状态徽标。等待你用琥珀色；启动中、运行中、已连接终端、外部占用、仅可查看使用中性色或主色；首页、侧栏和详情沿用同一概念。首页和侧栏只显示主机已经报告、不必检查其他客户端的状态，和手机一致：等待你（琥珀色圆点）；一轮正在运行（转动的圆环，悬停写出在 AgentKib、终端还是 Codex 应用里运行）；终端（连接终端里空闲的 Claude Code）；仅可查看。AgentKib 的后台进程空闲驻留、只在别处打开、结果待核对和已归档的会话不显示；“正在 {agent} 中使用”在打开会话后显示。分组标题在会话数前标出在等和运行中的数量，收起时仍显示。侧栏用圆点时，悬停及无障碍标签写出对应状态；仅可查看不增加运行圆点。同一个原因在一屏只说明一次。客户端版本、会话 ID、来源文件放在“会话操作 → 会话详情”，输入区不堆放这些技术信息。
+空闲时不显示额外状态徽标。等待你用琥珀色；启动中、运行中、已连接终端、跟随 Codex 桌面端、外部占用、仅可查看使用中性色或主色；首页、侧栏和详情沿用同一概念。首页和侧栏只显示主机已经报告、不必检查其他客户端的状态，和手机一致：等待你（琥珀色圆点）；一轮正在运行（转动的圆环，悬停写出在 AgentKib、终端还是 Codex 应用里运行）；终端（连接终端里空闲的 Claude Code）；仅可查看。AgentKib 的后台进程空闲驻留、只在别处打开、结果待核对和已归档的会话不显示；“正在 {agent} 中使用”在打开会话后显示。分组标题在会话数前标出在等和运行中的数量，收起时仍显示。侧栏用圆点时，悬停及无障碍标签写出对应状态；仅可查看不增加运行圆点。同一个原因在一屏只说明一次。客户端版本、会话 ID、来源文件放在“会话操作 → 会话详情”，输入区不堆放这些技术信息。
 
-外部占用时才显示选择条，`{agent}` 使用实际产品名（Claude Code、Codex）。主要操作创建分支，原会话不受影响；返回该 Agent 的操作保持当前草稿，只说明在哪里继续，不提供续接命令，因为会话已经在那边打开。有文字、附件或引用草稿时，选择条及返回说明显示“草稿已保留，回到这里后会恢复。”，没有草稿时不显示。选择条定期检查占用，发送仍以执行电脑的权威检查为准。只读时给出具体原因；校验中、未知操作结果、连接异常、缺少权限分别解释，不能统一当作平台或版本不支持，也不能承诺自动重发。
+外部占用时才显示选择条，`{agent}` 使用实际产品名（Claude Code、Codex）；Codex 会话能跟随桌面端时直接显示输入框，不显示选择条。主要操作创建分支，原会话不受影响；返回该 Agent 的操作保持当前草稿，只说明在哪里继续，不提供续接命令，因为会话已经在那边打开。有文字、附件或引用草稿时，选择条及返回说明显示“草稿已保留，回到这里后会恢复。”，没有草稿时不显示。选择条定期检查占用，发送仍以执行电脑的权威检查为准。只读时给出具体原因；校验中、未知操作结果、连接异常、缺少权限分别解释，不能统一当作平台或版本不支持，也不能承诺自动重发。
 
 | 提示用途 | 简体中文 | 繁體中文 | 日本語 | English |
 | --- | --- | --- | --- | --- |
@@ -174,6 +175,9 @@ D10、D11 的同 Agent 续接以“能否继续、在哪里运行”为准。用
 | 分支说明 | 原会话不受影响，新会话会标“分支自 {title}” | 原對話不受影響，新對話會標「分支自 {title}」 | 元の会話には影響しません。新しい会話には「{title} から分岐」と表示されます。 | The original session stays as is. The new one is marked "Forked from {title}". |
 | 返回该 Agent 之后 | 这条会话在 AgentKib 中只读，{agent} 那边关闭后会自动恢复 | 這段對話在 AgentKib 中為唯讀，{agent} 那邊關閉後會自動恢復 | この会話は AgentKib では閲覧のみです。{agent} 側で閉じると、ここで続けられるようになります。 | This session is view only in AgentKib. You can continue here once it's closed in {agent}. |
 | 已连接终端但不能从这里发送 | 在终端中继续这条会话，这里会同步显示 | 在終端中繼續這段對話，這裡會同步顯示 | この会話はターミナルで続けてください。ここにも同期して表示されます。 | Continue this session in the terminal. It stays in sync here. |
+| 跟随 Codex 桌面端时的输入区说明 | 消息会交给 Codex 执行，模型和权限沿用 Codex 中的设置 | 訊息會交給 Codex 執行，模型和權限沿用 Codex 中的設定 | メッセージは Codex で実行され、モデルと権限は Codex 側の設定に従います | Messages run in Codex, using the model and permissions set there |
+| 跟随时只能在 Codex 处理的请求 | 这项请求请在 Codex 中处理 | 這項請求請在 Codex 中處理 | このリクエストは Codex で対応してください | Handle this request in Codex |
+| 跟随时不开放的操作 | 这项操作请在 Codex 中完成。 | 這項操作請在 Codex 中完成。 | この操作は Codex で行ってください。 | Use Codex for this action. |
 | Codex 完全退出说明 | 只关掉 Codex 的窗口可能不够，完全退出应用后才能在这里继续 | 只關閉 Codex 的視窗可能不夠，完全結束應用程式後才能在這裡繼續 | Codex のウィンドウを閉じるだけでは不十分な場合があります。ここで続けるには、アプリを完全に終了してください。 | Closing the Codex window may not be enough. Quit the app completely to continue here. |
 | Claude Code 后台自动结束 | 后台进程已结束，下次发送时会自动继续 | 背景程序已結束，下次傳送訊息時會自動繼續 | バックグラウンドプロセスを終了しました。次のメッセージ送信時に自動で続行します。 | The background process ended. It will resume automatically when you send your next message. |
 | Claude Code 中途外部打开 | 你在 Claude Code 里打开了这条会话，AgentKib 已停止，避免两边同时写入 | 你在 Claude Code 裡開啟了這段對話，AgentKib 已停止，避免兩邊同時寫入 | Claude Code でこの会話が開かれたため、同時に書き込まれないよう AgentKib を停止しました。 | You opened this session in Claude Code. AgentKib stopped to avoid both sides writing at once. |

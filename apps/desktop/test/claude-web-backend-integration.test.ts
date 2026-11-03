@@ -3,6 +3,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { randomUUID } from "node:crypto";
 import { createServer, request } from "node:http";
 import {
+  appendFileSync,
   existsSync,
   linkSync,
   mkdirSync,
@@ -431,6 +432,59 @@ describe.skipIf(process.platform !== "darwin")(
         vi.restoreAllMocks();
         if (directory) rmSync(directory, { recursive: true, force: true });
       }
+    });
+
+    it("reads a child transcript through its authorized parent without listing auxiliary conversations", async () => {
+      const sessionId = await create();
+      expect((await send(sessionId, "Create the isolated parent transcript")).status).toBe(200);
+      await idle(sessionId);
+      const state = await live(sessionId);
+      const nativeId = state.sourceSessionId as string;
+      const project = join(environment.CLAUDE_CONFIG_DIR!, "projects", workspace.replace(/[^a-zA-Z0-9]/g, "-"));
+      const parentFile = join(project, `${nativeId}.jsonl`);
+      const childDirectory = join(project, nativeId, "subagents");
+      mkdirSync(childDirectory, { recursive: true });
+      const childId = "offline-reviewer";
+      const stamp = new Date().toISOString();
+      const row = (value: Record<string, unknown>) => JSON.stringify({
+        sessionId: nativeId, cwd: workspace, timestamp: stamp, ...value,
+      }) + "\n";
+      appendFileSync(parentFile,
+        row({ type: "assistant", uuid: randomUUID(), message: { role: "assistant", content: [
+          { type: "tool_use", id: "spawn-offline", name: "Agent", input: { description: "Offline child review" } },
+        ] } }) +
+        row({ type: "user", uuid: randomUUID(), message: { role: "user", content: [
+          { type: "tool_result", tool_use_id: "spawn-offline", content: "done" },
+        ] }, toolUseResult: { agentId: childId, status: "completed" } }),
+      );
+      writeFileSync(join(childDirectory, `agent-${childId}.jsonl`),
+        row({ type: "user", uuid: randomUUID(), isSidechain: true, agentId: childId,
+          message: { role: "user", content: "Synthetic delegated task" } }) +
+        row({ type: "assistant", uuid: randomUUID(), isSidechain: true, agentId: childId,
+          message: { role: "assistant", content: [{ type: "text", text: "Synthetic delegated result" }] } }),
+      );
+      const listing = await http(`/subagents?sessionId=${sessionId}`);
+      expect(listing.status, JSON.stringify(listing.body)).toBe(200);
+      expect(listing.body).toMatchObject({ version: 1, sessionId, agents: [
+        { name: "Offline child review", agent: "claude-code", status: "completed", readable: true },
+      ] });
+      const opaque = listing.body.agents[0].id as string;
+      expect(opaque).toMatch(/^[a-f0-9]{64}$/);
+      expect(JSON.stringify(listing.body)).not.toContain(childDirectory);
+      expect(JSON.stringify(listing.body)).not.toContain(childId);
+      const history = await http(`/subagent/events?sessionId=${sessionId}&subagentId=${opaque}`);
+      expect(history.status, JSON.stringify(history.body)).toBe(200);
+      expect(history.body).toMatchObject({ version: 1, sessionId, subagentId: opaque, epoch: expect.any(String) });
+      expect(history.body.events.map((item: { content: string }) => item.content))
+        .toEqual(["Synthetic delegated task", "Synthetic delegated result"]);
+      const other = await create();
+      expect((await http(`/subagent/events?sessionId=${other}&subagentId=${opaque}`)).status).not.toBe(200);
+      const catalog = await http("/catalog");
+      expect(catalog.status).toBe(200);
+      expect(catalog.body.sessions.some((item: { id: string }) => item.id === opaque)).toBe(false);
+      expect(catalog.body.sessions.some((item: { origin: string }) => item.origin === "auxiliary")).toBe(false);
+      // Reading the child never resumes it or dispatches additional model input.
+      expect(frames().filter((frame) => frame.type === "user")).toHaveLength(1);
     });
 
     it("persists the original send rejection and releases the host fence when ownership races its live preflight", async () => {

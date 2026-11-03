@@ -283,6 +283,7 @@ export class RuntimeRouter extends EventEmitter implements RuntimeHost {
         "diff",
         "catalog",
         "events",
+        "session-image",
         "context",
         "resume-command",
         "usage",

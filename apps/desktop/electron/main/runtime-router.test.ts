@@ -126,6 +126,18 @@ describe("RuntimeRouter Skill ownership", () => {
 });
 
 describe("RuntimeRouter read-only Codex continuation", () => {
+  it("forwards session-image reads through the real host router without invoking controls", async () => {
+    const host = new Host();
+    const router = new RuntimeRouter(host);
+    await router.start();
+    const params = { operation: "session-image", sessionId: "session", imageId: "opaque-image" };
+    const result = { mimeType: "image/png", base64: "aW1hZ2U=" };
+    const received = vi.fn(() => result);
+    host.handler = received;
+    expect(await router.request(RUNTIME_METHODS.webRequest, params)).toBe(result);
+    expect(received).toHaveBeenCalledExactlyOnceWith(RUNTIME_METHODS.webRequest, params);
+    await router.stop();
+  });
   it.each(["read-state", "read-state-update"])(
     "forwards %s independently of business controls",
     async (operation) => {

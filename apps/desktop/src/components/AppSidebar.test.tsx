@@ -333,13 +333,14 @@ describe("AppSidebar v8 navigation", () => {
     expect(screen.getByText(tr("sidebar.noWorkspaces"))).toBeTruthy();
   });
 
-  it("opens global search beside the non-clickable brand", async () => {
+  it("merges the home action into the brand and keeps global search available", async () => {
     const onOpenSearch = vi.fn();
+    const onNavigate = vi.fn();
     const { container } = render(
       <AppSidebar
         active="home"
         entries={createGlobalNavigation(0)}
-        onNavigate={() => undefined}
+        onNavigate={onNavigate}
         onSettings={() => undefined}
         onOpenSearch={onOpenSearch}
         collapsed={false}
@@ -348,7 +349,14 @@ describe("AppSidebar v8 navigation", () => {
     const header = container.querySelector(".app-activity-bar")!;
     const search = within(header as HTMLElement).getByRole("button", { name: tr("search.open") });
     expect(search.getAttribute("aria-keyshortcuts")).toBe("Control+K");
-    expect(header.querySelector(".activity-bar-brand")?.closest("button, a")).toBeNull();
+    const home = within(header as HTMLElement).getByRole("button", { name: tr("nav.home") });
+    expect(header.querySelector(".activity-bar-brand")).toBe(home);
+    expect(home.querySelector("img")).toBeTruthy();
+    expect(home.getAttribute("aria-current")).toBe("page");
+    expect(home.getAttribute("aria-keyshortcuts")).toBe("Control+1");
+    expect(screen.getAllByRole("button", { name: tr("nav.home") })).toHaveLength(1);
+    await userEvent.setup().click(home);
+    expect(onNavigate).toHaveBeenCalledWith("home");
     await userEvent.setup().click(search);
     expect(onOpenSearch).toHaveBeenCalledOnce();
   });
@@ -376,7 +384,7 @@ describe("AppSidebar v8 navigation", () => {
     expect(useAppStore.getState().sidebarCollapsed).toBe(true);
   });
 
-  it("keeps six activity destinations with sessions after workspaces and preserves the tool navigation", async () => {
+  it("keeps quota in the footer in place of refresh and preserves navigation", async () => {
     const user = userEvent.setup();
     const onNavigate = vi.fn();
     const { container, rerender } = render(
@@ -396,11 +404,9 @@ describe("AppSidebar v8 navigation", () => {
       .getAllByRole("button")
       .map((button) => button.getAttribute("aria-label"));
     expect(names).toEqual([
-      tr("nav.home"),
       tr("nav.workspaces"),
       tr("sessions.nav"),
       tr("nav.catalog"),
-      tr("nav.quota"),
       tr("nav.insights"),
     ]);
     expect(
@@ -413,7 +419,13 @@ describe("AppSidebar v8 navigation", () => {
     );
     expect(within(sidebar as HTMLElement).getByText("Example session")).toBeTruthy();
     expect(screen.getByRole("button", { name: tr("nav.catalog") })).toBeTruthy();
-    expect(screen.getByRole("button", { name: tr("nav.quota") })).toBeTruthy();
+    const footer = sidebar.querySelector(".activity-bar-footer")!;
+    const quota = within(footer as HTMLElement).getByRole("button", { name: tr("nav.quota") });
+    expect(footer.querySelector("button")).toBe(quota);
+    expect(screen.getAllByRole("button", { name: tr("nav.quota") })).toHaveLength(1);
+    expect(screen.queryByRole("button", { name: tr("menu.refreshCurrent") })).toBeNull();
+    await user.click(quota);
+    expect(onNavigate).toHaveBeenCalledWith("quota");
     expect(screen.getByRole("button", { name: tr("nav.insights") })).toBeTruthy();
     await user.click(sessions);
     expect(onNavigate).toHaveBeenCalledWith("sessions");

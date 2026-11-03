@@ -181,7 +181,7 @@ function EmbeddedShell() {
     if (!request.pending || (session.selected || undefined) !== props.sessionId) return;
     request.pending = undefined;
     requestReadStateRefresh("desktop-local", props.sessionId);
-    void session.refresh(true);
+    void session.refresh(true, true);
   }, [props.refreshRevision, props.sessionId, session.selected, session.refresh]);
   useEffect(() => {
     session.setLocale(props.locale);

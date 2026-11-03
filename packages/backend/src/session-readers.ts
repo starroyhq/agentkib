@@ -489,7 +489,12 @@ export class SessionReaders {
         (candidate) => this.store.id(agent, candidate.session.native_ref) === id,
       );
       if (!source) throw new Error("Conversation transcript is no longer available");
-      return { summary, native: source.session, workspace, transcript: source.transcript };
+      return {
+        summary,
+        native: { ...source.session, cwd: source.cwd },
+        workspace,
+        transcript: source.transcript,
+      };
     }
     const listing = await this.list(agent as SessionAgent, workspace);
     const native = listing.sessions.find(
@@ -519,6 +524,105 @@ export class SessionReaders {
       retainCursor !== false,
     );
   }
+  async image(sessionId: string, imageId: string) {
+    try {
+      return await this.#image(sessionId, imageId);
+    } catch (error) {
+      if (error instanceof Error && error.message.startsWith("session-image-")) throw error;
+      throw new Error("session-image-unavailable");
+    }
+  }
+  async #image(sessionId: string, imageId: string) {
+    if (this.store.get(sessionId)?.agent === "claude-code") {
+      const source = this.verifiedClaudeReadSource(sessionId);
+      const result = await this.#readImage(
+        source.native,
+        source.workspace,
+        imageId,
+        source.transcript,
+      );
+      const current = this.verifiedClaudeReadSource(sessionId);
+      if (
+        current.nativeId !== source.nativeId ||
+        current.workspaceId !== source.workspaceId ||
+        pathIdentity(current.workspace) !== pathIdentity(source.workspace)
+      )
+        throw new Error("session-image-unavailable");
+      return result;
+    }
+    const source = await this.resolve(sessionId);
+    const result = await this.#readImage(
+      source.native,
+      source.workspace,
+      imageId,
+      source.transcript,
+    );
+    const current = await this.resolve(sessionId);
+    if (
+      current.native.agent !== source.native.agent ||
+      current.native.native_ref !== source.native.native_ref ||
+      current.summary.workspace_id !== source.summary.workspace_id ||
+      pathIdentity(current.workspace) !== pathIdentity(source.workspace)
+    )
+      throw new Error("session-image-unavailable");
+    return result;
+  }
+  async imageForNative(
+    agent: SessionAgent,
+    nativeRef: string,
+    workspace: string,
+    imageId: string,
+    options?: { codexDirectory: string },
+  ) {
+    if (!nativeRef || nativeRef.length > 4096) throw new Error("invalid-request");
+    if (options) {
+      if (agent !== "codex") throw new Error("invalid-request");
+      const cwd = canonicalize(options.codexDirectory);
+      if (!lstatSync(cwd).isDirectory() || !within(cwd, canonicalize(workspace)))
+        throw new Error("session-workspace-mismatch");
+      const verify = () => {
+        const identity = this.verifiedCodexControlDirectory(nativeRef);
+        if (
+          !identity ||
+          identity.id !== nativeRef.toLowerCase() ||
+          pathIdentity(canonicalize(identity.cwd)) !== pathIdentity(cwd)
+        )
+          throw new Error("unverified-session-identity");
+      };
+      verify();
+      const source = this.#codex
+        .list(null, { matches: (ref) => ref.toLowerCase() === nativeRef.toLowerCase() })
+        .sessions.find(
+          (candidate) =>
+            candidate.session.native_ref.toLowerCase() === nativeRef.toLowerCase() &&
+            candidate.session.origin !== "auxiliary",
+        );
+      if (!source) throw new Error("session-image-unavailable");
+      const result = await this.#readImage(source.session, workspace, imageId, source.transcript);
+      verify();
+      return result;
+    }
+    if (agent === "claude-code") {
+      const source = this.#verifiedClaudeControlSource(nativeRef, workspace);
+      const result = await this.#readImage(source.session, workspace, imageId, source.transcript);
+      this.#verifiedClaudeControlSource(nativeRef, workspace);
+      return result;
+    }
+    throw new Error("session-image-unavailable");
+  }
+  #imageScope(native: NativeSession, workspace: string) {
+    return JSON.stringify([
+      native.agent,
+      native.native_ref.toLowerCase(),
+      pathIdentity(recordedDirectory(workspace).path),
+    ]);
+  }
+  async #readImage(native: NativeSession, workspace: string, imageId: string, transcript?: string) {
+    if (!transcript || (native.agent !== "codex" && native.agent !== "claude-code"))
+      throw new Error("session-image-unavailable");
+    const file = native.agent === "codex" ? await codexRollouts.plain(transcript) : transcript;
+    return this.#paging.image(file, imageId, this.#imageScope(native, workspace));
+  }
   /** `retain` false keeps no cursor; see [SessionPaging.read]. */
   async eventsForNative(
     agent: SessionAgent,
@@ -526,7 +630,7 @@ export class SessionReaders {
     workspace: string,
     cursor: string | null,
     limit: number,
-    options?: { codexDirectory: string },
+    options?: { codexDirectory: string; imageScanBudget?: { remainingBytes: number } },
     retain = true,
   ): Promise<ConversationEventPage> {
     if (!nativeRef || nativeRef.length > 4096 || limit < 1 || limit > 100)
@@ -555,12 +659,13 @@ export class SessionReaders {
         );
       if (!source) throw new Error("session-unavailable");
       const page = await this.#readEvents(
-        source.session,
+        { ...source.session, cwd },
         workspace,
         cursor,
         limit,
         source.transcript,
         retain,
+        options.imageScanBudget,
       );
       verify();
       return page;
@@ -583,6 +688,7 @@ export class SessionReaders {
     count: number,
     transcript?: string,
     retain = true,
+    imageScanBudget?: { remainingBytes: number },
   ): Promise<ConversationEventPage> {
     const ref = native.native_ref,
       agent = native.agent;
@@ -598,8 +704,10 @@ export class SessionReaders {
             count,
             agent,
             // Collections pass an ID here; only an absolute root shortens paths.
-            { workspace },
+            { workspace, cwd: native.cwd ?? workspace },
             retain,
+            this.#imageScope(native, workspace),
+            imageScanBudget,
           );
         if (transcript) return page(transcript);
         const provider = agent === "codex" ? this.#codex : this.#claude;

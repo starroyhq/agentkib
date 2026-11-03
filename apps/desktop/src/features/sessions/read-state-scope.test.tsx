@@ -31,6 +31,7 @@ it("fences account/phase changes immediately and ignores a late initial identity
   });
   const view = renderHook(useDesktopReadScope);
   expect(view.result.current.ready).toBe(false);
+  expect(view.result.current.identityKey).toBeUndefined();
   const signedIn = (id: string): DesktopAccountStatus => ({
     phase: "signed-in",
     secureStorage: true,
@@ -47,10 +48,14 @@ it("fences account/phase changes immediately and ignores a late initial identity
   const current = view.result.current;
   expect(current.ready).toBe(true);
   expect(current.key).toContain("account-b");
+  expect(current.identityKey).toContain("account-b");
+  await act(async () => receive(signedIn("account-b")));
+  expect(view.result.current.identityKey).toBe(current.identityKey);
   await act(async () => finish(signedIn("old-account-a")));
   expect(view.result.current).toBe(current);
   await act(async () => receive({ phase: "signing-in", secureStorage: true }));
   expect(view.result.current.ready).toBe(false);
+  expect(view.result.current.identityKey).toBeUndefined();
   await act(async () => receive({ phase: "signed-out", secureStorage: true }));
   expect(view.result.current.ready).toBe(true);
   expect(view.result.current.key).not.toBe(current.key);

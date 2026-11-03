@@ -53,7 +53,6 @@ export function SessionDirectoryControls({
   const filtersActive = activeFilterCount > 0;
   return (
     <div className="session-directory-controls grid gap-3 px-1 pt-3 pb-2">
-      <DesktopHistorySearch />
       <div
         data-session-directory-toolbar
         className="flex min-h-9 items-center justify-between gap-2 px-1.5"
@@ -64,7 +63,7 @@ export function SessionDirectoryControls({
             {tr("sessions.directory")}
           </span>
         </div>
-        <div className="flex items-center gap-2">
+        <div className="flex shrink-0 items-center gap-0.5">
           <div
             data-session-directory-pending-slot
             className="flex size-9 shrink-0 items-center justify-center"
@@ -163,6 +162,7 @@ export function SessionDirectoryControls({
               </DropdownMenuItem>
             </DropdownMenuContent>
           </DropdownMenu>
+          <DesktopHistorySearch />
         </div>
       </div>
       {filtersActive && (

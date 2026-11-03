@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 
 import "@testing-library/jest-dom/vitest";
-import { act, cleanup, fireEvent, render, screen, within } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { initializeI18n, tr } from "@/core/i18n";
@@ -54,9 +54,14 @@ const metadata = {
 let hub: ReturnType<typeof useSessionHub>;
 
 function workspaceHeading(workspace: WorkspaceSummary) {
-  return screen.getByTitle(`${workspace.name}\n${workspace.path}`, {
-    normalizer: (value) => value,
-  });
+  const heading = screen
+    .getAllByRole("button")
+    .find(
+      (button) =>
+        button.getAttribute("aria-description") === `${workspace.name}\n${workspace.path}`,
+    );
+  expect(heading).toBeDefined();
+  return heading!;
 }
 
 function dragEntry(source: Element, target: Element, after = false) {
@@ -82,12 +87,18 @@ function dragEntry(source: Element, target: Element, after = false) {
 function orderedWorkspacePaths(container: HTMLElement) {
   return Array.from(
     container.querySelectorAll<HTMLElement>(".session-workspace-heading strong"),
-  ).map((heading) => heading.closest("button")?.getAttribute("title")?.split("\n")[1]);
+  ).map((heading) => heading.closest("button")?.getAttribute("aria-description")?.split("\n")[1]);
+}
+
+async function focusByKeyboard(user: ReturnType<typeof userEvent.setup>, element: Element) {
+  for (let step = 0; step < 10 && document.activeElement !== element; step++) await user.tab();
+  expect(element).toHaveFocus();
 }
 
 describe("SessionDirectory", () => {
   beforeAll(() => initializeI18n("en-US"));
   beforeEach(() => {
+    initializeI18n("en-US");
     vi.clearAllMocks();
     localStorage.removeItem("agentkib.session-directory-order");
     useSessionViewStore.setState({
@@ -114,6 +125,7 @@ describe("SessionDirectory", () => {
       loading: false,
       refreshing: false,
       ready: true,
+      usable: true,
       historyRevision: 0,
       conversationRefreshRevision: 0,
       runtimeReady: true,
@@ -332,15 +344,16 @@ describe("SessionDirectory", () => {
     expect(current).toHaveTextContent("codex icon");
     expect(current).not.toHaveTextContent("Codex ·");
     expect(current.querySelector("small")).toBeNull();
-    expect(current.getAttribute("title")).toContain("Codex ·");
-    expect(current.getAttribute("title")).toContain(workspaces[0].path);
+    expect(current.getAttribute("aria-description")).toContain("Codex ·");
+    expect(current.getAttribute("aria-description")).toContain(workspaces[0].path);
     const other = screen.getByRole("button", { name: /Inspect token layout/ });
     expect(other).not.toHaveAttribute("aria-current");
     fireEvent.click(other);
     expect(hub.select).toHaveBeenCalledWith(second.id);
   });
 
-  it("groups a repository's worktrees under its main checkout with an icon-only mark", () => {
+  it("keeps worktree details in the project hover card and an icon-only session mark", async () => {
+    const user = userEvent.setup();
     const checkout = {
       repository_group_id: "repo",
       kind: "primary" as const,
@@ -381,9 +394,8 @@ describe("SessionDirectory", () => {
     const { container } = render(<SessionDirectory />);
     const headings = container.querySelectorAll(".session-workspace-heading");
     expect(headings).toHaveLength(1);
-    expect(headings[0]).toHaveTextContent("atlas");
-    expect(headings[0]).toHaveTextContent(`· ${tr("workspace.worktrees", { count: 2 })}`);
-    expect(headings[0].getAttribute("title")).toContain("h1a\nh2");
+    expect(headings[0]).toHaveTextContent(/^atlas$/);
+    expect(headings[0].getAttribute("aria-description")).toContain("h1a\nh2");
     const present = tr("sessions.worktree.present", {
       name: "h1a",
       branch: "codex/h1a",
@@ -393,7 +405,7 @@ describe("SessionDirectory", () => {
     expect(mark).toHaveAttribute("title", present);
     expect(mark).not.toHaveTextContent("h1a");
     expect(screen.getByRole("button", { name: /Inspect token layout/ })).toHaveAttribute(
-      "title",
+      "aria-description",
       expect.stringContaining(present),
     );
     const deleted = screen.getByRole("img", {
@@ -414,6 +426,73 @@ describe("SessionDirectory", () => {
       "true",
     );
     expect(useSessionViewStore.getState().revealedSessionId).toBeUndefined();
+    await user.hover(container.querySelector(".session-workspace-heading")!);
+    const card = await screen.findByRole("tooltip");
+    expect(card).toHaveTextContent("/projects/atlas");
+    expect(card).toHaveTextContent(tr("workspace.worktrees", { count: 2 }));
+    expect(card).toHaveTextContent("h1a");
+    expect(card).toHaveTextContent("h2");
+  });
+
+  it.each(["zh-CN", "zh-TW", "en-US", "ja-JP"] as const)(
+    "shows only one aggregate status on a folded project, without inline counts, in %s",
+    (locale) => {
+      initializeI18n(locale);
+      const copy = sessionContinuationCopy(locale);
+      hub.sessions = [
+        {
+          ...first,
+          continuation: { status: "running", executionLocation: "agentkib" },
+        },
+        {
+          ...first,
+          id: "approval",
+          title: "Approval needed",
+          continuation: { status: "awaiting-approval", executionLocation: "agentkib" },
+        },
+        second,
+      ];
+      hub.selected = undefined;
+      render(<SessionDirectory />);
+      const heading = workspaceHeading(workspaces[0]);
+      const projectName = heading.querySelector("strong")!.textContent!;
+      const label = `${copy.groupWaiting(1)}, ${copy.groupRunning(1)}`;
+      expect(heading.textContent).toBe(projectName);
+      expect(within(heading).queryByTitle(label)).toBeNull();
+
+      fireEvent.click(heading);
+      expect(heading).toHaveAttribute("aria-expanded", "false");
+      expect(within(heading).getByTitle(label)).toHaveAttribute("aria-hidden", "true");
+      expect(heading).toHaveAccessibleName(expect.stringContaining(label));
+      expect(heading.querySelectorAll("i[title]")).toHaveLength(1);
+
+      fireEvent.click(heading);
+      expect(heading).toHaveAttribute("aria-expanded", "true");
+      expect(within(heading).queryByTitle(label)).toBeNull();
+      expect(heading.textContent).toBe(projectName);
+      const idleHeading = workspaceHeading(workspaces[1]);
+      const idleName = idleHeading.querySelector("strong")!.textContent!;
+      fireEvent.click(idleHeading);
+      expect(idleHeading).toHaveAttribute("aria-expanded", "false");
+      expect(idleHeading.textContent).toBe(idleName);
+      expect(idleHeading.querySelector("i[title]")).toBeNull();
+      initializeI18n("en-US");
+    },
+  );
+
+  it("opens a session details card from keyboard focus without selecting the session", async () => {
+    const user = userEvent.setup();
+    render(<SessionDirectory />);
+    const entry = screen.getByRole("button", { name: /Check sidebar selection/ });
+    await focusByKeyboard(user, entry);
+    await waitFor(() =>
+      expect(screen.getByRole("tooltip")).toHaveTextContent("Check sidebar selection"),
+    );
+    const card = screen.getByRole("tooltip");
+    expect(card).toHaveTextContent("Check sidebar selection");
+    expect(card).toHaveTextContent("Codex");
+    expect(card).toHaveTextContent(workspaces[0].path);
+    expect(hub.select).not.toHaveBeenCalled();
   });
 
   it("shows program-started sessions only after the directory option is turned on", async () => {
@@ -572,7 +651,9 @@ describe("SessionDirectory", () => {
     useSessionViewStore.setState({ scrollTop: 180 });
     const { container, unmount } = render(<SessionDirectory />);
     const tree = container.querySelector<HTMLDivElement>(".session-directory-tree")!;
+    const header = container.querySelector(".session-directory-header")!;
     expect(tree.scrollTop).toBe(180);
+    expect(header).toHaveAttribute("data-scrolled", "true");
     fireEvent.scroll(tree, { target: { scrollTop: 240 } });
     expect(useSessionViewStore.getState().scrollTop).toBe(240);
     unmount();
@@ -580,6 +661,109 @@ describe("SessionDirectory", () => {
     expect(
       remount.container.querySelector<HTMLDivElement>(".session-directory-tree")?.scrollTop,
     ).toBe(240);
+    expect(remount.container.querySelector(".session-directory-header")).toHaveAttribute(
+      "data-scrolled",
+      "true",
+    );
+  });
+
+  it("shows the header divider only while the directory is away from the top", () => {
+    const { container } = render(<SessionDirectory />);
+    const tree = container.querySelector<HTMLDivElement>(".session-directory-tree")!;
+    const header = container.querySelector(".session-directory-header")!;
+    expect(header).toHaveAttribute("data-scrolled", "false");
+    fireEvent.scroll(tree, { target: { scrollTop: 1 } });
+    expect(header).toHaveAttribute("data-scrolled", "true");
+    fireEvent.scroll(tree, { target: { scrollTop: 0 } });
+    expect(header).toHaveAttribute("data-scrolled", "false");
+    fireEvent.scroll(tree, { target: { scrollTop: -1 } });
+    expect(header).toHaveAttribute("data-scrolled", "false");
+  });
+
+  it("preserves the saved scroll position until the directory is ready", () => {
+    hub = { ...hub, ready: false, usable: false };
+    useSessionViewStore.setState({ scrollTop: 180 });
+    const { container, rerender } = render(<SessionDirectory />);
+    const tree = container.querySelector<HTMLDivElement>(".session-directory-tree")!;
+    const header = container.querySelector(".session-directory-header")!;
+    expect(tree.scrollTop).toBe(0);
+    expect(header).toHaveAttribute("data-scrolled", "false");
+    fireEvent.scroll(tree);
+    expect(useSessionViewStore.getState().scrollTop).toBe(180);
+    hub = { ...hub, ready: true, usable: true };
+    rerender(<SessionDirectory />);
+    expect(tree.scrollTop).toBe(180);
+    expect(header).toHaveAttribute("data-scrolled", "true");
+  });
+
+  it("restores cached scroll and expansion before the background scan completes", () => {
+    hub = { ...hub, ready: false, usable: true, refreshing: true, loading: false };
+    useSessionViewStore.setState({ scrollTop: 180, collapsed: { [workspaces[1].id]: true } });
+    const { container, rerender } = render(<SessionDirectory />);
+    const tree = container.querySelector<HTMLDivElement>(".session-directory-tree")!;
+    const firstRow = screen.getByRole("button", { name: first.title });
+    expect(tree.scrollTop).toBe(180);
+    expect(workspaceHeading(workspaces[1])).toHaveAttribute("aria-expanded", "false");
+    hub = { ...hub, ready: true, refreshing: false };
+    rerender(<SessionDirectory />);
+    expect(screen.getByRole("button", { name: first.title })).toBe(firstRow);
+    expect(tree.scrollTop).toBe(180);
+    expect(workspaceHeading(workspaces[1])).toHaveAttribute("aria-expanded", "false");
+  });
+
+  it("keeps a visible conversation anchored when new records arrive above it", () => {
+    let insertedHeight = 0;
+    let tree: HTMLDivElement;
+    const original = HTMLElement.prototype.getBoundingClientRect;
+    const geometry = vi
+      .spyOn(HTMLElement.prototype, "getBoundingClientRect")
+      .mockImplementation(function (this: HTMLElement) {
+        if (this.classList.contains("session-directory-tree"))
+          return {
+            top: 0,
+            bottom: 400,
+            left: 0,
+            right: 300,
+            width: 300,
+            height: 400,
+            x: 0,
+            y: 0,
+            toJSON() {},
+          };
+        if (this.dataset.directoryAnchor === `session:${first.id}`) {
+          const top = 20 + insertedHeight - ((tree?.scrollTop ?? 180) - 180);
+          return {
+            top,
+            bottom: top + 32,
+            left: 0,
+            right: 300,
+            width: 300,
+            height: 32,
+            x: 0,
+            y: top,
+            toJSON() {},
+          };
+        }
+        return original.call(this);
+      });
+    useSessionViewStore.setState({ scrollTop: 180 });
+    const { container, rerender } = render(<SessionDirectory />);
+    tree = container.querySelector<HTMLDivElement>(".session-directory-tree")!;
+    fireEvent.scroll(tree);
+    const row = screen.getByRole("button", { name: first.title });
+    insertedHeight = 32;
+    const newer = {
+      ...first,
+      id: "newer",
+      title: "A newly arrived conversation",
+      updated_at: "2026-11-03T18:00:00Z",
+    };
+    hub = { ...hub, sessions: [newer, ...hub.sessions], filtered: [newer, ...hub.filtered] };
+    rerender(<SessionDirectory />);
+    expect(screen.getByRole("button", { name: first.title })).toBe(row);
+    expect(tree.scrollTop).toBe(212);
+    expect(row.closest("[data-directory-anchor]")!.getBoundingClientRect().top).toBe(20);
+    geometry.mockRestore();
   });
 
   it("disables filtering when indexing is disabled", () => {

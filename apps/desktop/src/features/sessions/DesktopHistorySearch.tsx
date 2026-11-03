@@ -22,6 +22,7 @@ export function DesktopHistorySearch() {
     <HistorySearchLauncher
       client={client}
       locale={locale}
+      iconOnly
       onOpen={embedded ? () => requestConversationPanel("search") : undefined}
       onOpenSession={(source) => {
         useSessionViewStore.getState().revealSession({

@@ -19,7 +19,12 @@ import { MAX_MESSAGE_LENGTH } from "./session-model";
 import { useSession } from "./session-context";
 import { ArtifactBrowser } from "./artifact-browser";
 import { ArtifactWorkspace } from "./artifact-panel";
-import { useCallback, useLayoutEffect, useRef, useState } from "react";
+import { useCallback, useLayoutEffect, useMemo, useRef, useState } from "react";
+import {
+  createSessionImageLoader,
+  sessionImageCacheScope,
+  sessionImageRevision,
+} from "./session-image-scope";
 import {
   useTranscriptFollow,
   useVisibleReadState,
@@ -53,8 +58,35 @@ export function SessionReader() {
     setMessage,
     control,
     liveContentVersion,
+    client,
+    indexEnabled,
+    imageRequestVersion,
   } = session;
   const enterSends = useEnterSends();
+  const imageCacheRevision = sessionImageRevision(client);
+  const imageCacheScope = sessionImageCacheScope(client, access, selected, indexEnabled !== false);
+  const imageLoader = useMemo(() => {
+    const version = imageRequestVersion?.();
+    return createSessionImageLoader(
+      client,
+      access,
+      selected,
+      indexEnabled !== false,
+      () =>
+        sessionImageRevision(client) === imageCacheRevision &&
+        sessionImageCacheScope(client, access, selected, indexEnabled !== false) ===
+          imageCacheScope &&
+        imageRequestVersion?.() === version,
+    );
+  }, [
+    client,
+    access,
+    selected,
+    indexEnabled,
+    imageRequestVersion,
+    imageCacheRevision,
+    imageCacheScope,
+  ]);
   const composing = useRef(false);
   const submitPending = useRef(false);
   const banner = claudeSessionBanner(session, "web");
@@ -219,6 +251,7 @@ export function SessionReader() {
                 labels={t}
                 locale={locale}
                 onTool={setModal}
+                imageLoader={imageLoader}
                 hasEarlier={!!page.next_cursor}
                 loadingEarlier={busy}
                 earlierLabel={t.earlier}

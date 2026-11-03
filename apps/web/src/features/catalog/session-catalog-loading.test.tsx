@@ -147,6 +147,84 @@ afterEach(() => {
 });
 
 describe("catalog loading through the real Web application and session provider", () => {
+  it("does not present a partial first empty snapshot as a confirmed empty directory", async () => {
+    const host = fixture();
+    await waitFor(() => expect(host.readCatalog).toHaveBeenCalledOnce());
+    await act(async () =>
+      host.first.resolve(
+        Response.json({
+          ...emptyCatalog,
+          complete: false,
+          incompleteSources: [{ workspaceId: "project", agent: "claude-code" }],
+        }),
+      ),
+    );
+    expect(screen.getByRole("status")).toHaveTextContent(dictionaries["zh-CN"].loading);
+    expect(screen.queryByText(dictionaries["zh-CN"].empty)).not.toBeInTheDocument();
+    host.readCatalog.mockResolvedValue(Response.json({ ...emptyCatalog, complete: true }));
+    act(() => directoryStream().emit("catalog-invalidated"));
+    expect(await screen.findByText(dictionaries["zh-CN"].empty)).toBeVisible();
+  });
+
+  it("preserves the selected source on a partial live catalog while removing a completed source", async () => {
+    const host = fixture();
+    await act(async () => host.first.resolve(Response.json(catalog)));
+    fireEvent.click(await screen.findByRole("button", { name: /First session/ }));
+    const historyNode = await screen.findByText("Readable history");
+    const first = screen.getByRole("button", { name: /First session/ });
+    host.readCatalog.mockResolvedValue(
+      Response.json({
+        ...emptyCatalog,
+        complete: false,
+        incompleteSources: [{ workspaceId: "project", agent: "claude-code" }],
+      }),
+    );
+    act(() => directoryStream().emit("catalog-invalidated"));
+    await waitFor(() => expect(screen.queryByRole("button", { name: /Other session/ })).toBeNull());
+    expect(screen.getByRole("button", { name: /First session/ })).toBe(first);
+    expect(first).toHaveAttribute("aria-current", "page");
+    expect(screen.getByText("Readable history")).toBe(historyNode);
+    host.readCatalog.mockResolvedValue(Response.json({ ...emptyCatalog, complete: true }));
+    act(() => directoryStream().emit("catalog-invalidated"));
+    await waitFor(() => expect(screen.queryByRole("button", { name: /First session/ })).toBeNull());
+  });
+
+  it.each([undefined, []])(
+    "keeps unknown partial missing rows without replaying writes (%s)",
+    async (incompleteSources) => {
+      const host = fixture();
+      await act(async () => host.first.resolve(Response.json(catalog)));
+      const first = await screen.findByRole("button", { name: /First session/ });
+      host.readCatalog.mockResolvedValue(
+        Response.json({ ...emptyCatalog, complete: false, incompleteSources }),
+      );
+      act(() => directoryStream().emit("catalog-invalidated"));
+      await waitFor(() => expect(host.readCatalog).toHaveBeenCalledTimes(2));
+      expect(screen.getByRole("button", { name: /First session/ })).toBe(first);
+      expect(host.fetcher.mock.calls.some(([, init]) => init?.method === "POST")).toBe(false);
+    },
+  );
+
+  it("re-reads a stale catalog at most three times and retains a loaded reader", async () => {
+    const host = fixture();
+    await act(async () => host.first.resolve(Response.json(catalog)));
+    fireEvent.click(await screen.findByRole("button", { name: /First session/ }));
+    const historyNode = await screen.findByText("Readable history");
+    const before = host.readCatalog.mock.calls.length;
+    host.readCatalog.mockImplementation(async () =>
+      Response.json({ error: "catalog_stale" }, { status: 409 }),
+    );
+    act(() => directoryStream().emit("catalog-invalidated"));
+    await waitFor(() => expect(host.readCatalog).toHaveBeenCalledTimes(before + 3));
+    expect(screen.getByText("Readable history")).toBe(historyNode);
+    expect(screen.getByRole("button", { name: /First session/ })).toHaveAttribute(
+      "aria-current",
+      "page",
+    );
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+    expect(host.fetcher.mock.calls.some(([, init]) => init?.method === "POST")).toBe(false);
+  });
+
   it.each(["zh-CN", "zh-TW", "en-US", "ja-JP"] as const)(
     "shows %s loading until the first accepted snapshot, then the real empty result",
     async (locale) => {

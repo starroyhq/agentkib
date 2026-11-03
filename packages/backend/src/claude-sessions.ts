@@ -6,6 +6,7 @@ import {
   openSync,
   readdirSync,
   readSync,
+  statSync,
   type BigIntStats,
 } from "node:fs";
 import { homedir } from "node:os";
@@ -13,7 +14,7 @@ import path from "node:path";
 import { fileTime } from "./asset-scanner";
 import { claudeConfigFiles, resolveClaudeConfig } from "./claude-config";
 import { isFile, readText, within } from "./files";
-import { isDirectory, isProbeWorkspace } from "./paths";
+import { isProbeWorkspace } from "./paths";
 import { jsonLines } from "./jsonl";
 import { sessionTitle, type NativeSessionSource } from "./codex-sessions";
 import { isClaudeEcho } from "./session-document-providers";
@@ -373,8 +374,17 @@ export class ClaudeSessions {
     const files = claudeConfigFiles(this.#config()),
       projects = files.projects,
       errors: string[] = [],
-      paths = isDirectory(projects) ? scan(projects, errors) : [],
       sessions = new Map<string, NativeSessionSource>();
+    let paths: string[] = [];
+    try {
+      if (!statSync(projects).isDirectory())
+        throw new Error("Claude projects path is not a directory");
+      paths = scan(projects, errors);
+    } catch (error) {
+      // An absent installation is a complete empty source. Unreadable or
+      // malformed source roots cannot prove that previously indexed rows vanished.
+      if ((error as NodeJS.ErrnoException).code !== "ENOENT") errors.push(String(error));
+    }
     for (const index of paths.filter((file) => path.basename(file) === "sessions-index.json")) {
       let document: Record<string, unknown> | null;
       try {
@@ -484,7 +494,7 @@ export class ClaudeSessions {
         .filter(
           (value) => isFile(value.transcript) && !probeWorkspace(value.cwd) && belongs(value.cwd),
         ),
-      incomplete: false,
+      incomplete: errors.length > 0,
     };
   }
 }

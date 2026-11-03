@@ -140,3 +140,48 @@ describe("compacting a managed Codex session on the desktop", () => {
     expect(screen.getByRole("dialog")).toHaveTextContent(copy.compactAfterTurn);
   });
 });
+
+describe("compact context usage in the desktop composer", () => {
+  it.each(["zh-CN", "zh-TW", "en-US", "ja-JP"] as const)(
+    "uses an accessible icon during compaction and restores fresh usage in %s",
+    (locale) => {
+      state = {
+        ...state,
+        locale,
+        live: { ...state.live!, activity: "compacting" },
+      };
+      const view = render(<ContextUsageGauge />);
+      const button = screen.getByRole("button", { name: codexCopy[locale].contextUsage });
+      expect(button).toHaveTextContent(/^$/);
+      expect(button).toHaveAttribute(
+        "title",
+        expect.stringContaining(contextUsageCopy[locale].compacting),
+      );
+      expect(screen.queryByText(contextUsageCopy[locale].compactingDetail)).not.toBeInTheDocument();
+
+      fireEvent.click(button);
+      expect(screen.getByRole("dialog")).toHaveTextContent(
+        contextUsageCopy[locale].compactingDetail,
+      );
+      fireEvent.click(screen.getByRole("button", { name: codexCopy[locale].close }));
+      state = {
+        ...state,
+        live: {
+          ...state.live!,
+          activity: undefined,
+          usage: {
+            available: true,
+            state: "ready",
+            reportId: 2,
+            usedTokens: 17,
+            contextWindow: 100,
+          },
+        },
+      };
+      view.rerender(<ContextUsageGauge />);
+      expect(
+        screen.getByRole("button", { name: codexCopy[locale].contextUsage }),
+      ).toHaveTextContent("17%");
+    },
+  );
+});

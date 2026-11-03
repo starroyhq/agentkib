@@ -9,7 +9,6 @@ import {
   GitCompareArrows,
   Menu,
   MonitorSmartphone,
-  RefreshCw,
   Settings,
   SlidersHorizontal,
   Split,
@@ -19,15 +18,16 @@ import {
 import { useTranslation } from "react-i18next";
 import { cn } from "cn";
 import { SidebarSearchButton } from "./SidebarSearchButton";
+import { SettingsSolid } from "./SidebarActiveIcons";
 import { useAppStore } from "@/stores/app-store";
 import {
   ariaShortcut,
   currentAppPlatform,
-  formatShortcut,
   getShortcutDefinition,
   type ShortcutId,
 } from "@/core/keyboard-shortcuts";
-import type { WorkspaceSummary } from "@/core/types";
+import type { QuotaSnapshot, WorkspaceSummary } from "@/core/types";
+import { QuotaNavigationButton } from "@/features/quota/QuotaNavigationButton";
 import type { GlobalPage, Page } from "@/features/app/app-route";
 import { useRetainedScroll } from "@/features/app/useRetainedScroll";
 import { SidebarPanelTarget } from "@/features/app/SidebarPanel";
@@ -45,6 +45,7 @@ export interface SidebarEntry<T extends string> {
   id: T;
   label: string;
   icon: ComponentType<{ size?: number }>;
+  activeIcon?: ComponentType<{ size?: number }>;
   badge?: number;
   shortcut?: ShortcutId;
 }
@@ -67,11 +68,11 @@ const agentFilters: Array<[AgentFilter, string]> = [
 export function AppSidebar(props: {
   active: GlobalPage | "settings";
   entries: SidebarEntry<GlobalPage>[];
+  quotaSnapshot?: QuotaSnapshot;
   onNavigate: (page: GlobalPage) => void;
   onSettings: () => void;
   onRemoteSettings?: () => void;
   onOpenSearch?: () => void;
-  onRefresh?: () => void;
   searchOpen?: boolean;
   collapsed: boolean;
   context?: AppSidebarContext;
@@ -210,6 +211,87 @@ export function AppSidebar(props: {
       <span className="truncate">{tr(label)}</span>
     </Button>
   );
+  const renderActivityEntry = ({
+    id,
+    label,
+    icon,
+    activeIcon,
+    badge,
+    shortcut,
+  }: SidebarEntry<GlobalPage>) => {
+    const translatedLabel = tr(label);
+    if (id === "quota")
+      return (
+        <QuotaNavigationButton
+          key={id}
+          snapshot={props.quotaSnapshot}
+          label={translatedLabel}
+          active={active === id}
+          shortcut={shortcut ? ariaShortcut(getShortcutDefinition(shortcut), platform) : undefined}
+          onClick={() => navigate(id)}
+        />
+      );
+    const Icon = active === id && activeIcon ? activeIcon : icon;
+    return (
+      <Tooltip key={id}>
+        <TooltipTrigger
+          render={
+            <Button
+              variant="bare"
+              size="content"
+              className={cn(
+                "activity-bar-item",
+                id === "home" && "activity-bar-brand group/brand",
+                active === id && "activity-bar-item-active",
+              )}
+              aria-label={translatedLabel}
+              aria-current={active === id ? "page" : undefined}
+              aria-keyshortcuts={
+                shortcut ? ariaShortcut(getShortcutDefinition(shortcut), platform) : undefined
+              }
+              aria-controls={
+                ["workspaces", "sessions", "agents", "catalog"].includes(id) ? panelId : undefined
+              }
+              onClick={() => navigate(id)}
+            >
+              {id === "home" ? (
+                <>
+                  <img
+                    src={logo}
+                    alt=""
+                    aria-hidden="true"
+                    className="size-6 object-contain transition-opacity duration-150 group-hover/brand:opacity-0 group-focus-visible/brand:opacity-0 motion-reduce:transition-none"
+                  />
+                  <span
+                    aria-hidden="true"
+                    className="absolute inset-0 grid place-items-center opacity-0 transition-opacity duration-150 group-hover/brand:opacity-100 group-focus-visible/brand:opacity-100 motion-reduce:transition-none"
+                  >
+                    <Icon size={20} />
+                  </span>
+                </>
+              ) : (
+                <Icon size={20} />
+              )}
+              <span className="sr-only">{translatedLabel}</span>
+              {!!badge && (
+                <em
+                  className={cn(
+                    "activity-bar-badge absolute top-px right-0 min-w-[15px] h-[15px] px-[3px] rounded-[8px] text-[9px] leading-[15px] not-italic",
+                    id === "catalog"
+                      ? "bg-warning text-white"
+                      : "bg-sidebar-primary text-sidebar-primary-foreground",
+                  )}
+                >
+                  {badge}
+                </em>
+              )}
+            </Button>
+          }
+        />
+        <TooltipContent side="right">{translatedLabel}</TooltipContent>
+      </Tooltip>
+    );
+  };
 
   return (
     <>
@@ -253,10 +335,14 @@ export function AppSidebar(props: {
         )}
       >
         <div className="app-activity-bar">
-          <div className="activity-bar-brand grid size-[38px] place-items-center [&_img]:size-6 [&_img]:object-contain">
-            <img src={logo} alt="" aria-hidden="true" />
-            <span className="sr-only">AgentKib</span>
-          </div>
+          {props.entries.some(({ id }) => id === "home") ? (
+            props.entries.filter(({ id }) => id === "home").map(renderActivityEntry)
+          ) : (
+            <div className="activity-bar-brand grid size-[38px] place-items-center [&_img]:size-6 [&_img]:object-contain">
+              <img src={logo} alt="" aria-hidden="true" />
+              <span className="sr-only">AgentKib</span>
+            </div>
+          )}
           {props.onOpenSearch && (
             <SidebarSearchButton
               onOpenSearch={props.onOpenSearch}
@@ -267,85 +353,12 @@ export function AppSidebar(props: {
             className="activity-bar-navigation flex min-h-0 flex-1 flex-col gap-1.5 overflow-y-auto [scrollbar-width:none]"
             aria-label={tr("common.primaryNavigation")}
           >
-            {props.entries.map(({ id, label, icon: Icon, badge, shortcut }) => {
-              const translatedLabel = tr(label);
-
-              return (
-                <Tooltip key={id}>
-                  <TooltipTrigger
-                    render={
-                      <Button
-                        variant="bare"
-                        size="content"
-                        className={cn(
-                          "activity-bar-item",
-                          active === id && "activity-bar-item-active",
-                        )}
-                        aria-label={translatedLabel}
-                        aria-current={active === id ? "page" : undefined}
-                        aria-keyshortcuts={
-                          shortcut
-                            ? ariaShortcut(getShortcutDefinition(shortcut), platform)
-                            : undefined
-                        }
-                        aria-controls={
-                          ["workspaces", "sessions", "agents", "catalog"].includes(id)
-                            ? panelId
-                            : undefined
-                        }
-                        onClick={() => navigate(id)}
-                      >
-                        <Icon size={20} />
-                        <span className="sr-only">{translatedLabel}</span>
-                        {!!badge && (
-                          <em
-                            className={cn(
-                              "activity-bar-badge absolute top-px right-0 min-w-[15px] h-[15px] px-[3px] rounded-[8px] text-[9px] leading-[15px] not-italic",
-                              id === "catalog"
-                                ? "bg-warning text-white"
-                                : "bg-sidebar-primary text-sidebar-primary-foreground",
-                            )}
-                          >
-                            {badge}
-                          </em>
-                        )}
-                      </Button>
-                    }
-                  />
-                  <TooltipContent side="right">{translatedLabel}</TooltipContent>
-                </Tooltip>
-              );
-            })}
+            {props.entries
+              .filter(({ id }) => id !== "quota" && id !== "home")
+              .map(renderActivityEntry)}
           </nav>
           <div className="activity-bar-footer flex flex-col gap-1.5">
-            {props.onRefresh && (
-              <Tooltip>
-                <TooltipTrigger
-                  render={
-                    <Button
-                      variant="bare"
-                      size="content"
-                      className="activity-bar-item"
-                      type="button"
-                      aria-label={tr("menu.refreshCurrent")}
-                      aria-keyshortcuts={ariaShortcut(
-                        getShortcutDefinition("refresh-current"),
-                        platform,
-                      )}
-                      title={`${tr("menu.refreshCurrent")} (${formatShortcut(getShortcutDefinition("refresh-current"), platform)})`}
-                      onClick={() => {
-                        setMobileOpen(false);
-                        props.onRefresh?.();
-                      }}
-                    >
-                      <RefreshCw size={19} />
-                      <span className="sr-only">{tr("menu.refreshCurrent")}</span>
-                    </Button>
-                  }
-                />
-                <TooltipContent side="right">{tr("menu.refreshCurrent")}</TooltipContent>
-              </Tooltip>
-            )}
+            {props.entries.filter(({ id }) => id === "quota").map(renderActivityEntry)}
             <Tooltip>
               <TooltipTrigger
                 render={
@@ -387,7 +400,7 @@ export function AppSidebar(props: {
                       props.onSettings();
                     }}
                   >
-                    <Settings size={20} />
+                    {active === "settings" ? <SettingsSolid size={20} /> : <Settings size={20} />}
                     <span className="sr-only">{tr("nav.settings")}</span>
                   </Button>
                 }
@@ -422,7 +435,7 @@ export function AppSidebar(props: {
               ref={scrollRef}
               className={cn(
                 "context-sidebar-scroll",
-                active === "sessions" && "flex flex-col !overflow-hidden",
+                active === "sessions" && "flex flex-col !overflow-hidden !px-0",
               )}
             >
               {active === "workspaces" && (

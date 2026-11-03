@@ -135,6 +135,127 @@ afterEach(() => {
   vi.restoreAllMocks();
 });
 
+describe("catalog refresh source authority", () => {
+  it("does not retain the old workspace row when a global session moves during a partial refresh", async () => {
+    const host = baseFixture(baseIdle("original"), "codex");
+    const view = await open(host);
+    const moved = { ...host.sessions[0], workspace_id: "new-workspace" };
+    vi.mocked(host.client.catalog).mockResolvedValue({
+      indexEnabled: true,
+      sessions: [moved],
+      complete: false,
+      incompleteSources: [{ workspaceId: "workspace", agent: "codex" }],
+    });
+    await act(async () => view.result.current.refresh(true, true));
+    expect(view.result.current.sessions.filter((record) => record.id === "original")).toEqual([
+      moved,
+    ]);
+    expect(view.result.current.selected).toBe("original");
+  });
+
+  it("uses verified managed aliases instead of retaining native ghost rows from a partial source", async () => {
+    const host = baseFixture(baseIdle("original"), "codex");
+    const view = await open(host);
+    const managed = { ...summary("managed"), indexedSessionIds: ["original", "other"] };
+    vi.mocked(host.client.catalog).mockResolvedValue({
+      indexEnabled: true,
+      sessions: [managed],
+      complete: false,
+      incompleteSources: [{ workspaceId: "workspace", agent: "codex" }],
+    });
+    await act(async () => view.result.current.refresh(true, true));
+    expect(view.result.current.sessions).toEqual([managed]);
+    expect(readPending(host.scope)).toEqual([]);
+  });
+
+  it("keeps the selected managed owner without adding its temporarily exposed native alias", async () => {
+    const host = baseFixture(baseIdle("original"), "codex");
+    host.sessions[0] = { ...host.sessions[0], indexedSessionIds: ["native"] };
+    const view = await open(host);
+    const previous = view.result.current.sessions;
+    vi.mocked(host.client.catalog).mockResolvedValue({
+      indexEnabled: true,
+      sessions: [summary("native")],
+      complete: false,
+      incompleteSources: [{ workspaceId: "workspace", agent: "codex" }],
+    });
+    await act(async () => view.result.current.refresh(true, true));
+    expect(view.result.current.sessions).toEqual(previous);
+    expect(view.result.current.sessions[0]).toBe(previous[0]);
+    expect(view.result.current.selected).toBe("original");
+    expect(view.result.current.page).toBeDefined();
+  });
+
+  it("keeps the selected incomplete source and accepts deletions from a completed source", async () => {
+    const host = baseFixture(baseIdle("original", "claude-code"), "claude-code");
+    host.sessions[1] = summary("other", "codex");
+    const view = await open(host);
+    const selected = view.result.current.sessions.find((record) => record.id === "original");
+    vi.mocked(host.client.catalog).mockResolvedValue({
+      indexEnabled: true,
+      sessions: [],
+      complete: false,
+      incompleteSources: [{ workspaceId: "workspace", agent: "claude-code" }],
+    });
+    await act(async () => view.result.current.refresh(true, true));
+    expect(view.result.current.sessions).toEqual([selected]);
+    expect(view.result.current.sessions[0]).toBe(selected);
+    expect(view.result.current.selected).toBe("original");
+    expect(view.result.current.page).toBeDefined();
+    expect(host.request).not.toHaveBeenCalled();
+    expect(readPending(host.scope)).toEqual([]);
+  });
+
+  it.each([undefined, []])(
+    "retains unknown partial missing records (%s)",
+    async (incompleteSources) => {
+      const host = baseFixture(baseIdle("original"), "codex");
+      const view = await open(host);
+      const previous = view.result.current.sessions;
+      vi.mocked(host.client.catalog).mockResolvedValue({
+        indexEnabled: true,
+        sessions: [],
+        complete: false,
+        incompleteSources,
+      });
+      await act(async () => view.result.current.refresh(true, true));
+      expect(view.result.current.sessions).toEqual(previous);
+      expect(view.result.current.sessions[0]).toBe(previous[0]);
+      expect(view.result.current.selected).toBe("original");
+    },
+  );
+
+  it("bounds stale catalog retries without adding business pending or removing current history", async () => {
+    const host = baseFixture(baseIdle("original"), "codex");
+    const view = await open(host);
+    vi.mocked(host.client.catalog)
+      .mockClear()
+      .mockRejectedValue(new ApiError(409, "catalog_stale"));
+    await act(async () => view.result.current.refresh(true, true));
+    expect(host.client.catalog).toHaveBeenCalledTimes(3);
+    expect(view.result.current.selected).toBe("original");
+    expect(view.result.current.page).toBeDefined();
+    expect(view.result.current.error).toBe(false);
+    expect(readPending(host.scope)).toEqual([]);
+    expect(host.request).not.toHaveBeenCalled();
+  });
+
+  it("clears the reader when the index is explicitly disabled even if old records are available", async () => {
+    const host = baseFixture(baseIdle("original"), "codex");
+    const view = await open(host);
+    vi.mocked(host.client.catalog).mockResolvedValue({
+      indexEnabled: false,
+      sessions: [],
+      complete: false,
+    });
+    await act(async () => view.result.current.refresh(true, true));
+    expect(view.result.current.sessions).toEqual([]);
+    expect(view.result.current.selected).toBe("");
+    expect(view.result.current.page).toBeUndefined();
+    expect(view.result.current.indexEnabled).toBe(false);
+  });
+});
+
 describe("active send receipt ownership", () => {
   it("keeps a pending send distinct from an unknown receipt", async () => {
     const host = baseFixture(baseIdle("original", "claude-code"), "claude-code");

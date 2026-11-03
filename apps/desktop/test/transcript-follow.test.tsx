@@ -38,7 +38,7 @@ function Harness({
   enabled?: boolean;
 }) {
   const viewportRef = useRef<HTMLElement | null>(null);
-  const { following, contentRef, pause, resume } = useTranscriptFollow({
+  const { following, contentRef, pause, resume, awayFromBottom } = useTranscriptFollow({
     viewportRef,
     sessionId,
     enabled,
@@ -46,7 +46,7 @@ function Harness({
     onFollowingChange: changed,
   });
   useLayoutEffect(() => {
-    hook = { following, contentRef, pause, resume };
+    hook = { following, contentRef, pause, resume, awayFromBottom };
   });
   return (
     <>
@@ -145,6 +145,97 @@ describe("transcript reader following", () => {
     flushFrame();
     expect(state.top).toBe(850);
     expect(changed).not.toHaveBeenCalledWith(false);
+  });
+
+  it("reports the actual distance threshold without new messages or changing follow intent", () => {
+    render(<Harness />);
+    const { state, viewport } = geometry();
+    flushFrame();
+    expect(hook.awayFromBottom).toBe(false);
+    state.top = 505;
+    fireEvent.scroll(viewport);
+    expect(hook.awayFromBottom).toBe(false);
+    state.top = 504;
+    fireEvent.scroll(viewport);
+    expect(hook.awayFromBottom).toBe(true);
+    expect(hook.following.current).toBe(true);
+    state.top = 600;
+    fireEvent.scroll(viewport);
+    expect(hook.awayFromBottom).toBe(false);
+  });
+
+  it("updates distance after paused viewport and content resizing", () => {
+    render(<Harness />);
+    const { state, viewport } = geometry();
+    flushFrame();
+    fireEvent.click(screen.getByText("Load earlier"));
+    state.top = 400;
+    fireEvent.scroll(viewport);
+    expect(hook.awayFromBottom).toBe(true);
+    state.height = 550;
+    resize(viewport);
+    expect(hook.awayFromBottom).toBe(false);
+    state.content = 1200;
+    resize(screen.getByTestId("content"));
+    expect(hook.awayFromBottom).toBe(true);
+    expect(state.top).toBe(400);
+    expect(frames.size).toBe(0);
+  });
+
+  it("clears distance only after Latest actually returns to the bottom", () => {
+    render(<Harness />);
+    const { state, viewport } = geometry();
+    flushFrame();
+    fireEvent.click(screen.getByText("Load earlier"));
+    state.top = 300;
+    fireEvent.scroll(viewport);
+    expect(hook.awayFromBottom).toBe(true);
+    fireEvent.click(screen.getByText("Latest"));
+    expect(hook.awayFromBottom).toBe(true);
+    flushFrame();
+    expect(state.top).toBe(600);
+    expect(hook.awayFromBottom).toBe(false);
+  });
+
+  it("keeps short transcripts near the bottom and ignores nested output scrolls", () => {
+    render(<Harness />);
+    const { state, viewport } = geometry();
+    flushFrame();
+    state.top = 300;
+    fireEvent.scroll(screen.getByTestId("terminal"), { bubbles: true });
+    expect(hook.awayFromBottom).toBe(false);
+    state.top = 0;
+    state.content = 200;
+    fireEvent.scroll(viewport);
+    expect(hook.awayFromBottom).toBe(false);
+    resize(viewport);
+    flushFrame();
+    expect(hook.awayFromBottom).toBe(false);
+  });
+
+  it("isolates distance across session switches, disabling and stale resize callbacks", () => {
+    const view = render(<Harness />);
+    const { state, viewport } = geometry();
+    flushFrame();
+    state.top = 300;
+    fireEvent.scroll(viewport);
+    expect(hook.awayFromBottom).toBe(true);
+    const old = observers.at(-1)!;
+    view.rerender(<Harness sessionId="two" />);
+    expect(hook.awayFromBottom).toBe(false);
+    act(() => old.callback([], old as unknown as ResizeObserver));
+    expect(hook.awayFromBottom).toBe(false);
+    flushFrame();
+    expect(state.top).toBe(600);
+    state.top = 300;
+    fireEvent.scroll(viewport);
+    expect(hook.awayFromBottom).toBe(true);
+    const disabled = observers.at(-1)!;
+    view.rerender(<Harness sessionId="two" enabled={false} />);
+    expect(hook.awayFromBottom).toBe(false);
+    act(() => disabled.callback([], disabled as unknown as ResizeObserver));
+    fireEvent.scroll(viewport);
+    expect(hook.awayFromBottom).toBe(false);
   });
 
   it("observes both viewport and content and coalesces resize frames", () => {

@@ -594,6 +594,7 @@ export class TypeScriptBackend {
           },
           () => this.#historySearch?.refresh(),
           () => this.#claudeManaged?.managedNativeIds() ?? new Set(),
+          () => this.#sessionStream?.publish("", "invalidate", { domains: ["catalog"] }),
         );
         this.#stopping = false;
         const runtimeBootId = randomUUID();
@@ -827,6 +828,11 @@ export class TypeScriptBackend {
         params = unscoped;
       }
       if (params.operation === "diff") return webDiff(params, this.#store, this.#git!);
+      if (params.operation === "session-image")
+        return typeof params.sessionId === "string" &&
+          this.#claudeManaged!.hasManagedSession(params.sessionId)
+          ? this.#claudeManaged!.request(params)
+          : this.#withWebRead((owner) => owner.request(params));
       // Claude managed sessions run in their registered workspace root, so they have no
       // narrower directory; every other session reads it from the index or Codex ledger.
       if (params.operation === "session-directory")

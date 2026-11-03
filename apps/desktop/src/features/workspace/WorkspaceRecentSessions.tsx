@@ -27,7 +27,7 @@ export function WorkspaceRecentSessions({
   const { tr, formatRelativeTime } = useI18n();
   const navigate = useNavigate();
   const catalog = useSessionCatalog([workspace], enabled);
-  const managed = useConversationCatalog(enabled && !workspace.remote);
+  const managed = useConversationCatalog(enabled && !workspace.remote, enabled);
   const installations = useHomeInstallations();
   const sessions = workspaceSessionEntries(workspace.id, catalog.sessions, managed.sessions);
   const recent = selectRecentContinuations(

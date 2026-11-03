@@ -1,3 +1,6 @@
+export { mergeCatalogSessions, isStaleCatalogRead, retryStaleCatalogRead } from "./catalog";
+export type { IncompleteSessionSource } from "./catalog";
+
 import type {
   ConversationReadState,
   ConversationReadResult,
@@ -136,12 +139,25 @@ export interface ConversationWorkspaceSummary {
   checkout?: WorkspaceCheckout | null;
 }
 export interface ConversationCatalog {
+  /** False while one or more source scopes still need verification. Absent on older hosts. */
+  complete?: boolean;
+  /** Retain cached rows only for these scopes during partial/background refreshes. */
+  incompleteSources?: Array<{ workspaceId: string; agent: string }>;
   sessions: ConversationSessionSummary[];
   /** Global verified CLI floor; absent on older hosts, never a control grant. */
   codexRuntimeReason?: "codex-cli-version-too-old" | null;
   // Missing on older desktop hosts; never treat it as an empty known catalog.
   workspaces?: ConversationWorkspaceSummary[];
   indexEnabled: boolean;
+}
+export interface ConversationImage {
+  id: string;
+  mimeType?: string;
+  name?: string;
+}
+export interface ConversationImageData {
+  mimeType: string;
+  base64: string;
 }
 export interface ConversationEvent {
   id: string;
@@ -156,6 +172,8 @@ export interface ConversationEvent {
   tool_status?: string;
   duration_ms?: number | null;
   attachment_count: number;
+  /** Original message images are read separately, never embedded in event pages. */
+  images?: ConversationImage[];
   truncated: boolean;
   /** Absent on older hosts; clients then show the tool name and status. */
   tool?: ConversationToolDetail;
@@ -1279,6 +1297,13 @@ export class WebClient {
     const q = new URLSearchParams({ sessionId, limit: "50" });
     if (cursor) q.set("cursor", cursor);
     return this.request<ConversationEventPage>(`events?${q}`, undefined, signal);
+  }
+  sessionImage(sessionId: string, imageId: string, signal?: AbortSignal) {
+    return this.request<ConversationImageData>(
+      `session-images?${new URLSearchParams({ sessionId, imageId })}`,
+      undefined,
+      signal,
+    );
   }
   live(sessionId: string, signal?: AbortSignal) {
     return this.request<Live>(`live?${new URLSearchParams({ sessionId })}`, undefined, signal);

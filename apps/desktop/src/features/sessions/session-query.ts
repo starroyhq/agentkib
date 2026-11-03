@@ -1,7 +1,18 @@
 import { retryBusyRead } from "./conversation/features/sessions/session-read-retry";
-import { queryOptions, type QueryClient } from "@tanstack/react-query";
+import { queryOptions, replaceEqualDeep, type QueryClient } from "@tanstack/react-query";
 import { api } from "@/core/api";
+import type { ConversationSessionSummary } from "@/core/types";
 import { homeKeys, queryDefaults } from "@/features/home/home-query";
+import {
+  mergeCatalogSessions as sharedMergeCatalogSessions,
+  retryStaleCatalogRead,
+  type IncompleteSessionSource,
+} from "@agentkib/web-client";
+export {
+  isStaleCatalogRead,
+  retryStaleCatalogRead,
+  type IncompleteSessionSource,
+} from "@agentkib/web-client";
 
 export const sessionKeys = {
   status: (id: string) => [...homeKeys.continuations(id), "status"] as const,
@@ -9,6 +20,30 @@ export const sessionKeys = {
     ["session-history", workspaceId, id, remote, revision] as const,
   capability: (id: string, revision: number) => ["session-capability", id, revision] as const,
 };
+export const SESSION_CATALOG_RUNTIME_CHANGED = "agentkib:session-catalog-runtime-changed";
+const readGenerations = new WeakMap<QueryClient, number>();
+export function sessionQueryGeneration(client: QueryClient) {
+  return readGenerations.get(client) ?? 0;
+}
+export function advanceSessionQueryGeneration(client: QueryClient) {
+  readGenerations.set(client, sessionQueryGeneration(client) + 1);
+}
+
+/** Reordered records keep their identity; only unfinished sources retain missing rows. */
+export function mergeCatalogSessions(
+  previous: ConversationSessionSummary[],
+  records: ConversationSessionSummary[],
+  incompleteSources: readonly IncompleteSessionSource[] = [],
+  retainMissing = false,
+): ConversationSessionSummary[] {
+  return sharedMergeCatalogSessions(
+    previous,
+    records,
+    incompleteSources,
+    retainMissing,
+    replaceEqualDeep,
+  );
+}
 
 // Electron RPC cannot be aborted once sent. Keep its slot until it settles and
 // reuse the physical read if a cancelled Query is observed again before then.
@@ -109,19 +144,27 @@ export function sessionListOptions(client: QueryClient, id: string) {
   return queryOptions({
     ...queryDefaults,
     queryKey,
+    structuralSharing: (previous, records) =>
+      mergeCatalogSessions(
+        (previous as ConversationSessionSummary[] | undefined) ?? [],
+        records as ConversationSessionSummary[],
+      ),
     queryFn: async ({ signal }) => {
+      const generation = sessionQueryGeneration(client);
       const before = client.getQueryState(queryKey)?.dataUpdateCount;
       const records = await queuedSessionRead(
         client,
-        `sessions:${id}`,
+        `sessions:${generation}:${id}`,
         signal,
-        () => api.workspaceSessions(id),
+        () => retryStaleCatalogRead(() => api.workspaceSessions(id), signal),
         { retryBusy: true },
       );
+      if (generation !== sessionQueryGeneration(client))
+        throw new DOMException("Cancelled", "AbortError");
       const latest = client.getQueryData<typeof records>(queryKey);
       return client.getQueryState(queryKey)?.dataUpdateCount !== before && latest !== undefined
         ? latest
-        : records;
+        : mergeCatalogSessions(latest ?? [], records);
     },
   });
 }
@@ -130,8 +173,14 @@ export function sessionStatusOptions(client: QueryClient, id: string) {
     ...queryDefaults,
     queryKey: sessionKeys.status(id),
     queryFn: ({ signal }) =>
-      queuedSessionRead(client, `status:${id}`, signal, () => api.workspaceSessionStatus(id), {
-        retryBusy: true,
-      }),
+      queuedSessionRead(
+        client,
+        `status:${sessionQueryGeneration(client)}:${id}`,
+        signal,
+        () => api.workspaceSessionStatus(id),
+        {
+          retryBusy: true,
+        },
+      ),
   });
 }

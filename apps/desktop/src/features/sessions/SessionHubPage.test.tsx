@@ -95,6 +95,7 @@ function defaultHub(): ReturnType<typeof useSessionHub> {
     loading: false,
     refreshing: false,
     ready: true,
+    usable: true,
     historyRevision: 0,
     conversationRefreshRevision: 0,
     runtimeReady: true,
@@ -246,6 +247,27 @@ describe("SessionHubPage", () => {
     expect(screen.getByRole("alert")).not.toHaveTextContent("RuntimeRequestError");
     fireEvent.click(screen.getByRole("button", { name: tr("errors.details") }));
     expect(screen.getByRole("alert")).toHaveTextContent("RuntimeRequestError: REMOTE_OFFLINE");
+  });
+
+  it("shows unknown statistics as placeholders until the first trustworthy directory arrives", () => {
+    hub = { ...hub, sessions: [], filtered: [], ready: false, usable: false, loading: true };
+    render(sessionSurface());
+    for (const label of ["All sessions", "History available", "Archived", "No history content"]) {
+      const metric = screen.getByText(label).parentElement!;
+      expect(within(metric).getByText("—")).toBeInTheDocument();
+      expect(within(metric).queryByText("0")).toBeNull();
+    }
+  });
+
+  it("keeps the cached statistics and recent rows while background refresh is pending", () => {
+    hub = { ...hub, ready: false, usable: true, refreshing: true, loading: false };
+    const { container } = render(sessionSurface());
+    expect(container.querySelector(".session-stats")).toHaveAttribute("aria-busy", "false");
+    expect(
+      within(screen.getByText("All sessions").parentElement!).getByText("3"),
+    ).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /Review theme switching/ })).toBeInTheDocument();
+    expect(screen.queryByText(tr("conversations.scanning"))).toBeNull();
   });
 
   it("shows the four filtered-history metrics and no live-control affordances", () => {

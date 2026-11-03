@@ -26,6 +26,7 @@ import {
   type EventState,
 } from "./session-event-parser";
 import { toolEventBytes, type ToolContext } from "./conversation-tools";
+import { MAX_IMAGE_RECORD_BYTES, SessionImages } from "./session-images";
 const SCAN_BYTES = 16 * 1024 * 1024,
   SCAN_LINES = 20_000,
   BLOCK_BYTES = 64 * 1024,
@@ -76,7 +77,10 @@ class ReverseReader {
   buffer: Buffer = Buffer.alloc(0);
   index = 0;
   bytes = 0;
-  constructor(readonly fd: number) {}
+  constructor(
+    readonly fd: number,
+    readonly byteLimit = SCAN_BYTES,
+  ) {}
   next(state: State): RecordRead {
     const finish = (offset: number): RecordRead => {
       const oversized = state.oversized;
@@ -90,8 +94,8 @@ class ReverseReader {
       if (state.position === 0)
         return state.fragmentBytes || state.oversized ? finish(0) : { type: "end" };
       if (this.index === 0) {
-        if (this.bytes >= SCAN_BYTES) return { type: "budget" };
-        const count = Math.min(state.position, BLOCK_BYTES, SCAN_BYTES - this.bytes);
+        if (this.bytes >= this.byteLimit) return { type: "budget" };
+        const count = Math.min(state.position, BLOCK_BYTES, this.byteLimit - this.bytes);
         this.buffer = readExact(this.fd, count, state.position - count);
         this.index = count;
         this.bytes += count;
@@ -102,7 +106,10 @@ class ReverseReader {
       state.position -= part.length;
       this.index = start;
       if (!state.oversized) {
-        if (state.fragmentBytes + part.length > MAX_LINE_BYTES) {
+        const limit = ["codex", "claude-code"].includes(state.format)
+          ? MAX_IMAGE_RECORD_BYTES
+          : MAX_LINE_BYTES;
+        if (state.fragmentBytes + part.length > limit) {
           state.fragments = [];
           state.fragmentBytes = 0;
           state.oversized = true;
@@ -121,7 +128,11 @@ class ReverseReader {
 }
 /** Bytes an event adds to a page: its text plus any tool detail and turn data. */
 function eventPageBytes(event: ConversationEvent): number {
-  return (event.content ? Buffer.byteLength(event.content) : 0) + toolEventBytes(event);
+  return (
+    (event.content ? Buffer.byteLength(event.content) : 0) +
+    toolEventBytes(event) +
+    (event.images ? Buffer.byteLength(JSON.stringify(event.images)) : 0)
+  );
 }
 function estimatedBytes(state: State): number {
   return (
@@ -132,6 +143,7 @@ function estimatedBytes(state: State): number {
         sum +
         256 +
         toolEventBytes(event) +
+        (event.images ? Buffer.byteLength(JSON.stringify(event.images)) : 0) +
         [event.id, event.content, event.turn_id, event.tool_name, event.tool_status].reduce<number>(
           (size, value) => size + (value ? Buffer.byteLength(value) : 0),
           0,
@@ -154,8 +166,13 @@ export const UNRETAINED_CURSOR = "history-v1-unretained";
 /** Snapshot-bound reverse pages remain replayable without loading the whole native transcript. */
 export class SessionPaging {
   #states = new Map<string, { created: number; state: State }>();
+  #images = new SessionImages();
   clear(): void {
     this.#states.clear();
+    this.#images.clear();
+  }
+  image(file: string, imageId: string, scope = file) {
+    return this.#images.read(scope, file, imageId);
   }
   /**
    * `context` only changes how tool paths are shown; cursors keep the first read's.
@@ -170,6 +187,8 @@ export class SessionPaging {
     format: HistoryFormat,
     context: ToolContext = {},
     retain = true,
+    imageScope = file,
+    imageScanBudget?: { remainingBytes: number },
   ): ConversationEventPage {
     if (!Number.isSafeInteger(limit) || limit < 0) throw new Error("Invalid event limit");
     let fd: number;
@@ -213,13 +232,28 @@ export class SessionPaging {
       }
       this.#validate(fd, file, format, state);
       state.turnRangeStart = 0;
-      const reader = new ReverseReader(fd),
+      const reader = new ReverseReader(
+          fd,
+          Math.min(SCAN_BYTES, imageScanBudget?.remainingBytes ?? SCAN_BYTES),
+        ),
         events: ConversationEvent[] = [],
         warnings = new Set<string>();
       let lines = 0,
         eventBytes = 0;
+      let lookahead: number | undefined;
       for (;;) {
-        if (state.pending.length) {
+        const next = state.pending[0];
+        const full =
+          events.length >= Math.min(100, Math.max(1, limit)) ||
+          (next !== undefined && eventBytes + eventPageBytes(next) > MAX_PAGE_BYTES);
+        if (full) {
+          // An image-bearing message can have its only usable image on the
+          // immediately older mirror row. Resolve that bounded mirror window
+          // before sending the page, keeping other newly parsed items pending.
+          lookahead ??= events.at(-1)?.attachment_count ? 64 : 0;
+          if (lookahead <= 0) break;
+        }
+        if (state.pending.length && !full) {
           const next = state.pending[0]!,
             bytes = eventPageBytes(next);
           if (
@@ -250,6 +284,7 @@ export class SessionPaging {
           continue;
         }
         if (record.type !== "line") continue;
+        if (lookahead !== undefined) lookahead--;
         if (state.trailing) {
           state.trailing = false;
           if (!record.bytes.length || record.bytes.equals(Buffer.from("\r"))) continue;
@@ -270,7 +305,22 @@ export class SessionPaging {
           warnings.add("TRANSCRIPT_DAMAGED_LINES");
           continue;
         }
-        parseEventRecord(state, record.offset, value, events);
+        const images = this.#images.register(
+          imageScope,
+          record.offset,
+          record.bytes,
+          value,
+          format,
+          context.cwd ?? context.workspace ?? "",
+        );
+        if (record.bytes.length > MAX_LINE_BYTES && !images.length) {
+          state.candidateTurn = null;
+          state.turnRangeStart = events.length;
+          state.associationWarning = true;
+          warnings.add("TRANSCRIPT_OVERSIZED_LINES");
+          continue;
+        }
+        parseEventRecord(state, record.offset, value, events, images);
         if (
           associationCount(state) > 20_000 ||
           state.pending.reduce((sum, event) => sum + eventPageBytes(event), 0) > 8 * MAX_PAGE_BYTES
@@ -278,6 +328,12 @@ export class SessionPaging {
           throw new Error("TRANSCRIPT_SCAN_STATE_LIMIT");
       }
       this.#validate(fd, file, format, state);
+      if (imageScanBudget) imageScanBudget.remainingBytes -= reader.bytes;
+      while (
+        events.length > 1 &&
+        events.reduce((total, event) => total + eventPageBytes(event), 0) > MAX_PAGE_BYTES
+      )
+        state.pending.unshift(events.pop()!);
       if (state.associationWarning) warnings.add("TRANSCRIPT_ASSOCIATION_WINDOW");
       let next: string | null = null;
       const older = state.position > 0 || state.pending.length > 0 || state.fragmentBytes > 0;

@@ -835,7 +835,12 @@ export class RemoteAgent {
       ),
     );
     const checkouts = catalogCheckouts(this.store, this.readers.env);
+    const incompleteSources = this.index.incompleteSources(
+      workspaces.map((workspace) => String(workspace.id)),
+    );
     return {
+      complete: incompleteSources.length === 0,
+      incompleteSources,
       workspaces: checkouts.workspaces(
         workspaces
           .filter((workspace) => registered.has(workspace.id))

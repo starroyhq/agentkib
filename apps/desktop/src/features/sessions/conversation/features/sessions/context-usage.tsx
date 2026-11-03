@@ -310,16 +310,16 @@ export function ContextUsageIndicator({
       <Button
         type="button"
         variant="ghost"
-        className="h-11 shrink-0 gap-1.5 rounded-full px-2 text-xs text-muted-foreground hover:text-foreground"
+        className={`h-11 shrink-0 gap-1.5 rounded-full text-xs text-muted-foreground hover:text-foreground ${view.compacting ? "size-11 p-0" : "px-2"}`}
         aria-label={title}
         title={`${title}: ${view.state === "ready" && view.percent !== undefined ? `${copy.recentNativeReport}: ${view.usage!.usedTokens!.toLocaleString()} / ${view.usage!.contextWindow!.toLocaleString()}` : label}`}
         onClick={() => setOpened(scope)}
       >
         <Gauge className="size-4" aria-hidden="true" />
-        {(view.state !== "ready" || view.compacting || view.awaitingCliReport) && (
+        {!view.compacting && (view.state !== "ready" || view.awaitingCliReport) && (
           <span className="hidden @min-[32rem]:inline">{title}</span>
         )}
-        <span className="@max-[22rem]:sr-only">{label}</span>
+        {!view.compacting && <span className="@max-[22rem]:sr-only">{label}</span>}
       </Button>
       {opened === scope && (
         <Dialog

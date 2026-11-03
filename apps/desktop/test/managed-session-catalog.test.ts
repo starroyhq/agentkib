@@ -76,6 +76,8 @@ vi.mock("../../../packages/backend/src/remote-tls", async (original) => ({
 }));
 
 type Catalog = {
+  complete?: boolean;
+  incompleteSources?: Array<{ workspaceId: string; agent: string }>;
   codexRuntimeReason?: "codex-cli-version-too-old" | null;
   sessions: Array<
     ReturnType<BackendStore["sessions"]["list"]>[number] & {
@@ -349,8 +351,10 @@ describe("managed directory ownership", () => {
     f.addNative(f.owner.native_id!, "cli");
     f.addNative("11111111-2222-4333-8444-555555555555", "cli");
     f.sync();
-    const catalog = await f.localCatalog();
+    const first = await f.localCatalog();
     expect(check).toHaveBeenCalledOnce();
+    expect(first.codexRuntimeReason).toBeNull();
+    const catalog = await f.localCatalog();
     expect(catalog.codexRuntimeReason).toBe("codex-cli-version-too-old");
     expect(
       catalog.sessions.every(
@@ -360,11 +364,59 @@ describe("managed directory ownership", () => {
       ),
     ).toBe(true);
     check.mockResolvedValue({ reason: null });
+    await f.localCatalog();
     expect(
       (await f.localCatalog()).sessions.every(
         (row) => row.continuation?.reason !== "codex-cli-version-too-old",
       ),
     ).toBe(true);
+  });
+
+  it("returns persisted sessions while the CLI version probe is still pending", async () => {
+    const f = fixture();
+    f.addNative(f.owner.native_id!, "cli");
+    f.sync();
+    let finish!: (value: { reason: string | null }) => void;
+    const check = vi.spyOn(CodexRuntimePreflight.prototype, "check").mockImplementation(
+      () =>
+        new Promise((resolve) => {
+          finish = resolve;
+        }),
+    );
+    const first = await f.localCatalog();
+    expect(first.sessions).toHaveLength(1);
+    expect(first.codexRuntimeReason).toBeNull();
+    expect(check).toHaveBeenCalledOnce();
+    expect((await f.localCatalog()).sessions).toHaveLength(1);
+    expect(check).toHaveBeenCalledOnce();
+    finish({ reason: "codex-cli-version-too-old" });
+    await Promise.resolve();
+    expect((await f.localCatalog()).codexRuntimeReason).toBe("codex-cli-version-too-old");
+  });
+
+  it("rejects an invalidated catalog instead of returning a successful empty disabled catalog", async () => {
+    const f = fixture();
+    f.addNative(f.owner.native_id!, "cli");
+    f.sync();
+    f.saveOwners([f.owner]);
+    const list = f.readers.list.bind(f.readers);
+    vi.spyOn(f.readers, "list").mockImplementationOnce(async (...args) => {
+      const result = await list(...args);
+      f.index.invalidate();
+      return result;
+    });
+    await expect(f.localCatalog()).rejects.toThrow("catalog-stale");
+    expect((await f.localCatalog()).sessions.some((row) => row.id === f.owner.id)).toBe(true);
+    writeFileSync(
+      path.join(f.root, "preferences.json"),
+      JSON.stringify({ session_index_enabled: false }),
+    );
+    f.saveOwners([{ ...f.owner, released: true, adopted: true }]);
+    expect(await f.localCatalog()).toMatchObject({
+      sessions: [],
+      workspaces: [],
+      indexEnabled: false,
+    });
   });
 
   it("projects only a global old-version reason for raw native collections without exposing their sessions", async () => {
@@ -383,12 +435,14 @@ describe("managed directory ownership", () => {
     const check = vi
       .spyOn(CodexRuntimePreflight.prototype, "check")
       .mockResolvedValue({ reason: "codex-cli-version-too-old" });
+    expect(await f.localCatalog()).toMatchObject({ sessions: [], codexRuntimeReason: null });
+    expect(check).toHaveBeenCalledOnce();
     expect(await f.localCatalog()).toMatchObject({
       sessions: [],
       codexRuntimeReason: "codex-cli-version-too-old",
     });
-    expect(check).toHaveBeenCalledOnce();
     check.mockResolvedValue({ reason: "codex-cli-version-unavailable" });
+    await f.localCatalog();
     expect(await f.localCatalog()).toMatchObject({ sessions: [], codexRuntimeReason: null });
   });
 
@@ -649,6 +703,8 @@ describe("managed directory ownership", () => {
       expect(snapshot.complete).toBe(false);
       expect(snapshot.records).toHaveLength(20_000);
       const local = await f.localCatalog();
+      expect(local.complete).toBe(false);
+      expect(local.incompleteSources).toBeUndefined();
       expect(
         local.sessions
           .filter((record) => record.executionMode === "codex-managed")

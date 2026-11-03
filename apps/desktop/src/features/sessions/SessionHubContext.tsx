@@ -62,8 +62,10 @@ function useHub(active: boolean) {
     localWorkspaces,
     active && localEnabled,
     controlled ? refreshControlledCatalog : undefined,
+    localEnabled,
   );
-  const controlledCatalog = useConversationCatalog(active && localEnabled);
+  const controlledCatalog = useConversationCatalog(active && localEnabled, localEnabled);
+  const localAccessDenied = controlled && controlledCatalog.accessDenied === true;
   const catalogError =
     controlled && active && localEnabled && controlledCatalog.error !== undefined
       ? isBusyRead(controlledCatalog.error)
@@ -71,7 +73,12 @@ function useHub(active: boolean) {
         : localizeMessage(controlledCatalog.error)
       : "";
   const localSessions = useMemo(() => {
-    if (!controlled) return catalog.sessions;
+    if (localAccessDenied) return [];
+    // The persisted workspace index can arrive before the managed directory.
+    // Use it for display until that directory has its own trusted snapshot;
+    // navigation and controls still wait for its current authoritative read.
+    if (!controlled || !(controlledCatalog.usable ?? controlledCatalog.ready))
+      return catalog.sessions;
     const identity = (agent: string, id: string) => `${agent}:${id}`;
     const seen = new Set(
       controlledCatalog.sessions.flatMap((session) => [
@@ -114,7 +121,10 @@ function useHub(active: boolean) {
     ];
   }, [
     controlled,
+    localAccessDenied,
     controlledCatalog.sessions,
+    controlledCatalog.usable,
+    controlledCatalog.ready,
     controlledCatalog.codexRuntimeReason,
     catalog.sessions,
   ]);
@@ -184,6 +194,31 @@ function useHub(active: boolean) {
   const selectedWorkspace = selected
     ? workspaces.find((workspace) => workspace.id === selected.workspace_id)
     : undefined;
+  const [selectionSource, setSelectionSource] = useState<{
+    id: string;
+    workspaceId: string;
+    agent: string;
+  }>();
+  if (
+    selected &&
+    (selectionSource?.id !== selected.id ||
+      selectionSource.workspaceId !== selected.workspace_id ||
+      selectionSource.agent !== selected.agent)
+  ) {
+    setSelectionSource({
+      id: selected.id,
+      workspaceId: selected.workspace_id,
+      agent: selected.agent,
+    });
+  }
+  const directoryUsable =
+    !enabled ||
+    !localEnabled ||
+    (!localAccessDenied &&
+      (controlled
+        ? (controlledCatalog.usable ?? controlledCatalog.ready) || (catalog.usable ?? catalog.ready)
+        : (catalog.usable ?? catalog.ready))) ||
+    remote.sessions.length > 0;
   const selectionRevision = useRef(0);
   const selectionVersion = useCallback(() => selectionRevision.current, []);
   const select = useCallback(
@@ -236,19 +271,40 @@ function useHub(active: boolean) {
   useEffect(() => {
     const target = allSessions.find((session) => session.id === canonicalId);
     if (target && !listed(target)) return;
-    // Wait until every workspace cache has been read before validating a deep link.
+    // A partial snapshot can prove absence only in sources that completed.
+    // Remember the selected source, not its display/control data, so failure of
+    // an unrelated provider does not block a confirmed deletion forever.
+    const incomplete = controlledCatalog.incompleteSources ?? [];
+    const selectedSource = selectionSource?.id === canonicalId ? selectionSource : undefined;
+    const selectionVerified =
+      !controlled ||
+      controlledCatalog.complete !== false ||
+      (selectedSource !== undefined &&
+        incomplete.length > 0 &&
+        !incomplete.some(
+          (source) =>
+            source.workspaceId === selectedSource.workspaceId &&
+            source.agent === selectedSource.agent,
+        ));
+    // Wait for a current successful read before validating a deep link. A cached
+    // directory remains usable while this background observation is pending.
     if (
       sessionId &&
       (!sessionId.startsWith("remote:") || sessions.some((session) => session.id === sessionId)) &&
       catalog.ready &&
       controlledCatalog.ready &&
+      selectionVerified &&
       !catalogError &&
       enabled &&
       !workspaceQuery.isPending &&
       !workspaceQuery.error &&
       !selected &&
       (sessions.some((session) => session.id === sessionId) ||
-        (!catalog.refreshing && Object.keys(catalog.errors).length === 0))
+        (!catalog.refreshing &&
+          (controlled ||
+            (selectedSource
+              ? !catalog.errors[selectedSource.workspaceId]
+              : Object.keys(catalog.errors).length === 0))))
     ) {
       void navigate({
         to: "/sessions",
@@ -262,6 +318,10 @@ function useHub(active: boolean) {
     allSessions,
     catalog.ready,
     controlledCatalog.ready,
+    controlledCatalog.complete,
+    controlledCatalog.incompleteSources,
+    selectionSource,
+    controlled,
     catalogError,
     catalog.refreshing,
     catalog.sessions,
@@ -279,7 +339,11 @@ function useHub(active: boolean) {
     errors: catalog.errors,
     refreshing: catalog.refreshing,
     ready: catalog.ready && controlledCatalog.ready,
-    loading: catalog.loading || (controlled && !controlledCatalog.ready),
+    usable: directoryUsable,
+    loading:
+      !directoryUsable &&
+      !localAccessDenied &&
+      (catalog.loading || (controlled && !controlledCatalog.ready)),
     catalogError,
     hiddenSessionNotice,
     sessions,

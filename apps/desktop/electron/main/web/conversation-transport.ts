@@ -96,6 +96,7 @@ export function isConversationPath(path: string, post: boolean) {
         "/info",
         "/catalog",
         "/events",
+        "/session-images",
         "/live",
         "/attachments",
         "/codex/capabilities",

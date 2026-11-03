@@ -2,14 +2,18 @@ import { useSyncExternalStore } from "react";
 import { desktopApi } from "@/core/desktop";
 import type { DesktopAccountStatus } from "../../../electron/main/account/state";
 
-type Scope = { key: string; ready: boolean };
+type Scope = { key: string; ready: boolean; identityKey?: string };
 const listeners = new Set<() => void>();
-let snapshot: Scope = { key: "legacy-local-owner:0", ready: true };
+let snapshot: Scope = {
+  key: "legacy-local-owner:0",
+  ready: true,
+  identityKey: "legacy-local-owner",
+};
 let revision = 0;
 let identity = "";
 let release: (() => void) | undefined;
 function publish(key: string, ready: boolean) {
-  snapshot = { key: `${key}:${++revision}`, ready };
+  snapshot = { key: `${key}:${++revision}`, ready, identityKey: ready ? key : undefined };
   for (const listener of [...listeners]) listener();
 }
 function start() {

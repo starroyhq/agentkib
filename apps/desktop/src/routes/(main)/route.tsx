@@ -26,10 +26,12 @@ import { workspaceSearchForPage, type AppSearch, type Page } from "@/features/ap
 import { cn } from "cn";
 import { useAppDialogs } from "@/components/AppDialogProvider";
 import { AppMessageBanner } from "@/features/app/AppMessageBanner";
+import { useQuotaSnapshot } from "@/features/quota/quota-query";
 
 function MainLayout() {
   const { app, history, searchOpen, onOpenSearch } = useAppNavigationContext();
   const { tr } = useI18n();
+  const quota = useQuotaSnapshot();
   const dialogs = useAppDialogs();
   const navigate = useNavigate();
   const locationKey = useLocation({ select: (location) => location.href });
@@ -76,10 +78,10 @@ function MainLayout() {
   const sidebar = (
     <AppSidebar
       searchOpen={searchOpen}
-      onRefresh={() => void app.refreshCurrentView()}
       active={isWorkspace ? "workspaces" : active}
       collapsed={sidebarCollapsed}
       entries={entries}
+      quotaSnapshot={quota.data}
       favoriteWorkspaceIds={favoriteWorkspaceIds}
       workspaces={[...app.workspaces].sort((left, right) => {
         const leftFavorite = favoriteWorkspaceIds.indexOf(left.id);
@@ -164,8 +166,10 @@ function MainLayout() {
             )}
             <section
               className={cn(
-                "content mx-auto w-full max-w-[1500px] px-6 pb-10 pt-5 max-[640px]:px-4",
-                isSessions && "app-sessions-content !pt-0",
+                "content w-full",
+                isSessions
+                  ? "app-sessions-content"
+                  : "mx-auto max-w-[1500px] px-6 pb-10 pt-5 max-[640px]:px-4",
               )}
             >
               <Outlet />

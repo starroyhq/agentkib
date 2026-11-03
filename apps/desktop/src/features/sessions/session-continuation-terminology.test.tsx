@@ -339,7 +339,7 @@ describe("visible session continuation terminology", () => {
       redraw(view);
       expect(screen.getByText(expected.choice)).toBeVisible();
       expect(screen.getByText(expected.draftHint)).toBeVisible();
-      expect(screen.getByText(expected.forkHint)).toBeVisible();
+      expect(screen.queryByText(expected.forkHint)).not.toBeInTheDocument();
       expect(screen.getByRole("button", { name: expected.fork })).toBeVisible();
       expect(screen.getByRole("button", { name: expected.back })).toBeVisible();
       expect(screen.queryByRole("textbox", { name: session.t.message })).not.toBeInTheDocument();

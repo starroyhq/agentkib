@@ -267,7 +267,17 @@ export function readSnapshotMatches(
 export function visibleReadTarget(viewport: HTMLElement, target: HTMLElement): boolean {
   if (document.visibilityState !== "visible" || !document.hasFocus() || !target.isConnected)
     return false;
-  if (document.querySelector('[aria-modal="true"], dialog[open]')) return false;
+  if (
+    document.querySelector(
+      '[aria-modal="true"], dialog[open], [data-slot="dialog-content"][data-open]',
+    )
+  )
+    return false;
+  if (
+    target.matches('[data-message-image-pending="true"]') ||
+    target.querySelector('[data-message-image-pending="true"]')
+  )
+    return false;
   const box = target.getBoundingClientRect(),
     clip = viewport.getBoundingClientRect();
   const left = Math.max(box.left, clip.left, 0),
@@ -543,6 +553,17 @@ export function useVisibleReadState(options: {
       if (result?.itemId && !exactItem) return;
       if (!result && state.firstUnread?.type !== "threadStart") return;
       if (!target) return;
+      if (!result) {
+        // Manual-unread threads use a separate terminal marker. Their latest
+        // displayed message still needs to show its images before that marker
+        // can prove reading; older off-screen attachments do not block it.
+        const latestMessage = [...observation.events!]
+          .reverse()
+          .filter((event) => event.kind === "user-message" || resultBody(event))
+          .map((event) => nodes.find((node) => node.dataset.eventId === event.id))
+          .find((node) => node !== undefined);
+        if (latestMessage?.querySelector('[data-message-image-pending="true"]')) return;
+      }
       const intent = reviewIntent;
       if (
         intent?.id === current.sessionId &&
@@ -638,7 +659,13 @@ export function useVisibleReadState(options: {
         childList: true,
         subtree: true,
         attributes: true,
-        attributeFilter: ["aria-modal", "open", "hidden"],
+        attributeFilter: [
+          "aria-modal",
+          "open",
+          "data-open",
+          "hidden",
+          "data-message-image-pending",
+        ],
       });
     schedule();
     return () => {

@@ -285,7 +285,8 @@ describe("catalog loading through the real Web application and session provider"
     await waitFor(() => expect(host.readCatalog).toHaveBeenCalledOnce());
     const newer = deferred<Response>();
     host.readCatalog.mockReturnValue(newer.promise);
-    act(() => directoryStream().emit("catalog-invalidated"));
+    const directory = await waitFor(directoryStream);
+    act(() => directory.emit("catalog-invalidated"));
     await waitFor(() => expect(host.readCatalog).toHaveBeenCalledTimes(2));
     await act(async () => newer.resolve(Response.json(emptyCatalog)));
     expect(await screen.findByText(dictionaries["zh-CN"].empty)).toBeVisible();
@@ -320,8 +321,9 @@ describe("catalog loading through the real Web application and session provider"
     await waitFor(() => expect(host.readCatalog).toHaveBeenCalledOnce());
     const next = deferred<Response>();
     host.readCatalog.mockReturnValue(next.promise);
+    const directory = await waitFor(directoryStream);
     host.state.access = { ...host.state.access, bootId: "replacement-boot" };
-    act(() => directoryStream().emit("access-changed"));
+    act(() => directory.emit("access-changed"));
     await waitFor(() => expect(CatalogEventSource.instances).toHaveLength(2));
     act(() => CatalogEventSource.instances.at(-1)!.onopen?.());
     await waitFor(() => expect(host.readCatalog).toHaveBeenCalledTimes(2));

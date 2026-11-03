@@ -7,6 +7,11 @@ export const MAX_PAGE_BYTES = 2 * 1024 * 1024;
 export const MAX_LINE_BYTES = 4 * 1024 * 1024;
 export type CompatibleFormat = "open-claw" | "hermes" | "grok-build";
 export type HistoryFormat = CompatibleFormat | "codex" | "claude-code";
+export interface ConversationImage {
+  id: string;
+  mimeType?: string;
+  name?: string;
+}
 export interface ConversationEvent {
   id: string;
   kind: "user-message" | "agent-message" | "tool-summary";
@@ -18,6 +23,7 @@ export interface ConversationEvent {
   tool_status: string | null;
   duration_ms: number | null;
   attachment_count: number;
+  images?: ConversationImage[];
   truncated: boolean;
   /** Bounded, redacted detail for `tool-summary` items. */
   tool?: ConversationToolDetail;

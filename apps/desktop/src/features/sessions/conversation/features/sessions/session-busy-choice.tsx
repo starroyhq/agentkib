@@ -25,6 +25,7 @@ export function SessionBusyChoice({
   return (
     <div className="w-full max-w-3xl self-center space-y-2">
       <SessionContinuationChoice
+        compact
         locale={session.locale}
         agent={session.current?.agent === "claude-code" ? "Claude Code" : "Codex"}
         title={session.currentTitle || session.current?.title || session.t.untitled}

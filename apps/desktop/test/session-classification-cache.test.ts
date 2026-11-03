@@ -10,6 +10,7 @@ import {
 } from "../../../packages/backend/src/store-migrations";
 
 const databases: DatabaseSync[] = [];
+const indexes: SessionIndex[] = [];
 const native = (ref: string, origin: NativeSession["origin"] = "unknown"): NativeSession => ({
   native_ref: ref,
   agent: "codex",
@@ -46,7 +47,9 @@ function fixture() {
 }
 
 afterEach(() => {
+  for (const index of indexes.splice(0)) index.close();
   for (const database of databases.splice(0)) database.close();
+  vi.restoreAllMocks();
 });
 
 describe("Codex classification cache upgrade", () => {
@@ -138,21 +141,26 @@ describe("Codex classification cache upgrade", () => {
 });
 
 describe("directory reads during reclassification", () => {
-  it("rescans only Codex and shares concurrent reads without a repeated upgrade scan", async () => {
+  it("returns trusted cache immediately and coalesces background Codex classification", async () => {
     const { store, upgrade } = fixture();
     store.sync("workspace", "codex", [native("old")]);
     upgrade();
     const list = vi.fn(async () => ({ sessions: [native("old", "execution")], incomplete: false }));
     const index = new SessionIndex(store, { list }, () => true);
+    indexes.push(index);
     const [first, second] = await Promise.all([index.read("workspace"), index.read("workspace")]);
-    expect(list).toHaveBeenCalledExactlyOnceWith("codex", "/fixture/workspace");
-    expect(first[0]?.origin).toBe("execution");
+    expect(list).not.toHaveBeenCalled();
+    expect(first).toEqual([]);
     expect(second).toEqual(first);
+    await vi.waitFor(() => expect(store.list("workspace")[0]?.origin).toBe("execution"));
+    expect(list).toHaveBeenCalledExactlyOnceWith("codex", "/fixture/workspace");
     await index.read("workspace");
     expect(list).toHaveBeenCalledTimes(1);
   });
 
   it("returns reclassified rows while retaining failed-source history for a later read", async () => {
+    let now = Date.now();
+    vi.spyOn(Date, "now").mockImplementation(() => now);
     const { store, upgrade } = fixture();
     store.sync("workspace", "codex", [native("verified"), native("unverified")]);
     upgrade();
@@ -162,10 +170,22 @@ describe("directory reads during reclassification", () => {
       .mockResolvedValueOnce({ sessions: [native("verified", "interactive")], incomplete: true })
       .mockResolvedValueOnce({ sessions: [native("unverified", "execution")], incomplete: true });
     const index = new SessionIndex(store, { list }, () => true);
+    indexes.push(index);
     expect(await index.read("workspace")).toEqual([]);
+    await vi.waitFor(() => expect(list).toHaveBeenCalledTimes(1));
     expect(store.get(store.id("codex", "unverified"))).not.toBeNull();
+    expect(await index.read("workspace")).toEqual([]);
+    expect(list).toHaveBeenCalledTimes(1);
+    now += 5_000;
+    await index.read("workspace");
+    await vi.waitFor(() =>
+      expect(store.list("workspace").map((item) => item.title)).toEqual(["verified"]),
+    );
     expect((await index.read("workspace")).map((item) => item.title)).toEqual(["verified"]);
-    expect(await index.read("workspace")).toHaveLength(2);
+    expect(list).toHaveBeenCalledTimes(2);
+    now += 5_000;
+    await index.read("workspace");
+    await vi.waitFor(() => expect(store.list("workspace")).toHaveLength(2));
     expect(store.codexClassificationPending("workspace")).toBe(false);
     await index.read("workspace");
     expect(list).toHaveBeenCalledTimes(3);
@@ -177,7 +197,11 @@ describe("directory reads during reclassification", () => {
     upgrade();
     const list = vi.fn(async () => ({ sessions: [native("old", "execution")] }));
     const index = new SessionIndex(store, { list }, () => true);
-    expect((await index.read(SESSION_COLLECTIONS.projectless))[0]?.origin).toBe("execution");
+    indexes.push(index);
+    expect(await index.read(SESSION_COLLECTIONS.projectless)).toEqual([]);
+    await vi.waitFor(() =>
+      expect(store.list(SESSION_COLLECTIONS.projectless)[0]?.origin).toBe("execution"),
+    );
     expect(list).toHaveBeenCalledExactlyOnceWith("codex", SESSION_COLLECTIONS.projectless);
   });
 
@@ -193,6 +217,7 @@ describe("directory reads during reclassification", () => {
         }),
     );
     const index = new SessionIndex(store, { list }, () => true);
+    indexes.push(index);
     const read = index.read("workspace");
     await vi.waitFor(() => expect(list).toHaveBeenCalledTimes(1));
     index.clear({ workspaceId: "workspace" });

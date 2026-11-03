@@ -124,7 +124,7 @@ function providerAgent(id: string, name: string): AgentKind | undefined {
   return undefined;
 }
 
-function useQuotaClock(resetAt: number, staleAt: number) {
+export function useQuotaClock(resetAt: number, staleAt: number) {
   const [now, setNow] = useState(Date.now);
   useEffect(() => {
     let timer: ReturnType<typeof setTimeout> | undefined;

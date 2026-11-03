@@ -1,4 +1,15 @@
 import type { ContinuationComposerDraft, ContinuationDraft } from "./continuation-draft";
+import {
+  mountSessionImages,
+  acceptSessionImageAccess,
+  invalidateSessionImages,
+  sessionImageRevision,
+  readSessionImageAccess,
+  setSessionImageIndexEnabled,
+  forgetSessionImages,
+  restoreSessionImages,
+  noteSessionImageBoot,
+} from "./session-image-scope";
 import { claudeConnectionReason } from "./claude-connection-copy";
 import {
   historyMessageText,
@@ -36,6 +47,10 @@ import {
   isClaudeCommandRefusal,
   isLegacyPreparedReceipt,
   WebClient,
+  mergeCatalogSessions,
+  isStaleCatalogRead,
+  retryStaleCatalogRead,
+  type ConversationCatalog,
   type Access,
   type ClaudeCommandRefusal,
   type WebConnection,
@@ -225,28 +240,32 @@ export function useSessionController({
     actionUnavailable?.binding === settingsBinding ? actionUnavailable.reason : undefined;
   const entryNotice = useRef<{ sessionId: string; ignoredId?: string } | undefined>(undefined);
   const liveValue = useRef<Live | undefined>(undefined);
-  const setLive = useCallback((value: SetStateAction<Live | undefined>) => {
-    let next = typeof value === "function" ? value(liveValue.current) : value;
-    if (!next) entryNotice.current = undefined;
-    else {
-      if (entryNotice.current?.sessionId !== next.sessionId)
-        entryNotice.current = {
-          sessionId: next.sessionId,
-          ...(next.continuationNotice === "background-ended"
-            ? { ignoredId: next.continuationNoticeId ?? "legacy" }
-            : {}),
-        };
-      // Another client may still observe this session. Its earlier retirement notice is
-      // not an event in this visit; a later retirement has a different identity and shows.
-      if (
-        next.continuationNotice === "background-ended" &&
-        entryNotice.current.ignoredId === (next.continuationNoticeId ?? "legacy")
-      )
-        next = { ...next, continuationNotice: null };
-    }
-    liveValue.current = next;
-    publishLive(next);
-  }, []);
+  const setLive = useCallback(
+    (value: SetStateAction<Live | undefined>) => {
+      let next = typeof value === "function" ? value(liveValue.current) : value;
+      noteSessionImageBoot(client, next?.runtimeBootId);
+      if (!next) entryNotice.current = undefined;
+      else {
+        if (entryNotice.current?.sessionId !== next.sessionId)
+          entryNotice.current = {
+            sessionId: next.sessionId,
+            ...(next.continuationNotice === "background-ended"
+              ? { ignoredId: next.continuationNoticeId ?? "legacy" }
+              : {}),
+          };
+        // Another client may still observe this session. Its earlier retirement notice is
+        // not an event in this visit; a later retirement has a different identity and shows.
+        if (
+          next.continuationNotice === "background-ended" &&
+          entryNotice.current.ignoredId === (next.continuationNoticeId ?? "legacy")
+        )
+          next = { ...next, continuationNotice: null };
+      }
+      liveValue.current = next;
+      publishLive(next);
+    },
+    [client],
+  );
   const { online, notice, reason: noticeReason } = connectionNotice;
   const setNotice = useCallback((notice?: ControlNotice, reason?: NotDispatchedReason) => {
     setConnectionNotice((value) => ({
@@ -349,6 +368,7 @@ export function useSessionController({
     accessRef = useRef<Access | undefined>(undefined),
     scroll = useRef<HTMLElement>(null),
     mutating = useRef(false);
+  const imageRequestVersion = useCallback(() => generation.current, []);
   const forkNavigation = useRef<ForkNavigation | undefined>(undefined);
   const cancelForkNavigation = useCallback(() => {
     forkNavigation.current?.resolve(undefined);
@@ -469,6 +489,14 @@ export function useSessionController({
     clearCapabilities,
     cancelForkNavigation,
   ]);
+  const clearEndedImageAccess = useCallback(() => {
+    invalidateSessionImages(client);
+    clear();
+  }, [client, clear]);
+  const disconnectImages = useCallback(() => {
+    invalidateSessionImages(client);
+    disconnect?.();
+  }, [client, disconnect]);
   const leaveSession = useCallback(() => {
     cancelForkNavigation();
     generation.current++;
@@ -497,7 +525,26 @@ export function useSessionController({
     cancelForkNavigation,
   ]);
   const acceptCatalog = useCallback(
-    (records: ConversationSessionSummary[]) => {
+    (
+      records: ConversationSessionSummary[],
+      snapshot?: Pick<ConversationCatalog, "complete" | "incompleteSources">,
+    ) => {
+      const previous = catalogRecords.current;
+      const readableEvidence = snapshot
+        ? records.filter((record) => record.availability === "readable")
+        : [];
+      records = mergeCatalogSessions(
+        previous ?? [],
+        records,
+        snapshot?.incompleteSources,
+        snapshot?.complete === false && !snapshot.incompleteSources?.length,
+      );
+      const readable = new Set(
+        records.filter((record) => record.availability === "readable").map((record) => record.id),
+      );
+      for (const record of previous ?? [])
+        if (!readable.has(record.id)) forgetSessionImages(client, record.id);
+      for (const record of readableEvidence) restoreSessionImages(client, record.id);
       catalogRecords.current = records;
       const listed = (record: ConversationSessionSummary) =>
         isSessionListed(record, { execution: showExecutionValue.current });
@@ -515,7 +562,7 @@ export function useSessionController({
         setCatalogNotice(true);
       }
     },
-    [leaveSession, observeForkNavigation],
+    [client, leaveSession, observeForkNavigation],
   );
   useEffect(() => {
     if (showExecutionValue.current === showExecution) return;
@@ -526,6 +573,11 @@ export function useSessionController({
     (e: unknown, g = generation.current) => {
       if (g !== generation.current) return;
       readinessEpoch.current++;
+      if (
+        e instanceof ApiError &&
+        (e.status === 401 || e.status === 403 || e.code === "access_ended")
+      )
+        invalidateSessionImages(client);
       if (e instanceof ApiError && e.code === "access_ended") {
         if (isLan) client.reset();
         clear();
@@ -588,52 +640,61 @@ export function useSessionController({
     (stillCurrent?: () => boolean) => {
       const g = generation.current;
       const epoch = ++accessEpoch.current;
+      let imageRevision = sessionImageRevision(client);
       const flight = (async () => {
-        let next: Access;
-        try {
-          next = await client.access();
-        } catch (error) {
+        for (let imageAttempt = 0; ; imageAttempt++) {
+          let next: Access;
+          try {
+            next = await readSessionImageAccess(client);
+          } catch (error) {
+            if (g !== generation.current) return;
+            if (epoch !== accessEpoch.current) return accessFlight.current;
+            if (stillCurrent && !stillCurrent()) return;
+            throw error;
+          }
           if (g !== generation.current) return;
+          // A notification may require a newer access read while a full refresh is
+          // pending. Its callers must finish using that accepted read, not abandon
+          // the refresh and leave its control fence set indefinitely.
           if (epoch !== accessEpoch.current) return accessFlight.current;
           if (stillCurrent && !stillCurrent()) return;
-          throw error;
-        }
-        if (g !== generation.current) return;
-        // A notification may require a newer access read while a full refresh is
-        // pending. Its callers must finish using that accepted read, not abandon
-        // the refresh and leave its control fence set indefinitely.
-        if (epoch !== accessEpoch.current) return accessFlight.current;
-        if (stillCurrent && !stillCurrent()) return;
-        const old = accessRef.current;
-        if (
-          old &&
-          (old.historySearchScope !== next.historySearchScope ||
-            !next.device?.send ||
-            !next.historySearch)
-        ) {
-          setHistoryReferences([]);
-          setHistorySearchOpen(false);
-        }
-        if (
-          old?.status === "approved" &&
-          (next.status !== "approved" ||
-            old.bootId !== next.bootId ||
-            old.device?.id !== next.device?.id)
-        )
-          clear();
-        if (next.status === "approved" && next.device?.id) {
-          const scope = pendingScope(origin, next.device.id);
-          if (durableScope.current !== scope) {
-            const pending = readPending(scope);
-            durableScope.current = scope;
-            durablePending.current = pending;
+          if (imageRevision !== sessionImageRevision(client)) {
+            if (imageAttempt >= 2) throw new DOMException("Access scope changed", "AbortError");
+            imageRevision = sessionImageRevision(client);
+            continue;
           }
+          const old = accessRef.current;
+          if (
+            old &&
+            (old.historySearchScope !== next.historySearchScope ||
+              !next.device?.send ||
+              !next.historySearch)
+          ) {
+            setHistoryReferences([]);
+            setHistorySearchOpen(false);
+          }
+          if (
+            old?.status === "approved" &&
+            (next.status !== "approved" ||
+              old.bootId !== next.bootId ||
+              old.device?.id !== next.device?.id)
+          )
+            clear();
+          if (next.status === "approved" && next.device?.id) {
+            const scope = pendingScope(origin, next.device.id);
+            if (durableScope.current !== scope) {
+              const pending = readPending(scope);
+              durableScope.current = scope;
+              durablePending.current = pending;
+            }
+          }
+          acceptSessionImageAccess(client, next);
+          accessRef.current = next;
+          observeForkNavigation();
+          if (isLan && next.status === "ended") client.reset();
+          setAccess(next);
+          return next;
         }
-        accessRef.current = next;
-        observeForkNavigation();
-        if (isLan && next.status === "ended") client.reset();
-        setAccess(next);
-        return next;
       })();
       accessFlight.current = flight;
       return flight;
@@ -783,18 +844,20 @@ export function useSessionController({
         await reconcilePending(selection.current || undefined);
         if (g !== generation.current) return;
         const catalogOrder = ++catalogReadOrder.current;
-        const catalog = await retryBusyRead(() => client.catalog());
+        const catalog = await retryStaleCatalogRead(() => retryBusyRead(() => client.catalog()));
         if (g !== generation.current) return;
         if (contention !== readContention.current.version)
           throw new ApiError(409, "operation_busy");
         if (catalogOrder === catalogReadOrder.current) {
           if (!catalog.indexEnabled) {
+            setSessionImageIndexEnabled(client, false);
             clear();
             setIndexEnabled(false);
             return;
           }
+          setSessionImageIndexEnabled(client, true);
           setIndexEnabled(true);
-          acceptCatalog(catalog.sessions);
+          acceptCatalog(catalog.sessions, catalog);
           setWorkspaces(catalog.workspaces);
         }
         // The full refresh still owns calibrating selected history and control
@@ -947,7 +1010,7 @@ export function useSessionController({
         }
       } catch (e) {
         if (!historyScope || historyScope.epoch === nativeCoverage.current.historyCacheEpoch) {
-          if (e instanceof ApiError && e.code === "operation_busy") {
+          if ((e instanceof ApiError && e.code === "operation_busy") || isStaleCatalogRead(e)) {
             if (g !== generation.current || epoch !== readinessEpoch.current) return;
             // Only retry this read, under the fence it originally acquired. A
             // newer selection, refresh or uncertain control cancels its recovery.
@@ -1011,6 +1074,13 @@ export function useSessionController({
       void refresh(false, true);
     },
     [refresh, resumeDeferredRefresh],
+  );
+  useEffect(
+    () =>
+      mountSessionImages(client, () => {
+        void syncAccess().catch((error) => fail(error));
+      }),
+    [client, syncAccess, fail],
   );
   useEffect(() => {
     void refresh();
@@ -1123,7 +1193,9 @@ export function useSessionController({
             // the generation belonging to this newly accepted access instead.
             g = generation.current;
             const catalogOrder = ++catalogReadOrder.current;
-            const catalog = await retryBusyRead(() => client.catalog());
+            const catalog = await retryStaleCatalogRead(() =>
+              retryBusyRead(() => client.catalog()),
+            );
             if (!active()) break;
             if (g !== generation.current) {
               if (retryInvalidated(g)) continue;
@@ -1134,12 +1206,14 @@ export function useSessionController({
               continue;
             }
             if (!catalog.indexEnabled) {
+              setSessionImageIndexEnabled(client, false);
               clear();
               setIndexEnabled(false);
               break;
             }
+            setSessionImageIndexEnabled(client, true);
             setIndexEnabled(true);
-            acceptCatalog(catalog.sessions);
+            acceptCatalog(catalog.sessions, catalog);
             setWorkspaces(catalog.workspaces);
             await reconcilePending();
             retryAfterControl = false;
@@ -1151,7 +1225,10 @@ export function useSessionController({
             if (active() && !retryInvalidated(g)) {
               // Read contention is not an uncertain command outcome. Wait for a
               // settlement/catalog event without fencing the selected conversation.
-              if (error instanceof ApiError && error.code === "operation_busy")
+              if (
+                (error instanceof ApiError && error.code === "operation_busy") ||
+                isStaleCatalogRead(error)
+              )
                 retryAfterControl = true;
               else fail(error, g);
             }
@@ -1230,6 +1307,7 @@ export function useSessionController({
               state.epoch !== previous.epoch ||
               state.runtimeBootId !== previous.runtimeBootId;
             if (advanced) {
+              noteSessionImageBoot(client, state.runtimeBootId);
               wakeDeferredRefresh();
               if (
                 event.type === "snapshot" ||
@@ -1308,7 +1386,7 @@ export function useSessionController({
     fail,
     readBusy,
     refreshWake,
-    clear,
+    clear: clearEndedImageAccess,
     accessRef,
     setLive,
     setOnline,
@@ -1450,6 +1528,7 @@ export function useSessionController({
   );
   async function post(path: string, body: unknown) {
     if (mutating.current) return;
+    if (path.replace(/^\//, "") === "logout") invalidateSessionImages(client);
     mutating.current = true;
     setBusy(true);
     setError(!!nativeCoverage.current.historyRecoveryFailed);
@@ -1839,6 +1918,8 @@ export function useSessionController({
       setNotice("accepted");
       if (["steer", "queue-add"].includes(action)) setHistoryReferences([]);
       if (action === "delete") {
+        catalogReadOrder.current++;
+        forgetSessionImages(client, id);
         // Nothing of a deleted conversation can be read again. Fence it and drop its row until
         // the catalog, which the host invalidates, arrives without it.
         excludedIds.current = new Set([...excludedIds.current, id]);
@@ -2375,7 +2456,8 @@ export function useSessionController({
     pendingSend,
     origin,
     connection: client.connection,
-    disconnect,
+    disconnect: disconnect ? disconnectImages : undefined,
+    imageRequestVersion,
     locale,
     setLocale,
     theme,

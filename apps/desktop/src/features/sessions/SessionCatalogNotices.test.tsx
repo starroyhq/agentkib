@@ -75,6 +75,7 @@ function defaultHub(): ReturnType<typeof useSessionHub> {
     loading: false,
     refreshing: false,
     ready: true,
+    usable: true,
     historyRevision: 0,
     conversationRefreshRevision: 0,
     runtimeReady: true,

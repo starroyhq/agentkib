@@ -6,6 +6,7 @@ import { join } from "node:path";
 import { createServer, request, ServerResponse } from "node:http";
 import { WebAccessService, createWebControlState } from "./service";
 import { ConversationHub } from "../conversation-hub";
+import { RuntimeRequestError } from "../runtime-host";
 import { RUNTIME_METHODS, type SessionStreamEvent } from "../../generated/runtime-protocol";
 import { approveLegacyBrowser, seedLegacyPending } from "./legacy-pairing-fixture";
 import { RelayManager } from "./relay/manager";
@@ -602,6 +603,47 @@ describe("WebAccessService loopback security boundary", () => {
       expect(runtime).not.toHaveBeenCalled();
     },
   );
+  it.each([
+    new Error("catalog-stale"),
+    new RuntimeRequestError({
+      code: -32000,
+      message: "Read failed",
+      data: { detail: "catalog-stale" },
+    }),
+  ])(
+    "reports an invalidated catalog as a retryable read, never a successful empty directory (%s)",
+    async (error) => {
+      await bootstrap();
+      await pair(false, false);
+      runtime.mockRejectedValueOnce(error);
+      const response = await http("/api/web/v1/catalog");
+      expect(response.status).toBe(409);
+      expect(response.json()).toEqual({ error: "catalog_stale" });
+      runtime.mockRejectedValueOnce(error);
+      expect(await service.localRequest("catalog")).toEqual({
+        status: 409,
+        body: { error: "catalog_stale" },
+      });
+    },
+  );
+
+  it("keeps revocation authoritative when a pending catalog becomes stale", async () => {
+    await bootstrap();
+    const id = await pair(false, false);
+    let reject!: (error: Error) => void;
+    runtime.mockImplementationOnce(
+      () =>
+        new Promise((_resolve, fail) => {
+          reject = fail;
+        }),
+    );
+    const pending = http("/api/web/v1/catalog");
+    await vi.waitFor(() => expect(reject).toBeTypeOf("function"));
+    await service.request({ operation: "revoke", id });
+    reject(new Error("catalog-stale"));
+    expect((await pending).status).toBe(401);
+  });
+
   it("protects the workspace catalog and preserves history metadata without requiring control grants", async () => {
     const catalog = {
       indexEnabled: true,

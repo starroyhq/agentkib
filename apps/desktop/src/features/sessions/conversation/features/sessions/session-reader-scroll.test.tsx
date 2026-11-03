@@ -6,6 +6,7 @@ import { conversationWords } from "@/core/i18n";
 import { SessionReader } from "./session-reader";
 import { useSession } from "./session-context";
 import { webLayoutCopy } from "./web-layout-copy";
+import { contextUsageCopy } from "./context-usage-copy";
 
 vi.mock("./session-context", () => ({ useSession: vi.fn() }));
 vi.mock("./session-operations", () => ({ SessionOperations: () => null }));
@@ -15,6 +16,7 @@ type Session = ReturnType<typeof useSession>;
 let state: Session;
 let viewportHeight: number;
 let contentHeight: number;
+let composerHeight: number;
 let frameId: number;
 let frames: Map<number, FrameRequestCallback>;
 let observers: Set<TestResizeObserver>;
@@ -88,11 +90,15 @@ function reply(content = "Native reply") {
 beforeEach(() => {
   viewportHeight = 400;
   contentHeight = 1000;
+  composerHeight = 80;
   frameId = 0;
   frames = new Map();
   observers = new Set();
   positions = new WeakMap();
   vi.stubGlobal("ResizeObserver", TestResizeObserver);
+  vi.spyOn(Element.prototype, "getBoundingClientRect").mockImplementation(function (this: Element) {
+    return new DOMRect(0, 0, 0, this.classList.contains("reader-composer") ? composerHeight : 0);
+  });
   vi.stubGlobal(
     "requestAnimationFrame",
     vi.fn((callback: FrameRequestCallback) => {
@@ -181,7 +187,7 @@ describe("reader follows user intent across transcript and viewport layout", () 
     expect(screen.getAllByText("My pending message")).toHaveLength(1);
     expect(screen.getByText("Native reply")).toBeInTheDocument();
     expect(
-      screen.queryByRole("button", { name: webLayoutCopy["en-US"].newMessages }),
+      screen.queryByRole("button", { name: webLayoutCopy["en-US"].jumpToLatest }),
     ).not.toBeInTheDocument();
   });
 
@@ -194,6 +200,30 @@ describe("reader follows user intent across transcript and viewport layout", () 
     expect(state.control).not.toHaveBeenCalled();
   });
 
+  it("keeps the latest result above a growing sticky composer with a full-height viewport", () => {
+    const view = reader();
+    expect(view.viewport.style.scrollPaddingBottom).toBe("80px");
+    composerHeight = 200;
+    contentHeight = 1120;
+    resize();
+    expect(view.viewport.clientHeight).toBe(400);
+    expect(view.viewport.scrollTop).toBe(720);
+    expect(view.viewport.style.scrollPaddingBottom).toBe("200px");
+    expect(state.control).not.toHaveBeenCalled();
+  });
+
+  it("preserves an older reading position when the sticky composer grows", () => {
+    const view = reader();
+    fireEvent.wheel(view.viewport, { deltaY: -200 });
+    view.viewport.scrollTop = 200;
+    fireEvent.scroll(view.viewport);
+    composerHeight = 200;
+    contentHeight = 1120;
+    resize();
+    expect(view.viewport.style.scrollPaddingBottom).toBe("200px");
+    expect(view.viewport.scrollTop).toBe(200);
+  });
+
   it("preserves a deliberate upward read and resumes when returning to latest", () => {
     const view = reader();
     fireEvent.wheel(view.viewport, { deltaY: -200 });
@@ -204,17 +234,33 @@ describe("reader follows user intent across transcript and viewport layout", () 
     view.update();
     resize();
     expect(view.viewport.scrollTop).toBe(200);
-    const latest = screen.getByRole("button", { name: webLayoutCopy["en-US"].newMessages });
+    const latest = screen.getByRole("button", { name: webLayoutCopy["en-US"].jumpToLatest });
     expect(latest).toBeVisible();
     fireEvent.click(latest);
     flushFrames();
     expect(view.viewport.scrollTop).toBe(900);
     expect(
-      screen.queryByRole("button", { name: webLayoutCopy["en-US"].newMessages }),
+      screen.queryByRole("button", { name: webLayoutCopy["en-US"].jumpToLatest }),
     ).not.toBeInTheDocument();
     contentHeight = 1500;
     resize();
     expect(view.viewport.scrollTop).toBe(1100);
+  });
+
+  it("shows an icon-only bottom control for older content without waiting for new messages", () => {
+    const view = reader();
+    view.viewport.scrollTop = 450;
+    fireEvent.scroll(view.viewport);
+    const bottom = screen.getByRole("button", { name: webLayoutCopy["en-US"].jumpToLatest });
+    expect(bottom).toBeVisible();
+    expect(bottom.textContent).toBe("");
+    expect(screen.queryByText(webLayoutCopy["en-US"].newMessages)).not.toBeInTheDocument();
+    fireEvent.click(bottom);
+    flushFrames();
+    expect(view.viewport.scrollTop).toBe(600);
+    expect(
+      screen.queryByRole("button", { name: webLayoutCopy["en-US"].jumpToLatest }),
+    ).not.toBeInTheDocument();
   });
 
   it("does not pull an older reading position down for a new local pending message", () => {
@@ -257,7 +303,49 @@ describe("reader follows user intent across transcript and viewport layout", () 
     expect(screen.getByText("Older page")).toBeInTheDocument();
     expect(view.viewport.scrollTop).toBe(300);
     expect(
-      screen.queryByRole("button", { name: webLayoutCopy["en-US"].newMessages }),
-    ).not.toBeInTheDocument();
+      screen.queryByRole("button", { name: webLayoutCopy["en-US"].jumpToLatest }),
+    ).toBeVisible();
+  });
+});
+
+describe("reader compaction status belongs to the conversation", () => {
+  it.each(["zh-CN", "zh-TW", "en-US", "ja-JP"] as const)(
+    "shows a single concise status after the transcript in %s",
+    (locale) => {
+      state = {
+        ...state,
+        locale,
+        t: conversationWords(locale),
+        live: { ...state.live!, activity: "compacting" },
+      };
+      const view = reader();
+      const status = screen.getByText(contextUsageCopy[locale].compacting);
+      expect(status).toHaveAttribute("role", "status");
+      expect(status.closest(".reader-content")).not.toBeNull();
+      expect(status.closest(".reader-composer")).toBeNull();
+      const transcript = screen.getByText("Earlier reply");
+      expect(
+        transcript.compareDocumentPosition(status) & Node.DOCUMENT_POSITION_FOLLOWING,
+      ).toBeTruthy();
+      expect(screen.getAllByText(contextUsageCopy[locale].compacting)).toHaveLength(1);
+      expect(screen.queryByText(contextUsageCopy[locale].compactingDetail)).not.toBeInTheDocument();
+
+      state = { ...state, live: { ...state.live!, activity: undefined } };
+      view.update();
+      expect(screen.queryByText(contextUsageCopy[locale].compacting)).not.toBeInTheDocument();
+    },
+  );
+
+  it("does not show a previous session's compaction after selection changes", () => {
+    state = { ...state, live: { ...state.live!, activity: "compacting" } };
+    const view = reader();
+    expect(screen.getByText(contextUsageCopy["en-US"].compacting)).toBeInTheDocument();
+    state = {
+      ...state,
+      selected: "other-session",
+      current: { ...state.current!, id: "other-session" },
+    };
+    view.update();
+    expect(screen.queryByText(contextUsageCopy["en-US"].compacting)).not.toBeInTheDocument();
   });
 });

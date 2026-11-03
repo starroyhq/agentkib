@@ -10,6 +10,7 @@ export interface ConversationItem {
   tool_status?: string;
   duration_ms?: number | null;
   attachment_count: number;
+  images?: { id: string; mimeType?: string; name?: string }[];
   truncated: boolean;
   /** Live-only identity that an authoritative native history response may replace. */
   ephemeral?: boolean;

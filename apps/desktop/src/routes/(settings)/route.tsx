@@ -26,10 +26,12 @@ import { useAppStore } from "@/stores/app-store";
 import { useWorkspaceStore } from "@/features/workspace/workspace-store";
 import { WindowToolbar } from "@/components/WindowToolbar";
 import { cn } from "cn";
+import { useQuotaSnapshot } from "@/features/quota/quota-query";
 
 function SettingsLayout() {
   const { app, history, searchOpen, onOpenSearch } = useAppNavigationContext();
   const { tr } = useI18n();
+  const quota = useQuotaSnapshot();
   const navigate = useNavigate();
   const locationKey = useLocation({ select: (location) => location.href });
   const search = useSearch({ strict: false }) as {
@@ -52,10 +54,10 @@ function SettingsLayout() {
   const sidebar = (
     <AppSidebar
       searchOpen={searchOpen}
-      onRefresh={() => void app.refreshCurrentView()}
       active="settings"
       collapsed={false}
       entries={app.navigation}
+      quotaSnapshot={quota.data}
       favoriteWorkspaceIds={favoriteWorkspaceIds}
       workspaces={[...app.workspaces].sort((left, right) => {
         const leftFavorite = favoriteWorkspaceIds.indexOf(left.id);

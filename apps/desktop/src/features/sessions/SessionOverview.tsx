@@ -13,7 +13,6 @@ import {
   sessionSourceLabel,
   worktreeLabel,
 } from "./session-labels";
-import { SessionNotice as Notice } from "./SessionNotice";
 import { sessionGroupLabels } from "./session-catalog";
 import { WorktreeMark } from "./WorktreeMark";
 import { sessionSourceWasUsed } from "./session-source-status";
@@ -21,6 +20,7 @@ import { sessionSourceWasUsed } from "./session-source-status";
 export function SessionOverview() {
   const { locale, tr, formatDateTime, localizeMessage } = useI18n();
   const hub = useSessionHub();
+  const statsAvailable = hub.usable ?? (hub.ready || hub.filtered.length > 0);
   const resetFilters = useSessionViewStore((state) => state.resetFilters);
   const stats = [
     ["all", hub.filtered.length],
@@ -42,23 +42,34 @@ export function SessionOverview() {
 
   return (
     <>
-      <div className="session-stats mb-6 grid grid-cols-4 gap-3 max-[600px]:grid-cols-2">
+      <div
+        className="session-stats mb-6 grid grid-cols-4 gap-3 max-[600px]:grid-cols-2"
+        aria-busy={!statsAvailable}
+      >
         {stats.map(([key, count]) => (
           <div className="grid gap-2 rounded-xl bg-muted p-[18px] max-[600px]:p-3.5" key={key}>
-            <strong className="text-[28px] leading-[1.2] font-[550] tabular-nums">{count}</strong>
+            <strong className="text-[28px] leading-[1.2] font-[550] tabular-nums">
+              {statsAvailable ? count : "—"}
+            </strong>
             <span className="text-muted-foreground">{tr(`sessions.stat.${key}`)}</span>
           </div>
         ))}
       </div>
-      {hub.loading && <Notice>{tr("conversations.scanning")}</Notice>}
+      {hub.loading && !statsAvailable && (
+        <p className="mb-4 text-xs text-muted-foreground" role="status">
+          {tr("conversations.scanning")}
+        </p>
+      )}
       <div className="session-overview-panels grid grid-cols-[minmax(0,1.15fr)_minmax(0,1fr)] items-stretch gap-[18px] max-[1199px]:grid-cols-1">
         <section className="session-overview-panel min-w-0 rounded-[14px] border border-border">
           <header className="flex items-center gap-[9px] p-5">
             <Clock size={18} />
             <h2 className="flex-1 text-base font-semibold">{tr("sessions.recent")}</h2>
-            <span className="text-muted-foreground">{hub.filtered.length}</span>
+            <span className="text-muted-foreground">
+              {statsAvailable ? hub.filtered.length : "—"}
+            </span>
           </header>
-          <div className="session-overview-panel-content [scrollbar-width:thin]">
+          <div className="session-overview-panel-content">
             {hub.filtered.slice(0, 12).map((session) => {
               const status = sessionContinuationListState(session, locale);
               const source = hub.workspaces.find((item) => item.id === session.workspace_id);
@@ -133,7 +144,7 @@ export function SessionOverview() {
             <Database size={18} />
             <h2 className="flex-1 text-base font-semibold">{tr("sessions.indexStatus")}</h2>
           </header>
-          <div className="session-overview-panel-content [scrollbar-width:thin]">
+          <div className="session-overview-panel-content">
             {statusWorkspaces.map((item) => (
               <div
                 className="session-index-item mx-5 border-t border-border py-3.5 [overflow-wrap:anywhere] [&>p]:mt-2 [&>p]:text-muted-foreground"

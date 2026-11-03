@@ -353,6 +353,12 @@ export class ClaudeManagedReadOwner {
         typeof value.deviceId === "string" ? value.deviceId : undefined,
       );
     if (this.#shuttingDown) throw new Error("session-unavailable");
+    if (value.operation === "session-image") {
+      if (!id || typeof value.imageId !== "string" || !value.imageId || value.imageId.length > 512)
+        throw new Error("session-image-invalid");
+      // Media reads do not acquire execution ownership or wait for controls.
+      return this.image(id, value.imageId);
+    }
     if (id && this.continuation.isSessionObserved?.(id)) this.#observed.add(id);
     const run = () => this.#requestLocked(value, id);
     return id ? this.#serializeSession(id, run) : run();
@@ -4623,6 +4629,29 @@ export class ClaudeManagedReadOwner {
   }
 
   /** `retain` false keeps no cursor for the page, for stream snapshots (see SessionPaging.read). */
+  async image(id: string, imageId: string) {
+    const record = this.#load(id);
+    if (!record || record.fresh) throw new Error("session-image-unavailable");
+    this.#validate(record);
+    const result = await this.sessions.imageForNative(
+      "claude-code",
+      record.nativeId,
+      record.workspace,
+      imageId,
+    );
+    const latest = this.#load(id);
+    if (
+      !latest ||
+      latest.nativeId !== record.nativeId ||
+      latest.workspace !== record.workspace ||
+      latest.workspaceId !== record.workspaceId ||
+      latest.home !== record.home
+    )
+      throw new Error("session-image-unavailable");
+    this.#validate(latest);
+    return result;
+  }
+
   async events(id: string, cursor: unknown, limit: unknown, retain = true): Promise<unknown> {
     const record = this.#load(id);
     if (record) {

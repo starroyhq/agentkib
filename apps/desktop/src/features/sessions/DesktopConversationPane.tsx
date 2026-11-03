@@ -125,7 +125,7 @@ export function DesktopConversationPane({
       ref={containerRef}
       className={cn(
         "desktop-conversation flex min-h-0 flex-1 flex-col",
-        "[&_.agentkib-conversation_.reader-scroll]:px-4",
+        "[&_.agentkib-conversation_.reader-content]:px-4",
         '[&_.agentkib-conversation_[data-message-role="user"]]:px-1',
         '[&_.agentkib-conversation_[data-message-role="assistant"]]:px-1',
       )}

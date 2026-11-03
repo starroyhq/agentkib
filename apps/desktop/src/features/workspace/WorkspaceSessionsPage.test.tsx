@@ -1,9 +1,18 @@
 // @vitest-environment jsdom
 
 import "@testing-library/jest-dom/vitest";
-import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import {
+  act,
+  cleanup,
+  fireEvent,
+  render as renderComponent,
+  screen,
+  waitFor,
+  within,
+} from "@testing-library/react";
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import userEvent from "@testing-library/user-event";
-import { useState } from "react";
+import { useState, type ReactElement, type ReactNode } from "react";
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { api } from "@/core/api";
 import { initializeI18n } from "@/core/i18n";
@@ -67,9 +76,19 @@ function deferred<T>() {
   return { promise, resolve, reject };
 }
 
+let queryClient: QueryClient;
+function render(component: ReactElement) {
+  return renderComponent(component, {
+    wrapper: ({ children }: { children: ReactNode }) => (
+      <QueryClientProvider client={queryClient}>{children}</QueryClientProvider>
+    ),
+  });
+}
+
 describe("WorkspaceSessionsPage", () => {
   beforeAll(() => initializeI18n("en-US"));
   beforeEach(() => {
+    queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
     vi.clearAllMocks();
     managedCatalog.sessions = [];
     managedCatalog.ready = true;
@@ -89,6 +108,7 @@ describe("WorkspaceSessionsPage", () => {
   });
   afterEach(() => {
     cleanup();
+    queryClient.clear();
     vi.useRealTimers();
   });
 
@@ -233,7 +253,8 @@ describe("WorkspaceSessionsPage", () => {
       expect(within(dialog).getByRole("button", { name: "Connect a Cursor window" })).toBeEnabled(),
     );
     expect(api.nativeImportOperations).toHaveBeenCalledWith(workspace.id);
-    expect(api.refreshWorkspaceSessions).toHaveBeenCalledTimes(1);
+    await waitFor(() => expect(api.refreshWorkspaceSessions).toHaveBeenCalledTimes(1));
+    await waitFor(() => expect(screen.getByLabelText("Refresh sessions")).toBeEnabled());
     vi.useFakeTimers();
     await act(async () => {
       fireEvent.click(within(dialog).getByRole("button", { name: "Connect a Cursor window" }));
@@ -296,7 +317,9 @@ describe("WorkspaceSessionsPage", () => {
     fireEvent.click(await screen.findByRole("button", { name: "Connect a Cursor window" }));
     await waitFor(() => expect(api.cursorBridge).toHaveBeenCalledTimes(1));
     expect(api.refreshWorkspaceSessions).toHaveBeenCalledTimes(1);
-    expect(api.refreshWorkspaceSessions).toHaveBeenCalledWith(workspace.id, false);
+    await waitFor(() =>
+      expect(api.refreshWorkspaceSessions).toHaveBeenCalledWith(workspace.id, false),
+    );
   });
 
   it("keeps the first connection gated by the Runtime's actual platform capability", async () => {

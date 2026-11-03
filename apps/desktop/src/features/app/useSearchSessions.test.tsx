@@ -200,6 +200,64 @@ describe("useSearchSessions", () => {
     expect(api.refreshWorkspaceSessions).not.toHaveBeenCalled();
   });
 
+  it("reuses an in-flight read across reopening without binding stale retries to the closed consumer", async () => {
+    const { wrapper } = setup();
+    const pending = deferred<ConversationSessionSummary[]>();
+    let calls = 0;
+    vi.mocked(api.workspaceSessions).mockImplementation(async () => {
+      if (++calls === 1) {
+        await pending.promise;
+        throw new Error("catalog-stale");
+      }
+      return [session("one", "current")];
+    });
+    const { result, rerender } = renderHook(
+      ({ enabled }) => useSearchSessions([workspace("one")], enabled),
+      { wrapper, initialProps: { enabled: true } },
+    );
+    expect(api.workspaceSessions).toHaveBeenCalledTimes(1);
+    rerender({ enabled: false });
+    rerender({ enabled: true });
+    expect(api.workspaceSessions).toHaveBeenCalledTimes(1);
+    await act(async () => pending.resolve([]));
+    await waitFor(() => expect(result.current.loading).toBe(false));
+    expect(api.workspaceSessions).toHaveBeenCalledTimes(2);
+    expect(result.current.sessions).toEqual([session("one", "current")]);
+    expect(result.current.errors).toEqual({});
+    expect(api.refreshWorkspaceSessions).not.toHaveBeenCalled();
+  });
+
+  it("does not repeat a stale read after its last search consumer closes", async () => {
+    vi.useFakeTimers();
+    const { client, wrapper } = setup();
+    vi.mocked(api.workspaceSessions).mockRejectedValue(new Error("catalog-stale"));
+    const { result, rerender } = renderHook(
+      ({ enabled }) => useSearchSessions([workspace("one")], enabled),
+      { wrapper, initialProps: { enabled: true } },
+    );
+    await act(async () => vi.advanceTimersByTimeAsync(0));
+    expect(api.workspaceSessions).toHaveBeenCalledTimes(1);
+    rerender({ enabled: false });
+    await act(async () => vi.advanceTimersByTimeAsync(500));
+    expect(api.workspaceSessions).toHaveBeenCalledTimes(1);
+    expect(client.getQueryData(homeKeys.continuations("one"))).toBeUndefined();
+    expect(result.current.sessions).toEqual([]);
+  });
+
+  it("bounds shared stale retries without starting an index scan", async () => {
+    vi.useFakeTimers();
+    const { client } = setup();
+    const read = vi.fn().mockRejectedValue(new Error("catalog-stale"));
+    const outcome = queuedSessionRead(client, "stale", new AbortController().signal, read, {
+      retryBusy: true,
+      retryStale: true,
+    }).catch((error: unknown) => error);
+    await vi.advanceTimersByTimeAsync(100);
+    expect(read).toHaveBeenCalledTimes(3);
+    expect(await outcome).toMatchObject({ message: "catalog-stale" });
+    expect(api.refreshWorkspaceSessions).not.toHaveBeenCalled();
+  });
+
   it("keeps shared busy retries alive until the last consumer cancels", async () => {
     vi.useFakeTimers();
     const { client } = setup();

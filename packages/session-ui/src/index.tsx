@@ -15,6 +15,22 @@ import remarkGfm from "remark-gfm";
 import rehypeSanitize from "rehype-sanitize";
 
 export { useTranscriptFollow } from "./use-transcript-follow";
+export {
+  MessageImageCache,
+  messageImageCache,
+  messageImageScope,
+  clearMessageImageCache,
+  type MessageImageSnapshot,
+  type MessageImageCacheOptions,
+} from "./message-image-cache";
+export {
+  ConversationImages,
+  conversationImageCopy,
+  type MessageImage,
+  type MessageImageLoader,
+  type MessageImagePreview,
+} from "./conversation-images";
+export { displayUserMessageText } from "./message-image-text";
 
 export {
   sessionContinuationCopy,

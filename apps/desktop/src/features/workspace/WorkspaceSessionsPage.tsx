@@ -166,7 +166,7 @@ export function WorkspaceSessionsPage({
   const catalog = useSessionCatalog([workspace], enabled);
   const sessions = catalog.sessions;
   const [selectedId, setSelectedId] = useState<string>();
-  const managedCatalog = useConversationCatalog(enabled && !workspace.remote);
+  const managedCatalog = useConversationCatalog(enabled && !workspace.remote, enabled);
   const indexedSessions = useMemo(
     () =>
       workspaceSessionEntries(

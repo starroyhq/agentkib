@@ -845,7 +845,15 @@ function projectItem(
     content: boundedContent,
     tool_name: null,
     tool_status: null,
-    attachment_count: 0,
+    attachment_count: Array.isArray(item.content)
+      ? item.content.filter(
+          (part) =>
+            isObject(part) &&
+            ["image", "localImage", "input_image", "document", "input_file"].includes(
+              String(part.type),
+            ),
+        ).length
+      : 0,
     truncated,
   };
 }

@@ -5,6 +5,7 @@ import { useState, type ReactNode } from "react";
 import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { UploadedAttachment } from "@agentkib/web-client";
+import { sessionContinuationCopy } from "@agentkib/session-ui";
 import { SessionComposer } from "./session-composer";
 import { composerLayoutCopy } from "./composer-layout-copy";
 import { codexCopy } from "./codex-copy";
@@ -501,7 +502,30 @@ describe("composer sending shortcuts", () => {
       reason: "codex-owner-busy",
     });
   }
-  it("shows the Codex follower hint with an enabled composer and hides the busy bar and advanced menu", () => {
+  it.each(["zh-CN", "zh-TW", "en-US", "ja-JP"] as const)(
+    "keeps the compact owner choice actionable without its secondary instructions in %s",
+    (locale) => {
+      continuationFixture();
+      externalOwner();
+      doubles.session.locale = locale;
+      doubles.session.currentTitle = "Original";
+      const copy = sessionContinuationCopy(locale);
+      render(<SessionComposer />);
+      expect(screen.getByText(copy.choice("Codex"))).toBeVisible();
+      expect(screen.queryByText(copy.forkHint("Original"))).not.toBeInTheDocument();
+      expect(screen.queryByText(copy.codexQuit)).not.toBeInTheDocument();
+      const fork = screen.getByRole("button", { name: copy.fork });
+      expect(fork).toBeEnabled();
+      expect(fork).not.toHaveAttribute("aria-describedby");
+      const back = screen.getByRole("button", { name: copy.returnTo("Codex") });
+      expect(back).toBeEnabled();
+      expect(doubles.control).not.toHaveBeenCalled();
+      fireEvent.click(back);
+      expect(screen.getByText(copy.returned("Codex"))).toBeVisible();
+      expect(doubles.control).not.toHaveBeenCalled();
+    },
+  );
+  it("keeps the Codex follower composer enabled without the explanatory hint or busy bar", () => {
     continuationFixture();
     Object.assign(doubles.session.live!, {
       executionMode: "codex-follower",
@@ -518,8 +542,8 @@ describe("composer sending shortcuts", () => {
     };
     const { input } = renderComposer();
     expect(
-      screen.getByText("Messages run in Codex, using the model and permissions set there"),
-    ).toBeVisible();
+      screen.queryByText("Messages run in Codex, using the model and permissions set there"),
+    ).not.toBeInTheDocument();
     expect(input).toBeEnabled();
     expect(
       screen.queryByRole("button", { name: codexCopy["en-US"].advanced }),

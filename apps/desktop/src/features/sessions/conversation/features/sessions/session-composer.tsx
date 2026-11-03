@@ -54,7 +54,6 @@ import {
 import { Dialog } from "../../components/dialog";
 import { useSession } from "./session-context";
 import { ContextUsageGauge } from "./context-usage";
-import { contextUsageCopy } from "./context-usage-copy";
 import { sessionDisplayState } from "./session-display-state";
 import { composerLayoutCopy } from "./composer-layout-copy";
 import { codexCopy, codexReason } from "./codex-copy";
@@ -564,13 +563,10 @@ export function SessionComposer({
       {isClaude && display.continuation === "terminal" && (
         <p className="px-3 text-xs leading-5 text-muted-foreground">{continuation.terminalHint}</p>
       )}
-      {isCodex && display.continuation === "codex" && (
-        <p className="px-3 text-xs leading-5 text-muted-foreground">{continuation.codexHint}</p>
-      )}
       {isClaude && <PermissionModeNotice permission={live?.permission} locale={locale} compact />}
       {(isClaude || isCodex) && <ManagedTurnNotice live={live} locale={locale} />}
       <form
-        className="relative w-full space-y-2 rounded-3xl border border-border bg-background p-2 shadow-sm transition-colors focus-within:border-ring/40 md:p-3"
+        className="session-composer-frame relative w-full space-y-2 rounded-3xl border border-border bg-background p-2 shadow-sm transition-colors focus-within:border-ring/40 md:p-3"
         onSubmit={(event) => {
           event.preventDefault();
           if (canSubmit && !compacting) void send("send");
@@ -755,11 +751,6 @@ export function SessionComposer({
       {commandNotice?.draft === draft && (
         <p role="status" className="px-3 text-xs leading-5 text-muted-foreground">
           {codexReason(locale, commandNotice.reason).text}
-        </p>
-      )}
-      {compacting && (
-        <p role="status" className="px-3 text-xs leading-5 text-muted-foreground">
-          {contextUsageCopy[locale].compactingDetail}
         </p>
       )}
       {!isClaude && access?.device?.accessMode !== "full" && (

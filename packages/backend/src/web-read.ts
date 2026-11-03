@@ -8,6 +8,8 @@ import { SESSION_COLLECTIONS } from "@agentkib/runtime-protocol";
 import { historyReferenceSchema, validHistoryControl } from "./history-control-schema";
 import type { BackendStore } from "./store";
 import type { SessionReaders } from "./session-readers";
+import { enrichLedgerImages } from "./session-image-matching";
+import type { ConversationImage } from "./session-events";
 import type { SessionIndex } from "./session-index";
 import {
   hasManagedCatalogWorkspace,
@@ -68,6 +70,13 @@ const requestSchema = z.discriminatedUnion("operation", [
   z.object({ operation: z.literal("usage"), sessionId: z.string().min(1).max(256) }).strict(),
   z.object({ operation: z.literal("goal"), sessionId: z.string().min(1).max(256) }).strict(),
   z.object({ operation: z.literal("resources"), sessionId: z.string().min(1).max(256) }).strict(),
+  z
+    .object({
+      operation: z.literal("session-image"),
+      sessionId: z.string().min(1).max(256),
+      imageId: z.string().min(1).max(512),
+    })
+    .strict(),
   z.object({ operation: z.literal("subagents"), sessionId: z.string().min(1).max(256) }).strict(),
   z
     .object({
@@ -372,6 +381,8 @@ export class WebReadRequests {
   /** Turns that the Codex app or CLI runs, for the catalog and live state to show. */
   #externalTurns = new CodexExternalTurns(() => canonicalize(this.sessions.codexHome()));
   #catalogObservations = new Map<string, { at: number; status: string; reason: string | null }>();
+  #catalogRuntime?: Awaited<ReturnType<CodexRuntimePreflight["check"]>>;
+  #catalogRuntimeCheck?: Promise<void>;
   #retirementTimer: ReturnType<typeof setInterval>;
   #retiring = false;
   #controlSessions = new Map<string, { count: number; observed: boolean }>();
@@ -380,6 +391,16 @@ export class WebReadRequests {
   #operations = new Set<Promise<unknown>>();
   #bootId = randomUUID();
   #managedRunners = new Map<string, ManagedRunner>();
+  #managedImagePages = new Map<
+    string,
+    {
+      at: number;
+      pending: Promise<{
+        images: Map<string, { images: ConversationImage[]; attachment_count: number }>;
+        warnings: string[];
+      }>;
+    }
+  >();
   #startingRunners = new Map<string, ManagedRunner>();
   #transientSessions = new Set<CodexAppServerSession>();
   #codexFollowers = new Map<string, CodexFollowerRecord>();
@@ -4140,6 +4161,53 @@ export class WebReadRequests {
     if (request.operation === "goal") return this.#goal(request.sessionId);
     if (request.operation === "resources") return this.#resources(request.sessionId);
     if (request.operation === "session-directory") return this.#sessionDirectory(request.sessionId);
+    if (request.operation === "session-image") {
+      const managed = readManagedRecords(this.dataDir, this.store).find(
+        (record) => record.id === request.sessionId,
+      );
+      if (managed) {
+        this.#assertManagedHome(managed);
+        if (!managed.native_id) throw new Error("session-image-unavailable");
+        const identity = this.sessions.verifiedCodexControlDirectory(managed.native_id);
+        if (!identity || identity.id !== managed.native_id.toLowerCase())
+          throw new Error("unverified-session-identity");
+        const cwd = canonicalize(managed.cwd ?? identity.cwd);
+        const workspace = canonicalize(this.store.workspacePath(managed.workspace_id));
+        const result = await this.sessions.imageForNative(
+          "codex",
+          managed.native_id,
+          workspace,
+          request.imageId,
+          { codexDirectory: cwd },
+        );
+        const latest = readManagedRecords(this.dataDir, this.store).find(
+          (record) => record.id === request.sessionId,
+        );
+        if (
+          !latest ||
+          latest.workspace_id !== managed.workspace_id ||
+          latest.native_id !== managed.native_id ||
+          latest.cwd !== managed.cwd
+        )
+          throw new Error("session-image-unavailable");
+        this.#assertManagedHome(latest);
+        return result;
+      }
+      const generation = this.indexGeneration();
+      const summary = this.store.sessions.get(request.sessionId);
+      if (!indexEnabled(this.dataDir) || !summary) throw new Error("session-image-unavailable");
+      const result = await this.sessions.image(request.sessionId, request.imageId);
+      const latest = this.store.sessions.get(request.sessionId);
+      if (
+        !indexEnabled(this.dataDir) ||
+        generation !== this.indexGeneration() ||
+        !latest ||
+        latest.workspace_id !== summary.workspace_id ||
+        latest.agent !== summary.agent
+      )
+        throw new Error("session-image-unavailable");
+      return result;
+    }
     if (request.operation === "events") {
       const managed = readManagedRecords(this.dataDir, this.store).find(
         (record) => record.id === request.sessionId,
@@ -4151,7 +4219,11 @@ export class WebReadRequests {
         const nativePrefix = "codex-native-v1:";
         if (request.cursor && nativeHistory !== request.cursor.startsWith(nativePrefix))
           throw new Error("TRANSCRIPT_CURSOR_STALE");
-        let events;
+        let events: {
+          events: Array<Record<string, unknown>>;
+          next_cursor: string | null;
+          warnings: string[];
+        };
         if (nativeHistory) {
           const identity = this.sessions.verifiedCodexControlDirectory(managed.native_id!);
           if (!identity || identity.id !== managed.native_id!.toLowerCase())
@@ -4174,6 +4246,7 @@ export class WebReadRequests {
           );
           events = {
             ...page,
+            events: page.events.map((event) => ({ ...event })),
             next_cursor: page.next_cursor ? nativePrefix + page.next_cursor : null,
           };
         } else {
@@ -4183,6 +4256,83 @@ export class WebReadRequests {
             request.cursor,
             request.limit,
           );
+          if (managed.native_id) {
+            const identity = this.sessions.verifiedCodexControlDirectory(managed.native_id);
+            if (!identity || identity.id !== managed.native_id.toLowerCase())
+              throw new Error("unverified-session-identity");
+            const cwd = canonicalize(managed.cwd ?? identity.cwd);
+            const workspace = canonicalize(this.store.workspacePath(managed.workspace_id));
+            if (
+              !within(cwd, workspace) ||
+              pathIdentity(canonicalize(identity.cwd)) !== pathIdentity(cwd)
+            )
+              throw new Error("session-workspace-mismatch");
+            let sourceRevision: string | null = null;
+            const transcript = this.sessions.verifiedCodexReadTranscript(
+              managed.native_id,
+              workspace,
+            );
+            if (transcript) {
+              try {
+                const stat = statSync(transcript, { bigint: true });
+                sourceRevision = `${transcript}:${stat.dev}:${stat.ino}:${stat.size}:${stat.mtimeNs}`;
+              } catch {
+                /* Compressed/missing sources still get a fresh verified read below. */
+              }
+            }
+            const cacheKey = createHash("sha256")
+              .update(
+                JSON.stringify([
+                  managed.id,
+                  managed.native_id,
+                  managed.home,
+                  workspace,
+                  cwd,
+                  sourceRevision,
+                  events.events,
+                ]),
+              )
+              .digest("hex");
+            const cached = sourceRevision ? this.#managedImagePages.get(cacheKey) : undefined;
+            const read = () =>
+              enrichLedgerImages(events, (cursor, imageScanBudget) =>
+                this.sessions.eventsForNative("codex", managed.native_id!, workspace, cursor, 100, {
+                  codexDirectory: cwd,
+                  imageScanBudget,
+                }),
+              );
+            const pending =
+              cached && Date.now() - cached.at < 5_000
+                ? cached.pending
+                : read().then((page) => ({
+                    images: new Map(
+                      page.events
+                        .filter((event) => Array.isArray(event.images))
+                        .map((event) => [
+                          String(event.id),
+                          {
+                            images: event.images as ConversationImage[],
+                            attachment_count: Number(event.attachment_count) || 0,
+                          },
+                        ]),
+                    ),
+                    warnings: page.warnings,
+                  }));
+            if (sourceRevision && (!cached || pending !== cached.pending)) {
+              while (this.#managedImagePages.size >= 32)
+                this.#managedImagePages.delete(this.#managedImagePages.keys().next().value!);
+              this.#managedImagePages.set(cacheKey, { at: Date.now(), pending });
+            }
+            const projection = await pending;
+            events = {
+              ...events,
+              events: events.events.map((event) => ({
+                ...event,
+                ...projection.images.get(String(event.id)),
+              })),
+              warnings: projection.warnings,
+            };
+          }
         }
         const latest = readManagedRecords(this.dataDir, this.store).find(
           (record) => record.id === request.sessionId,
@@ -4206,7 +4356,13 @@ export class WebReadRequests {
         hasManagedCatalogWorkspace(this.store, record),
       );
       if (!enabled && managed.length === 0)
-        return { workspaces: [], sessions: [], indexEnabled: false };
+        return {
+          workspaces: [],
+          sessions: [],
+          indexEnabled: false,
+          complete: catalog.complete,
+          ...(catalog.complete ? { incompleteSources: [] } : {}),
+        };
       const allWorkspaces = this.store.listWorkspaces() as Array<{
         id: string;
         name: string;
@@ -4286,13 +4442,36 @@ export class WebReadRequests {
               .list(collection)
               .some((row) => row.agent === "codex" && row.workspace_id === collection),
           ));
-      const runtime = needsRuntime ? await this.#preflight.check() : null;
+      // Directory display is read-only. A slow/missing CLI must not delay the
+      // persisted catalog; controls still perform their own mandatory preflight.
+      const runtime = needsRuntime ? (this.#catalogRuntime ?? null) : null;
+      if (needsRuntime && !this.#catalogRuntimeCheck) {
+        const check = this.#preflight
+          .check()
+          .then((value) => {
+            if (this.#shuttingDown) return;
+            const changed = this.#catalogRuntime?.reason !== value.reason;
+            this.#catalogRuntime = value;
+            if (changed) this.catalogChanged?.();
+          })
+          .catch(() => undefined);
+        this.#catalogRuntimeCheck = check;
+        void check.finally(() => {
+          if (this.#catalogRuntimeCheck === check) this.#catalogRuntimeCheck = undefined;
+        });
+      }
       if (this.indexGeneration() !== generation || indexEnabled(this.dataDir) !== enabled)
-        return { workspaces: [], sessions: [], indexEnabled: false };
+        throw new Error("catalog-stale");
+      const incompleteSources = enabled
+        ? (this.sessionIndex?.incompleteSources(allWorkspaces.map((workspace) => workspace.id)) ??
+          [])
+        : [];
       const checkouts = catalogCheckouts(this.store, this.environment);
       const externalTurns = this.#externalTurnsBySession(managed, aliasesByOwner, enabled);
       return {
         codexRuntimeReason: runtime?.reason === "codex-cli-version-too-old" ? runtime.reason : null,
+        complete: catalog.complete && incompleteSources.length === 0,
+        ...(catalog.complete ? { incompleteSources } : {}),
         workspaces: checkouts.workspaces(
           workspaces
             .filter((workspace) => registered.has(workspace.id))

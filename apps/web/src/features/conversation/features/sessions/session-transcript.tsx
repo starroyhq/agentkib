@@ -1,6 +1,10 @@
 import type { ConversationEvent } from "@agentkib/web-client";
 import {
   SafeMarkdown,
+  ConversationImages,
+  conversationImageCopy,
+  displayUserMessageText,
+  type MessageImageLoader,
   ToolDetailRow,
   TurnFileChanges,
   formatToolDuration,
@@ -13,6 +17,7 @@ import { groupConversationEvents } from "./conversation-groups";
 import { ChevronRight, CircleAlert, Wrench } from "lucide-react";
 import { useId, useMemo, useState } from "react";
 import { toolStatusLabel } from "./tool-status";
+import { SessionImagePreview } from "./session-image-preview";
 
 interface ReaderLabels {
   process: string;
@@ -53,7 +58,15 @@ function splitSegments(
 
 function projectMessages(events: ConversationEvent[], incomplete: boolean): TranscriptMessage[] {
   // A wrapper call is shown through the items it recorded, not as its own row.
-  const visible = events.filter((event) => !isHiddenWrapperTool(event));
+  const visible = events.filter(
+    (event) =>
+      !isHiddenWrapperTool(event) &&
+      (event.kind !== "user-message" ||
+        displayUserMessageText(event.content ?? "", event.images ?? []).trim().length > 0 ||
+        event.attachment_count > 0 ||
+        (event.images?.length ?? 0) > 0 ||
+        event.truncated),
+  );
   const groups = groupConversationEvents(visible, { incomplete });
   const messages: TranscriptMessage[] = [];
   for (const group of groups) {
@@ -141,13 +154,24 @@ function EventRow({
   labels,
   locale,
   onTool,
+  imageLoader,
 }: {
   event: ConversationEvent;
   labels: ReaderLabels;
   locale: string;
   onTool: (event: ConversationEvent) => void;
+  imageLoader?: MessageImageLoader;
 }) {
   const isTool = event.kind === "tool-summary";
+  const isUser = event.kind === "user-message";
+  const images = !isTool && imageLoader ? (event.images ?? []) : [];
+  const content = isUser
+    ? displayUserMessageText(event.content ?? "", event.images ?? [])
+    : event.content;
+  const hasText = !!content?.trim();
+  const attachmentCount =
+    Math.max(0, event.attachment_count, event.images?.length ?? 0) - images.length;
+  const hasBubble = hasText || attachmentCount > 0 || event.truncated;
   if (isTool && event.tool)
     return (
       <div data-event-id={event.id}>
@@ -161,41 +185,80 @@ function EventRow({
   return (
     <div
       data-event-id={event.id}
-      className={isTool ? "flex min-w-0" : "aui-markdown min-w-0 break-words"}
+      className={
+        isUser
+          ? "flex min-w-0 max-w-full flex-col items-end"
+          : isTool
+            ? "flex min-w-0"
+            : "aui-markdown min-w-0 break-words"
+      }
     >
-      {isTool ? (
-        <Button
-          type="button"
-          variant="ghost"
-          aria-label={`${event.tool_name || labels.unknownTool} ${toolStatusLabel(event.tool_status, locale)}`}
-          className="group/tool flex h-auto min-w-0 max-w-full items-center gap-2 rounded-lg px-2 py-1.5 text-left text-xs font-normal text-muted-foreground transition-colors hover:bg-muted/70 hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-          onClick={() => onTool(event)}
-        >
-          <Wrench aria-hidden="true" className="size-3.5 shrink-0" />
-          <span className="min-w-0 truncate text-foreground">
-            {event.tool_name || labels.unknownTool}
-          </span>
-          <span className="shrink-0">{toolStatusLabel(event.tool_status, locale)}</span>
-          <ChevronRight
-            aria-hidden="true"
-            className="ml-auto size-3.5 shrink-0 opacity-50 transition-transform group-hover/tool:translate-x-0.5"
-          />
-        </Button>
-      ) : (
-        event.content && <SafeMarkdown text={event.content} literal={event.cli_output === true} />
-      )}
-      {(event.attachment_count > 0 || event.truncated) && (
-        <div className="mt-2 flex flex-wrap gap-2 text-[11px] text-muted-foreground">
-          {event.attachment_count > 0 && (
-            <span className="rounded-md bg-muted px-2 py-1">
-              {labels.attachments}: {event.attachment_count}
-            </span>
+      {images.length > 0 && imageLoader && (
+        <ConversationImages
+          images={images}
+          load={imageLoader}
+          locale={locale}
+          align={isUser ? "end" : "start"}
+          renderPreview={({ src, name, onClose }) => (
+            <SessionImagePreview
+              src={src}
+              name={name}
+              closeLabel={conversationImageCopy(locale).close}
+              onClose={onClose}
+            />
           )}
-          {event.truncated && (
-            <span className="inline-flex items-center gap-1 rounded-md bg-amber-500/10 px-2 py-1 text-amber-700 dark:text-amber-300">
-              <CircleAlert aria-hidden="true" className="size-3" />
-              {labels.truncated}
-            </span>
+        />
+      )}
+      {(!isUser || hasBubble) && (
+        <div
+          data-user-message-bubble={isUser ? "true" : undefined}
+          className={
+            isUser
+              ? "aui-markdown w-fit min-w-0 max-w-full rounded-2xl bg-primary px-4 py-2.5 text-sm leading-7 break-words text-primary-foreground shadow-sm dark:bg-blue-950 dark:text-blue-50"
+              : "contents"
+          }
+        >
+          {isTool ? (
+            <Button
+              type="button"
+              variant="ghost"
+              aria-label={`${event.tool_name || labels.unknownTool} ${toolStatusLabel(event.tool_status, locale)}`}
+              className="group/tool flex h-auto min-w-0 max-w-full items-center gap-2 rounded-lg px-2 py-1.5 text-left text-xs font-normal text-muted-foreground transition-colors hover:bg-muted/70 hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+              onClick={() => onTool(event)}
+            >
+              <Wrench aria-hidden="true" className="size-3.5 shrink-0" />
+              <span className="min-w-0 truncate text-foreground">
+                {event.tool_name || labels.unknownTool}
+              </span>
+              <span className="shrink-0">{toolStatusLabel(event.tool_status, locale)}</span>
+              <ChevronRight
+                aria-hidden="true"
+                className="ml-auto size-3.5 shrink-0 opacity-50 transition-transform group-hover/tool:translate-x-0.5"
+              />
+            </Button>
+          ) : (
+            hasText && <SafeMarkdown text={content!} literal={event.cli_output === true} />
+          )}
+          {(attachmentCount > 0 || event.truncated) && (
+            <div
+              className={`mt-2 flex flex-wrap gap-2 text-[11px] ${isUser ? "text-inherit" : "text-muted-foreground"}`}
+            >
+              {attachmentCount > 0 && (
+                <span
+                  className={`rounded-md px-2 py-1 ${isUser ? "bg-black/10 dark:bg-white/10" : "bg-muted"}`}
+                >
+                  {labels.attachments}: {attachmentCount}
+                </span>
+              )}
+              {event.truncated && (
+                <span
+                  className={`inline-flex items-center gap-1 rounded-md px-2 py-1 ${isUser ? "bg-black/10 text-inherit dark:bg-white/10" : "bg-amber-500/10 text-amber-700 dark:text-amber-300"}`}
+                >
+                  <CircleAlert aria-hidden="true" className="size-3" />
+                  {labels.truncated}
+                </span>
+              )}
+            </div>
           )}
         </div>
       )}
@@ -208,6 +271,7 @@ function MessageBlock({
   labels,
   locale,
   onTool,
+  imageLoader,
   openProcesses,
   onToggleProcess,
 }: {
@@ -215,6 +279,7 @@ function MessageBlock({
   labels: ReaderLabels;
   locale: string;
   onTool: (event: ConversationEvent) => void;
+  imageLoader?: MessageImageLoader;
   openProcesses: Record<string, boolean>;
   onToggleProcess: (key: string, open: boolean) => void;
 }) {
@@ -246,11 +311,13 @@ function MessageBlock({
         <div
           className={
             isUser
-              ? "rounded-2xl bg-primary px-4 py-2.5 text-sm leading-7 text-primary-foreground shadow-sm"
+              ? "min-w-0 max-w-full text-sm leading-7"
               : "w-full text-sm leading-7 text-foreground"
           }
         >
-          <div className="space-y-3">
+          <div
+            className={isUser ? "flex min-w-0 max-w-full flex-col items-end gap-3" : "space-y-3"}
+          >
             {message.segments.flatMap((segment) => {
               if (segment.kind !== "process") {
                 return segment.events.map((event) => (
@@ -260,6 +327,7 @@ function MessageBlock({
                     labels={labels}
                     locale={locale}
                     onTool={onTool}
+                    imageLoader={imageLoader}
                   />
                 ));
               }
@@ -302,6 +370,7 @@ function MessageBlock({
                           labels={labels}
                           locale={locale}
                           onTool={onTool}
+                          imageLoader={imageLoader}
                         />
                       ))}
                     </div>
@@ -330,6 +399,7 @@ export function SessionTranscript({
   labels,
   locale,
   onTool,
+  imageLoader,
   hasEarlier = false,
   loadingEarlier = false,
   earlierLabel,
@@ -344,6 +414,7 @@ export function SessionTranscript({
   labels: ReaderLabels;
   locale: string;
   onTool: (event: ConversationEvent) => void;
+  imageLoader?: MessageImageLoader;
   hasEarlier?: boolean;
   loadingEarlier?: boolean;
   earlierLabel: string;
@@ -420,6 +491,7 @@ export function SessionTranscript({
           labels={labels}
           locale={locale}
           onTool={onTool}
+          imageLoader={imageLoader}
           openProcesses={openProcesses}
           onToggleProcess={(key, open) => setOpenProcesses((value) => ({ ...value, [key]: !open }))}
         />

@@ -12,6 +12,7 @@ import type {
 } from "@/core/types";
 import { homeKeys } from "@/features/home/home-query";
 import { useSessionCatalog } from "./useSessionCatalog";
+import { SESSION_CATALOG_RUNTIME_CHANGED } from "./session-query";
 
 vi.mock("@/core/api", () => ({
   api: {
@@ -122,7 +123,7 @@ describe("useSessionCatalog", () => {
     ]);
   });
 
-  it("waits for every workspace and the controlled catalog before publishing readiness", async () => {
+  it("publishes completed workspace progress before the slowest scan and waits for final authority", async () => {
     const { wrapper } = setup();
     const finalScan = deferred<ConversationSessionSummary[]>();
     const synced = deferred<void>();
@@ -135,7 +136,8 @@ describe("useSessionCatalog", () => {
       wrapper,
     });
     await waitFor(() => expect(api.refreshWorkspaceSessions).toHaveBeenCalledTimes(6));
-    expect(afterRefresh).not.toHaveBeenCalled();
+    await waitFor(() => expect(afterRefresh).toHaveBeenCalledOnce());
+    expect(result.current.usable).toBe(true);
     await act(async () => finalScan.resolve([session("six", "newly discovered")]));
     await waitFor(() => expect(afterRefresh).toHaveBeenCalledOnce());
     expect(result.current.ready).toBe(false);
@@ -143,6 +145,7 @@ describe("useSessionCatalog", () => {
     await act(async () => synced.resolve());
     await waitFor(() => expect(result.current.ready).toBe(true));
     expect(result.current.refreshing).toBe(false);
+    expect(afterRefresh).toHaveBeenCalledTimes(2);
     expect(result.current.sessions.find(({ workspace_id }) => workspace_id === "six")?.title).toBe(
       "newly discovered",
     );
@@ -339,7 +342,7 @@ describe("useSessionCatalog", () => {
     rerender({ enabled: false });
     await act(async () => pending.resolve([session("one", "obsolete")]));
     expect(result.current.sessions).toEqual([]);
-    expect(client.getQueryData(homeKeys.continuations("one"))).toEqual([session("one")]);
+    expect(client.getQueryData(homeKeys.continuations("one"))).toBeUndefined();
     expect(api.workspaceSessionStatus).toHaveBeenCalledTimes(1);
   });
 
@@ -377,5 +380,131 @@ describe("useSessionCatalog", () => {
     rerender({ workspaces: [workspace("one")] });
     await waitFor(() => expect(result.current.ready).toBe(true));
     expect(result.current.statuses).toEqual([status]);
+  });
+
+  it("uses cached rows on re-entry while a stored read is slow and does not repeat a recent scan", async () => {
+    const { wrapper } = setup();
+    const first = renderHook(() => useSessionCatalog([workspace("one")], true), { wrapper });
+    await waitFor(() => expect(first.result.current.ready).toBe(true));
+    const row = first.result.current.sessions[0];
+    first.unmount();
+    const stored = deferred<ConversationSessionSummary[]>();
+    vi.mocked(api.workspaceSessions).mockReturnValueOnce(stored.promise);
+    const next = renderHook(() => useSessionCatalog([workspace("one")], true), { wrapper });
+    expect(next.result.current.sessions[0]).toBe(row);
+    expect(next.result.current.usable).toBe(true);
+    expect(next.result.current.ready).toBe(false);
+    await act(async () => stored.resolve([session("one")]));
+    await waitFor(() => expect(next.result.current.ready).toBe(true));
+    expect(api.refreshWorkspaceSessions).toHaveBeenCalledOnce();
+    expect(next.result.current.sessions[0]).toBe(row);
+  });
+
+  it("retains unknown cached directory rows while stripping unverified account read receipts", async () => {
+    const { wrapper, client } = setup();
+    client.setQueryData(homeKeys.continuations("one"), [
+      {
+        ...session("one"),
+        readState: {
+          source: "agentkib",
+          status: "unread",
+          freshness: "current",
+          version: "old-account",
+          firstUnread: { type: "threadStart" },
+          latestResult: null,
+        },
+      },
+    ]);
+    const stored = deferred<ConversationSessionSummary[]>();
+    vi.mocked(api.workspaceSessions).mockReturnValueOnce(stored.promise);
+    const view = renderHook(() => useSessionCatalog([workspace("one")], true), { wrapper });
+    expect(view.result.current.sessions[0]?.id).toBe("session-one");
+    expect(view.result.current.sessions[0]?.readState).toBeUndefined();
+    expect(view.result.current.usable).toBe(true);
+    await act(async () => stored.resolve([session("one")]));
+    await waitFor(() => expect(view.result.current.ready).toBe(true));
+    expect(view.result.current.sessions[0]?.readState).toBeUndefined();
+  });
+
+  it("retains a cached row through an interim empty stored read until its scan confirms deletion", async () => {
+    const { wrapper, client } = setup();
+    client.setQueryData(homeKeys.continuations("one"), [session("one", "cached")]);
+    vi.mocked(api.workspaceSessions).mockResolvedValue([]);
+    const scan = deferred<ConversationSessionSummary[]>();
+    vi.mocked(api.refreshWorkspaceSessions).mockReturnValueOnce(scan.promise);
+    const frames: string[][] = [];
+    const view = renderHook(
+      () => {
+        const catalog = useSessionCatalog([workspace("one")], true);
+        frames.push(catalog.sessions.map(({ id }) => id));
+        return catalog;
+      },
+      { wrapper },
+    );
+    await waitFor(() => expect(api.refreshWorkspaceSessions).toHaveBeenCalledOnce());
+    expect(frames.every((rows) => rows.includes("session-one"))).toBe(true);
+    expect(view.result.current.sessions[0]?.title).toBe("cached");
+    await act(async () => scan.resolve([]));
+    await waitFor(() => expect(view.result.current.ready).toBe(true));
+    expect(view.result.current.sessions).toEqual([]);
+    expect(view.result.current.usable).toBe(true);
+  });
+
+  it("lets a completed workspace remove rows while retaining a slower workspace cache", async () => {
+    const { wrapper, client } = setup();
+    client.setQueryData(homeKeys.continuations("one"), [session("one")]);
+    client.setQueryData(homeKeys.continuations("two"), [session("two")]);
+    vi.mocked(api.workspaceSessions).mockResolvedValue([]);
+    const slow = deferred<ConversationSessionSummary[]>();
+    vi.mocked(api.refreshWorkspaceSessions).mockImplementation((id) =>
+      id === "two" ? slow.promise : Promise.resolve([]),
+    );
+    const view = renderHook(() => useSessionCatalog([workspace("one"), workspace("two")], true), {
+      wrapper,
+    });
+    await waitFor(() =>
+      expect(view.result.current.sessions.map(({ id }) => id)).toEqual(["session-two"]),
+    );
+    expect(view.result.current.ready).toBe(false);
+    await act(async () => slow.resolve([]));
+    await waitFor(() => expect(view.result.current.ready).toBe(true));
+    expect(view.result.current.sessions).toEqual([]);
+  });
+
+  it("reads the current snapshot after a stale scan without repeating the mutation", async () => {
+    const { wrapper } = setup();
+    vi.mocked(api.workspaceSessions)
+      .mockResolvedValueOnce([session("one", "before")])
+      .mockResolvedValue([session("one", "after")]);
+    vi.mocked(api.refreshWorkspaceSessions).mockRejectedValue(new Error("session-index-stale"));
+    const view = renderHook(() => useSessionCatalog([workspace("one")], true), { wrapper });
+    await waitFor(() => expect(view.result.current.ready).toBe(true));
+    expect(view.result.current.sessions[0]?.title).toBe("after");
+    expect(view.result.current.errors).toEqual({});
+    expect(api.refreshWorkspaceSessions).toHaveBeenCalledOnce();
+    expect(api.workspaceSessions).toHaveBeenCalledTimes(2);
+  });
+
+  it("clears old runtime rows and never accepts its late scan after a boot change", async () => {
+    const { wrapper } = setup();
+    const view = renderHook(() => useSessionCatalog([workspace("one")], true), { wrapper });
+    await waitFor(() => expect(view.result.current.ready).toBe(true));
+    const oldScan = deferred<ConversationSessionSummary[]>();
+    vi.mocked(api.refreshWorkspaceSessions)
+      .mockReturnValueOnce(oldScan.promise)
+      .mockResolvedValue([]);
+    let prior!: Promise<void>;
+    act(() => {
+      prior = view.result.current.refresh();
+    });
+    vi.mocked(api.workspaceSessions).mockResolvedValue([]);
+    act(() => window.dispatchEvent(new Event(SESSION_CATALOG_RUNTIME_CHANGED)));
+    expect(view.result.current.sessions).toEqual([]);
+    await act(async () => {
+      oldScan.resolve([session("one", "old boot")]);
+      await prior;
+    });
+    await waitFor(() => expect(view.result.current.ready).toBe(true));
+    expect(view.result.current.sessions).toEqual([]);
   });
 });

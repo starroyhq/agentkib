@@ -272,6 +272,8 @@ export type SessionContinuationChoiceProps = {
   disabled?: boolean;
   forkDisabled?: boolean;
   hasDraft?: boolean;
+  /** Match the desktop input card and omit secondary instructions. */
+  compact?: boolean;
   /** Offer only once a connected terminal accepts messages sent from AgentKib. */
   pluginAction?: SessionContinuationAction;
 };
@@ -288,6 +290,7 @@ export function SessionContinuationChoice({
   disabled,
   forkDisabled,
   hasDraft,
+  compact = false,
   pluginAction,
 }: SessionContinuationChoiceProps) {
   const copy = sessionContinuationCopy(locale);
@@ -297,7 +300,11 @@ export function SessionContinuationChoice({
     <div
       role="group"
       aria-labelledby={choiceId}
-      className="flex min-w-0 flex-col gap-3 rounded-xl border border-border bg-muted/30 p-4"
+      className={`flex min-w-0 flex-col gap-3 border border-border ${
+        compact
+          ? "session-composer-frame justify-between rounded-3xl bg-background p-2 shadow-sm md:p-3"
+          : "rounded-xl bg-muted/30 p-4"
+      }`}
     >
       <p id={choiceId} className="text-sm leading-6 text-foreground">
         {copy.choice(agent)}
@@ -307,15 +314,17 @@ export function SessionContinuationChoice({
           <button
             type="button"
             className={`${continuationButtonClass} bg-primary text-primary-foreground hover:bg-[var(--primary-hover-strong)]`}
-            aria-describedby={hintId}
+            aria-describedby={compact ? undefined : hintId}
             disabled={disabled || forkDisabled}
             onClick={onFork}
           >
             {copy.fork}
           </button>
-          <p id={hintId} className="text-xs leading-5 break-words text-muted-foreground">
-            {copy.forkHint(title)}
-          </p>
+          {!compact && (
+            <p id={hintId} className="text-xs leading-5 break-words text-muted-foreground">
+              {copy.forkHint(title)}
+            </p>
+          )}
         </div>
         <button
           type="button"
@@ -341,7 +350,7 @@ export function SessionContinuationChoice({
           {copy.draftPreserved}
         </p>
       ) : null}
-      {agent === "Codex" ? (
+      {agent === "Codex" && !compact ? (
         <p className="text-xs leading-5 text-muted-foreground">{copy.codexQuit}</p>
       ) : null}
     </div>

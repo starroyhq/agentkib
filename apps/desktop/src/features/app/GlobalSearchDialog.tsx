@@ -112,7 +112,7 @@ export function GlobalSearchDialog({
   const runtime = useAppStore((state) => state.runtime);
   const enabled = runtime?.session_index_enabled === true;
   const sessions = useSearchSessions(workspaces, open && enabled);
-  const managedCatalog = useConversationCatalog(open && enabled);
+  const managedCatalog = useConversationCatalog(open && enabled, enabled);
   const remote = useRemoteCatalogEntries();
   const sessionWorkspaces = useMemo(
     () => [...workspaces, ...remote.workspaces],

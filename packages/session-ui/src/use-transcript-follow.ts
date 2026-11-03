@@ -26,6 +26,22 @@ export function useTranscriptFollow({
   const notify = useRef(onFollowingChange);
   const active = useRef(enabled);
   const [content, contentRef] = useState<HTMLDivElement | null>(null);
+  const [bottomState, setBottomState] = useState({ sessionId, enabled, away: false });
+  if (bottomState.sessionId !== sessionId || bottomState.enabled !== enabled)
+    setBottomState({ sessionId, enabled, away: false });
+  const updateBottomState = useCallback(() => {
+    if (previousSession.current !== sessionId) return;
+    const viewport = viewportRef.current;
+    const away =
+      active.current &&
+      !!viewport &&
+      viewport.scrollHeight - viewport.scrollTop - viewport.clientHeight >= NEAR_END;
+    setBottomState((previous) =>
+      previous.sessionId === sessionId && previous.enabled === enabled && previous.away === away
+        ? previous
+        : { sessionId, enabled, away },
+    );
+  }, [enabled, sessionId, viewportRef]);
 
   const cancelFrame = useCallback(() => {
     if (frame.current !== null) cancelAnimationFrame(frame.current);
@@ -53,8 +69,9 @@ export function useTranscriptFollow({
       if (!viewport) return;
       const bottom = Math.max(0, viewport.scrollHeight - viewport.clientHeight);
       if (Math.abs(viewport.scrollTop - bottom) > 0.5) viewport.scrollTop = bottom;
+      updateBottomState();
     });
-  }, [viewportRef]);
+  }, [updateBottomState, viewportRef]);
   const pause = useCallback(() => {
     cancelFrame();
     cancelInput();
@@ -85,6 +102,7 @@ export function useTranscriptFollow({
   useLayoutEffect(() => {
     const viewport = viewportRef.current;
     if (!enabled || !viewport) return;
+    let stopped = false;
     let pointerActive = false;
     let touching = false;
     let touchY = 0;
@@ -119,7 +137,8 @@ export function useTranscriptFollow({
       }
       return false;
     };
-    const scroll = () => {
+    const scroll = (event: Event) => {
+      if (event.target !== viewport) return;
       const top = viewport.scrollTop;
       if (pointerActive || touching || performance.now() < inputUntil.current) {
         if (distance() < NEAR_END) {
@@ -127,6 +146,7 @@ export function useTranscriptFollow({
         } else if (top < previousTop - 0.5) pause();
       }
       previousTop = top;
+      updateBottomState();
     };
     const wheel = (event: WheelEvent) => {
       if (event.defaultPrevented || event.ctrlKey || event.deltaY === 0) return;
@@ -184,11 +204,18 @@ export function useTranscriptFollow({
     viewport.addEventListener("touchcancel", touchend, { passive: true });
     window.addEventListener("pointerup", pointerup, { passive: true });
     window.addEventListener("pointercancel", pointerup, { passive: true });
-    const observer = typeof ResizeObserver !== "undefined" ? new ResizeObserver(schedule) : null;
+    const resized = () => {
+      if (stopped) return;
+      updateBottomState();
+      schedule();
+    };
+    const observer = typeof ResizeObserver !== "undefined" ? new ResizeObserver(resized) : null;
     observer?.observe(viewport);
     if (content) observer?.observe(content);
+    if (!following.current) updateBottomState();
     schedule();
     return () => {
+      stopped = true;
       cancelFrame();
       cancelInput();
       observer?.disconnect();
@@ -212,6 +239,7 @@ export function useTranscriptFollow({
     schedule,
     sessionId,
     setFollowing,
+    updateBottomState,
     viewportRef,
   ]);
 
@@ -224,9 +252,11 @@ export function useTranscriptFollow({
       layoutVersion.some((value, index) => !Object.is(value, previous[index]))
     ) {
       previousLayout.current = layoutVersion;
+      if (!following.current) updateBottomState();
       schedule();
     }
   });
 
-  return { following, contentRef, pause, resume };
+  const awayFromBottom = enabled && bottomState.sessionId === sessionId && bottomState.away;
+  return { following, contentRef, pause, resume, awayFromBottom };
 }

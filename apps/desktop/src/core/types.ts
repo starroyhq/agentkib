@@ -1335,6 +1335,7 @@ export interface ConversationEvent {
   tool_status?: string;
   duration_ms?: number | null;
   attachment_count: number;
+  images?: import("@agentkib/web-client").ConversationImage[];
   truncated: boolean;
   tool?: import("@agentkib/runtime-protocol").ConversationToolDetail;
   turn_meta?: import("@agentkib/runtime-protocol").ConversationTurnMeta;

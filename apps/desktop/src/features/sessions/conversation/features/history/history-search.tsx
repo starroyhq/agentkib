@@ -815,12 +815,14 @@ export function HistorySearchLauncher({
   client,
   locale,
   initialQuery = "",
+  iconOnly = false,
   onOpen,
   onOpenSession,
 }: {
   client: WebClient;
   locale: Locale;
   initialQuery?: string;
+  iconOnly?: boolean;
   onOpen?: () => void;
   onOpenSession?: (session: ConversationSessionSummary) => void | Promise<void>;
 }) {
@@ -885,16 +887,29 @@ export function HistorySearchLauncher({
     <>
       <Button
         type="button"
-        variant="outline"
-        className="h-10 w-full justify-start gap-2 rounded-xl bg-background px-3 text-sm font-normal shadow-sm"
+        variant={iconOnly ? "ghost" : "outline"}
+        className={
+          iconOnly
+            ? `size-8 shrink-0 rounded-lg p-0 ${error ? "text-destructive-text" : "text-muted-foreground hover:text-foreground"}`
+            : "h-10 w-full justify-start gap-2 rounded-xl bg-background px-3 text-sm font-normal shadow-sm"
+        }
+        aria-label={historyCopy[locale].title}
+        title={
+          iconOnly ? (error ? historyCopy[locale].error : historyCopy[locale].title) : undefined
+        }
+        aria-busy={pending || undefined}
         disabled={pending}
         onClick={() => void openSearch()}
       >
-        <Search size={16} className="text-muted-foreground" />
-        {historyCopy[locale].title}
+        <Search
+          size={iconOnly ? 15 : 16}
+          className={iconOnly ? undefined : "text-muted-foreground"}
+          aria-hidden="true"
+        />
+        {!iconOnly && historyCopy[locale].title}
       </Button>
       {error && (
-        <p role="alert" className="text-sm text-destructive-text">
+        <p role="alert" className={iconOnly ? "sr-only" : "text-sm text-destructive-text"}>
           {historyCopy[locale].error}
         </p>
       )}

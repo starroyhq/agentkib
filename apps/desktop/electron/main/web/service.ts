@@ -370,6 +370,7 @@ const API_ROUTES: Record<"GET" | "POST", Record<string, RouteSpec>> = {
     "/catalog": { lan: true },
     "/read-state": { lan: true },
     "/events": { lan: true },
+    "/session-images": { lan: true },
     "/live": { lan: true },
     "/stream": { lan: true },
     "/attachments": { lan: true },
@@ -4250,9 +4251,15 @@ export class WebAccessService {
    * 可控内容时，压缩后的长度会泄露秘密（BREACH），所以不对所有回复开压缩。
    * 只压缩真正的 HTTP 回复；桌面桥和 WebSocket 授权用的内存回复按 JSON 文本读取。
    */
-  private json(res: ConversationResponse, status: number, data: unknown, compress = false) {
+  private json(
+    res: ConversationResponse,
+    status: number,
+    data: unknown,
+    compress = false,
+    maxBytes = 4 * 1024 * 1024,
+  ) {
     const body = JSON.stringify(data);
-    if (Buffer.byteLength(body) > 4 * 1024 * 1024) throw new HttpError(413, "response_too_large");
+    if (Buffer.byteLength(body) > maxBytes) throw new HttpError(413, "response_too_large");
     const headers: Record<string, string> = {
       "Content-Type": "application/json; charset=utf-8",
       "Cache-Control": "no-store",
@@ -4425,6 +4432,78 @@ export class WebAccessService {
     await this.codexScope(sessionId, hash, true, false);
     check();
     return this.json(res, 200, result);
+  }
+  private async conversationSessionImage(
+    res: ConversationResponse,
+    hash: string,
+    sessionId: string,
+    imageId: string,
+  ) {
+    const device = this.grant(hash);
+    const boot = this.bootId;
+    const readerScope = this.readerScope();
+    const check = () => {
+      if (this.grant(hash).id !== device.id) throw new HttpError(401, "access_ended");
+      if (this.bootId !== boot) throw new HttpError(409, "stale_boot");
+      if (this.readerScope() !== readerScope) throw new HttpError(409, "access_changed");
+    };
+    const workspace = await this.codexScope(sessionId, hash, true, false);
+    check();
+    let result: unknown;
+    try {
+      result = await this.runtime(
+        { operation: "session-image", sessionId, imageId },
+        undefined,
+        true,
+      );
+    } catch (error) {
+      check();
+      const detail =
+        error instanceof RuntimeRequestError &&
+        error.data !== null &&
+        typeof error.data === "object" &&
+        "detail" in error.data &&
+        typeof error.data.detail === "string"
+          ? error.data.detail
+          : error instanceof Error
+            ? error.message
+            : undefined;
+      const errors: Record<string, [number, string]> = {
+        "session-image-invalid": [400, "invalid_image_id"],
+        "session-image-unavailable": [404, "image_unavailable"],
+        "session-image-changed": [409, "image_changed"],
+        "session-image-too-large": [413, "image_too_large"],
+        "session-image-unsupported": [415, "image_unsupported"],
+      };
+      const mapped = detail ? errors[detail] : undefined;
+      if (mapped) throw new HttpError(...mapped);
+      throw error;
+    }
+    check();
+    if (workspace !== (await this.codexScope(sessionId, hash, true, false)))
+      throw new HttpError(403, "access_changed");
+    check();
+    const image = result as { mimeType?: unknown; base64?: unknown } | null;
+    if (
+      !image ||
+      typeof image.mimeType !== "string" ||
+      !["image/png", "image/jpeg", "image/webp", "image/gif"].includes(image.mimeType) ||
+      typeof image.base64 !== "string" ||
+      !image.base64.length ||
+      image.base64.length > Math.ceil((8 * 1024 * 1024) / 3) * 4 ||
+      image.base64.length % 4 !== 0 ||
+      !/^[A-Za-z0-9+/]+={0,2}$/.test(image.base64) ||
+      Buffer.byteLength(image.base64, "base64") > 8 * 1024 * 1024
+    )
+      throw new HttpError(502, "invalid_image_response");
+    // Only this separately bounded media route may exceed the usual 4 MiB JSON reply.
+    return this.json(
+      res,
+      200,
+      { mimeType: image.mimeType, base64: image.base64 },
+      false,
+      12 * 1024 * 1024,
+    );
   }
   private async handle(
     req: ConversationRequest,
@@ -5306,6 +5385,20 @@ export class WebAccessService {
         throw new HttpError(400, "invalid_read_state_request");
       return this.conversationReadState(res, hash, this.field(url.searchParams.get("sessionId")));
     }
+    if (path === "/session-images") {
+      if (
+        [...url.searchParams.keys()].some((key) => !["sessionId", "imageId"].includes(key)) ||
+        url.searchParams.getAll("sessionId").length !== 1 ||
+        url.searchParams.getAll("imageId").length !== 1
+      )
+        throw new HttpError(400, "invalid_image_request");
+      return this.conversationSessionImage(
+        res,
+        hash,
+        this.field(url.searchParams.get("sessionId")),
+        this.field(url.searchParams.get("imageId"), 512),
+      );
+    }
     if (path === "/history/status") {
       if (url.search) throw new HttpError(400, "invalid_history_request");
       const scope = await this.historyScope(hash, true);
@@ -6013,7 +6106,27 @@ export class WebAccessService {
     else throw new HttpError(404, "not_found");
     const boot = this.bootId;
     const readerScope = this.readerScope();
-    let result = await this.runtime(params);
+    let result: unknown;
+    try {
+      result = await this.runtime(params);
+    } catch (error) {
+      if (path === "/catalog") {
+        this.grant(hash);
+        if (boot !== this.bootId) throw new HttpError(409, "stale_boot");
+        if (readerScope !== this.readerScope()) throw new HttpError(409, "access_changed");
+        const detail =
+          error instanceof RuntimeRequestError &&
+          error.data !== null &&
+          typeof error.data === "object" &&
+          "detail" in error.data
+            ? error.data.detail
+            : error instanceof Error
+              ? error.message
+              : undefined;
+        if (detail === "catalog-stale") throw new HttpError(409, "catalog_stale");
+      }
+      throw error;
+    }
     const device = this.grant(hash);
     if (path === "/catalog" && this.isFullAccess(device)) {
       const registered = new Set(

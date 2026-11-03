@@ -277,9 +277,10 @@ describe("Claude local owner panel", () => {
         activity: "compacting",
       }),
     );
-    expect(screen.getByRole("button", { name: "Context usage" })).toHaveTextContent(
-      "Compacting context",
-    );
+    const usage = screen.getByRole("button", { name: "Context usage" });
+    expect(usage).toHaveTextContent(/^$/);
+    expect(usage).toHaveAttribute("title", "Context usage: Compacting context");
+    expect(screen.getByLabelText("Message")).toHaveValue("next");
     expect(screen.getByRole("button", { name: "Send" })).toBeDisabled();
     expect(
       screen.queryByRole("button", { name: "Return to original client" }),
@@ -289,6 +290,7 @@ describe("Claude local owner panel", () => {
     expect(screen.getByRole("button", { name: "Context usage" })).toHaveTextContent(
       "Awaiting update",
     );
+    expect(screen.getByLabelText("Message")).toHaveValue("next");
     expect(screen.getByRole("button", { name: "Send" })).toBeDisabled();
     act(() =>
       emitNative(3, "state", {
@@ -297,6 +299,8 @@ describe("Claude local owner panel", () => {
       }),
     );
     expect(screen.getByRole("button", { name: "Context usage" })).toHaveTextContent("4%");
+    expect(screen.getByLabelText("Message")).toHaveValue("next");
+    expect(calls("send")).toHaveLength(0);
   });
   it.each(["before", "after"])(
     "recovers an admission-busy history read when another session settles %s its response",

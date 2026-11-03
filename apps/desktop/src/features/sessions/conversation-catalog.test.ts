@@ -29,6 +29,17 @@ function catalog(id: string): DesktopConversationResponse {
   };
 }
 
+function snapshot(ids: string[], extra: Record<string, unknown> = {}): DesktopConversationResponse {
+  return {
+    status: 200,
+    body: {
+      workspaces: [],
+      sessions: ids.map((id) => (catalog(id).body as { sessions: object[] }).sessions[0]),
+      ...extra,
+    },
+  };
+}
+
 function fixture() {
   let receive = (_event: SessionStreamEvent<Live>) => {};
   let controlChanged = (_sessionId: string) => {};
@@ -124,7 +135,8 @@ describe("desktop conversation catalog", () => {
     });
     expect(bridge.request).toHaveBeenCalledTimes(reads + 3);
     expect(view.result.current.sessions[0]?.id).toBe("initial");
-    expect(view.result.current.ready).toBe(true);
+    expect(view.result.current.ready).toBe(false);
+    expect(view.result.current.usable).toBe(true);
     expect(view.result.current.error).toBeUndefined();
   });
   it.each(["control", "catalog"] as const)(
@@ -411,6 +423,274 @@ describe("desktop conversation catalog", () => {
     });
     await waitFor(() => expect(view.result.current.sessions[0]?.id).toBe("recovered"));
   });
+
+  it("shows the same cached objects immediately on re-entry and retains them after read failure", async () => {
+    const { bridge } = fixture();
+    const first = renderHook(() => useConversationCatalog(true, true));
+    await waitFor(() => expect(first.result.current.ready).toBe(true));
+    const rows = first.result.current.sessions;
+    first.unmount();
+    let reject!: (error: Error) => void;
+    vi.mocked(bridge.request).mockImplementation(
+      () =>
+        new Promise((_resolve, fail) => {
+          reject = fail;
+        }),
+    );
+    const second = renderHook(() => useConversationCatalog(true, true));
+    expect(second.result.current.sessions).toBe(rows);
+    expect(second.result.current.usable).toBe(true);
+    expect(second.result.current.ready).toBe(false);
+    await act(async () => reject(new Error("storage unavailable")));
+    await waitFor(() => expect(second.result.current.error).toBeInstanceOf(Error));
+    expect(second.result.current.sessions).toBe(rows);
+    expect(second.result.current.usable).toBe(true);
+    expect(second.result.current.ready).toBe(false);
+  });
+
+  it("retains only incomplete sources and accepts a later authoritative empty snapshot", async () => {
+    const { bridge } = fixture();
+    vi.mocked(bridge.request).mockResolvedValue(
+      snapshot(["old-codex"], {
+        sessions: [
+          ...(snapshot(["old-codex"]).body as { sessions: object[] }).sessions,
+          {
+            ...(catalog("old-claude").body as { sessions: object[] }).sessions[0],
+            agent: "claude-code",
+          },
+        ],
+        complete: true,
+      }),
+    );
+    const view = renderHook(() => useConversationCatalog(true, true));
+    await waitFor(() => expect(view.result.current.ready).toBe(true));
+    const oldCodex = view.result.current.sessions.find(({ id }) => id === "old-codex");
+    vi.mocked(bridge.request).mockResolvedValue(
+      snapshot([], {
+        sessions: [
+          {
+            ...(catalog("new-claude").body as { sessions: object[] }).sessions[0],
+            agent: "claude-code",
+          },
+        ],
+        complete: false,
+        incompleteSources: [{ workspaceId: "workspace", agent: "codex" }],
+      }),
+    );
+    await act(async () => {
+      await refreshConversationCatalog();
+    });
+    expect(view.result.current.sessions.map(({ id }) => id)).toEqual(["new-claude", "old-codex"]);
+    expect(view.result.current.sessions[1]).toBe(oldCodex);
+    expect(view.result.current).toMatchObject({ usable: true, ready: true, complete: false });
+    vi.mocked(bridge.request).mockResolvedValue(
+      snapshot([], { complete: false, incompleteSources: [] }),
+    );
+    await act(async () => {
+      await refreshConversationCatalog();
+    });
+    expect(view.result.current.sessions).toHaveLength(2);
+    vi.mocked(bridge.request).mockResolvedValue(
+      snapshot([], { complete: true, incompleteSources: [] }),
+    );
+    await act(async () => {
+      await refreshConversationCatalog();
+    });
+    expect(view.result.current.sessions).toEqual([]);
+    expect(view.result.current).toMatchObject({ usable: true, ready: true, complete: true });
+  });
+
+  it("does not treat an initial partial empty response as a trusted empty directory", async () => {
+    const { bridge } = fixture();
+    vi.mocked(bridge.request).mockResolvedValue(
+      snapshot([], {
+        complete: false,
+        incompleteSources: [{ workspaceId: "workspace", agent: "codex" }],
+      }),
+    );
+    const view = renderHook(() => useConversationCatalog(true, true));
+    await waitFor(() => expect(view.result.current.refreshing).toBe(false));
+    expect(view.result.current).toMatchObject({ sessions: [], usable: false, ready: false });
+  });
+
+  it("keeps record identity across reorder and coalesces a burst of directory invalidations", async () => {
+    const { bridge, emit } = fixture();
+    vi.mocked(bridge.request).mockResolvedValue(snapshot(["a", "b"]));
+    const view = renderHook(() => useConversationCatalog(true, true));
+    await waitFor(() => expect(view.result.current.ready).toBe(true));
+    const [a, b] = view.result.current.sessions;
+    const original = view.result.current.sessions;
+    await act(async () => {
+      await refreshConversationCatalog();
+    });
+    expect(view.result.current.sessions).toBe(original);
+    const reads = vi.mocked(bridge.request).mock.calls.length;
+    vi.mocked(bridge.request).mockResolvedValue(snapshot(["b", "a"]));
+    act(() => {
+      for (let seq = 1; seq <= 8; seq++)
+        emit({
+          protocolVersion: 2,
+          sessionId: "",
+          subscriptionId: "catalog",
+          runtimeBootId: "boot",
+          epoch: "epoch",
+          seq,
+          cursor: `epoch:${seq}`,
+          type: "invalidate",
+          payload: { domains: ["catalog"] },
+        });
+    });
+    expect(bridge.request).toHaveBeenCalledTimes(reads);
+    await waitFor(() => expect(view.result.current.sessions[0]?.id).toBe("b"));
+    expect(bridge.request).toHaveBeenCalledTimes(reads + 1);
+    expect(view.result.current.sessions).toEqual([b, a]);
+    expect(view.result.current.sessions[0]).toBe(b);
+    expect(view.result.current.sessions[1]).toBe(a);
+  });
+
+  it("retries stale catalog reads without clearing usable rows or surfacing a storage error", async () => {
+    const { bridge } = fixture();
+    const view = renderHook(() => useConversationCatalog(true, true));
+    await waitFor(() => expect(view.result.current.ready).toBe(true));
+    const previous = view.result.current.sessions;
+    vi.mocked(bridge.request)
+      .mockResolvedValueOnce({ status: 409, body: { error: "catalog_stale" } })
+      .mockResolvedValueOnce(catalog("fresh"));
+    let read!: Promise<unknown>;
+    act(() => {
+      read = refreshConversationCatalog();
+    });
+    expect(view.result.current.sessions).toBe(previous);
+    await act(async () => {
+      await read;
+    });
+    expect(view.result.current.sessions[0]?.id).toBe("fresh");
+    expect(view.result.current.error).toBeUndefined();
+  });
+
+  it.each([401, 403])(
+    "clears cached directory authority after a %s access rejection",
+    async (status) => {
+      const { bridge } = fixture();
+      const view = renderHook(() => useConversationCatalog(true, true));
+      await waitFor(() => expect(view.result.current.ready).toBe(true));
+      vi.mocked(bridge.request).mockResolvedValue({ status, body: { error: "forbidden" } });
+      await act(async () => {
+        await expect(refreshConversationCatalog()).rejects.toMatchObject({ status });
+      });
+      expect(view.result.current).toMatchObject({
+        sessions: [],
+        usable: false,
+        ready: false,
+        accessDenied: true,
+      });
+      vi.mocked(bridge.request).mockResolvedValue(catalog("authorized-again"));
+      await act(async () => {
+        await refreshConversationCatalog();
+      });
+      expect(view.result.current.accessDenied).toBe(false);
+      expect(view.result.current.sessions[0]?.id).toBe("authorized-again");
+    },
+  );
+
+  it("never commits a complete empty response invalidated while the read was running", async () => {
+    const { bridge, emit } = fixture();
+    const frames: string[][] = [];
+    const view = renderHook(() => {
+      const catalog = useConversationCatalog(true, true);
+      frames.push(catalog.sessions.map(({ id }) => id));
+      return catalog;
+    });
+    await waitFor(() => expect(view.result.current.ready).toBe(true));
+    frames.length = 0;
+    let oldReply!: (value: DesktopConversationResponse) => void;
+    let newReply!: (value: DesktopConversationResponse) => void;
+    vi.mocked(bridge.request)
+      .mockImplementationOnce(
+        () =>
+          new Promise((resolve) => {
+            oldReply = resolve;
+          }),
+      )
+      .mockImplementationOnce(
+        () =>
+          new Promise((resolve) => {
+            newReply = resolve;
+          }),
+      );
+    let refresh!: Promise<unknown>;
+    act(() => {
+      refresh = refreshConversationCatalog();
+    });
+    act(() =>
+      emit({
+        protocolVersion: 2,
+        sessionId: "",
+        subscriptionId: "catalog",
+        runtimeBootId: "boot",
+        epoch: "epoch",
+        seq: 1,
+        cursor: "epoch:1",
+        type: "invalidate",
+        payload: { domains: ["catalog"] },
+      }),
+    );
+    await act(async () => oldReply(snapshot([], { complete: true })));
+    await waitFor(() => expect(newReply).toBeTypeOf("function"));
+    expect(frames.every((rows) => rows.includes("initial"))).toBe(true);
+    expect(view.result.current.sessions[0]?.id).toBe("initial");
+    await act(async () => {
+      newReply(snapshot(["initial", "new"]));
+      await refresh;
+    });
+    expect(view.result.current.sessions.map(({ id }) => id)).toEqual(["initial", "new"]);
+  });
+
+  it("discards old-boot rows before merging a new partial snapshot and fences the old read", async () => {
+    const { bridge, emit } = fixture();
+    const baseline = await bridge.subscribe("", undefined);
+    const view = renderHook(() => useConversationCatalog(true, true));
+    await waitFor(() => expect(view.result.current.ready).toBe(true));
+    let finish!: (value: DesktopConversationResponse) => void;
+    vi.mocked(bridge.request)
+      .mockImplementationOnce(
+        () =>
+          new Promise((resolve) => {
+            finish = resolve;
+          }),
+      )
+      .mockResolvedValue(
+        snapshot([], {
+          complete: false,
+          incompleteSources: [{ workspaceId: "workspace", agent: "codex" }],
+        }),
+      );
+    let old!: Promise<unknown>;
+    act(() => {
+      old = refreshConversationCatalog();
+    });
+    const next = {
+      ...baseline.events[0],
+      runtimeBootId: "new-boot",
+      epoch: "new-epoch",
+      cursor: "new-epoch:0",
+    };
+    vi.mocked(bridge.subscribe).mockResolvedValue({
+      ...baseline,
+      cursor: "new-epoch:0",
+      events: [next],
+    });
+    act(() => emit(next));
+    expect(view.result.current.sessions).toEqual([]);
+    expect(view.result.current.usable).toBe(false);
+    await act(async () => {
+      finish(catalog("obsolete"));
+      await old;
+    });
+    await waitFor(() => expect(view.result.current.refreshing).toBe(false));
+    expect(view.result.current.sessions).toEqual([]);
+    expect(view.result.current.usable).toBe(false);
+  });
 });
 
 it("clears account read cursors immediately and refuses an old catalog after switching account", async () => {
@@ -501,6 +781,18 @@ it("clears account read cursors immediately and refuses an old catalog after swi
       await prior;
     });
     expect(view.result.current.sessions[0]?.readState?.version).toBe("account-b");
+    view.unmount();
+    act(() => {
+      status = profile("account-c");
+      receive(status);
+    });
+    const reentered = renderHook(() => useConversationCatalog(true, true));
+    expect(reentered.result.current.sessions[0]?.id).toBe("s");
+    expect(reentered.result.current.sessions[0]?.readState).toBeUndefined();
+    await waitFor(() =>
+      expect(reentered.result.current.sessions[0]?.readState?.version).toBe("account-c"),
+    );
+    reentered.unmount();
   } finally {
     view.unmount();
     Object.defineProperty(window, "agentkibDesktop", { configurable: true, value: originalApi });

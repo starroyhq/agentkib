@@ -28,6 +28,7 @@ import {
   trimWhitespace,
   truncateUtf8,
   type ConversationEvent,
+  type ConversationImage,
   type HistoryFormat,
 } from "./session-events";
 interface Mirror {
@@ -168,6 +169,7 @@ function mergeMetadata(
   turn: string | null,
   phase: ConversationEvent["message_phase"],
   attachments: number,
+  images: ConversationImage[] = [],
 ): boolean {
   let conflict = false;
   if (event.turn_id && turn && event.turn_id !== turn) {
@@ -179,6 +181,24 @@ function mergeMetadata(
     conflict = true;
   } else if (!event.message_phase && phase) event.message_phase = phase;
   event.attachment_count = Math.max(event.attachment_count, attachments);
+  if (images.length) {
+    const existing = event.images ?? [];
+    // Codex mirrors one message as URL/data images and local image paths. When
+    // both complete attachment lists have the same length, they describe the
+    // same ordered images, not additional uploads. Prefer the inline proof,
+    // retaining the local basename for presentation.
+    if (existing.length === images.length && images.length === event.attachment_count)
+      event.images = existing.map((image, index) => {
+        const other = images[index]!;
+        const preferred = image.mimeType ? image : other.mimeType ? other : image;
+        const name = image.name ?? other.name;
+        return { ...preferred, ...(name ? { name } : {}) };
+      });
+    else
+      event.images = [
+        ...new Map([...existing, ...images].map((image) => [image.id, image])).values(),
+      ].slice(0, 32);
+  }
   return conflict;
 }
 /** Marks messages Claude Code wrote itself, which clients show with their line breaks. */
@@ -197,6 +217,7 @@ function message(
   classification: ConversationEvent["message_phase"],
   page: ConversationEvent[],
   id = `event-${offset}`,
+  images: ConversationImage[] = [],
 ): void {
   const event: ConversationEvent = {
     id,
@@ -206,7 +227,8 @@ function message(
     tool_name: null,
     tool_status: null,
     duration_ms: null,
-    attachment_count: attachments,
+    attachment_count: Math.max(attachments, images.length),
+    ...(images.length ? { images } : {}),
   };
   if (turn !== null) event.turn_id = turn;
   if (kind === "agent-message" && classification) event.message_phase = classification;
@@ -256,7 +278,13 @@ function message(
           conflict = false;
         } else conflict = true;
       } else if (existing)
-        conflict = mergeMetadata(existing, event.turn_id ?? null, event.message_phase, attachments);
+        conflict = mergeMetadata(
+          existing,
+          event.turn_id ?? null,
+          event.message_phase,
+          attachments,
+          images,
+        );
       else
         conflict =
           event.turn_id !== undefined ||
@@ -530,12 +558,19 @@ export function parseEventRecord(
   offset: number,
   row: any,
   page: ConversationEvent[],
+  images: ConversationImage[] = [],
 ): void {
   const from = state.pending.length;
-  parseRecord(state, offset, row, page);
+  parseRecord(state, offset, row, page, images);
   attachTurnMeta(state, from);
 }
-function parseRecord(state: EventState, offset: number, row: any, page: ConversationEvent[]): void {
+function parseRecord(
+  state: EventState,
+  offset: number,
+  row: any,
+  page: ConversationEvent[],
+  images: ConversationImage[],
+): void {
   if (state.format !== "codex" && state.format !== "claude-code") {
     for (const event of compatibleEvents(state.format, offset, row)) state.pending.push(event);
     return;
@@ -700,23 +735,51 @@ function parseRecord(state: EventState, offset: number, row: any, page: Conversa
           nativeId ?? `event-${offset}`,
         );
         if (output) markCliOutput(state.pending.slice(from));
-      } else if (output === null && hasText(text) && !hiddenCommand(text)) {
+      } else if (
+        output === null &&
+        (hasText(text) || images.length > 0) &&
+        !hiddenCommand(text ?? "")
+      ) {
         const from = state.pending.length;
         message(
           state,
           offset,
           kind,
           timestamp,
-          text,
+          text ?? "",
           attachments,
           true,
           null,
           undefined,
           page,
           nativeId ?? `event-${offset}`,
+          images,
         );
         if (synthetic) markCliOutput(state.pending.slice(from));
       }
+    }
+    if (images.length && kind === "agent-message" && nativeId && !hiddenCommand(text ?? "")) {
+      const first = [...rowEvents]
+        .sort((a, b) => a.index - b.index)
+        .find(({ event }) => event.kind === kind);
+      if (first) {
+        first.event.images = images;
+        first.event.attachment_count = Math.max(first.event.attachment_count, attachments);
+      } else if (!hasText(text))
+        message(
+          state,
+          offset,
+          kind,
+          timestamp,
+          "",
+          attachments,
+          true,
+          null,
+          undefined,
+          page,
+          nativeId,
+          images,
+        );
     }
     // The file is read newest-first and the page is reversed before return.
     // Queue this row in reverse block order so text and tool items retain the
@@ -754,26 +817,29 @@ function parseRecord(state: EventState, offset: number, row: any, page: Conversa
     return;
   }
   if (row?.type === "event_msg" && ["user_message", "agent_message"].includes(payload?.type)) {
-    if (typeof payload.message === "string")
+    const content = typeof payload.message === "string" ? payload.message : "";
+    if (typeof payload.message === "string" || images.length)
       message(
         state,
         offset,
         payload.type === "user_message" ? "user-message" : "agent-message",
         timestamp,
-        payload.type === "agent_message" ? withoutPlanTags(payload.message) : payload.message,
+        payload.type === "agent_message" ? withoutPlanTags(content) : content,
         (Array.isArray(payload.images) ? payload.images.length : 0) +
           (Array.isArray(payload.local_images) ? payload.local_images.length : 0),
         true,
         turn,
         phase(payload),
         page,
+        `event-${offset}`,
+        images,
       );
   } else if (row?.type === "response_item" && payload?.type === "message") {
     if (!["user", "assistant"].includes(payload.role)) return;
     const content = payload.content,
       raw = messageText(content),
       text = raw !== null && payload.role === "assistant" ? withoutPlanTags(raw) : raw;
-    if (text === null) return;
+    if (text === null && !images.length) return;
     const injectedTurn = payload.internal_chat_message_metadata_passthrough?.turn_id;
     if (payload.role === "user" && typeof injectedTurn === "string") {
       const key = hash(injectedTurn);
@@ -790,7 +856,7 @@ function parseRecord(state: EventState, offset: number, row: any, page: Conversa
       offset,
       payload.role === "user" ? "user-message" : "agent-message",
       timestamp,
-      text,
+      text ?? "",
       Array.isArray(content)
         ? content.filter((block) => ["input_image", "image", "document"].includes(block?.type))
             .length
@@ -799,6 +865,8 @@ function parseRecord(state: EventState, offset: number, row: any, page: Conversa
       turn,
       payload.role === "assistant" ? phase(payload) : undefined,
       page,
+      `event-${offset}`,
+      images,
     );
   } else if (
     row?.type === "response_item" &&

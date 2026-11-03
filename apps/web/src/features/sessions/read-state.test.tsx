@@ -62,6 +62,7 @@ function Probe({
   source = "codex-native",
   ready = true,
   catalogVersion,
+  imagePending = false,
 }: {
   client: Client;
   id?: string;
@@ -72,6 +73,7 @@ function Probe({
   source?: SessionReadState["source"];
   ready?: boolean;
   catalogVersion?: string;
+  imagePending?: boolean | string;
 }) {
   const viewport = useRef<HTMLDivElement>(null);
   const observed = useVisibleReadState({
@@ -94,6 +96,12 @@ function Probe({
       {rows.map((row) => (
         <article data-event-id={row.id} key={row.id}>
           {row.content}
+          <span
+            data-message-image-pending={
+              (typeof imagePending === "string" ? row.id === imagePending : imagePending) ||
+              undefined
+            }
+          />
         </article>
       ))}
       {observed.events && (
@@ -151,6 +159,21 @@ afterEach(() => {
 });
 
 describe("visible result read acknowledgements", () => {
+  it("waits for an image-only result to display successfully before acknowledging it", async () => {
+    const rows = [{ ...event, content: "", attachment_count: 1 }];
+    const client = fixture(unread(), rows);
+    const view = render(<Probe client={client} rows={rows} imagePending />);
+    await settle();
+    expect(client.acknowledgeReadState).not.toHaveBeenCalled();
+    // Removing the loading/failure marker must wake observation without a scroll.
+    view.rerender(<Probe client={client} rows={rows} />);
+    await settle();
+    expect(client.acknowledgeReadState).toHaveBeenCalledExactlyOnceWith(
+      "session",
+      "native:revision-1",
+      "result",
+    );
+  });
   it("does not acknowledge an off-screen row; actual scrolling into view acknowledges exactly that result", async () => {
     const client = fixture();
     offscreen = true;
@@ -193,6 +216,21 @@ describe("visible result read acknowledgements", () => {
     dialog.remove();
     await settle();
     expect(client.acknowledgeReadState).toHaveBeenCalledTimes(1);
+  });
+  it("waits for the actual Base UI preview to close even without an aria-modal attribute", async () => {
+    const dialog = document.createElement("div");
+    dialog.setAttribute("data-slot", "dialog-content");
+    dialog.setAttribute("data-open", "");
+    document.body.append(dialog);
+    const client = fixture();
+    render(<Probe client={client} />);
+    await settle();
+    expect(client.acknowledgeReadState).not.toHaveBeenCalled();
+    // Base UI can keep the popup mounted during its closing animation.
+    dialog.removeAttribute("data-open");
+    await settle();
+    expect(client.acknowledgeReadState).toHaveBeenCalledTimes(1);
+    dialog.remove();
   });
   it("never treats a cached or missing result as a fresh visible snapshot", async () => {
     const fresh = [{ ...event, content: "New answer" }],
@@ -297,6 +335,48 @@ describe("visible result read acknowledgements", () => {
     expect(client.acknowledgeReadState).not.toHaveBeenCalled();
     markerVisible = true;
     fireEvent.scroll(screen.getByTestId("viewport"));
+    await settle();
+    expect(client.acknowledgeReadState).toHaveBeenCalledExactlyOnceWith(
+      "session",
+      "native:revision-1",
+      null,
+    );
+  });
+  it("waits for the latest image in a manually unread thread, even when its separate marker is visible", async () => {
+    const rows = [{ ...event, kind: "user-message", content: "", attachment_count: 1 }];
+    const client = fixture(
+      unread({ latestResult: null, firstUnread: { type: "threadStart" } }),
+      rows,
+    );
+    Object.defineProperty(document, "elementFromPoint", {
+      configurable: true,
+      value: () => document.querySelector("[data-read-result]"),
+    });
+    const view = render(<Probe client={client} rows={rows} imagePending />);
+    await settle();
+    expect(client.acknowledgeReadState).not.toHaveBeenCalled();
+    view.rerender(<Probe client={client} rows={rows} />);
+    await settle();
+    expect(client.acknowledgeReadState).toHaveBeenCalledExactlyOnceWith(
+      "session",
+      "native:revision-1",
+      null,
+    );
+  });
+  it("does not let an older off-screen image block a newly viewed manual-unread marker", async () => {
+    const rows = [
+      { ...event, id: "old-image", kind: "user-message", content: "", attachment_count: 1 },
+      { ...event, id: "latest-text", kind: "user-message", content: "Latest request" },
+    ];
+    const client = fixture(
+      unread({ latestResult: null, firstUnread: { type: "threadStart" } }),
+      rows,
+    );
+    Object.defineProperty(document, "elementFromPoint", {
+      configurable: true,
+      value: () => document.querySelector("[data-read-result]"),
+    });
+    render(<Probe client={client} rows={rows} imagePending="old-image" />);
     await settle();
     expect(client.acknowledgeReadState).toHaveBeenCalledExactlyOnceWith(
       "session",

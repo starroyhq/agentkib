@@ -25,6 +25,34 @@ afterEach(() => {
 });
 
 describe("WebClient transport boundaries", () => {
+  it("reads only the selected session image using its opaque ID and cancellation", async () => {
+    const image = { mimeType: "image/png", base64: "aW1hZ2U=" };
+    const transport = vi.fn().mockResolvedValue(json(image));
+    const client = new WebClient(transport);
+    const abort = new AbortController();
+    await expect(
+      client.sessionImage("session &other=foreign", "opaque/image?other=1", abort.signal),
+    ).resolves.toEqual(image);
+    expect(transport).toHaveBeenCalledExactlyOnceWith(
+      "/api/web/v1/session-images?sessionId=session+%26other%3Dforeign&imageId=opaque%2Fimage%3Fother%3D1",
+      expect.objectContaining({
+        method: "GET",
+        credentials: "same-origin",
+        signal: abort.signal,
+        cache: "no-store",
+      }),
+    );
+    expect(transport.mock.calls[0][1].body).toBeUndefined();
+  });
+
+  it("does not contact an unpaired LAN host for a session image", async () => {
+    const transport = vi.fn();
+    const client = new WebClient(transport, "http://192.168.1.10:1422");
+    await expect(client.sessionImage("session", "image")).rejects.toMatchObject({
+      code: "access_ended",
+    });
+    expect(transport).not.toHaveBeenCalled();
+  });
   it("reads a host resume command with the selected identity and cancellation without dispatching", async () => {
     const command = {
       available: true,

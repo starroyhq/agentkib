@@ -13,6 +13,10 @@ const mocks = vi.hoisted(() => ({
   indexed: [] as ConversationSessionSummary[],
   controlled: [] as ConversationSessionSummary[],
   controlledReady: true,
+  controlledUsable: true,
+  controlledComplete: true,
+  controlledAccessDenied: false,
+  incompleteSources: [] as Array<{ workspaceId: string; agent: string }>,
   controlledError: undefined as unknown,
   codexRuntimeReason: undefined as "codex-cli-version-too-old" | null | undefined,
   search: {} as { sessionId?: string },
@@ -53,6 +57,10 @@ vi.mock("./conversation-catalog", () => ({
   useConversationCatalog: () => ({
     sessions: mocks.controlled,
     ready: mocks.controlledReady,
+    usable: mocks.controlledUsable,
+    complete: mocks.controlledComplete,
+    accessDenied: mocks.controlledAccessDenied,
+    incompleteSources: mocks.incompleteSources,
     error: mocks.controlledError,
     codexRuntimeReason: mocks.codexRuntimeReason,
   }),
@@ -100,6 +108,10 @@ beforeEach(() => {
   mocks.indexed = [session("indexed-alias"), session("unmanaged")];
   mocks.controlled = [session("managed-id"), session("unmanaged")];
   mocks.controlledReady = true;
+  mocks.controlledUsable = true;
+  mocks.controlledComplete = true;
+  mocks.controlledAccessDenied = false;
+  mocks.incompleteSources = [];
   mocks.controlledError = undefined;
   mocks.codexRuntimeReason = undefined;
   mocks.search = {};
@@ -110,6 +122,143 @@ beforeEach(() => {
 afterEach(cleanup);
 
 describe("desktop authoritative session directory", () => {
+  it("does not revive workspace cache after a controlled directory authorization denial", () => {
+    mocks.controlled = [];
+    mocks.controlledUsable = false;
+    mocks.controlledReady = false;
+    mocks.controlledAccessDenied = true;
+    mocks.controlledError = new Error("Directory access denied");
+    let snapshot: ReturnType<typeof useSessionHub> | undefined;
+    function Probe() {
+      snapshot = useSessionHub();
+      return <Directory />;
+    }
+    render(
+      <SessionHubProvider>
+        <Probe />
+      </SessionHubProvider>,
+    );
+    expect(snapshot?.sessions).toEqual([]);
+    expect(snapshot?.usable).toBe(false);
+    expect(snapshot?.loading).toBe(false);
+    expect(screen.getByRole("alert").textContent).toContain("Directory access denied");
+    expect(screen.queryByRole("button", { name: "indexed-alias" })).toBeNull();
+  });
+
+  it("shows trusted workspace cache while the first controlled read is pending", () => {
+    mocks.search = { sessionId: "unmanaged" };
+    mocks.controlled = [];
+    mocks.controlledReady = false;
+    mocks.controlledUsable = false;
+    let snapshot: ReturnType<typeof useSessionHub> | undefined;
+    function Probe() {
+      snapshot = useSessionHub();
+      return <Directory />;
+    }
+    const view = render(
+      <SessionHubProvider>
+        <Probe />
+      </SessionHubProvider>,
+    );
+    expect(snapshot?.usable).toBe(true);
+    expect(snapshot?.loading).toBe(false);
+    expect(snapshot?.ready).toBe(false);
+    expect(snapshot?.selected?.id).toBe("unmanaged");
+    expect(screen.getByRole("button", { name: "indexed-alias" })).toBeTruthy();
+    expect(mocks.navigate).not.toHaveBeenCalled();
+    mocks.controlled = [
+      { ...session("managed-id"), indexedSessionIds: ["indexed-alias"] },
+      session("unmanaged"),
+    ];
+    mocks.controlledReady = true;
+    mocks.controlledUsable = true;
+    view.rerender(
+      <SessionHubProvider>
+        <Probe />
+      </SessionHubProvider>,
+    );
+    expect(snapshot?.selected?.id).toBe("unmanaged");
+    expect(screen.queryByRole("button", { name: "indexed-alias" })).toBeNull();
+    expect(screen.getByRole("button", { name: "managed-id" })).toBeTruthy();
+    expect(mocks.navigate).not.toHaveBeenCalled();
+  });
+
+  it("does not restore workspace rows after a trusted empty controlled snapshot", () => {
+    mocks.controlled = [];
+    render(
+      <SessionHubProvider>
+        <Directory />
+      </SessionHubProvider>,
+    );
+    expect(screen.queryByRole("button", { name: "indexed-alias" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "unmanaged" })).toBeNull();
+  });
+
+  it("keeps cached selection usable while a newer directory read is pending", () => {
+    mocks.search = { sessionId: "unmanaged" };
+    mocks.controlledReady = false;
+    let snapshot: ReturnType<typeof useSessionHub> | undefined;
+    function Probe() {
+      snapshot = useSessionHub();
+      return <Directory />;
+    }
+    render(
+      <SessionHubProvider>
+        <Probe />
+      </SessionHubProvider>,
+    );
+    expect(snapshot?.usable).toBe(true);
+    expect(snapshot?.loading).toBe(false);
+    expect(snapshot?.selected?.id).toBe("unmanaged");
+    expect(mocks.navigate).not.toHaveBeenCalled();
+  });
+
+  it("does not erase the selection for an incomplete source, but accepts deletion in a completed source", () => {
+    mocks.search = { sessionId: "unmanaged" };
+    const view = render(
+      <SessionHubProvider>
+        <Directory />
+      </SessionHubProvider>,
+    );
+    expect(screen.getByText("unmanaged", { selector: "output" })).toBeTruthy();
+    mocks.controlled = [session("managed-id")];
+    mocks.controlledComplete = false;
+    mocks.incompleteSources = [{ workspaceId: "workspace", agent: "codex" }];
+    view.rerender(
+      <SessionHubProvider>
+        <Directory />
+      </SessionHubProvider>,
+    );
+    expect(mocks.navigate).not.toHaveBeenCalled();
+    mocks.incompleteSources = [{ workspaceId: "workspace", agent: "claude-code" }];
+    view.rerender(
+      <SessionHubProvider>
+        <Directory />
+      </SessionHubProvider>,
+    );
+    expect(mocks.navigate).toHaveBeenCalledWith(expect.objectContaining({ replace: true }));
+  });
+
+  it("waits for a complete directory before discarding an unknown deep link", () => {
+    mocks.search = { sessionId: "not-yet-verified" };
+    mocks.controlledComplete = false;
+    mocks.incompleteSources = [{ workspaceId: "workspace", agent: "codex" }];
+    const view = render(
+      <SessionHubProvider>
+        <Directory />
+      </SessionHubProvider>,
+    );
+    expect(mocks.navigate).not.toHaveBeenCalled();
+    mocks.controlledComplete = true;
+    mocks.incompleteSources = [];
+    view.rerender(
+      <SessionHubProvider>
+        <Directory />
+      </SessionHubProvider>,
+    );
+    expect(mocks.navigate).toHaveBeenCalledWith(expect.objectContaining({ replace: true }));
+  });
+
   it("finishes creation when selecting the already committed conversation", () => {
     mocks.search = { sessionId: "managed-id" };
     useSessionViewStore.getState().setCreatingConversation(true);

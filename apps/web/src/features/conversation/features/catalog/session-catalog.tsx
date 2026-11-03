@@ -1,4 +1,5 @@
 import {
+  PendingReviewLane,
   sessionContinuationListState,
   SessionContinuationDot,
   sessionGroupActivity,
@@ -52,7 +53,9 @@ export function SessionCatalog({
   rowMenu,
   execution = false,
   onExecutionChange,
+  readContext,
 }: {
+  readContext?: object;
   sessions: ConversationSessionSummary[];
   workspaces?: CatalogWorkspace[];
   selected: string;
@@ -131,6 +134,12 @@ export function SessionCatalog({
           </label>
         )}
       </details>
+      <PendingReviewLane
+        sessions={filtered}
+        locale={locale}
+        onSelect={onSelect}
+        context={readContext}
+      />
       <div className="min-h-0 flex-1 space-y-3 overflow-y-auto px-3 pb-4">
         {!indexEnabled ? (
           <p>{t.indexDisabled}</p>
@@ -219,6 +228,7 @@ export function SessionCatalog({
                                 label={runtime.label}
                                 active={runtime.active}
                                 waiting={runtime.waiting}
+                                unread={runtime.unread}
                               />
                             )}
                             {runtime &&

@@ -1,4 +1,4 @@
-import { SessionContinuationStatus } from "@agentkib/session-ui";
+import { requestReadStateRefresh, SessionContinuationStatus } from "@agentkib/session-ui";
 import { HistorySearchTrigger } from "@/features/conversation/features/history/history-search-controls";
 import { Outlet, useLocation, useNavigate } from "@tanstack/react-router";
 import { useEffect, useId, useRef, useState } from "react";
@@ -254,7 +254,10 @@ export function SessionWorkspace() {
                 variant="ghost"
                 className="size-11 p-0"
                 aria-label={t.refresh}
-                onClick={() => void refresh(true)}
+                onClick={() => {
+                  requestReadStateRefresh(session.client, selected);
+                  void refresh(true);
+                }}
               >
                 <RefreshCw className="size-3.5" />
               </Button>
@@ -262,6 +265,7 @@ export function SessionWorkspace() {
             <ManagedTasks create />
             <HistorySearchTrigger />
             <SessionCatalog
+              readContext={session.client}
               pendingSessions={pendingSessions}
               sessions={sessions}
               workspaces={workspaces}

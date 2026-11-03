@@ -368,6 +368,7 @@ const API_ROUTES: Record<"GET" | "POST", Record<string, RouteSpec>> = {
     "/access": { lan: true },
     "/info": { lan: true },
     "/catalog": { lan: true },
+    "/read-state": { lan: true },
     "/events": { lan: true },
     "/live": { lan: true },
     "/stream": { lan: true },
@@ -394,6 +395,7 @@ const API_ROUTES: Record<"GET" | "POST", Record<string, RouteSpec>> = {
     "/diff": { lan: true },
   },
   POST: {
+    "/read-state": { lan: true },
     "/history/search": { lan: true },
     "/history/locate": { lan: true },
     "/history/references": { lan: true },
@@ -549,7 +551,7 @@ export class WebAccessService {
   private requests = new Set<string>();
   private controlEvents = new EventEmitter().setMaxListeners(64);
   // 正在进行的目录读取（按 runtime 启动区分）；同时到达的权限检查共用它。
-  private catalogFlight?: { boot: string; read: Promise<unknown> };
+  private catalogFlight?: { boot: string; readerScope: string; read: Promise<unknown> };
   private pendingControlNotifications = new Set<string>();
   private rates = new Map<string, { count: number; until: number }>();
   private adminQueue: Promise<unknown> = Promise.resolve();
@@ -1627,6 +1629,13 @@ export class WebAccessService {
       this.config.relay?.enabled === true &&
       (!!this.relay?.accountLoginContext || this.config.relay.brokerUrl === DEFAULT_RELAY_BROKER)
     );
+  }
+  /** Supplemental receipts belong to the computer's owner, never the paired browser. */
+  private readerScope(): string {
+    const accountId =
+      this.relay?.accountLoginContext?.accountId ??
+      (this.options.account?.signedIn() ? this.options.account.accountId() : undefined);
+    return accountId ? `account:${accountId}` : "local";
   }
   private validCloudBinding(binding?: AccountBinding) {
     const context = this.relay?.accountLoginContext;
@@ -4332,12 +4341,16 @@ export class WebAccessService {
   }
   /** 发出 runtime 请求；整份目录的读取登记为进行中，供权限检查共用。 */
   private runtimeCall(params: unknown): Promise<unknown> {
-    const read = this.options.runtimeRequest(params);
+    const catalog = snapshotField(params, "operation") === "catalog";
+    const readerScope = this.readerScope();
+    const read = this.options.runtimeRequest(
+      catalog ? { ...(params as Record<string, unknown>), readerScope } : params,
+    );
     if (
       snapshotField(params, "operation") === "catalog" &&
       Object.keys(params as object).length === 1
     ) {
-      const flight = { boot: this.bootId, read };
+      const flight = { boot: this.bootId, readerScope, read };
       this.catalogFlight = flight;
       const release = () => {
         if (this.catalogFlight === flight) this.catalogFlight = undefined;
@@ -4353,10 +4366,65 @@ export class WebAccessService {
    */
   private async scopeCatalog(reserved = false): Promise<unknown> {
     const flight = this.catalogFlight;
-    if (!flight || flight.boot !== this.bootId)
+    if (!flight || flight.boot !== this.bootId || flight.readerScope !== this.readerScope())
       return this.runtime({ operation: "catalog" }, undefined, reserved);
     if (!reserved && this.admission) throw new HttpError(409, "operation_busy");
     return this.runtime({ operation: "catalog" }, flight.read, reserved);
+  }
+  private async conversationReadState(
+    res: ConversationResponse,
+    hash: string,
+    sessionId: string,
+    update?: { expectedVersion: string; seenResultId: string | null },
+  ) {
+    const device = this.grant(hash);
+    const boot = this.bootId;
+    const readerScope = this.readerScope();
+    const check = () => {
+      if (this.grant(hash).id !== device.id) throw new HttpError(401, "access_ended");
+      if (this.bootId !== boot) throw new HttpError(409, "stale_boot");
+      if (this.readerScope() !== readerScope) throw new HttpError(409, "access_changed");
+    };
+    // Reading a result is independent of send/control admission and experimental controls.
+    // Resolve the same readable session/workspace boundary before and after the native await.
+    await this.codexScope(sessionId, hash, true, false);
+    check();
+    let result: unknown;
+    try {
+      result = await this.runtime(
+        {
+          operation: update ? "read-state-update" : "read-state",
+          sessionId,
+          readerScope,
+          ...update,
+        },
+        undefined,
+        true,
+      );
+    } catch (error) {
+      const errors: Record<string, [number, string]> = {
+        "read-state-conflict": [409, "read_state_conflict"],
+        "read-state-unavailable": [503, "read_state_unavailable"],
+        "read-state-unsupported": [404, "read_state_unsupported"],
+      };
+      const detail =
+        error instanceof RuntimeRequestError &&
+        error.data !== null &&
+        typeof error.data === "object" &&
+        "detail" in error.data &&
+        typeof error.data.detail === "string"
+          ? error.data.detail
+          : error instanceof Error
+            ? error.message
+            : undefined;
+      const mapped = detail ? errors[detail] : undefined;
+      if (mapped) throw new HttpError(...mapped);
+      throw error;
+    }
+    check();
+    await this.codexScope(sessionId, hash, true, false);
+    check();
+    return this.json(res, 200, result);
   }
   private async handle(
     req: ConversationRequest,
@@ -4535,6 +4603,7 @@ export class WebAccessService {
               ? "pending"
               : "unpaired",
         protocolVersion: 2,
+        readStateVersion: 1,
         csrfToken: browser.csrf,
         bootId: this.bootId,
         device: browser.ended ? undefined : device,
@@ -4600,6 +4669,20 @@ export class WebAccessService {
         return this.json(res, 201, result);
       }
       const body = await this.body(req);
+      if (path === "/read-state") {
+        if (
+          url.search ||
+          Object.keys(body).some(
+            (key) => !["sessionId", "expectedVersion", "seenResultId"].includes(key),
+          ) ||
+          !(body.seenResultId === null || typeof body.seenResultId === "string")
+        )
+          throw new HttpError(400, "invalid_read_state_request");
+        return this.conversationReadState(res, hash, this.field(body.sessionId), {
+          expectedVersion: this.field(body.expectedVersion, 4096),
+          seenResultId: body.seenResultId === null ? null : this.field(body.seenResultId, 4096),
+        });
+      }
       if (path.startsWith("/history/")) {
         if (url.search) throw new HttpError(400, "invalid_history_request");
         const kind = path.slice(9);
@@ -5215,6 +5298,14 @@ export class WebAccessService {
     }
     if (req.method !== "GET") throw new HttpError(405, "method_not_allowed");
     this.grant(hash);
+    if (path === "/read-state") {
+      if (
+        [...url.searchParams.keys()].some((key) => key !== "sessionId") ||
+        url.searchParams.getAll("sessionId").length !== 1
+      )
+        throw new HttpError(400, "invalid_read_state_request");
+      return this.conversationReadState(res, hash, this.field(url.searchParams.get("sessionId")));
+    }
     if (path === "/history/status") {
       if (url.search) throw new HttpError(400, "invalid_history_request");
       const scope = await this.historyScope(hash, true);
@@ -5921,6 +6012,7 @@ export class WebAccessService {
       };
     else throw new HttpError(404, "not_found");
     const boot = this.bootId;
+    const readerScope = this.readerScope();
     let result = await this.runtime(params);
     const device = this.grant(hash);
     if (path === "/catalog" && this.isFullAccess(device)) {
@@ -5941,6 +6033,8 @@ export class WebAccessService {
     if (path === "/live") result = await this.projectLive(sessionId, result, device);
     this.grant(hash);
     if (boot !== this.bootId) throw new HttpError(409, "stale_boot");
+    if (path === "/catalog" && readerScope !== this.readerScope())
+      throw new HttpError(409, "access_changed");
     // 桌面内嵌会话页走可信本地桥，仍拿完整目录；远程（中继、局域网）客户端从不列出
     // 子代理会话，去掉它们并压缩，目录回复从约 800 KiB 降到几十 KiB。
     const remoteCatalog = path === "/catalog" && !trustedLocal;

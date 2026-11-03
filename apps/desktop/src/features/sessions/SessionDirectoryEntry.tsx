@@ -32,6 +32,7 @@ export function SessionDirectoryEntry({
           label={status.label}
           active={status.active}
           waiting={status.waiting}
+          unread={status.unread}
         />
       )}
       {status && !status.dot && session.continuation?.reason === "codex-cli-version-too-old" && (

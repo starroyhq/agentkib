@@ -18,6 +18,7 @@ import {
 import { canonicalize, pathIdentity } from "./paths";
 import { within } from "./files";
 import { catalogCheckouts } from "./git-checkouts";
+import { conversationReadKey, ReadStateLedger } from "./read-state-ledger";
 import { resolveCommand } from "./command-resolution";
 import {
   CodexAppServerReader,
@@ -3829,6 +3830,32 @@ export class WebReadRequests {
           const envelope = isObject(value) ? value : {};
           const method = typeof envelope.method === "string" ? envelope.method : "";
           const params = isObject(envelope.params) ? envelope.params : {};
+          if (
+            method === "turn/completed" &&
+            isObject(params.turn) &&
+            typeof params.turn.id === "string" &&
+            record.native_id
+          ) {
+            const turn = params.turn;
+            new ReadStateLedger(this.dataDir).record(
+              conversationReadKey("codex", record.home, record.native_id),
+              {
+                id: `turn:${turn.id}`,
+                turnId: String(turn.id),
+                itemId: typeof result.event?.id === "string" ? result.event.id : null,
+                outcome:
+                  turn.status === "failed"
+                    ? "failed"
+                    : turn.status === "interrupted"
+                      ? "cancelled"
+                      : turn.status === "completed"
+                        ? "completed"
+                        : "ended",
+                completedAt: new Date().toISOString(),
+              },
+            );
+            this.catalogChanged?.();
+          }
           if (method === "item/agentMessage/delta" || method === "item/plan/delta") {
             const delta = typeof params.delta === "string" ? params.delta : "";
             const streamText = typeof live.streamText === "string" ? live.streamText : "";

@@ -7,7 +7,10 @@ import {
   updateVisiblePolling,
 } from "./visible-polling";
 
-type Operation = Exclude<RemoteRequest, { operation: "catalog" | "events" | "status" }>;
+type Operation = Exclude<
+  RemoteRequest,
+  { operation: "catalog" | "events" | "status" | "read-state" | "read-state-update" }
+>;
 type RemoteState = {
   snapshot: RemoteStatus | null;
   pairing: RemotePairingResult | null;

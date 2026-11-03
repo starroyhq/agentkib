@@ -1,3 +1,4 @@
+import { requestReadStateRefresh } from "@agentkib/session-ui";
 import { useEffect, useState } from "react";
 import { useSessionPanels } from "./session-panels";
 import { Button } from "@/components/ui/button";
@@ -42,7 +43,10 @@ export function SessionOperations({
         variant="outline"
         className="min-h-11"
         disabled={busy}
-        onClick={() => void refresh(true)}
+        onClick={() => {
+          requestReadStateRefresh("desktop-local", selected);
+          void refresh(true);
+        }}
       >
         {t.refresh}
       </Button>

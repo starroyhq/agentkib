@@ -412,3 +412,97 @@ describe("desktop conversation catalog", () => {
     await waitFor(() => expect(view.result.current.sessions[0]?.id).toBe("recovered"));
   });
 });
+
+it("clears account read cursors immediately and refuses an old catalog after switching account", async () => {
+  const originalApi = window.agentkibDesktop;
+  const profile = (id: string) => ({
+    phase: "signed-in" as const,
+    secureStorage: true,
+    account: {
+      id,
+      username: id,
+      status: "active",
+      deviceLimit: 3,
+      deviceCount: 1,
+      totpEnabled: false,
+    },
+  });
+  let status = profile("account-a");
+  let receive!: (
+    value: ReturnType<typeof profile> | { phase: "signing-in"; secureStorage: boolean },
+  ) => void;
+  Object.defineProperty(window, "agentkibDesktop", {
+    configurable: true,
+    value: {
+      ...originalApi,
+      account: {
+        request: async () => status,
+        onStatus: (listener: typeof receive) => {
+          receive = listener;
+          return () => {};
+        },
+      },
+    },
+  });
+  const { bridge } = fixture();
+  const response = (version: string): DesktopConversationResponse => ({
+    status: 200,
+    body: {
+      workspaces: [],
+      sessions: [
+        {
+          id: "s",
+          workspace_id: "w",
+          agent: "codex",
+          title: "Same session",
+          availability: "readable",
+          archived: false,
+          sidechain: false,
+          readState: {
+            source: "agentkib",
+            status: "unread",
+            freshness: "current",
+            version,
+            firstUnread: { type: "threadStart" },
+            latestResult: null,
+          },
+        },
+      ],
+    },
+  });
+  vi.mocked(bridge.request).mockImplementation(async () => response(status.account.id));
+  const view = renderHook(() => useConversationCatalog(true));
+  try {
+    await waitFor(() =>
+      expect(view.result.current.sessions[0]?.readState?.version).toBe("account-a"),
+    );
+    let finish!: (value: DesktopConversationResponse) => void;
+    vi.mocked(bridge.request).mockImplementationOnce(
+      () =>
+        new Promise((resolve) => {
+          finish = resolve;
+        }),
+    );
+    let prior!: Promise<unknown>;
+    act(() => {
+      prior = refreshConversationCatalog();
+    });
+    act(() => receive({ phase: "signing-in", secureStorage: true }));
+    expect(view.result.current.sessions[0]?.readState).toBeUndefined();
+    act(() => {
+      status = profile("account-b");
+      receive(status);
+    });
+    await waitFor(() =>
+      expect(view.result.current.sessions[0]?.readState?.version).toBe("account-b"),
+    );
+    await act(async () => {
+      finish(response("account-a-late"));
+      await prior;
+    });
+    expect(view.result.current.sessions[0]?.readState?.version).toBe("account-b");
+  } finally {
+    view.unmount();
+    Object.defineProperty(window, "agentkibDesktop", { configurable: true, value: originalApi });
+  }
+});

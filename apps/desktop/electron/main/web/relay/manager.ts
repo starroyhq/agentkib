@@ -58,7 +58,34 @@ type Reason =
   | "certificate"
   | "connector"
   | "suspended"
-  | "setup";
+  | "setup"
+  | "quota-exhausted"
+  | "traffic-unavailable"
+  | "account-required"
+  | "client-update";
+type RelayPolicy = {
+  allowed: boolean;
+  loginRequired: boolean;
+  accessProofVersion?: number;
+  reason?:
+    | "quota_exhausted"
+    | "traffic_unavailable"
+    | "account_required"
+    | "client_update_required";
+  resetsAt?: number;
+};
+export type RemoteAccountBinding = {
+  id: string;
+  accountId: string;
+  sessionId: string;
+  expiresAt: number;
+};
+export type AccountLoginProof = {
+  code: string;
+  codeVerifier: string;
+  hostChallenge: string;
+  redemptionId: string;
+};
 export type RelayStatus = {
   phase: "disabled" | "registering" | "certifying" | "connecting" | "ready" | "offline" | "error";
   publicUrl?: string;
@@ -70,6 +97,7 @@ export type RelayStatus = {
   certificateWarning?: boolean;
   failure?: RelayFailure;
   connectorExit?: { channel: Channel; code?: number; signal?: string };
+  resetsAt?: number;
 };
 type Target = { host: "127.0.0.1"; port: number };
 export type RelayNode = { id: string; transport: "frp-wss"; host: string; port: number };
@@ -279,7 +307,7 @@ export function buildFrpcConfig(
 ): string {
   const q = JSON.stringify;
   const host = device.node?.host ?? device.tunnelHost;
-  return `serverAddr = ${q(host)}\nserverPort = 443\nuser = ${q(device.deviceId)}\nloginFailExit = false\nmetadatas.credential = ${q(device.credential)}\ntransport.protocol = "wss"\ntransport.tls.enable = true\ntransport.tls.serverName = ${q(host)}\ntransport.tls.trustedCaFile = ${q(trustedCaFile)}\ntransport.tcpMux = true\ntransport.heartbeatInterval = 15\ntransport.heartbeatTimeout = 45\nauth.additionalScopes = ["HeartBeats", "NewWorkConns"]\nlog.level = "warn"\nlog.to = "console"\n[[proxies]]\nname = ${q(channel)}\ntype = "https"\nlocalIP = "127.0.0.1"\nlocalPort = ${localPort}\ncustomDomains = [${q(channel === "control" ? device.controlHost : device.previewHost)}]\n`;
+  return `serverAddr = ${q(host)}\nserverPort = 443\nuser = ${q(device.deviceId)}\nloginFailExit = false\nmetadatas.credential = ${q(device.credential)}\nmetadatas.account_access_proof_version = "1"\ntransport.protocol = "wss"\ntransport.tls.enable = true\ntransport.tls.serverName = ${q(host)}\ntransport.tls.trustedCaFile = ${q(trustedCaFile)}\ntransport.tcpMux = true\ntransport.heartbeatInterval = 15\ntransport.heartbeatTimeout = 45\nauth.additionalScopes = ["HeartBeats", "NewWorkConns"]\nlog.level = "warn"\nlog.to = "console"\n[[proxies]]\nname = ${q(channel)}\ntype = "https"\nlocalIP = "127.0.0.1"\nlocalPort = ${localPort}\ncustomDomains = [${q(channel === "control" ? device.controlHost : device.previewHost)}]\n`;
 }
 /**
  * 状态文件不存在或内容损坏（JSON 解析失败、字段校验失败）。带其他 errno 的 IO 错误
@@ -339,13 +367,14 @@ export class RelayManager {
   private enabled = false;
   private reenrolling: boolean;
   private suspended = false;
+  private relayPolicy?: RelayPolicy;
   private certificateWarning = false;
   private failure?: RelayFailure;
   private connectorExit?: RelayStatus["connectorExit"];
   constructor(private options: RelayOptions) {
     this.frpcPath = options.frpcPath;
     this.reenrolling = options.reenroll === true;
-    if (this.reenrolling && !options.inviteCode?.trim())
+    if (this.reenrolling && !options.registerAccount && !options.inviteCode?.trim())
       throw new Error("A new invitation is required for reenrollment");
     this.brokerUrl = options.brokerUrl ?? DEFAULT_RELAY_BROKER;
     const url = new URL(this.brokerUrl);
@@ -369,6 +398,83 @@ export class RelayManager {
   }
   get status(): RelayStatus {
     return { ...this.current, channels: { ...this.ready } };
+  }
+  get accountLoginContext(): { deviceId: string; accountId: string } | undefined {
+    const registration = this.registration;
+    if (!registration?.accountId) return undefined;
+    return { deviceId: registration.deviceId, accountId: registration.accountId };
+  }
+  async redeemAccountLogin(input: AccountLoginProof): Promise<RemoteAccountBinding> {
+    if (!this.registration?.accountId) throw new Error("account_login_required");
+    const data = await this.api(
+      "/v1/device/login-proof/redeem",
+      { ...input, deviceId: this.registration.deviceId },
+      this.generation,
+    );
+    const binding = data.binding as RemoteAccountBinding;
+    if (
+      !binding ||
+      typeof binding.id !== "string" ||
+      !/^[A-Za-z0-9_-]{32,128}$/.test(binding.id) ||
+      binding.accountId !== this.registration.accountId ||
+      typeof binding.sessionId !== "string" ||
+      !/^[a-f0-9-]{36}$/.test(binding.sessionId) ||
+      !Number.isSafeInteger(binding.expiresAt) ||
+      binding.expiresAt <= Date.now()
+    )
+      throw new Error("invalid_account_binding");
+    return {
+      id: binding.id,
+      accountId: binding.accountId,
+      sessionId: binding.sessionId,
+      expiresAt: binding.expiresAt,
+    };
+  }
+  async verifyAccountLogins(
+    bindingIds: string[],
+  ): Promise<{ id: string; active: boolean; expiresAt?: number }[]> {
+    if (!this.registration?.accountId) throw new Error("account_login_required");
+    const data = await this.api(
+      "/v1/device/login-bindings/verify",
+      { deviceId: this.registration.deviceId, bindingIds },
+      this.generation,
+    );
+    if (
+      !Array.isArray(data.bindings) ||
+      data.bindings.length !== bindingIds.length ||
+      new Set(data.bindings.map((row: { id?: unknown }) => row?.id)).size !== bindingIds.length
+    )
+      throw new Error("invalid_account_binding");
+    return data.bindings.map((row: unknown) => {
+      const value = row as { id: string; active: boolean; expiresAt?: number };
+      if (
+        !value ||
+        !bindingIds.includes(value.id) ||
+        typeof value.active !== "boolean" ||
+        (value.expiresAt !== undefined &&
+          (!Number.isSafeInteger(value.expiresAt) || value.expiresAt <= 0))
+      )
+        throw new Error("invalid_account_binding");
+      return {
+        id: value.id,
+        active: value.active,
+        ...(value.expiresAt !== undefined ? { expiresAt: value.expiresAt } : {}),
+      };
+    });
+  }
+  private publicAllowed() {
+    return this.relayPolicy?.allowed !== false;
+  }
+  private reportPolicyPause() {
+    const reason: Reason =
+      this.relayPolicy?.reason === "quota_exhausted"
+        ? "quota-exhausted"
+        : this.relayPolicy?.reason === "account_required"
+          ? "account-required"
+          : this.relayPolicy?.reason === "client_update_required"
+            ? "client-update"
+            : "traffic-unavailable";
+    this.report("offline", reason);
   }
   /** Authenticated callers keep these origins; only their TCP destination changes. */
   get directConnection(): DirectConnection | undefined {
@@ -427,17 +533,24 @@ export class RelayManager {
         ? {
             reason,
             error: {
-              revoked: "Relay authorization was rejected. Reconnect with a new invitation.",
+              revoked: "Relay authorization was rejected. Sign in and check device registration.",
               "lease-expired": "Relay authorization expired; public connections are closed.",
               network: "Relay is unreachable. Retrying automatically.",
               certificate: "Relay certificate is unavailable or invalid.",
               connector: "Relay connector is unavailable. Retrying automatically.",
               suspended: "Relay is suspended; public connections are closed.",
               setup: "Relay setup is incomplete. Check configuration and registration.",
+              "quota-exhausted":
+                "The monthly relay allowance is used up; authorized LAN access can continue.",
+              "traffic-unavailable":
+                "Relay metering is unavailable; authorized LAN access can continue.",
+              "account-required": "Sign in to the account that owns this computer.",
+              "client-update": "The account service or desktop requires an update.",
             }[reason],
           }
         : {}),
       ...(retryAt ? { retryAt } : {}),
+      ...(this.relayPolicy?.resetsAt !== undefined ? { resetsAt: this.relayPolicy.resetsAt } : {}),
       ...(this.connectorExit && reason === "connector"
         ? { connectorExit: this.connectorExit }
         : {}),
@@ -726,7 +839,7 @@ export class RelayManager {
     const work = (async () => {
       const result = await this.api(
         "/v1/device",
-        { deviceId: this.registration!.deviceId },
+        { deviceId: this.registration!.deviceId, accountAccessProofVersion: 1 },
         generation,
       );
       const assignment = validateRegistration(
@@ -756,6 +869,37 @@ export class RelayManager {
         JSON.stringify(assignment.node) !== JSON.stringify(this.registration!.node) &&
         this.servers.size > 0;
       this.registration = assignment;
+      if (result.relay !== undefined) {
+        const policy = result.relay as RelayPolicy;
+        if (
+          !policy ||
+          typeof policy.allowed !== "boolean" ||
+          typeof policy.loginRequired !== "boolean" ||
+          (policy.resetsAt !== undefined &&
+            (!Number.isSafeInteger(policy.resetsAt) || policy.resetsAt < 0)) ||
+          (policy.reason !== undefined &&
+            ![
+              "quota_exhausted",
+              "traffic_unavailable",
+              "account_required",
+              "client_update_required",
+            ].includes(policy.reason))
+        )
+          throw new Error("Invalid relay policy");
+        this.relayPolicy = {
+          allowed: policy.allowed,
+          loginRequired: policy.loginRequired,
+          accessProofVersion: policy.accessProofVersion,
+          reason: policy.reason,
+          resetsAt: policy.resetsAt,
+        };
+      } else if (this.brokerUrl === DEFAULT_RELAY_BROKER || assignment.accountId) {
+        this.relayPolicy = {
+          allowed: false,
+          loginRequired: true,
+          reason: "client_update_required",
+        };
+      }
       if (changed) {
         this.failClosed("network", true);
         return;
@@ -770,6 +914,10 @@ export class RelayManager {
         Math.max(0, Math.min(until - performance.now(), this.wallLeaseUntil - Date.now())),
       );
       this.leaseTimer.unref();
+      if (!this.publicAllowed()) {
+        this.disconnect(false);
+        this.reportPolicyPause();
+      }
     })();
     this.authorizing = work;
     void work
@@ -932,6 +1080,7 @@ export class RelayManager {
       !!this.abort &&
       !this.abort.signal.aborted &&
       this.liveLease() &&
+      (!!direct || this.publicAllowed()) &&
       (!direct || this.directActive(direct)) &&
       request.headers.host === expectedHost &&
       (request.socket as TLSSocket).servername === expectedHost;
@@ -1050,6 +1199,7 @@ export class RelayManager {
         if (
           generation !== this.generation ||
           !this.liveLease() ||
+          (!direct && !this.publicAllowed()) ||
           (direct && !this.directActive(direct))
         ) {
           request.socket.destroy();
@@ -1343,6 +1493,12 @@ export class RelayManager {
       // Renewal must also continue while only LAN is reachable. Keep it in the
       // background so slow ACME/CSR work cannot block public connector recovery.
       this.renewInBackground(generation);
+      if (!this.publicAllowed()) {
+        this.disconnect(false);
+        this.reportPolicyPause();
+        this.scheduleMaintain(generation, false);
+        return;
+      }
       for (const channel of CHANNELS) {
         try {
           await this.startTls(channel, generation);
@@ -1361,6 +1517,12 @@ export class RelayManager {
         ),
       );
       this.active(generation);
+      if (!this.publicAllowed()) {
+        this.disconnect(false);
+        this.reportPolicyPause();
+        this.scheduleMaintain(generation, false);
+        return;
+      }
       CHANNELS.forEach((channel, index) => {
         this.ready[channel] = outcomes[index].status === "fulfilled" && this.children.has(channel);
         if (this.ready[channel]) this.connectorFailures.delete(channel);
@@ -1384,6 +1546,12 @@ export class RelayManager {
       this.scheduleMaintain(generation, false);
     })().catch((error) => {
       if (generation !== this.generation) return;
+      if (!this.publicAllowed() && this.liveLease()) {
+        this.disconnect(false);
+        this.reportPolicyPause();
+        this.scheduleMaintain(generation, false);
+        return;
+      }
       if (error instanceof RelayAuthorizationError) {
         this.failClosed("revoked", false);
         return;
@@ -1438,11 +1606,18 @@ export class RelayManager {
     this.retryTimer.unref();
   }
   /** Cut all inbound TLS, outbound HTTP/probe sockets and both processes synchronously. */
-  private disconnect() {
+  private disconnect(includeDirect = true) {
     this.ready = { control: false, preview: false };
-    for (const socket of this.sockets) socket.destroy();
-    this.sockets.clear();
-    for (const listener of this.directListeners.values()) this.closeDirect(listener);
+    const retained = includeDirect
+      ? new Set<Duplex>()
+      : new Set([...this.directListeners.values()].flatMap((listener) => [...listener.sockets]));
+    for (const socket of this.sockets)
+      if (!retained.has(socket)) {
+        socket.destroy();
+        this.sockets.delete(socket);
+      }
+    if (includeDirect)
+      for (const listener of this.directListeners.values()) this.closeDirect(listener);
     for (const server of this.servers.values()) {
       server.closeAllConnections();
       server.close();

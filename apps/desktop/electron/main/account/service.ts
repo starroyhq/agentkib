@@ -451,9 +451,9 @@ export class DesktopAccountService {
   }
   async ensureDeviceOwner(accountId?: string) {
     if (this.loggingOut) throw new AccountError("account_login_required");
-    if (!accountId) return;
     await this.accessToken();
-    if (this.profile?.id !== accountId) throw new AccountError("account_device_conflict");
+    if (accountId && this.profile?.id !== accountId)
+      throw new AccountError("account_device_conflict");
   }
   async registerDevice(input: { registrationId: string; credential: string }) {
     const token = await this.accessToken();

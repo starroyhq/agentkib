@@ -5,6 +5,9 @@ import { PairingLayout } from "@/features/connection/pairing-layout";
 import { useSession } from "@/features/conversation/features/sessions/session-context";
 import { codePairingCopy } from "./code-pairing-copy";
 import { pairingErrorCopy, pairingErrorText } from "./pairing-error-copy";
+import { useState } from "react";
+import { beginComputerAccountLogin } from "./account-login";
+import { accountLoginCopy } from "./account-login-copy";
 export function PairingPage() {
   const {
     t,
@@ -24,6 +27,32 @@ export function PairingPage() {
   } = useSession();
   const direct = connection.type === "same-origin" && access?.pairingMode === "code";
   const copy = codePairingCopy[locale];
+  const cloud = accountLoginCopy[locale];
+  const [signingIn, setSigningIn] = useState(false);
+  const [loginError, setLoginError] = useState(false);
+  if (access?.accountLogin?.required && !access.accountLogin.bound)
+    return (
+      <main className="mx-auto flex w-full max-w-lg flex-col justify-center gap-5 p-6 md:p-10">
+        <h1>{cloud.title}</h1>
+        <p>{cloud.info}</p>
+        {loginError && <p role="alert">{cloud.unavailable}</p>}
+        <Button
+          disabled={signingIn}
+          onClick={() => {
+            setSigningIn(true);
+            setLoginError(false);
+            void beginComputerAccountLogin(access)
+              .then((url) => location.assign(url))
+              .catch(() => {
+                setLoginError(true);
+                setSigningIn(false);
+              });
+          }}
+        >
+          {cloud.login}
+        </Button>
+      </main>
+    );
   return !access ? (
     <main className="flex flex-1 flex-col items-center justify-center gap-4 p-8 text-center text-muted-foreground">
       <p role="status">{t.loading}</p>

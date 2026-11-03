@@ -11,6 +11,7 @@
 import { Route as rootRouteImport } from './routes/__root'
 import { Route as IndexRouteImport } from './routes/index'
 import { Route as SessionRouteImport } from './routes/_session'
+import { Route as AccountCallbackRouteImport } from './routes/account-callback'
 import { Route as ConnectRouteImport } from './routes/connect'
 import { Route as SessionPairRouteImport } from './routes/_session.pair'
 import { Route as SessionSessionsRouteImport } from './routes/_session.sessions'
@@ -24,6 +25,11 @@ const IndexRoute = IndexRouteImport.update({
 } as any)
 const SessionRoute = SessionRouteImport.update({
   id: '/_session',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const AccountCallbackRoute = AccountCallbackRouteImport.update({
+  id: '/account-callback',
+  path: '/account-callback',
   getParentRoute: () => rootRouteImport,
 } as any)
 const ConnectRoute = ConnectRouteImport.update({
@@ -55,6 +61,7 @@ const SessionSessionsSessionIdRoute =
 
 export interface FileRoutesByFullPath {
   '/': typeof IndexRoute
+  '/account-callback': typeof AccountCallbackRoute
   '/connect': typeof ConnectRoute
   '/pair': typeof SessionPairRoute
   '/sessions': typeof SessionSessionsRouteWithChildren
@@ -63,6 +70,7 @@ export interface FileRoutesByFullPath {
 }
 export interface FileRoutesByTo {
   '/': typeof IndexRoute
+  '/account-callback': typeof AccountCallbackRoute
   '/connect': typeof ConnectRoute
   '/pair': typeof SessionPairRoute
   '/sessions/$sessionId': typeof SessionSessionsSessionIdRoute
@@ -72,6 +80,7 @@ export interface FileRoutesById {
   __root__: typeof rootRouteImport
   '/': typeof IndexRoute
   '/_session': typeof SessionRouteWithChildren
+  '/account-callback': typeof AccountCallbackRoute
   '/connect': typeof ConnectRoute
   '/_session/pair': typeof SessionPairRoute
   '/_session/sessions': typeof SessionSessionsRouteWithChildren
@@ -82,17 +91,25 @@ export interface FileRouteTypes {
   fileRoutesByFullPath: FileRoutesByFullPath
   fullPaths:
     | '/'
+    | '/account-callback'
     | '/connect'
     | '/pair'
     | '/sessions'
     | '/sessions/$sessionId'
     | '/sessions/'
   fileRoutesByTo: FileRoutesByTo
-  to: '/' | '/connect' | '/pair' | '/sessions/$sessionId' | '/sessions'
+  to:
+    | '/'
+    | '/account-callback'
+    | '/connect'
+    | '/pair'
+    | '/sessions/$sessionId'
+    | '/sessions'
   id:
     | '__root__'
     | '/'
     | '/_session'
+    | '/account-callback'
     | '/connect'
     | '/_session/pair'
     | '/_session/sessions'
@@ -103,6 +120,7 @@ export interface FileRouteTypes {
 export interface RootRouteChildren {
   IndexRoute: typeof IndexRoute
   SessionRoute: typeof SessionRouteWithChildren
+  AccountCallbackRoute: typeof AccountCallbackRoute
   ConnectRoute: typeof ConnectRoute
 }
 
@@ -120,6 +138,13 @@ declare module '@tanstack/react-router' {
       path: ''
       fullPath: '/'
       preLoaderRoute: typeof SessionRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/account-callback': {
+      id: '/account-callback'
+      path: '/account-callback'
+      fullPath: '/account-callback'
+      preLoaderRoute: typeof AccountCallbackRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/connect': {
@@ -190,6 +215,7 @@ const SessionRouteWithChildren =
 const rootRouteChildren: RootRouteChildren = {
   IndexRoute: IndexRoute,
   SessionRoute: SessionRouteWithChildren,
+  AccountCallbackRoute: AccountCallbackRoute,
   ConnectRoute: ConnectRoute,
 }
 export const routeTree = rootRouteImport

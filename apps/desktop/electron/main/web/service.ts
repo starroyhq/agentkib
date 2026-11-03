@@ -44,6 +44,8 @@ import {
   validateRegistration,
   type Registration,
   type RelayStatus,
+  type RemoteAccountBinding,
+  type AccountLoginProof,
 } from "./relay/manager";
 
 export const HOSTED_ORIGIN = "https://remote.agentkib.com";
@@ -236,7 +238,13 @@ type Credential = {
    */
   account?: AccountBinding;
 };
-type AccountBinding = { accountId: string; sessionId: string };
+type AccountBinding = {
+  accountId: string;
+  sessionId: string;
+  id?: string;
+  expiresAt?: number;
+  hostChallenge?: string;
+};
 export type AccountSessions = { accountId: string; sessions: { id: string; kind: string }[] };
 const SESSION_ID = /^[a-f0-9-]{36}$/;
 const validAccountBinding = (value: unknown): value is AccountBinding => {
@@ -247,7 +255,14 @@ const validAccountBinding = (value: unknown): value is AccountBinding => {
     binding.accountId.length > 0 &&
     binding.accountId.length <= 128 &&
     typeof binding.sessionId === "string" &&
-    SESSION_ID.test(binding.sessionId)
+    SESSION_ID.test(binding.sessionId) &&
+    (binding.id === undefined ||
+      (typeof binding.id === "string" &&
+        /^[A-Za-z0-9_-]{32,128}$/.test(binding.id) &&
+        Number.isSafeInteger(binding.expiresAt) &&
+        binding.expiresAt! > 0 &&
+        typeof binding.hostChallenge === "string" &&
+        /^[A-Za-z0-9_-]{43}$/.test(binding.hostChallenge)))
   );
 };
 /** How often bound pairings are checked against the account's live logins. */
@@ -263,7 +278,14 @@ type PairingCode = {
   /** 按浏览器计数：单个客户端猜错只锁死自己，不再让配对码对所有人失效。 */
   failuresByBrowser: Map<string, number>;
 };
-type Browser = { csrf: string; expiresAt: number; pending?: WebPending; ended?: boolean };
+type Browser = {
+  csrf: string;
+  expiresAt: number;
+  pending?: WebPending;
+  ended?: boolean;
+  accountChallenge?: string;
+  account?: AccountBinding;
+};
 type Availability = { available: boolean; reason?: string };
 type ContextResourceReference = {
   kind: "file" | "directory" | "skill" | "plugin" | "app";
@@ -1345,10 +1367,13 @@ export class WebAccessService {
         if (!entry?.[1].pending) throw new Error("pairing_expired");
         const [hash, browser] = entry;
         const pending = browser.pending!;
+        if (this.accountLoginRequired() && !this.validCloudBinding(browser.account))
+          throw new Error("account_login_required");
         if (this.credentials.length >= 128) throw new Error("device_limit");
         this.credentials.push({
           hash,
           ...(this.options.mode === "lan" ? { binding: this.binding } : {}),
+          ...(this.accountLoginRequired() ? { account: { ...browser.account! } } : {}),
           expiresAt: Date.now() + MAX_AGE,
           device: {
             id: pending.id,
@@ -1556,6 +1581,7 @@ export class WebAccessService {
    * here, it cannot create one.
    */
   private async bindAccount(hash: string, body: Record<string, unknown>) {
+    if (this.accountLoginRequired()) return this.bindCloudAccount(hash, body);
     if (Object.keys(body).some((key) => key !== "sessionId"))
       throw new HttpError(400, "invalid_input");
     const sessionId = this.field(body.sessionId, 64);
@@ -1595,13 +1621,121 @@ export class WebAccessService {
     this.grant(hash);
     return result;
   }
+  private accountLoginRequired() {
+    return (
+      this.options.mode !== "lan" &&
+      this.config.relay?.enabled === true &&
+      (!!this.relay?.accountLoginContext || this.config.relay.brokerUrl === DEFAULT_RELAY_BROKER)
+    );
+  }
+  private validCloudBinding(binding?: AccountBinding) {
+    const context = this.relay?.accountLoginContext;
+    return (
+      !!context &&
+      !!binding?.id &&
+      binding.accountId === context.accountId &&
+      typeof binding.expiresAt === "number" &&
+      binding.expiresAt > Date.now()
+    );
+  }
+  private async bindCloudAccount(hash: string, body: Record<string, unknown>) {
+    const browser = this.browsers.get(hash);
+    if (!browser || browser.ended) throw new HttpError(401, "access_ended");
+    const fields = ["code", "codeVerifier", "hostChallenge", "redemptionId"] as const;
+    if (
+      Object.keys(body).some((key) => !fields.includes(key as (typeof fields)[number])) ||
+      fields.some(
+        (key) =>
+          typeof body[key] !== "string" || !/^[A-Za-z0-9_-]{32,128}$/.test(body[key] as string),
+      ) ||
+      body.hostChallenge !== browser.accountChallenge
+    )
+      throw new HttpError(400, "invalid_account_proof");
+    if (!this.relay?.accountLoginContext) throw new HttpError(503, "account_login_unavailable");
+    this.rate(`account-binding:${hash}`, 6);
+    let proof: RemoteAccountBinding;
+    try {
+      proof = await this.relay.redeemAccountLogin(body as AccountLoginProof);
+    } catch {
+      throw new HttpError(503, "account_login_unavailable");
+    }
+    const bound: AccountBinding = { ...proof, hostChallenge: browser.accountChallenge };
+    const work = this.adminQueue.then(async () => {
+      if (
+        this.browsers.get(hash) !== browser ||
+        browser.ended ||
+        !this.server ||
+        !this.validCloudBinding(bound)
+      )
+        throw new HttpError(401, "access_ended");
+      const credential = this.credentials.find((row) => row.hash === hash);
+      if (
+        credential?.account?.id &&
+        (credential.account.accountId !== bound.accountId ||
+          credential.account.sessionId !== bound.sessionId)
+      ) {
+        await this.revokeCredentials([credential], "authorization-revoked");
+        throw new HttpError(401, "access_ended");
+      }
+      if (credential) {
+        const next = this.credentials.map((row) =>
+          row === credential ? { ...row, account: bound } : row,
+        );
+        await this.save(this.config, this.remotePairingInitialized, next);
+        this.credentials = next;
+      }
+      browser.account = bound;
+      return { bound: true };
+    });
+    this.adminQueue = work.catch(() => undefined);
+    return work;
+  }
   /**
    * Ends bound pairings whose login ended (signed out, revoked, expired) or belongs to another
    * account than the one this computer is now signed in to, and renews the others. Signed out
    * or offline, nothing changes: no pairing ends, none is renewed.
    */
   async checkAccountBindings() {
-    if (this.disposed || !this.options.accountSessions) return;
+    if (this.disposed) return;
+    const proofCredentials = this.credentials.filter((c) => c.account?.id);
+    if (proofCredentials.length && this.relay?.accountLoginContext) {
+      let results: { id: string; active: boolean; expiresAt?: number }[];
+      try {
+        results = await this.relay.verifyAccountLogins(proofCredentials.map((c) => c.account!.id!));
+      } catch {
+        return;
+      }
+      const check = this.adminQueue.then(async () => {
+        if (this.disposed) return;
+        const ended = this.credentials.filter(
+          (c) =>
+            proofCredentials.includes(c) &&
+            results.some((row) => row.id === c.account?.id && !row.active),
+        );
+        if (ended.length) await this.revokeCredentials(ended, "authorization-revoked");
+        let renewed = false;
+        for (const credential of this.credentials) {
+          if (!proofCredentials.includes(credential)) continue;
+          const result = results.find((row) => row.id === credential.account?.id && row.active);
+          if (
+            result?.expiresAt !== undefined &&
+            result.expiresAt > Date.now() &&
+            credential.account!.expiresAt !== result.expiresAt
+          ) {
+            credential.account!.expiresAt = result.expiresAt;
+            renewed = true;
+          }
+          if (result && credential.expiresAt < Date.now() + MAX_AGE - RENEW_AFTER_MS) {
+            credential.expiresAt = Date.now() + MAX_AGE;
+            renewed = true;
+          }
+        }
+        if (renewed) await this.save();
+      });
+      this.adminQueue = check.catch(() => undefined);
+      await check;
+    }
+    if (!this.options.accountSessions) return;
     if (!this.credentials.some((c) => c.account)) return;
     let live: AccountSessions;
     try {
@@ -1616,12 +1750,19 @@ export class WebAccessService {
       if (this.disposed) return;
       const ended = this.credentials.filter(
         (c) =>
-          c.account && (c.account.accountId !== live.accountId || !ids.has(c.account.sessionId)),
+          c.account &&
+          !c.account.id &&
+          (c.account.accountId !== live.accountId || !ids.has(c.account.sessionId)),
       );
       const now = Date.now();
       let renewed = false;
       for (const c of this.credentials)
-        if (c.account && !ended.includes(c) && c.expiresAt < now + MAX_AGE - RENEW_AFTER_MS) {
+        if (
+          c.account &&
+          !c.account.id &&
+          !ended.includes(c) &&
+          c.expiresAt < now + MAX_AGE - RENEW_AFTER_MS
+        ) {
           c.expiresAt = now + MAX_AGE;
           renewed = true;
         }
@@ -4152,6 +4293,10 @@ export class WebAccessService {
       this.endStreams(hash);
       throw new HttpError(401, "access_ended");
     }
+    if (this.accountLoginRequired() && !this.validCloudBinding(credential.account)) {
+      this.endStreams(hash);
+      throw new HttpError(401, "account_login_required");
+    }
     if (
       permission &&
       ((permission !== "files" && !this.controlsEnabled(undefined, credential.device)) ||
@@ -4351,7 +4496,17 @@ export class WebAccessService {
           );
       }
       const credential = trustedLocal ? undefined : this.credentials.find((c) => c.hash === hash);
-      const device = trustedLocal ? this.localDevice : credential?.device;
+      const loginRequired = !trustedLocal && this.accountLoginRequired();
+      const loginContext = loginRequired ? this.relay?.accountLoginContext : undefined;
+      if (loginRequired && !loginContext) throw new HttpError(503, "account_login_unavailable");
+      const binding = credential ? credential.account : browser.account;
+      const bound = this.validCloudBinding(binding);
+      browser.accountChallenge ??= binding?.hostChallenge ?? token();
+      const device = trustedLocal
+        ? this.localDevice
+        : !loginRequired || bound
+          ? credential?.device
+          : undefined;
       // A pairing bound to an account login is renewed here; its cookie follows the new lifetime.
       if (!lan && raw && credential?.account && !browser.ended)
         res.setHeader(
@@ -4394,6 +4549,18 @@ export class WebAccessService {
           ? { directConnection }
           : {}),
         ...(bearerToken ? { bearerToken } : {}),
+        ...(loginRequired && loginContext
+          ? {
+              accountLogin: {
+                required: true,
+                proofVersion: 1,
+                deviceId: loginContext.deviceId,
+                challenge: browser.accountChallenge,
+                bound,
+                ...(bound ? { accountId: loginContext.accountId } : {}),
+              },
+            }
+          : {}),
       });
     }
     if (!browser) throw new HttpError(401, "unpaired");
@@ -4478,6 +4645,17 @@ export class WebAccessService {
             throw new HttpError(409, "already_paired");
           if (this.browsers.get(hash) !== pairingBrowser || !this.server)
             throw new HttpError(401, "access_ended");
+          if (this.accountLoginRequired()) {
+            if (!this.validCloudBinding(pairingBrowser.account))
+              throw new HttpError(401, "account_login_required");
+            let verified;
+            try {
+              verified = await this.relay!.verifyAccountLogins([pairingBrowser.account!.id!]);
+            } catch {
+              throw new HttpError(503, "account_login_unavailable");
+            }
+            if (!verified[0]?.active) throw new HttpError(401, "account_login_required");
+          }
           const name = this.field(body.name, 80);
           if (!this.code) throw new HttpError(403, "invalid_pairing_code");
           const browserFailures = this.code.failuresByBrowser.get(hash) ?? 0;
@@ -4495,6 +4673,7 @@ export class WebAccessService {
             const credential: Credential = {
               hash,
               expiresAt: Date.now() + MAX_AGE,
+              ...(this.accountLoginRequired() ? { account: { ...pairingBrowser.account! } } : {}),
               device: {
                 id: token(),
                 name,

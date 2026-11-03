@@ -4,6 +4,7 @@ import { mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import type { DesktopAccountProfile, DesktopAccountRequest, DesktopAccountStatus } from "./state";
 import { normalizeComputerName } from "./computer-name";
+import { checkedRelayUsage, type RelayUsage } from "./relay-usage";
 
 export const ACCOUNT_ORIGIN = "https://account.agentkib.com";
 export const ACCOUNT_API = "https://api.agentkib.com";
@@ -55,6 +56,10 @@ export class DesktopAccountService {
   private nameReadAt = 0;
   private nameGeneration = 0;
   private nameReadWork?: { key: string; work: Promise<boolean> };
+  private relayUsage?: RelayUsage;
+  private usageUnavailable = false;
+  private usageReadAt = 0;
+  private usageRevision = 0;
   constructor(private readonly options: Options) {}
   private get tokenFile() {
     return join(this.options.directory, "refresh.enc");
@@ -89,6 +94,8 @@ export class DesktopAccountService {
     return {
       phase: this.phase,
       secureStorage: this.options.storage.available(),
+      ...(this.profile && this.relayUsage ? { relayUsage: { ...this.relayUsage } } : {}),
+      ...(this.profile && this.usageUnavailable ? { relayUsageUnavailable: true } : {}),
       ...(this.profile ? { account: { ...this.profile } } : {}),
       ...(identity
         ? {
@@ -135,6 +142,8 @@ export class DesktopAccountService {
           await this.refreshProfile();
         if (input.operation === "status" && this.profile && Date.now() - this.nameReadAt >= 30_000)
           await this.refreshDeviceName();
+        if (input.operation === "status" && this.profile && Date.now() - this.usageReadAt >= 30_000)
+          await this.refreshRelayUsage();
         if (input.operation === "login") await this.login();
         if (input.operation === "cancel-login") {
           this.cancelLogin();
@@ -188,21 +197,23 @@ export class DesktopAccountService {
         }
         // Only recognized categories reach IPC, never arbitrary server error text.
         throw new AccountError(
-          response.status === 400 && code === "invalid_name"
-            ? "account_invalid_name"
-            : response.status === 401
-              ? "account_login_required"
-              : response.status === 403
-                ? "account_forbidden"
-                : response.status === 409
-                  ? code === "device_limit_reached"
-                    ? "account_device_limit"
-                    : code === "name_already_set"
-                      ? "account_name_already_set"
-                      : "account_device_conflict"
-                  : response.status === 429
-                    ? "account_rate_limited"
-                    : "account_request_failed",
+          response.status === 404 && path === "/v1/account/relay-usage"
+            ? "account_usage_unsupported"
+            : response.status === 400 && code === "invalid_name"
+              ? "account_invalid_name"
+              : response.status === 401
+                ? "account_login_required"
+                : response.status === 403
+                  ? "account_forbidden"
+                  : response.status === 409
+                    ? code === "device_limit_reached"
+                      ? "account_device_limit"
+                      : code === "name_already_set"
+                        ? "account_name_already_set"
+                        : "account_device_conflict"
+                    : response.status === 429
+                      ? "account_rate_limited"
+                      : "account_request_failed",
         );
       }
       return await this.readResponse(response);
@@ -273,6 +284,9 @@ export class DesktopAccountService {
     };
     this.profileReadAt = Date.now();
     this.phase = "signed-in";
+    void this.refreshRelayUsage()
+      .then(() => this.publish())
+      .catch(() => undefined);
   }
   async accessToken(): Promise<string> {
     if (this.access && this.access.until > Date.now()) return this.access.value;
@@ -408,6 +422,10 @@ export class DesktopAccountService {
     this.nameChecked = undefined;
     this.nameReadAt = 0;
     this.nameGeneration++;
+    this.relayUsage = undefined;
+    this.usageUnavailable = false;
+    this.usageReadAt = 0;
+    this.usageRevision++;
     this.phase = "signed-out";
     await rm(this.tokenFile, { force: true });
     await rm(this.rotationFile, { force: true });
@@ -474,6 +492,27 @@ export class DesktopAccountService {
       totpEnabled: data.totpEnabled,
     };
     this.profileReadAt = Date.now();
+  }
+  private async refreshRelayUsage() {
+    const owner = this.profile?.id;
+    const revision = ++this.usageRevision;
+    if (!owner || this.loggingOut) return;
+    try {
+      const data = checkedRelayUsage(
+        await this.api("/v1/account/relay-usage", undefined, await this.accessToken()),
+      );
+      if (this.profile?.id !== owner || this.loggingOut || this.usageRevision !== revision) return;
+      this.relayUsage = data;
+      this.usageUnavailable = false;
+    } catch (error) {
+      if (this.profile?.id !== owner || this.loggingOut || this.usageRevision !== revision) return;
+      this.usageUnavailable = !(
+        error instanceof AccountError && error.code === "account_usage_unsupported"
+      );
+      if (!this.usageUnavailable) this.relayUsage = undefined;
+    }
+    if (this.profile?.id === owner && this.usageRevision === revision)
+      this.usageReadAt = Date.now();
   }
   get signedIn() {
     return !!this.profile && !this.loggingOut;

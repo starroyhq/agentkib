@@ -1,0 +1,48 @@
+export const relayUsageCopy = {
+  "zh-CN": {
+    title: "本月中继流量",
+    remaining: "剩余",
+    reset: "下次重置",
+    updated: "更新时间",
+    hint: "账号内所有电脑共享额度，仅计算官方中继流量。每月按 UTC 重置，局域网直连不计入",
+    warning: "本月中继额度已使用 80% 以上",
+    almost: "本月中继额度即将用完",
+    exhausted: "本月中继额度已用完，官方中继已暂停。有效授权下的局域网直连和本地任务仍可继续",
+    unavailable: "暂时无法读取中继用量，请刷新重试",
+  },
+  "zh-TW": {
+    title: "本月中繼流量",
+    remaining: "剩餘",
+    reset: "下次重設",
+    updated: "更新時間",
+    hint: "帳號內所有電腦共用額度，僅計算官方中繼流量。每月按 UTC 重設，區域網路直連不計入",
+    warning: "本月中繼額度已使用 80% 以上",
+    almost: "本月中繼額度即將用盡",
+    exhausted: "本月中繼額度已用盡，官方中繼已暫停。有效授權下的區域網路直連和本機工作仍可繼續",
+    unavailable: "暫時無法讀取中繼用量，請重新整理後重試",
+  },
+  "en-US": {
+    title: "Monthly relay traffic",
+    remaining: "Remaining",
+    reset: "Resets",
+    updated: "Updated",
+    hint: "All computers share this allowance. Only official relay traffic counts. Resets monthly in UTC; local connections do not count",
+    warning: "At least 80% of this month’s allowance has been used",
+    almost: "This month’s relay allowance is almost used up",
+    exhausted:
+      "This month’s allowance is used up. Official relay access is paused. Authorized local connections and local tasks can continue",
+    unavailable: "Relay usage is temporarily unavailable. Refresh to retry",
+  },
+  "ja-JP": {
+    title: "今月の中継通信量",
+    remaining: "残り",
+    reset: "次回リセット",
+    updated: "更新日時",
+    hint: "すべてのコンピュータで枠を共有します。公式中継のみを計測し、LAN直接接続は含みません。毎月UTCでリセットされます",
+    warning: "今月の中継通信枠を80%以上使用しました",
+    almost: "今月の中継通信枠がまもなく上限に達します",
+    exhausted:
+      "今月の枠を使い切ったため公式中継を停止しました。有効な許可によるLAN直接接続とローカルタスクは継続できます",
+    unavailable: "中継通信量を取得できません。更新して再試行してください",
+  },
+};

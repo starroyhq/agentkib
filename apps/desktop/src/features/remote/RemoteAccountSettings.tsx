@@ -18,6 +18,8 @@ import {
 import { requestWebAdmin } from "./web-status";
 import { withAsyncCleanup } from "@/lib/utils";
 import { subscribeVisiblePolling } from "./visible-polling";
+import { relayUsageCopy } from "./relay-usage-copy";
+import { trafficAmount } from "../../../electron/main/account/relay-usage";
 
 export function RemoteAccountSettings({
   variant = "standalone",
@@ -31,6 +33,7 @@ export function RemoteAccountSettings({
   const { locale } = useI18n();
   const c = remoteAccountCopy[locale];
   const p = remotePhoneCopy[locale];
+  const traffic = relayUsageCopy[locale];
   const [manageOpen, setManageOpen] = useState(false);
   const [status, setStatus] = useState<DesktopAccountStatus>();
   const [failed, setFailed] = useState(() => !desktopApi().account);
@@ -135,9 +138,41 @@ export function RemoteAccountSettings({
     <>
       {signedIn && (
         <>
-          <p>
-            {c.quota}: {status!.account!.deviceCount} / {status!.account!.deviceLimit}
-          </p>
+          {status?.relayUsage && (
+            <section aria-label={traffic.title} className="space-y-2 break-words">
+              <p className="font-medium">{traffic.title}</p>
+              <p>
+                {trafficAmount(status.relayUsage.usedBytes, locale)} /{" "}
+                {trafficAmount(status.relayUsage.limitBytes, locale)}
+              </p>
+              <progress
+                className="w-full"
+                aria-label={traffic.title}
+                max={1}
+                value={Math.min(1, status.relayUsage.usedBytes / status.relayUsage.limitBytes)}
+              />
+              <p>
+                {traffic.remaining}: {trafficAmount(status.relayUsage.remainingBytes, locale)}
+              </p>
+              <p>
+                {traffic.reset}: {new Date(status.relayUsage.periodEnd).toLocaleString(locale)}
+              </p>
+              <p className="text-muted-foreground">
+                {traffic.updated}: {new Date(status.relayUsage.updatedAt).toLocaleString(locale)}
+              </p>
+              <p className="text-muted-foreground">{traffic.hint}</p>
+              {status.relayUsage.usedBytes >= status.relayUsage.limitBytes * 0.8 && (
+                <p role="status">
+                  {status.relayUsage.exhausted
+                    ? traffic.exhausted
+                    : status.relayUsage.usedBytes >= status.relayUsage.limitBytes * 0.95
+                      ? traffic.almost
+                      : traffic.warning}
+                </p>
+              )}
+            </section>
+          )}
+          {status?.relayUsageUnavailable && <p role="alert">{traffic.unavailable}</p>}
           <p>
             {c.totp}: {status!.account!.totpEnabled ? c.on : c.off}
           </p>

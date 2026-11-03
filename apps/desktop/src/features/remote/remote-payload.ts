@@ -47,6 +47,32 @@ const worktree = z
   .nullish()
   .catch(undefined)
   .transform((value) => value ?? undefined);
+const readState = z.object({
+  source: z.enum(["codex-native", "agentkib"]),
+  status: z.enum(["read", "unread", "unknown"]),
+  freshness: z.enum(["current", "stale"]),
+  version: id.nullable(),
+  firstUnread: z
+    .discriminatedUnion("type", [
+      z.object({ type: z.literal("threadStart") }),
+      z.object({ type: z.literal("result"), resultId: id, turnId: id.nullable() }),
+    ])
+    .nullable(),
+  latestResult: z
+    .object({
+      id,
+      turnId: id.nullable(),
+      itemId: id.nullable(),
+      outcome: z.enum(["completed", "failed", "cancelled", "ended"]),
+      completedAt: z.iso.datetime({ offset: true }).nullable(),
+    })
+    .nullable(),
+});
+export function parseRemoteReadState(input: unknown) {
+  const result = z.object({ readState }).safeParse(input);
+  if (!result.success) throw new Error("REMOTE_INVALID_RESPONSE");
+  return result.data;
+}
 const catalog = z.object({
   workspaces: z
     .array(
@@ -88,6 +114,7 @@ const catalog = z.object({
         spawned_by_session_id: relationshipId,
         forked_from_session_id: relationshipId,
         availability: z.enum(["readable", "metadata-only"]),
+        readState: readState.optional(),
         worktree,
       }),
     )

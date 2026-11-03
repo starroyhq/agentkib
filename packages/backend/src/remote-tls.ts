@@ -593,6 +593,9 @@ async function readFrame(socket: TLSSocket, limit: number): Promise<unknown> {
 }
 
 function safeRemoteError(value: string): string {
+  if (value === "read-state-conflict") return "REMOTE_READ_STATE_CONFLICT";
+  if (value === "read-state-unavailable") return "REMOTE_READ_STATE_UNAVAILABLE";
+  if (value === "read-state-unsupported") return "REMOTE_READ_STATE_UNSUPPORTED";
   if (value === "index-disabled") return "REMOTE_INDEX_DISABLED";
   if (value === "sharing-disabled") return "REMOTE_SHARING_DISABLED";
   if (value === "revoked") return "REMOTE_REVOKED";
@@ -607,6 +610,8 @@ function safeRemoteError(value: string): string {
 
 function wireError(error: unknown): string {
   const message = error instanceof Error ? error.message : "";
+  if (["read-state-conflict", "read-state-unavailable", "read-state-unsupported"].includes(message))
+    return message;
   if (message.includes("index-disabled") || message.includes("INDEX_DISABLED"))
     return "index-disabled";
   if (message.includes("sharing-disabled")) return "sharing-disabled";

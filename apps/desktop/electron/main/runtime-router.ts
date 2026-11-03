@@ -289,6 +289,8 @@ export class RuntimeRouter extends EventEmitter implements RuntimeHost {
         "goal",
         "resources",
         "session-directory",
+        "read-state",
+        "read-state-update",
       ].includes(String(params.operation))
     )
       return this.typescript.request<TResult>(method, params);

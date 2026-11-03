@@ -1,3 +1,4 @@
+import { requestReadStateRefresh } from "@agentkib/session-ui";
 import {
   createContext,
   useContext,
@@ -179,6 +180,7 @@ function EmbeddedShell() {
     if (request.pending?.sessionId !== props.sessionId) request.pending = undefined;
     if (!request.pending || (session.selected || undefined) !== props.sessionId) return;
     request.pending = undefined;
+    requestReadStateRefresh("desktop-local", props.sessionId);
     void session.refresh(true);
   }, [props.refreshRevision, props.sessionId, session.selected, session.refresh]);
   useEffect(() => {
@@ -225,7 +227,13 @@ function EmbeddedShell() {
         {session.error && (
           <p role="alert" className="px-4 py-2 text-sm text-destructive-text">
             {session.incompatible ? session.t.lanIncompatible : session.t.error}{" "}
-            <Button variant="outline" onClick={() => void session.refresh(true)}>
+            <Button
+              variant="outline"
+              onClick={() => {
+                requestReadStateRefresh("desktop-local", session.selected);
+                void session.refresh(true);
+              }}
+            >
               {session.t.retry}
             </Button>
           </p>

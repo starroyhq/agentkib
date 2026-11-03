@@ -66,7 +66,7 @@ export const remoteEntryCopy = {
       "quota-exhausted": "本月中继额度已用完，有效授权下的局域网直连仍可继续",
       "traffic-unavailable": "中继计量服务暂不可用，有效授权下的局域网直连仍可继续",
       "account-required": "请登录这台电脑所属的账号",
-      "client-update": "账号服务或桌面版本需要更新",
+      "client-update": "账号服务或电脑端版本需要更新",
     },
     failureStages: {
       broker: "管理服务",
@@ -157,7 +157,7 @@ export const remoteEntryCopy = {
       "quota-exhausted": "本月中繼額度已用盡，有效授權下的區域網路直連仍可繼續",
       "traffic-unavailable": "中繼計量服務暫時無法使用，有效授權下的區域網路直連仍可繼續",
       "account-required": "請登入這台電腦所屬的帳號",
-      "client-update": "帳號服務或桌面版本需要更新",
+      "client-update": "帳號服務或電腦端版本需要更新",
     },
     failureStages: {
       broker: "管理服務",

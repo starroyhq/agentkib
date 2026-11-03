@@ -1,3 +1,4 @@
+import { requestReadStateRefresh } from "@agentkib/session-ui";
 import { Button } from "../../components/ui/button";
 import { Dialog } from "../../components/dialog";
 import { CodexTools } from "./codex-tools";
@@ -11,7 +12,7 @@ export function SessionOperations({
   open: boolean;
   onOpenChange: (value: boolean) => void;
 }) {
-  const { t, locale, current, setModal, refresh, busy, embedded } = useSession();
+  const { t, locale, current, selected, client, setModal, refresh, busy, embedded } = useSession();
   const shortcuts = (
     <div className="flex flex-wrap gap-2 border-b pb-4">
       <Button
@@ -28,7 +29,10 @@ export function SessionOperations({
         variant="outline"
         className="min-h-11"
         disabled={busy}
-        onClick={() => void refresh(true)}
+        onClick={() => {
+          requestReadStateRefresh(client, selected);
+          void refresh(true);
+        }}
       >
         {t.refresh}
       </Button>

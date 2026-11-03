@@ -150,11 +150,13 @@ function EventRow({
   const isTool = event.kind === "tool-summary";
   if (isTool && event.tool)
     return (
-      <ToolDetailRow
-        event={{ ...event, tool: event.tool }}
-        locale={locale}
-        statusLabel={toolStatusLabel(event.tool_status, locale)}
-      />
+      <div data-event-id={event.id}>
+        <ToolDetailRow
+          event={{ ...event, tool: event.tool }}
+          locale={locale}
+          statusLabel={toolStatusLabel(event.tool_status, locale)}
+        />
+      </div>
     );
   return (
     <div

@@ -381,6 +381,13 @@ export class SessionReaders {
   codexHome(): string {
     return this.#codex.home();
   }
+  verifiedCodexReadTranscript(nativeId: string, workspace: string): string | null {
+    return (
+      this.#codex
+        .list(workspace, { matches: (id) => id === nativeId })
+        .sessions.find((source) => source.session.native_ref === nativeId)?.transcript ?? null
+    );
+  }
   /** `matches` narrows a Codex listing by native ID before any thread is classified. */
   async list(
     agent: SessionAgent,

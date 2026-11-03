@@ -19,8 +19,14 @@ import { MAX_MESSAGE_LENGTH } from "./session-model";
 import { useSession } from "./session-context";
 import { ArtifactBrowser } from "./artifact-browser";
 import { ArtifactWorkspace } from "./artifact-panel";
-import { useLayoutEffect, useRef, useState } from "react";
-import { useTranscriptFollow } from "@agentkib/session-ui";
+import { useCallback, useLayoutEffect, useRef, useState } from "react";
+import {
+  useTranscriptFollow,
+  useVisibleReadState,
+  ReadStateNotice,
+  readStateCopy,
+} from "@agentkib/session-ui";
+import { publishSessionInvalidation, subscribeSessionInvalidation } from "./session-events";
 import { webLayoutCopy } from "./web-layout-copy";
 import { approvalSummary } from "./approval-summary";
 export function SessionReader() {
@@ -53,6 +59,45 @@ export function SessionReader() {
   const submitPending = useRef(false);
   const banner = claudeSessionBanner(session, "web");
   const panels = useSessionPanels();
+  const readSubscription = useCallback(
+    (listener: (userAction?: boolean) => void) =>
+      subscribeSessionInvalidation(session.client, (id, domains) => {
+        if (
+          (!id || id === selected) &&
+          domains.some((domain) =>
+            ["catalog", "history", "live", "read-state", "read-state-refresh"].includes(domain),
+          )
+        )
+          listener(domains.includes("read-state-refresh"));
+      }),
+    [session.client, selected],
+  );
+  const readObservation = useVisibleReadState({
+    client: session.client,
+    sessionId: selected,
+    scope: JSON.stringify([
+      session.origin,
+      access?.bootId,
+      access?.device?.id,
+      access?.historySearchScope,
+      access?.accountLogin?.accountId,
+    ]),
+    source: current?.readState?.source,
+    catalogVersion: current?.readState?.version,
+    supported: access?.readStateVersion === 1,
+    ready: !!page && online && access?.status === "approved",
+    blocked:
+      !!session.modal ||
+      session.historySearchOpen ||
+      !!panels?.filesOpen ||
+      !!panels?.actionsOpen ||
+      !!panels?.terminalOpen,
+    events: page?.events ?? [],
+    viewportRef: scroll,
+    subscribe: readSubscription,
+    onAcknowledged: () => publishSessionInvalidation(session.client, selected, ["catalog"]),
+  });
+  const readCopy = readStateCopy(locale);
   const forkSource = current?.forked_from_session_id
     ? session.sessions?.find((item) => item.id === current.forked_from_session_id)
     : undefined;
@@ -138,6 +183,7 @@ export function SessionReader() {
             </div>
           ) : (
             <div ref={contentRef} className="min-w-0 shrink-0">
+              <ReadStateNotice locale={locale} observation={readObservation} />
               {current?.agent === "claude-code" &&
                 banner &&
                 banner.notice !== "background-ended" && (
@@ -181,6 +227,22 @@ export function SessionReader() {
                   await earlier();
                 }}
               />
+              {readObservation.status === "ready" &&
+                readObservation.events &&
+                readObservation.readState?.freshness === "current" && (
+                  <p
+                    data-read-result={readObservation.readState.latestResult?.id ?? "threadStart"}
+                    className="mx-auto mt-4 w-full max-w-3xl text-xs text-muted-foreground"
+                  >
+                    {readObservation.readState.latestResult
+                      ? readCopy[readObservation.readState.latestResult.outcome]
+                      : !page.events.length
+                        ? readCopy.empty
+                        : readObservation.readState.firstUnread?.type === "threadStart"
+                          ? readCopy.manualUnread
+                          : null}
+                  </p>
+                )}
             </div>
           )}
         </section>

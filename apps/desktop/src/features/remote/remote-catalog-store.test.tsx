@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { act, cleanup, renderHook } from "@testing-library/react";
+import { act, cleanup, render, renderHook } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { RemoteCatalog, RemoteConnection, RemoteStatus } from "@/core/remote-types";
 import type { ConversationEventPage, WorkspaceSummary } from "@/core/types";
@@ -7,6 +7,7 @@ import { useRemoteStore } from "./remote-store";
 import { filterSessions, groupSessions } from "@agentkib/session-catalog";
 import { sessionCatalogStats } from "@/features/sessions/session-catalog";
 import {
+  RemoteCatalogBridge,
   readRemoteHistory,
   refreshRemoteCatalog,
   useRemoteCatalogEntries,
@@ -170,6 +171,60 @@ describe("remote catalog and history isolation", () => {
       cursor: undefined,
       limit: 50,
     });
+  });
+
+  it("refreshes read-state hosts every five visible seconds, retains old-host cadence, and pauses in background", async () => {
+    vi.useFakeTimers();
+    const visibility = vi.spyOn(document, "visibilityState", "get");
+    visibility.mockReturnValue("visible");
+    const readState = {
+      source: "codex-native",
+      status: "unread",
+      freshness: "current",
+      version: "native:v1",
+      firstUnread: { type: "threadStart" },
+      latestResult: null,
+    };
+    useRemoteStore.setState({ snapshot: snapshot([host(), host("host-b")]) });
+    request.mockImplementation(async ({ id }: { id: string }) =>
+      id === "host-a"
+        ? { ...catalog, sessions: catalog.sessions.map((session) => ({ ...session, readState })) }
+        : catalog,
+    );
+    const view = render(<RemoteCatalogBridge />);
+    try {
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(0);
+      });
+      expect(request.mock.calls.filter(([arg]) => arg.id === "host-a")).toHaveLength(1);
+      expect(request.mock.calls.filter(([arg]) => arg.id === "host-b")).toHaveLength(1);
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(5_000);
+      });
+      expect(request.mock.calls.filter(([arg]) => arg.id === "host-a")).toHaveLength(2);
+      expect(request.mock.calls.filter(([arg]) => arg.id === "host-b")).toHaveLength(1);
+      visibility.mockReturnValue("hidden");
+      act(() => document.dispatchEvent(new Event("visibilitychange")));
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(20_000);
+      });
+      expect(request.mock.calls.filter(([arg]) => arg.id === "host-a")).toHaveLength(2);
+      visibility.mockReturnValue("visible");
+      await act(async () => {
+        document.dispatchEvent(new Event("visibilitychange"));
+        await vi.advanceTimersByTimeAsync(0);
+      });
+      expect(request.mock.calls.filter(([arg]) => arg.id === "host-a")).toHaveLength(3);
+      expect(request.mock.calls.filter(([arg]) => arg.id === "host-b")).toHaveLength(1);
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(5_000);
+      });
+      expect(request.mock.calls.filter(([arg]) => arg.id === "host-b")).toHaveLength(2);
+    } finally {
+      view.unmount();
+      visibility.mockRestore();
+      vi.useRealTimers();
+    }
   });
 
   it("deduplicates reads and observes the 30 second snapshot interval", async () => {

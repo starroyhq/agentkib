@@ -20,6 +20,8 @@ import {
 import path from "node:path";
 import { homedir } from "node:os";
 import { claudeResumeCommand } from "./claude-resume-command";
+import { conversationReadKey, ReadStateLedger } from "./read-state-ledger";
+import type { ReadStateTarget } from "./conversation-read-state";
 import { ClaudeSessionOwnerProbe, type ClaudeOwnerObservationShare } from "./claude-session-owner";
 import { resolveCommand } from "./command-resolution";
 import { validHistoryControl } from "./history-control-schema";
@@ -1251,6 +1253,25 @@ export class ClaudeManagedReadOwner {
         beforeStart: () => this.#beforeRunnerStart(id),
         ...(this.#version?.value ? { cliVersion: this.#version.value } : {}),
         onResult: (result) => {
+          new ReadStateLedger(this.dataDir).record(
+            conversationReadKey("claude-code", record.home, record.nativeId),
+            {
+              id: `turn:${result.turnId}`,
+              turnId: result.turnId,
+              itemId:
+                runner.state.streamItemId && !runner.state.streamItemId.startsWith("live:")
+                  ? runner.state.streamItemId
+                  : null,
+              outcome: result.success
+                ? "completed"
+                : runner.state.lastOutcome === "cancelled" ||
+                    ["cancelled", "aborted", "interrupted"].includes(result.terminalReason ?? "")
+                  ? "cancelled"
+                  : "failed",
+              completedAt: new Date().toISOString(),
+            },
+          );
+          this.#catalogChanged?.();
           this.#hostState.complete(id, result.turnId, {
             success: result.success,
             usage: result.usage,
@@ -3602,6 +3623,26 @@ export class ClaudeManagedReadOwner {
 
   hasManagedSession(id: string): boolean {
     return sessionIdPattern.test(id) && this.#load(id) !== null;
+  }
+
+  readStateTarget(id: string): ReadStateTarget | null {
+    if (!sessionIdPattern.test(id)) return null;
+    const record = this.#load(id);
+    if (!record || (record.released && record.adopted)) return null;
+    this.#validate(record);
+    let transcript: string | null = null;
+    try {
+      transcript = this.sessions.verifiedClaudeControlTarget(record.nativeId, record.workspace);
+    } catch {
+      /* A fresh turn may not have a transcript yet. */
+    }
+    return {
+      provider: "claude-code",
+      home: record.home,
+      nativeId: record.nativeId,
+      workspace: record.workspace,
+      transcript,
+    };
   }
 
   indexedAliases(): Set<string> {

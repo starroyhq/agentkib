@@ -64,6 +64,7 @@ export function isConversationPath(path: string, post: boolean) {
   const name = url.pathname.replace(/^\/api\/web\/v1(?=\/)/, "");
   return post
     ? [
+        "/read-state",
         "/history/search",
         "/history/locate",
         "/history/references",
@@ -89,6 +90,7 @@ export function isConversationPath(path: string, post: boolean) {
           name,
         )
     : [
+        "/read-state",
         "/history/status",
         "/access",
         "/info",

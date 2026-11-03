@@ -258,6 +258,23 @@ describe("hosted LAN transport", () => {
     expect((await http(receipt)).status).toBe(401);
   });
   it("only preflights whitelisted routes, methods and headers", async () => {
+    for (const method of ["GET", "POST"]) {
+      expect(
+        (
+          await http(
+            "/read-state",
+            {
+              "Access-Control-Request-Method": method,
+              "Access-Control-Request-Headers": "authorization,content-type,x-csrf-token",
+            },
+            "OPTIONS",
+          )
+        ).status,
+      ).toBe(204);
+    }
+    expect(
+      (await http("/read-state", { "Access-Control-Request-Method": "PATCH" }, "OPTIONS")).status,
+    ).toBe(403);
     const response = await http(
       "/send",
       {

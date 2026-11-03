@@ -1,3 +1,4 @@
+import { desktopReadScope, subscribeDesktopReadScope } from "./read-state-scope";
 import { isBusyRead, retryBusyRead } from "./conversation/features/sessions/session-read-retry";
 import { useEffect } from "react";
 import { create } from "zustand";
@@ -73,6 +74,7 @@ export function refreshConversationCatalog(): Promise<ConversationSessionSummary
       }
       const sessions: ConversationSessionSummary[] = catalog.sessions.map((session) => ({
         ...session,
+        readState: desktopReadScope().ready ? session.readState : undefined,
         indexedSessionIds:
           session.indexedSessionIds ??
           (session.indexedSessionId ? [session.indexedSessionId] : undefined),
@@ -134,6 +136,17 @@ export function useConversationCatalog(enabled: boolean) {
     }
     catalogObservers += 1;
     if (catalogObservers > 1) return releaseCatalogObserver;
+    const stopReadScope = subscribeDesktopReadScope(() => {
+      // Account events fence pending reads synchronously, before any React effect.
+      generation++;
+      invalidation++;
+      pending = undefined;
+      waitingForSettlement = false;
+      useConversationCatalogStore.setState((current) => ({
+        sessions: current.sessions.map((session) => ({ ...session, readState: undefined })),
+      }));
+      if (desktopReadScope().ready) void refreshConversationCatalog().catch(() => {});
+    });
     observationError = undefined;
     useConversationCatalogStore.setState({ ready: false, error: undefined });
     void refreshConversationCatalog().catch(() => {});
@@ -227,6 +240,7 @@ export function useConversationCatalog(enabled: boolean) {
     connect();
     stopCatalogObservation = () => {
       closed = true;
+      stopReadScope();
       if (retryObservation === retry) retryObservation = undefined;
       stop?.();
     };

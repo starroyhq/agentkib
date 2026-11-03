@@ -1,6 +1,10 @@
 import { useI18n } from "@/core/useI18n";
 import { sessionCollection } from "@agentkib/runtime-protocol";
-import { sessionGroupActivity, SessionGroupActivity } from "@agentkib/session-ui";
+import {
+  sessionGroupActivity,
+  SessionGroupActivity,
+  PendingReviewLane,
+} from "@agentkib/session-ui";
 import { cn } from "cn";
 import { Fragment, useEffect, useLayoutEffect, useRef } from "react";
 import { useShallow } from "zustand/react/shallow";
@@ -73,6 +77,12 @@ export function SessionDirectory({
       aria-label={tr("sessions.directory")}
     >
       <SessionDirectoryControls onMenuOpenChange={onMenuOpenChange} />
+      <PendingReviewLane
+        sessions={hub.filtered}
+        locale={locale}
+        onSelect={hub.select}
+        context={(row) => (row.remote ? `remote:${row.remote.host_id}` : "desktop-local")}
+      />
       <div
         className="session-directory-tree min-h-0 flex-1 overflow-auto overscroll-contain px-1 pb-3 [scrollbar-width:thin]"
         ref={scrollRef}

@@ -24,7 +24,9 @@ concurrency:
 jobs:
   compatibility:
     name: App-server protocol (${{ matrix.version }})
-    runs-on: macos-15
+    # The default arm64 pool can time out acquiring a runner before checks start.
+    # Use the Intel pool for this architecture-independent protocol contract.
+    runs-on: macos-15-intel
     timeout-minutes: 15
     strategy:
       fail-fast: false

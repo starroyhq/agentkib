@@ -61,7 +61,7 @@ export function queuedSessionRead<T>(
   key: string,
   signal: AbortSignal,
   read: () => Promise<T>,
-  { retryBusy = false }: { retryBusy?: boolean } = {},
+  { retryBusy = false, retryStale = false }: { retryBusy?: boolean; retryStale?: boolean } = {},
 ): Promise<T> {
   let requests = pending.get(client);
   if (!requests) {
@@ -114,7 +114,11 @@ export function queuedSessionRead<T>(
         };
         try {
           // Scans also use this queue and must never replay a mutation.
-          const operation = retryBusy ? retryBusyRead(call, retry.signal) : call();
+          // Both read retries belong to the shared attempt, not the first
+          // Query's signal. Reopened consumers can join a sent call; once its
+          // last consumer leaves, the settled attempt cancels every later retry.
+          const observe = retryStale ? () => retryStaleCatalogRead(call, retry.signal) : call;
+          const operation = retryBusy ? retryBusyRead(observe, retry.signal) : observe();
           void operation.then(resolve, reject).finally(finish);
         } catch (error) {
           reject(error);
@@ -156,8 +160,8 @@ export function sessionListOptions(client: QueryClient, id: string) {
         client,
         `sessions:${generation}:${id}`,
         signal,
-        () => retryStaleCatalogRead(() => api.workspaceSessions(id), signal),
-        { retryBusy: true },
+        () => api.workspaceSessions(id),
+        { retryBusy: true, retryStale: true },
       );
       if (generation !== sessionQueryGeneration(client))
         throw new DOMException("Cancelled", "AbortError");

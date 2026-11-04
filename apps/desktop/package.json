@@ -2,7 +2,7 @@
   "name": "@agentkib/desktop",
   "license": "Apache-2.0",
   "private": true,
-  "version": "0.25.0",
+  "version": "0.26.0",
   "description": "Desktop app for discovering, diagnosing, and synchronizing coding agent configuration.",
   "homepage": "https://github.com/starroyhq/agentkib",
   "author": "AgentKib contributors",

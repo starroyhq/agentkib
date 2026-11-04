@@ -28,6 +28,7 @@ import { Commands } from "./commands";
 import { parameters, optionalString, unsigned } from "./rpc";
 import type { ConversationEventPage } from "./session-events";
 import type { DocumentOptions, SessionDocument } from "./session-model";
+import type { DshBridge } from "./dsh-bridge";
 import {
   readClaudeDocument,
   readCodexDocument,
@@ -74,8 +75,11 @@ export const SESSION_AGENTS = [
   "grok-build",
   "antigravity",
   "cursor",
+  "deepseek-harness",
 ] as const;
 export type SessionAgent = (typeof SESSION_AGENTS)[number];
+/** DeepSeek Harness history comes from the running DSH through its AgentKib plugin. */
+export type DshSessionSource = Pick<DshBridge, "list" | "events">;
 /** One catalog call may share discovery; every metadata target still verifies its own header. */
 export type ClaudeControlMetadataShare = { current?: ReturnType<ClaudeSessions["list"]> };
 
@@ -103,6 +107,7 @@ export class SessionReaders {
     commands: Commands,
     readonly env: NodeJS.ProcessEnv,
     readonly cursorBridge: Pick<CursorBridge, "profiles">,
+    readonly dsh?: DshSessionSource,
   ) {
     this.#subagents = new SessionSubagents(store.identitySalt());
     this.#codex = new CodexSessions(env);
@@ -413,6 +418,9 @@ export class SessionReaders {
         return { sessions: await this.#opencode.list(workspace), incomplete: false };
       case "antigravity":
         return this.#antigravity.list(workspace);
+      case "deepseek-harness":
+        // Workers without a bridge list nothing rather than a stale or partial set.
+        return this.dsh ? this.dsh.list(workspace) : { sessions: [], incomplete: false };
       case "cursor": {
         const cli = this.#cursor.list(workspace);
         try {
@@ -751,6 +759,9 @@ export class SessionReaders {
         return ref.startsWith("cursor-ide-v1-")
           ? this.#cursorIde.events(ref, workspace, offset, count)
           : this.#cursor.events(ref, offset, count);
+      case "deepseek-harness":
+        if (!this.dsh) throw new Error("Conversation provider is unavailable");
+        return this.dsh.events(ref, offset, count);
       default:
         throw new Error("Conversation provider is unavailable");
     }

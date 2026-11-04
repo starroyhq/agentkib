@@ -18,6 +18,7 @@ import { SessionReadOnly } from "./session-read-only";
 import { isSendEnter, useEnterSends } from "./composer-shortcuts";
 import { runningSendAction, useSendWhileRunning } from "../preferences/send-while-running";
 import { claudeConnectionCopyForSurface } from "./claude-connection-copy";
+import { DshQueue } from "./dsh-queue";
 import { HistoryReferenceChips } from "../history/history-search-controls";
 import { validHistoryMessage } from "../history/history-reference-model";
 import { useEffect, useId, useMemo, useRef, useState } from "react";
@@ -80,6 +81,9 @@ type Upload = {
 };
 // A paired browser is a remote device, which may run only some Claude Code commands.
 const COMMAND_OWNER = false;
+/** A notice floating above the composer. Opaque: the conversation scrolls behind it. */
+const floatingNotice =
+  "pointer-events-auto rounded-lg border px-3 py-2 text-xs leading-5 shadow-sm";
 export function SessionComposer({
   connectionStatusInBanner = false,
 }: {
@@ -560,15 +564,13 @@ export function SessionComposer({
       </div>
     );
   return (
-    <div className="w-full max-w-3xl shrink-0 self-center space-y-2">
+    <div className="relative w-full max-w-3xl shrink-0 self-center space-y-2">
       {isClaude && display.continuation === "terminal" && (
         <p className="px-3 text-xs leading-5 text-muted-foreground">{continuation.terminalHint}</p>
       )}
-      {isCodex && display.continuation === "codex" && (
-        <p className="px-3 text-xs leading-5 text-muted-foreground">{continuation.codexHint}</p>
-      )}
       {isClaude && <PermissionModeNotice permission={live?.permission} locale={locale} compact />}
       {(isClaude || isCodex) && <ManagedTurnNotice live={live} locale={locale} surface="web" />}
+      {current?.agent === "deepseek-harness" && <DshQueue key={selected} />}
       <form
         className="relative w-full space-y-2 rounded-3xl border border-border bg-background p-2 shadow-sm transition-colors focus-within:border-ring/40 md:p-3"
         onSubmit={(event) => {
@@ -737,31 +739,6 @@ export function SessionComposer({
           )}
         </div>
       </form>
-      {resources.some((item) => !item.available) && (
-        <p role="status" className="px-3 text-xs text-muted-foreground">
-          {copy.resourceRemoved}
-        </p>
-      )}
-      {resourceNeedsMessage && (
-        <p role="status" className="px-3 text-sm text-muted-foreground">
-          {layout.resourceNeedsMessage}
-        </p>
-      )}
-      {error && (
-        <p role="alert" className="px-3 text-xs text-destructive-text">
-          {error}
-        </p>
-      )}
-      {commandNotice?.draft === draft && (
-        <p role="status" className="px-3 text-xs leading-5 text-muted-foreground">
-          {codexReason(locale, commandNotice.reason, "web").text}
-        </p>
-      )}
-      {compacting && (
-        <p role="status" className="px-3 text-xs leading-5 text-muted-foreground">
-          {contextUsageCopyForSurface(locale, "web").compactingDetail}
-        </p>
-      )}
       {!isClaude && access?.device?.accessMode !== "full" && (
         <Disclosure className="px-3 text-xs text-muted-foreground">
           <DisclosureSummary className="min-h-11 cursor-pointer content-center">
@@ -770,26 +747,54 @@ export function SessionComposer({
           <p className="pb-2 leading-5">{copy.composerHint}</p>
         </Disclosure>
       )}
-      {!canSend &&
-        !(connectionStatusInBanner && isClaude) &&
-        (!running || (live?.executionMode === "claude-follower" && display.tone === "warning")) &&
-        !compacting &&
-        !connectionFailure &&
-        !display.loading && (
-          <div
-            role="status"
-            className={`flex min-w-0 items-start gap-2 rounded-lg border px-3 py-2 text-xs leading-5 ${
-              display.tone === "warning"
-                ? "border-amber-500/30 bg-amber-500/5 text-amber-900 dark:text-amber-200"
-                : "border-border bg-muted/40 text-muted-foreground"
-            }`}
-          >
-            {display.tone === "warning" && (
-              <AlertTriangle aria-hidden="true" className="mt-0.5 size-3.5 shrink-0" />
-            )}
-            <span className="min-w-0">{display.reason}</span>
-          </div>
+      {/* These come and go. Floating above the composer, they never move it. */}
+      <div className="pointer-events-none absolute inset-x-0 bottom-full z-10 mb-2 flex flex-col gap-2">
+        {resources.some((item) => !item.available) && (
+          <p role="status" className={`${floatingNotice} bg-background text-muted-foreground`}>
+            {copy.resourceRemoved}
+          </p>
         )}
+        {resourceNeedsMessage && (
+          <p role="status" className={`${floatingNotice} bg-background text-muted-foreground`}>
+            {layout.resourceNeedsMessage}
+          </p>
+        )}
+        {error && (
+          <p role="alert" className={`${floatingNotice} bg-background text-destructive-text`}>
+            {error}
+          </p>
+        )}
+        {commandNotice?.draft === draft && (
+          <p role="status" className={`${floatingNotice} bg-background text-muted-foreground`}>
+            {codexReason(locale, commandNotice.reason, "web").text}
+          </p>
+        )}
+        {compacting && (
+          <p role="status" className={`${floatingNotice} bg-background text-muted-foreground`}>
+            {contextUsageCopyForSurface(locale, "web").compactingDetail}
+          </p>
+        )}
+        {!canSend &&
+          !(connectionStatusInBanner && isClaude) &&
+          (!running || (live?.executionMode === "claude-follower" && display.tone === "warning")) &&
+          !compacting &&
+          !connectionFailure &&
+          !display.loading && (
+            <div
+              role="status"
+              className={`${floatingNotice} flex min-w-0 items-start gap-2 ${
+                display.tone === "warning"
+                  ? "border-amber-500/30 bg-amber-50 text-amber-900 dark:bg-amber-950 dark:text-amber-200"
+                  : "bg-background text-muted-foreground"
+              }`}
+            >
+              {display.tone === "warning" && (
+                <AlertTriangle aria-hidden="true" className="mt-0.5 size-3.5 shrink-0" />
+              )}
+              <span className="min-w-0">{display.reason}</span>
+            </div>
+          )}
+      </div>
     </div>
   );
 }

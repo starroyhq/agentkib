@@ -66,7 +66,7 @@ export function SessionWindowToolbar() {
     hasDesktopConversation() &&
     !selected.remote &&
     selected.availability === "readable" &&
-    ["codex", "claude-code", "antigravity"].includes(selected.agent);
+    ["codex", "claude-code", "deepseek-harness", "antigravity"].includes(selected.agent);
   const canConnectTerminal =
     interactive &&
     hub.ready &&

@@ -163,7 +163,9 @@ export function SessionWorkspace() {
                     {currentWorkspace?.name}
                   </span>
                   {status.label && <span aria-hidden="true">·</span>}
-                  {["codex", "claude-code"].includes(session.current?.agent ?? "") ? (
+                  {["codex", "claude-code", "deepseek-harness"].includes(
+                    session.current?.agent ?? "",
+                  ) ? (
                     <SessionContinuationStatus
                       label={status.label}
                       active={status.tone === "active"}

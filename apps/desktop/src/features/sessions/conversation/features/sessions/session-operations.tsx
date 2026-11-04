@@ -8,6 +8,7 @@ import { ManagedTasks } from "./managed-tasks";
 import { useSession } from "./session-context";
 import { webLayoutCopy } from "./web-layout-copy";
 import { ClaudeBridgePanel } from "./claude-bridge-panel";
+import { DshBridgePanel } from "./dsh-bridge-panel";
 export function SessionOperations({
   open,
   onOpenChange,
@@ -73,6 +74,7 @@ export function SessionOperations({
         onClose={() => onOpenChange(false)}
       >
         {shortcuts}
+        {current?.agent === "deepseek-harness" && !!access?.device?.manage && <DshBridgePanel />}
       </Dialog>
     ) : null;
   // Old request identities still need settlement after the execution controls disappear.

@@ -341,6 +341,7 @@ export interface Live {
     | "managed-resume"
     | "claude-managed"
     | "claude-follower"
+    | "dsh-follower"
     | "acp-managed"
     | "codex-managed"
     | "codex-follower";
@@ -439,6 +440,8 @@ export type CodexAction =
   | "queue-add"
   | "queue-update"
   | "queue-delete"
+  /** Moves a queued message into the running turn; only a connected DeepSeek Harness offers it. */
+  | "queue-steer"
   | "queue-reorder"
   | "queue-start"
   | "rename"
@@ -500,7 +503,7 @@ export interface CodexCapabilities {
    */
   commands?: ClaudeCommandEntry[];
 }
-export type ManagedAgent = "codex" | "claude-code";
+export type ManagedAgent = "codex" | "claude-code" | "deepseek-harness";
 export type SessionCapabilities = CodexCapabilities;
 export interface ManagedOptions {
   available: boolean;
@@ -1407,7 +1410,9 @@ const SESSION_MANAGEMENT_ACTIONS: readonly SessionManagementAction[] = [
 ];
 
 export function managedAgentOf(agent: string): ManagedAgent | null {
-  return agent === "codex" || agent === "claude-code" ? agent : null;
+  return agent === "codex" || agent === "claude-code" || agent === "deepseek-harness"
+    ? agent
+    : null;
 }
 
 /**

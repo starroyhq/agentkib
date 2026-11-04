@@ -1,0 +1,25 @@
+{
+  "name": "agentkib-dsh-bridge",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Connects running DeepSeek Harness sessions to AgentKib on this computer.",
+  "license": "Apache-2.0",
+  "files": [
+    "index.js",
+    "bridge.js",
+    "client.js",
+    "projection.js",
+    "compatibility.js",
+    "cordis.patch.yml"
+  ],
+  "type": "module",
+  "main": "index.js",
+  "engines": {
+    "dsh": ">=0.2.1-rc.5 <0.3.0"
+  },
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    }
+  }
+}

@@ -32,6 +32,7 @@ const pendingKinds = {
   "queue-add": true,
   "queue-update": true,
   "queue-delete": true,
+  "queue-steer": true,
   "queue-reorder": true,
   "queue-start": true,
   "queue-pause": true,

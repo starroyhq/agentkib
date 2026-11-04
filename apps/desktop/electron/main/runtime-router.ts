@@ -258,6 +258,7 @@ export class RuntimeRouter extends EventEmitter implements RuntimeHost {
         "queue-add",
         "queue-update",
         "queue-delete",
+        "queue-steer",
         "queue-reorder",
         "rename",
         "archive",

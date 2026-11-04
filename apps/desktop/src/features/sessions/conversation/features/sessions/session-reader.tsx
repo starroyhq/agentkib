@@ -138,6 +138,9 @@ export function SessionReader() {
       }),
     [session.client, selected],
   );
+  // Only Codex and Claude Code sessions keep a read state. For other Agents a missing read state
+  // is expected, not a sign that the computer needs an update.
+  const readStateAgent = ["codex", "claude-code"].includes(current?.agent ?? "");
   const readObservation = useVisibleReadState({
     client: session.client,
     sessionId: selected,
@@ -153,7 +156,7 @@ export function SessionReader() {
     ]),
     source: current?.readState?.source,
     catalogVersion: current?.readState?.version,
-    supported: access?.readStateVersion === 1,
+    supported: access?.readStateVersion === 1 && readStateAgent,
     ready: desktopReadScope.ready && !!page && online && access?.status === "approved",
     blocked:
       !!session.modal ||
@@ -236,7 +239,7 @@ export function SessionReader() {
             </div>
           ) : (
             <div ref={contentRef} className="reader-content min-w-0 shrink-0 px-4 pb-2 md:px-8">
-              <ReadStateNotice locale={locale} observation={readObservation} />
+              {readStateAgent && <ReadStateNotice locale={locale} observation={readObservation} />}
               {current?.agent === "claude-code" &&
                 banner &&
                 banner.notice !== "background-ended" && (
@@ -373,6 +376,8 @@ export function SessionReader() {
                 </div>
               )}
               {notice &&
+                // An accepted message shows up in the conversation at once; saying so is noise.
+                notice !== "accepted" &&
                 // The composer's controls explain these beside a way into next-turn settings.
                 !(
                   notice === "notDispatched" &&
@@ -400,11 +405,14 @@ export function SessionReader() {
                 )}
               {(current?.agent === "codex" ||
                 current?.agent === "claude-code" ||
+                current?.agent === "deepseek-harness" ||
                 current?.agent === "antigravity") &&
               access.experimentalEnabled &&
               access.protocolVersion === 2 &&
               access.device?.send ? (
-                current?.agent === "codex" || current?.agent === "claude-code" ? (
+                current?.agent === "codex" ||
+                current?.agent === "claude-code" ||
+                current?.agent === "deepseek-harness" ? (
                   <SessionComposer
                     connectionStatusInBanner={!!banner && banner.notice !== "background-ended"}
                     key={`composer-${selected}`}
@@ -507,6 +515,7 @@ export function SessionReader() {
                     )}
                   {(current?.agent === "codex" ||
                     current?.agent === "claude-code" ||
+                    current?.agent === "deepseek-harness" ||
                     current?.agent === "antigravity") &&
                   access.experimentalEnabled &&
                   access.device?.approve

@@ -4579,12 +4579,17 @@ export class WebAccessService {
     // 已配对设备各自一份额度；未认证流量（含静态资源、预检、配对）共享一个池。
     // 经 relay 进来的请求都来自本机 frpc，拿不到真实客户端地址，无法再按 IP 细分。
     const paired = !!hash && this.credentials.some((c) => c.hash === hash);
+    const url = new URL(req.url || "/", origin);
+    // Classified before the first limit, so a control it turns away still says it was never
+    // dispatched; without an outcome the client has to treat the request as unknown.
+    control.request =
+      url.pathname.startsWith("/api/web/v1/") &&
+      isControlRequest(req.method, url.pathname.replace(/^\/api\/web\/v1/, ""));
     this.rate(paired ? `paired:${hash}` : "anonymous", 600);
     if (lan) {
       res.setHeader("Access-Control-Allow-Origin", origin);
       res.setHeader("Vary", "Origin");
     }
-    const url = new URL(req.url || "/", origin);
     if (!url.pathname.startsWith("/api/")) {
       if (lan) throw new HttpError(404, "not_found");
       return this.static(req, res);

@@ -17,6 +17,7 @@ import {
   type CodexContextResource,
   type CodexGoalState,
   type CodexSessionSettings,
+  type ManagedAgent,
 } from "@agentkib/web-client";
 import { Button } from "../../components/ui/button";
 import { Input } from "../../components/ui/input";
@@ -96,6 +97,13 @@ export function CodexComposerControls({
   } = useSession();
   const copy = codexCopyForSurface(locale, "web");
   const isClaude = current?.agent === "claude-code";
+  // Claude Code and DeepSeek Harness read through the shared managed routes, and only what their
+  // capabilities offer; DeepSeek Harness otherwise follows the Codex settings rules.
+  const managedAgent: ManagedAgent | null = isClaude
+    ? "claude-code"
+    : current?.agent === "deepseek-harness"
+      ? "deepseek-harness"
+      : null;
   const agentCopy = sessionAgentCopy[locale];
   const feature = (name: string) =>
     (
@@ -104,16 +112,18 @@ export function CodexComposerControls({
         | undefined
     )?.[name];
   const settingsReadable =
-    !isClaude ||
+    !managedAgent ||
     feature("settings-state")?.available === true ||
     feature("settings")?.available === true;
   const goalReadable =
-    !isClaude ||
+    !managedAgent ||
     ["goal", "goal-set", "goal-pause", "goal-resume", "goal-clear"].some(
       (key) => feature(key)?.available,
     );
   const resourcesReadable =
-    !isClaude || feature("resources")?.available === true || feature("context")?.available === true;
+    !managedAgent ||
+    feature("resources")?.available === true ||
+    feature("context")?.available === true;
   const layout = composerLayoutCopy[locale];
   const term = (value: string) => composerTerm(locale, value);
   const reason = (code?: string) => codexReason(locale, code, "web").text;
@@ -199,6 +209,9 @@ export function CodexComposerControls({
   const [tokenBudget, setTokenBudget] = useState("");
   const compacting = live?.activity === "compacting";
   const running = live?.status !== "idle" || compacting;
+  // While a turn runs, the note below the settings already says to wait for it.
+  const settingReason = (code?: string) =>
+    running && code === "session-busy" ? null : reasonDetail(code);
   const usageView = useContextUsage(settings?.sessionId === selected ? settings.usage : undefined);
 
   const applySettings = useCallback(
@@ -227,8 +240,8 @@ export function CodexComposerControls({
       setContextLoading(true);
       setContextError("");
       try {
-        const value = isClaude
-          ? await client.sessionResources(selected, "claude-code", directoryId, abort.signal)
+        const value = managedAgent
+          ? await client.sessionResources(selected, managedAgent, directoryId, abort.signal)
           : await client.codexContextOptions(selected, directoryId, abort.signal);
         if (abort.signal.aborted || generation !== contextGeneration.current) return;
         setContext(value);
@@ -260,7 +273,7 @@ export function CodexComposerControls({
       online,
       selected,
       setResources,
-      isClaude,
+      managedAgent,
       resourcesReadable,
     ],
   );
@@ -286,13 +299,13 @@ export function CodexComposerControls({
           flight.background = true;
           const [settingsResult, goalResult] = await Promise.allSettled([
             settingsReadable
-              ? isClaude
-                ? client.sessionSettings(selected, "claude-code")
+              ? managedAgent
+                ? client.sessionSettings(selected, managedAgent)
                 : client.codexSessionSettings(selected)
               : Promise.resolve(undefined),
             goalReadable
-              ? isClaude
-                ? client.sessionGoals(selected, "claude-code")
+              ? managedAgent
+                ? client.sessionGoals(selected, managedAgent)
                 : client.codexGoals(selected)
               : Promise.resolve(undefined),
           ]);
@@ -324,7 +337,7 @@ export function CodexComposerControls({
       loadFlight.current = flight;
       return flight.promise;
     },
-    [applySettings, client, full, selected, isClaude, settingsReadable, goalReadable],
+    [applySettings, client, full, selected, managedAgent, settingsReadable, goalReadable],
   );
 
   useEffect(() => {
@@ -654,7 +667,7 @@ export function CodexComposerControls({
         )}
       <div className="@container flex min-w-0 items-center justify-between gap-2 px-1">
         <div className="flex min-w-0 flex-1 items-center gap-0.5">
-          {(!isClaude ||
+          {(!managedAgent ||
             resourcesReadable ||
             goalReadable ||
             feature("attachments")?.available) && (
@@ -888,7 +901,7 @@ export function CodexComposerControls({
                   ))}
                 </select>
                 {!settings.writable.model?.available &&
-                  reasonDetail(settings.writable.model?.reason)}
+                  settingReason(settings.writable.model?.reason)}
               </label>
               <div className="grid gap-3 sm:grid-cols-2">
                 <label className="block space-y-1 text-sm">
@@ -911,7 +924,7 @@ export function CodexComposerControls({
                     ))}
                   </select>
                   {!settings.writable.effort?.available &&
-                    reasonDetail(settings.writable.effort?.reason)}
+                    settingReason(settings.writable.effort?.reason)}
                 </label>
                 {isClaude ? (
                   <label className="block space-y-1 text-sm">
@@ -938,7 +951,7 @@ export function CodexComposerControls({
                         ))}
                     </select>
                     {!settings.writable.permissionMode?.available &&
-                      reasonDetail(settings.writable.permissionMode?.reason)}
+                      settingReason(settings.writable.permissionMode?.reason)}
                     {settings.options.permissionModes?.find((item) => item.id === permissionMode)
                       ?.description && (
                       <small className="block text-muted-foreground">
@@ -950,7 +963,8 @@ export function CodexComposerControls({
                       </small>
                     )}
                   </label>
-                ) : (
+                ) : // DeepSeek Harness offers only a model and its effort here.
+                managedAgent ? null : (
                   <>
                     <label className="block space-y-1 text-sm">
                       {copy.mode}
@@ -1004,7 +1018,7 @@ export function CodexComposerControls({
                           ))}
                       </select>
                       {!settings.writable.serviceTier?.available &&
-                        reasonDetail(settings.writable.serviceTier?.reason)}
+                        settingReason(settings.writable.serviceTier?.reason)}
                       {!!settings.options.serviceTiers?.find((item) => item.id === serviceTier)
                         ?.description && (
                         <small className="block text-muted-foreground">
@@ -1034,7 +1048,7 @@ export function CodexComposerControls({
                         ))}
                       </select>
                       {!settings.writable.policy?.available &&
-                        reasonDetail(settings.writable.policy?.reason)}
+                        settingReason(settings.writable.policy?.reason)}
                       {!!settings.options.policies?.find((item) => item.id === policy)
                         ?.description && (
                         <small className="block text-muted-foreground">
@@ -1048,7 +1062,8 @@ export function CodexComposerControls({
                   </>
                 )}
               </div>
-              {feature("settings")?.available !== true && reasonDetail(feature("settings")?.reason)}
+              {feature("settings")?.available !== true &&
+                settingReason(feature("settings")?.reason)}
               {settings.applicationStatus === "pending" && (
                 <p role="status" className="text-xs text-muted-foreground">
                   {layout.settingsPending}

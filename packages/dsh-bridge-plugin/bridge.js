@@ -13,6 +13,7 @@ import {
   bounded,
   historyRecord,
   isHumanMessage,
+  modelsProjection,
   queueItems,
   questionItems,
   sessionSummary,
@@ -99,6 +100,9 @@ export function createBridge(ctx, options = {}) {
   const historyVersions = new Map();
   const interactions = new Map();
   const derived = new WeakSet();
+  /** DSH's archive set, from its workspace controller. */
+  let archived = new Set();
+  let followingArchive = false;
 
   const service = (name) => {
     try {
@@ -235,7 +239,7 @@ export function createBridge(ctx, options = {}) {
     if (typeof controller?.list === "function") {
       try {
         const value = await controller.list({}, lifetime.signal);
-        return (value?.items ?? []).map(sessionSummary).filter(Boolean);
+        return (value?.items ?? []).map((item) => sessionSummary(item, archived)).filter(Boolean);
       } catch {
         // Fall back to the persistence corpus below.
       }
@@ -244,21 +248,70 @@ export function createBridge(ctx, options = {}) {
     const records = (await query?.listSessions?.(lifetime.signal)) ?? [];
     return records
       .map((record) =>
-        sessionSummary({
-          sessionId: record?.header?.id,
-          cwd: record?.header?.cwd,
-          updatedAt: record?.header?.createdAt,
-          agentAvailable: record?.live === true,
-          parentSessionId: record?.header?.parentSession,
-          origin: record?.header?.origin,
-        }),
+        sessionSummary(
+          {
+            sessionId: record?.header?.id,
+            cwd: record?.header?.cwd,
+            updatedAt: record?.header?.createdAt,
+            agentAvailable: record?.live === true,
+            parentSessionId: record?.header?.parentSession,
+            origin: record?.header?.origin,
+          },
+          archived,
+        ),
       )
       .filter(Boolean);
+  }
+  /**
+   * The session's chosen model, read as DSH's own model picker reads it: the next selection of
+   * its `modelSelection` projection, which needs no running agent. The running agent's own
+   * answer is only the fallback for a DSH without projection reads. Null means DSH's default.
+   */
+  async function chosenModel(controller, sessionId) {
+    if (typeof controller.projections === "function") {
+      try {
+        const value = await controller.projections({ sessionId }, lifetime.signal);
+        const selection = value?.values?.modelSelection;
+        if (selection && typeof selection === "object")
+          return selection.next ?? selection.lastUsed ?? null;
+      } catch {
+        // Read from the running agent below.
+      }
+    }
+    try {
+      return service("agents")?.get?.(sessionId)?.model?.current?.() ?? null;
+    } catch {
+      return null;
+    }
+  }
+  function setArchived(ids) {
+    if (!Array.isArray(ids)) return;
+    const next = new Set(ids.filter((id) => typeof id === "string"));
+    if (next.size === archived.size && [...next].every((id) => archived.has(id))) return;
+    archived = next;
+    refreshList();
+  }
+  /** Keeps the archive set current, including archives made in DSH's own window. */
+  async function followArchive() {
+    const workspaces = service("workspaceController");
+    if (followingArchive || typeof workspaces?.follow !== "function") return;
+    followingArchive = true;
+    try {
+      for await (const frame of workspaces.follow(lifetime.signal)) {
+        if (frame?.type === "baseline" || frame?.type === "replace")
+          setArchived(frame.value?.archivedSessionIds);
+        else if (frame?.type === "archived") setArchived(frame.archivedSessionIds);
+      }
+    } catch {
+      // The stream ends with the service or this plugin; the next injection follows again.
+    } finally {
+      followingArchive = false;
+    }
   }
   function refreshList() {
     if (listQueued || lifetime.signal.aborted) return;
     listQueued = true;
-    const wait = Math.max(0, lastList + LIST_THROTTLE_MS - Date.now());
+    const wait = Math.max(0, lastList + (options.listThrottleMs ?? LIST_THROTTLE_MS) - Date.now());
     setTimeout(async () => {
       listQueued = false;
       if (lifetime.signal.aborted) return;
@@ -543,6 +596,56 @@ export function createBridge(ctx, options = {}) {
         });
       case "cancel":
         return needController().cancel({ sessionId: String(command.sessionId) });
+      case "rename": {
+        const value = await needController().rename({
+          sessionId: String(command.sessionId),
+          title: String(command.title),
+        });
+        refreshList();
+        return { title: value?.title ?? null };
+      }
+      case "fork": {
+        const value = await needController().fork({ sessionId: String(command.sessionId) });
+        refreshList();
+        return { sessionId: value?.sessionId ?? null };
+      }
+      case "create": {
+        // DSH creates the session under the ID AgentKib reserved for it.
+        const value = await needController().create({
+          cwd: String(command.cwd),
+          sessionId: String(command.sessionId),
+        });
+        refreshList();
+        return { sessionId: value?.sessionId ?? null };
+      }
+      case "archive": {
+        const workspaces = service("workspaceController");
+        if (typeof workspaces?.archiveSession !== "function")
+          throw new Error("workspace-controller-unavailable");
+        const sessionId = String(command.sessionId);
+        // Never stops a running turn: DSH refuses to archive an active session instead.
+        const value = command.archived
+          ? await workspaces.archiveSession({ sessionId })
+          : await workspaces.unarchiveSession({ sessionId });
+        setArchived(value?.archivedSessionIds);
+        return { archived: archived.has(sessionId) };
+      }
+      case "models": {
+        const controller = needController();
+        if (typeof controller.modelCatalog !== "function")
+          throw new Error("model-catalog-unavailable");
+        const catalog = await controller.modelCatalog();
+        return modelsProjection(catalog, await chosenModel(controller, String(command.sessionId)));
+      }
+      case "selectModel": {
+        const value = await needController().selectModel({
+          sessionId: String(command.sessionId),
+          provider: String(command.provider),
+          model: String(command.model),
+          ...(command.reasoningEffort ? { reasoningEffort: String(command.reasoningEffort) } : {}),
+        });
+        return { selected: value?.selected ?? null };
+      }
       case "answer": {
         const interaction = interactions.get(String(command.interactionId));
         if (!interaction) return { found: false };
@@ -566,6 +669,8 @@ export function createBridge(ctx, options = {}) {
     sessionQuery: typeof service("sessionQuery")?.observeSession === "function",
     approvals: true,
     questions: typeof service("userQuestions")?.ask === "function",
+    workspaceController: typeof service("workspaceController")?.archiveSession === "function",
+    modelCatalog: typeof service("sessionController")?.modelCatalog === "function",
   });
   function report(host) {
     const since = host.acked;
@@ -737,6 +842,12 @@ export function createBridge(ctx, options = {}) {
     refreshList();
     schedule();
   });
+  // The archive set lives in the workspace controller, which can also start after this plugin.
+  ctx.inject?.(["workspaceController"], () => {
+    void followArchive();
+    schedule();
+  });
+  void followArchive();
   void scan();
   const heartbeat = setInterval(() => {
     for (const host of hosts.values())

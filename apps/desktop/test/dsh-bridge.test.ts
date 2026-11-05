@@ -17,11 +17,17 @@ function fakeDsh(cwd: string) {
   const hooks = new Map<string, Listener[]>();
   const sessions = new Map<
     string,
-    { events: any[]; agent: any; title: string | null; updatedAt: number }
+    { events: any[]; agent: any; title: string | null; updatedAt: number; selection?: unknown }
   >();
   const prompts: any[] = [];
   const queueUpdates: any[] = [];
   const cancels: string[] = [];
+  const selections: any[] = [];
+  const archived = new Set<string>();
+  const followers = new Set<(frame: unknown) => void>();
+  const pushArchived = () => {
+    for (const push of followers) push({ type: "archived", archivedSessionIds: [...archived] });
+  };
   const disposers: Array<() => void> = [];
   const nativeAnswers: Array<{
     request: any;
@@ -139,6 +145,105 @@ function fakeDsh(cwd: string) {
         cancels.push(request.sessionId);
         return { accepted: true };
       },
+      async rename(request: any) {
+        const session = sessions.get(request.sessionId)!;
+        session.title = String(request.title).trim();
+        return { title: session.title, seq: session.events.length };
+      },
+      async fork(request: any) {
+        const source = sessions.get(request.sessionId)!;
+        const id = `${request.sessionId}-fork`;
+        create(id, `${source.title} (fork)`);
+        return { sessionId: id };
+      },
+      async create(request: any) {
+        expect(request.cwd).toBe(cwd);
+        // DSH names a new session after the ID it is given.
+        const id = request.sessionId ?? `session-new-${sessions.size}`;
+        create(id, "");
+        return { sessionId: id };
+      },
+      async modelCatalog() {
+        return {
+          default: { provider: "deepseek", model: "deepseek-chat" },
+          routableProviders: ["deepseek", "mock/local"],
+          groups: [
+            {
+              id: "deepseek",
+              name: "DeepSeek",
+              models: [
+                {
+                  id: "deepseek-chat",
+                  name: "DeepSeek Chat",
+                  reasoning: {
+                    efforts: [
+                      { id: "low", name: "Low" },
+                      { id: "high", name: "High" },
+                    ],
+                    defaultEffort: "low",
+                  },
+                },
+              ],
+            },
+            // A provider ID with a slash must survive the picker ID round trip.
+            { id: "mock/local", name: "Mock", models: [{ id: "m-1", name: "Mock One" }] },
+          ],
+          failures: [],
+        };
+      },
+      async selectModel(request: any) {
+        selections.push(request);
+        const { sessionId: _sessionId, ...selected } = request;
+        sessions.get(request.sessionId)!.selection = selected;
+        return { selected };
+      },
+      // The session's chosen model, read the way DSH's own model picker reads it.
+      async projections(request: any) {
+        const session = sessions.get(request.sessionId);
+        if (!session) return null;
+        return {
+          kind: "sequenced",
+          asOfSeq: session.events.length,
+          values: { modelSelection: { lastUsed: null, next: session.selection ?? null } },
+        };
+      },
+    },
+    workspaceController: {
+      async archiveSession(request: any) {
+        archived.add(request.sessionId);
+        pushArchived();
+        return { archivedSessionIds: [...archived] };
+      },
+      async unarchiveSession(request: any) {
+        archived.delete(request.sessionId);
+        pushArchived();
+        return { archivedSessionIds: [...archived] };
+      },
+      async *follow(signal: AbortSignal) {
+        const queue: unknown[] = [
+          {
+            type: "baseline",
+            value: { items: [], archivedSessionIds: [...archived], pinnedSessionIds: [] },
+          },
+        ];
+        let wake: (() => void) | undefined;
+        const push = (frame: unknown) => {
+          queue.push(frame);
+          wake?.();
+        };
+        followers.add(push);
+        try {
+          while (!signal.aborted) {
+            while (queue.length) yield queue.shift();
+            await new Promise<void>((resolve) => {
+              wake = resolve;
+              signal.addEventListener("abort", () => resolve(), { once: true });
+            });
+          }
+        } finally {
+          followers.delete(push);
+        }
+      },
     },
   };
   // DSH's own browser UI answers through a forwarded, non-prepended waterfall listener.
@@ -161,7 +266,7 @@ function fakeDsh(cwd: string) {
       inbox: { nextTurn: [], nextStep: [] },
       session: { id, seq: 0 },
     };
-    sessions.set(id, { events: [], agent, title, updatedAt: Date.now() });
+    sessions.set(id, { events: [], agent, title, updatedAt: Date.now(), selection: undefined });
     emit("agent/created", { agent, source: "startup" });
     return agent;
   };
@@ -182,6 +287,13 @@ function fakeDsh(cwd: string) {
     prompts,
     queueUpdates,
     cancels,
+    selections,
+    archived,
+    /** An archive made in DSH's own window. */
+    archiveInDsh(id: string) {
+      archived.add(id);
+      pushArchived();
+    },
     nativeAnswers,
     create,
     append,
@@ -227,6 +339,7 @@ async function fixture() {
     sessionId: (nativeId) => `ak-${nativeId}`,
     workspaceFor: (cwd) =>
       cwd.startsWith(workspace) ? { id: "workspace", path: workspace } : null,
+    workspacePath: (id) => (id === "workspace" ? workspace : null),
     sessionsChanged: (ids) => changed.push(ids),
     publish,
   });
@@ -238,6 +351,7 @@ async function fixture() {
     dshVersion: "0.2.1-rc.5",
     discoveryMs: 50,
     debounceMs: 10,
+    listThrottleMs: 20,
   });
   cleanups.push(async () => {
     plugin.close();
@@ -543,6 +657,27 @@ describe("DeepSeek Harness bridge", () => {
     });
   });
 
+  it("shows a send still waiting for DSH's reply as busy, not unconfirmed", async () => {
+    const f = await fixture();
+    const controller = f.dsh.ctx.sessionController;
+    const prompt = controller.prompt.bind(controller);
+    let release: (() => void) | undefined;
+    // DSH starts the turn, and reports it, before the prompt call returns.
+    controller.prompt = (request: any) =>
+      new Promise((resolve) => {
+        const started = prompt(request);
+        release = () => resolve(started);
+      });
+    const sending = f.control("send", { text: "slow reply" });
+    await until(() => release !== undefined);
+    const waiting = f.bridge.live("ak-session-a", true);
+    expect(waiting.status).not.toBe("outcome-unknown");
+    expect(waiting.reason).not.toBe("control-outcome-unconfirmed");
+    expect(waiting.sendEnabled).toBe(false);
+    release!();
+    expect(await sending).toMatchObject({ controlOutcome: "accepted" });
+  });
+
   it("keeps a delivered send unknown until DSH's record confirms it", async () => {
     const f = await fixture();
     const original = f.dsh.ctx.sessionController.prompt;
@@ -740,5 +875,246 @@ describe("DeepSeek Harness plugin projections", () => {
         },
       ]),
     ).toEqual([expect.objectContaining({ id: "dsh-tool:x", tool_status: "failed" })]);
+  });
+
+  it("renames, archives and forks through DSH's own services", async () => {
+    const f = await fixture();
+    const features = () =>
+      f.bridge.capabilities("ak-session-a", true).features as Record<
+        string,
+        { available: boolean }
+      >;
+    const row = () =>
+      f.bridge.list(f.workspace).sessions.find((session) => session.native_ref === "session-a");
+    await until(() => features().archive.available);
+    expect(features().rename.available).toBe(true);
+    expect(features().unarchive.available).toBe(false);
+
+    expect(await f.control("rename", { name: "  Renamed in AgentKib " })).toMatchObject({
+      accepted: true,
+      controlOutcome: "accepted",
+    });
+    expect(f.dsh.sessions.get("session-a")!.title).toBe("Renamed in AgentKib");
+    await until(() => row()?.title === "Renamed in AgentKib");
+    expect(await f.control("rename", { name: "   " })).toMatchObject({
+      controlOutcome: "not-dispatched",
+      reason: "invalid-name",
+    });
+
+    expect(await f.control("archive")).toMatchObject({ accepted: true });
+    expect(f.dsh.archived.has("session-a")).toBe(true);
+    await until(() => row()?.archived === true);
+    expect(features().archive.available).toBe(false);
+    expect(features().unarchive.available).toBe(true);
+    expect(await f.control("unarchive")).toMatchObject({ accepted: true });
+    await until(() => row()?.archived === false);
+    // An archive made in DSH's own window reaches AgentKib through the archive follow.
+    f.dsh.archiveInDsh("session-a");
+    await until(() => row()?.archived === true);
+
+    // Clients open the copy from the receipt, so it is already listed when the reply comes.
+    expect(await f.control("fork")).toMatchObject({
+      accepted: true,
+      completed: true,
+      sessionId: "ak-session-a-fork",
+    });
+    expect(f.bridge.handles("ak-session-a-fork")).toBe(true);
+    expect(f.bridge.live("ak-session-a", true).reason).not.toBe("control-outcome-unconfirmed");
+
+    // While a turn runs, renaming and forking still work; archiving waits for the turn to end.
+    await f.control("send", { text: "run the tests" });
+    await until(() => f.bridge.live("ak-session-a", true).status === "running");
+    expect(features().rename.available).toBe(true);
+    expect(features().fork.available).toBe(true);
+    expect(features().unarchive).toEqual({ available: false, reason: "session-busy" });
+    expect(features().settings).toEqual({ available: false, reason: "session-busy" });
+    // The model picker still reads, and says why it cannot change now.
+    expect(
+      (await f.bridge.request({
+        operation: "settings-state",
+        sessionId: "ak-session-a",
+      })) as Record<string, unknown>,
+    ).toMatchObject({
+      available: true,
+      writable: {
+        model: { available: false, reason: "session-busy" },
+        effort: { available: false, reason: "session-busy" },
+      },
+    });
+  });
+
+  it("lists DSH's models and switches the session's model and effort", async () => {
+    const f = await fixture();
+    const settings = () =>
+      f.bridge.request({ operation: "settings-state", sessionId: "ak-session-a" }) as Promise<
+        Record<string, any>
+      >;
+    await until(
+      () =>
+        (f.bridge.capabilities("ak-session-a", true).features as Record<string, any>)[
+          "settings-state"
+        ].available,
+    );
+    const state = await settings();
+    expect(state).toMatchObject({
+      available: true,
+      current: { model: "deepseek/deepseek-chat", effort: null },
+      writable: { model: { available: true }, effort: { available: true } },
+    });
+    // Goals are not offered yet, but reading them answers instead of failing.
+    expect(await f.bridge.request({ operation: "goal", sessionId: "ak-session-a" })).toMatchObject({
+      available: false,
+      reason: "operation-unavailable",
+    });
+    // A provider with a slash keeps an unambiguous picker ID.
+    expect(state.models).toEqual([
+      {
+        id: "deepseek/deepseek-chat",
+        name: "DeepSeek Chat",
+        efforts: ["low", "high"],
+        defaultEffort: "low",
+      },
+      { id: "mock%2Flocal/m-1", name: "Mock One", efforts: [] },
+    ]);
+
+    // An effort change keeps the current model.
+    expect(await f.control("settings", { effort: "high" })).toMatchObject({ accepted: true });
+    expect(f.dsh.selections.at(-1)).toEqual({
+      sessionId: "session-a",
+      provider: "deepseek",
+      model: "deepseek-chat",
+      reasoningEffort: "high",
+    });
+    expect((await settings()).current).toEqual({
+      model: "deepseek/deepseek-chat",
+      effort: "high",
+    });
+    expect(await f.control("settings", { effort: "extreme" })).toMatchObject({
+      controlOutcome: "not-dispatched",
+      reason: "invalid-effort",
+    });
+    // A new model starts at its own default effort.
+    expect(await f.control("settings", { model: "mock%2Flocal/m-1" })).toMatchObject({
+      accepted: true,
+    });
+    expect(f.dsh.selections.at(-1)).toEqual({
+      sessionId: "session-a",
+      provider: "mock/local",
+      model: "m-1",
+    });
+    // Read back from DSH's own selection, as its model picker shows it.
+    expect((await settings()).current).toEqual({ model: "mock%2Flocal/m-1", effort: null });
+    expect(await f.control("settings", { model: "nobody/none" })).toMatchObject({
+      controlOutcome: "not-dispatched",
+      reason: "invalid-model",
+    });
+    // Restoring defaults selects DSH's default model at its default effort.
+    await settings();
+    expect(await f.control("settings", { resetDefaults: true })).toMatchObject({
+      accepted: true,
+    });
+    expect(f.dsh.selections.at(-1)).toEqual({
+      sessionId: "session-a",
+      provider: "deepseek",
+      model: "deepseek-chat",
+    });
+  });
+
+  it("starts a new DSH session in a registered workspace, once per request", async () => {
+    const f = await fixture();
+    expect(f.bridge.createOptions()).toEqual({ available: true });
+    const request = {
+      operation: "create",
+      requestId: randomUUID(),
+      deviceId: "device-1",
+      workspaceId: "workspace",
+    };
+    const created = await f.bridge.create(request);
+    expect(created).toMatchObject({
+      accepted: true,
+      completed: true,
+      controlOutcome: "accepted",
+      sessionId: expect.stringMatching(/^ak-session-[0-9a-f-]{36}$/),
+    });
+    const sessionId = String(created.sessionId);
+    // The client opens it from the reply, so it is already listed and not left unconfirmed.
+    expect(f.bridge.handles(sessionId)).toBe(true);
+    expect(f.bridge.live(sessionId, true).reason).not.toBe("control-outcome-unconfirmed");
+    // The receipt names the new session, so a client that lost the reply can still open it.
+    expect(
+      readControlReceipt(f.bridge.options.dataDir, {
+        requestId: request.requestId,
+        deviceId: "device-1",
+      }),
+    ).toMatchObject({ operation: "create", status: "accepted", sessionId });
+    // The same request returns its stored outcome instead of starting another session.
+    expect(await f.bridge.create(request)).toMatchObject({ sessionId });
+    expect(f.dsh.sessions.size).toBe(2);
+    expect(
+      await f.bridge.create({ ...request, requestId: randomUUID(), workspaceId: "elsewhere" }),
+    ).toMatchObject({ controlOutcome: "not-dispatched", reason: "workspace-unavailable" });
+    // With a second DSH running, AgentKib cannot tell which one the person means.
+    const second = createBridge(f.dsh.ctx, {
+      roots: [f.agentkibHome],
+      dshVersion: "0.2.1-rc.5",
+      discoveryMs: 50,
+      debounceMs: 10,
+    });
+    cleanups.push(() => second.close());
+    await until(() => f.bridge.createOptions().available === false);
+    expect(f.bridge.createOptions()).toEqual({
+      available: false,
+      reason: "dsh-create-ambiguous",
+    });
+    expect(await f.bridge.create({ ...request, requestId: randomUUID() })).toMatchObject({
+      controlOutcome: "not-dispatched",
+      reason: "dsh-create-ambiguous",
+    });
+    expect(f.dsh.sessions.size).toBe(2);
+  });
+
+  it("settles a create whose reply was lost once its session is listed", async () => {
+    const f = await fixture();
+    const controller = f.dsh.ctx.sessionController;
+    const original = controller.create.bind(controller);
+    // DSH makes the session, but the reply never comes back.
+    controller.create = (request: any) => {
+      void original(request);
+      return new Promise(() => undefined);
+    };
+    const request = { requestId: randomUUID(), deviceId: "device-1", workspaceId: "workspace" };
+    expect(await f.bridge.create(request)).toMatchObject({ controlOutcome: "unknown" });
+    // Read from the ledger alone, so only the bridge's own reconciliation can settle it.
+    const stored = () =>
+      readControlReceipt(f.bridge.options.dataDir, {
+        requestId: request.requestId,
+        deviceId: "device-1",
+      });
+    const sessionId = String(stored().sessionId);
+    await until(() => f.bridge.handles(sessionId));
+    await until(() => stored().status === "accepted");
+    expect(f.dsh.sessions.has(String(f.bridge.nativeId(sessionId)))).toBe(true);
+    // The new session is not left waiting on the create that made it, and nothing was resent.
+    expect(f.bridge.live(sessionId, true).reason).not.toBe("control-outcome-unconfirmed");
+    expect(f.dsh.sessions.size).toBe(2);
+  });
+
+  it("settles a lost create DSH never made once DSH has listed its sessions since", async () => {
+    const f = await fixture();
+    f.dsh.ctx.sessionController.create = () => new Promise(() => undefined);
+    const request = { requestId: randomUUID(), deviceId: "device-1", workspaceId: "workspace" };
+    expect(await f.bridge.create(request)).toMatchObject({ controlOutcome: "unknown" });
+    const receipt = () =>
+      f.bridge.receipt(
+        readControlReceipt(f.bridge.options.dataDir, {
+          requestId: request.requestId,
+          deviceId: "device-1",
+        }),
+      ) as Record<string, unknown>;
+    // Overdue, but DSH has not told AgentKib its sessions since: it may still be listed.
+    expect(receipt()).toMatchObject({ status: "unknown" });
+    f.dsh.create("session-b", "Another DSH session");
+    await until(() => receipt().status === "not-dispatched");
+    expect(receipt().ack).toMatchObject({ reason: "dsh-session-not-created" });
   });
 });

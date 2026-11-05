@@ -131,8 +131,11 @@ const titleOf = (projections) => {
   return null;
 };
 
-/** One row of `sessionController.list`, reduced to what the AgentKib catalog stores. */
-export function sessionSummary(item) {
+/**
+ * One row of `sessionController.list`, reduced to what the AgentKib catalog stores. `archived`
+ * is DSH's archive set, which lives in its workspace controller, not in the session list.
+ */
+export function sessionSummary(item, archived) {
   if (!item || typeof item.sessionId !== "string" || typeof item.cwd !== "string") return null;
   return {
     sessionId: item.sessionId,
@@ -144,7 +147,50 @@ export function sessionSummary(item) {
     blank: item.blank === true,
     parentSessionId: typeof item.parentSessionId === "string" ? item.parentSessionId : null,
     origin: item.origin === "subagent" ? "subagent" : null,
+    archived: archived?.has(item.sessionId) === true,
   };
+}
+
+const ID_LIMIT = 128;
+const shortId = (value) =>
+  typeof value === "string" && value.length > 0 && value.length <= ID_LIMIT ? value : null;
+function modelSelection(value) {
+  const provider = shortId(value?.provider);
+  const model = shortId(value?.model);
+  if (!provider || !model) return null;
+  return { provider, model, reasoningEffort: shortId(value.reasoningEffort) };
+}
+
+/**
+ * DSH's model catalog flattened for AgentKib's model picker. An identifier too long to pass back
+ * to `selectModel` unchanged is left out rather than shortened. `selected` is the session's model.
+ */
+export function modelsProjection(catalog, selected) {
+  const models = [];
+  for (const group of Array.isArray(catalog?.groups) ? catalog.groups.slice(0, 32) : []) {
+    const provider = shortId(group?.id);
+    if (!provider) continue;
+    for (const model of Array.isArray(group.models) ? group.models.slice(0, 64) : []) {
+      const id = shortId(model?.id);
+      if (!id || models.length >= 64) continue;
+      const efforts = Array.isArray(model.reasoning?.efforts) ? model.reasoning.efforts : [];
+      models.push({
+        provider,
+        providerName: bounded(String(group.name ?? provider), 128).text,
+        model: id,
+        name: bounded(String(model.name ?? id), 256).text,
+        efforts: efforts
+          .slice(0, 16)
+          .filter((effort) => shortId(effort?.id))
+          .map((effort) => ({
+            id: effort.id,
+            name: bounded(String(effort.name ?? effort.id), 128).text,
+          })),
+        defaultEffort: shortId(model.reasoning?.defaultEffort),
+      });
+    }
+  }
+  return { models, default: modelSelection(catalog?.default), selected: modelSelection(selected) };
 }
 
 /** A pending native question, bounded for display. Option labels are answer values. */

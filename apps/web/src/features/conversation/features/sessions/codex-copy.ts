@@ -489,6 +489,8 @@ const reasons: Record<Locale, Record<string, string>> = {
       "DeepSeek Harness 没有运行，或它的配置里没有装 AgentKib 插件。打开 DeepSeek Harness 后可以继续。",
     "dsh-runtime-ambiguous":
       "有多个 DeepSeek Harness 在运行。请先在其中一个打开这条会话，再从这里继续。",
+    "dsh-create-ambiguous":
+      "有多个 DeepSeek Harness 在运行，无法确定用哪一个。请直接在要用的那个里新建会话，它会出现在这里。",
     "dsh-session-controller-unavailable": "这个 DeepSeek Harness 配置只能查看，不能从这里发送。",
     "dsh-handle-in-native-ui": "这项请求请在 DeepSeek Harness 中处理。",
     "interaction-answered-elsewhere": "这项请求已经在 DeepSeek Harness 中处理过了。",
@@ -593,6 +595,8 @@ const reasons: Record<Locale, Record<string, string>> = {
       "DeepSeek Harness 沒有執行，或它的設定裡沒有安裝 AgentKib 外掛。開啟 DeepSeek Harness 後即可繼續。",
     "dsh-runtime-ambiguous":
       "有多個 DeepSeek Harness 正在執行。請先在其中一個開啟這個對話，再從這裡繼續。",
+    "dsh-create-ambiguous":
+      "有多個 DeepSeek Harness 正在執行，無法確定要用哪一個。請直接在要用的那個裡新建對話，它會出現在這裡。",
     "dsh-session-controller-unavailable": "這個 DeepSeek Harness 設定只能檢視，不能從這裡傳送。",
     "dsh-handle-in-native-ui": "這項請求請在 DeepSeek Harness 中處理。",
     "interaction-answered-elsewhere": "這項請求已經在 DeepSeek Harness 中處理過了。",
@@ -702,6 +706,8 @@ const reasons: Record<Locale, Record<string, string>> = {
       "DeepSeek Harness is not running, or the AgentKib plugin is not installed in its profile. Open DeepSeek Harness to continue.",
     "dsh-runtime-ambiguous":
       "More than one DeepSeek Harness is running. Open this session in one of them first, then continue here.",
+    "dsh-create-ambiguous":
+      "More than one DeepSeek Harness is running, so AgentKib cannot tell which to use. Start the session in the one you want; it will show up here.",
     "dsh-session-controller-unavailable":
       "This DeepSeek Harness profile can be viewed but cannot take messages from here.",
     "dsh-handle-in-native-ui": "Handle this request in DeepSeek Harness.",
@@ -819,6 +825,8 @@ const reasons: Record<Locale, Record<string, string>> = {
       "DeepSeek Harness が起動していないか、そのプロファイルに AgentKib プラグインがありません。DeepSeek Harness を開くと続行できます。",
     "dsh-runtime-ambiguous":
       "複数の DeepSeek Harness が起動しています。先にどれか一つでこのセッションを開いてから、ここで続けてください。",
+    "dsh-create-ambiguous":
+      "複数の DeepSeek Harness が起動しているため、どれを使うか判断できません。使いたい DeepSeek Harness で直接セッションを作成すると、ここに表示されます。",
     "dsh-session-controller-unavailable":
       "この DeepSeek Harness プロファイルは表示のみで、ここからは送信できません。",
     "dsh-handle-in-native-ui": "このリクエストは DeepSeek Harness で対応してください。",

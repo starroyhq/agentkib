@@ -18,6 +18,7 @@ vi.mock("./codex-tools", () => ({
   CodexTools: ({ open, shortcuts }: { open: boolean; shortcuts: ReactNode }) =>
     open ? <section>{shortcuts}</section> : null,
 }));
+vi.mock("./dsh-bridge-panel", () => ({ DshBridgePanel: () => <p>DSH plugin panel</p> }));
 vi.mock("./claude-bridge-panel", () => ({
   ClaudeBridgePanel: ({ onClose }: { onClose?: () => void }) => (
     <section role="dialog" aria-label={claudeConnectionCopy[session.locale].title}>
@@ -123,5 +124,18 @@ describe("Claude terminal setup entry", () => {
     expect(screen.queryByRole("button", { name: "连接终端…" })).not.toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: "Open terminal directly" }));
     expect(screen.queryByText("Terminal wizard")).not.toBeInTheDocument();
+  });
+});
+
+describe("DeepSeek Harness session actions entry", () => {
+  it("opens the full actions with the plugin panel for a device that manages", () => {
+    session.current = { ...session.current!, agent: "deepseek-harness" };
+    const view = render(<View />);
+    // The full actions come from CodexTools (mocked here as its header).
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+    expect(screen.getByText("DSH plugin panel")).toBeInTheDocument();
+    session.access!.device!.manage = false;
+    view.rerender(<View revision={1} />);
+    expect(screen.queryByText("DSH plugin panel")).not.toBeInTheDocument();
   });
 });

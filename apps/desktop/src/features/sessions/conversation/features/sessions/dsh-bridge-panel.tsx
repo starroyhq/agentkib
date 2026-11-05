@@ -112,7 +112,14 @@ export function DshBridgePanel() {
         .claude.request({ operation: "dsh-bridge-status" })
         .then(
           (value) => current && setStatus(value as DshBridgeStatus),
-          () => current && setStatus({ reason: "dsh-bridge-unavailable" }),
+          (error: unknown) => {
+            if (!current) return;
+            // The host turns reads away while a control runs; that says nothing about the bridge,
+            // so the last status stays until the next read.
+            if (String(error).includes("operation_busy"))
+              setStatus((previous) => previous ?? { reason: "dsh-bridge-unavailable" });
+            else setStatus({ reason: "dsh-bridge-unavailable" });
+          },
         );
     read();
     const timer = setInterval(read, 5000);

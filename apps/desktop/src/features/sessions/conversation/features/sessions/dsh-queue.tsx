@@ -11,6 +11,7 @@ import {
 } from "@/components/ui/dropdown-menu";
 import { useSession } from "./session-context";
 import { subscribeSessionInvalidation } from "./session-events";
+import { retryBusyRead } from "./session-read-retry";
 import { codexCopy, codexReason } from "./codex-copy";
 
 type QueueAction = "queue-update" | "queue-delete" | "queue-steer";
@@ -41,11 +42,14 @@ export function DshQueue() {
   const readable =
     capabilities?.sessionId === selected && capabilities.features["queue-list"]?.available === true;
   // The live state changes with every streamed chunk; the queue is read again only when the
-  // host says it changed.
+  // host says it changed. DSH reports a queued message before the host has finished the
+  // control that queued it, and the host turns reads away until then, so a settled control
+  // ("receipts") is a reason to read again too.
   useEffect(
     () =>
       subscribeSessionInvalidation(client, (id, domains) => {
-        if ((!id || id === selected) && domains.includes("queue")) setReload((n) => n + 1);
+        if ((!id || id === selected) && (domains.includes("queue") || domains.includes("receipts")))
+          setReload((n) => n + 1);
       }),
     [client, selected],
   );
@@ -53,7 +57,10 @@ export function DshQueue() {
   useEffect(() => {
     if (!readable) return;
     const abort = new AbortController();
-    client.sessionQueue(selected, "deepseek-harness", abort.signal).then(
+    retryBusyRead(
+      () => client.sessionQueue(selected, "deepseek-harness", abort.signal),
+      abort.signal,
+    ).then(
       (value) => {
         if (abort.signal.aborted) return;
         setQueue(value);

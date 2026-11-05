@@ -26,6 +26,10 @@ export interface DshBridgeServices {
   sessionQuery: boolean;
   approvals: boolean;
   questions: boolean;
+  /** Archive and unarchive. Plugins older than 0.2.0 do not report it. */
+  workspaceController?: boolean;
+  /** Model catalog and per-session model selection. Plugins older than 0.2.0 do not report it. */
+  modelCatalog?: boolean;
 }
 
 /** One row of DSH's own session list. */
@@ -39,6 +43,26 @@ export interface DshBridgeSessionSummary {
   blank: boolean;
   parentSessionId: string | null;
   origin: "subagent" | null;
+  /** In DSH's archive set. Plugins older than 0.2.0 do not report it. */
+  archived?: boolean;
+}
+
+/** One model DSH can run, as `provider` and `model` for `selectModel`. */
+export interface DshBridgeModel {
+  provider: string;
+  providerName: string;
+  model: string;
+  name: string;
+  efforts: { id: string; name: string }[];
+  defaultEffort: string | null;
+}
+
+/** DSH's model catalog and what the session currently runs. */
+export interface DshBridgeModels {
+  models: DshBridgeModel[];
+  default: { provider: string; model: string; reasoningEffort: string | null } | null;
+  /** The session's selection when the plugin can read it; null otherwise. */
+  selected: { provider: string; model: string; reasoningEffort: string | null } | null;
 }
 
 export interface DshBridgeQueueItem {
@@ -134,6 +158,19 @@ export type DshBridgeCommand = { commandId: string } & (
       action: { kind: "remove" } | { kind: "steer" } | { kind: "edit"; text: string };
     }
   | { type: "cancel"; sessionId: string }
+  | { type: "rename"; sessionId: string; title: string }
+  | { type: "archive"; sessionId: string; archived: boolean }
+  | { type: "fork"; sessionId: string }
+  /** `sessionId` is the new session's ID, chosen by AgentKib so a lost reply can be settled. */
+  | { type: "create"; cwd: string; sessionId: string }
+  | { type: "models"; sessionId: string }
+  | {
+      type: "selectModel";
+      sessionId: string;
+      provider: string;
+      model: string;
+      reasoningEffort?: string;
+    }
   | {
       type: "answer";
       interactionId: string;

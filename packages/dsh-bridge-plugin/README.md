@@ -1,7 +1,7 @@
 # AgentKib DeepSeek Harness bridge
 
 First-party DeepSeek Harness (DSH) bundle for DSH **0.2.1-rc.5 or later** (`engines.dsh`
-`>=0.2.1-rc.5 <0.3.0`), bridge protocol **1**, plugin **0.1.0**. It connects the sessions of a
+`>=0.2.1-rc.5 <0.3.0`), bridge protocol **1**, plugin **0.2.0**. It connects the sessions of a
 running DSH to AgentKib on the same computer. It never starts a second executor, never writes
 the session log itself and never calls a model: every action goes through DSH's own services.
 
@@ -34,7 +34,10 @@ with every Runtime it finds, and then:
 - serves bounded history pages from `sessionQuery.observeSession`;
 - runs commands from AgentKib through `sessionController`: `prompt` (queue or steer, with
   AgentKib's request ID as DSH's `requestId`, so DSH keeps it on the message and never takes
-  the same request twice), `updateQueue` and `cancel` (which keeps the queue);
+  the same request twice), `updateQueue` and `cancel` (which keeps the queue), `rename`, `fork`,
+  `create`, `modelCatalog` and `selectModel`;
+- archives and unarchives through the workspace controller, and follows its archive set so
+  archives made in DSH's own window reach AgentKib too;
 - answers verification requests from that record when a result was lost.
 
 Only human prompts, assistant text and tool summaries leave DSH. Injected context, hidden

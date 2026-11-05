@@ -49,11 +49,15 @@ export function CodexTools({
   const copy = codexCopyForSurface(locale, "web");
   const agentCopy = sessionAgentCopy[locale];
   const isClaude = current?.agent === "claude-code";
+  // DeepSeek Harness takes management actions here; its model is set from the composer and its
+  // waiting messages sit in the strip above it, so neither is repeated in this panel.
+  const isDsh = current?.agent === "deepseek-harness";
   const queueReadable =
-    !isClaude ||
-    ["queue-list", "queue-add", "queue-resume", "queue-pause"].some(
-      (key) => capabilities?.features[key as SessionAction | "queue-list"]?.available,
-    );
+    !isDsh &&
+    (!isClaude ||
+      ["queue-list", "queue-add", "queue-resume", "queue-pause"].some(
+        (key) => capabilities?.features[key as SessionAction | "queue-list"]?.available,
+      ));
   const navigate = useSessionNavigate();
   const [context, setContext] = useState<unknown>();
   const [localOpen, setLocalOpen] = useState(false);
@@ -132,7 +136,7 @@ export function CodexTools({
       }
     };
     void load();
-    if (!isClaude)
+    if (!isClaude && !isDsh)
       void client
         .request<CodexOptions>("managed/options", undefined, abort.signal)
         .then((value) => {
@@ -162,9 +166,10 @@ export function CodexTools({
     copy.queueTooLarge,
     copy.unavailableQueue,
     isClaude,
+    isDsh,
     queueReadable,
   ]);
-  if (current?.agent !== "codex" && !isClaude) return null;
+  if (current?.agent !== "codex" && !isClaude && !isDsh) return null;
   function enabled(action: SessionAction) {
     return !!(
       access?.experimentalEnabled &&
@@ -287,7 +292,7 @@ export function CodexTools({
               <Button
                 variant="outline"
                 disabled={!enabled("rename") || !name.trim()}
-                title={reason("rename")}
+                title={enabled("rename") ? undefined : reason("rename")}
                 onClick={() => void run("rename", { name: name.trim() })}
               >
                 {copy.rename}
@@ -354,7 +359,7 @@ export function CodexTools({
             )}
           </section>
           {isClaude && ownership}
-          {!isClaude && access?.device?.accessMode !== "full" && (
+          {!isClaude && !isDsh && access?.device?.accessMode !== "full" && (
             <section className="space-y-3 border-t pt-3">
               <h3>{copy.settings}</h3>
               <label className="block text-sm">

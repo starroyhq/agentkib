@@ -124,6 +124,7 @@ const DSH_BRIDGE_OPERATIONS = new Set<string>([
   "capabilities",
   "inspect",
   "usage",
+  "goal",
   "context",
   "queue-list",
   "reconcile",
@@ -136,6 +137,12 @@ const DSH_BRIDGE_OPERATIONS = new Set<string>([
   "stop",
   "approve",
   "answer",
+  "settings-state",
+  "settings",
+  "rename",
+  "archive",
+  "unarchive",
+  "fork",
 ]);
 const HANDOFF_TASK_METHODS = new Set<string>([
   RUNTIME_METHODS.prepareSessionHandoff,
@@ -534,6 +541,13 @@ export class TypeScriptBackend {
           discoveryFile: path.join(agentkibHome, "dsh-bridge", "discovery-v1.json"),
           sessionId: (nativeId) => store.sessions.id("deepseek-harness", nativeId),
           workspaceFor: registeredWorkspace,
+          workspacePath: (workspaceId) => {
+            try {
+              return store.workspacePath(workspaceId);
+            } catch {
+              return null;
+            }
+          },
           sessionsChanged: (workspaceIds) => {
             // Write only the DSH listing; a full refresh would rescan every other source too.
             if (this.#store !== store || readPreferences(dataDir).session_index_enabled === false)
@@ -922,6 +936,15 @@ export class TypeScriptBackend {
           this.#claudeManaged!.hasManagedSession(params.sessionId)
           ? { cwd: null }
           : this.#withWebRead((owner) => owner.request(params));
+      // A new DSH session has no session ID yet; the bridge starts it in the running DSH.
+      if (params.operation === "dsh-create") {
+        if (!this.#dshBridge) throw new Error("session-unavailable");
+        return this.#dshBridge.create(params);
+      }
+      if (params.operation === "dsh-options")
+        return (
+          this.#dshBridge?.createOptions() ?? { available: false, reason: "platform-unsupported" }
+        );
       // Resolve the provider from persisted identity, never from a browser-supplied agent.
       // Fresh Claude sessions are not indexed until their first native transcript exists.
       if (typeof params.sessionId === "string" && params.operation !== "catalog") {

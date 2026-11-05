@@ -3,6 +3,7 @@ import "@testing-library/jest-dom/vitest";
 import { cleanup, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { ApiError } from "@agentkib/web-client";
 import { DshQueue } from "./dsh-queue";
 import { useSession } from "./session-context";
 import { publishSessionInvalidation } from "./session-events";
@@ -87,6 +88,27 @@ describe("DSH queued messages above the composer", () => {
     expect(state.client.sessionQueue).toHaveBeenCalledTimes(1);
     publishSessionInvalidation(state.client, "session", ["queue"]);
     await vi.waitFor(() => expect(state.client.sessionQueue).toHaveBeenCalledTimes(2));
+  });
+
+  it("shows a message queued while the host still turned reads away", async () => {
+    state = session({ "queue-list": available }, []);
+    const { container } = render(<DshQueue />);
+    await vi.waitFor(() => expect(state.client.sessionQueue).toHaveBeenCalledTimes(1));
+    expect(container).toBeEmptyDOMElement();
+    // DSH reports the new message while the control that queued it is still being admitted.
+    const read = vi.mocked(state.client.sessionQueue);
+    read.mockRejectedValueOnce(new ApiError(409, "operation_busy"));
+    read.mockResolvedValue({
+      sessionId: "session",
+      data: [{ id: "item-1", status: "pending", text: "run the tests next" }],
+    } as never);
+    publishSessionInvalidation(state.client, "session", ["queue"]);
+    expect(await screen.findByRole("list", { name: "Queued messages" })).toHaveTextContent(
+      "run the tests next",
+    );
+    // A settled control on this session is read again as well.
+    publishSessionInvalidation(state.client, "session", ["receipts"]);
+    await vi.waitFor(() => expect(read).toHaveBeenCalledTimes(4));
   });
 
   it("takes no room when nothing waits or the queue cannot be read here", async () => {

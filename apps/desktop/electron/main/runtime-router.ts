@@ -270,6 +270,8 @@ export class RuntimeRouter extends EventEmitter implements RuntimeHost {
         "fork",
         "compact",
         "terminals-clean",
+        "dsh-create",
+        "dsh-options",
       ].includes(String(params.operation))
     ) {
       return this.typescript.request<TResult>(method, params);

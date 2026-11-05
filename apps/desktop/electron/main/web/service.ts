@@ -3236,11 +3236,23 @@ export class WebAccessService {
         ["steer", "queue-add", "queue-delete"].includes(operation);
       const claude = generic && capabilities.executionMode === "claude-managed";
       const followerFork = capabilities.executionMode === "codex-follower" && operation === "fork";
-      // A connected DeepSeek Harness takes steering and queued messages through its own inbox.
+      // A connected DeepSeek Harness takes steering and queued messages through its own inbox, and
+      // renames, archives, forks and switches models through its own session services.
       const dsh =
         generic &&
         capabilities.executionMode === "dsh-follower" &&
-        ["steer", "queue-add", "queue-update", "queue-delete", "queue-steer"].includes(operation);
+        [
+          "steer",
+          "queue-add",
+          "queue-update",
+          "queue-delete",
+          "queue-steer",
+          "rename",
+          "archive",
+          "unarchive",
+          "fork",
+          "settings",
+        ].includes(operation);
       if (
         (capabilities.executionMode !== "codex-managed" &&
           !claude &&
@@ -3995,13 +4007,27 @@ export class WebAccessService {
   ) {
     this.grant(hash, "manage");
     const agent = body.agent ?? "codex";
-    if (agent !== "codex" && agent !== "claude-code") throw new HttpError(400, "invalid_agent");
+    if (agent !== "codex" && agent !== "claude-code" && agent !== "deepseek-harness")
+      throw new HttpError(400, "invalid_agent");
+    // DeepSeek Harness only starts sessions here; its sessions are controlled through actions.
+    if (agent === "deepseek-harness" && operation !== "create")
+      throw new HttpError(404, "not_found");
     const requestId = this.field(body.requestId, 128);
     if (agent === "claude-code")
       await this.controlReceipt(requestId, this.grant(hash, "manage").id, control);
     const managedRequest =
-      agent === "claude-code" ? this.options.claudeManagedRequest : this.options.managedRequest;
+      agent === "claude-code"
+        ? this.options.claudeManagedRequest
+        : agent === "deepseek-harness"
+          ? (value: unknown) =>
+              this.options.runtimeRequest({
+                ...(value as Record<string, unknown>),
+                operation: "dsh-create",
+              })
+          : this.options.managedRequest;
     if (agent === "claude-code" && !this.options.verifiedClaudeManaged)
+      throw new HttpError(409, "unsupported_host");
+    if (agent === "deepseek-harness" && this.options.verifiedDshFollower !== true)
       throw new HttpError(409, "unsupported_host");
     if (
       this.options.acceptanceSessionId &&
@@ -4141,6 +4167,9 @@ export class WebAccessService {
           "codex-sandbox-mismatch",
           "codex-writable-roots-mismatch",
           "remote-environment-not-supported",
+          "dsh-runtime-offline",
+          "dsh-create-ambiguous",
+          "workspace-unavailable",
         ]);
         throw new HttpError(
           409,
@@ -5664,12 +5693,19 @@ export class WebAccessService {
       const permission = this.grant(hash).manage === true ? "manage" : "settings";
       this.grant(hash, permission);
       const agent = url.searchParams.get("agent") ?? "codex";
-      if (agent !== "codex" && agent !== "claude-code") throw new HttpError(400, "invalid_agent");
+      if (agent !== "codex" && agent !== "claude-code" && agent !== "deepseek-harness")
+        throw new HttpError(400, "invalid_agent");
       const managedRequest =
         agent === "claude-code" ? this.options.claudeManagedRequest : this.options.managedRequest;
-      const options = managedRequest
-        ? await managedRequest({ operation: "options" })
-        : { available: false, reason: "unsupported_host" };
+      // A new DeepSeek Harness session needs exactly one running DSH with the plugin.
+      const options =
+        agent === "deepseek-harness"
+          ? this.options.verifiedDshFollower === true
+            ? await this.runtime({ operation: "dsh-options" })
+            : { available: false, reason: "unsupported_host" }
+          : managedRequest
+            ? await managedRequest({ operation: "options" })
+            : { available: false, reason: "unsupported_host" };
       const device = this.grant(hash, permission);
       const workspaces = device.manage === true ? await this.registeredWorkspaces() : [];
       this.grant(hash, permission);

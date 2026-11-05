@@ -65,7 +65,11 @@ export function SessionOperations({
       )}
     </div>
   );
-  if (current?.agent !== "codex" && current?.agent !== "claude-code")
+  if (
+    current?.agent !== "codex" &&
+    current?.agent !== "claude-code" &&
+    current?.agent !== "deepseek-harness"
+  )
     return open ? (
       <Dialog
         panel
@@ -74,9 +78,18 @@ export function SessionOperations({
         onClose={() => onOpenChange(false)}
       >
         {shortcuts}
-        {current?.agent === "deepseek-harness" && !!access?.device?.manage && <DshBridgePanel />}
       </Dialog>
     ) : null;
+  // How this computer's DeepSeek Harness connects, above the session's own actions.
+  const header =
+    current?.agent === "deepseek-harness" && !!access?.device?.manage ? (
+      <>
+        {shortcuts}
+        <DshBridgePanel />
+      </>
+    ) : (
+      shortcuts
+    );
   // Old request identities still need settlement after the execution controls disappear.
   return (
     <>
@@ -88,7 +101,7 @@ export function SessionOperations({
             open={open}
             onOpenChange={onOpenChange}
             showTrigger={false}
-            shortcuts={shortcuts}
+            shortcuts={header}
             ownership={pendingOutcome}
           />
         )}

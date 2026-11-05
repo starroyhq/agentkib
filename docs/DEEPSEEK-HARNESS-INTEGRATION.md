@@ -302,6 +302,34 @@ DSH 的审批和问答经 `approval/request`、`user-questions/request` waterfal
 
 按 §4.3 补齐附件、模型与推理强度、Agent preset 与权限 preset、重命名、分叉、归档与置顶、目标、新建会话、子代理浏览与控制，以及压缩、斜杠命令和审批策略切换；每项单独进入能力表并验收。补齐统一 SessionDocument、正文搜索和 handoff 来源／目标适配。
 
+接口核对（2026-11-05，DSH 源码 `8bd0733`，0.2.2-alpha.3；安装版 0.2.1-rc.5 开工时逐项复核）：
+
+| 能力           | DSH 入口与参数                                                                                                 | 要点                                                                           |
+| -------------- | -------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------ |
+| 重命名         | `sessionController.rename({ sessionId, title })` → `{ title, seq }`                                            | 返回规范化后的标题                                                             |
+| 分叉           | `sessionController.fork({ sessionId, atSeq?, allowMigration? })` → `{ sessionId }`                             | 省略 `atSeq` 取最近一个完整轮次；需要迁移的会话报 `session/migration-required` |
+| 新建会话       | `sessionController.create({ workspaceId? \| cwd?, sessionId?, agentPreset? })` → `{ sessionId, agentPreset? }` | `workspaceId` 与 `cwd` 二选一                                                  |
+| 归档           | `workspaceController.archiveSession({ sessionId, … })`、`unarchiveSession` → 归档集合                          | 运行中默认拒绝（`workspace/session-active`），可选先停止                       |
+| 置顶           | `workspaceController.pinSession`、`unpinSession`                                                               | AgentKib 目前没有置顶概念，暂不接                                              |
+| 模型与推理强度 | `sessionController.modelCatalog()`；`selectModel({ sessionId, provider, model, reasoningEffort? })`            | 目录按 provider 分组，每个模型带可选的推理强度；选择会恢复会话并在后台保存默认 |
+| 图片附件       | `prompt` 的 `content` 支持 `{ type: 'image', mediaType, data(base64), name? }`                                 | `sessionController.attachment()` 只读取已保存的图片，不用于上传                |
+| 文件附件       | `prompt` 的 `{ type: 'file', receiptId }`                                                                      | 收据来自 `client/file-upload`，开工前核对上传入口                              |
+| 正文搜索       | `sessionController.search({ query })` → 至多 20 条，摘要不超过 240 个码点                                      |                                                                                |
+
+插件对 `workspaceController` 与 `sessionController` 一样按需注入，缺少时对应能力保持关闭。拆分为：2a 重命名、归档、分叉、新建会话与模型设置；2b 图片附件；2c 目标、子代理、压缩、斜杠命令与审批策略；2d SessionDocument、搜索与交接。
+
+2a 实现（2026-11-05，未提交）：
+
+- 插件升到 0.2.0。Host 只接受同版本插件，所以 AgentKib 升级后要重启一次 DSH，插件才会重新连上；以链接方式安装的插件随 AgentKib 一起更新，不必重装。
+- 重命名、分叉、归档与取消归档、模型与推理强度都按能力开放：重命名和分叉要求可控；归档、取消归档与改模型还要求空闲（DSH 拒绝归档运行中的会话，AgentKib 不替用户停止），运行中这几项的原因是 `session-busy`，客户端提示等本轮结束。插件跟随 workspace 流维护归档集合，DSH 自己窗口里的归档也会同步到 AgentKib。
+- 目标暂不提供，但读取会返回“不可用”，打开目标面板的客户端不会报错。
+- 模型按 provider 与 model 组成一个选择器 ID（两段各自 URI 编码）。只改强度时沿用当前模型，换模型时回到该模型的默认强度；“恢复默认”选 DSH 的默认模型。
+- 当前模型从会话的 `modelSelection` 投影读取（`sessionController.projections`，取 `next`），与 DSH 自己的模型选择器一致，不需要会话正在运行；运行中 agent 的 `model.current()` 只作后备。0.2.1-rc.5 上用 agent 读取会一直得到默认模型。
+- 分叉的回执带上新会话 ID，客户端照 Codex 分叉的方式打开它。DSH 先回复、下一次上报才列出新会话，所以分叉和新建在回复客户端前最多等三秒，让新会话先出现在列表里。
+- 新建会话要求恰好一个运行中的 DSH，在 AgentKib 工作区的根目录发起；有多个 DSH 时原因为 `dsh-create-ambiguous`，提示直接在要用的那个 DSH 里新建（不同于已有会话的 `dsh-runtime-ambiguous`）。新会话的 ID 由 AgentKib 预先生成并交给 DSH（`session.create` 的 `sessionId`），回执因此直接指向新会话。
+- 结果未知的核对：重命名比对标题，归档比对归档状态，改模型重新读取模型目录比对；新建以预留 ID 的会话出现在列表为已创建，超过两分钟且 DSH 此后重新上报过会话列表仍没有它，判为未创建。分叉在原会话上没有证据，超过两分钟判为未执行（若实际已分叉，副本仍会出现在列表中）。都不自动重发。
+- 置顶暂不接，AgentKib 目前没有置顶概念。
+
 ### 三期：DSH 未运行时由 AgentKib 启动
 
 没有可控制的 runtime 时，AgentKib 以用户的 web profile 启动 DSH（§4.2），插件注册后继续原会话；没有 DSH 进程时的历史浏览一并解决。开工前需确定 §9 列出的托管启动规则。离线原生日志读取独立评估，优先复用官方只读 persistence／codec，不自写完整 V0–V4 解析器。

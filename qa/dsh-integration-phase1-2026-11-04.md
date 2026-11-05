@@ -121,6 +121,30 @@ DSH 专项用例：
 | 运行中发送后，手机显示“请求无法完成，请刷新”和“结果未知”，之后发送键点了没有反应；强制停止再打开，会话页一直停在“正在连接” | 手机本地保存待确认控制时，名单里没有 `deepseek-harness`。Host 其实已接受，但手机读回本地记录时抛出 `Invalid pending identity`，所有后续控制和启动时的核对都被挡住。已把它加入名单，并加回归测试：客户端受控的每个 agent 都必须能写入并读回待确认记录 |
 | 重复请求和回执里的状态是“结果未知” | Host 在把请求标为已完成之前就生成了回执，里面的实时状态是“登记未决时”的快照。已改为状态落定后用落定的状态重写，并在单元测试里断言 |
 
+## 补充验收（2026-11-05）
+
+同一个沙箱（AgentKib 桌面 dev 版、沙箱 DSH 0.2.1-rc.5、mock 模型）上补完一期剩下的项目。
+
+| 场景 | 结果 |
+| --- | --- |
+| 插件安装流程 | 用 `dsh plugin add` 把打包目录装进沙箱 DSH 的 profile（链接方式），重启 DSH 后插件从 profile 加载并连上，兼容性为 verified |
+| 两个 DSH 同时运行 | 会话页提示有多个 DeepSeek Harness 在运行；在其中一个打开该会话后恢复可控，消息发到了打开它的那个 DSH |
+| Web 客户端（无头 Chrome，英文） | 配对、页头“Running in DeepSeek Harness · Connected”、发送与回复、待发条（引导、编辑、删除）、审批、DSH 先答后 Web 端提示 “This request was already handled in DeepSeek Harness.”、DSH 退出后仅可查看并保留历史（提示浮在输入框上方，输入框不移动）、重启 DSH 后 8 秒内恢复；其中待发条一项发现缺陷，见下表 |
+| 手机：待发队列面板 | 长按发送键选“Add to queue”；队列面板每行有 “Insert into current turn”，点后该条进入当前轮次 |
+| 手机：DSH 先答 | 已打开的作答面板显示 “Already handled in DeepSeek Harness”，选项和提交都不可用 |
+| 手机：四种语言 | 页头分别为“在 DeepSeek Harness 中运行 · 已连接”“在 DeepSeek Harness 中執行 · 已連線”“DeepSeek Harness で実行中 · 接続済み”“Running in DeepSeek Harness · Connected” |
+
+### 补充验收中发现并已修复（修复在二期 2a 的未提交改动里）
+
+| 现象 | 原因与修复 |
+| --- | --- |
+| 新配对的浏览器第一次排队的消息不出现在待发条上，消息本身照常执行；之后的排队都正常 | DSH 在回复排队请求之前就上报了队列变化，此时 Host 仍在处理这次控制，会以 `operation_busy` 拒绝所有读取，待发条读队列失败后不再重试。待发条改为遇到 `operation_busy` 稍后重读，并在本会话的控制落定（receipts）时再读一次；桌面端与 Web 端同改，加回归测试 |
+| DSH 重启后的第一次发送，页面短暂出现“结果未确认” | 请求已送达、DSH 尚未回复时，实时状态把这条仍在等待的请求算作结果未知；DSH 恢复会话较慢时，期间的状态上报就会带出这个提示。等待中的请求现在只让会话显示为忙，不算未确认；加回归测试 |
+| 手机：队列面板里删除一条后显示 “The conversation changed. Reload this form before submitting”，点重新加载后才更新 | DSH 在删除完成后才上报队列变化并推进 revision，手机只在自己的操作之后读队列。手机改为收到 Host 的队列变化通知时重新读取；加回归测试 |
+| 手机：每次打开 DSH 会话，`/managed/settings` 返回 500 | 一期 DSH 不提供设置读取。二期 2a 起提供模型设置；目标读取也改为返回“不可用”而不是报错 |
+
+另有两处与 DSH 无关、没有处理：Web 客户端在无头 Chrome 中每次重新加载页面后界面语言回到简体中文；控制进行中读取会话事件会收到 409 `operation_busy`（Host 的既有行为，客户端会重读，界面上没有提示）。
+
 ## 桌面端沙箱验收截图与日志位置
 
 截图与日志在本次会话的临时目录 `$SCRATCH/acceptance/run/`（手机部分在 `$SCRATCH/phone/`），没有纳入仓库：
@@ -143,13 +167,11 @@ DSH 专项用例：
 
 ## 未覆盖
 
-- 手机（Flutter）只在 Android 模拟器上验收过，没有 iOS 模拟器或真机；经 HTTPS 代理直连，没有走中继。还没覆盖：待发队列面板里的“插入当前轮次”按钮、DSH 先答后手机上已打开的作答框、会话被其他进程占用或有多个 DSH 时的提示、四种语言的显示。
-- AgentKib Web 客户端只有自动化测试，没有在浏览器中对沙箱 Host 验收。
-- 插件安装流程：
-  - 没有走 `dsh plugin add` 安装后重启；
-  - 没有验证 DSH 升级后插件未加载的提示。
+- 手机（Flutter）只在 Android 模拟器上验收过，没有 iOS 模拟器或真机；经 HTTPS 代理直连，没有走中继。手机上没有覆盖会话被其他进程占用或有多个 DSH 时的提示。
+- AgentKib Web 客户端只在本机无头 Chrome 上验收过，没有经中继访问。
+- 没有验证 DSH 升级后插件未加载的提示。
 - DSH Desktop 应用及其保留的 `desktop` profile。
-- 两个 DSH 进程共享数据时的控制目标（`dsh-runtime-ambiguous`），以及会话被其他进程占用。
+- 会话被其他进程占用。
 - 以下只有自动化测试：
   - 权限撤销；
   - 多设备状态一致；

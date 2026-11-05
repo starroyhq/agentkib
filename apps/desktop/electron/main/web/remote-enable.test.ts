@@ -52,6 +52,14 @@ import { WebAccessService, type WebConfig } from "./service";
 
 const brokerUrl = "https://api.agentkib.com";
 const ready: RelayStatus = { phase: "ready", publicUrl: "https://device.control.example.com" };
+const account = {
+  signedIn: vi.fn(() => true),
+  accountId: () => "owner",
+  ensureDeviceOwner: vi.fn(async (accountId?: string) => {
+    if (accountId && accountId !== "owner") throw new Error("account_device_conflict");
+  }),
+  registerDevice: vi.fn(async () => ({ accountId: "owner" })),
+};
 let dir: string;
 let service: WebAccessService;
 let port: number;
@@ -127,6 +135,9 @@ async function configured() {
 }
 beforeEach(async () => {
   relays.length = 0;
+  account.signedIn.mockReset().mockReturnValue(true);
+  account.ensureDeviceOwner.mockClear();
+  account.registerDevice.mockClear();
   dir = await mkdtemp(join(tmpdir(), "agentkib-remote-enable-"));
   const listener = createServer();
   await new Promise<void>((resolve) => listener.listen(0, "127.0.0.1", resolve));
@@ -136,6 +147,7 @@ beforeEach(async () => {
     dataDir: dir,
     staticDir: dir,
     runtimeRequest: async () => ({}),
+    account,
   });
   await service.initialize();
   await configured();
@@ -201,7 +213,9 @@ describe("remote enable orchestration", () => {
     expect(result.devices).toEqual([]);
     expect(result.code).toBeUndefined();
     expect(relays).toHaveLength(1);
-    expect(relays[0].options.inviteCode).toBe("test-invite");
+    expect(relays[0].options.inviteCode).toBeUndefined();
+    expect(relays[0].options.registrationAccountId).toBe("owner");
+    expect(relays[0].options.registerAccount).toBeTypeOf("function");
     expect(await readFile(join(dir, "web-access.json"), "utf8")).not.toContain("test-invite");
   });
   it("issues a code only once after readiness, never rotates it on polling, expiry or restart", async () => {
@@ -223,6 +237,7 @@ describe("remote enable orchestration", () => {
       dataDir: dir,
       staticDir: dir,
       runtimeRequest: async () => ({}),
+      account,
     });
     await service.initialize();
     relays.at(-1)!.report(ready);
@@ -400,6 +415,13 @@ describe("account ownership and durable pause", () => {
   }
   it("refuses account-owned remote enable without an account bridge", async () => {
     await saveIdentity({ accountId: "owner" });
+    await service.shutdown();
+    service = new WebAccessService({
+      dataDir: dir,
+      staticDir: dir,
+      runtimeRequest: async () => ({}),
+    });
+    await service.initialize();
     await expect(service.request({ operation: "remote-enable", brokerUrl })).rejects.toThrow(
       "account_login_required",
     );
@@ -417,6 +439,7 @@ describe("account ownership and durable pause", () => {
       dataDir: dir,
       staticDir: dir,
       runtimeRequest: async () => ({}),
+      account,
     });
     await service.initialize();
     await expect(service.request({ operation: "remote-enable", brokerUrl })).rejects.toThrow(
@@ -440,5 +463,50 @@ describe("account ownership and durable pause", () => {
     });
     await service.request({ operation: "relay-stop" });
     expect((await status()).devices).toHaveLength(1);
+  });
+  it("requires login for first official registration even with a stale invitation", async () => {
+    account.signedIn.mockReturnValue(false);
+    await expect(
+      service.request({ operation: "remote-enable", brokerUrl, inviteCode: "obsolete" }),
+    ).rejects.toThrow("account_login_required");
+    expect(relays).toHaveLength(0);
+    expect((await status()).config.enabled).toBe(false);
+  });
+  it("allows official reenrollment without an invitation and checks the saved owner", async () => {
+    await saveIdentity({ accountId: "owner" });
+    await service.request({ operation: "remote-enable", brokerUrl, reenroll: true });
+    expect(account.ensureDeviceOwner).toHaveBeenCalledWith("owner");
+    expect(relays[0].options).toMatchObject({ reenroll: true, registrationAccountId: "owner" });
+    expect(relays[0].options.inviteCode).toBeUndefined();
+  });
+  it("does not reenroll a device owned by another account", async () => {
+    await saveIdentity({ accountId: "other" });
+    await expect(
+      service.request({ operation: "remote-enable", brokerUrl, reenroll: true }),
+    ).rejects.toThrow("account_device_conflict");
+    expect(relays).toHaveLength(0);
+  });
+  it("fails closed if login ends before relay authorization", async () => {
+    await service.request({ operation: "remote-enable", brokerUrl });
+    account.signedIn.mockReturnValue(false);
+    await expect(relays[0].options.authorizeAccount?.("owner")).rejects.toThrow(
+      "account_login_required",
+    );
+  });
+  it("keeps explicit invitation reenrollment for independent brokers", async () => {
+    const independent = "https://relay.example.com";
+    await expect(
+      service.request({ operation: "remote-enable", brokerUrl: independent, reenroll: true }),
+    ).rejects.toThrow("invitation_required_for_reenrollment");
+    account.signedIn.mockReturnValue(false);
+    await service.request({
+      operation: "remote-enable",
+      brokerUrl: independent,
+      reenroll: true,
+      inviteCode: "self-hosted-invitation",
+    });
+    expect(relays[0].options.inviteCode).toBe("self-hosted-invitation");
+    expect(relays[0].options.registerAccount).toBeUndefined();
+    expect(relays[0].options.authorizeAccount).toBeUndefined();
   });
 });

@@ -7,7 +7,7 @@ export const remotePhoneCopy = {
     registerHint: "没有账号可以在浏览器里注册",
     loggedIn: "已登录 {account}",
     enableStep: "开启远程访问",
-    enableHint: "第一次开启需要填写邀请码。",
+    enableHint: "登录后即可将这台电脑登记到账号并开启远程访问。",
     connectStep: "连接手机",
     connectHint: "生成授权码，用手机扫码后输入；可以完整控制或只读。",
     manageStep: "管理已授权的浏览器",
@@ -53,7 +53,7 @@ export const remotePhoneCopy = {
     registerHint: "沒有帳號可以在瀏覽器裡註冊",
     loggedIn: "已登入 {account}",
     enableStep: "開啟遠端存取",
-    enableHint: "第一次開啟需要填寫邀請碼。",
+    enableHint: "登入後即可將這台電腦登記到帳號並開啟遠端存取。",
     connectStep: "連接手機",
     connectHint: "產生授權碼，用手機掃碼後輸入；可以完整控制或唯讀。",
     manageStep: "管理已授權的瀏覽器",
@@ -101,7 +101,7 @@ export const remotePhoneCopy = {
     registerHint: "You can register in the browser if you do not have an account",
     loggedIn: "Signed in as {account}",
     enableStep: "Enable remote access",
-    enableHint: "Enter an invitation when enabling access for the first time.",
+    enableHint: "Sign in to register this computer with your account and enable remote access.",
     connectStep: "Connect your phone",
     connectHint:
       "Generate an access code, scan with your phone and enter it. Choose full control or read-only access.",
@@ -151,7 +151,8 @@ export const remotePhoneCopy = {
     registerHint: "アカウントがない場合はブラウザーで登録できます",
     loggedIn: "{account} でログイン済み",
     enableStep: "リモートアクセスを有効化",
-    enableHint: "初回の有効化には招待コードを入力します。",
+    enableHint:
+      "ログインすると、このコンピューターをアカウントに登録してリモートアクセスを有効にできます。",
     connectStep: "スマートフォンを接続",
     connectHint:
       "認証コードを生成し、スマートフォンでスキャンして入力します。フルコントロールまたは読み取り専用を選べます。",

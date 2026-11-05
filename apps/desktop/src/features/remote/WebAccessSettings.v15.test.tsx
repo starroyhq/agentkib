@@ -129,6 +129,77 @@ it.each(["zh-CN", "zh-TW", "en-US", "ja-JP"] as const)(
     expect(
       screen.queryByRole("button", { name: webSettingsCopy[locale].generateAccess }),
     ).toBeNull();
+    expect(screen.queryByLabelText(remoteEntryCopy[locale].invitation)).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: remotePhoneCopy[locale].advanced }));
+    expect(screen.queryByLabelText(remoteEntryCopy[locale].invitation)).toBeNull();
+    expect(screen.queryByText(/邀请码|邀請碼|invitation|招待コード/i)).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: remoteEntryCopy[locale].enable }));
+    await waitFor(() =>
+      expect(request).toHaveBeenCalledWith({
+        operation: "remote-enable",
+        brokerUrl: "https://api.agentkib.com",
+      }),
+    );
+  },
+);
+
+it.each([
+  "https://api.agentkib.com/",
+  "https://API.AGENTKIB.COM:443/",
+  " https://API.AGENTKIB.COM:443 ",
+])(
+  "requires account login for official origin %s in advanced settings without an invitation",
+  async (brokerUrl) => {
+    account = { phase: "signed-out", secureStorage: true };
+    render(<WebAccessSettings />);
+    await screen.findByRole("button", { name: remoteAccountCopy["en-US"].login });
+    fireEvent.click(screen.getByRole("button", { name: remotePhoneCopy["en-US"].advanced }));
+    fireEvent.change(screen.getByLabelText(remoteEntryCopy["en-US"].broker), {
+      target: { value: brokerUrl },
+    });
+    expect(screen.queryByLabelText(remoteEntryCopy["en-US"].invitation)).toBeNull();
+    const apply = screen.getByRole("button", { name: remotePhoneCopy["en-US"].applyConnection });
+    expect(apply).toBeDisabled();
+    fireEvent.click(apply);
+    expect(request.mock.calls.every(([input]) => input.operation === "status")).toBe(true);
+    act(() => accountListener?.(signedIn));
+    expect(apply).toBeEnabled();
+    fireEvent.click(apply);
+    await waitFor(() =>
+      expect(request).toHaveBeenCalledWith({
+        operation: "remote-enable",
+        brokerUrl: brokerUrl.trim(),
+      }),
+    );
+  },
+);
+
+it.each([
+  "https://self-hosted.example.com",
+  "http://api.agentkib.com",
+  "https://user@api.agentkib.com",
+  "https://api.agentkib.com/path",
+  "https://api.agentkib.com/?query=1",
+  "https://api.agentkib.com/#hash",
+  "https://api.agentkib.com//",
+  "invalid broker",
+])(
+  "keeps %s on the explicit advanced path without treating it as the official origin",
+  async (brokerUrl) => {
+    account = { phase: "signed-out", secureStorage: true };
+    render(<WebAccessSettings />);
+    await screen.findByRole("button", { name: remoteAccountCopy["en-US"].login });
+    fireEvent.click(screen.getByRole("button", { name: remotePhoneCopy["en-US"].advanced }));
+    fireEvent.change(screen.getByLabelText(remoteEntryCopy["en-US"].broker), {
+      target: { value: brokerUrl },
+    });
+    expect(screen.getByLabelText(remoteEntryCopy["en-US"].invitation)).toBeVisible();
+    const apply = screen.getByRole("button", { name: remotePhoneCopy["en-US"].applyConnection });
+    expect(apply).toBeEnabled();
+    fireEvent.click(apply);
+    await waitFor(() =>
+      expect(request).toHaveBeenCalledWith({ operation: "remote-enable", brokerUrl }),
+    );
   },
 );
 
@@ -393,34 +464,47 @@ it("does not restart local Web for external-only save failures, retries, or disc
   expect(request.mock.calls.every(([input]) => input.operation === "status")).toBe(true);
 });
 
-it("keeps the ready first-time migration invitation reachable and requires explicit provider confirmation", async () => {
-  const user = userEvent.setup();
-  ready();
-  local = {
-    ...local,
-    config: { ...local.config, relay: { enabled: true, brokerUrl: "https://remote.agentkib.com" } },
-  };
-  render(<WebAccessSettings />);
-  await screen.findByText("Signed in as demo@example.com");
-  await user.click(screen.getByRole("button", { name: "Advanced settings" }));
-  await user.click(screen.getByRole("button", { name: "Prepare service migration" }));
-  const invitation = screen.getByLabelText("Invitation (first connection only)");
-  expect(invitation).toBeVisible();
-  expect(screen.getAllByLabelText("Invitation (first connection only)")).toHaveLength(1);
-  expect(screen.getByRole("button", { name: "Apply connection settings" })).toBeDisabled();
-  await user.type(invitation, "example-invitation");
-  await user.click(screen.getByRole("button", { name: "Apply connection settings" }));
-  const dialog = screen.getByRole("dialog", { name: "Apply connection settings" });
-  expect(request.mock.calls.every(([input]) => input.operation === "status")).toBe(true);
-  await user.click(within(dialog).getByRole("button", { name: "Apply connection settings" }));
-  await waitFor(() =>
-    expect(request).toHaveBeenCalledWith({
-      operation: "remote-enable",
-      brokerUrl: "https://api.agentkib.com",
-      inviteCode: "example-invitation",
-    }),
-  );
-});
+it.each(["zh-CN", "zh-TW", "en-US", "ja-JP"] as const)(
+  "migrates a ready legacy official service through the account with explicit confirmation in %s",
+  async (locale) => {
+    await changeLocale(locale);
+    const user = userEvent.setup();
+    ready();
+    local = {
+      ...local,
+      config: {
+        ...local.config,
+        relay: { enabled: true, brokerUrl: "https://remote.agentkib.com" },
+      },
+    };
+    render(<WebAccessSettings />);
+    await screen.findByText(
+      remotePhoneCopy[locale].loggedIn.replace("{account}", "demo@example.com"),
+    );
+    await user.click(screen.getByRole("button", { name: remotePhoneCopy[locale].advanced }));
+    expect(screen.getByText(remoteEntryCopy[locale].migrationNotice)).toBeVisible();
+    expect(screen.queryByText(/邀请码|邀請碼|invitation|招待コード/i)).toBeNull();
+    await user.click(
+      screen.getByRole("button", { name: remoteEntryCopy[locale].prepareMigration }),
+    );
+    expect(screen.queryByLabelText(remoteEntryCopy[locale].invitation)).toBeNull();
+    expect(
+      screen.getByRole("button", { name: remotePhoneCopy[locale].applyConnection }),
+    ).toBeEnabled();
+    await user.click(screen.getByRole("button", { name: remotePhoneCopy[locale].applyConnection }));
+    const dialog = screen.getByRole("dialog", { name: remotePhoneCopy[locale].applyConnection });
+    expect(request.mock.calls.every(([input]) => input.operation === "status")).toBe(true);
+    await user.click(
+      within(dialog).getByRole("button", { name: remotePhoneCopy[locale].applyConnection }),
+    );
+    await waitFor(() =>
+      expect(request).toHaveBeenCalledWith({
+        operation: "remote-enable",
+        brokerUrl: "https://api.agentkib.com",
+      }),
+    );
+  },
+);
 
 it("keeps LAN plaintext warnings visible outside either tab and hides duplicate network fields in its dialog", async () => {
   lan = { ...lan, running: true, config: { ...lan.config, enabled: true, allowPlaintext: true } };
@@ -551,40 +635,129 @@ it.each([false, true])(
     expect(screen.queryByRole("heading", { name: remotePhoneCopy["en-US"].introTitle })).toBeNull();
     expect(await screen.findByRole("button", { name: "Enable remote access" })).toBeEnabled();
     expect(screen.getByRole("button", { name: "Connect a new phone" })).toBeDisabled();
-    expect(screen.queryByLabelText("Invitation (first connection only)")).toBeNull();
+    expect(screen.queryByLabelText(/invitation/i)).toBeNull();
   },
 );
 
-it("keeps a first failed enable intent in the setup flow until a browser is authorized", async () => {
-  local = {
-    ...local,
-    config: { ...local.config, relay: { enabled: true, brokerUrl: "https://api.agentkib.com" } },
-    relay: { phase: "error", reason: "setup" },
-  };
-  render(<WebAccessSettings />);
-  expect(
-    await screen.findByRole("heading", { name: remotePhoneCopy["en-US"].introTitle }),
-  ).toBeVisible();
-  expect(screen.queryByRole("heading", { name: "Authorized browsers 0" })).toBeNull();
-  const retry = await screen.findByRole("button", { name: "Enable remote access" });
-  const invitation = await screen.findByLabelText("Invitation (first connection only)");
-  expect(invitation).toBeVisible();
-  fireEvent.change(invitation, { target: { value: "corrected-invitation" } });
-  ready();
-  fireEvent.click(retry);
-  await waitFor(() =>
-    expect(request).toHaveBeenCalledWith({
-      operation: "remote-enable",
-      brokerUrl: "https://api.agentkib.com",
-      inviteCode: "corrected-invitation",
-    }),
-  );
-  expect(await screen.findByText(remotePhoneCopy["en-US"].readyResult)).toBeVisible();
-  expect(
-    screen.getByRole("button", { name: webSettingsCopy["en-US"].generateAccess }),
-  ).toBeEnabled();
-  expect(screen.queryByRole("heading", { name: "Authorized browsers 0" })).toBeNull();
-});
+it.each(["zh-CN", "zh-TW", "en-US", "ja-JP"] as const)(
+  "retries a failed official enable intent without an invitation and stays in setup in %s",
+  async (locale) => {
+    await changeLocale(locale);
+    local = {
+      ...local,
+      config: { ...local.config, relay: { enabled: true, brokerUrl: "https://api.agentkib.com/" } },
+      relay: { phase: "error", reason: "setup" },
+    };
+    render(<WebAccessSettings />);
+    expect(
+      await screen.findByRole("heading", { name: remotePhoneCopy[locale].introTitle }),
+    ).toBeVisible();
+    expect(
+      screen.queryByRole("heading", {
+        name: remotePhoneCopy[locale].browsers.replace("{count}", "0"),
+      }),
+    ).toBeNull();
+    const retry = await screen.findByRole("button", { name: remoteEntryCopy[locale].enable });
+    expect(retry).toBeEnabled();
+    expect(screen.queryByLabelText(remoteEntryCopy[locale].invitation)).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: remotePhoneCopy[locale].advanced }));
+    expect(screen.queryByLabelText(remoteEntryCopy[locale].invitation)).toBeNull();
+    expect(screen.queryByText(/邀请码|邀請碼|invitation|招待コード/i)).toBeNull();
+    ready();
+    fireEvent.click(retry);
+    await waitFor(() =>
+      expect(request).toHaveBeenCalledWith({
+        operation: "remote-enable",
+        brokerUrl: "https://api.agentkib.com/",
+      }),
+    );
+    expect(await screen.findByText(remotePhoneCopy[locale].readyResult)).toBeVisible();
+    expect(
+      screen.getByRole("button", { name: webSettingsCopy[locale].generateAccess }),
+    ).toBeEnabled();
+    expect(
+      screen.queryByRole("heading", {
+        name: remotePhoneCopy[locale].browsers.replace("{count}", "0"),
+      }),
+    ).toBeNull();
+  },
+);
+
+it.each(
+  (["zh-CN", "zh-TW", "en-US", "ja-JP"] as const).flatMap((locale) =>
+    [false, true].map((management) => ({ locale, management })),
+  ),
+)(
+  "re-registers a revoked official device with its account in $locale (management=$management)",
+  async ({ locale, management }) => {
+    await changeLocale(locale);
+    const brokerUrl = `https://api.agentkib.com${management ? "/" : ""}`;
+    local = {
+      ...local,
+      config: { ...local.config, relay: { enabled: true, brokerUrl } },
+      relay: { phase: "error", reason: "revoked" },
+      devices: management ? [browser] : [],
+    };
+    render(<WebAccessSettings />);
+    await screen.findByText(
+      remotePhoneCopy[locale].loggedIn.replace("{account}", "demo@example.com"),
+    );
+    expect(screen.queryByLabelText(remoteEntryCopy[locale].invitation)).toBeNull();
+    if (!management) {
+      expect(
+        screen.getByRole("button", { name: remoteEntryCopy[locale].reenrollAccount }),
+      ).toBeEnabled();
+    }
+    fireEvent.click(screen.getByRole("button", { name: remotePhoneCopy[locale].advanced }));
+    expect(screen.queryByLabelText(remoteEntryCopy[locale].invitation)).toBeNull();
+    expect(screen.queryByText(/邀请码|邀請碼|invitation|招待コード/i)).toBeNull();
+    const action = screen.getByRole("button", {
+      name: management
+        ? remotePhoneCopy[locale].applyConnection
+        : remoteEntryCopy[locale].reenrollAccount,
+    });
+    expect(action).toBeEnabled();
+    fireEvent.click(action);
+    await waitFor(() =>
+      expect(request).toHaveBeenCalledWith({
+        operation: "remote-enable",
+        brokerUrl,
+        reenroll: true,
+      }),
+    );
+  },
+);
+
+it.each(["zh-CN", "zh-TW", "en-US", "ja-JP"] as const)(
+  "keeps a self-hosted invitation in advanced settings and omits it after switching to official in %s",
+  async (locale) => {
+    await changeLocale(locale);
+    render(<WebAccessSettings />);
+    await screen.findByRole("button", { name: remoteEntryCopy[locale].enable });
+    fireEvent.click(screen.getByRole("button", { name: remotePhoneCopy[locale].advanced }));
+    const broker = screen.getByLabelText(remoteEntryCopy[locale].broker);
+    fireEvent.change(broker, { target: { value: "https://self-hosted.example.com" } });
+    const invitation = screen.getByLabelText(remoteEntryCopy[locale].invitation);
+    expect(invitation).toBeVisible();
+    expect(invitation).toHaveAccessibleDescription(webSettingsCopy[locale].invitationCodeHint);
+    const setup = screen
+      .getByRole("heading", { name: remotePhoneCopy[locale].introTitle })
+      .closest("section")!;
+    expect(within(setup).queryByLabelText(remoteEntryCopy[locale].invitation)).toBeNull();
+    fireEvent.change(invitation, { target: { value: "self-hosted-invitation" } });
+    fireEvent.change(broker, { target: { value: "https://api.agentkib.com/" } });
+    expect(screen.queryByLabelText(remoteEntryCopy[locale].invitation)).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: remotePhoneCopy[locale].applyConnection }));
+    await waitFor(() =>
+      expect(request).toHaveBeenCalledWith({
+        operation: "remote-enable",
+        brokerUrl: "https://api.agentkib.com/",
+      }),
+    );
+    fireEvent.change(broker, { target: { value: "https://self-hosted.example.com" } });
+    expect(screen.getByLabelText(remoteEntryCopy[locale].invitation)).toHaveValue("");
+  },
+);
 
 it("hides a phone code and blocks generation if an open connection dialog is paused", async () => {
   ready();

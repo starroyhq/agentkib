@@ -62,6 +62,14 @@ export async function sourceTreeHash(root) {
   return createHash("sha256").update(entries.sort().join("")).digest("hex");
 }
 
+export function applySourcePatch(source, patch) {
+  for (const args of [
+    ["apply", "--check", patch],
+    ["apply", patch],
+  ])
+    run("git", ["-c", "core.autocrlf=false", ...args], { cwd: source });
+}
+
 export function binaryPath(target, root = resourceDirectory) {
   if (target.endsWith("windows-msvc"))
     return path.join(root, "resources/windows/agentkib-quota-sidecar.exe");
@@ -166,8 +174,7 @@ export async function prepareSources(target) {
     )
   ).every(Boolean);
   if (!alreadyPatched) {
-    run("git", ["apply", "--check", patch], { cwd: source });
-    run("git", ["apply", patch], { cwd: source });
+    applySourcePatch(source, patch);
   }
   for (const [file, hash] of Object.entries(spec.patchedFiles)) {
     if (!(await matches(path.join(source, file), hash)))
@@ -255,6 +262,8 @@ export async function prepareQuotaSidecar() {
       const linux = await prepareLinuxSdk(source, spec);
       env.CODEXBAR_SQLITE3_LIB_DIR = linux.sqliteLibrary;
       args.push(
+        "--swift-sdks-path",
+        linux.swiftSdksDirectory,
         "--swift-sdk",
         spec.linux.sdk,
         "--triple",
@@ -369,8 +378,6 @@ async function filesIn(directory) {
   return files;
 }
 
-// Same SDK and SQLite recipe as upstream .github/workflows/release-cli.yml.
-// Do not prune the SDK's other architecture: both local build targets may share it.
 export function swiftSdkRootFromConfiguration(configuration) {
   const roots = configuration
     .split(/\r?\n/)
@@ -381,6 +388,58 @@ export function swiftSdkRootFromConfiguration(configuration) {
   return roots[0];
 }
 
+export function swiftSdkPathsFromConfiguration(configuration) {
+  const paths = { sdkRootPath: swiftSdkRootFromConfiguration(configuration) };
+  for (const name of [
+    "swiftResourcesPath",
+    "swiftStaticResourcesPath",
+    "includeSearchPaths",
+    "librarySearchPaths",
+    "toolsetPaths",
+  ]) {
+    const values = configuration
+      .split(/\r?\n/)
+      .filter((line) => line.startsWith(`${name}: `))
+      .map((line) => line.slice(name.length + 2));
+    if (values.length > 1) throw new Error(`Duplicate Swift SDK configuration ${name}`);
+    if (values.length === 0 || values[0] === "not set") continue;
+    const value = name.endsWith("Paths") ? JSON.parse(values[0]) : values[0];
+    if (
+      (name.endsWith("Paths") && !Array.isArray(value)) ||
+      !(Array.isArray(value) ? value : [value]).every(
+        (item) => typeof item === "string" && path.posix.isAbsolute(item) && !item.includes("\0"),
+      )
+    )
+      throw new Error(`Swift SDK configuration ${name} must contain absolute paths`);
+    paths[name] = value;
+  }
+  return paths;
+}
+
+export async function writeSingleTargetSwiftSdk(directory, sdk, triple, paths) {
+  const bundle = path.join(directory, `${sdk}.artifactbundle`);
+  await mkdir(path.join(bundle, "sdk"), { recursive: true });
+  await writeFile(
+    path.join(bundle, "info.json"),
+    `${JSON.stringify(
+      {
+        schemaVersion: "1.0",
+        artifacts: {
+          [sdk]: { type: "swiftSDK", version: "0.1.0", variants: [{ path: "sdk" }] },
+        },
+      },
+      null,
+      2,
+    )}\n`,
+  );
+  await writeFile(
+    path.join(bundle, "sdk/swift-sdk.json"),
+    `${JSON.stringify({ schemaVersion: "4.0", targetTriples: { [triple]: paths } }, null, 2)}\n`,
+  );
+  return directory;
+}
+
+// Same SDK and SQLite recipe as upstream .github/workflows/release-cli.yml.
 async function prepareLinuxSdk(source, spec) {
   const settings = spec.linux;
   const sdkList = spawnSync("swift", ["sdk", "list"], { encoding: "utf8" });
@@ -397,13 +456,23 @@ async function prepareLinuxSdk(source, spec) {
   }
   const arch = process.arch === "arm64" ? "aarch64" : "x86_64";
   const triple = `${arch}-swift-linux-musl`;
-  let sysroot;
+  let paths;
   if (process.env.AGENTKIB_SWIFT_SDK_BUNDLE) {
-    sysroot = path.join(
+    const sdkDirectory = path.join(
       process.env.AGENTKIB_SWIFT_SDK_BUNDLE,
       settings.sdk,
-      "swift-linux-musl/musl-1.2.5.sdk",
-      arch,
+      "swift-linux-musl",
+    );
+    const metadata = JSON.parse(await readFile(path.join(sdkDirectory, "swift-sdk.json"), "utf8"));
+    const target = metadata.targetTriples?.[triple];
+    if (!target) throw new Error(`Swift SDK target triple not found: ${triple}`);
+    paths = Object.fromEntries(
+      Object.entries(target).map(([name, value]) => [
+        name,
+        Array.isArray(value)
+          ? value.map((item) => path.resolve(sdkDirectory, item))
+          : path.resolve(sdkDirectory, value),
+      ]),
     );
   } else {
     // SwiftPM chooses its data directory per platform/XDG settings, not ~/.swiftpm.
@@ -414,8 +483,9 @@ async function prepareLinuxSdk(source, spec) {
     );
     if (configuration.status !== 0)
       throw new Error("Unable to read the installed Swift SDK configuration");
-    sysroot = swiftSdkRootFromConfiguration(configuration.stdout);
+    paths = swiftSdkPathsFromConfiguration(configuration.stdout);
   }
+  const sysroot = paths.sdkRootPath;
   await access(sysroot);
   const root = path.join(path.dirname(source), `sqlite-${settings.sqliteVersion}-${triple}`);
   await mkdir(root, { recursive: true });
@@ -454,7 +524,16 @@ async function prepareLinuxSdk(source, spec) {
     path.join(root, "sqlite3.o"),
   ]);
   run("llvm-ar", ["crs", path.join(root, "lib/libsqlite3.a"), path.join(root, "sqlite3.o")]);
-  return { sqliteLibrary: path.join(root, "lib") };
+  // SwiftPM merges paths from both SDK targets, which can select the other
+  // architecture's Foundation modules. Upstream prunes the installed SDK; keep
+  // a target-only metadata view instead, leaving the shared SDK files intact.
+  const swiftSdksDirectory = await writeSingleTargetSwiftSdk(
+    path.join(path.dirname(source), `swift-sdk-${settings.sdk}-${triple}`),
+    settings.sdk,
+    triple,
+    paths,
+  );
+  return { sqliteLibrary: path.join(root, "lib"), swiftSdksDirectory };
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href)

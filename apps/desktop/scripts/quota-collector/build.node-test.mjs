@@ -12,7 +12,9 @@ import {
   preparedManifest,
   sha256,
   sourceTreeHash,
+  swiftSdkPathsFromConfiguration,
   swiftSdkRootFromConfiguration,
+  writeSingleTargetSwiftSdk,
 } from "./build.mjs";
 
 test("upstream lock pins exact commits, source archives, dependency locks, patches and native source markers", async () => {
@@ -107,6 +109,82 @@ test("Swift SDK roots come from the configured target instead of an assumed inst
     "sdkRootPath: /invalid\0path\n",
   ])
     assert.throws(() => swiftSdkRootFromConfiguration(output), /one absolute sdkRootPath/);
+});
+
+test("isolated SDK metadata exposes only its target and preserves configured absolute paths", async () => {
+  const directory = await mkdtemp(path.join(tmpdir(), "agentkib-single-target-sdk-"));
+  try {
+    const sdk = lock.upstreams.codexbar.linux.sdk;
+    for (const arch of ["x86_64", "aarch64"]) {
+      const triple = `${arch}-swift-linux-musl`;
+      const sysroot = `/installed SDK/musl/${arch}`;
+      const paths = swiftSdkPathsFromConfiguration(
+        [
+          `sdkRootPath: ${sysroot}`,
+          `swiftResourcesPath: ${sysroot}/usr/lib/swift_static`,
+          `swiftStaticResourcesPath: ${sysroot}/usr/lib/swift_static`,
+          "includeSearchPaths: not set",
+          "librarySearchPaths: not set",
+          'toolsetPaths: ["/installed SDK/toolset.json"]',
+        ].join("\n"),
+      );
+      const root = await writeSingleTargetSwiftSdk(path.join(directory, arch), sdk, triple, paths);
+      const bundle = path.join(root, `${sdk}.artifactbundle`);
+      const info = JSON.parse(await readFile(path.join(bundle, "info.json"), "utf8"));
+      const metadata = JSON.parse(await readFile(path.join(bundle, "sdk/swift-sdk.json"), "utf8"));
+      assert.deepEqual(info.artifacts[sdk].variants, [{ path: "sdk" }]);
+      assert.deepEqual(Object.keys(metadata.targetTriples), [triple]);
+      assert.deepEqual(metadata.targetTriples[triple], paths);
+      assert.equal(metadata.targetTriples[triple].sdkRootPath, sysroot);
+      assert.deepEqual(metadata.targetTriples[triple].toolsetPaths, [
+        "/installed SDK/toolset.json",
+      ]);
+    }
+    for (const invalid of [
+      'toolsetPaths: "not-an-array"',
+      'toolsetPaths: ["relative/toolset.json"]',
+      'toolsetPaths: ["/one"]\ntoolsetPaths: ["/two"]',
+      "swiftResourcesPath: relative/resources",
+    ])
+      assert.throws(() => swiftSdkPathsFromConfiguration(`sdkRootPath: /sdk\n${invalid}\n`));
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("source patches retain locked LF bytes when the host enables autocrlf", async () => {
+  const directory = await mkdtemp(path.join(tmpdir(), "agentkib-patch-eol-"));
+  try {
+    const source = path.join(directory, "source");
+    await mkdir(source);
+    const file = path.join(source, "source.rs");
+    const patch = path.join(directory, "change.patch");
+    const config = path.join(directory, "gitconfig");
+    await writeFile(file, "let value = 1;\n");
+    await writeFile(config, "[core]\n\tautocrlf = true\n");
+    await writeFile(
+      patch,
+      "--- a/source.rs\n+++ b/source.rs\n@@ -1 +1 @@\n-let value = 1;\n+let value = 2;\n",
+    );
+    const env = { ...process.env, GIT_CONFIG_GLOBAL: config, GIT_CONFIG_NOSYSTEM: "1" };
+    const setting = spawnSync("git", ["config", "--get", "core.autocrlf"], {
+      cwd: source,
+      env,
+      encoding: "utf8",
+    });
+    assert.equal(setting.status, 0, setting.stderr);
+    assert.equal(setting.stdout.trim(), "true");
+    const code = `import { applySourcePatch } from ${JSON.stringify(new URL("./build.mjs", import.meta.url).href)}; applySourcePatch(process.argv[1], process.argv[2]);`;
+    const result = spawnSync(
+      process.execPath,
+      ["--input-type=module", "--eval", code, source, patch],
+      { cwd: source, env, encoding: "utf8" },
+    );
+    assert.equal(result.status, 0, result.stderr);
+    assert.equal(await readFile(file, "utf8"), "let value = 2;\n");
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
 });
 
 test("unlocked source edits invalidate provenance while compiler caches do not", async () => {

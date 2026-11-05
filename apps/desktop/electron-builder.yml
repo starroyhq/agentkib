@@ -22,6 +22,8 @@ asarUnpack:
 extraResources:
   - from: build/claude-bridge
     to: claude-bridge
+  - from: build/dsh-bridge
+    to: dsh-bridge
   - from: build/cursor-bridge
     to: cursor-bridge
   - from: ../../LICENSE

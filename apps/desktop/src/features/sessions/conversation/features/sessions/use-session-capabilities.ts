@@ -1,6 +1,12 @@
 import { retryBusyRead } from "./session-read-retry";
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
-import type { Access, CodexCapabilities, Live, WebClient } from "@agentkib/web-client";
+import {
+  managedAgentOf,
+  type Access,
+  type CodexCapabilities,
+  type Live,
+  type WebClient,
+} from "@agentkib/web-client";
 
 export function capabilityAccessBinding(access: Access | undefined) {
   return JSON.stringify([
@@ -39,7 +45,7 @@ export function useSessionCapabilities({
   epoch: number;
 }) {
   const identity =
-    selected && access?.status === "approved" && (agent === "codex" || agent === "claude-code")
+    selected && access?.status === "approved" && !!agent && !!managedAgentOf(agent)
       ? JSON.stringify([
           selected,
           agent,
@@ -73,14 +79,14 @@ export function useSessionCapabilities({
     | undefined
   >(undefined);
   const verifyCapabilities = useCallback(() => {
-    if (scope.current.key !== key || !binding || (agent !== "codex" && agent !== "claude-code"))
-      return Promise.resolve(undefined);
+    const managed = agent ? managedAgentOf(agent) : null;
+    if (scope.current.key !== key || !binding || !managed) return Promise.resolve(undefined);
     if (request.current?.key === key && !request.current.abort.signal.aborted)
       return request.current.promise;
     request.current?.abort.abort();
     const abort = new AbortController();
     const promise = retryBusyRead(
-      () => client.sessionCapabilities(selected, agent, abort.signal),
+      () => client.sessionCapabilities(selected, managed, abort.signal),
       abort.signal,
     )
       .then(

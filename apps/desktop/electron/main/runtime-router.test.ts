@@ -178,6 +178,10 @@ describe("RuntimeRouter Codex controls", () => {
     [RUNTIME_METHODS.webRequest, "compact"],
     [RUNTIME_METHODS.webRequest, "terminals-clean"],
     [RUNTIME_METHODS.webRequest, "delete"],
+    // A connected DeepSeek Harness moves a queued message into its running turn.
+    [RUNTIME_METHODS.webRequest, "queue-steer"],
+    [RUNTIME_METHODS.webRequest, "dsh-create"],
+    [RUNTIME_METHODS.webRequest, "dsh-options"],
     [RUNTIME_METHODS.codexManaged, "compact"],
     [RUNTIME_METHODS.codexManaged, "terminals-clean"],
     [RUNTIME_METHODS.codexManaged, "delete"],

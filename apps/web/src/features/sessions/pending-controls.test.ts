@@ -73,4 +73,31 @@ describe("pending Codex identities", () => {
     ).toThrow();
     expect(sessionStorage.getItem(scope)).toBe("broken json");
   });
+  it.each(["codex", "claude-code", "deepseek-harness"] as const)(
+    "keeps a %s create and still reads the store afterwards",
+    (agent) => {
+      // A name the store rejects would make every later read throw and block all controls.
+      const scope = pendingScope("", "device");
+      const identity = {
+        requestId: crypto.randomUUID(),
+        workspaceId: "workspace",
+        kind: "create" as const,
+        agent,
+      };
+      rememberPending(scope, identity);
+      expect(readPending(scope)).toEqual([identity]);
+      forgetPending(scope, identity.requestId);
+      expect(readPending(scope)).toEqual([]);
+    },
+  );
+  it("rejects an agent no control can name", () => {
+    const scope = pendingScope("", "device");
+    sessionStorage.setItem(
+      scope,
+      JSON.stringify([
+        { requestId: crypto.randomUUID(), workspaceId: "w", kind: "create", agent: "unknown" },
+      ]),
+    );
+    expect(() => readPending(scope)).toThrow("pending_control_storage_invalid");
+  });
 });

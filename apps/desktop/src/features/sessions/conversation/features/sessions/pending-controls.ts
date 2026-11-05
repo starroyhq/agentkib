@@ -32,6 +32,7 @@ const pendingKinds = {
   "queue-add": true,
   "queue-update": true,
   "queue-delete": true,
+  "queue-steer": true,
   "queue-reorder": true,
   "queue-start": true,
   "queue-pause": true,
@@ -49,6 +50,13 @@ const pendingKinds = {
   compact: true,
   "terminals-clean": true,
 } satisfies Record<PendingControl["kind"], true>;
+// Every agent a control can name. One missing here makes every later read of the store throw,
+// which blocks all controls in this browser, as a DeepSeek Harness create once did.
+const pendingAgents = {
+  codex: true,
+  "claude-code": true,
+  "deepseek-harness": true,
+} satisfies Record<ManagedAgent, true>;
 const prefix = "agentkib:codex-pending:v1:";
 const listeners = new Set<() => void>();
 export function subscribePending(listener: () => void) {
@@ -83,7 +91,8 @@ export function readPending(scope: string): PendingControl[] {
           (typeof value.workspaceId !== "string" ||
             !value.workspaceId ||
             value.workspaceId.length > 256)) ||
-        (value.agent !== undefined && value.agent !== "codex" && value.agent !== "claude-code") ||
+        (value.agent !== undefined &&
+          (typeof value.agent !== "string" || !Object.hasOwn(pendingAgents, value.agent))) ||
         (!value.sessionId && !value.workspaceId) ||
         typeof value.kind !== "string" ||
         !Object.hasOwn(pendingKinds, value.kind),

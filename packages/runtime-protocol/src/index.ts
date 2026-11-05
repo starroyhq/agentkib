@@ -234,3 +234,4 @@ export interface RuntimeRpcError {
   data?: unknown;
 }
 export * from "./claude-bridge";
+export * from "./dsh-bridge";

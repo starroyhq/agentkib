@@ -497,7 +497,7 @@ describe("composer sending shortcuts", () => {
       reason: "codex-owner-busy",
     });
   }
-  it("shows the Codex follower hint with an enabled composer and hides the busy bar and advanced menu", () => {
+  it("keeps the Codex follower composer enabled without a hint line and hides the busy bar and advanced menu", () => {
     continuationFixture();
     Object.assign(doubles.session.live!, {
       executionMode: "codex-follower",
@@ -513,9 +513,8 @@ describe("composer sending shortcuts", () => {
       reason: "follower-operation-unverified",
     };
     const { input } = renderComposer();
-    expect(
-      screen.getByText("Messages run in Codex, using the model and permissions set there"),
-    ).toBeVisible();
+    // The header already says where it runs; no explanatory line sits over the composer.
+    expect(screen.queryByText(/Messages run in Codex/)).not.toBeInTheDocument();
     expect(input).toBeEnabled();
     expect(
       screen.queryByRole("button", { name: codexCopy["en-US"].advanced }),

@@ -100,6 +100,8 @@ async function localClaudeRequestInner(
   const input = record(raw);
   const operation = field(input.operation, 32);
   if (operation === "options") return deps.managed({ operation });
+  // The DeepSeek Harness connection is per computer, not per session; status only.
+  if (operation === "dsh-bridge-status") return deps.managed({ operation, deviceId: OWNER });
   if (operation === "receipt")
     return deps.receipt({ requestId: field(input.requestId), deviceId: OWNER });
   if (operation === "catalog") {

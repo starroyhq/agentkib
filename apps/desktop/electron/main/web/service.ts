@@ -627,6 +627,8 @@ export class WebAccessService {
       verifiedClaudeManaged?: boolean;
       enableClaudeScheduler?: boolean;
       verifiedAntigravityManaged?: boolean;
+      /** DeepSeek Harness sessions connected through the AgentKib plugin (macOS only for now). */
+      verifiedDshFollower?: boolean;
       acceptanceSessionId?: string;
       mode?: "lan";
       sharedControl?: ReturnType<typeof createWebControlState>;
@@ -886,7 +888,8 @@ export class WebAccessService {
         : this.options.verifiedExperimental === true ||
           this.options.verifiedCodex === true ||
           this.options.verifiedClaudeManaged === true ||
-          this.options.verifiedAntigravityManaged === true)
+          this.options.verifiedAntigravityManaged === true ||
+          this.options.verifiedDshFollower === true)
     );
   }
   private async controlsEnabledForSnapshot(
@@ -898,7 +901,7 @@ export class WebAccessService {
     const executionMode = snapshotField(snapshot, "executionMode");
     if (
       isCodexMode(executionMode) ||
-      ["claude-managed", "claude-follower"].includes(String(executionMode))
+      ["claude-managed", "claude-follower", "dsh-follower"].includes(String(executionMode))
     ) {
       const workspaceId = snapshotField(snapshot, "workspaceId");
       if (
@@ -926,7 +929,8 @@ export class WebAccessService {
           (executionMode === "managed-resume" ||
             executionMode === "claude-managed" ||
             executionMode === "claude-follower")) ||
-        (this.options.verifiedAntigravityManaged === true && executionMode === "acp-managed"))
+        (this.options.verifiedAntigravityManaged === true && executionMode === "acp-managed") ||
+        (this.options.verifiedDshFollower === true && executionMode === "dsh-follower"))
     );
   }
 
@@ -2962,7 +2966,13 @@ export class WebAccessService {
       ? "send"
       : "advancedControl";
   }
-  private projectClaudeCapabilities(result: unknown, device: WebDevice, sessionId: string) {
+  /** Also projects a connected DeepSeek Harness, whose features follow the same device roles. */
+  private projectClaudeCapabilities(
+    result: unknown,
+    device: WebDevice,
+    sessionId: string,
+    verified = this.options.verifiedClaudeManaged === true,
+  ) {
     const data = result as {
       features?: Record<string, { available: boolean; reason?: string }>;
       commands?: unknown;
@@ -2992,6 +3002,7 @@ export class WebAccessService {
       "queue-add": "advancedControl",
       "queue-update": "advancedControl",
       "queue-delete": "advancedControl",
+      "queue-steer": "advancedControl",
       "queue-reorder": "advancedControl",
       "queue-pause": "advancedControl",
       "queue-resume": "advancedControl",
@@ -3032,8 +3043,7 @@ export class WebAccessService {
               "context",
               "resources",
             ].includes(operation) ||
-            (this.options.verifiedClaudeManaged === true &&
-              this.controlsEnabled(sessionId, device));
+            (verified && this.controlsEnabled(sessionId, device));
           const allowed =
             permission &&
             device[permission] === true &&
@@ -3108,7 +3118,7 @@ export class WebAccessService {
       "queue-delete",
       "queue-reorder",
       "queue-start",
-      ...(generic ? ["queue-pause", "queue-resume"] : []),
+      ...(generic ? ["queue-pause", "queue-resume", "queue-steer"] : []),
       "rename",
       "archive",
       "unarchive",
@@ -3229,8 +3239,29 @@ export class WebAccessService {
         ["steer", "queue-add", "queue-delete"].includes(operation);
       const claude = generic && capabilities.executionMode === "claude-managed";
       const followerFork = capabilities.executionMode === "codex-follower" && operation === "fork";
+      // A connected DeepSeek Harness takes steering and queued messages through its own inbox, and
+      // renames, archives, forks and switches models through its own session services.
+      const dsh =
+        generic &&
+        capabilities.executionMode === "dsh-follower" &&
+        [
+          "steer",
+          "queue-add",
+          "queue-update",
+          "queue-delete",
+          "queue-steer",
+          "rename",
+          "archive",
+          "unarchive",
+          "fork",
+          "settings",
+        ].includes(operation);
       if (
-        (capabilities.executionMode !== "codex-managed" && !claude && !terminal && !followerFork) ||
+        (capabilities.executionMode !== "codex-managed" &&
+          !claude &&
+          !terminal &&
+          !followerFork &&
+          !dsh) ||
         capabilities.features?.[operation]?.available !== true
       )
         throw new HttpError(
@@ -3262,7 +3293,7 @@ export class WebAccessService {
         expectedRevision: body.expectedRevision,
         runtimeBootId: snapshot.runtimeBootId,
         experimentalEnabled: true,
-        ...(claude || terminal ? { publicInputHash } : {}),
+        ...(claude || terminal || dsh ? { publicInputHash } : {}),
       };
       // Every operation has an explicit public-field projection. Paths and raw RPC input never pass through.
       if (["steer", "queue-add", "queue-update"].includes(operation)) {
@@ -3309,7 +3340,11 @@ export class WebAccessService {
           delete params.text;
         }
       }
-      if (operation === "queue-update" || (operation === "queue-delete" && (claude || terminal))) {
+      if (
+        operation === "queue-update" ||
+        (operation === "queue-delete" && (claude || terminal || dsh)) ||
+        operation === "queue-steer"
+      ) {
         const queued = (await this.runtime(
           { operation: "queue-list", sessionId, limit: 100 },
           undefined,
@@ -3336,7 +3371,7 @@ export class WebAccessService {
           throw new HttpError(409, "queue_attachments_edit_unsupported");
       }
       if (operation === "steer") params.turnId = this.field(body.turnId);
-      if (["queue-update", "queue-delete"].includes(operation))
+      if (["queue-update", "queue-delete", "queue-steer"].includes(operation))
         params.queuedSubmissionId = this.field(body.queuedSubmissionId);
       if (operation === "queue-reorder") {
         if (
@@ -3975,13 +4010,27 @@ export class WebAccessService {
   ) {
     this.grant(hash, "manage");
     const agent = body.agent ?? "codex";
-    if (agent !== "codex" && agent !== "claude-code") throw new HttpError(400, "invalid_agent");
+    if (agent !== "codex" && agent !== "claude-code" && agent !== "deepseek-harness")
+      throw new HttpError(400, "invalid_agent");
+    // DeepSeek Harness only starts sessions here; its sessions are controlled through actions.
+    if (agent === "deepseek-harness" && operation !== "create")
+      throw new HttpError(404, "not_found");
     const requestId = this.field(body.requestId, 128);
     if (agent === "claude-code")
       await this.controlReceipt(requestId, this.grant(hash, "manage").id, control);
     const managedRequest =
-      agent === "claude-code" ? this.options.claudeManagedRequest : this.options.managedRequest;
+      agent === "claude-code"
+        ? this.options.claudeManagedRequest
+        : agent === "deepseek-harness"
+          ? (value: unknown) =>
+              this.options.runtimeRequest({
+                ...(value as Record<string, unknown>),
+                operation: "dsh-create",
+              })
+          : this.options.managedRequest;
     if (agent === "claude-code" && !this.options.verifiedClaudeManaged)
+      throw new HttpError(409, "unsupported_host");
+    if (agent === "deepseek-harness" && this.options.verifiedDshFollower !== true)
       throw new HttpError(409, "unsupported_host");
     if (
       this.options.acceptanceSessionId &&
@@ -4121,6 +4170,9 @@ export class WebAccessService {
           "codex-sandbox-mismatch",
           "codex-writable-roots-mismatch",
           "remote-environment-not-supported",
+          "dsh-runtime-offline",
+          "dsh-create-ambiguous",
+          "workspace-unavailable",
         ]);
         throw new HttpError(
           409,
@@ -4559,12 +4611,17 @@ export class WebAccessService {
     // 已配对设备各自一份额度；未认证流量（含静态资源、预检、配对）共享一个池。
     // 经 relay 进来的请求都来自本机 frpc，拿不到真实客户端地址，无法再按 IP 细分。
     const paired = !!hash && this.credentials.some((c) => c.hash === hash);
+    const url = new URL(req.url || "/", origin);
+    // Classified before the first limit, so a control it turns away still says it was never
+    // dispatched; without an outcome the client has to treat the request as unknown.
+    control.request =
+      url.pathname.startsWith("/api/web/v1/") &&
+      isControlRequest(req.method, url.pathname.replace(/^\/api\/web\/v1/, ""));
     this.rate(paired ? `paired:${hash}` : "anonymous", 600);
     if (lan) {
       res.setHeader("Access-Control-Allow-Origin", origin);
       res.setHeader("Vary", "Origin");
     }
-    const url = new URL(req.url || "/", origin);
     if (!url.pathname.startsWith("/api/")) {
       if (lan) throw new HttpError(404, "not_found");
       return this.static(req, res);
@@ -4963,10 +5020,11 @@ export class WebAccessService {
       const historyReplay = this.historyReplay(prior, body, operation, control);
       if (historyReplay !== undefined) return this.json(res, 200, historyReplay);
       if (body.bootId !== this.bootId) throw new HttpError(409, "stale_boot");
+      // Bridged and managed providers replay a receipted request from their own ledger.
       const claudeReplay =
         prior?.found === true &&
         prior.sessionId === sessionId &&
-        ["claude-managed", "claude-follower"].includes(String(prior.executionMode));
+        ["claude-managed", "claude-follower", "dsh-follower"].includes(String(prior.executionMode));
       this.grant(hash, permission);
       if (!claudeReplay && this.requests.has(requestId)) {
         control.priorUncertain = true;
@@ -5593,6 +5651,7 @@ export class WebAccessService {
                     "queue-add",
                     "queue-update",
                     "queue-delete",
+                    "queue-steer",
                     "queue-reorder",
                     "queue-start",
                     "queue-pause",
@@ -5637,12 +5696,19 @@ export class WebAccessService {
       const permission = this.grant(hash).manage === true ? "manage" : "settings";
       this.grant(hash, permission);
       const agent = url.searchParams.get("agent") ?? "codex";
-      if (agent !== "codex" && agent !== "claude-code") throw new HttpError(400, "invalid_agent");
+      if (agent !== "codex" && agent !== "claude-code" && agent !== "deepseek-harness")
+        throw new HttpError(400, "invalid_agent");
       const managedRequest =
         agent === "claude-code" ? this.options.claudeManagedRequest : this.options.managedRequest;
-      const options = managedRequest
-        ? await managedRequest({ operation: "options" })
-        : { available: false, reason: "unsupported_host" };
+      // A new DeepSeek Harness session needs exactly one running DSH with the plugin.
+      const options =
+        agent === "deepseek-harness"
+          ? this.options.verifiedDshFollower === true
+            ? await this.runtime({ operation: "dsh-options" })
+            : { available: false, reason: "unsupported_host" }
+          : managedRequest
+            ? await managedRequest({ operation: "options" })
+            : { available: false, reason: "unsupported_host" };
       const device = this.grant(hash, permission);
       const workspaces = device.manage === true ? await this.registeredWorkspaces() : [];
       this.grant(hash, permission);
@@ -5657,6 +5723,34 @@ export class WebAccessService {
     }
     if (path === "/managed/capabilities" || path === "/managed/inspect") {
       const agent = url.searchParams.get("agent") ?? "codex";
+      if (agent === "deepseek-harness") {
+        // The runtime resolves the provider from the indexed session, never from this parameter.
+        const sessionId = this.field(url.searchParams.get("sessionId"));
+        const device = this.grant(hash);
+        if (path.endsWith("inspect")) this.grant(hash, "manage");
+        const workspaceId = await this.codexScope(sessionId, hash, false, false);
+        const result = await this.runtime({
+          operation: path.endsWith("inspect") ? "inspect" : "capabilities",
+          sessionId,
+          experimentalEnabled: this.controlsEnabled(sessionId, device),
+        });
+        if (snapshotField(result, "executionMode") !== "dsh-follower")
+          throw new HttpError(400, "invalid_agent");
+        if (!(await this.workspaceAllowed(workspaceId, this.grant(hash))))
+          throw new HttpError(403, "workspace_not_authorized");
+        return this.json(
+          res,
+          200,
+          path.endsWith("capabilities")
+            ? this.projectClaudeCapabilities(
+                result,
+                this.grant(hash),
+                sessionId,
+                this.options.verifiedDshFollower === true,
+              )
+            : result,
+        );
+      }
       if (agent !== "claude-code") throw new HttpError(400, "invalid_agent");
       const sessionId = this.field(url.searchParams.get("sessionId"));
       const device = this.grant(hash);

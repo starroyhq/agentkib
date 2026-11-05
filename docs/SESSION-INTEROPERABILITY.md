@@ -17,7 +17,7 @@
 | Cursor IDE       | macOS 本地 bridge，支持 Cursor 3.22.12 与 3.23.12；显式连接 profile/window 后读取与原生导入                | 仅支持已连接的本地窗口；不代表 Cursor CLI 或 Agents Window 能力；Windows/Linux 原生桥接关闭                              |
 | Antigravity      | 现有官方 ACP 回放                                                                                          | ACP 来源不等于完整 Desktop 或 CLI 原生存储                                                                                   |
 | OpenClaw         | `2026.9.6` / SQLite schema 23：原始事件正文、官方有效分支投影和 reset 窗口；兼容无 SQLite 的 Pi JSONL v1–3 | 未知 schema、陈旧投影、压缩事件、冷归档及缺失的外部历史拒绝；仅供显示的消息可浏览、不可交接；SQLite/WAL 存在时不回退旧 JSONL |
-| DeepSeek Harness | 保持只读 Beta                                                                                              | 不参与新增续接或原生写入                                                                                                     |
+| DeepSeek Harness | Beta：仅接管运行中 DSH 的原会话，操作经插件在 DSH 内执行                                                   | 不作为交接来源或目标；AgentKib 不直接写入 DSH 文件；DSH 未运行时仅可查看，见[接入方案](DEEPSEEK-HARNESS-INTEGRATION.md)      |
 
 会话页面向 Runtime 查询具体会话能否完整解析；不再仅以 Agent 名称决定。来源缺必要正文时拒绝。推理排除、工具摘要化、附件省略等已知损失在预览展示，需确认的损失未经确认不能继续。
 

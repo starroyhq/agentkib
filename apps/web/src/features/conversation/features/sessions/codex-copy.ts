@@ -22,6 +22,9 @@ const zh = {
   queueUp: "上移",
   queueStart: "开始队列",
   queueEmpty: "队列为空",
+  queueSteerItem: "引导",
+  queueEditItem: "编辑消息",
+  queueSave: "保存",
   rename: "重命名",
   archive: "归档",
   unarchive: "取消归档",
@@ -129,6 +132,9 @@ export const codexCopy: Record<Locale, Copy> = {
     queueUp: "上移",
     queueStart: "開始佇列",
     queueEmpty: "佇列為空",
+    queueSteerItem: "引導",
+    queueEditItem: "編輯訊息",
+    queueSave: "儲存",
     rename: "重新命名",
     archive: "封存",
     unarchive: "取消封存",
@@ -235,6 +241,9 @@ export const codexCopy: Record<Locale, Copy> = {
     queueUp: "Move up",
     queueStart: "Start queue",
     queueEmpty: "Queue is empty",
+    queueSteerItem: "Steer",
+    queueEditItem: "Edit message",
+    queueSave: "Save",
     rename: "Rename",
     archive: "Archive",
     unarchive: "Unarchive",
@@ -344,6 +353,9 @@ export const codexCopy: Record<Locale, Copy> = {
     queueUp: "上へ移動",
     queueStart: "キューを開始",
     queueEmpty: "キューは空です",
+    queueSteerItem: "現在のターンへ",
+    queueEditItem: "メッセージを編集",
+    queueSave: "保存",
     rename: "名前を変更",
     archive: "アーカイブ",
     unarchive: "アーカイブ解除",
@@ -473,6 +485,15 @@ const reasons: Record<Locale, Record<string, string>> = {
     "settings-not-applied": "设置尚未由 Codex 确认，请先发送一轮应用设置，再开始或恢复目标。",
     "collaboration-modes-unavailable": "这台电脑尚未提供已验证的 Codex 协作模式列表。",
     "session-busy": "此操作需要会话空闲，请等待当前轮次结束。",
+    "dsh-runtime-offline":
+      "DeepSeek Harness 没有运行，或它的配置里没有装 AgentKib 插件。打开 DeepSeek Harness 后可以继续。",
+    "dsh-runtime-ambiguous":
+      "有多个 DeepSeek Harness 在运行。请先在其中一个打开这条会话，再从这里继续。",
+    "dsh-create-ambiguous":
+      "有多个 DeepSeek Harness 在运行，无法确定用哪一个。请直接在要用的那个里新建会话，它会出现在这里。",
+    "dsh-session-controller-unavailable": "这个 DeepSeek Harness 配置只能查看，不能从这里发送。",
+    "dsh-handle-in-native-ui": "这项请求请在 DeepSeek Harness 中处理。",
+    "interaction-answered-elsewhere": "这项请求已经在 DeepSeek Harness 中处理过了。",
     "session-requires-running-turn": "此操作仅在轮次运行中可用。",
     "no-active-turn": "当前没有可停止的轮次。",
     "session-already-managed": "这条会话已可在 AgentKib 中继续，无需重复操作。",
@@ -570,6 +591,15 @@ const reasons: Record<Locale, Record<string, string>> = {
     "settings-not-applied": "設定尚未由 Codex 確認，請先傳送一回合套用設定，再開始或恢復目標。",
     "collaboration-modes-unavailable": "這台電腦尚未提供已驗證的 Codex 協作模式清單。",
     "session-busy": "此操作需要對話閒置，請等待目前輪次結束。",
+    "dsh-runtime-offline":
+      "DeepSeek Harness 沒有執行，或它的設定裡沒有安裝 AgentKib 外掛。開啟 DeepSeek Harness 後即可繼續。",
+    "dsh-runtime-ambiguous":
+      "有多個 DeepSeek Harness 正在執行。請先在其中一個開啟這個對話，再從這裡繼續。",
+    "dsh-create-ambiguous":
+      "有多個 DeepSeek Harness 正在執行，無法確定要用哪一個。請直接在要用的那個裡新建對話，它會出現在這裡。",
+    "dsh-session-controller-unavailable": "這個 DeepSeek Harness 設定只能檢視，不能從這裡傳送。",
+    "dsh-handle-in-native-ui": "這項請求請在 DeepSeek Harness 中處理。",
+    "interaction-answered-elsewhere": "這項請求已經在 DeepSeek Harness 中處理過了。",
     "session-requires-running-turn": "此操作僅在輪次執行中可用。",
     "no-active-turn": "目前沒有可停止的輪次。",
     "session-already-managed": "這段對話已可在 AgentKib 中繼續，無需重複操作。",
@@ -672,6 +702,16 @@ const reasons: Record<Locale, Record<string, string>> = {
     "collaboration-modes-unavailable":
       "The computer has not provided a verified Codex collaboration mode list.",
     "session-busy": "This operation requires an idle session. Wait for the current turn to finish.",
+    "dsh-runtime-offline":
+      "DeepSeek Harness is not running, or the AgentKib plugin is not installed in its profile. Open DeepSeek Harness to continue.",
+    "dsh-runtime-ambiguous":
+      "More than one DeepSeek Harness is running. Open this session in one of them first, then continue here.",
+    "dsh-create-ambiguous":
+      "More than one DeepSeek Harness is running, so AgentKib cannot tell which to use. Start the session in the one you want; it will show up here.",
+    "dsh-session-controller-unavailable":
+      "This DeepSeek Harness profile can be viewed but cannot take messages from here.",
+    "dsh-handle-in-native-ui": "Handle this request in DeepSeek Harness.",
+    "interaction-answered-elsewhere": "This request was already handled in DeepSeek Harness.",
     "session-requires-running-turn": "This operation is only available while a turn is running.",
     "no-active-turn": "There is no active turn to stop.",
     "session-already-managed":
@@ -781,6 +821,16 @@ const reasons: Record<Locale, Record<string, string>> = {
     "collaboration-modes-unavailable":
       "このコンピューターは検証済みの Codex 協調モード一覧を提供していません。",
     "session-busy": "この操作は待機中に利用できます。現在のターンの終了をお待ちください。",
+    "dsh-runtime-offline":
+      "DeepSeek Harness が起動していないか、そのプロファイルに AgentKib プラグインがありません。DeepSeek Harness を開くと続行できます。",
+    "dsh-runtime-ambiguous":
+      "複数の DeepSeek Harness が起動しています。先にどれか一つでこのセッションを開いてから、ここで続けてください。",
+    "dsh-create-ambiguous":
+      "複数の DeepSeek Harness が起動しているため、どれを使うか判断できません。使いたい DeepSeek Harness で直接セッションを作成すると、ここに表示されます。",
+    "dsh-session-controller-unavailable":
+      "この DeepSeek Harness プロファイルは表示のみで、ここからは送信できません。",
+    "dsh-handle-in-native-ui": "このリクエストは DeepSeek Harness で対応してください。",
+    "interaction-answered-elsewhere": "このリクエストはすでに DeepSeek Harness で対応済みです。",
     "session-requires-running-turn": "この操作はターンの実行中のみ利用できます。",
     "no-active-turn": "停止できるターンはありません。",
     "session-already-managed": "この会話はすでに AgentKib で続けられます。追加の操作は不要です。",

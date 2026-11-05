@@ -752,6 +752,23 @@ describe("WebAccessService loopback security boundary", () => {
     expect((await http("/api/web/v1/access")).status).toBe(200);
     expect((await http("/api/web/v1/catalog")).status).toBe(200);
   });
+  it("says a control the per-device limit turned away was never dispatched", async () => {
+    await bootstrap();
+    await pair();
+    expect((await http("/api/web/v1/catalog")).status).toBe(200);
+    const rates = (service as unknown as { rates: Map<string, { count: number; until: number }> })
+      .rates;
+    const key = [...rates.keys()].find((item) => item.startsWith("paired:"))!;
+    rates.set(key, { count: 600, until: Date.now() + 60_000 });
+    const rejected = await http("/api/web/v1/send", {
+      method: "POST",
+      body: { sessionId: "s1", text: "hello", requestId: "00000000-0000-4000-8000-000000000001" },
+    });
+    expect(rejected.status).toBe(429);
+    expect(rejected.json()).toEqual({ error: "rate_limited", controlOutcome: "not-dispatched" });
+    // Reads keep their plain error.
+    expect((await http("/api/web/v1/catalog")).json()).toEqual({ error: "rate_limited" });
+  });
   it("does not let one browser's wrong guesses invalidate the code for another browser", async () => {
     await bootstrap();
     const status = await service.request({ operation: "generate-code" });

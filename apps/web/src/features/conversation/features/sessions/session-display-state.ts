@@ -38,6 +38,7 @@ type DisplayState = {
     | "terminal-watch"
     | "busy"
     | "codex"
+    | "dsh"
     | "view-only";
 };
 
@@ -74,7 +75,9 @@ export function sessionDisplayState(
     state.current?.availability === "metadata-only" ||
     (state.current &&
       (("remote" in state.current && state.current.remote) ||
-        !["codex", "claude-code", "antigravity"].includes(state.current.agent) ||
+        !["codex", "claude-code", "deepseek-harness", "antigravity"].includes(
+          state.current.agent,
+        ) ||
         state.current.origin === "auxiliary" ||
         state.current.origin === "execution"))
   )
@@ -227,6 +230,52 @@ export function sessionDisplayState(
           : (claudeReconnectFailureReason(live, locale, surface) ??
             claudeConnectionReason(locale, reason, surface) ??
             codexReason(locale, reason, surface).text),
+      tone: "muted",
+      continuation: "view-only",
+    };
+  }
+  if (state.current?.agent === "deepseek-harness") {
+    const copy = sessionContinuationCopy(locale);
+    if (access?.status !== "approved")
+      return {
+        label: c.accessRequired,
+        reason: managedControlCopyForSurface(locale, surface).access,
+        tone: "muted",
+      };
+    if (access.protocolVersion !== 2)
+      return {
+        label: c.controlUnavailable,
+        reason: managedControlCopyForSurface(locale, surface).protocol,
+        tone: "muted",
+      };
+    if (!access.experimentalEnabled)
+      return {
+        label: c.controlDisabled,
+        reason: codexReason(locale, "control-disabled", surface).text,
+        tone: "muted",
+      };
+    if (!access.device?.send)
+      return {
+        label: c.permissionRequired,
+        reason: managedControlCopyForSurface(locale, surface).send,
+        tone: "muted",
+      };
+    if (
+      state.current.id !== state.selected ||
+      live?.sessionId !== state.selected ||
+      capabilities?.sessionId !== state.selected
+    )
+      return { label: c.verifying, reason: c.verifying, tone: "muted", loading: true };
+    // The running DSH executes; this view follows it. Requests waiting for an answer keep their
+    // own cards, and either side may answer them.
+    if (live.executionMode === "dsh-follower" && live.executionLocation === "external") {
+      if (live.questions?.length) return { label: c.question, reason: c.question, tone: "warning" };
+      if (live.approvals?.length) return { label: c.approval, reason: c.approval, tone: "warning" };
+      return { label: copy.dshConnected, reason: "", tone: "muted", continuation: "dsh" };
+    }
+    return {
+      label: copy.viewOnly,
+      reason: codexReason(locale, reason, surface).text,
       tone: "muted",
       continuation: "view-only",
     };

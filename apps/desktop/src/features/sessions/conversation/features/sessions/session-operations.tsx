@@ -8,6 +8,7 @@ import { ManagedTasks } from "./managed-tasks";
 import { useSession } from "./session-context";
 import { webLayoutCopy } from "./web-layout-copy";
 import { ClaudeBridgePanel } from "./claude-bridge-panel";
+import { DshBridgePanel } from "./dsh-bridge-panel";
 export function SessionOperations({
   open,
   onOpenChange,
@@ -64,7 +65,11 @@ export function SessionOperations({
       )}
     </div>
   );
-  if (current?.agent !== "codex" && current?.agent !== "claude-code")
+  if (
+    current?.agent !== "codex" &&
+    current?.agent !== "claude-code" &&
+    current?.agent !== "deepseek-harness"
+  )
     return open ? (
       <Dialog
         panel
@@ -75,6 +80,16 @@ export function SessionOperations({
         {shortcuts}
       </Dialog>
     ) : null;
+  // How this computer's DeepSeek Harness connects, above the session's own actions.
+  const header =
+    current?.agent === "deepseek-harness" && !!access?.device?.manage ? (
+      <>
+        {shortcuts}
+        <DshBridgePanel />
+      </>
+    ) : (
+      shortcuts
+    );
   // Old request identities still need settlement after the execution controls disappear.
   return (
     <>
@@ -86,7 +101,7 @@ export function SessionOperations({
             open={open}
             onOpenChange={onOpenChange}
             showTrigger={false}
-            shortcuts={shortcuts}
+            shortcuts={header}
             ownership={pendingOutcome}
           />
         )}

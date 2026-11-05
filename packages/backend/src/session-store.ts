@@ -30,6 +30,7 @@ const supported = [
   "grok-build",
   "antigravity",
   "cursor",
+  "deepseek-harness",
 ];
 export interface NativeSession {
   native_ref: string;

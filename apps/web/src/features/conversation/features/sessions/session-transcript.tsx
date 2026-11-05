@@ -381,9 +381,6 @@ function MessageBlock({
           </div>
           {!isUser && <TurnFileChanges events={message.events} locale={locale} />}
         </div>
-        {message.running && (
-          <span className="mt-2 px-1 text-[11px] text-muted-foreground">{labels.incomplete}</span>
-        )}
       </div>
     </article>
   );

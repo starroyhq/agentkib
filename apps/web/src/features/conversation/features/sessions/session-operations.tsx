@@ -50,7 +50,11 @@ export function SessionOperations({
       )}
     </div>
   );
-  if (current?.agent !== "codex" && current?.agent !== "claude-code")
+  if (
+    current?.agent !== "codex" &&
+    current?.agent !== "claude-code" &&
+    current?.agent !== "deepseek-harness"
+  )
     return open ? (
       <Dialog
         panel

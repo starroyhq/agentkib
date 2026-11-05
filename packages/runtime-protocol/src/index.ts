@@ -179,6 +179,10 @@ export const RUNTIME_METHODS = {
   insightsStatus: "insights.status",
   quotaCollectorStatus: "quota.collectorStatus",
   quotaSnapshot: "quota.snapshot",
+  localCostSnapshot: "quota.costSnapshot",
+  localCostStatus: "quota.costStatus",
+  refreshLocalCost: "quota.refreshCost",
+  observeLocalCosts: "quota.observeCosts",
   quotaPreferences: "quota.preferences",
   setQuotaPreferences: "quota.setPreferences",
   refreshQuota: "quota.refresh",
@@ -234,4 +238,5 @@ export interface RuntimeRpcError {
   data?: unknown;
 }
 export * from "./claude-bridge";
+export * from "./quota-cost";
 export * from "./dsh-bridge";

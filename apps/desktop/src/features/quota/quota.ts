@@ -72,7 +72,13 @@ export function visibleQuotaWindows(provider: QuotaProvider, preferences: QuotaP
 }
 
 export function lowestRemaining(provider: QuotaProvider) {
-  const values = flattenQuotaWindows(provider).map(({ window }) => window.remaining_percent);
+  const values = flattenQuotaWindows(provider)
+    .filter(({ window }) => window.usage_known !== false)
+    .map(({ window }) => window.remaining_percent)
+    .filter(
+      (remaining): remaining is number =>
+        typeof remaining === "number" && Number.isFinite(remaining),
+    );
   return values.length ? Math.min(...values) : undefined;
 }
 
@@ -88,7 +94,7 @@ export function compareQuotaProviders(left: QuotaProvider, right: QuotaProvider)
 }
 
 export function providerIsUnavailable(provider: QuotaProvider) {
-  return flattenQuotaWindows(provider).length === 0;
+  return lowestRemaining(provider) === undefined;
 }
 
 export function providerHasPartialData(provider: QuotaProvider) {

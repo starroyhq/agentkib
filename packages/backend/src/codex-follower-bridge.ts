@@ -17,6 +17,9 @@ export class CodexFollowerBridge {
   #resyncAfterMutation = false;
   #closed = false;
   #operations: Promise<void> = Promise.resolve();
+  #stopObserving?: () => void;
+  #drainScheduled = false;
+  #drainTimer?: ReturnType<typeof setImmediate>;
 
   private constructor(
     readonly connection: CodexFollowerConnection,
@@ -34,6 +37,7 @@ export class CodexFollowerBridge {
     const bridge = new CodexFollowerBridge(connection, onSnapshot);
     try {
       await bridge.select(conversationId);
+      bridge.#stopObserving = connection.onReadable(() => bridge.#scheduleDrain());
       return bridge;
     } catch (error) {
       bridge.close();
@@ -80,7 +84,7 @@ export class CodexFollowerBridge {
       this.#resyncAfterMutation = false;
       this.#publishSnapshot(state);
     } catch (error) {
-      state.invalidate("unsupported");
+      if (state.revision !== null) state.invalidate("unsupported");
       throw error;
     }
   }
@@ -143,7 +147,7 @@ export class CodexFollowerBridge {
       if (state.snapshotCount > before) this.#lastFullRefresh = Date.now();
       return state;
     } catch (error) {
-      state.invalidate("unsupported");
+      if (state.revision !== null) state.invalidate("unsupported");
       throw error;
     }
   }
@@ -179,7 +183,7 @@ export class CodexFollowerBridge {
       this.#publishSnapshot(state);
       return state;
     } catch (error) {
-      state.invalidate("unsupported");
+      if (state.revision !== null) state.invalidate("unsupported");
       throw error;
     }
   }
@@ -244,8 +248,35 @@ export class CodexFollowerBridge {
   close(): void {
     if (this.#closed) return;
     this.#closed = true;
+    this.#stopObserving?.();
+    clearImmediate(this.#drainTimer);
     this.#unfollow();
     this.connection.disconnect();
+  }
+
+  #scheduleDrain(): void {
+    if (this.#closed || this.#drainScheduled) return;
+    this.#drainScheduled = true;
+    this.#drainTimer = setImmediate(() => {
+      this.#drainTimer = undefined;
+      // Never run a second socket reader alongside discovery or a mutation ACK.
+      // The bounded drain yields between bursts so controls and other sessions
+      // retain their place in the same operation queue.
+      void this.#enqueue(async () => {
+        if (!this.connected) return;
+        try {
+          await this.#observeLive();
+        } catch {
+          // A malformed stream cannot leave an unconsumed queue spinning. The
+          // normal live read will reconnect and revalidate the native owner.
+          this.connection.disconnect();
+        }
+      }).finally(() => {
+        this.#drainScheduled = false;
+        if (this.connection.hasPendingMessages) this.#scheduleDrain();
+      });
+    });
+    this.#drainTimer.unref();
   }
 
   // Requests and notification drains share a single-consumer connection. Keep

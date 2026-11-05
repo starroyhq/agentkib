@@ -7,6 +7,8 @@ import type {
   AppNavigationRequest,
   AppUpdateProgress,
   QuotaSnapshot,
+  LocalCostProvider,
+  LocalCostUpdate,
   RefreshJobStatus,
   SkillSyncCoordinatorState,
   SkillSyncComparison,
@@ -46,6 +48,8 @@ const desktopApi = Object.freeze({
       subscribe("agentkib:skills:sync-state-changed", listener),
     onQuotaUpdated: (listener: (snapshot: QuotaSnapshot) => void) =>
       subscribe("agentkib:quota-updated", listener),
+    onLocalCostUpdated: (listener: (update: LocalCostUpdate) => void) =>
+      subscribe("agentkib:local-cost-updated", listener),
     onNavigate: (listener: (request: AppNavigationRequest) => void) =>
       subscribe("agentkib:navigate", listener),
     onMenuCommand: (listener: (request: AppMenuCommandRequest) => void) =>
@@ -400,7 +404,16 @@ const desktopApi = Object.freeze({
     quotaPreferences: () => ipcRenderer.invoke("agentkib:home:quota-preferences"),
     setQuotaPreferences: (preferences: unknown) =>
       ipcRenderer.invoke("agentkib:home:set-quota-preferences", preferences),
-    refreshQuota: (force?: boolean) => ipcRenderer.invoke("agentkib:home:refresh-quota", force),
+    refreshQuota: (force?: boolean, provider?: string) =>
+      ipcRenderer.invoke("agentkib:home:refresh-quota", force, provider),
+    localCostSnapshot: (provider: LocalCostProvider) =>
+      ipcRenderer.invoke("agentkib:home:local-cost-snapshot", provider),
+    localCostStatus: (provider: LocalCostProvider) =>
+      ipcRenderer.invoke("agentkib:home:local-cost-status", provider),
+    refreshLocalCost: (provider: LocalCostProvider, force?: boolean) =>
+      ipcRenderer.invoke("agentkib:home:refresh-local-cost", provider, force),
+    observeLocalCosts: (provider: LocalCostProvider | null) =>
+      ipcRenderer.invoke("agentkib:home:observe-local-costs", provider),
     setLocalAutoRefresh: (enabled: boolean) =>
       ipcRenderer.invoke("agentkib:home:set-local-auto-refresh", enabled),
     setQuotaAutoRefresh: (enabled: boolean) =>

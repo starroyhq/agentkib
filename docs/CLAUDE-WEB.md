@@ -38,18 +38,18 @@
 托管执行和额度采集是两条独立路径，对凭据的处理不同。
 
 - **托管执行不读取凭据。** AgentKib 只启动本机 `claude` CLI（`--print`，输入输出为 `stream-json`），沿用 CLI 自己的登录状态和供应商配置。AgentKib 不读取、复制或下发 Claude 的登录凭据，也不访问 Claude Code 的凭据文件或 Keychain 项。
-- **额度采集由第三方 sidecar 完成，sidecar 可能读取凭据。** 额度由随应用打包的 CodexBar 采集（macOS 与 Linux 为 CodexBarCLI 0.49.5，Windows x64 为 Win-CodexBar 0.60.3）。它以你的用户环境运行 `dashboard` 命令，只在你手动刷新额度，或开启“自动获取额度”（默认关闭）后启动。AgentKib 自身不读取下列来源：它解析 sidecar 输出的 JSON，保留标准化后的额度窗口、余额、重置时间以及 sidecar 报告的账号邮箱和套餐，并对错误信息脱敏。
+- **额度采集由第三方 sidecar 完成，sidecar 可能读取凭据。** 额度由随应用打包的 CodexBar 采集（macOS 与 Linux 为带补丁的 CodexBarCLI 0.83.0，Windows x64 为带补丁的 Win-CodexBar 0.70.0）。它以你的用户环境运行 `dashboard --no-local-costs --provider …` 命令，只在你手动刷新额度，或开启“自动获取额度”（默认关闭）后启动。AgentKib 自身不读取下列来源：它解析 sidecar 输出的 JSON，保留标准化后的额度窗口、余额、重置时间以及 sidecar 报告的账号邮箱和套餐，并对错误信息脱敏。
 
-据 CodexBar 文档（v0.49.5 的 `docs/claude.md` 与 `docs/refactor/claude-current-baseline.md`），Claude 的数据源有：
+依照上游配置，Claude 采集器可能使用以下来源；认证与来源选择由采集器负责：
 
 - **网页 API：** claude.ai 的 `sessionKey` Cookie，从浏览器配置文件导入（文档列出的位置是 macOS 的 Safari、Chrome 系浏览器和 Firefox），或使用手动提供的 Cookie 头；请求发往 `claude.ai`。
 - **CLI PTY：** 在伪终端里启动 `claude`，发送 `/usage`（可选 `/status`）并解析输出。工作目录是 CodexBar 自己的探测目录，探测留下的会话日志由它清理。
 - **OAuth API：** 凭据来自 CodexBar 自己的 OAuth 缓存、文件 `~/.claude/.credentials.json`，以及作为后备的 Keychain 项 `Claude Code-credentials`；请求发往 `api.anthropic.com`。
 - **本地日志统计：** 扫描 Claude Code 的 `projects/**/*.jsonl`（`$CLAUDE_CONFIG_DIR`、`~/.config/claude`、`~/.claude` 等位置下），读取助手消息里按模型记录的 Token 用量，用于计算费用。`dashboard` 命令在取得用量之后，会为已启用的 Claude 另做一次这样的统计。
 
-对 macOS 与 Linux 上打包的 CodexBarCLI，文档记载的自动顺序是先用网页 API、再用 CLI PTY；OAuth API 在 CodexBar 配置里显式选择时才生效。文档同时说明个别内部代码路径仍使用不同的自动顺序，所以这是上游文档记载的行为，不是 AgentKib 的保证，具体采用哪个来源由 CodexBar 的自动选择和你的 CodexBar 设置决定。没有 CodexBar 配置时，AgentKib 生成的配置（应用数据目录下的 `quota/codexbar-config.json`，仅当前用户可读写）只启用已安装的 Provider，检测到 Claude Code 时启用 `claude`，不选择数据源，也不写入密钥或 Cookie。已有的 CodexBar 配置（`$XDG_CONFIG_HOME/codexbar/config.json`、`~/.config/codexbar/config.json` 或 `~/.codexbar/config.json`）或环境变量 `CODEXBAR_CONFIG` 优先，额度页的采集器诊断会显示实际使用的配置来源。
+本次升级不替用户选择新的认证来源。没有 CodexBar 配置时，AgentKib 生成的配置（应用数据目录下的 `quota/codexbar-config.json`，仅当前用户可读写）只启用已安装的 Provider，不写入密钥或 Cookie。已有配置（`$XDG_CONFIG_HOME/codexbar/config.json`、`~/.config/codexbar/config.json`、`~/.codexbar/config.json`）或 `CODEXBAR_CONFIG` 优先。Windows 使用其设置（包括 `CODEXBAR_CONFIG` 或 `%APPDATA%\CodexBar\settings.json`），诊断显示配置来源。
 
-Windows x64 使用的 Win-CodexBar 是独立的 Windows 移植版，有自己的 Claude provider。AgentKib 在 Windows 上不生成配置，由它使用自己的设置（`%APPDATA%\CodexBar\settings.json`）。其文档和源码（v0.60.3）同样涉及浏览器 Cookie（Chrome、Edge、Brave、Firefox）、`claude` CLI 和 OAuth，自动顺序为网页 Cookie、OAuth、`claude` CLI（已配置 Admin API 密钥时先用它）；读取 Claude Code 自己的凭据文件或凭据管理器条目，要先启用一项默认关闭的设置。
+费用面板是独立的本机原生日志扫描，按 API 价格估算 USD，不是订阅账单或当前登录账号的消费。进入额度页可按需读取和更新；离开后遵守“自动获取额度”开关。原始日志、项目路径和凭据不会通过费用 IPC 返回。构建版本、补丁和隔离验证见[采集器说明](QUOTA-COLLECTOR.md)。
 
 不希望 sidecar 触碰这些来源时，保持“自动获取额度”关闭，也不要手动刷新额度。
 

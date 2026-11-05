@@ -59,6 +59,7 @@ export function migrateSharedSchema(database: DatabaseSync): void {
     // Additive caches keep schema 15 compatible with previous releases. Collection IDs
     // are not workspaces and must not be inserted into the filesystem catalog.
     database.exec(sessionCollections);
+    database.exec(quotaCollectionCaches);
     const classification = database
       .prepare("SELECT value FROM schema_meta WHERE key='codex_session_classification_revision'")
       .get()?.value;
@@ -131,6 +132,21 @@ export function migrateSharedSchema(database: DatabaseSync): void {
     throw error;
   }
 }
+
+// These are disposable, additive caches; prior schema-15 releases can still open the database.
+const quotaCollectionCaches = `
+CREATE TABLE IF NOT EXISTS quota_provider_status (
+  provider TEXT PRIMARY KEY,
+  status_json TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS local_cost_cache (
+  scope_key TEXT PRIMARY KEY,
+  provider TEXT NOT NULL,
+  snapshot_json TEXT,
+  status_json TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_local_cost_provider ON local_cost_cache(provider);
+`;
 
 function setVersion(database: DatabaseSync, version: number): void {
   database

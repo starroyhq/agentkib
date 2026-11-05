@@ -49,6 +49,7 @@ export class ElectronRefreshCoordinator {
     REFRESH_KINDS.map((kind) => [kind, { status: idleStatus(kind), failures: 0 }]),
   );
   readonly #active = new Map<RefreshKind, Promise<RefreshReceipt>>();
+  readonly #quotaProviders = new Map<string, Promise<RefreshReceipt>>();
   readonly #initializedLocalKinds = new Set<RefreshKind>();
   readonly #manualRequests = new Set<RefreshKind>();
   readonly #timers = new Set<NodeJS.Timeout>();
@@ -167,9 +168,10 @@ export class ElectronRefreshCoordinator {
     };
     this.#emit(record.status);
 
-    const promise = this.#enqueue(() =>
-      this.#execute(kind, requestId, automatic, previousNextAllowed),
-    );
+    const execute = () => this.#execute(kind, requestId, automatic, previousNextAllowed);
+    // Quota has its own bounded provider queue in the runtime. Never wait behind
+    // workspace discovery, insights or a gateway network timeout.
+    const promise = kind === "quota" ? Promise.resolve().then(execute) : this.#enqueue(execute);
     this.#active.set(kind, promise);
     void promise
       .finally(() => {
@@ -180,6 +182,32 @@ export class ElectronRefreshCoordinator {
       })
       .catch(() => undefined);
     return promise;
+  }
+
+  requestQuota(provider?: string, force = true): Promise<RefreshReceipt> {
+    if (provider === undefined) return this.request("quota", force);
+    if (!/^[a-z][a-z0-9-]{0,63}$/.test(provider))
+      return Promise.reject(new Error("Invalid quota provider"));
+    const current = this.#quotaProviders.get(provider);
+    if (current) return current;
+    if (!this.#accepting || !this.#runtimeAvailable)
+      return Promise.reject(new Error("AgentKib runtime is unavailable"));
+    const task = this.#options
+      .runtime()
+      .request<RefreshReceipt>(RUNTIME_METHODS.refreshQuota, {
+        provider,
+      })
+      .then(async (receipt) => {
+        await this.#emitLatestQuotaSnapshot();
+        return receipt;
+      });
+    this.#quotaProviders.set(provider, task);
+    void task
+      .finally(() => {
+        if (this.#quotaProviders.get(provider) === task) this.#quotaProviders.delete(provider);
+      })
+      .catch(() => undefined);
+    return task;
   }
 
   async requestAll(force = false): Promise<RefreshReceipt[]> {

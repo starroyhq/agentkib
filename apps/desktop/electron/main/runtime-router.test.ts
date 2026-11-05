@@ -107,6 +107,29 @@ const historyRequests = [
   },
 ];
 
+describe("RuntimeRouter independent quota and local estimates", () => {
+  it.each([
+    [RUNTIME_METHODS.localCostSnapshot, { provider: "codex" }],
+    [RUNTIME_METHODS.localCostStatus, { provider: "claude" }],
+    [RUNTIME_METHODS.refreshLocalCost, { provider: "codex", force: true }],
+    [RUNTIME_METHODS.observeLocalCosts, { provider: null }],
+  ] as const)("routes %s without waiting for a slow quota collection", async (method, params) => {
+    const host = new Host();
+    const router = new RuntimeRouter(host);
+    await router.start();
+    const held = gate();
+    host.handler = async (name, values) => {
+      if (name === RUNTIME_METHODS.refreshQuota) await held.promise;
+      return values;
+    };
+    const quota = router.request(RUNTIME_METHODS.refreshQuota, {});
+    expect(await router.request(method, params)).toEqual(params);
+    held.resolve();
+    await quota;
+    await router.stop();
+  });
+});
+
 describe("RuntimeRouter Skill ownership", () => {
   it.each(Object.values(RUNTIME_METHODS).filter((method) => method.startsWith("skills.")))(
     "forwards %s through the real router exactly once",

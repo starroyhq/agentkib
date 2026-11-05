@@ -1,0 +1,2 @@
+# Collector patches are byte-hashed by lock.json and must be identical on every host.
+apps/desktop/scripts/quota-collector/*.patch text eol=lf

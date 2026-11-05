@@ -84,6 +84,7 @@ import {
   type SessionStreamEvent,
 } from "@agentkib/runtime-protocol";
 import { SessionStreamHub } from "./session-stream";
+import { mergeCodexFollowerSnapshot } from "./codex-follower-stream";
 import { SessionSnapshotHistory } from "./session-snapshot-history";
 import { BackendStore } from "./store";
 import { canonicalize } from "./paths";
@@ -203,6 +204,7 @@ export class TypeScriptBackend {
     this.#historySearch?.stop();
     this.#handoffQueue.stop();
     this.#storage?.cancel();
+    this.#quota?.stop();
     this.#sessionIndex?.close();
     this.#commands.close();
     this.#mcp?.close();
@@ -436,10 +438,16 @@ export class TypeScriptBackend {
             store.recordWorkspaceStorageFailure(id, at, key, detail),
           getWorkspace: (id) => store.getWorkspace(id),
         });
-        this.#quota = new QuotaOwner(store, this.#commands, dataDir, {
-          ...process.env,
-          ...this.environment,
-        });
+        this.#quota = new QuotaOwner(
+          store,
+          this.#commands,
+          dataDir,
+          { ...process.env, ...this.environment },
+          this.notify,
+        );
+        this.#quota.setCostAutoRefresh(
+          readPreferences(dataDir).quota_auto_refresh_enabled === true,
+        );
         this.#git = new Git(this.#commands, (id) => store.workspacePath(id), {
           ...process.env,
           ...this.environment,
@@ -781,7 +789,11 @@ export class TypeScriptBackend {
                     readHistory,
                   )
                 : await readHistory();
-            return { live, ...history };
+            const follower = this.#webRead?.readFollowerSnapshot(sessionId);
+            return {
+              live,
+              ...(follower ? mergeCodexFollowerSnapshot(history, follower) : history),
+            };
           },
           (event) => {
             this.notify(SESSION_EVENT_NOTIFICATION, event);
@@ -1385,7 +1397,22 @@ export class TypeScriptBackend {
       case RUNTIME_METHODS.quotaCollectorStatus:
         return this.#quota!.status();
       case RUNTIME_METHODS.refreshQuota:
-        return this.#quota!.refresh();
+        return this.#quota!.refresh(
+          params.provider === undefined ? undefined : string(params, "provider"),
+        );
+      case RUNTIME_METHODS.localCostSnapshot:
+        return this.#quota!.costSnapshot(localCostProvider(params.provider));
+      case RUNTIME_METHODS.localCostStatus:
+        return this.#quota!.costStatus(localCostProvider(params.provider));
+      case RUNTIME_METHODS.refreshLocalCost:
+        if (params.force !== undefined && typeof params.force !== "boolean")
+          invalid("Expected boolean force");
+        return this.#quota!.refreshCost(localCostProvider(params.provider), params.force === true);
+      case RUNTIME_METHODS.observeLocalCosts:
+        return this.#quota!.observeCosts(
+          params.provider === null ? null : localCostProvider(params.provider),
+          readPreferences(this.#dataDir).quota_auto_refresh_enabled === true,
+        );
       case RUNTIME_METHODS.quotaPreferences:
         return (
           parseQuotaPreferences(readPreferences(this.#dataDir).quota_popover) ?? {
@@ -1423,6 +1450,8 @@ export class TypeScriptBackend {
             ? { quota_auto_refresh_prompt_seen: true }
             : {}),
         });
+        if (method === RUNTIME_METHODS.setQuotaAutoRefresh)
+          this.#quota!.setCostAutoRefresh(params[aliases[0]!] === true);
         if (method === RUNTIME_METHODS.setSessionIndexEnabled && !params[aliases[0]!]) {
           this.#store.sessions.clear(null);
           return this.#historySearch!.clear().then(() => this.#preferences());
@@ -1955,7 +1984,8 @@ export class TypeScriptBackend {
         dataDir,
         () => this.#sessionIndex?.generation() ?? -1n,
         { ...process.env, ...this.environment },
-        (sessionId, type, payload, live) => this.#publishSession(sessionId, type, payload, live),
+        (sessionId, type, payload, live, item) =>
+          this.#publishSession(sessionId, type, payload, live, item),
         (sessionId) => this.#sessionStream?.hasSubscribers(sessionId) ?? false,
         this.#sessionIndex,
         () => this.#sessionStream?.publish("", "invalidate", { domains: ["catalog"] }),
@@ -2042,11 +2072,12 @@ export class TypeScriptBackend {
     type: SessionStreamEvent["type"],
     payload: Record<string, unknown>,
     live?: Record<string, unknown>,
+    textItem?: Record<string, unknown>,
   ) {
     if (type === "invalidate") this.#childSnapshots.invalidate(sessionId || undefined);
     else this.#childSnapshots.publish(sessionId, live ?? payload);
     if (type === "invalidate") this.#snapshotHistory?.invalidate(sessionId || undefined);
-    this.#sessionStream?.publish(sessionId, type, payload, live);
+    this.#sessionStream?.publish(sessionId, type, payload, live, textItem);
     if (sessionId && type === "state") {
       const state = live ?? payload;
       const status = JSON.stringify([
@@ -2088,6 +2119,11 @@ function object(value: unknown): Record<string, unknown> {
 
 function invalid(detail: string): never {
   throw new RpcFault(-32602, "Invalid method parameters", { detail });
+}
+
+function localCostProvider(value: unknown): "codex" | "claude" {
+  if (value !== "codex" && value !== "claude") invalid("Unsupported local cost provider");
+  return value;
 }
 
 function string(params: Record<string, unknown>, key: string): string {

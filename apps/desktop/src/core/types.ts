@@ -1,5 +1,15 @@
 import type { ConversationReadState } from "@agentkib/runtime-protocol";
 export type {
+  LocalCostProvider,
+  LocalCostRefreshState,
+  LocalCostModel,
+  LocalCostDay,
+  LocalCostTotal,
+  LocalCostSnapshot,
+  LocalCostStatus,
+  LocalCostUpdate,
+} from "@agentkib/runtime-protocol";
+export type {
   PrepareSkillSyncRequest,
   SkillSyncOperation,
   SkillSyncResolution,
@@ -1192,8 +1202,9 @@ export interface QuotaIdentity {
 export interface QuotaWindow {
   kind: string;
   label: string;
-  used_percent: number;
-  remaining_percent: number;
+  used_percent: number | null;
+  remaining_percent: number | null;
+  usage_known?: boolean;
   reset_at?: string;
 }
 export interface QuotaCredits {
@@ -1226,6 +1237,9 @@ export interface QuotaProvider {
   error?: string;
   updated_at?: string;
   accounts: QuotaAccount[];
+  fetched_at?: string;
+  refresh_state?: import("@agentkib/runtime-protocol").LocalCostRefreshState;
+  data_version?: string;
 }
 export interface QuotaSnapshot {
   schema_version: number;
@@ -1248,6 +1262,15 @@ export interface QuotaCollectorStatus {
   running: boolean;
   error_key?: string;
   error_detail?: string;
+  providers?: Record<string, QuotaProviderCollectionStatus>;
+}
+export interface QuotaProviderCollectionStatus {
+  state: import("@agentkib/runtime-protocol").LocalCostRefreshState;
+  last_attempt_at?: string;
+  last_success_at?: string;
+  error_key?: string;
+  error_detail?: string;
+  data_version?: string;
 }
 export interface QuotaWindowSelector {
   provider_id: string;

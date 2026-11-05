@@ -35,6 +35,7 @@ import { codexResumeCommand } from "./codex-resume-command";
 import { CodexFollowerBridge } from "./codex-follower-bridge";
 import { CodexFollowerConnection } from "./codex-follower-connection";
 import type { CodexFollowerState } from "./codex-follower-state";
+import { CodexFollowerStream } from "./codex-follower-stream";
 import { AntigravityManagedRunner } from "./antigravity-managed-runner";
 import { ManagedCodexState, elicitationResponse } from "./managed-codex-state";
 import { ManagedCodexEventBridge } from "./managed-codex-state";
@@ -345,6 +346,7 @@ type ManagedRunner = {
 
 type CodexFollowerRecord = {
   bridge: CodexFollowerBridge;
+  stream: CodexFollowerStream;
   workspaceId: string;
   workspace: string;
   nativeId: string;
@@ -421,6 +423,7 @@ export class WebReadRequests {
       type: "state" | "text-delta" | "item-upsert" | "snapshot",
       payload: Record<string, unknown>,
       live: Record<string, unknown>,
+      textItem?: Record<string, unknown>,
     ) => void,
     readonly isSessionObserved?: (sessionId: string) => boolean,
     readonly sessionIndex?: SessionIndex,
@@ -434,6 +437,14 @@ export class WebReadRequests {
 
   close(): void {
     void this.closeAsync().catch(() => undefined);
+  }
+
+  /** Resident native overlays also seed subscriptions that have not received any events yet. */
+  readFollowerSnapshot(sessionId: string): ReturnType<CodexFollowerStream["snapshot"]> | undefined {
+    const follower = this.#codexFollowers.get(sessionId);
+    if (!follower?.bridge.connected || follower.bridge.selectedState?.revision == null)
+      return undefined;
+    return follower.stream.snapshot();
   }
 
   closeAsync(): Promise<void> {
@@ -5307,14 +5318,16 @@ export class WebReadRequests {
       retire.bridge.close();
     }
     let bridge: CodexFollowerBridge | undefined;
+    const stream = new CodexFollowerStream();
     const publish = (snapshot: ReturnType<CodexFollowerState["streamSnapshot"]>) => {
       const state = bridge?.selectedState;
       if (!state) return;
-      const live = {
-        ...this.#followerLive(record, state, true),
-        streamText: snapshot.live.streamText,
-      };
-      this.publishConversationEvent?.(sessionId, "state", live, live);
+      stream.publish(
+        snapshot,
+        this.#followerLive(record, state, true),
+        (type, payload, live, item) =>
+          this.publishConversationEvent?.(sessionId, type, payload, live, item),
+      );
     };
     bridge = await CodexFollowerBridge.connect(
       path.join(home, "ipc", "ipc.sock"),
@@ -5329,6 +5342,7 @@ export class WebReadRequests {
         throw new Error("session-unavailable");
       const follower = {
         bridge,
+        stream,
         workspaceId: record.workspace_id,
         workspace,
         nativeId,

@@ -1147,6 +1147,13 @@ button {
     color 160ms ease;
   -webkit-app-region: no-drag;
 }
+
+.activity-bar-item svg,
+.activity-bar-search svg {
+  width: 20px;
+  height: 20px;
+}
+
 :root:not([data-accent-theme]),
 :root[data-accent-theme="vtron"] {
   --activity-icon: var(--primary);

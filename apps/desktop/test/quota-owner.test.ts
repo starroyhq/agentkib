@@ -24,13 +24,14 @@ function fixture() {
   const sidecar = path.join(root, "collector");
   const config = path.join(root, "config.json");
   writeFileSync(sidecar, "synthetic executable, intercepted at process boundary");
-  writeFileSync(config, '{"version":1,"providers":[]}');
+  writeFileSync(config, '{"version":1,"providers":[{"id":"codex","enabled":true}]}');
   const owner = new QuotaOwner(store, commands, root, {
     AGENTKIB_QUOTA_SIDECAR: sidecar,
     CODEXBAR_CONFIG: config,
     // Keep Windows proxy discovery from invoking a separate command.
     HTTPS_PROXY: "http://127.0.0.1:1",
   });
+  cleanups.push(() => owner.stop());
   store.saveQuotaSnapshot({
     backend: "codex-bar-cli",
     generated_at: previousTime,
@@ -45,7 +46,19 @@ function fixture() {
     config_source: "environment",
     running: false,
   });
+  let expectedCalls = 1;
   function respond(providers: unknown[]) {
+    const enabled = (providers as Array<{ id: string; enabled: boolean }>).filter(
+      (entry) => entry.enabled,
+    );
+    expectedCalls = enabled.length;
+    writeFileSync(
+      config,
+      JSON.stringify({
+        version: 1,
+        providers: enabled.map((entry) => ({ id: entry.id, enabled: true })),
+      }),
+    );
     const snapshot = {
       schemaVersion: 1,
       generatedAt: new Date().toISOString(),
@@ -61,7 +74,7 @@ function fixture() {
       exitCode: 0,
     });
   }
-  return { store, owner, run, before, respond };
+  return { store, owner, run, before, respond, expectedCalls: () => expectedCalls };
 }
 
 function window(remaining = 57) {
@@ -115,7 +128,7 @@ describe("quota collection diagnostics and partial results", () => {
       ],
     });
     expect(await f.owner.status()).not.toHaveProperty("error_key");
-    expect(f.run).toHaveBeenCalledOnce();
+    expect(f.run).toHaveBeenCalledTimes(f.expectedCalls());
   });
 
   it.each(["Authentication failed (401)", "codex usage timed out", "unknown provider failure"])(
@@ -130,7 +143,7 @@ describe("quota collection diagnostics and partial results", () => {
         error_key: "errors.quotaUnavailable",
         error_detail: expect.stringContaining(`codex: ${error}`),
       });
-      expect(f.run).toHaveBeenCalledOnce();
+      expect(f.run).toHaveBeenCalledTimes(f.expectedCalls());
     },
   );
 
@@ -164,13 +177,18 @@ describe("quota collection diagnostics and partial results", () => {
       expect(f.owner.snapshot()).toMatchObject({
         fetched_at: previousTime,
         freshness: "stale",
-        providers: [{ windows: [{ remaining_percent: 13 }] }],
+        providers: expect.arrayContaining([
+          expect.objectContaining({
+            id: "codex",
+            windows: expect.arrayContaining([expect.objectContaining({ remaining_percent: 13 })]),
+          }),
+        ]),
       });
       expect(await f.owner.status()).toMatchObject({
         last_success_at: (f.before as { last_success_at: string }).last_success_at,
         error_key: "errors.quotaUnavailable",
       });
-      expect(f.run).toHaveBeenCalledOnce();
+      expect(f.run).toHaveBeenCalledTimes(f.expectedCalls());
     },
   );
 
@@ -201,7 +219,7 @@ describe("quota collection diagnostics and partial results", () => {
     f.respond([provider("codex", { windows: [window()], ...errors })]);
     await expect(f.owner.refresh()).rejects.toThrow("no usable quota");
     expect(f.owner.snapshot()).toMatchObject({ fetched_at: previousTime, freshness: "stale" });
-    expect(f.run).toHaveBeenCalledOnce();
+    expect(f.run).toHaveBeenCalledTimes(f.expectedCalls());
   });
 
   it("does not treat a discarded null credit balance as usable quota", async () => {
@@ -359,7 +377,7 @@ describe("quota collection diagnostics and partial results", () => {
       });
       expect(JSON.stringify(await f.owner.status())).not.toContain("SYNTHETIC-");
       expect(f.owner.snapshot()).toMatchObject({ fetched_at: previousTime, freshness: "stale" });
-      expect(f.run).toHaveBeenCalledOnce();
+      expect(f.run).toHaveBeenCalledTimes(f.expectedCalls());
     },
   );
 
@@ -401,7 +419,7 @@ describe("quota collection diagnostics and partial results", () => {
       }
       expect(JSON.stringify(await f.owner.status())).not.toContain("SYNTHETIC-");
       expect(JSON.stringify(f.owner.snapshot())).not.toContain("SYNTHETIC-");
-      expect(f.run).toHaveBeenCalledOnce();
+      expect(f.run).toHaveBeenCalledTimes(f.expectedCalls());
     },
   );
 
@@ -418,7 +436,7 @@ describe("quota collection diagnostics and partial results", () => {
     await expect(refresh).rejects.toThrow("Request failed (403)");
     await expect(refresh).rejects.not.toThrow("SYNTHETIC-");
     expect(JSON.stringify(await f.owner.status())).not.toContain("SYNTHETIC-");
-    expect(f.run).toHaveBeenCalledOnce();
+    expect(f.run).toHaveBeenCalledTimes(f.expectedCalls());
   });
 
   it("retains ordinary structured errors for diagnosis", async () => {
@@ -469,7 +487,7 @@ describe("quota collection diagnostics and partial results", () => {
       for (const stored of [f.owner.snapshot(), await f.owner.status()]) {
         expect(JSON.stringify(stored)).not.toContain("SYNTHETIC-VALUE");
       }
-      expect(f.run).toHaveBeenCalledOnce();
+      expect(f.run).toHaveBeenCalledTimes(f.expectedCalls());
     }
   });
 
@@ -526,7 +544,7 @@ describe("quota collection diagnostics and partial results", () => {
       });
       expect(JSON.stringify(f.owner.snapshot())).not.toContain("SYNTHETIC-");
       expect(JSON.stringify(await f.owner.status())).not.toContain("SYNTHETIC-");
-      expect(f.run).toHaveBeenCalledOnce();
+      expect(f.run).toHaveBeenCalledTimes(f.expectedCalls());
     },
   );
 
@@ -546,7 +564,7 @@ describe("quota collection diagnostics and partial results", () => {
       await expect(refresh).rejects.not.toThrow("SYNTHETIC-");
       expect(JSON.stringify(await f.owner.status())).not.toContain("SYNTHETIC-");
       expect(f.owner.snapshot()).toMatchObject({ fetched_at: previousTime, freshness: "stale" });
-      expect(f.run).toHaveBeenCalledOnce();
+      expect(f.run).toHaveBeenCalledTimes(f.expectedCalls());
     },
   );
 
@@ -596,7 +614,7 @@ describe("quota collection diagnostics and partial results", () => {
       }
       expect(JSON.stringify(await f.owner.status())).not.toContain("SYNTHETIC-");
       expect(JSON.stringify(f.owner.snapshot())).not.toContain("SYNTHETIC-");
-      expect(f.run).toHaveBeenCalledOnce();
+      expect(f.run).toHaveBeenCalledTimes(f.expectedCalls());
     },
   );
 
@@ -698,7 +716,7 @@ describe("quota collection diagnostics and partial results", () => {
         expect(JSON.stringify(stored)).not.toContain("SYNTHETIC-");
         expect(JSON.stringify(stored)).not.toContain("example.test");
       }
-      expect(f.run).toHaveBeenCalledOnce();
+      expect(f.run).toHaveBeenCalledTimes(f.expectedCalls());
     }
   });
 
@@ -723,7 +741,7 @@ describe("quota collection diagnostics and partial results", () => {
     await expect(f.owner.refresh()).rejects.toThrow("Request failed (403)");
     const status = (await f.owner.status()) as { error_detail: string };
     expect(status.error_detail.length).toBeLessThanOrEqual(1000);
-    expect(f.run).toHaveBeenCalledOnce();
+    expect(f.run).toHaveBeenCalledTimes(f.expectedCalls());
   });
 
   it.each([

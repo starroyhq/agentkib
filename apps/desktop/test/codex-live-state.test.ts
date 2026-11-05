@@ -972,6 +972,7 @@ describe("follower final dispatch compaction gate", () => {
       connected: true,
       supportsThreadSettings: true,
       disconnect() {},
+      onReadable: () => () => {},
       broadcast: vi.fn(async () => {}),
       receive: vi.fn(async () => received.shift() ?? null),
       request: vi.fn(

@@ -34,20 +34,22 @@ Current native and synthetic results are recorded separately in [connection QA](
 | Asset catalog | A machine-wide view of Instructions, Skills, MCP, memory, and other agent assets |
 | Skill Hub | A local Skill library, existing-installation inspection and batch copy import, reviewed OpenAI/GitHub sources, GitHub version selection, personal/project deployment, updates, rollback, withdrawal, and recoverable library removal |
 | Agents | Installation state, configuration homes, capabilities, and discovered assets |
-| Quota | Locally available quota windows, balances, and reset times |
+| Quota | Quota windows, balances, reset times, and local Codex/Claude API-price estimates |
 | Insights | Token, session, Git activity, heatmaps, and achievements derived locally |
 | Settings | Discovery roots, tool updates, integrations, privacy controls, and diagnostics |
 
-Quota diagnostics show the last attempt, last success, automatic-refresh setting and redacted provider failures. Verified Codex/Claude cost-scan timeouts can retain successfully collected quota windows with a partial-data warning. A complete failure retains the last-good snapshot as stale; expired reset times request a refresh instead of showing a future countdown.
+Quota collection runs independently of workspace refreshes and local cost scans, with at most two providers at once. Each provider publishes its result immediately and retains its last-good cache on failure. Unknown usage stays unknown, including Windows placeholder percentages. Diagnostics keep separate provider attempts, successes and errors; expired reset times request a refresh instead of showing a future countdown.
 
-Quota collection is separate from Claude Code managed execution, which never reads credentials (see [Claude usage](CLAUDE-WEB.md)). Quotas come from a bundled third-party sidecar (CodexBarCLI 0.49.5 on macOS and Linux, Win-CodexBar 0.60.3 on Windows x64) that runs with your user environment, and only on a manual refresh or after you turn on "Automatically get quota" (off by default). AgentKib itself does not read provider credentials: it parses the sidecar's JSON, keeps the normalized windows, balances, reset times, account email and plan, and redacts credential-like text from errors. The sidecar, however, may read credentials. For Claude, the CodexBar documentation (v0.49.5) lists these sources:
+The local usage estimate panel shows today's USD estimate and tokens, a rolling 30-day USD estimate, daily cost/token trends and model details. These are API-price estimates from this machine's native Codex/Claude logs, not the selected quota account's usage or actual bill. It excludes other tools' mirrored/imported histories. Dates use the collector machine's local timezone, shown in the panel. Unpriced models and incomplete history remain visible; missing days are not filled with invented zeroes. Cost cache, progress and errors are independent of quota. See [collector builds and validation](QUOTA-COLLECTOR.md).
+
+Quota collection is separate from Claude Code managed execution, which never reads credentials (see [Claude usage](CLAUDE-WEB.md)). Quotas come from a bundled third-party sidecar (patched CodexBarCLI 0.83.0 on macOS and Linux, patched Win-CodexBar 0.70.0 on Windows x64) that runs with your user environment, and only on a manual refresh or after you turn on "Automatically get quota" (off by default). AgentKib itself does not read provider credentials: it parses the sidecar's JSON, keeps the normalized windows, balances, reset times, account email and plan, and redacts credential-like text from errors. The sidecar, however, may read credentials. Depending on its configuration, the collector may use these Claude sources:
 
 - The claude.ai `sessionKey` cookie, imported from a browser profile (the documented locations are macOS Safari, Chrome-family and Firefox) or supplied as a manual cookie header.
 - A probe that runs the `claude` CLI in a pseudo-terminal to read `/usage`.
 - Claude Code's OAuth credentials (CodexBar's own cache, `~/.claude/.credentials.json`, or the `Claude Code-credentials` Keychain item), used against `api.anthropic.com`.
 - For cost totals, a scan of local Claude Code session logs (`projects/**/*.jsonl`) for per-model token counts.
 
-For the CodexBarCLI bundled on macOS and Linux, the documented automatic order is the cookie source first and the `claude` probe second, and the OAuth source applies when it is selected explicitly in the CodexBar configuration. The same documentation notes that some internal code paths still use a different automatic order, so treat this as upstream's documented behavior, not an AgentKib guarantee. When no CodexBar configuration exists, the one AgentKib generates only enables the installed providers (among Codex, Claude Code and Cursor) and does not choose a source; an existing CodexBar configuration or `CODEXBAR_CONFIG` takes precedence, and the collector diagnostics on the Quota page show which configuration is in use. Win-CodexBar is a separate Windows port: its documentation and source (v0.60.3) also cover browser cookies (Chrome, Edge, Brave, Firefox), the `claude` CLI and OAuth, with the automatic order web cookies, then OAuth, then the `claude` CLI (after an Admin API key, when one is configured). It reads Claude Code's own credential file or credential-manager entry only after a setting that is off by default is enabled.
+Provider authentication and source selection remain owned by the upstream collector and its configuration; AgentKib does not select a new credential source during this upgrade. When no CodexBar configuration exists on macOS/Linux, AgentKib only enables installed providers (Codex, Claude Code and Cursor). Existing CodexBar configuration or `CODEXBAR_CONFIG` takes precedence. Windows uses its own settings, including `CODEXBAR_CONFIG` or `%APPDATA%\CodexBar\settings.json`. Diagnostics show the configuration source. Quota uses the patched `dashboard --no-local-costs --provider …` path; unsupported external collectors retain cached data and ask for an update rather than falling back to mixed collection. Local costs use a separate native-only command.
 
 ### Inside a workspace
 
@@ -182,20 +184,22 @@ Platform setup and known limitations are documented in the [Windows guide](WINDO
 | 全局资产目录 | 跨工作区查看 Instructions、Skills、MCP、记忆和其他 Agent 资产 |
 | Skill Hub | 本地 Skill 资源库、已有安装查看与批量复制入库、OpenAI 精选及 GitHub 导入与版本选择、个人/项目部署、更新、回滚、撤销部署和资源库可恢复移除 |
 | Agent | 安装状态、配置 Home、能力和已发现资产 |
-| 额度 | 本机可读取的额度窗口、余额和重置时间 |
+| 额度 | 额度窗口、余额、重置时间，以及本机 Codex/Claude API 价格估算 |
 | 洞察 | 本地派生的 Token、会话、Git 活动、热力图和成就 |
 | 设置 | 发现目录、工具更新、集成、隐私控制和诊断 |
 
-额度诊断显示最近尝试、最近成功、自动刷新设置及脱敏后的 Provider 错误。已验证的 Codex/Claude 费用统计超时不会丢弃成功取得的额度窗口，同时保留部分数据失败提示。完全失败时保留并标记上次成功快照；已过期的重置时间提示刷新，不再显示未来倒计时。
+额度采集不等待工作区刷新或本机费用扫描，最多并发两个 Provider，每个完成后立即显示。失败保留上次成功数据，未知用量保持未知，包括 Windows 的占位百分比。诊断分别保存各 Provider 的尝试、成功时间与错误；已过期的重置时间提示刷新。
 
-额度采集与 Claude Code 托管执行是两条独立路径，托管执行不读取凭据（见 [Claude 使用说明](CLAUDE-WEB.md)）。额度由随应用打包的第三方 sidecar 采集（macOS 与 Linux 为 CodexBarCLI 0.49.5，Windows x64 为 Win-CodexBar 0.60.3），它以你的用户环境运行，只在手动刷新或你开启“自动获取额度”（默认关闭）后启动。AgentKib 自身不读取各 Provider 的凭据：它解析 sidecar 输出的 JSON，保留标准化后的额度窗口、余额、重置时间、账号邮箱与套餐，并对错误信息脱敏；但 sidecar 可能读取凭据。对 Claude，CodexBar 文档（v0.49.5）列出的来源有：
+“本机用量估算”显示今日 USD 估算费用和 Token、近 30 天费用、每日费用／Token 趋势和模型明细。数据仅来自本机原生 Codex/Claude 日志，排除其他工具镜像和导入记录；不归属当前额度账号，不是实际账单。日期按采集机器自然日计算，页面标明时区；未定价模型、不完整历史和未知值明确展示，缺失日期不补零。费用与额度分别缓存、更新和报错。构建与隔离验证见[采集器说明](QUOTA-COLLECTOR.md)。
+
+额度采集与 Claude Code 托管执行是两条独立路径，托管执行不读取凭据（见 [Claude 使用说明](CLAUDE-WEB.md)）。额度由随应用打包的第三方 sidecar 采集（macOS 与 Linux 为带补丁的 CodexBarCLI 0.83.0，Windows x64 为带补丁的 Win-CodexBar 0.70.0），它以你的用户环境运行，只在手动刷新或你开启“自动获取额度”（默认关闭）后启动。AgentKib 自身不读取各 Provider 的凭据：它解析 sidecar 输出的 JSON，保留标准化后的额度窗口、余额、重置时间、账号邮箱与套餐，并对错误信息脱敏；但 sidecar 可能读取凭据。依照采集器配置，Claude 可能使用以下来源：
 
 - claude.ai 的 `sessionKey` Cookie，从浏览器配置文件导入（文档列出的位置是 macOS 的 Safari、Chrome 系浏览器和 Firefox），或使用手动提供的 Cookie 头。
 - 在伪终端中运行 `claude` CLI 读取 `/usage` 的探测。
 - Claude Code 的 OAuth 凭据（CodexBar 自己的缓存、`~/.claude/.credentials.json`，或 Keychain 项 `Claude Code-credentials`），用于访问 `api.anthropic.com`。
 - 为统计费用，扫描本地 Claude Code 会话日志（`projects/**/*.jsonl`）里按模型记录的 Token 数量。
 
-对 macOS 与 Linux 上打包的 CodexBarCLI，文档记载的自动顺序是先用 Cookie 来源、再用 `claude` 探测，OAuth 来源在 CodexBar 配置里显式选择时才生效；文档同时说明个别内部代码路径仍使用不同的自动顺序，所以这是上游文档记载的行为，不是 AgentKib 的保证。没有 CodexBar 配置时，AgentKib 生成的配置只启用已安装的 Provider（Codex、Claude Code、Cursor 之中），不选择数据源；已有的 CodexBar 配置或 `CODEXBAR_CONFIG` 优先，额度页的采集器诊断会显示实际使用的配置。Win-CodexBar 是独立的 Windows 移植版：其文档和源码（v0.60.3）同样涉及浏览器 Cookie（Chrome、Edge、Brave、Firefox）、`claude` CLI 和 OAuth，自动顺序为网页 Cookie、OAuth、`claude` CLI（已配置 Admin API 密钥时先用它）；只有启用一项默认关闭的设置后，才会读取 Claude Code 自己的凭据文件或凭据管理器条目。
+Provider 的认证与来源选择继续由上游采集器及其配置决定，本次升级不替用户选择新的凭据来源。macOS/Linux 没有配置时，AgentKib 只启用已安装的 Codex、Claude Code、Cursor；已有配置或 `CODEXBAR_CONFIG` 优先。Windows 使用其设置，包括 `CODEXBAR_CONFIG` 或 `%APPDATA%\CodexBar\settings.json`，诊断显示实际配置来源。额度使用带补丁的 `dashboard --no-local-costs --provider …`；外部采集器不支持时保留缓存并提示更新，不退回混合采集。费用通过独立的严格原生来源命令统计。
 
 ### 工作区内
 

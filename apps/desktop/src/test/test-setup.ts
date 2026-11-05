@@ -25,6 +25,7 @@ if (typeof window !== "undefined") {
         onThemeChanged: () => unsubscribe,
         onRefreshState: () => unsubscribe,
         onQuotaUpdated: () => unsubscribe,
+        onLocalCostUpdated: () => unsubscribe,
         onNavigate: () => unsubscribe,
         onMenuCommand: () => unsubscribe,
         onRuntimeStatus: () => unsubscribe,

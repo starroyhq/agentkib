@@ -38,6 +38,7 @@ import type {
   MemoryType,
   OnboardingEvent,
   QuotaPopoverPreferences,
+  LocalCostProvider,
   QuotaWindowSelector,
   RefreshKind,
   RemoteGatewayInput,
@@ -363,7 +364,13 @@ export const api = {
   setGitIdentityEnabled: (id: string, enabled: boolean) =>
     desktopApi().insights.setGitIdentityEnabled(id, enabled),
   quotaSnapshot: () => desktopApi().home.quotaSnapshot(),
-  refreshQuota: () => desktopApi().home.refreshQuota(true),
+  refreshQuota: (provider?: string) => desktopApi().home.refreshQuota(true, provider),
+  localCostSnapshot: (provider: LocalCostProvider) => desktopApi().home.localCostSnapshot(provider),
+  localCostStatus: (provider: LocalCostProvider) => desktopApi().home.localCostStatus(provider),
+  refreshLocalCost: (provider: LocalCostProvider, force = true) =>
+    desktopApi().home.refreshLocalCost(provider, force),
+  observeLocalCosts: (provider: LocalCostProvider | null) =>
+    desktopApi().home.observeLocalCosts(provider),
   quotaCollectorStatus: () => desktopApi().home.quotaCollectorStatus(),
   quotaPopoverPreferences: () => desktopApi().home.quotaPreferences(),
   setQuotaPopoverPreferences: (preferences: QuotaPopoverPreferences) =>

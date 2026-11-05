@@ -4,6 +4,8 @@ import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { StrictMode } from "react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { ConversationEvent } from "@agentkib/web-client";
+import { createConversationStore, type SessionStreamEvent } from "@agentkib/conversation-state";
+import { CodexFollowerStream } from "../../../../../../../../packages/backend/src/codex-follower-stream";
 import { SessionTranscript } from "./session-transcript";
 
 const props = {
@@ -42,6 +44,47 @@ function event(
 afterEach(cleanup);
 
 describe("production transcript identity", () => {
+  it("renders followed message deltas before completion without concatenating a turn", () => {
+    const store = createConversationStore("followed");
+    let seq = 0;
+    const envelope = () => ({
+      protocolVersion: 2 as const,
+      sessionId: "followed",
+      subscriptionId: "subscriber",
+      runtimeBootId: "boot",
+      epoch: "epoch",
+      seq: seq++,
+      cursor: String(seq),
+    });
+    store.dispatch({ ...envelope(), type: "snapshot", payload: { live: {}, items: [] } });
+    const projection = new CodexFollowerStream();
+    const push = (first: string, second?: string) =>
+      projection.publish(
+        {
+          items: [first, ...(second === undefined ? [] : [second])].map((content, index) => ({
+            ...event(`reply-${index}`, "agent-message"),
+            content,
+            ephemeral: true,
+            message_phase: index === 0 ? "commentary" : "final_answer",
+          })),
+        },
+        { status: "running", turnId: "turn" },
+        (type, payload) => {
+          store.dispatch({ ...envelope(), type, payload } as SessionStreamEvent);
+        },
+      );
+    const transcript = () => <SessionTranscript {...props} events={store.getSnapshot().items} />;
+    push("First reply");
+    const view = render(transcript());
+    const first = screen.getByText("First reply");
+    push("First reply grows", "Final **answer**");
+    view.rerender(transcript());
+    expect(screen.getByText("First reply grows")).toBe(first);
+    expect(screen.getByText("answer")).toBeVisible();
+    expect(screen.getAllByText(/First reply/)).toHaveLength(1);
+    expect(store.getSnapshot().live).toMatchObject({ status: "running", streamText: "" });
+  });
+
   it("keeps partial paged commentary expanded without an incomplete label", () => {
     const commentary: ConversationEvent = {
       ...event("commentary", "agent-message"),

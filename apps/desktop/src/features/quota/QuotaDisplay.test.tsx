@@ -78,4 +78,18 @@ describe("quota reset labels", () => {
     );
     expect(screen.getByText(tr("quota.noReset"))).toBeTruthy();
   });
+
+  it("does not display unknown Windows placeholder values as real quota", () => {
+    const unknown = item(3_600_000);
+    unknown.window = {
+      ...unknown.window,
+      usage_known: false,
+      used_percent: 0,
+      remaining_percent: 100,
+    };
+    render(<QuotaWindowRow item={unknown} snapshot={snapshot()} />);
+    expect(screen.getByText("—")).toBeTruthy();
+    expect(screen.queryByRole("progressbar")).toBeNull();
+    expect(screen.queryByText("100%")).toBeNull();
+  });
 });

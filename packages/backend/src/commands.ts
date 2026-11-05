@@ -1,4 +1,5 @@
 import type { ChildProcess } from "node:child_process";
+import path from "node:path";
 import spawn from "cross-spawn";
 import { windowsProcessTree, type NativeProcessTree } from "./native-process";
 import { resolveCommand } from "./command-resolution";
@@ -157,7 +158,16 @@ export class Commands {
         tree.terminate();
         return;
       }
-      const killer = spawn("taskkill", ["/PID", String(child.pid), "/T", "/F"], {
+      // Commands may run with a deliberately isolated PATH. Resolve the Windows
+      // cleanup executable independently so killing a CMD shim also kills its CLI.
+      const systemRoot =
+        process.env[
+          Object.keys(process.env).find((key) => key.toLowerCase() === "systemroot") ?? "SystemRoot"
+        ];
+      const executable = systemRoot
+        ? path.win32.join(systemRoot, "System32", "taskkill.exe")
+        : "taskkill.exe";
+      const killer = spawn(executable, ["/PID", String(child.pid), "/T", "/F"], {
         stdio: "ignore",
         windowsHide: true,
       });

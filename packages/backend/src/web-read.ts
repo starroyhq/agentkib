@@ -311,8 +311,8 @@ const managedControlSchema = z
     queuedSubmissionId: z.string().min(1).max(256).optional(),
     queuedSubmissionIds: z.array(z.string().min(1).max(256)).max(100).optional(),
     model: z.string().min(1).max(256).optional(),
-    effort: z.string().min(1).max(64).optional(),
-    serviceTier: z.string().min(1).max(128).optional(),
+    effort: z.string().min(1).max(64).nullable().optional(),
+    serviceTier: z.string().min(1).max(128).nullable().optional(),
     mode: z.string().min(1).max(128).optional(),
     policyId: z
       .enum(["workspace-write-on-request", "full-access-on-request", "workspace-write-auto-review"])
@@ -321,7 +321,11 @@ const managedControlSchema = z
     goal: z.unknown().optional(),
   })
   .strict()
-  .refine(validHistoryControl);
+  .refine(validHistoryControl)
+  .refine(
+    (request) =>
+      request.operation === "settings" || (request.effort !== null && request.serviceTier !== null),
+  );
 
 type ManagedRecord = z.infer<typeof managedRecordSchema>;
 
@@ -2480,6 +2484,11 @@ export class WebReadRequests {
     const fingerprint = createHash("sha256").update(stableJson(value)).digest("hex");
     const previous = replayManagedCommand(this.dataDir, request.requestId, fingerprint);
     if (previous) return previous;
+    if (
+      this.store.sessions.get(request.sessionId)?.agent === "antigravity" &&
+      (request.effort === null || request.serviceTier === null)
+    )
+      throw new Error("unsupported-setting-clear");
     if (this.store.sessions.get(request.sessionId)?.agent === "antigravity")
       return this.#antigravityControl(request, fingerprint);
 
@@ -2687,12 +2696,13 @@ export class WebReadRequests {
       if (request.operation === "send") {
         if (snapshot.status !== "idle" || snapshot.sendEnabled !== true)
           throw new Error("session-busy");
-        if (record.mode) {
+        const turnMode = managedTurnMode(record);
+        if (turnMode) {
           if (!runner.planVerified) throw new Error("native-collaboration-modes-unavailable");
           const modes = verifiedCollaborationModes(
             await runner.session.request("collaborationMode/list", {}),
           );
-          if (!modes.some((mode) => mode.id === record.mode))
+          if (!modes.some((mode) => mode.id === turnMode))
             throw new Error("unsupported-collaboration-mode");
           // The preset's settings name the turn's model, which the runner always confirms.
           if (!record.model) throw new Error("native-model-unconfirmed");
@@ -2876,11 +2886,15 @@ export class WebReadRequests {
         if (!selected) throw new Error("unsupported-model");
         const effort = request.resetDefaults
           ? record.default_effort
-          : (request.effort ?? record.effort);
+          : request.effort === undefined
+            ? record.effort
+            : request.effort;
         if (effort && !selected.efforts.includes(effort)) throw new Error("unsupported-effort");
         const serviceTier = request.resetDefaults
           ? record.default_service_tier
-          : (request.serviceTier ?? record.service_tier);
+          : request.serviceTier === undefined
+            ? record.service_tier
+            : request.serviceTier;
         if (serviceTier && !selected.serviceTiers.includes(serviceTier))
           throw new Error("unsupported-service-tier");
         if (
@@ -2889,14 +2903,21 @@ export class WebReadRequests {
         )
           throw new Error("unsupported-policy");
         const mode = request.mode ?? record.mode ?? null;
-        if (request.mode) {
+        const clearsInheritedEffort =
+          effort === null &&
+          isObject(record.native_settings) &&
+          typeof record.native_settings.effort === "string";
+        const effectiveMode = clearsInheritedEffort
+          ? managedTurnMode({ ...record, model: selected.id, effort, mode })
+          : mode;
+        if (request.mode || clearsInheritedEffort) {
           if (!runner.planVerified) throw new Error("native-collaboration-modes-unavailable");
           // The presets are `{mode, name}` rows (0.163.0 CollaborationModeMask); AgentKib's
           // option id is the native mode.
           const modes = verifiedCollaborationModes(
             await runner.session.request("collaborationMode/list", {}),
           );
-          if (!modes.some((entry) => entry.id === request.mode))
+          if (!modes.some((entry) => entry.id === effectiveMode))
             throw new Error("unsupported-collaboration-mode");
         }
         localMutation = {
@@ -3959,6 +3980,10 @@ export class WebReadRequests {
       }
       const requestedModel = record.model ?? null;
       const requestedEffort = record.effort ?? null;
+      const clearingEffort =
+        requestedEffort === null &&
+        isObject(record.native_settings) &&
+        typeof record.native_settings.effort === "string";
       // Creating a new thread is an explicit model choice. Attaching an existing
       // thread or its fork must also work when its inherited model left the picker;
       // send and explicit settings changes validate their own model selection.
@@ -3976,7 +4001,7 @@ export class WebReadRequests {
       if (requestedModel) params.model = requestedModel;
       if (requestedEffort)
         (params.config as Record<string, unknown>).model_reasoning_effort = requestedEffort;
-      if (tier) params.serviceTier = tier;
+      if (tier || isObject(record.native_settings)) params.serviceTier = tier;
       if (fork) {
         params.threadId = fork.nativeId;
         params.lastTurnId = fork.lastTurnId;
@@ -4035,7 +4060,9 @@ export class WebReadRequests {
 
       const mutableRecord = state.record as ManagedRecord;
       mutableRecord.model = model;
-      mutableRecord.effort = effort;
+      // A resume can report the old inherited effort before the pending clear is
+      // applied with the verified collaboration mode on the next turn.
+      mutableRecord.effort = clearingEffort ? null : effort;
       mutableRecord.service_tier = normalizeManagedTier(response.serviceTier);
       mutableRecord.native_settings = {
         model,
@@ -5975,6 +6002,18 @@ function managedResumeParams(record: ManagedRecord, workspace: string): Record<s
   return params;
 }
 
+function managedTurnMode(record: ManagedRecord): string | null {
+  if (record.mode) return record.mode;
+  const native = record.native_settings;
+  if (record.effort != null || !isObject(native) || typeof native.effort !== "string") return null;
+  const mode = isObject(native.collaborationMode) ? native.collaborationMode.mode : null;
+  // A null top-level effort inherits the previous native effort. The confirmed mode's
+  // settings replace it, without choosing a different mode on the user's behalf.
+  if (mode !== "default" && mode !== "plan")
+    throw new Error("native-collaboration-modes-unavailable");
+  return mode;
+}
+
 function managedTurnSettings(record: ManagedRecord, workspace: string): Record<string, unknown> {
   const config: Record<string, unknown> = {};
   const params: Record<string, unknown> = { cwd: workspace, config };
@@ -6022,10 +6061,12 @@ function managedTurnSettings(record: ManagedRecord, workspace: string): Record<s
   }
   if (record.model) params.model = record.model;
   if (record.effort) params.effort = record.effort;
-  if (record.service_tier) params.serviceTier = record.service_tier;
-  if (record.mode) {
+  // Omission inherits the native thread's previous tier; null explicitly clears Fast.
+  params.serviceTier = record.service_tier ?? null;
+  const mode = managedTurnMode(record);
+  if (mode) {
     params.collaborationMode = {
-      mode: record.mode,
+      mode,
       settings: {
         model: record.model,
         reasoning_effort: record.effort,

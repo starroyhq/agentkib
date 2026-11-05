@@ -171,6 +171,8 @@ describe("DeepSeek Harness host control boundary", () => {
       status: 400,
       body: { error: "unsupported_effort" },
     });
+    for (const fields of [{ effort: null }, { serviceTierId: null }])
+      expect(await action("settings", fields)).toMatchObject({ status: 400 });
     expect(forwarded("settings")).toHaveLength(2);
     // With a default model reported, restoring defaults reaches the runtime as a reset.
     expect(await action("settings", { restoreDefaults: true })).toMatchObject({ status: 200 });

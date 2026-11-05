@@ -3440,14 +3440,20 @@ export class WebAccessService {
               )?.value ?? typedModel)
             : typedModel;
         const effort =
-          body.effort === null && capabilities.executionMode === "claude-managed"
+          body.effort === null &&
+          (capabilities.executionMode === "claude-managed" ||
+            capabilities.executionMode === "codex-managed")
             ? null
             : body.effort === undefined
               ? undefined
               : this.field(body.effort, 128);
         const mode = body.mode === undefined ? undefined : this.field(body.mode, 128);
         const serviceTier =
-          body.serviceTierId === undefined ? undefined : this.field(body.serviceTierId, 128);
+          body.serviceTierId === null && capabilities.executionMode === "codex-managed"
+            ? null
+            : body.serviceTierId === undefined
+              ? undefined
+              : this.field(body.serviceTierId, 128);
         const policyId = body.policyId === undefined ? undefined : this.field(body.policyId, 128);
         if (body.restoreDefaults !== undefined && body.restoreDefaults !== true)
           throw new HttpError(400, "invalid_restore_defaults");
@@ -3486,9 +3492,10 @@ export class WebAccessService {
             throw new HttpError(400, "unsupported_mode");
           params.mode = mode;
         }
-        if (serviceTier) {
+        if (serviceTier !== undefined) {
           ensureWritable("serviceTier");
           if (
+            serviceTier !== null &&
             ![
               ...(selectedModel?.serviceTiers ?? []).flatMap((entry) =>
                 typeof entry === "string" ? [entry] : entry.id ? [entry.id] : [],
@@ -3514,7 +3521,7 @@ export class WebAccessService {
           !model &&
           effort === undefined &&
           !mode &&
-          !serviceTier &&
+          serviceTier === undefined &&
           !policyId &&
           body.permissionMode === undefined &&
           body.restoreDefaults !== true

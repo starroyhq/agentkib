@@ -399,6 +399,7 @@ describe("Claude host control boundary", () => {
       [{ model: "best" }, "unsupported_model"],
       [{ model: "HAIKU", effort: "high" }, "unsupported_effort"],
       [{ effort: "xhigh" }, "unsupported_effort"],
+      [{ serviceTierId: null }, "invalid_input"],
     ])("refuses %j before the backend as %s", async (fields, error) => {
       expect(await settings(fields)).toMatchObject({
         status: 400,

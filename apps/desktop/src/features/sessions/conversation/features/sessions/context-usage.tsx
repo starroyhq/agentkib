@@ -1,9 +1,7 @@
-import { useRef, useState } from "react";
-import { Gauge } from "lucide-react";
+import { useRef } from "react";
 import type { ContextUsage, Live } from "@agentkib/web-client";
 import type { SupportedLocale as Locale } from "@/core/types";
-import { Button } from "@/components/ui/button";
-import { Dialog } from "../../components/dialog";
+import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { useSession } from "./session-context";
 import { codexCopy } from "./codex-copy";
 import { contextUsageCopy, contextUsageReason } from "./context-usage-copy";
@@ -185,9 +183,8 @@ type ContextUsageView = ReturnType<typeof useObservedContextUsage> & {
   awaitingCliReport?: boolean;
 };
 
-export function ContextUsageDetails({
+function contextUsageMessage({
   usage,
-  percent,
   state,
   compacting,
   awaitingCliReport,
@@ -195,7 +192,7 @@ export function ContextUsageDetails({
   online,
 }: ContextUsageView & { locale: Locale; online: boolean }) {
   const copy = contextUsageCopy[locale];
-  const message = compacting
+  return compacting
     ? copy.compactingDetail
     : !online && usage?.reason !== "permission_denied" && usage?.reason !== "permission-denied"
       ? copy.offline
@@ -207,6 +204,27 @@ export function ContextUsageDetails({
             : state === "stale"
               ? copy.staleDetail
               : codexCopy[locale].contextUnknown));
+}
+
+export function ContextUsageDetails({
+  usage,
+  percent,
+  state,
+  compacting,
+  awaitingCliReport,
+  locale,
+  online,
+}: ContextUsageView & { locale: Locale; online: boolean }) {
+  const copy = contextUsageCopy[locale];
+  const message = contextUsageMessage({
+    usage,
+    percent,
+    state,
+    compacting,
+    awaitingCliReport,
+    locale,
+    online,
+  });
   return (
     <div className="space-y-2 text-sm">
       {state !== "ready" && <p role="status">{message}</p>}
@@ -226,60 +244,11 @@ export function ContextUsageDetails({
   );
 }
 
-/**
- * Compacting the context as a button: Claude Code's `/compact`, sent as a message of its own, or
- * Codex's own compaction (thread/compact/start), a turn of its own. The draft stays.
- */
-export type CompactAction = {
-  agent: "Claude Code" | "Codex";
-  enabled: boolean;
-  afterTurn: boolean;
-  run: () => void;
-};
-
-function useCompactAction(): CompactAction | undefined {
-  const { current, selected, live, access, canSend, page, control, capabilities, codexAction } =
-    useSession();
-  if (current?.id !== selected || live?.sessionId !== selected || !access?.device?.send)
-    return undefined;
-  if (current.agent === "codex" && live.executionMode === "codex-managed") {
-    const feature =
-      capabilities?.sessionId === selected ? capabilities.features.compact : undefined;
-    if (!feature) return undefined;
-    return {
-      agent: "Codex",
-      // Codex compacts only while the session is idle; there is nothing to summarize before the
-      // first message.
-      enabled: feature.available && !!canSend && !!page?.events.length,
-      afterTurn: live.status === "running",
-      run: () => void codexAction("compact"),
-    };
-  }
-  if (current.agent !== "claude-code" || live.executionMode !== "claude-managed") return undefined;
-  return {
-    agent: "Claude Code",
-    // There is nothing to summarize before the first message.
-    enabled: !!canSend && !!page?.events.length,
-    afterTurn: live.status === "running",
-    run: () =>
-      void control("send", undefined, undefined, undefined, undefined, { command: "/compact" }),
-  };
-}
-
 export function ContextUsageGauge({ fallback }: { fallback?: ContextUsage } = {}) {
   const { selected, locale, access, live, online, usageEpoch } = useSession();
   const scope = `${selected}\0${access?.bootId ?? ""}\0${access?.device?.id ?? ""}\0${usageEpoch ?? ""}\0${live?.connectionGeneration ?? ""}`;
   const view = useContextUsage(fallback);
-  const compact = useCompactAction();
-  return (
-    <ContextUsageIndicator
-      scope={scope}
-      locale={locale}
-      online={online}
-      view={view}
-      compact={compact}
-    />
-  );
+  return <ContextUsageIndicator scope={scope} locale={locale} online={online} view={view} />;
 }
 
 export function ContextUsageIndicator({
@@ -287,74 +256,99 @@ export function ContextUsageIndicator({
   locale,
   online,
   view,
-  compact,
 }: {
   scope: string;
   locale: Locale;
   online: boolean;
   view: ContextUsageView;
-  compact?: CompactAction;
 }) {
   const copy = contextUsageCopy[locale];
-  const [opened, setOpened] = useState<string>();
   const title = codexCopy[locale].contextUsage;
-  const label = view.compacting
-    ? copy.compacting
-    : view.awaitingCliReport
-      ? copy.awaitingCliReport
-      : view.state === "ready" && view.percent !== undefined
-        ? `${Math.round(view.percent)}%`
-        : copy[view.state === "ready" ? "unavailable" : view.state];
+  const reported = view.percent !== undefined;
+  const used = Math.round(view.percent ?? 0);
+  const proportions = copy.usedRemaining
+    .replace("{used}", String(used))
+    .replace("{remaining}", String(100 - used));
+  const tokens = reported
+    ? copy.tokenUsage
+        .replace(
+          "{used}",
+          new Intl.NumberFormat("en-US", { notation: "compact", maximumFractionDigits: 1 }).format(
+            view.usage!.usedTokens!,
+          ),
+        )
+        .replace(
+          "{total}",
+          new Intl.NumberFormat("en-US", { notation: "compact", maximumFractionDigits: 1 }).format(
+            view.usage!.contextWindow!,
+          ),
+        )
+    : undefined;
+  const fresh = view.state === "ready" && !view.compacting && !view.awaitingCliReport;
+  const description = [
+    !fresh && contextUsageMessage({ ...view, locale, online }),
+    reported && !view.compacting && proportions,
+    reported && !view.compacting && tokens,
+  ]
+    .filter(Boolean)
+    .join(" ");
   return (
-    <>
-      <Button
-        type="button"
-        variant="ghost"
-        className={`h-11 shrink-0 gap-1.5 rounded-full text-xs text-muted-foreground hover:text-foreground ${view.compacting ? "size-11 p-0" : "px-2"}`}
-        aria-label={title}
-        title={`${title}: ${view.state === "ready" && view.percent !== undefined ? `${copy.recentNativeReport}: ${view.usage!.usedTokens!.toLocaleString()} / ${view.usage!.contextWindow!.toLocaleString()}` : label}`}
-        onClick={() => setOpened(scope)}
-      >
-        <Gauge className="size-4" aria-hidden="true" />
-        {!view.compacting && (view.state !== "ready" || view.awaitingCliReport) && (
-          <span className="hidden @min-[32rem]:inline">{title}</span>
-        )}
-        {!view.compacting && <span className="@max-[22rem]:sr-only">{label}</span>}
-      </Button>
-      {opened === scope && (
-        <Dialog
-          panel
-          title={title}
-          closeLabel={codexCopy[locale].close}
-          onClose={() => setOpened(undefined)}
-        >
-          <ContextUsageDetails {...view} locale={locale} online={online} />
-          {compact && (
-            <div className="mt-4 space-y-2 border-t pt-4">
-              <p className="text-xs leading-5 text-muted-foreground">
-                {compact.agent === "Codex" ? copy.compactDetailCodex : copy.compactDetail}
-              </p>
-              <Button
-                type="button"
-                variant="outline"
-                className="min-h-11"
-                disabled={!compact.enabled}
-                onClick={() => {
-                  setOpened(undefined);
-                  compact.run();
-                }}
-              >
-                {copy.compactAction}
-              </Button>
-              {compact.afterTurn && (
-                <p role="status" className="text-xs leading-5 text-muted-foreground">
-                  {copy.compactAfterTurn}
-                </p>
+    <Tooltip key={scope}>
+      <TooltipTrigger
+        closeOnClick={false}
+        render={
+          <span
+            role="img"
+            tabIndex={0}
+            className="inline-flex size-8 shrink-0 cursor-default items-center justify-center rounded-full text-muted-foreground outline-none focus-visible:outline-2 focus-visible:outline-ring"
+            aria-label={title}
+            aria-description={description}
+          >
+            <svg
+              className="size-4"
+              viewBox="0 0 20 20"
+              fill="none"
+              stroke="currentColor"
+              strokeWidth="2.6"
+              aria-hidden="true"
+            >
+              <circle
+                cx="10"
+                cy="10"
+                r="7.5"
+                opacity="0.25"
+                strokeDasharray={!reported || view.compacting ? "2 2" : undefined}
+              />
+              {reported && !view.compacting && view.percent! > 0 && (
+                <circle
+                  cx="10"
+                  cy="10"
+                  r="7.5"
+                  pathLength="100"
+                  strokeDasharray={`${view.percent} 100`}
+                  transform="rotate(-90 10 10)"
+                  opacity={fresh ? 1 : 0.5}
+                />
               )}
-            </div>
-          )}
-        </Dialog>
-      )}
-    </>
+            </svg>
+          </span>
+        }
+      />
+      <TooltipContent
+        role="tooltip"
+        className="max-w-64 rounded-2xl bg-popover px-4 py-3 text-center text-sm leading-5 font-normal text-popover-foreground dark:border-white/10 dark:bg-[#2b2b2b]"
+        sideOffset={8}
+      >
+        <p className="text-muted-foreground">{copy.windowTitle}</p>
+        {!fresh && <p className="mt-1">{contextUsageMessage({ ...view, locale, online })}</p>}
+        {reported && !view.compacting && (
+          <>
+            {!fresh && <p className="mt-1 text-muted-foreground">{copy.reported}</p>}
+            <p className="mt-1">{proportions}</p>
+            <p className="mt-1">{tokens}</p>
+          </>
+        )}
+      </TooltipContent>
+    </Tooltip>
   );
 }

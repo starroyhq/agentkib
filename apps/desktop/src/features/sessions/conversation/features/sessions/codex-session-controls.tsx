@@ -40,6 +40,7 @@ import { codexCopy, codexReason } from "./codex-copy";
 import { subscribeSessionInvalidation } from "./session-events";
 import { ContextUsageDetails, ContextUsageGauge, useContextUsage } from "./context-usage";
 import { sessionAgentCopy } from "./session-agent-copy";
+import { ComposerModelPicker } from "./composer-model-picker";
 
 export type CodexResource = CodexContextResource;
 
@@ -112,6 +113,7 @@ export function CodexComposerControls({
   } = useSession();
   const copy = codexCopy[locale];
   const isClaude = current?.agent === "claude-code";
+  const isCodex = current?.agent === "codex";
   // Claude Code and DeepSeek Harness read through the shared managed routes, and only what their
   // capabilities offer; DeepSeek Harness otherwise follows the Codex settings rules.
   const managedAgent: ManagedAgent | null = isClaude
@@ -196,6 +198,7 @@ export function CodexComposerControls({
   const [mutationError, setMutationError] = useState("");
   const [resourceWarning, setResourceWarning] = useState("");
   const [saving, setSaving] = useState(false);
+  const mutationFlight = useRef<symbol | undefined>(undefined);
   const [preparingSettings, setPreparingSettings] = useState(false);
   const settingsPreparation = useRef<symbol | undefined>(undefined);
   const [saved, setSaved] = useState(false);
@@ -389,6 +392,8 @@ export function CodexComposerControls({
     };
     setDialog(undefined);
     setSaved(false);
+    setSaving(false);
+    mutationFlight.current = undefined;
     settingsPreparation.current = undefined;
     setPreparingSettings(false);
     setPendingSettings(undefined);
@@ -493,15 +498,19 @@ export function CodexComposerControls({
           settings.options.models.find((item) => item.id === expected.model)?.resolvedModel ===
             settings.current.modelId)) &&
       (expected.effort === undefined ||
-        (isClaude && expected.effort === null
-          ? settings.selected !== undefined && settings.selected.effort === undefined
+        (expected.effort === null
+          ? isClaude
+            ? settings.selected !== undefined && settings.selected.effort === undefined
+            : settings.current.effort === undefined
           : settings.current.effort === expected.effort)) &&
       (expected.mode === undefined || settings.current.mode === expected.mode) &&
       (expected.policyId === undefined || settings.current.policyId === expected.policyId) &&
       (expected.permissionMode === undefined ||
         settings.current.permissionMode === expected.permissionMode) &&
       (expected.serviceTierId === undefined ||
-        settings.current.serviceTierId === expected.serviceTierId);
+        (expected.serviceTierId === null
+          ? settings.current.serviceTierId === undefined
+          : settings.current.serviceTierId === expected.serviceTierId));
     if (confirmed) {
       setPendingSettings(undefined);
       setSaved(true);
@@ -521,8 +530,12 @@ export function CodexComposerControls({
     setSaving(true);
     setSaved(false);
     setMutationError("");
+    const generation = loadGeneration.current;
+    const mutation = Symbol("settings-or-goal");
+    mutationFlight.current = mutation;
     try {
       const result = await codexAction(name, fields);
+      if (generation !== loadGeneration.current) return;
       if (result) {
         if (name === "settings") {
           setPendingSettings({ ...fields, expectedRevision: readRevision ?? 0 });
@@ -537,9 +550,13 @@ export function CodexComposerControls({
         await load();
       }
     } catch (error) {
-      setMutationError(unavailable(error));
+      if (generation === loadGeneration.current) setMutationError(unavailable(error));
     } finally {
-      setSaving(false);
+      // Reconnection can invalidate reads without replacing this mutation's busy owner.
+      if (mutationFlight.current === mutation) {
+        mutationFlight.current = undefined;
+        setSaving(false);
+      }
     }
   }
 
@@ -656,6 +673,19 @@ export function CodexComposerControls({
   const settingsFeatureUnavailable = feature("settings")?.available !== true;
   const currentModel =
     modelOption(settings, displayedSettings?.modelId)?.name ?? displayedSettings?.modelId;
+  const quickStatus = mutationError
+    ? reason(mutationError)
+    : settingsError
+      ? reason(settingsError)
+      : !settings?.available
+        ? reason(settings?.reason) || copy.settingUnavailable
+        : settingsChangedHere && settings.applicationStatus === "unknown"
+          ? layout.settingsUnknown
+          : running
+            ? copy.settingsWhileRunning
+            : settingsReadStale
+              ? layout.connecting
+              : undefined;
 
   return (
     <>
@@ -705,8 +735,8 @@ export function CodexComposerControls({
             <Button
               type="button"
               variant="ghost"
-              className={`h-11 min-w-11 max-w-72 gap-1.5 @max-[22rem]:size-11 @max-[22rem]:gap-0 @max-[22rem]:p-0 rounded-full px-3 text-muted-foreground hover:text-foreground ${currentModel ? "shrink justify-start" : "shrink-0 justify-center"}`}
-              aria-label={currentModel ? undefined : copy.conversationSettings}
+              className={`h-11 min-w-11 max-w-72 gap-1.5 @max-[22rem]:size-11 @max-[22rem]:gap-0 @max-[22rem]:p-0 rounded-full px-3 text-muted-foreground hover:text-foreground ${!isCodex && currentModel ? "shrink justify-start" : "shrink-0 justify-center"}`}
+              aria-label={isCodex || !currentModel ? copy.conversationSettings : undefined}
               title={
                 currentModel
                   ? `${copy.conversationSettings}: ${currentModel}`
@@ -716,26 +746,29 @@ export function CodexComposerControls({
               onClick={() => openControls("settings")}
             >
               <Settings2 className="size-4 shrink-0" aria-hidden="true" />
-              <span className={currentModel ? "truncate @max-[22rem]:sr-only" : "sr-only"}>
+              <span
+                className={!isCodex && currentModel ? "truncate @max-[22rem]:sr-only" : "sr-only"}
+              >
                 {currentModel || copy.conversationSettings}
               </span>
-              {displayedSettings?.effort && (
+              {!isCodex && displayedSettings?.effort && (
                 <span className="shrink-0 text-xs text-muted-foreground @max-[22rem]:hidden">
                   {term(displayedSettings.effort)}
                 </span>
               )}
-              {(displayedSettings?.mode === "plan" ||
-                displayedSettings?.permissionMode === "plan") && (
-                <span className="shrink-0 text-xs text-muted-foreground @max-[22rem]:hidden">
-                  {copy.plan}
-                </span>
-              )}
-              {settings?.applicationStatus === "pending" && (
+              {!isCodex &&
+                (displayedSettings?.mode === "plan" ||
+                  displayedSettings?.permissionMode === "plan") && (
+                  <span className="shrink-0 text-xs text-muted-foreground @max-[22rem]:hidden">
+                    {copy.plan}
+                  </span>
+                )}
+              {!isCodex && settings?.applicationStatus === "pending" && (
                 <span className="shrink-0 text-xs text-muted-foreground @max-[22rem]:hidden">
                   {layout.nextTurn}
                 </span>
               )}
-              {settingsChangedHere && settings?.applicationStatus === "unknown" && (
+              {!isCodex && settingsChangedHere && settings?.applicationStatus === "unknown" && (
                 <span className="shrink-0 text-xs text-muted-foreground @max-[22rem]:hidden">
                   {layout.settingsUnknown}
                 </span>
@@ -743,11 +776,30 @@ export function CodexComposerControls({
             </Button>
           )}
         </div>
-        <div className="ml-auto flex shrink-0 items-center gap-1">
+        <div className="ml-auto flex min-w-0 items-center gap-1">
           {advancedActions}
           <ContextUsageGauge
             fallback={settings?.sessionId === selected ? settings.usage : undefined}
           />
+          {isCodex && settingsReadable && (
+            <ComposerModelPicker
+              key={`${selected}\0${access?.bootId ?? ""}\0${access?.device?.id ?? ""}\0${usageEpoch ?? ""}`}
+              locale={locale}
+              settings={settings}
+              selection={displayedSettings}
+              disabled={
+                settingDisabled ||
+                settingsReadStale ||
+                (settingsChangedHere && settings?.applicationStatus === "unknown")
+              }
+              saving={saving}
+              status={quickStatus}
+              onOpen={() => {
+                if (settingsReadStale || !settings?.available) void load();
+              }}
+              onChange={(fields) => mutate("settings", fields)}
+            />
+          )}
           {action}
         </div>
       </div>

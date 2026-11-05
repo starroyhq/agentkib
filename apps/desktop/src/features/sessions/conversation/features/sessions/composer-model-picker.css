@@ -1,0 +1,138 @@
+.composer-model-popup {
+  --effort-color: #2368ce;
+  --effort-fill: linear-gradient(90deg, #2368ce, #3486fa 25%, #67a5ff 50%, #3486fa 75%, #2368ce);
+  height: var(--popup-height, auto);
+  overflow: hidden;
+  opacity: 1;
+  transform: translateY(0) scale(1);
+  transform-origin: var(--transform-origin, bottom right);
+  transition:
+    height 220ms cubic-bezier(0.2, 0.8, 0.2, 1),
+    opacity 140ms ease-out,
+    transform 180ms cubic-bezier(0.2, 0.8, 0.2, 1);
+}
+
+.composer-model-positioner {
+  width: var(--positioner-width, max-content);
+  height: var(--positioner-height, max-content);
+}
+
+.composer-model-popup[data-starting-style],
+.composer-model-popup[data-ending-style] {
+  opacity: 0;
+  transform: translateY(5px) scale(0.97);
+}
+
+.composer-model-popup[data-side="bottom"][data-starting-style],
+.composer-model-popup[data-side="bottom"][data-ending-style] {
+  transform: translateY(-5px) scale(0.97);
+}
+
+.composer-model-viewport {
+  position: relative;
+}
+
+.composer-model-page {
+  animation: composer-model-page-in 180ms ease-out both;
+}
+
+.composer-model-page[data-page="models"] {
+  --page-entry-offset: 5px;
+}
+
+@keyframes composer-model-page-in {
+  from {
+    opacity: 0;
+    transform: translateY(var(--page-entry-offset, -3px));
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.composer-model-popup[data-peak] {
+  --effort-color: #803ac4;
+  --effort-fill: linear-gradient(90deg, #3545c5, #8061e9 25%, #bb8ef0 50%, #8061e9 75%, #3545c5);
+}
+
+[data-theme="dark"] .composer-model-popup {
+  --effort-color: #3486fa;
+}
+
+[data-theme="dark"] .composer-model-popup[data-peak] {
+  --effort-color: #b580ff;
+}
+
+.composer-effort-color {
+  color: var(--effort-color);
+}
+
+.composer-effort-fill {
+  background: var(--effort-fill);
+  background-size: 200% 100%;
+  animation: composer-fast-spectrum 30s linear infinite;
+}
+
+.composer-effort-fill[data-known="false"] {
+  background: transparent;
+}
+
+/* All motion stays mounted so changing speed never restarts a particle or the glow. */
+.composer-effort-track {
+  container-type: inline-size;
+}
+
+.composer-effort-flow {
+  /* Coordinates and travel use the whole track; the selected fill only clips it. */
+  width: 100cqw;
+  animation: composer-fast-flow calc(var(--composer-track-width, 224) * 0.05s) linear infinite;
+}
+
+.composer-effort-particle {
+  position: absolute;
+  border-radius: 50%;
+  background: white;
+  animation: composer-particle-bob var(--particle-bob-duration) ease-in-out infinite alternate;
+  animation-delay: var(--particle-bob-delay);
+}
+
+@keyframes composer-fast-flow {
+  from {
+    transform: translateX(-100%);
+  }
+  to {
+    transform: translateX(0);
+  }
+}
+
+@keyframes composer-particle-bob {
+  from {
+    transform: translateY(calc(-1 * var(--particle-bob-distance)));
+  }
+  to {
+    transform: translateY(var(--particle-bob-distance));
+  }
+}
+
+@keyframes composer-fast-spectrum {
+  to {
+    background-position: -200% 0;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .composer-model-popup {
+    transition: none;
+  }
+
+  .composer-model-page {
+    animation: none;
+  }
+
+  .composer-effort-flow,
+  .composer-effort-fill,
+  .composer-effort-particle {
+    animation: none;
+  }
+}

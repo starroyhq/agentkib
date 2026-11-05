@@ -318,3 +318,48 @@ final result: pairing error localization defect fixed and verified
 - Limits: 760px uses a temporary minimum-size override only in the isolated QA process; the product minimum remains unchanged. Render viewport synchronization validates responsive Electron layout, not the native manual-drag resize event chain. Remote UI used synthetic IPC responses, not a new TLS/LAN acceptance run. Windows/Linux, physical multi-device networking and screen-reader validation were not performed. No commit, PR, push or release.
 
 final result: global session reader and reliable metadata grouping implemented; automated and isolated Electron acceptance passed
+
+---
+
+# Composer controls design QA
+
+Source visual truth: `/var/folders/sn/js11_0t91mg_bf1m2fr_38780000gn/T/codex-clipboard-7154de39-e296-4f7a-961f-e1c7d24c9c18.png`; original six screenshots and subsequent user instructions override prior UI behavior.
+
+Implementation: real `ComposerModelPicker` and `ContextUsageIndicator`, mounted with synthetic settings in an isolated Vite preview at http://127.0.0.1:1430/. Production settings and permissions are separately exercised by integration tests; this preview does not mutate real sessions.
+
+- Desktop viewport: 900 × 500 CSS px, screenshot 900 × 500, device density 1.
+- Narrow viewport: 375 × 500 CSS px, screenshot 375 × 500; `/tmp/agentkib-composer-model-narrow.png`.
+- Source: 554 × 262 px screenshot, popup crop 512 × 194 px at inferred density 2.
+- Focused normalized comparison: `/tmp/agentkib-composer-comparison.png`, implementation popup crop 256 × 105 scaled 2× beside the source popup.
+- Full-view evidence: `/tmp/agentkib-composer-model-static-points.png`, `/tmp/agentkib-composer-model-fast.png`, `/tmp/agentkib-composer-model-ultra-fast.png`, `/tmp/agentkib-composer-model-list.png`.
+- Context tooltip: `/tmp/agentkib-composer-context-hover.png`.
+- Light mode: `/tmp/agentkib-composer-model-light.png`.
+
+## Fidelity checks
+
+Typography uses the existing application font and actual provider model names. Numeric context content uses actual reported values; fixture values are 173K / 475K. The model and effort labels retain accessible names and truncation on narrow windows. Layout retains the requested context → model → send order, upper popover, centered effort/model, Fast on the left, reset on the right, and discrete slider. The model menu scrolls within the available viewport. Colors use blue for ordinary effort and a blue-to-lilac spectrum at the final supported stop. Static particles stay visible with Fast off; Fast starts from rest with a 0.6s acceleration and then 200px/s cruise. Reduced-motion CSS disables animation. No bitmap assets are required: library icons and data visualization primitives implement these controls. Model/effort choices come from runtime metadata; the number of fixture options intentionally differs from the reference.
+
+## Comparison history
+
+1. Initial pass: [P2] the popover was too tall and light-mode effort text lacked contrast. Reduced model-row height and slider gap; light-mode title colors now use darker blue/purple. Post-fix evidence: light screenshot and normalized comparison.
+2. Motion pass: [P2] repeating the one-way spectrum produced a hard seam. The Fast spectrum now uses a cyclic gradient with matching endpoints; post-fix evidence: Ultra Fast screenshot.
+3. User follow-up: dots now remain visible when Fast is disabled; enabling Fast ramps up to a faster constant speed. Browser-computed animation values verified `composer-fast-launch, composer-fast-flow`, durations `0.6s, 0.5s`, delay `0s, 0.6s`. Disabled Fast verified animation `none` while particle background remains present.
+
+## Interaction evidence
+
+Real browser interaction covered two-level model selection, selected model checkmark, keyboard effort changes, Fast toggling, context keyboard-focus tooltip, light/dark switching, and narrow layout. Context is a focusable image rather than a clickable button, with no click dialog. The final clean reload produced no console errors; earlier temporary preview HMR root warnings were fixed in the isolated harness and are not production changes.
+
+No remaining actionable P0/P1/P2 findings. Native API dispatch and identity/CAS boundaries remain covered by separate repository tests. No claim is made that fixture interaction calls a real model.
+
+final result: passed
+
+
+## Latest animation iteration (2026-11-06)
+
+The user's latest requirement supersedes static particles: opening changes the trigger label to “Select reasoning effort”; normal mode has a slow shimmer and floating particles, Fast accelerates both continuously, and disabling it decelerates while preserving phase. The popover has entry/exit and height expansion animations. Final visual verification completed in the in-app browser at 900 × 500 CSS px. `/tmp/agentkib-composer-model-final.png` shows the latest irregular particle field and expanded trigger label; `/tmp/agentkib-composer-model-final-menu.png` shows the model-list expansion. Normal/Fast toggles were exercised while reading the rendered particle-layer transforms, confirming faster continuous movement without resetting the layer. Popup CSS transitions include height, opacity and transform; normal and Fast share the same particle DOM. The fixed seed generates 18 distinct positions, sizes, opacities and bob phases across the full track, repeated only after an entire track width, rather than a short 100px tile. Browser console check returned no new errors. Temporary viewport override was reset and the preview remains available.
+
+A local Codex 0.163.0 process with an isolated temporary home and no provider credentials confirmed the actual Fast catalog ID `priority`, native tier clearing, and the difference between inherited top-level effort and explicit collaboration-mode effort replacement. No model turn or production session was invoked by that probe. Repository tests separately cover consecutive turn dispatch, default/Plan preservation, unsupported mode rejection and restart persistence.
+
+No remaining actionable P0/P1/P2 findings.
+
+final result: passed

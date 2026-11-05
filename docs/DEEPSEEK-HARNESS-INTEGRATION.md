@@ -1,6 +1,6 @@
 # DeepSeek Harness 接入方案草案
 
-状态：架构讨论稿，尚未实施。日期：2026-11-04；同日按 DSH、AgentKib 与 agentkib-flutter 源码复核修订，并按“完全接管”目标重排分期。
+状态：一期与二期 2a 已实施并合并（#199），2b 已实施，其余为方案。日期：2026-11-04；同日按 DSH、AgentKib 与 agentkib-flutter 源码复核修订，并按“完全接管”目标重排分期。
 
 本文记录宿主机插件桥接、Remote 复用现有链路，以及后续 CLI 与 Desktop 共用实例的接入方向。文中的新命令、模块和协议字段均为建议，不代表当前已提供的功能。
 
@@ -318,7 +318,7 @@ DSH 的审批和问答经 `approval/request`、`user-questions/request` waterfal
 
 插件对 `workspaceController` 与 `sessionController` 一样按需注入，缺少时对应能力保持关闭。拆分为：2a 重命名、归档、分叉、新建会话与模型设置；2b 图片附件；2c 目标、子代理、压缩、斜杠命令与审批策略；2d SessionDocument、搜索与交接。
 
-2a 实现（2026-11-05，未提交）：
+2a 实现（2026-11-05，#199 已合并）：
 
 - 插件升到 0.2.0。Host 只接受同版本插件，所以 AgentKib 升级后要重启一次 DSH，插件才会重新连上；以链接方式安装的插件随 AgentKib 一起更新，不必重装。
 - 重命名、分叉、归档与取消归档、模型与推理强度都按能力开放：重命名和分叉要求可控；归档、取消归档与改模型还要求空闲（DSH 拒绝归档运行中的会话，AgentKib 不替用户停止），运行中这几项的原因是 `session-busy`，客户端提示等本轮结束。插件跟随 workspace 流维护归档集合，DSH 自己窗口里的归档也会同步到 AgentKib。
@@ -329,6 +329,17 @@ DSH 的审批和问答经 `approval/request`、`user-questions/request` waterfal
 - 新建会话要求恰好一个运行中的 DSH，在 AgentKib 工作区的根目录发起；有多个 DSH 时原因为 `dsh-create-ambiguous`，提示直接在要用的那个 DSH 里新建（不同于已有会话的 `dsh-runtime-ambiguous`）。新会话的 ID 由 AgentKib 预先生成并交给 DSH（`session.create` 的 `sessionId`），回执因此直接指向新会话。
 - 结果未知的核对：重命名比对标题，归档比对归档状态，改模型重新读取模型目录比对；新建以预留 ID 的会话出现在列表为已创建，超过两分钟且 DSH 此后重新上报过会话列表仍没有它，判为未创建。分叉在原会话上没有证据，超过两分钟判为未执行（若实际已分叉，副本仍会出现在列表中）。都不自动重发。
 - 置顶暂不接，AgentKib 目前没有置顶概念。
+
+2b 实现（2026-11-05）：
+
+- 图片附件是各 Agent 共用的一项能力。上传、校验、按设备与会话绑定、能力开关（`attachments`）都沿用 Host 的附件存储；只有交给执行者这一步按执行模式分派（Host 的 `ATTACHMENT_FORMATS`）：Codex 按本地路径读图片，Claude 在消息里带图片字节，DSH 由插件读取附件文件、核对 SHA-256 后作为 `prompt` 的 `{ type: 'image', mediaType, data, name }` 交给 DSH。其他文件对所有执行者都以一行“User attached file …”写进消息。
+- 图片不经桥接 socket 传输：插件 HTTP 客户端单次响应上限 4 MiB，DSH 单图上限 20 MiB，所以 Host 只下发路径、大小、摘要与类型；文件读出的字节与摘要不符时不发，原因为 `attachment-changed`。
+- 插件升到 0.3.0，有 `sessionController.attachment` 时报告 `images`。会话能发送、排队或加入本轮时开放 `attachments`，所以运行中也能随排队或加入本轮的消息发图片。
+- DSH 拒收图片时说明原因，都是“未执行”，草稿保留：当前模型不收图片（`MODEL_DOES_NOT_SUPPORT_IMAGES`）为 `model-images-unsupported`，超出 DSH 的格式、尺寸或大小限制为 `attachment-invalid`。模型是否收图片由 DSH 在发送时判断，AgentKib 不预先读取模型的输入模态。
+- 历史图片：插件在用户消息记录里带上 DSH 存储的图片引用（`sha256:` 摘要、类型、名称），Host 生成 `dsh-image-v1-<摘要>` 图片 ID，与 Codex、Claude 的历史图片走同一个 `/session-images`。读取时插件调用 `sessionController.attachment`，DSH 只返回该会话记录引用的图片，Host 再核对字节摘要与 ID 一致。没有运行的 DSH 时图片显示不可用。
+- 待发队列：DSH 只能编辑纯文本，含图片或文件的待发消息标为带附件，不能编辑，可以删除或加入本轮。
+- 其他执行模式：Codex 跟随（ChatGPT 桌面端）与发送同条件开放附件，图片按 Codex 格式（`localImage`）交给 owner，已在 Desktop `26.1029.61003` 上真实验收；经 app-server 发出的 Codex 图片消息末尾的 `<image …>` 标签在消息中不再显示。Claude 终端连接的提交接口只接受文本，不提供图片。
+- 被拒原因对所有 Agent 一致：客户端以前只为 Codex 和 Claude 保留未执行原因，其他 Agent 一律显示“本次操作未执行”；现在图片被拒（`model-images-unsupported`、`attachment-invalid`、`attachment-changed`、`attachment-unavailable`、Host 自己的 `invalid_attachment_image`）对任何 Agent 都说明具体原因，手机端同样。
 
 ### 三期：DSH 未运行时由 AgentKib 启动
 

@@ -45,11 +45,11 @@ Goal 使用 `thread/goal/get/set/clear` 和原生事件。`goal-set` 的 `intent
 Codex 每条会话只允许一个进程写入。ChatGPT 桌面端用自己启动的 app-server 打开会话后会一直持有写锁（不显示的会话约 3 小时后才退订），AgentKib 的 `thread/resume` 因此被拒绝。为了不必分支或退出桌面端，AgentKib 像 VS Code 插件那样作为 follower 加入桌面端的本地 IPC：订阅 owner 的实时状态，把发送、停止和审批交给 owner 执行，写入的始终只有桌面端。
 
 - **何时跟随**：仅在 `live`／`capabilities` 发现写锁被其他进程持有、且没有其他阻断原因时尝试。连接 `<CODEX_HOME>/ipc/ipc.sock`，按原生 ID 做 owner discovery；成功后 `live` 返回 `executionMode: "codex-follower"`、`executionLocation: "external"`、`ownershipReason: null` 和 `workspaceId`。非 macOS、找不到 owner（例如锁在 CLI 或其他进程手里）、版本或协议不符、连接失败时回到原有的 `codex-owner-busy` 选择条，5 秒内不重复尝试，不向界面透出跟随失败的细节。写锁空闲时照常走托管链路。
-- **可用操作**：第一版只开放发送、停止和审批（命令与文件审批，按 owner 提供的决定，例如只给“允许一次”“取消轮次”时不显示“拒绝”）。分支照常可用；删除因写锁在桌面端而不可用（`codex-owner-busy`）。问答、设置、模型、Plan、追加、队列、压缩、目标、附件、重命名、归档等返回 `follower-operation-unverified`（“这项操作请在 Codex 中完成。”），owner 的提问在 AgentKib 中只显示“这项请求请在 Codex 中处理”。执行使用桌面端这条会话的模型、权限和沙箱设置，不使用 AgentKib 的托管策略。
+- **可用操作**：开放发送、停止和审批（命令与文件审批，按 owner 提供的决定，例如只给“允许一次”“取消轮次”时不显示“拒绝”）。发送可以带附件，与发送同条件开放：图片作为原生 `localImage`、其他文件作为文件引用文本交给 owner，与托管链路相同（2026-11-05 起）。分支照常可用；删除因写锁在桌面端而不可用（`codex-owner-busy`）。问答、设置、模型、Plan、追加、队列、压缩、目标、重命名、归档等返回 `follower-operation-unverified`（“这项操作请在 Codex 中完成。”），owner 的提问在 AgentKib 中只显示“这项请求请在 Codex 中处理”。执行使用桌面端这条会话的模型、权限和沙箱设置，不使用 AgentKib 的托管策略。
 - **状态与历史**：follower 只推送实时状态（运行状态、轮次、审批、流式文字）；对话内容仍以 250ms 快照从原生 rollout 读取，避免同一消息以两种身份重复出现。
 - **生命周期**：最多同时跟随 8 条会话；有 follower 时桌面端不会退订这条会话，所以没有订阅者且闲置 30 秒后断开跟随。owner 变化或断开时关闭连接，重新核对写锁：锁已释放则回到托管链路，发送时自动续接；不会在两条链路之间自动重发消息。
 - **授权与回执**：主机把 `codex-follower` 与 `codex-managed` 同样对待（工作区、设备权限、LAN 范围和回执查询）。控制回执记录 `executionMode: "codex-follower"` 和 `workspaceId`。结果未知时，发送与停止通过临时 app-server 的 `thread/read` 核对 `clientUserMessageId` 和轮次终态；审批在已连接的 follower 中确认对应请求已不再待处理，不重新建立连接。
-- **版本**：follower 要求 Desktop `26.917.62051` 或更新版本，按三段数字比较；IPC 方法版本固定（discovery 1、start-turn 2、interrupt 4、状态流 11 等），并继续核对 peer、owner、host、thread、revision 和原生 ACK。2026-11-02 已对本机 Desktop `26.1027.51404`（内置 codex-cli `0.166.0-alpha.5.1`）完成静态方法版本核对和真实验收，见 [跟随 Codex 桌面端验收](../qa/codex-desktop-follow-2026-11-02.md)。满足门槛不代表其他版本已验收；内部协议没有兼容承诺。
+- **版本**：follower 要求 Desktop `26.917.62051` 或更新版本，按三段数字比较；IPC 方法版本固定（discovery 1、start-turn 2、interrupt 4、状态流 11 等），并继续核对 peer、owner、host、thread、revision 和原生 ACK。2026-11-02 已对本机 Desktop `26.1027.51404`（内置 codex-cli `0.166.0-alpha.5.1`）完成静态方法版本核对和真实验收，见 [跟随 Codex 桌面端验收](../qa/codex-desktop-follow-2026-11-02.md)；2026-11-05 在 Desktop `26.1029.61003` 上验收了随消息发送图片，见 [二期 2b 验收](../qa/dsh-integration-phase2b-2026-11-05.md)。满足门槛不代表其他版本已验收；内部协议没有兼容承诺。
 - **限制**：只支持 macOS；桌面端必须已经加载这条会话；两端同时发送的竞争（RACE-022）、桌面端中途退出后的真实切换尚未实机验收。旧的 `#reconcileCodexFollower` 等遗留辅助函数暂保留，待单独清理。
 
 ### 原生状态与用量

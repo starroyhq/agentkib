@@ -1,6 +1,6 @@
 import { NativeScope } from "../interactions/native-scope";
 import { NativeDecisions } from "../interactions/native-decisions";
-import { codexCopyForSurface } from "./codex-copy";
+import { codexCopyForSurface, codexReason } from "./codex-copy";
 import { sessionContinuationCopy } from "@agentkib/session-ui";
 import { PreferencesDialog } from "../preferences/preferences-dialog";
 import { SessionDetailsDialog } from "../catalog/session-details-dialog";
@@ -37,6 +37,13 @@ export function SessionDialogs() {
     online,
     control,
   } = useSession();
+  // DSH withdraws a request as soon as either side answers it, so an open dialog whose request is
+  // gone from a connected runtime was answered there (our own answer closes the dialog itself).
+  const answeredInDsh = (requestId: string | number) =>
+    !busy &&
+    live?.executionMode === "dsh-follower" &&
+    live.executionLocation === "external" &&
+    ![...live.approvals, ...(live.questions ?? [])].some((item) => item.requestId === requestId);
   return (
     <>
       {" "}
@@ -64,6 +71,14 @@ export function SessionDialogs() {
         >
           {live?.executionMode === "codex-follower" && !modal.supported && (
             <aside className="info">{sessionContinuationCopy(locale).codexHandleThere}</aside>
+          )}
+          {live?.executionMode === "dsh-follower" && !modal.supported && (
+            <aside className="info">{sessionContinuationCopy(locale).dshHandleThere}</aside>
+          )}
+          {answeredInDsh(modal.requestId) && (
+            <aside className="info">
+              {codexReason(locale, "interaction-answered-elsewhere", "web").text}
+            </aside>
           )}
           <QuestionForm
             key={`${selected}:${JSON.stringify(modal)}`}
@@ -94,13 +109,13 @@ export function SessionDialogs() {
           <p>
             {modal.decisionOptions?.length
               ? codexCopyForSurface(locale, "web").native
-              : modal.method === "claude/can_use_tool"
+              : modal.method === "claude/can_use_tool" || modal.method === "dsh/approval"
                 ? t.claudeDecisionInfo
                 : t.decisionInfo}
           </p>
-          {(modal.method === "claude/can_use_tool" || modal.method === MCP_REQUEST) && (
-            <h3>{modal.toolName || t.unknownTool}</h3>
-          )}
+          {(modal.method === "claude/can_use_tool" ||
+            modal.method === MCP_REQUEST ||
+            modal.method === "dsh/approval") && <h3>{modal.toolName || t.unknownTool}</h3>}
           {modal.method === MCP_REQUEST && mcpMessage(modal.input) && (
             <p className="whitespace-pre-wrap break-words">{mcpMessage(modal.input)}</p>
           )}
@@ -127,6 +142,9 @@ export function SessionDialogs() {
           {modal.requestContext && <NativeScope value={modal.requestContext} locale={locale} />}
           {live?.executionMode === "codex-follower" && !modal.supported && (
             <aside className="info">{sessionContinuationCopy(locale).codexHandleThere}</aside>
+          )}
+          {live?.executionMode === "dsh-follower" && !modal.supported && (
+            <aside className="info">{sessionContinuationCopy(locale).dshHandleThere}</aside>
           )}
           <NativeDecisions
             key={`${selected}:${JSON.stringify(modal)}`}
@@ -206,7 +224,11 @@ export function SessionDialogs() {
                 ))}
             </div>
           ) : (
-            <aside className="info">{t.approvalFallback}</aside>
+            <aside className="info">
+              {answeredInDsh(modal.requestId)
+                ? codexReason(locale, "interaction-answered-elsewhere", "web").text
+                : t.approvalFallback}
+            </aside>
           )}
         </Dialog>
       )}

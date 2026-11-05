@@ -8,6 +8,7 @@ import {
 } from "./cursor-native-import";
 import { CursorBridge } from "./cursor-bridge";
 import { ClaudeBridge } from "./claude-bridge";
+import { DshBridge } from "./dsh-bridge";
 import { listNativeImports } from "./session-native-imports";
 import {
   continueNativeImport,
@@ -118,6 +119,32 @@ import {
   BACKEND_PLAN_PROJECT_ASSETS,
 } from "./migration";
 
+/** Session requests a DeepSeek Harness bridge answers; history and everything else stay on the readers. */
+const DSH_BRIDGE_OPERATIONS = new Set<string>([
+  "live",
+  "capabilities",
+  "inspect",
+  "usage",
+  "goal",
+  "context",
+  "queue-list",
+  "reconcile",
+  "send",
+  "steer",
+  "queue-add",
+  "queue-update",
+  "queue-delete",
+  "queue-steer",
+  "stop",
+  "approve",
+  "answer",
+  "settings-state",
+  "settings",
+  "rename",
+  "archive",
+  "unarchive",
+  "fork",
+]);
 const HANDOFF_TASK_METHODS = new Set<string>([
   RUNTIME_METHODS.prepareSessionHandoff,
   RUNTIME_METHODS.planSessionHandoff,
@@ -139,6 +166,7 @@ export class TypeScriptBackend {
   #childSnapshots = new SessionSubagentSnapshots();
   #cursorBridge?: CursorBridge;
   #claudeBridge?: ClaudeBridge;
+  #dshBridge?: DshBridge;
   #catalogContinuation = new Map<string, string>();
   #webRead?: WebReadRequests;
   #readStates?: ConversationReadStates;
@@ -199,6 +227,8 @@ export class TypeScriptBackend {
     this.#claudeManaged?.close();
     void this.#claudeBridge?.close();
     this.#claudeBridge = undefined;
+    void this.#dshBridge?.close();
+    this.#dshBridge = undefined;
     this.#claudeManaged = undefined;
     this.#sessionIndex?.close();
     this.#sessionIndex = undefined;
@@ -236,6 +266,7 @@ export class TypeScriptBackend {
     this.cancelPendingOperations();
     const claudeManaged = this.#claudeManaged;
     const claudeBridge = this.#claudeBridge;
+    const dshBridge = this.#dshBridge;
     const mcp = this.#mcp;
     const mcpHub = this.#mcpHub;
     const remoteAgent = this.#remoteAgent;
@@ -244,6 +275,7 @@ export class TypeScriptBackend {
     this.#readStates = undefined;
     this.#claudeManaged = undefined;
     this.#claudeBridge = undefined;
+    this.#dshBridge = undefined;
     this.#mcpHub = undefined;
     this.#remoteAgent = undefined;
     const closing = (async () => {
@@ -254,6 +286,7 @@ export class TypeScriptBackend {
         Promise.resolve().then(() => mcp?.closeAsync()),
         Promise.resolve().then(() => claudeManaged?.shutdown()),
         Promise.resolve().then(() => claudeBridge?.close()),
+        Promise.resolve().then(() => dshBridge?.close()),
         Promise.resolve().then(() => mcpHub?.close()),
         Promise.resolve().then(() => remoteAgent?.close()),
         // Native CLI processes must release their workspace before shutdown is
@@ -485,6 +518,66 @@ export class TypeScriptBackend {
           { ...process.env, ...this.environment },
           (id) => store.workspacePath(id),
         );
+        const agentkibHome =
+          this.environment.AGENTKIB_HOME ??
+          path.join(
+            userHome({ ...process.env, ...this.environment }),
+            this.environment.AGENTKIB_APP_FLAVOR === "ai.agentkib.dev"
+              ? ".agentkib-dev"
+              : ".agentkib",
+          );
+        // The innermost registered workspace containing a native working directory.
+        const registeredWorkspace = (cwd: string) => {
+          let directory: string;
+          try {
+            directory = canonicalize(cwd);
+          } catch {
+            return null;
+          }
+          return (
+            (store.listWorkspaces() as { id: string; path: string }[])
+              .filter(
+                (row) => directory === row.path || directory.startsWith(`${row.path}${path.sep}`),
+              )
+              .sort((a, b) => b.path.length - a.path.length)[0] ?? null
+          );
+        };
+        const dshBridge = new DshBridge({
+          dataDir,
+          bootId: randomUUID(),
+          pluginDirectory: this.environment.AGENTKIB_DSH_PLUGIN_DIR ?? "",
+          discoveryFile: path.join(agentkibHome, "dsh-bridge", "discovery-v1.json"),
+          sessionId: (nativeId) => store.sessions.id("deepseek-harness", nativeId),
+          workspaceFor: registeredWorkspace,
+          workspacePath: (workspaceId) => {
+            try {
+              return store.workspacePath(workspaceId);
+            } catch {
+              return null;
+            }
+          },
+          sessionsChanged: (workspaceIds) => {
+            // Write only the DSH listing; a full refresh would rescan every other source too.
+            if (this.#store !== store || readPreferences(dataDir).session_index_enabled === false)
+              return;
+            let changed = false;
+            for (const workspaceId of workspaceIds)
+              try {
+                store.sessions.sync(
+                  workspaceId,
+                  "deepseek-harness",
+                  dshBridge.list(store.workspacePath(workspaceId)).sessions,
+                  true,
+                );
+                changed = true;
+              } catch {
+                // A removed workspace or closed store; the next index pass lists it again.
+              }
+            if (changed) this.#sessionStream?.publish("", "invalidate", { domains: ["catalog"] });
+          },
+          publish: (id, type, payload, live) => this.#publishSession(id, type, payload, live),
+        });
+        this.#dshBridge = dshBridge;
         this.#sessions = new SessionReaders(
           store.sessions,
           this.#commands,
@@ -493,6 +586,7 @@ export class TypeScriptBackend {
             ...this.environment,
           },
           this.#cursorBridge,
+          dshBridge,
         );
         this.#claudeManaged = new ClaudeManagedReadOwner(
           store,
@@ -587,6 +681,7 @@ export class TypeScriptBackend {
             ),
         });
         this.#claudeBridge.initialize();
+        dshBridge.initialize();
         this.#historySearch = new HistorySearch(
           store,
           dataDir,
@@ -742,7 +837,8 @@ export class TypeScriptBackend {
     }
     if (method === RUNTIME_METHODS.controlReceipt) {
       const receipt = readControlReceipt(this.#dataDir, params);
-      const nativeReceipt = this.#claudeBridge?.receipt(receipt) ?? receipt;
+      const dshReceipt = this.#dshBridge?.receipt(receipt) ?? receipt;
+      const nativeReceipt = this.#claudeBridge?.receipt(dshReceipt) ?? dshReceipt;
       return this.#claudeManaged ? this.#claudeManaged.receipt(nativeReceipt) : nativeReceipt;
     }
     if (method === RUNTIME_METHODS.claudeManaged) return this.#requestClaudeManaged(params);
@@ -852,10 +948,26 @@ export class TypeScriptBackend {
           this.#claudeManaged!.hasManagedSession(params.sessionId)
           ? { cwd: null }
           : this.#withWebRead((owner) => owner.request(params));
+      // A new DSH session has no session ID yet; the bridge starts it in the running DSH.
+      if (params.operation === "dsh-create") {
+        if (!this.#dshBridge) throw new Error("session-unavailable");
+        return this.#dshBridge.create(params);
+      }
+      if (params.operation === "dsh-options")
+        return (
+          this.#dshBridge?.createOptions() ?? { available: false, reason: "platform-unsupported" }
+        );
       // Resolve the provider from persisted identity, never from a browser-supplied agent.
       // Fresh Claude sessions are not indexed until their first native transcript exists.
       if (typeof params.sessionId === "string" && params.operation !== "catalog") {
         const sessionId = typeof params.sessionId === "string" ? params.sessionId : "";
+        // DSH history pages come through the session readers; live state and control go to
+        // the bridge, which talks to the plugin inside the running DSH.
+        if (
+          this.#store!.sessions.get(sessionId)?.agent === "deepseek-harness" &&
+          DSH_BRIDGE_OPERATIONS.has(String(params.operation))
+        )
+          return this.#requestDsh(params);
         const claudeSession =
           this.#store!.sessions.get(sessionId)?.agent === "claude-code" ||
           this.#claudeManaged!.hasManagedSession(sessionId);
@@ -941,6 +1053,26 @@ export class TypeScriptBackend {
         const continuation = (session: unknown) => {
           if (!session || typeof session !== "object" || Array.isArray(session)) return session;
           const row = session as Record<string, unknown>;
+          if (
+            row.agent === "deepseek-harness" &&
+            typeof row.id === "string" &&
+            this.#dshBridge?.handles(row.id)
+          ) {
+            try {
+              const live = this.#dshBridge.live(row.id, false);
+              return {
+                ...row,
+                continuation: {
+                  status: live.status,
+                  executionLocation: live.executionLocation,
+                  ownershipReason: live.ownershipReason,
+                  reason: live.reason,
+                },
+              };
+            } catch {
+              return row;
+            }
+          }
           if (row.agent !== "claude-code" || typeof row.id !== "string") return row;
           const projection = row.continuation;
           let live = managedIds.has(row.id)
@@ -1862,13 +1994,26 @@ export class TypeScriptBackend {
     return await operation(this.#webRead);
   }
 
+  #requestDsh(params: Record<string, unknown>) {
+    const bridge = this.#dshBridge;
+    if (!bridge || typeof params.sessionId !== "string" || !bridge.handles(params.sessionId))
+      throw new Error("session-unavailable");
+    return bridge.request(params);
+  }
+
   async #requestClaudeManaged(params: Record<string, unknown>) {
     try {
-      if (params.operation === "schedule-invalidate")
-        this.#claudeBridge?.invalidate(
-          typeof params.deviceId === "string" ? params.deviceId : undefined,
-          typeof params.sessionId === "string" ? params.sessionId : undefined,
-        );
+      if (params.operation === "schedule-invalidate") {
+        const deviceId = typeof params.deviceId === "string" ? params.deviceId : undefined;
+        const sessionId = typeof params.sessionId === "string" ? params.sessionId : undefined;
+        this.#claudeBridge?.invalidate(deviceId, sessionId);
+        this.#dshBridge?.invalidate(deviceId, sessionId);
+      }
+      // The desktop's local management channel also reports the DeepSeek Harness connection.
+      if (params.operation === "dsh-bridge-status") {
+        if (!this.#dshBridge) throw new Error("dsh-bridge-unavailable");
+        return this.#dshBridge.management(params);
+      }
       if (params.operation === "adopt") this.#claudeBridge?.assertCanAdopt();
       if (
         ["bridge-status", "bridge-challenge", "bridge-disconnect", "bridge-auto-connect"].includes(

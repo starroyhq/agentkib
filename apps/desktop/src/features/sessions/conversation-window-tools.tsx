@@ -82,7 +82,7 @@ export function ConversationWindowTools({
             slots.files,
           )
         : null}
-      {slots.status && ["codex", "claude-code"].includes(current.agent)
+      {slots.status && ["codex", "claude-code", "deepseek-harness"].includes(current.agent)
         ? createPortal(
             <SessionContinuationStatus
               label={status.label}

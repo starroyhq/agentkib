@@ -34,8 +34,9 @@ export type SessionContinuationCopy = {
   claudeWindowsUnsupported: string;
   codexVersionTooOld: string;
   codexConnected: string;
-  codexHint: string;
   codexHandleThere: string;
+  dshConnected: string;
+  dshHandleThere: string;
   viewOnly: string;
   queued: string;
   connectTerminal: string;
@@ -80,8 +81,9 @@ const continuationCopy: Record<string, SessionContinuationCopy> = {
     claudeWindowsUnsupported: "Windows 上暂不支持在这里继续 Claude Code 会话",
     codexVersionTooOld: "Codex 版本过低，升级后可以在这里继续",
     codexConnected: "在 Codex 中运行 · 已连接",
-    codexHint: "消息会交给 Codex 执行，模型和权限沿用 Codex 中的设置",
     codexHandleThere: "这项请求请在 Codex 中处理",
+    dshConnected: "在 DeepSeek Harness 中运行 · 已连接",
+    dshHandleThere: "这项请求请在 DeepSeek Harness 中处理",
     viewOnly: "仅可查看",
     queued: "待发队列",
     connectTerminal: "连接终端",
@@ -126,8 +128,9 @@ const continuationCopy: Record<string, SessionContinuationCopy> = {
     claudeWindowsUnsupported: "Windows 上暫不支援在這裡繼續 Claude Code 對話",
     codexVersionTooOld: "Codex 版本過舊，升級後可以在這裡繼續",
     codexConnected: "在 Codex 中執行 · 已連線",
-    codexHint: "訊息會交給 Codex 執行，模型和權限沿用 Codex 中的設定",
     codexHandleThere: "這項請求請在 Codex 中處理",
+    dshConnected: "在 DeepSeek Harness 中執行 · 已連線",
+    dshHandleThere: "這項請求請在 DeepSeek Harness 中處理",
     viewOnly: "僅可查看",
     queued: "待發佇列",
     connectTerminal: "連接終端",
@@ -178,8 +181,9 @@ const continuationCopy: Record<string, SessionContinuationCopy> = {
     claudeWindowsUnsupported: "Windows では、ここで Claude Code の会話を続ける機能はまだ使えません",
     codexVersionTooOld: "Codex のバージョンが古いため、更新するとここで続けられます。",
     codexConnected: "Codex で実行中 · 接続済み",
-    codexHint: "メッセージは Codex で実行され、モデルと権限は Codex 側の設定に従います",
     codexHandleThere: "このリクエストは Codex で対応してください",
+    dshConnected: "DeepSeek Harness で実行中 · 接続済み",
+    dshHandleThere: "このリクエストは DeepSeek Harness で対応してください",
     viewOnly: "閲覧のみ",
     queued: "送信待ちキュー",
     connectTerminal: "ターミナルに接続",
@@ -230,8 +234,9 @@ const continuationCopy: Record<string, SessionContinuationCopy> = {
     claudeWindowsUnsupported: "Continuing Claude Code sessions here isn't supported on Windows yet",
     codexVersionTooOld: "Your Codex version is too old. Update it to continue here.",
     codexConnected: "Running in Codex · Connected",
-    codexHint: "Messages run in Codex, using the model and permissions set there",
     codexHandleThere: "Handle this request in Codex",
+    dshConnected: "Running in DeepSeek Harness · Connected",
+    dshHandleThere: "Handle this request in DeepSeek Harness",
     viewOnly: "View only",
     queued: "Queued messages",
     connectTerminal: "Connect terminal",
@@ -660,7 +665,7 @@ export function sessionContinuationListState(
   const unreadLabel = unread ? ` · ${unreadText}` : "";
   if (session.remote) return unread ? { label: unreadText, dot: true, unread: true } : undefined;
   if (session.availability === "metadata-only") return { label: copy.viewOnly };
-  if (!["codex", "claude-code"].includes(session.agent))
+  if (!["codex", "claude-code", "deepseek-harness"].includes(session.agent))
     return unread ? { label: unreadText, dot: true, unread: true } : undefined;
   const state = session.continuation;
   if (state?.status === "outcome-unknown" || state?.reason === "control-outcome-unconfirmed")

@@ -204,6 +204,9 @@ async function startApplication(): Promise<void> {
     AGENTKIB_CLAUDE_PLUGIN_DIR: app.isPackaged
       ? path.join(process.resourcesPath, "claude-bridge")
       : path.resolve(__dirname, "../build/claude-bridge"),
+    AGENTKIB_DSH_PLUGIN_DIR: app.isPackaged
+      ? path.join(process.resourcesPath, "dsh-bridge")
+      : path.resolve(__dirname, "../build/dsh-bridge"),
   };
   const typescriptHost = new DesktopRuntimeHost({
     executablePath: path.join(__dirname, "backend.cjs"),
@@ -299,6 +302,7 @@ async function startApplication(): Promise<void> {
     verifiedClaudeManaged: process.platform === "darwin",
     enableClaudeScheduler: process.platform === "darwin",
     verifiedAntigravityManaged: true,
+    verifiedDshFollower: process.platform === "darwin",
     accountSessions: () => {
       if (!accountService) return Promise.reject(new Error("account_unavailable"));
       return accountService.liveSessions();

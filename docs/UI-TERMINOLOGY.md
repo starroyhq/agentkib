@@ -145,6 +145,7 @@ D10、D11 的同 Agent 续接以“能否继续、在哪里运行”为准。用
 | AgentKib 后台进程正在运行 | 在 AgentKib 中运行 | 在 AgentKib 中執行 | AgentKib で実行中 | Running in AgentKib |
 | Claude Code 终端已连接 | 在终端中运行 · 已连接 | 在終端中執行 · 已連線 | ターミナルで実行中 · 接続済み | Running in terminal · Connected |
 | 跟随 Codex 桌面端 | 在 Codex 中运行 · 已连接 | 在 Codex 中執行 · 已連線 | Codex で実行中 · 接続済み | Running in Codex · Connected |
+| 已连接的 DeepSeek Harness | 在 DeepSeek Harness 中运行 · 已连接 | 在 DeepSeek Harness 中執行 · 已連線 | DeepSeek Harness で実行中 · 接続済み | Running in DeepSeek Harness · Connected |
 | 已连接终端的列表徽标 | 终端 | 終端 | ターミナル | Terminal |
 | 列表里有审批或提问在等 | 等待你 | 等待你 | 対応待ち | Needs you |
 | 连接的终端正在跑一轮 | 在终端中运行 | 在終端中執行 | ターミナルで実行中 | Running in terminal |
@@ -175,8 +176,9 @@ D10、D11 的同 Agent 续接以“能否继续、在哪里运行”为准。用
 | 分支说明 | 原会话不受影响，新会话会标“分支自 {title}” | 原對話不受影響，新對話會標「分支自 {title}」 | 元の会話には影響しません。新しい会話には「{title} から分岐」と表示されます。 | The original session stays as is. The new one is marked "Forked from {title}". |
 | 返回该 Agent 之后 | 这条会话在 AgentKib 中只读，{agent} 那边关闭后会自动恢复 | 這段對話在 AgentKib 中為唯讀，{agent} 那邊關閉後會自動恢復 | この会話は AgentKib では閲覧のみです。{agent} 側で閉じると、ここで続けられるようになります。 | This session is view only in AgentKib. You can continue here once it's closed in {agent}. |
 | 已连接终端但不能从这里发送 | 在终端中继续这条会话，这里会同步显示 | 在終端中繼續這段對話，這裡會同步顯示 | この会話はターミナルで続けてください。ここにも同期して表示されます。 | Continue this session in the terminal. It stays in sync here. |
-| 跟随 Codex 桌面端时的输入区说明 | 消息会交给 Codex 执行，模型和权限沿用 Codex 中的设置 | 訊息會交給 Codex 執行，模型和權限沿用 Codex 中的設定 | メッセージは Codex で実行され、モデルと権限は Codex 側の設定に従います | Messages run in Codex, using the model and permissions set there |
 | 跟随时只能在 Codex 处理的请求 | 这项请求请在 Codex 中处理 | 這項請求請在 Codex 中處理 | このリクエストは Codex で対応してください | Handle this request in Codex |
+| 只能在 DeepSeek Harness 作答的请求 | 这项请求请在 DeepSeek Harness 中处理。 | 這項請求請在 DeepSeek Harness 中處理。 | このリクエストは DeepSeek Harness で対応してください。 | Handle this request in DeepSeek Harness. |
+| DeepSeek Harness 先答后的卡片 | 这项请求已经在 DeepSeek Harness 中处理过了。 | 這項請求已經在 DeepSeek Harness 中處理過了。 | このリクエストはすでに DeepSeek Harness で対応済みです。 | This request was already handled in DeepSeek Harness. |
 | 跟随时不开放的操作 | 这项操作请在 Codex 中完成。 | 這項操作請在 Codex 中完成。 | この操作は Codex で行ってください。 | Use Codex for this action. |
 | Codex 完全退出说明 | 只关掉 Codex 的窗口可能不够，完全退出应用后才能在这里继续 | 只關閉 Codex 的視窗可能不夠，完全結束應用程式後才能在這裡繼續 | Codex のウィンドウを閉じるだけでは不十分な場合があります。ここで続けるには、アプリを完全に終了してください。 | Closing the Codex window may not be enough. Quit the app completely to continue here. |
 | Claude Code 后台自动结束 | 后台进程已结束，下次发送时会自动继续 | 背景程序已結束，下次傳送訊息時會自動繼續 | バックグラウンドプロセスを終了しました。次のメッセージ送信時に自動で続行します。 | The background process ended. It will resume automatically when you send your next message. |

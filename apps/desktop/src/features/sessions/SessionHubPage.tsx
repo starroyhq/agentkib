@@ -30,7 +30,7 @@ export function SessionHubPage() {
     !hub.selected?.remote &&
     (creating ||
       (hub.selected?.availability === "readable" &&
-        ["codex", "claude-code", "antigravity"].includes(hub.selected.agent)));
+        ["codex", "claude-code", "deepseek-harness", "antigravity"].includes(hub.selected.agent)));
   const history = useSessionHistory(hub.selected, hub.enabled && !interactive, hub.historyRevision);
   const [enabling, setEnabling] = useState(false);
   const [enableError, setEnableError] = useState("");

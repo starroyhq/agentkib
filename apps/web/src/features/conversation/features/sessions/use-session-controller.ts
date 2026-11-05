@@ -1918,9 +1918,10 @@ export function useSessionController({
     }
     if (action === "settings" && Object.keys(fields).length)
       setSettingsIntentBinding(settingsBinding);
+    const sessionAgent = sessions.find((session) => session.id === id)?.agent;
     const perform = (body: SessionActionBody) =>
-      sessions.find((session) => session.id === id)?.agent === "claude-code"
-        ? client.sessionAction(action, body, "claude-code")
+      sessionAgent === "claude-code" || sessionAgent === "deepseek-harness"
+        ? client.sessionAction(action, body, sessionAgent)
         : action === "queue-pause" || action === "queue-resume"
           ? Promise.reject(new ApiError(409, "operation_unavailable", "not-dispatched"))
           : client.codexAction(action, body);
@@ -2105,16 +2106,17 @@ export function useSessionController({
     const requestId = crypto.randomUUID();
     if (
       kind === "send" &&
-      ["codex", "claude-code"].includes(
+      ["codex", "claude-code", "deepseek-harness"].includes(
         catalogSessions.current.find((item) => item.id === id)?.agent ?? "",
       )
     )
       setPendingSend({ sessionId: id, text, afterEventId: page?.events.at(-1)?.id });
     const needsDurableReceipt =
-      ["codex", "claude-code"].includes(
+      ["codex", "claude-code", "deepseek-harness"].includes(
         sessions.find((session) => session.id === id)?.agent ?? "",
       ) ||
       live.executionMode === "claude-managed" ||
+      live.executionMode === "dsh-follower" ||
       live.executionMode?.startsWith("codex-");
     const scope = needsDurableReceipt ? durableScope.current : undefined;
     try {

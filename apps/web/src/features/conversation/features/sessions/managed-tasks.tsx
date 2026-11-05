@@ -243,7 +243,7 @@ export function ManagedTasks({
     setOptions(undefined);
     void client
       .request<Options>(
-        agent === "codex" ? "managed/options" : "managed/options?agent=claude-code",
+        agent === "codex" ? "managed/options" : `managed/options?agent=${agent}`,
         undefined,
         abort.signal,
       )
@@ -305,7 +305,7 @@ export function ManagedTasks({
         throw new ApiError(409, "pending_storage_unavailable", "not-dispatched");
       }
       const result = await client.request<{ sessionId?: string }>("managed/create", {
-        ...(agent === "claude-code" ? { agent } : {}),
+        ...(agent !== "codex" ? { agent } : {}),
         bootId: access!.bootId,
         requestId,
         workspaceId,
@@ -369,6 +369,7 @@ export function ManagedTasks({
           >
             <option value="codex">Codex</option>
             <option value="claude-code">Claude Code</option>
+            <option value="deepseek-harness">DeepSeek Harness</option>
           </select>
         </label>
       )}

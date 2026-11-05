@@ -140,11 +140,10 @@ it("does not enable service until settings are saved", async () => {
     }),
   );
 });
-it("connects with the default service and bundled connector without asking for a binary path", async () => {
+it("connects with the default service and bundled connector without an invitation or binary path", async () => {
   render(<WebAccessSettings />);
   await screen.findByText("Signed in as demo@example.com");
-  const invitation = await screen.findByLabelText("Invitation (first connection only)");
-  fireEvent.change(invitation, { target: { value: "invited-device" } });
+  expect(screen.queryByLabelText(/invitation/i)).toBeNull();
   const connect = screen.getByRole("button", { name: "Enable remote access" });
   await waitFor(() => expect((connect as HTMLButtonElement).disabled).toBe(false));
   fireEvent.click(connect);
@@ -152,10 +151,8 @@ it("connects with the default service and bundled connector without asking for a
     expect(request).toHaveBeenCalledWith({
       operation: "remote-enable",
       brokerUrl: "https://api.agentkib.com",
-      inviteCode: "invited-device",
     }),
   );
-  expect((invitation as HTMLInputElement).value).toBe("");
 });
 it("shows the failed relay stage and retry time without exposing raw errors or a pairing code", async () => {
   request.mockResolvedValue({
@@ -298,7 +295,7 @@ it("does not restore a revoked browser from an older shared poll", async () => {
 });
 
 it.each(["https://remote.agentkib.com", "https://api.remote.agentkib.com"])(
-  "requires explicit migration from %s and a new invitation",
+  "requires explicit account migration from %s without an invitation",
   async (legacyUrl) => {
     request.mockResolvedValue({
       ...status,
@@ -321,10 +318,8 @@ it.each(["https://remote.agentkib.com", "https://api.remote.agentkib.com"])(
     fireEvent.click(screen.getByRole("button", { name: "Prepare service migration" }));
     expect(request.mock.calls.every(([input]) => input.operation === "status")).toBe(true);
     const confirm = screen.getByRole("button", { name: "Apply connection settings" });
-    expect((confirm as HTMLButtonElement).disabled).toBe(true);
-    fireEvent.change(screen.getByLabelText("Invitation (first connection only)"), {
-      target: { value: "new-invitation" },
-    });
+    expect(confirm).toBeEnabled();
+    expect(screen.queryByLabelText(/invitation/i)).toBeNull();
     fireEvent.click(confirm);
     const dialog = screen.getByRole("dialog", { name: "Apply connection settings" });
     expect(request.mock.calls.every(([input]) => input.operation === "status")).toBe(true);
@@ -333,7 +328,6 @@ it.each(["https://remote.agentkib.com", "https://api.remote.agentkib.com"])(
       expect(request).toHaveBeenCalledWith({
         operation: "remote-enable",
         brokerUrl: "https://api.agentkib.com",
-        inviteCode: "new-invitation",
       }),
     );
     expect(request.mock.calls.filter(([input]) => input.operation !== "status")).toHaveLength(1);
@@ -754,7 +748,7 @@ it("keeps unsaved settings visible outside advanced controls and saves once whil
   expect(screen.getByLabelText("Connection service (official or self-hosted)")).toBeDisabled();
   expect(screen.getByLabelText("Custom frpc executable (optional)")).toBeDisabled();
   expect(screen.getByLabelText("Preview bandwidth (KiB/s; save settings to apply)")).toBeDisabled();
-  expect(screen.getByLabelText("Invitation (first connection only)")).toBeDisabled();
+  expect(screen.queryByLabelText(/invitation/i)).toBeNull();
   await user.type(directories, "/tmp/not-granted");
   expect(directories).toHaveValue("/tmp/reports\n");
   const savedStatus = {
@@ -1038,20 +1032,29 @@ it("keeps relay phase and retry guidance visible while engineering details requi
   expect(request.mock.calls.every(([input]) => input.operation === "status")).toBe(true);
 });
 
-it("retains an invitation when remote registration fails and permits an explicit retry", async () => {
+it("retains a self-hosted invitation after registration fails and permits an explicit retry", async () => {
   render(<WebAccessSettings />);
   await screen.findByText("Signed in as demo@example.com");
-  const invitation = await screen.findByLabelText("Invitation (first connection only)");
+  fireEvent.click(screen.getByRole("button", { name: "Advanced settings" }));
+  fireEvent.change(screen.getByLabelText("Connection service (official or self-hosted)"), {
+    target: { value: "https://self-hosted.example.com" },
+  });
+  const invitation = screen.getByLabelText("Self-hosted service invitation (if required)");
   fireEvent.change(invitation, { target: { value: "new-invitation" } });
   request.mockRejectedValueOnce(new Error("failed"));
-  fireEvent.click(screen.getByRole("button", { name: "Enable remote access" }));
+  fireEvent.click(screen.getByRole("button", { name: "Apply connection settings" }));
   expect(await screen.findByRole("alert")).toHaveTextContent("Web settings unavailable");
   expect(invitation).toHaveValue("new-invitation");
-  fireEvent.click(screen.getByRole("button", { name: "Enable remote access" }));
+  fireEvent.click(screen.getByRole("button", { name: "Apply connection settings" }));
   await waitFor(() => expect(invitation).toHaveValue(""));
   expect(request.mock.calls.filter(([input]) => input.operation === "remote-enable")).toHaveLength(
     2,
   );
+  expect(request).toHaveBeenCalledWith({
+    operation: "remote-enable",
+    brokerUrl: "https://self-hosted.example.com",
+    inviteCode: "new-invitation",
+  });
 });
 
 it.each([
@@ -1079,14 +1082,14 @@ it.each([
       expect(screen.getByText(remotePhoneCopy[locale].connectHint)).toBeVisible();
       expect(screen.queryByRole("button", { name: c.generateAccess })).toBeNull();
       expect(screen.queryByText(c.accessCodeHint)).toBeNull();
-      expect(screen.getByLabelText(remoteEntryCopy[locale].invitation)).toHaveAccessibleDescription(
-        c.invitationCodeHint,
-      );
+      expect(screen.queryByLabelText(remoteEntryCopy[locale].invitation)).toBeNull();
+      expect(screen.queryByText(c.invitationCodeHint)).toBeNull();
       expect(screen.getByRole("button", { name: diagnostics })).toHaveAttribute(
         "aria-expanded",
         "false",
       );
       fireEvent.click(screen.getByRole("button", { name: remotePhoneCopy[locale].advanced }));
+      expect(screen.queryByLabelText(remoteEntryCopy[locale].invitation)).toBeNull();
       fireEvent.click(screen.getByRole("checkbox", { name: c.enabled }));
       expect(screen.getByText(unsaved)).toBeVisible();
       expect(screen.getAllByText(c.saveHint)).toHaveLength(1);

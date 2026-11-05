@@ -52,6 +52,25 @@ import {
 
 // setTimeout 的最大延迟约 24.8 天，超过会立即触发。
 const MAX_TIMEOUT_MS = 2 ** 31 - 1;
+const OFFICIAL_BROKER_URL = "https://api.agentkib.com";
+function normalizeBrokerUrl(value: string) {
+  const trimmed = value.trim();
+  try {
+    const url = new URL(trimmed);
+    if (
+      url.protocol === "https:" &&
+      !url.username &&
+      !url.password &&
+      url.pathname === "/" &&
+      !url.search &&
+      !url.hash
+    )
+      return url.origin;
+  } catch {
+    // Invalid broker input is left for the existing native validation.
+  }
+  return trimmed;
+}
 const configFields = [
   "enabled",
   "port",
@@ -353,13 +372,17 @@ export function WebAccessSettings({
   }
   const legacyBrokerUrls = ["https://remote.agentkib.com", "https://api.remote.agentkib.com"];
   const legacyBroker = legacyBrokerUrls.includes(
-    status?.config.relay?.brokerUrl?.replace(/\/$/, "") ?? "",
+    normalizeBrokerUrl(status?.config.relay?.brokerUrl ?? ""),
   );
-  const migrating = legacyBroker && relayBroker.replace(/\/$/, "") === "https://api.agentkib.com";
+  const officialBroker = normalizeBrokerUrl(relayBroker) === OFFICIAL_BROKER_URL;
+  const customBroker =
+    Boolean(relayBroker.trim()) &&
+    !officialBroker &&
+    !legacyBrokerUrls.includes(normalizeBrokerUrl(relayBroker));
+  const migrating = legacyBroker && officialBroker;
   const remoteEnabled =
     status?.relay?.phase === "ready" &&
-    relayBroker.trim().replace(/\/$/, "") ===
-      status.config.relay?.brokerUrl.trim().replace(/\/$/, "") &&
+    normalizeBrokerUrl(relayBroker) === normalizeBrokerUrl(status.config.relay?.brokerUrl ?? "") &&
     frpcPath.trim() === (status.config.relay?.frpcPath ?? "").trim();
   const manualAccess =
     !lan &&
@@ -396,13 +419,13 @@ export function WebAccessSettings({
   const unsaved = localConfigDirty || localSaveFailed || sharedAdmin.configurationUncertain;
   const connectionDirty = Boolean(
     status &&
-    (relayBroker.trim().replace(/\/$/, "") !==
-      (status.config.relay?.brokerUrl || "https://api.agentkib.com").replace(/\/$/, "") ||
+    (normalizeBrokerUrl(relayBroker) !==
+      normalizeBrokerUrl(status.config.relay?.brokerUrl || OFFICIAL_BROKER_URL) ||
       frpcPath.trim() !== (status.config.relay?.frpcPath || "").trim()),
   );
   const brokerChanged = Boolean(
     status?.config.relay &&
-    relayBroker.trim().replace(/\/$/, "") !== status.config.relay.brokerUrl.replace(/\/$/, ""),
+    normalizeBrokerUrl(relayBroker) !== normalizeBrokerUrl(status.config.relay.brokerUrl),
   );
   const signedIn = accountStatus?.phase === "signed-in" && Boolean(accountStatus.account);
   const relayReady = status?.running && status.relay?.phase === "ready";
@@ -411,27 +434,29 @@ export function WebAccessSettings({
     busy ||
     !config ||
     !relayBroker.trim() ||
-    (legacyBroker && legacyBrokerUrls.includes(relayBroker.replace(/\/$/, ""))) ||
-    ((status?.relay?.reason === "revoked" || migrating) && !inviteCode.trim());
+    (officialBroker && !signedIn) ||
+    (legacyBroker && legacyBrokerUrls.includes(normalizeBrokerUrl(relayBroker))) ||
+    (!officialBroker && status?.relay?.reason === "revoked" && !inviteCode.trim());
   const enableConnection = () => {
+    if (connectionDisabled) return;
     if (!setupComplete) setupInProgress.current = true;
     return run({
       operation: "remote-enable",
       brokerUrl: relayBroker,
       ...(frpcPath.trim() ? { frpcPath: frpcPath.trim() } : {}),
-      ...(inviteCode ? { inviteCode } : {}),
+      ...(customBroker && inviteCode ? { inviteCode } : {}),
       ...(status?.relay?.reason === "revoked" ? { reenroll: true } : {}),
     });
   };
   const savedRelay = status?.config.relay;
   const resumeNeedsLogin =
     !relayActive &&
-    savedRelay?.brokerUrl.trim().replace(/\/$/, "") === "https://api.agentkib.com" &&
+    normalizeBrokerUrl(savedRelay?.brokerUrl ?? "") === OFFICIAL_BROKER_URL &&
     !signedIn;
   const resumeDisabled =
     busy ||
     !savedRelay?.brokerUrl.trim() ||
-    legacyBrokerUrls.includes(savedRelay.brokerUrl.replace(/\/$/, "")) ||
+    legacyBrokerUrls.includes(normalizeBrokerUrl(savedRelay.brokerUrl)) ||
     status?.relay?.reason === "revoked";
   const resumeConnection = () => {
     if (resumeDisabled || !savedRelay) return;
@@ -989,33 +1014,34 @@ export function WebAccessSettings({
       )}
     </>
   );
-  // Enable persists the relay intent before enrollment can fail, so that intent alone
-  // must not hide the invitation while the first setup is still unfinished.
-  const invitation = (!status?.config.relay ||
-    (!setupComplete && !relayReady) ||
-    brokerChanged ||
-    migrating ||
-    status?.relay?.reason === "revoked") && (
-    <div className="space-y-1">
-      <label htmlFor={invitationId}>{r.invitation}</label>
-      <Input
-        id={invitationId}
-        aria-describedby={invitationHintId}
-        type="password"
-        autoComplete="off"
-        value={inviteCode}
-        disabled={busy}
-        onChange={(e) => setInviteCode(e.target.value)}
-      />
-      <p id={invitationHintId} className="text-xs text-muted-foreground">
-        {c.invitationCodeHint}
-      </p>
-    </div>
-  );
+  // Self-hosted services can retain invitation enrollment; official enrollment uses the account.
+  const invitation = customBroker &&
+    (!status?.config.relay ||
+      (!setupComplete && !relayReady) ||
+      brokerChanged ||
+      status?.relay?.reason === "revoked") && (
+      <div className="space-y-1">
+        <label htmlFor={invitationId}>{r.invitation}</label>
+        <Input
+          id={invitationId}
+          aria-describedby={invitationHintId}
+          type="password"
+          autoComplete="off"
+          value={inviteCode}
+          disabled={busy}
+          onChange={(e) => setInviteCode(e.target.value)}
+        />
+        <p id={invitationHintId} className="text-xs text-muted-foreground">
+          {c.invitationCodeHint}
+        </p>
+      </div>
+    );
   const connectionActionLabel = migrating
     ? r.confirmMigration
     : status?.relay?.reason === "revoked"
-      ? r.reenroll
+      ? officialBroker
+        ? r.reenrollAccount
+        : r.reenroll
       : r.enable;
   const migrationNotice = legacyBroker && (
     <SettingsNotice tone="warning" inset={false}>
@@ -1300,14 +1326,13 @@ export function WebAccessSettings({
               <SetupStep
                 number={2}
                 title={relayReady ? p.readyResult : p.enableStep}
-                hint={!relayReady ? p.enableHint : undefined}
+                hint={!relayReady && officialBroker ? p.enableHint : undefined}
                 active={signedIn && !relayReady}
                 done={Boolean(relayReady)}
               >
                 {signedIn && !relayReady && (
                   <div className="space-y-3">
                     {migrationNotice}
-                    {invitation}
                     <Button
                       disabled={
                         connectionDisabled ||
@@ -1472,7 +1497,10 @@ export function WebAccessSettings({
                 value={relayBroker}
                 disabled={busy}
                 placeholder="https://api.agentkib.com"
-                onChange={(e) => setRelayBroker(e.target.value)}
+                onChange={(e) => {
+                  setRelayBroker(e.target.value);
+                  setInviteCode("");
+                }}
               />
             </label>
             <label className="block space-y-1">
@@ -1494,8 +1522,7 @@ export function WebAccessSettings({
                 {p.connectionDraft}
               </p>
             )}
-            {/* Keep explicit enrollment available for custom brokers and existing invitation-only computers. */}
-            {!(signedIn && !relayReady && !setupComplete) && invitation}
+            {invitation}
             <Button
               variant="outline"
               disabled={connectionDisabled || (remoteEnabled && !connectionDirty)}

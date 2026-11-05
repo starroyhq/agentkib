@@ -1755,6 +1755,142 @@ describe("isolated local transport fault exercise", () => {
 });
 
 describe("account device registration", () => {
+  const { credential: _credential, ...accountAssignment } = assignment;
+  it.each([DEFAULT_RELAY_BROKER, `${DEFAULT_RELAY_BROKER}/`, registration.brokerUrl])(
+    "ignores a stale invitation when account registration is available at %s",
+    async (brokerUrl) => {
+      const path = await directory();
+      const registerAccount = vi.fn(
+        async (_input: { registrationId: string; credential: string }) => ({
+          ...accountAssignment,
+          accountId: "account-a",
+        }),
+      );
+      const fetcher = vi.fn();
+      vi.stubGlobal("fetch", fetcher);
+      const { internal } = setup(path, {
+        brokerUrl,
+        inviteCode: "obsolete-invitation",
+        registrationAccountId: "account-a",
+        registerAccount,
+      });
+      await internal.register(1);
+      expect(registerAccount).toHaveBeenCalledOnce();
+      expect(registerAccount.mock.calls[0][0]).not.toHaveProperty("invitation");
+      expect(fetcher).not.toHaveBeenCalled();
+      const stored = await readFile(join(path, "registration.json"), "utf8");
+      expect(JSON.parse(stored).accountId).toBe("account-a");
+      expect(stored).not.toContain("obsolete-invitation");
+    },
+  );
+  it.each([undefined, "obsolete-invitation"])(
+    "never starts anonymous official registration with invitation %s",
+    async (inviteCode) => {
+      const path = await directory();
+      const { internal } = setup(path, { brokerUrl: DEFAULT_RELAY_BROKER, inviteCode });
+      const fetcher = vi.fn();
+      vi.stubGlobal("fetch", fetcher);
+      await expect(internal.register(1)).rejects.toThrow("account_login_required");
+      expect(fetcher).not.toHaveBeenCalled();
+      await expect(readFile(join(path, "registration-pending.json"))).rejects.toMatchObject({
+        code: "ENOENT",
+      });
+    },
+  );
+  it("does not move an anonymous pending request to an account registration", async () => {
+    const path = await directory();
+    const pending = JSON.stringify({
+      brokerUrl: DEFAULT_RELAY_BROKER,
+      registrationId: "r".repeat(32),
+      credential: registration.credential,
+    });
+    await writeFile(join(path, "registration-pending.json"), pending);
+    const registerAccount = vi.fn();
+    const fetcher = vi.fn();
+    vi.stubGlobal("fetch", fetcher);
+    const { internal } = setup(path, {
+      brokerUrl: DEFAULT_RELAY_BROKER,
+      registrationAccountId: "account-a",
+      registerAccount,
+      inviteCode: "obsolete-invitation",
+    });
+    await expect(internal.register(1)).rejects.toThrow("account_registration_pending");
+    expect(registerAccount).not.toHaveBeenCalled();
+    expect(fetcher).not.toHaveBeenCalled();
+    expect(await readFile(join(path, "registration-pending.json"), "utf8")).toBe(pending);
+  });
+  it("recovers a lost account response with the same identity despite a stale invitation", async () => {
+    const path = await directory();
+    const firstRegistration = vi.fn(
+      async (_input: { registrationId: string; credential: string }) => {
+        throw new Error("response lost");
+      },
+    );
+    const first = setup(path, {
+      brokerUrl: DEFAULT_RELAY_BROKER,
+      registrationAccountId: "account-a",
+      registerAccount: firstRegistration,
+    });
+    await expect(first.internal.register(1)).rejects.toThrow("response lost");
+    await first.manager.stop();
+    const retry = vi.fn(async (_input: { registrationId: string; credential: string }) => ({
+      ...accountAssignment,
+      accountId: "account-a",
+    }));
+    const second = setup(path, {
+      brokerUrl: DEFAULT_RELAY_BROKER,
+      registrationAccountId: "account-a",
+      registerAccount: retry,
+      inviteCode: "obsolete-invitation",
+    });
+    const fetcher = vi.fn();
+    vi.stubGlobal("fetch", fetcher);
+    await second.internal.register(1);
+    expect(retry).toHaveBeenCalledExactlyOnceWith(firstRegistration.mock.calls[0][0]);
+    expect(fetcher).not.toHaveBeenCalled();
+    expect(second.internal.registration.credential).toBe(
+      firstRegistration.mock.calls[0][0].credential,
+    );
+  });
+  it("reenrolls an official device without an invitation and preserves the failed request on restart", async () => {
+    const path = await directory();
+    const old = { ...registration, brokerUrl: DEFAULT_RELAY_BROKER, accountId: "account-a" };
+    await writeFile(join(path, "registration.json"), JSON.stringify(old));
+    const first = setup(path, {
+      brokerUrl: DEFAULT_RELAY_BROKER,
+      reenroll: true,
+      registrationAccountId: "account-a",
+      registerAccount: async () => {
+        throw new Error("response lost");
+      },
+    });
+    await expect(first.internal.register(1)).rejects.toThrow("response lost");
+    expect(JSON.parse(await readFile(join(path, "registration.json"), "utf8"))).toEqual(old);
+    const pending = JSON.parse(await readFile(join(path, "registration-pending.json"), "utf8"));
+    expect(pending).toMatchObject({ accountId: "account-a", reenroll: true });
+    expect(pending.credential).not.toBe(old.credential);
+    await first.manager.stop();
+    const registerAccount = vi.fn(async () => ({
+      ...accountAssignment,
+      deviceId: "c".repeat(32),
+      accountId: "account-a",
+    }));
+    const restarted = setup(path, {
+      brokerUrl: DEFAULT_RELAY_BROKER,
+      registrationAccountId: "account-a",
+      registerAccount,
+    });
+    await restarted.internal.register(1);
+    expect(registerAccount).toHaveBeenCalledExactlyOnceWith({
+      registrationId: pending.registrationId,
+      credential: pending.credential,
+    });
+    expect(restarted.internal.registration).toMatchObject({
+      deviceId: "c".repeat(32),
+      credential: pending.credential,
+      accountId: "account-a",
+    });
+  });
   it("persists account ownership with the pending identity and never stores an access token", async () => {
     const path = await directory();
     const registerAccount = vi.fn(async (input: { registrationId: string; credential: string }) => {

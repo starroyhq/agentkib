@@ -374,10 +374,7 @@ export class RelayManager {
   constructor(private options: RelayOptions) {
     this.frpcPath = options.frpcPath;
     this.reenrolling = options.reenroll === true;
-    if (this.reenrolling && !options.registerAccount && !options.inviteCode?.trim())
-      throw new Error("A new invitation is required for reenrollment");
-    this.brokerUrl = options.brokerUrl ?? DEFAULT_RELAY_BROKER;
-    const url = new URL(this.brokerUrl);
+    const url = new URL(options.brokerUrl ?? DEFAULT_RELAY_BROKER);
     if (
       url.protocol !== "https:" ||
       url.username ||
@@ -387,6 +384,14 @@ export class RelayManager {
       url.hash
     )
       throw new Error("Relay broker must be an HTTPS origin");
+    this.brokerUrl = url.origin;
+    if (
+      this.reenrolling &&
+      this.brokerUrl !== DEFAULT_RELAY_BROKER &&
+      !options.registerAccount &&
+      !options.inviteCode?.trim()
+    )
+      throw new Error("A new invitation is required for reenrollment");
     for (const target of [options.target, options.preview])
       if (
         target.host !== "127.0.0.1" ||
@@ -682,7 +687,7 @@ export class RelayManager {
         throw new Error("Invalid pending registration");
     } catch (error) {
       if (!unreadableState(error)) throw error;
-      // 损坏的待注册记录没法再用（凭据对不上），留着只会让每次启动都失败，包括重新邀请。
+      // 损坏的待注册记录无法恢复；权限及磁盘错误仍须交给调用方处理。
       pending = undefined;
       await rm(join(this.options.stateDirectory, "registration-pending.json"), { force: true });
     }
@@ -697,19 +702,26 @@ export class RelayManager {
         this.registration = validateRegistration(stored, this.brokerUrl);
         return;
       } catch (error) {
-        // 损坏的注册记录按"没有注册"处理：有邀请码就重新注册，没有就提示需要邀请码。
+        // 损坏的注册记录按没有注册处理，登记方式由当前服务和账号决定。
         if (!unreadableState(error)) throw error;
       }
     }
     if (pending?.accountId && pending.accountId !== this.options.registrationAccountId)
       throw new Error("account_registration_pending");
+    // A stale invitation must never switch an account registration to the anonymous API.
+    const accountRegistration = Boolean(this.options.registerAccount);
+    if (
+      (this.brokerUrl === DEFAULT_RELAY_BROKER || accountRegistration) &&
+      (!accountRegistration || !this.options.registrationAccountId)
+    )
+      throw new Error("account_login_required");
+    if (pending && Boolean(pending.accountId) !== accountRegistration)
+      throw new Error("account_registration_pending");
     if (!pending) {
-      if (!this.options.inviteCode && !this.options.registerAccount)
+      if (!this.options.inviteCode && !accountRegistration)
         throw new Error("Relay invitation required");
       pending = {
-        ...(this.options.registerAccount && !this.options.inviteCode
-          ? { accountId: this.options.registrationAccountId }
-          : {}),
+        ...(accountRegistration ? { accountId: this.options.registrationAccountId } : {}),
         brokerUrl: this.brokerUrl,
         registrationId: randomUUID(),
         credential: randomBytes(32).toString("base64url"),
@@ -719,24 +731,23 @@ export class RelayManager {
     }
     this.registration = undefined;
     this.active(generation);
-    const result =
-      this.options.registerAccount && !this.options.inviteCode
-        ? await abortable(
-            this.options.registerAccount({
-              registrationId: pending.registrationId,
-              credential: pending.credential,
-            }),
-            this.abort!.signal,
-          )
-        : await this.api(
-            "/v1/register",
-            {
-              registrationId: pending.registrationId,
-              credential: pending.credential,
-              ...(this.options.inviteCode ? { invitation: this.options.inviteCode } : {}),
-            },
-            generation,
-          );
+    const result = this.options.registerAccount
+      ? await abortable(
+          this.options.registerAccount({
+            registrationId: pending.registrationId,
+            credential: pending.credential,
+          }),
+          this.abort!.signal,
+        )
+      : await this.api(
+          "/v1/register",
+          {
+            registrationId: pending.registrationId,
+            credential: pending.credential,
+            ...(this.options.inviteCode ? { invitation: this.options.inviteCode } : {}),
+          },
+          generation,
+        );
     if (pending.accountId && result.accountId !== pending.accountId)
       throw new Error("account_registration_mismatch");
     this.active(generation);

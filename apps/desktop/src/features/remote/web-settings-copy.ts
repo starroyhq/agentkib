@@ -14,7 +14,8 @@ export const webSettingsCopy = {
     generateNeedsConnection: "远程连接就绪后才能生成连接码，请先检查上方连接状态。",
     accessCodeHint: "授权码由手机浏览器输入，直接按所选档位获得权限，电脑上无需再次确认。",
     pairingCodeHint: "配对码用于发起浏览器配对，仍需在这台电脑上确认并授予权限。",
-    invitationCodeHint: "邀请码用于将这台电脑登记到远程连接服务，不是浏览器的配对码或授权码。",
+    invitationCodeHint:
+      "仅在自建服务要求时填写管理员提供的邀请码，用于登记这台电脑；不是浏览器的配对码或授权码。",
     diagnostics: "连接诊断",
     connectionApplyHint:
       "连接服务地址和程序路径需通过“应用连接设置”应用：更换服务会重新登记并清除浏览器授权，需单独确认；其他设置由“保存设置”保存。",
@@ -80,7 +81,8 @@ export const webSettingsCopy = {
     generateNeedsConnection: "遠端連線就緒後才能產生連線碼，請先檢查上方連線狀態。",
     accessCodeHint: "授權碼由手機瀏覽器輸入，直接依所選等級取得權限，電腦上無需再次確認。",
     pairingCodeHint: "配對碼用於發起瀏覽器配對，仍需在這台電腦上確認並授予權限。",
-    invitationCodeHint: "邀請碼用於將這台電腦登記到遠端連線服務，不是瀏覽器的配對碼或授權碼。",
+    invitationCodeHint:
+      "僅在自建服務要求時填寫管理員提供的邀請碼，用於登記這台電腦；不是瀏覽器的配對碼或授權碼。",
     diagnostics: "連線診斷",
     connectionApplyHint:
       "連線服務位址和程式路徑需透過「套用連線設定」套用：更換服務會重新登記並清除瀏覽器授權，需個別確認；其他設定由「儲存設定」儲存。",
@@ -150,7 +152,7 @@ export const webSettingsCopy = {
     pairingCodeHint:
       "A pairing code starts browser pairing. Confirm and grant permissions on this computer afterward.",
     invitationCodeHint:
-      "An invitation registers this computer with the remote connection service. It is not a browser pairing or access code.",
+      "Enter the administrator’s invitation only if your self-hosted service requires it to register this computer. It is not a browser pairing or access code.",
     diagnostics: "Connection diagnostics",
     connectionApplyHint:
       "Apply the connection service and executable path with “Apply connection settings”. Changing service re-registers this computer and clears browser grants, so it requires confirmation. “Save settings” saves the other fields.",
@@ -224,7 +226,7 @@ export const webSettingsCopy = {
     pairingCodeHint:
       "ペアリングコードでブラウザーとの接続を申請します。その後、このコンピューターで確認して権限を付与します。",
     invitationCodeHint:
-      "招待コードはこのコンピューターをリモート接続サービスに登録するためのものです。ブラウザーのペアリングコードや認証コードとは異なります。",
+      "自前サービスで必要な場合のみ、管理者の招待コードを入力してこのコンピューターを登録します。ブラウザーのペアリングコードや認証コードとは異なります。",
     diagnostics: "接続の診断",
     connectionApplyHint:
       "接続サービスと実行ファイルは「接続設定を適用」で反映します。サービス変更は端末の再登録とブラウザー認証の削除を伴うため、個別に確認します。その他の項目は「設定を保存」で保存します。",

@@ -1241,16 +1241,17 @@ export class WebAccessService {
         if (input.operation === "relay-start" && !this.server) throw new Error("web_not_running");
         if (this.options.mode === "lan" || this.options.acceptanceSessionId)
           throw new Error("remote_enable_unavailable");
-        if (input.reenroll && (typeof input.inviteCode !== "string" || !input.inviteCode.trim()))
-          throw new Error("invitation_required_for_reenrollment");
         const brokerUrl = relayBrokerOrigin(input.brokerUrl);
         if (brokerUrl === DEFAULT_RELAY_BROKER) {
           const identity = await this.accountIdentity();
           if (identity?.accountClaimPending) throw new Error("account_claim_pending");
-          if (identity?.accountId && !this.options.account)
-            throw new Error("account_login_required");
-          await this.options.account?.ensureDeviceOwner(identity?.accountId);
-        }
+          if (!this.options.account?.signedIn()) throw new Error("account_login_required");
+          await this.options.account.ensureDeviceOwner(identity?.accountId);
+        } else if (
+          input.reenroll &&
+          (typeof input.inviteCode !== "string" || !input.inviteCode.trim())
+        )
+          throw new Error("invitation_required_for_reenrollment");
         const changedBroker = !!this.config.relay && this.config.relay.brokerUrl !== brokerUrl;
         const next = this.validateConfig({
           ...this.config,
@@ -2043,11 +2044,13 @@ export class WebAccessService {
       trustedFrpcPath: this.options.bundledFrpcPath || "",
       createCsr:
         this.options.createRelayCsr ?? (() => Promise.reject(new Error("runtime_unavailable"))),
-      inviteCode,
+      ...(config.brokerUrl === DEFAULT_RELAY_BROKER ? {} : { inviteCode }),
       ...(config.brokerUrl === DEFAULT_RELAY_BROKER
         ? {
-            authorizeAccount: (accountId?: string) =>
-              this.options.account?.ensureDeviceOwner(accountId) ?? Promise.resolve(),
+            authorizeAccount: async (accountId?: string) => {
+              if (!this.options.account?.signedIn()) throw new Error("account_login_required");
+              await this.options.account.ensureDeviceOwner(accountId);
+            },
             ...(this.options.account?.signedIn()
               ? {
                   registrationAccountId: this.options.account.accountId(),

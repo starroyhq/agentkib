@@ -12,6 +12,7 @@ import {
   preparedManifest,
   sha256,
   sourceTreeHash,
+  swiftSdkRootFromConfiguration,
 } from "./build.mjs";
 
 test("upstream lock pins exact commits, source archives, dependency locks, patches and native source markers", async () => {
@@ -55,7 +56,7 @@ test("only a pinned manifest with matching actual files permits staging", async 
       patchSha256: spec.patchSha256,
       features: lock.features,
       toolchain: spec.toolchain.darwin,
-      files: { [path.relative(directory, binary)]: await sha256(binary) },
+      files: { [path.relative(directory, binary).split(path.sep).join("/")]: await sha256(binary) },
     };
     const file = path.join(directory, `manifests/${target}.json`);
     await writeFile(file, JSON.stringify(manifest));
@@ -78,6 +79,34 @@ test("only a pinned manifest with matching actual files permits staging", async 
   } finally {
     await rm(directory, { recursive: true, force: true });
   }
+});
+
+test("Swift SDK roots come from the configured target instead of an assumed installation directory", () => {
+  for (const architecture of ["x86_64", "aarch64"]) {
+    const root = `/home/runner/.local/share/org.swift.swiftpm/swift-sdks/swift-6.3.3-RELEASE_static-linux-0.1.0.artifactbundle/swift-6.3.3-RELEASE_static-linux-0.1.0/swift-linux-musl/musl-1.2.5.sdk/${architecture}`;
+    const configuration = [
+      `sdkRootPath: ${root}`,
+      `swiftResourcesPath: ${root}/usr/lib/swift_static`,
+      `swiftStaticResourcesPath: ${root}/usr/lib/swift_static`,
+      "includeSearchPaths: not set",
+      "librarySearchPaths: not set",
+      "toolsetPaths: []",
+    ];
+    assert.equal(swiftSdkRootFromConfiguration(configuration.join("\n")), root);
+    assert.equal(swiftSdkRootFromConfiguration(configuration.join("\r\n")), root);
+  }
+  assert.equal(
+    swiftSdkRootFromConfiguration("sdkRootPath: /custom SDK/musl/x86_64\n"),
+    "/custom SDK/musl/x86_64",
+  );
+  for (const output of [
+    "",
+    "sdkRootPath: not set\n",
+    "sdkRootPath: relative/path\n",
+    "sdkRootPath: /one\nsdkRootPath: /two\n",
+    "sdkRootPath: /invalid\0path\n",
+  ])
+    assert.throws(() => swiftSdkRootFromConfiguration(output), /one absolute sdkRootPath/);
 });
 
 test("unlocked source edits invalidate provenance while compiler caches do not", async () => {

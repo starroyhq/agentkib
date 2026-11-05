@@ -371,9 +371,20 @@ async function filesIn(directory) {
 
 // Same SDK and SQLite recipe as upstream .github/workflows/release-cli.yml.
 // Do not prune the SDK's other architecture: both local build targets may share it.
+export function swiftSdkRootFromConfiguration(configuration) {
+  const roots = configuration
+    .split(/\r?\n/)
+    .filter((line) => line.startsWith("sdkRootPath: "))
+    .map((line) => line.slice("sdkRootPath: ".length));
+  if (roots.length !== 1 || !path.posix.isAbsolute(roots[0]) || roots[0].includes("\0"))
+    throw new Error("Swift SDK configuration must contain one absolute sdkRootPath");
+  return roots[0];
+}
+
 async function prepareLinuxSdk(source, spec) {
   const settings = spec.linux;
   const sdkList = spawnSync("swift", ["sdk", "list"], { encoding: "utf8" });
+  if (sdkList.status !== 0) throw new Error("Unable to list installed Swift SDKs");
   if (!sdkList.stdout?.split(/\r?\n/).includes(settings.sdk)) {
     run("bash", ["Scripts/install_swift_static_sdk.sh"], {
       cwd: source,
@@ -384,12 +395,27 @@ async function prepareLinuxSdk(source, spec) {
       },
     });
   }
-  const sdkBundle =
-    process.env.AGENTKIB_SWIFT_SDK_BUNDLE ??
-    path.join(homedir(), ".swiftpm/swift-sdks", `${settings.sdk}.artifactbundle`);
   const arch = process.arch === "arm64" ? "aarch64" : "x86_64";
   const triple = `${arch}-swift-linux-musl`;
-  const sysroot = path.join(sdkBundle, settings.sdk, "swift-linux-musl/musl-1.2.5.sdk", arch);
+  let sysroot;
+  if (process.env.AGENTKIB_SWIFT_SDK_BUNDLE) {
+    sysroot = path.join(
+      process.env.AGENTKIB_SWIFT_SDK_BUNDLE,
+      settings.sdk,
+      "swift-linux-musl/musl-1.2.5.sdk",
+      arch,
+    );
+  } else {
+    // SwiftPM chooses its data directory per platform/XDG settings, not ~/.swiftpm.
+    const configuration = spawnSync(
+      "swift",
+      ["sdk", "configure", "--show-configuration", settings.sdk, triple],
+      { encoding: "utf8" },
+    );
+    if (configuration.status !== 0)
+      throw new Error("Unable to read the installed Swift SDK configuration");
+    sysroot = swiftSdkRootFromConfiguration(configuration.stdout);
+  }
   await access(sysroot);
   const root = path.join(path.dirname(source), `sqlite-${settings.sqliteVersion}-${triple}`);
   await mkdir(root, { recursive: true });

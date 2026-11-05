@@ -9,6 +9,7 @@ on:
   workflow_dispatch:
   pull_request:
     paths:
+      - ".gitattributes"
       - "apps/desktop/scripts/quota-collector/**"
       - "apps/desktop/scripts/prepare-quota-sidecar.mjs"
       - "apps/desktop/scripts/stage-electron-quota.mjs"

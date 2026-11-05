@@ -267,14 +267,17 @@
          result.read_failures = result.read_failures.saturating_add(swaps.read_failures);
 --- a/rust/src/cost_scanner/codex.rs
 +++ b/rust/src/cost_scanner/codex.rs
-@@ -229,8 +229,8 @@
+@@ -227,10 +227,11 @@
+         let settings = Settings::load();
+         let codex_home = std::env::var("CODEX_HOME").ok();
++        let wsl_roots = if super::agentkib_native_only() { Vec::new() } else { default_wsl_roots() };
          codex_sessions_dir_candidates(
              dirs::home_dir(),
              codex_home,
 -            &settings.codex_custom_sessions_dirs,
 -            &default_wsl_roots(),
 +            if super::agentkib_native_only() { &[] } else { &settings.codex_custom_sessions_dirs },
-+            if super::agentkib_native_only() { &[] } else { &default_wsl_roots() },
++            &wsl_roots,
          )
      }
  

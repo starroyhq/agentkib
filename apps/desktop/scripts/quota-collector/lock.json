@@ -44,21 +44,21 @@
       "dependencyLock": "Cargo.lock",
       "dependencyLockSha256": "e6f299296b6ea92a9ad85ba156c55720bb29f3ef8fd07cf2683533a7b5a45042",
       "patch": "win-codexbar.patch",
-      "patchSha256": "e6e64341c132db696b4460f9c10eec0c572adb17f074ddd7ff014888c31cc2ed",
+      "patchSha256": "1b89b2e58ff0fb48f4a08f29dd423c9253eebbde07a9b34404695530b7d3f113",
       "patchedFiles": {
         "rust/src/cli/cost.rs": "d3c7e34e8a7c38922f9b01cffab2887697dcd886c99bf2b0b2d54ba79bf2149a",
         "rust/src/cli/dashboard.rs": "930cc297c8ffd058b1181f218a5147b16bb8118f845685b1605ffe6361efac88",
         "rust/src/cli/serve/dashboard/source.rs": "bc567f8182867d56ca1f29b087d5cd556739dfe9f25ea56543d28e8a6c0fbbf3",
         "rust/src/cost_scanner.rs": "460e3042a81a465702c41544fb49743d28d1b79f8489004318c68f3859ef998e",
         "rust/src/cost_scanner/claude_roots.rs": "708a193a14e5ad091030a7bcc8ab2b496fd96d11cd248bf5ceb29b8f68ddeedd",
-        "rust/src/cost_scanner/codex.rs": "a30cf78f45ea8eb5acde6a024631c94b3bcf36acd22bb39389459024238099a3",
+        "rust/src/cost_scanner/codex.rs": "83ba57e6c936015194c4767a21bb7194ca14bc5362058f03651f1524f6e6c194",
         "rust/src/spend_contract.rs": "faddf4013d7472955c41eebc2782dd966f86d192f6139a36fb626fbb22727f3f"
       },
       "toolchain": {
         "win32": "rustc 1.92.0"
       },
       "minimumOS": "Windows x64 MSVC",
-      "patchedTreeSha256": "8a1aa97ce57ab4491318354e3bc9fd06fe247cca3f2daa696b0a55881d68495a"
+      "patchedTreeSha256": "3fc34656f48ad18760c7532757411ba27b8b0f254ff000d1be3229a186dedd2f"
     }
   },
   "targets": {

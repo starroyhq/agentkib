@@ -16,6 +16,7 @@ interface Snapshot {
   live: Record<string, unknown>;
   items: Record<string, unknown>[];
   completeItems: boolean;
+  authoritativeTurnIds?: string[];
 }
 
 interface Source {
@@ -94,7 +95,16 @@ export class SessionStreamHub {
         epoch: randomUUID(),
         seq: 0,
         historyRevision: 0,
-        snapshot: { ...snapshot, items: initialItems, completeItems },
+        snapshot: {
+          ...snapshot,
+          items: initialItems,
+          completeItems,
+          authoritativeTurnIds: retainedCoverage(
+            snapshot.authoritativeTurnIds,
+            snapshot.items,
+            initialItems,
+          ),
+        },
         replay: [],
         replayBytes: 0,
         nextPollAt: Date.now() + (sessionId ? SNAPSHOT_INTERVAL_MS : 2_000),
@@ -181,12 +191,13 @@ export class SessionStreamHub {
     type: SessionStreamEvent["type"],
     payload: Record<string, unknown>,
     live?: Record<string, unknown>,
+    textItem?: Record<string, unknown>,
   ): void {
     const source = this.#sources.get(sessionId);
     if (!source || ![...this.#subscriptions.values()].some((item) => item.sessionId === sessionId))
       return;
     if (type === "text-delta") {
-      this.#queueText(sessionId, source, payload, live);
+      this.#queueText(sessionId, source, payload, live, textItem);
       return;
     }
     this.#flushText(sessionId, source);
@@ -216,11 +227,17 @@ export class SessionStreamHub {
         if (isString(item.id)) source.removedItemIds.delete(item.id);
         if (isString(item.turn_id)) source.removedTurnIds.delete(item.turn_id);
       }
+      const beforeRetention = [...items];
       const retainedAll = this.#retainItems(items);
       source.snapshot = {
         live: live ?? (isRecord(payload.live) ? payload.live : source.snapshot.live),
         items,
         completeItems: complete && retainedAll,
+        authoritativeTurnIds: retainedCoverage(
+          source.snapshot.authoritativeTurnIds,
+          beforeRetention,
+          items,
+        ),
       };
       this.#recordCompleteCoverage(source, incoming, complete, retainedAll);
       this.#boundRemoved(source);
@@ -240,7 +257,12 @@ export class SessionStreamHub {
       else items.push(payload);
       const retainedAll = this.#retainItems(items);
       source.retentionOverflowed ||= !retainedAll;
-      source.snapshot = { ...source.snapshot, items, completeItems: false };
+      source.snapshot = {
+        ...source.snapshot,
+        items,
+        completeItems: false,
+        authoritativeTurnIds: retainedAll ? source.snapshot.authoritativeTurnIds : [],
+      };
       source.removedItemIds.delete(payload.id);
       if (typeof payload.turn_id === "string") source.removedTurnIds.delete(payload.turn_id);
     }
@@ -280,6 +302,7 @@ export class SessionStreamHub {
       ...source.snapshot,
       live,
       completeItems: false,
+      authoritativeTurnIds: retainedAll ? source.snapshot.authoritativeTurnIds : [],
       items,
     };
     source.removedItemIds.add(previousId);
@@ -384,6 +407,7 @@ export class SessionStreamHub {
     source: Source,
     payload: Record<string, unknown>,
     live?: Record<string, unknown>,
+    textItem?: Record<string, unknown>,
   ): void {
     const itemId = payload.itemId;
     const text = payload.text;
@@ -413,16 +437,27 @@ export class SessionStreamHub {
     const existing = existingIndex >= 0 ? items[existingIndex] : undefined;
     const content = typeof existing?.content === "string" ? existing.content : "";
     if (content.length !== offset) {
+      // A history read can already contain bytes that arrived on the native
+      // socket just before this delta. Keep that agreeing, fuller copy.
+      if (
+        textItem?.id === itemId &&
+        typeof textItem.content === "string" &&
+        content.startsWith(textItem.content)
+      )
+        return;
       this.#flushText(sessionId, source);
-      const replacement = {
-        id: itemId,
-        kind: "agent-message",
-        turn_id: payload.turnId ?? null,
-        content: typeof live?.streamText === "string" ? live.streamText : content,
-        attachment_count: 0,
-        truncated: false,
-        ephemeral: payload.ephemeral === true,
-      };
+      const replacement =
+        textItem?.id === itemId
+          ? textItem
+          : {
+              id: itemId,
+              kind: "agent-message",
+              turn_id: payload.turnId ?? null,
+              content: typeof live?.streamText === "string" ? live.streamText : content,
+              attachment_count: 0,
+              truncated: false,
+              ephemeral: payload.ephemeral === true,
+            };
       if (existingIndex >= 0) items[existingIndex] = replacement;
       else items.push(replacement);
       const retainedAll = this.#retainItems(items);
@@ -432,6 +467,7 @@ export class SessionStreamHub {
         live: live ?? source.snapshot.live,
         items,
         completeItems: false,
+        authoritativeTurnIds: retainedAll ? source.snapshot.authoritativeTurnIds : [],
       };
       source.historyRevision += 1;
       this.#append(sessionId, source, "item-upsert", replacement);
@@ -440,12 +476,14 @@ export class SessionStreamHub {
     }
 
     const item = {
+      ...existing,
+      ...(textItem?.id === itemId ? textItem : {}),
       id: itemId,
       kind: "agent-message",
       turn_id: payload.turnId ?? existing?.turn_id ?? null,
       content: content + text,
       attachment_count: 0,
-      truncated: false,
+      truncated: textItem?.truncated ?? existing?.truncated ?? false,
       ephemeral: payload.ephemeral === true,
     };
     if (existingIndex >= 0) items[existingIndex] = item;
@@ -457,6 +495,7 @@ export class SessionStreamHub {
       live: live ?? source.snapshot.live,
       items,
       completeItems: false,
+      authoritativeTurnIds: retainedAll ? source.snapshot.authoritativeTurnIds : [],
     };
     source.historyRevision += 1;
 
@@ -505,7 +544,27 @@ export class SessionStreamHub {
   }
 
   #reconcileSnapshot(source: Source, next: Snapshot): Snapshot {
-    const items = [...next.items];
+    const covered = new Set(next.authoritativeTurnIds ?? []);
+    const previous = new Map(source.snapshot.items.map((item) => [item.id, item]));
+    const items = next.items.map((item) => {
+      const live = previous.get(item.id);
+      // A file can lag behind a live prefix even when no notification arrived
+      // during this read. Verified native coverage still permits real rewrites.
+      if (
+        !covered.has(String(item.turn_id)) &&
+        next.live.status !== "idle" &&
+        item.turn_id === next.live.turnId &&
+        live?.ephemeral === true &&
+        live.kind === item.kind &&
+        live.turn_id === item.turn_id &&
+        typeof live.content === "string" &&
+        typeof item.content === "string" &&
+        live.content.length > item.content.length &&
+        live.content.startsWith(item.content)
+      )
+        return { ...item, ...live };
+      return item;
+    });
     const ids = new Set(items.map((item) => item.id));
     const activeTurn =
       next.live.status !== "idle" && typeof next.live.turnId === "string" ? next.live.turnId : null;
@@ -514,19 +573,25 @@ export class SessionStreamHub {
         item.ephemeral === true &&
         typeof item.id === "string" &&
         !ids.has(item.id) &&
+        !covered.has(String(item.turn_id)) &&
         (!next.completeItems || (activeTurn !== null && item.turn_id === activeTurn))
       )
         items.push(item);
     }
     const coveredIds = new Set(items.map((item) => item.id));
     let completeItems = next.completeItems;
-    if (next.completeItems) {
+    if (next.completeItems || covered.size) {
       const missingTurns = new Set<string>();
       for (const item of source.snapshot.items) {
-        if (typeof item.id === "string" && !coveredIds.has(item.id))
+        if (
+          (next.completeItems || covered.has(String(item.turn_id))) &&
+          typeof item.id === "string" &&
+          !coveredIds.has(item.id)
+        )
           source.removedItemIds.add(item.id);
         if (
           typeof item.turn_id === "string" &&
+          (next.completeItems || covered.has(item.turn_id)) &&
           !items.some((candidate) => candidate.turn_id === item.turn_id)
         )
           missingTurns.add(item.turn_id);
@@ -541,7 +606,12 @@ export class SessionStreamHub {
     const retainedAll = this.#retainItems(items);
     if (!retainedAll) completeItems = false;
     this.#recordCompleteCoverage(source, next.items, next.completeItems, retainedAll);
-    return { live: next.live, items, completeItems };
+    return {
+      live: next.live,
+      items,
+      completeItems,
+      authoritativeTurnIds: retainedCoverage(next.authoritativeTurnIds, next.items, items),
+    };
   }
 
   #itemsFingerprint(items: Record<string, unknown>[]): string {
@@ -612,15 +682,20 @@ export class SessionStreamHub {
       items: source.snapshot.items,
       replaceItems: true,
       preserveItemsOutsideCoverage: !source.snapshot.completeItems,
-      authoritativeTurnIds: source.snapshot.completeItems
-        ? [
-            ...new Set(
-              source.snapshot.items.flatMap((item) =>
-                typeof item.turn_id === "string" ? [item.turn_id] : [],
-              ),
-            ),
-          ]
-        : [],
+      authoritativeTurnIds: [
+        ...new Set([
+          ...(source.snapshot.authoritativeTurnIds ?? []),
+          ...(source.snapshot.completeItems
+            ? [
+                ...new Set(
+                  source.snapshot.items.flatMap((item) =>
+                    typeof item.turn_id === "string" ? [item.turn_id] : [],
+                  ),
+                ),
+              ]
+            : []),
+        ]),
+      ],
       removedItemIds: [...source.removedItemIds],
       removedTurnIds: [...source.removedTurnIds],
       ...(source.historyCacheEpoch ? { historyCacheEpoch: source.historyCacheEpoch } : {}),
@@ -666,4 +741,15 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 
 function isString(value: unknown): value is string {
   return typeof value === "string";
+}
+
+function retainedCoverage(
+  turns: string[] | undefined,
+  before: Record<string, unknown>[],
+  after: Record<string, unknown>[],
+): string[] {
+  const retained = new Set(after.map((item) => item.id));
+  return (turns ?? []).filter((turn) =>
+    before.every((item) => item.turn_id !== turn || retained.has(item.id)),
+  );
 }

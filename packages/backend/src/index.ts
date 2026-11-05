@@ -83,6 +83,7 @@ import {
   type SessionStreamEvent,
 } from "@agentkib/runtime-protocol";
 import { SessionStreamHub } from "./session-stream";
+import { mergeCodexFollowerSnapshot } from "./codex-follower-stream";
 import { SessionSnapshotHistory } from "./session-snapshot-history";
 import { BackendStore } from "./store";
 import { canonicalize } from "./paths";
@@ -693,7 +694,11 @@ export class TypeScriptBackend {
                     readHistory,
                   )
                 : await readHistory();
-            return { live, ...history };
+            const follower = this.#webRead?.readFollowerSnapshot(sessionId);
+            return {
+              live,
+              ...(follower ? mergeCodexFollowerSnapshot(history, follower) : history),
+            };
           },
           (event) => {
             this.notify(SESSION_EVENT_NOTIFICATION, event);
@@ -1847,7 +1852,8 @@ export class TypeScriptBackend {
         dataDir,
         () => this.#sessionIndex?.generation() ?? -1n,
         { ...process.env, ...this.environment },
-        (sessionId, type, payload, live) => this.#publishSession(sessionId, type, payload, live),
+        (sessionId, type, payload, live, item) =>
+          this.#publishSession(sessionId, type, payload, live, item),
         (sessionId) => this.#sessionStream?.hasSubscribers(sessionId) ?? false,
         this.#sessionIndex,
         () => this.#sessionStream?.publish("", "invalidate", { domains: ["catalog"] }),
@@ -1921,11 +1927,12 @@ export class TypeScriptBackend {
     type: SessionStreamEvent["type"],
     payload: Record<string, unknown>,
     live?: Record<string, unknown>,
+    textItem?: Record<string, unknown>,
   ) {
     if (type === "invalidate") this.#childSnapshots.invalidate(sessionId || undefined);
     else this.#childSnapshots.publish(sessionId, live ?? payload);
     if (type === "invalidate") this.#snapshotHistory?.invalidate(sessionId || undefined);
-    this.#sessionStream?.publish(sessionId, type, payload, live);
+    this.#sessionStream?.publish(sessionId, type, payload, live, textItem);
     if (sessionId && type === "state") {
       const state = live ?? payload;
       const status = JSON.stringify([

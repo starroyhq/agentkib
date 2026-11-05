@@ -287,22 +287,31 @@ export class CodexFollowerState {
   }
 
   /** Bounded event projection used by the app's shared live session stream. */
-  streamSnapshot(): { live: JsonRecord; items: JsonRecord[] } {
+  streamSnapshot(): { live: JsonRecord; items: JsonRecord[]; authoritativeTurnIds?: string[] } {
     const turns = this.#conversationTurns() ?? [];
     const activeTurn = this.activeTurn();
-    const candidates = turns
+    const candidates = turns.slice(-20).flatMap((turn) => {
+      if (typeof turn.turnId !== "string" || !Array.isArray(turn.items)) return [];
+      return turn.items.flatMap((item) => {
+        if (!isRecord(item) || typeof item.id !== "string") return [];
+        const projected = projectFollowerItem(item, turn.turnId as string);
+        return projected ? [projected] : [];
+      });
+    });
+    const retained = candidates.slice(-100);
+    const retainedIds = new Set(retained.map((item) => item.id));
+    // A window boundary is not a native deletion. Only turns whose entire
+    // projection fits in this snapshot can retire previously streamed rows.
+    const authoritativeTurnIds = turns
       .slice(-20)
-      .flatMap((turn) => {
-        if (typeof turn.turnId !== "string" || !Array.isArray(turn.items)) return [];
-        return turn.items.flatMap((item) => {
-          if (!isRecord(item) || typeof item.id !== "string") return [];
-          const projected = projectFollowerItem(item, turn.turnId as string);
-          return projected ? [projected] : [];
-        });
-      })
-      .slice(-100);
+      .flatMap((turn) =>
+        typeof turn.turnId === "string" &&
+        candidates.every((item) => item.turn_id !== turn.turnId || retainedIds.has(item.id))
+          ? [turn.turnId]
+          : [],
+      );
     let streamText = "";
-    for (const item of candidates) {
+    for (const item of retained) {
       if (item.kind === "agent-message" && item.turn_id === activeTurn)
         streamText = `${streamText}${typeof item.content === "string" ? item.content : ""}`.slice(
           0,
@@ -313,7 +322,8 @@ export class CodexFollowerState {
     live.streamText = streamText;
     return {
       live,
-      items: candidates.map((item) => ({ ...item, ephemeral: true })),
+      items: retained.map((item) => ({ ...item, ephemeral: true })),
+      authoritativeTurnIds,
     };
   }
 
@@ -622,6 +632,9 @@ function projectFollowerItem(item: JsonRecord, turnId: string): JsonRecord | nul
     content,
     tool_name: toolName,
     tool_status: toolStatus,
+    ...(["commentary", "final_answer"].includes(String(item.phase))
+      ? { message_phase: item.phase }
+      : {}),
     attachment_count: parts.filter((part) =>
       ["image", "localImage", "input_image", "document", "input_file"].includes(String(part.type)),
     ).length,

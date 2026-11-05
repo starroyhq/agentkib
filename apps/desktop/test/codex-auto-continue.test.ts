@@ -3169,9 +3169,7 @@ describe("Codex Desktop follow", () => {
   ) {
     const f = fixture(false, undefined, {}, options.publish);
     vi.spyOn(CodexFollowerConnection, "supported").mockReturnValue(true);
-    vi.spyOn(codexFollowerLocks, "acquireCodexFollowerOperationLock").mockReturnValue(
-      () => {},
-    );
+    vi.spyOn(codexFollowerLocks, "acquireCodexFollowerOperationLock").mockReturnValue(() => {});
     const release = holdWriterLock(f);
     const turnId = options.turn || options.approval || options.question ? "followed-turn" : null;
     const requests = options.approval
@@ -3661,9 +3659,9 @@ describe("Codex Desktop follow", () => {
     const { f } = followerFixture({ revision: 3, question: true });
     const live = await f.live();
     expect(live).toMatchObject({ status: "waiting-input" });
-    expect(
-      (live.questions as Array<Record<string, unknown>>)[0],
-    ).toMatchObject({ supported: false });
+    expect((live.questions as Array<Record<string, unknown>>)[0]).toMatchObject({
+      supported: false,
+    });
     const capabilities = (await f.web.managedQuery({
       operation: "capabilities",
       sessionId: f.summary.id,
@@ -3675,9 +3673,9 @@ describe("Codex Desktop follow", () => {
     });
   });
 
-  it("publishes live state without transcript items while following", async () => {
+  it("publishes followed messages by identity without concatenated fallback text", async () => {
     const publish = vi.fn();
-    const { f } = followerFixture({ publish });
+    const { f } = followerFixture({ publish, turn: true });
     await f.live();
     const states = publish.mock.calls.filter((call) => call[1] === "state");
     expect(states.length).toBeGreaterThan(0);
@@ -3697,13 +3695,32 @@ describe("Codex Desktop follow", () => {
           turn_id: "followed-turn",
           content: "x",
         },
+        {
+          id: "desktop-agent-item",
+          kind: "agent-message",
+          turn_id: "followed-turn",
+          content: "partial",
+          ephemeral: true,
+        },
       ],
     });
     const updates = publish.mock.calls.filter((call) => call[1] === "state");
     expect(updates.length).toBeGreaterThan(0);
     const last = updates.at(-1)![2] as Record<string, unknown>;
-    expect(last.streamText).toBe("partial");
+    expect(last.streamText).toBe("");
     expect(last).not.toHaveProperty("items");
+    expect(publish.mock.calls.filter((call) => call[1] === "item-upsert")).toEqual([
+      [
+        f.summary.id,
+        "item-upsert",
+        expect.objectContaining({
+          id: "desktop-agent-item",
+          content: "partial",
+        }),
+        expect.objectContaining({ streamText: "" }),
+        undefined,
+      ],
+    ]);
     expect(publish.mock.calls.some((call) => call[1] === "snapshot")).toBe(false);
   });
 });

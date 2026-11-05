@@ -50,6 +50,7 @@ export class CodexFollowerConnection {
   #queuedBytes = 0;
   #waiters: Waiter[] = [];
   #requestActive = false;
+  #readableListeners = new Set<() => void>();
   readonly desktopVersion: string;
 
   private constructor(
@@ -111,6 +112,16 @@ export class CodexFollowerConnection {
 
   get supportsThreadSettings(): boolean {
     return versionAtLeast(this.desktopVersion, SETTINGS_MINIMUM_DESKTOP_VERSION);
+  }
+
+  get hasPendingMessages(): boolean {
+    return this.connected && !this.#requestActive && this.#queued.length > 0;
+  }
+
+  onReadable(listener: () => void): () => void {
+    this.#readableListeners.add(listener);
+    if (this.hasPendingMessages) listener();
+    return () => this.#readableListeners.delete(listener);
   }
 
   disconnect(): void {
@@ -190,6 +201,7 @@ export class CodexFollowerConnection {
       throw new Error("Codex IPC request timed out; outcome is unknown");
     } finally {
       this.#requestActive = false;
+      this.#notifyReadable();
     }
   }
 
@@ -284,6 +296,7 @@ export class CodexFollowerConnection {
       }
       if (this.#buffer.byteLength > MAX_FRAME_BYTES + 4)
         throw new Error("Codex IPC frame exceeds limit");
+      this.#notifyReadable();
     } catch {
       this.disconnect();
     }
@@ -296,6 +309,11 @@ export class CodexFollowerConnection {
     this.#queued = [];
     this.#queuedBytes = 0;
     for (const waiter of this.#waiters.splice(0)) waiter.resolve(null);
+    this.#readableListeners.clear();
+  }
+
+  #notifyReadable(): void {
+    if (this.hasPendingMessages) for (const listener of this.#readableListeners) listener();
   }
 }
 

@@ -27,6 +27,13 @@ export function continuationPreflightReason(
       "claude-cli-unavailable",
       "platform-unsupported",
       "follower-operation-unverified",
+      // The executor refused an image: its model takes none, or the image is outside its limits.
+      "model-images-unsupported",
+      "attachment-invalid",
+      // The attachment file no longer held the checked bytes when the executor read it.
+      "attachment-changed",
+      "attachment-unavailable",
+      "dsh-attachments-unavailable",
     ]).has(reason)
     ? reason
     : fallback;

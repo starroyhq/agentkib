@@ -205,4 +205,45 @@ describe("DeepSeek Harness host control boundary", () => {
       }),
     ).toMatchObject({ status: 404 });
   });
+
+  it("hands DSH an uploaded image as a checked file in DSH's own form", async () => {
+    const png = Buffer.from(
+      "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aE1sAAAAASUVORK5CYII=",
+      "base64",
+    );
+    features.send = { available: true };
+    features.attachments = { available: true };
+    const upload = await service.localRequest(
+      "/attachments?sessionId=dsh-session&name=one.png&mime=image%2Fpng",
+      undefined,
+      png,
+    );
+    expect(upload).toMatchObject({ status: 201 });
+    const { id, version } = upload.body as { id: string; version: string };
+    const desktop = await service.localRequest("/access");
+    const sent = await service.localRequest("/send", {
+      sessionId: "dsh-session",
+      requestId: randomUUID(),
+      bootId: (desktop.body as { bootId: string }).bootId,
+      expectedRevision: 4,
+      text: "look",
+      attachmentIds: [id],
+    });
+    expect(sent).toMatchObject({ status: 200 });
+    const [send] = forwarded("send");
+    expect(send).toMatchObject({
+      input: [
+        { type: "text", text: "look" },
+        {
+          type: "image",
+          path: expect.stringContaining(id),
+          sha256: version,
+          size: png.length,
+          mediaType: "image/png",
+          name: "one.png",
+        },
+      ],
+    });
+    expect(send).not.toHaveProperty("text");
+  });
 });

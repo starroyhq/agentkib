@@ -30,6 +30,8 @@ export interface DshBridgeServices {
   workspaceController?: boolean;
   /** Model catalog and per-session model selection. Plugins older than 0.2.0 do not report it. */
   modelCatalog?: boolean;
+  /** Images in prompts and reading a session's images. Plugins older than 0.3.0 do not report it. */
+  images?: boolean;
 }
 
 /** One row of DSH's own session list. */
@@ -69,8 +71,32 @@ export interface DshBridgeQueueItem {
   id: string;
   placement: "queued" | "steering";
   text: string;
+  /** Images in the message; DSH edits only text, so these items cannot be edited. */
+  images: number;
   rpcId: string | null;
 }
+
+/** One image DSH stored for a message. `attachmentId` is `sha256:` and the digest of its bytes. */
+export interface DshBridgeImage {
+  attachmentId: string;
+  mediaType: "image/png" | "image/jpeg" | "image/webp" | "image/gif";
+  name: string | null;
+}
+
+/**
+ * Prompt content. An image is an AgentKib attachment file the plugin reads and checks against
+ * `sha256` before handing DSH its bytes, so large images never cross the bridge socket.
+ */
+export type DshBridgePromptPart =
+  | { type: "text"; text: string }
+  | {
+      type: "image";
+      path: string;
+      sha256: string;
+      size: number;
+      mediaType: DshBridgeImage["mediaType"];
+      name: string;
+    };
 
 export interface DshBridgeSessionState {
   sessionId: string;
@@ -122,7 +148,7 @@ export type DshBridgeHistoryRecord = { seq: number; time: number | null } & (
       id: string | null;
       text: string;
       truncated: boolean;
-      images: number;
+      images: DshBridgeImage[];
       files: number;
       rpcId: string | null;
     }
@@ -150,7 +176,15 @@ export interface DshBridgeHistoryPage {
 export type DshBridgeCommand = { commandId: string } & (
   | { type: "history"; sessionId: string; before?: number; limit: number }
   | { type: "verify"; sessionId: string; requestId: string }
-  | { type: "prompt"; sessionId: string; requestId: string; mode: "queue" | "steer"; text: string }
+  | {
+      type: "prompt";
+      sessionId: string;
+      requestId: string;
+      mode: "queue" | "steer";
+      content: DshBridgePromptPart[];
+    }
+  /** One image the session's log references, as `{ mediaType, data }` with base64 data. */
+  | { type: "image"; sessionId: string; attachmentId: string }
   | {
       type: "queue";
       sessionId: string;

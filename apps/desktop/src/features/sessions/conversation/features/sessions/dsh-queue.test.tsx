@@ -3,7 +3,7 @@ import "@testing-library/jest-dom/vitest";
 import { cleanup, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { ApiError } from "@agentkib/web-client";
+import { ApiError, type SessionQueue } from "@agentkib/web-client";
 import { DshQueue } from "./dsh-queue";
 import { useSession } from "./session-context";
 import { publishSessionInvalidation } from "./session-events";
@@ -15,7 +15,7 @@ let state: Session;
 const available = { available: true };
 function session(
   features: Record<string, { available: boolean; reason?: string }>,
-  data = [{ id: "item-1", status: "pending", text: "run the tests next" }],
+  data: SessionQueue["data"] = [{ id: "item-1", status: "pending", text: "run the tests next" }],
 ) {
   return {
     selected: "session",
@@ -75,6 +75,31 @@ describe("DSH queued messages above the composer", () => {
     expect(state.codexAction).toHaveBeenCalledExactlyOnceWith("queue-update", {
       queuedSubmissionId: "item-1",
       text: "run the tests first",
+    });
+  });
+
+  it("marks a message with images and keeps it out of editing", async () => {
+    const user = userEvent.setup();
+    state = session(
+      {
+        "queue-list": available,
+        "queue-update": available,
+        "queue-delete": available,
+        "queue-steer": available,
+      },
+      [{ id: "item-1", status: "pending", text: "", hasAttachments: true }],
+    );
+    render(<DshQueue />);
+    expect(await screen.findByRole("img", { name: /cannot be edited/ })).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "More actions" }));
+    expect(await screen.findByRole("menuitem", { name: "Edit message" })).toHaveAttribute(
+      "aria-disabled",
+      "true",
+    );
+    await user.keyboard("{Escape}");
+    await user.click(screen.getByRole("button", { name: "Remove" }));
+    expect(state.codexAction).toHaveBeenLastCalledWith("queue-delete", {
+      queuedSubmissionId: "item-1",
     });
   });
 

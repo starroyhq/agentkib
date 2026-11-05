@@ -1,8 +1,9 @@
 // The AgentKib side of a running DeepSeek Harness process. It reports sessions, live state and
 // pending interactions to every AgentKib Runtime it can discover, and runs their commands
 // through DSH's own session services. It never rewrites the log or starts another executor.
-import { randomUUID } from "node:crypto";
-import { readFileSync } from "node:fs";
+import { createHash, randomUUID } from "node:crypto";
+import { constants, readFileSync } from "node:fs";
+import { open } from "node:fs/promises";
 import { createRequire } from "node:module";
 import path from "node:path";
 import { DSH_BRIDGE_COMPATIBILITY } from "./compatibility.js";
@@ -33,6 +34,75 @@ const DISCOVERY_MS = 2_000;
 const LIST_THROTTLE_MS = 1_000;
 const HISTORY_PAGE_BYTES = 1536 * 1024;
 const APPROVAL_OUTCOMES = new Set(["allowed-once", "rejected"]);
+// AgentKib's upload limit. DSH applies its own image limits when it takes the prompt.
+const MAX_ATTACHMENT_BYTES = 25 * 1024 * 1024;
+// A bridge message carries at most 8 MiB; DSH stores images at about 4 MiB.
+const MAX_IMAGE_READ_CHARS = 7 * 1024 * 1024;
+const IMAGE_TYPES = new Set(["image/png", "image/jpeg", "image/webp", "image/gif"]);
+
+/**
+ * One image for a prompt, read from the AgentKib attachment file. The file must still hold the
+ * exact bytes AgentKib checked; otherwise the prompt fails before DSH sees it.
+ */
+async function attachedImage(part) {
+  if (
+    typeof part?.path !== "string" ||
+    !path.isAbsolute(part.path) ||
+    typeof part.sha256 !== "string" ||
+    !/^[a-f0-9]{64}$/.test(part.sha256) ||
+    !Number.isSafeInteger(part.size) ||
+    part.size < 1 ||
+    part.size > MAX_ATTACHMENT_BYTES ||
+    !IMAGE_TYPES.has(part.mediaType)
+  )
+    throw new Error("invalid-prompt");
+  let handle;
+  let data;
+  try {
+    handle = await open(part.path, constants.O_RDONLY | constants.O_NOFOLLOW);
+    const info = await handle.stat();
+    if (!info.isFile() || info.size !== part.size) throw new Error("attachment-changed");
+    data = await handle.readFile();
+  } catch (error) {
+    throw new Error(
+      error?.message === "attachment-changed" ? "attachment-changed" : "attachment-unavailable",
+    );
+  } finally {
+    await handle?.close();
+  }
+  if (data.length !== part.size || createHash("sha256").update(data).digest("hex") !== part.sha256)
+    throw new Error("attachment-changed");
+  return {
+    type: "image",
+    mediaType: part.mediaType,
+    data: data.toString("base64"),
+    ...(typeof part.name === "string" && part.name ? { name: part.name } : {}),
+  };
+}
+
+/** DSH's prompt content, with each image's bytes in place of AgentKib's file reference. */
+async function promptContent(content) {
+  if (!Array.isArray(content) || !content.length || content.length > 32)
+    throw new Error("invalid-prompt");
+  const parts = [];
+  for (const part of content) {
+    if (part?.type === "text" && typeof part.text === "string")
+      parts.push({ type: "text", text: part.text });
+    else if (part?.type === "image") parts.push(await attachedImage(part));
+    else throw new Error("invalid-prompt");
+  }
+  return parts;
+}
+
+/** DSH refuses an image it cannot take: a model without image input, or one over its limits. */
+function attachmentRefusal(error) {
+  if (error?.code !== "session/attachment-invalid") return error;
+  return new Error(
+    error.details?.reason === "MODEL_DOES_NOT_SUPPORT_IMAGES"
+      ? "model-images-unsupported"
+      : "attachment-invalid",
+  );
+}
 
 const DSH_PACKAGE = /^@deepseek-ai\/dsh(-desktop-host)?$/;
 
@@ -568,20 +638,37 @@ export function createBridge(ctx, options = {}) {
         return present(command);
       case "prompt": {
         const requestId = String(command.requestId);
+        const controller = needController();
+        // Read before DSH is asked: an attachment that changed fails the prompt here.
+        const content = await promptContent(command.content);
         promptsInFlight.add(requestId);
         try {
-          return await needController().prompt(
+          return await controller.prompt(
             {
               requestId,
               sessionId: String(command.sessionId),
               mode: command.mode === "steer" ? "steer" : "queue",
-              content: [{ type: "text", text: String(command.text) }],
+              content,
             },
             lifetime.signal,
           );
+        } catch (error) {
+          throw attachmentRefusal(error);
         } finally {
           promptsInFlight.delete(requestId);
         }
+      }
+      case "image": {
+        const controller = needController();
+        if (typeof controller.attachment !== "function") throw new Error("images-unavailable");
+        // DSH returns only images the session's own log refers to.
+        const value = await controller.attachment({
+          sessionId: String(command.sessionId),
+          attachmentId: String(command.attachmentId),
+        });
+        if (typeof value?.data !== "string" || value.data.length > MAX_IMAGE_READ_CHARS)
+          throw new Error("image-too-large");
+        return { mediaType: value.attachment?.mediaType ?? null, data: value.data };
       }
       case "queue":
         return needController().updateQueue({
@@ -671,6 +758,7 @@ export function createBridge(ctx, options = {}) {
     questions: typeof service("userQuestions")?.ask === "function",
     workspaceController: typeof service("workspaceController")?.archiveSession === "function",
     modelCatalog: typeof service("sessionController")?.modelCatalog === "function",
+    images: typeof service("sessionController")?.attachment === "function",
   });
   function report(host) {
     const since = host.acked;

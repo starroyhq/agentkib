@@ -492,6 +492,13 @@ const reasons: Record<Locale, Record<string, string>> = {
     "dsh-create-ambiguous":
       "有多个 DeepSeek Harness 在运行，无法确定用哪一个。请直接在要用的那个里新建会话，它会出现在这里。",
     "dsh-session-controller-unavailable": "这个 DeepSeek Harness 配置只能查看，不能从这里发送。",
+    "dsh-attachments-unavailable": "这个版本的 DeepSeek Harness 不能从这里接收图片。",
+    "model-images-unsupported":
+      "当前模型不支持图片，本次消息尚未发送。换用支持图片的模型，或去掉图片后再发送。",
+    "attachment-invalid": "图片的格式、尺寸或大小不符合 Agent 的要求，本次消息尚未发送。",
+    invalid_attachment_image: "图片的格式、尺寸或大小不符合 Agent 的要求，本次消息尚未发送。",
+    "attachment-changed": "附件在发送前有变动，本次消息尚未发送。请移除后重新添加。",
+    "attachment-unavailable": "附件已无法读取，本次消息尚未发送。请移除后重新添加。",
     "dsh-handle-in-native-ui": "这项请求请在 DeepSeek Harness 中处理。",
     "interaction-answered-elsewhere": "这项请求已经在 DeepSeek Harness 中处理过了。",
     "session-requires-running-turn": "此操作仅在轮次运行中可用。",
@@ -598,6 +605,13 @@ const reasons: Record<Locale, Record<string, string>> = {
     "dsh-create-ambiguous":
       "有多個 DeepSeek Harness 正在執行，無法確定要用哪一個。請直接在要用的那個裡新建對話，它會出現在這裡。",
     "dsh-session-controller-unavailable": "這個 DeepSeek Harness 設定只能檢視，不能從這裡傳送。",
+    "dsh-attachments-unavailable": "這個版本的 DeepSeek Harness 不能從這裡接收圖片。",
+    "model-images-unsupported":
+      "目前模型不支援圖片，本次訊息尚未傳送。請改用支援圖片的模型，或移除圖片後再傳送。",
+    "attachment-invalid": "圖片的格式、尺寸或大小不符合 Agent 的要求，本次訊息尚未傳送。",
+    invalid_attachment_image: "圖片的格式、尺寸或大小不符合 Agent 的要求，本次訊息尚未傳送。",
+    "attachment-changed": "附件在傳送前有變動，本次訊息尚未傳送。請移除後重新新增。",
+    "attachment-unavailable": "附件已無法讀取，本次訊息尚未傳送。請移除後重新新增。",
     "dsh-handle-in-native-ui": "這項請求請在 DeepSeek Harness 中處理。",
     "interaction-answered-elsewhere": "這項請求已經在 DeepSeek Harness 中處理過了。",
     "session-requires-running-turn": "此操作僅在輪次執行中可用。",
@@ -710,6 +724,17 @@ const reasons: Record<Locale, Record<string, string>> = {
       "More than one DeepSeek Harness is running, so AgentKib cannot tell which to use. Start the session in the one you want; it will show up here.",
     "dsh-session-controller-unavailable":
       "This DeepSeek Harness profile can be viewed but cannot take messages from here.",
+    "dsh-attachments-unavailable": "This DeepSeek Harness version cannot take images from here.",
+    "model-images-unsupported":
+      "The current model does not take images, so the message was not sent. Switch to a model that does, or remove the images.",
+    "attachment-invalid":
+      "The agent does not accept this image's format, dimensions or size, so the message was not sent.",
+    invalid_attachment_image:
+      "The agent does not accept this image's format, dimensions or size, so the message was not sent.",
+    "attachment-changed":
+      "An attachment changed before it was sent, so the message was not sent. Remove it and add it again.",
+    "attachment-unavailable":
+      "An attachment can no longer be read, so the message was not sent. Remove it and add it again.",
     "dsh-handle-in-native-ui": "Handle this request in DeepSeek Harness.",
     "interaction-answered-elsewhere": "This request was already handled in DeepSeek Harness.",
     "session-requires-running-turn": "This operation is only available while a turn is running.",
@@ -829,6 +854,18 @@ const reasons: Record<Locale, Record<string, string>> = {
       "複数の DeepSeek Harness が起動しているため、どれを使うか判断できません。使いたい DeepSeek Harness で直接セッションを作成すると、ここに表示されます。",
     "dsh-session-controller-unavailable":
       "この DeepSeek Harness プロファイルは表示のみで、ここからは送信できません。",
+    "dsh-attachments-unavailable":
+      "このバージョンの DeepSeek Harness はここから画像を受け取れません。",
+    "model-images-unsupported":
+      "現在のモデルは画像に対応していないため、メッセージは送信されていません。画像に対応したモデルに切り替えるか、画像を外してから送信してください。",
+    "attachment-invalid":
+      "画像の形式、サイズまたは容量が Agent の要件を満たしていないため、メッセージは送信されていません。",
+    invalid_attachment_image:
+      "画像の形式、サイズまたは容量が Agent の要件を満たしていないため、メッセージは送信されていません。",
+    "attachment-changed":
+      "送信前に添付ファイルが変更されたため、メッセージは送信されていません。削除してから追加し直してください。",
+    "attachment-unavailable":
+      "添付ファイルを読み取れなくなったため、メッセージは送信されていません。削除してから追加し直してください。",
     "dsh-handle-in-native-ui": "このリクエストは DeepSeek Harness で対応してください。",
     "interaction-answered-elsewhere": "このリクエストはすでに DeepSeek Harness で対応済みです。",
     "session-requires-running-turn": "この操作はターンの実行中のみ利用できます。",

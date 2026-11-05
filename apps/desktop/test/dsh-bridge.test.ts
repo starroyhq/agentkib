@@ -1,6 +1,14 @@
 // @vitest-environment node
-import { randomUUID } from "node:crypto";
-import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, statSync } from "node:fs";
+import { createHash, randomUUID } from "node:crypto";
+import {
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  realpathSync,
+  rmSync,
+  statSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -11,6 +19,10 @@ import { dshBridgeCompatibility } from "../../../packages/dsh-bridge-plugin/comp
 import { historyRecord, queueItems } from "../../../packages/dsh-bridge-plugin/projection.js";
 
 type Listener = { callback: (...args: any[]) => any; prepend: boolean };
+const PNG = Buffer.from(
+  "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aE1sAAAAASUVORK5CYII=",
+  "base64",
+);
 
 /** Just enough of a DSH process: Cordis events and waterfalls, agents, queries and the session service. */
 function fakeDsh(cwd: string) {
@@ -23,6 +35,11 @@ function fakeDsh(cwd: string) {
   const queueUpdates: any[] = [];
   const cancels: string[] = [];
   const selections: any[] = [];
+  // DSH keeps each image in its own store, named after the digest of its bytes.
+  const images = new Map<string, { ref: any; data: string }>();
+  let imagesRefused = false;
+  const attachmentInvalid = (reason: string) =>
+    Object.assign(new Error(reason), { code: "session/attachment-invalid", details: { reason } });
   const archived = new Set<string>();
   const followers = new Set<(frame: unknown) => void>();
   const pushArchived = () => {
@@ -126,16 +143,47 @@ function fakeDsh(cwd: string) {
           )
         )
           return { accepted: true };
+        if (imagesRefused && request.content.some((part: any) => part.type === "image"))
+          throw attachmentInvalid("MODEL_DOES_NOT_SUPPORT_IMAGES");
+        const content = request.content.map((part: any) => {
+          if (part.type !== "image") return part;
+          const bytes = Buffer.from(part.data, "base64");
+          const ref = {
+            attachmentId: `sha256:${createHash("sha256").update(bytes).digest("hex")}`,
+            mediaType: part.mediaType,
+            bytes: bytes.length,
+            width: 1,
+            height: 1,
+            ...(part.name ? { name: part.name } : {}),
+          };
+          images.set(ref.attachmentId, { ref, data: part.data });
+          return { type: "image", attachment: ref };
+        });
         session.agent.status = "running";
         emit("agent/status", { agent: session.agent, status: "running" });
         append(request.sessionId, "turn/start", { turn: 1 });
         append(request.sessionId, "user/message", {
           role: "user",
           id: randomUUID(),
-          content: request.content,
+          content,
           source: { kind: "user", rpcId: request.requestId },
         });
         return { accepted: true };
+      },
+      // Only an image the session's own log refers to.
+      async attachment(request: any) {
+        const stored = images.get(request.attachmentId);
+        const referenced = sessions
+          .get(request.sessionId)
+          ?.events.some(
+            (event) =>
+              event.type === "user/message" &&
+              event.data.content.some(
+                (part: any) => part.attachment?.attachmentId === request.attachmentId,
+              ),
+          );
+        if (!stored || !referenced) throw attachmentInvalid("ATTACHMENT_NOT_REFERENCED");
+        return { attachment: stored.ref, data: stored.data };
       },
       async updateQueue(request: any) {
         queueUpdates.push(request);
@@ -295,6 +343,10 @@ function fakeDsh(cwd: string) {
       pushArchived();
     },
     nativeAnswers,
+    /** A model without image input: DSH refuses prompts with images. */
+    refuseImages() {
+      imagesRefused = true;
+    },
     create,
     append,
     finishTurn,
@@ -580,6 +632,132 @@ describe("DeepSeek Harness bridge", () => {
     ]);
   });
 
+  it("sends images through DSH's own prompt and reads them back for its history", async () => {
+    const f = await fixture();
+    expect(f.bridge.capabilities("ak-session-a", true).features).toMatchObject({
+      attachments: { available: true },
+    });
+    const file = path.join(f.root, "shot.png");
+    writeFileSync(file, PNG);
+    const sha256 = createHash("sha256").update(PNG).digest("hex");
+    const result = await f.control("send", {
+      input: [
+        { type: "text", text: "what is this?" },
+        {
+          type: "image",
+          path: file,
+          sha256,
+          size: PNG.length,
+          mediaType: "image/png",
+          name: "shot.png",
+        },
+      ],
+    });
+    expect(result).toMatchObject({ accepted: true });
+    // The plugin read the file and handed DSH its bytes; the path stays on this side.
+    expect(f.dsh.prompts[0].content).toEqual([
+      { type: "text", text: "what is this?" },
+      { type: "image", mediaType: "image/png", data: PNG.toString("base64"), name: "shot.png" },
+    ]);
+    const page = await f.bridge.events("session-a", null, 50);
+    expect(page.events.find((event) => event.kind === "user-message")).toMatchObject({
+      content: "what is this?",
+      attachment_count: 1,
+      images: [{ id: `dsh-image-v1-${sha256}`, mimeType: "image/png", name: "shot.png" }],
+    });
+    await expect(f.bridge.image("session-a", `dsh-image-v1-${sha256}`)).resolves.toEqual({
+      mimeType: "image/png",
+      base64: PNG.toString("base64"),
+    });
+    // DSH reads an image only for a session whose log refers to it.
+    await expect(f.bridge.image("session-b", `dsh-image-v1-${sha256}`)).rejects.toThrow(
+      "session-image-unavailable",
+    );
+    await expect(f.bridge.image("session-a", "session-image-v1-x")).rejects.toThrow(
+      "session-image-invalid",
+    );
+  });
+
+  it("refuses images DSH cannot take, whether AgentKib or DSH finds out", async () => {
+    const f = await fixture();
+    const file = path.join(f.root, "shot.png");
+    const image = (sha256: string) => ({
+      type: "image",
+      path: file,
+      sha256,
+      size: PNG.length,
+      mediaType: "image/png",
+      name: "shot.png",
+    });
+    // The file no longer holds what AgentKib checked: the plugin stops before DSH is asked.
+    const changed = Buffer.from(PNG);
+    changed[changed.length - 1]! ^= 1;
+    writeFileSync(file, changed);
+    await expect(
+      f.control("send", { input: [image(createHash("sha256").update(PNG).digest("hex"))] }),
+    ).resolves.toMatchObject({ controlOutcome: "not-dispatched", reason: "attachment-changed" });
+    expect(f.dsh.prompts).toEqual([]);
+    // A model without image input: DSH refuses, and the reason says so.
+    writeFileSync(file, PNG);
+    f.dsh.refuseImages();
+    await expect(
+      f.control("send", {
+        input: [
+          { type: "text", text: "look" },
+          image(createHash("sha256").update(PNG).digest("hex")),
+        ],
+      }),
+    ).resolves.toMatchObject({
+      controlOutcome: "not-dispatched",
+      reason: "model-images-unsupported",
+    });
+    expect(f.dsh.sessions.get("session-a")!.events).toEqual([]);
+  });
+
+  it("marks a queued message with images or files, which an edit would drop", async () => {
+    const f = await fixture();
+    await f.control("send", { text: "run the tests" });
+    await until(() => f.bridge.live("ak-session-a", true).status === "running");
+    const agent = f.dsh.sessions.get("session-a")!.agent;
+    agent.inbox.nextTurn = [
+      {
+        id: "q1",
+        role: "user",
+        content: [
+          { type: "text", text: "see this" },
+          {
+            type: "image",
+            attachment: { attachmentId: `sha256:${"a".repeat(64)}`, mediaType: "image/png" },
+          },
+        ],
+        source: { kind: "user" },
+      },
+      // A file reaches DSH as its own line of text naming it.
+      {
+        id: "q2",
+        role: "user",
+        content: [
+          { type: "text", text: "read this" },
+          { type: "text", text: 'User attached file "a.txt": /tmp/a.txt' },
+        ],
+        source: { kind: "user" },
+      },
+    ];
+    f.dsh.emit("agent/status", { agent, status: "running" });
+    await until(() => f.bridge.live("ak-session-a", true).queuedCount === 2);
+    const queued = (await f.bridge.request({
+      operation: "queue-list",
+      sessionId: "ak-session-a",
+    })) as { data: { input: unknown[] }[] };
+    expect(queued.data.map((item) => item.input)).toEqual([
+      [{ type: "text", text: "see this" }, { type: "image" }],
+      [
+        { type: "text", text: "read this" },
+        { type: "text", text: 'User attached file "a.txt": /tmp/a.txt' },
+      ],
+    ]);
+  });
+
   it("shows an approval in both places and the first answer wins", async () => {
     const f = await fixture();
     const outer = new AbortController();
@@ -860,7 +1038,36 @@ describe("DeepSeek Harness plugin projections", () => {
           nextStep: [{ id: "2", content: "notice", source: { kind: "context" } }],
         },
       }),
-    ).toEqual([{ id: "1", placement: "queued", text: "queued", rpcId: "r" }]);
+    ).toEqual([{ id: "1", placement: "queued", text: "queued", images: 0, rpcId: "r" }]);
+    // Images keep DSH's stored reference; one without a well-formed reference is left out.
+    expect(
+      historyRecord({
+        seq: 3,
+        time: 1,
+        type: "user/message",
+        data: {
+          content: [
+            { type: "text", text: "look" },
+            {
+              type: "image",
+              attachment: {
+                attachmentId: `sha256:${"b".repeat(64)}`,
+                mediaType: "image/png",
+                name: "a.png",
+              },
+            },
+            {
+              type: "image",
+              attachment: { attachmentId: "../etc/passwd", mediaType: "image/png" },
+            },
+          ],
+          source: { kind: "user" },
+        },
+      }),
+    ).toMatchObject({
+      kind: "user",
+      images: [{ attachmentId: `sha256:${"b".repeat(64)}`, mediaType: "image/png", name: "a.png" }],
+    });
     expect(
       dshConversationEvents([
         {

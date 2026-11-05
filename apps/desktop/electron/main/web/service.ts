@@ -19,7 +19,7 @@ import { mkdir, readFile, realpath, rename, stat, writeFile } from "node:fs/prom
 import { extname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { networkInterfaces } from "node:os";
 import { ArtifactService, ArtifactError } from "./artifacts";
-import { AttachmentStore, AttachmentError } from "./attachments";
+import { AttachmentStore, AttachmentError, type AttachmentFormat } from "./attachments";
 import { LivePreviewError, LivePreviewService } from "./live-preview";
 import { dispatchClaude } from "./claude-dispatch";
 import { ClaudeHostScheduler, type ClaudeScheduledSession } from "./claude-scheduler";
@@ -58,6 +58,16 @@ const CLAUDE_OBSERVED_PERMISSION_MODES = new Set([
   "dontAsk",
   "bypassPermissions",
 ]);
+/**
+ * The form each executor takes attachments in, by execution mode. Whether a session takes them
+ * now is its `attachments` capability; a mode missing here takes none.
+ */
+const ATTACHMENT_FORMATS: Readonly<Record<string, AttachmentFormat>> = {
+  "codex-managed": "codex",
+  "codex-follower": "codex",
+  "claude-managed": "claude",
+  "dsh-follower": "dsh",
+};
 /** Freeze browser-visible inputs so durable replay never needs to reopen resources. */
 function managedActionInputHash(operation: string, body: Record<string, unknown>): string {
   const fields = [
@@ -3322,19 +3332,26 @@ export class WebAccessService {
         params.text = text;
         if (hasAttachments) {
           this.grant(hash, "attachments");
-          if (capabilities.features?.attachments?.available !== true)
+          const format = ATTACHMENT_FORMATS[capabilities.executionMode ?? ""];
+          if (capabilities.features?.attachments?.available !== true || !format)
             throw new HttpError(409, "attachments_unavailable");
           params.input =
-            capabilities.executionMode === "claude-managed"
+            format === "claude"
               ? await this.attachmentStore.inputForAgent(
                   device.id,
                   sessionId,
                   body.attachmentIds,
                   text,
-                  "claude",
+                  format,
                   requestId,
                 )
-              : await this.attachmentStore.input(device.id, sessionId, body.attachmentIds, text);
+              : await this.attachmentStore.input(
+                  device.id,
+                  sessionId,
+                  body.attachmentIds,
+                  text,
+                  format,
+                );
           if (capabilities.executionMode === "claude-managed" && prior?.found !== true)
             newlyPinnedDevice = device.id;
           delete params.text;
@@ -5279,19 +5296,21 @@ export class WebAccessService {
               return this.json(res, 200, previous);
             }
           }
+          const format = ATTACHMENT_FORMATS[mode ?? ""];
+          if (!format) throw new HttpError(409, "attachments_unavailable");
           const alreadyPinned =
             mode === "claude-managed" &&
             (await this.attachmentStore.pendingRequests(sessionId)).some(
               (item) => item.deviceId === device.id && item.requestId === requestId,
             );
           params.input =
-            mode === "claude-managed"
+            format === "claude"
               ? await this.attachmentStore.inputForAgent(
                   device.id,
                   sessionId,
                   body.attachmentIds,
                   String(frozenText ?? ""),
-                  "claude",
+                  format,
                   requestId,
                 )
               : await this.attachmentStore.input(
@@ -5299,6 +5318,7 @@ export class WebAccessService {
                   sessionId,
                   body.attachmentIds,
                   String(frozenText ?? ""),
+                  format,
                 );
           if (mode === "claude-managed" && !alreadyPinned) newlyPinnedDevice = device.id;
           delete params.text;

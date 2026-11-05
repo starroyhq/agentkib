@@ -38,6 +38,13 @@ const MESSAGE_LIMIT = 100 * 1024 * 1024;
 const STORE_LIMIT = 2 * 1024 * 1024 * 1024;
 const CLAUDE_IMAGE_LIMIT = 4 * 1024 * 1024;
 const CLAUDE_IMAGES_LIMIT = 12 * 1024 * 1024;
+const IMAGE_TYPES = ["image/png", "image/jpeg", "image/webp", "image/gif"];
+/**
+ * How an executor takes the images in a message: Codex reads the file by path, Claude takes the
+ * bytes in the message, and DeepSeek Harness's plugin reads the file and checks its digest before
+ * handing DSH the bytes. Every executor gets other files as a path in the message text.
+ */
+export type AttachmentFormat = "codex" | "claude" | "dsh";
 interface AttachmentRequest {
   deviceId: string;
   sessionId: string;
@@ -255,8 +262,14 @@ export class AttachmentStore {
     });
   }
   /** Mark before dispatch: unknown execution outcomes retain referenced files. */
-  input(deviceId: string, sessionId: string, ids: unknown, text: string) {
-    return this.prepareInput(deviceId, sessionId, ids, text, "codex");
+  input(
+    deviceId: string,
+    sessionId: string,
+    ids: unknown,
+    text: string,
+    format: AttachmentFormat = "codex",
+  ) {
+    return this.prepareInput(deviceId, sessionId, ids, text, format);
   }
   /** Persist references before dispatch; an unknown outcome must never be settled. */
   inputForAgent(
@@ -264,7 +277,7 @@ export class AttachmentStore {
     sessionId: string,
     ids: unknown,
     text: string,
-    agent: "claude" | "codex",
+    agent: AttachmentFormat,
     requestId: string,
   ) {
     if (!requestId || requestId.length > 256)
@@ -285,7 +298,7 @@ export class AttachmentStore {
     sessionId: string,
     ids: unknown,
     text: string,
-    agent: "claude" | "codex",
+    agent: AttachmentFormat,
     requestId: string,
   ): Promise<boolean> {
     return this.serialize(async () => {
@@ -334,7 +347,7 @@ export class AttachmentStore {
     sessionId: string,
     ids: unknown,
     text: string,
-    agent: "claude" | "codex",
+    agent: AttachmentFormat,
     requestId?: string,
   ) {
     return this.serialize(async () => {
@@ -372,7 +385,7 @@ export class AttachmentStore {
       if (files.reduce((sum, item) => sum + item.size, 0) > MESSAGE_LIMIT)
         throw new AttachmentError(413, "attachments_too_large");
       const input: Record<string, unknown>[] = text.trim()
-        ? [agent === "claude" ? { type: "text", text } : { type: "text", text, text_elements: [] }]
+        ? [agent === "codex" ? { type: "text", text, text_elements: [] } : { type: "text", text }]
         : [];
       let imageBytes = 0;
       for (const item of files) {
@@ -404,7 +417,7 @@ export class AttachmentStore {
           createHash("sha256").update(bytes).digest("hex") !== item.version
         )
           throw new AttachmentError(409, "attachment_changed");
-        const image = agent === "claude" ? imageDimensions(bytes) : null;
+        const image = agent === "codex" ? null : imageDimensions(bytes);
         if (agent === "claude" && (item.mime.startsWith("image/") || image)) {
           if (
             !image ||
@@ -422,12 +435,19 @@ export class AttachmentStore {
             type: "image",
             source: { type: "base64", media_type: image.mime, data: bytes.toString("base64") },
           });
-        } else if (
-          agent === "codex" &&
-          ["image/png", "image/jpeg", "image/webp", "image/gif"].includes(item.mime)
-        )
+        } else if (agent === "codex" && IMAGE_TYPES.includes(item.mime))
           input.push({ type: "localImage", path: canonicalPath });
-        else
+        else if (agent === "dsh" && IMAGE_TYPES.includes(item.mime)) {
+          if (image?.mime !== item.mime) throw new AttachmentError(400, "invalid_attachment_image");
+          input.push({
+            type: "image",
+            path: canonicalPath,
+            sha256: item.version,
+            size: item.size,
+            mediaType: item.mime,
+            name: item.name,
+          });
+        } else
           input.push({
             type: "text",
             text: `User attached file ${JSON.stringify(item.name)}: ${canonicalPath}`,

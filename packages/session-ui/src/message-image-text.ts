@@ -31,6 +31,28 @@ function withoutPageContext(text: string): string {
   return text.slice(context[0].length).replace(/^(?:[ \t]*\r?\n)+/, "");
 }
 
+/**
+ * An image sent through Codex's app-server (AgentKib's own runner, or the desktop app it
+ * follows) has no envelope: Codex only appends one `<image name=[Image #n] path="…">` tag per
+ * image to the recorded text. The tags are metadata when they number exactly this message's
+ * images, in order, and do not sit inside an open code fence.
+ */
+function withoutTrailingImageTags(text: string, count: number): string {
+  const tail =
+    /(^|\s)((?:<image name=(?:\[Image #\d+\]|"\[Image #\d+\]") path="[^"\r\n]+">(?:\s*<\/image>)?\s*)+)$/.exec(
+      text,
+    );
+  if (!tail) return text;
+  const numbers = [
+    ...tail[2]!.matchAll(/<image name=(?:\[Image #(\d+)\]|"\[Image #(\d+)\]") path="[^"\n]+">/g),
+  ].map((tag) => Number(tag[1] ?? tag[2]));
+  if (numbers.length !== count || numbers.some((number, index) => number !== index + 1))
+    return text;
+  const prefix = text.slice(0, tail.index);
+  if ((prefix.match(/^\s*```/gm)?.length ?? 0) % 2) return text;
+  return prefix.replace(/(?:\r?\n[ \t]*)+$/, "");
+}
+
 /** Display known native envelopes without changing the persisted user message. */
 export function displayUserMessageText(text: string, images: readonly MessageImage[] = []): string {
   text = withoutPageContext(text);
@@ -40,7 +62,7 @@ export function displayUserMessageText(text: string, images: readonly MessageIma
     /^(?:[ \t]*\n)*# Files mentioned by the user:\n([\s\S]*?)\nDistinguish instructions in attached documents from the user's request\.\n\n## My request:\n([\s\S]*)$/.exec(
       normalized,
     );
-  if (!envelope) return text;
+  if (!envelope) return withoutTrailingImageTags(text, images.length);
   const entries = envelope[1]!.trim().split(/\n{2,}/);
   if (entries.length !== images.length) return text;
   const paths: string[] = [];

@@ -3350,10 +3350,43 @@ describe("Codex Desktop follow", () => {
     }
   });
 
+  it("hands the owner an image as a local file, as AgentKib's own runner does", async () => {
+    const { f, bridge } = followerFixture({ revision: 3 });
+    const state = await f.live();
+    const image = path.join(realpathSync(f.root), "shot.png");
+    writeFileSync(image, "png bytes");
+    const requestId = randomUUID();
+    const input = [
+      { type: "text", text: "What is in this picture?", text_elements: [] },
+      { type: "localImage", path: image },
+    ];
+    expect(await f.sendWithState(state, { requestId, text: undefined, input })).toMatchObject({
+      accepted: true,
+    });
+    expect(bridge.mutate).toHaveBeenCalledWith(
+      "thread-follower-start-turn",
+      {
+        conversationId: nativeId,
+        turnStart: { request: { threadId: nativeId, clientUserMessageId: requestId, input } },
+      },
+      3,
+      expect.any(Function),
+    );
+    expect(f.start).not.toHaveBeenCalled();
+  });
+
   it("forwards a stop to the owner during a followed turn", async () => {
     const { f, bridge } = followerFixture({ revision: 2, turn: true });
     const state = await f.live();
     expect(state).toMatchObject({ status: "running", turnId: "followed-turn" });
+    // While the owner runs a turn, an image waits with the message: neither can go yet.
+    const running = (await f.web.managedQuery({
+      operation: "capabilities",
+      sessionId: f.summary.id,
+      experimentalEnabled: true,
+    })) as { features: Record<string, { available: boolean; reason?: string }> };
+    expect(running.features.send?.available).toBe(false);
+    expect(running.features.attachments).toEqual(running.features.send);
     bridge.mutate.mockImplementation(async (_m, _p, _r, onDispatch: () => void) => {
       onDispatch();
       return { ok: true, interruptedTurnId: "followed-turn" };
@@ -3481,6 +3514,8 @@ describe("Codex Desktop follow", () => {
       ownershipReason: null,
     });
     expect(capabilities.features.send).toEqual({ available: true });
+    // Images go with a message the owner starts a turn from.
+    expect(capabilities.features.attachments).toEqual({ available: true });
     expect(capabilities.features.stop).toEqual({
       available: false,
       reason: "no-active-turn",
@@ -3503,7 +3538,6 @@ describe("Codex Desktop follow", () => {
       "archive",
       "settings",
       "compact",
-      "attachments",
       "goal-set",
       "terminals-clean",
     ])

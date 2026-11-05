@@ -360,9 +360,8 @@ export function SessionReader() {
                 >
                   {notice === "notDispatched" && session.actionUnavailableReason
                     ? codexReason(locale, session.actionUnavailableReason, "web").text
-                    : (current?.agent === "codex" || current?.agent === "claude-code") &&
-                        notice === "notDispatched" &&
-                        noticeReason
+                    : // Only a reason with its own explanation is kept; see `NotDispatchedReason`.
+                      notice === "notDispatched" && noticeReason
                       ? codexReason(locale, noticeReason, "web").text
                       : t[notice]}
                 </p>

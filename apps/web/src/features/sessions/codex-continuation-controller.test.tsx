@@ -43,10 +43,8 @@ vi.mock("@/features/conversation/features/sessions/use-session-live", () => ({
 }));
 
 const history: ConversationEventPage = { events: [], warnings: [] };
-const summary = (
-  id: string,
-  agent: "codex" | "claude-code" = "codex",
-): ConversationSessionSummary => ({
+type Agent = "codex" | "claude-code" | "deepseek-harness";
+const summary = (id: string, agent: Agent = "codex"): ConversationSessionSummary => ({
   id,
   agent,
   title: id,
@@ -55,11 +53,16 @@ const summary = (
   archived: false,
   sidechain: false,
 });
-const baseIdle = (sessionId: string, agent: "codex" | "claude-code" = "codex"): Live => ({
+const baseIdle = (sessionId: string, agent: Agent = "codex"): Live => ({
   sessionId,
   revision: 1,
   status: "idle",
-  executionMode: agent === "codex" ? "codex-managed" : "claude-managed",
+  executionMode:
+    agent === "codex"
+      ? "codex-managed"
+      : agent === "claude-code"
+        ? "claude-managed"
+        : "dsh-follower",
   sendEnabled: true,
   approvals: [],
   questions: [],
@@ -72,7 +75,7 @@ const baseOccupied = (sessionId: string, agent: "codex" | "claude-code" = "codex
   ownershipReason: agent === "codex" ? "codex-owner-busy" : "claude-owner-busy",
 });
 
-function baseFixture(initial: Live, agent: "codex" | "claude-code") {
+function baseFixture(initial: Live, agent: Agent) {
   const client = new WebClient();
   const scope = pendingScope(client.origin, "device");
   const sessions = [summary("original", agent), summary("other", agent)];
@@ -453,6 +456,24 @@ afterEach(() => {
   cleanup();
   vi.useRealTimers();
   vi.restoreAllMocks();
+});
+
+describe("Image refusals", () => {
+  it.each(["codex", "claude-code", "deepseek-harness"] as const)(
+    "explains an image a %s session refused instead of the generic rejection",
+    async (agent) => {
+      const host = baseFixture(baseIdle("original", agent), agent);
+      const { result } = await open(host);
+      await act(async () => result.current.setMessage("What is in this picture?"));
+      host.request.mockRejectedValueOnce(
+        new ApiError(409, "model-images-unsupported", "not-dispatched"),
+      );
+      await act(async () => result.current.control("send"));
+      expect(result.current.notice).toBe("notDispatched");
+      expect(result.current.noticeReason).toBe("model-images-unsupported");
+      expect(result.current.message).toBe("What is in this picture?");
+    },
+  );
 });
 
 describe("Codex next-turn settings recovery", () => {

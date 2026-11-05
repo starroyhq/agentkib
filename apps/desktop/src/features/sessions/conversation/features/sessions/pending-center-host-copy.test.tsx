@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import "@testing-library/jest-dom/vitest";
-import { cleanup, fireEvent, render, screen, within } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { WebClient, type Access } from "@agentkib/web-client";
 import {
@@ -79,11 +79,59 @@ beforeEach(() => {
 });
 afterEach(() => {
   cleanup();
+  document.querySelectorAll("[data-pending-test-host]").forEach((node) => node.remove());
   sessionStorage.clear();
   vi.restoreAllMocks();
 });
 
 describe("desktop pending-center copy", () => {
+  function toolbarSlots() {
+    const host = document.createElement("div");
+    host.dataset.pendingTestHost = "";
+    const directorySlot = document.createElement("div");
+    directorySlot.dataset.sessionDirectoryPendingSlot = "";
+    const review = document.createElement("button");
+    review.setAttribute("aria-label", "To review");
+    directorySlot.append(review);
+    const windowSlot = document.createElement("div");
+    windowSlot.dataset.sessionWindowPendingSlot = "";
+    host.append(directorySlot, windowSlot);
+    document.body.append(host);
+    return { review, directorySlot, windowSlot };
+  }
+
+  it("keeps unknown business requests in the window action, separate from the review bell", async () => {
+    const { client, bridge } = fixture();
+    const slots = toolbarSlots();
+    const pending = {
+      requestId: "11111111-1111-4111-8111-111111111111",
+      sessionId: "unconfirmed-session",
+      kind: "stop" as const,
+    };
+    const scope = pendingScope(client.origin, "desktop-local");
+    rememberPending(scope, pending);
+    render(<EmbeddedConversation client={client} locale="en-US" onSessionChange={vi.fn()} />);
+    const trigger = await screen.findByRole("button", { name: "Pending actions (1)" });
+    expect(slots.windowSlot).toContainElement(trigger);
+    expect(slots.directorySlot).not.toContainElement(trigger);
+    expect(trigger.querySelector(".lucide-list-todo")).not.toBeNull();
+    fireEvent.click(trigger);
+    expect(await screen.findByRole("dialog", { name: "Pending actions" })).toBeVisible();
+    expect(slots.review).toBeInTheDocument();
+    expect(readPending(scope)).toEqual([pending]);
+    expect(vi.mocked(bridge.request).mock.calls.every(([, body]) => body === undefined)).toBe(true);
+  });
+
+  it("does not add an empty pending action to the window toolbar", async () => {
+    const { client, bridge } = fixture();
+    const slots = toolbarSlots();
+    render(<EmbeddedConversation client={client} locale="en-US" onSessionChange={vi.fn()} />);
+    await waitFor(() => expect(bridge.subscribe).toHaveBeenCalled());
+    expect(screen.queryByRole("button", { name: "Pending actions" })).not.toBeInTheDocument();
+    expect(slots.windowSlot).toBeEmptyDOMElement();
+    expect(slots.review).toBeInTheDocument();
+  });
+
   it.each(labels)(
     "opens the embedded pending center with access-neutral copy in %s",
     async (locale, title, description) => {

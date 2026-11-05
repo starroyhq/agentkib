@@ -33,6 +33,9 @@ describe("session view source visibility", () => {
       agent: "all",
       host: "all",
       filter: "current",
+      unreadOnly: false,
+      execution: false,
+      collections: false,
       collapsed: { workspace: true },
       scrollTop: 0,
     });
@@ -40,6 +43,65 @@ describe("session view source visibility", () => {
 
   it("keeps newly discovered sessions ahead of manually ordered sessions", () => {
     expect(normalizeSessionDirectoryOrder(["saved"], ["new", "saved"])).toEqual(["new", "saved"]);
+  });
+
+  it("keeps the unread filter in view state and clears it with the other filters", () => {
+    const view = useSessionViewStore.getState();
+    view.setUnreadOnly(true);
+    expect(useSessionViewStore.getState().unreadOnly).toBe(true);
+    expect(localStorage.getItem("agentkib.session-directory-order")).toBeNull();
+    view.resetFilters();
+    expect(useSessionViewStore.getState()).toMatchObject({
+      unreadOnly: false,
+      agent: "all",
+      host: "all",
+      filter: "current",
+    });
+  });
+
+  it("leaves unread filtering to reveal an ordinary deep-linked session", () => {
+    useSessionViewStore.setState({ unreadOnly: true });
+    prepareSessionNavigation(source);
+    expect(useSessionViewStore.getState().unreadOnly).toBe(false);
+  });
+
+  it.each(["read", "unknown"] as const)(
+    "reveals a %s deep link outside the unread filter",
+    (status) => {
+      useSessionViewStore.setState({ unreadOnly: true });
+      prepareSessionNavigation({
+        ...source,
+        readState: {
+          source: "codex-native",
+          status,
+          freshness: "current",
+          version: "native:known",
+          firstUnread: null,
+          latestResult: null,
+        },
+      });
+      expect(useSessionViewStore.getState().unreadOnly).toBe(false);
+    },
+  );
+
+  it("preserves unread filtering when a deep-linked session is unread", () => {
+    useSessionViewStore.setState({ unreadOnly: true, agent: "codex", host: "local" });
+    prepareSessionNavigation({
+      ...source,
+      readState: {
+        source: "codex-native",
+        status: "unread",
+        freshness: "stale",
+        version: "native:unread",
+        firstUnread: { type: "threadStart" },
+        latestResult: null,
+      },
+    });
+    expect(useSessionViewStore.getState()).toMatchObject({
+      unreadOnly: true,
+      agent: "codex",
+      host: "local",
+    });
   });
 
   it.each(["auxiliary", "execution"] as const)("does not reveal a targeted %s record", (origin) => {

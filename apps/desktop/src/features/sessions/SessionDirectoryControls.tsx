@@ -1,6 +1,7 @@
 import { DesktopHistorySearch } from "./DesktopHistorySearch";
+import { readStateCopy } from "@agentkib/session-ui";
 import { useShallow } from "zustand/react/shallow";
-import { ListFilter, SlidersHorizontal, X } from "lucide-react";
+import { Bell, ListFilter, SlidersHorizontal, X } from "lucide-react";
 import { useI18n } from "@/core/useI18n";
 import type { AgentKind } from "@/core/types";
 import { Button } from "@/components/ui/button";
@@ -26,17 +27,19 @@ export function SessionDirectoryControls({
 }: {
   onMenuOpenChange?: (open: boolean) => void;
 }) {
-  const { tr } = useI18n();
+  const { tr, locale } = useI18n();
   const hub = useSessionHub();
   const view = useSessionViewStore(
     useShallow((state) => ({
       agent: state.agent,
       filter: state.filter,
+      unreadOnly: state.unreadOnly,
       host: state.host,
       execution: state.execution,
       collections: state.collections,
       setAgent: state.setAgent,
       setFilter: state.setFilter,
+      setUnreadOnly: state.setUnreadOnly,
       setHost: state.setHost,
       setExecution: state.setExecution,
       setCollections: state.setCollections,
@@ -64,10 +67,18 @@ export function SessionDirectoryControls({
           </span>
         </div>
         <div className="flex shrink-0 items-center gap-0.5">
-          <div
-            data-session-directory-pending-slot
-            className="flex size-9 shrink-0 items-center justify-center"
-          />
+          <Button
+            variant="ghost"
+            size="sm"
+            className={`size-8 rounded-lg p-0 ${view.unreadOnly ? "bg-sidebar-accent text-foreground" : "text-muted-foreground hover:text-foreground"}`}
+            aria-label={readStateCopy(locale).pending}
+            title={readStateCopy(locale).pending}
+            aria-pressed={view.unreadOnly}
+            disabled={!hub.enabled}
+            onClick={() => view.setUnreadOnly(!view.unreadOnly)}
+          >
+            <Bell size={15} aria-hidden="true" fill={view.unreadOnly ? "currentColor" : "none"} />
+          </Button>
           <DropdownMenu onOpenChange={onMenuOpenChange}>
             <DropdownMenuTrigger
               render={
@@ -157,7 +168,10 @@ export function SessionDirectoryControls({
                 {tr("sessions.showCollections")}
               </DropdownMenuCheckboxItem>
               <DropdownMenuSeparator />
-              <DropdownMenuItem disabled={!filtersActive} onClick={view.resetFilters}>
+              <DropdownMenuItem
+                disabled={!filtersActive && !view.unreadOnly}
+                onClick={view.resetFilters}
+              >
                 {tr("sessions.clearFilters")}
               </DropdownMenuItem>
             </DropdownMenuContent>

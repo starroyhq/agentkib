@@ -122,6 +122,44 @@ beforeEach(() => {
 afterEach(cleanup);
 
 describe("desktop authoritative session directory", () => {
+  it("keeps the selected reader when unread filtering is active and its result becomes read", () => {
+    const unread: NonNullable<ConversationSessionSummary["readState"]> = {
+      source: "codex-native",
+      status: "unread",
+      freshness: "current",
+      version: "native:unread",
+      firstUnread: { type: "threadStart" },
+      latestResult: null,
+    };
+    mocks.search = { sessionId: "unmanaged" };
+    mocks.controlled = [session("managed-id"), { ...session("unmanaged"), readState: unread }];
+    useSessionViewStore.setState({ unreadOnly: true });
+    let snapshot: ReturnType<typeof useSessionHub> | undefined;
+    function Probe() {
+      snapshot = useSessionHub();
+      return <Directory />;
+    }
+    const view = render(
+      <SessionHubProvider>
+        <Probe />
+      </SessionHubProvider>,
+    );
+    expect(snapshot?.selected?.id).toBe("unmanaged");
+    mocks.controlled = [
+      session("managed-id"),
+      { ...session("unmanaged"), readState: { ...unread, status: "read", firstUnread: null } },
+    ];
+    view.rerender(
+      <SessionHubProvider>
+        <Probe />
+      </SessionHubProvider>,
+    );
+    expect(snapshot?.selected?.id).toBe("unmanaged");
+    expect(snapshot?.selected?.readState?.status).toBe("read");
+    expect(mocks.navigate).not.toHaveBeenCalled();
+    expect(useSessionViewStore.getState().unreadOnly).toBe(true);
+  });
+
   it("does not revive workspace cache after a controlled directory authorization denial", () => {
     mocks.controlled = [];
     mocks.controlledUsable = false;

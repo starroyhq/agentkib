@@ -1,4 +1,4 @@
-import { Bell } from "lucide-react";
+import { Bell, ListTodo } from "lucide-react";
 import { useEffect, useState } from "react";
 import { createPortal } from "react-dom";
 import { useSessionNavigate } from "./session-navigation";
@@ -53,10 +53,7 @@ export function PendingCenter({ compact = false }: { compact?: boolean }) {
   }, [origin, access?.status, access?.device?.id, open, live?.revision]);
   useEffect(() => {
     const sync = () =>
-      setPortalTarget(
-        document.querySelector<HTMLElement>("[data-session-directory-pending-slot]") ??
-          document.querySelector<HTMLElement>("[data-session-window-pending-slot]"),
-      );
+      setPortalTarget(document.querySelector<HTMLElement>("[data-session-window-pending-slot]"));
     sync();
     const observer = new MutationObserver(sync);
     observer.observe(document.body, { childList: true, subtree: true });
@@ -73,15 +70,19 @@ export function PendingCenter({ compact = false }: { compact?: boolean }) {
     ? [...(live?.approvals ?? []), ...(live?.questions ?? [])]
     : [];
   if (interactions.length && selected) pendingIds.add(selected);
+  // The directory bell filters unread results. Business requests keep their own
+  // existing window action, shown when there is something to handle or recover.
+  if (compact && portalTarget && !open && !failed && !pendingIds.size && !saved.length) return null;
   const trigger = (
     <Button
       data-conversation-pending-trigger
       variant="ghost"
       className={compact ? "relative !size-9 !min-w-0 !p-0" : "min-h-11"}
       aria-label={`${copy.pending}${pendingIds.size ? ` (${pendingIds.size})` : ""}`}
+      title={copy.pending}
       onClick={() => setOpen(true)}
     >
-      {compact ? <Bell size={18} /> : copy.pending}
+      {compact ? portalTarget ? <ListTodo size={18} /> : <Bell size={18} /> : copy.pending}
       {pendingIds.size > 0 && (
         <span
           aria-hidden="true"

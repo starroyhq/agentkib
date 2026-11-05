@@ -35,6 +35,7 @@ import { registerRuntimeIpc } from "./ipc/runtime";
 import { createIpcRegistrar } from "./ipc/registrar";
 import { ElectronNativeShell, resolveNativeShellTrayIcon } from "./native-shell";
 import { ElectronRefreshCoordinator } from "./refresh-coordinator";
+import { CostObservation, requireLocalCostProvider } from "./cost-observation";
 import { SkillSyncCoordinator } from "./skill-sync-coordinator";
 import { StartupBenchmark } from "./startup-benchmark";
 import { firstCloseDecision } from "./close-behavior";
@@ -102,6 +103,7 @@ let benchmarkCompletionStarted = false;
 let rendererUnresponsive = false;
 const startupBenchmark = new StartupBenchmark();
 const { handle, forward } = createIpcRegistrar({ assertTrustedRenderer, runtime: requireRuntime });
+const costObservation = new CostObservation(requireRuntime);
 
 const quitGuard = createQuitGuard({
   approveQuit: () => {
@@ -219,6 +221,7 @@ async function startApplication(): Promise<void> {
     startupBenchmark.setRuntimePid(handshake.pid);
     startupBenchmark.mark("runtime-handshake");
     refreshCoordinator?.setRuntimeAvailable(true);
+    costObservation.setRuntimeAvailable(true);
     skillSyncCoordinator?.setRuntimeAvailable(true);
     void initializeRuntimeServices().catch((error: unknown) => {
       process.stderr.write(`AgentKib runtime services failed: ${String(error)}\n`);
@@ -229,6 +232,7 @@ async function startApplication(): Promise<void> {
   });
   selectedRuntimeHost.on("exit", ({ expected }: { expected: boolean }) => {
     runtimeHandshake = undefined;
+    costObservation.setRuntimeAvailable(false);
     conversationHub?.unavailable();
     webAccess?.runtimeUnavailable();
     lanWebAccess?.runtimeUnavailable();
@@ -250,9 +254,12 @@ async function startApplication(): Promise<void> {
     if (!runtimeHandshake) return Promise.reject(new Error("runtime_unavailable"));
     return requireRuntime().request(method, params);
   });
-  selectedRuntimeHost.on("notification", (method: string, params: unknown) =>
-    conversationHub?.notification(method, params),
-  );
+  selectedRuntimeHost.on("notification", (method: string, params: unknown) => {
+    if (method === "quota.updated") sendRendererEvent("agentkib:quota-updated", params);
+    else if (method === "quota.costUpdated")
+      sendRendererEvent("agentkib:local-cost-updated", params);
+    else conversationHub?.notification(method, params);
+  });
   selectedRuntimeHost.on("request-completed", (method: string) => {
     if (
       new Set<string>([
@@ -396,6 +403,9 @@ async function startApplication(): Promise<void> {
 
   const updatePowerActivity = () => {
     const paused = systemSuspended || screenLocked;
+    costObservation.setActive(
+      !paused && Boolean(mainWindow?.isVisible() && !mainWindow?.isMinimized()),
+    );
     refreshCoordinator?.setSuspended(paused);
     skillSyncCoordinator?.setSuspended(paused);
     sendRendererEvent(
@@ -864,12 +874,32 @@ function registerHomeIpc(): void {
       preferences: requireObject(preferences, "quota preferences"),
     }),
   );
-  handle("agentkib:home:refresh-quota", (_event, force: unknown) => {
-    return requireRefreshCoordinator().request(
-      "quota",
+  handle("agentkib:home:refresh-quota", (_event, force: unknown, provider: unknown) => {
+    return requireRefreshCoordinator().requestQuota(
+      provider === undefined ? undefined : requireString(provider, "provider"),
       force === undefined ? true : requireBoolean(force, "force"),
     );
   });
+  forward("agentkib:home:local-cost-snapshot", RUNTIME_METHODS.localCostSnapshot, (provider) => ({
+    provider: requireLocalCostProvider(provider),
+  }));
+  forward("agentkib:home:local-cost-status", RUNTIME_METHODS.localCostStatus, (provider) => ({
+    provider: requireLocalCostProvider(provider),
+  }));
+  forward(
+    "agentkib:home:refresh-local-cost",
+    RUNTIME_METHODS.refreshLocalCost,
+    (provider, force) => ({
+      provider: requireLocalCostProvider(provider),
+      force: force === undefined ? true : requireBoolean(force, "force"),
+    }),
+  );
+  handle("agentkib:home:observe-local-costs", (event, provider) =>
+    costObservation.observe(
+      event.sender.id,
+      provider === null ? null : requireLocalCostProvider(provider),
+    ),
+  );
   handle("agentkib:home:set-local-auto-refresh", async (_event, enabled: unknown) => {
     const runtime = await requireRuntime().request<ElectronRuntimeInfo>(
       RUNTIME_METHODS.setLocalAutoRefresh,
@@ -1062,6 +1092,9 @@ async function createMainWindow(): Promise<void> {
   });
   const updateWindowActivity = () => {
     refreshCoordinator?.activityChanged();
+    costObservation.setActive(
+      !systemSuspended && !screenLocked && window.isVisible() && !window.isMinimized(),
+    );
     sendRendererEvent(
       "agentkib:window-activity",
       !systemSuspended && !screenLocked && window.isVisible() && !window.isMinimized(),
@@ -1080,7 +1113,15 @@ async function createMainWindow(): Promise<void> {
   window.on("responsive", () => {
     rendererUnresponsive = false;
   });
-  window.webContents.on("render-process-gone", () => quitGuard.rendererUnavailable());
+  window.webContents.on("render-process-gone", () => {
+    costObservation.forget(window.webContents.id);
+    quitGuard.rendererUnavailable();
+  });
+  const costOwnerId = window.webContents.id;
+  window.webContents.on("destroyed", () => costObservation.forget(costOwnerId));
+  window.webContents.on("did-start-navigation", (_event, _url, isInPlace, isMainFrame) => {
+    if (isMainFrame && !isInPlace) costObservation.forget(costOwnerId);
+  });
   window.webContents.setWindowOpenHandler(({ url }) => {
     if (webAccess?.canDownloadDesktopArtifact(url)) window.webContents.downloadURL(url);
     return { action: "deny" };

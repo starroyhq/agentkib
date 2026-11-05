@@ -192,9 +192,15 @@ jobs:
       - name: Test all release workflow helpers
         run: node --test .github/scripts/*.test.mjs
 
+  quota-collectors:
+    needs: preflight
+    uses: ./.github/workflows/quota-collector.yml
+    with:
+      source_ref: ${{ needs.preflight.outputs.release_sha }}
+
   desktop:
     name: Build ${{ matrix.name }} ${{ matrix.arch }}
-    needs: [preflight, release-helpers]
+    needs: [preflight, release-helpers, quota-collectors]
     runs-on: ${{ matrix.os }}
     # Allow branch builds to save dependency caches for subsequent runs.
     cache-mode: write
@@ -207,29 +213,35 @@ jobs:
             updater_channel: arm64
             os: macos-15
             artifact: macos-arm64
+            quota_target: aarch64-apple-darwin
           - name: macOS
             arch: x64
             updater_channel: x64
             os: macos-15-intel
             artifact: macos-x64
+            quota_target: x86_64-apple-darwin
           - name: Windows
             arch: x64
             updater_channel: x64
             os: windows-2025
             artifact: windows-x64
+            quota_target: x86_64-pc-windows-msvc
           - name: Windows
             arch: arm64-preview
             updater_channel: arm64
             os: windows-11-arm
             artifact: windows-arm64-preview
+            quota_target: unsupported
           - name: Ubuntu
             arch: x64
             os: ubuntu-22.04
             artifact: linux-ubuntu-x64
+            quota_target: x86_64-unknown-linux-gnu
           - name: Ubuntu
             arch: arm64-preview
             os: ubuntu-24.04-arm
             artifact: linux-ubuntu-arm64-preview
+            quota_target: aarch64-unknown-linux-gnu
 
     env:
       APP_VERSION: ${{ needs.preflight.outputs.app_version }}
@@ -293,6 +305,13 @@ jobs:
         shell: bash
         run: |
           rm -rf apps/desktop/release-electron apps/desktop/build/quota
+
+      - name: Download validated patched collector
+        if: matrix.quota_target != 'unsupported'
+        uses: actions/download-artifact@v7
+        with:
+          name: quota-collector-${{ matrix.quota_target }}
+          path: apps/desktop/resources/quota/
 
       - name: Set macOS x64 package targets
         if: matrix.name == 'macOS' && matrix.arch == 'x64'

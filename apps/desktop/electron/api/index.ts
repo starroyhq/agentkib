@@ -45,6 +45,10 @@ import type {
   QuotaCollectorStatus,
   QuotaPopoverPreferences,
   QuotaSnapshot,
+  LocalCostProvider,
+  LocalCostSnapshot,
+  LocalCostStatus,
+  LocalCostUpdate,
   RefreshJobStatus,
   RefreshReceipt,
   ScanRoot,
@@ -198,6 +202,7 @@ export interface DesktopApi {
       listener: (status: SkillSyncCoordinatorState) => void,
     ): DesktopEventUnsubscribe;
     onQuotaUpdated(listener: (snapshot: QuotaSnapshot) => void): DesktopEventUnsubscribe;
+    onLocalCostUpdated(listener: (update: LocalCostUpdate) => void): DesktopEventUnsubscribe;
     onNavigate(listener: (request: AppNavigationRequest) => void): DesktopEventUnsubscribe;
     onMenuCommand(listener: (request: AppMenuCommandRequest) => void): DesktopEventUnsubscribe;
     onRuntimeStatus(listener: (status: DesktopRuntimeStatus) => void): DesktopEventUnsubscribe;
@@ -467,7 +472,11 @@ export interface DesktopApi {
     quotaSnapshot(): Promise<QuotaSnapshot | undefined>;
     quotaPreferences(): Promise<QuotaPopoverPreferences>;
     setQuotaPreferences(preferences: QuotaPopoverPreferences): Promise<QuotaPopoverPreferences>;
-    refreshQuota(force?: boolean): Promise<RefreshReceipt>;
+    refreshQuota(force?: boolean, provider?: string): Promise<RefreshReceipt>;
+    localCostSnapshot(provider: LocalCostProvider): Promise<LocalCostSnapshot | undefined>;
+    localCostStatus(provider: LocalCostProvider): Promise<LocalCostStatus>;
+    refreshLocalCost(provider: LocalCostProvider, force?: boolean): Promise<LocalCostStatus>;
+    observeLocalCosts(provider: LocalCostProvider | null): Promise<void>;
     setLocalAutoRefresh(enabled: boolean): Promise<RuntimeInfo>;
     setQuotaAutoRefresh(enabled: boolean): Promise<RuntimeInfo>;
     setQuotaPromptSeen(seen: boolean): Promise<RuntimeInfo>;

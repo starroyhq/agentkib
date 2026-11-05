@@ -1,35 +1,94 @@
-import { mkdir, rename, stat, writeFile } from "node:fs/promises";
+import { mkdir, readFile, rename, stat, writeFile } from "node:fs/promises";
+import { randomUUID } from "node:crypto";
 import os from "node:os";
 import path from "node:path";
-import { RUNTIME_METHODS } from "@agentkib/runtime-protocol";
+import { RUNTIME_METHODS, type LocalCostProvider } from "@agentkib/runtime-protocol";
 import type { Commands } from "./commands";
 import type { BackendStore } from "./store";
 import { utcNow } from "./workspaces";
 import { timestamp } from "./timestamps";
 import { isSensitiveSessionKey, sanitizeSessionText } from "./session-handoff";
+import { LocalCosts, costScope } from "./local-costs";
 
 type Backend = "codex-bar-cli" | "win-codex-bar";
 type RecordValue = Record<string, unknown>;
 const backend: Backend = process.platform === "win32" ? "win-codex-bar" : "codex-bar-cli";
 
 export class QuotaOwner {
-  #running = false;
+  #active = new Map<string, Promise<void>>();
+  #queue: Array<() => void> = [];
+  #processes = 0;
+  #controllers = new Set<AbortController>();
+  #generation = 0;
+  #source = "";
+  #stopped = false;
+  #preparing?: Promise<{ source: string; environment: NodeJS.ProcessEnv }>;
+  readonly #costs: LocalCosts;
 
   constructor(
     readonly store: BackendStore,
     readonly commands: Commands,
     readonly dataDir: string,
     readonly environment: NodeJS.ProcessEnv,
-  ) {}
+    readonly notify: (method: string, params: unknown) => void = () => {},
+  ) {
+    this.#costs = new LocalCosts(
+      store,
+      commands,
+      backend,
+      async () => {
+        const configuration = await this.#configuration();
+        const scope = await costScope(configuration.environment);
+        return {
+          ...scope,
+          environment: {
+            ...configuration.environment,
+            AGENTKIB_COST_CACHE: path.join(this.dataDir, "quota", "local-costs", scope.scope_key),
+          },
+          executable: await this.#sidecar(),
+        };
+      },
+      notify,
+    );
+    for (const row of store.sql.rows("SELECT provider,status_json FROM quota_provider_status")) {
+      const status = JSON.parse(String(row.status_json)) as RecordValue;
+      if (["queued", "running"].includes(String(status.state)))
+        store.saveQuotaProviderStatus(String(row.provider), { ...status, state: "cancelled" });
+    }
+  }
+
+  costSnapshot(provider: LocalCostProvider) {
+    return this.#costs.snapshot(provider);
+  }
+  costStatus(provider: LocalCostProvider) {
+    return this.#costs.status(provider);
+  }
+  refreshCost(provider: LocalCostProvider, force = false) {
+    return this.#costs.refresh(provider, force);
+  }
+  observeCosts(provider: LocalCostProvider | null, autoRefresh: boolean) {
+    return this.#costs.observe(provider, autoRefresh);
+  }
+  setCostAutoRefresh(enabled: boolean): void {
+    this.#costs.setAutomatic(enabled);
+  }
+  stop(): void {
+    this.#stopped = true;
+    this.#generation++;
+    this.#costs.stop();
+    for (const controller of this.#controllers)
+      controller.abort(new Error("quota collection cancelled"));
+    this.#queue.splice(0).forEach((start) => start());
+  }
 
   snapshot(): unknown {
     return this.store.quotaSnapshot();
   }
 
   async status(): Promise<unknown> {
-    const configuration = await this.#environment();
+    const configuration = await this.#configuration();
     const executable = await this.#sidecar();
-    return this.store.quotaCollectorStatus({
+    const status = this.store.quotaCollectorStatus({
       backend,
       platform_supported:
         process.platform === "darwin" ||
@@ -37,47 +96,81 @@ export class QuotaOwner {
         (process.platform === "win32" && process.arch === "x64"),
       sidecar_available: executable !== null,
       config_source: configuration.source,
-      running: this.#running,
-    });
+      running: this.#active.size > 0,
+    }) as RecordValue;
+    const providers = await this.#enabledProviders(configuration.environment).catch(() => []);
+    return {
+      ...status,
+      providers: Object.fromEntries(
+        providers.map((id) => [id, this.store.quotaProviderStatus(id)]),
+      ),
+    };
   }
 
-  async refresh(): Promise<unknown> {
-    if (this.#running) throw new Error("Quota collection is already running");
-    this.#running = true;
+  async refresh(provider?: string): Promise<unknown> {
+    if (this.#stopped) throw new Error("quota collector is stopped");
+    if (provider !== undefined && !/^[a-z][a-z0-9-]{0,63}$/.test(provider))
+      throw new Error("invalid quota provider");
     const queuedAt = utcNow();
     const startedAt = utcNow();
+    let preparing = true;
+    let preparationGeneration = this.#generation;
     try {
-      const executable = await this.#sidecar();
-      if (!executable) throw new Error("quota collector sidecar is unavailable");
-      const platformSupported =
-        process.platform === "darwin" ||
-        process.platform === "linux" ||
-        (process.platform === "win32" && process.arch === "x64");
-      if (!platformSupported) throw new Error("quota collector is not supported on this platform");
-      const configuration = await this.#environment();
-      const output = await this.commands.run(
-        executable,
-        ["dashboard", "--identity", "full", "--timeout", backend === "win-codex-bar" ? "12" : "25"],
-        {
-          env: configuration.environment,
-          timeout: 35_000,
-          limit: 2 * 1024 * 1024,
-          allowFailure: true,
-          strictOutput: true,
-          terminateDescendantsOnExit: true,
-        },
-      );
-      if (!output.success) {
-        const diagnostic = sanitize(output.error);
+      const configuration = await this.#configuration();
+      const scope = await costScope(configuration.environment);
+      if (this.#stopped) throw new Error("quota collector is stopped");
+      if (this.#source && this.#source !== scope.scope_key) {
+        this.#generation++;
+        for (const controller of this.#controllers)
+          controller.abort(new Error("quota configuration changed"));
+      }
+      this.#source = scope.scope_key;
+      const generation = this.#generation;
+      preparationGeneration = generation;
+      const providers = provider
+        ? [provider]
+        : await this.#enabledProviders(configuration.environment);
+      if (!providers.length) {
         throw new Error(
-          diagnostic
-            ? `quota collector command failed: ${diagnostic}`
-            : "quota collector command failed",
+          "quota collector returned no usable quota for enabled providers\nNo providers are enabled.",
         );
       }
-      const { snapshot, usable } = parseSnapshot(output.bytes, backend);
-      if (!usable) throw new Error(unavailableDiagnostics(snapshot));
-      this.store.saveQuotaSnapshot(snapshot);
+      preparing = false;
+      const results = await Promise.allSettled(
+        providers.map((id) => this.#refreshProvider(id, configuration, scope.scope_key)),
+      );
+      if (this.#stopped || generation !== this.#generation)
+        throw new Error("quota collection cancelled");
+      const current = await costScope((await this.#configuration()).environment);
+      if (this.#stopped || current.scope_key !== scope.scope_key)
+        throw new Error("quota configuration changed");
+      const failed = results.filter(
+        (result): result is PromiseRejectedResult => result.status === "rejected",
+      );
+      if (failed.length === results.length) {
+        const cached = this.snapshot() as RecordValue | undefined;
+        const allUnavailable = failed.every((result) =>
+          String(result.reason).includes("no usable quota"),
+        );
+        const message = allUnavailable
+          ? unavailableDiagnostics({
+              providers: (Array.isArray(cached?.providers) ? cached.providers : []).filter(
+                (item) => isRecord(item) && providers.includes(String(item.id)),
+              ),
+            })
+          : failed
+              .map((result) => errorMessage(result.reason))
+              .join("\n")
+              .slice(0, 1000);
+        this.store.recordQuotaFailure(
+          backend,
+          failed.every((result) => String(result.reason).includes("update collector"))
+            ? "errors.quotaCollectorUpdateRequired"
+            : "errors.quotaUnavailable",
+          message,
+        );
+        throw new Error(message);
+      }
       return {
         kind: "quota",
         disposition: "queued",
@@ -89,18 +182,222 @@ export class QuotaOwner {
           queued_at: queuedAt,
           started_at: startedAt,
           finished_at: utcNow(),
-          progress_current: 1,
-          progress_total: 1,
+          progress_current: providers.length,
+          progress_total: providers.length,
           error: null,
           next_allowed_at: null,
         },
       };
     } catch (error) {
-      this.store.recordQuotaFailure(backend, "errors.quotaUnavailable", errorMessage(error));
+      if (preparing && !this.#stopped && preparationGeneration === this.#generation) {
+        const message = error instanceof Error ? error.message : "";
+        const detail =
+          message === "invalid quota collector configuration" ||
+          message.includes("No providers are enabled.")
+            ? message
+            : "quota collector configuration is unavailable";
+        this.store.recordQuotaFailure(backend, "errors.quotaUnavailable", detail);
+        throw new Error(detail);
+      }
+      throw error;
+    }
+  }
+
+  #refreshProvider(
+    id: string,
+    configuration: { source: string; environment: NodeJS.ProcessEnv },
+    scope: string,
+  ): Promise<void> {
+    const key = `${scope}:${id}`;
+    const active = this.#active.get(key);
+    if (active) return active;
+    const generation = this.#generation;
+    const previous = this.store.quotaProviderStatus(id);
+    this.store.saveQuotaProviderStatus(id, {
+      ...previous,
+      state: "queued",
+      last_attempt_at: utcNow(),
+    });
+    const promise = new Promise<void>((resolve, reject) => {
+      const start = () => {
+        this.#processes++;
+        const finish = () => {
+          this.#processes--;
+          this.#active.delete(key);
+          this.#queue.shift()?.();
+        };
+        void this.#collectProvider(id, configuration, scope, generation).then(
+          () => {
+            finish();
+            resolve();
+          },
+          (error: unknown) => {
+            finish();
+            reject(error);
+          },
+        );
+      };
+      if (this.#processes < 2) start();
+      else this.#queue.push(start);
+    });
+    this.#active.set(key, promise);
+    return promise;
+  }
+
+  async #collectProvider(
+    id: string,
+    configuration: { source: string; environment: NodeJS.ProcessEnv },
+    scope: string,
+    generation: number,
+  ): Promise<void> {
+    const controller = new AbortController();
+    this.#controllers.add(controller);
+    let returnedProvider: RecordValue | undefined;
+    try {
+      if (this.#stopped || generation !== this.#generation)
+        throw new Error("quota collection cancelled");
+      this.store.saveQuotaProviderStatus(id, {
+        ...this.store.quotaProviderStatus(id),
+        state: "running",
+      });
+      const executable = await this.#sidecar();
+      if (!executable) throw new Error("quota collector sidecar is unavailable");
+      if (
+        !(
+          process.platform === "darwin" ||
+          process.platform === "linux" ||
+          (process.platform === "win32" && process.arch === "x64")
+        )
+      )
+        throw new Error("quota collector is not supported on this platform");
+      const output = await this.commands.run(
+        executable,
+        [
+          "dashboard",
+          "--no-local-costs",
+          "--provider",
+          id,
+          "--identity",
+          "full",
+          "--timeout",
+          backend === "win-codex-bar" ? "12" : "25",
+        ],
+        {
+          env: configuration.environment,
+          timeout: 35_000,
+          limit: 2 * 1024 * 1024,
+          allowFailure: true,
+          strictOutput: true,
+          terminateDescendantsOnExit: true,
+          signal: controller.signal,
+        },
+      );
+      if (this.#stopped || controller.signal.aborted || generation !== this.#generation)
+        throw new Error("quota collection cancelled");
+      if (output.truncated) throw new Error("quota collector output exceeds the 2 MiB limit");
+      let parsed: ReturnType<typeof parseSnapshot>;
+      try {
+        parsed = parseSnapshot(output.bytes, backend, id);
+      } catch (error) {
+        if (!output.success)
+          throw new Error(
+            /unknown|unexpected|unrecognized.*argument/i.test(output.error)
+              ? "quota collector options unsupported; update collector"
+              : `quota collector command failed: ${sanitize(output.error) || "invalid dashboard data"}`,
+          );
+        throw error;
+      }
+      const { snapshot, usable } = parsed;
+      returnedProvider = (snapshot.providers as RecordValue[]).find((item) => item.id === id);
+      if (!usable) throw new Error(unavailableDiagnostics(snapshot));
+      const current = await costScope((await this.#configuration()).environment);
+      if (this.#stopped || generation !== this.#generation || scope !== current.scope_key)
+        throw new Error("quota configuration changed");
+      const result = (snapshot.providers as RecordValue[]).find((item) => item.id === id)!;
+      const version = randomUUID();
+      this.store.saveQuotaProvider(snapshot, {
+        ...result,
+        fetched_at: utcNow(),
+        refresh_state: "succeeded",
+        data_version: version,
+      });
+      this.store.saveQuotaProviderStatus(id, {
+        state: "succeeded",
+        last_attempt_at: this.store.quotaProviderStatus(id).last_attempt_at,
+        last_success_at: utcNow(),
+        data_version: version,
+      });
+      this.notify("quota.updated", this.snapshot());
+    } catch (error) {
+      let sameScope = false;
+      if (!this.#stopped && generation === this.#generation) {
+        try {
+          sameScope =
+            (await costScope((await this.#configuration()).environment)).scope_key === scope;
+        } catch {
+          /* Invalid or changing configuration cannot authorize an old result. */
+        }
+      }
+      if (!this.#stopped && generation === this.#generation && sameScope) {
+        this.store.saveQuotaProviderStatus(id, {
+          ...this.store.quotaProviderStatus(id),
+          state: "failed",
+          error_key: errorMessage(error).includes("update collector")
+            ? "errors.quotaCollectorUpdateRequired"
+            : "errors.quotaUnavailable",
+          error_detail: errorMessage(error),
+        });
+        this.store.recordQuotaProviderFailure(
+          returnedProvider ?? { id, name: id, enabled: true, windows: [], accounts: [] },
+          returnedProvider?.error ? String(returnedProvider.error) : errorMessage(error),
+        );
+        this.notify("quota.updated", this.snapshot());
+      }
       throw error;
     } finally {
-      this.#running = false;
+      this.#controllers.delete(controller);
     }
+  }
+
+  async #enabledProviders(environment: NodeJS.ProcessEnv): Promise<string[]> {
+    const config = environment.CODEXBAR_CONFIG;
+    if (config) {
+      let parsed: unknown;
+      try {
+        parsed = JSON.parse(await readFile(config, "utf8"));
+      } catch {
+        throw new Error("invalid quota collector configuration");
+      }
+      if (!isRecord(parsed)) throw new Error("invalid quota collector configuration");
+      const raw = Array.isArray(parsed.providers)
+        ? parsed.providers
+            // CodexBar v0.83.0 metadata defaults only Codex on. Claude and all
+            // other providers remain opt-in when `enabled` is omitted/null.
+            .filter(
+              (value) =>
+                isRecord(value) &&
+                (value.enabled === true || (value.enabled == null && value.id === "codex")),
+            )
+            .map((value) => (value as RecordValue).id)
+        : (parsed.enabled_providers ?? parsed.enabledProviders);
+      if (Array.isArray(raw))
+        return [
+          ...new Set(
+            raw.filter(
+              (id): id is string => typeof id === "string" && /^[a-z][a-z0-9-]{0,63}$/.test(id),
+            ),
+          ),
+        ];
+    }
+    return process.platform === "win32" ? ["codex", "claude"] : ["codex"];
+  }
+
+  #configuration(): Promise<{ source: string; environment: NodeJS.ProcessEnv }> {
+    if (!this.#preparing)
+      this.#preparing = this.#environment().finally(() => {
+        this.#preparing = undefined;
+      });
+    return this.#preparing;
   }
 
   async #sidecar(): Promise<string | null> {
@@ -123,7 +420,14 @@ export class QuotaOwner {
 
   async #environment(): Promise<{ source: string; environment: NodeJS.ProcessEnv }> {
     const environment = { ...process.env, ...this.environment };
-    const home = os.homedir();
+    const home = environment.HOME || environment.USERPROFILE || os.homedir();
+    const configured = environment.CODEXBAR_CONFIG?.trim();
+    const expanded =
+      configured === "~"
+        ? home
+        : configured?.startsWith("~/")
+          ? path.join(home, configured.slice(2))
+          : configured;
     if (process.platform === "win32") {
       const appData = environment.APPDATA?.trim();
       const config = appData ? path.join(appData, "CodexBar", "settings.json") : "";
@@ -138,18 +442,19 @@ export class QuotaOwner {
         }
       }
       return {
-        source: config && (await fileExists(config)) ? "win-codexbar" : "automatic",
-        environment,
+        source: expanded
+          ? "environment"
+          : config && (await fileExists(config))
+            ? "win-codexbar"
+            : "automatic",
+        environment: expanded
+          ? { ...environment, CODEXBAR_CONFIG: expanded }
+          : config && (await fileExists(config))
+            ? { ...environment, CODEXBAR_CONFIG: config }
+            : environment,
       };
     }
-    const configured = environment.CODEXBAR_CONFIG?.trim();
-    if (configured) {
-      const expanded =
-        configured === "~"
-          ? home
-          : configured.startsWith("~/")
-            ? path.join(home, configured.slice(2))
-            : configured;
+    if (expanded) {
       return { source: "environment", environment: { ...environment, CODEXBAR_CONFIG: expanded } };
     }
     const xdgRoot = environment.XDG_CONFIG_HOME;
@@ -245,6 +550,7 @@ async function writePrivateJson(file: string, value: unknown): Promise<void> {
 function parseSnapshot(
   bytes: Buffer,
   backendName: Backend,
+  requestedProvider?: string,
 ): { snapshot: RecordValue; usable: boolean } {
   const input = JSON.parse(bytes.toString("utf8")) as RecordValue;
   if (
@@ -258,6 +564,10 @@ function parseSnapshot(
   if (input.providers !== undefined && !Array.isArray(input.providers))
     throw new Error("providers is not an array");
   const host = isRecord(input.host) ? input.host : {};
+  if (requestedProvider)
+    input.providers = (Array.isArray(input.providers) ? input.providers : []).filter(
+      (value) => isRecord(value) && value.id === requestedProvider,
+    );
   const providers = Array.isArray(input.providers) ? input.providers.map(normalizeProvider) : [];
   const fetched = utcNow();
   const generated = timestamp(input.generatedAt)!;
@@ -349,13 +659,15 @@ function normalizeWindows(value: unknown): RecordValue[] {
   return (Array.isArray(value) ? value : []).map((window) => {
     if (!isRecord(window) || typeof window.kind !== "string" || typeof window.label !== "string")
       throw new Error("invalid dashboard quota window");
-    const used = finite(window.usedPercent, "usedPercent"),
-      remaining = finite(window.remainingPercent, "remainingPercent");
+    const known = window.usageKnown !== false && window.idle !== true;
+    const used = known ? finite(window.usedPercent, "usedPercent") : null,
+      remaining = known ? finite(window.remainingPercent, "remainingPercent") : null;
     return {
       kind: window.kind,
       label: window.label,
-      used_percent: clamp(used),
-      remaining_percent: clamp(remaining),
+      used_percent: used === null ? null : clamp(used),
+      remaining_percent: remaining === null ? null : clamp(remaining),
+      usage_known: known,
       ...(validDate(window.resetAt) ? { reset_at: timestamp(window.resetAt)! } : {}),
     };
   });
@@ -382,11 +694,22 @@ function hasUsableQuota(snapshot: RecordValue): boolean {
       isRecord(p) &&
       p.enabled === true &&
       ((quotaErrorAllowsData(p, snapshot) &&
-        ((Array.isArray(p.windows) && p.windows.length > 0) || isRecord(p.credits))) ||
+        ((Array.isArray(p.windows) && p.windows.some(knownWindow)) || isRecord(p.credits))) ||
         (Array.isArray(p.accounts) &&
           p.accounts.some(
-            (a) => isRecord(a) && !a.error && Array.isArray(a.windows) && a.windows.length > 0,
+            (a) =>
+              isRecord(a) && !a.error && Array.isArray(a.windows) && a.windows.some(knownWindow),
           ))),
+  );
+}
+
+function knownWindow(value: unknown): boolean {
+  // An explicit unknown is a valid measurement and must replace a prior numeric cache.
+  return (
+    isRecord(value) &&
+    (value.usageKnown === false ||
+      value.idle === true ||
+      (typeof value.remainingPercent === "number" && Number.isFinite(value.remainingPercent)))
   );
 }
 

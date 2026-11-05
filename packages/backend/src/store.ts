@@ -277,9 +277,76 @@ export class BackendStore {
         ? {}
         : { last_success_at: parseTimestamp(row.last_success_at) }),
       running: input.running,
+      providers: Object.fromEntries(
+        this.#rows("SELECT provider,status_json FROM quota_provider_status").map((item) => [
+          String(item.provider),
+          JSON.parse(String(item.status_json)) as unknown,
+        ]),
+      ),
       ...(errorKey == null ? {} : { error_key: errorKey }),
       ...(row.error_detail == null ? {} : { error_detail: row.error_detail }),
     };
+  }
+
+  quotaProviderStatus(provider: string): Record<string, unknown> {
+    const value = this.#rows(
+      "SELECT status_json FROM quota_provider_status WHERE provider=?",
+      provider,
+    )[0];
+    return value
+      ? (JSON.parse(String(value.status_json)) as Record<string, unknown>)
+      : { state: "idle" };
+  }
+
+  saveQuotaProviderStatus(provider: string, status: Record<string, unknown>): void {
+    this.#database
+      .prepare(
+        "INSERT INTO quota_provider_status(provider,status_json) VALUES (?,?) ON CONFLICT(provider) DO UPDATE SET status_json=excluded.status_json",
+      )
+      .run(provider, JSON.stringify(status));
+  }
+
+  /** Merge each completed provider without dropping another in-flight provider's cache. */
+  saveQuotaProvider(snapshot: Record<string, unknown>, provider: Record<string, unknown>): void {
+    const previous = this.quotaSnapshot() as Record<string, unknown> | undefined;
+    const providers = (Array.isArray(previous?.providers) ? previous.providers : []) as Record<
+      string,
+      unknown
+    >[];
+    const index = providers.findIndex((item) => item.id === provider.id);
+    if (index < 0) providers.push(provider);
+    else providers[index] = provider;
+    this.saveQuotaSnapshot({ ...previous, ...snapshot, providers });
+  }
+
+  recordQuotaProviderFailure(provider: Record<string, unknown>, detail: string): void {
+    const previous = this.quotaSnapshot() as Record<string, unknown> | undefined;
+    if (!previous) return;
+    const providers = (Array.isArray(previous.providers) ? previous.providers : []) as Record<
+      string,
+      unknown
+    >[];
+    const index = providers.findIndex((item) => item.id === provider.id);
+    const failure = {
+      ...provider,
+      ...(index < 0
+        ? {
+            windows: [],
+            accounts: (Array.isArray(provider.accounts) ? provider.accounts : []).map((item) => ({
+              ...(item as Record<string, unknown>),
+              windows: [],
+            })),
+          }
+        : providers[index]),
+      error: detail,
+      refresh_state: "failed",
+    };
+    if (index < 0) providers.push(failure);
+    else providers[index] = failure;
+    // A failed attempt changes diagnostics, never the last-success measurement/save times.
+    this.#database
+      .prepare("UPDATE quota_snapshot SET snapshot_json=? WHERE id=1")
+      .run(JSON.stringify({ ...previous, providers }));
   }
 
   saveQuotaSnapshot(snapshot: Record<string, unknown>): void {

@@ -1,0 +1,325 @@
+--- a/rust/src/cli/cost.rs
++++ b/rust/src/cli/cost.rs
+@@ -61,6 +61,10 @@
+     #[arg(long = "provider-native-only")]
+     pub provider_native_only: bool,
+ 
++    /// AgentKib strict native history with local calendar, API list prices, no imports.
++    #[arg(long = "agentkib-native-only")]
++    pub agentkib_native_only: bool,
++
+     /// Group text output by Codex local conversation/session.
+     #[arg(long = "group-by", value_parser = ["session"])]
+     pub group_by: Option<String>,
+@@ -107,7 +111,15 @@
+     let group_by = CostGroupBy::from_arg(args.group_by.as_deref());
+     let use_color = !args.no_color && is_terminal();
+ 
+-    let settings = Settings::load();
++    let mut settings = Settings::load();
++    if args.agentkib_native_only {
++        anyhow::ensure!(matches!(providers.as_list().as_slice(), [ProviderId::Codex] | [ProviderId::Claude]),
++                        "--agentkib-native-only requires one Codex or Claude provider");
++        crate::cost_scanner::set_agentkib_native_only();
++        settings.open_codex_usage_logs_enabled = false;
++        settings.hide_native_codex_cost_when_open_codex_present = false;
++        crate::cost_reporting_period::set_cost_bucket_zone("");
++    }
+     let host_summary = args.remote.is_some() || args.summary_only;
+     let period = resolve_period(
+         args.days,
+@@ -134,13 +146,15 @@
+         .await;
+     }
+ 
+-    let mut scan_options = CostScanOptions::app_driven();
++    let mut scan_options = if args.agentkib_native_only {
++        CostScanOptions::default()
++    } else { CostScanOptions::app_driven() };
+     let requested_providers = providers.as_list();
+     let pi_selected = requested_providers.contains(&ProviderId::Pi);
+     // When Pi is selected alongside native providers, the standalone Pi row
+     // owns its mirrored Codex/Claude events. A single native-provider request
+     // keeps the historical inclusive behavior unless explicitly narrowed.
+-    scan_options.include_pi_sessions = !args.provider_native_only && !pi_selected;
++    scan_options.include_pi_sessions = !args.provider_native_only && !args.agentkib_native_only && !pi_selected;
+     let scanner = CostScanner::for_period(period).with_options(scan_options);
+ 
+     tracing::debug!(
+@@ -167,7 +181,7 @@
+                 });
+             }
+             ProviderId::Claude => {
+-                let summary = if pi_selected || args.provider_native_only {
++                let summary = if pi_selected || args.provider_native_only || args.agentkib_native_only {
+                     scanner.scan_claude_with_cancel_and_pi_sessions(None, false)
+                 } else {
+                     scanner.scan_claude()
+@@ -240,7 +254,20 @@
+             {
+                 crate::spend_contract::refresh_opencodex_pricing_if_needed().await;
+             }
+-            print_json_output(&results, args.pretty, period, days, &settings)?;
++            if args.agentkib_native_only {
++                let mut payloads = build_json_payloads(&results, period, days, &settings);
++                for (payload, result) in payloads.iter_mut().zip(&results) {
++                    payload["spendContract"] = serde_json::to_value(
++                        crate::spend_contract::build_agentkib_native_contract_from_summary(
++                            &result.provider, days, settings.hide_personal_info, result.summary.clone()))?;
++                    payload["updatedAt"] = serde_json::json!(chrono::Utc::now().to_rfc3339());
++                    payload["agentkibNativeOnly"] = serde_json::json!(true);
++                }
++                println!("{}", if args.pretty { serde_json::to_string_pretty(&payloads)? }
++                         else { serde_json::to_string(&payloads)? });
++            } else {
++                print_json_output(&results, args.pretty, period, days, &settings)?;
++            }
+         }
+     }
+ 
+--- a/rust/src/cli/dashboard.rs
++++ b/rust/src/cli/dashboard.rs
+@@ -15,6 +15,14 @@
+ 
+ #[derive(Args, Debug, Clone)]
+ pub struct DashboardArgs {
++    /// Skip all independent local cost scans, preserving quota and account projections.
++    #[arg(long)]
++    pub no_local_costs: bool,
++
++    /// Query a provider without collecting other enabled providers.
++    #[arg(long)]
++    pub provider: Option<String>,
++
+     /// Pretty-print JSON output
+     #[arg(long, default_value_t = false)]
+     pub pretty: bool,
+@@ -40,7 +48,12 @@
+     };
+     let fetch_timeout = parse_timeout(args.timeout)?;
+ 
+-    let producer = SnapshotProducer::new(60, Some(identity)).with_fetch_timeout(fetch_timeout);
++    let providers = args.provider.as_deref()
++        .map(|raw| super::usage::ProviderSelection::from_arg(Some(raw)).map(|selection| selection.as_list()))
++        .transpose()?;
++    let producer = SnapshotProducer::new(60, Some(identity))
++        .with_fetch_timeout(fetch_timeout)
++        .with_selection(providers, !args.no_local_costs);
+     let payload = producer.collect().await.map_err(anyhow::Error::msg)?;
+ 
+     let body = if args.pretty {
+--- a/rust/src/cli/serve/dashboard/source.rs
++++ b/rust/src/cli/serve/dashboard/source.rs
+@@ -50,6 +50,8 @@
+     /// Outer per-provider fetch envelope; `None` relies on provider-internal
+     /// `web_timeout` alone (`--timeout 0` in the dashboard command).
+     pub fetch_timeout: Option<Duration>,
++    pub providers: Option<Vec<ProviderId>>,
++    pub include_local_costs: bool,
+ }
+ 
+ impl SnapshotProducer {
+@@ -59,11 +61,19 @@
+             identity,
+             version: env!("CARGO_PKG_VERSION").to_string(),
+             fetch_timeout: Some(PROVIDER_FETCH_TIMEOUT),
++            providers: None,
++            include_local_costs: true,
+         }
+     }
+ 
+     pub fn with_fetch_timeout(mut self, timeout: Option<Duration>) -> Self {
+         self.fetch_timeout = timeout;
++        self
++    }
++
++    pub fn with_selection(mut self, providers: Option<Vec<ProviderId>>, include_local_costs: bool) -> Self {
++        self.providers = providers;
++        self.include_local_costs = include_local_costs;
+         self
+     }
+ 
+@@ -86,7 +96,7 @@
+         } else {
+             DashboardIdentity::Full
+         });
+-        let provider_ids: Vec<ProviderId> = settings.get_enabled_provider_ids();
++        let provider_ids = self.providers.clone().unwrap_or_else(|| settings.get_enabled_provider_ids());
+ 
+         // Concurrent, individually bounded provider fetches; order restored by index.
+         let mut set = tokio::task::JoinSet::new();
+@@ -115,7 +125,8 @@
+         let providers: Vec<ProviderFetchEnvelope> =
+             indexed.into_iter().map(|(_, envelope)| envelope).collect();
+ 
+-        let costs = collect_costs(provider_ids.contains(&ProviderId::Pi)).await;
++        let costs = collect_costs_when_enabled(self.include_local_costs, ||
++            collect_costs(provider_ids.contains(&ProviderId::Pi))).await;
+         let claude_accounts =
+             collect_claude_accounts(provider_ids.contains(&ProviderId::Claude), &settings).await;
+ 
+@@ -143,6 +154,35 @@
+             }),
+             sidecar: Some(metrics),
+         })
++    }
++}
++
++async fn collect_costs_when_enabled<F, Fut>(enabled: bool, collect: F) -> HashMap<String, RawCostPayload>
++where F: FnOnce() -> Fut, Fut: Future<Output = HashMap<String, RawCostPayload>> {
++    if enabled { collect().await } else { HashMap::new() }
++}
++
++#[cfg(test)]
++mod agentkib_tests {
++    use super::*;
++    use std::sync::atomic::{AtomicUsize, Ordering};
++
++    #[tokio::test]
++    async fn no_local_costs_never_calls_the_collector_and_default_still_does() {
++        let calls = AtomicUsize::new(0);
++        for enabled in [false, true] {
++            let _ = collect_costs_when_enabled(enabled, || async {
++                calls.fetch_add(1, Ordering::SeqCst);
++                HashMap::new()
++            }).await;
++            assert_eq!(calls.load(Ordering::SeqCst), usize::from(enabled));
++        }
++        let default = SnapshotProducer::new(60, None);
++        assert!(default.include_local_costs);
++        assert!(default.providers.is_none());
++        let selected = default.with_selection(Some(vec![ProviderId::Claude]), false);
++        assert_eq!(selected.providers, Some(vec![ProviderId::Claude]));
++        assert!(!selected.include_local_costs);
+     }
+ }
+ 
+--- a/rust/src/cost_scanner.rs
++++ b/rust/src/cost_scanner.rs
+@@ -16,6 +16,11 @@
+ use std::io::{BufRead, BufReader};
+ use std::path::{Path, PathBuf};
+ use std::sync::atomic::{AtomicBool, Ordering};
++
++// Set only by the opt-in one-shot CLI command, before any readers start.
++static AGENTKIB_NATIVE_ONLY: AtomicBool = AtomicBool::new(false);
++pub fn set_agentkib_native_only() { AGENTKIB_NATIVE_ONLY.store(true, Ordering::Relaxed); }
++pub(crate) fn agentkib_native_only() -> bool { AGENTKIB_NATIVE_ONLY.load(Ordering::Relaxed) }
+ use std::time::{SystemTime, UNIX_EPOCH};
+ 
+ #[cfg(test)]
+@@ -570,8 +575,14 @@
+     pub fn for_period(period: CostReportingPeriod) -> Self {
+         Self {
+             period,
+-            options: CostScanOptions::default(),
+-            cache_root: None,
++            options: {
++                let mut options = CostScanOptions::default();
++                if agentkib_native_only() { options.include_pi_sessions = false; }
++                options
++            },
++            cache_root: if agentkib_native_only() {
++                std::env::var_os("AGENTKIB_COST_CACHE").map(PathBuf::from)
++            } else { None },
+             sessions_dirs_override: None,
+             codex_trace_database_override: None,
+         }
+@@ -941,9 +952,9 @@
+     /// Existing Claude transcript roots: the profile root plus claude-swap
+     /// session homes, de-duplicated by resolved path.
+     fn claude_projects_roots(&self) -> claude_roots::ClaudeProjectsRoots {
+-        claude_roots::claude_projects_roots(
++        claude_roots::claude_projects_roots_with_scope(
+             std::env::var("CLAUDE_CONFIG_DIR").ok().as_deref(),
+-            dirs::home_dir().as_deref(),
++            dirs::home_dir().as_deref(), !agentkib_native_only(),
+         )
+     }
+ 
+--- a/rust/src/cost_scanner/claude_roots.rs
++++ b/rust/src/cost_scanner/claude_roots.rs
+@@ -38,11 +38,23 @@
+     config_dir: Option<&str>,
+     home: Option<&Path>,
+ ) -> ClaudeProjectsRoots {
++    claude_projects_roots_with_scope(config_dir, home, true)
++}
++
++pub(super) fn claude_projects_roots_with_scope(
++    config_dir: Option<&str>, home: Option<&Path>, include_swap: bool,
++) -> ClaudeProjectsRoots {
+     let mut result = ClaudeProjectsRoots {
+-        paths: vec![base_projects_dir(config_dir, home)],
++        paths: vec![if include_swap {
++            base_projects_dir(config_dir, home)
++        } else {
++            config_dir.map(str::trim).filter(|value| !value.is_empty()).map(PathBuf::from)
++                .unwrap_or_else(|| home.unwrap_or_else(|| Path::new(".")).join(".claude"))
++                .join("projects")
++        }],
+         ..ClaudeProjectsRoots::default()
+     };
+-    if let Some(home) = home {
++    if let Some(home) = home.filter(|_| include_swap) {
+         let swaps = swap_projects_roots(home);
+         result.paths.extend(swaps.paths);
+         result.read_failures = result.read_failures.saturating_add(swaps.read_failures);
+--- a/rust/src/cost_scanner/codex.rs
++++ b/rust/src/cost_scanner/codex.rs
+@@ -229,8 +229,8 @@
+         codex_sessions_dir_candidates(
+             dirs::home_dir(),
+             codex_home,
+-            &settings.codex_custom_sessions_dirs,
+-            &default_wsl_roots(),
++            if super::agentkib_native_only() { &[] } else { &settings.codex_custom_sessions_dirs },
++            if super::agentkib_native_only() { &[] } else { &default_wsl_roots() },
+         )
+     }
+ 
+--- a/rust/src/spend_contract.rs
++++ b/rust/src/spend_contract.rs
+@@ -247,6 +247,7 @@
+     }
+ 
+     fn load() -> Self {
++        if crate::cost_scanner::agentkib_native_only() { return Self::default(); }
+         Self::default_path()
+             .and_then(|path| fs::read(path).ok())
+             .map(|bytes| Self::parse(&bytes))
+@@ -455,8 +456,24 @@
+     hide_personal_info: bool,
+     summary: CostSummary,
+ ) -> SpendContract {
++    build_contract_with_pricing(provider_id, period, include_opencodex,
++        hide_native_codex_when_opencodex_present, hide_personal_info, summary, CustomPricing::load())
++}
++
++/// Strict native API-list-price estimate; never apply machine-specific custom price overrides.
++pub fn build_agentkib_native_contract_from_summary(
++    provider_id: &str, days: u32, hide_personal_info: bool, summary: CostSummary,
++) -> SpendContract {
++    build_contract_with_pricing(provider_id, CostReportingPeriod::Rolling(days.clamp(1, 365)),
++        false, false, hide_personal_info, summary, CustomPricing::default())
++}
++
++fn build_contract_with_pricing(
++    provider_id: &str, period: CostReportingPeriod, include_opencodex: bool,
++    hide_native_codex_when_opencodex_present: bool, hide_personal_info: bool,
++    summary: CostSummary, custom: CustomPricing,
++) -> SpendContract {
+     let history_days = period.sidecar_days(Utc::now());
+-    let custom = CustomPricing::load();
+     let native_models = model_rows(provider_id, &summary, &custom);
+     let native_coverage = coverage_for_models(&native_models);
+     let native_cost = known_subtotal(&native_models, &summary);
+@@ -561,7 +578,7 @@
+     history_days: u32,
+     hide_personal_info: bool,
+ ) -> NativeSpendData {
+-    if provider_id != "codex" {
++    if provider_id != "codex" || crate::cost_scanner::agentkib_native_only() {
+         return NativeSpendData {
+             projects: Vec::new(),
+             conversations: Vec::new(),

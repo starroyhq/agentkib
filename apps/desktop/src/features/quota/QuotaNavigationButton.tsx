@@ -30,13 +30,15 @@ function minimumWindow(providers: QuotaProvider[], agent: "codex" | "claude") {
     .flatMap(flattenQuotaWindows)
     .filter(
       ({ window }) =>
+        window.usage_known !== false &&
+        typeof window.remaining_percent === "number" &&
         Number.isFinite(window.remaining_percent) &&
         window.remaining_percent >= 0 &&
         window.remaining_percent <= 100,
     )
     .reduce<ReturnType<typeof flattenQuotaWindows>[number] | undefined>(
       (minimum, item) =>
-        !minimum || item.window.remaining_percent < minimum.window.remaining_percent
+        !minimum || Number(item.window.remaining_percent) < Number(minimum.window.remaining_percent)
           ? item
           : minimum,
       undefined,
@@ -68,9 +70,10 @@ export function QuotaNavigationButton({
       ...agent,
       item,
       remaining: item?.window.remaining_percent,
-      description: item
-        ? `${tr("quota.remaining", { value: Math.round(item.window.remaining_percent) })} · ${tr("quota.lowestRemaining")}`
-        : tr("quota.unavailable"),
+      description:
+        item && typeof item.window.remaining_percent === "number"
+          ? `${tr("quota.remaining", { value: Math.round(item.window.remaining_percent) })} · ${tr("quota.lowestRemaining")}`
+          : tr("quota.unavailable"),
     };
   });
   const description = [

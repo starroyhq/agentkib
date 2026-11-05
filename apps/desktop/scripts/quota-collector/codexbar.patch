@@ -1,0 +1,196 @@
+--- a/Sources/CodexBarCLI/CLICostCommand.swift
++++ b/Sources/CodexBarCLI/CLICostCommand.swift
+@@ -40,10 +40,15 @@
+         let format = output.format
+         let forceRefresh = values.flags.contains("refresh")
+         let includeBreakdown = values.flags.contains("breakdown")
+-        let includePiSessions = Self.decodeCostIncludePiSessions(from: values)
++        let nativeOnly = values.flags.contains("agentkibNativeOnly")
++        guard !nativeOnly || (providers.count == 1 && [.codex, .claude].contains(providers[0])) else {
++            Self.exit(code: .failure, message: "--agentkib-native-only requires one Codex or Claude provider.",
++                      output: output, kind: .args)
++        }
++        let includePiSessions = !nativeOnly && Self.decodeCostIncludePiSessions(from: values)
+         let useColor = Self.shouldUseColor(noColor: values.flags.contains("noColor"), format: format)
+         let now = Date()
+-        let bucketCalendar = CostUsageBucketTimeZone.calendar(
++        let bucketCalendar = nativeOnly ? Calendar.current : CostUsageBucketTimeZone.calendar(
+             identifier: Self.stringFromAppDefaults("tokenCostUsageBucketTimeZone"))
+         let period = Self.decodeCostReportingPeriod(from: values, saved: Self.costReportingPeriodFromDefaults())
+         let historyDays = period.days(now: now, calendar: bucketCalendar)
+@@ -82,7 +87,12 @@
+             Self.writeStderr("Warning: \(warning)\n")
+         }
+ 
+-        let fetcher = CostUsageFetcher(calendar: bucketCalendar)
++        let cacheRoot = ProcessInfo.processInfo.environment["AGENTKIB_COST_CACHE"].map {
++            URL(fileURLWithPath: $0, isDirectory: true)
++        }
++        let fetcher = nativeOnly ? CostUsageFetcher(nativeLogsOnly: true, cacheRoot: cacheRoot,
++                                                    calendar: bucketCalendar) :
++            CostUsageFetcher(calendar: bucketCalendar)
+         let outputProviders = Self.costProviders(providers, groupBy: groupBy, format: format)
+         let piSessionProcessContexts = await Self.piSessionProcessContextsForCost(
+             providers: outputProviders,
+@@ -151,7 +161,7 @@
+             }
+         }
+ 
+-        if format == .json,
++        if format == .json, !nativeOnly,
+            let openCodex = await Self.loadOpenCodexCostPayload(
+                period: period,
+                calendar: bucketCalendar,
+@@ -167,6 +177,13 @@
+             }
+         case .json:
+             if !payload.isEmpty {
++                if nativeOnly {
++                    payload = payload.map { original in
++                        var item = original
++                        item.agentkibNativeOnly = true
++                        return item
++                    }
++                }
+                 Self.printJSON(payload, pretty: output.pretty)
+             }
+         }
+@@ -953,6 +970,9 @@
+     @Flag(name: .long("no-color"), help: "Disable ANSI colors in text output")
+     var noColor: Bool = false
+ 
++    @Flag(name: .long("agentkib-native-only"), help: "Only native Codex/Claude logs, local calendar, no imported tools")
++    var agentkibNativeOnly: Bool = false
++
+     @Flag(name: .long("refresh"), help: "Force refresh by ignoring cached scans")
+     var refresh: Bool = false
+ 
+@@ -989,6 +1009,7 @@
+ }
+ 
+ struct CostPayload: Encodable, Sendable {
++    var agentkibNativeOnly: Bool? = nil
+     let provider: String
+     let source: String
+     let updatedAt: Date?
+--- a/Sources/CodexBarCLI/CLIDashboardCommand.swift
++++ b/Sources/CodexBarCLI/CLIDashboardCommand.swift
+@@ -18,6 +18,12 @@
+ 
+     @Option(name: .long("log-level"), help: "Set log level (trace|verbose|debug|info|warning|error|critical)")
+     var logLevel: String?
++
++    @Flag(name: .long("no-local-costs"), help: "Skip local cost scanning; preserve dashboard quota and accounts")
++    var noLocalCosts: Bool = false
++
++    @Option(name: .long("provider"), help: ProviderHelp.optionHelp)
++    var provider: ProviderSelection?
+ 
+     @Flag(name: .long("pretty"), help: "Pretty-print JSON output")
+     var pretty: Bool = false
+@@ -56,6 +62,7 @@
+     var weeklyWorkDays: @Sendable () -> Int? = { nil }
+     var usageBarsShowUsed: @Sendable () -> Bool = { false }
+     var allAccounts = false
++    var includeLocalCosts = true
+ 
+     func collect(
+         config: CodexBarConfig,
+@@ -68,9 +75,9 @@
+             rawOverride: nil,
+             enabled: config.enabledProviders().compactMap(\.firstPartyProvider))
+         let usageOutput = try await self.collectUsage(selection.asList)
+-        let costPayloads = await self.collectCost(
++        let costPayloads = self.includeLocalCosts ? await self.collectCost(
+             CodexBarCLI.costProviders(from: selection),
+-            config)
++            config) : []
+         var accountCollections: [UsageProvider: DashboardAccountsInput] = [:]
+         for provider in selection.asList {
+             if let collection = await self.collectAccounts(config, provider) {
+@@ -252,11 +259,16 @@
+ 
+         let result: DashboardSnapshotResult
+         do {
+-            result = try await DashboardSnapshotProducer.live(context: context).collect(
++            var producer = DashboardSnapshotProducer.live(context: context)
++            producer.includeLocalCosts = !values.flags.contains("noLocalCosts")
++            let providers = values.options["provider"] == nil ? nil :
++                Self.decodeProvider(from: values, config: context.config).asList
++            result = try await producer.collect(
+                 config: context.config,
+                 refreshInterval: context.usage.refreshInterval,
+                 codexBarVersion: context.codexBarVersion,
+-                identityMode: identityMode)
++                identityMode: identityMode,
++                providers: providers)
+         } catch {
+             await Self.shutdownDashboardRuntime(
+                 providerOperations: providerOperations,
+--- a/Sources/CodexBarCore/CostUsageFetcher.swift
++++ b/Sources/CodexBarCore/CostUsageFetcher.swift
+@@ -92,6 +92,15 @@
+     public init(cacheRoot: URL? = nil, calendar: Calendar? = nil) {
+         self.scannerOptions = cacheRoot == nil && calendar == nil
+             ? nil : CostUsageScanner.Options(cacheRoot: cacheRoot, calendar: calendar ?? .current)
++    }
++
++    /// Narrow local CLI consumers to the configured native profile rather than imported/swap history.
++    public init(nativeLogsOnly: Bool, cacheRoot: URL? = nil, calendar: Calendar = .current) {
++        let environment = ProcessInfo.processInfo.environment
++        let root = ClaudeConfigPaths.configRoot(environment: environment)
++        self.scannerOptions = CostUsageScanner.Options(
++            claudeProjectsRoots: nativeLogsOnly ? [root.appendingPathComponent("projects", isDirectory: true)] : nil,
++            cacheRoot: cacheRoot, calendar: calendar)
+     }
+ 
+     init(scannerOptions: CostUsageScanner.Options) {
+--- /dev/null
++++ b/Tests/CodexBarTests/AgentKibDashboardTests.swift
+@@ -0,0 +1,46 @@
++import CodexBarCore
++import Foundation
++import Testing
++@testable import CodexBarCLI
++
++struct AgentKibDashboardTests {
++    @Test(arguments: [false, true])
++    func localCostsAreOptionalWithoutChangingQuotaSelection(includeCosts: Bool) async throws {
++        let calls = AgentKibCollectorCalls()
++        var producer = DashboardSnapshotProducer(
++            collectUsage: { providers in
++                await calls.usage(providers)
++                var output = UsageCommandOutput()
++                output.payload = providers.map { provider in
++                    ProviderPayload(provider: provider, account: nil, version: nil,
++                        source: "fixture", status: nil, usage: nil, credits: nil,
++                        antigravityPlanInfo: nil, openaiDashboard: nil, error: nil)
++                }
++                return output
++            },
++            collectCost: { _, _ in await calls.cost(); return [] },
++            now: { Date(timeIntervalSince1970: 1_800_000_000) },
++            collectAccounts: { _, provider in await calls.account(provider); return nil })
++        #expect(producer.includeLocalCosts)
++        producer.includeLocalCosts = includeCosts
++        let result = try await producer.collect(
++            config: CodexBarConfig(providers: [ProviderConfig(id: .codex, enabled: true),
++                                               ProviderConfig(id: .claude, enabled: true)]),
++            refreshInterval: 0, codexBarVersion: "0.83.0", providers: [.codex])
++        #expect(await calls.costs == (includeCosts ? 1 : 0))
++        #expect(await calls.usageSelection == [.codex])
++        #expect(await calls.accountSelection == [.codex])
++        let json = try JSONSerialization.jsonObject(with: JSONEncoder().encode(result.payload)) as! [String: Any]
++        let rows = json["providers"] as! [[String: Any]]
++        #expect(rows.count == 1)
++        #expect(rows[0]["id"] as? String == "codex")
++    }
++}
++private actor AgentKibCollectorCalls {
++    var costs = 0
++    var usageSelection: [UsageProvider] = []
++    var accountSelection: [UsageProvider] = []
++    func cost() { costs += 1 }
++    func usage(_ providers: [UsageProvider]) { usageSelection = providers }
++    func account(_ provider: UsageProvider) { accountSelection.append(provider) }
++}

@@ -1,0 +1,81 @@
+{
+  "schemaVersion": 1,
+  "patchRevision": 1,
+  "features": ["dashboard-no-local-costs", "dashboard-provider", "cost-agentkib-native-only"],
+  "upstreams": {
+    "codexbar": {
+      "repository": "steipete/CodexBar",
+      "version": "0.83.0",
+      "commit": "348e2fa8d36ae8e452739ca07a79e83ab9d25e98",
+      "sourceUrl": "https://codeload.github.com/steipete/CodexBar/tar.gz/348e2fa8d36ae8e452739ca07a79e83ab9d25e98",
+      "sourceSha256": "512c5e4215e0b2a7ca40267ee048dc3df533cc2202dc5d3113c1d55305d97795",
+      "dependencyLock": "Package.resolved",
+      "dependencyLockSha256": "6f022ab98d19c71832fd5b1b852a223feb5fd756ac10abae93ca6af5a027f829",
+      "patch": "codexbar.patch",
+      "patchSha256": "55873ee4291a320160932b048e5272856afab78dfb3dcd6d98cfc83c4402e0c0",
+      "patchedFiles": {
+        "Sources/CodexBarCLI/CLICostCommand.swift": "fc56cabce621723df37467130aecfbe1397c6e16270db4a1f4e7492e9f99c29c",
+        "Sources/CodexBarCLI/CLIDashboardCommand.swift": "f0aac93c9146e27507520aa2d0257deed648b65089467c8d76bec93904f53d20",
+        "Sources/CodexBarCore/CostUsageFetcher.swift": "8b2023974b3822eba605116490d27887ad28411b6161df0dbcd76410eadac1d3",
+        "Tests/CodexBarTests/AgentKibDashboardTests.swift": "544214da060e45edeac04942181856e5ed28fa3d70a51ee6554c91cf47c96eba"
+      },
+      "toolchain": {
+        "darwin": "Apple Swift version 6.4 (swiftlang-6.4.0.34.1 clang-2100.3.34.1)",
+        "linux": "Swift version 6.3.3"
+      },
+      "minimumOS": "macOS 14 / Linux static musl 1.2.5",
+      "linux": {
+        "sdk": "swift-6.3.3-RELEASE_static-linux-0.1.0",
+        "url": "https://download.swift.org/swift-6.3.3-release/static-sdk/swift-6.3.3-RELEASE/swift-6.3.3-RELEASE_static-linux-0.1.0.artifactbundle.tar.gz",
+        "sha256": "87c3eaf908e67c0e13a84367119e12273cec1d2cd3d81f7d74bb36722d6b607b",
+        "sqliteVersion": "3530400",
+        "sqliteUrl": "https://www.sqlite.org/2026/sqlite-amalgamation-3530400.zip",
+        "sqliteSha3": "628a44cfe82c66aed1ccbbe85a562d2e33ebe64b3288981ed76285612227934e"
+      },
+      "xcode": "27.1 (27A9275)",
+      "patchedTreeSha256": "ed83ba5e5afb155b81b59ac197fb49f63e2835a9480469029a592372938d0a31"
+    },
+    "win-codexbar": {
+      "repository": "nesszer/Win-CodexBar",
+      "version": "0.70.0",
+      "commit": "f0b45ed422513eaf3e58ef0e321e1b02424547be",
+      "sourceUrl": "https://codeload.github.com/nesszer/Win-CodexBar/tar.gz/f0b45ed422513eaf3e58ef0e321e1b02424547be",
+      "sourceSha256": "f91327ee241c7609ab294790c1065fd25699a2a2951e54bcd49f7932f90fe4a8",
+      "dependencyLock": "Cargo.lock",
+      "dependencyLockSha256": "e6f299296b6ea92a9ad85ba156c55720bb29f3ef8fd07cf2683533a7b5a45042",
+      "patch": "win-codexbar.patch",
+      "patchSha256": "e6e64341c132db696b4460f9c10eec0c572adb17f074ddd7ff014888c31cc2ed",
+      "patchedFiles": {
+        "rust/src/cli/cost.rs": "d3c7e34e8a7c38922f9b01cffab2887697dcd886c99bf2b0b2d54ba79bf2149a",
+        "rust/src/cli/dashboard.rs": "930cc297c8ffd058b1181f218a5147b16bb8118f845685b1605ffe6361efac88",
+        "rust/src/cli/serve/dashboard/source.rs": "bc567f8182867d56ca1f29b087d5cd556739dfe9f25ea56543d28e8a6c0fbbf3",
+        "rust/src/cost_scanner.rs": "460e3042a81a465702c41544fb49743d28d1b79f8489004318c68f3859ef998e",
+        "rust/src/cost_scanner/claude_roots.rs": "708a193a14e5ad091030a7bcc8ab2b496fd96d11cd248bf5ceb29b8f68ddeedd",
+        "rust/src/cost_scanner/codex.rs": "a30cf78f45ea8eb5acde6a024631c94b3bcf36acd22bb39389459024238099a3",
+        "rust/src/spend_contract.rs": "faddf4013d7472955c41eebc2782dd966f86d192f6139a36fb626fbb22727f3f"
+      },
+      "toolchain": {
+        "win32": "rustc 1.92.0"
+      },
+      "minimumOS": "Windows x64 MSVC",
+      "patchedTreeSha256": "8a1aa97ce57ab4491318354e3bc9fd06fe247cca3f2daa696b0a55881d68495a"
+    }
+  },
+  "targets": {
+    "aarch64-apple-darwin": {
+      "upstream": "codexbar"
+    },
+    "x86_64-apple-darwin": {
+      "upstream": "codexbar"
+    },
+    "aarch64-unknown-linux-gnu": {
+      "upstream": "codexbar"
+    },
+    "x86_64-unknown-linux-gnu": {
+      "upstream": "codexbar"
+    },
+    "x86_64-pc-windows-msvc": {
+      "upstream": "win-codexbar"
+    }
+  }
+}

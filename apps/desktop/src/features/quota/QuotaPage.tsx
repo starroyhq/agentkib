@@ -13,7 +13,6 @@ import { desktopApi } from "@/core/desktop";
 
 import { normalizePlatform } from "@/core/platform";
 import { useAppStore } from "@/stores/app-store";
-import { cn } from "cn";
 import { withAsyncCleanup } from "@/lib/utils";
 import {
   compareQuotaProviders,
@@ -27,6 +26,8 @@ import { QuotaDiagnostics } from "./QuotaDiagnostics";
 import { ProviderTabs, QuotaProviderDetail } from "./QuotaProviderPanels";
 import { QuotaDisplaySettings } from "./QuotaDisplaySettings";
 import { formatDateTime } from "./quota-format";
+import { LocalCostPanel } from "./LocalCostPanel";
+import { useLocalCosts } from "./local-cost-query";
 import {
   DEFAULT_QUOTA_PREFERENCES,
   useQuotaPreferences,
@@ -115,7 +116,17 @@ export function QuotaPage({
 
   const providers = useMemo(() => {
     const needle = query.trim().toLocaleLowerCase();
-    return [...(snapshot?.providers ?? [])]
+    const cached = snapshot?.providers ?? [];
+    const configured: QuotaProvider[] = Object.keys(status?.providers ?? {})
+      .filter((id) => !cached.some((provider) => provider.id === id))
+      .map((id) => ({
+        id,
+        name: id === "codex" ? "Codex" : id === "claude" ? "Claude" : id,
+        enabled: true,
+        windows: [],
+        accounts: [],
+      }));
+    return [...cached, ...configured]
       .filter(isQuotaProviderSupported)
       .filter((provider) => {
         const haystack = [
@@ -136,7 +147,7 @@ export function QuotaPage({
         return (!needle || haystack.includes(needle)) && matchesFilter(provider, filter);
       })
       .sort(compareQuotaProviders);
-  }, [snapshot, query, filter]);
+  }, [snapshot, status, query, filter]);
 
   useEffect(() => {
     if (!providers.length) return;
@@ -154,8 +165,12 @@ export function QuotaPage({
   }, [initialWindow, selectedId]);
 
   const selected = providers.find((provider) => provider.id === selectedId);
+  const costProvider =
+    selected?.id === "codex" || selected?.id === "claude" ? selected.id : undefined;
+  const costs = useLocalCosts(costProvider);
   const busy = requestPending || refreshActive;
   const refresh = async () => {
+    if (costProvider) void costs.refresh().catch(() => undefined);
     setRequestPending(true);
     setManualError("");
     await withAsyncCleanup(
@@ -293,7 +308,7 @@ export function QuotaPage({
         <QuotaAutoRefreshPrompt onEnableAutoRefresh={enableAutoRefresh} onNotNow={markPromptSeen} />
       )}
 
-      {!snapshot && (
+      {!snapshot && !providers.length && (
         <div className="grid min-h-[240px] place-content-center justify-items-center gap-3 text-muted-foreground">
           <Gauge size={26} />
           <strong className="text-foreground">{emptyLabel}</strong>
@@ -311,13 +326,15 @@ export function QuotaPage({
           </Button>
         </div>
       )}
-      {snapshot && (
+      {(snapshot || providers.length > 0) && (
         <>
           <div className="grid gap-4 lg:grid-cols-[minmax(250px,0.36fr)_minmax(0,1fr)]">
             <section className="grid content-start gap-3 rounded-2xl border border-border bg-card p-4 shadow-sm max-[900px]:p-3">
               <div className="flex items-center justify-between gap-3">
                 <h2 className="text-sm font-semibold tracking-tight">{tr("quota.providers")}</h2>
-                <Badge variant="outline">{tr(`quota.freshness.${snapshot.freshness}`)}</Badge>
+                <Badge variant="outline">
+                  {tr(`quota.freshness.${snapshot?.freshness ?? "unavailable"}`)}
+                </Badge>
               </div>
               <ProviderTabs
                 providers={providers}
@@ -326,11 +343,26 @@ export function QuotaPage({
               />
             </section>
             {selected && (
-              <QuotaProviderDetail
-                provider={selected}
-                snapshot={snapshot}
-                targetWindow={initialWindow}
-              />
+              <div className="grid min-w-0 content-start gap-4">
+                {snapshot ? (
+                  <QuotaProviderDetail
+                    provider={selected}
+                    snapshot={snapshot}
+                    targetWindow={initialWindow}
+                  />
+                ) : (
+                  <section className="rounded-2xl border border-border bg-card p-5 text-sm text-muted-foreground">
+                    <h2 className="font-semibold text-foreground">{selected.name}</h2>
+                    <p className="mt-2">{emptyLabel}</p>
+                    {emptyDetail && (
+                      <p role="alert" className="mt-2 whitespace-pre-wrap text-xs">
+                        {emptyDetail}
+                      </p>
+                    )}
+                  </section>
+                )}
+                {costProvider && <LocalCostPanel costs={costs} />}
+              </div>
             )}
           </div>
           {!providers.length && (

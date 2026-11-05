@@ -24,12 +24,13 @@ const queryDefaults = {
 };
 
 export function useQuotaSnapshot() {
-  return useQuery({
+  const query = useQuery({
     ...queryDefaults,
     queryKey: quotaKeys.snapshot(),
-    queryFn: () => api.quotaSnapshot(),
+    queryFn: async () => (await api.quotaSnapshot()) ?? null,
     staleTime: 30_000,
   });
+  return { ...query, data: query.data ?? undefined };
 }
 
 export function useQuotaStatus() {
@@ -58,7 +59,7 @@ export function useQuotaRefreshJob() {
     queryKey: quotaKeys.refreshJob(),
     queryFn: async () => {
       const jobs = await api.refreshStatus();
-      return jobs.find((job) => job.kind === "quota");
+      return jobs.find((job) => job.kind === "quota") ?? null;
     },
     staleTime: 0,
     refetchInterval: (current) => {

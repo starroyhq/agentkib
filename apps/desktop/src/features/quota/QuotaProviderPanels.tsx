@@ -1,5 +1,4 @@
 import { useI18n } from "@/core/useI18n";
-import { Badge } from "@/components/ui/badge";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
 import { Gauge } from "lucide-react";
@@ -13,8 +12,8 @@ import {
   quotaWindowKey,
 } from "@/features/quota/quota";
 import type { QuotaProvider, QuotaSnapshot, QuotaWindowSelector } from "@/core/types";
-import { ProviderIcon, QuotaWindowRow } from "./QuotaDisplay";
-import { formatDateTime, formatNumber } from "./quota-format";
+import { ProviderIcon, QuotaWindowRow, useQuotaClock } from "./QuotaDisplay";
+import { formatNumber } from "./quota-format";
 
 export function ProviderTabs({
   providers,
@@ -122,8 +121,18 @@ export function QuotaProviderDetail({
   }));
   const targetKey = targetWindow ? quotaWindowKey(targetWindow) : undefined;
   const unavailable = providerIsUnavailable(provider);
+  const measuredAt = provider.updated_at ?? provider.fetched_at ?? snapshot.generated_at;
+  const freshUntil = Date.parse(measuredAt) + snapshot.stale_after_seconds * 1000;
+  const now = useQuotaClock(NaN, freshUntil);
+  const freshness =
+    provider.updated_at || provider.fetched_at
+      ? provider.refresh_state === "failed" || freshUntil <= now
+        ? "stale"
+        : "fresh"
+      : snapshot.freshness;
+  const providerSnapshot: QuotaSnapshot = { ...snapshot, generated_at: measuredAt, freshness };
   return (
-    <section className="h-full w-full max-w-none overflow-hidden rounded-2xl border border-border bg-card px-5 pb-5 shadow-sm max-[900px]:px-4">
+    <section className="w-full max-w-none overflow-hidden rounded-2xl border border-border bg-card px-5 pb-5 shadow-sm max-[900px]:px-4">
       <header className="-mx-5 grid min-h-[82px] grid-cols-[auto_minmax(0,1fr)_auto_auto] items-center gap-3 border-b border-border px-5 max-[900px]:mx-[-16px] max-[900px]:grid-cols-[auto_minmax(0,1fr)_auto] max-[900px]:px-4">
         <ProviderIcon provider={provider} />
         <div className="min-w-0">
@@ -137,13 +146,13 @@ export function QuotaProviderDetail({
         <div className="grid justify-items-end gap-0.5 text-xs text-muted-foreground">
           <span
             className={cn(
-              snapshot.freshness === "stale" && "text-amber-600",
-              snapshot.freshness === "unavailable" && "text-destructive-text",
+              freshness === "stale" && "text-amber-600",
+              freshness === "unavailable" && "text-destructive-text",
             )}
           >
-            {tr(`quota.freshness.${snapshot.freshness}`)}
+            {tr(`quota.freshness.${freshness}`)}
           </span>
-          <time>{tr("quota.updated", { time: formatRelativeTime(snapshot.fetched_at) })}</time>
+          <time>{tr("quota.updated", { time: formatRelativeTime(measuredAt) })}</time>
         </div>
         {provider.credits && provider.credits.remaining > 0 && (
           <span className="inline-flex h-[30px] items-center rounded-md border border-border px-2.5 text-xs text-muted-foreground max-[900px]:hidden">
@@ -153,12 +162,12 @@ export function QuotaProviderDetail({
       </header>
 
       {direct.length > 0 && (
-        <div className="grid gap-3 px-1 pt-5">
+        <div className="grid gap-3 px-1 pt-5 sm:grid-cols-2">
           {direct.map((item) => (
             <QuotaWindowRow
               key={item.key}
               item={item}
-              snapshot={snapshot}
+              snapshot={providerSnapshot}
               target={item.key === targetKey}
             />
           ))}
@@ -188,12 +197,16 @@ export function QuotaProviderDetail({
                   </time>
                 )}
               </header>
-              <div className="grid gap-3">
+              <div className="grid gap-3 sm:grid-cols-2">
                 {accountWindows.map((item) => (
                   <QuotaWindowRow
                     key={item.key}
                     item={item}
-                    snapshot={snapshot}
+                    snapshot={
+                      account.updated_at
+                        ? { ...providerSnapshot, generated_at: account.updated_at }
+                        : providerSnapshot
+                    }
                     target={item.key === targetKey}
                   />
                 ))}
@@ -214,7 +227,7 @@ export function QuotaProviderDetail({
           ),
       )}
 
-      {unavailable && (
+      {unavailable && windows.length === 0 && (
         <div className="grid min-h-[210px] place-content-center justify-items-center gap-2 text-muted-foreground">
           <Gauge size={24} />
           <strong className="text-sm text-foreground">{tr("quota.providerUnavailable")}</strong>

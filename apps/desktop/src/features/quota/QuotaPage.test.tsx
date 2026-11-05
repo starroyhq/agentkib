@@ -1,13 +1,14 @@
 // @vitest-environment jsdom
 
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { cleanup, fireEvent, render, screen } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { api } from "@/core/api";
 import { initializeI18n, tr } from "@/core/i18n";
 import type { QuotaSnapshot, RuntimeInfo } from "@/core/types";
 import { useAppStore } from "@/stores/app-store";
 import { QuotaPage } from "./QuotaPage";
+import { localCostFixture } from "./__fixtures__/local-cost";
 
 vi.mock("@/core/api", () => ({
   api: {
@@ -16,6 +17,10 @@ vi.mock("@/core/api", () => ({
     quotaPopoverPreferences: vi.fn(),
     refreshStatus: vi.fn(),
     refreshQuota: vi.fn(),
+    localCostSnapshot: vi.fn(),
+    localCostStatus: vi.fn(),
+    refreshLocalCost: vi.fn(),
+    observeLocalCosts: vi.fn(),
   },
 }));
 
@@ -68,6 +73,13 @@ describe("quota page diagnostics", () => {
       hidden_windows: [],
     });
     vi.mocked(api.refreshStatus).mockResolvedValue([]);
+    vi.mocked(api.localCostSnapshot).mockResolvedValue(undefined);
+    vi.mocked(api.localCostStatus).mockResolvedValue({
+      provider: "codex",
+      scope_key: "scope-codex",
+      state: "idle",
+    });
+    vi.mocked(api.observeLocalCosts).mockResolvedValue(undefined);
   });
   afterEach(() => {
     cleanup();
@@ -90,4 +102,57 @@ describe("quota page diagnostics", () => {
     expect(api.refreshQuota).not.toHaveBeenCalled();
     client.clear();
   });
+
+  it("refreshes quota without waiting for a slow independent cost scan", async () => {
+    vi.mocked(api.localCostSnapshot).mockResolvedValue(localCostFixture());
+    vi.mocked(api.refreshLocalCost).mockReturnValue(new Promise(() => {}));
+    vi.mocked(api.refreshQuota).mockResolvedValue({
+      kind: "quota",
+      disposition: "queued",
+      request_id: "quota-now",
+      status: { kind: "quota", state: "succeeded", request_id: "quota-now" },
+    });
+    const client = new QueryClient();
+    render(
+      <QueryClientProvider client={client}>
+        <QuotaPage popoverSupported={false} />
+      </QueryClientProvider>,
+    );
+    expect(await screen.findByRole("heading", { name: tr("quota.cost.title") })).toBeTruthy();
+    const refresh = screen.getByRole("button", { name: tr("quota.refresh") });
+    fireEvent.click(refresh);
+    await waitFor(() => expect(api.refreshQuota).toHaveBeenCalledTimes(1));
+    expect(api.refreshLocalCost).toHaveBeenCalledWith("codex", true);
+    await waitFor(() => expect(refresh.getAttribute("aria-busy")).toBe("false"));
+    expect(screen.getAllByText("13%").length).toBeGreaterThan(0);
+    expect(screen.getAllByText(/USD\s*1\.25/).length).toBeGreaterThan(0);
+    client.clear();
+  });
+
+  it.each(["idle", "failed"] as const)(
+    "keeps local cost available before any quota collection has succeeded (%s)",
+    async (state) => {
+      vi.mocked(api.quotaSnapshot).mockResolvedValue(undefined);
+      vi.mocked(api.quotaCollectorStatus).mockResolvedValue({
+        backend: "codex-bar-cli",
+        platform_supported: true,
+        sidecar_available: true,
+        config_source: "agentkib-managed",
+        running: false,
+        providers: { codex: { state } },
+      });
+      vi.mocked(api.localCostSnapshot).mockResolvedValue(localCostFixture());
+      const client = new QueryClient();
+      render(
+        <QueryClientProvider client={client}>
+          <QuotaPage popoverSupported={false} />
+        </QueryClientProvider>,
+      );
+      expect(await screen.findByRole("heading", { name: tr("quota.cost.title") })).toBeTruthy();
+      expect(screen.getByRole("tab", { name: /Codex/ })).toBeTruthy();
+      expect(screen.getAllByText(/USD\s*1\.25/).length).toBeGreaterThan(0);
+      expect(screen.queryByRole("progressbar")).toBeNull();
+      client.clear();
+    },
+  );
 });

@@ -1,0 +1,126 @@
+name: Patched quota collector acceptance
+
+on:
+  workflow_call:
+    inputs:
+      source_ref:
+        required: true
+        type: string
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - "apps/desktop/scripts/quota-collector/**"
+      - "apps/desktop/scripts/prepare-quota-sidecar.mjs"
+      - "apps/desktop/scripts/stage-electron-quota.mjs"
+      - ".github/workflows/quota-collector.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: xcode-27
+            target: aarch64-apple-darwin
+            source_tests: true
+          - os: xcode-27
+            target: x86_64-apple-darwin
+            source_tests: false
+          - os: ubuntu-22.04
+            target: x86_64-unknown-linux-gnu
+            source_tests: false
+          - os: ubuntu-24.04-arm
+            target: aarch64-unknown-linux-gnu
+            source_tests: false
+          - os: windows-2025
+            target: x86_64-pc-windows-msvc
+            source_tests: true
+    runs-on: ${{ matrix.os }}
+    env:
+      AGENTKIB_QUOTA_TARGET: ${{ matrix.target }}
+      SWIFT_VERSION: 6.3.3
+      SWIFTLY_VERSION: 1.1.3
+      SWIFTLY_SIGNING_FINGERPRINT: E813C892820A6FA13755B268F167DF1ACF9CE069
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ inputs.source_ref || github.sha }}
+          persist-credentials: false
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+      - name: Select pinned Xcode 27.1 toolchain
+        if: runner.os == 'macOS'
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo xcode-select -s /Applications/Xcode_27.1.app/Contents/Developer
+          echo "DEVELOPER_DIR=/Applications/Xcode_27.1.app/Contents/Developer" >> "$GITHUB_ENV"
+          [[ "$(xcodebuild -version)" == $'Xcode 27.1\nBuild version 27A9275' ]]
+          swift --version
+          if ! arch -x86_64 /usr/bin/true; then
+            sudo softwareupdate --install-rosetta --agree-to-license
+          fi
+      - name: Install pinned Rust MSVC toolchain
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          rustup toolchain install 1.92.0 --profile minimal
+          if ($LASTEXITCODE -ne 0) { throw 'Rust toolchain installation failed' }
+          'RUSTUP_TOOLCHAIN=1.92.0' >> $env:GITHUB_ENV
+      - name: Install Linux build prerequisites
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ca-certificates gpg clang llvm file unzip libcurl4-openssl-dev libxml2-dev
+      - name: Install verified Swift 6.3.3 using pinned Swiftly
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          set -euo pipefail
+          swiftly_arch=$(uname -m)
+          archive="$RUNNER_TEMP/swiftly.tar.gz"
+          signature="$archive.sig"
+          keys="$RUNNER_TEMP/swift-signing-keys.asc"
+          keyring=$(mktemp -d)
+          chmod 700 "$keyring"
+          curl -fsSL "https://download.swift.org/swiftly/linux/swiftly-${SWIFTLY_VERSION}-${swiftly_arch}.tar.gz" -o "$archive"
+          curl -fsSL "https://download.swift.org/swiftly/linux/swiftly-${SWIFTLY_VERSION}-${swiftly_arch}.tar.gz.sig" -o "$signature"
+          curl -fsSL --compressed https://www.swift.org/keys/all-keys.asc -o "$keys"
+          GNUPGHOME="$keyring" gpg --batch --import "$keys"
+          status=$(GNUPGHOME="$keyring" gpg --batch --status-fd=1 --verify "$signature" "$archive" 2>&1)
+          grep -Fq "[GNUPG:] VALIDSIG ${SWIFTLY_SIGNING_FINGERPRINT} " <<< "$status"
+          tar -xzf "$archive" -C "$RUNNER_TEMP"
+          export SWIFTLY_HOME_DIR="$HOME/.local/share/swiftly"
+          export SWIFTLY_BIN_DIR="$HOME/.local/bin"
+          mkdir -p "$SWIFTLY_BIN_DIR"
+          "$RUNNER_TEMP/swiftly" init --assume-yes --skip-install
+          . "$SWIFTLY_HOME_DIR/env.sh"
+          post_install=$(mktemp)
+          swiftly install "$SWIFT_VERSION" --use --assume-yes --verify --post-install-file "$post_install"
+          if [[ -s "$post_install" ]]; then sudo bash "$post_install"; fi
+          echo "$SWIFTLY_BIN_DIR" >> "$GITHUB_PATH"
+          echo "SWIFTLY_HOME_DIR=$SWIFTLY_HOME_DIR" >> "$GITHUB_ENV"
+          echo "SWIFTLY_BIN_DIR=$SWIFTLY_BIN_DIR" >> "$GITHUB_ENV"
+      - name: Verify source and asset contracts
+        run: node --test apps/desktop/scripts/quota-collector/build.node-test.mjs
+      - name: Build pinned patched collector
+        run: node apps/desktop/scripts/prepare-quota-sidecar.mjs --rebuild
+      - name: Validate isolated real cost commands
+        if: matrix.source_tests == false
+        run: node apps/desktop/scripts/quota-collector/verify.mjs
+      - name: Test patched producers and dashboard projection
+        if: matrix.source_tests
+        run: node apps/desktop/scripts/quota-collector/verify.mjs --source-tests
+      - name: Stage verified collector
+        run: node apps/desktop/scripts/stage-electron-quota.mjs
+      - uses: actions/upload-artifact@v7
+        with:
+          name: quota-collector-${{ matrix.target }}
+          path: apps/desktop/resources/quota/
+          if-no-files-found: error
+          retention-days: 7

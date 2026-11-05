@@ -52,6 +52,45 @@ const calls = (request: ReturnType<typeof vi.fn>, method: string) =>
   request.mock.calls.filter(([value]) => value === method).length;
 
 describe("energy-aware refresh scheduling", () => {
+  it("refreshes quota while a workspace refresh occupies the global lane", async () => {
+    const { coordinator, request, state } = setup();
+    await vi.advanceTimersByTimeAsync(0);
+    state.enabled = false;
+    let finish!: () => void;
+    request.mockImplementationOnce(
+      () =>
+        new Promise<void>((resolve) => {
+          finish = resolve;
+        }),
+    );
+    const discovery = coordinator.request("discovery", true);
+    await vi.advanceTimersByTimeAsync(0);
+    expect(calls(request, M.refreshDiscovery)).toBe(1);
+    await coordinator.request("quota", true);
+    expect(calls(request, M.refreshQuota)).toBe(1);
+    expect(coordinator.statuses().find((job) => job.kind === "discovery")?.state).toBe("running");
+    finish();
+    await discovery;
+  });
+
+  it("forwards provider-scoped quota refresh without waiting on another provider", async () => {
+    const { coordinator, request } = setup();
+    await vi.advanceTimersByTimeAsync(0);
+    let finish!: () => void;
+    request.mockImplementationOnce(
+      () =>
+        new Promise<void>((resolve) => {
+          finish = resolve;
+        }),
+    );
+    const all = coordinator.request("quota", true);
+    await vi.advanceTimersByTimeAsync(0);
+    await coordinator.requestQuota("codex");
+    expect(request).toHaveBeenCalledWith(M.refreshQuota, { provider: "codex" });
+    finish();
+    await all;
+  });
+
   it("preserves genuine backoff when a forced retry loses the runtime", async () => {
     const { coordinator, request, state } = setup();
     await vi.advanceTimersByTimeAsync(0);

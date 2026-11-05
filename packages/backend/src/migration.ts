@@ -27,7 +27,13 @@ export const TYPESCRIPT_READ_METHODS = new Set<string>([
   RUNTIME_METHODS.resolveStoragePath,
 ]);
 
-export const TYPESCRIPT_QUOTA_METHODS = new Set<string>([RUNTIME_METHODS.refreshQuota]);
+export const TYPESCRIPT_QUOTA_METHODS = new Set<string>([
+  RUNTIME_METHODS.refreshQuota,
+  RUNTIME_METHODS.localCostSnapshot,
+  RUNTIME_METHODS.localCostStatus,
+  RUNTIME_METHODS.refreshLocalCost,
+  RUNTIME_METHODS.observeLocalCosts,
+]);
 
 export const TYPESCRIPT_STORAGE_METHODS = new Set<string>([
   RUNTIME_METHODS.refreshStorage,

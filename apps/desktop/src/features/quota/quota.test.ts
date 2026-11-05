@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   flattenQuotaWindows,
+  lowestRemaining,
   isQuotaProviderSupported,
   providerHasPartialData,
   providerIsUnavailable,
@@ -37,6 +38,27 @@ describe("quota display model", () => {
 
   it("keeps unknown providers available for future dashboard-v1 integrations", () => {
     expect(isQuotaProviderSupported({ id: "custom-coding-plan" })).toBe(true);
+  });
+
+  it("excludes unknown placeholder quota while keeping a genuine zero", () => {
+    const provider = fixture();
+    provider.windows = [
+      {
+        kind: "session",
+        label: "Session",
+        used_percent: 0,
+        remaining_percent: 100,
+        usage_known: false,
+      },
+    ];
+    provider.accounts = [];
+    expect(lowestRemaining(provider)).toBeUndefined();
+    expect(providerIsUnavailable(provider)).toBe(true);
+    provider.windows = [
+      { ...provider.windows[0], used_percent: 100, remaining_percent: 0, usage_known: true },
+    ];
+    expect(lowestRemaining(provider)).toBe(0);
+    expect(providerIsUnavailable(provider)).toBe(false);
   });
 });
 

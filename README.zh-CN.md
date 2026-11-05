@@ -82,7 +82,7 @@ Claude Remote 现有实现包括实际发现的模型/effort、会话工具权�
 - 普通发现和诊断不会调用模型，也不会上传项目资产。
 - 凭据、Cookie、Token、私钥、环境文件和消息数据库不会被收录为资产或写入日志。
 - Claude Code 托管执行只启动你本机的 `claude` CLI，沿用 CLI 自己的登录状态；AgentKib 不为此读取、复制或下发 Claude 登录凭据。
-- 额度采集是另一条路径，由随应用打包的第三方 sidecar（CodexBar）完成，只在手动刷新或你开启“自动获取额度”（默认关闭）后运行。AgentKib 自身不读取各 Provider 的凭据，但 sidecar 可能读取：对 Claude，它可能读取 claude.ai 浏览器 Cookie、运行 `claude` CLI、在 CodexBar 配置里选择该来源时使用 Claude Code 的 OAuth 凭据，并扫描本地 Claude Code 日志。详见[额度采集与凭据](docs/CLAUDE-WEB.md#额度采集与凭据)。
+- 额度采集是另一条路径，由随应用打包的第三方 sidecar（CodexBar）完成，只在手动刷新或你开启“自动获取额度”（默认关闭）后运行。AgentKib 自身不读取各 Provider 的凭据，但 sidecar 可能读取：对 Claude，它可能读取 claude.ai 浏览器 Cookie、运行 `claude` CLI、使用配置所选来源的 OAuth 凭据。额度页另行按需扫描本机原生 Codex/Claude 日志，展示 API 价格估算；费用不是账号实际账单，离开页面后的后台扫描遵守自动获取开关。详见[额度采集与凭据](docs/CLAUDE-WEB.md#额度采集与凭据)。
 - 生成的写入会检查路径边界和原始哈希、创建备份，并在应用前要求审查。
 - Agent Home 变更使用单独的高风险确认流程；远程集成保留各自的权限边界。
 

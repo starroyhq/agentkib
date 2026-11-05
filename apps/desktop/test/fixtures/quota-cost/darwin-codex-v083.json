@@ -1,0 +1,126 @@
+{
+  "updatedAt": "2026-11-05T07:26:59Z",
+  "source": "local",
+  "coverage": {
+    "priced": 1,
+    "estimated": 0,
+    "unpriced": 0,
+    "unmetered": 0
+  },
+  "agentkibNativeOnly": true,
+  "projects": [
+    {
+      "name": "no-project",
+      "daily": [
+        {
+          "outputTokens": 10,
+          "cacheReadTokens": 20,
+          "totalTokens": 110,
+          "inputTokens": 100,
+          "totalCost": 0.000355,
+          "modelsUsed": [
+            "gpt-5.4"
+          ],
+          "modelBreakdowns": [
+            {
+              "totalTokens": 110,
+              "modelName": "gpt-5.4",
+              "cost": 0.000355
+            }
+          ],
+          "date": "2026-11-05"
+        }
+      ],
+      "totalTokens": 110,
+      "path": "/synthetic/no-project",
+      "totalCost": 0.000355,
+      "modelBreakdowns": [
+        {
+          "totalTokens": 110,
+          "modelName": "gpt-5.4",
+          "cost": 0.000355
+        }
+      ],
+      "sources": [
+        {
+          "name": "no-project",
+          "totalTokens": 110,
+          "path": "/synthetic/no-project",
+          "modelBreakdowns": [
+            {
+              "cost": 0.000355,
+              "modelName": "gpt-5.4",
+              "totalTokens": 110
+            }
+          ],
+          "daily": [
+            {
+              "outputTokens": 10,
+              "cacheReadTokens": 20,
+              "totalTokens": 110,
+              "inputTokens": 100,
+              "totalCost": 0.000355,
+              "modelsUsed": [
+                "gpt-5.4"
+              ],
+              "modelBreakdowns": [
+                {
+                  "cost": 0.000355,
+                  "modelName": "gpt-5.4",
+                  "totalTokens": 110
+                }
+              ],
+              "date": "2026-11-05"
+            }
+          ],
+          "totalCost": 0.000355
+        }
+      ]
+    }
+  ],
+  "currencyCode": "USD",
+  "provider": "codex",
+  "totals": {
+    "outputTokens": 10,
+    "cacheReadTokens": 20,
+    "totalTokens": 110,
+    "inputTokens": 100,
+    "totalCost": 0.000355,
+    "provenance": "listPriceEstimate",
+    "coverage": {
+      "unpriced": 0,
+      "priced": 1,
+      "estimated": 0,
+      "unmetered": 0
+    }
+  },
+  "provenance": "listPriceEstimate",
+  "last30DaysCostUSD": 0.000355,
+  "sessionTokens": 110,
+  "reportingPeriod": "rolling:30",
+  "sessionCostUSD": 0.000355,
+  "historyCoverageIsEstablished": true,
+  "daily": [
+    {
+      "outputTokens": 10,
+      "cacheReadTokens": 20,
+      "totalTokens": 110,
+      "inputTokens": 100,
+      "totalCost": 0.000355,
+      "modelsUsed": [
+        "gpt-5.4"
+      ],
+      "modelBreakdowns": [
+        {
+          "modelName": "gpt-5.4",
+          "cost": 0.000355,
+          "totalTokens": 110
+        }
+      ],
+      "date": "2026-11-05"
+    }
+  ],
+  "historyLabel": "Last 30 days",
+  "last30DaysTokens": 110,
+  "historyDays": 30
+}

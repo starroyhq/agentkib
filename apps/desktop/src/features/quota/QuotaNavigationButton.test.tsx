@@ -71,6 +71,27 @@ afterEach(() => {
 });
 
 describe("quota navigation's independent agent remaining values", () => {
+  it("ignores unknown placeholders and null percentages when choosing and drawing a minimum", () => {
+    render(
+      button(
+        snapshot([
+          provider("codex", [
+            { ...quotaWindow(100), usage_known: false },
+            { ...quotaWindow(0), used_percent: null, remaining_percent: null },
+            quotaWindow(42),
+          ]),
+          provider("claude", [{ ...quotaWindow(100), usage_known: false }]),
+        ]),
+      ),
+    );
+    const navigation = screen.getByRole("button", { name: "Quota" });
+    expect(navigation).toHaveAccessibleDescription(
+      /Codex: 42% remaining.*Claude Code: Unavailable/,
+    );
+    expect(navigation).not.toHaveAccessibleDescription(/100%/);
+    expect(navigation.querySelectorAll("g circle")).toHaveLength(1);
+    expect(navigation.querySelector("g circle")).toHaveAttribute("stroke-dasharray", "21 79");
+  });
   it("selects each agent's minimum across provider and all account windows", async () => {
     render(
       button(

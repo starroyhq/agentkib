@@ -37,8 +37,10 @@ export function QuotaWindowRow({
     : NaN;
   const now = useQuotaClock(resetAt, staleAt);
   const stale = snapshot && (snapshot.freshness !== "fresh" || !(staleAt > now));
-  const remaining = item.window.remaining_percent;
-  const severity = quotaSeverity(remaining);
+  const known =
+    item.window.usage_known !== false && typeof item.window.remaining_percent === "number";
+  const remaining = item.window.remaining_percent ?? 0;
+  const severity = known ? quotaSeverity(remaining) : undefined;
   const content = (
     <>
       <div className="flex items-baseline justify-between gap-4">
@@ -53,16 +55,17 @@ export function QuotaWindowRow({
             severity === "danger" && "text-destructive-text",
           )}
         >
-          {Math.round(remaining)}%
+          {known ? `${Math.round(remaining)}%` : "—"}
         </span>
       </div>
       <div
         className="h-[7px] overflow-hidden rounded-full bg-[var(--surface-hover)]"
-        role="progressbar"
-        aria-valuemin={0}
-        aria-valuemax={100}
-        aria-valuenow={Math.round(remaining)}
-        aria-valuetext={tr("quota.remaining", { value: Math.round(remaining) })}
+        role={known ? "progressbar" : undefined}
+        aria-hidden={!known || undefined}
+        aria-valuemin={known ? 0 : undefined}
+        aria-valuemax={known ? 100 : undefined}
+        aria-valuenow={known ? Math.round(remaining) : undefined}
+        aria-valuetext={known ? tr("quota.remaining", { value: Math.round(remaining) }) : undefined}
       >
         <i
           className={cn(
@@ -70,11 +73,15 @@ export function QuotaWindowRow({
             severity === "warning" && "bg-[var(--amber)]",
             severity === "danger" && "bg-[var(--red)]",
           )}
-          style={{ width: `${remaining}%` }}
+          style={{ width: known ? `${remaining}%` : 0 }}
         />
       </div>
       <div className="flex items-baseline justify-between gap-4 text-xs text-muted-foreground">
-        <span>{tr("quota.remaining", { value: Math.round(remaining) })}</span>
+        <span>
+          {known
+            ? tr("quota.remaining", { value: Math.round(remaining) })
+            : tr("quota.unavailable")}
+        </span>
         <span>
           {stale
             ? tr("quota.staleReset")

@@ -1,0 +1,59 @@
+{
+  "historyLabel": "Last 30 days",
+  "sessionCostUSD": 0.00047475,
+  "historyDays": 30,
+  "daily": [
+    {
+      "cacheCreationTokens": 5,
+      "totalCost": 0.00047475,
+      "modelsUsed": [
+        "claude-sonnet-4-5"
+      ],
+      "totalTokens": 135,
+      "modelBreakdowns": [
+        {
+          "totalTokens": 135,
+          "modelName": "claude-sonnet-4-5",
+          "cost": 0.00047475
+        }
+      ],
+      "date": "2026-11-05",
+      "cacheReadTokens": 20,
+      "outputTokens": 10,
+      "inputTokens": 100
+    }
+  ],
+  "projects": [],
+  "totals": {
+    "cacheCreationTokens": 5,
+    "totalCost": 0.00047475,
+    "provenance": "listPriceEstimate",
+    "coverage": {
+      "estimated": 0,
+      "priced": 1,
+      "unpriced": 0,
+      "unmetered": 0
+    },
+    "totalTokens": 135,
+    "cacheReadTokens": 20,
+    "outputTokens": 10,
+    "inputTokens": 100
+  },
+  "reportingPeriod": "rolling:30",
+  "currencyCode": "USD",
+  "sessionTokens": 135,
+  "provider": "claude",
+  "last30DaysTokens": 135,
+  "updatedAt": "2026-11-05T07:27:01Z",
+  "historyCoverageIsEstablished": true,
+  "last30DaysCostUSD": 0.00047475,
+  "provenance": "listPriceEstimate",
+  "agentkibNativeOnly": true,
+  "coverage": {
+    "estimated": 0,
+    "priced": 1,
+    "unpriced": 0,
+    "unmetered": 0
+  },
+  "source": "local"
+}

@@ -260,7 +260,7 @@ export function AppSidebar(props: {
                     src={logo}
                     alt=""
                     aria-hidden="true"
-                    className="size-6 object-contain transition-opacity duration-150 group-hover/brand:opacity-0 group-focus-visible/brand:opacity-0 motion-reduce:transition-none"
+                    className="size-7 object-contain transition-opacity duration-150 group-hover/brand:opacity-0 group-focus-visible/brand:opacity-0 motion-reduce:transition-none"
                   />
                   <span
                     aria-hidden="true"
@@ -338,7 +338,7 @@ export function AppSidebar(props: {
           {props.entries.some(({ id }) => id === "home") ? (
             props.entries.filter(({ id }) => id === "home").map(renderActivityEntry)
           ) : (
-            <div className="activity-bar-brand grid size-[38px] place-items-center [&_img]:size-6 [&_img]:object-contain">
+            <div className="activity-bar-brand grid size-[38px] place-items-center [&_img]:size-7 [&_img]:object-contain">
               <img src={logo} alt="" aria-hidden="true" />
               <span className="sr-only">AgentKib</span>
             </div>

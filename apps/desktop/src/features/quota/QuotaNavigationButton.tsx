@@ -106,7 +106,7 @@ export function QuotaNavigationButton({
               <circle
                 cx="12"
                 cy="12"
-                r="9"
+                r="10.5"
                 stroke="var(--sidebar-foreground)"
                 opacity="0.22"
                 strokeDasharray={
@@ -121,7 +121,7 @@ export function QuotaNavigationButton({
                       key={segment.id}
                       cx="12"
                       cy="12"
-                      r="9"
+                      r="10.5"
                       pathLength="100"
                       className={segment.stroke}
                       opacity={stale ? 0.55 : 1}

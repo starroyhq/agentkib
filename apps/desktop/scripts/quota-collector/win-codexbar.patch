@@ -237,6 +237,162 @@
          )
      }
  
+@@ -1532,6 +1543,8 @@
+     let today = cost_bucket_zone().date(Utc::now());
+     let mut daily_tokens: HashMap<String, u64> = HashMap::new();
+     let mut covered_days: HashSet<String> = HashSet::new();
++    let mut strict_codex_coverage = None;
++    let mut native_observed_days = agentkib_native_only().then(HashSet::<String>::new);
+ 
+     // Initialize all days with 0
+     for days_ago in 0..days {
+@@ -1546,6 +1559,12 @@
+             // from packed days through the same summary path the cost chart
+             // uses.
+             let (_summary, _stats, cache) = scanner.scan_codex_detailed_with_cache(None);
++            if agentkib_native_only() {
++                strict_codex_coverage = Some(agentkib_codex_window_covered(&cache, &daily_tokens));
++                if let Some(observed) = native_observed_days.as_mut() {
++                    observed.extend(cache.days.keys().cloned());
++                }
++            }
+             for (day_key, models) in &cache.days {
+                 if !daily_tokens.contains_key(day_key) {
+                     continue;
+@@ -1576,12 +1595,13 @@
+                 let mut claude_scan = ClaudeFileScanResult::default();
+                 let traversal_read_failures = {
+                     let mut handle_file = |path: &Path| {
+-                        let file_result = scan_claude_file_for_daily_tokens(
++                        let file_result = scan_claude_file_for_daily_tokens_with_evidence(
+                             path,
+                             &cutoff,
+                             &mut seen,
+                             &mut pricing,
+                             &mut daily_tokens,
++                            native_observed_days.as_mut(),
+                         );
+                         claude_scan.absorb(file_result);
+                     };
+@@ -1612,7 +1632,9 @@
+     let mut result: Vec<(String, u64)> = daily_tokens.into_iter().collect();
+     result.sort_by(|a, b| a.0.cmp(&b.0));
+ 
+-    let incomplete = if matches!(provider, "claude" | "pi") {
++    let incomplete = if let Some(covered) = strict_codex_coverage {
++        !covered
++    } else if matches!(provider, "claude" | "pi") {
+         // A complete filesystem scan covers the requested window even when
+         // the roots contain no sessions; failed scans leave coverage empty.
+         covered_days.is_empty()
+@@ -1626,6 +1648,9 @@
+                 .any(|(date, _)| !covered_days.contains(date))
+     };
+ 
++    if let Some(observed) = native_observed_days {
++        agentkib_retain_observed_days(&mut result, &observed);
++    }
+     (result, incomplete)
+ }
+ 
+@@ -1663,6 +1688,19 @@
+     pricing: &mut ClaudeScanPricingResolver,
+     daily_tokens: &mut HashMap<String, u64>,
+ ) -> ClaudeFileScanResult {
++    scan_claude_file_for_daily_tokens_with_evidence(
++        path, cutoff, seen, pricing, daily_tokens, None,
++    )
++}
++
++fn scan_claude_file_for_daily_tokens_with_evidence(
++    path: &Path,
++    cutoff: &DateTime<Utc>,
++    seen: &mut HashSet<ClaudeUsageDedupKey>,
++    pricing: &mut ClaudeScanPricingResolver,
++    daily_tokens: &mut HashMap<String, u64>,
++    mut observed_days: Option<&mut HashSet<String>>,
++) -> ClaudeFileScanResult {
+     let mut aggregation_failures = 0u32;
+     // Token history ignores incomplete-request markers.
+     let mut incomplete = ClaudeIncompleteTracker::default();
+@@ -1678,6 +1716,8 @@
+                 || !add_claude_record_to_daily_tokens(daily_tokens, record)
+             {
+                 aggregation_failures = aggregation_failures.saturating_add(1);
++            } else if let (Some(observed), Some(timestamp)) = (observed_days.as_mut(), record.timestamp) {
++                observed.insert(cost_bucket_zone().date(timestamp).format("%Y-%m-%d").to_string());
+             }
+         },
+     );
+@@ -1698,3 +1738,68 @@
+         covered_days.clear();
+     }
+ }
++
++
++// Initialized chart slots are not usage evidence. Preserve recorded zero rows,
++// but never publish an absent log date as a measured zero.
++fn agentkib_retain_observed_days(daily: &mut Vec<(String, u64)>, observed: &HashSet<String>) {
++    daily.retain(|(day, _)| observed.contains(day));
++}
++
++// Coverage describes the scan, independently of which dates had activity.
++// Missing activity dates stay omitted from the separately filtered projection.
++fn agentkib_codex_window_covered(cache: &CostUsageCache, daily: &HashMap<String, u64>) -> bool {
++    if cache.codex_scan_incomplete || cache.previous_report.is_some() {
++        return false;
++    }
++    let (Some(since), Some(until)) = (&cache.scan_since_key, &cache.scan_until_key) else {
++        return false;
++    };
++    !daily.is_empty() && daily.keys().all(|day| day >= since && day <= until)
++}
++
++#[cfg(test)]
++mod agentkib_tests {
++    use super::*;
++
++    #[test]
++    fn native_daily_projection_keeps_evidenced_zero_and_omits_initialized_missing_dates() {
++        let mut daily = vec![
++            ("2026-11-03".to_string(), 0),
++            ("2026-11-04".to_string(), 0),
++            ("2026-11-05".to_string(), 110),
++        ];
++        let observed = HashSet::from(["2026-11-04".to_string(), "2026-11-05".to_string()]);
++        agentkib_retain_observed_days(&mut daily, &observed);
++        assert_eq!(daily, vec![("2026-11-04".to_string(), 0), ("2026-11-05".to_string(), 110)]);
++        agentkib_retain_observed_days(&mut daily, &HashSet::new());
++        assert!(daily.is_empty(), "a scan without native evidence cannot manufacture zero days");
++    }
++
++    #[test]
++    fn codex_daily_coverage_uses_completed_scan_bounds_instead_of_activity_count() {
++        // Sparse activity does not make the scan itself incomplete. The
++        // projection separately omits dates with no native record evidence.
++        let daily = HashMap::from([
++            ("2026-11-04".to_string(), 0),
++            ("2026-11-05".to_string(), 110),
++        ]);
++        let mut cache = CostUsageCache {
++            scan_since_key: Some("2026-11-04".to_string()),
++            scan_until_key: Some("2026-11-05".to_string()),
++            ..Default::default()
++        };
++        assert!(agentkib_codex_window_covered(&cache, &daily));
++        cache.scan_since_key = Some("2026-11-05".to_string());
++        assert!(!agentkib_codex_window_covered(&cache, &daily), "an unscanned date is not zero");
++        cache.scan_since_key = Some("2026-11-04".to_string());
++        cache.codex_scan_incomplete = true;
++        assert!(!agentkib_codex_window_covered(&cache, &daily), "pending or failed scans remain unknown");
++        cache.codex_scan_incomplete = false;
++        cache.previous_report = Some(JsonlScanner::cached_cost_report_from_days(&cache));
++        assert!(!agentkib_codex_window_covered(&cache, &daily), "a preserved report is not current scan coverage");
++        cache.previous_report = None;
++        cache.scan_until_key = None;
++        assert!(!agentkib_codex_window_covered(&cache, &daily), "missing coverage bounds remain unknown");
++    }
++}
 --- a/rust/src/cost_scanner/claude_roots.rs
 +++ b/rust/src/cost_scanner/claude_roots.rs
 @@ -38,11 +38,23 @@

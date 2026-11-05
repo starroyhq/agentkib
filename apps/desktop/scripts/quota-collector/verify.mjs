@@ -176,6 +176,12 @@ try {
     const daily = process.platform === "win32" ? row.spendContract?.daily : row.daily;
     assert(
       daily?.some((entry) => (entry.day ?? entry.date) === today && entry.totalTokens === tokens),
+      `Native ${provider} daily totals must retain the covered fixture day: ${JSON.stringify({ today, tokens, daily })}`,
+    );
+    assert.deepEqual(
+      daily.map((entry) => entry.day ?? entry.date),
+      [today],
+      "Days without native log records must remain absent, even after a complete scan",
     );
     const outputPath = process.env.AGENTKIB_QUOTA_FIXTURE_OUTPUT;
     if (outputPath) {

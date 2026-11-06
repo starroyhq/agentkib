@@ -1594,9 +1594,9 @@ export class WebAccessService {
   /**
    * A paired phone reports the account login it is in. When that login belongs to the account
    * this computer is signed in to, the pairing is bound to it: it ends with the login and is
-   * renewed while the login lasts. A bound pairing never moves to another login; asking for one
-   * ends it, and the phone pairs again with a new code. The account only ever ends pairings
-   * here, it cannot create one.
+   * renewed while the login lasts. A verified replacement login for the same account may
+   * renew an existing pairing; a different account cannot inherit its authority. The account
+   * cannot create pairing authority here.
    */
   private async bindAccount(hash: string, body: Record<string, unknown>) {
     if (this.accountLoginRequired()) return this.bindCloudAccount(hash, body);
@@ -1618,18 +1618,14 @@ export class WebAccessService {
       if (!credential || this.browsers.get(hash)?.ended) throw new HttpError(401, "access_ended");
       const session = live.sessions.find((s) => s.id === sessionId && s.kind === "mobile");
       if (credential.account) {
-        if (
-          credential.account.accountId !== live.accountId ||
-          credential.account.sessionId !== sessionId ||
-          !session
-        ) {
+        if (credential.account.accountId !== live.accountId || !session) {
           await this.revokeCredentials([credential], "authorization-revoked");
           throw new HttpError(401, "access_ended");
         }
       } else {
         if (!session) return { bound: false, reason: "session_unknown" };
-        credential.account = { accountId: live.accountId, sessionId };
       }
+      credential.account = { accountId: live.accountId, sessionId };
       credential.expiresAt = Math.max(credential.expiresAt, Date.now() + MAX_AGE);
       await this.save();
       return { bound: true };
@@ -1694,11 +1690,7 @@ export class WebAccessService {
       )
         throw new HttpError(401, "access_ended");
       const credential = this.credentials.find((row) => row.hash === hash);
-      if (
-        credential?.account?.id &&
-        (credential.account.accountId !== bound.accountId ||
-          credential.account.sessionId !== bound.sessionId)
-      ) {
+      if (credential?.account?.id && credential.account.accountId !== bound.accountId) {
         await this.revokeCredentials([credential], "authorization-revoked");
         throw new HttpError(401, "access_ended");
       }

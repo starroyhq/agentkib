@@ -115,6 +115,8 @@ export function RemoteAccountSettings({
   }
   const signingIn = status?.phase === "signing-in";
   const signedIn = status?.phase === "signed-in" && Boolean(status.account);
+  const recovering = status?.phase === "error" && Boolean(status.account);
+  const recoveringText = c.recovering.replace("{account}", status?.account?.username ?? "");
   const errorText = status?.error
     ? ((
         {
@@ -227,9 +229,9 @@ export function RemoteAccountSettings({
           </>
         )
       )}
-      {signedIn && (
+      {(signedIn || recovering) && (
         <>
-          {status?.device?.ownership === "unclaimed" && (
+          {signedIn && status?.device?.ownership === "unclaimed" && (
             <Button variant="outline" disabled={busy} onClick={() => void run("claim")}>
               {c.claim}
             </Button>
@@ -258,11 +260,13 @@ export function RemoteAccountSettings({
               ? c.signingIn
               : signedIn
                 ? p.loggedIn.replace("{account}", status!.account!.username)
-                : status
-                  ? c.signedOut
-                  : failed
-                    ? c.unavailable
-                    : c.loading}
+                : recovering
+                  ? recoveringText
+                  : status
+                    ? c.signedOut
+                    : failed
+                      ? c.unavailable
+                      : c.loading}
           </p>
           {signedIn && (
             <Button variant="link" onClick={() => setManageOpen(true)}>
@@ -306,11 +310,13 @@ export function RemoteAccountSettings({
           ? c.signingIn
           : signedIn
             ? status!.account!.username
-            : status
-              ? c.signedOut
-              : failed
-                ? c.unavailable
-                : c.loading}
+            : recovering
+              ? recoveringText
+              : status
+                ? c.signedOut
+                : failed
+                  ? c.unavailable
+                  : c.loading}
       </p>
       {accountDetails}
       {actions}

@@ -214,3 +214,32 @@ it("refreshes the account name when the window resumes and when settings are reo
   await screen.findByText("This computer appears as Web name in your account");
   expect(request).toHaveBeenCalledTimes(3);
 });
+
+it.each(Object.keys(remoteAccountCopy) as (keyof typeof remoteAccountCopy)[])(
+  "keeps a cached identity visible while authentication recovers in %s",
+  async (locale) => {
+    await changeLocale(locale);
+    const copy = remoteAccountCopy[locale];
+    request.mockResolvedValue({ ...signedIn, phase: "error", error: "account_connection_failed" });
+    render(<RemoteAccountSettings />);
+    expect(
+      await screen.findByText(copy.recovering.replace("{account}", "test-user")),
+    ).toBeVisible();
+    expect(screen.queryByText(copy.signedOut)).toBeNull();
+    expect(screen.getByRole("button", { name: copy.retry })).toBeEnabled();
+    expect(screen.getByRole("button", { name: copy.login })).toBeEnabled();
+    expect(screen.getByRole("button", { name: copy.logout })).toBeEnabled();
+    expect(screen.queryByRole("button", { name: copy.claim })).toBeNull();
+  },
+);
+
+it("shows recovery rather than signed-out in the compact account step", async () => {
+  request.mockResolvedValue({ ...signedIn, phase: "error", error: "account_connection_failed" });
+  render(<RemoteAccountSettings variant="step" />);
+  expect(
+    await screen.findByText(
+      remoteAccountCopy["en-US"].recovering.replace("{account}", "test-user"),
+    ),
+  ).toBeVisible();
+  expect(screen.queryByText(remoteAccountCopy["en-US"].signedOut)).toBeNull();
+});

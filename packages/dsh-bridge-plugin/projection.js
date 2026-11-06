@@ -15,16 +15,37 @@ export function bounded(value, max = MAX_TEXT) {
   return { text: value.slice(0, end), truncated: true };
 }
 
-/** Text blocks only; images and files are counted, reasoning and tool blocks are not text. */
+const IMAGE_TYPES = new Set(["image/png", "image/jpeg", "image/webp", "image/gif"]);
+// DSH names a stored image after the digest of its bytes, so AgentKib can check what it reads.
+const ATTACHMENT_ID = /^sha256:[a-f0-9]{64}$/;
+
+/** The stored image an admitted image block refers to, or null for anything else. */
+function imageRef(block) {
+  const ref = block?.attachment;
+  if (typeof ref?.attachmentId !== "string" || !ATTACHMENT_ID.test(ref.attachmentId)) return null;
+  if (!IMAGE_TYPES.has(ref.mediaType)) return null;
+  return {
+    attachmentId: ref.attachmentId,
+    mediaType: ref.mediaType,
+    name: typeof ref.name === "string" && ref.name ? bounded(ref.name, 255).text : null,
+  };
+}
+
+/**
+ * Text blocks only; images and files are counted and images keep their stored reference.
+ * Reasoning and tool blocks are not text.
+ */
 export function contentParts(content) {
-  if (typeof content === "string") return { text: content, images: 0, files: 0 };
+  if (typeof content === "string") return { text: content, images: 0, imageRefs: [], files: 0 };
   const parts = Array.isArray(content) ? content : [];
+  const images = parts.filter((block) => block?.type === "image");
   return {
     text: parts
       .filter((block) => block?.type === "text" && typeof block.text === "string")
       .map((block) => block.text)
       .join("\n"),
-    images: parts.filter((block) => block?.type === "image").length,
+    images: images.length,
+    imageRefs: images.map(imageRef).filter(Boolean).slice(0, 32),
     files: parts.filter((block) => block?.type === "file").length,
   };
 }
@@ -54,7 +75,7 @@ export function historyRecord(event) {
         id: typeof data.id === "string" ? data.id : null,
         text,
         truncated,
-        images: parts.images,
+        images: parts.imageRefs,
         files: parts.files,
         rpcId: typeof data.source?.rpcId === "string" ? data.source.rpcId : null,
       };
@@ -115,6 +136,7 @@ export function queueItems(agent) {
         id: String(message.id),
         placement,
         text: bounded(parts.text, MAX_PREVIEW).text,
+        images: Math.min(parts.images, 64),
         rpcId: typeof message.source?.rpcId === "string" ? message.source.rpcId : null,
       });
     }

@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { CornerDownRight, ListEnd, MoreHorizontal, Pencil, Trash2 } from "lucide-react";
+import { CornerDownRight, ListEnd, MoreHorizontal, Paperclip, Pencil, Trash2 } from "lucide-react";
 import { ApiError, type SessionQueue } from "@agentkib/web-client";
 import { Button } from "../../components/ui/button";
 import { Input } from "../../components/ui/input";
@@ -142,8 +142,14 @@ export function DshQueue() {
               </form>
             ) : (
               <>
+                {/* DSH edits text only, so a message with images can be withdrawn but not edited. */}
+                {item.hasAttachments && (
+                  <span className="shrink-0 text-muted-foreground" title={copy.queueAttachments}>
+                    <Paperclip size={14} role="img" aria-label={copy.queueAttachments} />
+                  </span>
+                )}
                 <span className="min-w-0 flex-1 truncate" title={item.text}>
-                  {item.text || item.id}
+                  {item.text || (item.hasAttachments ? "" : item.id)}
                 </span>
                 <Button
                   type="button"
@@ -180,7 +186,7 @@ export function DshQueue() {
                   </DropdownMenuTrigger>
                   <DropdownMenuContent side="top" align="end">
                     <DropdownMenuItem
-                      disabled={!enabled("queue-update")}
+                      disabled={!enabled("queue-update") || item.hasAttachments === true}
                       onClick={() => {
                         setEditing(item.id);
                         setText(item.text ?? "");

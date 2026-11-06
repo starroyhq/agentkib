@@ -110,15 +110,34 @@ type CodexSettingsRecoveryReason =
   | "native-effort-unconfirmed";
 /** A model or effort Claude Code does not offer; worded apart from Codex's unsent message. */
 type ClaudeSettingsReason = "claude-model-unsupported" | "claude-effort-unsupported";
+/** An image the agent refused, explained the same way for every agent that takes images. */
+type AttachmentRefusal =
+  | "model-images-unsupported"
+  | "attachment-invalid"
+  | "attachment-changed"
+  | "attachment-unavailable"
+  | "invalid_attachment_image";
+const attachmentRefusals: ReadonlySet<string> = new Set<AttachmentRefusal>([
+  "model-images-unsupported",
+  "attachment-invalid",
+  "attachment-changed",
+  "attachment-unavailable",
+  "invalid_attachment_image",
+]);
 /** A reason a rejected request is explained with instead of the generic notice. */
 type NotDispatchedReason =
   | CodexSettingsRecoveryReason
   | ClaudeCommandRefusal
-  | ClaudeSettingsReason;
+  | ClaudeSettingsReason
+  | AttachmentRefusal;
 function codexSettingsRecoveryReason(
   agent: string | undefined,
   ...reasons: (string | undefined)[]
 ): NotDispatchedReason | undefined {
+  const image = reasons.find(
+    (reason): reason is AttachmentRefusal => !!reason && attachmentRefusals.has(reason),
+  );
+  if (image) return image;
   if (agent === "claude-code") {
     // A slash command Claude Code was not sent; the host names which rule refused it.
     const refusal = reasons.find(isClaudeCommandRefusal);

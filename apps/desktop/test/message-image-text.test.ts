@@ -104,4 +104,31 @@ describe("Codex native user message display text", () => {
       "Compare them",
     );
   });
+  // A message sent through the app-server (AgentKib's runner or the followed desktop app).
+  const tag = (n: number) => `<image name=[Image #${n}] path="/private/tmp/ak/attachments/${n}">`;
+  it("hides the image tags Codex appends to a message sent through its app-server", () => {
+    // As Codex 0.166 records it: the closing tag on its own line.
+    expect(displayUserMessageText(`What colour is this? ${tag(1)}\n</image>`, images)).toBe(
+      "What colour is this?",
+    );
+    expect(displayUserMessageText(`What colour is this? ${tag(1)}`, images)).toBe(
+      "What colour is this?",
+    );
+    expect(displayUserMessageText(`Line one  \nLine two\n${tag(1)}\n`, images)).toBe(
+      "Line one  \nLine two",
+    );
+    expect(displayUserMessageText(tag(1), images)).toBe("");
+    const two = [...images, { id: "second" }];
+    expect(displayUserMessageText(`Compare ${tag(1)} ${tag(2)}`, two)).toBe("Compare");
+  });
+  it("keeps image-like text that does not number exactly the message's images", () => {
+    for (const [text, list] of [
+      [`Compare ${tag(1)}`, [...images, { id: "second" }]],
+      [`Out of order ${tag(2)}`, images],
+      [`Plain text ${tag(1)}`, []],
+      [`Mid ${tag(1)} sentence`, images],
+      ["```\n" + tag(1), images],
+    ] as const)
+      expect(displayUserMessageText(text, list)).toBe(text);
+  });
 });

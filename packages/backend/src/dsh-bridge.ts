@@ -22,6 +22,7 @@ import {
   type DshBridgeHistoryPage,
   type DshBridgeHistoryRecord,
   type DshBridgeInteraction,
+  type DshBridgePromptPart,
   type DshBridgeServices,
   type DshBridgeSessionState,
   type DshBridgeSessionSummary,
@@ -37,6 +38,7 @@ import {
 } from "./managed-ledger";
 import { sanitizeSessionText } from "./session-handoff";
 import type { ConversationEvent, ConversationEventPage } from "./session-events";
+import { decodedSessionImage, sessionImageResult } from "./session-images";
 import type { NativeSession } from "./session-store";
 
 const MAX_BODY = 8 * 1024 * 1024;
@@ -151,6 +153,7 @@ const stateSchema = z
             id: z.string().min(1).max(256),
             placement: z.enum(["queued", "steering"]),
             text: z.string().max(8192),
+            images: z.number().int().nonnegative().max(64),
             rpcId: z.string().max(256).nullable(),
           })
           .strip(),
@@ -223,6 +226,7 @@ const servicesSchema = z
     questions: z.boolean(),
     workspaceController: z.boolean().optional(),
     modelCatalog: z.boolean().optional(),
+    images: z.boolean().optional(),
   })
   .strip();
 const registerSchema = z
@@ -255,6 +259,43 @@ const resultSchema = z
     error: z.string().max(256).optional(),
   })
   .strip();
+const IMAGE_TYPES = ["image/png", "image/jpeg", "image/webp", "image/gif"] as const;
+/** A message with attachments, as the Host's attachment store builds it for DSH. */
+const promptContentSchema = z
+  .array(
+    z.union([
+      z.object({ type: z.literal("text"), text: z.string().max(16_384) }).strict(),
+      z
+        .object({
+          type: z.literal("image"),
+          path: z
+            .string()
+            .min(1)
+            .max(4096)
+            .refine((value) => path.isAbsolute(value)),
+          sha256: z.string().regex(/^[a-f0-9]{64}$/),
+          size: z
+            .number()
+            .int()
+            .positive()
+            .max(25 * 1024 * 1024),
+          mediaType: z.enum(IMAGE_TYPES),
+          name: z.string().min(1).max(255),
+        })
+        .strict(),
+    ]),
+  )
+  .min(1)
+  .max(32);
+/** One image a history record names; anything else is dropped rather than shown. */
+const historyImageSchema = z
+  .object({
+    attachmentId: z.string().regex(/^sha256:[a-f0-9]{64}$/),
+    mediaType: z.enum(IMAGE_TYPES),
+    name: z.string().max(255).nullable(),
+  })
+  .strip();
+const IMAGE_ID_PREFIX = "dsh-image-v1-";
 
 type Command = DshBridgeCommand;
 type CommandWaiter = {
@@ -419,17 +460,29 @@ export function dshConversationEvents(
       case "turn-end":
         turn = null;
         break;
-      case "user":
+      case "user": {
+        // Each image is read on demand through the session (`DshBridge.image`), as other
+        // agents' history images are; the ID names DSH's stored copy.
+        const images = new Map<string, NonNullable<ConversationEvent["images"]>[number]>();
+        for (const value of Array.isArray(record.images) ? record.images : []) {
+          const image = historyImageSchema.safeParse(value);
+          if (!image.success) continue;
+          const id = IMAGE_ID_PREFIX + image.data.attachmentId.slice("sha256:".length);
+          const name = image.data.name?.replace(/[\p{Cc}\p{Cf}]/gu, "");
+          images.set(id, { id, mimeType: image.data.mediaType, ...(name ? { name } : {}) });
+        }
         events.push({
           ...base(record),
           id: `dsh:${record.seq}`,
           kind: "user-message",
           ...(turnIdOf(turn) ? { turn_id: turnIdOf(turn)! } : {}),
           content: sanitizeSessionText(record.text, { value: 0 }),
-          attachment_count: record.images + record.files,
+          attachment_count: images.size + record.files,
+          ...(images.size ? { images: [...images.values()] } : {}),
           truncated: record.truncated,
         });
         break;
+      }
       case "assistant":
         events.push({
           ...base(record),
@@ -686,6 +739,44 @@ export class DshBridge {
     };
     this.#cachePage(key, history);
     return history;
+  }
+  /**
+   * One image a session's history shows, read from the DSH that has the session. DSH returns only
+   * images the session's own log refers to; the ID is the digest of the stored bytes, so the
+   * bytes are checked against it here.
+   */
+  async image(nativeId: string, imageId: string): Promise<{ mimeType: string; base64: string }> {
+    const sha256 = imageId.startsWith(IMAGE_ID_PREFIX) ? imageId.slice(IMAGE_ID_PREFIX.length) : "";
+    if (!/^[a-f0-9]{64}$/.test(sha256)) throw new Error("session-image-invalid");
+    const runtime =
+      this.#controlRuntime(nativeId) ??
+      this.#online().find((candidate) => candidate.services.images === true);
+    if (runtime?.services.images !== true) throw new Error("session-image-unavailable");
+    const result = await this.#command(
+      runtime,
+      {
+        commandId: randomUUID(),
+        type: "image",
+        sessionId: nativeId,
+        attachmentId: `sha256:${sha256}`,
+      },
+      HISTORY_TIMEOUT_MS,
+    );
+    if (!result.ok)
+      throw new Error(
+        result.error === "image-too-large"
+          ? "session-image-too-large"
+          : "session-image-unavailable",
+      );
+    const value = result.value as { mediaType?: unknown; data?: unknown } | null;
+    if (typeof value?.data !== "string") throw new Error("session-image-unavailable");
+    const bytes = decodedSessionImage(value.data);
+    if (createHash("sha256").update(bytes).digest("hex") !== sha256)
+      throw new Error("session-image-changed");
+    return sessionImageResult(
+      bytes,
+      typeof value.mediaType === "string" ? value.mediaType : undefined,
+    );
   }
   #cachePage(key: string, page: ConversationEventPage): void {
     const previous = this.#pages.get(key);
@@ -1078,8 +1169,11 @@ export class DshBridge {
       reconcile: true,
       adopt: false,
       release: false,
-      attachments: false,
       resources: false,
+      // Images go with any message DSH takes now: sent, queued or added to the running turn.
+      attachments:
+        services?.images === true &&
+        (live.sendEnabled === true || live.queueEnabled === true || live.steerEnabled === true),
       // Model and reasoning effort; a running turn keeps its model, so changes wait for idle.
       settings: idle && services?.modelCatalog === true,
       "settings-state": online && services?.modelCatalog === true,
@@ -1117,7 +1211,7 @@ export class DshBridge {
             : {
                 available: false,
                 reason:
-                  key === "attachments"
+                  key === "attachments" && online && services?.images !== true
                     ? "dsh-attachments-unavailable"
                     : // Offered once the turn ends, so say that rather than "unavailable".
                       controllable &&
@@ -1201,14 +1295,25 @@ export class DshBridge {
       paused: false,
       requiresResume: false,
       reason: null,
-      data: queuedFor(state).map((item) => ({
-        id: item.id,
-        kind: "queue",
-        input: [{ type: "text", text: item.text }],
-        status: "pending",
-        createdAt: null,
-        requiresAttachments: false,
-      })),
+      data: queuedFor(state).map((item) => {
+        // An attached file reaches DSH as its own line of text (see the Host's attachment store).
+        // Listing those lines and the images, which are already in DSH, as their own inputs
+        // marks the item as one with attachments; an edit would replace them with text only.
+        const lines = item.text.split("\n");
+        const note = (line: string) => line.startsWith("User attached file ");
+        return {
+          id: item.id,
+          kind: "queue",
+          input: [
+            { type: "text", text: lines.filter((line) => !note(line)).join("\n") },
+            ...lines.filter(note).map((text) => ({ type: "text", text })),
+            ...Array.from({ length: item.images }, () => ({ type: "image" })),
+          ],
+          status: "pending",
+          createdAt: null,
+          requiresAttachments: false,
+        };
+      }),
       nextCursor: null,
     };
   }
@@ -1656,6 +1761,16 @@ export class DshBridge {
           throw new Error("invalid-text-input");
         return input;
       };
+      // A message with attachments arrives as content the Host's attachment store built.
+      const content = (): DshBridgePromptPart[] => {
+        if (!Array.isArray(value.input)) return [{ type: "text", text: text() }];
+        const parts = promptContentSchema.parse(value.input);
+        if (!parts.some((part) => part.type === "image" || part.text.trim()))
+          throw new Error("invalid-text-input");
+        if (parts.some((part) => part.type === "image") && runtime.services.images !== true)
+          throw new Error("dsh-attachments-unavailable");
+        return parts;
+      };
       const commandId = randomUUID();
       let command: Command;
       switch (value.operation) {
@@ -1667,7 +1782,7 @@ export class DshBridge {
             sessionId: nativeId,
             requestId,
             mode: "queue",
-            text: text(),
+            content: content(),
           };
           break;
         case "queue-add":
@@ -1678,7 +1793,7 @@ export class DshBridge {
             sessionId: nativeId,
             requestId,
             mode: "queue",
-            text: text(),
+            content: content(),
           };
           break;
         case "steer":
@@ -1690,7 +1805,7 @@ export class DshBridge {
             sessionId: nativeId,
             requestId,
             mode: "steer",
-            text: text(),
+            content: content(),
           };
           break;
         case "queue-delete":

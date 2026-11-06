@@ -191,6 +191,27 @@ function mimeOf(bytes: Buffer): string | null {
   return null;
 }
 
+/** Canonical base64 for one image within the size limit; any other spelling is refused. */
+export function decodedSessionImage(data: string): Buffer {
+  if (data.length % 4 || !/^[A-Za-z0-9+/]*={0,2}$/.test(data))
+    throw new Error("session-image-unsupported");
+  const bytes = Buffer.from(data, "base64");
+  if (bytes.length > MAX_SESSION_IMAGE_BYTES) throw new Error("session-image-too-large");
+  if (bytes.toString("base64") !== data) throw new Error("session-image-unsupported");
+  return bytes;
+}
+
+/** Bytes that really are a supported image, and of the type the source declared, if it did. */
+export function sessionImageResult(
+  data: Buffer,
+  declared?: string,
+): { mimeType: string; base64: string } {
+  const mimeType = mimeOf(data);
+  if (!mimeType || (declared !== undefined && mimeType !== declared))
+    throw new Error("session-image-unsupported");
+  return { mimeType, base64: data.toString("base64") };
+}
+
 function readRecord(filename: string, offset: number): Buffer {
   let fd: number | undefined;
   try {
@@ -299,13 +320,8 @@ export class SessionImages {
     );
     if (!source) throw new Error("session-image-changed");
     let data: Buffer;
-    if (source.kind === "inline") {
-      if (source.data.length % 4 || !/^[A-Za-z0-9+/]*={0,2}$/.test(source.data))
-        throw new Error("session-image-unsupported");
-      data = Buffer.from(source.data, "base64");
-      if (data.length > MAX_SESSION_IMAGE_BYTES) throw new Error("session-image-too-large");
-      if (data.toString("base64") !== source.data) throw new Error("session-image-unsupported");
-    } else {
+    if (source.kind === "inline") data = decodedSessionImage(source.data);
+    else {
       if (reference.localRevision === null) throw new Error("session-image-unavailable");
       let fd: number | undefined;
       try {
@@ -328,10 +344,7 @@ export class SessionImages {
         if (fd !== undefined) closeSync(fd);
       }
     }
-    const mimeType = mimeOf(data);
-    if (!mimeType || (source.kind === "inline" && mimeType !== source.mimeType))
-      throw new Error("session-image-unsupported");
-    return { mimeType, base64: data.toString("base64") };
+    return sessionImageResult(data, source.kind === "inline" ? source.mimeType : undefined);
   }
   #delete(id: string, reference: ImageReference) {
     this.#references.delete(id);

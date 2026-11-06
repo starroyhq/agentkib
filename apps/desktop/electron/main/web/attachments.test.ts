@@ -178,6 +178,29 @@ describe("private attachment input storage", () => {
       { type: "localImage", path: expect.stringContaining(image.id) },
     ]);
   });
+  it("hands DeepSeek Harness checked image files and other files as paths", async () => {
+    const image = await store.upload(binary(png), owner, "one.png", "image/png", () => {});
+    const file = await store.upload(bytes(), owner, "notes.txt", "text/plain", () => {});
+    const input = await store.input("phone", "task", [image.id, file.id], "look", "dsh");
+    expect(input).toEqual([
+      { type: "text", text: "look" },
+      {
+        type: "image",
+        path: expect.stringContaining(image.id),
+        sha256: image.version,
+        size: png.length,
+        mediaType: "image/png",
+        name: "one.png",
+      },
+      { type: "text", text: expect.stringContaining(file.id) },
+    ]);
+    expect(input[2].text).toContain('"notes.txt"');
+    // An image whose bytes are not what its type says is refused, as it is for Claude.
+    const spoofed = await store.upload(binary(png), owner, "two.jpg", "image/jpeg", () => {});
+    await expect(store.input("phone", "task", [spoofed.id], "", "dsh")).rejects.toThrow(
+      "invalid_attachment_image",
+    );
+  });
   it("rejects MIME spoofing, unknown image formats and invalid encoded dimensions before pinning", async () => {
     const oversized = Buffer.from(png);
     oversized.writeUInt32BE(8001, 16);

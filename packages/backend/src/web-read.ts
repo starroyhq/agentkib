@@ -1918,6 +1918,20 @@ export class WebReadRequests {
                 : this.#managedRunners.get(source.id)?.retiring
                   ? "session-retiring"
                   : "codex-owner-busy";
+          const send =
+            f.sendEnabled === true
+              ? { available: true }
+              : {
+                  available: false,
+                  reason:
+                    typeof f.reason === "string"
+                      ? f.reason
+                      : f.activity === "compacting"
+                        ? "session-compacting"
+                        : !controls
+                          ? "control-disabled"
+                          : "session-busy",
+                };
           const features = Object.fromEntries([
             followerUnavailable("answer"),
             followerUnavailable("resume"),
@@ -1936,27 +1950,14 @@ export class WebReadRequests {
             followerUnavailable("goal-pause"),
             followerUnavailable("goal-resume"),
             followerUnavailable("goal-clear"),
-            followerUnavailable("attachments"),
             followerUnavailable("worktree-create"),
             followerUnavailable("branch-switch"),
             followerUnavailable("terminals-clean"),
             followerUnavailable("compact"),
-            [
-              "send",
-              f.sendEnabled === true
-                ? { available: true }
-                : {
-                    available: false,
-                    reason:
-                      typeof f.reason === "string"
-                        ? f.reason
-                        : f.activity === "compacting"
-                          ? "session-compacting"
-                          : !controls
-                            ? "control-disabled"
-                            : "session-busy",
-                  },
-            ],
+            ["send", send],
+            // Images go with the message that starts the owner's next turn; the owner reads
+            // them by path, as AgentKib's own Codex runner does.
+            ["attachments", send],
             [
               "stop",
               f.stopEnabled === true

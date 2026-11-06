@@ -78,8 +78,8 @@ export const SESSION_AGENTS = [
   "deepseek-harness",
 ] as const;
 export type SessionAgent = (typeof SESSION_AGENTS)[number];
-/** DeepSeek Harness history comes from the running DSH through its AgentKib plugin. */
-export type DshSessionSource = Pick<DshBridge, "list" | "events">;
+/** DeepSeek Harness history and its images come from the running DSH through its AgentKib plugin. */
+export type DshSessionSource = Pick<DshBridge, "list" | "events" | "image">;
 /** One catalog call may share discovery; every metadata target still verifies its own header. */
 export type ClaudeControlMetadataShare = { current?: ReturnType<ClaudeSessions["list"]> };
 
@@ -626,6 +626,11 @@ export class SessionReaders {
     ]);
   }
   async #readImage(native: NativeSession, workspace: string, imageId: string, transcript?: string) {
+    // DSH keeps its images in its own store and reads them for the session that refers to them.
+    if (native.agent === "deepseek-harness") {
+      if (!this.dsh) throw new Error("session-image-unavailable");
+      return this.dsh.image(native.native_ref, imageId);
+    }
     if (!transcript || (native.agent !== "codex" && native.agent !== "claude-code"))
       throw new Error("session-image-unavailable");
     const file = native.agent === "codex" ? await codexRollouts.plain(transcript) : transcript;

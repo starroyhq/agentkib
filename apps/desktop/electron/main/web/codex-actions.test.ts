@@ -453,6 +453,27 @@ it("dispatches an idle Codex send with only the existing send grant", async () =
   expect(dispatched).toMatchObject({ expectedRevision: 1, runtimeBootId: "runtime" });
   expect(dispatched).not.toHaveProperty("handoffConfirmed");
 });
+it("hands a followed Codex session an uploaded image as a local file", async () => {
+  await pair({ attachments: true });
+  executionMode = "codex-follower";
+  status = "idle";
+  const upload = await http(
+    "/attachments?sessionId=session&name=a.png&mime=image%2Fpng",
+    "bytes",
+    true,
+  );
+  expect(upload.status).toBe(201);
+  const body = { ...action("look"), attachmentIds: [upload.data.id] };
+  expect((await http("/send", body)).status).toBe(200);
+  const dispatched = runtime.mock.calls.find(
+    ([p]) => (p as { operation: string }).operation === "send",
+  )![0] as Record<string, unknown>;
+  expect(dispatched.input).toEqual([
+    { type: "text", text: "look", text_elements: [] },
+    { type: "localImage", path: expect.stringContaining(upload.data.id) },
+  ]);
+  expect(dispatched).not.toHaveProperty("text");
+});
 it.each([
   "codex-owner-busy",
   "codex-cli-version-too-old",

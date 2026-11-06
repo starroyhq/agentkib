@@ -12,7 +12,6 @@ import type {
   UserQuestionRequest,
 } from "../../../../../packages/web-client/src/index";
 import {
-  type CompactAction,
   ContextUsageIndicator,
   useObservedContextUsage,
 } from "@/features/sessions/conversation/features/sessions/context-usage";
@@ -915,22 +914,6 @@ export function ClaudeSessionPanel({
     !controlReady ||
     !!continuationError ||
     sessionId !== observedSessionId;
-  // Claude Code's /compact as in the conversation page: a message of its own, the draft stays.
-  const compact: CompactAction | undefined =
-    live?.executionMode === "claude-managed" && live.sessionId === sessionId
-      ? {
-          agent: "Claude Code",
-          // There is nothing to summarize before the first message.
-          enabled:
-            !blocked &&
-            !compacting &&
-            !!live.sendEnabled &&
-            live.status === "idle" &&
-            !!history?.events.length,
-          afterTurn: live.status === "running",
-          run: () => void mutate("send", { text: "/compact", attachmentIds: [] }, true),
-        }
-      : undefined;
   const interactionCurrent =
     !!interaction &&
     interaction.supported &&
@@ -1439,7 +1422,6 @@ export function ClaudeSessionPanel({
                     locale={locale}
                     online={online}
                     view={usageView}
-                    compact={compact}
                   />
                   <Button
                     disabled={

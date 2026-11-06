@@ -3,6 +3,9 @@ import { surfaceCopy, type SessionSurface } from "./session-surface-copy";
 
 export const contextUsageCopy = {
   "zh-CN": {
+    windowTitle: "上下文窗口",
+    usedRemaining: "已使用 {used}%（剩余 {remaining}%）",
+    tokenUsage: "已使用 {used} / {total} Token",
     pending: "等待用量",
     stale: "待更新",
     unavailable: "暂不可用",
@@ -29,6 +32,9 @@ export const contextUsageCopy = {
       "让 Codex 总结此前的对话，为后续轮次腾出上下文；压缩作为单独的一轮运行，此前的消息仍会显示在这里。",
   },
   "zh-TW": {
+    windowTitle: "上下文視窗",
+    usedRemaining: "已使用 {used}%（剩餘 {remaining}%）",
+    tokenUsage: "已使用 {used} / {total} Token",
     pending: "等待用量",
     stale: "待更新",
     unavailable: "暫不可用",
@@ -55,6 +61,9 @@ export const contextUsageCopy = {
       "讓 Codex 總結先前的對話，為後續回合騰出上下文；壓縮會作為單獨的一回合執行，先前的訊息仍會顯示在這裡。",
   },
   "en-US": {
+    windowTitle: "Context window",
+    usedRemaining: "{used}% used ({remaining}% remaining)",
+    tokenUsage: "{used} / {total} tokens used",
     pending: "Awaiting usage",
     stale: "Awaiting update",
     unavailable: "Unavailable",
@@ -83,6 +92,9 @@ export const contextUsageCopy = {
       "Codex summarizes the conversation so far to free up context for later turns. Compaction runs as a turn of its own; earlier messages still show here.",
   },
   "ja-JP": {
+    windowTitle: "コンテキストウィンドウ",
+    usedRemaining: "{used}% 使用（残り {remaining}%）",
+    tokenUsage: "{used} / {total} トークン使用",
     pending: "使用量を待機中",
     stale: "更新待ち",
     unavailable: "利用不可",

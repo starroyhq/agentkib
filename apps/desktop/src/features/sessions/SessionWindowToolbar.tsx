@@ -49,6 +49,7 @@ export function SessionWindowToolbar() {
         <div className={navigationStyles.appToolbarBreadcrumb} aria-label={tr("common.breadcrumb")}>
           {tr(creating ? "sessions.newConversation" : "sessions.nav")}
         </div>
+        <div data-session-window-pending-slot className="flex shrink-0 items-center empty:hidden" />
         {hasDesktopConversation() && hub.localEnabled && (
           <Button
             variant="outline"

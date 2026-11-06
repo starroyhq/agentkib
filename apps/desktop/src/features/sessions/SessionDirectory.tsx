@@ -4,10 +4,10 @@ import {
   sessionGroupActivity,
   sessionContinuationListState,
   SessionContinuationDot,
-  PendingReviewLane,
+  requestReadReview,
 } from "@agentkib/session-ui";
 import { cn } from "cn";
-import { Fragment, useEffect, useLayoutEffect, useRef } from "react";
+import { Fragment, useEffect, useLayoutEffect, useMemo, useRef } from "react";
 import { useShallow } from "zustand/react/shallow";
 import { Folder, FolderOpen, MessageSquare, Monitor } from "lucide-react";
 import { Button } from "@/components/ui/button";
@@ -50,6 +50,7 @@ export function SessionDirectory({
     useShallow((state) => ({
       agent: state.agent,
       filter: state.filter,
+      unreadOnly: state.unreadOnly,
       collapsed: state.collapsed,
       host: state.host,
       sessionOrder: state.sessionOrder,
@@ -61,7 +62,15 @@ export function SessionDirectory({
   );
   const scrollRef = useRef<HTMLDivElement>(null);
   const position = useRef<ReturnType<typeof directoryPosition> | undefined>(undefined);
-  const positionScope = JSON.stringify([view.agent, view.filter, view.host]);
+  const positionScope = JSON.stringify([view.agent, view.filter, view.host, view.unreadOnly]);
+  // Review filtering is directory-only: an ACK must not close the reader it came from.
+  const directorySessions = useMemo(
+    () =>
+      view.unreadOnly
+        ? hub.filtered.filter((session) => session.readState?.status === "unread")
+        : hub.filtered,
+    [hub.filtered, view.unreadOnly],
+  );
   const setScrollTop = view.setScrollTop;
   const directoryReady = hub.usable ?? hub.ready;
   useLayoutEffect(() => {
@@ -82,7 +91,7 @@ export function SessionDirectory({
     allowDrop,
     dropBefore,
     moveByKeyboard,
-  } = useSessionDirectoryOrder(hub);
+  } = useSessionDirectoryOrder({ ...hub, filtered: directorySessions });
   useLayoutEffect(() => {
     const element = scrollRef.current;
     if (!element || !directoryReady) return;
@@ -100,7 +109,7 @@ export function SessionDirectory({
     }
     position.current = directoryPosition(element, positionScope);
     setScrollTop(element.scrollTop);
-  }, [hub.filtered, hub.workspaces, directoryReady, positionScope, setScrollTop]);
+  }, [directorySessions, hub.workspaces, directoryReady, positionScope, setScrollTop]);
   // A revealed session can sit in its repository's group rather than its own workspace's.
   const revealed = useSessionViewStore((state) => state.revealedSessionId);
   const revealedGroup = revealed
@@ -120,12 +129,6 @@ export function SessionDirectory({
         data-scrolled={directoryReady && view.scrolled}
       >
         <SessionDirectoryControls onMenuOpenChange={onMenuOpenChange} />
-        <PendingReviewLane
-          sessions={hub.filtered}
-          locale={locale}
-          onSelect={hub.select}
-          context={(row) => (row.remote ? `remote:${row.remote.host_id}` : "desktop-local")}
-        />
       </div>
       <div
         className="session-directory-tree min-h-0 flex-1 overflow-auto overscroll-contain pl-2 pr-2 pb-3"
@@ -143,6 +146,7 @@ export function SessionDirectory({
         {hub.statuses?.some((status) => status.error_key) && <SessionDirectorySourceNotices />}
         {orderedGroups.map((group, index) => {
           const { workspace, sessions: workspaceSessions, label } = group;
+          const expanded = view.unreadOnly || !view.collapsed[group.id];
           const sessions = sessionOrder(workspaceSessions, view.sessionOrder[group.id] ?? []);
           const worktreeNames = group.worktrees.join("\n");
           const activity = sessionGroupActivity(sessions, locale);
@@ -179,8 +183,10 @@ export function SessionDirectory({
               <Collapsible
                 className="session-workspace mb-1"
                 key={group.id}
-                open={!view.collapsed[group.id]}
-                onOpenChange={() => view.toggleWorkspace(group.id)}
+                open={expanded}
+                onOpenChange={() => {
+                  if (!view.unreadOnly) view.toggleWorkspace(group.id);
+                }}
               >
                 <SessionDirectoryHoverCard
                   title={label}
@@ -230,13 +236,13 @@ export function SessionDirectory({
                   >
                     {sessionCollection(workspace.id) ? (
                       <MessageSquare size={16} aria-hidden="true" />
-                    ) : view.collapsed[group.id] ? (
+                    ) : !expanded ? (
                       <Folder size={16} aria-hidden="true" />
                     ) : (
                       <FolderOpen size={16} aria-hidden="true" />
                     )}
                     <strong>{label}</strong>
-                    {view.collapsed[group.id] && activity.label && (
+                    {!expanded && activity.label && (
                       <span className="ml-auto -mr-3 flex h-5 w-8 shrink-0 items-center justify-center">
                         <SessionContinuationDot
                           label={activity.label}
@@ -249,8 +255,8 @@ export function SessionDirectory({
                 </SessionDirectoryHoverCard>
                 <CollapsibleContent
                   className="session-workspace-items h-[var(--collapsible-panel-height)] overflow-hidden opacity-100 transition-[height,opacity] duration-[180ms] ease-out motion-reduce:transition-none data-[starting-style]:h-0 data-[starting-style]:opacity-0 data-[ending-style]:h-0 data-[ending-style]:opacity-0"
-                  inert={Boolean(view.collapsed[group.id])}
-                  aria-hidden={view.collapsed[group.id] || undefined}
+                  inert={!expanded}
+                  aria-hidden={!expanded || undefined}
                 >
                   {sessions.map((session) => {
                     const owner =
@@ -328,7 +334,17 @@ export function SessionDirectory({
                             aria-describedby="session-directory-reorder-hint"
                             aria-keyshortcuts="Alt+ArrowUp Alt+ArrowDown"
                             aria-current={hub.selected?.id === session.id ? "page" : undefined}
-                            onClick={() => hub.select(session.id)}
+                            onClick={() => {
+                              if (view.unreadOnly && session.readState?.status === "unread")
+                                requestReadReview(
+                                  session.id,
+                                  session.readState,
+                                  session.remote
+                                    ? `remote:${session.remote.host_id}`
+                                    : "desktop-local",
+                                );
+                              hub.select(session.id);
+                            }}
                             aria-description={description}
                           >
                             <SessionDirectoryEntry

@@ -6,7 +6,7 @@ import userEvent from "@testing-library/user-event";
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { initializeI18n, tr } from "@/core/i18n";
 import type { ConversationSessionSummary, WorkspaceSummary } from "@/core/types";
-import { sessionContinuationCopy } from "@agentkib/session-ui";
+import { readStateCopy, requestReadReview, sessionContinuationCopy } from "@agentkib/session-ui";
 import { SessionOverview } from "./SessionOverview";
 import { SessionDirectory } from "./SessionDirectory";
 import { useSessionHub } from "./SessionHubContext";
@@ -18,6 +18,10 @@ vi.mock("@/features/home/home-query", async (original) => ({
   useHomeInstallations: () => ({ data: [{ agent: "antigravity", installed: true }] }),
 }));
 vi.mock("./SessionHubContext", () => ({ useSessionHub: vi.fn() }));
+vi.mock("@agentkib/session-ui", async (original) => {
+  const actual = await original<typeof import("@agentkib/session-ui")>();
+  return { ...actual, requestReadReview: vi.fn(actual.requestReadReview) };
+});
 // Row menus have their own tests (SessionRowMenu.test.tsx); they read the host on open only.
 vi.mock("./SessionRowMenu", () => ({ SessionRowMenu: () => null }));
 vi.mock("@/features/agents/AgentIcon", () => ({
@@ -28,7 +32,8 @@ const workspaces = [
   { id: "workspace-a", name: "Design kit", path: "/projects/first/design-kit" },
   { id: "workspace-b", name: "Design kit", path: "/projects/second/design-kit" },
 ] as WorkspaceSummary[];
-const first: ConversationSessionSummary = {
+type NamedSession = ConversationSessionSummary & { title: string };
+const first: NamedSession = {
   id: "first",
   workspace_id: "workspace-a",
   agent: "codex",
@@ -37,7 +42,7 @@ const first: ConversationSessionSummary = {
   archived: false,
   sidechain: false,
 };
-const second: ConversationSessionSummary = {
+const second: NamedSession = {
   ...first,
   id: "second",
   workspace_id: "workspace-b",
@@ -50,6 +55,20 @@ const metadata = {
   id: "metadata",
   title: "Missing transcript",
   availability: "metadata-only" as const,
+};
+const unreadState: NonNullable<ConversationSessionSummary["readState"]> = {
+  source: "codex-native",
+  status: "unread",
+  freshness: "current",
+  version: "native:unread",
+  firstUnread: { type: "result", resultId: "latest-result", turnId: "turn" },
+  latestResult: {
+    id: "latest-result",
+    turnId: "turn",
+    itemId: "answer",
+    outcome: "completed",
+    completedAt: null,
+  },
 };
 let hub: ReturnType<typeof useSessionHub>;
 
@@ -105,6 +124,7 @@ describe("SessionDirectory", () => {
       agent: "all",
       host: "all",
       filter: "current",
+      unreadOnly: false,
       execution: false,
       collapsed: {},
       workspaceOrder: [],
@@ -145,10 +165,205 @@ describe("SessionDirectory", () => {
       filtered: filterSessions(hub.sessions, hub.workspaces, {
         ...useSessionViewStore.getState(),
         query: "",
+      }).filter((row) => {
+        const host = useSessionViewStore.getState().host;
+        return host === "all" || host === (row.remote?.host_id ?? "local");
       }),
     }));
   });
   afterEach(cleanup);
+
+  it("keeps unread dots on ordinary rows without a duplicate review card", () => {
+    hub.sessions = [{ ...first, readState: unreadState }, second];
+    const { container } = render(<SessionDirectory />);
+    expect(screen.queryByRole("region", { name: readStateCopy("en-US").pending })).toBeNull();
+    expect(screen.getAllByText(first.title)).toHaveLength(1);
+    expect(screen.getByRole("button", { name: readStateCopy("en-US").pending })).toHaveAttribute(
+      "aria-pressed",
+      "false",
+    );
+    expect(
+      container.querySelector('.session-directory-trailing [data-unread="true"]'),
+    ).not.toBeNull();
+  });
+
+  it("toggles all unread rows including running, manually unread and stale states", () => {
+    const rows: NamedSession[] = [
+      { ...first, title: "Completed unread", readState: unreadState },
+      {
+        ...first,
+        id: "running-unread",
+        title: "Running unread",
+        continuation: { status: "running", executionLocation: "agentkib" },
+        readState: unreadState,
+      },
+      {
+        ...first,
+        id: "manual-unread",
+        title: "Manual unread",
+        readState: { ...unreadState, latestResult: null, firstUnread: { type: "threadStart" } },
+      },
+      {
+        ...first,
+        id: "stale-unread",
+        title: "Stale unread",
+        readState: { ...unreadState, freshness: "stale" },
+      },
+      {
+        ...second,
+        title: "Already read",
+        readState: { ...unreadState, status: "read", firstUnread: null },
+      },
+      {
+        ...second,
+        id: "unknown-read-state",
+        title: "Unknown reading state",
+        readState: { ...unreadState, status: "unknown", version: null, firstUnread: null },
+      },
+    ];
+    hub.sessions = rows;
+    render(<SessionDirectory />);
+    const bell = screen.getByRole("button", { name: readStateCopy("en-US").pending });
+    fireEvent.click(bell);
+    expect(bell).toHaveAttribute("aria-pressed", "true");
+    for (const row of rows.slice(0, 4)) expect(screen.getByText(row.title)).toBeVisible();
+    expect(screen.queryByText("Already read")).toBeNull();
+    expect(screen.queryByText("Unknown reading state")).toBeNull();
+    expect(hub.select).not.toHaveBeenCalled();
+    fireEvent.click(bell);
+    expect(bell).toHaveAttribute("aria-pressed", "false");
+    expect(screen.getByText("Already read")).toBeVisible();
+    expect(screen.getByText("Unknown reading state")).toBeVisible();
+  });
+
+  it("combines unread filtering with the existing agent and record filters", () => {
+    hub.sessions = [
+      { ...first, readState: unreadState },
+      { ...second, readState: unreadState },
+      { ...second, id: "read-second", title: "Read Claude" },
+      {
+        ...second,
+        id: "archived-second",
+        title: "Archived unread Claude",
+        archived: true,
+        readState: unreadState,
+      },
+    ];
+    useSessionViewStore.setState({ agent: "claude-code" });
+    render(<SessionDirectory />);
+    fireEvent.click(screen.getByRole("button", { name: readStateCopy("en-US").pending }));
+    expect(screen.getByText(second.title)).toBeVisible();
+    expect(screen.queryByText(first.title)).toBeNull();
+    expect(screen.queryByText("Read Claude")).toBeNull();
+    expect(screen.queryByText("Archived unread Claude")).toBeNull();
+    act(() => useSessionViewStore.getState().setFilter("archived"));
+    expect(screen.getByText("Archived unread Claude")).toBeVisible();
+    expect(screen.queryByText(second.title)).toBeNull();
+    expect(useSessionViewStore.getState()).toMatchObject({
+      agent: "claude-code",
+      unreadOnly: true,
+    });
+  });
+
+  it("temporarily opens unread results without changing saved project collapse state", () => {
+    hub.sessions = [{ ...first, readState: unreadState }, second];
+    const collapsed = { "workspace-a": true, "workspace-b": true };
+    useSessionViewStore.setState({ collapsed });
+    render(<SessionDirectory />);
+    expect(screen.queryByText(first.title)).toBeNull();
+    const bell = screen.getByRole("button", { name: readStateCopy("en-US").pending });
+    fireEvent.click(bell);
+    expect(screen.getByText(first.title)).toBeVisible();
+    expect(workspaceHeading(workspaces[0])).toHaveAttribute("aria-expanded", "true");
+    expect(useSessionViewStore.getState().collapsed).toEqual(collapsed);
+    fireEvent.click(bell);
+    expect(workspaceHeading(workspaces[0])).toHaveAttribute("aria-expanded", "false");
+    expect(useSessionViewStore.getState().collapsed).toEqual(collapsed);
+  });
+
+  it("keeps unread results within the selected computer", () => {
+    const remoteWorkspace: WorkspaceSummary = {
+      ...workspaces[0],
+      id: "remote-workspace",
+      name: "Remote project",
+      remote: {
+        host_id: "other-computer",
+        host_name: "Other computer",
+        original_id: "native-workspace",
+        online: true,
+        last_synced_at: "",
+      },
+    };
+    hub.workspaces = [...workspaces, remoteWorkspace];
+    hub.sessions = [
+      { ...first, readState: unreadState },
+      {
+        ...first,
+        id: "remote-unread",
+        title: "Remote unread",
+        workspace_id: remoteWorkspace.id,
+        remote: { ...remoteWorkspace.remote!, original_id: "native-thread" },
+        readState: unreadState,
+      },
+    ];
+    useSessionViewStore.setState({ host: "other-computer" });
+    render(<SessionDirectory />);
+    fireEvent.click(screen.getByRole("button", { name: readStateCopy("en-US").pending }));
+    expect(screen.getByText("Remote unread")).toBeVisible();
+    expect(screen.queryByText(first.title)).toBeNull();
+    expect(useSessionViewStore.getState()).toMatchObject({
+      host: "other-computer",
+      unreadOnly: true,
+    });
+  });
+
+  it("removes a newly read row from unread results without requesting a selection change", () => {
+    const row = { ...first, readState: unreadState };
+    hub.sessions = [row, second];
+    hub.selected = row;
+    useSessionViewStore.setState({ unreadOnly: true });
+    const view = render(<SessionDirectory />);
+    expect(screen.getByText(first.title)).toBeVisible();
+    hub.sessions = [{ ...row, readState: { ...unreadState, status: "read" } }, second];
+    hub.selected = hub.sessions[0];
+    view.rerender(<SessionDirectory />);
+    expect(screen.queryByText(first.title)).toBeNull();
+    expect(hub.select).not.toHaveBeenCalled();
+    expect(hub.selected?.id).toBe(row.id);
+  });
+
+  it.each([false, true])(
+    "requests the displayed unread result only when entered from the filter (remote=%s)",
+    (remote) => {
+      const row: ConversationSessionSummary = {
+        ...first,
+        readState: unreadState,
+        ...(remote
+          ? {
+              remote: {
+                host_id: "other-computer",
+                host_name: "Other computer",
+                original_id: "native-thread",
+                online: true,
+                last_synced_at: "",
+              },
+            }
+          : {}),
+      };
+      hub.sessions = [row];
+      render(<SessionDirectory />);
+      fireEvent.click(screen.getByRole("button", { name: new RegExp(`^${first.title}`) }));
+      expect(requestReadReview).not.toHaveBeenCalled();
+      fireEvent.click(screen.getByRole("button", { name: readStateCopy("en-US").pending }));
+      fireEvent.click(screen.getByRole("button", { name: new RegExp(`^${first.title}`) }));
+      expect(requestReadReview).toHaveBeenCalledExactlyOnceWith(
+        row.id,
+        row.readState,
+        remote ? "remote:other-computer" : "desktop-local",
+      );
+      expect(hub.select).toHaveBeenLastCalledWith(row.id);
+    },
+  );
 
   it("shows one source notice above all workspace groups and retains any real warning", () => {
     hub.statuses = workspaces.map((workspace, index) => ({

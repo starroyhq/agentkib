@@ -1,6 +1,7 @@
 // @vitest-environment jsdom
 import "@testing-library/jest-dom/vitest";
-import { cleanup, fireEvent, render, screen } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { ContextUsageGauge } from "./context-usage";
 import { useSession } from "./session-context";
@@ -44,126 +45,67 @@ beforeEach(() => {
   vi.mocked(useSession).mockImplementation(() => state);
 });
 afterEach(cleanup);
-const openDialog = () =>
-  fireEvent.click(
-    screen.getByRole("button", { name: codexCopy["en-US"].contextUsage, hidden: true }),
+const ring = (locale = "en-US" as keyof typeof codexCopy) =>
+  screen.getByRole("img", { name: codexCopy[locale].contextUsage });
+
+describe("context usage is an informational surface", () => {
+  it.each(["claude-managed", "claude-follower", "codex-managed", "codex-follower"])(
+    "never opens a dialog or sends a command when clicked in %s",
+    async (executionMode) => {
+      state = {
+        ...state,
+        current: { id: "s", agent: executionMode.startsWith("codex") ? "codex" : "claude-code" },
+        live: { ...state.live!, executionMode },
+        capabilities: { sessionId: "s", features: { compact: { available: true } } },
+      } as typeof state;
+      render(<ContextUsageGauge />);
+      expect(screen.queryByRole("button", { name: "Context usage" })).not.toBeInTheDocument();
+      const indicator = ring();
+      expect(indicator.tagName).toBe("SPAN");
+      const user = userEvent.setup();
+      await user.hover(indicator);
+      expect(await screen.findByRole("tooltip")).toHaveTextContent("20% used");
+      await user.click(indicator);
+      expect(screen.getByRole("tooltip")).toHaveTextContent("20% used");
+      expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+      expect(control).not.toHaveBeenCalled();
+      expect(codexAction).not.toHaveBeenCalled();
+    },
   );
-const compact = () => screen.queryByRole("button", { name: copy.compactAction });
 
-describe("compacting a managed Claude session on the desktop", () => {
-  it("sends /compact as a message of its own and closes the dialog", () => {
-    render(<ContextUsageGauge />);
-    openDialog();
-    expect(screen.getByRole("dialog")).toHaveTextContent(copy.compactDetail);
-    fireEvent.click(compact()!);
-    expect(control).toHaveBeenCalledExactlyOnceWith(
-      "send",
-      undefined,
-      undefined,
-      undefined,
-      undefined,
-      { command: "/compact" },
-    );
-    expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
-  });
-
-  it("waits for the running turn to end", () => {
+  it("still exposes usage when sending is unavailable", async () => {
     state.canSend = false;
-    state.live = { ...state.live!, status: "running" };
+    state.access = { ...state.access!, device: { ...state.access!.device!, send: false } };
     render(<ContextUsageGauge />);
-    openDialog();
-    expect(compact()).toBeDisabled();
-    expect(screen.getByRole("dialog")).toHaveTextContent(copy.compactAfterTurn);
-  });
-
-  it.each([
-    [
-      "a Codex session whose host offers no compaction",
-      () => {
-        state.current = { id: "s", agent: "codex" } as typeof state.current;
-        state.live = { ...state.live!, executionMode: "codex-managed" };
-      },
-    ],
-    [
-      "a terminal-connected session",
-      () => {
-        state.live = { ...state.live!, executionMode: "claude-follower" };
-      },
-    ],
-    [
-      "a device that cannot send",
-      () => {
-        state.access = { ...state.access!, device: { ...state.access!.device!, send: false } };
-      },
-    ],
-  ])("is not offered for %s", (_label, change) => {
-    change();
-    render(<ContextUsageGauge />);
-    openDialog();
-    expect(screen.getByRole("dialog")).toBeVisible();
-    expect(compact()).not.toBeInTheDocument();
-  });
-});
-
-describe("compacting a managed Codex session on the desktop", () => {
-  beforeEach(() => {
-    state.current = { id: "s", agent: "codex" } as typeof state.current;
-    state.live = { ...state.live!, executionMode: "codex-managed" };
-    state.capabilities = {
-      sessionId: "s",
-      executionMode: "codex-managed",
-      status: "idle",
-      features: { compact: { available: true } },
-    } as typeof state.capabilities;
-  });
-
-  it("starts Codex's own compaction and closes the dialog", () => {
-    render(<ContextUsageGauge />);
-    openDialog();
-    expect(screen.getByRole("dialog")).toHaveTextContent(copy.compactDetailCodex);
-    fireEvent.click(compact()!);
-    expect(codexAction).toHaveBeenCalledExactlyOnceWith("compact");
+    await userEvent.setup().hover(ring());
+    expect(await screen.findByRole("tooltip")).toHaveTextContent("20% used");
     expect(control).not.toHaveBeenCalled();
-    expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
-  });
-
-  it("waits for the running turn to end", () => {
-    state.canSend = false;
-    state.live = { ...state.live!, status: "running" };
-    state.capabilities = {
-      ...state.capabilities!,
-      features: { compact: { available: false, reason: "session-busy" } },
-    };
-    render(<ContextUsageGauge />);
-    openDialog();
-    expect(compact()).toBeDisabled();
-    expect(screen.getByRole("dialog")).toHaveTextContent(copy.compactAfterTurn);
+    expect(codexAction).not.toHaveBeenCalled();
   });
 });
 
 describe("compact context usage in the desktop composer", () => {
   it.each(["zh-CN", "zh-TW", "en-US", "ja-JP"] as const)(
     "uses an accessible icon during compaction and restores fresh usage in %s",
-    (locale) => {
+    async (locale) => {
       state = {
         ...state,
         locale,
         live: { ...state.live!, activity: "compacting" },
       };
       const view = render(<ContextUsageGauge />);
-      const button = screen.getByRole("button", { name: codexCopy[locale].contextUsage });
+      const button = ring(locale);
       expect(button).toHaveTextContent(/^$/);
-      expect(button).toHaveAttribute(
-        "title",
-        expect.stringContaining(contextUsageCopy[locale].compacting),
-      );
+      expect(button).toHaveAccessibleDescription(contextUsageCopy[locale].compactingDetail);
       expect(screen.queryByText(contextUsageCopy[locale].compactingDetail)).not.toBeInTheDocument();
 
-      fireEvent.click(button);
-      expect(screen.getByRole("dialog")).toHaveTextContent(
+      const user = userEvent.setup();
+      await user.hover(button);
+      expect(await screen.findByRole("tooltip")).toHaveTextContent(
         contextUsageCopy[locale].compactingDetail,
       );
-      fireEvent.click(screen.getByRole("button", { name: codexCopy[locale].close }));
+      expect(screen.getByRole("tooltip")).not.toHaveTextContent("20% used");
+      await user.unhover(button);
       state = {
         ...state,
         live: {
@@ -179,9 +121,142 @@ describe("compact context usage in the desktop composer", () => {
         },
       };
       view.rerender(<ContextUsageGauge />);
-      expect(
-        screen.getByRole("button", { name: codexCopy[locale].contextUsage }),
-      ).toHaveTextContent("17%");
+      expect(ring(locale)).toHaveAccessibleDescription(expect.stringContaining("17%"));
+      expect(button).toHaveTextContent(/^$/);
     },
   );
+});
+
+describe("context window ring and hover details", () => {
+  it.each(["zh-CN", "zh-TW", "en-US", "ja-JP"] as const)(
+    "shows usage only on hover in %s",
+    async (locale) => {
+      state = {
+        ...state,
+        locale,
+        live: {
+          ...state.live!,
+          usage: {
+            available: true,
+            state: "ready",
+            reportId: 1,
+            usedTokens: 173000,
+            contextWindow: 475000,
+          },
+        },
+      };
+      render(<ContextUsageGauge />);
+      const button = ring(locale);
+      expect(button).toHaveTextContent(/^$/);
+      expect(screen.queryByRole("tooltip")).not.toBeInTheDocument();
+      expect(button).toHaveAccessibleDescription(expect.stringContaining("36%"));
+      await userEvent.setup().hover(button);
+      const tooltip = await screen.findByRole("tooltip");
+      expect(tooltip).toHaveTextContent(contextUsageCopy[locale].windowTitle);
+      expect(tooltip).toHaveTextContent("36%");
+      expect(tooltip).toHaveTextContent("64%");
+      expect(tooltip).toHaveTextContent("173K / 475K");
+    },
+  );
+
+  it("opens the same details for keyboard focus", async () => {
+    render(<ContextUsageGauge />);
+    await userEvent.setup().tab();
+    expect(await screen.findByRole("tooltip")).toHaveTextContent("20% used (80% remaining)");
+  });
+
+  it.each([0, 20, 100])("uses the entire circumference clockwise for %s%%", (percent) => {
+    state.live = {
+      ...state.live!,
+      usage: {
+        available: true,
+        state: "ready",
+        reportId: 1,
+        usedTokens: percent,
+        contextWindow: 100,
+      },
+    };
+    render(<ContextUsageGauge />);
+    const button = ring();
+    expect(button).toHaveAccessibleDescription(
+      `${percent}% used (${100 - percent}% remaining) ${percent} / 100 tokens used`,
+    );
+    const fill = button.querySelector("circle[pathLength]");
+    if (percent === 0) expect(fill).toBeNull();
+    else {
+      expect(fill).toHaveAttribute("stroke-dasharray", `${percent} 100`);
+      expect(fill).toHaveAttribute("transform", "rotate(-90 10 10)");
+    }
+  });
+
+  it("labels retained offline usage as the last report", async () => {
+    state.online = false;
+    render(<ContextUsageGauge />);
+    const button = ring();
+    expect(button).toHaveAccessibleDescription(expect.stringContaining(copy.offline));
+    await userEvent.setup().hover(button);
+    const tooltip = await screen.findByRole("tooltip");
+    expect(tooltip).toHaveTextContent(copy.offline);
+    expect(tooltip).toHaveTextContent(copy.reported);
+    expect(tooltip).toHaveTextContent("20% used");
+  });
+
+  it("does not represent unknown usage as a known zero", async () => {
+    state.live = {
+      ...state.live!,
+      usage: { available: false, state: "pending", reason: "not-reported" },
+    };
+    render(<ContextUsageGauge />);
+    const button = ring();
+    expect(button.querySelector("circle[pathLength]")).toBeNull();
+    expect(button).toHaveAccessibleDescription(copy.pendingDetail);
+    await userEvent.setup().hover(button);
+    const tooltip = await screen.findByRole("tooltip");
+    expect(tooltip).toHaveTextContent(copy.pendingDetail);
+    expect(tooltip).not.toHaveTextContent("0%");
+  });
+});
+
+describe("context hover report boundaries", () => {
+  it("never exposes retained usage after viewing permission is revoked", async () => {
+    const view = render(<ContextUsageGauge />);
+    const user = userEvent.setup();
+    await user.hover(ring());
+    expect(await screen.findByRole("tooltip")).toHaveTextContent("20% used");
+    state = {
+      ...state,
+      access: { ...state.access!, device: { ...state.access!.device!, advancedControl: false } },
+    };
+    view.rerender(<ContextUsageGauge />);
+    expect(ring()).toHaveAccessibleDescription(copy.permission);
+    expect(ring().querySelector("circle[pathLength]")).toBeNull();
+    expect(screen.getByRole("tooltip")).toHaveTextContent(copy.permission);
+    expect(screen.getByRole("tooltip")).not.toHaveTextContent("20% used");
+  });
+
+  it("closes the old hover surface when the host identity changes", async () => {
+    const view = render(<ContextUsageGauge />);
+    const user = userEvent.setup();
+    await user.hover(ring());
+    expect(await screen.findByRole("tooltip")).toHaveTextContent("20% used");
+    state = {
+      ...state,
+      access: { ...state.access!, bootId: "replacement-host" },
+    };
+    view.rerender(<ContextUsageGauge />);
+    await waitFor(() => expect(screen.queryByRole("tooltip")).not.toBeInTheDocument());
+    expect(ring()).not.toHaveAccessibleDescription(expect.stringContaining("20% used"));
+    expect(ring().querySelector("circle[pathLength]")).toBeNull();
+    expect(control).not.toHaveBeenCalled();
+    expect(codexAction).not.toHaveBeenCalled();
+  });
+
+  it("does not carry the previous session's report into a different session", () => {
+    const view = render(<ContextUsageGauge />);
+    expect(ring()).toHaveAccessibleDescription(expect.stringContaining("20% used"));
+    state = { ...state, selected: "different-session" };
+    view.rerender(<ContextUsageGauge />);
+    expect(ring()).not.toHaveAccessibleDescription(expect.stringContaining("20% used"));
+    expect(ring().querySelector("circle[pathLength]")).toBeNull();
+  });
 });

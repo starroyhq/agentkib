@@ -84,6 +84,7 @@ export const useSessionViewStore = create<{
   agent: AgentKind | "all";
   host: string;
   filter: SessionRecordFilter;
+  unreadOnly: boolean;
   /** Also list sessions a program started (SDK and `-p` runs, Codex `exec`). */
   execution: boolean;
   /** Also list conversation-only sessions with no project folder (Codex projectless/rootless). */
@@ -107,6 +108,7 @@ export const useSessionViewStore = create<{
   setAgent: (agent: AgentKind | "all") => void;
   setHost: (host: string) => void;
   setFilter: (filter: SessionRecordFilter) => void;
+  setUnreadOnly: (unreadOnly: boolean) => void;
   setExecution: (execution: boolean) => void;
   setCollections: (collections: boolean) => void;
   toggleWorkspace: (id: string) => void;
@@ -121,6 +123,7 @@ export const useSessionViewStore = create<{
   agent: "all",
   host: "all",
   filter: "current",
+  unreadOnly: false,
   execution: false,
   collections: false,
   collapsed: {},
@@ -154,6 +157,7 @@ export const useSessionViewStore = create<{
         (state.filter === "metadata" && session.availability !== "metadata-only")
           ? "all"
           : state.filter,
+      unreadOnly: state.unreadOnly && session.readState?.status === "unread",
       collapsed: { ...state.collapsed, [session.workspace_id]: false },
       revealedSessionId: session.id,
     }));
@@ -161,6 +165,7 @@ export const useSessionViewStore = create<{
   setAgent: (agent) => set({ agent }),
   setHost: (host) => set({ host }),
   setFilter: (filter) => set({ filter }),
+  setUnreadOnly: (unreadOnly) => set({ unreadOnly }),
   setExecution: (execution) => set({ execution }),
   setCollections: (collections) => set({ collections }),
   toggleWorkspace: (id) =>
@@ -185,7 +190,14 @@ export const useSessionViewStore = create<{
     }),
   setScrollTop: (scrollTop) => set({ scrollTop }),
   resetFilters: () =>
-    set({ agent: "all", filter: "current", host: "all", execution: false, collections: false }),
+    set({
+      agent: "all",
+      filter: "current",
+      host: "all",
+      unreadOnly: false,
+      execution: false,
+      collections: false,
+    }),
 }));
 
 /** Make a deep-linked session visible without discarding already compatible filters. */

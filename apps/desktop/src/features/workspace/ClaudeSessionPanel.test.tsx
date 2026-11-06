@@ -266,7 +266,9 @@ describe("Claude local owner panel", () => {
     await screen.findByText("Synthetic history");
     await enabled(screen.getByLabelText("Message"));
     fireEvent.change(screen.getByLabelText("Message"), { target: { value: "next" } });
-    expect(screen.getByRole("button", { name: "Context usage" })).toHaveTextContent("0%");
+    expect(screen.getByRole("img", { name: "Context usage" })).toHaveAccessibleDescription(
+      expect.stringContaining("0% used (100% remaining)"),
+    );
     act(() =>
       emitNative(1, "state", {
         revision: 2,
@@ -277,9 +279,9 @@ describe("Claude local owner panel", () => {
         activity: "compacting",
       }),
     );
-    const usage = screen.getByRole("button", { name: "Context usage" });
+    const usage = screen.getByRole("img", { name: "Context usage" });
     expect(usage).toHaveTextContent(/^$/);
-    expect(usage).toHaveAttribute("title", "Context usage: Compacting context");
+    expect(usage).toHaveAccessibleDescription(expect.stringContaining("Context is compacting"));
     expect(screen.getByLabelText("Message")).toHaveValue("next");
     expect(screen.getByRole("button", { name: "Send" })).toBeDisabled();
     expect(
@@ -287,8 +289,8 @@ describe("Claude local owner panel", () => {
     ).not.toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Stop" })).toBeEnabled();
     act(() => emitNative(2, "state", { revision: 3, activity: null }));
-    expect(screen.getByRole("button", { name: "Context usage" })).toHaveTextContent(
-      "Awaiting update",
+    expect(screen.getByRole("img", { name: "Context usage" })).toHaveAccessibleDescription(
+      expect.stringContaining("last reported usage"),
     );
     expect(screen.getByLabelText("Message")).toHaveValue("next");
     expect(screen.getByRole("button", { name: "Send" })).toBeDisabled();
@@ -298,7 +300,9 @@ describe("Claude local owner panel", () => {
         usage: { available: true, state: "ready", reportId: 2, usedTokens: 4, contextWindow: 100 },
       }),
     );
-    expect(screen.getByRole("button", { name: "Context usage" })).toHaveTextContent("4%");
+    expect(screen.getByRole("img", { name: "Context usage" })).toHaveAccessibleDescription(
+      expect.stringContaining("4% used (96% remaining)"),
+    );
     expect(screen.getByLabelText("Message")).toHaveValue("next");
     expect(calls("send")).toHaveLength(0);
   });
@@ -939,33 +943,31 @@ describe("Claude local owner panel", () => {
     });
     expect(calls("send")).toHaveLength(0);
   });
-  it("compacts from the usage dialog as a message of its own and keeps the draft", async () => {
+  it("keeps native /compact available through the composer without a clickable usage dialog", async () => {
     mount();
     await screen.findByText("Synthetic history");
-    await enterMessage("Keep this draft");
-    fireEvent.click(screen.getByRole("button", { name: "Context usage" }));
-    const dialog = await screen.findByRole("dialog", { name: "Context usage" });
-    fireEvent.click(await enabled(within(dialog).getByRole("button", { name: "Compact context" })));
+    await enterMessage("/compact");
+    fireEvent.click(screen.getByRole("img", { name: "Context usage" }));
+    expect(screen.queryByRole("dialog", { name: "Context usage" })).not.toBeInTheDocument();
+    expect(screen.getByLabelText("Message")).toHaveValue("/compact");
+    expect(calls("send")).toHaveLength(0);
+    fireEvent.click(await enabled(screen.getByRole("button", { name: "Send" })));
     await waitFor(() => expect(calls("send")).toHaveLength(1));
     expect(calls("send")[0][0]).toMatchObject({
       sessionId: "session",
       text: "/compact",
       attachmentIds: [],
     });
-    expect(screen.queryByRole("dialog", { name: "Context usage" })).not.toBeInTheDocument();
     await waitFor(() => expect(screen.getByLabelText("Message")).toBeEnabled());
-    expect(screen.getByLabelText("Message")).toHaveValue("Keep this draft");
-    // Until history records it, the command shows as the pending message, not the draft.
-    const pendingMessage = document.querySelector("[data-pending-user-message]");
-    expect(pendingMessage).toHaveTextContent("/compact");
-    expect(pendingMessage).not.toHaveTextContent("Keep this draft");
+    expect(screen.getByLabelText("Message")).toHaveValue("");
+    expect(document.querySelector("[data-pending-user-message]")).toHaveTextContent("/compact");
   });
   it.each([
-    ["a turn is running", { status: "running", turnId: "turn" }, false, true],
-    ["sending is unavailable", { sendEnabled: false }, false, false],
-    ["the context is compacting", { activity: "compacting" }, false, false],
-    ["the session has no message yet", {}, true, false],
-  ] as const)("keeps compaction disabled while %s", async (_case, state, empty, afterTurn) => {
+    ["a turn is running", { status: "running", turnId: "turn" }, false],
+    ["sending is unavailable", { sendEnabled: false }, false],
+    ["the context is compacting", { activity: "compacting" }, false],
+    ["the session has no message yet", {}, true],
+  ] as const)("keeps context usage informational while %s", async (_case, state, empty) => {
     live = { ...live, ...state } as Live;
     if (empty) {
       const original = vi.mocked(api.claudeRequest).getMockImplementation()!;
@@ -977,26 +979,23 @@ describe("Claude local owner panel", () => {
     }
     mount();
     if (!empty) await screen.findByText("Synthetic history");
-    // The usage dialog belongs to one observation; open it once the session has settled.
     await enabled(screen.getByLabelText("Message"));
-    fireEvent.click(screen.getByRole("button", { name: "Context usage" }));
-    const dialog = await screen.findByRole("dialog", { name: "Context usage" });
-    expect(within(dialog).getByRole("button", { name: "Compact context" })).toBeDisabled();
-    expect(!!within(dialog).queryByText("You can compact once the current turn ends.")).toBe(
-      afterTurn,
-    );
+    const usage = screen.getByRole("img", { name: "Context usage" });
+    fireEvent.click(usage);
+    expect(usage.tagName).toBe("SPAN");
+    expect(screen.queryByRole("dialog", { name: "Context usage" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Compact context" })).not.toBeInTheDocument();
     expect(calls("send")).toHaveLength(0);
   });
-  it("offers no compaction for a connected terminal", async () => {
+  it("never turns the usage ring into a control for a connected terminal", async () => {
     live = { ...live, executionMode: "claude-follower", executionLocation: "terminal" };
     mount();
     await screen.findByText(sessionContinuationCopy("en-US").terminalHint);
     await enabled(screen.getByLabelText("Message"));
-    fireEvent.click(screen.getByRole("button", { name: "Context usage" }));
-    const dialog = await screen.findByRole("dialog", { name: "Context usage" });
-    expect(
-      within(dialog).queryByRole("button", { name: "Compact context" }),
-    ).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole("img", { name: "Context usage" }));
+    expect(screen.queryByRole("dialog", { name: "Context usage" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Compact context" })).not.toBeInTheDocument();
+    expect(calls("send")).toHaveLength(0);
   });
   it("continues idle history directly without inspecting or adopting", async () => {
     mount();

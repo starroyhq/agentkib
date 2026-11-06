@@ -295,6 +295,28 @@ describe("Codex conversation controls", () => {
     ).toBe(false);
   });
 
+  it.each([
+    [{ serviceTierId: "fast" }, { serviceTier: "fast" }],
+    [{ serviceTierId: null }, { serviceTier: null }],
+    [{ effort: null }, { effort: null }],
+  ])("forwards only the explicit model control fields in %j", async (fields, expected) => {
+    const client = await fullBrowser();
+    const result = await client.api("codex/settings", {
+      bootId: client.bootId,
+      requestId: randomUUID(),
+      sessionId: "session",
+      expectedRevision: 7,
+      ...fields,
+    });
+    expect(result.response.status).toBe(200);
+    const dispatched = runtime.mock.calls.find(
+      ([value]) => (value as Record<string, unknown>).operation === "settings",
+    )![0] as Record<string, unknown>;
+    expect(dispatched).toMatchObject(expected);
+    for (const field of ["model", "effort", "serviceTier", "mode", "policyId", "resetDefaults"])
+      if (!(field in expected)) expect(dispatched).not.toHaveProperty(field);
+  });
+
   it("dispatches goal changes through the normal request fence", async () => {
     const client = await fullBrowser();
     const requestId = randomUUID();

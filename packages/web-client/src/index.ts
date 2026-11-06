@@ -702,10 +702,10 @@ export interface CodexActionBody {
   queuedSubmissionId?: string;
   queuedSubmissionIds?: string[];
   model?: string;
-  effort?: string;
+  effort?: string | null;
   mode?: "plan" | "default";
   policyId?: string;
-  serviceTierId?: string;
+  serviceTierId?: string | null;
   restoreDefaults?: true;
   objective?: string;
   intent?: "start" | "update";

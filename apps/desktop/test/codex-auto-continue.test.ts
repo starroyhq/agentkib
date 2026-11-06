@@ -1057,6 +1057,223 @@ describe("Codex Plan mode", () => {
       Record<string, any>
     >;
 
+  it("clears only explicit Fast and incompatible effort selections", async () => {
+    const f = fixture();
+    f.setModels([
+      {
+        model: "model-a",
+        isDefault: true,
+        supportedReasoningEfforts: [{ reasoningEffort: "low" }],
+        serviceTiers: [{ id: "fast" }],
+      },
+      { model: "model-b", supportedReasoningEfforts: [], serviceTiers: [] },
+    ]);
+    expect(
+      await control(f, "settings", {
+        model: "model-a",
+        effort: "low",
+        serviceTier: "fast",
+        policyId: "full-access-on-request",
+        mode: "plan",
+      }),
+    ).toMatchObject({ accepted: true });
+    expect(await control(f, "settings", { serviceTier: null })).toMatchObject({ accepted: true });
+    expect(readManagedRecord(f.root, f.summary.id)).toMatchObject({
+      model: "model-a",
+      effort: "low",
+      service_tier: null,
+      policy_id: "full-access-on-request",
+      mode: "plan",
+    });
+    expect(await control(f, "settings", { model: "model-b", effort: null })).toMatchObject({
+      accepted: true,
+    });
+    expect(readManagedRecord(f.root, f.summary.id)).toMatchObject({
+      model: "model-b",
+      effort: null,
+      service_tier: null,
+      policy_id: "full-access-on-request",
+      mode: "plan",
+    });
+  });
+
+  it.each(["default", "plan"] as const)(
+    "clears Fast and inherited effort on the next turn without changing native %s mode",
+    async (mode) => {
+      const f = fixture();
+      f.setModels([
+        {
+          model: "model-a",
+          isDefault: true,
+          supportedReasoningEfforts: [{ reasoningEffort: "low" }],
+          serviceTiers: [{ id: "priority", name: "Fast" }],
+        },
+        { model: "model-b", supportedReasoningEfforts: [], serviceTiers: [] },
+      ]);
+      expect(
+        await control(f, "settings", {
+          model: "model-a",
+          effort: "low",
+          serviceTier: "priority",
+          ...(mode === "plan" ? { mode } : {}),
+        }),
+      ).toMatchObject({ accepted: true });
+      expect(await control(f, "send")).toMatchObject({ accepted: true });
+      expect(
+        f.requests.filter((item) => item.method === "turn/start").at(-1)?.params,
+      ).toMatchObject({ serviceTier: "priority", effort: "low" });
+      const acknowledge = (model: string, effort: string | null, serviceTier: string) => {
+        f.servers.at(-1)!.emit("notification", {
+          method: "thread/settings/updated",
+          params: {
+            threadId: nativeId,
+            threadSettings: {
+              model,
+              effort,
+              serviceTier,
+              cwd: f.workspace,
+              approvalPolicy: "on-request",
+              approvalsReviewer: "user",
+              sandboxPolicy: {
+                type: "workspaceWrite",
+                writableRoots: [f.workspace],
+                networkAccess: false,
+              },
+              collaborationMode: {
+                mode,
+                settings: { model, reasoning_effort: effort, developer_instructions: null },
+              },
+            },
+          },
+        });
+      };
+      acknowledge("model-a", "low", "priority");
+      await vi.waitFor(async () =>
+        expect((await settingsState(f)).settings.applicationStatus).toBe("confirmed"),
+      );
+      f.servers.at(-1)!.complete();
+      await vi.waitFor(async () => expect((await f.live()).status).toBe("idle"));
+      expect(
+        await control(f, "settings", { model: "model-b", effort: null, serviceTier: null }),
+      ).toMatchObject({ accepted: true });
+      expect(await control(f, "send")).toMatchObject({ accepted: true });
+      expect(
+        f.requests.filter((item) => item.method === "turn/start").at(-1)?.params,
+      ).toMatchObject({
+        model: "model-b",
+        serviceTier: null,
+        approvalPolicy: "on-request",
+        collaborationMode: { mode, settings: { model: "model-b", reasoning_effort: null } },
+      });
+      expect(readManagedRecord(f.root, f.summary.id)).toMatchObject({
+        mode: mode === "plan" ? "plan" : null,
+      });
+      acknowledge("model-b", null, "default");
+      await vi.waitFor(async () =>
+        expect((await settingsState(f)).settings).toMatchObject({
+          selected: { model: "model-b", effort: null, serviceTier: null },
+          current: { model: "model-b", effort: null, serviceTier: null, mode },
+          applicationStatus: "confirmed",
+        }),
+      );
+    },
+  );
+
+  it("does not save an effort clear when the native mode cannot be verified", async () => {
+    const f = fixture();
+    expect(await control(f, "settings", { model: "model-a", effort: "low" })).toMatchObject({
+      accepted: true,
+    });
+    f.servers.at(-1)!.emit("notification", {
+      method: "thread/settings/updated",
+      params: {
+        threadId: nativeId,
+        threadSettings: {
+          model: "model-a",
+          effort: "low",
+          serviceTier: null,
+          collaborationMode: null,
+          approvalPolicy: "on-request",
+          approvalsReviewer: "user",
+          sandboxPolicy: {
+            type: "workspaceWrite",
+            writableRoots: [f.workspace],
+            networkAccess: false,
+          },
+        },
+      },
+    });
+    await vi.waitFor(async () =>
+      expect((await settingsState(f)).settings.current.effort).toBe("low"),
+    );
+    expect(await control(f, "settings", { effort: null })).toMatchObject({
+      accepted: false,
+      controlOutcome: "not-dispatched",
+    });
+    expect(readManagedRecord(f.root, f.summary.id)?.effort).toBe("low");
+    expect(f.methods).not.toContain("turn/start");
+  });
+
+  it("preserves pending clears across a restart instead of restoring inherited native settings", async () => {
+    const f = fixture();
+    expect(await control(f, "settings", { model: "model-a", effort: "low" })).toMatchObject({
+      accepted: true,
+    });
+    await f.web.closeAsync();
+    const record = readManagedRecord(f.root, f.summary.id)!;
+    const collaborationMode = {
+      mode: "default",
+      settings: { model: "model-a", reasoning_effort: "low", developer_instructions: null },
+    };
+    saveManagedRecord(f.root, {
+      ...record,
+      effort: null,
+      service_tier: null,
+      native_settings: {
+        ...record.native_settings,
+        effort: "low",
+        serviceTier: "priority",
+        collaborationMode,
+      },
+    });
+    f.setPolicyReply({ reasoningEffort: "low", serviceTier: "default", collaborationMode });
+    const restarted = new WebReadRequests(f.store, f.readers, f.root, () => 0n, {
+      CODEX_HOME: f.home,
+      HOME: f.root,
+      PATH: f.bin,
+    });
+    cleanups.push(() => restarted.closeAsync());
+    const state = await restarted.request({
+      operation: "live",
+      sessionId: f.summary.id,
+      experimentalEnabled: true,
+    });
+    expect(
+      await restarted.managedControl({
+        operation: "send",
+        sessionId: f.summary.id,
+        requestId: randomUUID(),
+        deviceId: "fixture",
+        runtimeBootId: state.runtimeBootId,
+        expectedRevision: state.revision,
+        experimentalEnabled: true,
+        text: "Continue after clear",
+      }),
+    ).toMatchObject({ accepted: true });
+    expect(
+      f.requests.filter((item) => item.method === "thread/resume").at(-1)?.params,
+    ).toMatchObject({ serviceTier: null });
+    expect(f.requests.filter((item) => item.method === "turn/start").at(-1)?.params).toMatchObject({
+      serviceTier: null,
+      collaborationMode: { mode: "default", settings: { reasoning_effort: null } },
+    });
+    expect(readManagedRecord(f.root, f.summary.id)).toMatchObject({
+      effort: null,
+      service_tier: null,
+      mode: null,
+    });
+  });
+
   it("offers the native presets, sends the turn in Plan, and confirms it from the CLI", async () => {
     const f = fixture();
     // Before any runner: read with a metadata-only reader.

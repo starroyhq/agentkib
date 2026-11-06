@@ -152,6 +152,27 @@ it("keeps an independent non-account relay usable with the desktop account bridg
   expect(redeem).not.toHaveBeenCalled();
 });
 
+it("renews a paired browser with a verified replacement login for the same account", async () => {
+  await access();
+  await approveLegacyBrowser(service, cookie);
+  requireCloud();
+  const initial = await access();
+  const redeem = vi.spyOn(relay, "redeemAccountLogin").mockResolvedValue(binding);
+  const proof = {
+    code: "p".repeat(43),
+    codeVerifier: "v".repeat(43),
+    hostChallenge: initial.data.accountLogin!.challenge,
+    redemptionId: "r".repeat(43),
+  };
+  expect((await request("account-binding", proof)).status).toBe(200);
+  const pairedDevice = (await access()).data.device!.id;
+  redeem.mockResolvedValue({ ...binding, id: "d".repeat(32), sessionId: "b".repeat(36) });
+  expect((await request("account-binding", proof)).status).toBe(200);
+  expect((await access()).data.device!.id).toBe(pairedDevice);
+  expect((await request("catalog")).status).toBe(200);
+  expect((await service.request({ operation: "status" })).devices).toHaveLength(1);
+});
+
 it("upgrades a paired browser without replaying pairing, and keeps authorization on a cloud verification outage", async () => {
   await access();
   await approveLegacyBrowser(service, cookie);

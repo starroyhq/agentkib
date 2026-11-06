@@ -33,6 +33,15 @@ type TokenResponse = {
   refreshToken: string;
   expiresIn: number;
   account: DesktopAccountProfile;
+  refreshRecovery?: boolean;
+};
+type SavedSession = {
+  version: 1;
+  refreshToken: string;
+  refreshRecovery: boolean;
+  account?: DesktopAccountProfile;
+  access?: { value: string; until: number };
+  pending?: string;
 };
 
 /** Account credentials never enter renderer IPC or the device control API. */
@@ -46,6 +55,11 @@ export class DesktopAccountService {
   private generation = 0;
   private queue: Promise<unknown> = Promise.resolve();
   private refreshWork?: Promise<string>;
+  private savedSession?: SavedSession;
+  private sessionLoaded = false;
+  private signedOutLocally = false;
+  private credentialGeneration = 0;
+  private storageWork: Promise<unknown> = Promise.resolve();
   private profileReadAt = 0;
   private loggingOut = false;
   private nameWork?: Promise<string | undefined>;
@@ -74,20 +88,91 @@ export class DesktopAccountService {
   }
   async initialize() {
     try {
-      await readFile(this.rotationFile);
-      await this.clearCredentials();
-      this.error = "account_login_required";
+      await this.accessToken();
+      this.refreshNameInBackground();
     } catch (error) {
-      if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
-      try {
-        await this.accessToken();
-        this.refreshNameInBackground();
-      } catch (failure) {
-        if ((failure as NodeJS.ErrnoException).code !== "ENOENT")
-          this.error = "account_login_required";
+      if ((error as NodeJS.ErrnoException).code !== "ENOENT" && !this.signedOutLocally) {
+        this.phase = this.savedSession ? "error" : "signed-out";
+        this.error = error instanceof AccountError ? error.code : "account_connection_failed";
       }
     }
     await this.publish();
+  }
+  private storageChange(change: () => Promise<void>) {
+    const work = this.storageWork.then(change);
+    this.storageWork = work.catch(() => undefined);
+    return work;
+  }
+  private async saveSession(session: SavedSession, generation: number) {
+    await this.storageChange(async () => {
+      if (generation !== this.credentialGeneration)
+        throw new AccountError("account_identity_changed");
+      await this.atomic(this.tokenFile, this.options.storage.encrypt(JSON.stringify(session)));
+    });
+    if (generation !== this.credentialGeneration)
+      throw new AccountError("account_identity_changed");
+    this.savedSession = session;
+  }
+  private async loadSession() {
+    if (this.sessionLoaded) return;
+    if (!this.options.storage.available())
+      throw new AccountError("account_secure_storage_unavailable");
+    const generation = this.credentialGeneration;
+    let legacyMarker = false;
+    try {
+      const marker = await readFile(this.rotationFile, "utf8");
+      if (generation !== this.credentialGeneration)
+        throw new AccountError("account_identity_changed");
+      if (marker === "signed-out") {
+        // Deleting the encrypted file can fail independently of the logout commit.
+        // This tombstone wins over every cached token until a new sign-in is durable.
+        this.signedOutLocally = true;
+        this.sessionLoaded = true;
+        return;
+      }
+      legacyMarker = true;
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+    }
+    const value = this.options.storage.decrypt(await readFile(this.tokenFile));
+    let session: SavedSession;
+    const legacy = /^[A-Za-z0-9_-]{32,256}$/.test(value);
+    if (legacy) {
+      session = { version: 1, refreshToken: value, refreshRecovery: false };
+    } else {
+      const data = JSON.parse(value) as SavedSession;
+      if (
+        data?.version !== 1 ||
+        !/^[A-Za-z0-9_-]{32,256}$/.test(data.refreshToken) ||
+        typeof data.refreshRecovery !== "boolean" ||
+        (data.pending !== undefined && !/^[A-Za-z0-9_-]{43}$/.test(data.pending))
+      )
+        throw new AccountError("account_response_invalid");
+      if (data.account)
+        this.validateTokens({
+          accessToken: "a".repeat(32),
+          refreshToken: data.refreshToken,
+          expiresIn: 600,
+          account: data.account,
+        });
+      if (
+        data.access &&
+        (typeof data.access.value !== "string" ||
+          !/^[A-Za-z0-9_-]{32,256}$/.test(data.access.value) ||
+          !Number.isFinite(data.access.until))
+      )
+        throw new AccountError("account_response_invalid");
+      session = data;
+    }
+    // The old journal has no request ID and cannot safely recover a rotated token.
+    if (legacy && legacyMarker) session.pending = "legacy";
+    if (generation !== this.credentialGeneration)
+      throw new AccountError("account_identity_changed");
+    this.savedSession = session;
+    this.sessionLoaded = true;
+    this.profile = session.account;
+    this.access = session.pending ? undefined : session.access;
+    this.phase = this.restingPhase();
   }
   async status(): Promise<DesktopAccountStatus> {
     const identity = await this.options.identity();
@@ -134,6 +219,7 @@ export class DesktopAccountService {
     const work = this.queue.then(async () => {
       if (input.operation !== "status") this.error = undefined;
       try {
+        if (input.operation === "status" && this.phase === "error") await this.accessToken();
         if (
           input.operation === "status" &&
           this.profile &&
@@ -147,7 +233,7 @@ export class DesktopAccountService {
         if (input.operation === "login") await this.login();
         if (input.operation === "cancel-login") {
           this.cancelLogin();
-          this.phase = this.profile ? "signed-in" : "signed-out";
+          this.phase = this.restingPhase();
         }
         if (input.operation === "logout") await this.logout();
         if (input.operation === "manage") await this.options.openExternal(ACCOUNT_ORIGIN);
@@ -165,7 +251,9 @@ export class DesktopAccountService {
     body?: object,
     token?: string,
     method = body ? "POST" : "GET",
+    retryRead = true,
   ): Promise<unknown> {
+    const generation = this.credentialGeneration;
     try {
       const response = await (this.options.fetch ?? fetch)(new URL(path, ACCOUNT_API), {
         method,
@@ -177,23 +265,41 @@ export class DesktopAccountService {
         },
         ...(body ? { body: JSON.stringify(body) } : {}),
       });
+      if (generation !== this.credentialGeneration) {
+        void response.body?.cancel().catch(() => undefined);
+        throw new AccountError("account_identity_changed");
+      }
       if (!response.ok) {
-        if (response.status === 401 && token && token === this.access?.value && !this.refreshWork) {
-          // A definitive rejection invalidates cached login state as well as the token file.
-          // Do not clear a newer credential because an older in-flight request failed.
-          await this.clearCredentials();
-          this.error = "account_login_required";
-          await this.publish();
-        }
         let code: unknown;
-        if (response.status === 409 || response.status === 400) {
-          try {
-            code = ((await this.readResponse(response)) as { error?: unknown })?.error;
-          } catch {
-            /* Unrecognized/malformed error bodies keep the generic status mapping. */
+        try {
+          code = ((await this.readResponse(response)) as { error?: unknown })?.error;
+        } catch {
+          // A proxy's HTML error is not proof that account credentials were revoked.
+        }
+        if (generation !== this.credentialGeneration)
+          throw new AccountError("account_identity_changed");
+        if (
+          path === "/v1/auth/token" &&
+          [400, 401, 403].includes(response.status) &&
+          [
+            "invalid_grant",
+            "session_revoked",
+            "account_revoked",
+            "account_disabled",
+            "account_deleted",
+            "authentication_required",
+          ].includes(String(code))
+        ) {
+          throw new AccountError("account_login_required", true);
+        }
+        if (response.status === 401 && token) {
+          if (token === this.access?.value) this.access.until = 0;
+          // A previous access token may be rejected while its rotation is still committing.
+          // Recover authentication once; writes remain unknown and are never replayed here.
+          if (retryRead) {
+            const recovered = await this.accessToken();
+            if (method === "GET") return this.api(path, body, recovered, method, false);
           }
-        } else {
-          void response.body?.cancel().catch(() => undefined);
         }
         // Only recognized categories reach IPC, never arbitrary server error text.
         throw new AccountError(
@@ -216,7 +322,10 @@ export class DesktopAccountService {
                       : "account_request_failed",
         );
       }
-      return await this.readResponse(response);
+      const data = await this.readResponse(response);
+      if (generation !== this.credentialGeneration)
+        throw new AccountError("account_identity_changed");
+      return data;
     } catch (error) {
       if (error instanceof AccountError) throw error;
       throw new AccountError("account_connection_failed");
@@ -264,17 +373,27 @@ export class DesktopAccountService {
       throw new AccountError("account_response_invalid");
     return data;
   }
-  private async acceptTokens(value: unknown) {
+  private restingPhase(): DesktopAccountStatus["phase"] {
+    if (this.signedOutLocally) return "signed-out";
+    return this.profile && this.access && !this.savedSession?.pending
+      ? "signed-in"
+      : this.savedSession
+        ? "error"
+        : "signed-out";
+  }
+  private async acceptTokens(
+    value: unknown,
+    generation = this.credentialGeneration,
+    expectedAccountId?: string,
+  ) {
     const tokens = this.validateTokens(value);
+    if (generation !== this.credentialGeneration)
+      throw new AccountError("account_identity_changed");
+    if (expectedAccountId && tokens.account.id !== expectedAccountId)
+      throw new AccountError("account_response_invalid");
     if (!this.options.storage.available())
       throw new AccountError("account_secure_storage_unavailable");
-    await this.atomic(this.tokenFile, this.options.storage.encrypt(tokens.refreshToken));
-    await rm(this.rotationFile, { force: true });
-    this.access = {
-      value: tokens.accessToken,
-      until: Date.now() + tokens.expiresIn * 1000 - 30_000,
-    };
-    this.profile = {
+    const account = {
       id: tokens.account.id,
       username: tokens.account.username,
       status: tokens.account.status,
@@ -282,8 +401,42 @@ export class DesktopAccountService {
       deviceCount: tokens.account.deviceCount,
       totpEnabled: tokens.account.totpEnabled,
     };
+    const access = {
+      value: tokens.accessToken,
+      until: Date.now() + tokens.expiresIn * 1000 - 30_000,
+    };
+    await this.saveSession(
+      {
+        version: 1,
+        refreshToken: tokens.refreshToken,
+        refreshRecovery: tokens.refreshRecovery === true,
+        account,
+        access,
+      },
+      generation,
+    );
+    // Remove the logout tombstone only after the new encrypted record is durable.
+    // An IO failure here must remain visible and must not restore the old identity.
+    await this.storageChange(() => rm(this.rotationFile, { force: true }));
+    if (generation !== this.credentialGeneration)
+      throw new AccountError("account_identity_changed");
+    if (this.profile && this.profile.id !== account.id) {
+      this.knownName = undefined;
+      this.nameChecked = undefined;
+      this.nameReadAt = 0;
+      this.nameGeneration++;
+      this.relayUsage = undefined;
+      this.usageUnavailable = false;
+      this.usageReadAt = 0;
+      this.usageRevision++;
+    }
+    this.signedOutLocally = false;
+    this.sessionLoaded = true;
+    this.access = access;
+    this.profile = account;
     this.profileReadAt = Date.now();
     this.phase = "signed-in";
+    this.error = undefined;
     void this.refreshRelayUsage()
       .then(() => this.publish())
       .catch(() => undefined);
@@ -300,27 +453,39 @@ export class DesktopAccountService {
     }
   }
   private async refresh() {
-    // Also check at the call boundary: relay startup can race background initialize().
+    const generation = this.credentialGeneration;
     try {
-      await readFile(this.rotationFile);
-      await this.clearCredentials();
-      throw new AccountError("account_login_required");
-    } catch (error) {
-      if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
-    }
-    if (!this.options.storage.available())
-      throw new AccountError("account_secure_storage_unavailable");
-    const encrypted = await readFile(this.tokenFile);
-    const refreshToken = this.options.storage.decrypt(encrypted);
-    // Durable uncertainty marker before network I/O: never replay a rotated credential.
-    await this.atomic(this.rotationFile, "pending");
-    try {
+      await this.loadSession();
+      if (this.signedOutLocally) throw new AccountError("account_login_required");
+      if (this.access && this.access.until > Date.now()) return this.access.value;
+      const saved = this.savedSession!;
+      if (saved.pending && (!saved.refreshRecovery || saved.pending === "legacy"))
+        throw new AccountError("account_login_required");
+      const pending = saved.pending ?? randomBytes(32).toString("base64url");
+      // Retain the original token and stable request ID until the replacement is durable.
+      // Only a server advertising recovery may receive this request again after uncertainty.
+      await this.saveSession({ ...saved, pending }, generation);
+      this.access = undefined;
       await this.acceptTokens(
-        await this.api("/v1/auth/token", { grantType: "refresh_token", refreshToken }),
+        await this.api("/v1/auth/token", {
+          grantType: "refresh_token",
+          refreshToken: saved.refreshToken,
+          ...(saved.refreshRecovery ? { refreshRequestId: pending } : {}),
+        }),
+        generation,
+        saved.account?.id,
       );
       return this.access!.value;
     } catch (error) {
-      await this.clearCredentials();
+      if (generation !== this.credentialGeneration)
+        throw new AccountError("account_identity_changed");
+      if (error instanceof AccountError && error.definite) {
+        await this.clearCredentials();
+      } else if ((error as NodeJS.ErrnoException).code !== "ENOENT" && !this.signedOutLocally) {
+        this.phase = this.savedSession ? "error" : "signed-out";
+      }
+      if ((error as NodeJS.ErrnoException).code !== "ENOENT" && !this.signedOutLocally)
+        this.error = error instanceof AccountError ? error.code : "account_connection_failed";
       throw error;
     }
   }
@@ -333,10 +498,13 @@ export class DesktopAccountService {
   }
   private async login() {
     if (this.refreshWork) await this.refreshWork.catch(() => undefined);
-    if (this.profile) throw new AccountError("account_already_signed_in");
+    if (this.profile && this.phase === "signed-in")
+      throw new AccountError("account_already_signed_in");
     if (!this.options.storage.available())
       throw new AccountError("account_secure_storage_unavailable");
     this.cancelLogin();
+    this.credentialGeneration++;
+    const credentialGeneration = this.credentialGeneration;
     const generation = this.generation;
     const state = randomBytes(32).toString("base64url");
     const verifier = randomBytes(32).toString("base64url");
@@ -374,7 +542,7 @@ export class DesktopAccountService {
             redirectUri,
           });
           if (generation !== this.generation) return;
-          await this.acceptTokens(result);
+          await this.acceptTokens(result, credentialGeneration);
           this.error = undefined;
           const identity = await this.options.identity();
           if (identity?.accountClaimPending) {
@@ -383,7 +551,7 @@ export class DesktopAccountService {
           }
           this.refreshNameInBackground();
         } catch (error) {
-          this.phase = this.profile ? "signed-in" : "signed-out";
+          this.phase = this.restingPhase();
           this.error = error instanceof AccountError ? error.code : "account_login_required";
         }
         this.cancelLogin();
@@ -401,7 +569,7 @@ export class DesktopAccountService {
     this.phase = "signing-in";
     this.timer = setTimeout(() => {
       this.cancelLogin();
-      this.phase = this.profile ? "signed-in" : "signed-out";
+      this.phase = this.restingPhase();
       this.error = "account_login_expired";
       void this.publish();
     }, 300_000);
@@ -411,11 +579,15 @@ export class DesktopAccountService {
       await this.options.openExternal(`${ACCOUNT_ORIGIN}/#/desktop?${params}`);
     } catch {
       this.cancelLogin();
-      this.phase = this.profile ? "signed-in" : "signed-out";
+      this.phase = this.restingPhase();
       throw new AccountError("account_browser_failed");
     }
   }
   private async clearCredentials() {
+    this.credentialGeneration++;
+    this.savedSession = undefined;
+    this.signedOutLocally = true;
+    this.sessionLoaded = true;
     this.access = undefined;
     this.profile = undefined;
     this.knownName = undefined;
@@ -427,8 +599,17 @@ export class DesktopAccountService {
     this.usageReadAt = 0;
     this.usageRevision++;
     this.phase = "signed-out";
-    await rm(this.tokenFile, { force: true });
-    await rm(this.rotationFile, { force: true });
+    await this.storageChange(async () => {
+      try {
+        await this.atomic(this.rotationFile, "signed-out");
+      } catch (error) {
+        // If the tombstone cannot be persisted, still try to remove credentials.
+        // Surface the IO failure even if deletion succeeds.
+        await rm(this.tokenFile, { force: true });
+        throw error;
+      }
+      await rm(this.tokenFile, { force: true });
+    });
   }
   private async logout() {
     this.cancelLogin();
@@ -452,6 +633,7 @@ export class DesktopAccountService {
   async ensureDeviceOwner(accountId?: string) {
     if (this.loggingOut) throw new AccountError("account_login_required");
     await this.accessToken();
+    if (this.loggingOut) throw new AccountError("account_login_required");
     if (accountId && this.profile?.id !== accountId)
       throw new AccountError("account_device_conflict");
   }
@@ -515,7 +697,7 @@ export class DesktopAccountService {
       this.usageReadAt = Date.now();
   }
   get signedIn() {
-    return !!this.profile && !this.loggingOut;
+    return this.phase === "signed-in" && !!this.profile && !this.loggingOut;
   }
   get accountId() {
     return this.profile?.id;
@@ -688,11 +870,15 @@ export class DesktopAccountService {
     return this.knownName?.name !== before;
   }
   shutdown() {
+    this.credentialGeneration++;
     this.cancelLogin();
   }
 }
 class AccountError extends Error {
-  constructor(readonly code: string) {
+  constructor(
+    readonly code: string,
+    readonly definite = false,
+  ) {
     super(code);
   }
 }

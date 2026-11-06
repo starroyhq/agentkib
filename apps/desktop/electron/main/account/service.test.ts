@@ -1,10 +1,24 @@
 // @vitest-environment node
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createHash } from "node:crypto";
 import { DesktopAccountService } from "./service";
+
+const storageFailure = vi.hoisted(() => ({ blockedDelete: "" }));
+vi.mock("node:fs/promises", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("node:fs/promises")>();
+  return {
+    ...actual,
+    rm: async (...args: Parameters<typeof actual.rm>) => {
+      if (String(args[0]) === storageFailure.blockedDelete) {
+        throw Object.assign(new Error("Synthetic credential deletion failure"), { code: "EACCES" });
+      }
+      return actual.rm(...args);
+    },
+  };
+});
 
 const profile = {
   id: "account-a",
@@ -18,6 +32,7 @@ const tokens = {
   accessToken: "a".repeat(43),
   refreshToken: "r".repeat(43),
   expiresIn: 600,
+  refreshRecovery: true,
   account: profile,
 };
 let directory: string;
@@ -73,6 +88,7 @@ async function callback(state?: string) {
   return result;
 }
 beforeEach(async () => {
+  storageFailure.blockedDelete = "";
   directory = await mkdtemp(join(tmpdir(), "agentkib-account-"));
   opened = "";
   available = true;
@@ -83,6 +99,7 @@ beforeEach(async () => {
   await setup();
 });
 afterEach(async () => {
+  storageFailure.blockedDelete = "";
   service.shutdown();
   await rm(directory, { recursive: true, force: true });
 });
@@ -215,22 +232,285 @@ describe("desktop account boundary", () => {
       code: "ENOENT",
     });
   });
-  it("serializes refresh and never retries an uncertain rotated token after restart", async () => {
+  it("retains a legacy uncertain session without replaying its refresh token", async () => {
+    network.mockImplementation(async () => Response.json({ ...tokens, refreshRecovery: false }));
+    await service.request({ operation: "login" });
+    await callback();
+    service.shutdown();
+    const clock = vi.spyOn(Date, "now").mockReturnValue(Date.now() + 601_000);
+    try {
+      network.mockClear();
+      network.mockRejectedValue(new Error("connection reset"));
+      await setup();
+      expect(network).toHaveBeenCalledTimes(1);
+      expect((await service.status()).phase).toBe("error");
+      expect((await service.status()).account).toEqual(profile);
+      expect(service.signedIn).toBe(false);
+      service.shutdown();
+      await setup();
+      expect(network).toHaveBeenCalledTimes(1);
+      expect((await service.status()).account).toEqual(profile);
+      expect((await service.request({ operation: "login" })).phase).toBe("signing-in");
+    } finally {
+      clock.mockRestore();
+    }
+  });
+  it("restores valid encrypted access without rotating on every restart", async () => {
     await service.request({ operation: "login" });
     await callback();
     service.shutdown();
     network.mockClear();
-    network.mockRejectedValue(new Error("connection reset"));
+    network.mockRejectedValue(new Error("offline"));
     await setup();
-    expect(network).toHaveBeenCalledTimes(1);
-    expect((await service.status()).phase).toBe("signed-out");
+    expect(await service.accessToken()).toBe(tokens.accessToken);
+    expect((await service.status()).account).toEqual(profile);
+    expect(network).not.toHaveBeenCalled();
+  });
+  it("recovers a lost refresh response after restart with the same durable request ID", async () => {
+    await service.request({ operation: "login" });
+    await callback();
+    service.shutdown();
+    const clock = vi.spyOn(Date, "now").mockReturnValue(Date.now() + 601_000);
+    const requests: Record<string, string>[] = [];
+    let lose = true;
+    network.mockImplementation(async (url: URL, init: RequestInit) => {
+      if (url.pathname !== "/v1/auth/token") return Response.json({});
+      requests.push(JSON.parse(init.body as string));
+      if (lose) throw new Error("response lost");
+      return Response.json({
+        ...tokens,
+        accessToken: "b".repeat(43),
+        refreshToken: "s".repeat(43),
+      });
+    });
+    try {
+      await setup();
+      expect((await service.status()).phase).toBe("error");
+      expect((await service.status()).account).toEqual(profile);
+      expect(requests).toHaveLength(1);
+      expect(requests[0].refreshRequestId).toMatch(/^[A-Za-z0-9_-]{43}$/);
+      service.shutdown();
+      lose = false;
+      await setup();
+      expect(requests).toHaveLength(2);
+      expect(requests[1]).toEqual(requests[0]);
+      expect(await service.accessToken()).toBe("b".repeat(43));
+      expect((await service.status()).phase).toBe("signed-in");
+      expect(JSON.stringify(await service.status())).not.toContain(requests[0].refreshRequestId);
+    } finally {
+      clock.mockRestore();
+    }
+  });
+  it("migrates a previous encrypted refresh token without a new storage dependency", async () => {
+    await writeFile(
+      join(directory, "refresh.enc"),
+      Buffer.from(Buffer.from(tokens.refreshToken).map((byte) => byte ^ 0x55)),
+    );
+    network.mockClear();
     await setup();
-    expect(network).toHaveBeenCalledTimes(1);
+    expect(await service.accessToken()).toBe(tokens.accessToken);
+    const stored = JSON.parse(
+      Buffer.from(
+        (await readFile(join(directory, "refresh.enc"))).map((byte) => byte ^ 0x55),
+      ).toString(),
+    );
+    expect(stored.version).toBe(1);
+    expect(stored.refreshRecovery).toBe(true);
+    expect(stored.pending).toBeUndefined();
+  });
+  it("retains the recoverable journal if saving a successful rotation fails", async () => {
+    await service.request({ operation: "login" });
+    await callback();
+    const clock = vi.spyOn(Date, "now").mockReturnValue(Date.now() + 601_000);
+    const requests: Record<string, string>[] = [];
+    let failSave = true;
+    network.mockImplementation(async (url: URL, init: RequestInit) => {
+      if (url.pathname !== "/v1/auth/token") return Response.json({});
+      requests.push(JSON.parse(init.body as string));
+      if (failSave) await mkdir(join(directory, "refresh.enc.tmp"));
+      return Response.json({
+        ...tokens,
+        accessToken: "b".repeat(43),
+        refreshToken: "s".repeat(43),
+      });
+    });
+    try {
+      await expect(service.accessToken()).rejects.toBeDefined();
+      expect((await service.status()).account).toEqual(profile);
+      await rm(join(directory, "refresh.enc.tmp"), { recursive: true });
+      failSave = false;
+      expect(await service.accessToken()).toBe("b".repeat(43));
+      expect(requests[1]).toEqual(requests[0]);
+    } finally {
+      clock.mockRestore();
+    }
+  });
+  it("waits for an in-flight rotation before retrying an old access 401 read", async () => {
+    await service.request({ operation: "login" });
+    await callback();
+    let rejectOld!: (value: Response) => void;
+    let rotate!: (value: Response) => void;
+    let reads = 0,
+      rotations = 0;
+    network.mockImplementation(async (url: URL) => {
+      if (url.pathname === "/v1/account/sessions") {
+        if (++reads === 1)
+          return new Promise<Response>((resolve) => {
+            rejectOld = resolve;
+          });
+        return Response.json({ sessions: [{ id: "phone", kind: "mobile" }] });
+      }
+      if (url.pathname === "/v1/auth/token") {
+        rotations++;
+        return new Promise<Response>((resolve) => {
+          rotate = resolve;
+        });
+      }
+      return Response.json({});
+    });
+    const oldRead = service.liveSessions();
+    await vi.waitFor(() => expect(rejectOld).toBeDefined());
+    const clock = vi.spyOn(Date, "now").mockReturnValue(Date.now() + 601_000);
+    try {
+      const refresh = service.accessToken();
+      await vi.waitFor(() => expect(rotate).toBeDefined());
+      rejectOld(Response.json({ error: "authentication_required" }, { status: 401 }));
+      rotate(
+        Response.json({ ...tokens, accessToken: "b".repeat(43), refreshToken: "s".repeat(43) }),
+      );
+      expect(await refresh).toBe("b".repeat(43));
+      expect((await oldRead).accountId).toBe(profile.id);
+      expect(rotations).toBe(1);
+      expect(reads).toBe(2);
+      expect((await service.status()).phase).toBe("signed-in");
+    } finally {
+      clock.mockRestore();
+    }
+  });
+  it("does not replay a rejected mutation after recovering authentication", async () => {
+    await service.request({ operation: "login" });
+    await callback();
+    let registrations = 0,
+      rotations = 0;
+    network.mockImplementation(async (url: URL) => {
+      if (url.pathname === "/v1/account/devices") {
+        registrations++;
+        return Response.json({ error: "authentication_required" }, { status: 401 });
+      }
+      if (url.pathname === "/v1/auth/token") {
+        rotations++;
+        return Response.json({
+          ...tokens,
+          accessToken: "b".repeat(43),
+          refreshToken: "s".repeat(43),
+        });
+      }
+      return Response.json({});
+    });
+    await expect(
+      service.registerDevice({ registrationId: "test", credential: "private" }),
+    ).rejects.toThrow("account_login_required");
+    expect(registrations).toBe(1);
+    expect(rotations).toBe(1);
+    expect((await service.status()).phase).toBe("signed-in");
+  });
+  it("does not discard login for an HTML 401 followed by an unavailable token endpoint", async () => {
+    await service.request({ operation: "login" });
+    await callback();
+    network.mockImplementation(async (url: URL) =>
+      url.pathname === "/v1/auth/token"
+        ? new Response("gateway down", { status: 503 })
+        : new Response("<html>gateway auth</html>", { status: 401 }),
+    );
+    await expect(service.liveSessions()).rejects.toBeDefined();
+    expect((await service.status()).account).toEqual(profile);
+    expect(await readFile(join(directory, "refresh.enc"))).toBeDefined();
+  });
+  it("does not let an old 401 refresh or retry as a newly signed-in account", async () => {
+    await service.request({ operation: "login" });
+    await callback();
+    let finish!: (value: Response) => void;
+    let reads = 0;
+    const other = { ...profile, id: "account-b", username: "bob" };
+    network.mockImplementation(async (url: URL) => {
+      if (url.pathname === "/v1/account/sessions") {
+        reads++;
+        return new Promise<Response>((resolve) => {
+          finish = resolve;
+        });
+      }
+      return Response.json(url.pathname === "/v1/auth/token" ? { ...tokens, account: other } : {});
+    });
+    const old = service.liveSessions();
+    const rejection = expect(old).rejects.toThrow("account_identity_changed");
+    await vi.waitFor(() => expect(finish).toBeDefined());
+    await service.request({ operation: "logout" });
+    await service.request({ operation: "login" });
+    await callback();
+    finish(Response.json({ error: "authentication_required" }, { status: 401 }));
+    await rejection;
+    expect(reads).toBe(1);
+    expect((await service.status()).account).toEqual(other);
+  });
+  it("logout wins over a rotation in flight and prevents later session resurrection", async () => {
+    await service.request({ operation: "login" });
+    await callback();
+    const clock = vi.spyOn(Date, "now").mockReturnValue(Date.now() + 601_000);
+    let rotate!: (value: Response) => void;
+    network.mockImplementation(async (url: URL) =>
+      url.pathname === "/v1/auth/token"
+        ? new Promise<Response>((resolve) => {
+            rotate = resolve;
+          })
+        : Response.json({ ok: true }),
+    );
+    try {
+      const refresh = service.accessToken();
+      await vi.waitFor(() => expect(rotate).toBeDefined());
+      const logout = service.request({ operation: "logout" });
+      await vi.waitFor(() => expect(pause).toHaveBeenCalledOnce());
+      rotate(
+        Response.json({ ...tokens, accessToken: "b".repeat(43), refreshToken: "s".repeat(43) }),
+      );
+      await refresh;
+      await logout;
+      expect((await service.status()).phase).toBe("signed-out");
+      expect(service.signedIn).toBe(false);
+      await expect(readFile(join(directory, "refresh.enc"))).rejects.toMatchObject({
+        code: "ENOENT",
+      });
+    } finally {
+      clock.mockRestore();
+    }
+  });
+  it("can replace an uncertain cached account by signing in as another account", async () => {
+    await service.request({ operation: "login" });
+    await callback();
+    const clock = vi.spyOn(Date, "now").mockReturnValue(Date.now() + 601_000);
+    try {
+      network.mockRejectedValue(new Error("response lost"));
+      await expect(service.accessToken()).rejects.toBeDefined();
+      expect((await service.status()).account).toEqual(profile);
+      const other = { ...profile, id: "account-b", username: "bob" };
+      network.mockImplementation(async (url: URL) =>
+        Response.json(url.pathname === "/v1/auth/token" ? { ...tokens, account: other } : {}),
+      );
+      await service.request({ operation: "login" });
+      await callback();
+      expect((await service.status()).account).toEqual(other);
+      expect((await service.status()).phase).toBe("signed-in");
+    } finally {
+      clock.mockRestore();
+    }
   });
   it("detects a crash marker before using old refresh credentials", async () => {
     await service.request({ operation: "login" });
     await callback();
     service.shutdown();
+    await writeFile(
+      join(directory, "refresh.enc"),
+      Buffer.from(Buffer.from(tokens.refreshToken).map((byte) => byte ^ 0x55)),
+    );
     await writeFile(join(directory, "rotation-pending"), "pending");
     network.mockClear();
     await setup();
@@ -250,6 +530,77 @@ describe("desktop account boundary", () => {
     expect(state.phase).toBe("signed-out");
     expect(identity.credential).toBe("private");
     await expect(service.ensureDeviceOwner(profile.id)).rejects.toBeDefined();
+  });
+  it("does not restore cached access after logout cannot delete the credential file", async () => {
+    await service.request({ operation: "login" });
+    await callback();
+    storageFailure.blockedDelete = join(directory, "refresh.enc");
+    network.mockRejectedValue(new Error("offline"));
+    const loggedOut = await service.request({ operation: "logout" });
+    expect(loggedOut.phase).toBe("signed-out");
+    expect(loggedOut.error).toBeDefined();
+    expect(await readFile(join(directory, "refresh.enc"))).toBeDefined();
+    service.shutdown();
+    storageFailure.blockedDelete = "";
+    network.mockClear();
+    await setup();
+    expect((await service.status()).phase).toBe("signed-out");
+    expect((await service.status()).account).toBeUndefined();
+    expect(service.signedIn).toBe(false);
+    expect(network).not.toHaveBeenCalled();
+    await expect(service.accessToken()).rejects.toThrow("account_login_required");
+    network.mockImplementation(async () => Response.json(tokens));
+    await service.request({ operation: "login" });
+    await callback();
+    expect((await service.status()).phase).toBe("signed-in");
+    service.shutdown();
+    await setup();
+    expect(await service.accessToken()).toBe(tokens.accessToken);
+  });
+  it("does not report a replacement login before removing the logout tombstone", async () => {
+    await service.request({ operation: "login" });
+    await callback();
+    await service.request({ operation: "logout" });
+    expect(await readFile(join(directory, "rotation-pending"), "utf8")).toBe("signed-out");
+    storageFailure.blockedDelete = join(directory, "rotation-pending");
+    await service.request({ operation: "login" });
+    await callback();
+    expect((await service.status()).phase).toBe("signed-out");
+    expect((await service.status()).error).toBeDefined();
+    expect(service.signedIn).toBe(false);
+    expect(await readFile(join(directory, "refresh.enc"))).toBeDefined();
+    service.shutdown();
+    storageFailure.blockedDelete = "";
+    network.mockClear();
+    await setup();
+    expect((await service.status()).phase).toBe("signed-out");
+    expect(network).not.toHaveBeenCalled();
+    await service.request({ operation: "login" });
+    await callback();
+    expect((await service.status()).phase).toBe("signed-in");
+    await expect(readFile(join(directory, "rotation-pending"))).rejects.toMatchObject({
+      code: "ENOENT",
+    });
+    service.shutdown();
+    await setup();
+    expect((await service.status()).phase).toBe("signed-in");
+    expect(await service.accessToken()).toBe(tokens.accessToken);
+  });
+  it("still deletes credentials and reports IO failure if the logout tombstone cannot be written", async () => {
+    await service.request({ operation: "login" });
+    await callback();
+    await mkdir(join(directory, "rotation-pending.tmp"));
+    const result = await service.request({ operation: "logout" });
+    expect(result.phase).toBe("signed-out");
+    expect(result.error).toBeDefined();
+    await expect(readFile(join(directory, "refresh.enc"))).rejects.toMatchObject({
+      code: "ENOENT",
+    });
+    service.shutdown();
+    network.mockClear();
+    await setup();
+    expect((await service.status()).phase).toBe("signed-out");
+    expect(network).not.toHaveBeenCalled();
   });
   it("blocks a concurrent relay enable while logout revocation is in flight", async () => {
     await service.request({ operation: "login" });

@@ -295,6 +295,9 @@ export class RuntimeRouter extends EventEmitter implements RuntimeHost {
         "session-directory",
         "read-state",
         "read-state-update",
+        // Read-only subagent browsing for every agent.
+        "subagents",
+        "subagent-events",
       ].includes(String(params.operation))
     )
       return this.typescript.request<TResult>(method, params);

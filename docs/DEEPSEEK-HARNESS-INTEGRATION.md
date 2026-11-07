@@ -1,6 +1,6 @@
 # DeepSeek Harness 接入方案草案
 
-状态：一期与二期 2a 已实施并合并（#199），2b 已实施，其余为方案。日期：2026-11-04；同日按 DSH、AgentKib 与 agentkib-flutter 源码复核修订，并按“完全接管”目标重排分期。
+状态：一期与二期 2a、2b 已实施并合并（#199、#201），2c 已实施，其余为方案。日期：2026-11-04；同日按 DSH、AgentKib 与 agentkib-flutter 源码复核修订，并按“完全接管”目标重排分期。
 
 本文记录宿主机插件桥接、Remote 复用现有链路，以及后续 CLI 与 Desktop 共用实例的接入方向。文中的新命令、模块和协议字段均为建议，不代表当前已提供的功能。
 
@@ -111,7 +111,7 @@ CLI 接入（包括曾提议的 `agentkib bridge --stdio` 长期转发器）不�
 - 插件包可随 AgentKib 提供本地 tarball，由用户执行 `dsh plugin --profile <name> add <tarball>`，不要求发布到 npm。
 - 插件需安装到用户实际运行的 profile。仅安装到 sdk profile 不会自动进入 web 或 desktop profile；DSH Desktop 的保留 profile 需遵循其自身插件管理入口。
 - 通过 `dsh plugin add` 安装或更新后，运行中的 profile 保留启动时的组合包集合，须重启才生效；DSH 内置插件管理器在启用 HMR 时可即时生效，未启用时需重启（更新已运行的组合包时返回 `restart-required`）。因此“连接正在运行的会话”只适用于插件生效之后的 DSH 进程，首次接入和升级说明需包含重启。
-- `engines.dsh` 收窄到已验收的版本范围，沿用 Claude 原会话连接的已验证版本清单和未验证版本的中性提示。DSH 处于 developer preview，升级后插件可能被拒绝加载，连接说明需覆盖这种情况。
+- `engines.dsh` 收窄到已验收的版本范围，沿用 Claude 原会话连接的已验证版本清单。未验证的版本同样可以连接，不常驻显示未验证提示；DSH 缺少的功能按插件上报的服务关闭，在用到时说明原因（例如这个版本的 DSH 不能从这里接收图片）。DSH 处于 developer preview，升级后插件可能被拒绝加载，连接说明需覆盖这种情况。
 
 ## 4. 会话连接与交接
 
@@ -162,13 +162,14 @@ CLI 接入（包括曾提议的 `agentkib bridge --stdio` 长期转发器）不�
 | 恢复未运行的会话（DSH 已运行） | `sessionController` 原生恢复路径（§4.2）                                                     | 一期 |
 | 图片与文件附件                 | `prompt` 内容中的附件与上传收据、`sessionController.attachment`                              | 二期 |
 | 模型与推理强度                 | `sessionController.selectModel`、`modelCatalog`                                              | 二期 |
-| Agent preset 与权限 preset     | `agent-preset-registry` 的 list、read、select，`permission-presets` 的 catalog               | 二期 |
+| Agent preset                   | `agent-preset-registry` 的 list、read、select                                                | 二期 |
+| 权限 preset（审批策略）        | `permissionPresets.catalog`、`permissions` 投影，切换走 `/permission <preset>`               | 二期 |
 | 重命名、分叉                   | `sessionController.rename`、`fork`                                                           | 二期 |
 | 归档、置顶                     | `workspace-controller` 的 `archiveSession`、`unarchiveSession`、`pinSession`、`unpinSession` | 二期 |
-| 目标                           | `goal` 的 create、edit、pause、resume、clear、complete                                       | 二期 |
+| 目标                           | `goals` 的 get、create、edit、pause、resume、clear，`goal` 投影                              | 二期 |
 | 新建会话                       | `sessionController.create`                                                                   | 二期 |
-| 子代理浏览与控制               | `SessionAddress` 的 subagent 路由                                                            | 二期 |
-| 压缩、斜杠命令、审批策略切换   | 原生入口待核对                                                                               | 二期 |
+| 子代理浏览                     | `subagentCatalog`、`subagentTiming` 投影与子会话历史                                         | 二期 |
+| 斜杠命令、压缩                 | `commands` 的 list、find、execute；`compaction/*` 事件                                       | 二期 |
 | 跨 Agent 交接、正文搜索        | 统一 SessionDocument、`sessionController.search` 与 `sessionQuery` 检索                      | 二期 |
 | DSH 未运行时启动并继续         | `dsh --profile <name> --no-open --port 0`，插件自动注册（§4.2）                              | 三期 |
 | Desktop 关闭后远控、CLI 接入   | 独立 Host（§7 四期）                                                                         | 四期 |
@@ -341,9 +342,23 @@ DSH 的审批和问答经 `approval/request`、`user-questions/request` waterfal
 - 其他执行模式：Codex 跟随（ChatGPT 桌面端）与发送同条件开放附件，图片按 Codex 格式（`localImage`）交给 owner，已在 Desktop `26.1029.61003` 上真实验收；经 app-server 发出的 Codex 图片消息末尾的 `<image …>` 标签在消息中不再显示。Claude 终端连接的提交接口只接受文本，不提供图片。
 - 被拒原因对所有 Agent 一致：客户端以前只为 Codex 和 Claude 保留未执行原因，其他 Agent 一律显示“本次操作未执行”；现在图片被拒（`model-images-unsupported`、`attachment-invalid`、`attachment-changed`、`attachment-unavailable`、Host 自己的 `invalid_attachment_image`）对任何 Agent 都说明具体原因，手机端同样。
 
+2c 实现（2026-11-06）：
+
+- 插件升到 0.4.0，按 DSH 提供的服务分别报告 `goals`、`commands`、`permissions`、`subagents`，缺少哪项就关闭哪项。安装版 DSH 已自动升到 0.2.2-rc.1，所用接口在该版本上逐项复核过；它不在已验证清单里，照常连接，不常驻显示未验证提示（各 Agent 一致），DSH 缺少的功能在用到时说明原因。
+- 斜杠命令照 DSH 自己窗口的做法：消息开头是会话 Agent 的命令（小写名，后接空白或结束）时，插件用 `commands.execute` 运行它，不交给模型，运行中也可以；其他行（如 `/private/tmp …`）照常作为消息发送。0.2.2-rc.1 的全局命令只有 export、feedback、permission，`/compact`、`/goal`、`/plan` 只在运行中 Agent 自己的命令表里，所以由插件按会话的 Agent 判断（`commands.find`）。插件上报全局命令和每个运行中 Agent 的命令表，Host 给会话自己的那份；会话未运行时给全局命令加上其他运行中 Agent 的命令，发送时 DSH 会先恢复该会话。命令与 DSH 的回答写进历史，显示为用户消息和命令输出；切换权限 preset 的 `/permission` 与 DSH 自己的窗口一样不显示（DSH 聊天界面的可见性规则），preset 只显示在执行策略里，失败的切换保留，原因只在那里能看到。插件最多等命令 2 秒：DSH 自己的命令毫秒级完成，压缩要调模型，之后在后台继续；Host 在控制进行中不回答任何读取，等得久会让各端一直重试。
+- 哪些命令替用户运行、对哪台设备运行，是插件与各端 `/` 菜单共用的一份规则（`dsh-bridge-plugin/commands.js`）：`/export` 在 DSH 窗口里下载文件，不替用户运行（`dsh-command-window-only`）；带附件的命令不运行（`dsh-command-attachments`）；`/compact`、`/plan`、`/feedback` 只作用于本会话，能发送的设备都可用；`/goal`、`/permission` 和其他插件加的命令与 AgentKib 的目标、设置控件一样要求完整访问的设备（`dsh-command-full-access`）。设备是否有完整访问只有 Host 知道，Host 随消息带上 `commandAccess`。命令已不在 DSH 中为 `dsh-command-unavailable`，DSH 运行失败为 `dsh-command-failed`。
+- 目标：读取和修改走 `goals`，修改带上目标 ID 与 revision，期间在 DSH 窗口改过则按 `goal-changed` 未执行。“开始目标”在没有目标或目标已完成时新建，否则编辑现有目标；暂停、恢复、清除对应原生动作。DSH 按轮次（默认 256）限制目标，不支持 token 预算：各端显示已开始的轮次，不显示预算输入（带预算为 `goal-token-budget-unavailable`），轮次用完不能恢复（`goal-rounds-exhausted`）。目标是否由 DSH 自动继续（activation）只在当前 DSH 进程内有效，DSH 恢复会话时目标不自动继续，AgentKib 把这种状态显示为已暂停，恢复后继续。会话未运行时从 `goal` 投影读取，不恢复会话。
+- 压缩：`/compact` 与 Web 的压缩按钮都运行 DSH 的 `/compact`（按钮要求会话空闲）。压缩期间 DSH 的 Agent 仍报告 `idle`，插件按 `compaction/start`、`compaction/end` 事件上报 `activity: "compacting"`，各端显示正在压缩。
+- 权限 preset 即各端的“执行策略”：选项来自 `permissionPresets.catalog`，当前值读 `permissions` 投影，切换运行 `/permission <preset>`。DSH 在运行中的轮次里也会应用，所以执行策略在运行中可以修改；模型和推理强度仍等本轮结束。
+- 计划模式按 Codex 的协作模式报告与切换：插件读 `plan` 投影，选中状态为 `pending ? !active : active`，与 DSH 输入框的计划标识一致；切换运行 DSH 自己的 `/plan`、`/plan off`，单独进行，运行中也可以（DSH 在下一步应用）。桌面输入框与 Codex、Claude 一样识别 `/plan` 并显示可点击退出的“计划”标识，设置对话框也有模式选择。
+- 子代理只读浏览：插件读 `subagentCatalog` 与 `subagentTiming` 投影，每个会话最多 50 个直接子代理；子会话 ID 在 Host 用本次运行的随机盐做 HMAC，不暴露 DSH 原始 ID。手机经现有的子代理接口浏览，Desktop 与 Web 暂无子代理视图。
+- 控制所依据的 revision 也随目标（ID、revision、activation）和压缩状态变化；目标操作结果未知时按目标状态核对：清除看目标是否消失，暂停看是否暂停，恢复看是否在继续，开始看 revision 是否变化。
+- 模型与推理强度：桌面端与 Codex、Claude 一样在输入框里切换（#200 的选择器），与 DSH 自己窗口的模型菜单一致：模型按提供方分组（DSH 后端给每个模型带上提供方名称），推理强度只列该模型支持的等级；未选强度即 DSH 的 Default，显示为“默认 · 该模型的默认强度”，换模型时仍跟随新模型的默认。DSH 没有服务档位，不显示 Fast。Web 与手机仍在设置中切换（Codex 也是）。
+- Agent preset 的切换未纳入 2c（AgentKib 尚无对应概念），与 2d 一起评估。
+
 ### 三期：DSH 未运行时由 AgentKib 启动
 
-没有可控制的 runtime 时，AgentKib 以用户的 web profile 启动 DSH（§4.2），插件注册后继续原会话；没有 DSH 进程时的历史浏览一并解决。开工前需确定 §9 列出的托管启动规则。离线原生日志读取独立评估，优先复用官方只读 persistence／codec，不自写完整 V0–V4 解析器。
+没有可控制的 runtime 时，AgentKib 以用户的 web profile 启动 DSH（§4.2），插件注册后继续原会话；没有 DSH 进程时的历史浏览一并解决。开工前需确定 §9 列出的托管启动规则。离线原生日志读取独立评估，优先复用官方只读 persistence／codec，不自写完整 V0–V4 解析器。插件在 DSH 启动时就会注册，DSH 的会话服务可能晚几秒才就绪，这期间读历史会失败（`dsh-history-unavailable`，2c 验收中 DSH 重启后立即打开会话时出现过，客户端不自动重试，点“重新连接”后正常）；由 AgentKib 启动 DSH 后会立即读取历史，需要等服务就绪或重试。
 
 验收覆盖：启动后原会话 ID 与 preset 不变、启动失败与版本不符的提示、用户随后自己打开 DSH 时控制目标的切换、AgentKib 启动的进程在空闲、崩溃和 Desktop 退出时的处理。
 

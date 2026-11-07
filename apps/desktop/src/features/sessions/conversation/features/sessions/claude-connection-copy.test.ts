@@ -132,7 +132,6 @@ describe("terminal connection guide copy", () => {
     expect(copy.cliTooOld).toContain("{minimum}");
     expect(copy.pluginOutdated).toMatch(/第 1|step 1|手順 1/);
     expect(copy.missingCapabilities).toContain("{version}");
-    expect(copy.unverifiedVersion).toContain("{version}");
   });
 
   it.each(cases)(

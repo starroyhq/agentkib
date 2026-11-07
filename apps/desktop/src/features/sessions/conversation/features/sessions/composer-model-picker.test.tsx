@@ -478,6 +478,22 @@ describe("composer model picker", () => {
     expect(props.onChange).toHaveBeenCalledOnce();
   });
 
+  it("shows the model's default effort where an agent reports none for it", async () => {
+    props = { ...props, effortDefault: true, selection: { modelId: "sol" } };
+    render(<ComposerModelPicker {...props} />);
+    const popup = await openPicker();
+    expect(within(popup).getByText(`${copy.defaultEffort} · Medium`)).toBeInTheDocument();
+    expect(within(popup).getByRole("slider", { name: copy.chooseEffort })).toHaveAttribute(
+      "aria-valuetext",
+      `${copy.defaultEffort} · Medium`,
+    );
+    // Choosing another model keeps following that model's default.
+    fireEvent.click(within(popup).getByRole("button", { name: `${copy.chooseModel}: GPT Sol` }));
+    const models = await screen.findByRole("dialog", { name: copy.chooseModel });
+    fireEvent.click(within(models).getByRole("button", { name: "GPT Terra" }));
+    await waitFor(() => expect(props.onChange).toHaveBeenCalledExactlyOnceWith({ model: "terra" }));
+  });
+
   it("shows unknown settings and a read-only status without fabricating models", async () => {
     props = { ...props, settings: undefined, selection: undefined, status: "Read back required" };
     render(<ComposerModelPicker {...props} />);

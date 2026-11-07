@@ -161,6 +161,20 @@ describe("RuntimeRouter read-only Codex continuation", () => {
     expect(received).toHaveBeenCalledExactlyOnceWith(RUNTIME_METHODS.webRequest, params);
     await router.stop();
   });
+  it.each([
+    { operation: "subagents", sessionId: "parent" },
+    { operation: "subagent-events", sessionId: "parent", subagentId: "a".repeat(64), limit: 50 },
+  ])("forwards $operation, the read-only subagent browsing", async (params) => {
+    const host = new Host();
+    const router = new RuntimeRouter(host);
+    await router.start();
+    const result = { version: 1, sessionId: "parent", agents: [], truncated: false };
+    const received = vi.fn(() => result);
+    host.handler = received;
+    expect(await router.request(RUNTIME_METHODS.webRequest, params)).toBe(result);
+    expect(received).toHaveBeenCalledExactlyOnceWith(RUNTIME_METHODS.webRequest, params);
+    await router.stop();
+  });
   it.each(["read-state", "read-state-update"])(
     "forwards %s independently of business controls",
     async (operation) => {

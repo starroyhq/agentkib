@@ -2,9 +2,10 @@ import { useEffect, useId, useMemo, useRef, useState, type KeyboardEvent } from 
 
 /**
  * The `/` menu of a session composer. Composers pass the commands their device may use
- * (runtime-protocol's `claudeMenuCommands`, or its `CODEX_MENU_COMMANDS` through
- * `codexSlashOptions`); this module matches what was typed, handles the keyboard and renders the
- * list. The textarea keeps focus and points at the active option through `aria-activedescendant`.
+ * (runtime-protocol's `claudeMenuCommands` or `dshMenuCommands`, or its `CODEX_MENU_COMMANDS`
+ * through `codexSlashOptions`); this module matches what was typed, handles the keyboard and
+ * renders the list. The textarea keeps focus and points at the active option through
+ * `aria-activedescendant`.
  */
 export interface SlashCommandOption {
   name: string;
@@ -22,6 +23,8 @@ const copies = {
     rename: "在 AgentKib 中重命名会话",
     goal: "设置持续目标",
     codexLabel: "Codex 命令",
+    dshLabel: "DeepSeek Harness 命令",
+    planMode: "开启计划模式",
     codexCompact: "压缩上下文",
     codexReview: "审查未提交的改动，或对比某个分支",
     codexInit: "为这个目录写一份 AGENTS.md",
@@ -41,6 +44,8 @@ const copies = {
     rename: "在 AgentKib 中重新命名對話",
     goal: "設定持續目標",
     codexLabel: "Codex 指令",
+    dshLabel: "DeepSeek Harness 指令",
+    planMode: "開啟計畫模式",
     codexCompact: "壓縮上下文",
     codexReview: "審查尚未提交的變更，或與某個分支比較",
     codexInit: "為這個目錄寫一份 AGENTS.md",
@@ -60,6 +65,8 @@ const copies = {
     rename: "Rename the session in AgentKib",
     goal: "Set a persistent goal",
     codexLabel: "Codex commands",
+    dshLabel: "DeepSeek Harness commands",
+    planMode: "Turn on Plan mode",
     codexCompact: "Compact the context",
     codexReview: "Review uncommitted changes, or against a branch",
     codexInit: "Write an AGENTS.md for this directory",
@@ -79,6 +86,8 @@ const copies = {
     rename: "AgentKib で会話の名前を変更",
     goal: "継続目標を設定",
     codexLabel: "Codex のコマンド",
+    dshLabel: "DeepSeek Harness のコマンド",
+    planMode: "計画モードをオンにする",
     codexCompact: "コンテキストを圧縮",
     codexReview: "未コミットの変更、またはブランチとの差分をレビュー",
     codexInit: "このディレクトリの AGENTS.md を作成",
@@ -171,6 +180,16 @@ export function codexSlashOptions(names: readonly string[], locale: string): Sla
   });
 }
 
+/**
+ * Menu options for a DeepSeek Harness session: DSH runs its own commands, so they keep DSH's
+ * descriptions. Composers pass runtime-protocol's `dshMenuCommands` for the device.
+ */
+export function dshSlashOptions(
+  commands: readonly { name: string; description?: string; argumentHint?: string }[],
+): SlashCommandOption[] {
+  return commands.map((command) => ({ ...command, aliases: [] }));
+}
+
 /** What AgentKib runs for a refused command, given its decision from runtime-protocol. */
 export type AgentKibCommand =
   | { action: "settings"; fields: { model: string } | { effort: string } }
@@ -244,6 +263,26 @@ export function slashCommandQuery(draft: string): string | null {
   return match ? match[1]!.toLowerCase() : null;
 }
 
+/**
+ * The start of `/plan` typed after a space, as Codex's composer takes it anywhere in a draft, or
+ * null. At the start of a draft the whole menu answers.
+ */
+export function slashPlanQuery(draft: string): string | null {
+  const match = /\s\/([A-Za-z]+)$/.exec(draft);
+  const typed = match?.[1]?.toLowerCase();
+  return typed && "plan".startsWith(typed) ? typed : null;
+}
+
+/** The draft without the `/plan` being typed at its end. */
+function withoutPlan(draft: string): string {
+  return draft.replace(/\s*\/[A-Za-z]*$/, "");
+}
+
+/** The menu entry for plan mode where an agent's own list has none. */
+export function planSlashOption(locale: string): SlashCommandOption {
+  return { name: "plan", description: slashCommandCopy(locale).planMode, aliases: [] };
+}
+
 /** Names that start with the query, then aliases that do, then names that contain it. */
 export function matchSlashCommands(
   options: readonly SlashCommandOption[],
@@ -269,6 +308,7 @@ export function useSlashCommandMenu({
   catalogKnown,
   locale,
   label,
+  plan,
   onChoose,
 }: {
   value: string;
@@ -280,6 +320,11 @@ export function useSlashCommandMenu({
   locale: string;
   /** The list's accessible name; Claude Code's commands by default. */
   label?: string;
+  /**
+   * Plan mode, as Codex's composer offers it: `/plan` turns it on rather than going into the
+   * draft, also typed after a space. `enter` says whether it could.
+   */
+  plan?: { option: SlashCommandOption; enter: () => boolean };
   /** Receives the draft with the chosen command, followed by a space. */
   onChoose: (text: string) => void;
 }) {
@@ -290,12 +335,28 @@ export function useSlashCommandMenu({
   // Escape closes the menu for this exact draft; typing reopens it.
   const [dismissed, setDismissed] = useState<string>();
   const [cursor, setCursor] = useState({ query: "", index: 0 });
-  const query = enabled ? slashCommandQuery(value) : null;
+  const fullQuery = enabled ? slashCommandQuery(value) : null;
+  const planQuery = enabled && plan && fullQuery === null ? slashPlanQuery(value) : null;
+  const query = fullQuery ?? planQuery;
+  const planOption = plan?.option;
   const matches = useMemo(
-    () => (query === null ? [] : matchSlashCommands(options, query)),
-    [options, query],
+    () =>
+      fullQuery !== null
+        ? matchSlashCommands(
+            planOption && !options.some((option) => option.name === "plan")
+              ? [planOption, ...options]
+              : options,
+            fullQuery,
+          )
+        : planQuery !== null && planOption
+          ? [planOption]
+          : [],
+    [options, fullQuery, planQuery, planOption],
   );
-  const open = query !== null && dismissed !== value && (matches.length > 0 || !catalogKnown);
+  const open =
+    query !== null &&
+    dismissed !== value &&
+    (matches.length > 0 || (fullQuery !== null && !catalogKnown));
   const listOpen = open && matches.length > 0;
   const index = cursor.query === query ? Math.min(cursor.index, matches.length - 1) : 0;
   useEffect(() => {
@@ -303,7 +364,11 @@ export function useSlashCommandMenu({
     const element = list.current?.children[index] as HTMLElement | undefined;
     element?.scrollIntoView?.({ block: "nearest" });
   }, [listOpen, index]);
-  const choose = (option: SlashCommandOption) => onChoose(`/${option.name} `);
+  const choose = (option: SlashCommandOption) => {
+    // Plan mode turns on, and the `/plan` typed for it leaves the draft.
+    if (plan && option.name === "plan" && plan.enter()) onChoose(withoutPlan(value));
+    else onChoose(`/${option.name} `);
+  };
   /** Handles the key when the menu uses it; returns whether it did. */
   const onKeyDown = (event: KeyboardEvent<HTMLTextAreaElement>, composing: boolean): boolean => {
     if (!open || composing || event.nativeEvent.isComposing) return false;
@@ -321,8 +386,13 @@ export function useSlashCommandMenu({
     }
     if (event.key !== "Enter" && event.key !== "Tab") return false;
     const option = matches[index]!;
-    // Enter on a complete name sends it; Tab and Enter otherwise complete the name.
-    if (event.key === "Enter" && value.toLowerCase() === `/${option.name.toLowerCase()}`)
+    // Enter on a complete name sends it; Tab and Enter otherwise complete the name. `/plan`
+    // turns plan mode on where the composer offers it.
+    if (
+      event.key === "Enter" &&
+      value.toLowerCase() === `/${option.name.toLowerCase()}` &&
+      !(plan && option.name === "plan")
+    )
       return false;
     event.preventDefault();
     choose(option);

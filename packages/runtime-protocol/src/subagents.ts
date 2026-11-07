@@ -13,7 +13,7 @@ export interface SubagentSummary {
   id: string;
   parentId?: string;
   name: string;
-  agent: "codex" | "claude-code";
+  agent: "codex" | "claude-code" | "deepseek-harness";
   status: SubagentStatus;
   updatedAt?: string;
   readable: boolean;

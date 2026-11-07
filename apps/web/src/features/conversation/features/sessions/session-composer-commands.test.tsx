@@ -618,3 +618,101 @@ describe("Codex slash commands in the composer", () => {
     expect(doubles.codexAction).not.toHaveBeenCalled();
   });
 });
+
+describe("DeepSeek Harness commands in the Web composer", () => {
+  // As a running DSH 0.2.1-rc.5 reports them (descriptions shortened).
+  const dshCatalog = [
+    { name: "compact", description: "Compact older conversation history" },
+    { name: "export", description: "Download this Session log as a ZIP archive" },
+    { name: "goal", description: "Set or view the goal", argumentHint: "[objective|clear]" },
+    { name: "permission", description: "Switch the permission preset", argumentHint: "<preset>" },
+    { name: "plan", description: "Enter or leave plan mode", argumentHint: "[off|message]" },
+  ];
+  const dshOptions = () =>
+    within(screen.getByRole("listbox", { name: "DeepSeek Harness commands" }))
+      .getAllByRole("option")
+      .map((option) => option.textContent);
+  beforeEach(() => {
+    vi.resetAllMocks();
+    doubles.panels = null;
+    doubles.control.mockResolvedValue(true);
+    doubles.session = {
+      selected: "session",
+      current: { id: "session", agent: "deepseek-harness" } as SessionController["current"],
+      locale: "en-US",
+      t: { message: "Message", send: "Send", stop: "Stop" } as SessionController["t"],
+      online: true,
+      busy: false,
+      controlReady: true,
+      canSend: true,
+      canStop: false,
+      live: {
+        sessionId: "session",
+        revision: 1,
+        sendEnabled: true,
+        status: "idle",
+        executionMode: "dsh-follower",
+        approvals: [],
+        questions: [],
+      } as SessionController["live"],
+      access: {
+        protocolVersion: 2,
+        experimentalEnabled: true,
+        device: { send: true },
+      } as SessionController["access"],
+      capabilities: {
+        sessionId: "session",
+        executionMode: "dsh-follower",
+        status: "idle",
+        commands: dshCatalog,
+        features: { send: { available: true } },
+      } as SessionController["capabilities"],
+      control: doubles.control,
+      codexAction: doubles.codexAction,
+      client: { request: vi.fn() } as unknown as SessionController["client"],
+    };
+  });
+  afterEach(cleanup);
+
+  it("lists DSH's own commands, only those this device may run", () => {
+    renderComposer("/");
+    // `/goal` and `/permission` need full access; `/export` runs only in DSH's window.
+    expect(dshOptions()).toEqual([
+      "/compactCompact older conversation history",
+      "/plan[off|message]Enter or leave plan mode",
+    ]);
+    cleanup();
+    doubles.session.access = {
+      ...doubles.session.access!,
+      device: fullDevice,
+    };
+    renderComposer("/");
+    expect(dshOptions()).toEqual([
+      "/compactCompact older conversation history",
+      "/goal[objective|clear]Set or view the goal",
+      "/permission<preset>Switch the permission preset",
+      "/plan[off|message]Enter or leave plan mode",
+    ]);
+  });
+
+  it("sends a command line for DSH to run, and explains a command DSH did not run", async () => {
+    const { form, input } = renderComposer("/plan");
+    fireEvent.submit(form);
+    await waitFor(() => expect(doubles.control).toHaveBeenCalledOnce());
+    expect(doubles.control.mock.lastCall?.[0]).toBe("send");
+    expect(doubles.codexAction).not.toHaveBeenCalled();
+    expect(input).toBeInTheDocument();
+    expect(reason("dsh-command-window-only")).toBe(
+      "This command only works in DeepSeek Harness's own window, so the message was not sent.",
+    );
+    expect(reason("dsh-command-full-access")).toBe(
+      "This command needs full access, so the message was not sent. Reconnect with a new full-access code to use it.",
+    );
+  });
+
+  it("offers no menu while DSH reports no commands", () => {
+    doubles.session.capabilities = { ...doubles.session.capabilities!, commands: undefined };
+    renderComposer("/");
+    expect(screen.queryByRole("listbox")).not.toBeInTheDocument();
+  });
+});

@@ -45,6 +45,7 @@ import {
 import {
   ApiError,
   isClaudeCommandRefusal,
+  isDshCommandRefusal,
   isLegacyPreparedReceipt,
   WebClient,
   mergeCatalogSessions,
@@ -53,6 +54,7 @@ import {
   type ConversationCatalog,
   type Access,
   type ClaudeCommandRefusal,
+  type DshCommandRefusal,
   type WebConnection,
   type SessionAction,
   type SessionActionBody,
@@ -123,12 +125,15 @@ const attachmentRefusals: ReadonlySet<string> = new Set<AttachmentRefusal>([
   "attachment-unavailable",
   "invalid_attachment_image",
 ]);
+/** A slash command DeepSeek Harness did not run: refused here, or no longer in its registry. */
+type DshCommandReason = DshCommandRefusal | "dsh-command-unavailable";
 /** A reason a rejected request is explained with instead of the generic notice. */
 type NotDispatchedReason =
   | CodexSettingsRecoveryReason
   | ClaudeCommandRefusal
   | ClaudeSettingsReason
-  | AttachmentRefusal;
+  | AttachmentRefusal
+  | DshCommandReason;
 function codexSettingsRecoveryReason(
   agent: string | undefined,
   ...reasons: (string | undefined)[]
@@ -151,6 +156,11 @@ function codexSettingsRecoveryReason(
       return "claude-effort-unsupported";
     return;
   }
+  if (agent === "deepseek-harness")
+    return reasons.find(
+      (reason): reason is DshCommandReason =>
+        isDshCommandRefusal(reason) || reason === "dsh-command-unavailable",
+    );
   if (agent !== "codex") return;
   return reasons.find(
     (reason): reason is CodexSettingsRecoveryReason =>

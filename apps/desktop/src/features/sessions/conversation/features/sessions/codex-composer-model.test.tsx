@@ -3,7 +3,8 @@ import "@testing-library/jest-dom/vitest";
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { CodexSessionSettings } from "@agentkib/web-client";
-import { CodexComposerControls } from "./codex-session-controls";
+import { createRef } from "react";
+import { CodexComposerControls, type ComposerControlsHandle } from "./codex-session-controls";
 import { useSession } from "./session-context";
 import { codexCopy } from "./codex-copy";
 
@@ -192,5 +193,48 @@ describe("Codex composer quick model settings", () => {
     const reconnected = await screen.findByRole("dialog", { name: /Select reasoning effort:/ });
     expect(within(reconnected).getByRole("button", { name: "Fast mode" })).toBeEnabled();
     expect(state.codexAction).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("plan mode in the composer, as in Codex's own", () => {
+  const modes = [
+    { id: "default" as const, name: "Default" },
+    { id: "plan" as const, name: "Plan" },
+  ];
+  it("shows plan mode and turns it off from its chip", async () => {
+    settings = {
+      ...settings,
+      current: { ...settings.current, mode: "plan" },
+      options: { ...settings.options, collaborationModes: modes },
+    };
+    vi.mocked(state.codexAction).mockResolvedValue({ accepted: true } as unknown as Awaited<
+      ReturnType<typeof state.codexAction>
+    >);
+    const onPlan = vi.fn();
+    render(<CodexComposerControls {...props} onPlan={onPlan} />);
+    const chip = await screen.findByRole("button", { name: codexCopy["en-US"].planOn });
+    expect(chip).toHaveTextContent(codexCopy["en-US"].plan);
+    await waitFor(() => expect(onPlan).toHaveBeenLastCalledWith({ on: true, available: true }));
+    fireEvent.click(chip);
+    await waitFor(() =>
+      expect(state.codexAction).toHaveBeenCalledExactlyOnceWith("settings", { mode: "default" }),
+    );
+  });
+
+  it("turns plan mode on when the composer takes /plan", async () => {
+    settings = { ...settings, options: { ...settings.options, collaborationModes: modes } };
+    const onPlan = vi.fn();
+    const ref = createRef<ComposerControlsHandle>();
+    render(<CodexComposerControls {...props} controlsRef={ref} onPlan={onPlan} />);
+    await waitFor(() => expect(onPlan).toHaveBeenLastCalledWith({ on: false, available: true }));
+    expect(
+      screen.queryByRole("button", { name: codexCopy["en-US"].planOn }),
+    ).not.toBeInTheDocument();
+    act(() => {
+      expect(ref.current!.plan()).toBe(true);
+    });
+    await waitFor(() =>
+      expect(state.codexAction).toHaveBeenCalledExactlyOnceWith("settings", { mode: "plan" }),
+    );
   });
 });

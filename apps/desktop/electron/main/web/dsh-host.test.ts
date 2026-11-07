@@ -1,10 +1,12 @@
 // @vitest-environment node
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { randomUUID } from "node:crypto";
+import { createServer } from "node:http";
 import { mkdir, mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { WebAccessService } from "./service";
+import { approveLegacyBrowser } from "./legacy-pairing-fixture";
 
 /** The Host side of a connected DeepSeek Harness: which session operations reach the runtime. */
 describe("DeepSeek Harness host control boundary", () => {
@@ -247,5 +249,199 @@ describe("DeepSeek Harness host control boundary", () => {
       ],
     });
     expect(send).not.toHaveProperty("text");
+  });
+
+  it("forwards goal changes and compaction, and shows a goal bounded by rounds", async () => {
+    Object.assign(features, {
+      goal: { available: true },
+      "goal-set": { available: true },
+      "goal-pause": { available: true },
+      compact: { available: true },
+    });
+    const read = runtime.getMockImplementation()!;
+    runtime.mockImplementation(async (value) =>
+      (value as { operation?: string }).operation === "goal"
+        ? {
+            available: true,
+            revision: 4,
+            budget: "rounds",
+            goal: {
+              objective: "Ship it",
+              status: "blocked",
+              rounds: { used: 3, limit: 256 },
+              detail: "Which branch?",
+              internal: "hidden",
+            },
+            actions: {
+              set: { available: true },
+              pause: { available: false, reason: "goal-action-unavailable" },
+              resume: { available: true },
+              clear: { available: true },
+            },
+          }
+        : read(value),
+    );
+    expect(
+      await service.localRequest("/managed/goals?sessionId=dsh-session&agent=deepseek-harness"),
+    ).toMatchObject({
+      status: 200,
+      body: {
+        available: true,
+        budget: "rounds",
+        goal: {
+          objective: "Ship it",
+          status: "blocked",
+          rounds: { used: 3, limit: 256 },
+          detail: "Which branch?",
+        },
+        actions: { pause: { available: false, reason: "goal-action-unavailable" } },
+      },
+    });
+    expect(await action("goal-set", { objective: "Ship it", intent: "start" })).toMatchObject({
+      status: 200,
+    });
+    expect(forwarded("goal-set")).toEqual([
+      expect.objectContaining({ goal: { objective: "Ship it", intent: "start" } }),
+    ]);
+    expect(await action("goal-pause")).toMatchObject({ status: 200 });
+    expect(await action("compact")).toMatchObject({ status: 200 });
+    expect(forwarded("compact")).toHaveLength(1);
+    // A capability the runtime does not offer is not forwarded.
+    expect(await action("goal-clear")).toMatchObject({ status: 409 });
+    expect(forwarded("goal-clear")).toEqual([]);
+  });
+});
+
+/**
+ * DSH runs a message naming one of its commands as that command; those that change a session's
+ * preset or goal need what those controls need, which only the Host knows.
+ */
+describe("DeepSeek Harness slash commands from another device", () => {
+  let service: WebAccessService;
+  let directory: string;
+  let origin: string;
+  const runtime = vi.fn(async (input: unknown): Promise<unknown> => {
+    const params = input as Record<string, unknown>;
+    switch (params.operation) {
+      case "catalog":
+        return {
+          sessions: [{ id: "dsh-session", workspace_id: "workspace", agent: "deepseek-harness" }],
+        };
+      case "live":
+        return {
+          sessionId: "dsh-session",
+          workspaceId: "workspace",
+          executionMode: "dsh-follower",
+          runtimeBootId: "runtime-one",
+          revision: 4,
+          status: "idle",
+          sendEnabled: true,
+          approvals: [],
+        };
+      case "capabilities":
+        return {
+          sessionId: "dsh-session",
+          executionMode: "dsh-follower",
+          features: { send: { available: true } },
+        };
+      default:
+        return {
+          accepted: true,
+          requestId: params.requestId,
+          controlOutcome: "accepted",
+          runtimeBootId: "runtime-one",
+        };
+    }
+  });
+
+  async function browser() {
+    let cookie = "";
+    let csrf = "";
+    let bootId = "";
+    const api = async (path: string, body?: unknown) => {
+      const response = await fetch(`${origin}/api/web/v1/${path}`, {
+        method: body === undefined ? "GET" : "POST",
+        headers: {
+          ...(cookie ? { Cookie: cookie } : {}),
+          ...(body === undefined
+            ? {}
+            : {
+                Origin: origin,
+                "Content-Type": "application/json",
+                "X-CSRF-Token": csrf,
+                "X-AgentKib-Protocol": "2",
+              }),
+        },
+        body: body === undefined ? undefined : JSON.stringify(body),
+      });
+      cookie ||= response.headers.get("set-cookie")?.split(";")[0] ?? "";
+      const data = await response.json();
+      csrf ||= data.csrfToken ?? "";
+      bootId ||= data.bootId ?? "";
+      return { response, data };
+    };
+    await api("access");
+    const send = (text: string) =>
+      api("send", {
+        sessionId: "dsh-session",
+        requestId: randomUUID(),
+        bootId,
+        expectedRevision: 4,
+        text,
+      });
+    return { api, send, cookie: () => cookie };
+  }
+
+  beforeEach(async () => {
+    runtime.mockClear();
+    directory = await mkdtemp(join(tmpdir(), "agentkib-dsh-commands-"));
+    await mkdir(join(directory, "workspace"));
+    const listener = createServer();
+    await new Promise<void>((resolve) => listener.listen(0, "127.0.0.1", resolve));
+    const port = (listener.address() as { port: number }).port;
+    await new Promise<void>((resolve) => listener.close(() => resolve()));
+    origin = `http://127.0.0.1:${port}`;
+    service = new WebAccessService({
+      dataDir: directory,
+      staticDir: directory,
+      runtimeRequest: runtime,
+      workspaceRequest: async () => [
+        { id: "workspace", name: "Workspace", path: join(directory, "workspace") },
+      ],
+      verifiedDshFollower: true,
+    });
+    await service.initialize();
+    await service.request({
+      operation: "configure",
+      enabled: true,
+      port,
+      externalOrigin: "",
+      experimentalEnabled: true,
+      allowedWorkspaceIds: ["workspace"],
+    });
+  });
+  afterEach(async () => {
+    await service.shutdown();
+    await rm(directory, { recursive: true, force: true });
+  });
+  const sent = () =>
+    runtime.mock.calls
+      .map(([value]) => value as Record<string, unknown>)
+      .filter((value) => value.operation === "send")
+      .map((value) => [value.text, value.commandAccess]);
+
+  it("tells DSH whether the device may run the commands that need full access", async () => {
+    const limited = await browser();
+    await approveLegacyBrowser(service, limited.cookie(), { send: true });
+    expect((await limited.send("/goal ship it")).response.status).toBe(200);
+    const full = await browser();
+    const code = (await service.request({ operation: "generate-code" })).code!.value;
+    expect((await full.api("pair", { code, name: "Phone" })).response.status).toBe(200);
+    expect((await full.send("/goal ship it")).response.status).toBe(200);
+    // DSH decides with the session's own registry and refuses `/goal` for the first device.
+    expect(sent()).toEqual([
+      ["/goal ship it", "session"],
+      ["/goal ship it", "all"],
+    ]);
   });
 });

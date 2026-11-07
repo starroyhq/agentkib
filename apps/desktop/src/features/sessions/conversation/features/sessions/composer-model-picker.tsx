@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, type CSSProperties } from "react";
+import { Fragment, useEffect, useRef, useState, type CSSProperties } from "react";
 import { Popover } from "@base-ui/react/popover";
 import { Slider } from "@base-ui/react/slider";
 import { Check, ChevronDown, ChevronRight, LoaderCircle, RotateCcw, Zap } from "lucide-react";
@@ -128,6 +128,7 @@ export function ComposerModelPicker({
   disabled,
   saving,
   status,
+  effortDefault,
   onOpen,
   onChange,
 }: {
@@ -137,6 +138,11 @@ export function ComposerModelPicker({
   disabled: boolean;
   saving: boolean;
   status?: string;
+  /**
+   * No effort means the model's own default, as Claude Code and DeepSeek Harness report it, not an
+   * unknown one.
+   */
+  effortDefault?: boolean;
   onOpen: () => void;
   onChange: (change: ComposerModelChange) => Promise<void>;
 }) {
@@ -156,7 +162,10 @@ export function ComposerModelPicker({
   );
   const modelName = model?.name || selection?.modelId || copy.unknown;
   const efforts = model?.efforts ?? [];
-  const effort = draftEffort ?? selection?.effort;
+  // The model's default effort runs; the slider shows where it stands.
+  const followsDefault = effortDefault === true && !!settings?.available && !selection?.effort;
+  const effort =
+    draftEffort ?? selection?.effort ?? (followsDefault ? model?.defaultEffort : undefined);
   const effortIndex = effort ? efforts.indexOf(effort) : -1;
   const peak = effortIndex >= 0 && effortIndex === efforts.length - 1;
   const effortText = (value: string) => (value === "ultra" ? "Ultra" : composerTerm(locale, value));
@@ -167,6 +176,13 @@ export function ComposerModelPicker({
     (item) => ["fast", "priority"].includes(item.id) && model?.serviceTierIds.includes(item.id),
   );
   const fastSupported = !!fastTier;
+  // An agent that knows no service tiers at all (DeepSeek Harness) has no Fast mode to offer.
+  const tiered =
+    !settings ||
+    settings.options.serviceTiers.length > 0 ||
+    settings.options.models.some((item) => !!item.serviceTierIds?.length);
+  // DSH lists models under their provider; so does this, once there is more than one.
+  const grouped = new Set(settings?.options.models.map((item) => item.group)).size > 1;
   const fastWritable = writable && settings?.writable.serviceTier.available && fastSupported;
   const effortWritable = writable && settings?.writable.effort.available && efforts.length > 1;
   useEffortMotion(popup, open && page === "effort", fast);
@@ -186,7 +202,14 @@ export function ComposerModelPicker({
     }
   }
 
-  const effortLabel = effort ? effortText(effort) : copy.effortUnknown;
+  const effortLabel =
+    followsDefault && draftEffort === undefined
+      ? model?.defaultEffort
+        ? `${copy.defaultEffort} · ${effortText(model.defaultEffort)}`
+        : copy.defaultEffort
+      : effort
+        ? effortText(effort)
+        : copy.effortUnknown;
   return (
     <Popover.Root
       open={open}
@@ -272,70 +295,83 @@ export function ComposerModelPicker({
                           </span>
                         </span>
                       </Button>
-                      {settings?.options.models.map((item) => (
-                        <Button
-                          key={item.id}
-                          type="button"
-                          variant="ghost"
-                          className="h-9 w-full justify-between gap-3 rounded-lg px-2 text-left font-normal"
-                          aria-pressed={model?.id === item.id}
-                          disabled={!writable || !settings.writable.model.available}
-                          onClick={() => {
-                            setPage("effort");
-                            if (model?.id === item.id) return;
-                            void change({
-                              model: item.id,
-                              ...(settings.writable.effort.available &&
-                              !item.efforts.includes(selection?.effort ?? "")
-                                ? { effort: item.defaultEffort ?? item.efforts[0] ?? null }
-                                : {}),
-                              ...(settings.writable.serviceTier.available &&
-                              selection?.serviceTierId &&
-                              !item.serviceTierIds.includes(selection.serviceTierId)
-                                ? { serviceTierId: null }
-                                : {}),
-                            });
-                          }}
-                        >
-                          <span className="truncate">{item.name || item.id}</span>
-                          {model?.id === item.id && (
-                            <Check className="size-4 text-muted-foreground" aria-hidden="true" />
+                      {settings?.options.models.map((item, index, models) => (
+                        <Fragment key={item.id}>
+                          {grouped && item.group && item.group !== models[index - 1]?.group && (
+                            <div className="px-2 pt-2 pb-1 text-xs text-muted-foreground">
+                              {item.group}
+                            </div>
                           )}
-                        </Button>
+                          <Button
+                            type="button"
+                            variant="ghost"
+                            className="h-9 w-full justify-between gap-3 rounded-lg px-2 text-left font-normal"
+                            aria-pressed={model?.id === item.id}
+                            disabled={!writable || !settings.writable.model.available}
+                            onClick={() => {
+                              setPage("effort");
+                              if (model?.id === item.id) return;
+                              void change({
+                                model: item.id,
+                                // A default effort stays the default of the model chosen.
+                                ...(settings.writable.effort.available &&
+                                !followsDefault &&
+                                !item.efforts.includes(selection?.effort ?? "")
+                                  ? { effort: item.defaultEffort ?? item.efforts[0] ?? null }
+                                  : {}),
+                                ...(settings.writable.serviceTier.available &&
+                                selection?.serviceTierId &&
+                                !item.serviceTierIds.includes(selection.serviceTierId)
+                                  ? { serviceTierId: null }
+                                  : {}),
+                              });
+                            }}
+                          >
+                            <span className="truncate">{item.name || item.id}</span>
+                            {model?.id === item.id && (
+                              <Check className="size-4 text-muted-foreground" aria-hidden="true" />
+                            )}
+                          </Button>
+                        </Fragment>
                       ))}
                     </div>
                   </>
                 ) : (
                   <>
                     <div className="flex items-start justify-between gap-2">
-                      <Tooltip>
-                        <TooltipTrigger
-                          render={
-                            <Button
-                              type="button"
-                              variant="ghost"
-                              className={`size-7 rounded-lg p-0 ${fast ? "composer-effort-color bg-muted" : "text-muted-foreground"}`}
-                              aria-label={copy.fast}
-                              aria-pressed={fast}
-                              disabled={!fastWritable}
-                              onClick={() =>
-                                void change({ serviceTierId: fast ? null : fastTier!.id })
-                              }
+                      {tiered ? (
+                        <Tooltip>
+                          <TooltipTrigger
+                            render={
+                              <Button
+                                type="button"
+                                variant="ghost"
+                                className={`size-7 rounded-lg p-0 ${fast ? "composer-effort-color bg-muted" : "text-muted-foreground"}`}
+                                aria-label={copy.fast}
+                                aria-pressed={fast}
+                                disabled={!fastWritable}
+                                onClick={() =>
+                                  void change({ serviceTierId: fast ? null : fastTier!.id })
+                                }
+                              />
+                            }
+                          >
+                            <Zap
+                              className="size-4"
+                              fill={fast ? "currentColor" : "none"}
+                              aria-hidden="true"
                             />
-                          }
-                        >
-                          <Zap
-                            className="size-4"
-                            fill={fast ? "currentColor" : "none"}
-                            aria-hidden="true"
-                          />
-                        </TooltipTrigger>
-                        <TooltipContent className="border-border bg-popover text-popover-foreground dark:bg-[#2b2b2b]">
-                          {fastSupported
-                            ? fastTier?.description || copy.fastDetail
-                            : copy.fastUnavailable}
-                        </TooltipContent>
-                      </Tooltip>
+                          </TooltipTrigger>
+                          <TooltipContent className="border-border bg-popover text-popover-foreground dark:bg-[#2b2b2b]">
+                            {fastSupported
+                              ? fastTier?.description || copy.fastDetail
+                              : copy.fastUnavailable}
+                          </TooltipContent>
+                        </Tooltip>
+                      ) : (
+                        // Keeps the title centred between the corners.
+                        <span className="size-7 shrink-0" aria-hidden="true" />
+                      )}
                       <div className="min-w-0 flex-1 text-center">
                         <Popover.Title className="composer-effort-color text-sm font-medium">
                           <span className="sr-only">{copy.chooseEffort}: </span>
@@ -448,7 +484,9 @@ export function ComposerModelPicker({
                           </div>
                           <Slider.Thumb
                             aria-label={copy.chooseEffort}
-                            aria-valuetext={effortIndex >= 0 ? effortLabel : copy.effortUnknown}
+                            aria-valuetext={
+                              effortIndex >= 0 || followsDefault ? effortLabel : copy.effortUnknown
+                            }
                             onKeyDown={(event) => {
                               if (
                                 effortWritable &&

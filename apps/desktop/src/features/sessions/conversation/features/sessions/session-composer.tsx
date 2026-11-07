@@ -5,11 +5,13 @@ import {
   claudeSlashOptions,
   codexCommandPrompt,
   codexSlashOptions,
+  dshSlashOptions,
   slashCommandCopy,
   sessionContinuationCopy,
   SessionContinuationReturned,
   SessionContinuationTerminal,
   unsupportedEffortReason,
+  planSlashOption,
   useSlashCommandMenu,
   type AgentKibPanel,
 } from "@agentkib/session-ui";
@@ -36,6 +38,7 @@ import {
   claudeCommandDecision,
   claudeMenuCommands,
   codexCommandDecision,
+  dshMenuCommands,
   type UploadedAttachment,
 } from "@agentkib/web-client";
 import { Button } from "@/components/ui/button";
@@ -62,6 +65,7 @@ import {
   CodexComposerControls,
   type CodexResource,
   type ComposerControlsHandle,
+  type ComposerPlanState,
 } from "./codex-session-controls";
 import { useSessionPanels } from "./session-panels";
 import { PermissionModeNotice } from "./permission-mode-notice";
@@ -143,31 +147,51 @@ export function SessionComposer({
     capabilities?.sessionId === selected &&
     capabilities.features.attachments?.available
   );
+  // DeepSeek Harness runs a message naming one of its commands itself. The person at this
+  // computer has full access, so every command it reports is offered.
+  const isDsh = current?.agent === "deepseek-harness";
   const commandCatalog =
-    isClaude && capabilities?.sessionId === selected ? capabilities.commands : undefined;
+    (isClaude || isDsh) && capabilities?.sessionId === selected ? capabilities.commands : undefined;
   const commandOptions = useMemo(
     () =>
       isCodex
         ? codexSlashOptions(CODEX_MENU_COMMANDS, locale)
-        : commandCatalog
-          ? claudeSlashOptions(claudeMenuCommands(commandCatalog, COMMAND_OWNER), locale)
-          : [],
-    [isCodex, commandCatalog, locale],
+        : !commandCatalog
+          ? []
+          : isDsh
+            ? dshSlashOptions(dshMenuCommands(commandCatalog, COMMAND_OWNER))
+            : claudeSlashOptions(claudeMenuCommands(commandCatalog, COMMAND_OWNER), locale),
+    [isCodex, isDsh, commandCatalog, locale],
   );
   // A refused command keeps its draft; the explanation goes once the draft changes.
   const [commandNotice, setCommandNotice] = useState<{ draft: string; reason: string }>();
+  // A command typed without an argument opens AgentKib's control for it, as a button would.
+  const controls = useRef<ComposerControlsHandle>(null);
+  // `/plan`, at the start or after a space, turns plan mode on as in Codex's composer.
+  const [planState, setPlanState] = useState<ComposerPlanState>({ on: false, available: false });
+  const planOption = useMemo(() => planSlashOption(locale), [locale]);
   const slash = useSlashCommandMenu({
     value: composerValue,
     options: commandOptions,
-    enabled: (isClaude || isCodex) && online && controlReady && !busy && !submitted,
-    // Codex's menu is AgentKib's own list; Claude Code's comes from the CLI.
+    enabled:
+      (isClaude || isCodex || (isDsh && commandOptions.length > 0)) &&
+      online &&
+      controlReady &&
+      !busy &&
+      !submitted,
+    // Codex's menu is AgentKib's own list; Claude Code's comes from the CLI, DSH's from DSH.
     catalogKnown: isCodex || !!commandCatalog?.length,
     locale,
-    label: isCodex ? slashCommandCopy(locale).codexLabel : undefined,
+    label: isCodex
+      ? slashCommandCopy(locale).codexLabel
+      : isDsh
+        ? slashCommandCopy(locale).dshLabel
+        : undefined,
+    plan: planState.available
+      ? { option: planOption, enter: () => controls.current?.plan() ?? false }
+      : undefined,
     onChoose: setMessage,
   });
-  // A command typed without an argument opens AgentKib's control for it, as a button would.
-  const controls = useRef<ComposerControlsHandle>(null);
   const panels = useSessionPanels();
   const openPanel = (panel: AgentKibPanel) => {
     if (panel === "settings" || panel === "goal") return controls.current?.open(panel) ?? false;
@@ -588,7 +612,13 @@ export function SessionComposer({
           maxLength={MAX_MESSAGE_LENGTH}
           rows={1}
           onChange={(event) => setMessage(event.target.value)}
-          placeholder={isCodex || isClaude ? continuation.placeholder : t.message}
+          placeholder={
+            planState.on
+              ? copy.planPlaceholder
+              : isCodex || isClaude
+                ? continuation.placeholder
+                : t.message
+          }
           onFocus={() => {
             if (isCodex || isClaude) void session.checkContinuation?.();
           }}
@@ -705,6 +735,7 @@ export function SessionComposer({
               disabled={busy || submitted || !online}
               action={primaryAction}
               advancedActions={advancedActions}
+              onPlan={setPlanState}
             />
           )}
           {access?.device?.accessMode !== "full" && (

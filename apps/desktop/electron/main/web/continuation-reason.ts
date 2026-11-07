@@ -1,4 +1,4 @@
-import { CLAUDE_COMMAND_REFUSALS } from "@agentkib/runtime-protocol";
+import { CLAUDE_COMMAND_REFUSALS, DSH_COMMAND_REFUSALS } from "@agentkib/runtime-protocol";
 
 /** Only these owner diagnostics may cross the host boundary as public reasons. */
 export function continuationPreflightReason(
@@ -34,6 +34,15 @@ export function continuationPreflightReason(
       "attachment-changed",
       "attachment-unavailable",
       "dsh-attachments-unavailable",
+      // DeepSeek Harness: a slash command it did not take or did not finish, and goal changes it
+      // refused because the goal changed meanwhile or allows no such change now.
+      ...DSH_COMMAND_REFUSALS,
+      "dsh-command-unavailable",
+      "dsh-command-failed",
+      "goal-changed",
+      "goal-action-unavailable",
+      "goal-rounds-exhausted",
+      "goal-token-budget-unavailable",
     ]).has(reason)
     ? reason
     : fallback;

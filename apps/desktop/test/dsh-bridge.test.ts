@@ -16,7 +16,15 @@ import { DshBridge, dshConversationEvents } from "../../../packages/backend/src/
 import { readControlReceipt } from "../../../packages/backend/src/control-receipt";
 import { createBridge } from "../../../packages/dsh-bridge-plugin/bridge.js";
 import { dshBridgeCompatibility } from "../../../packages/dsh-bridge-plugin/compatibility.js";
-import { historyRecord, queueItems } from "../../../packages/dsh-bridge-plugin/projection.js";
+import {
+  commandEntries,
+  goalFromProjection,
+  goalView,
+  historyRecord,
+  permissionOptions,
+  queueItems,
+  subagentEntry,
+} from "../../../packages/dsh-bridge-plugin/projection.js";
 
 type Listener = { callback: (...args: any[]) => any; prepend: boolean };
 const PNG = Buffer.from(
@@ -29,8 +37,31 @@ function fakeDsh(cwd: string) {
   const hooks = new Map<string, Listener[]>();
   const sessions = new Map<
     string,
-    { events: any[]; agent: any; title: string | null; updatedAt: number; selection?: unknown }
+    {
+      events: any[];
+      agent: any;
+      title: string | null;
+      updatedAt: number;
+      selection?: unknown;
+      parentSessionId?: string;
+    }
   >();
+  // Goals as DSH's goal service keeps them: every change names the goal's current revision.
+  const goals = new Map<string, any>();
+  const goalError = (code: string) => Object.assign(new Error(code), { code });
+  const presets = ["read-only", "workspace-write", "danger-full-access"];
+  const permissionOf = new Map<string, string>();
+  // DSH's `plan` projection view: a `/plan` switch stays pending until the next step.
+  const planOf = new Map<string, { active: boolean; pending: boolean }>();
+  // Direct children by parent, and how each child's last turn ended.
+  const children = new Map<
+    string,
+    { id: string; createdAt: number; mode: string; label?: string }[]
+  >();
+  const endings = new Map<string, boolean>();
+  let compactionHold: Promise<void> | null = null;
+  let commandCount = 0;
+  const executed: string[] = [];
   const prompts: any[] = [];
   const queueUpdates: any[] = [];
   const cancels: string[] = [];
@@ -130,8 +161,18 @@ function fakeDsh(cwd: string) {
             agentAvailable: true,
             blank: false,
             projections: { kind: "sequenced", asOfSeq: 0, values: { title: session.title } },
+            ...(session.parentSessionId
+              ? { parentSessionId: session.parentSessionId, origin: "subagent" }
+              : {}),
           })),
         };
+      },
+      // Every session here is running; DSH would resume one that is not.
+      async resolveAgent(sessionId: string) {
+        const session = sessions.get(sessionId);
+        return session
+          ? { agent: session.agent }
+          : { error: Object.assign(new Error("not found"), { code: "session/not-found" }) };
       },
       async prompt(request: any) {
         prompts.push(request);
@@ -249,11 +290,174 @@ function fakeDsh(cwd: string) {
       async projections(request: any) {
         const session = sessions.get(request.sessionId);
         if (!session) return null;
+        const goal = goals.get(request.sessionId);
+        const ending = endings.get(request.sessionId);
         return {
           kind: "sequenced",
           asOfSeq: session.events.length,
-          values: { modelSelection: { lastUsed: null, next: session.selection ?? null } },
+          values: {
+            modelSelection: { lastUsed: null, next: session.selection ?? null },
+            permissions: { currentValue: permissionOf.get(request.sessionId) ?? "workspace-write" },
+            plan: planOf.get(request.sessionId) ?? { active: false, pending: false },
+            goal: goal
+              ? {
+                  goal: {
+                    id: goal.id,
+                    revision: goal.revision,
+                    objective: goal.objective,
+                    phase: goal.phase,
+                    maxGoalRounds: goal.maxGoalRounds,
+                    ...(goal.blockedReason ? { blockedReason: goal.blockedReason } : {}),
+                  },
+                  roundsStarted: goal.roundsStarted,
+                  createdAt: goal.createdAt,
+                  updatedAt: goal.updatedAt,
+                }
+              : null,
+            subagentCatalog: children.get(request.sessionId) ?? [],
+            subagentTiming:
+              ending === undefined ? { settledMs: 0 } : { settledMs: 5, lastTurnCompleted: ending },
+          },
         };
+      },
+    },
+    goals: {
+      get: (agent: any) => (goals.has(agent.id) ? { ...goals.get(agent.id) } : undefined),
+      create(agent: any, request: any) {
+        const current = goals.get(agent.id);
+        if (current && current.phase !== "complete") throw goalError("GOAL_ALREADY_EXISTS");
+        return changeGoal(agent.id, {
+          id: `goal-${randomUUID()}`,
+          revision: 1,
+          objective: String(request.objective).trim(),
+          phase: "active",
+          maxGoalRounds: 256,
+          roundsStarted: 0,
+          createdAt: 1,
+          updatedAt: 1,
+          activation: "armed",
+        });
+      },
+      edit(agent: any, ref: any, request: any) {
+        const current = currentGoal(agent.id, ref);
+        return changeGoal(agent.id, {
+          ...current,
+          revision: current.revision + 1,
+          objective: request.objective,
+        });
+      },
+      pause(agent: any, ref: any) {
+        const current = currentGoal(agent.id, ref);
+        if (current.phase !== "active") throw goalError("GOAL_INVALID_TRANSITION");
+        return changeGoal(agent.id, {
+          ...current,
+          revision: current.revision + 1,
+          phase: "paused",
+          activation: "disarmed",
+        });
+      },
+      resume(agent: any, ref: any) {
+        const current = currentGoal(agent.id, ref);
+        if (current.phase === "active" && current.activation === "armed")
+          throw goalError("GOAL_INVALID_TRANSITION");
+        return changeGoal(agent.id, {
+          ...current,
+          revision: current.revision + 1,
+          phase: "active",
+          activation: "armed",
+        });
+      },
+      clear(agent: any, ref: any) {
+        const current = currentGoal(agent.id, ref);
+        changeGoal(agent.id, null);
+        return { id: current.id, revision: current.revision + 1 };
+      },
+    },
+    permissionPresets: {
+      catalog: () => ({
+        options: presets.map((value) => ({ value, name: value })),
+        defaultOptions: presets.map((value) => ({ value, name: value })),
+        defaultPreset: "workspace-write",
+      }),
+    },
+    // DSH's command registry: it logs each command it runs and what the command answered.
+    // As in DSH 0.2.2-rc.1: `/export` and `/permission` are listed for every session, while
+    // `/compact`, `/goal` and `/plan` show only in a running agent's own list.
+    commands: {
+      list: (agent?: any) =>
+        [
+          { name: "export", description: "Download this Session log as a ZIP archive" },
+          {
+            name: "permission",
+            description: "Switch the permission preset (sandbox mode + approval policy)",
+            input: { hint: "<preset>" },
+          },
+          ...(agent
+            ? [
+                { name: "compact", description: "Compact older conversation history" },
+                {
+                  name: "goal",
+                  description: "Set or view the goal for a long-running task",
+                  input: {
+                    hint: "[<objective>|clear|edit <objective>|pause|resume]",
+                    attachments: true,
+                  },
+                },
+                {
+                  name: "plan",
+                  description: "Enter or leave plan mode",
+                  input: { hint: "[off|message]", attachments: true },
+                },
+              ]
+            : []),
+        ].sort((a, b) => (a.name < b.name ? -1 : 1)),
+      find: (agent: any, name: string) =>
+        ctx.commands.list(agent).find((entry: any) => entry.name === name),
+      async execute(agent: any, line: string) {
+        const match = /^\/([a-z][a-z0-9_-]*)(?=$|[\t\n\r ])/.exec(line);
+        if (!match || !ctx.commands.find(agent, match[1])) return undefined;
+        executed.push(line);
+        const commandId = `cmd-${++commandCount}`;
+        const args = line.slice(match[0].length);
+        append(agent.id, "command/run", {
+          commandId,
+          name: match[1],
+          args,
+          source: { kind: "user" },
+        });
+        let result: { kind: "success" | "error"; text?: string };
+        if (match[1] === "compact") {
+          if (agent.status !== "idle")
+            result = {
+              kind: "error",
+              text: "Compaction is unavailable because the agent is not idle.",
+            };
+          else {
+            append(agent.id, "compaction/start", { compactionId: "c-1", turn: null });
+            await compactionHold;
+            append(agent.id, "compaction/end", { compactionId: "c-1", turn: null });
+            result = { kind: "success", text: "Compacted 4 history items (~120 tokens)." };
+          }
+        } else if (match[1] === "permission") {
+          const preset = args.trim();
+          if (!presets.includes(preset))
+            result = { kind: "error", text: `unknown preset "${preset}"` };
+          else {
+            permissionOf.set(agent.id, preset);
+            append(agent.id, "permission/preset", { preset });
+            result = { kind: "success", text: `preset ${preset}` };
+          }
+        } else if (match[1] === "plan") {
+          const active = planOf.get(agent.id)?.active ?? false;
+          const wanted = args.trim() !== "off";
+          planOf.set(agent.id, { active, pending: wanted !== active });
+          result = {
+            kind: "success",
+            text: wanted ? "Plan mode on. Use /plan off to leave." : "Plan mode off.",
+          };
+        } else result = { kind: "success", text: "Plan mode on. Use /plan off to leave." };
+        append(agent.id, "command/done", { commandId, ...result });
+        return { commandId, result };
       },
     },
     workspaceController: {
@@ -307,16 +511,36 @@ function fakeDsh(cwd: string) {
           });
         }),
     );
-  const create = (id: string, title: string) => {
+  const create = (id: string, title: string, parentSessionId?: string) => {
     const agent = {
       id,
       status: "idle",
       inbox: { nextTurn: [], nextStep: [] },
       session: { id, seq: 0 },
     };
-    sessions.set(id, { events: [], agent, title, updatedAt: Date.now(), selection: undefined });
+    sessions.set(id, {
+      events: [],
+      agent,
+      title,
+      updatedAt: Date.now(),
+      selection: undefined,
+      ...(parentSessionId ? { parentSessionId } : {}),
+    });
     emit("agent/created", { agent, source: "startup" });
     return agent;
+  };
+  const currentGoal = (id: string, ref: any) => {
+    const current = goals.get(id);
+    if (!current) throw goalError("GOAL_NOT_FOUND");
+    if (ref?.id !== current.id || ref?.revision !== current.revision)
+      throw goalError("GOAL_STALE_REVISION");
+    return current;
+  };
+  const changeGoal = (id: string, goal: any) => {
+    if (goal) goals.set(id, goal);
+    else goals.delete(id);
+    append(id, "goal/change", { kind: "goal/change", goal });
+    return goal && { ...goal };
   };
   const finishTurn = (id: string, text: string) => {
     const session = sessions.get(id)!;
@@ -346,6 +570,38 @@ function fakeDsh(cwd: string) {
     /** A model without image input: DSH refuses prompts with images. */
     refuseImages() {
       imagesRefused = true;
+    },
+    goals,
+    executed,
+    permissionOf,
+    planOf,
+    /** DSH resumed the session: its goal stays active but no longer continues by itself. */
+    disarmGoal(id: string) {
+      goals.set(id, { ...goals.get(id), activation: "disarmed" });
+      emit("goal/activation-changed", { sessionId: id });
+    },
+    /** A goal edited in DSH's own window. */
+    editGoalInDsh(id: string, objective: string) {
+      const current = goals.get(id);
+      changeGoal(id, { ...current, revision: current.revision + 1, objective });
+    },
+    /** Keeps the next compaction running until the returned function is called. */
+    holdCompaction() {
+      let release!: () => void;
+      compactionHold = new Promise<void>((resolve) => (release = resolve));
+      return () => {
+        compactionHold = null;
+        release();
+      };
+    },
+    /** A subagent of `parent`; `ending` is whether its last turn completed. */
+    spawnChild(parent: string, id: string, label: string, ending?: boolean) {
+      create(id, label, parent);
+      children.set(parent, [
+        ...(children.get(parent) ?? []),
+        { id, createdAt: 1_700_000_000_000, mode: "one-shot", label },
+      ]);
+      if (ending !== undefined) endings.set(id, ending);
     },
     create,
     append,
@@ -404,6 +660,7 @@ async function fixture() {
     discoveryMs: 50,
     debounceMs: 10,
     listThrottleMs: 20,
+    commandWaitMs: 150,
   });
   cleanups.push(async () => {
     plugin.close();
@@ -1084,6 +1341,82 @@ describe("DeepSeek Harness plugin projections", () => {
     ).toEqual([expect.objectContaining({ id: "dsh-tool:x", tool_status: "failed" })]);
   });
 
+  it("bounds goals, commands, presets and subagents", () => {
+    expect(
+      historyRecord({
+        seq: 4,
+        type: "command/run",
+        data: { commandId: "cmd-1", name: "goal", args: " ship", source: { kind: "user" } },
+      }),
+    ).toMatchObject({ kind: "command", name: "goal", args: " ship" });
+    expect(
+      historyRecord({ seq: 5, type: "command/done", data: { commandId: "cmd-1", kind: "error" } }),
+    ).toMatchObject({ kind: "command-result", ok: false, text: null });
+    // A command DSH answered without text adds nothing to read.
+    expect(
+      dshConversationEvents([
+        { seq: 5, time: null, kind: "command-result", commandId: "cmd-1", ok: true, text: null },
+      ]),
+    ).toEqual([]);
+
+    const goal = {
+      id: "goal-1",
+      revision: 3,
+      objective: "x".repeat(70 * 1024),
+      phase: "blocked",
+      blockedReason: { code: "needs-input", message: "Which branch?" },
+      maxGoalRounds: 256,
+      roundsStarted: 7,
+      createdAt: 1,
+      updatedAt: 2,
+      activation: "armed",
+    };
+    expect(goalView(goal)).toMatchObject({
+      phase: "blocked",
+      blockedReason: { code: "needs-input", message: "Which branch?" },
+      roundsStarted: 7,
+      activation: "armed",
+    });
+    expect(goalView(goal)!.objective).toHaveLength(64 * 1024);
+    expect(goalView({ ...goal, phase: "unknown" })).toBeNull();
+    expect(goalView({ ...goal, revision: 0 })).toBeNull();
+    // Without a running agent the goal is read from DSH's projection, as DSH would resume it.
+    expect(
+      goalFromProjection({
+        goal: { ...goal, phase: "active", blockedReason: undefined },
+        roundsStarted: 7,
+        createdAt: 1,
+        updatedAt: 2,
+      }),
+    ).toMatchObject({ phase: "active", activation: "disarmed", blockedReason: null });
+
+    expect(
+      commandEntries([
+        { name: "goal", description: "Goal", input: { hint: "[objective]", attachments: true } },
+        { name: "Bad Name", description: "x" },
+        { name: "plan", description: "Plan" },
+      ]),
+    ).toEqual([
+      { name: "goal", description: "Goal", hint: "[objective]", attachments: true },
+      { name: "plan", description: "Plan", hint: null, attachments: false },
+    ]);
+    expect(
+      permissionOptions({
+        options: [
+          { value: "read-only", name: "read-only" },
+          { value: "" },
+          { value: "x".repeat(200) },
+        ],
+      }),
+    ).toEqual([{ value: "read-only", name: "read-only", description: null }]);
+    expect(subagentEntry({ id: "child", createdAt: 5, mode: "spawned", label: "" })).toEqual({
+      sessionId: "child",
+      createdAt: 5,
+      mode: "unknown",
+      label: null,
+    });
+  });
+
   it("renames, archives and forks through DSH's own services", async () => {
     const f = await fixture();
     const features = () =>
@@ -1134,7 +1467,8 @@ describe("DeepSeek Harness plugin projections", () => {
     expect(features().rename.available).toBe(true);
     expect(features().fork.available).toBe(true);
     expect(features().unarchive).toEqual({ available: false, reason: "session-busy" });
-    expect(features().settings).toEqual({ available: false, reason: "session-busy" });
+    // A permission preset applies to the next approval, so it still changes during the turn.
+    expect(features().settings).toEqual({ available: true });
     // The model picker still reads, and says why it cannot change now.
     expect(
       (await f.bridge.request({
@@ -1146,7 +1480,12 @@ describe("DeepSeek Harness plugin projections", () => {
       writable: {
         model: { available: false, reason: "session-busy" },
         effort: { available: false, reason: "session-busy" },
+        policy: { available: true },
       },
+    });
+    expect(await f.control("settings", { effort: "high" })).toMatchObject({
+      controlOutcome: "not-dispatched",
+      reason: "session-busy",
     });
   });
 
@@ -1165,23 +1504,20 @@ describe("DeepSeek Harness plugin projections", () => {
     const state = await settings();
     expect(state).toMatchObject({
       available: true,
-      current: { model: "deepseek/deepseek-chat", effort: null },
+      current: { model: "deepseek/deepseek-chat", effort: null, policyId: "workspace-write" },
       writable: { model: { available: true }, effort: { available: true } },
     });
-    // Goals are not offered yet, but reading them answers instead of failing.
-    expect(await f.bridge.request({ operation: "goal", sessionId: "ak-session-a" })).toMatchObject({
-      available: false,
-      reason: "operation-unavailable",
-    });
-    // A provider with a slash keeps an unambiguous picker ID.
+    // A provider with a slash keeps an unambiguous picker ID; each model names its provider, as
+    // DSH's own model menu groups them.
     expect(state.models).toEqual([
       {
         id: "deepseek/deepseek-chat",
         name: "DeepSeek Chat",
+        group: "DeepSeek",
         efforts: ["low", "high"],
         defaultEffort: "low",
       },
-      { id: "mock%2Flocal/m-1", name: "Mock One", efforts: [] },
+      { id: "mock%2Flocal/m-1", name: "Mock One", group: "Mock", efforts: [] },
     ]);
 
     // An effort change keeps the current model.
@@ -1195,6 +1531,8 @@ describe("DeepSeek Harness plugin projections", () => {
     expect((await settings()).current).toEqual({
       model: "deepseek/deepseek-chat",
       effort: "high",
+      policyId: "workspace-write",
+      mode: "default",
     });
     expect(await f.control("settings", { effort: "extreme" })).toMatchObject({
       controlOutcome: "not-dispatched",
@@ -1210,7 +1548,12 @@ describe("DeepSeek Harness plugin projections", () => {
       model: "m-1",
     });
     // Read back from DSH's own selection, as its model picker shows it.
-    expect((await settings()).current).toEqual({ model: "mock%2Flocal/m-1", effort: null });
+    expect((await settings()).current).toEqual({
+      model: "mock%2Flocal/m-1",
+      effort: null,
+      policyId: "workspace-write",
+      mode: "default",
+    });
     expect(await f.control("settings", { model: "nobody/none" })).toMatchObject({
       controlOutcome: "not-dispatched",
       reason: "invalid-model",
@@ -1323,5 +1666,449 @@ describe("DeepSeek Harness plugin projections", () => {
     f.dsh.create("session-b", "Another DSH session");
     await until(() => receipt().status === "not-dispatched");
     expect(receipt().ack).toMatchObject({ reason: "dsh-session-not-created" });
+  });
+});
+
+async function eventually<T>(read: () => Promise<T | undefined | false>, ms = 5000): Promise<T> {
+  const end = Date.now() + ms;
+  for (;;) {
+    const value = await read();
+    if (value) return value;
+    if (Date.now() > end) throw new Error("timed out");
+    await new Promise((resolve) => setTimeout(resolve, 20));
+  }
+}
+
+describe("DeepSeek Harness goals, commands, presets and subagents", () => {
+  const features = (f: Awaited<ReturnType<typeof fixture>>) =>
+    f.bridge.capabilities("ak-session-a", true).features as Record<string, any>;
+
+  it("reads and changes the session's goal through DSH's goal service", async () => {
+    const f = await fixture();
+    const goal = () =>
+      f.bridge.request({ operation: "goal", sessionId: "ak-session-a" }) as Promise<
+        Record<string, any>
+      >;
+    // Each goal change reaches AgentKib as a goal invalidation; the next change names its result.
+    const notices = () =>
+      f.publish.mock.calls.filter(
+        ([id, type, payload]) =>
+          id === "ak-session-a" && type === "invalidate" && payload.domains.includes("goal"),
+      ).length;
+    const reported = async (step: Promise<Record<string, any>>) => {
+      const before = notices();
+      const result = await step;
+      if (result.accepted) await until(() => notices() > before);
+      return result;
+    };
+    await until(() => features(f).goal.available);
+    const empty = await goal();
+    expect(empty).toMatchObject({
+      available: true,
+      budget: "rounds",
+      actions: {
+        set: { available: true },
+        pause: { available: false, reason: "goal-action-unavailable" },
+        clear: { available: false, reason: "goal-action-unavailable" },
+      },
+    });
+    expect(empty.goal).toBeUndefined();
+    // DSH bounds a goal by rounds; a token budget is refused before anything reaches DSH.
+    expect(
+      await f.control("goal-set", {
+        goal: { objective: "Ship it", intent: "start", tokenBudget: 1000 },
+      }),
+    ).toMatchObject({ controlOutcome: "not-dispatched", reason: "goal-token-budget-unavailable" });
+    expect(f.dsh.goals.size).toBe(0);
+
+    expect(
+      await reported(
+        f.control("goal-set", { goal: { objective: " Ship the release ", intent: "start" } }),
+      ),
+    ).toMatchObject({ accepted: true });
+    expect(await goal()).toMatchObject({
+      goal: { objective: "Ship the release", status: "active", rounds: { used: 0, limit: 256 } },
+      actions: {
+        pause: { available: true },
+        resume: { available: false, reason: "goal-action-unavailable" },
+        clear: { available: true },
+      },
+    });
+    expect(await reported(f.control("goal-pause"))).toMatchObject({ accepted: true });
+    expect(await goal()).toMatchObject({
+      goal: { status: "paused" },
+      actions: { resume: { available: true } },
+    });
+    expect(await reported(f.control("goal-resume"))).toMatchObject({ accepted: true });
+    // A goal that exists is edited, as DSH's own `/goal edit` does.
+    expect(
+      await reported(f.control("goal-set", { goal: { objective: "Ship 1.0", intent: "update" } })),
+    ).toMatchObject({ accepted: true });
+    expect(f.dsh.goals.get("session-a")).toMatchObject({ objective: "Ship 1.0", revision: 4 });
+
+    // A session DSH resumed keeps its goal active but does not continue it by itself.
+    f.dsh.disarmGoal("session-a");
+    expect(
+      await eventually(async () => {
+        const value = await goal();
+        return value.goal?.status === "paused" && value.actions.resume.available === true;
+      }),
+    ).toBe(true);
+
+    // A goal changed in DSH's window changes what AgentKib decides on; an older control is stale.
+    const before = f.bridge.live("ak-session-a", true).revision;
+    const stale = { ...f.lastBody(), operation: "goal-clear", expectedRevision: before };
+    f.dsh.editGoalInDsh("session-a", "Ship 1.1");
+    await until(() => f.bridge.live("ak-session-a", true).revision !== before);
+    expect(await f.bridge.request({ ...stale, requestId: randomUUID() })).toMatchObject({
+      controlOutcome: "not-dispatched",
+      reason: "stale-dsh-revision",
+    });
+    expect(f.dsh.goals.has("session-a")).toBe(true);
+    expect(await reported(f.control("goal-clear"))).toMatchObject({ accepted: true });
+    expect(f.dsh.goals.has("session-a")).toBe(false);
+    expect(await f.control("goal-pause")).toMatchObject({
+      controlOutcome: "not-dispatched",
+      reason: "goal-changed",
+    });
+  });
+
+  it("runs a message naming one of DSH's slash commands as that command", async () => {
+    const f = await fixture();
+    // The running agent's own list: DSH's window lists a session's commands this way.
+    await until(
+      () => (f.bridge.capabilities("ak-session-a", true).commands as unknown[])?.length === 5,
+    );
+    expect(f.bridge.capabilities("ak-session-a", true).commands).toEqual([
+      { name: "compact", description: "Compact older conversation history" },
+      { name: "export", description: "Download this Session log as a ZIP archive" },
+      {
+        name: "goal",
+        description: "Set or view the goal for a long-running task",
+        argumentHint: "[<objective>|clear|edit <objective>|pause|resume]",
+      },
+      {
+        name: "permission",
+        description: "Switch the permission preset (sandbox mode + approval policy)",
+        argumentHint: "<preset>",
+      },
+      { name: "plan", description: "Enter or leave plan mode", argumentHint: "[off|message]" },
+    ]);
+
+    expect(await f.control("send", { text: "/plan" })).toMatchObject({ accepted: true });
+    expect(f.dsh.executed).toEqual(["/plan"]);
+    expect(f.dsh.prompts).toEqual([]);
+    // The history shows the command as typed, and DSH's answer as text DSH wrote itself.
+    const page = await f.bridge.events("session-a", null, 50);
+    expect(page.events.map((event) => [event.kind, event.content, !!event.cli_output])).toEqual([
+      ["user-message", "/plan", false],
+      ["agent-message", "Plan mode on. Use /plan off to leave.", true],
+    ]);
+
+    // `/export` downloads a file in DSH's own window; commands take no attachments.
+    expect(await f.control("send", { text: "/export" })).toMatchObject({
+      controlOutcome: "not-dispatched",
+      reason: "dsh-command-window-only",
+    });
+    expect(
+      await f.control("send", {
+        input: [
+          { type: "text", text: "/plan check the logs" },
+          { type: "text", text: 'User attached file "a.txt": /tmp/a.txt' },
+        ],
+      }),
+    ).toMatchObject({ controlOutcome: "not-dispatched", reason: "dsh-command-attachments" });
+    // `/goal` changes the session's goal: only a device with full access may run it.
+    expect(await f.control("send", { text: "/goal ship it" })).toMatchObject({
+      controlOutcome: "not-dispatched",
+      reason: "dsh-command-full-access",
+    });
+    expect(f.dsh.executed).toEqual(["/plan"]);
+    expect(await f.control("send", { text: "/goal ship it", commandAccess: "all" })).toMatchObject({
+      accepted: true,
+    });
+    expect(f.dsh.executed).toEqual(["/plan", "/goal ship it"]);
+
+    // A path, or a name DSH does not know, stays a message for the model.
+    expect(await f.control("send", { text: "/private/tmp holds the logs" })).toMatchObject({
+      accepted: true,
+    });
+    expect(f.dsh.prompts.at(-1).content).toEqual([
+      { type: "text", text: "/private/tmp holds the logs" },
+    ]);
+    // While the turn runs, a command still runs at once, as in DSH's window.
+    await until(() => f.bridge.live("ak-session-a", true).status === "running");
+    const live = f.bridge.live("ak-session-a", true);
+    expect(await f.control("steer", { text: "/plan off", turnId: live.turnId })).toMatchObject({
+      accepted: true,
+    });
+    expect(f.dsh.executed).toEqual(["/plan", "/goal ship it", "/plan off"]);
+    expect(f.dsh.prompts).toHaveLength(1);
+  });
+
+  it("offers a session without a running agent the commands its siblings have", async () => {
+    const f = await fixture();
+    await until(
+      () => (f.bridge.capabilities("ak-session-a", true).commands as unknown[])?.length === 5,
+    );
+    // DSH's agent for session-a goes away; DSH lists the session's own commands once it resumes.
+    const agent = f.dsh.sessions.get("session-a")!.agent;
+    f.dsh.create("session-b", "Second DSH session");
+    await until(() => f.bridge.handles("ak-session-b"));
+    f.dsh.emit("agent/disposed", { agent });
+    f.dsh.ctx.agents.get = (id: string) =>
+      id === "session-a" ? undefined : f.dsh.sessions.get(id)?.agent;
+    f.dsh.ctx.agents.list = () => [f.dsh.sessions.get("session-b")!.agent];
+    await until(
+      () =>
+        (f.bridge.capabilities("ak-session-b", true).commands as { name: string }[])?.length === 5,
+    );
+    // session-a keeps the menu of a running sibling, and so `/compact` stays offered.
+    await f.plugin.run({ type: "refresh" });
+    expect(
+      (f.bridge.capabilities("ak-session-a", true).commands as { name: string }[]).map(
+        (entry) => entry.name,
+      ),
+    ).toEqual(["compact", "export", "goal", "permission", "plan"]);
+  });
+
+  it("compacts with DSH's own /compact and holds messages while it runs", async () => {
+    const f = await fixture();
+    await until(() => features(f).compact.available);
+    const release = f.dsh.holdCompaction();
+    // The plugin answers once DSH has run the command a while; the compaction goes on.
+    expect(await f.control("compact")).toMatchObject({ accepted: true });
+    await until(() => f.bridge.live("ak-session-a", true).activity === "compacting");
+    expect(f.bridge.live("ak-session-a", true)).toMatchObject({
+      sendEnabled: false,
+      reason: "session-compacting",
+    });
+    expect(features(f).compact).toEqual({ available: false, reason: "session-compacting" });
+    expect(await f.control("send", { text: "after the compaction" })).toMatchObject({
+      controlOutcome: "not-dispatched",
+      reason: "session-busy",
+    });
+    release();
+    await until(() => f.bridge.live("ak-session-a", true).sendEnabled === true);
+    expect(f.bridge.live("ak-session-a", true).activity).toBeNull();
+    const page = await f.bridge.events("session-a", null, 50);
+    expect(page.events.map((event) => event.content)).toEqual([
+      "/compact",
+      "Compacted 4 history items (~120 tokens).",
+    ]);
+    // A running turn keeps its context; the compaction waits for the turn to end.
+    await f.control("send", { text: "run the tests" });
+    await until(() => f.bridge.live("ak-session-a", true).status === "running");
+    expect(features(f).compact).toEqual({ available: false, reason: "session-busy" });
+  });
+
+  it("shows DSH's plan mode as Codex's collaboration mode and switches it with /plan", async () => {
+    const f = await fixture();
+    const settings = () =>
+      f.bridge.request({ operation: "settings-state", sessionId: "ak-session-a" }) as Promise<
+        Record<string, any>
+      >;
+    await until(() => features(f).settings.available);
+    // The running agent's own `/plan` is what switches it.
+    await until(() =>
+      ((f.bridge.capabilities("ak-session-a", true).commands as { name: string }[]) ?? []).some(
+        (entry) => entry.name === "plan",
+      ),
+    );
+    expect(await settings()).toMatchObject({
+      current: { mode: "default" },
+      collaborationModes: [{ id: "default" }, { id: "plan" }],
+      writable: { mode: { available: true } },
+    });
+    expect(await f.control("settings", { mode: "plan" })).toMatchObject({ accepted: true });
+    expect(f.dsh.executed.at(-1)).toBe("/plan");
+    // A switch counts at once, as DSH's chip shows it, though DSH applies it at the next step.
+    expect(f.dsh.planOf.get("session-a")).toEqual({ active: false, pending: true });
+    expect((await settings()).current.mode).toBe("plan");
+    expect(await f.control("settings", { mode: "default" })).toMatchObject({ accepted: true });
+    expect(f.dsh.executed.at(-1)).toBe("/plan off");
+    expect((await settings()).current.mode).toBe("default");
+    // A plan switch goes alone, as DSH's own chip and `/plan` make it.
+    expect(await f.control("settings", { mode: "plan", policyId: "read-only" })).toMatchObject({
+      controlOutcome: "not-dispatched",
+      reason: "invalid-settings",
+    });
+    expect(f.dsh.executed.at(-1)).toBe("/plan off");
+  });
+
+  it("switches the permission preset with DSH's own /permission", async () => {
+    const f = await fixture();
+    const settings = () =>
+      f.bridge.request({ operation: "settings-state", sessionId: "ak-session-a" }) as Promise<
+        Record<string, any>
+      >;
+    await until(() => features(f).settings.available);
+    const state = await settings();
+    // DSH names its built-in presets by key; AgentKib words them as it words Codex's policies.
+    expect(state.policies).toEqual([
+      {
+        id: "read-only",
+        name: "Read only · ask when needed",
+        description: "Can read the workspace; changes and other actions require user approval.",
+      },
+      {
+        id: "workspace-write",
+        name: "Workspace write · ask when needed",
+        description:
+          "Can write inside the workspace and permitted temporary directories; wider access requires user approval.",
+      },
+      {
+        id: "danger-full-access",
+        name: "Full access · no approval prompts",
+        description: "Can access all files and run commands without prompting for approvals.",
+      },
+    ]);
+    expect(state).toMatchObject({
+      current: { policyId: "workspace-write" },
+      writable: { policy: { available: true } },
+    });
+    // The settings dialog sends the model it shows along with the new preset.
+    const { model, effort } = state.current;
+    expect(
+      await f.control("settings", { model, effort: effort ?? undefined, policyId: "read-only" }),
+    ).toMatchObject({ accepted: true });
+    expect(f.dsh.executed).toEqual(["/permission read-only"]);
+    expect(f.dsh.selections).toEqual([]);
+    await until(() =>
+      f.publish.mock.calls.some(
+        ([id, type, payload]) =>
+          id === "ak-session-a" && type === "invalidate" && payload.domains.includes("settings"),
+      ),
+    );
+    expect((await settings()).current.policyId).toBe("read-only");
+    // DSH's own window leaves preset switches out of the conversation, and so does AgentKib,
+    // also for one typed as `/permission`.
+    expect(
+      await f.control("send", { text: "/permission workspace-write", commandAccess: "all" }),
+    ).toMatchObject({ accepted: true });
+    expect(f.dsh.permissionOf.get("session-a")).toBe("workspace-write");
+    expect((await f.bridge.events("session-a", null, 50)).events).toEqual([]);
+    // One that failed stays: the conversation is the only place its reason shows.
+    expect(
+      await f.control("send", { text: "/permission root", commandAccess: "all" }),
+    ).toMatchObject({ accepted: true });
+    expect(await f.control("send", { text: "/plan" })).toMatchObject({ accepted: true });
+    expect(
+      (await f.bridge.events("session-a", null, 50)).events.map((event) => event.content),
+    ).toEqual([
+      "/permission root",
+      'unknown preset "root"',
+      "/plan",
+      "Plan mode on. Use /plan off to leave.",
+    ]);
+    expect(await f.control("settings", { policyId: "root" })).toMatchObject({
+      controlOutcome: "not-dispatched",
+      reason: "invalid-policy",
+    });
+
+    // A preset changes during a turn; the model waits for the turn to end.
+    await f.control("send", { text: "run the tests" });
+    await until(() => f.bridge.live("ak-session-a", true).status === "running");
+    await settings();
+    expect(await f.control("settings", { policyId: "danger-full-access" })).toMatchObject({
+      accepted: true,
+    });
+    expect(f.dsh.permissionOf.get("session-a")).toBe("danger-full-access");
+    expect(
+      await f.control("settings", { model: "mock%2Flocal/m-1", policyId: "workspace-write" }),
+    ).toMatchObject({ controlOutcome: "not-dispatched", reason: "session-busy" });
+    expect(f.dsh.permissionOf.get("session-a")).toBe("danger-full-access");
+
+    // Idle again: a new preset and a new model are two steps, preset first.
+    f.dsh.finishTurn("session-a", "done");
+    await until(() => f.bridge.live("ak-session-a", true).status === "idle");
+    await settings();
+    expect(
+      await f.control("settings", { model: "mock%2Flocal/m-1", policyId: "workspace-write" }),
+    ).toMatchObject({ accepted: true });
+    expect(f.dsh.permissionOf.get("session-a")).toBe("workspace-write");
+    expect(f.dsh.selections.at(-1)).toMatchObject({ provider: "mock/local", model: "m-1" });
+  });
+
+  it("lists a session's subagents and reads their history", async () => {
+    const f = await fixture();
+    f.dsh.spawnChild("session-a", "child-1", "Explore the repo", true);
+    f.dsh.spawnChild("session-a", "child-2", "Run the tests", false);
+    f.dsh.spawnChild("session-a", "child-3", "Watch the build");
+    f.dsh.sessions.get("child-3")!.agent.status = "running";
+    f.dsh.emit("agent/status", { agent: f.dsh.sessions.get("child-3")!.agent, status: "running" });
+    f.dsh.append("child-1", "assistant/message", {
+      turn: 1,
+      step: 0,
+      message: { role: "assistant", content: [{ type: "text", text: "Found 3 packages." }] },
+    });
+    await until(() => f.bridge.handles("ak-child-3"));
+    await until(() => features(f).send.available);
+    const catalog = (await f.bridge.request({
+      operation: "subagents",
+      sessionId: "ak-session-a",
+    })) as Record<string, any>;
+    expect(catalog).toMatchObject({ version: 1, sessionId: "ak-session-a", truncated: false });
+    expect(catalog.agents.map((agent: any) => [agent.name, agent.status])).toEqual([
+      ["Explore the repo", "completed"],
+      ["Run the tests", "stopped"],
+      ["Watch the build", "running"],
+    ]);
+    for (const agent of catalog.agents)
+      expect(agent).toMatchObject({
+        id: expect.stringMatching(/^[a-f0-9]{64}$/),
+        agent: "deepseek-harness",
+        readable: true,
+        updatedAt: "2023-11-14T22:13:20.000Z",
+      });
+    // Subagents stay out of the session list; DSH shows them read-only under their parent.
+    expect(f.bridge.list(f.workspace).sessions.map((session) => session.native_ref)).not.toContain(
+      "child-1",
+    );
+
+    const page = (await f.bridge.request({
+      operation: "subagent-events",
+      sessionId: "ak-session-a",
+      subagentId: catalog.agents[0].id,
+      cursor: null,
+      limit: 50,
+    })) as Record<string, any>;
+    expect(page).toMatchObject({
+      version: 1,
+      sessionId: "ak-session-a",
+      subagentId: catalog.agents[0].id,
+      epoch: expect.stringMatching(/^[a-f0-9]{64}$/),
+    });
+    expect(page.events.map((event: any) => event.content)).toEqual(["Found 3 packages."]);
+    await expect(
+      f.bridge.request({
+        operation: "subagent-events",
+        sessionId: "ak-session-a",
+        subagentId: "0".repeat(64),
+        limit: 50,
+      }),
+    ).rejects.toThrow("subagent-unavailable");
+  });
+
+  it("remembers the commands it ran, so a lost reply can be settled", async () => {
+    const f = await fixture();
+    const requestId = randomUUID();
+    expect(
+      await f.plugin.run({
+        type: "command",
+        sessionId: "session-a",
+        requestId,
+        line: "/plan",
+      }),
+    ).toMatchObject({ matched: true, running: false, ok: true });
+    expect(await f.plugin.run({ type: "verify", sessionId: "session-a", requestId })).toMatchObject(
+      { present: true, inFlight: false },
+    );
+    expect(
+      await f.plugin.run({ type: "command", sessionId: "session-a", requestId, line: "/nope" }),
+    ).toEqual({ matched: false });
+    expect(await f.plugin.run({ type: "verify", sessionId: "session-a", requestId })).toMatchObject(
+      { present: false },
+    );
   });
 });

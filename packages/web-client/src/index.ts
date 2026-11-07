@@ -29,6 +29,8 @@ export type {
   CodexCommandPrompt,
   CodexCommandRefusal,
   CodexMenuCommand,
+  DshCommandEntry,
+  DshCommandRefusal,
   ConversationToolContent,
   ConversationToolDetail,
   ConversationToolKind,
@@ -57,6 +59,9 @@ export {
   CODEX_MENU_COMMANDS,
   codexCommandDecision,
   isCodexCommandRefusal,
+  DSH_COMMAND_REFUSALS,
+  dshMenuCommands,
+  isDshCommandRefusal,
   claudeBridgeCompatibility,
   formatHistoryReferences,
   literalHistoryMatchRanges,
@@ -498,8 +503,9 @@ export interface CodexCapabilities {
     >
   >;
   /**
-   * Claude Code's slash-command catalog, as its last worker reported it. Absent for devices
-   * that cannot send, and empty before any worker has run in the session.
+   * The agent's slash-command catalog: Claude Code's as its last worker reported it (empty before
+   * any worker has run in the session), or the one a running DeepSeek Harness reports. Absent
+   * for devices that cannot send.
    */
   commands?: ClaudeCommandEntry[];
 }
@@ -635,6 +641,8 @@ export interface CodexSessionSettings {
       id: string;
       resolvedModel?: string;
       name?: string;
+      /** The provider the agent lists this model under, when it groups them (DeepSeek Harness). */
+      group?: string;
       efforts: string[];
       defaultEffort?: string;
       serviceTierIds: string[];
@@ -652,12 +660,18 @@ export interface CodexGoal {
   tokenBudget?: number;
   tokensUsed?: number;
   elapsedMs?: number;
+  /** Rounds started and allowed, for an agent that bounds a goal by rounds (DeepSeek Harness). */
+  rounds?: { used: number; limit: number };
+  /** Why a blocked goal stopped, in the agent's own words. */
+  detail?: string;
 }
 export interface CodexGoalState {
   sessionId: string;
   available: boolean;
   reason?: string;
   revision: number;
+  /** What bounds a goal; tokens when absent. A round-bounded goal takes no token budget. */
+  budget?: "rounds";
   goal?: CodexGoal;
   actions: {
     set: CodexAvailability;

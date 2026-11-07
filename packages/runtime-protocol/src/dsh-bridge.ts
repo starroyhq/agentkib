@@ -32,6 +32,60 @@ export interface DshBridgeServices {
   modelCatalog?: boolean;
   /** Images in prompts and reading a session's images. Plugins older than 0.3.0 do not report it. */
   images?: boolean;
+  /** Reading and changing a session's goal. Plugins older than 0.4.0 do not report it. */
+  goals?: boolean;
+  /** Running DSH's slash commands. Plugins older than 0.4.0 do not report it. */
+  commands?: boolean;
+  /** Permission presets and a session's current one. Plugins older than 0.4.0 do not report it. */
+  permissions?: boolean;
+  /** A session's subagents. Plugins older than 0.4.0 do not report it. */
+  subagents?: boolean;
+}
+
+/**
+ * One of DSH's slash commands. A report carries the ones every session has (`commands`) and each
+ * running agent's own list (`sessionCommands`, null once the agent has gone).
+ */
+export interface DshBridgeCommandEntry {
+  /** Lowercase, without the slash. */
+  name: string;
+  description: string;
+  hint: string | null;
+  /** DSH takes attachments with it. */
+  attachments: boolean;
+}
+
+/**
+ * A session's goal. A change names `id` and `revision`. `activation` says whether this DSH
+ * continues the goal by itself; DSH resumes a session with its goal disarmed.
+ */
+export interface DshBridgeGoal {
+  id: string;
+  revision: number;
+  objective: string;
+  phase: "active" | "paused" | "blocked" | "complete";
+  blockedReason: { code: string; message: string } | null;
+  maxGoalRounds: number;
+  roundsStarted: number;
+  createdAt: number | null;
+  updatedAt: number | null;
+  activation: "armed" | "disarmed";
+}
+
+/** One permission preset: a sandbox mode with an approval policy. */
+export interface DshBridgePermissionOption {
+  value: string;
+  name: string;
+  description: string | null;
+}
+
+/** One direct child of a session. */
+export interface DshBridgeSubagent {
+  sessionId: string;
+  createdAt: number | null;
+  mode: "one-shot" | "external" | "continuable" | "unknown";
+  label: string | null;
+  status: "running" | "completed" | "stopped" | "unknown";
 }
 
 /** One row of DSH's own session list. */
@@ -108,6 +162,10 @@ export interface DshBridgeSessionState {
   streamText: string;
   streamTruncated: boolean;
   pending: number;
+  /** A compaction runs outside any turn, while the agent counts as idle. */
+  activity: "compacting" | null;
+  /** The goal a change must name, while the session runs in this DSH. */
+  goal: Pick<DshBridgeGoal, "id" | "revision" | "phase" | "activation"> | null;
 }
 
 export interface DshBridgeQuestion {
@@ -162,6 +220,9 @@ export type DshBridgeHistoryRecord = { seq: number; time: number | null } & (
       preview: string;
       truncated: boolean;
     }
+  /** A slash command DSH ran itself, and its answer; `args` is what followed the name. */
+  | { kind: "command"; commandId: string; name: string; args: string | null }
+  | { kind: "command-result"; commandId: string; ok: boolean; text: string | null }
 );
 
 export interface DshBridgeHistoryPage {
@@ -176,12 +237,18 @@ export interface DshBridgeHistoryPage {
 export type DshBridgeCommand = { commandId: string } & (
   | { type: "history"; sessionId: string; before?: number; limit: number }
   | { type: "verify"; sessionId: string; requestId: string }
+  /**
+   * A message. One that names a command of the session's agent runs as that command, as in DSH's
+   * own window; the reply then carries `command` and the command's outcome. `fullAccess` says
+   * whether the sending device may run commands that need it (`dsh-bridge-plugin/commands.js`).
+   */
   | {
       type: "prompt";
       sessionId: string;
       requestId: string;
       mode: "queue" | "steer";
       content: DshBridgePromptPart[];
+      fullAccess?: boolean;
     }
   /** One image the session's log references, as `{ mediaType, data }` with base64 data. */
   | { type: "image"; sessionId: string; attachmentId: string }
@@ -213,4 +280,24 @@ export type DshBridgeCommand = { commandId: string } & (
         | { answers: { id: string; selected: string[]; custom?: string }[] };
     }
   | { type: "refresh" }
+  /** `{ goal, live }`; a session that is not running is read without resuming it. */
+  | { type: "goal"; sessionId: string }
+  /** `set` creates a goal or edits the current one; the others need `goalId` and `goalRevision`. */
+  | {
+      type: "goal-control";
+      sessionId: string;
+      action: "set" | "pause" | "resume" | "clear";
+      objective?: string;
+      goalId?: string;
+      goalRevision?: number;
+    }
+  /**
+   * One slash command line, run by DSH's command registry as its own window runs it. The reply
+   * is `{ matched, running, ok, text }`; a command still running after a few seconds goes on.
+   */
+  | { type: "command"; sessionId: string; requestId: string; line: string }
+  /** `{ options, current }`: DSH's permission presets and the session's current one. */
+  | { type: "permissions"; sessionId: string }
+  /** `{ agents, truncated }`: the session's direct children, newest last. */
+  | { type: "subagents"; sessionId: string }
 );

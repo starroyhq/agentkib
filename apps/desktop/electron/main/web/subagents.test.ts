@@ -15,6 +15,7 @@ describe("parent-scoped read-only subagents", () => {
   const sessions = [
     { id: "parent", workspace_id: "w", agent: "codex", origin: "interactive" },
     { id: "claude-parent", workspace_id: "w", agent: "claude-code", origin: "interactive" },
+    { id: "dsh-parent", workspace_id: "w", agent: "deepseek-harness", origin: "interactive" },
     { id: "other", workspace_id: "elsewhere", agent: "codex", origin: "interactive" },
     { id: "aux", workspace_id: "w", agent: "codex", origin: "auxiliary" },
   ];
@@ -62,7 +63,7 @@ describe("parent-scoped read-only subagents", () => {
     await rm(dir, { recursive: true, force: true });
   });
 
-  it.each(["parent", "claude-parent"])(
+  it.each(["parent", "claude-parent", "dsh-parent"])(
     "allows a read-only grant to inspect %s without control permissions",
     async (sessionId) => {
       expect((await api(`subagents?sessionId=${sessionId}`)).status).toBe(200);

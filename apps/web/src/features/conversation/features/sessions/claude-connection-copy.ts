@@ -43,7 +43,6 @@ const zh = {
     "终端里的连接插件需要更新。按第 1 步更新后，这条会话会自动连接，不需要新的连接码。",
   missingCapabilities:
     "Claude Code {version} 暂时不支持连接终端。可以继续在终端里使用，AgentKib 后续版本会适配。",
-  unverifiedVersion: "Claude Code {version} 还没有验证过，同步显示可能不完整",
   identityMismatch: "目标终端与所选会话不匹配。请在所选会话的终端重新连接。",
   connectionUnconfirmed: "上次操作结果尚未确认。请先核对终端状态，再重新连接。",
   managedUnconfirmed:
@@ -150,7 +149,6 @@ export const claudeConnectionCopy: Record<Locale, Copy> = {
       "終端裡的連線外掛需要更新。依第 1 步更新後，這段對話會自動連接，不需要新的連線碼。",
     missingCapabilities:
       "Claude Code {version} 暫時不支援連接終端。可以繼續在終端裡使用，AgentKib 後續版本會適配。",
-    unverifiedVersion: "Claude Code {version} 尚未驗證過，同步顯示可能不完整",
     identityMismatch: "目標終端與所選對話不符。請在所選對話的終端重新連接。",
     connectionUnconfirmed: "上次操作結果尚未確認。請先核對終端狀態，再重新連接。",
     managedUnconfirmed:
@@ -261,8 +259,6 @@ export const claudeConnectionCopy: Record<Locale, Copy> = {
       "The terminal connection plugin needs an update. After you update it with step 1, this session connects automatically; no new code is needed.",
     missingCapabilities:
       "Claude Code {version} does not currently support connecting a terminal. You can keep using it in the terminal; a future AgentKib release will add support.",
-    unverifiedVersion:
-      "Claude Code {version} has not been verified yet. Synchronized content may be incomplete.",
     identityMismatch:
       "The terminal does not match the selected session. Reconnect from that session’s terminal.",
     connectionUnconfirmed:
@@ -389,8 +385,6 @@ export const claudeConnectionCopy: Record<Locale, Copy> = {
       "ターミナルの接続プラグインを更新する必要があります。手順 1 で更新すると、この会話は自動で接続されます。新しい接続コードは不要です。",
     missingCapabilities:
       "Claude Code {version} は現在ターミナル接続に対応していません。ターミナルでは引き続き利用できます。AgentKib の今後のバージョンで対応します。",
-    unverifiedVersion:
-      "Claude Code {version} はまだ検証されていません。同期表示が不完全な場合があります。",
     identityMismatch:
       "ターミナルが選択した会話と一致しません。その会話のターミナルから再接続してください。",
     connectionUnconfirmed:

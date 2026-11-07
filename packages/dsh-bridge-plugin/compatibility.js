@@ -2,7 +2,7 @@
 // Only add a verified version after recording real-DSH acceptance evidence in QA.
 export const DSH_BRIDGE_COMPATIBILITY = Object.freeze({
   protocol: 1,
-  pluginVersion: "0.3.0",
+  pluginVersion: "0.4.0",
   minimumDshVersion: "0.2.1-rc.5",
   verifiedDshVersions: Object.freeze(["0.2.1-rc.5"]),
 });

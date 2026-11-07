@@ -1,13 +1,14 @@
 // @vitest-environment jsdom
 import "@testing-library/jest-dom/vitest";
 import { createRef, type RefObject } from "react";
-import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { CodexSessionSettings } from "@agentkib/web-client";
 import { CodexComposerControls, type ComposerControlsHandle } from "./codex-session-controls";
 import { useSession } from "./session-context";
 import { sessionAgentCopy } from "./session-agent-copy";
 import { codexCopy } from "./codex-copy";
+import { composerModelCopy } from "./composer-model-copy";
 
 vi.mock("./session-context", () => ({ useSession: vi.fn() }));
 let state: ReturnType<typeof useSession>;
@@ -70,6 +71,65 @@ beforeEach(() => {
 });
 afterEach(cleanup);
 
+describe("Claude's model in the composer", () => {
+  it("switches the model and its effort in the composer, with the model's default effort", async () => {
+    const picker = composerModelCopy["en-US"];
+    state.client.sessionSettings = vi.fn(async (id: string) => ({
+      ...settings(id),
+      current: { modelId: "model" },
+      options: {
+        ...settings(id).options,
+        models: [
+          {
+            id: "model",
+            name: "Claude session",
+            efforts: ["low", "high"],
+            defaultEffort: "high",
+            serviceTierIds: [],
+          },
+        ],
+      },
+    }));
+    render(<CodexComposerControls {...props} />);
+    // The settings button names no model; the composer's model control does.
+    const trigger = await screen.findByRole("button", {
+      name: `${picker.chooseEffort}: Claude session`,
+    });
+    expect(
+      screen.getByRole("button", { name: codexCopy["en-US"].conversationSettings }),
+    ).toBeEnabled();
+    fireEvent.click(trigger);
+    const popup = await screen.findByRole("dialog");
+    // Claude Code reports no effort for the model's own default; it has no Fast mode.
+    expect(within(popup).getByText(`${picker.defaultEffort} · High`)).toBeInTheDocument();
+    expect(within(popup).queryByRole("button", { name: picker.fast })).not.toBeInTheDocument();
+  });
+});
+
+describe("Claude's plan mode in the composer", () => {
+  it("shows plan mode and turns it off from its chip, as Codex's composer does", async () => {
+    state.client.sessionSettings = vi.fn(async (id: string) => ({
+      ...settings(id),
+      current: { modelId: "model", effort: "low", permissionMode: "plan" as const },
+      options: {
+        ...settings(id).options,
+        permissionModes: [
+          { id: "default" as const, name: "Default" },
+          { id: "plan" as const, name: "Plan" },
+        ],
+      },
+    }));
+    vi.mocked(state.codexAction).mockResolvedValue({ accepted: true } as unknown as Awaited<
+      ReturnType<typeof state.codexAction>
+    >);
+    render(<CodexComposerControls {...props} />);
+    fireEvent.click(await screen.findByRole("button", { name: codexCopy["en-US"].planOn }));
+    await waitFor(() =>
+      expect(state.codexAction).toHaveBeenCalledWith("settings", { permissionMode: "default" }),
+    );
+  });
+});
+
 describe("Claude settings preparation", () => {
   it.each(["zh-CN", "zh-TW", "en-US", "ja-JP"] as const)(
     "shows localized default model and effort labels before opening either select in %s",
@@ -106,7 +166,9 @@ describe("Claude settings preparation", () => {
     async (locale, expected) => {
       state.locale = locale;
       render(<CodexComposerControls {...props} />);
-      fireEvent.click(await screen.findByRole("button", { name: /Claude session/ }));
+      fireEvent.click(
+        await screen.findByRole("button", { name: codexCopy[state.locale].conversationSettings }),
+      );
       const select = await screen.findByLabelText(sessionAgentCopy[locale].permission);
       expect(select).toHaveTextContent(expected);
       expect(select).not.toHaveTextContent(/Codex/);
@@ -119,7 +181,9 @@ describe("Claude settings preparation", () => {
       const pending = deferred();
       vi.mocked(state.client.prepareSessionSettings).mockReturnValueOnce(pending.promise);
       const view = render(<CodexComposerControls {...props} />);
-      fireEvent.click(await screen.findByRole("button", { name: /Claude session/ }));
+      fireEvent.click(
+        await screen.findByRole("button", { name: codexCopy[state.locale].conversationSettings }),
+      );
       expect(screen.getByLabelText("Model")).toBeDisabled();
       state = { ...state, usageEpoch: "observation-b" };
       view.rerender(<CodexComposerControls {...props} />);
@@ -147,7 +211,9 @@ describe("Claude settings preparation", () => {
         .mockReturnValueOnce(old.promise)
         .mockReturnValueOnce(next.promise);
       const view = render(<CodexComposerControls {...props} />);
-      fireEvent.click(await screen.findByRole("button", { name: /Claude session/ }));
+      fireEvent.click(
+        await screen.findByRole("button", { name: codexCopy[state.locale].conversationSettings }),
+      );
       if (scope === "session") {
         state = {
           ...state,
@@ -163,9 +229,7 @@ describe("Claude settings preparation", () => {
       }
       view.rerender(<CodexComposerControls {...props} />);
       fireEvent.click(
-        await screen.findByRole("button", {
-          name: scope === "session" ? /Claude next/ : /Claude session/,
-        }),
+        await screen.findByRole("button", { name: codexCopy[state.locale].conversationSettings }),
       );
       expect(state.client.prepareSessionSettings).toHaveBeenCalledTimes(2);
       await act(async () => old.resolve(settings()));

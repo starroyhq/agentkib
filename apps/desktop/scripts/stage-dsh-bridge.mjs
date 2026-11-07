@@ -14,6 +14,7 @@ const entries = [
   "client.js",
   "projection.js",
   "compatibility.js",
+  "commands.js",
   "LICENSE",
   "NOTICE",
 ];

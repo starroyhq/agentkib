@@ -5,10 +5,7 @@ import { dictionaries } from "@/features/conversation/i18n";
 import { SessionReader } from "@/features/conversation/features/sessions/session-reader";
 import { useSession } from "@/features/conversation/features/sessions/session-context";
 import { webLayoutCopy } from "@/features/conversation/features/sessions/web-layout-copy";
-import {
-  claudeConnectionCopy,
-  claudeConnectionReason,
-} from "@/features/conversation/features/sessions/claude-connection-copy";
+import { claudeConnectionReason } from "@/features/conversation/features/sessions/claude-connection-copy";
 import { codexReason } from "@/features/conversation/features/sessions/codex-copy";
 
 vi.mock("@/features/conversation/features/sessions/session-context", () => ({
@@ -154,8 +151,8 @@ describe("conversation reading position", () => {
         },
       };
       const view = render(<SessionReader />);
-      const text = claudeConnectionCopy[locale].unverifiedVersion.replace("{version}", "2.1.307");
-      expect(screen.queryByText(text)).toBeNull();
+      // No version note anywhere on the session page.
+      expect(screen.queryByText(/2\.1\.307/)).toBeNull();
       expect(view.container.querySelector("[data-terminal-compatibility]")).toBeNull();
       expect(screen.getByText("First answer")).toBeVisible();
       expect(view.container.querySelector('[role="alert"]')).toBeNull();

@@ -491,9 +491,7 @@ describe("composer model picker", () => {
     fireEvent.click(within(popup).getByRole("button", { name: `${copy.chooseModel}: GPT Sol` }));
     const models = await screen.findByRole("dialog", { name: copy.chooseModel });
     fireEvent.click(within(models).getByRole("button", { name: "GPT Terra" }));
-    await waitFor(() =>
-      expect(props.onChange).toHaveBeenCalledExactlyOnceWith({ model: "terra" }),
-    );
+    await waitFor(() => expect(props.onChange).toHaveBeenCalledExactlyOnceWith({ model: "terra" }));
   });
 
   it("shows unknown settings and a read-only status without fabricating models", async () => {

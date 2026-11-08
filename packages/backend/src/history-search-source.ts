@@ -181,6 +181,23 @@ export async function readHistorySearchSource(
   };
   options.signal?.addEventListener("abort", abort, { once: true });
   try {
+    if (input.summary.agent === "deepseek-harness") {
+      // Read from the running DSH on the main thread (`HistorySearch`); without its records the
+      // indexed generation stays as it was.
+      if (!input.dsh) throw new Error("history-source-unavailable");
+      sink.fingerprint(JSON.stringify(["deepseek-harness", input.sessionId, input.dsh.revision]));
+      for (const { truncated, ...record } of input.dsh.records) {
+        if (truncated) sink.limit("source-record-limit");
+        await sink.emit(record);
+      }
+      check();
+      return {
+        sourceRevision: hash.digest("hex"),
+        recordCount: count,
+        limitations: [...limitations].sort(),
+        status: limitations.size ? "partial" : "ready",
+      };
+    }
     const verifyNative = (native: NativeSession) => {
       // The index keeps AgentKib's own `--print` Claude runs as conversations. A fresh read
       // still sees their `sdk-cli` entrypoint, so only that indexed decision admits them.

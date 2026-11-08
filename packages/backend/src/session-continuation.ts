@@ -19,6 +19,7 @@ import { claudeConfigFiles, resolveClaudeConfig } from "./claude-config";
 import { claudeProjectKey } from "./claude-project-path";
 import { probeClaudeSessionFormat } from "./claude-session-probe";
 import { resolveCommand } from "./command-resolution";
+import type { DshBridge } from "./dsh-bridge";
 import { isReparseOrSymlink } from "./native-files";
 import { userHome } from "./mcp-config-read";
 import { planSessionWindow, renderHandoff, sessionImportStats } from "./session-handoff";
@@ -182,13 +183,42 @@ function safeWritableRoot(root: string): boolean {
   }
 }
 
+/** Starting a DSH session for a handoff needs exactly one running DSH, as starting any does. */
+export type DshHandoffTarget = Pick<DshBridge, "createOptions">;
+
+/**
+ * Whether "continue" can start the target once the handoff is written: Codex and Claude Code in a
+ * terminal, DeepSeek Harness as a new session in the running DSH.
+ */
+export async function interactiveLaunchCapability(
+  target: string,
+  env: NodeJS.ProcessEnv,
+  dsh?: DshHandoffTarget,
+): Promise<{ status: string; reason: string | null }> {
+  if (target === "deepseek-harness") {
+    const options = (await dsh?.createOptions()) ?? {
+      available: false,
+      reason: "platform-unsupported",
+    };
+    return options.available
+      ? { status: "supported", reason: null }
+      : { status: "unavailable", reason: options.reason ?? "dsh-runtime-offline" };
+  }
+  if (target !== "codex" && target !== "claude-code")
+    return { status: "unsupported", reason: "target-not-supported" };
+  return resolveCommand(target === "codex" ? "codex" : "claude", env)
+    ? { status: "supported", reason: null }
+    : { status: "unavailable", reason: "cli-unavailable" };
+}
+
 export async function nativeImportCapability(
   target: string,
   commands: Commands,
   env: NodeJS.ProcessEnv,
   project: string,
 ): Promise<Capability> {
-  if (target === "antigravity")
+  // DSH has no way to take another Agent's history as its own; a handoff file is read instead.
+  if (target === "antigravity" || target === "deepseek-harness")
     return { supported: false, beta: false, reason: "native-history-import-unsupported" };
   if (target !== "codex" && target !== "claude-code")
     return { supported: false, beta: false, reason: "target-not-supported" };
@@ -362,6 +392,7 @@ export async function prepareSessionHandoff(
   commands: Commands,
   env: NodeJS.ProcessEnv,
   cursorBridge?: import("./cursor-bridge").CursorBridge,
+  dsh?: DshHandoffTarget,
 ): Promise<unknown> {
   const { request, mcpHubStatus } = z
     .object({
@@ -509,11 +540,7 @@ export async function prepareSessionHandoff(
       : mcpHubStatus.running
         ? capability("supported")
         : capability("unavailable", "mcp-hub-unavailable"),
-    interactive_launch: !targetSupportsContinuation
-      ? capability("unsupported", "target-not-supported")
-      : resolveCommand(request.target_agent === "codex" ? "codex" : "claude", env)
-        ? capability("supported")
-        : capability("unavailable", "cli-unavailable"),
+    interactive_launch: await interactiveLaunchCapability(request.target_agent, env, dsh),
   };
   const generated = new Date();
   const isoGenerated = generated.toISOString();

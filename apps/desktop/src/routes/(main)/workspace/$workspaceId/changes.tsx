@@ -71,6 +71,7 @@ export function Changes({
   onPlanHome,
   onApplied,
   onLaunchCompleted,
+  onOpenSession,
   onRejected,
   onApplyingChange,
   planStatus = "ready",
@@ -98,6 +99,8 @@ export function Changes({
     result?: { applied: string[]; backup_dir: string },
   ) => void | Promise<void>;
   onLaunchCompleted: () => void;
+  /** Opens the session a launch started (DeepSeek Harness continues a handoff in AgentKib). */
+  onOpenSession?: (sessionId: string) => void;
   onRejected: () => void;
   onApplyingChange: (applying: boolean) => void;
 }) {
@@ -117,7 +120,7 @@ export function Changes({
   const hasChanges = Boolean(changeSet?.changes.length);
   const selectedIndex = changeSet?.changes[selected] ? selected : 0;
   const change = changeSet?.changes[selectedIndex];
-  const launchSupported = launchRequest?.capabilities?.interactive_launch.status === "supported";
+  const launchSupported = launchRequest?.capabilities?.interactive_launch?.status === "supported";
   const isNativeImport = launchRequest?.mode === "native-import";
   const canApplyAndContinue = Boolean(launchRequest && (launchSupported || isNativeImport));
   const targetAgentName = launchRequest ? agentLabels[launchRequest.target_agent] : "";
@@ -175,10 +178,11 @@ export function Changes({
           disabled={busy || workspaceBusy}
           onClick={() =>
             void runLocked(async () => {
-              await api.launchSessionHandoff(launchRequest);
+              const receipt = await api.launchSessionHandoff(launchRequest);
               if (!active.current) return;
               setAppliedLaunchFailure("");
               onLaunchCompleted();
+              if (receipt?.session_id) onOpenSession?.(receipt.session_id);
             })
           }
         >
@@ -297,6 +301,7 @@ export function Changes({
       };
       if (result.status === "launched") {
         await onApplied(false, appliedReport);
+        if (result.receipt.session_id) onOpenSession?.(result.receipt.session_id);
       } else {
         setAppliedLaunchFailure(localizeMessage(result.error));
         if (result.status === "applied-launch-failed") await onApplied(true, appliedReport);
@@ -911,6 +916,9 @@ function WorkspaceChangesRoute() {
         }
         setHandoffLaunchRequest(undefined);
         navigateTo("sessions");
+      }}
+      onOpenSession={(sessionId) => {
+        void navigate({ to: "/sessions", search: { sessionId } });
       }}
       onRejected={() => {
         const returnPage = changesReturnPage(changeSetOrigin);

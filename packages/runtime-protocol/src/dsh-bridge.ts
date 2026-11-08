@@ -40,6 +40,22 @@ export interface DshBridgeServices {
   permissions?: boolean;
   /** A session's subagents. Plugins older than 0.4.0 do not report it. */
   subagents?: boolean;
+  /** Reading a whole session for handoff and search. Plugins older than 0.5.0 do not report it. */
+  documents?: boolean;
+  /** DSH's Agent presets, chosen when a session starts. Plugins older than 0.5.0 do not report it. */
+  agentPresets?: boolean;
+}
+
+/**
+ * One of DSH's Agent presets. A preset DSH ships has no `name` or `description` of its own and
+ * clients name it; `broken` is why DSH could not load one, which then cannot be chosen.
+ */
+export interface DshBridgeAgentPreset {
+  id: string;
+  name: string | null;
+  description: string | null;
+  isDefault: boolean;
+  broken: string | null;
 }
 
 /**
@@ -234,8 +250,52 @@ export interface DshBridgeHistoryPage {
   nextBefore: number | null;
 }
 
+/**
+ * A session's conversation for handoff and search: what the user and the model wrote, with tool
+ * arguments and output, in log order. `current` says whether the record is on DSH's current model
+ * surface and `position` where: a compaction takes what it summarized off the surface and puts its
+ * summary in their place, ahead of any later message it left there.
+ */
+export type DshBridgeDocumentRecord = {
+  seq: number;
+  time: number | null;
+  current: boolean;
+  position: number | null;
+} & (
+  | { kind: "user"; text: string; truncated: boolean; images: DshBridgeImage[]; files: number }
+  | {
+      kind: "assistant";
+      text: string;
+      truncated: boolean;
+      calls: { id: string; name: string; arguments: string; truncated: boolean }[];
+      /** The message also had reasoning, which never leaves DSH. */
+      reasoning: boolean;
+    }
+  | {
+      kind: "tool-result";
+      callId: string;
+      isError: boolean;
+      text: string;
+      truncated: boolean;
+      images: number;
+    }
+  /** DSH's summary of the history a compaction replaced. */
+  | { kind: "summary"; text: string; truncated: boolean }
+);
+
+export interface DshBridgeDocumentPage {
+  sessionId: string;
+  /** The last sequence number the page was read up to; later pages stop there too. */
+  revision: number | null;
+  records: DshBridgeDocumentRecord[];
+  /** Read on from after this sequence number; null at the end. */
+  nextAfter: number | null;
+}
+
 export type DshBridgeCommand = { commandId: string } & (
   | { type: "history"; sessionId: string; before?: number; limit: number }
+  /** One page of the session's conversation after `after`, read up to `through` when given. */
+  | { type: "document"; sessionId: string; after?: number; through?: number }
   | { type: "verify"; sessionId: string; requestId: string }
   /**
    * A message. One that names a command of the session's agent runs as that command, as in DSH's
@@ -262,8 +322,13 @@ export type DshBridgeCommand = { commandId: string } & (
   | { type: "rename"; sessionId: string; title: string }
   | { type: "archive"; sessionId: string; archived: boolean }
   | { type: "fork"; sessionId: string }
-  /** `sessionId` is the new session's ID, chosen by AgentKib so a lost reply can be settled. */
-  | { type: "create"; cwd: string; sessionId: string }
+  /**
+   * `sessionId` is the new session's ID, chosen by AgentKib so a lost reply can be settled.
+   * Without `agentPreset` the session runs DSH's default preset.
+   */
+  | { type: "create"; cwd: string; sessionId: string; agentPreset?: string }
+  /** `{ presets }`: DSH's Agent presets, in the order DSH lists them. */
+  | { type: "presets" }
   | { type: "models"; sessionId: string }
   | {
       type: "selectModel";

@@ -20,8 +20,10 @@ import type { BackendStore } from "./store";
 import { Commands } from "./commands";
 import {
   continuationMcpAvailable,
+  interactiveLaunchCapability,
   nativeHistoryIncomplete,
   nativeImportCapability,
+  type DshHandoffTarget,
 } from "./session-continuation";
 import { resolveWorkspaceIdentity, requireUniqueContinuationWorkspace } from "./workspace-identity";
 import { isReparseOrSymlink } from "./native-files";
@@ -264,6 +266,7 @@ export async function planSessionHandoff(
   environment: NodeJS.ProcessEnv,
   commands: Commands,
   cursorBridge?: CursorBridge,
+  dsh?: DshHandoffTarget,
 ) {
   const { mcpHubStatus, ...request } = planEnvelopeSchema.parse(value);
   const source = sessionStore.get(request.sessionId);
@@ -550,6 +553,14 @@ export async function planSessionHandoff(
     launch_request: {
       ...launchRequest,
       ...(effectiveArchiveId ? { archive_id: effectiveArchiveId, archive_hash: archiveHash } : {}),
+      // Whether the Changes page offers to continue in the target once the plan is applied.
+      capabilities: {
+        interactive_launch: await interactiveLaunchCapability(
+          request.targetAgent,
+          environment,
+          dsh,
+        ),
+      },
     },
   };
 }

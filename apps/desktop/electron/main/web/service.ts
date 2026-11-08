@@ -84,6 +84,7 @@ function managedActionInputHash(operation: string, body: Record<string, unknown>
     "model",
     "effort",
     "permissionMode",
+    "agentPreset",
     "mode",
     "serviceTierId",
     "policyId",
@@ -4111,6 +4112,9 @@ export class WebAccessService {
           params.permissionMode = body.permissionMode;
         }
       }
+      // DSH picks an Agent preset only when a session starts, as on its own new-session screen.
+      if (agent === "deepseek-harness" && body.agentPreset !== undefined)
+        params.agentPreset = this.field(body.agentPreset, 128);
     } else {
       params.sessionId = this.field(body.sessionId);
       if (

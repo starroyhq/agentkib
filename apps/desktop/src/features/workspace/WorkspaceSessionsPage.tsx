@@ -39,7 +39,10 @@ import { AgentIcon } from "@/features/agents/AgentIcon";
 import { useSessionSourceCapability } from "@/features/sessions/useSessionSourceCapability";
 import { NativeImportRecoveryPanel } from "./NativeImportRecoveryPanel";
 import { CursorBridgePanel } from "./CursorBridgePanel";
-import { canContinueFromHistory } from "@/features/agents/agent-capabilities";
+import {
+  canContinueFromHistory,
+  sourceCapabilityReason,
+} from "@/features/agents/agent-capabilities";
 import { useSessionCatalog } from "@/features/sessions/useSessionCatalog";
 
 import type {
@@ -905,7 +908,7 @@ export function WorkspaceSessionsPage({
                       className="shrink-0"
                       disabled={!canContinueFromHistory(sourceCapability)}
                       title={
-                        sourceCapability?.reason ||
+                        sourceCapabilityReason(tr, sourceCapability?.reason) ||
                         (!sourceCapability ? tr("handoff.checkingSource") : undefined)
                       }
                       onClick={() =>
@@ -1091,6 +1094,6 @@ export interface SessionContinuationResume {
   format: import("@/core/types").HandoffFormat;
   targetSurface?: "cursor-ide";
   bindingId?: string;
-  /** Claude Code sources: keep the choice to hand over history that a compaction replaced. */
+  /** Claude Code and DSH sources: keep the choice to hand over history a compaction replaced. */
   includePreCompactionHistory?: boolean;
 }

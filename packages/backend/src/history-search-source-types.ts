@@ -1,5 +1,6 @@
 import type { HistoryRecordKind } from "@agentkib/runtime-protocol";
 import type { CursorBridgeContext } from "./cursor-bridge";
+import type { DshSearchRecord } from "./dsh-document";
 import type { SessionStore } from "./session-store";
 
 // Shared by persisted caches and source fingerprints. Bump when common redaction changes,
@@ -38,6 +39,11 @@ export interface HistorySourceInput {
   profiles: CursorBridgeContext["profile"][];
   identitySalt: string;
   openClawBinding?: OpenClawHistorySourceBinding;
+  /**
+   * A DeepSeek Harness session's records, read on the main thread from the running DSH; the
+   * search worker cannot reach it. Absent when DSH could not be read.
+   */
+  dsh?: { revision: string; records: DshSearchRecord[] };
 }
 export interface HistorySourceRecord {
   recordId: string;

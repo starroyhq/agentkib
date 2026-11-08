@@ -572,11 +572,17 @@ describe("SessionHandoffDialog", () => {
     const openAdvanced = async () =>
       fireEvent.click(await screen.findByRole("button", { name: "Advanced options" }));
 
-    it("is offered for Claude sources only and starts unchecked", async () => {
+    it("is offered for Claude and DeepSeek Harness sources only and starts unchecked", async () => {
       renderDialog(claudeSession);
       await openAdvanced();
       expect(await screen.findByRole("checkbox", { name: optionName })).not.toBeChecked();
       expect(screen.getByText(/marks each compaction point/)).toBeVisible();
+      cleanup();
+
+      // DSH's log keeps what a compaction replaced, as Claude Code's transcript does.
+      renderDialog({ ...session, agent: "deepseek-harness" } as ConversationSessionSummary);
+      await openAdvanced();
+      expect(await screen.findByRole("checkbox", { name: optionName })).not.toBeChecked();
       cleanup();
 
       renderDialog(session);

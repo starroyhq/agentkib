@@ -28,7 +28,10 @@ import type {
   SessionHandoffRequest,
   WorkspaceSummary,
 } from "@/core/types";
-import { canContinueFromHistory } from "@/features/agents/agent-capabilities";
+import {
+  canContinueFromHistory,
+  sourceCapabilityReason,
+} from "@/features/agents/agent-capabilities";
 import { useSessionSourceCapability } from "@/features/sessions/useSessionSourceCapability";
 import { sessionHandoffTargets } from "./session-handoff-targets";
 import { withAsyncCleanup } from "@/lib/utils";
@@ -90,8 +93,9 @@ export function SessionHandoffDialog({
   const [historyBudget, setHistoryBudget] = useState(
     initialRequest?.historyBudgetTokens ?? 120_000,
   );
-  // Only Claude Code transcripts have compaction boundaries; other sources never carry the option.
-  const compactionApplies = session.agent === "claude-code";
+  // Only Claude Code and DeepSeek Harness keep the history a compaction replaced; other sources
+  // never carry the option.
+  const compactionApplies = session.agent === "claude-code" || session.agent === "deepseek-harness";
   const [includePreCompaction, setIncludePreCompaction] = useState(
     initialRequest?.includePreCompactionHistory === true,
   );
@@ -716,7 +720,8 @@ export function SessionHandoffDialog({
               className="mx-auto max-w-md rounded-xl border border-amber-500/30 bg-amber-500/10 px-4 py-3 text-sm leading-relaxed text-amber-800 dark:text-amber-200"
             >
               {sourceCapability
-                ? sourceCapability.reason || tr("handoff.sourceReadOnly")
+                ? sourceCapabilityReason(tr, sourceCapability.reason) ||
+                  tr("handoff.sourceReadOnly")
                 : tr("handoff.checkingSource")}
             </div>
           </div>

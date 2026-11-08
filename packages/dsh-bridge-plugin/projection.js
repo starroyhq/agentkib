@@ -136,6 +136,98 @@ export function historyRecord(event) {
   }
 }
 
+// A handoff or search reads whole messages; a page is still bounded (`DOCUMENT_PAGE_BYTES`).
+export const MAX_DOCUMENT_TEXT = 256 * 1024;
+export const MAX_DOCUMENT_ARGUMENTS = 64 * 1024;
+export const MAX_DOCUMENT_OUTPUT = 128 * 1024;
+
+/**
+ * One record of a session's conversation for handoff and search, or null for the rest of the log.
+ * `position` is the event's place on DSH's current model surface, absent when a compaction took
+ * it off. Injected context, system and developer messages and reasoning stay out; a compaction
+ * checkpoint becomes its summary.
+ */
+export function documentRecord(event, position) {
+  const current = Number.isSafeInteger(position);
+  const base = {
+    seq: event?.seq,
+    time: typeof event?.time === "number" ? event.time : null,
+    position: current ? position : null,
+  };
+  if (!Number.isSafeInteger(base.seq)) return null;
+  const data = event.data ?? {};
+  switch (event.type) {
+    case "user/message": {
+      const parts = contentParts(data.content);
+      const { text, truncated } = bounded(parts.text, MAX_DOCUMENT_TEXT);
+      if (data.source?.kind === "compact-checkpoint")
+        return text ? { ...base, current, kind: "summary", text, truncated } : null;
+      if (!isHumanMessage(data) || (!text && !parts.images && !parts.files)) return null;
+      return {
+        ...base,
+        current,
+        kind: "user",
+        text,
+        truncated,
+        images: parts.imageRefs,
+        files: parts.files,
+      };
+    }
+    case "assistant/message": {
+      const blocks = Array.isArray(data.message?.content) ? data.message.content : [];
+      const { text, truncated } = bounded(contentParts(blocks).text, MAX_DOCUMENT_TEXT);
+      const calls = blocks
+        .filter((block) => block?.type === "tool-call")
+        .slice(0, 64)
+        .map((block) => {
+          const input = bounded(
+            typeof block.arguments === "string" ? block.arguments : "",
+            MAX_DOCUMENT_ARGUMENTS,
+          );
+          return {
+            id: bounded(String(block.id ?? ""), 256).text,
+            name: bounded(String(block.name ?? ""), 256).text,
+            arguments: input.text,
+            truncated: input.truncated,
+          };
+        });
+      const reasoning = blocks.some((block) => block?.type === "reasoning");
+      if (!text && !calls.length && !reasoning) return null;
+      return { ...base, current, kind: "assistant", text, truncated, calls, reasoning };
+    }
+    case "tool/result": {
+      const parts = contentParts(data.message?.content);
+      const output = bounded(parts.text, MAX_DOCUMENT_OUTPUT);
+      return {
+        ...base,
+        current,
+        kind: "tool-result",
+        callId: bounded(String(data.message?.toolCallId ?? ""), 256).text,
+        isError: data.message?.isError === true,
+        text: output.text,
+        truncated: output.truncated,
+        images: parts.images,
+      };
+    }
+    default:
+      return null;
+  }
+}
+
+/** One of DSH's Agent presets, or null for a row that is not one. */
+export function presetEntry(row) {
+  if (typeof row?.id !== "string" || !row.id || row.id.length > 128) return null;
+  const optional = (value, max) =>
+    typeof value === "string" && value ? bounded(value, max).text : null;
+  return {
+    id: row.id,
+    name: optional(row.name, 256),
+    description: optional(row.description, 1024),
+    isDefault: row.isDefault === true,
+    broken: optional(row.broken, 512),
+  };
+}
+
 function reasonOf(reason) {
   if (typeof reason === "string") return reason;
   if (reason && typeof reason === "object" && typeof reason.kind === "string") return reason.kind;

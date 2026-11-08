@@ -14,12 +14,14 @@ import {
   MAX_STREAM,
   bounded,
   commandEntries,
+  documentRecord,
   goalFromProjection,
   goalView,
   historyRecord,
   isHumanMessage,
   modelsProjection,
   permissionOptions,
+  presetEntry,
   queueItems,
   questionItems,
   sessionSummary,
@@ -39,6 +41,9 @@ const HEARTBEAT_MS = 10_000;
 const DISCOVERY_MS = 2_000;
 const LIST_THROTTLE_MS = 1_000;
 const HISTORY_PAGE_BYTES = 1536 * 1024;
+// UTF-8 bytes of one conversation page; a bridge message carries at most 8 MiB.
+const DOCUMENT_PAGE_BYTES = 3 * 1024 * 1024;
+const MAX_PRESETS = 32;
 const APPROVAL_OUTCOMES = new Set(["allowed-once", "rejected"]);
 // AgentKib's upload limit. DSH applies its own image limits when it takes the prompt.
 const MAX_ATTACHMENT_BYTES = 25 * 1024 * 1024;
@@ -737,6 +742,58 @@ export function createBridge(ctx, options = {}) {
       observation[Symbol.dispose]?.();
     }
   }
+
+  /**
+   * One page of a session's conversation, oldest first, for a handoff or search. DSH's current
+   * model surface says which records a compaction replaced and in what order the model sees the
+   * rest. The first page fixes `revision`, the
+   * last event the surface was read up to, and later pages stop there, so an event added while
+   * AgentKib reads is left for the next read rather than counted as replaced.
+   */
+  async function conversation({ sessionId, after, through }) {
+    const query = service("sessionQuery");
+    if (typeof query?.observeSession !== "function" || typeof query?.readSurface !== "function")
+      throw new Error("document-unavailable");
+    const id = String(sessionId);
+    const surface = await query.readSurface(id);
+    // A compaction's summary takes the place of what it replaced, ahead of messages it left.
+    const positions = new Map((surface?.events ?? []).map((event, index) => [event?.seq, index]));
+    const captured = Number.isSafeInteger(surface?.capturedThroughSeq)
+      ? surface.capturedThroughSeq
+      : null;
+    const until = Number.isSafeInteger(through)
+      ? captured === null
+        ? through
+        : Math.min(through, captured)
+      : captured;
+    const observation = await query.observeSession(id, { projectionMode: "none" });
+    try {
+      const records = [];
+      let bytes = 0;
+      let nextAfter = null;
+      for (const event of observation.events) {
+        if (Number.isSafeInteger(after) && event.seq <= after) continue;
+        if (until === null || event.seq > until) break;
+        const record = documentRecord(event, positions.get(event.seq));
+        if (!record) continue;
+        const size = Buffer.byteLength(JSON.stringify(record));
+        if (records.length && bytes + size > DOCUMENT_PAGE_BYTES) {
+          nextAfter = records[records.length - 1].seq;
+          break;
+        }
+        bytes += size;
+        records.push(record);
+      }
+      return {
+        sessionId: String(observation.header?.id ?? id),
+        revision: until,
+        records,
+        nextAfter,
+      };
+    } finally {
+      observation[Symbol.dispose]?.();
+    }
+  }
   // Prompts DSH is still taking (a cold session resumes first). Until one finishes, its message
   // may be missing from the record without having been lost.
   const promptsInFlight = new Set();
@@ -867,6 +924,20 @@ export function createBridge(ctx, options = {}) {
     switch (command?.type) {
       case "history":
         return history(command);
+      case "document":
+        return conversation(command);
+      case "presets": {
+        const registry = service("agentPresets");
+        if (typeof registry?.remoteExportList !== "function")
+          throw new Error("agent-presets-unavailable");
+        const roster = await registry.remoteExportList();
+        return {
+          presets: (Array.isArray(roster?.presets) ? roster.presets : [])
+            .slice(0, MAX_PRESETS)
+            .map(presetEntry)
+            .filter(Boolean),
+        };
+      }
       case "verify":
         return present(command);
       case "prompt": {
@@ -936,6 +1007,7 @@ export function createBridge(ctx, options = {}) {
         const value = await needController().create({
           cwd: String(command.cwd),
           sessionId: String(command.sessionId),
+          ...(command.agentPreset ? { agentPreset: String(command.agentPreset) } : {}),
         });
         refreshList();
         return { sessionId: value?.sessionId ?? null };
@@ -1076,9 +1148,10 @@ export function createBridge(ctx, options = {}) {
     // Goals and commands act on the session's agent, which this resolves (resuming it).
     const resolves = typeof controller?.resolveAgent === "function";
     const projects = typeof controller?.projections === "function";
+    const query = service("sessionQuery");
     return {
       sessionController: typeof controller?.prompt === "function",
-      sessionQuery: typeof service("sessionQuery")?.observeSession === "function",
+      sessionQuery: typeof query?.observeSession === "function",
       approvals: true,
       questions: typeof service("userQuestions")?.ask === "function",
       workspaceController: typeof service("workspaceController")?.archiveSession === "function",
@@ -1088,6 +1161,9 @@ export function createBridge(ctx, options = {}) {
       commands: resolves && typeof service("commands")?.execute === "function",
       permissions: projects && typeof service("permissionPresets")?.catalog === "function",
       subagents: projects,
+      documents:
+        typeof query?.observeSession === "function" && typeof query?.readSurface === "function",
+      agentPresets: typeof service("agentPresets")?.remoteExportList === "function",
     };
   };
   function report(host) {
@@ -1271,9 +1347,10 @@ export function createBridge(ctx, options = {}) {
     refreshList();
     schedule();
   });
-  // So can the command registry, and the services behind goals and permission presets.
+  // So can the command registry, and the services behind goals and permission and Agent presets.
   ctx.inject?.(["commands"], () => schedule());
-  for (const name of ["goals", "permissionPresets"]) ctx.inject?.([name], () => schedule());
+  for (const name of ["goals", "permissionPresets", "agentPresets"])
+    ctx.inject?.([name], () => schedule());
   // The archive set lives in the workspace controller, which can also start after this plugin.
   ctx.inject?.(["workspaceController"], () => {
     void followArchive();

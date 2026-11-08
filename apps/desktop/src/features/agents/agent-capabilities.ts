@@ -13,3 +13,13 @@ export function agentSupport(installation?: AgentInstallation): AgentSupport | u
 export function canContinueFromHistory(capability?: ContinuationCapability): boolean {
   return capability?.status === "supported";
 }
+
+/** Why a session cannot be handed off: copy where there is some (DSH's reasons), else as reported. */
+export function sourceCapabilityReason(
+  tr: (key: string) => string,
+  reason?: string | null,
+): string | undefined {
+  if (!reason) return undefined;
+  const key = `handoff.sourceReason.${reason}`;
+  return tr(key) === key ? reason : tr(key);
+}

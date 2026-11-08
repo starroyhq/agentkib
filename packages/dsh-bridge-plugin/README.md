@@ -1,7 +1,7 @@
 # AgentKib DeepSeek Harness bridge
 
 First-party DeepSeek Harness (DSH) bundle for DSH **0.2.1-rc.5 or later** (`engines.dsh`
-`>=0.2.1-rc.5 <0.3.0`), bridge protocol **1**, plugin **0.4.0**. It connects the sessions of a
+`>=0.2.1-rc.5 <0.3.0`), bridge protocol **1**, plugin **0.5.0**. It connects the sessions of a
 running DSH to AgentKib on the same computer. It never starts a second executor, never writes
 the session log itself and never calls a model: every action goes through DSH's own services.
 
@@ -54,6 +54,9 @@ with every Runtime it finds, and then:
   reports a compaction while it runs (DSH counts the agent as idle meanwhile);
 - lists a session's direct subagents from its `subagentCatalog` projection, with whether each is
   running or how its last turn ended;
+- reads a whole session in pages for a handoff or content search (`document`), marking where each
+  record sits in what DSH's model currently sees, and lists DSH's Agent presets (`presets`) for a
+  new session;
 - answers verification requests from that record when a result was lost; for a slash command,
   from the requests it ran since DSH started.
 
@@ -74,4 +77,10 @@ Without a connected Runtime, or for other sessions, the plugin passes the reques
 
 `compatibility.js` is the single policy shared with the Runtime. Add a version to
 `verifiedDshVersions` only after recording real-DSH acceptance evidence in QA. A newer
-unverified DSH still connects; AgentKib shows the version as unverified.
+unverified DSH still connects; a feature it lacks is off, and AgentKib says so where it is used.
+
+The plugin and the Runtime need not come from the same AgentKib release. Within bridge protocol 1
+the Runtime takes any plugin from `minimumPluginVersion` (0.5.0) on, newer ones included, and both
+use only what both have: a service the plugin does not report stays off. After an AgentKib update
+a running DSH stays connected; restarting it loads the new plugin and its new features. The rules
+for changing the protocol are in `docs/DEEPSEEK-HARNESS-INTEGRATION.md` (§3.3).

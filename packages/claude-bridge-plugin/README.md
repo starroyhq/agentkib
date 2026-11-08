@@ -6,6 +6,10 @@ terminal's original execution process. It never starts a replacement Claude
 process, resumes another UUID, calls a model itself, or changes the user's
 permission rules.
 
+The plugin and the Runtime need not come from the same AgentKib release: within
+protocol 1 the Runtime takes this contract and any later one, and a terminal that
+still runs an older plugin after an AgentKib update keeps connecting.
+
 ## Connect a session
 
 Use AgentKib's connection panel for the selected session. Register the bundled

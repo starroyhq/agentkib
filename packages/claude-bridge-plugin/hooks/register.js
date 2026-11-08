@@ -3,6 +3,7 @@ import {
   CLAUDE_BRIDGE_COMPATIBILITY,
   CLAUDE_BRIDGE_REQUIRED_CAPABILITIES,
   claudeBridgeCompatibility,
+  claudeBridgePluginCompatibility,
 } from "./compatibility.js";
 
 const CLI_VERSION = CLAUDE_BRIDGE_COMPATIBILITY.minimumCliVersion;
@@ -378,11 +379,11 @@ export async function probeCapabilities($, state) {
       throw new Error("invalid-plugin-root");
     const manifest = JSON.parse(await $.fs.read(`${root}/package.json`));
     requireGeneration(state, generation, "stale-capability-probe");
-    if (manifest?.version !== PLUGIN_VERSION)
-      throw compatibilityFailure("bridge-plugin-update-required", observed.cliVersion);
-  } catch (error) {
+    // AgentKib may update these files under a running terminal; the Runtime takes this plugin
+    // all the same, so this only probes that a file can be read, not which release is on disk.
+    if (typeof manifest?.version !== "string") throw new Error("invalid-plugin-manifest");
+  } catch {
     requireGeneration(state, generation, "stale-capability-probe");
-    if (error?.message === "bridge-plugin-update-required") throw error;
     missing.push("credential-read");
   }
   if (missing.length)
@@ -1239,11 +1240,13 @@ async function reportReconnectFailure($, state, generation, failure) {
     return;
   const credential = JSON.parse(await $.fs.read(path));
   if (!current()) return;
+  // The Runtime writes the oldest plugin it takes, not necessarily this one; it judges this
+  // plugin by the version the plugin itself reports.
   if (
     credential?.protocol !== 1 ||
     credential.nativeId !== nativeId ||
     credential.cwd !== cwd ||
-    credential.pluginVersion !== PLUGIN_VERSION ||
+    claudeBridgePluginCompatibility(credential.pluginVersion) !== "supported" ||
     ["invalid", "too-old"].includes(claudeBridgeCompatibility(credential.cliVersion)) ||
     !safeSocket(credential.socketPath) ||
     typeof credential.bindingId !== "string" ||
@@ -1338,7 +1341,7 @@ async function reconnectOnce($, state) {
     credential.cwd !== observed.cwd ||
     claudeBridgeCompatibility(credential.cliVersion) === "invalid" ||
     claudeBridgeCompatibility(credential.cliVersion) === "too-old" ||
-    credential.pluginVersion !== PLUGIN_VERSION ||
+    claudeBridgePluginCompatibility(credential.pluginVersion) !== "supported" ||
     !safeSocket(credential.socketPath) ||
     typeof credential.bindingId !== "string" ||
     typeof credential.token !== "string"

@@ -3,6 +3,7 @@ import { DSH_BRIDGE_COMPATIBILITY } from "../../dsh-bridge-plugin/compatibility.
 export {
   DSH_BRIDGE_COMPATIBILITY,
   dshBridgeCompatibility,
+  dshBridgePluginCompatibility,
 } from "../../dsh-bridge-plugin/compatibility.js";
 
 export const DSH_BRIDGE_PROTOCOL = 1 as const;
@@ -21,6 +22,10 @@ export interface DshBridgeDiscovery {
   key: string;
 }
 
+/**
+ * What the connected plugin serves, by DSH service. Plugins of other releases connect too, so a
+ * flag a plugin does not report is off, and nothing behind it is sent to that plugin.
+ */
 export interface DshBridgeServices {
   sessionController: boolean;
   sessionQuery: boolean;

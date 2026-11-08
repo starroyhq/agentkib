@@ -17,7 +17,9 @@ import { z } from "zod";
 import {
   DSH_BRIDGE_PATHS,
   DSH_BRIDGE_PLUGIN_VERSION,
+  DSH_BRIDGE_PROTOCOL,
   dshBridgeCompatibility,
+  dshBridgePluginCompatibility,
   type DshBridgeAgentPreset,
   type DshBridgeCommand,
   type DshBridgeCommandEntry,
@@ -3149,7 +3151,10 @@ export class DshBridge {
           const actual = Buffer.from(hello.key);
           if (actual.length !== expected.length || !timingSafeEqual(actual, expected))
             throw new BridgeHttpError(403, "invalid-key");
-          if (hello.protocol !== 1 || hello.pluginVersion !== DSH_BRIDGE_PLUGIN_VERSION)
+          if (hello.protocol !== DSH_BRIDGE_PROTOCOL)
+            throw new BridgeHttpError(409, "dsh-bridge-protocol-unsupported");
+          // A plugin of another release connects too; what it does not report stays off.
+          if (dshBridgePluginCompatibility(hello.pluginVersion) !== "supported")
             throw new BridgeHttpError(409, "dsh-bridge-plugin-update-required");
           if (dshBridgeCompatibility(hello.dshVersion) === "too-old")
             throw new BridgeHttpError(409, "dsh-version-too-old");

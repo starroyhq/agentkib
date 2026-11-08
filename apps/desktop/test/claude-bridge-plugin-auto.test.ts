@@ -18,6 +18,7 @@ async function fixture(
     storedCredential?: boolean;
     autoReplies?: Array<{ status: number; body: Value }>;
     packageVersion?: string;
+    credentialPluginVersion?: string;
   } = {},
 ) {
   const hooks = new Map<string, Array<{ match: Value; hook: Hook }>>();
@@ -52,7 +53,7 @@ async function fixture(
         nativeId,
         cwd,
         cliVersion: "2.1.301",
-        pluginVersion: "0.4.0",
+        pluginVersion: options.credentialPluginVersion ?? "0.4.0",
       }),
     ],
   ]);
@@ -199,11 +200,18 @@ describe("Claude bridge plugin automatic pairing", () => {
     expect(f.autoPairs()).toHaveLength(2);
   });
 
-  it("explains a plugin whose installed files are out of step without calling AgentKib", async () => {
-    const f = await fixture({ packageVersion: "0.2.0" });
+  it("still connects when AgentKib has updated the plugin's files under a running terminal", async () => {
+    const f = await fixture({ packageVersion: "0.9.0" });
     await f.completeTurn();
+    expect(f.autoPairs()).toHaveLength(1);
+    expect(f.autoPairs()[0].body).toMatchObject({ pluginVersion: "0.4.0" });
+    expect(await f.status()).toContain("is connected");
+  });
+
+  it("reconnects with a credential that names another supported plugin release", async () => {
+    const f = await fixture({ storedCredential: true, credentialPluginVersion: "0.6.0" });
+    expect(f.calls.some((call) => call.url.endsWith("/reconnect"))).toBe(true);
     expect(f.autoPairs()).toHaveLength(0);
-    expect(await f.status()).toContain("plugin needs updating");
   });
 
   it("reconnects a previously paired session instead of pairing it again", async () => {

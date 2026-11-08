@@ -643,9 +643,60 @@ describe.skipIf(process.platform === "win32")("native Claude borrowed-host broke
       ).toBe(409);
     }
   });
+  it("takes a plugin of another release and drops the fields it does not know", async () => {
+    const f = await fixture();
+    await f.manage("bridge-disconnect");
+    const prepared = (await f.manage("bridge-challenge")) as { challenge: string };
+    const ticket = JSON.parse(Buffer.from(prepared.challenge, "base64url").toString());
+    const hello = {
+      ...f.hello,
+      pluginVersion: "0.9.0",
+      futureField: { kept: false },
+      nativeCapabilities: { ...f.hello.nativeCapabilities, futureField: true },
+    };
+    const paired = await f.http("/v1/pair", { ...hello, ticket: ticket.ticket });
+    expect(paired.status).toBe(200);
+    // Plugin 0.4.0 reconnects only with a credential naming its own version.
+    const credential = JSON.parse(readFileSync(paired.body.credentialPath, "utf8"));
+    expect(credential.pluginVersion).toBe(CLAUDE_BRIDGE_COMPATIBILITY.minimumPluginVersion);
+    const reconnect = await f.http(
+      "/v1/reconnect",
+      { ...hello, bindingId: paired.body.bindingId },
+      paired.body.token,
+    );
+    expect(reconnect.status).toBe(200);
+    const lease = {
+      bindingId: paired.body.bindingId,
+      leaseId: reconnect.body.leaseId,
+      nativeId: f.target.nativeId,
+      cwd: f.hello.cwd,
+      instanceId: f.hello.instanceId,
+    };
+    const snapshot = {
+      ...f.snapshot,
+      pluginVersion: "0.9.0",
+      revision: 1,
+      status: "running",
+      currentTurnId: randomUUID(),
+      futureField: "dropped",
+      capabilities: { ...f.snapshot.capabilities, send: false, futureCapability: true },
+    };
+    expect(
+      (
+        await f.http(
+          "/v1/events",
+          { ...lease, futureField: 1, events: [{ seq: 1, event: { type: "snapshot", snapshot } }] },
+          paired.body.token,
+        )
+      ).status,
+    ).toBe(200);
+    expect(f.live()).toMatchObject({ status: "running", sendEnabled: false, stopEnabled: true });
+  });
   it.each([
     { cliVersion: "2.1.307" },
     { pluginVersion: "0.1.0" },
+    // A lease keeps the plugin release it was negotiated with.
+    { pluginVersion: "0.9.0" },
     { nativeCapabilities: { version: 1, available: ["session-identity"] } },
   ])("rejects snapshot metadata that was not negotiated by the current lease", async (fields) => {
     const f = await fixture();
@@ -743,13 +794,27 @@ describe.skipIf(process.platform === "win32")("native Claude borrowed-host broke
     },
   );
   it.each([
-    { protocol: 2 },
     { pluginVersion: "0.1.0" },
+    { pluginVersion: "0.9.0" },
+    // Authorization travels in the header; a field this Runtime does not know is dropped.
+    { token: "untrusted-extra-field" },
+  ])("takes a reconnect failure from a plugin of another release %j", async (fields) => {
+    const f = await fixture();
+    await f.events({ type: "invalidated", reason: "synthetic-offline", revision: 1 });
+    expect(
+      await f.http("/v1/reconnect", { ...f.reconnectFailure, ...fields }, f.connection.token),
+    ).toEqual({ status: 200, body: { reported: true } });
+    expect(f.live()).toMatchObject({
+      bridgeConnectionFailure: { reason: "bridge-capabilities-missing" },
+    });
+  });
+  it.each([
+    { protocol: 2 },
+    { pluginVersion: "latest" },
     { instanceId: "not-a-uuid" },
     { cliVersion: "2.1.307-beta" },
     { missingCapabilities: ["private-unknown-capability"] },
     { connectionError: "native-identity-changed" },
-    { token: "untrusted-extra-field" },
   ])("rejects malformed reconnect failure reports %j", async (fields) => {
     const f = await fixture();
     await f.events({ type: "invalidated", reason: "synthetic-offline", revision: 1 });

@@ -1,11 +1,29 @@
 // One policy shared by the shipped plugin and Runtime. Only add a verified
 // version after recording native read-only acceptance evidence in QA.
+// Within protocol 1 a plugin and a Runtime of other releases still connect: the
+// Runtime takes any plugin from `minimumPluginVersion` on, newer ones included.
+// Raise it only to retire a plugin that must no longer connect; the rules for
+// changing the protocol are in docs/CLAUDE-NATIVE-CONNECTION.md.
 export const CLAUDE_BRIDGE_COMPATIBILITY = Object.freeze({
   minimumCliVersion: "2.1.301",
   verifiedCliVersions: Object.freeze(["2.1.301", "2.1.310"]),
   pluginVersion: "0.4.0",
+  minimumPluginVersion: "0.4.0",
   capabilityVersion: 1,
 });
+
+const STABLE_VERSION = /^(0|[1-9]\d{0,5})\.(0|[1-9]\d{0,5})\.(0|[1-9]\d{0,5})$/;
+
+/** Whether a Runtime takes a plugin of this version; plugins newer than the Runtime's own connect too. */
+export function claudeBridgePluginCompatibility(version) {
+  if (typeof version !== "string" || !STABLE_VERSION.test(version)) return "invalid";
+  const actual = version.split(".").map(Number);
+  const minimum = CLAUDE_BRIDGE_COMPATIBILITY.minimumPluginVersion.split(".").map(Number);
+  for (let index = 0; index < minimum.length; index++)
+    if (actual[index] !== minimum[index])
+      return actual[index] < minimum[index] ? "too-old" : "supported";
+  return "supported";
+}
 
 export const CLAUDE_BRIDGE_REQUIRED_CAPABILITIES = Object.freeze([
   "session-identity",
@@ -18,11 +36,7 @@ export const CLAUDE_BRIDGE_REQUIRED_CAPABILITIES = Object.freeze([
 export function claudeBridgeCompatibility(version) {
   // Reject ambiguous/prerelease versions instead of coercing them into a
   // supported stable release. Bound each component before numeric comparison.
-  if (
-    typeof version !== "string" ||
-    !/^(0|[1-9]\d{0,5})\.(0|[1-9]\d{0,5})\.(0|[1-9]\d{0,5})$/.test(version)
-  )
-    return "invalid";
+  if (typeof version !== "string" || !STABLE_VERSION.test(version)) return "invalid";
   const actual = version.split(".").map(Number);
   const minimum = CLAUDE_BRIDGE_COMPATIBILITY.minimumCliVersion.split(".").map(Number);
   for (let index = 0; index < minimum.length; index++) {

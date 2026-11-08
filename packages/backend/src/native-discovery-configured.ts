@@ -239,6 +239,8 @@ function appInstalled(agent: string, environment: NodeJS.ProcessEnv): boolean {
       cursor: "Cursor.app",
       opencode: "OpenCode.app",
       antigravity: "Antigravity.app",
+      // DSH Desktop ships its `dsh` CLI inside the bundle and does not put it on PATH.
+      "deepseek-harness": "DeepSeek Harness.app",
     };
     const bundle = bundles[agent];
     return bundle

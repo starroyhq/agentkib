@@ -25,7 +25,11 @@ vi.mock("./session-context", () => ({
   },
 }));
 vi.mock("./session-panels", () => ({ useSessionPanels: () => doubles.panels }));
-vi.mock("./context-usage", () => ({ ContextUsageGauge: () => null }));
+vi.mock("./context-usage", () => ({
+  ContextUsageGauge: () => null,
+  ContextUsageDetails: () => null,
+  useContextUsage: () => ({}),
+}));
 vi.mock("../history/history-search-controls", () => ({ HistoryReferenceChips: () => null }));
 
 const catalog: ClaudeCommandEntry[] = [
@@ -231,6 +235,58 @@ describe("Codex slash commands in the desktop composer", () => {
     };
   });
   afterEach(cleanup);
+
+  it("turns plan mode on for /plan typed after a space, as Codex's own composer does", async () => {
+    doubles.session.access = {
+      ...doubles.session.access!,
+      device: { send: true, accessMode: "full", advancedControl: true },
+    } as SessionController["access"];
+    doubles.session.capabilities = {
+      ...doubles.session.capabilities!,
+      features: { settings: { available: true } },
+    } as SessionController["capabilities"];
+    const writable = { available: true };
+    doubles.session.client = {
+      request: vi.fn(),
+      codexSessionSettings: vi.fn(async () => ({
+        sessionId: "session",
+        revision: 1,
+        available: true,
+        current: { modelId: "sol", mode: "default" },
+        defaults: { modelId: "sol" },
+        writable: {
+          model: writable,
+          effort: writable,
+          mode: writable,
+          policy: writable,
+          serviceTier: writable,
+          restoreDefaults: writable,
+        },
+        options: {
+          models: [{ id: "sol", name: "Sol", efforts: [], serviceTierIds: [] }],
+          collaborationModes: [
+            { id: "default", name: "Default" },
+            { id: "plan", name: "Plan" },
+          ],
+          policies: [],
+          serviceTiers: [],
+        },
+      })),
+      codexGoals: vi.fn(),
+      codexContextOptions: vi.fn(),
+    } as unknown as SessionController["client"];
+    const { input } = renderComposer("Fix it /pl");
+    fireEvent.change(input, { target: { value: "Fix it /pla" } });
+    expect(within(await screen.findByRole("listbox")).getAllByRole("option")[0]).toHaveTextContent(
+      "/plan",
+    );
+    fireEvent.keyDown(input, { key: "Enter" });
+    await waitFor(() =>
+      expect(doubles.codexAction).toHaveBeenCalledExactlyOnceWith("settings", { mode: "plan" }),
+    );
+    expect(input).toHaveValue("Fix it");
+    expect(doubles.control).not.toHaveBeenCalled();
+  });
 
   it("offers AgentKib's Codex commands and runs /compact", async () => {
     const { input, form } = renderComposer("/co");

@@ -70,6 +70,22 @@ function modelOption(settings: CodexSessionSettings | undefined, model: string |
   );
 }
 
+/** Which goal actions the panel offers: starting one always; with a goal, clearing it and
+ * resuming it once stopped or pausing it while active. */
+function offersGoalAction(
+  goal: { status: string } | undefined,
+  action: "set" | "pause" | "resume" | "clear",
+) {
+  if (action === "set") return true;
+  if (!goal) return false;
+  if (action === "pause") return goal.status === "active";
+  if (action === "resume")
+    return ["paused", "blocked", "budgetLimited", "usageLimited", "budget-exhausted"].includes(
+      goal.status,
+    );
+  return true;
+}
+
 export function CodexComposerControls({
   resources,
   setResources,
@@ -611,12 +627,16 @@ export function CodexComposerControls({
     goalDraftRevision.current ??= goal?.revision;
     setGoalDirty(true);
   };
+  // DeepSeek Harness's permission preset changes at once during a turn; its model waits.
+  const presetWhileRunning =
+    running && managedAgent === "deepseek-harness" && settings?.writable.policy?.available === true;
+  const runningLocks = running && !presetWhileRunning;
   const settingDisabled =
     disabled ||
     busy ||
     saving ||
     preparingSettings ||
-    running ||
+    runningLocks ||
     feature("settings")?.available !== true;
   const parsedBudget = tokenBudget ? Number(tokenBudget) : undefined;
   const budgetValid =
@@ -639,6 +659,33 @@ export function CodexComposerControls({
       ].flatMap(([label, available]) => (available === true ? [] : [label as string]))
     : [];
   const settingsFeatureUnavailable = feature("settings")?.available !== true;
+  // Codex's execution policies; for DeepSeek Harness, its permission presets.
+  const policyControl = (value: CodexSessionSettings) => {
+    const described = value.options.policies?.find((item) => item.id === policy)?.description;
+    return (
+      <label className="block space-y-1 text-sm">
+        {copy.executionPolicy}
+        <select
+          className={selectClass}
+          value={policy}
+          disabled={settingDisabled || !value.writable.policy?.available}
+          title={reasonTitle(value.writable.policy?.reason)}
+          onChange={(event) => {
+            editSettings();
+            setPolicy(event.target.value);
+          }}
+        >
+          {value.options.policies?.map((item) => (
+            <option value={item.id} key={item.id}>
+              {item.name}
+            </option>
+          ))}
+        </select>
+        {!value.writable.policy?.available && settingReason(value.writable.policy?.reason)}
+        {!!described && <small className="block text-muted-foreground">{described}</small>}
+      </label>
+    );
+  };
   const currentModel =
     modelOption(settings, displayedSettings?.modelId)?.name ?? displayedSettings?.modelId;
 
@@ -776,7 +823,9 @@ export function CodexComposerControls({
                 )}
                 {running && (
                   <p role="status" className="mb-3 text-xs text-muted-foreground">
-                    {copy.settingsWhileRunning}
+                    {presetWhileRunning
+                      ? copy.settingsWhileRunningModel
+                      : copy.settingsWhileRunning}
                   </p>
                 )}
                 <div className="flex flex-wrap gap-2">
@@ -963,8 +1012,12 @@ export function CodexComposerControls({
                       </small>
                     )}
                   </label>
-                ) : // DeepSeek Harness offers only a model and its effort here.
-                managedAgent ? null : (
+                ) : // DeepSeek Harness offers a model, its effort and its permission presets here.
+                managedAgent ? (
+                  settings.options.policies?.length ? (
+                    policyControl(settings)
+                  ) : null
+                ) : (
                   <>
                     <label className="block space-y-1 text-sm">
                       {copy.mode}
@@ -1029,36 +1082,7 @@ export function CodexComposerControls({
                         </small>
                       )}
                     </label>
-                    <label className="block space-y-1 text-sm">
-                      {copy.executionPolicy}
-                      <select
-                        className={selectClass}
-                        value={policy}
-                        disabled={settingDisabled || !settings.writable.policy?.available}
-                        title={reasonTitle(settings.writable.policy?.reason)}
-                        onChange={(event) => {
-                          editSettings();
-                          setPolicy(event.target.value);
-                        }}
-                      >
-                        {settings.options.policies?.map((item) => (
-                          <option value={item.id} key={item.id}>
-                            {item.name}
-                          </option>
-                        ))}
-                      </select>
-                      {!settings.writable.policy?.available &&
-                        settingReason(settings.writable.policy?.reason)}
-                      {!!settings.options.policies?.find((item) => item.id === policy)
-                        ?.description && (
-                        <small className="block text-muted-foreground">
-                          {
-                            settings.options.policies.find((item) => item.id === policy)
-                              ?.description
-                          }
-                        </small>
-                      )}
-                    </label>
+                    {policyControl(settings)}
                   </>
                 )}
               </div>
@@ -1122,10 +1146,7 @@ export function CodexComposerControls({
                 >
                   {goal.goal ? copy.goalUpdate : copy.goalCreate}
                 </Button>
-                {goal.goal &&
-                ["paused", "blocked", "budgetLimited", "usageLimited", "budget-exhausted"].includes(
-                  goal.goal.status,
-                ) ? (
+                {goal.goal && offersGoalAction(goal.goal, "resume") ? (
                   <Button
                     type="button"
                     variant="outline"
@@ -1148,7 +1169,7 @@ export function CodexComposerControls({
                       ? layout.tryResume
                       : copy.goalResume}
                   </Button>
-                ) : goal.goal?.status === "active" ? (
+                ) : offersGoalAction(goal.goal, "pause") ? (
                   <Button
                     type="button"
                     variant="outline"
@@ -1232,25 +1253,43 @@ export function CodexComposerControls({
               {goal.goal && (
                 <dl className="grid grid-cols-2 gap-2 rounded-lg border p-3 text-xs">
                   <dt>{copy.goalStatus}</dt>
-                  <dd>{term(goal.goal.status)}</dd>
-                  <dt>{copy.goalUsage}</dt>
                   <dd>
-                    {goal.goal.tokensUsed?.toLocaleString() ?? copy.unavailable}
-                    {goal.goal.tokenBudget ? ` / ${goal.goal.tokenBudget.toLocaleString()}` : ""}
+                    {term(goal.goal.status)}
+                    {goal.goal.detail && (
+                      <span className="block text-muted-foreground">{goal.goal.detail}</span>
+                    )}
                   </dd>
-                  <dt>{copy.goalElapsed}</dt>
-                  <dd>
-                    {goal.goal.elapsedMs === undefined
-                      ? copy.unavailable
-                      : `${Math.round(goal.goal.elapsedMs / 1000)}s`}
-                  </dd>
+                  {goal.goal.rounds ? (
+                    <>
+                      <dt>{copy.goalRounds}</dt>
+                      <dd>{`${goal.goal.rounds.used} / ${goal.goal.rounds.limit}`}</dd>
+                    </>
+                  ) : (
+                    <>
+                      <dt>{copy.goalUsage}</dt>
+                      <dd>
+                        {goal.goal.tokensUsed?.toLocaleString() ?? copy.unavailable}
+                        {goal.goal.tokenBudget
+                          ? ` / ${goal.goal.tokenBudget.toLocaleString()}`
+                          : ""}
+                      </dd>
+                      <dt>{copy.goalElapsed}</dt>
+                      <dd>
+                        {goal.goal.elapsedMs === undefined
+                          ? copy.unavailable
+                          : `${Math.round(goal.goal.elapsedMs / 1000)}s`}
+                      </dd>
+                    </>
+                  )}
                 </dl>
               )}
+              {/* Why an action this goal offers is unavailable; with no goal only starting one. */}
               {(["set", "pause", "resume", "clear"] as const)
                 .filter(
                   (action) =>
-                    !goal.actions[action]?.available ||
-                    feature(`goal-${action}`)?.available !== true,
+                    offersGoalAction(goal.goal, action) &&
+                    (!goal.actions[action]?.available ||
+                      feature(`goal-${action}`)?.available !== true),
                 )
                 .map((action) => (
                   <div key={action}>
@@ -1271,19 +1310,22 @@ export function CodexComposerControls({
                   }}
                 />
               </label>
-              <label className="block space-y-1 text-sm">
-                {copy.goalBudget}
-                <Input
-                  type="number"
-                  min={1}
-                  value={tokenBudget}
-                  disabled={busy || saving || compacting}
-                  onChange={(event) => {
-                    editGoal();
-                    setTokenBudget(event.target.value);
-                  }}
-                />
-              </label>
+              {/* A goal bounded by rounds takes no token budget. */}
+              {goal.budget !== "rounds" && (
+                <label className="block space-y-1 text-sm">
+                  {copy.goalBudget}
+                  <Input
+                    type="number"
+                    min={1}
+                    value={tokenBudget}
+                    disabled={busy || saving || compacting}
+                    onChange={(event) => {
+                      editGoal();
+                      setTokenBudget(event.target.value);
+                    }}
+                  />
+                </label>
+              )}
             </section>
           )}
         </Dialog>

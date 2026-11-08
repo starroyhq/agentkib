@@ -114,6 +114,23 @@ export function historyRecord(event) {
         truncated: preview.truncated,
       };
     }
+    // A slash command DSH ran itself, never the model, and what it answered.
+    case "command/run":
+      return {
+        ...base,
+        kind: "command",
+        commandId: bounded(String(data.commandId ?? ""), 128).text,
+        name: bounded(String(data.name ?? ""), 128).text,
+        args: typeof data.args === "string" ? bounded(data.args, MAX_PREVIEW).text : null,
+      };
+    case "command/done":
+      return {
+        ...base,
+        kind: "command-result",
+        commandId: bounded(String(data.commandId ?? ""), 128).text,
+        ok: data.kind === "success",
+        text: typeof data.text === "string" ? bounded(data.text, MAX_PREVIEW).text : null,
+      };
     default:
       return null;
   }
@@ -244,4 +261,93 @@ export function questionItems(questions) {
             }
           : null,
   }));
+}
+
+const GOAL_PHASES = new Set(["active", "paused", "blocked", "complete"]);
+const count = (value) => (Number.isSafeInteger(value) && value >= 0 ? value : 0);
+const time = (value) => (Number.isSafeInteger(value) && value >= 0 ? value : null);
+
+/**
+ * A goal as DSH's goal service reports it. A change names `id` and `revision`, so one made in
+ * DSH's own window meanwhile makes it fail instead of being overwritten. `activation` says
+ * whether this DSH continues the goal by itself; a session DSH has just resumed starts disarmed
+ * until someone resumes the goal.
+ */
+export function goalView(view) {
+  if (!view || typeof view !== "object" || !GOAL_PHASES.has(view.phase)) return null;
+  const id = shortId(view.id);
+  if (!id || !Number.isSafeInteger(view.revision) || view.revision < 1) return null;
+  const reason = view.phase === "blocked" ? view.blockedReason : null;
+  return {
+    id,
+    revision: view.revision,
+    objective: bounded(String(view.objective ?? ""), MAX_TEXT).text,
+    phase: view.phase,
+    blockedReason:
+      reason && typeof reason.code === "string"
+        ? {
+            code: bounded(reason.code, 128).text,
+            message: bounded(String(reason.message ?? ""), MAX_PREVIEW).text,
+          }
+        : null,
+    maxGoalRounds: count(view.maxGoalRounds),
+    roundsStarted: count(view.roundsStarted),
+    createdAt: time(view.createdAt),
+    updatedAt: time(view.updatedAt),
+    activation: view.activation === "armed" ? "armed" : "disarmed",
+  };
+}
+
+/** The goal of a session without a running agent, from DSH's `goal` projection. */
+export function goalFromProjection(projection) {
+  if (!projection || typeof projection !== "object") return null;
+  return goalView({
+    ...projection.goal,
+    roundsStarted: projection.roundsStarted,
+    createdAt: projection.createdAt,
+    updatedAt: projection.updatedAt,
+    activation: "disarmed",
+  });
+}
+
+/** DSH's slash commands, as its own `/` menu lists them. */
+export function commandEntries(list) {
+  const entries = [];
+  for (const command of Array.isArray(list) ? list.slice(0, 128) : []) {
+    if (typeof command?.name !== "string" || !/^[a-z][a-z0-9_-]{0,63}$/.test(command.name))
+      continue;
+    entries.push({
+      name: command.name,
+      description: bounded(String(command.description ?? ""), 512).text,
+      hint: typeof command.input?.hint === "string" ? bounded(command.input.hint, 256).text : null,
+      attachments: command.input?.attachments === true,
+    });
+  }
+  return entries;
+}
+
+/** DSH's permission presets: each one a sandbox mode with an approval policy. */
+export function permissionOptions(catalog) {
+  return (Array.isArray(catalog?.options) ? catalog.options.slice(0, 32) : [])
+    .filter((option) => shortId(option?.value))
+    .map((option) => ({
+      value: option.value,
+      name: bounded(String(option.name ?? option.value), 128).text,
+      description:
+        typeof option.description === "string" ? bounded(option.description, 512).text : null,
+    }));
+}
+
+const SUBAGENT_MODES = new Set(["one-shot", "external", "continuable", "unknown"]);
+
+/** One direct child from the parent's `subagentCatalog` projection. */
+export function subagentEntry(entry) {
+  const sessionId = shortId(entry?.id);
+  if (!sessionId) return null;
+  return {
+    sessionId,
+    createdAt: time(entry.createdAt),
+    mode: SUBAGENT_MODES.has(entry.mode) ? entry.mode : "unknown",
+    label: typeof entry.label === "string" && entry.label ? bounded(entry.label, 256).text : null,
+  };
 }

@@ -116,6 +116,7 @@ export const composerLayoutCopy = copy;
 const terms: Record<Locale, Record<string, string>> = {
   "zh-CN": {
     none: "无",
+    off: "关闭",
     minimal: "最低",
     low: "低",
     medium: "中",
@@ -140,6 +141,7 @@ const terms: Record<Locale, Record<string, string>> = {
   },
   "zh-TW": {
     none: "無",
+    off: "關閉",
     minimal: "最低",
     low: "低",
     medium: "中",
@@ -164,6 +166,7 @@ const terms: Record<Locale, Record<string, string>> = {
   },
   "en-US": {
     none: "None",
+    off: "Off",
     minimal: "Minimal",
     low: "Low",
     medium: "Medium",
@@ -188,6 +191,7 @@ const terms: Record<Locale, Record<string, string>> = {
   },
   "ja-JP": {
     none: "なし",
+    off: "オフ",
     minimal: "最小",
     low: "低",
     medium: "中",

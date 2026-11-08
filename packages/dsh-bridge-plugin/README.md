@@ -1,7 +1,7 @@
 # AgentKib DeepSeek Harness bridge
 
 First-party DeepSeek Harness (DSH) bundle for DSH **0.2.1-rc.5 or later** (`engines.dsh`
-`>=0.2.1-rc.5 <0.3.0`), bridge protocol **1**, plugin **0.3.0**. It connects the sessions of a
+`>=0.2.1-rc.5 <0.3.0`), bridge protocol **1**, plugin **0.4.0**. It connects the sessions of a
 running DSH to AgentKib on the same computer. It never starts a second executor, never writes
 the session log itself and never calls a model: every action goes through DSH's own services.
 
@@ -42,7 +42,20 @@ with every Runtime it finds, and then:
   that session's log refers to;
 - archives and unarchives through the workspace controller, and follows its archive set so
   archives made in DSH's own window reach AgentKib too;
-- answers verification requests from that record when a result was lost.
+- reads and changes a session's goal through DSH's goal service (`goals`); each change names
+  the goal's revision, so a goal changed meanwhile in DSH's window is refused, not overwritten.
+  A session that is not running is read from its `goal` projection without resuming it;
+- reports DSH's slash commands (`commands.list`) and runs a command line AgentKib sends through
+  `commands.execute`, as DSH's own window does: DSH logs the command and its answer in the
+  session, and a command still running after a few seconds (`/compact` calls the model) goes on
+  after the plugin has answered. AgentKib's compaction and permission-preset controls use DSH's
+  own `/compact` and `/permission <preset>`;
+- reads the permission presets (`permissionPresets.catalog`) and a session's current one, and
+  reports a compaction while it runs (DSH counts the agent as idle meanwhile);
+- lists a session's direct subagents from its `subagentCatalog` projection, with whether each is
+  running or how its last turn ended;
+- answers verification requests from that record when a result was lost; for a slash command,
+  from the requests it ran since DSH started.
 
 Only human prompts (and the images in them, when AgentKib shows one), assistant text and tool
 summaries leave DSH. Injected context, hidden reasoning, system prompts and provider frames stay

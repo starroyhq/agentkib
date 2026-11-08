@@ -5,6 +5,7 @@ import {
   claudeSlashOptions,
   codexCommandPrompt,
   codexSlashOptions,
+  dshSlashOptions,
   slashCommandCopy,
   sessionContinuationCopy,
   SessionContinuationReturned,
@@ -38,6 +39,7 @@ import {
   claudeCommandDecision,
   claudeMenuCommands,
   codexCommandDecision,
+  dshMenuCommands,
   type UploadedAttachment,
 } from "@agentkib/web-client";
 import { Button } from "../../components/ui/button";
@@ -144,27 +146,42 @@ export function SessionComposer({
     capabilities?.sessionId === selected &&
     capabilities.features.attachments?.available
   );
+  // DeepSeek Harness runs a message naming one of its commands itself; the host refuses the
+  // ones that need full access to a device without it, so the menu leaves them out.
+  const isDsh = current?.agent === "deepseek-harness";
+  const fullAccess = access?.device?.accessMode === "full";
   const commandCatalog =
-    isClaude && capabilities?.sessionId === selected ? capabilities.commands : undefined;
+    (isClaude || isDsh) && capabilities?.sessionId === selected ? capabilities.commands : undefined;
   const commandOptions = useMemo(
     () =>
       isCodex
         ? codexSlashOptions(CODEX_MENU_COMMANDS, locale)
-        : commandCatalog
-          ? claudeSlashOptions(claudeMenuCommands(commandCatalog, COMMAND_OWNER), locale)
-          : [],
-    [isCodex, commandCatalog, locale],
+        : !commandCatalog
+          ? []
+          : isDsh
+            ? dshSlashOptions(dshMenuCommands(commandCatalog, fullAccess))
+            : claudeSlashOptions(claudeMenuCommands(commandCatalog, COMMAND_OWNER), locale),
+    [isCodex, isDsh, commandCatalog, fullAccess, locale],
   );
   // A refused command keeps its draft; the explanation goes once the draft changes.
   const [commandNotice, setCommandNotice] = useState<{ draft: string; reason: string }>();
   const slash = useSlashCommandMenu({
     value: composerValue,
     options: commandOptions,
-    enabled: (isClaude || isCodex) && online && controlReady && !busy && !submitted,
-    // Codex's menu is AgentKib's own list; Claude Code's comes from the CLI.
+    enabled:
+      (isClaude || isCodex || (isDsh && commandOptions.length > 0)) &&
+      online &&
+      controlReady &&
+      !busy &&
+      !submitted,
+    // Codex's menu is AgentKib's own list; Claude Code's comes from the CLI, DSH's from DSH.
     catalogKnown: isCodex || !!commandCatalog?.length,
     locale,
-    label: isCodex ? slashCommandCopy(locale).codexLabel : undefined,
+    label: isCodex
+      ? slashCommandCopy(locale).codexLabel
+      : isDsh
+        ? slashCommandCopy(locale).dshLabel
+        : undefined,
     onChoose: setMessage,
   });
   // A command typed without an argument opens AgentKib's control for it, as a button would.

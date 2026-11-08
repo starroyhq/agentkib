@@ -26,7 +26,6 @@ const copy: Record<
     connected: (count: number) => string;
     none: string;
     version: (version: string) => string;
-    unverified: string;
     readOnly: string;
     install: string;
     restart: string;
@@ -41,7 +40,6 @@ const copy: Record<
     connected: (count) => `已连接 ${count} 个正在运行的 DeepSeek Harness`,
     none: "没有连接到正在运行的 DeepSeek Harness。装好 AgentKib 插件并重启 DeepSeek Harness 后会自动连接。",
     version: (version) => `版本 ${version}`,
-    unverified: "这个版本还没有验证过，部分功能可能不完整",
     readOnly: "这个配置只能查看，不能从这里发送",
     install: "在你运行的 profile 中安装插件（只需一次）：",
     restart:
@@ -56,7 +54,6 @@ const copy: Record<
     connected: (count) => `已連線 ${count} 個正在執行的 DeepSeek Harness`,
     none: "沒有連線到正在執行的 DeepSeek Harness。安裝 AgentKib 外掛並重新啟動 DeepSeek Harness 後會自動連線。",
     version: (version) => `版本 ${version}`,
-    unverified: "這個版本還沒有驗證過，部分功能可能不完整",
     readOnly: "這個設定只能檢視，不能從這裡傳送",
     install: "在你執行的 profile 中安裝外掛（只需一次）：",
     restart:
@@ -71,7 +68,6 @@ const copy: Record<
     connected: (count) => `実行中の DeepSeek Harness ${count} 件に接続済み`,
     none: "実行中の DeepSeek Harness に接続していません。AgentKib プラグインを入れて DeepSeek Harness を再起動すると自動で接続します。",
     version: (version) => `バージョン ${version}`,
-    unverified: "このバージョンは未検証のため、一部の機能が不完全な場合があります",
     readOnly: "このプロファイルは表示のみで、ここからは送信できません",
     install: "使用中のプロファイルにプラグインを入れます（初回のみ）：",
     restart:
@@ -87,7 +83,6 @@ const copy: Record<
       `Connected to ${count} running DeepSeek Harness ${count === 1 ? "instance" : "instances"}`,
     none: "No running DeepSeek Harness is connected. Install the AgentKib plugin and restart DeepSeek Harness; it then connects by itself.",
     version: (version) => `Version ${version}`,
-    unverified: "This version has not been verified yet; some features may be incomplete",
     readOnly: "This profile can be viewed but cannot take messages from here",
     install: "Install the plugin in the profile you run (once):",
     restart:
@@ -149,7 +144,6 @@ export function DshBridgePanel() {
           {runtimes.map((runtime) => (
             <p key={runtime.runtimeId} className="text-xs leading-5 text-muted-foreground">
               {text.version(runtime.dshVersion)}
-              {runtime.compatibility !== "verified" && ` · ${text.unverified}`}
               {!runtime.sessionController && ` · ${text.readOnly}`}
             </p>
           ))}

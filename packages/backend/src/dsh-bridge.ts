@@ -1,4 +1,4 @@
-import { createHash, randomBytes, randomUUID, timingSafeEqual } from "node:crypto";
+import { createHash, createHmac, randomBytes, randomUUID, timingSafeEqual } from "node:crypto";
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 import {
   chmodSync,
@@ -19,6 +19,7 @@ import {
   DSH_BRIDGE_PLUGIN_VERSION,
   dshBridgeCompatibility,
   type DshBridgeCommand,
+  type DshBridgeCommandEntry,
   type DshBridgeHistoryPage,
   type DshBridgeHistoryRecord,
   type DshBridgeInteraction,
@@ -162,6 +163,86 @@ const stateSchema = z
     streamText: z.string().max(256 * 1024),
     streamTruncated: z.boolean(),
     pending: z.number().int().nonnegative().max(64),
+    activity: z.literal("compacting").nullable().default(null),
+    goal: z
+      .object({
+        id: z.string().min(1).max(256),
+        revision: z.number().int().positive(),
+        phase: z.enum(["active", "paused", "blocked", "complete"]),
+        activation: z.enum(["armed", "disarmed"]),
+      })
+      .strip()
+      .nullable()
+      .default(null),
+  })
+  .strip();
+const commandEntrySchema = z
+  .object({
+    name: z.string().regex(/^[a-z][a-z0-9_-]{0,63}$/),
+    description: z.string().max(512),
+    hint: z.string().max(256).nullable(),
+    attachments: z.boolean(),
+  })
+  .strip();
+const goalSchema = z
+  .object({
+    id: z.string().min(1).max(256),
+    revision: z.number().int().positive(),
+    objective: z.string().max(64 * 1024),
+    phase: z.enum(["active", "paused", "blocked", "complete"]),
+    blockedReason: z
+      .object({ code: z.string().max(128), message: z.string().max(4096) })
+      .strip()
+      .nullable(),
+    maxGoalRounds: z.number().int().nonnegative(),
+    roundsStarted: z.number().int().nonnegative(),
+    createdAt: z.number().int().nonnegative().nullable(),
+    updatedAt: z.number().int().nonnegative().nullable(),
+    activation: z.enum(["armed", "disarmed"]),
+  })
+  .strip();
+const permissionsSchema = z
+  .object({
+    options: z
+      .array(
+        z
+          .object({
+            value: z.string().min(1).max(128),
+            name: z.string().max(128),
+            description: z.string().max(512).nullable(),
+          })
+          .strip(),
+      )
+      .max(32),
+    current: z.string().max(128).nullable(),
+    /** DSH's `plan` projection view; plugins older than 0.4.0 do not report it. */
+    plan: z.object({ active: z.boolean(), pending: z.boolean() }).strip().nullable().optional(),
+  })
+  .strip();
+type DshPermissions = z.infer<typeof permissionsSchema>;
+/**
+ * The plan mode a session selected, as DSH's composer chip shows it: a switch made with `/plan`
+ * counts at once, though DSH applies it at the next step.
+ */
+function planSelected(plan: DshPermissions["plan"]): boolean | null {
+  return plan ? (plan.pending ? !plan.active : plan.active) : null;
+}
+const subagentsSchema = z
+  .object({
+    agents: z
+      .array(
+        z
+          .object({
+            sessionId: nativeIdSchema,
+            createdAt: z.number().int().nonnegative().nullable(),
+            mode: z.enum(["one-shot", "external", "continuable", "unknown"]),
+            label: z.string().max(256).nullable(),
+            status: z.enum(["running", "completed", "stopped", "unknown"]),
+          })
+          .strip(),
+      )
+      .max(64),
+    truncated: z.boolean(),
   })
   .strip();
 const questionSchema = z
@@ -227,6 +308,10 @@ const servicesSchema = z
     workspaceController: z.boolean().optional(),
     modelCatalog: z.boolean().optional(),
     images: z.boolean().optional(),
+    goals: z.boolean().optional(),
+    commands: z.boolean().optional(),
+    permissions: z.boolean().optional(),
+    subagents: z.boolean().optional(),
   })
   .strip();
 const registerSchema = z
@@ -248,6 +333,20 @@ const reportSchema = z
     states: z.array(stateSchema).max(512).optional(),
     interactions: z.array(interactionSchema).max(64).optional(),
     historyChanged: z.array(nativeIdSchema).max(512).optional(),
+    commands: z.array(commandEntrySchema).max(128).optional(),
+    sessionCommands: z
+      .array(
+        z
+          .object({
+            sessionId: nativeIdSchema,
+            commands: z.array(commandEntrySchema).max(128).nullable(),
+          })
+          .strip(),
+      )
+      .max(512)
+      .optional(),
+    goalChanged: z.array(nativeIdSchema).max(512).optional(),
+    settingsChanged: z.array(nativeIdSchema).max(512).optional(),
   })
   .strip();
 const resultSchema = z
@@ -296,6 +395,41 @@ const historyImageSchema = z
   })
   .strip();
 const IMAGE_ID_PREFIX = "dsh-image-v1-";
+/**
+ * DSH reports only the keys of its built-in permission presets; AgentKib names them the way it
+ * names Codex's execution policies. A preset configured with a name of its own keeps it.
+ */
+const PRESET_NAMES: Record<string, { name: string; description: string }> = {
+  "read-only": {
+    name: "Read only · ask when needed",
+    description: "Can read the workspace; changes and other actions require user approval.",
+  },
+  "workspace-write": {
+    name: "Workspace write · ask when needed",
+    description:
+      "Can write inside the workspace and permitted temporary directories; wider access requires user approval.",
+  },
+  "danger-full-access": {
+    name: "Full access · no approval prompts",
+    description: "Can access all files and run commands without prompting for approvals.",
+  },
+  auto: {
+    name: "Auto review · experimental",
+    description:
+      "Runs without a sandbox; the same model reviews each tool call first, and the user decides the calls it denies.",
+  },
+};
+function presetPresentation(option: DshPermissions["options"][number]): {
+  name: string;
+  description?: string;
+} {
+  if (Object.hasOwn(PRESET_NAMES, option.value) && option.name === option.value)
+    return PRESET_NAMES[option.value]!;
+  return {
+    name: option.name || option.value,
+    ...(option.description ? { description: option.description } : {}),
+  };
+}
 
 type Command = DshBridgeCommand;
 type CommandWaiter = {
@@ -318,6 +452,9 @@ type Runtime = {
   summaries: Map<string, DshBridgeSessionSummary>;
   states: Map<string, DshBridgeSessionState>;
   interactions: Map<string, DshBridgeInteraction>;
+  /** DSH's slash commands for every session, and each running agent's own list. */
+  slashCommands: DshBridgeCommandEntry[];
+  sessionCommands: Map<string, DshBridgeCommandEntry[]>;
   queue: Command[];
   waiting?: () => void;
   commands: Map<string, CommandWaiter>;
@@ -404,6 +541,18 @@ const turnIdOf = (turn: number | null | undefined) =>
 /** Messages waiting for the next turn. Steering is already part of the running turn. */
 const queuedFor = (state: DshBridgeSessionState | null | undefined) =>
   (state?.queue ?? []).filter((item) => item.placement === "queued");
+/**
+ * Why DSH's goal service refused a change. It checks the goal's own revision, so a goal changed
+ * meanwhile in DSH's window is refused rather than overwritten.
+ */
+const goalRefusal = (error: string | undefined) =>
+  error === "GOAL_STALE_REVISION" || error === "GOAL_NOT_FOUND" || error === "GOAL_ALREADY_EXISTS"
+    ? "goal-changed"
+    : error === "GOAL_INVALID_TRANSITION"
+      ? "goal-action-unavailable"
+      : error === "GOAL_INVALID_OBJECTIVE"
+        ? "invalid-objective"
+        : error;
 /** The reason a control was refused before it reached DSH. */
 const preflightReason = (error: unknown) =>
   error instanceof z.ZodError
@@ -420,6 +569,9 @@ const controlView = (state: DshBridgeSessionState | null | undefined) =>
         turn: state.turn,
         queue: state.queue,
         pending: state.pending,
+        activity: state.activity ?? null,
+        // A goal changed in DSH's own window makes the goal controls read it again.
+        goal: state.goal ?? null,
       }
     : null;
 const iso = (time: number | null) =>
@@ -522,6 +674,26 @@ export function dshConversationEvents(
         else events.push(item);
         break;
       }
+      // A slash command reads as what the person typed, and DSH's answer as text DSH wrote
+      // itself, the way a Claude Code local command and its output read.
+      case "command":
+        events.push({
+          ...base(record),
+          id: `dsh:${record.seq}`,
+          kind: "user-message",
+          content: sanitizeSessionText(`/${record.name}${record.args ?? ""}`, { value: 0 }),
+        });
+        break;
+      case "command-result":
+        if (!record.text?.trim()) break;
+        events.push({
+          ...base(record),
+          id: `dsh:${record.seq}`,
+          kind: "agent-message",
+          content: sanitizeSessionText(record.text, { value: 0 }),
+          cli_output: true,
+        });
+        break;
     }
   }
   return events;
@@ -545,6 +717,14 @@ export class DshBridge {
    * the current model is known when only the reasoning effort changes.
    */
   #models = new Map<string, DshModels>();
+  /** Likewise the permission presets, so a preset change names one the user was shown. */
+  #permissions = new Map<string, DshPermissions>();
+  /** Each parent's last listing of its subagents, with the native session behind each ID. */
+  #children = new Map<
+    string,
+    { runtime: string; at: number; ids: Map<string, string>; catalog: Record<string, unknown> }
+  >();
+  readonly #subagentSalt = randomBytes(32);
   #answered = new Map<string, { by: "native" | "agentkib" | "cancelled"; at: number }>();
   /** Pages by `<session>\n<cursor>`, oldest first. */
   #pages = new Map<string, { page: ConversationEventPage; chars: number }>();
@@ -829,13 +1009,13 @@ export class DshBridge {
   #touch(nativeId: string): void {
     this.#revisions.set(nativeId, ++this.#revision);
   }
-  #publish(nativeId: string, history = false, queue = false): void {
+  #publish(nativeId: string, history = false, queue = false, other: string[] = []): void {
     if (!this.#catalog.has(nativeId)) return;
     const id = this.options.sessionId(nativeId);
     const live = this.live(id, true);
     this.options.publish(id, "state", live, live);
     // Streaming changes the state many times a second; readers of the queue refetch only here.
-    const domains = [...(history ? ["history"] : []), ...(queue ? ["queue"] : [])];
+    const domains = [...(history ? ["history"] : []), ...(queue ? ["queue"] : []), ...other];
     if (domains.length) this.options.publish(id, "invalidate", { domains }, live);
   }
   #drop(runtime: Runtime): void {
@@ -870,6 +1050,16 @@ export class DshBridge {
     const historyChanged = new Set(report.historyChanged ?? []);
     let listChanged = false;
     if (report.services) runtime.services = report.services;
+    if (report.commands && stable(report.commands) !== stable(runtime.slashCommands)) {
+      runtime.slashCommands = report.commands;
+      // The `/` menu comes with the capabilities; sessions this DSH serves read them again.
+      for (const id of runtime.summaries.keys()) changed.add(id);
+    }
+    for (const entry of report.sessionCommands ?? []) {
+      if (entry.commands) runtime.sessionCommands.set(entry.sessionId, entry.commands);
+      else runtime.sessionCommands.delete(entry.sessionId);
+      changed.add(entry.sessionId);
+    }
     if (report.sessions) {
       const next = new Map(report.sessions.map((row) => [row.sessionId, row]));
       for (const id of new Set([...runtime.summaries.keys(), ...next.keys()])) {
@@ -932,9 +1122,14 @@ export class DshBridge {
       for (const [id, entry] of this.#answered)
         if (Date.now() - entry.at > 10 * 60_000) this.#answered.delete(id);
     }
-    for (const id of new Set([...changed, ...historyChanged])) {
+    const goalChanged = new Set(report.goalChanged ?? []);
+    const settingsChanged = new Set(report.settingsChanged ?? []);
+    for (const id of new Set([...changed, ...historyChanged, ...goalChanged, ...settingsChanged])) {
       if (revised.has(id)) this.#touch(id);
-      this.#publish(id, historyChanged.has(id), queueChanged.has(id));
+      this.#publish(id, historyChanged.has(id), queueChanged.has(id), [
+        ...(goalChanged.has(id) ? ["goal"] : []),
+        ...(settingsChanged.has(id) ? ["settings"] : []),
+      ]);
     }
     // Every report, heartbeats included, is a chance to settle what is still unconfirmed.
     for (const nativeId of this.#unknownSessions) this.#autoReconcile(nativeId);
@@ -999,6 +1194,9 @@ export class DshBridge {
     if (unknown) this.#unknownSessions.add(nativeId);
     const controller = runtime?.services.sessionController === true;
     const running = state?.live === true && state.status === "running";
+    // DSH would take a message during a compaction and hold it until the end; AgentKib waits for
+    // the compaction to finish, as it does with the other agents.
+    const compacting = state?.live === true && state.activity === "compacting";
     const approval = interactions.find((item) => item.kind === "approval");
     const question = interactions.find((item) => item.kind === "question");
     const compatibility = runtime ? dshBridgeCompatibility(runtime.dshVersion) : null;
@@ -1016,7 +1214,9 @@ export class DshBridge {
               ? "dsh-approval-pending"
               : question
                 ? "dsh-question-pending"
-                : undefined;
+                : compacting
+                  ? "session-compacting"
+                  : undefined;
     const controllable = controls && online && controller && !!workspace && !unknown && !inflight;
     const turnId = running ? turnIdOf(state!.turn) : null;
     const status = unknown
@@ -1052,9 +1252,10 @@ export class DshBridge {
       status,
       reason,
       turnId,
-      sendEnabled: controllable && !running && !approval && !question,
-      steerEnabled: controllable && running && !!turnId,
-      queueEnabled: controllable && running,
+      activity: compacting ? "compacting" : null,
+      sendEnabled: controllable && !running && !approval && !question && !compacting,
+      steerEnabled: controllable && running && !!turnId && !compacting,
+      queueEnabled: controllable && running && !compacting,
       // Not tied to a non-empty queue: clients refetch capabilities on status changes, not when
       // DSH's own client queues a message. Each edit checks that its item still waits.
       queueEditEnabled: controllable,
@@ -1150,12 +1351,19 @@ export class DshBridge {
     const live = this.live(id, controls);
     const online = live.executionLocation === "external";
     const nativeId = this.#ids.get(id)!;
-    const services = this.#state(nativeId).runtime?.services;
+    const runtime = this.#state(nativeId).runtime;
+    const services = runtime?.services;
     // `live` reports this as queueEditEnabled: online, controllable and nothing unconfirmed.
     const controllable = live.queueEditEnabled === true;
-    const idle = controllable && live.status === "idle";
+    const idle = controllable && live.status === "idle" && live.activity !== "compacting";
     const archived = this.#catalog.get(nativeId)?.archived === true;
     const archivable = idle && services?.workspaceController === true;
+    const commands = online && runtime ? this.#commandsFor(runtime, nativeId) : [];
+    // A permission preset applies to the next approval, also in a running turn, as in DSH.
+    const presets =
+      services?.permissions === true && commands.some((entry) => entry.name === "permission");
+    const compactable = commands.some((entry) => entry.name === "compact");
+    const goals = online && services?.goals === true;
     const flags: Record<string, boolean> = {
       send: live.sendEnabled === true,
       stop: live.stopEnabled === true,
@@ -1174,9 +1382,9 @@ export class DshBridge {
       attachments:
         services?.images === true &&
         (live.sendEnabled === true || live.queueEnabled === true || live.steerEnabled === true),
-      // Model and reasoning effort; a running turn keeps its model, so changes wait for idle.
-      settings: idle && services?.modelCatalog === true,
-      "settings-state": online && services?.modelCatalog === true,
+      // A running turn keeps its model, so model changes wait for idle; a preset does not.
+      settings: (idle && services?.modelCatalog === true) || (controllable && presets),
+      "settings-state": online && (services?.modelCatalog === true || presets),
       queue: live.queueEnabled === true,
       "queue-list": online,
       "queue-add": live.queueEnabled === true,
@@ -1192,17 +1400,30 @@ export class DshBridge {
       // DSH refuses to archive an active session rather than stop it; so does AgentKib.
       archive: archivable && !archived,
       unarchive: archivable && archived,
-      goal: false,
-      "goal-set": false,
-      "goal-pause": false,
-      "goal-resume": false,
-      "goal-clear": false,
+      // DSH changes a goal also while a turn runs; the goal state says which change fits it now.
+      goal: goals,
+      "goal-set": controllable && goals,
+      "goal-pause": controllable && goals,
+      "goal-resume": controllable && goals,
+      "goal-clear": controllable && goals,
+      // DSH's own `/compact`, which waits for the session to be idle.
+      compact: idle && compactable,
     };
     return {
       sessionId: id,
       executionMode: DSH_EXECUTION_MODE,
       status: live.status,
       reason: live.reason,
+      // Clients filter the `/` menu per device (`dshMenuCommands`).
+      ...(commands.length
+        ? {
+            commands: commands.map((entry) => ({
+              name: entry.name,
+              ...(entry.description ? { description: entry.description } : {}),
+              ...(entry.hint ? { argumentHint: entry.hint } : {}),
+            })),
+          }
+        : {}),
       features: Object.fromEntries(
         Object.entries(flags).map(([key, available]) => [
           key,
@@ -1216,7 +1437,9 @@ export class DshBridge {
                     : // Offered once the turn ends, so say that rather than "unavailable".
                       controllable &&
                         !idle &&
+                        live.activity !== "compacting" &&
                         ((key === "settings" && services?.modelCatalog === true) ||
+                          (key === "compact" && compactable) ||
                           (["archive", "unarchive"].includes(key) &&
                             services?.workspaceController === true))
                       ? "session-busy"
@@ -1247,13 +1470,12 @@ export class DshBridge {
         };
       case "usage":
         return { available: false, state: "unavailable", reason: "usage-unavailable" };
-      // Not offered yet, but answered: clients that open the goal panel read this first.
       case "goal":
-        return {
-          available: false,
-          reason: "operation-unavailable",
-          revision: this.live(id, controls).revision,
-        };
+        return this.#goalState(id, nativeId);
+      case "subagents":
+        return this.#subagents(id, nativeId);
+      case "subagent-events":
+        return this.#subagentEvents(id, nativeId, value);
       case "context":
         return {
           available: true,
@@ -1281,6 +1503,11 @@ export class DshBridge {
       case "unarchive":
       case "fork":
       case "settings":
+      case "goal-set":
+      case "goal-pause":
+      case "goal-resume":
+      case "goal-clear":
+      case "compact":
         return this.#control(value, id, nativeId);
       default:
         throw new Error("operation-unavailable");
@@ -1446,7 +1673,10 @@ export class DshBridge {
     if (!listed) this.#unknownSessions.delete(String(command.evidence.nativeSessionId));
     return outcome;
   }
-  /** The model and reasoning effort picker, read from DSH's own model catalog. */
+  /**
+   * The model and reasoning effort picker, read from DSH's own model catalog, and the permission
+   * preset (sandbox mode with approval policy) as AgentKib's execution policy.
+   */
   async #settingsState(id: string, nativeId: string): Promise<Record<string, unknown>> {
     const live = this.live(id, true);
     const unavailable = (reason: string) => ({
@@ -1458,12 +1688,99 @@ export class DshBridge {
     const runtime = this.#controlRuntime(nativeId);
     if (!runtime || live.executionLocation !== "external")
       return unavailable("dsh-runtime-offline");
-    if (runtime.services.modelCatalog !== true) return unavailable("operation-unavailable");
-    const result = await this.#command(runtime, {
-      commandId: randomUUID(),
-      type: "models",
-      sessionId: nativeId,
-    });
+    const presets = this.#presets(runtime, nativeId);
+    if (runtime.services.modelCatalog !== true && !presets)
+      return unavailable("operation-unavailable");
+    const [result, permissionResult] = await Promise.all([
+      runtime.services.modelCatalog === true
+        ? this.#command(runtime, { commandId: randomUUID(), type: "models", sessionId: nativeId })
+        : null,
+      presets
+        ? this.#command(runtime, {
+            commandId: randomUUID(),
+            type: "permissions",
+            sessionId: nativeId,
+          })
+        : null,
+    ]);
+    const permissions = permissionResult?.ok
+      ? permissionsSchema.safeParse(permissionResult.value)
+      : null;
+    if (permissions?.success) this.#permissions.set(nativeId, permissions.data);
+    else this.#permissions.delete(nativeId);
+    const policy = permissions?.success ? permissions.data : null;
+    // Read moments before a change by the same request, so a change names what the user saw.
+    const policyFields = policy
+      ? {
+          policies: policy.options.map((option) => ({
+            id: option.value,
+            ...presetPresentation(option),
+          })),
+          policyWritable:
+            live.queueEditEnabled === true
+              ? { available: true }
+              : {
+                  available: false,
+                  reason: (live.reason as string | undefined) ?? "operation-unavailable",
+                },
+          // DSH's `custom` (knobs matching no preset) is not a choice; leave the picker unset.
+          policyId: policy.options.some((option) => option.value === policy.current)
+            ? policy.current
+            : null,
+        }
+      : null;
+    // Plan mode is DSH's collaboration mode, switched with its own `/plan` as in its window, also
+    // in a running turn; DSH applies it at the next step.
+    const planOn = planSelected(policy?.plan);
+    const planFields =
+      planOn !== null && this.#commandsFor(runtime, nativeId).some((entry) => entry.name === "plan")
+        ? {
+            mode: planOn ? "plan" : "default",
+            collaborationModes: [
+              { id: "default", name: "Default" },
+              { id: "plan", name: "Plan" },
+            ],
+            writable:
+              live.queueEditEnabled === true
+                ? { available: true }
+                : {
+                    available: false,
+                    reason: (live.reason as string | undefined) ?? "operation-unavailable",
+                  },
+          }
+        : null;
+    const modeFields = planFields
+      ? { collaborationModes: planFields.collaborationModes }
+      : { collaborationModes: [] };
+    const modeWritable = planFields?.writable ?? {
+      available: false,
+      reason: "operation-unavailable",
+    };
+    if (!result) {
+      return {
+        available: true,
+        executionMode: DSH_EXECUTION_MODE,
+        revision: live.revision,
+        current: {
+          ...(policyFields?.policyId ? { policyId: policyFields.policyId } : {}),
+          ...(planFields ? { mode: planFields.mode } : {}),
+        },
+        defaults: {},
+        applicationStatus: "confirmed",
+        models: [],
+        policies: policyFields?.policies ?? [],
+        ...modeFields,
+        writable: {
+          model: { available: false, reason: "operation-unavailable" },
+          effort: { available: false, reason: "operation-unavailable" },
+          mode: modeWritable,
+          policy: policyFields?.policyWritable ?? {
+            available: false,
+            reason: "dsh-permissions-unavailable",
+          },
+        },
+      };
+    }
     const parsed = result.ok ? modelsSchema.safeParse(result.value) : null;
     if (!parsed?.success) return unavailable("dsh-models-unavailable");
     const catalog = parsed.data;
@@ -1488,25 +1805,204 @@ export class DshBridge {
         : writable
           ? { available: true }
           : { available: false, reason: blocked };
+    const selected = {
+      ...current,
+      ...(policyFields?.policyId ? { policyId: policyFields.policyId } : {}),
+      ...(planFields ? { mode: planFields.mode } : {}),
+    };
     return {
       available: true,
       executionMode: DSH_EXECUTION_MODE,
       revision: live.revision,
-      current,
-      selected: current,
+      current: selected,
+      selected,
       defaults: values(catalog.default),
       applicationStatus: "confirmed",
       models: catalog.models.map((model) => ({
         id: modelId(model.provider, model.model),
         name:
           (names.get(model.name) ?? 0) > 1 ? `${model.name} · ${model.providerName}` : model.name,
+        // DSH's own model menu lists models under their provider.
+        group: model.providerName,
         efforts: model.efforts.map((effort) => effort.id),
         ...(model.defaultEffort ? { defaultEffort: model.defaultEffort } : {}),
       })),
+      policies: policyFields?.policies ?? [],
+      ...modeFields,
       writable: {
         model: choice(catalog.models.length > 0),
         effort: choice(catalog.models.some((model) => model.efforts.length > 0)),
+        mode: modeWritable,
+        policy: policyFields?.policyWritable ?? {
+          available: false,
+          reason: presets ? "dsh-permissions-unavailable" : "operation-unavailable",
+        },
       },
+    };
+  }
+  /** DSH's permission presets can be read and switched with its own `/permission`. */
+  #presets(runtime: Runtime, nativeId: string): boolean {
+    return (
+      runtime.services.permissions === true &&
+      this.#commandsFor(runtime, nativeId).some((entry) => entry.name === "permission")
+    );
+  }
+  /**
+   * The slash commands a session offers, as DSH's window lists them: its running agent's own
+   * list. A session without one gets the commands every session has and those its running
+   * siblings have, which it gets too once DSH resumes it. Only for the `/` menu and for what the
+   * capabilities offer; the plugin decides with the session's own registry when a message comes.
+   */
+  #commandsFor(runtime: Runtime, nativeId: string): DshBridgeCommandEntry[] {
+    if (runtime.services.commands !== true) return [];
+    const own = runtime.sessionCommands.get(nativeId);
+    if (own) return own;
+    const byName = new Map(runtime.slashCommands.map((entry) => [entry.name, entry]));
+    for (const entries of runtime.sessionCommands.values())
+      for (const entry of entries) if (!byName.has(entry.name)) byName.set(entry.name, entry);
+    return [...byName.values()].sort((a, b) => (a.name < b.name ? -1 : 1));
+  }
+  /**
+   * The goal panel. DSH bounds a goal by rounds, not tokens, and continues an active goal only
+   * while armed: a session it resumed waits for a resume, so AgentKib shows that goal as paused.
+   */
+  async #goalState(id: string, nativeId: string): Promise<Record<string, unknown>> {
+    const live = this.live(id, true);
+    const unavailable = (reason: string) => ({
+      sessionId: id,
+      available: false,
+      reason,
+      revision: live.revision,
+    });
+    const runtime = this.#controlRuntime(nativeId);
+    if (!runtime || live.executionLocation !== "external")
+      return unavailable("dsh-runtime-offline");
+    if (runtime.services.goals !== true) return unavailable("operation-unavailable");
+    const result = await this.#command(runtime, {
+      commandId: randomUUID(),
+      type: "goal",
+      sessionId: nativeId,
+    });
+    const parsed = result.ok
+      ? z.object({ goal: goalSchema.nullable() }).strip().safeParse(result.value)
+      : null;
+    if (!parsed?.success) return unavailable("dsh-goal-unavailable");
+    const goal = parsed.data.goal;
+    const blocked = (live.reason as string | undefined) ?? "operation-unavailable";
+    const choice = (offered: boolean, reason = "goal-action-unavailable") =>
+      live.queueEditEnabled !== true
+        ? { available: false, reason: blocked }
+        : offered
+          ? { available: true }
+          : { available: false, reason };
+    const armed = goal?.phase === "active" && goal.activation === "armed";
+    const exhausted = !!goal && goal.roundsStarted >= goal.maxGoalRounds;
+    return {
+      sessionId: id,
+      available: true,
+      revision: live.revision,
+      budget: "rounds",
+      ...(goal
+        ? {
+            goal: {
+              objective: goal.objective,
+              status: goal.phase === "active" && !armed ? "paused" : goal.phase,
+              rounds: { used: goal.roundsStarted, limit: goal.maxGoalRounds },
+              ...(goal.blockedReason?.message ? { detail: goal.blockedReason.message } : {}),
+            },
+          }
+        : {}),
+      actions: {
+        set: choice(true),
+        pause: choice(armed),
+        resume: choice(
+          !!goal && goal.phase !== "complete" && !armed && !exhausted,
+          exhausted ? "goal-rounds-exhausted" : "goal-action-unavailable",
+        ),
+        clear: choice(!!goal),
+      },
+    };
+  }
+
+  // ---- subagents --------------------------------------------------------------------------
+
+  /** A child's ID, meaningful only under its parent and only in this run of AgentKib. */
+  #childId(parent: string, child: string): string {
+    return createHmac("sha256", this.#subagentSalt).update(`${parent}\0${child}`).digest("hex");
+  }
+  /**
+   * The direct children DSH lists for a session; DSH shows them read-only too. Phones ask every
+   * few seconds, so a listing is reused briefly, longer for a parent that is not running.
+   */
+  async #subagents(id: string, nativeId: string): Promise<Record<string, unknown>> {
+    const empty = { version: 1, sessionId: id, agents: [], truncated: false };
+    const runtime = this.#controlRuntime(nativeId);
+    if (!runtime || runtime.services.subagents !== true) {
+      this.#children.delete(nativeId);
+      return empty;
+    }
+    const cached = this.#children.get(nativeId);
+    const ttl = this.#state(nativeId).state?.live ? 2_000 : 30_000;
+    if (cached && cached.runtime === runtime.token && Date.now() - cached.at < ttl)
+      return cached.catalog;
+    const result = await this.#command(runtime, {
+      commandId: randomUUID(),
+      type: "subagents",
+      sessionId: nativeId,
+    });
+    const parsed = result.ok ? subagentsSchema.safeParse(result.value) : null;
+    if (!parsed?.success) return cached?.catalog ?? empty;
+    const ids = new Map<string, string>();
+    const agents = parsed.data.agents.map((child) => {
+      const childId = this.#childId(nativeId, child.sessionId);
+      ids.set(childId, child.sessionId);
+      return {
+        id: childId,
+        name: child.label?.replace(/[\p{Cc}\p{Cf}]/gu, "").trim() || "DeepSeek Harness",
+        agent: "deepseek-harness",
+        status: child.status,
+        ...(iso(child.createdAt) ? { updatedAt: iso(child.createdAt) } : {}),
+        readable: true,
+      };
+    });
+    const catalog = { version: 1, sessionId: id, agents, truncated: parsed.data.truncated };
+    this.#children.set(nativeId, { runtime: runtime.token, at: Date.now(), ids, catalog });
+    if (this.#children.size > 64) this.#children.delete(this.#children.keys().next().value!);
+    return catalog;
+  }
+  /** One page of a child's history, read like any DSH session's. */
+  async #subagentEvents(
+    id: string,
+    nativeId: string,
+    value: Record<string, unknown>,
+  ): Promise<Record<string, unknown>> {
+    const childId = z
+      .string()
+      .regex(/^[a-f0-9]{64}$/)
+      .parse(value.subagentId);
+    const limit = z
+      .number()
+      .int()
+      .min(1)
+      .max(100)
+      .parse(value.limit ?? 50);
+    const cursor =
+      value.cursor === null || value.cursor === undefined ? null : String(value.cursor);
+    let child = this.#children.get(nativeId)?.ids.get(childId);
+    if (!child) {
+      await this.#subagents(id, nativeId);
+      child = this.#children.get(nativeId)?.ids.get(childId);
+    }
+    if (!child) throw new Error("subagent-unavailable");
+    const page = await this.events(child, cursor, limit);
+    const runtime = this.#controlRuntime(child);
+    return {
+      ...page,
+      version: 1,
+      sessionId: id,
+      subagentId: childId,
+      // Paging starts over when another DSH process serves the child.
+      epoch: this.#childId(childId, runtime?.runtimeId ?? "offline"),
     };
   }
   /** Asks the running DSH about this session's unconfirmed commands, at most once an interval. */
@@ -1560,7 +2056,9 @@ export class DshBridge {
       const since = this.#unknownSince.get(command.requestId) ?? Date.now();
       this.#unknownSince.set(command.requestId, since);
       const overdue = Date.now() - since >= giveUp;
-      if (["send", "steer", "queue-add"].includes(operation)) {
+      // The plugin keeps the requests of the slash commands it ran (`/compact` among them) until
+      // DSH restarts; a sent message carries its request ID into DSH's record.
+      if (["send", "steer", "queue-add", "compact"].includes(operation)) {
         const result = await this.#command(runtime, {
           commandId: randomUUID(),
           type: "verify",
@@ -1579,7 +2077,7 @@ export class DshBridge {
       const state = this.#state(nativeId).state;
       const row = this.#catalog.get(nativeId);
       let selected: DshModels["selected"] = null;
-      if (operation === "settings") {
+      if (operation === "settings" && typeof evidence.provider === "string") {
         const models = await this.#command(runtime, {
           commandId: randomUUID(),
           type: "models",
@@ -1588,6 +2086,22 @@ export class DshBridge {
         const parsed = models.ok ? modelsSchema.safeParse(models.value) : null;
         selected = parsed?.success ? parsed.data.selected : null;
       }
+      let preset: string | null = null;
+      let plan: boolean | null = null;
+      if (
+        operation === "settings" &&
+        (typeof evidence.preset === "string" || typeof evidence.plan === "boolean")
+      ) {
+        const permissions = await this.#command(runtime, {
+          commandId: randomUUID(),
+          type: "permissions",
+          sessionId: nativeId,
+        });
+        const parsed = permissions.ok ? permissionsSchema.safeParse(permissions.value) : null;
+        preset = parsed?.success ? parsed.data.current : null;
+        plan = parsed?.success ? planSelected(parsed.data.plan) : null;
+      }
+      const goal = state?.goal ?? null;
       // A fork leaves no trace on its source, so it settles as not dispatched once overdue; a
       // copy that was made anyway still shows up in the session list.
       const applied = ["queue-delete", "queue-update", "queue-steer"].includes(operation)
@@ -1601,10 +2115,22 @@ export class DshBridge {
               : operation === "archive" || operation === "unarchive"
                 ? (row?.archived === true) === (evidence.archived === true)
                 : operation === "settings"
-                  ? selected?.provider === evidence.provider &&
-                    selected?.model === evidence.model &&
-                    (selected?.reasoningEffort ?? null) === (evidence.reasoningEffort ?? null)
-                  : false;
+                  ? (typeof evidence.preset !== "string" || preset === evidence.preset) &&
+                    (typeof evidence.plan !== "boolean" || plan === evidence.plan) &&
+                    (typeof evidence.provider !== "string" ||
+                      (selected?.provider === evidence.provider &&
+                        selected?.model === evidence.model &&
+                        (selected?.reasoningEffort ?? null) === (evidence.reasoningEffort ?? null)))
+                  : // A goal leaves its state: cleared, paused, continuing, or a new revision.
+                    operation.startsWith("goal-")
+                    ? evidence.goalAction === "clear"
+                      ? !goal
+                      : evidence.goalAction === "pause"
+                        ? goal?.phase === "paused"
+                        : evidence.goalAction === "resume"
+                          ? goal?.phase === "active" && goal.activation === "armed"
+                          : !!goal && goal.revision !== evidence.goalRevision
+                    : false;
       settle(
         command.requestId,
         applied ? "accepted" : "not-dispatched",
@@ -1723,6 +2249,11 @@ export class DshBridge {
       "model",
       "effort",
       "resetDefaults",
+      // Permission preset, goals, and whether the device may run every DSH command.
+      "commandAccess",
+      "policyId",
+      "mode",
+      "goal",
     ]);
     if (Object.keys(value).some((key) => !allowed.has(key)))
       throw new Error("invalid-managed-control");
@@ -1772,41 +2303,34 @@ export class DshBridge {
         return parts;
       };
       const commandId = randomUUID();
+      // A message naming one of the session's slash commands runs as that command, as in DSH's
+      // own window, also while a turn runs. The plugin decides with the session's own registry;
+      // the Host says whether the device may run the commands that need full access.
+      const message = (mode: "queue" | "steer"): Command => ({
+        commandId,
+        type: "prompt",
+        sessionId: nativeId,
+        requestId,
+        mode,
+        content: content(),
+        ...(value.commandAccess === "all" ? { fullAccess: true } : {}),
+      });
       let command: Command;
+      // A preset and a model change are two native steps; this is the second.
+      let then: Command | undefined;
       switch (value.operation) {
         case "send":
           if (live.sendEnabled !== true) throw new Error("session-busy");
-          command = {
-            commandId,
-            type: "prompt",
-            sessionId: nativeId,
-            requestId,
-            mode: "queue",
-            content: content(),
-          };
+          command = message("queue");
           break;
         case "queue-add":
           if (live.queueEnabled !== true) throw new Error("session-busy");
-          command = {
-            commandId,
-            type: "prompt",
-            sessionId: nativeId,
-            requestId,
-            mode: "queue",
-            content: content(),
-          };
+          command = message("queue");
           break;
         case "steer":
           if (live.steerEnabled !== true || value.turnId !== live.turnId)
             throw new Error("stale-turn");
-          command = {
-            commandId,
-            type: "prompt",
-            sessionId: nativeId,
-            requestId,
-            mode: "steer",
-            content: content(),
-          };
+          command = message("steer");
           break;
         case "queue-delete":
         case "queue-update":
@@ -1916,49 +2440,152 @@ export class DshBridge {
           command = { commandId, type: "fork", sessionId: nativeId };
           break;
         case "settings": {
-          if (runtime.services.modelCatalog !== true) throw new Error("operation-unavailable");
-          if (live.queueEditEnabled !== true || live.status !== "idle")
-            throw new Error("session-busy");
-          // Read moments before by the same request, so this is the selection the user saw.
-          const catalog = this.#models.get(nativeId);
-          if (!catalog) throw new Error("stale-settings");
-          const current = catalog.selected ?? catalog.default;
-          // The Host offers "restore defaults" whenever DSH reports a default model.
-          const reset = value.resetDefaults === true;
-          const target = reset
-            ? catalog.default
-            : value.model === undefined
-              ? current
-              : parseModelId(value.model);
-          if (!target) throw new Error("invalid-model");
-          const model = catalog.models.find(
-            (entry) => entry.provider === target.provider && entry.model === target.model,
-          );
-          if (!model) throw new Error("invalid-model");
-          // An effort change keeps the model; a new model starts at its own default effort.
-          const effort = reset
-            ? (catalog.default?.reasoningEffort ?? null)
-            : typeof value.effort === "string"
-              ? value.effort
+          if (live.queueEditEnabled !== true) throw new Error("session-busy");
+          const steps: Command[] = [];
+          if (value.mode !== undefined) {
+            // A plan switch goes alone, as DSH's own composer chip and `/plan` make it.
+            if (
+              value.policyId !== undefined ||
+              value.model !== undefined ||
+              value.effort !== undefined ||
+              value.resetDefaults === true
+            )
+              throw new Error("invalid-settings");
+            if (!this.#commandsFor(runtime, nativeId).some((entry) => entry.name === "plan"))
+              throw new Error("operation-unavailable");
+            const mode = z.enum(["default", "plan"]).parse(value.mode);
+            // Read moments before by the same request, so this is the mode the user saw.
+            const permissions = this.#permissions.get(nativeId);
+            if (!permissions || planSelected(permissions.plan) === null)
+              throw new Error("stale-settings");
+            command = {
+              commandId,
+              type: "command",
+              sessionId: nativeId,
+              requestId,
+              line: mode === "plan" ? "/plan" : "/plan off",
+            };
+            break;
+          }
+          // A preset applies to the next approval, also in a running turn, as in DSH's window.
+          if (value.policyId !== undefined) {
+            if (!this.#presets(runtime, nativeId)) throw new Error("operation-unavailable");
+            // Read moments before by the same request, so this is a preset the user saw.
+            const permissions = this.#permissions.get(nativeId);
+            if (!permissions) throw new Error("stale-settings");
+            const preset = z.string().min(1).max(128).parse(value.policyId);
+            if (!permissions.options.some((option) => option.value === preset))
+              throw new Error("invalid-policy");
+            if (preset !== permissions.current)
+              steps.push({
+                commandId,
+                type: "command",
+                sessionId: nativeId,
+                requestId,
+                line: `/permission ${preset}`,
+              });
+          }
+          if (
+            value.model !== undefined ||
+            value.effort !== undefined ||
+            value.resetDefaults === true ||
+            !steps.length
+          ) {
+            if (runtime.services.modelCatalog !== true) throw new Error("operation-unavailable");
+            // Read moments before by the same request, so this is the selection the user saw.
+            const catalog = this.#models.get(nativeId);
+            if (!catalog) throw new Error("stale-settings");
+            const current = catalog.selected ?? catalog.default;
+            // The Host offers "restore defaults" whenever DSH reports a default model.
+            const reset = value.resetDefaults === true;
+            const target = reset
+              ? catalog.default
               : value.model === undefined
-                ? (current?.reasoningEffort ?? null)
-                : null;
-          if (effort !== null && !model.efforts.some((entry) => entry.id === effort))
-            throw new Error("invalid-effort");
+                ? current
+                : parseModelId(value.model);
+            if (!target) throw new Error("invalid-model");
+            const model = catalog.models.find(
+              (entry) => entry.provider === target.provider && entry.model === target.model,
+            );
+            if (!model) throw new Error("invalid-model");
+            // An effort change keeps the model; a new model starts at its own default effort.
+            const effort = reset
+              ? (catalog.default?.reasoningEffort ?? null)
+              : typeof value.effort === "string"
+                ? value.effort
+                : value.model === undefined
+                  ? (current?.reasoningEffort ?? null)
+                  : null;
+            if (effort !== null && !model.efforts.some((entry) => entry.id === effort))
+              throw new Error("invalid-effort");
+            const unchanged =
+              current?.provider === model.provider &&
+              current.model === model.model &&
+              (current.reasoningEffort ?? null) === effort;
+            // The settings dialog sends the model it shows along with a new preset.
+            if (!unchanged || !steps.length) {
+              // A running turn keeps its model until it ends.
+              if (live.status !== "idle" || live.activity === "compacting")
+                throw new Error("session-busy");
+              steps.push({
+                commandId: steps.length ? randomUUID() : commandId,
+                type: "selectModel",
+                sessionId: nativeId,
+                provider: model.provider,
+                model: model.model,
+                ...(effort !== null ? { reasoningEffort: effort } : {}),
+              });
+            }
+          }
+          [command, then] = steps as [Command, Command | undefined];
+          break;
+        }
+        case "goal-set":
+        case "goal-pause":
+        case "goal-resume":
+        case "goal-clear": {
+          if (runtime.services.goals !== true) throw new Error("operation-unavailable");
+          if (live.queueEditEnabled !== true) throw new Error("session-busy");
+          const goal = value.goal as { objective?: unknown; tokenBudget?: unknown } | undefined;
+          if (value.operation === "goal-set") {
+            const objective = typeof goal?.objective === "string" ? goal.objective.trim() : "";
+            if (!objective || objective.length > 16_000) throw new Error("invalid-objective");
+            // DSH bounds a goal by rounds, not tokens.
+            if (goal?.tokenBudget !== undefined && goal.tokenBudget !== null)
+              throw new Error("goal-token-budget-unavailable");
+          }
+          // The goal this DSH runs; a change made meanwhile in DSH's window bumped the revision.
+          const ref = this.#state(nativeId).state?.goal;
           command = {
             commandId,
-            type: "selectModel",
+            type: "goal-control",
             sessionId: nativeId,
-            provider: model.provider,
-            model: model.model,
-            ...(effort !== null ? { reasoningEffort: effort } : {}),
+            action: value.operation.slice("goal-".length) as "set" | "pause" | "resume" | "clear",
+            ...(value.operation === "goal-set"
+              ? { objective: (goal!.objective as string).trim() }
+              : {}),
+            ...(ref ? { goalId: ref.id, goalRevision: ref.revision } : {}),
           };
           break;
         }
+        case "compact":
+          // DSH's own `/compact`, which needs the session idle.
+          if (!this.#commandsFor(runtime, nativeId).some((entry) => entry.name === "compact"))
+            throw new Error("operation-unavailable");
+          if (live.queueEditEnabled !== true || live.status !== "idle" || live.activity)
+            throw new Error("session-busy");
+          command = {
+            commandId,
+            type: "command",
+            sessionId: nativeId,
+            requestId,
+            line: "/compact",
+          };
+          break;
         default:
           throw new Error("operation-unavailable");
       }
-      return { live, runtime, command, commandId };
+      return { live, runtime, command, commandId, then };
     };
     let prepared: ReturnType<typeof prepare>;
     try {
@@ -1968,7 +2595,20 @@ export class DshBridge {
       // fence the session as if the outcome were unknown.
       return this.#result(id, requestId, "not-dispatched", preflightReason(error));
     }
-    const { live, runtime, command, commandId } = prepared;
+    const { live, runtime, command, commandId, then } = prepared;
+    const selection = [command, then].find((step) => step?.type === "selectModel");
+    const preset =
+      command.type === "command" &&
+      value.operation === "settings" &&
+      command.line.startsWith("/permission ")
+        ? command.line.slice("/permission ".length)
+        : null;
+    const plan =
+      command.type === "command" &&
+      value.operation === "settings" &&
+      command.line.startsWith("/plan")
+        ? command.line === "/plan"
+        : null;
     const evidence = {
       operation: value.operation,
       commandId,
@@ -1986,12 +2626,17 @@ export class DshBridge {
       ...(command.type === "answer" ? { interactionId: command.interactionId } : {}),
       ...(command.type === "rename" ? { title: command.title } : {}),
       ...(command.type === "archive" ? { archived: command.archived } : {}),
-      ...(command.type === "selectModel"
+      ...(selection?.type === "selectModel"
         ? {
-            provider: command.provider,
-            model: command.model,
-            reasoningEffort: command.reasoningEffort ?? null,
+            provider: selection.provider,
+            model: selection.model,
+            reasoningEffort: selection.reasoningEffort ?? null,
           }
+        : {}),
+      ...(preset ? { preset } : {}),
+      ...(plan !== null ? { plan } : {}),
+      ...(command.type === "goal-control"
+        ? { goalAction: command.action, goalRevision: command.goalRevision ?? null }
         : {}),
     };
     const prior = claimManagedCommand(
@@ -2007,9 +2652,37 @@ export class DshBridge {
     this.#touch(nativeId);
     this.#publish(nativeId);
     try {
-      const result = await this.#command(runtime, command, undefined, () =>
+      let result = await this.#command(runtime, command, undefined, () =>
         dispatchManagedCommand(this.options.dataDir, requestId),
       );
+      // A command a person typed ran once DSH matched it; its answer is in the session's
+      // history, as in DSH's own window. One AgentKib runs for its own control must succeed.
+      const typed = ["send", "steer", "queue-add"].includes(String(value.operation));
+      const refusal = (step: Command, reply: typeof result) => {
+        const answer = reply.value as {
+          command?: unknown;
+          matched?: unknown;
+          running?: unknown;
+          ok?: unknown;
+        } | null;
+        // A message that ran as a command says which; any other message went to the model.
+        if (!reply.ok || (step.type === "prompt" ? !answer?.command : step.type !== "command"))
+          return null;
+        if (answer?.matched !== true) return "dsh-command-unavailable";
+        return !typed && answer.running !== true && answer.ok !== true
+          ? "dsh-command-failed"
+          : null;
+      };
+      const refused = refusal(command, result);
+      // The preset is set; a model change refused now leaves it, and the settings read again.
+      let partial = false;
+      if (result.ok && !refused && then) {
+        const second = await this.#command(runtime, then);
+        if (second.ok || second.error === "unknown") result = second;
+        else partial = true;
+      }
+      if (!result.ok && command.type === "goal-control")
+        result = { ...result, error: goalRefusal(result.error) };
       // Clients open a fork from the reply, as they do a Codex fork; still in flight, wait for
       // DSH to list it first.
       const child = result.ok ? (result.value as { sessionId?: unknown } | null)?.sessionId : null;
@@ -2017,11 +2690,16 @@ export class DshBridge {
       if (forked) await this.#listed(forked);
       this.#inflight.delete(id);
       let outcome: Record<string, unknown>;
-      if (result.ok) {
+      if (result.ok && refused) {
+        outcome = this.#result(id, requestId, "not-dispatched", refused);
+        finishManagedCommand(this.options.dataDir, requestId, outcome);
+      } else if (result.ok) {
         const found = (result.value as { found?: boolean } | null)?.found;
         if (command.type === "answer" && found === false) {
           this.#answered.set(command.interactionId, { by: "native", at: Date.now() });
           outcome = this.#result(id, requestId, "not-dispatched", "interaction-answered-elsewhere");
+        } else if (partial) {
+          outcome = this.#result(id, requestId, "accepted", "dsh-settings-partial");
         } else {
           if (command.type === "answer")
             this.#answered.set(command.interactionId, { by: "agentkib", at: Date.now() });
@@ -2216,6 +2894,8 @@ export class DshBridge {
             summaries: new Map(),
             states: new Map(),
             interactions: new Map(),
+            slashCommands: [],
+            sessionCommands: new Map(),
             queue: [],
             commands: new Map(),
           });

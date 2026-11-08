@@ -58,4 +58,18 @@ describe("DeepSeek Harness connection panel", () => {
     });
     expect(screen.getByText("AgentKib's connection service is not running.")).toBeInTheDocument();
   });
+
+  it("shows an unverified DSH version as just its version", async () => {
+    request.mockResolvedValueOnce({
+      ...connected,
+      runtimes: [
+        { ...connected.runtimes[0], dshVersion: "0.2.2-rc.1", compatibility: "unverified" },
+      ],
+    });
+    render(<DshBridgePanel />);
+    await act(async () => undefined);
+    // A feature this DSH lacks says so where it is used, not here.
+    expect(screen.getByText("Version 0.2.2-rc.1")).toBeInTheDocument();
+    expect(screen.queryByText(/not been verified/)).toBeNull();
+  });
 });

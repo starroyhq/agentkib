@@ -9,7 +9,6 @@ import {
   TriangleAlert,
 } from "lucide-react";
 import { CLAUDE_BRIDGE_CLI_VERSION } from "@agentkib/runtime-protocol";
-import { ClaudeCompatibilityNote } from "./claude-compatibility-note";
 import type { ClaudeBridgeChallenge, ClaudeBridgeStatus } from "../../../../../../electron/api";
 import { desktopApi } from "@/core/desktop";
 import { Button } from "@/components/ui/button";
@@ -782,9 +781,6 @@ export function ClaudeBridgePanel({ active, onClose }: { active: boolean; onClos
               status?.version ?? CLAUDE_BRIDGE_CLI_VERSION,
             )}
           </p>
-        )}
-        {confirmedConnected && (
-          <ClaudeCompatibilityNote locale={locale} compatibility={status?.bridgeCompatibility} />
         )}
       </div>
       {platformUnsupported ? (

@@ -113,28 +113,32 @@ describe("Claude terminal connection dialog", () => {
     },
   );
 
-  it.each(locales)("shows an unverified version as neutral text in %s", async (locale) => {
-    state.session.live = { ...state.session.live!, executionMode: "claude-follower" };
-    state.request.mockResolvedValue(
-      bridgeStatus({
-        connected: true,
-        bridgeCompatibility: { cliVersion: "2.1.307", status: "unverified" },
-      }),
-    );
-    const { dialog, copy } = await openDialog(locale);
-    const note = within(dialog).getByText(copy.unverifiedVersion.replace("{version}", "2.1.307"));
-    const installed = within(dialog).getByRole("button", { name: copy.installedStep });
-    expect(installed).toHaveAttribute("aria-expanded", "false");
-    expect(within(dialog).getByText(installCommand)).not.toBeVisible();
-    fireEvent.click(installed);
-    expect(installed).toHaveAttribute("aria-expanded", "true");
-    expect(within(dialog).getByText(installCommand)).toBeVisible();
-    expect(note).toHaveClass("text-muted-foreground");
-    expect(note.closest('[role="alert"]')).toBeNull();
-    expect(within(dialog).getByText(copy.connectedTitle)).toBeVisible();
-    expect(within(dialog).queryByRole("button", { name: copy.generate })).toBeNull();
-    expect(operations()).not.toContain("send");
-  });
+  it.each(locales)(
+    "connects an unverified version without a standing note in %s",
+    async (locale) => {
+      state.session.live = { ...state.session.live!, executionMode: "claude-follower" };
+      state.request.mockResolvedValue(
+        bridgeStatus({
+          connected: true,
+          bridgeCompatibility: { cliVersion: "2.1.307", status: "unverified" },
+        }),
+      );
+      const { dialog, copy } = await openDialog(locale);
+      // A feature that really depends on the version says so where it is used.
+      expect(dialog.querySelector("[data-terminal-compatibility]")).toBeNull();
+      expect(within(dialog).queryByText(/2\.1\.307/)).toBeNull();
+      const installed = within(dialog).getByRole("button", { name: copy.installedStep });
+      expect(installed).toHaveAttribute("aria-expanded", "false");
+      expect(within(dialog).getByText(installCommand)).not.toBeVisible();
+      fireEvent.click(installed);
+      expect(installed).toHaveAttribute("aria-expanded", "true");
+      expect(within(dialog).getByText(installCommand)).toBeVisible();
+      expect(within(dialog).queryByRole("alert")).toBeNull();
+      expect(within(dialog).getByText(copy.connectedTitle)).toBeVisible();
+      expect(within(dialog).queryByRole("button", { name: copy.generate })).toBeNull();
+      expect(operations()).not.toContain("send");
+    },
+  );
 
   it("accepts explicit cleared compatibility metadata without reviving an old version note", async () => {
     state.session.live = { ...state.session.live!, executionMode: "claude-follower" };

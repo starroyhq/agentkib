@@ -144,6 +144,13 @@ const DSH_BRIDGE_OPERATIONS = new Set<string>([
   "archive",
   "unarchive",
   "fork",
+  "goal-set",
+  "goal-pause",
+  "goal-resume",
+  "goal-clear",
+  "compact",
+  "subagents",
+  "subagent-events",
 ]);
 const HANDOFF_TASK_METHODS = new Set<string>([
   RUNTIME_METHODS.prepareSessionHandoff,

@@ -48,6 +48,10 @@ const zh = {
   mode: "协作模式",
   default: "这台电脑默认",
   plan: "计划",
+  planOn: "计划模式已开启，按下关闭",
+  planOnTitle: "计划模式已开启 — 点击关闭",
+  planExitFailed: "退出计划模式失败",
+  planPlaceholder: "描述你的任务以生成计划…",
   normal: "执行",
   apply: "应用到下一轮",
   attachment: "添加附件",
@@ -84,6 +88,7 @@ const zh = {
   contextUnknown: "这台电脑尚未提供上下文窗口用量",
   settingUnavailable: "此会话暂不支持修改该设置",
   settingsWhileRunning: "当前轮次结束后才能修改设置",
+  settingsWhileRunningModel: "当前轮次结束后才能修改模型和推理强度",
   settingsSaved: "设置已由这台电脑确认",
   goals: "持续目标",
   goalObjective: "目标内容",
@@ -97,6 +102,7 @@ const zh = {
   goalStatus: "状态",
   goalUsage: "消耗",
   goalElapsed: "运行时间",
+  goalRounds: "轮次",
   addContext: "添加上下文",
   uploadFromPhone: "选择附件文件",
   computerFiles: "电脑文件与文件夹",
@@ -158,6 +164,10 @@ export const codexCopy: Record<Locale, Copy> = {
     mode: "協作模式",
     default: "這台電腦預設",
     plan: "計畫",
+    planOn: "計畫模式已開啟，按下關閉",
+    planOnTitle: "計畫模式已開啟 — 點擊關閉",
+    planExitFailed: "退出計畫模式失敗",
+    planPlaceholder: "描述你的任務以產生計畫…",
     normal: "執行",
     apply: "套用至下一輪",
     attachment: "新增附件",
@@ -193,6 +203,7 @@ export const codexCopy: Record<Locale, Copy> = {
     contextUnknown: "這台電腦尚未提供上下文視窗用量",
     settingUnavailable: "此對話暫不支援修改此設定",
     settingsWhileRunning: "目前輪次結束後才能修改設定",
+    settingsWhileRunningModel: "目前輪次結束後才能修改模型和推理強度",
     settingsSaved: "設定已由這台電腦確認",
     goals: "持續目標",
     goalObjective: "目標內容",
@@ -206,6 +217,7 @@ export const codexCopy: Record<Locale, Copy> = {
     goalStatus: "狀態",
     goalUsage: "用量",
     goalElapsed: "執行時間",
+    goalRounds: "輪次",
     addContext: "新增上下文",
     uploadFromPhone: "選取附件檔案",
     computerFiles: "電腦檔案與資料夾",
@@ -268,6 +280,10 @@ export const codexCopy: Record<Locale, Copy> = {
     mode: "Collaboration mode",
     default: "Computer default",
     plan: "Plan",
+    planOn: "Plan mode on, press to turn off",
+    planOnTitle: "Plan mode on — click to turn off",
+    planExitFailed: "Could not leave Plan mode",
+    planPlaceholder: "Describe your task to make a plan…",
     normal: "Execute",
     apply: "Apply to next turn",
     attachment: "Add attachments",
@@ -305,6 +321,8 @@ export const codexCopy: Record<Locale, Copy> = {
     contextUnknown: "The computer has not reported context-window usage",
     settingUnavailable: "This session cannot change this setting",
     settingsWhileRunning: "Settings can be changed after the current turn finishes",
+    settingsWhileRunningModel:
+      "The model and reasoning effort can be changed after the current turn finishes",
     settingsSaved: "The computer confirmed these settings",
     goals: "Persistent goal",
     goalObjective: "Objective",
@@ -318,6 +336,7 @@ export const codexCopy: Record<Locale, Copy> = {
     goalStatus: "Status",
     goalUsage: "Usage",
     goalElapsed: "Elapsed time",
+    goalRounds: "Rounds",
     addContext: "Add context",
     uploadFromPhone: "Choose attachment files",
     computerFiles: "Computer files and folders",
@@ -381,6 +400,10 @@ export const codexCopy: Record<Locale, Copy> = {
     mode: "協調モード",
     default: "このコンピューターの既定値",
     plan: "計画",
+    planOn: "計画モードはオンです。押すとオフになります",
+    planOnTitle: "計画モードはオンです — クリックでオフ",
+    planExitFailed: "計画モードを終了できませんでした",
+    planPlaceholder: "タスクを説明して計画を作成…",
     normal: "実行",
     apply: "次のターンに適用",
     attachment: "添付ファイルを追加",
@@ -417,6 +440,7 @@ export const codexCopy: Record<Locale, Copy> = {
     contextUnknown: "このコンピューターからコンテキストウィンドウの使用量が提供されていません",
     settingUnavailable: "この会話ではこの設定を変更できません",
     settingsWhileRunning: "現在のターンが終了してから設定を変更できます",
+    settingsWhileRunningModel: "モデルと推論の強度は現在のターンが終了してから変更できます",
     settingsSaved: "このコンピューターが設定を確認しました",
     goals: "継続目標",
     goalObjective: "目標",
@@ -430,6 +454,7 @@ export const codexCopy: Record<Locale, Copy> = {
     goalStatus: "状態",
     goalUsage: "使用量",
     goalElapsed: "経過時間",
+    goalRounds: "ラウンド",
     addContext: "コンテキストを追加",
     uploadFromPhone: "添付ファイルを選択",
     computerFiles: "コンピューターのファイルとフォルダー",
@@ -493,6 +518,20 @@ const reasons: Record<Locale, Record<string, string>> = {
       "有多个 DeepSeek Harness 在运行，无法确定用哪一个。请直接在要用的那个里新建会话，它会出现在这里。",
     "dsh-session-controller-unavailable": "这个 DeepSeek Harness 配置只能查看，不能从这里发送。",
     "dsh-attachments-unavailable": "这个版本的 DeepSeek Harness 不能从这里接收图片。",
+    "goal-changed": "目标已在别处改动，本次操作尚未执行。请查看最新目标后再试。",
+    "goal-action-unavailable": "目标当前的状态不能这样操作。",
+    "goal-rounds-exhausted": "目标的轮次已经用完，不能继续。",
+    "goal-token-budget-unavailable": "这个 Agent 按轮次限制目标，不支持 token 预算。",
+    "dsh-goal-unavailable": "暂时读不到 DeepSeek Harness 的目标，请稍后再试。",
+    "dsh-permissions-unavailable": "暂时读不到 DeepSeek Harness 的权限预设，请稍后再试。",
+    "dsh-command-window-only":
+      "这个命令只能在 DeepSeek Harness 自己的窗口里使用，本次消息尚未发送。",
+    "dsh-command-attachments":
+      "DeepSeek Harness 的命令不接收附件，本次消息尚未发送。去掉附件后再发送。",
+    "dsh-command-full-access":
+      "这个命令需要完整授权，本次消息尚未发送。请使用新的完整授权码连接后再试。",
+    "dsh-command-unavailable": "DeepSeek Harness 已没有这个命令，本次消息尚未发送。",
+    "dsh-command-failed": "DeepSeek Harness 没有完成这项操作，原因见会话记录。",
     "model-images-unsupported":
       "当前模型不支持图片，本次消息尚未发送。换用支持图片的模型，或去掉图片后再发送。",
     "attachment-invalid": "图片的格式、尺寸或大小不符合 Agent 的要求，本次消息尚未发送。",
@@ -606,6 +645,20 @@ const reasons: Record<Locale, Record<string, string>> = {
       "有多個 DeepSeek Harness 正在執行，無法確定要用哪一個。請直接在要用的那個裡新建對話，它會出現在這裡。",
     "dsh-session-controller-unavailable": "這個 DeepSeek Harness 設定只能檢視，不能從這裡傳送。",
     "dsh-attachments-unavailable": "這個版本的 DeepSeek Harness 不能從這裡接收圖片。",
+    "goal-changed": "目標已在別處變更，本次操作尚未執行。請查看最新目標後再試。",
+    "goal-action-unavailable": "目標目前的狀態不能這樣操作。",
+    "goal-rounds-exhausted": "目標的輪次已經用完，不能繼續。",
+    "goal-token-budget-unavailable": "這個 Agent 按輪次限制目標，不支援 token 預算。",
+    "dsh-goal-unavailable": "暫時讀不到 DeepSeek Harness 的目標，請稍後再試。",
+    "dsh-permissions-unavailable": "暫時讀不到 DeepSeek Harness 的權限預設，請稍後再試。",
+    "dsh-command-window-only":
+      "這個指令只能在 DeepSeek Harness 自己的視窗裡使用，本次訊息尚未傳送。",
+    "dsh-command-attachments":
+      "DeepSeek Harness 的指令不接收附件，本次訊息尚未傳送。移除附件後再傳送。",
+    "dsh-command-full-access":
+      "這個指令需要完整授權，本次訊息尚未傳送。請使用新的完整授權碼連線後再試。",
+    "dsh-command-unavailable": "DeepSeek Harness 已沒有這個指令，本次訊息尚未傳送。",
+    "dsh-command-failed": "DeepSeek Harness 沒有完成這項操作，原因見對話記錄。",
     "model-images-unsupported":
       "目前模型不支援圖片，本次訊息尚未傳送。請改用支援圖片的模型，或移除圖片後再傳送。",
     "attachment-invalid": "圖片的格式、尺寸或大小不符合 Agent 的要求，本次訊息尚未傳送。",
@@ -725,6 +778,24 @@ const reasons: Record<Locale, Record<string, string>> = {
     "dsh-session-controller-unavailable":
       "This DeepSeek Harness profile can be viewed but cannot take messages from here.",
     "dsh-attachments-unavailable": "This DeepSeek Harness version cannot take images from here.",
+    "goal-changed":
+      "The goal changed elsewhere, so nothing was done. Check the current goal and try again.",
+    "goal-action-unavailable": "The goal's current state does not allow this.",
+    "goal-rounds-exhausted": "The goal has used all its rounds and cannot continue.",
+    "goal-token-budget-unavailable":
+      "This agent limits a goal by rounds and takes no token budget.",
+    "dsh-goal-unavailable": "DeepSeek Harness's goal cannot be read right now. Try again shortly.",
+    "dsh-permissions-unavailable":
+      "DeepSeek Harness's permission presets cannot be read right now. Try again shortly.",
+    "dsh-command-window-only":
+      "This command only works in DeepSeek Harness's own window, so the message was not sent.",
+    "dsh-command-attachments":
+      "DeepSeek Harness commands take no attachments, so the message was not sent. Remove the attachments and send again.",
+    "dsh-command-full-access":
+      "This command needs full access, so the message was not sent. Reconnect with a new full-access code to use it.",
+    "dsh-command-unavailable":
+      "DeepSeek Harness no longer has this command, so the message was not sent.",
+    "dsh-command-failed": "DeepSeek Harness did not complete this; the conversation shows why.",
     "model-images-unsupported":
       "The current model does not take images, so the message was not sent. Switch to a model that does, or remove the images.",
     "attachment-invalid":
@@ -856,6 +927,26 @@ const reasons: Record<Locale, Record<string, string>> = {
       "この DeepSeek Harness プロファイルは表示のみで、ここからは送信できません。",
     "dsh-attachments-unavailable":
       "このバージョンの DeepSeek Harness はここから画像を受け取れません。",
+    "goal-changed":
+      "目標が別の場所で変更されたため、この操作は実行されていません。最新の目標を確認してからもう一度お試しください。",
+    "goal-action-unavailable": "目標の現在の状態ではこの操作はできません。",
+    "goal-rounds-exhausted": "目標のラウンドを使い切ったため、続行できません。",
+    "goal-token-budget-unavailable":
+      "このエージェントは目標をラウンド数で制限するため、トークン予算は使えません。",
+    "dsh-goal-unavailable":
+      "DeepSeek Harness の目標を現在読み取れません。しばらくしてからお試しください。",
+    "dsh-permissions-unavailable":
+      "DeepSeek Harness の権限プリセットを現在読み取れません。しばらくしてからお試しください。",
+    "dsh-command-window-only":
+      "このコマンドは DeepSeek Harness 自身のウィンドウでのみ使えるため、メッセージは送信されていません。",
+    "dsh-command-attachments":
+      "DeepSeek Harness のコマンドは添付ファイルを受け付けないため、メッセージは送信されていません。添付を外してから送信してください。",
+    "dsh-command-full-access":
+      "このコマンドにはフルアクセスが必要なため、メッセージは送信されていません。新しいフルアクセスコードで再接続してください。",
+    "dsh-command-unavailable":
+      "DeepSeek Harness にこのコマンドがなくなったため、メッセージは送信されていません。",
+    "dsh-command-failed":
+      "DeepSeek Harness はこの操作を完了しませんでした。理由は会話に表示されています。",
     "model-images-unsupported":
       "現在のモデルは画像に対応していないため、メッセージは送信されていません。画像に対応したモデルに切り替えるか、画像を外してから送信してください。",
     "attachment-invalid":

@@ -988,25 +988,25 @@ describe("desktop embedded conversation", () => {
           },
           locale,
         );
-        const text = claudeConnectionCopy[locale].unverifiedVersion.replace("{version}", "2.1.307");
+        // No version note anywhere on the session page.
         expect(
           await screen.findByText(sessionContinuationCopy(locale).terminalWatch),
         ).toBeVisible();
-        expect(screen.queryByText(text)).toBeNull();
+        expect(screen.queryByText(/2\.1\.307/)).toBeNull();
         expect(document.querySelector("[data-terminal-compatibility]")).toBeNull();
         expect(screen.queryByRole("textbox")).toBeNull();
         expect(
           vi.mocked(bridge.request).mock.calls.filter(([path]) => path === "send"),
         ).toHaveLength(0);
         patch({ bridgeCompatibility: null });
-        await waitFor(() => expect(screen.queryByText(text)).toBeNull());
+        await waitFor(() => expect(screen.queryByText(/2\.1\.307/)).toBeNull());
         patch({ bridgeCompatibility: { cliVersion: "2.1.301", status: "verified" } });
-        await waitFor(() => expect(screen.queryByText(text)).toBeNull());
+        await waitFor(() => expect(screen.queryByText(/2\.1\.30[17]/)).toBeNull());
         patch({
           executionMode: "claude-managed",
           bridgeCompatibility: { cliVersion: "2.1.307", status: "unverified" },
         });
-        expect(screen.queryByText(text)).toBeNull();
+        expect(screen.queryByText(/2\.1\.307/)).toBeNull();
       },
     );
 

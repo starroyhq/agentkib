@@ -8,16 +8,22 @@ import { createRequire } from "node:module";
 import path from "node:path";
 import { DSH_BRIDGE_COMPATIBILITY } from "./compatibility.js";
 import { BridgeHttpError, discover, discoveryRoots, post } from "./client.js";
+import { DSH_COMMAND_LINE, DSH_HIDDEN_COMMANDS, dshCommandRefusal } from "./commands.js";
 import {
   MAX_PREVIEW,
   MAX_STREAM,
   bounded,
+  commandEntries,
+  goalFromProjection,
+  goalView,
   historyRecord,
   isHumanMessage,
   modelsProjection,
+  permissionOptions,
   queueItems,
   questionItems,
   sessionSummary,
+  subagentEntry,
 } from "./projection.js";
 
 export const DSH_BRIDGE_PATHS = Object.freeze({
@@ -39,6 +45,20 @@ const MAX_ATTACHMENT_BYTES = 25 * 1024 * 1024;
 // A bridge message carries at most 8 MiB; DSH stores images at about 4 MiB.
 const MAX_IMAGE_READ_CHARS = 7 * 1024 * 1024;
 const IMAGE_TYPES = new Set(["image/png", "image/jpeg", "image/webp", "image/gif"]);
+// A slash command answers within this time or keeps running (a compaction calls the model); its
+// outcome is in the session's history either way. AgentKib's Host answers no reads while it
+// waits for a control, so the wait stays short; DSH's own commands answer in milliseconds.
+const COMMAND_WAIT_MS = 2_000;
+const MAX_SUBAGENTS = 50;
+// Session events that change what a session's settings show: its permission preset, and its plan
+// mode, which a `/plan` switches once its command settles.
+const SETTINGS_EVENTS = new Set([
+  "permission/preset",
+  "sandbox/mode",
+  "approval/policy",
+  "plan/mode",
+  "command/done",
+]);
 
 /**
  * One image for a prompt, read from the AgentKib attachment file. The file must still hold the
@@ -168,6 +188,16 @@ export function createBridge(ctx, options = {}) {
   let lastList = 0;
   const states = new Map();
   const historyVersions = new Map();
+  /** Sessions whose goal or permission preset changed, as history changes are reported. */
+  const goalVersions = new Map();
+  const settingsVersions = new Map();
+  /**
+   * DSH's slash commands: the ones registered for every session, and each running agent's own
+   * view, which can add commands of its own (DSH's window lists a session's commands this way).
+   */
+  let commandCatalog = [];
+  let commandsVersion = 0;
+  const agentCommands = new Map();
   const interactions = new Map();
   const derived = new WeakSet();
   /** DSH's archive set, from its workspace controller. */
@@ -198,6 +228,9 @@ export function createBridge(ctx, options = {}) {
         queue: [],
         streamText: "",
         streamTruncated: false,
+        // A compaction runs outside any turn, while DSH reports the agent idle.
+        activity: null,
+        goal: null,
         version: 0,
       };
       states.set(sessionId, state);
@@ -208,12 +241,35 @@ export function createBridge(ctx, options = {}) {
     state.version = bump();
     schedule();
   };
+  /**
+   * Which goal a change must name. It is part of what a control is decided on, so a goal changed
+   * in DSH's own window makes AgentKib read it again before changing it.
+   */
+  const goalRefOf = (agent) => {
+    try {
+      const view = goalView(service("goals")?.get?.(agent));
+      return view
+        ? { id: view.id, revision: view.revision, phase: view.phase, activation: view.activation }
+        : null;
+    } catch {
+      return null;
+    }
+  };
+  const refreshGoal = (agent) => {
+    const state = stateOf(String(agent.id));
+    const goal = goalRefOf(agent);
+    goalVersions.set(state.sessionId, bump());
+    if (JSON.stringify(goal) === JSON.stringify(state.goal)) return schedule();
+    state.goal = goal;
+    touch(state);
+  };
   const attach = (agent) => {
     const state = stateOf(String(agent.id));
     state.live = true;
     state.status = agent.status === "running" ? "running" : "idle";
     state.cursor = typeof agent.session?.seq === "number" ? agent.session.seq - 1 : state.cursor;
     state.queue = queueItems(agent);
+    state.goal = goalRefOf(agent);
     touch(state);
   };
   const detach = (agent) => {
@@ -225,6 +281,8 @@ export function createBridge(ctx, options = {}) {
       queue: [],
       streamText: "",
       streamTruncated: false,
+      activity: null,
+      goal: null,
     });
     touch(state);
   };
@@ -282,6 +340,8 @@ export function createBridge(ctx, options = {}) {
         state.streamText = "";
         state.streamTruncated = false;
       }
+      if (event?.type === "compaction/start") state.activity = "compacting";
+      if (event?.type === "compaction/end") state.activity = null;
       // Inbox events can fire before the claimed message leaves the inbox; turn edges settle it.
       if (
         event?.type === "turn/start" ||
@@ -297,10 +357,60 @@ export function createBridge(ctx, options = {}) {
       historyVersions.set(sessionId, bump());
       schedule();
     }
+    if (event?.type === "goal/change") {
+      const agent = service("agents")?.get?.(sessionId);
+      if (agent) refreshGoal(agent);
+      else {
+        goalVersions.set(sessionId, bump());
+        schedule();
+      }
+    }
+    if (SETTINGS_EVENTS.has(event?.type)) {
+      settingsVersions.set(sessionId, bump());
+      schedule();
+    }
     if (event?.type === "session/title" || event?.type === "turn/end") refreshList();
   });
   ctx.on("session/created", () => refreshList());
   ctx.on("session/disposed", () => refreshList());
+  // Whether DSH continues a goal by itself lives only in this process, outside the session log.
+  ctx.on("goal/activation-changed", (payload) => {
+    const agent = service("agents")?.get?.(String(payload?.sessionId ?? ""));
+    if (agent) refreshGoal(agent);
+  });
+  /** Lists the commands again; every report does, so a registration DSH made later shows up. */
+  function refreshCommands() {
+    const commands = service("commands");
+    if (typeof commands?.list !== "function") return;
+    try {
+      // A session that is not running has no agent: it gets the commands of every session.
+      const next = commandEntries(commands.list(undefined));
+      if (JSON.stringify(next) !== JSON.stringify(commandCatalog)) {
+        commandCatalog = next;
+        commandsVersion = bump();
+      }
+    } catch {
+      // Keep the previous catalog; the next report lists again.
+    }
+    const live = new Set();
+    for (const agent of service("agents")?.list?.() ?? []) {
+      const sessionId = String(agent.id);
+      live.add(sessionId);
+      try {
+        const entries = commandEntries(commands.list(agent));
+        const known = agentCommands.get(sessionId);
+        if (!known || JSON.stringify(known.entries) !== JSON.stringify(entries))
+          agentCommands.set(sessionId, { entries, version: bump() });
+      } catch {
+        // This agent is going away; the next report drops it.
+      }
+    }
+    // An agent that went away is reported once without commands, so AgentKib drops its list.
+    for (const [sessionId, known] of agentCommands)
+      if (!live.has(sessionId) && known.entries !== null)
+        agentCommands.set(sessionId, { entries: null, version: bump() });
+  }
+  ctx.on("commands/change", () => schedule());
 
   // ---- session list -----------------------------------------------------------------------
 
@@ -571,13 +681,38 @@ export function createBridge(ctx, options = {}) {
     const observation = await query.observeSession(String(sessionId), { projectionMode: "none" });
     try {
       const events = observation.events;
+      // A command's answer names only its run, so the runs to leave out are found first. One that
+      // failed stays: the conversation is the only place its reason shows.
+      const runs = new Set(
+        events
+          .filter(
+            (event) =>
+              event?.type === "command/run" && DSH_HIDDEN_COMMANDS.includes(event.data?.name),
+          )
+          .map((event) => String(event.data.commandId)),
+      );
+      const hidden = new Set(
+        events
+          .filter(
+            (event) =>
+              event?.type === "command/done" &&
+              event.data?.kind === "success" &&
+              runs.has(String(event.data.commandId)),
+          )
+          .map((event) => String(event.data.commandId)),
+      );
+      const recordOf = (event) =>
+        (event?.type === "command/run" || event?.type === "command/done") &&
+        hidden.has(String(event.data?.commandId))
+          ? null
+          : historyRecord(event);
       const records = [];
       let bytes = 0;
       let index = events.length - 1;
       if (Number.isSafeInteger(before)) while (index >= 0 && events[index].seq >= before) index--;
       const max = Math.min(Math.max(Number(limit) || 50, 1), 100);
       for (; index >= 0 && records.length < max; index--) {
-        const record = historyRecord(events[index]);
+        const record = recordOf(events[index]);
         if (!record) continue;
         bytes += JSON.stringify(record).length;
         if (records.length && bytes > HISTORY_PAGE_BYTES) break;
@@ -585,7 +720,7 @@ export function createBridge(ctx, options = {}) {
       }
       let older = false;
       for (let rest = index; rest >= 0; rest--)
-        if (historyRecord(events[rest])) {
+        if (recordOf(events[rest])) {
           older = true;
           break;
         }
@@ -605,7 +740,105 @@ export function createBridge(ctx, options = {}) {
   // Prompts DSH is still taking (a cold session resumes first). Until one finishes, its message
   // may be missing from the record without having been lost.
   const promptsInFlight = new Set();
+  // Slash commands this plugin ran, by AgentKib request: DSH records a command under an ID of its
+  // own, so this is the only trace of the request. It is gone once DSH restarts.
+  const commandRequests = new Map();
+  /** The session's agent; DSH resumes one that is not running, as its own window does. */
+  async function agentFor(sessionId) {
+    const controller = service("sessionController");
+    if (typeof controller?.resolveAgent !== "function")
+      throw new Error("session-controller-unavailable");
+    const found = await controller.resolveAgent(sessionId);
+    if (found?.error) throw found.error;
+    if (!found?.agent) throw new Error("session-unavailable");
+    return found.agent;
+  }
+  async function projections(sessionId) {
+    const controller = service("sessionController");
+    if (typeof controller?.projections !== "function") throw new Error("projections-unavailable");
+    const value = await controller.projections({ sessionId }, lifetime.signal);
+    return value?.values ?? {};
+  }
+  // How a subagent that is not running ended. Reading it can mean reading the child's whole log,
+  // and AgentKib asks every few seconds, so it is read again only once the child has changed.
+  const endings = new Map();
+  async function settledStatus(sessionId, updatedAt) {
+    const known = endings.get(sessionId);
+    if (known && known.updatedAt === updatedAt) return known.status;
+    let status = "unknown";
+    try {
+      const timing = (await projections(sessionId)).subagentTiming;
+      status = timing?.active
+        ? "running"
+        : timing?.lastTurnCompleted === true
+          ? "completed"
+          : timing?.lastTurnCompleted === false
+            ? "stopped"
+            : "unknown";
+    } catch {
+      return "unknown";
+    }
+    if (status !== "running") {
+      endings.set(sessionId, { updatedAt, status });
+      if (endings.size > 512) endings.delete(endings.keys().next().value);
+    }
+    return status;
+  }
+  /** Runs one command line in DSH's command registry, as DSH's own window does. */
+  async function runCommand(agent, requestId, line) {
+    const commands = service("commands");
+    const record = { done: false };
+    commandRequests.set(requestId, record);
+    if (commandRequests.size > 256) commandRequests.delete(commandRequests.keys().next().value);
+    // The command outlives this request, as it does when DSH's own window runs it.
+    const execution = Promise.resolve()
+      .then(() => commands.execute(agent, line, [], lifetime.signal))
+      .finally(() => {
+        record.done = true;
+      });
+    const settled = await Promise.race([
+      execution.then((value) => ({ value })),
+      sleep(options.commandWaitMs ?? COMMAND_WAIT_MS, lifetime.signal).then(() => null),
+    ]);
+    if (!settled) {
+      execution.catch(() => undefined);
+      return { matched: true, running: true };
+    }
+    if (!settled.value) {
+      commandRequests.delete(requestId);
+      return { matched: false };
+    }
+    const result = settled.value.result;
+    return {
+      matched: true,
+      running: false,
+      ok: result?.kind === "success",
+      text: typeof result?.text === "string" ? bounded(result.text, MAX_PREVIEW).text : null,
+    };
+  }
+  /**
+   * A message naming one of the session's commands runs as that command, as in DSH's own window:
+   * DSH's registry for the session's agent decides, also for a session DSH resumes for it. Null
+   * for any other message. AgentKib says whether the device has full access.
+   */
+  async function slashCommand(command) {
+    const parts = Array.isArray(command.content) ? command.content : [];
+    const line = parts[0]?.type === "text" ? parts[0].text : "";
+    const name = DSH_COMMAND_LINE.exec(line)?.[1];
+    const commands = service("commands");
+    if (!name || typeof commands?.find !== "function") return null;
+    const agent = await agentFor(String(command.sessionId));
+    if (!commands.find(agent, name)) return null;
+    const refusal = dshCommandRefusal(name, {
+      fullAccess: command.fullAccess === true,
+      attachments: parts.length > 1,
+    });
+    if (refusal) throw new Error(refusal);
+    return { command: name, ...(await runCommand(agent, String(command.requestId), line)) };
+  }
   async function present({ sessionId, requestId }) {
+    const command = commandRequests.get(String(requestId));
+    if (command) return { present: true, live: true, inFlight: !command.done };
     const inFlight = promptsInFlight.has(String(requestId));
     const agent = service("agents")?.get?.(String(sessionId));
     const matches = (message) => isHumanMessage(message) && message.source?.rpcId === requestId;
@@ -639,6 +872,8 @@ export function createBridge(ctx, options = {}) {
       case "prompt": {
         const requestId = String(command.requestId);
         const controller = needController();
+        const slash = await slashCommand(command);
+        if (slash) return slash;
         // Read before DSH is asked: an attachment that changed fails the prompt here.
         const content = await promptContent(command.content);
         promptsInFlight.add(requestId);
@@ -733,6 +968,91 @@ export function createBridge(ctx, options = {}) {
         });
         return { selected: value?.selected ?? null };
       }
+      case "goal": {
+        const sessionId = String(command.sessionId);
+        const goals = service("goals");
+        const agent = service("agents")?.get?.(sessionId);
+        // A running session answers with whether this DSH continues the goal by itself; one that
+        // is not running is read without resuming it, and DSH would resume it disarmed.
+        if (agent && typeof goals?.get === "function")
+          return { goal: goalView(goals.get(agent)), live: true };
+        return { goal: goalFromProjection((await projections(sessionId)).goal), live: false };
+      }
+      case "goal-control": {
+        const goals = service("goals");
+        if (typeof goals?.get !== "function") throw new Error("goals-unavailable");
+        const agent = await agentFor(String(command.sessionId));
+        const current = goalView(goals.get(agent));
+        // The goal AgentKib showed; DSH refuses the change once its own revision moved on.
+        const ref =
+          typeof command.goalId === "string" && Number.isSafeInteger(command.goalRevision)
+            ? { id: command.goalId, revision: command.goalRevision }
+            : current && { id: current.id, revision: current.revision };
+        const objective = typeof command.objective === "string" ? command.objective : "";
+        if (command.action !== "set" && !ref) throw new Error("GOAL_NOT_FOUND");
+        switch (command.action) {
+          case "set":
+            // As DSH's own `/goal edit` does: a finished goal is replaced, any other one edited.
+            if (!current || current.phase === "complete") goals.create(agent, { objective });
+            else goals.edit(agent, ref, { objective });
+            break;
+          case "pause":
+            goals.pause(agent, ref);
+            break;
+          case "resume":
+            goals.resume(agent, ref);
+            break;
+          case "clear":
+            goals.clear(agent, ref);
+            break;
+          default:
+            throw new Error("invalid-goal-action");
+        }
+        return { goal: goalView(goals.get(agent)) };
+      }
+      case "command":
+        if (typeof service("commands")?.execute !== "function")
+          throw new Error("commands-unavailable");
+        return runCommand(
+          await agentFor(String(command.sessionId)),
+          String(command.requestId),
+          String(command.line),
+        );
+      case "permissions": {
+        const presets = service("permissionPresets");
+        if (typeof presets?.catalog !== "function") throw new Error("permissions-unavailable");
+        const values = await projections(String(command.sessionId));
+        const current = values.permissions?.currentValue;
+        // DSH's plan mode, which its composer shows beside the preset.
+        const plan = values.plan;
+        return {
+          options: permissionOptions(presets.catalog()),
+          current: typeof current === "string" ? current : null,
+          plan:
+            typeof plan?.active === "boolean" && typeof plan?.pending === "boolean"
+              ? { active: plan.active, pending: plan.pending }
+              : null,
+        };
+      }
+      case "subagents": {
+        const catalog = (await projections(String(command.sessionId))).subagentCatalog;
+        const entries = (Array.isArray(catalog) ? catalog : [])
+          .slice(-MAX_SUBAGENTS)
+          .map(subagentEntry)
+          .filter(Boolean);
+        const rows = new Map(summaries.map((row) => [row.sessionId, row]));
+        return {
+          agents: await Promise.all(
+            entries.map(async (entry) => {
+              const row = rows.get(entry.sessionId);
+              if (row?.running || states.get(entry.sessionId)?.status === "running")
+                return { ...entry, status: "running" };
+              return { ...entry, status: await settledStatus(entry.sessionId, row?.updatedAt) };
+            }),
+          ),
+          truncated: Array.isArray(catalog) && catalog.length > MAX_SUBAGENTS,
+        };
+      }
       case "answer": {
         const interaction = interactions.get(String(command.interactionId));
         if (!interaction) return { found: false };
@@ -751,21 +1071,37 @@ export function createBridge(ctx, options = {}) {
 
   // ---- hosts ------------------------------------------------------------------------------
 
-  const services = () => ({
-    sessionController: typeof service("sessionController")?.prompt === "function",
-    sessionQuery: typeof service("sessionQuery")?.observeSession === "function",
-    approvals: true,
-    questions: typeof service("userQuestions")?.ask === "function",
-    workspaceController: typeof service("workspaceController")?.archiveSession === "function",
-    modelCatalog: typeof service("sessionController")?.modelCatalog === "function",
-    images: typeof service("sessionController")?.attachment === "function",
-  });
+  const services = () => {
+    const controller = service("sessionController");
+    // Goals and commands act on the session's agent, which this resolves (resuming it).
+    const resolves = typeof controller?.resolveAgent === "function";
+    const projects = typeof controller?.projections === "function";
+    return {
+      sessionController: typeof controller?.prompt === "function",
+      sessionQuery: typeof service("sessionQuery")?.observeSession === "function",
+      approvals: true,
+      questions: typeof service("userQuestions")?.ask === "function",
+      workspaceController: typeof service("workspaceController")?.archiveSession === "function",
+      modelCatalog: typeof controller?.modelCatalog === "function",
+      images: typeof controller?.attachment === "function",
+      goals: resolves && projects && typeof service("goals")?.get === "function",
+      commands: resolves && typeof service("commands")?.execute === "function",
+      permissions: projects && typeof service("permissionPresets")?.catalog === "function",
+      subagents: projects,
+    };
+  };
   function report(host) {
+    refreshCommands();
     const since = host.acked;
     const at = version;
     // Services can finish starting after registration, so every report restates them.
     const body = { token: host.token, services: services() };
     if (listVersion > since) body.sessions = summaries;
+    if (commandsVersion > since) body.commands = commandCatalog;
+    const sessionCommands = [...agentCommands]
+      .filter(([, known]) => known.version > since)
+      .map(([sessionId, known]) => ({ sessionId, commands: known.entries }));
+    if (sessionCommands.length) body.sessionCommands = sessionCommands;
     const changed = [...states.values()].filter((state) => state.version > since);
     if (changed.length)
       body.states = changed.map(({ version: _version, ...state }) => ({
@@ -774,10 +1110,14 @@ export function createBridge(ctx, options = {}) {
           .length,
       }));
     if (interactionsVersion > since) body.interactions = openInteractions();
-    const historyChanged = [...historyVersions]
-      .filter(([, value]) => value > since)
-      .map(([id]) => id);
+    const changedSince = (versions) =>
+      [...versions].filter(([, value]) => value > since).map(([id]) => id);
+    const historyChanged = changedSince(historyVersions);
     if (historyChanged.length) body.historyChanged = historyChanged;
+    const goalChanged = changedSince(goalVersions);
+    if (goalChanged.length) body.goalChanged = goalChanged;
+    const settingsChanged = changedSince(settingsVersions);
+    if (settingsChanged.length) body.settingsChanged = settingsChanged;
     return { body, at };
   }
   async function send(host) {
@@ -925,11 +1265,15 @@ export function createBridge(ctx, options = {}) {
 
   for (const agent of service("agents")?.list?.() ?? []) attach(agent);
   refreshList();
+  refreshCommands();
   // The web application's session service can start after this plugin; list again with titles.
   ctx.inject?.(["sessionController"], () => {
     refreshList();
     schedule();
   });
+  // So can the command registry, and the services behind goals and permission presets.
+  ctx.inject?.(["commands"], () => schedule());
+  for (const name of ["goals", "permissionPresets"]) ctx.inject?.([name], () => schedule());
   // The archive set lives in the workspace controller, which can also start after this plugin.
   ctx.inject?.(["workspaceController"], () => {
     void followArchive();

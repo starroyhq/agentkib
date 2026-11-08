@@ -877,6 +877,15 @@ export class WebAccessService {
   private isFullAccess(device?: WebDevice) {
     return this.options.mode !== "lan" && device?.accessMode === "full";
   }
+  /**
+   * A message naming one of DeepSeek Harness's slash commands runs as that command, decided in
+   * DSH with the session's own registry. Those that change the session's permission preset or
+   * goal, or that other DSH plugins add, need what AgentKib's own settings and goal controls
+   * need: a device with full access. DSH applies this answer (`dsh-bridge-plugin/commands.js`).
+   */
+  private dshCommandAccess(device: WebDevice): "all" | "session" {
+    return this.isFullAccess(device) ? "all" : "session";
+  }
   private fullAccess(hash: string, permission?: "advancedControl") {
     const device = this.grant(hash, permission);
     if (!this.isFullAccess(device)) throw new HttpError(403, "permission_denied");
@@ -2525,10 +2534,13 @@ export class WebAccessService {
             model.defaultEffort ?? model.default_effort,
             128,
           );
+          // The provider an agent lists the model under (DeepSeek Harness).
+          const group = this.optionalString(model.group, 256);
           return [
             {
               id,
               ...(name ? { name } : {}),
+              ...(group ? { group } : {}),
               ...(resolvedModel ? { resolvedModel } : {}),
               efforts: stringList(model.efforts),
               ...(defaultEffort ? { defaultEffort } : {}),
@@ -2687,11 +2699,18 @@ export class WebAccessService {
         ? ((capabilities as Record<string, unknown>).features as Record<string, unknown>)
         : {};
     const reason = this.optionalString(data.reason);
+    const rounds =
+      rawGoal?.rounds && typeof rawGoal.rounds === "object"
+        ? (rawGoal.rounds as Record<string, unknown>)
+        : undefined;
+    const detail = this.optionalString(rawGoal?.detail, 4096);
     return {
       available: data.available === true,
       ...(reason ? { reason } : {}),
       revision:
         Number.isSafeInteger(data.revision) && Number(data.revision) >= 0 ? data.revision : 0,
+      // DeepSeek Harness bounds a goal by rounds rather than tokens.
+      ...(data.budget === "rounds" ? { budget: "rounds" } : {}),
       ...(objective && status
         ? {
             goal: {
@@ -2708,6 +2727,11 @@ export class WebAccessService {
                 : integer(rawGoal?.timeUsedSeconds) !== undefined
                   ? { elapsedMs: integer(rawGoal?.timeUsedSeconds)! * 1000 }
                   : {}),
+              ...(integer(rounds?.used) !== undefined && integer(rounds?.limit) !== undefined
+                ? { rounds: { used: integer(rounds?.used)!, limit: integer(rounds?.limit)! } }
+                : {}),
+              // Why a blocked goal stopped, in the agent's own words.
+              ...(detail ? { detail } : {}),
             },
           }
         : {}),
@@ -3014,6 +3038,8 @@ export class WebAccessService {
       archive: "organize",
       unarchive: "organize",
       delete: "organize",
+      // As for Codex: a compaction is a turn the user starts, as a message is.
+      compact: "send",
     };
     // The command catalog serves composing messages; clients filter it per device.
     const { commands, ...rest } = data;
@@ -3241,8 +3267,9 @@ export class WebAccessService {
         ["steer", "queue-add", "queue-delete"].includes(operation);
       const claude = generic && capabilities.executionMode === "claude-managed";
       const followerFork = capabilities.executionMode === "codex-follower" && operation === "fork";
-      // A connected DeepSeek Harness takes steering and queued messages through its own inbox, and
-      // renames, archives, forks and switches models through its own session services.
+      // A connected DeepSeek Harness takes steering and queued messages through its own inbox;
+      // renames, archives, forks, switches models and presets, changes goals and compacts through
+      // its own session services and commands.
       const dsh =
         generic &&
         capabilities.executionMode === "dsh-follower" &&
@@ -3257,6 +3284,11 @@ export class WebAccessService {
           "unarchive",
           "fork",
           "settings",
+          "goal-set",
+          "goal-pause",
+          "goal-resume",
+          "goal-clear",
+          "compact",
         ].includes(operation);
       if (
         (capabilities.executionMode !== "codex-managed" &&
@@ -3322,6 +3354,9 @@ export class WebAccessService {
           if (!text.trim() && !hasAttachments) throw new HttpError(400, "invalid_text");
         }
         params.text = text;
+        // A queued edit stays a message; DSH runs only a newly sent line as a command.
+        if (dsh && operation !== "queue-update")
+          params.commandAccess = this.dshCommandAccess(this.grant(hash, permission));
         if (hasAttachments) {
           this.grant(hash, "attachments");
           const format = ATTACHMENT_FORMATS[capabilities.executionMode ?? ""];
@@ -5262,6 +5297,8 @@ export class WebAccessService {
           )
             throw new HttpError(400, "invalid_text");
         }
+        if (operation === "send" && snapshotField(snapshot, "executionMode") === "dsh-follower")
+          params.commandAccess = this.dshCommandAccess(this.grant(hash, permission));
         if (operation === "send" && body.attachmentIds !== undefined) {
           const device = this.grant(hash, "attachments");
           await this.codexScope(sessionId, hash, true, false);
@@ -5863,7 +5900,7 @@ export class WebAccessService {
         const parent = catalog.sessions?.find(
           (entry) =>
             entry.id === parentId &&
-            ["codex", "claude-code"].includes(entry.agent) &&
+            ["codex", "claude-code", "deepseek-harness"].includes(entry.agent) &&
             !["auxiliary", "execution"].includes(entry.origin ?? "") &&
             entry.sidechain !== true,
         );

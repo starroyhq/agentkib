@@ -18,8 +18,10 @@ import {
   DSH_BRIDGE_PATHS,
   DSH_BRIDGE_PLUGIN_VERSION,
   dshBridgeCompatibility,
+  type DshBridgeAgentPreset,
   type DshBridgeCommand,
   type DshBridgeCommandEntry,
+  type DshBridgeDocumentRecord,
   type DshBridgeHistoryPage,
   type DshBridgeHistoryRecord,
   type DshBridgeInteraction,
@@ -37,9 +39,12 @@ import {
   readUnknownManagedCommands,
   replayManagedCommand,
 } from "./managed-ledger";
+import { dshSessionDocument, type DshDocumentImage } from "./dsh-document";
 import { sanitizeSessionText } from "./session-handoff";
+import type { DocumentSource } from "./session-document-providers";
 import type { ConversationEvent, ConversationEventPage } from "./session-events";
 import { decodedSessionImage, sessionImageResult } from "./session-images";
+import type { DocumentOptions, SessionDocument } from "./session-model";
 import type { NativeSession } from "./session-store";
 
 const MAX_BODY = 8 * 1024 * 1024;
@@ -48,6 +53,8 @@ const OFFLINE_MS = 45_000;
 const DISCONNECT_GRACE_MS = 3_000;
 const POLL_MS = 20_000;
 const HISTORY_TIMEOUT_MS = 15_000;
+/** DSH lists its Agent presets from memory; the new-task form waits for them. */
+const PRESETS_TIMEOUT_MS = 5_000;
 /** History read in this run, served while no DSH can be asked. Memory only. */
 const PAGE_CACHE_CHARS = 16 * 1024 * 1024;
 /** How often a session with unconfirmed commands asks its DSH again. */
@@ -59,6 +66,14 @@ const CATALOG_LIMIT = 4096;
 const CURSOR_PREFIX = "dsh-v1:";
 export const DSH_EXECUTION_MODE = "dsh-follower";
 const LOCAL_OWNER = "agentkib-local-owner";
+/** The device a handoff's DSH session is recorded under; it is started on this computer. */
+const HANDOFF_DEVICE = "agentkib-handoff";
+/** A UUID named after a value, so a request made again for the same thing keeps its identity. */
+function namedUuid(value: string): string {
+  const hex = createHash("sha256").update(value).digest("hex");
+  const variant = ((parseInt(hex[16]!, 16) & 0x3) | 0x8).toString(16);
+  return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-5${hex.slice(13, 16)}-${variant}${hex.slice(17, 20)}-${hex.slice(20, 32)}`;
+}
 
 const uuid = z.string().uuid();
 const nativeIdSchema = z.string().min(1).max(256);
@@ -312,6 +327,8 @@ const servicesSchema = z
     commands: z.boolean().optional(),
     permissions: z.boolean().optional(),
     subagents: z.boolean().optional(),
+    documents: z.boolean().optional(),
+    agentPresets: z.boolean().optional(),
   })
   .strip();
 const registerSchema = z
@@ -392,6 +409,90 @@ const historyImageSchema = z
     attachmentId: z.string().regex(/^sha256:[a-f0-9]{64}$/),
     mediaType: z.enum(IMAGE_TYPES),
     name: z.string().max(255).nullable(),
+  })
+  .strip();
+const documentBase = {
+  seq: z.number().int().nonnegative(),
+  time: z.number().int().nonnegative().nullable(),
+  current: z.boolean(),
+  position: z.number().int().nonnegative().nullable(),
+  truncated: z.boolean(),
+};
+// The plugin's own bounds (`dsh-bridge-plugin/projection.js`).
+const documentText = z.string().max(256 * 1024);
+const documentPageSchema = z
+  .object({
+    sessionId: nativeIdSchema,
+    revision: z.number().int().nonnegative().nullable(),
+    records: z
+      .array(
+        z.discriminatedUnion("kind", [
+          z
+            .object({
+              ...documentBase,
+              kind: z.literal("user"),
+              text: documentText,
+              images: z.array(historyImageSchema).max(32),
+              files: z.number().int().nonnegative().max(1024),
+            })
+            .strip(),
+          z
+            .object({
+              ...documentBase,
+              kind: z.literal("assistant"),
+              text: documentText,
+              calls: z
+                .array(
+                  z
+                    .object({
+                      id: z.string().max(256),
+                      name: z.string().max(256),
+                      arguments: z.string().max(64 * 1024),
+                      truncated: z.boolean(),
+                    })
+                    .strip(),
+                )
+                .max(64),
+              reasoning: z.boolean(),
+            })
+            .strip(),
+          z
+            .object({
+              ...documentBase,
+              kind: z.literal("tool-result"),
+              callId: z.string().max(256),
+              isError: z.boolean(),
+              text: z.string().max(128 * 1024),
+              images: z.number().int().nonnegative().max(1024),
+            })
+            .strip(),
+          z.object({ ...documentBase, kind: z.literal("summary"), text: documentText }).strip(),
+        ]),
+      )
+      .max(100_000),
+    nextAfter: z.number().int().nonnegative().nullable(),
+  })
+  .strip();
+/** Pages of one conversation read for a handoff or search: at most 64 pages of 3 MiB. */
+const DOCUMENT_PAGE_LIMIT = 64;
+/** Images a handoff document carries inline; the rest are named as left in DSH. */
+const DOCUMENT_IMAGE_LIMIT = 32;
+const DOCUMENT_IMAGE_CHARS = 32 * 1024 * 1024;
+const presetsSchema = z
+  .object({
+    presets: z
+      .array(
+        z
+          .object({
+            id: z.string().min(1).max(128),
+            name: z.string().max(256).nullable(),
+            description: z.string().max(1024).nullable(),
+            isDefault: z.boolean(),
+            broken: z.string().max(512).nullable(),
+          })
+          .strip(),
+      )
+      .max(32),
   })
   .strip();
 const IMAGE_ID_PREFIX = "dsh-image-v1-";
@@ -957,6 +1058,101 @@ export class DshBridge {
       bytes,
       typeof value.mediaType === "string" ? value.mediaType : undefined,
     );
+  }
+  /** Whether the session is in a turn in a running DSH. */
+  running(nativeId: string): boolean {
+    return this.#state(nativeId).state?.status === "running";
+  }
+  /** Running DSHs that list this session and can read it whole. */
+  #readers(nativeId: string): Runtime[] {
+    return this.#online().filter(
+      (runtime) => runtime.services.documents === true && runtime.summaries.has(nativeId),
+    );
+  }
+  /**
+   * Whether a handoff or search can read this session now, decided without reading it. A DSH
+   * whose plugin predates 0.5.0 lists sessions but cannot read them whole.
+   */
+  documentStatus(nativeId: string): { status: "supported" | "unavailable"; reason?: string } {
+    if (this.#readers(nativeId).length) return { status: "supported" };
+    const listing = this.#online().filter((runtime) => runtime.summaries.has(nativeId));
+    return {
+      status: "unavailable",
+      reason: listing.length ? "dsh-document-unavailable" : "dsh-runtime-offline",
+    };
+  }
+  /**
+   * A session's whole conversation for a handoff or search, from a DSH that can read it. Later
+   * pages stop at the event the first one was read up to, so the pages agree with one another.
+   */
+  async conversation(
+    nativeId: string,
+  ): Promise<{ revision: number | null; records: DshBridgeDocumentRecord[] }> {
+    const preferred = this.#controlRuntime(nativeId);
+    const runtime = preferred?.services.documents === true ? preferred : this.#readers(nativeId)[0];
+    if (!runtime) throw new Error(this.documentStatus(nativeId).reason ?? "dsh-runtime-offline");
+    const records: DshBridgeDocumentRecord[] = [];
+    let after: number | undefined;
+    let through: number | undefined;
+    for (let page = 0; page < DOCUMENT_PAGE_LIMIT; page++) {
+      const result = await this.#command(
+        runtime,
+        {
+          commandId: randomUUID(),
+          type: "document",
+          sessionId: nativeId,
+          ...(after === undefined ? {} : { after }),
+          ...(through === undefined ? {} : { through }),
+        },
+        HISTORY_TIMEOUT_MS,
+      );
+      if (!result.ok)
+        throw new Error(
+          result.outcome === "timeout" ? "dsh-history-timeout" : "dsh-document-unavailable",
+        );
+      const value = documentPageSchema.safeParse(result.value);
+      if (!value.success || value.data.sessionId !== nativeId)
+        throw new Error("dsh-document-unavailable");
+      records.push(...(value.data.records as DshBridgeDocumentRecord[]));
+      through ??= value.data.revision ?? undefined;
+      if (value.data.nextAfter === null) return { revision: through ?? null, records };
+      if (after !== undefined && value.data.nextAfter <= after)
+        throw new Error("dsh-document-unavailable");
+      after = value.data.nextAfter;
+    }
+    throw new Error("dsh-document-too-large");
+  }
+  /**
+   * A session as a handoff document. The images its user messages carried are read from DSH and
+   * kept inline, up to a bound; any others are counted as left in DSH.
+   */
+  async document(
+    nativeId: string,
+    source: DocumentSource,
+    options?: DocumentOptions,
+  ): Promise<SessionDocument> {
+    const { records } = await this.conversation(nativeId);
+    const images = new Map<string, DshDocumentImage | null>();
+    let chars = 0;
+    for (const record of records) {
+      if (record.kind !== "user" || (!options?.includePreCompactionHistory && !record.current))
+        continue;
+      for (const image of record.images) {
+        if (images.has(image.attachmentId)) continue;
+        const read =
+          [...images.values()].filter(Boolean).length < DOCUMENT_IMAGE_LIMIT
+            ? await this.image(
+                nativeId,
+                `${IMAGE_ID_PREFIX}${image.attachmentId.slice("sha256:".length)}`,
+              ).catch(() => null)
+            : null;
+        if (read && chars + read.base64.length <= DOCUMENT_IMAGE_CHARS) {
+          chars += read.base64.length;
+          images.set(image.attachmentId, { mediaType: read.mimeType, base64: read.base64 });
+        } else images.set(image.attachmentId, null);
+      }
+    }
+    return dshSessionDocument(source, records, images, options);
   }
   #cachePage(key: string, page: ConversationEventPage): void {
     const previous = this.#pages.get(key);
@@ -1544,16 +1740,34 @@ export class DshBridge {
       nextCursor: null,
     };
   }
-  /** Whether a new session can start now: exactly one running DSH that can take it. */
-  createOptions(): { available: boolean; reason?: string } {
+  /**
+   * Whether a new session can start now: exactly one running DSH that can take it. That DSH's
+   * Agent presets come with it when it lists them; without them a session runs DSH's default.
+   */
+  async createOptions(): Promise<{
+    available: boolean;
+    reason?: string;
+    agentPresets?: DshBridgeAgentPreset[];
+  }> {
     if (!this.supported) return { available: false, reason: "platform-unsupported" };
     const candidates = this.#online().filter((item) => item.services.sessionController);
-    if (candidates.length === 1) return { available: true };
     // Not "dsh-runtime-ambiguous": that one asks to open an existing session in one of them.
-    return {
-      available: false,
-      reason: candidates.length ? "dsh-create-ambiguous" : "dsh-runtime-offline",
-    };
+    if (candidates.length !== 1)
+      return {
+        available: false,
+        reason: candidates.length ? "dsh-create-ambiguous" : "dsh-runtime-offline",
+      };
+    const runtime = candidates[0]!;
+    if (runtime.services.agentPresets !== true) return { available: true };
+    const result = await this.#command(
+      runtime,
+      { commandId: randomUUID(), type: "presets" },
+      PRESETS_TIMEOUT_MS,
+    );
+    const roster = result.ok ? presetsSchema.safeParse(result.value) : null;
+    return roster?.success
+      ? { available: true, agentPresets: roster.data.presets }
+      : { available: true };
   }
   /**
    * Starts a DSH session in a registered workspace through the one running DSH that can. With
@@ -1563,6 +1777,10 @@ export class DshBridge {
     const requestId = uuid.parse(value.requestId);
     const deviceId = z.string().min(1).max(256).parse(value.deviceId);
     const workspaceId = z.string().min(1).max(256).parse(value.workspaceId);
+    const agentPreset =
+      value.agentPreset === undefined
+        ? undefined
+        : z.string().min(1).max(128).parse(value.agentPreset);
     const result = (outcome: string, extra: Record<string, unknown> = {}) =>
       this.#created(requestId, outcome, extra);
     const fingerprint = digest(stable({ ...value, runtimeBootId: undefined })).toString("hex");
@@ -1605,7 +1823,13 @@ export class DshBridge {
     try {
       sent = await this.#command(
         runtime,
-        { commandId, type: "create", cwd, sessionId: nativeId },
+        {
+          commandId,
+          type: "create",
+          cwd,
+          sessionId: nativeId,
+          ...(agentPreset ? { agentPreset } : {}),
+        },
         undefined,
         () => dispatchManagedCommand(this.options.dataDir, requestId),
       );
@@ -1626,6 +1850,60 @@ export class DshBridge {
       : result("not-dispatched", { reason: sent.error });
     finishManagedCommand(this.options.dataDir, requestId, outcome);
     return outcome;
+  }
+  /**
+   * Starts a DSH session for a handoff and sends it the message that points it at the handoff
+   * file. Both requests are named after the handoff, so trying again replays the session the first
+   * try started and never sends the message twice.
+   */
+  async handoff(value: {
+    key: string;
+    workspaceId: string;
+    text: string;
+  }): Promise<{ sessionId: string }> {
+    const created = await this.create({
+      requestId: namedUuid(`handoff-create\n${value.key}`),
+      deviceId: HANDOFF_DEVICE,
+      workspaceId: value.workspaceId,
+    });
+    const sessionId = typeof created.sessionId === "string" ? created.sessionId : null;
+    if (created.controlOutcome !== "accepted" || !sessionId)
+      throw new Error(
+        created.controlOutcome === "unknown"
+          ? "control-outcome-unconfirmed"
+          : String(created.reason ?? "dsh-create-failed"),
+      );
+    // DSH lists a session it made with its next report.
+    const until = Date.now() + 10_000;
+    while (!this.#ids.has(sessionId) && !this.#closed && Date.now() < until)
+      await new Promise((resolve) => setTimeout(resolve, 100));
+    const nativeId = this.#ids.get(sessionId);
+    const runtime = nativeId ? this.#controlRuntime(nativeId) : null;
+    if (!nativeId || !runtime) throw new Error("dsh-runtime-offline");
+    const requestId = namedUuid(`handoff-message\n${value.key}`);
+    const known = await this.#command(runtime, {
+      commandId: randomUUID(),
+      type: "verify",
+      sessionId: nativeId,
+      requestId,
+    });
+    if (known.ok && (known.value as { present?: unknown } | null)?.present === true)
+      return { sessionId };
+    const sent = await this.#command(runtime, {
+      commandId: randomUUID(),
+      type: "prompt",
+      sessionId: nativeId,
+      requestId,
+      mode: "queue",
+      content: [{ type: "text", text: value.text }],
+    });
+    if (!sent.ok)
+      throw new Error(
+        sent.error === "unknown"
+          ? "control-outcome-unconfirmed"
+          : (sent.error ?? "dsh-send-failed"),
+      );
+    return { sessionId };
   }
   /**
    * Waits briefly for DSH to list a session it just made. DSH replies first and lists it with

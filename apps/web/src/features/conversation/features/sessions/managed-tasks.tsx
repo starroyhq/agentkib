@@ -19,6 +19,7 @@ import { useSession } from "./session-context";
 import { catalogCopy } from "../catalog/catalog-copy";
 import { dictionaries } from "../../i18n";
 import { sessionAgentCopy } from "./session-agent-copy";
+import { dshAgentPresetCopy, dshAgentPresetText } from "@agentkib/session-ui";
 import {
   forgetPending,
   pendingScope,
@@ -66,6 +67,7 @@ export function ManagedTasks({
   const [model, setModel] = useState("");
   const [effort, setEffort] = useState("");
   const [permissionMode, setPermissionMode] = useState<ClaudePermissionMode | "">("");
+  const [agentPreset, setAgentPreset] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const [errorDetail, setErrorDetail] = useState("");
@@ -254,6 +256,7 @@ export function ManagedTasks({
         setModel("");
         setEffort("");
         setPermissionMode("");
+        setAgentPreset(value.agentPresets?.find((preset) => preset.isDefault)?.id ?? "");
       })
       .catch((e: unknown) => {
         if (!abort.signal.aborted) reportError(e);
@@ -312,6 +315,12 @@ export function ManagedTasks({
         ...(model ? { model } : {}),
         ...(effort ? { effort } : {}),
         ...(agent === "claude-code" && permissionMode ? { permissionMode } : {}),
+        // Without a choice DSH starts its own default preset.
+        ...(agent === "deepseek-harness" &&
+        agentPreset &&
+        agentPreset !== options.agentPresets?.find((preset) => preset.isDefault)?.id
+          ? { agentPreset }
+          : {}),
       });
       if (scope) forgetPending(scope, requestId);
       if (generation !== epoch.current) return;
@@ -443,6 +452,25 @@ export function ManagedTasks({
                   ))}
                 </select>
               </label>
+              {/* Beside the workspace, as on DSH's new-session screen: a preset is chosen only
+                  when a session starts. */}
+              {agent === "deepseek-harness" && !!options.agentPresets?.length && (
+                <label>
+                  {dshAgentPresetCopy(locale).label}
+                  <select
+                    className="mt-2 w-full rounded border bg-background p-2"
+                    value={agentPreset}
+                    onChange={(e) => setAgentPreset(e.target.value)}
+                  >
+                    {options.agentPresets.map((preset) => (
+                      <option key={preset.id} value={preset.id} disabled={!!preset.broken}>
+                        {dshAgentPresetText(preset, locale).name}
+                        {preset.broken ? ` · ${dshAgentPresetCopy(locale).broken}` : ""}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+              )}
               {!options.workspaces.length && (
                 <p>
                   {managedText(

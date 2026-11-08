@@ -17,9 +17,17 @@
 | Cursor IDE       | macOS 本地 bridge，支持 Cursor 3.22.12 与 3.23.12；显式连接 profile/window 后读取与原生导入                | 仅支持已连接的本地窗口；不代表 Cursor CLI 或 Agents Window 能力；Windows/Linux 原生桥接关闭                              |
 | Antigravity      | 现有官方 ACP 回放                                                                                          | ACP 来源不等于完整 Desktop 或 CLI 原生存储                                                                                   |
 | OpenClaw         | `2026.9.6` / SQLite schema 23：原始事件正文、官方有效分支投影和 reset 窗口；兼容无 SQLite 的 Pi JSONL v1–3 | 未知 schema、陈旧投影、压缩事件、冷归档及缺失的外部历史拒绝；仅供显示的消息可浏览、不可交接；SQLite/WAL 存在时不回退旧 JSONL |
-| DeepSeek Harness | Beta：仅接管运行中 DSH 的原会话，操作经插件在 DSH 内执行                                                   | 不作为交接来源或目标；AgentKib 不直接写入 DSH 文件；DSH 未运行时仅可查看，见[接入方案](DEEPSEEK-HARNESS-INTEGRATION.md)      |
+| DeepSeek Harness | Beta：经插件从运行中的 DSH 读取整个会话：用户消息及其图片、助手正文、工具调用参数与输出；默认按 DSH 模型当前的上下文（每次压缩的摘要加之后的消息），可选带上压缩替换掉的历史并标出压缩点（见下） | DSH 未运行时不能读取；推理不交接；单条正文超过 256 KiB、工具参数超过 64 KiB、工具输出超过 128 KiB 时截断并在预览说明；AgentKib 不直接读写 DSH 文件，见[接入方案](DEEPSEEK-HARNESS-INTEGRATION.md) |
 
 会话页面向 Runtime 查询具体会话能否完整解析；不再仅以 Agent 名称决定。来源缺必要正文时拒绝。推理排除、工具摘要化、附件省略等已知损失在预览展示，需确认的损失未经确认不能继续。
+
+### DeepSeek Harness 会话
+
+DSH 的会话日志只追加：压缩时 DSH 写入摘要，并用一条摘要消息替换模型可见范围中被压缩的部分，原来的消息仍在日志里。插件读取 DSH 当前的模型可见范围（`sessionQuery.readSurface`），标出每条记录是否仍在其中。
+
+- **默认交接：** 与 DSH 模型当前看到的一致，按可见范围中的顺序：每次压缩的摘要（以 `context-summary` 轮次保存，固定标注说明不是用户写的）在它替换的位置，排在压缩留下的回复和之后的消息之前；没有带上的记录数记为 `compacted-history`，需要确认。DSH 把较长的工具结果换成精简版本时，默认交接带精简版本。
+- **可选带上完整历史：** 与 Claude Code 来源相同的“包含压缩前的历史”，按顺序带上日志中的每条消息，并在压缩点插入 `compaction-boundary` 标记轮次和该次摘要；工具结果用原始版本。DSH 的日志不会接不回，因此没有 `compaction-link-unavailable`。
+- **不交接：** 推理内容、注入的上下文（AGENTS.md、技能、通知等）、系统与开发者消息，以及 DSH 自己运行的斜杠命令。用户消息中的图片从 DSH 读取后随文档带上（每份文档至多 32 张、共 32 MiB），读不到的记为 `external-attachment`。
 
 ### Claude Code 压缩会话
 
@@ -27,7 +35,7 @@ Claude Code 在手动或自动压缩时写入 `compact_boundary` 记录，并把
 
 - **默认交接：** 与 Claude 当前看到的上下文一致，即最近一次压缩的摘要加压缩后的消息。摘要以 `context-summary` 轮次保存：角色仍是 user（各目标格式只有 user/assistant 两种角色），但正文以固定的 `[AgentKib: context summary …]` 标注开头，Markdown 里的标题是 `Context summary`，JSON 里带 `kind` 字段，因此不会被当成用户写的消息。
 - **必须确认的损失：** 默认交接没有带上的压缩前时间线记录数记为 `compacted-history`；无法把边界接回更早历史（既没有可用的 `logicalParentUuid`，也没有可用的保留段头部、回溯途中缺失父记录，超过 1024 段，或所有历史候选累计超过 250,000 次节点查找）时另记 `compaction-link-unavailable`。默认摘要交接仍需确认这些损失；选择包含压缩前完整历史时，存在断链的来源不开放原生导入，即使确认损失也不能强行启动目标。用户可明确选择文件交接并确认不完整内容。
-- **可选带上完整历史：** 交接对话框“高级选项”里的“包含压缩前的历史”（请求参数 `include_pre_compaction_history`，默认关闭，仅 Claude Code 来源显示）按时间顺序带上每一段历史，并在每个压缩点插入 `compaction-boundary` 标记轮次；此时不再记 `compacted-history`。文档会更大，仍受现有限制：来源读取 256 MiB、单行 4 MiB、交接内容 256 MiB 和历史预算窗口化。该选择随预览冻结：规划以及命令导入目标（OpenCode、Hermes、OpenClaw、Cursor IDE）的续接都按同一选择重读来源，选择不一致时来源指纹不符，操作被拒绝。
+- **可选带上完整历史：** 交接对话框“高级选项”里的“包含压缩前的历史”（请求参数 `include_pre_compaction_history`，默认关闭，仅 Claude Code 与 DeepSeek Harness 来源显示）按时间顺序带上每一段历史，并在每个压缩点插入 `compaction-boundary` 标记轮次；此时不再记 `compacted-history`。文档会更大，仍受现有限制：来源读取 256 MiB、单行 4 MiB、交接内容 256 MiB 和历史预算窗口化。该选择随预览冻结：规划以及命令导入目标（OpenCode、Hermes、OpenClaw、Cursor IDE）的续接都按同一选择重读来源，选择不一致时来源指纹不符，操作被拒绝。
 - **不变的情形：** 活动链没有跨过压缩边界的 Claude 会话、从未压缩的会话和其他 Agent 的来源，文档与原先逐字节相同，该选项被忽略。
 - **同 UUID 重写：** 当前活动链使用同 UUID 的最新版本；回溯每次压缩时，使用该边界之前最近的版本（包括多次压缩间的中间版本）。已经输出的 UUID 仍可沿其旧版本继续追溯父链，但正文只归属最新采用它的段，不把重写副本当作新增轮次；不同 UUID 的相同正文仍保留。全文搜索沿用同一选择，旧的 Claude 正文缓存会重建。
 - **摘要选择：** 优先使用该段父链中的摘要；回退仅接受所选边界记录之后、下一次关联压缩之前的直接子摘要，并按 UUID 使用该窗口内的最新版本。后来的重写不能替换旧段摘要，也不能补上旧段缺失的摘要；摘要同样遵循 sidechain 过滤。
@@ -45,6 +53,7 @@ Claude Code 在手动或自动压缩时写入 `compact_boundary` 记录，并把
 | Hermes                    | `0.21.5` / release `v2026.9.24`；官方 Claude 文件导入、origin_json 查回、按真实 ID 恢复                                             | 历史导入、两次原生 TUI 与回读通过；Codex→Hermes 单轮 DeepSeek 回复与禁网导出有独立审计。官方免费模型 403 保留，不代表全部来源或迁移后的后端通过                                                                                |
 | Grok Build                 | `1.0.41` 实际二进制无文档所述 import 子命令；手工候选记录未被原生列表识别                                                           | 原生目标禁用；权威 updates 日志与索引写入契约未建立                                                                                                                          |
 | Cursor IDE                 | macOS 本地 bridge；Cursor 3.22.12 与 3.23.12；须显式连接目标 profile/window，按 binding 恢复                                     | 实验性原生导入；连接、导入与恢复按选定 binding 进行。Cursor CLI 与 Agents Window 不继承此能力                           |
+| DeepSeek Harness           | 交接文件写入 `.agentkib/handoffs/`；“应用并继续”在运行中的 DSH 新建会话，发送一条指向该文件的消息，然后在 AgentKib 中打开；需要恰好一个运行中的 DSH（macOS） | 不导入原生历史（DSH 没有导入入口）；超出历史预算的窗口化续接不可用；新建会话与引导消息按交接文件命名请求 ID，重试不会再建会话或重发消息 |
 | Cursor Agents Window       | 独立产品表面                                                                                                                      | 未接入；不能以 Cursor IDE 或 CLI 验收替代                                                                                 |
 | Cursor CLI                 | `2026.09.26-dd393fe` 有 create/resume，独立 blob 存储                                                                               | 外来原生写入、重启恢复和回复未验收；不能以 IDE 实验替代 CLI，原生目标禁用                                                                                                    |
 | Antigravity Desktop / CLI  | Desktop `2.12.2`、CLI `1.2.12`；官方自身 Desktop→CLI 迁移不等于外来历史导入                                                         | 外来原生目标禁用；保留 ACP 来源                                                                                                                                              |
@@ -78,7 +87,7 @@ OpenClaw 使用固定版本自带的写入函数维护原生索引与投影，�
 
 当前 TypeScript 后台执行器串行处理，允许 1 个执行中请求和 8 个等待请求；总期限从入队起计算，默认 180 秒，排队满时立即拒绝。耗时历史读取、哈希和序列化在只读 Worker 中处理，普通 Runtime 请求继续响应。退出时拒绝待执行请求并取消外部等待，已启动的本地写入执行至结束或自身回滚。已开始且结果不明的导入保留尝试记录，只允许核对，不自动重放；Cursor 导入失败后还会重新从原绑定的存储核对。任务失败不自动创建替代目标。不承诺目标 CLI 的跨进程事务、强杀或断电恢复。
 
-上下文文件交接仍可由用户明确选择，它创建引用文件，不计入原生互通验收。这些互通适配不授予 Web 控制权限，也不自动迁移 Agent 配置或凭据。
+上下文文件交接仍可由用户明确选择，它创建引用文件，不计入原生互通验收；DeepSeek Harness 目标只用这种方式，由 AgentKib 新建 DSH 会话读取该文件。这些互通适配不授予 Web 控制权限，也不自动迁移 Agent 配置或凭据。
 
 ## 证据
 

@@ -79,7 +79,7 @@ export const SESSION_AGENTS = [
 ] as const;
 export type SessionAgent = (typeof SESSION_AGENTS)[number];
 /** DeepSeek Harness history and its images come from the running DSH through its AgentKib plugin. */
-export type DshSessionSource = Pick<DshBridge, "list" | "events" | "image">;
+export type DshSessionSource = Pick<DshBridge, "list" | "events" | "image" | "document">;
 /** One catalog call may share discovery; every metadata target still verifies its own header. */
 export type ClaudeControlMetadataShare = { current?: ReturnType<ClaudeSessions["list"]> };
 
@@ -775,6 +775,32 @@ export class SessionReaders {
   async document(sessionId: string, options?: DocumentOptions): Promise<SessionDocument> {
     const summary = this.store.get(sessionId);
     if (!summary) throw new Error("Conversation metadata is no longer available");
+    // DSH history comes from the running DSH through its plugin, which the handoff read worker
+    // cannot reach, so it is read here even during a handoff.
+    if (summary.agent === "deepseek-harness") {
+      if (summary.availability !== "readable")
+        throw new Error("Conversation transcript is no longer available");
+      if (!this.dsh) throw new Error("Conversation provider is unavailable");
+      const { native } = await this.resolve(sessionId);
+      const document = await this.dsh.document(
+        native.native_ref,
+        {
+          agent: "deepseek-harness",
+          workspace_id: summary.workspace_id,
+          title: summary.title,
+          created_at: summary.created_at,
+          updated_at: summary.updated_at,
+          git_branch: summary.git_branch,
+        },
+        options,
+      );
+      if (handoffActive()) {
+        handoffCheckpoint();
+        if (JSON.stringify(this.store.get(sessionId)) !== JSON.stringify(summary))
+          throw new Error("Conversation ownership changed while reading history");
+      }
+      return document;
+    }
     if (handoffActive()) {
       const workspace = sessionCollection(summary.workspace_id)
         ? summary.workspace_id

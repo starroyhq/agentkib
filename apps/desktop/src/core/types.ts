@@ -1492,7 +1492,7 @@ export type SessionHandoffLaunchRequest =
       target_agent: AgentKind;
       plan_hash: string;
       binding_id?: string;
-      capabilities?: ContinuationCapabilities;
+      capabilities?: Partial<ContinuationCapabilities>;
     }
   | {
       mode: "native-session";
@@ -1502,7 +1502,7 @@ export type SessionHandoffLaunchRequest =
       target_path: string;
       archive_id?: string;
       archive_hash?: string;
-      capabilities?: ContinuationCapabilities;
+      capabilities?: Partial<ContinuationCapabilities>;
     }
   | {
       mode: "handoff-file";
@@ -1511,7 +1511,7 @@ export type SessionHandoffLaunchRequest =
       target_agent: AgentKind;
       archive_id?: string;
       archive_hash?: string;
-      capabilities?: ContinuationCapabilities;
+      capabilities?: Partial<ContinuationCapabilities>;
     };
 export interface NativeImportOperation {
   source_session_id: string;
@@ -1524,9 +1524,11 @@ export interface PlannedSessionHandoff {
   change_set: ChangeSet;
   launch_request: SessionHandoffLaunchRequest;
 }
+/** A terminal the target was opened in, or (DeepSeek Harness) the new session to open. */
 export interface HandoffLaunchReceipt {
   target_agent: AgentKind;
-  terminal: string;
+  terminal?: string;
+  session_id?: string;
 }
 export type HandoffContinuationResult =
   | { status: "launched"; receipt: HandoffLaunchReceipt }

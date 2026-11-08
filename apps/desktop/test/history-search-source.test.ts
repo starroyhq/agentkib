@@ -181,6 +181,54 @@ describe("complete history search source extraction", () => {
     },
   );
 
+  it("indexes the DeepSeek Harness records read on the main thread from the running DSH", async () => {
+    const f = fixture("deepseek-harness", "session-dsh");
+    // Without them the worker cannot reach DSH, and the indexed generation stays.
+    await expect(f.read()).rejects.toThrow("history-source-unavailable");
+    const secret = "sk-ant-api03-" + "s".repeat(40);
+    f.input.dsh = {
+      revision: "7",
+      records: [
+        {
+          recordId: "dsh:1:text",
+          kind: "user",
+          toolName: null,
+          timestamp,
+          content: `find ${secret}`,
+          truncated: false,
+        },
+        {
+          recordId: "call:c-1:input",
+          kind: "tool-input",
+          toolName: "bash",
+          timestamp,
+          content: '{"cmd":"ls"}',
+          truncated: false,
+        },
+        {
+          recordId: "call:c-1:output",
+          kind: "tool-output",
+          toolName: "bash",
+          timestamp,
+          content: "listing",
+          truncated: true,
+        },
+      ],
+    };
+    const result = await f.read();
+    expect(result.records.map((record) => [record.kind, record.toolName])).toEqual([
+      ["user", null],
+      ["tool-input", "bash"],
+      ["tool-output", "bash"],
+    ]);
+    expect(result.records[0]!.content).not.toContain(secret);
+    expect(result).toMatchObject({ limitations: ["source-record-limit"], status: "partial" });
+    // The revision follows what was read, not only DSH's own counter.
+    expect((await f.read()).sourceRevision).toBe(result.sourceRevision);
+    f.input.dsh.records[1]!.content = '{"cmd":"pwd"}';
+    expect((await f.read()).sourceRevision).not.toBe(result.sourceRevision);
+  });
+
   it("keeps the native linked-JSONL ownership fallback explicit when SQL metadata has no cwd", async () => {
     const f = hermesFixture();
     const sessions = path.join(f.input.environment.HERMES_HOME!, "sessions");

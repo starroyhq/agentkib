@@ -63,6 +63,9 @@ function fakeDsh(cwd: string) {
   let commandCount = 0;
   const executed: string[] = [];
   const prompts: any[] = [];
+  const creations: any[] = [];
+  // A session's current model surface, by event seq, after a compaction replaced part of it.
+  const surfaces = new Map<string, number[]>();
   const queueUpdates: any[] = [];
   const cancels: string[] = [];
   const selections: any[] = [];
@@ -148,6 +151,32 @@ function fakeDsh(cwd: string) {
           header: { id, cwd, createdAt: 1 },
           live: true,
         }));
+      },
+      async readSurface(id: string) {
+        const session = sessions.get(id);
+        if (!session) throw new Error("not found");
+        const surface = surfaces.get(id);
+        return {
+          session: { id, cwd, createdAt: 1 },
+          inheritedEventCount: 0,
+          capturedThroughSeq: session.events.at(-1)?.seq ?? null,
+          events: surface
+            ? surface.map((seq) => session.events[seq]).filter(Boolean)
+            : [...session.events],
+        };
+      },
+    },
+    // DSH's Agent preset registry: shipped presets have no name of their own.
+    agentPresets: {
+      async remoteExportList() {
+        return {
+          presets: [
+            { id: "standard", isDefault: true },
+            { id: "ptc", isDefault: false },
+            { id: "mine", name: "My preset", description: "Written by the user", isDefault: false },
+            { id: "broken", isDefault: false, broken: "plugin missing" },
+          ],
+        };
       },
     },
     sessionController: {
@@ -247,6 +276,7 @@ function fakeDsh(cwd: string) {
       },
       async create(request: any) {
         expect(request.cwd).toBe(cwd);
+        creations.push(request);
         // DSH names a new session after the ID it is given.
         const id = request.sessionId ?? `session-new-${sessions.size}`;
         create(id, "");
@@ -557,6 +587,8 @@ function fakeDsh(cwd: string) {
     ctx,
     sessions,
     prompts,
+    creations,
+    surfaces,
     queueUpdates,
     cancels,
     selections,
@@ -1572,7 +1604,22 @@ describe("DeepSeek Harness plugin projections", () => {
 
   it("starts a new DSH session in a registered workspace, once per request", async () => {
     const f = await fixture();
-    expect(f.bridge.createOptions()).toEqual({ available: true });
+    // The new-task form offers DSH's Agent presets; a shipped one has no name of its own.
+    expect(await f.bridge.createOptions()).toEqual({
+      available: true,
+      agentPresets: [
+        { id: "standard", name: null, description: null, isDefault: true, broken: null },
+        { id: "ptc", name: null, description: null, isDefault: false, broken: null },
+        {
+          id: "mine",
+          name: "My preset",
+          description: "Written by the user",
+          isDefault: false,
+          broken: null,
+        },
+        { id: "broken", name: null, description: null, isDefault: false, broken: "plugin missing" },
+      ],
+    });
     const request = {
       operation: "create",
       requestId: randomUUID(),
@@ -1611,8 +1658,9 @@ describe("DeepSeek Harness plugin projections", () => {
       debounceMs: 10,
     });
     cleanups.push(() => second.close());
-    await until(() => f.bridge.createOptions().available === false);
-    expect(f.bridge.createOptions()).toEqual({
+    for (let tries = 0; (await f.bridge.createOptions()).available && tries < 250; tries++)
+      await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(await f.bridge.createOptions()).toEqual({
       available: false,
       reason: "dsh-create-ambiguous",
     });
@@ -2110,5 +2158,203 @@ describe("DeepSeek Harness goals, commands, presets and subagents", () => {
     expect(await f.plugin.run({ type: "verify", sessionId: "session-a", requestId })).toMatchObject(
       { present: false },
     );
+  });
+});
+
+describe("DeepSeek Harness documents, Agent presets and handoffs", () => {
+  const source = {
+    agent: "deepseek-harness" as const,
+    workspace_id: "workspace",
+    title: "First DSH session",
+    created_at: null,
+    updated_at: null,
+    git_branch: null,
+  };
+  const message = (text: string, kind = "user") => ({
+    role: "user",
+    id: randomUUID(),
+    content: [{ type: "text", text }],
+    source: kind === "compact-checkpoint" ? { kind, compactionId: "c-1" } : { kind },
+  });
+
+  it("reads a whole session for a handoff, with what a compaction replaced", async () => {
+    const f = await fixture();
+    f.dsh.append("session-a", "user/message", message("Old question"));
+    f.dsh.append("session-a", "assistant/message", {
+      turn: 1,
+      step: 0,
+      message: {
+        role: "assistant",
+        content: [
+          { type: "reasoning", text: "never leaves DSH" },
+          { type: "text", text: "Old answer" },
+          { type: "tool-call", id: "call-1", name: "read_file", arguments: '{"path":"a.ts"}' },
+        ],
+      },
+    });
+    f.dsh.append("session-a", "tool/result", {
+      turn: 1,
+      step: 0,
+      message: { role: "tool", toolCallId: "call-1", content: [{ type: "text", text: "file a" }] },
+    });
+    // Injected context is not the conversation.
+    f.dsh.append("session-a", "user/message", message("AGENTS.md says", "agents-md"));
+    f.dsh.append("session-a", "assistant/message", {
+      turn: 2,
+      step: 0,
+      message: { role: "assistant", content: [{ type: "text", text: "Kept answer" }] },
+    });
+    f.dsh.append("session-a", "user/message", message("Earlier work", "compact-checkpoint"));
+    f.dsh.append("session-a", "user/message", message("New question"));
+    // As DSH 0.2.2-rc.1 compacts: the checkpoint replaces seq 0-3 in place, ahead of the reply
+    // the compaction left.
+    f.dsh.surfaces.set("session-a", [5, 4, 6]);
+    expect(f.bridge.documentStatus("session-a")).toEqual({ status: "supported" });
+    const { records, revision } = await f.bridge.conversation("session-a");
+    expect(revision).toBe(6);
+    expect(records.map((record) => [record.kind, record.position])).toEqual([
+      ["user", null],
+      ["assistant", null],
+      ["tool-result", null],
+      ["assistant", 1],
+      ["summary", 0],
+      ["user", 2],
+    ]);
+    const now = await f.bridge.document("session-a", source);
+    expect(now.turns.map((turn) => turn.kind ?? turn.role)).toEqual([
+      "context-summary",
+      "assistant",
+      "user",
+    ]);
+    expect(now.losses).toEqual([{ code: "compacted-history", count: 3 }]);
+    const full = await f.bridge.document("session-a", source, {
+      includePreCompactionHistory: true,
+    });
+    expect(full.turns.map((turn) => turn.kind ?? turn.role)).toEqual([
+      "user",
+      "assistant",
+      "tool",
+      "assistant",
+      "compaction-boundary",
+      "context-summary",
+      "user",
+    ]);
+    expect(full.turns[1]!.blocks).toContainEqual({
+      type: "tool-call",
+      call_id: "call-1",
+      name: "read_file",
+      input: '{"path":"a.ts"}',
+    });
+    expect(full.losses).toEqual([{ code: "reasoning-excluded", count: 1 }]);
+  });
+
+  it("carries a message's images into the handoff document", async () => {
+    const f = await fixture();
+    const file = path.join(f.root, "shot.png");
+    writeFileSync(file, PNG);
+    const sha256 = createHash("sha256").update(PNG).digest("hex");
+    await f.control("send", {
+      input: [
+        { type: "text", text: "what is this?" },
+        { type: "image", path: file, sha256, size: PNG.length, mediaType: "image/png", name: "shot.png" },
+      ],
+    });
+    const document = await f.bridge.document("session-a", source);
+    expect(document.turns[0]!.blocks).toEqual([
+      { type: "text", text: "what is this?" },
+      {
+        type: "attachment",
+        kind: "image",
+        media_type: "image/png",
+        filename: "shot.png",
+        inline_base64: PNG.toString("base64"),
+      },
+    ]);
+    expect(document.losses).toEqual([]);
+  });
+
+  it("reads a long session in pages that end where the first one was read", async () => {
+    const f = await fixture();
+    // Each message is near the plugin's text bound, so the session takes more than one page.
+    const long = "x".repeat(250 * 1024);
+    for (let index = 0; index < 14; index++)
+      f.dsh.append("session-a", "user/message", message(`${index} ${long}`));
+    // A message that arrives between two pages is left for the next read.
+    const surface = f.dsh.ctx.sessionQuery.readSurface;
+    let pages = 0;
+    f.dsh.ctx.sessionQuery.readSurface = async (id: string) => {
+      if (++pages === 2) f.dsh.append("session-a", "user/message", message("late"));
+      return surface(id);
+    };
+    const { records, revision } = await f.bridge.conversation("session-a");
+    expect(pages).toBe(2);
+    expect(revision).toBe(13);
+    expect(records.map((record) => (record as { text: string }).text.split(" ")[0])).toEqual(
+      Array.from({ length: 14 }, (_, index) => String(index)),
+    );
+  });
+
+  it("says why a session cannot be read whole", async () => {
+    const f = await fixture();
+    expect(f.bridge.documentStatus("session-unknown")).toEqual({
+      status: "unavailable",
+      reason: "dsh-runtime-offline",
+    });
+    // A plugin that predates whole-session reads still lists the session.
+    delete f.dsh.ctx.sessionQuery.readSurface;
+    f.dsh.emit("agent/status", { agent: f.dsh.sessions.get("session-a")!.agent, status: "idle" });
+    await until(() => f.bridge.documentStatus("session-a").status === "unavailable");
+    expect(f.bridge.documentStatus("session-a")).toEqual({
+      status: "unavailable",
+      reason: "dsh-document-unavailable",
+    });
+    await expect(f.bridge.conversation("session-a")).rejects.toThrow("dsh-document-unavailable");
+  });
+
+  it("starts a session with the Agent preset chosen for it", async () => {
+    const f = await fixture();
+    const created = await f.bridge.create({
+      operation: "create",
+      requestId: randomUUID(),
+      deviceId: "device-1",
+      workspaceId: "workspace",
+      agentPreset: "ptc",
+    });
+    expect(created).toMatchObject({ controlOutcome: "accepted" });
+    expect(f.dsh.creations.at(-1)).toMatchObject({ agentPreset: "ptc" });
+    // Without a choice DSH runs its default preset.
+    await f.bridge.create({
+      operation: "create",
+      requestId: randomUUID(),
+      deviceId: "device-1",
+      workspaceId: "workspace",
+    });
+    expect(f.dsh.creations.at(-1)).not.toHaveProperty("agentPreset");
+  });
+
+  it("continues a handoff in a new session once, however often it is tried", async () => {
+    const f = await fixture();
+    const handoff = {
+      key: "workspace\n20261108-codex-to-deepseek-harness.md",
+      workspaceId: "workspace",
+      text: "This is a fresh session continuing from a handoff.",
+    };
+    const first = await f.bridge.handoff(handoff);
+    expect(first.sessionId).toMatch(/^ak-session-/);
+    const nativeId = first.sessionId.slice("ak-".length);
+    expect(f.dsh.prompts).toEqual([
+      expect.objectContaining({
+        sessionId: nativeId,
+        mode: "queue",
+        content: [{ type: "text", text: handoff.text }],
+      }),
+    ]);
+    // Trying again finds the same session and the message already in it.
+    expect(await f.bridge.handoff(handoff)).toEqual(first);
+    expect(f.dsh.prompts).toHaveLength(1);
+    expect(f.dsh.creations).toHaveLength(1);
+    // Another handoff file is another session.
+    const other = await f.bridge.handoff({ ...handoff, key: "workspace\nother.md" });
+    expect(other.sessionId).not.toBe(first.sessionId);
   });
 });

@@ -196,8 +196,17 @@ describe("DeepSeek Harness host control boundary", () => {
         workspaceId: "workspace",
       }),
     ).toMatchObject({ status: 200, body: { accepted: true, sessionId: "dsh-new" } });
+    // An Agent preset chosen in the new-task form goes to DSH with the session.
+    await service.localRequest("/managed/create", {
+      agent: "deepseek-harness",
+      bootId,
+      requestId: randomUUID(),
+      workspaceId: "workspace",
+      agentPreset: "ptc",
+    });
     expect(forwarded("dsh-create")).toEqual([
-      expect.objectContaining({ workspaceId: "workspace" }),
+      expect.not.objectContaining({ agentPreset: expect.anything() }),
+      expect.objectContaining({ workspaceId: "workspace", agentPreset: "ptc" }),
     ]);
     // Adopting or releasing is not how a DSH session is taken over.
     expect(

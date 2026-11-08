@@ -834,3 +834,99 @@ it.each([methods.status, methods.query])(
     expect(reader!.threadId).not.toBe(-1);
   },
 );
+
+it("indexes DeepSeek Harness sessions read from the running DSH, after each turn", async () => {
+  const root = await realpath(await mkdtemp(path.join(os.tmpdir(), "history-lifecycle-dsh-")));
+  cleanups.push(() => rm(root, { recursive: true, force: true }));
+  const store = new BackendStore(path.join(root, "agentkib.db"));
+  cleanups.push(() => store.close());
+  const timestamp = "2026-10-08T00:00:00Z";
+  store.sql.run(
+    "INSERT INTO workspaces(id,canonical_path,name,manifest_workspace_id,status,last_discovered_at) VALUES(?,?,?,?,?,?)",
+    "fixture",
+    root,
+    "Synthetic workspace",
+    "fixture",
+    "healthy",
+    timestamp,
+  );
+  store.sessions.sync("fixture", "deepseek-harness", [
+    {
+      native_ref: "session-dsh",
+      agent: "deepseek-harness",
+      title: "Synthetic DSH",
+      created_at: null,
+      updated_at: timestamp,
+      message_count: null,
+      git_branch: null,
+      archived: false,
+      sidechain: false,
+      availability: "readable",
+      origin: "interactive",
+    },
+  ]);
+  const id = store.sessions.id("deepseek-harness", "session-dsh");
+  await writeFile(
+    path.join(root, "preferences.json"),
+    JSON.stringify({ session_content_search_enabled: true }),
+  );
+  let reads = 0,
+    checks = 0,
+    running = false,
+    marker = "dsh-search-marker-first";
+  const dsh = {
+    nativeId: (sessionId: string) => (sessionId === id ? "session-dsh" : undefined),
+    documentStatus: () => ({ status: "supported" as const }),
+    running: () => (checks++, running),
+    conversation: async () => ({
+      revision: ++reads,
+      records: [
+        {
+          seq: 1,
+          time: null,
+          current: true,
+          position: 0,
+          kind: "user" as const,
+          text: marker,
+          truncated: false,
+          images: [],
+          files: 0,
+        },
+      ],
+    }),
+  };
+  const index = new HistorySearch(
+    store,
+    root,
+    { HOME: root, USERPROFILE: root, PATH: root },
+    { profiles: () => [] },
+    {
+      workerFilename: path.resolve("dist-electron/backend-history-search.cjs"),
+      dsh: () => dsh,
+    },
+  );
+  cleanups.push(() => index.close());
+  const hits = async (query: string) =>
+    ((await index.request(methods.query, { query })) as HistorySearchResult).hits;
+  index.refresh();
+  await waitForIndexing(async () => expect(await hits("dsh-search-marker-first")).toHaveLength(1));
+  expect((await hits("dsh-search-marker-first"))[0]).toMatchObject({ agent: "deepseek-harness" });
+  expect(reads).toBe(1);
+  // While DSH runs a turn every record reports a change; the session is read after the turn.
+  running = true;
+  marker = "dsh-search-marker-second";
+  const before = checks;
+  index.refresh(id);
+  await waitForIndexing(async () => expect(checks).toBeGreaterThan(before));
+  expect(reads).toBe(1);
+  running = false;
+  index.refresh(id);
+  await waitForIndexing(async () =>
+    expect(await hits("dsh-search-marker-second")).toHaveLength(1),
+  );
+  expect(reads).toBe(2);
+  // Listed as it was when last indexed, the session is not read again.
+  index.refresh();
+  await new Promise((resolve) => setTimeout(resolve, 300));
+  expect(reads).toBe(2);
+});

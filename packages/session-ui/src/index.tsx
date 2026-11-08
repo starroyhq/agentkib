@@ -55,6 +55,7 @@ export {
 } from "./session-continuation";
 
 export { codexCommandPrompt, type CodexCommandPromptRequest } from "./codex-prompts";
+export { dshAgentPresetCopy, dshAgentPresetText, type DshAgentPreset } from "./dsh-agent-presets";
 export {
   agentKibCommand,
   agentKibPanel,

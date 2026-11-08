@@ -162,6 +162,45 @@ describe("Changes", () => {
     );
   });
 
+  it("opens the DeepSeek Harness session a handoff file continues in", async () => {
+    vi.mocked(api.continueSessionHandoff).mockResolvedValue({
+      status: "launched",
+      receipt: { target_agent: "deepseek-harness", session_id: "ak-session-new" },
+    });
+    vi.mocked(api.launchSessionHandoff).mockResolvedValue({
+      target_agent: "deepseek-harness",
+      session_id: "ak-session-retry",
+    });
+    // The plan step reports only whether DSH can start the session now.
+    const request: SessionHandoffLaunchRequest = {
+      mode: "handoff-file",
+      workspace_id: "workspace",
+      filename: "20261108-codex-to-deepseek-harness.md",
+      target_agent: "deepseek-harness",
+      capabilities: { interactive_launch: { status: "supported" } },
+    };
+    const onOpenSession = vi.fn();
+    const props = {
+      origin: "handoff" as const,
+      launchRequest: request,
+      onPlanHome: vi.fn(),
+      onApplied: vi.fn(),
+      onLaunchCompleted: vi.fn(),
+      onOpenSession,
+      onRejected: vi.fn(),
+      onApplyingChange: vi.fn(),
+    };
+    const { rerender } = render(
+      <Changes {...props} changeSet={{ ...changeSet, requires_home_approval: false }} />,
+    );
+    fireEvent.click(screen.getByRole("button", { name: "Apply and continue in DeepSeek Harness" }));
+    await waitFor(() => expect(onOpenSession).toHaveBeenCalledWith("ak-session-new"));
+    // Opening again after a failed start opens the session it started.
+    rerender(<Changes {...props} />);
+    fireEvent.click(screen.getByRole("button", { name: /Retry/ }));
+    await waitFor(() => expect(onOpenSession).toHaveBeenLastCalledWith("ak-session-retry"));
+  });
+
   it("offers handoff recovery after returning to a file handoff without its completed plan", async () => {
     vi.mocked(api.launchSessionHandoff).mockResolvedValue({
       target_agent: "codex",

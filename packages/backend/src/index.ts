@@ -20,7 +20,11 @@ import { handoffFormat, sanitizeHandoffExport } from "./session-handoff";
 import { prepareSessionHandoff } from "./session-continuation";
 import { planSessionHandoff } from "./session-handoff-plan";
 import { applySessionHandoff } from "./session-handoff-apply";
-import { launchPreparedHandoff, prepareHandoffLaunch } from "./session-handoff-launch";
+import {
+  launchDshHandoff,
+  launchPreparedHandoff,
+  prepareHandoffLaunch,
+} from "./session-handoff-launch";
 import { SessionIndex } from "./session-index";
 import { catalogCheckouts } from "./git-checkouts";
 import { HistorySearch } from "./history-search";
@@ -694,6 +698,7 @@ export class TypeScriptBackend {
           dataDir,
           { ...process.env, ...this.environment },
           this.#cursorBridge,
+          { dsh: () => this.#dshBridge },
         );
         this.#sessionIndex = new SessionIndex(
           store.sessions,
@@ -1194,16 +1199,23 @@ export class TypeScriptBackend {
       return this.#sessions!
         .resolve(sessionId)
         .then(({ native }) =>
-          this.#sessions!.document(sessionId).then(() => ({
-            status: "supported",
-            ...(native.agent === "cursor"
-              ? {
-                  source_surface: native.native_ref.startsWith("cursor-ide-v1-")
-                    ? "cursor-ide"
-                    : "cursor-cli",
-                }
-              : {}),
-          })),
+          // A DSH session is read whole through the running DSH; asking whether it can be read
+          // must not read it every time a session is shown.
+          native.agent === "deepseek-harness"
+            ? (this.#dshBridge?.documentStatus(native.native_ref) ?? {
+                status: "unavailable",
+                reason: "dsh-runtime-offline",
+              })
+            : this.#sessions!.document(sessionId).then(() => ({
+                status: "supported",
+                ...(native.agent === "cursor"
+                  ? {
+                      source_surface: native.native_ref.startsWith("cursor-ide-v1-")
+                        ? "cursor-ide"
+                        : "cursor-cli",
+                    }
+                  : {}),
+              })),
         )
         .then(
           (result) => result,
@@ -1822,6 +1834,7 @@ export class TypeScriptBackend {
         this.#handoffWork.commands,
         { ...process.env, ...this.environment },
         this.#cursorBridge,
+        this.#dshBridge,
       );
     if (method === RUNTIME_METHODS.planSessionHandoff)
       return planSessionHandoff(
@@ -1833,7 +1846,15 @@ export class TypeScriptBackend {
         { ...process.env, ...this.environment },
         this.#handoffWork.commands,
         this.#cursorBridge,
+        this.#dshBridge,
       );
+    // DSH continues a handoff file as a new session in the running DSH, not in a terminal.
+    if (
+      method === RUNTIME_METHODS.launchSessionHandoff &&
+      params.mode === "handoff-file" &&
+      params.target_agent === "deepseek-harness"
+    )
+      return launchDshHandoff(params, this.#store!, this.#dshBridge);
     if (method === RUNTIME_METHODS.continueSessionHandoff)
       return this.#continueSessionHandoff(params);
     if (
@@ -1944,16 +1965,23 @@ export class TypeScriptBackend {
         };
       }
     }
-    const prepared = await prepareHandoffLaunch(
-      request.launchRequest,
-      this.#store!,
-      this.#handoffWork.commands,
-      environment,
-      this.#dataDir,
-    );
+    const dsh =
+      launchRequest?.mode === "handoff-file" &&
+      (launchRequest as { target_agent?: unknown }).target_agent === "deepseek-harness";
+    const prepared = dsh
+      ? null
+      : await prepareHandoffLaunch(
+          request.launchRequest,
+          this.#store!,
+          this.#handoffWork.commands,
+          environment,
+          this.#dataDir,
+        );
     await commitTask(() => applySessionHandoff(value, this.#store!, this.#dataDir!, environment));
     try {
-      const receipt = await launchPreparedHandoff(prepared, this.#dataDir!, environment);
+      const receipt = prepared
+        ? await launchPreparedHandoff(prepared, this.#dataDir!, environment)
+        : await launchDshHandoff(request.launchRequest, this.#store!, this.#dshBridge);
       return { status: "launched", receipt };
     } catch (error) {
       return {

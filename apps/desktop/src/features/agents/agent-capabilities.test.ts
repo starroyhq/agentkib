@@ -1,10 +1,24 @@
 import { describe, expect, it } from "vitest";
 import type { AgentInstallation } from "@/core/types";
-import { agentSupport, canContinueFromHistory } from "./agent-capabilities";
+import { agentSupport, canContinueFromHistory, sourceCapabilityReason } from "./agent-capabilities";
 import { agentSupportsInsights, insightsAgentKinds } from "@/features/insights/insights";
 import { sessionHandoffTargets } from "@/features/workspace/session-handoff-targets";
 
 describe("Agent capability boundaries", () => {
+  it("says why a DSH session cannot be handed off and passes other reasons through", () => {
+    const copy: Record<string, string> = {
+      "handoff.sourceReason.dsh-runtime-offline": "DeepSeek Harness is not running.",
+    };
+    const tr = (key: string) => copy[key] ?? key;
+    expect(sourceCapabilityReason(tr, "dsh-runtime-offline")).toBe(
+      "DeepSeek Harness is not running.",
+    );
+    expect(sourceCapabilityReason(tr, "Conversation transcript is no longer available")).toBe(
+      "Conversation transcript is no longer available",
+    );
+    expect(sourceCapabilityReason(tr, undefined)).toBeUndefined();
+  });
+
   it.each(["grok-build", "opencode"] as const)(
     "does not expose unsupported Insights for %s",
     (agent) => {

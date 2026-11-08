@@ -517,6 +517,17 @@ export interface ManagedOptions {
   cliVersion?: string;
   models?: { id: string; name?: string; efforts?: string[] }[];
   permissionModes?: { id: ClaudePermissionMode; name: string; description?: string }[];
+  /**
+   * DeepSeek Harness's Agent presets, chosen only when a session starts. A preset DSH ships has
+   * a null `name`; `dshAgentPresetText` in `@agentkib/session-ui` names it.
+   */
+  agentPresets?: {
+    id: string;
+    name: string | null;
+    description: string | null;
+    isDefault: boolean;
+    broken: string | null;
+  }[];
   workspaces: { id: string; name: string }[];
 }
 export interface ManagedInspection {

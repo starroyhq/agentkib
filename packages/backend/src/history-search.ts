@@ -9,6 +9,8 @@ import {
 } from "@agentkib/runtime-protocol";
 import type { BackendStore } from "./store";
 import type { CursorBridge } from "./cursor-bridge";
+import type { DshBridge } from "./dsh-bridge";
+import { dshSearchRecords } from "./dsh-document";
 import { resolveWorkspaceIdentity } from "./workspace-identity";
 import { readPreferences, writePreference } from "./preferences";
 import { HistorySearchWorker } from "./history-search-worker";
@@ -28,6 +30,11 @@ import {
 import { sanitizeSessionText } from "./session-handoff";
 
 type Entry = { session: SearchSession; source: HistorySourceInput };
+/** The running DSH, which content search reads DSH sessions from. */
+export type DshSearchSource = Pick<
+  DshBridge,
+  "nativeId" | "documentStatus" | "conversation" | "running"
+>;
 const reads = new Set<string>([
   HISTORY_SEARCH_METHODS.query,
   HISTORY_SEARCH_METHODS.locate,
@@ -53,12 +60,19 @@ export class HistorySearch {
   #force = new Set<string>();
   #withdrawn = new Set<string>();
   #withdrawals = new Set<Promise<void>>();
+  /** What DSH listed for each DSH session when it was last indexed in this run. */
+  #dshIndexed = new Map<string, string>();
   constructor(
     readonly store: BackendStore,
     readonly dataDir: string,
     readonly environment: NodeJS.ProcessEnv,
     readonly bridge: Pick<CursorBridge, "profiles">,
-    readonly options: { workerFilename?: string; limitBytes?: number; timeoutMs?: number } = {},
+    readonly options: {
+      workerFilename?: string;
+      limitBytes?: number;
+      timeoutMs?: number;
+      dsh?: () => DshSearchSource | undefined;
+    } = {},
   ) {
     this.filename = path.join(dataDir, "session-search.sqlite");
   }
@@ -194,16 +208,29 @@ export class HistorySearch {
         for (const entry of entries.values()) {
           if (epoch !== this.#generation || this.#stopping || this.#clearing) break;
           if (!this.#current(entry, epoch)) continue;
+          const forced = unknownAlias || force.has(entry.session.sessionId);
+          const dsh =
+            entry.session.agent === "deepseek-harness"
+              ? await this.#dshRecords(entry, forced)
+              : null;
+          if (dsh === "unchanged" || !this.#current(entry, epoch)) continue;
           try {
             await writer.request(
               "index",
-              { ...entry, force: unknownAlias || force.has(entry.session.sessionId) },
+              {
+                ...entry,
+                source: dsh ? { ...entry.source, dsh: dsh.records } : entry.source,
+                force: forced,
+              },
               {
                 signal: controller.signal,
                 verify: () => this.#current(entry, epoch),
               },
             );
-            if (this.#current(entry, epoch)) this.#withdrawn.delete(entry.session.sessionId);
+            if (this.#current(entry, epoch)) {
+              this.#withdrawn.delete(entry.session.sessionId);
+              if (dsh) this.#dshIndexed.set(entry.session.sessionId, dsh.key);
+            }
           } catch {
             // Worker records partial/unavailable state; one damaged provider must not suppress others.
             if (this.#stopping || epoch !== this.#generation) break;
@@ -219,6 +246,32 @@ export class HistorySearch {
         if (this.#updating === update) this.#updating = undefined;
         if (this.#dirty && !this.#stopping && this.enabled()) this.refresh();
       });
+  }
+  /**
+   * A DSH session's records, read from the running DSH. A session DSH lists as it was when last
+   * indexed in this run is not read again, nor is one in a turn: each record of a turn reports a
+   * change, and the turn's end reports one more. One no DSH can read now is indexed without
+   * records, which keeps what was indexed before and reports it unavailable.
+   */
+  async #dshRecords(
+    entry: Entry,
+    force: boolean,
+  ): Promise<
+    "unchanged" | { key: string; records: NonNullable<HistorySourceInput["dsh"]> } | null
+  > {
+    const { summary } = entry.source;
+    const key = JSON.stringify([summary.updated_at, summary.title, summary.archived]);
+    if (!force && this.#dshIndexed.get(entry.session.sessionId) === key) return "unchanged";
+    const dsh = this.options.dsh?.();
+    const nativeId = dsh?.nativeId(entry.session.sessionId);
+    if (!dsh || !nativeId || dsh.documentStatus(nativeId).status !== "supported") return null;
+    if (dsh.running(nativeId)) return "unchanged";
+    try {
+      const { revision, records } = await dsh.conversation(nativeId);
+      return { key, records: { revision: String(revision), records: dshSearchRecords(records) } };
+    } catch {
+      return null;
+    }
   }
   /** Immediately fences results and in-flight publications; physical deletion is serialized. */
   invalidate(): void {

@@ -88,6 +88,13 @@ export class BackendStore {
     }
   }
 
+  /** Registered workspace IDs, most recently active first, as the workspace list orders them. */
+  workspaceIds(): string[] {
+    return this.#rows(
+      "SELECT id FROM workspaces ORDER BY COALESCE(last_active_at, last_scanned_at) DESC, name ASC",
+    ).map((row) => String(row.id));
+  }
+
   workspacePath(id: string): string {
     const row = this.#rows(
       "SELECT canonical_path FROM workspaces WHERE id = ? OR manifest_workspace_id = ? LIMIT 1",

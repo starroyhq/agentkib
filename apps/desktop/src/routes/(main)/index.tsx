@@ -253,6 +253,7 @@ function HomeRoute() {
         void Promise.all([
           api.requestRefresh("discovery", true),
           api.requestRefresh("insights", true),
+          api.requestRefresh("doctor", true),
         ]);
       }}
       runtime={runtime}

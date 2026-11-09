@@ -951,6 +951,12 @@ function registerHomeIpc(): void {
       force === undefined ? true : requireBoolean(force, "force"),
     );
   });
+  handle("agentkib:home:refresh-doctor", (_event, force: unknown) => {
+    return requireRefreshCoordinator().request(
+      "doctor",
+      force === undefined ? true : requireBoolean(force, "force"),
+    );
+  });
   handle(
     "agentkib:home:open-storage-path",
     async (_event, workspaceId: unknown, relativePath: unknown) => {

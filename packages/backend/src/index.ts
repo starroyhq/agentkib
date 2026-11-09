@@ -60,7 +60,7 @@ import { WorkspaceApplications } from "./workspace-applications";
 import { nativeContext } from "./native-context";
 import { discoverScanRoots } from "./discovery-scan-roots";
 import { discoverConfiguredWorkspaces } from "./native-discovery-configured";
-import { Doctor } from "./doctor";
+import { Doctor, StoredDoctorSummaries } from "./doctor";
 import { planWorkspace, ensureGateway } from "./change-plan";
 import { manifestSchema } from "./manifest";
 import { userHome } from "./mcp-config-read";
@@ -522,7 +522,11 @@ export class TypeScriptBackend {
           () => this.#mcpHub!.status(),
         );
         this.#remoteGateways = new RemoteGateways(dataDir);
-        this.#doctor = new Doctor(this.#context, (id) => store.workspacePath(id));
+        this.#doctor = new Doctor(
+          this.#context,
+          (id) => store.workspacePath(id),
+          new StoredDoctorSummaries(store.sql),
+        );
         this.#workspaceApplications = new WorkspaceApplications(
           dataDir,
           this.#commands,
@@ -1313,6 +1317,13 @@ export class TypeScriptBackend {
       case RUNTIME_METHODS.workspaceDoctorReport:
       case RUNTIME_METHODS.workspaceDoctorSummaries:
         return this.#doctor!.request(method, params);
+      case RUNTIME_METHODS.refreshDoctorSummaries: {
+        const { maxAgeMs } = parameters(
+          z.object({ maxAgeMs: z.number().int().nonnegative().optional() }),
+          params,
+        );
+        return this.#doctor!.refresh(this.#store.workspaceIds(), maxAgeMs);
+      }
       case RUNTIME_METHODS.resolveContext:
         return this.#context!.request(params);
       case BACKEND_INSPECT:
@@ -1362,7 +1373,11 @@ export class TypeScriptBackend {
           method === RUNTIME_METHODS.addWorkspace
             ? this.#store.workspaces.addWorkspace(plan, inspection)
             : this.#store.workspaces.refreshWorkspace(plan, inspection);
-        return this.#store.getWorkspace(id);
+        if (method === RUNTIME_METHODS.addWorkspace) return this.#store.getWorkspace(id);
+        // Workspace lists read kept summaries, so a workspace the user refreshes is diagnosed now
+        // rather than keeping its old result until the next background refresh. An added one is
+        // opened next, and its page runs the full report, which keeps its summary.
+        return this.#doctor!.update(id).then(() => this.#store!.getWorkspace(id));
       }
       case RUNTIME_METHODS.excludeWorkspace:
         this.#store.workspaces.excludeWorkspace(string(params, "id"));

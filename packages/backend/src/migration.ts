@@ -115,6 +115,7 @@ export const TYPESCRIPT_ASSET_METHODS = new Set<string>([
   RUNTIME_METHODS.resolveContext,
   RUNTIME_METHODS.workspaceDoctorReport,
   RUNTIME_METHODS.workspaceDoctorSummaries,
+  RUNTIME_METHODS.refreshDoctorSummaries,
   RUNTIME_METHODS.planChanges,
   RUNTIME_METHODS.applyChanges,
 ]);

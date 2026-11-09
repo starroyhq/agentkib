@@ -1,4 +1,5 @@
 import path from "node:path";
+import { setImmediate as nextEventLoopTurn } from "node:timers/promises";
 import { z } from "zod";
 import { RUNTIME_METHODS } from "@agentkib/runtime-protocol";
 import { AGENTS, parameters } from "./rpc";
@@ -10,6 +11,7 @@ import { loadManifest, manifestPath, type Manifest } from "./manifest";
 import { stripBlockComments } from "./context-claude";
 import { CONTEXT_NOTE_PREFIX, isProjectScope } from "./context-files";
 import { effectiveMcp, type McpServer } from "./mcp-config-read";
+import type { Sql } from "./sql";
 import { compareUtf8, utcNow } from "./workspaces";
 import { sharedInstructionOverlap, unmanagedInstructions } from "./instruction-adoption";
 import { MANAGED_START } from "./default-manifest";
@@ -56,28 +58,149 @@ const summary = (workspace_id: string, issues: Issue[]) => ({
   repairable_count: issues.filter((i) => i.repairable).length,
   checked_at: utcNow(),
 });
+export type DoctorSummary = ReturnType<typeof summary>;
+
+/** The latest diagnostic summary of each workspace, read without diagnosing it again. */
+export interface DoctorSummaryCache {
+  get(workspaceIds: readonly string[]): DoctorSummary[];
+  put(summary: DoctorSummary): void;
+  delete(workspaceId: string): void;
+  /** Drops the summaries of workspaces that are no longer registered. */
+  retain(workspaceIds: readonly string[]): void;
+}
+
+export function memoryDoctorSummaries(): DoctorSummaryCache {
+  const rows = new Map<string, DoctorSummary>();
+  return {
+    get: (ids) => ids.flatMap((id) => rows.get(id) ?? []),
+    put: (row) => void rows.set(row.workspace_id, row),
+    delete: (id) => void rows.delete(id),
+    retain: (ids) => {
+      const keep = new Set(ids);
+      for (const id of rows.keys()) if (!keep.has(id)) rows.delete(id);
+    },
+  };
+}
+
+const storedSummary = z.object({
+  workspace_id: z.string(),
+  error_count: z.number().int().nonnegative(),
+  warning_count: z.number().int().nonnegative(),
+  info_count: z.number().int().nonnegative(),
+  repairable_count: z.number().int().nonnegative(),
+  checked_at: z.string(),
+});
+
+/**
+ * Summaries kept in a table of the shared database, so the last results show right after a
+ * restart. The table is created here rather than by a schema migration: an older AgentKib, which
+ * requires the shared schema version it knows, keeps opening the database and ignores it.
+ */
+export class StoredDoctorSummaries implements DoctorSummaryCache {
+  constructor(readonly sql: Sql) {
+    sql.database.exec(
+      "CREATE TABLE IF NOT EXISTS doctor_summaries(workspace_id TEXT PRIMARY KEY, summary TEXT NOT NULL)",
+    );
+  }
+  get(workspaceIds: readonly string[]): DoctorSummary[] {
+    return workspaceIds.flatMap((id) => {
+      const row = this.sql.one("SELECT summary FROM doctor_summaries WHERE workspace_id = ?", id);
+      if (!row) return [];
+      try {
+        const parsed = storedSummary.safeParse(JSON.parse(String(row.summary)));
+        return parsed.success && parsed.data.workspace_id === id ? [parsed.data] : [];
+      } catch {
+        return [];
+      }
+    });
+  }
+  put(summary: DoctorSummary): void {
+    this.sql.run(
+      "INSERT OR REPLACE INTO doctor_summaries(workspace_id, summary) VALUES (?, ?)",
+      summary.workspace_id,
+      JSON.stringify(summary),
+    );
+  }
+  delete(workspaceId: string): void {
+    this.sql.run("DELETE FROM doctor_summaries WHERE workspace_id = ?", workspaceId);
+  }
+  retain(workspaceIds: readonly string[]): void {
+    const keep = new Set(workspaceIds);
+    for (const row of this.sql.rows("SELECT workspace_id FROM doctor_summaries"))
+      if (!keep.has(String(row.workspace_id))) this.delete(String(row.workspace_id));
+  }
+}
+
 export class Doctor {
   constructor(
     readonly context: Context,
     readonly workspacePath: (id: string) => string,
+    readonly summaries: DoctorSummaryCache = memoryDoctorSummaries(),
   ) {}
   async request(method: string, value: unknown) {
-    if (method === RUNTIME_METHODS.workspaceDoctorReport)
-      return this.report(parameters(z.object({ id: z.string() }), value).id);
+    if (method === RUNTIME_METHODS.workspaceDoctorReport) {
+      const { id } = parameters(z.object({ id: z.string() }), value);
+      try {
+        return await this.report(id);
+      } catch (error) {
+        // As in the app's own caches, a workspace whose report fails is shown as unchecked.
+        this.summaries.delete(id);
+        throw error;
+      }
+    }
     const { workspaceIds } = parameters(z.object({ workspaceIds: z.array(z.string()) }), value);
     if (workspaceIds.length > 100)
       throw new Error("workspace doctor accepts at most 100 workspaces");
-    const results = [];
-    for (const id of workspaceIds)
-      try {
-        results.push((await this.report(id)).summary);
-      } catch {
-        // A failed check has no findings. Omitting it lets callers show "unchecked"
-        // while retaining the real results for the other requested workspaces.
-        continue;
-      }
-    return results;
+    // Diagnosing every listed workspace on each read kept the home page waiting for minutes.
+    // Reads return the last results; refresh() brings them up to date in the background. A
+    // workspace without a summary has never been checked or failed its last check, and callers
+    // show it as unchecked.
+    return this.summaries.get(workspaceIds);
   }
+
+  /**
+   * Diagnoses the workspaces one at a time, in the given order, and keeps each summary. With
+   * `maxAgeMs`, a workspace whose summary is younger than that is skipped. Summaries of
+   * workspaces not in the list are dropped.
+   */
+  async refresh(
+    workspaceIds: readonly string[],
+    maxAgeMs?: number,
+  ): Promise<{ checked: number; failed: number }> {
+    this.summaries.retain(workspaceIds);
+    const now = Date.now();
+    const fresh = new Set(
+      maxAgeMs === undefined
+        ? []
+        : this.summaries
+            .get(workspaceIds)
+            .filter((row) => now - Date.parse(row.checked_at) < maxAgeMs)
+            .map((row) => row.workspace_id),
+    );
+    let checked = 0,
+      failed = 0;
+    for (const id of workspaceIds) {
+      if (fresh.has(id)) continue;
+      // Each workspace starts on a new turn of the event loop, so requests that arrive meanwhile
+      // are answered between workspaces instead of waiting for the whole list.
+      await nextEventLoopTurn();
+      if (await this.update(id)) checked++;
+      else failed++;
+    }
+    return { checked, failed };
+  }
+
+  /** Diagnoses one workspace and keeps its summary; one that cannot be checked loses it. */
+  async update(id: string): Promise<boolean> {
+    try {
+      await this.report(id);
+      return true;
+    } catch {
+      this.summaries.delete(id);
+      return false;
+    }
+  }
+
   async report(id: string) {
     const scan = scanWorkspace(this.workspacePath(id)),
       project = scan.root,
@@ -523,6 +646,8 @@ export class Doctor {
         compareUtf8(a.code, b.code) ||
         compareUtf8(a.id, b.id),
     );
-    return { summary: summary(id, issues), matrix, issues };
+    const result = { summary: summary(id, issues), matrix, issues };
+    this.summaries.put(result.summary);
+    return result;
   }
 }

@@ -484,6 +484,8 @@ export interface DesktopApi {
     storageOverview(): Promise<StorageOverview>;
     storageChildren(workspaceId: string, relativePath: string): Promise<StorageNode>;
     refreshStorage(force?: boolean): Promise<RefreshReceipt>;
+    /** Workspace diagnostics in the background; forced, every workspace is checked again. */
+    refreshDoctor(force?: boolean): Promise<RefreshReceipt>;
     openStoragePath(workspaceId: string, relativePath: string): Promise<void>;
     cancelStorage(): Promise<boolean>;
     updateOnboarding(event: OnboardingEvent): Promise<RuntimeInfo>;

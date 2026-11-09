@@ -50,6 +50,57 @@ function setup(saved?: QuotaScheduleState, missingCache = false) {
 }
 const calls = (request: ReturnType<typeof vi.fn>, method: string) =>
   request.mock.calls.filter(([value]) => value === method).length;
+const doctorRuns = (request: ReturnType<typeof vi.fn>) =>
+  request.mock.calls
+    .filter(([value]) => value === M.refreshDoctorSummaries)
+    .map(([, params]) => params);
+
+describe("workspace diagnostics refresh", () => {
+  it("checks outdated workspaces shortly after startup and every workspace on a manual refresh", async () => {
+    const { coordinator, request } = setup();
+    await vi.advanceTimersByTimeAsync(9_000);
+    expect(doctorRuns(request)).toEqual([]);
+    await vi.advanceTimersByTimeAsync(1_000);
+    expect(doctorRuns(request)).toEqual([{ maxAgeMs: 30 * 60_000 }]);
+    await coordinator.request("doctor", true);
+    expect(doctorRuns(request)).toEqual([{ maxAgeMs: 30 * 60_000 }, {}]);
+  });
+
+  it("checks newly discovered workspaces after discovery", async () => {
+    const { coordinator, request } = setup();
+    await vi.advanceTimersByTimeAsync(0);
+    await coordinator.request("discovery", true);
+    await vi.advanceTimersByTimeAsync(0);
+    expect(doctorRuns(request)).toEqual([{ maxAgeMs: 30 * 60_000 }]);
+  });
+
+  it("leaves diagnostics alone while the window is hidden", async () => {
+    const { request, state } = setup();
+    state.visible = false;
+    await vi.advanceTimersByTimeAsync(60 * 60_000);
+    expect(doctorRuns(request)).toEqual([]);
+  });
+
+  it("makes queued automatic diagnostics check every workspace when a forced refresh arrives", async () => {
+    const { coordinator, request } = setup();
+    await vi.advanceTimersByTimeAsync(0);
+    let release!: () => void;
+    request.mockImplementationOnce(
+      () =>
+        new Promise<void>((resolve) => {
+          release = resolve;
+        }),
+    );
+    const blocking = coordinator.request("storage", true);
+    await vi.advanceTimersByTimeAsync(0);
+    const queued = coordinator.request("doctor", false, true);
+    expect((await coordinator.request("doctor", true)).disposition).toBe("already-running");
+    release();
+    await blocking;
+    await queued;
+    expect(doctorRuns(request)).toEqual([{}]);
+  });
+});
 
 describe("energy-aware refresh scheduling", () => {
   it("refreshes quota while a workspace refresh occupies the global lane", async () => {
@@ -246,8 +297,8 @@ describe("energy-aware refresh scheduling", () => {
     coordinator.setSuspended(true);
     coordinator.setSuspended(false);
     await vi.advanceTimersByTimeAsync(31_000);
-    // 四类任务各一个 interval（其余一次性计时器都已触发完）。
-    expect(vi.getTimerCount()).toBe(4);
+    // 五类定时任务各一个 interval（其余一次性计时器都已触发完）。
+    expect(vi.getTimerCount()).toBe(5);
   });
   it("restores backoff and last attempt across coordinator restarts", async () => {
     const { coordinator, request, state, save } = setup({

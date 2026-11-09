@@ -425,6 +425,7 @@ const desktopApi = Object.freeze({
     storageChildren: (workspaceId: string, relativePath: string) =>
       ipcRenderer.invoke("agentkib:home:storage-children", workspaceId, relativePath),
     refreshStorage: (force?: boolean) => ipcRenderer.invoke("agentkib:home:refresh-storage", force),
+    refreshDoctor: (force?: boolean) => ipcRenderer.invoke("agentkib:home:refresh-doctor", force),
     openStoragePath: (workspaceId: string, relativePath: string) =>
       ipcRenderer.invoke("agentkib:home:open-storage-path", workspaceId, relativePath),
     cancelStorage: () => ipcRenderer.invoke("agentkib:home:cancel-storage"),

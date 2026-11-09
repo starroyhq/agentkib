@@ -174,6 +174,7 @@ export const RUNTIME_METHODS = {
   addGitIdentityAlias: "insights.addGitIdentityAlias",
   setGitIdentityEnabled: "insights.setGitIdentityEnabled",
   workspaceDoctorSummaries: "workspace.doctorSummaries",
+  refreshDoctorSummaries: "workspace.refreshDoctorSummaries",
   insightsView: "insights.view",
   refreshInsights: "insights.refresh",
   insightsSummary: "insights.summary",

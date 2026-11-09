@@ -219,6 +219,7 @@ export const api = {
     if (kind === "gateways") return desktop.home.refreshGateways(force);
     if (kind === "quota") return desktop.home.refreshQuota(force);
     if (kind === "storage") return desktop.home.refreshStorage(force);
+    if (kind === "doctor") return desktop.home.refreshDoctor(force);
     return Promise.reject(new Error(`Unsupported Electron refresh kind: ${kind}`));
   },
   refreshStatus: () => desktopApi().home.refreshStatus(),

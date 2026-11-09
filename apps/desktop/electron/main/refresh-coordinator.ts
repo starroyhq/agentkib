@@ -12,15 +12,31 @@ import type {
 import { RUNTIME_METHODS } from "../generated/runtime-protocol";
 import { RuntimeUnavailableError, type RuntimeHost } from "./runtime-host";
 
-const REFRESH_KINDS: RefreshKind[] = ["discovery", "insights", "gateways", "quota", "storage"];
+const REFRESH_KINDS: RefreshKind[] = [
+  "discovery",
+  "insights",
+  "gateways",
+  "quota",
+  "storage",
+  "doctor",
+];
+type ScheduledKind = "discovery" | "insights" | "gateways" | "quota" | "doctor";
+const SCHEDULED_KINDS: ScheduledKind[] = ["quota", "discovery", "gateways", "insights", "doctor"];
 const SCHEDULER_INTERVAL_MS = 60_000;
 const DISCOVERY_INITIAL_DELAY_MS = 3_000;
 const GATEWAYS_INITIAL_DELAY_MS = 5_000;
+const DOCTOR_INITIAL_DELAY_MS = 10_000;
 const INSIGHTS_INITIAL_DELAY_MS = 30_000;
 const QUOTA_INITIAL_DELAY_MS = 1_000;
 const DISCOVERY_MAX_AGE_MS = 15 * 60_000;
 const GATEWAYS_MAX_AGE_MS = 15 * 60_000;
 const INSIGHTS_MAX_AGE_MS = 30 * 60_000;
+/**
+ * Workspace diagnostics older than this are checked again. Automatic refreshes skip younger ones,
+ * so the run after startup or after discovery only checks new or outdated workspaces; a manual
+ * refresh checks them all.
+ */
+const DOCTOR_MAX_AGE_MS = 30 * 60_000;
 const QUOTA_VISIBLE_MAX_AGE_MS = 5 * 60_000;
 const QUOTA_BACKGROUND_MAX_AGE_MS = 15 * 60_000;
 export interface QuotaScheduleState {
@@ -52,6 +68,8 @@ export class ElectronRefreshCoordinator {
   readonly #quotaProviders = new Map<string, Promise<RefreshReceipt>>();
   readonly #initializedLocalKinds = new Set<RefreshKind>();
   readonly #manualRequests = new Set<RefreshKind>();
+  // A forced request that finds work of its kind still queued makes that work forced too.
+  readonly #forcedRequests = new Set<RefreshKind>();
   readonly #timers = new Set<NodeJS.Timeout>();
   // 每类任务最多一组计时器：start() 的初始化还没完成时挂起再恢复，两边都会调度同一类任务。
   readonly #scheduledKinds = new Set<RefreshKind>();
@@ -77,6 +95,7 @@ export class ElectronRefreshCoordinator {
         this.#schedule("quota", QUOTA_INITIAL_DELAY_MS);
         this.#schedule("discovery", DISCOVERY_INITIAL_DELAY_MS);
         this.#schedule("gateways", GATEWAYS_INITIAL_DELAY_MS);
+        this.#schedule("doctor", DOCTOR_INITIAL_DELAY_MS);
         this.#schedule("insights", INSIGHTS_INITIAL_DELAY_MS);
       });
   }
@@ -106,8 +125,7 @@ export class ElectronRefreshCoordinator {
       this.#timers.clear();
       this.#scheduledKinds.clear();
     } else if (this.#accepting) {
-      for (const kind of ["quota", "discovery", "gateways", "insights"] as const)
-        this.#schedule(kind, 2_000);
+      for (const kind of SCHEDULED_KINDS) this.#schedule(kind, 2_000);
     }
     this.activityChanged();
   }
@@ -130,6 +148,7 @@ export class ElectronRefreshCoordinator {
     const active = this.#active.get(kind);
     if (active) {
       if (!automatic) this.#manualRequests.add(kind);
+      if (force) this.#forcedRequests.add(kind);
       const status = { ...this.#record(kind).status };
       return Promise.resolve({
         kind,
@@ -168,7 +187,7 @@ export class ElectronRefreshCoordinator {
     };
     this.#emit(record.status);
 
-    const execute = () => this.#execute(kind, requestId, automatic, previousNextAllowed);
+    const execute = () => this.#execute(kind, requestId, automatic, previousNextAllowed, force);
     // Quota has its own bounded provider queue in the runtime. Never wait behind
     // workspace discovery, insights or a gateway network timeout.
     const promise = kind === "quota" ? Promise.resolve().then(execute) : this.#enqueue(execute);
@@ -178,6 +197,7 @@ export class ElectronRefreshCoordinator {
         if (this.#active.get(kind) === promise) {
           this.#active.delete(kind);
           this.#manualRequests.delete(kind);
+          this.#forcedRequests.delete(kind);
         }
       })
       .catch(() => undefined);
@@ -212,15 +232,15 @@ export class ElectronRefreshCoordinator {
 
   async requestAll(force = false): Promise<RefreshReceipt[]> {
     return Promise.all(
-      (["discovery", "insights", "gateways", "quota"] satisfies RefreshKind[]).map((kind) =>
-        this.request(kind, force),
+      (["discovery", "insights", "gateways", "quota", "doctor"] satisfies RefreshKind[]).map(
+        (kind) => this.request(kind, force),
       ),
     );
   }
 
   async refreshIfDue(): Promise<void> {
     await Promise.allSettled(
-      (["discovery", "insights", "gateways", "quota"] as const).map((kind) =>
+      (["discovery", "insights", "gateways", "quota", "doctor"] as const).map((kind) =>
         this.#requestScheduled(kind),
       ),
     );
@@ -231,6 +251,7 @@ export class ElectronRefreshCoordinator {
     requestId: string,
     automatic: boolean,
     previousNextAllowed: string | undefined,
+    force: boolean,
   ): Promise<RefreshReceipt> {
     const record = this.#record(kind);
     const wasInitialized = this.#initializedLocalKinds.has(kind);
@@ -249,7 +270,7 @@ export class ElectronRefreshCoordinator {
       if (!this.#accepting) throw new Error("Refresh coordinator is shutting down");
       if (!this.#runtimeAvailable)
         throw new RuntimeUnavailableError(new Error("AgentKib runtime is restarting"));
-      if (kind === "discovery" || kind === "insights") this.#initializedLocalKinds.add(kind);
+      if (localKind(kind)) this.#initializedLocalKinds.add(kind);
       const startedAt = new Date().toISOString();
       record.status = {
         ...record.status,
@@ -263,8 +284,11 @@ export class ElectronRefreshCoordinator {
       }
 
       if (kind === "gateways") await this.#refreshGateways(record);
-      else await this.#requestRuntimeRefresh(kind);
+      else await this.#requestRuntimeRefresh(kind, force || this.#forcedRequests.has(kind));
       if (kind === "quota") await this.#emitLatestQuotaSnapshot();
+      // Newly discovered workspaces have no diagnostics yet; this run checks only those and
+      // outdated ones, after discovery in the same lane.
+      if (kind === "discovery") void this.request("doctor", false, true).catch(() => undefined);
 
       record.failures = 0;
       record.status = {
@@ -314,7 +338,11 @@ export class ElectronRefreshCoordinator {
     return result;
   }
 
-  #requestRuntimeRefresh(kind: Exclude<RefreshKind, "gateways">): Promise<unknown> {
+  #requestRuntimeRefresh(kind: Exclude<RefreshKind, "gateways">, force: boolean): Promise<unknown> {
+    if (kind === "doctor")
+      return this.#options.runtime().request(RUNTIME_METHODS.refreshDoctorSummaries, {
+        ...(force ? {} : { maxAgeMs: DOCTOR_MAX_AGE_MS }),
+      });
     const method = {
       discovery: RUNTIME_METHODS.refreshDiscovery,
       insights: RUNTIME_METHODS.refreshInsights,
@@ -382,7 +410,7 @@ export class ElectronRefreshCoordinator {
     record.status = { ...record.status, state: "succeeded", finished_at: finishedAt };
   }
 
-  #schedule(kind: "discovery" | "insights" | "gateways" | "quota", initialDelay: number): void {
+  #schedule(kind: ScheduledKind, initialDelay: number): void {
     if (this.#scheduledKinds.has(kind)) return;
     this.#scheduledKinds.add(kind);
     const initial = setTimeout(() => {
@@ -398,7 +426,7 @@ export class ElectronRefreshCoordinator {
     this.#timers.add(initial);
   }
 
-  async #requestScheduled(kind: "discovery" | "insights" | "gateways" | "quota"): Promise<void> {
+  async #requestScheduled(kind: ScheduledKind): Promise<void> {
     if (!(await this.#automaticAllowed(kind))) return;
     if (kind === "gateways") {
       if (await this.#gatewaysNeedRefresh())
@@ -410,7 +438,12 @@ export class ElectronRefreshCoordinator {
         await this.request(kind, false, true).catch(() => undefined);
       return;
     }
-    const maxAge = kind === "discovery" ? DISCOVERY_MAX_AGE_MS : INSIGHTS_MAX_AGE_MS;
+    const maxAge =
+      kind === "discovery"
+        ? DISCOVERY_MAX_AGE_MS
+        : kind === "doctor"
+          ? DOCTOR_MAX_AGE_MS
+          : INSIGHTS_MAX_AGE_MS;
     if (this.#isStale(kind, maxAge)) await this.request(kind, false, true).catch(() => undefined);
   }
 
@@ -427,7 +460,7 @@ export class ElectronRefreshCoordinator {
       return false;
     const next = parseTime(this.#record(kind).status.next_allowed_at);
     if (Number.isFinite(next) && next > Date.now()) return false;
-    if (kind === "discovery" || kind === "insights") {
+    if (localKind(kind)) {
       if (!this.#options.isMainWindowVisible()) return false;
       const info = await this.#options
         .runtime()
@@ -501,6 +534,14 @@ export class ElectronRefreshCoordinator {
 
 function idleStatus(kind: RefreshKind): RefreshJobStatus {
   return { kind, state: "idle" };
+}
+
+/**
+ * Work on this computer's files: it runs automatically only while the window shows, and follows
+ * the local auto-refresh setting.
+ */
+function localKind(kind: RefreshKind): boolean {
+  return kind === "discovery" || kind === "insights" || kind === "doctor";
 }
 
 function parseTime(value: string | undefined): number {

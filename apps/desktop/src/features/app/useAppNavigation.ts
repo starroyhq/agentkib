@@ -595,6 +595,8 @@ export function useAppNavigation(activeRoute?: ParsedRoute) {
     if (globalPage === "sessions") requestSessionRefresh();
     else if (globalPage === "quota") await requestRefreshKinds(["quota"]);
     else if (globalPage === "insights") await requestRefreshKinds(["insights"]);
+    else if (globalPage === "home" || globalPage === "workspaces")
+      await requestRefreshKinds(["discovery", "doctor"]);
     else await requestRefreshKinds(["discovery"]);
   };
 

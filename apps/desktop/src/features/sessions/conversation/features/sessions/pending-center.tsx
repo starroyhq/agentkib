@@ -13,6 +13,8 @@ import {
 } from "./pending-controls";
 import { codexCopy } from "./codex-copy";
 import { catalogCopy } from "../catalog/catalog-copy";
+import { approvalSummary } from "./approval-summary";
+import { interactionCopy } from "../interactions/interaction-copy";
 
 export function PendingCenter({ compact = false }: { compact?: boolean }) {
   const {
@@ -136,8 +138,9 @@ export function PendingCenter({ compact = false }: { compact?: boolean }) {
                       setModal(request);
                     }}
                   >
-                    {"questions" in request ? copy.pending : t.approval} ·{" "}
-                    {String(request.requestId)}
+                    {"questions" in request
+                      ? `${interactionCopy[locale].title} · ${request.questions?.[0]?.question ?? ""}`
+                      : `${t.approval} · ${approvalSummary(request, locale, t.unknownTool)}`}
                   </Button>
                 ))}
             </section>

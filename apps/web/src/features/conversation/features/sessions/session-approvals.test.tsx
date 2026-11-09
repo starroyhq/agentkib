@@ -1,8 +1,9 @@
 // @vitest-environment jsdom
 import "@testing-library/jest-dom/vitest";
-import { cleanup, fireEvent, render, screen } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Approval } from "@agentkib/web-client";
+import { fillCopy, interactionCardCopy, type InteractionLocale } from "@agentkib/session-ui";
 import { dictionaries } from "../../i18n";
 const conversationWords = (locale: keyof typeof dictionaries) => dictionaries[locale];
 import { SessionReader } from "./session-reader";
@@ -53,64 +54,65 @@ beforeEach(() => {
 });
 afterEach(cleanup);
 
-describe("approval summaries", () => {
-  it.each(locales)(
-    "identifies same-tool requests and opens the matching request in %s",
-    (locale) => {
-      const requests = [
-        approval({ requestId: 0 }),
-        approval({ requestId: "second" }),
-        approval({ requestId: "third", toolName: "Read" }),
-      ];
-      state = {
-        ...state,
-        locale,
-        t: conversationWords(locale),
-        live: { ...state.live!, approvals: requests },
-      };
-      render(<SessionReader />);
-      const first = screen.getByRole("button", { name: `${state.t.approval} · Bash #0` });
-      const second = screen.getByRole("button", { name: `${state.t.approval} · Bash #second` });
-      const third = screen.getByRole("button", { name: `${state.t.approval} · Read #third` });
-      expect(first).toBeVisible();
-      expect(second).toBeVisible();
-      third.focus();
-      expect(third).toHaveFocus();
-      fireEvent.click(third);
-      expect(state.setModal).toHaveBeenCalledExactlyOnceWith(requests[2]);
-      expect(state.control).not.toHaveBeenCalled();
-      expect(state.setMessage).not.toHaveBeenCalled();
-    },
-  );
+function card() {
+  return screen.getByRole("region", {
+    name: interactionCardCopy(state.locale as InteractionLocale).waitingApproval,
+  });
+}
 
-  it.each([
-    ["zh-CN", "执行命令", "文件变更", "权限请求"],
-    ["zh-TW", "執行命令", "檔案變更", "權限請求"],
-    ["en-US", "Command execution", "File changes", "Permission request"],
-    ["ja-JP", "コマンド実行", "ファイル変更", "権限リクエスト"],
-  ] as const)(
-    "uses the actual Codex operation when no tool name is supplied in %s",
-    (locale, command, files, permissions) => {
-      const requests = ["commandExecution", "fileChange", "permissions"].map((kind) =>
-        approval({ requestId: kind, toolName: undefined, method: `item/${kind}/requestApproval` }),
-      );
-      state = {
-        ...state,
-        locale,
-        t: conversationWords(locale),
-        live: { ...state.live!, approvals: requests },
-      };
-      render(<SessionReader />);
-      for (const [index, label] of [command, files, permissions].entries()) {
-        const button = screen.getByRole("button", {
-          name: `${state.t.approval} · ${label} #${requests[index].requestId}`,
-        });
-        fireEvent.click(button);
-        expect(state.setModal).toHaveBeenLastCalledWith(requests[index]);
-      }
-      expect(state.control).not.toHaveBeenCalled();
-    },
-  );
+describe("waiting approvals above the composer", () => {
+  it.each(locales)("pages same-tool requests in %s without deciding anything", (locale) => {
+    const requests = [
+      approval({ requestId: 0 }),
+      approval({ requestId: "second" }),
+      approval({ requestId: "third", toolName: "Read" }),
+    ];
+    state = {
+      ...state,
+      locale,
+      t: conversationWords(locale),
+      live: { ...state.live!, approvals: requests },
+    };
+    render(<SessionReader />);
+    const t = interactionCardCopy(locale);
+    expect(
+      within(card()).getByRole("heading", { name: fillCopy(t.commandTitle, { agent: "Codex" }) }),
+    ).toBeVisible();
+    expect(within(card()).getByText("1/3")).toBeVisible();
+    fireEvent.click(within(card()).getByRole("button", { name: t.next }));
+    fireEvent.click(within(card()).getByRole("button", { name: t.next }));
+    expect(within(card()).getByText("3/3")).toBeVisible();
+    // This access cannot approve, so the card says so instead of offering decisions.
+    expect(within(card()).getByText(t.noApprovePermission)).toBeVisible();
+    expect(state.control).not.toHaveBeenCalled();
+    expect(state.setMessage).not.toHaveBeenCalled();
+  });
+
+  it.each(locales)("names the Codex operation when no tool name is given in %s", (locale) => {
+    const requests = ["commandExecution", "fileChange", "permissions"].map((kind) =>
+      approval({
+        requestId: kind,
+        toolName: undefined,
+        input: undefined,
+        method: `item/${kind}/requestApproval`,
+      }),
+    );
+    state = {
+      ...state,
+      locale,
+      t: conversationWords(locale),
+      live: { ...state.live!, approvals: requests },
+    };
+    render(<SessionReader />);
+    const t = interactionCardCopy(locale);
+    for (const [index, title] of [t.commandTitle, t.filesTitle, t.permissionsTitle].entries()) {
+      expect(
+        within(card()).getByRole("heading", { name: fillCopy(title, { agent: "Codex" }) }),
+      ).toBeVisible();
+      if (index < 2) fireEvent.click(within(card()).getByRole("button", { name: t.next }));
+    }
+    expect(state.control).not.toHaveBeenCalled();
+  });
 
   it.each([
     ["ACP title", { title: " Read files " }, "Read files"],
@@ -123,36 +125,49 @@ describe("approval summaries", () => {
     const request = approval({ toolName: " ", method: "session/request_permission", toolCall });
     state.live = { ...state.live!, approvals: [request] };
     render(<SessionReader />);
-    fireEvent.click(
-      screen.getByRole("button", {
-        name: `${state.t.approval} · ${expected ?? state.t.unknownTool} #request`,
+    const t = interactionCardCopy("en-US");
+    expect(
+      within(card()).getByRole("heading", {
+        name: fillCopy(t.toolTitle, { agent: "Codex", tool: expected ?? t.unknownTool }),
       }),
-    );
-    expect(state.setModal).toHaveBeenCalledExactlyOnceWith(request);
-    expect(state.control).not.toHaveBeenCalled();
+    ).toBeVisible();
     expect(screen.queryByText("[object Object]")).not.toBeInTheDocument();
+    expect(state.control).not.toHaveBeenCalled();
   });
 
-  it("renders tool text literally and preserves the full request object", () => {
-    const request = approval({ toolName: "<img src=x onerror=alert(1)>" });
+  it("renders tool text literally", () => {
+    const request = approval({
+      toolName: "<img src=x onerror=alert(1)>",
+      input: { url: "https://example.test" },
+    });
     state.live = { ...state.live!, approvals: [request] };
     const view = render(<SessionReader />);
     expect(view.container.querySelector("img")).toBeNull();
-    fireEvent.click(screen.getByRole("button", { name: /<img src=x onerror=alert\(1\)>/ }));
-    expect(state.setModal).toHaveBeenCalledExactlyOnceWith(request);
-    expect(request.input).toEqual({ command: "example" });
+    expect(
+      within(card()).getByRole("heading", {
+        name: "Allow Codex to use <img src=x onerror=alert(1)>?",
+      }),
+    ).toBeVisible();
+    expect(request.input).toEqual({ url: "https://example.test" });
   });
 
-  it("updates pending requests and localized operation names without dispatching", () => {
+  it("follows changing requests and language without deciding anything", () => {
     const original = approval({
       requestId: "old",
       toolName: undefined,
+      input: undefined,
       method: "item/fileChange/requestApproval",
     });
     state.live = { ...state.live!, approvals: [original] };
     const view = render(<SessionReader />);
-    expect(screen.getByRole("button", { name: /File changes #old/ })).toBeVisible();
-    const next = approval({ requestId: "new", toolName: "Write" });
+    expect(
+      within(card()).getByRole("heading", { name: "Allow Codex to edit the following files?" }),
+    ).toBeVisible();
+    const next = approval({
+      requestId: "new",
+      toolName: "Write",
+      input: { file_path: "notes.md" },
+    });
     state = {
       ...state,
       locale: "zh-CN",
@@ -160,12 +175,14 @@ describe("approval summaries", () => {
       live: { ...state.live!, approvals: [original, next] },
     };
     view.rerender(<SessionReader />);
-    expect(screen.getByRole("button", { name: /文件变更 #old/ })).toBeVisible();
+    expect(
+      within(card()).getByRole("heading", { name: "允许 Codex 编辑以下文件吗？" }),
+    ).toBeVisible();
+    expect(within(card()).getByText("1/2")).toBeVisible();
     state.live = { ...state.live!, approvals: [next] };
     view.rerender(<SessionReader />);
-    expect(screen.queryByRole("button", { name: /#old/ })).not.toBeInTheDocument();
-    fireEvent.click(screen.getByRole("button", { name: /Write #new/ }));
-    expect(state.setModal).toHaveBeenCalledExactlyOnceWith(next);
+    expect(screen.queryByText("1/2")).not.toBeInTheDocument();
+    expect(within(card()).getByText("notes.md")).toBeVisible();
     expect(state.control).not.toHaveBeenCalled();
   });
 });

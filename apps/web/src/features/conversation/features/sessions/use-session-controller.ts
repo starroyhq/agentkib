@@ -67,7 +67,8 @@ import {
   type UserQuestionRequest,
 } from "@agentkib/web-client";
 import { displaySessionTitle, isSessionListed } from "@agentkib/session-catalog";
-import { answerRequestBody, interactionCopy } from "../interactions/question-form";
+import { answerRequestBody } from "@agentkib/session-ui";
+import { interactionCopy } from "../interactions/interaction-copy";
 import type { CatalogStatus, CatalogWorkspace } from "../catalog/session-catalog";
 import { catalogCopy } from "../catalog/catalog-copy";
 import { dictionaries, type Locale } from "../../i18n";
@@ -104,6 +105,8 @@ type ForkNavigation = {
   completion?: Promise<string | undefined>;
 };
 type ControlNotice = "accepted" | "uncertain" | "notDispatched";
+/** The control call a notice came from; the interaction card shows its own outcomes. */
+type ControlKind = "send" | "stop" | "approve" | "answer";
 type CodexSettingsRecoveryReason =
   | "unsupported-model"
   | "unsupported-effort"
@@ -244,6 +247,7 @@ export function useSessionController({
       online: boolean;
       notice?: ControlNotice;
       reason?: NotDispatchedReason;
+      source?: ControlKind;
     }>({ online: false }),
     [code, setCode] = useState(""),
     [name, setName] = useState(""),
@@ -295,14 +299,18 @@ export function useSessionController({
     },
     [client],
   );
-  const { online, notice, reason: noticeReason } = connectionNotice;
-  const setNotice = useCallback((notice?: ControlNotice, reason?: NotDispatchedReason) => {
-    setConnectionNotice((value) => ({
-      ...value,
-      notice,
-      reason: notice === "notDispatched" ? reason : undefined,
-    }));
-  }, []);
+  const { online, notice, reason: noticeReason, source: noticeSource } = connectionNotice;
+  const setNotice = useCallback(
+    (notice?: ControlNotice, reason?: NotDispatchedReason, source?: ControlKind) => {
+      setConnectionNotice((value) => ({
+        ...value,
+        notice,
+        reason: notice === "notDispatched" ? reason : undefined,
+        source: notice ? source : undefined,
+      }));
+    },
+    [],
+  );
   const setOnline = useCallback((next: SetStateAction<boolean>) => {
     setConnectionNotice((value) => {
       const online = typeof next === "function" ? next(value.online) : next;
@@ -329,7 +337,6 @@ export function useSessionController({
     cache.set(selected, page);
     if (cache.size > 10) cache.delete(cache.keys().next().value as string);
   }, [selected, page]);
-  const shownInteractions = useRef(new Set<string>());
   const catalogSessions = useRef<ConversationSessionSummary[]>([]);
   // The last accepted catalog, so the program-started sessions option can re-filter it.
   const catalogRecords = useRef<ConversationSessionSummary[] | undefined>(undefined);
@@ -493,7 +500,6 @@ export function useSessionController({
     setHistoryReferences([]);
     setHistorySearchOpen(false);
     setNotice(undefined);
-    shownInteractions.current.clear();
     receipt.current = undefined;
     setPendingSessions({});
     setCode("");
@@ -1750,22 +1756,6 @@ export function useSessionController({
       setNotice(undefined);
     }
   }, [live, selected, notice, setNotice]);
-  useEffect(() => {
-    if (!online || !controlReady || !live || modal) return;
-    const pending = [...live.approvals, ...(live.questions ?? [])].find((request) => {
-      const key = `${selected}:${request.turnId}:${request.requestId}:${"questions" in request ? "question" : "approval"}`;
-      const permitted =
-        access?.experimentalEnabled &&
-        ("questions" in request ? access.device?.send : access.device?.approve);
-      return request.supported && permitted && !shownInteractions.current.has(key);
-    });
-    if (pending) {
-      shownInteractions.current.add(
-        `${selected}:${pending.turnId}:${pending.requestId}:${"questions" in pending ? "question" : "approval"}`,
-      );
-      setModal(pending);
-    }
-  }, [live, selected, online, controlReady, modal, access]);
   const terminalBinding = useRef<
     { sessionId: string; mode?: string; generation?: string } | undefined
   >(undefined);
@@ -1784,7 +1774,6 @@ export function useSessionController({
     if (!changed && !(terminalMode === "claude-follower" && !online)) return;
     // A replaced binding invalidates reviewed forms and source references, not the draft.
     setModal(undefined);
-    shownInteractions.current.clear();
     setHistoryReferences([]);
     setHistorySearchOpen(false);
   }, [selected, terminalPresent, terminalMode, terminalGeneration, online, setHistoryReferences]);
@@ -2117,8 +2106,8 @@ export function useSessionController({
         !live.questions?.some((current) => JSON.stringify(current) === JSON.stringify(question)))
     )
       return;
-    // A stable request ID does not mean the command/scope shown in an open
-    // dialog is still current. Require the exact reviewed projection.
+    // A stable request ID does not mean the command/scope shown on the card
+    // is still current. Require the exact reviewed projection.
     if (
       kind === "approve" &&
       (!approval ||
@@ -2173,7 +2162,7 @@ export function useSessionController({
             if (g === generation.current && selection.current === id) {
               refreshRequired.current = true;
               setControlReady(false);
-              setNotice("uncertain");
+              setNotice("uncertain", undefined, kind);
             }
             return;
           }
@@ -2246,7 +2235,7 @@ export function useSessionController({
         // even if the owner uses an unfamiliar waiting-status label.
         observedActive: kind !== "send",
       };
-      setNotice("accepted");
+      setNotice("accepted", undefined, kind);
       if (kind === "send" && command === undefined) {
         setMessage("");
         setHistoryReferences([]);
@@ -2276,6 +2265,7 @@ export function useSessionController({
                 catalogSessions.current.find((session) => session.id === id)?.agent,
                 e.code,
               ),
+              kind,
             );
             await refresh();
           } else {
@@ -2283,7 +2273,7 @@ export function useSessionController({
             // an uncertain outcome that has only just arrived.
             manualRefreshRequired.current = false;
             uncertainOutcomes.current.add(id);
-            setNotice("uncertain");
+            setNotice("uncertain", undefined, kind);
             setOnline(false);
             fail(e, g);
           }
@@ -2555,6 +2545,7 @@ export function useSessionController({
     setIncompatible,
     notice,
     noticeReason,
+    noticeSource,
     code,
     setCode,
     name,

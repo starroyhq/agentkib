@@ -3,7 +3,6 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { CodexCapabilities, UploadedAttachment } from "@agentkib/web-client";
 import { CodexTools } from "@/features/conversation/features/sessions/codex-tools";
 import { CodexComposer } from "@/features/conversation/features/sessions/codex-composer";
-import { NativeDecisions } from "@/features/conversation/features/interactions/native-decisions";
 import { useSession } from "@/features/conversation/features/sessions/session-context";
 import { dictionaries } from "@/features/conversation/i18n";
 import { codexCopyForSurface } from "@/features/conversation/features/sessions/codex-copy";
@@ -396,34 +395,6 @@ describe("Codex composer", () => {
     await waitFor(() => expect(state.codexAction).toHaveBeenCalledWith("goal-pause", {}));
   });
 });
-it("requires explicit confirmation for native session/persistent approval scope and submits the exact candidate", () => {
-  const submit = vi.fn();
-  const decision = { acceptWithExecpolicyAmendment: { execpolicy_amendment: ["git", "status"] } };
-  render(
-    <NativeDecisions
-      approval={{
-        requestId: 1,
-        turnId: "t",
-        method: "command",
-        supported: true,
-        availableDecisions: [],
-        decisionOptions: [
-          { id: "persist", label: "acceptWithExecpolicyAmendment", decision, scope: "persistent" },
-        ],
-      }}
-      locale="en-US"
-      enabled
-      busy={false}
-      submit={submit}
-    />,
-  );
-  const button = screen.getByRole("button", { name: "Save command rule and allow" });
-  expect(button).toBeDisabled();
-  fireEvent.click(screen.getByRole("checkbox"));
-  fireEvent.click(button);
-  expect(submit).toHaveBeenCalledExactlyOnceWith(decision);
-});
-
 it.each(["zh-CN", "zh-TW", "en-US", "ja-JP"] as const)(
   "keeps Codex operations focused on session management and automatic queues in %s",
   async (locale) => {

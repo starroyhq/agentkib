@@ -16,9 +16,9 @@ import { contextUsageCopy } from "./context-usage-copy";
 import { SessionComposer } from "./session-composer";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
-import { ArrowDown, ArrowUp, ChevronRight, LoaderCircle, ShieldCheck, Square } from "lucide-react";
+import { ArrowDown, ArrowUp, LoaderCircle, Square } from "lucide-react";
 import { SessionTranscript } from "./session-transcript";
-import { interactionCopy } from "../interactions/question-form";
+import { SessionInteractionDock } from "../interactions/interaction-dock";
 import { MAX_MESSAGE_LENGTH } from "./session-model";
 import { useSession } from "./session-context";
 import { ArtifactBrowser } from "./artifact-browser";
@@ -37,7 +37,6 @@ import {
 } from "@agentkib/session-ui";
 import { publishSessionInvalidation, subscribeSessionInvalidation } from "./session-events";
 import { webLayoutCopy } from "./web-layout-copy";
-import { approvalSummary } from "./approval-summary";
 export function SessionReader() {
   const session = useSession();
   const desktopReadScope = useDesktopReadScope();
@@ -340,44 +339,15 @@ export function SessionReader() {
                     {banner.body}
                   </p>
                 )}
-              {!!(live?.approvals.length || live?.questions?.length) && (
-                <div className="max-h-[25dvh] shrink-0 overflow-y-auto">
-                  {live?.approvals.map((a) => (
-                    <Button
-                      variant="ghost"
-                      key={a.requestId}
-                      aria-label={`${t.approval} · ${approvalSummary(a, locale, t.unknownTool)} #${a.requestId}`}
-                      className="mx-5 my-2 h-auto min-h-8 min-w-0 shrink-0 justify-start whitespace-normal border border-amber-500/25 bg-amber-500/5 text-left text-xs text-amber-700 dark:text-amber-300 [&>svg:last-child]:ml-auto"
-                      onClick={() => setModal(a)}
-                    >
-                      <ShieldCheck size={19} />
-                      <span className="grid min-w-0 gap-1">
-                        <span className="break-all">
-                          {t.approval} · {approvalSummary(a, locale, t.unknownTool)}
-                        </span>
-                        <span className="break-all text-xs text-muted-foreground">
-                          #{a.requestId}
-                        </span>
-                      </span>
-                      <ChevronRight size={18} />
-                    </Button>
-                  ))}
-                  {live?.questions?.map((q) => (
-                    <Button
-                      variant="ghost"
-                      key={q.requestId}
-                      className="mx-5 my-2 shrink-0 justify-start whitespace-normal border border-amber-500/25 bg-amber-500/5 text-left text-xs text-amber-700 dark:text-amber-300 [&>svg:last-child]:ml-auto"
-                      onClick={() => setModal(q)}
-                    >
-                      {interactionCopy[locale].title}
-                      <ChevronRight size={18} />
-                    </Button>
-                  ))}
-                </div>
-              )}
+              <SessionInteractionDock />
               {notice &&
                 // An accepted message shows up in the conversation at once; saying so is noise.
                 notice !== "accepted" &&
+                // The card reports the outcome of its own decisions while it is still shown.
+                !(
+                  (session.noticeSource === "approve" || session.noticeSource === "answer") &&
+                  !!(live?.approvals.length || live?.questions?.length)
+                ) &&
                 // The composer's controls explain these beside a way into next-turn settings.
                 !(
                   notice === "notDispatched" &&

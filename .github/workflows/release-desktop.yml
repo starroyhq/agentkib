@@ -579,7 +579,7 @@ jobs:
 
   fedora-x64:
     name: Build Fedora x64 RPM
-    needs: [preflight, release-helpers]
+    needs: [preflight, release-helpers, quota-collectors]
     runs-on: ubuntu-24.04
     container: fedora:42
     env:
@@ -619,6 +619,12 @@ jobs:
       - name: Clean previous Electron bundle outputs
         shell: bash
         run: rm -rf apps/desktop/release-electron apps/desktop/build/quota
+
+      - name: Download validated patched collector
+        uses: actions/download-artifact@v7
+        with:
+          name: quota-collector-x86_64-unknown-linux-gnu
+          path: apps/desktop/resources/quota/
 
       - name: Build Electron RPM
         shell: bash

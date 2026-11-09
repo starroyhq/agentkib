@@ -1,10 +1,11 @@
-import type { AssetSection } from "@/features/home/GlobalHome";
 import type { GitSubview } from "@/features/workspace/WorkspaceGitPage";
 import type { SettingsSection, SettingsTarget } from "@/features/settings/SettingsSidebar";
 import type { AgentKind } from "@/core/types";
 import type { AgentFilter } from "@/components/AppSidebar";
 import type { SkillHubSection } from "@/features/skills/SkillHubPage";
 
+/** The sections of the global asset catalog. */
+export type AssetSection = "instructions" | "skills" | "mcp" | "memory" | "other";
 export type Page = "overview" | "sessions" | "git" | "assets" | "context" | "doctor" | "changes";
 export type GlobalPage =
   | "home"

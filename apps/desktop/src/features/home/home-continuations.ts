@@ -10,10 +10,7 @@ export function continuationIndexingEnabled(runtime?: Pick<RuntimeInfo, "session
   return runtime?.session_index_enabled === true;
 }
 
-export function continuationRefreshFailed(results: PromiseSettledResult<unknown>[]) {
-  return results.some((result) => result.status === "rejected");
-}
-
+/** The most recently active workspaces, whose session index the home reads again on entry. */
 export function recentContinuationWorkspaces(workspaces: WorkspaceSummary[], limit = 5) {
   return [...workspaces]
     .sort((left, right) => (right.last_active_at ?? "").localeCompare(left.last_active_at ?? ""))
@@ -37,17 +34,6 @@ export function selectRecentContinuations(
         sessionTimestamp(left.session, left.workspace),
     )
     .slice(0, limit);
-}
-
-export function metadataOnlyContinuationWorkspace(
-  workspaces: WorkspaceSummary[],
-  sessionsByWorkspace: Array<ConversationSessionSummary[] | undefined>,
-) {
-  return workspaces.find((_, index) =>
-    (sessionsByWorkspace[index] ?? []).some(
-      (session) => session.availability === "metadata-only" && isSessionVisible(session),
-    ),
-  );
 }
 
 function sessionTimestamp(session: ConversationSessionSummary, workspace: WorkspaceSummary) {

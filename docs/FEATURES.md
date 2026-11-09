@@ -29,7 +29,7 @@ Current native and synthetic results are recorded separately in [connection QA](
 
 | Area | What it provides |
 | --- | --- |
-| Today | Prioritized local actions and recent workspace activity |
+| Home | This computer's sessions: what needs you (approvals, questions, results to verify), unread results, turns in progress and recent sessions |
 | Workspaces | Discovered and manually added projects, with coverage and warnings |
 | Asset catalog | A machine-wide view of Instructions, Skills, MCP, memory, and other agent assets |
 | Skill Hub | A local Skill library, existing-installation inspection and batch copy import, reviewed OpenAI/GitHub sources, GitHub version selection, personal/project deployment, updates, rollback, withdrawal, and recoverable library removal |
@@ -187,7 +187,7 @@ Platform setup and known limitations are documented in the [Windows guide](devel
 
 | 区域 | 提供的能力 |
 | --- | --- |
-| 今日任务 | 排好优先级的本地行动项和近期工作区活动 |
+| 首页 | 这台电脑上的会话：需要你处理（审批、问题、结果待核对）、待查看的新结果、进行中的轮次和最近会话 |
 | 工作区 | 自动发现或手动添加的项目，以及覆盖情况和警告 |
 | 全局资产目录 | 跨工作区查看 Instructions、Skills、MCP、记忆和其他 Agent 资产 |
 | Skill Hub | 本地 Skill 资源库、已有安装查看与批量复制入库、OpenAI 精选及 GitHub 导入与版本选择、个人/项目部署、更新、回滚、撤销部署和资源库可恢复移除 |

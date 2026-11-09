@@ -13,6 +13,7 @@ import type { Manifest, RefreshKind, WorkspaceSummary } from "@/core/types";
 import type { SettingsSection, SettingsTarget } from "@/features/settings/SettingsSidebar";
 import { refreshAgentTools } from "@/features/settings/agent-tools-query";
 import { requestSessionRefresh } from "@/features/sessions/session-refresh";
+import { refreshConversationCatalog } from "@/features/sessions/conversation-catalog";
 import { withAsyncCleanup } from "@/lib/utils";
 import { createGlobalNavigation } from "./global-navigation";
 import { useWorkspaceTransitions } from "./useWorkspaceTransitions";
@@ -595,8 +596,13 @@ export function useAppNavigation(activeRoute?: ParsedRoute) {
     if (globalPage === "sessions") requestSessionRefresh();
     else if (globalPage === "quota") await requestRefreshKinds(["quota"]);
     else if (globalPage === "insights") await requestRefreshKinds(["insights"]);
-    else if (globalPage === "home" || globalPage === "workspaces")
-      await requestRefreshKinds(["discovery", "doctor"]);
+    else if (globalPage === "home")
+      // The home lists sessions from the catalog; its store keeps the error for the page.
+      await Promise.all([
+        requestRefreshKinds(["discovery", "doctor"]),
+        refreshConversationCatalog().catch(() => undefined),
+      ]);
+    else if (globalPage === "workspaces") await requestRefreshKinds(["discovery", "doctor"]);
     else await requestRefreshKinds(["discovery"]);
   };
 

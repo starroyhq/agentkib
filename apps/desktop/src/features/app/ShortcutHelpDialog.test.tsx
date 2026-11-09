@@ -33,7 +33,7 @@ describe("ShortcutHelpDialog", () => {
     expect(screen.getByRole("dialog")).toBeTruthy();
     expect(screen.getByText("Navigation")).toBeTruthy();
     expect(screen.getByText("Actions")).toBeTruthy();
-    expect(screen.getByText("Today")).toBeTruthy();
+    expect(screen.getByText("Home")).toBeTruthy();
     expect(screen.getByText("Ctrl+1")).toBeTruthy();
     expect(screen.getByText("Ctrl+Shift+O")).toBeTruthy();
     expect(screen.getByText("Toggle sidebar")).toBeTruthy();

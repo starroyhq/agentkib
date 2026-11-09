@@ -1,17 +1,10 @@
 // @vitest-environment jsdom
 
 import "@testing-library/jest-dom/vitest";
-import { act, cleanup, fireEvent, render, screen, within } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import { initializeI18n, tr } from "@/core/i18n";
-import type {
-  AgentInstallation,
-  ContextDoctorSummary,
-  ConversationSessionSummary,
-  MemoryRecord,
-  RuntimeInfo,
-  WorkspaceSummary,
-} from "@/core/types";
+import type { AgentInstallation, RuntimeInfo, WorkspaceSummary } from "@/core/types";
 import { GlobalHome } from "./GlobalHome";
 
 const workspace = {
@@ -38,16 +31,19 @@ function homeProps() {
     doctorSummaries: {},
     installations: [],
     memories: [],
-    uniqueAssetCount: 0,
-    assetCounts: new Map<string, number>(),
-    onShowWorkspaces: vi.fn(),
-    onShowAgents: vi.fn(),
-    onOpen: vi.fn().mockResolvedValue(undefined),
+    sessions: {
+      state: "ready" as const,
+      sessions: [],
+      onOpen: vi.fn(),
+      onShowAll: vi.fn(),
+      onEnableIndex: vi.fn().mockResolvedValue(undefined),
+      onRetry: vi.fn().mockResolvedValue(undefined),
+      onRetrySources: vi.fn().mockResolvedValue(undefined),
+      onNewSession: vi.fn(),
+    },
     onOpenDoctor: vi.fn().mockResolvedValue(undefined),
-    onOpenAssets: vi.fn(),
     onAddWorkspace: vi.fn().mockResolvedValue(undefined),
     onAddRoot: vi.fn().mockResolvedValue(undefined),
-    onRefresh: vi.fn(),
     onRuntimeChanged: vi.fn(),
   };
 }
@@ -56,7 +52,7 @@ describe("GlobalHome", () => {
   beforeAll(() => initializeI18n("en-US"));
   afterEach(cleanup);
 
-  it("replaces zero metrics with the new-user explanation and detected Agents", () => {
+  it("explains the daily home to a new user next to the getting-started steps", () => {
     render(
       <GlobalHome
         {...homeProps()}
@@ -72,7 +68,6 @@ describe("GlobalHome", () => {
     expect(screen.getByText(tr("home.emptySummary"))).toBeVisible();
     expect(screen.getByText(tr("onboarding.readScope"))).toBeVisible();
     expect(screen.getByText(`${tr("onboarding.detectedAgents")} Codex`)).toBeVisible();
-    expect(screen.queryByText(tr("home.issueSummary", { count: 0 }))).toBeNull();
     expect(screen.queryByRole("button", { name: tr("common.refresh") })).toBeNull();
     expect(screen.getByText(tr("onboarding.workspaceStep")).closest("li")).toHaveAttribute(
       "aria-current",
@@ -80,94 +75,12 @@ describe("GlobalHome", () => {
     );
   });
 
-  it("uses singular English for one workspace, installed Agent, and asset", () => {
-    const props = homeProps();
-    render(
-      <GlobalHome
-        {...props}
-        workspaces={[workspace]}
-        installations={
-          [
-            { agent: "codex", installed: true },
-            { agent: "claude-code", installed: false },
-          ] as AgentInstallation[]
-        }
-        uniqueAssetCount={1}
-      />,
-    );
-    fireEvent.click(screen.getByRole("button", { name: /^1\s*Workspace$/ }));
-    expect(props.onShowWorkspaces).toHaveBeenCalledTimes(1);
-    fireEvent.click(screen.getByRole("button", { name: /^1\s*Installed Agent$/ }));
-    expect(props.onShowAgents).toHaveBeenCalledTimes(1);
-    fireEvent.click(screen.getByRole("button", { name: /^1\s*Asset$/ }));
-    expect(props.onOpenAssets).toHaveBeenCalledExactlyOnceWith("instructions");
-  });
-
-  it("uses diagnostic issues and memory proposals once, with consistent recent workspace states", () => {
-    const healthy = {
-      ...workspace,
-      id: "healthy",
-      name: "Clear workspace",
-      status: "attention",
-      last_active_at: "2026-10-23T01:00:00Z",
-    } as WorkspaceSummary;
-    const attention = {
-      ...workspace,
-      id: "attention",
-      name: "Attention",
-      last_active_at: "2026-10-22T01:00:00Z",
-    };
-    const summary = {
-      workspace_id: healthy.id,
-      error_count: 0,
-      warning_count: 0,
-      checked_at: "2026-10-23T00:00:00Z",
-    } as ContextDoctorSummary;
-    render(
-      <GlobalHome
-        {...homeProps()}
-        workspaces={[healthy, attention]}
-        doctorSummaries={{
-          healthy: summary,
-          attention: { ...summary, workspace_id: attention.id, warning_count: 2 },
-        }}
-        memories={
-          [
-            { id: "m1", project_id: attention.id, status: "pending" },
-            { id: "m2", project_id: "global", status: "pending" },
-          ] as MemoryRecord[]
-        }
-      />,
-    );
-    const summaryAction = screen.getByRole("button", {
-      name: tr("home.issueSummary", { count: 4 }),
-    });
-    expect(summaryAction).toBeVisible();
-    const pending = document.getElementById("home-pending-tasks")!;
-    expect(within(pending).getByText(tr("home.itemCount", { count: 4 }))).toHaveClass(
-      "text-warning",
-    );
-    expect(within(pending).getByText(tr("home.workspaceWarnings", { count: 2 }))).toBeVisible();
-    expect(
-      within(pending).getByText(
-        `${tr("home.pendingMemoryDetail", { count: 2 })} · ${tr("home.fromWorkspaces", { count: 2 })}`,
-      ),
-    ).toBeVisible();
-    const recent = screen
-      .getByRole("heading", { name: tr("home.recentWorkspaces") })
-      .closest<HTMLElement>("[data-slot=card]")!;
-    expect(within(recent).getByText(tr("workspace.status.attention", { count: 3 }))).toBeVisible();
-    expect(within(recent).getByText(tr("workspace.status.healthy"))).toBeVisible();
-    const workspaceRows = within(recent)
-      .getAllByRole("button")
-      .filter((button) => button.textContent?.includes("assets"));
-    expect(workspaceRows[0]).toHaveTextContent("Attention");
-    expect(screen.queryByRole("heading", { name: tr("home.recentActivity") })).toBeNull();
-    expect(screen.getByRole("button", { name: tr("common.refresh") })).toHaveClass("border-border");
-    const scrollIntoView = vi.fn();
-    pending.scrollIntoView = scrollIntoView;
-    fireEvent.click(summaryAction);
-    expect(scrollIntoView).toHaveBeenCalledWith({ behavior: "smooth", block: "start" });
+  it("shows the session groups once a workspace exists, without workspace health or add actions", () => {
+    render(<GlobalHome {...homeProps()} workspaces={[workspace]} />);
+    expect(screen.getByText(tr("home.firstSession"))).toBeVisible();
+    expect(screen.queryByRole("button", { name: tr("home.addWorkspace") })).toBeNull();
+    expect(screen.queryByRole("button", { name: tr("home.addScanRoot") })).toBeNull();
+    expect(screen.queryByText(tr("workspace.status.undiagnosed"))).toBeNull();
   });
 
   it("keeps the onboarding steps visible after discovering a workspace and advances to Doctor", () => {
@@ -222,25 +135,20 @@ describe("GlobalHome", () => {
     expect(screen.getByRole("heading", { name: tr("onboarding.title") })).toBeVisible();
   });
 
-  it.each([false, true])(
-    "separates the workspace and scan-folder callbacks (existing workspace: %s)",
-    async (existing) => {
-      const props = homeProps();
-      render(<GlobalHome {...props} workspaces={existing ? [workspace] : []} />);
-      fireEvent.click(screen.getByRole("button", { name: tr("home.addWorkspace") }));
-      expect(props.onAddWorkspace).toHaveBeenCalledTimes(1);
-      expect(props.onAddRoot).not.toHaveBeenCalled();
-      await act(async () => {});
-      fireEvent.click(screen.getByRole("button", { name: tr("home.addScanRoot") }));
-      expect(props.onAddRoot).toHaveBeenCalledTimes(1);
-      expect(props.onAddWorkspace).toHaveBeenCalledTimes(1);
-      await act(async () => {});
-      if (!existing) {
-        expect(screen.getByText(tr("home.addWorkspaceHint"))).toBeVisible();
-        expect(screen.getByText(tr("home.addScanRootHint"))).toBeVisible();
-      }
-    },
-  );
+  it("separates the workspace and scan-folder callbacks", async () => {
+    const props = homeProps();
+    render(<GlobalHome {...props} />);
+    fireEvent.click(screen.getByRole("button", { name: tr("home.addWorkspace") }));
+    expect(props.onAddWorkspace).toHaveBeenCalledTimes(1);
+    expect(props.onAddRoot).not.toHaveBeenCalled();
+    await act(async () => {});
+    fireEvent.click(screen.getByRole("button", { name: tr("home.addScanRoot") }));
+    expect(props.onAddRoot).toHaveBeenCalledTimes(1);
+    expect(props.onAddWorkspace).toHaveBeenCalledTimes(1);
+    await act(async () => {});
+    expect(screen.getByText(tr("home.addWorkspaceHint"))).toBeVisible();
+    expect(screen.getByText(tr("home.addScanRootHint"))).toBeVisible();
+  });
 
   it("locks all add actions until the request settles and exposes a recoverable error", async () => {
     const props = homeProps();
@@ -266,259 +174,5 @@ describe("GlobalHome", () => {
     await act(async () => {});
     expect(props.onAddWorkspace).toHaveBeenCalledTimes(2);
     expect(screen.queryByRole("alert")).toBeNull();
-  });
-
-  it("keeps Doctor accessible after onboarding is no longer visible", () => {
-    const onOpenDoctor = vi.fn().mockResolvedValue(undefined);
-    render(
-      <GlobalHome
-        workspaces={[workspace]}
-        doctorSummaries={{}}
-        installations={[]}
-        memories={[]}
-        uniqueAssetCount={0}
-        assetCounts={new Map()}
-        onShowWorkspaces={vi.fn()}
-        onShowAgents={vi.fn()}
-        onOpen={vi.fn().mockResolvedValue(undefined)}
-        onOpenDoctor={onOpenDoctor}
-        onOpenAssets={vi.fn()}
-        onAddWorkspace={vi.fn().mockResolvedValue(undefined)}
-        onAddRoot={vi.fn().mockResolvedValue(undefined)}
-        onRefresh={vi.fn()}
-        onRuntimeChanged={vi.fn()}
-      />,
-    );
-
-    fireEvent.click(screen.getByRole("button", { name: "View diagnostics" }));
-
-    expect(onOpenDoctor).toHaveBeenCalledWith(workspace);
-  });
-
-  it("names a recent worktree session after its repository, as the directory does", () => {
-    const checkout = {
-      repository_group_id: "repo",
-      kind: "primary" as const,
-      primary_path: "/work/atlas",
-      name: null,
-      branch: "main",
-      status: "present" as const,
-    };
-    const repository = { ...workspace, id: "atlas", name: "atlas", path: "/work/atlas", checkout };
-    const work = { ...workspace, id: "work", name: "work", path: "/work" };
-    const session = {
-      id: "gone",
-      workspace_id: "work",
-      agent: "claude-code",
-      title: "Old experiment",
-      updated_at: "2026-09-03T00:00:00.000Z",
-      archived: false,
-      sidechain: false,
-      availability: "readable",
-      worktree: {
-        repository_group_id: "repo",
-        name: "gone",
-        path: "/work/atlas-worktrees/gone",
-        branch: null,
-        status: "deleted",
-      },
-    } as ConversationSessionSummary;
-    const notes = { ...session, id: "notes", title: "Tidy notes", worktree: undefined };
-    render(
-      <GlobalHome
-        {...homeProps()}
-        workspaces={[repository, work]}
-        recentContinuations={[
-          { workspace: work, session },
-          { workspace: work, session: notes },
-        ]}
-        continuationState="ready"
-      />,
-    );
-    expect(screen.getByRole("button", { name: /Old experiment/ })).toHaveTextContent(
-      "Claude Code · atlas ·",
-    );
-    expect(screen.getByRole("button", { name: /Tidy notes/ })).toHaveTextContent(
-      "Claude Code · work ·",
-    );
-  });
-
-  it("shows a concrete recent session and opens that session", () => {
-    const onContinue = vi.fn().mockResolvedValue(undefined);
-    const session = {
-      id: "session-1",
-      workspace_id: workspace.id,
-      agent: "codex",
-      title: "Continue the migration",
-      updated_at: "2026-09-03T00:00:00.000Z",
-      archived: false,
-      sidechain: false,
-      availability: "readable",
-    } as ConversationSessionSummary;
-    const continuation = { workspace, session };
-    render(
-      <GlobalHome
-        workspaces={[workspace]}
-        doctorSummaries={{}}
-        installations={[]}
-        memories={[]}
-        uniqueAssetCount={0}
-        assetCounts={new Map()}
-        onShowWorkspaces={vi.fn()}
-        onShowAgents={vi.fn()}
-        recentContinuations={[continuation]}
-        continuationState="ready"
-        onContinue={onContinue}
-        onOpen={vi.fn().mockResolvedValue(undefined)}
-        onOpenDoctor={vi.fn().mockResolvedValue(undefined)}
-        onOpenAssets={vi.fn()}
-        onAddWorkspace={vi.fn().mockResolvedValue(undefined)}
-        onAddRoot={vi.fn().mockResolvedValue(undefined)}
-        onRefresh={vi.fn()}
-        onRuntimeChanged={vi.fn()}
-      />,
-    );
-
-    expect(screen.getByText("Continue the migration")).toBeTruthy();
-    fireEvent.click(screen.getByRole("button", { name: /Continue the migration/i }));
-    expect(onContinue).toHaveBeenCalledWith(continuation);
-  });
-
-  it("offers to enable session reading when indexing is disabled", () => {
-    const onEnableContinuations = vi.fn().mockResolvedValue(undefined);
-    const cachedSession = {
-      id: "cached-session",
-      workspace_id: workspace.id,
-      agent: "codex",
-      title: "Cached private session",
-      archived: false,
-      sidechain: false,
-      availability: "readable",
-    } as ConversationSessionSummary;
-    render(
-      <GlobalHome
-        workspaces={[workspace]}
-        doctorSummaries={{}}
-        installations={[]}
-        memories={[]}
-        uniqueAssetCount={0}
-        assetCounts={new Map()}
-        onShowWorkspaces={vi.fn()}
-        onShowAgents={vi.fn()}
-        recentContinuations={[{ workspace, session: cachedSession }]}
-        continuationState="disabled"
-        onEnableContinuations={onEnableContinuations}
-        onOpen={vi.fn().mockResolvedValue(undefined)}
-        onOpenDoctor={vi.fn().mockResolvedValue(undefined)}
-        onOpenAssets={vi.fn()}
-        onAddWorkspace={vi.fn().mockResolvedValue(undefined)}
-        onAddRoot={vi.fn().mockResolvedValue(undefined)}
-        onRefresh={vi.fn()}
-        onRuntimeChanged={vi.fn()}
-      />,
-    );
-
-    fireEvent.click(screen.getByRole("button", { name: "Enable session reading" }));
-    expect(onEnableContinuations).toHaveBeenCalledTimes(1);
-    expect(screen.queryByText("Cached private session")).toBeNull();
-  });
-
-  it("does not reveal cached sessions while session indexing is loading", () => {
-    const cachedSession = {
-      id: "cached-session",
-      workspace_id: workspace.id,
-      agent: "codex",
-      title: "Cached private session",
-      archived: false,
-      sidechain: false,
-      availability: "readable",
-    } as ConversationSessionSummary;
-    render(
-      <GlobalHome
-        workspaces={[workspace]}
-        doctorSummaries={{}}
-        installations={[]}
-        memories={[]}
-        uniqueAssetCount={0}
-        assetCounts={new Map()}
-        onShowWorkspaces={vi.fn()}
-        onShowAgents={vi.fn()}
-        recentContinuations={[{ workspace, session: cachedSession }]}
-        continuationState="loading"
-        onOpen={vi.fn().mockResolvedValue(undefined)}
-        onOpenDoctor={vi.fn().mockResolvedValue(undefined)}
-        onOpenAssets={vi.fn()}
-        onAddWorkspace={vi.fn().mockResolvedValue(undefined)}
-        onAddRoot={vi.fn().mockResolvedValue(undefined)}
-        onRefresh={vi.fn()}
-        onRuntimeChanged={vi.fn()}
-      />,
-    );
-
-    expect(screen.queryByText("Cached private session")).toBeNull();
-  });
-
-  it("explains loading, metadata-only, empty, and error continuation states", () => {
-    const props = {
-      workspaces: [workspace],
-      doctorSummaries: {},
-      installations: [],
-      memories: [],
-      uniqueAssetCount: 0,
-      assetCounts: new Map<string, number>(),
-      onShowWorkspaces: vi.fn(),
-      onShowAgents: vi.fn(),
-      onOpen: vi.fn().mockResolvedValue(undefined),
-      onOpenDoctor: vi.fn().mockResolvedValue(undefined),
-      onOpenAssets: vi.fn(),
-      onAddWorkspace: vi.fn().mockResolvedValue(undefined),
-      onAddRoot: vi.fn().mockResolvedValue(undefined),
-      onRefresh: vi.fn(),
-      onRuntimeChanged: vi.fn(),
-    };
-    const onOpenContinuationWorkspace = vi.fn().mockResolvedValue(undefined);
-    const onRetryContinuations = vi.fn().mockResolvedValue(undefined);
-    const view = render(
-      <GlobalHome
-        {...props}
-        continuationState="loading"
-        continuationSlow
-        onOpenContinuationWorkspace={onOpenContinuationWorkspace}
-      />,
-    );
-    expect(
-      screen.getByText("There are many local records. AgentKib is still working."),
-    ).toBeTruthy();
-
-    view.rerender(
-      <GlobalHome
-        {...props}
-        continuationState="metadata-only"
-        onOpenContinuationWorkspace={onOpenContinuationWorkspace}
-      />,
-    );
-    fireEvent.click(screen.getByRole("button", { name: "View workspace sessions" }));
-    expect(onOpenContinuationWorkspace).toHaveBeenCalledTimes(1);
-
-    view.rerender(
-      <GlobalHome
-        {...props}
-        continuationState="empty"
-        onOpenContinuationWorkspace={onOpenContinuationWorkspace}
-      />,
-    );
-    expect(screen.getByText("No readable sessions were found in recent workspaces.")).toBeTruthy();
-
-    view.rerender(
-      <GlobalHome
-        {...props}
-        continuationState="error"
-        continuationError="Source unavailable"
-        onRetryContinuations={onRetryContinuations}
-      />,
-    );
-    expect(screen.getByText("Source unavailable")).toBeTruthy();
-    fireEvent.click(screen.getByRole("button", { name: "Retry" }));
-    expect(onRetryContinuations).toHaveBeenCalledTimes(1);
   });
 });

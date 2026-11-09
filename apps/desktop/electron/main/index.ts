@@ -886,9 +886,6 @@ function registerHomeIpc(): void {
       force === undefined ? true : requireBoolean(force, "force"),
     );
   });
-  forward("agentkib:home:insights-summary", RUNTIME_METHODS.insightsSummary, (query: unknown) => ({
-    query: requireObject(query, "insights query"),
-  }));
   forward("agentkib:home:insights-status", RUNTIME_METHODS.insightsStatus);
   forward("agentkib:home:quota-collector-status", RUNTIME_METHODS.quotaCollectorStatus);
   forward("agentkib:home:quota-snapshot", RUNTIME_METHODS.quotaSnapshot);

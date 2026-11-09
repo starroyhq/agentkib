@@ -39,7 +39,6 @@ export const homeKeys = {
   continuationsRoot: () => [...homeKeys.all, "continuations"] as const,
   continuations: (workspaceId: string) => [...homeKeys.all, "continuations", workspaceId] as const,
   discovery: () => [...homeKeys.all, "discovery"] as const,
-  insightsSummary: () => [...homeKeys.all, "insights-summary"] as const,
   refreshJobs: () => [...homeKeys.all, "refresh-jobs"] as const,
   remoteGateways: () => [...homeKeys.all, "remote-gateways"] as const,
   scanRoots: () => [...homeKeys.all, "scan-roots"] as const,
@@ -145,18 +144,6 @@ export function useHomeDiscovery() {
       ...queryDefaults,
       queryKey: homeKeys.discovery(),
       queryFn: () => api.discoveryReport(),
-    },
-    queryClient,
-  );
-}
-
-export function useHomeInsightsSummary() {
-  const queryClient = useOptionalQueryClient();
-  return useQuery(
-    {
-      ...queryDefaults,
-      queryKey: homeKeys.insightsSummary(),
-      queryFn: () => api.insightsSummary(),
     },
     queryClient,
   );

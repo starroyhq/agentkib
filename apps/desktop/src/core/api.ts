@@ -356,7 +356,6 @@ export const api = {
   activity: (limit = 200) => desktopApi().home.activity(limit),
   refreshInsights: () => desktopApi().home.refreshInsights(),
   insightsView: (query: InsightsQuery = {}) => desktopApi().home.insightsView(query),
-  insightsSummary: (query: InsightsQuery = {}) => desktopApi().home.insightsSummary(query),
   insightsHeatmap: (query: InsightsQuery = {}) => desktopApi().insights.heatmap(query),
   agentUsageBreakdown: (query: InsightsQuery = {}) => desktopApi().insights.agentUsage(query),
   modelUsageBreakdown: (query: InsightsQuery = {}) => desktopApi().insights.modelUsage(query),

@@ -1,11 +1,11 @@
-import { useI18n } from "@/core/useI18n";
 import { createFileRoute, useNavigate } from "@tanstack/react-router";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { useQueries, useQueryClient } from "@tanstack/react-query";
-import { GlobalHome, type ContinuationHomeState } from "@/features/home/GlobalHome";
+import { useEffect, useMemo, useRef } from "react";
+import { useQueryClient } from "@tanstack/react-query";
+import { useI18n } from "@/core/useI18n";
+import { GlobalHome } from "@/features/home/GlobalHome";
 import { HomeSkeleton } from "@/features/home/HomeSkeleton";
+import type { HomeSessionsState } from "@/features/home/HomeSessions";
 import { api } from "@/core/api";
-import { groupCatalogAssets, workspaceAssetCounts } from "@/features/catalog/catalog";
 import { useAppStore } from "@/stores/app-store";
 import { useAppNavigationContext } from "@/features/app/AppNavigationContext";
 import { desktopApi } from "@/core/desktop";
@@ -14,26 +14,28 @@ import {
   refreshConversationCatalog,
   useConversationCatalog,
 } from "@/features/sessions/conversation-catalog";
-import { workspaceSessionEntries } from "@/features/sessions/session-catalog";
-import { prepareSessionNavigation } from "@/features/sessions/session-view-store";
+import {
+  prepareSessionNavigation,
+  useSessionViewStore,
+} from "@/features/sessions/session-view-store";
 import {
   continuationIndexingEnabled,
-  continuationRefreshFailed,
-  metadataOnlyContinuationWorkspace,
   recentContinuationWorkspaces,
-  selectRecentContinuations,
 } from "@/features/home/home-continuations";
-import type { ConversationSessionSummary, WorkspaceSummary } from "@/core/types";
+import type { AgentKind, WorkspaceSummary } from "@/core/types";
 import {
   homeKeys,
-  useHomeCatalog,
-  useHomeDiscovery,
   useHomeDoctorSummaries,
-  useHomeInsightsSummary,
   useHomeInstallations,
   useHomeMemories,
   useHomeWorkspaces,
 } from "@/features/home/home-query";
+
+const settle = () =>
+  refreshConversationCatalog().then(
+    () => undefined,
+    () => undefined,
+  );
 
 function HomeRoute() {
   const { localizeMessage, tr } = useI18n();
@@ -44,128 +46,31 @@ function HomeRoute() {
   const queryClient = useQueryClient();
   const workspacesQuery = useHomeWorkspaces();
   const workspaces = useMemo(() => workspacesQuery.data ?? [], [workspacesQuery.data]);
-  const continuationWorkspaces = useMemo(
-    () => recentContinuationWorkspaces(workspaces),
-    [workspaces],
-  );
-  const continuationRuntimeReady = runtime !== undefined;
-  const continuationEnabled = continuationIndexingEnabled(runtime);
-  const managedCatalog = useConversationCatalog(continuationEnabled);
-  const continuationQueries = useQueries({
-    queries: continuationWorkspaces.map((workspace) => ({
-      queryKey: homeKeys.continuations(workspace.id),
-      queryFn: () => api.workspaceSessions(workspace.id),
-      staleTime: 60_000,
-      enabled: continuationEnabled,
-    })),
-  });
-  const continuationKey = continuationWorkspaces.map(({ id }) => id).join(":");
-  const continuationCacheReady = continuationQueries.every((query) => !query.isPending);
-  const continuationRefreshKey = useRef("");
-  const continuationRefreshGeneration = useRef(0);
-  const [continuationsRefreshing, setContinuationsRefreshing] = useState(false);
-  const [continuationsSlow, setContinuationsSlow] = useState(false);
-  const [continuationsError, setContinuationsError] = useState("");
-  const refreshContinuations = useCallback(async () => {
-    if (!continuationEnabled || !continuationWorkspaces.length) return;
-    const generation = ++continuationRefreshGeneration.current;
-    setContinuationsRefreshing(true);
-    setContinuationsSlow(false);
-    setContinuationsError("");
-    const results = await Promise.allSettled(
-      continuationWorkspaces.map(async (workspace) => {
-        const sessions = await api.refreshWorkspaceSessions(workspace.id, false);
-        return { workspaceId: workspace.id, sessions };
-      }),
-    );
-    if (generation !== continuationRefreshGeneration.current) return;
-    for (const result of results) {
-      if (result.status !== "fulfilled") continue;
-      queryClient.setQueryData<ConversationSessionSummary[]>(
-        homeKeys.continuations(result.value.workspaceId),
-        result.value.sessions,
-      );
-    }
-    const failures = results.filter(
-      (result): result is PromiseRejectedResult => result.status === "rejected",
-    );
-    if (continuationRefreshFailed(results) && failures[0]) {
-      setContinuationsError(localizeMessage(failures[0].reason));
-    }
-    setContinuationsRefreshing(false);
-  }, [continuationEnabled, continuationWorkspaces, localizeMessage, queryClient]);
+  const indexEnabled = continuationIndexingEnabled(runtime);
+  // The home lists sessions from the catalog and follows its subscription.
+  const catalog = useConversationCatalog(indexEnabled);
+  // Nothing watches session sources, so a session started outside AgentKib (a terminal, the Codex
+  // app) reaches the index only when it is read. As before, entering the home reads the most
+  // recently active workspaces once, in the background, without forcing a full rescan.
+  const recentWorkspaceIds = recentContinuationWorkspaces(workspaces)
+    .map(({ id }) => id)
+    .join(":");
+  const readRecentWorkspaces = useRef("");
   useEffect(() => {
-    if (!continuationEnabled) {
-      continuationRefreshGeneration.current += 1;
-      continuationRefreshKey.current = "";
-      return;
-    }
-    if (!continuationKey || !continuationCacheReady) return;
-    if (continuationRefreshKey.current === continuationKey) return;
-    continuationRefreshKey.current = continuationKey;
-    void refreshContinuations();
-  }, [continuationCacheReady, continuationEnabled, continuationKey, refreshContinuations]);
-  useEffect(() => {
-    if (!continuationsRefreshing) return;
-    const timer = window.setTimeout(() => setContinuationsSlow(true), 3000);
-    return () => window.clearTimeout(timer);
-  }, [continuationsRefreshing]);
-  useEffect(
-    () => () => {
-      continuationRefreshGeneration.current += 1;
-    },
-    [],
-  );
-  const projectedContinuationSessions = continuationEnabled
-    ? continuationQueries.map((query, index) =>
-        workspaceSessionEntries(
-          continuationWorkspaces[index].id,
-          query.data ?? [],
-          managedCatalog.sessions,
-        ),
-      )
-    : [];
-  const recentContinuations = continuationEnabled
-    ? selectRecentContinuations(continuationWorkspaces, projectedContinuationSessions, 3)
-    : [];
-  const metadataOnlyWorkspace = continuationEnabled
-    ? metadataOnlyContinuationWorkspace(continuationWorkspaces, projectedContinuationSessions)
-    : undefined;
-  const continuationError =
-    continuationsError || (managedCatalog.error ? localizeMessage(managedCatalog.error) : "");
-  const continuationState: ContinuationHomeState = !continuationRuntimeReady
-    ? "loading"
-    : !continuationEnabled
-      ? "disabled"
-      : recentContinuations.length
-        ? "ready"
-        : continuationQueries.some((query) => query.isPending) ||
-            continuationsRefreshing ||
-            !managedCatalog.ready
-          ? "loading"
-          : continuationError
-            ? "error"
-            : metadataOnlyWorkspace
-              ? "metadata-only"
-              : "empty";
+    if (!indexEnabled || !recentWorkspaceIds) return;
+    if (readRecentWorkspaces.current === recentWorkspaceIds) return;
+    readRecentWorkspaces.current = recentWorkspaceIds;
+    void Promise.allSettled(
+      recentWorkspaceIds.split(":").map((id) => api.refreshWorkspaceSessions(id, false)),
+    ).then(settle);
+  }, [indexEnabled, recentWorkspaceIds]);
   const doctorSummariesQuery = useHomeDoctorSummaries(workspaces.map((workspace) => workspace.id));
   const installationsQuery = useHomeInstallations();
   const memoriesQuery = useHomeMemories();
-  const discoveryQuery = useHomeDiscovery();
-  const insightsQuery = useHomeInsightsSummary();
-  const catalogQuery = useHomeCatalog();
   const benchmarkReported = useRef(false);
   useEffect(() => {
     if (benchmarkReported.current) return;
-    const queries = [
-      workspacesQuery,
-      doctorSummariesQuery,
-      installationsQuery,
-      memoriesQuery,
-      discoveryQuery,
-      insightsQuery,
-      catalogQuery,
-    ];
+    const queries = [workspacesQuery, doctorSummariesQuery, installationsQuery, memoriesQuery];
     if (!runtime) return;
     const outcome = homeBenchmarkOutcome(queries);
     if (outcome === "pending") return;
@@ -173,24 +78,24 @@ function HomeRoute() {
     void desktopApi()
       .benchmark.mark(outcome === "ready" ? "home-data-ready" : "home-data-failed")
       .catch(() => undefined);
-  }, [
-    catalogQuery,
-    discoveryQuery,
-    doctorSummariesQuery,
-    insightsQuery,
-    installationsQuery,
-    memoriesQuery,
-    runtime,
-    workspacesQuery,
-  ]);
-  const doctorSummaries = doctorSummariesQuery.isError ? {} : (doctorSummariesQuery.data ?? {});
+  }, [doctorSummariesQuery, installationsQuery, memoriesQuery, runtime, workspacesQuery]);
   const installations = installationsQuery.data ?? [];
-  const globalMemories = memoriesQuery.data ?? [];
-  const discovery = discoveryQuery.data;
-  const insightsSummary = insightsQuery.data;
-  const catalog = catalogQuery.data ?? [];
-  const groupedCatalog = groupCatalogAssets(catalog);
-  const assetCounts = workspaceAssetCounts(groupedCatalog);
+  const installed = new Set(
+    installations.filter((item) => item.installed).map((item) => item.agent),
+  );
+  // Agents that are not installed have nothing to read; only an installed one is worth a note.
+  const unavailableAgents = [
+    ...new Set((catalog.incompleteSources ?? []).map((source) => source.agent)),
+  ].filter((agent): agent is AgentKind => installed.has(agent as AgentKind));
+  const sessionsState: HomeSessionsState = !runtime
+    ? "loading"
+    : !indexEnabled
+      ? "disabled"
+      : catalog.usable
+        ? "ready"
+        : catalog.error !== undefined && !catalog.refreshing
+          ? "error"
+          : "loading";
   const openWorkspace = async (workspace: WorkspaceSummary, page = "overview") => {
     const path =
       page === "overview" ? "/workspace/$workspaceId" : "/workspace/$workspaceId/" + page;
@@ -204,58 +109,51 @@ function HomeRoute() {
       await api.requestRefresh("discovery", true);
     }
   };
-  const issuesPending = doctorSummariesQuery.isPending || memoriesQuery.isPending;
   if (workspacesQuery.isPending) return <HomeSkeleton />;
   return (
     <GlobalHome
       workspaces={workspaces}
-      doctorSummaries={doctorSummaries}
+      doctorSummaries={doctorSummariesQuery.isError ? {} : (doctorSummariesQuery.data ?? {})}
       installations={installations}
-      memories={globalMemories}
-      issuesPending={issuesPending}
-      discovery={discovery}
+      memories={memoriesQuery.data ?? []}
       installationsPending={installationsQuery.isPending}
-      catalogPending={catalogQuery.isPending}
-      insights={insightsSummary}
-      uniqueAssetCount={groupedCatalog.filter((asset) => asset.scope === "workspace").length}
-      assetCounts={assetCounts}
-      onShowWorkspaces={() => void navigate({ to: "/workspaces" })}
-      onShowAgents={() => void navigate({ to: "/agents" })}
-      recentContinuations={recentContinuations}
-      continuationState={continuationState}
-      continuationSlow={continuationsSlow}
-      continuationError={continuationError}
-      onContinue={async ({ session }) => {
-        prepareSessionNavigation(session);
-        await navigate({
-          to: "/sessions",
-          search: { sessionId: session.id },
-        });
+      sessions={{
+        state: sessionsState,
+        sessions: catalog.sessions,
+        error: catalog.error === undefined ? undefined : localizeMessage(catalog.error),
+        unavailableAgents,
+        onOpen: (session) => {
+          prepareSessionNavigation(session);
+          void navigate({ to: "/sessions", search: { sessionId: session.id } });
+        },
+        onShowAll: () => void navigate({ to: "/sessions" }),
+        onEnableIndex: async () => {
+          // A newly enabled index is empty; read each workspace's sessions once, as the sessions
+          // page does when it opens, so the home has something to show. That covers the recent
+          // workspaces the entry read would take again.
+          readRecentWorkspaces.current = recentWorkspaceIds;
+          setRuntime(await api.setSessionIndexEnabled(true));
+          await Promise.allSettled(
+            workspaces.map((workspace) => api.refreshWorkspaceSessions(workspace.id, false)),
+          );
+          await settle();
+        },
+        onRetry: settle,
+        onRetrySources: async () => {
+          const ids = new Set(
+            (catalog.incompleteSources ?? []).map((source) => source.workspaceId),
+          );
+          await Promise.allSettled([...ids].map((id) => api.refreshWorkspaceSessions(id, true)));
+          await settle();
+        },
+        onNewSession: () => {
+          useSessionViewStore.getState().setCreatingConversation(true);
+          void navigate({ to: "/sessions" });
+        },
       }}
-      onEnableContinuations={async () => {
-        setRuntime(await api.setSessionIndexEnabled(true));
-      }}
-      onRetryContinuations={async () => {
-        await Promise.allSettled([refreshContinuations(), refreshConversationCatalog()]);
-      }}
-      onOpenContinuationWorkspace={async () => {
-        const workspace = metadataOnlyWorkspace ?? continuationWorkspaces[0];
-        if (workspace) await openWorkspace(workspace, "sessions");
-      }}
-      onOpen={openWorkspace}
       onOpenDoctor={(workspace) => openWorkspace(workspace, "doctor")}
-      onOpenAssets={(section) =>
-        void navigate({ to: "/catalog", search: { assetSection: section } as never })
-      }
       onAddWorkspace={app.addWorkspace}
       onAddRoot={addScanRoot}
-      onRefresh={() => {
-        void Promise.all([
-          api.requestRefresh("discovery", true),
-          api.requestRefresh("insights", true),
-          api.requestRefresh("doctor", true),
-        ]);
-      }}
       runtime={runtime}
       onRuntimeChanged={setRuntime}
     />

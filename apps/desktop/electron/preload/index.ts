@@ -407,8 +407,6 @@ const desktopApi = Object.freeze({
     insightsView: (query: unknown) => ipcRenderer.invoke("agentkib:home:insights-view", query),
     refreshInsights: (force?: boolean) =>
       ipcRenderer.invoke("agentkib:home:refresh-insights", force),
-    insightsSummary: (query: unknown) =>
-      ipcRenderer.invoke("agentkib:home:insights-summary", query),
     insightsStatus: () => ipcRenderer.invoke("agentkib:home:insights-status"),
     quotaCollectorStatus: () => ipcRenderer.invoke("agentkib:home:quota-collector-status"),
     quotaSnapshot: () => ipcRenderer.invoke("agentkib:home:quota-snapshot"),

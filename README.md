@@ -42,7 +42,8 @@ Everything runs on your computer. Discovery, diagnostics, history and handoff ne
 
 ### Use your computer from your phone
 
-- Pair a phone or another browser with an 8-character code and give it read-only access or full control. Connect through the AgentKib Remote relay with an [AgentKib account](https://account.agentkib.com), directly over your local network, or through your own HTTPS setup.
+- Use the AgentKib phone app, or a browser on your phone or another computer. Pair it with an 8-character code and give it read-only access or full control.
+- Connect through the AgentKib Remote relay with an [AgentKib account](https://account.agentkib.com), directly over your local network, or through your own HTTPS setup. On the same network the phone app connects to the computer directly by itself. When the app and the computer are signed in to the same account, the pairing renews while the app stays signed in and ends when it signs out.
 - Full control covers sending, approvals and questions, attachments, project files and artifacts, and a preview of web pages running on the computer. Tasks keep running when the phone disconnects; the desktop app has to stay open.
 
 ### Keep context, Skills and MCP in order

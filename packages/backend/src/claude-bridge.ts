@@ -16,10 +16,11 @@ import path from "node:path";
 import { z } from "zod";
 import {
   CLAUDE_BRIDGE_CLI_VERSION,
-  CLAUDE_BRIDGE_PLUGIN_VERSION,
+  CLAUDE_BRIDGE_COMPATIBILITY,
   CLAUDE_BRIDGE_PATHS,
   CLAUDE_BRIDGE_REQUIRED_CAPABILITIES,
   claudeBridgeCompatibility,
+  claudeBridgePluginCompatibility,
   missingClaudeBridgeCapabilities,
   type ClaudeBridgeConnectionFailure,
   type ClaudeBridgeIdentity,
@@ -94,10 +95,14 @@ const reportedMissingCapabilities = z
   .array(z.enum(CLAUDE_BRIDGE_REQUIRED_CAPABILITIES as [string, ...string[]]))
   .max(CLAUDE_BRIDGE_REQUIRED_CAPABILITIES.length)
   .optional();
+// Plugins of other releases report here too, an old one included, so the dialog can say why.
 const reconnectFailureSchema = z
   .object({
     protocol: z.literal(1),
-    pluginVersion: z.literal(CLAUDE_BRIDGE_PLUGIN_VERSION),
+    pluginVersion: z
+      .string()
+      .max(64)
+      .refine((version) => claudeBridgePluginCompatibility(version) !== "invalid"),
     bindingId: uuid,
     nativeId: uuid,
     cwd: z.string().min(1).max(4096),
@@ -111,7 +116,7 @@ const reconnectFailureSchema = z
     cliVersion: reportedCliVersion,
     missingCapabilities: reportedMissingCapabilities,
   })
-  .strict();
+  .strip();
 const AUTO_STATE_LIMIT = 512;
 // Kept beside, not inside, bindings-v1.json so an older Runtime can still read its registry.
 const autoStateSchema = z
@@ -222,7 +227,8 @@ function requireCompatibility(value: unknown): void {
   const row = value && typeof value === "object" ? (value as Record<string, unknown>) : {};
   const state = claudeBridgeCompatibility(row.cliVersion);
   const version = state === "invalid" ? undefined : (row.cliVersion as string);
-  if (row.protocol !== 1 || row.pluginVersion !== CLAUDE_BRIDGE_PLUGIN_VERSION)
+  // A plugin of another release connects too, a newer one included.
+  if (row.protocol !== 1 || claudeBridgePluginCompatibility(row.pluginVersion) !== "supported")
     throw new CompatibilityError("bridge-plugin-update-required", version);
   if (state === "too-old") throw new CompatibilityError("bridge-cli-too-old", version);
   if (state === "invalid") throw new CompatibilityError("bridge-cli-unsupported");
@@ -1203,7 +1209,9 @@ export class ClaudeBridge {
       cwd: row.target.workspace,
       // Registries written before B2 could only contain the exactly pinned CLI.
       cliVersion: row.cliVersion ?? CLAUDE_BRIDGE_CLI_VERSION,
-      pluginVersion: CLAUDE_BRIDGE_PLUGIN_VERSION,
+      // Plugin 0.4.0 reconnects only with a credential naming its own version. Naming the oldest
+      // plugin this Runtime takes keeps that plugin working; later plugins take any supported one.
+      pluginVersion: CLAUDE_BRIDGE_COMPATIBILITY.minimumPluginVersion,
     });
   }
   async #http(request: IncomingMessage, response: ServerResponse): Promise<void> {
@@ -1263,7 +1271,7 @@ export class ClaudeBridge {
               cliVersion: reportedCliVersion,
               missingCapabilities: reportedMissingCapabilities,
             })
-            .strict()
+            .strip()
             .parse(value);
           throw new CompatibilityError(
             report.connectionError === "bridge-version-mismatch"
@@ -1274,9 +1282,10 @@ export class ClaudeBridge {
           );
         }
         requireCompatibility(value);
+        // A newer plugin may add fields this Runtime does not know; they are dropped.
         const hello = bridgeIdentitySchema
           .extend({ ticket: z.string().regex(/^[a-f0-9]{64}$/) })
-          .strict()
+          .strip()
           .parse(value);
         let target: ClaudeBridgeTarget;
         try {
@@ -1316,7 +1325,7 @@ export class ClaudeBridge {
           if (error instanceof CompatibilityError) await this.#recordAutoFailure(value, error);
           throw error;
         }
-        const hello = bridgeIdentitySchema.extend({ autoKey: z.string() }).strict().parse(value);
+        const hello = bridgeIdentitySchema.extend({ autoKey: z.string() }).strip().parse(value);
         if (this.#declined.has(hello.nativeId)) throw new Error("bridge-auto-declined");
         let target: ClaudeBridgeTarget;
         try {
@@ -1393,7 +1402,7 @@ export class ClaudeBridge {
           return;
         }
         requireCompatibility(value);
-        const hello = bridgeIdentitySchema.extend({ bindingId: uuid }).strict().parse(value);
+        const hello = bridgeIdentitySchema.extend({ bindingId: uuid }).strip().parse(value);
         if (hello.nativeId !== row.target.nativeId || hello.cwd !== row.target.workspace)
           throw new Error("bridge-identity-mismatch");
         this.#disconnect(row.target.sessionId);

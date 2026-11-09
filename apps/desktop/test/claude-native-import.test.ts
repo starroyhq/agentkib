@@ -134,7 +134,7 @@ describe("Claude native import capability", () => {
     });
   });
 
-  it("keeps the version gate and its reason unchanged", async () => {
+  it("refuses a release before 2.1 with the version reason", async () => {
     const f = fixture("2.0.9 (Claude Code)\n");
     currentSession(path.join(f.projects, "-synthetic-workspace"));
     expect(await claude(f)).toEqual({
@@ -143,6 +143,15 @@ describe("Claude native import capability", () => {
       reason: "unsupported-version-or-schema",
     });
   });
+
+  it.each(["2.2.0 (Claude Code)\n", "3.0.0 (Claude Code)\n"])(
+    "accepts %j, a release after the 2.1 series, once its sessions pass the format probe",
+    async (output) => {
+      const f = fixture(output);
+      currentSession(path.join(f.projects, "-synthetic-workspace"));
+      expect(await claude(f)).toEqual({ supported: true, beta: true });
+    },
+  );
 
   it("reports an unavailable CLI before looking at any transcript", async () => {
     const f = fixture();
@@ -214,7 +223,7 @@ describe("Claude native import capability", () => {
   });
 });
 
-describe("Codex native import capability stays unchanged", () => {
+describe("Codex native import capability", () => {
   const sessions = (f: ReturnType<typeof fixture>) =>
     path.join(f.codexHome, "sessions", "2026", "10", "13");
   const codex = (f: ReturnType<typeof fixture>, project = "/synthetic/workspace") =>
@@ -240,8 +249,23 @@ describe("Codex native import capability stays unchanged", () => {
     });
   });
 
-  it("still requires the pinned CLI version", async () => {
-    const f = fixture("codex-cli 0.160.0\n");
+  it.each(["codex-cli 0.160.0\n", "codex-cli 0.163.0\n", "codex-cli 1.0.0\n"])(
+    "accepts %j, a release after the one whose rollout format it writes",
+    async (output) => {
+      const f = fixture(output);
+      writeTranscript(sessions(f), jsonl([meta]), { name: "rollout-synthetic.jsonl" });
+      expect(await codex(f)).toEqual({ supported: true, beta: true });
+    },
+  );
+
+  it.each([
+    "codex-cli 0.159.1\n",
+    "codex-cli 0.147.0\n",
+    // Only the CLI's own version counts, not a later one printed after it.
+    "codex-cli 0.158.0 (0.163.0 available)\n",
+    "codex-cli\n",
+  ])("refuses %j with the version reason", async (output) => {
+    const f = fixture(output);
     expect(await codex(f)).toEqual({
       supported: false,
       beta: true,

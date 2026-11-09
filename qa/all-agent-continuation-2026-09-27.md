@@ -22,7 +22,7 @@ OpenCode/Hermes 新目标使用官方导入格式及命令；OpenClaw 新目标�
 
 ## 实际目标版本与方向结果
 
-完整方向矩阵见 [SESSION-INTEROPERABILITY](../docs/SESSION-INTEROPERABILITY.md)。该矩阵对所有可解析来源分别适用，未验收不计为通过。
+完整方向矩阵见 [SESSION-INTEROPERABILITY](../docs/sessions/interoperability.md)。该矩阵对所有可解析来源分别适用，未验收不计为通过。
 
 | 目标/表面 | 证据及本轮结果 |
 | --- | --- |

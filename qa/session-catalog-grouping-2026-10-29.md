@@ -1,6 +1,6 @@
 # 会话目录：程序启动的会话与 git 工作树（2026-10-29）
 
-分支 `feat/session-catalog-grouping`，独立 worktree，基于 `v0.22.0`（`85b41db4c`）。未推送、未开 PR。解决三个问题：Pen 等程序启动的 Claude Code 会话混在普通会话里；git 工作树在会话目录和工作区页里各占一组；主目录这类外层工作区刷新后抢走内层工作区的会话。行为与规则见[功能与兼容矩阵](../docs/FEATURES.md)的“会话历史”、[实时会话](../docs/CONVERSATIONS.md)和[界面术语](../docs/UI-TERMINOLOGY.md)。
+分支 `feat/session-catalog-grouping`，独立 worktree，基于 `v0.22.0`（`85b41db4c`）。未推送、未开 PR。解决三个问题：Pen 等程序启动的 Claude Code 会话混在普通会话里；git 工作树在会话目录和工作区页里各占一组；主目录这类外层工作区刷新后抢走内层工作区的会话。行为与规则见[功能与兼容矩阵](../docs/FEATURES.md)的“会话历史”、[实时会话](../docs/sessions/conversations.md)和[界面术语](../docs/development/ui-terminology.md)。
 
 | 提交 | 内容 |
 | --- | --- |

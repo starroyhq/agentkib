@@ -89,7 +89,7 @@
 - 状态：第四批已修复并通过针对性及综合自动化验证，见[第四批修复节](#第四批修复2026-10-16)。下述现象为基线行为。
 
 - 判定：增强，P2；当前引用行为有明确设计约定。
-- 位置：`conv/features/history/history-search.tsx:509-592`（Web 端 :458-540）；`docs/SESSION-CONTENT-SEARCH.md:11`
+- 位置：`conv/features/history/history-search.tsx:509-592`（Web 端 :458-540）；`docs/sessions/content-search.md:11`
 - 现状：结果详情提供"上一条 / 下一条 / 引用到当前会话"；会话内引用按设计保留当前目标与草稿，不切换来源会话。
 - 建议：另增显式的"打开会话"入口并尽量定位命中消息，导航按已有草稿保护流程执行；保留现有引用行为。
 - 验收：显式打开可进入来源会话；仅引用时当前目标和草稿保持不变。
@@ -630,7 +630,7 @@
 | UX-05：显式打开来源会话 | 搜索命中原文详情另增“打开会话”；会话内跨会话打开前确认清理未发送的草稿、历史引用和附件，取消保留当前内容。打开前重新核对命中原文、正文索引状态、当前访问范围和目录中的实际会话及别名，失效、不可读或范围变化的来源不导航。打开锁绑定请求代次和中止信号；返回结果后，未结束的旧传输不阻止重试，旧响应也不释放新请求的锁。只打开来源会话并沿用正常历史读取流程，当前不能自动跳到命中消息；命中原文仍在搜索定位窗口中查看。原有“引用到当前会话”保持当前目标与草稿，只有显式打开才执行导航。 | `conv/features/history/history-search.tsx`、`history-search-controls.tsx`、`history-session-target.ts`、`history-copy.ts`（Web 同步）；`desktop/features/sessions/DesktopHistorySearch.tsx` |
 | UX-07：交接禁用原因与术语 | “执行管理”面板在交接/交还按钮附近显示当前禁用原因与真实下一步，覆盖进行中、未知结果、压缩、工具不可用、Claude 资格、当前来源/控制状态、访问与权限、确认及历史核验。历史核验未完成时保持禁用；失败后说明关闭再打开面板重试。Claude 原门控逐项等价，按钮原限制不放宽，未知结果继续走已有回执核对。转交执行权统一称“交给 AgentKib”，相关面板称“执行管理”；原生 resume 和“在工作区续接”保留各自语义。局部四语言字典与两端组件同步。 | `conv/features/sessions/managed-tasks.tsx`、`claude-handoff.ts`、`managed-control-copy.ts`、`managed-copy.ts` 及相关展示字典（Web 同步）；桌面/ Web 共享会话文案 |
 
-文档同步：`docs/CONVERSATIONS.md` 记录发送规则、交接术语与能力边界；`docs/SESSION-CONTENT-SEARCH.md` 记录显式打开的确认、重核对与当前无法自动定位命中消息的限制。没有新增大 JSON locale key；局部发送提示和禁用原因均有四语言文案。
+文档同步：`docs/sessions/conversations.md` 记录发送规则、交接术语与能力边界；`docs/sessions/content-search.md` 记录显式打开的确认、重核对与当前无法自动定位命中消息的限制。没有新增大 JSON locale key；局部发送提示和禁用原因均有四语言文案。
 
 已完成的分组验证：
 
@@ -719,7 +719,7 @@
 | UX-18：设置开启入口 | 桌面正文索引关闭时，在提示下提供“前往设置”，通过主应用导航打开隐私设置；嵌入会话子路由与独立目录共用该能力；全局搜索仅在确认已打开设置后关闭，应用期间导航被阻止时保留搜索窗口。没有主应用导航上下文的宿主只显示明确路径，不提供无效按钮。Web 的四语说明引导联系主机所有者，在主机桌面「设置 → 隐私 → 会话正文搜索」启用，不跳转到浏览器不存在的本地设置，也不直接修改开关；索引门控保持。 | `desktop/features/app/AppNavigationContext.tsx`、`GlobalSearchDialog.tsx`；`conv/features/history/history-search.tsx`、`history-copy.ts`；Web 的 `history-copy.ts` |
 | UX-19：待交接状态的可识别性 | 在当前会话身份、来源可读性、访问权限、控制状态和真实能力均满足时，分别显示“待交接”或原生“待恢复”，提供打开既有确认/管理面板的入口。正在核对、尚未验证、结果未知、待授权、权限不足、控制未启用或协议不可用分别说明；远程、元数据、辅助来源、审批/问题未处理、压缩及离线等情况不冒充可交接。Claude 复用原交接门控与已有输入区入口；Codex 在正文区提供真实入口，原生恢复审查自动展开，仍走原确认与执行路径。展示变更不启用发送，也不直接发送或交接；Codex 原生恢复与交给 AgentKib 保留区别。 | `conv/features/sessions/session-display-state.ts`、`session-reader.tsx`、`codex-tools.tsx`、`web-layout-copy.ts`（Web 同步） |
 
-文档同步：`docs/SESSION-CONTENT-SEARCH.md` 记录桌面设置入口与 Web 的主机操作路径；`docs/CONVERSATIONS.md` 记录待交接与待原生恢复的区别。
+文档同步：`docs/sessions/content-search.md` 记录桌面设置入口与 Web 的主机操作路径；`docs/sessions/conversations.md` 记录待交接与待原生恢复的区别。
 
 已完成的分组验证：
 
@@ -841,10 +841,10 @@
 
 | 范围 | 本轮实现行为与边界 | 相关实现 |
 |---|---|---|
-| UX-30：按概念定义四语术语 | 新增四语概念表，区分变更计划、待审状态、审查动作与应用写入；区分全局资源库与技能库、技能与完整技能包、MCP 服务中心与资源库。资产“由 AgentKib 管理”不等于会话已交给 AgentKib；API、类型、存储字段、诊断码、真实文件和用户内容保持原名。 | `docs/UI-TERMINOLOGY.md`；桌面四语 `locales/*.json` 主要入口 |
+| UX-30：按概念定义四语术语 | 新增四语概念表，区分变更计划、待审状态、审查动作与应用写入；区分全局资源库与技能库、技能与完整技能包、MCP 服务中心与资源库。资产“由 AgentKib 管理”不等于会话已交给 AgentKib；API、类型、存储字段、诊断码、真实文件和用户内容保持原名。 | `docs/development/ui-terminology.md`；桌面四语 `locales/*.json` 主要入口 |
 | UX-30：变更计划与 MCP 说明 | Changes 标题不再裸露 `ChangeSet`，常驻说明只有应用才会写入目标文件。MCP 页面常驻解释服务中心通过统一连接提供已启用服务与获准工具，高级区域的裸 Hub 标题本地化；保留 MCP、Streamable HTTP、地址与配置键的精确含义，不混同资源库。 | `desktop/routes/(main)/workspace/$workspaceId/changes.tsx`、`desktop/routes/(main)/catalog.tsx` 内的 `McpHubPage` 及四语文案 |
 | UX-30：技能库与部署方向 | 简中、繁中、日文使用对应的技能库名称；以“部署到…”表示首次选择位置建立部署，以“更新部署”表示将技能库版本写入已有位置，以“保存到技能库”表示从部署位置反向保存。保留部署/同步预览、冲突选择、版本、基线和确认行为，不将保存到库写成已更新其他位置。 | 桌面技能管理相关四语 JSON；`desktop/features/skills/SkillHubPage.tsx`、`SkillManagerPanels.tsx` 的现有动作与测试；术语表的 API 行为依据 |
-| UX-30：会话、主机与结果语义 | 实体名称按简中“会话”、英文 Session、繁中“對話”、日文“会話”统一；执行管理与交给 AgentKib、交还原客户端分别表达。未交接只说明“尚未交给 AgentKib”，不推测原客户端正在运行；原生恢复保留独立含义。主机指运行 Agent/AgentKib 的电脑；已保存请求处理状态、结果待确认和“已接受不代表执行完成”的含义保留，不暗示自动重发。 | 两端会话局部字典与桌面/Web 共享会话词条；`docs/UI-TERMINOLOGY.md` |
+| UX-30：会话、主机与结果语义 | 实体名称按简中“会话”、英文 Session、繁中“對話”、日文“会話”统一；执行管理与交给 AgentKib、交还原客户端分别表达。未交接只说明“尚未交给 AgentKib”，不推测原客户端正在运行；原生恢复保留独立含义。主机指运行 Agent/AgentKib 的电脑；已保存请求处理状态、结果待确认和“已接受不代表执行完成”的含义保留，不暗示自动重发。 | 两端会话局部字典与桌面/Web 共享会话词条；`docs/development/ui-terminology.md` |
 | UX-31：Claude 面板与混合字形 | 两个工作区 Claude 面板原有 45 + 6 处局部文案改为必传四语，补齐繁中、日文真实分支，保留原简中与英文；繁中实体使用“對話”。Web 设置简中警告中的繁体混字修正为简体，其余语言现有内容保持。语言切换保留未发送草稿和文件预览，不改变发送、接管或审批门控。 | `desktop/features/workspace/ClaudeSessionPanel.tsx`、`ClaudeFilesPanel.tsx`；`desktop/features/remote/web-settings-copy.ts` |
 | UX-31：动态键与审计口径 | 两端各检查 30 处实际 `managedText` 调用，仅确认 Claude 默认设置说明因“默认”二字导致键不匹配；修正调用键使既有四语词条实际命中，并补真实组件渲染验证。继续撤回“约 170 处缺翻译”的旧统计；`native-scope`、`question-form`、`native-decisions` 等已有四语分支不计为缺译，局部字典不等于缺少国际化。 | `conv/features/sessions/managed-copy.ts`、`managed-tasks.tsx` 及 Web 对应文件、真实组件测试 |
 

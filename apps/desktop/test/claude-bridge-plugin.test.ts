@@ -471,7 +471,6 @@ describe("Claude Code native session plugin", () => {
     ["bridge-cli-too-old", "2.1.300"],
     ["bridge-cli-unsupported", "2.1.307-preview"],
     ["bridge-capabilities-missing", "2.1.307"],
-    ["bridge-plugin-update-required", "2.1.307"],
   ])(
     "reports authenticated startup failure %s and explains it in terminal status",
     async (reason, version) => {
@@ -485,13 +484,6 @@ describe("Claude Code native session plugin", () => {
             api.session.messages = async () => {
               throw new Error("private native error");
             };
-          if (reason === "bridge-plugin-update-required") {
-            const read = api.fs.read;
-            api.fs.read = async (path: string) =>
-              path === "/synthetic/plugin/package.json"
-                ? JSON.stringify({ version: "0.1.0" })
-                : read(path);
-          }
         },
       });
       await expect
@@ -755,16 +747,17 @@ describe("Claude Code native session plugin", () => {
     });
     expect(report).not.toHaveProperty("cliVersion");
   });
-  it("rejects an installed plugin manifest from the old contract with a reinstall instruction", async () => {
+  it("connects whatever release the plugin's files on disk come from", async () => {
+    // AgentKib may have updated them under this running terminal; it checks the running plugin.
     const f = await fixture({ connect: false, version: "2.1.307" });
-    f.api.fs.read = async () => JSON.stringify({ version: "0.1.0" });
+    const read = f.api.fs.read;
+    f.api.fs.read = async (path: string) =>
+      path === "/synthetic/plugin/package.json" ? JSON.stringify({ version: "0.1.0" }) : read(path);
     const result = await f.run("command.run", { command: "agentkib-connect", args: f.ticket });
-    expect(result.text).toContain("Reinstall it using step 1");
-    expect(f.calls.find((call) => call.url.endsWith("/pair"))?.body).toMatchObject({
-      connectionError: "bridge-plugin-update-required",
-      cliVersion: "2.1.307",
-    });
-    expect(f.snapshots()).toHaveLength(0);
+    expect(result.text).toContain("AgentKib connected");
+    const pair = f.calls.find((call) => call.url.endsWith("/pair"))?.body;
+    expect(pair).toMatchObject({ pluginVersion: "0.4.0", cliVersion: "2.1.307" });
+    expect(pair).not.toHaveProperty("connectionError");
   });
   it.each(["2.1.301-beta", "02.1.301", "not-a-version"])(
     "rejects ambiguous version %s without displaying arbitrary native data",

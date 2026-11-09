@@ -36,7 +36,7 @@
 | `cargo test -p agentkib-runtime -p agentkib-conversations`                                                                                | Runtime 243 passed / 1 ignored；conversations 206 passed / 8 ignored；合计 449 passed / 0 failed / 9 ignored；`rust-tests.log` |
 | `cargo clippy -p agentkib-runtime -p agentkib-conversations --all-targets -- -D warnings`                                                 | exit 0；`clippy.log`                                                                                                           |
 | `cargo fmt --all -- --check`                                                                                                              | exit 0；`rust-format.log`                                                                                                      |
-| `pnpm exec oxfmt --check docs/SESSION-INTEROPERABILITY.md qa/cursor-reconnect-recovery-p2-2026-10-02.md`                                  | exit 0                                                                                                                         |
+| `pnpm exec oxfmt --check docs/sessions/interoperability.md qa/cursor-reconnect-recovery-p2-2026-10-02.md`                                  | exit 0                                                                                                                         |
 | `git diff --check`                                                                                                                        | exit 0                                                                                                                         |
 
 修复前两次失败的原始输出仅保留在本聊天工具记录中，未另存日志；本机证据清单保存其失败摘要，不冒充完整原始日志。

@@ -4,7 +4,7 @@
 
 ## 范围与结果
 
-- 按实施说明第 4 阶段更新 `docs/UI-TERMINOLOGY.md`，用直接续接、运行位置、外部占用选择和只读原因替换早期手动执行交接约定。
+- 按实施说明第 4 阶段更新 `docs/development/ui-terminology.md`，用直接续接、运行位置、外部占用选择和只读原因替换早期手动执行交接约定。
 - 核对桌面会话页、工作区 Claude 面板、Web、首页、目录、连接终端和会话详情的简体中文、繁体中文、英文、日文。简体文案以实施说明 1.5 为准，繁体实体统一“對話”、日文统一“会話”、英文实体统一 session。
 - 只修本轮续接相关的用户可见文案及确认无调用的废弃词条；内部原因码、旧回执结算、锁、指纹、版本、平台、权限等安全检查保持原样。
 - 用户本轮明确要求 Codex follower 暂不删除，相关实现保留；不改跨 Agent 继续、交接文件、在工作区续接和 `handoff.*`，也不改变协议或持久化格式。
@@ -81,7 +81,7 @@ pnpm --filter @agentkib/desktop exec vitest run \
 
 现行四语术语、安全与能力边界、验证证据及真实环境待验清单。
 
-- `docs/UI-TERMINOLOGY.md`
+- `docs/development/ui-terminology.md`
 - `qa/session-continue-stage-4-validation-2026-10-19.md`
 
 ### 桌面文案与回归

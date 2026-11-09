@@ -30,7 +30,7 @@
 - zh-CN / zh-TW / en-US / ja-JP 均补最低版本、旧 CLI、旧插件、能力缺失、无法识别版本及未验证版本文案；简体使用中文标点，遵循术语表。
 - 桌面/Web 的 `claude-connection-copy.ts` 和新增 `claude-compatibility-note.tsx` 保持相同；实际 reader 四语渲染及文案插值均有回归。经现有 web-client 转导出策略，没有添加依赖或改锁文件。
 - 桌面保留 B 的三步向导、状态互斥、过期处理、异步代际与撤销门禁；Web 只在已有会话页显示提示，不新增安装或连接管理入口。提示不覆盖权限、事件缺口或结果未知状态。
-- `docs/CLAUDE-NATIVE-CONNECTION.md` 与 `docs/UI-TERMINOLOGY.md` 同步新规则。`designs/` 未修改。
+- `docs/agents/claude-code-terminal.md` 与 `docs/development/ui-terminology.md` 同步新规则。`designs/` 未修改。
 
 ## 自动无登录检查
 

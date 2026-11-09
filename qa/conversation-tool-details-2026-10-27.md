@@ -4,7 +4,7 @@
 
 - 分支 `feat/conversation-tool-details`，独立 worktree，基于 `origin/main` `c5abfed36`（v0.21.0）。主 checkout 未改动；未推送、未开 PR、未合并。
 - Node v26.12.0，macOS arm64。没有新增或升级依赖。本机 pnpm 12.10.1 无法执行（ENOEXEC），依赖目录从主 checkout 克隆，命令直接调用各包 `node_modules/.bin` 中的 vitest、tsc、vite、oxlint 和 oxfmt。
-- 范围：Codex 与 Claude Code 的历史和实时工具条目带结构化详情与轮次时长；桌面会话页与 Web 共用 `@agentkib/session-ui` 的组件显示。规则见 [CONVERSATIONS.md](../docs/CONVERSATIONS.md) 的「工具详情与轮次时长」，术语见 [UI-TERMINOLOGY.md](../docs/UI-TERMINOLOGY.md)。
+- 范围：Codex 与 Claude Code 的历史和实时工具条目带结构化详情与轮次时长；桌面会话页与 Web 共用 `@agentkib/session-ui` 的组件显示。规则见 [实时会话](../docs/sessions/conversations.md) 的「工具详情与轮次时长」，术语见 [界面术语](../docs/development/ui-terminology.md)。
 
 ## 依据
 

@@ -5,6 +5,7 @@ export {
   CLAUDE_BRIDGE_COMPATIBILITY,
   CLAUDE_BRIDGE_REQUIRED_CAPABILITIES,
   claudeBridgeCompatibility,
+  claudeBridgePluginCompatibility,
   missingClaudeBridgeCapabilities,
 } from "../../claude-bridge-plugin/hooks/compatibility.js";
 export const CLAUDE_BRIDGE_PLUGIN_VERSION = CLAUDE_BRIDGE_COMPATIBILITY.pluginVersion;

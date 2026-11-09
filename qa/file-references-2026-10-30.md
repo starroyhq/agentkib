@@ -16,7 +16,7 @@
   - 新接口 `GET artifacts/resolve?workspaceId=…&sessionId=…&reference=…`，授权与 `artifacts` 相同（文件权限，会话属于该工作区），返回 `{artifact}`，找不到或不允许读取时为 null。旧主机对这个路径返回 404 `not_found`，手机据此提示更新电脑端。
   - 本机桌面通道（`isConversationPath`）和运行时路由加了这条路径和操作。
   - 读不到会话工作目录时按工作区根目录解析，与以前一致。
-- 文档：`docs/REMOTE-CODEX-WEB.md` 的会话产物说明和接口表。
+- 文档：`docs/remote/phone-access.md` 的会话产物说明和接口表。
 ## 手机端
 - 电脑允许本设备读取文件时，回复里的 Markdown 本地链接和像路径的行内代码可以点。点开后向主机解析：找到就打开预览；找不到、权限已被收回、主机太旧时各有提示。链接文字里的行内代码不单独成链接，以外层链接为准。
 - PDF、Office 文档等应用内不能显示的文件，以及 CSV/TSV，多了“打开文件”：下载到临时目录后交给系统，iOS 用 Quick Look，Android 交给其他应用（`open_filex` 5.0.0）。临时副本在离开预览页时删除。Markdown、HTML、图片和音视频仍用应用内预览；HTML 不交给系统，保留隔离预览。

@@ -14,8 +14,12 @@ import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { DshBridge, dshConversationEvents } from "../../../packages/backend/src/dsh-bridge";
 import { readControlReceipt } from "../../../packages/backend/src/control-receipt";
-import { createBridge } from "../../../packages/dsh-bridge-plugin/bridge.js";
-import { dshBridgeCompatibility } from "../../../packages/dsh-bridge-plugin/compatibility.js";
+import { createBridge, DSH_BRIDGE_PATHS } from "../../../packages/dsh-bridge-plugin/bridge.js";
+import { post } from "../../../packages/dsh-bridge-plugin/client.js";
+import {
+  dshBridgeCompatibility,
+  dshBridgePluginCompatibility,
+} from "../../../packages/dsh-bridge-plugin/compatibility.js";
 import {
   commandEntries,
   goalFromProjection,
@@ -753,6 +757,69 @@ describe("DeepSeek Harness bridge", () => {
     expect(f.changed.flat()).toContain("workspace");
   });
 
+  it("takes a plugin of another release and leaves off what it does not report", async () => {
+    const f = await fixture();
+    const discovery = JSON.parse(
+      readFileSync(path.join(f.agentkibHome, "dsh-bridge", "discovery-v1.json"), "utf8"),
+    );
+    const register = (change: Record<string, unknown> = {}) =>
+      post(discovery.socketPath, DSH_BRIDGE_PATHS.register, {
+        key: discovery.key,
+        protocol: 1,
+        pluginVersion: "0.9.0",
+        dshVersion: "0.2.2-rc.1",
+        runtimeId: randomUUID(),
+        pid: process.pid,
+        // A newer plugin may report services and fields this Runtime does not know.
+        services: {
+          sessionController: true,
+          sessionQuery: true,
+          approvals: true,
+          questions: true,
+          futureService: true,
+        },
+        futureField: { kept: false },
+        ...change,
+      });
+    const { token } = await register();
+    expect(token).toMatch(/^[a-f0-9]{64}$/);
+    await post(discovery.socketPath, DSH_BRIDGE_PATHS.report, {
+      token,
+      sessions: [
+        {
+          sessionId: "session-newer",
+          cwd: f.workspace,
+          title: null,
+          updatedAt: 1,
+          running: false,
+          live: false,
+          blank: false,
+          parentSessionId: null,
+          origin: null,
+          futureField: true,
+        },
+      ],
+    });
+    expect(
+      f.bridge.management({ operation: "dsh-bridge-status", deviceId: "agentkib-local-owner" })
+        .runtimes,
+    ).toContainEqual(expect.objectContaining({ pluginVersion: "0.9.0", sessions: 1 }));
+    // It reported no `documents`, so its session cannot be read for a handoff.
+    expect(f.bridge.documentStatus("session-newer")).toEqual({
+      status: "unavailable",
+      reason: "dsh-document-unavailable",
+    });
+    expect(f.bridge.documentStatus("session-a")).toEqual({ status: "supported" });
+    await expect(register({ pluginVersion: "0.4.0" })).rejects.toMatchObject({
+      status: 409,
+      code: "dsh-bridge-plugin-update-required",
+    });
+    await expect(register({ protocol: 2 })).rejects.toMatchObject({
+      status: 409,
+      code: "dsh-bridge-protocol-unsupported",
+    });
+  });
+
   it("reads history pages through the plugin and keeps injected context out", async () => {
     const f = await fixture();
     f.dsh.append("session-a", "turn/start", { turn: 1 });
@@ -1305,6 +1372,13 @@ describe("DeepSeek Harness plugin projections", () => {
     expect(dshBridgeCompatibility("0.2.1")).toBe("unverified");
     expect(dshBridgeCompatibility("unknown")).toBe("unknown");
     expect(dshBridgeCompatibility("latest")).toBe("invalid");
+    expect(dshBridgePluginCompatibility("0.5.0")).toBe("supported");
+    expect(dshBridgePluginCompatibility("0.6.0")).toBe("supported");
+    expect(dshBridgePluginCompatibility("1.0.0")).toBe("supported");
+    expect(dshBridgePluginCompatibility("0.4.9")).toBe("too-old");
+    expect(dshBridgePluginCompatibility("0.5.0-rc.1")).toBe("too-old");
+    expect(dshBridgePluginCompatibility("latest")).toBe("invalid");
+    expect(dshBridgePluginCompatibility(undefined)).toBe("invalid");
     expect(historyRecord({ seq: 1, time: 1, type: "system/message", data: {} })).toBeNull();
     expect(
       historyRecord({

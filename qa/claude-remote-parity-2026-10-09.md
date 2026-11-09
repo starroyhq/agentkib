@@ -20,7 +20,7 @@
 | 数据与前端 | 保留历史、工作区文件、只读 Git diff、图片/文件、资源引用、审批和选择式问题。共享 UI 按 capabilities 读取和启用；当前设置与待生效选择值分开，inspect 为只读 GET。 |
 | 传输 | 原 HTTP/SSE 保持兼容；可选 `/api/web/v1/socket` 仅适配受限 JSON 请求，复用 HTTP 鉴权/回执，每帧重新检查权限。握手必须带 Origin；禁止 frame headers/deviceId、任意 RPC、上传字节、历史长读及事件流。 |
 
-详细产品语义与限制见 [CLAUDE-WEB.md](../docs/CLAUDE-WEB.md)。
+详细产品语义与限制见 [Claude Code 托管执行](../docs/agents/claude-code-managed.md)。
 
 ## 阶段性自动化证据
 

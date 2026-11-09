@@ -1,6 +1,6 @@
 # Codex 接入补齐（2026-10-28）
 
-分支 `feat/codex-gaps`，基于 `main` 的 `4e4f8a6b2`。补齐上一轮 Codex 接入分析找出的缺口：失败与重试、Plan、附件、MCP 请求、手动压缩、`/` 菜单、后台终端，以及最低版本上的待发队列，并加上 CI 协议检查。之后对照 Codex Desktop 的做法，把 `/review` 和 `/init` 做成普通消息。行为与规则见 [Codex 托管执行](../docs/CODEX-MANAGED.md)。
+分支 `feat/codex-gaps`，基于 `main` 的 `4e4f8a6b2`。补齐上一轮 Codex 接入分析找出的缺口：失败与重试、Plan、附件、MCP 请求、手动压缩、`/` 菜单、后台终端，以及最低版本上的待发队列，并加上 CI 协议检查。之后对照 Codex Desktop 的做法，把 `/review` 和 `/init` 做成普通消息。行为与规则见 [Codex 托管执行](../docs/agents/codex-managed.md)。
 
 | 提交 | 内容 |
 | --- | --- |

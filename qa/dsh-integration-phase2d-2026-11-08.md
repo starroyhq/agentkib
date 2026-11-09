@@ -1,6 +1,6 @@
 # DeepSeek Harness 二期 2d（交接、正文搜索、Agent 预设）QA — 2026-11-08
 
-本文记录二期 2d 的源码、自动化结果和真实 DSH 沙箱验收：DSH 会话作为交接来源与目标、正文搜索收录 DSH 会话、新建会话时选择 DSH 的 Agent 预设，以及验收中发现并修复的问题。2026-11-08 确认先以 DSH 打开时可用为准，本轮不涉及三期（DSH 未运行时由 AgentKib 启动）。结论只适用于下列源码与版本。方案见[接入方案](../docs/DEEPSEEK-HARNESS-INTEGRATION.md)的“2d 实现”。
+本文记录二期 2d 的源码、自动化结果和真实 DSH 沙箱验收：DSH 会话作为交接来源与目标、正文搜索收录 DSH 会话、新建会话时选择 DSH 的 Agent 预设，以及验收中发现并修复的问题。2026-11-08 确认先以 DSH 打开时可用为准，本轮不涉及三期（DSH 未运行时由 AgentKib 启动）。结论只适用于下列源码与版本。方案见[接入方案](../docs/agents/deepseek-harness.md)的“2d 实现”。
 
 ## 源码与边界
 

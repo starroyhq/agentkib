@@ -10,7 +10,7 @@
 
 - 桌面 `GET access`：已批准的设备多一个 `computerName`，即系统设置里的电脑名称。读取方式沿用上报账号的 `detectComputerName`（macOS `scutil --get ComputerName`，Linux PRETTY_HOSTNAME，其他平台主机名），按账号要求的规则清理，每 10 分钟重读一次，账号上报和网页服务共用这一份。未配对、配对中和已结束的请求都不带这个字段，因为名称可能说出电脑归谁；读取失败时也不带，`access` 照常返回。
 - 手机：`Access.computerName` 不是文本时当作没有，不影响连接。批准后记住电脑时，如果它的名称还是连接地址的主机部分，就换成电脑报告的名称；账号给的名称和之前已有的名称都不覆盖。名称再清理一次：去掉控制字符和方向控制字符，合并空白，最多 64 个字符。
-- 文档：`docs/REMOTE-CODEX-WEB.md` 的 `GET access` 说明；手机仓库 `docs/FEATURE_MATRIX.md`。
+- 文档：`docs/remote/phone-access.md` 的 `GET access` 说明；手机仓库 `docs/FEATURE_MATRIX.md`。
 
 ## 检查
 

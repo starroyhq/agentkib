@@ -6,7 +6,7 @@
 
 - 使用 `code-review` 技能，Standards 与 Spec 由未参与阶段实施的新代理分别只读审查，另设独立运行时并发审查。
 - 原始固定命令为 `git diff bae578ef1...HEAD`，提交列表为 `git log bae578ef1..HEAD --oneline`。审查期间按用户要求不提交，复审额外检查 `git diff HEAD`，最终累积范围为 `git diff bae578ef1`；新增回归和本记录另列清单。
-- 规范来自 `AGENTS.md` 与 `docs/UI-TERMINOLOGY.md`；规格来自实施说明、技术前提与本机设计第 8 节。项目不用 issue tracker，不为审查增加跟踪系统。
+- 规范来自 `AGENTS.md` 与 `docs/development/ui-terminology.md`；规格来自实施说明、技术前提与本机设计第 8 节。项目不用 issue tracker，不为审查增加跟踪系统。
 - 沿用用户已确认决定：Web 复制续接命令与主机说明；最后订阅者离开等待当前轮次完成后释放；跨 Agent 继续、`handoff.*`、交接文件与在工作区续接不改；Codex follower 暂不删除；内部锁、指纹、版本、平台、权限、未知结果校验保留。
 - 原有 `.agents/`、`prototypes/`、两份本机实施/技术文档及设计文件保持原样。
 

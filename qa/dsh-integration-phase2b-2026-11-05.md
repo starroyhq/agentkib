@@ -1,6 +1,6 @@
 # DeepSeek Harness 二期 2b（图片附件）QA — 2026-11-05
 
-本文记录二期 2b 的源码、自动化结果和真实验收：图片附件做成各 Agent 共用的能力，接入 DeepSeek Harness（DSH），并为跟随 ChatGPT 桌面端的 Codex 会话开放。结论只适用于下列源码与版本。方案见[接入方案](../docs/DEEPSEEK-HARNESS-INTEGRATION.md) §7 的“2b 实现”，2a 记录见[二期 2a QA](dsh-integration-phase2a-2026-11-05.md)。
+本文记录二期 2b 的源码、自动化结果和真实验收：图片附件做成各 Agent 共用的能力，接入 DeepSeek Harness（DSH），并为跟随 ChatGPT 桌面端的 Codex 会话开放。结论只适用于下列源码与版本。方案见[接入方案](../docs/agents/deepseek-harness.md) §7 的“2b 实现”，2a 记录见[二期 2a QA](dsh-integration-phase2a-2026-11-05.md)。
 
 ## 源码与边界
 

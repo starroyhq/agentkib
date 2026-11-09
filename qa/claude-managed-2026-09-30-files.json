@@ -311,7 +311,7 @@
       "status": "added"
     },
     {
-      "path": "docs/CLAUDE-WEB.md",
+      "path": "docs/agents/claude-code-managed.md",
       "baseline_sha256": "62eebf150119ba36859e7d0f1c424f5885a41373065e45ac11797b2d1ec5bfd8",
       "current_sha256": "a571eddb54579bc7be3a02df5f0d6b8016f7e1d91945e8f353abd805361fa9fc",
       "status": "modified"

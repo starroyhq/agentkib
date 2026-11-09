@@ -1,8 +1,13 @@
 // One policy shared by the shipped DeepSeek Harness plugin and the AgentKib Runtime.
 // Only add a verified version after recording real-DSH acceptance evidence in QA.
+// Within one protocol a plugin and a Runtime of other releases still connect and use what both
+// have: a feature a plugin does not report in its services stays off. Raise
+// `minimumPluginVersion` only to retire a plugin that must no longer connect; the rules for
+// changing the protocol are in docs/agents/deepseek-harness.md.
 export const DSH_BRIDGE_COMPATIBILITY = Object.freeze({
   protocol: 1,
   pluginVersion: "0.5.0",
+  minimumPluginVersion: "0.5.0",
   minimumDshVersion: "0.2.1-rc.5",
   verifiedDshVersions: Object.freeze(["0.2.1-rc.5"]),
 });
@@ -30,6 +35,14 @@ function compare(left, right) {
     if (!numeric && x[index] !== y[index]) return x[index] < y[index] ? -1 : 1;
   }
   return 0;
+}
+
+/** Whether a Runtime takes a plugin of this version; plugins newer than the Runtime's own connect too. */
+export function dshBridgePluginCompatibility(version) {
+  if (typeof version !== "string" || !VERSION.test(version)) return "invalid";
+  return compare(version, DSH_BRIDGE_COMPATIBILITY.minimumPluginVersion) < 0
+    ? "too-old"
+    : "supported";
 }
 
 /**

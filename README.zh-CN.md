@@ -4,11 +4,12 @@
 
 <h1 align="center">AgentKib</h1>
 
-<p align="center"><strong>检查、组织并安全维护 Coding Agent 的上下文、Skills、会话与本地工具链。</strong></p>
+<p align="center"><strong>一个本地应用，管好你的 Coding Agent：会话、交接、远程操控、上下文、Skills、MCP 服务与工具链。</strong></p>
 
 <p align="center">
   <a href="https://agentkib.com">官网</a> ·
   <a href="https://github.com/starroyhq/agentkib/releases/latest">下载</a> ·
+  <a href="docs/README.md">文档</a> ·
   <a href="README.md">English</a>
 </p>
 
@@ -19,95 +20,85 @@
   <a href="LICENSE"><img alt="Apache License 2.0" src="https://img.shields.io/badge/license-Apache--2.0-111827" /></a>
 </p>
 
-[![AgentKib 首页，展示今日任务和最近工作区](docs/assets/agentkib-home.png)](docs/assets/agentkib-home.png)
+[![AgentKib 首页：待处理事项、最近会话和最近工作区](docs/assets/agentkib-home.zh-CN.png)](docs/assets/agentkib-home.zh-CN.png)
 
-## 为什么需要 AgentKib
+AgentKib 把电脑上的 Coding Agent 汇集到一个桌面应用里：Codex、Claude Code、Cursor、OpenCode、Antigravity、OpenClaw、Hermes、Grok Build 和 DeepSeek Harness。你可以查看并继续它们的会话，把对话从一个 Agent 交给另一个，在手机上跟进和操控会话，并维护指令、Skills、MCP 服务以及各 Agent 的 CLI 本身。
 
-Coding Agent 会在项目指令、Skills、MCP 连接、原生配置和会话历史中积累有价值的本地状态。这些状态分散在不同工具中，因此很难确认某个 Agent 实际能看到什么、复用可信资产，或者安全地换一个工具继续工作。
+所有处理都在你的电脑上进行。发现、诊断、历史阅读和交接不需要 AgentKib 账号，也不需要模型 API；账号只用于可选的远程中继。**KIB** 代表 **Knowledge & Instruction Base（知识与指令底座）**。
 
-AgentKib 把这些状态汇集到一个本地、可检查的桌面界面中。基础发现、诊断、Skill 管理和会话交接不需要 AgentKib 账号、云端数据库或模型 API。**KIB** 代表 **Knowledge & Instruction Base（知识与指令底座）**。
+## 能做什么
 
-### 管理 MCP 服务与 Agent 接入
+### 统一查看和继续各 Agent 的会话
 
-收录原生或粘贴的 MCP 配置后默认停用，再显式启用和探测。集中预览可一次补齐多个已安装 Agent 的 Hub 连接，并按 Agent 分配具体工具，支持工作区覆盖与版本化写入。参见 [MCP 管理说明](docs/library/mcp.md)。
+- 所有受支持 Agent 的会话放在同一个目录里，按工作区和 git 仓库分组，工作树也归入所属仓库。可选开启正文搜索，搜索这台电脑上的会话。
+- 不离开 AgentKib 就能继续 Codex、Claude Code 和 Antigravity 的会话：发送消息、处理审批和问题；Agent 支持时还可以添加附件、切换模型和思考强度、使用计划模式和斜杠命令、排队消息和设定目标。Codex 和 Claude Code 会话里，命令显示输出，文件改动显示差异，每轮显示用时。
+- 已经在运行的会话可以直接连接，不另起一份（macOS）：通过 AgentKib 插件连接 Claude Code 终端，跟随 Codex 桌面端，或通过桥接插件连接 DeepSeek Harness。
+- 未读结果在桌面、Web 和手机之间同步。
 
-## AgentKib 能做什么
+### 把会话交给另一个 Agent
 
-### 检查实际生效的上下文
+- 把会话生成经过审查的交接内容，交给另一个 Agent。Codex 和 Claude Code 以原生会话接收，可以直接恢复；OpenCode、Hermes、OpenClaw 和已连接的 Cursor IDE 窗口支持实验性的原生导入。任何 Agent 都可以改用交接文件开始，DeepSeek Harness 会新建一个会话读取它。
+- 常见敏感值会被遮盖，目标无法保留的内容会列出来请你确认，批准之前不写入任何东西。
 
-查看每个 Agent 在工作区内可用的 Instructions、Skills、MCP 连接、记忆和原生配置。诊断缺失、漂移、无效或重复的资产，并在任何写入发生前审查完整 ChangeSet 和 Diff。
+### 在手机上使用电脑
 
-### 管理可复用的 Skills
+- 用八位授权码配对手机或其他浏览器，按设备授予只读或完整控制。可以登录 [AgentKib 账号](https://account.agentkib.com)经官方中继连接，也可以在局域网内直连，或使用自己配置的 HTTPS。
+- 完整控制包括发送、审批和问答、附件、项目文件与产物，以及预览电脑上正在运行的网页。手机断开后任务继续运行；桌面应用需要保持打开。
 
-浏览经过审查的 OpenAI Skills，或在添加到本地资源库前检查公开 GitHub 仓库。AgentKib 将受管包固定到不可变 Commit，预览文件和可执行资源，检测更新与本地漂移，并支持回滚和可恢复移除。资源库中的 Skill 不会自动启用到任何 Agent。
+### 维护上下文、Skills 和 MCP
 
-已有安装可查看并复制入库，再经审查部署到个人或项目位置。部署独立更新、回滚和撤销，原安装不会被接管；共享目录影响与原生加载限制会分别说明。参见 [Skill 管理](docs/library/skills.md)。
+- 查看每个 Agent 在工作区里实际加载的指令、Skills、MCP 服务、记忆和设置，诊断缺失、漂移或重复的资产；所有改动先以完整差异供你审查，确认后才写入。
+- Skill 库：经过审查的 OpenAI Skills 和固定到 Commit 的 GitHub 包，可以从已在用的 Agent 导入，部署到个人或项目位置，并支持更新、回滚和撤销。
+- MCP Hub：MCP 服务只需收录一次，即可接入已安装的各个 Agent，并按 Agent 选择开放哪些工具。
 
-[![AgentKib Skill Hub，展示精选 Skills 和可审查的来源信息](docs/assets/agentkib-skill-hub.png)](docs/assets/agentkib-skill-hub.png)
+### 维护工具链
 
-### 跨 Agent 继续工作
+- 显示每个 Agent CLI 的版本、安装来源和 PATH 冲突；包管理器支持时，按精确版本更新。
+- 额度窗口，以及根据本机 Codex 和 Claude Code 日志按 API 价格估算的费用，还有在本机统计的用量洞察。
 
-桌面与 Web 支持由主机所有者显式开启的本机正文搜索：查找消息或可读取的工具文字，定位并选择片段，加入当前草稿且保持目标会话不变，只有用户明确发送时才带入引用。其他已配对主机仍只搜索标题。参见[正文搜索与来源覆盖](docs/sessions/content-search.md)。
+## 支持的 Agent
 
-浏览 Codex、Claude Code、Antigravity ACP、OpenCode、OpenClaw、Hermes 和 Grok Build 的本地会话。Codex、Claude Code、Antigravity ACP 与 OpenCode 会话可以生成经过审查的跨 Agent 交接；其余来源保持只读。AgentKib 会保留有用的时间线上下文、遮盖常见敏感值，并在写入或导入交接产物前请求确认。压缩过的 Claude Code 会话默认交接压缩摘要与压缩后的消息，并声明未带上的更早历史；高级选项可带上这部分历史。Antigravity 的原生导入与 Desktop/CLI 互操作限制见[Antigravity 接入边界](docs/agents/antigravity.md)。
+| Agent | 会话 | 在 AgentKib 中继续 | 原生交接目标 | 上下文与 Skills | 工具更新 |
+| --- | --- | --- | --- | --- | --- |
+| Codex | 支持 | 支持；macOS 上可跟随 Codex 桌面端 | 支持 | 支持 | 支持 |
+| Claude Code | 支持 | macOS，在 AgentKib 中或连接终端 | 支持 | 支持（上下文部分支持） | 支持 |
+| Antigravity | ACP 会话 | 经官方 ACP 服务 | — | 支持 | 仅提供安装说明 |
+| Cursor | CLI 与已连接的 IDE（macOS） | — | IDE，实验性 | 支持 | 支持 |
+| OpenCode | 支持 | — | 实验性 | 支持 | 支持 |
+| OpenClaw | 只读 | — | 实验性 | 支持 | 支持 |
+| Hermes | 只读 | — | 实验性 | 支持 | 支持 |
+| Grok Build | 只读 | — | — | 支持 | 支持 |
+| DeepSeek Harness（Beta） | 经运行中的 DSH（macOS） | 经桥接插件（macOS） | 交接文件 | 仅诊断 | — |
 
-### 连接原 Claude Code 会话
-
-macOS 的 Claude Code `2.1.301` 及更新版本可主动安装第一方 Mods 插件，将原执行会话连接到桌面及获授权的 Web 聊天界面，支持同步观察、发送消息和取消当前轮次，不另起续接进程。终端空闲时消息开始新一轮；运行中按各设备的“运行中发送”设置排到本轮之后或加入本轮。审批和问答仍在原终端处理，托管执行保持独立。参见[原会话连接说明](docs/agents/claude-code-terminal.md)与[本轮 QA](qa/native-session-connection-2026-10-16.md)。
-
-### 维护本地工具链
-
-检查 Codex、Claude Code、Antigravity、Cursor、OpenCode、OpenClaw、Hermes 和 Grok Build 的安装。AgentKib 会显示每处安装的版本、来源、可执行路径、PATH 默认项和冲突。经过验证且能固定目标版本的包管理器操作可以直接执行；无法固定精确版本、来源不明、需要提权或远程脚本的流程只提供供用户审查的命令或官方文档。
-
-[![AgentKib 工具与更新，展示版本、安装来源和诊断](docs/assets/agentkib-tools-updates.png)](docs/assets/agentkib-tools-updates.png)
-
-## 内置 Web（开发预览）
-
-monorepo 中的独立 Web 构建随 Electron 打包。在 **设置 → 远程连接** 中通过手机访问入口完成账号登录、设备登记与配对；本地/LAN Web 访问和自行配置 HTTPS 反向代理或隧道仍是独立可选路径，不要求官方协调服务。连接另一台桌面的原生 LAN 配对是另一条流程，见[原生远程连接](docs/remote/desktop-connections.md)。桌面应用必须保持运行。读取授权与控制权限相互独立。Claude Code 的桌面/Web 控制共用托管后端，支持新建、确认后的同 UUID 续接、图片/文件、审批和持久回执；基础控制保留 macOS 兼容门槛，高级控制要求 Claude Code `2.1.286` 或更新版本、主机开关及对应设备权限。Codex owner 控制仍受发布验收门槛限制。参见[自部署说明](docs/remote/self-hosting.md)、[Claude 控制边界](docs/agents/claude-code-managed.md)、[本轮验收记录](qa/claude-remote-parity-2026-10-09.md)和[分层验收状态](qa/WEB-V1.md)。此处描述的是开发预览，不代表当前已发布版本已包含 Web。
-
-Claude Remote 现有实现包括实际发现的模型/effort、会话工具权限、原生 `next` 插入、经过验证的原生历史分叉和标题，以及 AgentKib 管理的队列和目标。Claude 会话可以按 Claude Desktop 的做法永久删除；AgentKib 不再有自己的归档。完整控制的浏览器还能在会话右侧的[网页预览](docs/sessions/web-preview.md)里查看电脑上正在运行的网页。仅修改模型会保留 CLI 继承的权限。未选择权限时 AgentKib 仍不传 `--permission-mode`，并如实显示 CLI 报告的实际模式：`auto`、`dontAsk`、`bypassPermissions` 在桌面端和 Web 会话界面有明显提示，且不会成为可选项；CLI 始终没有报告时模式保持未知，Claude Code 2.1.285 及以上会补一句“可能是 auto”的警示（拿不到功能开关时，例如使用第三方 provider 或关闭遥测，CLI 可能以 auto 启动）。目前仅经合成帧验证，未用真实 CLI 验证。effort 设置支持原生模型别名；单独恢复 effort 默认值会重新继承 CLI 配置，并保留模型及权限选择。尚未首次发送的分叉在释放及确认重新接管后仍保留来源和截止点。主机/后端重启后，队列与目标需要手动恢复；目标预算使用原生轮次用量，完成必须同时具备结构化 MCP 报告和对应原生成功终态。用量缺口跨更新和重启保留，有限预算目标必须取得实际用量或明确移除预算后才能恢复。队列仅编辑待派发的纯文本条目并保留原设备；已派发条目和附件引用保持固定。浏览器继续使用 HTTP 操作与 SSE 更新；可选 `/api/web/v1/socket` WebSocket 适配器对有界请求复用相同鉴权和回执。托管网页到 LAN HTTP 的连接不开放这些高级控制和 socket。自动化通过不代表真实模型、实体手机或生产中继已验收。
+DeepSeek Harness 支持仍在开发中，尚未包含在正式版里。各项能力的版本要求和限制见[功能与兼容矩阵](docs/FEATURES.md)和[会话互通矩阵](docs/sessions/interoperability.md)。
 
 ## 下载
 
-从 [Latest Release](https://github.com/starroyhq/agentkib/releases/latest) 下载当前稳定版本：
+从 [Releases](https://github.com/starroyhq/agentkib/releases/latest) 下载当前版本：
 
-- macOS 13.3+：Apple Silicon 或 Intel 的 `.dmg`
-- Windows 11：x64 `.exe`；ARM64 仍为 Preview
-- Linux：Ubuntu `.deb` 或 AppImage、Fedora `.rpm`；ARM64 仍为 Preview
+- macOS 13.3 及以上：Apple Silicon 或 Intel 的 `.dmg`，已签名并公证。
+- Windows 11：x64 `.exe`；ARM64 为预览版。
+- Linux：Ubuntu 22.04 的 `.deb` 或 AppImage，Fedora 的 `.rpm`；ARM64 为预览版。
 
-请只使用官方 Release 中的文件，并核对对应的 `.sha256` 校验值。Windows 安装包尚未进行 Authenticode 签名，可能触发 SmartScreen。应用内更新、不同安装包的升级方式和历史 macOS 包说明见[升级指南](docs/UPGRADING.md)。
+请只使用官方 Release 中的文件，并用对应的 `.sha256` 文件核对。Windows 安装包尚未进行 Authenticode 签名，SmartScreen 可能提示风险。应用内更新和各安装包的升级说明见[升级指南](docs/UPGRADING.md)。
 
-## 本地优先的安全边界
+界面支持 English、简体中文、繁體中文和日本語，提供浅色、深色和跟随系统三种主题。
 
-- 普通发现和诊断不会调用模型，也不会上传项目资产。
-- 凭据、Cookie、Token、私钥、环境文件和消息数据库不会被收录为资产或写入日志。
-- Claude Code 托管执行只启动你本机的 `claude` CLI，沿用 CLI 自己的登录状态；AgentKib 不为此读取、复制或下发 Claude 登录凭据。
-- 额度采集是另一条路径，由随应用打包的第三方 sidecar（CodexBar）完成，只在手动刷新或你开启“自动获取额度”（默认关闭）后运行。AgentKib 自身不读取各 Provider 的凭据，但 sidecar 可能读取：对 Claude，它可能读取 claude.ai 浏览器 Cookie、运行 `claude` CLI、使用配置所选来源的 OAuth 凭据。额度页另行按需扫描本机原生 Codex/Claude 日志，展示 API 价格估算；费用不是账号实际账单，离开页面后的后台扫描遵守自动获取开关。详见[额度采集与凭据](docs/agents/claude-code-managed.md#额度采集与凭据)。
-- 生成的写入会检查路径边界和原始哈希、创建备份，并在应用前要求审查。
-- Agent Home 变更使用单独的高风险确认流程；远程集成保留各自的权限边界。
+## 隐私与安全
 
-## 支持概览
+- 发现、诊断和历史阅读都在你的电脑上完成，不调用模型，也不上传项目文件。
+- 凭据、Cookie、Token、私钥和环境文件不会被收录为资产，也不会写入日志。
+- AgentKib 运行的是你本机的 Agent CLI，沿用它们自己的登录状态，不读取或复制它们的登录凭据。
+- 额度采集是另一条路径：随应用打包的第三方采集器（CodexBar）只在你刷新额度或开启自动获取后运行，它可能读取各服务的凭据，例如 Claude 的浏览器 Cookie。详见[额度采集与凭据](docs/agents/claude-code-managed.md#额度采集与凭据)。
+- 每次写入都先生成改动供你审查，写入时创建备份，并核对文件在此期间没有被改过。写入 Agent 的 Home 目录需要单独确认。
+- 远程访问默认关闭。每台配对设备有自己的权限档位，可以随时在桌面上撤销。
 
-- **发现与上下文：** Codex、Claude Code、Antigravity、Cursor、OpenCode、OpenClaw、Hermes、Grok Build，以及只读的 DeepSeek Harness 诊断。
-- **会话浏览：** Codex、Claude Code、Antigravity ACP、OpenCode、OpenClaw、Hermes 和 Grok Build；后三者是只读来源。
-- **经过审查的交接：** 支持以 Codex、Claude Code、Antigravity ACP 和 OpenCode 会话为来源，续接到受支持的本机 Agent。
-- **工具管理：** Codex、Claude Code、Cursor、OpenCode、OpenClaw、Hermes 和 Grok Build。Antigravity 只提供安装检测与官方更新说明，不提供自动包管理操作；DeepSeek Harness 明确不在此范围内。
-- **界面：** English、简体中文、繁體中文和日本語；支持浅色、深色与跟随系统主题。
-- **平台：** macOS 13.3+、Windows 11、Ubuntu 22.04 和 Fedora；Windows 与 Linux ARM64 安装包仍为 Preview。
+## 文档
 
-完整的全局视图、工作区能力、Agent 支持和平台状态见[功能与兼容矩阵](docs/FEATURES.md)。
-
-开发版的新增只读来源和“找不到工作区”排查方式见[发现与历史阅读说明](docs/sessions/discovery.md)，实际验证范围见[分层 QA](qa/MULTI-AGENT-HISTORY.md)。
-
-## 文档与社区
-
-- [功能矩阵](docs/FEATURES.md)
-- [开发文档](docs/DEVELOPMENT.md)
+- [文档目录](docs/README.md)：会话、Agent 接入、远程访问、Skills、MCP 和开发相关文档。
+- [功能与兼容矩阵](docs/FEATURES.md)
 - [升级指南](docs/UPGRADING.md)
-- [发布流程](docs/development/release.md)
-- [贡献指南](CONTRIBUTING.md)
-- [安全策略](SECURITY.md)
-- [第三方许可](THIRD_PARTY_NOTICES.md)
-- [GitHub Issues](https://github.com/starroyhq/agentkib/issues)
+- [开发文档](docs/DEVELOPMENT.md)
+- [贡献指南](CONTRIBUTING.md) · [安全策略](SECURITY.md) · [第三方许可](THIRD_PARTY_NOTICES.md) · [GitHub Issues](https://github.com/starroyhq/agentkib/issues)
 
-安全漏洞必须按照[安全策略](SECURITY.md)私密报告，不要创建公开 Issue。AgentKib 使用 [Apache License 2.0](LICENSE) 发布。
+安全漏洞请按照[安全策略](SECURITY.md)私下报告，不要创建公开 Issue。AgentKib 使用 [Apache License 2.0](LICENSE) 发布。

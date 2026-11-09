@@ -119,12 +119,12 @@
       "sha256": "5474648b40bf287b2c8e787f023f0cab513fb14e932e9b677085ebd4fb8a75ee"
     },
     {
-      "path": "docs/SESSION-INTEROPERABILITY.md",
+      "path": "docs/sessions/interoperability.md",
       "baseline_sha256": "a498552436060bd422e58c4caff0ac94ac9affc8dabb487a3092d507b83db274",
       "sha256": "157ce0cb45cbd610ed440faba323ff76470d9d3dd985bec891b59be45a4d058b"
     },
     {
-      "path": "docs/WEB-SELF-HOSTING.md",
+      "path": "docs/remote/self-hosting.md",
       "baseline_sha256": "7dc369421ee51b6d7939f174e586bb316d9854cd34714ab73f688e22d22995ff",
       "sha256": "081780694b5a1d958060da89dca0cbb9a41c5c3d6779400eee07d6c4ea4d426f"
     },

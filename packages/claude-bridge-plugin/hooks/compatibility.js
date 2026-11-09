@@ -3,7 +3,7 @@
 // Within protocol 1 a plugin and a Runtime of other releases still connect: the
 // Runtime takes any plugin from `minimumPluginVersion` on, newer ones included.
 // Raise it only to retire a plugin that must no longer connect; the rules for
-// changing the protocol are in docs/CLAUDE-NATIVE-CONNECTION.md.
+// changing the protocol are in docs/agents/claude-code-terminal.md.
 export const CLAUDE_BRIDGE_COMPATIBILITY = Object.freeze({
   minimumCliVersion: "2.1.301",
   verifiedCliVersions: Object.freeze(["2.1.301", "2.1.310"]),

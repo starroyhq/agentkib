@@ -1,6 +1,6 @@
 # DeepSeek Harness 一期接入 QA — 2026-11-04
 
-本文记录一期（接入运行中的 DSH）的源码、自动化结果和真实 DSH 沙箱验收。结论只适用于下列源码与版本。桌面端和手机端（Android 模拟器）各有一节真实 DSH 验收；Web 浏览器客户端与 iOS 只有自动化证据。方案与规则见[接入方案](../docs/DEEPSEEK-HARNESS-INTEGRATION.md)。
+本文记录一期（接入运行中的 DSH）的源码、自动化结果和真实 DSH 沙箱验收。结论只适用于下列源码与版本。桌面端和手机端（Android 模拟器）各有一节真实 DSH 验收；Web 浏览器客户端与 iOS 只有自动化证据。方案与规则见[接入方案](../docs/agents/deepseek-harness.md)。
 
 ## 源码与边界
 

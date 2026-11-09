@@ -10,7 +10,7 @@
 | 个人技能与两个具名项目关联 | [简体中文](zh-CN-skills-personal-detail.png) |
 | Claude 用量缺失时的主提示与具体原因 | [简体中文](zh-CN-usage-error-hierarchy.png) |
 
-四语对应五种状态均已实际渲染并检查，其他三语完整本地截图保存在 `qa/screenshots/v15-d-revalidation/`，遵循仓库忽略 QA PNG 的现有约定。实测见 [computed-style.json](computed-style.json)，过程、测试结果及覆盖限制见 [QA 记录](../../../qa/v15-d-revalidation-2026-10-23.md)
+四语对应五种状态均已实际渲染并检查，其他三语完整本地截图保存在 `qa/screenshots/v15-d-revalidation/`，遵循仓库忽略 QA PNG 的现有约定。实测见 [computed-style.json](computed-style.json)，过程、测试结果及覆盖限制见 [QA 记录](../../v15-d-revalidation-2026-10-23.md)
 
 截图前使用合成个人技能、两个合成工作区和合成历史，经生产接口登记并由真实后端读取，没有替换 IPC 响应。所有 `~/…` 和 `/private/tmp/agentkib-v15-d-finalize-d-revalidation/…` 均为合成沙盒路径。截图未登录、未连接服务，已核验没有真实用户名、账号或凭据
 

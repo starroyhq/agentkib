@@ -83,4 +83,4 @@ The plugin and the Runtime need not come from the same AgentKib release. Within 
 the Runtime takes any plugin from `minimumPluginVersion` (0.5.0) on, newer ones included, and both
 use only what both have: a service the plugin does not report stays off. After an AgentKib update
 a running DSH stays connected; restarting it loads the new plugin and its new features. The rules
-for changing the protocol are in `docs/DEEPSEEK-HARNESS-INTEGRATION.md` (§3.3).
+for changing the protocol are in `docs/agents/deepseek-harness.md` (§3.3).

@@ -6,7 +6,7 @@
 - 路径约定：沿用上一轮。`desktop/` 指 `apps/desktop/src/`，`web/` 指 `apps/web/src/`，`conv/` 指 `apps/desktop/src/features/sessions/conversation/`（Web 端 `web/features/conversation/` 是同源副本，行号基本一致，修复时两端同步）。本文另用 `ws/` 指 `desktop/routes/(main)/workspace/$workspaceId/`。
 - 编号：上一轮的条目沿用原编号；本轮新问题从 UX-46 起续编。
 - 判定沿用上一轮的标签："已确认缺陷"表示代码路径可以证实；"待实机"表示视觉、设备或运行表现还没有复现；"待确认"表示依据不足，修复前需要先核实。
-- 术语：建议文案以 `docs/UI-TERMINOLOGY.md` 为准。
+- 术语：建议文案以 `docs/development/ui-terminology.md` 为准。
 
 严重程度：
 
@@ -71,7 +71,7 @@ UX-03、UX-06、UX-13 的判定已由开发者收窄（见上一轮清单各条�
 - 判定：已确认缺陷，P2。
 - 已修复：执行管理里的禁用条件已就近说明原因（`conv/features/sessions/managed-tasks.tsx:280-296, 605-609`）。
 - 剩余：工作区 Claude 面板仍写"准备接管"（`desktop/features/workspace/ClaudeSessionPanel.tsx:660`）、"释放给原客户端"（`:703`）和状态"已释放"（`:498`）。执行管理里同一动作叫"交还原客户端"（`conv/features/sessions/managed-tasks.tsx:602`）。
-- 建议：按 `docs/UI-TERMINOLOGY.md` 改为"交给 AgentKib""交还原客户端""已交还"，四种语言同步。
+- 建议：按 `docs/development/ui-terminology.md` 改为"交给 AgentKib""交还原客户端""已交还"，四种语言同步。
 - 验收：工作区 Claude 面板与执行管理对同一动作用同一叫法。
 
 ### UX-08 应用后的反馈（剩余部分）
@@ -110,7 +110,7 @@ UX-03、UX-06、UX-13 的判定已由开发者收窄（见上一轮清单各条�
 - 剩余（PR #125）：
   - 接管、交给、交还、释放、续接、连接几种说法并存，界面上没有区分说明。
   - 繁体中文写"原會話"（`conv/features/sessions/claude-connection-copy.ts:33, 45` 等），术语表规定繁中用"對話"。
-- 建议：按 `docs/UI-TERMINOLOGY.md` 逐条统一；"连接原终端"（只同步观察、可取消当前轮次）与"交给 AgentKib"（接管执行）在首次出现处各用一句话说明区别。
+- 建议：按 `docs/development/ui-terminology.md` 逐条统一；"连接原终端"（只同步观察、可取消当前轮次）与"交给 AgentKib"（接管执行）在首次出现处各用一句话说明区别。
 
 ### UX-45 Web 端部分触控目标小于 44px（剩余部分）
 
@@ -316,7 +316,7 @@ UX-03、UX-06、UX-13 的判定已由开发者收窄（见上一轮清单各条�
 3. 没有"连接码只用于自己的终端，不要发给他人"之类的提示（`claude-bridge-panel.tsx:201-214`）。
 4. 未连接时"断开"也能点，断开前没有确认（`claude-bridge-panel.tsx:59-68, 184-190`）。建议未连接时禁用，并说明断开后原终端照常运行、AgentKib 停止同步。
 5. 已连接原终端时，执行管理整段隐藏交接操作（`conv/features/sessions/managed-tasks.tsx:574, 587`），只显示"此会话尚未交给 AgentKib"，不提示需要先断开连接。
-6. 已连接原终端的会话，页头状态是"仅可查看"（`conv/features/sessions/session-display-state.ts:192-197`），横幅却写"可取消当前轮次"。`docs/UI-TERMINOLOGY.md` 也要求不要把这类状态统一写成"仅可查看"。
+6. 已连接原终端的会话，页头状态是"仅可查看"（`conv/features/sessions/session-display-state.ts:192-197`），横幅却写"可取消当前轮次"。`docs/development/ui-terminology.md` 也要求不要把这类状态统一写成"仅可查看"。
 
 ### UX-64 首页残留的旧叫法（2026-10-17 补充）
 
@@ -360,7 +360,7 @@ UX-03、UX-06、UX-13 的判定已由开发者收窄（见上一轮清单各条�
 2. **UX-47、UX-48、UX-49、UX-50**：都在工作区计划的生命周期里（`workspace-store.ts`、`ws/route.tsx`），建议一起改、一起补测试。
 3. **UX-55–UX-58 与 UX-19 剩余部分**：连接原终端的状态与反馈。建议先列出"执行模式 × 状态 × 原因"对应的标题和正文，再改横幅和面板。
 4. **UX-51、UX-52、UX-53**：资源库，三项相互独立。
-5. **UX-59、UX-07、UX-30**：文案，按 `docs/UI-TERMINOLOGY.md` 统一。
+5. **UX-59、UX-07、UX-30**：文案，按 `docs/development/ui-terminology.md` 统一。
 6. **UX-54**：等设计确认色值后，统一改主题变量。
 7. **UX-08、UX-25、UX-45 剩余部分**，以及 P3 细节。
 

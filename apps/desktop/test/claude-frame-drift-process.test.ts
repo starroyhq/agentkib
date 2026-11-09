@@ -19,7 +19,7 @@ import { createFakeClaude, processAlive, type FakeClaudePlan } from "./fixtures/
 
 // The runner and the host against a scripted stand-in for the CLI that plays hand-made frames.
 // No real Claude session is started; that a real CLI sends these frames in this form is NOT
-// verified (the shapes still to confirm are listed in docs/CLAUDE-WEB.md).
+// verified (the shapes still to confirm are listed in docs/agents/claude-code-managed.md).
 
 const cleanups: Array<() => void | Promise<void>> = [];
 afterEach(async () => {

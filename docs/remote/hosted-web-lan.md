@@ -1,6 +1,6 @@
 # 托管 Web 与局域网直连
 
-本文描述可选的局域网直连方式；手机访问的主要流程见 [一键开通托管连接](REMOTE-CODEX-WEB.md)。在 LAN 模式下，`https://remote.agentkib.com` 托管网页并作为桌面可信 Origin，Chromium 浏览器直接请求同一局域网电脑上的 AgentKib；静态网页托管不代理会话、控制请求或实时事件。托管连接的注册与授权 API 独立使用 `https://api.agentkib.com`，本模式不调用该 API 建立中继，也不代替原生「连接其他电脑」。
+本文描述可选的局域网直连方式；手机访问的主要流程见 [一键开通托管连接](phone-access.md)。在 LAN 模式下，`https://remote.agentkib.com` 托管网页并作为桌面可信 Origin，Chromium 浏览器直接请求同一局域网电脑上的 AgentKib；静态网页托管不代理会话、控制请求或实时事件。托管连接的注册与授权 API 独立使用 `https://api.agentkib.com`，本模式不调用该 API 建立中继，也不代替原生「连接其他电脑」。
 
 ## 使用与安全边界
 
@@ -52,7 +52,7 @@ wrangler pages deploy apps/web/dist-hosted --project-name agentkib-remote --bran
 
 产物的 [`_headers`](https://developers.cloudflare.com/pages/configuration/headers/) 禁止嵌入、关闭 Referrer、请求不缓存并限制脚本／字体来源；[`_redirects`](https://developers.cloudflare.com/pages/configuration/redirects/) 提供 SPA 回退。不要添加 `upgrade-insecure-requests` 改变 HTTP 连接。`connect-src 'self' http:` 是浏览器连接许可，不是 RFC1918 网络隔离；应用和桌面仍必须执行地址与授权限制。API 不经过 Pages。
 
-默认可信来源固定为 `https://remote.agentkib.com`。其他域名仅能显示页面，不自动取得连接权限；自有域名需同步审查修改桌面可信 Origin、生成链接及前端约束并构建对应版本，不宣称设置支持任意域名。完全不依赖该域名的方式仍是[内置 Web 自部署](WEB-SELF-HOSTING.md)。
+默认可信来源固定为 `https://remote.agentkib.com`。其他域名仅能显示页面，不自动取得连接权限；自有域名需同步审查修改桌面可信 Origin、生成链接及前端约束并构建对应版本，不宣称设置支持任意域名。完全不依赖该域名的方式仍是[内置 Web 自部署](self-hosting.md)。
 
 ## 诊断、升级与验收
 

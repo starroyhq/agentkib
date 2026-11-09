@@ -30,7 +30,7 @@ AgentKib 是一个本地优先的 Coding Agent 资产中心。它发现 Codex、
 | Hermes           | 支持       | 支持             | —              |
 | DeepSeek Harness | Beta，只读 | 仅诊断，不写入   | —              |
 
-Claude Code 的“上下文诊断与同步”为部分支持：managed 与用户级指令、上级目录和项目里的 `CLAUDE.md`、`AGENTS.md` 回退、递归的 `.claude/rules`（含只列出匹配模式的按路径生效规则）、自动记忆、`@import` 和 settings 文件（只读，含 `claudeMdExcludes`、managed 的 `claudeMd`、“Project instructions”、自动记忆设置）已覆盖，命令行 `--settings`、MDM 与注册表下发的策略等 AgentKib 看不到的部分除外，覆盖范围详见 [功能说明](FEATURES.md)。
+Claude Code 的“上下文诊断与同步”为部分支持：managed 与用户级指令、上级目录和项目里的 `CLAUDE.md`、`AGENTS.md` 回退、递归的 `.claude/rules`（含只列出匹配模式的按路径生效规则）、自动记忆、`@import` 和 settings 文件（只读，含 `claudeMdExcludes`、managed 的 `claudeMd`、“Project instructions”、自动记忆设置）已覆盖，命令行 `--settings`、MDM 与注册表下发的策略等 AgentKib 看不到的部分除外，覆盖范围详见 [功能说明](../FEATURES.md)。
 
 ## 一、安装编译环境
 
@@ -196,6 +196,6 @@ Get-NetTCPConnection -LocalPort 1420 -ErrorAction SilentlyContinue
 
 - 已验收目标仅为 Windows 11 x64 的编译、开发启动、NSIS 安装和启动。
 - Windows ARM64 仅提供 Preview 安装包，尚未完成与 x64 等价的原生回归。
-- GitHub Release 已由版本标签自动发布；具体升级方式见[升级指南](UPGRADING.md)。Windows 安装包仍未进行代码签名，ARM64 仍为 Preview。
+- GitHub Release 已由版本标签自动发布；具体升级方式见[升级指南](../UPGRADING.md)。Windows 安装包仍未进行代码签名，ARM64 仍为 Preview。
 - macOS/Linux 行为通过平台隔离和现有 CI 保持，本机无法替代对应平台的原生回归。
 - 完整 Windows 功能等价测试仍需后续阶段逐项完成。

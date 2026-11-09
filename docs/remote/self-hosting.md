@@ -2,9 +2,9 @@
 
 Web 是 AgentKib 桌面应用的一部分，不是官方云服务。安装包包含网页、字体和本机服务；普通用户无需安装 Node 或下载源码构建，也不需要官方账号。项目使用根目录 Apache-2.0 许可。
 
-本文描述内置同源模式，适用于本机或自行管理网络的开发使用。邀请内测的手机访问主要流程见 [一键开通托管连接](REMOTE-CODEX-WEB.md)，不要求按本文自行部署。另有[托管 Web 与局域网直连](WEB-HOSTED-LAN.md)：网页独立托管到 `remote.agentkib.com`，通过单独、默认关闭的局域网 HTTP 监听器连接桌面，不使用本节 cookie 或扩大原监听范围。
+本文描述内置同源模式，适用于本机或自行管理网络的开发使用。邀请内测的手机访问主要流程见 [一键开通托管连接](phone-access.md)，不要求按本文自行部署。另有[托管 Web 与局域网直连](hosted-web-lan.md)：网页独立托管到 `remote.agentkib.com`，通过单独、默认关闭的局域网 HTTP 监听器连接桌面，不使用本节 cookie 或扩大原监听范围。
 
-历史读取、跨 Agent 原生导入与 Web 托管控制分别判断能力。桌面新增的 OpenCode/Hermes/OpenClaw 实验导入不赋予它们 Web 控制能力，也不修改远程授权。具体来源、目标版本和验收状态见[会话互通矩阵](SESSION-INTEROPERABILITY.md)；Claude 托管控制与 Codex 实验能力仍遵循各自已有门限。
+历史读取、跨 Agent 原生导入与 Web 托管控制分别判断能力。桌面新增的 OpenCode/Hermes/OpenClaw 实验导入不赋予它们 Web 控制能力，也不修改远程授权。具体来源、目标版本和验收状态见[会话互通矩阵](../sessions/interoperability.md)；Claude 托管控制与 Codex 实验能力仍遵循各自已有门限。
 
 ## 开启与本机使用
 
@@ -20,7 +20,7 @@ Web 是 AgentKib 桌面应用的一部分，不是官方云服务。安装包包
 
 ## 配置远程 HTTPS
 
-使用本文的自管理模式时，用户自行提供域名、证书、反向代理或隧道，不依赖托管服务。本公开仓库不提供托管后端部署实现；独立托管连接的使用边界见 [AgentKib Remote](REMOTE-RELAY.md)。模型调用自身可能需要联网，与网页自部署无关，不代表离线推理。
+使用本文的自管理模式时，用户自行提供域名、证书、反向代理或隧道，不依赖托管服务。本公开仓库不提供托管后端部署实现；独立托管连接的使用边界见 [AgentKib Remote](account-relay.md)。模型调用自身可能需要联网，与网页自部署无关，不代表离线推理。
 
 先在 Web 设置填写外部地址，例如 `https://agent.example.com`（仅 origin，不带路径），保存。必须使用该地址访问；服务严格核验 Host 和 Origin，不接受任意转发头作为信任依据。
 
@@ -64,9 +64,9 @@ server {
 新授权码授予完整远控权限，但操作是否可用仍取决于原生主机能力和当前任务状态。旧版逐项授权的浏览器继续受原有主机控制开关、各自权限和工作区范围限制，不自动升级。
 
 - 历史读取不是 Agent 当前状态；只有权威实时快照确认空闲后才允许发送。
-- 对经过验证的 macOS Claude Code 安装，首次发送会启动 AgentKib 托管的 `claude --resume=<UUID>`。这是续接已索引的会话，不是接管已有终端；查看历史不会启动 CLI。完整边界见 [Claude Code 托管续接](CLAUDE-WEB.md)。
-- 对已核验的 Antigravity ACP 1.1.1，会话发送、原生审批与精确轮次停止由 AgentKib 托管；未知服务版本保持只读。Desktop/CLI 会话互操作边界见 [Antigravity 接入边界](ANTIGRAVITY.md)。
-- Codex 控制只跟随经过验证的 macOS 官方 owner 会话，当前正式开发构建仍保持验收门槛关闭。找不到 owner 时需在官方客户端打开会话；AgentKib 不会自行恢复、分叉或接管。完整边界见 [Codex 原会话实验桥接](CODEX-BRIDGE.md)。
+- 对经过验证的 macOS Claude Code 安装，首次发送会启动 AgentKib 托管的 `claude --resume=<UUID>`。这是续接已索引的会话，不是接管已有终端；查看历史不会启动 CLI。完整边界见 [Claude Code 托管续接](../agents/claude-code-managed.md)。
+- 对已核验的 Antigravity ACP 1.1.1，会话发送、原生审批与精确轮次停止由 AgentKib 托管；未知服务版本保持只读。Desktop/CLI 会话互操作边界见 [Antigravity 接入边界](../agents/antigravity.md)。
+- Codex 控制只跟随经过验证的 macOS 官方 owner 会话，当前正式开发构建仍保持验收门槛关闭。找不到 owner 时需在官方客户端打开会话；AgentKib 不会自行恢复、分叉或接管。完整边界见 [Codex 原会话实验桥接](../archive/codex-bridge.md)。
 - 未验证的版本、其他平台、只读历史来源以及未知交互契约保持只读。
 - 完整远控允许处理原生审批，不会自动同意执行。命令/变更不完整、不支持的审批决定或额外权限需求须在官方客户端处理。
 - 请求已接收不等于执行完成。断线、超时和应用重启不会自动重发。结果不明确时先回官方客户端核验，不反复点击发送。

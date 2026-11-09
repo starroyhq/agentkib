@@ -28,7 +28,7 @@
 
 ## 文档与设计
 
-- 已更新：`docs/UI-TERMINOLOGY.md`、`docs/CONVERSATIONS.md`、`docs/CLAUDE-NATIVE-CONNECTION.md`。
+- 已更新：`docs/development/ui-terminology.md`、`docs/sessions/conversations.md`、`docs/agents/claude-code-terminal.md`。
 - 本机设计文件（不入库）：修订计划第 8 节新增 8.7，重新导出 4-0、4-1、4-3 预览，均为无头编辑。
 
 ## 验证

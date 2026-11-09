@@ -59,7 +59,7 @@
 修复后的复验：对同一批目录重新运行 AgentKib 预览（不再调用模型），D4、D5 与真机观察到的加载结果一致；Claude 一侧没有变化，所以没有重跑模型。
 
 ## 文档改动
-`docs/CLAUDE-WEB.md`（版本记录、`permissionMode` 时机、子代理行为、`can_use_tool` 字段、仍待确认的清单）、`docs/CONVERSATIONS.md`、`docs/FEATURES.md`（验证版本、上级目录规则、`claudeMdExcludes` 对规则的作用）、`docs/SESSION-INTEROPERABILITY.md`（导入后 `--resume` 的真机结果，限定为 2.1.299 与这一种目录名组合）。
+`docs/agents/claude-code-managed.md`（版本记录、`permissionMode` 时机、子代理行为、`can_use_tool` 字段、仍待确认的清单）、`docs/sessions/conversations.md`、`docs/FEATURES.md`（验证版本、上级目录规则、`claudeMdExcludes` 对规则的作用）、`docs/sessions/interoperability.md`（导入后 `--resume` 的真机结果，限定为 2.1.299 与这一种目录名组合）。
 
 ## 副作用与清理
 1. `~/.claude/projects/<测试目录键>/`：12 个目录（B、C、D 各场景、ORD、冒烟）。删除前逐个核对了其中每个会话文件的 `cwd` 字段都在 `<sbx>` 之下，然后整目录删除；`projects/` 的目录数回到测试前的 24。

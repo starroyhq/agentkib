@@ -80,7 +80,7 @@ AgentKib 的终端连接和后台续接是两条独立路径。终端连接通�
 
 运行中发送的默认方式按设备分别设置，默认是排队：手机在“我的 → 偏好 → 运行中发送”，桌面在“设置 → 常规 → 界面”，Web 在“外观与语言”对话框。运行中点发送（桌面和 Web 也包括回车）按默认方式发出；手机长按发送、桌面和 Web 用发送旁的“…”菜单选另一种。这个默认方式同样用于 Codex 会话。
 
-端到端依据见[终端发送方式 QA](../qa/claude-terminal-send-modes-2026-10-30.md)：真实 2.1.311 TUI，模型和 AgentKib 桥接都是本机模拟。
+端到端依据见[终端发送方式 QA](../../qa/claude-terminal-send-modes-2026-10-30.md)：真实 2.1.311 TUI，模型和 AgentKib 桥接都是本机模拟。
 
 ## 并发、重连和退出
 
@@ -104,6 +104,6 @@ Web 仅能使用桌面已经建立且当前授权允许的连接，不能安装�
 
 ## 验证范围
 
-源码、插件产物身份、自动化与原生结果见[接入 QA](../qa/native-session-connection-2026-10-16.md)和[审查修复 QA](../qa/native-session-review-loop-2026-10-16.md)，发送方式见[终端发送方式 QA](../qa/claude-terminal-send-modes-2026-10-30.md)。Haiku 5.5 与 Codex Luna6 的后续结果见[真实模型补验](../qa/native-session-real-model-2026-10-16.md)，其中模型回复与完整链路是否通过分别报告。代码测试、原生合成模型测试和真实模型回复分别记录；未验证能力保持关闭。
+源码、插件产物身份、自动化与原生结果见[接入 QA](../../qa/native-session-connection-2026-10-16.md)和[审查修复 QA](../../qa/native-session-review-loop-2026-10-16.md)，发送方式见[终端发送方式 QA](../../qa/claude-terminal-send-modes-2026-10-30.md)。Haiku 5.5 与 Codex Luna6 的后续结果见[真实模型补验](../../qa/native-session-real-model-2026-10-16.md)，其中模型回复与完整链路是否通过分别报告。代码测试、原生合成模型测试和真实模型回复分别记录；未验证能力保持关闭。
 
 官方依据：[Mods API](https://code.claude.com/docs/en/plugins/mods/api)、[事件和方法](https://code.claude.com/docs/en/plugins/mods/reference)、[安装与热加载](https://code.claude.com/docs/en/plugins/mods/overview)。

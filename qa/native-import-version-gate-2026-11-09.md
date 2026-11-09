@@ -45,7 +45,7 @@
 1. **导入的 Codex 会话按记录里的 `model_provider: "openai"` 恢复。**
    - 沙盒配置的 `model_provider` 改为其他提供方时，`thread/resume` 返回的仍是 `openai`，续接请求发往 OpenAI（被沙盒拦下）。
    - 因此只配置了其他提供方、没有登录 OpenAI 的用户，导入后无法在 Codex 里继续对话。
-   - 这与版本门限无关，本次不改代码，已写进[会话互通文档](../docs/SESSION-INTEROPERABILITY.md)。
+   - 这与版本门限无关，本次不改代码，已写进[会话互通文档](../docs/sessions/interoperability.md)。
 2. **Codex 0.163.0 的终端界面默认启动共享后台服务，并调用 `ps` 记录这个进程。**
    - `sandbox-exec` 里 `ps` 没有权限，Codex 打印 "failed to invoke ps … Operation not permitted" 后直接退出。
    - 这是验收沙盒造成的，普通终端不受影响；终端界面检查因此加了 `--no-daemon`。

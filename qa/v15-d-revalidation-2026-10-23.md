@@ -33,7 +33,7 @@
 | 详情使用位置 | 详情直接使用原始 agents，没有复用卡片判断；逐条调用既有 `skillObservationVisibility([item])`，避免正常个人别名把受限项目行重新标为可见；由 `SkillHubPage` 传入已有工作区列表取得名称 | 四语个人/项目名称、禁止/未知 Agent、原始诊断、坏软链和异常状态；独立正常 profile/原生 ID；受管理部署目标保持完整；实际页面接入工作区名称 |
 | 用量错误层级 | `AgentUsagePanel` 主提示改为正文色，具体原因继续次要色，不改匹配和重试行为 | 四语颜色类；既有 ENOENT 窄匹配、权限/其他错误、原始详情、重试和概览断言保留 |
 
-修改测试文件为 `SkillFileBrowser.test.tsx`、`SkillUsageList.v15.test.tsx`、`SkillManagerPanels.test.tsx`、`SkillHubPage.v15.test.tsx`、`AgentsPage.test.tsx`；同步更新 `docs/SKILLS.md` 与 `docs/UI-TERMINOLOGY.md`
+修改测试文件为 `SkillFileBrowser.test.tsx`、`SkillUsageList.v15.test.tsx`、`SkillManagerPanels.test.tsx`、`SkillHubPage.v15.test.tsx`、`AgentsPage.test.tsx`；同步更新 `docs/library/skills.md` 与 `docs/development/ui-terminology.md`
 
 没有增加用户文案或 locale 键；个人/项目、未知项目和异常状态均复用现有四语翻译，未改 `handoff.*`。Web 没有技能管理详情或 Agent 用量设置页，本轮不新增 Web 管理入口；协议、后端与镜像源码均未修改，Web 通过类型、构建与全量回归验证
 
@@ -81,7 +81,7 @@
 
 四语用量主提示均为 `rgb(14, 20, 43)`，原因均为 `rgb(98, 106, 126)`，文字透明度均为 1。错误源为合成 HOME 中不存在的 Claude stats-cache.json，详情展开后保留真实 ENOENT。没有改动主题色值或错误语义
 
-每语五种状态，共 20 张截图；简中五张及日文长菜单见 [截图索引](../docs/screenshots/v15-d-revalidation/README.md)，其他三语完整截图在本地忽略目录 `qa/screenshots/v15-d-revalidation/`。DOM 实测保存为 [computed-style.json](../docs/screenshots/v15-d-revalidation/computed-style.json)。捕获前核对所有内容为合成数据；页面无用户名、账号、密钥或真实用户路径，renderer pageerror 为 0
+每语五种状态，共 20 张截图；简中五张及日文长菜单见 [截图索引](screenshots/v15-d-revalidation/README.md)，其他三语完整截图在本地忽略目录 `qa/screenshots/v15-d-revalidation/`。DOM 实测保存为 [computed-style.json](screenshots/v15-d-revalidation/computed-style.json)。捕获前核对所有内容为合成数据；页面无用户名、账号、密钥或真实用户路径，renderer pageerror 为 0
 
 复用既有 Seatbelt 探针：环境五目录隔离、仅回环网络、拒绝探针枚举的真实用户目录与系统凭据访问，未登录或连接外部服务；不将其描述成拒绝所有 HOME 路径或 Chromium 渲染器沙盒。结束后仅清理自建 Electron PID，退出码 0，未结束其他应用或用户进程
 

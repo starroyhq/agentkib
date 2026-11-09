@@ -2,7 +2,7 @@
 
 ## 中文
 
-本文仅描述桌面「连接其他电脑」的原生局域网协议，与 [手机访问](REMOTE-CODEX-WEB.md) 及 [浏览器 LAN 直连](WEB-HOSTED-LAN.md) 分开配置和配对。
+本文仅描述桌面「连接其他电脑」的原生局域网协议，与 [手机访问](phone-access.md) 及 [浏览器 LAN 直连](hosted-web-lan.md) 分开配置和配对。
 
 AgentKib 可以连接另一台 AgentKib，也可以允许其他设备查看本机历史。本阶段只读：不发送消息、不审批或停止 Agent，不提供远程桌面、Shell、公网 Relay 或 Web 客户端。
 
@@ -27,7 +27,7 @@ AgentKib 可以连接另一台 AgentKib，也可以允许其他设备查看本�
 
 ## English
 
-This guide covers native desktop-to-desktop connections. [Phone access](REMOTE-CODEX-WEB.md) and [browser LAN access](WEB-HOSTED-LAN.md) use separate configuration and pairing.
+This guide covers native desktop-to-desktop connections. [Phone access](phone-access.md) and [browser LAN access](hosted-web-lan.md) use separate configuration and pairing.
 
 AgentKib can connect to another desktop and accept incoming devices independently. This stage shares read-only history: no message sending, Agent approvals/stopping, remote desktop, shell, public relay or web client.
 

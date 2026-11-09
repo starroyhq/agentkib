@@ -9,7 +9,7 @@
 - 按锁文件安装。新增的依赖关系仅为工作区内 `@agentkib/web-client → @agentkib/runtime-protocol`，没有新增或升级外部生产依赖，没有更改业务数据库表。
 - 本轮全部历史与执行验证使用临时目录、合成内容、真实 Backend/Store/Worker 和客户端边界；没有调用真实模型，没有读取用户历史建立测试索引。
 
-功能与八来源覆盖矩阵见 [会话正文搜索与历史引用](../docs/SESSION-CONTENT-SEARCH.md)。以下自动化证据不能替代 Windows/Linux 原生窗口、手机或安装包验收。
+功能与八来源覆盖矩阵见 [会话正文搜索与历史引用](../docs/sessions/content-search.md)。以下自动化证据不能替代 Windows/Linux 原生窗口、手机或安装包验收。
 
 初次交付的本地证据保存在权限为 0700 的 `$CODEX_HOME/tmp/session-content-search-20261008-evidence/`，包含早期及初次交付命令日志、tracked patch、含新增文件的源码覆盖包和逐文件 SHA256。下列源码清单包含 74 个修改/新增文件，排除本 QA 自身以避免循环哈希；QA 另存副本。后续审查修复的证据单独保留，见本记录末尾，不覆盖这些旧哈希。
 

@@ -75,7 +75,7 @@ Hub 的目录与调用使用同一规则。即使客户端记住旧工具名，�
 
 ## 验证边界
 
-本轮使用合成配置、临时 Home 和合成 MCP 服务验证，不更改个人 Agent 配置或调用真实模型。自动化、Electron 验收及未验证平台见 [本轮 QA](../qa/mcp-management-2026-10-09.md)。旧单 Agent RPC 分支为兼容保留，新桌面流程使用版本化保存与后端预览 token。
+本轮使用合成配置、临时 Home 和合成 MCP 服务验证，不更改个人 Agent 配置或调用真实模型。自动化、Electron 验收及未验证平台见 [本轮 QA](../../qa/mcp-management-2026-10-09.md)。旧单 Agent RPC 分支为兼容保留，新桌面流程使用版本化保存与后端预览 token。
 
 ## MCP library presentation
 

@@ -9,7 +9,7 @@ branch pushes run platform checks but do not publish installers.
 1. Update the desktop version in `apps/desktop/package.json`.
 2. Merge the version change into `main` and make sure the required checks pass.
 3. Run the workflow manually without `release_tag`, then complete the
-   pre-release parts of the [Beta acceptance guide](BETA.md) against the
+   pre-release parts of the [Beta acceptance guide](beta-checklist.md) against the
    candidate artifacts. Artifact-only runs intentionally produce unsigned
    macOS previews and omit signing/notarization; they cannot
    validate Gatekeeper, notarization, or the end-to-end updater path.
@@ -39,7 +39,7 @@ branch pushes run platform checks but do not publish installers.
    account login or real secure storage. Production launch options are unchanged.
 
 6. Complete the release-only signing, notarization, installation, and updater
-   checks in the [Beta acceptance guide](BETA.md) against the published,
+   checks in the [Beta acceptance guide](beta-checklist.md) against the published,
    immutable Release assets. If a defect is found, publish a new patch version;
    do not move or replace the tag.
 
@@ -123,7 +123,7 @@ requested, preflight-verified immutable stable tag at or before v0.20.1 whose
 source predates the tracked hook. That retry skips only the unavailable product
 policy tests; the real installer smoke and uninstall/user-data assertions still
 run. A missing hook in branch builds or newer tags remains a failure. See the
-[v0.20.1 failure investigation](../qa/windows-uninstall-2026-10-21.md) for the
+[v0.20.1 failure investigation](../../qa/windows-uninstall-2026-10-21.md) for the
 original evidence and Windows CI verification.
 
 ## Build artifacts without publishing

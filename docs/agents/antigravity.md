@@ -40,4 +40,4 @@ ACP v1 的 `session/new` 没有导入外部历史的参数。Antigravity CLI 1.2
 
 实施顺序是：冻结官方版本和协议能力；完成资产发现与保留式写入；用 ACP 能力协商接入历史；实现带 session、turn、revision 三重校验的控制；归一化会话；逐方向验证原生导入；最后执行全仓回归。任何缺少官方稳定接口的方向保持不支持，并记录证据。
 
-完整验收定义、八个跨 Agent 方向、A01–A14 场景和证据要求见 [`qa/ANTIGRAVITY-ACCEPTANCE.md`](../qa/ANTIGRAVITY-ACCEPTANCE.md)。其中 A05 是整体放行条件：只要 Codex/Claude Code → Antigravity 仍不能创建可重启、可继续的 Antigravity 原生历史，完整支持就不能验收通过。
+完整验收定义、八个跨 Agent 方向、A01–A14 场景和证据要求见 [`qa/ANTIGRAVITY-ACCEPTANCE.md`](../../qa/ANTIGRAVITY-ACCEPTANCE.md)。其中 A05 是整体放行条件：只要 Codex/Claude Code → Antigravity 仍不能创建可重启、可继续的 Antigravity 原生历史，完整支持就不能验收通过。

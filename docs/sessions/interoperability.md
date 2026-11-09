@@ -2,7 +2,7 @@
 
 本页描述工作树中的实现，不代表已发布版本。统一中间格式仍是 `SessionDocument`；来源解析、目标转换、原生导入与 Web 托管控制分别判断能力。新目标目前为实验适配，不能将离线导入成功理解为真实模型续接已验收。
 
-原生验收记录绑定各自的源码 revision、Agent 版本和产品界面。当前后端已迁移到 TypeScript；本轮执行器、恢复及 MCP 归属的自动化与候选包检查见[2026-10-07 稳定性 QA](../qa/typescript-stability-2026-10-07.md)。历史 Rust Runtime、原生界面和真实回复记录仍保留原结论，不作为迁移后同方向已重新验收的证明。
+原生验收记录绑定各自的源码 revision、Agent 版本和产品界面。当前后端已迁移到 TypeScript；本轮执行器、恢复及 MCP 归属的自动化与候选包检查见[2026-10-07 稳定性 QA](../../qa/typescript-stability-2026-10-07.md)。历史 Rust Runtime、原生界面和真实回复记录仍保留原结论，不作为迁移后同方向已重新验收的证明。
 
 ## 来源
 
@@ -17,7 +17,7 @@
 | Cursor IDE       | macOS 本地 bridge，支持 Cursor 3.22.12 与 3.23.12；显式连接 profile/window 后读取与原生导入                | 仅支持已连接的本地窗口；不代表 Cursor CLI 或 Agents Window 能力；Windows/Linux 原生桥接关闭                              |
 | Antigravity      | 现有官方 ACP 回放                                                                                          | ACP 来源不等于完整 Desktop 或 CLI 原生存储                                                                                   |
 | OpenClaw         | `2026.9.6` / SQLite schema 23：原始事件正文、官方有效分支投影和 reset 窗口；兼容无 SQLite 的 Pi JSONL v1–3 | 未知 schema、陈旧投影、压缩事件、冷归档及缺失的外部历史拒绝；仅供显示的消息可浏览、不可交接；SQLite/WAL 存在时不回退旧 JSONL |
-| DeepSeek Harness | Beta：经插件从运行中的 DSH 读取整个会话：用户消息及其图片、助手正文、工具调用参数与输出；默认按 DSH 模型当前的上下文（每次压缩的摘要加之后的消息），可选带上压缩替换掉的历史并标出压缩点（见下） | DSH 未运行时不能读取；推理不交接；单条正文超过 256 KiB、工具参数超过 64 KiB、工具输出超过 128 KiB 时截断并在预览说明；AgentKib 不直接读写 DSH 文件，见[接入方案](DEEPSEEK-HARNESS-INTEGRATION.md) |
+| DeepSeek Harness | Beta：经插件从运行中的 DSH 读取整个会话：用户消息及其图片、助手正文、工具调用参数与输出；默认按 DSH 模型当前的上下文（每次压缩的摘要加之后的消息），可选带上压缩替换掉的历史并标出压缩点（见下） | DSH 未运行时不能读取；推理不交接；单条正文超过 256 KiB、工具参数超过 64 KiB、工具输出超过 128 KiB 时截断并在预览说明；AgentKib 不直接读写 DSH 文件，见[接入方案](../agents/deepseek-harness.md) |
 
 会话页面向 Runtime 查询具体会话能否完整解析；不再仅以 Agent 名称决定。来源缺必要正文时拒绝。推理排除、工具摘要化、附件省略等已知损失在预览展示，需确认的损失未经确认不能继续。
 
@@ -48,7 +48,7 @@ Claude Code 在手动或自动压缩时写入 `compact_boundary` 记录，并把
 | 目标                      | 执行与固定范围                                                                                                                      | 已记录的原生验收与限制                                                                                                                                                                                                         |
 | -------------------------- | ----------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | Claude Code                | 保留 ChangeSet 原生文件写入与按 ID 恢复，要求 Claude Code 2.1 或更新的版本；另须通过会话格式探针、确认项目目录名并确认配置目录有效（见下）                          | OpenClaw SQLite 来源的生产转换载荷已获单轮真实回复，准确复述历史随机标记与决策；目标 TUI 和 AgentKib Runtime 重启可读。完整预览→Changes 操作及全部来源真实回复尚未逐方向验收 |
-| Codex                      | 保留 ChangeSet rollout 写入与按 ID 恢复；要求 Codex CLI 0.159.2 或更新的版本，写入的记录结构对应 0.159.2（见下）                     | 0.159.2：经用户授权，4 个文件的 ChangeSet 已应用到私有归档与本机 rollout，未另送提示；直接 resume 显示了导入的历史，Codex state DB 建立了首条消息与预览索引。0.163.0（2026-11-09，隔离目录、合成来源）：AgentKib 后端从预览到启动前读回均通过；Codex 读出、按 ID 恢复并列出这份会话，终端界面显示导入的历史，续接一轮时发给模型（本机模拟接口）的输入完整包含导入的文本、工具调用与结果和图片，见 [QA](../qa/native-import-version-gate-2026-11-09.md)。两次都没有真实模型回复，其他版本与来源方向未覆盖 |
+| Codex                      | 保留 ChangeSet rollout 写入与按 ID 恢复；要求 Codex CLI 0.159.2 或更新的版本，写入的记录结构对应 0.159.2（见下）                     | 0.159.2：经用户授权，4 个文件的 ChangeSet 已应用到私有归档与本机 rollout，未另送提示；直接 resume 显示了导入的历史，Codex state DB 建立了首条消息与预览索引。0.163.0（2026-11-09，隔离目录、合成来源）：AgentKib 后端从预览到启动前读回均通过；Codex 读出、按 ID 恢复并列出这份会话，终端界面显示导入的历史，续接一轮时发给模型（本机模拟接口）的输入完整包含导入的文本、工具调用与结果和图片，见 [QA](../../qa/native-import-version-gate-2026-11-09.md)。两次都没有真实模型回复，其他版本与来源方向未覆盖 |
 | OpenCode                  | `1.18.32` 官方 import/export；必须显式配置 provider/model；独立会话 ID                                                              | 历史生产载荷导入、两次原生 TUI 与回读通过；Claude/Codex 两个文本方向各有单轮 CPA/Opus 回复证据。免费模型 403 保留，其他方向与迁移后的后端未因此通过                                                                            |
 | Hermes                    | `0.21.5` / release `v2026.9.24`；官方 Claude 文件导入、origin_json 查回、按真实 ID 恢复                                             | 历史导入、两次原生 TUI 与回读通过；Codex→Hermes 单轮 DeepSeek 回复与禁网导出有独立审计。官方免费模型 403 保留，不代表全部来源或迁移后的后端通过                                                                                |
 | Grok Build                 | `1.0.41` 实际二进制无文档所述 import 子命令；手工候选记录未被原生列表识别                                                           | 原生目标禁用；权威 updates 日志与索引写入契约未建立                                                                                                                          |
@@ -93,16 +93,16 @@ OpenClaw 使用固定版本自带的写入函数维护原生索引与投影，�
 
 ## 证据
 
-- [当前 TypeScript 自动化与候选包验收](../qa/typescript-stability-2026-10-07.md)（与下列历史原生记录分开）
-- [10 月 1 日 provider 逐例复验](../qa/full-interop-provider-retest-2026-10-01.md)
-- [10 月 1 日 Codex/OpenClaw/Cursor 收尾](../qa/interop-closeout-2026-10-01.md)
+- [当前 TypeScript 自动化与候选包验收](../../qa/typescript-stability-2026-10-07.md)（与下列历史原生记录分开）
+- [10 月 1 日 provider 逐例复验](../../qa/full-interop-provider-retest-2026-10-01.md)
+- [10 月 1 日 Codex/OpenClaw/Cursor 收尾](../../qa/interop-closeout-2026-10-01.md)
 
-- [9 月 28 日增量 QA 与真实回复](../qa/all-agent-continuation-2026-09-28.md)
-- [40 组合与原生 TUI 验收](../qa/interop-matrix-2026-09-28.md)
-- [Cursor 官方导入深入实验](../qa/cursor-interop-2026-09-28.md)
-- [Codex 登录与存储隔离边界](../qa/codex-native-isolation-2026-09-28.md)
-- [9 月 27 日历史总 QA](../qa/all-agent-continuation-2026-09-27.md)
-- [OpenCode/Hermes/Grok 实验与命令](../qa/interop-targets-2026-09-27.md)
-- [Cursor/Antigravity/OpenClaw 平台与版本探测](../qa/interop-platform-probes-2026-09-27.md)
+- [9 月 28 日增量 QA 与真实回复](../../qa/all-agent-continuation-2026-09-28.md)
+- [40 组合与原生 TUI 验收](../../qa/interop-matrix-2026-09-28.md)
+- [Cursor 官方导入深入实验](../../qa/cursor-interop-2026-09-28.md)
+- [Codex 登录与存储隔离边界](../../qa/codex-native-isolation-2026-09-28.md)
+- [9 月 27 日历史总 QA](../../qa/all-agent-continuation-2026-09-27.md)
+- [OpenCode/Hermes/Grok 实验与命令](../../qa/interop-targets-2026-09-27.md)
+- [Cursor/Antigravity/OpenClaw 平台与版本探测](../../qa/interop-platform-probes-2026-09-27.md)
 
-- [新版 OpenClaw SQLite 专项验证](../qa/openclaw-sqlite-2026-09-27.md)
+- [新版 OpenClaw SQLite 专项验证](../../qa/openclaw-sqlite-2026-09-27.md)

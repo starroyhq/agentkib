@@ -73,4 +73,4 @@
 
 本轮证据来自 TypeScript 自动化：八来源格式 fixture、超过 256 KiB 的正文、Unicode/重复记录、SQLite WAL、来源变化与清除、真实后端 Worker 生命周期，以及桌面/Web/LAN 权限和引用回执测试。新增真实宿主、Router、Backend、搜索 Worker 到合成 Codex/Claude CLI 子进程的用例，检查最终原生输入、实际派发次数和重启回执；它证明协议接线，不能代替真实产品或模型验收。未为此功能调用真实模型，也未在本机执行 Windows/Linux 验收；历史 Rust Runtime、原生 UI 或模型回复记录不作为本功能的 TypeScript 验收证据。
 
-相关说明：[功能矩阵](FEATURES.md)、[实时会话](CONVERSATIONS.md)、[会话互通边界](SESSION-INTEROPERABILITY.md)。
+相关说明：[功能矩阵](../FEATURES.md)、[实时会话](conversations.md)、[会话互通边界](interoperability.md)。

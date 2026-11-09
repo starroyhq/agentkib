@@ -85,4 +85,4 @@ Desktop `2.12.2` 包内只有 `language_server` 和 `webm_encoder` 等二进制�
 
 ## 后续新版 OpenClaw 补充
 
-本记录保留初次探测结论。后续已进一步验证 schema-23 官方事务写入、Gateway 重启及本地 TUI 恢复，并实现来源/目标适配，详见 [专项 QA](openclaw-sqlite-2026-09-27.md) 与[当前能力矩阵](../docs/SESSION-INTEROPERABILITY.md)。初次“未验证”不代表后续仍禁用。
+本记录保留初次探测结论。后续已进一步验证 schema-23 官方事务写入、Gateway 重启及本地 TUI 恢复，并实现来源/目标适配，详见 [专项 QA](openclaw-sqlite-2026-09-27.md) 与[当前能力矩阵](../docs/sessions/interoperability.md)。初次“未验证”不代表后续仍禁用。

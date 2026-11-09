@@ -26,7 +26,7 @@ HTTP 另外携带 Electron `bootId`，由 Electron 验证，不直接传给 Runt
 
 新建托管会话默认使用 `workspace-write-on-request`：`workspace-write`、`on-request`、人工 reviewer、sandbox network=false。完整授权浏览器可在主机返回的映射策略中显式切换为完全访问（不弹审批）或工作区写入／自动审核；浏览器不能提交任意 sandbox 对象、cwd、CLI 参数、额外可写根或审核器参数。策略更新必须在空闲时携带当前 revision，由原生 settings 通知和 `thread/read` 回读确认后写入账本；后续 turn/start 从账本使用已确认策略，不再被固定默认值覆盖。旧记录缺少策略字段时仍使用原受限默认。
 
-模型、思考强度和服务档位来自 `model/list`；Plan／执行模式来自实验协议 `collaborationMode/list`：runner 启动时读取一次，同时列出 `plan` 与 `default` 两个预设（按 `mode` 字段识别）才开放 Plan；读取失败或结构不符时 Plan 保持不可用，会话照常使用。0.163.0 与 0.147.0 都已对本地桩核对，见 [Codex 接入补齐验收](../qa/codex-gaps-2026-10-28.md)。空闲时保存设置只改变 `selected`，不启动轮次；`current` 保留原生确认值，`applicationStatus` 区分 `pending`、`confirmed` 和 `unknown`。下一次显式发送在 `turn/start.collaborationMode` 传入选择，内外模型和强度一致，`developer_instructions:null` 由 Codex 加载内置指令。没有自定义计划提示词、隐藏空轮次或自动执行计划。实时链路里计划是原生 `plan` 项；原生记录里计划写在 Agent 回复的 `<proposed_plan>` 标签内，读历史时去掉这对标签，只显示计划正文。
+模型、思考强度和服务档位来自 `model/list`；Plan／执行模式来自实验协议 `collaborationMode/list`：runner 启动时读取一次，同时列出 `plan` 与 `default` 两个预设（按 `mode` 字段识别）才开放 Plan；读取失败或结构不符时 Plan 保持不可用，会话照常使用。0.163.0 与 0.147.0 都已对本地桩核对，见 [Codex 接入补齐验收](../../qa/codex-gaps-2026-10-28.md)。空闲时保存设置只改变 `selected`，不启动轮次；`current` 保留原生确认值，`applicationStatus` 区分 `pending`、`confirmed` 和 `unknown`。下一次显式发送在 `turn/start.collaborationMode` 传入选择，内外模型和强度一致，`developer_instructions:null` 由 Codex 加载内置指令。没有自定义计划提示词、隐藏空轮次或自动执行计划。实时链路里计划是原生 `plan` 项；原生记录里计划写在 Agent 回复的 `<proposed_plan>` 标签内，读历史时去掉这对标签，只显示计划正文。
 
 新建选项和没有 runner 的会话设置要读模型目录时，每次都得临时启动一个 app-server；它可能还要先从网络刷新共享的 `models_cache.json`（ChatGPT 桌面版内置的 Codex 与 PATH 上的 CLI 版本不同时，几乎每次都会刷新，实测约 3–4 秒）。所以电脑端按 CLI 文件身份、CODEX_HOME 和工作目录缓存最近一次的模型和预设：有缓存时立即返回，超过 5 分钟才在后台重读，只有第一次读取需要等待，重读失败保留旧结果。缓存只用于显示；有 runner 时设置照常读实时目录，发送和保存设置前仍按实时目录核对模型、强度和档位。
 
@@ -36,7 +36,7 @@ HTTP 另外携带 Electron `bootId`，由 Electron 验证，不直接传给 Runt
 
 Goal 使用 `thread/goal/get/set/clear` 和原生事件。`goal-set` 的 `intent:update` 不传原生 status，保留暂停、阻塞或受限状态；`intent:start`（旧请求缺省值）仅创建不存在的目标并明确激活。已有目标的旧缺省请求拒绝，避免意外恢复。预算字段缺省保留、`null` 清空，修改不重置消耗。仅活动目标可暂停；暂停／阻塞可显式恢复，预算或用量受限可尝试恢复，仍以 Codex 返回的最终状态为准。完成目标须清除后新建。设置尚未原生确认时阻止目标启动／恢复；不发送隐藏消息补偿，不新增目标调度器。
 
-通过已有平台发现解析 codex，再读取严格格式的 `--version`，要求不低于写锁起始版本 `0.147.0`；无法取得可信版本、版本过低或格式无效时保守拒绝。最低版本实测及能力限制见[第 1 阶段 QA](../qa/session-continue-stage-1-validation-2026-10-19.md)。官方 thread/start/resume 回包还必须确认 cwd、sandbox、reviewer、可写根及本地环境。版本门槛不表示每个版本或可选能力都已验收；模型、Plan、Goal 等仍分别核验原生能力。Plan 和原生待发队列在 runner 启动时探测：0.147.0 没有 `thread/queue/*`（0.148.0 加入），对 `thread/queue/list` 回 -32600 “unknown variant” 并保持连接，此时队列各项能力显示 `unsupported-codex-cli-version`，追加指令（`turn/steer`）不受影响。探测在 thread/resume 之后进行，因为 0.163.0 不能列出未加载线程的队列。CI 每天检查最低版本与最新版的协议，见下文“协议检查”。
+通过已有平台发现解析 codex，再读取严格格式的 `--version`，要求不低于写锁起始版本 `0.147.0`；无法取得可信版本、版本过低或格式无效时保守拒绝。最低版本实测及能力限制见[第 1 阶段 QA](../../qa/session-continue-stage-1-validation-2026-10-19.md)。官方 thread/start/resume 回包还必须确认 cwd、sandbox、reviewer、可写根及本地环境。版本门槛不表示每个版本或可选能力都已验收；模型、Plan、Goal 等仍分别核验原生能力。Plan 和原生待发队列在 runner 启动时探测：0.147.0 没有 `thread/queue/*`（0.148.0 加入），对 `thread/queue/list` 回 -32600 “unknown variant” 并保持连接，此时队列各项能力显示 `unsupported-codex-cli-version`，追加指令（`turn/steer`）不受影响。探测在 thread/resume 之后进行，因为 0.163.0 不能列出未加载线程的队列。CI 每天检查最低版本与最新版的协议，见下文“协议检查”。
 
 目录刷新共享已有的全局 CLI 版本探测与缓存，不逐条会话启动探针。已核实版本过低时，桌面和 Web 列表标记“仅可查看”；全局版本原因不携带原生路径，也不将未登记集合加入 Web 历史授权范围。“设置是否生效尚未确认”仅在当前页面确实发起过设置更改后显示，不将未更改设置的初始 unknown 状态作为失败提示。
 
@@ -49,7 +49,7 @@ Codex 每条会话只允许一个进程写入。ChatGPT 桌面端用自己启动
 - **状态与历史**：follower 只推送实时状态（运行状态、轮次、审批、流式文字）；对话内容仍以 250ms 快照从原生 rollout 读取，避免同一消息以两种身份重复出现。
 - **生命周期**：最多同时跟随 8 条会话；有 follower 时桌面端不会退订这条会话，所以没有订阅者且闲置 30 秒后断开跟随。owner 变化或断开时关闭连接，重新核对写锁：锁已释放则回到托管链路，发送时自动续接；不会在两条链路之间自动重发消息。
 - **授权与回执**：主机把 `codex-follower` 与 `codex-managed` 同样对待（工作区、设备权限、LAN 范围和回执查询）。控制回执记录 `executionMode: "codex-follower"` 和 `workspaceId`。结果未知时，发送与停止通过临时 app-server 的 `thread/read` 核对 `clientUserMessageId` 和轮次终态；审批在已连接的 follower 中确认对应请求已不再待处理，不重新建立连接。
-- **版本**：follower 要求 Desktop `26.917.62051` 或更新版本，按三段数字比较；IPC 方法版本固定（discovery 1、start-turn 2、interrupt 4、状态流 11 等），并继续核对 peer、owner、host、thread、revision 和原生 ACK。2026-11-02 已对本机 Desktop `26.1027.51404`（内置 codex-cli `0.166.0-alpha.5.1`）完成静态方法版本核对和真实验收，见 [跟随 Codex 桌面端验收](../qa/codex-desktop-follow-2026-11-02.md)；2026-11-05 在 Desktop `26.1029.61003` 上验收了随消息发送图片，见 [二期 2b 验收](../qa/dsh-integration-phase2b-2026-11-05.md)。满足门槛不代表其他版本已验收；内部协议没有兼容承诺。
+- **版本**：follower 要求 Desktop `26.917.62051` 或更新版本，按三段数字比较；IPC 方法版本固定（discovery 1、start-turn 2、interrupt 4、状态流 11 等），并继续核对 peer、owner、host、thread、revision 和原生 ACK。2026-11-02 已对本机 Desktop `26.1027.51404`（内置 codex-cli `0.166.0-alpha.5.1`）完成静态方法版本核对和真实验收，见 [跟随 Codex 桌面端验收](../../qa/codex-desktop-follow-2026-11-02.md)；2026-11-05 在 Desktop `26.1029.61003` 上验收了随消息发送图片，见 [二期 2b 验收](../../qa/dsh-integration-phase2b-2026-11-05.md)。满足门槛不代表其他版本已验收；内部协议没有兼容承诺。
 - **限制**：只支持 macOS；桌面端必须已经加载这条会话；两端同时发送的竞争（RACE-022）、桌面端中途退出后的真实切换尚未实机验收。旧的 `#reconcileCodexFollower` 等遗留辅助函数暂保留，待单独清理。
 
 ### 原生状态与用量
@@ -127,7 +127,7 @@ app-server 没有斜杠命令：`/compact` 这样的文字只会作为消息交�
 
 ## 验证
 
-本轮的真实 CLI 核对、变异检查与未验证项见 [Codex 接入补齐验收](../qa/codex-gaps-2026-10-28.md)。
+本轮的真实 CLI 核对、变异检查与未验证项见 [Codex 接入补齐验收](../../qa/codex-gaps-2026-10-28.md)。
 
 运行桌面验证套件：
 
@@ -173,4 +173,4 @@ pnpm --filter @agentkib/desktop exec vitest run electron/main/web/codex-actions.
 
 这些自动化测试不等同于真实 Codex 账户或公网手机验收。功能启用情况以实际频道的能力响应为准。
 
-本轮扩展的操作/权限、原生双版本验证、构建及界面验收记录见 [Codex 远控补全验收](../qa/codex-completion-2026-09-26.md)。官方 follower 尚未验证的高级操作不会因托管 app-server 测试通过而开启。
+本轮扩展的操作/权限、原生双版本验证、构建及界面验收记录见 [Codex 远控补全验收](../../qa/codex-completion-2026-09-26.md)。官方 follower 尚未验证的高级操作不会因托管 app-server 测试通过而开启。

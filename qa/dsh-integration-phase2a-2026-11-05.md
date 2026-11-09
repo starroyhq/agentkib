@@ -1,6 +1,6 @@
 # DeepSeek Harness 二期 2a 接入 QA — 2026-11-05
 
-本文记录二期 2a（重命名、分叉、归档、模型与推理强度、新建会话）的源码、自动化结果和真实 DSH 沙箱验收。结论只适用于下列源码与版本。方案与规则见[接入方案](../docs/DEEPSEEK-HARNESS-INTEGRATION.md) §7，一期记录见[一期 QA](dsh-integration-phase1-2026-11-04.md)。
+本文记录二期 2a（重命名、分叉、归档、模型与推理强度、新建会话）的源码、自动化结果和真实 DSH 沙箱验收。结论只适用于下列源码与版本。方案与规则见[接入方案](../docs/agents/deepseek-harness.md) §7，一期记录见[一期 QA](dsh-integration-phase1-2026-11-04.md)。
 
 ## 源码与边界
 

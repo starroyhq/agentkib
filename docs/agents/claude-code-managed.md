@@ -1,11 +1,11 @@
 # Claude Code 桌面与 Web 托管执行
 
-已有终端可以使用独立的[连接终端插件](CLAUDE-NATIVE-CONNECTION.md)，按固定版本及已验证能力开放，不启动第二个执行者。AgentKib 后台续接与已连接终端自动按实际归属选择，用户不需要勾选交接。两种模式的发送、审批、附件及高级控制能力分别显示，不能互相外推。
+已有终端可以使用独立的[连接终端插件](claude-code-terminal.md)，按固定版本及已验证能力开放，不启动第二个执行者。AgentKib 后台续接与已连接终端自动按实际归属选择，用户不需要勾选交接。两种模式的发送、审批、附件及高级控制能力分别显示，不能互相外推。
 
 桌面与 Web 的 Claude 控制共用一个 Runtime 执行服务，使用本机 Claude CLI 的原生 `stream-json` 协议，而不是 Codex bridge。
 历史目录仍由现有 Claude provider 发现。可以准备新会话，也可以直接发送以续接有可验证 UUID、工作目录及主会话记录的空闲会话。每次启动及回收后重启都检查外部占用，不以用户确认代替内部校验。创建只预留会话身份，不提交模型消息；模型与设置发现可初始化原生 CLI，但不发送用户轮次。
 
-桌面跨 Agent 会话导入是另一条经过预览、确认和目标回读的流程，详见[互通兼容矩阵](SESSION-INTEROPERABILITY.md)。新增来源或原生导入适配不自动获得 Web 发送、审批或托管权限；本轮不扩展其他 Agent 的 Web 控制。
+桌面跨 Agent 会话导入是另一条经过预览、确认和目标回读的流程，详见[互通兼容矩阵](../sessions/interoperability.md)。新增来源或原生导入适配不自动获得 Web 发送、审批或托管权限；本轮不扩展其他 Agent 的 Web 控制。
 
 ## 使用与边界
 
@@ -49,7 +49,7 @@
 
 本次升级不替用户选择新的认证来源。没有 CodexBar 配置时，AgentKib 生成的配置（应用数据目录下的 `quota/codexbar-config.json`，仅当前用户可读写）只启用已安装的 Provider，不写入密钥或 Cookie。已有配置（`$XDG_CONFIG_HOME/codexbar/config.json`、`~/.config/codexbar/config.json`、`~/.codexbar/config.json`）或 `CODEXBAR_CONFIG` 优先。Windows 使用其设置（包括 `CODEXBAR_CONFIG` 或 `%APPDATA%\CodexBar\settings.json`），诊断显示配置来源。
 
-费用面板是独立的本机原生日志扫描，按 API 价格估算 USD，不是订阅账单或当前登录账号的消费。进入额度页可按需读取和更新；离开后遵守“自动获取额度”开关。原始日志、项目路径和凭据不会通过费用 IPC 返回。构建版本、补丁和隔离验证见[采集器说明](QUOTA-COLLECTOR.md)。
+费用面板是独立的本机原生日志扫描，按 API 价格估算 USD，不是订阅账单或当前登录账号的消费。进入额度页可按需读取和更新；离开后遵守“自动获取额度”开关。原始日志、项目路径和凭据不会通过费用 IPC 返回。构建版本、补丁和隔离验证见[采集器说明](../development/quota-collector.md)。
 
 不希望 sidecar 触碰这些来源时，保持“自动获取额度”关闭，也不要手动刷新额度。
 
@@ -138,7 +138,7 @@ capabilities 附带 CLI 在 initialize 时报告的命令目录（含 `builtin`�
 
 ## HTTP、SSE 与 WebSocket
 
-浏览器现有 HTTP 操作和 SSE 实时订阅保持兼容。新增 `/api/web/v1/socket` 是可选的有界 JSON 请求适配层，不替代 SSE，也不转发任意 Backend RPC。它仅用于同源 Web 服务及其桌面 TLS/反向代理入口；托管网页到 LAN HTTP 的连接继续保留原有基础能力，不开放此 socket 或新增高级控制。原生桌面连接另一台主机的配对和能力范围见 [REMOTE.md](REMOTE.md)，不因本次 Web 改动自动扩展。
+浏览器现有 HTTP 操作和 SSE 实时订阅保持兼容。新增 `/api/web/v1/socket` 是可选的有界 JSON 请求适配层，不替代 SSE，也不转发任意 Backend RPC。它仅用于同源 Web 服务及其桌面 TLS/反向代理入口；托管网页到 LAN HTTP 的连接继续保留原有基础能力，不开放此 socket 或新增高级控制。原生桌面连接另一台主机的配对和能力范围见 [REMOTE.md](../remote/desktop-connections.md)，不因本次 Web 改动自动扩展。
 
 - 升级请求必须带 Origin 并通过现有主机、来源和配对鉴权。每帧沿用握手身份，并重新执行 HTTP handler 的 cookie、CSRF、boot/revision、授权、capabilities 和回执校验。
 - 帧结构为 `{ id, path, body?, csrfToken, protocolVersion: 2 }`；`body` 存在时为 POST，否则为 GET。不能提供 headers 或 deviceId。响应为 `{ id, status, body }`。
@@ -161,10 +161,10 @@ capabilities 附带 CLI 在 initialize 时报告的命令目录（含 `builtin`�
 ## 开发验收
 
 - 自动化测试默认不调用真实模型。旧 `claude-real.test.ts` 是历史验收脚本，不能作为本期通过证据；本期用隔离数据和合成历史重新验收。
-- 本次通用协议、前端、宿主调度和 WebSocket 的验收见 [2026-10-09 QA](../qa/claude-remote-parity-2026-10-09.md)；早期原生执行证据保留在 [2026-09-30 QA](../qa/claude-managed-2026-09-30.md)，不外推到新增能力。代码测试通过不等于真实模型、桌面/Web 全工作流、生产中继或实体手机已验收。
-- 公网 Relay 转发的两仓库同步另见 [Relay 离线验收](../qa/claude-relay-sync-2026-10-09.md)，包括真实 frp、桌面 TLS、WebAccessService、Backend 与合成 CLI。跨仓测试显式启用，默认测试中的跳过不计为真实隧道通过。
+- 本次通用协议、前端、宿主调度和 WebSocket 的验收见 [2026-10-09 QA](../../qa/claude-remote-parity-2026-10-09.md)；早期原生执行证据保留在 [2026-09-30 QA](../../qa/claude-managed-2026-09-30.md)，不外推到新增能力。代码测试通过不等于真实模型、桌面/Web 全工作流、生产中继或实体手机已验收。
+- 公网 Relay 转发的两仓库同步另见 [Relay 离线验收](../../qa/claude-relay-sync-2026-10-09.md)，包括真实 frp、桌面 TLS、WebAccessService、Backend 与合成 CLI。跨仓测试显式启用，默认测试中的跳过不计为真实隧道通过。
 - 真实测试每例单轮，保留 attempt 记录；超时或结果未知后不自动重试、切换模型或复制凭据。
-- 不调用模型也能核对 CLI 的实际帧：本地 Anthropic API 桩加 `ANTHROPIC_BASE_URL`、假 key、隔离的 `HOME` 与 `CLAUDE_CONFIG_DIR`，再用只放行 localhost 的 `sandbox-exec` 配置运行 CLI。做法和结果见 [2026-10-27 QA](../qa/claude-code-followups-2026-10-27.md)；斜杠命令的探测与验收见 [斜杠命令 QA](../qa/claude-code-slash-commands-2026-10-27.md)。
+- 不调用模型也能核对 CLI 的实际帧：本地 Anthropic API 桩加 `ANTHROPIC_BASE_URL`、假 key、隔离的 `HOME` 与 `CLAUDE_CONFIG_DIR`，再用只放行 localhost 的 `sandbox-exec` 配置运行 CLI。做法和结果见 [2026-10-27 QA](../../qa/claude-code-followups-2026-10-27.md)；斜杠命令的探测与验收见 [斜杠命令 QA](../../qa/claude-code-slash-commands-2026-10-27.md)。
 - 公开分发前仍需另行确认第三方接入边界。本机 CLI 验证不表示已获得订阅额度接入许可。
 
 参考：[Claude 官方 SDK 控制协议](https://github.com/anthropics/claude-agent-sdk-python/blob/main/src/claude_agent_sdk/_internal/query.py)。未引入 SDK 或新生产依赖。

@@ -6,7 +6,7 @@ import { ClaudeProtocolError } from "../../../packages/backend/src/claude-frame-
 // What the runner state does with frames it does not fully understand. Every frame is hand-built
 // after the stream-json shape of the Agent SDK reference and the 2.1.285 QA capture. No Claude
 // session is started, and that a real CLI sends any of these frames in this form is NOT verified:
-// the shapes still to confirm are listed in docs/CLAUDE-WEB.md.
+// the shapes still to confirm are listed in docs/agents/claude-code-managed.md.
 
 const SPAWN = "toolu_agent_spawn";
 const backgroundRefused = "Claude background tasks are unsupported in managed sessions";

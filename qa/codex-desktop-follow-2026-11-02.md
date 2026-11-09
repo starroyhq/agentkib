@@ -2,7 +2,7 @@
 
 ## 范围
 
-D11 之后，Codex 会话被 ChatGPT 桌面端占着写锁时，AgentKib 只能分支或回 Codex 继续。本轮把保留的 follower 接回主流程：写锁被其他进程持有、且桌面端的本地 IPC 报告了这条会话的 owner 时，AgentKib 跟随 owner，把发送、停止和审批交给 owner 执行；其余情况保持 D11 行为。设计与边界见 [Codex 托管执行](../docs/CODEX-MANAGED.md)的“跟随 Codex 桌面端”。
+D11 之后，Codex 会话被 ChatGPT 桌面端占着写锁时，AgentKib 只能分支或回 Codex 继续。本轮把保留的 follower 接回主流程：写锁被其他进程持有、且桌面端的本地 IPC 报告了这条会话的 owner 时，AgentKib 跟随 owner，把发送、停止和审批交给 owner 执行；其余情况保持 D11 行为。设计与边界见 [Codex 托管执行](../docs/agents/codex-managed.md)的“跟随 Codex 桌面端”。
 
 改动均未提交。
 

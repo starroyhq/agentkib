@@ -51,4 +51,4 @@ Remote 不额外为每个子代理打开 SSE。列表以父流为主并以静默
 
 ## 运行时路由修复（2026-11-07）
 
-桌面主进程的运行时路由按操作名把 `web.request` 分给后端，原名单里没有 `subagents` 与 `subagent-events`，两个读取都报“没有后端处理者”，HTTP 返回 500，手机上看不到子代理入口；上面的测试都替换了运行时，没有经过这层路由。二期 2c 已把两者加入只读读取名单并补了路由测试，随后在沙箱中以真实 DeepSeek Harness 和 Android 模拟器完成首次端到端验收（列表、只读子会话），见[二期 2c QA](../qa/dsh-integration-phase2c-2026-11-06.md)。Codex 与 Claude 走同一路由，尚未单独做真实端到端验收。
+桌面主进程的运行时路由按操作名把 `web.request` 分给后端，原名单里没有 `subagents` 与 `subagent-events`，两个读取都报“没有后端处理者”，HTTP 返回 500，手机上看不到子代理入口；上面的测试都替换了运行时，没有经过这层路由。二期 2c 已把两者加入只读读取名单并补了路由测试，随后在沙箱中以真实 DeepSeek Harness 和 Android 模拟器完成首次端到端验收（列表、只读子会话），见[二期 2c QA](../../qa/dsh-integration-phase2c-2026-11-06.md)。Codex 与 Claude 走同一路由，尚未单独做真实端到端验收。

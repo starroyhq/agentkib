@@ -37,7 +37,7 @@
 
 目录每 2 秒由全局会话流读一次，内容变化时推送 `catalog-invalidated`，所以手机最多晚约 2 秒看到变化。
 
-文档：`docs/CODEX-MANAGED.md`、`docs/REMOTE-CODEX-WEB.md`、`docs/CONVERSATIONS.md`。
+文档：`docs/agents/codex-managed.md`、`docs/remote/phone-access.md`、`docs/sessions/conversations.md`。
 
 ## 桌面和 Web 的列表
 
@@ -51,7 +51,7 @@
 
 桌面侧栏和 Web 目录的分组标题在会话数前显示在等和运行中的数量，各带圆点或圆环，收起时仍显示；悬停和读屏读作“2 个在等你, 3 个运行中”。Web 目录里一条会话同时被主机报告在等、又被页面标记为待处理时，只显示琥珀色圆点，不再另加“●”。
 
-文档：`docs/UI-TERMINOLOGY.md` 的术语表和列表规则，`docs/REMOTE-CODEX-WEB.md`。
+文档：`docs/development/ui-terminology.md` 的术语表和列表规则，`docs/remote/phone-access.md`。
 
 ## 手机
 

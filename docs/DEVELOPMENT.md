@@ -17,7 +17,7 @@ This guide covers local development, validation, and packaging for the current E
 Platform-native build dependencies:
 
 - **macOS 13.3+**: Xcode Command Line Tools
-- **Windows 11**: Visual Studio Build Tools 2022 with Desktop development with C++, and a Windows 10 or 11 SDK. Follow the [Windows guide](WINDOWS.md).
+- **Windows 11**: Visual Studio Build Tools 2022 with Desktop development with C++, and a Windows 10 or 11 SDK. Follow the [Windows guide](development/windows.md).
 - **Ubuntu 22.04**: `build-essential`, `pkg-config`, `libssl-dev`, and `libgtk-3-dev`
 - **Fedora 42**: GCC/G++, Make, OpenSSL and pkg-config development packages, GTK 3 development packages, and RPM packaging tools. The exact CI baseline is in [linux.yml](../.github/workflows/linux.yml).
 
@@ -39,7 +39,7 @@ AgentKib is one desktop application assembled from several cooperating parts:
 | Electron preload      | `apps/desktop/electron/preload/`                              | Narrow bridge exposed to the renderer                                                                                      |
 | React renderer        | `apps/desktop/src/`                                           | Routes, screens, state, and user interaction                                                                               |
 | TypeScript backend    | `packages/backend/`, `apps/desktop/electron/backend-entry.ts` | Application settings, workspace/discovery writes and cached reads in an independently restartable Electron utility process |
-| Quota sidecar         | Prepared under `apps/desktop/resources/quota/`                | Pinned, patched platform collectors for separate quota and local-cost collection; see [build and verification](QUOTA-COLLECTOR.md) |
+| Quota sidecar         | Prepared under `apps/desktop/resources/quota/`                | Pinned, patched platform collectors for separate quota and local-cost collection; see [build and verification](development/quota-collector.md) |
 | Runtime protocol      | `packages/runtime-protocol/src/index.ts`                      | Shared contract generated for Electron                                                                                     |
 
 Quota RPC compatibility: `quota.snapshot` and `quota.collectorStatus` remain available; `quota.refresh` accepts an optional `{provider}` and refreshes every enabled provider when omitted. Each completed provider emits `quota.updated` immediately. Local estimates use `quota.costSnapshot`, `quota.costStatus`, `quota.refreshCost` with `{provider: "codex" | "claude", force?: boolean}`, and `quota.observeCosts` with `{provider: "codex" | "claude" | null}`. The `force` flag bypasses application scheduling only; it does not request an upstream full rescan. `quota.costUpdated` carries normalized snapshot/status data. Renderer observation IPC is trusted-desktop-only and is cleared on navigation, destruction, hiding and runtime restart; clients cannot select log roots or identities. The existing private SQLite receives additive cache tables without changing schema 15, so prior quota caches remain readable.
@@ -123,7 +123,7 @@ Packages are written to `apps/desktop/release-electron/`. Packaging prepares and
 
 Windows x64 quota collection uses the pinned Win-CodexBar 0.60.3 prebuilt console CLI. `pnpm quota:prepare` downloads its release ZIP, verifies the pinned SHA-256, and stages `codexbar-cli.exe` as `agentkib-quota-sidecar.exe`. Windows ARM64 quota collection remains unavailable.
 
-Do not publish local packages as official releases. Maintainers should follow the [release process](RELEASE.md), which defines version synchronization, immutable tags, signing, notarization, checksums, and platform artifacts.
+Do not publish local packages as official releases. Maintainers should follow the [release process](development/release.md), which defines version synchronization, immutable tags, signing, notarization, checksums, and platform artifacts.
 
 ---
 
@@ -142,7 +142,7 @@ Do not publish local packages as official releases. Maintainers should follow th
 各平台原生构建依赖：
 
 - **macOS 13.3+**：Xcode Command Line Tools
-- **Windows 11**：带“使用 C++ 的桌面开发”工作负载的 Visual Studio Build Tools 2022，以及 Windows 10 或 11 SDK。完整步骤见 [Windows 指南](WINDOWS.md)。
+- **Windows 11**：带“使用 C++ 的桌面开发”工作负载的 Visual Studio Build Tools 2022，以及 Windows 10 或 11 SDK。完整步骤见 [Windows 指南](development/windows.md)。
 - **Ubuntu 22.04**：`build-essential`、`pkg-config`、`libssl-dev` 和 `libgtk-3-dev`
 - **Fedora 42**：GCC/G++、Make、OpenSSL 与 pkg-config 开发包、GTK 3 开发包和 RPM 打包工具。准确的 CI 基线见 [linux.yml](../.github/workflows/linux.yml)。
 
@@ -252,4 +252,4 @@ pnpm dist:electron
 
 Windows x64 额度采集使用固定版本的 Win-CodexBar 0.60.3 预编译控制台 CLI。`pnpm quota:prepare` 下载发布版 ZIP、校验固定的 SHA-256，并将 `codexbar-cli.exe` 暂存为 `agentkib-quota-sidecar.exe`。Windows ARM64 的额度采集仍不可用。
 
-不要把本机包作为正式版本发布。维护者应遵循[发布流程](RELEASE.md)，其中定义了版本同步、不可变标签、签名、公证、校验文件和各平台产物。
+不要把本机包作为正式版本发布。维护者应遵循[发布流程](development/release.md)，其中定义了版本同步、不可变标签、签名、公证、校验文件和各平台产物。

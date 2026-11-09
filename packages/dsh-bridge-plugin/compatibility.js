@@ -3,7 +3,7 @@
 // Within one protocol a plugin and a Runtime of other releases still connect and use what both
 // have: a feature a plugin does not report in its services stays off. Raise
 // `minimumPluginVersion` only to retire a plugin that must no longer connect; the rules for
-// changing the protocol are in docs/DEEPSEEK-HARNESS-INTEGRATION.md.
+// changing the protocol are in docs/agents/deepseek-harness.md.
 export const DSH_BRIDGE_COMPATIBILITY = Object.freeze({
   protocol: 1,
   pluginVersion: "0.5.0",

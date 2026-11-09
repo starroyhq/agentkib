@@ -30,7 +30,7 @@
 | 22 | 一次性配对码／生成一次性连接码 → 配对码／生成连接码 | `remote.code`、桌面/Web `claude-connection-copy.ts` 的 `generate` | 简繁配对短称同步；四语终端按钮去一次性修饰；英语/日语自然配对名称保留“一次性”，有效期和一次性约束均保留。 |
 | 23 | 主机 → 电脑（按桌面／Web 上下文） | `remote.*`、`gateway.pairingRequired`、`conversation.*`、会话局部 copy、工作区 Claude 面板、历史搜索提示；新增镜像 `session-surface-copy.ts` | 桌面写这台／其他／对方电脑；Web 的操作明确指向电脑上的 AgentKib，正文索引设置给出页面路径。仅作用于应用静态文案，用户内容和技术详情保持原值。 |
 
-`docs/UI-TERMINOLOGY.md` 已同步以上概念，并明确普通界面用“电脑”、技术目标与原始诊断保留 Host。A 批不重排连接终端、远程连接或资源库的布局与步骤；后续 B/C/D 批功能仍保留现有入口和能力。“未分类”保持原称。
+`docs/development/ui-terminology.md` 已同步以上概念，并明确普通界面用“电脑”、技术目标与原始诊断保留 Host。A 批不重排连接终端、远程连接或资源库的布局与步骤；后续 B/C/D 批功能仍保留现有入口和能力。“未分类”保持原称。
 
 ## 搜索命令与残留分类
 

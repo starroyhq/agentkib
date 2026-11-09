@@ -25,7 +25,7 @@ AgentKib Web 使用 React、shadcn/ui、Tailwind CSS 和 TanStack Router 文件�
 
 会话状态放在会话布局的 Provider 中，切换子路由不会重新创建客户端。实时监听集中在 `use-session-live.ts`；控制请求及权限同步位于 `use-session-controller.ts`。保留访问身份变更后的清空、旧异步响应隔离、完整审批快照校验以及结果不确定时禁止自动重发的约束。修改这些流程时运行已有回归用例。
 
-Codex 与 Claude 共用 Web 内建的会话控件，`packages/web-client` 的通用方法按 agent 选择路由；既有 Codex 方法保留兼容。Claude 高级操作使用 `POST managed/action`，设置、队列、目标和资源读取使用对应 `GET managed/*`；inspect 继续走只读 `managed/inspect`。设置中的 `permissionMode` 与 Codex `policyId` 独立，实际模型/effort 来自主机发现；无 capability 时不挂载相关读取。运行中插入、队列与目标有不同语义，见 [Claude 控制说明](../../docs/CLAUDE-WEB.md)。
+Codex 与 Claude 共用 Web 内建的会话控件，`packages/web-client` 的通用方法按 agent 选择路由；既有 Codex 方法保留兼容。Claude 高级操作使用 `POST managed/action`，设置、队列、目标和资源读取使用对应 `GET managed/*`；inspect 继续走只读 `managed/inspect`。设置中的 `permissionMode` 与 Codex `policyId` 独立，实际模型/effort 来自主机发现；无 capability 时不挂载相关读取。运行中插入、队列与目标有不同语义，见 [Claude 控制说明](../../docs/agents/claude-code-managed.md)。
 
 浏览器默认仍使用 HTTP 和 SSE。主机额外提供 `/api/web/v1/socket` 有界 JSON 适配器，复用 HTTP 鉴权和回执，不向浏览器暴露原始 Backend RPC；它不承载附件字节、历史长读或 SSE。新增能力及未执行的真实设备/模型验证记录在 [2026-10-09 QA](../../qa/claude-remote-parity-2026-10-09.md)。
 

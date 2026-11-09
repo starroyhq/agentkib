@@ -1,6 +1,6 @@
-# DeepSeek Harness 接入方案草案
+# DeepSeek Harness 接入方案
 
-状态：一期与二期 2a、2b、2c 已实施并合并（#199、#201、#204），2d 已实施；2026-11-08 确认先以 DSH 打开时可用为准，三期暂缓。日期：2026-11-04；同日按 DSH、AgentKib 与 agentkib-flutter 源码复核修订，并按“完全接管”目标重排分期。
+状态：一期与二期 2a–2d 已实施并合并（#199、#201、#204、#205）；2026-11-08 确认先以 DSH 打开时可用为准，三期暂缓。日期：2026-11-04；同日按 DSH、AgentKib 与 agentkib-flutter 源码复核修订，并按“完全接管”目标重排分期。
 
 本文记录宿主机插件桥接、Remote 复用现有链路，以及后续 CLI 与 Desktop 共用实例的接入方向。文中的新命令、模块和协议字段均为建议，不代表当前已提供的功能。
 
@@ -33,13 +33,13 @@
 
 ### 1.1 产品边界变更（2026-11-04 已确认）
 
-现有文档承诺 DSH 是只读 Beta：[功能说明](FEATURES.md)写明 DSH “is never written to”，[会话互操作说明](SESSION-INTEROPERABILITY.md)写明 DSH “不参与新增续接或原生写入”。2026-11-04 确认需要完全接管，接受以下变更：
+现有文档承诺 DSH 是只读 Beta：[功能说明](../FEATURES.md)写明 DSH “is never written to”，[会话互操作说明](../sessions/interoperability.md)写明 DSH “不参与新增续接或原生写入”。2026-11-04 确认需要完全接管，接受以下变更：
 
 - 安装插件会写入用户的 DSH profile，包括 `package.json`、锁文件和组合包列表。
 - 发送、停止、作答审批和问答、修改会话设置等操作会写入原生会话。
 - 三期由 AgentKib 启动和停止 DSH 进程。
 
-一期上线时同步更新上述两份文档和支持矩阵（一期工作树已更新，另含[实时会话](CONVERSATIONS.md)与[界面术语](UI-TERMINOLOGY.md)）。插件安装沿用 Claude 原会话连接的做法：AgentKib 只提供插件包、命令和说明，由用户自行执行，不自动修改 DSH profile。
+一期上线时同步更新上述两份文档和支持矩阵（一期工作树已更新，另含[实时会话](../sessions/conversations.md)与[界面术语](../development/ui-terminology.md)）。插件安装沿用 Claude 原会话连接的做法：AgentKib 只提供插件包、命令和说明，由用户自行执行，不自动修改 DSH profile。
 
 ## 2. 当前代码事实
 
@@ -261,7 +261,7 @@ DSH 的审批和问答经 `approval/request`、`user-questions/request` waterfal
 
 这一做法只用到 DSH 的公开导出（`ctx.waterfall`，以及 `@deepseek-ai/dsh-scope` 的 `scopeTarget`），网关也按请求上的 signal 撤回待答卡片；但它依赖“重新派发与原派发等价”这一派发细节。一期开工先做技术验证，用合成 fixture 覆盖：审批与问答各自的撤回、计时问题与可继续的问题、plan-review 和带 `approval` intent 的问题、`approval/asked` 与 `approval/decided` 仍各只有一条，以及外层另有监听器时的影响。
 
-技术验证结果（2026-11-04，本机 DSH Desktop 0.2.1-rc.5 自带 CLI，独立 `DSH_HOME`，插件经 `--patch` 挂载）：外层监听器能拿到作用域并重新派发；派生请求经 `api-remotes` 进入网关的待答列表；AgentKib 先答后，中止派生 signal 会让网关撤回待答项；外层请求被取消时两边一起撤回，问答以 `ASK_ABORTED` 结束。0.2.1-rc.5 与核对基线 0.2.2-alpha.3 在这几处的派发与撤回逻辑一致（`dispatch` 按 `this` 过滤并绑定监听器）。“DSH 界面先答”和真实轮次中的工具审批随后在一期验收中覆盖（真实 DSH、合成模型，见[一期 QA](../qa/dsh-integration-phase1-2026-11-04.md)）。
+技术验证结果（2026-11-04，本机 DSH Desktop 0.2.1-rc.5 自带 CLI，独立 `DSH_HOME`，插件经 `--patch` 挂载）：外层监听器能拿到作用域并重新派发；派生请求经 `api-remotes` 进入网关的待答列表；AgentKib 先答后，中止派生 signal 会让网关撤回待答项；外层请求被取消时两边一起撤回，问答以 `ASK_ABORTED` 结束。0.2.1-rc.5 与核对基线 0.2.2-alpha.3 在这几处的派发与撤回逻辑一致（`dispatch` 按 `this` 过滤并绑定监听器）。“DSH 界面先答”和真实轮次中的工具审批随后在一期验收中覆盖（真实 DSH、合成模型，见[一期 QA](../../qa/dsh-integration-phase1-2026-11-04.md)）。
 
 验证不通过时，一期改用按会话独占：用户显式把会话的答复权交给 AgentKib，插件在外层作答且不调用 `next()`，DSH 界面不再看到这些请求，并提供归还入口。长期向上游提议让 `next()` 支持传入修改后的请求，从而不再需要重新派发。
 
@@ -305,7 +305,7 @@ DSH 的审批和问答经 `approval/request`、`user-questions/request` waterfal
 - 两个 DSH 进程共享数据时只有运行中的进程可控制；未运行的会话在选定 runtime 中恢复，preset 不变；被其他进程占用时报告占用。
 - DSH 界面打开与关闭两种情况下的审批和问答：先答者生效、另一边撤回、迟到答复无效、轮次取消时两边一起撤回、Host 断开时 DSH 界面仍可作答。
 
-先使用隔离合成 fixture，再单独记录真实 DSH 与手机验收。已完成与尚未覆盖的项目见[一期 QA](../qa/dsh-integration-phase1-2026-11-04.md)。
+先使用隔离合成 fixture，再单独记录真实 DSH 与手机验收。已完成与尚未覆盖的项目见[一期 QA](../../qa/dsh-integration-phase1-2026-11-04.md)。
 
 ### 二期：会话管理与设置对齐
 
@@ -422,7 +422,7 @@ agentkib-flutter（按代码核对，未在真机确认）：
 - 普通发送、停止、回执和 DSH 身份图标已是通用实现，不需改动；子代理浏览仍限 Codex、Claude Code，二期接入 DSH 子代理时再放开。
 - 该仓库要求协议改动先有 AgentKib Web 客户端的合成 fixture，Flutter 排在 Host 和 Web 之后实施。
 
-一期实现（agentkib-flutter 工作树 `dsh-integration`，基于 `1269df2`，未提交；已在 Android 模拟器上对沙箱 Host 和真实 DSH 验收发送、运行中发送、停止、审批、问答和离线提示，iOS 与真机未验收，见[一期 QA](../qa/dsh-integration-phase1-2026-11-04.md)）：
+一期实现（agentkib-flutter 工作树 `dsh-integration`，基于 `1269df2`，未提交；已在 Android 模拟器上对沙箱 Host 和真实 DSH 验收发送、运行中发送、停止、审批、问答和离线提示，iOS 与真机未验收，见[一期 QA](../../qa/dsh-integration-phase1-2026-11-04.md)）：
 
 - 客户端的受控来源加入 `deepseek-harness`。每个会话能做什么仍取自 Host 下发的能力；新增 `queue-steer` 操作及对应的待确认控制。本地保存待确认控制的 agent 名单必须同步包含新来源，否则读回记录时抛异常，会挡住该电脑上的所有控制；已加测试，要求客户端受控的每个 agent 都能写入并读回。
 - 跟随按 `executionMode` 判断（`codex-follower`、`dsh-follower`），没有新增 Host 字段，Desktop／Web 同样如此；以后再增加跟随来源时，改由 Host 显式下发。状态条显示“在 {agent} 中运行 · 已连接”，不再提示“完全退出后继续”；DSH 未运行、多个 DSH 进程、配置只能查看三种情况分别显示原因和下一步。
@@ -447,14 +447,14 @@ agentkib-flutter（按代码核对，未在真机确认）：
 
 AgentKib 当前实现：
 
-- [CLI 临时后端入口](../apps/desktop/scripts/agentkib.mjs)
-- [Desktop Host 组装](../apps/desktop/electron/main/index.ts)
-- [统一会话订阅](../apps/desktop/electron/main/conversation-hub.ts)
-- [会话接口范围](../apps/desktop/electron/main/web/conversation-transport.ts)
-- [Claude Bridge](../packages/backend/src/claude-bridge.ts)、[Claude 插件发现与自动连接](../packages/claude-bridge-plugin/hooks/register.js)与[原会话连接说明](CLAUDE-NATIVE-CONNECTION.md)
-- [会话来源](../packages/backend/src/session-readers.ts)与[共享客户端能力类型](../packages/web-client/src/index.ts)
-- [远程会话接口](../apps/desktop/electron/main/web/service.ts)与[Web 会话展示状态](../apps/web/src/features/conversation/features/sessions/session-display-state.ts)
-- [功能说明](FEATURES.md)与[会话互操作说明](SESSION-INTEROPERABILITY.md)中的 DSH 只读边界
+- [CLI 临时后端入口](../../apps/desktop/scripts/agentkib.mjs)
+- [Desktop Host 组装](../../apps/desktop/electron/main/index.ts)
+- [统一会话订阅](../../apps/desktop/electron/main/conversation-hub.ts)
+- [会话接口范围](../../apps/desktop/electron/main/web/conversation-transport.ts)
+- [Claude Bridge](../../packages/backend/src/claude-bridge.ts)、[Claude 插件发现与自动连接](../../packages/claude-bridge-plugin/hooks/register.js)与[原会话连接说明](claude-code-terminal.md)
+- [会话来源](../../packages/backend/src/session-readers.ts)与[共享客户端能力类型](../../packages/web-client/src/index.ts)
+- [远程会话接口](../../apps/desktop/electron/main/web/service.ts)与[Web 会话展示状态](../../apps/web/src/features/conversation/features/sessions/session-display-state.ts)
+- [功能说明](../FEATURES.md)与[会话互操作说明](../sessions/interoperability.md)中的 DSH 只读边界
 
 agentkib-flutter（`main`，`2c14526`）：
 

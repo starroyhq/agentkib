@@ -22,7 +22,7 @@
 - `SessionPaging.read` 多一个参数 `retain`。为 false 时不存游标，还有更早的历史时返回固定的 `history-v1-unretained`，这个值不能当游标用。
 - `web.request` 的 `events` 多一个可选字段 `retainCursor`，经 `WebReadRequests`、`SessionReaders` 和托管 Claude 的读取传到 `SessionPaging`。
 - 会话流的快照读取，以及 `GET artifacts` 为找文件引用读的那一页，都传 `retainCursor: false`。客户端翻页仍然照常存游标。
-- 文档：`docs/CONVERSATIONS.md` 说明快照读取不保留游标。
+- 文档：`docs/sessions/conversations.md` 说明快照读取不保留游标。
 
 手机：
 

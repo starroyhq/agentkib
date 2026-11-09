@@ -9,7 +9,7 @@
 - 固定起点 `bae578ef1eeabcf16bd34d1cb2ede9abb3fb7fa2`，审查开始时 HEAD 为 `ebe3bd3d5dbd539ce518e72c4e1a7e45893861e6`，累计 168 个文件。
 - 固定命令 `git diff bae578ef1...HEAD`，提交列表 `git log bae578ef1..HEAD --oneline`。包含 `f762c7772`、`06b678020`、`683b0a427`、`ac3f8decb` 四阶段，压缩分支 `33fb8d1d3`、审查修复 `07bd4510b` 及合并 `ebe3bd3d5`。本轮修复另以 `git diff HEAD` 纳入最终复审，不通过提交改变审查起点。
 - 使用 `code-review` 技能，Standards 与 Spec 由两位全新代理独立审查，另有全新运行时审查代理；主代理单独追踪压缩头、分页、文档、全文索引与 worker 入口。没有沿用上一轮 no finding 作为本轮证据。
-- 规范：`AGENTS.md`、`CONTRIBUTING.md`、`docs/DEVELOPMENT.md`、`docs/UI-TERMINOLOGY.md`；规格：本机实施说明、技术前提、设计计划第 8 节及来源压缩提交的功能范围。仓库不使用 issue tracker。
+- 规范：`AGENTS.md`、`CONTRIBUTING.md`、`docs/DEVELOPMENT.md`、`docs/development/ui-terminology.md`；规格：本机实施说明、技术前提、设计计划第 8 节及来源压缩提交的功能范围。仓库不使用 issue tracker。
 - 用户已确认的覆盖决定继续有效：Web 仅提供复制续接命令与主机说明；Codex 最后订阅者离开时等当前轮次完成后释放。锁、指纹、版本、平台、权限、未知回执保护保留，跨 Agent 继续及 `handoff.*` 不改，follower 不删除、不接回主路由。
 - 原有 `.agents/`、`prototypes/`、两份未跟踪实施/技术文档与设计文件保留。
 - 额外按固定起点比较四语 JSON 的跨 Agent 键：每种语言 132 个 `handoff.*`、`sessions.*Handoff`、`sessions.continuation.*` 与 `sessions.continueWorkspace` 键值均未变化；follower 模块及跨 Agent 的 `SessionHandoffDialog`、`session-handoff-targets` 文件未变。
@@ -20,7 +20,7 @@
 
 实施说明 §3.5 明确列出也需同步的使用文档；原先仅更新术语表，其他文档仍指导用户寻找已删除的“执行管理”、勾选确认和手工交接，并把 Codex follower 描述为当前主流程。
 
-- 同步 `docs/CONVERSATIONS.md`、`docs/CLAUDE-WEB.md`、`docs/REMOTE-CODEX-WEB.md`、`docs/CLAUDE-NATIVE-CONNECTION.md` 及其直接链接的 `docs/CODEX-MANAGED.md`。
+- 同步 `docs/sessions/conversations.md`、`docs/agents/claude-code-managed.md`、`docs/remote/phone-access.md`、`docs/agents/claude-code-terminal.md` 及其直接链接的 `docs/agents/codex-managed.md`。
 - 按真实实现说明直接发送、外部占用选择、自动结束与重启、连接终端入口、压缩历史读取及缓存边界；保留平台/版本/能力、原生占用和未知回执限制，不扩展跨 Agent 功能。
 - 旧 follower 的保留代码与历史说明明确标为不接入主流程，没有删除模块或相关测试。没有给文档变更增加只复述文字的测试。
 

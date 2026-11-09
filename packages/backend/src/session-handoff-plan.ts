@@ -19,6 +19,7 @@ import type { SessionStore } from "./session-store";
 import type { BackendStore } from "./store";
 import { Commands } from "./commands";
 import {
+  CODEX_ROLLOUT_SCHEMA_VERSION,
   continuationMcpAvailable,
   interactiveLaunchCapability,
   nativeHistoryIncomplete,
@@ -142,7 +143,7 @@ export function renderNative(
           timestamp: generated,
           cwd: project,
           originator: "agentkib",
-          cli_version: "0.159.2",
+          cli_version: CODEX_ROLLOUT_SCHEMA_VERSION,
           source: "cli",
           thread_source: "user",
           model_provider: "openai",

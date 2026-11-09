@@ -21,6 +21,7 @@ import { probeClaudeSessionFormat } from "./claude-session-probe";
 import { resolveCommand } from "./command-resolution";
 import type { DshBridge } from "./dsh-bridge";
 import { isReparseOrSymlink } from "./native-files";
+import { versionAtLeast } from "./native-version";
 import { userHome } from "./mcp-config-read";
 import { planSessionWindow, renderHandoff, sessionImportStats } from "./session-handoff";
 import type { DocumentOptions, SessionDocument } from "./session-model";
@@ -54,17 +55,19 @@ interface Capability {
   reason?: string;
   target_fingerprint?: string;
 }
-function cliVersionMatches(output: string, expected: readonly number[]): boolean {
-  for (const candidate of output.split(/[^0-9.]+/)) {
-    const parts = candidate.split(".");
-    if (
-      parts.length === 3 &&
-      parts.every((part) => /^\d+$/.test(part)) &&
-      expected.every((version, index) => Number(parts[index]) === version)
-    )
-      return true;
-  }
-  return false;
+
+/**
+ * Value of `cli_version` in the `session_meta` that native import writes, and the oldest Codex CLI
+ * it writes for. It names the release whose rollout structure `renderNative` reproduces, not the
+ * installed CLI. Later releases are accepted because Codex resumes rollouts its older releases
+ * wrote; keep this unless the record structure is re-verified against a newer release.
+ */
+export const CODEX_ROLLOUT_SCHEMA_VERSION = "0.159.2";
+
+/** Whether the CLI's own `X.Y.Z`, the first one its `--version` prints, is `minimum` or later. */
+function cliVersionAtLeast(output: string, minimum: string): boolean {
+  const version = output.split(/[^0-9.]+/).find((candidate) => /^\d+\.\d+\.\d+$/.test(candidate));
+  return version !== undefined && versionAtLeast(version, minimum);
 }
 
 function firstJsonlRecord(file: string): unknown | null {
@@ -222,11 +225,13 @@ export async function nativeImportCapability(
     return { supported: false, beta: false, reason: "native-history-import-unsupported" };
   if (target !== "codex" && target !== "claude-code")
     return { supported: false, beta: false, reason: "target-not-supported" };
-  const [command, expected] =
-    target === "codex" ? ["codex", [0, 159, 2] as const] : ["claude", [2, 1] as const];
+  // A newer CLI is accepted because it resumes what its older releases wrote; it still has to
+  // pass the session-format checks below.
+  const [command, minimum] =
+    target === "codex" ? ["codex", CODEX_ROLLOUT_SCHEMA_VERSION] : ["claude", "2.1.0"];
   const executable = resolveCommand(command, env);
   if (!executable) return { supported: false, beta: true, reason: "cli-unavailable" };
-  let versionMatches = false;
+  let versionSupported = false;
   try {
     const result = await commands.run(executable, ["--version"], {
       env,
@@ -235,10 +240,10 @@ export async function nativeImportCapability(
       allowFailure: true,
       terminateDescendantsOnExit: true,
     });
-    versionMatches = result.success && cliVersionMatches(result.bytes.toString("utf8"), expected);
+    versionSupported = result.success && cliVersionAtLeast(result.bytes.toString("utf8"), minimum);
   } catch {}
   const unsupported = (reason: string): Capability => ({ supported: false, beta: true, reason });
-  if (!versionMatches) return unsupported("unsupported-version-or-schema");
+  if (!versionSupported) return unsupported("unsupported-version-or-schema");
   // An unusable CLAUDE_CONFIG_DIR means the session file has no directory it can safely land in.
   if (target === "claude-code" && resolveClaudeConfig(env, userHome(env)).invalid)
     return unsupported("config-directory-invalid");

@@ -16,7 +16,7 @@
  *   (https://github.com/anthropics/claude-code/issues/40946, #38007, #39424).
  *
  * This follows current Claude Code releases. Older ones used a narrower pattern for some
- * characters (#38007); AgentKib's 2.1.x version gate does not distinguish them.
+ * characters (#38007); AgentKib's version gate (2.1 or later) does not distinguish them.
  *
  * Claude Code cuts keys longer than 200 characters to 200 and appends `-<hash>`. That hash comes
  * from Claude Code's own routine and is not documented, so AgentKib cannot reproduce it with

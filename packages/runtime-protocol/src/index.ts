@@ -9,6 +9,7 @@ export * from "./history-search";
 export * from "./read-state";
 export * from "./mcp-management";
 export * from "./skill-sync";
+export * from "./native-memory";
 export {
   SESSION_COLLECTIONS,
   sessionCollection,
@@ -84,6 +85,11 @@ export const RUNTIME_METHODS = {
   recoverSkillSync: "skills.recoverSync",
   runDueSkillSync: "skills.runDueSync",
   listGlobalMemories: "memories.listGlobal",
+  nativeMemoryList: "memories.nativeList",
+  nativeMemoryRead: "memories.nativeRead",
+  nativeMemorySearch: "memories.nativeSearch",
+  nativeMemoryRefresh: "memories.nativeRefresh",
+  nativeMemoryObserve: "memories.nativeObserve",
   listActivity: "activity.list",
   listScanRoots: "discovery.listScanRoots",
   addScanRoot: "discovery.addScanRoot",

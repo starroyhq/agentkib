@@ -25,10 +25,9 @@ import {
 } from "@/features/mcp/McpManagementPanel";
 import { CatalogSkeleton } from "@/features/catalog/CatalogSkeleton";
 import { useAppDialogs } from "@/components/AppDialogProvider";
-import { MemoryCard } from "@/features/catalog/MemoryCard";
+import { NativeMemoryPage } from "@/features/catalog/NativeMemoryPage";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { SelectItem } from "@/components/ui/select";
@@ -160,7 +159,8 @@ function CatalogRoute() {
   const activeSources = sources.filter(({ labelKey }) => dependencies.includes(labelKey));
   // Skills and global MCP load their own data. Workspace enumeration only adds
   // project choices there; its failure must remain visible without hiding them.
-  const requiredSources = section === "skills" || section === "mcp" ? [] : activeSources;
+  const requiredSources =
+    section === "skills" || section === "mcp" || section === "memory" ? [] : activeSources;
   const failed = activeSources.filter(({ query }) => query.isError);
   const initiallyFailed = failed.some(({ query }) => query.data === undefined);
   const contentUnavailable = requiredSources.some(({ query }) => query.data === undefined);
@@ -301,7 +301,11 @@ function CatalogRoute() {
   };
 
   return (
-    <div className="grid gap-4">
+    <div
+      className={
+        section === "memory" ? "flex min-h-0 flex-1 flex-col overflow-hidden" : "grid gap-4"
+      }
+    >
       <CatalogPage
         section={section}
         onSection={setSection}
@@ -432,6 +436,7 @@ function CatalogPage({
       id: "memory",
       label: tr("assets.memories"),
       icon: Brain,
+      // Keep platform review attention here; native files have their own page counter.
       count: memoriesAvailable ? memories.length : undefined,
       badgeLabel: pendingMemoryLabel,
     },
@@ -443,7 +448,14 @@ function CatalogPage({
     },
   ];
   return (
-    <div className="relative grid gap-5 pb-8">
+    <div
+      className={cn(
+        "relative",
+        section === "memory"
+          ? "flex min-h-0 flex-1 flex-col gap-3 overflow-hidden"
+          : "grid gap-5 pb-8",
+      )}
+    >
       <SidebarPanel>
         {/* 这是切换本页分区的导航，不是带面板的 Tabs：用按钮 + aria-current。 */}
         <nav className="catalog-sidebar-navigation grid gap-0.5" aria-label={tr("nav.assets")}>
@@ -500,7 +512,7 @@ function CatalogPage({
         <AssetPage assets={otherAssets} workspaces={workspaces} onOpen={onOpen} />
       )}
       {!contentUnavailable && section === "memory" && (
-        <GlobalMemoryInbox records={memories} workspaces={workspaces} onReload={onReload} />
+        <NativeMemoryPage records={memories} workspaces={workspaces} onReload={onReload} />
       )}
       {!contentUnavailable && section === "mcp" && (
         <McpHubPage
@@ -512,112 +524,6 @@ function CatalogPage({
           onNetworkSettingsFocused={onMcpNetworkFocused}
         />
       )}
-    </div>
-  );
-}
-
-function GlobalMemoryInbox({
-  records,
-  workspaces,
-  onReload,
-}: {
-  records: MemoryRecord[];
-  workspaces: WorkspaceSummary[];
-  onReload: () => Promise<void>;
-}) {
-  const { tr } = useI18n();
-  const pendingCount = records.filter((item) => item.status === "pending").length;
-  const approvedCount = records.filter((item) => item.status === "approved").length;
-  const review = async (
-    id: string,
-    status: "approved" | "rejected" | "invalidated",
-    editedContent?: string,
-  ) => {
-    await api.reviewMemory(id, status, editedContent);
-    await onReload();
-  };
-  return (
-    <div className="mx-auto grid w-full max-w-6xl gap-4 pb-8">
-      <Card className="overflow-hidden rounded-xl border border-border bg-card shadow-sm">
-        <CardHeader className="flex flex-row flex-wrap items-center justify-between gap-4 border-b border-border px-5 py-4">
-          <div className="flex min-w-0 items-center gap-3">
-            <div className="grid size-11 shrink-0 place-items-center rounded-xl bg-muted text-foreground">
-              <Brain size={21} />
-            </div>
-            <div className="min-w-0">
-              <CardTitle className="text-lg">{tr("memory.globalTitle")}</CardTitle>
-              <p className="mt-1 text-sm text-muted-foreground">
-                {tr("memory.globalPending", { count: pendingCount })}
-              </p>
-            </div>
-          </div>
-          <div className="flex w-full max-w-full flex-wrap items-center gap-2 sm:w-auto">
-            <span className="inline-flex h-9 items-center gap-2 rounded-lg border border-border bg-background px-3 text-sm text-muted-foreground">
-              {tr("assets.memories")}
-              <strong className="font-semibold text-foreground">{records.length}</strong>
-            </span>
-            <span
-              className={cn(
-                "inline-flex h-9 items-center gap-2 rounded-lg border px-3 text-sm",
-                pendingCount > 0
-                  ? "border-[color-mix(in_srgb,var(--amber)_40%,transparent)] bg-[color-mix(in_srgb,var(--amber)_10%,transparent)] text-[var(--amber)]"
-                  : "border-border bg-background text-muted-foreground",
-              )}
-            >
-              {tr("status.memory.pending")}
-              <strong className="font-semibold">{pendingCount}</strong>
-            </span>
-            {approvedCount > 0 && (
-              <span className="inline-flex h-9 items-center gap-2 rounded-lg border border-[color-mix(in_srgb,var(--green)_40%,transparent)] bg-[color-mix(in_srgb,var(--green)_10%,transparent)] px-3 text-sm text-[var(--green)]">
-                {tr("status.memory.approved")}
-                <strong className="font-semibold">{approvedCount}</strong>
-              </span>
-            )}
-            <Button
-              type="button"
-              variant="outline"
-              size="icon"
-              className="size-9 rounded-lg"
-              aria-label={tr("common.refresh")}
-              title={tr("common.refresh")}
-              onClick={() => void onReload()}
-            >
-              <RefreshCw size={15} />
-            </Button>
-          </div>
-        </CardHeader>
-        <CardContent className="p-4 sm:p-5">
-          {records.map((record) => (
-            <div
-              key={record.id}
-              className="mb-3 grid gap-2 rounded-xl border border-border bg-background p-4 last:mb-0"
-            >
-              <span className="text-xs font-semibold text-muted-foreground">
-                {workspaces.find((item) => item.manifest_workspace_id === record.project_id)
-                  ?.name ?? record.project_id.slice(0, 8)}
-              </span>
-              <MemoryCard record={record} onReview={review} />
-            </div>
-          ))}
-          {!records.length && (
-            <div className="grid min-h-56 place-items-center rounded-xl border border-dashed border-border bg-muted/20 px-5 py-8 text-center">
-              <div className="grid max-w-lg justify-items-center gap-3">
-                <div className="grid size-12 place-items-center rounded-2xl border border-border bg-card text-muted-foreground shadow-sm">
-                  <Brain size={22} />
-                </div>
-                <div className="grid gap-1.5">
-                  <h3 className="m-0 text-base font-semibold text-foreground">
-                    {tr("memory.empty")}
-                  </h3>
-                  <p className="m-0 text-sm leading-relaxed text-muted-foreground">
-                    {tr("memory.globalEmptyText")}
-                  </p>
-                </div>
-              </div>
-            </div>
-          )}
-        </CardContent>
-      </Card>
     </div>
   );
 }

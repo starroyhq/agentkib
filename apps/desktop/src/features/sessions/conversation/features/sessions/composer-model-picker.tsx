@@ -129,6 +129,7 @@ export function ComposerModelPicker({
   saving,
   status,
   effortDefault,
+  side = "top",
   onOpen,
   onChange,
 }: {
@@ -143,6 +144,8 @@ export function ComposerModelPicker({
    * unknown one.
    */
   effortDefault?: boolean;
+  /** Where the picker opens: above a composer at the bottom, below one at the top of a page. */
+  side?: "top" | "bottom";
   onOpen: () => void;
   onChange: (change: ComposerModelChange) => Promise<void>;
 }) {
@@ -253,7 +256,7 @@ export function ComposerModelPicker({
       </Tooltip>
       <Popover.Portal>
         <Popover.Positioner
-          side="top"
+          side={side}
           align="end"
           sideOffset={8}
           collisionPadding={12}

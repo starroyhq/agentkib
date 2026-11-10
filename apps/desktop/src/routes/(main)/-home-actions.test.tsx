@@ -7,7 +7,12 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { api } from "@/core/api";
 import { initializeI18n, tr } from "@/core/i18n";
-import type { ConversationSessionSummary, RuntimeInfo, WorkspaceSummary } from "@/core/types";
+import type {
+  ContextDoctorSummary,
+  ConversationSessionSummary,
+  RuntimeInfo,
+  WorkspaceSummary,
+} from "@/core/types";
 import {
   AppNavigationProvider,
   type AppNavigationContextValue,
@@ -26,6 +31,7 @@ const doubles = vi.hoisted(() => ({
   search: {},
   emptyListQuery: { data: [], isPending: false, isSuccess: true, isError: false },
   workspaces: [] as WorkspaceSummary[],
+  doctorSummaries: {} as Record<string, ContextDoctorSummary>,
   managed: vi.fn(),
 }));
 vi.mock("@tanstack/react-router", async (importOriginal) => ({
@@ -47,7 +53,15 @@ vi.mock("@/core/api", () => ({
     workspaceSessions: vi.fn(),
     refreshWorkspaceSessions: vi.fn(),
     setSessionIndexEnabled: vi.fn(),
+    agentTools: vi.fn(),
   },
+}));
+vi.mock("@/features/sessions/new-session/NewSessionComposer", () => ({
+  NewSessionComposer: ({ onCreated }: { onCreated: (sessionId: string) => Promise<void> }) => (
+    <button type="button" onClick={() => void onCreated("created")}>
+      Start session
+    </button>
+  ),
 }));
 vi.mock("@/core/desktop", () => ({
   desktopApi: () => ({ benchmark: { mark: vi.fn().mockResolvedValue(undefined) } }),
@@ -64,7 +78,7 @@ vi.mock("@/features/home/home-query", async (importOriginal) => ({
   useHomeInstallations: () => doubles.emptyListQuery,
   useHomeActivity: () => doubles.emptyListQuery,
   useHomeCatalog: () => doubles.emptyListQuery,
-  useHomeDoctorSummaries: () => ({ ...doubles.emptyListQuery, data: {} }),
+  useHomeDoctorSummaries: () => ({ ...doubles.emptyListQuery, data: doubles.doctorSummaries }),
   useHomeDiscovery: () => ({ ...doubles.emptyListQuery, data: undefined }),
 }));
 
@@ -113,6 +127,7 @@ describe("home add actions", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     doubles.workspaces = [];
+    doubles.doctorSummaries = {};
     doubles.managed.mockReturnValue({ sessions: [], ready: true });
     useAppStore.setState(useAppStore.getInitialState(), true);
     useAppStore.setState({ runtime: { session_index_enabled: false } as RuntimeInfo });
@@ -128,6 +143,30 @@ describe("home add actions", () => {
     );
   });
   afterEach(cleanup);
+
+  it("opens the workspaces that need attention from the upkeep card without checking tools", async () => {
+    doubles.workspaces = [workspace];
+    doubles.doctorSummaries = {
+      [workspace.id]: {
+        workspace_id: workspace.id,
+        error_count: 0,
+        warning_count: 2,
+        info_count: 0,
+        repairable_count: 0,
+        checked_at: "2026-11-09T00:00:00.000Z",
+      },
+    };
+    useAppStore.setState({ runtime: { session_index_enabled: true } as RuntimeInfo });
+    doubles.managed.mockReturnValue({ sessions: [], ready: true, usable: true });
+    const name = "1 workspace has configuration problems";
+    await renderHome(() => screen.findByRole("button", { name }));
+    fireEvent.click(screen.getByRole("button", { name }));
+    expect(doubles.navigate).toHaveBeenCalledWith({
+      to: "/workspaces",
+      search: { workspaceStatus: "attention" },
+    });
+    expect(api.agentTools).not.toHaveBeenCalled();
+  });
 
   it("opens a recent session from the catalog in the session page", async () => {
     doubles.workspaces = [workspace];
@@ -186,14 +225,35 @@ describe("home add actions", () => {
     expect(useAppStore.getState().runtime?.session_index_enabled).toBe(true);
   });
 
-  it("starts the first session in the session page's creation flow", async () => {
+  it("opens a session started from the home once the session list has it", async () => {
     doubles.workspaces = [workspace];
     useAppStore.setState({ runtime: { session_index_enabled: true } as RuntimeInfo });
     doubles.managed.mockReturnValue({ sessions: [], ready: true, usable: true });
-    await renderHome(() => screen.findByRole("button", { name: tr("sessions.newConversation") }));
-    fireEvent.click(screen.getByRole("button", { name: tr("sessions.newConversation") }));
-    await waitFor(() => expect(doubles.navigate).toHaveBeenCalledWith({ to: "/sessions" }));
-    expect(useSessionViewStore.getState().creatingConversation).toBe(true);
+    Object.defineProperty(window, "desktopConversation", { configurable: true, value: {} });
+    try {
+      await renderHome(() => screen.findByRole("button", { name: "Start session" }));
+      fireEvent.click(screen.getByRole("button", { name: "Start session" }));
+      await act(async () => {});
+      // The sessions page drops a selection its list cannot find, so nothing opens yet.
+      expect(doubles.navigate).not.toHaveBeenCalled();
+      const created = {
+        id: "created",
+        workspace_id: workspace.id,
+        agent: "codex",
+        availability: "readable",
+      } as ConversationSessionSummary;
+      doubles.managed.mockReturnValue({ sessions: [created], ready: true, usable: true });
+      act(() => useAppStore.setState({ runtime: { session_index_enabled: true } as RuntimeInfo }));
+      await waitFor(() =>
+        expect(doubles.navigate).toHaveBeenCalledWith({
+          to: "/sessions",
+          search: { sessionId: "created" },
+        }),
+      );
+      expect(useSessionViewStore.getState().creatingConversation).toBe(false);
+    } finally {
+      delete (window as { desktopConversation?: unknown }).desktopConversation;
+    }
   });
 
   it("adds a single workspace through the shared safe navigation flow", async () => {

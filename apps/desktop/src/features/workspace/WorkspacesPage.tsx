@@ -25,6 +25,7 @@ const WORKSPACES_PER_PAGE = 8;
 
 export function WorkspacesPage({
   view,
+  initialStatus = "all",
   storageJob,
   workspaces,
   favoriteWorkspaceIds,
@@ -44,6 +45,8 @@ export function WorkspacesPage({
   onReveal,
 }: {
   view: WorkspaceView;
+  /** The status filter a link opened the list with, such as the home's configuration problems. */
+  initialStatus?: "all" | WorkspaceDisplayState;
   storageJob?: RefreshJobStatus;
   workspaces: WorkspaceSummary[];
   favoriteWorkspaceIds: string[];
@@ -64,7 +67,7 @@ export function WorkspacesPage({
 }) {
   const { tr, formatRelativeTime: relativeTime } = useI18n();
   const [query, setQuery] = useState("");
-  const [status, setStatus] = useState<"all" | WorkspaceDisplayState>("all");
+  const [status, setStatus] = useState<"all" | WorkspaceDisplayState>(initialStatus);
   const [agent, setAgent] = useState<"all" | AgentKind>("all");
   const [page, setPage] = useState(1);
   const statuses = useMemo(

@@ -11,6 +11,7 @@ import { useSessionHistory } from "./useSessionHistory";
 import { withAsyncCleanup } from "@/lib/utils";
 import { hasDesktopConversation } from "@/core/conversation-bridge";
 import { DesktopConversationPane } from "./DesktopConversationPane";
+import { NewSessionPane } from "./new-session/NewSessionPane";
 import { SessionNotice as Notice } from "./SessionNotice";
 import { SessionOverview } from "./SessionOverview";
 import { SessionHistoryContent } from "./SessionHistoryContent";
@@ -149,10 +150,7 @@ export function SessionHubPage() {
           </div>
         )}
         {continuationDialog}
-        <DesktopConversationPane
-          sessionId={creating ? undefined : selected?.id}
-          create={creating}
-        />
+        {creating ? <NewSessionPane /> : <DesktopConversationPane sessionId={selected?.id} />}
       </div>
     );
 

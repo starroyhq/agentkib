@@ -32,6 +32,8 @@ export const appSearchSchema = z.object({
     .optional()
     .catch(undefined),
   workspaceView: z.enum(["list", "storage"]).optional().catch(undefined),
+  /** Opens the workspace list already filtered, as the home's upkeep links do. */
+  workspaceStatus: z.enum(["attention", "healthy", "undiagnosed"]).optional().catch(undefined),
   settingsSection: z
     .enum([
       "general",

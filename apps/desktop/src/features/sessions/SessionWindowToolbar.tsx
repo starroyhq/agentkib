@@ -35,7 +35,15 @@ export function SessionWindowToolbar() {
   const creating = useSessionViewStore((state) => state.creatingConversation);
   const terminalEntry = useSessionViewStore((state) => state.terminalEntry);
   const createConversation = () => {
-    useSessionViewStore.getState().setCreatingConversation(true);
+    // Started from a session, the new one defaults to that session's workspace and Agent.
+    useSessionViewStore
+      .getState()
+      .setCreatingConversation(
+        true,
+        selected && !selected.remote
+          ? { workspaceId: selected.workspace_id, agent: selected.agent }
+          : undefined,
+      );
     hub.select();
   };
   const { canContinue, continueSession } = useHistoryContinuation(

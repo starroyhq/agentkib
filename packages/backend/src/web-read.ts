@@ -4295,7 +4295,9 @@ export class WebReadRequests {
             request.cursor,
             request.limit,
           );
-          if (managed.native_id) {
+          // Codex writes a started thread only with its first message. Until then this
+          // connected runner's ledger is the whole history, with no native images to add.
+          if (managed.native_id && this.sessions.codexThreadWritten(managed.native_id)) {
             const identity = this.sessions.verifiedCodexControlDirectory(managed.native_id);
             if (!identity || identity.id !== managed.native_id.toLowerCase())
               throw new Error("unverified-session-identity");

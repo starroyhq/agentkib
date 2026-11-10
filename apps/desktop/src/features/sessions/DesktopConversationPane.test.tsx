@@ -48,14 +48,12 @@ vi.mock("./session-view-store", () => ({
 vi.mock("./conversation/conversation", () => ({
   EmbeddedConversation: ({
     onSessionChange,
-    onCreateClosed,
     refreshRevision,
     initialPanel,
     onInitialPanelConsumed,
     onCatalogChange,
   }: {
     onSessionChange: (id?: string) => void;
-    onCreateClosed: () => void;
     refreshRevision?: number;
     initialPanel?: string;
     onInitialPanelConsumed?: () => void;
@@ -64,7 +62,6 @@ vi.mock("./conversation/conversation", () => ({
     <>
       <button onClick={() => onSessionChange("fork")}>Open fork</button>
       <button onClick={() => onSessionChange(undefined)}>Clear selection</button>
-      <button onClick={onCreateClosed}>Cancel creation</button>
       <button onClick={onCatalogChange}>Refresh catalog</button>
       <output>{refreshRevision}</output>
       {initialPanel && <button onClick={onInitialPanelConsumed}>{initialPanel}</button>}
@@ -143,16 +140,6 @@ describe("desktop conversation navigation", () => {
     expect(mocks.reveal).not.toHaveBeenCalled();
   });
 
-  it("reveals a successfully created session and lets cancellation leave creation mode", async () => {
-    mocks.refresh.mockResolvedValue([{ id: "fork" }]);
-    render(<DesktopConversationPane create />);
-    fireEvent.click(await screen.findByText("Open fork"));
-    await waitFor(() => expect(mocks.select).toHaveBeenCalledWith("fork"));
-    expect(mocks.reveal).toHaveBeenCalledWith({ id: "fork" });
-    fireEvent.click(screen.getByText("Cancel creation"));
-    expect(mocks.creating).toHaveBeenLastCalledWith(false);
-  });
-
   it("finishes a deferred fork when an explicit catalog retry recovers from a real failure", async () => {
     mocks.refresh
       .mockRejectedValueOnce(new Error("catalog unavailable"))
@@ -171,21 +158,17 @@ describe("desktop conversation navigation", () => {
     expect(screen.queryByText(/sessions\.conversationCatalogError/)).not.toBeInTheDocument();
   });
 
-  it.each(["selection", "cancel"] as const)(
-    "discards deferred navigation after a newer %s intent even if the outer session ID is unchanged",
-    async (intent) => {
-      mocks.refresh.mockRejectedValueOnce(new ApiError(409, "operation_busy"));
-      const view = render(<DesktopConversationPane sessionId="original" />);
-      fireEvent.click(await screen.findByText("Open fork"));
-      await waitFor(() => expect(mocks.refresh).toHaveBeenCalledOnce());
-      if (intent === "selection") mocks.selectionRevision += 1;
-      else fireEvent.click(screen.getByText("Cancel creation"));
-      mocks.sessions = [{ id: "fork" }];
-      view.rerender(<DesktopConversationPane sessionId="original" />);
-      expect(mocks.select).not.toHaveBeenCalled();
-      expect(mocks.reveal).not.toHaveBeenCalled();
-    },
-  );
+  it("discards deferred navigation after a newer selection even if the outer session ID is unchanged", async () => {
+    mocks.refresh.mockRejectedValueOnce(new ApiError(409, "operation_busy"));
+    const view = render(<DesktopConversationPane sessionId="original" />);
+    fireEvent.click(await screen.findByText("Open fork"));
+    await waitFor(() => expect(mocks.refresh).toHaveBeenCalledOnce());
+    mocks.selectionRevision += 1;
+    mocks.sessions = [{ id: "fork" }];
+    view.rerender(<DesktopConversationPane sessionId="original" />);
+    expect(mocks.select).not.toHaveBeenCalled();
+    expect(mocks.reveal).not.toHaveBeenCalled();
+  });
 
   it("discards deferred navigation when the pane unmounts before its catalog read finishes", async () => {
     let finish!: (sessions: { id: string }[]) => void;

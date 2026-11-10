@@ -221,6 +221,28 @@ describe("remote capabilities share device and workspace authorization", () => {
     });
     expect((await api("managed/create", body)).status).toBe(409);
     expect(managed).toHaveBeenCalledTimes(1);
+    // Another policy is a settings change, which only a device with full access may make.
+    expect(
+      (
+        await api("managed/create", {
+          bootId,
+          requestId: "b",
+          workspaceId: "w",
+          policyId: "full-access-on-request",
+        })
+      ).status,
+    ).toBe(403);
+    expect(
+      (
+        await api("managed/create", {
+          bootId,
+          requestId: "c",
+          workspaceId: "w",
+          policyId: "anything",
+        })
+      ).status,
+    ).toBe(400);
+    expect(managed).toHaveBeenCalledTimes(1);
   });
   it("reports release blocked by an unknown control as definitely not dispatched", async () => {
     await pair({ manage: true });

@@ -20,6 +20,7 @@ const doubles = vi.hoisted(() => ({
   reveal: vi.fn(),
   exclude: vi.fn(),
   view: "list",
+  status: undefined as string | undefined,
   pick: vi.fn(),
   add: vi.fn(),
   navigate: vi.fn(),
@@ -46,7 +47,7 @@ vi.mock("@/components/AppDialogProvider", () => ({
 vi.mock("@tanstack/react-router", async (original) => ({
   ...(await original<typeof import("@tanstack/react-router")>()),
   createFileRoute: () => (options: unknown) => ({ options }),
-  useSearch: () => ({ workspaceView: doubles.view }),
+  useSearch: () => ({ workspaceView: doubles.view, workspaceStatus: doubles.status }),
   useNavigate: () => doubles.navigate,
 }));
 const workspace: WorkspaceSummary = {
@@ -108,6 +109,7 @@ beforeEach(async () => {
   doubles.doctor.mockResolvedValue([summary]);
   doubles.memories.mockResolvedValue([]);
   doubles.view = "list";
+  doubles.status = undefined;
   useAppStore.setState({ favoriteWorkspaceIds: [] });
   doubles.pick.mockResolvedValue(null);
   doubles.confirm.mockResolvedValue(true);
@@ -351,6 +353,25 @@ it("filters by shared diagnostic and pending-memory counts instead of the stored
   ).toBeVisible();
   expect(screen.queryByText(workspace.name)).not.toBeInTheDocument();
   expect(screen.queryByText(warning.name)).not.toBeInTheDocument();
+});
+
+it("opens already filtered to the workspaces that need attention, as the home links it", async () => {
+  const unchecked = { ...workspace, id: "unchecked", name: "Unchecked", path: "/unchecked" };
+  const warning = { ...workspace, id: "warning", name: "Warning", path: "/warning" };
+  doubles.status = "attention";
+  doubles.workspaces.mockResolvedValue([workspace, unchecked, warning]);
+  doubles.doctor.mockResolvedValue([
+    summary,
+    { ...summary, workspace_id: warning.id, warning_count: 2 },
+  ]);
+  start();
+  expect(
+    await screen.findByRole("button", {
+      name: `Warning, ${tr("workspace.source.manual")}, ${tr("workspace.status.attention", { count: 2 })}`,
+    }),
+  ).toBeVisible();
+  expect(screen.queryByText(workspace.name)).not.toBeInTheDocument();
+  expect(screen.queryByText(unchecked.name)).not.toBeInTheDocument();
 });
 
 it("keeps pagination for multiple pages and places the count by the list title", async () => {

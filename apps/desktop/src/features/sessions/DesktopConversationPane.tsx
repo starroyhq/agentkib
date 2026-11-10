@@ -17,13 +17,7 @@ const EmbeddedConversation = lazy(() =>
   })),
 );
 
-export function DesktopConversationPane({
-  sessionId,
-  create = false,
-}: {
-  sessionId?: string;
-  create?: boolean;
-}) {
+export function DesktopConversationPane({ sessionId }: { sessionId?: string }) {
   const { locale, tr, localizeMessage } = useI18n();
   const { select, selected, sessions, selectionVersion, conversationRefreshRevision } =
     useSessionHub();
@@ -55,11 +49,6 @@ export function DesktopConversationPane({
     },
     [sessionId],
   );
-  const onCreateClosed = useCallback(() => {
-    navigation.current += 1;
-    pendingNavigation.current = undefined;
-    useSessionViewStore.getState().setCreatingConversation(false);
-  }, []);
   const completeNavigation = useCallback(
     (catalog: ConversationSessionSummary[]) => {
       const pending = pendingNavigation.current;
@@ -154,13 +143,11 @@ export function DesktopConversationPane({
           onInitialPanelConsumed={onInitialPanelConsumed}
           client={client}
           sessionId={sessionId}
-          create={create}
           refreshRevision={conversationRefreshRevision}
           locale={locale}
           showExecution={showExecution}
           onSessionChange={onSessionChange}
           onCatalogChange={onCatalogChange}
-          onCreateClosed={onCreateClosed}
         />
       </Suspense>
     </div>

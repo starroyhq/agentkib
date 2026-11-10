@@ -81,7 +81,6 @@ export function HomeSessions({
   onEnableIndex,
   onRetry,
   onRetrySources,
-  onNewSession,
 }: {
   state: HomeSessionsState;
   sessions: ConversationSessionSummary[];
@@ -94,7 +93,6 @@ export function HomeSessions({
   onEnableIndex: () => Promise<void>;
   onRetry: () => Promise<void>;
   onRetrySources: () => Promise<void>;
-  onNewSession: () => void;
 }) {
   const { locale, tr, formatRelativeTime } = useI18n();
   const groups = useMemo(() => homeSessionGroups(sessions), [sessions]);
@@ -173,11 +171,7 @@ export function HomeSessions({
     return (
       <div className="grid gap-3">
         {sources}
-        <Notice text={tr("home.firstSession")}>
-          <Button variant="outline" size="sm" onClick={onNewSession}>
-            {tr("sessions.newConversation")}
-          </Button>
-        </Notice>
+        <Notice text={tr("home.firstSession")} />
       </div>
     );
   return (
@@ -358,7 +352,7 @@ function Notice({
 }: {
   icon?: Icon;
   text: string;
-  children: ReactNode;
+  children?: ReactNode;
 }) {
   return (
     <Card className="flex flex-row items-center gap-3 rounded-xl border-border bg-card px-5 py-3.5 shadow-none">

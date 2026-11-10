@@ -18,10 +18,11 @@ import {
 } from "@/features/home/home-query";
 import { useWorkspaceStore } from "@/features/workspace/workspace-store";
 import type { WorkspaceView } from "@/features/workspace/workspace-page-types";
+import type { WorkspaceDisplayState } from "@/features/workspace/workspace-status";
 import type { WorkspaceSummary } from "@/core/types";
 import { useAppStore } from "@/stores/app-store";
 
-type WorkspacesSearch = { workspaceView?: WorkspaceView };
+type WorkspacesSearch = { workspaceView?: WorkspaceView; workspaceStatus?: WorkspaceDisplayState };
 
 function WorkspacesRoute() {
   const { localizeMessage } = useI18n();
@@ -213,6 +214,7 @@ function WorkspacesRoute() {
       )}
       <WorkspacesPage
         view={view}
+        initialStatus={search.workspaceStatus}
         storageJob={storageJob}
         workspaces={workspaces}
         favoriteWorkspaceIds={favoriteWorkspaceIds}

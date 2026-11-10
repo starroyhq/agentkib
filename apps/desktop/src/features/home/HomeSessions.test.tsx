@@ -47,7 +47,6 @@ function renderSessions(
     onEnableIndex: vi.fn().mockResolvedValue(undefined),
     onRetry: vi.fn().mockResolvedValue(undefined),
     onRetrySources: vi.fn().mockResolvedValue(undefined),
-    onNewSession: vi.fn(),
   };
   render(
     <HomeSessions
@@ -183,7 +182,6 @@ describe("HomeSessions", () => {
         onEnableIndex={vi.fn()}
         onRetry={vi.fn()}
         onRetrySources={vi.fn()}
-        onNewSession={vi.fn()}
       />,
     );
     expect(screen.getByRole("button", { name: /Old experiment/ })).toHaveTextContent(
@@ -216,11 +214,10 @@ describe("HomeSessions", () => {
     expect(props.onRetry).toHaveBeenCalledOnce();
   });
 
-  it("starts the first session when there is none yet", () => {
-    const props = renderSessions([]);
+  it("points to the composer above when there is no session yet", () => {
+    renderSessions([]);
     expect(screen.getByText(tr("home.firstSession"))).toBeVisible();
-    fireEvent.click(screen.getByRole("button", { name: tr("sessions.newConversation") }));
-    expect(props.onNewSession).toHaveBeenCalledOnce();
+    expect(screen.queryByRole("button")).not.toBeInTheDocument();
   });
 
   it("notes an installed Agent whose sessions could not be read, with a retry", () => {

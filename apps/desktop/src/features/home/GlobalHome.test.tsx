@@ -39,7 +39,6 @@ function homeProps() {
       onEnableIndex: vi.fn().mockResolvedValue(undefined),
       onRetry: vi.fn().mockResolvedValue(undefined),
       onRetrySources: vi.fn().mockResolvedValue(undefined),
-      onNewSession: vi.fn(),
     },
     onOpenDoctor: vi.fn().mockResolvedValue(undefined),
     onAddWorkspace: vi.fn().mockResolvedValue(undefined),

@@ -35,6 +35,15 @@ const unknown = (source: ConversationReadState["source"]): ConversationReadState
   firstUnread: null,
   latestResult: null,
 });
+/** A thread with no turns yet has nothing to review. */
+const nothingToRead: ConversationReadState = {
+  source: "codex-native",
+  status: "read",
+  freshness: "current",
+  version: null,
+  firstUnread: null,
+  latestResult: null,
+};
 function readStateFailure(error: unknown): Error {
   return error instanceof Error &&
     ["read-state-conflict", "read-state-unavailable", "read-state-unsupported"].includes(
@@ -242,8 +251,20 @@ export class ConversationReadStates {
     }
   }
 
+  /** Codex writes a thread AgentKib started only with its first message. */
+  #unwrittenCodexThread(id: string): boolean {
+    const parsed = managedRecordSchema.safeParse(readManagedRecord(this.dataDir, id));
+    return (
+      parsed.success &&
+      !!parsed.data.native_id &&
+      pathIdentity(parsed.data.home) === pathIdentity(this.sessions.codexHome()) &&
+      !this.sessions.codexThreadWritten(parsed.data.native_id)
+    );
+  }
+
   async get(id: string, scope: string): Promise<ConversationReadState> {
     if (this.#closed) throw new Error("read-state-unavailable");
+    if (this.#unwrittenCodexThread(id)) return nothingToRead;
     const target = await this.#resolve(id);
     if (this.#closed) throw new Error("read-state-unavailable");
     const value = await this.#observe(target, scope).catch((error: unknown) => {

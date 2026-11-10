@@ -4119,7 +4119,24 @@ export class WebAccessService {
     };
     if (operation === "create") {
       params.workspaceId = this.field(body.workspaceId);
-      if (agent === "codex") params.policyId = "workspace-write-on-request";
+      if (agent === "codex") {
+        const policyId =
+          body.policyId === undefined
+            ? "workspace-write-on-request"
+            : this.field(body.policyId, 128);
+        if (
+          ![
+            "workspace-write-on-request",
+            "workspace-write-auto-review",
+            "full-access-on-request",
+          ].includes(policyId)
+        )
+          throw new HttpError(400, "unsupported_policy");
+        // Starting with another policy is changing it, which a session's settings allow only
+        // to a device with full access.
+        if (policyId !== "workspace-write-on-request") this.fullAccess(hash);
+        params.policyId = policyId;
+      }
       if (agent === "codex" && body.model !== undefined) params.model = this.field(body.model, 128);
       if (agent === "codex" && body.effort !== undefined)
         params.effort = this.field(body.effort, 32);

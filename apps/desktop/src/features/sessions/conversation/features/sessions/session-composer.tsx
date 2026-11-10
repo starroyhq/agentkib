@@ -1,4 +1,5 @@
 import { continuationResources } from "./continuation-draft";
+import { takeNewSessionDraft } from "./new-session-draft";
 import {
   agentKibCommand,
   agentKibPanel,
@@ -338,6 +339,43 @@ export function SessionComposer({
     submitted,
     session.takeContinuationDraft,
   ]);
+  // A session just started from the new-session composer brings its first message. It goes out
+  // once, as soon as this session can take it; a failed upload, a send that cannot go now or an
+  // edit leaves it here as the draft.
+  const firstMessage = useRef<{ sessionId: string; text: string; shown?: boolean }>(undefined);
+  useEffect(() => {
+    if (!online || !controlReady || busy || submitted || capabilities?.sessionId !== selected)
+      return;
+    const draft = takeNewSessionDraft(selected);
+    if (!draft) return;
+    setMessage(draft.text);
+    firstMessage.current = draft.send ? { sessionId: selected, text: draft.text } : undefined;
+    if (!draft.files.length) return;
+    if (uploadPermission) void add(draft.files);
+    else {
+      firstMessage.current = undefined;
+      count.current = draft.files.length;
+      setUploads(
+        draft.files.map((file) => ({
+          key: crypto.randomUUID(),
+          name: file.name,
+          file,
+          percent: 0,
+          failed: true,
+        })),
+      );
+      setError(codexReason(locale, capabilities.features.attachments?.reason).text);
+    }
+  }, [
+    selected,
+    online,
+    controlReady,
+    capabilities?.sessionId,
+    uploadPermission,
+    busy,
+    submitted,
+    setMessage,
+  ]);
   async function remove(item: Upload) {
     const requestGeneration = generation.current;
     active.current.get(item.key)?.abort();
@@ -473,6 +511,20 @@ export function SessionComposer({
     };
   }, [connectionFailure, connectionToastId, display.reason, selected]);
   const canSubmit = online && controlReady && canSend;
+  useEffect(() => {
+    const first = firstMessage.current;
+    if (!first) return;
+    // The draft reaches the composer a render after it is taken; only a change after that is an edit.
+    if (composerValue === first.text) first.shown = true;
+    if (first.sessionId !== selected || (first.shown && composerValue !== first.text) || error) {
+      firstMessage.current = undefined;
+      return;
+    }
+    if (!first.shown) return;
+    if (!ready || !valid || !canSubmit || compacting || submitted || submitPending.current) return;
+    firstMessage.current = undefined;
+    void send("send");
+  });
   const canAdvanced = !!(access?.device?.advancedControl && controlReady && online && !busy);
   // Send, and Enter, take the device's running choice when a direct send cannot go now.
   const runningReady =

@@ -46,7 +46,30 @@ export const homeKeys = {
   insightsStatus: () => [...homeKeys.all, "insights-status"] as const,
   doctorReport: (workspaceId: string) => [...homeKeys.all, "doctor-report", workspaceId] as const,
   storageOverview: () => [...homeKeys.all, "storage-overview"] as const,
+  remoteStatus: () => [...homeKeys.all, "remote-status"] as const,
+  relayUsage: () => [...homeKeys.all, "relay-usage"] as const,
 };
+
+/** The remote settings' own status, read once per visit; the home does not poll it. */
+export function useHomeRemoteStatus() {
+  return useQuery({
+    ...queryDefaults,
+    queryKey: homeKeys.remoteStatus(),
+    queryFn: () => desktopApi().web.request({ operation: "status" }),
+  });
+}
+
+/** This month's relay allowance, only while the official relay carries remote access. */
+export function useHomeRelayUsage(enabled: boolean) {
+  const account = desktopApi().account;
+  return useQuery({
+    ...queryDefaults,
+    queryKey: homeKeys.relayUsage(),
+    queryFn: async () => (await account!.request({ operation: "status" })).relayUsage ?? null,
+    enabled: enabled && Boolean(account),
+    staleTime: 60_000,
+  });
+}
 
 /** 放在 homeKeys 下：存储扫描任务完成时 useHomeQueryEvents 会一并刷新它。 */
 export function useHomeStorageOverview() {

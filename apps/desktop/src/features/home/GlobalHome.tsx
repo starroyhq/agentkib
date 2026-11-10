@@ -1,5 +1,5 @@
 import { useI18n } from "@/core/useI18n";
-import { useRef, useState, type ComponentProps } from "react";
+import { useRef, useState, type ComponentProps, type ReactNode } from "react";
 import { FolderGit2 } from "lucide-react";
 import { Card } from "@/components/ui/card";
 import type {
@@ -9,8 +9,10 @@ import type {
   RuntimeInfo,
   WorkspaceSummary,
 } from "@/core/types";
+import { cn } from "cn";
 import { GettingStartedCard } from "./GettingStartedCard";
 import { HomeSessions } from "./HomeSessions";
+import { HomeSide, hasHomeSide, type HomeSideProps } from "./HomeSide";
 import { WorkspaceAddActions } from "./WorkspaceAddActions";
 
 export function GlobalHome({
@@ -20,6 +22,8 @@ export function GlobalHome({
   memories,
   installationsPending = false,
   sessions,
+  newSession,
+  side,
   onOpenDoctor,
   onAddWorkspace,
   onAddRoot,
@@ -33,6 +37,10 @@ export function GlobalHome({
   installationsPending?: boolean;
   /** The session groups; the home shows them once a workspace exists. */
   sessions: Omit<ComponentProps<typeof HomeSessions>, "workspaces">;
+  /** The new-session composer, above the sessions once a workspace exists. */
+  newSession?: ReactNode;
+  /** Quota, remote and upkeep beside the sessions; below them in a narrow window. */
+  side?: HomeSideProps;
   onOpenDoctor: (workspace: WorkspaceSummary) => Promise<void>;
   onAddWorkspace: () => Promise<void>;
   onAddRoot: () => Promise<void>;
@@ -104,7 +112,18 @@ export function GlobalHome({
           </Card>
         )
       ) : (
-        <HomeSessions {...sessions} workspaces={workspaces} />
+        <div
+          className={cn(
+            "grid gap-6",
+            side && hasHomeSide(side) && "lg:grid-cols-[minmax(0,1fr)_300px] lg:items-start",
+          )}
+        >
+          <div className="grid min-w-0 gap-6">
+            {newSession}
+            <HomeSessions {...sessions} workspaces={workspaces} />
+          </div>
+          {side && <HomeSide {...side} />}
+        </div>
       )}
     </div>
   );

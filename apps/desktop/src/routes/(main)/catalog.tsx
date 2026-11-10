@@ -373,6 +373,7 @@ function CatalogPage({
   assetsAvailable,
   workspaces,
   memories,
+  memoriesAvailable,
   runtime,
   onReload,
   onRuntimeChanged,
@@ -435,7 +436,8 @@ function CatalogPage({
       id: "memory",
       label: tr("assets.memories"),
       icon: Brain,
-      // Native files and platform records have separate counters inside the page.
+      // Keep platform review attention here; native files have their own page counter.
+      count: memoriesAvailable ? memories.length : undefined,
       badgeLabel: pendingMemoryLabel,
     },
     {

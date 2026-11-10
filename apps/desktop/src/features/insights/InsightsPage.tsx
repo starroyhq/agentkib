@@ -30,7 +30,15 @@ import {
 } from "./InsightsComponents";
 import { AchievementWall } from "./InsightsAchievements";
 import { ProviderRow } from "./InsightsProviderRow";
-import type { HeatmapMetric, InsightsSection } from "./InsightsTypes";
+import {
+  insightsDates,
+  dateSpan,
+  localDate,
+  readInsightsRange,
+  saveInsightsRange,
+  validCustomDates,
+} from "./insights-range";
+import type { HeatmapMetric, InsightsSection, InsightsRange } from "./InsightsTypes";
 
 export type { InsightsSection } from "./InsightsTypes";
 
@@ -45,7 +53,11 @@ export function InsightsPage({
   const [agent, setAgent] = useState<"all" | AgentKind>("all");
   const [workspaceId, setWorkspaceId] = useState("all");
   const [repository, setRepository] = useState("all");
-  const [range, setRange] = useState<"52w" | "year">("52w");
+  const [selection, setSelection] = useState(() => readInsightsRange(localDate(new Date())));
+  const range = selection.range;
+  const [customDraft, setCustomDraft] = useState(selection.custom);
+  const setRange = (range: InsightsRange) => setSelection((previous) => ({ ...previous, range }));
+  useEffect(() => saveInsightsRange(selection), [selection]);
   const [metric, setMetric] = useState<HeatmapMetric>("tokens");
   // 选中的工作区/仓库被移除后，标签会回落成"全部"；查询也必须按"全部"发，不能继续带着旧 id。
   const activeWorkspaceId = workspaces.some((value) => value.id === workspaceId)
@@ -56,22 +68,16 @@ export function InsightsPage({
     : "all";
   const day = useLocalDay();
   const query = useMemo<InsightsQuery>(() => {
-    const [year, month, date] = day.split("-").map(Number);
-    const today = new Date(year, month - 1, date);
-    const from =
-      range === "year"
-        ? new Date(today.getFullYear(), 0, 1)
-        : new Date(today.getFullYear(), today.getMonth(), today.getDate() - 363);
+    const dates = insightsDates(range, day, selection.custom);
     const tokenView = section === "overview" || section === "tokens";
     const commitView = section === "overview" || section === "commits";
     return {
-      from: localDate(from),
-      to: localDate(today),
+      ...dates,
       agent: tokenView && agent !== "all" ? agent : undefined,
       workspace_id: tokenView && activeWorkspaceId !== "all" ? activeWorkspaceId : undefined,
       repository_group_id: commitView && activeRepository !== "all" ? activeRepository : undefined,
     };
-  }, [agent, activeWorkspaceId, activeRepository, range, section, day]);
+  }, [agent, activeWorkspaceId, activeRepository, range, section, day, selection.custom]);
   const viewQuery = useInsightsView(query);
   const refreshJobQuery = useInsightsRefreshJob();
   const view = viewQuery.data;
@@ -110,6 +116,7 @@ export function InsightsPage({
       ? (Date.UTC(heatmapYear + 1, 0, 1) - Date.UTC(heatmapYear, 0, 1)) / 86_400_000
       : points.length;
   const heatmapColumns = Math.max(1, Math.ceil((heatmapPadding + heatmapDays) / 7));
+  const compactHeatmap = range !== "year" && dateSpan({ from: query.from!, to: query.to! }) <= 100;
 
   if (!view) {
     // 首次加载（或切换筛选后）失败时没有旧数据可显示；不能一直停在骨架屏，要给出错误和重试入口。
@@ -170,6 +177,13 @@ export function InsightsPage({
           onRepositoryChange={setRepository}
           range={range}
           onRangeChange={setRange}
+          custom={customDraft}
+          onCustomChange={setCustomDraft}
+          onApplyCustom={() => {
+            if (validCustomDates(customDraft, day))
+              setSelection({ range: "custom", custom: { ...customDraft } });
+          }}
+          today={day}
         />
       </section>
       {!summary && (
@@ -188,11 +202,9 @@ export function InsightsPage({
               <AchievementMetric
                 icon={Sparkles}
                 tone="blue"
-                label={tr("insights.totalToken")}
+                label={tr("insights.periodTokens")}
                 value={formatCompactNumber(summary.total_tokens)}
-                detail={
-                  summary.coverage_from ? `${summary.coverage_from} — ${summary.coverage_to}` : ""
-                }
+                detail={`${query.from} — ${query.to}`}
               />
               <AchievementMetric
                 icon={GitCommitHorizontal}
@@ -224,13 +236,19 @@ export function InsightsPage({
                   count: summary.current_streak,
                   value: formatNumber(summary.current_streak),
                 })}
-                detail={tr("insights.longestStreak", {
+                detail={tr("insights.streakScope", {
                   count: summary.longest_streak,
                   value: formatNumber(summary.longest_streak),
                 })}
               />
             </div>
-            <div>
+            <div
+              className={
+                compactHeatmap
+                  ? "grid items-stretch gap-4 lg:grid-cols-[minmax(320px,0.7fr)_minmax(0,1.3fr)]"
+                  : undefined
+              }
+            >
               <Card className="overflow-hidden rounded-2xl border-border bg-card shadow-sm">
                 <CardHeader className="flex min-h-[62px] flex-row items-center justify-between gap-3 border-b border-border px-5 py-3">
                   <div>
@@ -243,7 +261,9 @@ export function InsightsPage({
                     {showRange
                       ? range === "year"
                         ? tr("insights.rangeYear")
-                        : tr("insights.range52w")
+                        : range === "custom"
+                          ? `${query.from} — ${query.to}`
+                          : tr(`insights.range${range}`)
                       : tr("nav.insights")}
                   </Badge>
                 </CardHeader>
@@ -269,10 +289,29 @@ export function InsightsPage({
                   </div>
                 </CardContent>
               </Card>
+              {compactHeatmap && <AgentUsageSummary agents={agents} />}
             </div>
-            <div className="grid items-stretch gap-4 lg:grid-cols-[minmax(0,1.4fr)_minmax(280px,0.6fr)]">
-              <TokenTrendCard points={points} metric={metric} metricLabel={metricLabels[metric]} />
-              <AgentUsageSummary agents={agents} />
+            <div
+              className={
+                compactHeatmap
+                  ? undefined
+                  : "grid items-stretch gap-4 lg:grid-cols-[minmax(0,1.4fr)_minmax(280px,0.6fr)]"
+              }
+            >
+              <TokenTrendCard
+                key={`${query.from}:${query.to}`}
+                points={points}
+                metric={metric}
+                metricLabel={metricLabels[metric]}
+                granularity={
+                  dateSpan({ from: query.from!, to: query.to! }) <= 31
+                    ? "day"
+                    : dateSpan({ from: query.from!, to: query.to! }) <= 100
+                      ? "week"
+                      : "month"
+                }
+              />
+              {!compactHeatmap && <AgentUsageSummary agents={agents} />}
             </div>
           </div>
         </>
@@ -433,12 +472,6 @@ function useLocalDay() {
     return () => window.clearInterval(timer);
   }, []);
   return day;
-}
-function localDate(value: Date) {
-  const year = value.getFullYear();
-  const month = String(value.getMonth() + 1).padStart(2, "0");
-  const day = String(value.getDate()).padStart(2, "0");
-  return `${year}-${month}-${day}`;
 }
 function achievementTranslationKey(code: string) {
   return (

@@ -9,11 +9,19 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
+import { Input } from "@/components/ui/input";
+import { Button } from "@/components/ui/button";
+import { validCustomDates, type InsightsDates } from "./insights-range";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { insightsAgentKinds } from "@/features/insights/insights";
 import { AGENT_LABELS as agentLabels } from "@/core/agents";
 import type { AgentKind, WorkspaceSummary } from "@/core/types";
-import type { HeatmapMetric, InsightsAgentFilter, InsightsSection } from "./InsightsTypes";
+import type {
+  HeatmapMetric,
+  InsightsAgentFilter,
+  InsightsSection,
+  InsightsRange,
+} from "./InsightsTypes";
 
 export function InsightsFilters({
   section,
@@ -28,6 +36,10 @@ export function InsightsFilters({
   onRepositoryChange,
   range,
   onRangeChange,
+  custom,
+  onCustomChange,
+  onApplyCustom,
+  today,
 }: {
   section: InsightsSection;
   workspaces: WorkspaceSummary[];
@@ -39,8 +51,12 @@ export function InsightsFilters({
   onWorkspaceChange: Dispatch<SetStateAction<string>>;
   repository: string;
   onRepositoryChange: Dispatch<SetStateAction<string>>;
-  range: "52w" | "year";
-  onRangeChange: Dispatch<SetStateAction<"52w" | "year">>;
+  range: InsightsRange;
+  onRangeChange: (value: InsightsRange) => void;
+  custom: InsightsDates;
+  onCustomChange: (value: InsightsDates) => void;
+  onApplyCustom: () => void;
+  today: string;
 }) {
   const { tr } = useI18n();
   const metricLabels: Record<HeatmapMetric, string> = {
@@ -51,8 +67,12 @@ export function InsightsFilters({
     sessions: tr("common.sessions"),
   };
   const rangeLabels = {
+    "7d": tr("insights.range7d"),
+    "30d": tr("insights.range30d"),
+    "90d": tr("insights.range90d"),
     "52w": tr("insights.range52w"),
     year: tr("insights.rangeYear"),
+    custom: tr("insights.rangeCustom"),
   };
   const repositoryOptions = [
     ...new Map(
@@ -104,7 +124,7 @@ export function InsightsFilters({
           </TabsList>
         </Tabs>
       )}
-      <div className="flex min-w-0 flex-1 flex-wrap items-center justify-start gap-2">
+      <div className="flex min-w-0 flex-[1_1_420px] flex-wrap items-center justify-start gap-2">
         {showTokenFilters && (
           <Select
             items={agentItems}
@@ -179,7 +199,7 @@ export function InsightsFilters({
             items={rangeItems}
             value={range}
             onValueChange={(value) => {
-              if (value !== null) onRangeChange(String(value) as "52w" | "year");
+              if (value !== null) onRangeChange(String(value) as InsightsRange);
             }}
           >
             <SelectTrigger className="max-w-48" aria-label={tr("insights.range")}>
@@ -196,6 +216,41 @@ export function InsightsFilters({
               </SelectGroup>
             </SelectContent>
           </Select>
+        )}
+        {showRange && range === "custom" && (
+          <div className="flex min-w-0 flex-wrap items-center gap-2">
+            <Input
+              className="w-36"
+              type="date"
+              aria-label={tr("insights.fromDate")}
+              max={today}
+              value={custom.from}
+              onChange={(event) => onCustomChange({ ...custom, from: event.target.value })}
+            />
+            <span aria-hidden="true">—</span>
+            <Input
+              className="w-36"
+              type="date"
+              aria-label={tr("insights.toDate")}
+              min={custom.from}
+              max={today}
+              value={custom.to}
+              onChange={(event) => onCustomChange({ ...custom, to: event.target.value })}
+            />
+            <Button
+              variant="outline"
+              size="sm"
+              disabled={!validCustomDates(custom, today)}
+              onClick={onApplyCustom}
+            >
+              {tr("insights.applyRange")}
+            </Button>
+            {!validCustomDates(custom, today) && (
+              <p role="status" className="text-xs text-destructive-text">
+                {tr("insights.invalidRange")}
+              </p>
+            )}
+          </div>
         )}
       </div>
     </div>

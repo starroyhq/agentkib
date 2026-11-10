@@ -6,6 +6,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { initializeI18n, tr } from "@/core/i18n";
 import type { HeatmapPoint } from "@/core/types";
 import { InsightsPage } from "./InsightsPage";
+import { INSIGHTS_RANGE_STORAGE_KEY } from "./insights-range";
 
 const state = vi.hoisted(() => ({
   view: {} as Record<string, unknown>,
@@ -49,12 +50,13 @@ const summary = {
 };
 function heatmapGrid(container: HTMLElement) {
   return [...container.querySelectorAll<HTMLElement>("div[style]")].find((element) =>
-    element.className.includes("grid-rows-[repeat(7,11px)]"),
+    element.hasAttribute("aria-description"),
   )!;
 }
 
 describe("InsightsPage", () => {
   beforeEach(() => {
+    window.localStorage.removeItem(INSIGHTS_RANGE_STORAGE_KEY);
     initializeI18n("en-US");
     state.job = { data: undefined };
     state.queries = [];
@@ -121,7 +123,7 @@ describe("InsightsPage", () => {
     await act(async () => {
       await vi.advanceTimersByTimeAsync(60_000);
     });
-    expect(state.queries.at(-1)).toMatchObject({ from: "2025-03-04", to: "2026-03-02" });
+    expect(state.queries.at(-1)).toMatchObject({ from: "2026-02-01", to: "2026-03-02" });
   });
 
   it("names filters by purpose and summarizes the heatmap and trend for screen readers", () => {
@@ -139,9 +141,13 @@ describe("InsightsPage", () => {
       expect(screen.getByRole("combobox", { name: tr(key) })).toBeTruthy();
     const map = screen.getByRole("img", { name: /Mar 1, 2026/ });
     expect(map.getAttribute("aria-label")).toBe(
-      "Token, Mar 3, 2025 to Mar 1, 2026: 2 active days, peak 10",
+      "Token, Jan 31, 2026 to Mar 1, 2026: 2 active days, peak 10",
     );
-    expect(screen.getByRole("img", { name: /Token Trend: Feb 15/ })).toBeTruthy();
+    expect(
+      screen.getByRole("img", {
+        name: /Token Trend: Feb 1, 2026, Token: 0, Feb 2, 2026, Token: 5/,
+      }),
+    ).toBeTruthy();
   });
 
   it("lays out the whole calendar year, even while last year's 52-week data is a placeholder", async () => {
@@ -166,5 +172,52 @@ describe("InsightsPage", () => {
       "repeat(53, var(--heatmap-cell-size))",
     );
     expect(heatmapGrid(container).querySelectorAll('[aria-hidden="true"]')).toHaveLength(365 - 60);
+  });
+  it("uses recent days by default, remembers changes, and keeps a compact daily heatmap", async () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(new Date(2026, 10, 10, 12));
+    state.view = { data: { summary, status: { running: false }, heatmap: days("2026-10-12", 30) } };
+    const user = userEvent.setup();
+    const first = render(<InsightsPage section="overview" workspaces={[]} />);
+    expect(state.queries.at(-1)).toMatchObject({ from: "2026-10-12", to: "2026-11-10" });
+    expect(heatmapGrid(first.container).style.justifyContent).toBe("start");
+    expect(
+      screen.getByRole("combobox", { name: tr("insights.trendGranularity") }).textContent,
+    ).toContain(tr("insights.byDay"));
+    await user.click(screen.getByRole("combobox", { name: tr("insights.range") }));
+    await user.click(await screen.findByRole("option", { name: tr("insights.range90d") }));
+    expect(state.queries.at(-1)).toMatchObject({ from: "2026-08-13", to: "2026-11-10" });
+    expect(
+      screen.getByRole("combobox", { name: tr("insights.trendGranularity") }).textContent,
+    ).toContain(tr("insights.byWeek"));
+    first.unmount();
+    render(<InsightsPage section="overview" workspaces={[]} />);
+    expect(screen.getByRole("combobox", { name: tr("insights.range") }).textContent).toContain(
+      tr("insights.range90d"),
+    );
+    expect(state.queries.at(-1)).toMatchObject({ from: "2026-08-13", to: "2026-11-10" });
+  });
+
+  it("applies custom dates explicitly and never requests invalid drafts", async () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(new Date(2026, 10, 10, 12));
+    state.view = { data: { summary, status: { running: false }, heatmap: [] } };
+    const user = userEvent.setup();
+    render(<InsightsPage section="overview" workspaces={[]} />);
+    await user.click(screen.getByRole("combobox", { name: tr("insights.range") }));
+    await user.click(await screen.findByRole("option", { name: tr("insights.rangeCustom") }));
+    const from = screen.getByLabelText(tr("insights.fromDate"));
+    const to = screen.getByLabelText(tr("insights.toDate"));
+    fireEvent.change(from, { target: { value: "2026-11-01" } });
+    fireEvent.change(to, { target: { value: "2026-11-05" } });
+    expect(state.queries.at(-1)).toMatchObject({ from: "2026-10-12", to: "2026-11-10" });
+    await user.click(screen.getByRole("button", { name: tr("insights.applyRange") }));
+    expect(state.queries.at(-1)).toMatchObject({ from: "2026-11-01", to: "2026-11-05" });
+    fireEvent.change(to, { target: { value: "2026-11-11" } });
+    expect(
+      screen.getByRole("button", { name: tr("insights.applyRange") }).hasAttribute("disabled"),
+    ).toBe(true);
+    expect(state.queries.at(-1)).toMatchObject({ from: "2026-11-01", to: "2026-11-05" });
+    expect(screen.getByRole("status").textContent).toBe(tr("insights.invalidRange"));
   });
 });

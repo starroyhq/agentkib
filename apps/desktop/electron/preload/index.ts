@@ -1,3 +1,4 @@
+import type { NativeMemoryQuery } from "@agentkib/runtime-protocol";
 import type { DesktopAccountRequest, DesktopAccountStatus } from "../main/account/state";
 import { contextBridge, ipcRenderer } from "electron";
 import type { DesktopApi, DesktopRuntimeStatus, DesktopConversationApi } from "../api";
@@ -48,6 +49,8 @@ const desktopApi = Object.freeze({
       subscribe("agentkib:skills:sync-state-changed", listener),
     onQuotaUpdated: (listener: (snapshot: QuotaSnapshot) => void) =>
       subscribe("agentkib:quota-updated", listener),
+    onNativeMemoryChanged: (listener: () => void) =>
+      subscribe("agentkib:native-memory-changed", listener),
     onLocalCostUpdated: (listener: (update: LocalCostUpdate) => void) =>
       subscribe("agentkib:local-cost-updated", listener),
     onNavigate: (listener: (request: AppNavigationRequest) => void) =>
@@ -375,6 +378,14 @@ const desktopApi = Object.freeze({
     catalogAssets: (input: unknown) => ipcRenderer.invoke("agentkib:home:catalog-assets", input),
     globalMemories: (status?: string) =>
       ipcRenderer.invoke("agentkib:home:global-memories", status),
+    nativeMemoryList: (query?: NativeMemoryQuery) =>
+      ipcRenderer.invoke("agentkib:native-memory:list", query),
+    nativeMemorySearch: (query: NativeMemoryQuery) =>
+      ipcRenderer.invoke("agentkib:native-memory:search", query),
+    nativeMemoryRead: (fileId: string) => ipcRenderer.invoke("agentkib:native-memory:read", fileId),
+    nativeMemoryRefresh: () => ipcRenderer.invoke("agentkib:native-memory:refresh"),
+    nativeMemoryObserve: (active: boolean) =>
+      ipcRenderer.invoke("agentkib:native-memory:observe", active),
     activity: (limit?: number) => ipcRenderer.invoke("agentkib:home:activity", limit),
     scanRoots: () => ipcRenderer.invoke("agentkib:home:scan-roots"),
     addScanRoot: (path: string, maxDepth: number) =>

@@ -1,3 +1,4 @@
+import type { NativeMemoryQuery } from "@agentkib/runtime-protocol";
 import type {
   McpBatchConnectionRequest,
   McpImportApplyRequest,
@@ -345,6 +346,11 @@ export const api = {
   },
   catalogAssets: (query = "", agent?: AgentKind, workspaceId?: string, limit = 500) =>
     desktopApi().home.catalogAssets({ query, agent, workspaceId, limit }),
+  nativeMemoryList: (query: NativeMemoryQuery = {}) => desktopApi().home.nativeMemoryList(query),
+  nativeMemorySearch: (query: NativeMemoryQuery) => desktopApi().home.nativeMemorySearch(query),
+  nativeMemoryRead: (fileId: string) => desktopApi().home.nativeMemoryRead(fileId),
+  nativeMemoryRefresh: () => desktopApi().home.nativeMemoryRefresh(),
+  nativeMemoryObserve: (active: boolean) => desktopApi().home.nativeMemoryObserve(active),
   globalMemories: (status?: MemoryStatus) => desktopApi().home.globalMemories(status),
   activity: (limit = 200) => desktopApi().home.activity(limit),
   refreshInsights: () => desktopApi().home.refreshInsights(),

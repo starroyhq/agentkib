@@ -36,6 +36,8 @@ import { createIpcRegistrar } from "./ipc/registrar";
 import { ElectronNativeShell, resolveNativeShellTrayIcon } from "./native-shell";
 import { ElectronRefreshCoordinator } from "./refresh-coordinator";
 import { CostObservation, requireLocalCostProvider } from "./cost-observation";
+import { NativeMemoryObservation } from "./native-memory-observation";
+import { NATIVE_MEMORY_CHANGED } from "@agentkib/runtime-protocol";
 import { SkillSyncCoordinator } from "./skill-sync-coordinator";
 import { StartupBenchmark } from "./startup-benchmark";
 import { firstCloseDecision } from "./close-behavior";
@@ -104,6 +106,7 @@ let rendererUnresponsive = false;
 const startupBenchmark = new StartupBenchmark();
 const { handle, forward } = createIpcRegistrar({ assertTrustedRenderer, runtime: requireRuntime });
 const costObservation = new CostObservation(requireRuntime);
+const nativeMemoryObservation = new NativeMemoryObservation(requireRuntime);
 
 const quitGuard = createQuitGuard({
   approveQuit: () => {
@@ -225,6 +228,7 @@ async function startApplication(): Promise<void> {
     startupBenchmark.mark("runtime-handshake");
     refreshCoordinator?.setRuntimeAvailable(true);
     costObservation.setRuntimeAvailable(true);
+    nativeMemoryObservation.setRuntimeAvailable(true);
     skillSyncCoordinator?.setRuntimeAvailable(true);
     void initializeRuntimeServices().catch((error: unknown) => {
       process.stderr.write(`AgentKib runtime services failed: ${String(error)}\n`);
@@ -236,6 +240,7 @@ async function startApplication(): Promise<void> {
   selectedRuntimeHost.on("exit", ({ expected }: { expected: boolean }) => {
     runtimeHandshake = undefined;
     costObservation.setRuntimeAvailable(false);
+    nativeMemoryObservation.setRuntimeAvailable(false);
     conversationHub?.unavailable();
     webAccess?.runtimeUnavailable();
     lanWebAccess?.runtimeUnavailable();
@@ -258,7 +263,8 @@ async function startApplication(): Promise<void> {
     return requireRuntime().request(method, params);
   });
   selectedRuntimeHost.on("notification", (method: string, params: unknown) => {
-    if (method === "quota.updated") sendRendererEvent("agentkib:quota-updated", params);
+    if (method === NATIVE_MEMORY_CHANGED) sendRendererEvent("agentkib:native-memory-changed", {});
+    else if (method === "quota.updated") sendRendererEvent("agentkib:quota-updated", params);
     else if (method === "quota.costUpdated")
       sendRendererEvent("agentkib:local-cost-updated", params);
     else conversationHub?.notification(method, params);
@@ -408,6 +414,9 @@ async function startApplication(): Promise<void> {
   const updatePowerActivity = () => {
     const paused = systemSuspended || screenLocked;
     costObservation.setActive(
+      !paused && Boolean(mainWindow?.isVisible() && !mainWindow?.isMinimized()),
+    );
+    nativeMemoryObservation.setActive(
       !paused && Boolean(mainWindow?.isVisible() && !mainWindow?.isMinimized()),
     );
     refreshCoordinator?.setSuspended(paused);
@@ -804,6 +813,19 @@ function registerHomeIpc(): void {
     }
     return requireRuntime().request(RUNTIME_METHODS.listGlobalMemories, { status });
   });
+  forward("agentkib:native-memory:list", RUNTIME_METHODS.nativeMemoryList, (query: unknown) =>
+    requireObject(query ?? {}, "native memory query"),
+  );
+  forward("agentkib:native-memory:search", RUNTIME_METHODS.nativeMemorySearch, (query: unknown) =>
+    requireObject(query ?? {}, "native memory query"),
+  );
+  forward("agentkib:native-memory:read", RUNTIME_METHODS.nativeMemoryRead, (fileId: unknown) => ({
+    fileId: requireString(fileId, "file ID"),
+  }));
+  forward("agentkib:native-memory:refresh", RUNTIME_METHODS.nativeMemoryRefresh);
+  handle("agentkib:native-memory:observe", (event, active: unknown) =>
+    nativeMemoryObservation.observe(event.sender.id, requireBoolean(active, "active")),
+  );
   forward("agentkib:home:activity", RUNTIME_METHODS.listActivity, (limit: unknown) => ({
     limit: optionalPositiveInteger(limit, "limit") ?? 200,
   }));
@@ -1099,6 +1121,9 @@ async function createMainWindow(): Promise<void> {
     costObservation.setActive(
       !systemSuspended && !screenLocked && window.isVisible() && !window.isMinimized(),
     );
+    nativeMemoryObservation.setActive(
+      !systemSuspended && !screenLocked && window.isVisible() && !window.isMinimized(),
+    );
     sendRendererEvent(
       "agentkib:window-activity",
       !systemSuspended && !screenLocked && window.isVisible() && !window.isMinimized(),
@@ -1119,12 +1144,19 @@ async function createMainWindow(): Promise<void> {
   });
   window.webContents.on("render-process-gone", () => {
     costObservation.forget(window.webContents.id);
+    nativeMemoryObservation.forget(window.webContents.id);
     quitGuard.rendererUnavailable();
   });
   const costOwnerId = window.webContents.id;
-  window.webContents.on("destroyed", () => costObservation.forget(costOwnerId));
+  window.webContents.on("destroyed", () => {
+    costObservation.forget(costOwnerId);
+    nativeMemoryObservation.forget(costOwnerId);
+  });
   window.webContents.on("did-start-navigation", (_event, _url, isInPlace, isMainFrame) => {
-    if (isMainFrame && !isInPlace) costObservation.forget(costOwnerId);
+    if (isMainFrame && !isInPlace) {
+      costObservation.forget(costOwnerId);
+      nativeMemoryObservation.forget(costOwnerId);
+    }
   });
   window.webContents.setWindowOpenHandler(({ url }) => {
     if (webAccess?.canDownloadDesktopArtifact(url)) window.webContents.downloadURL(url);

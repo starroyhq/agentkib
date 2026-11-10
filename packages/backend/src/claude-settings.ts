@@ -277,10 +277,10 @@ function redactQueryValues(text: string): string {
  * both can split escaped spaces, joined quotes and continued values and leave a suffix behind.
  * URL, header and opaque-value rules follow. Shortened last, never through a raw secret.
  */
-export function redactText(text: string): string {
-  return redactCommandText(text, 0);
+export function redactText(text: string, maxCharacters = MAX_TEXT_CHARS): string {
+  return redactCommandText(text, 0, maxCharacters);
 }
-function redactCommandText(text: string, depth: number): string {
+function redactCommandText(text: string, depth: number, maxCharacters = MAX_TEXT_CHARS): string {
   // Protect already-redacted arguments from broad header/line rules. For example, applying
   // those rules to `--api-key=[REDACTED]; echo ok` would also remove the ordinary command.
   // Escape input markers first, so restoration always uses a fixed-size delimiter. Growing a
@@ -525,7 +525,7 @@ function redactCommandText(text: string, depth: number): string {
             if (script.literal === null || depth >= 4) {
               hideWord(script);
             } else {
-              const sanitized = redactCommandText(script.literal, depth + 1);
+              const sanitized = redactCommandText(script.literal, depth + 1, maxCharacters);
               // The outer pass must not interpret a script's closing quote as the start of
               // a credential word (for example `sh -c 'python -u script.py'`). Only keep a
               // fragment here after its full redaction pass, including URL/header rules.
@@ -669,7 +669,7 @@ function redactCommandText(text: string, depth: number): string {
     (blob) => (/[a-z]/.test(blob) && /[A-Z]/.test(blob) && /\d/.test(blob) ? "[REDACTED]" : blob),
   );
   output = restore(output);
-  return output.length > MAX_TEXT_CHARS ? `${output.slice(0, MAX_TEXT_CHARS)}…` : output;
+  return output.length > maxCharacters ? `${output.slice(0, maxCharacters)}…` : output;
 }
 
 /** A key or identifier taken from a file, bounded and redacted. */

@@ -99,6 +99,14 @@ export const TYPESCRIPT_GIT_METHODS = new Set<string>([
   RUNTIME_METHODS.gitDiff,
 ]);
 
+export const TYPESCRIPT_NATIVE_MEMORY_METHODS = new Set<string>([
+  RUNTIME_METHODS.nativeMemoryList,
+  RUNTIME_METHODS.nativeMemoryRead,
+  RUNTIME_METHODS.nativeMemorySearch,
+  RUNTIME_METHODS.nativeMemoryRefresh,
+  RUNTIME_METHODS.nativeMemoryObserve,
+]);
+
 export const TYPESCRIPT_CATALOG_METHODS = new Set<string>([
   RUNTIME_METHODS.listAgentInstallations,
   RUNTIME_METHODS.searchCatalogAssets,

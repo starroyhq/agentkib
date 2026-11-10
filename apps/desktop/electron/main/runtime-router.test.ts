@@ -130,6 +130,31 @@ describe("RuntimeRouter independent quota and local estimates", () => {
   });
 });
 
+describe("RuntimeRouter desktop native memory", () => {
+  it.each([
+    [RUNTIME_METHODS.nativeMemoryList, { workspaceId: "fixture", offset: 100 }],
+    [RUNTIME_METHODS.nativeMemorySearch, { query: "中文 查询" }],
+    [RUNTIME_METHODS.nativeMemoryRead, { fileId: "opaque-id" }],
+    [RUNTIME_METHODS.nativeMemoryRefresh, {}],
+    [RUNTIME_METHODS.nativeMemoryObserve, { active: true }],
+  ] as const)("routes %s independently of quota work", async (method, params) => {
+    const host = new Host();
+    const router = new RuntimeRouter(host);
+    await router.start();
+    const held = gate();
+    host.handler = async (name, values) => {
+      if (name === RUNTIME_METHODS.refreshQuota) await held.promise;
+      return values;
+    };
+    const quota = router.request(RUNTIME_METHODS.refreshQuota, {});
+    expect(await router.request(method, params)).toEqual(params);
+    expect(host.calls.filter((value) => value === method)).toHaveLength(1);
+    held.resolve();
+    await quota;
+    await router.stop();
+  });
+});
+
 describe("RuntimeRouter Skill ownership", () => {
   it.each(Object.values(RUNTIME_METHODS).filter((method) => method.startsWith("skills.")))(
     "forwards %s through the real router exactly once",

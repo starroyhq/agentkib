@@ -44,6 +44,7 @@ function MainLayout() {
   const active = app.globalPage;
   const isWorkspace = route.kind === "workspace";
   const isSessions = route.kind === "global" && route.page === "sessions";
+  const isMemory = active === "catalog" && search.assetSection === "memory";
   const discoveryFailure = app.refreshJobs.find(
     (job) => job.kind === "discovery" && job.state === "failed",
   );
@@ -157,7 +158,13 @@ function MainLayout() {
           </div>
         )}
         <main className="app-shell-main !flex !min-h-0 !min-w-0 !h-full !flex-col !overflow-hidden !text-sm">
-          <div ref={scrollRef} className="page-scroll-container min-h-0 flex-1">
+          <div
+            ref={scrollRef}
+            className={cn(
+              "page-scroll-container min-h-0 flex-1",
+              isMemory && "!flex !flex-col !overflow-hidden",
+            )}
+          >
             <AppMessageBanner />
             {active === "workspaces" && discoveryFailure?.error && (
               <div className="mx-7 mt-3 flex items-center gap-2 rounded-lg border border-destructive/30 bg-destructive/5 px-3 py-2 text-sm text-destructive-text">
@@ -167,9 +174,11 @@ function MainLayout() {
             <section
               className={cn(
                 "content w-full",
-                isSessions
-                  ? "app-sessions-content"
-                  : "mx-auto max-w-[1500px] px-6 pb-10 pt-5 max-[640px]:px-4",
+                isMemory
+                  ? "flex min-h-0 max-w-none flex-1 flex-col px-5 py-4 max-[640px]:px-3"
+                  : isSessions
+                    ? "app-sessions-content"
+                    : "mx-auto max-w-[1500px] px-6 pb-10 pt-5 max-[640px]:px-4",
               )}
             >
               <Outlet />

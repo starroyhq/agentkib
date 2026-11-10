@@ -1,5 +1,8 @@
 import assert from "node:assert/strict";
-import { readFile } from "node:fs/promises";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { spawnSync } from "node:child_process";
+import { tmpdir } from "node:os";
+import path from "node:path";
 import { createRequire } from "node:module";
 import test from "node:test";
 
@@ -152,9 +155,16 @@ test("shared setup preserves native prerequisites and the pinned dependency inst
   assert.equal(action.runs.using, "composite");
   assert.equal(action.inputs.native.default, "false");
   const steps = action.runs.steps;
-  const nativeInstall = steps.find((step) => step.run?.includes("apt-get install"));
+  const nativeInstall = steps.find((step) => /apt-get.*install/.test(step.run ?? ""));
   assert.ok(nativeInstall);
   assert.equal(expression(nativeInstall.if), "inputs.native == 'true'");
+  assert.equal(nativeInstall["timeout-minutes"], undefined);
+  assert.match(nativeInstall.run, /timeout --kill-after=10s 120s apt-get .* update/);
+  assert.match(nativeInstall.run, /timeout --kill-after=10s 180s apt-get .* install/);
+  assert.match(nativeInstall.run, /Acquire::Retries=2/);
+  assert.match(nativeInstall.run, /Acquire::http::Timeout=20/);
+  assert.match(nativeInstall.run, /Acquire::https::Timeout=20/);
+  assert.match(nativeInstall.run, /APT::Update::Error-Mode=any update/);
   for (const dependency of ["build-essential", "pkg-config", "libssl-dev", "libgtk-3-dev"]) {
     assert.ok(nativeInstall.run.includes(dependency), `Missing native dependency: ${dependency}`);
   }
@@ -172,3 +182,79 @@ test("shared setup preserves native prerequisites and the pinned dependency inst
   assert.ok(steps.some((step) => step.run?.trim() === "pnpm install --frozen-lockfile"));
   assert.ok(steps.every((step) => step["continue-on-error"] === undefined));
 });
+
+test(
+  "native setup bounds both apt requests and never installs after an index failure",
+  {
+    skip: process.platform === "win32" ? "The Linux apt setup requires /bin/bash" : false,
+  },
+  async () => {
+    const action = await readYaml("../actions/setup-quality/action.yml");
+    const command = action.runs.steps.find((step) => /apt-get.*install/.test(step.run ?? "")).run;
+    const directory = await mkdtemp(path.join(tmpdir(), "agentkib-quality-apt-"));
+    try {
+      await writeFile(path.join(directory, "sudo"), '#!/bin/bash\nexec "$@"\n', { mode: 0o755 });
+      await writeFile(
+        path.join(directory, "timeout"),
+        `#!/bin/bash
+printf '%s\\n' "$1 $2" >> "$TIMEOUT_CALLS"
+shift 2
+exec "$@"
+`,
+        { mode: 0o755 },
+      );
+      await writeFile(
+        path.join(directory, "apt-get"),
+        `#!/bin/bash
+printf '%s\\n' "$*" >> "$APT_CALLS"
+if [[ "$*" == *" update" ]]; then exit "$APT_EXIT"; fi
+`,
+        { mode: 0o755 },
+      );
+      for (const updateExit of [0, 100, 124]) {
+        const failUpdate = updateExit !== 0;
+        const callsFile = path.join(directory, `apt-calls-${updateExit}`);
+        const timeoutsFile = path.join(directory, `timeout-calls-${updateExit}`);
+        const result = spawnSync("/bin/bash", ["-e", "-o", "pipefail", "-c", command], {
+          env: {
+            ...process.env,
+            PATH: `${directory}${path.delimiter}${process.env.PATH}`,
+            APT_CALLS: callsFile,
+            APT_EXIT: String(updateExit),
+            TIMEOUT_CALLS: timeoutsFile,
+          },
+          encoding: "utf8",
+          timeout: 5_000,
+        });
+        assert.ifError(result.error);
+        assert.equal(result.status, updateExit, result.stderr);
+        const calls = (await readFile(callsFile, "utf8")).trim().split("\n");
+        assert.equal(calls.length, failUpdate ? 1 : 2);
+        const deadlines = (await readFile(timeoutsFile, "utf8")).trim().split("\n");
+        assert.deepEqual(
+          deadlines,
+          failUpdate
+            ? ["--kill-after=10s 120s"]
+            : ["--kill-after=10s 120s", "--kill-after=10s 180s"],
+        );
+        for (const call of calls) {
+          for (const option of [
+            "Acquire::Retries=2",
+            "Acquire::http::Timeout=20",
+            "Acquire::https::Timeout=20",
+          ]) {
+            assert.ok(call.includes(option), `Missing network bound: ${option}`);
+          }
+        }
+        assert.match(calls[0], /APT::Update::Error-Mode=any update$/);
+        if (!failUpdate)
+          assert.match(
+            calls[1],
+            /install -y --no-install-recommends build-essential pkg-config libssl-dev libgtk-3-dev$/,
+          );
+      }
+    } finally {
+      await rm(directory, { recursive: true, force: true });
+    }
+  },
+);

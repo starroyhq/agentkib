@@ -1,3 +1,8 @@
+import type {
+  NativeMemoryQuery,
+  NativeMemorySnapshot,
+  NativeMemoryDetail,
+} from "@agentkib/runtime-protocol";
 import type { McpMigrationPreview, McpMigrationResult } from "@agentkib/runtime-protocol";
 import type {
   McpBatchConnectionCheck,
@@ -202,6 +207,7 @@ export interface DesktopApi {
       listener: (status: SkillSyncCoordinatorState) => void,
     ): DesktopEventUnsubscribe;
     onQuotaUpdated(listener: (snapshot: QuotaSnapshot) => void): DesktopEventUnsubscribe;
+    onNativeMemoryChanged(listener: () => void): DesktopEventUnsubscribe;
     onLocalCostUpdated(listener: (update: LocalCostUpdate) => void): DesktopEventUnsubscribe;
     onNavigate(listener: (request: AppNavigationRequest) => void): DesktopEventUnsubscribe;
     onMenuCommand(listener: (request: AppMenuCommandRequest) => void): DesktopEventUnsubscribe;
@@ -452,6 +458,11 @@ export interface DesktopApi {
       limit?: number;
     }): Promise<CatalogAsset[]>;
     globalMemories(status?: string): Promise<MemoryRecord[]>;
+    nativeMemoryList(query?: NativeMemoryQuery): Promise<NativeMemorySnapshot>;
+    nativeMemorySearch(query: NativeMemoryQuery): Promise<NativeMemorySnapshot>;
+    nativeMemoryRead(fileId: string): Promise<NativeMemoryDetail>;
+    nativeMemoryRefresh(): Promise<NativeMemorySnapshot>;
+    nativeMemoryObserve(active: boolean): Promise<void>;
     activity(limit?: number): Promise<ActivityRecord[]>;
     scanRoots(): Promise<ScanRoot[]>;
     addScanRoot(path: string, maxDepth: number): Promise<ScanRoot>;

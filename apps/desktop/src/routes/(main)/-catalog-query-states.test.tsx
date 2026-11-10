@@ -332,7 +332,7 @@ it("keeps skills and MCP usable after the initial memory query fails", async () 
   expect(screen.getByRole("navigation")).toBeVisible();
 });
 
-it.each(["instructions", "memory", "other"])(
+it.each(["instructions", "other"])(
   "keeps a missing workspace dependency blocking the %s section until it resolves",
   async (section) => {
     const pending = deferred<WorkspaceSummary[]>();
@@ -360,6 +360,27 @@ it.each(["instructions", "memory", "other"])(
     ).toBeVisible();
   },
 );
+
+it("keeps native memory access and platform review available while workspace enumeration fails", async () => {
+  const pending = deferred<WorkspaceSummary[]>();
+  doubles.search.assetSection = "memory";
+  doubles.workspaces.mockReturnValueOnce(pending.promise);
+  doubles.memories.mockResolvedValue([memory]);
+  const { client } = start();
+  expect(await screen.findByRole("heading", { name: tr("memory.title") })).toBeVisible();
+  expect(screen.queryByRole("status", { name: tr("loading.assets") })).not.toBeInTheDocument();
+  expect(await screen.findByText(memory.content)).toBeVisible();
+  expect(screen.getByText(tr("memory.native.unsupported"))).toBeVisible();
+  fireEvent.click(screen.getByRole("button", { name: new RegExp(memory.content) }));
+  expect(await screen.findByRole("button", { name: tr("common.approve") })).toBeVisible();
+  await act(async () => pending.reject(new Error("Workspace list unavailable")));
+  expect(await screen.findByRole("alert")).toHaveTextContent(tr("query.workspaces"));
+  expect(screen.getByRole("button", { name: tr("common.approve") })).toBeEnabled();
+  doubles.workspaces.mockResolvedValue([workspace]);
+  await act(async () => client.invalidateQueries({ queryKey: homeKeys.workspaces() }));
+  await waitFor(() => expect(screen.queryByRole("alert")).not.toBeInTheDocument());
+  expect(screen.getByRole("button", { name: new RegExp(memory.content) })).toBeVisible();
+});
 
 it("consumes the MCP network focus target with replace after focusing once", async () => {
   doubles.search.assetSection = "mcp";
@@ -467,6 +488,7 @@ it.each(sources.slice(0, 2))(
 it("retains an actual memory review draft across cached refresh failure and retry", async () => {
   doubles.search.assetSection = "memory";
   const { client } = start(true);
+  fireEvent.click(await screen.findByRole("button", { name: new RegExp(memory.content) }));
   fireEvent.click(await screen.findByRole("button", { name: tr("common.edit") }));
   const editor = screen.getByRole("textbox");
   fireEvent.change(editor, { target: { value: "Unsubmitted memory edit" } });

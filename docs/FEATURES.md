@@ -38,6 +38,12 @@ Current native and synthetic results are recorded separately in [connection QA](
 | Insights | Token, session, Git activity, heatmaps, and achievements derived locally |
 | Settings | Discovery roots, tool updates, integrations, privacy controls, and diagnostics |
 
+The Memory page reads Claude Code project auto memory from workspaces already discovered by AgentKib, including workspaces without an AgentKib manifest. It lists `MEMORY.md` and Markdown topic files in the resolved memory directory, deduplicates shared repository/worktree or custom directories, and keeps native files separate from AgentKib proposals. Native files are read-only and do not require approval to view; viewing them does not mean the current Claude session has loaded them. The index preview is separate from Claude's startup limit (the first 200 lines or 25 KB); Claude reads topic files on demand. `CLAUDE.md`, rules, independent subagent memory and unmapped historical directories are outside this reader's scope. Native text is not shared through MCP, remote Web, other Agents or cloud sync.
+
+The memory browser groups non-empty entries by project and shows filenames without body titles, excerpts or modification dates. Wide windows use independently scrolling list and reader panes; narrow windows open a detail drawer. Source diagnostics are collapsed by default, while errors, stale cache and incomplete scans appear on project rows and in a summary. Preview and raw-text views remain read-only, and shared directories retain their workspace associations.
+
+Native memory uses a separate local SQLite cache containing redacted text. The page shows cached results first, watches file changes and rechecks every five seconds while visible, and reconciles again on focus or manual refresh independently of global refreshes. Read failures retain the last result as stale; confirmed deletions remove files, and excluded workspaces, changed configuration roots or disabled auto memory withdraw the old source. Reads stay within the resolved memory directory and apply sensitive-path filtering. Scans are bounded to 512 files and four subdirectory levels, 512 KiB per file with the existing text limit, and 8 MiB of indexed text per directory; truncation and incomplete scans are explicit. Existing AgentKib proposal approval and Agent-search semantics are unchanged.
+
 Quota collection runs independently of workspace refreshes and local cost scans, with at most two providers at once. Each provider publishes its result immediately and retains its last-good cache on failure. Unknown usage stays unknown, including Windows placeholder percentages. Diagnostics keep separate provider attempts, successes and errors; expired reset times request a refresh instead of showing a future countdown.
 
 The local usage estimate panel shows today's USD estimate and tokens, a rolling 30-day USD estimate, daily cost/token trends and model details. These are API-price estimates from this machine's native Codex/Claude logs, not the selected quota account's usage or actual bill. It excludes other tools' mirrored/imported histories. Dates use the collector machine's local timezone, shown in the panel. Unpriced models and incomplete history remain visible; missing days are not filled with invented zeroes. Cost cache, progress and errors are independent of quota. See [collector builds and validation](development/quota-collector.md).
@@ -189,6 +195,14 @@ Platform setup and known limitations are documented in the [Windows guide](devel
 | 额度 | 额度窗口、余额、重置时间，以及本机 Codex/Claude API 价格估算 |
 | 洞察 | 本地派生的 Token、会话、Git 活动、热力图和成就 |
 | 设置 | 发现目录、工具更新、集成、隐私控制和诊断 |
+
+“记忆”页只读获取 AgentKib 已发现工作区的 Claude Code 项目自动记忆，工作区无需先建立 AgentKib manifest。页面列出解析所得记忆目录中的 `MEMORY.md` 和 Markdown 专题文件，对主仓库／worktree 共享目录及自定义共用目录去重，并将原生文件与 AgentKib 提议分开展示。原生文件无需审核即可查看；可查看不代表当前 Claude 会话已加载。文件预览与 Claude 启动读取上限（前 200 行或 25 KB）分开，专题文件由 Claude 按需读取。`CLAUDE.md`、rules、子代理独立记忆及无法归属的历史目录不在本轮范围内。原生正文不通过 MCP、远控网页、其他 Agent 或云同步共享。
+
+记忆浏览按项目分组，仅将有内容的条目放入列表，列表仅显示文件名，不展开正文标题与摘要。宽窗口使用列表与正文双栏并分别滚动，窄窗口打开详情抽屉；正文可切换预览与原始文本。来源诊断默认折叠，异常、缓存过期或扫描不完整在项目行及汇总处提示，共用目录保留关联工作区信息，原生正文继续只读。
+
+原生记忆使用独立的本机 SQLite 脱敏文本缓存。页面先显示缓存，可见时监听文件变化并每五秒合并核对，回前台或手动刷新时再次检查，不等待全局刷新。普通读取失败保留上次结果并标注过期；确认删除后移除文件，工作区排除、配置来源变化或关闭自动记忆后撤下旧来源。读取限定在解析所得记忆目录内，沿用敏感路径过滤。每目录最多遍历 512 个文件和 4 层子目录，单文件最多读取 512 KiB 并沿用现有文本长度限制，每目录正文索引预算为 8 MiB；截断或扫描不完整均明确标示。原有 AgentKib 提议审核与 Agent 检索语义保持不变。
+
+目录解析沿用现有 Claude 配置可见范围：支持应用进程环境中的配置目录覆盖，以及用户／managed 设置中的自定义记忆目录。项目设置指定自定义目录但无法确认 Claude 的工作区信任状态时，显示“路径无法确定”，不读取项目指定的外部目录，也不冒充默认目录的内容。逐会话的命令行覆盖不在本机配置解析范围内。接口、缓存边界和隔离测试入口见[原生记忆说明](NATIVE-MEMORY.md)。
 
 额度采集不等待工作区刷新或本机费用扫描，最多并发两个 Provider，每个完成后立即显示。失败保留上次成功数据，未知用量保持未知，包括 Windows 的占位百分比。诊断分别保存各 Provider 的尝试、成功时间与错误；已过期的重置时间提示刷新。
 

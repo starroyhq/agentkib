@@ -60,6 +60,7 @@ export function migrateSharedSchema(database: DatabaseSync): void {
     // are not workspaces and must not be inserted into the filesystem catalog.
     database.exec(sessionCollections);
     database.exec(quotaCollectionCaches);
+    database.exec(nativeMemoryCache);
     const classification = database
       .prepare("SELECT value FROM schema_meta WHERE key='codex_session_classification_revision'")
       .get()?.value;
@@ -146,6 +147,16 @@ CREATE TABLE IF NOT EXISTS local_cost_cache (
   status_json TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_local_cost_provider ON local_cost_cache(provider);
+`;
+
+// Disposable desktop-only projections; the native files remain the source of truth.
+const nativeMemoryCache = `
+CREATE TABLE IF NOT EXISTS native_memory_cache (
+  source_id TEXT PRIMARY KEY,
+  directory TEXT NOT NULL,
+  source_json TEXT NOT NULL,
+  files_json TEXT NOT NULL
+);
 `;
 
 function setVersion(database: DatabaseSync, version: number): void {

@@ -461,18 +461,19 @@ export class ElectronNativeShell {
   #createTrayImage(): Electron.NativeImage {
     const source = nativeImage.createFromPath(this.#options.trayIconPath);
     if (source.isEmpty() || process.platform !== "darwin") return source;
+    // The 44 px asset is designed for a 22 pt menu bar slot, including its padding.
     const image = nativeImage.createEmpty();
     image.addRepresentation({
       scaleFactor: 1,
-      width: 16,
-      height: 16,
-      buffer: source.resize({ width: 16, height: 16 }).toPNG(),
+      width: 22,
+      height: 22,
+      buffer: source.resize({ width: 22, height: 22 }).toPNG(),
     });
     image.addRepresentation({
       scaleFactor: 2,
-      width: 32,
-      height: 32,
-      buffer: source.resize({ width: 32, height: 32 }).toPNG(),
+      width: 44,
+      height: 44,
+      buffer: source.resize({ width: 44, height: 44 }).toPNG(),
     });
     return image;
   }

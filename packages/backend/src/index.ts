@@ -163,9 +163,22 @@ const HANDOFF_TASK_METHODS = new Set<string>([
   RUNTIME_METHODS.launchSessionHandoff,
 ]);
 
+import { NativeMemoryOwner } from "./native-memory";
+import { NATIVE_MEMORY_CHANGED } from "@agentkib/runtime-protocol";
+
+const nativeMemoryQuerySchema = z
+  .object({
+    workspaceId: z.string().min(1).max(256).optional(),
+    sourceId: z.string().min(1).max(256).optional(),
+    query: z.string().max(512).optional(),
+    offset: z.number().int().min(0).max(1000000).optional(),
+  })
+  .strict();
+
 export class TypeScriptBackend {
   #instructionImports = new InstructionImports();
   #store?: BackendStore;
+  #nativeMemory?: NativeMemoryOwner;
   #dataDir?: string;
   #commands = new Commands();
   #git?: Git;
@@ -211,6 +224,7 @@ export class TypeScriptBackend {
   /** Cancel producers before draining RPC requests; keep their stores open until they settle. */
   cancelPendingOperations(): void {
     this.#stopping = true;
+    this.#nativeMemory?.close();
     this.#skills?.stop();
     this.#historySearch?.stop();
     this.#handoffQueue.stop();
@@ -227,6 +241,8 @@ export class TypeScriptBackend {
 
   #reset(): void {
     this.#instructionImports.clear();
+    this.#nativeMemory?.close();
+    this.#nativeMemory = undefined;
     this.#sessionStream?.close();
     this.#sessionStream = undefined;
     this.#snapshotHistory?.invalidate();
@@ -406,6 +422,7 @@ export class TypeScriptBackend {
           "changesets",
           "catalog",
           "memory",
+          "native-memory",
           "git",
           "insight-reads",
           "session-cache",
@@ -439,6 +456,11 @@ export class TypeScriptBackend {
         this.#handoffWork = new HandoffWork();
         this.#store = store;
         this.#dataDir = dataDir;
+        this.#nativeMemory = new NativeMemoryOwner({
+          store,
+          environment: { ...process.env, ...this.environment },
+          notify: () => this.notify(NATIVE_MEMORY_CHANGED, {}),
+        });
         this.#cursorBridge = new CursorBridge(dataDir, store);
         this.#cursorBridge.initialize();
         this.#storage = new WorkspaceStorageOwner({
@@ -840,6 +862,23 @@ export class TypeScriptBackend {
       throw new RpcFault(-32000, "AgentKib command failed", {
         detail: "TypeScript backend has not been initialized",
       });
+    if (method === RUNTIME_METHODS.nativeMemoryList)
+      return this.#nativeMemory!.snapshot(parameters(nativeMemoryQuerySchema, params));
+    if (method === RUNTIME_METHODS.nativeMemorySearch)
+      return this.#nativeMemory!.search(parameters(nativeMemoryQuerySchema, params));
+    if (method === RUNTIME_METHODS.nativeMemoryRead) {
+      const value = parameters(z.object({ fileId: z.string().min(1).max(256) }).strict(), params);
+      return this.#nativeMemory!.read(value.fileId);
+    }
+    if (method === RUNTIME_METHODS.nativeMemoryRefresh) {
+      parameters(z.object({}).strict(), params);
+      return this.#nativeMemory!.refresh();
+    }
+    if (method === RUNTIME_METHODS.nativeMemoryObserve) {
+      const value = parameters(z.object({ active: z.boolean() }).strict(), params);
+      this.#nativeMemory!.observe("desktop", value.active);
+      return null;
+    }
     if (method === RUNTIME_METHODS.sessionsSubscribe) {
       const request = parameters(
         z.object({ sessionId: z.string().max(256), afterCursor: z.string().max(1024).optional() }),

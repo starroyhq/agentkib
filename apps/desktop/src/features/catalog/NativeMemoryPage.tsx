@@ -4,6 +4,14 @@ import { Brain, Copy, HelpCircle, RefreshCw, X } from "lucide-react";
 import { Markdown } from "@tanstack/markdown/react";
 import type { NativeMemoryDetail, NativeMemoryQuery } from "@agentkib/runtime-protocol";
 import { Button } from "@/components/ui/button";
+import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
 import { Input } from "@/components/ui/input";
 import { api } from "@/core/api";
 import { desktopApi } from "@/core/desktop";
@@ -347,30 +355,59 @@ export function NativeMemoryPage({
       <div className="flex shrink-0 flex-wrap items-end gap-2">
         <label className="grid min-w-0 gap-1 text-xs text-muted-foreground">
           {tr("memory.native.sourceFilter")}
-          <select
-            className="h-9 max-w-48 rounded-lg border border-border bg-background px-2 text-sm text-foreground"
+          <Select
             value={source}
-            onChange={(event) => setSource(event.target.value)}
+            onValueChange={(value) => {
+              if (value !== null) setSource(String(value));
+            }}
           >
-            <option value="all">{tr("memory.native.allSources")}</option>
-            <option value="claude">{tr("memory.native.claude")}</option>
-            <option value="platform">{tr("memory.native.platform")}</option>
-          </select>
+            <SelectTrigger
+              aria-label={tr("memory.native.sourceFilter")}
+              className="h-9 max-w-48 text-foreground"
+            >
+              <SelectValue>
+                {tr(
+                  source === "all"
+                    ? "memory.native.allSources"
+                    : source === "claude"
+                      ? "memory.native.claude"
+                      : "memory.native.platform",
+                )}
+              </SelectValue>
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="all">{tr("memory.native.allSources")}</SelectItem>
+              <SelectItem value="claude">{tr("memory.native.claude")}</SelectItem>
+              <SelectItem value="platform">{tr("memory.native.platform")}</SelectItem>
+            </SelectContent>
+          </Select>
         </label>
         <label className="grid min-w-0 gap-1 text-xs text-muted-foreground">
           {tr("memory.native.workspaceFilter")}
-          <select
-            className="h-9 min-w-0 max-w-60 rounded-lg border border-border bg-background px-2 text-sm text-foreground"
+          <Select
             value={workspaceId}
-            onChange={(event) => setWorkspaceId(event.target.value)}
+            onValueChange={(value) => {
+              if (value !== null) setWorkspaceId(String(value));
+            }}
           >
-            <option value="">{tr("memory.native.allWorkspaces")}</option>
-            {workspaces.map((workspace) => (
-              <option key={workspace.id} value={workspace.id}>
-                {workspace.name}
-              </option>
-            ))}
-          </select>
+            <SelectTrigger
+              aria-label={tr("memory.native.workspaceFilter")}
+              className="h-9 min-w-0 max-w-60 text-foreground"
+            >
+              <SelectValue>
+                {workspaces.find((workspace) => workspace.id === workspaceId)?.name ??
+                  tr("memory.native.allWorkspaces")}
+              </SelectValue>
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="">{tr("memory.native.allWorkspaces")}</SelectItem>
+              {workspaces.map((workspace) => (
+                <SelectItem key={workspace.id} value={workspace.id}>
+                  {workspace.name}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
         </label>
         <label className="grid min-w-48 flex-1 gap-1 text-xs text-muted-foreground">
           {tr("memory.native.search")}
@@ -397,8 +434,16 @@ export function NativeMemoryPage({
       )}
       {showNative && (
         <section aria-label={tr("memory.native.diagnostics")} className="shrink-0">
-          <details className="rounded-lg border border-border text-xs">
-            <summary className="flex cursor-pointer list-none flex-wrap items-center gap-x-3 gap-y-1 px-3 py-2 text-muted-foreground">
+          <Collapsible className="rounded-lg border border-border text-xs">
+            <CollapsibleTrigger
+              render={
+                <Button
+                  variant="bare"
+                  size="content"
+                  className="flex w-full flex-wrap items-center justify-start gap-x-3 gap-y-1 px-3 py-2 text-muted-foreground"
+                />
+              }
+            >
               <span className="font-medium">{tr("memory.native.diagnostics")}</span>
               <span className={attention.length ? "text-amber-700 dark:text-amber-400" : undefined}>
                 {tr("memory.native.diagnosticsCount", {
@@ -406,8 +451,11 @@ export function NativeMemoryPage({
                   issues: attention.length,
                 })}
               </span>
-            </summary>
-            <div className="max-h-48 overflow-y-auto border-t border-border px-3 py-3">
+            </CollapsibleTrigger>
+            <CollapsibleContent
+              keepMounted
+              className="max-h-48 overflow-y-auto border-t border-border px-3 py-3"
+            >
               {sources.map((item) => (
                 <div
                   key={item.id}
@@ -428,8 +476,8 @@ export function NativeMemoryPage({
                   {item.lastSuccessAt && <time>{formatDateTime(item.lastSuccessAt)}</time>}
                 </div>
               ))}
-            </div>
-          </details>
+            </CollapsibleContent>
+          </Collapsible>
         </section>
       )}
       {showNative && query.error && !nativeUnsupported && (
@@ -502,9 +550,11 @@ function NativeDetail({
       {(stale || detail.file.stale || detail.source.stale) && (
         <p className="text-xs text-amber-700 dark:text-amber-400">{tr("memory.native.stale")}</p>
       )}
-      <details className="text-xs text-muted-foreground">
-        <summary className="cursor-pointer py-1">{tr("memory.native.location")}</summary>
-        <div className="grid min-w-0 gap-2 py-3">
+      <Collapsible className="text-xs text-muted-foreground">
+        <CollapsibleTrigger render={<Button variant="bare" size="content" className="py-1" />}>
+          {tr("memory.native.location")}
+        </CollapsibleTrigger>
+        <CollapsibleContent keepMounted className="grid min-w-0 gap-2 py-3">
           <p>{tr(`memory.native.${detail.file.kind}Hint`)}</p>
           {location && (
             <>
@@ -521,8 +571,8 @@ function NativeDetail({
             </>
           )}
           {copyState === "error" && <p role="alert">{tr("memory.native.copyError")}</p>}
-        </div>
-      </details>
+        </CollapsibleContent>
+      </Collapsible>
       {!!detail.links.length && (
         <nav aria-label={tr("memory.native.links")} className="flex flex-wrap gap-2">
           {detail.links.map((link) => (

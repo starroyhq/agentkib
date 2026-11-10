@@ -1,6 +1,7 @@
 // @vitest-environment jsdom
 import "@testing-library/jest-dom/vitest";
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type {
@@ -148,12 +149,10 @@ function projectList() {
 
 function openDiagnostics() {
   const diagnostics = screen.getByRole("region", { name: tr("memory.native.diagnostics") });
-  const disclosure = diagnostics.querySelector("details") ?? diagnostics.closest("details");
-  expect(disclosure).not.toBeNull();
-  const summary = disclosure!.querySelector("summary");
-  expect(summary).not.toBeNull();
-  fireEvent.click(summary!);
-  expect(disclosure).toHaveAttribute("open");
+  const trigger = within(diagnostics).getByRole("button");
+  expect(trigger).toHaveAttribute("aria-expanded", "false");
+  fireEvent.click(trigger);
+  expect(trigger).toHaveAttribute("aria-expanded", "true");
   return diagnostics;
 }
 
@@ -162,12 +161,18 @@ function openPlatformRecord() {
 }
 
 async function openLocation() {
-  const summary = await within(reader()).findByText(tr("memory.native.location"), {
-    selector: "summary",
+  const trigger = await within(reader()).findByRole("button", {
+    name: tr("memory.native.location"),
   });
-  expect(summary.closest("details")).not.toHaveAttribute("open");
-  fireEvent.click(summary);
-  expect(summary.closest("details")).toHaveAttribute("open");
+  expect(trigger).toHaveAttribute("aria-expanded", "false");
+  fireEvent.click(trigger);
+  expect(trigger).toHaveAttribute("aria-expanded", "true");
+}
+
+async function chooseFilter(label: string, option: string) {
+  const user = userEvent.setup();
+  await user.click(screen.getByRole("combobox", { name: label }));
+  await user.click(await screen.findByRole("option", { name: option }));
 }
 
 beforeEach(async () => {
@@ -259,9 +264,7 @@ describe("native and platform memory", () => {
   it("filters platform memories locally and sends native search terms with the selected workspace", async () => {
     mount({ records: [record, { ...record, id: "second", content: "Other information" }] });
     await screen.findByRole("button", { name: /MEMORY.md/ });
-    fireEvent.change(screen.getByRole("combobox", { name: tr("memory.native.workspaceFilter") }), {
-      target: { value: workspace.id },
-    });
+    await chooseFilter(tr("memory.native.workspaceFilter"), workspace.name);
     fireEvent.change(screen.getByRole("searchbox", { name: tr("memory.native.search") }), {
       target: { value: "build instructions" },
     });
@@ -274,15 +277,11 @@ describe("native and platform memory", () => {
     );
     expect(screen.queryByText("Other information")).not.toBeInTheDocument();
     expect(screen.getByText(record.content)).toBeVisible();
-    fireEvent.change(screen.getByRole("combobox", { name: tr("memory.native.sourceFilter") }), {
-      target: { value: "claude" },
-    });
+    await chooseFilter(tr("memory.native.sourceFilter"), tr("memory.native.claude"));
     expect(
       within(projectList()).queryByRole("button", { name: new RegExp(record.content) }),
     ).not.toBeInTheDocument();
-    fireEvent.change(screen.getByRole("combobox", { name: tr("memory.native.sourceFilter") }), {
-      target: { value: "platform" },
-    });
+    await chooseFilter(tr("memory.native.sourceFilter"), tr("memory.native.platform"));
     expect(
       within(projectList()).queryByRole("button", { name: /MEMORY.md/ }),
     ).not.toBeInTheDocument();
@@ -361,9 +360,7 @@ describe("native and platform memory", () => {
     mount({ workspaces: [workspace, second] });
     fireEvent.click(await screen.findByRole("button", { name: /MEMORY.md/ }));
     await waitFor(() => expect(mocks.read).toHaveBeenCalled());
-    fireEvent.change(screen.getByRole("combobox", { name: tr("memory.native.workspaceFilter") }), {
-      target: { value: second.id },
-    });
+    await chooseFilter(tr("memory.native.workspaceFilter"), second.name);
     await act(async () => resolve(detail()));
     expect(screen.queryByText(/Native index/)).not.toBeInTheDocument();
     expect(within(reader()).queryByText(tr("memory.native.readOnly"))).not.toBeInTheDocument();
@@ -477,9 +474,7 @@ describe("native and platform memory", () => {
     mount();
     fireEvent.click(await screen.findByRole("button", { name: /MEMORY.md/ }));
     await waitFor(() => expect(mocks.read).toHaveBeenCalled());
-    fireEvent.change(screen.getByRole("combobox", { name: tr("memory.native.sourceFilter") }), {
-      target: { value: "platform" },
-    });
+    await chooseFilter(tr("memory.native.sourceFilter"), tr("memory.native.platform"));
     await act(async () => resolve(detail()));
     expect(screen.queryByText(/Native index/)).not.toBeInTheDocument();
     expect(screen.getByText(record.content)).toBeVisible();
@@ -616,8 +611,7 @@ describe("native and platform memory", () => {
     expect(within(projects).getAllByRole("button", { name: /MEMORY.md/ })).toHaveLength(35);
     expect(within(projects).queryByText("Project 59")).not.toBeInTheDocument();
     const diagnostics = screen.getByRole("region", { name: tr("memory.native.diagnostics") });
-    const disclosure = diagnostics.querySelector("details") ?? diagnostics.closest("details");
-    expect(disclosure).not.toHaveAttribute("open");
+    expect(within(diagnostics).getByRole("button")).toHaveAttribute("aria-expanded", "false");
     expect(within(diagnostics).getByText("Project 59")).not.toBeVisible();
     expect(within(projects).queryByText("Useful excerpt 59")).not.toBeInTheDocument();
     projects.scrollTop = 180;
@@ -704,16 +698,15 @@ describe("native and platform memory", () => {
       "aria-expanded",
       "true",
     );
-    const shared = [...projects.querySelectorAll("details")].find((item) =>
-      item.textContent?.includes(nested.path),
-    );
-    expect(shared).toBeDefined();
-    expect(shared).not.toHaveAttribute("open");
-    expect(within(shared!).getByText(nested.name)).not.toBeVisible();
-    fireEvent.click(shared!.querySelector("summary")!);
-    expect(within(shared!).getByText(nested.name)).toBeVisible();
-    expect(within(shared!).getByText(nested.path)).toBeVisible();
-    expect(within(shared!).getByText(main.path)).toBeVisible();
+    const shared = within(projects).getByRole("button", {
+      name: tr("memory.native.sharedWorkspaces", { count: 2 }),
+    });
+    expect(shared).toHaveAttribute("aria-expanded", "false");
+    expect(within(projects).getByText(nested.name)).not.toBeVisible();
+    fireEvent.click(shared);
+    expect(within(projects).getByText(nested.name)).toBeVisible();
+    expect(within(projects).getByText(nested.path)).toBeVisible();
+    expect(within(projects).getByText(main.path)).toBeVisible();
   });
 
   it("retracts a selected file if its source disappears even when a stale list page retains the file", async () => {

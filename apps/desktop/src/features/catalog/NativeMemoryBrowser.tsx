@@ -4,6 +4,7 @@ import type { NativeMemoryFile, NativeMemorySource } from "@agentkib/runtime-pro
 import type { MemoryRecord, WorkspaceSummary } from "@/core/types";
 import { useI18n } from "@/core/useI18n";
 import { Button } from "@/components/ui/button";
+import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
 import { Sheet, SheetContent, SheetTitle } from "@/components/ui/sheet";
 import { cn } from "cn";
 import "./native-memory-browser.css";
@@ -141,7 +142,9 @@ export function NativeMemoryBrowser({
             (group.source.stale || group.source.incomplete || group.source.status === "error");
           return (
             <div key={group.id} className="mb-3 min-w-0">
-              <button
+              <Button
+                variant="bare"
+                size="content"
                 type="button"
                 aria-expanded={open}
                 className="flex w-full items-center gap-2 rounded-lg px-2 py-2 text-left hover:bg-muted/60"
@@ -172,25 +175,34 @@ export function NativeMemoryBrowser({
                 <span className="shrink-0 text-xs tabular-nums text-muted-foreground">
                   {group.files.length + group.records.length}
                 </span>
-              </button>
+              </Button>
               {open && (
                 <>
                   {group.workspaces.length > 1 && (
-                    <details className="mx-3 mb-1 text-xs text-muted-foreground">
-                      <summary className="cursor-pointer py-1">
+                    <Collapsible className="mx-3 mb-1 text-xs text-muted-foreground">
+                      <CollapsibleTrigger
+                        render={<Button variant="bare" size="content" className="py-1" />}
+                      >
                         {tr("memory.native.sharedWorkspaces", { count: group.workspaces.length })}
-                      </summary>
-                      <ul aria-label={tr("memory.native.associations")} className="grid gap-2 py-2">
-                        {group.workspaces.map((workspace) => (
-                          <li key={workspace.id} className="min-w-0">
-                            <span>{workspace.name}</span>
-                            {workspace.path && (
-                              <span className="block break-all text-[11px]">{workspace.path}</span>
-                            )}
-                          </li>
-                        ))}
-                      </ul>
-                    </details>
+                      </CollapsibleTrigger>
+                      <CollapsibleContent keepMounted>
+                        <ul
+                          aria-label={tr("memory.native.associations")}
+                          className="grid gap-2 py-2"
+                        >
+                          {group.workspaces.map((workspace) => (
+                            <li key={workspace.id} className="min-w-0">
+                              <span>{workspace.name}</span>
+                              {workspace.path && (
+                                <span className="block break-all text-[11px]">
+                                  {workspace.path}
+                                </span>
+                              )}
+                            </li>
+                          ))}
+                        </ul>
+                      </CollapsibleContent>
+                    </Collapsible>
                   )}
                   {needsAttention && (
                     <p className="px-3 pb-1 text-xs text-amber-700 dark:text-amber-400">
@@ -202,7 +214,9 @@ export function NativeMemoryBrowser({
                     </p>
                   )}
                   {group.files.map((file) => (
-                    <button
+                    <Button
+                      variant="bare"
+                      size="content"
                       key={file.id}
                       type="button"
                       aria-pressed={selectedKey === `native:${file.id}`}
@@ -216,10 +230,12 @@ export function NativeMemoryBrowser({
                       <span className="min-w-0 flex-1 truncate text-[13px]">
                         {file.relativePath}
                       </span>
-                    </button>
+                    </Button>
                   ))}
                   {group.records.map((record) => (
-                    <button
+                    <Button
+                      variant="bare"
+                      size="content"
                       key={record.id}
                       type="button"
                       aria-pressed={selectedKey === `platform:${record.id}`}
@@ -239,7 +255,7 @@ export function NativeMemoryBrowser({
                           {tr(`status.memory.${record.status}`)}
                         </span>
                       </span>
-                    </button>
+                    </Button>
                   ))}
                 </>
               )}

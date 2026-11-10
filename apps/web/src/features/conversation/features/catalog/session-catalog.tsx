@@ -30,7 +30,7 @@ import {
 import type { ConversationSessionSummary, WorkspaceCheckout } from "@agentkib/web-client";
 import { dictionaries, type Locale } from "../../i18n";
 import { catalogCopyForSurface } from "./catalog-copy";
-import { interactionCopy } from "../interactions/question-form";
+import { interactionCopy } from "../interactions/interaction-copy";
 import { worktreeCopy, worktreeLabel } from "./worktree-copy";
 import { WorktreeMark } from "./worktree-note";
 

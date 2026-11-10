@@ -29,8 +29,9 @@ export function useOptionalQueryClient() {
 export const homeKeys = {
   all: ["home"] as const,
   workspaces: () => [...homeKeys.all, "workspaces"] as const,
+  doctorSummariesRoot: () => [...homeKeys.all, "doctor-summaries"] as const,
   doctorSummaries: (workspaceIds: string[]) =>
-    [...homeKeys.all, "doctor-summaries", workspaceIds] as const,
+    [...homeKeys.doctorSummariesRoot(), workspaceIds] as const,
   installations: () => [...homeKeys.all, "installations"] as const,
   catalog: () => [...homeKeys.all, "catalog"] as const,
   memories: () => [...homeKeys.all, "memories"] as const,
@@ -279,6 +280,10 @@ export function useHomeQueryEvents() {
       }
       if (status.kind === "storage") {
         void queryClient.invalidateQueries({ queryKey: homeKeys.all });
+      }
+      // Diagnostics are read from the kept summaries; reread them once a refresh stored new ones.
+      if (status.kind === "doctor") {
+        void queryClient.invalidateQueries({ queryKey: homeKeys.doctorSummariesRoot() });
       }
     });
     return unlisten;

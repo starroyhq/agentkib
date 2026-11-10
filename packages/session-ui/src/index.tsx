@@ -54,6 +54,37 @@ export {
   type SessionContinuationTerminalProps,
 } from "./session-continuation";
 
+export {
+  InteractionDock,
+  type ApprovalDockItem,
+  type InteractionDockItem,
+  type InteractionDockProps,
+  type InteractionNotice,
+  type InteractionNoticeTone,
+  type QuestionDockItem,
+} from "./interaction-card";
+export {
+  answerProblem,
+  answerRequestBody,
+  approvalCardModel,
+  displayCommand,
+  fillCopy,
+  interactionCardCopy,
+  MAX_ANSWER_BYTES,
+  MAX_ANSWER_LENGTH,
+  ownValue,
+  supportedQuestionRequest,
+  type AnswerContext,
+  type ApprovalCardContext,
+  type ApprovalCardModel,
+  type ApprovalChoice,
+  type InteractionApproval,
+  type InteractionCardCopy,
+  type InteractionIcon,
+  type InteractionLocale,
+  type InteractionQuestionRequest,
+} from "./interaction-model";
+
 export { codexCommandPrompt, type CodexCommandPromptRequest } from "./codex-prompts";
 export { dshAgentPresetCopy, dshAgentPresetText, type DshAgentPreset } from "./dsh-agent-presets";
 export {

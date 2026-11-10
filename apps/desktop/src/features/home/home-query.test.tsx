@@ -5,12 +5,42 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { PropsWithChildren } from "react";
 import { api } from "@/core/api";
-import type { ContextDoctorReport, ContextDoctorSummary } from "@/core/types";
-import { homeKeys, useHomeDoctorReport } from "./home-query";
+import type { ContextDoctorReport, ContextDoctorSummary, RefreshJobStatus } from "@/core/types";
+import { homeKeys, useHomeDoctorReport, useHomeQueryEvents } from "./home-query";
 
 vi.mock("@/core/api", () => ({ api: { workspaceDoctorReport: vi.fn() } }));
+const refreshListeners: Array<(status: RefreshJobStatus) => void> = [];
+vi.mock("@/core/desktop", () => ({
+  desktopApi: () => ({
+    events: {
+      onRefreshState: (listener: (status: RefreshJobStatus) => void) => {
+        refreshListeners.push(listener);
+        return () => refreshListeners.splice(refreshListeners.indexOf(listener), 1);
+      },
+    },
+  }),
+}));
 
 afterEach(cleanup);
+
+describe("refresh job events", () => {
+  it("rereads only the diagnostics once a diagnostics refresh has stored new results", () => {
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    const wrapper = ({ children }: PropsWithChildren) => (
+      <QueryClientProvider client={client}>{children}</QueryClientProvider>
+    );
+    renderHook(() => useHomeQueryEvents(), { wrapper });
+    const diagnostics = homeKeys.doctorSummaries(["workspace"]);
+    client.setQueryData(diagnostics, {});
+    client.setQueryData(homeKeys.catalog(), []);
+    const emit = (status: RefreshJobStatus) => act(() => refreshListeners.at(-1)!(status));
+    emit({ kind: "doctor", state: "running" });
+    expect(client.getQueryState(diagnostics)?.isInvalidated).toBe(false);
+    emit({ kind: "doctor", state: "succeeded" });
+    expect(client.getQueryState(diagnostics)?.isInvalidated).toBe(true);
+    expect(client.getQueryState(homeKeys.catalog())?.isInvalidated).toBe(false);
+  });
+});
 
 describe("workspace diagnostic summary cache", () => {
   it("updates existing summary entries when fresh diagnostics are loaded", async () => {

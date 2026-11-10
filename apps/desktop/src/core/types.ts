@@ -1011,7 +1011,7 @@ export interface InsightsStatus {
   refreshed_at?: string;
   running: boolean;
 }
-export type RefreshKind = "discovery" | "insights" | "gateways" | "quota" | "storage";
+export type RefreshKind = "discovery" | "insights" | "gateways" | "quota" | "storage" | "doctor";
 export type RefreshState = "idle" | "queued" | "running" | "succeeded" | "failed" | "backoff";
 export interface RefreshReceipt {
   kind: RefreshKind;

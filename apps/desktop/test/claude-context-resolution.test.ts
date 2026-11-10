@@ -41,8 +41,10 @@ describe("workspace diagnostic summary requests", () => {
       if (id === "unavailable") throw new Error("Workspace is unavailable");
       return f.project;
     });
+    const workspaceIds = ["first", "unavailable", "last"];
+    expect(await doctor.refresh(workspaceIds)).toEqual({ checked: 2, failed: 1 });
     const summaries = await doctor.request(RUNTIME_METHODS.workspaceDoctorSummaries, {
-      workspaceIds: ["first", "unavailable", "last"],
+      workspaceIds,
     });
     expect(summaries).toEqual([
       expect.objectContaining({ workspace_id: "first", error_count: 0, warning_count: 0 }),

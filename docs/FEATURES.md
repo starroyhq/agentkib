@@ -69,6 +69,8 @@ Provider authentication and source selection remain owned by the upstream collec
 | Doctor | Actionable diagnostics across supported agents |
 | Changes | Pending and historical ChangeSets with complete diffs |
 
+The home page and the Workspaces page show each workspace's latest diagnostic result instead of diagnosing every workspace whenever they open. Results are kept across restarts and checked again in the background: while the window is visible, workspaces whose result is older than 30 minutes and newly discovered ones; all of them when you refresh the home or Workspaces page. Refreshing one workspace checks it again at once, and opening a workspace runs a full check, as before. A workspace that has not been checked yet, or whose last check failed, shows "Not diagnosed".
+
 Generated changes follow a review-first flow:
 
 ```text
@@ -226,6 +228,8 @@ Provider 的认证与来源选择继续由上游采集器及其配置决定，�
 | 上下文 | 指定 Agent 与目录的有效加载顺序、作用域、覆盖和冲突 |
 | 诊断 | 跨受支持 Agent 的可执行诊断 |
 | 变更 | 待处理和历史 ChangeSet，以及完整 Diff |
+
+首页和工作区页显示每个工作区最近一次的诊断结果，不再每次打开都把所有工作区诊断一遍。结果在重启后保留，并在后台重新检查：窗口显示时，检查结果超过 30 分钟的工作区和新发现的工作区；在首页或工作区页刷新时检查全部工作区。刷新单个工作区会立即重新检查它，打开工作区时照旧完整检查一次。尚未检查过或上次检查失败的工作区显示为“未诊断”。
 
 生成的变更遵循先审查、后写入的流程：
 

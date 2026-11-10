@@ -28,7 +28,7 @@ import type { ConversationSessionSummary } from "@agentkib/web-client";
 import { conversationWords } from "@/core/i18n";
 import type { SupportedLocale as Locale } from "@/core/types";
 import { catalogCopy } from "./catalog-copy";
-import { interactionCopy } from "../interactions/question-form";
+import { interactionCopy } from "../interactions/interaction-copy";
 
 export interface CatalogWorkspace {
   id: string;

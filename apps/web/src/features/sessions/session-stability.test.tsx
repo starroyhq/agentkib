@@ -1,4 +1,4 @@
-import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { RouterProvider } from "@tanstack/react-router";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type {
@@ -361,7 +361,7 @@ describe("control outcome recovery", () => {
 });
 
 describe("live interaction validity", () => {
-  it("dismisses without answering, reopens, and disables a cancelled question", async () => {
+  it("collapses without answering, reopens, and drops a cancelled question", async () => {
     const server = createServer({
       ...idleLive,
       status: "awaiting-input",
@@ -370,28 +370,28 @@ describe("live interaction validity", () => {
       questions: [question],
     });
     await openSession();
-    const dialog = await screen.findByRole("dialog", { name: "需要你的回答" });
-    expect(dialog).toBeVisible();
-    fireEvent.click(screen.getByRole("button", { name: "关闭" }));
-    expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+    const card = await screen.findByRole("region", { name: "有问题待回答" });
+    expect(within(card).getByRole("heading", { name: "选一个" })).toBeVisible();
+    fireEvent.click(within(card).getByRole("button", { name: "收起" }));
+    expect(screen.queryByRole("region", { name: "有问题待回答" })).not.toBeInTheDocument();
     expect(
       server.fetcher.mock.calls.filter(([url]) => String(url).endsWith("/answer")),
     ).toHaveLength(0);
 
-    fireEvent.click(screen.getByRole("button", { name: "需要你的回答" }));
-    fireEvent.click(screen.getByLabelText("甲"));
+    fireEvent.click(screen.getByRole("button", { name: "展开 · 有问题待回答 · 选一个" }));
+    expect(screen.getByRole("button", { name: "甲" })).toBeVisible();
     const cancelled = { ...idleLive, revision: 2 };
     server.state.live = cancelled;
     act(() => FakeEventSource.instances.at(-1)!.emit("snapshot", cancelled));
 
-    expect(screen.getByRole("button", { name: "提交回答" })).toBeDisabled();
-    fireEvent.submit(screen.getByRole("button", { name: "提交回答" }).closest("form")!);
+    expect(screen.queryByRole("region", { name: "有问题待回答" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "甲" })).not.toBeInTheDocument();
     expect(
       server.fetcher.mock.calls.filter(([url]) => String(url).endsWith("/answer")),
     ).toHaveLength(0);
   });
 
-  it("invalidates an approval when its reviewed projection changes", async () => {
+  it("shows the current projection when a waiting approval changes", async () => {
     const server = createServer({
       ...idleLive,
       status: "awaiting-approval",
@@ -400,15 +400,14 @@ describe("live interaction validity", () => {
       approvals: [approval],
     });
     await openSession();
-    await screen.findByRole("dialog", { name: "等待审批" });
-    expect(screen.getByText(/echo before/)).toBeVisible();
-    fireEvent.click(screen.getByRole("button", { name: "关闭" }));
-    expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+    const card = await screen.findByRole("region", { name: "等待审批" });
+    expect(within(card).getByText("echo before")).toBeVisible();
+    fireEvent.click(within(card).getByRole("button", { name: "收起" }));
+    expect(screen.queryByRole("region", { name: "等待审批" })).not.toBeInTheDocument();
     expect(
       server.fetcher.mock.calls.filter(([url]) => String(url).endsWith("/approve")),
     ).toHaveLength(0);
-    fireEvent.click(screen.getByRole("button", { name: "等待审批 · Bash #approval" }));
-    await screen.findByRole("dialog", { name: "等待审批" });
+    fireEvent.click(screen.getByRole("button", { name: "展开 · 等待审批 · echo before" }));
 
     const changed = {
       ...server.state.live,
@@ -418,8 +417,10 @@ describe("live interaction validity", () => {
     server.state.live = changed;
     act(() => FakeEventSource.instances.at(-1)!.emit("snapshot", changed));
 
-    expect(screen.queryByRole("button", { name: /允许/ })).not.toBeInTheDocument();
-    expect(screen.getByText(/请回官方客户端查看/)).toBeVisible();
+    // The card only ever offers decisions on what it currently shows.
+    const updated = screen.getByRole("region", { name: "等待审批" });
+    expect(within(updated).getByText("echo after")).toBeVisible();
+    expect(within(updated).queryByText("echo before")).not.toBeInTheDocument();
     expect(
       server.fetcher.mock.calls.filter(([url]) => String(url).endsWith("/approve")),
     ).toHaveLength(0);
@@ -445,10 +446,10 @@ describe("live interaction validity", () => {
     server.state.mutation = async () => json({ accepted: true });
     await openSession();
 
-    await screen.findByRole("dialog", { name: "等待审批" });
+    await screen.findByRole("region", { name: "等待审批" });
     const option = screen.getByRole("button", { name: "Allow this native action" });
     expect(screen.queryByRole("button", { name: "取消运行" })).not.toBeInTheDocument();
-    expect(option.querySelector("svg")).toBeNull();
+    expect(screen.queryByRole("button", { name: "拒绝并停止本轮" })).not.toBeInTheDocument();
     fireEvent.click(option);
 
     await waitFor(() => {
@@ -474,12 +475,12 @@ describe("live interaction validity", () => {
       questions: [question],
     });
     await openSession();
-    await screen.findByRole("dialog", { name: "需要你的回答" });
+    await screen.findByRole("region", { name: "有问题待回答" });
 
     act(() => FakeEventSource.instances.at(-1)!.emit("access-ended", {}));
 
     await screen.findByText("远程访问已结束");
-    expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+    expect(screen.queryByRole("region", { name: "有问题待回答" })).not.toBeInTheDocument();
     expect(screen.queryByText("选一个")).not.toBeInTheDocument();
   });
 });
@@ -695,7 +696,7 @@ describe("durable Codex control recovery", () => {
       ack: { accepted: true, completed: false },
     };
     await openSession();
-    await waitFor(() => expect(screen.getByRole("dialog")).toBeVisible());
+    await waitFor(() => expect(screen.getByRole("region", { name: "等待审批" })).toBeVisible());
     expect(readPending(pendingScope("", "browser"))).toEqual([]);
     expect(
       server.fetcher.mock.calls.some(

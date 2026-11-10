@@ -11,8 +11,14 @@ runs:
       if: ${{ inputs.native == 'true' }}
       shell: bash
       run: |
-        sudo apt-get update
-        sudo apt-get install -y --no-install-recommends \
+        # Bound stalled mirrors before they consume the entire quality job.
+        apt_options=(
+          -o Acquire::Retries=2
+          -o Acquire::http::Timeout=20
+          -o Acquire::https::Timeout=20
+        )
+        sudo timeout --kill-after=10s 120s apt-get "${apt_options[@]}" -o APT::Update::Error-Mode=any update
+        sudo timeout --kill-after=10s 180s apt-get "${apt_options[@]}" install -y --no-install-recommends \
           build-essential pkg-config libssl-dev \
           libgtk-3-dev
 

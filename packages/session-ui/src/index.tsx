@@ -63,6 +63,7 @@ export {
   type InteractionNoticeTone,
   type QuestionDockItem,
 } from "./interaction-card";
+export { CompactApprovalCard, type CompactApprovalProps } from "./compact-approval";
 export {
   answerProblem,
   answerRequestBody,
@@ -85,6 +86,41 @@ export {
   type InteractionQuestionRequest,
 } from "./interaction-model";
 
+export {
+  interactionKey,
+  sessionInteractionItems,
+  type InteractionItemsAccess,
+  type InteractionItemsContext,
+  type InteractionItemsLive,
+} from "./interaction-items";
+export {
+  NEW_SESSION_AGENTS,
+  newSessionCopy,
+  newSessionCreateFields,
+  newSessionPermissions,
+  newSessionPresets,
+  type ClaudeStartMode,
+  type NewSessionAgent,
+  type NewSessionCopy,
+  type NewSessionCreateFields,
+  type NewSessionOptions,
+  type NewSessionPermissionChoice,
+  type NewSessionPermissions,
+  type NewSessionSelection,
+} from "./new-session";
+export {
+  formatRunningTime,
+  formatSessionTime,
+  homeSessionCopy,
+  HomeSessionList,
+  type HomeListGroups,
+  type HomeListNeed,
+  type HomeListPlace,
+  type HomeListResult,
+  type HomeRowText,
+  type HomeSessionCopy,
+  type HomeSessionListProps,
+} from "./home-sessions";
 export { codexCommandPrompt, type CodexCommandPromptRequest } from "./codex-prompts";
 export { dshAgentPresetCopy, dshAgentPresetText, type DshAgentPreset } from "./dsh-agent-presets";
 export {

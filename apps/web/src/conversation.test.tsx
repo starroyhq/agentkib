@@ -2217,68 +2217,6 @@ describe("session refresh ownership", () => {
 });
 
 describe("shared embedded conversation", () => {
-  it("opens the requested create dialog after initial access loads", async () => {
-    const { client } = fixture();
-    render(
-      <EmbeddedConversation client={client} create locale="en-US" onSessionChange={vi.fn()} />,
-    );
-    expect(await screen.findByRole("dialog")).toBeVisible();
-    await waitFor(() => expect(screen.getByRole("button", { name: "Create" })).toBeEnabled());
-    expect(screen.queryByRole("button", { name: "New task" })).not.toBeInTheDocument();
-  });
-
-  it.each(["reconnect", "settlement", "runtime restart"])(
-    "recovers unknown creation on a global %s without replaying creation",
-    async (trigger) => {
-      const { client, streams, bridge, host } = fixture();
-      const scope = pendingScope("", "local");
-      const requestId = crypto.randomUUID();
-      rememberPending(scope, {
-        requestId,
-        kind: "create",
-        workspaceId: "workspace",
-      });
-      const receipt = vi.spyOn(client, "receipt").mockResolvedValue({
-        found: true,
-        requestId,
-        status: "unknown",
-        operation: "create",
-        sessionId: "first",
-        completionObserved: false,
-      });
-      const request = vi.spyOn(bridge, "request");
-      const onSessionChange = vi.fn();
-      render(
-        <EmbeddedConversation client={client} locale="en-US" onSessionChange={onSessionChange} />,
-      );
-      await waitFor(() => expect(receipt).toHaveBeenCalled());
-      await act(async () => {});
-      expect(readPending(scope)).toHaveLength(1);
-      receipt.mockClear();
-      receipt.mockResolvedValue({
-        found: true,
-        requestId,
-        status: "accepted",
-        operation: "create",
-        sessionId: "first",
-        completionObserved: false,
-      });
-      act(() => {
-        if (trigger === "settlement") streams.get("")!.event("control-changed", "{}");
-        else {
-          if (trigger === "runtime restart") host.bootId = "restarted-boot";
-          streams.get("")!.open();
-        }
-      });
-      await screen.findByText("first history");
-      expect(readPending(scope)).toEqual([]);
-      expect(onSessionChange).toHaveBeenCalledWith("first");
-      expect(
-        request.mock.calls.some(([path, body]) => path === "managed/create" && body !== undefined),
-      ).toBe(false);
-    },
-  );
-
   it("clears the host selection after archive and can reopen that same record", async () => {
     const { client, sessions } = fixture();
     sessions[0].agent = "codex";

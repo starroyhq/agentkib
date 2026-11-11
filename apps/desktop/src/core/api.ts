@@ -40,7 +40,6 @@ import type {
   OnboardingEvent,
   QuotaPopoverPreferences,
   LocalCostProvider,
-  QuotaWindowSelector,
   RefreshKind,
   RemoteGatewayInput,
   SessionHandoffLaunchRequest,
@@ -381,11 +380,4 @@ export const api = {
   quotaPopoverPreferences: () => desktopApi().home.quotaPreferences(),
   setQuotaPopoverPreferences: (preferences: QuotaPopoverPreferences) =>
     desktopApi().home.setQuotaPreferences(preferences),
-  openQuotaDashboard: (provider?: string, window?: QuotaWindowSelector, configurePopover = false) =>
-    desktopApi().shell.openQuotaDashboard({
-      page: "quota",
-      provider,
-      window,
-      configure_popover: configurePopover,
-    }),
 };

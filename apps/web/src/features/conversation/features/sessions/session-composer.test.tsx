@@ -6,6 +6,7 @@ import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-libra
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { UploadedAttachment } from "@agentkib/web-client";
 import { SessionComposer } from "./session-composer";
+import { offerNewSessionDraft, takeNewSessionDraft } from "./new-session-draft";
 import { composerLayoutCopy } from "./composer-layout-copy";
 import { codexCopy } from "./codex-copy";
 import type { CodexResource } from "./codex-session-controls";
@@ -916,6 +917,51 @@ describe("composer sending shortcuts", () => {
       expect.any(Function),
       expect.any(AbortSignal),
     );
+    expect(doubles.control).not.toHaveBeenCalled();
+  });
+  it("sends a new session's first message once, after its files upload", async () => {
+    const file = new File(["abc"], "spec.md", { type: "text/markdown" });
+    const upload = deferred<UploadedAttachment>();
+    doubles.upload.mockReturnValue(upload.promise);
+    offerNewSessionDraft("session", { text: "Add rate limiting", files: [file] });
+    const { rerender } = render(<SessionComposer />);
+    expect(screen.getByRole("textbox", { name: "Message" })).toHaveValue("Add rate limiting");
+    expect(screen.getByText("spec.md")).toBeVisible();
+    expect(doubles.control).not.toHaveBeenCalled();
+    await act(async () => upload.resolve({ ...attachment, id: "spec" }));
+    rerender(<SessionComposer />);
+    await waitFor(() =>
+      expect(doubles.control).toHaveBeenCalledExactlyOnceWith(
+        "send",
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        { attachmentIds: ["spec"] },
+      ),
+    );
+    rerender(<SessionComposer />);
+    expect(doubles.control).toHaveBeenCalledOnce();
+    expect(takeNewSessionDraft("session")).toBeUndefined();
+  });
+  it("leaves a new session's first message as the draft once it is edited before it can go", async () => {
+    doubles.session.canSend = false;
+    offerNewSessionDraft("session", { text: "Add rate limiting", files: [] });
+    const { rerender } = render(<SessionComposer />);
+    const input = screen.getByRole("textbox", { name: "Message" });
+    expect(input).toHaveValue("Add rate limiting");
+    fireEvent.change(input, { target: { value: "Add rate limiting per IP" } });
+    doubles.session.canSend = true;
+    rerender(<SessionComposer />);
+    await act(async () => {});
+    expect(doubles.control).not.toHaveBeenCalled();
+    expect(input).toHaveValue("Add rate limiting per IP");
+  });
+  it("gives a first message opened long after it was written back unsent", async () => {
+    offerNewSessionDraft("session", { text: "Add rate limiting", files: [] }, Date.now() - 120_000);
+    render(<SessionComposer />);
+    expect(screen.getByRole("textbox", { name: "Message" })).toHaveValue("Add rate limiting");
+    await act(async () => {});
     expect(doubles.control).not.toHaveBeenCalled();
   });
 });

@@ -34,6 +34,8 @@ import { createUtilityTransport } from "./utility-runtime-transport";
 import { registerRuntimeIpc } from "./ipc/runtime";
 import { createIpcRegistrar } from "./ipc/registrar";
 import { ElectronNativeShell, resolveNativeShellTrayIcon } from "./native-shell";
+import { TraySessionWatcher, type TraySessionSource } from "./tray-sessions";
+import type { HomeSession } from "@agentkib/session-catalog";
 import { ElectronRefreshCoordinator } from "./refresh-coordinator";
 import { CostObservation, requireLocalCostProvider } from "./cost-observation";
 import { NativeMemoryObservation } from "./native-memory-observation";
@@ -51,6 +53,7 @@ import {
   requireAccentThemePreference,
   requireAppIconPreference,
   requireBoolean,
+  requireMainWindowRequest,
   requireObject,
   requirePositiveInteger,
   requireSidebarWidthPreference,
@@ -81,6 +84,8 @@ let mainWindow: BrowserWindow | undefined;
 let systemSuspended = false;
 let screenLocked = false;
 let nativeShell: ElectronNativeShell | undefined;
+/** Keeps the menu bar icon's counts; see TraySessionWatcher for when it reads the catalog. */
+let traySessions: TraySessionWatcher | undefined;
 let refreshCoordinator: ElectronRefreshCoordinator | undefined;
 let skillSyncCoordinator: SkillSyncCoordinator | undefined;
 let runtimeHost: RuntimeHost | undefined;
@@ -172,6 +177,7 @@ app.on("before-quit", (event) => {
   accountService?.shutdown();
   refreshCoordinator?.stop();
   skillSyncCoordinator?.stop();
+  traySessions?.stop();
   nativeShell?.destroy();
   void (async () => {
     try {
@@ -230,6 +236,7 @@ async function startApplication(): Promise<void> {
     costObservation.setRuntimeAvailable(true);
     nativeMemoryObservation.setRuntimeAvailable(true);
     skillSyncCoordinator?.setRuntimeAvailable(true);
+    traySessions?.refresh(0);
     void initializeRuntimeServices().catch((error: unknown) => {
       process.stderr.write(`AgentKib runtime services failed: ${String(error)}\n`);
     });
@@ -362,6 +369,7 @@ async function startApplication(): Promise<void> {
     onStatus: (status) => {
       if (mainWindow && !mainWindow.isDestroyed())
         mainWindow.webContents.send("agentkib:account:status", status);
+      nativeShell?.sendToPopover("agentkib:account:status", status);
       // Signing in to another account ends the phones bound to the previous one.
       const accountId = status.account?.id;
       if (accountId && accountId !== checkedAccountId) {
@@ -384,6 +392,13 @@ async function startApplication(): Promise<void> {
   });
   await lanWebAccess.initialize();
   registerConversationIpc({ service: webAccess, hub: conversationHub, assertTrustedRenderer });
+  traySessions = new TraySessionWatcher(traySessionSource(webAccess, conversationHub), (status) =>
+    nativeShell?.setSessionStatus(status),
+  );
+  // Another window following the catalog saw a change, or a control settled: read it again.
+  conversationHub.on("catalog-invalidated", () => traySessions?.refresh());
+  conversationHub.on("unavailable", () => traySessions?.restart());
+  webAccess.onControlChanged(() => traySessions?.refresh());
   registerApplicationIpc();
   refreshCoordinator = new ElectronRefreshCoordinator({
     runtime: requireRuntime,
@@ -520,19 +535,19 @@ async function initializeRuntimeServices(): Promise<void> {
 
     if (!nativeShell) {
       nativeShell = new ElectronNativeShell({
-        runtime: requireRuntime,
         mainWindow: () => mainWindow,
         preloadPath: path.join(__dirname, "preload.cjs"),
         rendererUrl,
         trayIconPath: resolveNativeShellTrayIcon(),
         locale: runtime.effective_locale ?? normalizeSystemLocale(app.getLocale()),
-        refreshStatus: () => refreshCoordinator?.statuses() ?? [],
         showMainWindow,
         requestQuit: requestRendererQuitGuard,
-        requestRefresh: requestNativeRefresh,
+        onPopoverShown: () => traySessions?.refresh(0),
       });
       nativeShell.create();
+      if (traySessions) nativeShell.setSessionStatus(traySessions.status);
     }
+    traySessions?.start();
     refreshCoordinator?.start();
     skillSyncCoordinator?.start();
   })();
@@ -569,14 +584,6 @@ function requestRendererQuitGuard(): void {
   );
 }
 
-function requestNativeRefresh(kind: "discovery" | "insights" | "quota" | "all"): void {
-  const request =
-    kind === "all"
-      ? requireRefreshCoordinator().requestAll(true)
-      : requireRefreshCoordinator().request(kind, true);
-  void request.finally(() => nativeShell?.refreshTrayStatus()).catch(() => undefined);
-}
-
 function withElectronRuntimeCapabilities(runtime: unknown): unknown {
   if (runtime === null || typeof runtime !== "object" || Array.isArray(runtime)) return runtime;
   const enriched = { ...(runtime as Record<string, unknown>) };
@@ -589,7 +596,6 @@ function withElectronRuntimeCapabilities(runtime: unknown): unknown {
 
 function emitElectronRefreshState(status: RefreshJobStatus): void {
   sendRendererEvent("agentkib:electron-refresh-state", status);
-  void nativeShell?.refreshTrayStatus();
 }
 
 function sendRendererEvent(channel: string, payload: unknown): void {
@@ -689,14 +695,21 @@ function registerShellIpc(): void {
     if (!settingsUrl) throw new Error("Opening file and folder settings is not supported");
     return shell.openExternal(settingsUrl);
   });
-  handle("agentkib:shell:open-quota-dashboard", (_event, request: unknown) => {
-    const navigation = requireObject(request, "navigation request");
-    if (navigation.page !== "quota") throw new Error("Only quota navigation is supported");
-    showMainWindow();
-    mainWindow?.webContents.send("agentkib:navigate", navigation);
-  });
   handle("agentkib:shell:hide-window", (event) => {
     BrowserWindow.fromWebContents(event.sender)?.hide();
+  });
+  // The menu bar popover opens the main window at a page, or at a session it was asked about.
+  handle("agentkib:shell:open-main", (_event, request: unknown) => {
+    const navigation = request === undefined ? undefined : requireMainWindowRequest(request);
+    if (nativeShell) nativeShell.openMainWindow(navigation);
+    else {
+      showMainWindow();
+      if (navigation) mainWindow?.webContents.send("agentkib:navigate", navigation);
+    }
+  });
+  handle("agentkib:shell:popover-height", (event, height: unknown) => {
+    if (typeof height !== "number") throw new TypeError("height must be a number");
+    nativeShell?.resizePopover(event.sender, height);
   });
   handle("agentkib:shell:quit", () => {
     approveQuit();
@@ -755,12 +768,16 @@ function registerShellIpc(): void {
 function registerHomeIpc(): void {
   ipcMain.handle("agentkib:account:request", (event, input: unknown) => {
     assertTrustedRenderer(event);
-    if (
-      !mainWindow ||
-      event.sender !== mainWindow.webContents ||
-      event.senderFrame !== mainWindow.webContents.mainFrame
-    )
-      throw new Error("account_untrusted_renderer");
+    const fromMainWindow =
+      !!mainWindow &&
+      event.sender === mainWindow.webContents &&
+      event.senderFrame === mainWindow.webContents.mainFrame;
+    // The menu bar popover only reads the status, so read states follow the same account.
+    const statusFromPopover =
+      !!nativeShell?.ownsWebContents(event.sender) &&
+      event.senderFrame === event.sender.mainFrame &&
+      isAccountStatusRequest(input);
+    if (!fromMainWindow && !statusFromPopover) throw new Error("account_untrusted_renderer");
     if (!accountService) throw new Error("account_unavailable");
     return accountService.request(input as DesktopAccountRequest);
   });
@@ -1254,7 +1271,7 @@ function persistCloseBehaviorBestEffort(value: "minimize-to-tray" | "quit"): voi
     );
 }
 
-function rendererUrl(surface?: "quota-popover"): string {
+function rendererUrl(surface?: "menubar"): string {
   const base = devServerUrl ?? "app://bundle/index.html";
   if (!surface) return base;
   const url = new URL(base);
@@ -1403,4 +1420,41 @@ function escapeHtml(value: string): string {
     };
     return entities[character];
   });
+}
+
+/**
+ * The catalog as the menu bar reads it: the same local read and change stream as the windows,
+ * and nothing while the session index is off, when the home lists no sessions either.
+ */
+function traySessionSource(service: WebAccessService, hub: ConversationHub): TraySessionSource {
+  return {
+    async readSessions() {
+      if (!runtimeHandshake) return undefined;
+      const runtime = await requireRuntime().request<{ session_index_enabled?: boolean }>(
+        RUNTIME_METHODS.runtimeInfo,
+        {},
+      );
+      if (runtime.session_index_enabled !== true) return undefined;
+      const result = await service.localRequest("/catalog");
+      const sessions =
+        result.status === 200
+          ? (result.body as { sessions?: unknown } | undefined)?.sessions
+          : undefined;
+      return Array.isArray(sessions) ? (sessions as HomeSession[]) : undefined;
+    },
+    async follow(onChange) {
+      const subscription = await service.localSubscribe("", undefined, onChange);
+      return () => void hub.unsubscribe(subscription.subscriptionId).catch(() => undefined);
+    },
+  };
+}
+
+function isAccountStatusRequest(input: unknown): boolean {
+  return (
+    typeof input === "object" &&
+    input !== null &&
+    !Array.isArray(input) &&
+    Object.keys(input).length === 1 &&
+    (input as { operation?: unknown }).operation === "status"
+  );
 }

@@ -4,7 +4,6 @@ import type { ReactNode } from "react";
 import { dictionaries } from "@/features/conversation/i18n";
 import { useSession } from "@/features/conversation/features/sessions/session-context";
 import { SessionLayout } from "./session-layout";
-import { SessionEmpty } from "./session-empty";
 
 vi.mock("@tanstack/react-router", () => ({
   useLocation: ({ select }: { select: (value: { pathname: string }) => unknown }) =>
@@ -45,22 +44,17 @@ describe("LAN error instructions", () => {
     ["zh-TW", "電腦上的 AgentKib"],
     ["en-US", "AgentKib on your computer"],
     ["ja-JP", "コンピューター上の AgentKib"],
-  ] as const)(
-    "identifies the computer application in general errors and empty-session guidance in %s",
-    (locale, app) => {
-      state.t = dictionaries[locale];
-      state.locale = locale;
-      state.connection = { type: "same-origin" };
-      const view = render(<SessionLayout />);
-      expect(screen.getByRole("alert")).toHaveTextContent(state.t.error);
-      expect(screen.getByRole("alert")).toHaveTextContent(app);
-      expect(screen.getByRole("alert").textContent).not.toMatch(/桌面|デスクトップ|\bdesktop\b/i);
-      view.rerender(<SessionEmpty />);
-      expect(screen.getByText(state.t.selectInfo)).toHaveTextContent(app);
-      expect(view.container.textContent).not.toMatch(/桌面|デスクトップ|\bdesktop\b/i);
-      expect(state.refresh).not.toHaveBeenCalled();
-    },
-  );
+  ] as const)("identifies the computer application in general errors in %s", (locale, app) => {
+    state.t = dictionaries[locale];
+    state.locale = locale;
+    state.connection = { type: "same-origin" };
+    const view = render(<SessionLayout />);
+    expect(screen.getByRole("alert")).toHaveTextContent(state.t.error);
+    expect(screen.getByRole("alert")).toHaveTextContent(app);
+    expect(screen.getByRole("alert").textContent).not.toMatch(/桌面|デスクトップ|\bdesktop\b/i);
+    expect(view.container.textContent).not.toMatch(/桌面|デスクトップ|\bdesktop\b/i);
+    expect(state.refresh).not.toHaveBeenCalled();
+  });
 
   it.each([
     ["zh-CN", "电脑上的 AgentKib"],

@@ -54,8 +54,11 @@ export function SessionCatalog({
   execution = false,
   onExecutionChange,
   readContext,
+  reviewLane = true,
 }: {
   readContext?: object;
+  /** The unread results above the directory; off where the page beside it already lists them. */
+  reviewLane?: boolean;
   sessions: ConversationSessionSummary[];
   workspaces?: CatalogWorkspace[];
   selected: string;
@@ -134,12 +137,14 @@ export function SessionCatalog({
           </label>
         )}
       </details>
-      <PendingReviewLane
-        sessions={filtered}
-        locale={locale}
-        onSelect={onSelect}
-        context={readContext}
-      />
+      {reviewLane && (
+        <PendingReviewLane
+          sessions={filtered}
+          locale={locale}
+          onSelect={onSelect}
+          context={readContext}
+        />
+      )}
       <div className="min-h-0 flex-1 space-y-3 overflow-y-auto px-3 pb-4">
         {!indexEnabled ? (
           <p>{t.indexDisabled}</p>

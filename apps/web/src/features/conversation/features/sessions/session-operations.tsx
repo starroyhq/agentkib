@@ -68,8 +68,6 @@ export function SessionOperations({
   // Keep the receipt reconciler mounted even after the operations panel closes.
   return (
     <ManagedTasks
-      active={open}
-      onClose={() => onOpenChange(false)}
       renderContent={(ownership) => (
         <CodexTools
           open={open}

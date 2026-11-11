@@ -909,41 +909,6 @@ describe("Codex composer with the real session controller", () => {
 });
 
 describe("Claude managed workflow", () => {
-  it("creates a Claude task with the same provider and does not offer Codex-only settings", async () => {
-    const server = createServer({ ...idleLive, executionMode: "claude-managed" });
-    server.state.access = {
-      ...approvedAccess,
-      device: { ...approvedAccess.device!, manage: true },
-    };
-    const original = server.fetcher.getMockImplementation()!;
-    server.fetcher.mockImplementation(async (input, init) => {
-      if (String(input).includes("/managed/options"))
-        return json({ available: true, workspaces: catalog.workspaces });
-      return original(input, init);
-    });
-    server.state.mutation = async () => json({ accepted: true, sessionId: "session" });
-    render(<WebApplication />);
-    fireEvent.click(await screen.findByRole("button", { name: "新建任务" }));
-    fireEvent.change(screen.getByLabelText("执行工具"), { target: { value: "claude-code" } });
-    await screen.findByText(/沿用运行 AgentKib 的电脑上的 Claude Code/);
-    expect(screen.queryByLabelText("模型")).not.toBeInTheDocument();
-    fireEvent.click(screen.getByRole("button", { name: "创建" }));
-    await screen.findByText("Secret history");
-    const creates = server.fetcher.mock.calls.filter(([url]) =>
-      String(url).endsWith("/managed/create"),
-    );
-    expect(creates).toHaveLength(1);
-    expect(JSON.parse(String(creates[0][1]?.body))).toMatchObject({
-      agent: "claude-code",
-      workspaceId: "workspace",
-      bootId: "boot",
-    });
-    expect(JSON.parse(String(creates[0][1]?.body))).not.toHaveProperty("model");
-    expect(server.fetcher.mock.calls.filter(([url]) => String(url).endsWith("/send"))).toHaveLength(
-      0,
-    );
-  });
-
   it("continues Claude with a regular send and keeps identity checks inside the host", async () => {
     const server = createServer({
       ...idleLive,

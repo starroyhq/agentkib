@@ -25,7 +25,6 @@ import { SessionProvider, useSession } from "./features/sessions/session-context
 import { SessionReader } from "./features/sessions/session-reader";
 import { SessionDialogs } from "./features/sessions/session-dialogs";
 import { SessionPanelsContext } from "./features/sessions/session-panels";
-import { ManagedTasks } from "./features/sessions/managed-tasks";
 import { PendingCenter } from "./features/sessions/pending-center";
 import { Button } from "./components/ui/button";
 import { webLayoutCopy } from "./features/sessions/web-layout-copy";
@@ -43,10 +42,8 @@ export interface EmbeddedConversationProps {
   /** Changes only when the host explicitly requests a conversation refresh. */
   refreshRevision?: number;
   locale: Locale;
-  create?: boolean;
   onSessionChange: (sessionId?: string) => void;
   onCatalogChange?: () => void;
-  onCreateClosed?: () => void;
 }
 const EmbeddedContext = createContext<
   | (EmbeddedConversationProps & {
@@ -131,13 +128,6 @@ function EmbeddedShell() {
           data-conversation-toolbar
           className="flex shrink-0 items-center justify-end gap-2 border-b px-4 py-2"
         >
-          <ManagedTasks
-            key={String(props.create)}
-            create
-            showTrigger={false}
-            initialOpen={props.create}
-            onDismiss={props.onCreateClosed}
-          />
           <HistorySearchTrigger />
           <PendingCenter compact />
           {session.selected && (

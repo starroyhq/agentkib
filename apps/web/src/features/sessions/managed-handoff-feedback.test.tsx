@@ -5,7 +5,7 @@ import "@testing-library/jest-dom/vitest";
 import type { ReactNode } from "react";
 import { ApiError } from "@agentkib/web-client";
 import type { ManagedOptions } from "@agentkib/web-client";
-import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, cleanup, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { ManagedTasks } from "@/features/conversation/features/sessions/managed-tasks";
 import { managedControlCopy } from "@/features/conversation/features/sessions/managed-control-copy";
@@ -18,10 +18,6 @@ import {
 const managementLocales = [
   {
     locale: "en-US",
-    agent: "Agent",
-    create: "Create",
-    host: "Keep AgentKib running on the computer running the Agent.",
-    note: "Uses the Claude Code model and tool permissions from the computer running AgentKib by default. Creating a task does not start a model request.",
     handoff: "Hand over to AgentKib",
     release: "Return to original client",
     notHandedOver: "This session has not been handed over to AgentKib",
@@ -33,10 +29,6 @@ const managementLocales = [
   },
   {
     locale: "zh-CN",
-    agent: "执行工具",
-    create: "创建",
-    host: "请让电脑上的 AgentKib 保持运行。",
-    note: "默认沿用运行 AgentKib 的电脑上的 Claude Code 的模型与工具权限。创建任务不会调用模型。",
     handoff: "交给 AgentKib",
     release: "交还原客户端",
     notHandedOver: "此会话尚未交给 AgentKib",
@@ -46,10 +38,6 @@ const managementLocales = [
   },
   {
     locale: "zh-TW",
-    agent: "執行工具",
-    create: "建立",
-    host: "請讓電腦上的 AgentKib 保持執行。",
-    note: "預設沿用執行 AgentKib 的電腦上的 Claude Code 的模型與工具權限。建立任務不會呼叫模型。",
     handoff: "交給 AgentKib",
     release: "交還原客戶端",
     notHandedOver: "此對話尚未交給 AgentKib",
@@ -59,10 +47,6 @@ const managementLocales = [
   },
   {
     locale: "ja-JP",
-    agent: "実行ツール",
-    create: "作成",
-    host: "コンピューター上の AgentKib を起動したままにしてください。",
-    note: "既定ではAgentKib を実行しているコンピューターの Claude Code のモデルとツール権限を使用します。タスクを作成してもモデルは呼び出しません。",
     handoff: "AgentKib に引き渡す",
     release: "元のクライアントに引き渡す",
     notHandedOver: "この会話はまだ AgentKib に引き渡されていません",
@@ -141,10 +125,7 @@ const mutations = () =>
   session.client.request.mock.calls.filter(([path]) => !path.startsWith("managed/options"));
 const requestId = "11111111-1111-4111-8111-111111111111";
 const panel = (active: boolean) => (
-  <ManagedTasks
-    active={active}
-    renderContent={(children) => (active ? <section>{children}</section> : null)}
-  />
+  <ManagedTasks renderContent={(children) => (active ? <section>{children}</section> : null)} />
 );
 function save(kind: "adopt" | "release" | "reconcile" = "adopt") {
   const scope = pendingScope(session.origin, session.access.device.id);
@@ -168,7 +149,7 @@ describe("automatic Claude continuation replaces execution handoff", () => {
     "never offers handoff, release or execution management in $locale",
     (copy) => {
       session.locale = copy.locale;
-      const view = render(<ManagedTasks initialOpen />);
+      const view = render(<ManagedTasks renderContent={(content) => content} />);
       for (const [mode, status] of [
         ["managed-resume", "idle"],
         ["claude-managed", "idle"],
@@ -178,7 +159,7 @@ describe("automatic Claude continuation replaces execution handoff", () => {
       ]) {
         session.live.executionMode = mode;
         session.live.status = status;
-        view.rerender(<ManagedTasks initialOpen />);
+        view.rerender(<ManagedTasks renderContent={(content) => content} />);
         expect(screen.queryByRole("button")).not.toBeInTheDocument();
         expect(screen.queryByRole("checkbox")).not.toBeInTheDocument();
         expect(screen.queryByText(copy.notHandedOver)).not.toBeInTheDocument();
@@ -210,7 +191,7 @@ describe("automatic Claude continuation replaces execution handoff", () => {
     if (boundary === "experimental") session.access.experimentalEnabled = false;
     if (boundary === "protocol") session.access.protocolVersion = 1;
     if (boundary === "compacting") session.live.activity = "compacting";
-    render(<ManagedTasks initialOpen />);
+    render(<ManagedTasks renderContent={(content) => content} />);
     expect(screen.queryByRole("button")).not.toBeInTheDocument();
     expect(screen.queryByRole("checkbox")).not.toBeInTheDocument();
     expect(session.client.managedInspect).not.toHaveBeenCalled();
@@ -241,10 +222,7 @@ describe("automatic Claude continuation replaces execution handoff", () => {
     "settles saved %s while hidden without replaying or reopening the old panel",
     async (kind) => {
       const scope = save(kind);
-      const onClose = vi.fn();
-      const view = render(
-        <ManagedTasks active={false} onClose={onClose} renderContent={() => null} />,
-      );
+      const view = render(<ManagedTasks renderContent={() => null} />);
       await waitFor(() => expect(session.client.receipt).toHaveBeenCalledWith(requestId));
       expect(readPending(scope)).toHaveLength(1);
       session.client.receipt.mockResolvedValue({
@@ -257,7 +235,6 @@ describe("automatic Claude continuation replaces execution handoff", () => {
       invalidate();
       await waitFor(() => expect(readPending(scope)).toEqual([]));
       expect(session.refresh).toHaveBeenCalledWith(true);
-      expect(onClose).not.toHaveBeenCalled();
       view.rerender(panel(true));
       expect(screen.queryByRole("button")).not.toBeInTheDocument();
       expect(mutations()).toEqual([]);
@@ -340,20 +317,4 @@ describe("automatic Claude continuation replaces execution handoff", () => {
     expect(session.client.managedInspect).not.toHaveBeenCalled();
     expect(mutations()).toEqual([]);
   });
-  it.each(managementLocales)(
-    "preserves Claude creation defaults and host explanation in $locale",
-    async (copy) => {
-      session.locale = copy.locale;
-      render(<ManagedTasks create initialOpen />);
-      fireEvent.change(screen.getByRole("combobox", { name: copy.agent }), {
-        target: { value: "claude-code" },
-      });
-      expect(await screen.findByText(copy.note)).toBeVisible();
-      expect(screen.getByRole("dialog")).toHaveTextContent(copy.host);
-      expect(screen.getByRole("button", { name: copy.create })).toBeEnabled();
-      expect(screen.queryByRole("checkbox")).not.toBeInTheDocument();
-      expect(session.client.managedInspect).not.toHaveBeenCalled();
-      expect(mutations()).toEqual([]);
-    },
-  );
 });

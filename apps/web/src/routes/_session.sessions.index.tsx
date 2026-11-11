@@ -1,6 +1,6 @@
 import { useEffect } from "react";
 import { createFileRoute } from "@tanstack/react-router";
-import { SessionEmpty } from "@/features/sessions/session-empty";
+import { SessionHome } from "@/features/sessions/home/session-home";
 import { useSession } from "@/features/conversation/features/sessions/session-context";
 export const Route = createFileRoute("/_session/sessions/")({ component: Index });
 function Index() {
@@ -8,5 +8,5 @@ function Index() {
   useEffect(() => {
     leaveSession();
   }, [leaveSession]);
-  return <SessionEmpty />;
+  return <SessionHome />;
 }

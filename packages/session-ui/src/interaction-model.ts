@@ -90,6 +90,7 @@ const copy = {
     alwaysDeny: "始终拒绝",
     deny: "拒绝",
     allow: "允许",
+    moreOptions: "更多选项",
     accept: "接受",
     allowTurn: "允许本轮",
     allowAllEdits: "允许所有修改",
@@ -159,6 +160,7 @@ const copy = {
     alwaysDeny: "一律拒絕",
     deny: "拒絕",
     allow: "允許",
+    moreOptions: "更多選項",
     accept: "接受",
     allowTurn: "允許本輪",
     allowAllEdits: "允許所有編輯",
@@ -228,6 +230,7 @@ const copy = {
     alwaysDeny: "Always deny",
     deny: "Deny",
     allow: "Allow",
+    moreOptions: "More options",
     accept: "Accept",
     allowTurn: "Allow for this turn",
     allowAllEdits: "Allow all edits",
@@ -299,6 +302,7 @@ const copy = {
     alwaysDeny: "常に拒否",
     deny: "拒否",
     allow: "許可",
+    moreOptions: "その他のオプション",
     accept: "承認",
     allowTurn: "このターンで許可",
     allowAllEdits: "すべての編集を許可",
@@ -481,6 +485,12 @@ export interface ApprovalChoice {
   /** A basic decision name, sent as `decision`. */
   decision?: string;
   disabled?: boolean;
+  /**
+   * The one-click answers a compact card offers, such as the menu bar's: allow this request once,
+   * or deny it ("stop" denies it and stops the turn, for requests that offer no plain denial).
+   * Everything else is chosen on the full card.
+   */
+  quick?: "allow" | "deny" | "stop";
 }
 
 export interface ApprovalCardModel {
@@ -531,7 +541,7 @@ function extendedChoices(
     const base = { key: option.id, nativeDecision: option.decision };
     switch (option.label) {
       case "accept":
-        return [{ ...base, label: t.allowOnce }];
+        return [{ ...base, label: t.allowOnce, quick: "allow" }];
       case "acceptForSession":
         return [
           files
@@ -566,11 +576,11 @@ function extendedChoices(
       }
       case "decline":
       case "deny-permissions":
-        return [{ ...base, label: t.deny }];
+        return [{ ...base, label: t.deny, quick: "deny" }];
       case "cancel":
-        return canStop ? [] : [{ ...base, label: t.denyAndStop }];
+        return canStop ? [] : [{ ...base, label: t.denyAndStop, quick: "stop" }];
       case "grant-turn":
-        return [{ ...base, label: t.allowTurn }];
+        return [{ ...base, label: t.allowTurn, quick: "allow" }];
       case "grant-session":
         return [{ ...base, label: t.allowSession }];
       default:
@@ -590,7 +600,16 @@ function basicChoices(
     const ids = new Set(approval.availableDecisions);
     return (approval.options ?? [])
       .filter((option) => ids.has(option.optionId))
-      .map((option) => ({ key: option.optionId, label: option.name, decision: option.optionId }));
+      .map((option) => ({
+        key: option.optionId,
+        label: option.name,
+        decision: option.optionId,
+        ...(option.kind === "allow_once"
+          ? { quick: "allow" as const }
+          : option.kind === "reject_once"
+            ? { quick: "deny" as const }
+            : {}),
+      }));
   }
   if (method === "claude/can_use_tool")
     return approval.availableDecisions
@@ -599,16 +618,22 @@ function basicChoices(
         key: decision,
         label: decision === "allow" ? t.allow : t.deny,
         decision,
+        quick: decision === "allow" ? ("allow" as const) : ("deny" as const),
       }));
   // An MCP form or link is accepted as a whole; everything else is allowed for this call only.
   const mcpForm =
     method === "mcpServer/elicitation/request" && object(approval.input).kind !== "tool-approval";
   return approval.availableDecisions.flatMap((decision): ApprovalChoice[] => {
+    // An MCP form is filled in on the full card, never accepted in one click.
     if (decision === "accept")
-      return [{ key: decision, decision, label: mcpForm ? t.accept : t.allowOnce }];
-    if (decision === "decline") return [{ key: decision, decision, label: t.deny }];
+      return [
+        mcpForm
+          ? { key: decision, decision, label: t.accept }
+          : { key: decision, decision, label: t.allowOnce, quick: "allow" },
+      ];
+    if (decision === "decline") return [{ key: decision, decision, label: t.deny, quick: "deny" }];
     if (decision === "cancel" && !canStop)
-      return [{ key: decision, decision, label: t.denyAndStop }];
+      return [{ key: decision, decision, label: t.denyAndStop, quick: "stop" }];
     return [];
   });
 }

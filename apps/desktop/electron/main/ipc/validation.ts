@@ -1,4 +1,4 @@
-import type { AgentKind } from "../../../src/core/types";
+import type { AgentKind, AppNavigationRequest } from "../../../src/core/types";
 
 // Record 强制覆盖 AgentKind 的每个成员：新增 agent 时漏写这里会直接编译失败。
 const AGENT_KINDS: Record<AgentKind, true> = {
@@ -106,4 +106,48 @@ export function requirePositiveInteger(value: unknown, name: string): number {
   const parsed = optionalPositiveInteger(value, name);
   if (parsed === undefined) throw new TypeError(`${name} must be a positive integer`);
   return parsed;
+}
+
+const MAIN_WINDOW_PAGES = new Set(["home", "sessions", "quota", "settings"]);
+const SETTINGS_SECTIONS = new Set([
+  "general",
+  "discovery",
+  "integrations",
+  "privacy",
+  "diagnostics",
+  "remote",
+]);
+/** A new session's first message is a composer draft; this keeps a malformed one out. */
+const MAX_DRAFT_LENGTH = 100_000;
+
+/**
+ * A page of the main window the menu bar popover may open: home, a session (with the first
+ * message of one it just created), the quota page or a settings section. Only those fields pass.
+ */
+export function requireMainWindowRequest(value: unknown): AppNavigationRequest {
+  const request = requireObject(value, "navigation request");
+  const page = requireString(request.page, "page");
+  if (!MAIN_WINDOW_PAGES.has(page)) throw new Error(`Unsupported page: ${page}`);
+  const sessionId = optionalString(request.session_id, "session_id");
+  if (sessionId !== undefined && (page !== "sessions" || sessionId.length > 256))
+    throw new Error("session_id is invalid");
+  const draft = request.draft === undefined ? undefined : requireText(request.draft, "draft");
+  if (draft !== undefined && (!sessionId || draft.length > MAX_DRAFT_LENGTH))
+    throw new Error("draft is invalid");
+  const provider = optionalString(request.provider, "provider");
+  if (provider !== undefined && (page !== "quota" || provider.length > 256))
+    throw new Error("provider is invalid");
+  const section = optionalString(request.settings_section, "settings_section");
+  if (section !== undefined && (page !== "settings" || !SETTINGS_SECTIONS.has(section)))
+    throw new Error("settings_section is invalid");
+  return {
+    page: page as AppNavigationRequest["page"],
+    configure_popover: false,
+    ...(sessionId === undefined ? {} : { session_id: sessionId }),
+    ...(draft === undefined ? {} : { draft }),
+    ...(provider === undefined ? {} : { provider }),
+    ...(section === undefined
+      ? {}
+      : { settings_section: section as AppNavigationRequest["settings_section"] }),
+  };
 }

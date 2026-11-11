@@ -1859,6 +1859,29 @@ describe("WebAccessService loopback security boundary", () => {
     }
   });
 
+  it("reports a paired device online while it follows a stream or just made a request", async () => {
+    await bootstrap();
+    await pair();
+    const online = async () => (await service.request({ operation: "status" })).devices[0].online;
+    const start = Date.now();
+    const clock = vi.spyOn(Date, "now");
+    try {
+      await http("/api/web/v1/access");
+      expect(await online()).toBe(true);
+      // A minute after its last request, a device without a stream is offline.
+      clock.mockReturnValue(start + 61_000);
+      expect(await online()).toBe(false);
+      const stream = await openReadyStream();
+      // Over a minute after the stream's own request, the open stream alone keeps it online.
+      clock.mockReturnValue(start + 150_000);
+      expect(await online()).toBe(true);
+      stream.close();
+      await vi.waitFor(async () => expect(await online()).toBe(false));
+    } finally {
+      clock.mockRestore();
+    }
+  });
+
   it("only replaces streams owned by the reconnecting device", async () => {
     await bootstrap();
     await pair();

@@ -4,10 +4,13 @@ import {
   BrowserWindow,
   Menu,
   nativeImage,
+  nativeTheme,
   screen,
   shell,
+  systemPreferences,
   Tray,
   type MenuItemConstructorOptions,
+  type NativeImage,
   type Rectangle,
   type WebContents,
 } from "electron";
@@ -15,19 +18,31 @@ import enUS from "../../src/locales/en-US.json";
 import jaJP from "../../src/locales/ja-JP.json";
 import zhCN from "../../src/locales/zh-CN.json";
 import zhTW from "../../src/locales/zh-TW.json";
-import type {
-  AppMenuCommand,
-  AppNavigationRequest,
-  McpHubStatus,
-  RefreshJobStatus,
-  SupportedLocale,
-  WorkspaceSummary,
-} from "../../src/core/types";
-import { RUNTIME_METHODS } from "../generated/runtime-protocol";
-import type { RuntimeHost } from "./runtime-host";
+import type { AppMenuCommand, AppNavigationRequest, SupportedLocale } from "../../src/core/types";
+import {
+  RUNNING_FRAMES,
+  RUNNING_MARK_SIZE,
+  TEMPLATE_COLOR,
+  TRAY_CANVAS,
+  runningFrame,
+  waitingImage,
+  type TrayBitmap,
+  type TrayColor,
+} from "./tray-icon-images";
+import { IDLE_TRAY_STATUS, type TraySessionStatus } from "./tray-sessions";
 
-const QUOTA_POPOVER_WIDTH = 392;
-const QUOTA_POPOVER_HEIGHT = 560;
+const POPOVER_WIDTH = 360;
+const POPOVER_MIN_HEIGHT = 200;
+const POPOVER_MAX_HEIGHT = 720;
+/** Between the popover and the menu bar or taskbar, and the screen edges. */
+const POPOVER_GAP = 6;
+/** One step of the running arc; a turn takes RUNNING_FRAMES of them. */
+const FRAME_MS = 125;
+/** The arc where the design draws it, on the right, when motion is reduced. */
+const STILL_FRAME = 1;
+/** Windows icons are colour; the running arc and the waiting dot get the mark's blue and a badge red. */
+const WINDOWS_ARC: TrayColor = { r: 59, g: 108, b: 246 };
+const WINDOWS_DOT: TrayColor = { r: 239, g: 68, b: 68 };
 
 const messages: Record<SupportedLocale, Record<string, string>> = {
   "en-US": enUS,
@@ -37,25 +52,35 @@ const messages: Record<SupportedLocale, Record<string, string>> = {
 };
 
 interface NativeShellOptions {
-  runtime(): RuntimeHost;
   mainWindow(): BrowserWindow | undefined;
   preloadPath: string;
-  rendererUrl(surface?: "quota-popover"): string;
+  rendererUrl(surface?: "menubar"): string;
   trayIconPath: string;
   locale: SupportedLocale;
-  refreshStatus(): RefreshJobStatus[];
   showMainWindow(): void;
   requestQuit(): void;
-  requestRefresh(kind: "discovery" | "insights" | "quota" | "all"): void;
+  /** The menu bar popover opened; its counts should be read again. */
+  onPopoverShown?(): void;
+}
+
+interface TrayImages {
+  idle: NativeImage;
+  running: NativeImage[];
+  waiting: NativeImage;
 }
 
 export class ElectronNativeShell {
   readonly #options: NativeShellOptions;
   #locale: SupportedLocale;
   #tray: Tray | undefined;
-  #quotaPopover: BrowserWindow | undefined;
-  #trayRefresh: Promise<void> | undefined;
-  #trayRefreshPending = false;
+  #images: TrayImages | undefined;
+  #status: TraySessionStatus = IDLE_TRAY_STATUS;
+  #frame = 0;
+  #frameTimer: ReturnType<typeof setInterval> | undefined;
+  #popover: BrowserWindow | undefined;
+  #popoverTray: Rectangle | undefined;
+  #popoverHeight = 480;
+  #popoverHiddenAt = 0;
 
   constructor(options: NativeShellOptions) {
     this.#options = options;
@@ -65,7 +90,6 @@ export class ElectronNativeShell {
   create(): void {
     this.#installApplicationMenu();
     this.#createTray();
-    void this.refreshTrayStatus();
   }
 
   get trayAvailable(): boolean {
@@ -74,9 +98,7 @@ export class ElectronNativeShell {
 
   ownsWebContents(sender: WebContents): boolean {
     return Boolean(
-      this.#quotaPopover &&
-      !this.#quotaPopover.isDestroyed() &&
-      sender === this.#quotaPopover.webContents,
+      this.#popover && !this.#popover.isDestroyed() && sender === this.#popover.webContents,
     );
   }
 
@@ -84,45 +106,52 @@ export class ElectronNativeShell {
     if (this.#locale === locale) return;
     this.#locale = locale;
     this.#installApplicationMenu();
-    this.#setTrayTooltip();
-    void this.refreshTrayStatus();
+    this.#applyStatus();
   }
 
   translate(key: string, params: Record<string, string | number> = {}): string {
     return this.#tr(key, params);
   }
 
-  async refreshTrayStatus(): Promise<void> {
-    if (!this.trayAvailable) return;
-    if (this.#trayRefresh) {
-      this.#trayRefreshPending = true;
-      return this.#trayRefresh;
-    }
+  /** What the icon shows: a dot and the count while something waits, a turning arc while a session runs. */
+  setSessionStatus(status: TraySessionStatus): void {
+    this.#status = status;
+    this.#applyStatus();
+  }
 
-    const refresh = this.#loadTrayStatus()
-      .then(({ workspaces, hub, refreshJobs }) => {
-        if (!this.trayAvailable) return;
-        this.#tray?.setContextMenu(this.#buildTrayMenu(workspaces, hub, refreshJobs));
-      })
-      .catch(() => {
-        if (this.trayAvailable) this.#tray?.setContextMenu(this.#buildTrayMenu([], undefined, []));
-      })
-      .finally(() => {
-        if (this.#trayRefresh !== refresh) return;
-        this.#trayRefresh = undefined;
-        if (this.#trayRefreshPending) {
-          this.#trayRefreshPending = false;
-          void this.refreshTrayStatus();
-        }
-      });
-    this.#trayRefresh = refresh;
-    return refresh;
+  /** Tells the popover, once it has been opened, what the main window hears too. */
+  sendToPopover(channel: string, payload: unknown): void {
+    if (this.#popover && !this.#popover.isDestroyed())
+      this.#popover.webContents.send(channel, payload);
+  }
+
+  /** Opens or closes the popover under the menu bar icon, as a click on the icon does. */
+  togglePopover(): void {
+    if (!this.#tray || this.#tray.isDestroyed() || process.platform === "linux") return;
+    void this.#togglePopover(this.#tray.getBounds());
+  }
+
+  /** Opens the main window from the popover, at the page it names. */
+  openMainWindow(request?: AppNavigationRequest): void {
+    this.#popover?.hide();
+    this.#options.showMainWindow();
+    if (request) this.#options.mainWindow()?.webContents.send("agentkib:navigate", request);
+  }
+
+  /** The popover's content is this tall; the window follows it within the screen. */
+  resizePopover(sender: WebContents, height: number): void {
+    if (!this.ownsWebContents(sender) || !Number.isFinite(height)) return;
+    this.#popoverHeight = Math.round(
+      Math.min(Math.max(height, POPOVER_MIN_HEIGHT), POPOVER_MAX_HEIGHT),
+    );
+    const popover = this.#popover!;
+    if (popover.isVisible()) this.#placePopover(popover);
   }
 
   hideMainWindow(): void {
     const window = this.#options.mainWindow();
     if (!window || window.isDestroyed()) return;
-    this.#quotaPopover?.hide();
+    this.#popover?.hide();
     if (this.trayAvailable) {
       window.hide();
       if (process.platform === "darwin") app.dock?.hide();
@@ -132,8 +161,9 @@ export class ElectronNativeShell {
   }
 
   destroy(): void {
-    if (this.#quotaPopover && !this.#quotaPopover.isDestroyed()) this.#quotaPopover.destroy();
-    this.#quotaPopover = undefined;
+    this.#stopFrames();
+    if (this.#popover && !this.#popover.isDestroyed()) this.#popover.destroy();
+    this.#popover = undefined;
     if (this.#tray && !this.#tray.isDestroyed()) this.#tray.destroy();
     this.#tray = undefined;
   }
@@ -280,105 +310,140 @@ export class ElectronNativeShell {
   }
 
   #createTray(): void {
-    const image = this.#createTrayImage();
-    if (image.isEmpty()) return;
-    if (process.platform === "darwin") image.setTemplateImage(true);
-    this.#tray = new Tray(image);
-    this.#setTrayTooltip();
-    this.#tray.setContextMenu(this.#buildTrayMenu([], undefined, []));
-    this.#tray.on("click", (_event, bounds) => {
-      if (process.platform === "darwin") {
-        void this.#toggleQuotaPopover(bounds);
-        return;
-      }
-      this.#options.showMainWindow();
-    });
-  }
-
-  #setTrayTooltip(): void {
-    this.#tray?.setToolTip(this.#tr("tray.tooltip", { appName: app.getName() }));
-  }
-
-  #buildTrayMenu(
-    workspaces: WorkspaceSummary[],
-    hub: McpHubStatus | undefined,
-    refreshJobs: RefreshJobStatus[],
-  ): Menu {
-    const activeKinds = refreshJobs
-      .filter((status) => status.state === "queued" || status.state === "running")
-      .map((status) => status.kind);
-    const attention = workspaces.filter((workspace) => workspace.status !== "healthy").length;
-    const statusLabel =
-      this.#activeRefreshLabel(activeKinds) ??
-      this.#tr("tray.status", {
-        workspaces: workspaces.length,
-        attention,
-      });
-    const hubLabel = hub
-      ? `MCP Hub · ${this.#tr(hub.running ? "mcp.running" : "mcp.stopped")} · ${hub.runtime_count}`
-      : `MCP Hub · ${this.#tr("mcp.stopped")} · 0`;
-    return Menu.buildFromTemplate([
-      {
-        label: this.#tr("tray.open", { appName: app.getName() }),
-        click: () => this.#options.showMainWindow(),
-      },
-      {
-        label: this.#tr("tray.quotaAll"),
-        click: () => this.#sendNavigation({ page: "quota", configure_popover: false }),
-      },
-      {
-        label: this.#tr("tray.refreshQuotaAction"),
-        click: () => this.#options.requestRefresh("quota"),
-      },
-      { type: "separator" },
-      { label: statusLabel, enabled: false },
-      { label: hubLabel, enabled: false },
-      {
-        label: this.#tr("nav.settings"),
-        click: () =>
-          this.#sendNavigation({
-            page: "settings",
-            settings_section: "general",
-            configure_popover: false,
-          }),
-      },
-      { label: this.#tr("tray.refreshAll"), click: () => this.#options.requestRefresh("all") },
-      { type: "separator" },
-      {
-        label: this.#tr("tray.quit", { appName: app.getName() }),
-        click: () => this.#options.requestQuit(),
-      },
-    ]);
-  }
-
-  async #loadTrayStatus(): Promise<{
-    workspaces: WorkspaceSummary[];
-    hub: McpHubStatus;
-    refreshJobs: RefreshJobStatus[];
-  }> {
-    const runtime = this.#options.runtime();
-    const [workspaces, hub] = await Promise.all([
-      runtime.request<WorkspaceSummary[]>(RUNTIME_METHODS.listWorkspaces, {}),
-      runtime.request<McpHubStatus>(RUNTIME_METHODS.mcpHubStatus, {}),
-    ]);
-    const refreshJobs = this.#options.refreshStatus();
-    return { workspaces, hub, refreshJobs };
-  }
-
-  #activeRefreshLabel(kinds: RefreshJobStatus["kind"][]): string | undefined {
-    if (kinds.length > 1) return this.#tr("tray.refreshMultiple");
-    switch (kinds[0]) {
-      case "discovery":
-        return this.#tr("tray.refreshDiscovery");
-      case "insights":
-        return this.#tr("tray.refreshInsights");
-      case "gateways":
-        return this.#tr("tray.refreshGateways");
-      case "quota":
-        return this.#tr("tray.refreshQuota");
-      default:
-        return undefined;
+    this.#images = this.#createTrayImages();
+    if (!this.#images) return;
+    this.#tray = new Tray(this.#images.idle);
+    if (process.platform === "linux") {
+      // Most Linux panels only show a native menu; the click opens the window where they report one.
+      this.#tray.on("click", () => this.#options.showMainWindow());
+    } else {
+      // Everything else lives in the popover; the context menu only opens or quits the app.
+      this.#tray.on("click", (_event, bounds) => void this.#togglePopover(bounds));
+      this.#tray.on("right-click", () => this.#tray?.popUpContextMenu(this.#contextMenu()));
     }
+    this.#applyStatus();
+  }
+
+  #contextMenu(): Menu {
+    const appName = app.getName();
+    const needsYou = this.#status.needsYou;
+    return Menu.buildFromTemplate([
+      { label: this.#tr("tray.open", { appName }), click: () => this.openMainWindow() },
+      ...(process.platform === "linux" && needsYou > 0
+        ? [
+            {
+              label: this.#tr("tray.needsYou", { count: needsYou }),
+              click: () => this.openMainWindow({ page: "home", configure_popover: false }),
+            },
+          ]
+        : []),
+      { type: "separator" },
+      { label: this.#tr("tray.quit", { appName }), click: () => this.#options.requestQuit() },
+    ] satisfies MenuItemConstructorOptions[]);
+  }
+
+  #applyStatus(): void {
+    const tray = this.#tray;
+    if (!tray || tray.isDestroyed() || !this.#images) return;
+    const { needsYou, running } = this.#status;
+    const appName = app.getName();
+    // Waiting for the person wins over running: it is the state that needs an action.
+    if (needsYou > 0) {
+      this.#stopFrames();
+      tray.setImage(this.#images.waiting);
+    } else if (running > 0) {
+      if (this.#reducedMotion()) {
+        this.#stopFrames();
+        tray.setImage(this.#images.running[STILL_FRAME]);
+      } else this.#startFrames();
+    } else {
+      this.#stopFrames();
+      tray.setImage(this.#images.idle);
+    }
+    if (process.platform === "darwin")
+      tray.setTitle(needsYou > 0 ? String(needsYou) : "", { fontType: "monospacedDigit" });
+    tray.setToolTip(
+      needsYou > 0
+        ? this.#tr("tray.tooltipNeedsYou", { appName, count: needsYou })
+        : running > 0
+          ? this.#tr("tray.tooltipRunning", { appName, count: running })
+          : this.#tr("tray.tooltip", { appName }),
+    );
+    if (process.platform === "linux") tray.setContextMenu(this.#contextMenu());
+  }
+
+  #startFrames(): void {
+    if (this.#frameTimer) return;
+    const show = () => {
+      if (!this.trayAvailable || !this.#images) return;
+      this.#tray!.setImage(this.#images.running[this.#frame]);
+      this.#frame = (this.#frame + 1) % RUNNING_FRAMES;
+    };
+    show();
+    this.#frameTimer = setInterval(show, FRAME_MS);
+  }
+
+  #stopFrames(): void {
+    clearInterval(this.#frameTimer);
+    this.#frameTimer = undefined;
+  }
+
+  #reducedMotion(): boolean {
+    try {
+      return systemPreferences.getAnimationSettings().prefersReducedMotion;
+    } catch {
+      return false;
+    }
+  }
+
+  #createTrayImages(): TrayImages | undefined {
+    const source = nativeImage.createFromPath(this.#options.trayIconPath);
+    if (source.isEmpty()) return undefined;
+    const template = process.platform === "darwin";
+    const bitmap = (image: NativeImage, size: number): TrayBitmap => ({
+      width: size,
+      height: size,
+      data: image.resize({ width: size, height: size, quality: "best" }).toBitmap(),
+    });
+    const mark = bitmap(source, TRAY_CANVAS);
+    const smallMark = bitmap(source, RUNNING_MARK_SIZE);
+    const arc = template ? TEMPLATE_COLOR : WINDOWS_ARC;
+    const dot = template ? TEMPLATE_COLOR : WINDOWS_DOT;
+    const image = (value: TrayBitmap) =>
+      this.#trayImage(
+        nativeImage.createFromBitmap(Buffer.from(value.data), {
+          width: value.width,
+          height: value.height,
+        }),
+      );
+    return {
+      idle: this.#trayImage(source),
+      running: Array.from({ length: RUNNING_FRAMES }, (_, frame) =>
+        image(runningFrame(smallMark, frame, arc)),
+      ),
+      waiting: image(waitingImage(mark, dot)),
+    };
+  }
+
+  /** On macOS, the 44 px drawing becomes a 22 pt template image with both resolutions. */
+  #trayImage(source: NativeImage): NativeImage {
+    if (process.platform !== "darwin") return source;
+    // The 44 px asset is designed for a 22 pt menu bar slot, including its padding.
+    const image = nativeImage.createEmpty();
+    image.addRepresentation({
+      scaleFactor: 1,
+      width: 22,
+      height: 22,
+      buffer: source.resize({ width: 22, height: 22, quality: "best" }).toPNG(),
+    });
+    image.addRepresentation({
+      scaleFactor: 2,
+      width: TRAY_CANVAS,
+      height: TRAY_CANVAS,
+      buffer: source.resize({ width: TRAY_CANVAS, height: TRAY_CANVAS, quality: "best" }).toPNG(),
+    });
+    image.setTemplateImage(true);
+    return image;
   }
 
   #sendCommand(command: AppMenuCommand): void {
@@ -387,28 +452,30 @@ export class ElectronNativeShell {
   }
 
   #sendNavigation(request: AppNavigationRequest): void {
-    this.#quotaPopover?.hide();
-    this.#options.showMainWindow();
-    this.#options.mainWindow()?.webContents.send("agentkib:navigate", request);
+    this.openMainWindow(request);
   }
 
-  async #toggleQuotaPopover(trayBounds: Rectangle): Promise<void> {
-    const popover = await this.#getQuotaPopover();
+  async #togglePopover(trayBounds: Rectangle): Promise<void> {
+    const popover = await this.#getPopover();
     if (popover.isVisible()) {
       popover.hide();
       return;
     }
-    this.#positionQuotaPopover(popover, trayBounds);
+    // A click on the icon can first take focus from the open popover, which hides it; that same
+    // click must not open it again.
+    if (Date.now() - this.#popoverHiddenAt < 300) return;
+    this.#popoverTray = trayBounds;
+    this.#placePopover(popover);
     popover.show();
     popover.focus();
-    void this.refreshTrayStatus();
+    this.#options.onPopoverShown?.();
   }
 
-  async #getQuotaPopover(): Promise<BrowserWindow> {
-    if (this.#quotaPopover && !this.#quotaPopover.isDestroyed()) return this.#quotaPopover;
+  async #getPopover(): Promise<BrowserWindow> {
+    if (this.#popover && !this.#popover.isDestroyed()) return this.#popover;
     const popover = new BrowserWindow({
-      width: QUOTA_POPOVER_WIDTH,
-      height: QUOTA_POPOVER_HEIGHT,
+      width: POPOVER_WIDTH,
+      height: this.#popoverHeight,
       show: false,
       frame: false,
       resizable: false,
@@ -418,7 +485,7 @@ export class ElectronNativeShell {
       alwaysOnTop: true,
       skipTaskbar: true,
       hasShadow: true,
-      backgroundColor: "#0a0a0a",
+      backgroundColor: nativeTheme.shouldUseDarkColors ? "#0a0a0a" : "#fafafa",
       webPreferences: {
         preload: this.#options.preloadPath,
         contextIsolation: true,
@@ -426,7 +493,7 @@ export class ElectronNativeShell {
         sandbox: true,
       },
     });
-    this.#quotaPopover = popover;
+    this.#popover = popover;
     popover.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true });
     popover.webContents.setWindowOpenHandler(() => ({ action: "deny" }));
     popover.webContents.on("will-navigate", (event, targetUrl) => {
@@ -435,47 +502,36 @@ export class ElectronNativeShell {
       }
     });
     popover.on("blur", () => popover.hide());
-    popover.once("closed", () => {
-      if (this.#quotaPopover === popover) this.#quotaPopover = undefined;
+    popover.on("hide", () => {
+      this.#popoverHiddenAt = Date.now();
     });
-    await popover.loadURL(this.#options.rendererUrl("quota-popover"));
+    popover.once("closed", () => {
+      if (this.#popover === popover) this.#popover = undefined;
+    });
+    await popover.loadURL(this.#options.rendererUrl("menubar"));
     return popover;
   }
 
-  #positionQuotaPopover(popover: BrowserWindow, trayBounds: Rectangle): void {
+  /** Below the menu bar icon, or above it when the taskbar is at the bottom; inside the screen. */
+  #placePopover(popover: BrowserWindow): void {
+    const tray = this.#popoverTray;
+    if (!tray) return;
     const display = screen.getDisplayNearestPoint({
-      x: Math.round(trayBounds.x + trayBounds.width / 2),
-      y: Math.round(trayBounds.y + trayBounds.height / 2),
+      x: Math.round(tray.x + tray.width / 2),
+      y: Math.round(tray.y + tray.height / 2),
     });
     const area = display.workArea;
     const x = Math.min(
-      Math.max(Math.round(trayBounds.x + trayBounds.width / 2 - QUOTA_POPOVER_WIDTH / 2), area.x),
-      area.x + area.width - QUOTA_POPOVER_WIDTH,
+      Math.max(Math.round(tray.x + tray.width / 2 - POPOVER_WIDTH / 2), area.x + POPOVER_GAP),
+      area.x + area.width - POPOVER_WIDTH - POPOVER_GAP,
     );
-    const below = Math.round(trayBounds.y + trayBounds.height + 6);
-    const above = Math.round(trayBounds.y - QUOTA_POPOVER_HEIGHT - 6);
-    const y = below + QUOTA_POPOVER_HEIGHT <= area.y + area.height ? below : above;
-    popover.setPosition(x, Math.max(area.y, y), false);
-  }
-
-  #createTrayImage(): Electron.NativeImage {
-    const source = nativeImage.createFromPath(this.#options.trayIconPath);
-    if (source.isEmpty() || process.platform !== "darwin") return source;
-    // The 44 px asset is designed for a 22 pt menu bar slot, including its padding.
-    const image = nativeImage.createEmpty();
-    image.addRepresentation({
-      scaleFactor: 1,
-      width: 22,
-      height: 22,
-      buffer: source.resize({ width: 22, height: 22 }).toPNG(),
-    });
-    image.addRepresentation({
-      scaleFactor: 2,
-      width: 44,
-      height: 44,
-      buffer: source.resize({ width: 44, height: 44 }).toPNG(),
-    });
-    return image;
+    const top = Math.max(area.y, Math.round(tray.y + tray.height + POPOVER_GAP));
+    const bottom = Math.min(area.y + area.height, Math.round(tray.y - POPOVER_GAP));
+    // The menu bar or a top taskbar leaves room below the icon; a bottom taskbar, above it.
+    const below = tray.y + tray.height / 2 < area.y + area.height / 2;
+    const room = below ? area.y + area.height - POPOVER_GAP - top : bottom - area.y - POPOVER_GAP;
+    const height = Math.max(POPOVER_MIN_HEIGHT, Math.min(this.#popoverHeight, room));
+    popover.setBounds({ x, y: below ? top : bottom - height, width: POPOVER_WIDTH, height }, false);
   }
 
   #tr(key: string, params: Record<string, string | number> = {}): string {

@@ -30,7 +30,6 @@ const connectionKeys = [
   "scope",
   "pending",
   "verify",
-  "selectInfo",
   "unavailable",
   "error",
 ] as const;

@@ -4,10 +4,10 @@ import {
   ApiError,
   isLegacyPreparedReceipt,
   type Access,
-  type ClaudePermissionMode,
   type ManagedAgent,
   type ManagedOptions,
 } from "@agentkib/web-client";
+import type { NewSessionCreateFields } from "@agentkib/session-ui";
 import { createDesktopConversationClient } from "@/core/conversation-bridge";
 import type { SupportedLocale } from "@/core/types";
 import { codexReason } from "../conversation/features/sessions/codex-copy";
@@ -22,16 +22,6 @@ import {
 } from "../conversation/features/sessions/pending-controls";
 
 export const newSessionOptionsKey = (agent: ManagedAgent) => ["new-session-options", agent];
-
-export type NewSessionRequest = {
-  agent: ManagedAgent;
-  workspaceId: string;
-  model?: string;
-  effort?: string;
-  policyId?: string;
-  permissionMode?: ClaudePermissionMode;
-  agentPreset?: string;
-};
 
 /** Why nothing was created, in the words the old new-task form used, with the code as detail. */
 export type NewSessionFailure = { reason: string; detail?: string };
@@ -152,7 +142,7 @@ export function useNewSession({
   }, [scope, pending, client, locale]);
 
   const create = useCallback(
-    async (request: NewSessionRequest): Promise<string | undefined> => {
+    async (fields: NewSessionCreateFields): Promise<string | undefined> => {
       if (flight.current || pending || !access || !scope) return;
       flight.current = true;
       setBusy(true);
@@ -161,8 +151,8 @@ export function useNewSession({
       const entry: PendingControl = {
         requestId,
         kind: "create",
-        agent: request.agent,
-        workspaceId: request.workspaceId,
+        agent: fields.agent ?? "codex",
+        workspaceId: fields.workspaceId,
       };
       ownRequest.current = requestId;
       try {
@@ -171,12 +161,10 @@ export function useNewSession({
         } catch {
           throw new ApiError(409, "pending_storage_unavailable", "not-dispatched");
         }
-        const { agent: requestAgent, ...fields } = request;
         const result = await client.managedAction("create", {
-          ...(requestAgent !== "codex" ? { agent: requestAgent } : {}),
+          ...fields,
           bootId: access.bootId,
           requestId,
-          ...fields,
         });
         forgetPending(scope, requestId);
         return result.sessionId;

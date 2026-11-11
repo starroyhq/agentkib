@@ -52,6 +52,23 @@ describe("homeSessionGroups", () => {
     expect(groups.running).toEqual([]);
   });
 
+  it("lists a session whose decision may not have arrived as to verify, never to answer again", () => {
+    const groups = homeSessionGroups(
+      [
+        session("answered", { continuation: { status: "awaiting-approval" } }),
+        session("running", { continuation: { status: "running", executionLocation: "agentkib" } }),
+        session("other", { continuation: { status: "waiting-input" } }),
+      ],
+      { unconfirmed: new Set(["answered", "running"]) },
+    );
+    expect(groups.needsYou.map(({ session, need }) => [session.id, need])).toEqual([
+      ["other", "question"],
+      ["running", "verify"],
+      ["answered", "verify"],
+    ]);
+    expect(groups.running).toEqual([]);
+  });
+
   it("names where each turn runs and keeps a waiting session out of in progress", () => {
     const groups = homeSessionGroups([
       session("agentkib", { continuation: { status: "running", executionLocation: "agentkib" } }),

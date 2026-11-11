@@ -324,3 +324,12 @@ export function sessionGroupId<S extends CatalogSession, W extends CatalogWorksp
 ): string | undefined {
   return groupSessions([{ ...session, origin: "interactive" }], workspaces)[0]?.id;
 }
+
+export {
+  homeSessionGroups,
+  type HomeNeed,
+  type HomePlace,
+  type HomeResult,
+  type HomeSession,
+  type HomeSessionGroups,
+} from "./home";

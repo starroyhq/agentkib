@@ -29,7 +29,7 @@ Current native and synthetic results are recorded separately in [connection QA](
 
 | Area | What it provides |
 | --- | --- |
-| Home | Start a new session; this computer's sessions: what needs you (approvals, questions, results to verify), unread results, turns in progress and recent sessions; a side column for quota, remote access and upkeep |
+| Home | Start a new session; this computer's sessions: what needs you (approvals, questions, results to verify), unread results, turns in progress and recent sessions; approvals and questions are answered in their rows; a side column for quota, remote access and upkeep |
 | Workspaces | Discovered and manually added projects, with coverage and warnings |
 | Asset catalog | A machine-wide view of Instructions, Skills, MCP, memory, and other agent assets |
 | Skill Hub | A local Skill library, existing-installation inspection and batch copy import, reviewed OpenAI/GitHub sources, GitHub version selection, personal/project deployment, updates, rollback, withdrawal, and recoverable library removal |
@@ -163,6 +163,7 @@ AgentKib distinguishes an installed app or CLI from local data left behind after
 ### Web access and continuation
 
 - Pairing grants read access first. Sending and approvals are separate per-browser permissions and also require the host control switch.
+- The Web home follows the desktop home. On a wide screen it has the new-session composer (hidden when this browser cannot send) and what needs you, unread results and turns in progress beside the session directory; "Home" at the top of the sidebar and the bell both count what needs you, and the AgentKib mark returns home. At phone width the home comes first, with "Home | All sessions", a "+" for a new session and the three most recent sessions; the authorized browser and sign-out stay under All sessions. Approvals and questions are answered in their rows with the session page's card and checks; a decision whose outcome is unknown is never sent again and its row asks you to verify the result. While disconnected the lists stay readable, and answering and new sessions wait. New sessions use the desktop's composer: workspace, Agent, permissions in each Agent's own words, model and effort, and files; Codex policies other than "Ask for approval" need a full-access browser.
 - Claude Code desktop/Web control shares one execution service on macOS CLI versions at least `2.1.263`, with foreground Bash support at least `2.1.285`: prepare new sessions without a model call, or explicitly adopt an existing UUID after stopping its terminal. Native identities, protocol shapes, and receipts remain validated; accepting a newer version does not imply real-device acceptance. Managed sessions run the CLI with background tasks switched off (`CLAUDE_CODE_DISABLE_BACKGROUND_TASKS=1`) so sub-agents run in the foreground, tolerate frames and requests they do not know without ending the session (an unknown request is refused, never allowed), and are verified through `2.1.299`: synthetic frames plus one real-CLI acceptance run on 2026-10-14 (start-up, idle, Bash approval, one foreground sub-agent, one MCP approval, resume with the same UUID; see [live acceptance QA](../qa/claude-live-acceptance-2026-10-14.md)). LAN uploads remain disabled; Windows/Linux control remains unavailable. See [Claude usage](agents/claude-code-managed.md) and [historical native QA](../qa/claude-managed-2026-09-30.md) and [current TypeScript QA](../qa/typescript-stability-2026-10-07.md).
 - Codex Web control continues sessions through AgentKib's own app-server. When Codex Desktop holds a session's writer lock, AgentKib follows the Desktop owner instead (macOS, Desktop `26.917.62051` or later) and offers only send, stop and approval. Unknown or malformed versions, unsupported platforms, missing owners and incompatible native protocols show the existing in-use choice; satisfying the version threshold does not replace native validation or acceptance testing.
 - Antigravity Web control manages only sessions returned by the official ACP server. It negotiates ACP v1 capabilities, checks the indexed session and workspace again, and requires exact revision, turn, request, and offered permission option matches.
@@ -187,7 +188,7 @@ Platform setup and known limitations are documented in the [Windows guide](devel
 
 | 区域 | 提供的能力 |
 | --- | --- |
-| 首页 | 新建会话；这台电脑上的会话：需要你处理（审批、问题、结果待核对）、待查看的新结果、进行中的轮次和最近会话；右栏的额度、远程和维护提醒 |
+| 首页 | 新建会话；这台电脑上的会话：需要你处理（审批、问题、结果待核对）、待查看的新结果、进行中的轮次和最近会话；审批和问题在行里直接作答；右栏的额度、远程和维护提醒 |
 | 工作区 | 自动发现或手动添加的项目，以及覆盖情况和警告 |
 | 全局资产目录 | 跨工作区查看 Instructions、Skills、MCP、记忆和其他 Agent 资产 |
 | Skill Hub | 本地 Skill 资源库、已有安装查看与批量复制入库、OpenAI 精选及 GitHub 导入与版本选择、个人/项目部署、更新、回滚、撤销部署和资源库可恢复移除 |
@@ -325,6 +326,7 @@ AgentKib 会区分“已安装”和“卸载后仍留有本地数据”。涉�
 ### Web 访问与续接
 
 - 配对首先授予读取权限；发送和审批是单独的浏览器权限，同时还需要打开主机控制开关。
+- Web 首页与桌面首页一致。宽屏时上面是新建会话（这次访问不能发送时隐藏），下面是需要你处理、待查看和进行中，左侧是会话目录；侧栏最上面的“首页”和右上角铃铛都显示需要你处理的数量，点 AgentKib 标志回到首页。手机宽度先显示首页，用“首页 | 全部会话”切换，右上角“+”新建会话，下面列最近 3 个会话；“已授权浏览器”和退出留在“全部会话”里。审批和问题在行里用会话页的同一张卡片直接作答，检查也相同；结果不明时不重发，该行改为“结果待核对”。断线时列表保留，作答和新建会话不可用。新建会话与桌面用同一个输入框：工作区、Agent、各 Agent 自己说法的权限、模型和强度、附件；Codex 选“请求批准”以外的策略需要完整访问的浏览器。
 - Claude Code 桌面/Web 在 macOS CLI ≥ `2.1.263` 上共用执行服务，前台 Bash 契约要求 ≥ `2.1.285`：准备新会话不调用模型，停止原终端并确认后可续接原 UUID。仍核验原生身份、协议结构和回执，新版通过最低门槛不代表真实设备验收通过。托管会话启动 CLI 时关闭后台任务（`CLAUDE_CODE_DISABLE_BACKGROUND_TASKS=1`），子代理在前台运行；对不认识的帧与请求不再终止会话（不认识的请求只会被拒绝，绝不放行）；对帧的处理验证到 `2.1.299`：合成帧加 2026-10-14 的一次真机验收（启动、空闲、Bash 审批、一个前台子代理、一次 MCP 审批、同一 UUID 续接；见[真机验收 QA](../qa/claude-live-acceptance-2026-10-14.md)）。LAN 仍禁上传，Windows/Linux 控制保持不可用。详见 [Claude 使用说明](agents/claude-code-managed.md) 与[历史原生 QA](../qa/claude-managed-2026-09-30.md) 及[当前 TypeScript QA](../qa/typescript-stability-2026-10-07.md)。
 - Codex Web 控制默认由 AgentKib 自己的 app-server 续接；写锁被 Codex 桌面端持有时改为跟随桌面端的 owner（仅 macOS，Desktop ≥ `26.917.62051`），只开放发送（可带附件）、停止和审批。版本未知或格式异常、平台不支持、没有 owner 或原生协议不兼容时显示原有的占用选择条；满足门槛不能代替原生校验和真实验收。
 - Antigravity Web 控制只管理官方 ACP server 返回的会话。运行时协商 ACP v1 能力，重新核验索引会话和工作区，并要求 revision、turn、request 与服务端提供的权限选项全部精确匹配。

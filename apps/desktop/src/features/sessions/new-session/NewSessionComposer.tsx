@@ -18,12 +18,16 @@ import {
   TriangleAlert,
   X,
 } from "lucide-react";
-import type {
-  ClaudePermissionMode,
-  CodexSessionSettings,
-  ManagedAgent,
-} from "@agentkib/web-client";
-import { dshAgentPresetText } from "@agentkib/session-ui";
+import type { CodexSessionSettings, ManagedAgent } from "@agentkib/web-client";
+import {
+  dshAgentPresetText,
+  fillCopy,
+  NEW_SESSION_AGENTS,
+  newSessionCopy,
+  newSessionCreateFields,
+  newSessionPermissions,
+  newSessionPresets,
+} from "@agentkib/session-ui";
 import { Button } from "@/components/ui/button";
 import { Disclosure, DisclosureSummary } from "@/components/ui/disclosure";
 import {
@@ -52,15 +56,8 @@ import {
   rememberNewSessionTarget,
   type NewSessionTarget,
 } from "../conversation/features/sessions/new-session-draft";
-import { failureOf, useNewSession, type NewSessionRequest } from "./use-new-session";
+import { failureOf, useNewSession } from "./use-new-session";
 
-const AGENTS: ManagedAgent[] = ["codex", "claude-code", "deepseek-harness"];
-const POLICIES = [
-  "workspace-write-on-request",
-  "workspace-write-auto-review",
-  "full-access-on-request",
-] as const;
-const CLAUDE_MODES: ClaudePermissionMode[] = ["default", "acceptEdits", "plan"];
 const MAX_FILES = 10;
 const available = { available: true };
 const unavailable = { available: false };
@@ -88,7 +85,8 @@ export interface NewSessionComposerProps {
  */
 export function NewSessionComposer(props: NewSessionComposerProps) {
   const { workspaces, notInstalled, placement, onCreated, onAddWorkspace, onOpenSettings } = props;
-  const { tr, locale, localizeMessage } = useI18n();
+  const { locale, localizeMessage } = useI18n();
+  const copy = newSessionCopy(locale);
   const [target] = useState(() => ({ ...readNewSessionTarget(), ...props.initial }));
   const [agent, setAgent] = useState<ManagedAgent>(
     target.agent && !notInstalled?.has(target.agent) ? target.agent : "codex",
@@ -99,8 +97,7 @@ export function NewSessionComposer(props: NewSessionComposerProps) {
     recentContinuationWorkspaces(workspaces as WorkspaceSummary[], 1)[0];
   const [text, setText] = useState("");
   const [files, setFiles] = useState<File[]>([]);
-  const [policyId, setPolicyId] = useState<string>(POLICIES[0]);
-  const [permissionMode, setPermissionMode] = useState<ClaudePermissionMode>();
+  const [permission, setPermission] = useState<string>();
   const [model, setModel] = useState("");
   const [effort, setEffort] = useState("");
   const [agentPreset, setAgentPreset] = useState<string>();
@@ -190,12 +187,11 @@ export function NewSessionComposer(props: NewSessionComposerProps) {
     (model
       ? modelSettings?.options.models.find((item) => item.id === model)?.defaultEffort
       : (modelSettings?.defaults.effort ?? undefined));
-  const policies = POLICIES.filter((id) => options?.policies?.some((item) => item.id === id));
-  const claudeModes = CLAUDE_MODES.filter((id) =>
-    options?.permissionModes?.some((item) => item.id === id),
+  const permissions = newSessionPermissions(agent, options, locale);
+  const shownPermission = permissions?.choices.find(
+    (item) => item.id === (permission ?? permissions.initial),
   );
-  const presets = options?.agentPresets ?? [];
-  const defaultPreset = presets.find((item) => item.isDefault)?.id;
+  const { presets, defaultId: defaultPreset } = newSessionPresets(agent, options);
   const preset = presets.find((item) => item.id === (agentPreset ?? defaultPreset));
 
   const unavailableReason = session.options.isError
@@ -215,21 +211,20 @@ export function NewSessionComposer(props: NewSessionComposerProps) {
   async function send() {
     if (!canSend || !workspace) return;
     setSending(true);
-    const request: NewSessionRequest = {
-      agent,
-      workspaceId: workspace.id,
-      // Codex starts an effort only on a named model.
-      ...(model || effort ? { model: modelId } : {}),
-      ...(effort ? { effort } : {}),
-      ...(agent === "codex" && policies.length ? { policyId } : {}),
-      ...(agent === "claude-code" && permissionMode ? { permissionMode } : {}),
-      // Without a choice DSH starts its own default preset.
-      ...(agent === "deepseek-harness" && agentPreset && agentPreset !== defaultPreset
-        ? { agentPreset }
-        : {}),
-    };
+    const fields = newSessionCreateFields(
+      {
+        agent,
+        workspaceId: workspace.id,
+        model,
+        effort,
+        shownModel: modelId,
+        permission,
+        preset: agentPreset,
+      },
+      options,
+    );
     rememberNewSessionTarget({ workspaceId: workspace.id, agent });
-    const sessionId = await session.create(request);
+    const sessionId = await session.create(fields);
     if (sessionId) await handOff(sessionId);
     else setSending(false);
   }
@@ -242,14 +237,14 @@ export function NewSessionComposer(props: NewSessionComposerProps) {
 
   const notice = session.unknown ? (
     <Notice tone="warning" icon={<Hourglass className="size-3.5" />}>
-      {tr("newSession.unknown")}
+      {copy.unknown}
     </Notice>
   ) : session.failure ? (
     <Notice tone="error" icon={<CircleX className="size-3.5" />}>
-      {tr("newSession.notCreated", { reason: session.failure.reason })}
+      {fillCopy(copy.notCreated, { reason: session.failure.reason })}
       {session.failure.detail && (
         <Disclosure className="mt-1">
-          <DisclosureSummary>{tr("newSession.details")}</DisclosureSummary>
+          <DisclosureSummary>{copy.details}</DisclosureSummary>
           <code className="break-all">{session.failure.detail}</code>
         </Disclosure>
       )}
@@ -260,11 +255,11 @@ export function NewSessionComposer(props: NewSessionComposerProps) {
       icon={<TriangleAlert className="size-3.5" />}
       action={
         <Button variant="link" size="sm" className="h-auto p-0 text-xs" onClick={onOpenSettings}>
-          {tr("newSession.openSettings")}
+          {copy.openSettings}
         </Button>
       }
     >
-      {tr("newSession.agentUnavailable", { reason: unavailableReason })}
+      {fillCopy(copy.agentUnavailable, { reason: unavailableReason })}
     </Notice>
   ) : addError ? (
     <Notice tone="error" icon={<CircleX className="size-3.5" />}>
@@ -278,8 +273,8 @@ export function NewSessionComposer(props: NewSessionComposerProps) {
     return (
       <section className="grid justify-items-start gap-2 rounded-2xl border border-dashed border-border bg-card p-5">
         <FolderPlus className="size-5 text-muted-foreground" aria-hidden />
-        <h2 className="text-sm font-semibold">{tr("newSession.noWorkspace")}</h2>
-        <p className="text-xs text-muted-foreground">{tr("newSession.noWorkspaceHint")}</p>
+        <h2 className="text-sm font-semibold">{copy.noWorkspace}</h2>
+        <p className="text-xs text-muted-foreground">{copy.noWorkspaceHint}</p>
         {addError && (
           <p role="alert" className="text-xs text-destructive-text">
             {addError}
@@ -287,13 +282,13 @@ export function NewSessionComposer(props: NewSessionComposerProps) {
         )}
         <Button variant="outline" size="sm" onClick={() => void addWorkspace()}>
           <FolderPlus size={15} aria-hidden />
-          {tr("newSession.addWorkspaceButton")}
+          {copy.addWorkspaceButton}
         </Button>
       </section>
     );
 
   return (
-    <section aria-label={tr("sessions.newConversation")} className="@container grid w-full gap-2">
+    <section aria-label={copy.newSession} className="@container grid w-full gap-2">
       {notice}
       <div className="flex min-w-0 items-center gap-1">
         <WorkspacePicker
@@ -307,7 +302,7 @@ export function NewSessionComposer(props: NewSessionComposerProps) {
         <DropdownMenu>
           <DropdownMenuTrigger
             render={<Button variant="ghost" className={chip} disabled={locked} />}
-            aria-label={`${tr("newSession.agent")}: ${AGENT_LABELS[agent]}`}
+            aria-label={`${copy.agent}: ${AGENT_LABELS[agent]}`}
           >
             <AgentIcon agent={agent} compact />
             <span className="truncate @max-[28rem]:sr-only">{AGENT_LABELS[agent]}</span>
@@ -317,7 +312,7 @@ export function NewSessionComposer(props: NewSessionComposerProps) {
             <ChevronDown className="size-3.5 shrink-0" aria-hidden />
           </DropdownMenuTrigger>
           <DropdownMenuContent side={side} className="w-60">
-            {AGENTS.map((item) => (
+            {NEW_SESSION_AGENTS.map((item) => (
               <DropdownMenuItem
                 key={item}
                 disabled={notInstalled?.has(item)}
@@ -325,15 +320,15 @@ export function NewSessionComposer(props: NewSessionComposerProps) {
                   setAgent(item);
                   setModel("");
                   setEffort("");
+                  setPermission(undefined);
+                  setAgentPreset(undefined);
                 }}
               >
                 <AgentIcon agent={item} compact />
                 <span className="grid min-w-0 flex-1">
                   <span className="truncate">{AGENT_LABELS[item]}</span>
                   {notInstalled?.has(item) && (
-                    <span className="text-xs text-muted-foreground">
-                      {tr("newSession.notInstalled")}
-                    </span>
+                    <span className="text-xs text-muted-foreground">{copy.notInstalled}</span>
                   )}
                 </span>
                 {item === agent && <Check className="size-4" aria-hidden />}
@@ -341,13 +336,13 @@ export function NewSessionComposer(props: NewSessionComposerProps) {
             ))}
           </DropdownMenuContent>
         </DropdownMenu>
-        {agent === "deepseek-harness" && presets.length > 0 && (
+        {presets.length > 0 && (
           <DropdownMenu>
             <DropdownMenuTrigger
               render={<Button variant="ghost" className={chip} disabled={locked} />}
             >
               <Layers className="size-3.5 shrink-0" aria-hidden />
-              <span className="@max-[28rem]:sr-only">{tr("newSession.preset")}</span>
+              <span className="@max-[28rem]:sr-only">{copy.preset}</span>
               <span className="truncate text-foreground">
                 {preset ? dshAgentPresetText(preset, locale).name : ""}
               </span>
@@ -399,7 +394,7 @@ export function NewSessionComposer(props: NewSessionComposerProps) {
                   variant="ghost"
                   size="content"
                   className="grid size-5 shrink-0 place-items-center rounded text-muted-foreground"
-                  aria-label={tr("newSession.removeFile", { name: file.name })}
+                  aria-label={fillCopy(copy.removeFile, { name: file.name })}
                   disabled={locked}
                   onClick={() => {
                     setFileLimit(false);
@@ -413,12 +408,12 @@ export function NewSessionComposer(props: NewSessionComposerProps) {
           </ul>
         )}
         <Textarea
-          aria-label={tr("newSession.message")}
+          aria-label={copy.message}
           className="max-h-48 min-h-12 resize-none border-0 bg-transparent px-2 py-1.5 text-sm shadow-none focus-visible:ring-0 disabled:bg-transparent dark:bg-transparent dark:disabled:bg-transparent"
           rows={2}
           value={text}
           maxLength={MAX_MESSAGE_LENGTH}
-          placeholder={tr("newSession.placeholder")}
+          placeholder={copy.placeholder}
           disabled={locked}
           onChange={(event) => setText(event.target.value)}
           onCompositionStart={() => {
@@ -444,7 +439,7 @@ export function NewSessionComposer(props: NewSessionComposerProps) {
           type="file"
           multiple
           className="hidden"
-          aria-label={tr("newSession.attach")}
+          aria-label={copy.attach}
           onChange={(event) => {
             addFiles(Array.from(event.target.files ?? []));
             event.target.value = "";
@@ -455,43 +450,23 @@ export function NewSessionComposer(props: NewSessionComposerProps) {
             type="button"
             variant="ghost"
             className="size-8 shrink-0 rounded-full bg-muted/60 p-0"
-            aria-label={tr("newSession.attach")}
-            title={tr("newSession.attach")}
+            aria-label={copy.attach}
+            title={copy.attach}
             disabled={locked || files.length >= MAX_FILES}
             onClick={() => fileInput.current?.click()}
           >
             <Plus className="size-4" aria-hidden />
           </Button>
-          {agent === "codex" && policies.length > 0 && (
+          {permissions && shownPermission && (
             <PermissionMenu
-              label={tr(`newSession.policy.${policyId}`)}
-              title={tr("newSession.codexPermissionTitle")}
-              risky={policyId === "full-access-on-request"}
+              label={shownPermission.name}
+              title={permissions.title}
+              risky={shownPermission.risky}
               disabled={locked}
               side={side}
-              items={policies.map((id) => ({
-                id,
-                name: tr(`newSession.policy.${id}`),
-                description: tr(`newSession.policy.${id}.description`),
-                risky: id === "full-access-on-request",
-              }))}
-              selected={policyId}
-              onSelect={setPolicyId}
-            />
-          )}
-          {agent === "claude-code" && claudeModes.length > 0 && (
-            <PermissionMenu
-              label={tr(`newSession.claude.${permissionMode ?? "default"}`)}
-              title={tr("newSession.permission")}
-              disabled={locked}
-              side={side}
-              items={claudeModes.map((id) => ({
-                id,
-                name: tr(`newSession.claude.${id}`),
-                description: tr(`newSession.claude.${id}.description`),
-              }))}
-              selected={permissionMode}
-              onSelect={(id) => setPermissionMode(id as ClaudePermissionMode)}
+              items={permissions.choices}
+              selected={shownPermission.id}
+              onSelect={setPermission}
             />
           )}
           <div className="ml-auto flex min-w-0 items-center gap-1">
@@ -518,8 +493,8 @@ export function NewSessionComposer(props: NewSessionComposerProps) {
             <Button
               type="submit"
               className="size-8 shrink-0 rounded-full p-0"
-              aria-label={tr("newSession.send")}
-              title={tr("newSession.send")}
+              aria-label={copy.send}
+              title={copy.send}
               disabled={!canSend}
             >
               {locked ? (
@@ -643,7 +618,7 @@ function WorkspacePicker({
   onSelect: (id: string) => void;
   onAdd: () => void;
 }) {
-  const { tr } = useI18n();
+  const copy = newSessionCopy(useI18n().locale);
   const [open, setOpen] = useState(false);
   const [query, setQuery] = useState("");
   const name = workspaces.find((item) => item.id === selected)?.name ?? "";
@@ -657,9 +632,9 @@ function WorkspacePicker({
         },
       ]
     : [
-        { label: tr("newSession.recentWorkspaces"), items: recent },
+        { label: copy.recentWorkspaces, items: recent },
         {
-          label: tr("newSession.allWorkspaces"),
+          label: copy.allWorkspaces,
           items: workspaces
             .filter((item) => !recent.some((entry) => entry.id === item.id))
             .sort((left, right) => left.name.localeCompare(right.name)),
@@ -679,7 +654,7 @@ function WorkspacePicker({
     >
       <Popover.Trigger
         render={<Button variant="ghost" className={chip} disabled={disabled} />}
-        aria-label={`${tr("newSession.workspace")}: ${name}`}
+        aria-label={`${copy.workspace}: ${name}`}
       >
         <Folder className="size-3.5 shrink-0" aria-hidden />
         <span className="max-w-48 truncate text-foreground @max-[28rem]:max-w-24">{name}</span>
@@ -693,8 +668,8 @@ function WorkspacePicker({
               <Input
                 autoFocus
                 className="h-8 min-w-0 flex-1 border-0 bg-transparent px-0 text-sm shadow-none focus-visible:ring-0 dark:bg-transparent"
-                placeholder={tr("newSession.searchWorkspaces")}
-                aria-label={tr("newSession.searchWorkspaces")}
+                placeholder={copy.searchWorkspaces}
+                aria-label={copy.searchWorkspaces}
                 value={query}
                 onChange={(event) => setQuery(event.target.value)}
                 onKeyDown={(event) => {
@@ -708,9 +683,7 @@ function WorkspacePicker({
             </label>
             <div className="max-h-72 overflow-y-auto">
               {groups.length === 0 && (
-                <p className="px-2 py-2 text-xs text-muted-foreground">
-                  {tr("newSession.noWorkspaceMatch")}
-                </p>
+                <p className="px-2 py-2 text-xs text-muted-foreground">{copy.noWorkspaceMatch}</p>
               )}
               {groups.map((group) => (
                 <div key={group.label ?? "matches"} role="group" aria-label={group.label}>
@@ -742,7 +715,7 @@ function WorkspacePicker({
               }}
             >
               <Plus className="size-3.5" aria-hidden />
-              {tr("newSession.addWorkspace")}
+              {copy.addWorkspace}
             </Button>
           </Popover.Popup>
         </Popover.Positioner>

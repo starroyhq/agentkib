@@ -1,12 +1,19 @@
 // @vitest-environment jsdom
 
 import "@testing-library/jest-dom/vitest";
-import { cleanup, fireEvent, render, screen, within } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
-import { interactionCardCopy, readStateCopy, sessionContinuationCopy } from "@agentkib/session-ui";
+import {
+  homeSessionCopy,
+  interactionCardCopy,
+  readStateCopy,
+  sessionContinuationCopy,
+} from "@agentkib/session-ui";
 import { initializeI18n, tr } from "@/core/i18n";
 import type { ConversationSessionSummary, WorkspaceSummary } from "@/core/types";
+import type { Approval, Live } from "@agentkib/web-client";
 import { HomeSessions, type HomeSessionsState } from "./HomeSessions";
+import type { HomeReplies } from "./home-replies";
 
 const workspace = {
   id: "workspace",
@@ -60,6 +67,7 @@ function renderSessions(
   return props;
 }
 
+const home = homeSessionCopy("en-US");
 const groupNamed = (name: string) => screen.getByRole("region", { name });
 
 describe("HomeSessions", () => {
@@ -97,8 +105,8 @@ describe("HomeSessions", () => {
         continuation: { status: "running", executionLocation: "external" },
       }),
     ]);
-    const needs = groupNamed(tr("home.needsYou"));
-    expect(within(needs).getByRole("heading")).toHaveTextContent(`${tr("home.needsYou")}2`);
+    const needs = groupNamed(home.needsYou);
+    expect(within(needs).getByRole("heading")).toHaveTextContent(`${home.needsYou}2`);
     const approvalRow = within(needs).getByRole("button", { name: /Fix the login timeout/ });
     expect(approvalRow).toHaveTextContent("Codex · northstar-api ·");
     expect(approvalRow).toHaveTextContent(interactionCardCopy("en-US").waitingApproval);
@@ -111,12 +119,12 @@ describe("HomeSessions", () => {
       }),
     ).toHaveTextContent(readStateCopy("en-US").failed);
     expect(
-      within(groupNamed(tr("home.inProgress"))).getByRole("button", {
+      within(groupNamed(home.inProgress)).getByRole("button", {
         name: /Refactor the canvas drag/,
       }),
     ).toHaveTextContent(sessionContinuationCopy("en-US").runningIn("DeepSeek Harness"));
-    expect(screen.queryByText(tr("home.allClear"))).toBeNull();
-    expect(screen.queryByRole("region", { name: tr("home.recentSessions") })).toBeNull();
+    expect(screen.queryByText(home.allClear)).toBeNull();
+    expect(screen.queryByRole("region", { name: home.recentSessions })).toBeNull();
 
     fireEvent.click(approvalRow);
     expect(props.onOpen).toHaveBeenCalledExactlyOnceWith(approval);
@@ -129,7 +137,7 @@ describe("HomeSessions", () => {
     ]);
     const row = screen.getByRole("button", { name: /Upgrade dependencies/ });
     expect(row).toHaveTextContent(
-      `Codex · northstar-api · ${tr("home.runningFor", { duration: "4 minutes" })}`,
+      `Codex · northstar-api · ${home.runningFor.replace("{duration}", "4 minutes")}`,
     );
     expect(row).toHaveTextContent(sessionContinuationCopy("en-US").runningIn("Codex"));
   });
@@ -137,10 +145,10 @@ describe("HomeSessions", () => {
   it("is all caught up when nothing waits, and keeps the recent sessions", () => {
     const recent = session("recent", "Tidy the routes", { agent: "claude-code" });
     const props = renderSessions([recent]);
-    expect(screen.getByRole("heading", { name: tr("home.allClear") })).toBeVisible();
-    expect(screen.getByText(tr("home.allClearHint"))).toBeVisible();
-    expect(screen.queryByRole("region", { name: tr("home.needsYou") })).toBeNull();
-    const list = screen.getByRole("region", { name: tr("home.recentSessions") });
+    expect(screen.getByRole("heading", { name: home.allClear })).toBeVisible();
+    expect(screen.getByText(home.allClearHint)).toBeVisible();
+    expect(screen.queryByRole("region", { name: home.needsYou })).toBeNull();
+    const list = screen.getByRole("region", { name: home.recentSessions });
     fireEvent.click(within(list).getByRole("button", { name: /Tidy the routes/ }));
     expect(props.onOpen).toHaveBeenCalledExactlyOnceWith(recent);
     fireEvent.click(within(list).getByRole("button", { name: tr("home.viewAll") }));
@@ -229,5 +237,120 @@ describe("HomeSessions", () => {
     );
     fireEvent.click(screen.getByRole("button", { name: "Retry" }));
     expect(props.onRetrySources).toHaveBeenCalledOnce();
+  });
+});
+
+describe("HomeSessions answering in place", () => {
+  beforeAll(() => initializeI18n("en-US"));
+  afterEach(cleanup);
+
+  const approval: Approval = {
+    requestId: 7,
+    turnId: "turn",
+    method: "item/commandExecution/requestApproval",
+    command: "pnpm test",
+    cwd: workspace.path,
+    availableDecisions: ["accept", "decline"],
+    supported: true,
+  };
+  const waiting: Live = {
+    sessionId: "approval",
+    status: "waiting-approval",
+    revision: 3,
+    sendEnabled: false,
+    approvals: [approval],
+    questions: [],
+  };
+  function replies(extra: Partial<HomeReplies> = {}) {
+    const live = vi.fn(async () => waiting);
+    const value: HomeReplies = {
+      client: { live } as unknown as HomeReplies["client"],
+      access: {
+        status: "approved",
+        csrfToken: "csrf",
+        bootId: "boot",
+        experimentalEnabled: true,
+        device: { id: "desktop", name: "Desktop", send: true, approve: true },
+      },
+      unconfirmed: new Set(),
+      answered: new Set(),
+      reply: vi.fn(async () => ({ status: "accepted" as const, requestId: "r" })),
+      markAnswered: vi.fn(),
+      ...extra,
+    };
+    return { value, live };
+  }
+  const approvalSession = session("approval", "Fix the login timeout", {
+    continuation: { status: "awaiting-approval" },
+  });
+
+  it("opens the approval card in its row and answers it there", async () => {
+    const { value, live } = replies();
+    live.mockResolvedValueOnce(waiting).mockResolvedValueOnce({ ...waiting, approvals: [] });
+    const props = renderSessions([approvalSession], "ready", { replies: value });
+    const row = screen.getByRole("button", { name: /Fix the login timeout/ });
+    fireEvent.click(row);
+    expect(row).toHaveAttribute("aria-expanded", "true");
+    expect(props.onOpen).not.toHaveBeenCalled();
+    const card = await screen.findByRole("region", {
+      name: interactionCardCopy("en-US").waitingApproval,
+    });
+    expect(card).toHaveTextContent("pnpm test");
+    fireEvent.click(within(card).getByRole("button", { name: /Allow once/ }));
+    await waitFor(() =>
+      expect(value.reply).toHaveBeenCalledExactlyOnceWith(
+        { ...approvalSession },
+        { kind: "approve", approval, decision: "accept" },
+      ),
+    );
+    await waitFor(() => expect(value.markAnswered).toHaveBeenCalledWith("approval"));
+    expect(row).toHaveAttribute("aria-expanded", "false");
+  });
+
+  it("folds the row when the outcome is unknown and never sends again", async () => {
+    const { value } = replies({
+      reply: vi.fn(async () => ({ status: "unknown" as const, requestId: "r", durable: true })),
+    });
+    renderSessions([approvalSession], "ready", { replies: value });
+    const row = screen.getByRole("button", { name: /Fix the login timeout/ });
+    fireEvent.click(row);
+    const card = await screen.findByRole("region", {
+      name: interactionCardCopy("en-US").waitingApproval,
+    });
+    fireEvent.click(within(card).getByRole("button", { name: /Allow once/ }));
+    await waitFor(() => expect(row).toHaveAttribute("aria-expanded", "false"));
+    expect(value.reply).toHaveBeenCalledOnce();
+    expect(value.markAnswered).not.toHaveBeenCalled();
+  });
+
+  it("lists a session whose decision may not have arrived as to verify, opening the session", () => {
+    const { value } = replies({ unconfirmed: new Set(["approval"]) });
+    const props = renderSessions([approvalSession], "ready", { replies: value });
+    const row = screen.getByRole("button", { name: /Fix the login timeout/ });
+    expect(row).toHaveTextContent(home.verifyResult);
+    expect(row).not.toHaveAttribute("aria-expanded");
+    fireEvent.click(row);
+    expect(props.onOpen).toHaveBeenCalledExactlyOnceWith(approvalSession);
+  });
+
+  it("keeps an answered request off the list and still opens the session from the card", async () => {
+    const { value } = replies({ answered: new Set(["approval"]) });
+    const other = session("question", "Write the API docs", {
+      agent: "claude-code",
+      continuation: { status: "waiting-input" },
+    });
+    const props = renderSessions([approvalSession, other], "ready", { replies: value });
+    expect(screen.queryByRole("button", { name: /Fix the login timeout/ })).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: /Write the API docs/ }));
+    fireEvent.click(await screen.findByRole("button", { name: home.openSession }));
+    expect(props.onOpen).toHaveBeenCalledExactlyOnceWith(other);
+  });
+
+  it("says when the request no longer waits", async () => {
+    const { value, live } = replies();
+    live.mockResolvedValue({ ...waiting, approvals: [] });
+    renderSessions([approvalSession], "ready", { replies: value });
+    fireEvent.click(screen.getByRole("button", { name: /Fix the login timeout/ }));
+    expect(await screen.findByText(home.requestGone)).toBeVisible();
   });
 });

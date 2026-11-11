@@ -1,11 +1,18 @@
-import { requestReadStateRefresh, SessionContinuationStatus } from "@agentkib/session-ui";
+import {
+  homeSessionCopy,
+  newSessionCopy,
+  requestReadStateRefresh,
+  SessionContinuationStatus,
+} from "@agentkib/session-ui";
 import { HistorySearchTrigger } from "@/features/conversation/features/history/history-search-controls";
 import { Outlet, useLocation, useNavigate } from "@tanstack/react-router";
-import { useEffect, useId, useRef, useState } from "react";
+import { useEffect, useId, useMemo, useRef, useState } from "react";
 import {
   ArrowLeft,
   FolderOpen,
+  House,
   MoreHorizontal,
+  Plus,
   Settings2,
   RefreshCw,
   LogOut,
@@ -21,15 +28,27 @@ import {
   DialogTitle,
 } from "@/features/conversation/components/ui/dialog";
 import { useSession } from "@/features/conversation/features/sessions/session-context";
-import { ManagedTasks } from "@/features/conversation/features/sessions/managed-tasks";
 import { PendingCenter } from "@/features/conversation/features/sessions/pending-center";
 import { SessionPanelsContext } from "@/features/conversation/features/sessions/session-panels";
 import { sessionDisplayState } from "@/features/conversation/features/sessions/session-display-state";
+import { codexCopyForSurface } from "@/features/conversation/features/sessions/codex-copy";
 import { webLayoutCopy } from "@/features/conversation/features/sessions/web-layout-copy";
 import { cn } from "@/features/conversation/lib/utils";
 import { sessionAccessCopy } from "./session-access-copy";
+import { HomeAttentionProvider, useHomeAttention } from "./home/home-attention";
+import { canStartSessions, HomeViewContext } from "./home/session-home";
+import { NewSessionComposer } from "./new-session/new-session-composer";
+import { useOpenWhenListed } from "./new-session/use-open-when-listed";
 
 export function SessionWorkspace() {
+  return (
+    <HomeAttentionProvider>
+      <WorkspaceShell />
+    </HomeAttentionProvider>
+  );
+}
+
+function WorkspaceShell() {
   const session = useSession();
   const {
     t,
@@ -64,6 +83,28 @@ export function SessionWorkspace() {
   const cancelLogout = useRef<HTMLButtonElement | null>(null);
   const logoutDescriptionId = useId();
   const accessCopy = sessionAccessCopy[locale];
+  const home = homeSessionCopy(locale);
+  const attention = useHomeAttention();
+  const needsYou = attention?.groups.needsYou.length ?? 0;
+  // At phone width the home and the directory take turns; wider screens show both.
+  const [phoneView, setPhoneView] = useState<"home" | "all">("home");
+  const [newOpen, setNewOpen] = useState(false);
+  const openWhenListed = useOpenWhenListed();
+  const canCreate = canStartSessions(access);
+  const homeView = useMemo(() => ({ showAll: () => setPhoneView("all") }), []);
+  // A decision whose outcome is unknown marks its session in the directory as well.
+  const pendingMarks = useMemo(
+    () => ({
+      ...pendingSessions,
+      ...Object.fromEntries([...(attention?.replies.unconfirmed ?? [])].map((id) => [id, true])),
+    }),
+    [pendingSessions, attention?.replies.unconfirmed],
+  );
+  function goHome() {
+    leaveSession();
+    setPhoneView("home");
+    void navigate({ to: "/sessions" });
+  }
   useEffect(() => {
     mounted.current = true;
     return () => {
@@ -125,13 +166,22 @@ export function SessionWorkspace() {
               reading ? "hidden" : "flex flex-1 md:flex-none",
             )}
           >
-            <span
-              aria-hidden="true"
-              className="grid size-8 place-items-center rounded-xl bg-foreground font-bold text-background"
+            <Button
+              variant="bare"
+              size="content"
+              className="min-h-11 flex-1 justify-start gap-3 rounded-lg"
+              aria-label={`AgentKib · ${home.home}`}
+              title={home.home}
+              onClick={goHome}
             >
-              K
-            </span>
-            <strong className="flex-1 text-sm">AgentKib</strong>
+              <span
+                aria-hidden="true"
+                className="grid size-8 place-items-center rounded-xl bg-foreground font-bold text-background"
+              >
+                K
+              </span>
+              <strong className="text-sm">AgentKib</strong>
+            </Button>
             <Button
               variant="ghost"
               className="hidden size-11 p-0 md:inline-flex"
@@ -141,6 +191,7 @@ export function SessionWorkspace() {
               <Settings2 />
             </Button>
           </div>
+          {!reading && <h1 className="hidden px-5 text-sm font-medium md:block">{home.home}</h1>}
           {reading && (
             <div className="flex min-w-0 flex-1 items-center gap-1 px-2 md:px-5">
               <Button
@@ -194,7 +245,7 @@ export function SessionWorkspace() {
               !reading && "md:ml-auto",
             )}
           >
-            <PendingCenter compact />
+            <PendingCenter compact needsYou={attention?.groups.needsYou} />
             {reading ? (
               <>
                 {access?.device?.files && (
@@ -233,6 +284,40 @@ export function SessionWorkspace() {
             )}
           </div>
         </header>
+        {!reading && (
+          <div className="flex items-center gap-3 border-b px-4 py-2 md:hidden">
+            <div role="group" className="inline-flex rounded-xl bg-muted p-0.5">
+              {(["home", "all"] as const).map((view) => (
+                <Button
+                  key={view}
+                  variant="bare"
+                  size="content"
+                  aria-pressed={phoneView === view}
+                  className={cn(
+                    "min-h-10 rounded-[10px] px-4 text-sm",
+                    phoneView === view
+                      ? "bg-background font-medium text-foreground shadow-xs"
+                      : "text-muted-foreground",
+                  )}
+                  onClick={() => setPhoneView(view)}
+                >
+                  {view === "home" ? home.home : home.allSessions}
+                </Button>
+              ))}
+            </div>
+            {canCreate && (
+              <Button
+                className="ml-auto size-11 rounded-full p-0"
+                aria-label={newSessionCopy(locale).newSession}
+                title={newSessionCopy(locale).newSession}
+                disabled={!!session.error}
+                onClick={() => setNewOpen(true)}
+              >
+                <Plus className="size-5" />
+              </Button>
+            )}
+          </div>
+        )}
         {session.catalogNotice && (
           <p role="status" className="border-b px-4 py-3 text-sm text-muted-foreground">
             {session.c.excludedSession}
@@ -242,10 +327,33 @@ export function SessionWorkspace() {
           <aside
             className={cn(
               "flex min-h-0 w-full shrink-0 flex-col border-r bg-sidebar md:w-[280px]",
-              reading && "hidden md:flex",
+              (reading || phoneView === "home") && "hidden md:flex",
             )}
           >
-            <header className="flex items-center justify-between px-5 pb-4 pt-6">
+            <div className="hidden px-3 pt-4 md:block">
+              <Button
+                variant="ghost"
+                aria-current={!reading ? "page" : undefined}
+                aria-label={needsYou ? `${home.home} · ${home.needsYou} ${needsYou}` : home.home}
+                className={cn(
+                  "h-10 w-full justify-start gap-2 rounded-lg px-3 text-sm font-normal",
+                  !reading && "bg-background text-foreground shadow-xs ring-1 ring-border",
+                )}
+                onClick={goHome}
+              >
+                <House className="size-4" />
+                <span className="flex-1 text-left">{home.home}</span>
+                {needsYou > 0 && (
+                  <span
+                    aria-hidden="true"
+                    className="grid h-5 min-w-5 place-items-center rounded-full bg-amber-600 px-1 text-[11px] font-semibold tabular-nums text-white"
+                  >
+                    {needsYou}
+                  </span>
+                )}
+              </Button>
+            </div>
+            <header className="flex items-center justify-between px-5 pb-4 pt-6 md:pt-4">
               <div className="flex items-center gap-2">
                 <h1 className="text-sm font-semibold">{t.sessions}</h1>
                 <span className="rounded-md bg-muted px-1.5 text-xs tabular-nums text-muted-foreground">
@@ -264,11 +372,10 @@ export function SessionWorkspace() {
                 <RefreshCw className="size-3.5" />
               </Button>
             </header>
-            <ManagedTasks create />
             <HistorySearchTrigger />
             <SessionCatalog
               readContext={session.client}
-              pendingSessions={pendingSessions}
+              pendingSessions={pendingMarks}
               sessions={sessions}
               workspaces={workspaces}
               selected={selected}
@@ -321,13 +428,39 @@ export function SessionWorkspace() {
           <main
             className={cn(
               "min-w-0 flex-1 flex-col bg-background",
-              reading ? "flex" : "hidden md:flex",
+              reading || phoneView === "home" ? "flex" : "hidden md:flex",
             )}
           >
-            <Outlet />
+            <HomeViewContext value={homeView}>
+              <Outlet />
+            </HomeViewContext>
           </main>
         </div>
       </div>
+      <Dialog
+        open={newOpen && !session.modal}
+        onOpenChange={(open) => {
+          if (!open) setNewOpen(false);
+        }}
+      >
+        <DialogContent
+          closeLabel={codexCopyForSurface(locale, "web").close}
+          // At phone width the panel stays at the top, so the keyboard does not cover it.
+          className="top-4 translate-y-0 sm:top-1/2 sm:-translate-y-1/2"
+        >
+          <DialogHeader>
+            <DialogTitle>{newSessionCopy(locale).newSession}</DialogTitle>
+          </DialogHeader>
+          <NewSessionComposer
+            autoFocus
+            disabled={!!session.error}
+            onCreated={async (sessionId) => {
+              await openWhenListed(sessionId);
+              setNewOpen(false);
+            }}
+          />
+        </DialogContent>
+      </Dialog>
       <Dialog open={logoutOpen && !session.modal} onOpenChange={(open) => !open && closeLogout()}>
         <DialogContent
           showCloseButton={false}

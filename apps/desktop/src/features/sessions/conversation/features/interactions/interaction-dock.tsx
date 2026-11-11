@@ -2,20 +2,14 @@ import { useCallback } from "react";
 import type { Approval, UserQuestionRequest } from "@agentkib/web-client";
 import { agentName } from "@agentkib/agent-identity";
 import {
-  approvalCardModel,
-  fillCopy,
   interactionCardCopy,
   InteractionDock,
-  sessionContinuationCopy,
-  type InteractionDockItem,
+  interactionKey,
+  sessionInteractionItems,
   type InteractionNotice,
 } from "@agentkib/session-ui";
 import { codexReason } from "../sessions/codex-copy";
 import { useSession } from "../sessions/session-context";
-
-export function interactionKey(request: Approval | UserQuestionRequest) {
-  return `${"questions" in request ? "question" : "approval"}:${request.turnId}:${String(request.requestId)}`;
-}
 
 function isInteraction(value: unknown): value is Approval | UserQuestionRequest {
   return (
@@ -54,81 +48,26 @@ export function SessionInteractionDock() {
   if (!live || !access) return null;
   const t = interactionCardCopy(locale);
   const agent = agentName(current?.agent);
-  const continuation = sessionContinuationCopy(locale);
   const fromCard = noticeSource === "approve" || noticeSource === "answer";
   const uncertain =
     (fromCard && notice === "uncertain") ||
     live.status === "outcome-unknown" ||
     live.reason === "control-outcome-unconfirmed";
-  // Requests the session follows from another client are answered there.
-  const elsewhere = (supported: boolean): InteractionNotice | undefined =>
-    supported
-      ? undefined
-      : live.executionMode === "codex-follower"
-        ? { tone: "terminal", text: continuation.codexHandleThere }
-        : live.executionMode === "dsh-follower"
-          ? { tone: "terminal", text: continuation.dshHandleThere }
-          : undefined;
   // DeepSeek Harness withdraws a request as soon as either side answers it, so one that leaves a
   // connected session without an answer from here was answered there.
   const vanished: InteractionNotice | undefined =
     !busy && live.executionMode === "dsh-follower" && live.executionLocation === "external"
       ? { tone: "done", text: codexReason(locale, "interaction-answered-elsewhere").text }
       : undefined;
-  const approvals = new Map<string, Approval>();
-  const questions = new Map<string, UserQuestionRequest>();
-  const items: InteractionDockItem[] = [
-    ...live.approvals.map((approval): InteractionDockItem => {
-      const key = interactionKey(approval);
-      approvals.set(key, approval);
-      const model = approvalCardModel(approval, {
-        locale,
-        agent,
-        workspacePath: currentWorkspace?.path,
-        canStop,
-      });
-      const permitted =
-        !!access.experimentalEnabled &&
-        !!access.device?.approve &&
-        (!approval.decisionOptions?.length || !!access.device.extendedApproval);
-      const notice =
-        elsewhere(approval.supported) ??
-        (!approval.supported || !model.choices.length
-          ? { tone: "neutral" as const, text: fillCopy(t.unsupported, { agent }) }
-          : !permitted
-            ? { tone: "lock" as const, text: t.noApprovePermission }
-            : uncertain
-              ? { tone: "pending" as const, text: t.uncertain }
-              : undefined);
-      return { kind: "approval", key, model, enabled: !notice && online && controlReady, notice };
-    }),
-    ...(live.questions ?? []).map((question): InteractionDockItem => {
-      const key = interactionKey(question);
-      questions.set(key, question);
-      const permitted = !!access.experimentalEnabled && !!access.device?.send;
-      const notice =
-        elsewhere(question.supported) ??
-        (!question.supported
-          ? undefined
-          : !permitted
-            ? { tone: "lock" as const, text: t.noSendPermission }
-            : uncertain
-              ? { tone: "pending" as const, text: t.uncertain }
-              : undefined);
-      return {
-        kind: "question",
-        key,
-        request: question,
-        enabled: !notice && question.supported && online && controlReady,
-        notice,
-        answerContext: {
-          sessionId: selected,
-          bootId: access.bootId,
-          expectedRevision: live.revision,
-        },
-      };
-    }),
-  ];
+  const { items, approvals, questions } = sessionInteractionItems(live, access, {
+    locale,
+    sessionId: selected,
+    agent,
+    workspacePath: currentWorkspace?.path,
+    canStop,
+    ready: online && controlReady,
+    uncertain,
+  });
   return (
     <InteractionDock
       locale={locale}

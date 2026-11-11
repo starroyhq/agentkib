@@ -65,6 +65,8 @@ import {
   type Decision,
   type Live,
   type UserQuestionRequest,
+  managedAgentOf,
+  needsDurableReceipt,
 } from "@agentkib/web-client";
 import { displaySessionTitle, isSessionListed } from "@agentkib/session-catalog";
 import { answerRequestBody } from "@agentkib/session-ui";
@@ -2088,19 +2090,14 @@ export function useSessionController({
     const requestId = crypto.randomUUID();
     if (
       kind === "send" &&
-      ["codex", "claude-code", "deepseek-harness"].includes(
-        catalogSessions.current.find((item) => item.id === id)?.agent ?? "",
-      )
+      managedAgentOf(catalogSessions.current.find((item) => item.id === id)?.agent ?? "")
     )
       setPendingSend({ sessionId: id, text, afterEventId: page?.events.at(-1)?.id });
-    const needsDurableReceipt =
-      ["codex", "claude-code", "deepseek-harness"].includes(
-        sessions.find((session) => session.id === id)?.agent ?? "",
-      ) ||
-      live.executionMode === "claude-managed" ||
-      live.executionMode === "dsh-follower" ||
-      live.executionMode?.startsWith("codex-");
-    const scope = needsDurableReceipt ? durableScope.current : undefined;
+    const durableReceipt = needsDurableReceipt(
+      sessions.find((session) => session.id === id)?.agent,
+      live.executionMode,
+    );
+    const scope = durableReceipt ? durableScope.current : undefined;
     try {
       if (extra?.attachmentIds?.length || extra?.resourceIds?.length) {
         const accessBinding = capabilityAccessBinding(access);
@@ -2133,7 +2130,7 @@ export function useSessionController({
           throw new ApiError(409, "session-state-unavailable", "not-dispatched");
         }
       }
-      if (needsDurableReceipt) {
+      if (durableReceipt) {
         try {
           if (!scope) throw new Error("missing_device_scope");
           if (kind === "send")

@@ -16,6 +16,7 @@ import {
 } from "@/features/sessions/conversation-catalog";
 import { prepareSessionNavigation } from "@/features/sessions/session-view-store";
 import { hasDesktopConversation } from "@/core/conversation-bridge";
+import { useHomeReplies } from "@/features/home/home-replies";
 import { NewSessionComposer } from "@/features/sessions/new-session/NewSessionComposer";
 import { useAddWorkspace } from "@/features/sessions/new-session/use-add-workspace";
 import { useOpenWhenListed } from "@/features/sessions/new-session/use-open-when-listed";
@@ -59,6 +60,8 @@ function HomeRoute() {
   const indexEnabled = continuationIndexingEnabled(runtime);
   // The home lists sessions from the catalog and follows its subscription.
   const catalog = useConversationCatalog(indexEnabled);
+  // Approvals and questions are answered in their home rows, as in the session view.
+  const replies = useHomeReplies(catalog.sessions);
   // Nothing watches session sources, so a session started outside AgentKib (a terminal, the Codex
   // app) reaches the index only when it is read. As before, entering the home reads the most
   // recently active workspaces once, in the background, without forcing a full rescan.
@@ -155,6 +158,7 @@ function HomeRoute() {
         sessions: catalog.sessions,
         error: catalog.error === undefined ? undefined : localizeMessage(catalog.error),
         unavailableAgents,
+        replies: hasDesktopConversation() ? replies : undefined,
         onOpen: (session) => {
           prepareSessionNavigation(session);
           void navigate({ to: "/sessions", search: { sessionId: session.id } });

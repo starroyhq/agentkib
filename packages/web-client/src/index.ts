@@ -1502,6 +1502,175 @@ export async function runSessionManagement(
   );
 }
 
+/**
+ * Whether a control sent to this session leaves a receipt on the host. Its identity is then kept
+ * in this browser before it is sent, so an outcome that turns out unknown can be checked later
+ * instead of being sent again.
+ */
+export function needsDurableReceipt(
+  agent: string | undefined,
+  executionMode?: string | null,
+): boolean {
+  return (
+    managedAgentOf(agent ?? "") !== null ||
+    executionMode === "claude-managed" ||
+    executionMode === "dsh-follower" ||
+    !!executionMode?.startsWith("codex-")
+  );
+}
+
+/** The fields every decision sends with it; `answerRequestBody` in session-ui takes the same. */
+export type InteractionReplyContext = {
+  sessionId: string;
+  bootId: string;
+  expectedRevision: number;
+};
+
+/** A decision on one approval, or the answers to one question request, as its card showed it. */
+export type InteractionReply =
+  | { kind: "approve"; approval: Approval; decision: Decision }
+  | { kind: "approve"; approval: Approval; nativeDecision: unknown }
+  | {
+      kind: "answer";
+      question: UserQuestionRequest;
+      /** The request body for the chosen answers: `answerRequestBody` from session-ui. */
+      body: (context: InteractionReplyContext, requestId: string) => Record<string, unknown>;
+    };
+
+/** Where a decision's identity stays until its outcome is known (the pending-control store). */
+export interface InteractionReplyPending {
+  /** Throws when the identity cannot be kept, or another control of the session is unsettled. */
+  remember(entry: { requestId: string; sessionId: string; kind: "approve" | "answer" }): void;
+  forget(requestId: string): void;
+}
+
+export type InteractionReplyResult =
+  | { status: "accepted"; requestId: string }
+  /** The request no longer waits as the card showed it; nothing was sent. */
+  | { status: "gone" }
+  /** This device may not decide it, or the Agent cannot take it from here; nothing was sent. */
+  | { status: "refused"; reason: string }
+  /** Nothing ran: the host refused it, or it could not be sent. `reason` is the code. */
+  | { status: "not-dispatched"; reason: string }
+  /** It may have run. It is never sent again; a kept identity lets the host's receipt settle it. */
+  | { status: "unknown"; requestId: string; durable: boolean }
+  | { status: "access-ended" };
+
+/**
+ * Sends one decision for a session from outside its own view, such as the home or the menu bar,
+ * with the checks the session view makes: the request must still wait exactly as its card showed
+ * it, this device must be allowed to decide it, and controls that leave a receipt keep their
+ * identity before they are sent. Access and the session's state are read again first, so the
+ * decision goes against the current revision.
+ */
+export async function replyToInteraction(
+  client: WebClient,
+  session: { id: string; agent: string },
+  reply: InteractionReply,
+  pending?: InteractionReplyPending,
+): Promise<InteractionReplyResult> {
+  let access: Access;
+  let live: Live;
+  try {
+    access = await client.access();
+    if (access.status !== "approved") return { status: "access-ended" };
+    live = await client.live(session.id);
+  } catch (error) {
+    if (error instanceof ApiError && error.code === "access_ended")
+      return { status: "access-ended" };
+    return {
+      status: "not-dispatched",
+      reason: error instanceof ApiError ? error.code : "connection_failed",
+    };
+  }
+  const same = (left: unknown, right: unknown) => JSON.stringify(left) === JSON.stringify(right);
+  const device = access.device;
+  if (reply.kind === "approve") {
+    const { approval } = reply;
+    if (!live.approvals.some((current) => same(current, approval))) return { status: "gone" };
+    if (!access.experimentalEnabled || !device?.approve)
+      return { status: "refused", reason: "approve_not_permitted" };
+    if (!approval.supported) return { status: "refused", reason: "approval_unsupported" };
+    if (
+      "nativeDecision" in reply &&
+      (!device.extendedApproval ||
+        !approval.decisionOptions?.some((option) => same(option.decision, reply.nativeDecision)))
+    )
+      return { status: "refused", reason: "decision_unavailable" };
+  } else {
+    const { question } = reply;
+    if (!live.questions?.some((current) => same(current, question))) return { status: "gone" };
+    if (!access.experimentalEnabled || !device?.send)
+      return { status: "refused", reason: "send_not_permitted" };
+    if (!question.supported) return { status: "refused", reason: "question_unsupported" };
+  }
+  const durable = needsDurableReceipt(session.agent, live.executionMode);
+  const requestId = crypto.randomUUID();
+  if (durable)
+    try {
+      if (!pending) throw new Error("pending_storage_unavailable");
+      pending.remember({ requestId, sessionId: session.id, kind: reply.kind });
+    } catch {
+      return { status: "not-dispatched", reason: "pending_storage_unavailable" };
+    }
+  const context = { sessionId: session.id, bootId: access.bootId, expectedRevision: live.revision };
+  try {
+    await client.request(
+      reply.kind,
+      reply.kind === "approve"
+        ? {
+            ...context,
+            requestId,
+            turnId: reply.approval.turnId,
+            approvalId: reply.approval.requestId,
+            ...("nativeDecision" in reply
+              ? { nativeDecision: reply.nativeDecision }
+              : { decision: reply.decision }),
+          }
+        : reply.body(context, requestId),
+    );
+  } catch (error) {
+    if (error instanceof ApiError && error.controlOutcome === "not-dispatched") {
+      try {
+        if (durable) pending?.forget(requestId);
+      } catch {
+        // Storage that cannot be written keeps the identity; its receipt settles it later.
+      }
+      return { status: "not-dispatched", reason: error.code };
+    }
+    if (error instanceof ApiError && error.code === "access_ended")
+      return { status: "access-ended" };
+    return { status: "unknown", requestId, durable };
+  }
+  if (durable)
+    try {
+      pending?.forget(requestId);
+    } catch {
+      // Kept identities are settled by their receipt.
+    }
+  return { status: "accepted", requestId };
+}
+
+/**
+ * What a host receipt says about a kept control identity: it ran, it never ran, or nothing is
+ * known yet. Only a receipt for exactly this request, session and operation settles it.
+ */
+export function settledReceipt(
+  receipt: ControlReceipt,
+  entry: { requestId: string; sessionId?: string; kind: string },
+): "accepted" | "not-dispatched" | undefined {
+  if (!receipt.found || receipt.requestId !== entry.requestId) return undefined;
+  if (isLegacyPreparedReceipt(receipt, entry.requestId)) return "not-dispatched";
+  if (
+    receipt.recovery !== undefined ||
+    (entry.sessionId && receipt.sessionId !== entry.sessionId) ||
+    receipt.operation !== entry.kind ||
+    receipt.status === "unknown"
+  )
+    return undefined;
+  return receipt.status;
+}
+
 /** A page on this computer to preview: a dev server a session printed, or one the user typed. */
 export interface LocalPreviewTarget {
   /** Dev servers started with HTTPS keep it. */

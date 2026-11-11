@@ -46,8 +46,6 @@ const conversationKeys = [
   "sessions",
   "search",
   "empty",
-  "select",
-  "selectInfo",
   "untitled",
   "history",
   "live",

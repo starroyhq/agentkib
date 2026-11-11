@@ -53,6 +53,11 @@ export interface InteractionDockProps {
   /** A request to bring forward and expand, such as one picked in the pending list. */
   focusKey?: string;
   onFocused?: () => void;
+  /**
+   * Shown inside another element, such as a home row: ✕ and Esc call this to fold that element
+   * instead of collapsing the card to a line above the composer.
+   */
+  onDismiss?: () => void;
   /** Resolves to `true` once the host accepted the decision. */
   onChoose: (item: ApprovalDockItem, choice: ApprovalChoice) => unknown;
   onAnswer: (item: QuestionDockItem, answers: Record<string, string[]>) => unknown;
@@ -801,6 +806,7 @@ export function InteractionDock({
   vanished,
   focusKey,
   onFocused,
+  onDismiss,
   onChoose,
   onAnswer,
 }: InteractionDockProps) {
@@ -926,7 +932,7 @@ export function InteractionDock({
             pending={pending?.itemKey === item.key ? (pending.choiceKey ?? "") : undefined}
             failure={failedKey === item.key ? failure : undefined}
             pager={pager}
-            onCollapse={() => setCollapsedWith(keys)}
+            onCollapse={onDismiss ?? (() => setCollapsedWith(keys))}
             onChoose={(choice) => void run(item.key, choice.key, () => onChoose(item, choice))}
           />
         ) : (
@@ -940,7 +946,7 @@ export function InteractionDock({
             sending={pending?.itemKey === item.key}
             failure={failedKey === item.key ? failure : undefined}
             pager={pager}
-            onCollapse={() => setCollapsedWith(keys)}
+            onCollapse={onDismiss ?? (() => setCollapsedWith(keys))}
             onAnswer={(answers) => void run(item.key, undefined, () => onAnswer(item, answers))}
           />
         ),

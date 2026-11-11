@@ -14,8 +14,19 @@ import { codexCopyForSurface } from "./codex-copy";
 import { catalogCopy } from "../catalog/catalog-copy";
 import { approvalSummary } from "./approval-summary";
 import { interactionCopy } from "../interactions/interaction-copy";
+import { homeSessionCopy, interactionCardCopy } from "@agentkib/session-ui";
 
-export function PendingCenter({ compact = false }: { compact?: boolean }) {
+/**
+ * The bell and its list of what waits. With `needsYou` (the home's group) it counts and lists
+ * exactly that group; otherwise the sessions with controls not yet settled here.
+ */
+export function PendingCenter({
+  compact = false,
+  needsYou,
+}: {
+  compact?: boolean;
+  needsYou?: { session: { id: string }; need: "approval" | "question" | "verify" }[];
+}) {
   const {
     access,
     origin,
@@ -52,16 +63,31 @@ export function PendingCenter({ compact = false }: { compact?: boolean }) {
     return subscribePending(read);
   }, [origin, access?.status, access?.device?.id, open, live?.revision]);
   if (access?.status !== "approved") return null;
-  const pendingIds = new Set([
-    ...Object.keys(pendingSessions).filter((id) => pendingSessions[id]),
-    ...saved.flatMap((item) => (item.sessionId ? [item.sessionId] : [])),
-  ]);
+  const pendingIds = new Set(
+    needsYou
+      ? needsYou.map(({ session }) => session.id)
+      : [
+          ...Object.keys(pendingSessions).filter((id) => pendingSessions[id]),
+          ...saved.flatMap((item) => (item.sessionId ? [item.sessionId] : [])),
+        ],
+  );
   const interactions = sessions.some(
     (session) => session.id === selected && session.availability === "readable",
   )
     ? [...(live?.approvals ?? []), ...(live?.questions ?? [])]
     : [];
-  if (interactions.length && selected) pendingIds.add(selected);
+  if (!needsYou && interactions.length && selected) pendingIds.add(selected);
+  const card = interactionCardCopy(locale);
+  const needLabel = (id: string) => {
+    const need = needsYou?.find(({ session }) => session.id === id)?.need;
+    return need === "approval"
+      ? card.waitingApproval
+      : need === "question"
+        ? card.waitingAnswer
+        : need === "verify"
+          ? homeSessionCopy(locale).verifyResult
+          : undefined;
+  };
   return (
     <>
       <Button
@@ -107,8 +133,12 @@ export function PendingCenter({ compact = false }: { compact?: boolean }) {
                   {sessions.find((item) => item.id === id)?.title || t.untitled}
                 </Button>
               )}
-              {saved.some((item) => item.sessionId === id) && (
-                <p className="text-xs text-muted-foreground">{copy.unknown}</p>
+              {needLabel(id) ? (
+                <p className="text-xs text-muted-foreground">{needLabel(id)}</p>
+              ) : (
+                saved.some((item) => item.sessionId === id) && (
+                  <p className="text-xs text-muted-foreground">{copy.unknown}</p>
+                )
               )}
               {id === selected &&
                 interactions.map((request) => (

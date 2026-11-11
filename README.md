@@ -63,7 +63,7 @@ Everything runs on your computer. Discovery, diagnostics, history and handoff ne
 | --- | --- | --- | --- | --- | --- |
 | Codex | Yes | Yes; follows Codex Desktop on macOS | Yes | Yes | Yes |
 | Claude Code | Yes | macOS, in AgentKib or a connected terminal | Yes | Yes (context partly) | Yes |
-| Antigravity | ACP sessions | Through the official ACP server | — | Yes | Install guide only |
+| Antigravity | [App/IDE (read-only)](docs/agents/antigravity.md) and ACP sessions | Through the official ACP server | — | Yes | Install guide only |
 | Cursor | CLI and connected IDE (macOS) | — | IDE, experimental | Yes | Yes |
 | OpenCode | Yes | — | Experimental | Yes | Yes |
 | OpenClaw | Read-only | — | Experimental | Yes | Yes |

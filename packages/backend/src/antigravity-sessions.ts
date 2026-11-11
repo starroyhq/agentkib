@@ -20,6 +20,10 @@ export interface AntigravitySession {
   created_at: string | null;
   updated_at: string | null;
 }
+interface AntigravityReadCommand {
+  executable: string;
+  args: string[];
+}
 function validateRef(value: string): void {
   if (!hasText(value) || Buffer.byteLength(value) > 4096 || /[\n\r\0]/.test(value))
     throw new Error("Invalid Antigravity native session reference");
@@ -54,7 +58,7 @@ export class AntigravitySessions {
   #clients = new Set<AntigravityAcp>();
   #closed = false;
   #paging = new AntigravityPaging({
-    executable: () => this.#executable(),
+    executable: () => JSON.stringify(this.#command()),
     resolve: (ref, deadline) => this.resolve(ref, deadline),
     replay: (ref, deadline) => this.readReplay(ref, deadline),
   });
@@ -100,17 +104,30 @@ export class AntigravitySessions {
     );
   }
   optionalExecutable(): string | null {
+    return this.optionalReadCommand()?.executable ?? null;
+  }
+  optionalReadCommand(): AntigravityReadCommand | null {
     if (this.#closed) throw new Error("Antigravity session provider is closed");
     const explicit = this.executable ?? this.env.AGENTKIB_ANTIGRAVITY_ACP_BIN;
-    if (explicit !== undefined) return this.#verifiedExecutable(explicit);
+    if (explicit !== undefined)
+      return {
+        executable: this.#verifiedExecutable(explicit),
+        args: /^agy(?:\.exe)?$/i.test(path.basename(explicit)) ? ["acp"] : [],
+      };
     for (const name of ["agy_acp_server.par", "agy_acp_server.exe"]) {
       const resolved = resolveCommand(name, this.env);
-      if (resolved !== null) return this.#verifiedExecutable(resolved);
+      if (resolved !== null) return { executable: this.#verifiedExecutable(resolved), args: [] };
     }
+    const cli = resolveCommand("agy", this.env);
+    if (cli !== null) return { executable: this.#verifiedExecutable(cli), args: ["acp"] };
     return null;
   }
   controlExecutable(): string {
-    return this.#executable();
+    const command = this.#command();
+    // The newer CLI identity is verified for browsing only. Do not let discovery
+    // silently widen the separately verified legacy control adapter's scope.
+    if (command.args.length) throw new Error("Antigravity CLI ACP is read-only in AgentKib");
+    return command.executable;
   }
   #verifiedExecutable(value: string): string {
     if (!path.isAbsolute(value))
@@ -119,21 +136,23 @@ export class AntigravitySessions {
       throw new Error("Antigravity ACP executable is not a runnable regular file");
     return canonicalize(value);
   }
-  #executable(): string {
-    const executable = this.optionalExecutable();
-    if (executable === null)
+  #command(): AntigravityReadCommand {
+    const command = this.optionalReadCommand();
+    if (command === null)
       throw new Error(
         "Antigravity ACP server is unavailable; set AGENTKIB_ANTIGRAVITY_ACP_BIN to the official absolute executable path",
       );
-    return executable;
+    return command;
   }
   async list(
     workspace: string,
     deadline = performance.now() + 30_000,
   ): Promise<{ sessions: NativeSession[]; incomplete: boolean }> {
-    const executable = this.optionalExecutable();
-    if (executable === null) return { sessions: [], incomplete: true };
-    const collected = await this.#collect(executable, workspace, deadline);
+    const command = this.optionalReadCommand();
+    // ACP is optional; its absence is not a failed history scan. Locally stored
+    // App/IDE sessions are indexed independently of this provider.
+    if (command === null) return { sessions: [], incomplete: false };
+    const collected = await this.#collect(command, workspace, deadline);
     return {
       incomplete: collected.incomplete,
       sessions: collected.sessions.map((session) => ({
@@ -158,7 +177,7 @@ export class AntigravitySessions {
     deadline = performance.now() + 30_000,
   ): Promise<AntigravitySession> {
     validateRef(nativeRef);
-    const collected = await this.#collect(this.#executable(), null, deadline),
+    const collected = await this.#collect(this.#command(), null, deadline),
       sessions = collected.sessions.filter((session) => session.id === nativeRef);
     if (sessions.length !== 1) throw new Error("Antigravity session is unavailable or ambiguous");
     return sessions[0]!;
@@ -168,7 +187,7 @@ export class AntigravitySessions {
     deadline = performance.now() + 15_000,
   ): Promise<{ session: AntigravitySession; updates: Record<string, unknown>[] }> {
     const session = await this.resolve(nativeRef, deadline),
-      client = await this.#connect(this.#executable(), session.workspace, deadline);
+      client = await this.#connect(this.#command(), session.workspace, deadline);
     try {
       if (!client.compatibility!.loadSession)
         throw new Error("Antigravity ACP does not support session/load");
@@ -203,10 +222,10 @@ export class AntigravitySessions {
       this.#release(client);
     }
   }
-  async #collect(executable: string, workspace: string | null, deadline: number) {
+  async #collect(command: AntigravityReadCommand, workspace: string | null, deadline: number) {
     const filter = workspace === null ? null : canonicalize(workspace),
       cwd = filter ?? canonicalize(process.cwd()),
-      client = await this.#connect(executable, cwd, deadline);
+      client = await this.#connect(command, cwd, deadline);
     try {
       if (!client.compatibility!.listSessions)
         throw new Error("Antigravity ACP does not support session/list");
@@ -263,22 +282,37 @@ export class AntigravitySessions {
       this.#release(client);
     }
   }
-  async #connect(executable: string, cwd: string, deadline: number): Promise<AntigravityAcp> {
+  async #connect(
+    command: AntigravityReadCommand,
+    cwd: string,
+    deadline: number,
+  ): Promise<AntigravityAcp> {
     const timeout = Math.min(10_000, deadline - performance.now());
     if (timeout <= 0) throw new Error("Antigravity ACP operation timed out before connection");
-    const client = AntigravityAcp.spawn(executable, [], canonicalize(cwd), this.env, {
-      timeout,
-      deadline,
-    });
+    const client = AntigravityAcp.spawn(
+      command.executable,
+      command.args,
+      canonicalize(cwd),
+      this.env,
+      {
+        timeout,
+        deadline,
+      },
+    );
     this.#clients.add(client);
     try {
       const request = await client.initialize();
-      await this.#wait(
+      const initialized = await this.#wait(
         client,
         request,
         "initialize",
         Math.min(deadline, performance.now() + 10_000),
       );
+      if (
+        command.args.length &&
+        acpObject(acpObject(initialized).agentInfo).name !== "Antigravity ACP Server"
+      )
+        throw new Error("Unverified Antigravity CLI ACP server identity");
       return client;
     } catch (error) {
       this.#release(client);

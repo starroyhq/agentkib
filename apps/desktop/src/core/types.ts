@@ -1296,10 +1296,20 @@ export interface AppNavigationRequest {
     | "quota"
     | "insights"
     | "settings";
-  settings_section?: "general" | "discovery" | "integrations" | "privacy" | "diagnostics";
+  settings_section?:
+    | "general"
+    | "discovery"
+    | "integrations"
+    | "privacy"
+    | "diagnostics"
+    | "remote";
   provider?: string;
   window?: QuotaWindowSelector;
   configure_popover?: boolean;
+  /** With page "sessions": the session to open, once the session list has it. */
+  session_id?: string;
+  /** The first message of a session the menu bar just created; that session's composer sends it. */
+  draft?: string;
 }
 
 export type SessionAvailability = "readable" | "metadata-only";

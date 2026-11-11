@@ -148,7 +148,8 @@ export function useQuotaClock(resetAt: number, staleAt: number) {
   return now;
 }
 
-function relativeReset(milliseconds: number, tr: ReturnType<typeof useI18n>["tr"]) {
+/** "in 3 hours": how long until a quota window resets. */
+export function relativeReset(milliseconds: number, tr: ReturnType<typeof useI18n>["tr"]) {
   const seconds = Math.round(milliseconds / 1000);
   if (seconds < 3600)
     return tr("quota.duration.minutes", { value: Math.max(1, Math.round(seconds / 60)) });

@@ -375,6 +375,44 @@ describe("useAppNavigation guards", () => {
     expect(useAppStore.getState().navigationRequest).toBeUndefined();
   });
 
+  it("opens a session the menu bar asks for once the list has it, with its first message", async () => {
+    const created = {
+      id: "new-session",
+      agent: "codex",
+      workspace_id: "w",
+      title: "Codex",
+      availability: "readable",
+      archived: false,
+      sidechain: false,
+    };
+    testDoubles.refreshCatalog.mockResolvedValueOnce([]).mockResolvedValue([created]);
+    useAppStore.setState({
+      navigationRequest: {
+        page: "sessions",
+        session_id: "new-session",
+        draft: "Fix the login timeout",
+      },
+    });
+
+    renderHook(() => useAppNavigation());
+
+    expect(useAppStore.getState().navigationRequest).toBeUndefined();
+    await waitFor(() =>
+      expect(testDoubles.navigate).toHaveBeenCalledWith({
+        to: "/sessions",
+        search: { sessionId: "new-session" },
+      }),
+    );
+    expect(testDoubles.refreshCatalog).toHaveBeenCalledTimes(2);
+    // The session's own composer takes the first message and sends it.
+    const { takeNewSessionDraft } =
+      await import("@/features/sessions/conversation/features/sessions/new-session-draft");
+    expect(takeNewSessionDraft("new-session")).toMatchObject({
+      text: "Fix the login timeout",
+      send: true,
+    });
+  });
+
   it.each(["en-US", "zh-CN", "zh-TW", "ja-JP"] as const)(
     "blocks settings navigation with an operation warning in %s",
     async (locale) => {

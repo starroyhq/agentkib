@@ -275,6 +275,7 @@ describe("HomeSessions answering in place", () => {
       unconfirmed: new Set(),
       answered: new Set(),
       reply: vi.fn(async () => ({ status: "accepted" as const, requestId: "r" })),
+      stop: vi.fn(async () => ({ status: "accepted" as const, requestId: "s" })),
       markAnswered: vi.fn(),
       ...extra,
     };

@@ -429,7 +429,10 @@ export interface DesktopApi {
     openDirectory(title?: string): Promise<string | undefined>;
     openExternal(url: string): Promise<void>;
     openFilesAndFoldersSettings(): Promise<void>;
-    openQuotaDashboard(request: AppNavigationRequest): Promise<void>;
+    /** Shows the main window, at the page or session named; from the menu bar popover. */
+    openMain(request?: AppNavigationRequest): Promise<void>;
+    /** The menu bar popover's content height; its window follows within the screen. */
+    setPopoverHeight(height: number): Promise<void>;
     hideWindow(): Promise<void>;
     quit(): Promise<void>;
   };

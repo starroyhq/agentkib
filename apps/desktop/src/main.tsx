@@ -3,7 +3,7 @@ import { createRoot } from "react-dom/client";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { RouterProvider } from "@tanstack/react-router";
 import { AppDialogProvider } from "@/components/AppDialogProvider";
-import { QuotaPopover } from "@/features/quota/QuotaPopover";
+import { MenuBarPopover } from "@/features/menubar/MenuBarPopover";
 import { WebPairingPrompt } from "@/features/remote/WebPairingPrompt";
 import { cachedEffectiveLocale, initializeI18n } from "./core/i18n";
 import { applyPlatformAttribute } from "./core/platform";
@@ -47,17 +47,17 @@ async function bootstrap() {
   applyAccentTheme(accentTheme);
   cacheAccentTheme(accentTheme);
   await initializeI18n(locale);
-  const surface = new URLSearchParams(window.location.search).get("surface");
-  const app =
-    surface === "quota-popover" ? <QuotaPopover /> : <RouterProvider router={createAppRouter()} />;
+  // The menu bar popover is its own window with the same bundle; it has no router.
+  const popover = new URLSearchParams(window.location.search).get("surface") === "menubar";
+  const app = popover ? <MenuBarPopover /> : <RouterProvider router={createAppRouter()} />;
   createRoot(document.getElementById("root")!).render(
     <StrictMode>
       <QueryClientProvider client={queryClient}>
-        {surface !== "quota-popover" && <BenchmarkCommitMarker />}
+        {!popover && <BenchmarkCommitMarker />}
         <PathDisplayProvider>
           <AppDialogProvider>
             {app}
-            {surface !== "quota-popover" && <WebPairingPrompt />}
+            {!popover && <WebPairingPrompt />}
           </AppDialogProvider>
         </PathDisplayProvider>
       </QueryClientProvider>

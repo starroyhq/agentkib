@@ -1537,16 +1537,20 @@ export type InteractionReply =
       body: (context: InteractionReplyContext, requestId: string) => Record<string, unknown>;
     };
 
-/** Where a decision's identity stays until its outcome is known (the pending-control store). */
+/** Where a control's identity stays until its outcome is known (the pending-control store). */
 export interface InteractionReplyPending {
   /** Throws when the identity cannot be kept, or another control of the session is unsettled. */
-  remember(entry: { requestId: string; sessionId: string; kind: "approve" | "answer" }): void;
+  remember(entry: {
+    requestId: string;
+    sessionId: string;
+    kind: "approve" | "answer" | "stop";
+  }): void;
   forget(requestId: string): void;
 }
 
 export type InteractionReplyResult =
   | { status: "accepted"; requestId: string }
-  /** The request no longer waits as the card showed it; nothing was sent. */
+  /** The request no longer waits as the card showed it, or the turn no longer runs; nothing was sent. */
   | { status: "gone" }
   /** This device may not decide it, or the Agent cannot take it from here; nothing was sent. */
   | { status: "refused"; reason: string }
@@ -1556,17 +1560,19 @@ export type InteractionReplyResult =
   | { status: "unknown"; requestId: string; durable: boolean }
   | { status: "access-ended" };
 
+type ControlCheck =
+  | { status: "ready"; kind: "approve" | "answer" | "stop"; body: (requestId: string) => object }
+  | Exclude<InteractionReplyResult, { status: "accepted" | "unknown" }>;
+
 /**
- * Sends one decision for a session from outside its own view, such as the home or the menu bar,
- * with the checks the session view makes: the request must still wait exactly as its card showed
- * it, this device must be allowed to decide it, and controls that leave a receipt keep their
- * identity before they are sent. Access and the session's state are read again first, so the
- * decision goes against the current revision.
+ * Sends one control for a session from outside its own view. Access and the session's state are
+ * read again first, so `check` decides against the current revision; a control that leaves a
+ * receipt keeps its identity before it is sent, and one whose outcome is unknown is never resent.
  */
-export async function replyToInteraction(
+async function controlFromOutside(
   client: WebClient,
   session: { id: string; agent: string },
-  reply: InteractionReply,
+  check: (access: Access, live: Live) => ControlCheck,
   pending?: InteractionReplyPending,
 ): Promise<InteractionReplyResult> {
   let access: Access;
@@ -1583,52 +1589,19 @@ export async function replyToInteraction(
       reason: error instanceof ApiError ? error.code : "connection_failed",
     };
   }
-  const same = (left: unknown, right: unknown) => JSON.stringify(left) === JSON.stringify(right);
-  const device = access.device;
-  if (reply.kind === "approve") {
-    const { approval } = reply;
-    if (!live.approvals.some((current) => same(current, approval))) return { status: "gone" };
-    if (!access.experimentalEnabled || !device?.approve)
-      return { status: "refused", reason: "approve_not_permitted" };
-    if (!approval.supported) return { status: "refused", reason: "approval_unsupported" };
-    if (
-      "nativeDecision" in reply &&
-      (!device.extendedApproval ||
-        !approval.decisionOptions?.some((option) => same(option.decision, reply.nativeDecision)))
-    )
-      return { status: "refused", reason: "decision_unavailable" };
-  } else {
-    const { question } = reply;
-    if (!live.questions?.some((current) => same(current, question))) return { status: "gone" };
-    if (!access.experimentalEnabled || !device?.send)
-      return { status: "refused", reason: "send_not_permitted" };
-    if (!question.supported) return { status: "refused", reason: "question_unsupported" };
-  }
+  const checked = check(access, live);
+  if (checked.status !== "ready") return checked;
   const durable = needsDurableReceipt(session.agent, live.executionMode);
   const requestId = crypto.randomUUID();
   if (durable)
     try {
       if (!pending) throw new Error("pending_storage_unavailable");
-      pending.remember({ requestId, sessionId: session.id, kind: reply.kind });
+      pending.remember({ requestId, sessionId: session.id, kind: checked.kind });
     } catch {
       return { status: "not-dispatched", reason: "pending_storage_unavailable" };
     }
-  const context = { sessionId: session.id, bootId: access.bootId, expectedRevision: live.revision };
   try {
-    await client.request(
-      reply.kind,
-      reply.kind === "approve"
-        ? {
-            ...context,
-            requestId,
-            turnId: reply.approval.turnId,
-            approvalId: reply.approval.requestId,
-            ...("nativeDecision" in reply
-              ? { nativeDecision: reply.nativeDecision }
-              : { decision: reply.decision }),
-          }
-        : reply.body(context, requestId),
-    );
+    await client.request(checked.kind, checked.body(requestId));
   } catch (error) {
     if (error instanceof ApiError && error.controlOutcome === "not-dispatched") {
       try {
@@ -1649,6 +1622,108 @@ export async function replyToInteraction(
       // Kept identities are settled by their receipt.
     }
   return { status: "accepted", requestId };
+}
+
+/**
+ * Sends one decision for a session from outside its own view, such as the home or the menu bar,
+ * with the checks the session view makes: the request must still wait exactly as its card showed
+ * it, this device must be allowed to decide it, and controls that leave a receipt keep their
+ * identity before they are sent. Access and the session's state are read again first, so the
+ * decision goes against the current revision.
+ */
+export function replyToInteraction(
+  client: WebClient,
+  session: { id: string; agent: string },
+  reply: InteractionReply,
+  pending?: InteractionReplyPending,
+): Promise<InteractionReplyResult> {
+  const same = (left: unknown, right: unknown) => JSON.stringify(left) === JSON.stringify(right);
+  return controlFromOutside(
+    client,
+    session,
+    (access, live) => {
+      const device = access.device;
+      const context = {
+        sessionId: session.id,
+        bootId: access.bootId,
+        expectedRevision: live.revision,
+      };
+      if (reply.kind === "approve") {
+        const { approval } = reply;
+        if (!live.approvals.some((current) => same(current, approval))) return { status: "gone" };
+        if (!access.experimentalEnabled || !device?.approve)
+          return { status: "refused", reason: "approve_not_permitted" };
+        if (!approval.supported) return { status: "refused", reason: "approval_unsupported" };
+        if (
+          "nativeDecision" in reply &&
+          (!device.extendedApproval ||
+            !approval.decisionOptions?.some((option) =>
+              same(option.decision, reply.nativeDecision),
+            ))
+        )
+          return { status: "refused", reason: "decision_unavailable" };
+        return {
+          status: "ready",
+          kind: "approve",
+          body: (requestId) => ({
+            ...context,
+            requestId,
+            turnId: approval.turnId,
+            approvalId: approval.requestId,
+            ...("nativeDecision" in reply
+              ? { nativeDecision: reply.nativeDecision }
+              : { decision: reply.decision }),
+          }),
+        };
+      }
+      const { question } = reply;
+      if (!live.questions?.some((current) => same(current, question))) return { status: "gone" };
+      if (!access.experimentalEnabled || !device?.send)
+        return { status: "refused", reason: "send_not_permitted" };
+      if (!question.supported) return { status: "refused", reason: "question_unsupported" };
+      return {
+        status: "ready",
+        kind: "answer",
+        body: (requestId) => reply.body(context, requestId),
+      };
+    },
+    pending,
+  );
+}
+
+/**
+ * Stops a session's running turn from outside its own view, such as the menu bar, with the
+ * session view's checks: the turn must still be one this computer can stop, and this device must
+ * be allowed to send. The session's state is read again first, so the stop names the turn that
+ * runs now and goes against the current revision.
+ */
+export function stopSessionTurn(
+  client: WebClient,
+  session: { id: string; agent: string },
+  pending?: InteractionReplyPending,
+): Promise<InteractionReplyResult> {
+  return controlFromOutside(
+    client,
+    session,
+    (access, live) => {
+      if (live.stopEnabled !== true || !live.turnId) return { status: "gone" };
+      if (!access.experimentalEnabled || !access.device?.send)
+        return { status: "refused", reason: "send_not_permitted" };
+      const turnId = live.turnId;
+      return {
+        status: "ready",
+        kind: "stop",
+        body: (requestId) => ({
+          sessionId: session.id,
+          requestId,
+          bootId: access.bootId,
+          expectedRevision: live.revision,
+          turnId,
+        }),
+      };
+    },
+    pending,
+  );
 }
 
 /**

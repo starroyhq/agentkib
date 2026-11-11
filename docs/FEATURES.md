@@ -30,6 +30,7 @@ Current native and synthetic results are recorded separately in [connection QA](
 | Area | What it provides |
 | --- | --- |
 | Home | Start a new session; this computer's sessions: what needs you (approvals, questions, results to verify), unread results, turns in progress and recent sessions; approvals and questions are answered in their rows; a side column for quota, remote access and upkeep |
+| Menu bar | The icon shows state without being opened: a dot and the count while something needs you, a turning ring while a session runs. Its popover lists what needs you, turns in progress and unread results; the first approval is answered in one click ("Allow once" or "Deny"; other options open the session), a running turn can be stopped from its row, and a one-line new session starts in the last workspace and Agent used. Each Agent's quota is a ring that opens its windows; remote access can be paused or resumed. Right-click keeps only "Open" and "Quit"; on Linux the native menu also lists what needs you |
 | Workspaces | Discovered and manually added projects, with coverage and warnings |
 | Asset catalog | A machine-wide view of Instructions, Skills, MCP, memory, and other agent assets |
 | Skill Hub | A local Skill library, existing-installation inspection and batch copy import, reviewed OpenAI/GitHub sources, GitHub version selection, personal/project deployment, updates, rollback, withdrawal, and recoverable library removal |
@@ -189,6 +190,7 @@ Platform setup and known limitations are documented in the [Windows guide](devel
 | 区域 | 提供的能力 |
 | --- | --- |
 | 首页 | 新建会话；这台电脑上的会话：需要你处理（审批、问题、结果待核对）、待查看的新结果、进行中的轮次和最近会话；审批和问题在行里直接作答；右栏的额度、远程和维护提醒 |
+| 菜单栏 | 不打开也能看出状态：有事等你处理时图标右上角一个小圆点、旁边写数量；有会话在运行时图标外一圈转动。点开的浮窗列出需要你处理、进行中和待查看；第一条审批展开后一键“允许一次”或“拒绝”（其余选项打开会话）；进行中的会话可以在行里停止；一行输入就用上次的工作区和 Agent 新建会话。每个 Agent 的额度是一个小圆环，点开看各窗口；远程访问可以暂停或恢复。右键只有“打开”和“退出”；Linux 的原生菜单另外列出需要你处理的数量 |
 | 工作区 | 自动发现或手动添加的项目，以及覆盖情况和警告 |
 | 全局资产目录 | 跨工作区查看 Instructions、Skills、MCP、记忆和其他 Agent 资产 |
 | Skill Hub | 本地 Skill 资源库、已有安装查看与批量复制入库、OpenAI 精选及 GitHub 导入与版本选择、个人/项目部署、更新、回滚、撤销部署和资源库可恢复移除 |

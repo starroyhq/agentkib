@@ -44,11 +44,17 @@ export function useNewSession({
   agent,
   locale,
   onReconciled,
+  readOptions = true,
 }: {
   agent: ManagedAgent;
   locale: SupportedLocale;
   /** A create whose outcome was unknown turned out to have run. `own` is this composer's. */
   onReconciled: (sessionId: string, own: boolean) => void;
+  /**
+   * Whether to read the Agent's options now. The menu bar waits until the person starts typing:
+   * the first Codex read starts an app-server.
+   */
+  readOptions?: boolean;
 }) {
   const [client] = useState(createDesktopConversationClient);
   const [access, setAccess] = useState<Omit<Access, "bearerToken">>();
@@ -75,7 +81,7 @@ export function useNewSession({
   const options = useQuery({
     queryKey: newSessionOptionsKey(agent),
     queryFn: ({ signal }): Promise<ManagedOptions> => client.managedOptions(agent, signal),
-    enabled: controls,
+    enabled: controls && readOptions,
     staleTime: 5 * 60_000,
     retry: false,
   });

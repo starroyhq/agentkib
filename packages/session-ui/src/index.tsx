@@ -63,6 +63,7 @@ export {
   type InteractionNoticeTone,
   type QuestionDockItem,
 } from "./interaction-card";
+export { CompactApprovalCard, type CompactApprovalProps } from "./compact-approval";
 export {
   answerProblem,
   answerRequestBody,

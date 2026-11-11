@@ -4,6 +4,7 @@ import {
   needsDurableReceipt,
   replyToInteraction,
   settledReceipt,
+  stopSessionTurn,
   type Access,
   type Approval,
   type Live,
@@ -262,6 +263,53 @@ describe("replyToInteraction", () => {
         store().pending,
       ),
     ).toEqual({ status: "access-ended" });
+  });
+});
+
+describe("stopSessionTurn", () => {
+  const running = live({ status: "running", turnId: "turn-2", stopEnabled: true, approvals: [] });
+
+  it("stops the turn that runs now, keeping its identity until the host answers", async () => {
+    const { value, request } = client({ state: running });
+    const { log, pending } = store();
+    const result = await stopSessionTurn(value, { id: "s1", agent: "codex" }, pending);
+    expect(result).toMatchObject({ status: "accepted" });
+    expect(request).toHaveBeenCalledWith("stop", {
+      sessionId: "s1",
+      requestId: expect.any(String),
+      bootId: "boot",
+      expectedRevision: 4,
+      turnId: "turn-2",
+    });
+    expect(log).toEqual(["remember:stop", "forget"]);
+  });
+
+  it("sends nothing when the turn no longer runs here or this device may not send", async () => {
+    const ended = client({ state: live({ status: "idle", stopEnabled: false }) });
+    expect(
+      await stopSessionTurn(ended.value, { id: "s1", agent: "codex" }, store().pending),
+    ).toEqual({ status: "gone" });
+    const readOnly = client({ state: running, device: { send: false } });
+    expect(
+      await stopSessionTurn(readOnly.value, { id: "s1", agent: "codex" }, store().pending),
+    ).toEqual({ status: "refused", reason: "send_not_permitted" });
+    expect(ended.request).not.toHaveBeenCalled();
+    expect(readOnly.request).not.toHaveBeenCalled();
+  });
+
+  it("never sends a stop whose outcome is unknown again", async () => {
+    const { value } = client({
+      state: running,
+      send: async () => {
+        throw new ApiError(504, "request_timeout", "unknown");
+      },
+    });
+    const { log, pending } = store();
+    expect(await stopSessionTurn(value, { id: "s1", agent: "codex" }, pending)).toMatchObject({
+      status: "unknown",
+      durable: true,
+    });
+    expect(log).toEqual(["remember:stop"]);
   });
 });
 

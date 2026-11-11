@@ -4,6 +4,7 @@ import {
   optionalBoolean,
   requireAccentThemePreference,
   requireAgentKind,
+  requireMainWindowRequest,
   requireSidebarWidthPreference,
 } from "./validation";
 
@@ -76,4 +77,39 @@ describe("accent theme IPC validation", () => {
       );
     },
   );
+});
+
+describe("main window requests from the menu bar popover", () => {
+  it("passes the pages it opens and only their fields", () => {
+    expect(requireMainWindowRequest({ page: "home", extra: "dropped" })).toEqual({
+      page: "home",
+      configure_popover: false,
+    });
+    expect(
+      requireMainWindowRequest({ page: "sessions", session_id: "s1", draft: "Fix it" }),
+    ).toEqual({ page: "sessions", session_id: "s1", draft: "Fix it", configure_popover: false });
+    expect(requireMainWindowRequest({ page: "quota", provider: "codex" })).toEqual({
+      page: "quota",
+      provider: "codex",
+      configure_popover: false,
+    });
+    expect(requireMainWindowRequest({ page: "settings", settings_section: "remote" })).toEqual({
+      page: "settings",
+      settings_section: "remote",
+      configure_popover: false,
+    });
+  });
+
+  it.each([
+    [{ page: "workspaces" }],
+    [{ page: "home", session_id: "s1" }],
+    [{ page: "sessions", draft: "text without a session" }],
+    [{ page: "sessions", session_id: "x".repeat(257) }],
+    [{ page: "sessions", session_id: "s1", draft: "x".repeat(100_001) }],
+    [{ page: "settings", settings_section: "accounts" }],
+    [{ page: "home", provider: "codex" }],
+    ["sessions"],
+  ])("refuses %j", (request) => {
+    expect(() => requireMainWindowRequest(request)).toThrow();
+  });
 });

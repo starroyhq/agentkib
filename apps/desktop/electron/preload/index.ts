@@ -340,8 +340,9 @@ const desktopApi = Object.freeze({
     openExternal: (url: string) => ipcRenderer.invoke("agentkib:shell:open-external", url),
     openFilesAndFoldersSettings: () =>
       ipcRenderer.invoke("agentkib:shell:open-files-and-folders-settings"),
-    openQuotaDashboard: (request: unknown) =>
-      ipcRenderer.invoke("agentkib:shell:open-quota-dashboard", request),
+    openMain: (request?: unknown) => ipcRenderer.invoke("agentkib:shell:open-main", request),
+    setPopoverHeight: (height: number) =>
+      ipcRenderer.invoke("agentkib:shell:popover-height", height),
     hideWindow: () => ipcRenderer.invoke("agentkib:shell:hide-window"),
     quit: () => ipcRenderer.invoke("agentkib:shell:quit"),
   }),

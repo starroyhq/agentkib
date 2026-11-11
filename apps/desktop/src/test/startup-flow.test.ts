@@ -69,7 +69,7 @@ describe("desktop startup flow", () => {
     const rendererSource = readFileSync(path.join(desktopRoot, "src/main.tsx"), "utf8");
     const mainSource = readFileSync(path.join(desktopRoot, "electron/main/index.ts"), "utf8");
 
-    expect(rendererSource).toContain('surface !== "quota-popover" && <BenchmarkCommitMarker />');
+    expect(rendererSource).toContain("{!popover && <BenchmarkCommitMarker />}");
     expect(mainSource).toContain("event.sender !== mainWindow.webContents");
   });
 

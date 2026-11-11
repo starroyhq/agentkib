@@ -2,8 +2,10 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   replyToInteraction,
   settledReceipt,
+  stopSessionTurn,
   type Access,
   type InteractionReply,
+  type InteractionReplyPending,
   type InteractionReplyResult,
   type WebClient,
 } from "@agentkib/web-client";
@@ -32,13 +34,16 @@ export interface HomeReplies {
     session: { id: string; agent: string },
     reply: InteractionReply,
   ) => Promise<InteractionReplyResult>;
+  /** Stops the session's running turn, with the same checks and kept identity as a decision. */
+  stop: (session: { id: string; agent: string }) => Promise<InteractionReplyResult>;
   /** The session no longer waits for anything this home showed. */
   markAnswered: (sessionId: string) => void;
 }
 
 /**
- * Answering approvals and questions from the home: the same checks and kept identities as the
- * session view, through `replyToInteraction`. A decision whose outcome is unknown is never sent
+ * Answering approvals and questions from the home or the menu bar, and stopping a turn from the
+ * menu bar: the same checks and kept identities as the session view, through
+ * `replyToInteraction` and `stopSessionTurn`. A control whose outcome is unknown is never sent
  * again; its session is listed as to verify until the host's receipt settles it.
  */
 export function useHomeReplies(
@@ -95,7 +100,7 @@ export function useHomeReplies(
       try {
         entries = readPending(scope).filter(
           (entry) =>
-            (entry.kind === "approve" || entry.kind === "answer") &&
+            (entry.kind === "approve" || entry.kind === "answer" || entry.kind === "stop") &&
             !!entry.sessionId &&
             !replyingRef.current.has(entry.sessionId),
         );
@@ -137,14 +142,14 @@ export function useHomeReplies(
     return () => clearTimeout(timer);
   }, [answeredAt, sessions]);
 
-  const reply = useCallback(
-    async (session: { id: string; agent: string }, value: InteractionReply) => {
+  const send = useCallback(
+    async (
+      session: { id: string; agent: string },
+      control: (pending: InteractionReplyPending | undefined) => Promise<InteractionReplyResult>,
+    ) => {
       setReplying((current) => new Set(current).add(session.id));
       try {
-        const result = await replyToInteraction(
-          client,
-          session,
-          value,
+        const result = await control(
           scope
             ? {
                 remember: (entry) => rememberPending(scope, entry),
@@ -164,7 +169,17 @@ export function useHomeReplies(
         });
       }
     },
-    [client, scope],
+    [scope],
+  );
+  const reply = useCallback(
+    (session: { id: string; agent: string }, value: InteractionReply) =>
+      send(session, (pending) => replyToInteraction(client, session, value, pending)),
+    [client, send],
+  );
+  const stop = useCallback(
+    (session: { id: string; agent: string }) =>
+      send(session, (pending) => stopSessionTurn(client, session, pending)),
+    [client, send],
   );
   const markAnswered = useCallback(
     (sessionId: string) => setAnsweredAt((current) => new Map(current).set(sessionId, Date.now())),
@@ -182,5 +197,5 @@ export function useHomeReplies(
     [kept, replying, lost],
   );
   const answered = useMemo(() => new Set(answeredAt.keys()), [answeredAt]);
-  return { client, access, unconfirmed, answered, reply, markAnswered };
+  return { client, access, unconfirmed, answered, reply, stop, markAnswered };
 }

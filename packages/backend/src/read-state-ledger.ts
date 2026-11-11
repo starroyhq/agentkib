@@ -128,6 +128,23 @@ export class ReadStateLedger {
     checkpoint: ReadCheckpoint | null,
     complete: boolean,
   ): boolean {
+    // A transcript that has not grown is observed every few seconds while a window is open.
+    // Recording the same checkpoint again was a write transaction per session per poll.
+    if (!results.length) {
+      const saved = this.#read(
+        (db) =>
+          db
+            .prepare("SELECT baseline_done,checkpoint FROM conversation_read_sources WHERE key=?")
+            .get(key) as Pick<Source, "baseline_done" | "checkpoint"> | undefined,
+        undefined,
+      );
+      if (
+        saved &&
+        saved.checkpoint === (checkpoint ? JSON.stringify(checkpoint) : null) &&
+        (saved.baseline_done === 1 || !complete)
+      )
+        return false;
+    }
     return this.#write((db) => {
       db.prepare("INSERT OR IGNORE INTO conversation_read_sources(key) VALUES(?)").run(key);
       let changed = false;

@@ -75,6 +75,7 @@ async function fixture(
   servers: McpServer[],
   manifestId: string = "manifest-workspace",
   workspaceId: string = "registered-workspace",
+  limits: ConstructorParameters<typeof McpHub>[5] = {},
 ) {
   const root = canonicalize(mkdtempSync(path.join(os.tmpdir(), "agentkib-mcp-hub-check-")));
   cleanups.push(() => rmSync(root, { recursive: true, force: true }));
@@ -125,11 +126,18 @@ async function fixture(
   cleanups.push(() => manager.closeAsync());
   const builtins = new McpBuiltins(store, new Context(store.catalog, commands, environment), data);
   const port = await availablePort();
-  const hub = new McpHub(manager, store, builtins, new McpOAuth(manager, () => port), {
-    port,
-    lan_enabled: false,
-    lan_risk_accepted: false,
-  });
+  const hub = new McpHub(
+    manager,
+    store,
+    builtins,
+    new McpOAuth(manager, () => port),
+    {
+      port,
+      lan_enabled: false,
+      lan_risk_accepted: false,
+    },
+    limits,
+  );
   cleanups.push(() => hub.close());
   const probe = vi.spyOn(manager, "probe").mockRejectedValue(new Error("Unexpected probe"));
   const callHubTool = vi
@@ -177,6 +185,18 @@ async function fixture(
       ),
     verify: (targetAgent: "cursor" | "codex", id: string = workspaceId) =>
       verifyMcpConnection({ workspaceId: id, targetAgent }, store, () => hub.status(), environment),
+    /** A client that keeps its session open, like an Agent CLI that never ends it. */
+    async openClient(id = workspaceId) {
+      const client = new Client({ name: "fixture-client", version: "1.0.0" });
+      const transport = new StreamableHTTPClientTransport(
+        new URL(
+          `http://127.0.0.1:${port}/mcp/v1/workspaces/${encodeURIComponent(id)}/agents/cursor`,
+        ),
+      );
+      await client.connect(transport);
+      cleanups.push(() => client.close());
+      return client as { listTools(): Promise<{ tools: Array<{ name: string }> }> };
+    },
     async listRoute(
       id: string,
       beforeList?: () => void,
@@ -415,6 +435,32 @@ describe("MCP connection verification through the actual AgentKib Hub", () => {
 
     await expect(f.listRoute("manifest-workspace")).rejects.toMatchObject({ code: 400 });
     f.assertDirectoryOnly();
+  });
+
+  it("closes the least recently used session beyond the limit", async () => {
+    const f = await fixture([server("shared")], undefined, undefined, { sessions: 2 });
+    const first = await f.openClient();
+    const second = await f.openClient();
+    // Using the first session makes the second the least recently used one.
+    await first.listTools();
+    const third = await f.openClient();
+    await expect(second.listTools()).rejects.toMatchObject({ code: 404 });
+    expect((await first.listTools()).tools.length).toBeGreaterThan(0);
+    expect((await third.listTools()).tools.length).toBeGreaterThan(0);
+  });
+
+  it("closes sessions left unused for the idle time when a new one starts", async () => {
+    const f = await fixture([server("shared")], undefined, undefined, { sessionIdleMs: 60_000 });
+    const now = vi.spyOn(Date, "now");
+    now.mockReturnValue(1_000_000);
+    const abandoned = await f.openClient();
+    const active = await f.openClient();
+    now.mockReturnValue(1_050_000);
+    await active.listTools();
+    now.mockReturnValue(1_070_000);
+    await f.openClient();
+    await expect(abandoned.listTools()).rejects.toMatchObject({ code: 404 });
+    expect((await active.listTools()).tools.length).toBeGreaterThan(0);
   });
 
   it("rejects a legacy session after its alias moves to a different registered workspace", async () => {

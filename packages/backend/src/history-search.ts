@@ -42,6 +42,15 @@ const reads = new Set<string>([
   HISTORY_SEARCH_METHODS.status,
 ]);
 const scopeSchema = z.array(z.string().min(1).max(256)).max(20_000);
+// Background indexing is paced. A pass used to follow every catalog change at once, which
+// kept the writer and this thread busy for as long as any session was active.
+const PASS_INTERVAL_MS = 30_000;
+/**
+ * A session rebuilt or failed while it keeps changing waits longer each time, up to the
+ * maximum. Reading a large transcript costs seconds even when little of it is rewritten.
+ */
+const RETRY_WAIT_MS = 60_000;
+const RETRY_WAIT_MAX_MS = 10 * 60_000;
 
 /** Owns only derived data. Native histories and the business database are never written here. */
 export class HistorySearch {
@@ -62,6 +71,12 @@ export class HistorySearch {
   #withdrawals = new Set<Promise<void>>();
   /** What DSH listed for each DSH session when it was last indexed in this run. */
   #dshIndexed = new Map<string, string>();
+  /** When each session was last rebuilt or failed, and how long it then waits. */
+  #paced = new Map<string, { at: number; wait: number }>();
+  #urgent = false;
+  #passedAt = 0;
+  #timer?: ReturnType<typeof setTimeout>;
+  #wake?: ReturnType<typeof setTimeout>;
   constructor(
     readonly store: BackendStore,
     readonly dataDir: string,
@@ -71,6 +86,10 @@ export class HistorySearch {
       workerFilename?: string;
       limitBytes?: number;
       timeoutMs?: number;
+      /** Minimum time between background passes. */
+      passIntervalMs?: number;
+      /** First wait before a rebuilt or failed session is read again. */
+      retryWaitMs?: number;
       dsh?: () => DshSearchSource | undefined;
     } = {},
   ) {
@@ -183,60 +202,118 @@ export class HistorySearch {
       if (this.#initializing === initializing) this.#initializing = undefined;
     }
   }
-  /** Coalesced at directory refresh / completed turn boundaries, never for token deltas. */
-  refresh(sessionId?: string): void {
+  /**
+   * Coalesced at directory refresh / completed turn boundaries, never for token deltas.
+   * Background passes are spaced apart; `urgent` is for a person's own request.
+   */
+  refresh(sessionId?: string, urgent = false): void {
     if (this.#stopping || !this.enabled()) return;
     if (sessionId) this.#force.add(sessionId);
+    if (urgent) this.#urgent = true;
     this.#dirty = true;
-    if (this.#updating || this.#clearing) return;
+    this.#schedule();
+  }
+  #interval(key: "passIntervalMs" | "retryWaitMs", fallback: number): number {
+    const name =
+      key === "passIntervalMs"
+        ? "AGENTKIB_SEARCH_PASS_INTERVAL_MS"
+        : "AGENTKIB_SEARCH_RETRY_WAIT_MS";
+    const configured = this.options[key] ?? Number(this.environment[name] ?? NaN);
+    return Number.isFinite(configured) && configured >= 0 ? configured : fallback;
+  }
+  #schedule(): void {
+    if (this.#updating || this.#clearing || this.#stopping) return;
+    const wait = this.#urgent
+      ? 0
+      : this.#passedAt + this.#interval("passIntervalMs", PASS_INTERVAL_MS) - Date.now();
+    if (wait > 0) {
+      this.#timer ??= setTimeout(() => {
+        this.#timer = undefined;
+        this.#schedule();
+      }, wait);
+      this.#timer.unref();
+      return;
+    }
+    if (this.#timer) clearTimeout(this.#timer);
+    this.#timer = undefined;
+    if (this.#dirty && this.enabled()) this.#pass();
+  }
+  #pass(): void {
     const update = (async () => {
       await this.#maintenance;
-      while (this.#dirty && !this.#clearing && !this.#stopping && this.enabled()) {
-        this.#dirty = false;
-        const epoch = this.#generation;
-        const controller = (this.#scanAbort = new AbortController());
-        await this.#workers();
-        const writer = this.#writer!;
-        const entries = this.#entries();
-        const force = new Set(this.#force);
-        this.#force.clear();
-        // Managed IDs may be aliases of a native source. In that case calibrate all entries.
-        const unknownAlias = [...force].some((id) => !entries.has(id));
-        await writer.request("prune", {
-          owners: [...entries.values()].map((entry) => entry.session),
-        });
-        for (const entry of entries.values()) {
-          if (epoch !== this.#generation || this.#stopping || this.#clearing) break;
-          if (!this.#current(entry, epoch)) continue;
-          const forced = unknownAlias || force.has(entry.session.sessionId);
-          const dsh =
-            entry.session.agent === "deepseek-harness"
-              ? await this.#dshRecords(entry, forced)
-              : null;
-          if (dsh === "unchanged" || !this.#current(entry, epoch)) continue;
-          try {
-            await writer.request(
-              "index",
-              {
-                ...entry,
-                source: dsh ? { ...entry.source, dsh: dsh.records } : entry.source,
-                force: forced,
-              },
-              {
-                signal: controller.signal,
-                verify: () => this.#current(entry, epoch),
-              },
-            );
-            if (this.#current(entry, epoch)) {
-              this.#withdrawn.delete(entry.session.sessionId);
-              if (dsh) this.#dshIndexed.set(entry.session.sessionId, dsh.key);
-            }
-          } catch {
-            // Worker records partial/unavailable state; one damaged provider must not suppress others.
-            if (this.#stopping || epoch !== this.#generation) break;
-            if (writer.failed) break;
-          }
+      if (!this.#dirty || this.#clearing || this.#stopping || !this.enabled()) return;
+      this.#dirty = false;
+      const urgent = this.#urgent;
+      this.#urgent = false;
+      if (urgent) this.#paced.clear();
+      const started = Date.now();
+      const epoch = this.#generation;
+      const controller = (this.#scanAbort = new AbortController());
+      await this.#workers();
+      const writer = this.#writer!;
+      const entries = this.#entries();
+      const force = new Set(this.#force);
+      this.#force.clear();
+      // Managed IDs may be aliases of a native source. In that case calibrate all entries.
+      const unknownAlias = [...force].some((id) => !entries.has(id));
+      await writer.request("prune", {
+        owners: [...entries.values()].map((entry) => entry.session),
+      });
+      // Newest first: when the cache is full, the recent sessions are the ones kept searchable.
+      const newestFirst = [...entries.values()].sort((a, b) =>
+        (b.session.updatedAt ?? "").localeCompare(a.session.updatedAt ?? ""),
+      );
+      let wake = Infinity;
+      for (const entry of newestFirst) {
+        if (epoch !== this.#generation || this.#stopping || this.#clearing) break;
+        if (!this.#current(entry, epoch)) continue;
+        const id = entry.session.sessionId;
+        const forced = unknownAlias || force.has(id);
+        const pace = this.#paced.get(id);
+        if (pace && started < pace.at + pace.wait) {
+          // Still changing after a rebuild; one more attempt follows when its wait is over.
+          if (force.has(id)) this.#force.add(id);
+          wake = Math.min(wake, pace.at + pace.wait);
+          continue;
         }
+        const dsh =
+          entry.session.agent === "deepseek-harness" ? await this.#dshRecords(entry, forced) : null;
+        if (dsh === "unchanged" || !this.#current(entry, epoch)) continue;
+        try {
+          const result = (await writer.request(
+            "index",
+            {
+              ...entry,
+              source: dsh ? { ...entry.source, dsh: dsh.records } : entry.source,
+              force: forced,
+            },
+            {
+              signal: controller.signal,
+              verify: () => this.#current(entry, epoch),
+            },
+          )) as { rebuilt?: boolean } | undefined;
+          if (this.#current(entry, epoch)) {
+            this.#withdrawn.delete(id);
+            if (dsh) this.#dshIndexed.set(id, dsh.key);
+            if (result?.rebuilt) this.#pace(id);
+          }
+        } catch (error) {
+          // Worker records partial/unavailable state; one damaged provider must not suppress others.
+          if (this.#stopping || epoch !== this.#generation) break;
+          if (writer.failed) break;
+          // A full cache answers without reading anything, so only other failures wait.
+          if (!(error instanceof Error && error.message === "history-search-budget-exceeded"))
+            this.#pace(id);
+        }
+      }
+      for (const id of this.#paced.keys()) if (!entries.has(id)) this.#paced.delete(id);
+      this.#passedAt = Date.now();
+      if (this.#wake) clearTimeout(this.#wake);
+      this.#wake = undefined;
+      // A paced session that stops changing raises no further event, so come back for it.
+      if (Number.isFinite(wake) && !this.#stopping) {
+        this.#wake = setTimeout(() => this.refresh(), Math.max(0, wake - Date.now()));
+        this.#wake.unref();
       }
     })();
     this.#updating = update;
@@ -244,8 +321,23 @@ export class HistorySearch {
       .catch(() => undefined)
       .finally(() => {
         if (this.#updating === update) this.#updating = undefined;
-        if (this.#dirty && !this.#stopping && this.enabled()) this.refresh();
+        if (this.#dirty && !this.#stopping && this.enabled()) this.#schedule();
       });
+  }
+  #pace(sessionId: string): void {
+    const now = Date.now(),
+      previous = this.#paced.get(sessionId),
+      first = this.#interval("retryWaitMs", RETRY_WAIT_MS);
+    const wait =
+      previous && now - previous.at < previous.wait * 2
+        ? Math.min(Math.max(previous.wait * 2, first), RETRY_WAIT_MAX_MS)
+        : first;
+    this.#paced.set(sessionId, { at: now, wait });
+  }
+  #stopTimers(): void {
+    if (this.#timer) clearTimeout(this.#timer);
+    if (this.#wake) clearTimeout(this.#wake);
+    this.#timer = this.#wake = undefined;
   }
   /**
    * A DSH session's records, read from the running DSH. A session DSH lists as it was when last
@@ -278,7 +370,7 @@ export class HistorySearch {
     this.#generation++;
     this.#scanAbort?.abort();
     for (const request of this.#requests.values()) request.abort();
-    this.refresh();
+    this.refresh(undefined, true);
   }
   async #withdraw(entry: Entry): Promise<void> {
     const sessionId = entry.session.sessionId;
@@ -319,7 +411,7 @@ export class HistorySearch {
         throw new Error("index-disabled");
       writePreference(this.dataDir, "session_content_search_enabled", enabled);
       if (!enabled) await this.clear();
-      else this.refresh();
+      else this.refresh(undefined, true);
       return this.request(HISTORY_SEARCH_METHODS.status, {});
     }
     if (method === HISTORY_SEARCH_METHODS.clear) {
@@ -328,7 +420,7 @@ export class HistorySearch {
     }
     if (method === HISTORY_SEARCH_METHODS.refresh) {
       await this.clear();
-      this.refresh();
+      this.refresh(undefined, true);
       return this.request(HISTORY_SEARCH_METHODS.status, {});
     }
     if (!reads.has(method)) throw new Error("Unknown history search operation");
@@ -451,6 +543,11 @@ export class HistorySearch {
   }
   clear(): Promise<void> {
     this.#force.clear();
+    this.#paced.clear();
+    // The cache is gone, so nothing counts as already indexed.
+    this.#dshIndexed.clear();
+    this.#stopTimers();
+    this.#passedAt = 0;
     this.#generation++;
     this.#dirty = false;
     this.#clearing = true;
@@ -492,6 +589,7 @@ export class HistorySearch {
   }
   stop() {
     this.#stopping = true;
+    this.#stopTimers();
     this.#generation++;
     this.#dirty = false;
     this.#scanAbort?.abort();

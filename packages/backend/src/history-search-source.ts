@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { lstatSync, type BigIntStats } from "node:fs";
 import { performance } from "node:perf_hooks";
 import path from "node:path";
 import { Commands } from "./commands";
@@ -79,6 +80,24 @@ function verifyOpenClawSearchBinding(
   });
 }
 
+const fileStamp = (stat: BigIntStats) => `${stat.dev}:${stat.ino}:${stat.size}:${stat.mtimeNs}`;
+/** Whether every file behind a committed snapshot is still exactly as it was read. */
+export function historySourceStampCurrent(stamp: string): boolean {
+  try {
+    const files = JSON.parse(stamp) as Array<[string, string]>;
+    return (
+      Array.isArray(files) &&
+      files.length > 0 &&
+      files.every(([file, value]) => {
+        const stat = lstatSync(file, { bigint: true });
+        return stat.isFile() && fileStamp(stat) === value;
+      })
+    );
+  } catch {
+    return false;
+  }
+}
+
 /** Callers stage emitted records and publish them only after this function successfully settles. */
 export async function readHistorySearchSource(
   input: HistorySourceInput,
@@ -121,6 +140,7 @@ export async function readHistorySearchSource(
   let count = 0,
     bytes = 0;
   let openClawBinding: OpenClawHistorySourceBinding | undefined = input.openClawBinding;
+  const stamps = new Map<string, string>();
   // Limits describe omitted records; they never turn clipped text into a complete record.
   const sink: HistorySourceSink = {
     checkpoint: check,
@@ -132,6 +152,9 @@ export async function readHistorySearchSource(
     },
     limit: (code) => {
       limitations.add(code);
+    },
+    stamp: (file, stat) => {
+      stamps.set(file, fileStamp(stat));
     },
     emit: async (record) => {
       check();
@@ -520,6 +543,11 @@ export async function readHistorySearchSource(
       limitations: [...limitations].sort(),
       status: limitations.size ? "partial" : "ready",
       ...(openClawBinding ? { openClawBinding } : {}),
+      // These two are read from their transcript alone. The others also consult a database or a
+      // running process, which a file stamp cannot vouch for.
+      ...(["codex", "claude-code"].includes(native.agent) && stamps.size
+        ? { stamp: JSON.stringify([...stamps]) }
+        : {}),
     };
   } catch (error) {
     check();

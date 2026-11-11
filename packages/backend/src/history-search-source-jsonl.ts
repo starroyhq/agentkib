@@ -33,6 +33,7 @@ async function lines(
   try {
     const before = fstatSync(fd, { bigint: true });
     if (!before.isFile()) throw new Error("history-source-unsafe");
+    sink.stamp?.(file, before);
     // A compressed rollout's limit applies to the bytes it decompresses to.
     const compressed = isCompressedRollout(file);
     const maximum = Number(before.size > BigInt(MAX_BYTES) ? BigInt(MAX_BYTES) : before.size);

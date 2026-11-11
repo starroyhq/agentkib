@@ -1,7 +1,7 @@
 import { createHash, randomUUID } from "node:crypto";
 import { chmodSync, lstatSync, mkdirSync, type Stats } from "node:fs";
 import path from "node:path";
-import { DatabaseSync, type SQLInputValue } from "node:sqlite";
+import { DatabaseSync, type SQLInputValue, type StatementSync } from "node:sqlite";
 import { z } from "zod";
 import type {
   HistoryCoverage,
@@ -21,6 +21,13 @@ import {
 } from "./history-search-source-types";
 
 export const CONTENT_SEARCH_BUDGET = 1024 * 1024 * 1024;
+/**
+ * The share of the budget one session's text may take. Stored text costs about seven times its
+ * size (two copies and the trigram index), so a single very long history fills about a quarter
+ * of the cache instead of displacing the rest.
+ */
+const SESSION_TEXT_SHARE = 1 / 32;
+const SESSION_TEXT_FLOOR = 32 * 1024 * 1024;
 const CHUNK_SIZE = 8192;
 const CHUNK_OVERLAP = 512; // At least 256 Unicode query characters, including surrogate pairs.
 const MAX_SCANNED_CHUNKS = 20_000;
@@ -35,6 +42,18 @@ export interface SearchSession {
   ownerKey: string;
 }
 type CoverageSession = Pick<SearchSession, "sessionId" | "agent">;
+type ExistingChunk = { id: number; identity: string };
+/** Where a chunk sits in its session; equal content at the same place is the same chunk. */
+const chunkPlace = (ordinal: number, start: number, recordId: string) =>
+  `${ordinal}\0${start}\0${recordId}`;
+const chunkIdentity = (
+  hash: string,
+  kind: string,
+  toolName: string | null,
+  timestamp: string | null,
+) => JSON.stringify([hash, kind, toolName, timestamp]);
+/** Stays under a statement's bound-parameter limit. */
+const DELETE_BATCH = 500;
 export interface SearchRecord {
   recordId: string;
   ordinal: number;
@@ -190,10 +209,26 @@ function safeFile(filename: string) {
 }
 export class HistorySearchStore {
   readonly db: DatabaseSync;
+  #pageSize?: number;
+  #pageCount?: StatementSync;
+  #freePages?: StatementSync;
+  /** The committed chunks of the session being rebuilt that the new snapshot has not matched. */
+  #insert?: StatementSync;
+  #build?: {
+    session: SearchSession;
+    generation: string;
+    live: string | null;
+    unmatched: Map<string, ExistingChunk>;
+    /** Text taken from this snapshot so far, and whether its allowance ran out. */
+    bytes: number;
+    capped: boolean;
+  };
   constructor(
     readonly filename: string,
     readonly writable: boolean,
     readonly limitBytes = CONTENT_SEARCH_BUDGET,
+    /** How much text of one session is kept; the rest of a longer history is left out. */
+    readonly sessionTextBytes = Math.max(limitBytes * SESSION_TEXT_SHARE, SESSION_TEXT_FLOOR),
   ) {
     if (writable) mkdirSync(path.dirname(filename), { recursive: true, mode: 0o700 });
     safeFile(filename);
@@ -202,7 +237,10 @@ export class HistorySearchStore {
       this.db.exec("PRAGMA busy_timeout=1000; PRAGMA foreign_keys=ON;");
       if (writable) {
         chmodSync(filename, 0o600);
-        this.db.exec(`PRAGMA journal_mode=WAL; PRAGMA wal_autocheckpoint=256;
+        // A rebuildable cache: syncing every commit and checkpointing every megabyte only
+        // multiplies writes. WAL with synchronous=NORMAL still cannot corrupt the database.
+        this.db
+          .exec(`PRAGMA journal_mode=WAL; PRAGMA synchronous=NORMAL; PRAGMA wal_autocheckpoint=2048;
           CREATE TABLE IF NOT EXISTS metadata(key TEXT PRIMARY KEY,value TEXT NOT NULL);
           CREATE TABLE IF NOT EXISTS sessions(
             session_id TEXT PRIMARY KEY, workspace_id TEXT NOT NULL, agent TEXT NOT NULL,
@@ -219,6 +257,10 @@ export class HistorySearchStore {
             start INTEGER NOT NULL, content TEXT NOT NULL, normalized TEXT NOT NULL, content_hash TEXT NOT NULL);
           CREATE INDEX IF NOT EXISTS chunks_session ON chunks(session_id,generation,ordinal,start);
           CREATE INDEX IF NOT EXISTS chunks_location ON chunks(session_id,generation,record_id,chunk_id);
+          CREATE INDEX IF NOT EXISTS chunks_identity ON chunks(session_id,generation,ordinal,start,record_id,content_hash,kind,tool_name,timestamp);
+          CREATE TABLE IF NOT EXISTS source_stamps(
+            session_id TEXT PRIMARY KEY REFERENCES sessions(session_id) ON DELETE CASCADE,
+            revision TEXT NOT NULL, stamp TEXT NOT NULL);
           CREATE VIRTUAL TABLE IF NOT EXISTS chunks_fts USING fts5(normalized,content='chunks',content_rowid='id',tokenize='trigram');
           CREATE TRIGGER IF NOT EXISTS chunks_ai AFTER INSERT ON chunks BEGIN
             INSERT INTO chunks_fts(rowid,normalized) VALUES(new.id,new.normalized); END;
@@ -266,6 +308,74 @@ export class HistorySearchStore {
   }
   budgetExceeded() {
     return this.value("budgetExceeded") === "true";
+  }
+  /** Bytes in live pages. Pages freed by a deleted generation are reused by later inserts. */
+  private usedBytes(): number {
+    this.#pageSize ??= Number(this.db.prepare("PRAGMA page_size").get()!.page_size);
+    this.#pageCount ??= this.db.prepare("PRAGMA page_count");
+    this.#freePages ??= this.db.prepare("PRAGMA freelist_count");
+    return (
+      (Number(this.#pageCount.get()!.page_count) - Number(this.#freePages.get()!.freelist_count)) *
+      this.#pageSize
+    );
+  }
+  /**
+   * Indexing resumes once deletions leave clear room; just under the limit would flap. Call only
+   * after something was deleted: a session too large for the room that is left would otherwise
+   * be staged and discarded again on every pass.
+   */
+  private relieveBudget() {
+    if (this.budgetExceeded() && this.usedBytes() < this.limitBytes * 0.9)
+      this.set("budgetExceeded", "false");
+  }
+  /**
+   * Records why a session has no current index, without opening a generation. Writes only when
+   * the row changes: a full cache or an unreadable source used to rewrite every such session on
+   * every refresh pass.
+   */
+  markUnindexed(session: SearchSession, limitation: string) {
+    const limitations = JSON.stringify([limitation]);
+    const budget = limitation === "cache-budget-exceeded";
+    const row = this.db
+      .prepare("SELECT *,CAST(title AS BLOB) AS title_bytes FROM sessions WHERE session_id=?")
+      .get(session.sessionId);
+    const kept = row?.generation && row.owner_key === session.ownerKey;
+    const status = kept ? "stale" : "unavailable";
+    const same =
+      row &&
+      row.workspace_id === session.workspaceId &&
+      row.agent === session.agent &&
+      nullableSqliteText(row.title_bytes) === session.title &&
+      row.updated_at === session.updatedAt &&
+      row.archived === Number(session.archived) &&
+      row.owner_key === session.ownerKey &&
+      row.status === status &&
+      row.limitations === limitations;
+    if (same && (!budget || this.budgetExceeded())) return;
+    this.transaction(() => {
+      if (!same) {
+        if (row && row.owner_key !== session.ownerKey)
+          this.db.prepare("DELETE FROM sessions WHERE session_id=?").run(session.sessionId);
+        this.db
+          .prepare(`INSERT INTO sessions(session_id,workspace_id,agent,title,updated_at,archived,owner_key,status,limitations)
+          VALUES(?,?,?,?,?,?,?,?,?) ON CONFLICT(session_id) DO UPDATE SET
+          workspace_id=excluded.workspace_id,agent=excluded.agent,title=excluded.title,updated_at=excluded.updated_at,
+          archived=excluded.archived,owner_key=excluded.owner_key,status=excluded.status,limitations=excluded.limitations`)
+          .run(
+            session.sessionId,
+            session.workspaceId,
+            session.agent,
+            session.title,
+            session.updatedAt,
+            Number(session.archived),
+            session.ownerKey,
+            status,
+            limitations,
+          );
+        this.bump();
+      }
+      if (budget) this.set("budgetExceeded", "true");
+    });
   }
   private value(key: string): string | undefined {
     const row = this.db.prepare("SELECT value FROM metadata WHERE key=?").get(key);
@@ -343,15 +453,72 @@ export class HistorySearchStore {
         );
       this.bump();
     });
+    // Only chunks that differ from the committed ones are written, so a session that grew by
+    // one turn costs that turn, not its whole history again.
+    const live = this.db
+      .prepare("SELECT generation FROM sessions WHERE session_id=?")
+      .get(session.sessionId)?.generation;
+    const unmatched = new Map<string, ExistingChunk>();
+    if (typeof live === "string")
+      for (const row of this.db
+        .prepare(`SELECT id,ordinal,start,CAST(record_id AS BLOB) AS record_id,content_hash,kind,
+          CAST(tool_name AS BLOB) AS tool_name,CAST(timestamp AS BLOB) AS timestamp
+          FROM chunks INDEXED BY chunks_identity WHERE session_id=? AND generation=?`)
+        .all(session.sessionId, live))
+        unmatched.set(
+          chunkPlace(Number(row.ordinal), Number(row.start), sqliteText(row.record_id)),
+          {
+            id: Number(row.id),
+            identity: chunkIdentity(
+              String(row.content_hash),
+              String(row.kind),
+              nullableSqliteText(row.tool_name),
+              nullableSqliteText(row.timestamp),
+            ),
+          },
+        );
+    this.#build = {
+      session,
+      generation,
+      live: typeof live === "string" ? live : null,
+      unmatched,
+      bytes: 0,
+      capped: false,
+    };
     return generation;
   }
   append(sessionId: string, generation: string, record: SearchRecord, checkpoint: () => void) {
-    const insert = this.db.prepare(
+    const build = this.#build?.generation === generation ? this.#build : undefined;
+    const insert = (this.#insert ??= this.db.prepare(
       `INSERT INTO chunks(session_id,generation,record_id,ordinal,kind,tool_name,timestamp,chunk_id,start,content,normalized,content_hash) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)`,
-    );
-    this.transaction(() => {
+    ));
+    let began = false;
+    try {
       for (const chunk of textChunks(record.content)) {
         checkpoint();
+        if (build) {
+          // Keeps the beginning of an over-long history: a stable prefix is not rewritten when
+          // the history grows, which a window over its latest part would be.
+          if (build.capped) return;
+          build.bytes += Buffer.byteLength(chunk.content);
+          if (build.bytes > this.sessionTextBytes) {
+            build.capped = true;
+            return;
+          }
+        }
+        const hash = contentHash(chunk.content);
+        const place = chunkPlace(record.ordinal, chunk.start, record.recordId);
+        const existing = build?.unmatched.get(place);
+        if (
+          existing?.identity === chunkIdentity(hash, record.kind, record.toolName, record.timestamp)
+        ) {
+          build!.unmatched.delete(place);
+          continue;
+        }
+        if (!began) {
+          this.db.exec("BEGIN IMMEDIATE");
+          began = true;
+        }
         insert.run(
           sessionId,
           generation,
@@ -364,15 +531,54 @@ export class HistorySearchStore {
           chunk.start,
           chunk.content,
           normalizeHistorySearchText(chunk.content),
-          contentHash(chunk.content),
+          hash,
         );
         // Account for SQLite and FTS overhead rather than only counting raw source bytes.
-        const page = this.db.prepare("PRAGMA page_count").get()!;
-        const size = this.db.prepare("PRAGMA page_size").get()!;
-        if (Number(page.page_count) * Number(size.page_size) > this.limitBytes)
+        if (this.usedBytes() > this.limitBytes && !(build && this.makeRoom(build.session)))
           throw new Error("history-search-budget-exceeded");
       }
-    });
+      if (began) this.db.exec("COMMIT");
+    } catch (error) {
+      if (began) this.db.exec("ROLLBACK");
+      throw error;
+    }
+  }
+  /**
+   * Drops the cached text of sessions last updated before this one until the cache has room
+   * again, oldest first. Returns false when nothing older is left, so recent sessions stay
+   * searchable and a session never displaces a newer one.
+   */
+  makeRoom(session: SearchSession): boolean {
+    const target = this.limitBytes * 0.9;
+    const older = this.db
+      .prepare(
+        `SELECT session_id FROM sessions WHERE session_id!=? AND generation IS NOT NULL
+        AND COALESCE(updated_at,'')<COALESCE(?,'') ORDER BY COALESCE(updated_at,''),session_id`,
+      )
+      .all(session.sessionId, session.updatedAt);
+    for (const row of older) {
+      if (this.usedBytes() <= target) break;
+      this.db.prepare("DELETE FROM chunks WHERE session_id=?").run(row.session_id!);
+      this.db.prepare("DELETE FROM source_stamps WHERE session_id=?").run(row.session_id!);
+      this.db
+        .prepare(
+          "UPDATE sessions SET generation=NULL,source_revision=NULL,indexed_at=NULL,status='unavailable',limitations=? WHERE session_id=?",
+        )
+        .run(JSON.stringify(["cache-budget-exceeded"]), row.session_id!);
+      this.bump();
+    }
+    return this.usedBytes() <= this.limitBytes;
+  }
+  /** Whether a full cache could still take this session by dropping older ones. */
+  canMakeRoom(session: SearchSession): boolean {
+    return (
+      this.db
+        .prepare(
+          `SELECT 1 FROM sessions WHERE session_id!=? AND generation IS NOT NULL
+          AND COALESCE(updated_at,'')<COALESCE(?,'') LIMIT 1`,
+        )
+        .get(session.sessionId, session.updatedAt) !== undefined
+    );
   }
   finish(
     sessionId: string,
@@ -381,13 +587,36 @@ export class HistorySearchStore {
     state: "ready" | "partial",
     limitations: string[],
     openClawBinding?: OpenClawHistorySourceBinding,
+    stamp?: string,
   ) {
+    const build = this.#build?.generation === generation ? this.#build : undefined;
+    this.#build = undefined;
+    if (build?.capped) {
+      state = "partial";
+      limitations = [...new Set([...limitations, "cache-session-limit"])].sort();
+    }
     this.transaction(() => {
+      // Chunks carried over keep the committed generation; the new ones join it here.
+      const live = build?.live ?? generation;
+      let freed = false;
+      if (build?.live) {
+        const stale = [...build.unmatched.values()].map((chunk) => chunk.id);
+        freed = stale.length > 0;
+        for (let index = 0; index < stale.length; index += DELETE_BATCH) {
+          const batch = stale.slice(index, index + DELETE_BATCH);
+          this.db
+            .prepare(`DELETE FROM chunks WHERE id IN (${batch.map(() => "?").join(",")})`)
+            .run(...batch);
+        }
+        this.db
+          .prepare("UPDATE chunks SET generation=? WHERE session_id=? AND generation=?")
+          .run(live, sessionId, generation);
+      }
       this.db
         .prepare(
           "UPDATE sessions SET generation=?,source_revision=?,status=?,limitations=?,indexed_at=? WHERE session_id=?",
         )
-        .run(generation, revision, state, JSON.stringify(limitations), Date.now(), sessionId);
+        .run(live, revision, state, JSON.stringify(limitations), Date.now(), sessionId);
       if (openClawBinding)
         this.db
           .prepare(
@@ -395,12 +624,40 @@ export class HistorySearchStore {
           )
           .run(sessionId, JSON.stringify(openClawBindingSchema.parse(openClawBinding)));
       else this.db.prepare("DELETE FROM source_bindings WHERE session_id=?").run(sessionId);
-      this.db
+      const leftover = this.db
         .prepare("DELETE FROM chunks WHERE session_id=? AND generation!=?")
-        .run(sessionId, generation);
+        .run(sessionId, live);
+      this.saveStamp(sessionId, revision, stamp);
+      if (freed || Number(leftover.changes) > 0) this.relieveBudget();
       this.bump();
     });
     this.db.exec("PRAGMA wal_checkpoint(PASSIVE)");
+  }
+  private saveStamp(sessionId: string, revision: string, stamp?: string) {
+    if (stamp)
+      this.db
+        .prepare(
+          "INSERT INTO source_stamps VALUES(?,?,?) ON CONFLICT(session_id) DO UPDATE SET revision=excluded.revision,stamp=excluded.stamp",
+        )
+        .run(sessionId, revision, stamp);
+    else this.db.prepare("DELETE FROM source_stamps WHERE session_id=?").run(sessionId);
+  }
+  /**
+   * What the source's files looked like when this revision was committed. An older AgentKib
+   * leaves the stamp behind when it writes a revision, so it counts only for its own revision.
+   */
+  sourceStamp(sessionId: string, revision: string): string | undefined {
+    const row = this.db
+      .prepare(
+        "SELECT CAST(stamp AS BLOB) AS stamp FROM source_stamps WHERE session_id=? AND revision=?",
+      )
+      .get(sessionId, revision);
+    return row ? sqliteText(row.stamp) : undefined;
+  }
+  /** A source read in full and found unchanged is not read again while its files stay as they are. */
+  rememberStamp(sessionId: string, revision: string, stamp: string) {
+    if (this.sourceStamp(sessionId, revision) === stamp) return;
+    this.transaction(() => this.saveStamp(sessionId, revision, stamp));
   }
   abort(
     sessionId: string,
@@ -412,10 +669,12 @@ export class HistorySearchStore {
       sourceFailure?: "damaged-record" | "source-byte-limit";
     } = {},
   ) {
+    if (this.#build?.generation === generation) this.#build = undefined;
     this.transaction(() => {
       if (options.unsafeContent || options.ownerChanged) {
         this.db.prepare("DELETE FROM chunks WHERE session_id=?").run(sessionId);
         this.db.prepare("DELETE FROM source_bindings WHERE session_id=?").run(sessionId);
+        this.db.prepare("DELETE FROM source_stamps WHERE session_id=?").run(sessionId);
         this.db
           .prepare(
             "UPDATE sessions SET generation=NULL,source_revision=NULL,indexed_at=NULL WHERE session_id=?",
@@ -444,23 +703,28 @@ export class HistorySearchStore {
       if (budget) this.set("budgetExceeded", "true");
       this.bump();
     });
-    this.db.exec("PRAGMA wal_checkpoint(TRUNCATE)");
+    // Only an abandoned oversized generation leaves a log worth truncating.
+    this.db.exec(`PRAGMA wal_checkpoint(${budget ? "TRUNCATE" : "PASSIVE"})`);
   }
   prune(owners: Array<{ sessionId: string; ownerKey: string }>) {
     const keep = new Map(owners.map((owner) => [owner.sessionId, owner.ownerKey]));
     this.transaction(() => {
+      let removed = false;
       for (const row of this.db.prepare("SELECT session_id,owner_key FROM sessions").all())
         if (keep.get(String(row.session_id)) !== row.owner_key) {
           this.db.prepare("DELETE FROM sessions WHERE session_id=?").run(row.session_id!);
           this.bump();
+          removed = true;
         }
+      if (removed) this.relieveBudget();
     });
   }
   withdraw(sessionId: string, ownerKey: string) {
     this.transaction(() => {
-      this.db
+      const removed = this.db
         .prepare("DELETE FROM sessions WHERE session_id=? AND owner_key=?")
         .run(sessionId, ownerKey);
+      if (Number(removed.changes) > 0) this.relieveBudget();
       this.bump();
     });
   }

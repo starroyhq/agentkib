@@ -74,7 +74,13 @@ async function fixture(
   ];
   if (agent === "claude-code")
     await fs.writeFile(file, values.map((value) => JSON.stringify(value)).join("\n") + "\n");
-  const environment = { ...createIsolatedWorkerEnvironment(root), PATH: bin };
+  const environment = {
+    ...createIsolatedWorkerEnvironment(root),
+    PATH: bin,
+    // These tests change a source and expect the next refresh to index it at once.
+    AGENTKIB_SEARCH_PASS_INTERVAL_MS: "0",
+    AGENTKIB_SEARCH_RETRY_WAIT_MS: "0",
+  };
   let nativeDatabase: DatabaseSync | undefined;
   if (agent === "hermes") {
     const home = path.join(root, ".hermes");
@@ -411,6 +417,58 @@ describe("history search runtime lifecycle", () => {
       ],
     });
     expect(confirmed.text).toBe(preview.text.replace("Fixture", "Renamed source"));
+  }, 20_000);
+  it("leaves an unchanged transcript alone and writes only the turn appended to it", async () => {
+    const f = await fixture();
+    await f.enable();
+    const cache = new DatabaseSync(path.join(f.dataDir, "session-search.sqlite"), {
+      readOnly: true,
+    });
+    cleanup.push(async () => cache.close());
+    const rows = () =>
+      cache
+        .prepare("SELECT id FROM chunks ORDER BY ordinal,start")
+        .all()
+        .map((row) => Number(row.id));
+    const committed = () =>
+      cache.prepare("SELECT generation,source_revision,indexed_at FROM sessions").get();
+    const refresh = () =>
+      f.request(RUNTIME_METHODS.refreshWorkspaceSessions, { workspaceId: "fixture", force: true });
+    const settle = () => new Promise((resolve) => setTimeout(resolve, 300));
+    // The body is long enough to span several chunks.
+    const before = rows();
+    expect(before.length).toBeGreaterThan(10);
+    // The first listing replaces the synthetic summary; its text is the same, so no row moves.
+    await refresh();
+    await settle();
+    expect(rows()).toEqual(before);
+    const first = committed();
+    expect(cache.prepare("SELECT COUNT(*) AS count FROM source_stamps").get()?.count).toBe(1);
+    for (let pass = 0; pass < 3; pass++) await refresh();
+    await settle();
+    expect(rows()).toEqual(before);
+    expect(committed()).toEqual(first);
+    const appended = {
+      ...f.values[1]!,
+      uuid: randomUUID(),
+      parentUuid: f.values[1]!.uuid,
+      message: { role: "assistant", content: "appended-turn-5c1e marker" },
+    };
+    await fs.appendFile(f.file, JSON.stringify(appended) + "\n");
+    await refresh();
+    await vi.waitFor(
+      async () => {
+        const result = await f.request<HistorySearchResult>(methods.query, {
+          query: "appended-turn-5c1e",
+        });
+        expect(result.hits).toHaveLength(1);
+      },
+      { timeout: 10_000, interval: 30 },
+    );
+    const after = rows();
+    expect(after.slice(0, before.length)).toEqual(before);
+    expect(after).toHaveLength(before.length + 1);
+    expect((await f.query()).hits.length).toBeGreaterThan(0);
   }, 20_000);
   it("refreshes changed SQLite WAL bodies even when directory summaries are identical", async () => {
     const f = await fixture(false, "hermes");

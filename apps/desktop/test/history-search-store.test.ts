@@ -627,4 +627,200 @@ describe("committed history content cache", () => {
       db.db.prepare("SELECT COUNT(*) AS count FROM chunks WHERE session_id='a'").get()?.count,
     ).toBe(0);
   });
+
+  describe("write volume", () => {
+    const ids = (db: HistorySearchStore, id: string) =>
+      db.db
+        .prepare("SELECT id FROM chunks WHERE session_id=? ORDER BY ordinal,start")
+        .all(id)
+        .map((row) => Number(row.id));
+    /** Counts commits by the writer, as another connection sees them. */
+    function commits(db: HistorySearchStore) {
+      const reader = new HistorySearchStore(db.filename, false);
+      stores.push(reader);
+      const version = () => Number(reader.db.prepare("PRAGMA data_version").get()!.data_version);
+      let last = version();
+      return () => {
+        const now = version(),
+          changed = now !== last;
+        last = now;
+        return changed;
+      };
+    }
+    it("rewrites only the chunks that changed when a grown session is rebuilt", () => {
+      const db = fixture(),
+        s = session("grown");
+      const turns = Array.from({ length: 40 }, (_, index) =>
+        record(`r${index}`, index, `turn ${index} ${"body ".repeat(200)}`),
+      );
+      const generation = publish(db, s, turns);
+      const before = ids(db, "grown");
+      const next = publish(
+        db,
+        s,
+        [...turns, record("r40", 40, "turn 40 appended-marker")],
+        "rev-2",
+      );
+      const after = ids(db, "grown");
+      // The forty earlier turns keep their rows; one row was written for the new turn.
+      expect(after.slice(0, before.length)).toEqual(before);
+      expect(after).toHaveLength(before.length + 1);
+      expect(next).not.toBe(generation);
+      expect(db.cachedSourceRevision(s)).toBe("rev-2");
+      expect(db.query({ query: "appended-marker" }, ["grown"], () => {}).hits).toHaveLength(1);
+      expect(db.query({ query: "turn 7 " }, ["grown"], () => {}).hits).toHaveLength(1);
+    });
+    it("replaces an edited record and drops removed ones without touching the rest", () => {
+      const db = fixture(),
+        s = session("edited");
+      publish(db, s, [
+        record("a", 0, "first unchanged-text"),
+        record("b", 1, "second before-edit"),
+        record("c", 2, "third removed-text"),
+      ]);
+      const [first] = ids(db, "edited");
+      publish(
+        db,
+        s,
+        [record("a", 0, "first unchanged-text"), record("b", 1, "second after-edit")],
+        "rev-2",
+      );
+      expect(ids(db, "edited")[0]).toBe(first);
+      expect(ids(db, "edited")).toHaveLength(2);
+      const hits = (query: string) => db.query({ query }, ["edited"], () => {}).hits.length;
+      expect([hits("unchanged-text"), hits("after-edit")]).toEqual([1, 1]);
+      expect([hits("before-edit"), hits("removed-text")]).toEqual([0, 0]);
+    });
+    it("keeps the committed chunks when a rebuild is abandoned", () => {
+      const db = fixture(),
+        s = session("abandoned");
+      publish(db, s, [record("a", 0, "kept-original")]);
+      const before = ids(db, "abandoned");
+      const stage = db.begin(s);
+      db.append("abandoned", stage, record("a", 0, "kept-original"), () => {});
+      db.append("abandoned", stage, record("b", 1, "never-published"), () => {});
+      db.abort("abandoned", stage, false);
+      expect(ids(db, "abandoned")).toEqual(before);
+      expect(db.query({ query: "never-published" }, ["abandoned"], () => {}).hits).toHaveLength(0);
+      expect(db.query({ query: "kept-original" }, ["abandoned"], () => {}).hits).toHaveLength(1);
+    });
+    it("records a session that cannot be indexed once, not on every pass", () => {
+      const db = fixture(),
+        changed = commits(db);
+      db.markUnindexed(session("broken"), "source-unavailable");
+      expect(changed()).toBe(true);
+      for (let pass = 0; pass < 5; pass++)
+        db.markUnindexed(session("broken"), "source-unavailable");
+      expect(changed()).toBe(false);
+      expect(db.status(["broken"]).coverage).toMatchObject({
+        unavailable: 1,
+        limitations: ["source-unavailable"],
+      });
+      // A changed title is new information and is recorded.
+      db.markUnindexed({ ...session("broken"), title: "renamed" }, "source-unavailable");
+      expect(changed()).toBe(true);
+    });
+    it("keeps committed text searchable while its source cannot be read", () => {
+      const db = fixture(),
+        s = session("offline");
+      publish(db, s, [record("a", 0, "offline-marker")]);
+      db.markUnindexed(s, "source-unavailable");
+      expect(db.cachedSourceRevision(s)).toBeUndefined();
+      expect(db.status(["offline"]).coverage).toMatchObject({ stale: 1 });
+      expect(db.query({ query: "offline-marker" }, ["offline"], () => {}).hits).toHaveLength(1);
+    });
+    it("drops older sessions to make room for a newer one and never the reverse", () => {
+      const text = (name: string) => `${name} ${"filler-text ".repeat(4000)}`;
+      const bytes = (db: HistorySearchStore) =>
+        Number(db.db.prepare("PRAGMA page_count").get()!.page_count) *
+        Number(db.db.prepare("PRAGMA page_size").get()!.page_size);
+      // Sized from a real record, so that five of them do not fit and four do.
+      const probe = fixture(),
+        empty = bytes(probe);
+      publish(probe, session("probe"), [record("r", 0, text("probe"))]);
+      const db = fixture(empty + Math.round((bytes(probe) - empty) * 4.5));
+      const old = session("old", "w1", "2026-10-01T00:00:00Z"),
+        middle = session("middle", "w1", "2026-10-02T00:00:00Z"),
+        recent = session("recent", "w1", "2026-10-03T00:00:00Z");
+      publish(db, old, [record("r", 0, text("old-marker"))]);
+      publish(db, middle, [record("r", 0, text("middle-marker"))]);
+      publish(db, recent, [
+        record("r", 0, text("recent-marker")),
+        record("s", 1, text("recent-second")),
+        record("t", 2, text("recent-third")),
+      ]);
+      const hits = (query: string) =>
+        db.query({ query }, ["old", "middle", "recent"], () => {}).hits.length;
+      expect(hits("recent-third")).toBe(1);
+      expect(hits("middle-marker")).toBe(1);
+      expect(hits("old-marker")).toBe(0);
+      expect(db.status(["old"]).coverage).toMatchObject({
+        unavailable: 1,
+        limitations: ["cache-budget-exceeded"],
+      });
+      // The oldest session finds nothing older to displace, so it waits and writes nothing more.
+      expect(db.canMakeRoom(old)).toBe(false);
+      const stage = db.begin(old);
+      expect(() => {
+        for (let index = 0; index < 20; index++)
+          db.append("old", stage, record(`r${index}`, index, text("old-again")), () => {});
+      }).toThrow("budget-exceeded");
+      db.abort("old", stage, true);
+      expect(hits("recent-third")).toBe(1);
+      expect(db.budgetExceeded()).toBe(true);
+      const changed = commits(db);
+      db.markUnindexed(old, "cache-budget-exceeded");
+      expect(changed()).toBe(false);
+    });
+    it("resumes indexing after removed sessions leave room", () => {
+      const db = fixture(300_000),
+        large = session("large", "w1", "2026-10-02T00:00:00Z");
+      const stage = db.begin(large);
+      expect(() => {
+        for (let index = 0; index < 40; index++)
+          db.append("large", stage, record(`r${index}`, index, "x ".repeat(20_000)), () => {});
+      }).toThrow("budget-exceeded");
+      db.abort("large", stage, true);
+      expect(db.budgetExceeded()).toBe(true);
+      db.prune([]);
+      expect(db.budgetExceeded()).toBe(false);
+    });
+    it("keeps the beginning of an over-long session and does not rewrite it as the session grows", () => {
+      const root = mkdtempSync(path.join(os.tmpdir(), "history-index-"));
+      roots.push(root);
+      const db = new HistorySearchStore(path.join(root, "search.sqlite"), true, undefined, 20_000);
+      stores.push(db);
+      const s = session("long");
+      const turns = (count: number) =>
+        Array.from({ length: count }, (_, index) =>
+          record(`r${index}`, index, `turn-${index}-marker ${"body ".repeat(1000)}`),
+        );
+      publish(db, s, turns(10));
+      const kept = ids(db, "long");
+      expect(kept.length).toBeGreaterThan(0);
+      expect(kept.length).toBeLessThan(10);
+      expect(db.status(["long"]).coverage).toMatchObject({
+        partial: 1,
+        limitations: ["cache-session-limit"],
+      });
+      const hits = (query: string) => db.query({ query }, ["long"], () => {}).hits.length;
+      expect([hits("turn-0-marker"), hits("turn-9-marker")]).toEqual([1, 0]);
+      publish(db, s, turns(30), "rev-2");
+      expect(ids(db, "long")).toEqual(kept);
+    });
+    it("trusts a file stamp only for the revision it was saved with", () => {
+      const db = fixture(),
+        s = session("stamped");
+      const generation = db.begin(s);
+      db.append("stamped", generation, record("a", 0, "stamped-text"), () => {});
+      db.finish("stamped", generation, "rev-1", "ready", [], undefined, "stamp-1");
+      expect(db.sourceStamp("stamped", "rev-1")).toBe("stamp-1");
+      expect(db.sourceStamp("stamped", "rev-2")).toBeUndefined();
+      // A rebuild from a source that offers no stamp forgets the old one.
+      publish(db, s, [record("a", 0, "stamped-text")], "rev-2");
+      expect(db.sourceStamp("stamped", "rev-2")).toBeUndefined();
+      db.rememberStamp("stamped", "rev-2", "stamp-2");
+      expect(db.sourceStamp("stamped", "rev-2")).toBe("stamp-2");
+    });
+  });
 });

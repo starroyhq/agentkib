@@ -180,6 +180,8 @@ async function fixture(agent: "codex" | "claude-code" = "codex", delayExit = fal
   const environment = {
     ...createIsolatedWorkerEnvironment(root),
     PATH: bin,
+    AGENTKIB_SEARCH_PASS_INTERVAL_MS: "0",
+    AGENTKIB_SEARCH_RETRY_WAIT_MS: "0",
     FIXTURE_NATIVE_ID: nativeId,
     FIXTURE_FRAMES: framesFile,
     FIXTURE_MODE: modeFile,

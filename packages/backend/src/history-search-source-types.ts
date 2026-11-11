@@ -1,3 +1,4 @@
+import type { BigIntStats } from "node:fs";
 import type { HistoryRecordKind } from "@agentkib/runtime-protocol";
 import type { CursorBridgeContext } from "./cursor-bridge";
 import type { DshSearchRecord } from "./dsh-document";
@@ -59,6 +60,11 @@ export interface HistorySourceResult {
   limitations: string[];
   status: "ready" | "partial";
   openClawBinding?: OpenClawHistorySourceBinding;
+  /**
+   * What the files this snapshot was read from looked like. Present only when they are its whole
+   * input, so an unchanged stamp means an unchanged revision without reading them again.
+   */
+  stamp?: string;
 }
 /** Internal readers emit complete, unredacted text; the common sink sanitizes before delivery. */
 export interface HistorySourceSink {
@@ -66,4 +72,6 @@ export interface HistorySourceSink {
   fingerprint(value: string | Uint8Array): void;
   limit(code: string): void;
   checkpoint(): void;
+  /** A file the snapshot is read from, as it was when reading began. */
+  stamp?(file: string, stat: BigIntStats): void;
 }

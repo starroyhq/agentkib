@@ -822,6 +822,8 @@
   "menubar.chooseTarget": "在 {{workspace}} 用 {{agent}} 新增，點一下更換",
   "menubar.remote": "遠端存取",
   "menubar.remoteFailed": "沒能暫停遠端存取，請在遠端連線頁查看",
+  "menubar.deviceOnline": "{{name}} 在線",
+  "menubar.devicesOnline": "{{name}} 和另外 {{others}} 台在線",
   "menubar.stop": "停止",
   "menubar.stopFailed": "沒能停止，開啟對話查看",
   "menubar.stopElsewhere": "這個對話已經停止，或只能在它執行的地方停止",

@@ -300,6 +300,27 @@ describe("menu bar remote access", () => {
     await waitFor(() => expect(onChanged).toHaveBeenCalled());
   });
 
+  it("names the devices that are online", () => {
+    const status = remoteStatus({}, "ready");
+    const iphone = { id: "phone", name: "iPhone", send: true, approve: true, createdAt: 1 };
+    const ipad = { id: "pad", name: "iPad", send: true, approve: true, createdAt: 2 };
+    status.devices = [
+      { ...iphone, online: true },
+      { ...ipad, online: false },
+    ];
+    const { unmount } = render(
+      <MenuBarRemote status={status} onChanged={vi.fn()} onOpenSettings={vi.fn()} />,
+    );
+    expect(screen.getByText(tr("menubar.deviceOnline", { name: "iPhone" }))).toBeInTheDocument();
+    unmount();
+    status.devices = [
+      { ...iphone, online: true },
+      { ...ipad, online: true },
+    ];
+    render(<MenuBarRemote status={status} onChanged={vi.fn()} onOpenSettings={vi.fn()} />);
+    expect(screen.getByText("iPhone and 1 more online")).toBeInTheDocument();
+  });
+
   it("resumes with the saved connection, and sends the person to the remote page when it cannot", async () => {
     request.mockRejectedValueOnce(new Error("account_login_required"));
     const onOpenSettings = vi.fn();

@@ -37,6 +37,7 @@ import { cn } from "@/features/conversation/lib/utils";
 import { sessionAccessCopy } from "./session-access-copy";
 import { HomeAttentionProvider, useHomeAttention } from "./home/home-attention";
 import { canStartSessions, HomeViewContext } from "./home/session-home";
+import { useMediaQuery } from "./home/use-media-query";
 import { NewSessionComposer } from "./new-session/new-session-composer";
 import { useOpenWhenListed } from "./new-session/use-open-when-listed";
 
@@ -92,6 +93,9 @@ function WorkspaceShell() {
   const openWhenListed = useOpenWhenListed();
   const canCreate = canStartSessions(access);
   const homeView = useMemo(() => ({ showAll: () => setPhoneView("all") }), []);
+  // On a wide screen the home beside the directory already lists the unread results.
+  const wide = useMediaQuery("(min-width: 768px)", true);
+  const homeBeside = wide && !reading;
   // A decision whose outcome is unknown marks its session in the directory as well.
   const pendingMarks = useMemo(
     () => ({
@@ -396,6 +400,7 @@ function WorkspaceShell() {
               }
               execution={session.showExecution}
               onExecutionChange={session.setShowExecution}
+              reviewLane={!homeBeside}
             />
             <footer className="flex items-center gap-3 border-t p-4">
               <span className="grid size-9 place-items-center rounded-lg border bg-background">

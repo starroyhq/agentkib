@@ -214,8 +214,16 @@ export interface WebAdminStatus {
 }
 /** 授权码配对的权限档位；LAN 确认配对仍按单项权限逐个授予。 */
 export type WebAccessLevel = "read" | "full";
-/** `accountBound`: the pairing ends when the phone's account login ends (and renews meanwhile). */
-export type WebAdminDevice = WebDevice & { accessLevel?: WebAccessLevel; accountBound?: boolean };
+/**
+ * `accountBound`: the pairing ends when the phone's account login ends (and renews meanwhile).
+ * `online`: the device follows a stream from this computer now, or made a request in the last
+ * minute. Kept in memory only.
+ */
+export type WebAdminDevice = WebDevice & {
+  accessLevel?: WebAccessLevel;
+  accountBound?: boolean;
+  online?: boolean;
+};
 export type WebAdminRequest = { target?: "lan" } & (
   | { operation: "status" }
   | { operation: "generate-code"; access?: WebAccessLevel }
@@ -333,6 +341,8 @@ const token = () => randomBytes(32).toString("base64url");
 const digest = (value: string) => createHash("sha256").update(value).digest("hex");
 const MAX_AGE = 30 * 24 * 60 * 60 * 1000;
 const PAIRING_CODE_TTL_MS = 300_000;
+/** A paired device counts as online this long after its last request, or while it holds a stream. */
+const ONLINE_WINDOW_MS = 60_000;
 const PAIRING_FAILURES_PER_BROWSER = 5;
 // 全局 pair 限流为每分钟 20 次、码有效期 5 分钟，一个码最多被试约 100 次；
 // 这里取同一数量级作为上限，猜中 8 位码的概率不超过 1e-6。
@@ -570,6 +580,8 @@ export class WebAccessService {
   private browsers = new Map<string, Browser>();
   // 按建立顺序登记；evict 走该流自己的 unavailable 清理路径。
   private streams = new Map<ConversationResponse, { hash: string; evict: () => void }>();
+  /** When each paired credential last made an API request, for the device's online state. */
+  private seen = new Map<string, number>();
   private active = new Set<string>();
   // One runtime worker serves all Web sessions. Reserve its admission across
   // preflight and mutation; new reads must not queue behind that preflight.
@@ -1613,10 +1625,18 @@ export class WebAccessService {
           ...c.device,
           ...(accessLevel ? { accessLevel } : {}),
           ...(c.account ? { accountBound: true } : {}),
+          online: this.isOnline(c.hash),
         };
       }),
       relay: this.relay?.status,
     };
+  }
+  /** Online: the device follows a stream from this computer now, or made a request lately. */
+  private isOnline(hash: string) {
+    return (
+      [...this.streams.values()].some((stream) => stream.hash === hash) ||
+      Date.now() - (this.seen.get(hash) ?? -Infinity) < ONLINE_WINDOW_MS
+    );
   }
   /**
    * A paired phone reports the account login it is in. When that login belongs to the account
@@ -4708,6 +4728,7 @@ export class WebAccessService {
       url.pathname.startsWith("/api/web/v1/") &&
       isControlRequest(req.method, url.pathname.replace(/^\/api\/web\/v1/, ""));
     this.rate(paired ? `paired:${hash}` : "anonymous", 600);
+    if (paired && url.pathname.startsWith("/api/")) this.seen.set(hash, Date.now());
     if (lan) {
       res.setHeader("Access-Control-Allow-Origin", origin);
       res.setHeader("Vary", "Origin");

@@ -822,6 +822,8 @@
   "menubar.chooseTarget": "{{workspace}} で {{agent}} を使って開始。クリックで変更",
   "menubar.remote": "リモートアクセス",
   "menubar.remoteFailed": "リモートアクセスを一時停止できませんでした。リモート接続ページで確認してください。",
+  "menubar.deviceOnline": "{{name}} がオンライン",
+  "menubar.devicesOnline": "{{name}} ほか {{others}} 台がオンライン",
   "menubar.stop": "停止",
   "menubar.stopFailed": "停止できませんでした。会話を開いて確認してください。",
   "menubar.stopElsewhere": "この会話はすでに停止したか、実行している場所でしか停止できません。",

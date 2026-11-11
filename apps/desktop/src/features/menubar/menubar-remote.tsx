@@ -31,6 +31,15 @@ export function MenuBarRemote({
   const ready = active && status.running && phase === "ready";
   const interrupted = active && (phase === "error" || phase === "offline");
   const state = !active ? pc.paused : ready ? pc.on : interrupted ? pc.interrupted : pc.connecting;
+  // Who is connected says more than how many are paired.
+  const online = status.devices.filter((device) => device.online);
+  const presence = !ready
+    ? undefined
+    : online.length === 1
+      ? tr("menubar.deviceOnline", { name: online[0].name })
+      : online.length > 1
+        ? tr("menubar.devicesOnline", { name: online[0].name, others: online.length - 1 })
+        : undefined;
   const devices = ready ? pc.devices.replace("{count}", String(status.devices.length)) : undefined;
   const toggle = async (on: boolean) => {
     setBusy(true);
@@ -70,7 +79,7 @@ export function MenuBarRemote({
                 : "text-muted-foreground",
           )}
         >
-          {devices ? `${state} · ${devices}` : state}
+          {presence ?? (devices ? `${state} · ${devices}` : state)}
         </span>
         <Switch
           checked={active}

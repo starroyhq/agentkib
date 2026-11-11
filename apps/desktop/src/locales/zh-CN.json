@@ -822,6 +822,8 @@
   "menubar.chooseTarget": "在 {{workspace}} 用 {{agent}} 新建，点击更换",
   "menubar.remote": "远程访问",
   "menubar.remoteFailed": "没能暂停远程访问，请在远程连接页查看",
+  "menubar.deviceOnline": "{{name}} 在线",
+  "menubar.devicesOnline": "{{name}} 和另外 {{others}} 台在线",
   "menubar.stop": "停止",
   "menubar.stopFailed": "没能停止，打开会话查看",
   "menubar.stopElsewhere": "这个会话已经停了，或只能在它运行的地方停止",

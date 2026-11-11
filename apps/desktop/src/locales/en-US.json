@@ -822,6 +822,8 @@
   "menubar.chooseTarget": "Starts in {{workspace}} with {{agent}}; click to change",
   "menubar.remote": "Remote access",
   "menubar.remoteFailed": "Couldn't pause remote access. Check the remote connection page.",
+  "menubar.deviceOnline": "{{name}} online",
+  "menubar.devicesOnline": "{{name}} and {{others}} more online",
   "menubar.stop": "Stop",
   "menubar.stopFailed": "Couldn't stop it. Open the session to check.",
   "menubar.stopElsewhere": "This session has stopped, or can only be stopped where it runs.",

@@ -9,10 +9,13 @@ import { SessionWorkspace } from "./session-workspace";
 const fixture = vi.hoisted(() => ({
   navigate: vi.fn(),
   session: undefined as unknown as Record<string, unknown>,
+  pathname: "/sessions",
+  wide: false,
+  catalog: undefined as { reviewLane?: boolean } | undefined,
 }));
 vi.mock("@tanstack/react-router", () => ({
   useLocation: ({ select }: { select: (value: { pathname: string }) => unknown }) =>
-    select({ pathname: "/sessions" }),
+    select({ pathname: fixture.pathname }),
   useNavigate: () => fixture.navigate,
   Outlet: () => <div data-testid="outlet" />,
 }));
@@ -20,8 +23,12 @@ vi.mock("@/features/conversation/features/sessions/session-context", () => ({
   useSession: () => fixture.session,
 }));
 vi.mock("@/features/conversation/features/catalog/session-catalog", () => ({
-  SessionCatalog: () => null,
+  SessionCatalog: (props: { reviewLane?: boolean }) => {
+    fixture.catalog = props;
+    return null;
+  },
 }));
+vi.mock("./home/use-media-query", () => ({ useMediaQuery: () => fixture.wide }));
 vi.mock("./new-session/new-session-composer", () => ({
   NewSessionComposer: () => <section aria-label="composer" />,
 }));
@@ -83,6 +90,8 @@ describe("Web home in the workspace", () => {
   beforeEach(() => {
     sessionStorage.clear();
     fixture.navigate.mockReset();
+    fixture.pathname = "/sessions";
+    fixture.wide = false;
   });
   afterEach(cleanup);
 
@@ -113,6 +122,23 @@ describe("Web home in the workspace", () => {
     expect(homeTab).toHaveAttribute("aria-pressed", "false");
     // The authorized browser and sign-out stay with all sessions.
     expect(within(directory).getByText("My iPad")).toBeInTheDocument();
+  });
+
+  it("leaves unread results to the home beside the directory on a wide screen", () => {
+    fixture.wide = true;
+    setup();
+    expect(fixture.catalog?.reviewLane).toBe(false);
+    cleanup();
+    // Reading a session, the directory lists them again.
+    fixture.pathname = "/sessions/approval";
+    setup();
+    expect(fixture.catalog?.reviewLane).toBe(true);
+    cleanup();
+    // At phone width the home and the directory take turns, so the directory keeps them.
+    fixture.wide = false;
+    fixture.pathname = "/sessions";
+    setup();
+    expect(fixture.catalog?.reviewLane).toBe(true);
   });
 
   it("opens the new-session composer from + only for a visit that can send", () => {

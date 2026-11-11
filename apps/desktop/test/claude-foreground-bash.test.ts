@@ -473,7 +473,7 @@ const alive = (pid: number) => {
   }
 };
 
-function synthetic(scenario: "finish" | "finish-open" | "in-flight") {
+function synthetic(scenario: "finish" | "finish-open" | "in-flight" | "many-tools") {
   const root = realpathSync(mkdtempSync(path.join(tmpdir(), "agentkib-claude-foreground-")));
   const home = path.join(root, "home");
   const workspace = path.join(root, "workspace");
@@ -511,6 +511,18 @@ readline.createInterface({input: process.stdin}).on('line', (line) => {
     send({type: 'control_response', response: {subtype: 'success', request_id: frame.request_id,
       response: initialize ? {models: [{value: 'fixture-model', displayName: 'Fixture'}], commands: []} : {}}});
   } else if (frame.type === 'user') {
+    if (process.env.FG_SCENARIO === 'many-tools') {
+      // More tools in one worker than its table of running tools holds.
+      for (let index = 0; index < 1030; index++) {
+        use('toolu_many_' + index, 'Read', {file_path: 'notes-' + index + '.md'}, null);
+        answer('toolu_many_' + index, null);
+      }
+      const id = randomUUID();
+      send({type: 'assistant', uuid: id, parent_tool_use_id: null,
+        message: {id, model: 'fixture-model', content: [{type: 'text', text: 'Read them all'}]}});
+      send({type: 'result', subtype: 'success', is_error: false, terminal_reason: 'completed'});
+      return;
+    }
     use('toolu_agent', 'Agent', {description: 'inspect', prompt: 'list files'}, null);
     use('toolu_sub_bash', 'Bash', {command: 'ls'}, 'toolu_agent');
     system('task_started', {task_id: 'sub-task', tool_use_id: 'toolu_sub_bash',
@@ -607,6 +619,18 @@ describe.skipIf(!["darwin", "linux"].includes(process.platform))(
         tool_status: "completed",
       });
       expect(f.runner.state.foregroundTasks.size).toBe(0);
+    }, 20_000);
+
+    it("keeps publishing tools after a worker has run more than a thousand", async () => {
+      const f = synthetic("many-tools");
+      await f.runner.send(f.executable, "read every note", randomUUID(), 0);
+      await expect.poll(() => f.runner.snapshot().status, { timeout: 8000 }).toBe("idle");
+      for (const index of [0, 1023, 1024, 1029])
+        expect(f.published(`toolu_many_${index}`)).toMatchObject({
+          kind: "tool-summary",
+          tool_name: "Read",
+          tool_status: "completed",
+        });
     }, 20_000);
 
     it("lets the turn finish with a sub-agent task still open, and forgets it when the idle worker is retired", async () => {

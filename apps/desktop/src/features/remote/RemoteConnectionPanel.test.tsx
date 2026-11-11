@@ -1,13 +1,15 @@
 // @vitest-environment jsdom
-import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import type { ReactNode } from "react";
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { changeLocale, initializeI18n, tr } from "@/core/i18n";
 import type { RemoteStatus } from "@/core/remote-types";
 import { RemoteConnectionPanel, RemoteConnectionSettings } from "./RemoteConnectionPanel";
 import { useRemoteStore } from "./remote-store";
-import { remoteEntryCopy } from "./remote-entry-copy";
 import { QuickConnect } from "./QuickConnect";
+import { remotePageCopy } from "./remote-page-copy";
+import { remotePhoneCopy } from "./remote-phone-copy";
 import { remoteSettingsCopy } from "./remote-settings-copy";
 import { focusSettingsTarget } from "@/features/settings/components/SettingsLayout";
 
@@ -21,49 +23,72 @@ const status: RemoteStatus = {
   pairing_code: null,
   pairing_expires_at: null,
 };
+// The name is only editable on the sharing panel, so name tests start from a sharing computer.
+const sharing: RemoteStatus = {
+  ...status,
+  local: { ...status.local, enabled: true, address: "192.168.1.3:42987" },
+};
+const host = {
+  id: "host",
+  name: "Laptop",
+  address: "192.168.1.5:42987",
+  status: "pending" as const,
+  last_seen: null,
+  error: null,
+};
+const page = remotePageCopy["en-US"];
 const run = vi.fn();
 let networkAddress = "192.168.1.3";
 let networkBusy = false;
 let networkDirty = false;
 const saveNetwork = vi.fn();
+const resetNetwork = vi.fn();
 vi.mock("./RemoteNetworkSettings", () => ({
   useRemoteNetworkSettings: () => ({
     address: networkAddress,
+    interfaces: [{ name: "Wi-Fi", address: "192.168.1.3" }],
     content: null,
     dirty: networkDirty,
     busy: networkBusy,
     valid: true,
     save: saveNetwork,
+    reset: resetNetwork,
   }),
 }));
+// Stands in for the advanced window's footer: Save runs the page's callback, Cancel discards drafts.
 vi.mock("./WebAccessSettings", () => ({
   WebAccessSettings: ({
     children,
     onSaveAdvanced,
+    onDiscardAdvanced,
     advancedDirty,
     advancedValid,
   }: {
     children?: ReactNode;
     onSaveAdvanced?: () => Promise<boolean>;
+    onDiscardAdvanced?: () => void;
     advancedDirty?: boolean;
     advancedValid?: boolean;
   }) => (
     <>
       {children}
+      <button onClick={() => onDiscardAdvanced?.()}>Cancel</button>
       {advancedDirty && (
         <button disabled={!advancedValid} onClick={() => void onSaveAdvanced?.()}>
-          Save settings
+          Save
         </button>
       )}
     </>
   ),
 }));
-function renderSettings() {
-  const view = render(<RemoteConnectionSettings />);
-  fireEvent.click(screen.getByRole("button", { name: "Other computers" }));
-  const setup = screen.queryByRole("button", { name: "Share this computer" });
-  if (setup) fireEvent.click(setup);
-  return view;
+function renderSharing() {
+  useRemoteStore.setState({ snapshot: sharing });
+  return render(<RemoteConnectionSettings />);
+}
+/** The name is plain text until the pencil button turns it into an input. */
+function startRenaming(label: string = page.editName) {
+  fireEvent.click(screen.getByRole("button", { name: label }));
+  return screen.getByRole("textbox", { name: tr("remote.name") }) as HTMLInputElement;
 }
 beforeAll(() => initializeI18n("en-US"));
 beforeEach(() => {
@@ -71,6 +96,7 @@ beforeEach(() => {
   networkBusy = false;
   networkDirty = false;
   saveNetwork.mockReset().mockResolvedValue(true);
+  resetNetwork.mockReset();
   run.mockReset().mockResolvedValue(null);
   useRemoteStore.setState({
     snapshot: status,
@@ -86,27 +112,34 @@ beforeEach(() => {
 afterEach(cleanup);
 
 it.each(["zh-CN", "zh-TW", "en-US", "ja-JP"] as const)(
-  "shows nearby computer empty guidance only after a successful load in %s",
+  "shows the nothing-found guidance only after discovery has finished in %s",
   async (locale) => {
     await changeLocale(locale);
     try {
+      const copy = remotePageCopy[locale];
+      let finish!: (value: RemoteStatus) => void;
+      run.mockImplementation(
+        () =>
+          new Promise((resolve) => {
+            finish = resolve;
+          }),
+      );
       useRemoteStore.setState({ snapshot: null, loading: true });
       render(<RemoteConnectionSettings />);
-      fireEvent.click(screen.getByRole("button", { name: remoteSettingsCopy[locale].computers }));
-      expect(screen.queryByText(tr("remote.noNearby"))).toBeNull();
-      act(() =>
-        useRemoteStore.setState({
-          snapshot: { ...status, local: { ...status.local, enabled: true } },
-          loading: false,
-        }),
-      );
-      expect(screen.getByText(tr("remote.noNearby"))).toBeTruthy();
-      act(() => useRemoteStore.setState({ loading: true }));
-      expect(screen.queryByText(tr("remote.noNearby"))).toBeNull();
-      act(() => useRemoteStore.setState({ loading: false, error: "remote_unavailable" }));
-      expect(screen.queryByText(tr("remote.noNearby"))).toBeNull();
-      act(() => useRemoteStore.setState({ error: "", busy: true }));
-      expect(screen.queryByText(tr("remote.noNearby"))).toBeNull();
+      fireEvent.click(screen.getByRole("button", { name: copy.addComputer }));
+      expect(screen.getByText(copy.searching)).toBeTruthy();
+      expect(screen.queryByText(copy.notFoundTitle)).toBeNull();
+      await act(async () => {
+        useRemoteStore.setState({ snapshot: status, loading: false });
+        finish(status);
+      });
+      expect(screen.getByText(copy.notFoundTitle)).toBeTruthy();
+      expect(screen.queryByText(copy.searching)).toBeNull();
+      fireEvent.click(screen.getByRole("button", { name: tr("remote.quick.searchAgain") }));
+      expect(screen.getByText(copy.searching)).toBeTruthy();
+      expect(screen.queryByText(copy.notFoundTitle)).toBeNull();
+      await act(async () => finish(status));
+      expect(screen.getByText(copy.notFoundTitle)).toBeTruthy();
     } finally {
       await changeLocale("en-US");
     }
@@ -121,49 +154,57 @@ describe("quick connection flow", () => {
     status: "pending" as const,
     expires_at: now / 1000 + 300,
   };
-  const host = {
-    id: "host",
-    name: "Laptop",
-    address: "192.168.1.5:42987",
-    status: "pending" as const,
-    last_seen: null,
-    error: null,
-  };
-  async function openManual() {
-    const button = screen.getByRole("button", { name: tr("remote.quick.manual") });
-    await waitFor(() => expect((button as HTMLButtonElement).disabled).toBe(false));
-    fireEvent.click(button);
+  async function openManual(label: string = page.enterAddress) {
+    const link = await screen.findByRole("button", { name: label });
+    await waitFor(() => expect((link as HTMLButtonElement).disabled).toBe(false));
+    fireEvent.click(link);
   }
   it("discovers once per opening and keeps manual inputs out of the initial view", async () => {
     const { rerender } = render(<QuickConnect now={now} onDone={vi.fn()} />);
-    await waitFor(() => expect(screen.getByText(tr("remote.quick.empty"))).toBeTruthy());
-    expect(screen.queryByLabelText(tr("remote.address"))).toBeNull();
+    await waitFor(() => expect(screen.getByText(page.notFoundTitle)).toBeTruthy());
+    expect(screen.queryByLabelText(page.computerAddress)).toBeNull();
     expect(screen.queryByText(tr("remote.quick.saved"))).toBeNull();
     await openManual();
-    fireEvent.click(screen.getByRole("button", { name: tr("remote.quick.back") }));
+    // Without a chosen computer the way back is named after the list it returns to.
+    fireEvent.click(screen.getByRole("button", { name: tr("remote.nearby") }));
     rerender(<QuickConnect now={now + 2000} onDone={vi.fn()} />);
     expect(run.mock.calls).toEqual([[{ operation: "discover" }]]);
     fireEvent.click(screen.getByRole("button", { name: tr("remote.quick.searchAgain") }));
     await waitFor(() => expect(run).toHaveBeenCalledTimes(2));
   });
-  it("selects a nearby computer, requires eight digits, and returns without pairing", async () => {
+  it("selects a nearby computer, sends nothing for fewer than eight digits, and returns without pairing", async () => {
+    const user = userEvent.setup();
     useRemoteStore.setState({ snapshot: { ...status, discovered: [host] } });
     render(<QuickConnect now={now} onDone={vi.fn()} />);
-    const device = await screen.findByRole("button", { name: /Laptop/ });
-    fireEvent.click(device);
-    expect(screen.queryByLabelText(tr("remote.address"))).toBeNull();
-    const input = screen.getByLabelText(tr("remote.code"));
-    expect(document.activeElement).toBe(input);
-    fireEvent.change(input, { target: { value: "1234567" } });
-    expect(
-      (screen.getByRole("button", { name: tr("remote.pair") }) as HTMLButtonElement).disabled,
-    ).toBe(true);
-    fireEvent.change(input, { target: { value: "12345678" } });
-    expect(
-      (screen.getByRole("button", { name: tr("remote.pair") }) as HTMLButtonElement).disabled,
-    ).toBe(false);
-    fireEvent.click(screen.getByRole("button", { name: tr("remote.quick.back") }));
+    await user.click(await screen.findByRole("button", { name: `${tr("remote.pair")}: Laptop` }));
+    expect(screen.queryByLabelText(page.computerAddress)).toBeNull();
+    const slots = within(screen.getByRole("group", { name: tr("remote.code") })).getAllByRole(
+      "textbox",
+    );
+    expect(slots).toHaveLength(8);
+    expect(document.activeElement).toBe(slots[0]);
+    await user.keyboard("1234567");
     expect(run.mock.calls).toEqual([[{ operation: "discover" }]]);
+    await user.click(screen.getByRole("button", { name: "Laptop" }));
+    expect(run.mock.calls).toEqual([[{ operation: "discover" }]]);
+    expect(screen.getByRole("button", { name: `${tr("remote.pair")}: Laptop` })).toBeTruthy();
+  });
+  it("pairs a selected nearby computer by itself once the eighth digit is entered", async () => {
+    const user = userEvent.setup();
+    useRemoteStore.setState({ snapshot: { ...status, discovered: [host] } });
+    run.mockImplementation(async (request) => {
+      if (request.operation !== "pair") return null;
+      useRemoteStore.setState({ pairing });
+      return pairing;
+    });
+    render(<QuickConnect now={now} onDone={vi.fn()} />);
+    await user.click(await screen.findByRole("button", { name: `${tr("remote.pair")}: Laptop` }));
+    await user.keyboard("12345678");
+    await screen.findByText(pairing.verification);
+    expect(run.mock.calls.filter(([request]) => request.operation === "pair")).toEqual([
+      [{ operation: "pair", address: host.address, code: "12345678" }],
+    ]);
+    expect(screen.getByText(tr("remote.waitApproval"))).toBeTruthy();
   });
   it("shows reconnect success only after the host is authoritatively online", async () => {
     useRemoteStore.setState({
@@ -228,7 +269,7 @@ describe("quick connection flow", () => {
     const onDone = vi.fn();
     const { unmount } = render(<QuickConnect now={now} onDone={onDone} />);
     await openManual();
-    fireEvent.change(screen.getByLabelText(tr("remote.address")), {
+    fireEvent.change(screen.getByLabelText(page.computerAddress), {
       target: { value: host.address },
     });
     fireEvent.change(screen.getByLabelText(tr("remote.code")), { target: { value: "12345678" } });
@@ -246,33 +287,28 @@ describe("quick connection flow", () => {
 
 describe("remote connections UI", () => {
   it.each(["zh-CN", "zh-TW", "en-US", "ja-JP"] as const)(
-    "shows one computer empty state and preserves the setup draft across tabs in %s",
+    "shows one computers empty state and finding computers never turns sharing on in %s",
     async (locale) => {
       await act(() => changeLocale(locale));
       try {
         const copy = remoteSettingsCopy[locale];
+        const text = remotePageCopy[locale];
         render(<RemoteConnectionSettings />);
         expect(screen.getByRole("heading", { name: copy.title })).toBeTruthy();
-        expect(screen.getByRole("button", { name: copy.phone }).getAttribute("aria-pressed")).toBe(
-          "true",
-        );
-        fireEvent.click(screen.getByRole("button", { name: copy.computers }));
-        expect(screen.getAllByText(copy.emptyTitle)).toHaveLength(1);
+        expect(screen.getByRole("heading", { name: text.computers })).toBeTruthy();
+        expect(screen.getAllByText(text.noneYet)).toHaveLength(1);
         for (const key of ["remote.noConnections", "remote.noAuthorized", "remote.noNearby"])
           expect(screen.queryByText(tr(key))).toBeNull();
-        expect(screen.queryByRole("switch")).toBeNull();
-        fireEvent.click(screen.getByRole("button", { name: copy.discover }));
-        expect(screen.getByRole("button", { name: copy.find })).toBeTruthy();
+        expect(screen.queryByText(copy.emptyTitle)).toBeNull();
+        expect(screen.getByRole("switch", { name: text.share }).getAttribute("aria-checked")).toBe(
+          "false",
+        );
+        fireEvent.click(screen.getByRole("button", { name: text.addComputer }));
+        expect(screen.getByRole("heading", { name: text.addComputer })).toBeTruthy();
+        // The settings page is already open, so the window offers no way back to it.
+        expect(screen.queryByRole("button", { name: tr("remote.quick.settings") })).toBeNull();
         expect(run).toHaveBeenCalledWith({ operation: "discover" });
         expect(run.mock.calls.some(([input]) => input.operation === "configure")).toBe(false);
-        const input = screen.getByRole("textbox", { name: tr("remote.name") });
-        fireEvent.change(input, { target: { value: "Synthetic draft" } });
-        fireEvent.click(screen.getByRole("button", { name: copy.phone }));
-        fireEvent.click(screen.getByRole("button", { name: copy.computers }));
-        expect(
-          (screen.getByRole("textbox", { name: tr("remote.name") }) as HTMLInputElement).value,
-        ).toBe("Synthetic draft");
-        expect(run.mock.calls.some(([request]) => request.operation === "configure")).toBe(false);
       } finally {
         await act(() => changeLocale("en-US"));
       }
@@ -280,17 +316,65 @@ describe("remote connections UI", () => {
   );
 
   it("does not apply an unsaved name when the sharing switch takes effect immediately", () => {
-    renderSettings();
-    fireEvent.change(screen.getByRole("textbox", { name: tr("remote.name") }), {
-      target: { value: "Unsaved name" },
+    renderSharing();
+    fireEvent.change(startRenaming(), { target: { value: "Unsaved name" } });
+    fireEvent.click(screen.getByRole("switch", { name: page.share }));
+    expect(run).toHaveBeenLastCalledWith({
+      operation: "configure",
+      enabled: false,
+      address: "192.168.1.3:42987",
+      name: "Desk",
     });
-    fireEvent.click(screen.getByRole("switch", { name: remoteSettingsCopy["en-US"].enable }));
+    // The switch changes nothing but sharing, so turning it back on keeps the saved name too.
+    act(() => useRemoteStore.setState({ snapshot: status }));
+    fireEvent.click(screen.getByRole("switch", { name: page.share }));
+    expect(run).toHaveBeenLastCalledWith({
+      operation: "configure",
+      enabled: true,
+      address: "192.168.1.3:42987",
+      name: "Desk",
+    });
+  });
+
+  it("asks for a network before sharing when none is saved, then saves it and starts sharing", async () => {
+    const user = userEvent.setup();
+    networkAddress = "";
+    render(<RemoteConnectionSettings />);
+    await user.click(screen.getByRole("switch", { name: page.share }));
+    expect(run).not.toHaveBeenCalled();
+    expect(saveNetwork).not.toHaveBeenCalled();
+    const start = screen.getByRole("button", { name: page.startSharing }) as HTMLButtonElement;
+    expect(start.disabled).toBe(true);
+    await user.click(screen.getByRole("combobox", { name: page.shareNetwork }));
+    await user.click(await screen.findByRole("option", { name: /192\.168\.1\.3/ }));
+    expect(start.disabled).toBe(false);
+    expect(saveNetwork).not.toHaveBeenCalled();
+    await user.click(start);
+    await waitFor(() => expect(run).toHaveBeenCalledOnce());
+    expect(saveNetwork).toHaveBeenCalledExactlyOnceWith("192.168.1.3");
+    expect(saveNetwork.mock.invocationCallOrder[0]).toBeLessThan(run.mock.invocationCallOrder[0]);
     expect(run).toHaveBeenCalledWith({
       operation: "configure",
       enabled: true,
       address: "192.168.1.3:42987",
       name: "Desk",
     });
+  });
+
+  it("does not start sharing when the chosen network cannot be saved, and switching off cancels the choice", async () => {
+    const user = userEvent.setup();
+    networkAddress = "";
+    saveNetwork.mockResolvedValue(false);
+    render(<RemoteConnectionSettings />);
+    await user.click(screen.getByRole("switch", { name: page.share }));
+    await user.click(screen.getByRole("combobox", { name: page.shareNetwork }));
+    await user.click(await screen.findByRole("option", { name: /192\.168\.1\.3/ }));
+    await user.click(screen.getByRole("button", { name: page.startSharing }));
+    await waitFor(() => expect(saveNetwork).toHaveBeenCalledOnce());
+    expect(run).not.toHaveBeenCalled();
+    await user.click(screen.getByRole("switch", { name: page.share }));
+    expect(screen.queryByRole("button", { name: page.startSharing })).toBeNull();
+    expect(run).not.toHaveBeenCalled();
   });
 
   it.each(["remote-access", "remote-devices"] as const)(
@@ -309,18 +393,17 @@ describe("remote connections UI", () => {
           focusSettingsTarget(target);
         });
         await waitFor(() => expect(document.activeElement?.id).toBe(`settings-target-${target}`));
-        expect(
-          screen.getByRole("button", { name: "Other computers" }).getAttribute("aria-pressed"),
-        ).toBe("true");
+        expect(screen.getByRole("heading", { name: page.computers })).toBeTruthy();
         expect(run).not.toHaveBeenCalled();
-        fireEvent.click(screen.getByRole("button", { name: "Phones" }));
+        // Both cards are always on the page; a later request has to bring focus back again.
+        act(() => screen.getByRole("button", { name: page.addComputer }).focus());
       }
     },
   );
 
   it("saves a name on blur and preserves its draft for an explicit retry after failure", async () => {
-    renderSettings();
-    const input = screen.getByRole("textbox", { name: tr("remote.name") });
+    renderSharing();
+    const input = startRenaming();
     fireEvent.change(input, { target: { value: "New name" } });
     fireEvent.blur(input);
     await waitFor(() =>
@@ -328,15 +411,15 @@ describe("remote connections UI", () => {
         remoteSettingsCopy["en-US"].saveFailed,
       ),
     );
-    expect((input as HTMLInputElement).value).toBe("New name");
+    expect(input.value).toBe("New name");
     expect(run).toHaveBeenCalledWith({
       operation: "configure",
-      enabled: false,
+      enabled: true,
       address: "192.168.1.3:42987",
       name: "New name",
     });
     run.mockImplementation(async (request) => {
-      const next = { ...status, local: { ...status.local, name: request.name } };
+      const next = { ...sharing, local: { ...sharing.local, name: request.name } };
       useRemoteStore.setState({ snapshot: next });
       return next;
     });
@@ -352,23 +435,23 @@ describe("remote connections UI", () => {
       await act(() => changeLocale(locale));
       try {
         const copy = remoteSettingsCopy[locale];
-        const view = render(<RemoteConnectionSettings />);
-        fireEvent.click(screen.getByRole("button", { name: copy.computers }));
-        fireEvent.click(screen.getByRole("button", { name: copy.shareAction }));
-        const input = screen.getByRole("textbox", { name: tr("remote.name") });
+        const view = renderSharing();
+        const input = startRenaming(remotePageCopy[locale].editName);
         fireEvent.change(input, { target: { value: " New name " } });
-        expect(screen.queryByRole("button", { name: "Save settings" })).toBeNull();
+        expect(screen.queryByRole("button", { name: "Save" })).toBeNull();
         run.mockImplementation(async (request) => {
-          const next = { ...status, local: { ...status.local, name: request.name } };
+          const next = { ...sharing, local: { ...sharing.local, name: request.name } };
           useRemoteStore.setState({ snapshot: next });
           return next;
         });
         fireEvent.blur(input);
         await waitFor(() => expect(screen.getByRole("status").textContent).toBe(copy.saved));
-        expect((input as HTMLInputElement).value).toBe("New name");
+        // Saving puts the trimmed name back as plain text.
+        expect(screen.queryByRole("textbox", { name: tr("remote.name") })).toBeNull();
+        expect(screen.getByText("New name")).toBeTruthy();
         expect(run).toHaveBeenCalledExactlyOnceWith({
           operation: "configure",
-          enabled: false,
+          enabled: true,
           address: "192.168.1.3:42987",
           name: "New name",
         });
@@ -388,33 +471,46 @@ describe("remote connections UI", () => {
           finish = resolve;
         }),
     );
-    renderSettings();
-    const input = screen.getByRole("textbox", { name: tr("remote.name") });
+    renderSharing();
+    const input = startRenaming();
     fireEvent.change(input, { target: { value: "New name" } });
     fireEvent.keyDown(input, { key: "Enter" });
     fireEvent.keyDown(input, { key: "Enter" });
     fireEvent.blur(input);
     expect(run).toHaveBeenCalledTimes(1);
-    expect((input as HTMLInputElement).disabled).toBe(true);
+    expect(input.disabled).toBe(true);
     await act(async () => {
-      const next = { ...status, local: { ...status.local, name: "New name" } };
+      const next = { ...sharing, local: { ...sharing.local, name: "New name" } };
       useRemoteStore.setState({ snapshot: next });
       finish(next);
     });
     expect(screen.getByRole("status").textContent).toBe(remoteSettingsCopy["en-US"].saved);
-    fireEvent.blur(input);
+    // A later blur of the unchanged name must not send the request again.
+    fireEvent.blur(startRenaming());
     expect(run).toHaveBeenCalledTimes(1);
   });
 
   it("keeps an independent name draft out of the advanced network save", async () => {
     networkDirty = true;
-    renderSettings();
-    const input = screen.getByRole("textbox", { name: tr("remote.name") });
+    renderSharing();
+    const input = startRenaming();
     fireEvent.change(input, { target: { value: "Name draft" } });
-    fireEvent.click(screen.getByRole("button", { name: "Save settings" }));
+    fireEvent.click(screen.getByRole("button", { name: "Save" }));
     await waitFor(() => expect(saveNetwork).toHaveBeenCalledOnce());
     expect(run).not.toHaveBeenCalled();
-    expect((input as HTMLInputElement).value).toBe("Name draft");
+    expect(input.value).toBe("Name draft");
+  });
+
+  it("discards the network drafts but not a name draft when the advanced window is cancelled", () => {
+    networkDirty = true;
+    renderSharing();
+    const input = startRenaming();
+    fireEvent.change(input, { target: { value: "Name draft" } });
+    fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
+    expect(resetNetwork).toHaveBeenCalledOnce();
+    expect(saveNetwork).not.toHaveBeenCalled();
+    expect(run).not.toHaveBeenCalled();
+    expect(input.value).toBe("Name draft");
   });
 
   it("blocks a stale advanced save callback admitted in the same event batch as a name blur", async () => {
@@ -426,9 +522,9 @@ describe("remote connections UI", () => {
           finish = resolve;
         }),
     );
-    renderSettings();
-    const input = screen.getByRole("textbox", { name: tr("remote.name") });
-    const save = screen.getByRole("button", { name: "Save settings" });
+    renderSharing();
+    const input = startRenaming();
+    const save = screen.getByRole("button", { name: "Save" });
     fireEvent.change(input, { target: { value: "New name" } });
     act(() => {
       fireEvent.blur(input);
@@ -436,19 +532,19 @@ describe("remote connections UI", () => {
     });
     expect(run).toHaveBeenCalledOnce();
     expect(saveNetwork).not.toHaveBeenCalled();
-    await act(async () => finish({ ...status, local: { ...status.local, name: "New name" } }));
+    await act(async () => finish({ ...sharing, local: { ...sharing.local, name: "New name" } }));
   });
 
   it("retains a dirty name across external updates and saves using the latest sharing address", async () => {
-    renderSettings();
-    const input = screen.getByRole("textbox", { name: tr("remote.name") });
+    renderSharing();
+    const input = startRenaming();
     fireEvent.change(input, { target: { value: "Name draft" } });
     const next = {
       ...status,
       local: { ...status.local, name: "External", enabled: true, address: "10.20.0.5:43123" },
     };
     act(() => useRemoteStore.setState({ snapshot: next }));
-    expect((input as HTMLInputElement).value).toBe("Name draft");
+    expect(input.value).toBe("Name draft");
     fireEvent.blur(input);
     expect(run).toHaveBeenCalledExactlyOnceWith({
       operation: "configure",
@@ -459,23 +555,23 @@ describe("remote connections UI", () => {
   });
 
   it("does not dispatch a name save during network work and keeps the draft for later", () => {
-    renderSettings();
-    const input = screen.getByRole("textbox", { name: tr("remote.name") });
+    renderSharing();
+    const input = startRenaming();
     fireEvent.change(input, { target: { value: "Name draft" } });
     networkBusy = true;
-    act(() => useRemoteStore.setState({ snapshot: { ...status } }));
+    act(() => useRemoteStore.setState({ snapshot: { ...sharing } }));
     fireEvent.blur(input);
     expect(run).not.toHaveBeenCalled();
-    expect((input as HTMLInputElement).value).toBe("Name draft");
+    expect(input.value).toBe("Name draft");
     networkBusy = false;
-    act(() => useRemoteStore.setState({ snapshot: { ...status } }));
+    act(() => useRemoteStore.setState({ snapshot: { ...sharing } }));
     fireEvent.keyDown(input, { key: "Enter" });
     expect(run).toHaveBeenCalledOnce();
   });
 
   it("does not save an invalid name or confirm an old request after unmount", async () => {
-    const view = renderSettings();
-    const input = screen.getByRole("textbox", { name: tr("remote.name") });
+    const view = renderSharing();
+    const input = startRenaming();
     fireEvent.change(input, { target: { value: "   " } });
     fireEvent.blur(input);
     expect(run).not.toHaveBeenCalled();
@@ -490,23 +586,21 @@ describe("remote connections UI", () => {
     fireEvent.keyDown(input, { key: "Enter" });
     expect(run).toHaveBeenCalledOnce();
     view.unmount();
-    await act(async () => finish({ ...status, local: { ...status.local, name: "New name" } }));
-    renderSettings();
+    await act(async () => finish({ ...sharing, local: { ...sharing.local, name: "New name" } }));
+    renderSharing();
     expect(screen.queryByRole("status")).toBeNull();
-    expect(
-      (screen.getByRole("textbox", { name: tr("remote.name") }) as HTMLInputElement).value,
-    ).toBe("Desk");
+    expect(startRenaming().value).toBe("Desk");
     expect(run).toHaveBeenCalledOnce();
   });
 
   it("shows successful name feedback briefly and ignores Enter during input composition", async () => {
-    renderSettings();
-    const input = screen.getByRole("textbox", { name: tr("remote.name") });
+    renderSharing();
+    const input = startRenaming();
     fireEvent.change(input, { target: { value: "New name" } });
     fireEvent.keyDown(input, { key: "Enter", isComposing: true });
     expect(run).not.toHaveBeenCalled();
     run.mockImplementation(async (request) => {
-      const next = { ...status, local: { ...status.local, name: request.name } };
+      const next = { ...sharing, local: { ...sharing.local, name: request.name } };
       useRemoteStore.setState({ snapshot: next });
       return next;
     });
@@ -522,14 +616,14 @@ describe("remote connections UI", () => {
   });
 
   it("clears a failed name notice after a status refresh confirms the requested name", async () => {
-    renderSettings();
-    const input = screen.getByRole("textbox", { name: tr("remote.name") });
+    renderSharing();
+    const input = startRenaming();
     fireEvent.change(input, { target: { value: "New name" } });
     fireEvent.blur(input);
     await screen.findByRole("button", { name: "Retry saving name" });
     act(() =>
       useRemoteStore.setState({
-        snapshot: { ...status, local: { ...status.local, name: "New name" } },
+        snapshot: { ...sharing, local: { ...sharing.local, name: "New name" } },
       }),
     );
     fireEvent.click(screen.getByRole("button", { name: "Retry saving name" }));
@@ -537,26 +631,52 @@ describe("remote connections UI", () => {
     expect(run).toHaveBeenCalledOnce();
   });
 
-  it("keeps an entered address and pairing code when the last discovered computer disappears", () => {
+  it("keeps an entered address and pairing code when the last discovered computer disappears", async () => {
     useRemoteStore.setState({
       snapshot: {
         ...status,
         discovered: [{ id: "peer", name: "Example laptop", address: "192.168.1.20:42987" }],
       },
     });
-    renderSettings();
-    const address = screen.getByRole("textbox", { name: tr("remote.address") });
-    const code = screen.getByRole("textbox", { name: tr("remote.code") });
+    render(<RemoteConnectionPanel open onOpenChange={vi.fn()} />);
+    // With a nearby computer listed, the manual entry is the "can't find it" link.
+    const link = await screen.findByRole("button", { name: page.notFoundLink });
+    await waitFor(() => expect((link as HTMLButtonElement).disabled).toBe(false));
+    fireEvent.click(link);
+    const address = screen.getByRole("textbox", { name: page.computerAddress }) as HTMLInputElement;
+    const code = screen.getByRole("textbox", { name: tr("remote.code") }) as HTMLInputElement;
     address.focus();
     fireEvent.change(address, { target: { value: "192.168.1.20:42987" } });
     expect(document.activeElement).toBe(address);
     fireEvent.change(code, { target: { value: "12345678" } });
     act(() => useRemoteStore.setState({ snapshot: status }));
-    expect(screen.queryByText(remoteSettingsCopy["en-US"].emptyTitle)).toBeNull();
-    expect(screen.getByRole("textbox", { name: tr("remote.address") })).toBe(address);
-    expect((address as HTMLInputElement).value).toBe("192.168.1.20:42987");
-    expect((code as HTMLInputElement).value).toBe("12345678");
-    expect(run).not.toHaveBeenCalled();
+    expect(screen.queryByText(page.notFoundTitle)).toBeNull();
+    expect(screen.getByRole("textbox", { name: page.computerAddress })).toBe(address);
+    expect(address.value).toBe("192.168.1.20:42987");
+    expect(code.value).toBe("12345678");
+    expect(run.mock.calls).toEqual([[{ operation: "discover" }]]);
+  });
+
+  it("keeps a partly entered pairing code when the selected computer disappears from the list", async () => {
+    const user = userEvent.setup();
+    useRemoteStore.setState({
+      snapshot: {
+        ...status,
+        discovered: [{ id: "peer", name: "Example laptop", address: "192.168.1.20:42987" }],
+      },
+    });
+    render(<RemoteConnectionPanel open onOpenChange={vi.fn()} />);
+    await user.click(
+      await screen.findByRole("button", { name: `${tr("remote.pair")}: Example laptop` }),
+    );
+    await user.keyboard("1234");
+    act(() => useRemoteStore.setState({ snapshot: status }));
+    const slots = within(screen.getByRole("group", { name: tr("remote.code") })).getAllByRole(
+      "textbox",
+    ) as HTMLInputElement[];
+    expect(slots.map((slot) => slot.value).join("")).toBe("1234");
+    expect(document.activeElement).toBe(slots[4]);
+    expect(run.mock.calls).toEqual([[{ operation: "discover" }]]);
   });
 
   it("shows friendly feedback for a real wrapped IPC error in the quick panel", () => {
@@ -574,7 +694,7 @@ describe("remote connections UI", () => {
   it("retranslates a displayed structured error in all four languages and still clears it", async () => {
     const failure = { key: "errors.generic", detail: "REMOTE_PAIRING_DENIED" };
     useRemoteStore.setState({ error: failure, operationError: true });
-    renderSettings();
+    render(<RemoteConnectionSettings />);
     const alert = screen.getByRole("alert");
     expect(alert.textContent).toContain(tr(failure.key));
     expect(alert.textContent).not.toContain(failure.detail);
@@ -597,23 +717,25 @@ describe("remote connections UI", () => {
   });
   it("translates an open pairing panel immediately without losing address/code input", async () => {
     render(<RemoteConnectionPanel open onOpenChange={vi.fn()} onSettings={vi.fn()} />);
-    await waitFor(() =>
-      expect(
-        (screen.getByRole("button", { name: tr("remote.quick.manual") }) as HTMLButtonElement)
-          .disabled,
-      ).toBe(false),
-    );
-    fireEvent.click(screen.getByRole("button", { name: tr("remote.quick.manual") }));
-    const address = screen.getByRole("textbox", { name: tr("remote.address") });
+    const link = await screen.findByRole("button", { name: page.enterAddress });
+    await waitFor(() => expect((link as HTMLButtonElement).disabled).toBe(false));
+    fireEvent.click(link);
+    const address = screen.getByRole("textbox", { name: page.computerAddress }) as HTMLInputElement;
+    const code = screen.getByRole("textbox", { name: tr("remote.code") }) as HTMLInputElement;
     fireEvent.change(address, { target: { value: "192.168.1.20:42987" } });
+    fireEvent.change(code, { target: { value: "1234" } });
     try {
       for (const locale of ["zh-CN", "zh-TW", "ja-JP", "en-US"] as const) {
         await act(() => changeLocale(locale));
         expect(
-          screen.getByRole("heading", { name: remoteEntryCopy[locale].nativeTitle }),
+          screen.getByRole("heading", { name: remotePageCopy[locale].addComputer }),
         ).toBeTruthy();
-        expect(screen.getByRole("textbox", { name: tr("remote.address") })).toBe(address);
-        expect((address as HTMLInputElement).value).toBe("192.168.1.20:42987");
+        expect(screen.getByRole("textbox", { name: remotePageCopy[locale].computerAddress })).toBe(
+          address,
+        );
+        expect(screen.getByRole("textbox", { name: tr("remote.code") })).toBe(code);
+        expect(address.value).toBe("192.168.1.20:42987");
+        expect(code.value).toBe("1234");
       }
     } finally {
       await act(() => changeLocale("en-US"));
@@ -632,7 +754,7 @@ describe("remote connections UI", () => {
       useRemoteStore.setState({ error: "Approval failed" });
       return null;
     });
-    renderSettings();
+    render(<RemoteConnectionSettings />);
     fireEvent.click(screen.getByRole("button", { name: "Digits match — approve" }));
     await waitFor(() =>
       expect(screen.getByRole("alert").textContent).toContain(tr("remote.error.request")),
@@ -643,7 +765,7 @@ describe("remote connections UI", () => {
     expect(screen.getByText("321 654")).toBeTruthy();
   });
   it("does not expose a stale pairing code while sharing is off or after expiry", () => {
-    const { rerender } = renderSettings();
+    const { rerender } = render(<RemoteConnectionSettings />);
     expect(screen.queryByRole("button", { name: "Generate new code" })).toBeNull();
     expect(screen.queryByRole("button", { name: /copy/i })).toBeNull();
     useRemoteStore.setState({
@@ -656,6 +778,8 @@ describe("remote connections UI", () => {
     });
     rerender(<RemoteConnectionSettings />);
     expect(screen.queryByText("87654321")).toBeNull();
+    expect(screen.queryByText("8765 4321")).toBeNull();
+    expect(screen.queryByRole("button", { name: remotePhoneCopy["en-US"].regenerate })).toBeNull();
     expect(screen.getByRole("button", { name: "Generate new code" })).toBeTruthy();
   });
   it("shows sharing-disabled remote state without any message or execution controls", () => {
@@ -687,10 +811,8 @@ describe("remote connections UI", () => {
         local: { ...status.local, enabled: true, address: "192.168.1.3:42987" },
       },
     });
-    renderSettings();
-    fireEvent.click(
-      screen.getByRole("switch", { name: "Allow other computers to view (read-only)" }),
-    );
+    render(<RemoteConnectionSettings />);
+    fireEvent.click(screen.getByRole("switch", { name: page.share }));
     expect(run).toHaveBeenCalledWith({
       operation: "configure",
       enabled: false,
@@ -700,11 +822,9 @@ describe("remote connections UI", () => {
   });
 
   it("shares only after an explicit switch action with a private address and port", () => {
-    renderSettings();
+    render(<RemoteConnectionSettings />);
     expect(run).not.toHaveBeenCalled();
-    fireEvent.click(
-      screen.getByRole("switch", { name: "Allow other computers to view (read-only)" }),
-    );
+    fireEvent.click(screen.getByRole("switch", { name: page.share }));
     expect(run).toHaveBeenCalledWith({
       operation: "configure",
       enabled: true,
@@ -731,8 +851,9 @@ describe("remote connections UI", () => {
         ],
       },
     });
-    renderSettings();
-    expect(screen.getByText("87654321")).toBeTruthy();
+    render(<RemoteConnectionSettings />);
+    expect(screen.getByText("8765 4321")).toBeTruthy();
+    expect(screen.getByRole("button", { name: remotePhoneCopy["en-US"].regenerate })).toBeTruthy();
     expect(screen.getByText(/including workspaces added later/)).toBeTruthy();
     fireEvent.click(screen.getByRole("button", { name: "Digits match — approve" }));
     expect(run).toHaveBeenCalledWith({ operation: "approve", id: "request" });
@@ -745,14 +866,10 @@ describe("remote connections UI", () => {
       expires_at: Date.now() / 1000 + 300,
     });
     render(<RemoteConnectionPanel open onOpenChange={vi.fn()} onSettings={vi.fn()} />);
-    await waitFor(() =>
-      expect(
-        (screen.getByRole("button", { name: tr("remote.quick.manual") }) as HTMLButtonElement)
-          .disabled,
-      ).toBe(false),
-    );
-    fireEvent.click(screen.getByRole("button", { name: tr("remote.quick.manual") }));
-    fireEvent.change(screen.getByLabelText("Computer IPv4 address and port"), {
+    const link = await screen.findByRole("button", { name: page.enterAddress });
+    await waitFor(() => expect((link as HTMLButtonElement).disabled).toBe(false));
+    fireEvent.click(link);
+    fireEvent.change(screen.getByLabelText("Computer address"), {
       target: { value: "192.168.1.5:42987" },
     });
     fireEvent.change(screen.getByLabelText("Pairing code"), {
@@ -785,13 +902,25 @@ describe("remote connections UI", () => {
         ],
       },
     });
-    renderSettings();
-    expect((screen.getByRole("button", { name: "Connect" }) as HTMLButtonElement).disabled).toBe(
-      true,
-    );
+    render(<RemoteConnectionSettings />);
+    // A changed identity gets no Connect button at all, so it cannot be forced.
+    expect(screen.queryByRole("button", { name: "Connect" })).toBeNull();
     fireEvent.click(screen.getByRole("button", { name: "Revoke access" }));
     expect(run).not.toHaveBeenCalled();
     fireEvent.click(screen.getByRole("button", { name: "Confirm" }));
     expect(run).toHaveBeenCalledWith({ operation: "revoke", id: "device" });
+  });
+  it("disconnects an online computer directly but removes it only after confirmation", () => {
+    useRemoteStore.setState({
+      snapshot: { ...status, connections: [{ ...host, status: "online" }] },
+    });
+    render(<RemoteConnectionSettings />);
+    fireEvent.click(screen.getByRole("button", { name: tr("remote.disconnect") }));
+    expect(run).toHaveBeenCalledExactlyOnceWith({ operation: "disconnect", id: host.id });
+    run.mockClear();
+    fireEvent.click(screen.getByRole("button", { name: `${tr("remote.remove")}: ${host.name}` }));
+    expect(run).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByRole("button", { name: tr("remote.confirm") }));
+    expect(run).toHaveBeenCalledExactlyOnceWith({ operation: "remove", id: host.id });
   });
 });

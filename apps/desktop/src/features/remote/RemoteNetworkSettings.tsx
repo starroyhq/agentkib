@@ -8,7 +8,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-import { SettingsNotice, SettingsRow } from "@/features/settings/components/SettingsLayout";
+import { SettingsNotice } from "@/features/settings/components/SettingsLayout";
 import { useI18n } from "@/core/useI18n";
 import type { WebAdminStatus } from "../../../electron/main/web/service";
 import { useRemoteStore } from "./remote-store";
@@ -45,8 +45,12 @@ export function useRemoteNetworkSettings(): {
   dirty: boolean;
   busy: boolean;
   valid: boolean;
-  save: () => Promise<boolean>;
+  /** Saves the drafts, or the given interface when sharing starts with its first choice. */
+  save: (address?: string) => Promise<boolean>;
+  /** Drops unsaved drafts, as cancelling the advanced settings does. */
+  reset: () => void;
   address: string;
+  interfaces: { name: string; address: string }[];
 } {
   const { locale } = useI18n();
   const c = remoteNetworkCopy[locale];
@@ -101,45 +105,49 @@ export function useRemoteNetworkSettings(): {
       entries.findIndex((entry) => entry.address === address) === index,
   );
   const available = (address: string) => interfaces.some((entry) => entry.address === address);
-  const chosenAddress =
-    addressDraft ??
-    (admin.configurationUncertain ? (status?.config.lanAddress ?? "") : savedAddress);
   const port = portDraft ?? status?.config.port ?? 1422;
-  const lanChanged = Boolean(
-    status &&
-    ((addressDraft !== undefined && addressDraft !== (status.config.lanAddress ?? "")) ||
-      (portDraft !== undefined && portDraft !== status.config.port) ||
-      retryLan ||
-      admin.configurationUncertain),
-  );
-  const nativeChanged = Boolean(
-    snapshot?.local.enabled &&
-    addressDraft !== undefined &&
-    (nativeHost !== addressDraft || retryNative),
-  );
-  const dirty = lanChanged || nativeChanged;
   const portValid = Number.isInteger(port) && port >= 1024 && port <= 65535;
-  const valid =
-    !dirty ||
-    Boolean(
+  // What saving would change, for the drafted interface or one chosen where sharing starts.
+  function plan(draft: string | undefined) {
+    const chosenAddress =
+      draft ?? (admin.configurationUncertain ? (status?.config.lanAddress ?? "") : savedAddress);
+    const lanChanged = Boolean(
       status &&
-      snapshot &&
-      !loadFailed &&
-      portValid &&
-      (!conflict || addressDraft !== undefined) &&
-      (!(
-        addressDraft !== undefined ||
-        status.config.enabled ||
-        nativeChanged ||
-        (admin.configurationUncertain && chosenAddress)
-      ) ||
-        available(chosenAddress)),
+      ((draft !== undefined && draft !== (status.config.lanAddress ?? "")) ||
+        (portDraft !== undefined && portDraft !== status.config.port) ||
+        retryLan ||
+        admin.configurationUncertain),
     );
+    const nativeChanged = Boolean(
+      snapshot?.local.enabled && draft !== undefined && (nativeHost !== draft || retryNative),
+    );
+    const dirty = lanChanged || nativeChanged;
+    const valid =
+      !dirty ||
+      Boolean(
+        status &&
+        snapshot &&
+        !loadFailed &&
+        portValid &&
+        (!conflict || draft !== undefined) &&
+        (!(
+          draft !== undefined ||
+          status.config.enabled ||
+          nativeChanged ||
+          (admin.configurationUncertain && chosenAddress)
+        ) ||
+          available(chosenAddress)),
+      );
+    return { chosenAddress, lanChanged, nativeChanged, dirty, valid };
+  }
+  const { chosenAddress, lanChanged, dirty, valid } = plan(addressDraft);
   const busy = saving || nativeBusy || admin.busy;
   const failed = result?.lan === "failed" || result?.native === "failed";
   const lost = Boolean(savedAddress && !available(savedAddress));
 
-  async function save() {
+  async function save(address?: string) {
+    const draft = address ?? addressDraft;
+    const { chosenAddress, lanChanged, nativeChanged, dirty, valid } = plan(draft);
     if (locked.current || busy || getWebAdminState("lan").busy || !valid) return false;
     if (!dirty) return true;
     if (!status || !snapshot) return false;
@@ -158,7 +166,7 @@ export function useRemoteNetworkSettings(): {
             operation: "configure",
             target: "lan",
             ...status.config,
-            ...(addressDraft === undefined ? {} : { lanAddress: addressDraft }),
+            ...(draft === undefined ? {} : { lanAddress: draft }),
             port,
           });
           if (next.error === "web_state_save_failed" || (next.config.enabled && next.error))
@@ -242,15 +250,20 @@ export function useRemoteNetworkSettings(): {
     busy,
     valid,
     save,
+    reset: () => {
+      setAddressDraft(undefined);
+      setPortDraft(undefined);
+      setResult(undefined);
+    },
+    interfaces,
     address:
       !admin.configurationUncertain && !retryLan && !saving && available(savedAddress)
         ? savedAddress
         : "",
     content: (
-      <div className="space-y-3 border-t pt-4" aria-label={c.title}>
-        <h3 className="px-5 text-sm font-medium">{c.title}</h3>
-        <p className="px-5 text-xs text-muted-foreground">{c.explicitChoice}</p>
-        <SettingsRow>
+      <div className="grid gap-3" role="group" aria-label={c.title}>
+        <p className="text-xs text-muted-foreground">{c.explicitChoice}</p>
+        <div className="grid gap-1.5 text-sm">
           <label htmlFor={`${id}-interface`}>{c.interface}</label>
           <Select
             value={chosenAddress || null}
@@ -262,7 +275,7 @@ export function useRemoteNetworkSettings(): {
               }
             }}
           >
-            <SelectTrigger id={`${id}-interface`} className="max-w-full min-w-0">
+            <SelectTrigger id={`${id}-interface`} className="w-full min-w-0">
               <SelectValue placeholder={c.choose}>
                 {chosenAddress
                   ? `${interfaces.find((entry) => entry.address === chosenAddress)?.name ?? ""} · ${chosenAddress}`
@@ -279,8 +292,8 @@ export function useRemoteNetworkSettings(): {
               </SelectGroup>
             </SelectContent>
           </Select>
-        </SettingsRow>
-        <SettingsRow>
+        </div>
+        <div className="grid gap-1.5 text-sm">
           <label htmlFor={`${id}-port`}>{c.port}</label>
           <Input
             id={`${id}-port`}
@@ -294,16 +307,24 @@ export function useRemoteNetworkSettings(): {
               setResult(undefined);
             }}
           />
-        </SettingsRow>
-        {lanChanged && <SettingsNotice tone="warning">{c.revokeWarning}</SettingsNotice>}
+        </div>
+        {lanChanged && (
+          <SettingsNotice tone="warning" inset={false}>
+            {c.revokeWarning}
+          </SettingsNotice>
+        )}
         {!!warnings.length && (
-          <SettingsNotice tone="warning" role="alert">
+          <SettingsNotice tone="warning" inset={false} role="alert">
             {warnings.map((warning, index) => (
               <p key={index}>{warning}</p>
             ))}
           </SettingsNotice>
         )}
-        {result && !failed && <SettingsNotice role="status">{outcomeText}</SettingsNotice>}
+        {result && !failed && (
+          <SettingsNotice inset={false} role="status">
+            {outcomeText}
+          </SettingsNotice>
+        )}
       </div>
     ),
   };

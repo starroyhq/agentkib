@@ -6,6 +6,7 @@ import { remoteAccountCopy } from "./remote-account-copy";
 import { remoteEntryCopy } from "./remote-entry-copy";
 import { remoteNetworkCopy } from "./remote-network-copy";
 import { remotePhoneCopy } from "./remote-phone-copy";
+import { remotePageCopy } from "./remote-page-copy";
 import { remoteSettingsCopy } from "./remote-settings-copy";
 import { webSettingsCopy } from "./web-settings-copy";
 
@@ -14,6 +15,7 @@ const copyGroups = [
   remoteAccountCopy,
   remoteNetworkCopy,
   remotePhoneCopy,
+  remotePageCopy,
   remoteSettingsCopy,
   webSettingsCopy,
 ];

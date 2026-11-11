@@ -25,16 +25,28 @@ export function RemoteAccountSettings({
   variant = "standalone",
   onStatusChange,
   primary = variant !== "footer",
+  manageOpen: controlledOpen,
+  onManageOpenChange,
 }: {
-  variant?: "standalone" | "step" | "footer";
+  /** "dialog" renders only the account window, opened from the remote page's menu. */
+  variant?: "standalone" | "step" | "footer" | "dialog";
   onStatusChange?: (status: DesktopAccountStatus | undefined) => void;
   primary?: boolean;
+  manageOpen?: boolean;
+  onManageOpenChange?: (open: boolean) => void;
 } = {}) {
   const { locale } = useI18n();
   const c = remoteAccountCopy[locale];
   const p = remotePhoneCopy[locale];
   const traffic = relayUsageCopy[locale];
-  const [manageOpen, setManageOpen] = useState(false);
+  const [localOpen, setLocalOpen] = useState(false);
+  const manageOpen = controlledOpen ?? localOpen;
+  // The account window opened from the page menu stays open through sign-in and sign-out.
+  const dialogOnly = variant === "dialog";
+  const setManageOpen = (open: boolean) => {
+    setLocalOpen(open);
+    onManageOpenChange?.(open);
+  };
   const [status, setStatus] = useState<DesktopAccountStatus>();
   const [failed, setFailed] = useState(() => !desktopApi().account);
   const [busy, setBusy] = useState(false);
@@ -53,7 +65,7 @@ export function RemoteAccountSettings({
       revision.current += 1;
       if (alive.current) {
         setStatus(value);
-        if (value.phase !== "signed-in") setManageOpen(false);
+        if (value.phase !== "signed-in" && !dialogOnly) setLocalOpen(false);
         setFailed(false);
       }
     });
@@ -84,7 +96,7 @@ export function RemoteAccountSettings({
       stopPolling();
       release();
     };
-  }, []);
+  }, [dialogOnly]);
   useEffect(() => onStatusChange?.(status), [status, onStatusChange]);
   async function run(operation: DesktopAccountRequest["operation"]) {
     if (locked.current) return;
@@ -98,7 +110,7 @@ export function RemoteAccountSettings({
           const next = await desktopApi().account.request({ operation });
           if (alive.current && requestRevision === revision.current) {
             setStatus(next);
-            if (next.phase !== "signed-in") setManageOpen(false);
+            if (next.phase !== "signed-in" && !dialogOnly) setLocalOpen(false);
           }
           if (operation === "logout" || operation === "claim") {
             await requestWebAdmin({ operation: "status" });
@@ -251,6 +263,35 @@ export function RemoteAccountSettings({
       )}
     </div>
   );
+  if (dialogOnly)
+    return (
+      <Dialog open={manageOpen} onOpenChange={setManageOpen}>
+        <DialogContent className="sm:max-w-lg">
+          <DialogHeader>
+            <DialogTitle>{c.title}</DialogTitle>
+            <DialogDescription>{c.intro}</DialogDescription>
+          </DialogHeader>
+          <div className="space-y-3 text-sm">
+            <p role="status">
+              {signingIn
+                ? c.signingIn
+                : signedIn
+                  ? p.loggedIn.replace("{account}", status!.account!.username)
+                  : recovering
+                    ? recoveringText
+                    : status
+                      ? c.signedOut
+                      : failed
+                        ? c.unavailable
+                        : c.loading}
+            </p>
+            {accountDetails}
+            {actions}
+            {signedIn && <p className="text-xs text-muted-foreground">{c.logoutHint}</p>}
+          </div>
+        </DialogContent>
+      </Dialog>
+    );
   if (variant !== "standalone")
     return (
       <div className="space-y-3 text-sm">
@@ -263,7 +304,10 @@ export function RemoteAccountSettings({
                 : recovering
                   ? recoveringText
                   : status
-                    ? c.signedOut
+                    ? // The sign-in step's own heading already says to sign in first.
+                      variant === "step"
+                      ? ""
+                      : c.signedOut
                     : failed
                       ? c.unavailable
                       : c.loading}

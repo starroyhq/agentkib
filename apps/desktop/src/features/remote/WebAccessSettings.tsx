@@ -4,7 +4,33 @@ import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/component
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import { Checkbox } from "@/components/ui/checkbox";
-import { Check, ChevronRight, Copy, LoaderCircle, Smartphone, Wifi } from "lucide-react";
+import { RadioGroup, RadioGroupItem } from "@/components/ui/radio-group";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
+import {
+  ArrowLeft,
+  Check,
+  ChevronRight,
+  CircleCheck,
+  CircleX,
+  Copy,
+  LoaderCircle,
+  MoreHorizontal,
+  Pause,
+  Play,
+  Plus,
+  QrCode,
+  SlidersHorizontal,
+  Smartphone,
+  TriangleAlert,
+  User,
+  Wifi,
+  WifiOff,
+} from "lucide-react";
 import {
   Dialog,
   DialogContent,
@@ -40,6 +66,8 @@ import { remoteEntryCopy } from "./remote-entry-copy";
 import { ConnectionQr } from "./ConnectionQr";
 import { RemoteAccountSettings } from "./RemoteAccountSettings";
 import { useRemoteStore } from "./remote-store";
+import { remotePageCopy } from "./remote-page-copy";
+import { CardIcon, clockTime } from "./RemoteCard";
 import {
   Select,
   SelectContent,
@@ -121,10 +149,13 @@ function useDeadlineClock(...deadlines: Array<number | undefined>) {
 
 export type WebAccessSettingsProps = {
   target?: "lan";
-  phoneVisible?: boolean;
+  /** LAN only: the "only on the same Wi-Fi" steps inside the connect-phone window. */
+  mode?: "wifi";
+  onBack?: () => void;
   children?: ReactNode;
   advancedContent?: ReactNode;
   onSaveAdvanced?: () => Promise<boolean>;
+  onDiscardAdvanced?: () => void;
   advancedDirty?: boolean;
   advancedBusy?: boolean;
   advancedValid?: boolean;
@@ -134,51 +165,17 @@ export type WebAccessSettingsProps = {
   onOpenNetworkSettings?: () => void;
 };
 
-function SetupStep({
-  number,
-  title,
-  hint,
-  active,
-  done,
-  children,
-}: {
-  number: number;
-  title: string;
-  hint?: string;
-  active?: boolean;
-  done?: boolean;
-  children?: ReactNode;
-}) {
-  return (
-    <div className={`relative flex gap-3 pb-5 last:pb-0 ${!active && !done ? "opacity-50" : ""}`}>
-      <span
-        className={`z-10 flex size-6 shrink-0 items-center justify-center rounded-full text-xs ${done ? "bg-emerald-500/10 text-emerald-600" : active ? "bg-primary text-primary-foreground" : "border bg-card text-muted-foreground"}`}
-      >
-        {done ? <Check className="size-3.5" aria-hidden="true" /> : number}
-      </span>
-      {number < 4 && (
-        <span
-          aria-hidden="true"
-          className="absolute left-3 top-6 bottom-0 border-l border-border"
-        />
-      )}
-      <div className="min-w-0 flex-1 space-y-2 pt-0.5">
-        {title && (
-          <h4 className={`text-sm ${active ? "font-semibold" : "font-medium"}`}>{title}</h4>
-        )}
-        {hint && <p className="text-xs leading-5 text-muted-foreground">{hint}</p>}
-        {children}
-      </div>
-    </div>
-  );
-}
+/** Where the connect-phone window is: one step at a time, decided by the live state. */
+type PhoneStep = "loading" | "login" | "prepare" | "preparing" | "error" | "scan" | "connected";
 
 export function WebAccessSettings({
   target,
-  phoneVisible = true,
+  mode,
+  onBack,
   children,
   advancedContent,
   onSaveAdvanced,
+  onDiscardAdvanced,
   advancedDirty = false,
   advancedBusy = false,
   advancedValid = true,
@@ -191,6 +188,7 @@ export function WebAccessSettings({
   const lan = target === "lan";
   const p = remotePhoneCopy[locale];
   const l = lanSettingsCopy[locale];
+  const pc = remotePageCopy[locale];
   const [localAdvancedOpen, setLocalAdvancedOpen] = useState(false);
   const [setupComplete, setSetupComplete] = useState(false);
   const setupInProgress = useRef(false);
@@ -198,8 +196,18 @@ export function WebAccessSettings({
   const [lanStatus, setLanStatus] = useState<WebAdminStatus>();
   const [lanUnavailable, setLanUnavailable] = useState(false);
   const [lanOpen, setLanOpen] = useState(false);
-  const focusNetworkSettings = useRef(false);
-  const [newPhoneOpen, setNewPhoneOpen] = useState(false);
+  // The connect-phone window and which path it shows: with an account, or the same Wi-Fi only.
+  const [connect, setConnect] = useState<"account" | "wifi">();
+  // Browsers authorized before the window reached its code, so a new one shows as connected.
+  const [baseline, setBaseline] = useState<string[]>();
+  const autoPrepared = useRef(false);
+  const [autoArmed, setAutoArmed] = useState(false);
+  const [autoDone, setAutoDone] = useState(false);
+  const autoCode = useRef<WebAccessLevel>(undefined);
+  const [accountOpen, setAccountOpen] = useState(false);
+  const [lanChoice, setLanChoice] = useState<string>();
+  const [lanAcknowledged, setLanAcknowledged] = useState(false);
+  const saveOutcome = useRef<"saved" | "failed">(undefined);
   const [confirmation, setConfirmation] = useState<"pause" | "connection" | { device: string }>();
   const cancelRef = useRef<HTMLButtonElement>(null);
   const r = remoteEntryCopy[locale];
@@ -316,6 +324,7 @@ export function WebAccessSettings({
             setStatus(next);
             if (input.operation === "configure") {
               if (next.error) {
+                saveOutcome.current = "failed";
                 setLocalSaveFailed(true);
                 setSaveState("failed");
                 setOperationError("save");
@@ -331,6 +340,7 @@ export function WebAccessSettings({
                     extraSaved = false;
                   }
                 }
+                saveOutcome.current = extraSaved ? "saved" : "failed";
                 if (mounted.current) {
                   setSaveState(extraSaved ? "saved" : "failed");
                   if (!extraSaved) setOperationError("save");
@@ -342,6 +352,7 @@ export function WebAccessSettings({
             return next;
           }
         } catch {
+          if (input.operation === "configure") saveOutcome.current = "failed";
           if (mounted.current) {
             setOperationError(input.operation === "configure" ? "save" : "request");
             if (input.operation === "configure") {
@@ -380,10 +391,6 @@ export function WebAccessSettings({
     !officialBroker &&
     !legacyBrokerUrls.includes(normalizeBrokerUrl(relayBroker));
   const migrating = legacyBroker && officialBroker;
-  const remoteEnabled =
-    status?.relay?.phase === "ready" &&
-    normalizeBrokerUrl(relayBroker) === normalizeBrokerUrl(status.config.relay?.brokerUrl ?? "") &&
-    frpcPath.trim() === (status.config.relay?.frpcPath ?? "").trim();
   const manualAccess =
     !lan &&
     status?.running &&
@@ -466,17 +473,19 @@ export function WebAccessSettings({
       ...(savedRelay.frpcPath ? { frpcPath: savedRelay.frpcPath } : {}),
     });
   };
+  /** Saves the local Web service and the shared network settings; true when nothing failed. */
   async function saveSettings() {
     if (busy || locked.current || getWebAdminState(target).busy || useRemoteStore.getState().busy)
-      return;
+      return false;
     if (!unsaved && !advancedDirty) {
       setOperationError(undefined);
       setSaveState(undefined);
-      return;
+      return true;
     }
     if (unsaved) {
+      saveOutcome.current = undefined;
       await run({ operation: "configure", ...configToSave! });
-      return;
+      return saveOutcome.current === "saved";
     }
     locked.current = true;
     setBusy(true);
@@ -487,11 +496,13 @@ export function WebAccessSettings({
         setSaveState(saved ? "saved" : "failed");
         if (!saved) setOperationError("save");
       }
+      return Boolean(saved);
     } catch {
       if (mounted.current) {
         setSaveState("failed");
         setOperationError("save");
       }
+      return false;
     } finally {
       locked.current = false;
       if (mounted.current) setBusy(false);
@@ -566,11 +577,26 @@ export function WebAccessSettings({
         </Button>
       </SettingsNotice>
     ) : null;
+  const settingsInvalid =
+    !config ||
+    !advancedValid ||
+    !Number.isInteger(config.port) ||
+    config.port < 1024 ||
+    config.port > 65535 ||
+    (config.previewBytesPerSecond !== undefined &&
+      (!Number.isSafeInteger(config.previewBytesPerSecond) ||
+        config.previewBytesPerSecond < 16 * 1024 ||
+        config.previewBytesPerSecond > 1024 * 1024 * 1024)) ||
+    (lan &&
+      config.enabled &&
+      (!config.allowPlaintext ||
+        !status?.addresses?.some(({ address }) => address === config.lanAddress)));
   const settingsForm = !config ? (
     <p>{c.loading}</p>
   ) : (
     <>
-      <SettingsNotice id={saveHintId}>{c.saveHint}</SettingsNotice>
+      {/* The advanced window has its own Save and Cancel; only the LAN window needs the hint. */}
+      {lan && <SettingsNotice id={saveHintId}>{c.saveHint}</SettingsNotice>}
       {lan &&
         hideNetworkFields &&
         !status?.addresses?.some(({ address }) => address === config.lanAddress) && (
@@ -599,7 +625,7 @@ export function WebAccessSettings({
           aria-label={c.enabled}
           checked={config.enabled}
           disabled={busy}
-          aria-describedby={saveHintId}
+          aria-describedby={lan ? saveHintId : undefined}
           onCheckedChange={(enabled) => setConfig({ ...config, enabled: enabled === true })}
         />
       </SettingsRow>
@@ -738,47 +764,24 @@ export function WebAccessSettings({
           </label>
         </div>
       )}
-      {!lan && (
-        <fieldset disabled={busy} className="m-0 min-w-0 border-0 p-0">
-          {advancedContent}
-        </fieldset>
-      )}
-      <div className="flex flex-wrap justify-end gap-2 border-b px-5 py-3">
-        <Button
-          variant={lan ? "default" : "outline"}
-          disabled={
-            busy ||
-            !advancedValid ||
-            !Number.isInteger(config.port) ||
-            config.port < 1024 ||
-            config.port > 65535 ||
-            (config.previewBytesPerSecond !== undefined &&
-              (!Number.isSafeInteger(config.previewBytesPerSecond) ||
-                config.previewBytesPerSecond < 16 * 1024 ||
-                config.previewBytesPerSecond > 1024 * 1024 * 1024)) ||
-            (lan &&
-              config.enabled &&
-              (!config.allowPlaintext ||
-                !status?.addresses?.some(({ address }) => address === config.lanAddress)))
-          }
-          onClick={() => void saveSettings()}
-        >
-          {activeOperation === "configure" ? c.saving : c.save}
-        </Button>
-        {(lan || manualAccess) && (
-          <>
-            {accessLevelSelect}
-            <Button
-              variant="outline"
-              disabled={busy || !status?.running}
-              aria-describedby={generateHint ? generateHintId : undefined}
-              onClick={() => void generateCode()}
-            >
-              {codeAccess ? c.generateAccess : c.generate}
+      {(lan || manualAccess) && (
+        <div className="flex flex-wrap justify-end gap-2 border-b px-5 py-3">
+          {lan && (
+            <Button disabled={busy || settingsInvalid} onClick={() => void saveSettings()}>
+              {activeOperation === "configure" ? c.saving : c.save}
             </Button>
-          </>
-        )}
-      </div>
+          )}
+          {accessLevelSelect}
+          <Button
+            variant="outline"
+            disabled={busy || !status?.running}
+            aria-describedby={generateHint ? generateHintId : undefined}
+            onClick={() => void generateCode()}
+          >
+            {codeAccess ? c.generateAccess : c.generate}
+          </Button>
+        </div>
+      )}
       {lan && generateHint && <SettingsNotice id={generateHintId}>{generateHint}</SettingsNotice>}
       {manualAccess && (
         <div className="space-y-3 p-4">
@@ -853,16 +856,15 @@ export function WebAccessSettings({
   );
   const browserRows = (
     <>
-      {" "}
       {status?.devices.map((device) => (
-        <SettingsRow key={device.id}>
-          <SettingsCopy>
-            <strong className="flex items-center gap-2">
-              <Smartphone className="size-4 text-muted-foreground" aria-hidden="true" />
-              {device.name}
-            </strong>
+        <div key={device.id} className="flex flex-wrap items-center gap-3 px-4 py-3 text-sm">
+          <span className="flex size-8 shrink-0 items-center justify-center rounded-md bg-muted">
+            <Smartphone className="size-4 text-muted-foreground" aria-hidden="true" />
+          </span>
+          <div className="grid min-w-0 flex-1 gap-0.5">
+            <strong className="break-words font-medium">{device.name}</strong>
             {!(codeAccess && device.accessLevel) && (
-              <small>
+              <small className="text-muted-foreground">
                 {device.accessLevel
                   ? levelLabel(device.accessLevel)
                   : device.accessMode === "full"
@@ -883,8 +885,10 @@ export function WebAccessSettings({
                         .join(" · ")}
               </small>
             )}
-            {device.accountBound && <small>{c.accountBound}</small>}
-          </SettingsCopy>
+            {device.accountBound && (
+              <small className="text-muted-foreground">{c.accountBound}</small>
+            )}
+          </div>
           <div className="flex flex-wrap items-center justify-end gap-2">
             {codeAccess && device.accessLevel && (
               <Select
@@ -918,7 +922,7 @@ export function WebAccessSettings({
               {c.revoke}
             </Button>
           </div>
-        </SettingsRow>
+        </div>
       ))}
     </>
   );
@@ -969,18 +973,21 @@ export function WebAccessSettings({
       )}
     </>
   );
-  const notices = (
+  // Dialogs place notices flush with their content; a step that shows its own result skips "saved".
+  const renderNotices = ({ inset = true, saved = true } = {}) => (
     <>
       {(unsaved || advancedDirty) && (
-        <SettingsNotice tone="warning" role="status">
+        <SettingsNotice tone="warning" inset={inset} role="status">
           <strong>{c.unsaved}</strong>
         </SettingsNotice>
       )}
-      {!unsaved && !advancedDirty && saveState === "saved" && (
-        <SettingsNotice role="status">{c.saved}</SettingsNotice>
+      {saved && !unsaved && !advancedDirty && saveState === "saved" && (
+        <SettingsNotice inset={inset} role="status">
+          {c.saved}
+        </SettingsNotice>
       )}
       {status?.acceptanceSessionId && (
-        <SettingsNotice>
+        <SettingsNotice inset={inset}>
           {c.acceptance} <code>{status.acceptanceSessionId}</code>
         </SettingsNotice>
       )}
@@ -1095,80 +1102,234 @@ export function WebAccessSettings({
       {connectionDetails}
     </div>
   );
+  const relayPhase = status?.relay?.phase;
+  const enabling =
+    activeOperation === "remote-enable" ||
+    ["registering", "certifying", "connecting"].includes(relayPhase ?? "");
+  const relayFailed =
+    (relayActive && !enabling && (relayPhase === "error" || relayPhase === "offline")) ||
+    // An enable request that failed outright leaves remote access off with an error to show.
+    (!relayActive && !enabling && (operationError === "request" || Boolean(status?.error)));
+  const needsLogin = setupComplete ? resumeNeedsLogin : officialBroker && !signedIn;
+  // The window turns remote access on by itself only where nothing is left to choose: the
+  // official service as set up, or resuming what was saved. Migration, a self-hosted invitation
+  // or re-registration still take the explicit action.
+  const autoPrepare = setupComplete
+    ? !resumeNeedsLogin && !resumeDisabled
+    : officialBroker &&
+      signedIn &&
+      !migrating &&
+      !brokerChanged &&
+      status?.relay?.reason !== "revoked" &&
+      !connectionDisabled;
+  const prepare = () => (setupComplete ? resumeConnection() : enableConnection());
+  const connectedDevice = baseline
+    ? status?.devices.find((device) => !baseline.includes(device.id))
+    : undefined;
+  // A revoked device needs a deliberate re-registration, never an automatic or plain retry.
+  const revoked = status?.relay?.reason === "revoked";
+  const phoneStep: PhoneStep = !status
+    ? "loading"
+    : relayReady
+      ? connectedDevice
+        ? "connected"
+        : "scan"
+      : needsLogin
+        ? "login"
+        : enabling
+          ? "preparing"
+          : revoked
+            ? "prepare"
+            : relayFailed
+              ? "error"
+              : relayActive || (autoArmed && !autoDone && autoPrepare)
+                ? "preparing"
+                : "prepare";
+  const liveCode = Boolean(
+    status?.code &&
+    status.code.expiresAt > now &&
+    !phoneGenerateHint &&
+    (!codeAccess || status.code.access === codeLevel),
+  );
+  useEffect(() => {
+    // Only an opening that found remote access off turns it on, once: a pause made while the
+    // window is open stays paused and leaves the explicit action.
+    if (connect !== "account" || phoneStep !== "preparing" || !autoArmed) return;
+    if (autoPrepared.current || busy || relayActive || !autoPrepare) return;
+    autoPrepared.current = true;
+    void Promise.resolve(prepare()).finally(() => {
+      if (mounted.current) setAutoDone(true);
+    });
+  });
+  useEffect(() => {
+    // One code per opening and level, counting a code that was already showing: an expired code
+    // waits for an explicit "regenerate".
+    if (connect !== "account" || phoneStep !== "scan" || busy) return;
+    if (autoCode.current === codeLevel) return;
+    autoCode.current = codeLevel;
+    if (!liveCode) void generatePhoneCode();
+  });
+  function openConnect(path: "account" | "wifi" = "account") {
+    autoPrepared.current = false;
+    autoCode.current = undefined;
+    setAutoArmed(!relayActive);
+    setAutoDone(false);
+    setOperationError(undefined);
+    setBaseline(status?.devices.map((device) => device.id) ?? []);
+    setLanChoice(undefined);
+    setLanAcknowledged(false);
+    setConnect(path);
+  }
+  const advancedIsOpen = advancedOpen ?? localAdvancedOpen;
+  function setAdvanced(open: boolean) {
+    setLocalAdvancedOpen(open);
+    onAdvancedOpenChange?.(open);
+  }
+  function cancelAdvanced() {
+    if (busy) return;
+    if (status) {
+      setConfig(status.config);
+      setRelayBroker(status.config.relay?.brokerUrl || OFFICIAL_BROKER_URL);
+      setFrpcPath(status.config.relay?.frpcPath || "");
+    }
+    setExtraRootsText(undefined);
+    setInviteCode("");
+    setSaveState(undefined);
+    onDiscardAdvanced?.();
+    setAdvanced(false);
+  }
+  async function saveAdvancedDialog() {
+    if (!(await saveSettings())) return;
+    if (connectionDirty) {
+      // Any change of service, migration included, clears the browser grants: confirm it first.
+      if (brokerChanged) {
+        setConfirmation("connection");
+        return;
+      }
+      const result = await enableConnection();
+      if (!result || result.error) return;
+    }
+    setAdvanced(false);
+  }
+  // A retired official address is neither choice until its migration notice is acted on.
+  const serviceChoice = officialBroker
+    ? "official"
+    : legacyBrokerUrls.includes(normalizeBrokerUrl(relayBroker))
+      ? ""
+      : "self";
+  const selfHostedDraft = useRef("");
+  const usage = accountStatus?.relayUsage;
+  const usedPercent = usage
+    ? Math.min(100, Math.round((usage.usedBytes / usage.limitBytes) * 100))
+    : undefined;
+  const usageNear = Boolean(
+    usage && (usage.exhausted || usage.usedBytes >= usage.limitBytes * 0.8),
+  );
+  const usageText =
+    usage && usedPercent !== undefined
+      ? usage.exhausted
+        ? pc.relayExhausted
+        : usageNear
+          ? pc.relayAlmost.replace("{percent}", String(usedPercent))
+          : pc.relayUsed
+              .replace("{percent}", String(usedPercent))
+              .replace(
+                "{date}",
+                new Intl.DateTimeFormat(locale, { month: "long", day: "numeric" }).format(
+                  new Date(usage.periodEnd),
+                ),
+              )
+      : undefined;
+  const phoneSummary = [
+    pc.devices.replace("{count}", String(status?.devices.length ?? 0)),
+    usageText,
+  ]
+    .filter(Boolean)
+    .join(" · ");
+  const badge = !relayActive
+    ? { label: pc.paused, className: "bg-muted text-muted-foreground", dot: "bg-muted-foreground" }
+    : relayReady
+      ? {
+          label: pc.on,
+          className: "bg-emerald-500/10 text-emerald-700 dark:text-emerald-400",
+          dot: "bg-emerald-600",
+        }
+      : relayFailed
+        ? {
+            label: pc.interrupted,
+            className: "bg-amber-500/10 text-amber-700 dark:text-amber-400",
+            dot: "bg-amber-600",
+          }
+        : { label: pc.connecting, className: "bg-muted text-muted-foreground", dot: "bg-primary" };
+  const levelPicker = codeAccess && (
+    <div className="grid gap-2">
+      <span className="text-xs text-muted-foreground">{pc.levelQuestion}</span>
+      <div
+        role="group"
+        aria-label={c.accessLevel}
+        className="inline-flex w-fit rounded-lg border bg-background p-1"
+      >
+        {(["full", "read"] as const).map((level) => (
+          <Button
+            key={level}
+            variant="ghost"
+            size="sm"
+            disabled={busy}
+            aria-pressed={codeLevel === level}
+            className={
+              codeLevel === level ? "bg-primary/10 text-primary-text" : "text-muted-foreground"
+            }
+            onClick={() => setCodeLevel(level)}
+          >
+            {level === "full" ? c.fullAccess : p.readOnly}
+          </Button>
+        ))}
+      </div>
+    </div>
+  );
   const phoneConnection = (
-    <div className="space-y-3">
-      {codeAccess && (
-        <div
-          role="group"
-          aria-label={c.accessLevel}
-          className="inline-flex rounded-lg border bg-background p-1"
-        >
-          {(["full", "read"] as const).map((level) => (
-            <Button
-              key={level}
-              variant="ghost"
-              size="sm"
-              disabled={busy}
-              aria-pressed={codeLevel === level}
-              className={
-                codeLevel === level ? "bg-primary/10 text-primary-text" : "text-muted-foreground"
-              }
-              onClick={() => setCodeLevel(level)}
-            >
-              {level === "full" ? c.fullAccess : p.readOnly}
-            </Button>
-          ))}
-        </div>
-      )}
-      {status?.code &&
-      status.code.expiresAt > now &&
-      !phoneGenerateHint &&
-      (!codeAccess || status.code.access === codeLevel) ? (
-        <div className="flex flex-wrap items-center gap-5 rounded-lg border bg-background p-4">
+    <div className="grid gap-4">
+      {liveCode && status?.code ? (
+        <div className="flex flex-wrap items-center gap-5">
           {status.relay?.phase === "ready" && status.relay.publicUrl && (
-            <div className="space-y-1 text-center">
-              <ConnectionQr url={status.relay.publicUrl} label={r.scan} />
-              <p className="text-xs text-muted-foreground">{r.scan}</p>
-            </div>
+            <ConnectionQr url={status.relay.publicUrl} label={r.scan} />
           )}
-          <div className="space-y-2">
-            <p className="text-xs text-muted-foreground">{p.code}</p>
+          <div className="grid gap-1">
+            <span className="text-xs text-muted-foreground">{p.code}</span>
             <strong
               className="block font-mono text-3xl tracking-wider"
               aria-label={status.code.value}
             >
               {status.code.value.replace(/(\d{4})(\d{4})/, "$1 $2")}
             </strong>
-            {!newPhoneOpen && (
-              <p className="text-xs text-muted-foreground">
-                {c.accessLevel}: {levelLabel(status.code.access)}
-              </p>
-            )}
-            <p className="text-xs text-muted-foreground">
-              {c.expires}{" "}
-              {new Intl.DateTimeFormat(locale, {
-                hour: "2-digit",
-                minute: "2-digit",
-                hour12: false,
-              }).format(new Date(status.code.expiresAt))}
-            </p>
-            <div className="flex flex-wrap gap-2">
-              <Button variant="outline" disabled={busy} onClick={() => void generatePhoneCode()}>
+            <span className="flex flex-wrap items-center gap-1 text-xs text-muted-foreground">
+              {pc.validUntil.replace("{time}", clockTime(status.code.expiresAt, locale))}
+              <span aria-hidden="true">·</span>
+              <Button
+                variant="link"
+                size="content"
+                className="text-xs"
+                disabled={busy}
+                onClick={() => void generatePhoneCode()}
+              >
                 {p.regenerate}
               </Button>
-              <Button
-                variant="ghost"
-                disabled={busy}
-                onClick={() => void copyPairingCode(status.code!.value)}
-              >
-                {codeCopied ? <Check aria-hidden="true" /> : <Copy aria-hidden="true" />}
-                {tr(codeCopied ? "handoff.copied" : "common.copy")}
-              </Button>
-            </div>
+            </span>
+            <Button
+              variant="ghost"
+              size="sm"
+              className="-ml-2 justify-self-start"
+              disabled={busy}
+              onClick={() => void copyPairingCode(status.code!.value)}
+            >
+              {codeCopied ? <Check aria-hidden="true" /> : <Copy aria-hidden="true" />}
+              {tr(codeCopied ? "handoff.copied" : "common.copy")}
+            </Button>
           </div>
         </div>
       ) : (
         <Button
+          className="justify-self-start"
           disabled={busy || Boolean(phoneGenerateHint)}
           aria-describedby={phoneGenerateHint ? generateHintId : undefined}
           onClick={() => void generatePhoneCode()}
@@ -1176,6 +1337,7 @@ export function WebAccessSettings({
           {codeAccess ? c.generateAccess : c.generate}
         </Button>
       )}
+      {levelPicker}
       {phoneGenerateHint && (
         <p id={generateHintId} className="text-xs text-muted-foreground">
           {phoneGenerateHint}
@@ -1186,6 +1348,106 @@ export function WebAccessSettings({
       </p>
     </div>
   );
+  const wifiLink = (
+    <div className="border-t pt-3">
+      <Button variant="link" size="content" className="gap-1.5" onClick={() => setConnect("wifi")}>
+        <Wifi aria-hidden="true" />
+        {pc.wifiLink}
+      </Button>
+    </div>
+  );
+  const reasonText = status?.relay?.reason
+    ? r.reasons[status.relay.reason]
+    : r.phases[relayPhase ?? "disabled"];
+  const connectBody =
+    phoneStep === "loading" ? (
+      <p role="status">{c.loading}</p>
+    ) : phoneStep === "login" ? (
+      <div className="grid gap-4">
+        <StepIntro icon={<User aria-hidden="true" />} title={pc.loginTitle} info={pc.loginInfo} />
+        <RemoteAccountSettings variant="step" primary onStatusChange={setAccountStatus} />
+        {wifiLink}
+      </div>
+    ) : phoneStep === "prepare" ? (
+      <div className="grid gap-4">
+        <StepIntro icon={<Smartphone aria-hidden="true" />} title={pc.prepareTitle} />
+        {migrationNotice}
+        {invitation}
+        <Button
+          className="justify-self-start"
+          disabled={connectionDisabled || enabling}
+          onClick={() => {
+            if (brokerChanged && !migrating) setConfirmation("connection");
+            else void enableConnection();
+          }}
+        >
+          {connectionActionLabel}
+        </Button>
+        {connectionState}
+        {wifiLink}
+      </div>
+    ) : phoneStep === "preparing" ? (
+      <div className="grid gap-4">
+        <StepIntro
+          icon={<LoaderCircle className="animate-spin" aria-hidden="true" />}
+          title={pc.preparingTitle}
+        />
+        {connectionSummary}
+        <p className="text-xs text-muted-foreground">{pc.preparingHint}</p>
+      </div>
+    ) : phoneStep === "error" ? (
+      <div className="grid gap-4">
+        <StepIntro
+          tone="error"
+          icon={<CircleX aria-hidden="true" />}
+          title={relayPhase === "offline" ? pc.interruptedTitle : pc.failedTitle}
+          info={reasonText}
+        />
+        {status?.relay?.retryAt && status.relay.retryAt > now && (
+          <p className="-mt-2 text-sm text-muted-foreground">
+            {pc.nextRetry.replace("{time}", clockTime(status.relay.retryAt, locale))}
+          </p>
+        )}
+        {diagnostics}
+        <div className="grid grid-cols-2 gap-2">
+          <Button variant="outline" onClick={() => setConnect(undefined)}>
+            {pc.close}
+          </Button>
+          <Button
+            disabled={busy || (setupComplete ? resumeDisabled : connectionDisabled)}
+            onClick={() => void prepare()}
+          >
+            {pc.retryNow}
+          </Button>
+        </div>
+      </div>
+    ) : phoneStep === "scan" ? (
+      phoneConnection
+    ) : (
+      <div className="grid gap-4">
+        <StepIntro
+          tone="success"
+          icon={<CircleCheck aria-hidden="true" />}
+          title={pc.connectedTitle.replace("{name}", connectedDevice?.name ?? "")}
+          info={connectedDevice?.accessLevel === "read" ? pc.readInfo : pc.fullInfo}
+        />
+        <div className="grid grid-cols-2 gap-2">
+          <Button
+            variant="outline"
+            onClick={() => {
+              autoCode.current = undefined;
+              setBaseline(status?.devices.map((device) => device.id) ?? []);
+            }}
+          >
+            {pc.connectAnother}
+          </Button>
+          <Button onClick={() => setConnect(undefined)}>{pc.done}</Button>
+        </div>
+      </div>
+    );
+  const stepIndex = { login: 0, prepare: 1, preparing: 1, error: 1, scan: 2 } as Partial<
+    Record<PhoneStep, number>
+  >;
   const confirmations = (
     <Dialog
       open={Boolean(confirmation)}
@@ -1231,7 +1493,10 @@ export function WebAccessSettings({
                     : confirmation
                       ? await run({ operation: "revoke", id: confirmation.device })
                       : undefined;
-              if (result && !result.error) setConfirmation(undefined);
+              if (result && !result.error) {
+                if (confirmation === "connection") setAdvanced(false);
+                setConfirmation(undefined);
+              }
             }}
           >
             {confirmation === "pause"
@@ -1244,6 +1509,144 @@ export function WebAccessSettings({
       </DialogContent>
     </Dialog>
   );
+  if (lan && mode === "wifi") {
+    const addresses = status?.addresses ?? [];
+    const chosen =
+      lanChoice ??
+      (addresses.some(({ address }) => address === config?.lanAddress)
+        ? (config?.lanAddress ?? "")
+        : "");
+    const listening = Boolean(status?.running && status.config.enabled && status.connectionUrl);
+    if (listening && status?.connectionUrl)
+      return (
+        <div className="grid gap-4 text-sm">
+          <div className="flex flex-wrap items-start gap-4">
+            <ConnectionQr url={status.connectionUrl} label={l.qr} />
+            <div className="grid min-w-0 flex-1 gap-2">
+              <span className="inline-flex w-fit items-center gap-1 rounded-md bg-amber-500/10 px-2 py-0.5 text-xs text-amber-700 dark:text-amber-400">
+                <WifiOff className="size-3.5" aria-hidden="true" />
+                {pc.unencrypted}
+              </span>
+              <p>{pc.wifiScan}</p>
+              <code className="break-all text-xs text-muted-foreground">{status.localUrl}</code>
+            </div>
+          </div>
+          <p className="text-xs text-muted-foreground">{pc.wifiOnly}</p>
+          <div className="grid gap-2 border-t pt-3">
+            <p className="text-xs text-muted-foreground">{c.pairingCodeHint}</p>
+            {status.code && status.code.expiresAt > now ? (
+              <div className="flex flex-wrap items-center gap-x-4 gap-y-1">
+                <strong
+                  className="font-mono text-2xl tracking-wider"
+                  aria-label={status.code.value}
+                >
+                  {status.code.value.replace(/(\d{4})(\d{4})/, "$1 $2")}
+                </strong>
+                <span className="text-xs text-muted-foreground">
+                  {pc.validUntil.replace("{time}", clockTime(status.code.expiresAt, locale))}
+                </span>
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  disabled={busy}
+                  onClick={() => void copyPairingCode(status.code!.value)}
+                >
+                  {codeCopied ? <Check aria-hidden="true" /> : <Copy aria-hidden="true" />}
+                  {tr(codeCopied ? "handoff.copied" : "common.copy")}
+                </Button>
+              </div>
+            ) : (
+              <Button
+                variant="outline"
+                className="justify-self-start"
+                disabled={busy}
+                onClick={() => void generateCode()}
+              >
+                {c.generate}
+              </Button>
+            )}
+          </div>
+          {!!status.pending.length && (
+            <section aria-label={c.pending}>
+              <h3 className="text-sm font-medium">{c.pending}</h3>
+              {pendingRequests}
+            </section>
+          )}
+          {renderNotices({ inset: false, saved: false })}
+          {confirmations}
+        </div>
+      );
+    return (
+      <div className="grid gap-4 text-sm">
+        <SettingsNotice tone="warning" inset={false}>
+          <div className="flex gap-2">
+            <TriangleAlert className="mt-0.5 size-4 shrink-0" aria-hidden="true" />
+            <p>{pc.wifiRisk}</p>
+          </div>
+        </SettingsNotice>
+        <div className="grid gap-1.5">
+          <label htmlFor="remote-wifi-network">{pc.wifiNetwork}</label>
+          <Select
+            value={chosen || null}
+            disabled={busy || !config}
+            onValueChange={(value) => setLanChoice(value ?? "")}
+          >
+            <SelectTrigger id="remote-wifi-network" className="w-full min-w-0">
+              <SelectValue placeholder={l.choose}>
+                {chosen
+                  ? `${addresses.find((entry) => entry.address === chosen)?.name ?? ""} · ${chosen}`
+                  : l.choose}
+              </SelectValue>
+            </SelectTrigger>
+            <SelectContent>
+              <SelectGroup>
+                {addresses.map(({ name, address }) => (
+                  <SelectItem key={`${name}-${address}`} value={address}>
+                    {name} · {address}
+                  </SelectItem>
+                ))}
+              </SelectGroup>
+            </SelectContent>
+          </Select>
+          {status && !addresses.length && (
+            <p className="text-xs text-muted-foreground">{l.noAddress}</p>
+          )}
+        </div>
+        <label className="flex items-center gap-2">
+          <Checkbox
+            checked={lanAcknowledged}
+            disabled={busy}
+            onCheckedChange={(checked) => setLanAcknowledged(checked === true)}
+          />
+          {pc.wifiAck}
+        </label>
+        {renderNotices({ inset: false })}
+        <Button
+          disabled={busy || !config || !chosen || !lanAcknowledged}
+          onClick={() => {
+            if (!config || !chosen || !lanAcknowledged) return;
+            void run({
+              operation: "configure",
+              ...config,
+              enabled: true,
+              lanAddress: chosen,
+              allowPlaintext: true,
+            });
+          }}
+        >
+          {activeOperation === "configure" ? c.saving : pc.wifiStart}
+        </Button>
+        {onBack && (
+          <div className="border-t pt-3">
+            <Button variant="link" size="content" className="gap-1.5" onClick={onBack}>
+              <ArrowLeft aria-hidden="true" />
+              {pc.wifiBack}
+            </Button>
+          </div>
+        )}
+      </div>
+    );
+  }
   if (lan)
     return (
       <SettingsSection title={c.title}>
@@ -1253,7 +1656,7 @@ export function WebAccessSettings({
             <p>{c.pairingCodeHint}</p>
           </div>
         </SettingsNotice>
-        {notices}
+        {renderNotices()}
         {settingsForm}
         {lan && status?.running && status.connectionUrl && (
           <SettingsNotice>
@@ -1280,16 +1683,86 @@ export function WebAccessSettings({
         {!!status?.pending.length && <h3 className="px-5 pt-4 text-sm font-medium">{c.pending}</h3>}
         {pendingRequests}
         {!!status?.devices.length && <h3 className="px-5 pt-4 text-sm font-medium">{c.devices}</h3>}
-        {browserRows}
+        <div className="divide-y">{browserRows}</div>
         {confirmations}
       </SettingsSection>
     );
+  const moreMenu = (
+    <DropdownMenu>
+      <DropdownMenuTrigger
+        render={<Button variant="outline" size="icon" aria-label={pc.more} disabled={busy} />}
+      >
+        <MoreHorizontal aria-hidden="true" />
+      </DropdownMenuTrigger>
+      <DropdownMenuContent align="end" className="w-auto min-w-56">
+        {relayActive && (
+          <DropdownMenuItem onClick={() => setConfirmation("pause")}>
+            <Pause aria-hidden="true" />
+            {pc.pauseAccess}
+          </DropdownMenuItem>
+        )}
+        <DropdownMenuItem onClick={() => setAccountOpen(true)}>
+          <User aria-hidden="true" />
+          {pc.account}
+          {accountStatus?.account?.username && (
+            <span className="ml-auto max-w-40 truncate pl-4 text-xs text-muted-foreground">
+              {accountStatus.account.username}
+            </span>
+          )}
+        </DropdownMenuItem>
+        <DropdownMenuItem onClick={() => setAdvanced(true)}>
+          <SlidersHorizontal aria-hidden="true" />
+          {pc.advanced}
+        </DropdownMenuItem>
+      </DropdownMenuContent>
+    </DropdownMenu>
+  );
+  const frpcField = (
+    <>
+      <label className="grid gap-1.5">
+        {r.frpc}
+        <Input
+          value={frpcPath}
+          disabled={busy}
+          aria-describedby={frpcHintId}
+          placeholder={r.bundled}
+          onChange={(e) => setFrpcPath(e.target.value)}
+        />
+      </label>
+      <p id={frpcHintId} className="-mt-3 text-xs text-muted-foreground">
+        {r.frpcHint}
+      </p>
+    </>
+  );
+  const bandwidthField = (
+    <label className="grid gap-1.5">
+      {r.bandwidth}
+      <Input
+        type="number"
+        min={16}
+        max={1048576}
+        step={1}
+        disabled={busy || !config}
+        value={(config?.previewBytesPerSecond ?? 2 * 1024 * 1024) / 1024}
+        onChange={(event) =>
+          setConfig((old) =>
+            old
+              ? {
+                  ...old,
+                  previewBytesPerSecond: Math.round(Number(event.target.value) * 1024),
+                }
+              : old,
+          )
+        }
+      />
+    </label>
+  );
   return (
     <div className="grid gap-5">
-      {notices}
+      {!advancedIsOpen && connect === undefined && renderNotices()}
       {lanStatus?.config.enabled && (
         <SettingsNotice tone="warning">
-          <div>
+          <div className="grid gap-1">
             <strong>{l.plaintextActiveTitle}</strong>
             {lanStatus.running && !lanUnavailable ? (
               <>
@@ -1299,281 +1772,282 @@ export function WebAccessSettings({
             ) : (
               <p>{r.lanUnavailable}</p>
             )}
-          </div>
-        </SettingsNotice>
-      )}
-      <div hidden={!phoneVisible} className="space-y-5">
-        {!setupComplete ? (
-          <section className="space-y-5 rounded-xl border bg-card p-5">
-            <header className="space-y-1">
-              <h3 className="text-sm font-semibold">{p.introTitle}</h3>
-              <p className="text-xs text-muted-foreground">{p.lifetime}</p>
-            </header>
-            <div>
-              <SetupStep
-                number={1}
-                title={signedIn ? "" : p.loginStep}
-                hint={!signedIn ? p.loginHint : undefined}
-                active={!signedIn}
-                done={signedIn}
-              >
-                <RemoteAccountSettings
-                  variant="step"
-                  primary={!relayReady}
-                  onStatusChange={setAccountStatus}
-                />
-              </SetupStep>
-              <SetupStep
-                number={2}
-                title={relayReady ? p.readyResult : p.enableStep}
-                hint={!relayReady && officialBroker ? p.enableHint : undefined}
-                active={signedIn && !relayReady}
-                done={Boolean(relayReady)}
-              >
-                {signedIn && !relayReady && (
-                  <div className="space-y-3">
-                    {migrationNotice}
-                    <Button
-                      disabled={
-                        connectionDisabled ||
-                        ["registering", "certifying", "connecting"].includes(
-                          status?.relay?.phase ?? "",
-                        )
-                      }
-                      onClick={() => {
-                        if (brokerChanged && !migrating) setConfirmation("connection");
-                        else void enableConnection();
-                      }}
-                    >
-                      {connectionActionLabel}
-                    </Button>
-                    {connectionState}
-                  </div>
-                )}
-              </SetupStep>
-              <SetupStep
-                number={3}
-                title={p.connectStep}
-                hint={!relayReady ? p.connectHint : undefined}
-                active={Boolean(relayReady)}
-              >
-                {relayReady && phoneConnection}
-              </SetupStep>
-              <SetupStep number={4} title={p.manageStep} hint={p.manageHint} />
-            </div>
-            {relayReady && diagnostics}
-          </section>
-        ) : (
-          <>
-            <section className="space-y-3 rounded-xl border bg-card p-4">
-              <div className="flex flex-wrap items-center justify-between gap-3">
-                <div className="flex flex-wrap items-center gap-2 text-sm">
-                  <span
-                    aria-hidden="true"
-                    className={`size-2 rounded-full ${relayReady ? "bg-emerald-600" : "bg-muted-foreground"}`}
-                  />
-                  <strong>{relayActive ? r.enabledRemote : p.paused}</strong>
-                  {connectionSummary}
-                </div>
-                <div className="flex flex-wrap gap-2">
-                  {relayActive ? (
-                    <Button
-                      variant="outline"
-                      disabled={busy}
-                      onClick={() => setConfirmation("pause")}
-                    >
-                      {p.pause}
-                    </Button>
-                  ) : (
-                    !resumeNeedsLogin && (
-                      <Button disabled={resumeDisabled} onClick={() => void resumeConnection()}>
-                        {r.enable}
-                      </Button>
-                    )
-                  )}
-                </div>
-              </div>
-              {connectionDetails}
-            </section>
-            <section className="space-y-2">
-              <header className="flex flex-wrap items-center justify-between gap-3">
-                <h3 className="text-sm font-medium">
-                  {p.browsers.replace("{count}", String(status?.devices.length ?? 0))}
-                </h3>
-                <Button
-                  variant={relayReady && !newPhoneOpen ? "default" : "outline"}
-                  disabled={busy || Boolean(phoneGenerateHint)}
-                  onClick={() => setNewPhoneOpen(true)}
-                >
-                  {p.connectNew}
-                </Button>
-              </header>
-              {status?.devices.length ? (
-                <div className="overflow-hidden rounded-xl border bg-card">{browserRows}</div>
-              ) : (
-                status &&
-                !loadFailed &&
-                !operationError &&
-                !status.error &&
-                !busy && <p className="py-3 text-sm text-muted-foreground">{p.noBrowsers}</p>
-              )}
-            </section>
-          </>
-        )}
-        {!!status?.pending.length && (
-          <section className="rounded-xl border bg-card">
-            <h3 className="px-5 pt-4 text-sm font-medium">{c.pending}</h3>
-            {pendingRequests}
-          </section>
-        )}
-        <section className="overflow-hidden rounded-xl border bg-card">
-          <div className="flex flex-wrap items-center justify-between gap-3 p-4">
-            <div className="flex min-w-0 items-center gap-3">
-              <Wifi className="size-4 shrink-0 text-muted-foreground" aria-hidden="true" />
-              <div className="space-y-1">
-                <p className="text-sm font-medium">
-                  {setupComplete
-                    ? `${p.lanSummary} · ${lanStatus?.config.enabled ? p.lanOn : p.lanOff}`
-                    : p.lanTitle}
-                </p>
-                {!setupComplete && (
-                  <p className="text-xs leading-5 text-muted-foreground">{p.lanHint}</p>
-                )}
-              </div>
-            </div>
             <Button
-              variant="outline"
+              variant="link"
+              size="content"
+              className="justify-self-start"
               disabled={busy}
               onClick={() => {
                 if (!getWebAdminState().busy) setLanOpen(true);
               }}
             >
-              {setupComplete ? p.settings : p.lanSetup}
+              {pc.lanManage}
             </Button>
           </div>
+        </SettingsNotice>
+      )}
+      <section className="rounded-xl border bg-card" aria-labelledby="remote-phone-title">
+        <header className="flex flex-wrap items-start gap-3 p-5">
+          <CardIcon>
+            <Smartphone aria-hidden="true" />
+          </CardIcon>
+          <div className="min-w-0 flex-1 space-y-1">
+            <div className="flex flex-wrap items-center gap-2">
+              <h2 id="remote-phone-title" className="text-base font-semibold">
+                {pc.phone}
+              </h2>
+              {setupComplete && (
+                <span
+                  className={`inline-flex items-center gap-1.5 rounded-full px-2 py-0.5 text-xs ${badge.className}`}
+                >
+                  <span aria-hidden="true" className={`size-1.5 rounded-full ${badge.dot}`} />
+                  {badge.label}
+                </span>
+              )}
+            </div>
+            {setupComplete ? (
+              relayActive ? (
+                <p
+                  className={`flex items-center gap-1.5 text-sm ${usageNear ? "text-amber-700 dark:text-amber-400" : "text-muted-foreground"}`}
+                >
+                  {usageNear && <TriangleAlert className="size-4 shrink-0" aria-hidden="true" />}
+                  {phoneSummary}
+                </p>
+              ) : (
+                <p className="text-sm text-muted-foreground">{pc.pausedInfo}</p>
+              )
+            ) : (
+              <p className="text-sm text-muted-foreground">{pc.phoneInfo}</p>
+            )}
+            {setupComplete && relayActive && !relayReady && connectionState}
+            {!setupComplete && (
+              <Button className="mt-3" disabled={busy} onClick={() => openConnect()}>
+                <QrCode aria-hidden="true" />
+                {pc.connectPhone}
+              </Button>
+            )}
+          </div>
           {setupComplete && (
-            <div className="border-t p-4">
-              <RemoteAccountSettings
-                variant="footer"
-                primary={resumeNeedsLogin}
-                onStatusChange={setAccountStatus}
-              />
+            <div className="flex items-center gap-2">
+              {relayActive ? (
+                // Opens even while not ready: the window shows connecting, the failure or the
+                // re-registration a revoked device needs.
+                <Button disabled={busy} onClick={() => openConnect()}>
+                  <Plus aria-hidden="true" />
+                  {p.connectNew}
+                </Button>
+              ) : (
+                <Button
+                  disabled={resumeNeedsLogin ? busy : resumeDisabled}
+                  onClick={() => {
+                    if (resumeNeedsLogin) openConnect();
+                    else void resumeConnection();
+                  }}
+                >
+                  <Play aria-hidden="true" />
+                  {pc.resume}
+                </Button>
+              )}
+              {moreMenu}
             </div>
           )}
-        </section>
-      </div>
+        </header>
+        {setupComplete && (
+          <div className="px-5 pb-5 sm:pl-[4.5rem]">
+            {status?.devices.length ? (
+              <div
+                aria-label={p.browsers.replace("{count}", String(status.devices.length))}
+                className="divide-y rounded-lg border"
+              >
+                {browserRows}
+              </div>
+            ) : (
+              status &&
+              !loadFailed &&
+              !operationError &&
+              !status.error &&
+              !busy && <p className="text-sm text-muted-foreground">{p.noBrowsers}</p>
+            )}
+          </div>
+        )}
+        {!!status?.pending.length && (
+          <div className="border-t pb-2">
+            <h3 className="px-5 pt-4 text-sm font-medium">{c.pending}</h3>
+            {pendingRequests}
+          </div>
+        )}
+      </section>
       <fieldset disabled={busy} className="m-0 min-w-0 border-0 p-0">
         {children}
       </fieldset>
-      <Collapsible
-        open={advancedOpen ?? localAdvancedOpen}
-        onOpenChange={(open) => {
-          setLocalAdvancedOpen(open);
-          onAdvancedOpenChange?.(open);
-        }}
-        className="overflow-hidden rounded-xl border bg-card"
+      <Button
+        variant="ghost"
+        id="remote-advanced-trigger"
+        className="justify-self-start text-muted-foreground"
+        aria-label={pc.advanced}
+        aria-describedby="remote-advanced-info"
+        onClick={() => setAdvanced(true)}
       >
-        <CollapsibleTrigger
-          aria-label={p.advanced}
-          id="remote-advanced-trigger"
-          className="group flex w-full cursor-pointer flex-wrap items-center gap-2 px-4 py-3 text-sm font-medium"
-        >
-          <ChevronRight
-            aria-hidden="true"
-            className="size-4 transition-transform group-aria-expanded:rotate-90"
-          />
-          {p.advanced}
-          <span className="ml-auto text-xs font-normal text-muted-foreground">
-            {p.advancedHint}
-          </span>
-        </CollapsibleTrigger>
-        <CollapsibleContent keepMounted className="border-t">
-          <div className="space-y-3 px-5 py-4 text-sm">
-            {!(signedIn && !relayReady && !setupComplete) && migrationNotice}
-            <label className="block space-y-1">
-              {r.broker}
-              <Input
-                type="url"
-                value={relayBroker}
+        <SlidersHorizontal aria-hidden="true" />
+        {pc.advanced}
+        <span id="remote-advanced-info" className="text-xs font-normal">
+          {pc.advancedInfo}
+        </span>
+        <ChevronRight aria-hidden="true" />
+      </Button>
+      <Dialog
+        open={advancedIsOpen}
+        onOpenChange={(open) => {
+          if (open) setAdvanced(true);
+          else cancelAdvanced();
+        }}
+      >
+        <DialogContent className="flex max-h-[85vh] flex-col sm:max-w-lg">
+          <DialogHeader>
+            <DialogTitle>{pc.advanced}</DialogTitle>
+            <DialogDescription className="sr-only">{pc.advancedInfo}</DialogDescription>
+          </DialogHeader>
+          {/* Only the fields scroll; Cancel and Save stay in view however long the form gets. */}
+          <div className="-mx-4 grid min-h-0 flex-1 gap-5 overflow-y-auto px-4 py-1 text-sm">
+            {migrationNotice}
+            <div className="grid gap-2">
+              <span className="font-medium">{pc.service}</span>
+              <RadioGroup
+                aria-label={pc.service}
+                value={serviceChoice}
                 disabled={busy}
-                placeholder="https://api.agentkib.com"
-                onChange={(e) => {
-                  setRelayBroker(e.target.value);
-                  setInviteCode("");
+                className="flex flex-wrap gap-x-6 gap-y-2"
+                onValueChange={(value) => {
+                  if (value === "official") {
+                    if (serviceChoice === "self") selfHostedDraft.current = relayBroker;
+                    setRelayBroker(OFFICIAL_BROKER_URL);
+                    setInviteCode("");
+                  } else if (value === "self") {
+                    setRelayBroker(selfHostedDraft.current);
+                    setInviteCode("");
+                  }
                 }}
-              />
-            </label>
-            <label className="block space-y-1">
-              {r.frpc}
-              <Input
-                value={frpcPath}
-                disabled={busy}
-                aria-describedby={frpcHintId}
-                placeholder={r.bundled}
-                onChange={(e) => setFrpcPath(e.target.value)}
-              />
-            </label>
-            <p id={frpcHintId} className="text-xs text-muted-foreground">
-              {r.frpcHint}
-            </p>
-            <p className="text-xs leading-5 text-muted-foreground">{c.connectionApplyHint}</p>
+              >
+                <label className="flex items-center gap-2">
+                  <RadioGroupItem value="official" />
+                  {pc.official}
+                  <span className="text-xs text-muted-foreground">{pc.officialInfo}</span>
+                </label>
+                <label className="flex items-center gap-2">
+                  <RadioGroupItem value="self" />
+                  {pc.selfHosted}
+                  <span className="text-xs text-muted-foreground">{pc.selfHostedInfo}</span>
+                </label>
+              </RadioGroup>
+            </div>
+            {serviceChoice === "self" && (
+              <>
+                <label className="grid gap-1.5">
+                  {pc.serviceAddress}
+                  <Input
+                    type="url"
+                    value={relayBroker}
+                    disabled={busy}
+                    placeholder="https://relay.example.com"
+                    onChange={(e) => {
+                      setRelayBroker(e.target.value);
+                      setInviteCode("");
+                    }}
+                  />
+                </label>
+                {invitation}
+                {frpcField}
+                {bandwidthField}
+              </>
+            )}
             {connectionDirty && (
               <p role="status" className="text-xs text-muted-foreground">
                 {p.connectionDraft}
               </p>
             )}
-            {invitation}
-            <Button
-              variant="outline"
-              disabled={connectionDisabled || (remoteEnabled && !connectionDirty)}
-              onClick={() => {
-                if (brokerChanged) setConfirmation("connection");
-                else void enableConnection();
-              }}
-            >
-              {p.applyConnection}
-            </Button>
-            {!setupComplete && relayActive && (
-              <Button variant="outline" disabled={busy} onClick={() => setConfirmation("pause")}>
-                {p.pause}
-              </Button>
-            )}
-            {!signedIn && !setupComplete && connectionState}
-            <label className="block space-y-1">
-              {r.bandwidth}
-              <Input
-                type="number"
-                min={16}
-                max={1048576}
-                step={1}
-                disabled={busy || !config}
-                value={(config?.previewBytesPerSecond ?? 2 * 1024 * 1024) / 1024}
-                onChange={(event) =>
-                  setConfig((old) =>
-                    old
-                      ? {
-                          ...old,
-                          previewBytesPerSecond: Math.round(Number(event.target.value) * 1024),
-                        }
-                      : old,
-                  )
-                }
-              />
-            </label>
-            <h3 className="pt-2 font-medium">{p.localWeb}</h3>
+            {brokerChanged && <p className="text-xs text-muted-foreground">{r.switchWarning}</p>}
+            <fieldset disabled={busy} className="m-0 grid min-w-0 gap-3 border-0 p-0">
+              {advancedContent}
+            </fieldset>
+            <Collapsible className="rounded-lg border">
+              <CollapsibleTrigger className="group flex w-full cursor-pointer items-center gap-2 px-3 py-2 text-sm font-medium">
+                <ChevronRight
+                  aria-hidden="true"
+                  className="size-4 transition-transform group-aria-expanded:rotate-90"
+                />
+                {pc.moreSettings}
+                <span className="ml-auto text-xs font-normal text-muted-foreground">
+                  {p.localWeb}
+                </span>
+              </CollapsibleTrigger>
+              <CollapsibleContent keepMounted className="grid gap-3 border-t pt-3">
+                {serviceChoice !== "self" && (
+                  <div className="grid gap-3 px-3">
+                    {frpcField}
+                    {bandwidthField}
+                  </div>
+                )}
+                <h3 className="px-3 pt-2 font-medium">{p.localWeb}</h3>
+                {settingsForm}
+              </CollapsibleContent>
+            </Collapsible>
+            {advancedIsOpen && renderNotices({ inset: false })}
           </div>
-          {settingsForm}
-        </CollapsibleContent>
-      </Collapsible>
+          <div className="flex justify-end gap-2">
+            <Button variant="outline" disabled={busy} onClick={cancelAdvanced}>
+              {pc.cancel}
+            </Button>
+            <Button
+              disabled={
+                busy ||
+                settingsInvalid ||
+                (connectionDirty && connectionDisabled) ||
+                (!unsaved && !advancedDirty && !connectionDirty)
+              }
+              onClick={() => void saveAdvancedDialog()}
+            >
+              {activeOperation === "configure" || activeOperation === "remote-enable"
+                ? c.saving
+                : pc.save}
+            </Button>
+          </div>
+        </DialogContent>
+      </Dialog>
+      <Dialog
+        open={connect !== undefined}
+        onOpenChange={(open) => {
+          if (!open) setConnect(undefined);
+        }}
+      >
+        <DialogContent className="max-h-[85vh] overflow-y-auto sm:max-w-md">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2">
+              {connect === "wifi" ? pc.wifiTitle : pc.dialogTitle}
+              {connect === "account" && stepIndex[phoneStep] !== undefined && (
+                <span aria-hidden="true" className="flex gap-1">
+                  {[0, 1, 2].map((index) => (
+                    <span
+                      key={index}
+                      className={`size-1.5 rounded-full ${index === stepIndex[phoneStep] ? "bg-primary" : "bg-muted-foreground/30"}`}
+                    />
+                  ))}
+                </span>
+              )}
+            </DialogTitle>
+            <DialogDescription className="sr-only">{p.connectHint}</DialogDescription>
+          </DialogHeader>
+          {connect === "wifi" ? (
+            <WebAccessSettings target="lan" mode="wifi" onBack={() => setConnect("account")} />
+          ) : (
+            <>
+              {connectBody}
+              {renderNotices({ inset: false })}
+            </>
+          )}
+        </DialogContent>
+      </Dialog>
       <Dialog open={lanOpen} onOpenChange={setLanOpen}>
-        <DialogContent
-          className="max-h-[85vh] overflow-y-auto sm:max-w-2xl"
-          finalFocus={() => {
-            if (!focusNetworkSettings.current) return true;
-            focusNetworkSettings.current = false;
-            return document.getElementById("remote-advanced-trigger");
-          }}
-        >
+        <DialogContent className="max-h-[85vh] overflow-y-auto sm:max-w-2xl">
           <DialogHeader className="sr-only">
             <DialogTitle>{p.lanSummary}</DialogTitle>
             <DialogDescription>{l.scope}</DialogDescription>
@@ -1583,25 +2057,52 @@ export function WebAccessSettings({
               target="lan"
               hideNetworkFields
               onOpenNetworkSettings={() => {
-                focusNetworkSettings.current = true;
                 setLanOpen(false);
-                setLocalAdvancedOpen(true);
-                onAdvancedOpenChange?.(true);
+                setAdvanced(true);
               }}
             />
           )}
         </DialogContent>
       </Dialog>
-      <Dialog open={newPhoneOpen} onOpenChange={setNewPhoneOpen}>
-        <DialogContent className="sm:max-w-xl">
-          <DialogHeader>
-            <DialogTitle>{p.connectNew}</DialogTitle>
-            <DialogDescription>{p.connectHint}</DialogDescription>
-          </DialogHeader>
-          {phoneConnection}
-        </DialogContent>
-      </Dialog>
+      <RemoteAccountSettings
+        variant="dialog"
+        manageOpen={accountOpen}
+        onManageOpenChange={setAccountOpen}
+        onStatusChange={setAccountStatus}
+      />
       {confirmations}
+    </div>
+  );
+}
+
+function StepIntro({
+  icon,
+  title,
+  info,
+  tone = "primary",
+}: {
+  icon: ReactNode;
+  title: string;
+  info?: string;
+  tone?: "primary" | "success" | "error";
+}) {
+  const colors =
+    tone === "success"
+      ? "bg-emerald-500/10 text-emerald-600"
+      : tone === "error"
+        ? "bg-destructive/10 text-destructive-text"
+        : "bg-primary/10 text-primary-text";
+  return (
+    <div className="grid justify-items-start gap-2">
+      <span
+        className={`flex size-10 items-center justify-center rounded-full [&_svg]:size-5 ${colors}`}
+      >
+        {icon}
+      </span>
+      <h3 data-step-heading tabIndex={-1} className="text-base font-semibold outline-none">
+        {title}
+      </h3>
+      {info && <p className="text-sm text-muted-foreground">{info}</p>}
     </div>
   );
 }

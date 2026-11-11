@@ -97,8 +97,22 @@ function enableLan(running: boolean) {
   };
 }
 
+/** Turns computer sharing on, which is when the computer name can be edited. */
+function startSharing() {
+  nativeStatus = {
+    ...nativeStatus,
+    local: { ...nativeStatus.local, enabled: true, address: "192.168.20.10:42987" },
+  };
+  useRemoteStore.setState({ snapshot: nativeStatus });
+}
+
+function configureCalls() {
+  return nativeRequest.mock.calls.filter(([request]) => request.operation === "configure");
+}
+
 describe("remote settings integration", () => {
   it("saves a blurred computer name without opening advanced settings or configuring Web services", async () => {
+    startSharing();
     nativeRequest.mockImplementation(async (input: RemoteRequest) => {
       if (input.operation === "configure") {
         nativeStatus = { ...nativeStatus, local: { ...nativeStatus.local, name: input.name } };
@@ -106,33 +120,28 @@ describe("remote settings integration", () => {
       return nativeStatus;
     });
     render(<RemoteConnectionSettings />);
-    await screen.findByRole("button", { name: "Sign in with your browser" });
-    fireEvent.click(screen.getByRole("button", { name: "Other computers" }));
-    fireEvent.click(screen.getByRole("button", { name: "Share this computer" }));
+    await screen.findByRole("button", { name: "Connect phone" });
+    fireEvent.click(screen.getByRole("button", { name: "Rename" }));
     const input = screen.getByRole("textbox", { name: "This device name" });
     fireEvent.change(input, { target: { value: "New example name" } });
     fireEvent.blur(input);
-    await waitFor(() => expect(screen.getByRole("status")).toHaveTextContent("Name saved."));
-    expect(
-      nativeRequest.mock.calls.filter(([request]) => request.operation === "configure"),
-    ).toEqual([
+    await waitFor(() => expect(screen.getByText("Name saved.")).toHaveAttribute("role", "status"));
+    expect(configureCalls()).toEqual([
       [
         {
           operation: "configure",
-          enabled: false,
+          enabled: true,
           address: "192.168.20.10:42987",
           name: "New example name",
         },
       ],
     ]);
     expect(webRequest.mock.calls.every(([request]) => request.operation === "status")).toBe(true);
-    expect(screen.getByRole("button", { name: "Advanced settings" })).toHaveAttribute(
-      "aria-expanded",
-      "false",
-    );
+    expect(screen.queryByRole("dialog")).toBeNull();
   });
 
   it("keeps shared settings locked until a name write finishes and does not submit it twice", async () => {
+    startSharing();
     let finish!: (value: RemoteStatus) => void;
     nativeRequest.mockImplementation((input: RemoteRequest) => {
       if (input.operation === "configure")
@@ -143,22 +152,19 @@ describe("remote settings integration", () => {
       return Promise.resolve(nativeStatus);
     });
     render(<RemoteConnectionSettings />);
-    await screen.findByRole("button", { name: "Sign in with your browser" });
-    fireEvent.click(screen.getByRole("button", { name: "Other computers" }));
-    fireEvent.click(screen.getByRole("button", { name: "Share this computer" }));
+    await screen.findByRole("button", { name: "Connect phone" });
+    fireEvent.click(screen.getByRole("button", { name: "Rename" }));
     const input = screen.getByRole("textbox", { name: "This device name" });
     fireEvent.change(input, { target: { value: "New example name" } });
     fireEvent.keyDown(input, { key: "Enter" });
     fireEvent.blur(input);
     expect(input).toBeDisabled();
-    fireEvent.click(screen.getByRole("button", { name: "Phones" }));
-    expect(screen.getByRole("button", { name: "Set up LAN direct connection" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Connect phone" })).toBeDisabled();
     fireEvent.click(screen.getByRole("button", { name: "Advanced settings" }));
-    expect(screen.getByRole("button", { name: "Save settings" })).toBeDisabled();
-    expect(screen.getByRole("combobox", { name: "Shared LAN interface" })).toBeDisabled();
-    expect(
-      nativeRequest.mock.calls.filter(([request]) => request.operation === "configure"),
-    ).toHaveLength(1);
+    const dialog = await screen.findByRole("dialog", { name: "Advanced settings" });
+    expect(within(dialog).getByRole("button", { name: "Save" })).toBeDisabled();
+    expect(within(dialog).getByRole("combobox", { name: "Shared LAN interface" })).toBeDisabled();
+    expect(configureCalls()).toHaveLength(1);
     await act(async () => {
       nativeStatus = {
         ...nativeStatus,
@@ -166,15 +172,16 @@ describe("remote settings integration", () => {
       };
       finish(nativeStatus);
     });
-    expect(screen.getByRole("button", { name: "Set up LAN direct connection" })).toBeEnabled();
+    expect(screen.getByRole("button", { name: "Connect phone", hidden: true })).toBeEnabled();
+    expect(within(dialog).getByRole("combobox", { name: "Shared LAN interface" })).toBeEnabled();
     expect(webRequest.mock.calls.every(([request]) => request.operation === "status")).toBe(true);
   });
 
   it("does not save a name while a Web write is pending, even through a stale blur handler", async () => {
+    startSharing();
     render(<RemoteConnectionSettings />);
-    await screen.findByRole("button", { name: "Sign in with your browser" });
-    fireEvent.click(screen.getByRole("button", { name: "Other computers" }));
-    fireEvent.click(screen.getByRole("button", { name: "Share this computer" }));
+    await screen.findByRole("button", { name: "Connect phone" });
+    fireEvent.click(screen.getByRole("button", { name: "Rename" }));
     const input = screen.getByRole("textbox", { name: "This device name" });
     fireEvent.change(input, { target: { value: "New example name" } });
     let finish!: (value: WebAdminStatus) => void;
@@ -204,6 +211,7 @@ describe("remote settings integration", () => {
   });
 
   it("does not dispatch sharing or Web changes from clicks queued with a name blur", async () => {
+    startSharing();
     let finish!: (value: RemoteStatus) => void;
     nativeRequest.mockImplementation((input: RemoteRequest) => {
       if (input.operation === "configure")
@@ -214,29 +222,29 @@ describe("remote settings integration", () => {
       return Promise.resolve(nativeStatus);
     });
     render(<RemoteConnectionSettings />);
-    await screen.findByRole("button", { name: "Sign in with your browser" });
-    fireEvent.click(screen.getByRole("button", { name: "Other computers" }));
-    fireEvent.click(screen.getByRole("button", { name: "Share this computer" }));
+    await screen.findByRole("button", { name: "Connect phone" });
     fireEvent.click(screen.getByRole("button", { name: "Advanced settings" }));
-    fireEvent.change(screen.getByRole("spinbutton", { name: "Port" }), {
+    const dialog = await screen.findByRole("dialog", { name: "Advanced settings" });
+    fireEvent.click(within(dialog).getByRole("button", { name: /^More settings/ }));
+    fireEvent.change(await within(dialog).findByRole("spinbutton", { name: "Port" }), {
       target: { value: "1431" },
     });
-    const input = screen.getByRole("textbox", { name: "This device name" });
-    const save = screen.getByRole("button", { name: "Save settings" });
-    const share = screen.getByRole("switch", { name: "Allow other computers to view (read-only)" });
+    // The name editor and the share switch stay on the page behind the dialog.
+    fireEvent.click(screen.getByRole("button", { name: "Rename", hidden: true }));
+    const input = screen.getByRole("textbox", { name: "This device name", hidden: true });
+    const save = within(dialog).getByRole("button", { name: "Save" });
+    const share = screen.getByRole("switch", { name: "Share this computer", hidden: true });
     fireEvent.change(input, { target: { value: "New example name" } });
     act(() => {
       fireEvent.blur(input);
       fireEvent.click(save);
       fireEvent.click(share);
     });
-    expect(
-      nativeRequest.mock.calls.filter(([request]) => request.operation === "configure"),
-    ).toEqual([
+    expect(configureCalls()).toEqual([
       [
         {
           operation: "configure",
-          enabled: false,
+          enabled: true,
           address: "192.168.20.10:42987",
           name: "New example name",
         },
@@ -250,19 +258,20 @@ describe("remote settings integration", () => {
       };
       finish(nativeStatus);
     });
-    expect(nativeStatus.local.enabled).toBe(false);
-    expect(screen.getByRole("spinbutton", { name: "Port" })).toHaveValue(1431);
-    expect(screen.getByText("Unsaved changes")).toBeVisible();
+    expect(nativeStatus.local.enabled).toBe(true);
+    expect(configureCalls()).toHaveLength(1);
+    expect(within(dialog).getByRole("spinbutton", { name: "Port" })).toHaveValue(1431);
+    expect(within(dialog).getByText("Unsaved changes")).toBeVisible();
   });
 
   it.each([
-    ["zh-CN", "连接新手机", "生成授权码", "完整控制"],
-    ["zh-TW", "連接新手機", "產生授權碼", "完整控制"],
-    ["en-US", "Connect a new phone", "Generate access code", "Full control"],
-    ["ja-JP", "新しいスマートフォンを接続", "認証コードを生成", "フルコントロール"],
+    ["zh-CN", "连接新手机", "连接手机", "重新生成", "完整控制"],
+    ["zh-TW", "連接新手機", "連接手機", "重新產生", "完整控制"],
+    ["en-US", "Connect a new phone", "Connect phone", "Regenerate", "Full control"],
+    ["ja-JP", "新しいスマートフォンを接続", "スマートフォンを接続", "再生成", "フルコントロール"],
   ] as const)(
-    "renders the access code action without a length qualifier in %s",
-    async (locale, connect, generate, full) => {
+    "renders the access code step without a length qualifier in %s",
+    async (locale, connect, title, regenerate, full) => {
       await changeLocale(locale);
       localStatus = {
         ...localStatus,
@@ -274,56 +283,68 @@ describe("remote settings integration", () => {
         },
         relay: { phase: "ready", publicUrl: "https://computer.example.com" },
       };
+      webRequest.mockImplementation(async (input: WebAdminRequest) => {
+        if (input.operation === "generate-code") {
+          localStatus = {
+            ...localStatus,
+            code: { value: "12345678", expiresAt: Date.now() + 300_000, access: "full" },
+          };
+          return localStatus;
+        }
+        if (input.operation !== "status") throw new Error("Unexpected Web mutation");
+        return input.target === "lan" ? lanStatus : localStatus;
+      });
       render(<RemoteConnectionSettings />);
       fireEvent.click(await screen.findByRole("button", { name: connect }));
-      const dialog = await screen.findByRole("dialog", { name: connect });
-      expect(within(dialog).getByRole("button", { name: generate })).toBeVisible();
+      const dialog = await screen.findByRole("dialog", { name: title });
+      expect(await within(dialog).findByRole("button", { name: regenerate })).toBeVisible();
       expect(within(dialog).getByRole("button", { name: full })).toHaveAttribute(
         "aria-pressed",
         "true",
       );
       expect(dialog.textContent).not.toMatch(/八位|8\s*(?:位|桁)|8-digit/i);
-      expect(webRequest.mock.calls.every(([input]) => input.operation === "status")).toBe(true);
+      // The dialog asks for exactly one access code by itself and changes nothing else.
+      const mutations = webRequest.mock.calls.filter(([input]) => input.operation !== "status");
+      expect(mutations).toEqual([[{ operation: "generate-code", access: "full" }]]);
     },
   );
 
-  it("defaults to phones and keeps one empty computer state with one shared advanced save", async () => {
+  it("shows both cards without tabs and keeps one shared save inside the advanced dialog", async () => {
     render(<RemoteConnectionSettings />);
-    expect(await screen.findByRole("button", { name: "Sign in with your browser" })).toBeVisible();
-    expect(screen.getByRole("button", { name: "Phones" })).toHaveAttribute("aria-pressed", "true");
+    expect(await screen.findByRole("button", { name: "Connect phone" })).toBeVisible();
+    expect(screen.getByRole("heading", { name: "Phone" })).toBeVisible();
+    expect(screen.getByRole("heading", { name: "Other computers" })).toBeVisible();
+    expect(screen.queryByRole("button", { name: "Phones" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Other computers" })).toBeNull();
+    expect(screen.getByRole("switch", { name: "Share this computer" })).toBeVisible();
+    expect(screen.getByRole("button", { name: "Add computer" })).toBeVisible();
+    expect(screen.queryByRole("button", { name: "Find nearby computers" })).toBeNull();
     expect(
-      screen.getByRole("heading", { name: "Access this computer from your phone" }),
-    ).toBeVisible();
-    expect(screen.getByRole("button", { name: "Advanced settings" })).toHaveAttribute(
-      "aria-expanded",
-      "false",
-    );
-    expect(screen.queryByRole("button", { name: "Save settings" })).toBeNull();
-
-    fireEvent.click(screen.getByRole("button", { name: "Other computers" }));
-    expect(
-      screen.getAllByRole("heading", { name: "No connections with other computers yet" }),
-    ).toHaveLength(1);
-    expect(screen.getByRole("button", { name: "Find nearby computers" })).toBeVisible();
-    expect(screen.getByRole("button", { name: "Share this computer" })).toBeVisible();
-    expect(screen.queryByRole("heading", { name: "Share this computer" })).toBeNull();
-    expect(screen.queryByRole("heading", { name: "View other computers" })).toBeNull();
+      screen.queryByRole("heading", { name: "No connections with other computers yet" }),
+    ).toBeNull();
     expect(
       screen.queryByText(/No computers found|No authorized devices|No remote computers/),
     ).toBeNull();
+    expect(screen.queryByRole("dialog")).toBeNull();
+    expect(screen.queryByRole("button", { name: "Save settings" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Save" })).toBeNull();
 
     fireEvent.click(screen.getByRole("button", { name: "Advanced settings" }));
-    expect(await screen.findByRole("button", { name: "Save settings" })).toBeVisible();
-    expect(screen.getAllByRole("button", { name: "Save settings" })).toHaveLength(1);
-    expect(screen.queryByRole("button", { name: "Save" })).toBeNull();
-    expect(screen.getByRole("checkbox", { name: "Enable local Web service" })).toBeVisible();
-    expect(screen.queryByRole("switch", { name: "Enable local Web service" })).toBeNull();
+    const dialog = await screen.findByRole("dialog", { name: "Advanced settings" });
+    expect(within(dialog).getAllByRole("button", { name: "Save" })).toHaveLength(1);
+    expect(within(dialog).getByRole("button", { name: "Save" })).toBeDisabled();
+    expect(within(dialog).queryByRole("button", { name: "Save settings" })).toBeNull();
+    fireEvent.click(within(dialog).getByRole("button", { name: /^More settings/ }));
+    expect(
+      await within(dialog).findByRole("checkbox", { name: "Enable local Web service" }),
+    ).toBeVisible();
+    expect(within(dialog).queryByRole("switch", { name: "Enable local Web service" })).toBeNull();
     expect(webRequest.mock.calls.every(([input]) => input.operation === "status")).toBe(true);
     expect(accountRequest.mock.calls.every(([input]) => input.operation === "status")).toBe(true);
     expect(nativeRequest.mock.calls.every(([input]) => input.operation === "status")).toBe(true);
   });
 
-  it("keeps one running plaintext warning across settings dialogs and both tabs", async () => {
+  it("keeps one running plaintext warning across settings dialogs and the page", async () => {
     enableLan(true);
     const user = userEvent.setup();
     render(<RemoteConnectionSettings />);
@@ -335,7 +356,7 @@ describe("remote settings integration", () => {
     expect(warning).toHaveTextContent("capture the access token");
     expect(screen.getAllByText("LAN direct connection is not encrypted")).toHaveLength(1);
 
-    const manage = screen.getByRole("button", { name: "Set up LAN direct connection" });
+    const manage = screen.getByRole("button", { name: "Manage" });
     manage.focus();
     await user.keyboard("{Enter}");
     const dialog = await screen.findByRole("dialog", { name: "LAN direct connection" });
@@ -349,11 +370,14 @@ describe("remote settings integration", () => {
     await waitFor(() => expect(manage).toHaveFocus());
     expect(warning).toBeVisible();
 
-    fireEvent.click(screen.getByRole("button", { name: "Other computers" }));
+    fireEvent.click(screen.getByRole("button", { name: "Advanced settings" }));
+    const advanced = await screen.findByRole("dialog", { name: "Advanced settings" });
     expect(warning).toBeVisible();
     expect(screen.getAllByText("LAN direct connection is not encrypted")).toHaveLength(1);
-    fireEvent.click(screen.getByRole("button", { name: "Phones" }));
+    fireEvent.click(within(advanced).getByRole("button", { name: "Cancel" }));
+    await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
     expect(warning).toBeVisible();
+    expect(screen.getAllByText("LAN direct connection is not encrypted")).toHaveLength(1);
     expect(webRequest.mock.calls.every(([input]) => input.operation === "status")).toBe(true);
   });
 
@@ -363,7 +387,8 @@ describe("remote settings integration", () => {
     expect(await screen.findByText("LAN access is enabled but unavailable")).toBeVisible();
     expect(screen.queryByText("LAN HTTP access is running")).toBeNull();
     expect(screen.queryByText(/capture the access token/)).toBeNull();
-    fireEvent.click(screen.getByRole("button", { name: "Other computers" }));
+    fireEvent.click(screen.getByRole("button", { name: "Advanced settings" }));
+    await screen.findByRole("dialog", { name: "Advanced settings" });
     expect(screen.queryByText("LAN HTTP access is running")).toBeNull();
   });
 
@@ -381,13 +406,9 @@ describe("remote settings integration", () => {
     };
     useRemoteStore.setState({ snapshot: nativeStatus });
     render(<RemoteConnectionSettings />);
-    await screen.findByRole("button", { name: "Sign in with your browser" });
-    fireEvent.click(screen.getByRole("button", { name: "Other computers" }));
-    expect(
-      screen.queryByRole("heading", { name: "No connections with other computers yet" }),
-    ).toBeNull();
-    expect(screen.getByRole("heading", { name: "Share this computer" })).toBeVisible();
-    expect(screen.getByRole("heading", { name: "View other computers" })).toBeVisible();
+    await screen.findByRole("button", { name: "Connect phone" });
+    expect(screen.getByRole("switch", { name: "Share this computer" })).toBeVisible();
+    expect(screen.getByRole("heading", { name: "Computers that can view this one" })).toBeVisible();
     expect(screen.getByText("Example laptop")).toBeVisible();
     fireEvent.click(screen.getByRole("button", { name: "Revoke access" }));
     const dialog = await screen.findByRole("dialog", { name: "Revoke access" });

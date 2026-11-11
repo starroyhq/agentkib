@@ -166,10 +166,32 @@ export const UNRETAINED_CURSOR = "history-v1-unretained";
 /** Snapshot-bound reverse pages remain replayable without loading the whole native transcript. */
 export class SessionPaging {
   #states = new Map<string, { created: number; state: State }>();
+  #expiry?: ReturnType<typeof setTimeout>;
+  /**
+   * Drops expired scan states when they expire. They were dropped only when another one was
+   * stored, so the last ones read kept up to the whole cache budget while the app sat idle.
+   */
+  #expireLater(): void {
+    if (this.#expiry || !this.#states.size) return;
+    const oldest = Math.min(...[...this.#states.values()].map((cached) => cached.created));
+    this.#expiry = setTimeout(
+      () => {
+        this.#expiry = undefined;
+        const now = performance.now();
+        for (const [key, cached] of this.#states)
+          if (now - cached.created >= TTL) this.#states.delete(key);
+        this.#expireLater();
+      },
+      Math.max(0, oldest + TTL - performance.now()),
+    );
+    this.#expiry.unref();
+  }
   #images = new SessionImages();
   clear(): void {
     this.#states.clear();
     this.#images.clear();
+    if (this.#expiry) clearTimeout(this.#expiry);
+    this.#expiry = undefined;
   }
   image(file: string, imageId: string, scope = file) {
     return this.#images.read(scope, file, imageId);
@@ -359,6 +381,7 @@ export class SessionPaging {
         }
         next = `history-v1-${randomUUID()}`;
         this.#states.set(next, { created: now, state: clone(state) });
+        this.#expireLater();
       }
       return {
         events: events.reverse(),

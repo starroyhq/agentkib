@@ -49,9 +49,24 @@ function cursor(value: string | null): Cursor {
   if (id === 0n) throw new Error("Invalid Antigravity event cursor");
   return { type: "snapshot", id, end };
 }
+let expiry: ReturnType<typeof setTimeout> | undefined;
 function prune(): void {
   const now = performance.now();
   snapshots = snapshots.filter((snapshot) => now - snapshot.created < 120_000);
+}
+/** Snapshots, up to MAX_BYTES of events, were dropped only by the next read after they expired. */
+function expireLater(): void {
+  if (expiry || !snapshots.length) return;
+  const oldest = Math.min(...snapshots.map((snapshot) => snapshot.created));
+  expiry = setTimeout(
+    () => {
+      expiry = undefined;
+      prune();
+      expireLater();
+    },
+    Math.max(0, oldest + 120_000 - performance.now()),
+  );
+  expiry.unref();
 }
 function page(
   events: ConversationEvent[],
@@ -148,6 +163,7 @@ export class AntigravityPaging {
     snapshots.push(snapshot);
     let total = snapshots.reduce((total, snapshot) => total + snapshot.bytes, 0);
     while (snapshots.length > 4 || total > MAX_BYTES) total -= snapshots.shift()!.bytes;
+    expireLater();
     const result = page(snapshot.events, snapshot.warnings, end, limit, snapshot.id);
     check();
     return result;

@@ -1,3 +1,4 @@
+import { managedAgentOf } from "@agentkib/web-client";
 import {
   homeSessionCopy,
   newSessionCopy,
@@ -218,9 +219,7 @@ function WorkspaceShell() {
                     {currentWorkspace?.name}
                   </span>
                   {status.label && <span aria-hidden="true">·</span>}
-                  {["codex", "claude-code", "deepseek-harness"].includes(
-                    session.current?.agent ?? "",
-                  ) ? (
+                  {managedAgentOf(session.current?.agent) ? (
                     <SessionContinuationStatus
                       label={status.label}
                       active={status.tone === "active"}

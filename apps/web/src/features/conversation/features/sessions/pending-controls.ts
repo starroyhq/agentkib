@@ -1,4 +1,4 @@
-import type { SessionAction, ManagedAgent } from "@agentkib/web-client";
+import { managedAgentOf, type ManagedAgent, type SessionAction } from "@agentkib/web-client";
 /** Only command identity is persisted; never prompts, answers, tokens or approval details. */
 export type PendingControl = {
   requestId: string;
@@ -50,13 +50,6 @@ const pendingKinds = {
   compact: true,
   "terminals-clean": true,
 } satisfies Record<PendingControl["kind"], true>;
-// Every agent a control can name. One missing here makes every later read of the store throw,
-// which blocks all controls in this browser, as a DeepSeek Harness create once did.
-const pendingAgents = {
-  codex: true,
-  "claude-code": true,
-  "deepseek-harness": true,
-} satisfies Record<ManagedAgent, true>;
 const prefix = "agentkib:codex-pending:v1:";
 const listeners = new Set<() => void>();
 export function subscribePending(listener: () => void) {
@@ -92,7 +85,9 @@ export function readPending(scope: string): PendingControl[] {
             !value.workspaceId ||
             value.workspaceId.length > 256)) ||
         (value.agent !== undefined &&
-          (typeof value.agent !== "string" || !Object.hasOwn(pendingAgents, value.agent))) ||
+          // Every managed Agent a control can name; one missing here would make every later
+          // read of the store throw and block all controls in this browser.
+          !managedAgentOf(value.agent)) ||
         (!value.sessionId && !value.workspaceId) ||
         typeof value.kind !== "string" ||
         !Object.hasOwn(pendingKinds, value.kind),

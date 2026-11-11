@@ -1,3 +1,4 @@
+import { isLiveSessionAgent } from "@agentkib/web-client";
 import type { SessionSurface } from "./session-surface-copy";
 import { claudeConnectionCopyForSurface, claudeConnectionReason } from "./claude-connection-copy";
 import type { SessionController } from "./use-session-controller";
@@ -75,9 +76,7 @@ export function sessionDisplayState(
     state.current?.availability === "metadata-only" ||
     (state.current &&
       (("remote" in state.current && state.current.remote) ||
-        !["codex", "claude-code", "deepseek-harness", "antigravity"].includes(
-          state.current.agent,
-        ) ||
+        !isLiveSessionAgent(state.current.agent) ||
         state.current.origin === "auxiliary" ||
         state.current.origin === "execution"))
   )

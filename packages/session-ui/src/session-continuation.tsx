@@ -1,4 +1,5 @@
 import { readStateCopy, type SessionReadState } from "./read-state";
+import { NEW_SESSION_AGENTS } from "./new-session";
 import { useEffect, useId, useMemo, useRef, useState } from "react";
 
 export type SessionContinuationAgent = "Codex" | "Claude Code";
@@ -665,7 +666,8 @@ export function sessionContinuationListState(
   const unreadLabel = unread ? ` · ${unreadText}` : "";
   if (session.remote) return unread ? { label: unreadText, dot: true, unread: true } : undefined;
   if (session.availability === "metadata-only") return { label: copy.viewOnly };
-  if (!["codex", "claude-code", "deepseek-harness"].includes(session.agent))
+  // Only managed sessions (the Agents a new session can start) report a continuation.
+  if (!(NEW_SESSION_AGENTS as readonly string[]).includes(session.agent))
     return unread ? { label: unreadText, dot: true, unread: true } : undefined;
   const state = session.continuation;
   if (state?.status === "outcome-unknown" || state?.reason === "control-outcome-unconfirmed")

@@ -1,4 +1,5 @@
 import { useI18n } from "@/core/useI18n";
+import { isLiveSessionAgent } from "@agentkib/web-client";
 import { useRef, useState } from "react";
 import { Database, RefreshCw } from "lucide-react";
 import { Button } from "@/components/ui/button";
@@ -30,8 +31,7 @@ export function SessionHubPage() {
     hasDesktopConversation() &&
     !hub.selected?.remote &&
     (creating ||
-      (hub.selected?.availability === "readable" &&
-        ["codex", "claude-code", "deepseek-harness", "antigravity"].includes(hub.selected.agent)));
+      (hub.selected?.availability === "readable" && isLiveSessionAgent(hub.selected.agent)));
   const history = useSessionHistory(hub.selected, hub.enabled && !interactive, hub.historyRevision);
   const [enabling, setEnabling] = useState(false);
   const [enableError, setEnableError] = useState("");

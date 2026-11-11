@@ -2,6 +2,7 @@ import { createHash, randomBytes, randomInt, randomUUID } from "node:crypto";
 import {
   HISTORY_SEARCH_METHODS,
   claudeModelOption,
+  managedAgentOf,
   type HistoryReference,
   type ResolvedHistoryReference,
 } from "@agentkib/runtime-protocol";
@@ -341,6 +342,14 @@ const token = () => randomBytes(32).toString("base64url");
 const digest = (value: string) => createHash("sha256").update(value).digest("hex");
 const MAX_AGE = 30 * 24 * 60 * 60 * 1000;
 const PAIRING_CODE_TTL_MS = 300_000;
+/**
+ * A managed Agent with no host handler here. Each Agent in MANAGED_AGENTS needs its own case where
+ * this is called; without one, its requests would otherwise reach another Agent's handler.
+ */
+function unhandledManagedAgent(agent: never): never {
+  void agent;
+  throw new HttpError(400, "invalid_agent");
+}
 /** A paired device counts as online this long after its last request, or while it holds a stream. */
 const ONLINE_WINDOW_MS = 60_000;
 const PAIRING_FAILURES_PER_BROWSER = 5;
@@ -4101,25 +4110,30 @@ export class WebAccessService {
     control: { request: boolean; dispatched: boolean; priorUncertain: boolean },
   ) {
     this.grant(hash, "manage");
-    const agent = body.agent ?? "codex";
-    if (agent !== "codex" && agent !== "claude-code" && agent !== "deepseek-harness")
-      throw new HttpError(400, "invalid_agent");
+    const agent = managedAgentOf(body.agent ?? "codex");
+    if (!agent) throw new HttpError(400, "invalid_agent");
     // DeepSeek Harness only starts sessions here; its sessions are controlled through actions.
     if (agent === "deepseek-harness" && operation !== "create")
       throw new HttpError(404, "not_found");
     const requestId = this.field(body.requestId, 128);
     if (agent === "claude-code")
       await this.controlReceipt(requestId, this.grant(hash, "manage").id, control);
-    const managedRequest =
-      agent === "claude-code"
-        ? this.options.claudeManagedRequest
-        : agent === "deepseek-harness"
-          ? (value: unknown) =>
-              this.options.runtimeRequest({
-                ...(value as Record<string, unknown>),
-                operation: "dsh-create",
-              })
-          : this.options.managedRequest;
+    const managedRequest = (() => {
+      switch (agent) {
+        case "codex":
+          return this.options.managedRequest;
+        case "claude-code":
+          return this.options.claudeManagedRequest;
+        case "deepseek-harness":
+          return (value: unknown) =>
+            this.options.runtimeRequest({
+              ...(value as Record<string, unknown>),
+              operation: "dsh-create",
+            });
+        default:
+          return unhandledManagedAgent(agent);
+      }
+    })();
     if (agent === "claude-code" && !this.options.verifiedClaudeManaged)
       throw new HttpError(409, "unsupported_host");
     if (agent === "deepseek-harness" && this.options.verifiedDshFollower !== true)
@@ -5810,11 +5824,20 @@ export class WebAccessService {
     if (path === "/managed/options") {
       const permission = this.grant(hash).manage === true ? "manage" : "settings";
       this.grant(hash, permission);
-      const agent = url.searchParams.get("agent") ?? "codex";
-      if (agent !== "codex" && agent !== "claude-code" && agent !== "deepseek-harness")
-        throw new HttpError(400, "invalid_agent");
-      const managedRequest =
-        agent === "claude-code" ? this.options.claudeManagedRequest : this.options.managedRequest;
+      const agent = managedAgentOf(url.searchParams.get("agent") ?? "codex");
+      if (!agent) throw new HttpError(400, "invalid_agent");
+      const managedRequest = (() => {
+        switch (agent) {
+          case "codex":
+            return this.options.managedRequest;
+          case "claude-code":
+            return this.options.claudeManagedRequest;
+          case "deepseek-harness":
+            return undefined;
+          default:
+            return unhandledManagedAgent(agent);
+        }
+      })();
       // A new DeepSeek Harness session needs exactly one running DSH with the plugin.
       const options =
         agent === "deepseek-harness"
@@ -5959,7 +5982,7 @@ export class WebAccessService {
         const parent = catalog.sessions?.find(
           (entry) =>
             entry.id === parentId &&
-            ["codex", "claude-code", "deepseek-harness"].includes(entry.agent) &&
+            managedAgentOf(entry.agent) &&
             !["auxiliary", "execution"].includes(entry.origin ?? "") &&
             entry.sidechain !== true,
         );

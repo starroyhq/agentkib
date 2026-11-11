@@ -129,14 +129,16 @@ it("blocks LAN changes while a deferred unified save still owns an older network
   });
   render(createElement(RemoteConnectionSettings));
   fireEvent.click(await screen.findByRole("button", { name: "Advanced settings" }));
-  await screen.findByLabelText("Phone LAN port");
-  fireEvent.change(screen.getByLabelText("Phone LAN port"), {
+  const advanced = await screen.findByRole("dialog", { name: "Advanced settings" });
+  await within(advanced).findByLabelText("Phone LAN port");
+  fireEvent.change(within(advanced).getByLabelText("Phone LAN port"), {
     target: { value: String(nextPort) },
   });
-  fireEvent.change(screen.getByLabelText("Port"), { target: { value: "1444" } });
-  fireEvent.click(screen.getByRole("button", { name: "Save settings" }));
+  fireEvent.change(within(advanced).getByLabelText("Port"), { target: { value: "1444" } });
+  fireEvent.click(within(advanced).getByRole("button", { name: "Save" }));
   await waitFor(() => expect(finishLocal).toBeTypeOf("function"));
-  const openLan = screen.getByRole("button", { name: "Set up LAN direct connection" });
+  // The LAN settings open from the page's plaintext warning; the modal save keeps it out of reach.
+  const openLan = screen.getByRole("button", { name: "Manage", hidden: true });
   try {
     expect(openLan).toBeDisabled();
     fireEvent.click(openLan);
@@ -145,6 +147,9 @@ it("blocks LAN changes while a deferred unified save still owns an older network
     await act(async () => finishLocal({ ...local, config: { ...local.config, port: 1444 } }));
   }
   await waitFor(async () => expect((await persistedLan()).config.port).toBe(nextPort));
+  await waitFor(() =>
+    expect(screen.queryByRole("dialog", { name: "Advanced settings" })).toBeNull(),
+  );
   await waitFor(() => expect(openLan).toBeEnabled());
   fireEvent.click(openLan);
   const dialog = await screen.findByRole("dialog", { name: "LAN direct connection" });
@@ -156,20 +161,15 @@ it("blocks LAN changes while a deferred unified save still owns an older network
 });
 
 it("keeps every unified control locked after a pending LAN dialog is closed", async () => {
+  // Sharing is on, so the computer name and the sharing switch are both on the page.
+  const sharing = {
+    ...native,
+    local: { ...native.local, enabled: true, address: "192.168.20.10:42987" },
+  };
+  adapters.native.mockResolvedValue(sharing);
+  useRemoteStore.setState({ snapshot: sharing });
   render(createElement(RemoteConnectionSettings));
-  fireEvent.click(await screen.findByRole("button", { name: "Advanced settings" }));
-  await screen.findByLabelText("Phone LAN port");
-  fireEvent.change(screen.getByLabelText("Phone LAN port"), {
-    target: { value: String(nextPort) },
-  });
-  fireEvent.change(screen.getByLabelText("Port"), { target: { value: "1444" } });
-  fireEvent.click(screen.getByRole("button", { name: "Other computers" }));
-  fireEvent.click(screen.getByRole("button", { name: "Share this computer" }));
-  fireEvent.change(screen.getByRole("textbox", { name: "This device name" }), {
-    target: { value: "Renamed fixture" },
-  });
-  fireEvent.click(screen.getByRole("button", { name: "Phones" }));
-  fireEvent.click(screen.getByRole("button", { name: "Set up LAN direct connection" }));
+  fireEvent.click(await screen.findByRole("button", { name: "Manage" }));
   const dialog = await screen.findByRole("dialog", { name: "LAN direct connection" });
   const persistence = service as unknown as { save(): Promise<void> };
   const save = persistence.save.bind(service);
@@ -187,18 +187,20 @@ it("keeps every unified control locked after a pending LAN dialog is closed", as
   fireEvent.click(within(dialog).getByRole("button", { name: "Close" }));
   await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
   try {
-    expect(screen.getByRole("button", { name: "Save settings" })).toBeDisabled();
-    expect(screen.getByLabelText("Port")).toBeDisabled();
-    expect(screen.getByLabelText("Phone LAN port")).toBeDisabled();
-    expect(screen.getByRole("combobox", { name: "Shared LAN interface" })).toBeDisabled();
-    fireEvent.click(screen.getByRole("button", { name: "Other computers" }));
-    expect(screen.getByRole("textbox", { name: "This device name" })).toBeDisabled();
-    const sharing = screen.getByRole("switch", {
-      name: "Allow other computers to view (read-only)",
-    });
-    expect(sharing).toHaveAttribute("aria-disabled", "true");
-    fireEvent.click(sharing);
-    fireEvent.click(screen.getByRole("button", { name: "Save settings" }));
+    expect(screen.getByRole("button", { name: "Manage" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Connect phone" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Rename" })).toBeDisabled();
+    const share = screen.getByRole("switch", { name: "Share this computer" });
+    expect(share).toHaveAttribute("aria-disabled", "true");
+    fireEvent.click(share);
+    fireEvent.click(screen.getByRole("button", { name: "Advanced settings" }));
+    const advanced = await screen.findByRole("dialog", { name: "Advanced settings" });
+    const save = within(advanced).getByRole("button", { name: "Save" });
+    expect(save).toBeDisabled();
+    expect(within(advanced).getByLabelText("Port")).toBeDisabled();
+    expect(within(advanced).getByLabelText("Phone LAN port")).toBeDisabled();
+    expect(within(advanced).getByRole("combobox", { name: "Shared LAN interface" })).toBeDisabled();
+    fireEvent.click(save);
     expect(
       adapters.web.mock.calls.filter(([input]) => input.operation === "configure"),
     ).toHaveLength(1);
@@ -214,13 +216,14 @@ it("does not use an unpersisted LAN interface after the entire settings view rem
   const user = userEvent.setup();
   const view = render(createElement(RemoteConnectionSettings));
   fireEvent.click(await screen.findByRole("button", { name: "Advanced settings" }));
-  await user.click(await screen.findByRole("combobox", { name: "Shared LAN interface" }));
+  const advanced = await screen.findByRole("dialog", { name: "Advanced settings" });
+  await user.click(await within(advanced).findByRole("combobox", { name: "Shared LAN interface" }));
   await user.click(await screen.findByRole("option", { name: /10\.20\.0\.10/ }));
   const persistence = service as unknown as { save(): Promise<void> };
   const failedWrite = vi
     .spyOn(persistence, "save")
     .mockRejectedValueOnce(new Error("fixture write failed"));
-  fireEvent.click(screen.getByRole("button", { name: "Save settings" }));
+  fireEvent.click(within(advanced).getByRole("button", { name: "Save" }));
   await waitFor(() =>
     expect(
       screen
@@ -235,20 +238,36 @@ it("does not use an unpersisted LAN interface after the entire settings view rem
   failedWrite.mockRestore();
 
   render(createElement(RemoteConnectionSettings));
-  fireEvent.click(await screen.findByRole("button", { name: "Advanced settings" }));
   await act(async () => {
     await requestWebAdmin({ operation: "status", target: "lan" });
   });
-  fireEvent.click(screen.getByRole("button", { name: "Other computers" }));
-  fireEvent.click(screen.getByRole("button", { name: "Share this computer" }));
-  const sharing = screen.getByRole("switch", { name: "Allow other computers to view (read-only)" });
-  expect(sharing).toHaveAttribute("aria-disabled", "true");
+  // Turning sharing on never uses the unpersisted address: it asks for a network instead.
+  const sharing = await screen.findByRole("switch", { name: "Share this computer" });
   fireEvent.click(sharing);
+  expect(await screen.findByText("Network to share on")).toBeVisible();
   expect(adapters.native.mock.calls.every(([input]) => input.operation === "status")).toBe(true);
+  fireEvent.click(sharing);
+  expect(screen.queryByText("Network to share on")).toBeNull();
 
   // Only another explicit successful save may authorize this in-memory address.
-  fireEvent.click(screen.getByRole("button", { name: "Save settings" }));
+  fireEvent.click(screen.getByRole("button", { name: "Advanced settings" }));
+  const retry = await screen.findByRole("dialog", { name: "Advanced settings" });
+  fireEvent.click(within(retry).getByRole("button", { name: "Save" }));
   await waitFor(async () => expect((await persistedLan()).config.lanAddress).toBe("10.20.0.10"));
-  await waitFor(() => expect(sharing).not.toHaveAttribute("aria-disabled", "true"));
+  await waitFor(() =>
+    expect(screen.queryByRole("dialog", { name: "Advanced settings" })).toBeNull(),
+  );
   expect(adapters.native.mock.calls.every(([input]) => input.operation === "status")).toBe(true);
+  // Now the saved address is used directly, without asking for a network.
+  fireEvent.click(sharing);
+  await waitFor(() =>
+    expect(adapters.native).toHaveBeenCalledWith(
+      expect.objectContaining({
+        operation: "configure",
+        enabled: true,
+        address: "10.20.0.10:42987",
+      }),
+    ),
+  );
+  expect(screen.queryByText("Network to share on")).toBeNull();
 });

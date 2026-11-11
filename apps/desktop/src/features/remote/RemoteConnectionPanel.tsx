@@ -1,9 +1,8 @@
 import { useEffect, useRef, useState } from "react";
-import { Monitor, RefreshCw, Search, Share2, ShieldCheck, Wifi } from "lucide-react";
+import { Monitor, Pencil, Plus, ShieldCheck, Wifi } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Switch } from "@/components/ui/switch";
-import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group";
 import {
   Dialog,
   DialogContent,
@@ -12,13 +11,17 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import {
-  SettingsCopy,
+  Select,
+  SelectContent,
+  SelectGroup,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
+import {
   SettingsNotice,
   SettingsPage,
   SettingsPageHeader,
-  SettingsPanel,
-  SettingsRow,
-  SettingsSection,
   SettingsStatus,
   settingsTargetRequestEvent,
   settingsTargetId,
@@ -30,6 +33,10 @@ import { WebAccessSettings } from "./WebAccessSettings";
 import { remoteEntryCopy } from "./remote-entry-copy";
 import { QuickConnect } from "./QuickConnect";
 import { remoteSettingsCopy } from "./remote-settings-copy";
+import { remotePageCopy } from "./remote-page-copy";
+import { remotePhoneCopy } from "./remote-phone-copy";
+import { remoteNetworkCopy } from "./remote-network-copy";
+import { CardIcon, clockTime } from "./RemoteCard";
 import { useRemoteNetworkSettings } from "./RemoteNetworkSettings";
 import { getWebAdminState } from "./web-status";
 
@@ -66,47 +73,49 @@ function RemoteFeedback() {
 }
 
 function RemoteConnections() {
-  const { tr, formatDateTime } = useI18n();
+  const { tr, locale } = useI18n();
+  const copy = remotePageCopy[locale];
   const { snapshot, busy, run } = useRemoteStore();
   const [removing, setRemoving] = useState<string | null>(null);
   return (
-    <SettingsPanel title={tr("remote.connections")} contentClassName="divide-y divide-border/60">
+    <div className="grid gap-2">
       {snapshot?.connections.map((host) => (
-        <div key={host.id} className="flex flex-wrap items-center justify-between gap-3 p-4">
-          <div className="grid min-w-0 gap-1">
-            <strong className="flex items-center gap-2 text-sm">
-              <Monitor size={16} />
-              {host.name}
-            </strong>
-            <span className="break-all text-sm text-muted-foreground">{host.address}</span>
-            <SettingsStatus tone={host.status === "online" ? "success" : "neutral"}>
-              {tr(`remote.state.${host.status}`)}
-            </SettingsStatus>
-            {host.last_seen && (
-              <small className="text-muted-foreground">
-                {tr("remote.lastSeen")}: {formatDateTime(new Date(host.last_seen * 1000))}
-              </small>
-            )}
+        <div key={host.id} className="flex flex-wrap items-center gap-3 rounded-lg border p-3">
+          <Monitor className="size-4 shrink-0 text-muted-foreground" aria-hidden="true" />
+          <div className="grid min-w-0 flex-1 gap-0.5">
+            <strong className="break-words text-sm font-medium">{host.name}</strong>
+            <span className="flex flex-wrap items-center gap-x-1 text-xs text-muted-foreground">
+              <SettingsStatus tone={host.status === "online" ? "success" : "neutral"}>
+                {tr(`remote.state.${host.status}`)}
+              </SettingsStatus>
+              {host.status === "online" && <span>· {copy.viewOnly}</span>}
+            </span>
           </div>
-          <div className="flex flex-wrap gap-2">
+          <div className="flex flex-wrap gap-1">
+            {!["revoked", "identity-changed", "expired", "rejected", "pending"].includes(
+              host.status,
+            ) && (
+              <Button
+                disabled={busy}
+                variant="ghost"
+                size="sm"
+                onClick={() =>
+                  void run({
+                    operation: host.status === "online" ? "disconnect" : "connect",
+                    id: host.id,
+                  })
+                }
+              >
+                {tr(host.status === "online" ? "remote.disconnect" : "remote.connect")}
+              </Button>
+            )}
             <Button
-              disabled={
-                busy ||
-                ["revoked", "identity-changed", "expired", "rejected", "pending"].includes(
-                  host.status,
-                )
-              }
-              variant="outline"
-              onClick={() =>
-                void run({
-                  operation: host.status === "online" ? "disconnect" : "connect",
-                  id: host.id,
-                })
-              }
+              disabled={busy}
+              variant="ghost"
+              size="sm"
+              aria-label={`${tr("remote.remove")}: ${host.name}`}
+              onClick={() => setRemoving(host.id)}
             >
-              {tr(host.status === "online" ? "remote.disconnect" : "remote.connect")}
-            </Button>
-            <Button disabled={busy} variant="ghost" onClick={() => setRemoving(host.id)}>
               {tr("remote.remove")}
             </Button>
           </div>
@@ -134,132 +143,11 @@ function RemoteConnections() {
           </Button>
         </DialogContent>
       </Dialog>
-    </SettingsPanel>
+    </div>
   );
 }
 
-function PairHost({ now, onEdit }: { now: number; onEdit?: () => void }) {
-  const { tr, locale } = useI18n();
-  const { snapshot, pairing, busy, loading, error, run } = useRemoteStore();
-  const [address, setAddress] = useState("");
-  const [code, setCode] = useState("");
-  const [submitted, setSubmitted] = useState(Boolean(pairing));
-  const validCode = /^\d{8}$/.test(code);
-  const pairingConnection = pairing && snapshot?.connections.find((host) => host.id === pairing.id);
-  const paired = pairingConnection?.status === "online";
-  const expired = pairing && pairing.expires_at * 1000 <= now;
-  return (
-    <>
-      <SettingsPanel
-        title={tr("remote.nearby")}
-        action={
-          <Button
-            disabled={busy}
-            variant="outline"
-            onClick={() => void run({ operation: "discover" })}
-          >
-            <RefreshCw size={15} />
-            {remoteSettingsCopy[locale].find}
-          </Button>
-        }
-      >
-        {snapshot && !snapshot.discovered.length && !loading && !busy && error === "" && (
-          <p className="p-4 text-sm text-muted-foreground">{tr("remote.noNearby")}</p>
-        )}
-        {snapshot?.discovered.map((host) => (
-          <div key={host.id} className="flex items-center justify-between gap-3 border-b p-4">
-            <div className="min-w-0">
-              <strong className="block truncate text-sm">{host.name}</strong>
-              <span className="break-all text-sm text-muted-foreground">{host.address}</span>
-            </div>
-            <Button
-              variant="outline"
-              disabled={busy}
-              onClick={() => {
-                setAddress(host.address);
-                setSubmitted(false);
-                onEdit?.();
-              }}
-            >
-              {tr("remote.select")}
-            </Button>
-          </div>
-        ))}
-      </SettingsPanel>
-      <SettingsPanel title={tr("remote.pair")} contentClassName="p-4">
-        <form
-          className="grid gap-3"
-          onSubmit={async (event) => {
-            event.preventDefault();
-            if (!validCode || !address.trim()) return;
-            if (await run({ operation: "pair", address: address.trim(), code })) {
-              setCode("");
-              setSubmitted(true);
-            }
-          }}
-        >
-          <label className="grid gap-1.5 text-sm">
-            {tr("remote.address")}
-            <Input
-              placeholder="192.168.1.20:43123"
-              value={address}
-              onChange={(event) => {
-                setAddress(event.target.value);
-                onEdit?.();
-              }}
-              disabled={busy}
-              autoComplete="off"
-            />
-          </label>
-          <label className="grid gap-1.5 text-sm">
-            {tr("remote.code")}
-            <Input
-              value={code}
-              onChange={(event) => {
-                setCode(event.target.value.replace(/\D/g, "").slice(0, 8));
-                onEdit?.();
-              }}
-              inputMode="numeric"
-              maxLength={8}
-              autoComplete="off"
-              disabled={busy}
-            />
-          </label>
-          <Button
-            variant="outline"
-            className="justify-self-end"
-            type="submit"
-            disabled={busy || !validCode || !address.trim()}
-          >
-            {tr("remote.pair")}
-          </Button>
-        </form>
-        {submitted && pairing && (
-          <SettingsNotice inset={false} className="mt-3" role="status">
-            <div>
-              {paired ? (
-                tr("remote.paired")
-              ) : pairingConnection && pairingConnection.status !== "pending" ? (
-                tr(`remote.state.${pairingConnection.status}`)
-              ) : expired ? (
-                tr("remote.expired")
-              ) : (
-                <>
-                  <p>{tr("remote.waitApproval")}</p>
-                  <strong className="my-2 block font-mono text-xl tracking-widest">
-                    {pairing.verification}
-                  </strong>
-                  <p>{tr("remote.compare")}</p>
-                </>
-              )}
-            </div>
-          </SettingsNotice>
-        )}
-      </SettingsPanel>
-    </>
-  );
-}
-
+/** "Add computer": the same window from settings and from the session page. */
 export function RemoteConnectionPanel({
   open,
   onOpenChange,
@@ -267,303 +155,404 @@ export function RemoteConnectionPanel({
 }: {
   open: boolean;
   onOpenChange: (open: boolean) => void;
-  onSettings: () => void;
+  onSettings?: () => void;
 }) {
   const { tr, locale } = useI18n();
   const { now } = useRemoteStatus();
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="max-h-[85vh] overflow-y-auto sm:max-w-[480px]">
+      <DialogContent className="max-h-[85vh] overflow-y-auto sm:max-w-[440px]">
         <DialogHeader>
-          <DialogTitle>{remoteEntryCopy[locale].nativeTitle}</DialogTitle>
-          <DialogDescription>{remoteEntryCopy[locale].nativeDescription}</DialogDescription>
-          <span className="text-xs text-muted-foreground">{tr("remote.quick.readonly")}</span>
+          <DialogTitle>{remotePageCopy[locale].addComputer}</DialogTitle>
+          <DialogDescription className="sr-only">
+            {remoteEntryCopy[locale].nativeDescription}
+          </DialogDescription>
         </DialogHeader>
         <RemoteFeedback />
         {open && <QuickConnect now={now} onDone={() => onOpenChange(false)} />}
-        <Button
-          variant="ghost"
-          className="justify-self-start text-muted-foreground"
-          onClick={onSettings}
-        >
-          {tr("remote.quick.settings")}
-        </Button>
+        {onSettings && (
+          <Button
+            variant="ghost"
+            className="justify-self-start text-muted-foreground"
+            onClick={onSettings}
+          >
+            {tr("remote.quick.settings")}
+          </Button>
+        )}
       </DialogContent>
     </Dialog>
   );
 }
 
+function NameEditor({
+  name,
+  saved,
+  error,
+  disabled,
+  onChange,
+  onSave,
+}: {
+  name: string;
+  saved: boolean;
+  error: boolean;
+  disabled: boolean;
+  onChange: (value: string) => void;
+  onSave: () => Promise<boolean>;
+}) {
+  const { tr, locale } = useI18n();
+  const copy = remotePageCopy[locale];
+  const settings = remoteSettingsCopy[locale];
+  const [editing, setEditing] = useState(false);
+  async function save() {
+    if (await onSave()) setEditing(false);
+  }
+  return (
+    <div className="grid gap-1 text-sm">
+      {editing || error ? (
+        <Input
+          autoFocus
+          aria-label={tr("remote.name")}
+          value={name}
+          maxLength={64}
+          disabled={disabled}
+          className="h-8 w-48"
+          onChange={(event) => onChange(event.target.value)}
+          onBlur={() => void save()}
+          onKeyDown={(event) => {
+            if (event.key === "Enter" && !event.nativeEvent.isComposing) {
+              event.preventDefault();
+              void save();
+            }
+          }}
+        />
+      ) : (
+        <span className="flex items-center gap-1.5">
+          <span className="text-muted-foreground">{tr("remote.name")}</span>
+          <span className="break-all font-medium">{name}</span>
+          <Button
+            variant="ghost"
+            size="icon-xs"
+            aria-label={copy.editName}
+            disabled={disabled}
+            onClick={() => setEditing(true)}
+          >
+            <Pencil aria-hidden="true" />
+          </Button>
+        </span>
+      )}
+      {saved && (
+        <small role="status" className="text-muted-foreground">
+          {settings.saved}
+        </small>
+      )}
+      {error && (
+        <Button
+          variant="link"
+          size="content"
+          className="justify-self-start"
+          disabled={disabled}
+          onClick={() => void save()}
+        >
+          {settings.retryName}
+        </Button>
+      )}
+    </div>
+  );
+}
+
 function ComputerConnectionSettings({
-  networkAddress,
+  network,
   name,
   onNameChange,
   onNameSave,
   nameSaved,
   nameError,
-  onShowAdvanced,
   networkBusy,
-  revealSetup,
+  onAddComputer,
 }: {
-  networkAddress: string;
+  network: {
+    address: string;
+    interfaces: { name: string; address: string }[];
+    save: (address?: string) => Promise<boolean>;
+  };
   name: string;
   onNameChange: (value: string) => void;
   onNameSave: () => Promise<boolean>;
   nameSaved: boolean;
   nameError: boolean;
-  onShowAdvanced: () => void;
   networkBusy: boolean;
-  revealSetup: boolean;
+  onAddComputer: () => void;
 }) {
   const { tr, formatDateTime, locale } = useI18n();
   const { snapshot, busy, now, run } = useRemoteStatus();
-  const copy = remoteSettingsCopy[locale];
-  const [showSetup, setShowSetup] = useState(false);
-  const focusSetup = useRef(false);
-  const setup = useRef<HTMLElement>(null);
+  const copy = remotePageCopy[locale];
   const [revoking, setRevoking] = useState<string | null>(null);
-  const listeningAddress = networkAddress
-    ? `${networkAddress}:${snapshot?.local.address?.split(":")[1] || "42987"}`
-    : "";
-  const disabled = busy || networkBusy;
-  const empty = Boolean(
-    snapshot &&
-    !showSetup &&
-    !revealSetup &&
-    !snapshot.local.enabled &&
-    !snapshot.authorized.length &&
-    !snapshot.pending.some((request) => request.expires_at * 1000 > now) &&
-    !snapshot.connections.length &&
-    !snapshot.discovered.length,
-  );
-  useEffect(() => {
-    if (showSetup && focusSetup.current) {
-      setup.current?.focus();
-      focusSetup.current = false;
-    }
-  }, [showSetup]);
+  const [choosing, setChoosing] = useState(false);
+  const [choice, setChoice] = useState("");
+  const [starting, setStarting] = useState(false);
+  const starts = useRef(false);
+  const port = snapshot?.local.address?.split(":")[1] || "42987";
+  const listeningAddress = network.address ? `${network.address}:${port}` : "";
+  const disabled = busy || networkBusy || starting;
+  const enabled = snapshot?.local.enabled ?? false;
   const liveCode =
     snapshot?.pairing_code &&
     snapshot.pairing_expires_at &&
     snapshot.pairing_expires_at * 1000 > now;
+  const pending = snapshot?.pending.filter((request) => request.expires_at * 1000 > now) ?? [];
+  async function startSharing() {
+    if (
+      starts.current ||
+      disabled ||
+      !snapshot ||
+      !network.interfaces.some((i) => i.address === choice)
+    )
+      return;
+    starts.current = true;
+    setStarting(true);
+    try {
+      // The interface is shared with phone LAN access, so it is saved as that choice first.
+      if (!(await network.save(choice))) return;
+      const current = useRemoteStore.getState().snapshot;
+      const result = await run({
+        operation: "configure",
+        enabled: true,
+        address: `${choice}:${port}`,
+        name: current?.local.name || "AgentKib",
+      });
+      if (result) setChoosing(false);
+    } finally {
+      starts.current = false;
+      setStarting(false);
+    }
+  }
   return (
-    <section className="space-y-6" aria-label={copy.computers}>
-      <RemoteFeedback />
-      {empty ? (
-        <div className="grid justify-items-center gap-3 rounded-xl border bg-card px-6 py-10 text-center">
-          <Monitor className="size-8 text-muted-foreground" aria-hidden="true" />
-          <h2 className="text-base font-semibold">{copy.emptyTitle}</h2>
-          <p className="max-w-[60ch] text-sm text-muted-foreground">{copy.emptyInfo}</p>
-          <div className="flex flex-wrap justify-center gap-2">
-            <Button
-              variant="outline"
-              disabled={disabled}
-              onClick={() => {
-                focusSetup.current = true;
-                setShowSetup(true);
-                void run({ operation: "discover" });
-              }}
-            >
-              <Search aria-hidden="true" />
-              {copy.discover}
-            </Button>
-            <Button
-              variant="outline"
-              onClick={() => {
-                focusSetup.current = true;
-                setShowSetup(true);
-              }}
-            >
-              <Share2 aria-hidden="true" />
-              {copy.shareAction}
-            </Button>
-          </div>
+    <section className="rounded-xl border bg-card" aria-labelledby="remote-computers-title">
+      <header className="flex items-start gap-3 p-5 pb-3">
+        <CardIcon>
+          <Monitor aria-hidden="true" />
+        </CardIcon>
+        <div className="min-w-0 flex-1 space-y-1">
+          <h2 id="remote-computers-title" className="text-base font-semibold">
+            {copy.computers}
+          </h2>
+          <p className="text-sm text-muted-foreground">{copy.computersInfo}</p>
         </div>
-      ) : (
-        <>
-          <section
-            ref={setup}
-            tabIndex={-1}
-            className="space-y-3 outline-none"
+      </header>
+      <div className="grid gap-4 px-5 pb-5 sm:pl-[4.5rem]">
+        <RemoteFeedback />
+        <div
+          id={settingsTargetId("remote-access")}
+          tabIndex={-1}
+          className="flex items-start justify-between gap-4 outline-none"
+        >
+          <div className="grid min-w-0 gap-0.5 text-sm">
+            <strong className="font-medium">{copy.share}</strong>
+            <span className="text-muted-foreground">
+              {enabled
+                ? tr("remote.listening", { address: snapshot?.local.address ?? "" })
+                : copy.shareInfo}
+            </span>
+          </div>
+          <Switch
             aria-label={copy.share}
-          >
-            <SettingsSection title={copy.share} target="remote-access">
-              <SettingsNotice>{tr("remote.readonly")}</SettingsNotice>
-              <SettingsRow>
-                <SettingsCopy>
-                  <strong>{tr("remote.name")}</strong>
-                </SettingsCopy>
-                <div className="grid min-w-0 gap-1.5">
-                  <Input
-                    aria-label={tr("remote.name")}
-                    value={name}
-                    maxLength={64}
-                    disabled={disabled || !snapshot}
-                    onChange={(event) => onNameChange(event.target.value)}
-                    onBlur={() => void onNameSave()}
-                    onKeyDown={(event) => {
-                      if (event.key === "Enter" && !event.nativeEvent.isComposing) {
-                        event.preventDefault();
-                        void onNameSave();
-                      }
-                    }}
-                  />
-                  {nameSaved && (
-                    <small role="status" className="text-muted-foreground">
-                      {copy.saved}
-                    </small>
-                  )}
-                  {nameError && (
+            checked={enabled || choosing}
+            disabled={disabled || !snapshot}
+            onCheckedChange={(on) => {
+              if (!on && !enabled) {
+                setChoosing(false);
+                return;
+              }
+              if (on && !network.address) {
+                setChoice("");
+                setChoosing(true);
+                return;
+              }
+              void run({
+                operation: "configure",
+                enabled: on,
+                // Stopping must remain possible when the shared interface is lost
+                // or conflicts. The backend ignores this address when disabled.
+                address: on ? listeningAddress : snapshot?.local.address || "127.0.0.1:42987",
+                name: snapshot?.local.name || "AgentKib",
+              });
+            }}
+          />
+        </div>
+        {choosing && !enabled && (
+          <div className="grid gap-2 rounded-lg border bg-muted/40 p-4 text-sm">
+            <label htmlFor="remote-share-network" className="font-medium">
+              {copy.shareNetwork}
+            </label>
+            {network.interfaces.length ? (
+              <div className="flex flex-wrap gap-2">
+                <Select
+                  value={choice || null}
+                  disabled={disabled}
+                  onValueChange={(value) => setChoice(value ?? "")}
+                >
+                  <SelectTrigger id="remote-share-network" className="min-w-0 flex-1">
+                    <SelectValue placeholder={remoteNetworkCopy[locale].choose}>
+                      {choice
+                        ? `${network.interfaces.find((entry) => entry.address === choice)?.name ?? ""} · ${choice}`
+                        : remoteNetworkCopy[locale].choose}
+                    </SelectValue>
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectGroup>
+                      {network.interfaces.map((entry) => (
+                        <SelectItem key={entry.address} value={entry.address}>
+                          {entry.name} · {entry.address}
+                        </SelectItem>
+                      ))}
+                    </SelectGroup>
+                  </SelectContent>
+                </Select>
+                <Button disabled={disabled || !choice} onClick={() => void startSharing()}>
+                  {copy.startSharing}
+                </Button>
+              </div>
+            ) : (
+              <p role="status">{tr("remote.noNetwork")}</p>
+            )}
+            <small className="text-muted-foreground">{copy.shareNetworkHint}</small>
+          </div>
+        )}
+        {enabled && (
+          <div className="flex flex-wrap items-center gap-x-6 gap-y-3 rounded-lg border bg-muted/40 p-4">
+            <div className="grid gap-1">
+              <span className="text-xs text-muted-foreground">{tr("remote.code")}</span>
+              {liveCode ? (
+                <>
+                  <strong className="font-mono text-2xl tracking-wider">
+                    {snapshot.pairing_code!.replace(/^(\d{4})(\d{4})$/, "$1 $2")}
+                  </strong>
+                  <span className="flex flex-wrap items-center gap-1 text-xs text-muted-foreground">
+                    {copy.codeValid.replace(
+                      "{time}",
+                      clockTime(snapshot.pairing_expires_at! * 1000, locale),
+                    )}
+                    <span aria-hidden="true">·</span>
                     <Button
                       variant="link"
                       size="content"
-                      disabled={disabled}
-                      onClick={() => void onNameSave()}
-                    >
-                      {copy.retryName}
-                    </Button>
-                  )}
-                </div>
-              </SettingsRow>
-              <SettingsRow>
-                <SettingsCopy>
-                  <strong>{copy.enable}</strong>
-                  <small>
-                    {snapshot?.local.enabled
-                      ? tr("remote.listening", { address: snapshot.local.address })
-                      : tr("remote.disabled")}
-                  </small>
-                </SettingsCopy>
-                <Switch
-                  aria-label={copy.enable}
-                  checked={snapshot?.local.enabled ?? false}
-                  disabled={disabled || !snapshot || (!snapshot.local.enabled && !networkAddress)}
-                  onCheckedChange={(enabled) =>
-                    void run({
-                      operation: "configure",
-                      enabled,
-                      // Stopping must remain possible when the shared interface is lost
-                      // or conflicts. The backend ignores this address when disabled.
-                      address: enabled
-                        ? listeningAddress
-                        : snapshot?.local.address || "127.0.0.1:42987",
-                      name: snapshot?.local.name || "AgentKib",
-                    })
-                  }
-                />
-              </SettingsRow>
-              {!networkAddress && !snapshot?.local.enabled && (
-                <SettingsNotice>
-                  <div>
-                    <p>{copy.networkRequired}</p>
-                    <Button variant="link" size="content" onClick={onShowAdvanced}>
-                      {copy.advanced}
-                    </Button>
-                  </div>
-                </SettingsNotice>
-              )}
-              {snapshot?.local.enabled && (
-                <div className="grid gap-3 border-t p-4">
-                  <div className="flex items-center justify-between gap-3">
-                    <span className="text-sm">{tr("remote.code")}</span>
-                    <Button
+                      className="text-xs"
                       disabled={busy}
-                      variant="outline"
                       onClick={() => void run({ operation: "generate-code" })}
                     >
-                      {tr("remote.generate")}
+                      {remotePhoneCopy[locale].regenerate}
                     </Button>
-                  </div>
-                  {liveCode && (
-                    <>
-                      <strong className="font-mono text-2xl tracking-[0.25em]">
-                        {snapshot.pairing_code}
-                      </strong>
-                      <p className="text-sm text-muted-foreground">{tr("remote.codeHint")}</p>
-                    </>
-                  )}
-                </div>
+                  </span>
+                </>
+              ) : (
+                <Button
+                  variant="outline"
+                  size="sm"
+                  disabled={busy}
+                  onClick={() => void run({ operation: "generate-code" })}
+                >
+                  {tr("remote.generate")}
+                </Button>
               )}
-            </SettingsSection>
-            {!!snapshot?.pending.length && (
-              <SettingsPanel title={tr("remote.requests")}>
-                {snapshot.pending
-                  .filter((request) => request.expires_at * 1000 > now)
-                  .map((request) => (
-                    <div key={request.id} className="grid gap-3 border-b p-4">
-                      <strong className="flex items-center gap-2">
-                        <ShieldCheck size={16} />
-                        {request.name}
-                      </strong>
-                      <p className="text-sm">{tr("remote.compare")}</p>
-                      <strong className="font-mono text-2xl tracking-widest">
-                        {request.verification}
-                      </strong>
-                      <SettingsNotice tone="warning" inset={false}>
-                        {tr("remote.grantScope")}
-                      </SettingsNotice>
-                      <div className="flex justify-end gap-2">
-                        <Button
-                          variant="outline"
-                          disabled={busy}
-                          onClick={() => void run({ operation: "reject", id: request.id })}
-                        >
-                          {tr("remote.reject")}
-                        </Button>
-                        <Button
-                          variant="outline"
-                          disabled={busy}
-                          onClick={() => void run({ operation: "approve", id: request.id })}
-                        >
-                          {tr("remote.approve")}
-                        </Button>
-                      </div>
-                    </div>
-                  ))}
-              </SettingsPanel>
-            )}
-            {!!snapshot?.authorized.length && (
-              <SettingsPanel title={tr("remote.authorized")} target="remote-devices">
-                {snapshot?.authorized.map((device) => (
-                  <div
-                    key={device.id}
-                    className="flex items-center justify-between gap-3 border-b p-4"
+            </div>
+            <p className="min-w-48 flex-1 text-sm text-muted-foreground">{copy.codeInfo}</p>
+            <NameEditor
+              name={name}
+              saved={nameSaved}
+              error={nameError}
+              disabled={disabled || !snapshot}
+              onChange={onNameChange}
+              onSave={onNameSave}
+            />
+          </div>
+        )}
+        {!!pending.length && (
+          <section aria-label={tr("remote.requests")} className="grid gap-2">
+            <h3 className="text-sm font-medium">{tr("remote.requests")}</h3>
+            {pending.map((request) => (
+              <div key={request.id} className="grid gap-3 rounded-lg border p-4">
+                <strong className="flex items-center gap-2 text-sm">
+                  <ShieldCheck size={16} />
+                  {request.name}
+                </strong>
+                <p className="text-sm">{tr("remote.compare")}</p>
+                <strong className="font-mono text-2xl tracking-widest">
+                  {request.verification}
+                </strong>
+                <SettingsNotice tone="warning" inset={false}>
+                  {tr("remote.grantScope")}
+                </SettingsNotice>
+                <div className="flex justify-end gap-2">
+                  <Button
+                    variant="outline"
+                    disabled={busy}
+                    onClick={() => void run({ operation: "reject", id: request.id })}
                   >
-                    <div className="grid min-w-0 gap-1">
-                      <strong className="flex items-center gap-2 text-sm">
-                        <Wifi size={16} />
-                        {device.name}
-                      </strong>
-                      <small className="text-muted-foreground">
-                        {tr("remote.approvedAt")}:{" "}
-                        {formatDateTime(new Date(device.approved_at * 1000))}
-                      </small>
-                      <p className="text-sm text-muted-foreground">{tr("remote.viewPermission")}</p>
-                      {device.last_seen && (
-                        <small className="text-muted-foreground">
-                          {tr("remote.lastSeen")}:{" "}
-                          {formatDateTime(new Date(device.last_seen * 1000))}
-                        </small>
-                      )}
-                    </div>
-                    <Button
-                      variant="outline"
-                      disabled={busy}
-                      onClick={() => setRevoking(device.id)}
-                    >
-                      {tr("remote.revoke")}
-                    </Button>
-                  </div>
-                ))}
-              </SettingsPanel>
-            )}
+                    {tr("remote.reject")}
+                  </Button>
+                  <Button
+                    variant="outline"
+                    disabled={busy}
+                    onClick={() => void run({ operation: "approve", id: request.id })}
+                  >
+                    {tr("remote.approve")}
+                  </Button>
+                </div>
+              </div>
+            ))}
           </section>
-          <section className="space-y-3" aria-label={copy.view}>
-            <h2 className="text-base font-semibold">{copy.view}</h2>
-            {!!snapshot?.connections.length && <RemoteConnections />}
-            <PairHost now={now} onEdit={() => setShowSetup(true)} />
+        )}
+        {!!snapshot?.authorized.length && (
+          <section
+            id={settingsTargetId("remote-devices")}
+            tabIndex={-1}
+            aria-label={copy.viewers}
+            className="grid gap-2 outline-none"
+          >
+            <h3 className="text-sm font-medium">{copy.viewers}</h3>
+            {snapshot.authorized.map((device) => (
+              <div key={device.id} className="flex items-center gap-3 rounded-lg border p-3">
+                <Wifi className="size-4 shrink-0 text-muted-foreground" aria-hidden="true" />
+                <div className="grid min-w-0 flex-1 gap-0.5">
+                  <strong className="break-words text-sm font-medium">{device.name}</strong>
+                  <small className="text-muted-foreground">
+                    {tr("remote.approvedAt")}: {formatDateTime(new Date(device.approved_at * 1000))}
+                    {device.last_seen && (
+                      <>
+                        {" · "}
+                        {tr("remote.lastSeen")}: {formatDateTime(new Date(device.last_seen * 1000))}
+                      </>
+                    )}
+                  </small>
+                </div>
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  disabled={busy}
+                  onClick={() => setRevoking(device.id)}
+                >
+                  {tr("remote.revoke")}
+                </Button>
+              </div>
+            ))}
           </section>
-        </>
-      )}
+        )}
+        <div className="grid gap-2 border-t pt-4">
+          <div className="flex items-center justify-between gap-3">
+            <div className="grid gap-0.5 text-sm">
+              <strong className="font-medium">{copy.connected}</strong>
+              {!snapshot?.connections.length && (
+                <span className="text-muted-foreground">{copy.noneYet}</span>
+              )}
+            </div>
+            <Button variant="outline" size="sm" onClick={onAddComputer}>
+              <Plus aria-hidden="true" />
+              {copy.addComputer}
+            </Button>
+          </div>
+          {!!snapshot?.connections.length && <RemoteConnections />}
+        </div>
+      </div>
       <Dialog
         open={revoking !== null}
         onOpenChange={(open) => {
@@ -595,9 +584,8 @@ export function RemoteConnectionSettings() {
   const copy = remoteSettingsCopy[locale];
   const { snapshot, busy, run } = useRemoteStore();
   const network = useRemoteNetworkSettings();
-  const [tab, setTab] = useState("phone");
   const [advancedOpen, setAdvancedOpen] = useState(false);
-  const [revealSetup, setRevealSetup] = useState(false);
+  const [addOpen, setAddOpen] = useState(false);
   const [focusTarget, setFocusTarget] = useState<"remote-access" | "remote-devices">();
   const [name, setName] = useState(() => snapshot?.local.name ?? "");
   const previousName = useRef(snapshot?.local.name);
@@ -611,8 +599,6 @@ export function RemoteConnectionSettings() {
     function reveal(event: Event) {
       const target = (event as CustomEvent<unknown>).detail;
       if (target !== "remote-access" && target !== "remote-devices") return;
-      setTab("computers");
-      setRevealSetup(true);
       setFocusTarget(target);
     }
     window.addEventListener(settingsTargetRequestEvent, reveal);
@@ -624,7 +610,7 @@ export function RemoteConnectionSettings() {
       const element =
         document.getElementById(settingsTargetId(focusTarget)) ??
         document.getElementById(settingsTargetId("remote-access"));
-      if (element && !element.closest("[hidden]")) {
+      if (element) {
         element.scrollIntoView({ block: "nearest" });
         element.focus({ preventScroll: true });
       }
@@ -707,42 +693,10 @@ export function RemoteConnectionSettings() {
       if (alive.current) setNameSaving(false);
     }
   }
-  function showAdvanced() {
-    setAdvancedOpen(true);
-    requestAnimationFrame(() => {
-      if (!alive.current) return;
-      const trigger = document.getElementById("remote-advanced-trigger");
-      trigger?.scrollIntoView({ block: "nearest" });
-      trigger?.focus();
-    });
-  }
   return (
     <SettingsPage variant="management">
       <SettingsPageHeader title={copy.title} />
-      <ToggleGroup
-        aria-label={copy.title}
-        value={[tab]}
-        onValueChange={(values) => {
-          if (values[0] === "phone" || values[0] === "computers") setTab(values[0]);
-        }}
-        className="rounded-lg border bg-card p-1"
-        spacing={1}
-      >
-        <ToggleGroupItem
-          value="phone"
-          className="aria-pressed:bg-primary/10 aria-pressed:text-primary-text"
-        >
-          {copy.phone}
-        </ToggleGroupItem>
-        <ToggleGroupItem
-          value="computers"
-          className="aria-pressed:bg-primary/10 aria-pressed:text-primary-text"
-        >
-          {copy.computers}
-        </ToggleGroupItem>
-      </ToggleGroup>
       <WebAccessSettings
-        phoneVisible={tab === "phone"}
         advancedOpen={advancedOpen}
         onAdvancedOpenChange={setAdvancedOpen}
         advancedContent={network.content}
@@ -750,8 +704,9 @@ export function RemoteConnectionSettings() {
         advancedBusy={network.busy || busy || nameSaving}
         advancedValid={network.valid}
         onSaveAdvanced={saveAdvanced}
+        onDiscardAdvanced={network.reset}
       >
-        <div hidden={tab !== "computers"} className="space-y-3">
+        <div className="space-y-3">
           {nameError && (
             <SettingsNotice tone="error" role="alert">
               {copy.saveFailed}
@@ -763,9 +718,8 @@ export function RemoteConnectionSettings() {
             </SettingsNotice>
           )}
           <ComputerConnectionSettings
-            networkAddress={network.address}
+            network={network}
             networkBusy={network.busy || nameSaving}
-            revealSetup={revealSetup}
             name={name}
             onNameChange={(value) => {
               nameValue.current = value;
@@ -780,10 +734,11 @@ export function RemoteConnectionSettings() {
               name.trim() === savedName
             }
             nameError={nameError}
-            onShowAdvanced={showAdvanced}
+            onAddComputer={() => setAddOpen(true)}
           />
         </div>
       </WebAccessSettings>
+      {addOpen && <RemoteConnectionPanel open={addOpen} onOpenChange={setAddOpen} />}
     </SettingsPage>
   );
 }

@@ -223,6 +223,26 @@ export class ClaudeManagedReadOwner {
   #desktopClaims?: { at: number; claims: Set<string> | null };
   #ownership: ClaudeSessionOwnerProbe;
   #ownershipReasons = new Map<string, { at: number; reason: string | null }>();
+  /**
+   * The observation behind the displayed ownership of every session in one interval. Each open
+   * Claude session used to start its own `claude agents` and `ps` every few seconds; a status
+   * is display only, unlike the fresh check made before a worker starts.
+   */
+  #displayObservation?: { at: number; share: ClaudeOwnerObservationShare };
+  /**
+   * A new observation, never a reused one, for a check that decides an action. Statuses
+   * displayed afterwards use it too, so they never show an older one.
+   */
+  /** The next status of this session is read from a new observation, not a shared older one. */
+  #forgetOwnership(id: string): void {
+    this.#ownershipReasons.delete(id);
+    this.#displayObservation = undefined;
+  }
+  #freshObservation(): ClaudeOwnerObservationShare {
+    const share: ClaudeOwnerObservationShare = {};
+    this.#displayObservation = { at: Date.now(), share };
+    return share;
+  }
   // A live read can fence an otherwise idle runner because another host command
   // is unresolved. Catalog reads reuse that proof without opening the ledger.
   #catalogUnconfirmed = new Set<string>();
@@ -669,7 +689,7 @@ export class ClaudeManagedReadOwner {
     if (operation !== "send" && !existingRunner) throw new Error("session-runner-unavailable");
     if (managedSessionHasUnknownCommands(this.dataDir, id))
       throw new Error("control-outcome-unconfirmed");
-    this.#ownershipReasons.delete(id);
+    this.#forgetOwnership(id);
     let live = await this.#live(id, true);
     if (live.status === "outcome-unknown") throw new Error("control-outcome-unconfirmed");
     if (
@@ -1753,6 +1773,7 @@ export class ClaudeManagedReadOwner {
       const owner = await this.#ownership.check(
         record.nativeId,
         this.#runners.get(record.id)?.processId ?? null,
+        this.#freshObservation(),
       );
       const target = await this.#resolveNative(id);
       if (target.nativeId !== record.nativeId || target.workspace !== record.workspace)
@@ -3047,7 +3068,7 @@ export class ClaudeManagedReadOwner {
         if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
       }
       this.#hostState.forget(sessionId);
-      this.#ownershipReasons.delete(sessionId);
+      this.#forgetOwnership(sessionId);
       this.#catalogUnconfirmed.delete(sessionId);
       this.#idleSince.delete(sessionId);
       this.#observed.delete(sessionId);
@@ -3123,7 +3144,7 @@ export class ClaudeManagedReadOwner {
   }
 
   async #ensureNoExternalOwner(nativeId: string, ownedPid: number | null = null): Promise<void> {
-    const owner = await this.#ownership.check(nativeId, ownedPid);
+    const owner = await this.#ownership.check(nativeId, ownedPid, this.#freshObservation());
     if (owner.kind !== "idle")
       throw new Error(
         owner.kind === "background" ? "claude-background-session-running" : "claude-owner-busy",
@@ -3179,12 +3200,16 @@ export class ClaudeManagedReadOwner {
     nativeId: string,
     ownedPid: number | null,
   ): Promise<string | null> {
+    const interval = this.continuation.maintenanceIntervalMs ?? 3000;
     const cached = this.#ownershipReasons.get(id);
-    if (cached && Date.now() - cached.at < (this.continuation.maintenanceIntervalMs ?? 3000))
-      return cached.reason;
+    if (cached && Date.now() - cached.at < interval) return cached.reason;
+    if (!this.#displayObservation || Date.now() - this.#displayObservation.at >= interval)
+      this.#displayObservation = { at: Date.now(), share: {} };
+    // Dated by the shared observation, so no status is older than one interval.
+    const observedAt = this.#displayObservation.at;
     let reason: string | null;
     try {
-      const owner = await this.#ownership.check(nativeId, ownedPid);
+      const owner = await this.#ownership.check(nativeId, ownedPid, this.#displayObservation.share);
       reason =
         owner.kind === "idle"
           ? null
@@ -3194,7 +3219,7 @@ export class ClaudeManagedReadOwner {
     } catch {
       reason = "claude-owner-check-unavailable";
     }
-    this.#ownershipReasons.set(id, { at: Date.now(), reason });
+    this.#ownershipReasons.set(id, { at: observedAt, reason });
     if (cached?.reason !== reason) this.#catalogChanged?.();
     return reason;
   }
@@ -3307,7 +3332,7 @@ export class ClaudeManagedReadOwner {
   async #maintain(): Promise<void> {
     // One read-only observation per tick serves every live worker, so the patrol cost does not
     // grow with the number of sessions. Each worker is still evaluated with its own process.
-    const share: ClaudeOwnerObservationShare = {};
+    const share = this.#freshObservation();
     const runners = [...this.#runners];
     const workers = new Map(runners.map(([id, runner]) => [id, runner.processId] as const));
     await Promise.allSettled(
@@ -3867,7 +3892,7 @@ export class ClaudeManagedReadOwner {
             ? "claude-cli-unavailable"
             : await this.#ownershipReason(id, target.nativeId, null);
       if (this.#load(id)) {
-        this.#ownershipReasons.delete(id);
+        this.#forgetOwnership(id);
         if (ownershipReadAttempt > 0) throw new Error("claude-owner-check-unavailable");
         return this.#live(id, controls, ownershipReadAttempt + 1);
       }
@@ -3922,7 +3947,7 @@ export class ClaudeManagedReadOwner {
     ) {
       // The observation excluded the previous worker. A replacement or completed
       // startup needs a fresh check, never the old worker's cached idle result.
-      this.#ownershipReasons.delete(id);
+      this.#forgetOwnership(id);
       if (ownershipReadAttempt > 0) throw new Error("claude-owner-check-unavailable");
       return this.#live(id, controls, ownershipReadAttempt + 1);
     }
@@ -4901,7 +4926,7 @@ export class ClaudeManagedReadOwner {
         await this.#prepareRunner(record);
       } catch (error) {
         // A fresh startup probe can reject ownership after the cached idle preflight.
-        this.#ownershipReasons.delete(id);
+        this.#forgetOwnership(id);
         try {
           await publishCurrentState();
         } catch {

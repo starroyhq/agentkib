@@ -66,9 +66,9 @@ describe("i18n resources", () => {
 
   it("changes language immediately", async () => {
     await initializeI18n("en-US");
-    expect(tr("nav.home")).toBe("Today");
+    expect(tr("nav.home")).toBe("Home");
     await changeLocale("ja-JP");
-    expect(tr("nav.home")).toBe("今日のタスク");
+    expect(tr("nav.home")).toBe("ホーム");
     expect(document.documentElement.lang).toBe("ja-JP");
   });
 

@@ -160,6 +160,17 @@ describe("same-origin one-time code full authorization", () => {
     expect(managed).toHaveBeenLastCalledWith(
       expect.objectContaining({ workspaceId: "later", policyId: "workspace-write-on-request" }),
     );
+    // With full access a session can start with another policy, as its settings could change.
+    const fullAccess = await b.api("managed/create", {
+      workspaceId: "later",
+      bootId: b.access.bootId,
+      requestId: randomUUID(),
+      policyId: "full-access-on-request",
+    });
+    expect(fullAccess.status).toBe(200);
+    expect(managed).toHaveBeenLastCalledWith(
+      expect.objectContaining({ workspaceId: "later", policyId: "full-access-on-request" }),
+    );
     const send = await b.api("send", {
       sessionId: "session-first",
       text: "test",

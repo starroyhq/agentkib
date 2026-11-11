@@ -1,68 +1,32 @@
 import { useI18n } from "@/core/useI18n";
-import { useRef, useState } from "react";
+import { useRef, useState, type ComponentProps, type ReactNode } from "react";
 import { FolderGit2 } from "lucide-react";
 import { Card } from "@/components/ui/card";
 import type {
   AgentInstallation,
   ContextDoctorSummary,
-  DiscoveryReport,
-  InsightsSummary,
   MemoryRecord,
   RuntimeInfo,
   WorkspaceSummary,
 } from "@/core/types";
+import { cn } from "cn";
 import { GettingStartedCard } from "./GettingStartedCard";
-import type { RecentContinuation } from "./home-continuations";
-import { HomeSummaryBar } from "./HomeSummaryBar";
-import { ContinueWorkCard, PendingTasksCard } from "./HomeTaskCards";
-import { RecentWorkspacesCard, WorkspaceAddActions } from "./HomeRecentSections";
-import { getWorkspaceStatus } from "@/features/workspace/workspace-status";
-
-export type AssetSection = "instructions" | "skills" | "mcp" | "memory" | "other";
-export type ContinuationHomeState =
-  | "ready"
-  | "disabled"
-  | "loading"
-  | "metadata-only"
-  | "empty"
-  | "error";
-
-function resolveContinuationState(
-  continuationState: ContinuationHomeState | undefined,
-  recentContinuations: RecentContinuation[],
-): ContinuationHomeState {
-  if (continuationState !== undefined) return continuationState;
-  if (recentContinuations.length) return "ready";
-  return "empty";
-}
+import { HomeSessions } from "./HomeSessions";
+import { HomeSide, hasHomeSide, type HomeSideProps } from "./HomeSide";
+import { WorkspaceAddActions } from "./WorkspaceAddActions";
 
 export function GlobalHome({
   workspaces,
   doctorSummaries,
   installations,
   memories,
-  discovery,
-  issuesPending = false,
   installationsPending = false,
-  catalogPending = false,
-  uniqueAssetCount,
-  assetCounts,
-  onShowWorkspaces,
-  onShowAgents,
-  recentContinuations = [],
-  continuationState,
-  continuationSlow = false,
-  continuationError,
-  onContinue,
-  onEnableContinuations,
-  onRetryContinuations,
-  onOpenContinuationWorkspace,
-  onOpen,
+  sessions,
+  newSession,
+  side,
   onOpenDoctor,
-  onOpenAssets,
   onAddWorkspace,
   onAddRoot,
-  onRefresh,
   runtime,
   onRuntimeChanged,
 }: {
@@ -70,29 +34,16 @@ export function GlobalHome({
   doctorSummaries: Record<string, ContextDoctorSummary>;
   installations: AgentInstallation[];
   memories: MemoryRecord[];
-  discovery?: DiscoveryReport;
-  issuesPending?: boolean;
   installationsPending?: boolean;
-  catalogPending?: boolean;
-  insights?: InsightsSummary;
-  uniqueAssetCount: number;
-  assetCounts: Map<string, number>;
-  onShowWorkspaces: () => void;
-  onShowAgents: () => void;
-  recentContinuations?: RecentContinuation[];
-  continuationState?: ContinuationHomeState;
-  continuationSlow?: boolean;
-  continuationError?: string;
-  onContinue?: (continuation: RecentContinuation) => Promise<void>;
-  onEnableContinuations?: () => Promise<void>;
-  onRetryContinuations?: () => Promise<void>;
-  onOpenContinuationWorkspace?: () => Promise<void>;
-  onOpen: (workspace: WorkspaceSummary) => Promise<void>;
+  /** The session groups; the home shows them once a workspace exists. */
+  sessions: Omit<ComponentProps<typeof HomeSessions>, "workspaces">;
+  /** The new-session composer, above the sessions once a workspace exists. */
+  newSession?: ReactNode;
+  /** Quota, remote and upkeep beside the sessions; below them in a narrow window. */
+  side?: HomeSideProps;
   onOpenDoctor: (workspace: WorkspaceSummary) => Promise<void>;
-  onOpenAssets: (section: AssetSection) => void;
   onAddWorkspace: () => Promise<void>;
   onAddRoot: () => Promise<void>;
-  onRefresh: () => void;
   runtime?: RuntimeInfo;
   onRuntimeChanged: (runtime: RuntimeInfo) => void;
 }) {
@@ -119,73 +70,6 @@ export function GlobalHome({
   const onboarding = runtime?.onboarding;
   const showOnboarding = Boolean(
     onboarding && onboarding.acknowledged_version < onboarding.version,
-  );
-  const resolvedContinuationState = resolveContinuationState(
-    continuationState,
-    recentContinuations,
-  );
-  const attention = workspaces.filter(
-    (item) => getWorkspaceStatus(item.id, doctorSummaries[item.id]).diagnosticIssueCount > 0,
-  );
-  const pendingMemories = memories.filter((item) => item.status === "pending");
-  const pending = pendingMemories.length;
-  const doctorIssueCount = workspaces.reduce(
-    (total, workspace) =>
-      total + getWorkspaceStatus(workspace.id, doctorSummaries[workspace.id]).diagnosticIssueCount,
-    0,
-  );
-  const issueCount = doctorIssueCount + pending;
-  const installedAgentCount = installations.filter((item) => item.installed).length;
-  const metrics = [
-    {
-      label: tr("home.workspaceMetric", { count: workspaces.length }),
-      value: workspaces.length,
-      onClick: onShowWorkspaces,
-    },
-    {
-      label: tr("home.installedAgents", { count: installedAgentCount }),
-      value: installedAgentCount,
-      pending: installationsPending,
-      onClick: onShowAgents,
-    },
-    {
-      label: tr("home.assetMetric", { count: uniqueAssetCount }),
-      value: uniqueAssetCount,
-      pending: catalogPending,
-      onClick: () => onOpenAssets("instructions"),
-    },
-  ];
-  const openPendingTasks = () => {
-    const section = document.getElementById("home-pending-tasks");
-    if (section) section.scrollIntoView({ behavior: "smooth", block: "start" });
-    else onShowWorkspaces();
-  };
-  const pendingTasksCard = (
-    <PendingTasksCard
-      pending={pending}
-      pendingMemories={pendingMemories}
-      issueCount={issueCount}
-      issuesPending={issuesPending}
-      workspaces={workspaces}
-      attention={attention}
-      doctorSummaries={doctorSummaries}
-      onOpenDoctor={onOpenDoctor}
-      onOpenAssets={onOpenAssets}
-    />
-  );
-  const continueWorkCard = (
-    <ContinueWorkCard
-      state={resolvedContinuationState}
-      workspaces={workspaces}
-      recentContinuations={showOnboarding ? recentContinuations.slice(0, 2) : recentContinuations}
-      slow={continuationSlow}
-      error={continuationError}
-      onContinue={onContinue}
-      onEnable={onEnableContinuations}
-      onRetry={onRetryContinuations}
-      onOpenWorkspace={onOpenContinuationWorkspace}
-      onOpen={onOpen}
-    />
   );
 
   return (
@@ -228,30 +112,17 @@ export function GlobalHome({
           </Card>
         )
       ) : (
-        <div className="grid items-start gap-5 lg:grid-cols-[minmax(0,1fr)_360px]">
-          <div className="grid gap-6">
-            <HomeSummaryBar
-              issueCount={issueCount}
-              issuesPending={issuesPending}
-              metrics={metrics}
-              discovery={discovery}
-              onShowPending={openPendingTasks}
-              onRefresh={onRefresh}
-            />
-            {pendingTasksCard}
-            {continueWorkCard}
+        <div
+          className={cn(
+            "grid gap-6",
+            side && hasHomeSide(side) && "lg:grid-cols-[minmax(0,1fr)_300px] lg:items-start",
+          )}
+        >
+          <div className="grid min-w-0 gap-6">
+            {newSession}
+            <HomeSessions {...sessions} workspaces={workspaces} />
           </div>
-          <RecentWorkspacesCard
-            workspaces={workspaces}
-            assetCounts={assetCounts}
-            doctorSummaries={doctorSummaries}
-            memories={memories}
-            onOpen={onOpen}
-            onShowWorkspaces={onShowWorkspaces}
-            additionsBusy={adding}
-            onAddWorkspace={addWorkspace}
-            onAddRoot={addRoot}
-          />
+          {side && <HomeSide {...side} />}
         </div>
       )}
     </div>

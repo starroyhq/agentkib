@@ -515,7 +515,17 @@ export interface ManagedOptions {
   available: boolean;
   reason?: string;
   cliVersion?: string;
-  models?: { id: string; name?: string; efforts?: string[] }[];
+  models?: {
+    id: string;
+    name?: string;
+    efforts?: string[];
+    isDefault?: boolean;
+    defaultEffort?: string;
+  }[];
+  /** Codex: the model and effort a session starts with when none is chosen. */
+  defaults?: { model?: string | null; effort?: string | null };
+  /** Codex: the execution policies a session can start with. */
+  policies?: { id: string; name: string; description?: string }[];
   permissionModes?: { id: ClaudePermissionMode; name: string; description?: string }[];
   /**
    * DeepSeek Harness's Agent presets, chosen only when a session starts. A preset DSH ships has
@@ -555,6 +565,10 @@ export interface ManagedActionBody {
   model?: string;
   effort?: string;
   permissionMode?: ClaudePermissionMode;
+  /** Codex: the execution policy a new session starts with. */
+  policyId?: string;
+  /** DeepSeek Harness: the Agent preset a new session starts with. */
+  agentPreset?: string;
   handoffConfirmed?: boolean;
   handoffFingerprint?: string;
 }

@@ -24,7 +24,7 @@ HTTP 另外携带 Electron `bootId`，由 Electron 验证，不直接传给 Runt
 
 ## 执行策略与版本适配
 
-新建托管会话默认使用 `workspace-write-on-request`：`workspace-write`、`on-request`、人工 reviewer、sandbox network=false。完整授权浏览器可在主机返回的映射策略中显式切换为完全访问（不弹审批）或工作区写入／自动审核；浏览器不能提交任意 sandbox 对象、cwd、CLI 参数、额外可写根或审核器参数。策略更新必须在空闲时携带当前 revision，由原生 settings 通知和 `thread/read` 回读确认后写入账本；后续 turn/start 从账本使用已确认策略，不再被固定默认值覆盖。旧记录缺少策略字段时仍使用原受限默认。
+新建托管会话默认使用 `workspace-write-on-request`：`workspace-write`、`on-request`、人工 reviewer、sandbox network=false。完整授权浏览器可在主机返回的映射策略中显式切换为完全访问（不弹审批）或工作区写入／自动审核；新建时也可以直接选这三种映射策略之一，选默认以外的同样只限完整授权的设备（桌面按本机用户处理）。浏览器不能提交任意 sandbox 对象、cwd、CLI 参数、额外可写根或审核器参数。策略更新必须在空闲时携带当前 revision，由原生 settings 通知和 `thread/read` 回读确认后写入账本；后续 turn/start 从账本使用已确认策略，不再被固定默认值覆盖。旧记录缺少策略字段时仍使用原受限默认。
 
 模型、思考强度和服务档位来自 `model/list`；Plan／执行模式来自实验协议 `collaborationMode/list`：runner 启动时读取一次，同时列出 `plan` 与 `default` 两个预设（按 `mode` 字段识别）才开放 Plan；读取失败或结构不符时 Plan 保持不可用，会话照常使用。0.163.0 与 0.147.0 都已对本地桩核对，见 [Codex 接入补齐验收](../../qa/codex-gaps-2026-10-28.md)。空闲时保存设置只改变 `selected`，不启动轮次；`current` 保留原生确认值，`applicationStatus` 区分 `pending`、`confirmed` 和 `unknown`。下一次显式发送在 `turn/start.collaborationMode` 传入选择，内外模型和强度一致，`developer_instructions:null` 由 Codex 加载内置指令。没有自定义计划提示词、隐藏空轮次或自动执行计划。实时链路里计划是原生 `plan` 项；原生记录里计划写在 Agent 回复的 `<proposed_plan>` 标签内，读历史时去掉这对标签，只显示计划正文。
 

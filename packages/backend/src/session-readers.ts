@@ -239,6 +239,9 @@ export class SessionReaders {
   verifiedCodexControlDirectory(nativeRef: string): { id: string; cwd: string } | undefined {
     return this.#codex.verifiedControlDirectories([nativeRef]).get(nativeRef.toLowerCase());
   }
+  codexThreadWritten(nativeRef: string): boolean {
+    return this.#codex.writtenThreadIds([nativeRef]).has(nativeRef.toLowerCase());
+  }
   antigravityControlExecutable(): string {
     return this.#antigravity.controlExecutable();
   }

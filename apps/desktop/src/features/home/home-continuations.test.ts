@@ -3,8 +3,6 @@ import { describe, expect, it } from "vitest";
 import type { ConversationSessionSummary, WorkspaceSummary } from "@/core/types";
 import {
   continuationIndexingEnabled,
-  continuationRefreshFailed,
-  metadataOnlyContinuationWorkspace,
   recentContinuationWorkspaces,
   selectRecentContinuations,
 } from "./home-continuations";
@@ -56,8 +54,6 @@ describe("selectRecentContinuations", () => {
     expect(
       selectRecentContinuations(workspaces, [sessions]).map(({ session }) => session.id),
     ).toEqual(["fork", "unknown"]);
-    const metadata = [{ ...sessions[0], availability: "metadata-only" as const }];
-    expect(metadataOnlyContinuationWorkspace(workspaces, [metadata])).toBeUndefined();
   });
 
   it("waits for the runtime preference before enabling session indexing", () => {
@@ -66,17 +62,7 @@ describe("selectRecentContinuations", () => {
     expect(continuationIndexingEnabled({ session_index_enabled: true })).toBe(true);
   });
 
-  it("retains a refresh error when only part of the workspace refresh succeeds", () => {
-    expect(
-      continuationRefreshFailed([
-        { status: "fulfilled", value: [] },
-        { status: "rejected", reason: new Error("unavailable") },
-      ]),
-    ).toBe(true);
-    expect(continuationRefreshFailed([{ status: "fulfilled", value: [] }])).toBe(false);
-  });
-
-  it("limits background discovery to the five most recent workspaces", () => {
+  it("reads the sessions of the five most recently active workspaces again", () => {
     const values = Array.from({ length: 7 }, (_, index) => ({
       id: `workspace-${index}`,
       last_active_at: `2026-09-0${index + 1}T00:00:00.000Z`,
@@ -124,20 +110,5 @@ describe("selectRecentContinuations", () => {
     );
 
     expect(result.map((item) => item.session.id)).toEqual(["session-2", "session-3"]);
-  });
-
-  it("returns the workspace that contains metadata-only sessions", () => {
-    expect(
-      metadataOnlyContinuationWorkspace(workspaces, [
-        [],
-        [],
-        [
-          {
-            ...readableSession,
-            availability: "metadata-only",
-          },
-        ],
-      ]),
-    ).toMatchObject({ id: "third" });
   });
 });

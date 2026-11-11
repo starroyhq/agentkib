@@ -39,7 +39,6 @@ export const homeKeys = {
   continuationsRoot: () => [...homeKeys.all, "continuations"] as const,
   continuations: (workspaceId: string) => [...homeKeys.all, "continuations", workspaceId] as const,
   discovery: () => [...homeKeys.all, "discovery"] as const,
-  insightsSummary: () => [...homeKeys.all, "insights-summary"] as const,
   refreshJobs: () => [...homeKeys.all, "refresh-jobs"] as const,
   remoteGateways: () => [...homeKeys.all, "remote-gateways"] as const,
   scanRoots: () => [...homeKeys.all, "scan-roots"] as const,
@@ -47,7 +46,30 @@ export const homeKeys = {
   insightsStatus: () => [...homeKeys.all, "insights-status"] as const,
   doctorReport: (workspaceId: string) => [...homeKeys.all, "doctor-report", workspaceId] as const,
   storageOverview: () => [...homeKeys.all, "storage-overview"] as const,
+  remoteStatus: () => [...homeKeys.all, "remote-status"] as const,
+  relayUsage: () => [...homeKeys.all, "relay-usage"] as const,
 };
+
+/** The remote settings' own status, read once per visit; the home does not poll it. */
+export function useHomeRemoteStatus() {
+  return useQuery({
+    ...queryDefaults,
+    queryKey: homeKeys.remoteStatus(),
+    queryFn: () => desktopApi().web.request({ operation: "status" }),
+  });
+}
+
+/** This month's relay allowance, only while the official relay carries remote access. */
+export function useHomeRelayUsage(enabled: boolean) {
+  const account = desktopApi().account;
+  return useQuery({
+    ...queryDefaults,
+    queryKey: homeKeys.relayUsage(),
+    queryFn: async () => (await account!.request({ operation: "status" })).relayUsage ?? null,
+    enabled: enabled && Boolean(account),
+    staleTime: 60_000,
+  });
+}
 
 /** 放在 homeKeys 下：存储扫描任务完成时 useHomeQueryEvents 会一并刷新它。 */
 export function useHomeStorageOverview() {
@@ -145,18 +167,6 @@ export function useHomeDiscovery() {
       ...queryDefaults,
       queryKey: homeKeys.discovery(),
       queryFn: () => api.discoveryReport(),
-    },
-    queryClient,
-  );
-}
-
-export function useHomeInsightsSummary() {
-  const queryClient = useOptionalQueryClient();
-  return useQuery(
-    {
-      ...queryDefaults,
-      queryKey: homeKeys.insightsSummary(),
-      queryFn: () => api.insightsSummary(),
     },
     queryClient,
   );

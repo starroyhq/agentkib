@@ -477,7 +477,7 @@ describe("AppSidebar v8 navigation", () => {
     );
 
     expect(container.querySelectorAll("kbd")).toHaveLength(0);
-    expect(screen.getByRole("button", { name: "Today" }).getAttribute("aria-keyshortcuts")).toBe(
+    expect(screen.getByRole("button", { name: "Home" }).getAttribute("aria-keyshortcuts")).toBe(
       "Control+1",
     );
   });

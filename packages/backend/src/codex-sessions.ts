@@ -265,6 +265,10 @@ export class CodexSessions {
       ).keys(),
     );
   }
+  /** Ids with a state row, verified or not. Codex writes a new thread's row with its first message. */
+  writtenThreadIds(nativeRefs: Iterable<string>): Set<string> {
+    return new Set(this.#verifyIndexed(nativeRefs, [], (_row, _transcript, id) => id).keys());
+  }
   /** Control uses the native creation directory even when an older resume changed SQLite cwd. */
   verifiedControlDirectories(
     nativeRefs: Iterable<string>,

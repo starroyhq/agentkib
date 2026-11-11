@@ -21,9 +21,12 @@ vi.mock("@/core/api", () => ({
   },
 }));
 vi.mock("./SessionHubContext", () => ({ useSessionHub: vi.fn() }));
+vi.mock("./new-session/NewSessionPane", () => ({
+  NewSessionPane: () => <div data-testid="new-session">New session composer</div>,
+}));
 vi.mock("./DesktopConversationPane", () => ({
-  DesktopConversationPane: ({ sessionId, create }: { sessionId?: string; create?: boolean }) => (
-    <div data-testid="conversation" data-session-id={sessionId} data-create={String(create)}>
+  DesktopConversationPane: ({ sessionId }: { sessionId?: string }) => (
+    <div data-testid="conversation" data-session-id={sessionId}>
       <input aria-label="Conversation draft" defaultValue="" />
     </div>
   ),
@@ -181,7 +184,7 @@ describe("SessionHubPage catalog notices", () => {
     render(<SessionHubPage />);
 
     expectCatalogNotices();
-    expect(screen.getByTestId("conversation")).toHaveAttribute("data-create", "true");
+    expect(screen.getByTestId("new-session")).toBeVisible();
     expect(screen.queryByText(tr("sessions.hiddenRecord"))).not.toBeInTheDocument();
     expect(api.sessionEvents).not.toHaveBeenCalled();
   });

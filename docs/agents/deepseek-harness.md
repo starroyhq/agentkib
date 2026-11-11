@@ -373,7 +373,7 @@ DSH 的审批和问答经 `approval/request`、`user-questions/request` waterfal
 - DSH Desktop 不把自带的 `dsh` 放进 PATH，安装检测因此加上 macOS 的 `DeepSeek Harness.app`；之前只装了 DSH Desktop 时，DSH 不出现在交接目标里。交接对话框的 `native-history-import-unsupported` 与 DSH 来源不可读的原因（`dsh-runtime-offline`、`dsh-document-unavailable`）有了四种语言的说明。
 - 修复：TypeScript 后端迁移后，规划交接时不再给续接请求带上能否启动目标的能力，“变更”页因此对任何目标都不显示“应用并在 … 中继续”。现在规划时重新判断（Codex、Claude 看 CLI，DSH 看是否恰好一个 DSH 在运行），各目标恢复这一步。
 - 正文搜索：开启全文搜索后，DSH 会话进入同一个索引，与其他 Agent 一样按消息命中、可按类型筛选。只读 Worker 连不到 DSH，所以由主进程经插件读取后交给 Worker；DSH 列表中的会话（更新时间、标题、归档）与上次收录时相同就不再读取，会话运行中也不读，本轮结束时再读一次。收录的是 DSH 记录的全部消息与工具，包括压缩替换掉的历史，不含压缩摘要；DSH 关闭后已收录的内容仍可搜索，没有收录过的显示为不可用。
-- Agent 预设：照 DSH 自己的新建页面，预设只在新建会话时选，会话开始后 DSH 不再允许切换（`agent-preset/locked`），所以不放进会话设置。桌面、Web 的新建任务和手机的新建会话在选择 DSH 时列出 DSH 的预设（`agentPresets.remoteExportList`），默认选中 DSH 的默认预设；DSH 自带的预设没有名字，各端按 DSH 的叫法显示（标准模式、PTC 模式、极简模式、创造模式），用户自己写的预设显示它自己的名字；加载失败的预设不能选。没选或选了默认预设时不传，由 DSH 用默认。DSH 关闭“开发者工具”时它的窗口会隐藏 PTC 与极简模式；这个偏好存于 DSH 另一个插件的配置，插件读不到，AgentKib 按 DSH 的默认（开启）列出全部。
+- Agent 预设：照 DSH 自己的新建页面，预设只在新建会话时选，会话开始后 DSH 不再允许切换（`agent-preset/locked`），所以不放进会话设置。桌面和手机的新建会话、Web 的新建任务在选择 DSH 时列出 DSH 的预设（`agentPresets.remoteExportList`），默认选中 DSH 的默认预设；DSH 自带的预设没有名字，各端按 DSH 的叫法显示（标准模式、PTC 模式、极简模式、创造模式），用户自己写的预设显示它自己的名字；加载失败的预设不能选。没选或选了默认预设时不传，由 DSH 用默认。DSH 关闭“开发者工具”时它的窗口会隐藏 PTC 与极简模式；这个偏好存于 DSH 另一个插件的配置，插件读不到，AgentKib 按 DSH 的默认（开启）列出全部。
 
 ### 三期：DSH 未运行时由 AgentKib 启动
 

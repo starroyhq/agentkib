@@ -29,6 +29,7 @@ const testDoubles = vi.hoisted(() => ({
   open: vi.fn(),
   agentTools: vi.fn(),
   requestRefresh: vi.fn(),
+  refreshCatalog: vi.fn(),
   workspaces: vi.fn(),
   location: { pathname: "/" },
   search: {} as Record<string, string>,
@@ -57,6 +58,11 @@ vi.mock("@/components/AppDialogProvider", () => ({
   }),
 }));
 
+vi.mock("@/features/sessions/conversation-catalog", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@/features/sessions/conversation-catalog")>()),
+  refreshConversationCatalog: testDoubles.refreshCatalog,
+}));
+
 describe("useAppNavigation guards", () => {
   beforeAll(async () => initializeI18n("en-US"));
 
@@ -80,6 +86,7 @@ describe("useAppNavigation guards", () => {
     testDoubles.open.mockReset();
     testDoubles.agentTools.mockReset();
     testDoubles.requestRefresh.mockReset().mockResolvedValue(undefined);
+    testDoubles.refreshCatalog.mockReset().mockResolvedValue([]);
     testDoubles.workspaces.mockReset().mockResolvedValue([]);
     testDoubles.location.pathname = "/";
     testDoubles.search = {};
@@ -1198,6 +1205,8 @@ describe("useAppNavigation guards", () => {
     await act(async () => result.current.refreshCurrentView());
 
     expect(testDoubles.requestRefresh).toHaveBeenCalledWith(true);
+    // The home lists sessions from the catalog, so its refresh reads the catalog again too.
+    expect(testDoubles.refreshCatalog).toHaveBeenCalledOnce();
     expect(useWorkspaceStore.getState().selectedWorkspace).toBe(workspace);
     expect(useWorkspaceStore.getState().manifest).toBe(manifest);
   });

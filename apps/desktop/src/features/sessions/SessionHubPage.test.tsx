@@ -39,13 +39,12 @@ vi.mock("./SessionHistoryContinuationDialog", () => ({
   ),
 }));
 vi.mock("./SessionHubContext", () => ({ useSessionHub: vi.fn() }));
+vi.mock("./new-session/NewSessionPane", () => ({
+  NewSessionPane: () => <div data-testid="new-session">New session composer</div>,
+}));
 vi.mock("./DesktopConversationPane", () => ({
-  DesktopConversationPane: ({ sessionId, create }: { sessionId?: string; create?: boolean }) => (
-    <div
-      data-testid="desktop-conversation"
-      data-session-id={sessionId}
-      data-create={String(create)}
-    >
+  DesktopConversationPane: ({ sessionId }: { sessionId?: string }) => (
+    <div data-testid="desktop-conversation" data-session-id={sessionId}>
       Interactive conversation
     </div>
   ),
@@ -191,11 +190,12 @@ describe("SessionHubPage", () => {
     });
   });
 
-  it("opens task creation from the existing desktop toolbar", () => {
+  it("opens the new-session composer from the existing desktop toolbar", () => {
     Object.defineProperty(window, "desktopConversation", { configurable: true, value: {} });
     render(sessionSurface());
     fireEvent.click(screen.getByRole("button", { name: "New session" }));
-    expect(screen.getByTestId("desktop-conversation")).toHaveAttribute("data-create", "true");
+    expect(screen.getByTestId("new-session")).toBeVisible();
+    expect(screen.queryByTestId("desktop-conversation")).not.toBeInTheDocument();
     expect(hub.select).toHaveBeenCalledWith();
   });
 

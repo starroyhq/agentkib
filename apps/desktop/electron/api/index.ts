@@ -83,7 +83,6 @@ import type {
   HandoffLaunchReceipt,
   PlannedSessionHandoff,
   RuntimeInfo,
-  InsightsSummary,
   InsightsView,
   ContextDoctorReport,
   WorkspaceOpener,
@@ -477,7 +476,6 @@ export interface DesktopApi {
     removeRemoteGateway(id: string): Promise<void>;
     insightsView(query: InsightsQuery): Promise<InsightsView>;
     refreshInsights(force?: boolean): Promise<RefreshReceipt>;
-    insightsSummary(query: InsightsQuery): Promise<InsightsSummary>;
     insightsStatus(): Promise<InsightsStatus>;
     quotaCollectorStatus(): Promise<QuotaCollectorStatus>;
     quotaSnapshot(): Promise<QuotaSnapshot | undefined>;

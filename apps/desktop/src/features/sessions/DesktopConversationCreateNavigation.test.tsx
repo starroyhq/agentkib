@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 import "@testing-library/jest-dom/vitest";
 import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState, type ReactNode } from "react";
 import {
   createMemoryHistory,
   createRootRoute,
@@ -33,7 +33,14 @@ vi.mock("@/features/home/home-query", () => ({
     data: [{ id: "workspace", name: "Project", path: "/project" }],
     isPending: false,
   }),
+  useHomeInstallations: () => ({ data: [] }),
 }));
+vi.mock("./new-session/NewSessionComposer", () => ({
+  NewSessionComposer: ({ onCreated }: { onCreated: (sessionId: string) => Promise<void> }) => (
+    <button onClick={() => void onCreated("created")}>Start session</button>
+  ),
+}));
+vi.mock("./new-session/use-add-workspace", () => ({ useAddWorkspace: () => vi.fn() }));
 vi.mock("@/core/conversation-bridge", () => ({
   hasDesktopConversation: () => true,
   createDesktopConversationClient: () => ({}),
@@ -138,12 +145,10 @@ afterEach(() => {
 });
 
 describe("desktop creation selection handoff", () => {
+  // A fork opens from its source session's conversation; a new session starts in the pane below.
   it.each([
-    { creating: true, recovery: "busy" },
     { creating: false, recovery: "busy" },
-    { creating: true, recovery: "missing" },
     { creating: false, recovery: "missing" },
-    { creating: true, recovery: "error" },
     { creating: false, recovery: "error" },
   ])(
     "finishes deferred catalog navigation without losing the draft or subscription (creating: $creating, recovery: $recovery)",
@@ -214,30 +219,11 @@ describe("desktop creation selection handoff", () => {
     },
   );
 
-  it("does not let a late creation catalog override a newer pending navigation", async () => {
-    mocks.controlled = [session("previous")];
-    let finishCatalog!: () => void;
-    mocks.refresh.mockReturnValue(
-      new Promise<ConversationSessionSummary[]>((resolve) => {
-        finishCatalog = () => {
-          mocks.controlled = [session("previous"), session("created")];
-          resolve(mocks.controlled);
-        };
-      }),
-    );
-    let finishNavigation!: () => void;
-    const navigation = new Promise<void>((resolve) => {
-      finishNavigation = resolve;
-    });
-    const navigating = vi.fn();
-    function ManualSelection() {
-      const hub = useSessionHub();
-      return <button onClick={() => hub.select("previous")}>Choose existing conversation</button>;
-    }
+  function renderHub(extra?: ReactNode) {
     const root = createRootRoute({
       component: () => (
         <SessionHubProvider>
-          <ManualSelection />
+          {extra}
           <Outlet />
         </SessionHubProvider>
       ),
@@ -248,95 +234,52 @@ describe("desktop creation selection handoff", () => {
       validateSearch: (search: Record<string, unknown>): { sessionId?: string } => ({
         sessionId: typeof search.sessionId === "string" ? search.sessionId : undefined,
       }),
-      loaderDeps: ({ search }) => ({ sessionId: search.sessionId }),
-      loader: async ({ deps }) => {
-        if (deps.sessionId) {
-          navigating(deps.sessionId);
-          await navigation;
-        }
-      },
       component: SessionHubPage,
     });
     const router = createRouter({
       routeTree: root.addChildren([route]),
       history: createMemoryHistory({ initialEntries: ["/sessions"] }),
-      defaultPendingMs: Infinity,
     });
     render(<RouterProvider router={router} />);
-    fireEvent.click(await screen.findByText("Complete native creation"));
-    await waitFor(() => expect(mocks.subscribed).toHaveBeenCalledExactlyOnceWith("created"));
-    fireEvent.click(screen.getByText("Choose existing conversation"));
-    await waitFor(() => expect(navigating).toHaveBeenCalledExactlyOnceWith("previous"));
-    await act(async () => finishCatalog());
-    expect(navigating).toHaveBeenCalledExactlyOnceWith("previous");
-    await act(async () => finishNavigation());
-    await waitFor(() => expect(router.state.location.search).toEqual({ sessionId: "previous" }));
-    expect(useSessionViewStore.getState().creatingConversation).toBe(false);
+    return router;
+  }
+  const listCreated = () =>
+    act(() => {
+      mocks.controlled = [session("previous"), session("created")];
+      for (const changed of mocks.catalogListeners) changed();
+    });
+
+  it("opens a new session only once the directory lists it, mounting its conversation once", async () => {
+    mocks.refresh.mockImplementation(async () => mocks.controlled);
+    const router = renderHub();
+    fireEvent.click(await screen.findByText("Start session"));
+    await waitFor(() => expect(mocks.refresh).toHaveBeenCalled());
+    // The sessions page drops a selection its directory cannot find, so nothing opens yet.
+    expect(useSessionViewStore.getState().creatingConversation).toBe(true);
+    expect(router.state.location.search).toEqual({});
+    expect(screen.getByText("Start session")).toBeVisible();
+    listCreated();
+    await waitFor(() => expect(router.state.location.search).toEqual({ sessionId: "created" }));
+    await waitFor(() => expect(useSessionViewStore.getState().creatingConversation).toBe(false));
+    expect(screen.queryByText("Start session")).not.toBeInTheDocument();
+    expect(mocks.subscribed).toHaveBeenCalledExactlyOnceWith("created");
+    expect(mocks.unsubscribed).not.toHaveBeenCalled();
   });
 
-  it.each([undefined, "previous"])(
-    "keeps the created conversation subscribed while outer navigation is pending (previous: %s)",
-    async (previous) => {
-      let finishCatalog!: () => void;
-      mocks.refresh.mockReturnValue(
-        new Promise<ConversationSessionSummary[]>((resolve) => {
-          finishCatalog = () => {
-            mocks.controlled = [session("previous"), session("created")];
-            resolve(mocks.controlled);
-          };
-        }),
-      );
-      let finishNavigation!: () => void;
-      const navigation = new Promise<void>((resolve) => {
-        finishNavigation = resolve;
-      });
-      const navigating = vi.fn();
-      const root = createRootRoute({
-        component: () => (
-          <SessionHubProvider>
-            <Outlet />
-          </SessionHubProvider>
-        ),
-      });
-      const route = createRoute({
-        getParentRoute: () => root,
-        path: "/sessions",
-        validateSearch: (search: Record<string, unknown>): { sessionId?: string } => ({
-          sessionId: typeof search.sessionId === "string" ? search.sessionId : undefined,
-        }),
-        loaderDeps: ({ search }) => ({ sessionId: search.sessionId }),
-        loader: async ({ deps }) => {
-          if (deps.sessionId === "created") {
-            navigating();
-            await navigation;
-          }
-        },
-        component: SessionHubPage,
-      });
-      const router = createRouter({
-        routeTree: root.addChildren([route]),
-        history: createMemoryHistory({
-          initialEntries: [previous ? `/sessions?sessionId=${previous}` : "/sessions"],
-        }),
-        defaultPendingMs: Infinity,
-      });
-      render(<RouterProvider router={router} />);
-      fireEvent.click(await screen.findByText("Complete native creation"));
-      await waitFor(() => expect(mocks.subscribed).toHaveBeenCalledExactlyOnceWith("created"));
-      const draft = screen.getByRole("textbox", { name: "Draft" });
-      fireEvent.change(draft, { target: { value: "Keep the first message" } });
-      await act(async () => finishCatalog());
-      await waitFor(() => expect(navigating).toHaveBeenCalledOnce());
-      expect(mocks.unsubscribed).not.toHaveBeenCalled();
-      expect(useSessionViewStore.getState().creatingConversation).toBe(true);
-      expect(draft).toBeVisible();
-      expect(draft).toHaveValue("Keep the first message");
-      await act(async () => finishNavigation());
-      await waitFor(() => expect(useSessionViewStore.getState().creatingConversation).toBe(false));
-      expect(router.state.location.search).toEqual({ sessionId: "created" });
-      expect(screen.getByRole("textbox", { name: "Draft" })).toBe(draft);
-      expect(mocks.unsubscribed).not.toHaveBeenCalled();
-      expect(mocks.subscribed).toHaveBeenCalledExactlyOnceWith("created");
-    },
-  );
+  it("does not open a new session over a conversation chosen meanwhile", async () => {
+    mocks.refresh.mockImplementation(async () => mocks.controlled);
+    function ManualSelection() {
+      const hub = useSessionHub();
+      return <button onClick={() => hub.select("previous")}>Choose existing conversation</button>;
+    }
+    const router = renderHub(<ManualSelection />);
+    fireEvent.click(await screen.findByText("Start session"));
+    fireEvent.click(screen.getByText("Choose existing conversation"));
+    await waitFor(() => expect(router.state.location.search).toEqual({ sessionId: "previous" }));
+    await waitFor(() => expect(useSessionViewStore.getState().creatingConversation).toBe(false));
+    listCreated();
+    await act(async () => {});
+    expect(router.state.location.search).toEqual({ sessionId: "previous" });
+    expect(mocks.subscribed).not.toHaveBeenCalledWith("created");
+  });
 });

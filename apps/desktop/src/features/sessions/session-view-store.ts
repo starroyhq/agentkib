@@ -94,6 +94,8 @@ export const useSessionViewStore = create<{
   sessionOrder: Record<string, string[]>;
   scrollTop: number;
   creatingConversation: boolean;
+  /** The session a new one was started from; the new one defaults to its workspace and Agent. */
+  creatingFrom?: { workspaceId: string; agent: string };
   requestedPanel?: RequestedConversationPanel;
   historyContinuation?: HistoryContinuationRequest;
   requestHistoryContinuation: (request: HistoryContinuationRequest) => void;
@@ -103,7 +105,10 @@ export const useSessionViewStore = create<{
   consumePanel: (request: RequestedConversationPanel) => void;
   registerTerminalEntry: (entry: TerminalEntryRegistration) => void;
   unregisterTerminalEntry: (entry: TerminalEntryRegistration) => void;
-  setCreatingConversation: (creating: boolean) => void;
+  setCreatingConversation: (
+    creating: boolean,
+    from?: { workspaceId: string; agent: string },
+  ) => void;
   revealSession: (session: ConversationSessionSummary) => void;
   setAgent: (agent: AgentKind | "all") => void;
   setHost: (host: string) => void;
@@ -141,7 +146,8 @@ export const useSessionViewStore = create<{
   registerTerminalEntry: (terminalEntry) => set({ terminalEntry }),
   unregisterTerminalEntry: (entry) =>
     set((state) => (state.terminalEntry === entry ? { terminalEntry: undefined } : {})),
-  setCreatingConversation: (creatingConversation) => set({ creatingConversation }),
+  setCreatingConversation: (creatingConversation, creatingFrom) =>
+    set({ creatingConversation, creatingFrom }),
   revealSession: (session) => {
     if (!isSessionListed(session, { execution: get().execution })) return;
     if (!get().collections && sessionCollection(session.workspace_id)) return;

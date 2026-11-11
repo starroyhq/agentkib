@@ -94,8 +94,6 @@ export function SessionOperations({
   return (
     <>
       <ManagedTasks
-        active={open}
-        onClose={() => onOpenChange(false)}
         renderContent={(pendingOutcome) => (
           <CodexTools
             open={open}

@@ -19,6 +19,8 @@ async function fixture(
     autoReplies?: Array<{ status: number; body: Value }>;
     packageVersion?: string;
     credentialPluginVersion?: string;
+    /** The discovery file names a socket nothing answers on. */
+    unreachable?: boolean;
   } = {},
 ) {
   const hooks = new Map<string, Array<{ match: Value; hook: Hook }>>();
@@ -89,6 +91,15 @@ async function fixture(
     clock: { every: () => undefined },
     http: {
       fetch: async (url: string, init: Value) => {
+        if (init.method === "GET") {
+          // A liveness check: a stale discovery file names a socket nothing answers on.
+          if (options.unreachable) throw new Error("connect ECONNREFUSED");
+          return {
+            ok: false,
+            status: 403,
+            text: JSON.stringify({ error: "bridge-request-rejected" }),
+          };
+        }
         const body = JSON.parse(init.body);
         calls.push({ url, init, body });
         if (url.endsWith("/auto-pair") && replies.length) {
@@ -148,6 +159,15 @@ describe("Claude bridge plugin automatic pairing", () => {
     const f = await fixture({ discovery: false });
     await f.completeTurn();
     expect(f.calls).toHaveLength(0);
+    expect(await f.status()).toBe("AgentKib bridge is not connected.");
+  });
+
+  it("neither probes nor pairs through a discovery file a closed AgentKib left behind", async () => {
+    const f = await fixture({ unreachable: true });
+    await f.completeTurn();
+    await f.completeTurn();
+    expect(f.autoPairs()).toHaveLength(0);
+    expect(f.stored.has("compatibility:credential-store:1")).toBe(false);
     expect(await f.status()).toBe("AgentKib bridge is not connected.");
   });
 

@@ -68,6 +68,8 @@ export interface ArtifactOptions {
   maxBundleFiles?: number;
   maxTextBytes?: number;
   maxTickets?: number;
+  /** Listed entries that keep an ID; see ARTIFACT_RECORD_LIMIT. */
+  maxRecords?: number;
   maxSnapshotBytes?: number;
   bytesPerSecond?: number;
   maxTransfers?: number;
@@ -296,8 +298,15 @@ function validOrigin(value: string, allowHttp: boolean) {
     throw new Error("invalid_artifact_origin");
   return value;
 }
+/**
+ * How many listed entries keep an ID. A host browsed for days used to stop listing anything
+ * once it had handed out this many; now the least recently used ones go, and a browser that
+ * still holds one gets `artifact_not_found` and lists the directory again.
+ */
+const ARTIFACT_RECORD_LIMIT = 20_000;
 /** File metadata and content are scoped by a fresh host-side grant, never a browser path. */
 export class ArtifactService {
+  /** Kept in order of use, least recent first. */
   private records = new Map<string, RecordEntry>();
   private recordIds = new Map<string, string>();
   private tickets = new Map<string, Ticket>();
@@ -461,25 +470,41 @@ export class ArtifactService {
     if (!this.sameBinding(binding, await this.binding(binding.scope)))
       reject(403, "artifact_access_changed");
   }
-  private remember(binding: Binding, path: string) {
-    const key = JSON.stringify([
+  private recordKey(binding: Binding, path: string) {
+    return JSON.stringify([
       scopeKey(binding.scope),
       binding.root,
       binding.rootIdentity,
       binding.epoch,
       path,
     ]);
+  }
+  private touch(id: string, record: RecordEntry) {
+    this.records.delete(id);
+    this.records.set(id, record);
+  }
+  private remember(binding: Binding, path: string) {
+    const key = this.recordKey(binding, path);
     const existing = this.recordIds.get(key);
-    if (existing) return existing;
-    if (this.records.size >= 20_000) reject(429, "artifact_catalog_limit");
+    const known = existing ? this.records.get(existing) : undefined;
+    if (existing && known) {
+      this.touch(existing, known);
+      return existing;
+    }
     const id = opaqueId();
     this.records.set(id, { ...binding, path });
     this.recordIds.set(key, id);
+    for (const [oldest, record] of this.records) {
+      if (this.records.size <= (this.options.maxRecords ?? ARTIFACT_RECORD_LIMIT)) break;
+      this.records.delete(oldest);
+      this.recordIds.delete(this.recordKey(record, record.path));
+    }
     return id;
   }
   private async record(scope: ArtifactScope, id: string) {
     const record = this.records.get(id);
     if (!record || scopeKey(record.scope) !== scopeKey(scope)) reject(404, "artifact_not_found");
+    this.touch(id, record);
     await this.check(record);
     return record;
   }

@@ -135,6 +135,38 @@ describe("authorized project artifacts", () => {
     const child = await service.list(scope, listing.entries[0].id);
     expect(child.parentId).toBe(listing.directoryId);
   });
+  it("keeps listing after handing out its limit of ids and forgets the least recently used", async () => {
+    service = new ArtifactService({
+      previewOrigin: origin,
+      appOrigin: "http://localhost:1422",
+      allowHttpLoopback: true,
+      now: () => now,
+      maxRecords: 6,
+      authorize: async () => ({ root, epoch }),
+    });
+    for (const name of ["a.txt", "b.txt", "c.txt", "d.txt"])
+      await writeFile(join(root, name), name);
+    await mkdir(join(root, "sub"));
+    for (const name of ["x.txt", "y.txt"]) await writeFile(join(root, "sub", name), name);
+    // Four files, the subdirectory and the directory itself fill the limit.
+    const top = await service.list(scope);
+    const id = (name: string) => top.entries.find((item) => item.name === name)!.id;
+    expect((await service.readText(scope, id("a.txt"))).text).toBe("a.txt");
+    // Two new ids make the least recently used ones go: b.txt and c.txt, not a.txt just read.
+    const sub = await service.list(scope, id("sub"));
+    expect(sub.parentId).toBe(top.directoryId);
+    for (const name of ["b.txt", "c.txt"])
+      await expect(service.readText(scope, id(name))).rejects.toMatchObject({
+        code: "artifact_not_found",
+      });
+    expect((await service.readText(scope, id("a.txt"))).text).toBe("a.txt");
+    const x = sub.entries.find((item) => item.name === "x.txt")!;
+    expect((await service.readText(scope, x.id)).text).toBe("x.txt");
+    // Listing again hands out a working id instead of refusing.
+    const again = await service.list(scope);
+    const b = again.entries.find((item) => item.name === "b.txt")!;
+    expect((await service.readText(scope, b.id)).text).toBe("b.txt");
+  });
   it("bounds queued small responses and releases their slots on disconnect", async () => {
     service.clear();
     service = new ArtifactService({

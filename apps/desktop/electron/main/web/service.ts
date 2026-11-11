@@ -138,6 +138,8 @@ export function lanAddresses(): Array<{ name: string; address: string }> {
  * which used to stop all sending and approvals after the ten-thousandth control.
  */
 const REMEMBERED_REQUESTS = 10_000;
+/** Context picker entries that keep an ID; the least recently listed ones go first. */
+const CONTEXT_ARTIFACT_LIMIT = 20_000;
 export function rememberRequest(requests: Set<string>, requestId: string): void {
   requests.delete(requestId);
   requests.add(requestId);
@@ -2876,8 +2878,8 @@ export class WebAccessService {
         const id = digest(
           `${this.bootId}|${device.id}|${sessionId}|${workspaceId}|${entry.id}|${entry.revision}`,
         );
-        if (this.contextArtifactRefs.size >= 20_000 && !this.contextArtifactRefs.has(id))
-          throw new HttpError(429, "resource_capacity");
+        // Kept in order of listing; the oldest make way instead of refusing new listings.
+        this.contextArtifactRefs.delete(id);
         this.contextArtifactRefs.set(id, {
           deviceId: device.id,
           sessionId,
@@ -2885,6 +2887,10 @@ export class WebAccessService {
           artifactId: entry.id,
           revision: entry.revision,
         });
+        for (const oldest of this.contextArtifactRefs.keys()) {
+          if (this.contextArtifactRefs.size <= CONTEXT_ARTIFACT_LIMIT) break;
+          this.contextArtifactRefs.delete(oldest);
+        }
         resources.push({
           id,
           kind: entry.kind,

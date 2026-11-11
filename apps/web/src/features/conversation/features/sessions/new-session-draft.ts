@@ -1,4 +1,4 @@
-import type { ManagedAgent } from "@agentkib/web-client";
+import { managedAgentOf, type ManagedAgent } from "@agentkib/web-client";
 
 /**
  * The first message of a session started from the new-session composer. The composer creates the
@@ -41,11 +41,10 @@ export function readNewSessionTarget(): Partial<NewSessionTarget> {
     const value: unknown = JSON.parse(localStorage.getItem(TARGET_KEY) ?? "null");
     if (!value || typeof value !== "object") return {};
     const { workspaceId, agent } = value as Record<string, unknown>;
+    const managed = managedAgentOf(agent);
     return {
       ...(typeof workspaceId === "string" ? { workspaceId } : {}),
-      ...(agent === "codex" || agent === "claude-code" || agent === "deepseek-harness"
-        ? { agent }
-        : {}),
+      ...(managed ? { agent: managed } : {}),
     };
   } catch {
     return {};

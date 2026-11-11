@@ -1,4 +1,5 @@
 import { catalogCopy } from "../catalog/catalog-copy";
+import { isLiveSessionAgent, managedAgentOf } from "@agentkib/web-client";
 import { WorktreeNote } from "../catalog/worktree-note";
 import { codexReason } from "./codex-copy";
 import { isSendEnter, useEnterSends } from "./composer-shortcuts";
@@ -340,16 +341,11 @@ export function SessionReader() {
                       : t[notice]}
                 </p>
               )}
-            {(current?.agent === "codex" ||
-              current?.agent === "claude-code" ||
-              current?.agent === "deepseek-harness" ||
-              current?.agent === "antigravity") &&
+            {isLiveSessionAgent(current?.agent) &&
             access.experimentalEnabled &&
             access.protocolVersion === 2 &&
             access.device?.send ? (
-              current?.agent === "codex" ||
-              current?.agent === "claude-code" ||
-              current?.agent === "deepseek-harness" ? (
+              managedAgentOf(current?.agent) ? (
                 <SessionComposer
                   connectionStatusInBanner={!!banner && banner.notice !== "background-ended"}
                   key={`composer-${selected}`}
@@ -455,10 +451,7 @@ export function SessionReader() {
                       <ContextUsageGauge />
                     </div>
                   )}
-                {(current?.agent === "codex" ||
-                  current?.agent === "claude-code" ||
-                  current?.agent === "deepseek-harness" ||
-                  current?.agent === "antigravity") &&
+                {isLiveSessionAgent(current?.agent) &&
                 access.experimentalEnabled &&
                 access.device?.approve
                   ? t.noSendPermission

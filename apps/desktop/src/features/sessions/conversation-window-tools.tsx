@@ -1,4 +1,5 @@
 import { useLayoutEffect, useState } from "react";
+import { managedAgentOf } from "@agentkib/web-client";
 import { createPortal } from "react-dom";
 import { FolderOpen } from "lucide-react";
 import { SessionContinuationStatus } from "@agentkib/session-ui";
@@ -82,7 +83,7 @@ export function ConversationWindowTools({
             slots.files,
           )
         : null}
-      {slots.status && ["codex", "claude-code", "deepseek-harness"].includes(current.agent)
+      {slots.status && managedAgentOf(current.agent)
         ? createPortal(
             <SessionContinuationStatus
               label={status.label}

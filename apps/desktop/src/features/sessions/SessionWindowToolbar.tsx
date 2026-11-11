@@ -1,4 +1,5 @@
 import { cn } from "cn";
+import { isLiveSessionAgent } from "@agentkib/web-client";
 import { navigationStyles } from "@/components/navigationStyles";
 import {
   ArrowUpRight,
@@ -75,7 +76,7 @@ export function SessionWindowToolbar() {
     hasDesktopConversation() &&
     !selected.remote &&
     selected.availability === "readable" &&
-    ["codex", "claude-code", "deepseek-harness", "antigravity"].includes(selected.agent);
+    isLiveSessionAgent(selected.agent);
   const canConnectTerminal =
     interactive &&
     hub.ready &&

@@ -48,6 +48,7 @@ Start with the repository [README](../README.md) for the overview and downloads.
 - [Windows 构建](development/windows.md)：在 Windows 11 x64 上从源码构建和打包。
 - [额度采集器](development/quota-collector.md)：随应用打包的额度采集器的源码、补丁与构建校验。
 - [界面术语](development/ui-terminology.md)：桌面和 Web 界面的用词约定。
+- [新增一个 Agent](development/adding-an-agent.md)：接入新 Agent 要改的地方，分只读和受控两档。
 
 ## 历史归档
 

@@ -1,6 +1,7 @@
 export { mergeCatalogSessions, isStaleCatalogRead, retryStaleCatalogRead } from "./catalog";
 export type { IncompleteSessionSource } from "./catalog";
 
+import { managedAgentOf, type ManagedAgent } from "@agentkib/runtime-protocol";
 import type {
   ConversationReadState,
   ConversationReadResult,
@@ -48,6 +49,11 @@ export type {
   HistoryRecordKind,
 } from "@agentkib/runtime-protocol";
 export {
+  isLiveSessionAgent,
+  LIVE_SESSION_AGENTS,
+  MANAGED_AGENTS,
+  managedAgentOf,
+  type ManagedAgent,
   CLAUDE_BRIDGE_CLI_VERSION,
   CLAUDE_COMMAND_REFUSALS,
   claudeCommandDecision,
@@ -509,7 +515,6 @@ export interface CodexCapabilities {
    */
   commands?: ClaudeCommandEntry[];
 }
-export type ManagedAgent = "codex" | "claude-code" | "deepseek-harness";
 export type SessionCapabilities = CodexCapabilities;
 export interface ManagedOptions {
   available: boolean;
@@ -1447,12 +1452,6 @@ const SESSION_MANAGEMENT_ACTIONS: readonly SessionManagementAction[] = [
   "unarchive",
   "delete",
 ];
-
-export function managedAgentOf(agent: string): ManagedAgent | null {
-  return agent === "codex" || agent === "claude-code" || agent === "deepseek-harness"
-    ? agent
-    : null;
-}
 
 /**
  * The management actions the host reports for a session, read as its own view would. Only the

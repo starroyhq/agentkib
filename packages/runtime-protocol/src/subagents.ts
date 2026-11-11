@@ -1,3 +1,5 @@
+import type { ManagedAgent } from "./agents";
+
 /** Additive, read-only child projection. Child IDs have meaning only inside their parent. */
 export type SubagentStatus =
   | "starting"
@@ -13,7 +15,7 @@ export interface SubagentSummary {
   id: string;
   parentId?: string;
   name: string;
-  agent: "codex" | "claude-code" | "deepseek-harness";
+  agent: ManagedAgent;
   status: SubagentStatus;
   updatedAt?: string;
   readable: boolean;

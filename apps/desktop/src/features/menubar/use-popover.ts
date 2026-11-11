@@ -9,13 +9,22 @@ import { useAppStore } from "@/stores/app-store";
 const isOpen = () => document.visibilityState === "visible" && document.hasFocus();
 
 /**
- * Whether the popover is open. It hides as soon as it loses focus, so focus says it: the catalog
- * is followed only while the popover shows, and nothing runs for it once it is closed.
+ * Whether the popover is open, and how many times it has opened. It hides as soon as it loses
+ * focus, so focus says it: the catalog is followed only while the popover shows, and nothing runs
+ * for it once it is closed.
  */
 export function usePopoverOpen() {
-  const [open, setOpen] = useState(isOpen);
+  const [state, setState] = useState(() => ({ open: isOpen(), opened: isOpen() ? 1 : 0 }));
   useEffect(() => {
-    const update = () => setOpen(isOpen());
+    let last = isOpen();
+    const update = () => {
+      const open = isOpen();
+      if (open === last) return;
+      last = open;
+      // Each opening starts fresh: no focus ring left on the button that closed it last time.
+      if (open && document.activeElement instanceof HTMLElement) document.activeElement.blur();
+      setState((current) => ({ open, opened: open ? current.opened + 1 : current.opened }));
+    };
     window.addEventListener("focus", update);
     window.addEventListener("blur", update);
     document.addEventListener("visibilitychange", update);
@@ -25,7 +34,7 @@ export function usePopoverOpen() {
       document.removeEventListener("visibilitychange", update);
     };
   }, []);
-  return open;
+  return state;
 }
 
 /**
@@ -101,9 +110,14 @@ export function useNow(running: boolean, interval = 1000) {
   const [now, setNow] = useState(Date.now);
   useEffect(() => {
     if (!running) return;
-    setNow(Date.now());
-    const timer = setInterval(() => setNow(Date.now()), interval);
-    return () => clearInterval(timer);
+    const tick = () => setNow(Date.now());
+    // The first tick comes at once, so a popover opened again does not show an old time.
+    const first = setTimeout(tick, 0);
+    const timer = setInterval(tick, interval);
+    return () => {
+      clearTimeout(first);
+      clearInterval(timer);
+    };
   }, [running, interval]);
   return now;
 }

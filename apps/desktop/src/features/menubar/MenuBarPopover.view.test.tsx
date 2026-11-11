@@ -6,7 +6,7 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { homeSessionCopy } from "@agentkib/session-ui";
 import { initializeI18n, tr } from "@/core/i18n";
-import type { ConversationSessionSummary, QuotaSnapshot, WorkspaceSummary } from "@/core/types";
+import type { ConversationSessionSummary, QuotaSnapshot } from "@/core/types";
 import { MenuBarPopover } from "./MenuBarPopover";
 
 const state = vi.hoisted(() => ({
@@ -17,7 +17,7 @@ const state = vi.hoisted(() => ({
 }));
 
 vi.mock("./use-popover", () => ({
-  usePopoverOpen: () => true,
+  usePopoverOpen: () => ({ open: true, opened: 1 }),
   usePopoverRuntime: () => ({ session_index_enabled: state.indexEnabled }),
   usePopoverHeight: () => undefined,
   useNow: () => Date.parse("2026-11-11T10:00:00.000Z"),

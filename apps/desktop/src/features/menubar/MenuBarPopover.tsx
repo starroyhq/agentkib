@@ -50,7 +50,7 @@ const openMain = (request?: AppNavigationRequest) =>
 export function MenuBarPopover() {
   const { locale, tr, formatRelativeTime, localizeMessage } = useI18n();
   const t = homeSessionCopy(locale);
-  const open = usePopoverOpen();
+  const { open, opened } = usePopoverOpen();
   const runtime = usePopoverRuntime(open);
   const indexEnabled = continuationIndexingEnabled(runtime);
   const controlled = hasDesktopConversation();
@@ -123,16 +123,11 @@ export function MenuBarPopover() {
     time: session.updated_at ? formatRelativeTime(session.updated_at) : undefined,
   });
 
-  // The first approval opens as a card each time the popover opens, until the person folds it.
-  const [expanded, setExpanded] = useState<string | null>();
-  useEffect(() => {
-    if (!open) return;
-    setExpanded(undefined);
-    // Each opening starts fresh: no focus ring left on the button that closed it last time.
-    if (document.activeElement instanceof HTMLElement) document.activeElement.blur();
-  }, [open]);
+  // The first approval opens as a card each time the popover opens, until the person folds it or
+  // opens another; a choice holds for the opening it was made in.
+  const [expanded, setExpanded] = useState<{ opened: number; id: string | undefined }>();
   const firstApproval = groups.needsYou.find(({ need }) => need === "approval")?.session.id;
-  const shownExpanded = expanded === undefined ? firstApproval : (expanded ?? undefined);
+  const shownExpanded = expanded?.opened === opened ? expanded.id : firstApproval;
   const now = useNow(open && groups.running.some(({ startedAt }) => !!startedAt));
 
   const providers = quotaRingProviders(snapshot, preferences);
@@ -184,7 +179,7 @@ export function MenuBarPopover() {
         workspacePath={(session) => workspaces.find(({ id }) => id === session.workspace_id)?.path}
         now={now}
         expanded={shownExpanded}
-        onExpand={(id) => setExpanded(id ?? null)}
+        onExpand={(id) => setExpanded({ opened, id })}
         onOpen={openSession}
       />
     );

@@ -53,18 +53,20 @@ export function HomeSessions({
 }) {
   const { locale, tr, formatRelativeTime } = useI18n();
   const [expanded, setExpanded] = useState<string>();
+  const unconfirmed = replies?.unconfirmed;
+  const answered = replies?.answered;
   const groups = useMemo(() => {
-    const value = homeSessionGroups(sessions, { unconfirmed: replies?.unconfirmed });
+    const value = homeSessionGroups(sessions, { unconfirmed });
     // An answered request stays off the list until the catalog reports the session again.
-    return replies?.answered.size
+    return answered?.size
       ? {
           ...value,
           needsYou: value.needsYou.filter(
-            ({ session, need }) => need === "verify" || !replies.answered.has(session.id),
+            ({ session, need }) => need === "verify" || !answered.has(session.id),
           ),
         }
       : value;
-  }, [sessions, replies?.unconfirmed, replies?.answered]);
+  }, [sessions, unconfirmed, answered]);
   const labels = useMemo(
     () =>
       sessionGroupLabels(sessions, [

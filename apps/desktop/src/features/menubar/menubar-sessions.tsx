@@ -384,26 +384,32 @@ function MenuBarApproval({
   const [busy, setBusy] = useState(false);
   const [failure, setFailure] = useState<string>();
   const { client, access } = replies;
-  const load = useCallback(
-    async (signal?: AbortSignal) => {
-      try {
-        const value = await client.live(session.id, signal);
-        if (signal?.aborted) return undefined;
-        setLive(value);
-        setState(value.approvals.length ? "ready" : "gone");
-        return value;
-      } catch {
-        if (!signal?.aborted) setState("failed");
-        return undefined;
-      }
-    },
-    [client, session.id],
-  );
   useEffect(() => {
     const controller = new AbortController();
-    void load(controller.signal);
+    client.live(session.id, controller.signal).then(
+      (value) => {
+        if (controller.signal.aborted) return;
+        setLive(value);
+        setState(value.approvals.length ? "ready" : "gone");
+      },
+      () => {
+        if (!controller.signal.aborted) setState("failed");
+      },
+    );
     return () => controller.abort();
-  }, [load]);
+  }, [client, session.id]);
+  // Read again after a decision, to see whether anything else waits.
+  const load = useCallback(async () => {
+    try {
+      const value = await client.live(session.id);
+      setLive(value);
+      setState(value.approvals.length ? "ready" : "gone");
+      return value;
+    } catch {
+      setState("failed");
+      return undefined;
+    }
+  }, [client, session.id]);
 
   if (state === "loading" || (state === "ready" && !access))
     return (

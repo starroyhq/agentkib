@@ -125,19 +125,18 @@ export function useHomeReplies(
     };
   }, [scope, client]);
 
+  // An answered session leaves this set once the catalog no longer reports it waiting, or when
+  // the grace period ends. The pruning runs from a timer: at once when something is already over.
   useEffect(() => {
     if (!answeredAt.size) return;
     const still = (id: string, at: number) =>
       Date.now() - at < ANSWERED_GRACE &&
       WAITING.has(sessions.find((session) => session.id === id)?.continuation?.status ?? "");
-    const next = new Map([...answeredAt].filter(([id, at]) => still(id, at)));
-    if (next.size !== answeredAt.size) {
-      setAnsweredAt(next);
-      return;
-    }
+    const over = [...answeredAt].some(([id, at]) => !still(id, at));
+    const ends = Math.min(...answeredAt.values()) + ANSWERED_GRACE;
     const timer = setTimeout(
       () => setAnsweredAt((current) => new Map([...current].filter(([id, at]) => still(id, at)))),
-      ANSWERED_GRACE,
+      over ? 0 : Math.max(0, ends - Date.now()),
     );
     return () => clearTimeout(timer);
   }, [answeredAt, sessions]);

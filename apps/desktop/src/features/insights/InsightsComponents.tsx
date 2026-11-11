@@ -1,7 +1,6 @@
 import { useRef, useState, type ComponentType, type KeyboardEvent } from "react";
 import { useI18n } from "@/core/useI18n";
 import { Card, CardContent, CardHeader } from "@/components/ui/card";
-import { Badge } from "@/components/ui/badge";
 import { AgentIcon } from "@/features/agents/AgentIcon";
 import {
   insightsMetadataLabel,
@@ -11,7 +10,15 @@ import {
 import type { AgentUsageBreakdown, HeatmapPoint } from "@/core/types";
 import { AGENT_LABELS as agentLabels } from "@/core/agents";
 import { cn } from "cn";
-import type { HeatmapMetric } from "./InsightsTypes";
+import type { HeatmapMetric, InsightsRange } from "./InsightsTypes";
+import { buildTrendSeries, smoothTrendPath, type TrendGranularity } from "./insights-trend";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
 
 export function RankingLimit({ shown, total }: { shown: number; total: number }) {
   const { formatNumber, tr } = useI18n();
@@ -31,7 +38,7 @@ function HeatmapWeekdays() {
     ),
   );
   return (
-    <div className="grid w-7 shrink-0 grid-rows-[repeat(7,11px)] gap-1 pt-[18px] text-[10px] leading-[11px] text-muted-foreground max-[1200px]:grid-rows-[repeat(7,8px)] max-[1200px]:gap-[2px] max-[1200px]:leading-[8px]">
+    <div className="grid w-7 shrink-0 grid-rows-[repeat(7,var(--heatmap-cell-size))] items-center gap-1 pt-[22px] text-[10px] text-muted-foreground max-[1200px]:gap-[2px]">
       {labels.map((label) => (
         <span key={label}>{label}</span>
       ))}
@@ -44,11 +51,13 @@ function HeatmapMonths({
   padding,
   columns,
   year,
+  compact,
 }: {
   points: HeatmapPoint[];
   padding: number;
   columns: number;
   year?: number;
+  compact: boolean;
 }) {
   const { locale } = useI18n();
   const markers = year
@@ -65,17 +74,17 @@ function HeatmapMonths({
   return (
     <div
       className={cn(
-        "[--heatmap-cell-size:11px] mb-2 min-h-3.5 w-full text-[10px] text-muted-foreground max-[1200px]:[--heatmap-cell-size:8px]",
+        "mb-2 min-h-3.5 w-full text-[10px] text-muted-foreground",
         year
           ? "grid grid-cols-12"
-          : "grid grid-flow-col auto-cols-[11px] gap-1 max-[1200px]:auto-cols-[8px] max-[1200px]:gap-[2px]",
+          : "grid grid-flow-col auto-cols-[var(--heatmap-cell-size)] gap-1 max-[1200px]:gap-[2px]",
       )}
       style={
         year
           ? undefined
           : {
               gridTemplateColumns: `repeat(${columns}, var(--heatmap-cell-size))`,
-              justifyContent: "space-between",
+              justifyContent: compact ? "start" : "space-between",
             }
       }
     >
@@ -125,7 +134,7 @@ export function ActivityHeatmap({
 }: {
   points: HeatmapPoint[];
   metric: HeatmapMetric;
-  range: "52w" | "year";
+  range: InsightsRange;
   year: number;
   from: string;
   to: string;
@@ -135,6 +144,8 @@ export function ActivityHeatmap({
   max: number;
 }) {
   const { formatCompactNumber, formatNumber, locale, tr } = useI18n();
+  const compact =
+    range === "7d" || range === "30d" || range === "90d" || (range === "custom" && days <= 100);
   const [focusedIndex, setFocusedIndex] = useState(0);
   const tabStopIndex = Math.min(focusedIndex, Math.max(0, points.length - 1));
   const cellRefs = useRef<Array<HTMLSpanElement | null>>([]);
@@ -168,7 +179,14 @@ export function ActivityHeatmap({
   };
 
   return (
-    <div className="px-5 pb-4 pt-4">
+    <div
+      className={cn(
+        "px-5 pb-4 pt-4",
+        compact
+          ? "[--heatmap-cell-size:16px]"
+          : "[--heatmap-cell-size:11px] max-[1200px]:[--heatmap-cell-size:8px]",
+      )}
+    >
       <div className="flex items-start gap-2">
         <HeatmapWeekdays />
         <div className="min-w-0 flex-1 overflow-x-auto">
@@ -177,16 +195,17 @@ export function ActivityHeatmap({
             padding={padding}
             columns={columns}
             year={range === "year" ? year : undefined}
+            compact={compact}
           />
           <span role="img" aria-label={summary} className="sr-only" />
           <div
             role="group"
             aria-label={summary}
             aria-description={tr("insights.heatmapKeyboardHelp")}
-            className="[--heatmap-cell-size:11px] grid w-full grid-flow-col grid-rows-[repeat(7,11px)] auto-cols-[11px] gap-1 max-[1200px]:[--heatmap-cell-size:8px] max-[1200px]:grid-rows-[repeat(7,8px)] max-[1200px]:auto-cols-[8px] max-[1200px]:gap-[2px]"
+            className="grid w-full grid-flow-col grid-rows-[repeat(7,var(--heatmap-cell-size))] auto-cols-[var(--heatmap-cell-size)] gap-1 max-[1200px]:gap-[2px]"
             style={{
               gridTemplateColumns: `repeat(${columns}, var(--heatmap-cell-size))`,
-              justifyContent: "space-between",
+              justifyContent: compact ? "start" : "space-between",
             }}
           >
             {Array.from({ length: padding }, (_, index) => (
@@ -209,6 +228,7 @@ export function ActivityHeatmap({
                   role="img"
                   className={cn(
                     heatmapCellClass(level),
+                    compact && "!size-4",
                     "cursor-default focus-visible:z-10 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-1",
                   )}
                   title={accessibleValue}
@@ -244,29 +264,74 @@ export function TokenTrendCard({
   points,
   metric,
   metricLabel,
+  granularity: initialGranularity,
 }: {
   points: HeatmapPoint[];
   metric: HeatmapMetric;
   metricLabel: string;
+  granularity: TrendGranularity;
 }) {
-  const { formatCompactNumber, formatNumber, locale, tr } = useI18n();
-  const monthly = new Map<string, number>();
-  for (const point of points) {
-    const key = point.date.slice(0, 7);
-    monthly.set(key, (monthly.get(key) ?? 0) + point[metric]);
-  }
-  const series = [...monthly.entries()].slice(-9);
-  const values = series.map(([, value]) => value);
-  const max = Math.max(1, ...values);
-  const chartPoints = values
-    .map((value, index) => {
-      const x = series.length === 1 ? 260 : (index / (series.length - 1)) * 520;
-      const y = 150 - (value / max) * 124;
-      return `${x},${y}`;
-    })
-    .join(" ");
+  const { formatNumber, locale, tr } = useI18n();
+  const [granularity, setGranularity] = useState(initialGranularity);
+  const [active, setActive] = useState<number | null>(null);
+  const [focused, setFocused] = useState(0);
+  const targets = useRef<Array<SVGGElement | null>>([]);
+  const series = buildTrendSeries(points, metric, granularity);
+  const max = Math.max(1, ...series.map((point) => point.value ?? 0));
+  const coordinates = series.map((point, index) =>
+    point.value === null
+      ? null
+      : {
+          x: series.length === 1 ? 260 : 6 + (index / (series.length - 1)) * 508,
+          y: 150 - (point.value / max) * 124,
+        },
+  );
   const trendLabel = tr("insights.trend", { metric: metricLabel });
-  const monthFormatter = new Intl.DateTimeFormat(locale, { month: "short" });
+  const granularityItems = [
+    { value: "day", label: tr("insights.byDay") },
+    { value: "week", label: tr("insights.byWeek") },
+    { value: "month", label: tr("insights.byMonth") },
+  ];
+  const dateFormatter = new Intl.DateTimeFormat(locale, {
+    month: "short",
+    day: "numeric",
+    year: "numeric",
+  });
+  const formatDate = (date: string) => dateFormatter.format(new Date(`${date}T00:00:00`));
+  const dateLabel = (index: number) =>
+    series[index].date === series[index].endDate
+      ? formatDate(series[index].date)
+      : `${formatDate(series[index].date)} — ${formatDate(series[index].endDate)}`;
+  const detail = (index: number) =>
+    `${dateLabel(index)}, ${metricLabel}: ${series[index].value === null ? "—" : formatNumber(series[index].value)}`;
+  const available = series.flatMap((point, index) => (point.value === null ? [] : [index]));
+  const tabStop = available.includes(focused) ? focused : available[0];
+  const activeIndex = active !== null && coordinates[active] ? active : null;
+  const moveFocus = (index: number, event: KeyboardEvent<SVGGElement>) => {
+    const position = available.indexOf(index);
+    const target =
+      event.key === "ArrowLeft"
+        ? available[position - 1]
+        : event.key === "ArrowRight"
+          ? available[position + 1]
+          : event.key === "Home"
+            ? available[0]
+            : event.key === "End"
+              ? available.at(-1)
+              : undefined;
+    if (target === undefined) return;
+    event.preventDefault();
+    targets.current[target]?.focus();
+  };
+  const ticks = [
+    ...new Set([
+      0,
+      Math.round((series.length - 1) / 4),
+      Math.round((series.length - 1) / 2),
+      Math.round(((series.length - 1) * 3) / 4),
+      series.length - 1,
+    ]),
+  ].filter((index) => index >= 0);
   return (
     <Card className="overflow-hidden rounded-2xl border-border bg-card shadow-sm">
       <CardHeader className="flex min-h-[58px] flex-row items-center justify-between gap-3 border-b border-border px-5 py-4">
@@ -274,76 +339,139 @@ export function TokenTrendCard({
           <h2 className="m-0 text-base font-semibold">{trendLabel}</h2>
           <p className="mt-0.5 text-xs text-muted-foreground">{metricLabel}</p>
         </div>
-        <Badge variant="outline">{tr("insights.byMonth")}</Badge>
+        <Select
+          items={granularityItems}
+          value={granularity}
+          onValueChange={(value) => {
+            if (value !== null) {
+              setGranularity(value as TrendGranularity);
+              setActive(null);
+              setFocused(0);
+            }
+          }}
+        >
+          <SelectTrigger aria-label={tr("insights.trendGranularity")} className="w-auto">
+            <SelectValue />
+          </SelectTrigger>
+          <SelectContent>
+            {granularityItems.map((item) => (
+              <SelectItem key={item.value} value={item.value}>
+                {item.label}
+              </SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
       </CardHeader>
       <CardContent className="px-5 pb-4 pt-5">
         {series.length ? (
           <>
-            <svg
-              viewBox="0 0 520 170"
-              className="h-[170px] w-full overflow-visible"
-              preserveAspectRatio="none"
-              role="img"
-              aria-label={tr("insights.trendSummary", {
-                label: trendLabel,
-                values: series
-                  .map(
-                    ([key, value]) =>
-                      `${monthFormatter.format(new Date(`${key}-01T00:00:00`))} ${formatNumber(value)}`,
-                  )
-                  .join(", "),
-              })}
-            >
-              {[26, 67, 108, 150].map((y) => (
-                <line
-                  key={y}
-                  x1="0"
-                  x2="520"
-                  y1={y}
-                  y2={y}
-                  stroke="currentColor"
-                  strokeOpacity=".12"
-                  strokeDasharray="3 4"
-                />
-              ))}
-              <polyline
-                points={chartPoints}
-                fill="none"
-                stroke="var(--primary)"
-                strokeWidth="3"
-                strokeLinecap="round"
-                strokeLinejoin="round"
+            <div className="relative" onMouseLeave={() => setActive(null)}>
+              <span
+                role="img"
+                className="sr-only"
+                aria-label={tr("insights.trendSummary", {
+                  label: trendLabel,
+                  values: series.map((_, index) => detail(index)).join(", "),
+                })}
               />
-              {values.map((value, index) => {
-                const x = series.length === 1 ? 260 : (index / (series.length - 1)) * 520;
-                const y = 150 - (value / max) * 124;
-                return (
-                  <circle
-                    key={`${series[index][0]}-${value}`}
-                    cx={x}
-                    cy={y}
-                    r="4"
-                    fill="var(--primary)"
+              <svg
+                viewBox="0 0 520 170"
+                className="h-[170px] w-full overflow-visible"
+                preserveAspectRatio="none"
+                role="group"
+                aria-label={trendLabel}
+              >
+                {[26, 67, 108, 150].map((y) => (
+                  <line
+                    key={y}
+                    x1="0"
+                    x2="520"
+                    y1={y}
+                    y2={y}
+                    stroke="currentColor"
+                    strokeOpacity=".1"
+                    strokeDasharray="3 4"
                   />
-                );
-              })}
-            </svg>
-            <div className="mt-2 flex justify-between gap-1 text-center text-[10px] text-muted-foreground">
-              {series.map(([key, value]) => {
-                const month = monthFormatter.format(new Date(`${key}-01T00:00:00`));
-                return (
-                  <span
-                    className="grid min-w-0 gap-0.5"
-                    key={key}
-                    title={`${month}: ${formatNumber(value)}`}
-                  >
-                    <span className="truncate">{month}</span>
-                    <strong className="font-medium tabular-nums text-foreground">
-                      {formatCompactNumber(value)}
-                    </strong>
-                  </span>
-                );
-              })}
+                ))}
+                <path
+                  d={smoothTrendPath(coordinates)}
+                  fill="none"
+                  stroke="var(--primary)"
+                  strokeWidth="2.25"
+                  vectorEffect="non-scaling-stroke"
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                />
+                {coordinates.map(
+                  (coordinate, index) =>
+                    coordinate && (
+                      <g
+                        key={series[index].date}
+                        ref={(element) => {
+                          targets.current[index] = element;
+                        }}
+                        role="img"
+                        aria-label={detail(index)}
+                        tabIndex={index === tabStop ? 0 : -1}
+                        onFocus={() => {
+                          setActive(index);
+                          setFocused(index);
+                        }}
+                        onBlur={() => setActive(null)}
+                        onMouseEnter={() => setActive(index)}
+                        onKeyDown={(event) => moveFocus(index, event)}
+                        className="outline-none"
+                      >
+                        <rect
+                          x={coordinate.x - (series.length === 1 ? 260 : 254 / (series.length - 1))}
+                          y="0"
+                          width={series.length === 1 ? 520 : 508 / (series.length - 1)}
+                          height="170"
+                          fill="transparent"
+                        />
+                        <circle
+                          cx={coordinate.x}
+                          cy={coordinate.y}
+                          r="3.5"
+                          fill="var(--primary)"
+                          style={{
+                            opacity:
+                              activeIndex === index ||
+                              (coordinates[index - 1] == null && coordinates[index + 1] == null)
+                                ? 1
+                                : 0,
+                          }}
+                          vectorEffect="non-scaling-stroke"
+                        />
+                      </g>
+                    ),
+                )}
+              </svg>
+              {activeIndex !== null && (
+                <div
+                  role="tooltip"
+                  className="pointer-events-none absolute top-0 z-10 max-w-full rounded-md border border-border bg-popover px-3 py-2 text-xs text-popover-foreground shadow-md"
+                  style={{
+                    left: `${Math.max(0, Math.min(100, (coordinates[activeIndex]!.x / 520) * 100))}%`,
+                    transform: `translateX(${activeIndex < series.length / 3 ? 0 : activeIndex > (series.length * 2) / 3 ? -100 : -50}%)`,
+                  }}
+                >
+                  {detail(activeIndex)}
+                </div>
+              )}
+            </div>
+            <div
+              className="mt-2 flex justify-between gap-2 text-[10px] text-muted-foreground"
+              aria-hidden="true"
+            >
+              {ticks.map((index) => (
+                <span key={series[index].date}>
+                  {new Intl.DateTimeFormat(locale, {
+                    month: "short",
+                    ...(granularity === "month" ? {} : { day: "numeric" }),
+                  }).format(new Date(`${series[index].date}T00:00:00`))}
+                </span>
+              ))}
             </div>
           </>
         ) : (

@@ -5,6 +5,7 @@ import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { changeLocale, formatCompactNumber, initializeI18n, tr } from "@/core/i18n";
 import { InsightsPage } from "./InsightsPage";
+import { INSIGHTS_RANGE_STORAGE_KEY } from "./insights-range";
 
 vi.mock("./insights-query", () => ({
   useInsightsRefreshJob: () => ({ data: undefined }),
@@ -35,7 +36,10 @@ vi.mock("./insights-query", () => ({
 }));
 
 describe("InsightsPage locale changes", () => {
-  beforeEach(() => initializeI18n("en-US"));
+  beforeEach(() => {
+    window.localStorage.removeItem(INSIGHTS_RANGE_STORAGE_KEY);
+    initializeI18n("en-US");
+  });
   afterEach(cleanup);
 
   it("updates heatmap labels and compact numbers while preserving the selected metric", async () => {
@@ -82,7 +86,10 @@ describe("InsightsPage locale changes", () => {
 });
 
 describe("InsightsPage filters", () => {
-  beforeEach(() => initializeI18n("en-US"));
+  beforeEach(() => {
+    window.localStorage.removeItem(INSIGHTS_RANGE_STORAGE_KEY);
+    initializeI18n("en-US");
+  });
   afterEach(cleanup);
 
   it("keeps purpose names stable while the selected range changes", async () => {
@@ -90,7 +97,7 @@ describe("InsightsPage filters", () => {
     render(<InsightsPage section="overview" workspaces={[]} />);
 
     const range = screen.getByRole("combobox", { name: tr("insights.range") });
-    expect(range.textContent).toContain(tr("insights.range52w"));
+    expect(range.textContent).toContain(tr("insights.range30d"));
 
     await user.click(range);
     await user.click(await screen.findByRole("option", { name: tr("insights.rangeYear") }));

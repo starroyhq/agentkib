@@ -182,7 +182,6 @@ export class Insights {
       usage = this.rows(Q.summaryUsage, [from, to, agent, workspace, repository])[0]!,
       commits = this.rows(Q.summaryCommits, [from, to, repository, agent])[0]!;
     const active = this.active(query),
-      days = new Set(active),
       now = today();
     let longest_streak = 0,
       run = 0,
@@ -192,6 +191,9 @@ export class Insights {
       longest_streak = Math.max(longest_streak, run);
       previous = day;
     }
+    // The current streak is anchored to today, independent of the chart window.
+    // Retain source/workspace filters, but do not cut a 46-day run down to 30 days.
+    const days = new Set(this.active({ ...query, from: null, to: now }));
     let current_streak = 0,
       cursor = days.has(now) ? now : shift(now, -1);
     while (days.has(cursor)) {

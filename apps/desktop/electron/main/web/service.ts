@@ -131,6 +131,24 @@ export function lanAddresses(): Array<{ name: string; address: string }> {
       .map((entry) => ({ name, address: entry.address })),
   );
 }
+/**
+ * Request IDs this host dispatched. They stop a retry from being dispatched again before its
+ * receipt is settled; the receipt ledger is what lasts, and this set starts empty after every
+ * restart. The oldest IDs therefore make way for new ones instead of refusing new requests,
+ * which used to stop all sending and approvals after the ten-thousandth control.
+ */
+const REMEMBERED_REQUESTS = 10_000;
+/** Context picker entries that keep an ID; the least recently listed ones go first. */
+const CONTEXT_ARTIFACT_LIMIT = 20_000;
+export function rememberRequest(requests: Set<string>, requestId: string): void {
+  requests.delete(requestId);
+  requests.add(requestId);
+  while (requests.size > REMEMBERED_REQUESTS) {
+    const oldest = requests.values().next();
+    if (oldest.done) break;
+    requests.delete(oldest.value);
+  }
+}
 export function createWebControlState() {
   return {
     admission: false,
@@ -762,8 +780,7 @@ export class WebAccessService {
         (sessionId &&
           this.unconfirmed.has(sessionId) &&
           operation !== "reconcile" &&
-          this.unconfirmedRequests.get(sessionId) !== requestId) ||
-        this.requests.size >= 10_000)
+          this.unconfirmedRequests.get(sessionId) !== requestId))
     ) {
       // A rejected duplicate may already have run through either local surface.
       // Only its authoritative receipt can establish that it was never dispatched.
@@ -793,7 +810,7 @@ export class WebAccessService {
       const value = params as Record<string, unknown>;
       if (mutation && value.operation === operation) {
         dispatched = true;
-        if (requestId) this.requests.add(requestId);
+        if (requestId) rememberRequest(this.requests, requestId);
         if (sessionId && requestId && operation !== "reconcile") {
           this.unconfirmed.add(sessionId);
           this.unconfirmedRequests.set(sessionId, requestId);
@@ -2861,8 +2878,8 @@ export class WebAccessService {
         const id = digest(
           `${this.bootId}|${device.id}|${sessionId}|${workspaceId}|${entry.id}|${entry.revision}`,
         );
-        if (this.contextArtifactRefs.size >= 20_000 && !this.contextArtifactRefs.has(id))
-          throw new HttpError(429, "resource_capacity");
+        // Kept in order of listing; the oldest make way instead of refusing new listings.
+        this.contextArtifactRefs.delete(id);
         this.contextArtifactRefs.set(id, {
           deviceId: device.id,
           sessionId,
@@ -2870,6 +2887,10 @@ export class WebAccessService {
           artifactId: entry.id,
           revision: entry.revision,
         });
+        for (const oldest of this.contextArtifactRefs.keys()) {
+          if (this.contextArtifactRefs.size <= CONTEXT_ARTIFACT_LIMIT) break;
+          this.contextArtifactRefs.delete(oldest);
+        }
         resources.push({
           id,
           kind: entry.kind,
@@ -3245,7 +3266,6 @@ export class WebAccessService {
     if (this.admission || this.active.has(sessionId)) throw new HttpError(409, "operation_busy");
     const workspaceId = await this.codexScope(sessionId, hash, false, !generic);
     if (this.admission) throw new HttpError(409, "operation_busy");
-    if (this.requests.size >= 10_000) throw new HttpError(429, "request_capacity");
     this.admission = true;
     this.active.add(sessionId);
     let dispatched = false;
@@ -3619,7 +3639,7 @@ export class WebAccessService {
       if (historyScopeKey) await this.assertHistoryScope(hash, historyScopeKey, true);
       this.grant(hash, permission);
       this.rate(`control:${hash}`, 30);
-      this.requests.add(requestId);
+      rememberRequest(this.requests, requestId);
       this.unconfirmed.add(sessionId);
       this.unconfirmedRequests.set(sessionId, requestId);
       dispatched = true;
@@ -4141,7 +4161,6 @@ export class WebAccessService {
       control.priorUncertain = true;
       throw new HttpError(409, "duplicate_request");
     }
-    if (this.requests.size >= 10_000) throw new HttpError(429, "request_capacity");
     const catalog = (await this.scopeCatalog()) as {
       sessions: { id: string; workspace_id: string; agent: string }[];
     };
@@ -4163,10 +4182,9 @@ export class WebAccessService {
       control.priorUncertain = true;
       throw new HttpError(409, "duplicate_request");
     }
-    if (this.requests.size >= 10_000) throw new HttpError(429, "request_capacity");
     this.rate(`control:${hash}`, 30);
     this.admission = true;
-    this.requests.add(requestId);
+    rememberRequest(this.requests, requestId);
     control.dispatched = true;
     const pending = Promise.resolve()
       .then(() =>
@@ -5090,7 +5108,6 @@ export class WebAccessService {
         control.priorUncertain = true;
         throw new HttpError(409, "outcome_unknown");
       }
-      if (this.requests.size >= 10_000) throw new HttpError(429, "request_capacity");
       if (!Number.isSafeInteger(body.expectedRevision) || Number(body.expectedRevision) < 0)
         throw new HttpError(400, "invalid_revision");
       const params: Record<string, unknown> = {
@@ -5166,7 +5183,7 @@ export class WebAccessService {
       }
       if (this.admission) throw new HttpError(409, "operation_busy");
       this.rate(`control:${hash}`, 30);
-      this.requests.add(requestId);
+      rememberRequest(this.requests, requestId);
       this.active.add(sessionId);
       this.admission = true;
       const boot = this.bootId;

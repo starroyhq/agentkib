@@ -1300,6 +1300,10 @@ export class ClaudeManagedRunnerProcess {
   #startupAttempt = false;
   #startupDispatched = false;
   #startupCleanupKind?: ClaudeStartupCleanupKind;
+  /**
+   * Tools still waiting for their result, oldest first. A worker kept open for days used to
+   * keep every finished tool here and stopped showing new ones after the 1,024th.
+   */
   #toolItems = new Map<string, Record<string, unknown>>();
   /** Compact tool_use inputs kept until their result arrives. */
   #toolInputs = new Map<string, unknown>();
@@ -2299,6 +2303,8 @@ export class ClaudeManagedRunnerProcess {
           );
           if (detail) item.tool = detail;
           this.#toolInputs.delete(toolId);
+          // A finished tool is not updated again.
+          this.#toolItems.delete(toolId);
           items.push({ index: blocks.indexOf(block), item: { ...item } });
         }
       }
@@ -2306,7 +2312,13 @@ export class ClaudeManagedRunnerProcess {
       for (const block of blocks) {
         const id = typeof block?.id === "string" ? block.id : "";
         if (block?.type !== "tool_use" || !id || id.length > 256) continue;
-        if (this.#toolItems.size >= 1024 && !this.#toolItems.has(id)) continue;
+        // Tools of an interrupted turn never report a result; the oldest make way.
+        if (!this.#toolItems.has(id))
+          for (const oldest of this.#toolItems.keys()) {
+            if (this.#toolItems.size < 1024) break;
+            this.#toolItems.delete(oldest);
+            this.#toolInputs.delete(oldest);
+          }
         const item: Record<string, unknown> = {
           id,
           kind: "tool-summary",
@@ -2324,7 +2336,12 @@ export class ClaudeManagedRunnerProcess {
         );
         if (detail) item.tool = detail;
         this.#toolItems.set(id, item);
-        if (this.#toolInputs.size < 256) this.#toolInputs.set(id, compactClaudeInput(block.input));
+        if (!this.#toolInputs.has(id))
+          for (const oldest of this.#toolInputs.keys()) {
+            if (this.#toolInputs.size < 256) break;
+            this.#toolInputs.delete(oldest);
+          }
+        this.#toolInputs.set(id, compactClaudeInput(block.input));
         items.push({ index: blocks.indexOf(block), item });
       }
     }

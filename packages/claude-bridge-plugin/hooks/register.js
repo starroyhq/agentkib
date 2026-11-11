@@ -88,6 +88,23 @@ function appendStreamText(state, text) {
   }
 }
 
+/**
+ * Whether an AgentKib Runtime answers on this socket. Any reply counts; a missing socket, or one
+ * a closed Runtime left behind, refuses the connection. The probe it saves reads the session's
+ * whole history and rewrites the plugin store, which used to happen every few seconds for as
+ * long as AgentKib stayed closed. It never goes through `request`, which would take the
+ * Runtime's refusal of this request as a revoked binding.
+ */
+export async function runtimeReachable($, socketPath) {
+  if (!safeSocket(socketPath)) return false;
+  try {
+    await $.http.fetch("http://localhost/v1/ping", { socketPath, method: "GET" });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 export function safeSocket(path) {
   return (
     typeof path === "string" &&
@@ -1332,9 +1349,13 @@ async function reconnectOnce($, state) {
   }
   // A terminal with no saved binding does not need history/file/store-write
   // probes on startup. Every actual reconnect still repeats the full probe.
+  const credential = JSON.parse(await $.fs.read(path));
+  if (state.generation !== generation || state.closed) throw new Error("stale-reconnect");
+  if (safeSocket(credential?.socketPath) && !(await runtimeReachable($, credential.socketPath)))
+    throw new Error("bridge-unavailable");
+  if (state.generation !== generation || state.closed) throw new Error("stale-reconnect");
   const observed = await probeCapabilities($, state);
   if (state.generation !== generation || state.closed) throw new Error("stale-reconnect");
-  const credential = JSON.parse(await $.fs.read(path));
   if (
     credential?.protocol !== 1 ||
     credential.nativeId !== observed.nativeId ||
@@ -1454,7 +1475,10 @@ export async function autoConnect($, state) {
       }
       return;
     }
-    const sources = await discoverAgentKib($);
+    // A discovery file a closed Runtime left behind names a socket nothing answers on.
+    const sources = [];
+    for (const source of await discoverAgentKib($))
+      if (await runtimeReachable($, source.socketPath)) sources.push(source);
     if (!sources.length) return;
     // After /clear or /resume the previous conversation's identity no longer applies.
     if (state.closed) state.identity = null;

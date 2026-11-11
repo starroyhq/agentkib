@@ -30,7 +30,19 @@ type Scope = {
   agent: string;
   remote: boolean;
 };
-type HubSession = { transport: StreamableHTTPServerTransport; server: Server; scope: Scope };
+type HubSession = {
+  transport: StreamableHTTPServerTransport;
+  server: Server;
+  scope: Scope;
+  usedAt: number;
+};
+/**
+ * An Agent CLI that exits without ending its session leaves the session here until the Hub
+ * stops. Sessions unused this long, or the least recently used beyond the limit, are closed;
+ * a client that comes back is answered 404 and starts a new session, as MCP requires.
+ */
+const SESSION_IDLE_MS = 24 * 60 * 60_000;
+const SESSION_LIMIT = 512;
 
 export class McpHub {
   #server?: HttpServer;
@@ -44,6 +56,7 @@ export class McpHub {
     readonly builtins: McpBuiltins,
     readonly oauth: McpOAuth,
     settings: McpNetworkSettings,
+    readonly limits: { sessions?: number; sessionIdleMs?: number } = {},
   ) {
     this.#settings = { ...settings };
   }
@@ -97,6 +110,22 @@ export class McpHub {
     const closing = server ? closeServer(server) : Promise.resolve();
     await this.#closeSessions();
     await closing;
+  }
+
+  /** Makes room for one new session. */
+  #retireSessions(): void {
+    const now = Date.now();
+    const idle = this.limits.sessionIdleMs ?? SESSION_IDLE_MS;
+    const limit = this.limits.sessions ?? SESSION_LIMIT;
+    let excess = this.#sessions.size + 1 - limit;
+    // The map is kept in order of use, least recent first.
+    for (const [id, session] of [...this.#sessions]) {
+      if (excess <= 0 && now - session.usedAt <= idle) break;
+      this.#sessions.delete(id);
+      excess--;
+      void session.transport.close().catch(() => undefined);
+      void session.server.close().catch(() => undefined);
+    }
   }
 
   async #closeSessions(): Promise<void> {
@@ -233,6 +262,9 @@ export class McpHub {
         response.writeHead(404).end();
         return;
       }
+      existing.usedAt = Date.now();
+      this.#sessions.delete(sessionId);
+      this.#sessions.set(sessionId, existing);
       await existing.transport.handleRequest(request, response);
       return;
     }
@@ -266,7 +298,8 @@ export class McpHub {
       sessionIdGenerator: randomUUID,
       onsessioninitialized: (id) => {
         sessionIdCreated = id;
-        this.#sessions.set(id, { transport, server: mcpServer, scope });
+        this.#retireSessions();
+        this.#sessions.set(id, { transport, server: mcpServer, scope, usedAt: Date.now() });
       },
       onsessionclosed: (id) => {
         this.#sessions.delete(id);

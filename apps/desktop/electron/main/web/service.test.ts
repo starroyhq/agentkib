@@ -826,6 +826,24 @@ describe("WebAccessService loopback security boundary", () => {
         .status,
     ).toBe(409);
   });
+  it("keeps accepting controls after ten thousand requests and still refuses a recent duplicate", async () => {
+    await bootstrap();
+    await pair(true, false);
+    // A host that has run for days remembers its oldest requests least.
+    for (let index = 0; index < 10_000; index++) control.requests.add(`earlier-${index}`);
+    const body = {
+      sessionId: "session",
+      text: "hello",
+      requestId: "after-ten-thousand",
+      bootId,
+      expectedRevision: 4,
+    };
+    expect((await http("/api/web/v1/send", { method: "POST", body })).status).toBe(200);
+    expect(control.requests.size).toBe(10_000);
+    expect(control.requests.has("earlier-0")).toBe(false);
+    expect(control.requests.has("after-ten-thousand")).toBe(true);
+    expect((await http("/api/web/v1/send", { method: "POST", body })).status).toBe(409);
+  });
   it("stops only the exact active turn and forwards it with send permission", async () => {
     await bootstrap();
     await pair(true, false);

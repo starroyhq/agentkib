@@ -129,6 +129,9 @@ async function fixture(
   let stops = 0;
   let messages: Value[] = [{ role: "user", text: "native history" }];
   let interceptHttp = options.httpInterceptor;
+  // Whether a Runtime listens on the socket; liveness checks are counted apart from requests.
+  let reachable = true;
+  const pings: string[] = [];
   const nextResponses = new Map<string, Value>();
   const calls: Array<{ url: string; init: Value; body: Value }> = [];
   const timers: Array<() => Promise<void>> = [];
@@ -174,6 +177,15 @@ async function fixture(
     clock: { every: (_ms: number, callback: () => Promise<void>) => timers.push(callback) },
     http: {
       fetch: async (url: string, init: Value) => {
+        if (init.method === "GET") {
+          pings.push(url);
+          if (!reachable) throw new Error("connect ECONNREFUSED");
+          return {
+            ok: false,
+            status: 403,
+            text: JSON.stringify({ error: "bridge-request-rejected" }),
+          };
+        }
         const body = JSON.parse(init.body);
         calls.push({ url, init, body });
         await interceptHttp?.(url);
@@ -283,6 +295,10 @@ async function fixture(
     setHttpInterceptor(value: typeof interceptHttp) {
       interceptHttp = value;
     },
+    setReachable(value: boolean) {
+      reachable = value;
+    },
+    pings,
     nextHttpResponse(suffix: string, response: Value) {
       nextResponses.set(`http://localhost${suffix}`, response);
     },
@@ -954,6 +970,34 @@ describe("Claude Code native session plugin", () => {
       expect(f.stops).toBe(0);
     },
   );
+
+  it("neither probes nor writes the plugin store while AgentKib is closed, and reconnects when it returns", async () => {
+    const f = await fixture();
+    const reconnects = () => f.calls.filter((call) => call.url.endsWith("/reconnect")).length;
+    f.setReachable(false);
+    f.nextHttpResponse("/v1/commands", { status: 409, body: { error: "bridge-lease-expired" } });
+    const set = vi.spyOn(f.api.store, "set");
+    const reads = vi.spyOn(f.api.fs, "read");
+    const before = reconnects();
+    // Several backoff rounds: about twenty seconds of a closed AgentKib.
+    for (let tick = 0; tick < 80; tick++) await f.tick();
+    expect(f.pings.length).toBeGreaterThan(2);
+    expect(reconnects()).toBe(before);
+    expect(set).not.toHaveBeenCalled();
+    expect(
+      reads.mock.calls.filter(([path]) => path === "/synthetic/plugin/package.json"),
+    ).toHaveLength(0);
+    f.setReachable(true);
+    await expect
+      .poll(async () => {
+        await f.tick();
+        return reconnects();
+      })
+      .toBe(before + 1);
+    expect((await f.run("command.run", { command: "agentkib-status", args: "" })).text).toContain(
+      "is connected",
+    );
+  });
 
   it("pauses saved-binding recovery during replacement pairing and resumes its bounded backoff after rejection", async () => {
     const f = await fixture();

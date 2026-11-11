@@ -89,6 +89,9 @@ async function ownershipFixture() {
     PATH: root,
     HERMES_HOME: home,
     CURSOR_CONFIG_DIR: path.join(root, "cursor"),
+    // These tests change a source and expect the next refresh to index it at once.
+    AGENTKIB_SEARCH_PASS_INTERVAL_MS: "0",
+    AGENTKIB_SEARCH_RETRY_WAIT_MS: "0",
   };
   store.sessions.sync(
     "registered",
@@ -835,7 +838,10 @@ it.each([methods.status, methods.query])(
   },
 );
 
-it("indexes DeepSeek Harness sessions read from the running DSH, after each turn", async () => {
+/** One DeepSeek Harness session. Each read of it by the index counts in `state`. */
+async function dshFixture(
+  pacing: { passIntervalMs?: number; retryWaitMs?: number; limitBytes?: number } = {},
+) {
   const root = await realpath(await mkdtemp(path.join(os.tmpdir(), "history-lifecycle-dsh-")));
   cleanups.push(() => rm(root, { recursive: true, force: true }));
   const store = new BackendStore(path.join(root, "agentkib.db"));
@@ -870,16 +876,13 @@ it("indexes DeepSeek Harness sessions read from the running DSH, after each turn
     path.join(root, "preferences.json"),
     JSON.stringify({ session_content_search_enabled: true }),
   );
-  let reads = 0,
-    checks = 0,
-    running = false,
-    marker = "dsh-search-marker-first";
+  const state = { reads: 0, checks: 0, running: false, marker: "dsh-search-marker-first" };
   const dsh = {
     nativeId: (sessionId: string) => (sessionId === id ? "session-dsh" : undefined),
     documentStatus: () => ({ status: "supported" as const }),
-    running: () => (checks++, running),
+    running: () => (state.checks++, state.running),
     conversation: async () => ({
-      revision: ++reads,
+      revision: ++state.reads,
       records: [
         {
           seq: 1,
@@ -887,7 +890,7 @@ it("indexes DeepSeek Harness sessions read from the running DSH, after each turn
           current: true,
           position: 0,
           kind: "user" as const,
-          text: marker,
+          text: state.marker,
           truncated: false,
           images: [],
           files: 0,
@@ -902,31 +905,90 @@ it("indexes DeepSeek Harness sessions read from the running DSH, after each turn
     { profiles: () => [] },
     {
       workerFilename: path.resolve("dist-electron/backend-history-search.cjs"),
+      passIntervalMs: 0,
+      retryWaitMs: 0,
+      ...pacing,
       dsh: () => dsh,
     },
   );
   cleanups.push(() => index.close());
   const hits = async (query: string) =>
     ((await index.request(methods.query, { query })) as HistorySearchResult).hits;
+  return { index, id, state, hits, root };
+}
+it("indexes DeepSeek Harness sessions read from the running DSH, after each turn", async () => {
+  const { index, id, state, hits } = await dshFixture();
   index.refresh();
   await waitForIndexing(async () => expect(await hits("dsh-search-marker-first")).toHaveLength(1));
   expect((await hits("dsh-search-marker-first"))[0]).toMatchObject({ agent: "deepseek-harness" });
-  expect(reads).toBe(1);
+  expect(state.reads).toBe(1);
   // While DSH runs a turn every record reports a change; the session is read after the turn.
-  running = true;
-  marker = "dsh-search-marker-second";
-  const before = checks;
+  state.running = true;
+  state.marker = "dsh-search-marker-second";
+  const before = state.checks;
   index.refresh(id);
-  await waitForIndexing(async () => expect(checks).toBeGreaterThan(before));
-  expect(reads).toBe(1);
-  running = false;
+  await waitForIndexing(async () => expect(state.checks).toBeGreaterThan(before));
+  expect(state.reads).toBe(1);
+  state.running = false;
   index.refresh(id);
-  await waitForIndexing(async () =>
-    expect(await hits("dsh-search-marker-second")).toHaveLength(1),
-  );
-  expect(reads).toBe(2);
+  await waitForIndexing(async () => expect(await hits("dsh-search-marker-second")).toHaveLength(1));
+  expect(state.reads).toBe(2);
   // Listed as it was when last indexed, the session is not read again.
   index.refresh();
   await new Promise((resolve) => setTimeout(resolve, 300));
-  expect(reads).toBe(2);
+  expect(state.reads).toBe(2);
+});
+it("writes nothing more to a full cache however many passes follow", async () => {
+  const { index, id, state, root } = await dshFixture({ limitBytes: 1 });
+  index.refresh();
+  await waitForIndexing(async () =>
+    expect(((await index.request(methods.status, {})) as HistorySearchStatus).budgetExceeded).toBe(
+      true,
+    ),
+  );
+  const cache = new DatabaseSync(path.join(root, "session-search.sqlite"), { readOnly: true });
+  cleanups.push(() => cache.close());
+  // Another connection's commits change this number; a pass that only reads leaves it alone.
+  const commits = () => Number(cache.prepare("PRAGMA data_version").get()!.data_version);
+  const pass = async () => {
+    const reads = state.reads;
+    index.refresh(id);
+    await waitForIndexing(async () => expect(state.reads).toBeGreaterThan(reads));
+    await new Promise((resolve) => setTimeout(resolve, 50));
+  };
+  await pass();
+  const before = commits();
+  for (let count = 0; count < 5; count++) await pass();
+  expect(commits()).toBe(before);
+});
+it("runs one pass for a burst of changes and waits between passes", async () => {
+  const { index, id, state, hits } = await dshFixture({ passIntervalMs: 600 });
+  index.refresh();
+  await waitForIndexing(async () => expect(await hits("dsh-search-marker-first")).toHaveLength(1));
+  // A turn in progress is checked once per pass, so the checks count the passes.
+  state.running = true;
+  const before = state.checks;
+  for (let change = 0; change < 20; change++) index.refresh(id);
+  await new Promise((resolve) => setTimeout(resolve, 250));
+  expect(state.checks).toBe(before);
+  await waitForIndexing(async () => expect(state.checks).toBe(before + 1));
+  await new Promise((resolve) => setTimeout(resolve, 250));
+  expect(state.checks).toBe(before + 1);
+  // What a person asks for does not wait.
+  await index.request(methods.refresh, {});
+  await waitForIndexing(async () => expect(state.checks).toBeGreaterThan(before + 1));
+});
+it("reads a session that keeps changing again only after its wait, then catches up", async () => {
+  const { index, id, state, hits } = await dshFixture({ retryWaitMs: 700 });
+  index.refresh();
+  await waitForIndexing(async () => expect(await hits("dsh-search-marker-first")).toHaveLength(1));
+  state.marker = "dsh-search-marker-second";
+  for (let change = 0; change < 5; change++) {
+    index.refresh(id);
+    await new Promise((resolve) => setTimeout(resolve, 60));
+  }
+  expect(state.reads).toBe(1);
+  // No further event arrives; the index returns on its own for the pending change.
+  await waitForIndexing(async () => expect(await hits("dsh-search-marker-second")).toHaveLength(1));
+  expect(state.reads).toBe(2);
 });

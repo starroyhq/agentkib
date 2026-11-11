@@ -7,6 +7,7 @@ import {
   symlinkSync,
   writeFileSync,
 } from "node:fs";
+import { DatabaseSync } from "node:sqlite";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -63,6 +64,32 @@ describe("durable AgentKib read states", () => {
       observeReadHistory(ledger, key, "claude-code", path.join(root, "absent")),
     ).toThrow();
     expect(ledger.get(key, "a").status).toBe("unknown");
+  });
+
+  it("does not write again when a transcript has not grown", () => {
+    const { root, ledger, key } = fixture();
+    const transcript = path.join(root, "transcript.jsonl");
+    writeFileSync(transcript, rows("one"));
+    expect(observeReadHistory(ledger, key, "claude-code", transcript)).toMatchObject({
+      complete: true,
+    });
+    const database = path.join(root, "codex-managed", "executions.sqlite");
+    // Another connection sees a commit as a changed data version.
+    const reader = new DatabaseSync(database, { readOnly: true });
+    try {
+      const version = () => Number(reader.prepare("PRAGMA data_version").get()!.data_version);
+      const before = version();
+      for (let poll = 0; poll < 5; poll++)
+        expect(observeReadHistory(ledger, key, "claude-code", transcript).changed).toBe(false);
+      expect(version()).toBe(before);
+      // A new turn is still recorded.
+      appendFileSync(transcript, rows("two"));
+      expect(observeReadHistory(ledger, key, "claude-code", transcript).changed).toBe(true);
+      expect(version()).not.toBe(before);
+    } finally {
+      reader.close();
+    }
+    expect(ledger.get(key, "a").latestResult?.turnId).toBe("two");
   });
 
   it("uses one canonical source across aliases, but isolates reader scopes and execution receipts", () => {

@@ -102,6 +102,8 @@ test("the native engine bounds a connected register stream without changing nati
     clock: { every: (_ms: number, callback: () => Promise<void>) => timers.push(callback) },
     http: {
       fetch: async (url: string, init: Value) => {
+        // A liveness check; the Runtime refuses anything but POST.
+        if (init.method === "GET") return { ok: false, status: 403, text: "{}" };
         const body = JSON.parse(init.body);
         if (url.endsWith("/events"))
           snapshots.push(
@@ -186,6 +188,7 @@ test("the native engine recovers a running terminal on its next prompt after an 
   };
   let offline = false;
   let reconnects = 0;
+  let pings = 0;
   const api = {
     ...capabilityApi("2.1.307"),
     store: {
@@ -211,6 +214,12 @@ test("the native engine recovers a running terminal on its next prompt after an 
     },
     http: {
       fetch: async (url: string, init: Value) => {
+        if (init.method === "GET") {
+          // A liveness check; the Runtime refuses anything but POST.
+          pings++;
+          if (offline) throw new Error("synthetic offline Runtime");
+          return { ok: false, status: 403, text: "{}" };
+        }
         if (url.endsWith("/reconnect")) reconnects++;
         if (offline) throw new Error("synthetic offline Runtime");
         const body = JSON.parse(init.body);
@@ -255,12 +264,14 @@ test("the native engine recovers a running terminal on its next prompt after an 
   offline = true;
   await timers[1]();
   await timers[1]();
-  expect(reconnects).toBe(1);
+  // The retry found no Runtime, so it neither probed the session nor asked to reconnect.
+  expect(pings).toBe(1);
+  expect(reconnects).toBe(0);
   offline = false;
   const event = { text: "native prompt after Runtime restarts" };
   expect(await run("prompt.submit", event)).toBe(event);
   for (let index = 0; index < 64; index++) await Promise.resolve();
-  expect(reconnects).toBe(2);
+  expect(reconnects).toBe(1);
   await timers[0]();
   expect(snapshots.at(-1)!.capabilities.send).toBe(false);
   expect((await run("command.run", { command: "agentkib-status", args: "" })).text).toContain(

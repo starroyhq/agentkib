@@ -16,7 +16,7 @@ import {
   unicodeBoundary,
   type SearchSession,
 } from "./history-search-store";
-import { readHistorySearchSource } from "./history-search-source";
+import { historySourceStampCurrent, readHistorySearchSource } from "./history-search-source";
 import {
   HistorySourceInvalidatedError,
   HistorySourceSnapshotError,
@@ -140,12 +140,26 @@ port.on(
             if (!configuration.writable) throw new Error("Read-only search worker");
             const session = input.session as unknown as SearchSession;
             let generation: string | undefined;
+            let settled = false;
             try {
               const source = sourceWithCachedBinding(
                 input.source as unknown as HistorySourceInput,
                 session,
               );
               const previousRevision = db.cachedSourceRevision(session);
+              const stamp = previousRevision
+                ? db.sourceStamp(session.sessionId, previousRevision)
+                : undefined;
+              // Files exactly as they were read give the same revision, forced or not. A large
+              // transcript is then neither read nor rewritten after every turn.
+              if (previousRevision && stamp && historySourceStampCurrent(stamp)) {
+                value = {
+                  sessionId: session.sessionId,
+                  sourceRevision: previousRevision,
+                  rebuilt: false,
+                };
+                break;
+              }
               if (previousRevision && input.force !== true) {
                 // Provider summaries can stay unchanged when a JSONL body or SQLite WAL changes.
                 // Read the complete source in this worker; retain the committed generation only
@@ -159,12 +173,19 @@ port.on(
                 await verify();
                 checkpoint();
                 if (snapshot.sourceRevision === previousRevision) {
-                  value = { ...snapshot, sessionId: session.sessionId };
+                  if (snapshot.stamp)
+                    db.rememberStamp(session.sessionId, previousRevision, snapshot.stamp);
+                  value = { ...snapshot, sessionId: session.sessionId, rebuilt: false };
                   break;
                 }
               }
+              if (db.budgetExceeded() && !db.canMakeRoom(session)) {
+                // Refuse before opening a generation, so a full cache is not rewritten per pass.
+                db.markUnindexed(session, "cache-budget-exceeded");
+                settled = true;
+                throw new Error("history-search-budget-exceeded");
+              }
               generation = db.begin(session);
-              if (db.budgetExceeded()) throw new Error("history-search-budget-exceeded");
               const snapshot = await readHistorySearchSource(
                 source,
                 async (record) => {
@@ -184,25 +205,32 @@ port.on(
                   snapshot.status,
                   snapshot.limitations,
                   snapshot.openClawBinding,
+                  snapshot.stamp,
                 ),
               );
-              value = { ...snapshot, sessionId: session.sessionId };
+              value = { ...snapshot, sessionId: session.sessionId, rebuilt: true };
             } catch (error) {
+              if (settled) throw error;
+              const message = error instanceof Error ? error.message : "";
+              const unsafeContent = message === "history-source-redaction-failed",
+                ownerChanged = message === "history-source-owner-changed",
+                budget = message === "history-search-budget-exceeded",
+                sourceFailure =
+                  error instanceof HistorySourceSnapshotError ? error.limitation : undefined;
               // Redaction failures and confirmed ownership changes must withdraw cached text.
               // Temporary source failures still preserve the previous committed generation.
-              db.abort(
-                session.sessionId,
-                generation ?? db.begin(session),
-                error instanceof Error && error.message === "history-search-budget-exceeded",
-                {
-                  unsafeContent:
-                    error instanceof Error && error.message === "history-source-redaction-failed",
-                  ownerChanged:
-                    error instanceof Error && error.message === "history-source-owner-changed",
-                  sourceFailure:
-                    error instanceof HistorySourceSnapshotError ? error.limitation : undefined,
-                },
-              );
+              if (generation === undefined && !unsafeContent && !ownerChanged)
+                // Nothing was staged; a source that keeps failing is recorded once.
+                db.markUnindexed(
+                  session,
+                  budget ? "cache-budget-exceeded" : (sourceFailure ?? "source-unavailable"),
+                );
+              else
+                db.abort(session.sessionId, generation ?? db.begin(session), budget, {
+                  unsafeContent,
+                  ownerChanged,
+                  sourceFailure,
+                });
               throw error;
             }
             break;

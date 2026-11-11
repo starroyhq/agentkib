@@ -323,6 +323,36 @@ describe.skipIf(process.platform === "win32")("Claude verified managed catalog m
     expect(discover).toHaveBeenCalledTimes(2);
   });
 
+  it("checks who owns every open session with one claude agents call per interval", async () => {
+    const f = await fixture();
+    const secondNativeId = randomUUID();
+    writeFileSync(
+      path.join(path.dirname(f.file), `${secondNativeId}.jsonl`),
+      readFileSync(f.file, "utf8").replaceAll(f.nativeId, secondNativeId),
+    );
+    const listing = await f.sessions.list("claude-code", f.workspace);
+    f.store.sessions.sync("workspace", "claude-code", listing.sessions);
+    const secondId = f.sessions.store.id("claude-code", secondNativeId);
+    const run = vi.mocked(f.commands.run);
+    const agents = () => run.mock.calls.filter(([, args]) => args[0] === "agents").length;
+    const processes = () => run.mock.calls.filter(([program]) => program === "/bin/ps").length;
+    const now = vi.spyOn(Date, "now").mockReturnValue(1_000_000);
+    const before = { agents: agents(), processes: processes() };
+    // Two open sessions polled several times within one interval share one observation.
+    for (let poll = 0; poll < 3; poll++) {
+      expect((await f.owner.live(f.id)).ownershipReason).toBeNull();
+      expect((await f.owner.live(secondId)).ownershipReason).toBeNull();
+    }
+    expect(agents() - before.agents).toBe(1);
+    expect(processes() - before.processes).toBe(1);
+    // The next interval observes again, once for both.
+    now.mockReturnValue(1_003_000);
+    await f.owner.live(f.id);
+    await f.owner.live(secondId);
+    expect(agents() - before.agents).toBe(2);
+    expect(processes() - before.processes).toBe(2);
+  });
+
   it("projects verified native activity time and never refreshes it just by reading settings or catalog", async () => {
     const f = await fixture();
     await f.adopt();

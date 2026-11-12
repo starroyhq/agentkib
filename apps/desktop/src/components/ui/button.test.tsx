@@ -19,6 +19,27 @@ describe("Button class compatibility", () => {
     );
   });
 
+  it("gives buttons with a look of their own the label font, and a bare button the surrounding one", () => {
+    render(
+      <>
+        <Button>Save</Button>
+        <Button variant="bare">Open card</Button>
+        <Button variant="bare" className="text-xs font-semibold">
+          View all
+        </Button>
+      </>,
+    );
+    expect(screen.getByRole("button", { name: "Save" })).toHaveClass("text-sm", "font-medium");
+    expect(screen.getByRole("button", { name: "Open card" })).not.toHaveClass(
+      "text-sm",
+      "font-medium",
+    );
+    expect(screen.getByRole("button", { name: "View all" })).toHaveClass(
+      "text-xs",
+      "font-semibold",
+    );
+  });
+
   it("preserves primary surface and custom-property hover utilities", () => {
     render(
       <Button

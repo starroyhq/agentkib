@@ -120,7 +120,7 @@ export function MenuBarNewSession({
           aria-label={copy.newSession}
           placeholder={tr("menubar.newSession")}
           disabled={session.busy || session.unknown || !workspaces.length}
-          className="h-full min-w-0 flex-1 truncate rounded-none border-0 bg-transparent px-0 py-0 shadow-none focus-visible:border-0 focus-visible:ring-0 disabled:bg-transparent dark:bg-transparent dark:disabled:bg-transparent"
+          className="h-full min-w-0 flex-1 truncate rounded-none border-0 bg-transparent px-0 py-0 text-sm shadow-none focus-visible:border-0 focus-visible:ring-0 disabled:bg-transparent dark:bg-transparent dark:disabled:bg-transparent"
           onFocus={() => setEngaged(true)}
           onChange={(event) => {
             setEngaged(true);

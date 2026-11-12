@@ -398,6 +398,7 @@ export class CodexSessions {
     workspace: string | null,
     selection: {
       collection?: SessionCollection;
+      nativeRef?: string;
       matches?: (nativeRef: string) => boolean;
       parents?: ReadonlySet<string>;
       limit?: number;
@@ -450,7 +451,8 @@ export class CodexSessions {
           first(["git_origin_url"]),
         ];
         for (const row of sql.rows(
-          `SELECT ${expressions.map((expression, index) => `${expression} AS k${index}`).join(",")} FROM threads`,
+          `SELECT ${expressions.map((expression, index) => `${expression} AS k${index}`).join(",")} FROM threads${selection.nativeRef !== undefined ? " WHERE id=?" : ""}`,
+          ...(selection.nativeRef !== undefined ? [selection.nativeRef] : []),
         )) {
           // The cheap ID filter runs first; classification resolves paths on disk.
           if (selection.matches && !selection.matches(String(row.k0))) continue;

@@ -22,16 +22,22 @@ export class SessionSnapshotHistory {
 
   async read(
     sessionId: string,
-    version: () => Promise<string>,
+    version: () => Promise<string | null>,
     load: () => Promise<SnapshotHistory>,
   ): Promise<SnapshotHistory> {
     const revision = this.#revision;
-    let before: string;
+    let before: string | null;
     try {
       before = await version();
     } catch (error) {
       this.#remove(sessionId);
       throw error;
+    }
+    // A managed/unsupported source must use the regular authorized read path;
+    // never reuse an indexed projection after its ownership changes.
+    if (before === null) {
+      this.#remove(sessionId);
+      return load();
     }
     const cached = this.#entries.get(sessionId);
     if (cached?.version === before && revision === this.#revision) {

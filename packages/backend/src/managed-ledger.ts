@@ -1,13 +1,5 @@
 import { DatabaseSync } from "node:sqlite";
-import {
-  closeSync,
-  constants,
-  existsSync,
-  lstatSync,
-  mkdirSync,
-  openSync,
-  chmodSync,
-} from "node:fs";
+import { closeSync, constants, existsSync, lstatSync, mkdirSync, openSync } from "node:fs";
 import path from "node:path";
 import { restrictRemotePath } from "./remote-tls";
 
@@ -18,7 +10,6 @@ export function openManagedLedger(dataDir: string, create = false): DatabaseSync
   if (!existsSync(file) && !create) return null;
   if (create) {
     mkdirSync(directory, { recursive: true, mode: 0o700 });
-    chmodSync(directory, 0o700);
     if (!existsSync(file)) {
       let fd: number | undefined;
       try {
@@ -43,32 +34,44 @@ export function openManagedLedger(dataDir: string, create = false): DatabaseSync
     !fileStat.isFile()
   )
     throw new Error("invalid-managed-ledger");
-  restrictRemotePath(directory, true);
-  restrictRemotePath(file);
+  if (process.platform === "win32" || (directoryStat.mode & 0o7777) !== 0o700)
+    restrictRemotePath(directory, true);
+  if (process.platform === "win32" || (fileStat.mode & 0o7777) !== 0o600) restrictRemotePath(file);
 
   const database = new DatabaseSync(file);
   try {
-    database.exec("PRAGMA busy_timeout = 3000; PRAGMA journal_mode = WAL; BEGIN IMMEDIATE;");
+    database.exec("PRAGMA busy_timeout = 3000");
+    const journal = database.prepare("PRAGMA journal_mode").get() as { journal_mode: string };
+    if (journal.journal_mode !== "wal") database.exec("PRAGMA journal_mode = WAL");
+    const columns = commandColumns(database);
+    const tables = database
+      .prepare(
+        "SELECT count(*) AS count FROM sqlite_master WHERE type='table' AND name IN ('managed_sessions','managed_commands','managed_events')",
+      )
+      .get() as { count: number };
+    // Existing ledgers need no DDL or writer lock just to open a connection.
+    if (
+      tables.count === 3 &&
+      ["evidence", "device_id", "claim_version"].every((name) => columns.has(name))
+    )
+      return database;
+    database.exec("BEGIN IMMEDIATE");
     database.exec(
       "CREATE TABLE IF NOT EXISTS managed_sessions(id TEXT PRIMARY KEY, record TEXT NOT NULL);" +
         "CREATE TABLE IF NOT EXISTS managed_commands(request_id TEXT PRIMARY KEY, session_id TEXT NOT NULL, fingerprint TEXT NOT NULL, phase TEXT NOT NULL, result TEXT);" +
         "CREATE TABLE IF NOT EXISTS managed_events(sequence INTEGER PRIMARY KEY AUTOINCREMENT, session_id TEXT NOT NULL, event_id TEXT NOT NULL, event TEXT NOT NULL, UNIQUE(session_id,event_id));",
     );
-    const columns = new Set(
-      (
-        database.prepare("PRAGMA table_info(managed_commands)").all() as Array<{ name: string }>
-      ).map((column) => column.name),
-    );
-    if (!columns.has("evidence"))
+    // Recheck after taking the lock: another runtime may have migrated it first.
+    const migratedColumns = commandColumns(database);
+    if (!migratedColumns.has("evidence"))
       database.exec("ALTER TABLE managed_commands ADD COLUMN evidence TEXT");
-    if (!columns.has("device_id"))
+    if (!migratedColumns.has("device_id"))
       database.exec("ALTER TABLE managed_commands ADD COLUMN device_id TEXT NOT NULL DEFAULT ''");
-    if (!columns.has("claim_version"))
+    if (!migratedColumns.has("claim_version"))
       database.exec(
         "ALTER TABLE managed_commands ADD COLUMN claim_version INTEGER NOT NULL DEFAULT 0",
       );
     database.exec("COMMIT");
-    if (create) chmodSync(file, 0o600);
     return database;
   } catch (error) {
     try {
@@ -81,11 +84,119 @@ export function openManagedLedger(dataDir: string, create = false): DatabaseSync
   }
 }
 
+function commandColumns(database: DatabaseSync): Set<string> {
+  return new Set(
+    (database.prepare("PRAGMA table_info(managed_commands)").all() as Array<{ name: string }>).map(
+      (column) => column.name,
+    ),
+  );
+}
+
+function hasLedgerTable(database: DatabaseSync, name: string): boolean {
+  return (
+    database.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name=?").get(name) !==
+    undefined
+  );
+}
+
+type ManagedLedgerReader = {
+  references: number;
+  database?: DatabaseSync;
+  identity?: string;
+  lastUsed: number;
+};
+const managedLedgerReaders = new Map<string, ManagedLedgerReader>();
+const retainedReaderConnections = new Set<DatabaseSync>();
+const MAX_READER_CONNECTIONS = 4;
+let readerUseSequence = 0;
+
+/** A runtime owns its reader lifetime; standalone calls still close their files immediately. */
+export function retainManagedLedgerReaders(dataDir: string): () => void {
+  const key = path.resolve(dataDir);
+  const reader = managedLedgerReaders.get(key) ?? { references: 0, lastUsed: 0 };
+  reader.references += 1;
+  managedLedgerReaders.set(key, reader);
+  let released = false;
+  return () => {
+    if (released) return;
+    released = true;
+    reader.references -= 1;
+    if (reader.references !== 0) return;
+    closeRetainedReader(reader);
+    managedLedgerReaders.delete(key);
+  };
+}
+
+function closeRetainedReader(reader: ManagedLedgerReader): void {
+  if (!reader.database) return;
+  retainedReaderConnections.delete(reader.database);
+  reader.database.close();
+  reader.database = undefined;
+  reader.identity = undefined;
+}
+
+function releaseManagedLedgerReader(database: DatabaseSync): void {
+  if (!retainedReaderConnections.has(database)) database.close();
+}
+
+/** Reads must not take a writer lock, migrate the schema or change permissions. */
+function openManagedLedgerForRead(dataDir: string): DatabaseSync | null {
+  const directory = path.join(dataDir, "codex-managed");
+  const file = path.join(directory, "executions.sqlite");
+  const reader = managedLedgerReaders.get(path.resolve(dataDir));
+  let identity: string;
+  try {
+    const directoryStat = lstatSync(directory, { bigint: true });
+    const fileStat = lstatSync(file, { bigint: true });
+    if (!directoryStat.isDirectory() || !fileStat.isFile())
+      throw new Error("invalid-managed-ledger");
+    // An already-open SQLite handle must not bypass a later ACL change (not all
+    // platforms expose those changes through stat.mode).
+    const access = openSync(file, constants.O_RDONLY | constants.O_NOFOLLOW);
+    closeSync(access);
+    // Re-open on replacement or permission changes. WAL transactions remain visible through
+    // the same connection, so data timestamps are deliberately not part of this identity.
+    identity = [directoryStat, fileStat]
+      .map((stat) =>
+        [stat.dev, stat.ino, stat.birthtimeNs, stat.mode, stat.uid, stat.gid].join(":"),
+      )
+      .join("/");
+  } catch (error) {
+    if (reader) closeRetainedReader(reader);
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return null;
+    throw error;
+  }
+  if (reader) {
+    reader.lastUsed = ++readerUseSequence;
+    if (reader.identity !== identity) closeRetainedReader(reader);
+    if (reader.database) return reader.database;
+  }
+  const database = new DatabaseSync(file, { readOnly: true });
+  try {
+    database.exec("PRAGMA busy_timeout = 3000; PRAGMA cache_size = -256; PRAGMA mmap_size = 0");
+    if (reader) {
+      if (retainedReaderConnections.size >= MAX_READER_CONNECTIONS) {
+        const oldest = [...managedLedgerReaders.values()]
+          .filter((entry) => entry.database)
+          .sort((left, right) => left.lastUsed - right.lastUsed)[0];
+        if (oldest) closeRetainedReader(oldest);
+      }
+      reader.database = database;
+      reader.identity = identity;
+      retainedReaderConnections.add(database);
+    }
+    return database;
+  } catch (error) {
+    database.close();
+    throw error;
+  }
+}
+
 export function readManagedRecord(
   dataDir: string,
   sessionId: string,
 ): Record<string, unknown> | null {
-  const database = openManagedLedger(dataDir);
+  const database = openManagedLedgerForRead(dataDir);
   if (!database) return null;
   try {
     const row = database
@@ -96,12 +207,12 @@ export function readManagedRecord(
     if (!isObject(record) || record.id !== sessionId) throw new Error("invalid-managed-record");
     return record;
   } finally {
-    database.close();
+    releaseManagedLedgerReader(database);
   }
 }
 
 export function listManagedRecords(dataDir: string): Array<Record<string, unknown>> {
-  const database = openManagedLedger(dataDir);
+  const database = openManagedLedgerForRead(dataDir);
   if (!database) return [];
   try {
     const rows = database
@@ -113,7 +224,7 @@ export function listManagedRecords(dataDir: string): Array<Record<string, unknow
       return record;
     });
   } finally {
-    database.close();
+    releaseManagedLedgerReader(database);
   }
 }
 
@@ -124,20 +235,10 @@ export function readManagedCatalogSnapshot(dataDir: string): {
   records: Array<Record<string, unknown>>;
   complete: boolean;
 } {
-  const directory = path.join(dataDir, "codex-managed");
-  const file = path.join(directory, "executions.sqlite");
+  const database = openManagedLedgerForRead(dataDir);
+  if (!database) return { records: [], complete: true };
   try {
-    const directoryStat = lstatSync(directory);
-    const fileStat = lstatSync(file);
-    if (!directoryStat.isDirectory() || !fileStat.isFile())
-      throw new Error("invalid-managed-ledger");
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === "ENOENT") return { records: [], complete: true };
-    throw error;
-  }
-  const database = new DatabaseSync(file, { readOnly: true });
-  try {
-    database.exec("PRAGMA busy_timeout = 3000; BEGIN;");
+    database.exec("BEGIN");
     // Completeness and owners share one read snapshot. A truncated ledger must
     // not hide an older conflicting native owner and grant a display exception.
     const incomplete = database
@@ -161,7 +262,7 @@ export function readManagedCatalogSnapshot(dataDir: string): {
     }
     throw error;
   } finally {
-    database.close();
+    releaseManagedLedgerReader(database);
   }
 }
 
@@ -187,9 +288,10 @@ export function replayManagedCommand(
   requestId: string,
   fingerprint: string,
 ): Record<string, unknown> | null {
-  const database = openManagedLedger(dataDir);
+  const database = openManagedLedgerForRead(dataDir);
   if (!database) return null;
   try {
+    if (!hasLedgerTable(database, "managed_commands")) return null;
     const row = database
       .prepare("SELECT fingerprint,phase,result FROM managed_commands WHERE request_id=?")
       .get(requestId) as { fingerprint: string; phase: string; result: string | null } | undefined;
@@ -208,7 +310,7 @@ export function replayManagedCommand(
       reason: row.phase === "prepared" ? "request-interrupted" : "control-outcome-unconfirmed",
     };
   } finally {
-    database.close();
+    releaseManagedLedgerReader(database);
   }
 }
 
@@ -392,9 +494,10 @@ export function observeManagedCommandCompletion(
 }
 
 export function managedSessionHasUnknownCommands(dataDir: string, sessionId: string): boolean {
-  const database = openManagedLedger(dataDir);
+  const database = openManagedLedgerForRead(dataDir);
   if (!database) return false;
   try {
+    if (!hasLedgerTable(database, "managed_commands")) return false;
     const row = database
       .prepare(
         "SELECT EXISTS(SELECT 1 FROM managed_commands WHERE session_id=? AND phase='dispatched') AS found",
@@ -402,7 +505,7 @@ export function managedSessionHasUnknownCommands(dataDir: string, sessionId: str
       .get(sessionId) as { found: number };
     return row.found === 1;
   } finally {
-    database.close();
+    releaseManagedLedgerReader(database);
   }
 }
 
@@ -410,12 +513,16 @@ export function readUnknownManagedCommands(
   dataDir: string,
   sessionId: string,
 ): Array<{ requestId: string; evidence: Record<string, unknown> | null }> {
-  const database = openManagedLedger(dataDir);
+  const database = openManagedLedgerForRead(dataDir);
   if (!database) return [];
   try {
+    // Old receipts remain readable; the next actual write performs schema migration.
+    const columns = commandColumns(database);
+    if (columns.size === 0) return [];
+    const evidence = columns.has("evidence") ? "evidence" : "NULL AS evidence";
     const rows = database
       .prepare(
-        "SELECT request_id,evidence FROM managed_commands WHERE session_id=? AND phase='dispatched'",
+        `SELECT request_id,${evidence} FROM managed_commands WHERE session_id=? AND phase='dispatched'`,
       )
       .all(sessionId) as Array<{ request_id: string; evidence: string | null }>;
     return rows.map((row) => {
@@ -426,7 +533,7 @@ export function readUnknownManagedCommands(
       };
     });
   } finally {
-    database.close();
+    releaseManagedLedgerReader(database);
   }
 }
 
@@ -436,7 +543,7 @@ export function readManagedEvents(
   cursor: string | null | undefined,
   limit: number,
 ) {
-  const database = openManagedLedger(dataDir);
+  const database = openManagedLedgerForRead(dataDir);
   if (!database) throw new Error("session-unavailable");
   try {
     let before = 9_223_372_036_854_775_807n;
@@ -446,6 +553,8 @@ export function readManagedEvents(
       if (before > 18_446_744_073_709_551_615n) throw new Error("invalid-cursor");
     }
     const pageSize = Math.min(100, Math.max(1, limit));
+    if (!hasLedgerTable(database, "managed_events"))
+      return { events: [], next_cursor: null, warnings: [] };
     const statement = database.prepare(
       "SELECT sequence,event_id,event FROM managed_events WHERE session_id=? AND sequence<? ORDER BY sequence DESC LIMIT ?",
     );
@@ -468,7 +577,7 @@ export function readManagedEvents(
       warnings: [],
     };
   } finally {
-    database.close();
+    releaseManagedLedgerReader(database);
   }
 }
 

@@ -184,6 +184,33 @@ describe("independent history display", () => {
     expect(host.result.current.page?.events[0].content).toBe("first history");
   });
 
+  it("keeps oversized active history intact without retaining it after leaving", async () => {
+    const host = await fixture();
+    const content = "x".repeat(17 * 1024 * 1024);
+    const oversized = { ...page(content, "long-result"), next_cursor: "earlier-turn" };
+    const events = vi.spyOn(host.client, "events").mockResolvedValueOnce(oversized);
+    await act(async () => host.result.current.choose("first"));
+    await waitFor(() =>
+      expect(host.result.current.page?.events[0].content).toHaveLength(content.length),
+    );
+    expect(host.result.current.page?.next_cursor).toBe("earlier-turn");
+    await act(async () => host.result.current.choose("second"));
+    await waitFor(() => expect(host.result.current.page?.events[0].content).toBe("second history"));
+
+    const fresh = deferred<ConversationEventPage>();
+    events.mockReturnValueOnce(fresh.promise);
+    let reopening!: Promise<void>;
+    act(() => {
+      reopening = host.result.current.choose("first");
+    });
+    expect(host.result.current.page).toBeUndefined();
+    await act(async () => {
+      fresh.resolve(page("Fresh history", "fresh-result"));
+      await reopening;
+    });
+    expect(host.result.current.page?.events[0].content).toBe("Fresh history");
+  });
+
   it.each(["choose", "refresh"] as const)(
     "keeps readable history when %s live checks fail before history completes",
     async (operation) => {

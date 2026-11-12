@@ -258,3 +258,4 @@ export * from "./history-pagination";
 export * from "./conversation-groups";
 export * from "./session-events";
 export * from "./session-model";
+export * from "./transcript-page-cache";

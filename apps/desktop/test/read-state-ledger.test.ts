@@ -52,6 +52,25 @@ const rows = (turn: string, error = false) =>
     .join("\n") + "\n";
 
 describe("durable AgentKib read states", () => {
+  it("does not enter a write transaction for unchanged authoritative native receipts", () => {
+    const { ledger, key } = fixture();
+    const state: ConversationReadState = {
+      source: "codex-native",
+      status: "unread",
+      freshness: "current",
+      version: "v1",
+      firstUnread: { type: "threadStart" },
+      latestResult: result("one"),
+    };
+    ledger.saveNative(key, state, "native-1");
+    const exec = vi.spyOn(DatabaseSync.prototype, "exec");
+    for (let poll = 0; poll < 5; poll++) ledger.saveNative(key, state, "native-1");
+    expect(exec.mock.calls.some(([sql]) => /BEGIN IMMEDIATE|CREATE TABLE/.test(sql))).toBe(false);
+    ledger.saveNative(key, { ...state, status: "read", firstUnread: null }, "native-2");
+    expect(exec.mock.calls.some(([sql]) => /BEGIN IMMEDIATE/.test(sql))).toBe(true);
+    expect(ledger.nativeSnapshot(key)?.state.status).toBe("read");
+  });
+
   it("does not create a database from a pure catalog read or claim unsupported history read", () => {
     const { root, ledger, key } = fixture();
     expect(ledger.catalogStates(new Map([[key, true]]), "a").size).toBe(0);

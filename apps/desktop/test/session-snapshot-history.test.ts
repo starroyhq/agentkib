@@ -6,7 +6,21 @@ const history = (text: string) => ({
   completeItems: true,
 });
 
-describe("unchanged Claude stream history", () => {
+describe("unchanged stream history", () => {
+  it("drops indexed history when ownership changes to an uncached source", async () => {
+    const cache = new SessionSnapshotHistory();
+    const load = vi.fn(async () => history("indexed"));
+    await cache.read("session", async () => "indexed-version", load);
+    load.mockImplementation(async () => history("managed"));
+    expect(await cache.read("session", async () => null, load)).toEqual(history("managed"));
+    await cache.read("session", async () => null, load);
+    load.mockImplementation(async () => history("indexed again"));
+    expect(await cache.read("session", async () => "indexed-version", load)).toEqual(
+      history("indexed again"),
+    );
+    expect(load).toHaveBeenCalledTimes(4);
+  });
+
   it("checks the current source each poll while avoiding repeated history parsing", async () => {
     const cache = new SessionSnapshotHistory();
     const version = vi.fn(async () => "verified-source-1");

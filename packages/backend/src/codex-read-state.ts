@@ -21,6 +21,7 @@ type Snapshot = {
   active: boolean;
   checkedAt: number;
   stale: boolean;
+  fileVersion?: string;
 };
 type Connection = {
   session: Promise<CodexAppServerSession>;
@@ -81,6 +82,12 @@ export class CodexReadStateObserver {
   #unsupportedThreads = new Map<string, number>();
   #epochs = new Map<string, number>();
   #pages = new Map<string, string | null>();
+  #directory = new Map<
+    string,
+    { thread: Record<string, unknown>; receipt: NativeRead; checkedAt: number }
+  >();
+  #workspacePages = new Map<string, { cursor: string | null; checkedAt: number }>();
+  #directoryEpochs = new Map<string, number>();
   #closed = false;
   constructor(
     readonly environment: NodeJS.ProcessEnv,
@@ -92,6 +99,8 @@ export class CodexReadStateObserver {
     this.#closed = true;
     const connections = [...this.#connections.values()];
     this.#connections.clear();
+    this.#directory.clear();
+    this.#workspacePages.clear();
     await Promise.allSettled(
       connections.map(async (connection) => (await connection.session).close()),
     );
@@ -130,11 +139,14 @@ export class CodexReadStateObserver {
       this.environment,
       (event) => {
         if (
+          this.#closed ||
           event.method !== "thread/readState/changed" ||
           !object(event.params) ||
           typeof event.params.threadId !== "string"
         )
           return;
+        this.#directory.delete(`${key}\0${event.params.threadId}`);
+        this.#invalidateDirectory(key);
         // A notification is invalidation, not permission to acknowledge or take execution ownership.
         for (const [id, snapshot] of this.#snapshots) {
           if (id.startsWith(`${key}\0${event.params.threadId}\0`)) snapshot.stale = true;
@@ -149,6 +161,9 @@ export class CodexReadStateObserver {
       (session) =>
         session.once("close", () => {
           if (this.#connections.get(key) === captured) this.#connections.delete(key);
+          this.#invalidateDirectory(key);
+          for (const id of this.#directory.keys())
+            if (id.startsWith(`${key}\0`)) this.#directory.delete(id);
           for (const [id, snapshot] of this.#snapshots)
             if (id.startsWith(`${key}\0`)) snapshot.stale = true;
           if (!this.#closed) this.changed();
@@ -243,14 +258,31 @@ export class CodexReadStateObserver {
     try {
       await this.#serialized(target, async (session) => {
         const cursor = this.#pages.get(pool) ?? null;
-        const value = await session.request("thread/list", {
+        const epoch = this.#directoryEpochs.get(pool);
+        const params = {
           cursor,
           limit: 20,
           sortKey: "updated_at",
           sortDirection: "desc",
           modelProviders: [],
-        });
-        if (!object(value) || !Array.isArray(value.data)) return;
+        };
+        let value: unknown;
+        try {
+          value = await session.request("thread/list", { ...params, useStateDbOnly: true });
+        } catch (error) {
+          // Older servers may reject the optimization option. Keep their original directory
+          // observation and use coherent thread reads for result data instead.
+          if (!(error instanceof CodexAppServerError) || error.code !== -32602) throw error;
+          value = await session.request("thread/list", params);
+        }
+        if (
+          this.#closed ||
+          this.#directoryEpochs.get(pool) !== epoch ||
+          !object(value) ||
+          !Array.isArray(value.data)
+        )
+          return;
+        this.#rememberDirectory(pool, value);
         const next =
           typeof value.nextCursor === "string" &&
           value.nextCursor.length <= 8192 &&
@@ -286,6 +318,124 @@ export class CodexReadStateObserver {
     }
   }
 
+  #invalidateDirectory(pool: string): void {
+    this.#directoryEpochs.set(pool, (this.#directoryEpochs.get(pool) ?? 0) + 1);
+    // Keep each page cursor: unread changes must not starve older directory candidates.
+    for (const [key, page] of this.#workspacePages)
+      if (key.startsWith(`${pool}\0`)) page.checkedAt = 0;
+  }
+
+  // Recent CLI versions can return native receipts from SQLite without decoding rollouts.
+  // Keep pagination bounded; targets absent from a page still use the authoritative read RPC.
+  #rememberDirectory(pool: string, value: Record<string, unknown>): void {
+    if (!Array.isArray(value.data) || !object(value.readStates)) return;
+    for (const thread of value.data.slice(0, 100)) {
+      if (!object(thread) || typeof thread.id !== "string") continue;
+      try {
+        this.#directory.set(`${pool}\0${thread.id}`, {
+          thread,
+          receipt: receipt(value.readStates[thread.id]),
+          checkedAt: Date.now(),
+        });
+      } catch {
+        this.#directory.delete(`${pool}\0${thread.id}`);
+      }
+    }
+    // Entries are only a short-lived batch cache, never an alternative receipt authority.
+    for (const [key, entry] of this.#directory)
+      if (Date.now() - entry.checkedAt > 10_000) this.#directory.delete(key);
+  }
+
+  #fileVersion(target: CodexReadTarget, thread: Record<string, unknown>): string | undefined {
+    if (
+      thread.id !== target.nativeId ||
+      typeof thread.cwd !== "string" ||
+      pathIdentity(thread.cwd) !== pathIdentity(target.workspace) ||
+      typeof thread.path !== "string"
+    )
+      return undefined;
+    try {
+      const file = statSync(thread.path, { bigint: true });
+      if (!file.isFile()) return undefined;
+      return JSON.stringify([
+        thread.path,
+        String(file.dev),
+        String(file.ino),
+        String(file.size),
+        String(file.mtimeNs),
+        String(file.ctimeNs),
+        thread.status,
+      ]);
+    } catch {
+      return undefined;
+    }
+  }
+
+  async #unchanged(
+    session: CodexAppServerSession,
+    target: CodexReadTarget,
+    old: Snapshot | undefined,
+  ): Promise<Snapshot | null> {
+    if (!old?.fileVersion) return null;
+    const pool = this.#poolKey(target);
+    const key = `${pool}\0${target.nativeId}`;
+    const workspace = `${pool}\0${pathIdentity(target.workspace)}`;
+    let entry = this.#directory.get(key);
+    if (!entry || Date.now() - entry.checkedAt > 2_000) {
+      const page = this.#workspacePages.get(workspace);
+      if (!page || Date.now() - page.checkedAt > 2_000) {
+        try {
+          const cursor = page?.cursor ?? null;
+          const epoch = this.#directoryEpochs.get(pool);
+          const value = await session.request("thread/list", {
+            cursor,
+            limit: 100,
+            cwd: target.workspace,
+            useStateDbOnly: true,
+            sortKey: "updated_at",
+            sortDirection: "desc",
+            modelProviders: [],
+            sourceKinds: [
+              "cli",
+              "vscode",
+              "exec",
+              "appServer",
+              "subAgent",
+              "subAgentReview",
+              "subAgentCompact",
+              "subAgentThreadSpawn",
+              "subAgentOther",
+              "unknown",
+            ],
+          });
+          if (this.#closed) throw new Error("read-state-unavailable");
+          if (
+            this.#directoryEpochs.get(pool) === epoch &&
+            object(value) &&
+            Array.isArray(value.data)
+          ) {
+            this.#rememberDirectory(pool, value);
+            this.#workspacePages.set(workspace, {
+              checkedAt: Date.now(),
+              cursor:
+                typeof value.nextCursor === "string" &&
+                value.nextCursor.length <= 8192 &&
+                value.nextCursor !== cursor
+                  ? value.nextCursor
+                  : null,
+            });
+          }
+        } catch {
+          // Missing options/readStates in older CLIs must not change the source or imply read.
+        }
+        entry = this.#directory.get(key);
+      }
+    }
+    if (!old?.fileVersion || !entry || Date.now() - entry.checkedAt > 2_000) return null;
+    if (this.#fileVersion(target, entry.thread) !== old.fileVersion) return null;
+    return { ...old, receipt: entry.receipt, checkedAt: entry.checkedAt, stale: false };
+  }
+
   async #read(session: CodexAppServerSession, target: CodexReadTarget): Promise<Snapshot> {
     let value: unknown;
     try {
@@ -309,6 +459,7 @@ export class CodexReadStateObserver {
     if (!Object.hasOwn(value, "readState") || value.readState === null)
       throw new Error("read-state-thread-unsupported");
     const current = receipt(value.readState);
+    const fileVersion = this.#fileVersion(target, value.thread);
     const turns = await session.request("thread/turns/list", {
       threadId: target.nativeId,
       cursor: null,
@@ -325,7 +476,16 @@ export class CodexReadStateObserver {
     });
     if (!object(checked) || JSON.stringify(receipt(checked.readState)) !== JSON.stringify(current))
       throw new Error("read-state-unavailable");
-    return { receipt: current, latest, active, checkedAt: Date.now(), stale: false };
+    if (this.#closed) throw new Error("read-state-unavailable");
+    if (
+      fileVersion &&
+      (!object(checked.thread) || this.#fileVersion(target, checked.thread) !== fileVersion)
+    )
+      throw new Error("read-state-unavailable");
+    // Replace any older batch entry so a concurrent native read/unread change cannot regress
+    // to the receipt fetched by thread/list before this coherent read.
+    this.#directory.delete(`${this.#poolKey(target)}\0${target.nativeId}`);
+    return { receipt: current, latest, active, checkedAt: Date.now(), stale: false, fileVersion };
   }
 
   async refresh(target: CodexReadTarget, scope: string): Promise<ConversationReadState | null> {
@@ -338,14 +498,16 @@ export class CodexReadStateObserver {
       const key = this.#cacheKey(target),
         old = this.#snapshots.get(key);
       try {
-        const fresh = await this.#read(session, target);
+        const fresh =
+          (await this.#unchanged(session, target, old)) ?? (await this.#read(session, target));
+        if (this.#closed) throw new Error("read-state-unavailable");
         const poolChanged = this.#unsupported.delete(this.#poolKey(target)),
           threadChanged = this.#unsupportedThreads.delete(key);
         if (poolChanged || threadChanged) this.#epochs.set(key, (this.#epochs.get(key) ?? 0) + 1);
         this.#snapshots.set(key, fresh);
         if (
-          JSON.stringify([old?.receipt, old?.latest, old?.stale]) !==
-          JSON.stringify([fresh.receipt, fresh.latest, false])
+          JSON.stringify([old?.receipt, old?.latest, old?.active, old?.stale]) !==
+          JSON.stringify([fresh.receipt, fresh.latest, fresh.active, false])
         )
           this.changed();
         return this.#project(target, scope, fresh);
@@ -390,6 +552,8 @@ export class CodexReadStateObserver {
         (projected.latestResult?.id ?? null) !== seenResultId
       )
         throw new Error("read-state-conflict");
+      this.#directory.delete(`${this.#poolKey(target)}\0${target.nativeId}`);
+      this.#invalidateDirectory(this.#poolKey(target));
       let value: unknown;
       try {
         value = await session.request("thread/readState/update", {
@@ -405,6 +569,8 @@ export class CodexReadStateObserver {
         throw new Error("read-state-unavailable");
       }
       if (!object(value)) throw new Error("read-state-unavailable");
+      this.#directory.delete(`${this.#poolKey(target)}\0${target.nativeId}`);
+      this.#invalidateDirectory(this.#poolKey(target));
       fresh.receipt = receipt(value.readState);
       fresh.checkedAt = Date.now();
       this.changed();

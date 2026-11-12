@@ -9,6 +9,7 @@ import { ClaudeManagedReadOwner } from "../../../packages/backend/src/claude-man
 import { McpHub } from "../../../packages/backend/src/mcp-hub";
 import { RemoteAgent } from "../../../packages/backend/src/remote-agent";
 import { BackendStore } from "../../../packages/backend/src/store";
+import { WebReadRequests } from "../../../packages/backend/src/web-read";
 
 const cleanups: (() => unknown | Promise<unknown>)[] = [];
 afterEach(async () => {
@@ -17,7 +18,7 @@ afterEach(async () => {
   vi.useRealTimers();
 });
 
-async function fixture(managed = true) {
+async function fixture(managed = true, agent: "claude-code" | "codex" = "claude-code") {
   const root = realpathSync(mkdtempSync(path.join(tmpdir(), "session-snapshot-runtime-")));
   cleanups.push(() => rmSync(root, { recursive: true, force: true }));
   const data = path.join(root, "data");
@@ -43,7 +44,7 @@ async function fixture(managed = true) {
         "INSERT INTO conversation_sessions(id,workspace_id,agent,archived,sidechain,availability,origin,last_indexed_at) VALUES(?,?,?,?,?,?,?,?)",
         "session",
         "workspace",
-        "claude-code",
+        agent,
         0,
         0,
         "readable",
@@ -61,14 +62,22 @@ async function fixture(managed = true) {
   let status = "idle";
   let unavailable = false;
   const versionRead = vi
-    .spyOn(ClaudeManagedReadOwner.prototype, "historyVersion")
+    .spyOn(
+      agent === "codex" ? WebReadRequests.prototype : ClaudeManagedReadOwner.prototype,
+      agent === "codex" ? "indexedCodexHistoryVersion" : "historyVersion",
+    )
     .mockImplementation(async () => {
       if (unavailable) throw new Error("session-unavailable");
       return version;
     });
   const provider = vi
-    .spyOn(ClaudeManagedReadOwner.prototype, "request")
+    .spyOn(
+      agent === "codex" ? WebReadRequests.prototype : ClaudeManagedReadOwner.prototype,
+      "request",
+    )
     .mockImplementation(async (params) => {
+      params = params as Record<string, unknown>;
+      if (params.operation === "subagents") return { subagents: [] };
       if (params.operation === "live") return { sessionId: params.sessionId, status, revision: 1 };
       if (params.operation === "events")
         return {
@@ -198,6 +207,41 @@ describe("runtime Claude snapshot history reuse", () => {
     expect(result.events[0].payload.items).toEqual([{ id: "message", content: "initial" }]);
     expect(f.provider.mock.calls.filter(([params]) => params.operation === "events")).toHaveLength(
       2,
+    );
+  });
+});
+
+describe("runtime indexed Codex snapshot history reuse", () => {
+  it("rechecks live state and file identity without rereading unchanged history", async () => {
+    const f = await fixture(false, "codex");
+    await f.subscribe();
+    f.running();
+    const second = await f.subscribe();
+    expect(second.events[0].payload.live.status).toBe("running");
+    expect(second.events[0].payload.items).toEqual([{ id: "message", content: "initial" }]);
+    expect(f.provider.mock.calls.filter(([params]) => params.operation === "live")).toHaveLength(2);
+    expect(f.provider.mock.calls.filter(([params]) => params.operation === "events")).toHaveLength(
+      1,
+    );
+    expect(f.versionRead).toHaveBeenCalledTimes(3);
+    f.change("appended");
+    const third = await f.subscribe();
+    expect(third.events[0].payload.items).toEqual([{ id: "message", content: "appended" }]);
+    expect(f.provider.mock.calls.filter(([params]) => params.operation === "events")).toHaveLength(
+      2,
+    );
+    expect(f.provider).toHaveBeenCalledWith(
+      expect.objectContaining({ operation: "events", retainCursor: false }),
+    );
+  });
+
+  it("rejects a removed source before returning its cached history", async () => {
+    const f = await fixture(false, "codex");
+    await f.subscribe();
+    f.unavailable();
+    await expect(f.subscribe()).rejects.toThrow("session-unavailable");
+    expect(f.provider.mock.calls.filter(([params]) => params.operation === "events")).toHaveLength(
+      1,
     );
   });
 });

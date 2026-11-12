@@ -324,8 +324,14 @@ async function backend(directory: string, workerPatch: string) {
     pending.get(frame.id)?.resolve(frame);
     pending.delete(frame.id);
   });
-  child.on("exit", () => {
-    for (const waiter of pending.values()) waiter.reject(new Error(errors || "Backend exited"));
+  // The last RPC reply can still be in the stdout pipe when the process exits.
+  child.once("close", (code, signal) => {
+    if (!pending.size) return;
+    const detail = errors.trim();
+    const failure = new Error(
+      `Backend closed (${signal ?? `exit code ${code}`}) before replying to RPC IDs ${[...pending.keys()].join(", ")}${detail ? `\n${detail}` : ""}`,
+    );
+    for (const waiter of pending.values()) waiter.reject(failure);
     pending.clear();
   });
   const request = (method: string, params: Record<string, unknown> = {}) =>
@@ -381,6 +387,8 @@ describe("built backend Skills isolation", () => {
     const observations = (inventory.result as { observations: Array<{ name: string }> })
       .observations;
     expect([...new Set(observations.map((item) => item.name))]).toEqual(["reviewer"]);
+    // Force the shutdown reply to be read when Node drains stdout after the exit event.
+    rpc.child.stdout.pause();
     expect((await rpc.request("agentkib.shutdown")).error).toBeUndefined();
   }, 15_000);
 

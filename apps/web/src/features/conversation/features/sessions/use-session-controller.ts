@@ -19,6 +19,7 @@ import {
 import type { ResolvedHistoryReference } from "@agentkib/web-client";
 import {
   createConversationStore,
+  createTranscriptPageCache,
   loadEarlierHistoryBatch,
   mergeConversationItems,
   oldestIncompleteHistoryTurn,
@@ -360,16 +361,12 @@ export function useSessionController({
         : { page: next, historyDetailTurnId: detailTurnId },
     );
   }, []);
-  // Remember the history of the few most recently viewed sessions so reopening one shows its
-  // transcript immediately instead of clearing to a spinner. The fresh read still runs on every
-  // open and reconciles through the normal merge, so stale content is corrected within the read.
-  const pageCache = useRef(new Map<string, ConversationEventPage>());
+  // Reopening a recent session shows cached history while its fresh read runs. Retention is
+  // bounded by bytes as well as count; the current reader still owns its complete history.
+  const pageCache = useRef(createTranscriptPageCache<ConversationEventPage>());
   useEffect(() => {
     if (!selected || !page) return;
-    const cache = pageCache.current;
-    cache.delete(selected);
-    cache.set(selected, page);
-    if (cache.size > 10) cache.delete(cache.keys().next().value as string);
+    pageCache.current.set(selected, page);
   }, [selected, page]);
   const catalogSessions = useRef<ConversationSessionSummary[]>([]);
   // The last accepted catalog, so the program-started sessions option can re-filter it.

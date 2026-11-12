@@ -1,6 +1,6 @@
 import { DatabaseSync } from "node:sqlite";
 import { createHash, randomUUID } from "node:crypto";
-import { existsSync, readFileSync, realpathSync, statSync } from "node:fs";
+import { existsSync, lstatSync, readFileSync, realpathSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import path from "node:path";
 import { z } from "zod";
@@ -4126,6 +4126,38 @@ export class WebReadRequests {
     return this.#runOperation(() => this.#request(value));
   }
 
+  /** Revalidate access on every poll, but parse unchanged indexed history only once.
+   * Managed sessions keep their event-ledger path, and live/control reads are never cached. */
+  indexedCodexHistoryVersion(sessionId: string): Promise<string | null> {
+    return this.#runOperation(async () => {
+      const generation = this.indexGeneration();
+      let resolved: ReturnType<SessionReaders["resolve"]> | undefined;
+      const resolve = () => (resolved ??= this.sessions.resolve(sessionId));
+      const before = await this.#indexedCodexEventScope(sessionId, resolve);
+      if (!before) return null;
+      const source = await resolve();
+      if (source.summary.agent !== "codex" || !source.transcript) return null;
+      const info = lstatSync(source.transcript, { bigint: true });
+      if (!info.isFile() || info.isSymbolicLink()) throw new Error("session-unavailable");
+      const after = await this.#indexedCodexEventScope(sessionId, resolve);
+      if (before !== after || generation !== this.indexGeneration())
+        throw new Error("session-unavailable");
+      return JSON.stringify([
+        String(generation),
+        before,
+        this.sessions.codexHome(),
+        source.native.native_ref,
+        source.workspace,
+        source.transcript,
+        String(info.dev),
+        String(info.ino),
+        String(info.size),
+        String(info.mtimeNs),
+        String(info.ctimeNs),
+      ]);
+    });
+  }
+
   /** Serve an indexed Codex page without assembling the directory. Managed and
    * unverified records still go through the regular catalog authorization. */
   indexedCodexEvents(value: unknown) {
@@ -4139,6 +4171,7 @@ export class WebReadRequests {
         sessionId: request.sessionId,
         cursor: request.cursor ?? null,
         limit: request.limit,
+        retainCursor: request.retainCursor !== false,
       });
       const after = await this.#indexedCodexEventScope(request.sessionId);
       if (before !== after || generation !== this.indexGeneration())
@@ -4147,7 +4180,10 @@ export class WebReadRequests {
     });
   }
 
-  async #indexedCodexEventScope(sessionId: string): Promise<string | null> {
+  async #indexedCodexEventScope(
+    sessionId: string,
+    resolve = () => this.sessions.resolve(sessionId),
+  ): Promise<string | null> {
     const row = this.store.sessions.get(sessionId);
     if (
       row?.agent !== "codex" ||
@@ -4166,7 +4202,7 @@ export class WebReadRequests {
     // An incomplete ledger cannot attest that the indexed ID is safe to open directly.
     if (!catalog.complete || catalog.records.some((record) => record.id === sessionId)) return null;
     if (catalog.records.some((record) => record.native_id)) {
-      const source = await this.sessions.resolve(sessionId);
+      const source = await resolve();
       const ref = source.native.native_ref.toLowerCase();
       const candidates = catalog.records.filter(
         (record) => record.native_id?.toLowerCase() === ref,

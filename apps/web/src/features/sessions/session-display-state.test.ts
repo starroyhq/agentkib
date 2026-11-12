@@ -318,3 +318,70 @@ it.each(["zh-CN", "zh-TW", "en-US", "ja-JP"] as const)(
     expect(claude.canSend).toBe(true);
   },
 );
+
+it.each(["zh-CN", "zh-TW", "en-US", "ja-JP"] as const)(
+  "projects a DeepSeek Harness that AgentKib starts as ready, not view-only, in %s",
+  (locale) => {
+    const copy = sessionContinuationCopy(locale);
+    const dsh = {
+      ...state,
+      locale,
+      selected: "dsh",
+      current: { id: "dsh", agent: "deepseek-harness", availability: "readable" },
+      live: {
+        ...state.live!,
+        sessionId: "dsh",
+        executionMode: "dsh-follower",
+        executionLocation: null,
+        ownershipReason: null,
+      },
+      capabilities: { sessionId: "dsh", features: { send: { available: true } } },
+    } as SessionController;
+    // No DSH runs yet: the next message starts one in the background.
+    expect(sessionDisplayState(dsh)).toMatchObject({ continuation: "idle", label: "" });
+    expect(
+      sessionDisplayState({ ...dsh, pendingSend: { sessionId: "dsh", text: "draft" } }),
+    ).toMatchObject({ continuation: "starting", label: copy.starting, loading: true });
+    const background = {
+      ...dsh,
+      live: { ...dsh.live!, executionLocation: "agentkib" },
+    } as SessionController;
+    expect(sessionDisplayState(background)).toMatchObject({ continuation: "idle", label: "" });
+    expect(
+      sessionDisplayState({
+        ...background,
+        canSend: false,
+        pendingSend: { sessionId: "dsh", text: "next" },
+        live: { ...background.live!, status: "running", sendEnabled: false },
+      }),
+    ).toMatchObject({ continuation: "running", label: copy.running, tone: "active" });
+    expect(
+      sessionDisplayState({
+        ...background,
+        canSend: false,
+        live: { ...background.live!, sendEnabled: false, questions: [{ id: "q" }] },
+      } as unknown as SessionController).tone,
+    ).toBe("warning");
+    // Starting is off and no DSH runs: view only, with the reason.
+    expect(
+      sessionDisplayState({
+        ...dsh,
+        canSend: false,
+        live: {
+          ...dsh.live!,
+          status: "unsupported",
+          sendEnabled: false,
+          reason: "dsh-runtime-offline",
+        },
+      } as unknown as SessionController),
+    ).toMatchObject({
+      continuation: "view-only",
+      label: copy.viewOnly,
+      reason: codexReason(locale, "dsh-runtime-offline").text,
+    });
+    // The person's own DSH, with the plugin, is followed as before.
+    expect(
+      sessionDisplayState({ ...dsh, live: { ...dsh.live!, executionLocation: "external" } }),
+    ).toMatchObject({ continuation: "dsh", label: copy.dshConnected });
+  },
+);

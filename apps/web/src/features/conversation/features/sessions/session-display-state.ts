@@ -272,6 +272,32 @@ export function sessionDisplayState(
       if (live.approvals?.length) return { label: c.approval, reason: c.approval, tone: "warning" };
       return { label: copy.dshConnected, reason: "", tone: "muted", continuation: "dsh" };
     }
+    // A DSH that AgentKib started runs here, as a managed Codex does. While none runs, the next
+    // message starts one, so the session reads as ready rather than view-only.
+    if (live.executionMode === "dsh-follower") {
+      if (live.questions?.length) return { label: c.question, reason: c.question, tone: "warning" };
+      if (live.approvals?.length) return { label: c.approval, reason: c.approval, tone: "warning" };
+      if (live.activity === "compacting")
+        return {
+          label: contextUsageCopyForSurface(locale, surface).compacting,
+          reason: contextUsageCopyForSurface(locale, surface).compactingDetail,
+          tone: "active",
+        };
+      if (live.status === "running")
+        return { label: copy.running, reason: "", tone: "active", continuation: "running" };
+      if (state.pendingSend?.sessionId === state.selected && live.executionLocation !== "agentkib")
+        return {
+          label: copy.starting,
+          reason: "",
+          tone: "muted",
+          loading: true,
+          continuation: "starting",
+        };
+      if (!controlReady)
+        return { label: c.verifying, reason: c.verifying, tone: "muted", loading: true };
+      if (canSend || (live.sendEnabled && !reason))
+        return { label: "", reason: "", tone: "muted", continuation: "idle" };
+    }
     return {
       label: copy.viewOnly,
       reason: codexReason(locale, reason, surface).text,

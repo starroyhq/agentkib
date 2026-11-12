@@ -34,7 +34,12 @@ export class ConversationHub extends EventEmitter {
     const event = params as SessionStreamEvent;
     if (event.protocolVersion !== 2 || typeof event.subscriptionId !== "string") return;
     if (this.cleanups.has(event.subscriptionId)) return;
-    if (event.type === "invalidate") this.emit("catalog-invalidated");
+    if (
+      event.type === "invalidate" &&
+      Array.isArray(event.payload?.domains) &&
+      event.payload.domains.includes("catalog")
+    )
+      this.emit("catalog-invalidated");
     const observer = this.observers.get(event.subscriptionId);
     if (observer) observer(event);
     else if (this.pending) {

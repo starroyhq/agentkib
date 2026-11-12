@@ -58,6 +58,24 @@ describe("shared conversation dispatcher", () => {
     });
   });
 
+  it("forwards session invalidations without refreshing the catalog for unrelated domains", async () => {
+    const request = vi.fn(async () => ({ subscriptionId: "sub", events: [], cursor: "epoch:0" }));
+    const hub = new ConversationHub(request);
+    const received = vi.fn();
+    const catalogChanged = vi.fn();
+    hub.on("catalog-invalidated", catalogChanged);
+    await hub.subscribe("session", undefined, received);
+
+    const history = { ...event(1, "invalidate"), payload: { domains: ["history", "queue"] } };
+    const catalog = { ...event(2, "invalidate"), payload: { domains: ["history", "catalog"] } };
+    hub.notification("sessions.event", history);
+    expect(received).toHaveBeenCalledWith(history);
+    expect(catalogChanged).not.toHaveBeenCalled();
+    hub.notification("sessions.event", catalog);
+    expect(received).toHaveBeenLastCalledWith(catalog);
+    expect(catalogChanged).toHaveBeenCalledOnce();
+  });
+
   it("rejects a baseline from the Runtime generation that just exited", async () => {
     let finish!: (value: unknown) => void;
     const request = vi.fn(

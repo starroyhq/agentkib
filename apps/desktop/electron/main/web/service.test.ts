@@ -752,6 +752,35 @@ describe("WebAccessService loopback security boundary", () => {
     expect((await http("/api/web/v1/access")).status).toBe(200);
     expect((await http("/api/web/v1/catalog")).status).toBe(200);
   });
+  it("keeps desktop reads separate from the anonymous and local control budgets", async () => {
+    const rates = (service as unknown as { rates: Map<string, { count: number; until: number }> })
+      .rates;
+    rates.set("anonymous", { count: 600, until: Date.now() + 60_000 });
+    expect((await http("/api/web/v1/access")).status).toBe(429);
+    const access = await service.localRequest("/access");
+    expect(access.status).toBe(200);
+    for (let i = 0; i < 181; i++) expect((await service.localRequest("/catalog")).status).toBe(200);
+    expect(rates.has("desktop-local")).toBe(false);
+
+    runtime.mockResolvedValue({
+      workspaces: [{ id: "workspace", name: "Workspace", path: dir }],
+      sessions: [{ id: "s1", workspace_id: "workspace", agent: "codex" }],
+    });
+    const body = {
+      sessionId: "s1",
+      text: "hello",
+      requestId: "00000000-0000-4000-8000-000000000001",
+      bootId: (access.body as { bootId: string }).bootId,
+      expectedRevision: 4,
+    };
+    rates.set("control:desktop-local", { count: 30, until: Date.now() + 60_000 });
+    expect(await service.localRequest("/send", body)).toEqual({
+      status: 429,
+      body: { error: "rate_limited", controlOutcome: "not-dispatched" },
+    });
+    expect(runtime).not.toHaveBeenCalledWith(expect.objectContaining({ operation: "send" }));
+    expect((await service.localRequest("/catalog")).status).toBe(200);
+  });
   it("says a control the per-device limit turned away was never dispatched", async () => {
     await bootstrap();
     await pair();

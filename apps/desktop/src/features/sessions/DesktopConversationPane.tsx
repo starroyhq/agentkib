@@ -70,11 +70,16 @@ export function DesktopConversationPane({ sessionId }: { sessionId?: string }) {
   // Keep its navigation intent until that verified catalog contains the child.
   useEffect(() => completeNavigation(sessions), [sessions, completeNavigation]);
   const onCatalogChange = useCallback(() => {
-    const request = navigation.current;
-    const intent = selectionVersion();
-    // The embedded reader can adopt a snapshot the directory already has.
-    // Join its pending refresh without invalidating that same request.
-    void refreshConversationCatalog({ joinPending: !pendingNavigation.current }).then(
+    // The directory already observes catalog changes. Only a pending navigation
+    // needs a verified read to recover from an earlier failure.
+    const pending = pendingNavigation.current;
+    if (!pending) return;
+    const { request, intent } = pending;
+    if (request !== navigation.current || intent !== selectionVersion()) {
+      pendingNavigation.current = undefined;
+      return;
+    }
+    void refreshConversationCatalog({ joinPending: true }).then(
       (catalog) => {
         if (request !== navigation.current || intent !== selectionVersion()) return;
         completeNavigation(catalog);

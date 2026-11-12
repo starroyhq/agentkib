@@ -466,6 +466,7 @@ function storedDiagnostics(value: unknown): Record<string, unknown>[] {
       "grok-build",
       "antigravity",
       "deepseek-harness",
+      "devin",
     ];
     const statuses = [
       "not-configured",

@@ -24,6 +24,7 @@ const AGENTS = [
   "grok-build",
   "antigravity",
   "deepseek-harness",
+  "devin",
 ];
 const EVIDENCE = ["session-cwd", "configured-workspace", "scan-marker", "manual"];
 

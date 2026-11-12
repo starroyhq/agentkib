@@ -14,6 +14,7 @@ import { GrokSessions } from "./grok-sessions";
 import { CodexSessionOwnership } from "./codex-session-ownership";
 import { OpenClawSessions } from "./openclaw-sessions";
 import { HermesSessions } from "./hermes-sessions";
+import { DevinSessions, devinConfigHome, devinDataHome } from "./devin-sessions";
 import { scanNativeHomeAssets } from "./native-home-assets";
 import { resolveCommand } from "./command-resolution";
 import { utcNow, type DiscoveryCandidate } from "./workspaces";
@@ -98,6 +99,12 @@ export function discoverConfiguredWorkspaces(environment: NodeJS.ProcessEnv) {
       path: path.join(deepseekHome(environment), "storages/workspace.json"),
       read: (file: string) => readDeepSeek(file),
     },
+    {
+      agent: "devin",
+      source: "sessions-db",
+      path: new DevinSessions(environment).database(),
+      read: (_database: string) => readDevin(environment),
+    },
   ];
 
   for (const item of roots) {
@@ -176,6 +183,7 @@ export function agentInstallations(environment: NodeJS.ProcessEnv) {
       "grok-build": environment.GROK_HOME ?? path.join(home, ".grok"),
       antigravity: path.join(home, ".gemini"),
       "deepseek-harness": deepseekHome(environment),
+      devin: devinConfigHome(environment),
     },
     commands: Record<string, string> = {
       codex: "codex",
@@ -187,12 +195,14 @@ export function agentInstallations(environment: NodeJS.ProcessEnv) {
       "grok-build": "grok",
       antigravity: "agy",
       "deepseek-harness": "dsh",
+      devin: "devin",
     };
   return Object.entries(homes).map(([agent, agentHome]) => {
     const configured =
         isDirectory(agentHome) ||
         (agent === "cursor" && isDirectory(cursorData)) ||
-        (agent === "opencode" && isDirectory(opencodeData)),
+        (agent === "opencode" && isDirectory(opencodeData)) ||
+        (agent === "devin" && isDirectory(devinDataHome(environment))),
       warnings: string[] = [];
     if (agent === "deepseek-harness") {
       const file = path.join(agentHome, "storages/workspace.json");
@@ -241,6 +251,8 @@ function appInstalled(agent: string, environment: NodeJS.ProcessEnv): boolean {
       antigravity: "Antigravity.app",
       // DSH Desktop ships its `dsh` CLI inside the bundle and does not put it on PATH.
       "deepseek-harness": "DeepSeek Harness.app",
+      // Devin Desktop likewise bundles the `devin` CLI and runs its sessions through it.
+      devin: "Devin.app",
     };
     const bundle = bundles[agent];
     return bundle
@@ -850,6 +862,26 @@ function readOpenClaw(home: string, environment: NodeJS.ProcessEnv): ProviderRes
     status: incomplete ? "partial" : candidates.length ? "succeeded" : "empty",
     reasons: incomplete ? ["source-read-failed"] : [],
     source_diagnostics,
+  };
+}
+
+function readDevin(environment: NodeJS.ProcessEnv): ProviderResult {
+  const result = new DevinSessions(environment).list(null),
+    candidates = result.sessions.flatMap((session) =>
+      session.cwd
+        ? [
+            {
+              ...candidate(session.cwd, "devin", "session-cwd", session.updated_at, false, 1),
+              session_cwds: [session.cwd],
+            },
+          ]
+        : [],
+    );
+  return {
+    candidates,
+    errors: [],
+    status: result.incomplete ? "partial" : candidates.length ? "succeeded" : "empty",
+    reasons: result.incomplete ? ["source-read-failed"] : [],
   };
 }
 

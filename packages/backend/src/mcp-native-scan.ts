@@ -19,6 +19,7 @@ import { readClaudeSettings, type ClaudeSettings, type McpPolicyEntry } from "./
 import { isSensitiveExternalPath } from "./context-claude";
 import { defaultIo } from "./context-claude-sources";
 import type { Agent } from "./doctor-files";
+import { devinConfigHome } from "./devin-sessions";
 import { canonicalize, pathIdentity } from "./paths";
 import { compareUtf8 } from "./workspaces";
 import type { BackendStore } from "./store";
@@ -204,6 +205,7 @@ function scanProject(context: CandidateContext, project: string): void {
     ["claude-code", ".mcp.json"],
     ["cursor", ".cursor/mcp.json"],
     ["antigravity", ".agents/mcp_config.json"],
+    ["devin", ".devin/mcp_config.json"],
   ] as const) {
     const file = path.join(project, relative);
     scanSafely(context, agent, "project", file, () => scanConfig(file, agent, "project", context));
@@ -230,6 +232,7 @@ function scanHome(context: CandidateContext): void {
   for (const [agent, file] of [
     ["cursor", path.join(home, ".cursor/mcp.json")],
     ["antigravity", path.join(home, ".gemini/config/mcp_config.json")],
+    ["devin", path.join(devinConfigHome(context.environment), "mcp_config.json")],
   ] as const) {
     scanSafely(context, agent, "home", file, () => scanConfig(file, agent, "home", context));
   }

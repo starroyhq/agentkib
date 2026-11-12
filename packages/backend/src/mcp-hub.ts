@@ -450,6 +450,7 @@ function parseAgent(value: string): string {
     antigravity: "antigravity",
     "deepseek-harness": "deepseek-harness",
     dsh: "deepseek-harness",
+    devin: "devin",
   };
   const agent = aliases[value];
   if (!agent) throw new Error("Unknown Agent");

@@ -43,6 +43,7 @@ export const MCP_CONNECTION_AGENTS = [
   "hermes",
   "grok-build",
   "antigravity",
+  "devin",
 ] as const;
 export type McpConnectionAgent = (typeof MCP_CONNECTION_AGENTS)[number];
 type ObjectValue = Record<string, unknown>;
@@ -130,6 +131,7 @@ function connectionContext(
     hermes: [agentHome?.config ?? "", "yaml", "agent-home"],
     "grok-build": [path.join(project, ".grok/config.toml"), "toml", "project"],
     antigravity: [path.join(project, ".agents/mcp_config.json"), "json", "project"],
+    devin: [path.join(project, ".devin/mcp_config.json"), "json", "project"],
   } as const;
   const [target, format, scope] = targets[agent];
   const url = `http://127.0.0.1:${hub.port}/mcp/v1/workspaces/${encodeSegment(workspaceId)}/agents/${agent}`;

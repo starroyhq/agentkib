@@ -11,6 +11,7 @@ const AGENT_KINDS: Record<AgentKind, true> = {
   hermes: true,
   "grok-build": true,
   "deepseek-harness": true,
+  devin: true,
 };
 
 export function requireAgentKind(value: unknown): AgentKind {

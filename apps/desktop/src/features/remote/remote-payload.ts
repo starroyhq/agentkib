@@ -102,6 +102,7 @@ const catalog = z.object({
           "open-claw",
           "hermes",
           "grok-build",
+          "devin",
         ]),
         title: optionalText,
         created_at: optionalTimestamp,

@@ -194,6 +194,7 @@ const managedAgents = new Set([
   "grok-build",
   "antigravity",
   "deepseek-harness",
+  "devin",
 ]);
 /** Hide only the generator's known, flat checksum maps; ambiguous YAML stays fully visible. */
 export function generatedChecksumLines(text: string, target?: string): Set<number> {

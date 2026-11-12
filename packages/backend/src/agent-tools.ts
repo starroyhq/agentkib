@@ -112,6 +112,11 @@ const SPECS: Spec[] = [
     command: "agy",
     official: "https://antigravity.google/docs/cli/overview/",
   },
+  {
+    agent: "devin",
+    command: "devin",
+    official: "https://docs.devin.ai/cli",
+  },
 ];
 const CHANNELS: Record<string, Channel[]> = {
   codex: ["official-installer", "npm", "pnpm", "bun", "homebrew"],
@@ -122,6 +127,8 @@ const CHANNELS: Record<string, Channel[]> = {
   hermes: ["official-installer", "desktop-app", "nix"],
   "grok-build": ["official-installer", "npm"],
   antigravity: [],
+  // Devin Desktop bundles its own CLI; only the official installer is offered from here.
+  devin: ["official-installer"],
 };
 const PACKAGES: Record<string, string> = {
   codex: "@openai/codex",
@@ -621,6 +628,9 @@ export class AgentTools {
         "grok-build": shell
           ? "irm https://x.ai/cli/install.ps1 | iex"
           : "curl -fsSL https://x.ai/cli/install.sh | bash",
+        devin: shell
+          ? "irm https://static.devin.ai/cli/setup.ps1 | iex"
+          : "curl -fsSL https://cli.devin.ai/install.sh | bash",
       };
       return commands[spec.agent] || null;
     }
@@ -900,6 +910,11 @@ export class AgentTools {
     if (value.includes("/mise/")) return "unknown";
     if (spec.agent === "claude-code" && value.includes("/.local/share/claude/"))
       return "official-installer";
+    // Devin Desktop runs the CLI from its own bundle and updates it with the app.
+    if (spec.agent === "devin" && value.includes("/extensions/windsurf/devin/bin/"))
+      return "desktop-app";
+    if (spec.agent === "devin" && value.includes("/devin/cli/_versions/"))
+      return "official-installer";
     if (
       spec.agent === "cursor" &&
       (value.includes("/.local/share/cursor-agent/") ||
@@ -907,7 +922,7 @@ export class AgentTools {
     )
       return "official-installer";
     if (
-      ["codex", "claude-code", "hermes", "grok-build", "opencode", "open-claw"].includes(
+      ["codex", "claude-code", "hermes", "grok-build", "opencode", "open-claw", "devin"].includes(
         spec.agent,
       ) &&
       path

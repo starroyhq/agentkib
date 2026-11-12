@@ -17,7 +17,8 @@ export const normalize = (value: string) =>
     .join(" ");
 export function adapterEnabled(manifest: Manifest, agent: Agent): boolean {
   return (
-    manifest.adapters[agent]?.enabled ?? !["opencode", "grok-build", "antigravity"].includes(agent)
+    manifest.adapters[agent]?.enabled ??
+    !["opencode", "grok-build", "antigravity", "devin"].includes(agent)
   );
 }
 export function safeTarget(project: string, target: string): boolean {
@@ -127,6 +128,8 @@ const roots: Record<Agent, string[]> = {
   "grok-build": [".grok/skills", ".agents/skills", ".claude/skills", ".cursor/skills"],
   antigravity: [".agents/skills"],
   "deepseek-harness": [".dsh/skills", ".agents/skills"],
+  // Devin also imports the Windsurf and Claude Code project directories by default.
+  devin: [".devin/skills", ".agents/skills", ".windsurf/skills", ".claude/skills"],
 };
 const equal = (a: Map<string, string> | null, b: Map<string, string>) =>
   a !== null && a.size === b.size && [...b].every(([key, value]) => a.get(key) === value);
@@ -261,6 +264,7 @@ export function mcpRepairable(project: string, agent: Agent): boolean {
       opencode: ".opencode/opencode.json",
       "grok-build": ".grok/config.toml",
       antigravity: ".agents/mcp_config.json",
+      devin: ".devin/mcp_config.json",
     } as Partial<Record<Agent, string>>
   )[agent];
   if (!relative) return false;

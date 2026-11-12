@@ -269,6 +269,81 @@ function fixture() {
 }
 
 describe("managed directory ownership", () => {
+  it("versions indexed history without parsing events and detects append, replacement and ownership", async () => {
+    const f = fixture();
+    const file = f.addNative(f.owner.native_id!, "vscode");
+    f.sync();
+    const sessionId = f.store.sessions.id("codex", f.owner.native_id!);
+    const events = vi.spyOn(f.readers, "events");
+    const first = await f.web.indexedCodexHistoryVersion(sessionId);
+    expect(typeof first).toBe("string");
+    expect(await f.web.indexedCodexHistoryVersion(sessionId)).toBe(first);
+    appendFileSync(
+      file,
+      JSON.stringify({
+        type: "event_msg",
+        payload: { type: "agent_message", message: "Appended" },
+      }) + "\n",
+    );
+    const appended = await f.web.indexedCodexHistoryVersion(sessionId);
+    expect(appended).not.toBe(first);
+    writeFileSync(`${file}.replacement`, readFileSync(file));
+    renameSync(`${file}.replacement`, file);
+    expect(await f.web.indexedCodexHistoryVersion(sessionId)).not.toBe(appended);
+    expect(events).not.toHaveBeenCalled();
+    expect(f.run).not.toHaveBeenCalled();
+    f.saveOwners([f.owner]);
+    expect(await f.web.indexedCodexHistoryVersion(sessionId)).toBeNull();
+  });
+
+  it.each(["classification", "disabled", "workspace"])(
+    "does not reuse indexed history after its %s changes during validation",
+    async (kind) => {
+      const f = fixture();
+      f.addNative(f.owner.native_id!, "vscode");
+      f.sync();
+      const sessionId = f.store.sessions.id("codex", f.owner.native_id!);
+      const resolve = f.readers.resolve.bind(f.readers);
+      vi.spyOn(f.readers, "resolve").mockImplementationOnce(async (id) => {
+        const source = await resolve(id);
+        if (kind === "disabled")
+          writeFileSync(
+            path.join(f.root, "preferences.json"),
+            JSON.stringify({ session_index_enabled: false }),
+          );
+        else if (kind === "classification")
+          f.store.sql.run(
+            "INSERT INTO schema_meta(key,value) VALUES(?,?)",
+            `codex_session_classification_stale:${sessionId}`,
+            "workspace",
+          );
+        else f.store.sql.run("DELETE FROM workspaces WHERE id='workspace'");
+        return source;
+      });
+      await expect(f.web.indexedCodexHistoryVersion(sessionId)).rejects.toThrow(
+        "session-unavailable",
+      );
+      expect(await f.web.indexedCodexHistoryVersion(sessionId)).toBeNull();
+    },
+  );
+
+  it("does not retain pagination cursors for polled indexed history", async () => {
+    const f = fixture();
+    f.addNative(f.owner.native_id!, "vscode");
+    f.sync();
+    const read = vi.spyOn(f.readers, "events");
+    const input = {
+      operation: "events",
+      sessionId: f.store.sessions.id("codex", f.owner.native_id!),
+      limit: 100,
+      retainCursor: false,
+    };
+    await f.web.indexedCodexEvents(input);
+    expect(read).toHaveBeenCalledWith(expect.objectContaining({ retainCursor: false }));
+    await f.web.indexedCodexEvents({ ...input, retainCursor: undefined });
+    expect(read).toHaveBeenLastCalledWith(expect.objectContaining({ retainCursor: true }));
+  });
+
   it("reads one indexed Codex history page without building the workspace catalog", async () => {
     const f = fixture();
     const file = f.addNative(f.owner.native_id!, "vscode");

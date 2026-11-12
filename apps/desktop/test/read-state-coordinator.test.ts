@@ -164,6 +164,25 @@ function fixture(native = true) {
 }
 
 describe("conversation read-state coordination", () => {
+  it("does not broadcast unchanged polling cycles but still detects native manual unread", async () => {
+    vi.useFakeTimers({ toFake: ["Date", "setInterval", "clearInterval"] });
+    const f = fixture(),
+      owner = f.makeOwner();
+    await owner.get(f.alias, "a");
+    f.changed.mockClear();
+    await vi.advanceTimersByTimeAsync(5000);
+    expect(f.request.mock.calls.some(([method]) => method === "thread/list")).toBe(true);
+    expect(f.changed).not.toHaveBeenCalled();
+    f.manualUnread();
+    await vi.advanceTimersByTimeAsync(5000);
+    expect(f.changed).toHaveBeenCalled();
+    expect(await owner.get(f.alias, "a")).toMatchObject({
+      status: "unread",
+      source: "codex-native",
+      firstUnread: { type: "threadStart" },
+    });
+  });
+
   it("normalizes unavailable source resolution without leaking native paths or writing receipts", async () => {
     const f = fixture(),
       owner = f.makeOwner();

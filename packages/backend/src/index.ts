@@ -91,6 +91,7 @@ import {
 import { SessionStreamHub } from "./session-stream";
 import { mergeCodexFollowerSnapshot } from "./codex-follower-stream";
 import { SessionSnapshotHistory } from "./session-snapshot-history";
+import { retainManagedLedgerReaders } from "./managed-ledger";
 import { BackendStore } from "./store";
 import { canonicalize } from "./paths";
 import {
@@ -181,6 +182,7 @@ export class TypeScriptBackend {
   #store?: BackendStore;
   #nativeMemory?: NativeMemoryOwner;
   #dataDir?: string;
+  #releaseManagedLedgerReaders?: () => void;
   #commands = new Commands();
   #git?: Git;
   #context?: Context;
@@ -286,6 +288,8 @@ export class TypeScriptBackend {
     this.#git = undefined;
     this.#context = undefined;
     this.#doctor = undefined;
+    this.#releaseManagedLedgerReaders?.();
+    this.#releaseManagedLedgerReaders = undefined;
     this.#store?.close();
     this.#store = undefined;
     this.#dataDir = undefined;
@@ -459,6 +463,7 @@ export class TypeScriptBackend {
         this.#handoffWork = new HandoffWork();
         this.#store = store;
         this.#dataDir = dataDir;
+        this.#releaseManagedLedgerReaders = retainManagedLedgerReaders(dataDir);
         this.#nativeMemory = new NativeMemoryOwner({
           store,
           environment: { ...process.env, ...this.environment },
@@ -829,6 +834,7 @@ export class TypeScriptBackend {
             };
             const claude = this.#claudeManaged;
             const index = this.#sessionIndex;
+            const web = this.#webRead;
             const isClaude =
               this.#store?.sessions.get(sessionId)?.agent === "claude-code" ||
               claude?.hasManagedSession(sessionId);
@@ -856,7 +862,18 @@ export class TypeScriptBackend {
                     },
                     readHistory,
                   )
-                : await readHistory();
+                : web
+                  ? await snapshotHistory.read(
+                      sessionId,
+                      async () => {
+                        if (this.#webRead !== web) throw new Error("session-unavailable");
+                        const version = await web.indexedCodexHistoryVersion(sessionId);
+                        if (this.#webRead !== web) throw new Error("session-unavailable");
+                        return version;
+                      },
+                      readHistory,
+                    )
+                  : await readHistory();
             const follower = this.#webRead?.readFollowerSnapshot(sessionId);
             return {
               live,

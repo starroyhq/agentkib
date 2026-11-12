@@ -105,6 +105,9 @@ export class SessionReaders {
   #paging = new SessionPaging();
   #subagents: SessionSubagents;
   #subagentCandidates = new Map<string, { at: number; candidates: CodexSubagentSource[] }>();
+  // Opaque IDs cannot be reversed. Remember only the native lookup key, never
+  // ownership or a transcript path: each resolve still revalidates the live index.
+  #codexNativeRefs = new Map<string, string>();
   constructor(
     readonly store: Pick<SessionStore, "get" | "id" | "workspacePath" | "identitySalt">,
     commands: Commands,
@@ -129,6 +132,7 @@ export class SessionReaders {
     this.#paging.clear();
     this.#subagents.clear();
     this.#subagentCandidates.clear();
+    this.#codexNativeRefs.clear();
   }
   /** Children never pass through the ordinary catalog/control resolver. */
   async subagentsForNative(
@@ -464,6 +468,12 @@ export class SessionReaders {
       }
     }
   }
+  #rememberCodexNativeRef(id: string, nativeRef: string): void {
+    this.#codexNativeRefs.delete(id);
+    this.#codexNativeRefs.set(id, nativeRef);
+    if (this.#codexNativeRefs.size > 1_024)
+      this.#codexNativeRefs.delete(this.#codexNativeRefs.keys().next().value!);
+  }
   async resolve(id: string) {
     const summary = this.store.get(id);
     if (!summary) throw new Error("Conversation metadata is no longer available");
@@ -476,6 +486,7 @@ export class SessionReaders {
       const source = this.#codex
         .list(null, {
           collection,
+          nativeRef: this.#codexNativeRefs.get(id),
           matches: (nativeRef) => this.store.id(agent, nativeRef) === id,
         })
         .sessions.find(
@@ -484,6 +495,7 @@ export class SessionReaders {
             this.store.id(agent, candidate.session.native_ref) === id,
         );
       if (!source) throw new Error("Conversation transcript is no longer available");
+      this.#rememberCodexNativeRef(id, source.session.native_ref);
       return {
         summary,
         native: source.session,
@@ -499,6 +511,7 @@ export class SessionReaders {
         agent === "codex"
           ? // Classify and read the header of this one thread, not every thread in the folder.
             this.#codex.list(workspace, {
+              nativeRef: this.#codexNativeRefs.get(id),
               matches: (nativeRef) => this.store.id(agent, nativeRef) === id,
             })
           : this.#claude.list(workspace);
@@ -506,6 +519,7 @@ export class SessionReaders {
         (candidate) => this.store.id(agent, candidate.session.native_ref) === id,
       );
       if (!source) throw new Error("Conversation transcript is no longer available");
+      if (agent === "codex") this.#rememberCodexNativeRef(id, source.session.native_ref);
       return {
         summary,
         native: { ...source.session, cwd: source.cwd },

@@ -390,17 +390,22 @@ export class ConversationReadStates {
       }
       const native = [...homes.values()];
       if (native.length) await this.#native.pollPage(native[this.#homeCursor++ % native.length]!);
+      let freshnessChanged = false;
       for (let n = 0; n < count && !this.#closed && Date.now() < deadline; n++) {
         const id = ids[this.#cursor++ % ids.length]!;
         const candidate = this.#candidates.get(id)!;
+        const wasStale = candidate.stale;
         try {
           const value = await this.get(id, "observer");
           candidate.stale = value.freshness !== "current";
         } catch {
           candidate.stale = true;
         }
+        freshnessChanged ||= wasStale !== candidate.stale;
       }
-      this.changed();
+      // Native receipts and fallback results emit their own semantic invalidations.
+      // An unchanged five-second revalidation must not restart the catalog refresh loop.
+      if (freshnessChanged && !this.#closed) this.changed();
     } finally {
       this.#polling = false;
     }

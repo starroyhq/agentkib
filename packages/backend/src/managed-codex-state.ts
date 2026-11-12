@@ -47,6 +47,7 @@ export class ManagedCodexState {
   #status = "starting";
   #turn: string | null = null;
   #stream = "";
+  #streamBytes = 0;
   #approvals = new Map<string, JsonObject>();
   #questions = new Map<string, JsonObject>();
   #pendingTurns = new Map<string, string>();
@@ -225,6 +226,7 @@ export class ManagedCodexState {
         runtimeChanged = true;
         this.#status = "running";
         this.#stream = "";
+        this.#streamBytes = 0;
         this.#reason = null;
         this.#lastTurnEvent = null;
         this.#retry = null;
@@ -292,9 +294,19 @@ export class ManagedCodexState {
         if (params.turnId !== this.#turn || typeof params.delta !== "string")
           return { changed: false };
         // Streamed output means the request a retry was waiting for got through.
+        const hadRetry = this.#retry !== null;
         this.#retry = null;
-        if (Buffer.byteLength(this.#stream + params.delta, "utf8") <= MAX_STREAM_BYTES)
-          this.#stream += params.delta;
+        let deltaBytes = Buffer.byteLength(params.delta, "utf8");
+        // UTF-16 chunks may split a surrogate pair. Joining it replaces two
+        // three-byte replacement characters with the original four-byte code point.
+        const previous = this.#stream.charCodeAt(this.#stream.length - 1);
+        const first = params.delta.charCodeAt(0);
+        if (previous >= 0xd800 && previous <= 0xdbff && first >= 0xdc00 && first <= 0xdfff)
+          deltaBytes -= 2;
+        if (deltaBytes === 0 || this.#streamBytes + deltaBytes > MAX_STREAM_BYTES)
+          return hadRetry ? this.#changed() : { changed: false };
+        this.#stream += params.delta;
+        this.#streamBytes += deltaBytes;
         break;
       }
       case "item/started":
@@ -654,6 +666,8 @@ export class ManagedCodexEventBridge {
   #pending: Promise<void> = Promise.resolve();
   #closed = false;
   #closing?: Promise<void>;
+  #streamDirty = false;
+  #checkpointTimer?: ReturnType<typeof setTimeout>;
 
   constructor(
     readonly session: CodexAppServerSession,
@@ -676,6 +690,10 @@ export class ManagedCodexEventBridge {
   }
 
   async flush(): Promise<void> {
+    this.#cancelCheckpoint();
+    this.#queue(async () => {
+      if (this.#streamDirty) await this.#persist();
+    });
     await this.#pending;
   }
 
@@ -685,7 +703,7 @@ export class ManagedCodexEventBridge {
 
   async #close(): Promise<void> {
     this.#closed = true;
-    await this.#pending;
+    await this.flush();
     await this.session.close();
   }
 
@@ -702,15 +720,55 @@ export class ManagedCodexEventBridge {
 
   #enqueue(value: unknown): void {
     if (this.#closed) return;
-    this.#pending = this.#pending.then(async () => {
+    this.#queue(async () => {
       const result = this.state.apply(value);
       if (result.reply) this.#reply(result.reply);
       if (result.changed) {
-        await this.persist(this.state, result.event);
+        const method = isObject(value) ? value.method : null;
+        if (
+          !result.event &&
+          (method === "item/agentMessage/delta" || method === "item/plan/delta")
+        ) {
+          // Stream text is an ephemeral preview. Publish immediately, but checkpoint at most
+          // every 250 ms instead of rewriting the growing record for every token. All durable
+          // events, control boundaries, explicit flushes and shutdown still persist immediately.
+          this.#streamDirty = true;
+          this.#scheduleCheckpoint();
+        } else {
+          await this.#persist(result.event);
+        }
         this.onApplied?.(value, result, this.state);
       }
     });
+  }
+
+  #scheduleCheckpoint(): void {
+    if (this.#checkpointTimer) return;
+    this.#checkpointTimer = setTimeout(() => {
+      this.#checkpointTimer = undefined;
+      this.#queue(async () => {
+        if (this.#streamDirty) await this.#persist();
+      });
+    }, 250);
+    this.#checkpointTimer.unref?.();
+  }
+
+  #cancelCheckpoint(): void {
+    if (this.#checkpointTimer) clearTimeout(this.#checkpointTimer);
+    this.#checkpointTimer = undefined;
+  }
+
+  async #persist(event?: JsonObject): Promise<void> {
+    this.#cancelCheckpoint();
+    await this.persist(this.state, event);
+    this.#streamDirty = false;
+  }
+
+  #queue(work: () => Promise<void>): void {
+    this.#pending = this.#pending.then(work);
     this.#pending = this.#pending.catch(async () => {
+      this.#cancelCheckpoint();
+      this.#streamDirty = false;
       this.state.fail("invalid-codex-event");
       try {
         await this.persist(this.state);

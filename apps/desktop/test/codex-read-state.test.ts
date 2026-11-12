@@ -1,5 +1,5 @@
 import { EventEmitter } from "node:events";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { appendFileSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -17,7 +17,7 @@ afterEach(async () => {
   for (const cleanup of cleanups.splice(0).reverse()) await cleanup();
   vi.useRealTimers();
 });
-function fixture() {
+function fixture(options: { metadata?: boolean } = {}) {
   const root = mkdtempSync(path.join(tmpdir(), "agentkib-native-state-"));
   cleanups.push(() => rmSync(root, { recursive: true, force: true }));
   const executable = path.join(root, "codex");
@@ -29,6 +29,9 @@ function fixture() {
     executable,
     nativeId: "thread-one",
   };
+  const rollout = path.join(root, "rollout.jsonl");
+  writeFileSync(rollout, "synthetic fixture\n");
+  let listMode: "supported" | "no-receipts" | "unsupported" | "second-page" = "supported";
   let revision = "one",
     firstUnread: unknown = { type: "turn", turnId: "turn-one" },
     failure = false,
@@ -39,6 +42,13 @@ function fixture() {
     active = false,
     turnsUnsupported = false,
     page = 0;
+  const thread = (id: unknown, updatedAt: number) => ({
+    id,
+    cwd: root,
+    ...(options.metadata
+      ? { path: rollout, status: { type: active ? "active" : "notLoaded" }, updatedAt }
+      : {}),
+  });
   const emitter = new EventEmitter();
   const calls: Array<{ method: string; params: Record<string, unknown> }> = [];
   const session = Object.assign(emitter, {
@@ -48,7 +58,7 @@ function fixture() {
       if (unsupported === "method") throw new CodexAppServerError({ code: -32601 });
       if (method === "thread/read")
         return {
-          thread: { id: params.threadId, cwd: root },
+          thread: thread(params.threadId, 10),
           readState: unsupported === "null" ? null : { revision, firstUnread },
         };
       if (method === "thread/turns/list") {
@@ -67,12 +77,19 @@ function fixture() {
           nextCursor: null,
         };
       }
-      if (method === "thread/list")
+      if (method === "thread/list") {
+        if (listMode === "unsupported") throw new CodexAppServerError({ code: -32602 });
+        const included = listMode !== "second-page" || params.cursor === "page-two";
         return {
-          data: [{ id: target.nativeId }],
-          readStates: { [target.nativeId]: { revision, firstUnread } },
-          nextCursor: page++ === 0 ? "page-two" : null,
+          data: included ? [thread(target.nativeId, 20)] : [],
+          ...(listMode === "no-receipts"
+            ? {}
+            : {
+                readStates: included ? { [target.nativeId]: { revision, firstUnread } } : {},
+              }),
+          nextCursor: page++ % 2 === 0 ? "page-two" : null,
         };
+      }
       if (method === "thread/readState/update") {
         if (params.expectedRevision !== revision) throw new CodexAppServerError({ code: -32600 });
         firstUnread = null;
@@ -103,6 +120,21 @@ function fixture() {
   return {
     owner,
     target,
+    session,
+    listMode: (value: typeof listMode) => {
+      listMode = value;
+    },
+    append: () => {
+      appendFileSync(rollout, "new result\n");
+    },
+    nativeRead: () => {
+      revision = "read-elsewhere";
+      firstUnread = null;
+    },
+    silentUnread: () => {
+      revision = "unread-elsewhere";
+      firstUnread = { type: "threadStart" };
+    },
     start,
     calls,
     changed,
@@ -144,6 +176,116 @@ function fixture() {
 }
 
 describe("authoritative native Codex receipt observation", () => {
+  it("rechecks authoritative receipts without decoding unchanged rollouts or notifying again", async () => {
+    vi.useFakeTimers();
+    const f = fixture({ metadata: true });
+    const first = await f.owner.refresh(f.target, "a");
+    f.changed.mockClear();
+    for (let i = 0; i < 4; i++) {
+      await vi.advanceTimersByTimeAsync(5_000);
+      expect(await f.owner.refresh(f.target, "a")).toEqual(first);
+    }
+    expect(f.calls.filter((call) => call.method === "thread/read")).toHaveLength(2);
+    expect(f.calls.filter((call) => call.method === "thread/turns/list")).toHaveLength(1);
+    expect(f.calls.filter((call) => call.method === "thread/list")).toHaveLength(4);
+    expect(
+      f.calls
+        .filter((call) => call.method === "thread/list")
+        .every((call) => call.params.useStateDbOnly === true),
+    ).toBe(true);
+    expect(f.changed).not.toHaveBeenCalled();
+    f.nativeRead();
+    await vi.advanceTimersByTimeAsync(5_000);
+    expect(await f.owner.refresh(f.target, "a")).toMatchObject({
+      status: "read",
+      freshness: "current",
+    });
+    f.silentUnread();
+    await vi.advanceTimersByTimeAsync(5_000);
+    expect(await f.owner.refresh(f.target, "a")).toMatchObject({
+      firstUnread: { type: "threadStart" },
+      freshness: "current",
+    });
+    expect(f.calls.filter((call) => call.method === "thread/read")).toHaveLength(2);
+  });
+
+  it("invalidates the result cache on rollout or activity changes and keeps acknowledgement coherent", async () => {
+    vi.useFakeTimers();
+    const f = fixture({ metadata: true });
+    const initial = await f.owner.refresh(f.target, "a");
+    f.append();
+    await vi.advanceTimersByTimeAsync(5_000);
+    await f.owner.refresh(f.target, "a");
+    expect(f.calls.filter((call) => call.method === "thread/turns/list")).toHaveLength(2);
+    f.active();
+    await vi.advanceTimersByTimeAsync(5_000);
+    const active = await f.owner.refresh(f.target, "a");
+    expect(active?.version).not.toBe(initial?.version);
+    expect(f.calls.filter((call) => call.method === "thread/turns/list")).toHaveLength(3);
+    await expect(f.owner.update(f.target, "a", initial!.version!, "turn:turn-one")).rejects.toThrow(
+      "read-state-conflict",
+    );
+    expect(f.calls.some((call) => call.method === "thread/readState/update")).toBe(false);
+  });
+
+  it.each(["no-receipts", "unsupported"] as const)(
+    "falls back to native reads for old directory support: %s",
+    async (mode) => {
+      vi.useFakeTimers();
+      const f = fixture({ metadata: true });
+      await f.owner.refresh(f.target, "a");
+      f.listMode(mode);
+      await vi.advanceTimersByTimeAsync(5_000);
+      expect(await f.owner.refresh(f.target, "a")).toMatchObject({
+        source: "codex-native",
+        status: "unread",
+        freshness: "current",
+      });
+      expect(f.calls.filter((call) => call.method === "thread/turns/list")).toHaveLength(2);
+      f.fail();
+      await vi.advanceTimersByTimeAsync(5_000);
+      expect(await f.owner.refresh(f.target, "a")).toMatchObject({
+        source: "codex-native",
+        status: "unread",
+        freshness: "stale",
+      });
+    },
+  );
+
+  it("advances bounded workspace pages even when an older target is absent from the first page", async () => {
+    vi.useFakeTimers();
+    const f = fixture({ metadata: true });
+    await f.owner.refresh(f.target, "a");
+    f.listMode("second-page");
+    for (let i = 0; i < 3; i++) {
+      await vi.advanceTimersByTimeAsync(5_000);
+      expect(await f.owner.refresh(f.target, "a")).toMatchObject({ freshness: "current" });
+    }
+    expect(
+      f.calls.filter((call) => call.method === "thread/list").map((call) => call.params.cursor),
+    ).toEqual([null, "page-two", null]);
+    expect(f.calls.filter((call) => call.method === "thread/turns/list")).toHaveLength(3);
+  });
+
+  it("does not trust a directory response invalidated by a simultaneous native notification", async () => {
+    vi.useFakeTimers();
+    const f = fixture({ metadata: true });
+    await f.owner.refresh(f.target, "a");
+    f.session.request.mockImplementationOnce(async () => {
+      f.manualUnread();
+      return {
+        data: [{ id: f.target.nativeId, cwd: f.target.workspace }],
+        readStates: { [f.target.nativeId]: { revision: "old-read", firstUnread: null } },
+      };
+    });
+    await vi.advanceTimersByTimeAsync(5_000);
+    expect(await f.owner.refresh(f.target, "a")).toMatchObject({
+      status: "unread",
+      firstUnread: { type: "threadStart" },
+      freshness: "current",
+    });
+  });
+
   it("keeps native authority when a turn-list method is unavailable but receipts still work", async () => {
     const f = fixture();
     await f.owner.refresh(f.target, "a");

@@ -475,10 +475,13 @@ export class ReadStateLedger {
       state.status === "unknown"
     )
       return;
+    const fingerprint = createHash("sha256")
+      .update(JSON.stringify([nativeRevision, state.firstUnread, state.latestResult]))
+      .digest("hex");
+    // Foreground polling usually observes the same receipt. Avoid opening a writable
+    // ledger (including schema checks) unless there is a durable semantic change.
+    if (this.nativeSnapshot(key)?.fingerprint === fingerprint) return;
     this.#write((db) => {
-      const fingerprint = createHash("sha256")
-        .update(JSON.stringify([nativeRevision, state.firstUnread, state.latestResult]))
-        .digest("hex");
       const previous = db
         .prepare("SELECT fingerprint FROM conversation_native_read_receipts WHERE key=?")
         .get(key) as { fingerprint: string } | undefined;

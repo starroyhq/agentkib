@@ -188,6 +188,14 @@ export interface ClaudeBridgeChallenge {
   instructions: string;
 }
 
+/**
+ * A request to quit. `work` names the sessions whose turns run or wait in a process AgentKib
+ * started; quitting stops them, so the person confirms first.
+ */
+export interface QuitRequest {
+  work: { title: string; agent: string }[];
+}
+
 export interface DesktopApi {
   paths: { displayContext(): Promise<{ homeDirectory: string }> };
   claude: { request(input: Record<string, unknown>): Promise<unknown> };
@@ -199,7 +207,7 @@ export interface DesktopApi {
   platform: NodeJS.Platform;
   events: {
     onWindowActivity(listener: (active: boolean) => void): DesktopEventUnsubscribe;
-    onQuitRequested(listener: () => void): DesktopEventUnsubscribe;
+    onQuitRequested(listener: (request: QuitRequest) => void): DesktopEventUnsubscribe;
     onThemeChanged(listener: (theme: EffectiveTheme) => void): DesktopEventUnsubscribe;
     onRefreshState(listener: (status: RefreshJobStatus) => void): DesktopEventUnsubscribe;
     onSkillSyncState(

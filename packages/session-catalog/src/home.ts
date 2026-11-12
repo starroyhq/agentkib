@@ -95,3 +95,22 @@ export function homeSessionGroups<S extends HomeSession>(
   }
   return groups;
 }
+
+/**
+ * Sessions whose work stops when AgentKib quits: a turn running, or waiting for the person, in
+ * a process AgentKib started (managed Codex, Claude Code and Antigravity, and a DeepSeek Harness
+ * it started in the background). Turns in a connected terminal or another client go on.
+ */
+export function workStoppedByQuit<S extends HomeSession>(sessions: readonly S[]): S[] {
+  const groups = homeSessionGroups(sessions, { recent: 0 });
+  const here = (session: S) => {
+    const place = session.continuation?.executionLocation;
+    return place !== "terminal" && place !== "external";
+  };
+  return [
+    ...groups.needsYou
+      .filter((entry) => entry.need !== "verify" && here(entry.session))
+      .map((entry) => entry.session),
+    ...groups.running.filter((entry) => entry.place === "agentkib").map((entry) => entry.session),
+  ];
+}

@@ -35,7 +35,7 @@ import { registerRuntimeIpc } from "./ipc/runtime";
 import { createIpcRegistrar } from "./ipc/registrar";
 import { ElectronNativeShell, resolveNativeShellTrayIcon } from "./native-shell";
 import { TraySessionWatcher, type TraySessionSource } from "./tray-sessions";
-import type { HomeSession } from "@agentkib/session-catalog";
+import { workStoppedByQuit, type HomeSession } from "@agentkib/session-catalog";
 import { ElectronRefreshCoordinator } from "./refresh-coordinator";
 import { CostObservation, requireLocalCostProvider } from "./cost-observation";
 import { NativeMemoryObservation } from "./native-memory-observation";
@@ -86,6 +86,8 @@ let screenLocked = false;
 let nativeShell: ElectronNativeShell | undefined;
 /** Keeps the menu bar icon's counts; see TraySessionWatcher for when it reads the catalog. */
 let traySessions: TraySessionWatcher | undefined;
+/** This computer's sessions, for the menu bar counts and the quit confirmation. */
+let sessionSource: TraySessionSource | undefined;
 let refreshCoordinator: ElectronRefreshCoordinator | undefined;
 let skillSyncCoordinator: SkillSyncCoordinator | undefined;
 let runtimeHost: RuntimeHost | undefined;
@@ -392,7 +394,8 @@ async function startApplication(): Promise<void> {
   });
   await lanWebAccess.initialize();
   registerConversationIpc({ service: webAccess, hub: conversationHub, assertTrustedRenderer });
-  traySessions = new TraySessionWatcher(traySessionSource(webAccess, conversationHub), (status) =>
+  sessionSource = traySessionSource(webAccess, conversationHub);
+  traySessions = new TraySessionWatcher(sessionSource, (status) =>
     nativeShell?.setSessionStatus(status),
   );
   // Another window following the catalog saw a change, or a control settled: read it again.
@@ -573,15 +576,35 @@ function approveQuit(): void {
 }
 
 function requestRendererQuitGuard(): void {
-  const window = mainWindow && !mainWindow.isDestroyed() ? mainWindow : undefined;
-  quitGuard.request(
-    window && {
-      isAlive: () => !window.isDestroyed() && !window.webContents.isCrashed(),
-      isUnresponsive: () => rendererUnresponsive,
-      show: showMainWindow,
-      sendQuitRequest: () => window.webContents.send("agentkib:quit-requested"),
-    },
-  );
+  void quitWork().then((work) => {
+    const window = mainWindow && !mainWindow.isDestroyed() ? mainWindow : undefined;
+    quitGuard.request(
+      window && {
+        isAlive: () => !window.isDestroyed() && !window.webContents.isCrashed(),
+        isUnresponsive: () => rendererUnresponsive,
+        show: showMainWindow,
+        sendQuitRequest: () => window.webContents.send("agentkib:quit-requested", { work }),
+      },
+    );
+  });
+}
+
+/**
+ * Work that stops with AgentKib, named in the quit confirmation: turns running or waiting in a
+ * process AgentKib started. Read with a short bound, so quitting never waits on a busy runtime.
+ */
+async function quitWork(): Promise<{ title: string; agent: string }[]> {
+  const source = sessionSource;
+  if (!source) return [];
+  const sessions = await Promise.race([
+    source.readSessions().catch(() => undefined),
+    new Promise<undefined>((resolve) => setTimeout(resolve, 2_000)),
+  ]);
+  return sessions
+    ? workStoppedByQuit(sessions)
+        .slice(0, 50)
+        .map((session) => ({ title: session.title ?? "", agent: session.agent }))
+    : [];
 }
 
 function withElectronRuntimeCapabilities(runtime: unknown): unknown {

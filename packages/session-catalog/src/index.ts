@@ -327,6 +327,7 @@ export function sessionGroupId<S extends CatalogSession, W extends CatalogWorksp
 
 export {
   homeSessionGroups,
+  workStoppedByQuit,
   type HomeNeed,
   type HomePlace,
   type HomeResult,

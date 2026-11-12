@@ -4296,6 +4296,12 @@ export class WebAccessService {
           "remote-environment-not-supported",
           "dsh-runtime-offline",
           "dsh-create-ambiguous",
+          // Starting DeepSeek Harness in the background, and a session another DSH holds.
+          "dsh-start-failed",
+          "dsh-version-unsupported",
+          "dsh-launcher-unavailable",
+          "dsh-exited",
+          "dsh-session-in-use",
           "workspace-unavailable",
         ]);
         throw new HttpError(

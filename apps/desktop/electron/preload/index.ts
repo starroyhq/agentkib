@@ -1,7 +1,7 @@
 import type { NativeMemoryQuery } from "@agentkib/runtime-protocol";
 import type { DesktopAccountRequest, DesktopAccountStatus } from "../main/account/state";
 import { contextBridge, ipcRenderer } from "electron";
-import type { DesktopApi, DesktopRuntimeStatus, DesktopConversationApi } from "../api";
+import type { DesktopApi, DesktopRuntimeStatus, DesktopConversationApi, QuitRequest } from "../api";
 import type {
   AgentKind,
   AppMenuCommandRequest,
@@ -14,6 +14,22 @@ import type {
   SkillSyncCoordinatorState,
   SkillSyncComparison,
 } from "../../src/core/types";
+
+/** The work a quit would stop, as the main process names it; anything malformed names none. */
+function quitRequest(value: unknown): QuitRequest {
+  const work = (value as { work?: unknown } | undefined)?.work;
+  return {
+    work: Array.isArray(work)
+      ? work
+          .filter(
+            (item): item is { title: string; agent: string } =>
+              typeof item?.title === "string" && typeof item?.agent === "string",
+          )
+          .slice(0, 50)
+          .map((item) => ({ title: item.title.slice(0, 200), agent: item.agent.slice(0, 64) }))
+      : [],
+  };
+}
 
 function subscribe<T>(channel: string, listener: (value: T) => void): () => void {
   const ipcListener = (_event: Electron.IpcRendererEvent, value: T) => listener(value);
@@ -35,11 +51,11 @@ const desktopApi = Object.freeze({
   events: Object.freeze({
     onWindowActivity: (listener: (active: boolean) => void) =>
       subscribe("agentkib:window-activity", listener),
-    onQuitRequested: (listener: () => void) =>
-      subscribe("agentkib:quit-requested", () => {
+    onQuitRequested: (listener: (request: QuitRequest) => void) =>
+      subscribe("agentkib:quit-requested", (value: unknown) => {
         // 先回执再处理：主进程据此区分"renderer 正在询问用户"和"renderer 已卡死"。
         ipcRenderer.send("agentkib:quit-acknowledged");
-        listener();
+        listener(quitRequest(value));
       }),
     onThemeChanged: (listener: (theme: "light" | "dark") => void) =>
       subscribe("agentkib:theme-changed", listener),

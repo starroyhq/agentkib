@@ -11,10 +11,15 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
+import { PassThrough } from "node:stream";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { DshBridge, dshConversationEvents } from "../../../packages/backend/src/dsh-bridge";
 import { readControlReceipt } from "../../../packages/backend/src/control-receipt";
-import { createBridge, DSH_BRIDGE_PATHS } from "../../../packages/dsh-bridge-plugin/bridge.js";
+import {
+  createBridge,
+  DSH_BRIDGE_PATHS,
+  managedHost,
+} from "../../../packages/dsh-bridge-plugin/bridge.js";
 import { post } from "../../../packages/dsh-bridge-plugin/client.js";
 import {
   dshBridgeCompatibility,
@@ -2330,7 +2335,14 @@ describe("DeepSeek Harness documents, Agent presets and handoffs", () => {
     await f.control("send", {
       input: [
         { type: "text", text: "what is this?" },
-        { type: "image", path: file, sha256, size: PNG.length, mediaType: "image/png", name: "shot.png" },
+        {
+          type: "image",
+          path: file,
+          sha256,
+          size: PNG.length,
+          mediaType: "image/png",
+          name: "shot.png",
+        },
       ],
     });
     const document = await f.bridge.document("session-a", source);
@@ -2430,5 +2442,376 @@ describe("DeepSeek Harness documents, Agent presets and handoffs", () => {
     // Another handoff file is another session.
     const other = await f.bridge.handoff({ ...handoff, key: "workspace\nother.md" });
     expect(other.sessionId).not.toBe(first.sessionId);
+  });
+});
+
+/**
+ * A bridge that can start DSH in the background. Starting one connects the same fake DSH
+ * through a plugin reporting the background process's ID, as the real process would.
+ */
+async function managedFixture(
+  options: {
+    enabled?: () => boolean;
+    available?: { available: true } | { available: false; reason: any };
+    idleMs?: number;
+    desktopRunning?: boolean;
+    /** No session, and no DSH of the user's has ever run: a fresh DSH install. */
+    empty?: boolean;
+    /** How long a background DSH takes to exit once told to stop. */
+    stopDelayMs?: number;
+  } = {},
+) {
+  const root = realpathSync(mkdtempSync(path.join(tmpdir(), "ak-dsh-managed-")));
+  const workspace = path.join(root, "workspace");
+  const agentkibHome = path.join(root, "agentkib-home");
+  mkdirSync(workspace);
+  const dsh = fakeDsh(workspace);
+  if (!options.empty) dsh.create("session-a", "First DSH session");
+  // Each start is a new process with its own ID, as a real one would be.
+  let nextPid = 424242;
+  type Process = {
+    pid: number;
+    phase: "starting" | "running" | "stopping";
+    plugin: ReturnType<typeof createBridge>;
+    exited?: Promise<void>;
+  };
+  let current: Process | null = null;
+  const starts: number[] = [];
+  const stops: number[] = [];
+  const pluginOptions = {
+    roots: [agentkibHome],
+    dshVersion: "0.2.1-rc.5",
+    discoveryMs: 50,
+    debounceMs: 10,
+    listThrottleMs: 20,
+    commandWaitMs: 150,
+  };
+  let bridge!: DshBridge;
+  const managed = {
+    get pid() {
+      return current?.pid ?? null;
+    },
+    available: vi.fn(() => options.available ?? ({ available: true } as const)),
+    status: () => ({
+      phase: current?.phase ?? ("stopped" as const),
+      pid: current?.pid ?? null,
+      launcher: "app" as const,
+      version: "0.2.2-rc.1",
+      failure: null,
+    }),
+    start: vi.fn(async () => {
+      // Like the real one: a process still exiting is waited for first.
+      if (current?.phase === "stopping") await current.exited;
+      if (current) return current.pid;
+      starts.push(Date.now());
+      const pid = ++nextPid;
+      current = {
+        pid,
+        phase: "starting",
+        plugin: createBridge(dsh.ctx, { ...pluginOptions, pid }),
+      };
+      return pid;
+    }),
+    started: vi.fn(() => {
+      if (current?.phase === "starting") current.phase = "running";
+    }),
+    stop: vi.fn(async () => {
+      const process = current;
+      if (!process) return;
+      if (process.exited) return process.exited;
+      stops.push(Date.now());
+      process.phase = "stopping";
+      process.exited = (async () => {
+        await new Promise((resolve) => setTimeout(resolve, options.stopDelayMs ?? 0));
+        process.plugin.close();
+        if (current === process) current = null;
+        bridge.managedExited(process.pid);
+      })();
+      return process.exited;
+    }),
+    desktopRunning: vi.fn(async () => options.desktopRunning ?? false),
+  };
+  bridge = new DshBridge({
+    dataDir: path.join(root, "data"),
+    bootId: randomUUID(),
+    pluginDirectory: path.join(root, "plugin"),
+    discoveryFile: path.join(agentkibHome, "dsh-bridge", "discovery-v1.json"),
+    platform: "darwin",
+    commandTimeoutMs: 1500,
+    disconnectGraceMs: 100,
+    reconcileIntervalMs: 0,
+    reconcileGiveUpMs: 300,
+    sessionId: (nativeId) => `ak-${nativeId}`,
+    workspaceFor: (cwd) =>
+      cwd.startsWith(workspace) ? { id: "workspace", path: workspace } : null,
+    workspacePath: (id) => (id === "workspace" ? workspace : null),
+    sessionsChanged: () => undefined,
+    publish: vi.fn(),
+    managed: {
+      runtime: managed,
+      enabled: options.enabled ?? (() => true),
+      idleMs: options.idleMs ?? 60_000,
+      desktopIdleMs: 200,
+      reviewMs: 50,
+      settleMs: 300,
+    },
+  });
+  bridge.initialize();
+  // The user's own DSH ran once, so AgentKib knows the session; then they closed it.
+  if (!options.empty) {
+    const user = createBridge(dsh.ctx, { ...pluginOptions, pid: 1111 });
+    await until(() => bridge.handles("ak-session-a"));
+    user.close();
+    await until(() => bridge.live("ak-session-a", true).cliVersion === undefined);
+  }
+  cleanups.push(async () => {
+    current?.plugin.close();
+    dsh.close();
+    await bridge.close();
+    rmSync(root, { recursive: true, force: true });
+  });
+  const send = (text: string, extra: Record<string, unknown> = {}) => {
+    const live = bridge.live("ak-session-a", true);
+    return bridge.request({
+      operation: "send",
+      sessionId: "ak-session-a",
+      requestId: randomUUID(),
+      deviceId: "device-1",
+      runtimeBootId: live.runtimeBootId,
+      expectedRevision: live.revision,
+      experimentalEnabled: true,
+      text,
+      ...extra,
+    }) as Promise<Record<string, any>>;
+  };
+  const userDsh = () => createBridge(dsh.ctx, { ...pluginOptions, pid: 1111 });
+  return { root, agentkibHome, bridge, dsh, managed, starts, stops, send, userDsh, pluginOptions };
+}
+
+describe("DeepSeek Harness started in the background", () => {
+  it("lets a session be sent to while no DSH runs, and starts one to take it", async () => {
+    const f = await managedFixture();
+    const offline = f.bridge.live("ak-session-a", true);
+    expect(offline).toMatchObject({
+      status: "idle",
+      sendEnabled: true,
+      executionLocation: null,
+    });
+    expect(offline.reason).toBeUndefined();
+    expect(f.bridge.capabilities("ak-session-a", true)).toMatchObject({
+      features: { send: { available: true }, stop: { available: false } },
+    });
+
+    const sent = await f.send("hello from the phone");
+    expect(sent.controlOutcome).toBe("accepted");
+    expect(f.starts).toHaveLength(1);
+    expect(f.managed.started).toHaveBeenCalled();
+    expect(f.dsh.prompts.at(-1)).toMatchObject({
+      sessionId: "session-a",
+      content: [{ type: "text", text: "hello from the phone" }],
+    });
+    // It runs where AgentKib runs: it stops when AgentKib quits.
+    expect(f.bridge.live("ak-session-a", true).executionLocation).toBe("agentkib");
+    expect(
+      (
+        f.bridge.management({
+          operation: "dsh-bridge-status",
+          deviceId: "agentkib-local-owner",
+        }) as any
+      ).runtimes,
+    ).toEqual([expect.objectContaining({ managed: true })]);
+  });
+
+  it("stops the background DSH once it has had nothing to do", async () => {
+    const f = await managedFixture({ idleMs: 200 });
+    expect((await f.send("one turn")).controlOutcome).toBe("accepted");
+    // Running: it stays.
+    await new Promise((resolve) => setTimeout(resolve, 400));
+    expect(f.stops).toHaveLength(0);
+    f.dsh.finishTurn("session-a", "done");
+    await until(() => f.stops.length === 1, 3000);
+    // The session can be sent to again; that starts DSH anew.
+    expect(f.bridge.live("ak-session-a", true)).toMatchObject({
+      status: "idle",
+      sendEnabled: true,
+    });
+    expect((await f.send("again")).controlOutcome).toBe("accepted");
+    expect(f.starts).toHaveLength(2);
+  });
+
+  it("gives way at once to a DSH of the user's, and lets it take new sessions", async () => {
+    const f = await managedFixture();
+    expect((await f.send("started here")).controlOutcome).toBe("accepted");
+    f.dsh.finishTurn("session-a", "done");
+    const user = f.userDsh();
+    cleanups.push(() => user.close());
+    // With both running, AgentKib still knows where a new session goes.
+    await until(
+      () =>
+        (
+          f.bridge.management({
+            operation: "dsh-bridge-status",
+            deviceId: "agentkib-local-owner",
+          }) as any
+        ).runtimes.length === 2 || f.stops.length === 1,
+    );
+    await until(() => f.stops.length === 1, 3000);
+    expect((await f.bridge.createOptions()).available).toBe(true);
+  });
+
+  it("gives way once DSH Desktop's own window is open", async () => {
+    const f = await managedFixture({ desktopRunning: true });
+    expect((await f.send("started here")).controlOutcome).toBe("accepted");
+    await new Promise((resolve) => setTimeout(resolve, 300));
+    expect(f.stops).toHaveLength(0);
+    f.dsh.finishTurn("session-a", "done");
+    await until(() => f.stops.length === 1, 3000);
+  });
+
+  it("starts nothing when the setting is off, and says why it cannot start", async () => {
+    const off = await managedFixture({ enabled: () => false });
+    expect(off.bridge.live("ak-session-a", true)).toMatchObject({
+      status: "unsupported",
+      reason: "dsh-runtime-offline",
+      sendEnabled: false,
+    });
+    expect(await off.send("not sent")).toMatchObject({
+      controlOutcome: "not-dispatched",
+      reason: "dsh-runtime-offline",
+    });
+    expect(off.starts).toHaveLength(0);
+
+    const old = await managedFixture({
+      available: { available: false, reason: "dsh-version-unsupported" },
+    });
+    expect(old.bridge.live("ak-session-a", true)).toMatchObject({
+      status: "unsupported",
+      reason: "dsh-version-unsupported",
+    });
+    expect(old.bridge.documentStatus("session-a")).toEqual({
+      status: "unavailable",
+      reason: "dsh-version-unsupported",
+    });
+  });
+
+  it("reports the reason when the background start fails", async () => {
+    const f = await managedFixture();
+    f.managed.start.mockRejectedValueOnce(new Error("dsh-start-failed"));
+    expect(await f.send("not sent")).toMatchObject({
+      controlOutcome: "not-dispatched",
+      reason: "dsh-start-failed",
+    });
+    expect(f.dsh.prompts).toHaveLength(0);
+  });
+
+  it("starts DSH to read a session someone opens, but never for search", async () => {
+    const f = await managedFixture();
+    await expect(f.bridge.conversation("session-a")).rejects.toThrow("dsh-runtime-offline");
+    expect(f.starts).toHaveLength(0);
+    expect(f.bridge.documentStatus("session-a")).toEqual({ status: "supported" });
+    await f.bridge.events("session-a", null, 20);
+    expect(f.starts).toHaveLength(1);
+    expect(f.bridge.live("ak-session-a", true).executionLocation).toBe("agentkib");
+  });
+
+  it("explains a session another DSH holds", async () => {
+    const f = await managedFixture();
+    const controller = f.dsh.ctx.sessionController;
+    controller.prompt = async () => {
+      throw Object.assign(new Error("already owned by an active write handle"), {
+        code: "session/writer-held",
+      });
+    };
+    expect(await f.send("held elsewhere")).toMatchObject({
+      controlOutcome: "not-dispatched",
+      reason: "dsh-session-in-use",
+    });
+  });
+
+  it("takes a DSH with no sessions yet as ready", async () => {
+    const f = await managedFixture({ empty: true });
+    const options = await f.bridge.createOptions();
+    expect(options.available).toBe(true);
+    expect(options.agentPresets?.map((preset) => preset.id)).toContain("standard");
+    expect(f.starts).toHaveLength(1);
+  });
+
+  it("hands nothing to a background DSH it is stopping, and starts another", async () => {
+    const f = await managedFixture({ desktopRunning: true, stopDelayMs: 800 });
+    expect((await f.send("first")).controlOutcome).toBe("accepted");
+    f.dsh.finishTurn("session-a", "done");
+    // Idle with DSH Desktop open: it is being stopped, and takes a moment to exit.
+    await until(() => f.stops.length === 1, 3000);
+    expect(f.bridge.live("ak-session-a", true).executionLocation).toBeNull();
+    // A new session wanted meanwhile goes to a new DSH, not the one exiting.
+    const options = await f.bridge.createOptions();
+    expect(options.available).toBe(true);
+    expect(options.agentPresets?.length).toBeGreaterThan(0);
+    expect(f.starts).toHaveLength(2);
+  });
+
+  it("stops the background DSH when AgentKib closes", async () => {
+    const f = await managedFixture();
+    expect((await f.send("running when AgentKib quits")).controlOutcome).toBe("accepted");
+    await f.bridge.close();
+    expect(f.managed.stop).toHaveBeenCalled();
+    expect(f.stops).toHaveLength(1);
+  });
+});
+
+describe("DeepSeek Harness plugin in a DSH that AgentKib started", () => {
+  it("reports only to that AgentKib and exits when it goes away", async () => {
+    const f = await fixture();
+    const appExit = vi.fn();
+    const dsh = fakeDsh(f.workspace);
+    dsh.ctx.appExit = appExit;
+    const stdin = new PassThrough();
+    const plugin = createBridge(dsh.ctx, {
+      managed: { home: f.agentkibHome },
+      stdin,
+      dshVersion: "0.2.1-rc.5",
+      discoveryMs: 50,
+      debounceMs: 10,
+      pid: 5151,
+    });
+    cleanups.push(() => {
+      plugin.close();
+      dsh.close();
+    });
+    expect(plugin.managed).toBe(true);
+    await until(() => [...plugin.hosts.values()].some((host: any) => host.token));
+    expect(appExit).not.toHaveBeenCalled();
+    // AgentKib closing its end of DSH's standard input means it is gone.
+    stdin.end();
+    await until(() => appExit.mock.calls.length > 0);
+    expect(appExit).toHaveBeenCalledWith(0);
+  });
+
+  it("exits once it has not reached that AgentKib for a while", async () => {
+    const root = realpathSync(mkdtempSync(path.join(tmpdir(), "ak-dsh-gone-")));
+    cleanups.push(() => rmSync(root, { recursive: true, force: true }));
+    const appExit = vi.fn();
+    const dsh = fakeDsh(root);
+    dsh.ctx.appExit = appExit;
+    const plugin = createBridge(dsh.ctx, {
+      managed: { home: path.join(root, "no-agentkib-here") },
+      stdin: new PassThrough(),
+      discoveryMs: 50,
+      hostGoneMs: 200,
+    });
+    cleanups.push(() => {
+      plugin.close();
+      dsh.close();
+    });
+    await until(() => appExit.mock.calls.length > 0, 3000);
+  });
+
+  it("ignores a managed config without an absolute AgentKib home", () => {
+    expect(managedHost({ home: "relative/home" })).toBeNull();
+    expect(managedHost({ home: "/a/../b" })).toBeNull();
+    expect(managedHost(undefined)).toBeNull();
+    expect(managedHost({ home: "/Users/someone/.agentkib" })).toEqual({
+      home: "/Users/someone/.agentkib",
+    });
   });
 });

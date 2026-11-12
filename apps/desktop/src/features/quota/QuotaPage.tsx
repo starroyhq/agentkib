@@ -239,7 +239,7 @@ export function QuotaPage({
               <ToggleGroupItem
                 key={value}
                 value={value}
-                className="segmented-control-item h-10 min-h-10 flex-1 px-4 text-xs font-semibold"
+                className="segmented-control-item h-10 min-h-10 flex-1 px-4"
               >
                 {tr(`quota.filter.${value}`)}
               </ToggleGroupItem>

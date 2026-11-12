@@ -630,12 +630,6 @@ img {
   -webkit-user-select: none;
   -webkit-user-drag: none;
 }
-button,
-input,
-select,
-textarea {
-  font: inherit;
-}
 button {
   cursor: pointer;
 }

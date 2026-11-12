@@ -7,7 +7,16 @@ import {
   type ReactNode,
   type Ref,
 } from "react";
-import { ArrowLeft, ChevronRight, Goal, Plus, RotateCcw, Settings2, X } from "lucide-react";
+import {
+  ArrowLeft,
+  ChevronRight,
+  Goal,
+  Lightbulb,
+  Plus,
+  RotateCcw,
+  Settings2,
+  X,
+} from "lucide-react";
 import {
   ApiError,
   type SessionAction,
@@ -32,7 +41,13 @@ import { sessionAgentCopy } from "./session-agent-copy";
 export type CodexResource = CodexContextResource;
 
 /** Opens one of the composer's dialogs; false when this device or session cannot show it now. */
-export type ComposerControlsHandle = { open(dialog: "settings" | "goal"): boolean };
+export type ComposerControlsHandle = {
+  open(dialog: "settings" | "goal"): boolean;
+  /** Turns plan mode on, as `/plan` does in Codex's composer; false when this session cannot. */
+  plan(): boolean;
+};
+/** Whether plan mode is on, and whether the composer can turn it on. */
+export type ComposerPlanState = { on: boolean; available: boolean };
 
 type CodexComposerControlsProps = {
   resources: CodexResource[];
@@ -43,6 +58,8 @@ type CodexComposerControlsProps = {
   advancedActions?: ReactNode;
   /** Lets the composer open the settings or goal dialog, for a bare `/model` or `/goal`. */
   controlsRef?: Ref<ComposerControlsHandle>;
+  /** Told when plan mode or the composer's ability to switch it changes. */
+  onPlan?: (state: ComposerPlanState) => void;
 };
 
 const selectClass =
@@ -94,6 +111,7 @@ export function CodexComposerControls({
   action,
   advancedActions,
   controlsRef,
+  onPlan,
 }: CodexComposerControlsProps) {
   const {
     current,
@@ -509,36 +527,38 @@ export function CodexComposerControls({
     }
   }, [isClaude, pendingSettings, settings]);
 
+  /** Changes the settings or the goal; true once the host accepted the change. */
   async function mutate(
     name: SessionAction,
     fields: Omit<
       Partial<SessionActionBody>,
       "requestId" | "bootId" | "sessionId" | "expectedRevision"
     > = {},
-  ) {
-    if (!full || saving || compacting) return;
+  ): Promise<boolean> {
+    if (!full || saving || compacting) return false;
     const readRevision = name === "settings" ? settings?.revision : goal?.revision;
-    if (live?.revision !== undefined && readRevision !== live.revision) return;
+    if (live?.revision !== undefined && readRevision !== live.revision) return false;
     setSaving(true);
     setSaved(false);
     setMutationError("");
     try {
       const result = await codexAction(name, fields);
-      if (result) {
-        if (name === "settings") {
-          setPendingSettings({ ...fields, expectedRevision: readRevision ?? 0 });
-          settingsDraftRevision.current = undefined;
-          editedClaudeSettings.current.clear();
-          setSettingsDirty(false);
-        }
-        if (name.startsWith("goal-")) {
-          goalDraftRevision.current = undefined;
-          setGoalDirty(false);
-        }
-        await load();
+      if (!result) return false;
+      if (name === "settings") {
+        setPendingSettings({ ...fields, expectedRevision: readRevision ?? 0 });
+        settingsDraftRevision.current = undefined;
+        editedClaudeSettings.current.clear();
+        setSettingsDirty(false);
       }
+      if (name.startsWith("goal-")) {
+        goalDraftRevision.current = undefined;
+        setGoalDirty(false);
+      }
+      await load();
+      return true;
     } catch (error) {
       setMutationError(unavailable(error));
+      return false;
     } finally {
       setSaving(false);
     }
@@ -588,11 +608,38 @@ export function CodexComposerControls({
     // Ordinary refreshes and opening a running panel only read the cached CAS view.
     if (next === "settings" ? settingsReadStale : goalReadStale) void load();
   };
+  // Plan mode, as Codex's and DeepSeek Harness's own composers show and switch it: their
+  // collaboration mode, and Claude Code's permission mode. The same as on the desktop.
+  const planSelection = settings ? settingsSelection(settings, isClaude) : undefined;
+  const planOn = planSelection?.mode === "plan" || planSelection?.permissionMode === "plan";
+  const planAvailable =
+    full &&
+    !disabled &&
+    !!settings?.available &&
+    !settingsReadStale &&
+    (isClaude
+      ? settings.writable.permissionMode?.available === true &&
+        !!settings.options.permissionModes?.some((item) => item.id === "plan")
+      : settings.writable.mode?.available === true &&
+        !!settings.options.collaborationModes?.some((item) => item.id === "plan"));
+  const planChange = (on: boolean) =>
+    isClaude
+      ? { permissionMode: (on ? "plan" : "default") as ClaudePermissionMode }
+      : { mode: on ? ("plan" as const) : ("default" as const) };
+  const [planFailed, setPlanFailed] = useState(false);
+  useEffect(() => {
+    onPlan?.({ on: planOn, available: planAvailable });
+  }, [onPlan, planOn, planAvailable]);
   useImperativeHandle(controlsRef, () => ({
     open: (next) => {
       if (!full || disabled || !(next === "settings" ? settingsReadable : goalReadable))
         return false;
       openControls(next);
+      return true;
+    },
+    plan: () => {
+      if (!planAvailable) return false;
+      if (!planOn) void mutate("settings", planChange(true));
       return true;
     },
   }));
@@ -756,12 +803,6 @@ export function CodexComposerControls({
                   {term(displayedSettings.effort)}
                 </span>
               )}
-              {(displayedSettings?.mode === "plan" ||
-                displayedSettings?.permissionMode === "plan") && (
-                <span className="shrink-0 text-xs text-muted-foreground @max-[22rem]:hidden">
-                  {copy.plan}
-                </span>
-              )}
               {settings?.applicationStatus === "pending" && (
                 <span className="shrink-0 text-xs text-muted-foreground @max-[22rem]:hidden">
                   {layout.nextTurn}
@@ -773,6 +814,30 @@ export function CodexComposerControls({
                 </span>
               )}
             </Button>
+          )}
+          {planOn && (
+            // As in Codex's and DSH's own composers: plan mode shows here and turns off here.
+            <Button
+              type="button"
+              variant="ghost"
+              className="group h-11 shrink-0 gap-1.5 rounded-full px-3 text-muted-foreground hover:text-foreground"
+              aria-label={copy.planOn}
+              title={copy.planOnTitle}
+              disabled={!planAvailable || saving}
+              onClick={async () => {
+                setPlanFailed(false);
+                if (!(await mutate("settings", planChange(false)))) setPlanFailed(true);
+              }}
+            >
+              <Lightbulb className="size-4 group-hover:hidden" aria-hidden="true" />
+              <X className="hidden size-4 group-hover:block" aria-hidden="true" />
+              <span>{copy.plan}</span>
+            </Button>
+          )}
+          {planOn && planFailed && (
+            <span role="status" className="shrink-0 text-xs text-destructive">
+              {copy.planExitFailed}
+            </span>
           )}
         </div>
         <div className="ml-auto flex shrink-0 items-center gap-1">

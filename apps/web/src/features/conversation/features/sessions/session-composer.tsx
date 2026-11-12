@@ -7,6 +7,7 @@ import {
   codexCommandPrompt,
   codexSlashOptions,
   dshSlashOptions,
+  planSlashOption,
   slashCommandCopy,
   sessionContinuationCopy,
   SessionContinuationReturned,
@@ -68,6 +69,7 @@ import {
   CodexComposerControls,
   type CodexResource,
   type ComposerControlsHandle,
+  type ComposerPlanState,
 } from "./codex-session-controls";
 import { useSessionPanels } from "./session-panels";
 import { PermissionModeNotice } from "./permission-mode-notice";
@@ -166,6 +168,16 @@ export function SessionComposer({
   );
   // A refused command keeps its draft; the explanation goes once the draft changes.
   const [commandNotice, setCommandNotice] = useState<{ draft: string; reason: string }>();
+  // A command typed without an argument opens AgentKib's control for it, as a button would.
+  const controls = useRef<ComposerControlsHandle>(null);
+  // `/plan`, at the start or after a space, turns plan mode on as in Codex's composer. Only the
+  // controls report it, and they show only with full access.
+  const [reportedPlan, setPlanState] = useState<ComposerPlanState>({
+    on: false,
+    available: false,
+  });
+  const planState = fullAccess ? reportedPlan : { on: false, available: false };
+  const planOption = useMemo(() => planSlashOption(locale), [locale]);
   const slash = useSlashCommandMenu({
     value: composerValue,
     options: commandOptions,
@@ -183,10 +195,11 @@ export function SessionComposer({
       : isDsh
         ? slashCommandCopy(locale).dshLabel
         : undefined,
+    plan: planState.available
+      ? { option: planOption, enter: () => controls.current?.plan() ?? false }
+      : undefined,
     onChoose: setMessage,
   });
-  // A command typed without an argument opens AgentKib's control for it, as a button would.
-  const controls = useRef<ComposerControlsHandle>(null);
   const panels = useSessionPanels();
   const openPanel = (panel: AgentKibPanel) => {
     if (panel === "settings" || panel === "goal") return controls.current?.open(panel) ?? false;
@@ -658,7 +671,13 @@ export function SessionComposer({
           maxLength={MAX_MESSAGE_LENGTH}
           rows={1}
           onChange={(event) => setMessage(event.target.value)}
-          placeholder={isCodex || isClaude ? continuation.placeholder : t.message}
+          placeholder={
+            planState.on
+              ? copy.planPlaceholder
+              : isCodex || isClaude
+                ? continuation.placeholder
+                : t.message
+          }
           onFocus={() => {
             if (isCodex || isClaude) void session.checkContinuation?.();
           }}
@@ -769,6 +788,7 @@ export function SessionComposer({
           {access?.device?.accessMode === "full" && (
             <CodexComposerControls
               controlsRef={controls}
+              onPlan={setPlanState}
               resources={resources}
               setResources={setResources}
               openPhoneFiles={() => fileInput.current?.click()}

@@ -358,7 +358,7 @@ DSH 的审批和问答经 `approval/request`、`user-questions/request` waterfal
 - 目标：读取和修改走 `goals`，修改带上目标 ID 与 revision，期间在 DSH 窗口改过则按 `goal-changed` 未执行。“开始目标”在没有目标或目标已完成时新建，否则编辑现有目标；暂停、恢复、清除对应原生动作。DSH 按轮次（默认 256）限制目标，不支持 token 预算：各端显示已开始的轮次，不显示预算输入（带预算为 `goal-token-budget-unavailable`），轮次用完不能恢复（`goal-rounds-exhausted`）。目标是否由 DSH 自动继续（activation）只在当前 DSH 进程内有效，DSH 恢复会话时目标不自动继续，AgentKib 把这种状态显示为已暂停，恢复后继续。会话未运行时从 `goal` 投影读取，不恢复会话。
 - 压缩：`/compact` 与 Web 的压缩按钮都运行 DSH 的 `/compact`（按钮要求会话空闲）。压缩期间 DSH 的 Agent 仍报告 `idle`，插件按 `compaction/start`、`compaction/end` 事件上报 `activity: "compacting"`，各端显示正在压缩。
 - 权限 preset 即各端的“执行策略”：选项来自 `permissionPresets.catalog`，当前值读 `permissions` 投影，切换运行 `/permission <preset>`。DSH 在运行中的轮次里也会应用，所以执行策略在运行中可以修改；模型和推理强度仍等本轮结束。
-- 计划模式按 Codex 的协作模式报告与切换：插件读 `plan` 投影，选中状态为 `pending ? !active : active`，与 DSH 输入框的计划标识一致；切换运行 DSH 自己的 `/plan`、`/plan off`，单独进行，运行中也可以（DSH 在下一步应用）。桌面输入框与 Codex、Claude 一样识别 `/plan` 并显示可点击退出的“计划”标识，设置对话框也有模式选择。
+- 计划模式按 Codex 的协作模式报告与切换：插件读 `plan` 投影，选中状态为 `pending ? !active : active`，与 DSH 输入框的计划标识一致；切换运行 DSH 自己的 `/plan`、`/plan off`，单独进行，运行中也可以（DSH 在下一步应用）。桌面和 Web 的输入框与 Codex、Claude 一样识别 `/plan` 并显示可点击退出的“计划”标识，设置对话框也有模式选择。
 - 子代理只读浏览：插件读 `subagentCatalog` 与 `subagentTiming` 投影，每个会话最多 50 个直接子代理；子会话 ID 在 Host 用本次运行的随机盐做 HMAC，不暴露 DSH 原始 ID。手机经现有的子代理接口浏览，Desktop 与 Web 暂无子代理视图。
 - 控制所依据的 revision 也随目标（ID、revision、activation）和压缩状态变化；目标操作结果未知时按目标状态核对：清除看目标是否消失，暂停看是否暂停，恢复看是否在继续，开始看 revision 是否变化。
 - 模型与推理强度：桌面端与 Codex、Claude 一样在输入框里切换（#200 的选择器），与 DSH 自己窗口的模型菜单一致：模型按提供方分组（DSH 后端给每个模型带上提供方名称），推理强度只列该模型支持的等级；未选强度即 DSH 的 Default，显示为“默认 · 该模型的默认强度”，换模型时仍跟随新模型的默认。DSH 没有服务档位，不显示 Fast。Web 与手机仍在设置中切换（Codex 也是）。

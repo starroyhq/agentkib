@@ -65,7 +65,7 @@ vi.mock("./conversation/conversation", () => ({
     <>
       <button onClick={() => onSessionChange("fork")}>Open fork</button>
       <button onClick={() => onSessionChange(undefined)}>Clear selection</button>
-      <button onClick={onCatalogChange}>Refresh catalog</button>
+      <button onClick={onCatalogChange}>Embedded catalog updated</button>
       <output>{refreshRevision}</output>
       {initialPanel && <button onClick={onInitialPanelConsumed}>{initialPanel}</button>}
     </>
@@ -83,40 +83,45 @@ beforeEach(() => {
 afterEach(cleanup);
 
 describe("desktop conversation navigation", () => {
-  it.each(["Refresh catalog", "Open fork"])(
-    "does not report read contention as a catalog failure after %s",
-    async (action) => {
-      mocks.refresh.mockRejectedValue(new ApiError(409, "operation_busy"));
-      render(<DesktopConversationPane sessionId="original" />);
-      const button = await screen.findByText(action);
-      await act(async () => fireEvent.click(button));
-      expect(mocks.refresh).toHaveBeenCalledOnce();
-      expect(screen.queryByText(/sessions\.conversationCatalogError/)).not.toBeInTheDocument();
-      expect(mocks.select).not.toHaveBeenCalled();
-    },
-  );
+  it("lets the directory handle catalog changes without pending navigation", async () => {
+    render(<DesktopConversationPane sessionId="original" />);
+    const button = await screen.findByText("Embedded catalog updated");
+    fireEvent.click(button);
+    fireEvent.click(button);
+    expect(mocks.refresh).not.toHaveBeenCalled();
+    expect(mocks.select).not.toHaveBeenCalled();
+  });
 
-  it.each(["Refresh catalog", "Open fork"])(
-    "retains a real failure when the next %s only encounters contention",
-    async (action) => {
-      mocks.refresh
-        .mockRejectedValueOnce(new Error("catalog unavailable"))
-        .mockRejectedValueOnce(new ApiError(409, "operation_busy"))
-        .mockResolvedValueOnce([]);
-      render(<DesktopConversationPane sessionId="original" />);
-      const button = await screen.findByText(action);
-      await act(async () => fireEvent.click(button));
-      expect(screen.getByText(/sessions\.conversationCatalogError/)).toHaveTextContent(
-        "catalog unavailable",
-      );
-      await act(async () => fireEvent.click(button));
-      expect(screen.getByText(/sessions\.conversationCatalogError/)).toHaveTextContent(
-        "catalog unavailable",
-      );
-      await act(async () => fireEvent.click(button));
-      expect(screen.queryByText(/sessions\.conversationCatalogError/)).not.toBeInTheDocument();
-    },
-  );
+  it("does not report read contention as a catalog failure after opening a fork", async () => {
+    mocks.refresh.mockRejectedValue(new ApiError(409, "operation_busy"));
+    render(<DesktopConversationPane sessionId="original" />);
+    const button = await screen.findByText("Open fork");
+    await act(async () => fireEvent.click(button));
+    expect(mocks.refresh).toHaveBeenCalledOnce();
+    expect(screen.queryByText(/sessions\.conversationCatalogError/)).not.toBeInTheDocument();
+    expect(mocks.select).not.toHaveBeenCalled();
+  });
+
+  it("retains a real failure when a pending navigation retry only encounters contention", async () => {
+    mocks.refresh
+      .mockRejectedValueOnce(new Error("catalog unavailable"))
+      .mockRejectedValueOnce(new ApiError(409, "operation_busy"))
+      .mockResolvedValueOnce([]);
+    render(<DesktopConversationPane sessionId="original" />);
+    const open = await screen.findByText("Open fork");
+    await act(async () => fireEvent.click(open));
+    expect(screen.getByText(/sessions\.conversationCatalogError/)).toHaveTextContent(
+      "catalog unavailable",
+    );
+    const retry = screen.getByText("Embedded catalog updated");
+    await act(async () => fireEvent.click(retry));
+    expect(mocks.refresh).toHaveBeenLastCalledWith({ joinPending: true });
+    expect(screen.getByText(/sessions\.conversationCatalogError/)).toHaveTextContent(
+      "catalog unavailable",
+    );
+    await act(async () => fireEvent.click(retry));
+    expect(screen.queryByText(/sessions\.conversationCatalogError/)).not.toBeInTheDocument();
+  });
 
   it("forwards explicit toolbar refreshes to the mounted conversation", async () => {
     mocks.revision = 2;
@@ -143,7 +148,7 @@ describe("desktop conversation navigation", () => {
     expect(mocks.reveal).not.toHaveBeenCalled();
   });
 
-  it("finishes a deferred fork when an explicit catalog retry recovers from a real failure", async () => {
+  it("finishes a deferred fork when a catalog change recovers from a real failure", async () => {
     mocks.refresh
       .mockRejectedValueOnce(new Error("catalog unavailable"))
       .mockResolvedValueOnce([{ id: "fork" }]);
@@ -155,7 +160,7 @@ describe("desktop conversation navigation", () => {
       ),
     );
     expect(mocks.select).not.toHaveBeenCalled();
-    fireEvent.click(screen.getByText("Refresh catalog"));
+    fireEvent.click(screen.getByText("Embedded catalog updated"));
     await waitFor(() => expect(mocks.select).toHaveBeenCalledExactlyOnceWith("fork"));
     expect(mocks.reveal).toHaveBeenCalledExactlyOnceWith({ id: "fork" });
     expect(screen.queryByText(/sessions\.conversationCatalogError/)).not.toBeInTheDocument();
@@ -167,6 +172,8 @@ describe("desktop conversation navigation", () => {
     fireEvent.click(await screen.findByText("Open fork"));
     await waitFor(() => expect(mocks.refresh).toHaveBeenCalledOnce());
     mocks.selectionRevision += 1;
+    fireEvent.click(screen.getByText("Embedded catalog updated"));
+    expect(mocks.refresh).toHaveBeenCalledOnce();
     mocks.sessions = [{ id: "fork" }];
     view.rerender(<DesktopConversationPane sessionId="original" />);
     expect(mocks.select).not.toHaveBeenCalled();

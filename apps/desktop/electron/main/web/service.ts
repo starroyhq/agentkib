@@ -4930,7 +4930,7 @@ export class WebAccessService {
     control.request =
       url.pathname.startsWith("/api/web/v1/") &&
       isControlRequest(req.method, url.pathname.replace(/^\/api\/web\/v1/, ""));
-    this.rate(paired ? `paired:${hash}` : "anonymous", 600);
+    if (!trustedLocal) this.rate(paired ? `paired:${hash}` : "anonymous", 600);
     if (paired && url.pathname.startsWith("/api/")) this.seen.set(hash, Date.now());
     if (lan) {
       res.setHeader("Access-Control-Allow-Origin", origin);
@@ -5098,7 +5098,9 @@ export class WebAccessService {
       });
     }
     if (!browser) throw new HttpError(401, "unpaired");
-    this.rate(hash, 180);
+    // Trusted IPC GETs still use the underlying read admission and route-specific limits.
+    // Catalog and transcript refreshes must not exhaust the desktop's write budget.
+    if (!trustedLocal || req.method !== "GET") this.rate(hash, 180);
     if (req.method === "POST") {
       if (req.headers.origin !== origin || req.headers["x-csrf-token"] !== browser.csrf)
         throw new HttpError(403, "csrf_rejected");

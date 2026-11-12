@@ -35,6 +35,7 @@ import { registerRuntimeIpc } from "./ipc/runtime";
 import { createIpcRegistrar } from "./ipc/registrar";
 import { ElectronNativeShell, resolveNativeShellTrayIcon } from "./native-shell";
 import { TraySessionWatcher, type TraySessionSource } from "./tray-sessions";
+import { PushNotifier } from "./push/notifier";
 import { workStoppedByQuit, type HomeSession } from "@agentkib/session-catalog";
 import { ElectronRefreshCoordinator } from "./refresh-coordinator";
 import { CostObservation, requireLocalCostProvider } from "./cost-observation";
@@ -86,6 +87,7 @@ let screenLocked = false;
 let nativeShell: ElectronNativeShell | undefined;
 /** Keeps the menu bar icon's counts; see TraySessionWatcher for when it reads the catalog. */
 let traySessions: TraySessionWatcher | undefined;
+let pushNotifier: PushNotifier | undefined;
 /** This computer's sessions, for the menu bar counts and the quit confirmation. */
 let sessionSource: TraySessionSource | undefined;
 let refreshCoordinator: ElectronRefreshCoordinator | undefined;
@@ -183,6 +185,8 @@ app.on("before-quit", (event) => {
   nativeShell?.destroy();
   void (async () => {
     try {
+      // Ends the phones' Live Activities while the relay still runs.
+      await pushNotifier?.stop();
       await Promise.allSettled([webAccess?.dispose(), lanWebAccess?.dispose()]);
     } finally {
       await runtimeHost?.stop();
@@ -395,8 +399,20 @@ async function startApplication(): Promise<void> {
   await lanWebAccess.initialize();
   registerConversationIpc({ service: webAccess, hub: conversationHub, assertTrustedRenderer });
   sessionSource = traySessionSource(webAccess, conversationHub);
-  traySessions = new TraySessionWatcher(sessionSource, (status) =>
-    nativeShell?.setSessionStatus(status),
+  const remoteAccess = webAccess;
+  pushNotifier = new PushNotifier({
+    targets: () => remoteAccess.pushTargets(),
+    deviceId: () => remoteAccess.pushDeviceId(),
+    send: (input) => remoteAccess.pushSend(input),
+    computerName,
+    // Input in the last two minutes on an unlocked screen: the person sees this computer.
+    present: () => powerMonitor.getSystemIdleState(120) === "active",
+  });
+  remoteAccess.onPushChanged(() => pushNotifier?.refresh());
+  traySessions = new TraySessionWatcher(
+    sessionSource,
+    (status) => nativeShell?.setSessionStatus(status),
+    { onSessions: (sessions) => pushNotifier?.update(sessions) },
   );
   // Another window following the catalog saw a change, or a control settled: read it again.
   conversationHub.on("catalog-invalidated", () => traySessions?.refresh());

@@ -86,6 +86,26 @@ export type AccountLoginProof = {
   hostChallenge: string;
   redemptionId: string;
 };
+/**
+ * A notification for a phone login of this computer's account. An alert carries an envelope only
+ * the phone can open; Live Activity content travels as plain JSON (Apple's rule), so it holds
+ * counts, times and at most one session title. Dates are UNIX seconds.
+ */
+export type PushSendInput = { session: string; collapseId?: string } & (
+  | { kind: "alert"; envelope: string }
+  | {
+      kind: "activity";
+      event: "start" | "update" | "end";
+      contentState: Record<string, unknown>;
+      priority?: 5 | 10;
+      staleDate?: number;
+      dismissalDate?: number;
+    }
+);
+/** `error` is the relay's refusal code, such as `push_target_gone`, or a local one when no answer came. */
+export type PushSendResult =
+  | { delivered: true }
+  | { delivered: false; error: string; retryAfterSeconds?: number };
 export type RelayStatus = {
   phase: "disabled" | "registering" | "certifying" | "connecting" | "ready" | "offline" | "error";
   publicUrl?: string;
@@ -330,6 +350,26 @@ function abortable<T>(work: Promise<T>, signal: AbortSignal): Promise<T> {
     work.then(resolve, reject).finally(() => signal.removeEventListener("abort", abort));
   });
 }
+/** Reads a broker response body of at most `limit` bytes. */
+async function readBody(response: Response, signal: AbortSignal, limit: number): Promise<Buffer> {
+  const reader = response.body?.getReader();
+  if (!reader) throw new Error("Empty relay response");
+  const chunks: Uint8Array[] = [];
+  let bytes = 0;
+  try {
+    for (;;) {
+      const { done, value } = await abortable(reader.read(), signal);
+      if (done) break;
+      bytes += value.byteLength;
+      if (bytes > limit) throw new Error("Oversized relay response");
+      chunks.push(value);
+    }
+  } finally {
+    void reader.cancel().catch(() => {});
+    reader.releaseLock();
+  }
+  return Buffer.concat(chunks);
+}
 
 /** TLS terminates on this computer. Neither tunnel process owns or stops Codex execution. */
 export class RelayManager {
@@ -466,6 +506,57 @@ export class RelayManager {
         ...(value.expiresAt !== undefined ? { expiresAt: value.expiresAt } : {}),
       };
     });
+  }
+  /**
+   * Asks the relay to notify a phone login of this computer's account. Answers with the relay's
+   * refusal instead of throwing, and never counts as a relay failure: a phone that uninstalled the
+   * app or a throttled notification says nothing about the connection. Sends nothing while remote
+   * access is off or asleep.
+   */
+  async pushSend(input: PushSendInput): Promise<PushSendResult> {
+    const registration = this.registration;
+    if (!this.enabled || this.suspended || !registration?.accountId)
+      return { delivered: false, error: "relay_unavailable" };
+    const signal = AbortSignal.timeout(15_000);
+    let response: Response;
+    let text: string;
+    try {
+      response = await abortable(
+        fetch(new URL("/v1/push/send", this.brokerUrl), {
+          method: "POST",
+          headers: {
+            "content-type": "application/json",
+            authorization: `Bearer ${registration.credential}`,
+          },
+          body: JSON.stringify({ ...input, deviceId: registration.deviceId }),
+          signal,
+          redirect: "error",
+        }),
+        signal,
+      );
+      text = (await readBody(response, signal, 4_096)).toString("utf8");
+    } catch {
+      return { delivered: false, error: "relay_unreachable" };
+    }
+    let data: unknown;
+    try {
+      data = JSON.parse(text);
+    } catch {
+      data = undefined;
+    }
+    const answer = data as { delivered?: unknown; error?: unknown } | undefined;
+    if (response.ok && answer?.delivered === true) return { delivered: true };
+    const retryAfter = Number(response.headers.get("retry-after"));
+    return {
+      delivered: false,
+      error:
+        typeof answer?.error === "string" && /^[a-z_]{1,64}$/.test(answer.error)
+          ? answer.error
+          : `http_${response.status}`,
+      ...(Number.isSafeInteger(retryAfter) && retryAfter > 0
+        ? { retryAfterSeconds: retryAfter }
+        : {}),
+    };
   }
   private publicAllowed() {
     return this.relayPolicy?.allowed !== false;
@@ -615,24 +706,9 @@ export class RelayManager {
         if (response.status === 403) throw new RelayAuthorizationError();
         throw new RelayHttpError();
       }
-      const reader = response.body?.getReader();
-      if (!reader) throw new Error("Empty relay response");
-      const chunks: Uint8Array[] = [];
-      let bytes = 0;
-      try {
-        for (;;) {
-          const { done, value } = await abortable(reader.read(), signal);
-          if (done) break;
-          bytes += value.byteLength;
-          if (bytes > 65_536) throw new Error("Oversized relay response");
-          chunks.push(value);
-        }
-      } finally {
-        void reader.cancel().catch(() => {});
-        reader.releaseLock();
-      }
+      const body = await readBody(response, signal, 65_536);
       this.active(generation);
-      return JSON.parse(Buffer.concat(chunks).toString("utf8")) as Record<string, unknown>;
+      return JSON.parse(body.toString("utf8")) as Record<string, unknown>;
     } catch (error) {
       if (!(error instanceof RelayAuthorizationError) && generation === this.generation)
         this.recordFailure(path === "/v1/certificate" ? "certificate" : "broker", error);

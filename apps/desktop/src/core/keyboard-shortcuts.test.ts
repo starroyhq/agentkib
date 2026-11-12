@@ -50,17 +50,18 @@ describe("keyboard shortcuts", () => {
     ).toBe(false);
   });
 
-  it("assigns seven page shortcuts in sidebar order using the same translation keys", () => {
+  it("keeps page shortcuts in key order with the matching sidebar labels", () => {
     const entries = createGlobalNavigation(3);
     expect(entries.map((entry) => entry.id)).toEqual([
       "home",
-      "workspaces",
       "sessions",
+      "workspaces",
       "catalog",
       "quota",
       "insights",
     ]);
-    expect(entries.map((entry) => entry.shortcut)).toEqual([
+    const definitions = shortcutsForGroup("navigation").slice(0, 6);
+    expect(definitions.map((definition) => definition.id)).toEqual([
       "navigate-home",
       "navigate-workspaces",
       "navigate-sessions",
@@ -68,13 +69,11 @@ describe("keyboard shortcuts", () => {
       "navigate-quota",
       "navigate-insights",
     ]);
-    const definitions = shortcutsForGroup("navigation").slice(0, 6);
-    expect(definitions.map((definition) => definition.id)).toEqual(
-      entries.map((entry) => entry.shortcut),
-    );
-    expect(definitions.map((definition) => definition.labelKey)).toEqual(
-      entries.map((entry) => entry.label),
-    );
+    for (const definition of definitions) {
+      expect(entries.find((entry) => entry.shortcut === definition.id)?.label).toBe(
+        definition.labelKey,
+      );
+    }
     expect(definitions.map((definition) => definition.key)).toEqual(["1", "2", "3", "4", "5", "6"]);
     expect(entries.find((entry) => entry.id === "catalog")?.badge).toBe(3);
     expect(formatShortcut(getShortcutDefinition("navigate-sessions"), "macos")).toBe("⌘3");

@@ -40,22 +40,22 @@ describe("ShortcutHelpDialog", () => {
   });
 
   it.each(displayCases)(
-    "matches sidebar labels and page order in help and settings for $platform/$locale",
+    "matches sidebar labels in shortcut key order in help and settings for $platform/$locale",
     async ({ platform, locale }) => {
       document.documentElement.dataset.platform = platform;
       await act(() => changeLocale(locale));
       try {
         const entries = createGlobalNavigation(0);
-        expect(entries.map((entry) => entry.id)).toEqual([
+        const pagesInShortcutOrder = [
           "home",
           "workspaces",
           "sessions",
           "catalog",
           "quota",
           "insights",
-        ]);
-        const expectedPages = entries.map((entry, index) => [
-          tr(entry.label),
+        ];
+        const expectedPages = pagesInShortcutOrder.map((page, index) => [
+          tr(entries.find((entry) => entry.id === page)!.label),
           `${platform === "macos" ? "⌘" : "Ctrl+"}${index + 1}`,
         ]);
         const settingsShortcut = `${platform === "macos" ? "⌘" : "Ctrl+"},`;

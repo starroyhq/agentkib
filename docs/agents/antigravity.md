@@ -10,13 +10,27 @@ Antigravity 不能直接复用 Gemini CLI 的会话适配器。两者共享 `GEM
 | Antigravity ACP server | 1.1.1      | ACP v1 会话列表、加载、续接、发送、停止和逐次审批                                    |
 | ACP protocol           | v1         | `session/list`、`session/load`、`session/resume`、`session/prompt`、`session/cancel` |
 
-AgentKib 不自动下载 ACP server，也不读取或复制 Google 登录凭据。运行时从绝对路径环境变量 `AGENTKIB_ANTIGRAVITY_ACP_BIN` 查找服务器；未设置时查找 PATH 中的 `agy_acp_server.par` 或 `agy_acp_server.exe`。只读历史按 ACP v1 能力协商；发送、停止和审批还要求服务端精确报告身份 `antigravity-acp`，版本完整匹配 `agy_acp_server_数字.数字.数字` 且不低于 `1.1.1`。版本范围只决定尝试兼容，实际 ACP v1、加载或续接能力、会话及审批身份仍须确认。
+AgentKib 不自动下载 ACP server，也不读取或复制 Google 登录凭据。运行时从绝对路径环境变量 `AGENTKIB_ANTIGRAVITY_ACP_BIN` 查找服务器；未设置时优先查找 PATH 中的 `agy_acp_server.par` 或 `agy_acp_server.exe`，再查找新版 `agy acp`。只读历史按 ACP v1 能力协商；发送、停止和审批还要求服务端精确报告身份 `antigravity-acp`，版本完整匹配 `agy_acp_server_数字.数字.数字` 且不低于 `1.1.1`。版本范围只决定尝试兼容，实际 ACP v1、加载或续接能力、会话及审批身份仍须确认。
 
 上下文占用仅接收原生 `usage_update.used` 与 `size`，缺失或无效时保持未知。连接声明可选的 ACP v1 `session.compaction` 扩展；收到压缩通知时按原生 `compactionId` 保存有界生命周期、摘要块及 nullable patch，首次接收位置保持不变，历史允许从终态开始。未知状态不能确认压缩结束；压缩结束也不能确认当前轮次结束。压缩期间禁用新发送，保留停止及有效原生审批；没有这些通知时只依赖原有运行状态锁。扩展处理与离线测试通过不证明已安装服务器实际会上报它们。
 
 压缩期间的合法用量报告保留为待确认候选，包括连续压缩或模型切换后开始的压缩。压缩结束后仍显示“用量待更新”；只有普通请求或输出边界之后的新原生报告才能恢复当前占用比例，结束通知本身不会使候选报告变为当前值。
 
 每次新建 ACP runner 都分配当前 Backend 内递增的用量报告代次。重连后的报告编号可以重新从 1 开始；桌面和 Remote 持续订阅时，也能按代次撤销旧实例报告并接受新报告。模型切换、压缩和同一连接内的状态更新保留该代次。
+
+## 本机 App / IDE 只读浏览
+
+会话目录独立发现 `~/.gemini/antigravity`（App）与 `~/.gemini/antigravity-ide`（IDE），不要求安装 ACP。只读打开 `conversation_summaries.db`，或读取 `agyhub_summaries_proto.pb` 的已核验摘要字段；只将有可信工作区、原生 ID 与对应历史文件的条目加入项目。迁移到两个目录的同 ID、同工作区会话择更新时间较新的来源，时间相同时优先使用 App，只显示一份。缺少摘要、无法证明工作区的孤立 `.pb` 不猜测归属。
+
+原生应用已运行时，通过其当前用户私有 daemon 元数据找到已认证的本机 HTTP 服务，仅调用列举与读取历史方法；不启动后台 agent，不发送、恢复或接管会话。请求直连固定的 `127.0.0.1`，绕过 HTTP 代理并禁止重定向，不记录或传给前端 daemon 的认证凭据。App 2.24.0 的 `GetCascadeTrajectorySteps` 已实际核验：使用 PROD_UI 投影读取用户输入与助手可见答复，排除 planner thinking；工具细节、附件等未投影内容保留部分历史提示。
+
+应用关闭或首次原生读取失败时，可回退到本来源的 SQLite 搜索索引。运行中的数据库使用 SQLite 只读事务，已关闭的 WAL 库读取时不会创建辅助文件。按原生 step 与 UTF-8 字节偏移恢复文字顺序，明确显示部分历史，不将它当作完整 transcript。分页游标绑定来源和内容版本，翻页期间不自动切换在线/离线来源。离线缺少正文索引或本库工作区摘要的会话只显示元数据。IDE 原生目录补全使用运行中 daemon 的只读摘要能力；本机缺少 IDE 运行时的记录仅验证离线部分，不能声称全部旧 IDE 历史已恢复。
+
+这些条目使用独立的 `antigravity-local-v1-` 引用，只可浏览。服务端拒绝发送、停止、审批、回答、设置修改、归档、重命名和续接/完整历史导出。现有经过验证的旧 ACP 会话控制链保持原边界。
+
+新版 CLI 自动发现 `agy` 并以参数 `acp` 启动；显式 `AGENTKIB_ANTIGRAVITY_ACP_BIN` 指向绝对路径的 `agy` 时也使用同样参数。新版身份 `Antigravity ACP Server` 仅用于能力协商后的只读浏览，不继承旧服务的控制信任。缺少可选 ACP 返回空来源，不再产生常驻“暂时读不到”的故障提示；已配置路径损坏、协议错误、认证或真实读取失败仍保留诊断。
+
+验证入口：`antigravity-local-store.test.ts`、`antigravity-local-runtime.test.ts`、`antigravity-history.test.ts`、`antigravity-local-readonly.test.ts`、`antigravity-modern-acp.test.ts` 和 `antigravity-runtime-scope.test.ts`，位于 `apps/desktop/test`。使用隔离目录、合成 SQLite/Protobuf、只读 HTTP fixture 与合成 ACP 子进程，不依赖用户凭据或模型调用。
 
 ## 已实现范围
 
@@ -34,7 +48,7 @@ AgentKib 不自动下载 ACP server，也不读取或复制 Google 登录凭据�
 
 ACP v1 的 `session/new` 没有导入外部历史的参数。Antigravity CLI 1.2.7 也没有把任意外部 transcript 创建为目标原生会话的稳定命令。因此 Codex/Claude Code → Antigravity 的原生历史导入保持 `native-history-import-unsupported`，不会降级后仍标记为原生导入。
 
-当前 ACP server 使用自己的会话存储。尚无公开稳定接口证明它可以完整列出或控制 Antigravity Desktop/IDE 与 `agy` CLI 已有的全部会话。因此 AgentKib 只索引 ACP server 返回的会话；只有服务端同时支持 `session/load` 时才标记为可读，否则仅展示元数据。未安装可选 ACP server 时，会话来源为空；不会把 ACP 能力扩大解释为对现有 Desktop/IDE 或 CLI 会话的控制。
+当前 ACP server 使用自己的会话存储。尚无公开稳定接口证明它可以完整列出或控制 Antigravity Desktop/IDE 与 `agy` CLI 已有的全部会话。因此 AgentKib 只索引 ACP server 返回的会话；只有服务端同时支持 `session/load` 时才标记为可读，否则仅展示元数据。未安装可选 ACP server 时，ACP 来源为空，本机 App/IDE 的只读来源仍可使用；不会把 ACP 能力扩大解释为对现有 Desktop/IDE 或 CLI 会话的控制。
 
 ## 实施与验收
 

@@ -9,7 +9,7 @@ import { GrokSessions } from "./grok-sessions";
 import { OpenClawSessions } from "./openclaw-sessions";
 import { HermesSessions } from "./hermes-sessions";
 import { OpenCodeSessions } from "./opencode-sessions";
-import { AntigravitySessions } from "./antigravity-sessions";
+import { AntigravityHistory } from "./antigravity-history";
 import { CursorSessions } from "./cursor-sessions";
 import { CursorIdeSessions } from "./cursor-ide-sessions";
 import type { CursorBridge } from "./cursor-bridge";
@@ -96,7 +96,7 @@ export class SessionReaders {
   #openclaw: OpenClawSessions;
   #hermes: HermesSessions;
   #opencode: OpenCodeSessions;
-  #antigravity: AntigravitySessions;
+  #antigravity: AntigravityHistory;
   #cursor: CursorSessions;
   #cursorIde: CursorIdeSessions;
   #paging = new SessionPaging();
@@ -116,7 +116,7 @@ export class SessionReaders {
     this.#openclaw = new OpenClawSessions(env);
     this.#hermes = new HermesSessions(env);
     this.#opencode = new OpenCodeSessions(commands, env);
-    this.#antigravity = new AntigravitySessions(env);
+    this.#antigravity = new AntigravityHistory(env);
     this.#cursor = new CursorSessions(env);
     this.#cursorIde = new CursorIdeSessions(cursorBridge);
   }
@@ -762,7 +762,7 @@ export class SessionReaders {
       case "opencode":
         return this.#opencode.readEvents(workspace, ref, offset, count);
       case "antigravity":
-        return this.#antigravity.readEvents(ref, offset, count);
+        return this.#antigravity.readEvents(ref, offset, count, workspace);
       case "cursor":
         return ref.startsWith("cursor-ide-v1-")
           ? this.#cursorIde.events(ref, workspace, offset, count)

@@ -5108,6 +5108,8 @@ export class WebReadRequests {
       throw new Error("session-unavailable");
     const resolved = await this.sessions.resolve(sessionId);
     if (resolved.native.agent !== "antigravity") throw new Error("session-not-antigravity");
+    if (resolved.native.native_ref.startsWith("antigravity-local-v1-"))
+      throw new Error("session-read-only");
     if (resolved.native.sidechain) throw new Error("auxiliary-session-not-controllable");
     const nativeId = resolved.native.native_ref;
     const workspace = canonicalize(resolved.workspace);

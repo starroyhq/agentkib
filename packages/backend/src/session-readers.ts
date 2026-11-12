@@ -1,7 +1,7 @@
 import { closeSync, constants, fstatSync, lstatSync, openSync, readSync } from "node:fs";
 import path from "node:path";
 import { z } from "zod";
-import { sessionCollection } from "@agentkib/runtime-protocol";
+import { sessionCollection, type SessionCollection } from "@agentkib/runtime-protocol";
 import { CodexSessions } from "./codex-sessions";
 import { codexRollouts } from "./codex-rollout-files";
 import { ClaudeSessions } from "./claude-sessions";
@@ -116,7 +116,7 @@ export class SessionReaders {
     readonly dsh?: DshSessionSource,
   ) {
     this.#subagents = new SessionSubagents(store.identitySalt());
-    this.#codex = new CodexSessions(env);
+    this.#codex = new CodexSessions(env, { retainDatabase: true });
     this.#claude = new ClaudeSessions(env);
     this.#grok = new GrokSessions(env);
     this.#openclaw = new OpenClawSessions(env);
@@ -128,6 +128,7 @@ export class SessionReaders {
     this.#devin = new DevinSessions(env);
   }
   close(): void {
+    this.#codex.close();
     this.#antigravity.close();
     this.#paging.clear();
     this.#subagents.clear();
@@ -193,7 +194,7 @@ export class SessionReaders {
     if (!identity || !within(canonicalize(identity.cwd), root))
       throw new Error("session-workspace-mismatch");
     const source = this.#codex
-      .list(null, { matches: (ref) => ref === nativeId })
+      .list(null, { nativeRef: nativeId })
       .sessions.find(
         (value) => value.session.native_ref === nativeId && value.session.origin !== "auxiliary",
       );
@@ -239,6 +240,15 @@ export class SessionReaders {
   }
   verifiedCodexControlIds(nativeRefs: Iterable<string>): Set<string> {
     return this.#codex.verifiedControlIds(nativeRefs);
+  }
+  managedCodexCandidates(
+    nativeRefs: Iterable<string>,
+    matchesScope: (nativeRef: string, cwd: string, collection: SessionCollection | null) => boolean,
+  ) {
+    return this.#codex.list(null, { nativeRefs, matchesScope }).sessions;
+  }
+  verifiedCodexIndexedIdentities(nativeRefs: Iterable<string>, rolloutHome: string) {
+    return this.#codex.verifiedIndexedIdentities(nativeRefs, rolloutHome);
   }
   verifiedCodexResumeIdentity(nativeRef: string): { id: string; cwd: string } | undefined {
     if (!this.#codex.verifiedControlIds([nativeRef]).has(nativeRef.toLowerCase())) return;
@@ -403,7 +413,7 @@ export class SessionReaders {
   verifiedCodexReadTranscript(nativeId: string, workspace: string): string | null {
     return (
       this.#codex
-        .list(workspace, { matches: (id) => id === nativeId })
+        .list(workspace, { nativeRef: nativeId })
         .sessions.find((source) => source.session.native_ref === nativeId)?.transcript ?? null
     );
   }
@@ -625,7 +635,7 @@ export class SessionReaders {
       };
       verify();
       const source = this.#codex
-        .list(null, { matches: (ref) => ref.toLowerCase() === nativeRef.toLowerCase() })
+        .list(null, { nativeRefs: [nativeRef] })
         .sessions.find(
           (candidate) =>
             candidate.session.native_ref.toLowerCase() === nativeRef.toLowerCase() &&
@@ -692,7 +702,7 @@ export class SessionReaders {
       };
       verify();
       const source = this.#codex
-        .list(null, { matches: (ref) => ref.toLowerCase() === nativeRef.toLowerCase() })
+        .list(null, { nativeRefs: [nativeRef] })
         .sessions.find(
           (candidate) =>
             candidate.session.native_ref.toLowerCase() === nativeRef.toLowerCase() &&

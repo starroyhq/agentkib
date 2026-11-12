@@ -1,10 +1,10 @@
 import path from "node:path";
 import { z } from "zod";
-import { SESSION_COLLECTIONS } from "@agentkib/runtime-protocol";
-import { CodexSessions } from "./codex-sessions";
+import type { SessionCollection } from "@agentkib/runtime-protocol";
+import type { NativeSessionSource } from "./codex-sessions";
 import { readManagedCatalogSnapshot } from "./managed-ledger";
 import { canonicalize, pathIdentity } from "./paths";
-import { within } from "./files";
+import { within, withinIdentity } from "./files";
 import type { SessionReaders } from "./session-readers";
 import type { BackendStore } from "./store";
 import type { NativeSession } from "./session-store";
@@ -104,60 +104,73 @@ export async function managedCatalogProjection(
   } catch {
     return projection;
   }
-  const workspaces = new Map<string, Map<string, ManagedCatalogRecord>>();
+  const homeIdentity = pathIdentity(home);
+  type Candidate = { native: string; record: ManagedCatalogRecord; session: NativeSession };
+  type WorkspaceScope = { identity: string; candidates: Map<string, Candidate> };
+  const workspaces = new Map<string, WorkspaceScope>();
+  const eligible = new Map<string, { record: ManagedCatalogRecord; workspace: WorkspaceScope }>();
   for (const [native, record] of owners) {
     if (!record || !hasManagedCatalogWorkspace(store, record)) continue;
     try {
-      if (
-        !path.isAbsolute(record.home) ||
-        pathIdentity(canonicalize(record.home)) !== pathIdentity(home)
-      )
+      if (!path.isAbsolute(record.home) || pathIdentity(canonicalize(record.home)) !== homeIdentity)
         continue;
     } catch {
       continue;
     }
-    let workspaceOwners = workspaces.get(record.workspace_id);
-    if (!workspaceOwners) workspaces.set(record.workspace_id, (workspaceOwners = new Map()));
-    workspaceOwners.set(native, record);
-  }
-  const candidates: Array<{
-    native: string;
-    ref: string;
-    record: ManagedCatalogRecord;
-    session: NativeSession;
-  }> = [];
-  const scopes = [...workspaces].map(([workspaceId, workspaceOwners]) => ({
-    workspace: store.workspacePath(workspaceId),
-    workspaceOwners,
-  }));
-  const eligible = new Map([...workspaces.values()].flatMap((records) => [...records]));
-  if (eligible.size)
-    for (const collection of Object.values(SESSION_COLLECTIONS))
-      scopes.push({ workspace: collection, workspaceOwners: eligible });
-  for (const { workspace, workspaceOwners } of scopes) {
-    try {
-      // Only owned threads can become aliases; skip classifying every other thread.
-      const listing = await readers.list("codex", workspace, {
-        matches: (ref) => {
-          const native = uuid(ref);
-          return native !== null && workspaceOwners.has(native);
-        },
-      });
-      for (const candidate of listing.sessions) {
-        if (candidate.origin === "auxiliary") continue;
-        const native = uuid(candidate.native_ref);
-        const record = native ? workspaceOwners.get(native) : undefined;
-        if (native && record)
-          candidates.push({ native, ref: candidate.native_ref, record, session: candidate });
-      }
-    } catch {
-      // An unavailable native source cannot prove a directory ownership alias.
+    let workspace = workspaces.get(record.workspace_id);
+    if (!workspace) {
+      workspace = { identity: pathIdentity(record.workspace), candidates: new Map() };
+      workspaces.set(record.workspace_id, workspace);
     }
+    eligible.set(native, { record, workspace });
   }
+  if (eligible.size === 0) return projection;
+  let sources: NativeSessionSource[];
+  try {
+    sources = readers.managedCodexCandidates(eligible.keys(), (ref, cwd, collection) => {
+      const native = uuid(ref);
+      const owner = native ? eligible.get(native) : undefined;
+      return (
+        owner !== undefined &&
+        (collection !== null || withinIdentity(pathIdentity(cwd), owner.workspace.identity))
+      );
+    });
+  } catch {
+    // An unavailable native source cannot prove a directory ownership alias.
+    return projection;
+  }
+  const collections: Record<SessionCollection, Map<string, Candidate>> = {
+    projectless: new Map(),
+    unclassified: new Map(),
+  };
+  // Partition the batched read into the same scopes as the directory. An exact
+  // raw ID can appear in several databases, with the last row winning per scope.
+  for (const source of sources) {
+    const ref = source.session.native_ref;
+    const native = uuid(ref);
+    const owner = native ? eligible.get(native) : undefined;
+    if (!native || !owner) continue;
+    const { record, workspace } = owner;
+    const scope = source.collection ? collections[source.collection] : workspace.candidates;
+    scope.set(ref, { native, record, session: { ...source.session, cwd: source.cwd } });
+  }
+  const scopes = [
+    ...Array.from(workspaces.values(), (workspace) => workspace.candidates),
+    ...Object.values(collections),
+  ];
+  const candidates = scopes
+    .flatMap((scope) => [...scope.values()])
+    .filter(({ session }) => session.origin !== "auxiliary");
   if (candidates.length === 0) return projection;
-  const identities = new CodexSessions({ CODEX_HOME: home }).verifiedIndexedIdentities(
-    candidates.map((candidate) => candidate.ref),
+  const identities = readers.verifiedCodexIndexedIdentities(
+    new Set(candidates.map(({ native }) => native)),
+    home,
   );
+  try {
+    if (pathIdentity(canonicalize(readers.codexHome())) !== homeIdentity) return projection;
+  } catch {
+    return projection;
+  }
   // The alias ID helper can create a salt. A directory only projects existing
   // index identities, which always have their salt already recorded.
   if (
@@ -165,7 +178,7 @@ export async function managedCatalogProjection(
       ?.value !== "string"
   )
     return projection;
-  for (const { native, ref, record, session } of candidates) {
+  for (const { native, record, session } of candidates) {
     const verified = identities.get(native);
     // Legacy display ownership can be proved by its native UUID/header even
     // before the first safe resume adds a separate execution cwd to the ledger.
@@ -184,7 +197,7 @@ export async function managedCatalogProjection(
     }
     let owned = aliases.get(record.id);
     if (!owned) aliases.set(record.id, (owned = new Set()));
-    owned.add(store.sessions.id("codex", ref));
+    owned.add(store.sessions.id("codex", session.native_ref));
     const previous = nativeByOwner.get(record.id);
     if (
       !previous ||

@@ -4,6 +4,7 @@ import {
   mkdtempSync,
   openSync,
   readFileSync,
+  renameSync,
   rmSync,
   symlinkSync,
   writeFileSync,
@@ -13,6 +14,7 @@ import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { CodexSessions } from "../../../packages/backend/src/codex-sessions";
+import { Sql } from "../../../packages/backend/src/sql";
 
 vi.mock("node:fs", async (importOriginal) => {
   const actual = await importOriginal<typeof import("node:fs")>();
@@ -20,10 +22,11 @@ vi.mock("node:fs", async (importOriginal) => {
 });
 
 const fixtures: string[] = [];
+const readers: CodexSessions[] = [];
 const nativeId = "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee";
 const otherId = "11111111-2222-4333-8444-555555555555";
 
-function fixture(sourceColumn = true) {
+function fixture(sourceColumn = true, retainDatabase = false) {
   const root = mkdtempSync(path.join(tmpdir(), "agentkib-codex-classification-"));
   fixtures.push(root);
   const home = path.join(root, "home"),
@@ -38,7 +41,11 @@ function fixture(sourceColumn = true) {
     thread_source TEXT, parent_thread_id TEXT, forked_from_id TEXT, project_id TEXT
   )`);
   db.close();
-  const reader = new CodexSessions({ HOME: home, USERPROFILE: home, CODEX_HOME: codexHome });
+  const reader = new CodexSessions(
+    { HOME: home, USERPROFILE: home, CODEX_HOME: codexHome },
+    { retainDatabase },
+  );
+  readers.push(reader);
   const add = (
     id: string,
     options: {
@@ -125,6 +132,7 @@ function additionalIndex(
 
 afterEach(() => {
   vi.clearAllMocks();
+  for (const reader of readers.splice(0)) reader.close();
   for (const directory of fixtures.splice(0)) rmSync(directory, { recursive: true, force: true });
 });
 
@@ -352,6 +360,186 @@ describe("Legacy AgentKib history import display exception", () => {
 });
 
 describe("Codex indexed identity verification", () => {
+  it("reuses the narrow ID scan and rechecks rollout proofs across WAL updates", () => {
+    const f = fixture(true, true);
+    const writer = new DatabaseSync(f.file);
+    writer.exec("PRAGMA journal_mode=WAL");
+    writer.prepare("SELECT id FROM threads LIMIT 1").get();
+    const queries = vi.spyOn(Sql.prototype, "rows");
+    try {
+      const mixedCase = "aaaAAAAA-BBbB-4ccc-8ddd-eeeeeeeeeeee";
+      f.add(nativeId);
+      f.add(otherId);
+      const listed = () => f.reader.list(null, { nativeRefs: [nativeId.toUpperCase()] }).sessions;
+      const verified = () => f.reader.verifiedIndexedIdentities([nativeId]);
+      expect(listed().map(({ session }) => session.native_ref)).toEqual([nativeId]);
+      expect(verified().has(nativeId)).toBe(true);
+
+      const idScans = () =>
+        queries.mock.calls.filter(([sql]) => sql.startsWith("SELECT id FROM threads "));
+      expect(idScans()).toHaveLength(process.platform === "win32" ? 2 : 1);
+      expect(
+        queries.mock.calls.filter(([sql]) => sql.includes("FROM threads WHERE id COLLATE BINARY")),
+      ).toHaveLength(2);
+
+      const variant = f.add(mixedCase, {
+        transcript: path.join(f.codexHome, "mixed-case.jsonl"),
+        payload: { id: otherId },
+      });
+      expect(verified().size).toBe(0);
+      expect(listed().map(({ session }) => session.native_ref)).toEqual([mixedCase, nativeId]);
+      expect(idScans()).toHaveLength(process.platform === "win32" ? 4 : 2);
+
+      writeFileSync(
+        variant,
+        JSON.stringify({
+          type: "session_meta",
+          payload: { id: mixedCase, cwd: f.workspace, source: "cli" },
+        }) + "\n",
+      );
+      expect(verified().has(nativeId)).toBe(true);
+      expect(idScans()).toHaveLength(process.platform === "win32" ? 5 : 2);
+
+      writer.prepare("DELETE FROM threads WHERE id=?").run(nativeId);
+      expect(listed().map(({ session }) => session.native_ref)).toEqual([mixedCase]);
+    } finally {
+      queries.mockRestore();
+      writer.close();
+    }
+  });
+
+  it("discards retained IDs and metadata when the native database is replaced", () => {
+    const f = fixture(true, true);
+    const transcript = f.add(nativeId);
+    expect(f.reader.verifiedIndexedIdentities([nativeId]).has(nativeId)).toBe(true);
+    const nextFile = path.join(f.codexHome, "replacement.sqlite");
+    const next = new DatabaseSync(nextFile);
+    try {
+      next.exec("CREATE TABLE threads(id TEXT PRIMARY KEY,rollout_path TEXT,cwd TEXT)");
+      next
+        .prepare("INSERT INTO threads VALUES(?,?,?)")
+        .run(nativeId.toUpperCase(), transcript, f.workspace);
+    } finally {
+      next.close();
+    }
+    renameSync(f.file, `${f.file}.old`);
+    renameSync(nextFile, f.file);
+
+    expect(f.reader.verifiedIndexedIdentities([nativeId]).has(nativeId)).toBe(true);
+    expect(
+      f.reader
+        .list(null, { nativeRefs: [nativeId] })
+        .sessions.map(({ session }) => session.native_ref),
+    ).toEqual([nativeId.toUpperCase()]);
+  });
+
+  it.skipIf(process.platform === "win32")(
+    "resolves relative rollout paths from the canonical home when supplied",
+    () => {
+      const f = fixture(true, true);
+      const alternateParent = path.join(f.root, "alternate");
+      const alternateHome = path.join(alternateParent, "codex");
+      mkdirSync(alternateParent);
+      symlinkSync(f.codexHome, alternateHome);
+      f.add(nativeId, { transcript: path.join(f.home, "relative-rollout.jsonl") });
+      const reader = new CodexSessions({ CODEX_HOME: alternateHome }, { retainDatabase: true });
+      readers.push(reader);
+
+      expect(reader.verifiedIndexedIdentities([nativeId]).size).toBe(0);
+      expect(reader.verifiedIndexedIdentities([nativeId], f.codexHome).has(nativeId)).toBe(true);
+    },
+  );
+
+  it.skipIf(process.platform === "win32")(
+    "reopens the native database when WAL sidecars are recreated",
+    () => {
+      const f = fixture(true, true);
+      f.add(nativeId);
+      const writer = new DatabaseSync(f.file);
+      writer.exec("PRAGMA journal_mode=WAL");
+      writer.close();
+      expect(f.reader.verifiedIndexedIdentities([nativeId]).has(nativeId)).toBe(true);
+
+      for (const suffix of ["-wal", "-shm"])
+        renameSync(`${f.file}${suffix}`, `${f.file}${suffix}.old`);
+      const queries = vi.spyOn(Sql.prototype, "rows");
+      try {
+        expect(f.reader.verifiedIndexedIdentities([nativeId]).has(nativeId)).toBe(true);
+        expect(queries.mock.calls.some(([sql]) => sql.startsWith("SELECT id FROM threads "))).toBe(
+          true,
+        );
+      } finally {
+        queries.mockRestore();
+      }
+    },
+  );
+
+  it("keeps the raw ID candidates for each workspace when querying several indexed scopes", () => {
+    const f = fixture(true, true);
+    const otherWorkspace = path.join(f.root, "other-workspace");
+    mkdirSync(otherWorkspace);
+    const transcript = f.add(nativeId);
+    additionalIndex(f, nativeId, otherWorkspace);
+
+    expect(
+      f.reader
+        .list(null, { nativeRefs: [nativeId], matchesScope: () => true })
+        .sessions.map(({ cwd }) => cwd),
+    ).toEqual([f.workspace, otherWorkspace]);
+    expect(f.reader.list(null, { nativeRefs: [nativeId] }).sessions.map(({ cwd }) => cwd)).toEqual([
+      otherWorkspace,
+    ]);
+    expect(f.reader.list(f.workspace, { nativeRefs: [nativeId] }).sessions).toMatchObject([
+      { cwd: f.workspace, transcript },
+    ]);
+    vi.mocked(openSync).mockClear();
+    expect(
+      f.reader.list(null, {
+        nativeRefs: [nativeId],
+        matchesScope: (_id, cwd) => cwd === f.workspace,
+      }).sessions,
+    ).toMatchObject([{ cwd: f.workspace, transcript }]);
+    expect(new Set(vi.mocked(openSync).mock.calls.map(([file]) => file))).toEqual(
+      new Set([transcript]),
+    );
+    expect(f.reader.verifiedIndexedIdentities([nativeId]).size).toBe(0);
+  });
+
+  it.skipIf(process.platform === "win32")(
+    "bounds retained ID maps and falls back to a narrow index scan for a large database",
+    () => {
+      const f = fixture(true, true);
+      const transcript = f.add(nativeId.toUpperCase());
+      const writer = new DatabaseSync(f.file);
+      try {
+        writer.exec(`WITH RECURSIVE ids(n) AS (
+          VALUES(1) UNION ALL SELECT n+1 FROM ids WHERE n<20000
+        )
+        INSERT INTO threads(id) SELECT printf('%08x-aaaa-bbbb-cccc-%012x',n,n) FROM ids`);
+      } finally {
+        writer.close();
+      }
+      const queries = vi.spyOn(Sql.prototype, "rows");
+      try {
+        expect(f.reader.verifiedIndexedIdentities([nativeId]).has(nativeId)).toBe(true);
+        expect(f.reader.list(null, { nativeRefs: [nativeId] }).sessions).toMatchObject([
+          { transcript, session: { native_ref: nativeId.toUpperCase() } },
+        ]);
+        const sql = queries.mock.calls.map(([statement]) => statement);
+        expect(
+          sql.filter((statement) => statement.startsWith("SELECT id FROM threads WHERE length")),
+        ).toHaveLength(1);
+        expect(
+          sql.filter((statement) =>
+            statement.startsWith("SELECT id FROM threads WHERE id COLLATE NOCASE"),
+          ),
+        ).toHaveLength(2);
+      } finally {
+        queries.mockRestore();
+      }
+    },
+  );
+
   it.each(["lower", "upper"])(
     "does not borrow another case variant's valid header when the %s variant is invalid",
     (invalidCase) => {

@@ -183,7 +183,11 @@ const managedDeleteSchema = z
   .strict();
 
 const managedSettingsStateSchema = z
-  .object({ operation: z.literal("settings-state"), sessionId: z.string().min(1).max(256) })
+  .object({
+    operation: z.literal("settings-state"),
+    sessionId: z.string().min(1).max(256),
+    includeHistorical: z.boolean().optional(),
+  })
   .strict();
 
 const managedQuerySchema = z
@@ -1686,27 +1690,44 @@ export class WebReadRequests {
     const settingsObject = isObject(settings) ? settings : {};
     const runner = this.#managedRunners.get(request.sessionId);
     if (!runner?.session.connected) {
-      if (ownerSnapshot.reason)
-        return {
-          available: false,
-          executionMode: "codex-managed",
-          reason: ownerSnapshot.reason,
-          settings: settingsObject,
-        };
+      const history =
+        request.includeHistorical &&
+        record.native_id &&
+        ownerSnapshot.executionLocation === null &&
+        (ownerSnapshot.status === "idle" || ownerSnapshot.status === "unsupported") &&
+        this.#isCodexHome(record.home)
+          ? this.sessions.codexHistoricalSettings(record.native_id, record.workspace)
+          : undefined;
+      const historical = {
+        ...(history && (history.modelId || history.effort)
+          ? { historicalSettings: { modelId: history.modelId, effort: history.effort } }
+          : {}),
+        ...(history?.usage
+          ? {
+              historicalUsage: {
+                ...history.usage,
+                available: true,
+                state: "stale",
+                historical: true,
+              },
+            }
+          : {}),
+      };
+      const unavailable = (reason: unknown) => ({
+        available: false,
+        executionMode: "codex-managed",
+        reason,
+        settings: settingsObject,
+        ...historical,
+      });
+      if (ownerSnapshot.reason) return unavailable(ownerSnapshot.reason);
       const checked = await this.#preflight.check();
-      if (!checked.executable || checked.reason)
-        return {
-          available: false,
-          executionMode: "codex-managed",
-          reason: checked.reason,
-          settings: settingsObject,
-        };
+      if (!checked.executable || checked.reason) return unavailable(checked.reason);
       const cwd = this.#managedCwd(record);
       const home = this.#assertManagedHome(record);
       const executable = checked.executable;
-      const { models, collaborationModes } = await this.#settingsCatalog.read(
-        codexCatalogKey(executable, home, cwd),
-        async () => {
+      const catalog = await this.#settingsCatalog
+        .read(codexCatalogKey(executable, home, cwd), async () => {
           let catalog: unknown[];
           try {
             catalog = await this.#codex.requestMany(executable, cwd, home, [
@@ -1725,8 +1746,13 @@ export class WebReadRequests {
             models: projectManagedModels(catalog[0]),
             collaborationModes: verifiedCollaborationModes(catalog[1]),
           };
-        },
-      );
+        })
+        .catch((error: unknown) => {
+          if (!history) throw error;
+          return undefined;
+        });
+      if (!catalog) return unavailable("request_failed");
+      const { models, collaborationModes } = catalog;
       return {
         available: true,
         executionMode: "codex-managed",
@@ -1735,6 +1761,7 @@ export class WebReadRequests {
         collaborationModes,
         revision: record.snapshot?.revision ?? 0,
         runtimeBootId: this.#bootId,
+        ...historical,
         settings: {
           ...settingsObject,
           writable: {

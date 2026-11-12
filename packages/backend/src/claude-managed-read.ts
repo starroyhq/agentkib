@@ -71,6 +71,7 @@ import {
   ClaudeManagedRunnerProcess,
   ClaudeUndispatchedError,
   type ClaudeObservedPermissionMode,
+  type ClaudeRunnerOptionsSnapshot,
   type ClaudeRunnerSnapshot,
   type ClaudeStartupCleanupProof,
   validateClaudeContent,
@@ -193,6 +194,12 @@ export type ClaudeContinuationOptions = {
 /** Manages Claude session ownership, CLI runners, and read-side state. */
 export class ClaudeManagedReadOwner {
   #version?: { at: number; value: string | null };
+  #newSessionCatalog?: { key: string; at: number; snapshot: ClaudeRunnerOptionsSnapshot };
+  #catalogProbe?: {
+    key: string;
+    runner: ClaudeManagedRunnerProcess;
+    result: Promise<ClaudeRunnerOptionsSnapshot>;
+  };
   #runners = new Map<string, ClaudeManagedRunnerProcess>();
   #hostState: ClaudeHostStateStore;
   #turnMeta: ClaudeTurnMetaStore;
@@ -340,15 +347,17 @@ export class ClaudeManagedReadOwner {
     await Promise.allSettled([...this.#goalEndpoints.values()].map((endpoint) => endpoint.close()));
     this.#goalEndpoints.clear();
     const runners = [...this.#runners.entries()];
-    const results = await Promise.allSettled(
-      runners.map(async ([id, runner]) => {
+    const probe = this.#catalogProbe;
+    const results = await Promise.allSettled([
+      ...(probe ? [probe.runner.shutdown()] : []),
+      ...runners.map(async ([id, runner]) => {
         await runner.shutdown();
         if (this.#runners.get(id) !== runner) return;
         this.#runners.delete(id);
         this.#ownerLocks.get(id)?.();
         this.#ownerLocks.delete(id);
       }),
-    );
+    ]);
     const failures = results.flatMap((result) =>
       result.status === "rejected" ? [result.reason] : [],
     );
@@ -438,7 +447,7 @@ export class ClaudeManagedReadOwner {
   async #requestRead(value: Record<string, any>, id?: string): Promise<unknown> {
     switch (value.operation) {
       case "options":
-        return this.options();
+        return this.options(value.workspaceId);
       case "create":
         return this.#create(value);
       case "adopt":
@@ -2461,6 +2470,7 @@ export class ClaudeManagedReadOwner {
       "model",
       "effort",
       "permissionMode",
+      "verifyStartupModel",
     ]);
     const requestId = value.requestId;
     const workspaceId = value.workspaceId;
@@ -2471,19 +2481,18 @@ export class ClaudeManagedReadOwner {
       !uuidPattern.test(requestId) ||
       typeof workspaceId !== "string" ||
       workspaceId.length === 0 ||
+      (value.verifyStartupModel !== undefined && value.verifyStartupModel !== true) ||
       Object.keys(value).some((key) => !allowed.has(key)) ||
       (value.name !== undefined &&
         (typeof value.name !== "string" || Buffer.byteLength(value.name) > 512))
     )
       throw new Error("invalid-managed-create");
-    if ((await this.#installationVersion()) === null) throw new Error("claude-cli-unavailable");
+    const installation = await this.#installationVersion();
+    if (installation === null) throw new Error("claude-cli-unavailable");
     // Before the request is claimed or dispatched: nothing may be left half-recorded.
     this.#home();
     const selectedSettings = this.#settings(value);
-    if (
-      Object.keys(selectedSettings).length &&
-      !supportsClaudeVersion(this.#version?.value ?? "", "2.1.286")
-    )
+    if (Object.keys(selectedSettings).length && !supportsClaudeVersion(installation, "2.1.286"))
       throw new Error("unsupported-Claude-version");
     const workspace = canonicalize(this.store.workspacePath(workspaceId));
     const logical = { ...value };
@@ -2491,6 +2500,41 @@ export class ClaudeManagedReadOwner {
     const fingerprint = createHash("sha256").update(stableJson(logical)).digest("hex");
     const prior = replayManagedCommand(this.dataDir, requestId, fingerprint);
     if (prior) return prior;
+
+    if (value.verifyStartupModel && (selectedSettings.model || selectedSettings.effort)) {
+      const catalog = await this.#readNewSessionCatalog(workspace, installation, true).catch(
+        () => undefined,
+      );
+      const rejected = (reason: string) => ({
+        accepted: false,
+        completed: false,
+        controlOutcome: "not-dispatched",
+        requestId,
+        reason,
+      });
+      if (this.#shuttingDown || !catalog?.settingsAcknowledged || !catalog.models.length)
+        return rejected("claude-startup-models-unavailable");
+      try {
+        if (
+          pathIdentity(canonicalize(this.store.workspacePath(workspaceId))) !==
+          pathIdentity(workspace)
+        )
+          return rejected("claude-startup-models-unavailable");
+      } catch {
+        return rejected("claude-startup-models-unavailable");
+      }
+      const chosen = selectedSettings.model ?? catalog.settings.model;
+      const model = chosen ? claudeModelOption(catalog.models, chosen) : undefined;
+      if (selectedSettings.model) {
+        if (!model) return rejected("unsupported-model");
+        selectedSettings.model = model.value;
+      }
+      if (
+        selectedSettings.effort &&
+        !model?.supportedEffortLevels?.includes(selectedSettings.effort)
+      )
+        return rejected("unsupported-effort");
+    }
 
     const id = randomUUID();
     const nativeId = randomUUID();
@@ -3844,9 +3888,72 @@ export class ClaudeManagedReadOwner {
     return value;
   }
 
-  async options(): Promise<Record<string, unknown>> {
+  async #readNewSessionCatalog(workspace: string, cliVersion: string, revalidate = false) {
+    // Resolve the installed executable in the host environment, independently of the project cwd.
+    const executable = resolveCommand("claude", this.environment);
+    if (!executable) return;
+    const key = JSON.stringify([workspace, executable, cliVersion, this.#home()]);
+    // Overlapping requests share the initialize, including during rapid workspace changes.
+    while (!this.#shuttingDown) {
+      const cached = this.#newSessionCatalog;
+      if (!revalidate && cached?.key === key && Date.now() - cached.at < 30_000)
+        return cached.snapshot;
+      const probe = this.#catalogProbe;
+      if (probe) {
+        if (probe.runner.cleanupError) return;
+        if (probe.key === key) return probe.result;
+        await probe.result.catch(() => undefined);
+        continue;
+      }
+      const runner = new ClaudeManagedRunnerProcess(
+        workspace,
+        randomUUID(),
+        true,
+        0,
+        this.environment,
+        () => undefined,
+        false,
+        undefined,
+        { catalogOnly: true, controlTimeoutMs: 4_000, cliVersion },
+      );
+      const result = runner
+        .prepare(executable)
+        .finally(() => runner.shutdown())
+        .then((snapshot) => {
+          if (snapshot.settingsAcknowledged)
+            this.#newSessionCatalog = { key, at: Date.now(), snapshot };
+          return snapshot;
+        })
+        .finally(() => {
+          // An unconfirmed cleanup stays owned for shutdown. Do not start a replacement.
+          if (this.#catalogProbe?.runner === runner && !runner.hasWorker)
+            this.#catalogProbe = undefined;
+        });
+      this.#catalogProbe = { key, runner, result };
+      return result;
+    }
+  }
+
+  async options(workspaceId?: unknown): Promise<Record<string, unknown>> {
     const cliVersion = supportsClaudeManagedRunner() ? await this.#installationVersion() : null;
     const available = cliVersion !== null;
+    const supportsSettings = cliVersion !== null && supportsClaudeVersion(cliVersion, "2.1.286");
+    if (
+      workspaceId !== undefined &&
+      (typeof workspaceId !== "string" || !workspaceId || workspaceId.length > 256)
+    )
+      throw new Error("invalid-workspace-id");
+    const catalog =
+      supportsSettings && typeof workspaceId === "string"
+        ? await this.#readNewSessionCatalog(
+            canonicalize(this.store.workspacePath(workspaceId)),
+            cliVersion,
+          ).catch(() => undefined)
+        : undefined;
+    const models = catalog?.settingsAcknowledged ? catalog.models : [];
+    const reportedModel = catalog?.settings.model;
+    const model = reportedModel ? claudeModelOption(models, reportedModel) : undefined;
+    const effort = catalog?.settings.effort;
     return {
       available,
       ...(available ? {} : { reason: "unverified-installation" }),
@@ -3856,8 +3963,21 @@ export class ClaudeManagedReadOwner {
             name,
           }))
         : [],
-      models: [],
-      permissionModes: supportsClaudeVersion(cliVersion ?? "", "2.1.286")
+      models: models.map((option) => ({
+        id: option.value,
+        name: option.displayName,
+        ...(option.resolvedModel !== undefined ? { resolvedModel: option.resolvedModel } : {}),
+        efforts: option.supportedEffortLevels ?? [],
+      })),
+      ...(model
+        ? {
+            defaults: {
+              model: model.value,
+              effort: effort && model.supportedEffortLevels?.includes(effort) ? effort : null,
+            },
+          }
+        : {}),
+      permissionModes: supportsSettings
         ? ["default", "plan", "acceptEdits"].map((id) => ({ id, name: id }))
         : [],
       cliVersion,

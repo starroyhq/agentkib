@@ -56,7 +56,7 @@ beforeEach(() => {
     busy: false,
     usageEpoch: "observation-a",
     access: { bootId: "boot", device: { id: "device", accessMode: "full" } },
-    live: { sessionId: "session", status: "idle", revision: 1 },
+    live: { sessionId: "session", status: "idle", revision: 1, executionMode: "claude-managed" },
     capabilities: { sessionId: "session", features: { settings: { available: true } } },
     client: {
       sessionSettings: vi.fn(async (id: string) => settings(id)),
@@ -131,25 +131,52 @@ describe("Claude's plan mode in the composer", () => {
 });
 
 describe("Claude settings preparation", () => {
+  it("loads the native model catalog from the picker when a session has no options yet", async () => {
+    const picker = composerModelCopy["en-US"];
+    const value = settings();
+    vi.mocked(state.client.sessionSettings).mockResolvedValue({
+      ...value,
+      current: {},
+      options: { ...value.options, models: [] },
+    });
+    render(<CodexComposerControls {...props} />);
+    await waitFor(() => expect(state.client.sessionSettings).toHaveBeenCalled());
+    fireEvent.click(
+      screen.getByRole("button", { name: `${picker.chooseEffort}: ${picker.unknown}` }),
+    );
+    expect(
+      await screen.findByRole("button", { name: `${picker.chooseModel}: Claude session` }),
+    ).toBeVisible();
+    expect(state.client.prepareSessionSettings).toHaveBeenCalledExactlyOnceWith({
+      sessionId: "session",
+      bootId: "boot",
+      expectedRevision: 1,
+    });
+    expect(state.codexAction).not.toHaveBeenCalled();
+  });
+
   it.each(["zh-CN", "zh-TW", "en-US", "ja-JP"] as const)(
-    "shows localized default model and effort labels before opening either select in %s",
+    "keeps unknown models in the model picker and out of the permissions panel in %s",
     async (locale) => {
       state.locale = locale;
       const value: CodexSessionSettings = { ...settings(), current: {}, defaults: {} };
       vi.mocked(state.client.sessionSettings).mockResolvedValue(value);
       vi.mocked(state.client.prepareSessionSettings).mockResolvedValue(value);
       const copy = codexCopy[locale];
+      const picker = composerModelCopy[locale];
       render(<CodexComposerControls {...props} />);
+      expect(
+        screen.getByRole("button", { name: `${picker.chooseEffort}: ${picker.unknown}` }),
+      ).toBeInTheDocument();
       fireEvent.click(await screen.findByRole("button", { name: copy.conversationSettings }));
-      const model = await screen.findByLabelText(copy.model);
-      const effort = screen.getByLabelText(copy.effort);
-      await waitFor(() => expect(model).toBeEnabled());
-      for (const select of [model, effort]) {
-        expect(select).toBeEnabled();
-        expect(select).toHaveAttribute("aria-expanded", "false");
-        expect(select).toHaveTextContent(copy.defaultOption);
-        expect(select).not.toHaveTextContent(/__agentkib_default_/);
-      }
+      const panel = await screen.findByRole("dialog", { name: copy.conversationSettings });
+      const permission = within(panel).getByLabelText(sessionAgentCopy[locale].permission);
+      await waitFor(() => expect(permission).toBeEnabled());
+      expect(within(panel).queryByLabelText(copy.model)).not.toBeInTheDocument();
+      expect(within(panel).queryByLabelText(copy.effort)).not.toBeInTheDocument();
+      expect(
+        within(panel).queryByRole("button", { name: copy.restoreDefaults }),
+      ).not.toBeInTheDocument();
       expect(state.client.prepareSessionSettings).toHaveBeenCalledTimes(1);
       expect(state.codexAction).not.toHaveBeenCalled();
       expect(state.control).not.toHaveBeenCalled();
@@ -184,17 +211,18 @@ describe("Claude settings preparation", () => {
       fireEvent.click(
         await screen.findByRole("button", { name: codexCopy[state.locale].conversationSettings }),
       );
-      expect(screen.getByLabelText("Model")).toBeDisabled();
+      const permission = screen.getByLabelText(sessionAgentCopy[state.locale].permission);
+      expect(permission).toBeDisabled();
       state = { ...state, usageEpoch: "observation-b" };
       view.rerender(<CodexComposerControls {...props} />);
       await waitFor(() => expect(state.client.sessionSettings).toHaveBeenCalledTimes(2));
       await act(async () => {
         if (outcome === "resolve")
-          pending.resolve({ ...settings(), current: { modelId: "stale" } });
+          pending.resolve({ ...settings(), current: { permissionMode: "plan" } });
         else pending.reject(new Error("stale-prepare-error"));
       });
-      await waitFor(() => expect(screen.getByLabelText("Model")).toBeEnabled());
-      expect(screen.getByLabelText("Model")).toHaveTextContent("Claude session");
+      await waitFor(() => expect(permission).toBeEnabled());
+      expect(permission).toHaveTextContent(sessionAgentCopy[state.locale].permissionUnknown);
       expect(screen.queryByText("stale-prepare-error")).not.toBeInTheDocument();
       expect(state.client.prepareSessionSettings).toHaveBeenCalledTimes(1);
       expect(state.codexAction).not.toHaveBeenCalled();
@@ -233,10 +261,13 @@ describe("Claude settings preparation", () => {
       );
       expect(state.client.prepareSessionSettings).toHaveBeenCalledTimes(2);
       await act(async () => old.resolve(settings()));
-      expect(screen.getByLabelText("Model")).toBeDisabled();
-      await act(async () => next.resolve(settings(state.selected)));
-      await waitFor(() => expect(screen.getByLabelText("Model")).toBeEnabled());
-      expect(screen.getByLabelText("Model")).toHaveTextContent(`Claude ${state.selected}`);
+      const permission = screen.getByLabelText(sessionAgentCopy[state.locale].permission);
+      expect(permission).toBeDisabled();
+      await act(async () =>
+        next.resolve({ ...settings(state.selected), current: { permissionMode: "default" } }),
+      );
+      await waitFor(() => expect(permission).toBeEnabled());
+      expect(permission).toHaveTextContent("Default");
       expect(state.codexAction).not.toHaveBeenCalled();
     },
   );
@@ -287,7 +318,15 @@ describe("Claude settings rejection", () => {
       render(<CodexComposerControls {...props} />);
       expect(await screen.findByText(text)).toBeVisible();
       fireEvent.click(screen.getByRole("button", { name: "Change next-turn model" }));
-      expect(await screen.findByLabelText(codexCopy["en-US"].model)).toBeVisible();
+      const picker = composerModelCopy["en-US"];
+      expect(
+        await screen.findByRole("dialog", {
+          name:
+            reason === "claude-model-unsupported"
+              ? picker.chooseModel
+              : new RegExp(`^${picker.chooseEffort}:`),
+        }),
+      ).toBeVisible();
       await waitFor(() => expect(state.client.prepareSessionSettings).toHaveBeenCalledTimes(1));
       expect(state.codexAction).not.toHaveBeenCalled();
       expect(state.control).not.toHaveBeenCalled();

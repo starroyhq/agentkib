@@ -7,6 +7,7 @@ import type { CodexSessionSettings } from "@agentkib/web-client";
 import { CodexComposerControls } from "./codex-session-controls";
 import { useSession } from "./session-context";
 import type { SessionController } from "./use-session-controller";
+import { composerModelCopy } from "./composer-model-copy";
 
 vi.mock("./session-context", () => ({ useSession: vi.fn() }));
 let state: SessionController;
@@ -63,30 +64,33 @@ describe("Codex settings recovery on desktop", () => {
   it.each([
     ["unsupported-model", /current model is not in the model list verified on this computer/],
     ["unsupported-effort", /current model does not support the selected reasoning effort/],
-  ] as const)(
-    "opens the existing settings dialog for %s without submitting",
-    async (reason, text) => {
-      state.noticeReason = reason;
-      render(
-        <CodexComposerControls
-          resources={[]}
-          setResources={vi.fn()}
-          openPhoneFiles={vi.fn()}
-          disabled={false}
-        />,
-      );
-      expect(await screen.findByText(text)).toBeVisible();
-      await screen.findByRole("button", { name: /unlisted-model/ });
-      vi.mocked(state.client.codexSessionSettings).mockClear();
-      fireEvent.click(screen.getByRole("button", { name: "Change next-turn model" }));
-      expect(screen.getByRole("dialog", { name: "Session settings" })).toBeVisible();
-      await waitFor(() =>
-        expect(state.client.codexSessionSettings).toHaveBeenCalledWith("session"),
-      );
-      expect(state.codexAction).not.toHaveBeenCalled();
-      expect(state.control).not.toHaveBeenCalled();
-    },
-  );
+  ] as const)("opens the model picker for %s without submitting", async (reason, text) => {
+    state.noticeReason = reason;
+    render(
+      <CodexComposerControls
+        resources={[]}
+        setResources={vi.fn()}
+        openPhoneFiles={vi.fn()}
+        disabled={false}
+      />,
+    );
+    expect(await screen.findByText(text)).toBeVisible();
+    await screen.findByRole("button", { name: /unlisted-model/ });
+    vi.mocked(state.client.codexSessionSettings).mockClear();
+    fireEvent.click(screen.getByRole("button", { name: "Change next-turn model" }));
+    const picker = composerModelCopy["en-US"];
+    expect(
+      await screen.findByRole("dialog", {
+        name:
+          reason === "unsupported-model"
+            ? picker.chooseModel
+            : new RegExp(`^${picker.chooseEffort}:`),
+      }),
+    ).toBeVisible();
+    await waitFor(() => expect(state.client.codexSessionSettings).toHaveBeenCalledWith("session"));
+    expect(state.codexAction).not.toHaveBeenCalled();
+    expect(state.control).not.toHaveBeenCalled();
+  });
 
   it("does not offer recovery for an uncertain receipt", () => {
     state.notice = "uncertain";
@@ -101,5 +105,63 @@ describe("Codex settings recovery on desktop", () => {
     expect(
       screen.queryByRole("button", { name: "Change next-turn model" }),
     ).not.toBeInTheDocument();
+  });
+
+  it("retains history through empty live settings and switches to reported values", async () => {
+    state.notice = undefined;
+    state.access = {
+      ...state.access!,
+      device: { ...state.access!.device!, advancedControl: true },
+    };
+    const emptySettings = { ...settings, current: {}, selected: {} };
+    vi.mocked(state.client.codexSessionSettings).mockResolvedValue({
+      ...emptySettings,
+      historicalSettings: { modelId: "older-model", effort: "high" },
+      usage: {
+        available: true,
+        historical: true,
+        state: "stale",
+        usedTokens: 29,
+        contextWindow: 100,
+      },
+    });
+    const controlsProps = {
+      resources: [],
+      setResources: vi.fn(),
+      openPhoneFiles: vi.fn(),
+      disabled: false,
+    };
+    const view = render(<CodexComposerControls {...controlsProps} />);
+    expect(
+      await screen.findByRole("button", { name: /Last used · older-model · High/ }),
+    ).toBeVisible();
+    const ring = screen.getByRole("img", { name: "Context usage" });
+    expect(ring).toHaveAccessibleDescription(expect.stringContaining("29% used"));
+
+    state.live = {
+      ...state.live!,
+      settings: emptySettings,
+      usage: { available: true, state: "stale" },
+    };
+    view.rerender(<CodexComposerControls {...controlsProps} />);
+    expect(screen.getByRole("button", { name: /Last used · older-model · High/ })).toBeVisible();
+    expect(ring).toHaveAccessibleDescription(expect.stringContaining("29% used"));
+
+    state.live = { ...state.live, executionLocation: "external" };
+    view.rerender(<CodexComposerControls {...controlsProps} />);
+    expect(screen.queryByRole("button", { name: /Last used/ })).not.toBeInTheDocument();
+    expect(ring).not.toHaveAccessibleDescription(expect.stringContaining("Last recorded"));
+
+    state.live = {
+      ...state.live,
+      executionLocation: undefined,
+      settings,
+      usage: { available: true, state: "ready", usedTokens: 16, contextWindow: 100 },
+    };
+    view.rerender(<CodexComposerControls {...controlsProps} />);
+    expect(await screen.findByRole("button", { name: /unlisted-model · Low/ })).toBeVisible();
+    expect(ring).toHaveAccessibleDescription(expect.stringContaining("16% used"));
+    expect(ring).not.toHaveAccessibleDescription(expect.stringContaining("Last recorded"));
+    expect(state.codexAction).not.toHaveBeenCalled();
   });
 });

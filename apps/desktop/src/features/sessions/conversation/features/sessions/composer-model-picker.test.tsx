@@ -3,9 +3,10 @@ import "@testing-library/jest-dom/vitest";
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import type { ComponentProps } from "react";
+import { createRef, type ComponentProps } from "react";
 import type { CodexSessionSettings } from "@agentkib/web-client";
-import { ComposerModelPicker } from "./composer-model-picker";
+import { codexCopy } from "./codex-copy";
+import { ComposerModelPicker, type ComposerModelPickerHandle } from "./composer-model-picker";
 import { composerModelCopy } from "./composer-model-copy";
 import { composerTerm } from "./composer-layout-copy";
 
@@ -298,6 +299,33 @@ describe("composer model picker", () => {
     expect(props.onChange).toHaveBeenCalledOnce();
   });
 
+  it("opens either page through the same trigger without an extra open or save", async () => {
+    const user = userEvent.setup();
+    const pickerRef = createRef<ComposerModelPickerHandle>();
+    const view = render(<ComposerModelPicker {...props} pickerRef={pickerRef} />);
+    const trigger = screen.getByRole("button", { name: /^Select reasoning effort:/ });
+    act(() => {
+      pickerRef.current!.open("effort");
+      pickerRef.current!.open("models");
+    });
+    const popup = await screen.findByRole("dialog", { name: copy.chooseModel });
+    expect(trigger).toHaveAttribute("aria-expanded", "true");
+    expect(trigger).toHaveAttribute("aria-controls", popup.id);
+    act(() => pickerRef.current!.open("effort"));
+    expect(screen.getByRole("dialog", { name: /^Select reasoning effort:/ })).toBe(popup);
+    expect(props.onOpen).toHaveBeenCalledOnce();
+    (await within(popup).findByRole("slider")).focus();
+    await user.keyboard("{Escape}");
+    await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
+    expect(trigger).toHaveFocus();
+    act(() => pickerRef.current!.open("effort"));
+    expect(await screen.findByRole("slider")).toBeVisible();
+    expect(props.onOpen).toHaveBeenCalledTimes(2);
+    expect(props.onChange).not.toHaveBeenCalled();
+    view.unmount();
+    expect(pickerRef.current).toBeNull();
+  });
+
   it("uses the advertised fast tier and clears it with null", async () => {
     const view = render(<ComposerModelPicker {...props} />);
     await openPicker();
@@ -336,6 +364,33 @@ describe("composer model picker", () => {
     props = { ...props, selection: { ...props.selection, serviceTierId: "priority" } };
     view.rerender(<ComposerModelPicker {...props} />);
     expect(fast).toHaveAttribute("aria-pressed", "true");
+  });
+
+  it("preserves the advertised non-Fast tiers and can restore the standard tier", async () => {
+    props.settings!.options.serviceTiers.push(
+      { id: "flex", name: "Flex" },
+      { id: "unavailable", name: "Unsupported on this model" },
+    );
+    props.settings!.options.models[0].serviceTierIds.push("flex");
+    const view = render(<ComposerModelPicker {...props} />);
+    const popup = await openPicker();
+    const tier = within(popup).getByRole("combobox", { name: codexCopy["en-US"].serviceTier });
+    expect(within(tier).queryByRole("option", { name: "Unsupported on this model" })).toBeNull();
+    expect(within(popup).getByRole("button", { name: copy.fast })).toBeEnabled();
+    fireEvent.change(tier, { target: { value: "flex" } });
+    await waitFor(() =>
+      expect(props.onChange).toHaveBeenCalledExactlyOnceWith({ serviceTierId: "flex" }),
+    );
+    props.selection = { ...props.selection, serviceTierId: "flex" };
+    view.rerender(<ComposerModelPicker {...props} />);
+    expect(tier).toHaveValue("flex");
+    fireEvent.change(tier, { target: { value: "" } });
+    await waitFor(() => expect(props.onChange).toHaveBeenLastCalledWith({ serviceTierId: null }));
+    props.settings!.writable.serviceTier = { available: false, reason: "session-busy" };
+    view.rerender(<ComposerModelPicker {...props} />);
+    expect(tier).toBeDisabled();
+    fireEvent.change(tier, { target: { value: "" } });
+    expect(props.onChange).toHaveBeenCalledTimes(2);
   });
 
   it.each(["missing-global-tier", "missing-model-tier", "read-only-tier"])(
@@ -494,6 +549,39 @@ describe("composer model picker", () => {
     await waitFor(() => expect(props.onChange).toHaveBeenCalledExactlyOnceWith({ model: "terra" }));
   });
 
+  it("can clear the effort independently where the host accepts it", async () => {
+    props = { ...props, clearEffort: true, effortDefault: true };
+    render(<ComposerModelPicker {...props} />);
+    const popup = await openPicker();
+    fireEvent.click(within(popup).getByRole("button", { name: copy.useDefaultEffort }));
+    expect(props.onChange).toHaveBeenCalledExactlyOnceWith({ effort: null });
+  });
+
+  it("can recover from an unsupported effort even if the model offers only one level", async () => {
+    props.selection = { modelId: "sol", effort: "ultra" };
+    props.settings!.options.models[0].efforts = ["low"];
+    render(<ComposerModelPicker {...props} />);
+    const popup = await openPicker();
+    expect(within(popup).queryByRole("slider")).toBeNull();
+    fireEvent.click(within(popup).getByRole("button", { name: `${copy.chooseEffort}: Low` }));
+    expect(props.onChange).toHaveBeenCalledExactlyOnceWith({ effort: "low" });
+  });
+
+  it("selects a listed model from an unconfirmed state without an unsupported effort reset", async () => {
+    props = { ...props, effortDefault: true, selection: { effort: "ultra" } };
+    props.settings!.options.models[1].efforts = [];
+    delete props.settings!.options.models[1].defaultEffort;
+    render(<ComposerModelPicker {...props} />);
+    const popup = await openPicker();
+    expect(within(popup).queryByRole("button", { name: copy.useDefaultEffort })).toBeNull();
+    fireEvent.click(
+      within(popup).getByRole("button", { name: `${copy.chooseModel}: ${copy.unknown}` }),
+    );
+    const models = await screen.findByRole("dialog", { name: copy.chooseModel });
+    fireEvent.click(within(models).getByRole("button", { name: "GPT Terra" }));
+    expect(props.onChange).toHaveBeenCalledExactlyOnceWith({ model: "terra" });
+  });
+
   it("shows unknown settings and a read-only status without fabricating models", async () => {
     props = { ...props, settings: undefined, selection: undefined, status: "Read back required" };
     render(<ComposerModelPicker {...props} />);
@@ -505,5 +593,51 @@ describe("composer model picker", () => {
     expect(within(popup).queryByRole("slider")).not.toBeInTheDocument();
     expect(within(popup).getByRole("button", { name: copy.fast })).toBeDisabled();
     expect(props.onChange).not.toHaveBeenCalled();
+  });
+
+  it.each(["zh-CN", "zh-TW", "en-US", "ja-JP"] as const)(
+    "shows last-used values without selecting them in %s",
+    async (locale) => {
+      const copy = composerModelCopy[locale];
+      props = {
+        ...props,
+        locale,
+        selection: {},
+        historicalSettings: { modelId: "sol", effort: "ultra" },
+        settings: { ...settings(), current: {} },
+      };
+      render(<ComposerModelPicker {...props} />);
+      const summary = `${copy.lastUsed} · GPT Sol · Ultra`;
+      const trigger = screen.getByRole("button", { name: `${copy.nextTurnSettings}: ${summary}` });
+      expect(trigger).toHaveTextContent(summary);
+      fireEvent.click(trigger);
+      const popup = await screen.findByRole("dialog", { name: copy.nextTurnSettings });
+      expect(within(popup).getByText(summary)).toBeVisible();
+      expect(within(popup).queryByRole("slider")).not.toBeInTheDocument();
+      fireEvent.click(within(popup).getByRole("button", { name: copy.chooseModel }));
+      const models = await screen.findByRole("dialog", { name: copy.chooseModel });
+      const formerModel = within(models).getByRole("button", { name: "GPT Sol" });
+      expect(formerModel).toHaveAttribute("aria-pressed", "false");
+      expect(props.onChange).not.toHaveBeenCalled();
+      fireEvent.click(formerModel);
+      expect(props.onChange).toHaveBeenCalledExactlyOnceWith({ model: "sol", effort: "medium" });
+    },
+  );
+
+  it("prefers current settings when the next turn has no explicit selection", () => {
+    const current = settings();
+    const propsWithHistory = {
+      ...props,
+      selection: {},
+      historicalSettings: { modelId: "terra", effort: "high" },
+      settings: { ...current, current: {} },
+    };
+    const { rerender } = render(<ComposerModelPicker {...propsWithHistory} />);
+    expect(screen.getByRole("button")).toHaveTextContent(`${copy.lastUsed} · GPT Terra · High`);
+    rerender(<ComposerModelPicker {...propsWithHistory} settings={current} />);
+    expect(
+      screen.getByRole("button", { name: `${copy.chooseEffort}: GPT Sol · Low` }),
+    ).toBeVisible();
+    expect(screen.queryByText(/Last used/)).not.toBeInTheDocument();
   });
 });

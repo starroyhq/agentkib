@@ -64,7 +64,13 @@ describe("DeepSeek Harness host control boundary", () => {
         case "usage":
           return { available: false, state: "unavailable", reason: "usage-unavailable" };
         case "dsh-options":
-          return { available: true };
+          return params.includeModels === true
+            ? {
+                available: true,
+                models: models.map((model) => ({ ...model, group: "Native provider" })),
+                defaults: { model: "deepseek/deepseek-chat", effort: "low" },
+              }
+            : { available: true };
         case "dsh-create":
           return {
             accepted: true,
@@ -181,11 +187,30 @@ describe("DeepSeek Harness host control boundary", () => {
     expect(forwarded("settings").at(-1)).toMatchObject({ resetDefaults: true });
   });
 
-  it("starts new DSH sessions in an authorized workspace and takes nothing else here", async () => {
+  it("loads DSH's workspace-scoped start options and forwards model choices with the preset", async () => {
     expect(await service.localRequest("/managed/options?agent=deepseek-harness")).toMatchObject({
       status: 200,
       body: { available: true, workspaces: [{ id: "workspace", name: "Synthetic workspace" }] },
     });
+    expect(
+      await service.localRequest("/managed/options?agent=deepseek-harness&workspaceId=outside"),
+    ).toMatchObject({ status: 403, body: { error: "workspace_not_authorized" } });
+    expect(
+      await service.localRequest("/managed/options?agent=deepseek-harness&workspaceId=workspace"),
+    ).toMatchObject({
+      status: 200,
+      body: {
+        defaults: { model: "deepseek/deepseek-chat", effort: "low" },
+        models: [
+          expect.objectContaining({ id: "deepseek/deepseek-chat", group: "Native provider" }),
+          expect.objectContaining({ id: "mock%2Flocal/m-1", efforts: [] }),
+        ],
+      },
+    });
+    expect(forwarded("dsh-options")).toEqual([
+      { operation: "dsh-options" },
+      { operation: "dsh-options", includeModels: true },
+    ]);
     const desktop = await service.localRequest("/access");
     const bootId = (desktop.body as { bootId: string }).bootId;
     expect(
@@ -196,18 +221,38 @@ describe("DeepSeek Harness host control boundary", () => {
         workspaceId: "workspace",
       }),
     ).toMatchObject({ status: 200, body: { accepted: true, sessionId: "dsh-new" } });
-    // An Agent preset chosen in the new-task form goes to DSH with the session.
-    await service.localRequest("/managed/create", {
-      agent: "deepseek-harness",
-      bootId,
-      requestId: randomUUID(),
+    expect(
+      await service.localRequest("/managed/create", {
+        agent: "deepseek-harness",
+        bootId,
+        requestId: randomUUID(),
+        workspaceId: "workspace",
+        agentPreset: "ptc",
+        model: "deepseek/deepseek-chat",
+        effort: "high",
+      }),
+    ).toMatchObject({ status: 200, body: { accepted: true, sessionId: "dsh-new" } });
+    expect(
+      await service.localRequest("/managed/create", {
+        agent: "deepseek-harness",
+        bootId,
+        requestId: randomUUID(),
+        workspaceId: "workspace",
+        model: "\n",
+        effort: "high",
+      }),
+    ).toMatchObject({ status: 400, body: { controlOutcome: "not-dispatched" } });
+    const creates = forwarded("dsh-create");
+    expect(creates).toHaveLength(2);
+    expect(creates[0]).not.toHaveProperty("agentPreset");
+    expect(creates[0]).not.toHaveProperty("model");
+    expect(creates[0]).not.toHaveProperty("effort");
+    expect(creates[1]).toMatchObject({
       workspaceId: "workspace",
       agentPreset: "ptc",
+      model: "deepseek/deepseek-chat",
+      effort: "high",
     });
-    expect(forwarded("dsh-create")).toEqual([
-      expect.not.objectContaining({ agentPreset: expect.anything() }),
-      expect.objectContaining({ workspaceId: "workspace", agentPreset: "ptc" }),
-    ]);
     // Adopting or releasing is not how a DSH session is taken over.
     expect(
       await service.localRequest("/managed/adopt", {

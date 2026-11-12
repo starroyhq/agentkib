@@ -43,7 +43,12 @@ import {
   type UploadedAttachment,
 } from "@agentkib/web-client";
 import { Button } from "@/components/ui/button";
-import { Textarea } from "@/components/ui/textarea";
+import {
+  ComposerFrame,
+  ComposerIconButton,
+  ComposerTextarea,
+  ComposerToolbar,
+} from "../../../ComposerFrame";
 import { Disclosure, DisclosureSummary } from "@/components/ui/disclosure";
 import { Input } from "@/components/ui/input";
 import {
@@ -431,7 +436,12 @@ export function SessionComposer({
         ? agentKibPanel(decision)
         : (codexCommand?.panel ?? null)
       : null;
-    if (panel && openPanel(panel)) {
+    const command = decision?.command ?? codexCommand?.command;
+    const opened =
+      panel === "settings" && (command === "model" || command === "effort")
+        ? controls.current?.openModel(command === "model" ? "models" : "effort")
+        : panel && openPanel(panel);
+    if (opened) {
       setCommandNotice(undefined);
       setMessage("");
       return;
@@ -538,25 +548,23 @@ export function SessionComposer({
   const runningLabel = runningAction === "steer" ? copy.steer : copy.queueAdd;
   const primaryAction =
     canStop && live?.executionMode !== "claude-follower" ? (
-      <Button
+      <ComposerIconButton
         type="button"
         variant="outline"
-        className="inline-flex size-11 shrink-0 items-center justify-center rounded-full p-0"
         aria-label={t.stop}
         onClick={() => void control("stop")}
       >
         <Square size={17} />
-      </Button>
+      </ComposerIconButton>
     ) : (
-      <Button
+      <ComposerIconButton
         type="submit"
-        className="inline-flex size-11 shrink-0 items-center justify-center rounded-full p-0"
         aria-label={runningReady ? runningLabel : t.send}
         title={runningReady ? runningLabel : undefined}
         disabled={((!canSubmit || compacting) && !runningReady) || !valid || submitted}
       >
         <ArrowUp size={20} />
-      </Button>
+      </ComposerIconButton>
     );
   const advancedActions =
     (running || compacting) &&
@@ -646,8 +654,7 @@ export function SessionComposer({
       {isClaude && <PermissionModeNotice permission={live?.permission} locale={locale} compact />}
       {(isClaude || isCodex) && <ManagedTurnNotice live={live} locale={locale} />}
       {current?.agent === "deepseek-harness" && <DshQueue key={selected} />}
-      <form
-        className="session-composer-frame relative w-full space-y-2 rounded-3xl border border-border bg-background p-2 shadow-sm transition-colors focus-within:border-ring/40 md:p-3"
+      <ComposerFrame
         onSubmit={(event) => {
           event.preventDefault();
           if (canSubmit && !compacting) void send("send");
@@ -657,12 +664,10 @@ export function SessionComposer({
         <label className="sr-only" htmlFor="message">
           {t.message}
         </label>
-        <Textarea
+        <ComposerTextarea
           id="message"
-          className="min-h-10 max-h-40 w-full resize-none overflow-y-auto rounded-none border-0 bg-transparent px-3 py-2 text-sm shadow-none placeholder:text-muted-foreground focus-visible:border-transparent focus-visible:ring-0 disabled:bg-transparent dark:bg-transparent dark:disabled:bg-transparent"
           value={composerValue}
           maxLength={MAX_MESSAGE_LENGTH}
-          rows={1}
           onChange={(event) => setMessage(event.target.value)}
           placeholder={
             planState.on
@@ -791,36 +796,38 @@ export function SessionComposer({
             />
           )}
           {access?.device?.accessMode !== "full" && (
-            <div className="@container flex min-w-0 items-center justify-between gap-2 px-2 pb-1">
-              <Button
-                type="button"
-                variant="ghost"
-                size="icon"
-                className="size-11 rounded-full"
-                disabled={!uploadPermission || busy || submitted}
-                title={
-                  uploadPermission
-                    ? copy.attachmentNote
-                    : isClaude && live?.executionMode === "claude-follower"
-                      ? claudeConnectionCopy[locale].attachments
-                      : capabilities?.features.attachments?.reason
-                        ? codexReason(locale, capabilities.features.attachments.reason).text
-                        : copy.permission
-                }
-                onClick={() => fileInput.current?.click()}
-              >
-                <Paperclip aria-hidden="true" className="size-4" />
-                <span className="sr-only">{copy.attachment}</span>
-              </Button>
-              <div className="flex min-w-0 items-center gap-1">
-                {advancedActions}
-                <ContextUsageGauge />
-                {primaryAction}
-              </div>
-            </div>
+            <ComposerToolbar
+              leading={
+                <ComposerIconButton
+                  type="button"
+                  variant="ghost"
+                  disabled={!uploadPermission || busy || submitted}
+                  title={
+                    uploadPermission
+                      ? copy.attachmentNote
+                      : isClaude && live?.executionMode === "claude-follower"
+                        ? claudeConnectionCopy[locale].attachments
+                        : capabilities?.features.attachments?.reason
+                          ? codexReason(locale, capabilities.features.attachments.reason).text
+                          : copy.permission
+                  }
+                  onClick={() => fileInput.current?.click()}
+                >
+                  <Paperclip aria-hidden="true" className="size-4" />
+                  <span className="sr-only">{copy.attachment}</span>
+                </ComposerIconButton>
+              }
+              trailing={
+                <>
+                  {advancedActions}
+                  <ContextUsageGauge />
+                  {primaryAction}
+                </>
+              }
+            />
           )}
         </div>
-      </form>
+      </ComposerFrame>
       {!isClaude && access?.device?.accessMode !== "full" && (
         <Disclosure className="px-3 text-xs text-muted-foreground">
           <DisclosureSummary className="min-h-11 cursor-pointer content-center">

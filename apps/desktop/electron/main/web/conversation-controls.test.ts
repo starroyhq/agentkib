@@ -13,6 +13,7 @@ describe("Codex conversation controls", () => {
   let dataDir: string;
   let workspaceDir: string;
   let origin: string;
+  let usageMode: "live" | "empty" | "error";
   const runtime = vi.fn(async (input: unknown): Promise<unknown> => {
     const params = input as Record<string, unknown>;
     if (params.operation === "catalog")
@@ -53,6 +54,18 @@ describe("Codex conversation controls", () => {
         executionMode: "codex-managed",
         status: "idle",
         revision: 7,
+        ...(params.includeHistorical === true && {
+          historicalSettings: { modelId: "last-model", effort: "xhigh", path: "must-not-leak" },
+          historicalUsage: {
+            available: true,
+            state: "stale",
+            historical: true,
+            usedTokens: 75000,
+            contextWindow: 250000,
+            updatedAt: "2026-09-26T00:00:00Z",
+            path: "must-not-leak",
+          },
+        }),
         collaborationModes: [
           { id: "default", name: "Default" },
           { id: "plan", name: "Plan", native: "must-not-leak" },
@@ -96,7 +109,9 @@ describe("Codex conversation controls", () => {
         ],
         native: { rpc: "must-not-leak" },
       };
-    if (params.operation === "usage")
+    if (params.operation === "usage") {
+      if (usageMode === "error") throw new Error("fixture usage read failed");
+      if (usageMode === "empty") return { available: true, state: "stale" };
       return {
         available: true,
         revision: 7,
@@ -107,6 +122,7 @@ describe("Codex conversation controls", () => {
         },
         updatedAt: "2026-09-27T00:00:00Z",
       };
+    }
     if (params.operation === "goal")
       return {
         available: true,
@@ -171,6 +187,7 @@ describe("Codex conversation controls", () => {
 
   beforeEach(async () => {
     runtime.mockClear();
+    usageMode = "live";
     dataDir = await mkdtemp(join(tmpdir(), "agentkib-conversation-controls-"));
     workspaceDir = join(dataDir, "workspace");
     await mkdir(join(workspaceDir, "src"), { recursive: true });
@@ -212,6 +229,28 @@ describe("Codex conversation controls", () => {
     return client;
   }
 
+  it.each(["empty", "error"] as const)(
+    "projects history when the live usage read is %s",
+    async (mode) => {
+      usageMode = mode;
+      const client = await fullBrowser();
+      const settings = await client.api("codex/session-settings?sessionId=session");
+      expect(settings.response.status).toBe(200);
+      expect(settings.data.historicalSettings).toEqual({ modelId: "last-model", effort: "xhigh" });
+      expect(settings.data.usage).toEqual({
+        available: true,
+        state: "stale",
+        historical: true,
+        usedTokens: 75000,
+        contextWindow: 250000,
+        updatedAt: "2026-09-26T00:00:00Z",
+      });
+      expect((await client.api("codex/session-settings?sessionId=outside")).response.status).toBe(
+        403,
+      );
+    },
+  );
+
   it("projects settings, usage and goals without native objects", async () => {
     const client = await fullBrowser();
     const settings = await client.api("codex/session-settings?sessionId=session");
@@ -219,11 +258,13 @@ describe("Codex conversation controls", () => {
       sessionId: "session",
       revision: 7,
       selected: { modelId: "model-a", effort: "medium", mode: "plan", serviceTierId: "standard" },
+      historicalSettings: { modelId: "last-model", effort: "xhigh" },
       applicationStatus: "pending",
       current: { modelId: "model-a", serviceTierId: "fast", policyId: "workspace" },
       defaults: { modelId: "model-a", effort: "medium", serviceTierId: "standard" },
       usage: { usedTokens: 3000, totalTokens: 12000, contextWindow: 48000, percent: 6.25 },
     });
+    expect(settings.data.usage).not.toHaveProperty("historical");
     expect(settings.data.options.collaborationModes).toEqual([
       { id: "default", name: "Default" },
       { id: "plan", name: "Plan" },

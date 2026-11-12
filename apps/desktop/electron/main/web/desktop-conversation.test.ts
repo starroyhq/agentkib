@@ -203,6 +203,69 @@ describe("trusted desktop conversation routes", () => {
     expect(prepare.mock.calls[1][0]).not.toHaveProperty("requestId");
   });
 
+  it("scopes Claude's startup catalog to a registered workspace and forwards the launch selection", async () => {
+    await service.shutdown();
+    const models = [{ id: "fixture-model", resolvedModel: "fixture-model-v2", efforts: ["high"] }];
+    const claude = vi.fn(async (input: Record<string, unknown>) =>
+      input.operation === "create"
+        ? { accepted: true, sessionId: "new-claude" }
+        : { available: true, models: input.workspaceId === "w" ? models : [] },
+    );
+    service = new WebAccessService({
+      dataDir: directory,
+      staticDir: directory,
+      runtimeRequest: runtime,
+      claudeManagedRequest: (input) => claude(input as Record<string, unknown>),
+      verifiedClaudeManaged: true,
+      desktopOrigin: "app://bundle",
+      workspaceRequest: async () =>
+        workspaceRegistered ? [{ id: "w", name: "Workspace", path: directory }] : [],
+    });
+    await service.initialize();
+
+    const options = "/managed/options?agent=claude-code";
+    expect(await service.localRequest(`${options}&workspaceId=outside`)).toMatchObject({
+      status: 403,
+    });
+    expect(claude).not.toHaveBeenCalled();
+    expect(await service.localRequest(options)).toMatchObject({
+      status: 200,
+      body: { models: [] },
+    });
+    expect(await service.localRequest(`${options}&workspaceId=w`)).toMatchObject({
+      status: 200,
+      body: { models },
+    });
+    const access = await service.localRequest("/access");
+    expect(
+      await service.localRequest("/managed/create", {
+        agent: "claude-code",
+        workspaceId: "w",
+        requestId: randomUUID(),
+        bootId: (access.body as { bootId: string }).bootId,
+        model: "fixture-model",
+        effort: "high",
+        verifyStartupModel: true,
+      }),
+    ).toMatchObject({ status: 200, body: { accepted: true, sessionId: "new-claude" } });
+    expect(claude.mock.calls.map(([input]) => input)).toEqual([
+      { operation: "options" },
+      { operation: "options", workspaceId: "w" },
+      expect.objectContaining({
+        operation: "create",
+        workspaceId: "w",
+        model: "fixture-model",
+        effort: "high",
+        verifyStartupModel: true,
+      }),
+    ]);
+    claude.mockImplementationOnce(async () => {
+      workspaceRegistered = false;
+      return { available: true, models };
+    });
+    expect(await service.localRequest(`${options}&workspaceId=w`)).toMatchObject({ status: 403 });
+  });
+
   it("retains duplicate-command protection and detailed unknown outcomes", async () => {
     const access = await service.localRequest("/access");
     const body = {

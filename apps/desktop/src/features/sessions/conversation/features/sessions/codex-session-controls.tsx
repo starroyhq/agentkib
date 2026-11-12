@@ -9,13 +9,13 @@ import {
 } from "react";
 import {
   ArrowLeft,
+  ChevronDown,
   ChevronRight,
   Goal,
   Lightbulb,
   Plus,
-  RotateCcw,
   Search,
-  Settings2,
+  Shield,
   X,
 } from "lucide-react";
 import {
@@ -48,15 +48,22 @@ import { useSession } from "./session-context";
 import { composerLayoutCopy, composerTerm } from "./composer-layout-copy";
 import { codexCopy, codexReason } from "./codex-copy";
 import { subscribeSessionInvalidation } from "./session-events";
-import { ContextUsageDetails, ContextUsageGauge, useContextUsage } from "./context-usage";
+import {
+  contextUsagePercent,
+  ContextUsageDetails,
+  ContextUsageGauge,
+  useContextUsage,
+} from "./context-usage";
 import { sessionAgentCopy } from "./session-agent-copy";
-import { ComposerModelPicker } from "./composer-model-picker";
+import { ComposerModelPicker, type ComposerModelPickerHandle } from "./composer-model-picker";
+import { ComposerIconButton, ComposerToolbar } from "../../../ComposerFrame";
 
 export type CodexResource = CodexContextResource;
 
 /** Opens one of the composer's dialogs; false when this device or session cannot show it now. */
 export type ComposerControlsHandle = {
   open(dialog: "settings" | "goal"): boolean;
+  openModel(page: "effort" | "models"): boolean;
   /** Turns plan mode on, as `/plan` does in Codex's composer; false when this session cannot. */
   plan(): boolean;
 };
@@ -70,17 +77,14 @@ type CodexComposerControlsProps = {
   disabled: boolean;
   action?: ReactNode;
   advancedActions?: ReactNode;
-  /** Lets the composer open the settings or goal dialog, for a bare `/model` or `/goal`. */
+  /** Lets commands and session actions open the same controls as the toolbar. */
   controlsRef?: Ref<ComposerControlsHandle>;
   /** Told when plan mode or the composer's ability to switch it changes. */
   onPlan?: (state: ComposerPlanState) => void;
 };
 
 const selectClass = "h-11 w-full";
-const defaultModelValue = "__agentkib_default_model__";
-const defaultEffortValue = "__agentkib_default_effort__";
 const unknownModeValue = "__agentkib_unknown_mode__";
-const defaultServiceTierValue = "__agentkib_default_service_tier__";
 
 function unavailable(error: unknown) {
   return error instanceof ApiError ? error.code : "request_failed";
@@ -95,13 +99,6 @@ function settingsSelection(settings: CodexSessionSettings, isClaude: boolean) {
     effort: settings.selected?.effort ?? settings.current.effort,
     permissionMode: settings.selected?.permissionMode ?? settings.current.permissionMode,
   };
-}
-
-function modelOption(settings: CodexSessionSettings | undefined, model: string | undefined) {
-  if (!model) return undefined;
-  return settings?.options.models?.find(
-    (item) => item.id === model || item.resolvedModel === model,
-  );
 }
 
 /** Which goal actions the panel offers: starting one always; with a goal, clearing it and
@@ -156,9 +153,8 @@ export function CodexComposerControls({
     : current?.agent === "deepseek-harness"
       ? "deepseek-harness"
       : null;
-  // Every agent here switches the model and its effort in the composer, as Codex's and DeepSeek
-  // Harness's own windows do; the settings button then names no model.
-  const composerModels = isCodex || managedAgent !== null;
+  const modelPicker = useRef<ComposerModelPickerHandle>(null);
+  const refreshModelOnOpen = useRef(false);
   const agentCopy = sessionAgentCopy[locale];
   const feature = (name: string) =>
     (
@@ -221,13 +217,19 @@ export function CodexComposerControls({
   const [contextNames, setContextNames] = useState<string[]>([]);
   const [contextLoading, setContextLoading] = useState(false);
   const settingsDraftRevision = useRef<number | undefined>(undefined);
-  const editedClaudeSettings = useRef(new Set<"model" | "effort" | "permissionMode">());
   const goalDraftRevision = useRef<number | undefined>(undefined);
   const [settingsDirty, setSettingsDirty] = useState(false);
   const [goalDirty, setGoalDirty] = useState(false);
   const full = access?.device?.accessMode === "full";
   const [dialog, setDialog] = useState<"settings" | "goal" | "context">();
   const [settings, setSettings] = useState<CodexSessionSettings>();
+  const historyScope = `${selected}\0${access?.bootId ?? ""}\0${access?.device?.id ?? ""}`;
+  const [historyRead, setHistoryRead] = useState<{
+    scope: string;
+    client: typeof client;
+    values?: CodexSessionSettings["historicalSettings"];
+    usage?: CodexSessionSettings["usage"];
+  }>();
   const [goal, setGoal] = useState<CodexGoalState>();
   const [context, setContext] = useState<CodexContextOptions>();
   const [settingsError, setSettingsError] = useState("");
@@ -255,12 +257,9 @@ export function CodexComposerControls({
       >
     >();
   const [query, setQuery] = useState("");
-  const [model, setModel] = useState("");
-  const [effort, setEffort] = useState("");
   const [mode, setMode] = useState<"" | "default" | "plan">("");
   const [policy, setPolicy] = useState("");
   const [permissionMode, setPermissionMode] = useState<ClaudePermissionMode | "">("");
-  const [serviceTier, setServiceTier] = useState("");
   const [objective, setObjective] = useState("");
   const [tokenBudget, setTokenBudget] = useState("");
   const compacting = live?.activity === "compacting";
@@ -268,19 +267,40 @@ export function CodexComposerControls({
   // While a turn runs, the note below the settings already says to wait for it.
   const settingReason = (code?: string) =>
     running && code === "session-busy" ? null : reasonDetail(code);
-  const usageView = useContextUsage(settings?.sessionId === selected ? settings.usage : undefined);
+  const history =
+    isCodex &&
+    full &&
+    access.device?.advancedControl === true &&
+    historyRead?.scope === historyScope &&
+    historyRead.client === client
+      ? historyRead
+      : undefined;
+  const historicalSettings =
+    !compacting &&
+    settings?.applicationStatus !== "pending" &&
+    !pendingSettings &&
+    (!live ||
+      (live.sessionId === selected &&
+        (live.status === "idle" || live.status === "unsupported") &&
+        !live.executionLocation))
+      ? history?.values
+      : undefined;
+  const settingsUsage =
+    settings?.sessionId === selected && !settings.usage?.historical ? settings.usage : undefined;
+  const usageFallback =
+    contextUsagePercent(settingsUsage) !== undefined
+      ? settingsUsage
+      : (history?.usage ?? settingsUsage);
+  const usageView = useContextUsage(usageFallback);
 
   const applySettings = useCallback(
     (value: CodexSessionSettings) => {
       setSettings(value);
       if (settingsDraftRevision.current !== undefined) return;
       const selected = settingsSelection(value, isClaude);
-      setModel(modelOption(value, selected.modelId)?.id ?? selected.modelId ?? "");
-      setEffort(selected.effort ?? "");
       setMode(selected.mode === "default" || selected.mode === "plan" ? selected.mode : "");
       setPolicy(selected.policyId ?? "");
       setPermissionMode(selected.permissionMode ?? "");
-      setServiceTier(selected.serviceTierId ?? "");
     },
     [isClaude],
   );
@@ -367,7 +387,23 @@ export function CodexComposerControls({
           ]);
           if (generation !== loadGeneration.current) return;
           if (settingsResult.status === "fulfilled") {
-            if (settingsResult.value) applySettings(settingsResult.value);
+            const value = settingsResult.value;
+            if (isCodex) {
+              // Live settings can replace the GET's editable projection, while historical
+              // metadata belongs to the independently authorized read of this session.
+              setHistoryRead(
+                value?.sessionId === selected &&
+                  (value.historicalSettings || value.usage?.historical)
+                  ? {
+                      scope: historyScope,
+                      client,
+                      values: value.historicalSettings,
+                      usage: value.usage?.historical ? value.usage : undefined,
+                    }
+                  : undefined,
+              );
+            }
+            if (value) applySettings(value);
             else setSettings(undefined);
             setSettingsError("");
           } else if (!quiet) {
@@ -393,17 +429,27 @@ export function CodexComposerControls({
       loadFlight.current = flight;
       return flight.promise;
     },
-    [applySettings, client, full, selected, managedAgent, settingsReadable, goalReadable],
+    [
+      applySettings,
+      client,
+      full,
+      selected,
+      managedAgent,
+      settingsReadable,
+      goalReadable,
+      isCodex,
+      historyScope,
+    ],
   );
 
   useEffect(() => {
     loadGeneration.current++;
     settingsDraftRevision.current = undefined;
-    editedClaudeSettings.current.clear();
     goalDraftRevision.current = undefined;
     setSettingsDirty(false);
     setGoalDirty(false);
     setSettings(undefined);
+    setHistoryRead(undefined);
     setGoal(undefined);
     setContext(undefined);
     contextGeneration.current++;
@@ -578,7 +624,6 @@ export function CodexComposerControls({
         if (name === "settings") {
           setPendingSettings({ ...fields, expectedRevision: readRevision ?? 0 });
           settingsDraftRevision.current = undefined;
-          editedClaudeSettings.current.clear();
           setSettingsDirty(false);
         }
         if (name.startsWith("goal-")) {
@@ -603,18 +648,17 @@ export function CodexComposerControls({
 
   const settingsReadStale = live?.revision !== undefined && settings?.revision !== live.revision;
   const goalReadStale = live?.revision !== undefined && goal?.revision !== live.revision;
-  // Declared above the early return so the composer's handle below can call it.
-  const openControls = (next: "settings" | "goal") => {
-    setDialog(next);
+  const prepareSettings = () => {
     if (
-      next === "settings" &&
       isClaude &&
+      live?.executionMode === "claude-managed" &&
+      !running &&
       feature("settings")?.available &&
       access?.bootId &&
       selected &&
-      live?.revision !== undefined &&
-      !preparingSettings
+      live.revision !== undefined
     ) {
+      if (settingsPreparation.current) return;
       const generation = loadGeneration.current;
       const preparation = Symbol("settings-prepare");
       settingsPreparation.current = preparation;
@@ -642,13 +686,39 @@ export function CodexComposerControls({
         });
       return;
     }
-    // Ordinary refreshes and opening a running panel only read the cached CAS view.
-    if (next === "settings" ? settingsReadStale : goalReadStale) void load();
+    void load();
+  };
+  const displayedSettings = settings ? settingsSelection(settings, isClaude) : undefined;
+  const liveSettings =
+    isCodex &&
+    live?.sessionId === selected &&
+    live.settings?.sessionId === selected &&
+    live.settings.revision >= (settings?.revision ?? 0)
+      ? live.settings
+      : undefined;
+  const liveSelection = liveSettings && settingsSelection(liveSettings, false);
+  const reportedSettings =
+    settings?.applicationStatus !== "pending" && !pendingSettings
+      ? liveSelection?.modelId || liveSelection?.effort
+        ? liveSelection
+        : liveSettings?.current
+      : undefined;
+  const hasPermissionPanel =
+    settingsReadable && (isCodex || isClaude || !!settings?.options.policies?.length);
+  const openControls = (next: "settings" | "goal") => {
+    setDialog(next);
+    if (next === "settings") prepareSettings();
+    else if (goalReadStale) void load();
+  };
+  const openModel = (page: "effort" | "models", refresh = false) => {
+    if (!full || disabled || !settingsReadable || !modelPicker.current) return false;
+    refreshModelOnOpen.current = refresh;
+    modelPicker.current.open(page);
+    return true;
   };
   // Plan mode, as Codex's and DeepSeek Harness's own composers show and switch it: their
   // collaboration mode, and Claude Code's permission mode.
-  const planSelection = settings ? settingsSelection(settings, isClaude) : undefined;
-  const planOn = planSelection?.mode === "plan" || planSelection?.permissionMode === "plan";
+  const planOn = displayedSettings?.mode === "plan" || displayedSettings?.permissionMode === "plan";
   const planAvailable =
     full &&
     !disabled &&
@@ -669,11 +739,12 @@ export function CodexComposerControls({
   }, [onPlan, planOn, planAvailable]);
   useImperativeHandle(controlsRef, () => ({
     open: (next) => {
-      if (!full || disabled || !(next === "settings" ? settingsReadable : goalReadable))
+      if (!full || disabled || !(next === "settings" ? hasPermissionPanel : goalReadable))
         return false;
       openControls(next);
       return true;
     },
+    openModel,
     plan: () => {
       if (!planAvailable) return false;
       if (!planOn) void mutate("settings", planChange(true));
@@ -682,7 +753,6 @@ export function CodexComposerControls({
   }));
 
   if (!full) return null;
-  const selectedModel = modelOption(settings, model);
   const availableResources = (context?.resources ?? []).filter((item) => {
     const needle = query.trim().toLocaleLowerCase();
     return !needle || `${item.name} ${item.description ?? ""}`.toLocaleLowerCase().includes(needle);
@@ -701,9 +771,8 @@ export function CodexComposerControls({
   ];
   const settingsChanged = settingsDirty && settingsDraftRevision.current !== settings?.revision;
   const goalChanged = goalDirty && goalDraftRevision.current !== goal?.revision;
-  const editSettings = (field?: "model" | "effort" | "permissionMode") => {
+  const editSettings = () => {
     settingsDraftRevision.current ??= settings?.revision;
-    if (isClaude && field) editedClaudeSettings.current.add(field);
     setSettingsDirty(true);
     setSaved(false);
   };
@@ -725,24 +794,25 @@ export function CodexComposerControls({
   const parsedBudget = tokenBudget ? Number(tokenBudget) : undefined;
   const budgetValid =
     parsedBudget === undefined || (Number.isSafeInteger(parsedBudget) && parsedBudget > 0);
-  const displayedSettings = settings ? settingsSelection(settings, isClaude) : undefined;
   const modeOptions = settings?.options.collaborationModes ?? [];
   const modeWritable = settings?.writable.mode?.available && modeOptions.length > 0;
-  const unavailableSettings = settings
-    ? [
-        [copy.model, settings.writable.model?.available],
-        [copy.effort, settings.writable.effort?.available],
-        ...(isClaude
-          ? [[agentCopy.permission, settings.writable.permissionMode?.available]]
-          : [
-              [copy.mode, modeWritable],
-              [copy.serviceTier, settings.writable.serviceTier?.available],
-              [copy.executionPolicy, settings.writable.policy?.available],
-            ]),
-        [copy.restoreDefaults, settings.writable.restoreDefaults?.available],
-      ].flatMap(([label, available]) => (available === true ? [] : [label as string]))
-    : [];
-  const settingsFeatureUnavailable = feature("settings")?.available !== true;
+  const permissionChanges = {
+    ...(!isClaude && !running && mode && modeWritable && mode !== displayedSettings?.mode
+      ? { mode }
+      : {}),
+    ...(!isClaude &&
+    policy &&
+    settings?.writable.policy.available &&
+    policy !== displayedSettings?.policyId
+      ? { policyId: policy }
+      : {}),
+    ...(isClaude &&
+    permissionMode &&
+    settings?.writable.permissionMode?.available &&
+    permissionMode !== displayedSettings?.permissionMode
+      ? { permissionMode }
+      : {}),
+  };
   // Codex's execution policies; for DeepSeek Harness, its permission presets.
   const policyControl = (value: CodexSessionSettings) => {
     const selected = value.options.policies?.find((item) => item.id === policy);
@@ -759,7 +829,6 @@ export function CodexComposerControls({
           }}
         >
           <SelectTrigger className={selectClass} title={reasonTitle(value.writable.policy?.reason)}>
-            {/* The trigger names the option, as the model and effort selects do, not its ID. */}
             <SelectValue placeholder={copy.defaultOption}>
               {policy ? selected?.name || policy : copy.defaultOption}
             </SelectValue>
@@ -780,23 +849,31 @@ export function CodexComposerControls({
       </label>
     );
   };
-  const currentModel =
-    modelOption(settings, displayedSettings?.modelId)?.name ?? displayedSettings?.modelId;
+  const permissionLabel = isClaude
+    ? (settings?.options.permissionModes?.find(
+        (item) => item.id === settings.current.permissionMode,
+      )?.name ?? agentCopy.permission)
+    : (settings?.options.policies?.find((item) => item.id === settings.current.policyId)?.name ??
+      copy.executionPolicy);
   const quickStatus = mutationError
     ? reason(mutationError)
     : settingsError
       ? reason(settingsError)
-      : !settings?.available
-        ? reason(settings?.reason) || copy.settingUnavailable
-        : settingsChangedHere && settings.applicationStatus === "unknown"
-          ? layout.settingsUnknown
-          : running
-            ? presetWhileRunning
-              ? copy.settingsWhileRunningModel
-              : copy.settingsWhileRunning
-            : settingsReadStale
-              ? layout.connecting
-              : undefined;
+      : preparingSettings
+        ? layout.connecting
+        : !settings?.available
+          ? reason(settings?.reason) || copy.settingUnavailable
+          : settingsChangedHere && settings.applicationStatus === "unknown"
+            ? layout.settingsUnknown
+            : settings.applicationStatus === "pending"
+              ? layout.settingsPending
+              : running
+                ? presetWhileRunning
+                  ? copy.settingsWhileRunningModel
+                  : copy.settingsWhileRunning
+                : settingsReadStale
+                  ? layout.connecting
+                  : undefined;
 
   return (
     <>
@@ -811,141 +888,121 @@ export function CodexComposerControls({
               type="button"
               variant="link"
               className="h-auto min-h-11 whitespace-normal px-0 text-xs"
-              disabled={disabled || !full}
-              onClick={() => {
-                void load();
-                openControls("settings");
-              }}
+              disabled={disabled || !settingsReadable}
+              onClick={() =>
+                openModel(noticeReason?.includes("effort") ? "effort" : "models", true)
+              }
             >
               {copy.changeNextTurnModel}
             </Button>
           </div>
         )}
-      <div className="@container flex min-w-0 items-center justify-between gap-2 px-1">
-        <div className="flex min-w-0 flex-1 items-center gap-0.5">
-          {(!managedAgent ||
-            resourcesReadable ||
-            goalReadable ||
-            feature("attachments")?.available) && (
-            <Button
-              type="button"
-              variant="ghost"
-              className="size-11 shrink-0 rounded-full p-0"
-              aria-label={copy.addContext}
-              disabled={disabled}
-              onClick={() => {
-                void load();
-                void loadContext(context?.directoryId, contextNames);
-                setDialog("context");
-              }}
-            >
-              <Plus size={20} />
-            </Button>
-          )}
-          {settingsReadable && (
-            <Button
-              type="button"
-              variant="ghost"
-              className={`h-11 min-w-11 max-w-72 gap-1.5 @max-[22rem]:size-11 @max-[22rem]:gap-0 @max-[22rem]:p-0 rounded-full px-3 text-muted-foreground hover:text-foreground ${!composerModels && currentModel ? "shrink justify-start" : "shrink-0 justify-center"}`}
-              aria-label={composerModels || !currentModel ? copy.conversationSettings : undefined}
-              title={
-                currentModel
-                  ? `${copy.conversationSettings}: ${currentModel}`
-                  : copy.conversationSettings
-              }
-              disabled={disabled}
-              onClick={() => openControls("settings")}
-            >
-              <Settings2 className="size-4 shrink-0" aria-hidden="true" />
-              <span
-                className={
-                  !composerModels && currentModel ? "truncate @max-[22rem]:sr-only" : "sr-only"
-                }
+      <ComposerToolbar
+        leading={
+          <>
+            {(!managedAgent ||
+              resourcesReadable ||
+              goalReadable ||
+              feature("attachments")?.available) && (
+              <ComposerIconButton
+                type="button"
+                variant="ghost"
+                aria-label={copy.addContext}
+                disabled={disabled}
+                onClick={() => {
+                  void load();
+                  void loadContext(context?.directoryId, contextNames);
+                  setDialog("context");
+                }}
               >
-                {currentModel || copy.conversationSettings}
+                <Plus size={20} />
+              </ComposerIconButton>
+            )}
+            {hasPermissionPanel && (
+              <Button
+                type="button"
+                variant="ghost"
+                className="h-11 min-w-11 max-w-48 min-[520px]:shrink gap-1.5 rounded-full px-2 text-muted-foreground hover:text-foreground @max-[22rem]:size-11 @max-[22rem]:gap-0 @max-[22rem]:p-0"
+                aria-label={copy.conversationSettings}
+                title={permissionLabel}
+                disabled={disabled}
+                onClick={() => openControls("settings")}
+              >
+                <Shield className="size-4 shrink-0" aria-hidden />
+                <span className="truncate @max-[22rem]:sr-only">{permissionLabel}</span>
+                <ChevronDown className="size-3.5 shrink-0 @max-[22rem]:hidden" aria-hidden />
+              </Button>
+            )}
+            {planOn && (
+              // As in Codex's and DSH's own composers: plan mode shows here and turns off here.
+              <Button
+                type="button"
+                variant="ghost"
+                className="group h-11 shrink-0 gap-1.5 rounded-full px-3 text-muted-foreground hover:text-foreground"
+                aria-label={copy.planOn}
+                title={copy.planOnTitle}
+                disabled={!planAvailable || saving}
+                onClick={async () => {
+                  setPlanFailed(false);
+                  if (!(await mutate("settings", planChange(false)))) setPlanFailed(true);
+                }}
+              >
+                <Lightbulb className="size-4 group-hover:hidden" aria-hidden="true" />
+                <X className="hidden size-4 group-hover:block" aria-hidden="true" />
+                <span>{copy.plan}</span>
+              </Button>
+            )}
+            {planOn && planFailed && (
+              <span role="status" className="shrink-0 text-xs text-destructive">
+                {copy.planExitFailed}
               </span>
-              {!composerModels && displayedSettings?.effort && (
-                <span className="shrink-0 text-xs text-muted-foreground @max-[22rem]:hidden">
-                  {term(displayedSettings.effort)}
-                </span>
-              )}
-              {!composerModels &&
-                (displayedSettings?.mode === "plan" ||
-                  displayedSettings?.permissionMode === "plan") && (
-                  <span className="shrink-0 text-xs text-muted-foreground @max-[22rem]:hidden">
-                    {copy.plan}
-                  </span>
-                )}
-              {!composerModels && settings?.applicationStatus === "pending" && (
-                <span className="shrink-0 text-xs text-muted-foreground @max-[22rem]:hidden">
-                  {layout.nextTurn}
-                </span>
-              )}
-              {!composerModels &&
-                settingsChangedHere &&
-                settings?.applicationStatus === "unknown" && (
-                  <span className="shrink-0 text-xs text-muted-foreground @max-[22rem]:hidden">
-                    {layout.settingsUnknown}
-                  </span>
-                )}
-            </Button>
-          )}
-          {planOn && (
-            // As in Codex's and DSH's own composers: plan mode shows here and turns off here.
-            <Button
-              type="button"
-              variant="ghost"
-              className="group h-11 shrink-0 gap-1.5 rounded-full px-3 text-muted-foreground hover:text-foreground"
-              aria-label={copy.planOn}
-              title={copy.planOnTitle}
-              disabled={!planAvailable || saving}
-              onClick={async () => {
-                setPlanFailed(false);
-                if (!(await mutate("settings", planChange(false)))) setPlanFailed(true);
-              }}
-            >
-              <Lightbulb className="size-4 group-hover:hidden" aria-hidden="true" />
-              <X className="hidden size-4 group-hover:block" aria-hidden="true" />
-              <span>{copy.plan}</span>
-            </Button>
-          )}
-          {planOn && planFailed && (
-            <span role="status" className="shrink-0 text-xs text-destructive">
-              {copy.planExitFailed}
-            </span>
-          )}
-        </div>
-        <div className="ml-auto flex min-w-0 items-center gap-1">
-          {advancedActions}
-          <ContextUsageGauge
-            fallback={settings?.sessionId === selected ? settings.usage : undefined}
-          />
-          {composerModels && settingsReadable && (
-            <ComposerModelPicker
-              key={`${selected}\0${access?.bootId ?? ""}\0${access?.device?.id ?? ""}\0${usageEpoch ?? ""}`}
-              locale={locale}
-              settings={settings}
-              selection={displayedSettings}
-              disabled={
-                settingDisabled ||
-                settingsReadStale ||
-                (settingsChangedHere && settings?.applicationStatus === "unknown")
-              }
-              saving={saving}
-              status={quickStatus}
-              onOpen={() => {
-                if (settingsReadStale || !settings?.available) void load();
-              }}
-              // Claude Code and DeepSeek Harness report no effort for the model's own default.
-              effortDefault={managedAgent !== null}
-              onChange={async (fields) => {
-                await mutate("settings", fields);
-              }}
-            />
-          )}
-          {action}
-        </div>
-      </div>
+            )}
+          </>
+        }
+        trailing={
+          <>
+            {advancedActions}
+            <ContextUsageGauge fallback={usageFallback} />
+            {settingsReadable && (
+              <ComposerModelPicker
+                key={`${selected}\0${access?.bootId ?? ""}\0${access?.device?.id ?? ""}\0${usageEpoch ?? ""}`}
+                pickerRef={modelPicker}
+                locale={locale}
+                settings={settings}
+                selection={displayedSettings}
+                reportedSettings={reportedSettings}
+                historicalSettings={historicalSettings}
+                disabled={
+                  settingDisabled ||
+                  running ||
+                  settingsReadStale ||
+                  (settingsChangedHere && settings?.applicationStatus === "unknown")
+                }
+                saving={saving}
+                status={quickStatus}
+                onOpen={() => {
+                  const refresh = refreshModelOnOpen.current;
+                  refreshModelOnOpen.current = false;
+                  if (
+                    refresh ||
+                    settingsReadStale ||
+                    !settings?.available ||
+                    !settings.options.models.length
+                  )
+                    prepareSettings();
+                }}
+                // Claude Code and DeepSeek Harness report no effort for the model's own default.
+                effortDefault={managedAgent !== null}
+                clearEffort={isClaude && live?.executionMode === "claude-managed"}
+                onChange={async (fields) => {
+                  await mutate("settings", fields);
+                }}
+              />
+            )}
+            {action}
+          </>
+        }
+      />
       {goal?.goal && (
         <Button
           type="button"
@@ -962,7 +1019,6 @@ export function CodexComposerControls({
       {dialog === "settings" && (
         <Dialog
           panel
-          className="md:max-w-2xl"
           bodyClassName="space-y-5 bg-muted/5"
           footer={
             settings?.available ? (
@@ -976,7 +1032,6 @@ export function CodexComposerControls({
                         type="button"
                         onClick={() => {
                           settingsDraftRevision.current = undefined;
-                          editedClaudeSettings.current.clear();
                           setSettingsDirty(false);
                           applySettings(settings);
                         }}
@@ -1001,50 +1056,11 @@ export function CodexComposerControls({
                       settingDisabled ||
                       settingsChanged ||
                       settingsReadStale ||
-                      (isClaude && !settingsDirty)
+                      Object.keys(permissionChanges).length === 0
                     }
-                    onClick={() =>
-                      void mutate("settings", {
-                        ...(model &&
-                        settings.writable.model.available &&
-                        (!isClaude || editedClaudeSettings.current.has("model"))
-                          ? { model }
-                          : {}),
-                        ...(settings.writable.effort.available &&
-                        (isClaude ? editedClaudeSettings.current.has("effort") : effort)
-                          ? { effort: effort || null }
-                          : {}),
-                        ...(!isClaude && mode && modeWritable ? { mode } : {}),
-                        ...(!isClaude && policy && settings.writable.policy.available
-                          ? { policyId: policy }
-                          : {}),
-                        ...(!isClaude && serviceTier && settings.writable.serviceTier.available
-                          ? { serviceTierId: serviceTier }
-                          : {}),
-                        ...(isClaude &&
-                        permissionMode &&
-                        editedClaudeSettings.current.has("permissionMode") &&
-                        settings.writable.permissionMode?.available
-                          ? { permissionMode }
-                          : {}),
-                      })
-                    }
+                    onClick={() => void mutate("settings", permissionChanges)}
                   >
                     {copy.apply}
-                  </Button>
-                  <Button
-                    type="button"
-                    variant="outline"
-                    className="min-h-11"
-                    disabled={
-                      settingDisabled ||
-                      settingsReadStale ||
-                      !settings?.writable.restoreDefaults?.available
-                    }
-                    title={reasonTitle(settings?.writable.restoreDefaults?.reason)}
-                    onClick={() => void mutate("settings", { restoreDefaults: true })}
-                  >
-                    <RotateCcw size={15} /> {copy.restoreDefaults}
                   </Button>
                 </div>
               </>
@@ -1078,90 +1094,11 @@ export function CodexComposerControls({
               {reason(settings?.reason || settingsError)}
             </p>
           ) : (
-            <section className="session-settings-layout space-y-5">
+            <section className="space-y-5">
               <div className="rounded-xl border bg-muted/20 p-4">
                 <ContextUsageDetails {...usageView} locale={locale} online={online} />
               </div>
-              <label className="block space-y-1 text-sm">
-                {copy.model}
-                <Select
-                  value={model || defaultModelValue}
-                  disabled={settingDisabled || !settings.writable.model?.available}
-                  onValueChange={(value) => {
-                    editSettings("model");
-                    const next = value === defaultModelValue ? "" : (value ?? "");
-                    const option = settings.options.models?.find((item) => item.id === next);
-                    setModel(next);
-                    if (!option?.efforts?.includes(effort)) {
-                      editSettings("effort");
-                      setEffort(option?.defaultEffort ?? "");
-                    }
-                    if (!option?.serviceTierIds?.includes(serviceTier)) {
-                      setServiceTier(
-                        option?.serviceTierIds?.includes(settings.defaults.serviceTierId ?? "")
-                          ? (settings.defaults.serviceTierId ?? "")
-                          : "",
-                      );
-                    }
-                  }}
-                >
-                  <SelectTrigger
-                    className={selectClass}
-                    title={reasonTitle(settings.writable.model?.reason)}
-                  >
-                    <SelectValue placeholder={copy.defaultOption}>
-                      {model ? selectedModel?.name || model : copy.defaultOption}
-                    </SelectValue>
-                  </SelectTrigger>
-                  <SelectContent>
-                    <SelectGroup>
-                      <SelectLabel>{copy.model}</SelectLabel>
-                      <SelectItem value={defaultModelValue}>{copy.defaultOption}</SelectItem>
-                      {settings.options.models?.map((item) => (
-                        <SelectItem value={item.id} key={item.id}>
-                          {item.name || item.id}
-                        </SelectItem>
-                      ))}
-                    </SelectGroup>
-                  </SelectContent>
-                </Select>
-                {!settings.writable.model?.available &&
-                  settingReason(settings.writable.model?.reason)}
-              </label>
               <div className="grid gap-3 sm:grid-cols-2">
-                <label className="block space-y-1 text-sm">
-                  {copy.effort}
-                  <Select
-                    value={effort || defaultEffortValue}
-                    disabled={settingDisabled || !settings.writable.effort?.available}
-                    onValueChange={(value) => {
-                      editSettings("effort");
-                      setEffort(value === defaultEffortValue ? "" : (value ?? ""));
-                    }}
-                  >
-                    <SelectTrigger
-                      className={selectClass}
-                      title={reasonTitle(settings.writable.effort?.reason)}
-                    >
-                      <SelectValue placeholder={copy.defaultOption}>
-                        {effort ? term(effort) : copy.defaultOption}
-                      </SelectValue>
-                    </SelectTrigger>
-                    <SelectContent>
-                      <SelectGroup>
-                        <SelectLabel>{copy.effort}</SelectLabel>
-                        <SelectItem value={defaultEffortValue}>{copy.defaultOption}</SelectItem>
-                        {selectedModel?.efforts?.map((item) => (
-                          <SelectItem key={item} value={item}>
-                            {term(item)}
-                          </SelectItem>
-                        ))}
-                      </SelectGroup>
-                    </SelectContent>
-                  </Select>
-                  {!settings.writable.effort?.available &&
-                    settingReason(settings.writable.effort?.reason)}
-                </label>
                 {isClaude ? (
                   <label className="block space-y-1 text-sm">
                     {agentCopy.permission}
@@ -1169,7 +1106,7 @@ export function CodexComposerControls({
                       value={permissionMode || unknownModeValue}
                       disabled={settingDisabled || !settings.writable.permissionMode?.available}
                       onValueChange={(value) => {
-                        editSettings("permissionMode");
+                        editSettings();
                         if (value && value !== unknownModeValue)
                           setPermissionMode(value as ClaudePermissionMode);
                       }}
@@ -1215,8 +1152,7 @@ export function CodexComposerControls({
                       </small>
                     )}
                   </label>
-                ) : // DeepSeek Harness offers a model, its effort and its permission presets here.
-                managedAgent ? (
+                ) : managedAgent ? (
                   settings.options.policies?.length ? (
                     policyControl(settings)
                   ) : null
@@ -1257,54 +1193,6 @@ export function CodexComposerControls({
                         reasonDetail(
                           settings.writable.mode?.reason || "collaboration-modes-unavailable",
                         )}
-                    </label>
-                    <label className="block space-y-1 text-sm">
-                      {copy.serviceTier}
-                      <Select
-                        value={serviceTier || defaultServiceTierValue}
-                        disabled={settingDisabled || !settings.writable.serviceTier?.available}
-                        onValueChange={(value) => {
-                          editSettings();
-                          setServiceTier(value === defaultServiceTierValue ? "" : (value ?? ""));
-                        }}
-                      >
-                        <SelectTrigger
-                          className={selectClass}
-                          title={reasonTitle(settings.writable.serviceTier?.reason)}
-                        >
-                          <SelectValue placeholder={copy.defaultOption} />
-                        </SelectTrigger>
-                        <SelectContent>
-                          <SelectGroup>
-                            <SelectLabel>{copy.serviceTier}</SelectLabel>
-                            <SelectItem value={defaultServiceTierValue}>
-                              {copy.defaultOption}
-                            </SelectItem>
-                            {settings.options.serviceTiers
-                              ?.filter(
-                                (item) =>
-                                  !selectedModel?.serviceTierIds?.length ||
-                                  selectedModel.serviceTierIds.includes(item.id),
-                              )
-                              .map((item) => (
-                                <SelectItem value={item.id} key={item.id}>
-                                  {item.name || item.id}
-                                </SelectItem>
-                              ))}
-                          </SelectGroup>
-                        </SelectContent>
-                      </Select>
-                      {!settings.writable.serviceTier?.available &&
-                        settingReason(settings.writable.serviceTier?.reason)}
-                      {!!settings.options.serviceTiers?.find((item) => item.id === serviceTier)
-                        ?.description && (
-                        <small className="block text-muted-foreground">
-                          {
-                            settings.options.serviceTiers.find((item) => item.id === serviceTier)
-                              ?.description
-                          }
-                        </small>
-                      )}
                     </label>
                     {policyControl(settings)}
                   </>

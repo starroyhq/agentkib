@@ -490,6 +490,41 @@ export function createBridge(ctx, options = {}) {
       return null;
     }
   }
+  function canSelectModelAtCreation(controller) {
+    return (
+      typeof controller?.create === "function" &&
+      typeof controller?.modelCatalog === "function" &&
+      typeof controller?.projections === "function" &&
+      typeof service("agents")?.get === "function" &&
+      typeof service("llm")?.resolveCallConfig === "function"
+    );
+  }
+  async function recordedModel(controller, sessionId) {
+    const value = await controller.projections({ sessionId }, lifetime.signal);
+    const selection = value?.values?.modelSelection;
+    if (!selection || typeof selection !== "object") throw new Error("dsh-models-unavailable");
+    return selection.next ?? selection.lastUsed ?? null;
+  }
+  async function createSelection(controller, selection) {
+    if (!canSelectModelAtCreation(controller))
+      throw new Error("dsh-create-model-selection-unsupported");
+    const catalog = modelsProjection(await controller.modelCatalog(), null);
+    const model = catalog.models.find(
+      (entry) => entry.provider === selection.provider && entry.model === selection.model,
+    );
+    if (!model) throw new Error("unsupported-model");
+    if (
+      selection.reasoningEffort !== undefined &&
+      !model.efforts.some((effort) => effort.id === selection.reasoningEffort)
+    )
+      throw new Error("unsupported-effort");
+    try {
+      // Resolve adapter configuration before creating anything. This does not send a model request.
+      await service("llm").resolveCallConfig(selection);
+    } catch {
+      throw new Error("dsh-models-unavailable");
+    }
+  }
   function setArchived(ids) {
     if (!Array.isArray(ids)) return;
     const next = new Set(ids.filter((id) => typeof id === "string"));
@@ -1025,12 +1060,39 @@ export function createBridge(ctx, options = {}) {
         return { sessionId: value?.sessionId ?? null };
       }
       case "create": {
+        const controller = needController();
+        const selection = command.modelSelection;
+        if (selection) await createSelection(controller, selection);
         // DSH creates the session under the ID AgentKib reserved for it.
-        const value = await needController().create({
+        const value = await controller.create({
           cwd: String(command.cwd),
           sessionId: String(command.sessionId),
           ...(command.agentPreset ? { agentPreset: String(command.agentPreset) } : {}),
         });
+        if (selection)
+          try {
+            const sessionId = value?.sessionId;
+            if (sessionId !== command.sessionId) throw new Error("dsh-create-session-id-changed");
+            // The native controller's selectModel also saves the global default. The Agent's
+            // model interface records the same selection locally for this just-created session.
+            service("agents").get(sessionId).model.select(selection);
+            const selected = await recordedModel(controller, sessionId);
+            if (
+              selected?.provider !== selection.provider ||
+              selected.model !== selection.model ||
+              (selected.reasoningEffort ?? null) !== (selection.reasoningEffort ?? null)
+            )
+              throw new Error("dsh-create-model-not-applied");
+            return {
+              sessionId,
+              selected: { ...selection, reasoningEffort: selection.reasoningEffort ?? null },
+            };
+          } catch {
+            // The native blank session may already exist. The host reconciles it before sending.
+            throw new Error("dsh-create-model-not-applied");
+          } finally {
+            refreshList();
+          }
         refreshList();
         return { sessionId: value?.sessionId ?? null };
       }
@@ -1048,10 +1110,15 @@ export function createBridge(ctx, options = {}) {
       }
       case "models": {
         const controller = needController();
+        if (command.recordedOnly && typeof command.sessionId === "string")
+          return modelsProjection(undefined, await recordedModel(controller, command.sessionId));
         if (typeof controller.modelCatalog !== "function")
           throw new Error("model-catalog-unavailable");
         const catalog = await controller.modelCatalog();
-        return modelsProjection(catalog, await chosenModel(controller, String(command.sessionId)));
+        const sessionId = command.sessionId;
+        const selected =
+          typeof sessionId === "string" ? await chosenModel(controller, sessionId) : null;
+        return modelsProjection(catalog, selected);
       }
       case "selectModel": {
         const value = await needController().selectModel({
@@ -1178,6 +1245,7 @@ export function createBridge(ctx, options = {}) {
       questions: typeof service("userQuestions")?.ask === "function",
       workspaceController: typeof service("workspaceController")?.archiveSession === "function",
       modelCatalog: typeof controller?.modelCatalog === "function",
+      createModelSelection: canSelectModelAtCreation(controller),
       images: typeof controller?.attachment === "function",
       goals: resolves && projects && typeof service("goals")?.get === "function",
       commands: resolves && typeof service("commands")?.execute === "function",

@@ -2,11 +2,12 @@
 
 import "@testing-library/jest-dom/vitest";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { ApiError, type ManagedAgent, type ManagedOptions } from "@agentkib/web-client";
 import { initializeI18n } from "@/core/i18n";
+import { composerModelCopy } from "../conversation/features/sessions/composer-model-copy";
 import { takeNewSessionDraft } from "../conversation/features/sessions/new-session-draft";
 import { NewSessionComposer, type NewSessionComposerProps } from "./NewSessionComposer";
 
@@ -24,19 +25,6 @@ vi.mock("@/core/conversation-bridge", () => ({
   createDesktopConversationClient: () => doubles.client,
 }));
 vi.mock("@/features/agents/AgentIcon", () => ({ AgentIcon: () => null }));
-vi.mock("../conversation/features/sessions/composer-model-picker", () => ({
-  ComposerModelPicker: ({
-    selection,
-    onChange,
-  }: {
-    selection?: { modelId?: string; effort?: string };
-    onChange: (change: { effort: string }) => Promise<void>;
-  }) => (
-    <button type="button" onClick={() => void onChange({ effort: "high" })}>
-      {`Model ${selection?.modelId} ${selection?.effort}`}
-    </button>
-  ),
-}));
 
 const workspaces = [
   { id: "north", name: "northstar-api", last_active_at: "2026-11-09T10:00:00.000Z" },
@@ -73,6 +61,32 @@ const options: Record<ManagedAgent, ManagedOptions> = {
     workspaces: [],
   },
 };
+const modelCopy = composerModelCopy["en-US"];
+const pickerName = new RegExp(`^${modelCopy.chooseEffort}`);
+const anyPickerName = new RegExp(`^(?:${modelCopy.chooseModel}|${modelCopy.chooseEffort}):`);
+const claudeCatalog: ManagedOptions = {
+  ...options["claude-code"],
+  models: [
+    { id: "default", name: "Default (recommended)", efforts: ["low", "high"] },
+    { id: "sonnet", resolvedModel: "sonnet-native", name: "Sonnet", efforts: ["low", "high"] },
+    { id: "opus", name: "Opus", efforts: ["low", "high"] },
+  ],
+  defaults: { model: "sonnet-native", effort: null },
+};
+const dshCatalog: ManagedOptions = {
+  ...options["deepseek-harness"],
+  models: [
+    { id: "official/flash", name: "Flash", group: "Official", efforts: ["low", "high"] },
+    {
+      id: "local/pro",
+      name: "Pro",
+      group: "Local",
+      efforts: ["low", "high"],
+      defaultEffort: "low",
+    },
+  ],
+  defaults: { model: "official/flash", effort: null },
+};
 
 function renderComposer(extra: Partial<NewSessionComposerProps> = {}) {
   const props: NewSessionComposerProps = {
@@ -98,10 +112,38 @@ async function write(text: string) {
   await waitFor(() => expect(send()).toBeEnabled());
 }
 
+async function openModelPicker() {
+  fireEvent.click(await screen.findByRole("button", { name: pickerName }));
+  return screen.findByRole("dialog", { name: pickerName });
+}
+
+async function openModels(currentName: string) {
+  const picker = await openModelPicker();
+  fireEvent.click(
+    within(picker).getByRole("button", { name: `${modelCopy.chooseModel}: ${currentName}` }),
+  );
+  return screen.findByRole("dialog", { name: modelCopy.chooseModel });
+}
+
+async function chooseHighestEffort() {
+  const picker = await screen.findByRole("dialog", { name: pickerName });
+  const thumb = await within(picker).findByRole("slider", { name: modelCopy.chooseEffort });
+  fireEvent.keyDown(thumb, { key: "End" });
+  await waitFor(() => expect(thumb).toHaveAttribute("aria-valuetext", "High"));
+  fireEvent.keyDown(thumb, { key: "Escape" });
+}
+
 describe("NewSessionComposer", () => {
   beforeAll(() => initializeI18n("en-US"));
   beforeEach(() => {
     vi.resetAllMocks();
+    // BaseUI measures the slider before it exposes the thumb; jsdom has no layout.
+    vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockImplementation(
+      function (this: HTMLElement) {
+        const width = this.hasAttribute("data-index") ? 28 : 240;
+        return new DOMRect(0, 0, width, 28);
+      },
+    );
     localStorage.clear();
     sessionStorage.clear();
     doubles.client.access.mockResolvedValue({
@@ -124,7 +166,10 @@ describe("NewSessionComposer", () => {
       },
     });
   });
-  afterEach(cleanup);
+  afterEach(() => {
+    cleanup();
+    vi.restoreAllMocks();
+  });
 
   it("starts a Codex session with the chosen permission and hands it the first message", async () => {
     localStorage.setItem(
@@ -164,7 +209,8 @@ describe("NewSessionComposer", () => {
   it("names the model when only the effort changes, as Codex needs", async () => {
     doubles.client.managedAction.mockResolvedValue({ accepted: true, sessionId: "created" });
     renderComposer();
-    fireEvent.click(await screen.findByRole("button", { name: "Model gpt-6.1-sol medium" }));
+    await openModelPicker();
+    await chooseHighestEffort();
     await write("Tidy the logs");
     fireEvent.click(send());
     await waitFor(() => expect(doubles.client.managedAction).toHaveBeenCalledOnce());
@@ -224,7 +270,7 @@ describe("NewSessionComposer", () => {
     expect(screen.getByRole("button", { name: "Workspace: northstar-api" })).toBeVisible();
     expect(screen.getByRole("button", { name: "Agent: Claude Code" })).toBeVisible();
     expect(await screen.findByRole("button", { name: /Permissions: Default/ })).toBeVisible();
-    expect(screen.queryByRole("button", { name: /^Model/ })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: anyPickerName })).not.toBeInTheDocument();
     await write("Map the routes");
     fireEvent.click(send());
 
@@ -234,6 +280,165 @@ describe("NewSessionComposer", () => {
       bootId: "boot",
       requestId: expect.any(String),
       workspaceId: "north",
+    });
+  });
+
+  it("uses Claude's native catalogue and submits an explicit model and effort before opening the session", async () => {
+    doubles.client.managedOptions.mockResolvedValue(claudeCatalog);
+    doubles.client.managedAction.mockResolvedValue({ accepted: true, sessionId: "created" });
+    const props = renderComposer({ initial: { agent: "claude-code" } });
+    const models = await openModels("Sonnet");
+    expect(within(models).getByRole("button", { name: "Sonnet" })).toHaveAttribute(
+      "aria-pressed",
+      "true",
+    );
+    fireEvent.click(within(models).getByRole("button", { name: "Opus" }));
+    await chooseHighestEffort();
+    await write("Review the routes");
+    fireEvent.click(send());
+
+    await waitFor(() => expect(props.onCreated).toHaveBeenCalledWith("created"));
+    expect(doubles.client.managedAction).toHaveBeenCalledExactlyOnceWith("create", {
+      agent: "claude-code",
+      bootId: "boot",
+      requestId: expect.any(String),
+      workspaceId: "north",
+      model: "opus",
+      effort: "high",
+      verifyStartupModel: true,
+    });
+    expect(takeNewSessionDraft("created")).toMatchObject({ text: "Review the routes", send: true });
+  });
+
+  it("opens Claude's model list when its default is unknown and can clear just the chosen effort", async () => {
+    doubles.client.managedOptions.mockResolvedValue({ ...claudeCatalog, defaults: undefined });
+    doubles.client.managedAction.mockResolvedValue({ accepted: true, sessionId: "created" });
+    renderComposer({ initial: { agent: "claude-code" } });
+    fireEvent.click(
+      await screen.findByRole("button", { name: `${modelCopy.chooseModel}: Default` }),
+    );
+    const models = await screen.findByRole("dialog", { name: modelCopy.chooseModel });
+    expect(within(models).getByRole("button", { name: "Default", pressed: true })).toBeVisible();
+    expect(within(models).getByRole("button", { name: "Default (recommended)" })).toHaveAttribute(
+      "aria-pressed",
+      "false",
+    );
+    fireEvent.click(within(models).getByRole("button", { name: "Opus" }));
+    await chooseHighestEffort();
+
+    const picker = await openModelPicker();
+    const clear = within(picker).getByRole("button", { name: modelCopy.useDefaultEffort });
+    fireEvent.click(clear);
+    await waitFor(() => expect(clear).not.toBeInTheDocument());
+    await userEvent.setup().keyboard("{Escape}");
+    expect(
+      await screen.findByRole("button", { name: `${modelCopy.chooseEffort}: Opus` }),
+    ).toBeVisible();
+    await write("Use Opus with its default effort");
+    fireEvent.click(send());
+
+    await waitFor(() => expect(doubles.client.managedAction).toHaveBeenCalledOnce());
+    expect(doubles.client.managedAction.mock.calls[0]![1]).toEqual({
+      agent: "claude-code",
+      bootId: "boot",
+      requestId: expect.any(String),
+      workspaceId: "north",
+      model: "opus",
+      verifyStartupModel: true,
+    });
+  });
+
+  it("groups DSH models by provider and submits the preset together with model and effort", async () => {
+    doubles.client.managedOptions.mockResolvedValue(dshCatalog);
+    doubles.client.managedAction.mockResolvedValue({ accepted: true, sessionId: "created" });
+    renderComposer({ initial: { agent: "deepseek-harness" } });
+    const user = userEvent.setup();
+    await user.click(await screen.findByRole("button", { name: /Preset/ }));
+    await user.click(await screen.findByRole("menuitem", { name: /PTC/ }));
+    const models = await openModels("Flash");
+    expect(within(models).getByText("Official")).toBeVisible();
+    expect(within(models).getByText("Local")).toBeVisible();
+    fireEvent.click(within(models).getByRole("button", { name: "Pro" }));
+    expect(await screen.findByRole("slider", { name: modelCopy.chooseEffort })).toHaveAttribute(
+      "aria-valuetext",
+      "Default · Low",
+    );
+    await chooseHighestEffort();
+    await write("Profile the parser");
+    fireEvent.click(send());
+
+    await waitFor(() => expect(doubles.client.managedAction).toHaveBeenCalledOnce());
+    expect(doubles.client.managedAction.mock.calls[0]![1]).toMatchObject({
+      agent: "deepseek-harness",
+      agentPreset: "ptc",
+      model: "local/pro",
+      effort: "high",
+    });
+  });
+
+  it.each(["direct", "receipt"])(
+    "keeps the first message when DSH model selection fails via %s",
+    async (via) => {
+      const reason = "dsh-create-model-not-applied";
+      doubles.client.managedOptions.mockResolvedValue(dshCatalog);
+      doubles.client.managedAction.mockRejectedValue(
+        via === "direct"
+          ? new ApiError(409, reason, "not-dispatched")
+          : new ApiError(504, "request_timeout"),
+      );
+      const props = renderComposer({ initial: { agent: "deepseek-harness" } });
+      const models = await openModels("Flash");
+      fireEvent.click(within(models).getByRole("button", { name: "Pro" }));
+      await chooseHighestEffort();
+      await write("Keep this draft");
+      fireEvent.click(send());
+
+      if (via === "receipt") {
+        await waitFor(() => expect(doubles.client.receipt).toHaveBeenCalled());
+        const requestId = doubles.client.managedAction.mock.calls[0]![1].requestId as string;
+        doubles.client.receipt.mockResolvedValue({
+          found: true,
+          operation: "create",
+          requestId,
+          sessionId: "blank",
+          status: "not-dispatched",
+          ack: { reason },
+        });
+        await act(async () => doubles.controlChanged?.());
+      }
+
+      expect(await screen.findByRole("alert")).toHaveTextContent(
+        "Could not confirm the model for the new session. Your first message is still a draft.",
+      );
+      expect(screen.getByRole("alert")).not.toHaveTextContent("The session was not created:");
+      expect(message()).toHaveValue("Keep this draft");
+      expect(props.onCreated).not.toHaveBeenCalled();
+      expect(doubles.client.managedAction).toHaveBeenCalledOnce();
+    },
+  );
+
+  it("clears a workspace's Claude model selection when moving to a different workspace", async () => {
+    doubles.client.managedOptions.mockImplementation(
+      async (agent: ManagedAgent, _signal, workspaceId) =>
+        workspaceId === "north" ? claudeCatalog : options[agent],
+    );
+    doubles.client.managedAction.mockResolvedValue({ accepted: true, sessionId: "created" });
+    renderComposer({ initial: { agent: "claude-code" } });
+    const models = await openModels("Sonnet");
+    fireEvent.click(within(models).getByRole("button", { name: "Opus" }));
+    await chooseHighestEffort();
+
+    fireEvent.click(screen.getByRole("button", { name: "Workspace: northstar-api" }));
+    fireEvent.click(await screen.findByRole("button", { name: "atlas-studio" }));
+    await write("Review the routes");
+    expect(screen.queryByRole("button", { name: anyPickerName })).not.toBeInTheDocument();
+    fireEvent.click(send());
+    await waitFor(() => expect(doubles.client.managedAction).toHaveBeenCalledOnce());
+    expect(doubles.client.managedAction.mock.calls[0]![1]).toEqual({
+      agent: "claude-code",
+      bootId: "boot",
+      requestId: expect.any(String),
+      workspaceId: "atlas",
     });
   });
 

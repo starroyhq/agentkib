@@ -31,6 +31,7 @@ type Observation = {
   blockedFallback?: ContextUsage;
   usage?: ContextUsage;
   nativeSeen: boolean;
+  nativeReported?: boolean;
   compacting?: boolean;
   afterCompaction?: { reportId?: number; updatedAt?: string; native?: ContextUsage };
 };
@@ -131,17 +132,10 @@ export function useObservedContextUsage({
       )
         value.afterCompaction = undefined;
       value.usage = native;
+      if (contextUsagePercent(native) !== undefined) value.nativeReported = true;
     }
     value.nativeSeen = true;
   }
-  const usage: ContextUsage | undefined = !authorized
-    ? { available: false, state: "unavailable", reason: "permission_denied" }
-    : value.nativeSeen
-      ? value.usage
-      : fallback !== value.blockedFallback
-        ? fallback
-        : undefined;
-  const percent = contextUsagePercent(usage);
   if (
     authorized &&
     live?.sessionId === selected &&
@@ -151,6 +145,29 @@ export function useObservedContextUsage({
     value.compacting = live.activity === "compacting";
   // A late report must not activate or release the accepted observer's barrier.
   const compacting = authorized && value.compacting === true;
+  const eligibleFallback = fallback !== value.blockedFallback ? fallback : undefined;
+  const reportedUsage = value.nativeSeen
+    ? value.usage
+    : eligibleFallback?.historical !== true
+      ? eligibleFallback
+      : undefined;
+  const useHistory =
+    eligibleFallback?.historical === true &&
+    contextUsagePercent(eligibleFallback) !== undefined &&
+    contextUsagePercent(reportedUsage) === undefined &&
+    !value.nativeReported &&
+    !compacting &&
+    !value.afterCompaction &&
+    (!live ||
+      (live.sessionId === selected &&
+        (live.status === "idle" || live.status === "unsupported") &&
+        !live.executionLocation));
+  const usage: ContextUsage | undefined = !authorized
+    ? { available: false, state: "unavailable", reason: "permission_denied" }
+    : useHistory
+      ? eligibleFallback
+      : reportedUsage;
+  const percent = contextUsagePercent(usage);
   const acceptedNative = acceptsNative ? native : undefined;
   if (compacting)
     value.afterCompaction ??= {
@@ -195,28 +212,44 @@ export function ContextUsageDetails({
   online,
 }: ContextUsageView & { locale: Locale; online: boolean }) {
   const copy = contextUsageCopyForSurface(locale, "web");
+  const historical = usage?.historical === true && percent !== undefined;
+  const recordedAt = historical && usage.updatedAt ? new Date(usage.updatedAt) : undefined;
+  const reportLabel = historical
+    ? copy.historicalReport
+    : state === "ready"
+      ? copy.recentNativeReport
+      : copy.reported;
   const message = compacting
     ? copy.compactingDetail
     : !online && usage?.reason !== "permission_denied" && usage?.reason !== "permission-denied"
       ? copy.offline
       : awaitingCliReport
         ? copy.awaitingCliReportDetail
-        : (contextUsageReason(locale, usage?.reason, "web") ??
-          (state === "pending"
-            ? copy.pendingDetail
-            : state === "stale"
-              ? copy.staleDetail
-              : codexCopyForSurface(locale, "web").contextUnknown));
+        : historical
+          ? copy.historicalDetail
+          : (contextUsageReason(locale, usage?.reason, "web") ??
+            (state === "pending"
+              ? copy.pendingDetail
+              : state === "stale"
+                ? copy.staleDetail
+                : codexCopyForSurface(locale, "web").contextUnknown));
   return (
     <div className="space-y-2 text-sm">
       {state !== "ready" && <p role="status">{message}</p>}
       {percent !== undefined && (
         <div className="space-y-2">
           <p>
-            {`${state === "ready" ? copy.recentNativeReport : copy.reported}: `}
+            {`${reportLabel}: `}
             {usage!.usedTokens!.toLocaleString()} / {usage!.contextWindow!.toLocaleString()} (
             {Math.round(percent)}%)
           </p>
+          {recordedAt && Number.isFinite(recordedAt.valueOf()) && (
+            <time dateTime={usage!.updatedAt} className="block text-xs text-muted-foreground">
+              {new Intl.DateTimeFormat(locale, { dateStyle: "medium", timeStyle: "short" }).format(
+                recordedAt,
+              )}
+            </time>
+          )}
           <div className="h-1.5 overflow-hidden rounded-full bg-muted">
             <div className="h-full bg-primary" style={{ width: `${percent}%` }} />
           </div>
@@ -298,13 +331,16 @@ export function ContextUsageIndicator({
   const copy = contextUsageCopyForSurface(locale, "web");
   const [opened, setOpened] = useState<string>();
   const title = codexCopyForSurface(locale, "web").contextUsage;
+  const historical = view.usage?.historical === true && view.percent !== undefined;
   const label = view.compacting
     ? copy.compacting
     : view.awaitingCliReport
       ? copy.awaitingCliReport
-      : view.state === "ready" && view.percent !== undefined
-        ? `${Math.round(view.percent)}%`
-        : copy[view.state === "ready" ? "unavailable" : view.state];
+      : historical
+        ? `${copy.historicalReport} · ${Math.round(view.percent!)}%`
+        : view.state === "ready" && view.percent !== undefined
+          ? `${Math.round(view.percent)}%`
+          : copy[view.state === "ready" ? "unavailable" : view.state];
   return (
     <>
       <Button
@@ -312,11 +348,12 @@ export function ContextUsageIndicator({
         variant="ghost"
         className="h-11 shrink-0 gap-1.5 rounded-full px-2 text-xs text-muted-foreground hover:text-foreground"
         aria-label={title}
+        aria-description={historical ? label : undefined}
         title={`${title}: ${view.state === "ready" && view.percent !== undefined ? `${copy.recentNativeReport}: ${view.usage!.usedTokens!.toLocaleString()} / ${view.usage!.contextWindow!.toLocaleString()}` : label}`}
         onClick={() => setOpened(scope)}
       >
         <Gauge className="size-4" aria-hidden="true" />
-        {(view.state !== "ready" || view.compacting || view.awaitingCliReport) && (
+        {!historical && (view.state !== "ready" || view.compacting || view.awaitingCliReport) && (
           <span className="hidden @min-[32rem]:inline">{title}</span>
         )}
         <span className="@max-[22rem]:sr-only">{label}</span>

@@ -247,6 +247,9 @@ export class SessionReaders {
   verifiedCodexControlDirectory(nativeRef: string): { id: string; cwd: string } | undefined {
     return this.#codex.verifiedControlDirectories([nativeRef]).get(nativeRef.toLowerCase());
   }
+  codexHistoricalSettings(nativeRef: string, workspace: string) {
+    return this.#codex.historicalSettings(nativeRef, workspace);
+  }
   codexThreadWritten(nativeRef: string): boolean {
     return this.#codex.writtenThreadIds([nativeRef]).has(nativeRef.toLowerCase());
   }

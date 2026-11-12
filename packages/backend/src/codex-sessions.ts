@@ -1,8 +1,21 @@
-import { closeSync, constants, fstatSync, lstatSync, openSync, readdirSync } from "node:fs";
+import {
+  closeSync,
+  constants,
+  fstatSync,
+  lstatSync,
+  openSync,
+  readdirSync,
+  type BigIntStats,
+} from "node:fs";
 import { DatabaseSync } from "node:sqlite";
 import type { SessionCollection } from "@agentkib/runtime-protocol";
 import { CodexSessionOwnership } from "./codex-session-ownership";
 import { isCompressedRollout, readRolloutPrefix, resolveRollout } from "./codex-rollout-files";
+import {
+  codexHistoricalSetting,
+  readCodexHistoricalFields,
+  type CodexHistoricalSettings,
+} from "./codex-historical-fields";
 import { homedir } from "node:os";
 import path from "node:path";
 import { Sql, type Row } from "./sql";
@@ -11,6 +24,9 @@ import { pathIdentity } from "./paths";
 import { compareUtf8 } from "./workspaces";
 import { timestamp } from "./timestamps";
 import type { NativeSession } from "./session-store";
+import { isReparseOrSymlink } from "./native-files";
+
+export type { CodexHistoricalSettings } from "./codex-historical-fields";
 function nonempty(value: unknown): string | null {
   return typeof value === "string" && value.trim() ? value : null;
 }
@@ -183,38 +199,45 @@ function headerPayload(value: string, limit: number): Record<string, unknown> | 
   let fd: number | undefined;
   try {
     fd = regularOpen(value);
-    if (!isCompressedRollout(value)) {
-      const data = readRolloutPrefix(fd, value, limit),
-        newline = data.indexOf(10, 0);
-      return newline < 0 ? null : sessionMeta(data.subarray(0, newline));
-    }
-    const metadata = fstatSync(fd, { bigint: true }),
-      key = `${value}\0${metadata.dev}:${metadata.ino}:${metadata.size}:${metadata.mtimeNs}`;
-    let entry = compressedHeaders.get(key);
-    if (!entry) {
-      const data = readRolloutPrefix(fd, value, MAX_HEADER_BYTES),
-        newline = data.indexOf(10, 0);
-      let payload: Record<string, unknown> | null = null;
-      try {
-        const full = newline < 0 ? null : sessionMeta(data.subarray(0, newline));
-        if (full)
-          payload = Object.fromEntries(
-            HEADER_FIELDS.filter((field) => field in full).map((field) => [field, full[field]]),
-          );
-      } catch {
-        payload = null;
-      }
-      entry = { newline, payload };
-      if (compressedHeaders.size >= 50_000)
-        compressedHeaders.delete(compressedHeaders.keys().next().value!);
-      compressedHeaders.set(key, entry);
-    }
-    return entry.newline < 0 || entry.newline >= limit ? null : entry.payload;
+    return openedHeaderPayload(fd, value, limit);
   } catch {
     return null;
   } finally {
     if (fd !== undefined) closeSync(fd);
   }
+}
+
+function rolloutIdentity(metadata: BigIntStats) {
+  return `${metadata.dev}:${metadata.ino}:${metadata.size}:${metadata.mtimeNs}:${metadata.ctimeNs}`;
+}
+
+function openedHeaderPayload(fd: number, value: string, limit: number) {
+  if (!isCompressedRollout(value)) {
+    const data = readRolloutPrefix(fd, value, limit),
+      newline = data.indexOf(10);
+    return newline < 0 ? null : sessionMeta(data.subarray(0, newline));
+  }
+  const key = `${value}\0${rolloutIdentity(fstatSync(fd, { bigint: true }))}`;
+  let entry = compressedHeaders.get(key);
+  if (!entry) {
+    const data = readRolloutPrefix(fd, value, MAX_HEADER_BYTES),
+      newline = data.indexOf(10);
+    let payload: Record<string, unknown> | null = null;
+    try {
+      const full = newline < 0 ? null : sessionMeta(data.subarray(0, newline));
+      if (full)
+        payload = Object.fromEntries(
+          HEADER_FIELDS.filter((field) => field in full).map((field) => [field, full[field]]),
+        );
+    } catch {
+      payload = null;
+    }
+    entry = { newline, payload };
+    if (compressedHeaders.size >= 50_000)
+      compressedHeaders.delete(compressedHeaders.keys().next().value!);
+    compressedHeaders.set(key, entry);
+  }
+  return entry.newline < 0 || entry.newline >= limit ? null : entry.payload;
 }
 function header(value: string) {
   const p = headerPayload(value, 256 * 1024);
@@ -243,6 +266,11 @@ export interface NativeSessionSource {
 }
 /** Query metadata before bounded header enrichment so unrelated workspaces never trigger transcript reads. */
 export class CodexSessions {
+  #historicalFields = new Map<
+    string,
+    { identity: string; id: string; cwd: string; fields: CodexHistoricalSettings }
+  >();
+
   constructor(readonly environment: NodeJS.ProcessEnv) {}
   home(): string {
     return this.environment.CODEX_HOME ?? path.join(homedir(), ".codex");
@@ -316,11 +344,95 @@ export class CodexSessions {
       { consistent: (a, b) => pathIdentity(a.cwd) === pathIdentity(b.cwd) },
     );
   }
+
+  /** Read history for display only, after the caller has resolved the indexed session. */
+  historicalSettings(nativeRef: string, workspace: string): CodexHistoricalSettings | undefined {
+    const id = uuid(nativeRef);
+    if (!id || !path.isAbsolute(workspace)) return;
+    const workspaceIdentity = pathIdentity(workspace);
+    const homeIdentity = pathIdentity(this.home());
+    try {
+      const result = this.#verifyIndexed(
+        [id],
+        ["cwd", "model", "reasoning_effort"],
+        (row, transcript) => {
+          const indexedCwd = nonempty(row.cwd);
+          if (!indexedCwd || !path.isAbsolute(indexedCwd)) return null;
+          const cwd = pathIdentity(indexedCwd);
+          const file = pathIdentity(transcript);
+          if (
+            !withinIdentity(cwd, workspaceIdentity) ||
+            !withinIdentity(file, homeIdentity) ||
+            isReparseOrSymlink(transcript)
+          )
+            return null;
+          const fd = regularOpen(file);
+          try {
+            const before = fstatSync(fd, { bigint: true });
+            const identity = rolloutIdentity(before);
+            const previous = this.#historicalFields.get(file);
+            let fields: CodexHistoricalSettings;
+            if (previous?.identity === identity) {
+              if (previous.id !== id || previous.cwd !== cwd) return null;
+              fields = previous.fields;
+            } else {
+              const header = openedHeaderPayload(fd, file, 64 * 1024);
+              const headerCwd = nonempty(header?.cwd);
+              if (
+                typeof header?.id !== "string" ||
+                uuid(header.id) !== id ||
+                !headerCwd ||
+                !path.isAbsolute(headerCwd) ||
+                pathIdentity(headerCwd) !== cwd
+              )
+                return null;
+              fields = readCodexHistoricalFields(fd, file, Number(before.size));
+            }
+            if (rolloutIdentity(lstatSync(file, { bigint: true })) !== identity) return null;
+            this.#historicalFields.delete(file);
+            if (this.#historicalFields.size >= 128)
+              this.#historicalFields.delete(this.#historicalFields.keys().next().value!);
+            this.#historicalFields.set(file, { identity, id, cwd, fields });
+            const indexedModel = codexHistoricalSetting(row.model);
+            const modelId = fields.modelId ?? indexedModel;
+            const effort =
+              fields.effort ??
+              (indexedModel === modelId ? codexHistoricalSetting(row.reasoning_effort) : undefined);
+            return { cwd, file, modelId, effort, usage: fields.usage };
+          } finally {
+            closeSync(fd);
+          }
+        },
+        {
+          consistent: (a, b) => a.cwd === b.cwd && a.file === b.file,
+          busyTimeoutMs: 50,
+          // The caller already verified the canonical ID. Keep this optional
+          // read on the native primary-key index instead of scanning threads.
+          caseInsensitive: false,
+        },
+      ).get(id);
+      if (result && (result.modelId || result.effort || result.usage)) {
+        const { modelId, effort, usage } = result;
+        return {
+          ...(modelId ? { modelId } : {}),
+          ...(effort ? { effort } : {}),
+          ...(usage ? { usage: { ...usage } } : {}),
+        };
+      }
+    } catch {
+      // A busy native database or changed file is not evidence of a historical value.
+    }
+  }
+
   #verifyIndexed<T>(
     nativeRefs: Iterable<string>,
     extraColumns: string[],
     verify: (row: Row, transcript: string, id: string) => T | null,
-    displayProof?: { consistent: (a: T, b: T) => boolean },
+    displayProof?: {
+      consistent: (a: T, b: T) => boolean;
+      busyTimeoutMs?: number;
+      caseInsensitive?: boolean;
+    },
   ): Map<string, T> {
     const expected = new Set(
       [...nativeRefs].flatMap((value) => {
@@ -333,6 +445,8 @@ export class CodexSessions {
     const home = this.home();
     const current = this.databases(home);
     const databases = current.length ? current : this.databases(path.join(home, "sqlite"));
+    const collation =
+      displayProof && displayProof.caseInsensitive !== false ? " COLLATE NOCASE" : "";
     const verified = new Map<string, T>();
     const rejected = new Set<string>();
     for (const file of databases) {
@@ -340,7 +454,7 @@ export class CodexSessions {
       const db = new DatabaseSync(file, { readOnly: true });
       try {
         const sql = new Sql(db);
-        db.exec("PRAGMA busy_timeout=5000");
+        db.exec(`PRAGMA busy_timeout=${displayProof?.busyTimeoutMs ?? 5000}`);
         const columns = new Set(
           sql.rows("PRAGMA table_info(threads)").map((row) => String(row.name)),
         );
@@ -361,7 +475,7 @@ export class CodexSessions {
         for (let start = 0; start < pending.length; start += 500) {
           const ids = pending.slice(start, start + 500);
           const rows = sql.rows(
-            `SELECT ${selected.join(",")} FROM threads WHERE id${displayProof ? " COLLATE NOCASE" : ""} IN (${ids.map(() => "?").join(",")})`,
+            `SELECT ${selected.join(",")} FROM threads WHERE id${collation} IN (${ids.map(() => "?").join(",")})`,
             ...ids,
           );
           for (const row of rows) {

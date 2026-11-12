@@ -3329,6 +3329,55 @@ describe("Codex automatic CLI continuation", () => {
     expect(f.servers.every((server) => !server.connected)).toBe(true);
   });
 
+  it("reads settings and the last usage report of an idle indexed session without resuming it", async () => {
+    const f = fixture(true);
+    const updatedAt = "2026-10-19T00:01:00Z";
+    const events = [
+      { type: "turn_context", payload: { model: "last-model", effort: "xhigh" } },
+      {
+        type: "event_msg",
+        timestamp: updatedAt,
+        payload: {
+          type: "token_count",
+          info: {
+            last_token_usage: { total_tokens: 75584 },
+            total_token_usage: { total_tokens: 397857 },
+            model_context_window: 258400,
+          },
+        },
+      },
+    ];
+    writeFileSync(
+      f.compressedTranscript,
+      zstdCompressSync(f.history + events.map((event) => JSON.stringify(event) + "\n").join("")),
+    );
+
+    const settings = { operation: "settings-state", sessionId: f.summary.id };
+    expect(await f.web.managedSettingsState(settings)).not.toHaveProperty("historicalSettings");
+    const read = () => f.web.managedSettingsState({ ...settings, includeHistorical: true });
+    expect(await read()).toMatchObject({
+      available: true,
+      historicalSettings: { modelId: "last-model", effort: "xhigh" },
+      historicalUsage: {
+        historical: true,
+        state: "stale",
+        usedTokens: 75584,
+        contextWindow: 258400,
+        updatedAt,
+      },
+      settings: { selected: { model: null, effort: null }, current: { model: null, effort: null } },
+    });
+    f.version.mockResolvedValue({ reason: "codex-cli-unavailable" });
+    expect(await read()).toMatchObject({
+      available: false,
+      historicalSettings: { modelId: "last-model", effort: "xhigh" },
+      historicalUsage: { historical: true, usedTokens: 75584 },
+    });
+    expect(f.methods).not.toContain("thread/resume");
+    expect(f.methods).not.toContain("turn/start");
+    expect(readManagedRecord(f.root, f.summary.id)).toBeNull();
+  });
+
   it("preserves native steering and automatically consumed queue operations", async () => {
     const f = fixture();
     await f.send();

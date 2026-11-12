@@ -23,6 +23,8 @@ export const contextUsageCopy = {
     invalid: "原生用量报告不完整，暂时无法计算比例。",
     unsupported: "当前 Agent 未提供上下文用量接口。",
     reported: "上次上报",
+    historicalReport: "上次记录",
+    historicalDetail: "这是 Codex 保存的历史用量。",
     recentNativeReport: "最近原生报告",
     compactAction: "压缩上下文",
     compactDetail:
@@ -52,6 +54,8 @@ export const contextUsageCopy = {
     invalid: "原生用量報告不完整，暫時無法計算比例。",
     unsupported: "目前 Agent 未提供上下文用量介面。",
     reported: "上次上報",
+    historicalReport: "上次記錄",
+    historicalDetail: "這是 Codex 儲存的歷史用量。",
     recentNativeReport: "最近原生報告",
     compactAction: "壓縮上下文",
     compactDetail:
@@ -83,6 +87,8 @@ export const contextUsageCopy = {
     invalid: "The native usage report is incomplete; its percentage cannot be calculated.",
     unsupported: "This Agent does not provide a context usage interface.",
     reported: "Last reported",
+    historicalReport: "Last recorded",
+    historicalDetail: "This usage is from the Codex session history.",
     recentNativeReport: "Latest native report",
     compactAction: "Compact context",
     compactDetail:
@@ -113,6 +119,8 @@ export const contextUsageCopy = {
     invalid: "使用量の報告が不完全なため、割合を計算できません。",
     unsupported: "この Agent はコンテキスト使用量 API を提供していません。",
     reported: "前回の報告",
+    historicalReport: "前回の記録",
+    historicalDetail: "Codex が保存した履歴の使用量です。",
     recentNativeReport: "最新のネイティブ報告",
     compactAction: "コンテキストを圧縮",
     compactDetail:

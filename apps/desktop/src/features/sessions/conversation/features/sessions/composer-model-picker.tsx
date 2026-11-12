@@ -1,11 +1,22 @@
-import { Fragment, useEffect, useRef, useState, type CSSProperties } from "react";
+import {
+  Fragment,
+  useEffect,
+  useId,
+  useImperativeHandle,
+  useRef,
+  useState,
+  type CSSProperties,
+  type Ref,
+} from "react";
 import { Popover } from "@base-ui/react/popover";
 import { Slider } from "@base-ui/react/slider";
 import { Check, ChevronDown, ChevronRight, LoaderCircle, RotateCcw, Zap } from "lucide-react";
 import type { CodexSessionSettings, CodexSettingValues } from "@agentkib/web-client";
 import type { SupportedLocale as Locale } from "@/core/types";
 import { Button } from "@/components/ui/button";
+import { NativeSelect, NativeSelectOption } from "@/components/ui/native-select";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
+import { codexCopy } from "./codex-copy";
 import { composerTerm } from "./composer-layout-copy";
 import { composerModelCopy } from "./composer-model-copy";
 import "./composer-model-picker.css";
@@ -16,6 +27,17 @@ export type ComposerModelChange = {
   serviceTierId?: string | null;
   restoreDefaults?: true;
 };
+
+type ComposerModelPage = "effort" | "models";
+
+export type ComposerModelPickerHandle = {
+  open(page: ComposerModelPage): void;
+};
+
+function isFastTier(id?: string) {
+  // Codex 0.163 reports Fast as `priority`; older hosts use `fast`.
+  return id === "fast" || id === "priority";
+}
 
 const effortParticles = (() => {
   let seed = 0x51a7c0de;
@@ -120,15 +142,20 @@ function useEffortMotion(element: HTMLDivElement | null, enabled: boolean, fast:
   }, [element, enabled, fast]);
 }
 
-/** A quick selection uses the same checked settings action as the advanced dialog. */
+/** Select a model, its reasoning effort and any service tier supported by the host. */
 export function ComposerModelPicker({
   locale,
   settings,
   selection,
+  reportedSettings,
+  historicalSettings,
   disabled,
   saving,
   status,
+  modelDefault,
   effortDefault,
+  clearEffort = false,
+  pickerRef,
   side = "top",
   onOpen,
   onChange,
@@ -136,14 +163,21 @@ export function ComposerModelPicker({
   locale: Locale;
   settings?: CodexSessionSettings;
   selection?: CodexSettingValues;
+  reportedSettings?: Pick<CodexSettingValues, "modelId" | "effort">;
+  historicalSettings?: CodexSessionSettings["historicalSettings"];
   disabled: boolean;
   saving: boolean;
   status?: string;
+  /** A new session can delegate the model choice to the Agent. */
+  modelDefault?: boolean;
   /**
    * No effort means the model's own default, as Claude Code and DeepSeek Harness report it, not an
    * unknown one.
    */
   effortDefault?: boolean;
+  /** The host accepts clearing the effort without resetting the model or permissions. */
+  clearEffort?: boolean;
+  pickerRef?: Ref<ComposerModelPickerHandle>;
   /** Where the picker opens: above a composer at the bottom, below one at the top of a page. */
   side?: "top" | "bottom";
   onOpen: () => void;
@@ -151,7 +185,11 @@ export function ComposerModelPicker({
 }) {
   const copy = composerModelCopy[locale];
   const [open, setOpen] = useState(false);
-  const [page, setPage] = useState<"effort" | "models">("effort");
+  const [page, setPage] = useState<ComposerModelPage>("effort");
+  const triggerId = useId();
+  const [popover] = useState(() => Popover.createHandle<ComposerModelPage>());
+  const openState = useRef(false);
+  const requestedPage = useRef<ComposerModelPage | undefined>(undefined);
   const [popup, setPopup] = useState<HTMLDivElement | null>(null);
   const [draft, setDraft] = useState<{ scope: string; effort: string }>();
   const effortScope = JSON.stringify([settings?.revision, selection?.modelId, selection?.effort]);
@@ -160,10 +198,12 @@ export function ComposerModelPicker({
     setDraft(effort === undefined ? undefined : { scope: effortScope, effort });
   const flight = useRef(false);
   const unknownEffortPointer = useRef<number | undefined>(undefined);
-  const model = settings?.options.models.find(
-    (item) => item.id === selection?.modelId || item.resolvedModel === selection?.modelId,
-  );
-  const modelName = model?.name || selection?.modelId || copy.unknown;
+  const modelId = selection?.modelId;
+  const model = modelId
+    ? settings?.options.models.find((item) => item.id === modelId || item.resolvedModel === modelId)
+    : undefined;
+  const missingModelLabel = modelDefault ? copy.defaultModel : copy.unknown;
+  const modelName = model?.name || modelId || missingModelLabel;
   const efforts = model?.efforts ?? [];
   // The model's default effort runs; the slider shows where it stands.
   const followsDefault = effortDefault === true && !!settings?.available && !selection?.effort;
@@ -172,11 +212,43 @@ export function ComposerModelPicker({
   const effortIndex = effort ? efforts.indexOf(effort) : -1;
   const peak = effortIndex >= 0 && effortIndex === efforts.length - 1;
   const effortText = (value: string) => (value === "ultra" ? "Ultra" : composerTerm(locale, value));
+  const liveReport =
+    reportedSettings?.modelId || reportedSettings?.effort ? reportedSettings : undefined;
+  const displayModel = liveReport ? liveReport.modelId : (modelId ?? settings?.current.modelId);
+  const displayModelName =
+    (displayModel === modelId
+      ? model?.name
+      : settings?.options.models.find(
+          (item) => item.id === displayModel || item.resolvedModel === displayModel,
+        )?.name) ||
+    displayModel ||
+    missingModelLabel;
+  const displayEffort = liveReport
+    ? liveReport.effort
+    : (selection?.effort ?? (!modelId ? settings?.current.effort : undefined));
+  const historicalSummary =
+    !displayModel && !displayEffort && (historicalSettings?.modelId || historicalSettings?.effort)
+      ? [
+          copy.lastUsed,
+          settings?.options.models.find((item) => item.id === historicalSettings.modelId)?.name ||
+            historicalSettings.modelId,
+          historicalSettings.effort && effortText(historicalSettings.effort),
+        ]
+          .filter(Boolean)
+          .join(" · ")
+      : undefined;
+  const showModelChoices = modelDefault === true && !displayModel && !historicalSummary;
+  const triggerLabel = showModelChoices ? copy.chooseModel : copy.chooseEffort;
   const writable = settings?.available && !disabled && !saving;
-  const fast = selection?.serviceTierId === "fast" || selection?.serviceTierId === "priority";
-  // Codex 0.163 reports the Fast catalog entry as `priority`; older hosts use `fast`.
-  const fastTier = settings?.options.serviceTiers.find(
-    (item) => ["fast", "priority"].includes(item.id) && model?.serviceTierIds.includes(item.id),
+  const selectedTier = selection?.serviceTierId ?? "";
+  const fast = isFastTier(selectedTier);
+  const supportedTiers = settings?.options.serviceTiers.filter((item) =>
+    model?.serviceTierIds?.includes(item.id),
+  );
+  const fastTier = supportedTiers?.find((item) => isFastTier(item.id));
+  const otherTiers = supportedTiers?.filter((item) => !isFastTier(item.id)) ?? [];
+  const selectedTierOption = settings?.options.serviceTiers.find(
+    (item) => item.id === selectedTier,
   );
   const fastSupported = !!fastTier;
   // An agent that knows no service tiers at all (DeepSeek Harness) has no Fast mode to offer.
@@ -186,9 +258,26 @@ export function ComposerModelPicker({
     settings.options.models.some((item) => !!item.serviceTierIds?.length);
   // DSH lists models under their provider; so does this, once there is more than one.
   const grouped = new Set(settings?.options.models.map((item) => item.group)).size > 1;
-  const fastWritable = writable && settings?.writable.serviceTier.available && fastSupported;
-  const effortWritable = writable && settings?.writable.effort.available && efforts.length > 1;
+  const tierWritable = writable && settings?.writable.serviceTier.available;
+  const fastWritable = tierWritable && fastSupported;
+  const effortWritable = writable && settings?.writable.effort.available;
+  const onlyEffort = efforts.length === 1 ? efforts[0] : undefined;
   useEffortMotion(popup, open && page === "effort", fast);
+
+  useImperativeHandle(
+    pickerRef,
+    () => ({
+      open(next) {
+        if (openState.current) {
+          setPage(next);
+          return;
+        }
+        requestedPage.current = next;
+        popover.open(triggerId);
+      },
+    }),
+    [popover, triggerId],
+  );
 
   useEffect(() => {
     unknownEffortPointer.current = undefined;
@@ -215,13 +304,17 @@ export function ComposerModelPicker({
         : copy.effortUnknown;
   return (
     <Popover.Root
+      handle={popover}
       open={open}
       onOpenChange={(next) => {
+        if (next === openState.current) return;
+        openState.current = next;
         setOpen(next);
         setDraftEffort(undefined);
         unknownEffortPointer.current = undefined;
         if (next) {
-          setPage("effort");
+          setPage(requestedPage.current ?? (showModelChoices ? "models" : "effort"));
+          requestedPage.current = undefined;
           onOpen();
         }
       }}
@@ -230,29 +323,41 @@ export function ComposerModelPicker({
         <TooltipTrigger
           render={
             <Popover.Trigger
+              handle={popover}
+              id={triggerId}
               payload={page}
               render={
                 <Button
                   type="button"
                   variant="ghost"
                   className="h-9 min-w-0 max-w-64 gap-1.5 rounded-full px-2 text-sm font-normal"
-                  aria-label={`${copy.chooseEffort}: ${modelName}${selection?.effort ? ` · ${effortText(selection.effort)}` : ""}`}
+                  aria-label={
+                    historicalSummary
+                      ? `${copy.nextTurnSettings}: ${historicalSummary}`
+                      : `${triggerLabel}: ${displayModelName}${displayEffort ? ` · ${effortText(displayEffort)}` : ""}`
+                  }
                 />
               }
             />
           }
         >
-          <span className="truncate">{open ? copy.chooseEffort : modelName}</span>
-          {!open && selection?.effort && (
+          <span className="truncate">
+            {open
+              ? historicalSummary
+                ? copy.nextTurnSettings
+                : triggerLabel
+              : (historicalSummary ?? displayModelName)}
+          </span>
+          {!open && displayEffort && (
             <span
-              className={`shrink-0 @max-[25rem]:hidden ${selection.effort === efforts.at(-1) ? "text-violet-600 dark:text-violet-400" : "text-muted-foreground"}`}
+              className={`shrink-0 @max-[25rem]:hidden ${displayEffort === efforts.at(-1) ? "text-violet-600 dark:text-violet-400" : "text-muted-foreground"}`}
             >
-              {effortText(selection.effort)}
+              {effortText(displayEffort)}
             </span>
           )}
           <ChevronDown className="size-3.5 shrink-0 text-muted-foreground" aria-hidden="true" />
         </TooltipTrigger>
-        <TooltipContent>{copy.chooseEffort}</TooltipContent>
+        <TooltipContent>{historicalSummary ?? triggerLabel}</TooltipContent>
       </Tooltip>
       <Popover.Portal>
         <Popover.Positioner
@@ -264,7 +369,13 @@ export function ComposerModelPicker({
         >
           <Popover.Popup
             ref={setPopup}
-            aria-label={page === "models" ? copy.chooseModel : copy.chooseEffort}
+            aria-label={
+              page === "models"
+                ? copy.chooseModel
+                : historicalSummary
+                  ? copy.nextTurnSettings
+                  : copy.chooseEffort
+            }
             className="composer-model-popup w-64 max-w-[calc(100vw-24px)] rounded-2xl border border-border bg-popover p-3 text-popover-foreground shadow-xl outline-none dark:border-white/15 dark:bg-[#2b2b2b]"
             data-peak={peak || undefined}
             data-fast={fast || undefined}
@@ -285,6 +396,7 @@ export function ComposerModelPicker({
                         type="button"
                         variant="ghost"
                         className="mb-1 h-auto min-h-12 w-full justify-start rounded-lg px-2 py-2 text-left font-normal"
+                        aria-pressed={modelDefault ? !modelId : undefined}
                         disabled={!writable || !settings?.writable.restoreDefaults.available}
                         onClick={() => {
                           setPage("effort");
@@ -293,9 +405,11 @@ export function ComposerModelPicker({
                       >
                         <span>
                           <span className="block">{copy.defaultModel}</span>
-                          <span className="block text-xs text-muted-foreground">
-                            {copy.recommended}
-                          </span>
+                          {!modelDefault && (
+                            <span className="block text-xs text-muted-foreground">
+                              {copy.recommended}
+                            </span>
+                          )}
                         </span>
                       </Button>
                       {settings?.options.models.map((item, index, models) => (
@@ -314,17 +428,19 @@ export function ComposerModelPicker({
                             onClick={() => {
                               setPage("effort");
                               if (model?.id === item.id) return;
+                              const nextEffort = item.defaultEffort ?? item.efforts[0];
                               void change({
                                 model: item.id,
                                 // A default effort stays the default of the model chosen.
                                 ...(settings.writable.effort.available &&
                                 !followsDefault &&
-                                !item.efforts.includes(selection?.effort ?? "")
-                                  ? { effort: item.defaultEffort ?? item.efforts[0] ?? null }
+                                !item.efforts.includes(selection?.effort ?? "") &&
+                                (nextEffort !== undefined || clearEffort || !effortDefault)
+                                  ? { effort: nextEffort ?? null }
                                   : {}),
                                 ...(settings.writable.serviceTier.available &&
                                 selection?.serviceTierId &&
-                                !item.serviceTierIds.includes(selection.serviceTierId)
+                                !item.serviceTierIds?.includes(selection.serviceTierId)
                                   ? { serviceTierId: null }
                                   : {}),
                               });
@@ -377,17 +493,29 @@ export function ComposerModelPicker({
                       )}
                       <div className="min-w-0 flex-1 text-center">
                         <Popover.Title className="composer-effort-color text-sm font-medium">
-                          <span className="sr-only">{copy.chooseEffort}: </span>
-                          {effortLabel}
+                          {historicalSummary ? (
+                            copy.nextTurnSettings
+                          ) : (
+                            <>
+                              <span className="sr-only">{copy.chooseEffort}: </span>
+                              {effortLabel}
+                            </>
+                          )}
                         </Popover.Title>
                         <Button
                           type="button"
                           variant="ghost"
                           className="h-5 max-w-full gap-0.5 rounded-md px-1 text-xs font-normal text-muted-foreground"
-                          aria-label={`${copy.chooseModel}: ${modelName}`}
+                          aria-label={
+                            historicalSummary
+                              ? copy.chooseModel
+                              : `${copy.chooseModel}: ${modelName}`
+                          }
                           onClick={() => setPage("models")}
                         >
-                          <span className="truncate">{modelName}</span>
+                          <span className="truncate">
+                            {historicalSummary ? copy.chooseModel : modelName}
+                          </span>
                           <ChevronRight className="size-3" aria-hidden="true" />
                         </Button>
                       </div>
@@ -403,11 +531,11 @@ export function ComposerModelPicker({
                         <RotateCcw className="size-4" aria-hidden="true" />
                       </Button>
                     </div>
-                    {efforts.length > 0 && (
+                    {efforts.length > 1 && (
                       <Slider.Root
                         value={Math.max(0, effortIndex)}
                         min={0}
-                        max={Math.max(1, efforts.length - 1)}
+                        max={efforts.length - 1}
                         step={1}
                         largeStep={1}
                         thumbAlignment="edge"
@@ -505,7 +633,71 @@ export function ComposerModelPicker({
                         </Slider.Control>
                       </Slider.Root>
                     )}
+                    {onlyEffort && effort !== onlyEffort && (
+                      <Button
+                        type="button"
+                        variant="outline"
+                        size="sm"
+                        className="mt-2 w-full"
+                        aria-label={`${copy.chooseEffort}: ${effortText(onlyEffort)}`}
+                        disabled={!effortWritable}
+                        onClick={() => void change({ effort: onlyEffort })}
+                      >
+                        {effortText(onlyEffort)}
+                      </Button>
+                    )}
+                    {clearEffort && selection?.effort && (
+                      <Button
+                        type="button"
+                        variant="ghost"
+                        size="sm"
+                        className="mt-1 h-6 px-2 text-xs text-muted-foreground"
+                        disabled={!effortWritable}
+                        onClick={() => void change({ effort: null })}
+                      >
+                        {copy.useDefaultEffort}
+                      </Button>
+                    )}
+                    {otherTiers.length > 0 && (
+                      <label className="mt-2 flex flex-wrap items-center justify-between gap-1.5 text-xs text-muted-foreground">
+                        {codexCopy[locale].serviceTier}
+                        <NativeSelect
+                          size="sm"
+                          className="max-w-36 text-xs"
+                          title={selectedTierOption?.description}
+                          value={selectedTier}
+                          disabled={!tierWritable}
+                          onChange={(event) => {
+                            const value = event.currentTarget.value;
+                            if (
+                              tierWritable &&
+                              (value === "" || otherTiers.some((tier) => tier.id === value))
+                            )
+                              void change({ serviceTierId: value || null });
+                          }}
+                        >
+                          <NativeSelectOption value="">
+                            {codexCopy[locale].defaultOption}
+                          </NativeSelectOption>
+                          {selectedTier && !otherTiers.some((tier) => tier.id === selectedTier) && (
+                            <NativeSelectOption value={selectedTier} disabled>
+                              {selectedTierOption?.name ?? selectedTier}
+                            </NativeSelectOption>
+                          )}
+                          {otherTiers.map((tier) => (
+                            <NativeSelectOption key={tier.id} value={tier.id}>
+                              {tier.name}
+                            </NativeSelectOption>
+                          ))}
+                        </NativeSelect>
+                      </label>
+                    )}
                   </>
+                )}
+                {historicalSummary && (
+                  <p className="mt-2 text-center text-xs break-words text-muted-foreground">
+                    {historicalSummary}
+                  </p>
                 )}
                 {(saving || status) && (
                   <p

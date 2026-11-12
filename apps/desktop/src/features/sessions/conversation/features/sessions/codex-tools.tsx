@@ -4,13 +4,11 @@ import {
   ApiError,
   type SessionAction,
   type SessionActionBody,
-  type CodexOptions,
   type CodexQueue,
 } from "@agentkib/web-client";
 import { Button } from "@/components/ui/button";
 import { Disclosure, DisclosureSummary } from "@/components/ui/disclosure";
 import { Input } from "@/components/ui/input";
-import { NativeSelect } from "@/components/ui/native-select";
 import { Dialog } from "../../components/dialog";
 import { useSession } from "./session-context";
 import { webLayoutCopy } from "./web-layout-copy";
@@ -70,11 +68,7 @@ export function CodexTools({
   }
   const layout = webLayoutCopy[locale];
   const [queue, setQueue] = useState<CodexQueue>();
-  const [options, setOptions] = useState<CodexOptions>();
   const [name, setName] = useState("");
-  const [model, setModel] = useState("");
-  const [effort, setEffort] = useState("");
-  const [mode, setMode] = useState<"" | "default" | "plan">("");
   const [editing, setEditing] = useState("");
   const [text, setText] = useState("");
   const [queueError, setQueueError] = useState("");
@@ -84,10 +78,6 @@ export function CodexTools({
   useEffect(() => {
     setContext(undefined);
     setQueue(undefined);
-    setOptions(undefined);
-    setModel("");
-    setEffort("");
-    setMode("");
     setEditing("");
     setText("");
     setConfirmDelete(false);
@@ -138,15 +128,6 @@ export function CodexTools({
       }
     };
     void load();
-    if (!isClaude && !isDsh)
-      void client
-        .request<CodexOptions>("managed/options", undefined, abort.signal)
-        .then((value) => {
-          if (!abort.signal.aborted) setOptions(value);
-        })
-        .catch(() => {
-          if (!abort.signal.aborted) setOptions(undefined);
-        });
     const unsubscribe = subscribeSessionInvalidation(client, (id, domains) => {
       if (
         (!id || id === selected) &&
@@ -168,7 +149,6 @@ export function CodexTools({
     copy.queueTooLarge,
     copy.unavailableQueue,
     isClaude,
-    isDsh,
     queueReadable,
   ]);
   if (current?.agent !== "codex" && !isClaude && !isDsh) return null;
@@ -198,7 +178,6 @@ export function CodexTools({
     unarchive: copy.unarchive,
     delete: copy.delete,
     fork: copy.fork,
-    settings: copy.settings,
     attachments: copy.attachment,
   };
   const reason = (action: SessionAction) =>
@@ -358,61 +337,6 @@ export function CodexTools({
             )}
           </section>
           {isClaude && ownership}
-          {!isClaude && !isDsh && access?.device?.accessMode !== "full" && (
-            <section className="space-y-3 border-t pt-3">
-              <h3>{copy.settings}</h3>
-              <label className="block text-sm">
-                {copy.model}
-                <NativeSelect
-                  className="block w-full rounded border bg-background p-2"
-                  value={model}
-                  onChange={(e) => {
-                    setModel(e.target.value);
-                    setEffort("");
-                  }}
-                >
-                  <option value="">{copy.keep}</option>
-                  {options?.models?.map((item) => (
-                    <option key={item.id} value={item.id}>
-                      {item.name || item.id}
-                    </option>
-                  ))}
-                </NativeSelect>
-              </label>
-              <label className="block text-sm">
-                {copy.effort}
-                <NativeSelect
-                  className="block w-full rounded border bg-background p-2"
-                  value={effort}
-                  onChange={(e) => setEffort(e.target.value)}
-                >
-                  <option value="">{copy.keep}</option>
-                  {options?.models
-                    ?.find((item) => item.id === model)
-                    ?.efforts?.map((item) => (
-                      <option key={item}>{item}</option>
-                    ))}
-                </NativeSelect>
-              </label>
-              <label className="block text-sm">
-                {copy.mode}
-                <NativeSelect
-                  className="block w-full rounded border bg-background p-2"
-                  value={mode}
-                  onChange={(e) => setMode(e.target.value as "" | "default" | "plan")}
-                >
-                  <option value="">{copy.keep}</option>
-                  <option value="default">{copy.normal}</option>
-                  <option value="plan">{copy.plan}</option>
-                </NativeSelect>
-              </label>
-              {actionButton("settings", copy.apply, {
-                ...(model ? { model } : {}),
-                ...(effort ? { effort } : {}),
-                ...(mode ? { mode } : {}),
-              })}
-            </section>
-          )}
           {queueReadable && (
             <section className="space-y-3 border-t pt-3">
               <h3>{isClaude ? agentCopy.queue : copy.queue}</h3>

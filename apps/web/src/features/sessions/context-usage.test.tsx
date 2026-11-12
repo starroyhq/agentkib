@@ -133,6 +133,54 @@ describe("Claude context usage before its first continued turn", () => {
 });
 
 describe("native context usage", () => {
+  it.each(["zh-CN", "zh-TW", "en-US", "ja-JP"] as const)(
+    "labels a historical Codex report and its date in %s",
+    (locale) => {
+      state.locale = locale;
+      state.live = { ...state.live!, usage: { available: true, state: "stale" } };
+      const updatedAt = "2026-10-02T14:00:00Z";
+      render(
+        <ContextUsageGauge
+          fallback={{ ...report(29), state: "stale", historical: true, updatedAt }}
+        />,
+      );
+      expect(gauge()).toHaveAccessibleDescription(
+        `${contextUsageCopy[locale].historicalReport} · 29%`,
+      );
+      fireEvent.click(gauge());
+      const dialog = screen.getByRole("dialog");
+      expect(dialog).toHaveTextContent(contextUsageCopy[locale].historicalDetail);
+      expect(dialog).toHaveTextContent("29 / 100 (29%)");
+      expect(dialog.querySelector("time")).toHaveAttribute("datetime", updatedAt);
+    },
+  );
+
+  it("keeps historical usage out of compaction, newer native reports and restricted access", () => {
+    const fallback: ContextUsage = { ...report(29), state: "stale", historical: true };
+    state.live = { ...state.live!, usage: { available: true, state: "stale" } };
+    const view = render(<ContextUsageGauge fallback={fallback} />);
+    expect(gauge()).toHaveTextContent("29%");
+    state.live = { ...state.live!, activity: "compacting" };
+    view.rerender(<ContextUsageGauge fallback={fallback} />);
+    expect(gauge()).toHaveTextContent(contextUsageCopy["zh-CN"].compacting);
+    expect(gauge()).not.toHaveTextContent("29%");
+    state.live = { ...state.live!, activity: null, usage: report(40, 2, 1) };
+    view.rerender(<ContextUsageGauge fallback={fallback} />);
+    expect(gauge()).toHaveTextContent("40%");
+    state.live = {
+      ...state.live!,
+      usage: { available: false, state: "unavailable", reportGeneration: 1, reportId: 3 },
+    };
+    view.rerender(<ContextUsageGauge fallback={fallback} />);
+    expect(gauge()).not.toHaveTextContent("29%");
+    state.access = {
+      ...state.access!,
+      device: { ...state.access!.device!, advancedControl: false },
+    };
+    view.rerender(<ContextUsageGauge fallback={fallback} />);
+    expect(gauge()).toHaveTextContent(contextUsageCopy["zh-CN"].unavailable);
+  });
+
   it("renders valid zero without settings and opens the reported numerator and window", () => {
     state.live = { ...state.live!, usage: report(0) };
     render(<ContextUsageGauge />);

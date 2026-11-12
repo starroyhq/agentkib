@@ -1,9 +1,5 @@
 /* Embedded conversation only; host owns global theme, fonts and resets. */
 @layer components {
-  [data-slot="dialog-content"]:has(.session-settings-layout) {
-    max-width: 48rem;
-  }
-
   .agentkib-conversation .info {
     @apply flex items-start gap-3 rounded-xl border bg-muted/40 p-4 text-xs leading-6 text-muted-foreground;
   }

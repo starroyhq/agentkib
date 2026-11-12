@@ -3,6 +3,7 @@ import "@testing-library/jest-dom/vitest";
 import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import type { ContextUsage } from "@agentkib/web-client";
 import { ContextUsageGauge } from "./context-usage";
 import { useSession } from "./session-context";
 import { contextUsageCopy } from "./context-usage-copy";
@@ -47,6 +48,14 @@ beforeEach(() => {
 afterEach(cleanup);
 const ring = (locale = "en-US" as keyof typeof codexCopy) =>
   screen.getByRole("img", { name: codexCopy[locale].contextUsage });
+const historicalUsage: ContextUsage = {
+  historical: true,
+  available: true,
+  state: "stale",
+  usedTokens: 75584,
+  contextWindow: 258400,
+  updatedAt: "2026-07-15T06:02:16.051Z",
+};
 
 describe("context usage is an informational surface", () => {
   it.each(["claude-managed", "claude-follower", "codex-managed", "codex-follower"])(
@@ -257,6 +266,70 @@ describe("context hover report boundaries", () => {
     state = { ...state, selected: "different-session" };
     view.rerender(<ContextUsageGauge />);
     expect(ring()).not.toHaveAccessibleDescription(expect.stringContaining("20% used"));
+    expect(ring().querySelector("circle[pathLength]")).toBeNull();
+  });
+});
+
+describe("historical Codex context reports", () => {
+  beforeEach(() => {
+    state.current = { ...state.current!, agent: "codex" };
+    state.live = {
+      ...state.live!,
+      executionMode: "codex-managed",
+      usage: { available: true, state: "stale" },
+    };
+  });
+
+  it.each(["zh-CN", "zh-TW", "en-US", "ja-JP"] as const)(
+    "shows an explicitly historical fallback for an empty idle projection in %s",
+    async (locale) => {
+      state.locale = locale;
+      render(<ContextUsageGauge fallback={historicalUsage} />);
+      const indicator = ring(locale);
+      expect(indicator.querySelector("circle[pathLength]")).toHaveAttribute("opacity", "0.5");
+      expect(indicator).toHaveAccessibleDescription(
+        expect.stringContaining(contextUsageCopy[locale].historicalReport),
+      );
+      await userEvent.setup().hover(indicator);
+      const tooltip = await screen.findByRole("tooltip");
+      expect(tooltip).toHaveTextContent(contextUsageCopy[locale].historicalDetail);
+      expect(tooltip).toHaveTextContent("29%");
+      expect(tooltip).toHaveTextContent("75.6K / 258.4K");
+    },
+  );
+
+  it("prefers a fresh native report and never exposes history across a permission change", () => {
+    const { rerender } = render(<ContextUsageGauge fallback={historicalUsage} />);
+    expect(ring()).toHaveAccessibleDescription(expect.stringContaining(copy.historicalReport));
+    state.live = {
+      ...state.live!,
+      usage: { available: true, state: "ready", reportId: 1, usedTokens: 15, contextWindow: 100 },
+    };
+    rerender(<ContextUsageGauge fallback={historicalUsage} />);
+    expect(ring()).toHaveAccessibleDescription(expect.stringContaining("15% used"));
+    expect(ring()).not.toHaveAccessibleDescription(expect.stringContaining(copy.historicalReport));
+    state.live = {
+      ...state.live,
+      usage: { available: true, state: "stale" },
+    };
+    rerender(<ContextUsageGauge fallback={historicalUsage} />);
+    expect(ring()).not.toHaveAccessibleDescription(expect.stringContaining(copy.historicalReport));
+    expect(ring().querySelector("circle[pathLength]")).toBeNull();
+    state.access = {
+      ...state.access!,
+      device: { ...state.access!.device!, advancedControl: false },
+    };
+    rerender(<ContextUsageGauge fallback={historicalUsage} />);
+    expect(ring()).toHaveAccessibleDescription(copy.permission);
+  });
+
+  it("waits for a new native report after compaction", () => {
+    state.live = { ...state.live!, activity: "compacting" };
+    const { rerender } = render(<ContextUsageGauge fallback={historicalUsage} />);
+    expect(ring()).toHaveAccessibleDescription(copy.compactingDetail);
+    state.live = { ...state.live, activity: undefined };
+    rerender(<ContextUsageGauge fallback={historicalUsage} />);
+    expect(ring()).not.toHaveAccessibleDescription(expect.stringContaining(copy.historicalReport));
     expect(ring().querySelector("circle[pathLength]")).toBeNull();
   });
 });

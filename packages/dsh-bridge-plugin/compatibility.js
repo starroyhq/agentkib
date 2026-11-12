@@ -6,7 +6,7 @@
 // changing the protocol are in docs/agents/deepseek-harness.md.
 export const DSH_BRIDGE_COMPATIBILITY = Object.freeze({
   protocol: 1,
-  pluginVersion: "0.6.0",
+  pluginVersion: "0.7.0",
   minimumPluginVersion: "0.5.0",
   minimumDshVersion: "0.2.1-rc.5",
   // The upper bound of `engines.dsh` in package.json: from this version on DSH turns the plugin off.

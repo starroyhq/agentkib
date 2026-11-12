@@ -2681,6 +2681,8 @@ export class WebAccessService {
             };
             current?: Record<string, unknown>;
             selected?: Record<string, unknown>;
+            historicalSettings?: Record<string, unknown>;
+            historicalUsage?: unknown;
             applicationStatus?: unknown;
             defaults?: Record<string, unknown>;
             writable?: Record<string, unknown>;
@@ -2805,6 +2807,18 @@ export class WebAccessService {
         : {}),
     });
     const reason = this.optionalString(data.reason);
+    const codex = isCodexMode(data.executionMode);
+    const historicalModel = codex ? value(data.historicalSettings, "modelId") : undefined;
+    const historicalEffort = codex ? value(data.historicalSettings, "effort") : undefined;
+    const liveUsage = this.projectUsage(usage);
+    const historicalUsage = codex ? this.projectUsage(data.historicalUsage) : undefined;
+    const projectedUsage =
+      historicalUsage?.historical &&
+      (!liveUsage?.available ||
+        liveUsage.usedTokens === undefined ||
+        liveUsage.contextWindow === undefined)
+        ? historicalUsage
+        : liveUsage;
     return {
       available: data.available === true,
       ...(reason ? { reason } : {}),
@@ -2818,6 +2832,14 @@ export class WebAccessService {
         Number.isSafeInteger(data.revision) && Number(data.revision) >= 0 ? data.revision : 0,
       current: projectValues(current),
       ...(selected ? { selected: projectValues(selected) } : {}),
+      ...(historicalModel || historicalEffort
+        ? {
+            historicalSettings: {
+              ...(historicalModel ? { modelId: historicalModel } : {}),
+              ...(historicalEffort ? { effort: historicalEffort } : {}),
+            },
+          }
+        : {}),
       ...(["pending", "confirmed", "unknown"].includes(String(applicationStatus))
         ? { applicationStatus }
         : {}),
@@ -2877,7 +2899,7 @@ export class WebAccessService {
             })
           : [],
       },
-      ...(this.projectUsage(usage) ? { usage: this.projectUsage(usage) } : {}),
+      ...(projectedUsage ? { usage: projectedUsage } : {}),
     };
   }
   private projectGoal(raw: unknown, capabilities?: unknown) {
@@ -4327,12 +4349,13 @@ export class WebAccessService {
         if (policyId !== "workspace-write-on-request") this.fullAccess(hash);
         params.policyId = policyId;
       }
-      if (agent === "codex" && body.model !== undefined) params.model = this.field(body.model, 128);
-      if (agent === "codex" && body.effort !== undefined)
-        params.effort = this.field(body.effort, 32);
+      if (body.model !== undefined) params.model = this.field(body.model, 128);
+      if (body.effort !== undefined) params.effort = this.field(body.effort, 32);
       if (agent === "claude-code") {
-        if (body.model !== undefined) params.model = this.field(body.model, 128);
-        if (body.effort !== undefined) params.effort = this.field(body.effort, 32);
+        if (body.verifyStartupModel !== undefined) {
+          if (body.verifyStartupModel !== true) throw new HttpError(400, "invalid_input");
+          params.verifyStartupModel = true;
+        }
         if (body.permissionMode !== undefined) {
           if (!["default", "plan", "acceptEdits"].includes(String(body.permissionMode)))
             throw new HttpError(400, "unsupported_permission_mode");
@@ -4442,6 +4465,7 @@ export class WebAccessService {
           "unsupported-codex-cli-version",
           "unsupported-model",
           "unsupported-effort",
+          "claude-startup-models-unavailable",
           "session-managed-by-another-runtime",
           "pause-original-goal-before-handoff",
           "control-outcome-unconfirmed",
@@ -4452,6 +4476,9 @@ export class WebAccessService {
           "remote-environment-not-supported",
           "dsh-runtime-offline",
           "dsh-create-ambiguous",
+          "dsh-models-unavailable",
+          "dsh-create-model-selection-unsupported",
+          "dsh-create-model-not-applied",
           // Starting DeepSeek Harness in the background, and a session another DSH holds.
           "dsh-start-failed",
           "dsh-version-unsupported",
@@ -5810,9 +5837,22 @@ export class WebAccessService {
       );
       let result: unknown;
       if (path === "/codex/session-settings" || path === "/managed/settings") {
-        const settings = await this.runtime({ operation: "settings-state", sessionId });
+        const settings = await this.runtime({
+          operation: "settings-state",
+          sessionId,
+          ...(path === "/codex/session-settings" ? { includeHistorical: true } : {}),
+        });
         this.fullAccess(hash, "advancedControl");
-        const usage = await this.runtime({ operation: "usage", sessionId });
+        const usage = await this.runtime({ operation: "usage", sessionId }).catch((error) => {
+          // The optional live usage read cannot take down already available history.
+          if (
+            !settings ||
+            typeof settings !== "object" ||
+            (!("historicalSettings" in settings) && !("historicalUsage" in settings))
+          )
+            throw error;
+          return undefined;
+        });
         result = { sessionId, ...this.projectSettings(settings, usage) };
       } else if (path === "/codex/goals" || path === "/managed/goals") {
         const goal = await this.runtime({ operation: "goal", sessionId });
@@ -6000,10 +6040,22 @@ export class WebAccessService {
       return this.json(res, 200, result);
     }
     if (path === "/managed/options") {
-      const permission = this.grant(hash).manage === true ? "manage" : "settings";
-      this.grant(hash, permission);
+      const requestedWorkspace = url.searchParams.get("workspaceId");
+      const workspaceId = requestedWorkspace === null ? undefined : this.field(requestedWorkspace);
+      const permission =
+        workspaceId !== undefined || this.grant(hash).manage === true ? "manage" : "settings";
+      const caller = this.grant(hash, permission);
+      const bootId = this.bootId;
       const agent = managedAgentOf(url.searchParams.get("agent") ?? "codex");
       if (!agent) throw new HttpError(400, "invalid_agent");
+      if (workspaceId) {
+        if (this.options.acceptanceSessionId)
+          throw new HttpError(403, "session_control_not_allowed");
+        if (!(await this.workspaceAllowed(workspaceId, caller)))
+          throw new HttpError(403, "workspace_not_authorized");
+        this.grant(hash, permission);
+        if (this.bootId !== bootId) throw new HttpError(409, "stale_boot");
+      }
       const managedRequest = (() => {
         switch (agent) {
           case "codex":
@@ -6020,21 +6072,33 @@ export class WebAccessService {
       const options =
         agent === "deepseek-harness"
           ? this.options.verifiedDshFollower === true
-            ? await this.runtime({ operation: "dsh-options" })
+            ? await this.runtime({
+                operation: "dsh-options",
+                ...(workspaceId ? { includeModels: true } : {}),
+              })
             : { available: false, reason: "unsupported_host" }
           : managedRequest
-            ? await managedRequest({ operation: "options" })
+            ? await managedRequest({
+                operation: "options",
+                ...(workspaceId && agent === "claude-code" && this.options.verifiedClaudeManaged
+                  ? { workspaceId }
+                  : {}),
+              })
             : { available: false, reason: "unsupported_host" };
       const device = this.grant(hash, permission);
       const workspaces = device.manage === true ? await this.registeredWorkspaces() : [];
-      this.grant(hash, permission);
+      const current = this.grant(hash, permission);
+      const allowed = workspaces.filter(
+        (w) => this.isFullAccess(current) || this.config.allowedWorkspaceIds?.includes(w.id),
+      );
+      if (workspaceId) {
+        if (this.bootId !== bootId) throw new HttpError(409, "stale_boot");
+        if (!allowed.some((workspace) => workspace.id === workspaceId))
+          throw new HttpError(403, "workspace_not_authorized");
+      }
       return this.json(res, 200, {
         ...(options as object),
-        workspaces: workspaces
-          .filter(
-            (w) => this.isFullAccess(device) || this.config.allowedWorkspaceIds?.includes(w.id),
-          )
-          .map(({ id, name }) => ({ id, name })),
+        workspaces: allowed.map(({ id, name }) => ({ id, name })),
       });
     }
     if (path === "/managed/capabilities" || path === "/managed/inspect") {

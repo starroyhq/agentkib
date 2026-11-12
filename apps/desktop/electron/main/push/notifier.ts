@@ -426,6 +426,8 @@ export class PushNotifier {
           kind: "activity",
           event: "start",
           contentState: { ...content },
+          // Once per stretch of work, and it should appear while the work is fresh.
+          priority: 10,
           staleDate: seconds(now + STALE_AFTER_MS),
         });
         if (result.delivered)

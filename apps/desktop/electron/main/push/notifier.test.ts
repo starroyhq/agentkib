@@ -226,6 +226,7 @@ describe("push Live Activity", () => {
         kind: "activity",
         event: "start",
         contentState: { running: 1, waiting: 0, title: "Task a", startedAt },
+        priority: 10,
         staleDate: seconds(test.now() + 20 * MINUTE),
       },
     ]);

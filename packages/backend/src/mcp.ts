@@ -92,6 +92,7 @@ const AGENTS = new Set([
   "grok-build",
   "antigravity",
   "deepseek-harness",
+  "devin",
 ]);
 
 export class McpManager {

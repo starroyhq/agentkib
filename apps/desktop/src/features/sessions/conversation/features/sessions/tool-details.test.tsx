@@ -191,25 +191,26 @@ describe("tool detail row", () => {
 });
 
 describe("turn file changes", () => {
-  it("merges edits per file and opens each preview", () => {
-    const edit = (id: string, path: string, added: number, removed: number, preview?: string) => ({
-      id,
-      kind: "tool-summary",
-      tool_status: "completed",
-      tool: {
-        kind: "edit" as const,
-        content: [
-          {
-            type: "diff" as const,
-            path,
-            change: "update" as const,
-            added,
-            removed,
-            ...(preview ? { preview } : {}),
-          },
-        ],
-      },
-    });
+  const edit = (id: string, path: string, added: number, removed: number, preview?: string) => ({
+    id,
+    kind: "tool-summary",
+    tool_status: "completed",
+    tool: {
+      kind: "edit" as const,
+      content: [
+        {
+          type: "diff" as const,
+          path,
+          change: "update" as const,
+          added,
+          removed,
+          ...(preview ? { preview } : {}),
+        },
+      ],
+    },
+  });
+
+  it("merges recorded edits per file and opens each preview", () => {
     render(
       <TurnFileChanges
         locale="en-US"
@@ -226,6 +227,7 @@ describe("turn file changes", () => {
       name: "Edited 2 files, 6 lines added, 1 line removed",
     });
     const section = heading.closest("section")!;
+    expect(section).toHaveTextContent("Recorded edits");
     expect(section).not.toHaveTextContent("src/c.ts");
     const toggle = within(section).getByRole("button", {
       name: "Show diff: src/a.ts, 5 lines added, 1 line removed",
@@ -237,6 +239,52 @@ describe("turn file changes", () => {
     // A file without a preview is listed but not a button.
     expect(within(section).queryByRole("button", { name: /src\/b\.ts/ })).toBeNull();
     expect(within(section).getByText("src/b.ts")).toBeVisible();
+  });
+
+  it("shows only the first three files until expanded and preserves open previews", () => {
+    const events = ["a", "b", "c", "d", "e"].map((id) => edit(id, `${id}.ts`, 1, 0, `+${id}`));
+    const { rerender } = render(<TurnFileChanges locale="en-US" events={events} partial />);
+    expect(screen.getByText("Recorded edits · Partial history")).toBeVisible();
+    expect(screen.getAllByRole("listitem")).toHaveLength(3);
+    const more = screen.getByRole("button", { name: "Show 2 more files" });
+    expect(more).toHaveAttribute("aria-expanded", "false");
+    expect(screen.queryByText("d.ts")).toBeNull();
+
+    fireEvent.click(more);
+    expect(screen.getAllByRole("listitem")).toHaveLength(5);
+    fireEvent.click(screen.getByRole("button", { name: /^Show diff: d\.ts/ }));
+    expect(screen.getByText("+d")).toBeVisible();
+
+    rerender(<TurnFileChanges locale="en-US" events={events} />);
+    expect(screen.queryByText(/Partial history/)).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "Show fewer files" }));
+    expect(screen.getAllByRole("listitem")).toHaveLength(3);
+    fireEvent.click(screen.getByRole("button", { name: "Show 2 more files" }));
+    expect(screen.getByRole("button", { name: /^Hide diff: d\.ts/ })).toHaveAttribute(
+      "aria-expanded",
+      "true",
+    );
+  });
+
+  it("counts applied edits and leaves unconfirmed patch previews with their tool", () => {
+    const pending = ["failed", "declined", "running", "inProgress", "unknown", undefined];
+    render(
+      <TurnFileChanges
+        locale="en-US"
+        events={[
+          { ...edit("a", "applied.ts", 1, 0), tool_status: "succeeded" },
+          ...pending.map((tool_status, index) => ({
+            ...edit(`pending-${index}`, `pending-${index}.ts`, 2, 0, "+pending"),
+            tool_status,
+          })),
+        ]}
+      />,
+    );
+    expect(
+      screen.getByRole("heading", { name: "Edited 1 file, 1 line added, 0 lines removed" }),
+    ).toBeVisible();
+    expect(screen.getByText("applied.ts")).toBeVisible();
+    expect(screen.queryByText(/^pending-/)).toBeNull();
   });
 
   it("renders nothing without file edits", () => {

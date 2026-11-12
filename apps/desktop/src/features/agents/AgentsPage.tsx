@@ -37,6 +37,7 @@ const agentKinds: AgentKind[] = [
   "hermes",
   "grok-build",
   "deepseek-harness",
+  "devin",
 ];
 
 export function AgentsPage({

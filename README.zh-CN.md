@@ -22,7 +22,7 @@
 
 [![AgentKib 首页：待处理事项、最近会话和最近工作区](docs/assets/agentkib-home.zh-CN.png)](docs/assets/agentkib-home.zh-CN.png)
 
-AgentKib 把电脑上的 Coding Agent 汇集到一个桌面应用里：Codex、Claude Code、Cursor、OpenCode、Antigravity、OpenClaw、Hermes、Grok Build 和 DeepSeek Harness。你可以查看并继续它们的会话，把对话从一个 Agent 交给另一个，在手机上跟进和操控会话，并维护指令、Skills、MCP 服务以及各 Agent 的 CLI 本身。
+AgentKib 把电脑上的 Coding Agent 汇集到一个桌面应用里：Codex、Claude Code、Cursor、OpenCode、Antigravity、OpenClaw、Hermes、Grok Build、DeepSeek Harness 和 Devin。你可以查看并继续它们的会话，把对话从一个 Agent 交给另一个，在手机上跟进和操控会话，并维护指令、Skills、MCP 服务以及各 Agent 的 CLI 本身。
 
 所有处理都在你的电脑上进行。发现、诊断、历史阅读和交接不需要 AgentKib 账号，也不需要模型 API；账号只用于可选的远程中继。**KIB** 代表 **Knowledge & Instruction Base（知识与指令底座）**。
 
@@ -69,6 +69,7 @@ AgentKib 把电脑上的 Coding Agent 汇集到一个桌面应用里：Codex、C
 | OpenClaw | 只读 | — | 实验性 | 支持 | 支持 |
 | Hermes | 只读 | — | 实验性 | 支持 | 支持 |
 | Grok Build | 只读 | — | — | 支持 | 支持 |
+| Devin | 只读，含 CLI 与 Desktop | — | 交接文件 | 支持 | 检测 / 官方安装器 |
 | DeepSeek Harness（Beta） | 经运行中的 DSH（macOS） | 经桥接插件（macOS） | 交接文件 | 仅诊断 | — |
 
 DeepSeek Harness 支持仍在开发中，尚未包含在正式版里。各项能力的版本要求和限制见[功能与兼容矩阵](docs/FEATURES.md)和[会话互通矩阵](docs/sessions/interoperability.md)。

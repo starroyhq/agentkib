@@ -3,6 +3,7 @@ import { isDeepStrictEqual } from "node:util";
 import { createContextUsageGeneration, projectContextUsage } from "./context-usage";
 import { codexItemTool, type ToolContext } from "./conversation-tools";
 import { codexErrorText, codexTurnErrorEvent } from "./codex-turn-error";
+import { codexTurnEndEvent, codexTurnMeta } from "./codex-turn-end";
 
 type JsonObject = Record<string, unknown>;
 type ManagedRecord = JsonObject & {
@@ -250,7 +251,7 @@ export class ManagedCodexState {
         this.#turnError = null;
         // The native turn reports its duration; history readers attach the same
         // value to the turn's last item, so the live row carries it too.
-        const meta = turnMeta(params.turn);
+        const meta = codexTurnMeta(params.turn);
         const last = this.#lastTurnEvent;
         this.#lastTurnEvent = null;
         // A failed turn ends with the CLI's own error text, which the rollout keeps as well.
@@ -260,8 +261,14 @@ export class ManagedCodexState {
             ...this.#changed(runtimeChanged),
             event: meta ? { ...failure, turn_meta: meta } : failure,
           };
-        if (meta && last?.turn_id === id)
-          return { ...this.#changed(runtimeChanged), event: { ...last, turn_meta: meta } };
+        if (meta)
+          return {
+            ...this.#changed(runtimeChanged),
+            event:
+              last?.turn_id === id
+                ? { ...last, turn_meta: meta }
+                : codexTurnEndEvent(id, meta, new Date().toISOString()),
+          };
         break;
       }
       case "error": {
@@ -508,8 +515,11 @@ export class ManagedCodexState {
       }
       const failure = turnErrorEvent(turn, null);
       if (failure) events.push(failure);
-      const meta = turnMeta(turn);
-      if (meta && events.length > first) events[events.length - 1]!.turn_meta = meta;
+      const meta = codexTurnMeta(turn);
+      if (meta && typeof turn.id === "string" && turn.id) {
+        if (events.length > first) events[events.length - 1]!.turn_meta = meta;
+        else events.push(codexTurnEndEvent(turn.id, meta, null));
+      }
     }
     // History reads can finish after newer lifecycle notifications were applied.
     // Those events, including compaction, own the current live state.
@@ -1514,28 +1524,4 @@ function turnErrorEvent(turn: JsonObject, reported: string | null): JsonObject |
   const text = failed ? (codexErrorText(turn.error) ?? reported) : null;
   // Stamped like the other live rows: `completedAt` has whole seconds and can precede them.
   return text ? codexTurnErrorEvent(turn.id, text, new Date().toISOString()) : undefined;
-}
-
-/**
- * The `turn_meta` of a finished app-server turn, matching what the rollout
- * reader derives from task_complete / turn_aborted. Unfinished turns have none.
- */
-function turnMeta(turn: unknown): JsonObject | undefined {
-  if (!isObject(turn)) return undefined;
-  const outcome =
-    turn.status === "completed"
-      ? turn.error !== undefined && turn.error !== null
-        ? "failed"
-        : "completed"
-      : turn.status === "interrupted"
-        ? "aborted"
-        : turn.status === "failed"
-          ? "failed"
-          : undefined;
-  if (!outcome) return undefined;
-  const meta: JsonObject = { outcome };
-  const duration = turn.durationMs;
-  if (typeof duration === "number" && Number.isSafeInteger(duration) && duration >= 0)
-    meta.duration_ms = duration;
-  return meta;
 }

@@ -31,7 +31,7 @@ export function SessionHistoryContent({
   selected: ConversationSessionSummary;
   history: ReturnType<typeof useSessionHistory>;
   sessionKey: string;
-  loadEarlier: () => void;
+  loadEarlier: (turnId?: string) => void;
   viewportRef: RefObject<HTMLElement | null>;
 }) {
   const { tr, formatDateTime } = useI18n();
@@ -175,7 +175,7 @@ export function SessionHistoryContent({
               variant="outline"
               className="self-center"
               disabled={history.loadingEarlier}
-              onClick={loadEarlier}
+              onClick={() => loadEarlier()}
             >
               {tr(history.loadingEarlier ? "sessions.loadingHistory" : "sessions.loadEarlier")}
             </Button>
@@ -189,6 +189,9 @@ export function SessionHistoryContent({
             events={history.events}
             sessionKey={sessionKey}
             incomplete={history.warnings.length > 0}
+            historyDetailTurnId={history.historyDetailTurnId}
+            loadingEarlier={history.loadingEarlier}
+            loadEarlierDetails={loadEarlier}
           />
           <HistoryReadState
             session={selected}

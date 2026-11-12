@@ -36,6 +36,7 @@ const agentOrder: AgentKind[] = [
   "hermes",
   "grok-build",
   "deepseek-harness",
+  "devin",
 ];
 
 export function groupCatalogAssets(assets: CatalogAsset[]): CatalogAssetGroup[] {

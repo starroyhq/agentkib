@@ -24,6 +24,7 @@ const targetAgent = z.enum([
   "hermes",
   "grok-build",
   "deepseek-harness",
+  "devin",
 ]);
 const launchRequest = z.discriminatedUnion("mode", [
   z.object({

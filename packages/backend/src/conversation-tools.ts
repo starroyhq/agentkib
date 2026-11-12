@@ -832,6 +832,120 @@ export function codexItemTool(item: unknown, context: ToolContext = {}): Normali
   }
 }
 
+const ACP_TOOL_KINDS = new Set<string>([
+  "read",
+  "edit",
+  "delete",
+  "move",
+  "search",
+  "execute",
+  "think",
+  "fetch",
+  "switch_mode",
+  "other",
+]);
+/** Text blocks of ACP tool content (`{type: "content", content: {type: "text"}}`). */
+function acpTexts(blocks: JsonRecord[]): string[] {
+  return blocks.flatMap((block) =>
+    block.type === "content" &&
+    isRecord(block.content) &&
+    block.content.type === "text" &&
+    typeof block.content.text === "string"
+      ? [block.content.text]
+      : [],
+  );
+}
+/**
+ * An ACP `ToolCall` and its last `ToolCallUpdate`, as an agent's history keeps them (Devin CLI
+ * stores both). `name` is the native tool name the model called. Like the other sources, reads,
+ * searches and fetches show only what they targeted; commands keep their output tail and edits
+ * their diffs, all redacted and bounded.
+ */
+export function acpToolCall(
+  call: unknown,
+  update: unknown,
+  name: string,
+  context: ToolContext = {},
+): NormalizedToolCall {
+  const record = isRecord(call) ? call : {};
+  const last = isRecord(update) ? update : {};
+  const declared = text(record.kind);
+  const kind = (
+    declared && ACP_TOOL_KINDS.has(declared) ? declared : "other"
+  ) as ConversationToolKind;
+  const status = toolStatus(last.status ?? record.status);
+  const input = isRecord(record.rawInput) ? record.rawInput : {};
+  const blocks = [...arrayOf(record.content), ...arrayOf(last.content)].filter(isRecord);
+  const texts = acpTexts(blocks);
+  const detail: ConversationToolDetail = {
+    kind,
+    title: visible(record.title) ? firstLine(redactToolText(record.title)) : undefined,
+    locations: locations(
+      arrayOf(record.locations)
+        .filter(isRecord)
+        .flatMap((entry) =>
+          visible(entry.path)
+            ? [
+                {
+                  path: displayToolPath(entry.path, context),
+                  ...(typeof entry.line === "number" && Number.isSafeInteger(entry.line)
+                    ? { line: entry.line }
+                    : {}),
+                },
+              ]
+            : [],
+        ),
+    ),
+  };
+  const mcp = claudeMcpName(name);
+  if (mcp) {
+    const server = nameOf(mcp.server, "");
+    const tool = nameOf(mcp.tool, "");
+    detail.mcp = { server, tool };
+    detail.title ??= [server, tool].filter(Boolean).join(" · ");
+  }
+  // ACP titles are often generic ("Ran rg", "Read file"); a command or path says more.
+  if (kind === "execute") {
+    const command = boundedCommand(text(input.command) ?? "");
+    detail.title = firstLine(command.text) || detail.title;
+    detail.content = [terminal(command, outputTail(texts.join("\n")), null)];
+  } else if (kind === "edit" || kind === "delete" || kind === "move") {
+    const sources: DiffSource[] = [];
+    for (const block of blocks) {
+      if (block.type !== "diff" || !visible(block.path)) continue;
+      if (sources.length >= TOOL_DETAIL_LIMITS.diffFiles) break;
+      const after = text(block.newText) ?? "";
+      const before = text(block.oldText);
+      const lines =
+        before === null ? prefixed(after, "+") : after ? diffStrings(before, after) : [];
+      const counts =
+        before !== null && !after ? { added: 0, removed: lineCount(before) } : countMarked(lines);
+      sources.push({
+        path: block.path,
+        change: before === null ? "add" : after ? "update" : "delete",
+        ...counts,
+        lines: before !== null && !after ? prefixed(before, "-") : lines,
+      });
+    }
+    const budget = new DiffBudget();
+    const content: ConversationToolContent[] = sources.map((source) =>
+      diffContent(source, context, budget),
+    );
+    if (content.length === 1 && content[0]!.type === "diff") detail.title = content[0]!.path;
+    if (status === "failed") content.push(...textContent("output", joinedTexts(texts)));
+    detail.content = content;
+  } else if (kind === "read" || kind === "search" || kind === "fetch") {
+    if (kind === "read" && detail.locations?.length) detail.title = detail.locations[0]!.path;
+    // A failed lookup shows its error; successful ones never copy what they returned.
+    if (status === "failed") detail.content = textContent("output", joinedTexts(texts));
+  } else
+    detail.content = [
+      ...textContent("input", jsonPreview(record.rawInput)),
+      ...textContent("output", joinedTexts(texts)),
+    ];
+  return { name: nameOf(name, "tool"), status, durationMs: null, detail: finalizeDetail(detail) };
+}
+
 /** Bounded, redacted parts of a Claude Code tool result, kept until the call is seen. */
 export interface ClaudeToolResult {
   output?: string;

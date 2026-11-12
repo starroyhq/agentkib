@@ -31,6 +31,7 @@ const supported = [
   "antigravity",
   "cursor",
   "deepseek-harness",
+  "devin",
 ];
 export interface NativeSession {
   native_ref: string;
@@ -97,6 +98,7 @@ export function sessionWorkspaceRoot(
         "opencode.jsonc",
         ".grok",
         ".dsh",
+        ".devin",
       ].some((marker) => exists(path.join(current, marker)))
     )
       return current;
@@ -150,6 +152,12 @@ export class SessionStore {
     return !!this.sql.one(
       "SELECT 1 FROM schema_meta WHERE key=?",
       `codex_session_classification_pending:${id}`,
+    );
+  }
+  codexClassificationStale(id: string): boolean {
+    return !!this.sql.one(
+      "SELECT 1 FROM schema_meta WHERE key=?",
+      `codex_session_classification_stale:${id}`,
     );
   }
   get(id: string) {

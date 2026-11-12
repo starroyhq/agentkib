@@ -27,6 +27,7 @@ type ReadEvent = {
   message_phase?: string | null;
   cli_output?: boolean;
   attachment_count?: number;
+  turn_meta?: { outcome?: "completed" | "aborted" | "failed" };
 };
 export interface ReadStateClient {
   readState(id: string, signal?: AbortSignal): Promise<{ readState: SessionReadState }>;
@@ -249,6 +250,51 @@ function eventFingerprint(value: unknown): string {
 }
 function persisted(events: readonly ReadEvent[]) {
   return events.filter((event) => !event.ephemeral);
+}
+
+/** Match a real transcript outcome before using its folded status as reading proof. */
+export function transcriptRepresentsResult(
+  events: readonly ReadEvent[],
+  result: SessionReadState["latestResult"] | undefined,
+): boolean {
+  if (!result?.turnId || result.outcome === "ended") return false;
+  const expected = result.outcome === "cancelled" ? "aborted" : result.outcome;
+  const outcomes = events
+    .filter((event) => event.turn_id === result.turnId && event.turn_meta?.outcome)
+    .map((event) => event.turn_meta!.outcome);
+  return outcomes.length > 0 && outcomes.every((outcome) => outcome === expected);
+}
+
+function resultBody(event: ReadEvent): boolean {
+  return (
+    event.kind === "agent-message" &&
+    event.message_phase !== "commentary" &&
+    (!!event.content?.trim() || !!event.attachment_count || event.cli_output === true)
+  );
+}
+
+function displayedResultEvent(
+  result: SessionReadState["latestResult"],
+  turnEvents: readonly ReadEvent[],
+  exactItem: ReadEvent | undefined,
+  hasTerminal: boolean,
+): ReadEvent | undefined {
+  const newestFirst = [...turnEvents].reverse();
+  if (hasTerminal && result?.outcome === "cancelled") return undefined;
+  if (hasTerminal && result?.outcome === "failed")
+    return newestFirst.find(
+      (event) =>
+        resultBody(event) &&
+        event.cli_output === true &&
+        (event.turn_meta?.outcome === "failed" || event.id === `codex-turn-error:${result.turnId}`),
+    );
+  if (hasTerminal) {
+    const final = newestFirst.find(
+      (event) => resultBody(event) && event.message_phase === "final_answer",
+    );
+    if (final) return final;
+  }
+  return exactItem && resultBody(exactItem) ? exactItem : newestFirst.find(resultBody);
 }
 /** Cache rows alone are never proof: compare them with a newly loaded persisted snapshot. */
 export function readSnapshotMatches(
@@ -526,28 +572,31 @@ export function useVisibleReadState(options: {
       )
         return;
       const result = state.latestResult;
-      const resultBody = (event: ReadEvent) =>
-        event.kind === "agent-message" &&
-        event.message_phase !== "commentary" &&
-        (!!event.content?.trim() || !!event.attachment_count || event.cli_output === true);
       const exactItem = result?.itemId
         ? observation.events!.find((event) => event.id === result.itemId)
         : undefined;
-      const resultEvent =
-        exactItem && resultBody(exactItem)
-          ? exactItem
-          : result?.turnId
-            ? [...observation.events!]
-                .reverse()
-                .find((event) => event.turn_id === result.turnId && resultBody(event))
-            : undefined;
+      const turnEvents = result?.turnId
+        ? observation.events!.filter((event) => event.turn_id === result.turnId)
+        : [];
+      const hasTerminal = transcriptRepresentsResult(current.events, result);
+      const resultEvent = displayedResultEvent(result, turnEvents, exactItem, hasTerminal);
       const nodes = [...viewport.querySelectorAll<HTMLElement>("[data-event-id]")];
       const marker = [...viewport.querySelectorAll<HTMLElement>("[data-read-result]")].find(
         (node) => node.dataset.readResult === (result?.id ?? "threadStart"),
       );
+      const terminalMarker = hasTerminal
+        ? [...viewport.querySelectorAll<HTMLElement>("[data-terminal-turn-id]")]
+            .reverse()
+            .find(
+              (node) =>
+                node.dataset.terminalTurnId === result?.turnId &&
+                node.dataset.terminalOutcome ===
+                  (result?.outcome === "cancelled" ? "aborted" : result?.outcome),
+            )
+        : undefined;
       const target = resultEvent
         ? nodes.find((node) => node.dataset.eventId === resultEvent.id)
-        : marker;
+        : (terminalMarker ?? marker);
       // Known but unloaded items cannot be replaced with metadata. Tool/thinking-only
       // turns instead require their actual terminal marker to enter the viewport.
       if (result?.itemId && !exactItem) return;

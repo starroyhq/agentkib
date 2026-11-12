@@ -21,12 +21,27 @@ export type ReadCheckpoint = {
   lastTurnId: string | null;
 };
 type Source = {
-  revision: number;
   baseline_done: number;
   checkpoint: string | null;
-  latest_id: string | null;
 };
-type ResultRow = { sequence: number; result: string; baseline: number; position: number | null };
+type ReadProjection = {
+  key: string;
+  revision: number;
+  baseline_done: number;
+  read_sequence: number | null;
+  manual_unread: number | null;
+  latest_result: string | null;
+  first_unread: string | null;
+};
+const projectionColumns = `source.key, source.revision, source.baseline_done,
+  cursor.read_sequence, cursor.manual_unread, latest.result AS latest_result,
+  (SELECT result FROM conversation_read_results
+    WHERE key=source.key AND baseline=0 AND sequence>COALESCE(cursor.read_sequence,0)
+    ORDER BY sequence LIMIT 1) AS first_unread`;
+const projectionJoins = `LEFT JOIN conversation_read_cursors cursor
+    ON cursor.key=source.key AND cursor.reader_scope=?
+  LEFT JOIN conversation_read_results latest
+    ON latest.key=source.key AND latest.result_id=source.latest_id`;
 const pendingObservations = new Map<string, Map<string, ConversationReadResult>>();
 
 function migrate(db: DatabaseSync): void {
@@ -135,7 +150,7 @@ export class ReadStateLedger {
         (db) =>
           db
             .prepare("SELECT baseline_done,checkpoint FROM conversation_read_sources WHERE key=?")
-            .get(key) as Pick<Source, "baseline_done" | "checkpoint"> | undefined,
+            .get(key) as Source | undefined,
         undefined,
       );
       if (
@@ -219,7 +234,78 @@ export class ReadStateLedger {
 
   get(key: string, scope: string): ConversationReadState {
     const state = this.#read((db) => this.#project(db, key, scope), this.#unknown());
-    return pendingObservations.has(`${pathIdentity(this.dataDir)}\0${key}`)
+    return this.#withPending(state, key, pathIdentity(this.dataDir));
+  }
+
+  /** Catalog rows share one read transaction and a bounded number of SQL statements. */
+  catalogStates(
+    keys: ReadonlyMap<string, boolean>,
+    scope: string,
+  ): Map<string, ConversationReadState> {
+    if (!keys.size) return new Map();
+    const directory = pathIdentity(this.dataDir);
+    return this.#read((db) => {
+      const rows = db
+        .prepare(
+          `SELECT ${projectionColumns}
+            FROM json_each(?) requested
+            JOIN conversation_read_sources source ON source.key=requested.value
+            ${projectionJoins}`,
+        )
+        .all(JSON.stringify([...keys.keys()]), scope) as ReadProjection[];
+      const states = new Map(
+        rows.map((row) => [
+          row.key,
+          this.#withPending(this.#state(row, scope), row.key, directory),
+        ]),
+      );
+      const nativeKeys = [...keys].filter(([, native]) => native).map(([key]) => key);
+      if (!nativeKeys.length) return states;
+
+      // A ledger from an earlier version may have neither native receipt table.
+      const tables = new Set(
+        db
+          .prepare(
+            "SELECT name FROM sqlite_master WHERE name IN ('conversation_native_read_receipts','conversation_native_read_handoffs')",
+          )
+          .all()
+          .map((row) => row.name),
+      );
+      if (!tables.has("conversation_native_read_receipts")) return states;
+      const hasHandoffs = tables.has("conversation_native_read_handoffs");
+      const joins = hasHandoffs
+        ? "LEFT JOIN conversation_native_read_handoffs handoff ON handoff.key=receipt.key AND handoff.reader_scope=?"
+        : "";
+      const receipts = db
+        .prepare(
+          `SELECT receipt.key, receipt.fingerprint, receipt.snapshot, ${hasHandoffs ? "handoff.fingerprint" : "NULL"} AS applied
+            FROM json_each(?) requested
+            JOIN conversation_native_read_receipts receipt ON receipt.key=requested.value
+            ${joins}`,
+        )
+        .all(
+          ...(hasHandoffs ? [JSON.stringify(nativeKeys), scope] : [JSON.stringify(nativeKeys)]),
+        ) as Array<{ key: string; fingerprint: string; snapshot: string; applied: string | null }>;
+      for (const receipt of receipts) {
+        const state = JSON.parse(receipt.snapshot) as ConversationReadState;
+        if (state.status === "unread" && receipt.fingerprint !== receipt.applied)
+          states.set(receipt.key, {
+            ...state,
+            source: "agentkib",
+            freshness: "stale",
+            version: null,
+          });
+      }
+      return states;
+    }, new Map());
+  }
+
+  #withPending(
+    state: ConversationReadState,
+    key: string,
+    directory: string,
+  ): ConversationReadState {
+    return pendingObservations.has(`${directory}\0${key}`)
       ? { ...state, freshness: "stale" }
       : state;
   }
@@ -236,38 +322,27 @@ export class ReadStateLedger {
   }
 
   #project(db: DatabaseSync, key: string, scope: string): ConversationReadState {
-    const source = db
-      .prepare("SELECT revision,baseline_done,latest_id FROM conversation_read_sources WHERE key=?")
-      .get(key) as Source | undefined;
-    if (!source) return this.#unknown();
-    const cursor = db
+    const row = db
       .prepare(
-        "SELECT read_sequence,manual_unread FROM conversation_read_cursors WHERE key=? AND reader_scope=?",
+        `SELECT ${projectionColumns} FROM conversation_read_sources source ${projectionJoins} WHERE source.key=?`,
       )
-      .get(key, scope) as { read_sequence: number; manual_unread: number } | undefined;
-    const read = cursor?.read_sequence ?? 0;
-    const latest = source.latest_id
-      ? (db
-          .prepare(
-            "SELECT sequence,result,baseline FROM conversation_read_results WHERE key=? AND result_id=?",
-          )
-          .get(key, source.latest_id) as ResultRow | undefined)
-      : undefined;
-    const unread = db
-      .prepare(
-        "SELECT result FROM conversation_read_results WHERE key=? AND baseline=0 AND sequence>? ORDER BY sequence LIMIT 1",
-      )
-      .get(key, read) as { result: string } | undefined;
-    const result = unread ? (JSON.parse(unread.result) as ConversationReadResult) : null;
-    const manual = cursor?.manual_unread === 1;
-    const reliable = source.baseline_done === 1 || unread !== undefined || manual;
+      .get(scope, key) as ReadProjection | undefined;
+    return row ? this.#state(row, scope) : this.#unknown();
+  }
+
+  #state(row: ReadProjection, scope: string): ConversationReadState {
+    const read = row.read_sequence ?? 0;
+    const unread = row.first_unread;
+    const result = unread !== null ? (JSON.parse(unread) as ConversationReadResult) : null;
+    const manual = row.manual_unread === 1;
+    const reliable = row.baseline_done === 1 || unread !== null || manual;
     return {
       source: "agentkib",
-      status: unread || manual ? "unread" : reliable ? "read" : "unknown",
+      status: unread !== null || manual ? "unread" : reliable ? "read" : "unknown",
       freshness: reliable ? "current" : "stale",
       version: reliable
         ? `agentkib:${createHash("sha256")
-            .update(JSON.stringify([key, scope, source.revision, read, manual]))
+            .update(JSON.stringify([row.key, scope, row.revision, read, manual]))
             .digest("base64url")}`
         : null,
       firstUnread: manual
@@ -275,7 +350,10 @@ export class ReadStateLedger {
         : result
           ? { type: "result", resultId: result.id, turnId: result.turnId }
           : null,
-      latestResult: latest ? (JSON.parse(latest.result) as ConversationReadResult) : null,
+      latestResult:
+        row.latest_result !== null
+          ? (JSON.parse(row.latest_result) as ConversationReadResult)
+          : null,
     };
   }
 
@@ -426,22 +504,5 @@ export class ReadStateLedger {
         ? { fingerprint: row.fingerprint, state: JSON.parse(row.snapshot) as ConversationReadState }
         : null;
     }, null);
-  }
-
-  nativeHandoffApplied(key: string, scope: string, fingerprint: string): boolean {
-    return this.#read((db) => {
-      if (
-        !db
-          .prepare("SELECT 1 FROM sqlite_master WHERE name='conversation_native_read_handoffs'")
-          .get()
-      )
-        return false;
-      const row = db
-        .prepare(
-          "SELECT fingerprint FROM conversation_native_read_handoffs WHERE key=? AND reader_scope=?",
-        )
-        .get(key, scope) as { fingerprint: string } | undefined;
-      return row?.fingerprint === fingerprint;
-    }, false);
   }
 }

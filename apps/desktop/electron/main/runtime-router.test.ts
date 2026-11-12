@@ -174,6 +174,19 @@ describe("RuntimeRouter Skill ownership", () => {
 });
 
 describe("RuntimeRouter read-only Codex continuation", () => {
+  it("forwards the targeted desktop history page read to the workspace owner", async () => {
+    const host = new Host();
+    const router = new RuntimeRouter(host);
+    await router.start();
+    const params = { operation: "desktop-events", sessionId: "session", limit: 50 };
+    const result = { handled: true, page: { events: [] } };
+    const received = vi.fn(() => result);
+    host.handler = received;
+    expect(await router.request(RUNTIME_METHODS.webRequest, params)).toBe(result);
+    expect(received).toHaveBeenCalledExactlyOnceWith(RUNTIME_METHODS.webRequest, params);
+    await router.stop();
+  });
+
   it("forwards session-image reads through the real host router without invoking controls", async () => {
     const host = new Host();
     const router = new RuntimeRouter(host);

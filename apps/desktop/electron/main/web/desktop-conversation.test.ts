@@ -80,6 +80,44 @@ describe("trusted desktop conversation routes", () => {
     expect(await service.localRequest("/pair", {})).toMatchObject({ status: 404 });
   });
 
+  it("serves a verified desktop history page without reading the directory", async () => {
+    const page = { events: [{ id: "message" }], next_cursor: "older", warnings: [] };
+    runtime.mockResolvedValueOnce({ handled: true, page });
+    expect(await service.localRequest("/events?sessionId=s&limit=25&cursor=before")).toEqual({
+      status: 200,
+      body: page,
+    });
+    expect(runtime).toHaveBeenCalledExactlyOnceWith({
+      operation: "desktop-events",
+      sessionId: "s",
+      limit: 25,
+      cursor: "before",
+    });
+  });
+
+  it("retains catalog authorization when a history page cannot use the targeted route", async () => {
+    workspaceRegistered = false;
+    runtime.mockResolvedValueOnce({ handled: false });
+    expect(await service.localRequest("/events?sessionId=s")).toMatchObject({
+      status: 403,
+      body: { error: "workspace_not_authorized" },
+    });
+    expect(runtime.mock.calls.map(([input]) => (input as { operation: string }).operation)).toEqual(
+      ["desktop-events", "catalog"],
+    );
+  });
+
+  it("drops a targeted history response from a replaced runtime", async () => {
+    runtime.mockImplementationOnce(async () => {
+      service.runtimeUnavailable();
+      return { handled: true, page: { events: [{ id: "late" }] } };
+    });
+    expect(await service.localRequest("/events?sessionId=s")).toMatchObject({
+      status: 409,
+      body: { error: "stale_boot" },
+    });
+  });
+
   it.each(["compact", "terminals-clean", "delete"])(
     "sends the Codex %s action over the desktop route",
     async (operation) => {

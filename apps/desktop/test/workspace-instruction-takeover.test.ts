@@ -39,7 +39,8 @@ describe("first workspace instruction takeover", () => {
     f.write("CLAUDE.md", original);
     f.write(".grok/config.toml", "");
     const before = await new Doctor(f.context, () => f.project).report("fixture");
-    expect(before.summary.warning_count).toBe(1);
+    // Grok Build and Devin each load both files and report the exact duplicate.
+    expect(before.summary.warning_count).toBe(2);
     const manifest = defaultManifest(f.project);
     const instructionImport = instructionImportProof(f.project, manifest);
     manifest.instructions.shared += "Update CHANGELOG before release.\n";

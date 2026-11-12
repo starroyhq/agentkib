@@ -480,6 +480,13 @@ export function normalizeMcpImport(
       "native_substitution",
       { agent: "Hermes" },
     );
+  // Devin expands `${env:VAR}` and `${file:/path}` when it starts a server.
+  if (agent === "devin" && hasSubstitution(raw, /\$\{(?:env|file):[^}]+\}/))
+    throw new McpDiagnosticError(
+      "Devin environment/file substitutions cannot be collected; use literal configuration and enter credentials separately",
+      "native_substitution",
+      { agent: "Devin" },
+    );
   // Escaped OpenClaw references also change at runtime: $${VAR} becomes ${VAR}.
   if (agent === "open-claw" && hasSubstitution(raw, /\$\{[A-Z_][A-Z0-9_]*(?::-[^${}]*)?\}/))
     throw new McpDiagnosticError(

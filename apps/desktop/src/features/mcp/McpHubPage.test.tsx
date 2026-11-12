@@ -1177,7 +1177,7 @@ describe("McpHubPage management", () => {
     fireEvent.click(screen.getByRole("button", { name: tr("mcp.manage.checkPreview") }));
     const apply = await screen.findByRole("button", { name: tr("mcp.manage.applyConnection") });
     expect(apply).toBeDisabled();
-    expect(vi.mocked(api.planMcpConnections).mock.calls[0][0].targetAgents).toHaveLength(8);
+    expect(vi.mocked(api.planMcpConnections).mock.calls[0][0].targetAgents).toHaveLength(9);
     fireEvent.click(screen.getByRole("checkbox", { name: tr("mcp.manage.homeApproval") }));
     fireEvent.click(apply);
     fireEvent.click(apply);

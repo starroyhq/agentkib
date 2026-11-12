@@ -57,6 +57,7 @@ const homeCandidates: Record<string, readonly string[]> = {
     "skills",
     ".agent-presets",
   ],
+  devin: ["AGENTS.md", "AGENT.md", "config.json", "mcp_config.json", "skills", "agents"],
 };
 
 /** Read-only allowlisted files from agent homes; private/session state is excluded. */
@@ -108,6 +109,7 @@ function homes(environment: NodeJS.ProcessEnv): [string, string][] {
       ["grok-build", environment.GROK_HOME ?? path.join(home, ".grok")],
       ["antigravity", path.join(home, ".gemini")],
       ["deepseek-harness", environment.DSH_HOME ?? path.join(home, ".dsh")],
+      ["devin", path.join(xdg, "devin")],
     ];
   const hermes = entries.find(([agent]) => agent === "hermes")![1],
     profileRoot = path.join(hermes, "profiles");

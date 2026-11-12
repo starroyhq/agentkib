@@ -35,6 +35,7 @@ import {
   useVisibleReadState,
   ReadStateNotice,
   readStateCopy,
+  transcriptRepresentsResult,
 } from "@agentkib/session-ui";
 import { publishSessionInvalidation, subscribeSessionInvalidation } from "./session-events";
 import { webLayoutCopy } from "./web-layout-copy";
@@ -53,6 +54,8 @@ export function SessionReader() {
     page,
     busy,
     earlier,
+    historyDetailTurnId,
+    loadingEarlier,
     locale,
     live,
     notice,
@@ -277,11 +280,12 @@ export function SessionReader() {
                 onTool={setModal}
                 imageLoader={imageLoader}
                 hasEarlier={!!page.next_cursor}
-                loadingEarlier={busy}
+                loadingEarlier={busy || loadingEarlier}
+                historyDetailTurnId={historyDetailTurnId}
                 earlierLabel={t.earlier}
-                onLoadEarlier={async () => {
+                onLoadEarlier={async (turnId) => {
                   pause();
-                  await earlier();
+                  await earlier(turnId);
                 }}
               />
               {live?.sessionId === selected && live.activity === "compacting" && (
@@ -298,7 +302,11 @@ export function SessionReader() {
               )}
               {readObservation.status === "ready" &&
                 readObservation.events &&
-                readObservation.readState?.freshness === "current" && (
+                readObservation.readState?.freshness === "current" &&
+                !transcriptRepresentsResult(
+                  page.events,
+                  readObservation.readState.latestResult,
+                ) && (
                   <p
                     data-read-result={readObservation.readState.latestResult?.id ?? "threadStart"}
                     className="mx-auto mt-4 w-full max-w-3xl text-xs text-muted-foreground"

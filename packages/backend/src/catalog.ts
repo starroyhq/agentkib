@@ -115,6 +115,7 @@ export class Catalog {
             "grok-build",
             "antigravity",
             "cursor",
+            "devin",
           ].includes(agent);
         return {
           ...row,

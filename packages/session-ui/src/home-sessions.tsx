@@ -292,7 +292,7 @@ export interface HomeSessionListProps<S extends { id: string }> {
 }
 
 /**
- * What waits for the person, unread results and running turns, each group hidden when empty, then
+ * What waits for the person, running turns and unread results, each group hidden when empty, then
  * the most recent other sessions. "All clear" stands in for the first three groups. An approval
  * or a question can open its card in its row and be answered there; other rows open the session.
  */
@@ -378,6 +378,27 @@ export function HomeSessionList<S extends { id: string }>({
               );
             })}
           </Group>
+          <Group title={t.inProgress} count={groups.running.length}>
+            {groups.running.map(({ session, place, startedAt }) => {
+              const text = describe(session);
+              const duration = startedAt ? formatRunningTime(startedAt, locale) : undefined;
+              const time = duration ? t.runningFor.replace("{duration}", duration) : text.time;
+              return (
+                <Row
+                  key={session.id}
+                  layout={layout}
+                  icon="loader"
+                  spin
+                  tone="running"
+                  title={text.title}
+                  status={placeLabel(place, text.agent)}
+                  statusIcon={PLACE_ICONS[place]}
+                  meta={wide ? join([text.agent, text.workspace, time]) : join([time])}
+                  onClick={() => onOpen(session)}
+                />
+              );
+            })}
+          </Group>
           <Group title={read.pending} count={groups.review.length}>
             {groups.review.map(({ session, result }) => {
               const text = describe(session);
@@ -395,27 +416,6 @@ export function HomeSessionList<S extends { id: string }>({
                       ? join([text.agent, text.workspace, text.time])
                       : join([text.agent, text.time])
                   }
-                  onClick={() => onOpen(session)}
-                />
-              );
-            })}
-          </Group>
-          <Group title={t.inProgress} count={groups.running.length}>
-            {groups.running.map(({ session, place, startedAt }) => {
-              const text = describe(session);
-              const duration = startedAt ? formatRunningTime(startedAt, locale) : undefined;
-              const time = duration ? t.runningFor.replace("{duration}", duration) : text.time;
-              return (
-                <Row
-                  key={session.id}
-                  layout={layout}
-                  icon="loader"
-                  spin
-                  tone="running"
-                  title={text.title}
-                  status={placeLabel(place, text.agent)}
-                  statusIcon={PLACE_ICONS[place]}
-                  meta={wide ? join([text.agent, text.workspace, time]) : join([time])}
                   onClick={() => onOpen(session)}
                 />
               );

@@ -92,7 +92,7 @@ export const archiveChunk = z.object({
   content: z.string(),
 });
 export type SessionDocument = z.infer<typeof sessionDocument>;
-/** Reader options. Only the Claude Code provider reads them; every other source ignores them. */
+/** Reader options. Claude Code, DSH and Devin read them; every other source ignores them. */
 export interface DocumentOptions {
   /** Follow `compact_boundary` records back through the history that was compacted away. */
   includePreCompactionHistory?: boolean;

@@ -15,6 +15,7 @@ const SERVER_PATHS: Record<Agent, readonly string[]> = {
   "grok-build": ["mcp_servers"],
   antigravity: ["mcpServers"],
   "deepseek-harness": ["mcpServers"],
+  devin: ["mcpServers"],
 };
 
 /** Parse only; callers retain responsibility for source ownership and safe file reads. */

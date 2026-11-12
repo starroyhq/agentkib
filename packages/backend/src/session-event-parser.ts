@@ -13,6 +13,7 @@ import {
 } from "./conversation-tools";
 import { jsonTimestamp } from "./session-history";
 import { codexErrorText, codexTurnErrorEvent } from "./codex-turn-error";
+import { codexTurnEndEvent } from "./codex-turn-end";
 import {
   claudeCommandInvocation,
   claudeCommandOutput,
@@ -73,7 +74,7 @@ export interface EventState {
   /** Codex item rows already emitted, bounded the same way. */
   itemRows: Set<string>;
   /** A turn end read before the turn's last item; attached to that item. */
-  turnMeta: { turn: string | null; meta: ConversationTurnMeta } | null;
+  turnMeta: { turn: string | null; meta: ConversationTurnMeta; timestamp?: string | null } | null;
 }
 const MAX_OPEN_CALLS = 256;
 const MAX_ITEM_ROWS = 2048;
@@ -117,7 +118,7 @@ export function associationBytes(state: EventState): number {
     ) +
     state.openCalls.size * 320 +
     state.itemRows.size * 128 +
-    (state.turnMeta ? 256 : 0) +
+    (state.turnMeta ? 512 : 0) +
     (state.candidateTurn ? Buffer.byteLength(state.candidateTurn) : 0) +
     state.associationOrder.length * 128
   );
@@ -475,9 +476,13 @@ function attachTurnMeta(state: EventState, from: number): void {
         return;
       }
       if (event.kind !== "agent-message") continue;
-    } else if (pending.turn && event.turn_id && event.turn_id !== pending.turn) {
-      state.turnMeta = null;
-      return;
+    } else if (pending.turn) {
+      if (event.turn_id && event.turn_id !== pending.turn) {
+        state.turnMeta = null;
+        return;
+      }
+      if (!event.turn_id && (state.candidateTurn !== pending.turn || state.associationWarning))
+        continue;
     }
     event.turn_meta = pending.meta;
     state.turnMeta = null;
@@ -792,24 +797,29 @@ function parseRecord(
     id = stringValue(payload?.call_id) ?? "",
     turn = recordTurn(row, payload);
   if (row?.type === "turn_context") {
+    if (turn !== null && state.turnMeta?.turn !== turn) state.turnMeta = null;
     boundary(state, "context", turn, page);
     return;
   }
-  if (row?.type === "event_msg" && ["task_complete", "task_started"].includes(payload?.type)) {
-    if (payload.type === "task_complete") {
-      state.turnMeta = { turn, meta: turnEnd(payload, "completed") };
-      // A failed turn ends with Codex's own error text, its last row; the turn end goes on it.
-      const text = turn !== null ? codexErrorText(payload.error) : null;
-      if (text) state.pending.push(codexTurnErrorEvent(turn!, text, timestamp));
-    }
-    // A turn with no item left to carry its end keeps none.
-    else if (state.turnMeta && (state.turnMeta.turn === null || state.turnMeta.turn === turn))
-      state.turnMeta = null;
-    boundary(state, payload.type === "task_complete" ? "complete" : "start", turn, page);
+  if (row?.type === "event_msg" && payload?.type === "task_started") {
+    const end = state.turnMeta;
+    state.turnMeta = null;
+    boundary(state, "start", turn, page);
+    // If the matching start is reached without a visible item, retain the
+    // explicit outcome as status alone. Never carry it into an older turn.
+    if (end && turn !== null && end.turn === turn)
+      state.pending.push(codexTurnEndEvent(turn, end.meta, end.timestamp ?? null));
     return;
   }
-  if (row?.type === "event_msg" && payload?.type === "turn_aborted") {
-    state.turnMeta = { turn, meta: turnEnd(payload, "aborted") };
+  if (row?.type === "event_msg" && ["task_complete", "turn_aborted"].includes(payload?.type)) {
+    const outcome = payload.type === "turn_aborted" ? "aborted" : "completed";
+    state.turnMeta = turn === null ? null : { turn, meta: turnEnd(payload, outcome), timestamp };
+    if (turn !== null && outcome === "completed") {
+      // A failed turn ends with Codex's own error text, its last row; the turn end goes on it.
+      const text = codexErrorText(payload.error);
+      if (text) state.pending.push(codexTurnErrorEvent(turn, text, timestamp));
+    }
+    boundary(state, "complete", turn, page);
     return;
   }
   if (row?.type === "event_msg" && payload?.type === "item_completed") {

@@ -13,18 +13,18 @@ import type { GlobalPage } from "./app-route";
 const globalNav: SidebarEntry<GlobalPage>[] = [
   { id: "home", label: "nav.home", icon: Home, activeIcon: HomeSolid, shortcut: "navigate-home" },
   {
-    id: "workspaces",
-    label: "nav.workspaces",
-    icon: FolderGit2,
-    activeIcon: FolderGitSolid,
-    shortcut: "navigate-workspaces",
-  },
-  {
     id: "sessions",
     label: "sessions.nav",
     icon: MessageSquareText,
     activeIcon: MessageSquareTextSolid,
     shortcut: "navigate-sessions",
+  },
+  {
+    id: "workspaces",
+    label: "nav.workspaces",
+    icon: FolderGit2,
+    activeIcon: FolderGitSolid,
+    shortcut: "navigate-workspaces",
   },
   {
     id: "catalog",

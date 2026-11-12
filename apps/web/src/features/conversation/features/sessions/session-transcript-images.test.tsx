@@ -152,6 +152,7 @@ it("does not render an empty text bubble for an image-only request", async () =>
   expect(row).toContainElement(image);
   expect(row.querySelector('[data-user-message-bubble="true"]')).toBeNull();
   expect(row.querySelector(".not-prose")).toHaveClass("justify-end");
+  expect(screen.queryByRole("button", { name: "Copy message" })).toBeNull();
 });
 
 it("hides metadata-only messages including their bubble and timestamp", () => {

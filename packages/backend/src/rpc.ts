@@ -26,5 +26,6 @@ export const AGENTS = [
   "grok-build",
   "antigravity",
   "deepseek-harness",
+  "devin",
 ] as const;
 export const agentSchema = z.enum(AGENTS);

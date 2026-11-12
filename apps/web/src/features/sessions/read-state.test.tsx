@@ -63,6 +63,7 @@ function Probe({
   ready = true,
   catalogVersion,
   imagePending = false,
+  folded,
 }: {
   client: Client;
   id?: string;
@@ -74,6 +75,7 @@ function Probe({
   ready?: boolean;
   catalogVersion?: string;
   imagePending?: boolean | string;
+  folded?: boolean;
 }) {
   const viewport = useRef<HTMLDivElement>(null);
   const observed = useVisibleReadState({
@@ -93,18 +95,24 @@ function Probe({
       <output data-testid="read-observation">
         {observed.readState?.status}:{observed.readState?.version}
       </output>
-      {rows.map((row) => (
-        <article data-event-id={row.id} key={row.id}>
-          {row.content}
-          <span
-            data-message-image-pending={
-              (typeof imagePending === "string" ? row.id === imagePending : imagePending) ||
-              undefined
-            }
-          />
-        </article>
-      ))}
-      {observed.events && (
+      {!folded &&
+        rows.map((row) => (
+          <article data-event-id={row.id} key={row.id}>
+            {row.content}
+            <span
+              data-message-image-pending={
+                (typeof imagePending === "string" ? row.id === imagePending : imagePending) ||
+                undefined
+              }
+            />
+          </article>
+        ))}
+      {folded && (
+        <p data-terminal-turn-id="turn" data-terminal-outcome="aborted">
+          Interrupted
+        </p>
+      )}
+      {!folded && observed.events && (
         <p data-read-result={observed.readState?.latestResult?.id ?? "threadStart"}>Result</p>
       )}
       <ReadStateNotice locale="en-US" observation={observed} />
@@ -148,7 +156,9 @@ beforeEach(() => {
   Object.defineProperty(document, "elementFromPoint", {
     configurable: true,
     value: vi.fn(() =>
-      covered ? document.body : document.querySelector("[data-event-id], [data-read-result]"),
+      covered
+        ? document.body
+        : document.querySelector("[data-event-id], [data-read-result], [data-terminal-turn-id]"),
     ),
   });
 });
@@ -159,6 +169,34 @@ afterEach(() => {
 });
 
 describe("visible result read acknowledgements", () => {
+  it("acknowledges an interrupted turn only after its folded status enters view", async () => {
+    const rows = [
+      event,
+      {
+        ...event,
+        id: "codex-turn-end:turn",
+        content: "",
+        turn_meta: { outcome: "aborted" as const },
+      },
+    ];
+    const client = fixture(
+      unread({ latestResult: { ...unread().latestResult!, outcome: "cancelled" } }),
+      rows,
+    );
+    offscreen = true;
+    render(<Probe client={client} rows={rows} folded />);
+    await settle();
+    expect(client.acknowledgeReadState).not.toHaveBeenCalled();
+    offscreen = false;
+    fireEvent.scroll(screen.getByTestId("viewport"));
+    await settle();
+    expect(client.acknowledgeReadState).toHaveBeenCalledExactlyOnceWith(
+      "session",
+      "native:revision-1",
+      "result",
+    );
+  });
+
   it("waits for an image-only result to display successfully before acknowledging it", async () => {
     const rows = [{ ...event, content: "", attachment_count: 1 }];
     const client = fixture(unread(), rows);

@@ -39,6 +39,13 @@ The OpenCode icon is also sourced from LobeHub Lobe Icons:
 
 Source: https://github.com/lobehub/lobe-icons
 
+The Devin icon is sourced from LobeHub Lobe Icons
+(@lobehub/icons-static-svg version 1.102.0, same MIT License as above):
+
+- devin-color.svg -> devin.svg
+
+Source: https://github.com/lobehub/lobe-icons
+
 The DeepSeek Harness icon is adapted from the favicon distributed with
 DeepSeek Harness 0.1.0-rc.5:
 

@@ -142,7 +142,18 @@ function challengeResponse(value: unknown): ClaudeBridgeChallenge {
 /** Local owner IPC only; no connection credentials or paths are accepted from Web. */
 export function ClaudeBridgePanel({ active, onClose }: { active: boolean; onClose?: () => void }) {
   const session = useSession();
-  const { selected, current, live, access, online, controlReady, busy, locale, notice } = session;
+  const {
+    selected,
+    current,
+    live,
+    access,
+    online,
+    controlReady,
+    busy,
+    loadingEarlier,
+    locale,
+    notice,
+  } = session;
   const copy = claudeConnectionCopy[locale];
   const [statusObservation, setStatusObservation] = useState<{
     status: ClaudeBridgeStatus;
@@ -232,6 +243,7 @@ export function ClaudeBridgePanel({ active, onClose }: { active: boolean; onClos
     access?.experimentalEnabled &&
     controlReady &&
     !busy &&
+    !loadingEarlier &&
     notice !== "uncertain" &&
     live?.status !== "outcome-unknown"
   );

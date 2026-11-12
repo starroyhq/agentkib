@@ -1,5 +1,10 @@
 import { useMemo, type RefObject } from "react";
-import { ReadStateNotice, readStateCopy, useVisibleReadState } from "@agentkib/session-ui";
+import {
+  ReadStateNotice,
+  readStateCopy,
+  transcriptRepresentsResult,
+  useVisibleReadState,
+} from "@agentkib/session-ui";
 import { api } from "@/core/api";
 import type { ConversationEvent, ConversationSessionSummary } from "@/core/types";
 import { useI18n } from "@/core/useI18n";
@@ -84,7 +89,8 @@ export function HistoryReadState({
       <ReadStateNotice locale={locale} observation={observation} />
       {observation.status === "ready" &&
         observation.events &&
-        observation.readState?.freshness === "current" && (
+        observation.readState?.freshness === "current" &&
+        !transcriptRepresentsResult(events, observation.readState.latestResult) && (
           <p
             data-read-result={observation.readState.latestResult?.id ?? "threadStart"}
             className="text-xs text-muted-foreground"

@@ -414,6 +414,38 @@ describe("history pagination refresh compatibility", () => {
     };
   };
 
+  it("loads past tool-only windows and keeps earlier pages when a continuation fails", async () => {
+    const { client } = fixture();
+    const final = { ...row(5), turn_id: "current", message_phase: "final_answer" as const };
+    const tool = { ...row(4), turn_id: "current", kind: "tool-summary" as const };
+    const older = { ...row(3), turn_id: "older", message_phase: "final_answer" as const };
+    const events = vi
+      .spyOn(client, "events")
+      .mockResolvedValueOnce({ events: [final], next_cursor: "page-1", warnings: [] })
+      .mockResolvedValueOnce({ events: [tool], next_cursor: "page-2", warnings: [] })
+      .mockRejectedValueOnce(new Error("History page failed"))
+      .mockResolvedValueOnce({ events: [older], warnings: [] });
+    const view = renderHook(() => useSessionController({ client, embedded: true }));
+    await waitFor(() => expect(view.result.current.sessions).toHaveLength(2));
+    await act(async () => view.result.current.choose("first"));
+
+    await act(async () => view.result.current.earlier());
+    expect(events.mock.calls.slice(1)).toEqual([
+      ["first", "page-1"],
+      ["first", "page-2"],
+    ]);
+    expect(view.result.current.page?.events).toEqual([tool, final]);
+    expect(view.result.current.page?.next_cursor).toBe("page-2");
+    expect(view.result.current.error).toBe(true);
+    expect(view.result.current.loadingEarlier).toBe(false);
+
+    await act(async () => view.result.current.earlier());
+    expect(events).toHaveBeenLastCalledWith("first", "page-2");
+    expect(view.result.current.page?.events).toEqual([older, tool, final]);
+    expect(view.result.current.page?.next_cursor).toBeUndefined();
+    expect(view.result.current.error).toBe(false);
+  });
+
   it.each([
     { exhausted: false, strict: false },
     { exhausted: true, strict: false },
@@ -1262,7 +1294,7 @@ describe("busy full-refresh recovery", () => {
       const view = renderHook(() => useSessionController({ client, embedded: true }));
       await waitFor(() => expect(view.result.current.sessions).toHaveLength(2));
       await act(async () => view.result.current.choose("first"));
-      await act(async () => view.result.current.earlier());
+      await act(async () => view.result.current.earlier("removed-turn"));
       expect(view.result.current.page?.events).toHaveLength(4);
       emitSession(streams.get("first")!, 1, "snapshot", {
         live: view.result.current.live!,

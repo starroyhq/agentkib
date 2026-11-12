@@ -1,4 +1,6 @@
 import { createContextUsageGeneration, projectContextUsage } from "./context-usage";
+import { codexTurnEndEvent, codexTurnMeta } from "./codex-turn-end";
+import { codexErrorText, codexTurnErrorEvent } from "./codex-turn-error";
 
 type JsonRecord = Record<string, unknown>;
 type UsageRecovery = {
@@ -290,13 +292,34 @@ export class CodexFollowerState {
   streamSnapshot(): { live: JsonRecord; items: JsonRecord[]; authoritativeTurnIds?: string[] } {
     const turns = this.#conversationTurns() ?? [];
     const activeTurn = this.activeTurn();
+    const seen = new Set<string>();
+    const ambiguous = new Set<string>();
+    for (const { turnId } of turns) {
+      if (typeof turnId !== "string") continue;
+      if (seen.has(turnId)) ambiguous.add(turnId);
+      else seen.add(turnId);
+    }
     const candidates = turns.slice(-20).flatMap((turn) => {
       if (typeof turn.turnId !== "string" || !Array.isArray(turn.items)) return [];
-      return turn.items.flatMap((item) => {
+      const turnId = turn.turnId;
+      const items = turn.items.flatMap((item) => {
         if (!isRecord(item) || typeof item.id !== "string") return [];
-        const projected = projectFollowerItem(item, turn.turnId as string);
+        const projected = projectFollowerItem(item, turnId);
         return projected ? [projected] : [];
       });
+      const meta = ambiguous.has(turnId) ? undefined : codexTurnMeta(turn);
+      if (meta) {
+        const error = meta.outcome === "failed" ? codexErrorText(turn.error) : null;
+        if (error) items.push({ ...codexTurnErrorEvent(turnId, error, null), turn_meta: meta });
+        else {
+          // The follower streams text items incrementally. A tool-only turn
+          // needs its own terminal carrier to reach the same reader.
+          const lastMessage = [...items].reverse().find((item) => item.kind === "agent-message");
+          if (lastMessage) lastMessage.turn_meta = meta;
+          else items.push(codexTurnEndEvent(turnId, meta, null));
+        }
+      }
+      return items;
     });
     const retained = candidates.slice(-100);
     const retainedIds = new Set(retained.map((item) => item.id));

@@ -182,7 +182,8 @@ export class Context {
           break;
         }
         if (personal.skips(source)) continue;
-        const external = ["opencode", "antigravity"].includes(agent) && !within(source, root);
+        const external =
+          ["opencode", "antigravity", "devin"].includes(agent) && !within(source, root);
         let externalRoot: string | null = null;
         try {
           if (external) externalRoot = canonicalize(path.dirname(source));
@@ -390,6 +391,7 @@ function workspaceSkillNames(
     hermes: [".hermes/skills", ".agents/skills"],
     "grok-build": [".grok/skills", ".agents/skills", ".claude/skills", ".cursor/skills"],
     antigravity: [".agents/skills"],
+    devin: [".devin/skills", ".agents/skills", ".windsurf/skills", ".claude/skills"],
   };
   const names = new Set<string>();
   const personalRestrictions = ["codex", "opencode", "open-claw", "hermes", "grok-build"].includes(

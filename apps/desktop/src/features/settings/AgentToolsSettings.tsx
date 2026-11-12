@@ -92,6 +92,7 @@ const MANAGED_AGENTS = new Set<AgentKind>([
   "open-claw",
   "hermes",
   "grok-build",
+  "devin",
 ]);
 
 const stateIcons: Record<AgentToolState, typeof Check> = {

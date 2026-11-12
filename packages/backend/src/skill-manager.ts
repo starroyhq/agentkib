@@ -22,7 +22,8 @@ type Agent =
   | "hermes"
   | "grok-build"
   | "antigravity"
-  | "deepseek-harness";
+  | "deepseek-harness"
+  | "devin";
 type Scope = "personal" | "workspace";
 type Workspace = { id: string; path: string };
 type Target = {
@@ -149,6 +150,7 @@ const AGENTS: Agent[] = [
   "hermes",
   "grok-build",
   "antigravity",
+  "devin",
 ];
 const MAX_SKILL_SCAN_ENTRIES = 1_024;
 const MAX_SKILL_SCAN_DEPTH = 32;
@@ -162,6 +164,7 @@ const PERSONAL_ROOTS: Record<Agent, string> = {
   "grok-build": ".grok/skills",
   antigravity: ".gemini/antigravity-cli/skills",
   "deepseek-harness": ".dsh/skills",
+  devin: ".config/devin/skills",
 };
 const PROJECT_ROOTS: Record<Agent, string> = {
   codex: ".agents/skills",
@@ -173,6 +176,7 @@ const PROJECT_ROOTS: Record<Agent, string> = {
   "grok-build": ".grok/skills",
   antigravity: ".agents/skills",
   "deepseek-harness": "skills",
+  devin: ".devin/skills",
 };
 
 function stableId(prefix: string, value: string) {
@@ -331,6 +335,13 @@ export class SkillManager {
     if (agent === "hermes") return this.#configured("HERMES_HOME", path.join(home, ".hermes"));
     if (agent === "grok-build") return this.#configured("GROK_HOME", path.join(home, ".grok"));
     if (agent === "deepseek-harness") return this.#configured("DSH_HOME", path.join(home, ".dsh"));
+    if (agent === "devin") {
+      const config =
+        process.platform === "win32"
+          ? this.#configured("APPDATA", path.join(home, "AppData", "Roaming"))
+          : this.#configured("XDG_CONFIG_HOME", path.join(home, ".config"));
+      return { path: path.join(config.path, "devin"), invalid: config.invalid };
+    }
     return { path: path.join(home, PERSONAL_ROOTS[agent], ".."), invalid: false };
   }
 
@@ -1141,9 +1152,17 @@ export class SkillManager {
             "grok-build",
             "antigravity",
             "deepseek-harness",
+            "devin",
           ]
         : agent === "claude-code"
-          ? ["claude-code", "cursor", "opencode", "grok-build"]
+          ? // Devin imports a project's `.claude/skills`, not the personal Claude directory.
+            [
+              "claude-code",
+              "cursor",
+              "opencode",
+              "grok-build",
+              ...(scope === "workspace" ? ["devin" as const] : []),
+            ]
           : agent === "cursor"
             ? ["cursor", "grok-build"]
             : [agent];

@@ -42,6 +42,7 @@ import {
   replayManagedCommand,
 } from "./managed-ledger";
 import { dshSessionDocument, type DshDocumentImage } from "./dsh-document";
+import type { DshManagedRuntime } from "./dsh-managed-runtime";
 import { sanitizeSessionText } from "./session-handoff";
 import type { DocumentSource } from "./session-document-providers";
 import type { ConversationEvent, ConversationEventPage } from "./session-events";
@@ -64,6 +65,19 @@ const RECONCILE_INTERVAL_MS = 10_000;
 /** After this long, a command DSH shows no trace of, and no longer works on, did not run. */
 const RECONCILE_GIVE_UP_MS = 2 * 60_000;
 const MAX_RUNTIMES = 8;
+/** A DSH that AgentKib started stops after this long with nothing to do. */
+const MANAGED_IDLE_MS = 3 * 60_000;
+/** Sooner while DSH Desktop's window is open, so Desktop can continue what it resumed. */
+const MANAGED_DESKTOP_IDLE_MS = 60_000;
+/** Until its plugin has registered and listed the sessions. */
+const MANAGED_START_TIMEOUT_MS = 30_000;
+/**
+ * After a command reaches it, the background DSH counts as busy this long: the plugin reports the
+ * turn a command started a moment later, and stopping in between would end that turn.
+ */
+const MANAGED_SETTLE_MS = 10_000;
+/** Controls that can start DSH: the ones a session offers while no DSH runs. */
+const STARTING_CONTROLS = new Set(["send", "rename", "fork"]);
 const CATALOG_LIMIT = 4096;
 const CURSOR_PREFIX = "dsh-v1:";
 export const DSH_EXECUTION_MODE = "dsh-follower";
@@ -548,10 +562,14 @@ type Runtime = {
   dshVersion: string;
   pluginVersion: string;
   pid: number;
+  /** Started by this AgentKib in the background; used only when no DSH of the user's can serve. */
+  managed: boolean;
   services: DshBridgeServices;
   lastSeen: number;
   /** When this runtime last reported its session list; 0 before the first. */
   listedAt: number;
+  /** When this runtime last reported anything; 0 before the first report. */
+  reportedAt: number;
   summaries: Map<string, DshBridgeSessionSummary>;
   states: Map<string, DshBridgeSessionState>;
   interactions: Map<string, DshBridgeInteraction>;
@@ -590,7 +608,31 @@ export interface DshBridgeOptions {
   disconnectGraceMs?: number;
   reconcileIntervalMs?: number;
   reconcileGiveUpMs?: number;
+  /**
+   * Starting DSH in the background when no running DSH can take a session (phase 3). Without it
+   * DSH sessions continue only in a DSH the user runs.
+   */
+  managed?: {
+    runtime: Pick<
+      DshManagedRuntime,
+      "pid" | "available" | "status" | "start" | "started" | "stop" | "desktopRunning"
+    >;
+    /** The user's setting, read before every start. */
+    enabled(): boolean;
+    idleMs?: number;
+    /** Idle time while DSH Desktop's own window is open. */
+    desktopIdleMs?: number;
+    startTimeoutMs?: number;
+    /** How often to check whether the background DSH should stop. */
+    reviewMs?: number;
+    /** How long a command keeps the background DSH busy. */
+    settleMs?: number;
+  };
 }
+
+/** DSH's refusals that clients explain in their own words. */
+const dshRefusal = (error: string | undefined) =>
+  error === "session/writer-held" ? "dsh-session-in-use" : error;
 
 function privatePath(value: string, directory = false): void {
   if (!path.isAbsolute(value) || path.normalize(value) !== value)
@@ -840,6 +882,17 @@ export class DshBridge {
   #unknownSince = new Map<string, number>();
   #reconciledAt = new Map<string, number>();
   #reconciling = new Set<string>();
+  /** A background DSH starting for a control, history read or new session; later ones join it. */
+  #managedStart?: Promise<Runtime>;
+  /** Since when the background DSH has had nothing to do. */
+  #idleSince: number | null = null;
+  /** When a command last went to the background DSH. */
+  #managedTouched = 0;
+  /** The background DSH being stopped; it may not register again while it exits. */
+  #managedStopping: number | null = null;
+  #reviewing = false;
+  /** Whether a background start can be tried; reading it looks for the launcher on disk. */
+  #availability?: { at: number; value: ReturnType<DshManagedRuntime["available"]> };
   #server?: Server;
   #listening?: Promise<void>;
   #socketPath?: string;
@@ -850,6 +903,7 @@ export class DshBridge {
   #revision = 0;
   #saveTimer?: ReturnType<typeof setTimeout>;
   #timer: ReturnType<typeof setInterval>;
+  #managedTimer?: ReturnType<typeof setInterval>;
   readonly #key = randomBytes(32).toString("hex");
 
   constructor(readonly options: DshBridgeOptions) {
@@ -886,6 +940,13 @@ export class DshBridge {
       for (const nativeId of this.#unknownSessions) this.#autoReconcile(nativeId);
     }, 5_000);
     this.#timer.unref();
+    if (options.managed) {
+      this.#managedTimer = setInterval(
+        () => void this.#reviewManaged(),
+        options.managed.reviewMs ?? 5_000,
+      );
+      this.#managedTimer.unref();
+    }
   }
 
   get supported(): boolean {
@@ -928,6 +989,148 @@ export class DshBridge {
     return [...this.#runtimes.values()].filter(
       (runtime) => Date.now() - runtime.lastSeen <= OFFLINE_MS,
     );
+  }
+
+  // ---- background DSH ---------------------------------------------------------------------
+
+  #managedRuntime(): Runtime | undefined {
+    return this.#online().find((runtime) => runtime.managed);
+  }
+  #managedAvailability(): ReturnType<DshManagedRuntime["available"]> {
+    const known = this.#availability;
+    if (known && Date.now() - known.at < 10_000) return known.value;
+    const value = this.options.managed!.runtime.available();
+    this.#availability = { at: Date.now(), value };
+    return value;
+  }
+  /**
+   * Whether AgentKib may start DSH to serve a session now: no running DSH can continue
+   * sessions, the user's setting allows it and a launcher of a version the plugin runs in exists.
+   */
+  #startable(): boolean {
+    const managed = this.options.managed;
+    if (!managed || this.#closed || !this.supported || !managed.enabled()) return false;
+    if (this.#online().some((runtime) => runtime.services.sessionController)) return false;
+    return this.#managedAvailability().available;
+  }
+  /** Why a session that no running DSH serves cannot be continued from here. */
+  #offlineReason(ambiguous: boolean): string {
+    if (ambiguous) return "dsh-runtime-ambiguous";
+    const managed = this.options.managed;
+    if (managed && managed.enabled() && !this.#closed && this.supported) {
+      const availability = this.#managedAvailability();
+      if (!availability.available && availability.reason === "dsh-version-unsupported")
+        return availability.reason;
+    }
+    return "dsh-runtime-offline";
+  }
+  /**
+   * The background DSH, started if needed, once its plugin has registered and listed sessions.
+   * Rejects with the reason as the message.
+   */
+  /**
+   * The background DSH can take requests once its plugin has reported and DSH's session service
+   * is up. Its session list may come later: an empty one is not reported by older plugins.
+   */
+  #managedReady(runtime: Runtime | undefined, pid?: number): runtime is Runtime {
+    return (
+      !!runtime &&
+      runtime.managed &&
+      runtime.reportedAt > 0 &&
+      runtime.services.sessionController === true &&
+      (pid === undefined || runtime.pid === pid)
+    );
+  }
+  #ensureManaged(): Promise<Runtime> {
+    const running = this.#managedRuntime();
+    if (this.#managedReady(running)) return Promise.resolve(running);
+    const managed = this.options.managed;
+    if (!managed) return Promise.reject(new Error("dsh-runtime-offline"));
+    this.#managedStart ??= (async () => {
+      const pid = await managed.runtime.start();
+      this.#availability = undefined;
+      const deadline = Date.now() + (managed.startTimeoutMs ?? MANAGED_START_TIMEOUT_MS);
+      for (;;) {
+        const runtime = this.#online().find((candidate) => this.#managedReady(candidate, pid));
+        if (runtime) return runtime;
+        if (this.#closed) throw new Error("control-unavailable");
+        if (managed.runtime.pid !== pid)
+          throw new Error(managed.runtime.status().failure?.reason ?? "dsh-start-failed");
+        if (Date.now() > deadline) {
+          void managed.runtime.stop();
+          throw new Error("dsh-start-failed");
+        }
+        await new Promise((resolve) => setTimeout(resolve, 50));
+      }
+    })().finally(() => {
+      this.#managedStart = undefined;
+      this.#idleSince = null;
+    });
+    return this.#managedStart;
+  }
+  /**
+   * The background DSH process ended; its sessions stop showing as served at once. Why it ended
+   * is in the managed runtime's status.
+   */
+  managedExited(pid: number): void {
+    this.#availability = undefined;
+    this.#idleSince = null;
+    for (const runtime of [...this.#runtimes.values()])
+      if (runtime.managed && runtime.pid === pid) this.#drop(runtime);
+  }
+  /** Something still runs or waits in the background DSH, so it keeps running. */
+  #managedBusy(runtime: Runtime): boolean {
+    const settle = this.options.managed?.settleMs ?? MANAGED_SETTLE_MS;
+    if (Date.now() - this.#managedTouched < settle) return true;
+    if (runtime.interactions.size || runtime.commands.size) return true;
+    if ([...this.#inflight.values()].some((item) => item.runtime === runtime.token)) return true;
+    for (const state of runtime.states.values())
+      if (state.live && (state.status === "running" || state.activity === "compacting"))
+        return true;
+    return false;
+  }
+  /**
+   * Stops the background DSH once it has had nothing to do for a while, and at once when the user
+   * has a DSH of their own open or turned the setting off, so their DSH can take its sessions:
+   * a DSH keeps a session it resumed until it exits.
+   */
+  async #reviewManaged(): Promise<void> {
+    const managed = this.options.managed;
+    const runtime = this.#managedRuntime();
+    if (!managed || !runtime || this.#managedStart || this.#reviewing || this.#closed) {
+      if (!runtime) this.#idleSince = null;
+      return;
+    }
+    if (this.#managedBusy(runtime)) {
+      this.#idleSince = null;
+      return;
+    }
+    const now = Date.now();
+    this.#idleSince ??= now;
+    this.#reviewing = true;
+    try {
+      const yieldNow =
+        !managed.enabled() ||
+        this.#online().some((other) => !other.managed && other.services.sessionController);
+      const limit = yieldNow
+        ? 0
+        : (await managed.runtime.desktopRunning())
+          ? (managed.desktopIdleMs ?? MANAGED_DESKTOP_IDLE_MS)
+          : (managed.idleMs ?? MANAGED_IDLE_MS);
+      if (now - this.#idleSince >= limit && !this.#managedBusy(runtime)) {
+        this.#idleSince = null;
+        // Nothing new goes to it from here on, and it may not come back while it exits.
+        this.#managedStopping = runtime.pid;
+        this.#drop(runtime);
+        try {
+          await managed.runtime.stop();
+        } finally {
+          this.#managedStopping = null;
+        }
+      }
+    } finally {
+      this.#reviewing = false;
+    }
   }
   /**
    * Sessions whose working directory lies in this registered workspace. Subagents stay out.
@@ -984,9 +1187,12 @@ export class DshBridge {
     const before = cursor === null ? undefined : Number(cursor.slice(CURSOR_PREFIX.length));
     if (before !== undefined && !Number.isSafeInteger(before))
       throw new Error("TRANSCRIPT_CURSOR_STALE");
-    const runtime =
+    let runtime =
       this.#controlRuntime(nativeId) ??
       this.#online().find((candidate) => candidate.services.sessionQuery);
+    // Someone opened the session while no DSH runs: start one in the background to read it.
+    // Failing that, the session shows what this run already read, and its state says why.
+    if (!runtime && this.#startable()) runtime = await this.#ensureManaged().catch(() => undefined);
     const key = `${nativeId}\n${cursor ?? ""}`;
     if (!runtime) {
       // No DSH to ask: show what this run already read. A session not read yet shows no history
@@ -1078,18 +1284,24 @@ export class DshBridge {
   documentStatus(nativeId: string): { status: "supported" | "unavailable"; reason?: string } {
     if (this.#readers(nativeId).length) return { status: "supported" };
     const listing = this.#online().filter((runtime) => runtime.summaries.has(nativeId));
+    // A handoff starts DSH in the background to read the session.
+    if (!listing.length && this.#startable()) return { status: "supported" };
     return {
       status: "unavailable",
-      reason: listing.length ? "dsh-document-unavailable" : "dsh-runtime-offline",
+      reason: listing.length ? "dsh-document-unavailable" : this.#offlineReason(false),
     };
   }
   /**
    * A session's whole conversation for a handoff or search, from a DSH that can read it. Later
    * pages stop at the event the first one was read up to, so the pages agree with one another.
+   * `start` lets a handoff start DSH in the background; search indexing never starts it.
    */
   async conversation(
     nativeId: string,
+    start = false,
   ): Promise<{ revision: number | null; records: DshBridgeDocumentRecord[] }> {
+    if (start && !this.#readers(nativeId).length && this.#startable())
+      await this.#ensureManaged().catch(() => undefined);
     const preferred = this.#controlRuntime(nativeId);
     const runtime = preferred?.services.documents === true ? preferred : this.#readers(nativeId)[0];
     if (!runtime) throw new Error(this.documentStatus(nativeId).reason ?? "dsh-runtime-offline");
@@ -1133,7 +1345,7 @@ export class DshBridge {
     source: DocumentSource,
     options?: DocumentOptions,
   ): Promise<SessionDocument> {
-    const { records } = await this.conversation(nativeId);
+    const { records } = await this.conversation(nativeId, true);
     const images = new Map<string, DshDocumentImage | null>();
     let chars = 0;
     for (const record of records) {
@@ -1184,8 +1396,11 @@ export class DshBridge {
       )
       .sort((a, b) => b.lastSeen - a.lastSeen)[0];
     if (running) return running;
+    // A DSH the user runs comes first; the one AgentKib started serves only without one.
     const resumable = online.filter((runtime) => runtime.services.sessionController);
-    return resumable.length === 1 ? resumable[0]! : null;
+    const own = resumable.filter((runtime) => !runtime.managed);
+    if (own.length) return own.length === 1 ? own[0]! : null;
+    return resumable.find((runtime) => runtime.managed) ?? null;
   }
   #state(nativeId: string): {
     runtime: Runtime | null;
@@ -1195,7 +1410,9 @@ export class DshBridge {
     const runtime = this.#controlRuntime(nativeId);
     const ambiguous =
       !runtime &&
-      this.#online().filter((candidate) => candidate.services.sessionController).length > 1;
+      this.#online().filter(
+        (candidate) => candidate.services.sessionController && !candidate.managed,
+      ).length > 1;
     return { runtime, state: runtime?.states.get(nativeId) ?? null, ambiguous };
   }
   #interactions(nativeId: string): DshBridgeInteraction[] {
@@ -1240,6 +1457,7 @@ export class DshBridge {
   }
 
   #apply(runtime: Runtime, report: z.infer<typeof reportSchema>): string[] {
+    runtime.reportedAt = Date.now();
     const changed = new Set<string>();
     // Sessions whose control state changed. A control carries the revision it was decided on, so
     // streamed text, titles and history progress, which change many times a second, never bump
@@ -1347,6 +1565,7 @@ export class DshBridge {
     timeoutMs = this.options.commandTimeoutMs ?? 12_000,
     onDelivered?: () => void,
   ): Promise<{ ok: boolean; value?: unknown; error?: string; outcome?: "timeout" }> {
+    if (runtime.managed) this.#managedTouched = Date.now();
     return new Promise((resolve) => {
       const waiter: CommandWaiter = {
         command,
@@ -1382,6 +1601,9 @@ export class DshBridge {
     const workspace = this.options.workspaceFor(row.cwd);
     const { runtime, state, ambiguous } = this.#state(nativeId);
     const online = !!runtime;
+    // No running DSH can take the session, but AgentKib can start one: the session reads as
+    // idle, and sending starts DSH in the background.
+    const startable = !online && !ambiguous && this.#startable();
     const interactions = this.#interactions(nativeId);
     const inflight = this.#inflight.get(id);
     // A request still waiting for its reply makes the session busy, not unconfirmed. Also
@@ -1403,9 +1625,9 @@ export class DshBridge {
       : unknown
         ? "control-outcome-unconfirmed"
         : !online
-          ? ambiguous
-            ? "dsh-runtime-ambiguous"
-            : "dsh-runtime-offline"
+          ? startable
+            ? undefined
+            : this.#offlineReason(ambiguous)
           : !controller
             ? "dsh-session-controller-unavailable"
             : approval
@@ -1415,12 +1637,15 @@ export class DshBridge {
                 : compacting
                   ? "session-compacting"
                   : undefined;
-    const controllable = controls && online && controller && !!workspace && !unknown && !inflight;
+    const controllable =
+      controls && (online ? controller : startable) && !!workspace && !unknown && !inflight;
     const turnId = running ? turnIdOf(state!.turn) : null;
     const status = unknown
       ? "outcome-unknown"
       : !online
-        ? "unsupported"
+        ? startable
+          ? "idle"
+          : "unsupported"
         : approval
           ? "awaiting-approval"
           : question
@@ -1435,7 +1660,8 @@ export class DshBridge {
       workspaceId: workspace?.id ?? null,
       runtimeBootId: this.options.bootId,
       executionMode: DSH_EXECUTION_MODE,
-      executionLocation: online ? "external" : null,
+      // A DSH that AgentKib started runs in AgentKib's place: it stops when AgentKib quits.
+      executionLocation: runtime ? (runtime.managed ? "agentkib" : "external") : null,
       ownershipReason: null,
       connectionGeneration: runtime ? runtime.runtimeId : this.options.bootId,
       cliVersion: runtime ? `${runtime.dshVersion} (DeepSeek Harness)` : undefined,
@@ -1547,9 +1773,9 @@ export class DshBridge {
 
   capabilities(id: string, controls: boolean): Record<string, unknown> {
     const live = this.live(id, controls);
-    const online = live.executionLocation === "external";
     const nativeId = this.#ids.get(id)!;
     const runtime = this.#state(nativeId).runtime;
+    const online = !!runtime;
     const services = runtime?.services;
     // `live` reports this as queueEditEnabled: online, controllable and nothing unconfirmed.
     const controllable = live.queueEditEnabled === true;
@@ -1752,14 +1978,17 @@ export class DshBridge {
     agentPresets?: DshBridgeAgentPreset[];
   }> {
     if (!this.supported) return { available: false, reason: "platform-unsupported" };
-    const candidates = this.#online().filter((item) => item.services.sessionController);
-    // Not "dsh-runtime-ambiguous": that one asks to open an existing session in one of them.
-    if (candidates.length !== 1)
-      return {
-        available: false,
-        reason: candidates.length ? "dsh-create-ambiguous" : "dsh-runtime-offline",
-      };
-    const runtime = candidates[0]!;
+    let runtime = this.#creator();
+    if (runtime === "ambiguous") return { available: false, reason: "dsh-create-ambiguous" };
+    // Choosing DSH for a new session starts it in the background, the way the first Codex read
+    // starts an app-server; it stops again when nothing comes of it.
+    if (!runtime && this.#startable())
+      try {
+        runtime = await this.#ensureManaged();
+      } catch (error) {
+        return { available: false, reason: preflightReason(error) };
+      }
+    if (!runtime) return { available: false, reason: this.#offlineReason(false) };
     if (runtime.services.agentPresets !== true) return { available: true };
     const result = await this.#command(
       runtime,
@@ -1772,8 +2001,19 @@ export class DshBridge {
       : { available: true };
   }
   /**
-   * Starts a DSH session in a registered workspace through the one running DSH that can. With
-   * more than one, AgentKib cannot tell which the user means, so it asks them to pick in DSH.
+   * The DSH a new session starts in: the user's own when exactly one runs, else the one AgentKib
+   * started. With more than one of the user's, AgentKib cannot tell which they mean.
+   */
+  #creator(): Runtime | "ambiguous" | null {
+    const candidates = this.#online().filter((item) => item.services.sessionController);
+    const own = candidates.filter((item) => !item.managed);
+    // Not "dsh-runtime-ambiguous": that one asks to open an existing session in one of them.
+    if (own.length > 1) return "ambiguous";
+    return own[0] ?? candidates.find((item) => item.managed) ?? null;
+  }
+  /**
+   * Starts a DSH session in a registered workspace through the one running DSH that can, or one
+   * started in the background. With more than one of the user's, it asks them to pick in DSH.
    */
   async create(value: Record<string, unknown>): Promise<Record<string, unknown>> {
     const requestId = uuid.parse(value.requestId);
@@ -1795,10 +2035,11 @@ export class DshBridge {
       const root = this.options.workspacePath?.(workspaceId) ?? null;
       if (!root) throw new Error("workspace-unavailable");
       cwd = root;
-      const candidates = this.#online().filter((item) => item.services.sessionController);
-      if (!candidates.length) throw new Error("dsh-runtime-offline");
-      if (candidates.length > 1) throw new Error("dsh-create-ambiguous");
-      runtime = candidates[0]!;
+      const candidate = this.#creator();
+      if (candidate === "ambiguous") throw new Error("dsh-create-ambiguous");
+      if (candidate) runtime = candidate;
+      else if (this.#startable()) runtime = await this.#ensureManaged();
+      else throw new Error(this.#offlineReason(false));
     } catch (error) {
       return result("not-dispatched", { reason: preflightReason(error) });
     }
@@ -1849,7 +2090,7 @@ export class DshBridge {
     }
     const outcome = sent.ok
       ? result("accepted", { sessionId: this.options.sessionId(made) })
-      : result("not-dispatched", { reason: sent.error });
+      : result("not-dispatched", { reason: dshRefusal(sent.error) });
     finishManagedCommand(this.options.dataDir, requestId, outcome);
     return outcome;
   }
@@ -1966,8 +2207,7 @@ export class DshBridge {
       revision: live.revision,
     });
     const runtime = this.#controlRuntime(nativeId);
-    if (!runtime || live.executionLocation !== "external")
-      return unavailable("dsh-runtime-offline");
+    if (!runtime) return unavailable("dsh-runtime-offline");
     const presets = this.#presets(runtime, nativeId);
     if (runtime.services.modelCatalog !== true && !presets)
       return unavailable("operation-unavailable");
@@ -2155,8 +2395,7 @@ export class DshBridge {
       revision: live.revision,
     });
     const runtime = this.#controlRuntime(nativeId);
-    if (!runtime || live.executionLocation !== "external")
-      return unavailable("dsh-runtime-offline");
+    if (!runtime) return unavailable("dsh-runtime-offline");
     if (runtime.services.goals !== true) return unavailable("operation-unavailable");
     const result = await this.#command(runtime, {
       commandId: randomUUID(),
@@ -2548,6 +2787,27 @@ export class DshBridge {
     const fingerprint = digest(stable({ ...value, runtimeBootId: undefined })).toString("hex");
     const replay = replayManagedCommand(this.options.dataDir, requestId, fingerprint);
     if (replay) return replay;
+    // Sending, renaming or forking while no DSH runs starts one in the background. The request
+    // was decided on the state the client saw then; DSH registering moves the revision on.
+    let started = false;
+    if (
+      STARTING_CONTROLS.has(String(value.operation)) &&
+      value.experimentalEnabled === true &&
+      value.runtimeBootId === this.options.bootId &&
+      !this.#controlRuntime(nativeId) &&
+      this.#startable()
+    ) {
+      if (revision !== this.live(id, true).revision)
+        return this.#result(id, requestId, "not-dispatched", "stale-dsh-revision");
+      if (this.#inflight.has(id))
+        return this.#result(id, requestId, "not-dispatched", "session-busy");
+      try {
+        await this.#ensureManaged();
+      } catch (error) {
+        return this.#result(id, requestId, "not-dispatched", preflightReason(error));
+      }
+      started = true;
+    }
     const prepare = () => {
       if (
         this.#closed ||
@@ -2558,8 +2818,8 @@ export class DshBridge {
         throw new Error("control-unavailable");
       const live = this.live(id, true);
       const runtime = this.#controlRuntime(nativeId);
-      if (!runtime || live.executionLocation !== "external") throw new Error("dsh-runtime-offline");
-      if (revision !== live.revision) throw new Error("stale-dsh-revision");
+      if (!runtime) throw new Error("dsh-runtime-offline");
+      if (revision !== live.revision && !started) throw new Error("stale-dsh-revision");
       if (this.#inflight.has(id)) throw new Error("session-busy");
       const text = (): string => {
         const input = value.text ?? value.input;
@@ -2995,7 +3255,7 @@ export class DshBridge {
         this.#unknownSessions.add(nativeId);
         this.#unknownSince.set(requestId, Date.now());
       } else {
-        outcome = this.#result(id, requestId, "not-dispatched", result.error);
+        outcome = this.#result(id, requestId, "not-dispatched", dshRefusal(result.error));
         finishManagedCommand(this.options.dataDir, requestId, outcome);
       }
       this.#touch(nativeId);
@@ -3025,8 +3285,15 @@ export class DshBridge {
       pluginVersion: runtime.pluginVersion,
       sessionController: runtime.services.sessionController,
       sessions: runtime.summaries.size,
+      managed: runtime.managed,
+      running: [...runtime.states.values()].filter(
+        (state) => state.live && state.status === "running",
+      ).length,
     }));
     const directory = this.options.pluginDirectory.replaceAll("'", "'\\''");
+    const managed = this.options.managed;
+    const status = managed?.runtime.status();
+    const availability = managed && this.supported ? this.#managedAvailability() : null;
     return {
       supported: this.supported,
       listening: !!this.#server?.listening,
@@ -3038,6 +3305,19 @@ export class DshBridge {
       pluginVersion: DSH_BRIDGE_PLUGIN_VERSION,
       pluginDirectory: this.options.pluginDirectory,
       runtimes,
+      // Starting DSH in the background when none of the user's runs.
+      autoStart:
+        managed && status && availability
+          ? {
+              enabled: managed.enabled(),
+              available: availability.available,
+              ...(availability.available ? {} : { reason: availability.reason }),
+              phase: status.phase,
+              launcher: status.launcher,
+              version: status.version,
+              failure: status.failure?.reason ?? null,
+            }
+          : null,
       installInstructions: [
         `dsh plugin --profile web add '${directory}'`,
         "# Restart DeepSeek Harness afterwards.",
@@ -3158,12 +3438,19 @@ export class DshBridge {
             throw new BridgeHttpError(409, "dsh-bridge-plugin-update-required");
           if (dshBridgeCompatibility(hello.dshVersion) === "too-old")
             throw new BridgeHttpError(409, "dsh-version-too-old");
+          // A background DSH being stopped stays out; it exits in a moment.
+          if (this.#managedStopping !== null && this.#managedStopping === hello.pid)
+            throw new BridgeHttpError(409, "dsh-runtime-stopping");
           for (const runtime of [...this.#runtimes.values()])
             if (runtime.runtimeId === hello.runtimeId) this.#drop(runtime);
           if (this.#runtimes.size >= MAX_RUNTIMES)
             throw new BridgeHttpError(429, "dsh-bridge-busy");
           const first = this.#online().length === 0;
           const token = randomBytes(32).toString("hex");
+          // The DSH this AgentKib started is known by its process, not by what the plugin says.
+          const managed =
+            this.options.managed !== undefined && this.options.managed.runtime.pid === hello.pid;
+          if (managed) this.options.managed!.runtime.started();
           this.#runtimes.set(token, {
             token,
             runtimeId: hello.runtimeId,
@@ -3171,9 +3458,11 @@ export class DshBridge {
               dshBridgeCompatibility(hello.dshVersion) === "invalid" ? "unknown" : hello.dshVersion,
             pluginVersion: hello.pluginVersion,
             pid: hello.pid,
+            managed,
             services: hello.services,
             lastSeen: Date.now(),
             listedAt: 0,
+            reportedAt: 0,
             summaries: new Map(),
             states: new Map(),
             interactions: new Map(),
@@ -3259,6 +3548,10 @@ export class DshBridge {
     if (this.#closed) return;
     this.#closed = true;
     clearInterval(this.#timer);
+    clearInterval(this.#managedTimer);
+    // The DSH this AgentKib started goes with it; a turn still running there is recorded by DSH
+    // as interrupted. The user was told before quitting.
+    await this.options.managed?.runtime.stop().catch(() => undefined);
     if (this.#saveTimer) {
       clearTimeout(this.#saveTimer);
       this.#saveTimer = undefined;

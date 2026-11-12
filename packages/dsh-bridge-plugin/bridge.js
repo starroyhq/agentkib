@@ -39,6 +39,9 @@ const HEARTBEAT_MS = 10_000;
 // A restarted AgentKib writes a new key; DSH sessions stay metadata only until it is found, so
 // look often. Each pass only reads one small file per root.
 const DISCOVERY_MS = 2_000;
+// A DSH that AgentKib started in the background stops once it has not reached that AgentKib for
+// this long: three missed heartbeats. AgentKib stops it itself when it quits normally.
+const HOST_GONE_MS = 30_000;
 const LIST_THROTTLE_MS = 1_000;
 const HISTORY_PAGE_BYTES = 1536 * 1024;
 // UTF-8 bytes of one conversation page; a bridge message carries at most 8 MiB.
@@ -174,18 +177,36 @@ const sleep = (ms, signal) =>
   });
 
 /**
+ * The AgentKib that started this DSH in the background, from the plugin row's `managed` config;
+ * null for a DSH the user runs.
+ */
+export function managedHost(config) {
+  const home = config?.home;
+  return typeof home === "string" && path.isAbsolute(home) && path.normalize(home) === home
+    ? { home }
+    : null;
+}
+
+/**
  * @param ctx - the plugin's Cordis context.
- * @param options - test seams: discovery roots, a fixed version and timers.
+ * @param options - `managed` for a DSH that AgentKib started, and test seams: discovery roots,
+ *   a fixed version, process ID, standard input and timers.
  */
 export function createBridge(ctx, options = {}) {
   const runtimeId = randomUUID();
   const dshVersion = options.dshVersion ?? readDshVersion();
-  const roots = options.roots ?? discoveryRoots();
+  // A DSH that AgentKib started reports only to that AgentKib.
+  const managed = managedHost(options.managed);
+  const roots = options.roots ?? (managed ? [managed.home] : discoveryRoots());
   const lifetime = new AbortController();
   const hosts = new Map();
+  /** When an AgentKib last answered; a DSH that AgentKib started stops once this is too old. */
+  let lastContact = Date.now();
   /** Monotonic change counter; every report sends what changed after the host's last ack. */
   let version = 0;
   let listVersion = 0;
+  /** The list goes out once even when empty, so AgentKib knows DSH has listed its sessions. */
+  let listedOnce = false;
   let interactionsVersion = 0;
   let summaries = [];
   let listing = null;
@@ -504,7 +525,8 @@ export function createBridge(ctx, options = {}) {
       listing = readList();
       try {
         const next = await listing;
-        if (JSON.stringify(next) !== JSON.stringify(summaries)) {
+        if (!listedOnce || JSON.stringify(next) !== JSON.stringify(summaries)) {
+          listedOnce = true;
           summaries = next;
           listVersion = bump();
           schedule();
@@ -1211,6 +1233,7 @@ export function createBridge(ctx, options = {}) {
         });
         host.acked = at;
         host.lastReport = Date.now();
+        lastContact = host.lastReport;
         if (Array.isArray(reply?.watch)) host.watch = new Set(reply.watch.map(String));
       } while (host.again && host.token && !lifetime.signal.aborted);
     } catch (error) {
@@ -1238,7 +1261,7 @@ export function createBridge(ctx, options = {}) {
         pluginVersion: DSH_BRIDGE_COMPATIBILITY.pluginVersion,
         dshVersion,
         runtimeId,
-        pid: process.pid,
+        pid: options.pid ?? process.pid,
         services: services(),
       },
       { signal: lifetime.signal },
@@ -1246,6 +1269,7 @@ export function createBridge(ctx, options = {}) {
     host.token = String(reply.token);
     host.acked = 0;
     host.error = null;
+    lastContact = Date.now();
   }
   async function hostLoop(host) {
     let backoff = 500;
@@ -1263,6 +1287,7 @@ export function createBridge(ctx, options = {}) {
           { timeoutMs: 35_000, signal: lifetime.signal },
         );
         host.failures = 0;
+        lastContact = Date.now();
         if (Date.now() - host.lastReport > HEARTBEAT_MS) void send(host);
         for (const command of Array.isArray(reply?.commands) ? reply.commands : [])
           void (async () => {
@@ -1365,9 +1390,37 @@ export function createBridge(ctx, options = {}) {
   }, options.heartbeatMs ?? HEARTBEAT_MS);
   heartbeat.unref?.();
 
+  // A DSH that AgentKib started goes with that AgentKib. AgentKib stops it itself when it quits;
+  // if AgentKib crashes, DSH's standard input closes and the contact ends, and DSH exits the way
+  // its own launcher does, so a running turn is recorded as interrupted.
+  let exiting = false;
+  const exit = () => {
+    if (exiting || lifetime.signal.aborted) return;
+    exiting = true;
+    const appExit = service("appExit");
+    if (typeof appExit === "function") appExit(0);
+    else process.kill(process.pid, "SIGTERM");
+  };
+  const hostGoneMs = options.hostGoneMs ?? HOST_GONE_MS;
+  const stdin = managed ? (options.stdin ?? process.stdin) : null;
+  let hostWatch = null;
+  if (managed) {
+    hostWatch = setInterval(
+      () => {
+        if (Date.now() - lastContact > hostGoneMs) exit();
+      },
+      Math.min(hostGoneMs, 5_000),
+    );
+    hostWatch.unref?.();
+    stdin.on("end", exit);
+    stdin.on("error", () => undefined);
+    stdin.resume?.();
+  }
+
   return {
     runtimeId,
     dshVersion,
+    managed: managed !== null,
     hosts,
     states,
     interactions,
@@ -1376,6 +1429,8 @@ export function createBridge(ctx, options = {}) {
     close() {
       lifetime.abort();
       clearInterval(heartbeat);
+      if (hostWatch) clearInterval(hostWatch);
+      stdin?.off?.("end", exit);
       if (scheduled) clearTimeout(scheduled);
       for (const host of hosts.values()) host.closed = true;
     },

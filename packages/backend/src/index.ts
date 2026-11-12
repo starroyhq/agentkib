@@ -9,6 +9,7 @@ import {
 import { CursorBridge } from "./cursor-bridge";
 import { ClaudeBridge } from "./claude-bridge";
 import { DshBridge } from "./dsh-bridge";
+import { DshManagedRuntime } from "./dsh-managed-runtime";
 import { listNativeImports } from "./session-native-imports";
 import {
   continueNativeImport,
@@ -191,6 +192,8 @@ export class TypeScriptBackend {
   #cursorBridge?: CursorBridge;
   #claudeBridge?: ClaudeBridge;
   #dshBridge?: DshBridge;
+  /** Whether DeepSeek Harness may be started in the background, read for a moment at a time. */
+  #dshAutoStart?: { at: number; value: boolean };
   #catalogContinuation = new Map<string, string>();
   #webRead?: WebReadRequests;
   #readStates?: ConversationReadStates;
@@ -579,11 +582,38 @@ export class TypeScriptBackend {
               .sort((a, b) => b.path.length - a.path.length)[0] ?? null
           );
         };
+        const dshPluginDirectory = this.environment.AGENTKIB_DSH_PLUGIN_DIR ?? "";
+        // DSH started in the background when none of the user's runs; the bridge decides when
+        // and stops it on close.
+        const dshManaged = dshPluginDirectory
+          ? new DshManagedRuntime({
+              dataDir,
+              agentkibHome,
+              pluginDirectory: dshPluginDirectory,
+              env: { ...process.env, ...this.environment },
+              onExit: (pid) => dshBridge.managedExited(pid),
+            })
+          : undefined;
         const dshBridge = new DshBridge({
           dataDir,
           bootId: randomUUID(),
-          pluginDirectory: this.environment.AGENTKIB_DSH_PLUGIN_DIR ?? "",
+          pluginDirectory: dshPluginDirectory,
           discoveryFile: path.join(agentkibHome, "dsh-bridge", "discovery-v1.json"),
+          ...(dshManaged
+            ? {
+                managed: {
+                  runtime: dshManaged,
+                  // Read for every DSH session state, so kept for a moment.
+                  enabled: () => {
+                    const known = this.#dshAutoStart;
+                    if (known && Date.now() - known.at < 2_000) return known.value;
+                    const value = readPreferences(dataDir).dsh_auto_start !== false;
+                    this.#dshAutoStart = { at: Date.now(), value };
+                    return value;
+                  },
+                },
+              }
+            : {}),
           sessionId: (nativeId) => store.sessions.id("deepseek-harness", nativeId),
           workspaceFor: registeredWorkspace,
           workspacePath: (workspaceId) => {
@@ -2102,6 +2132,12 @@ export class TypeScriptBackend {
       if (params.operation === "dsh-bridge-status") {
         if (!this.#dshBridge) throw new Error("dsh-bridge-unavailable");
         return this.#dshBridge.management(params);
+      }
+      if (params.operation === "dsh-auto-start") {
+        if (!this.#dshBridge || !this.#dataDir) throw new Error("dsh-bridge-unavailable");
+        writePreference(this.#dataDir, "dsh_auto_start", params.enabled === true);
+        this.#dshAutoStart = undefined;
+        return this.#dshBridge.management({ ...params, operation: "dsh-bridge-status" });
       }
       if (params.operation === "adopt") this.#claudeBridge?.assertCanAdopt();
       if (

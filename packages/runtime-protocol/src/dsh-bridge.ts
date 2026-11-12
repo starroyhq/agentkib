@@ -3,6 +3,7 @@ import { DSH_BRIDGE_COMPATIBILITY } from "../../dsh-bridge-plugin/compatibility.
 export {
   DSH_BRIDGE_COMPATIBILITY,
   dshBridgeCompatibility,
+  dshBridgeLaunchable,
   dshBridgePluginCompatibility,
 } from "../../dsh-bridge-plugin/compatibility.js";
 

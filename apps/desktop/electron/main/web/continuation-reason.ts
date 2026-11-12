@@ -39,6 +39,12 @@ export function continuationPreflightReason(
       ...DSH_COMMAND_REFUSALS,
       "dsh-command-unavailable",
       "dsh-command-failed",
+      // Starting DeepSeek Harness in the background failed, or another DSH holds the session.
+      "dsh-start-failed",
+      "dsh-version-unsupported",
+      "dsh-launcher-unavailable",
+      "dsh-exited",
+      "dsh-session-in-use",
       "goal-changed",
       "goal-action-unavailable",
       "goal-rounds-exhausted",

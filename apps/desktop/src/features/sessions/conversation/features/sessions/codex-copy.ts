@@ -518,6 +518,15 @@ const reasons: Record<Locale, Record<string, string>> = {
       "有多个 DeepSeek Harness 在运行，无法确定用哪一个。请直接在要用的那个里新建会话，它会出现在这里。",
     "dsh-session-controller-unavailable": "这个 DeepSeek Harness 配置只能查看，不能从这里发送。",
     "dsh-attachments-unavailable": "这个版本的 DeepSeek Harness 不能从这里接收图片。",
+    "dsh-start-failed":
+      "没能在后台启动 DeepSeek Harness。请稍后重试，或打开 DeepSeek Harness 后继续。",
+    "dsh-version-unsupported":
+      "这个版本的 DeepSeek Harness 还不能由 AgentKib 启动。请更新 AgentKib，或打开 DeepSeek Harness 后继续。",
+    "dsh-launcher-unavailable":
+      "没有找到 DeepSeek Harness。安装 DeepSeek Harness Desktop 后可以继续。",
+    "dsh-exited": "DeepSeek Harness 意外退出了，请重试。",
+    "dsh-session-in-use":
+      "这个会话正在 DeepSeek Harness Desktop 里使用。在那里继续，或在 Desktop 里装上 AgentKib 插件后从这里继续。",
     "goal-changed": "目标已在别处改动，本次操作尚未执行。请查看最新目标后再试。",
     "goal-action-unavailable": "目标当前的状态不能这样操作。",
     "goal-rounds-exhausted": "目标的轮次已经用完，不能继续。",
@@ -645,6 +654,15 @@ const reasons: Record<Locale, Record<string, string>> = {
       "有多個 DeepSeek Harness 正在執行，無法確定要用哪一個。請直接在要用的那個裡新建對話，它會出現在這裡。",
     "dsh-session-controller-unavailable": "這個 DeepSeek Harness 設定只能檢視，不能從這裡傳送。",
     "dsh-attachments-unavailable": "這個版本的 DeepSeek Harness 不能從這裡接收圖片。",
+    "dsh-start-failed":
+      "沒能在背景啟動 DeepSeek Harness。請稍後再試，或開啟 DeepSeek Harness 後繼續。",
+    "dsh-version-unsupported":
+      "這個版本的 DeepSeek Harness 還不能由 AgentKib 啟動。請更新 AgentKib，或開啟 DeepSeek Harness 後繼續。",
+    "dsh-launcher-unavailable":
+      "找不到 DeepSeek Harness。安裝 DeepSeek Harness Desktop 後可以繼續。",
+    "dsh-exited": "DeepSeek Harness 意外結束了，請再試一次。",
+    "dsh-session-in-use":
+      "這個對話正在 DeepSeek Harness Desktop 裡使用。在那裡繼續，或在 Desktop 裝上 AgentKib 外掛後從這裡繼續。",
     "goal-changed": "目標已在別處變更，本次操作尚未執行。請查看最新目標後再試。",
     "goal-action-unavailable": "目標目前的狀態不能這樣操作。",
     "goal-rounds-exhausted": "目標的輪次已經用完，不能繼續。",
@@ -778,6 +796,15 @@ const reasons: Record<Locale, Record<string, string>> = {
     "dsh-session-controller-unavailable":
       "This DeepSeek Harness profile can be viewed but cannot take messages from here.",
     "dsh-attachments-unavailable": "This DeepSeek Harness version cannot take images from here.",
+    "dsh-start-failed":
+      "DeepSeek Harness could not be started in the background. Try again later, or open DeepSeek Harness to continue.",
+    "dsh-version-unsupported":
+      "AgentKib cannot start this DeepSeek Harness version yet. Update AgentKib, or open DeepSeek Harness to continue.",
+    "dsh-launcher-unavailable":
+      "DeepSeek Harness was not found. Install DeepSeek Harness Desktop to continue.",
+    "dsh-exited": "DeepSeek Harness quit unexpectedly. Try again.",
+    "dsh-session-in-use":
+      "This session is in use in DeepSeek Harness Desktop. Continue there, or install the AgentKib plugin in Desktop to continue from here.",
     "goal-changed":
       "The goal changed elsewhere, so nothing was done. Check the current goal and try again.",
     "goal-action-unavailable": "The goal's current state does not allow this.",
@@ -927,6 +954,15 @@ const reasons: Record<Locale, Record<string, string>> = {
       "この DeepSeek Harness プロファイルは表示のみで、ここからは送信できません。",
     "dsh-attachments-unavailable":
       "このバージョンの DeepSeek Harness はここから画像を受け取れません。",
+    "dsh-start-failed":
+      "DeepSeek Harness をバックグラウンドで起動できませんでした。しばらくしてから再試行するか、DeepSeek Harness を開いて続けてください。",
+    "dsh-version-unsupported":
+      "このバージョンの DeepSeek Harness はまだ AgentKib から起動できません。AgentKib を更新するか、DeepSeek Harness を開いて続けてください。",
+    "dsh-launcher-unavailable":
+      "DeepSeek Harness が見つかりません。DeepSeek Harness Desktop を入れると続けられます。",
+    "dsh-exited": "DeepSeek Harness が予期せず終了しました。もう一度お試しください。",
+    "dsh-session-in-use":
+      "この会話は DeepSeek Harness Desktop で使用中です。そちらで続けるか、Desktop に AgentKib プラグインを入れるとここから続けられます。",
     "goal-changed":
       "目標が別の場所で変更されたため、この操作は実行されていません。最新の目標を確認してからもう一度お試しください。",
     "goal-action-unavailable": "目標の現在の状態ではこの操作はできません。",

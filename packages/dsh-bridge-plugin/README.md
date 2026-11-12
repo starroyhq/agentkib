@@ -1,26 +1,39 @@
 # AgentKib DeepSeek Harness bridge
 
 First-party DeepSeek Harness (DSH) bundle for DSH **0.2.1-rc.5 or later** (`engines.dsh`
-`>=0.2.1-rc.5 <0.3.0`), bridge protocol **1**, plugin **0.5.0**. It connects the sessions of a
+`>=0.2.1-rc.5 <0.3.0`), bridge protocol **1**, plugin **0.6.0**. It connects the sessions of a
 running DSH to AgentKib on the same computer. It never starts a second executor, never writes
 the session log itself and never calls a model: every action goes through DSH's own services.
 
 ## Install
 
-Install the bundle into the profile you run, then restart DSH. AgentKib shows the exact command
-with the path of the copy it ships:
+Install the bundle into the profile you run, then restart DSH. AgentKib's DeepSeek Harness
+connection panel shows the path of the copy it ships (`<AgentKib resources>/dsh-bridge`):
+
+- DSH Desktop: paste that directory into "Add plugin". Its reserved `desktop` profile is managed
+  only through DSH Desktop's own plugin page.
+- The command line:
 
 ```sh
 dsh plugin --profile web add '<AgentKib resources>/dsh-bridge'
 ```
 
-A bundle added while DSH runs takes effect on the next start. DSH Desktop's reserved `desktop`
-profile is managed through DSH Desktop's own plugin page. For development, mount this directory
-for one run without installing it:
+A bundle added while DSH runs takes effect on the next start. For development, mount this
+directory for one run without installing it:
 
 ```sh
 dsh --profile web --patch <file containing an insert row whose name is this index.js>
 ```
+
+## Started by AgentKib
+
+When none of the user's DSH runs, AgentKib starts DSH itself with the web profile and mounts this
+plugin through a `--patch` overlay, as row `agentkib-dsh-bridge-managed` with the config
+`managed: { home: <AgentKib home> }` (and `agentkib-dsh-bridge` turned off, in case the profile
+has a copy installed). In that mode the plugin reports only to that AgentKib, and asks DSH to
+exit through `appExit` when its standard input closes or it has not reached that AgentKib for
+30 seconds, so a crashed AgentKib leaves no DSH behind holding sessions. AgentKib stops it itself
+when idle and when quitting; see phase 3 in `docs/agents/deepseek-harness.md`.
 
 ## How it connects
 

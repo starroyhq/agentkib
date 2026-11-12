@@ -8,6 +8,7 @@ import type { ClaudeCommandEntry } from "@agentkib/web-client";
 import { codexCommandPrompt, slashCommandCopy } from "@agentkib/session-ui";
 import { SessionComposer } from "./session-composer";
 import { codexCopy, codexReason } from "./codex-copy";
+import { composerModelCopy } from "./composer-model-copy";
 import type { SessionPanels } from "./session-panels";
 import type { SessionController } from "./use-session-controller";
 
@@ -25,10 +26,17 @@ vi.mock("./session-context", () => ({
   },
 }));
 vi.mock("./session-panels", () => ({ useSessionPanels: () => doubles.panels }));
-vi.mock("./context-usage", () => ({
-  ContextUsageGauge: () => null,
-  ContextUsageDetails: () => null,
-  useContextUsage: () => ({}),
+vi.mock(import("./context-usage"), async (importOriginal) => ({
+  ...(await importOriginal()),
+  ContextUsageGauge: () => <></>,
+  ContextUsageDetails: () => <></>,
+  useContextUsage: () => ({
+    usage: undefined,
+    percent: undefined,
+    state: "unavailable",
+    compacting: false,
+    awaitingCliReport: false,
+  }),
 }));
 vi.mock("../history/history-search-controls", () => ({ HistoryReferenceChips: () => null }));
 
@@ -47,6 +55,49 @@ function renderComposer(message: string) {
   const input = screen.getByRole("textbox", { name: "Message" });
   fireEvent.change(input, { target: { value: message } });
   return { ...view, input, form: input.closest("form")! };
+}
+
+function enableComposerSettings() {
+  doubles.session.access = {
+    ...doubles.session.access!,
+    device: { send: true, accessMode: "full", advancedControl: true },
+  } as SessionController["access"];
+  doubles.session.capabilities = {
+    ...doubles.session.capabilities!,
+    features: { settings: { available: true } },
+  } as SessionController["capabilities"];
+  const writable = { available: true };
+  const readSettings = vi.fn(async () => ({
+    sessionId: "session",
+    revision: 1,
+    available: true,
+    current: { modelId: "sol", mode: "default" },
+    defaults: { modelId: "sol" },
+    writable: {
+      model: writable,
+      effort: writable,
+      mode: writable,
+      policy: writable,
+      serviceTier: writable,
+      restoreDefaults: writable,
+    },
+    options: {
+      models: [{ id: "sol", name: "Sol", efforts: ["low", "high"], serviceTierIds: [] }],
+      collaborationModes: [
+        { id: "default", name: "Default" },
+        { id: "plan", name: "Plan" },
+      ],
+      policies: [],
+      serviceTiers: [],
+    },
+  }));
+  doubles.session.client = {
+    request: vi.fn(),
+    sessionSettings: readSettings,
+    codexSessionSettings: readSettings,
+    codexGoals: vi.fn(),
+    codexContextOptions: vi.fn(),
+  } as unknown as SessionController["client"];
 }
 
 describe("slash commands in the desktop composer", () => {
@@ -178,6 +229,22 @@ describe("slash commands in the desktop composer", () => {
     expect(doubles.control).not.toHaveBeenCalled();
   });
 
+  it.each([
+    ["/model", "group", composerModelCopy["en-US"].chooseModel],
+    ["/effort", "button", `${composerModelCopy["en-US"].chooseModel}: Sol`],
+  ])("opens the model picker for %s without sending a message", async (text, role, name) => {
+    enableComposerSettings();
+    const { form, input } = renderComposer(text);
+    await screen.findByRole("button", { name: /Sol/ });
+    fireEvent.submit(form);
+    expect(
+      await within(await screen.findByRole("dialog")).findByRole(role, { name }),
+    ).toBeVisible();
+    expect(input).toHaveValue("");
+    expect(doubles.control).not.toHaveBeenCalled();
+    expect(doubles.codexAction).not.toHaveBeenCalled();
+  });
+
   it("still explains /clear and /loop", () => {
     for (const [text, code] of [
       ["/new", "claude-command-clear"],
@@ -237,44 +304,7 @@ describe("Codex slash commands in the desktop composer", () => {
   afterEach(cleanup);
 
   it("turns plan mode on for /plan typed after a space, as Codex's own composer does", async () => {
-    doubles.session.access = {
-      ...doubles.session.access!,
-      device: { send: true, accessMode: "full", advancedControl: true },
-    } as SessionController["access"];
-    doubles.session.capabilities = {
-      ...doubles.session.capabilities!,
-      features: { settings: { available: true } },
-    } as SessionController["capabilities"];
-    const writable = { available: true };
-    doubles.session.client = {
-      request: vi.fn(),
-      codexSessionSettings: vi.fn(async () => ({
-        sessionId: "session",
-        revision: 1,
-        available: true,
-        current: { modelId: "sol", mode: "default" },
-        defaults: { modelId: "sol" },
-        writable: {
-          model: writable,
-          effort: writable,
-          mode: writable,
-          policy: writable,
-          serviceTier: writable,
-          restoreDefaults: writable,
-        },
-        options: {
-          models: [{ id: "sol", name: "Sol", efforts: [], serviceTierIds: [] }],
-          collaborationModes: [
-            { id: "default", name: "Default" },
-            { id: "plan", name: "Plan" },
-          ],
-          policies: [],
-          serviceTiers: [],
-        },
-      })),
-      codexGoals: vi.fn(),
-      codexContextOptions: vi.fn(),
-    } as unknown as SessionController["client"];
+    enableComposerSettings();
     const { input } = renderComposer("Fix it /pl");
     fireEvent.change(input, { target: { value: "Fix it /pla" } });
     expect(within(await screen.findByRole("listbox")).getAllByRole("option")[0]).toHaveTextContent(
@@ -286,6 +316,27 @@ describe("Codex slash commands in the desktop composer", () => {
     );
     expect(input).toHaveValue("Fix it");
     expect(doubles.control).not.toHaveBeenCalled();
+  });
+
+  it("opens the model list for /model and preserves the permissions command", async () => {
+    enableComposerSettings();
+    const model = renderComposer("/model");
+    await screen.findByRole("button", { name: /Sol/ });
+    fireEvent.submit(model.form);
+    expect(
+      await screen.findByRole("dialog", { name: composerModelCopy["en-US"].chooseModel }),
+    ).toBeVisible();
+    expect(model.input).toHaveValue("");
+    model.unmount();
+
+    const permissions = renderComposer("/permissions");
+    fireEvent.submit(permissions.form);
+    expect(
+      await screen.findByRole("dialog", { name: codexCopy["en-US"].conversationSettings }),
+    ).toBeVisible();
+    expect(permissions.input).toHaveValue("");
+    expect(doubles.control).not.toHaveBeenCalled();
+    expect(doubles.codexAction).not.toHaveBeenCalled();
   });
 
   it("offers AgentKib's Codex commands and runs /compact", async () => {

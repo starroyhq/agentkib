@@ -1,4 +1,3 @@
-import { ClaudeSessionPanel } from "./ClaudeSessionPanel";
 import { useI18n } from "@/core/useI18n";
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
@@ -27,6 +26,7 @@ import {
   ListChecks,
   MessageSquareText,
   PlugZap,
+  Plus,
   RefreshCw,
   Search,
   X,
@@ -134,7 +134,8 @@ export function WorkspaceSessionsPage({
   onInitialSessionConsumed,
   resumeContinuation,
   onResumeConsumed,
-  onOpenClaudeSession,
+  onNewClaudeSession,
+  claudeStartStatus,
   targetAgents,
   installedAgents,
   onOpenSession,
@@ -149,7 +150,8 @@ export function WorkspaceSessionsPage({
   onInitialSessionConsumed?: () => void;
   resumeContinuation?: SessionContinuationResume & { autoPrepare: boolean };
   onResumeConsumed?: () => void;
-  onOpenClaudeSession?: (sessionId: string, panel?: "terminal") => void;
+  onNewClaudeSession?: () => void;
+  claudeStartStatus?: "checking" | "uncertain";
   targetAgents: AgentKind[];
   installedAgents?: AgentKind[];
   onOpenSession?: (sessionId: string) => void;
@@ -159,7 +161,6 @@ export function WorkspaceSessionsPage({
   const [enabling, setEnabling] = useState(false);
   const [enableError, setEnableError] = useState("");
   const enableLock = useRef(false);
-  const [showClaude, setShowClaude] = useState(false);
   const [cursorBridgeWorkspaceId, setCursorBridgeWorkspaceId] = useState<string>();
   const [cursorBindingId, setCursorBindingId] = useState("");
   const showCursorBridge = cursorBridgeWorkspaceId === workspace.id && !workspace.remote;
@@ -568,15 +569,31 @@ export function WorkspaceSessionsPage({
               </div>
             </div>
             <div className="mt-2 flex min-w-0 flex-wrap items-center justify-end gap-1 max-[520px]:justify-start">
-              <Button
-                size="sm"
-                variant="ghost"
-                className="h-8 gap-1.5 px-2.5"
-                onClick={() => setShowClaude(true)}
-              >
-                <MessageSquareText size={14} aria-hidden="true" />
-                <span>Claude Code</span>
-              </Button>
+              {onNewClaudeSession && (
+                <Button
+                  size="sm"
+                  variant="ghost"
+                  className="h-8 gap-1.5 px-2.5"
+                  disabled={claudeStartStatus === "checking"}
+                  onClick={onNewClaudeSession}
+                >
+                  {claudeStartStatus ? (
+                    <RefreshCw
+                      size={14}
+                      className={claudeStartStatus === "checking" ? "animate-spin" : undefined}
+                      aria-hidden="true"
+                    />
+                  ) : (
+                    <Plus size={14} aria-hidden="true" />
+                  )}
+                  {tr(
+                    claudeStartStatus === "uncertain"
+                      ? "sessions.retry"
+                      : "sessions.newConversation",
+                  )}{" "}
+                  · Claude Code
+                </Button>
+              )}
               {!workspace.remote && (
                 <Button
                   size="sm"
@@ -708,6 +725,11 @@ export function WorkspaceSessionsPage({
               </label>
             )}
           </div>
+          {claudeStartStatus === "uncertain" && (
+            <p role="status" className="px-3 py-2 text-sm text-muted-foreground">
+              {tr("conversation.uncertain")}
+            </p>
+          )}
           <SessionSourceNotices
             statuses={statuses}
             sessions={indexedSessions}
@@ -1045,22 +1067,6 @@ export function WorkspaceSessionsPage({
             />
           </DialogContent>
         </Dialog>
-      )}
-      {showClaude && (
-        <ClaudeSessionPanel
-          key={workspace.id}
-          workspaceId={workspace.id}
-          initialSessionId={selected?.agent === "claude-code" ? selected.id : undefined}
-          onClose={() => setShowClaude(false)}
-          onConnectTerminal={
-            window.agentkibDesktop?.platform === "darwin" && onOpenClaudeSession
-              ? (sessionId) => {
-                  setShowClaude(false);
-                  onOpenClaudeSession(sessionId, "terminal");
-                }
-              : undefined
-          }
-        />
       )}
       {handoffSession && (
         <SessionHandoffDialog

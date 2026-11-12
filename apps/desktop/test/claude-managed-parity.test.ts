@@ -139,7 +139,11 @@ require('node:readline').createInterface({input:process.stdin}).on('line', line 
   } as unknown as Commands;
   const indexed = new Map<string, { agent: string; workspace_id: string; sidechain: boolean }>();
   const store = {
-    workspacePath: () => workspace,
+    workspacePath: (id: string) => {
+      if (id !== "workspace") throw new Error("Workspace does not exist");
+      return workspace;
+    },
+    listWorkspaces: () => [{ id: "workspace", name: "Fixture" }],
     sessions: { id: (_agent: string, id: string) => id, get: (id: string) => indexed.get(id) },
   } as unknown as BackendStore;
   const sessions = {
@@ -293,6 +297,128 @@ async function dispatch(owner: ClaudeManagedReadOwner, permit: Record<string, an
 describe.skipIf(!["darwin", "linux"].includes(process.platform))(
   "Claude remote owner parity (synthetic offline CLI)",
   () => {
+    it("reads a scoped new-session catalog without persisting a session, then sends with the explicit choice", async () => {
+      const f = fixture("2.1.286", 20, "effort-models");
+      expect(await f.owner.request({ operation: "options" })).toMatchObject({
+        available: true,
+        models: [],
+      });
+      await expect(
+        f.owner.request({ operation: "options", workspaceId: "unregistered" }),
+      ).rejects.toThrow("Workspace does not exist");
+      expect(f.frames()).toEqual([]);
+      const request = { operation: "options", workspaceId: "workspace" };
+      const [catalog, duplicate] = await Promise.all([
+        f.owner.request(request),
+        f.owner.request(request),
+      ]);
+      expect(duplicate).toEqual(catalog);
+      expect(await f.owner.request(request)).toEqual(catalog);
+      expect(catalog).toMatchObject({
+        available: true,
+        models: [
+          { id: "fixture-model", name: "Fixture", efforts: ["low", "high"] },
+          { id: "fixture-low-model", name: "Low effort fixture", efforts: ["low"] },
+        ],
+      });
+      expect(catalog).not.toHaveProperty("defaults");
+      expect(f.frames()).toEqual([
+        {
+          args: expect.arrayContaining([
+            "--no-session-persistence",
+            "--safe-mode",
+            "--strict-mcp-config",
+            "--tools",
+            "",
+            "--no-chrome",
+          ]),
+        },
+        expect.objectContaining({
+          type: "control_request",
+          request: { subtype: "initialize", hooks: null },
+        }),
+      ]);
+      expect(existsSync(path.join(f.root, "claude-managed"))).toBe(false);
+
+      const selection = {
+        requestId: randomUUID(),
+        model: "FIXTURE-LOW-MODEL",
+        effort: "low",
+        verifyStartupModel: true,
+      };
+      const created = await create(f.owner, selection);
+      expect(created).toMatchObject({ accepted: true });
+      // Create rechecks the scoped catalog but still has not sent a user turn.
+      expect(f.frames()).toHaveLength(4);
+      expect(await create(f.owner, selection)).toMatchObject({ sessionId: created.sessionId });
+      expect(f.frames()).toHaveLength(4);
+      expect(
+        await control(f.owner, created.sessionId, "send", { text: "First turn" }),
+      ).toMatchObject({
+        accepted: true,
+      });
+      await expect
+        .poll(async () => (await f.owner.live(created.sessionId, true)).status)
+        .toBe("idle");
+      const [launch, handshake, user] = f.frames().slice(4);
+      expect(launch?.args).not.toContain("--no-session-persistence");
+      expect(
+        launch?.args.slice(launch.args.indexOf("--model"), launch.args.indexOf("--model") + 2),
+      ).toEqual(["--model", "fixture-low-model"]);
+      expect(
+        launch?.args.slice(launch.args.indexOf("--effort"), launch.args.indexOf("--effort") + 2),
+      ).toEqual(["--effort", "low"]);
+      expect(handshake?.request.subtype).toBe("initialize");
+      expect(user).toMatchObject({ type: "user", session_id: created.sourceSessionId });
+    });
+
+    it("keeps the new-session catalog optional when the native handshake fails", async () => {
+      const f = fixture("2.1.286", 0, "initialize-rejected");
+      expect(
+        await f.owner.request({ operation: "options", workspaceId: "workspace" }),
+      ).toMatchObject({ available: true, models: [] });
+      expect(f.frames().filter((frame) => frame.type === "user")).toEqual([]);
+      const requestId = randomUUID();
+      expect(
+        await create(f.owner, { model: "fixture-model", verifyStartupModel: true, requestId }),
+      ).toMatchObject({
+        accepted: false,
+        completed: false,
+        controlOutcome: "not-dispatched",
+        requestId,
+        reason: "claude-startup-models-unavailable",
+      });
+      expect(existsSync(path.join(f.root, "claude-managed"))).toBe(false);
+      expect(await create(f.owner)).toMatchObject({ accepted: true });
+    });
+
+    it.each([
+      ["removed-model", "low", "unsupported-model"],
+      ["fixture-low-model", "high", "unsupported-effort"],
+    ])("rejects stale startup settings %s / %s before creating", async (model, effort, reason) => {
+      const f = fixture("2.1.286", 0, "effort-models");
+      const requestId = randomUUID();
+      expect(
+        await create(f.owner, { model, effort, requestId, verifyStartupModel: true }),
+      ).toMatchObject({
+        accepted: false,
+        completed: false,
+        controlOutcome: "not-dispatched",
+        requestId,
+        reason,
+      });
+      expect(f.frames().filter((frame) => frame.type === "user")).toEqual([]);
+      expect(existsSync(path.join(f.root, "claude-managed"))).toBe(false);
+    });
+
+    it("does not initialize the catalog before the advanced Claude CLI version", async () => {
+      const f = fixture("2.1.285");
+      expect(
+        await f.owner.request({ operation: "options", workspaceId: "workspace" }),
+      ).toMatchObject({ available: true, models: [], permissionModes: [] });
+      expect(f.frames()).toEqual([]);
+    });
+
     it("reads idle settings without starting a worker and prepares only on an explicit settings request", async () => {
       const f = fixture();
       const created = await create(f.owner);

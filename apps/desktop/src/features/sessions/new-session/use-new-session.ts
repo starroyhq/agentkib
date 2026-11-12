@@ -7,7 +7,7 @@ import {
   type ManagedAgent,
   type ManagedOptions,
 } from "@agentkib/web-client";
-import type { NewSessionCreateFields } from "@agentkib/session-ui";
+import { newSessionCopy, type NewSessionCreateFields } from "@agentkib/session-ui";
 import { createDesktopConversationClient } from "@/core/conversation-bridge";
 import type { SupportedLocale } from "@/core/types";
 import { codexReason } from "../conversation/features/sessions/codex-copy";
@@ -21,14 +21,25 @@ import {
   type PendingControl,
 } from "../conversation/features/sessions/pending-controls";
 
-export const newSessionOptionsKey = (agent: ManagedAgent) => ["new-session-options", agent];
+export const newSessionOptionsKey = (agent: ManagedAgent, workspaceId?: string) =>
+  workspaceId ? ["new-session-options", agent, workspaceId] : ["new-session-options", agent];
 
 /** Why nothing was created, in the words the old new-task form used, with the code as detail. */
 export type NewSessionFailure = { reason: string; detail?: string };
 
 export function failureOf(error: unknown, locale: SupportedLocale): NewSessionFailure {
   if (!(error instanceof ApiError)) return { reason: managedErrorCopy[locale].connection };
-  const reason = codexReason(locale, error.code.replaceAll("_", "-"));
+  const code = error.code.replaceAll("_", "-");
+  const copy = newSessionCopy(locale);
+  if (code === "dsh-create-model-not-applied")
+    return { reason: copy.startModelUnconfirmed, detail: code };
+  if (code === "dsh-create-model-selection-unsupported")
+    return { reason: copy.startModelUpgrade, detail: code };
+  if (code === "dsh-models-unavailable")
+    return { reason: copy.startModelUnavailable, detail: code };
+  if (code === "claude-startup-models-unavailable")
+    return { reason: copy.claudeStartupModelsUnavailable, detail: code };
+  const reason = codexReason(locale, code);
   return {
     reason: reason.technical ? managedErrorCopy[locale].failed : reason.text,
     detail: error.code,
@@ -42,11 +53,13 @@ export function failureOf(error: unknown, locale: SupportedLocale): NewSessionFa
  */
 export function useNewSession({
   agent,
+  workspaceId,
   locale,
   onReconciled,
   readOptions = true,
 }: {
   agent: ManagedAgent;
+  workspaceId?: string;
   locale: SupportedLocale;
   /** A create whose outcome was unknown turned out to have run. `own` is this composer's. */
   onReconciled: (sessionId: string, own: boolean) => void;
@@ -78,9 +91,13 @@ export function useNewSession({
       : undefined;
   // The host reads an Agent's options from its own cache: the first Codex read starts an
   // app-server once, later ones answer at once.
+  const catalogWorkspace = agent === "codex" ? undefined : workspaceId;
   const options = useQuery({
-    queryKey: newSessionOptionsKey(agent),
-    queryFn: ({ signal }): Promise<ManagedOptions> => client.managedOptions(agent, signal),
+    queryKey: newSessionOptionsKey(agent, catalogWorkspace),
+    queryFn: ({ signal }): Promise<ManagedOptions> =>
+      catalogWorkspace
+        ? client.managedOptions(agent, signal, catalogWorkspace)
+        : client.managedOptions(agent, signal),
     enabled: controls && readOptions,
     staleTime: 5 * 60_000,
     retry: false,
@@ -129,7 +146,12 @@ export function useNewSession({
         forgetPending(scope, pending.requestId);
         setPending(undefined);
         if (result.status === "not-dispatched") {
-          setFailure({ reason: managedErrorCopy[locale].failed });
+          const reason = "ack" in result ? result.ack?.reason : undefined;
+          setFailure(
+            reason === "dsh-create-model-not-applied"
+              ? { reason: newSessionCopy(locale).startModelUnconfirmed, detail: reason }
+              : { reason: managedErrorCopy[locale].failed },
+          );
           return;
         }
         if (result.sessionId)
@@ -169,6 +191,9 @@ export function useNewSession({
         }
         const result = await client.managedAction("create", {
           ...fields,
+          ...(fields.agent === "claude-code" && catalogWorkspace && (fields.model || fields.effort)
+            ? { verifyStartupModel: true }
+            : {}),
           bootId: access.bootId,
           requestId,
         });
@@ -189,7 +214,7 @@ export function useNewSession({
         setBusy(false);
       }
     },
-    [access, scope, pending, client, locale],
+    [access, scope, pending, client, locale, catalogWorkspace],
   );
 
   return {

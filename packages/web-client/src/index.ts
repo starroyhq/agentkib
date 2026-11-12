@@ -502,6 +502,7 @@ export interface CodexCapabilities {
     Record<
       | SessionAction
       | "adopt"
+      | "reconcile"
       | "settings-state"
       | "goal"
       | "queue-list"
@@ -529,11 +530,13 @@ export interface ManagedOptions {
   models?: {
     id: string;
     name?: string;
+    resolvedModel?: string;
+    group?: string;
     efforts?: string[];
     isDefault?: boolean;
     defaultEffort?: string;
   }[];
-  /** Codex: the model and effort a session starts with when none is chosen. */
+  /** The model and effort the Agent reports for a new session. */
   defaults?: { model?: string | null; effort?: string | null };
   /** Codex: the execution policies a session can start with. */
   policies?: { id: string; name: string; description?: string }[];
@@ -575,6 +578,8 @@ export interface ManagedActionBody {
   name?: string;
   model?: string;
   effort?: string;
+  /** Claude Code: confirm this startup choice against the native catalog for the workspace. */
+  verifyStartupModel?: true;
   permissionMode?: ClaudePermissionMode;
   /** Codex: the execution policy a new session starts with. */
   policyId?: string;
@@ -585,9 +590,13 @@ export interface ManagedActionBody {
 }
 export interface ManagedActionResult {
   accepted?: boolean;
+  completed?: boolean;
+  controlOutcome?: "accepted" | "not-dispatched" | "unknown";
+  requestId?: string;
   sessionId?: string;
   sourceSessionId?: string;
   reconciled?: boolean;
+  reason?: string;
   live?: Live;
 }
 export interface UploadedAttachment {
@@ -625,6 +634,8 @@ export interface CodexAvailability {
 export interface ContextUsage {
   available: boolean;
   state?: "ready" | "pending" | "stale" | "unavailable";
+  /** Last saved report from native history, outside the live report sequence. */
+  historical?: true;
   /** Native observer instance, ordered within a runtime boot independently of stream epochs. */
   reportGeneration?: number;
   /** Report sequence within its native observer, independent of the control revision. */
@@ -655,6 +666,8 @@ export interface CodexSessionSettings {
   status?: string;
   current: CodexSettingValues;
   selected?: CodexSettingValues;
+  /** Last used in native history. These values are display-only. */
+  historicalSettings?: Pick<CodexSettingValues, "modelId" | "effort">;
   applicationStatus?: "pending" | "confirmed" | "unknown";
   defaults: {
     modelId?: string;
@@ -1054,9 +1067,12 @@ export class WebClient {
       clearTimeout(timer);
     };
   }
-  managedOptions(agent: ManagedAgent = "codex", signal?: AbortSignal) {
+  managedOptions(agent: ManagedAgent = "codex", signal?: AbortSignal, workspaceId?: string) {
+    const query = new URLSearchParams();
+    if (agent !== "codex") query.set("agent", agent);
+    if (workspaceId) query.set("workspaceId", workspaceId);
     return this.request<ManagedOptions>(
-      agent === "codex" ? "managed/options" : `managed/options?${new URLSearchParams({ agent })}`,
+      query.size ? `managed/options?${query}` : "managed/options",
       undefined,
       signal,
     );

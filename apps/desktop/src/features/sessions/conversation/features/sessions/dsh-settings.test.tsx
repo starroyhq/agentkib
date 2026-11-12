@@ -2,6 +2,7 @@
 import "@testing-library/jest-dom/vitest";
 import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import userEvent from "@testing-library/user-event";
 import type { CodexSessionSettings } from "@agentkib/web-client";
 import { CodexComposerControls } from "./codex-session-controls";
 import { useSession } from "./session-context";
@@ -66,18 +67,15 @@ beforeEach(() => {
 afterEach(cleanup);
 
 describe("DeepSeek Harness model settings in the composer", () => {
-  it("reads DSH's own models through the managed route, and nothing Codex-only", async () => {
+  it("reads DSH's own models without showing a settings panel when there are no permissions", async () => {
     render(<CodexComposerControls {...props} />);
     await waitFor(() =>
       expect(state.client.sessionSettings).toHaveBeenCalledWith("session", "deepseek-harness"),
     );
-    fireEvent.click(await screen.findByRole("button", { name: copy.conversationSettings }));
-    expect(await screen.findByLabelText(copy.model)).toHaveTextContent("DeepSeek Chat");
-    // Only the model and its effort: no Codex mode, service tier or execution policy rows.
-    expect(screen.getByLabelText(copy.effort)).toBeInTheDocument();
-    // A row's label also holds its reason text, so match the label's start.
-    for (const label of [copy.mode, copy.serviceTier, copy.executionPolicy])
-      expect(screen.queryByLabelText(label, { exact: false })).not.toBeInTheDocument();
+    expect(await screen.findByRole("button", { name: /DeepSeek Chat/ })).toBeInTheDocument();
+    expect(
+      screen.queryByRole("button", { name: copy.conversationSettings }),
+    ).not.toBeInTheDocument();
     expect(state.client.codexSessionSettings).not.toHaveBeenCalled();
     expect(state.client.codexGoals).not.toHaveBeenCalled();
     // Without goal, resource or attachment capabilities there is nothing to add.
@@ -103,7 +101,7 @@ describe("DeepSeek Harness model settings in the composer", () => {
       },
     } as unknown as ReturnType<typeof useSession>;
     render(<CodexComposerControls {...props} />);
-    fireEvent.click(await screen.findByRole("button", { name: copy.conversationSettings }));
+    fireEvent.click(await screen.findByRole("button", { name: /DeepSeek Chat/ }));
     expect(await screen.findByText(copy.settingsWhileRunning)).toBeInTheDocument();
     expect(screen.queryByText(codexReason("en-US", "session-busy").text)).not.toBeInTheDocument();
   });
@@ -135,7 +133,9 @@ describe("DeepSeek Harness model settings in the composer", () => {
       },
     } as unknown as ReturnType<typeof useSession>;
     render(<CodexComposerControls {...props} />);
-    fireEvent.click(await screen.findByRole("button", { name: copy.conversationSettings }));
+    const permissions = await screen.findByRole("button", { name: copy.conversationSettings });
+    expect(permissions).toHaveTextContent("Workspace write · ask when needed");
+    fireEvent.click(permissions);
     expect(await screen.findByText(copy.settingsWhileRunningModel)).toBeInTheDocument();
     expect(screen.queryByText(copy.settingsWhileRunning)).not.toBeInTheDocument();
     // A row's label also holds its reason text, so match the label's start.
@@ -144,6 +144,18 @@ describe("DeepSeek Harness model settings in the composer", () => {
     // The select names the preset, not its ID.
     expect(policy).toHaveTextContent("Workspace write · ask when needed");
     expect(policy).not.toHaveTextContent("workspace-write");
+    for (const label of [copy.model, copy.effort, copy.serviceTier])
+      expect(screen.queryByLabelText(label)).not.toBeInTheDocument();
+    const user = userEvent.setup();
+    await user.click(policy);
+    await user.click(await screen.findByRole("option", { name: "Read only · ask when needed" }));
+    expect(policy).toHaveTextContent("Read only · ask when needed");
+    const apply = screen.getByRole("button", { name: copy.apply });
+    expect(apply).toBeEnabled();
+    await user.click(apply);
+    expect(state.codexAction).toHaveBeenCalledExactlyOnceWith("settings", {
+      policyId: "read-only",
+    });
   });
 
   it("explains nothing about pausing, resuming or clearing while there is no goal", async () => {
@@ -239,11 +251,13 @@ describe("DeepSeek Harness model settings in the composer", () => {
       },
     } as unknown as ReturnType<typeof useSession>;
     render(<CodexComposerControls {...props} />);
-    // The settings button names no model; the composer's model control does.
+    // A model-only session has a single entry point.
     expect(
       await screen.findByRole("button", { name: `${picker.chooseEffort}: DeepSeek Chat` }),
     ).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: copy.conversationSettings })).toBeInTheDocument();
+    expect(
+      screen.queryByRole("button", { name: copy.conversationSettings }),
+    ).not.toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: `${picker.chooseEffort}: DeepSeek Chat` }));
     const popup = await screen.findByRole("dialog");
     expect(within(popup).getByText(`${picker.defaultEffort} · High`)).toBeInTheDocument();

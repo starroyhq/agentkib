@@ -14,6 +14,7 @@ let state: ReturnType<typeof useSession>;
 function prepare(
   features: Record<string, { available: boolean; reason?: string }>,
   agent: "codex" | "claude-code" = "codex",
+  full = true,
 ) {
   state = {
     selected: "s",
@@ -34,7 +35,7 @@ function prepare(
       status: "approved",
       experimentalEnabled: true,
       bootId: "boot",
-      device: { id: "device", accessMode: "full", organize: true },
+      device: { id: "device", ...(full && { accessMode: "full" }), organize: true },
     },
     live: { sessionId: "s", status: "idle", revision: 1 },
     capabilities: { sessionId: "s", executionMode: "codex-managed", status: "idle", features },
@@ -50,6 +51,17 @@ function prepare(
 }
 beforeEach(() => navigate.mockReset());
 afterEach(cleanup);
+
+it.each([true, false])(
+  "keeps model settings out of desktop actions (full access: %s)",
+  async (full) => {
+    prepare({ settings: { available: true } }, "codex", full);
+    render(<CodexTools open />);
+    await screen.findByText(copy.queueEmpty);
+    expect(screen.queryByRole("heading", { name: copy.settings })).not.toBeInTheDocument();
+    expect(state.client.request).not.toHaveBeenCalled();
+  },
+);
 
 describe("deleting a session from its actions on the desktop", () => {
   it("asks first, deletes once confirmed, and leaves the deleted session", async () => {

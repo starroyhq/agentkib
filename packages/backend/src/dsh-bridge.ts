@@ -58,6 +58,7 @@ const POLL_MS = 20_000;
 const HISTORY_TIMEOUT_MS = 15_000;
 /** DSH lists its Agent presets from memory; the new-task form waits for them. */
 const PRESETS_TIMEOUT_MS = 5_000;
+const CREATE_MODELS_TIMEOUT_MS = 5_000;
 /** History read in this run, served while no DSH can be asked. Memory only. */
 const PAGE_CACHE_CHARS = 16 * 1024 * 1024;
 /** How often a session with unconfirmed commands asks its DSH again. */
@@ -129,6 +130,9 @@ const selectionSchema = z
     reasoningEffort: modelPartSchema.nullable(),
   })
   .strip();
+const createSelectionSchema = selectionSchema.extend({
+  reasoningEffort: z.string().min(1).max(32).optional(),
+});
 const modelsSchema = z
   .object({
     models: z
@@ -152,6 +156,10 @@ const modelsSchema = z
   })
   .strip();
 type DshModels = z.infer<typeof modelsSchema>;
+type DshModelSelection = NonNullable<DshModels["selected"]>;
+type DshCreateSelection = NonNullable<
+  Extract<DshBridgeCommand, { type: "create" }>["modelSelection"]
+>;
 /**
  * One DSH model as a single picker ID. Both parts are URI-encoded, so a "/" inside a provider or
  * model name cannot be mistaken for the separator.
@@ -171,6 +179,40 @@ function parseModelId(value: unknown): { provider: string; model: string } | nul
     return null;
   }
 }
+function modelChoices(catalog: DshModels, forCreate = false) {
+  const names = new Map<string, number>();
+  for (const model of catalog.models) names.set(model.name, (names.get(model.name) ?? 0) + 1);
+  return catalog.models.flatMap((model) => {
+    const id = modelId(model.provider, model.model);
+    if (forCreate && id.length > 128) return [];
+    const efforts = model.efforts
+      .map((effort) => effort.id)
+      .filter((effort) => !forCreate || effort.length <= 32);
+    return [
+      {
+        id,
+        name:
+          (names.get(model.name) ?? 0) > 1 ? `${model.name} · ${model.providerName}` : model.name,
+        group: model.providerName,
+        efforts,
+        ...(model.defaultEffort && (!forCreate || efforts.includes(model.defaultEffort))
+          ? { defaultEffort: model.defaultEffort }
+          : {}),
+      },
+    ];
+  });
+}
+function matchesSelection(
+  recorded: DshModels["selected"],
+  expected: DshCreateSelection | DshModelSelection,
+) {
+  return (
+    recorded?.provider === expected.provider &&
+    recorded.model === expected.model &&
+    recorded.reasoningEffort === (expected.reasoningEffort ?? null)
+  );
+}
+const createModelAckSchema = z.object({ sessionId: nativeIdSchema, selected: selectionSchema });
 const stateSchema = z
   .object({
     sessionId: nativeIdSchema,
@@ -338,6 +380,7 @@ const servicesSchema = z
     questions: z.boolean(),
     workspaceController: z.boolean().optional(),
     modelCatalog: z.boolean().optional(),
+    createModelSelection: z.boolean().optional(),
     images: z.boolean().optional(),
     goals: z.boolean().optional(),
     commands: z.boolean().optional(),
@@ -1972,10 +2015,12 @@ export class DshBridge {
    * Whether a new session can start now: exactly one running DSH that can take it. That DSH's
    * Agent presets come with it when it lists them; without them a session runs DSH's default.
    */
-  async createOptions(): Promise<{
+  async createOptions(includeModels = false): Promise<{
     available: boolean;
     reason?: string;
     agentPresets?: DshBridgeAgentPreset[];
+    models?: ReturnType<typeof modelChoices>;
+    defaults?: { model: string | null; effort: string | null };
   }> {
     if (!this.supported) return { available: false, reason: "platform-unsupported" };
     let runtime = this.#creator();
@@ -1989,16 +2034,51 @@ export class DshBridge {
         return { available: false, reason: preflightReason(error) };
       }
     if (!runtime) return { available: false, reason: this.#offlineReason(false) };
-    if (runtime.services.agentPresets !== true) return { available: true };
+    const [result, catalog] = await Promise.all([
+      runtime.services.agentPresets === true
+        ? this.#command(runtime, { commandId: randomUUID(), type: "presets" }, PRESETS_TIMEOUT_MS)
+        : null,
+      includeModels && runtime.services.createModelSelection === true
+        ? this.#readModelCatalog(runtime)
+        : null,
+    ]);
+    const roster = result?.ok ? presetsSchema.safeParse(result.value) : null;
+    const models = catalog ? modelChoices(catalog, true) : [];
+    const defaultId = catalog?.default
+      ? modelId(catalog.default.provider, catalog.default.model)
+      : null;
+    const defaultModel = models.find((model) => model.id === defaultId);
+    const defaultEffort = catalog?.default?.reasoningEffort;
+    return {
+      available: true,
+      ...(roster?.success ? { agentPresets: roster.data.presets } : {}),
+      ...(models.length
+        ? {
+            models,
+            defaults: {
+              model: defaultModel?.id ?? null,
+              effort:
+                defaultEffort && defaultModel?.efforts.includes(defaultEffort)
+                  ? defaultEffort
+                  : null,
+            },
+          }
+        : {}),
+    };
+  }
+  async #readModelCatalog(runtime: Runtime, sessionId?: string, recordedOnly = false) {
     const result = await this.#command(
       runtime,
-      { commandId: randomUUID(), type: "presets" },
-      PRESETS_TIMEOUT_MS,
+      {
+        commandId: randomUUID(),
+        type: "models",
+        sessionId,
+        ...(recordedOnly ? { recordedOnly } : {}),
+      },
+      CREATE_MODELS_TIMEOUT_MS,
     );
-    const roster = result.ok ? presetsSchema.safeParse(result.value) : null;
-    return roster?.success
-      ? { available: true, agentPresets: roster.data.presets }
-      : { available: true };
+    const catalog = result.ok ? modelsSchema.safeParse(result.value) : null;
+    return catalog?.success ? catalog.data : null;
   }
   /**
    * The DSH a new session starts in: the user's own when exactly one runs, else the one AgentKib
@@ -2030,6 +2110,7 @@ export class DshBridge {
     if (replay) return replay;
     let runtime: Runtime;
     let cwd: string;
+    let modelSelection: DshCreateSelection | undefined;
     try {
       if (this.#closed || !this.supported) throw new Error("control-unavailable");
       const root = this.options.workspacePath?.(workspaceId) ?? null;
@@ -2040,11 +2121,27 @@ export class DshBridge {
       if (candidate) runtime = candidate;
       else if (this.#startable()) runtime = await this.#ensureManaged();
       else throw new Error(this.#offlineReason(false));
+      if (value.model !== undefined || value.effort !== undefined) {
+        if (runtime.services.createModelSelection !== true)
+          throw new Error("dsh-create-model-selection-unsupported");
+        const model = parseModelId(value.model);
+        if (
+          !model ||
+          typeof value.model !== "string" ||
+          value.model.length > 128 ||
+          modelId(model.provider, model.model) !== value.model
+        )
+          throw new Error("unsupported-model");
+        const effort = value.effort;
+        if (effort !== undefined && (typeof effort !== "string" || !effort || effort.length > 32))
+          throw new Error("unsupported-effort");
+        modelSelection = { ...model, ...(effort === undefined ? {} : { reasoningEffort: effort }) };
+      }
     } catch (error) {
       return result("not-dispatched", { reason: preflightReason(error) });
     }
-    // DSH names a new session after the ID it is given, so the receipt carries the real session
-    // and a reply that never comes back is settled by that session being listed or not.
+    // DSH uses the supplied session ID. It lets us reconcile a lost reply against the same
+    // session and check its initial model selection before releasing the first draft.
     const nativeId = `session-${randomUUID()}`;
     const id = this.options.sessionId(nativeId);
     const commandId = randomUUID();
@@ -2054,6 +2151,7 @@ export class DshBridge {
       runtimeId: runtime.runtimeId,
       workspaceId,
       nativeSessionId: nativeId,
+      ...(modelSelection ? { modelSelection } : {}),
       claimedAt: Date.now(),
       runtimeBootId: this.options.bootId,
       executionMode: DSH_EXECUTION_MODE,
@@ -2072,18 +2170,30 @@ export class DshBridge {
           cwd,
           sessionId: nativeId,
           ...(agentPreset ? { agentPreset } : {}),
+          ...(modelSelection ? { modelSelection } : {}),
         },
         undefined,
         () => dispatchManagedCommand(this.options.dataDir, requestId),
       );
       const child = sent.ok ? (sent.value as { sessionId?: unknown } | null)?.sessionId : undefined;
       if (typeof child === "string" && child) made = child;
-      if (sent.ok) await this.#listed(made);
+      if (sent.ok || sent.error === "dsh-create-model-not-applied") await this.#listed(made);
     } finally {
       this.#inflight.delete(id);
     }
     // Delivered without a reply: never sent again, settled as described above.
-    if (sent.error === "unknown") {
+    const selected = modelSelection && sent.ok ? createModelAckSchema.safeParse(sent.value) : null;
+    const selectionUnconfirmed =
+      modelSelection &&
+      sent.ok &&
+      (!selected?.success ||
+        selected.data.sessionId !== nativeId ||
+        !matchesSelection(selected.data.selected, modelSelection));
+    if (
+      sent.error === "unknown" ||
+      sent.error === "dsh-create-model-not-applied" ||
+      selectionUnconfirmed
+    ) {
       this.#unknownSessions.add(nativeId);
       this.#autoReconcile(nativeId);
       return result("unknown", { reason: "control-outcome-unconfirmed" });
@@ -2169,10 +2279,15 @@ export class DshBridge {
     };
   }
   /**
-   * Settles a create whose reply never came. Its session being listed means DSH made it; long
-   * overdue, a DSH that listed its sessions since and has none under that ID never made it.
+   * Settles an unconfirmed create using a fresh session listing and, when requested, the
+   * model selection recorded in the new session.
    */
-  #settleCreate(id: string, requestId: string): Record<string, unknown> | null {
+  #settleCreate(
+    id: string,
+    requestId: string,
+    selectionVerified?: boolean,
+  ): Record<string, unknown> | null {
+    if (this.#inflight.get(id)?.requestId === requestId) return null;
     const command = readUnknownManagedCommands(this.options.dataDir, id).find(
       (item) => item.requestId === requestId,
     );
@@ -2180,14 +2295,26 @@ export class DshBridge {
     const claimedAt = Number(command.evidence.claimedAt);
     const giveUp = this.options.reconcileGiveUpMs ?? RECONCILE_GIVE_UP_MS;
     const listed = this.#ids.has(id);
+    const overdue = Date.now() - claimedAt >= giveUp;
     const absent =
-      Date.now() - claimedAt >= giveUp &&
+      overdue &&
       this.#online().some(
         (runtime) => runtime.services.sessionController && runtime.listedAt > claimedAt,
       );
     if (!listed && !absent) return null;
+    // A blank session can be listed before its initial selection is applied. Only read-back
+    // evidence may release the pending first draft, even when the original reply was lost.
+    if (
+      listed &&
+      command.evidence.modelSelection &&
+      selectionVerified !== true &&
+      !(selectionVerified === false && overdue)
+    )
+      return null;
     const outcome = listed
-      ? this.#created(requestId, "accepted", { sessionId: id })
+      ? selectionVerified === false
+        ? this.#created(requestId, "not-dispatched", { reason: "dsh-create-model-not-applied" })
+        : this.#created(requestId, "accepted", { sessionId: id })
       : this.#created(requestId, "not-dispatched", { reason: "dsh-session-not-created" });
     finishManagedCommand(this.options.dataDir, requestId, outcome);
     this.#unknownSince.delete(requestId);
@@ -2310,9 +2437,6 @@ export class DshBridge {
         ? { model: modelId(selection.provider, selection.model), effort: selection.reasoningEffort }
         : { model: null, effort: null };
     const current = values(catalog.selected ?? catalog.default);
-    // The same model name can come from more than one provider.
-    const names = new Map<string, number>();
-    for (const model of catalog.models) names.set(model.name, (names.get(model.name) ?? 0) + 1);
     const writable = live.queueEditEnabled === true && live.status === "idle";
     // Why an offered choice cannot change now: a running turn keeps its model until it ends.
     const blocked =
@@ -2338,15 +2462,7 @@ export class DshBridge {
       selected,
       defaults: values(catalog.default),
       applicationStatus: "confirmed",
-      models: catalog.models.map((model) => ({
-        id: modelId(model.provider, model.model),
-        name:
-          (names.get(model.name) ?? 0) > 1 ? `${model.name} · ${model.providerName}` : model.name,
-        // DSH's own model menu lists models under their provider.
-        group: model.providerName,
-        efforts: model.efforts.map((effort) => effort.id),
-        ...(model.defaultEffort ? { defaultEffort: model.defaultEffort } : {}),
-      })),
+      models: modelChoices(catalog),
       policies: policyFields?.policies ?? [],
       ...modeFields,
       writable: {
@@ -2567,9 +2683,14 @@ export class DshBridge {
       if (!runtime || this.#inflight.get(id)?.requestId === command.requestId) continue;
       const evidence = command.evidence ?? {};
       const operation = String(evidence.operation);
-      // This session is listed, so the create that reserved its ID ran.
       if (operation === "create") {
-        if (this.#settleCreate(id, command.requestId)) reconciled = true;
+        const expected = createSelectionSchema.safeParse(evidence.modelSelection);
+        let verified: boolean | undefined;
+        if (expected.success && runtime.services.createModelSelection === true) {
+          const catalog = await this.#readModelCatalog(runtime, nativeId, true);
+          if (catalog) verified = matchesSelection(catalog.selected, expected.data);
+        }
+        if (this.#settleCreate(id, command.requestId, verified)) reconciled = true;
         continue;
       }
       const since = this.#unknownSince.get(command.requestId) ?? Date.now();
@@ -2690,6 +2811,10 @@ export class DshBridge {
       const ack = this.#settleCreate(String(result.sessionId), String(result.requestId));
       if (ack)
         result = { ...result, status: ack.accepted === true ? "accepted" : "not-dispatched", ack };
+      else {
+        const nativeId = this.#ids.get(String(result.sessionId));
+        if (nativeId) this.#autoReconcile(nativeId);
+      }
     }
     return {
       ...result,

@@ -4,8 +4,8 @@ import type { WebClient } from "@agentkib/web-client";
 import "@testing-library/jest-dom/vitest";
 import type { ReactNode } from "react";
 import { ApiError } from "@agentkib/web-client";
-import type { ManagedOptions } from "@agentkib/web-client";
-import { act, cleanup, render, screen, waitFor } from "@testing-library/react";
+import type { ManagedActionBody, ManagedActionResult, ManagedOptions } from "@agentkib/web-client";
+import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { ManagedTasks } from "@/features/sessions/conversation/features/sessions/managed-tasks";
 import { managedControlCopy } from "@/features/sessions/conversation/features/sessions/managed-control-copy";
@@ -80,7 +80,7 @@ function createSession() {
     capabilities: {
       sessionId: "session",
       reason: undefined as string | undefined,
-      features: { adopt: { available: true } },
+      features: { adopt: { available: true }, reconcile: { available: false } },
     },
     access: {
       status: "approved",
@@ -97,6 +97,8 @@ function createSession() {
         sessionId: "session",
         handoffFingerprint: "verified-history" as string | undefined,
       })),
+      managedAction:
+        vi.fn<(action: string, body: ManagedActionBody) => Promise<ManagedActionResult>>(),
       receipt: vi.fn<(...args: [string]) => Promise<unknown>>(async (requestId) => ({
         found: false,
         requestId,
@@ -240,6 +242,78 @@ describe("automatic Claude continuation replaces execution handoff", () => {
       expect(mutations()).toEqual([]);
     },
   );
+  it("checks an uncertain Claude execution from session actions with a durable request", async () => {
+    session.live.executionMode = "claude-managed";
+    session.live.status = "outcome-unknown";
+    session.controlReady = false;
+    session.capabilities.features.reconcile.available = true;
+    const scope = pendingScope(session.origin, session.access.device.id);
+    let finish!: (result: ManagedActionResult) => void;
+    session.client.managedAction.mockImplementation((_action, body) => {
+      expect(readPending(scope)).toMatchObject([{ requestId: body.requestId, kind: "reconcile" }]);
+      return new Promise((resolve) => {
+        finish = resolve;
+      });
+    });
+    render(panel(true));
+    const button = screen.getByRole("button", { name: "Reconcile outcome" });
+    fireEvent.click(button);
+    expect(button).toBeDisabled();
+    fireEvent.click(button);
+    expect(session.client.managedAction).toHaveBeenCalledExactlyOnceWith("reconcile", {
+      agent: "claude-code",
+      sessionId: session.selected,
+      bootId: session.access.bootId,
+      requestId: expect.any(String),
+    });
+    await act(async () =>
+      finish({
+        accepted: true,
+        reconciled: true,
+        requestId: session.client.managedAction.mock.calls[0]?.[1].requestId,
+        sessionId: session.selected,
+      }),
+    );
+    expect(readPending(scope)).toEqual([]);
+    expect(session.refresh).toHaveBeenCalledExactlyOnceWith(true);
+  });
+
+  it("checks only the saved receipt after a reconciliation response is lost", async () => {
+    session.live.executionMode = "claude-managed";
+    session.live.status = "outcome-unknown";
+    session.capabilities.features.reconcile.available = true;
+    const scope = pendingScope(session.origin, session.access.device.id);
+    session.client.managedAction.mockRejectedValue(new ApiError(503, "outcome_unknown", "unknown"));
+    render(panel(true));
+    fireEvent.click(screen.getByRole("button", { name: "Reconcile outcome" }));
+    const [{ requestId: sent }] = readPending(scope);
+    await waitFor(() => expect(session.client.receipt).toHaveBeenCalledWith(sent));
+    expect(screen.getByRole("button", { name: "Reconcile outcome" })).toBeDisabled();
+    expect(readPending(scope)).toMatchObject([{ requestId: sent, kind: "reconcile" }]);
+    expect(session.client.managedAction).toHaveBeenCalledOnce();
+  });
+  it("clears a structured rejection when the host did not admit reconciliation", async () => {
+    session.live.executionMode = "claude-managed";
+    session.live.status = "outcome-unknown";
+    session.capabilities.features.reconcile.available = true;
+    const scope = pendingScope(session.origin, session.access.device.id);
+    session.client.managedAction.mockImplementation(async (_action, body) => ({
+      accepted: false,
+      completed: false,
+      controlOutcome: "not-dispatched",
+      requestId: body.requestId,
+      sessionId: body.sessionId,
+      reason: "web-busy",
+    }));
+    render(panel(true));
+    const button = screen.getByRole("button", { name: "Reconcile outcome" });
+    fireEvent.click(button);
+    expect(await screen.findByRole("alert")).toHaveTextContent("web-busy");
+    expect(readPending(scope)).toEqual([]);
+    expect(button).toBeEnabled();
+    expect(session.client.managedAction).toHaveBeenCalledOnce();
+    expect(session.client.receipt).not.toHaveBeenCalled();
+  });
   it.each([
     "unknown",
     "not-found",

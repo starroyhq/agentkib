@@ -249,8 +249,16 @@ export function CodexComposerControls({
   const usageView = useContextUsage(settings?.sessionId === selected ? settings.usage : undefined);
 
   const applySettings = useCallback(
-    (value: CodexSessionSettings) => {
-      setSettings(value);
+    (value: CodexSessionSettings, fromLive = false) => {
+      setSettings((previous) =>
+        fromLive && previous?.sessionId === value.sessionId
+          ? {
+              ...value,
+              historicalSettings: value.historicalSettings ?? previous.historicalSettings,
+              usage: previous.usage?.historical ? previous.usage : value.usage,
+            }
+          : value,
+      );
       if (settingsDraftRevision.current !== undefined) return;
       const selected = settingsSelection(value, isClaude);
       setModel(modelOption(value, selected.modelId)?.id ?? selected.modelId ?? "");
@@ -477,12 +485,13 @@ export function CodexComposerControls({
 
   useEffect(() => {
     if (live?.settings?.sessionId === selected) {
-      applySettings({
-        ...live.settings,
-        usage: live.usage ?? live.settings.usage,
-      });
+      applySettings({ ...live.settings, usage: live.usage ?? live.settings.usage }, true);
     } else if (live?.usage && settings?.sessionId === selected) {
-      setSettings((value) => (value ? { ...value, usage: live.usage } : value));
+      // The observer takes live usage directly. Keep the HTTP history report available
+      // while an idle live snapshot only has a placeholder.
+      setSettings((value) =>
+        value && !value.usage?.historical ? { ...value, usage: live.usage } : value,
+      );
     }
     if (live?.goal && goal?.sessionId === selected)
       setGoal((value) => (value ? { ...value, goal: live.goal } : value));
@@ -733,8 +742,45 @@ export function CodexComposerControls({
       </label>
     );
   };
+  const isCodex = current?.agent === "codex";
+  const settingsScope = resourceScope.current;
+  const liveSettings =
+    isCodex && live?.settings?.sessionId === selected ? live.settings : undefined;
+  const liveSelection = liveSettings && settingsSelection(liveSettings, false);
+  const liveReport =
+    liveSelection?.modelId || liveSelection?.effort ? liveSelection : liveSettings?.current;
+  const reportedSettings =
+    settings?.applicationStatus !== "pending" && (liveReport?.modelId || liveReport?.effort)
+      ? liveReport
+      : displayedSettings?.modelId || displayedSettings?.effort || !isCodex
+        ? displayedSettings
+        : settings?.current;
+  const lastUsed =
+    isCodex &&
+    access?.device?.advancedControl === true &&
+    settingsScope.client === client &&
+    settingsScope.bootId === access?.bootId &&
+    settingsScope.deviceId === access?.device?.id &&
+    settings?.sessionId === selected &&
+    !reportedSettings?.modelId &&
+    !reportedSettings?.effort &&
+    settings.applicationStatus !== "pending" &&
+    !pendingSettings &&
+    (!live ||
+      (live.sessionId === selected &&
+        (live.status === "idle" || live.status === "unsupported") &&
+        !live.executionLocation)) &&
+    !compacting
+      ? settings.historicalSettings
+      : undefined;
   const currentModel =
-    modelOption(settings, displayedSettings?.modelId)?.name ?? displayedSettings?.modelId;
+    modelOption(settings, reportedSettings?.modelId)?.name ?? reportedSettings?.modelId;
+  const currentEffort = reportedSettings?.effort;
+  const lastModel = modelOption(settings, lastUsed?.modelId)?.name ?? lastUsed?.modelId;
+  const lastUsedText = [lastModel, lastUsed?.effort && term(lastUsed.effort)]
+    .filter(Boolean)
+    .join(" · ");
+  const settingsLabel = lastUsedText ? `${layout.lastUsed} · ${lastUsedText}` : currentModel;
 
   return (
     <>
@@ -784,23 +830,23 @@ export function CodexComposerControls({
             <Button
               type="button"
               variant="ghost"
-              className={`h-11 min-w-11 max-w-72 gap-1.5 @max-[22rem]:size-11 @max-[22rem]:gap-0 @max-[22rem]:p-0 rounded-full px-3 text-muted-foreground hover:text-foreground ${currentModel ? "shrink justify-start" : "shrink-0 justify-center"}`}
-              aria-label={currentModel ? undefined : copy.conversationSettings}
+              className={`h-11 min-w-11 max-w-72 gap-1.5 @max-[22rem]:size-11 @max-[22rem]:gap-0 @max-[22rem]:p-0 rounded-full px-3 text-muted-foreground hover:text-foreground ${settingsLabel ? "shrink justify-start" : "shrink-0 justify-center"}`}
+              aria-label={settingsLabel ? undefined : copy.conversationSettings}
               title={
-                currentModel
-                  ? `${copy.conversationSettings}: ${currentModel}`
+                settingsLabel
+                  ? `${copy.conversationSettings}: ${settingsLabel}`
                   : copy.conversationSettings
               }
               disabled={disabled}
               onClick={() => openControls("settings")}
             >
               <Settings2 className="size-4 shrink-0" aria-hidden="true" />
-              <span className={currentModel ? "truncate @max-[22rem]:sr-only" : "sr-only"}>
-                {currentModel || copy.conversationSettings}
+              <span className={settingsLabel ? "truncate @max-[22rem]:sr-only" : "sr-only"}>
+                {settingsLabel || copy.conversationSettings}
               </span>
-              {displayedSettings?.effort && (
+              {currentEffort && (
                 <span className="shrink-0 text-xs text-muted-foreground @max-[22rem]:hidden">
-                  {term(displayedSettings.effort)}
+                  {term(currentEffort)}
                 </span>
               )}
               {settings?.applicationStatus === "pending" && (
@@ -971,6 +1017,11 @@ export function CodexComposerControls({
                 {layout.reloadDraft}
               </Button>
             </div>
+          )}
+          {lastUsedText && (
+            <p className="mb-3 break-words text-sm text-muted-foreground">
+              {layout.lastUsed} · {lastUsedText}
+            </p>
           )}
           {!settings?.available ? (
             <p role="status" className="text-sm text-muted-foreground">

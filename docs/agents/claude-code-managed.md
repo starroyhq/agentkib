@@ -18,8 +18,9 @@
 - 桌面启动时按项目统一的 CLI 发现规则查找 Claude（包括 macOS 的 `~/.local/bin`、Homebrew 等安装目录），并用同一解析路径完成版本验证和启动，不要求从终端启动 AgentKib，也不修改全局 PATH。找不到 CLI 或版本未经验证时仍禁用控制；不会跳过版本检查或自动安装 CLI。
 - 在桌面开启 Web 与实验控制，再按需授予浏览器发送、审批、管理、组织、设置及高级控制权限。默认关闭，读取授权不包含工具审批；高级设置/目标/资源读取仍受 full access 和高级控制权限约束。
 - 新建先保存工作区、请求身份和原生 UUID，新 CLI 使用 `--session-id=<UUID>`；续接已有会话使用 `--resume=<UUID>`。UUID、工作区及日志指纹仍在内部核对；外部历史变化后只在确认无占用、无未知回执且安全的空闲边界更新基线，不要求用户手动交接，也不会通过“最新会话”猜测身份。
+- 桌面新建前按所选工作区读取原生模型和推理强度。临时 CLI 只执行初始化，关闭 hooks、MCP 和工具，使用不保存会话模式。目录读取失败时仍可按 Claude Code 默认设置新建。首页显式选择在创建前按工作区核对，启动首轮时通过 `--model` 和 `--effort` 应用。
 - 后台续接启动前合并核对 `claude agents --json`、PID 登记与 `procStart`、进程命令行，并在运行中巡检；无法确认时保守拒绝。私有操作锁只约束 AgentKib 实例，无法原子约束官方 CLI；检测和停止不等于 Claude CLI 自带了写入锁。已连接终端由插件控制，不启动同 UUID 的后台执行者。
-- CLI 会加载其正常配置、CLAUDE.md、MCP 与 hooks；只对可信项目启用托管执行。AgentKib 启动 CLI 时唯一覆盖的环境变量是 `CLAUDE_CODE_DISABLE_BACKGROUND_TASKS=1`（理由与后果见下文“对 CLI 行为漂移的容错”）。保留 CLI 的权限配置，不启用跳过权限；CLI 自动允许的操作可能不会弹出审批，只有 CLI 实际请求的审批才展示。
+- 托管执行的 CLI 会加载其正常配置、CLAUDE.md、MCP 与 hooks；只对可信项目启用托管执行。启动会话执行时，AgentKib 只覆盖 `CLAUDE_CODE_DISABLE_BACKGROUND_TASKS=1`（理由与后果见下文“对 CLI 行为漂移的容错”）。保留 CLI 的权限配置，不启用跳过权限；CLI 自动允许的操作可能不会弹出审批，只有 CLI 实际请求的审批才展示。
 - 未选择权限模式时，AgentKib 不传 `--permission-mode`，会话沿用 CLI 自己的配置；用户设置、供应商和组织策略都可能让实际模式是 `auto`、`dontAsk` 或 `bypassPermissions`。AgentKib 只读取 CLI 在 `system/init` 与 `system/status` 帧里报告的 `permissionMode`（`manual` 视为 `default`）并如实显示：这三种模式下不会再逐项审批，桌面端和 Web 的会话输入区会显示带图标的文字提示（`bypassPermissions` 样式更醒目），只提示、不阻止发送。它们不是可选项，不进入权限选择控件，也不出现在“当前值”里。CLI 没有报告模式时保持未知，不推断；若检测到的 Claude Code 为 2.1.285 或更新、该会话在本次 Backend 运行中从未观察到模式、用户也没有选过权限，则补一句“可能以 auto 模式启动”的警示。依据是官方说明：拿不到功能开关的 `-p`/SDK 会话（例如第三方 provider 或关闭遥测）从 2.1.285 起默认 `auto`；组织策略也可能改变起始模式，所以这是提示，不是判定。Worker 空闲退休后继续显示上次观察到的模式并标注“上次观察”，会话释放或 Backend 重启后清除，不持久化。真机（2.1.299）确认：未传 `--permission-mode` 时 `system/init` 带 `permissionMode: "default"`，它出现在对 `initialize` 的控制响应之后，也晚于首条用户帧的写入，所以第一轮开始时的模式短暂是未知；AgentKib 取到后显示 `default`。其他版本、provider 与组织策略下是否总带该字段仍未验证。
 - 轮次用时：stream-json（`--print`）的会话记录不写 `system/turn_duration`，用时只在 `result.duration_ms` 里。AgentKib 在 `result` 到达时把它随本轮最后一条 Agent 回复下发，并存进应用数据的执行账本（`claude_turn_meta` 表，按原生会话与消息 ID，每个会话保留最新 1000 条），读取历史时补回；会话记录自带用时（在终端里运行的轮次）时以记录为准。本期之前托管的轮次没有存下用时，仍不显示。
 - 浏览器断线不等于终止模型执行；重连只同步快照，不重发请求。macOS 取消或退出会按父子关系捕获自有 Claude 进程树，核对 PID 与启动时间后清理，覆盖使用独立进程组的前台 Bash。无法确认完整清理时保留“结果待核对”，不报告安全释放；已脱离父子关系成为独立外部服务的进程不在清理保证内。
@@ -121,9 +122,9 @@
 
 - 所有设备都不发送 AgentKib 跟不上的命令。`/clear`（别名 `/reset`、`/new`）让 CLI 换一个原生会话 ID，此前会被当作协议错误而停止会话；`/loop`、`/batch` 启动后台工作；`/goal`、`/rename` 和带参数的 `/model`、`/effort` 改的是 AgentKib 自己保存的状态。这些命令在 AgentKib 里都有对应的操作：
   - `/clear`：新建会话即可得到空白上下文，这条会话保留；`/clear` 不出现在 `/` 菜单里。
-  - 腾出上下文：上下文用量对话框里有“压缩上下文”按钮，等同于单独发送一条 `/compact`，草稿、附件和历史引用保持不变；轮次运行中、会话还没有消息时不可用，只发给托管会话。会话页和桌面工作区的 Claude 面板都有这个按钮。
-  - 带参数时：输入框把 `/model <名称>`、`/effort <级别>` 改为下一轮设置，`/rename <名称>` 改为重命名，`/goal <目标>` 改为持续目标。`/model` 的名称按 CLI 在 initialize 时报告的模型列表匹配，电脑上的 AgentKib 服务和宿主用同一规则（`runtime-protocol` 的 `claudeModelOption`）各查一次：别名不区分大小写，也可以写完整模型 ID（例如 `claude-haiku-5-5`），保存为对应的别名；几个别名指向同一个 ID 时取具名的别名而不是 `default`。CLI 自己的 `/model` 还接受 `best`、`opusplan`、`sonnet[1m]` 等列表之外的名称，下一轮设置不接受：2.1.311 的 `set_model` 收到别名以外的名称时，会先用它向 API 发一次请求，名称无效时回复 `Model '…' not found`，这时设置已无法确认；完整模型 ID 换成别名后也不再发出这次请求。`/effort` 只接受 low、medium、high、xhigh、max；CLI 另有的 `auto`、`ultracode` 和拼错的级别由输入框说明可用的级别，不发请求。列表里没有的模型、所选模型不支持的思考强度不会改动设置：服务先拒绝，错误码为 `unsupported_model`、`unsupported_effort`，宿主再检查时回执原因为 `unsupported-model`、`unsupported-effort`。客户端都说明原因并保留草稿；完整访问的设备还显示“更改下一轮模型”，直接打开下一轮设置。
-  - 不带参数时：打开对应界面。`/model`、`/effort` 打开下一轮设置，`/goal` 打开持续目标，这两处需要完整访问；`/rename` 打开会话操作面板。打不开时，`/model`、`/effort` 照常交给 Claude Code 报告当前值，`/goal`、`/rename` 显示说明。
+  - 腾出上下文：桌面可在输入框单独发送 `/compact`。网页的上下文用量对话框提供“压缩上下文”按钮，等同于单独发送 `/compact`，草稿、附件和历史引用保持不变；轮次运行中、会话还没有消息时不可用，只发给托管会话。
+  - 带参数时：输入框把 `/model <名称>`、`/effort <级别>` 改为下一轮设置，`/rename <名称>` 改为重命名，`/goal <目标>` 改为持续目标。`/model` 的名称按 CLI 在 initialize 时报告的模型列表匹配，电脑上的 AgentKib 服务和宿主用同一规则（`runtime-protocol` 的 `claudeModelOption`）各查一次：别名不区分大小写，也可以写完整模型 ID（例如 `claude-haiku-5-5`），保存为对应的别名；几个别名指向同一个 ID 时取具名的别名而不是 `default`。CLI 自己的 `/model` 还接受 `best`、`opusplan`、`sonnet[1m]` 等列表之外的名称，下一轮设置不接受：2.1.311 的 `set_model` 收到别名以外的名称时，会先用它向 API 发一次请求，名称无效时回复 `Model '…' not found`，这时设置已无法确认；完整模型 ID 换成别名后也不再发出这次请求。`/effort` 只接受 low、medium、high、xhigh、max；CLI 另有的 `auto`、`ultracode` 和拼错的级别由输入框说明可用的级别，不发请求。列表里没有的模型、所选模型不支持的思考强度不会改动设置：服务先拒绝，错误码为 `unsupported_model`、`unsupported_effort`，宿主再检查时回执原因为 `unsupported-model`、`unsupported-effort`。客户端都说明原因并保留草稿；完整访问的设备还显示“更改下一轮模型”，桌面会直接打开右下角的选择器。
+  - 不带参数时：打开对应界面。桌面的 `/model`、`/effort` 分别打开右下角选择器的模型列表和强度滑条，网页打开下一轮设置；`/goal` 打开持续目标，这两处需要完整访问；`/rename` 打开会话操作面板。打不开时，`/model`、`/effort` 照常交给 Claude Code 报告当前值，`/goal`、`/rename` 显示说明。
   - 消息带附件、上下文引用或历史引用，或这项操作此时不可用时，只显示说明，不会丢掉附件。
   - `/loop`、`/batch` 没有对应按钮，要接着执行的消息请用待发队列或持续目标。
 - 远程设备（配对的浏览器）只能用一组只汇报会话、或展开为提示词的内置命令：`/compact`、`/context`、`/usage`、`/init`、`/code-review`、`/security-review`、`/simplify`、`/verify`、`/recap`、`/deep-research`、`/dataviz`、`/claude-api`、`/run`、`/color`、`/focus`、`/fast`、`/agents`、`/reload-skills`，以及不带参数的 `/model`、`/effort`、`/output-style`、`/autocompact`、`/mcp`。其余内置命令可能不经审批就改动这台电脑。用 CLI 2.1.311 对本地 API 桩实测：`/config permissionMode=auto` 写入 `~/.claude/settings.json`，此后新会话以 auto 模式启动；`/autocompact 200000` 写用户设置；`/output-style Concise` 写项目的 `.claude/settings.local.json`；`/heapdump` 往桌面写约 23 MB 的堆快照。这些命令只能在这台电脑上的 AgentKib 或终端里使用。技能、自定义命令和插件命令照常发送；CLI 不认识的名称作为普通文字交给模型。
@@ -149,12 +150,12 @@ capabilities 附带 CLI 在 initialize 时报告的命令目录（含 `builtin`�
 
 ## 桌面、附件与恢复
 
-- 工作区会话页提供 Claude 新建与交互面板；Web 使用现有新建、会话和弹窗入口。桌面 IPC 由宿主赋予本机 owner 身份，浏览器继续使用配对设备身份，不能提交本机文件路径。
+- 工作区会话列表直接打开统一会话页，“新建会话 · Claude Code”使用通用新建输入框，预选工作区和 Claude Code。若旧工作区面板留下了未确认的操作，先用原请求身份查询回执，确认已经创建或分支时打开已存在的会话。桌面 IPC 由宿主赋予本机 owner 身份，浏览器使用配对设备身份，不能提交本机文件路径。
 - 图片支持 PNG、JPEG、WebP、GIF，校验实际编码头和尺寸；Claude 单图原始数据不超过 4 MiB，单条图片合计不超过 12 MiB，边长不超过 8000。普通文件最多 10 个、单文件 25 MiB、消息总量 100 MiB。文件作为受管理副本交给 CLI，由其工具权限决定能否读取；上传成功不保证模型能理解格式。
 - 图片格式校验和 CLI 原生图片块传输不代表所选上游模型具备视觉能力。自定义渠道需选择支持图片输入的模型；例如 DeepSeek 官方能力表将 `deepseek-v4-pro` 列为仅文本输入、`deepseek-flash` 列为文本及图片输入。AgentKib 不因识图失败自动切换模型，实际验收按所选模型单独记录。见 [DeepSeek 模型能力](https://api-docs.deepseek.com/api/list-models/)。
 - 活动或未知请求引用的附件不能删除；跨重启保留。明确完成或未派发才结算引用。重复请求校验原始输入指纹；即使附件已按保留规则删除，也不会重新派发旧请求。
 - 桌面文件浏览复用注册工作区内的文件与产物服务；HTML/媒体在隔离浏览器预览，不把 HTML 作为 Electron 页面执行。Web 继续按文件权限校验，LAN 上传仍禁用。
-- 操作回执复用现有 ledger；Claude 元数据保存到应用数据目录 `claude-managed/` 的版本化文件。相同请求身份但不同内容会被拒绝。超时、断流及异常重启保留待核对状态；“核对”是只读检查，不能凭空补写成功或自动重发。设置原生 ACK 丢失、或改名/分叉已产生副作用而回执尚未提交时也保持 unknown；当前没有将此类状态自动重置为可执行的恢复入口。
+- 操作回执复用现有 ledger；Claude 元数据保存到应用数据目录 `claude-managed/` 的版本化文件。相同请求身份但不同内容会被拒绝。超时、断流及异常重启保留待核对状态。桌面会话的“更多操作 → 对话操作”在后台执行结果不明时提供“核对执行结果”，向宿主查询当前执行状态，无需再次发送原命令。设置原生 ACK 丢失、或改名/分叉已产生副作用而回执尚未提交时也保持 unknown；当前没有将此类状态自动重置为可执行的恢复入口。
 - 正常释放仅在本轮已结束且自有进程停止后完成；运行中先取消并等待确认。旧审批/问题不能跨轮次或重启继续使用。最多 8 个执行进程；私有锁不能约束官方客户端，也不承诺跨客户端原子排他。
 - Windows/Linux 尚不开放 Claude 托管控制；保留只读历史及现有独立续接能力。Claude Desktop Chat/Cowork 不在本功能范围。
 

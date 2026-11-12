@@ -83,6 +83,7 @@ vi.mock("@/features/sessions/conversation-catalog", () => ({
 vi.mock("@/core/api", () => ({
   api: {
     scan: vi.fn(),
+    claudeRequest: vi.fn(),
     manifest: vi.fn(),
     runtime: vi.fn(),
     workspaceSessions: vi.fn(),
@@ -139,6 +140,18 @@ const scan: WorkspaceScan = {
   warnings: [],
 };
 const runtime = { app_name: "AgentKib", session_index_enabled: true } as RuntimeInfo;
+const legacyClaudeKey = `agentkib:claude-owner-pending:v1:${workspace.id}`;
+const legacyClaudeRequestId = "11111111-1111-4111-8111-111111111111";
+
+function saveLegacyClaudeCreate() {
+  const pending = JSON.stringify({
+    requestId: legacyClaudeRequestId,
+    operation: "create",
+    workspaceId: workspace.id,
+  });
+  localStorage.setItem(legacyClaudeKey, pending);
+  return pending;
+}
 
 function NavigationRoot() {
   const matches = useMatches();
@@ -226,7 +239,11 @@ describe("workspace session route restoration", () => {
     vi.resetAllMocks();
     doubles.sessionHub = false;
     Object.defineProperty(window, "desktopConversation", { configurable: true, value: {} });
-    useSessionViewStore.setState({ historyContinuation: undefined, creatingConversation: false });
+    useSessionViewStore.setState({
+      historyContinuation: undefined,
+      creatingConversation: false,
+      creatingFrom: undefined,
+    });
     vi.mocked(useSessionHub).mockReturnValue({
       selected: source,
       selectedWorkspace: workspace,
@@ -268,6 +285,7 @@ describe("workspace session route restoration", () => {
     cleanup();
     vi.restoreAllMocks();
     useSessionViewStore.setState({ historyContinuation: undefined });
+    localStorage.removeItem(legacyClaudeKey);
     delete window.desktopConversation;
   });
 
@@ -297,6 +315,58 @@ describe("workspace session route restoration", () => {
     expect(await screen.findByText("Shared session destination")).toBeVisible();
     expect(router.state.location.pathname).toBe("/sessions");
     expect(router.state.location.search).toEqual({ sessionId: source.id });
+  });
+
+  it("opens the shared new-session composer with the workspace and Claude preselected", async () => {
+    const router = await mountRouter(`/workspace/${workspace.id}/sessions`);
+    fireEvent.click(await screen.findByRole("button", { name: "New session · Claude Code" }));
+    expect(await screen.findByText("Shared session destination")).toBeVisible();
+    expect(router.state.location.search.sessionId).toBeUndefined();
+    expect(useSessionViewStore.getState()).toMatchObject({
+      creatingConversation: true,
+      creatingFrom: { workspaceId: workspace.id, agent: "claude-code" },
+    });
+    expect(api.claudeRequest).not.toHaveBeenCalled();
+  });
+
+  it("opens a successfully created legacy Claude session without creating it again", async () => {
+    saveLegacyClaudeCreate();
+    vi.mocked(api.claudeRequest).mockResolvedValue({
+      found: true,
+      requestId: legacyClaudeRequestId,
+      operation: "create",
+      status: "accepted",
+      workspaceId: workspace.id,
+      sessionId: source.id,
+    });
+    const router = await mountRouter(`/workspace/${workspace.id}/sessions`);
+    fireEvent.click(await screen.findByRole("button", { name: "New session · Claude Code" }));
+    expect(await screen.findByText("Shared session destination")).toBeVisible();
+    expect(router.state.location.search).toEqual({ sessionId: source.id });
+    expect(useSessionViewStore.getState().creatingConversation).toBe(false);
+    expect(api.claudeRequest).toHaveBeenCalledExactlyOnceWith({
+      operation: "receipt",
+      requestId: legacyClaudeRequestId,
+    });
+    expect(localStorage.getItem(legacyClaudeKey)).toBeNull();
+  });
+
+  it("keeps an unconfirmed legacy request and does not open a new composer", async () => {
+    const saved = saveLegacyClaudeCreate();
+    vi.mocked(api.claudeRequest).mockResolvedValue({
+      found: false,
+      requestId: legacyClaudeRequestId,
+    });
+    const router = await mountRouter(`/workspace/${workspace.id}/sessions`);
+    fireEvent.click(await screen.findByRole("button", { name: "New session · Claude Code" }));
+    expect(await screen.findByText(tr("conversation.uncertain"))).toBeVisible();
+    expect(router.state.location.pathname).toBe(`/workspace/${workspace.id}/sessions`);
+    expect(useSessionViewStore.getState().creatingConversation).toBe(false);
+    expect(localStorage.getItem(legacyClaudeKey)).toBe(saved);
+    expect(api.claudeRequest).toHaveBeenCalledExactlyOnceWith({
+      operation: "receipt",
+      requestId: legacyClaudeRequestId,
+    });
   });
 
   it("restores another workspace using only that navigation's query rather than the previous continuation", async () => {

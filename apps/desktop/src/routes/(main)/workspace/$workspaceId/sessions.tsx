@@ -1,9 +1,12 @@
 import { createFileRoute, useNavigate, useParams, useSearch } from "@tanstack/react-router";
+import { useLayoutEffect, useRef, useState } from "react";
 import { useHomeInstallations } from "@/features/home/home-query";
 import { WorkspaceSessionsSkeleton } from "@/features/workspace/WorkspaceSkeleton";
 import { WorkspaceSessionsPage } from "@/features/workspace/WorkspaceSessionsPage";
+import { recoverWorkspaceClaudeSession } from "@/features/workspace/workspace-claude-receipt";
 import { useSessionViewStore } from "@/features/sessions/session-view-store";
 import { api } from "@/core/api";
+import { hasDesktopConversation } from "@/core/conversation-bridge";
 import { useAppStore } from "@/stores/app-store";
 import { useWorkspaceStore } from "@/features/workspace/workspace-store";
 
@@ -15,6 +18,21 @@ function WorkspaceSessionsRoute() {
   const { data: installations = [] } = useHomeInstallations();
   const { selectedWorkspace, scan, setChangeSet, setChangeSetOrigin, setHandoffLaunchRequest } =
     useWorkspaceStore();
+  const claudeStart = useRef<AbortController | undefined>(undefined);
+  const [claudeStartState, setClaudeStartState] = useState<{
+    workspaceId: string;
+    status: "checking" | "uncertain";
+  }>();
+  const currentWorkspaceId = selectedWorkspace?.id === workspaceId ? workspaceId : undefined;
+  if (claudeStartState && claudeStartState.workspaceId !== currentWorkspaceId)
+    setClaudeStartState(undefined);
+  useLayoutEffect(
+    () => () => {
+      claudeStart.current?.abort();
+      claudeStart.current = undefined;
+    },
+    [currentWorkspaceId],
+  );
   if (!selectedWorkspace || !scan) return <WorkspaceSessionsSkeleton />;
   const targetAgents = Array.from(
     new Set([
@@ -22,6 +40,32 @@ function WorkspaceSessionsRoute() {
       ...installations.filter((agent) => agent.installed).map((agent) => agent.agent),
     ]),
   );
+  const canStartClaude =
+    currentWorkspaceId !== undefined &&
+    !selectedWorkspace.remote &&
+    hasDesktopConversation() &&
+    !installations.some((item) => item.agent === "claude-code" && !item.installed);
+  const startClaudeSession = async () => {
+    if (claudeStart.current) return;
+    const check = new AbortController();
+    claudeStart.current = check;
+    setClaudeStartState({ workspaceId, status: "checking" });
+    try {
+      const sessionId = await recoverWorkspaceClaudeSession(workspaceId, check.signal);
+      if (check.signal.aborted) return;
+      const view = useSessionViewStore.getState();
+      if (sessionId) {
+        view.resetFilters();
+        view.setFilter("all");
+        view.setCreatingConversation(false);
+      } else view.setCreatingConversation(true, { workspaceId, agent: "claude-code" });
+      await navigate({ to: "/sessions", search: { sessionId } });
+    } catch {
+      if (!check.signal.aborted) setClaudeStartState({ workspaceId, status: "uncertain" });
+    } finally {
+      if (claudeStart.current === check) claudeStart.current = undefined;
+    }
+  };
   return (
     <WorkspaceSessionsPage
       workspace={selectedWorkspace}
@@ -35,14 +79,8 @@ function WorkspaceSessionsRoute() {
               void navigate({ to: "/sessions", search: { sessionId } });
             }
       }
-      onOpenClaudeSession={(sessionId, panel) => {
-        const view = useSessionViewStore.getState();
-        view.resetFilters();
-        view.setFilter("all");
-        view.setCreatingConversation(false);
-        if (panel) view.requestPanel(sessionId, panel);
-        void navigate({ to: "/sessions", search: (current) => ({ ...current, sessionId }) });
-      }}
+      onNewClaudeSession={canStartClaude ? () => void startClaudeSession() : undefined}
+      claudeStartStatus={claudeStartState?.status}
       onRuntimeChanged={async (enabled) => {
         setRuntime(await api.setSessionIndexEnabled(enabled));
       }}

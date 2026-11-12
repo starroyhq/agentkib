@@ -36,6 +36,8 @@ export interface DshBridgeServices {
   workspaceController?: boolean;
   /** Model catalog and per-session model selection. Plugins older than 0.2.0 do not report it. */
   modelCatalog?: boolean;
+  /** Read a model catalog before creating a session and apply its initial selection. */
+  createModelSelection?: boolean;
   /** Images in prompts and reading a session's images. Plugins older than 0.3.0 do not report it. */
   images?: boolean;
   /** Reading and changing a session's goal. Plugins older than 0.4.0 do not report it. */
@@ -332,10 +334,16 @@ export type DshBridgeCommand = { commandId: string } & (
    * `sessionId` is the new session's ID, chosen by AgentKib so a lost reply can be settled.
    * Without `agentPreset` the session runs DSH's default preset.
    */
-  | { type: "create"; cwd: string; sessionId: string; agentPreset?: string }
+  | {
+      type: "create";
+      cwd: string;
+      sessionId: string;
+      agentPreset?: string;
+      modelSelection?: { provider: string; model: string; reasoningEffort?: string };
+    }
   /** `{ presets }`: DSH's Agent presets, in the order DSH lists them. */
   | { type: "presets" }
-  | { type: "models"; sessionId: string }
+  | { type: "models"; sessionId?: string; recordedOnly?: boolean }
   | {
       type: "selectModel";
       sessionId: string;

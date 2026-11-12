@@ -124,6 +124,106 @@ function codexHome(
 
 const listed = (reader: CodexSessions) => reader.list(null).sessions;
 
+function usageReport(usedTokens: number, contextWindow: number) {
+  return JSON.stringify({
+    timestamp: "2026-10-01T08:30:00.123Z",
+    type: "event_msg",
+    payload: {
+      type: "token_count",
+      info: {
+        last_token_usage: { total_tokens: usedTokens },
+        total_token_usage: { total_tokens: 900_000 },
+        model_context_window: contextWindow,
+      },
+    },
+  });
+}
+
+function setIndexedModel(codex: string, model: string, effort: string) {
+  const db = new DatabaseSync(path.join(codex, "state_5.sqlite"));
+  try {
+    db.exec(
+      "ALTER TABLE threads ADD COLUMN model TEXT; ALTER TABLE threads ADD COLUMN reasoning_effort TEXT;",
+    );
+    db.prepare("UPDATE threads SET model=?, reasoning_effort=? WHERE id=?").run(
+      model,
+      effort,
+      nativeId,
+    );
+  } finally {
+    db.close();
+  }
+}
+
+describe("historical Codex display settings", () => {
+  it.each(["plain", "compressed"] as const)(
+    "reads the latest valid report in a %s rollout",
+    (stored) => {
+      const f = codexHome({ stored: [stored] });
+      setIndexedModel(f.codex, "next-model", "low");
+      const turn = JSON.stringify({
+        type: "turn_context",
+        payload: { model: "last-model", effort: "xhigh" },
+      });
+      const data = `${f.body}${turn}\n${usageReport(70_000, 258_400)}\n${usageReport(75_584, 258_400)}\n${usageReport(100_000, 0)}\n${usageReport(102_000, 258_400)}`;
+      if (stored === "compressed") writeFileSync(`${f.plain}.zst`, zstdCompressSync(data));
+      else writeFileSync(f.plain, data);
+      expect(f.reader.historicalSettings(nativeId, f.workspace)).toEqual({
+        modelId: "last-model",
+        effort: "xhigh",
+        usage: {
+          usedTokens: 75_584,
+          contextWindow: 258_400,
+          updatedAt: "2026-10-01T08:30:00.123Z",
+        },
+      });
+      expect(readdirSync(path.dirname(f.plain))).toEqual([
+        path.basename(f.plain) + (stored === "compressed" ? ".zst" : ""),
+      ]);
+    },
+  );
+
+  it("reads a bounded plain tail and invalidates a cached report when the rollout changes", () => {
+    const f = codexHome({ stored: ["plain"] });
+    setIndexedModel(f.codex, "indexed-model", "medium");
+    const largeEntry = JSON.stringify({
+      type: "response_item",
+      payload: { value: "x".repeat(1024 * 1024) },
+    });
+    const data = `${f.body}${usageReport(5, 100)}\n${largeEntry}\n`;
+    writeFileSync(f.plain, data);
+    expect(f.reader.historicalSettings(nativeId, f.workspace)).toEqual({
+      modelId: "indexed-model",
+      effort: "medium",
+    });
+    writeFileSync(f.plain, `${data}${usageReport(0, 100)}\n`);
+    expect(f.reader.historicalSettings(nativeId, f.workspace)?.usage).toMatchObject({
+      usedTokens: 0,
+      contextWindow: 100,
+    });
+  });
+
+  it("uses only the indexed settings when a compressed history exceeds the decode budget", () => {
+    const f = codexHome({ turns: 16, padding: 512 * 1024 });
+    setIndexedModel(f.codex, "indexed-model", "medium");
+    writeFileSync(`${f.plain}.zst`, zstdCompressSync(`${f.body}${usageReport(75_584, 258_400)}\n`));
+    expect(f.reader.historicalSettings(nativeId, f.workspace)).toEqual({
+      modelId: "indexed-model",
+      effort: "medium",
+    });
+  });
+
+  it("requires the recorded thread and creation directory to match the verified workspace", () => {
+    const f = codexHome({ stored: ["plain"] });
+    setIndexedModel(f.codex, "indexed-model", "medium");
+    writeFileSync(f.plain, `${f.body}${usageReport(25, 100)}\n`);
+    expect(f.reader.historicalSettings(nativeId, f.workspace)?.usage?.usedTokens).toBe(25);
+    expect(f.reader.historicalSettings(nativeId, f.codex)).toBeUndefined();
+    writeFileSync(f.plain, `${f.body.replace(nativeId, parentId)}${usageReport(35, 100)}\n`);
+    expect(f.reader.historicalSettings(nativeId, f.workspace)).toBeUndefined();
+  });
+});
+
 describe("compressed Codex rollouts", () => {
   it("keep a thread readable after Codex compresses its rollout", () => {
     // Long enough that the header is decoded from a prefix of the file.
@@ -189,6 +289,8 @@ describe("compressed Codex rollouts", () => {
       writeFileSync(elsewhere, zstdCompressSync(f.body));
       symlinkSync(elsewhere, `${f.plain}.zst`);
       expect(listed(f.reader)[0]?.session.availability).toBe("metadata-only");
+      setIndexedModel(f.codex, "indexed-model", "medium");
+      expect(f.reader.historicalSettings(nativeId, f.workspace)).toBeUndefined();
     },
   );
 

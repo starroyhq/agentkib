@@ -1061,7 +1061,10 @@ export class TypeScriptBackend {
       }
       if (params.operation === "dsh-options")
         return (
-          this.#dshBridge?.createOptions() ?? { available: false, reason: "platform-unsupported" }
+          this.#dshBridge?.createOptions(params.includeModels === true) ?? {
+            available: false,
+            reason: "platform-unsupported",
+          }
         );
       // Resolve the provider from persisted identity, never from a browser-supplied agent.
       // Fresh Claude sessions are not indexed until their first native transcript exists.

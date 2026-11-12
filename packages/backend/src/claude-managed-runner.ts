@@ -103,6 +103,8 @@ export type ClaudeRunnerTerminalResult = {
   costUsd: number | null;
 };
 export type ClaudeRunnerOptions = {
+  /** Starts a temporary, initialize-only worker for the new-session picker. */
+  catalogOnly?: true;
   model?: string;
   effort?: ClaudeEffort;
   permissionMode?: ClaudePermissionMode;
@@ -1642,6 +1644,7 @@ export class ClaudeManagedRunnerProcess {
     revision: number,
     beforeDispatch?: () => void,
   ): Promise<void> {
+    if (this.options.catalogOnly) throw new Error("Claude catalog worker cannot send a turn");
     if (this.#retiring || this.#configuring)
       throw new Error("Claude runner is being retired or configured");
     if (!this.#child && this.options.beforeStart) await this.options.beforeStart();
@@ -1810,6 +1813,16 @@ export class ClaudeManagedRunnerProcess {
           "host",
           "--permission-prompt-tool",
           "stdio",
+          ...(this.options.catalogOnly
+            ? [
+                "--no-session-persistence",
+                "--safe-mode",
+                "--strict-mcp-config",
+                "--tools",
+                "",
+                "--no-chrome",
+              ]
+            : []),
           ...(this.#settings.model ? ["--model", this.#settings.model] : []),
           ...(this.#settings.effort ? ["--effort", this.#settings.effort] : []),
           ...(this.#settings.permissionMode !== null
@@ -1824,7 +1837,11 @@ export class ClaudeManagedRunnerProcess {
           // Background work (Bash run_in_background, background sub-agents) outlives the turn
           // AgentKib starts and makes the CLI start turns of its own, which a managed session
           // cannot follow. Turn it off at the source, over whatever the user's environment says.
-          env: { ...this.environment, CLAUDE_CODE_DISABLE_BACKGROUND_TASKS: "1" },
+          env: {
+            ...this.environment,
+            CLAUDE_CODE_DISABLE_BACKGROUND_TASKS: "1",
+            ...(this.options.catalogOnly ? { CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: "1" } : {}),
+          },
           detached: true,
           stdio: ["pipe", "pipe", "ignore"],
           windowsHide: true,

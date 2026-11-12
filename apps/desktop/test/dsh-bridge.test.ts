@@ -142,6 +142,7 @@ function fakeDsh(cwd: string) {
       get: (id: string) => sessions.get(id)?.agent,
       list: () => [...sessions.values()].map((session) => session.agent),
     },
+    llm: { resolveCallConfig: vi.fn(async () => ({})) },
     userQuestions: { ask: () => undefined },
     approval: { request: () => undefined },
     sessionQuery: {
@@ -556,6 +557,12 @@ function fakeDsh(cwd: string) {
       status: "idle",
       inbox: { nextTurn: [], nextStep: [] },
       session: { id, seq: 0 },
+      model: {
+        select(selection: unknown) {
+          sessions.get(id)!.selection = selection;
+          append(id, "model/selection", selection);
+        },
+      },
     };
     sessions.set(id, {
       events: [],
@@ -668,7 +675,7 @@ async function until<T>(read: () => T | undefined | false, ms = 5000): Promise<T
   }
 }
 
-async function fixture() {
+async function fixture({ supportsCreateModelSelection = true } = {}) {
   const root = realpathSync(mkdtempSync(path.join(tmpdir(), "ak-dsh-test-")));
   const workspace = path.join(root, "workspace");
   const agentkibHome = path.join(root, "agentkib-home");
@@ -694,6 +701,7 @@ async function fixture() {
   });
   bridge.initialize();
   const dsh = fakeDsh(workspace);
+  if (!supportsCreateModelSelection) delete dsh.ctx.llm;
   dsh.create("session-a", "First DSH session");
   const plugin = createBridge(dsh.ctx, {
     roots: [agentkibHome],
@@ -1774,6 +1782,179 @@ describe("DeepSeek Harness plugin projections", () => {
     // The new session is not left waiting on the create that made it, and nothing was resent.
     expect(f.bridge.live(sessionId, true).reason).not.toBe("control-outcome-unconfirmed");
     expect(f.dsh.sessions.size).toBe(2);
+  });
+
+  it("reads new-session models without creating a session and records the chosen route before sending", async () => {
+    const f = await fixture();
+    const projections = vi.spyOn(f.dsh.ctx.sessionController, "projections");
+    const options = await f.bridge.createOptions(true);
+    expect(options).toMatchObject({
+      available: true,
+      defaults: { model: "deepseek/deepseek-chat", effort: null },
+      models: [
+        {
+          id: "deepseek/deepseek-chat",
+          group: "DeepSeek",
+          efforts: ["low", "high"],
+          defaultEffort: "low",
+        },
+        { id: "mock%2Flocal/m-1", group: "Mock", efforts: [] },
+      ],
+    });
+    expect(projections).not.toHaveBeenCalled();
+    expect(f.dsh.creations).toHaveLength(0);
+
+    const request = {
+      requestId: randomUUID(),
+      deviceId: "device-1",
+      workspaceId: "workspace",
+      agentPreset: "ptc",
+      model: "deepseek/deepseek-chat",
+      effort: "high",
+    };
+    const created = await f.bridge.create(request);
+    expect(created).toMatchObject({ accepted: true, controlOutcome: "accepted" });
+    const sessionId = String(created.sessionId);
+    const nativeId = String(f.bridge.nativeId(sessionId));
+    expect(f.dsh.creations).toEqual([
+      { sessionId: nativeId, cwd: f.workspace, agentPreset: "ptc" },
+    ]);
+    expect(f.dsh.ctx.llm.resolveCallConfig).toHaveBeenCalledWith({
+      provider: "deepseek",
+      model: "deepseek-chat",
+      reasoningEffort: "high",
+    });
+    // The per-session route was recorded without using DSH's global default-setting command.
+    expect(f.dsh.selections).toEqual([]);
+    expect(f.dsh.prompts).toEqual([]);
+    expect(
+      await f.control("send", {
+        sessionId,
+        expectedRevision: f.bridge.live(sessionId, true).revision,
+        text: "Use the configured model",
+      }),
+    ).toMatchObject({ accepted: true });
+    expect(f.dsh.sessions.get(nativeId)?.events.slice(0, 3)).toMatchObject([
+      {
+        type: "model/selection",
+        data: { provider: "deepseek", model: "deepseek-chat", reasoningEffort: "high" },
+      },
+      { type: "turn/start" },
+      { type: "user/message" },
+    ]);
+    expect(await f.bridge.create(request)).toMatchObject({ sessionId });
+    expect(f.dsh.creations).toHaveLength(1);
+  });
+
+  it("rejects unavailable models and effort levels before creating the session", async () => {
+    const f = await fixture();
+    const request = { deviceId: "device-1", workspaceId: "workspace" };
+    expect(
+      await f.bridge.create({
+        ...request,
+        requestId: randomUUID(),
+        model: "no/such-model",
+      }),
+    ).toMatchObject({ controlOutcome: "not-dispatched", reason: "unsupported-model" });
+    expect(
+      await f.bridge.create({
+        ...request,
+        requestId: randomUUID(),
+        model: "mock%2Flocal/m-1",
+        effort: "high",
+      }),
+    ).toMatchObject({ controlOutcome: "not-dispatched", reason: "unsupported-effort" });
+    expect(f.dsh.creations).toEqual([]);
+  });
+
+  it("preserves default creation when the plugin cannot set a new session's model", async () => {
+    const f = await fixture({ supportsCreateModelSelection: false });
+    const options = await f.bridge.createOptions(true);
+    expect(options).toMatchObject({ available: true, agentPresets: expect.any(Array) });
+    expect(options).not.toHaveProperty("models");
+    const request = { deviceId: "device-1", workspaceId: "workspace" };
+    expect(
+      await f.bridge.create({
+        ...request,
+        requestId: randomUUID(),
+        model: "deepseek/deepseek-chat",
+      }),
+    ).toMatchObject({
+      controlOutcome: "not-dispatched",
+      reason: "dsh-create-model-selection-unsupported",
+    });
+    expect(f.dsh.creations).toEqual([]);
+    expect(await f.bridge.create({ ...request, requestId: randomUUID() })).toMatchObject({
+      controlOutcome: "accepted",
+    });
+  });
+
+  it("requires the recorded model to reconcile a new session whose reply was lost", async () => {
+    const f = await fixture();
+    const controller = f.dsh.ctx.sessionController;
+    const original = controller.projections.bind(controller);
+    let missed = false;
+    controller.projections = (request: { sessionId: string }) => {
+      if (request.sessionId !== "session-a" && !missed) {
+        missed = true;
+        return new Promise(() => undefined);
+      }
+      return original(request);
+    };
+    const request = {
+      requestId: randomUUID(),
+      deviceId: "device-1",
+      workspaceId: "workspace",
+      model: "mock%2Flocal/m-1",
+    };
+    expect(await f.bridge.create(request)).toMatchObject({ controlOutcome: "unknown" });
+    const stored = () =>
+      readControlReceipt(f.bridge.options.dataDir, {
+        requestId: request.requestId,
+        deviceId: request.deviceId,
+      });
+    await until(() => stored().status === "accepted");
+    const nativeId = String(f.bridge.nativeId(String(stored().sessionId)));
+    expect(f.dsh.sessions.get(nativeId)?.selection).toEqual({
+      provider: "mock/local",
+      model: "m-1",
+    });
+    expect(f.dsh.creations).toHaveLength(1);
+  });
+
+  it("never accepts a listed blank session with an unconfirmed starting model", async () => {
+    const f = await fixture();
+    const controller = f.dsh.ctx.sessionController;
+    const original = controller.create.bind(controller);
+    controller.create = async (request: { sessionId: string }) => {
+      const result = await original(request);
+      f.dsh.sessions.get(request.sessionId)!.agent.model.select = () => {
+        throw new Error("selection refused");
+      };
+      return result;
+    };
+    const request = {
+      requestId: randomUUID(),
+      deviceId: "device-1",
+      workspaceId: "workspace",
+      model: "deepseek/deepseek-chat",
+      effort: "high",
+    };
+    expect(await f.bridge.create(request)).toMatchObject({ controlOutcome: "unknown" });
+    const stored = () =>
+      f.bridge.receipt(
+        readControlReceipt(f.bridge.options.dataDir, {
+          requestId: request.requestId,
+          deviceId: request.deviceId,
+        }),
+      ) as Record<string, unknown>;
+    const sessionId = String(stored().sessionId);
+    expect(f.bridge.handles(sessionId)).toBe(true);
+    expect(stored().status).not.toBe("accepted");
+    await until(() => stored().status === "not-dispatched");
+    expect(stored().ack).toMatchObject({ reason: "dsh-create-model-not-applied" });
+    expect(f.dsh.creations).toHaveLength(1);
+    expect(f.dsh.prompts).toEqual([]);
   });
 
   it("settles a lost create DSH never made once DSH has listed its sessions since", async () => {

@@ -29,6 +29,7 @@ type Observation = {
   blockedFallback?: ContextUsage;
   usage?: ContextUsage;
   nativeSeen: boolean;
+  nativeReported?: boolean;
   compacting?: boolean;
   afterCompaction?: { reportId?: number; updatedAt?: string; native?: ContextUsage };
 };
@@ -129,17 +130,13 @@ export function useObservedContextUsage({
       )
         value.afterCompaction = undefined;
       value.usage = native;
+      if (contextUsagePercent(native) !== undefined) value.nativeReported = true;
     }
     value.nativeSeen = true;
   }
-  const usage: ContextUsage | undefined = !authorized
-    ? { available: false, state: "unavailable", reason: "permission_denied" }
-    : value.nativeSeen
-      ? value.usage
-      : fallback !== value.blockedFallback
-        ? fallback
-        : undefined;
-  const percent = contextUsagePercent(usage);
+  const settingsReport = fallback !== value.blockedFallback ? fallback : undefined;
+  const history = settingsReport?.historical === true ? settingsReport : undefined;
+  const observed = value.nativeSeen ? value.usage : history ? undefined : settingsReport;
   if (
     authorized &&
     live?.sessionId === selected &&
@@ -152,26 +149,47 @@ export function useObservedContextUsage({
   const acceptedNative = acceptsNative ? native : undefined;
   if (compacting)
     value.afterCompaction ??= {
-      reportId: usage?.reportId,
-      updatedAt: usage?.updatedAt,
+      reportId: observed?.reportId,
+      updatedAt: observed?.updatedAt,
       native: acceptedNative,
     };
   else if (
     value.afterCompaction &&
-    usage?.state !== "pending" &&
-    usage?.state !== "stale" &&
-    ((usage?.reportId !== undefined &&
+    observed?.state !== "pending" &&
+    observed?.state !== "stale" &&
+    ((observed?.reportId !== undefined &&
       (value.afterCompaction.reportId === undefined ||
-        usage.reportId > value.afterCompaction.reportId)) ||
-      (usage?.reportId === undefined &&
+        observed.reportId > value.afterCompaction.reportId)) ||
+      (observed?.reportId === undefined &&
         acceptedNative !== undefined &&
         acceptedNative !== value.afterCompaction.native &&
         acceptedNative.updatedAt !== value.afterCompaction.updatedAt))
   )
     value.afterCompaction = undefined;
+  // The idle live snapshot may contain an empty usage placeholder. Saved usage
+  // can fill that gap but cannot settle a compaction or replace a native count.
+  const useHistory =
+    history !== undefined &&
+    contextUsagePercent(history) !== undefined &&
+    contextUsagePercent(observed) === undefined &&
+    !value.nativeReported &&
+    !compacting &&
+    !value.afterCompaction &&
+    (!live ||
+      (live.sessionId === selected &&
+        (live.status === "idle" || live.status === "unsupported") &&
+        !live.executionLocation));
+  const usage: ContextUsage | undefined = !authorized
+    ? { available: false, state: "unavailable", reason: "permission_denied" }
+    : useHistory
+      ? history
+      : observed;
+  const percent = contextUsagePercent(usage);
   const state = compacting
     ? "pending"
-    : (!online && authorized) || (percent !== undefined && value.afterCompaction !== undefined)
+    : usage?.historical ||
+        (!online && authorized) ||
+        (percent !== undefined && value.afterCompaction !== undefined)
       ? "stale"
       : usage?.state === "ready" && percent === undefined
         ? "unavailable"
@@ -182,6 +200,17 @@ export function useObservedContextUsage({
 type ContextUsageView = ReturnType<typeof useObservedContextUsage> & {
   awaitingCliReport?: boolean;
 };
+
+function historicalUsageLabel(locale: Locale, usage?: ContextUsage) {
+  if (usage?.historical !== true) return undefined;
+  const label = contextUsageCopy[locale].historicalReport;
+  const timestamp = Date.parse(usage.updatedAt ?? "");
+  if (!Number.isFinite(timestamp)) return label;
+  const date = new Intl.DateTimeFormat(locale, { dateStyle: "medium", timeStyle: "short" }).format(
+    timestamp,
+  );
+  return `${label} · ${date}`;
+}
 
 function contextUsageMessage({
   usage,
@@ -194,16 +223,18 @@ function contextUsageMessage({
   const copy = contextUsageCopy[locale];
   return compacting
     ? copy.compactingDetail
-    : !online && usage?.reason !== "permission_denied" && usage?.reason !== "permission-denied"
-      ? copy.offline
-      : awaitingCliReport
-        ? copy.awaitingCliReportDetail
-        : (contextUsageReason(locale, usage?.reason) ??
-          (state === "pending"
-            ? copy.pendingDetail
-            : state === "stale"
-              ? copy.staleDetail
-              : codexCopy[locale].contextUnknown));
+    : usage?.historical
+      ? copy.historicalDetail
+      : !online && usage?.reason !== "permission_denied" && usage?.reason !== "permission-denied"
+        ? copy.offline
+        : awaitingCliReport
+          ? copy.awaitingCliReportDetail
+          : (contextUsageReason(locale, usage?.reason) ??
+            (state === "pending"
+              ? copy.pendingDetail
+              : state === "stale"
+                ? copy.staleDetail
+                : codexCopy[locale].contextUnknown));
 }
 
 export function ContextUsageDetails({
@@ -216,6 +247,7 @@ export function ContextUsageDetails({
   online,
 }: ContextUsageView & { locale: Locale; online: boolean }) {
   const copy = contextUsageCopy[locale];
+  const historyLabel = historicalUsageLabel(locale, usage);
   const message = contextUsageMessage({
     usage,
     percent,
@@ -231,7 +263,7 @@ export function ContextUsageDetails({
       {percent !== undefined && (
         <div className="space-y-2">
           <p>
-            {`${state === "ready" ? copy.recentNativeReport : copy.reported}: `}
+            {`${historyLabel ?? (state === "ready" ? copy.recentNativeReport : copy.reported)}: `}
             {usage!.usedTokens!.toLocaleString()} / {usage!.contextWindow!.toLocaleString()} (
             {Math.round(percent)}%)
           </p>
@@ -264,6 +296,7 @@ export function ContextUsageIndicator({
 }) {
   const copy = contextUsageCopy[locale];
   const title = codexCopy[locale].contextUsage;
+  const historyLabel = historicalUsageLabel(locale, view.usage);
   const reported = view.percent !== undefined;
   const used = Math.round(view.percent ?? 0);
   const proportions = copy.usedRemaining
@@ -284,9 +317,11 @@ export function ContextUsageIndicator({
           ),
         )
     : undefined;
-  const fresh = view.state === "ready" && !view.compacting && !view.awaitingCliReport;
+  const fresh =
+    view.state === "ready" && !historyLabel && !view.compacting && !view.awaitingCliReport;
   const description = [
     !fresh && contextUsageMessage({ ...view, locale, online }),
+    !view.compacting && historyLabel,
     reported && !view.compacting && proportions,
     reported && !view.compacting && tokens,
   ]
@@ -343,7 +378,9 @@ export function ContextUsageIndicator({
         {!fresh && <p className="mt-1">{contextUsageMessage({ ...view, locale, online })}</p>}
         {reported && !view.compacting && (
           <>
-            {!fresh && <p className="mt-1 text-muted-foreground">{copy.reported}</p>}
+            {!fresh && (
+              <p className="mt-1 text-muted-foreground">{historyLabel ?? copy.reported}</p>
+            )}
             <p className="mt-1">{proportions}</p>
             <p className="mt-1">{tokens}</p>
           </>

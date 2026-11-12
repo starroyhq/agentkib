@@ -1,6 +1,8 @@
 export interface ContextUsage {
   available: boolean;
   state?: "ready" | "pending" | "stale" | "unavailable";
+  /** Last saved report from native history, outside the live report sequence. */
+  historical?: true;
   reason?: string;
   revision?: number;
   /** Native observer instance, ordered within the current backend process. */
@@ -59,12 +61,14 @@ export function projectContextUsage(raw: unknown, revision?: number): ContextUsa
     : declared === "ready" && !valid
       ? "pending"
       : (declared ?? (valid ? "ready" : "pending"));
-  const reportId = count(data.reportId);
-  const reportGeneration = count(data.reportGeneration);
-  const controlRevision = count(data.revision) ?? count(revision);
+  const historical = data.historical === true && state === "stale" && valid;
+  const reportId = historical ? undefined : count(data.reportId);
+  const reportGeneration = historical ? undefined : count(data.reportGeneration);
+  const controlRevision = historical ? undefined : (count(data.revision) ?? count(revision));
   return {
     available,
     state,
+    ...(historical ? { historical: true } : {}),
     ...(typeof data.reason === "string" && data.reason.length <= 4096
       ? { reason: data.reason }
       : {}),

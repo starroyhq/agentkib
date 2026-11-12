@@ -179,7 +179,7 @@ export function newSessionCreateFields(
     // Hosts that predate other Agents read a create without one as Codex.
     ...(agent !== "codex" ? { agent } : {}),
     workspaceId,
-    // Codex starts an effort only on a named model.
+    // A chosen effort applies to the model displayed by the composer.
     ...(model || effort ? { model: model || shownModel } : {}),
     ...(effort ? { effort } : {}),
     ...(spec && sent
@@ -216,6 +216,10 @@ const copy = {
     addWorkspaceButton: "添加工作区",
     removeFile: "移除 {name}",
     notCreated: "没有建成会话：{reason}",
+    startModelUnconfirmed: "无法确认新会话已应用所选模型。首条消息已保留为草稿。",
+    startModelUnavailable: "暂时无法核对 DeepSeek Harness 的模型目录，请稍后再试。",
+    startModelUpgrade: "请更新 DeepSeek Harness 中的 AgentKib 插件，以便在创建会话时选择模型。",
+    claudeStartupModelsUnavailable: "暂时无法核对 Claude Code 的模型目录，请稍后再试。",
     agentUnavailable: "{reason}可以换一个 Agent，或去设置里查看。",
     agentUnavailableHere: "{reason}可以换一个 Agent。",
     permissions: {
@@ -269,6 +273,10 @@ const copy = {
     addWorkspaceButton: "新增工作區",
     removeFile: "移除 {name}",
     notCreated: "沒有建立對話：{reason}",
+    startModelUnconfirmed: "無法確認新對話已套用所選模型。第一則訊息已保留為草稿。",
+    startModelUnavailable: "暫時無法核對 DeepSeek Harness 的模型清單，請稍後再試。",
+    startModelUpgrade: "請更新 DeepSeek Harness 中的 AgentKib 外掛，以便在建立對話時選擇模型。",
+    claudeStartupModelsUnavailable: "暫時無法核對 Claude Code 的模型清單，請稍後再試。",
     agentUnavailable: "{reason}可以換一個 Agent，或到設定裡查看。",
     agentUnavailableHere: "{reason}可以換一個 Agent。",
     permissions: {
@@ -323,6 +331,13 @@ const copy = {
     addWorkspaceButton: "Add workspace",
     removeFile: "Remove {name}",
     notCreated: "The session was not created: {reason}",
+    startModelUnconfirmed:
+      "Could not confirm the model for the new session. Your first message is still a draft.",
+    startModelUnavailable: "Could not check the DeepSeek Harness model catalog. Try again shortly.",
+    startModelUpgrade:
+      "Update the AgentKib plugin in DeepSeek Harness to select a model before starting a session.",
+    claudeStartupModelsUnavailable:
+      "Could not check the Claude Code model catalog. Try again shortly.",
     agentUnavailable: "{reason} Choose another Agent, or check Settings.",
     agentUnavailableHere: "{reason} Choose another Agent.",
     permissions: {
@@ -380,6 +395,14 @@ const copy = {
     addWorkspaceButton: "ワークスペースを追加",
     removeFile: "{name} を削除",
     notCreated: "会話を作成できませんでした：{reason}",
+    startModelUnconfirmed:
+      "新しい会話に選択したモデルが適用されたか確認できませんでした。最初のメッセージは下書きに残っています。",
+    startModelUnavailable:
+      "DeepSeek Harness のモデル一覧を確認できませんでした。しばらくしてからもう一度お試しください。",
+    startModelUpgrade:
+      "会話の作成前にモデルを選択するには、DeepSeek Harness の AgentKib プラグインを更新してください。",
+    claudeStartupModelsUnavailable:
+      "Claude Code のモデル一覧を確認できませんでした。しばらくしてからもう一度お試しください。",
     agentUnavailable: "{reason}別の Agent を選ぶか、設定を確認してください。",
     agentUnavailableHere: "{reason}別の Agent を選んでください。",
     permissions: {

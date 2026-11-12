@@ -39,13 +39,18 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { Input } from "@/components/ui/input";
-import { Textarea } from "@/components/ui/textarea";
 import { AGENT_LABELS } from "@/core/agents";
 import type { WorkspaceSummary } from "@/core/types";
 import { useI18n } from "@/core/useI18n";
 import { AgentIcon } from "@/features/agents/AgentIcon";
 import { recentContinuationWorkspaces } from "@/features/home/home-continuations";
 import { cn } from "cn";
+import {
+  ComposerFrame,
+  ComposerIconButton,
+  ComposerTextarea,
+  ComposerToolbar,
+} from "../ComposerFrame";
 import { codexCopy, codexReason } from "../conversation/features/sessions/codex-copy";
 import { ComposerModelPicker } from "../conversation/features/sessions/composer-model-picker";
 import { isSendEnter, useEnterSends } from "../conversation/features/sessions/composer-shortcuts";
@@ -91,6 +96,7 @@ export function NewSessionComposer(props: NewSessionComposerProps) {
   const [agent, setAgent] = useState<ManagedAgent>(
     target.agent && !notInstalled?.has(target.agent) ? target.agent : "codex",
   );
+  const isCodex = agent === "codex";
   const [workspaceId, setWorkspaceId] = useState(target.workspaceId ?? "");
   const workspace =
     workspaces.find((item) => item.id === workspaceId) ??
@@ -98,8 +104,11 @@ export function NewSessionComposer(props: NewSessionComposerProps) {
   const [text, setText] = useState("");
   const [files, setFiles] = useState<File[]>([]);
   const [permission, setPermission] = useState<string>();
-  const [model, setModel] = useState("");
-  const [effort, setEffort] = useState("");
+  const [modelDraft, setModelDraft] = useState<{
+    scope: string;
+    model: string;
+    effort: string;
+  }>();
   const [agentPreset, setAgentPreset] = useState<string>();
   const [sending, setSending] = useState(false);
   const draft = useRef({ text, files });
@@ -120,6 +129,7 @@ export function NewSessionComposer(props: NewSessionComposerProps) {
   };
   const session = useNewSession({
     agent,
+    workspaceId: workspace?.id,
     locale,
     // A create checked after its outcome was unknown opens the session it made, with this
     // composer's draft, only while that draft is still here.
@@ -133,6 +143,12 @@ export function NewSessionComposer(props: NewSessionComposerProps) {
   const fileInput = useRef<HTMLInputElement>(null);
   const [fileLimit, setFileLimit] = useState(false);
   const side = placement === "home" ? "bottom" : "top";
+  const modelScope = JSON.stringify([agent, isCodex ? null : workspace?.id]);
+
+  const selectWorkspace = (id: string) => {
+    if (!isCodex && id !== workspace?.id) setModelDraft(undefined);
+    setWorkspaceId(id);
+  };
 
   const [addError, setAddError] = useState("");
   // A workspace added from the menu is chosen; until the list has it, the last one stays shown.
@@ -140,7 +156,7 @@ export function NewSessionComposer(props: NewSessionComposerProps) {
     setAddError("");
     try {
       const id = await onAddWorkspace();
-      if (id) setWorkspaceId(id);
+      if (id) selectWorkspace(id);
     } catch (error) {
       setAddError(localizeMessage(error));
     }
@@ -148,10 +164,13 @@ export function NewSessionComposer(props: NewSessionComposerProps) {
 
   const modelSettings = useMemo((): CodexSessionSettings | undefined => {
     if (!options?.available || !options.models?.length) return undefined;
-    const defaultModel =
-      options.defaults?.model ?? options.models.find((item) => item.isDefault)?.id;
+    const reported = options.defaults?.model;
+    const defaultModel = reported
+      ? (options.models.find((item) => item.id === reported) ??
+        options.models.find((item) => item.resolvedModel === reported))
+      : options.models.find((item) => item.isDefault);
     const defaults = {
-      modelId: defaultModel ?? undefined,
+      modelId: defaultModel?.id ?? reported ?? undefined,
       effort: options.defaults?.effort ?? undefined,
     };
     return {
@@ -172,6 +191,8 @@ export function NewSessionComposer(props: NewSessionComposerProps) {
         models: options.models.map((item) => ({
           id: item.id,
           name: item.name,
+          resolvedModel: item.resolvedModel,
+          group: item.group,
           efforts: item.efforts ?? [],
           defaultEffort: item.defaultEffort,
           serviceTierIds: [],
@@ -181,12 +202,12 @@ export function NewSessionComposer(props: NewSessionComposerProps) {
       },
     };
   }, [options]);
+  const { model = "", effort = "" } = modelDraft?.scope === modelScope ? modelDraft : {};
   const modelId = model || modelSettings?.defaults.modelId;
-  const shownEffort =
-    effort ||
-    (model
-      ? modelSettings?.options.models.find((item) => item.id === model)?.defaultEffort
-      : (modelSettings?.defaults.effort ?? undefined));
+  const chosenModelDefaultEffort = isCodex
+    ? modelSettings?.options.models.find((item) => item.id === model)?.defaultEffort
+    : undefined;
+  const shownEffort = effort || (model ? chosenModelDefaultEffort : modelSettings?.defaults.effort);
   const permissions = newSessionPermissions(agent, options, locale);
   const shownPermission = permissions?.choices.find(
     (item) => item.id === (permission ?? permissions.initial),
@@ -241,7 +262,9 @@ export function NewSessionComposer(props: NewSessionComposerProps) {
     </Notice>
   ) : session.failure ? (
     <Notice tone="error" icon={<CircleX className="size-3.5" />}>
-      {fillCopy(copy.notCreated, { reason: session.failure.reason })}
+      {session.failure.detail === "dsh-create-model-not-applied"
+        ? session.failure.reason
+        : fillCopy(copy.notCreated, { reason: session.failure.reason })}
       {session.failure.detail && (
         <Disclosure className="mt-1">
           <DisclosureSummary>{copy.details}</DisclosureSummary>
@@ -296,7 +319,7 @@ export function NewSessionComposer(props: NewSessionComposerProps) {
           selected={workspace?.id}
           disabled={locked}
           side={side}
-          onSelect={setWorkspaceId}
+          onSelect={selectWorkspace}
           onAdd={() => void addWorkspace()}
         />
         <DropdownMenu>
@@ -318,8 +341,7 @@ export function NewSessionComposer(props: NewSessionComposerProps) {
                 disabled={notInstalled?.has(item)}
                 onClick={() => {
                   setAgent(item);
-                  setModel("");
-                  setEffort("");
+                  setModelDraft(undefined);
                   setPermission(undefined);
                   setAgentPreset(undefined);
                 }}
@@ -370,8 +392,7 @@ export function NewSessionComposer(props: NewSessionComposerProps) {
           </DropdownMenu>
         )}
       </div>
-      <form
-        className="grid gap-2 rounded-2xl border border-border bg-card p-2.5 shadow-sm transition-colors focus-within:border-ring/40"
+      <ComposerFrame
         onSubmit={(event) => {
           event.preventDefault();
           void send();
@@ -407,10 +428,8 @@ export function NewSessionComposer(props: NewSessionComposerProps) {
             ))}
           </ul>
         )}
-        <Textarea
+        <ComposerTextarea
           aria-label={copy.message}
-          className="max-h-48 min-h-12 resize-none border-0 bg-transparent px-2 py-1.5 text-sm shadow-none focus-visible:ring-0 disabled:bg-transparent dark:bg-transparent dark:disabled:bg-transparent"
-          rows={2}
           value={text}
           maxLength={MAX_MESSAGE_LENGTH}
           placeholder={copy.placeholder}
@@ -445,67 +464,85 @@ export function NewSessionComposer(props: NewSessionComposerProps) {
             event.target.value = "";
           }}
         />
-        <div className="flex min-w-0 items-center gap-1">
-          <Button
-            type="button"
-            variant="ghost"
-            className="size-8 shrink-0 rounded-full bg-muted/60 p-0"
-            aria-label={copy.attach}
-            title={copy.attach}
-            disabled={locked || files.length >= MAX_FILES}
-            onClick={() => fileInput.current?.click()}
-          >
-            <Plus className="size-4" aria-hidden />
-          </Button>
-          {permissions && shownPermission && (
-            <PermissionMenu
-              label={shownPermission.name}
-              title={permissions.title}
-              risky={shownPermission.risky}
-              disabled={locked}
-              side={side}
-              items={permissions.choices}
-              selected={shownPermission.id}
-              onSelect={setPermission}
-            />
-          )}
-          <div className="ml-auto flex min-w-0 items-center gap-1">
-            {modelSettings && (
-              <ComposerModelPicker
-                locale={locale}
-                settings={modelSettings}
-                selection={{ modelId, effort: shownEffort }}
-                disabled={locked}
-                saving={false}
-                side={side}
-                onOpen={() => undefined}
-                onChange={async (change) => {
-                  if (change.restoreDefaults) {
-                    setModel("");
-                    setEffort("");
-                  } else if (change.model !== undefined) {
-                    setModel(change.model);
-                    setEffort(change.effort ?? "");
-                  } else if (change.effort !== undefined) setEffort(change.effort ?? "");
-                }}
-              />
-            )}
-            <Button
-              type="submit"
-              className="size-8 shrink-0 rounded-full p-0"
-              aria-label={copy.send}
-              title={copy.send}
-              disabled={!canSend}
-            >
-              {locked ? (
-                <LoaderCircle className="size-4 animate-spin" aria-hidden />
-              ) : (
-                <ArrowUp className="size-4" aria-hidden />
+        <ComposerToolbar
+          leading={
+            <>
+              <ComposerIconButton
+                type="button"
+                variant="ghost"
+                aria-label={copy.attach}
+                title={copy.attach}
+                disabled={locked || files.length >= MAX_FILES}
+                onClick={() => fileInput.current?.click()}
+              >
+                <Plus size={20} aria-hidden />
+              </ComposerIconButton>
+              {permissions && shownPermission && (
+                <PermissionMenu
+                  label={shownPermission.name}
+                  title={permissions.title}
+                  risky={shownPermission.risky}
+                  disabled={locked}
+                  side={side}
+                  items={permissions.choices}
+                  selected={shownPermission.id}
+                  onSelect={setPermission}
+                />
               )}
-            </Button>
-          </div>
-        </div>
-      </form>
+            </>
+          }
+          trailing={
+            <>
+              {modelSettings && (
+                <ComposerModelPicker
+                  key={modelScope}
+                  locale={locale}
+                  settings={modelSettings}
+                  selection={{ modelId, effort: shownEffort }}
+                  disabled={locked}
+                  saving={false}
+                  side={side}
+                  modelDefault={!isCodex}
+                  effortDefault={!isCodex}
+                  clearEffort={!isCodex && !!effort}
+                  onOpen={() => undefined}
+                  onChange={async (change) => {
+                    if (change.restoreDefaults) {
+                      setModelDraft(undefined);
+                    } else if (change.model !== undefined) {
+                      const chosen = modelSettings.options.models.find(
+                        (item) => item.id === change.model,
+                      );
+                      if (!chosen) return;
+                      const nextEffort = isCodex
+                        ? change.effort
+                        : chosen.efforts.find((level) => level === effort);
+                      setModelDraft({
+                        scope: modelScope,
+                        model: chosen.id,
+                        effort: nextEffort ?? "",
+                      });
+                    } else if (change.effort !== undefined)
+                      setModelDraft({ scope: modelScope, model, effort: change.effort ?? "" });
+                  }}
+                />
+              )}
+              <ComposerIconButton
+                type="submit"
+                aria-label={copy.send}
+                title={copy.send}
+                disabled={!canSend}
+              >
+                {locked ? (
+                  <LoaderCircle className="size-4 animate-spin" aria-hidden />
+                ) : (
+                  <ArrowUp size={20} aria-hidden />
+                )}
+              </ComposerIconButton>
+            </>
+          }
+        />
+      </ComposerFrame>
     </section>
   );
 }
@@ -564,7 +601,7 @@ function PermissionMenu({
         render={
           <Button
             variant="ghost"
-            className={cn(chip, risky && "text-orange-600 hover:text-orange-700")}
+            className={cn(chip, "h-11", risky && "text-orange-600 hover:text-orange-700")}
             disabled={disabled}
           />
         }

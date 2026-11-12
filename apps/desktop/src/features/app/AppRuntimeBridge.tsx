@@ -1,4 +1,5 @@
 import { useI18n } from "@/core/useI18n";
+import { agentName } from "@agentkib/agent-identity";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 import { AlertTriangle, RefreshCw } from "lucide-react";
@@ -23,7 +24,17 @@ import { useQuotaQueryEvents } from "@/features/quota/quota-query";
 import { useSkillSyncEvents } from "@/features/skills/skills-query";
 import { withAsyncCleanup } from "@/lib/utils";
 import type { AppMenuCommandRequest, AppNavigationRequest, EffectiveTheme } from "@/core/types";
-import type { DesktopRuntimeStatus } from "../../../electron/api";
+import type { DesktopRuntimeStatus, QuitRequest } from "../../../electron/api";
+
+/** Up to three of the sessions a quit would stop, by title, in the locale's list style. */
+export function quitWorkNames(work: QuitRequest["work"], locale: string): string {
+  const cjk = locale.startsWith("zh") || locale.startsWith("ja");
+  const names = work.slice(0, 3).map((item) => {
+    const name = item.title.trim() || agentName(item.agent);
+    return cjk ? `「${name}」` : `“${name}”`;
+  });
+  return names.join(cjk ? "、" : ", ") + (work.length > 3 ? "…" : "");
+}
 
 function hasUnsavedWorkspaceDraft(workspace: ReturnType<typeof useWorkspaceStore.getState>) {
   const manifestChanged = Boolean(
@@ -35,7 +46,7 @@ function hasUnsavedWorkspaceDraft(workspace: ReturnType<typeof useWorkspaceStore
 }
 
 export function AppRuntimeBridge() {
-  const { localizeMessage, tr } = useI18n();
+  const { locale, localizeMessage, tr } = useI18n();
   const dialogs = useAppDialogs();
   const queryClient = useQueryClient();
   const appStore = useAppStore();
@@ -178,7 +189,7 @@ export function AppRuntimeBridge() {
   }, [clearRuntimeError, setRuntime]);
 
   useEffect(() => {
-    const handleQuitRequest = async () => {
+    const handleQuitRequest = async (request: QuitRequest) => {
       if (quitPromptOpen.current) return;
       quitPromptOpen.current = true;
       await withAsyncCleanup(
@@ -189,6 +200,20 @@ export function AppRuntimeBridge() {
             await dialogs.notify(tr("dialog.quit.changesApplying"));
             return;
           }
+          // Turns in processes AgentKib started stop with it, for every Agent alike.
+          if (
+            request.work.length &&
+            !(await dialogs.confirm({
+              title: tr("dialog.quit.workTitle"),
+              description: tr("dialog.quit.workRunning", {
+                count: request.work.length,
+                names: quitWorkNames(request.work, locale),
+              }),
+              tone: "destructive",
+              confirmLabel: tr("dialog.quit.quitAnyway"),
+            }))
+          )
+            return;
           if (
             hasUnsavedWorkspaceDraft(workspace) &&
             !(await dialogs.confirm({
@@ -204,8 +229,8 @@ export function AppRuntimeBridge() {
         },
       );
     };
-    return desktopApi().events.onQuitRequested(() => void handleQuitRequest());
-  }, [dialogs, tr]);
+    return desktopApi().events.onQuitRequested((request) => void handleQuitRequest(request));
+  }, [dialogs, locale, tr]);
 
   if (runtimeStatus?.state !== "failed") return null;
 

@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { ConversationSessionSummary } from "@/core/types";
+import { workStoppedByQuit } from "@agentkib/session-catalog";
 import { formatRunningTime, homeSessionGroups } from "./home-sessions";
 
 let clock = 0;
@@ -157,5 +158,30 @@ describe("formatRunningTime", () => {
 
   it("gives nothing for a start time it cannot read", () => {
     expect(formatRunningTime("soon", "en-US", now)).toBeUndefined();
+  });
+});
+
+describe("workStoppedByQuit", () => {
+  it("names turns running or waiting in processes AgentKib started, and nothing elsewhere", () => {
+    const work = workStoppedByQuit([
+      session("managed-running", {
+        continuation: { status: "running", executionLocation: "agentkib" },
+      }),
+      session("managed-approval", { continuation: { status: "awaiting-approval" } }),
+      session("terminal-running", {
+        continuation: { status: "running", executionLocation: "terminal" },
+      }),
+      session("desktop-question", {
+        continuation: { status: "waiting-input", executionLocation: "external" },
+      }),
+      session("external-turn", { externalTurn: { status: "running", startedAt: null } }),
+      session("unconfirmed", { continuation: { status: "outcome-unknown" } }),
+      session("idle", { continuation: { status: "idle" } }),
+      session("archived", {
+        archived: true,
+        continuation: { status: "running", executionLocation: "agentkib" },
+      }),
+    ]);
+    expect(work.map((item) => item.id)).toEqual(["managed-approval", "managed-running"]);
   });
 });

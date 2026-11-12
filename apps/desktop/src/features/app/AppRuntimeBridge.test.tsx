@@ -7,8 +7,8 @@ import { changeLocale, initializeI18n } from "@/core/i18n";
 import { api } from "@/core/api";
 import { useWorkspaceStore } from "@/features/workspace/workspace-store";
 import { useAppStore } from "@/stores/app-store";
-import type { DesktopRuntimeStatus } from "../../../electron/api";
-import { AppRuntimeBridge } from "./AppRuntimeBridge";
+import type { DesktopRuntimeStatus, QuitRequest } from "../../../electron/api";
+import { AppRuntimeBridge, quitWorkNames } from "./AppRuntimeBridge";
 import { useSidebarWidthStore } from "./sidebar-width-store";
 
 const { runtimeInfo, addWorkspace, setAccentThemePreference, setSidebarWidthPreference } =
@@ -74,7 +74,7 @@ describe("AppRuntimeBridge", () => {
           },
         },
       });
-      const listeners = new Set<() => void>();
+      const listeners = new Set<(request: QuitRequest) => void>();
       const unsubscribers: ReturnType<typeof vi.fn>[] = [];
       vi.spyOn(window.agentkibDesktop!.events, "onQuitRequested").mockImplementation((listener) => {
         listeners.add(listener);
@@ -98,7 +98,7 @@ describe("AppRuntimeBridge", () => {
       });
       expect(listeners.size).toBe(1);
       act(() => {
-        listeners.forEach((listener) => listener());
+        listeners.forEach((listener) => listener({ work: [] }));
       });
       expect(await screen.findByText(description)).toBeTruthy();
       fireEvent.click(screen.getByRole("button", { name: dismiss }));
@@ -121,7 +121,7 @@ describe("AppRuntimeBridge", () => {
       accent_theme_preference: "vtron",
     });
     await changeLocale("en-US");
-    let quit: (() => void) | undefined;
+    let quit: ((request: QuitRequest) => void) | undefined;
     vi.spyOn(window.agentkibDesktop!.events, "onQuitRequested").mockImplementation((listener) => {
       quit = listener;
       return () => undefined;
@@ -142,11 +142,82 @@ describe("AppRuntimeBridge", () => {
     });
     expect(stringify).not.toHaveBeenCalledWith(manifest);
 
-    act(() => quit!());
+    act(() => quit!({ work: [] }));
     expect(
       await screen.findByText("Discard unsaved workspace drafts and quit AgentKib?"),
     ).toBeTruthy();
     expect(stringify).toHaveBeenCalledWith(manifest);
+  });
+
+  it("names the work a quit would stop and quits only once the person confirms", async () => {
+    runtimeInfo.mockResolvedValue({
+      effective_theme: "light",
+      effective_locale: "en-US",
+      accent_theme_preference: "vtron",
+    });
+    await changeLocale("en-US");
+    let quit: ((request: QuitRequest) => void) | undefined;
+    vi.spyOn(window.agentkibDesktop!.events, "onQuitRequested").mockImplementation((listener) => {
+      quit = listener;
+      return () => undefined;
+    });
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    render(
+      <QueryClientProvider client={queryClient}>
+        <AppDialogProvider>
+          <AppRuntimeBridge />
+        </AppDialogProvider>
+      </QueryClientProvider>,
+    );
+    await waitFor(() => expect(useAppStore.getState().runtime?.effective_locale).toBe("en-US"));
+    const work = [
+      { title: "Fix login", agent: "codex" },
+      // An untitled session goes by its Agent's name.
+      { title: "", agent: "deepseek-harness" },
+    ];
+    const text =
+      "Running or waiting for you in AgentKib (2): “Fix login”, “DeepSeek Harness”. Quitting AgentKib stops them.";
+
+    act(() => quit!({ work }));
+    expect(await screen.findByText(text)).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
+    await waitFor(() => expect(screen.queryByText(text)).toBeNull());
+    expect(api.quitApp).not.toHaveBeenCalled();
+
+    act(() => quit!({ work }));
+    fireEvent.click(await screen.findByRole("button", { name: "Quit anyway" }));
+    await waitFor(() => expect(api.quitApp).toHaveBeenCalledOnce());
+  });
+
+  it("quits without asking when nothing runs in AgentKib", async () => {
+    runtimeInfo.mockResolvedValue({
+      effective_theme: "light",
+      effective_locale: "en-US",
+      accent_theme_preference: "vtron",
+    });
+    let quit: ((request: QuitRequest) => void) | undefined;
+    vi.spyOn(window.agentkibDesktop!.events, "onQuitRequested").mockImplementation((listener) => {
+      quit = listener;
+      return () => undefined;
+    });
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    render(
+      <QueryClientProvider client={queryClient}>
+        <AppDialogProvider>
+          <AppRuntimeBridge />
+        </AppDialogProvider>
+      </QueryClientProvider>,
+    );
+    await waitFor(() => expect(useAppStore.getState().runtime?.effective_locale).toBe("en-US"));
+    act(() => quit!({ work: [] }));
+    await waitFor(() => expect(api.quitApp).toHaveBeenCalledOnce());
+    expect(screen.queryByRole("alertdialog")).toBeNull();
+  });
+
+  it("lists at most three sessions in the locale's style", () => {
+    const work = ["A", "B", "C", "D"].map((title) => ({ title, agent: "codex" }));
+    expect(quitWorkNames(work, "zh-CN")).toBe("「A」、「B」、「C」…");
+    expect(quitWorkNames(work.slice(0, 2), "en-US")).toBe("“A”, “B”");
   });
 
   it("synchronizes Runtime information when legacy workspace migration fails", async () => {

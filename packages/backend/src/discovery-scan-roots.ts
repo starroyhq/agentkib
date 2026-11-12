@@ -21,6 +21,7 @@ const markers = [
   "opencode.jsonc",
   ".grok",
   ".dsh",
+  ".devin",
 ];
 const ignoredDirectories = new Set([
   ".git",

@@ -103,11 +103,11 @@ describe("MCP batch connection preparation", () => {
     const f = fixture(["codex", "claude-code"]),
       request = { workspaceId: "registry-id", all: true },
       preview = f.batch.plan(request);
-    expect(preview.targets).toHaveLength(8);
+    expect(preview.targets).toHaveLength(9);
     expect(
       preview.targets.filter((target) => target.status === "missing").map((target) => target.agent),
     ).toEqual(["codex", "claude-code"]);
-    expect(preview.targets.filter((target) => target.status === "uninstalled")).toHaveLength(6);
+    expect(preview.targets.filter((target) => target.status === "uninstalled")).toHaveLength(7);
     expect(existsSync(f.info("codex").target)).toBe(false);
     expect(existsSync(path.join(f.home, ".hermes"))).toBe(false);
     expect(existsSync(path.join(f.home, ".openclaw"))).toBe(false);

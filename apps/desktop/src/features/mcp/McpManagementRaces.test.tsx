@@ -201,6 +201,7 @@ describe("MCP management review regressions", () => {
         "open-claw",
         "hermes",
         "grok-build",
+        "devin",
       ];
       if (surface === "table") {
         await waitFor(() => expect(api.saveMcpConfiguration).toHaveBeenCalledTimes(1));

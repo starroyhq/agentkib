@@ -18,6 +18,7 @@ import {
 import { OpenCodeSessions } from "./opencode-sessions";
 import { CursorSessions } from "./cursor-sessions";
 import { CursorIdeSessions } from "./cursor-ide-sessions";
+import { DevinSessions } from "./devin-sessions";
 import { AntigravitySessions } from "./antigravity-sessions";
 import { parseAntigravityReplay } from "./antigravity-replay";
 import { stringifyAcpJson } from "./acp-json";
@@ -291,6 +292,13 @@ export async function readHistorySearchSource(
               case "open-claw":
                 lookup = new OpenClawSessions(input.environment).list(null).sessions.find(matches);
                 break;
+              case "devin": {
+                const session = new DevinSessions(input.environment)
+                  .list(null)
+                  .sessions.find((value) => matches({ session: value }));
+                if (session) lookup = { cwd: session.cwd ?? null, session };
+                break;
+              }
               case "cursor": {
                 // The CLI root can move while its path-based native identity stays stable.
                 // Match only that identity before opening a store; an unrelated profile or
@@ -491,6 +499,17 @@ export async function readHistorySearchSource(
         } finally {
           options.signal?.removeEventListener("abort", cancel);
           provider.close();
+        }
+        break;
+      }
+      case "devin": {
+        const snapshot = await readSourceSnapshot(sink, () =>
+          new DevinSessions(input.environment).searchRecords(native.native_ref, workspace),
+        );
+        sink.fingerprint(snapshot.fingerprint);
+        for (const { truncated, ...record } of snapshot.records) {
+          if (truncated) sink.limit("source-record-limit");
+          await sink.emit(record);
         }
         break;
       }

@@ -7,6 +7,7 @@ import openClaw from "./assets/open-claw.svg";
 import hermes from "./assets/hermes.svg";
 import grok from "./assets/grok-build.svg";
 import deepseek from "./assets/deepseek-harness.svg";
+import devin from "./assets/devin.svg";
 import "./style.css";
 import { Bot } from "lucide-react";
 
@@ -20,6 +21,7 @@ const identities: Record<string, { name: string; src: string; invert?: boolean; 
   hermes: { name: "Hermes", src: hermes, invert: true, dim: true },
   "grok-build": { name: "Grok Build", src: grok, invert: true, dim: true },
   "deepseek-harness": { name: "DeepSeek Harness", src: deepseek },
+  devin: { name: "Devin", src: devin },
 };
 
 function identity(agent?: string) {

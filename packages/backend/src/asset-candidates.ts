@@ -85,4 +85,17 @@ export const ASSET_CANDIDATES: Record<string, readonly (readonly [string, string
     [".dsh/skills", "skill", "DeepSeek Harness Skills"],
     [".agents/skills", "skill", "Shared Agent Skill"],
   ],
+  devin: [
+    ["AGENTS.md", "instruction", "Devin project instructions"],
+    ["AGENTS.local.md", "instruction", "Devin personal project instructions"],
+    ["AGENT.md", "instruction", "Devin project instructions"],
+    [".devin/rules", "instruction", "Devin project rules"],
+    [".devin/global_rules.md", "instruction", "Devin project rules"],
+    [".devin/skills", "skill", "Devin Skills"],
+    [".agents/skills", "skill", "Shared Agent Skill"],
+    [".devin/agents", "agent", "Devin custom subagents"],
+    [".devin/hooks.v1.json", "hook", "Devin Hooks"],
+    [".devin/config.json", "configuration", "Devin project configuration"],
+    [".devin/mcp_config.json", "connection", "Devin MCP"],
+  ],
 };

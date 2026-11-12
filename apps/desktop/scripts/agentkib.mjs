@@ -85,7 +85,7 @@ const desktopVersion = JSON.parse(
 
 const usage =
   "agentkib scan <project>\n" +
-  "agentkib context <project> <codex|claude-code|cursor|opencode|openclaw|hermes|grok-build|antigravity|deepseek-harness> [cwd]\n" +
+  "agentkib context <project> <codex|claude-code|cursor|opencode|openclaw|hermes|grok-build|antigravity|deepseek-harness|devin> [cwd]\n" +
   "agentkib plan <project>\n" +
   "agentkib validate <project>\n" +
   "agentkib manifest <project>";
@@ -119,6 +119,7 @@ const supportedAgents = new Set([
   "grok-build",
   "antigravity",
   "deepseek-harness",
+  "devin",
 ]);
 if (command === "context" && !supportedAgents.has(agent))
   throw new Error(`Unknown Agent: ${agentArg ?? ""}`);

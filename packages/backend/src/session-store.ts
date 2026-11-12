@@ -31,6 +31,7 @@ const supported = [
   "antigravity",
   "cursor",
   "deepseek-harness",
+  "devin",
 ];
 export interface NativeSession {
   native_ref: string;
@@ -97,6 +98,7 @@ export function sessionWorkspaceRoot(
         "opencode.jsonc",
         ".grok",
         ".dsh",
+        ".devin",
       ].some((marker) => exists(path.join(current, marker)))
     )
       return current;

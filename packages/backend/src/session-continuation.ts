@@ -47,6 +47,7 @@ const targetSchema = z.enum([
   "hermes",
   "grok-build",
   "deepseek-harness",
+  "devin",
 ]);
 
 interface Capability {
@@ -207,9 +208,9 @@ export async function interactiveLaunchCapability(
       ? { status: "supported", reason: null }
       : { status: "unavailable", reason: options.reason ?? "dsh-runtime-offline" };
   }
-  if (target !== "codex" && target !== "claude-code")
+  if (target !== "codex" && target !== "claude-code" && target !== "devin")
     return { status: "unsupported", reason: "target-not-supported" };
-  return resolveCommand(target === "codex" ? "codex" : "claude", env)
+  return resolveCommand(target === "codex" ? "codex" : target === "devin" ? "devin" : "claude", env)
     ? { status: "supported", reason: null }
     : { status: "unavailable", reason: "cli-unavailable" };
 }
@@ -221,7 +222,8 @@ export async function nativeImportCapability(
   project: string,
 ): Promise<Capability> {
   // DSH has no way to take another Agent's history as its own; a handoff file is read instead.
-  if (target === "antigravity" || target === "deepseek-harness")
+  // Devin has no interface that imports another Agent's history, and its store is private.
+  if (target === "antigravity" || target === "deepseek-harness" || target === "devin")
     return { supported: false, beta: false, reason: "native-history-import-unsupported" };
   if (target !== "codex" && target !== "claude-code")
     return { supported: false, beta: false, reason: "target-not-supported" };

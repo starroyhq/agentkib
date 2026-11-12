@@ -109,7 +109,8 @@ export interface ConversationSessionSummary {
     | "open-claw"
     | "hermes"
     | "grok-build"
-    | "deepseek-harness";
+    | "deepseek-harness"
+    | "devin";
   title?: string;
   created_at?: string | null;
   updated_at?: string;

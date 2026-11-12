@@ -22,7 +22,7 @@
 
 [![AgentKib home: items to handle, recent sessions and recent workspaces](docs/assets/agentkib-home.png)](docs/assets/agentkib-home.png)
 
-AgentKib brings the coding agents on your computer into one desktop app: Codex, Claude Code, Cursor, OpenCode, Antigravity, OpenClaw, Hermes, Grok Build and DeepSeek Harness. Read and continue their sessions, hand a conversation from one agent to another, follow and control your sessions from a phone, and keep instructions, Skills, MCP services and the agent CLIs themselves in order.
+AgentKib brings the coding agents on your computer into one desktop app: Codex, Claude Code, Cursor, OpenCode, Antigravity, OpenClaw, Hermes, Grok Build, DeepSeek Harness and Devin. Read and continue their sessions, hand a conversation from one agent to another, follow and control your sessions from a phone, and keep instructions, Skills, MCP services and the agent CLIs themselves in order.
 
 Everything runs on your computer. Discovery, diagnostics, history and handoff need no AgentKib account and no model API; an account is only used for the optional remote relay. **KIB** stands for **Knowledge & Instruction Base**.
 
@@ -69,6 +69,7 @@ Everything runs on your computer. Discovery, diagnostics, history and handoff ne
 | OpenClaw | Read-only | — | Experimental | Yes | Yes |
 | Hermes | Read-only | — | Experimental | Yes | Yes |
 | Grok Build | Read-only | — | — | Yes | Yes |
+| Devin | Read-only, CLI and Desktop | — | Handoff file | Yes | Detect / official installer |
 | DeepSeek Harness (beta) | Through a running DSH (macOS) | Through its bridge plugin (macOS) | Handoff file | Diagnostics only | — |
 
 DeepSeek Harness support is in development and not yet part of a release. Version requirements and the limits of each capability are in the [feature and compatibility matrix](docs/FEATURES.md) and the [session handoff matrix](docs/sessions/interoperability.md).

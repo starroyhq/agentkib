@@ -35,7 +35,8 @@ export type AgentKind =
   | "open-claw"
   | "hermes"
   | "grok-build"
-  | "deepseek-harness";
+  | "deepseek-harness"
+  | "devin";
 export type MemoryStatus = "pending" | "approved" | "rejected" | "invalidated";
 export type MemoryType =
   | "user_preference"

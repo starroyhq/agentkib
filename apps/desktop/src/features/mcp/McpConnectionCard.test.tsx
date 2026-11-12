@@ -148,14 +148,14 @@ describe("McpConnectionCard", () => {
     await waitFor(() => expect(navigator.clipboard.writeText).toHaveBeenCalledWith(info().config));
   });
 
-  it("offers the eight supported Agents and regenerates the target format and URL", async () => {
+  it("offers the nine supported Agents and regenerates the target format and URL", async () => {
     const user = userEvent.setup();
     render(<McpConnectionCard {...props} />);
     await screen.findByTestId("mcp-connection-url");
     // Keyboard opening avoids Base UI's pointer hold/release timing under parallel Worker tests.
     screen.getByRole("combobox", { name: tr("mcp.connection.agent") }).focus();
     await user.keyboard("{ArrowDown}");
-    expect(await screen.findAllByRole("option")).toHaveLength(8);
+    expect(await screen.findAllByRole("option")).toHaveLength(9);
     await user.click(await screen.findByRole("option", { name: "Claude Code" }));
     await waitFor(() =>
       expect(screen.getByTestId("mcp-connection-url")).toHaveTextContent(

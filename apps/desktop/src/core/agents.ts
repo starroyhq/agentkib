@@ -13,6 +13,7 @@ const AGENT_ORDER: Record<AgentKind, true> = {
   hermes: true,
   "grok-build": true,
   "deepseek-harness": true,
+  devin: true,
 };
 
 export const AGENT_KINDS = Object.keys(AGENT_ORDER) as AgentKind[];

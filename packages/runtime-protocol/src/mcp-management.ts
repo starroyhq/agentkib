@@ -12,7 +12,8 @@ export type McpAgent =
   | "hermes"
   | "grok-build"
   | "antigravity"
-  | "deepseek-harness";
+  | "deepseek-harness"
+  | "devin";
 export type ManagedMcpServer = {
   id: string;
   name: string;

@@ -12,6 +12,7 @@ import { OpenCodeSessions } from "./opencode-sessions";
 import { AntigravityHistory } from "./antigravity-history";
 import { CursorSessions } from "./cursor-sessions";
 import { CursorIdeSessions } from "./cursor-ide-sessions";
+import { DevinSessions } from "./devin-sessions";
 import type { CursorBridge } from "./cursor-bridge";
 import { readOpenClawSqliteDocument, readOpenClawSqliteEvents } from "./openclaw-sqlite-sessions";
 import { SessionPaging } from "./session-paging";
@@ -76,6 +77,7 @@ export const SESSION_AGENTS = [
   "antigravity",
   "cursor",
   "deepseek-harness",
+  "devin",
 ] as const;
 export type SessionAgent = (typeof SESSION_AGENTS)[number];
 /** DeepSeek Harness history and its images come from the running DSH through its AgentKib plugin. */
@@ -99,6 +101,7 @@ export class SessionReaders {
   #antigravity: AntigravityHistory;
   #cursor: CursorSessions;
   #cursorIde: CursorIdeSessions;
+  #devin: DevinSessions;
   #paging = new SessionPaging();
   #subagents: SessionSubagents;
   #subagentCandidates = new Map<string, { at: number; candidates: CodexSubagentSource[] }>();
@@ -119,6 +122,7 @@ export class SessionReaders {
     this.#antigravity = new AntigravityHistory(env);
     this.#cursor = new CursorSessions(env);
     this.#cursorIde = new CursorIdeSessions(cursorBridge);
+    this.#devin = new DevinSessions(env);
   }
   close(): void {
     this.#antigravity.close();
@@ -424,6 +428,8 @@ export class SessionReaders {
       case "deepseek-harness":
         // Workers without a bridge list nothing rather than a stale or partial set.
         return this.dsh ? this.dsh.list(workspace) : { sessions: [], incomplete: false };
+      case "devin":
+        return this.#devin.list(workspace);
       case "cursor": {
         const cli = this.#cursor.list(workspace);
         try {
@@ -634,6 +640,8 @@ export class SessionReaders {
       if (!this.dsh) throw new Error("session-image-unavailable");
       return this.dsh.image(native.native_ref, imageId);
     }
+    // Devin keeps a message's images in its own store, checked against this workspace.
+    if (native.agent === "devin") return this.#devin.image(native.native_ref, workspace, imageId);
     if (!transcript || (native.agent !== "codex" && native.agent !== "claude-code"))
       throw new Error("session-image-unavailable");
     const file = native.agent === "codex" ? await codexRollouts.plain(transcript) : transcript;
@@ -770,6 +778,8 @@ export class SessionReaders {
       case "deepseek-harness":
         if (!this.dsh) throw new Error("Conversation provider is unavailable");
         return this.dsh.events(ref, offset, count);
+      case "devin":
+        return this.#devin.events(ref, workspace, offset, count);
       default:
         throw new Error("Conversation provider is unavailable");
     }
@@ -863,6 +873,13 @@ export class SessionReaders {
       });
     if (native.agent === "antigravity")
       return this.#antigravity.readDocument(native.native_ref, { ...summary, agent: native.agent });
+    if (native.agent === "devin")
+      return this.#devin.document(
+        native.native_ref,
+        workspace,
+        { ...summary, agent: native.agent },
+        options,
+      );
     if (native.agent === "cursor")
       return native.native_ref.startsWith("cursor-ide-v1-")
         ? this.#cursorIde.document(native, summary.workspace_id, workspace)

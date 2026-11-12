@@ -49,6 +49,7 @@ const variants: Record<Agent, string> = {
   "grok-build": "GrokBuild",
   antigravity: "Antigravity",
   "deepseek-harness": "DeepSeekHarness",
+  devin: "Devin",
 };
 const summary = (workspace_id: string, issues: Issue[]) => ({
   workspace_id,

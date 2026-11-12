@@ -47,7 +47,11 @@ import {
   type RelayStatus,
   type RemoteAccountBinding,
   type AccountLoginProof,
+  type PushSendInput,
+  type PushSendResult,
 } from "./relay/manager";
+import { pushPublicKey } from "../push/envelope";
+import type { PushTarget } from "../push/notifier";
 
 export const HOSTED_ORIGIN = "https://remote.agentkib.com";
 /** Modes a Claude CLI can report; only the first three are ever selectable from AgentKib. */
@@ -275,6 +279,31 @@ type Credential = {
    * The pairing ends with that login and is renewed while it lasts.
    */
   account?: AccountBinding;
+  /** The phone asked this computer for notifications, sent to its account login. */
+  push?: PushSubscription;
+};
+type PushSubscription = {
+  /** X25519, base64url: alerts are encrypted to it. */
+  publicKey: string;
+  /** The phone's own name for this computer, returned inside every alert. */
+  ref: string;
+  alerts: boolean;
+  liveActivity: boolean;
+  updatedAt: number;
+};
+const PUSH_REF = /^[A-Za-z0-9_-]{8,64}$/;
+const validPushSubscription = (value: unknown): value is PushSubscription => {
+  const push = value as PushSubscription;
+  return (
+    !!push &&
+    !!pushPublicKey(push.publicKey) &&
+    typeof push.ref === "string" &&
+    PUSH_REF.test(push.ref) &&
+    typeof push.alerts === "boolean" &&
+    typeof push.liveActivity === "boolean" &&
+    Number.isSafeInteger(push.updatedAt) &&
+    push.updatedAt > 0
+  );
 };
 type AccountBinding = {
   accountId: string;
@@ -454,6 +483,9 @@ const API_ROUTES: Record<"GET" | "POST", Record<string, RouteSpec>> = {
     "/pair": { lan: true },
     "/pair/cancel": { lan: true },
     "/account-binding": { lan: true },
+    // Notifications travel through the relay to account-bound phones, so never on LAN.
+    "/push/subscribe": {},
+    "/push/unsubscribe": {},
     "/logout": { lan: true },
     "/send": { lan: true, control: true },
     "/stop": { lan: true, control: true },
@@ -601,6 +633,7 @@ export class WebAccessService {
   private unconfirmedRequests = new Map<string, string>();
   private requests = new Set<string>();
   private controlEvents = new EventEmitter().setMaxListeners(64);
+  private pushEvents = new EventEmitter();
   // 正在进行的目录读取（按 runtime 启动区分）；同时到达的权限检查共用它。
   private catalogFlight?: { boot: string; readerScope: string; read: Promise<unknown> };
   private pendingControlNotifications = new Set<string>();
@@ -1018,6 +1051,10 @@ export class WebAccessService {
           // A pairing whose login cannot be read could never end with it: drop it.
           (c.account === undefined || validAccountBinding(c.account)),
       );
+      // An unreadable subscription only stops notifications; the phone subscribes again.
+      for (const credential of this.credentials)
+        if (credential.push !== undefined && !validPushSubscription(credential.push))
+          delete credential.push;
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code !== "ENOENT") {
         this.config.enabled = false;
@@ -1215,6 +1252,125 @@ export class WebAccessService {
   onControlChanged(listener: (sessionId: string) => void): () => void {
     this.controlEvents.on("changed", listener);
     return () => this.controlEvents.off("changed", listener);
+  }
+
+  /**
+   * The phones that asked for notifications and can get them now: paired over the relay, bound
+   * to an account login of the account this computer is signed in to. One entry per login; the
+   * latest subscription wins when a phone paired more than once.
+   */
+  pushTargets(): PushTarget[] {
+    if (this.disposed || !this.server) return [];
+    const now = Date.now();
+    const targets = new Map<string, PushTarget>();
+    for (const credential of this.credentials) {
+      const push = credential.push;
+      if (!push || credential.expiresAt <= now || !this.pushReady(credential)) continue;
+      const session = credential.account!.sessionId;
+      const earlier = targets.get(session);
+      if (!earlier || earlier.updatedAt < push.updatedAt)
+        targets.set(session, {
+          session,
+          publicKey: push.publicKey,
+          ref: push.ref,
+          alerts: push.alerts,
+          liveActivity: push.liveActivity,
+          updatedAt: push.updatedAt,
+        });
+    }
+    return [...targets.values()];
+  }
+
+  /** This computer's relay device id while it can send notifications. */
+  pushDeviceId(): string | undefined {
+    return this.options.mode === "lan" ? undefined : this.relay?.accountLoginContext?.deviceId;
+  }
+
+  pushSend(input: PushSendInput): Promise<PushSendResult> {
+    if (this.options.mode === "lan" || !this.relay)
+      return Promise.resolve({ delivered: false, error: "relay_unavailable" });
+    return this.relay.pushSend(input);
+  }
+
+  /** A phone subscribed to notifications, changed what it gets, or stopped them. */
+  onPushChanged(listener: () => void): () => void {
+    this.pushEvents.on("changed", listener);
+    return () => this.pushEvents.off("changed", listener);
+  }
+
+  /** Only a phone bound to this computer's account login over the relay can be notified. */
+  private pushReady(credential: Credential) {
+    return (
+      this.options.mode !== "lan" &&
+      this.accountLoginRequired() &&
+      this.validCloudBinding(credential.account)
+    );
+  }
+
+  /**
+   * A phone asks for notifications: alerts encrypted to its key, and a Live Activity while
+   * sessions work. They go through the relay to the phone's account login only, and end with
+   * the pairing. Subscribing again with the same choices changes nothing.
+   */
+  private async subscribePush(hash: string, body: Record<string, unknown>) {
+    const fields = ["publicKey", "ref", "alerts", "liveActivity"];
+    if (
+      Object.keys(body).some((key) => !fields.includes(key)) ||
+      !pushPublicKey(body.publicKey) ||
+      typeof body.ref !== "string" ||
+      !PUSH_REF.test(body.ref) ||
+      typeof body.alerts !== "boolean" ||
+      typeof body.liveActivity !== "boolean"
+    )
+      throw new HttpError(400, "invalid_push_subscription");
+    this.grant(hash);
+    this.rate(`push:${hash}`, 12);
+    const push: PushSubscription = {
+      publicKey: body.publicKey as string,
+      ref: body.ref,
+      alerts: body.alerts,
+      liveActivity: body.liveActivity,
+      updatedAt: Date.now(),
+    };
+    const work = this.adminQueue.then(async () => {
+      const credential = this.credentials.find((row) => row.hash === hash);
+      if (!credential || this.browsers.get(hash)?.ended) throw new HttpError(401, "access_ended");
+      if (!this.pushReady(credential)) throw new HttpError(409, "push_unavailable");
+      const earlier = credential.push;
+      if (
+        earlier?.publicKey === push.publicKey &&
+        earlier.ref === push.ref &&
+        earlier.alerts === push.alerts &&
+        earlier.liveActivity === push.liveActivity
+      )
+        return false;
+      const next = this.credentials.map((row) => (row === credential ? { ...row, push } : row));
+      await this.save(this.config, this.remotePairingInitialized, next);
+      this.credentials = next;
+      return true;
+    });
+    this.adminQueue = work.catch(() => undefined);
+    if (await work) this.pushEvents.emit("changed");
+    return { subscribed: true };
+  }
+
+  private async unsubscribePush(hash: string, body: Record<string, unknown>) {
+    if (Object.keys(body).length) throw new HttpError(400, "invalid_push_subscription");
+    this.grant(hash);
+    this.rate(`push:${hash}`, 12);
+    const work = this.adminQueue.then(async () => {
+      const credential = this.credentials.find((row) => row.hash === hash);
+      if (!credential?.push) return false;
+      const next = this.credentials.map((row) =>
+        row === credential ? { ...row, push: undefined } : row,
+      );
+      await this.save(this.config, this.remotePairingInitialized, next);
+      this.credentials = next;
+      return true;
+    });
+    this.adminQueue = work.catch(() => undefined);
+    if (await work) this.pushEvents.emit("changed");
+    return { subscribed: false };
   }
 
   private notifyControlChanged(sessionId: string) {
@@ -4888,6 +5044,18 @@ export class WebAccessService {
           ? { directConnection }
           : {}),
         ...(bearerToken ? { bearerToken } : {}),
+        // Additive: only a pairing that can be notified learns that it can subscribe.
+        ...(device && credential && !browser.ended && this.pushReady(credential)
+          ? {
+              push: {
+                version: 1,
+                subscribed: !!credential.push,
+                ...(credential.push
+                  ? { alerts: credential.push.alerts, liveActivity: credential.push.liveActivity }
+                  : {}),
+              },
+            }
+          : {}),
         ...(loginRequired && loginContext
           ? {
               accountLogin: {
@@ -5071,6 +5239,10 @@ export class WebAccessService {
       }
       if (path === "/account-binding")
         return this.json(res, 200, await this.bindAccount(hash, body));
+      if (path === "/push/subscribe")
+        return this.json(res, 200, await this.subscribePush(hash, body));
+      if (path === "/push/unsubscribe")
+        return this.json(res, 200, await this.unsubscribePush(hash, body));
       if (path === "/logout") {
         // Share the config transaction queue: a logout captured during a provider
         // switch must not overwrite the new config with an old persistence snapshot.

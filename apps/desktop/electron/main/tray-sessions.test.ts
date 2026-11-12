@@ -65,6 +65,21 @@ describe("tray session watcher", () => {
     watcher.stop();
   });
 
+  it("hands every snapshot it reads to the phone notifications", async () => {
+    const value = source([session("a", "running")]);
+    const snapshots: unknown[] = [];
+    const watcher = new TraySessionWatcher(value, () => undefined, {
+      onSessions: (sessions) => snapshots.push(sessions?.map((entry) => entry.id)),
+    });
+    watcher.start();
+    await vi.advanceTimersByTimeAsync(0);
+    value.set(undefined);
+    watcher.refresh(0);
+    await vi.advanceTimersByTimeAsync(0);
+    expect(snapshots).toEqual([["a"], undefined]);
+    watcher.stop();
+  });
+
   it("reads once a minute while nothing runs, without following the catalog", async () => {
     const value = source([session("a", "awaiting-approval")]);
     const watcher = new TraySessionWatcher(value, () => undefined);

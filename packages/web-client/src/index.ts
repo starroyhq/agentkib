@@ -250,6 +250,11 @@ export interface Access {
   /** Additive capability; absent on older hosts. */
   historySearch?: true;
   historySearchScope?: string;
+  /**
+   * Notifications from this computer (`/push/subscribe`): present when this pairing can get
+   * them, which needs an account-bound phone on the relay. Additive; absent on older hosts.
+   */
+  push?: { version: 1; subscribed: boolean; alerts?: boolean; liveActivity?: boolean };
   /** Missing on legacy hosts: history and receipts remain readable. */
   protocolVersion?: number;
   bearerToken?: string;

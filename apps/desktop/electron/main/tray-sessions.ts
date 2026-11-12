@@ -22,6 +22,8 @@ export interface TraySessionWatcherOptions {
   idleMs?: number;
   /** Changes arriving within this delay are read once. */
   settleMs?: number;
+  /** Receives every snapshot read, undefined when the catalog could not be read. */
+  onSessions?: (sessions: readonly HomeSession[] | undefined) => void;
 }
 
 /**
@@ -36,6 +38,7 @@ export class TraySessionWatcher {
   readonly #onStatus: (status: TraySessionStatus) => void;
   readonly #idleMs: number;
   readonly #settleMs: number;
+  readonly #onSessions: TraySessionWatcherOptions["onSessions"];
   #status = IDLE_TRAY_STATUS;
   #timer: ReturnType<typeof setTimeout> | undefined;
   #reading = false;
@@ -47,12 +50,13 @@ export class TraySessionWatcher {
   constructor(
     source: TraySessionSource,
     onStatus: (status: TraySessionStatus) => void,
-    { idleMs = 60_000, settleMs = 750 }: TraySessionWatcherOptions = {},
+    { idleMs = 60_000, settleMs = 750, onSessions }: TraySessionWatcherOptions = {},
   ) {
     this.#source = source;
     this.#onStatus = onStatus;
     this.#idleMs = idleMs;
     this.#settleMs = settleMs;
+    this.#onSessions = onSessions;
   }
 
   get status(): TraySessionStatus {
@@ -100,6 +104,7 @@ export class TraySessionWatcher {
         sessions = undefined;
       }
       if (this.#stopped) return;
+      this.#onSessions?.(sessions);
       const groups = sessions ? homeSessionGroups(sessions, { recent: 0 }) : undefined;
       const status = groups
         ? { needsYou: groups.needsYou.length, running: groups.running.length }

@@ -1923,3 +1923,74 @@ describe("account device registration", () => {
     expect(registerAccount).not.toHaveBeenCalled();
   });
 });
+
+describe("phone notifications", () => {
+  function notifier(path: string) {
+    const { manager, internal } = setup(path);
+    const state = internal as unknown as { enabled: boolean; suspended: boolean };
+    state.enabled = true;
+    internal.registration = { ...registration, accountId: "owner" };
+    return { manager, state };
+  }
+  const alert = { session: "c".repeat(36), kind: "alert" as const, envelope: "e".repeat(64) };
+
+  it("sends as the computer's device and reports the relay's answer", async () => {
+    const { manager } = notifier(await directory());
+    const fetcher = vi.fn<typeof fetch>(async () => Response.json({ delivered: true }));
+    vi.stubGlobal("fetch", fetcher);
+    expect(await manager.pushSend(alert)).toEqual({ delivered: true });
+    const [url, init] = fetcher.mock.calls[0];
+    expect(String(url)).toBe("https://relay.example.com/v1/push/send");
+    expect(init!.headers).toMatchObject({ authorization: `Bearer ${registration.credential}` });
+    expect(JSON.parse(init!.body as string)).toEqual({ ...alert, deviceId: registration.deviceId });
+  });
+
+  it("turns refusals into codes without marking the relay as failing", async () => {
+    const { manager } = notifier(await directory());
+    const before = manager.status;
+    const fetcher = vi.fn<typeof fetch>();
+    vi.stubGlobal("fetch", fetcher);
+    fetcher.mockResolvedValueOnce(Response.json({ error: "push_target_gone" }, { status: 410 }));
+    expect(await manager.pushSend(alert)).toEqual({
+      delivered: false,
+      error: "push_target_gone",
+    });
+    fetcher.mockResolvedValueOnce(
+      Response.json(
+        { error: "Too many requests" },
+        { status: 429, headers: { "retry-after": "30" } },
+      ),
+    );
+    expect(await manager.pushSend(alert)).toEqual({
+      delivered: false,
+      error: "http_429",
+      retryAfterSeconds: 30,
+    });
+    fetcher.mockResolvedValueOnce(new Response("<html>bad gateway</html>", { status: 502 }));
+    expect(await manager.pushSend(alert)).toEqual({ delivered: false, error: "http_502" });
+    fetcher.mockRejectedValueOnce(Object.assign(new Error("offline"), { code: "ENOTFOUND" }));
+    expect(await manager.pushSend(alert)).toEqual({
+      delivered: false,
+      error: "relay_unreachable",
+    });
+    expect(manager.status).toEqual(before);
+  });
+
+  it("sends nothing while remote access is off, asleep or not on an account", async () => {
+    const { manager, state } = notifier(await directory());
+    const fetcher = vi.fn<typeof fetch>();
+    vi.stubGlobal("fetch", fetcher);
+    state.suspended = true;
+    expect(await manager.pushSend(alert)).toEqual({
+      delivered: false,
+      error: "relay_unavailable",
+    });
+    state.suspended = false;
+    state.enabled = false;
+    expect(await manager.pushSend(alert)).toMatchObject({ error: "relay_unavailable" });
+    state.enabled = true;
+    (manager as unknown as Internals).registration = { ...registration };
+    expect(await manager.pushSend(alert)).toMatchObject({ error: "relay_unavailable" });
+    expect(fetcher).not.toHaveBeenCalled();
+  });
+});

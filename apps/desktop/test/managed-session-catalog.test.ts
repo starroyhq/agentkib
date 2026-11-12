@@ -30,6 +30,7 @@ import {
 } from "../../../packages/backend/src/managed-ledger";
 import {
   managedCatalogAliases,
+  managedCatalogProjection,
   projectPairedManagedSessions,
   readManagedCatalog,
   type ManagedCatalogRecord,
@@ -95,7 +96,7 @@ afterEach(async () => {
   for (const cleanup of cleanups.splice(0).reverse()) await cleanup();
 });
 
-function fixture() {
+function fixture(symlinkedHome = false) {
   const root = realpathSync(mkdtempSync(path.join(tmpdir(), "agentkib-managed-catalog-")));
   cleanups.push(() => rmSync(root, { recursive: true, force: true }));
   const home = path.join(root, "home"),
@@ -120,7 +121,14 @@ function fixture() {
   const commands = new Commands();
   const run = vi.spyOn(commands, "run").mockRejectedValue(new Error("unexpected-native-command"));
   cleanups.push(() => commands.close());
-  const environment = { CODEX_HOME: home, HOME: root, USERPROFILE: root, PATH: "" };
+  let configuredHome = home;
+  if (symlinkedHome) {
+    const aliasParent = path.join(root, "links");
+    mkdirSync(aliasParent);
+    configuredHome = path.join(aliasParent, "home-alias");
+    symlinkSync(home, configuredHome, "junction");
+  }
+  const environment = { CODEX_HOME: configuredHome, HOME: root, USERPROFILE: root, PATH: "" };
   const readers = new SessionReaders(store.sessions, commands, environment, {} as CursorBridge);
   cleanups.push(() => readers.close());
   const index = new SessionIndex(store.sessions, readers, () => true);
@@ -151,7 +159,7 @@ function fixture() {
     snapshot: { revision: 0, private: "private-snapshot" },
   };
   const ledgerPath = path.join(root, "codex-managed", "executions.sqlite");
-  function addNative(native: string, source = "exec", fork: string | null = null) {
+  function addNative(native: string, source = "exec", fork: string | null = null, cwd = workspace) {
     const file = path.join(home, `${native}.jsonl`);
     writeFileSync(
       file,
@@ -159,7 +167,7 @@ function fixture() {
         type: "session_meta",
         payload: {
           id: native,
-          cwd: workspace,
+          cwd,
           source,
           thread_source: "user",
         },
@@ -169,7 +177,7 @@ function fixture() {
       .prepare(
         "INSERT INTO threads(id,rollout_path,cwd,title,source,thread_source,forked_from_id) VALUES(?,?,?,?,?,?,?)",
       )
-      .run(native, file, workspace, `Native ${source}`, source, "user", fork);
+      .run(native, file, cwd, `Native ${source}`, source, "user", fork);
     return file;
   }
   function sync() {
@@ -475,6 +483,103 @@ describe("managed directory ownership", () => {
     );
   });
 
+  it("batches managed aliases while preserving workspace and collection scopes", async () => {
+    const f = fixture();
+    const nested = path.join(f.workspace, "nested");
+    const executionDirectory = path.join(nested, "subdirectory");
+    mkdirSync(executionDirectory, { recursive: true });
+    f.store.sql.run(
+      "INSERT INTO workspaces(id,canonical_path,name,status,last_discovered_at) VALUES(?,?,?,?,?)",
+      "nested",
+      nested,
+      "Nested",
+      "healthy",
+      f.owner.created_at,
+    );
+    const child = {
+      ...f.owner,
+      id: "nested-owner",
+      workspace_id: "nested",
+      workspace: nested,
+      native_id: "11111111-2222-4333-8444-555555555555",
+    };
+    const wrongScope = {
+      ...child,
+      id: "wrong-scope",
+      native_id: "22222222-3333-4444-8555-666666666666",
+    };
+    const rootRef = f.owner.native_id!;
+    const file = f.addNative(rootRef);
+    f.addNative(child.native_id, "exec", null, executionDirectory);
+    f.addNative(wrongScope.native_id);
+    f.addNative("33333333-4444-4555-8666-777777777777");
+    writeFileSync(
+      path.join(f.home, ".codex-global-state.json"),
+      JSON.stringify({ "projectless-thread-ids": [rootRef] }),
+    );
+    const timestamp = Date.parse("2026-10-20T00:00:00Z");
+    f.nativeDatabase.exec(
+      "ALTER TABLE threads ADD COLUMN project_id TEXT; ALTER TABLE threads ADD COLUMN updated_at_ms INTEGER",
+    );
+    f.nativeDatabase
+      .prepare("UPDATE threads SET project_id=?, updated_at_ms=? WHERE id=?")
+      .run("assigned", timestamp, rootRef);
+    // A later database still classifies this raw ID as projectless. Both scopes
+    // must retain the row so the projection can use the latest verified activity.
+    const legacy = new DatabaseSync(path.join(f.home, "state_2.sqlite"));
+    try {
+      legacy.exec(
+        "CREATE TABLE threads(id TEXT, rollout_path TEXT, cwd TEXT, source TEXT, updated_at_ms INTEGER)",
+      );
+      legacy
+        .prepare("INSERT INTO threads VALUES(?,?,?,?,?)")
+        .run(rootRef, file, f.workspace, "exec", timestamp - 60_000);
+    } finally {
+      legacy.close();
+    }
+    f.sync();
+
+    const findCandidates = f.readers.managedCodexCandidates.bind(f.readers);
+    const lookedUp: string[] = [];
+    const lookup = vi
+      .spyOn(f.readers, "managedCodexCandidates")
+      .mockImplementation((refs, scope) => {
+        lookedUp.push(...refs);
+        return findCandidates(lookedUp, scope);
+      });
+    const verify = vi.spyOn(f.readers, "verifiedCodexIndexedIdentities");
+    const { aliases, nativeByOwner } = await managedCatalogProjection(f.store, f.readers, {
+      complete: true,
+      records: [f.owner, child, wrongScope],
+    });
+    expect(lookup).toHaveBeenCalledOnce();
+    expect(lookedUp).toEqual([rootRef, child.native_id, wrongScope.native_id]);
+    expect(verify).toHaveBeenCalledExactlyOnceWith(new Set([rootRef, child.native_id]), f.home);
+    expect([...aliases]).toEqual([
+      [f.owner.id, new Set([f.store.sessions.id("codex", rootRef)])],
+      [child.id, new Set([f.store.sessions.id("codex", child.native_id)])],
+    ]);
+    expect(nativeByOwner.get(f.owner.id)?.updated_at).toBe("2026-10-20T00:00:00Z");
+    expect(nativeByOwner.get(child.id)?.cwd).toBe(executionDirectory);
+  });
+
+  it("uses the resolved Codex home for relative rollout identity proofs", async () => {
+    const f = fixture(true);
+    const ref = f.owner.native_id!;
+    const rollout = f.addNative(ref);
+    const name = path.basename(rollout);
+    renameSync(rollout, path.join(f.root, name));
+    f.nativeDatabase
+      .prepare("UPDATE threads SET rollout_path=? WHERE id=?")
+      .run(path.join("..", name), ref);
+    f.sync();
+    f.saveOwners([f.owner]);
+    const catalog = readManagedCatalog(f.root);
+    expect(await managedCatalogAliases(f.store, f.readers, catalog)).toEqual(
+      new Map([[f.owner.id, new Set([f.store.sessions.id("codex", ref)])]]),
+    );
+  });
+
   it("shares one version probe across catalog rows and refreshes a known older version", async () => {
     const f = fixture();
     const check = vi
@@ -531,9 +636,9 @@ describe("managed directory ownership", () => {
     f.addNative(f.owner.native_id!, "cli");
     f.sync();
     f.saveOwners([f.owner]);
-    const list = f.readers.list.bind(f.readers);
-    vi.spyOn(f.readers, "list").mockImplementationOnce(async (...args) => {
-      const result = await list(...args);
+    const list = f.readers.managedCodexCandidates.bind(f.readers);
+    vi.spyOn(f.readers, "managedCodexCandidates").mockImplementationOnce((...args) => {
+      const result = list(...args);
       f.index.invalidate();
       return result;
     });

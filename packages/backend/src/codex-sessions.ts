@@ -7,10 +7,10 @@ import {
   readdirSync,
   type BigIntStats,
 } from "node:fs";
-import { DatabaseSync } from "node:sqlite";
 import type { SessionCollection } from "@agentkib/runtime-protocol";
 import { CodexSessionOwnership } from "./codex-session-ownership";
 import { isCompressedRollout, readRolloutPrefix, resolveRollout } from "./codex-rollout-files";
+import { CodexStateReader } from "./codex-state-reader";
 import {
   codexHistoricalSetting,
   readCodexHistoricalFields,
@@ -18,7 +18,7 @@ import {
 } from "./codex-historical-fields";
 import { homedir } from "node:os";
 import path from "node:path";
-import { Sql, type Row } from "./sql";
+import type { Row } from "./sql";
 import { withinIdentity } from "./files";
 import { pathIdentity } from "./paths";
 import { compareUtf8 } from "./workspaces";
@@ -266,12 +266,22 @@ export interface NativeSessionSource {
 }
 /** Query metadata before bounded header enrichment so unrelated workspaces never trigger transcript reads. */
 export class CodexSessions {
+  #state: CodexStateReader;
   #historicalFields = new Map<
     string,
     { identity: string; id: string; cwd: string; fields: CodexHistoricalSettings }
   >();
 
-  constructor(readonly environment: NodeJS.ProcessEnv) {}
+  constructor(
+    readonly environment: NodeJS.ProcessEnv,
+    { retainDatabase = false }: { retainDatabase?: boolean } = {},
+  ) {
+    this.#state = new CodexStateReader(retainDatabase);
+  }
+  close(): void {
+    this.#state.close();
+    this.#historicalFields.clear();
+  }
   home(): string {
     return this.environment.CODEX_HOME ?? path.join(homedir(), ".codex");
   }
@@ -285,6 +295,12 @@ export class CodexSessions {
       if ((error as NodeJS.ErrnoException).code === "ENOENT") return [];
       throw error;
     }
+  }
+  #stateDatabases(home: string): string[] {
+    const current = this.databases(home);
+    const databases = current.length ? current : this.databases(path.join(home, "sqlite"));
+    this.#state.keep(databases);
+    return databases;
   }
   verifiedControlIds(nativeRefs: Iterable<string>): Set<string> {
     return new Set(
@@ -320,6 +336,7 @@ export class CodexSessions {
   /** Display ownership requires the indexed UUID and absolute cwd to match the native header. */
   verifiedIndexedIdentities(
     nativeRefs: Iterable<string>,
+    rolloutHome?: string,
   ): Map<string, { id: string; cwd: string }> {
     return this.#verifyIndexed(
       nativeRefs,
@@ -341,7 +358,7 @@ export class CodexSessions {
           return null;
         return { id, cwd };
       },
-      { consistent: (a, b) => pathIdentity(a.cwd) === pathIdentity(b.cwd) },
+      { consistent: (a, b) => pathIdentity(a.cwd) === pathIdentity(b.cwd), rolloutHome },
     );
   }
 
@@ -432,78 +449,62 @@ export class CodexSessions {
       consistent: (a: T, b: T) => boolean;
       busyTimeoutMs?: number;
       caseInsensitive?: boolean;
+      rolloutHome?: string;
     },
   ): Map<string, T> {
-    const expected = new Set(
-      [...nativeRefs].flatMap((value) => {
-        const id = uuid(value);
-        return id ? [id] : [];
-      }),
-    );
+    const expected = normalizedIds(nativeRefs);
     if (!expected.size) return new Map();
 
     const home = this.home();
-    const current = this.databases(home);
-    const databases = current.length ? current : this.databases(path.join(home, "sqlite"));
-    const collation =
-      displayProof && displayProof.caseInsensitive !== false ? " COLLATE NOCASE" : "";
+    const rolloutHome = displayProof?.rolloutHome ?? home;
+    const caseInsensitive = !!displayProof && displayProof.caseInsensitive !== false;
     const verified = new Map<string, T>();
     const rejected = new Set<string>();
-    for (const file of databases) {
+    for (const file of this.#stateDatabases(home)) {
       if (!displayProof && verified.size === expected.size) break;
-      const db = new DatabaseSync(file, { readOnly: true });
-      try {
-        const sql = new Sql(db);
-        db.exec(`PRAGMA busy_timeout=${displayProof?.busyTimeoutMs ?? 5000}`);
+      // Display proof must inspect every matching raw identity in every
+      // database; another spelling cannot supply a missing or conflicting header.
+      const pending = [...expected].filter((id) =>
+        displayProof ? !rejected.has(id) : !verified.has(id),
+      );
+      if (!pending.length) break;
+      const rows = this.#state.read(file, displayProof?.busyTimeoutMs ?? 5000, (database) => {
         const columns = new Set(
-          sql.rows("PRAGMA table_info(threads)").map((row) => String(row.name)),
+          database.sql.rows("PRAGMA table_info(threads)").map((row) => String(row.name)),
         );
         const required = ["id", "rollout_path", ...extraColumns];
         if (
           !columns.has("id") ||
           (!displayProof && !required.every((column) => columns.has(column)))
         )
-          continue;
+          return [];
         const selected = required.map((column) =>
           columns.has(column) ? column : `NULL AS ${column}`,
         );
-        // Display proof must inspect every matching raw identity in every
-        // database; another spelling cannot supply a missing or conflicting header.
-        const pending = [...expected].filter((id) =>
-          displayProof ? !rejected.has(id) : !verified.has(id),
-        );
-        for (let start = 0; start < pending.length; start += 500) {
-          const ids = pending.slice(start, start + 500);
-          const rows = sql.rows(
-            `SELECT ${selected.join(",")} FROM threads WHERE id${collation} IN (${ids.map(() => "?").join(",")})`,
-            ...ids,
-          );
-          for (const row of rows) {
-            const id = uuid(String(row.id));
-            if (!id || !expected.has(id) || rejected.has(id)) continue;
-            if (displayProof && !nonempty(row.rollout_path)) {
-              rejected.add(id);
-              verified.delete(id);
-              continue;
-            }
-            const rawPath = String(row.rollout_path);
-            const transcript = resolveRollout(
-              path.isAbsolute(rawPath) ? rawPath : path.join(home, rawPath),
-            );
-            const identity = verify(row, transcript, id);
-            const previous = verified.get(id);
-            if (
-              displayProof &&
-              (identity === null ||
-                (previous !== undefined && !displayProof.consistent(previous, identity)))
-            ) {
-              rejected.add(id);
-              verified.delete(id);
-            } else if (identity !== null) verified.set(id, identity);
-          }
+        return database.rows(`SELECT ${selected.join(",")} FROM threads`, pending, caseInsensitive);
+      });
+      for (const row of rows) {
+        const id = uuid(String(row.id));
+        if (!id || !expected.has(id) || rejected.has(id)) continue;
+        if (displayProof && !nonempty(row.rollout_path)) {
+          rejected.add(id);
+          verified.delete(id);
+          continue;
         }
-      } finally {
-        db.close();
+        const rawPath = String(row.rollout_path);
+        const transcript = resolveRollout(
+          path.isAbsolute(rawPath) ? rawPath : path.join(rolloutHome, rawPath),
+        );
+        const identity = verify(row, transcript, id);
+        const previous = verified.get(id);
+        if (
+          displayProof &&
+          (identity === null ||
+            (previous !== undefined && !displayProof.consistent(previous, identity)))
+        ) {
+          rejected.add(id);
+          verified.delete(id);
+        } else if (identity !== null) verified.set(id, identity);
       }
     }
     return verified;
@@ -513,30 +514,35 @@ export class CodexSessions {
     selection: {
       collection?: SessionCollection;
       nativeRef?: string;
+      nativeRefs?: Iterable<string>;
       matches?: (nativeRef: string) => boolean;
+      /** Filter before rollout I/O and preserve matches from distinct scopes in a batch. */
+      matchesScope?: (
+        nativeRef: string,
+        cwd: string,
+        collection: SessionCollection | null,
+      ) => boolean;
       parents?: ReadonlySet<string>;
       limit?: number;
     } = {},
   ) {
-    const home = this.home(),
-      current = this.databases(home),
-      databases = current.length ? current : this.databases(path.join(home, "sqlite")),
-      sessions = new Map<string, NativeSessionSource>();
+    const home = this.home();
+    const sessions = new Map<string, NativeSessionSource>();
+    const ids =
+      selection.nativeRef === undefined && selection.nativeRefs !== undefined
+        ? [...normalizedIds(selection.nativeRefs)]
+        : undefined;
+    if (ids?.length === 0) return { sessions: [], incomplete: false };
+    const acrossScopes = ids !== undefined && workspace === null && !!selection.matchesScope;
     const ownership = new CodexSessionOwnership(home, this.environment);
     const workspaceIdentity = workspace === null ? null : pathIdentity(workspace);
     let incomplete = false;
-    for (const file of databases) {
-      const db = new DatabaseSync(file, { readOnly: true });
-      try {
-        const sql = new Sql(db);
-        db.exec("PRAGMA busy_timeout=5000");
+    for (const file of this.#stateDatabases(home)) {
+      const rows = this.#state.read(file, 5000, (database) => {
         const columns = new Set(
-          sql.rows("PRAGMA table_info(threads)").map((row) => String(row.name)),
+          database.sql.rows("PRAGMA table_info(threads)").map((row) => String(row.name)),
         );
-        if (["id", "cwd", "rollout_path"].some((column) => !columns.has(column))) {
-          incomplete = true;
-          continue;
-        }
+        if (["id", "cwd", "rollout_path"].some((column) => !columns.has(column))) return null;
         const first = (names: string[], fallback = "NULL") =>
             names.find((name) => columns.has(name)) ?? fallback,
           titleColumns = ["name", "title", "preview"]
@@ -564,125 +570,142 @@ export class CodexSessions {
           first(["project_id"]),
           first(["git_origin_url"]),
         ];
-        for (const row of sql.rows(
-          `SELECT ${expressions.map((expression, index) => `${expression} AS k${index}`).join(",")} FROM threads${selection.nativeRef !== undefined ? " WHERE id=?" : ""}`,
-          ...(selection.nativeRef !== undefined ? [selection.nativeRef] : []),
-        )) {
-          // The cheap ID filter runs first; classification resolves paths on disk.
-          if (selection.matches && !selection.matches(String(row.k0))) continue;
-          const cwd = String(row.k2);
-          const collection = ownership.collection(String(row.k0), cwd, row.k14);
-          if (
-            workspaceIdentity !== null &&
-            (collection !== null || !withinIdentity(pathIdentity(cwd), workspaceIdentity))
-          )
-            continue;
-          if (selection.collection && collection !== selection.collection) continue;
-          let transcript = String(row.k1);
-          if (!path.isAbsolute(transcript)) transcript = path.join(home, transcript);
-          // An idle thread's rollout may only exist compressed.
-          transcript = resolveRollout(transcript);
-          const parsed = sourceValue(row.k8),
-            p = nonempty(row.k9),
-            f = nonempty(row.k10);
-          let m = metadata(parsed.source, row.k11, p, f, parsed.malformed),
-            agentPath = nonempty(row.k12) ?? m.agent_path,
-            nickname = nonempty(row.k13) ?? m.agent_nickname;
-          // Child discovery filters authoritative metadata before touching unrelated histories.
-          if (
-            selection.parents &&
-            (m.spawned_by_session_id
-              ? !selection.parents.has(m.spawned_by_session_id)
-              : m.origin !== "auxiliary")
-          )
-            continue;
-          const needsOrigin = !nonempty(row.k8),
-            needsImportIdentity = m.origin === "execution",
-            needsSpawned = !p && !m.spawned_by_session_id,
-            needsForked = !f && !m.forked_from_session_id,
-            needsDetails =
-              m.origin === "auxiliary" && !agentPath && (!sessionTitle(row.k3) || !nickname);
-          if (needsOrigin || needsImportIdentity || needsSpawned || needsForked || needsDetails) {
-            const h = header(transcript);
-            if (h) {
-              const headerMetadata = h.metadata;
-              if (
-                needsOrigin &&
-                ((headerMetadata.authoritative && !m.authoritative) || m.origin === "unknown")
-              )
-                m = {
-                  ...m,
-                  origin: headerMetadata.origin,
-                  authoritative: headerMetadata.authoritative,
-                };
-              // Historical imports used exec; the complete marker only changes display classification.
-              if (
-                m.origin === "execution" &&
-                h.legacyImportIdentity?.id === String(row.k0) &&
-                path.isAbsolute(cwd) &&
-                pathIdentity(h.legacyImportIdentity.cwd) === pathIdentity(cwd)
-              )
-                m.origin = "interactive";
-              if (needsSpawned) m.spawned_by_session_id = headerMetadata.spawned_by_session_id;
-              if (needsForked) m.forked_from_session_id = headerMetadata.forked_from_session_id;
-              agentPath ??= headerMetadata.agent_path;
-              nickname ??= headerMetadata.agent_nickname;
-            }
+        const query = `SELECT ${expressions.map((expression, index) => `${expression} AS k${index}`).join(",")} FROM threads`;
+        return selection.nativeRef === undefined
+          ? database.rows(query, ids, true)
+          : database.sql.rows(`${query} WHERE id=?`, selection.nativeRef);
+      });
+      if (!rows) {
+        incomplete = true;
+        continue;
+      }
+      for (const row of rows) {
+        // The cheap ID filter runs first; classification resolves paths on disk.
+        const nativeRef = String(row.k0);
+        if (selection.matches && !selection.matches(nativeRef)) continue;
+        const cwd = String(row.k2);
+        const collection = ownership.collection(nativeRef, cwd, row.k14);
+        if (
+          workspaceIdentity !== null &&
+          (collection !== null || !withinIdentity(pathIdentity(cwd), workspaceIdentity))
+        )
+          continue;
+        if (selection.collection && collection !== selection.collection) continue;
+        if (selection.matchesScope && !selection.matchesScope(nativeRef, cwd, collection)) continue;
+        let transcript = String(row.k1);
+        if (!path.isAbsolute(transcript)) transcript = path.join(home, transcript);
+        // An idle thread's rollout may only exist compressed.
+        transcript = resolveRollout(transcript);
+        const parsed = sourceValue(row.k8),
+          p = nonempty(row.k9),
+          f = nonempty(row.k10);
+        let m = metadata(parsed.source, row.k11, p, f, parsed.malformed),
+          agentPath = nonempty(row.k12) ?? m.agent_path,
+          nickname = nonempty(row.k13) ?? m.agent_nickname;
+        // Child discovery filters authoritative metadata before touching unrelated histories.
+        if (
+          selection.parents &&
+          (m.spawned_by_session_id
+            ? !selection.parents.has(m.spawned_by_session_id)
+            : m.origin !== "auxiliary")
+        )
+          continue;
+        const needsOrigin = !nonempty(row.k8),
+          needsImportIdentity = m.origin === "execution",
+          needsSpawned = !p && !m.spawned_by_session_id,
+          needsForked = !f && !m.forked_from_session_id,
+          needsDetails =
+            m.origin === "auxiliary" && !agentPath && (!sessionTitle(row.k3) || !nickname);
+        if (needsOrigin || needsImportIdentity || needsSpawned || needsForked || needsDetails) {
+          const h = header(transcript);
+          if (h) {
+            const headerMetadata = h.metadata;
+            if (
+              needsOrigin &&
+              ((headerMetadata.authoritative && !m.authoritative) || m.origin === "unknown")
+            )
+              m = {
+                ...m,
+                origin: headerMetadata.origin,
+                authoritative: headerMetadata.authoritative,
+              };
+            // Historical imports used exec; the complete marker only changes display classification.
+            if (
+              m.origin === "execution" &&
+              h.legacyImportIdentity?.id === nativeRef &&
+              path.isAbsolute(cwd) &&
+              pathIdentity(h.legacyImportIdentity.cwd) === pathIdentity(cwd)
+            )
+              m.origin = "interactive";
+            if (needsSpawned) m.spawned_by_session_id = headerMetadata.spawned_by_session_id;
+            if (needsForked) m.forked_from_session_id = headerMetadata.forked_from_session_id;
+            agentPath ??= headerMetadata.agent_path;
+            nickname ??= headerMetadata.agent_nickname;
           }
-          if (
-            selection.parents &&
-            (!m.spawned_by_session_id || !selection.parents.has(m.spawned_by_session_id))
-          )
-            continue;
-          if (selection.limit !== undefined && sessions.size >= selection.limit) {
-            incomplete = true;
-            continue;
-          }
-          const title =
-              sessionTitle(row.k3) ??
-              (m.origin === "auxiliary"
-                ? ((agentPath
-                    ? sessionTitle(
-                        agentPath.replace(/\/+$/, "").split("/").at(-1) === "root"
-                          ? null
-                          : agentPath.replace(/\/+$/, "").split("/").at(-1),
-                      )
-                    : null) ?? sessionTitle(nickname))
-                : null),
-            native_ref = String(row.k0);
-          sessions.set(native_ref, {
-            collection,
-            cwd,
-            transcript,
-            session: {
-              native_ref,
-              agent: "codex",
-              title,
-              origin: m.origin,
-              spawned_by_session_id: m.spawned_by_session_id,
-              forked_from_session_id: m.forked_from_session_id,
-              created_at: integerTime(row.k4),
-              updated_at: integerTime(row.k5),
-              message_count: null,
-              git_branch: sessionTitle(row.k6),
-              archived: Boolean(row.k7),
-              sidechain: false,
-              availability: readable(transcript) ? "readable" : "metadata-only",
-              git_origin_url: nonempty(row.k15),
-            },
-          });
         }
-      } finally {
-        db.close();
+        if (
+          selection.parents &&
+          (!m.spawned_by_session_id || !selection.parents.has(m.spawned_by_session_id))
+        )
+          continue;
+        if (selection.limit !== undefined && sessions.size >= selection.limit) {
+          incomplete = true;
+          continue;
+        }
+        const title =
+          sessionTitle(row.k3) ??
+          (m.origin === "auxiliary"
+            ? ((agentPath
+                ? sessionTitle(
+                    agentPath.replace(/\/+$/, "").split("/").at(-1) === "root"
+                      ? null
+                      : agentPath.replace(/\/+$/, "").split("/").at(-1),
+                  )
+                : null) ?? sessionTitle(nickname))
+            : null);
+        // A whole-scope lookup leaves raw IDs from different workspaces or
+        // collections available to the caller's scope-specific selection.
+        const key = acrossScopes ? JSON.stringify([nativeRef, cwd, collection]) : nativeRef;
+        if (acrossScopes) sessions.delete(key);
+        sessions.set(key, {
+          collection,
+          cwd,
+          transcript,
+          session: {
+            native_ref: nativeRef,
+            agent: "codex",
+            title,
+            origin: m.origin,
+            spawned_by_session_id: m.spawned_by_session_id,
+            forked_from_session_id: m.forked_from_session_id,
+            created_at: integerTime(row.k4),
+            updated_at: integerTime(row.k5),
+            message_count: null,
+            git_branch: sessionTitle(row.k6),
+            archived: Boolean(row.k7),
+            sidechain: false,
+            availability: readable(transcript) ? "readable" : "metadata-only",
+            git_origin_url: nonempty(row.k15),
+          },
+        });
       }
     }
     return {
-      sessions: [...sessions.entries()]
-        .sort(([a], [b]) => compareUtf8(a, b))
-        .map(([, value]) => value),
+      sessions: [...sessions.values()].sort((a, b) =>
+        compareUtf8(a.session.native_ref, b.session.native_ref),
+      ),
       incomplete,
     };
   }
+}
+
+function normalizedIds(values: Iterable<string>): Set<string> {
+  const ids = new Set<string>();
+  for (const value of values) {
+    const id = uuid(value);
+    if (id) ids.add(id);
+  }
+  return ids;
 }
 
 function uuid(value: string): string | null {

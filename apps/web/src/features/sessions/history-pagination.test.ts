@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
-import type { ConversationEventPage } from "@agentkib/web-client";
+import type { ConversationEvent, ConversationEventPage } from "@agentkib/web-client";
+import { loadEarlierHistoryBatch } from "@agentkib/conversation-state";
 import {
   applyHistoryPagination,
   beginHistoryPagination,
@@ -18,6 +19,76 @@ const page = (ids: string[], next_cursor?: string): ConversationEventPage => ({
   })),
   next_cursor,
   warnings: [],
+});
+
+describe("loading an earlier history batch", () => {
+  const item = (
+    id: string,
+    turn_id: string,
+    kind: ConversationEvent["kind"] = "agent-message",
+  ) => ({
+    ...page([id]).events[0]!,
+    turn_id,
+    kind,
+  });
+
+  it("passes over tool windows and stops after three newly readable native turns", async () => {
+    const visible = [item("final-4", "4")];
+    const responses = new Map([
+      ["p1", { events: [item("tool-4", "4", "tool-summary")], next_cursor: "p2" }],
+      [
+        "p2",
+        {
+          events: [item("final-3", "3"), item("user-4", "4", "user-message")],
+          next_cursor: "p3",
+        },
+      ],
+      [
+        "p3",
+        {
+          events: [item("final-1", "1"), item("final-2", "2"), item("user-3", "3", "user-message")],
+          next_cursor: "p4",
+        },
+      ],
+    ]);
+    const read: string[] = [];
+    await loadEarlierHistoryBatch("p1", visible, async (cursor) => {
+      read.push(cursor);
+      return responses.get(cursor);
+    });
+    expect(read).toEqual(["p1", "p2", "p3"]);
+  });
+
+  it("does not fetch beyond the beginning of the requested long turn", async () => {
+    const read: string[] = [];
+    await loadEarlierHistoryBatch(
+      "p1",
+      [item("final", "turn")],
+      async (cursor) => {
+        read.push(cursor);
+        return cursor === "p1"
+          ? { events: [item("tool", "turn", "tool-summary")], next_cursor: "p2" }
+          : { events: [item("user", "turn", "user-message")], next_cursor: "p3" };
+      },
+      "turn",
+    );
+    expect(read).toEqual(["p1", "p2"]);
+  });
+
+  it("bounds empty-window scans and does not reissue a cursor", async () => {
+    const read: string[] = [];
+    await loadEarlierHistoryBatch("0", [], async (cursor) => {
+      read.push(cursor);
+      return { events: [], next_cursor: String(Number(cursor) + 1) };
+    });
+    expect(read).toEqual(["0", "1", "2", "3"]);
+    read.length = 0;
+    await loadEarlierHistoryBatch("0", [], async (cursor) => {
+      read.push(cursor);
+      return { events: [], next_cursor: "0" };
+    });
+    expect(read).toEqual(["0"]);
+  });
 });
 
 describe("history pagination", () => {

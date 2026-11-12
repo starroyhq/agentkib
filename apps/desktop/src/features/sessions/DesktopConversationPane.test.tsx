@@ -31,7 +31,10 @@ vi.mock("./SessionHubContext", () => ({
     conversationRefreshRevision: mocks.revision,
   }),
 }));
-vi.mock("./conversation-catalog", () => ({ refreshConversationCatalog: mocks.refresh }));
+vi.mock("./conversation-catalog", () => ({
+  refreshConversationCatalog: mocks.refresh,
+  cachedConversationCatalog: () => undefined,
+}));
 vi.mock("./session-view-store", () => ({
   useSessionViewStore: Object.assign(
     (selector: (state: { requestedPanel?: RequestedConversationPanel }) => unknown) =>

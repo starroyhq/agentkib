@@ -262,6 +262,43 @@ describe("Codex history tool details", () => {
     expect(page.events.filter((event) => event.id.startsWith("codex-turn-error:"))).toHaveLength(1);
   });
 
+  it("keeps explicit empty turn outcomes across pages without changing adjacent message identity", () => {
+    const file = rollout([
+      user("earlier", "Earlier question"),
+      agent("earlier", "Earlier answer", "final_answer"),
+      ...[
+        { turn: "completed", terminal: { type: "task_complete" } },
+        { turn: "aborted", terminal: { type: "turn_aborted" } },
+        { turn: "failed", terminal: { type: "task_complete", error: {} } },
+      ].flatMap(({ turn, terminal }) => [
+        row("event_msg", { type: "task_started", turn_id: turn }),
+        row("event_msg", { ...terminal, turn_id: turn, duration_ms: 5 }),
+      ]),
+      row("event_msg", { type: "task_complete", turn_id: "unmatched" }),
+    ]);
+    const paging = new SessionPaging();
+    const first = read(file, 1, null, paging);
+    const events = [...first.events];
+    let cursor = first.next_cursor;
+    while (cursor) {
+      const next = read(file, 1, cursor, paging);
+      events.unshift(...next.events);
+      cursor = next.next_cursor;
+    }
+    expect(events).toEqual(read(file).events);
+    expect(events.slice(0, 2).map((event) => [event.content, event.turn_meta])).toEqual([
+      ["Earlier question", undefined],
+      ["Earlier answer", undefined],
+    ]);
+    expect(events.slice(2).map((event) => [event.id, event.content, event.turn_meta])).toEqual(
+      ["completed", "aborted", "failed"].map((outcome) => [
+        `codex-turn-end:${outcome}`,
+        null,
+        { outcome, duration_ms: 5 },
+      ]),
+    );
+  });
+
   it("shows a Plan-mode reply without its plan tags, as the live view does", () => {
     const turn = "t-plan";
     // As CLI 0.163.0 wrote a Plan turn: the plan item, then the reply with the tags.

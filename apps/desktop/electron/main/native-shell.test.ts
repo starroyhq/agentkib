@@ -41,7 +41,11 @@ const electron = vi.hoisted(() => {
     workArea: { x: 0, y: 25, width: 1440, height: 875 },
     trays: [] as FakeTray[],
     windows: [] as FakeWindow[],
-    buildFromTemplate: vi.fn((items: MenuItemConstructorOptions[]) => ({ items })),
+    popup: vi.fn(),
+    buildFromTemplate: vi.fn((items: MenuItemConstructorOptions[]) => ({
+      items,
+      popup: electron.popup,
+    })),
     setApplicationMenu: vi.fn(),
     send: vi.fn(),
   };
@@ -76,6 +80,7 @@ vi.mock("electron", () => ({
       send: electron.send,
       setWindowOpenHandler: vi.fn(),
       on: vi.fn(),
+      mainFrame: {},
     };
     constructor(options: Record<string, unknown> = {}) {
       this.options = options;
@@ -193,7 +198,26 @@ function start(locale: SupportedLocale = "en-US") {
     requestQuit: vi.fn(),
   });
   shell.create();
-  return { shell, showMainWindow };
+  return { shell, showMainWindow, mainWindow };
+}
+
+function selection(window: BrowserWindow): Parameters<ElectronNativeShell["showSelectionMenu"]>[1] {
+  return {
+    frame: window.webContents.mainFrame,
+    isEditable: false,
+    selectionText: "selected message text",
+    editFlags: {
+      canUndo: false,
+      canRedo: false,
+      canCut: false,
+      canCopy: true,
+      canPaste: false,
+      canDelete: false,
+      canSelectAll: true,
+      canEditRichly: false,
+    },
+    menuSourceType: "mouse",
+  };
 }
 
 function submenu(label: string) {
@@ -214,6 +238,38 @@ beforeEach(() => {
 });
 afterEach(() => {
   Object.defineProperty(process, "platform", platformDescriptor);
+});
+
+describe("native text selection menu", () => {
+  it("opens the localized native Copy action for a main-window selection", () => {
+    const { shell, mainWindow } = start();
+    shell.setLocale("zh-CN");
+    shell.showSelectionMenu(mainWindow, selection(mainWindow));
+
+    expect(electron.buildFromTemplate).toHaveBeenLastCalledWith([{ role: "copy", label: "复制" }]);
+    expect(electron.popup).toHaveBeenCalledExactlyOnceWith({
+      window: mainWindow,
+      frame: mainWindow.webContents.mainFrame,
+      sourceType: "mouse",
+    });
+  });
+
+  it("leaves empty, non-copyable, editable and embedded selections alone", () => {
+    const { shell, mainWindow } = start();
+    const params = selection(mainWindow);
+    shell.showSelectionMenu(mainWindow, { ...params, selectionText: "  " });
+    shell.showSelectionMenu(mainWindow, {
+      ...params,
+      editFlags: { ...params.editFlags, canCopy: false },
+    });
+    shell.showSelectionMenu(mainWindow, { ...params, isEditable: true });
+    shell.showSelectionMenu(mainWindow, { ...params, frame: null });
+    const other = new BrowserWindow({ show: false });
+    shell.showSelectionMenu(mainWindow, { ...params, frame: other.webContents.mainFrame });
+    shell.showSelectionMenu(other, selection(other));
+
+    expect(electron.popup).not.toHaveBeenCalled();
+  });
 });
 
 describe("native navigation shortcuts", () => {

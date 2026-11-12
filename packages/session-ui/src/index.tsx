@@ -7,6 +7,7 @@ export {
   requestReadReview,
   requestReadStateRefresh,
   readSnapshotMatches,
+  transcriptRepresentsResult,
   visibleReadTarget,
   type SessionReadState,
 } from "./read-state";
@@ -15,6 +16,9 @@ import remarkGfm from "remark-gfm";
 import rehypeSanitize from "rehype-sanitize";
 
 export { useTranscriptFollow } from "./use-transcript-follow";
+export { captureHistoryScrollAnchor } from "./history-scroll-anchor";
+export { MessageActions, messageActionGroups } from "./message-actions";
+export { transcriptProcessCopy, transcriptProcessLabel } from "./transcript-process-copy";
 export {
   MessageImageCache,
   messageImageCache,

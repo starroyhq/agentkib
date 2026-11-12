@@ -154,6 +154,12 @@ export class SessionStore {
       `codex_session_classification_pending:${id}`,
     );
   }
+  codexClassificationStale(id: string): boolean {
+    return !!this.sql.one(
+      "SELECT 1 FROM schema_meta WHERE key=?",
+      `codex_session_classification_stale:${id}`,
+    );
+  }
   get(id: string) {
     const row =
       this.sql.one(`SELECT ${columns} FROM conversation_sessions WHERE id=?`, id) ??

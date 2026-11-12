@@ -690,7 +690,8 @@ describe("SessionHubPage", () => {
       .mockImplementation(function (this: HTMLElement) {
         return {
           top: this.dataset.eventId === "recent" ? anchorTop : 0,
-          bottom: anchorTop + 50,
+          bottom: this.dataset.eventId === "recent" ? anchorTop + 50 : 50,
+          height: 50,
         } as DOMRect;
       });
     try {

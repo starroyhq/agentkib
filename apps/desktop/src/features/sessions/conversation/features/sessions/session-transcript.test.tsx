@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import "@testing-library/jest-dom/vitest";
-import { cleanup, fireEvent, render, screen } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { StrictMode } from "react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { ConversationEvent } from "@agentkib/web-client";
@@ -44,6 +44,73 @@ function event(
 afterEach(cleanup);
 
 describe("production transcript identity", () => {
+  it("copies selectable messages across sources and combines only the final reply parts", async () => {
+    const writeText = vi.fn().mockResolvedValue(undefined);
+    const clipboard = Object.getOwnPropertyDescriptor(navigator, "clipboard");
+    Object.defineProperty(navigator, "clipboard", { configurable: true, value: { writeText } });
+    const sent = "2026-11-12T02:38:00Z";
+    const prompt = {
+      ...event("legacy-prompt", "user-message"),
+      turn_id: undefined,
+      timestamp: sent,
+      content: "Copy **this question**",
+    };
+    const legacyReply = {
+      ...event("legacy-reply", "agent-message"),
+      turn_id: undefined,
+      timestamp: sent,
+    };
+    const first = {
+      ...event("first-part", "agent-message"),
+      message_phase: "final_answer" as const,
+      content: "First paragraph.",
+    };
+    const last = {
+      ...event("last-part", "agent-message"),
+      timestamp: sent,
+      message_phase: "final_answer" as const,
+      content: "Second paragraph.\n\n```sh\necho ok\n```",
+      turn_meta: { outcome: "completed" as const },
+    };
+    try {
+      const { container } = render(
+        <SessionTranscript {...props} events={[prompt, legacyReply, event("tool"), first, last]} />,
+      );
+      const body = container.querySelector('[data-event-id="legacy-prompt"] [data-message-body]');
+      expect(body).toHaveClass("select-text");
+      const actions = screen.getAllByRole("button", { name: "Copy message" });
+      expect(actions).toHaveLength(3);
+      expect(actions[0].closest("footer")?.querySelector("time")).toHaveAttribute("datetime", sent);
+      const userFooter = actions[0].closest("footer");
+      expect(userFooter).toHaveClass("opacity-0", "pointer-coarse:opacity-100");
+      expect(userFooter?.querySelector("button, time")?.tagName).toBe("TIME");
+      for (const action of actions.slice(1)) {
+        const footer = action.closest("footer");
+        expect(footer).not.toHaveClass("opacity-0");
+        expect(footer?.querySelector("button, time")).toBe(action);
+        expect(footer?.querySelector("time")).toHaveClass(
+          "opacity-0",
+          "group-hover/message:opacity-100",
+          "group-focus-within/message:opacity-100",
+        );
+      }
+      fireEvent.click(actions[0]);
+      await waitFor(() => expect(actions[0]).toHaveAttribute("title", "Copied"));
+      expect(writeText).toHaveBeenNthCalledWith(1, prompt.content);
+
+      fireEvent.click(actions[2]);
+      await waitFor(() =>
+        expect(writeText).toHaveBeenNthCalledWith(2, `${first.content}\n\n${last.content}`),
+      );
+      writeText.mockRejectedValueOnce(new Error("clipboard unavailable"));
+      fireEvent.click(actions[1]);
+      await screen.findByText("Could not copy. Select the text to copy it.");
+      expect(writeText).toHaveBeenNthCalledWith(3, legacyReply.content);
+    } finally {
+      if (clipboard) Object.defineProperty(navigator, "clipboard", clipboard);
+      else Reflect.deleteProperty(navigator, "clipboard");
+    }
+  });
   it("renders followed message deltas before completion without concatenating a turn", () => {
     const store = createConversationStore("followed");
     let seq = 0;
@@ -265,6 +332,8 @@ describe("production transcript identity", () => {
     const failed = { ...event("failed"), tool_status: "failed" };
     const view = render(<SessionTranscript {...props} events={[failed]} />);
     const toggle = screen.getByRole("button", { name: /Process/ });
+    expect(toggle.getAttribute("aria-expanded")).toBe("false");
+    fireEvent.click(toggle);
     expect(toggle.getAttribute("aria-expanded")).toBe("true");
     fireEvent.click(toggle);
     expect(toggle.getAttribute("aria-expanded")).toBe("false");
@@ -393,15 +462,22 @@ describe("production transcript identity", () => {
     const view = render(
       <SessionTranscript {...props} events={[question, wrapper, shell, edit, answer]} />,
     );
-    const process = screen.getByRole("button", { name: /^Worked 2m 7s 2 tools · 1 failed$/ });
-    expect(process).toHaveAttribute("aria-expanded", "true");
+    const process = screen.getByRole("button", { name: /^Worked 2m 7s$/ });
+    expect(process).toHaveAttribute("aria-expanded", "false");
+    expect(screen.getByText("Fixed.")).toBeVisible();
+    expect(screen.queryByRole("button", { name: /pnpm test/ })).toBeNull();
+    const card = screen.getByRole("heading", { name: /Edited 1 file/ }).closest("section")!;
+    expect(card).toBeVisible();
+    expect(view.container.querySelector('[data-event-id="answer"]')?.nextElementSibling).toBe(card);
+    expect(card.nextElementSibling).toHaveAttribute("data-message-actions");
+    fireEvent.click(process);
     expect(view.container.querySelector('[data-event-id="wrapper"]')).toBeNull();
     const shellToggle = screen.getByRole("button", { name: /pnpm test/ });
     expect(shellToggle).toHaveAttribute("aria-expanded", "true");
     expect(document.getElementById(shellToggle.getAttribute("aria-controls")!)).toHaveTextContent(
       "1 failed",
     );
-    expect(screen.getByRole("heading", { name: /Edited 1 file/ })).toBeVisible();
+    expect(view.container.querySelectorAll("[data-turn-file-changes]")).toHaveLength(1);
     fireEvent.click(screen.getByRole("button", { name: /Show diff: src\/app\.ts/ }));
     expect(screen.getAllByText("+b")[0]).toBeVisible();
     expect(props.onTool).not.toHaveBeenCalled();
@@ -428,5 +504,69 @@ describe("production transcript identity", () => {
       screen.getByRole("button", { name: "second-instance Completed" }),
     );
     expect(firstBody).not.toBe(secondBody);
+  });
+
+  it("keeps the terminal disclosure open while loading an interrupted turn's earlier details", () => {
+    const onLoadEarlier = vi.fn(async () => {});
+    const marker: ConversationEvent = {
+      ...event("codex-turn-end:turn", "agent-message"),
+      content: undefined,
+      turn_meta: { outcome: "aborted" },
+    };
+    const options = { ...props, hasEarlier: true, historyDetailTurnId: "turn", onLoadEarlier };
+    const view = render(<SessionTranscript {...options} events={[marker]} />);
+    const process = screen.getByRole("button", { name: "Interrupted" });
+    expect(process).toHaveAttribute("aria-expanded", "false");
+    fireEvent.click(process);
+    fireEvent.click(screen.getByRole("button", { name: "Load earlier activity for this turn" }));
+    expect(onLoadEarlier).toHaveBeenCalledExactlyOnceWith("turn");
+
+    view.rerender(
+      <SessionTranscript
+        {...options}
+        events={[
+          { ...event("partial-answer", "agent-message"), message_phase: "final_answer" },
+          marker,
+        ]}
+      />,
+    );
+    expect(screen.getByRole("button", { name: "Interrupted" })).toBe(process);
+    expect(process).toHaveAttribute("aria-expanded", "true");
+    expect(screen.getByText("partial-answer")).toBeVisible();
+    fireEvent.click(process);
+    expect(screen.queryByText("partial-answer")).toBeNull();
+  });
+
+  it("reuses the opened tool process when the elapsed time replaces its running label", () => {
+    const commentary: ConversationEvent = {
+      ...event("working-commentary", "agent-message"),
+      message_phase: "commentary",
+    };
+    const events = [event("question", "user-message"), event("tool"), commentary];
+    const view = render(<SessionTranscript {...props} events={events} />);
+    expect(screen.getByText("working-commentary")).toBeVisible();
+    const toggle = screen.getByRole("button", { name: /Process/ });
+    fireEvent.click(toggle);
+    toggle.focus();
+    view.rerender(
+      <SessionTranscript
+        {...props}
+        events={[
+          ...events,
+          {
+            ...event("final-answer", "agent-message"),
+            message_phase: "final_answer",
+            turn_meta: { outcome: "completed", duration_ms: 129_000 },
+          },
+        ]}
+      />,
+    );
+    expect(screen.getByRole("button", { name: "Worked 2m 9s" })).toBe(toggle);
+    expect(toggle).toHaveFocus();
+    expect(toggle).toHaveAttribute("aria-expanded", "true");
+    expect(screen.getByText("working-commentary")).toBeVisible();
+    fireEvent.click(toggle);
+    expect(screen.queryByText("working-commentary")).toBeNull();
+    expect(screen.getByText("final-answer")).toBeVisible();
   });
 });

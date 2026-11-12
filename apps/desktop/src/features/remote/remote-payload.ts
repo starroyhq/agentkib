@@ -47,6 +47,13 @@ const worktree = z
   .nullish()
   .catch(undefined)
   .transform((value) => value ?? undefined);
+const turnMeta = z
+  .object({
+    outcome: z.enum(["completed", "aborted", "failed"]).optional().catch(undefined),
+    duration_ms: z.number().int().nonnegative().optional().catch(undefined),
+  })
+  .optional()
+  .catch(undefined);
 const readState = z.object({
   source: z.enum(["codex-native", "agentkib"]),
   status: z.enum(["read", "unread", "unknown"]),
@@ -142,6 +149,8 @@ const events = z.object({
           .transform((value) =>
             value === "commentary" || value === "final_answer" ? value : undefined,
           ),
+        turn_meta: turnMeta,
+        cli_output: z.literal(true).optional().catch(undefined),
         tool_name: optionalText,
         tool_status: optionalText,
         duration_ms: z.number().nonnegative().nullish(),

@@ -6,7 +6,7 @@ import { createDesktopConversationClient } from "@/core/conversation-bridge";
 import type { ConversationSessionSummary } from "@/core/types";
 import { useI18n } from "@/core/useI18n";
 import { useSessionHub } from "./SessionHubContext";
-import { refreshConversationCatalog } from "./conversation-catalog";
+import { cachedConversationCatalog, refreshConversationCatalog } from "./conversation-catalog";
 import { useSessionViewStore } from "./session-view-store";
 import { cn } from "cn";
 import { subscribeConversationPanel } from "./conversation-panel-commands";
@@ -72,7 +72,9 @@ export function DesktopConversationPane({ sessionId }: { sessionId?: string }) {
   const onCatalogChange = useCallback(() => {
     const request = navigation.current;
     const intent = selectionVersion();
-    void refreshConversationCatalog().then(
+    // The embedded reader can adopt a snapshot the directory already has.
+    // Join its pending refresh without invalidating that same request.
+    void refreshConversationCatalog({ joinPending: !pendingNavigation.current }).then(
       (catalog) => {
         if (request !== navigation.current || intent !== selectionVersion()) return;
         completeNavigation(catalog);
@@ -143,6 +145,7 @@ export function DesktopConversationPane({ sessionId }: { sessionId?: string }) {
           onInitialPanelConsumed={onInitialPanelConsumed}
           client={client}
           sessionId={sessionId}
+          readInitialCatalog={cachedConversationCatalog}
           refreshRevision={conversationRefreshRevision}
           locale={locale}
           showExecution={showExecution}

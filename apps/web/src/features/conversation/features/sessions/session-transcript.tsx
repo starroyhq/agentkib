@@ -1,21 +1,24 @@
 import type { ConversationEvent } from "@agentkib/web-client";
+import { turnFileActivity } from "@agentkib/conversation-state";
 import {
   SafeMarkdown,
+  MessageActions,
+  messageActionGroups,
   ConversationImages,
   conversationImageCopy,
   displayUserMessageText,
   type MessageImageLoader,
   ToolDetailRow,
   TurnFileChanges,
-  formatToolDuration,
   isHiddenWrapperTool,
-  toolDetailCopy,
   turnDurationOf,
+  transcriptProcessCopy,
+  transcriptProcessLabel,
 } from "@agentkib/session-ui";
 import { Button } from "../../components/ui/button";
 import { groupConversationEvents } from "./conversation-groups";
 import { ChevronRight, CircleAlert, Wrench } from "lucide-react";
-import { useId, useMemo, useState } from "react";
+import { useId, useMemo, useState, type ComponentProps, type ReactNode } from "react";
 import { toolStatusLabel } from "./tool-status";
 import { SessionImagePreview } from "./session-image-preview";
 
@@ -30,17 +33,20 @@ interface ReaderLabels {
   unknownTool: string;
 }
 
-type TranscriptGroup = ReturnType<typeof groupConversationEvents>[number];
+type TranscriptGroup = ReturnType<typeof groupConversationEvents<ConversationEvent>>[number];
 type TranscriptSegment = TranscriptGroup["segments"][number];
 
 type TranscriptMessage = {
   id: string;
   role: "assistant" | "user";
   turnId?: string;
+  terminalMarkerId?: string;
   events: ConversationEvent[];
   segments: TranscriptSegment[];
-  time?: string;
   running: boolean;
+  outcome?: TranscriptGroup["outcome"];
+  durationMs?: number;
+  fileActivity?: ReturnType<typeof turnFileActivity<ConversationEvent>>;
 };
 
 function withEvents(segment: TranscriptSegment, events: ConversationEvent[]) {
@@ -57,19 +63,19 @@ function splitSegments(
 }
 
 function projectMessages(events: ConversationEvent[], incomplete: boolean): TranscriptMessage[] {
-  // A wrapper call is shown through the items it recorded, not as its own row.
-  const visible = events.filter(
-    (event) =>
-      !isHiddenWrapperTool(event) &&
-      (event.kind !== "user-message" ||
-        displayUserMessageText(event.content ?? "", event.images ?? []).trim().length > 0 ||
-        event.attachment_count > 0 ||
-        (event.images?.length ?? 0) > 0 ||
-        event.truncated),
-  );
-  const groups = groupConversationEvents(visible, { incomplete });
+  const groups = groupConversationEvents(events, {
+    incomplete,
+    isHidden: (event) =>
+      isHiddenWrapperTool(event) ||
+      (event.kind === "user-message" &&
+        !displayUserMessageText(event.content ?? "", event.images ?? []).trim() &&
+        !event.attachment_count &&
+        !event.images?.length &&
+        !event.truncated),
+  });
   const messages: TranscriptMessage[] = [];
   for (const group of groups) {
+    let lastAssistant: TranscriptMessage | undefined;
     let start = 0;
     while (start < group.events.length) {
       const role: TranscriptMessage["role"] =
@@ -83,18 +89,37 @@ function projectMessages(events: ConversationEvent[], incomplete: boolean): Tran
       }
       const runEvents = group.events.slice(start, end);
       const runEventIds = new Set(runEvents.map((event) => event.id));
-      messages.push({
+      const message: TranscriptMessage = {
         id: `${group.key}:${role}:${start}`,
         role,
         turnId: group.turnId,
         events: runEvents,
         segments: splitSegments(group.segments, (event) => runEventIds.has(event.id)),
-        time: start === 0 ? group.timestamp : undefined,
+        terminalMarkerId:
+          role === "assistant" && end === group.events.length ? group.terminalMarkerId : undefined,
+        durationMs: group.durationMs,
+        outcome: role === "assistant" && end === group.events.length ? group.outcome : undefined,
         running:
           role === "assistant" && runEvents.some((event) => event.id.startsWith("session-live:")),
-      });
+      };
+      messages.push(message);
+      if (role === "assistant") lastAssistant = message;
       start = end;
     }
+    if (lastAssistant) lastAssistant.fileActivity = turnFileActivity(group);
+    const status = group.segments.find((segment) => segment.outcome && !segment.events.length);
+    if (status)
+      messages.push({
+        id: `${group.key}:status`,
+        role: "assistant",
+        turnId: group.turnId,
+        events: [],
+        segments: [status],
+        terminalMarkerId: group.terminalMarkerId,
+        running: false,
+        outcome: group.outcome,
+        durationMs: group.durationMs,
+      });
   }
   return messages;
 }
@@ -110,26 +135,35 @@ function projectTranscript(
   events: ConversationEvent[],
   incomplete: boolean,
   previous?: TranscriptProjection,
+  openProcesses: Readonly<Record<string, boolean>> = {},
 ): TranscriptProjection {
   const messages = projectMessages(events, incomplete);
   const previousByItem = new Map<string, TranscriptMessage>();
-  for (const message of previous?.messages ?? [])
+  const previousStatusByMarker = new Map<string, TranscriptMessage>();
+  for (const message of previous?.messages ?? []) {
     for (const event of message.events) previousByItem.set(event.id, message);
+    if (!message.events.length && message.terminalMarkerId)
+      previousStatusByMarker.set(message.terminalMarkerId, message);
+  }
   const usedMessages = new Set<string>();
   let nextKey = previous?.nextKey ?? 0;
   for (const message of messages) {
     // A page can prepend tools or the missing user message to an existing turn.
     // Keep role runs and process bodies mounted using their shared event IDs,
     // without joining distinct runs that happen to carry the same turn ID.
-    const prior = message.events
-      .map((event) => previousByItem.get(event.id))
-      .find(
-        (candidate) =>
-          candidate &&
-          !usedMessages.has(candidate.id) &&
-          candidate.role === message.role &&
-          candidate.turnId === message.turnId,
-      );
+    const status = message.terminalMarkerId
+      ? previousStatusByMarker.get(message.terminalMarkerId)
+      : undefined;
+    const prior =
+      message.events
+        .map((event) => previousByItem.get(event.id))
+        .find(
+          (candidate) =>
+            candidate &&
+            !usedMessages.has(candidate.id) &&
+            candidate.role === message.role &&
+            candidate.turnId === message.turnId,
+        ) ?? (status && !usedMessages.has(status.id) ? status : undefined);
     if (prior) usedMessages.add(prior.id);
     message.id = prior?.id ?? `message:${nextKey++}`;
     const previousProcesses = new Map<string, TranscriptSegment>();
@@ -139,14 +173,29 @@ function projectTranscript(
     const usedProcesses = new Set<string>();
     for (const segment of message.segments) {
       if (segment.kind !== "process") continue;
-      const priorProcess = segment.events
+      const candidates = segment.events
         .map((event) => previousProcesses.get(event.id))
-        .find((candidate) => candidate && !usedProcesses.has(candidate.key));
+        .filter((candidate) => candidate && !usedProcesses.has(candidate.key));
+      // A completed turn can combine several live disclosures. Keep one the
+      // reader explicitly opened, even if earlier closed tools are merged in.
+      const priorProcess =
+        candidates.find((candidate) => candidate && openProcesses[candidate.key] === true) ??
+        candidates.find((candidate) => candidate && openProcesses[candidate.key] === false) ??
+        candidates[0] ??
+        (status && prior === status && segment.outcome && !usedProcesses.has(status.segments[0].key)
+          ? status.segments[0]
+          : undefined);
       if (priorProcess) usedProcesses.add(priorProcess.key);
       segment.key = priorProcess?.key ?? `process:${nextKey++}`;
     }
   }
   return { events, incomplete, messages, nextKey };
+}
+
+function messageBody(event: ConversationEvent): string {
+  return event.kind === "user-message"
+    ? displayUserMessageText(event.content ?? "", event.images ?? [])
+    : (event.content ?? "");
 }
 
 function EventRow({
@@ -165,10 +214,8 @@ function EventRow({
   const isTool = event.kind === "tool-summary";
   const isUser = event.kind === "user-message";
   const images = !isTool && imageLoader ? (event.images ?? []) : [];
-  const content = isUser
-    ? displayUserMessageText(event.content ?? "", event.images ?? [])
-    : event.content;
-  const hasText = !!content?.trim();
+  const content = messageBody(event);
+  const hasText = !!content.trim();
   const attachmentCount =
     Math.max(0, event.attachment_count, event.images?.length ?? 0) - images.length;
   const hasBubble = hasText || attachmentCount > 0 || event.truncated;
@@ -237,7 +284,11 @@ function EventRow({
               />
             </Button>
           ) : (
-            hasText && <SafeMarkdown text={content!} literal={event.cli_output === true} />
+            hasText && (
+              <div data-message-body className="select-text">
+                <SafeMarkdown text={content} literal={event.cli_output === true} />
+              </div>
+            )
           )}
           {(attachmentCount > 0 || event.truncated) && (
             <div
@@ -266,6 +317,39 @@ function EventRow({
   );
 }
 
+function MessageRows({
+  events,
+  beforeActions,
+  ...rowProps
+}: Omit<ComponentProps<typeof EventRow>, "event"> & {
+  events: ConversationEvent[];
+  beforeActions?: ReactNode;
+}) {
+  const isUser = events[0]?.kind === "user-message";
+  const timestamp = [...events].reverse().find((event) => event.timestamp)?.timestamp;
+  const text = events
+    .map(messageBody)
+    .filter((body) => body.trim())
+    .join("\n\n");
+  return (
+    <div
+      className={`group/message flex min-w-0 max-w-full flex-col ${isUser ? "items-end" : "gap-1"}`}
+    >
+      {events.map((event) => (
+        <EventRow event={event} {...rowProps} key={event.id} />
+      ))}
+      {beforeActions}
+      <MessageActions
+        locale={rowProps.locale}
+        timestamp={timestamp}
+        text={text}
+        role={isUser ? "user" : "assistant"}
+        align={isUser ? "end" : "start"}
+      />
+    </div>
+  );
+}
+
 function MessageBlock({
   message,
   labels,
@@ -274,6 +358,9 @@ function MessageBlock({
   imageLoader,
   openProcesses,
   onToggleProcess,
+  earlierProcessKey,
+  loadEarlierDetails,
+  loadingEarlier,
 }: {
   message: TranscriptMessage;
   labels: ReaderLabels;
@@ -282,15 +369,29 @@ function MessageBlock({
   imageLoader?: MessageImageLoader;
   openProcesses: Record<string, boolean>;
   onToggleProcess: (key: string, open: boolean) => void;
+  earlierProcessKey?: string;
+  loadEarlierDetails?: () => Promise<void>;
+  loadingEarlier: boolean;
 }) {
   const processId = useId();
   const isUser = message.role === "user";
-  const turnDuration = isUser ? undefined : turnDurationOf(message.events);
+  const turnDuration = isUser ? undefined : (message.durationMs ?? turnDurationOf(message.events));
   const firstProcess = message.segments.find((segment) => segment.kind === "process")?.key;
-  const processLabel = (key: string) =>
-    turnDuration !== undefined && key === firstProcess
-      ? toolDetailCopy(locale).worked(formatToolDuration(turnDuration, locale))
-      : labels.process;
+  const copy = transcriptProcessCopy(locale);
+  const hasVisibleReply = message.segments.some((segment) => segment.kind === "event");
+  const blocks = messageActionGroups(message.segments);
+  const fileActivity = message.fileActivity && (
+    <TurnFileChanges
+      events={message.fileActivity.events}
+      locale={locale}
+      partial={message.fileActivity.partial}
+    />
+  );
+  const fileActivityReply =
+    fileActivity && [...blocks].reverse().find((block) => block.kind === "message");
+  const showFailure =
+    message.outcome === "failed" &&
+    !message.segments.some((segment) => segment.kind === "process" && segment.outcome === "failed");
   return (
     <article
       data-message-role={message.role}
@@ -299,15 +400,6 @@ function MessageBlock({
       <div
         className={`flex min-w-0 flex-col ${isUser ? "max-w-[min(82%,42rem)] items-end" : "w-full max-w-3xl"}`}
       >
-        {message.time && (
-          <time
-            dateTime={message.time}
-            tabIndex={0}
-            className="mb-2 px-1 text-[11px] text-muted-foreground focus-visible:rounded-sm focus-visible:outline-2 focus-visible:outline-ring focus-visible:outline-offset-2"
-          >
-            {new Date(message.time).toLocaleString(locale)}
-          </time>
-        )}
         <div
           className={
             isUser
@@ -318,68 +410,133 @@ function MessageBlock({
           <div
             className={isUser ? "flex min-w-0 max-w-full flex-col items-end gap-3" : "space-y-3"}
           >
-            {message.segments.flatMap((segment) => {
-              if (segment.kind !== "process") {
-                return segment.events.map((event) => (
-                  <EventRow
-                    event={event}
-                    key={event.id}
+            {showFailure && (
+              <p
+                data-terminal-turn-id={message.turnId}
+                data-terminal-outcome="failed"
+                className="text-xs font-medium text-destructive-text"
+              >
+                {copy.failed}
+              </p>
+            )}
+            {blocks.map((group) => {
+              if (group.kind === "message") {
+                return (
+                  <MessageRows
+                    events={group.events}
+                    key={group.events[0].id}
+                    beforeActions={group === fileActivityReply ? fileActivity : undefined}
                     labels={labels}
                     locale={locale}
                     onTool={onTool}
                     imageLoader={imageLoader}
                   />
-                ));
+                );
               }
+              const { segment } = group;
+              const label = transcriptProcessLabel(
+                locale,
+                labels.process,
+                segment.outcome,
+                segment.key === firstProcess ? turnDuration : undefined,
+                hasVisibleReply,
+              );
+              if (!segment.events.length && segment.key !== earlierProcessKey)
+                return (
+                  <p
+                    key={segment.key}
+                    data-history-anchor={segment.key}
+                    data-terminal-turn-id={message.turnId}
+                    data-terminal-outcome={segment.outcome}
+                    className="text-xs text-muted-foreground"
+                  >
+                    {label}
+                  </p>
+                );
               const open = openProcesses[segment.key] ?? segment.defaultOpen;
               const bodyId = `process-${processId}-${segment.key}`;
+              const toolSummary = [
+                !segment.outcome && segment.toolCount > 0
+                  ? `${segment.toolCount} ${labels.tools}`
+                  : "",
+                segment.failedToolCount > 0 && (!segment.outcome || segment.outcome === "failed")
+                  ? `${segment.failedToolCount} ${labels.failed}`
+                  : "",
+              ].filter(Boolean);
               return (
-                <div
-                  key={segment.key}
-                  className="my-2 overflow-hidden rounded-xl border border-border/70 bg-muted/20"
-                >
-                  <Button
-                    type="button"
-                    variant="ghost"
-                    aria-expanded={open}
-                    aria-controls={bodyId}
-                    aria-label={`${processLabel(segment.key)} ${segment.toolCount} ${labels.tools}${segment.failedToolCount > 0 ? ` · ${segment.failedToolCount} ${labels.failed}` : ""}`}
-                    className="flex h-auto min-h-10 w-full items-center justify-start gap-2 rounded-none px-3 py-2 text-left text-xs font-normal transition-colors hover:bg-muted/50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-inset"
-                    onClick={() => onToggleProcess(segment.key, open)}
-                  >
-                    <ChevronRight
-                      aria-hidden="true"
-                      className={`size-4 shrink-0 text-muted-foreground transition-transform ${open ? "rotate-90" : ""}`}
-                    />
-                    <span className="font-medium text-foreground">{processLabel(segment.key)}</span>
-                    <span className="text-muted-foreground">
-                      {segment.toolCount} {labels.tools}
-                    </span>
-                    {segment.failedToolCount > 0 && (
-                      <span className="text-destructive-text">
-                        · {segment.failedToolCount} {labels.failed}
-                      </span>
-                    )}
-                  </Button>
+                <div key={segment.key}>
+                  <div className={segment.outcome ? "border-b border-border/70 pb-1" : undefined}>
+                    <Button
+                      type="button"
+                      variant="ghost"
+                      aria-expanded={open}
+                      aria-controls={bodyId}
+                      aria-label={[label, ...toolSummary].join(" · ")}
+                      data-history-anchor={segment.key}
+                      data-terminal-turn-id={segment.outcome && message.turnId}
+                      data-terminal-outcome={segment.outcome}
+                      className="flex h-auto min-h-8 w-fit max-w-full items-center justify-start gap-2 rounded-md px-1.5 py-1 text-left text-sm font-normal text-muted-foreground hover:bg-muted/50 hover:text-foreground"
+                      onClick={() => onToggleProcess(segment.key, open)}
+                    >
+                      <span>{label}</span>
+                      {!segment.outcome && segment.toolCount > 0 && (
+                        <span>
+                          {segment.toolCount} {labels.tools}
+                        </span>
+                      )}
+                      {segment.failedToolCount > 0 &&
+                        (!segment.outcome || segment.outcome === "failed") && (
+                          <span className="text-destructive-text">
+                            · {segment.failedToolCount} {labels.failed}
+                          </span>
+                        )}
+                      <ChevronRight
+                        aria-hidden="true"
+                        className={`size-3.5 shrink-0 transition-transform ${open ? "rotate-90" : ""}`}
+                      />
+                    </Button>
+                  </div>
                   {open && (
-                    <div id={bodyId} className="space-y-1 border-t border-border/60 px-3 py-2">
-                      {segment.events.map((event) => (
-                        <EventRow
-                          event={event}
-                          key={event.id}
-                          labels={labels}
-                          locale={locale}
-                          onTool={onTool}
-                          imageLoader={imageLoader}
-                        />
-                      ))}
+                    <div id={bodyId} className="my-2 space-y-2">
+                      {segment.key === earlierProcessKey && loadEarlierDetails && (
+                        <Button
+                          type="button"
+                          variant="ghost"
+                          className="h-auto min-h-8 px-2 text-xs text-muted-foreground"
+                          disabled={loadingEarlier}
+                          onClick={() => void loadEarlierDetails()}
+                        >
+                          {copy.earlierDetails}
+                        </Button>
+                      )}
+                      {segment.events.map((event) =>
+                        event.kind === "tool-summary" ? (
+                          <EventRow
+                            event={event}
+                            key={event.id}
+                            labels={labels}
+                            locale={locale}
+                            onTool={onTool}
+                            imageLoader={imageLoader}
+                          />
+                        ) : (
+                          <MessageRows
+                            events={[event]}
+                            key={event.id}
+                            labels={labels}
+                            locale={locale}
+                            onTool={onTool}
+                            imageLoader={imageLoader}
+                          />
+                        ),
+                      )}
                     </div>
                   )}
                 </div>
               );
             })}
+            {!fileActivityReply && fileActivity}
           </div>
-          {!isUser && <TurnFileChanges events={message.events} locale={locale} />}
         </div>
       </div>
     </article>
@@ -401,6 +558,7 @@ export function SessionTranscript({
   loadingEarlier = false,
   earlierLabel,
   onLoadEarlier,
+  historyDetailTurnId,
 }: {
   events: ConversationEvent[];
   pendingMessage?: { text: string; afterEventId?: string };
@@ -415,7 +573,8 @@ export function SessionTranscript({
   hasEarlier?: boolean;
   loadingEarlier?: boolean;
   earlierLabel: string;
-  onLoadEarlier?: () => Promise<void>;
+  onLoadEarlier?: (turnId?: string) => Promise<void>;
+  historyDetailTurnId?: string;
 }) {
   const projectedEvents = useMemo(() => {
     const projected = [...events];
@@ -460,14 +619,22 @@ export function SessionTranscript({
   const [projection, setProjection] = useState(() =>
     projectTranscript(projectedEvents, incomplete),
   );
+  const [openProcesses, setOpenProcesses] = useState<Record<string, boolean>>({});
   const current =
     projection.events === projectedEvents && projection.incomplete === incomplete
       ? projection
-      : projectTranscript(projectedEvents, incomplete, projection);
+      : projectTranscript(projectedEvents, incomplete, projection, openProcesses);
   // Reconcile before committing children; an effect would already have replaced
   // their DOM nodes and discarded keyboard focus and process expansion.
   if (current !== projection) setProjection(current);
-  const [openProcesses, setOpenProcesses] = useState<Record<string, boolean>>({});
+  const firstMessage = current.messages[0];
+  const earlierProcessKey =
+    hasEarlier &&
+    historyDetailTurnId &&
+    firstMessage?.role === "assistant" &&
+    firstMessage.turnId === historyDetailTurnId
+      ? firstMessage.segments.find((segment) => segment.kind === "process" && segment.outcome)?.key
+      : undefined;
   return (
     <div className="mx-auto flex w-full max-w-3xl flex-col gap-6">
       {hasEarlier && (
@@ -491,6 +658,9 @@ export function SessionTranscript({
           imageLoader={imageLoader}
           openProcesses={openProcesses}
           onToggleProcess={(key, open) => setOpenProcesses((value) => ({ ...value, [key]: !open }))}
+          earlierProcessKey={earlierProcessKey}
+          loadEarlierDetails={onLoadEarlier && (() => onLoadEarlier(historyDetailTurnId))}
+          loadingEarlier={loadingEarlier}
         />
       ))}
     </div>

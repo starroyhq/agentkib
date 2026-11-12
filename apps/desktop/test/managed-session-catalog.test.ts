@@ -269,6 +269,63 @@ function fixture() {
 }
 
 describe("managed directory ownership", () => {
+  it("reads one indexed Codex history page without building the workspace catalog", async () => {
+    const f = fixture();
+    const file = f.addNative(f.owner.native_id!, "vscode");
+    appendFileSync(
+      file,
+      JSON.stringify({
+        type: "event_msg",
+        payload: { type: "agent_message", message: "Indexed answer" },
+      }) + "\n",
+    );
+    f.sync();
+    const list = vi.spyOn(f.store.sessions, "list");
+    const input = {
+      operation: "events",
+      sessionId: f.store.sessions.id("codex", f.owner.native_id!),
+    };
+    await expect(f.web.indexedCodexEvents(input)).resolves.toMatchObject({
+      handled: true,
+      page: { events: [expect.objectContaining({ content: "Indexed answer" })] },
+    });
+    expect(list).not.toHaveBeenCalled();
+    expect(f.run).not.toHaveBeenCalled();
+
+    f.saveOwners([f.owner]);
+    expect((await f.localCatalog()).sessions.map((item) => item.id)).toEqual([f.owner.id]);
+    await expect(f.web.indexedCodexEvents(input)).resolves.toEqual({ handled: false });
+  });
+
+  it.each(["classification", "disabled", "workspace"])(
+    "does not serve a page after its %s changes",
+    async (kind) => {
+      const f = fixture();
+      f.addNative(f.owner.native_id!, "vscode");
+      f.sync();
+      const sessionId = f.store.sessions.id("codex", f.owner.native_id!);
+      const read = vi.spyOn(f.readers, "events").mockImplementationOnce(async () => {
+        if (kind === "disabled")
+          writeFileSync(
+            path.join(f.root, "preferences.json"),
+            JSON.stringify({ session_index_enabled: false }),
+          );
+        else if (kind === "classification")
+          f.store.sql.run(
+            "INSERT INTO schema_meta(key,value) VALUES(?,?)",
+            `codex_session_classification_stale:${sessionId}`,
+            "workspace",
+          );
+        else f.store.sql.run("DELETE FROM workspaces WHERE id='workspace'");
+        return { events: [], next_cursor: null, warnings: [] };
+      });
+      const input = { operation: "events", sessionId };
+      await expect(f.web.indexedCodexEvents(input)).rejects.toThrow("session-unavailable");
+      await expect(f.web.indexedCodexEvents(input)).resolves.toEqual({ handled: false });
+      expect(read).toHaveBeenCalledOnce();
+    },
+  );
+
   it.each(
     (["projectless", "unclassified"] as const).flatMap((collection) =>
       [true, false].map((persisted) => [collection, persisted] as const),

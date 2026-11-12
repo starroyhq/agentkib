@@ -6040,8 +6040,9 @@ export class WebAccessService {
       path === "/catalog" || (path === "/stream" && !url.searchParams.has("sessionId"))
         ? undefined
         : this.field(url.searchParams.get("sessionId"));
+    const localEvents = trustedLocal && path === "/events";
     const streamWorkspaceId =
-      sessionId && this.isFullAccess(this.grant(hash))
+      sessionId && !localEvents && this.isFullAccess(this.grant(hash))
         ? await this.codexScope(sessionId, hash, path === "/stream", false)
         : undefined;
     if (path === "/stream") {
@@ -6343,7 +6344,22 @@ export class WebAccessService {
     const readerScope = this.readerScope();
     let result: unknown;
     try {
-      result = await this.runtime(params);
+      if (localEvents) {
+        this.grant(hash);
+        // The same runtime that owns workspace registration verifies the selected
+        // indexed record before and after reading it.
+        const direct = (await this.runtime({ ...params, operation: "desktop-events" })) as
+          | { handled: true; page: unknown }
+          | { handled: false };
+        this.grant(hash);
+        if (boot !== this.bootId) throw new HttpError(409, "stale_boot");
+        if (readerScope !== this.readerScope()) throw new HttpError(409, "access_changed");
+        if (direct?.handled === true) result = direct.page;
+        else {
+          await this.codexScope(sessionId!, hash, false, false);
+          result = await this.runtime(params);
+        }
+      } else result = await this.runtime(params);
     } catch (error) {
       if (path === "/catalog") {
         this.grant(hash);
@@ -6381,7 +6397,7 @@ export class WebAccessService {
     if (path === "/live") result = await this.projectLive(sessionId, result, device);
     this.grant(hash);
     if (boot !== this.bootId) throw new HttpError(409, "stale_boot");
-    if (path === "/catalog" && readerScope !== this.readerScope())
+    if ((path === "/catalog" || localEvents) && readerScope !== this.readerScope())
       throw new HttpError(409, "access_changed");
     // 桌面内嵌会话页走可信本地桥，仍拿完整目录；远程（中继、局域网）客户端从不列出
     // 子代理会话，去掉它们并压缩，目录回复从约 800 KiB 降到几十 KiB。

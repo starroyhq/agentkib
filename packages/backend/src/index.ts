@@ -957,6 +957,10 @@ export class TypeScriptBackend {
       return this.#workspaceApplications!.open(request.workspaceId, request.openerId);
     }
     if (method === RUNTIME_METHODS.webRequest) {
+      if (params.operation === "desktop-events")
+        return this.#withWebRead((owner) =>
+          owner.indexedCodexEvents({ ...params, operation: "events" }),
+        );
       if (params.operation === "read-state" || params.operation === "read-state-update") {
         const input = parameters(
           z

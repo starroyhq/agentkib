@@ -19,7 +19,9 @@ import {
 import type { ResolvedHistoryReference } from "@agentkib/web-client";
 import {
   createConversationStore,
+  loadEarlierHistoryBatch,
   mergeConversationItems,
+  oldestIncompleteHistoryTurn,
   type SessionStreamEvent,
 } from "@agentkib/conversation-state";
 import {
@@ -37,6 +39,7 @@ import { capabilityAccessBinding, useSessionCapabilities } from "./use-session-c
 import {
   useCallback,
   useEffect,
+  useLayoutEffect,
   useRef,
   useState,
   type FormEvent,
@@ -69,7 +72,7 @@ import {
   needsDurableReceipt,
 } from "@agentkib/web-client";
 import { displaySessionTitle, isSessionListed } from "@agentkib/session-catalog";
-import { answerRequestBody } from "@agentkib/session-ui";
+import { answerRequestBody, captureHistoryScrollAnchor } from "@agentkib/session-ui";
 import { interactionCopy } from "../interactions/interaction-copy";
 import type { CatalogWorkspace } from "../catalog/session-catalog";
 import { catalogCopy } from "../catalog/catalog-copy";
@@ -97,6 +100,11 @@ import {
 } from "./history-pagination";
 import { useAppearance } from "../preferences/use-appearance";
 import { publishSessionInvalidation, subscribeSessionInvalidation } from "./session-events";
+type EarlierHistoryFlight = {
+  generation: number;
+  pagination: NonNullable<NativeCoverage["historyPagination"]>;
+  cacheEpoch: string | undefined;
+};
 type ForkNavigation = {
   sourceId: string;
   generation: number;
@@ -182,6 +190,8 @@ export function useSessionController({
   disconnect,
   initialLocale = "zh-CN",
   initialTheme = "system",
+  initialSessionId,
+  readInitialCatalog,
   client: providedClient,
   embedded = false,
   showExecution: controlledShowExecution,
@@ -191,6 +201,8 @@ export function useSessionController({
   disconnect?: () => void;
   initialLocale?: Locale;
   initialTheme?: string;
+  initialSessionId?: string;
+  readInitialCatalog?: (sessionId: string) => ConversationCatalog | undefined;
   client?: WebClient;
   embedded?: boolean;
   /** Also list and open program-started sessions (the directory option). */
@@ -206,6 +218,9 @@ export function useSessionController({
   const [capabilitiesEpoch, setCapabilitiesEpoch] = useState(0);
   const [client] = useState(
     () => providedClient ?? new WebClient(undefined, connection ?? legacyOrigin),
+  );
+  const initialCatalog = useRef(() =>
+    initialSessionId ? readInitialCatalog?.(initialSessionId) : undefined,
   );
   const [streamEpoch, setStreamEpoch] = useState(0);
   const [usageEpoch, setUsageEpoch] = useState("");
@@ -237,7 +252,11 @@ export function useSessionController({
     [catalogNotice, setCatalogNotice] = useState(false),
     [workspaces, setWorkspaces] = useState<CatalogWorkspace[]>(),
     [selected, setSelected] = useState(""),
-    [page, publishPage] = useState<ConversationEventPage>(),
+    [{ page, historyDetailTurnId }, publishPage] = useState<{
+      page?: ConversationEventPage;
+      historyDetailTurnId?: string;
+    }>({}),
+    [loadingEarlier, setLoadingEarlier] = useState(false),
     [live, publishLive] = useState<Live>(),
     [controlReady, setControlReady] = useState(false),
     [indexEnabled, setIndexEnabled] = useState(true),
@@ -319,6 +338,8 @@ export function useSessionController({
       return { ...value, online, reason: online ? value.reason : undefined };
     });
   }, []);
+  const generation = useRef(0);
+  const earlierFlight = useRef<EarlierHistoryFlight>(undefined);
   const pageValue = useRef<ConversationEventPage | undefined>(undefined);
   const setPage = useCallback((update: SetStateAction<ConversationEventPage | undefined>) => {
     // History and pagination are one accepted projection. Resolve updates once
@@ -326,7 +347,25 @@ export function useSessionController({
     // state updaters, which must not consume pagination tickets or reset coverage.
     const next = typeof update === "function" ? update(pageValue.current) : update;
     pageValue.current = next;
-    publishPage(next);
+    const coverage = nativeCoverage.current;
+    const pagination = coverage.historyPagination;
+    const pending = earlierFlight.current;
+    if (
+      pending &&
+      (pending.generation !== generation.current ||
+        pending.pagination !== pagination ||
+        pending.cacheEpoch !== coverage.historyCacheEpoch)
+    ) {
+      earlierFlight.current = undefined;
+      setLoadingEarlier(false);
+    }
+
+    const detailTurnId = pagination && oldestIncompleteHistoryTurn(next, pagination);
+    publishPage((state) =>
+      state.page === next && state.historyDetailTurnId === detailTurnId
+        ? state
+        : { page: next, historyDetailTurnId: detailTurnId },
+    );
   }, []);
   // Remember the history of the few most recently viewed sessions so reopening one shows its
   // transcript immediately instead of clearing to a spinner. The fresh read still runs on every
@@ -401,11 +440,16 @@ export function useSessionController({
     pending: false,
     promise: undefined as Promise<void> | undefined,
   });
-  const generation = useRef(0),
-    selection = useRef(""),
+  const selection = useRef(""),
     accessRef = useRef<Access | undefined>(undefined),
     scroll = useRef<HTMLElement>(null),
     mutating = useRef(false);
+  const earlierAnchor = useRef<{ scope: EarlierHistoryFlight; restore: () => void }>(undefined);
+  useLayoutEffect(() => {
+    const anchor = earlierAnchor.current;
+    earlierAnchor.current = undefined;
+    anchor?.restore();
+  }, [page, selected]);
   const imageRequestVersion = useCallback(() => generation.current, []);
   const forkNavigation = useRef<ForkNavigation | undefined>(undefined);
   const cancelForkNavigation = useCallback(() => {
@@ -842,7 +886,11 @@ export function useSessionController({
     [client, hasDurablePending, setNotice, observeForkNavigation],
   );
   const refresh = useCallback(
-    async function refreshCurrent(manual = false, preserveHistory = false): Promise<void> {
+    async function refreshCurrent(
+      manual = false,
+      preserveHistory = false,
+      initial = false,
+    ): Promise<void> {
       if (manual) {
         setPairingError(undefined);
         retryCatalogObservation.current?.();
@@ -878,10 +926,14 @@ export function useSessionController({
         if (next?.status !== "approved") return;
         g = generation.current;
         flight.generation = g;
-        await reconcilePending(selection.current || undefined);
+        const cached = initial && next.protocolVersion === 2 ? initialCatalog.current() : undefined;
+        // The selected session reconciles its own receipts. The catalog observer
+        // reconciles the rest after refreshing the shared directory.
+        if (!cached) await reconcilePending(selection.current || undefined);
         if (g !== generation.current) return;
         const catalogOrder = ++catalogReadOrder.current;
-        const catalog = await retryStaleCatalogRead(() => retryBusyRead(() => client.catalog()));
+        const catalog =
+          cached ?? (await retryStaleCatalogRead(() => retryBusyRead(() => client.catalog())));
         if (g !== generation.current) return;
         if (contention !== readContention.current.version)
           throw new ApiError(409, "operation_busy");
@@ -1120,7 +1172,7 @@ export function useSessionController({
     [client, syncAccess, fail],
   );
   useEffect(() => {
-    void refresh();
+    void refresh(false, false, true);
     return () => {
       generation.current++;
       deferredRefresh.current = undefined;
@@ -1455,6 +1507,7 @@ export function useSessionController({
       manualRefreshRequired.current = false;
       selection.current = id;
       setSelected(id);
+      nativeCoverage.current = { items: [], authoritativeTurnIds: [], removedTurnIds: [] };
       // Seed from cache for an instant reopen; an unseen session stays undefined and shows the spinner.
       setPage(pageCache.current.get(id));
       setLive(undefined);
@@ -1468,7 +1521,6 @@ export function useSessionController({
       setOnline(false);
       setControlReady(false);
       streamReady.current = false;
-      nativeCoverage.current = { items: [], authoritativeTurnIds: [], removedTurnIds: [] };
       setError(false);
       const g = generation.current;
       const wake = refreshWake.current;
@@ -1610,86 +1662,121 @@ export function useSessionController({
       setBusy(false);
     }
   }
-  async function earlier() {
-    if (!page?.next_cursor || busy) return;
+  async function earlier(turnId?: string) {
+    const id = selected;
+    const g = generation.current;
+    const current = pageValue.current;
     const pagination = nativeCoverage.current.historyPagination;
-    const ticket = pagination && beginHistoryPagination(pagination, page.next_cursor);
-    if (!ticket) return;
-    setBusy(true);
-    const id = selected,
-      g = generation.current;
-    const viewport = scroll.current;
-    const anchor = viewport?.querySelector<HTMLElement>("[data-event-id]");
-    const top = anchor?.getBoundingClientRect().top;
-    const anchorId = anchor?.dataset.eventId;
     const historyCacheEpoch = nativeCoverage.current.historyCacheEpoch;
+    const pending = earlierFlight.current;
+    if (
+      !current?.next_cursor ||
+      !pagination ||
+      busy ||
+      selection.current !== id ||
+      excludedIds.current.has(id) ||
+      (turnId && turnId !== oldestIncompleteHistoryTurn(current, pagination)) ||
+      (pending?.generation === g &&
+        pending.pagination === pagination &&
+        pending.cacheEpoch === historyCacheEpoch)
+    )
+      return;
+    const initialTicket = beginHistoryPagination(pagination, current.next_cursor);
+    if (!initialTicket) return;
+    const scope = { generation: g, pagination, cacheEpoch: historyCacheEpoch };
+    earlierFlight.current = scope;
+    setLoadingEarlier(true);
     const wake = refreshWake.current;
+    const stillCurrent = () =>
+      g === generation.current &&
+      selection.current === id &&
+      !excludedIds.current.has(id) &&
+      pagination === nativeCoverage.current.historyPagination &&
+      historyCacheEpoch === nativeCoverage.current.historyCacheEpoch;
     try {
-      const historyRead = await readHistory(id, g, historyCacheEpoch, page.next_cursor);
-      if (historyRead?.type === "busy") {
-        readBusy(wake, g);
-        return;
-      }
-      if (
-        !historyRead ||
-        historyRead.type !== "page" ||
-        g !== generation.current ||
-        selection.current !== id ||
-        historyCacheEpoch !== nativeCoverage.current.historyCacheEpoch
-      )
-        return;
-      const { page: older, attempt } = historyRead;
-      if (
-        nativeCoverage.current.historyPagination !== pagination ||
-        !applyHistoryPagination(pagination, ticket, older)
-      )
-        return;
-      const nextCursor = historyPaginationCursor(pagination);
-      const hadHistoryError = nativeCoverage.current.historyRecoveryFailed;
-      completeHistoryRead(nativeCoverage.current, attempt);
-      if (hadHistoryError) setError(!!nativeCoverage.current.historyRecoveryFailed);
-      setPage((current) =>
-        current
-          ? {
-              events: mergeNativeCoverage(
-                mergeConversationItems(
-                  mergeOrderedPersistedHistory(
-                    current.events,
-                    older.events,
-                    "older",
-                    nativeCoverage.current.preserveItemsOutsideCoverage,
-                    ticket.beforeItemIds,
-                    ticket.afterItemIds,
+      await loadEarlierHistoryBatch(
+        current.next_cursor,
+        current.events,
+        async (cursor) => {
+          if (!stillCurrent() || historyPaginationCursor(pagination) !== cursor) return;
+          const ticket = beginHistoryPagination(pagination, cursor);
+          if (!ticket || ticket.rangeId !== initialTicket.rangeId) return;
+          const historyRead = await readHistory(id, g, historyCacheEpoch, cursor);
+          if (!stillCurrent()) return;
+          if (historyRead?.type === "busy") {
+            readBusy(wake, g);
+            return;
+          }
+          if (historyRead?.type !== "page") return;
+          const { page: older, attempt } = historyRead;
+          const wasActiveCursor = historyPaginationCursor(pagination) === cursor;
+          if (!applyHistoryPagination(pagination, ticket, older)) return;
+          const nextCursor = historyPaginationCursor(pagination);
+          const hadHistoryError = nativeCoverage.current.historyRecoveryFailed;
+          completeHistoryRead(nativeCoverage.current, attempt);
+          if (hadHistoryError) setError(!!nativeCoverage.current.historyRecoveryFailed);
+
+          const viewport = scroll.current;
+          if (viewport && earlierAnchor.current?.scope !== scope) {
+            const restore = captureHistoryScrollAnchor(viewport);
+            earlierAnchor.current = {
+              scope,
+              restore: () => {
+                if (stillCurrent() && scroll.current === viewport) restore();
+              },
+            };
+          }
+          setPage((latest) =>
+            latest
+              ? {
+                  events: mergeNativeCoverage(
+                    mergeConversationItems(
+                      mergeOrderedPersistedHistory(
+                        latest.events,
+                        older.events,
+                        "older",
+                        nativeCoverage.current.preserveItemsOutsideCoverage,
+                        ticket.beforeItemIds,
+                        ticket.afterItemIds,
+                      ),
+                      removePersistedOverlays(
+                        latest.events,
+                        older.events,
+                        nativeCoverage.current.preserveItemsOutsideCoverage,
+                      ),
+                    ),
+                    nativeCoverage.current,
                   ),
-                  removePersistedOverlays(
-                    current.events,
-                    older.events,
-                    nativeCoverage.current.preserveItemsOutsideCoverage,
-                  ),
-                ),
-                nativeCoverage.current,
-              ),
-              next_cursor: nextCursor,
-              warnings: [...new Set([...older.warnings, ...current.warnings])],
-            }
-          : {
-              ...older,
-              next_cursor: nextCursor,
-              events: mergeNativeCoverage(older.events, nativeCoverage.current),
-            },
-      );
-      requestAnimationFrame(() => {
-        if (anchorId && top !== undefined && viewport) {
-          const node = Array.from(viewport.querySelectorAll<HTMLElement>("[data-event-id]")).find(
-            (n) => n.dataset.eventId === anchorId,
+                  next_cursor: nextCursor,
+                  warnings: [
+                    ...new Set([
+                      ...older.warnings,
+                      ...latest.warnings.filter(
+                        (warning) => warning !== "TRANSCRIPT_SCAN_BUDGET" || !wasActiveCursor,
+                      ),
+                    ]),
+                  ],
+                }
+              : {
+                  ...older,
+                  next_cursor: nextCursor,
+                  events: mergeNativeCoverage(older.events, nativeCoverage.current),
+                },
           );
-          if (node) viewport.scrollTop += node.getBoundingClientRect().top - top;
-        }
-      });
+          return {
+            events: older.events,
+            next_cursor: older.next_cursor === nextCursor ? nextCursor : undefined,
+          };
+        },
+        turnId,
+      );
     } catch (e) {
-      fail(e, g);
+      if (stillCurrent()) fail(e, g);
     } finally {
-      setBusy(false);
+      if (earlierFlight.current === scope) {
+        earlierFlight.current = undefined;
+        setLoadingEarlier(false);
+      }
     }
   }
   useEffect(() => {
@@ -2520,6 +2607,8 @@ export function useSessionController({
     post,
     pair,
     earlier,
+    historyDetailTurnId,
+    loadingEarlier,
     control,
     current,
     currentWorkspace,

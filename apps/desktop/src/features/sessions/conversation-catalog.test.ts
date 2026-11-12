@@ -7,7 +7,11 @@ import type {
   DesktopConversationBridge,
   DesktopConversationResponse,
 } from "@/core/conversation-bridge";
-import { refreshConversationCatalog, useConversationCatalog } from "./conversation-catalog";
+import {
+  cachedConversationCatalog,
+  refreshConversationCatalog,
+  useConversationCatalog,
+} from "./conversation-catalog";
 
 function catalog(id: string): DesktopConversationResponse {
   return {
@@ -95,6 +99,45 @@ afterEach(() => {
 });
 
 describe("desktop conversation catalog", () => {
+  it("only seeds history from a readable row on the current desktop bridge", async () => {
+    const { bridge } = fixture();
+    vi.mocked(bridge.request).mockResolvedValue(snapshot(["selected"], { indexEnabled: true }));
+    renderHook(() => useConversationCatalog(true));
+    await waitFor(() =>
+      expect(cachedConversationCatalog("selected")).toMatchObject({
+        indexEnabled: true,
+        sessions: [{ id: "selected", availability: "readable" }],
+      }),
+    );
+    expect(cachedConversationCatalog("missing")).toBeUndefined();
+    const denied = { status: 403, body: { error: "permission_denied" } };
+    vi.mocked(bridge.request).mockResolvedValue(denied);
+    await act(async () => {
+      await expect(refreshConversationCatalog()).rejects.toMatchObject({ status: 403 });
+    });
+    expect(cachedConversationCatalog("selected")).toBeUndefined();
+    vi.mocked(bridge.request).mockResolvedValue(snapshot(["selected"], { indexEnabled: true }));
+    await act(async () => {
+      await refreshConversationCatalog();
+    });
+    expect(cachedConversationCatalog("selected")).toBeDefined();
+    window.desktopConversation = { ...bridge };
+    expect(cachedConversationCatalog("selected")).toBeUndefined();
+  });
+
+  it("shares an active directory refresh with a passive reader without issuing another read", async () => {
+    const { bridge } = fixture();
+    let finish!: (response: DesktopConversationResponse) => void;
+    vi.mocked(bridge.request).mockImplementation(
+      () => new Promise((resolve) => (finish = resolve)),
+    );
+    const flight = refreshConversationCatalog();
+    expect(refreshConversationCatalog({ joinPending: true })).toBe(flight);
+    finish(snapshot(["selected"], { indexEnabled: true }));
+    await expect(flight).resolves.toMatchObject([{ id: "selected" }]);
+    expect(bridge.request).toHaveBeenCalledOnce();
+  });
+
   it("keeps the catalog's verified global CLI floor alongside its controlled rows", async () => {
     const { bridge } = fixture();
     vi.mocked(bridge.request).mockResolvedValue({

@@ -1,14 +1,14 @@
 // @vitest-environment jsdom
 
 import "@testing-library/jest-dom/vitest";
-import { useImperativeHandle, useState, type ReactNode, type Ref } from "react";
+import { useEffect, useImperativeHandle, useState, type ReactNode, type Ref } from "react";
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { ClaudeCommandEntry } from "@agentkib/web-client";
 import { codexCommandPrompt, slashCommandCopy } from "@agentkib/session-ui";
 import { SessionComposer } from "./session-composer";
 import { codexCopy, codexReason } from "./codex-copy";
-import type { ComposerControlsHandle } from "./codex-session-controls";
+import type { ComposerControlsHandle, ComposerPlanState } from "./codex-session-controls";
 import type { SessionPanels } from "./session-panels";
 import type { SessionController } from "./use-session-controller";
 
@@ -19,6 +19,9 @@ const doubles = vi.hoisted(() => ({
   panels: null as SessionPanels | null,
   // Opens the composer's settings or goal dialog; rendered only with full access.
   open: vi.fn<(dialog: "settings" | "goal") => boolean>(),
+  // Turns plan mode on; the controls report whether it is on and can be switched.
+  plan: vi.fn<() => boolean>(),
+  planState: { on: false, available: false } as ComposerPlanState,
 }));
 vi.mock("./session-navigation", () => ({ useSessionNavigate: () => vi.fn() }));
 vi.mock("./session-context", () => ({
@@ -32,11 +35,14 @@ vi.mock("./codex-session-controls", () => ({
   CodexComposerControls: ({
     action,
     controlsRef,
+    onPlan,
   }: {
     action: ReactNode;
     controlsRef?: Ref<ComposerControlsHandle>;
+    onPlan?: (state: ComposerPlanState) => void;
   }) => {
-    useImperativeHandle(controlsRef, () => ({ open: doubles.open }));
+    useImperativeHandle(controlsRef, () => ({ open: doubles.open, plan: doubles.plan }));
+    useEffect(() => onPlan?.(doubles.planState), [onPlan]);
     return <>{action}</>;
   },
 }));
@@ -616,6 +622,40 @@ describe("Codex slash commands in the composer", () => {
       unmount();
     }
     expect(doubles.codexAction).not.toHaveBeenCalled();
+  });
+
+  describe("plan mode, as on the desktop", () => {
+    beforeEach(() => {
+      doubles.session.access = {
+        ...doubles.session.access,
+        device: fullDevice,
+      } as SessionController["access"];
+    });
+    afterEach(() => {
+      doubles.planState = { on: false, available: false };
+    });
+
+    it("turns on for /plan typed after a space, and leaves it out of the draft", () => {
+      doubles.planState = { on: false, available: true };
+      doubles.plan.mockReturnValue(true);
+      const { input } = renderComposer("Fix the flaky test /pl");
+      expect(codexOptions()).toEqual(["/planTurn on Plan mode"]);
+      fireEvent.keyDown(input, { key: "Enter" });
+      expect(doubles.plan).toHaveBeenCalledOnce();
+      expect(input).toHaveValue("Fix the flaky test");
+      expect(doubles.control).not.toHaveBeenCalled();
+    });
+
+    it("is not offered after a space where the session cannot switch it", () => {
+      renderComposer("Fix the flaky test /pl");
+      expect(screen.queryByRole("listbox")).not.toBeInTheDocument();
+    });
+
+    it("asks for the task to plan while it is on", () => {
+      doubles.planState = { on: true, available: true };
+      const { input } = renderComposer("");
+      expect(input).toHaveAttribute("placeholder", codexCopy["en-US"].planPlaceholder);
+    });
   });
 });
 

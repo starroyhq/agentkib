@@ -54,6 +54,7 @@ const rows = (turn: string, error = false) =>
 describe("durable AgentKib read states", () => {
   it("does not create a database from a pure catalog read or claim unsupported history read", () => {
     const { root, ledger, key } = fixture();
+    expect(ledger.catalogStates(new Map([[key, true]]), "a").size).toBe(0);
     expect(ledger.get(key, "a")).toMatchObject({
       status: "unknown",
       freshness: "stale",
@@ -226,6 +227,48 @@ describe("durable AgentKib read states", () => {
     expect(restarted.get(key, "a").status).toBe("read");
   });
 
+  it("projects catalog rows in bounded queries and preserves scope-specific native handoff evidence", () => {
+    const { root, ledger, key } = fixture();
+    const nativeKey = conversationReadKey("codex", root, "native");
+    const missingKey = conversationReadKey("claude-code", root, "missing");
+    ledger.observe(key, [{ result: result("old"), baseline: true }], null, true);
+    ledger.record(key, result("new", "failed"));
+    const newResult = ledger.get(key, "a");
+    ledger.update(key, "a", newResult.version!, newResult.latestResult!.id);
+    const native: ConversationReadState = {
+      source: "codex-native",
+      status: "unread",
+      freshness: "current",
+      version: "native",
+      firstUnread: { type: "threadStart" },
+      latestResult: result("native"),
+    };
+    ledger.saveNative(nativeKey, native, "native-revision");
+    const receipt = ledger.nativeSnapshot(nativeKey)!;
+    ledger.handoff(nativeKey, "a", receipt.state, receipt.fingerprint);
+    const viewed = ledger.get(nativeKey, "a");
+    ledger.update(nativeKey, "a", viewed.version!, viewed.latestResult!.id);
+    const expectedA = new Map([
+      [key, ledger.get(key, "a")],
+      [nativeKey, ledger.get(nativeKey, "a")],
+    ]);
+    const expectedB = new Map([
+      [key, ledger.get(key, "b")],
+      [nativeKey, { ...native, source: "agentkib", freshness: "stale", version: null }],
+    ]);
+    const candidates = new Map([
+      [key, false],
+      [nativeKey, true],
+      [missingKey, false],
+    ]);
+    for (let n = 0; n < 100; n++) candidates.set(`missing-${n}`, true);
+
+    const prepare = vi.spyOn(DatabaseSync.prototype, "prepare");
+    expect(ledger.catalogStates(candidates, "a")).toEqual(expectedA);
+    expect(ledger.catalogStates(candidates, "b")).toEqual(expectedB);
+    expect(prepare.mock.calls.length).toBeLessThanOrEqual(8);
+  });
+
   it("never clears a result that appeared after the last verified native read snapshot", () => {
     const { ledger, key } = fixture();
     ledger.observe(
@@ -263,6 +306,7 @@ describe("durable AgentKib read states", () => {
     businessFinished = true;
     expect(businessFinished).toBe(true);
     expect(ledger.get(key, "a").freshness).toBe("stale");
+    expect(ledger.catalogStates(new Map([[key, false]]), "a").get(key)?.freshness).toBe("stale");
     expect(warning).toHaveBeenCalledWith(
       "Conversation read-state observation could not be persisted",
     );

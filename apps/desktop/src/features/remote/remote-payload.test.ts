@@ -158,6 +158,36 @@ describe("remote payload validation", () => {
     expect(result.sessions[0].spawned_by_session_id).toBeUndefined();
     expect(result.sessions[0].forked_from_session_id).toBeUndefined();
   });
+  it("keeps remote terminal facts and strips unrecognized detail", () => {
+    const event = {
+      kind: "agent-message",
+      turn_id: "turn",
+      attachment_count: 0,
+      truncated: false,
+    };
+    const { events } = parseRemoteEvents({
+      events: [
+        {
+          ...event,
+          id: "terminal",
+          turn_meta: { outcome: "failed", duration_ms: 320, private: "ignored" },
+          cli_output: true,
+        },
+        {
+          ...event,
+          id: "legacy",
+          turn_meta: { outcome: "future-status", duration_ms: -1 },
+          cli_output: "true",
+        },
+      ],
+      warnings: [],
+    });
+    expect(events[0].turn_meta).toEqual({ outcome: "failed", duration_ms: 320 });
+    expect(events[0].cli_output).toBe(true);
+    expect(events[1].turn_meta?.outcome).toBeUndefined();
+    expect(events[1].turn_meta?.duration_ms).toBeUndefined();
+    expect(events[1].cli_output).toBeUndefined();
+  });
   it("normalizes legacy nullable fields and strips remote-provided provenance", () => {
     const result = parseRemoteCatalog({
       workspaces: [{ ...workspace, remote: { host_id: "forged" } }],

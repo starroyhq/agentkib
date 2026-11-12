@@ -1,16 +1,22 @@
 import { useI18n } from "@/core/useI18n";
 import { Bot, UserRound, Wrench } from "lucide-react";
+import { displayUserMessageText, MessageActions } from "@agentkib/session-ui";
+import type { ReactNode } from "react";
 import { MarkdownContent } from "@/components/MarkdownContent";
 import type { ConversationEvent } from "@/core/types";
 
 export function ConversationEventRow({
   event,
   variant = "workspace",
+  showActions = true,
+  beforeActions,
 }: {
   event: ConversationEvent;
   variant?: "workspace" | "hub";
+  showActions?: boolean;
+  beforeActions?: ReactNode;
 }) {
-  const { tr, formatDateTime } = useI18n();
+  const { tr, formatDateTime, locale } = useI18n();
   const hub = variant === "hub";
   if (event.kind === "tool-summary") {
     return (
@@ -39,38 +45,63 @@ export function ConversationEventRow({
   }
   const isUser = event.kind === "user-message";
   const coloredUser = isUser && !hub;
-  const messageClassName = hub
+  const text = isUser ? displayUserMessageText(event.content ?? "", event.images) : event.content;
+  const width = hub
     ? isUser
-      ? "session-hub-event session-hub-message session-hub-user ml-auto w-fit max-w-[82%] self-start rounded-2xl border border-border/50 bg-muted px-4 py-3.5 text-foreground shadow-none [overflow-wrap:anywhere]"
-      : "session-hub-event session-hub-message session-hub-agent w-full min-w-0 max-w-full self-start px-1 py-1 text-foreground [overflow-wrap:anywhere]"
-    : `max-w-[min(820px,92%)] self-start rounded-2xl border px-4 py-3.5 shadow-xs ${coloredUser ? "ml-auto border-primary bg-primary text-primary-foreground" : isUser ? "ml-auto border-border/70 bg-muted text-foreground" : "border-border/70 bg-card text-foreground"}`;
+      ? "ml-auto w-fit max-w-[82%]"
+      : "w-full"
+    : `w-fit max-w-[min(820px,92%)] ${isUser ? "ml-auto" : ""}`;
+  const framing = hub
+    ? isUser
+      ? "session-hub-event session-hub-message session-hub-user self-end rounded-2xl border border-border/50 bg-muted px-4 py-3.5 text-foreground shadow-none"
+      : "session-hub-event session-hub-message session-hub-agent px-1 py-1 text-foreground"
+    : `rounded-2xl border px-4 py-3.5 shadow-xs ${coloredUser ? "self-end border-primary bg-primary text-primary-foreground" : "border-border/70 bg-card text-foreground"}`;
   return (
-    <article data-event-id={event.id} className={messageClassName}>
-      {!hub && (
-        <header
-          className={`mb-2.5 flex items-center gap-1.5 text-xs ${coloredUser ? "text-primary-foreground" : "text-muted-foreground"}`}
-        >
-          {isUser ? <UserRound size={14} /> : <Bot size={14} />}
-          <strong className={coloredUser ? "text-primary-foreground" : "text-foreground"}>
-            {tr(isUser ? "conversations.you" : "conversations.agent")}
-          </strong>
-          {event.timestamp && <time className="ml-auto">{formatDateTime(event.timestamp)}</time>}
-        </header>
-      )}
-      <MarkdownContent
-        content={event.content ?? ""}
-        literal={event.cli_output === true}
-        className={`select-text text-sm leading-7 [overflow-wrap:anywhere]${coloredUser ? " markdown-on-primary" : ""}`}
-      />
-      {(event.attachment_count > 0 || event.truncated) && (
-        <footer
-          className={`mt-3 flex gap-2 ${hub ? "text-sm" : "text-xs"} ${coloredUser ? "text-primary-foreground" : "text-muted-foreground"}`}
-        >
-          {event.attachment_count > 0 && (
-            <span>{tr("conversations.attachments", { count: event.attachment_count })}</span>
-          )}
-          {event.truncated && <span>{tr("conversations.contentTruncated")}</span>}
-        </footer>
+    <article
+      data-event-id={event.id}
+      className={`group/message flex min-w-0 flex-col self-start ${width}`}
+    >
+      <div className={framing}>
+        {!hub && (
+          <header
+            className={`mb-2.5 flex items-center gap-1.5 text-xs ${coloredUser ? "text-primary-foreground" : "text-muted-foreground"}`}
+          >
+            {isUser ? <UserRound size={14} /> : <Bot size={14} />}
+            <strong className={coloredUser ? "text-primary-foreground" : "text-foreground"}>
+              {tr(isUser ? "conversations.you" : "conversations.agent")}
+            </strong>
+          </header>
+        )}
+        {text?.trim() && (
+          <div data-message-body="" className="select-text">
+            <MarkdownContent
+              content={text}
+              literal={event.cli_output === true}
+              className={`text-sm leading-7 [overflow-wrap:anywhere]${coloredUser ? " markdown-on-primary" : ""}`}
+            />
+          </div>
+        )}
+        {(event.attachment_count > 0 || event.truncated) && (
+          <footer
+            className={`mt-3 flex gap-2 ${hub ? "text-sm" : "text-xs"} ${coloredUser ? "text-primary-foreground" : "text-muted-foreground"}`}
+          >
+            {event.attachment_count > 0 && (
+              <span>{tr("conversations.attachments", { count: event.attachment_count })}</span>
+            )}
+            {event.truncated && <span>{tr("conversations.contentTruncated")}</span>}
+          </footer>
+        )}
+      </div>
+      {beforeActions}
+      {showActions && (
+        <MessageActions
+          locale={locale}
+          role={isUser ? "user" : "assistant"}
+          text={text}
+          timestamp={event.timestamp}
+          timestampLabel={tr("sessions.recordTime")}
+          align={isUser ? "end" : "start"}
+        />
       )}
     </article>
   );

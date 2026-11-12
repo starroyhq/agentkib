@@ -19,7 +19,7 @@ export type HomeSessionsState = "ready" | "loading" | "disabled" | "error";
 type Icon = ComponentType<{ size?: number; className?: string; "aria-hidden"?: boolean }>;
 
 /**
- * The home's session groups: what waits for the person, unread results, running turns and the
+ * The home's session groups: what waits for the person, running turns, unread results and the
  * most recent other sessions. Each group hides when it is empty; "all clear" stands in for the
  * first three. With `replies`, an approval or a question opens its card in its row and is answered
  * there; other rows open their session.

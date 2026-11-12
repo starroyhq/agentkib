@@ -21,6 +21,8 @@ import {
 
 interface ConversationCatalogState {
   sessions: ConversationSessionSummary[];
+  workspaces?: ConversationCatalog["workspaces"];
+  indexEnabled?: boolean;
   ready: boolean;
   usable: boolean;
   refreshing: boolean;
@@ -62,6 +64,8 @@ function resetConversationCatalog() {
   scheduledRefresh = undefined;
   useConversationCatalogStore.setState({
     sessions: emptySessions,
+    workspaces: undefined,
+    indexEnabled: undefined,
     ready: false,
     usable: false,
     refreshing: false,
@@ -108,7 +112,9 @@ function scheduleCatalogRefresh() {
   }, 40);
 }
 
-export function refreshConversationCatalog(): Promise<ConversationSessionSummary[]> {
+export function refreshConversationCatalog({
+  joinPending = false,
+}: { joinPending?: boolean } = {}): Promise<ConversationSessionSummary[]> {
   if (!hasDesktopConversation()) return Promise.resolve([]);
   const bridge = window.desktopConversation;
   if (bridge !== cacheBridge) {
@@ -117,6 +123,7 @@ export function refreshConversationCatalog(): Promise<ConversationSessionSummary
     stopReadScope = undefined;
     cacheBridge = bridge;
   }
+  if (joinPending && pending) return pending;
   retryObservation?.();
   invalidation++;
   if (pending) return pending;
@@ -168,6 +175,8 @@ export function refreshConversationCatalog(): Promise<ConversationSessionSummary
       const usable = catalog.complete !== false || current.usable || next.length > 0;
       useConversationCatalogStore.setState({
         sessions: next,
+        workspaces: catalog.workspaces,
+        indexEnabled: catalog.indexEnabled,
         usable,
         ready: version === invalidation && usable,
         accessDenied: false,
@@ -211,6 +220,23 @@ export function refreshConversationCatalog(): Promise<ConversationSessionSummary
     });
   pending = task;
   return task;
+}
+
+/** Reuse the local directory already displayed when opening a known readable session. */
+export function cachedConversationCatalog(sessionId: string): ConversationCatalog | undefined {
+  const bridge = globalThis.window?.desktopConversation;
+  const { sessions, workspaces, indexEnabled, usable, accessDenied, complete, incompleteSources } =
+    useConversationCatalogStore.getState();
+  if (
+    !bridge ||
+    bridge !== cacheBridge ||
+    !usable ||
+    accessDenied ||
+    !indexEnabled ||
+    !sessions.some((session) => session.id === sessionId && session.availability === "readable")
+  )
+    return undefined;
+  return { sessions, workspaces, indexEnabled, complete, incompleteSources };
 }
 
 function releaseCatalogObserver() {

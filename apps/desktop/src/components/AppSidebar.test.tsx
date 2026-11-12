@@ -404,8 +404,8 @@ describe("AppSidebar v8 navigation", () => {
       .getAllByRole("button")
       .map((button) => button.getAttribute("aria-label"));
     expect(names).toEqual([
-      tr("nav.workspaces"),
       tr("sessions.nav"),
+      tr("nav.workspaces"),
       tr("nav.catalog"),
       tr("nav.insights"),
     ]);

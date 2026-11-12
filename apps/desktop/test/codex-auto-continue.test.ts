@@ -726,7 +726,10 @@ describe("Codex delete", () => {
     } finally {
       ledger.close();
     }
-    expect(readManagedEvents(f.root, f.summary.id, null, 100).events).toHaveLength(1);
+    expect(readManagedEvents(f.root, f.summary.id, null, 100).events).toMatchObject([
+      { id: "codex-turn-end:new-turn", turn_meta: { outcome: "completed" } },
+      { id: "synthetic-item", text: "Synthetic" },
+    ]);
     expect(await remove(f)).toMatchObject({ accepted: true, completed: true, deleted: true });
     // Codex lets one process write a thread: the runner had exited before the delete was sent.
     expect(f.deletes).toEqual([{ server: 1, othersOpen: 0 }]);

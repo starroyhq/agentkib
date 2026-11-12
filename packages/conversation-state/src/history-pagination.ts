@@ -1,4 +1,61 @@
 import type { ConversationEventPage } from "./session-model";
+import type { ConversationItem } from "./index";
+
+type HistoryBatchEvent = ConversationItem & { turn_meta?: { outcome?: string } };
+
+function isReadableHistoryEvent(event: HistoryBatchEvent): boolean {
+  return (
+    event.kind === "user-message" ||
+    !!event.turn_meta?.outcome ||
+    (event.kind === "agent-message" &&
+      event.message_phase !== "commentary" &&
+      (!!event.content?.trim() || event.attachment_count > 0 || !!event.images?.length))
+  );
+}
+
+/** Pull a few readable turns using existing bounded event pages and their continuations. */
+export async function loadEarlierHistoryBatch(
+  cursor: string,
+  visible: readonly HistoryBatchEvent[],
+  readAndApply: (
+    cursor: string,
+  ) => Promise<{ events: readonly HistoryBatchEvent[]; next_cursor?: string | null } | undefined>,
+  turnId?: string,
+): Promise<void> {
+  const deadline = performance.now() + 1200;
+  const requestedCursors = new Set<string>();
+  const seenEvents = new Set(visible.map((event) => event.id));
+  const visibleTurns = new Set(
+    visible.filter(isReadableHistoryEvent).map((event) => event.turn_id),
+  );
+  const addedTurns = new Set<string>();
+  let next: string | null | undefined = cursor;
+  while (next && !requestedCursors.has(next) && requestedCursors.size < 4) {
+    requestedCursors.add(next);
+    const page = await readAndApply(next);
+    if (!page) return;
+    const added = page.events.filter((event) => !seenEvents.has(event.id));
+    for (const event of added) seenEvents.add(event.id);
+    if (turnId) {
+      if (
+        added.some(
+          (event) => event.kind === "user-message" || (event.turn_id && event.turn_id !== turnId),
+        )
+      )
+        return;
+    } else {
+      for (const event of added.filter(isReadableHistoryEvent)) {
+        // Older sources without turn IDs only provide an event window. Stop on
+        // the first readable window instead of guessing where their turns start.
+        if (!event.turn_id) return;
+        if (!visibleTurns.has(event.turn_id)) addedTurns.add(event.turn_id);
+      }
+      if (addedTurns.size >= 3) return;
+    }
+    if (performance.now() >= deadline) return;
+    next = page.next_cursor;
+  }
+}
 
 interface HistoryRange {
   id: number;
@@ -51,6 +108,25 @@ export function createHistoryPagination(): HistoryPagination {
 
 export function historyPaginationCursor(state: HistoryPagination): string | undefined {
   return state.ranges.at(-1)?.cursor;
+}
+
+/** The oldest persisted window is cut inside this turn, or at its unknown start. */
+export function oldestIncompleteHistoryTurn(
+  page: ConversationEventPage | undefined,
+  pagination?: HistoryPagination,
+): string | undefined {
+  const oldest = page?.events[0];
+  if (!page?.next_cursor || !oldest?.turn_id || oldest.kind === "user-message") return;
+  if (pagination) {
+    const range = pagination.ranges.at(-1);
+    if (
+      range?.cursor !== page.next_cursor ||
+      range.stopAt !== undefined ||
+      range.beforeItemIds[0] !== oldest.id
+    )
+      return;
+  }
+  return oldest.turn_id;
 }
 
 function registerIds(state: HistoryPagination, page: ConversationEventPage): void {

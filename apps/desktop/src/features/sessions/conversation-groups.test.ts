@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { ConversationEvent } from "@/core/types";
+import { turnFileActivity } from "@agentkib/conversation-state";
 import { groupConversationEvents } from "./conversation-groups";
 
 function event(
@@ -50,12 +51,21 @@ describe("groupConversationEvents", () => {
       event("a-user", "user-message", { turn_id: "turn-a" }),
       event("legacy-gap", "agent-message"),
       event("a-final", "agent-message", { turn_id: "turn-a", message_phase: "final_answer" }),
-      event("a-again", "tool-summary", { turn_id: "turn-a" }),
+      event(
+        "a-again",
+        "tool-summary",
+        { turn_id: "turn-a" },
+        {
+          turn_meta: { outcome: "completed" },
+        },
+      ),
     ]);
 
     expect(groups.map((group) => group.turnId)).toEqual(["turn-a", undefined, "turn-a"]);
     expect(groups.map((group) => group.events[0].id)).toEqual(["a-user", "legacy-gap", "a-final"]);
     expect(groups[2].events.map(({ id }) => id)).toEqual(["a-final", "a-again"]);
+    expect(groups[2].outcome).toBe("completed");
+    expect(turnFileActivity(groups[2])).toBeUndefined();
   });
 
   it("folds contiguous commentary and tools only in a complete turn", () => {
@@ -67,7 +77,12 @@ describe("groupConversationEvents", () => {
         turn_id: "turn-1",
         message_phase: "commentary",
       }),
-      event("final", "agent-message", { turn_id: "turn-1", message_phase: "final_answer" }),
+      event(
+        "final",
+        "agent-message",
+        { turn_id: "turn-1", message_phase: "final_answer" },
+        { turn_meta: { outcome: "completed" } },
+      ),
     ]);
 
     expect(groups).toHaveLength(1);
@@ -109,7 +124,7 @@ describe("groupConversationEvents", () => {
     expect(groups[0].segments[2].events.map(({ id }) => id)).toEqual(["tool-1", "tool-2"]);
   });
 
-  it("opens a process containing failed tools and reports only tool counts", () => {
+  it("keeps a process containing failed tools collapsed and reports the failed count", () => {
     const groups = groupConversationEvents([
       event("user", "user-message", { turn_id: "failed" }),
       event("failed-tool", "tool-summary", { turn_id: "failed" }, { tool_status: "failed" }),
@@ -117,10 +132,10 @@ describe("groupConversationEvents", () => {
     ]);
 
     const process = groups[0].segments[1];
-    expect(groups[0].complete).toBe(true);
+    expect(groups[0].outcome).toBeUndefined();
     expect(process.toolCount).toBe(1);
     expect(process.failedToolCount).toBe(1);
-    expect(process.defaultOpen).toBe(true);
+    expect(process.defaultOpen).toBe(false);
   });
 
   it("leaves unclassified body events expanded and keeps the final in order", () => {
@@ -138,7 +153,7 @@ describe("groupConversationEvents", () => {
       "final",
     ]);
     expect(groups[0].segments[1].collapsible).toBe(false);
-    expect(groups[0].segments[2].collapsible).toBe(true);
+    expect(groups[0].segments[2].collapsible).toBe(false);
     expect(groups[0].segments[3].events[0].id).toBe("final");
   });
 
@@ -180,13 +195,139 @@ describe("groupConversationEvents", () => {
     const events = [
       event("user", "user-message", { turn_id: "turn-3" }),
       event("commentary", "agent-message", { turn_id: "turn-3", message_phase: "commentary" }),
-      event("final", "agent-message", { turn_id: "turn-3", message_phase: "final_answer" }),
+      event(
+        "final",
+        "agent-message",
+        { turn_id: "turn-3", message_phase: "final_answer" },
+        { turn_meta: { outcome: "completed" } },
+      ),
     ];
 
     expect(groupConversationEvents(events)[0].complete).toBe(true);
     expect(groupConversationEvents(events, { incomplete: true })[0].complete).toBe(false);
-    expect(groupConversationEvents(events, { incomplete: true })[0].segments[1].collapsible).toBe(
-      false,
+    expect(groupConversationEvents(events, { incomplete: true })[0].outcome).toBe("completed");
+  });
+
+  it("keeps only the latest final response outside one process for a terminal turn fragment", () => {
+    const metadata = { turn_id: "partial" };
+    const [group] = groupConversationEvents(
+      [
+        event("old-answer", "agent-message", { ...metadata, message_phase: "final_answer" }),
+        event("tool-1", "tool-summary", metadata),
+        event("interim", "agent-message", metadata),
+        event("tool-2", "tool-summary", metadata),
+        event("new-answer-1", "agent-message", { ...metadata, message_phase: "final_answer" }),
+        event("new-answer-2", "agent-message", { ...metadata, message_phase: "final_answer" }),
+        event("tool-after-answer", "tool-summary", metadata, {
+          turn_meta: { outcome: "completed", duration_ms: 23 },
+        }),
+      ],
+      { incomplete: true },
     );
+    expect(group).toMatchObject({ complete: false, durationMs: 23, outcome: "completed" });
+    expect(group.segments.map((segment) => segment.events.map(({ id }) => id))).toEqual([
+      ["old-answer", "tool-1", "interim", "tool-2", "tool-after-answer"],
+      ["new-answer-1"],
+      ["new-answer-2"],
+    ]);
+    expect(group.segments[0]).toMatchObject({
+      kind: "process",
+      outcome: "completed",
+      defaultOpen: false,
+      toolCount: 3,
+    });
+  });
+
+  it("folds all assistant output of an aborted turn without hiding either user message", () => {
+    const metadata = { turn_id: "stopped" };
+    const [group] = groupConversationEvents([
+      event("user", "user-message", metadata),
+      event("working", "agent-message", metadata),
+      event("follow-up", "user-message", metadata),
+      event("tool", "tool-summary", metadata),
+      event("partial-answer", "agent-message", metadata, { turn_meta: { outcome: "aborted" } }),
+    ]);
+    expect(group.outcome).toBe("aborted");
+    expect(group.segments.map(({ kind, events }) => [kind, events.map(({ id }) => id)])).toEqual([
+      ["event", ["user"]],
+      ["process", ["working"]],
+      ["event", ["follow-up"]],
+      ["process", ["tool", "partial-answer"]],
+    ]);
+  });
+
+  it("keeps a failed turn's terminal error outside the disclosure", () => {
+    const metadata = { turn_id: "error" };
+    const [group] = groupConversationEvents([
+      event("user", "user-message", metadata),
+      event("old-answer", "agent-message", { ...metadata, message_phase: "final_answer" }),
+      event("tool", "tool-summary", metadata, { tool_status: "failed" }),
+      event("error", "agent-message", metadata, {
+        cli_output: true,
+        turn_meta: { outcome: "failed" },
+      }),
+    ]);
+    expect(group.segments.map(({ events }) => events.map(({ id }) => id))).toEqual([
+      ["user"],
+      ["old-answer", "tool"],
+      ["error"],
+    ]);
+    expect(group.segments[1]).toMatchObject({
+      kind: "process",
+      outcome: "failed",
+      defaultOpen: false,
+      failedToolCount: 1,
+    });
+  });
+
+  it("uses terminal metadata from hidden wrappers and omits empty turn markers from the body", () => {
+    const [wrapped, empty] = groupConversationEvents(
+      [
+        event("reply", "agent-message", { turn_id: "wrap" }),
+        event(
+          "wrapper",
+          "tool-summary",
+          { turn_id: "wrap" },
+          {
+            turn_meta: { outcome: "aborted", duration_ms: 100 },
+          },
+        ),
+        event(
+          "codex-turn-end:empty",
+          "agent-message",
+          { turn_id: "empty" },
+          {
+            content: undefined,
+            turn_meta: { outcome: "failed" },
+          },
+        ),
+      ],
+      { isHidden: ({ id }) => id === "wrapper" },
+    );
+    expect(wrapped).toMatchObject({
+      outcome: "aborted",
+      durationMs: 100,
+      events: [{ id: "reply" }],
+    });
+    expect(empty).toMatchObject({
+      outcome: "failed",
+      events: [],
+      segments: [{ kind: "process", outcome: "failed", events: [], collapsible: false }],
+    });
+  });
+
+  it("keeps unknown replies visible when a completed legacy turn has no explicit final answer", () => {
+    const metadata = { turn_id: "legacy" };
+    const [group] = groupConversationEvents([
+      event("user", "user-message", metadata),
+      event("commentary", "agent-message", { ...metadata, message_phase: "commentary" }),
+      event("tool", "tool-summary", metadata),
+      event("unclassified", "agent-message", metadata, { turn_meta: { outcome: "completed" } }),
+    ]);
+    expect(group.segments.map(({ kind, events }) => [kind, events.map(({ id }) => id)])).toEqual([
+      ["event", ["user"]],
+      ["process", ["commentary", "tool"]],
+      ["event", ["unclassified"]],
+    ]);
   });
 });

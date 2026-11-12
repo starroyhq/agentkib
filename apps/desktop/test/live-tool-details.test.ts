@@ -181,6 +181,17 @@ describe("live Codex projection", () => {
         method: "turn/completed",
         params: { threadId, turn: { id: "turn-a", status: "completed", durationMs: 5 } },
       }).event,
+    ).toMatchObject({
+      id: "codex-turn-end:turn-a",
+      turn_id: "turn-a",
+      content: null,
+      turn_meta: { outcome: "completed", duration_ms: 5 },
+    });
+    expect(
+      empty.apply({
+        method: "turn/completed",
+        params: { threadId, turn: { id: "turn-a", status: "unknown" } },
+      }).event,
     ).toBeUndefined();
   });
 
@@ -203,6 +214,12 @@ describe("live Codex projection", () => {
     );
     // Like the rollout reader: a finished turn without a duration still records its outcome.
     expect(events.map((event) => event.turn_meta)).toEqual([undefined, { outcome: "completed" }]);
+    expect(
+      state.hydrate({ id: threadId, turns: [{ id: "empty", status: "interrupted", items: [] }] })
+        .events,
+    ).toMatchObject([
+      { id: "codex-turn-end:empty", content: null, turn_meta: { outcome: "aborted" } },
+    ]);
   });
 
   it("hydrates each finished turn's duration onto its last row", () => {

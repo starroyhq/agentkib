@@ -9,6 +9,7 @@ import {
   shell,
   systemPreferences,
   Tray,
+  type ContextMenuParams,
   type MenuItemConstructorOptions,
   type NativeImage,
   type Rectangle,
@@ -111,6 +112,30 @@ export class ElectronNativeShell {
 
   translate(key: string, params: Record<string, string | number> = {}): string {
     return this.#tr(key, params);
+  }
+
+  showSelectionMenu(
+    window: BrowserWindow,
+    params: Pick<
+      ContextMenuParams,
+      "frame" | "isEditable" | "selectionText" | "editFlags" | "menuSourceType"
+    >,
+  ): void {
+    if (
+      window !== this.#options.mainWindow() ||
+      window.isDestroyed() ||
+      !params.frame ||
+      params.frame !== window.webContents.mainFrame ||
+      params.isEditable ||
+      !params.editFlags.canCopy ||
+      !params.selectionText.trim()
+    )
+      return;
+    Menu.buildFromTemplate([{ role: "copy", label: this.#tr("menu.copy") }]).popup({
+      window,
+      frame: params.frame,
+      sourceType: params.menuSourceType,
+    });
   }
 
   /** What the icon shows: a dot and the count while something waits, a turning arc while a session runs. */

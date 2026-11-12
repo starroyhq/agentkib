@@ -2,6 +2,7 @@
 
 import { act, cleanup, renderHook, waitFor } from "@testing-library/react";
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
+import { captureHistoryScrollAnchor } from "@agentkib/session-ui";
 import { api } from "@/core/api";
 import { changeLocale, initializeI18n, tr } from "@/core/i18n";
 import type {
@@ -40,6 +41,25 @@ function deferred<T>() {
   });
   return { promise, resolve, reject };
 }
+
+it("anchors a process disclosure when the preceding history row becomes hidden", () => {
+  const viewport = document.createElement("div");
+  const detail = document.createElement("div");
+  const disclosure = document.createElement("button");
+  detail.dataset.eventId = "same-id";
+  disclosure.dataset.historyAnchor = "same-id";
+  viewport.append(detail, disclosure);
+  viewport.scrollTop = 100;
+  vi.spyOn(detail, "getBoundingClientRect").mockReturnValue(new DOMRect(0, 10, 100, 10));
+  const disclosureRect = vi
+    .spyOn(disclosure, "getBoundingClientRect")
+    .mockReturnValue(new DOMRect(0, 20, 100, 10));
+  const restore = captureHistoryScrollAnchor(viewport);
+  detail.hidden = true;
+  disclosureRect.mockReturnValue(new DOMRect(0, 80, 100, 10));
+  restore();
+  expect(viewport.scrollTop).toBe(160);
+});
 
 describe("useSessionHistory", () => {
   it("translates a stored failure without requesting history again", async () => {
@@ -171,12 +191,27 @@ describe("useSessionHistory", () => {
     const { result } = renderHook(() => useSessionHistory(first, true));
     await waitFor(() => expect(result.current.nextCursor).toBe("earlier-1"));
     await act(() => result.current.loadEarlier());
-    expect(result.current.nextCursor).toBe("earlier-2");
-    await act(() => result.current.loadEarlier());
     expect(result.current.events.map((item) => item.id)).toEqual(["older message"]);
     expect(result.current.warnings).not.toContain("TRANSCRIPT_SCAN_BUDGET");
     expect(result.current.nextCursor).toBeUndefined();
     expect(api.sessionEvents).toHaveBeenLastCalledWith(first.id, "earlier-2");
+  });
+
+  it("keeps the first loaded window and its continuation when the next window fails", async () => {
+    const tool = { ...event("tool"), kind: "tool-summary" as const, turn_id: "current" };
+    vi.mocked(api.sessionEvents)
+      .mockResolvedValueOnce(page("recent", "page-1"))
+      .mockResolvedValueOnce({ events: [tool], warnings: [], next_cursor: "page-2" })
+      .mockRejectedValueOnce(new Error("Page failed"))
+      .mockResolvedValueOnce(page("earlier"));
+    const { result } = renderHook(() => useSessionHistory(first, true));
+    await waitFor(() => expect(result.current.nextCursor).toBe("page-1"));
+    await act(() => result.current.loadEarlier());
+    expect(result.current.events.map(({ id }) => id)).toEqual(["tool", "recent"]);
+    expect(result.current.nextCursor).toBe("page-2");
+    expect(result.current.error).toContain("Page failed");
+    await act(() => result.current.loadEarlier());
+    expect(result.current.events.map(({ id }) => id)).toEqual(["earlier", "tool", "recent"]);
   });
 
   it("does not read disabled or metadata-only sessions", async () => {

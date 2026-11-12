@@ -62,6 +62,10 @@ type Copy = {
   exitCode: (code: number) => string;
   worked: (duration: string) => string;
   filesChanged: (count: number) => string;
+  recordedEdits: string;
+  partialFileHistory: string;
+  showMoreFiles: (count: number) => string;
+  showFewerFiles: string;
   showDiff: string;
   hideDiff: string;
   showDetails: string;
@@ -107,6 +111,10 @@ const copies: Record<"zh-CN" | "zh-TW" | "en-US" | "ja-JP", Copy> = {
     exitCode: (code) => `退出码 ${code}`,
     worked: (duration) => `用时 ${duration}`,
     filesChanged: (count) => `已修改 ${count} 个文件`,
+    recordedEdits: "已记录的编辑",
+    partialFileHistory: "部分记录",
+    showMoreFiles: (count) => `显示另外 ${count} 个文件`,
+    showFewerFiles: "收起文件列表",
     showDiff: "查看差异",
     hideDiff: "收起差异",
     showDetails: "展开详情",
@@ -149,6 +157,10 @@ const copies: Record<"zh-CN" | "zh-TW" | "en-US" | "ja-JP", Copy> = {
     exitCode: (code) => `結束代碼 ${code}`,
     worked: (duration) => `用時 ${duration}`,
     filesChanged: (count) => `已修改 ${count} 個檔案`,
+    recordedEdits: "已記錄的編輯",
+    partialFileHistory: "部分記錄",
+    showMoreFiles: (count) => `顯示另外 ${count} 個檔案`,
+    showFewerFiles: "收合檔案清單",
     showDiff: "查看差異",
     hideDiff: "收起差異",
     showDetails: "展開詳情",
@@ -191,6 +203,10 @@ const copies: Record<"zh-CN" | "zh-TW" | "en-US" | "ja-JP", Copy> = {
     exitCode: (code) => `exit ${code}`,
     worked: (duration) => `Worked ${duration}`,
     filesChanged: (count) => (count === 1 ? "Edited 1 file" : `Edited ${count} files`),
+    recordedEdits: "Recorded edits",
+    partialFileHistory: "Partial history",
+    showMoreFiles: (count) => (count === 1 ? "Show 1 more file" : `Show ${count} more files`),
+    showFewerFiles: "Show fewer files",
     showDiff: "Show diff",
     hideDiff: "Hide diff",
     showDetails: "Show details",
@@ -233,6 +249,10 @@ const copies: Record<"zh-CN" | "zh-TW" | "en-US" | "ja-JP", Copy> = {
     exitCode: (code) => `終了コード ${code}`,
     worked: (duration) => `所要時間 ${duration}`,
     filesChanged: (count) => `${count} 件のファイルを編集`,
+    recordedEdits: "記録された編集",
+    partialFileHistory: "一部の履歴",
+    showMoreFiles: (count) => `残り ${count} 件のファイルを表示`,
+    showFewerFiles: "ファイル一覧を折りたたむ",
     showDiff: "差分を表示",
     hideDiff: "差分を閉じる",
     showDetails: "詳細を表示",
@@ -298,11 +318,18 @@ export interface TurnFileChange {
   previews: string[];
   truncated: boolean;
 }
-/** File edits of a run of items, merged by path in first-seen order. */
+const completedEditStatuses = new Set(["completed", "success", "succeeded"]);
+
+/** Recorded edits of a turn, merged by path in first-seen order. */
 export function turnFileChanges(events: readonly ToolEventView[]): TurnFileChange[] {
   const files = new Map<string, TurnFileChange>();
   for (const event of events) {
-    if (event.kind !== "tool-summary" || isFailed(event.tool_status)) continue;
+    // A tool's input can include a proposed diff before its result is recorded.
+    if (
+      event.kind !== "tool-summary" ||
+      !completedEditStatuses.has(event.tool_status?.trim().toLowerCase() ?? "")
+    )
+      continue;
     for (const entry of event.tool?.content ?? []) {
       if (entry.type !== "diff") continue;
       const file = files.get(entry.path) ?? {
@@ -424,12 +451,13 @@ function Note({ children }: { children: ReactNode }) {
   return <p className="text-[11px] leading-5 text-muted-foreground">{children}</p>;
 }
 
-function Chevron({ open }: { open: boolean }) {
+function Chevron({ open, vertical = false }: { open: boolean; vertical?: boolean }) {
+  const rotation = vertical ? (open ? "-rotate-90" : "rotate-90") : open ? "rotate-90" : "";
   return (
     <svg
       aria-hidden="true"
       viewBox="0 0 16 16"
-      className={`ml-auto size-3.5 shrink-0 opacity-60 transition-transform ${open ? "rotate-90" : ""}`}
+      className={`ml-auto size-3.5 shrink-0 opacity-60 transition-transform ${rotation}`}
     >
       <path d="M6 4l4 4-4 4" fill="none" stroke="currentColor" strokeWidth="1.5" />
     </svg>
@@ -591,19 +619,27 @@ export function ToolDetailRow({
   );
 }
 
-/** Files edited in a turn, shown after its final reply; each opens its diff preview. */
+const visibleTurnFileCount = 3;
+
+/** Recorded file edits of one turn, with a bounded initial list and inline previews. */
 export function TurnFileChanges({
   events,
   locale,
+  partial = false,
 }: {
   events: readonly ToolEventView[];
   locale: string;
+  partial?: boolean;
 }) {
   const copy = toolDetailCopy(locale);
   const files = turnFileChanges(events);
   const [open, setOpen] = useState<Record<string, boolean>>({});
+  const [showAll, setShowAll] = useState(false);
   const prefix = useId();
   if (!files.length) return null;
+  const listId = `${prefix}-files`;
+  const remaining = files.length - visibleTurnFileCount;
+  const visibleFiles = showAll ? files : files.slice(0, visibleTurnFileCount);
   const total = files.reduce(
     (sum, file) => ({ added: sum.added + file.added, removed: sum.removed + file.removed }),
     { added: 0, removed: 0 },
@@ -613,18 +649,27 @@ export function TurnFileChanges({
       data-turn-file-changes=""
       className="mt-3 overflow-hidden rounded-xl border border-border/70 bg-background text-xs"
     >
-      <h4 className="flex items-center gap-2 border-b border-border/60 px-3 py-2 font-medium text-foreground">
-        <span>{copy.filesChanged(files.length)}</span>
-        <Counts added={total.added} removed={total.removed} copy={copy} />
-      </h4>
-      <ul className="divide-y divide-border/60">
-        {files.map((file, index) => {
+      <div className="space-y-1 border-b border-border/60 px-3 py-2">
+        <h4 className="flex flex-wrap items-center gap-x-2 font-medium text-foreground">
+          <span>{copy.filesChanged(files.length)}</span>
+          <Counts added={total.added} removed={total.removed} copy={copy} />
+        </h4>
+        <p className="text-[11px] text-muted-foreground">
+          {copy.recordedEdits}
+          {partial && ` · ${copy.partialFileHistory}`}
+        </p>
+      </div>
+      <ul id={listId} className="divide-y divide-border/60">
+        {visibleFiles.map((file, index) => {
           const expanded = open[file.path] === true;
           const id = `${prefix}-${index}`;
           const viewable = file.previews.length > 0;
           const content = (
             <>
-              <span className="min-w-0 truncate font-mono text-[11px] text-foreground">
+              <span
+                className="min-w-0 flex-1 truncate font-mono text-[11px] text-foreground"
+                title={file.path}
+              >
                 {file.path}
               </span>
               <Counts added={file.added} removed={file.removed} copy={copy} />
@@ -661,6 +706,18 @@ export function TurnFileChanges({
           );
         })}
       </ul>
+      {remaining > 0 && (
+        <button
+          type="button"
+          aria-expanded={showAll}
+          aria-controls={listId}
+          className="flex w-full items-center gap-2 border-t border-border/60 px-3 py-2 text-left text-muted-foreground transition-colors hover:bg-muted/50 hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring"
+          onClick={() => setShowAll((value) => !value)}
+        >
+          {showAll ? copy.showFewerFiles : copy.showMoreFiles(remaining)}
+          <Chevron open={showAll} vertical />
+        </button>
+      )}
     </section>
   );
 }

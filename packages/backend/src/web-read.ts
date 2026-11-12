@@ -13,6 +13,7 @@ import type { ConversationImage } from "./session-events";
 import type { SessionIndex } from "./session-index";
 import {
   hasManagedCatalogWorkspace,
+  managedCatalogAliases,
   managedCatalogProjection,
   managedRecordSchema,
   readManagedCatalog,
@@ -21,6 +22,7 @@ import { canonicalize, pathIdentity } from "./paths";
 import { within } from "./files";
 import { catalogCheckouts } from "./git-checkouts";
 import { conversationReadKey, ReadStateLedger } from "./read-state-ledger";
+import { codexTurnMeta, isCodexTurnEndEvent } from "./codex-turn-end";
 import { resolveCommand } from "./command-resolution";
 import {
   CodexAppServerReader,
@@ -3891,20 +3893,17 @@ export class WebReadRequests {
             record.native_id
           ) {
             const turn = params.turn;
+            const outcome = codexTurnMeta(turn)?.outcome;
             new ReadStateLedger(this.dataDir).record(
               conversationReadKey("codex", record.home, record.native_id),
               {
                 id: `turn:${turn.id}`,
                 turnId: String(turn.id),
-                itemId: typeof result.event?.id === "string" ? result.event.id : null,
-                outcome:
-                  turn.status === "failed"
-                    ? "failed"
-                    : turn.status === "interrupted"
-                      ? "cancelled"
-                      : turn.status === "completed"
-                        ? "completed"
-                        : "ended",
+                itemId:
+                  typeof result.event?.id === "string" && !isCodexTurnEndEvent(result.event)
+                    ? result.event.id
+                    : null,
+                outcome: outcome === "aborted" ? "cancelled" : (outcome ?? "ended"),
                 completedAt: new Date().toISOString(),
               },
             );
@@ -4125,6 +4124,62 @@ export class WebReadRequests {
 
   request(value: unknown) {
     return this.#runOperation(() => this.#request(value));
+  }
+
+  /** Serve an indexed Codex page without assembling the directory. Managed and
+   * unverified records still go through the regular catalog authorization. */
+  indexedCodexEvents(value: unknown) {
+    return this.#runOperation(async () => {
+      const request = requestSchema.parse(value);
+      if (request.operation !== "events") throw new Error("invalid-request");
+      const generation = this.indexGeneration();
+      const before = await this.#indexedCodexEventScope(request.sessionId);
+      if (!before) return { handled: false as const };
+      const page = await this.sessions.events({
+        sessionId: request.sessionId,
+        cursor: request.cursor ?? null,
+        limit: request.limit,
+      });
+      const after = await this.#indexedCodexEventScope(request.sessionId);
+      if (before !== after || generation !== this.indexGeneration())
+        throw new Error("session-unavailable");
+      return { handled: true as const, page };
+    });
+  }
+
+  async #indexedCodexEventScope(sessionId: string): Promise<string | null> {
+    const row = this.store.sessions.get(sessionId);
+    if (
+      row?.agent !== "codex" ||
+      row.availability !== "readable" ||
+      !indexEnabled(this.dataDir) ||
+      this.store.sessions.codexClassificationStale(sessionId)
+    )
+      return null;
+    // Registration uses the exact catalog ID. workspacePath also accepts a manifest alias.
+    const workspace = this.store.sessions.sql.one(
+      "SELECT canonical_path FROM workspaces WHERE id=?",
+      row.workspace_id,
+    )?.canonical_path;
+    if (typeof workspace !== "string") return null;
+    const catalog = readManagedCatalog(this.dataDir);
+    // An incomplete ledger cannot attest that the indexed ID is safe to open directly.
+    if (!catalog.complete || catalog.records.some((record) => record.id === sessionId)) return null;
+    if (catalog.records.some((record) => record.native_id)) {
+      const source = await this.sessions.resolve(sessionId);
+      const ref = source.native.native_ref.toLowerCase();
+      const candidates = catalog.records.filter(
+        (record) => record.native_id?.toLowerCase() === ref,
+      );
+      if (candidates.length) {
+        const aliases = await managedCatalogAliases(this.store, this.sessions, {
+          records: candidates,
+          complete: true,
+        });
+        if ([...aliases.values()].some((owned) => owned.has(sessionId))) return null;
+      }
+    }
+    return JSON.stringify([row.workspace_id, workspace, row.created_at]);
   }
 
   async #request(value: unknown) {

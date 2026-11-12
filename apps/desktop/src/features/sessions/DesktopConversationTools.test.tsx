@@ -53,7 +53,10 @@ vi.mock("@/core/conversation-bridge", () => ({
   hasDesktopConversation: () => doubles.desktop,
 }));
 vi.mock("./SessionHubContext", () => ({ useSessionHub: vi.fn() }));
-vi.mock("./conversation-catalog", () => ({ refreshConversationCatalog: doubles.catalog }));
+vi.mock("./conversation-catalog", () => ({
+  refreshConversationCatalog: doubles.catalog,
+  cachedConversationCatalog: () => undefined,
+}));
 vi.mock("@/core/api", () => ({
   api: {
     sessionSourceCapability: vi.fn(async () => ({ status: "unsupported" })),

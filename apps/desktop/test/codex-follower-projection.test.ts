@@ -379,6 +379,75 @@ describe("native Codex message stream projection", () => {
 });
 
 describe("native follower window coverage", () => {
+  it("publishes a verified interruption after an observed turn loses its active ID", async () => {
+    const native = new CodexFollowerState(nativeId, "owner");
+    const f = fixture();
+    const publish = (revision: number, status: string) => {
+      native.notification({
+        type: "broadcast",
+        method: "thread-stream-state-changed",
+        version: 11,
+        sourceClientId: "owner",
+        params: {
+          conversationId: nativeId,
+          hostId: "local",
+          change: {
+            type: "snapshot",
+            revision,
+            conversationState: {
+              id: nativeId,
+              hostId: "local",
+              threadRuntimeStatus: { type: status === "inProgress" ? "active" : "idle" },
+              requests: [],
+              turns: [{ turnId: "turn-a", status, items: [], durationMs: 15 }],
+            },
+          },
+        },
+      });
+      const snapshot = native.streamSnapshot();
+      f.publish(snapshot.items, snapshot.authoritativeTurnIds, snapshot.live);
+    };
+
+    await f.subscribe();
+    publish(1, "inProgress");
+    publish(2, "unknown");
+    await f.flush();
+    expect(f.client.getSnapshot().items).toHaveLength(0);
+    publish(3, "interrupted");
+    await f.flush();
+    expect(native.activeTurn()).toBeNull();
+    expect(f.client.getSnapshot().items).toMatchObject([
+      {
+        id: "codex-turn-end:turn-a",
+        content: null,
+        turn_meta: { outcome: "aborted", duration_ms: 15 },
+      },
+    ]);
+  });
+
+  it("keeps earlier persisted content when a sparse native snapshot reports a turn ending", () => {
+    const reply = item("persisted", "Progress from the rollout");
+    const newer = item("newer", "Next turn", { turn_id: "turn-b" });
+    const marker = item("codex-turn-end:turn-a", "", {
+      content: null,
+      turn_meta: { outcome: "aborted" },
+    });
+    const failure = item("codex-turn-error:turn-a", "Codex error", {
+      cli_output: true,
+      turn_meta: { outcome: "failed" },
+    });
+    for (const terminal of [marker, failure]) {
+      for (const completeItems of [false, true]) {
+        expect(
+          mergeCodexFollowerSnapshot(
+            { items: [reply, newer], completeItems },
+            { items: [terminal], authoritativeTurnIds: ["turn-a"] },
+          ).items,
+        ).toEqual([reply, terminal, newer]);
+      }
+    }
+  });
+
   it("does not call a turn authoritative when its message projection exceeds the retained window", () => {
     const native = new CodexFollowerState(nativeId, "owner");
     native.notification({

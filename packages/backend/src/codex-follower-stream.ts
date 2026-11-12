@@ -1,3 +1,5 @@
+import { isCodexTurnEndEvent } from "./codex-turn-end";
+
 type Item = Record<string, unknown>;
 export interface CodexFollowerSnapshot {
   items: Item[];
@@ -43,6 +45,7 @@ export class CodexFollowerStream {
         typeof item.id === "string" &&
         item.kind === "agent-message" &&
         (item.turn_id === live.turnId ||
+          (item.turn_meta && this.#observedTurns.has(String(item.turn_id))) ||
           this.#items.has(item.id) ||
           this.#outsideWindow.has(item.id))
       )
@@ -188,7 +191,19 @@ export function mergeCodexFollowerSnapshot(
     // A partial file turn has no reliable native-to-file ordinal mapping.
     // Do not replay its historical native rows under a second set of IDs;
     // subsequent live notifications can still deliver the growing tail.
-    if (fileMessageTurns.has(item.turn_id) || ids.has(item.id)) continue;
+    if (ids.has(item.id)) continue;
+    const marker = isCodexTurnEndEvent(item);
+    if (marker || isCodexTurnError(item)) {
+      let after = items.length;
+      while (after > 0 && items[after - 1]?.turn_id !== item.turn_id) after--;
+      if (after > 0) {
+        if (marker && items.some((row) => row.turn_id === item.turn_id && row.turn_meta)) continue;
+        ids.add(item.id);
+        items.splice(after, 0, item);
+        continue;
+      }
+    }
+    if (fileMessageTurns.has(item.turn_id)) continue;
     ids.add(item.id);
     items.push(item);
   }
@@ -197,6 +212,18 @@ export function mergeCodexFollowerSnapshot(
 
 function mergeTurn(history: Item[], native: Item[]): Item[] {
   if (!history.length) return native.map((item) => ({ ...item }));
+  const marker = native.find(isCodexTurnEndEvent);
+  if (marker) {
+    // The marker is metadata, so it cannot substitute for a persisted message
+    // when the follower has no text item for that turn.
+    return history.some((item) => item.turn_meta) ? history : [...history, marker];
+  }
+  const failure = native.find(isCodexTurnError);
+  if (failure && !native.some((item) => item.kind === "agent-message" && item !== failure)) {
+    // A failure row is not a replacement for the assistant's preceding reply.
+    const persisted = history.find((item) => item.id === failure.id);
+    return [...history.filter((item) => item.id !== failure.id), { ...persisted, ...failure }];
+  }
   const persistedMessages = history.filter((item) => item.kind === "agent-message");
   const nativeMessages = native.filter((item) => item.kind === "agent-message");
   let matched = 0;
@@ -254,4 +281,8 @@ function mergeTurn(history: Item[], native: Item[]): Item[] {
   }
   result.push(...messages.slice(message));
   return result;
+}
+
+function isCodexTurnError(item: Item): boolean {
+  return typeof item.turn_id === "string" && item.id === `codex-turn-error:${item.turn_id}`;
 }

@@ -1172,6 +1172,9 @@ async function createMainWindow(): Promise<void> {
     costObservation.forget(costOwnerId);
     nativeMemoryObservation.forget(costOwnerId);
   });
+  window.webContents.on("context-menu", (_event, params) => {
+    nativeShell?.showSelectionMenu(window, params);
+  });
   window.webContents.on("did-start-navigation", (_event, _url, isInPlace, isMainFrame) => {
     if (isMainFrame && !isInPlace) {
       costObservation.forget(costOwnerId);

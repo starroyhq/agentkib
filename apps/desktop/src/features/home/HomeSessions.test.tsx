@@ -74,7 +74,7 @@ describe("HomeSessions", () => {
   beforeAll(() => initializeI18n("en-US"));
   afterEach(cleanup);
 
-  it("lists what needs the person, unread results and running turns, and opens a session", () => {
+  it("lists what needs the person, running turns and unread results in order", () => {
     const approval = session("approval", "Fix the login timeout", {
       continuation: { status: "awaiting-approval" },
     });
@@ -106,6 +106,9 @@ describe("HomeSessions", () => {
       }),
     ]);
     const needs = groupNamed(home.needsYou);
+    const running = groupNamed(home.inProgress);
+    const pending = groupNamed(readStateCopy("en-US").pending);
+    expect(screen.getAllByRole("region")).toEqual([needs, running, pending]);
     expect(within(needs).getByRole("heading")).toHaveTextContent(`${home.needsYou}2`);
     const approvalRow = within(needs).getByRole("button", { name: /Fix the login timeout/ });
     expect(approvalRow).toHaveTextContent("Codex · northstar-api ·");
@@ -114,12 +117,12 @@ describe("HomeSessions", () => {
       interactionCardCopy("en-US").waitingAnswer,
     );
     expect(
-      within(groupNamed(readStateCopy("en-US").pending)).getByRole("button", {
+      within(pending).getByRole("button", {
         name: /Check the nightly retries/,
       }),
     ).toHaveTextContent(readStateCopy("en-US").failed);
     expect(
-      within(groupNamed(home.inProgress)).getByRole("button", {
+      within(running).getByRole("button", {
         name: /Refactor the canvas drag/,
       }),
     ).toHaveTextContent(sessionContinuationCopy("en-US").runningIn("DeepSeek Harness"));

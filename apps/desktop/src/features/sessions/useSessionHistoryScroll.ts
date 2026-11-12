@@ -1,4 +1,5 @@
 import { useLayoutEffect, useRef } from "react";
+import { captureHistoryScrollAnchor } from "@agentkib/session-ui";
 import type { useSessionHistory } from "./useSessionHistory";
 
 /** Preserve visible records when an earlier history window is prepended. */
@@ -9,9 +10,7 @@ export function useSessionHistoryScroll(
   const historyRef = useRef<HTMLDivElement>(null);
   const scrollAnchor = useRef<{
     key: string;
-    candidates: { id: string; top: number }[];
-    height: number;
-    scroll: number;
+    restore: () => void;
   } | null>(null);
   useLayoutEffect(() => {
     scrollAnchor.current = null;
@@ -20,46 +19,21 @@ export function useSessionHistoryScroll(
   useLayoutEffect(() => {
     const anchor = scrollAnchor.current;
     const container = historyRef.current;
-    if (!anchor || !container || history.loadingEarlier) return;
+    if (!anchor || !container || anchor.key !== sessionKey) return;
+    anchor.restore();
     scrollAnchor.current = null;
-    if (anchor.key !== sessionKey) return;
-    const elements = Array.from(container.querySelectorAll<HTMLElement>("[data-event-id]"));
-    // Completing a previously partial turn can hide the first anchor inside a
-    // process disclosure. Prefer the next surviving record (usually the final).
-    for (const candidate of anchor.candidates) {
-      const element = elements.find(
-        (item) =>
-          item.dataset.eventId === candidate.id &&
-          item.getClientRects().length > 0 &&
-          !item.closest("[hidden]"),
-      );
-      if (element) {
-        container.scrollTop += element.getBoundingClientRect().top - candidate.top;
-        return;
-      }
-    }
-    container.scrollTop = anchor.scroll + container.scrollHeight - anchor.height;
-  }, [history.events, history.loadingEarlier, sessionKey]);
-  const loadEarlier = () => {
+    if (history.loadingEarlier)
+      scrollAnchor.current = { key: sessionKey, restore: captureHistoryScrollAnchor(container) };
+  }, [history.nextCursor, history.loadingEarlier, sessionKey]);
+  const loadEarlier = (turnId?: string) => {
+    if (!history.nextCursor || history.loadingEarlier) return;
     const container = historyRef.current;
-    if (container) {
-      const top = container.getBoundingClientRect().top;
-      const candidates = Array.from(container.querySelectorAll<HTMLElement>("[data-event-id]"))
-        .filter(
-          (item) =>
-            item.getClientRects().length > 0 &&
-            !item.closest("[hidden]") &&
-            item.getBoundingClientRect().bottom > top,
-        )
-        .map((item) => ({ id: item.dataset.eventId!, top: item.getBoundingClientRect().top }));
+    if (container)
       scrollAnchor.current = {
         key: sessionKey,
-        candidates,
-        height: container.scrollHeight,
-        scroll: container.scrollTop,
+        restore: captureHistoryScrollAnchor(container),
       };
-    }
-    void history.loadEarlier();
+    void history.loadEarlier(turnId);
   };
 
   return { historyRef, loadEarlier };

@@ -20,7 +20,7 @@ import {
   useParams,
 } from "@tanstack/react-router";
 import { LoaderCircle } from "lucide-react";
-import type { WebClient } from "@agentkib/web-client";
+import type { ConversationCatalog, WebClient } from "@agentkib/web-client";
 import type { SupportedLocale as Locale } from "@/core/types";
 import { SessionProvider, useSession } from "./features/sessions/session-context";
 import { SessionReader } from "./features/sessions/session-reader";
@@ -42,6 +42,7 @@ export interface EmbeddedConversationProps {
   onInitialPanelConsumed?: () => void;
   client: WebClient;
   sessionId?: string;
+  readInitialCatalog?: (sessionId: string) => ConversationCatalog | undefined;
   /** Changes only when the host explicitly requests a conversation refresh. */
   refreshRevision?: number;
   locale: Locale;
@@ -62,9 +63,16 @@ function useEmbedded() {
   return value;
 }
 function EmbeddedRoot() {
-  const { client, locale, showExecution } = useEmbedded();
+  const { client, locale, sessionId, showExecution, readInitialCatalog } = useEmbedded();
   return (
-    <SessionProvider client={client} embedded initialLocale={locale} showExecution={showExecution}>
+    <SessionProvider
+      client={client}
+      embedded
+      initialLocale={locale}
+      initialSessionId={sessionId}
+      readInitialCatalog={readInitialCatalog}
+      showExecution={showExecution}
+    >
       <EmbeddedShell />
     </SessionProvider>
   );

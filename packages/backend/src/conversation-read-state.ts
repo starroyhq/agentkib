@@ -320,7 +320,9 @@ export class ConversationReadStates {
   /** Does not await N native processes on a catalog request; the observer visits bounded pages. */
   project<T>(rows: T[], scope: string): T[] {
     const now = Date.now();
-    return rows.map((row) => {
+    const fallbackKeys = new Map<string, boolean>();
+    let codexExecutable: string | null | undefined;
+    const projections = rows.map((row) => {
       if (
         !row ||
         typeof row !== "object" ||
@@ -329,33 +331,40 @@ export class ConversationReadStates {
         typeof row.id !== "string" ||
         (row.agent !== "codex" && row.agent !== "claude-code")
       )
-        return row;
+        return { row };
       let candidate = this.#candidates.get(row.id);
       if (!candidate) {
-        if (this.#candidates.size >= 20_000) return row;
+        if (this.#candidates.size >= 20_000) return { row };
         candidate = { provider: row.agent, touched: now, stale: true };
         this.#candidates.set(row.id, candidate);
       }
       candidate.touched = now;
-      let state = unknown(candidate.provider === "codex" ? "codex-native" : "agentkib");
-      if (candidate.target) {
-        const native = this.#nativeTarget(candidate.target);
-        state = native
-          ? (this.#native.cached(native, scope) ?? this.ledger.get(candidate.target.key, scope))
-          : candidate.provider === "codex"
-            ? state
-            : this.ledger.get(candidate.target.key, scope);
-        if (state.source === "agentkib" && candidate.provider === "codex") {
-          const persisted = this.ledger.nativeSnapshot(candidate.target.key);
-          if (
-            persisted?.state.status === "unread" &&
-            !this.ledger.nativeHandoffApplied(candidate.target.key, scope, persisted.fingerprint)
-          )
-            state = { ...persisted.state, source: "agentkib", freshness: "stale", version: null };
-        }
-        if (candidate.stale) state = { ...state, freshness: "stale" };
+      const { target, stale } = candidate;
+      if (!target)
+        return {
+          row,
+          state: unknown(candidate.provider === "codex" ? "codex-native" : "agentkib"),
+        };
+      if (target.provider === "codex" && codexExecutable === undefined)
+        codexExecutable = resolveCommand("codex", this.environment);
+      const executable = target.provider === "codex" ? codexExecutable : null;
+      if (executable) {
+        const state = this.#native.cached({ ...target, executable }, scope);
+        if (state) return { row, state, stale };
+      } else if (candidate.provider === "codex") {
+        return { row, state: unknown("codex-native") };
       }
-      return { ...row, readState: state };
+      fallbackKeys.set(target.key, candidate.provider === "codex");
+      return { row, fallbackKey: target.key, stale };
+    });
+    const fallbackStates = this.ledger.catalogStates(fallbackKeys, scope);
+    return projections.map(({ row, state, fallbackKey, stale }) => {
+      const readState = fallbackKey
+        ? (fallbackStates.get(fallbackKey) ?? unknown("agentkib"))
+        : state;
+      return readState
+        ? { ...row, readState: stale ? { ...readState, freshness: "stale" } : readState }
+        : row;
     });
   }
 

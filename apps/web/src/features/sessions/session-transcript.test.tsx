@@ -1,4 +1,4 @@
-import { cleanup, fireEvent, render, screen } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { StrictMode } from "react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { ConversationEvent } from "@agentkib/web-client";
@@ -37,9 +37,87 @@ function event(
   };
 }
 
+function fileEdit(id: string, turnId: string, path: string, added: number): ConversationEvent {
+  return {
+    ...event(id, "tool-summary", turnId),
+    tool: {
+      kind: "edit",
+      title: path,
+      content: [{ type: "diff", path, change: "update", added, removed: 0, preview: `+${id}` }],
+    },
+  };
+}
+
 afterEach(cleanup);
 
 describe("production transcript identity", () => {
+  it("copies selectable messages across sources and combines only the final reply parts", async () => {
+    const writeText = vi.fn().mockResolvedValue(undefined);
+    const clipboard = Object.getOwnPropertyDescriptor(navigator, "clipboard");
+    Object.defineProperty(navigator, "clipboard", { configurable: true, value: { writeText } });
+    const sent = "2026-11-12T02:38:00Z";
+    const prompt = {
+      ...event("legacy-prompt", "user-message"),
+      turn_id: undefined,
+      timestamp: sent,
+      content: "Copy **this question**",
+    };
+    const legacyReply = {
+      ...event("legacy-reply", "agent-message"),
+      turn_id: undefined,
+      timestamp: sent,
+    };
+    const first = {
+      ...event("first-part", "agent-message"),
+      message_phase: "final_answer" as const,
+      content: "First paragraph.",
+    };
+    const last = {
+      ...event("last-part", "agent-message"),
+      timestamp: sent,
+      message_phase: "final_answer" as const,
+      content: "Second paragraph.\n\n```sh\necho ok\n```",
+      turn_meta: { outcome: "completed" as const },
+    };
+    try {
+      const { container } = render(
+        <SessionTranscript {...props} events={[prompt, legacyReply, event("tool"), first, last]} />,
+      );
+      const body = container.querySelector('[data-event-id="legacy-prompt"] [data-message-body]');
+      expect(body).toHaveClass("select-text");
+      const actions = screen.getAllByRole("button", { name: "Copy message" });
+      expect(actions).toHaveLength(3);
+      expect(actions[0].closest("footer")?.querySelector("time")).toHaveAttribute("datetime", sent);
+      const userFooter = actions[0].closest("footer");
+      expect(userFooter).toHaveClass("opacity-0", "pointer-coarse:opacity-100");
+      expect(userFooter?.querySelector("button, time")?.tagName).toBe("TIME");
+      for (const action of actions.slice(1)) {
+        const footer = action.closest("footer");
+        expect(footer).not.toHaveClass("opacity-0");
+        expect(footer?.querySelector("button, time")).toBe(action);
+        expect(footer?.querySelector("time")).toHaveClass(
+          "opacity-0",
+          "group-hover/message:opacity-100",
+          "group-focus-within/message:opacity-100",
+        );
+      }
+      fireEvent.click(actions[0]);
+      await waitFor(() => expect(actions[0]).toHaveAttribute("title", "Copied"));
+      expect(writeText).toHaveBeenNthCalledWith(1, prompt.content);
+
+      fireEvent.click(actions[2]);
+      await waitFor(() =>
+        expect(writeText).toHaveBeenNthCalledWith(2, `${first.content}\n\n${last.content}`),
+      );
+      writeText.mockRejectedValueOnce(new Error("clipboard unavailable"));
+      fireEvent.click(actions[1]);
+      await screen.findByText("Could not copy. Select the text to copy it.");
+      expect(writeText).toHaveBeenNthCalledWith(3, legacyReply.content);
+    } finally {
+      if (clipboard) Object.defineProperty(navigator, "clipboard", clipboard);
+      else Reflect.deleteProperty(navigator, "clipboard");
+    }
+  });
   it("keeps partial paged commentary visible without a running label", () => {
     const commentary: ConversationEvent = {
       ...event("comment", "agent-message"),
@@ -252,6 +330,8 @@ describe("production transcript identity", () => {
     const failed = { ...event("failed"), tool_status: "failed" };
     const view = render(<SessionTranscript {...props} events={[failed]} />);
     const toggle = screen.getByRole("button", { name: /Process/ });
+    expect(toggle.getAttribute("aria-expanded")).toBe("false");
+    fireEvent.click(toggle);
     expect(toggle.getAttribute("aria-expanded")).toBe("true");
     fireEvent.click(toggle);
     view.rerender(<SessionTranscript {...props} events={[event("earlier"), failed]} />);
@@ -379,17 +459,105 @@ describe("production transcript identity", () => {
     const view = render(
       <SessionTranscript {...props} events={[question, wrapper, shell, edit, answer]} />,
     );
-    const process = screen.getByRole("button", { name: /^Worked 2m 7s 2 tools · 1 failed$/ });
-    expect(process).toHaveAttribute("aria-expanded", "true");
+    const process = screen.getByRole("button", { name: /^Worked 2m 7s$/ });
+    expect(process).toHaveAttribute("aria-expanded", "false");
+    expect(screen.getByText("Fixed.")).toBeVisible();
+    expect(screen.queryByRole("button", { name: /pnpm test/ })).toBeNull();
+    const card = screen.getByRole("heading", { name: /Edited 1 file/ }).closest("section")!;
+    const answerRow = view.container.querySelector('[data-event-id="answer"]')!;
+    const actions = answerRow.parentElement!.querySelector("[data-message-actions]")!;
+    expect(answerRow.nextElementSibling).toBe(card);
+    expect(card.nextElementSibling).toBe(actions);
+    fireEvent.click(process);
     expect(view.container.querySelector('[data-event-id="wrapper"]')).toBeNull();
     const shellToggle = screen.getByRole("button", { name: /pnpm test/ });
     expect(shellToggle).toHaveAttribute("aria-expanded", "true");
     expect(document.getElementById(shellToggle.getAttribute("aria-controls")!)).toHaveTextContent(
       "1 failed",
     );
-    expect(screen.getByRole("heading", { name: /Edited 1 file/ })).toBeVisible();
-    fireEvent.click(screen.getByRole("button", { name: /Show diff: src\/app\.ts/ }));
+    expect(view.container.querySelectorAll("[data-turn-file-changes]")).toHaveLength(1);
+    expect(screen.getByRole("heading", { name: /Edited 1 file/ }).closest("section")).toBe(card);
+    fireEvent.click(within(card).getByRole("button", { name: /Show diff: src\/app\.ts/ }));
     expect(screen.getAllByText("+b")[0]).toBeVisible();
     expect(props.onTool).not.toHaveBeenCalled();
+  });
+
+  it("keeps file cards separate by turn while filling in earlier records", () => {
+    const shared = "src/shared.ts";
+    const answer = (id: string, turnId: string): ConversationEvent => ({
+      ...event(id, "agent-message", turnId),
+      message_phase: "final_answer",
+      turn_meta: { outcome: "completed" },
+    });
+    const history = [
+      fileEdit("first-edit", "first-turn", shared, 2),
+      answer("first-answer", "first-turn"),
+      event("second-question", "user-message", "second-turn"),
+      fileEdit("second-edit", "second-turn", shared, 7),
+      answer("second-answer", "second-turn"),
+    ];
+    const view = render(<SessionTranscript {...props} events={history} hasEarlier />);
+    const cards = () =>
+      Array.from(view.container.querySelectorAll<HTMLElement>("[data-turn-file-changes]"));
+    const [first, second] = cards();
+    expect(cards()).toHaveLength(2);
+    expect(within(first).getByText(/Partial history/)).toBeVisible();
+    expect(within(second).queryByText(/Partial history/)).toBeNull();
+    expect(within(first).getAllByText("+2")[0]).toBeVisible();
+    expect(within(second).getAllByText("+7")[0]).toBeVisible();
+    fireEvent.click(within(first).getByRole("button", { name: /Show diff: src\/shared\.ts/ }));
+    expect(within(first).getByText("+first-edit")).toBeVisible();
+
+    view.rerender(
+      <SessionTranscript
+        {...props}
+        events={[
+          event("first-question", "user-message", "first-turn"),
+          fileEdit("earlier-edit", "first-turn", "src/earlier.ts", 1),
+          ...history,
+        ]}
+      />,
+    );
+    expect(cards()).toEqual([first, second]);
+    expect(within(first).queryByText(/Partial history/)).toBeNull();
+    expect(within(first).getByText("src/earlier.ts")).toBeVisible();
+    expect(within(first).getByText("+first-edit")).toBeVisible();
+    expect(within(second).queryByText("src/earlier.ts")).toBeNull();
+  });
+
+  it("shows applied edits after an interrupted turn and keeps active or unattributed edits in tool rows", () => {
+    const interrupted = "interrupted-turn";
+    const active = "active-turn";
+    const history: ConversationEvent[] = [
+      { ...fileEdit("legacy-edit", "legacy-turn", "src/legacy.ts", 9), turn_id: undefined },
+      event("interrupted-question", "user-message", interrupted),
+      fileEdit("applied-edit", interrupted, "src/applied.ts", 2),
+      { ...fileEdit("declined-edit", interrupted, "src/declined.ts", 8), tool_status: "declined" },
+      {
+        ...event(`codex-turn-end:${interrupted}`, "agent-message", interrupted),
+        content: "",
+        turn_meta: { outcome: "aborted" },
+      },
+      event("active-question", "user-message", active),
+      fileEdit("active-edit", active, "src/active.ts", 4),
+    ];
+    const view = render(<SessionTranscript {...props} events={history} liveTurnId={active} />);
+    const cards = view.container.querySelectorAll<HTMLElement>("[data-turn-file-changes]");
+    expect(cards).toHaveLength(1);
+    expect(within(cards[0]).getByText("src/applied.ts")).toBeVisible();
+    expect(within(cards[0]).queryByText("src/declined.ts")).toBeNull();
+    const terminal = screen.getByRole("button", { name: /Interrupted/ });
+    expect(
+      terminal.compareDocumentPosition(cards[0]) & Node.DOCUMENT_POSITION_FOLLOWING,
+    ).toBeTruthy();
+    const activeMessage = Array.from(
+      view.container.querySelectorAll<HTMLElement>('[data-message-role="assistant"]'),
+    ).at(-1)!;
+    const activeToolToggle = within(activeMessage).getByRole("button", {
+      name: /Process · 1 tools/,
+    });
+    fireEvent.click(activeToolToggle);
+    expect(screen.getByRole("button", { name: /src\/active\.ts/ })).toBeVisible();
+    expect(view.container.querySelectorAll("[data-turn-file-changes]")).toHaveLength(1);
   });
 });

@@ -1,6 +1,6 @@
 # DeepSeek Harness 接入方案
 
-状态：一期与二期 2a–2d 已实施并合并（#199、#201、#204、#205）；2026-11-08 确认先以 DSH 打开时可用为准，三期暂缓。日期：2026-11-04；同日按 DSH、AgentKib 与 agentkib-flutter 源码复核修订，并按“完全接管”目标重排分期。
+状态：一期与二期 2a–2d 已实施并合并（#199、#201、#204、#205）；三期（DSH 未运行时由 AgentKib 在后台启动）2026-11-12 实施，见 §7 三期。日期：2026-11-04；同日按 DSH、AgentKib 与 agentkib-flutter 源码复核修订，并按“完全接管”目标重排分期。
 
 本文记录宿主机插件桥接、Remote 复用现有链路，以及后续 CLI 与 Desktop 共用实例的接入方向。文中的新命令、模块和协议字段均为建议，不代表当前已提供的功能。
 
@@ -273,16 +273,16 @@ DSH 的审批和问答经 `approval/request`、`user-questions/request` waterfal
 
 ## 6. 断线、撤销与退出
 
-| 情况                    | 预期行为                                                                                              |
-| ----------------------- | ----------------------------------------------------------------------------------------------------- |
-| 手机离页或断网          | 释放对应观察；不停止原生 DSH 任务，不自动重发控制                                                     |
-| 插件暂时连不上 Host     | DSH 本身照常运行；插件退避重连，不积累无界内容                                                        |
-| AgentKib 重启           | 重新建立 lease、generation 和权威快照；持久绑定不等于在线授权                                         |
-| 插件重载或 DSH 实例替换 | 废止旧连接命令、瞬时状态和待答表单，核对原生身份后重建                                                |
-| DSH 升级后插件未加载    | Host 只能看到离线；连接说明提示检查插件版本并重启 DSH，不自动修改 profile                             |
-| Host 断开时有待答请求   | 已转给 DSH 界面的请求继续在那里作答；各端卡片标为失效，重连后按原生状态重建                           |
-| Remote 权限撤销         | 停止该设备后续读取和控制；撤回未派发命令，已派发结果继续核对                                          |
-| Desktop 真正退出        | Host 与现有远控入口停止；用户自己打开的 DSH 继续运行；三期由 AgentKib 启动的 DSH 按托管规则处理（§9） |
+| 情况                    | 预期行为                                                                                                  |
+| ----------------------- | --------------------------------------------------------------------------------------------------------- |
+| 手机离页或断网          | 释放对应观察；不停止原生 DSH 任务，不自动重发控制                                                         |
+| 插件暂时连不上 Host     | DSH 本身照常运行；插件退避重连，不积累无界内容                                                            |
+| AgentKib 重启           | 重新建立 lease、generation 和权威快照；持久绑定不等于在线授权                                             |
+| 插件重载或 DSH 实例替换 | 废止旧连接命令、瞬时状态和待答表单，核对原生身份后重建                                                    |
+| DSH 升级后插件未加载    | Host 只能看到离线；连接说明提示检查插件版本并重启 DSH，不自动修改 profile                                 |
+| Host 断开时有待答请求   | 已转给 DSH 界面的请求继续在那里作答；各端卡片标为失效，重连后按原生状态重建                               |
+| Remote 权限撤销         | 停止该设备后续读取和控制；撤回未派发命令，已派发结果继续核对                                              |
+| Desktop 真正退出        | Host 与现有远控入口停止；用户自己打开的 DSH 继续运行；AgentKib 启动的 DSH 一并停止，退出前确认（§7 三期） |
 
 持久绑定、在线连接和设备授权分别管理。插件连接成功不能扩张 Remote 权限，也不能获取受信 renderer 的 `desktop-local` 身份或任意 runtime RPC。
 
@@ -377,11 +377,39 @@ DSH 的审批和问答经 `approval/request`、`user-questions/request` waterfal
 
 ### 三期：DSH 未运行时由 AgentKib 启动
 
-2026-11-08 确认先以 DSH 打开时可用为准，本期暂缓。
+2026-11-08 先以 DSH 打开时可用为准，本期暂缓；2026-11-12 经[技术验证](../../qa/dsh-phase3-spike-2026-11-12.md)后实施。
 
-没有可控制的 runtime 时，AgentKib 以用户的 web profile 启动 DSH（§4.2），插件注册后继续原会话；没有 DSH 进程时的历史浏览一并解决。开工前需确定 §9 列出的托管启动规则。离线原生日志读取独立评估，优先复用官方只读 persistence／codec，不自写完整 V0–V4 解析器。插件在 DSH 启动时就会注册，DSH 的会话服务可能晚几秒才就绪，这期间读历史会失败（`dsh-history-unavailable`，2c 验收中 DSH 重启后立即打开会话时出现过，客户端不自动重试，点“重新连接”后正常）；由 AgentKib 启动 DSH 后会立即读取历史，需要等服务就绪或重试。
+**启动什么**
 
-验收覆盖：启动后原会话 ID 与 preset 不变、启动失败与版本不符的提示、用户随后自己打开 DSH 时控制目标的切换、AgentKib 启动的进程在空闲、崩溃和 Desktop 退出时的处理。
+- 只用 web profile。命令行拒绝启动 desktop；headless、acp、sdk 都不能续接带 Agent 预设的会话（headless 明确拒绝，后两者没有预设与 `sessionController`）。DSH Desktop 自己也是用 web 应用运行 desktop profile，组合包相同，所以 web profile 能继续 Desktop 建的会话。
+- 启动器：先找 DSH Desktop 包里的 `Contents/Resources/runtime/cli/bin/dsh`（/Applications 或 ~/Applications），再找 PATH 与 /usr/local/bin、/opt/homebrew/bin 上的 `dsh`。`AGENTKIB_DSH_LAUNCHER` 可替换这一查找，供测试与沙箱使用。
+- 命令：`dsh --profile web [--patch <DSH home>/profiles/desktop/cordis.patch.yml] --patch <AgentKib 叠加层> --no-open --port 0 --host 127.0.0.1`，工作目录为用户主目录，标准输入接管道。
+  - 叠加 Desktop 的设置：设置界面只写当前 profile 的 patch，web profile 读不到用户在 Desktop 里改的默认模型与 provider；实测不叠加时 web profile 的默认模型不在它自己的模型目录里。patch 指向不存在的条目时 DSH 只记警告。密钥与 DeepSeek 账号登录在 DSH home 的 `.credentials.yaml`，所有 profile 共用。
+  - AgentKib 叠加层写在 `<数据目录>/dsh-bridge/managed-overlay.yml`（0600）：禁用 profile 里可能装着的 `agentkib-dsh-bridge`，按绝对路径插入 `agentkib-dsh-bridge-managed`，配置 `managed.home` 为这个 AgentKib 的 home。
+  - 环境：用户的环境去掉 `AGENTKIB_*` 与 `ELECTRON_*`，DSH 会把环境交给它运行的工具。
+- 版本：启动前用 `dsh --version` 对照插件的 `engines.dsh`（`dshBridgeLaunchable`，与 DSH 一样把预发布版本按先后比较）；不在范围内就不启动，原因为 `dsh-version-unsupported`。DSH 禁用插件时 stderr 写 `disabling profile plugin row "agentkib-dsh-bridge-managed"`，进程退出时据此报同一原因。stdout 里带 token 的网页地址不读取、不记录。
+
+**插件托管模式**（只在 AgentKib 启动的 DSH 里）
+
+- 只向 `managed.home` 里的这个 AgentKib 注册。
+- 标准输入关闭，或 30 秒没有联系上这个 AgentKib（三次心跳），就经 DSH 的 `appExit` 正常退出；AgentKib 崩溃时 DSH 不会留在后台占着会话。
+- Host 按进程 ID 认出它（`Runtime.managed`），不依赖插件自报；协议不变，插件升到 0.6.0。
+
+**什么时候启动和停止**
+
+- 没有用户自己的可控制 runtime、设置“需要时自动启动 DeepSeek Harness”打开（默认，偏好 `dsh_auto_start`）且找到合适版本的启动器时，会话显示为空闲、可以发送。发送、重命名、分叉、打开会话读历史、交接读取、选 DSH 新建会话（读选项时）会先启动 DSH，等插件注册、报告过一次且 DSH 的会话服务可用（最长 30 秒）再继续，不等会话列表：0.5.0 的插件不报告空的列表，全新的 DSH 会一直等不到（0.6.0 起空列表也报告一次）；同时到来的请求共用一次启动。正文搜索收录从不启动 DSH。
+- 控制请求按启动前客户端看到的状态核对 revision，启动后不再因 DSH 注册带来的 revision 变化而拒绝。
+- 控制目标：用户自己的 DSH 优先，AgentKib 启动的只在没有用户的可控制 runtime 时使用（§5.1）；新建会话同理，用户的多于一个时仍请用户在 DSH 里选。
+- 停止：没有运行中的轮次、待答的审批与问题、进行中的控制，并且最近 10 秒没有发过命令（插件稍后才报告命令开始的那一轮），持续 3 分钟后停止；DSH Desktop 的窗口在运行时 1 分钟，因为 DSH 恢复过的会话会一直占着写入锁，直到进程退出；用户自己装了插件的 DSH 注册上来或设置被关掉时，一空闲就停。决定停止时先把它从可用的 runtime 里撤下，它退出前不再接受它重新注册，新请求另起一个。停止发 SIGTERM，8 秒后仍未退出再 SIGKILL。
+- AgentKib 退出时一并停止。DSH 收到 SIGTERM 会中断正在跑的轮次，记为 `aborted`／`disposed`，之后可以继续；退出前的确认对所有 Agent 统一列出将被停止的轮次（托管的 Codex、Claude Code、Antigravity 与这里的 DSH，即会话目录中执行位置为 AgentKib 的运行中与待答会话）。
+
+**界面与原因**
+
+- 会话的执行位置为 `agentkib`（用户自己的 DSH 仍为 `external`）。
+- 新原因：`dsh-start-failed`、`dsh-version-unsupported`、`dsh-launcher-unavailable`、`dsh-exited`；DSH 的 `session/writer-held` 报为 `dsh-session-in-use`（会话被没装插件的 DSH Desktop 占着时）。各端说明并保留草稿。
+- 桌面“会话操作”里的 DSH 连接面板：后台进程标为“由 AgentKib 在后台启动”；自动启动开关；先给 DSH Desktop“添加插件”要粘贴的插件目录，再给命令行写法。
+
+**验收覆盖**：启动后原会话 ID 与 preset 不变、启动失败与版本不符的提示、用户随后自己打开 DSH 时控制目标的切换、AgentKib 启动的进程在空闲、崩溃和 AgentKib 退出时的处理。记录见三期 QA。
 
 ### 四期：独立常驻 Host 与 CLI 接入
 
@@ -437,8 +465,7 @@ agentkib-flutter（按代码核对，未在真机确认）：
 - 插件随 AgentKib 分发的具体形式（本地 tarball 或 `link:`）、DSH Desktop 保留 profile 的安装入口，以及升级后的重启提示。
 - AgentKib 如何独立核验新 DSH 会话并纳入登记工作区，避免要求“先有索引才能注册”形成循环。
 - 多个 runtime 时默认 runtime 的设置位置与提示方式（§5.1）。
-- 三期托管启动：使用哪个 profile、端口与绑定地址、空闲多久停止、崩溃与升级处理，以及 Desktop 退出时运行中的轮次如何处理。已确认 `--patch` 覆盖层可以按绝对路径挂载插件，托管启动无需修改用户 profile。
-- 没有 DSH 进程时的历史浏览：为只读浏览启动 DSH，还是评估官方只读 codec（新增生产依赖需单独授权）。
+- 三期托管启动：已定（2026-11-12），见 §7 三期。空闲 3 分钟停止；AgentKib 退出时一并停止并事先确认；叠加 Desktop 的设置；自动启动默认打开；没有 DSH 进程时打开会话即按需启动来读历史，不引入官方只读 codec。
 - 停止等没有原生请求 ID 的操作，在插件重启后能取得哪些回执证据。
 - 进程内调用不记录 `principal`，是否需要在 DSH 原生记录中区分来自 AgentKib 的消息，以及可行做法。
 - 一期验收的 DSH 版本范围，以及未验证版本和未验证能力的降级方式。

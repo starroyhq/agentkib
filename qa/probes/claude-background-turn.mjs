@@ -11,10 +11,20 @@
 //           command runs) | finish-during-turn (the command finishes inside a host-started turn)
 //           | tool-in-self-turn (the model calls a tool in the turn the CLI starts by itself)
 //           | two-tasks (two commands that finish together) | two-tasks-apart (3 s apart)
+//           | interrupt-tool (a second message runs a long foreground command; the host sends the
+//           `interrupt` control request while it runs) | interrupt-approval (the same, while its
+//           approval is unanswered) | interrupt-model (while the model has not answered yet)
+//           | interrupt-steer (as interrupt-tool, with a message added to the turn just before the
+//           interrupt, which then asks to cancel queued messages).
+//           After an interrupt the host sends a third message, then waits for the background
+//           command.
+// PROBE_SESSION_STATE=1 also sets CLAUDE_CODE_SDK_READS_SESSION_STATE=1; PROBE_INTERRUPT_AFTER_MS sets
+// how long interrupt-tool lets the command run (2500 by default).
 //
 // macOS only. HOME, CLAUDE_CONFIG_DIR and TMPDIR live in the run dir, and sandbox-exec allows no
 // network except the mock's port: the user's Claude configuration and credentials are never read
-// and no real model request is made. Results: qa/claude-background-tasks-probe-2026-11-13.md.
+// and no real model request is made. Results: qa/claude-background-tasks-probe-2026-11-13.md and,
+// for the interrupt scenarios, qa/claude-interrupt-2026-11-13.md.
 import http from "node:http";
 import { spawn } from "node:child_process";
 import { mkdirSync, writeFileSync, appendFileSync } from "node:fs";
@@ -37,6 +47,7 @@ const log = (line) => {
 const blocksOf = (message) =>
   Array.isArray(message.content) ? message.content : [{ type: "text", text: String(message.content) }];
 let modelRequests = 0;
+let heldOnce = false;
 const mock = http.createServer((request, response) => {
   let raw = "";
   request.on("data", (chunk) => (raw += chunk));
@@ -58,6 +69,7 @@ const mock = http.createServer((request, response) => {
     writeFileSync(path.join(root, `model-request-${index}.json`), JSON.stringify(body, null, 1));
     let content;
     let reason = "end_turn";
+    let delay = 0;
     if (!bash) {
       content = [{ type: "text", text: "ok" }];
     } else if (assistantTurns === 0) {
@@ -87,8 +99,13 @@ const mock = http.createServer((request, response) => {
       reason = "tool_use";
     } else if (assistantTurns === 1 && lastBlocks.some((block) => block.type === "tool_result")) {
       content = [{ type: "text", text: "STARTED" }];
-    } else if (scenario === "finish-during-turn" && lastBlocks.some((block) => block.type === "text" && block.text.includes("Second message."))) {
-      content = [{ type: "tool_use", id: "toolu_bgprobe_2", name: "Bash", input: { command: "sleep 7; echo fg-done", description: "Foreground probe" } }];
+    } else if (scenario === "interrupt-model" && !heldOnce && lastBlocks.some((block) => block.type === "text" && block.text.includes("Second message."))) {
+      // Only once: the CLI folds the interrupted message into the next one it sends.
+      heldOnce = true;
+      content = [{ type: "text", text: "SLOW-ANSWER" }];
+      delay = 15_000;
+    } else if ((scenario === "finish-during-turn" || scenario.startsWith("interrupt-")) && lastBlocks.some((block) => block.type === "text" && block.text.includes("Second message."))) {
+      content = [{ type: "tool_use", id: "toolu_bgprobe_2", name: "Bash", input: { command: scenario === "finish-during-turn" ? "sleep 7; echo fg-done" : "perl -e 'select(undef, undef, undef, 30); print qq(fg-done\\n)'", description: "Foreground probe" } }];
       reason = "tool_use";
     } else if (lastBlocks.some((block) => block.type === "tool_result" && block.tool_use_id === "toolu_bgprobe_2")) {
       content = [{ type: "text", text: "FG-DONE" }];
@@ -127,7 +144,13 @@ const mock = http.createServer((request, response) => {
       stop_sequence: null,
       usage: { input_tokens: 100, output_tokens: 20 },
     };
-    if (!body.stream) {
+    if (delay) log(`${at()} mock  holding the answer ${delay} ms`);
+    setTimeout(() => answer(message, content, reason, body.stream, response), delay);
+  });
+});
+function answer(message, content, reason, stream, response) {
+    if (response.destroyed || response.writableEnded) return log(`${at()} mock  client went away before the answer`);
+    if (!stream) {
       response.writeHead(200, { "content-type": "application/json" });
       response.end(JSON.stringify(message));
       return;
@@ -149,8 +172,7 @@ const mock = http.createServer((request, response) => {
     );
     response.writeHead(200, { "content-type": "text/event-stream" });
     response.end(events.map(([name, value]) => `event: ${name}\ndata: ${JSON.stringify(value)}\n\n`).join(""));
-  });
-});
+}
 await new Promise((resolve) => mock.listen(0, "127.0.0.1", resolve));
 const port = mock.address().port;
 
@@ -176,6 +198,7 @@ const env = {
   DISABLE_ERROR_REPORTING: "1",
   ENABLE_TOOL_SEARCH: "false",
   ...(mode === "disabled" ? { CLAUDE_CODE_DISABLE_BACKGROUND_TASKS: "1" } : {}),
+  ...(process.env.PROBE_SESSION_STATE === "1" ? { CLAUDE_CODE_SDK_READS_SESSION_STATE: "1" } : {}),
 };
 const sessionId = randomUUID();
 const args = [
@@ -193,8 +216,17 @@ let stderr = "";
 child.stderr.on("data", (chunk) => (stderr += chunk));
 
 const initId = randomUUID();
+const interruptId = randomUUID();
 let results = 0;
 let secondUserSent = false;
+let interruptSent = false;
+const interrupting = scenario.startsWith("interrupt-");
+const interrupt = (why) => {
+  if (interruptSent) return;
+  interruptSent = true;
+  log(`${at()} host  interrupt (${why})`);
+  send({ type: "control_request", request_id: interruptId, request: { subtype: "interrupt", ...(scenario === "interrupt-steer" ? { cancel_queued: true } : {}) } });
+};
 let buffer = "";
 const userFrame = (text) => ({
   type: "user",
@@ -226,7 +258,8 @@ const describe = (frame) => {
   }
   if (frame.type === "result") return `result subtype=${frame.subtype} is_error=${frame.is_error} num_turns=${frame.num_turns} result=${JSON.stringify(frame.result)?.slice(0, 120)}`;
   if (frame.type === "control_request") return `control_request ${frame.request?.subtype} ${frame.request?.tool_name ?? ""} ${JSON.stringify(frame.request?.input ?? {}).slice(0, 160)}`;
-  if (frame.type === "control_response") return `control_response ${frame.response?.subtype}`;
+  if (frame.type === "control_response")
+    return `control_response ${frame.response?.subtype} ${frame.response?.request_id === interruptId ? "(interrupt) " + JSON.stringify(frame.response?.response ?? frame.response?.error ?? {}).slice(0, 200) : ""}`;
   return `${frame.type} ${JSON.stringify(frame).slice(0, 240)}`;
 };
 let finish;
@@ -245,15 +278,29 @@ child.stdout.on("data", (chunk) => {
     const text = describe(frame);
     if (text) log(`${at()} cli   ${results ? `[after result ${results}] ` : ""}${text}`);
     if (frame.type === "control_response" && frame.response?.request_id === initId) send(userFrame("Start the background probe."));
-    if (frame.type === "control_request" && frame.request?.subtype === "can_use_tool")
+    const foreground = frame.type === "control_request" && frame.request?.subtype === "can_use_tool" && frame.request?.tool_use_id === "toolu_bgprobe_2";
+    if (foreground && scenario === "interrupt-approval") setTimeout(() => interrupt("approval unanswered"), 1500);
+    else if (frame.type === "control_request" && frame.request?.subtype === "can_use_tool") {
       send({ type: "control_response", response: { subtype: "success", request_id: frame.request_id, response: { behavior: "allow", updatedInput: frame.request.input } } });
+      if (foreground && scenario === "interrupt-tool")
+        setTimeout(() => interrupt("foreground command running"), Number(process.env.PROBE_INTERRUPT_AFTER_MS ?? 2500));
+      if (foreground && scenario === "interrupt-steer") {
+        setTimeout(() => { log(`${at()} host  message added to the turn`); send({ ...userFrame("Steered message."), priority: "next" }); }, 2000);
+        setTimeout(() => interrupt("foreground command running, a message queued"), 2500);
+      }
+    }
     if (frame.type === "result") {
       results++;
       if (results === 1) {
-        if (["send-while-running", "finish-during-turn"].includes(scenario) && !secondUserSent) {
+        if ((["send-while-running", "finish-during-turn"].includes(scenario) || interrupting) && !secondUserSent) {
           secondUserSent = true;
           setTimeout(() => { log(`${at()} host  second user message while the background command runs`); send(userFrame("Second message.")); }, 1500);
+          if (scenario === "interrupt-model") setTimeout(() => interrupt("model not answered"), 4500);
         }
+        if (!interrupting) setTimeout(() => finish("waited"), waitAfterResult * 1000);
+      }
+      if (interrupting && interruptSent && results === 2) {
+        setTimeout(() => { log(`${at()} host  third user message after the interrupt`); send(userFrame("Third message.")); }, 2000);
         setTimeout(() => finish("waited"), waitAfterResult * 1000);
       }
     }

@@ -6,7 +6,7 @@
 // account, credential or user configuration is read.
 import { randomUUID } from "node:crypto";
 import { spawnSync } from "node:child_process";
-import { createServer } from "node:http";
+import { createServer, type ServerResponse } from "node:http";
 import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import type { AddressInfo } from "node:net";
 import { homedir, tmpdir } from "node:os";
@@ -68,7 +68,25 @@ async function mockModel() {
       let content: Json[] = [{ type: "text", text: `reply ${assistantTurns + 1}` }];
       let reason = "end_turn";
       const move = Object.entries(FIRST_MOVES).find(([name]) => prompt.includes(name));
-      if (tools.includes("Bash") && assistantTurns === 0 && move) {
+      // 2.1.263 ends the list with reminders of its own (`role: "system"`).
+      const last = blocksOf([...messages].reverse().find((item) => item.role === "user") ?? {});
+      const asked = last.map((block) => (block.type === "text" ? block.text : "")).join(" ");
+      if (tools.includes("Bash") && asked.includes("FOREGROUND-COMMAND")) {
+        // A long command in the foreground, without the word `sleep` that 2.1.323 refuses.
+        const seconds = /seconds=([0-9.]+)/.exec(asked)?.[1] ?? "30";
+        content = [
+          {
+            type: "tool_use",
+            id: `toolu_${randomUUID().slice(0, 8)}`,
+            name: "Bash",
+            input: {
+              command: `perl -e 'select(undef, undef, undef, ${seconds}); print qq(foreground-done\\n)'`,
+              description: "Foreground acceptance",
+            },
+          },
+        ];
+        reason = "tool_use";
+      } else if (tools.includes("Bash") && assistantTurns === 0 && move) {
         const seconds = /seconds=([0-9.]+)/.exec(prompt)?.[1] ?? "3";
         content = [
           { type: "tool_use", id: `toolu_${randomUUID().slice(0, 8)}`, ...move[1](seconds) },
@@ -76,70 +94,83 @@ async function mockModel() {
         reason = "tool_use";
       }
       if (tools.includes("Bash")) requests.push({ assistantTurns, reply: content[0] });
-      const message = {
-        id: `msg_${randomUUID()}`,
-        type: "message",
-        role: "assistant",
-        model: body.model,
-        content,
-        stop_reason: reason,
-        stop_sequence: null,
-        usage: { input_tokens: 100, output_tokens: 20 },
-      };
-      if (!body.stream) {
-        response.writeHead(200, { "content-type": "application/json" });
-        response.end(JSON.stringify(message));
+      // A reply that takes this long, once: the CLI repeats the message it was interrupted in.
+      const slow = /SLOW-REPLY seconds=([0-9.]+)/.exec(asked);
+      if (tools.includes("Bash") && slow && !held.has(slow[0])) {
+        held.add(slow[0]);
+        const wait = setTimeout(
+          () => respond(body, content, reason, response),
+          Number(slow[1]) * 1000,
+        );
+        response.on("close", () => clearTimeout(wait));
         return;
       }
-      const events: Array<[string, Json]> = [
-        [
-          "message_start",
-          { type: "message_start", message: { ...message, content: [], stop_reason: null } },
-        ],
-      ];
-      content.forEach((block, index) => {
-        const tool = block.type === "tool_use";
-        events.push(
-          [
-            "content_block_start",
-            {
-              type: "content_block_start",
-              index,
-              content_block: tool ? { ...block, input: {} } : { type: "text", text: "" },
-            },
-          ],
-          [
-            "content_block_delta",
-            {
-              type: "content_block_delta",
-              index,
-              delta: tool
-                ? { type: "input_json_delta", partial_json: JSON.stringify(block.input) }
-                : { type: "text_delta", text: block.text },
-            },
-          ],
-          ["content_block_stop", { type: "content_block_stop", index }],
-        );
-      });
-      events.push(
-        [
-          "message_delta",
-          {
-            type: "message_delta",
-            delta: { stop_reason: reason, stop_sequence: null },
-            usage: { output_tokens: 20 },
-          },
-        ],
-        ["message_stop", { type: "message_stop" }],
-      );
-      response.writeHead(200, { "content-type": "text/event-stream" });
-      response.end(
-        events
-          .map(([name, value]) => `event: ${name}\ndata: ${JSON.stringify(value)}\n\n`)
-          .join(""),
-      );
+      respond(body, content, reason, response);
     });
   });
+  const held = new Set<string>();
+  const respond = (body: Json, content: Json[], reason: string, response: ServerResponse) => {
+    const message = {
+      id: `msg_${randomUUID()}`,
+      type: "message",
+      role: "assistant",
+      model: body.model,
+      content,
+      stop_reason: reason,
+      stop_sequence: null,
+      usage: { input_tokens: 100, output_tokens: 20 },
+    };
+    if (!body.stream) {
+      response.writeHead(200, { "content-type": "application/json" });
+      response.end(JSON.stringify(message));
+      return;
+    }
+    const events: Array<[string, Json]> = [
+      [
+        "message_start",
+        { type: "message_start", message: { ...message, content: [], stop_reason: null } },
+      ],
+    ];
+    content.forEach((block, index) => {
+      const tool = block.type === "tool_use";
+      events.push(
+        [
+          "content_block_start",
+          {
+            type: "content_block_start",
+            index,
+            content_block: tool ? { ...block, input: {} } : { type: "text", text: "" },
+          },
+        ],
+        [
+          "content_block_delta",
+          {
+            type: "content_block_delta",
+            index,
+            delta: tool
+              ? { type: "input_json_delta", partial_json: JSON.stringify(block.input) }
+              : { type: "text_delta", text: block.text },
+          },
+        ],
+        ["content_block_stop", { type: "content_block_stop", index }],
+      );
+    });
+    events.push(
+      [
+        "message_delta",
+        {
+          type: "message_delta",
+          delta: { stop_reason: reason, stop_sequence: null },
+          usage: { output_tokens: 20 },
+        },
+      ],
+      ["message_stop", { type: "message_stop" }],
+    );
+    response.writeHead(200, { "content-type": "text/event-stream" });
+    response.end(
+      events.map(([name, value]) => `event: ${name}\ndata: ${JSON.stringify(value)}\n\n`).join(""),
+    );
+  };
   await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
   return {
     port: (server.address() as AddressInfo).port,
@@ -286,6 +317,71 @@ describe.skipIf(
     expect(new Set(results.map((result) => result.turnId)).size).toBe(3);
     expect(runner.snapshot()).toMatchObject({ status: "idle", reason: null, turnOrigin: "self" });
   }, 120_000);
+
+  it("stops only the turn: the foreground command ends, the CLI and its background command go on", async () => {
+    const box = await sandbox();
+    const { runner, results, send } = managed(box, randomUUID(), true, true);
+    // Durations no other process on this machine waits for.
+    const background = `9.${Math.floor(Math.random() * 9000) + 1000}`;
+    const foreground = `48.${Math.floor(Math.random() * 9000) + 1000}`;
+    await send(`BACKGROUND-COMMAND seconds=${background}`);
+    await expect.poll(() => results.length, wait).toBe(1);
+    const pid = runner.processId;
+    const turnId = await send(`FOREGROUND-COMMAND seconds=${foreground}`);
+    await expect
+      .poll(() => runner.snapshot().status !== "running" || running(`${foreground}`) > 0, wait)
+      .toBe(true);
+    const asking = runner.snapshot();
+    if (asking.status === "waiting-approval") {
+      await runner.approve(asking.approvals[0]!.requestId, turnId, "allow", asking.revision);
+      await expect.poll(() => running(`${foreground}`), wait).toBeGreaterThan(0);
+    }
+    // A CLI that refused the command itself (2.1.299 in this sandbox) ended the turn already.
+    if (runner.snapshot().status === "idle") return;
+    await runner.stop(turnId, runner.snapshot().revision);
+    expect(runner.snapshot()).toMatchObject({
+      status: "idle",
+      lastOutcome: "cancelled",
+      reason: null,
+      backgroundTasks: [{ kind: "command", description: "Background acceptance" }],
+    });
+    expect(runner.hasWorker).toBe(true);
+    expect(runner.processId).toBe(pid);
+    await expect.poll(() => running(`${foreground}`), wait).toBe(0);
+    expect(running(`sleep ${background}`)).toBeGreaterThan(0);
+    // The background command still ends in a turn of the CLI's own, in the same process.
+    await expect.poll(() => runner.snapshot().backgroundTasks.length, wait).toBe(0);
+    await expect.poll(() => results.length, wait).toBe(2);
+    await expect.poll(() => runner.snapshot().status, wait).toBe("idle");
+    expect(runner.snapshot()).toMatchObject({ turnOrigin: "self", lastOutcome: "succeeded" });
+    expect(runner.processId).toBe(pid);
+  }, 180_000);
+
+  it("stops a turn still waiting for the model; the CLI and its background command go on", async () => {
+    const box = await sandbox();
+    const { runner, results, send } = managed(box, randomUUID(), true, true);
+    const background = `9.${Math.floor(Math.random() * 9000) + 1000}`;
+    await send(`BACKGROUND-COMMAND seconds=${background}`);
+    await expect.poll(() => results.length, wait).toBe(1);
+    const pid = runner.processId;
+    const turnId = await send("SLOW-REPLY seconds=30");
+    await expect.poll(() => runner.snapshot().status, wait).toBe("running");
+    await new Promise((resolve) => setTimeout(resolve, 1500));
+    await runner.stop(turnId, runner.snapshot().revision);
+    expect(runner.snapshot()).toMatchObject({
+      status: "idle",
+      lastOutcome: "cancelled",
+      reason: null,
+      backgroundTasks: [{ kind: "command", description: "Background acceptance" }],
+    });
+    expect(runner.processId).toBe(pid);
+    expect(running(`sleep ${background}`)).toBeGreaterThan(0);
+    // The same process takes the next message.
+    const next = await send("Message after the stop.");
+    await expect.poll(() => results.some((result) => result.turnId === next), wait).toBe(true);
+    expect(results.find((result) => result.turnId === next)).toMatchObject({ success: true });
+    expect(runner.processId).toBe(pid);
+  }, 180_000);
 
   // The next worker hears that the command was stopped. That start is where a session used to be
   // lost: the CLI sends an empty result before the turn of the message it was given.

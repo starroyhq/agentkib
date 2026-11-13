@@ -34,6 +34,12 @@ export type FakeClaudePlan = {
   silentInitialize?: boolean;
   /** The slash-command catalog the initialize response reports; empty by default. */
   commands?: unknown[];
+  /** Frames sent after acknowledging an `interrupt` control request, as the turn ends. */
+  onInterrupt?: unknown[];
+  /** The `interrupt` acknowledgement; `{still_queued: []}` by default. */
+  interruptResponse?: Record<string, unknown>;
+  /** Leave an `interrupt` control request unanswered. */
+  ignoreInterrupt?: boolean;
 };
 
 export function createFakeClaude(prefix = "agentkib-claude-drift-") {
@@ -82,6 +88,13 @@ readline.createInterface({input: process.stdin}).on('line', (line) => {
   const frame = JSON.parse(line); log(frame);
   if (frame.type === 'control_response') {
     if (waiting && frame.response && frame.response.request_id === waiting) { waiting = null; run(); }
+    return;
+  }
+  if (frame.type === 'control_request' && frame.request.subtype === 'interrupt') {
+    if (plan().ignoreInterrupt) return;
+    send({type: 'control_response', response: {subtype: 'success', request_id: frame.request_id,
+      response: plan().interruptResponse || {still_queued: []}}});
+    queue = (plan().onInterrupt || []).slice(); run();
     return;
   }
   if (frame.type === 'control_request') {

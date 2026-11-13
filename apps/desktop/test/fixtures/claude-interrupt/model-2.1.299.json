@@ -1,0 +1,709 @@
+{
+ "note": "Captured from the real CLI by qa/probes/claude-background-turn.mjs against a mock model; 2.1.299. The host interrupts while the model has not answered the second message.",
+ "unanswered": [],
+ "steered": [],
+ "frames": [
+  {
+   "type": "control_response",
+   "response": {
+    "subtype": "success",
+    "request_id": "d5b839d7-748b-40a6-9581-526f20cafefc"
+   }
+  },
+  {
+   "type": "command_lifecycle",
+   "command_uuid": "86694099-84af-404b-a147-b634858ac7b1",
+   "state": "queued"
+  },
+  {
+   "type": "command_lifecycle",
+   "command_uuid": "86694099-84af-404b-a147-b634858ac7b1",
+   "state": "started"
+  },
+  {
+   "type": "system",
+   "subtype": "init",
+   "model": "claude-sonnet-4-6",
+   "apiKeySource": "ANTHROPIC_API_KEY",
+   "permissionMode": "auto",
+   "claude_code_version": "2.1.299"
+  },
+  {
+   "type": "system",
+   "subtype": "status",
+   "status": "requesting",
+   "user_message_uuids": [
+    "86694099-84af-404b-a147-b634858ac7b1"
+   ]
+  },
+  {
+   "type": "stream_event",
+   "parent_tool_use_id": null,
+   "event": {
+    "type": "message_start",
+    "message": {
+     "id": "msg_bgprobe_1",
+     "model": "claude-sonnet-4-6",
+     "usage": {
+      "input_tokens": 100,
+      "output_tokens": 0
+     }
+    }
+   }
+  },
+  {
+   "type": "stream_event",
+   "parent_tool_use_id": null,
+   "event": {
+    "type": "content_block_start",
+    "index": 0,
+    "content_block": {
+     "type": "tool_use",
+     "id": "toolu_bgprobe_1",
+     "name": "Bash",
+     "input": {}
+    }
+   }
+  },
+  {
+   "type": "stream_event",
+   "parent_tool_use_id": null,
+   "event": {
+    "type": "content_block_delta",
+    "index": 0,
+    "delta": {
+     "type": "input_json_delta",
+     "partial_json": "{\"command\":\"sleep 14; echo bg-done\",\"description\":\"Background probe\",\"run_in_background\":true}"
+    }
+   }
+  },
+  {
+   "type": "assistant",
+   "parent_tool_use_id": null,
+   "uuid": "8738c95a-6b63-4ff6-ba6d-485f82826e88",
+   "message": {
+    "id": "msg_bgprobe_1",
+    "model": "claude-sonnet-4-6",
+    "content": [
+     {
+      "type": "tool_use",
+      "id": "toolu_bgprobe_1",
+      "name": "Bash",
+      "input": {
+       "command": "sleep 14; echo bg-done",
+       "description": "Background probe",
+       "run_in_background": true
+      }
+     }
+    ],
+    "usage": {
+     "input_tokens": 100,
+     "output_tokens": 0
+    }
+   }
+  },
+  {
+   "type": "stream_event",
+   "parent_tool_use_id": null,
+   "event": {
+    "type": "content_block_stop",
+    "index": 0
+   }
+  },
+  {
+   "type": "stream_event",
+   "parent_tool_use_id": null,
+   "event": {
+    "type": "message_delta",
+    "delta": {
+     "stop_reason": "tool_use",
+     "stop_sequence": null
+    }
+   }
+  },
+  {
+   "type": "system",
+   "subtype": "informational"
+  },
+  {
+   "type": "stream_event",
+   "parent_tool_use_id": null,
+   "event": {
+    "type": "message_stop"
+   }
+  },
+  {
+   "type": "system",
+   "subtype": "background_tasks_changed",
+   "tasks": [
+    {
+     "task_id": "b7up6e485",
+     "task_type": "local_bash",
+     "description": "Background probe"
+    }
+   ]
+  },
+  {
+   "type": "system",
+   "subtype": "task_started",
+   "task_id": "b7up6e485",
+   "tool_use_id": "toolu_bgprobe_1",
+   "description": "Background probe",
+   "is_backgrounded": true,
+   "task_type": "local_bash"
+  },
+  {
+   "type": "user",
+   "parent_tool_use_id": null,
+   "message": {
+    "role": "user",
+    "content": [
+     {
+      "type": "tool_result",
+      "tool_use_id": "toolu_bgprobe_1",
+      "content": "Command running in background with ID: b7up6e485. Output is being written to: <path> You will be notified when it completes. To check interim output, use Read on that file path."
+     }
+    ]
+   }
+  },
+  {
+   "type": "system",
+   "subtype": "status",
+   "status": "requesting",
+   "user_message_uuids": [
+    "86694099-84af-404b-a147-b634858ac7b1"
+   ]
+  },
+  {
+   "type": "stream_event",
+   "parent_tool_use_id": null,
+   "event": {
+    "type": "message_start",
+    "message": {
+     "id": "msg_bgprobe_2",
+     "model": "claude-sonnet-4-6",
+     "usage": {
+      "input_tokens": 100,
+      "output_tokens": 0
+     }
+    }
+   }
+  },
+  {
+   "type": "stream_event",
+   "parent_tool_use_id": null,
+   "event": {
+    "type": "content_block_start",
+    "index": 0,
+    "content_block": {
+     "type": "text",
+     "text": ""
+    }
+   }
+  },
+  {
+   "type": "stream_event",
+   "parent_tool_use_id": null,
+   "event": {
+    "type": "content_block_delta",
+    "index": 0,
+    "delta": {
+     "type": "text_delta",
+     "text": "STARTED"
+    }
+   }
+  },
+  {
+   "type": "assistant",
+   "parent_tool_use_id": null,
+   "uuid": "6707864e-f7b4-4d21-93be-3767d8d4dd42",
+   "message": {
+    "id": "msg_bgprobe_2",
+    "model": "claude-sonnet-4-6",
+    "content": [
+     {
+      "type": "text",
+      "text": "STARTED"
+     }
+    ],
+    "usage": {
+     "input_tokens": 100,
+     "output_tokens": 0
+    }
+   }
+  },
+  {
+   "type": "stream_event",
+   "parent_tool_use_id": null,
+   "event": {
+    "type": "content_block_stop",
+    "index": 0
+   }
+  },
+  {
+   "type": "stream_event",
+   "parent_tool_use_id": null,
+   "event": {
+    "type": "message_delta",
+    "delta": {
+     "stop_reason": "end_turn",
+     "stop_sequence": null
+    }
+   }
+  },
+  {
+   "type": "stream_event",
+   "parent_tool_use_id": null,
+   "event": {
+    "type": "message_stop"
+   }
+  },
+  {
+   "type": "result",
+   "subtype": "success",
+   "is_error": false,
+   "num_turns": 2,
+   "result": "STARTED",
+   "terminal_reason": "completed",
+   "total_cost_usd": 0.0012000000000000001
+  },
+  {
+   "type": "command_lifecycle",
+   "command_uuid": "86694099-84af-404b-a147-b634858ac7b1",
+   "state": "completed"
+  },
+  {
+   "type": "command_lifecycle",
+   "command_uuid": "113b51e2-402a-463a-94fd-624e2189aca9",
+   "state": "queued"
+  },
+  {
+   "type": "command_lifecycle",
+   "command_uuid": "113b51e2-402a-463a-94fd-624e2189aca9",
+   "state": "started"
+  },
+  {
+   "type": "system",
+   "subtype": "init",
+   "model": "claude-sonnet-4-6",
+   "apiKeySource": "ANTHROPIC_API_KEY",
+   "permissionMode": "auto",
+   "claude_code_version": "2.1.299"
+  },
+  {
+   "type": "system",
+   "subtype": "status",
+   "status": "requesting",
+   "user_message_uuids": [
+    "113b51e2-402a-463a-94fd-624e2189aca9"
+   ]
+  },
+  {
+   "type": "<host interrupt>"
+  },
+  {
+   "type": "control_response",
+   "response": {
+    "subtype": "success",
+    "request_id": "<interrupt>",
+    "response": {
+     "still_queued": []
+    }
+   }
+  },
+  {
+   "type": "user",
+   "parent_tool_use_id": null,
+   "message": {
+    "role": "user",
+    "content": [
+     {
+      "type": "text"
+     }
+    ]
+   }
+  },
+  {
+   "type": "result",
+   "subtype": "error_during_execution",
+   "is_error": true,
+   "num_turns": 2,
+   "terminal_reason": "aborted_streaming",
+   "total_cost_usd": 0.0012000000000000001
+  },
+  {
+   "type": "command_lifecycle",
+   "command_uuid": "113b51e2-402a-463a-94fd-624e2189aca9",
+   "state": "cancelled"
+  },
+  {
+   "type": "command_lifecycle",
+   "command_uuid": "0c974409-1a58-481f-910e-3409e6e7431d",
+   "state": "queued"
+  },
+  {
+   "type": "command_lifecycle",
+   "command_uuid": "0c974409-1a58-481f-910e-3409e6e7431d",
+   "state": "started"
+  },
+  {
+   "type": "system",
+   "subtype": "init",
+   "model": "claude-sonnet-4-6",
+   "apiKeySource": "ANTHROPIC_API_KEY",
+   "permissionMode": "auto",
+   "claude_code_version": "2.1.299"
+  },
+  {
+   "type": "system",
+   "subtype": "status",
+   "status": "requesting",
+   "user_message_uuids": [
+    "0c974409-1a58-481f-910e-3409e6e7431d"
+   ]
+  },
+  {
+   "type": "stream_event",
+   "parent_tool_use_id": null,
+   "event": {
+    "type": "message_start",
+    "message": {
+     "id": "msg_bgprobe_4",
+     "model": "claude-sonnet-4-6",
+     "usage": {
+      "input_tokens": 100,
+      "output_tokens": 0
+     }
+    }
+   }
+  },
+  {
+   "type": "stream_event",
+   "parent_tool_use_id": null,
+   "event": {
+    "type": "content_block_start",
+    "index": 0,
+    "content_block": {
+     "type": "tool_use",
+     "id": "toolu_bgprobe_2",
+     "name": "Bash",
+     "input": {}
+    }
+   }
+  },
+  {
+   "type": "stream_event",
+   "parent_tool_use_id": null,
+   "event": {
+    "type": "content_block_delta",
+    "index": 0,
+    "delta": {
+     "type": "input_json_delta",
+     "partial_json": "{\"command\":\"perl -e 'select(undef, undef, undef, 30); print qq(fg-done\\\\n)'\",\"description\":\"Foreground probe\"}"
+    }
+   }
+  },
+  {
+   "type": "assistant",
+   "parent_tool_use_id": null,
+   "uuid": "ffc4c4c7-5e4e-4ef0-a58c-02175b4e2ba3",
+   "message": {
+    "id": "msg_bgprobe_4",
+    "model": "claude-sonnet-4-6",
+    "content": [
+     {
+      "type": "tool_use",
+      "id": "toolu_bgprobe_2",
+      "name": "Bash",
+      "input": {
+       "command": "perl -e 'select(undef, undef, undef, 30); print qq(fg-done\\n)'",
+       "description": "Foreground probe"
+      }
+     }
+    ],
+    "usage": {
+     "input_tokens": 100,
+     "output_tokens": 0
+    }
+   }
+  },
+  {
+   "type": "stream_event",
+   "parent_tool_use_id": null,
+   "event": {
+    "type": "content_block_stop",
+    "index": 0
+   }
+  },
+  {
+   "type": "stream_event",
+   "parent_tool_use_id": null,
+   "event": {
+    "type": "message_delta",
+    "delta": {
+     "stop_reason": "tool_use",
+     "stop_sequence": null
+    }
+   }
+  },
+  {
+   "type": "stream_event",
+   "parent_tool_use_id": null,
+   "event": {
+    "type": "message_stop"
+   }
+  },
+  {
+   "type": "system",
+   "subtype": "permission_denied",
+   "tool_use_id": "toolu_bgprobe_2"
+  },
+  {
+   "type": "user",
+   "parent_tool_use_id": null,
+   "message": {
+    "role": "user",
+    "content": [
+     {
+      "type": "tool_result",
+      "tool_use_id": "toolu_bgprobe_2",
+      "content": "Auto mode could not evaluate this action and is blocking it for safety — run with --debug for details. This is not a judgment that the action is unsafe. This is usually transient — wait briefly and try this action again as-is; don't rewrite it. If it keeps failing, continue with other tasks that don't require this action and come back to it later. Note: reading files, searching code, and other read-only operations do not require the classifier and can still be used."
+     }
+    ]
+   }
+  },
+  {
+   "type": "system",
+   "subtype": "status",
+   "status": "requesting",
+   "user_message_uuids": [
+    "0c974409-1a58-481f-910e-3409e6e7431d"
+   ]
+  },
+  {
+   "type": "stream_event",
+   "parent_tool_use_id": null,
+   "event": {
+    "type": "message_start",
+    "message": {
+     "id": "msg_bgprobe_15",
+     "model": "claude-sonnet-4-6",
+     "usage": {
+      "input_tokens": 100,
+      "output_tokens": 0
+     }
+    }
+   }
+  },
+  {
+   "type": "stream_event",
+   "parent_tool_use_id": null,
+   "event": {
+    "type": "content_block_start",
+    "index": 0,
+    "content_block": {
+     "type": "text",
+     "text": ""
+    }
+   }
+  },
+  {
+   "type": "stream_event",
+   "parent_tool_use_id": null,
+   "event": {
+    "type": "content_block_delta",
+    "index": 0,
+    "delta": {
+     "type": "text_delta",
+     "text": "FG-DONE"
+    }
+   }
+  },
+  {
+   "type": "assistant",
+   "parent_tool_use_id": null,
+   "uuid": "e6ac6063-61ab-4d5f-bff2-65a211406624",
+   "message": {
+    "id": "msg_bgprobe_15",
+    "model": "claude-sonnet-4-6",
+    "content": [
+     {
+      "type": "text",
+      "text": "FG-DONE"
+     }
+    ],
+    "usage": {
+     "input_tokens": 100,
+     "output_tokens": 0
+    }
+   }
+  },
+  {
+   "type": "stream_event",
+   "parent_tool_use_id": null,
+   "event": {
+    "type": "content_block_stop",
+    "index": 0
+   }
+  },
+  {
+   "type": "stream_event",
+   "parent_tool_use_id": null,
+   "event": {
+    "type": "message_delta",
+    "delta": {
+     "stop_reason": "end_turn",
+     "stop_sequence": null
+    }
+   }
+  },
+  {
+   "type": "stream_event",
+   "parent_tool_use_id": null,
+   "event": {
+    "type": "message_stop"
+   }
+  },
+  {
+   "type": "result",
+   "subtype": "success",
+   "is_error": false,
+   "num_turns": 2,
+   "result": "FG-DONE",
+   "terminal_reason": "completed",
+   "total_cost_usd": 0.0024000000000000002
+  },
+  {
+   "type": "command_lifecycle",
+   "command_uuid": "0c974409-1a58-481f-910e-3409e6e7431d",
+   "state": "completed"
+  },
+  {
+   "type": "system",
+   "subtype": "task_updated",
+   "task_id": "b7up6e485",
+   "patch": {
+    "status": "completed"
+   }
+  },
+  {
+   "type": "system",
+   "subtype": "task_notification",
+   "status": "completed",
+   "task_id": "b7up6e485",
+   "tool_use_id": "toolu_bgprobe_1",
+   "summary": "Background command \"Background probe\" completed (exit code 0)"
+  },
+  {
+   "type": "system",
+   "subtype": "background_tasks_changed",
+   "tasks": []
+  },
+  {
+   "type": "system",
+   "subtype": "init",
+   "model": "claude-sonnet-4-6",
+   "apiKeySource": "ANTHROPIC_API_KEY",
+   "permissionMode": "auto",
+   "claude_code_version": "2.1.299"
+  },
+  {
+   "type": "system",
+   "subtype": "status",
+   "status": "requesting"
+  },
+  {
+   "type": "stream_event",
+   "parent_tool_use_id": null,
+   "event": {
+    "type": "message_start",
+    "message": {
+     "id": "msg_bgprobe_16",
+     "model": "claude-sonnet-4-6",
+     "usage": {
+      "input_tokens": 100,
+      "output_tokens": 0
+     }
+    }
+   }
+  },
+  {
+   "type": "stream_event",
+   "parent_tool_use_id": null,
+   "event": {
+    "type": "content_block_start",
+    "index": 0,
+    "content_block": {
+     "type": "text",
+     "text": ""
+    }
+   }
+  },
+  {
+   "type": "stream_event",
+   "parent_tool_use_id": null,
+   "event": {
+    "type": "content_block_delta",
+    "index": 0,
+    "delta": {
+     "type": "text_delta",
+     "text": "NOTED-4"
+    }
+   }
+  },
+  {
+   "type": "assistant",
+   "parent_tool_use_id": null,
+   "uuid": "b92ebd95-0722-46ad-9ea4-d2ad92a18b7a",
+   "message": {
+    "id": "msg_bgprobe_16",
+    "model": "claude-sonnet-4-6",
+    "content": [
+     {
+      "type": "text",
+      "text": "NOTED-4"
+     }
+    ],
+    "usage": {
+     "input_tokens": 100,
+     "output_tokens": 0
+    }
+   }
+  },
+  {
+   "type": "stream_event",
+   "parent_tool_use_id": null,
+   "event": {
+    "type": "content_block_stop",
+    "index": 0
+   }
+  },
+  {
+   "type": "stream_event",
+   "parent_tool_use_id": null,
+   "event": {
+    "type": "message_delta",
+    "delta": {
+     "stop_reason": "end_turn",
+     "stop_sequence": null
+    }
+   }
+  },
+  {
+   "type": "stream_event",
+   "parent_tool_use_id": null,
+   "event": {
+    "type": "message_stop"
+   }
+  },
+  {
+   "type": "result",
+   "subtype": "success",
+   "is_error": false,
+   "num_turns": 1,
+   "result": "NOTED-4",
+   "terminal_reason": "completed",
+   "total_cost_usd": 0.003
+  }
+ ]
+}

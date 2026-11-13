@@ -135,6 +135,8 @@ export type ClaudeRunnerOptions = {
   selfTurnLimit?: number;
   /** The worker was stopped at that limit. The session stays usable. */
   onSelfTurnLimit?: () => void;
+  /** How long a stop waits for the CLI to end the turn before it ends the process instead. */
+  interruptTimeoutMs?: number;
 };
 export type ClaudeStartupFailureCode =
   | "initialize-timeout"
@@ -282,6 +284,8 @@ export class ClaudeRunnerState {
   turnContent = false;
   // Turns the CLI started by itself since the last one AgentKib sent.
   selfTurns = 0;
+  // The turn the host asked the CLI to interrupt, until a result ends it.
+  interrupting: string | null = null;
   // What was ignored or refused, by category. Not part of any snapshot or checkpoint.
   readonly diagnostics = new ClaudeProtocolDiagnostics();
 
@@ -586,6 +590,15 @@ export class ClaudeRunnerState {
 
   stop(turnId: string, revision: number): void {
     this.assertCanStop(turnId, revision);
+    this.processStopped();
+  }
+
+  /**
+   * The worker was ended while a turn ran, so nothing of the turn or the process is left. Also
+   * after an interrupt that did not end the turn, when the revision has moved on since.
+   */
+  processStopped(): void {
+    this.interrupting = null;
     this.subagentObservation.unavailable(true);
     this.bashToolIds.clear();
     this.foregroundTasks.clear();
@@ -610,7 +623,44 @@ export class ClaudeRunnerState {
     this.revision++;
   }
 
+  /**
+   * The host is about to ask the CLI to end the running turn but keep its process. Only the
+   * turn ends: background commands, Monitors and sub-agents go on.
+   */
+  beginInterrupt(turnId: string, revision: number): void {
+    this.assertCanStop(turnId, revision);
+    this.interrupting = turnId;
+  }
+
+  /**
+   * The result that ends an interrupted turn: an `error_during_execution` with nothing left to
+   * answer, since the CLI withdrew any open approval or question first. It ends the turn as a
+   * stop does, without the reset a new process needs.
+   */
+  #interruptEnded(): void {
+    this.interrupting = null;
+    // Interrupted commands report `stopped` first (2.1.263, 2.1.323); anything still listed
+    // ended with the turn.
+    if (this.foregroundTasks.size) {
+      this.diagnostics.record("observedTaskTypes", "interrupted_foreground");
+      this.foregroundTasks.clear();
+    }
+    this.status = "idle";
+    this.lastOutcome = "cancelled";
+    this.terminalResult = null;
+    this.approvals = [];
+    this.questions = [];
+    this.pendingUser = null;
+    this.reason = null;
+    this.activity = null;
+    this.apiRetry = null;
+    this.streamText = "";
+    this.partial = false;
+    this.revision++;
+  }
+
   fail(reason: string): void {
+    this.interrupting = null;
     this.subagentObservation.unavailable();
     this.status = "outcome-unknown";
     this.activity = null;
@@ -764,6 +814,10 @@ export class ClaudeRunnerState {
         break;
       }
       case "result":
+        if (this.interrupting !== null && this.initialized && this.#turnActive()) {
+          this.#interruptEnded();
+          break;
+        }
         if (this.#strayResult(frame)) return null;
         if (this.foregroundTasks.size)
           throw new Error("Claude result with unresolved foreground tasks");
@@ -1603,6 +1657,8 @@ export class ClaudeManagedRunnerProcess {
   #observedPermissionMode: ClaudeObservedPermissionMode | null = null;
   #configuring = false;
   #steeringIds = new Set<string>();
+  /** Set while a stop waits for the interrupted turn's result. */
+  #interruptEnded?: () => void;
   #reportedResult?: ClaudeRunnerTerminalResult;
   /** The current turn's last native agent message, which carries the turn end when it comes. */
   #lastAgentItem: Record<string, unknown> | null = null;
@@ -1667,6 +1723,13 @@ export class ClaudeManagedRunnerProcess {
         options.controlTimeoutMs > 30_000)
     )
       throw new Error("invalid Claude control timeout");
+    if (
+      options.interruptTimeoutMs !== undefined &&
+      (!Number.isSafeInteger(options.interruptTimeoutMs) ||
+        options.interruptTimeoutMs < 1 ||
+        options.interruptTimeoutMs > 30_000)
+    )
+      throw new Error("invalid Claude interrupt timeout");
   }
 
   snapshot(): ClaudeRunnerSnapshot {
@@ -2053,9 +2116,49 @@ export class ClaudeManagedRunnerProcess {
   async stop(turnId: string, revision: number): Promise<void> {
     this.state.assertCanStop(turnId, revision);
     if (!this.#child) throw new Error("Claude session has not started");
+    // Where background work may outlive the turn, only the turn is ended, as Esc does in the
+    // terminal; the process, and what runs in the background, stays.
+    if (this.state.backgroundTasksEnabled && (await this.#interrupt(turnId, revision))) return;
     await this.#terminate();
-    this.state.stop(turnId, revision);
+    // The interrupt may have moved the revision on, or ended the turn, before it gave up.
+    this.state.processStopped();
     this.#notify();
+  }
+
+  /**
+   * Asks the CLI to end the running turn (`interrupt`, with `cancel_queued` for messages added to
+   * the turn that it still holds). Verified with 2.1.263, 2.1.299 and 2.1.323: it acknowledges at
+   * once, withdraws an open approval or question (`control_cancel_request`), stops a foreground
+   * command, ends the turn with an `error_during_execution` result and keeps the process and its
+   * background tasks. False when the turn did not end that way in time; the caller then ends the
+   * process as before.
+   */
+  async #interrupt(turnId: string, revision: number): Promise<boolean> {
+    if (!this.#child || this.#retiring || this.#configuring || !this.state.initialized)
+      return false;
+    this.state.beginInterrupt(turnId, revision);
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const turnEnded = new Promise<boolean>((resolve) => {
+      timer = setTimeout(() => resolve(false), this.options.interruptTimeoutMs ?? 5_000);
+      this.#interruptEnded = () => resolve(true);
+    });
+    try {
+      const acknowledgement = await this.#requestControl(
+        { subtype: "interrupt", cancel_queued: true },
+        this.options.interruptTimeoutMs ?? 5_000,
+      );
+      // A CLI that keeps a message for later would start a turn of it after this one.
+      if (Array.isArray(acknowledgement.still_queued) && acknowledgement.still_queued.length)
+        return false;
+      return await turnEnded;
+    } catch {
+      return false;
+    } finally {
+      clearTimeout(timer);
+      // Still marked when it gave up: a result of the turn that comes before the process is
+      // gone ends it as cancelled rather than as a failure.
+      this.#interruptEnded = undefined;
+    }
   }
 
   async shutdown(): Promise<void> {
@@ -2329,6 +2432,7 @@ export class ClaudeManagedRunnerProcess {
         let response: JsonObject | null;
         try {
           response = inbound(() => this.state.frame(frame));
+          if (this.#interruptEnded && this.state.interrupting === null) this.#interruptEnded();
         } finally {
           this.#logDiagnostics();
           const result = this.state.terminalResult;
@@ -2767,17 +2871,27 @@ export class ClaudeManagedRunnerProcess {
     this.#commands = projectCommands(payload.commands);
   }
 
-  async #requestControl(request: Record<string, unknown>): Promise<Record<string, unknown>> {
+  /**
+   * Sends a control request and waits for its acknowledgement. Without its own `timeoutMs` a
+   * request that goes unanswered ends the worker; with one, the caller decides what follows.
+   */
+  async #requestControl(
+    request: Record<string, unknown>,
+    timeoutMs?: number,
+  ): Promise<Record<string, unknown>> {
     if (!this.#child || !this.state.initialized || this.#controls.size >= 8)
       throw new Error("Claude control unavailable");
     const requestId = randomUUID();
     const response = new Promise<Record<string, unknown>>((resolve, reject) => {
-      const timer = setTimeout(() => {
-        this.#controls.delete(requestId);
-        const error = new Error("Claude control acknowledgement timed out");
-        reject(error);
-        this.#fail(error.message);
-      }, this.options.controlTimeoutMs ?? 30_000);
+      const timer = setTimeout(
+        () => {
+          this.#controls.delete(requestId);
+          const error = new Error("Claude control acknowledgement timed out");
+          reject(error);
+          if (timeoutMs === undefined) this.#fail(error.message);
+        },
+        timeoutMs ?? this.options.controlTimeoutMs ?? 30_000,
+      );
       this.#controls.set(requestId, { resolve, reject, timer });
     });
     // Observe early transport failures even when the pipe write has not settled.

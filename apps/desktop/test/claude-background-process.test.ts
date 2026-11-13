@@ -188,6 +188,90 @@ describe.skipIf(process.platform !== "darwin")(
       expect(runner.snapshot().backgroundTasks).toEqual([]);
     }, 60_000);
 
+    // What 2.1.263, 2.1.299 and 2.1.323 send after `interrupt` (qa/claude-interrupt-2026-11-13.md).
+    const interrupted = [
+      {
+        type: "user",
+        parent_tool_use_id: null,
+        message: {
+          role: "user",
+          content: [{ type: "text", text: "[Request interrupted by user]" }],
+        },
+      },
+      { type: "result", subtype: "error_during_execution", is_error: true, num_turns: 2 },
+    ];
+
+    it("stops only the turn: the CLI and its background command keep running", async () => {
+      const { fake, runner, results, turnId, sent } = start(
+        {
+          onUser: [...startsBackgroundCommand, { __spawn: "command", detached: true }],
+          noResult: true,
+          onInterrupt: interrupted,
+        },
+        { backgroundTasks: true },
+      );
+      await sent;
+      await expect.poll(() => fake.childPid("command"), { timeout: 15_000 }).not.toBeNull();
+      await expect
+        .poll(() => runner.snapshot().backgroundTasks.length, { timeout: 15_000 })
+        .toBe(1);
+      const pid = runner.processId!;
+      await runner.stop(turnId, runner.snapshot().revision);
+      expect(
+        fake.frames().find((frame) => frame.request?.subtype === "interrupt")?.request,
+      ).toEqual({ subtype: "interrupt", cancel_queued: true });
+      expect(runner.snapshot()).toMatchObject({
+        status: "idle",
+        lastOutcome: "cancelled",
+        reason: null,
+        sendEnabled: true,
+        backgroundTasks: [{ id: TASK, kind: "command" }],
+      });
+      // The turn ended as a stop ends it: no result of its own is reported.
+      expect(results).toEqual([]);
+      expect(runner.hasWorker).toBe(true);
+      expect(runner.processId).toBe(pid);
+      expect(processAlive(pid)).toBe(true);
+      expect(processAlive(fake.childPid("command")!)).toBe(true);
+      await runner.shutdown();
+      await expect
+        .poll(() => processAlive(fake.childPid("command")!), { timeout: 8000 })
+        .toBe(false);
+    }, 60_000);
+
+    it("ends the process as before when the CLI does not end the turn", async () => {
+      for (const plan of [
+        { ignoreInterrupt: true },
+        // It would start a turn of a message it still holds once this one ends.
+        { interruptResponse: { still_queued: [randomUUID()] }, onInterrupt: interrupted },
+      ] satisfies FakeClaudePlan[]) {
+        const { fake, runner, turnId, sent } = start(
+          {
+            onUser: [...startsBackgroundCommand, { __spawn: "command", detached: true }],
+            noResult: true,
+            ...plan,
+          },
+          { backgroundTasks: true, interruptTimeoutMs: 500 },
+        );
+        await sent;
+        await expect.poll(() => fake.childPid("command"), { timeout: 15_000 }).not.toBeNull();
+        await expect
+          .poll(() => runner.snapshot().backgroundTasks.length, { timeout: 15_000 })
+          .toBe(1);
+        await runner.stop(turnId, runner.snapshot().revision);
+        expect(runner.hasWorker).toBe(false);
+        expect(runner.snapshot()).toMatchObject({
+          status: "idle",
+          lastOutcome: "cancelled",
+          reason: null,
+          backgroundTasks: [],
+        });
+        await expect
+          .poll(() => processAlive(fake.childPid("command")!), { timeout: 8000 })
+          .toBe(false);
+      }
+    }, 60_000);
+
     it("stops the worker when the CLI keeps starting turns by itself", async () => {
       let limited = 0;
       const { fake, runner, results, sent } = start(

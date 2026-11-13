@@ -2381,6 +2381,15 @@ describe("Codex automatic CLI continuation", () => {
     expect(await f.send()).toMatchObject({ accepted: true });
   });
 
+  it("tells a lead when one of its lanes ends a turn", async () => {
+    const f = fixture(true);
+    const ended: unknown[] = [];
+    f.web.observeLanes({ turnEnded: (...args) => ended.push(args), waiting: () => {} });
+    expect(await f.send()).toMatchObject({ accepted: true });
+    f.servers[0]!.complete();
+    await vi.waitFor(() => expect(ended).toEqual([[f.summary.id, "new-turn", "completed"]]));
+  });
+
   it("keeps native writer conflicts authoritative for compressed history", async () => {
     const f = fixture(true);
     vi.spyOn(CodexFollowerConnection, "supported").mockReturnValue(false);

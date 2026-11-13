@@ -30,6 +30,7 @@ import type { BackendStore } from "./store";
 import { canonicalize, pathIdentity } from "./paths";
 import { restrictRemotePath } from "./remote-tls";
 import { acquirePortableFileLease } from "./managed-session-lock";
+import { LEAD_ALLOWED_TOOLS, mergeMcpConfigs } from "./orchestration-service";
 import {
   CLAUDE_BACKGROUND_TASKS_MINIMUM,
   readClaudeInstallation,
@@ -204,11 +205,22 @@ type ClaudePermissionView = {
   possiblyAuto?: true;
 };
 
+/** What tells two sets of lead tools apart; undefined for none. */
+const toolKey = (tools: Record<string, unknown> | null | undefined): string | undefined =>
+  tools ? JSON.stringify(tools) : undefined;
+
 export type ClaudeContinuationOptions = {
   idleTimeoutMs?: number;
   maintenanceIntervalMs?: number;
   /** Whether the person lets managed sessions do background work; read when a worker starts. */
   backgroundTasks?: () => boolean;
+  /**
+   * The `--mcp-config` content of a lead's delegation tools (see `orchestration-service.ts`),
+   * or null when the session directs no lanes. Read when a worker starts.
+   */
+  leadTools?: (sessionId: string) => Promise<Record<string, unknown> | null>;
+  /** The person sent a message to this session themselves, not a queued or automatic one. */
+  userSent?: (sessionId: string) => void;
   isSessionObserved?: (sessionId: string) => boolean;
   isSessionBridged?: (sessionId: string) => boolean;
 };
@@ -224,6 +236,8 @@ export class ClaudeManagedReadOwner {
     result: Promise<ClaudeRunnerOptionsSnapshot>;
   };
   #runners = new Map<string, ClaudeManagedRunnerProcess>();
+  /** The lead tools each runner's workers start with, as JSON; absent for none. */
+  #leadToolKeys = new Map<string, string>();
   #hostState: ClaudeHostStateStore;
   #turnMeta: ClaudeTurnMetaStore;
   // Bumped when a turn end is stored, so cached history projections are read again with it.
@@ -749,8 +763,26 @@ export class ClaudeManagedReadOwner {
       record.snapshot = this.#load(id)!.snapshot;
       live = await this.#live(id, true);
     }
+    const leadTools = operation === "send" ? await this.#leadTools(id) : undefined;
+    if (
+      operation === "send" &&
+      live.status === "idle" &&
+      existingRunner &&
+      this.#leadToolKeys.get(id) !== toolKey(leadTools)
+    ) {
+      // It became a lead, or stopped being one, since its worker started.
+      await this.#retireGoalRunner(id);
+      existingRunner = undefined;
+      record.snapshot = this.#load(id)!.snapshot;
+      live = await this.#live(id, true);
+    }
 
     if (operation === "send" && !value.schedulePermitId) {
+      try {
+        this.continuation.userSent?.(id);
+      } catch {
+        /* Bookkeeping of others never blocks the person's message. */
+      }
       const host = this.#hostState.read(id);
       if (host.goal?.status === "active")
         this.#hostState.update(id, (state) => {
@@ -848,7 +880,7 @@ export class ClaudeManagedReadOwner {
       }
       let runner = existingRunner;
       if (!runner) {
-        runner = this.#newRunner(record);
+        runner = this.#newRunner(record, { leadTools });
       }
 
       try {
@@ -1227,10 +1259,14 @@ export class ClaudeManagedReadOwner {
 
   #newRunner(
     record: ClaudeRecord,
-    options: { mcpConfig?: Record<string, unknown> } = {},
+    {
+      leadTools,
+      ...options
+    }: { mcpConfig?: Record<string, unknown>; leadTools?: Record<string, unknown> | null } = {},
     settings = this.#hostState.read(record.id).settings,
   ): ClaudeManagedRunnerProcess {
     const id = record.id;
+    const mcpConfig = mergeMcpConfigs(options.mcpConfig, leadTools);
     const runner = new ClaudeManagedRunnerProcess(
       record.workspace,
       record.nativeId,
@@ -1305,6 +1341,8 @@ export class ClaudeManagedReadOwner {
           ? { forkSourceNativeId: record.forkSourceNativeId, forkCutoff: record.forkCutoff }
           : {}),
         ...options,
+        ...(mcpConfig ? { mcpConfig } : {}),
+        ...(leadTools ? { allowedTools: [...LEAD_ALLOWED_TOOLS] } : {}),
         onUndispatchedStartup: (proof) => this.#recordStartupCleanup(record, proof),
         beforeStart: () => this.#beforeRunnerStart(id),
         ...(this.#version?.value ? { cliVersion: this.#version.value } : {}),
@@ -1350,7 +1388,19 @@ export class ClaudeManagedReadOwner {
     this.#runners.set(id, runner);
     if (this.continuation.isSessionObserved?.(id)) this.#observed.add(id);
     if (options.mcpConfig) this.#goalRunners.add(id);
+    const key = toolKey(leadTools);
+    if (key === undefined) this.#leadToolKeys.delete(id);
+    else this.#leadToolKeys.set(id, key);
     return runner;
+  }
+
+  /** A lead's delegation tools; none when the lookup fails, so the session still runs. */
+  async #leadTools(id: string): Promise<Record<string, unknown> | null> {
+    try {
+      return (await this.continuation.leadTools?.(id)) ?? null;
+    } catch {
+      return null;
+    }
   }
 
   /** Keeps a turn end the transcript will not have, so history shows it after the live rows go. */
@@ -1395,6 +1445,7 @@ export class ClaudeManagedReadOwner {
     if (runner) await runner.shutdown();
     this.#runners.delete(id);
     this.#goalRunners.delete(id);
+    this.#leadToolKeys.delete(id);
   }
 
   #queue(id: string): Record<string, unknown> {
@@ -1465,7 +1516,13 @@ export class ClaudeManagedReadOwner {
       if (!release) throw new Error("session-managed-by-another-runtime");
       this.#ownerLocks.set(record.id, release);
     }
+    const leadTools = await this.#leadTools(record.id);
     let runner = this.#runners.get(record.id);
+    if (runner && !runner.hasWorker && this.#leadToolKeys.get(record.id) !== toolKey(leadTools)) {
+      await this.#retireGoalRunner(record.id);
+      record = this.#load(record.id)!;
+      runner = undefined;
+    }
     if (!runner?.hasWorker) {
       await this.#ensureNoExternalOwner(record.nativeId);
       if (!record.fresh) {
@@ -1477,7 +1534,7 @@ export class ClaudeManagedReadOwner {
       if ((await this.#installationVersion()) === null)
         throw new Error(this.#installationMissing());
       await this.#reserveRunner(record.id);
-      runner = this.#newRunner(record, options, settings);
+      runner = this.#newRunner(record, { ...options, leadTools }, settings);
     }
     try {
       const executable = await this.#installationExecutable();
@@ -3767,6 +3824,23 @@ export class ClaudeManagedReadOwner {
 
   hasManagedSession(id: string): boolean {
     return sessionIdPattern.test(id) && this.#load(id) !== null;
+  }
+
+  /**
+   * Queues a lead's report from its lanes; it is sent as a turn of its own once the session is
+   * idle, after the person's own queued messages (`ClaudeHostStateStore.addReport`).
+   */
+  /** Returns whether it joined a report still waiting, so that no new turn is needed. */
+  queueReport(id: string, deviceId: string, text: string): boolean {
+    if (!this.hasManagedSession(id)) throw new Error("session-unavailable");
+    return this.#hostState.addReport(id, deviceId, text);
+  }
+
+  /** The workspace a managed session belongs to, also before its first turn is indexed. */
+  managedWorkspace(id: string): string | null {
+    if (!sessionIdPattern.test(id)) return null;
+    const record = this.#load(id);
+    return record && !record.released ? record.workspaceId : null;
   }
 
   readStateTarget(id: string): ReadStateTarget | null {

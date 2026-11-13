@@ -11,7 +11,7 @@ export interface ClaudeScheduledSession {
     requestId: string;
     deviceId: string;
     originDeviceId?: string;
-    kind: "queue" | "goal";
+    kind: "queue" | "goal" | "report";
     requiresAttachments?: boolean;
   };
 }

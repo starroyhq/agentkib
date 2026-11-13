@@ -42,7 +42,8 @@ export type ClaudeHostWork = {
   deviceId: string;
   originDeviceId: string;
   originRequestId?: string;
-  kind: "queue" | "goal";
+  /** `report`: what a lead's lanes did, delivered to the lead (`orchestration-service.ts`). */
+  kind: "queue" | "goal" | "report";
   goalGeneration?: string;
   goalId?: string;
   usageAccounted?: boolean;
@@ -326,7 +327,10 @@ export class ClaudeHostStateStore {
         state.work.some((item) => ["claimed", "dispatched", "unknown"].includes(item.status))
       )
         return null;
-      let item = state.work.find((work) => work.kind === "queue" && work.status === "pending");
+      // The user's own messages first, then reports from lanes, then the goal's next step.
+      let item =
+        state.work.find((work) => work.kind === "queue" && work.status === "pending") ??
+        state.work.find((work) => work.kind === "report" && work.status === "pending");
       const goal = state.goal;
       if (!item && goal?.status === "active") {
         if (goal.tokenBudget !== null && goal.usageIncomplete) {
@@ -369,6 +373,43 @@ export class ClaudeHostStateStore {
         }
       }
       return item ? structuredClone(item) : null;
+    });
+  }
+
+  /**
+   * Queues a report for a lead, sent as its own turn once the lead is idle, on behalf of the
+   * device that made it a lead. Reports not yet picked up are sent as one message.
+   */
+  addReport(sessionId: string, deviceId: string, text: string): boolean {
+    if (!validClaudeDeviceId(deviceId) || !text.trim()) throw new Error("invalid-report");
+    return this.#transaction(sessionId, (state) => {
+      const waiting = state.work.find(
+        (work) =>
+          work.kind === "report" &&
+          work.status === "pending" &&
+          work.deviceId === deviceId &&
+          typeof work.input === "string" &&
+          work.input.length + text.length < 32_000,
+      );
+      state.revision++;
+      if (waiting) {
+        waiting.input = `${String(waiting.input)}\n\n${text}`;
+        return true;
+      }
+      state.work.push({
+        id: randomUUID(),
+        requestId: randomUUID(),
+        deviceId,
+        originDeviceId: deviceId,
+        kind: "report",
+        status: "pending",
+        input: text,
+        requiresAttachments: false,
+        createdAt: new Date().toISOString(),
+        report: null,
+        usage: null,
+      });
+      return false;
     });
   }
 

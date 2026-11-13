@@ -17,6 +17,10 @@ import {
   type ClaudeRunnerSnapshot,
   type ClaudeRunnerTerminalResult,
 } from "../../../packages/backend/src/claude-managed-runner";
+import {
+  LEAD_ALLOWED_TOOLS,
+  OrchestrationService,
+} from "../../../packages/backend/src/orchestration-service";
 
 type Json = Record<string, any>;
 const blocksOf = (message: Json): Json[] =>
@@ -71,7 +75,22 @@ async function mockModel() {
       // 2.1.263 ends the list with reminders of its own (`role: "system"`).
       const last = blocksOf([...messages].reverse().find((item) => item.role === "user") ?? {});
       const asked = last.map((block) => (block.type === "text" ? block.text : "")).join(" ");
-      if (tools.includes("Bash") && asked.includes("FOREGROUND-COMMAND")) {
+      const toolResults = messages.flatMap((item) =>
+        blocksOf(item).filter((block) => block.type === "tool_result"),
+      );
+      if (prompt.includes("PROJECT-AGENT") && toolResults.length < 2) {
+        const name = toolResults.length === 0 ? "worker_list" : "worker_open";
+        content = [
+          {
+            type: "tool_use",
+            id: `toolu_${randomUUID().slice(0, 8)}`,
+            name: `mcp__agentkib_workers__${name}`,
+            input: name === "worker_open" ? { name: "api", workspace: "w1" } : {},
+          },
+        ];
+        reason = "tool_use";
+        requests.push({ assistantTurns, reply: content[0], toolResults });
+      } else if (tools.includes("Bash") && asked.includes("FOREGROUND-COMMAND")) {
         // A long command in the foreground, without the word `sleep` that 2.1.323 refuses.
         const seconds = /seconds=([0-9.]+)/.exec(asked)?.[1] ?? "30";
         content = [
@@ -198,10 +217,15 @@ async function sandbox() {
     process.env.AGENTKIB_CLAUDE_EXECUTABLE ?? path.join(homedir(), ".local/bin/claude"),
   );
   const profile = path.join(root, "cli-network.sb");
-  writeFileSync(
-    profile,
-    `(version 1)(allow default)(deny network*)(allow network-outbound (remote ip "localhost:${model.port}"))\n`,
-  );
+  const ports = [model.port];
+  const writeProfile = () =>
+    writeFileSync(
+      profile,
+      `(version 1)(allow default)(deny network*)${ports
+        .map((port) => `(allow network-outbound (remote ip "localhost:${port}"))`)
+        .join("")}\n`,
+    );
+  writeProfile();
   const executable = path.join(root, "bin", "claude");
   writeFileSync(
     executable,
@@ -230,7 +254,18 @@ async function sandbox() {
     ENABLE_TOOL_SEARCH: "false",
   };
   const version = spawnSync(claude, ["--version"], { encoding: "utf8", env: environment }).stdout;
-  return { model, executable, environment, workspace: path.join(root, "workspace"), version };
+  return {
+    model,
+    executable,
+    environment,
+    workspace: path.join(root, "workspace"),
+    version,
+    /** Lets the CLI reach one more loopback port, such as an AgentKib MCP endpoint. */
+    allowPort: (port: number) => {
+      ports.push(port);
+      writeProfile();
+    },
+  };
 }
 
 function managed(
@@ -238,6 +273,7 @@ function managed(
   sessionId: string,
   fresh: boolean,
   backgroundTasks: boolean,
+  extra: { mcpConfig?: Record<string, unknown>; allowedTools?: string[] } = {},
 ) {
   const snapshots: ClaudeRunnerSnapshot[] = [];
   const results: ClaudeRunnerTerminalResult[] = [];
@@ -250,7 +286,12 @@ function managed(
     (snapshot) => snapshots.push(snapshot),
     true,
     undefined,
-    { backgroundTasks, cliVersion: box.version.trim(), onResult: (result) => results.push(result) },
+    {
+      backgroundTasks,
+      cliVersion: box.version.trim(),
+      onResult: (result) => results.push(result),
+      ...extra,
+    },
   );
   cleanups.push(async () => {
     await runner.shutdown().catch(() => undefined);
@@ -382,6 +423,48 @@ describe.skipIf(
     expect(results.find((result) => result.turnId === next)).toMatchObject({ success: true });
     expect(runner.processId).toBe(pid);
   }, 180_000);
+
+  it("lets a Project Agent call its worker tools without asking", async () => {
+    const box = await sandbox();
+    const lanes = {
+      options: async () => ({ models: [] }),
+      lifecycle: async () => ({ accepted: true }),
+      control: async () => ({ accepted: true }),
+      live: async (sessionId: string) => ({ sessionId, status: "idle", revision: 1 }),
+      events: async () => [],
+      session: () => null,
+      managed: async () => false,
+      workspaces: () => [{ id: "w1", name: "app" }],
+    };
+    const data = mkdtempSync(path.join(tmpdir(), "agentkib-project-agent-native-"));
+    cleanups.push(() => rmSync(data, { recursive: true, force: true }));
+    const lead = randomUUID();
+    const orchestration = new OrchestrationService(data, "boot", lanes, (id) => id === lead);
+    cleanups.push(() => orchestration.close());
+    orchestration.designate({ sessionId: lead, deviceId: "desktop-local", workspaceId: "w1" });
+    const tools = (await orchestration.leadTools(lead)) as {
+      mcpServers: Record<string, { url: string }>;
+    };
+    box.allowPort(Number(new URL(tools.mcpServers.agentkib_workers!.url).port));
+    const { runner, results, snapshots, send } = managed(box, randomUUID(), true, true, {
+      mcpConfig: tools,
+      allowedTools: [...LEAD_ALLOWED_TOOLS],
+    });
+    await send("PROJECT-AGENT: open a worker for the API.");
+    await expect.poll(() => results.length, wait).toBe(1);
+    expect(results[0]).toMatchObject({ success: true });
+    // No approval was asked for either call.
+    expect(snapshots.every((snapshot) => snapshot.approvals.length === 0)).toBe(true);
+    const calls = box.model.requests.filter((request) => request.toolResults);
+    expect(calls.map((request) => request.reply.name)).toEqual([
+      "mcp__agentkib_workers__worker_list",
+      "mcp__agentkib_workers__worker_open",
+    ]);
+    // The model saw the tools' answers.
+    expect(JSON.stringify(calls[1]!.toolResults)).toContain('\\"workers\\":[]');
+    expect(orchestration.status(lead)!.lanes).toMatchObject([{ name: "api", workspaceId: "w1" }]);
+    expect(runner.snapshot()).toMatchObject({ status: "idle", reason: null });
+  }, 120_000);
 
   // The next worker hears that the command was stopped. That start is where a session used to be
   // lost: the CLI sends an empty result before the turn of the message it was given.

@@ -112,6 +112,20 @@ async function localClaudeRequestInner(
       ...(typeof input.enabled === "boolean" ? { enabled: input.enabled } : {}),
       deviceId: OWNER,
     });
+  // Whether a session directs lanes, and making it do so, on behalf of this computer's owner.
+  if (
+    ["lead-status", "lead-designate", "lead-release", "lead-pause", "lead-resume"].includes(
+      operation,
+    )
+  )
+    return deps.managed({
+      operation,
+      sessionId: field(input.sessionId),
+      ...(operation === "lead-designate" && input.scope && typeof input.scope === "object"
+        ? { scope: input.scope }
+        : {}),
+      deviceId: OWNER,
+    });
   if (operation === "receipt")
     return deps.receipt({ requestId: field(input.requestId), deviceId: OWNER });
   if (operation === "catalog") {

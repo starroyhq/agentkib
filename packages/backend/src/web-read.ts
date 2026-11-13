@@ -396,6 +396,12 @@ type ManagedModelOption = {
   serviceTiers: string[];
 };
 
+/** See `WebReadRequests.observeLanes`. */
+export type LaneObserver = {
+  turnEnded(sessionId: string, turnId: string, outcome: string): void;
+  waiting(sessionId: string, turnId: string | null, status: string): void;
+};
+
 export class WebReadRequests {
   #codex: CodexAppServerReader;
   #preflight: CodexRuntimePreflight;
@@ -414,6 +420,7 @@ export class WebReadRequests {
   #retirementTimer: ReturnType<typeof setInterval>;
   #retiring = false;
   #controlSessions = new Map<string, { count: number; observed: boolean }>();
+  #laneObserver?: LaneObserver;
   #closing?: Promise<void>;
   #shuttingDown = false;
   #operations = new Set<Promise<unknown>>();
@@ -565,6 +572,31 @@ export class WebReadRequests {
       reject(error);
     }
     return pending;
+  }
+
+  /**
+   * Tells the orchestration service when a Codex session's turn ends or starts waiting for the
+   * person, so a lead hears about its lanes. Never part of running the session.
+   */
+  observeLanes(observer: LaneObserver | undefined): void {
+    this.#laneObserver = observer;
+  }
+
+  #observeLane(notify: (observer: LaneObserver) => void): void {
+    const observer = this.#laneObserver;
+    if (!observer) return;
+    try {
+      notify(observer);
+    } catch {
+      /* A lead's bookkeeping must not disturb its lane. */
+    }
+  }
+
+  /** Whether AgentKib runs this Codex session (it was created or taken over, not released). */
+  isManagedSession(sessionId: string): boolean {
+    return readManagedRecords(this.dataDir, this.store).some(
+      (record) => record.id === sessionId && !record.released,
+    );
   }
 
   managedOptions() {
@@ -4005,7 +4037,22 @@ export class WebReadRequests {
               },
             );
             this.catalogChanged?.();
+            this.#observeLane((observer) =>
+              observer.turnEnded(
+                record.id,
+                String(turn.id),
+                outcome === "aborted" ? "cancelled" : (outcome ?? "ended"),
+              ),
+            );
           }
+          if (live.status === "awaiting-approval" || live.status === "waiting-input")
+            this.#observeLane((observer) =>
+              observer.waiting(
+                record.id,
+                typeof live.turnId === "string" ? live.turnId : null,
+                String(live.status),
+              ),
+            );
           if (method === "item/agentMessage/delta" || method === "item/plan/delta") {
             const delta = typeof params.delta === "string" ? params.delta : "";
             const streamText = typeof live.streamText === "string" ? live.streamText : "";

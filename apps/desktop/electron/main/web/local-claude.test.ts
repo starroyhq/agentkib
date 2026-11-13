@@ -75,6 +75,28 @@ describe("trusted Claude owner boundary", () => {
     ]);
     expect(deps.receipt).not.toHaveBeenCalled();
   });
+  it("passes Project Agent requests on as the local owner, whatever device they name", async () => {
+    const scope = { workspaceIds: ["w1"], maxLanes: 2 };
+    await localClaudeRequest(deps, {
+      operation: "lead-status",
+      sessionId: "session",
+      deviceId: "phone",
+    });
+    await localClaudeRequest(deps, { operation: "lead-designate", sessionId: "session", scope });
+    await localClaudeRequest(deps, { operation: "lead-pause", sessionId: "session", scope });
+    expect(vi.mocked(deps.managed).mock.calls.map(([params]) => params)).toEqual([
+      { operation: "lead-status", sessionId: "session", deviceId: "agentkib-local-owner" },
+      {
+        operation: "lead-designate",
+        sessionId: "session",
+        scope,
+        deviceId: "agentkib-local-owner",
+      },
+      // Only designating carries a scope.
+      { operation: "lead-pause", sessionId: "session", deviceId: "agentkib-local-owner" },
+    ]);
+    expect(deps.receipt).not.toHaveBeenCalled();
+  });
   it("rejects bridge management for a session outside the Claude catalog", async () => {
     await expect(
       localClaudeRequest(deps, {

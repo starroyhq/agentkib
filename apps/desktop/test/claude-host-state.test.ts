@@ -203,6 +203,39 @@ describe("Claude host orchestration persistence", () => {
     expect(store.next(sessionId)?.kind).toBe("goal");
   });
 
+  it("sends a lead's reports after the person's queued messages and before the goal, as one message while they wait", async () => {
+    const { store, sessionId } = await fixture();
+    const message = queued();
+    store.update(sessionId, (state) => {
+      state.goal = goal();
+      state.work.push(message);
+    });
+    expect(store.addReport(sessionId, "device-a", '[AgentKib report] Lane "a" · turn ended')).toBe(
+      false,
+    );
+    expect(store.addReport(sessionId, "device-a", '[AgentKib report] Lane "b" · turn ended')).toBe(
+      true,
+    );
+    expect(store.next(sessionId)?.id).toBe(message.id);
+    const report = store.read(sessionId).work.find((work) => work.kind === "report")!;
+    expect(() => store.claim(sessionId, report.id, "device-a")).toThrow("stale-queue-order");
+    store.claim(sessionId, message.id, message.deviceId);
+    store.dispatched(sessionId, message.id);
+    store.complete(sessionId, message.requestId, { success: true, usage: null });
+    expect(store.next(sessionId)).toMatchObject({
+      kind: "report",
+      deviceId: "device-a",
+      input: '[AgentKib report] Lane "a" · turn ended\n\n[AgentKib report] Lane "b" · turn ended',
+    });
+    store.claim(sessionId, report.id, "device-a");
+    // Claimed: a later report waits for a turn of its own.
+    expect(store.addReport(sessionId, "device-a", "later")).toBe(false);
+    store.dispatched(sessionId, report.id);
+    store.complete(sessionId, report.requestId, { success: true, usage: null });
+    expect(store.next(sessionId)).toMatchObject({ kind: "report", input: "later" });
+    expect(() => store.addReport(sessionId, "device a", "x")).toThrow("invalid-report");
+  });
+
   it("returns pre-dispatch claims to pending but requires confirmation after restart", async () => {
     const { store, sessionId, directory } = await fixture();
     const item = queued();

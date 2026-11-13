@@ -118,6 +118,11 @@ export type ClaudeRunnerOptions = {
   forkSourceNativeId?: string;
   forkCutoff?: string;
   mcpConfig?: Record<string, unknown>;
+  /**
+   * Tools the CLI runs without asking (`--allowedTools`), such as a Project Agent's worker
+   * tools: being made a Project Agent is the authorization, and the host checks each call.
+   */
+  allowedTools?: string[];
   onResult?: (result: ClaudeRunnerTerminalResult) => void;
   controlTimeoutMs?: number;
   /** Revalidate native ownership immediately before every new worker, including retirement reuse. */
@@ -2237,6 +2242,10 @@ export class ClaudeManagedRunnerProcess {
             : []),
           ...(this.options.mcpConfig
             ? ["--mcp-config", JSON.stringify(this.options.mcpConfig)]
+            : []),
+          // Last: the option takes every argument after it.
+          ...(this.options.allowedTools?.length
+            ? ["--allowedTools", ...this.options.allowedTools]
             : []),
         ],
         {

@@ -353,6 +353,95 @@ describe("synthetic: a result before the turn AgentKib sent has started", () => 
   });
 });
 
+describe("synthetic: prompts scheduled for later (/loop, reminders)", () => {
+  // The frames 2.1.323 sends for a scheduling call and its answer (claude-background-native).
+  const call = (id: string, name: string, input: Frame) => ({
+    type: "assistant",
+    parent_tool_use_id: null,
+    message: { content: [{ type: "tool_use", id, name, input }] },
+  });
+  const answer = (id: string, content: string, error = false) => ({
+    type: "user",
+    parent_tool_use_id: null,
+    message: {
+      content: [{ type: "tool_result", tool_use_id: id, content, ...(error ? { is_error: true } : {}) }],
+    },
+  });
+  const done = { type: "result", subtype: "success", num_turns: 1, result: "done" };
+  const fire = { type: "assistant", parent_tool_use_id: null, message: { content: [] } };
+  /** A turn AgentKib sent in which the model calls these tools, then the session rests. */
+  const scheduling = (background: boolean, ...calls: Array<[string, string, Frame, string, boolean?]>) => {
+    const state = new ClaudeRunnerState(randomUUID());
+    state.foregroundBashContract = true;
+    state.backgroundTasksEnabled = background;
+    state.initialized = true;
+    beginStarted(state);
+    for (const [id, name, input, result, error] of calls) {
+      state.frame(call(id, name, input));
+      state.frame(answer(id, result, error));
+    }
+    state.frame(done);
+    return state;
+  };
+  const created = "Scheduled recurring job 05cd54a7 (Every minute). Session-only.";
+
+  it("a job's turn is the CLI's own, as one for ended background work", () => {
+    const state = scheduling(true, ["toolu_c", "CronCreate", { cron: "*/1 * * * *", prompt: "tick" }, created]);
+    expect(state.hasScheduledWork()).toBe(true);
+    state.frame(fire);
+    expect(state).toMatchObject({ status: "running", turnOrigin: "self" });
+    state.frame(done);
+    expect(state.terminalResult).toMatchObject({ success: true });
+    // A recurring job fires again.
+    state.frame(fire);
+    expect(state.turnOrigin).toBe("self");
+  });
+
+  it("deleting the job, or a refused one, leaves nothing that may start a turn", () => {
+    const deleted = scheduling(
+      true,
+      ["toolu_c", "CronCreate", { cron: "*/1 * * * *", prompt: "tick" }, created],
+      ["toolu_d", "CronDelete", { id: "05cd54a7" }, "Cancelled job 05cd54a7."],
+    );
+    expect(deleted.hasScheduledWork()).toBe(false);
+    expect(codeOf(() => deleted.frame(fire))).toBe("claude-unrequested-turn");
+    const refused = scheduling(true, ["toolu_c", "CronCreate", { cron: "bad" }, "Invalid cron", true]);
+    expect(refused.hasScheduledWork()).toBe(false);
+  });
+
+  it("a wakeup waits its delay; stopping the loop ends it", () => {
+    const state = scheduling(true, ["toolu_w", "ScheduleWakeup", { delaySeconds: 1200, prompt: "go" }, "Scheduled."]);
+    const now = Date.now();
+    expect(state.hasScheduledWork(now + 1_000_000)).toBe(true);
+    expect(state.hasScheduledWork(now + 1_200_000 + 11 * 60_000)).toBe(false);
+    const stopped = scheduling(
+      true,
+      ["toolu_w", "ScheduleWakeup", { delaySeconds: 1200, prompt: "go" }, "Scheduled."],
+      ["toolu_s", "ScheduleWakeup", { stop: true }, "Stopped."],
+    );
+    expect(stopped.hasScheduledWork()).toBe(false);
+  });
+
+  it("is not followed where background work is not allowed, and ends with the worker", () => {
+    expect(
+      scheduling(false, ["toolu_c", "CronCreate", { cron: "*/1 * * * *", prompt: "tick" }, created]).hasScheduledWork(),
+    ).toBe(false);
+    const state = scheduling(true, ["toolu_c", "CronCreate", { cron: "*/1 * * * *", prompt: "tick" }, created]);
+    state.workerEnded();
+    expect(state.hasScheduledWork()).toBe(false);
+  });
+
+  it("a durable job of this session lets a later worker take its turn", () => {
+    const state = new ClaudeRunnerState(randomUUID());
+    state.foregroundBashContract = true;
+    state.backgroundTasksEnabled = true;
+    state.initialized = true;
+    state.durableJobs = () => true;
+    state.frame(fire);
+    expect(state.turnOrigin).toBe("self");
+  });
+});
+
 describe("synthetic: what still stops the session", () => {
   const idle = (background: boolean) => {
     const state = new ClaudeRunnerState(randomUUID());

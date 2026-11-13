@@ -81,7 +81,7 @@
 | 子代理（`local_agent`）的任务帧，以及只含子代理的后台任务集 | 只观察，不终止会话，不使待处理的审批或问题失效 |
 | 子代理的 `stream_event`、`assistant`、`user` 帧 | 不影响主线程的流式文字、用量与对话项 |
 | 不允许后台任务时的后台 Bash；`local_bash`、`local_agent` 以外的任务类型 | 停止会话（原因码 `claude-background-task`）；允许时后台 Bash 与子代理见下文“后台任务” |
-| AgentKib 发起的轮次结束后 CLI 自行继续（空闲时的主线程内容帧、轮次外的审批请求），且不是后台任务引起的 | 停止会话（`claude-unrequested-turn`）；后台任务结束后 CLI 自己开始的轮次见下文“后台任务” |
+| AgentKib 发起的轮次结束后 CLI 自行继续（空闲时的主线程内容帧、轮次外的审批请求），且不是后台任务或定时任务引起的 | 停止会话（`claude-unrequested-turn`）；后台任务结束或定时任务到点时 CLI 自己开始的轮次见下文“后台任务” |
 | 不属于任何轮次的 `result`：重启后 CLI 先发的空结果，或 CLI 开始处理这条消息之前到达的结果 | 忽略并计数（`strayResults`），不结束当前轮次 |
 | 其余无法解析或前后矛盾的输出 | 停止会话（`claude-protocol-violation`） |
 | `system/api_retry` | 只显示，不改变会话状态；新的流式回复、`assistant` 或 `result` 到达后清除 |
@@ -101,7 +101,8 @@ macOS 上、Claude Code `2.1.299` 或更新版本时，托管会话默认允许�
 
 - **记录。** AgentKib 按 `task_started`（`is_backgrounded: true`）与 `background_tasks_changed` 记下正在后台运行的命令（`local_bash`，含 Monitor）和子代理（`local_agent`），按 `task_notification` 记它们结束。描述经脱敏、截到 240 字节；同时最多 64 个，超出则停止会话（`claude-background-task`）。客户端只拿到每项的类型、描述和开始时间，拿不到 CLI 的任务 ID。
 - **CLI 自己开始的轮次。** 后台任务结束，或 Monitor 报告一条事件时，CLI 会自己开始一轮来处理（先 `system/init`，再 `system/status` 的 `requesting`，没有 `user_message_uuids`）。AgentKib 把它当作单独的一轮（实时状态 `turnOrigin: "self"`，有自己的轮次 ID），可以停止、审批和回答；输入区上方显示“后台任务有了结果，Claude Code 正在继续”。只有在有后台任务正在运行、或有已结束还没处理的后台任务时才接受这样的轮次，每个结束的任务最多换来一轮（两个任务一起结束时 CLI 只开一轮，多出的额度留到下次）；其他轮次外的内容仍按上表停止会话。
-- **哪个结果属于哪一轮。** AgentKib 发出的消息，以 `command_lifecycle` 的 `started`（或 `system/status` 的 `user_message_uuids` 含这条消息）为这一轮真正开始；在此之前到达的 `result` 属于 CLI 自己的轮次，忽略并计数，不会把这一轮提前结束。如果 AgentKib 刚发出消息、CLI 正好开始了自己的一轮，那一轮的输出会显示在这条消息的轮次里，它的 `result` 被忽略，这条消息的轮次等 CLI 开始处理它之后照常结束（这种交错只用合成帧测过，没有在真实 CLI 上抓到）。
+- **哪个结果属于哪一轮。** AgentKib 发出的消息，以 `command_lifecycle` 的 `started`（或 `system/status` 的 `user_message_uuids` 含这条消息）为这一轮真正开始；在此之前到达的 `result` 属于 CLI 自己的轮次，忽略并计数，不会把这一轮提前结束。如果 AgentKib 刚发出消息、CLI 正好开始了自己的一轮，那一轮的输出会显示在这条消息的轮次里，它的 `result` 被忽略，这条消息的轮次等 CLI 开始处理它之后照常结束（在真实 CLI 上也按后台任务结束的同一刻发送测过，消息只被模型读到一次；那一刻 CLI 是否已经开始自己的一轮无法控制）。
+- **定时任务。** `/loop`、提醒等用 `CronCreate`、`ScheduleWakeup` 安排的提示，到点时 CLI 也会自己开始一轮。AgentKib 按这两个工具（以及 `CronDelete` 和 `ScheduleWakeup` 的 `stop`）的结果，记下这个进程里还可能触发的定时任务：定时任务按 CLI 的规则最多留 7 天，`ScheduleWakeup` 按它的延迟（CLI 限在 60–3600 秒）再加 10 分钟。有它们时接受 CLI 自己开始的一轮，进程也不做闲置回收，否则周期超过空闲回收时间的 `/loop` 会随进程一起停掉。工作区 `.claude/scheduled_tasks.json` 里持久保存的定时任务（`durable: true`）若是这个会话建的，以后的进程同样接受它触发的一轮。不允许后台任务时，启动 CLI 带 `--disallowedTools=CronCreate,CronDelete,ScheduleWakeup`，模型安排不了定时任务。以前到点的那一轮被当作轮次外内容，会话进入“结果待核对”。2.1.323 实测（`claude-background-native.test.ts`）。
 - **上限。** 没有人发送消息时，CLI 连续自己开始的轮次超过 25 轮，AgentKib 正常结束进程（后台任务一并结束），这一轮记为取消，会话保持可发送，输入区上方提示“Claude Code 连续自动运行了太多轮，AgentKib 已停止它和后台任务”（`continuationNotice: "background-limit"`）。下次发送启动新进程时提示消失。
 - **空闲时的审批。** 没有进行中的轮次时，后台子代理发来的 `can_use_tool` 会被拒绝并附说明，不弹出审批。
 - **进程与退出。** 后台命令运行在自己的会话和进程组里，CLI 进程被强行结束后它们仍会存活。macOS 上 AgentKib 按进程树结束进程，后台命令随之结束；Linux 的进程组清理做不到，所以只在 macOS 开放。有后台任务时进程不做闲置回收，空闲计时从后台任务全部结束后才开始。退出 AgentKib 会结束它们，退出确认会把这些会话列为“正在运行”。
@@ -109,7 +110,7 @@ macOS 上、Claude Code `2.1.299` 或更新版本时，托管会话默认允许�
 - **显示。** 输入区上方显示“后台运行中：<描述>”或“N 个后台任务运行中”；会话列表在没有轮次运行时显示同样的标记，目录在后台任务数变化时刷新。CLI 在会话文件里把通知记为 `origin.kind: "task-notification"` 的用户行，AgentKib 读历史时把它显示为 CLI 的一行说明（`<summary>`，Monitor 事件另附 `<event>`），不当作用户发的消息；在终端里跑过后台任务的会话同样如此。
 - **重启后的空结果。** 进程在后台命令还在运行时被结束后，下次启动同一会话，CLI 会先发这个命令 `stopped` 的通知和一个空的 `result`（`num_turns: 0`），只在第一次重启时出现，三个版本都有，关闭后台任务时也有。以前这个空结果会被当成刚发出的这一轮的结果，下一帧随即被判为轮次外内容，会话进入“结果待核对”；现在无论是否允许后台任务都忽略并计数。CLI 会在下一轮自己把命令被停止的事告诉模型。
 
-帧的形态用本地模型桩和沙箱里的真实 CLI（2.1.263、2.1.299、2.1.322）核对，13 份帧记录在 `apps/desktop/test/fixtures/claude-background/`，由 `claude-background-turns.test.ts` 回放；真实 CLI（2.1.299、2.1.322、2.1.323）在 AgentKib 的进程管理下的验收见 `claude-background-native.test.ts`（设 `AGENTKIB_CLAUDE_BACKGROUND_NATIVE=1` 才运行）。详情见 `qa/claude-background-tasks-probe-2026-11-13.md`。没有用真实模型验收；后台子代理在空闲时请求审批、多个 Monitor 并发、长时间运行的会话都还没有核对。
+帧的形态用本地模型桩和沙箱里的真实 CLI（2.1.263、2.1.299、2.1.322）核对，13 份帧记录在 `apps/desktop/test/fixtures/claude-background/`，由 `claude-background-turns.test.ts` 回放；真实 CLI（2.1.299、2.1.322、2.1.323）在 AgentKib 的进程管理下的验收见 `claude-background-native.test.ts`（设 `AGENTKIB_CLAUDE_BACKGROUND_NATIVE=1` 才运行）。详情见 `qa/claude-background-tasks-probe-2026-11-13.md`。没有用真实模型验收。2026-11-14 补测：CLI 自己开始的一轮里提问并回答（2.1.263、2.1.299、2.1.301、2.1.323），两个 Monitor 并发约 20 秒、期间不被回收（2.1.323，更早的版本没有 Monitor），在 CLI 开始自己一轮的同一刻发送（四个版本），`/loop` 与持久定时任务（2.1.323）。后台子代理在空闲时请求审批、几小时的长会话还没有核对；Windows 上不允许后台任务。
 
 ## 高级操作与产品语义
 

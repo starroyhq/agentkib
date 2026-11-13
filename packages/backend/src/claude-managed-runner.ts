@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { isUtf8 } from "node:buffer";
 import { spawn, type ChildProcess } from "node:child_process";
-import { mkdirSync, chmodSync } from "node:fs";
+import { mkdirSync, chmodSync, readFileSync } from "node:fs";
 import path from "node:path";
 import { homedir } from "node:os";
 import { MacOwnedProcessTree } from "./mac-owned-process-tree";
@@ -39,6 +39,20 @@ const MAX_INTERACTIONS = 1024 * 1024;
 // Stable texts that tests and logs match on.
 const BACKGROUND_REFUSED = "Claude background tasks are unsupported in managed sessions";
 const MAX_BACKGROUND_TASKS = 64;
+/**
+ * The tools that schedule a prompt for later (`/loop`, reminders). The CLI begins a turn for it by
+ * itself, like one for ended background work, so they go with background work: on where that is,
+ * off at the source where it is not.
+ */
+const SCHEDULING_TOOLS = ["CronCreate", "CronDelete", "ScheduleWakeup"];
+/** How long a scheduled job may still fire: the CLI expires jobs after 7 days. */
+const CRON_LIFETIME_MS = 7 * 24 * 60 * 60_000 + 60 * 60_000;
+/** A wakeup fires within its delay, which the CLI clamps to 60–3600 s; this much later it has. */
+const WAKEUP_SLACK_MS = 10 * 60_000;
+const MAX_SCHEDULED = 64;
+/** The project's durable jobs (`CronCreate` with `durable: true`), as the CLI keeps them. */
+const DURABLE_JOBS_FILE = path.join(".claude", "scheduled_tasks.json");
+const DURABLE_JOBS_TTL_MS = 5_000;
 /** Turns in a row the CLI may start by itself; a message from AgentKib starts the count again. */
 export const CLAUDE_SELF_TURN_LIMIT = 25;
 const REFUSED_BACKGROUND_APPROVAL_TEXT =
@@ -285,6 +299,14 @@ export class ClaudeRunnerState {
   // about an end with a request of the running turn or in a turn it starts by itself; which of
   // the two cannot be seen, so a count can outlast the end it stands for.
   pendingWakes = 0;
+  // Prompts this worker will begin a turn for by itself later (CronCreate, ScheduleWakeup), and
+  // until when they may: such a turn is the CLI's own, like one for ended background work. They
+  // live in the worker, so they end with it; durable jobs are read from the project's schedule.
+  scheduled = new Map<string, { until: number; text: string }>();
+  // This worker's scheduling calls waiting for their result, by tool use ID.
+  schedulingCalls = new Map<string, { name: string; input: JsonObject }>();
+  // Whether a durable job this session made is in the project's schedule (set by the process).
+  durableJobs: () => boolean = () => false;
   // Who started the current turn: AgentKib, or the CLI after background work ended.
   turnOrigin: "host" | "self" = "host";
   // What the CLI has said about the message AgentKib sent (`command_lifecycle`): nothing, that it
@@ -476,15 +498,82 @@ export class ClaudeRunnerState {
   #beginSelfTurn(): boolean {
     if (!this.backgroundTasksEnabled) return false;
     if (this.pendingWakes > 0) this.pendingWakes--;
-    else if (this.backgroundTasks.size === 0) return false;
+    else if (this.backgroundTasks.size === 0 && !this.hasScheduledWork()) return false;
     this.#startTurn(randomUUID(), "self");
     return true;
+  }
+
+  /** Whether a prompt scheduled in this session may still make the CLI begin a turn by itself. */
+  hasScheduledWork(now = Date.now()): boolean {
+    for (const [key, job] of this.scheduled) if (job.until <= now) this.scheduled.delete(key);
+    return this.scheduled.size > 0 || this.durableJobs();
+  }
+
+  /** A main-thread call of a scheduling tool, whose result says whether it scheduled. */
+  #observeScheduling(block: JsonObject): void {
+    if (
+      !this.backgroundTasksEnabled ||
+      block?.type !== "tool_use" ||
+      !SCHEDULING_TOOLS.includes(block.name) ||
+      typeof block.id !== "string" ||
+      !block.id ||
+      !object(block.input)
+    )
+      return;
+    if (this.schedulingCalls.size >= MAX_SCHEDULED)
+      this.schedulingCalls.delete(this.schedulingCalls.keys().next().value!);
+    this.schedulingCalls.set(block.id, { name: block.name, input: block.input });
+  }
+
+  #observeSchedulingResult(block: JsonObject, now = Date.now()): void {
+    if (block?.type !== "tool_result" || typeof block.tool_use_id !== "string") return;
+    const call = this.schedulingCalls.get(block.tool_use_id);
+    if (!call) return;
+    this.schedulingCalls.delete(block.tool_use_id);
+    if (block.is_error === true) return;
+    const text = (
+      typeof block.content === "string"
+        ? block.content
+        : Array.isArray(block.content)
+          ? block.content
+              .map((part: JsonObject) => (typeof part?.text === "string" ? part.text : ""))
+              .join(" ")
+          : ""
+    ).slice(0, 2_000);
+    if (call.name === "CronDelete") {
+      const id = call.input.id;
+      if (typeof id === "string" && id)
+        for (const [key, job] of this.scheduled)
+          if (job.text.includes(id)) this.scheduled.delete(key);
+      return;
+    }
+    let key = block.tool_use_id;
+    let until = now + CRON_LIFETIME_MS;
+    if (call.name === "ScheduleWakeup") {
+      // One wakeup at a time; scheduling another replaces it, `stop` ends the loop.
+      key = "wakeup";
+      if (call.input.stop === true) {
+        this.scheduled.delete(key);
+        return;
+      }
+      const delay = Number(call.input.delaySeconds);
+      until =
+        now +
+        Math.min(Math.max(Number.isFinite(delay) ? delay : 3600, 60), 3600) * 1000 +
+        WAKEUP_SLACK_MS;
+    }
+    this.scheduled.delete(key);
+    if (this.scheduled.size >= MAX_SCHEDULED)
+      this.scheduled.delete(this.scheduled.keys().next().value!);
+    this.scheduled.set(key, { until, text });
   }
 
   /** Clears what only a living worker has. Called whenever the worker is gone. */
   workerEnded(): void {
     this.backgroundTasks.clear();
     this.backgroundTaskIds.clear();
+    this.scheduled.clear();
+    this.schedulingCalls.clear();
     this.pendingWakes = 0;
     this.hostTurnPhase = null;
   }
@@ -796,7 +885,11 @@ export class ClaudeRunnerState {
           "";
         const hasText =
           Array.isArray(blocks) && blocks.some((block: JsonObject) => block?.type === "text");
-        if (Array.isArray(blocks)) for (const block of blocks) this.#observeBash(block, origin);
+        if (Array.isArray(blocks))
+          for (const block of blocks) {
+            this.#observeBash(block, origin);
+            this.#observeScheduling(block);
+          }
         if (hasText && nativeId && Array.isArray(blocks)) {
           const textBlocks = blocks.flatMap((block: JsonObject, index: number) => {
             if (block?.type !== "text") return [];
@@ -980,6 +1073,8 @@ export class ClaudeRunnerState {
         }
         this.#assertTurnActive("user");
         this.turnContent = true;
+        const blocks = frame.message?.content;
+        if (Array.isArray(blocks)) for (const block of blocks) this.#observeSchedulingResult(block);
         break;
       }
       case "tool_progress":
@@ -1701,6 +1796,7 @@ export class ClaudeManagedRunnerProcess {
       foregroundBashContract &&
       !options.catalogOnly &&
       process.platform === "darwin";
+    this.state.durableJobs = () => this.#durableJobs();
     if (
       options.selfTurnLimit !== undefined &&
       (!Number.isSafeInteger(options.selfTurnLimit) || options.selfTurnLimit < 1)
@@ -1953,6 +2049,36 @@ export class ClaudeManagedRunnerProcess {
   }
 
   /** Background work the worker still does; it keeps the worker from being retired. */
+  #durableRead: { at: number; found: boolean } | null = null;
+
+  /**
+   * Whether the project's durable schedule holds a job this session made: it fires in whichever
+   * worker runs the session, a later one too. Read again at most every few seconds.
+   */
+  #durableJobs(now = Date.now()): boolean {
+    if (this.#durableRead && now - this.#durableRead.at < DURABLE_JOBS_TTL_MS)
+      return this.#durableRead.found;
+    let found = false;
+    try {
+      const raw = readFileSync(path.join(this.workspace, DURABLE_JOBS_FILE), "utf8");
+      if (raw.length <= 1024 * 1024) {
+        const tasks = (JSON.parse(raw) as { tasks?: unknown }).tasks;
+        found =
+          Array.isArray(tasks) &&
+          tasks.some(
+            (task) =>
+              object(task) &&
+              task.createdBySessionId === this.sessionId &&
+              (typeof task.createdAt !== "number" || now - task.createdAt < CRON_LIFETIME_MS),
+          );
+      }
+    } catch {
+      // No schedule, or one being written: nothing durable to wait for.
+    }
+    this.#durableRead = { at: now, found };
+    return found;
+  }
+
   get backgroundTaskCount(): number {
     return this.state.backgroundTasks.size;
   }
@@ -1970,7 +2096,9 @@ export class ClaudeManagedRunnerProcess {
       this.state.status !== "idle" ||
       this.state.activity === "compacting" ||
       // The worker is still doing something for the session, or about to report on it.
-      this.state.backgroundTasks.size > 0
+      this.state.backgroundTasks.size > 0 ||
+      // A prompt scheduled here fires only while the worker runs (`/loop`, reminders).
+      this.state.hasScheduledWork()
     )
       return null;
     this.#retiring = true;
@@ -2230,6 +2358,10 @@ export class ClaudeManagedRunnerProcess {
           "host",
           "--permission-prompt-tool",
           "stdio",
+          // Scheduled prompts go with background work (SCHEDULING_TOOLS).
+          ...(this.state.backgroundTasksEnabled || this.options.catalogOnly
+            ? []
+            : [`--disallowedTools=${SCHEDULING_TOOLS.join(",")}`]),
           ...(this.options.catalogOnly
             ? [
                 "--no-session-persistence",

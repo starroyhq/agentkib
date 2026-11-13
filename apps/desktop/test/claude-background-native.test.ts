@@ -47,6 +47,15 @@ const FIRST_MOVES: Record<string, (seconds: string) => Json> = {
       run_in_background: true,
     },
   }),
+  // Then, in the turn the CLI starts by itself, a question for the person.
+  "BACKGROUND-QUESTION": (seconds) => ({
+    name: "Bash",
+    input: {
+      command: `sleep ${seconds}; echo background-done`,
+      description: "Background before a question",
+      run_in_background: true,
+    },
+  }),
   MONITOR: (seconds) => ({
     name: "Monitor",
     input: {
@@ -63,6 +72,9 @@ async function mockModel() {
   const offered = new Set<string>();
   /** The tools the CLI offered in each request, in order. */
   const toolsByRequest: string[][] = [];
+  // The job `/loop` scheduled (CronCreate's answer names it), and whether LOOP-STOP deleted it.
+  let job: string | null = null;
+  let jobDeleted = false;
   const server = createServer((request, response) => {
     let raw = "";
     request.on("data", (chunk) => (raw += chunk));
@@ -90,6 +102,7 @@ async function mockModel() {
       const toolResults = messages.flatMap((item) =>
         blocksOf(item).filter((block) => block.type === "tool_result"),
       );
+      job ??= /Scheduled (?:recurring )?job ([0-9a-f]{8})/.exec(JSON.stringify(toolResults))?.[1] ?? null;
       if (prompt.includes("PROJECT-AGENT") && toolResults.length < 2) {
         const name = toolResults.length === 0 ? "worker_list" : "worker_open";
         content = [
@@ -117,6 +130,93 @@ async function mockModel() {
           },
         ];
         reason = "tool_use";
+      } else if (tools.includes("Bash") && assistantTurns === 0 && prompt.includes("TWO-MONITORS")) {
+        // Two Monitors at once, each with events of its own, over half a minute.
+        const seconds = Number(/seconds=([0-9.]+)/.exec(prompt)?.[1] ?? "3");
+        content = [
+          {
+            type: "tool_use",
+            id: `toolu_${randomUUID().slice(0, 8)}`,
+            name: "Monitor",
+            input: {
+              description: "Monitor one",
+              timeout_ms: 120_000,
+              command: `sleep ${seconds}; echo one-a; sleep ${seconds * 3}; echo one-b; sleep ${seconds}`,
+            },
+          },
+          {
+            type: "tool_use",
+            id: `toolu_${randomUUID().slice(0, 8)}`,
+            name: "Monitor",
+            input: {
+              description: "Monitor two",
+              timeout_ms: 120_000,
+              command: `sleep ${seconds * 2}; echo two-a; sleep ${seconds * 4}`,
+            },
+          },
+        ];
+        reason = "tool_use";
+      } else if (
+        prompt.includes("BACKGROUND-QUESTION") &&
+        assistantTurns === 2 &&
+        tools.includes("AskUserQuestion")
+      ) {
+        content = [
+          {
+            type: "tool_use",
+            id: `toolu_${randomUUID().slice(0, 8)}`,
+            name: "AskUserQuestion",
+            input: {
+              questions: [
+                {
+                  question: "Keep the change?",
+                  header: "Change",
+                  multiSelect: false,
+                  options: [
+                    { label: "Keep", description: "Keep it." },
+                    { label: "Drop", description: "Drop it." },
+                  ],
+                },
+              ],
+            },
+          },
+        ];
+        reason = "tool_use";
+      } else if (
+        tools.includes("CronDelete") &&
+        asked.includes("LOOP-STOP") &&
+        job &&
+        !jobDeleted
+      ) {
+        jobDeleted = true;
+        content = [
+          {
+            type: "tool_use",
+            id: `toolu_${randomUUID().slice(0, 8)}`,
+            name: "CronDelete",
+            input: { id: job },
+          },
+        ];
+        reason = "tool_use";
+      } else if (
+        tools.includes("CronCreate") &&
+        asked.includes("<command-name>/loop</command-name>") &&
+        !toolResults.length
+      ) {
+        content = [
+          {
+            type: "tool_use",
+            id: `toolu_${randomUUID().slice(0, 8)}`,
+            name: "CronCreate",
+            input: {
+              cron: "*/1 * * * *",
+              prompt: "LOOP-TICK fire",
+              recurring: true,
+              ...(asked.includes("DURABLE") ? { durable: true } : {}),
+            },
+          },
+        ];
+        reason = "tool_use";
       } else if (tools.includes("Bash") && assistantTurns === 0 && move) {
         const seconds = /seconds=([0-9.]+)/.exec(prompt)?.[1] ?? "3";
         content = [
@@ -124,7 +224,13 @@ async function mockModel() {
         ];
         reason = "tool_use";
       }
-      if (tools.includes("Bash")) requests.push({ assistantTurns, reply: content[0] });
+      if (tools.includes("Bash"))
+        requests.push({
+          assistantTurns,
+          reply: content[0],
+          asked,
+          answers: JSON.stringify(toolResults).slice(-2000),
+        });
       // A reply that takes this long, once: the CLI repeats the message it was interrupted in.
       const slow = /SLOW-REPLY seconds=([0-9.]+)/.exec(asked);
       if (tools.includes("Bash") && slow && !held.has(slow[0])) {
@@ -322,6 +428,12 @@ const running = (pattern: string) =>
     .filter(Boolean).length;
 const wait = { timeout: 45_000, interval: 100 };
 
+/** Whether the CLI scheduled the job `/loop` asked for (CronCreate's answer says so). */
+const scheduled = (box: Awaited<ReturnType<typeof sandbox>>) =>
+  box.model.requests.some((request) =>
+    /Scheduled (?:recurring )?job [0-9a-f]{8}/.test(String(request.answers)),
+  );
+
 /** Whether the CLI has written this text into the session's transcript. */
 function transcriptHas(box: Awaited<ReturnType<typeof sandbox>>, sessionId: string, text: string) {
   const projects = path.join(box.environment.CLAUDE_CONFIG_DIR!, "projects");
@@ -380,6 +492,149 @@ describe.skipIf(
     await expect.poll(() => runner.snapshot().backgroundTasks.length, wait).toBe(0);
     expect(new Set(results.map((result) => result.turnId)).size).toBe(3);
     expect(runner.snapshot()).toMatchObject({ status: "idle", reason: null, turnOrigin: "self" });
+  }, 120_000);
+
+  it("follows /loop: its turns are the CLI's own, and the worker stays for them", async () => {
+    const box = await sandbox();
+    const { runner, results, send } = managed(box, randomUUID(), true, true);
+    await send("/loop 1m LOOP-TICK");
+    await expect.poll(() => results.length, wait).toBe(1);
+    if (!box.model.offered("CronCreate")) return;
+    // 2.1.299 and 2.1.301 refuse the call offline (a classifier they cannot reach): nothing is
+    // scheduled, and nothing keeps the worker.
+    if (!scheduled(box)) {
+      expect(runner.retireIfInactive()).not.toBeNull();
+      return;
+    }
+    // Idle, with a prompt scheduled: never retired.
+    expect(runner.snapshot()).toMatchObject({ status: "idle", reason: null });
+    expect(runner.retireIfInactive()).toBeNull();
+    // The job fires within the minute: a turn of the CLI's own, not a broken stream.
+    await expect.poll(() => results.length, { timeout: 75_000, interval: 200 }).toBe(2);
+    await expect.poll(() => runner.snapshot().status, wait).toBe("idle");
+    expect(results[1]).toMatchObject({ success: true });
+    expect(runner.snapshot()).toMatchObject({ reason: null, turnOrigin: "self" });
+    expect(box.model.requests.some((request) => String(request.asked).includes("LOOP-TICK fire"))).toBe(
+      true,
+    );
+    // Deleted, it no longer keeps the worker.
+    await send("LOOP-STOP");
+    await expect.poll(() => runner.snapshot().status, wait).toBe("idle");
+    await expect
+      .poll(() => box.model.requests.some((request) => request.reply?.name === "CronDelete"), wait)
+      .toBe(true);
+    await expect.poll(() => runner.retireIfInactive() !== null, wait).toBe(true);
+  }, 180_000);
+
+  it("takes a durable job's turn in a later worker of the session", async () => {
+    const box = await sandbox();
+    const sessionId = randomUUID();
+    const { runner, results, send } = managed(box, sessionId, true, true);
+    await send("/loop 1m LOOP-TICK DURABLE");
+    await expect.poll(() => results.length, wait).toBe(1);
+    if (!box.model.offered("CronCreate") || !scheduled(box)) return;
+    expect(existsSync(path.join(box.workspace, ".claude", "scheduled_tasks.json"))).toBe(true);
+    // The worker goes, as when AgentKib restarts; the next one resumes the session.
+    await runner.shutdown();
+    const next = managed(box, sessionId, false, true);
+    await next.send("RESUME-AFTER-RESTART");
+    await expect.poll(() => next.results.length, wait).toBe(1);
+    // It knows nothing of the job, yet takes its turn as the CLI's own.
+    expect(next.runner.retireIfInactive()).toBeNull();
+    await expect.poll(() => next.results.length, { timeout: 75_000, interval: 200 }).toBe(2);
+    await expect.poll(() => next.runner.snapshot().status, wait).toBe("idle");
+    expect(next.results[1]).toMatchObject({ success: true });
+    expect(next.runner.snapshot()).toMatchObject({ reason: null, turnOrigin: "self" });
+  }, 180_000);
+
+  it("asks the person in a turn it starts by itself, and goes on with the answer", async () => {
+    const box = await sandbox();
+    const { runner, results, send } = managed(box, randomUUID(), true, true);
+    await send("BACKGROUND-QUESTION seconds=3");
+    await expect.poll(() => results.length, wait).toBe(1);
+    if (!box.model.offered("AskUserQuestion")) return;
+    await expect.poll(() => runner.snapshot().questions.length, wait).toBe(1);
+    const asking = runner.snapshot();
+    expect(asking).toMatchObject({ status: "waiting-input", turnOrigin: "self" });
+    const pending = asking.questions[0] as Json;
+    const id = (pending.questions as Json[])[0]!.id as string;
+    await runner.answer(pending.requestId, asking.turnId, { [id]: ["Keep"] }, asking.revision);
+    await expect.poll(() => results.length, wait).toBe(2);
+    expect(results[1]).toMatchObject({ success: true });
+    expect(runner.snapshot()).toMatchObject({
+      status: "idle",
+      questions: [],
+      turnOrigin: "self",
+      reason: null,
+    });
+    // The answer reached the model in that same turn.
+    expect(box.model.requests.at(-1)).toMatchObject({ assistantTurns: 3 });
+    expect(box.model.requests.at(-1)!.answers).toContain("Keep");
+  }, 120_000);
+
+  it("follows two Monitors at once until both end, and is not retired meanwhile", async () => {
+    const box = await sandbox();
+    const { runner, results, send } = managed(box, randomUUID(), true, true);
+    await send("TWO-MONITORS seconds=3");
+    await expect.poll(() => results.length, wait).toBe(1);
+    if (!box.model.offered("Monitor")) return;
+    expect(runner.snapshot().backgroundTasks.map((task) => task.description).sort()).toEqual([
+      "Monitor one",
+      "Monitor two",
+    ]);
+    // Idle between events, but with work going on: never retired.
+    const longRun = { timeout: 90_000, interval: 100 };
+    let checks = 0;
+    await expect
+      .poll(() => {
+        const snapshot = runner.snapshot();
+        if (snapshot.status === "idle" && snapshot.backgroundTasks.length) {
+          expect(runner.retireIfInactive()).toBeNull();
+          checks++;
+        }
+        return snapshot.backgroundTasks.length;
+      }, longRun)
+      .toBe(0);
+    await expect.poll(() => runner.snapshot().status, wait).toBe("idle");
+    expect(checks).toBeGreaterThan(0);
+    // Each event and each end woke the CLI; none of those turns failed or got lost.
+    expect(results.length).toBeGreaterThanOrEqual(3);
+    expect(results.every((result) => result.success)).toBe(true);
+    expect(new Set(results.map((result) => result.turnId)).size).toBe(results.length);
+    expect(runner.snapshot()).toMatchObject({ reason: null, turnOrigin: "self" });
+    await runner.shutdown();
+    expect(running("one-a; sleep")).toBe(0);
+  }, 180_000);
+
+  it("takes a message sent just as the CLI starts a turn by itself", async () => {
+    const box = await sandbox();
+    const { runner, results, send } = managed(box, randomUUID(), true, true);
+    await send("BACKGROUND-COMMAND seconds=3");
+    await expect.poll(() => results.length, wait).toBe(1);
+    // The moment the background work ends, the CLI begins its own turn.
+    await expect
+      .poll(
+        () => runner.snapshot().backgroundTasks.length === 0 || runner.snapshot().status !== "idle",
+        { timeout: 45_000, interval: 2 },
+      )
+      .toBe(true);
+    let sent: string;
+    try {
+      sent = await send("RACE-MESSAGE");
+    } catch (error) {
+      // Its own turn came first: the message waits for it, as AgentKib's queue would.
+      expect(String(error)).toMatch(/busy|stale/);
+      await expect.poll(() => runner.snapshot().status, wait).toBe("idle");
+      sent = await send("RACE-MESSAGE");
+    }
+    await expect.poll(() => results.some((result) => result.turnId === sent), wait).toBe(true);
+    await expect.poll(() => runner.snapshot().status, wait).toBe("idle");
+    expect(results.every((result) => result.success)).toBe(true);
+    expect(runner.snapshot()).toMatchObject({ reason: null, backgroundTasks: [] });
+    // The model read the message once.
+    expect(
+      box.model.requests.filter((request) => String(request.asked).includes("RACE-MESSAGE")),
+    ).toHaveLength(1);
   }, 120_000);
 
   it("stops only the turn: the foreground command ends, the CLI and its background command go on", async () => {
@@ -534,6 +789,22 @@ describe.skipIf(
     }
     expect(offered).toEqual([true, true, true, true, true, true]);
   }, 300_000);
+
+  it("offers the scheduling tools only where background work is allowed", async () => {
+    const box = await sandbox();
+    const on = managed(box, randomUUID(), true, true);
+    await on.send("Plain message.");
+    await expect.poll(() => on.results.length, wait).toBe(1);
+    if (!box.model.toolsByRequest.at(-1)!.includes("CronCreate")) return;
+    const off = managed(box, randomUUID(), true, false);
+    await off.send("Plain message.");
+    await expect.poll(() => off.results.length, wait).toBe(1);
+    const offered = box.model.toolsByRequest.at(-1)!;
+    expect(offered).toContain("Bash");
+    expect(
+      offered.filter((tool) => ["CronCreate", "CronDelete", "ScheduleWakeup"].includes(tool)),
+    ).toEqual([]);
+  }, 120_000);
 
   // The next worker hears that the command was stopped. That start is where a session used to be
   // lost: the CLI sends an empty result before the turn of the message it was given.

@@ -24,7 +24,7 @@ const copy: Record<
 > = {
   "zh-CN": {
     toggle: "允许 Claude Code 在后台运行任务",
-    hint: "命令和子代理可以在后台运行，结束后 Claude Code 会自己接着处理；退出 AgentKib 会停止它们。改动在 Claude Code 下次启动时生效。",
+    hint: "命令、子代理和 /loop 这类定时任务可以在后台运行，结束或到点后 Claude Code 会自己接着处理；退出 AgentKib 会停止它们。改动在 Claude Code 下次启动时生效。",
     tooOld: (minimum, version) =>
       `需要 Claude Code ${minimum} 或更新版本${version ? `（当前 ${version}）` : ""}。`,
     missing: "没有找到 Claude Code。",
@@ -32,7 +32,7 @@ const copy: Record<
   },
   "zh-Hant": {
     toggle: "允許 Claude Code 在背景執行工作",
-    hint: "命令和子代理可以在背景執行，結束後 Claude Code 會自己接著處理；結束 AgentKib 會停止它們。變更在 Claude Code 下次啟動時生效。",
+    hint: "命令、子代理和 /loop 這類排程工作可以在背景執行，結束或到時間後 Claude Code 會自己接著處理；結束 AgentKib 會停止它們。變更在 Claude Code 下次啟動時生效。",
     tooOld: (minimum, version) =>
       `需要 Claude Code ${minimum} 或更新版本${version ? `（目前 ${version}）` : ""}。`,
     missing: "找不到 Claude Code。",
@@ -40,7 +40,7 @@ const copy: Record<
   },
   "ja-JP": {
     toggle: "Claude Code にバックグラウンドでの実行を許可",
-    hint: "コマンドやサブエージェントをバックグラウンドで実行し、終わると Claude Code が自動で続けます。AgentKib を終了すると停止します。変更は Claude Code の次回起動時に反映されます。",
+    hint: "コマンドやサブエージェント、/loop などの定期実行をバックグラウンドで実行し、終わったり時間になったりすると Claude Code が自動で続けます。AgentKib を終了すると停止します。変更は Claude Code の次回起動時に反映されます。",
     tooOld: (minimum, version) =>
       `Claude Code ${minimum} 以降が必要です${version ? `（現在 ${version}）` : ""}。`,
     missing: "Claude Code が見つかりません。",
@@ -48,7 +48,7 @@ const copy: Record<
   },
   "en-US": {
     toggle: "Let Claude Code run tasks in the background",
-    hint: "Commands and subagents can run in the background, and Claude Code picks up their results by itself. Quitting AgentKib stops them. Changes apply the next time Claude Code starts.",
+    hint: "Commands, subagents and scheduled prompts such as /loop can run in the background, and Claude Code picks them up by itself when they finish or come due. Quitting AgentKib stops them. Changes apply the next time Claude Code starts.",
     tooOld: (minimum, version) =>
       `Requires Claude Code ${minimum} or later${version ? ` (this computer has ${version})` : ""}.`,
     missing: "Claude Code was not found.",

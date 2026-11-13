@@ -35,6 +35,15 @@ export type LaneHost = {
   /** Whether AgentKib already runs this Codex session. */
   managed(sessionId: string): Promise<boolean>;
   workspaces(): Array<{ id: string; name: string }>;
+  /**
+   * The latest turns of a lane whose end Codex recorded, whoever ran them, oldest first: the ones
+   * no live observer reported, as when the Codex app ran the lane, are reported late (`catchUp`).
+   */
+  endedTurns?(
+    sessionId: string,
+  ): Promise<
+    Array<{ turnId: string; outcome: string; startedAt: string | null; endedAt: string | null }>
+  >;
 };
 
 /** The longest message AgentKib sends in one turn, as the host's control entry allows. */
@@ -51,6 +60,10 @@ const SERVER_NAME = "agentkib_workers";
 export const LEAD_ALLOWED_TOOLS = Object.freeze([`mcp__${SERVER_NAME}`]);
 /** One notice per worker and minute that the person worked on it directly. */
 const INTERVENTION_QUIET_MS = 60_000;
+/** How often the lanes are read for turns that ended unreported (`catchUp`). */
+const CATCH_UP_MS = 20_000;
+/** A turn this recent is left to the live observers, which report it with Codex's own measure. */
+const CATCH_UP_GRACE_MS = 15_000;
 /** Pauses that end when the person sends the lead a message (`userSpoke`). */
 const RESUMED_BY_MESSAGE = new Set(["auto-turn-limit", "restart-confirmation-required"]);
 
@@ -250,6 +263,8 @@ export class OrchestrationService {
   #endpoints = new Map<string, Promise<LeadEndpoint>>();
   #interventions = new Map<string, number>();
   #closed = false;
+  #catchUp: ReturnType<typeof setInterval> | undefined;
+  #catchingUp = false;
 
   constructor(
     dataDir: string,
@@ -267,6 +282,10 @@ export class OrchestrationService {
     readonly queuedReports: (leadSessionId: string) => number = () => 0,
   ) {
     this.registry = new LeadRegistry(dataDir, bootId);
+    if (lanes.endedTurns) {
+      this.#catchUp = setInterval(() => void this.catchUp(), CATCH_UP_MS);
+      this.#catchUp.unref?.();
+    }
   }
 
   // ---- leads -----------------------------------------------------------------------------
@@ -432,6 +451,46 @@ export class OrchestrationService {
       ),
       reply,
     );
+  }
+
+  /**
+   * Reports the turns a lane ended that no live observer reported: those the Codex app ran while
+   * AgentKib was not connected to it, or while AgentKib was not running. Only turns begun after
+   * the lane joined count, and a turn ended in the last moments is left to the live observers.
+   */
+  async catchUp(now = Date.now()): Promise<void> {
+    if (this.#catchingUp || this.#closed || !this.lanes.endedTurns) return;
+    this.#catchingUp = true;
+    try {
+      for (const lead of this.registry.list())
+        for (const lane of lead.lanes) {
+          let turns: Awaited<ReturnType<NonNullable<LaneHost["endedTurns"]>>>;
+          try {
+            turns = await this.lanes.endedTurns(lane.sessionId);
+          } catch {
+            continue;
+          }
+          const joined = Date.parse(lane.createdAt);
+          for (const turn of turns) {
+            const started = turn.startedAt === null ? Number.NaN : Date.parse(turn.startedAt);
+            const ended = turn.endedAt === null ? Number.NaN : Date.parse(turn.endedAt);
+            if (
+              lane.reportedTurns.includes(turn.turnId) ||
+              !(started >= joined) ||
+              !(now - ended >= CATCH_UP_GRACE_MS)
+            )
+              continue;
+            await this.laneTurnEnded(
+              lane.sessionId,
+              turn.turnId,
+              turn.outcome,
+              ended >= started ? ended - started : null,
+            );
+          }
+        }
+    } finally {
+      this.#catchingUp = false;
+    }
   }
 
   /**
@@ -637,6 +696,7 @@ export class OrchestrationService {
 
   async close(): Promise<void> {
     this.#closed = true;
+    clearInterval(this.#catchUp);
     const endpoints = [...this.#endpoints.values()];
     this.#endpoints.clear();
     await Promise.all(

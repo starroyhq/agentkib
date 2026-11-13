@@ -23,6 +23,14 @@ import { timestamp } from "./timestamps";
  */
 export type ExternalTurn = { status: "running"; startedAt: string | null };
 
+/** A turn whose end a thread's rollout records, whoever ran it. */
+export type EndedTurn = {
+  turnId: string;
+  outcome: "completed" | "cancelled";
+  startedAt: string | null;
+  endedAt: string | null;
+};
+
 const LOCK_DIRECTORY = "thread-writer-locks";
 const THREAD_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const HISTORY_DATABASE = /^thread_history_(\d+)\.sqlite$/;
@@ -40,12 +48,26 @@ const LOCK_TTL_MS = 5_000;
 const MISSING_TTL_MS = 60_000;
 /** Turn times come from the rollout and lock times from the file system. */
 const CLOCK_SLACK_MS = 2_000;
+/** How far back a rollout is read for its ended turns the first time. */
+const ENDED_TAIL_BYTES = 2 * 1024 * 1024;
+/** The ended turns kept per thread, and the threads followed for them. */
+const MAX_ENDED = 20;
+const MAX_ENDED_THREADS = 64;
 
-type TurnEvent = { started: boolean; turnId: string | null; at: string | null };
+type TurnEvent = { started: boolean; aborted: boolean; turnId: string | null; at: string | null };
 /** The latest turn to start in a thread. */
 type Turn = { id: string | null; open: boolean; startedAt: string | null };
 /** Where a rollout was read up to, and its latest turn there. */
 type Scan = { file: string; dev: number; ino: number; offset: number; turn: Turn | null };
+/** Where a rollout was read up to for ended turns: the turns begun and not ended, the ended. */
+type EndedScan = {
+  file: string;
+  dev: number;
+  ino: number;
+  offset: number;
+  open: Map<string, string | null>;
+  ended: EndedTurn[];
+};
 type Thread = { id: string; recorded: string };
 
 const codex = new CodexSessions({});
@@ -63,6 +85,9 @@ export class CodexExternalTurns {
   #missing = new Map<string, number>();
   #scans = new Map<string, Scan>();
   #locks = new Map<string, { at: number; busy: boolean }>();
+  // Kept apart from the running-turn caches, which `observe` prunes to the locked threads.
+  #endedThreads = new Map<string, Thread>();
+  #ended = new Map<string, EndedScan>();
 
   constructor(private readonly home: () => string) {}
 
@@ -106,6 +131,115 @@ export class CodexExternalTurns {
       return thread ? this.#turn(home, key, thread, `${threadId}.lock`, true, now) : null;
     } catch {
       return null;
+    }
+  }
+
+  /**
+   * The latest turns of one thread whose end its rollout records, oldest first, whoever ran them:
+   * for a Project Agent's worker that ran while AgentKib did not watch it. Reads where the rollout
+   * grew since the last call, or its end the first time. Never throws.
+   */
+  endedTurns(threadId: string, now = Date.now()): EndedTurn[] {
+    try {
+      if (!THREAD_ID.test(threadId)) return [];
+      const home = this.home();
+      const key = threadId.toLowerCase();
+      let thread = this.#endedThreads.get(key);
+      if (!thread) {
+        this.#lookUp(home, [key], now);
+        thread = this.#threads.get(key);
+        if (!thread) return [];
+        if (this.#endedThreads.size >= MAX_ENDED_THREADS) {
+          const oldest = this.#endedThreads.keys().next().value!;
+          this.#endedThreads.delete(oldest);
+          this.#ended.delete(oldest);
+        }
+        this.#endedThreads.set(key, thread);
+      }
+      const file = resolveRollout(
+        path.isAbsolute(thread.recorded) ? thread.recorded : path.join(home, thread.recorded),
+      );
+      // Codex compresses only idle threads' rollouts: nothing ended since the last read.
+      if (isCompressedRollout(file)) return this.#ended.get(key)?.ended.slice() ?? [];
+      const scan = this.#endedScan(key, file);
+      // The rollout moved, as an archived thread's does: look it up again next time.
+      if (!scan) this.#endedThreads.delete(key);
+      return scan?.ended.slice() ?? [];
+    } catch {
+      return [];
+    }
+  }
+
+  #endedScan(key: string, file: string): EndedScan | undefined {
+    let seen: Stats;
+    try {
+      seen = lstatSync(file);
+    } catch {
+      return undefined;
+    }
+    if (!seen.isFile() || isReparseOrSymlink(file, seen)) return undefined;
+    const previous = this.#ended.get(key);
+    if (
+      previous?.file === file &&
+      previous.dev === seen.dev &&
+      previous.ino === seen.ino &&
+      previous.offset === seen.size
+    )
+      return previous;
+    let fd: number;
+    try {
+      fd = openSync(file, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0));
+    } catch {
+      return undefined;
+    }
+    try {
+      const stat = fstatSync(fd);
+      if (!stat.isFile()) return undefined;
+      const resume =
+        previous &&
+        previous.file === file &&
+        previous.dev === stat.dev &&
+        previous.ino === stat.ino &&
+        previous.offset <= stat.size &&
+        stat.size - previous.offset <= MAX_SCAN_BYTES
+          ? previous
+          : undefined;
+      const scan: EndedScan = resume
+        ? { ...resume, open: new Map(resume.open), ended: resume.ended.slice() }
+        : { file, dev: stat.dev, ino: stat.ino, offset: 0, open: new Map(), ended: [] };
+      const from = resume ? resume.offset : Math.max(0, stat.size - ENDED_TAIL_BYTES);
+      const bytes = readAt(fd, from, stat.size - from);
+      // Read from the middle of a line, the first one is not whole.
+      let start = 0;
+      if (!resume && from > 0) {
+        const first = bytes.indexOf(10);
+        start = first < 0 ? bytes.length : first + 1;
+      }
+      for (let end = bytes.indexOf(10, start); end >= 0; end = bytes.indexOf(10, start)) {
+        const event = turnEvent(bytes.subarray(start, end));
+        if (event?.turnId && event.started) {
+          scan.open.delete(event.turnId);
+          scan.open.set(event.turnId, event.at);
+          if (scan.open.size > MAX_ENDED) scan.open.delete(scan.open.keys().next().value!);
+        } else if (event?.turnId) {
+          scan.ended = scan.ended.filter((turn) => turn.turnId !== event.turnId);
+          scan.ended.push({
+            turnId: event.turnId,
+            outcome: event.aborted ? "cancelled" : "completed",
+            startedAt: scan.open.get(event.turnId) ?? null,
+            endedAt: event.at,
+          });
+          scan.open.delete(event.turnId);
+          if (scan.ended.length > MAX_ENDED) scan.ended.shift();
+        }
+        start = end + 1;
+      }
+      // The bytes after the last newline are a line still being written.
+      scan.offset = from + start;
+      this.#ended.set(key, scan);
+      return scan;
+    } finally {
+      closeSync(fd);
     }
   }
 
@@ -313,6 +447,7 @@ function turnEvent(line: Buffer): TurnEvent | undefined {
   if (typeof type !== "string" || !TURN_EVENTS.includes(type)) return undefined;
   return {
     started: type === "task_started",
+    aborted: type === "turn_aborted",
     turnId: typeof turnId === "string" && turnId ? turnId : null,
     at: timestamp(row.timestamp),
   };

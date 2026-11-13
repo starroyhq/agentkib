@@ -36,7 +36,7 @@ import {
   codexServerVersion,
 } from "./codex-runtime-preflight";
 import { CodexCatalogCache } from "./codex-catalog-cache";
-import { CodexExternalTurns, type ExternalTurn } from "./codex-external-turns";
+import { CodexExternalTurns, type EndedTurn, type ExternalTurn } from "./codex-external-turns";
 import { codexResumeCommand } from "./codex-resume-command";
 import { CodexFollowerBridge } from "./codex-follower-bridge";
 import { CodexFollowerConnection } from "./codex-follower-connection";
@@ -598,6 +598,17 @@ export class WebReadRequests {
     return readManagedRecords(this.dataDir, this.store).some(
       (record) => record.id === sessionId && !record.released,
     );
+  }
+
+  /**
+   * The latest turns of a Codex session AgentKib manages whose end Codex recorded, whoever ran
+   * them: a Project Agent hears of those its worker ran while AgentKib did not watch it.
+   */
+  endedTurns(sessionId: string): EndedTurn[] {
+    const record = readManagedRecords(this.dataDir, this.store).find(
+      (item) => item.id === sessionId && !item.released,
+    );
+    return record?.native_id ? this.#externalTurns.endedTurns(record.native_id) : [];
   }
 
   managedOptions() {

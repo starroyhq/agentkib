@@ -691,6 +691,49 @@ describe("orchestration service", () => {
       expect(orchestration.status(LEAD)!.lanes[0]!.lastReport?.preview).toContain("Done.");
     });
 
+    it("reports late the turns a worker ended while AgentKib did not watch it", async () => {
+      const delivered: string[] = [];
+      let ended: Array<{
+        turnId: string;
+        outcome: string;
+        startedAt: string | null;
+        endedAt: string | null;
+      }> = [];
+      const { lanes } = host({
+        events: async () => [
+          { kind: "agent-message", content: "Ran in the Codex app.", turn_id: "missed" },
+        ],
+        endedTurns: async () => ended,
+      });
+      const orchestration = service(lanes, directory(), "boot-1", (_lead, _device, text) => {
+        delivered.push(text);
+        return false;
+      });
+      orchestration.designate({ sessionId: LEAD, deviceId: DEVICE, workspaceId: "w1" });
+      const { session } = parse(
+        await orchestration.call(LEAD, "worker_open", { name: "api", workspace: "w1" }),
+      );
+      const joined = Date.parse(orchestration.status(LEAD)!.lanes[0]!.createdAt);
+      const at = (offset: number) => new Date(joined + offset).toISOString();
+      ended = [
+        // Before it was a worker: not the Project Agent's business.
+        { turnId: "before", outcome: "completed", startedAt: at(-60_000), endedAt: at(-30_000) },
+        { turnId: "missed", outcome: "completed", startedAt: at(1_000), endedAt: at(43_000) },
+        { turnId: "stopped", outcome: "cancelled", startedAt: at(50_000), endedAt: at(55_000) },
+        // Just ended: the live observers report it, with Codex's own measure.
+        { turnId: "fresh", outcome: "completed", startedAt: at(100_000), endedAt: at(110_000) },
+      ];
+      // A live observer saw this one.
+      await orchestration.laneTurnEnded(session, "stopped", "cancelled", 5_000);
+      await orchestration.catchUp(joined + 120_000);
+      await orchestration.catchUp(joined + 120_000);
+      expect(delivered.map((text) => text.split("\n")[0])).toEqual([
+        '[AgentKib report] Worker "api" (Codex) · turn ended: cancelled after 5s',
+        '[AgentKib report] Worker "api" (Codex) · turn ended: completed after 42s',
+      ]);
+      expect(delivered[1]).toContain("Ran in the Codex app.");
+    });
+
     it("tells the lead once that a lane waits for the user, and when the user steps in", async () => {
       const { orchestration, delivered, session } = await leading();
       await orchestration.laneWaiting(session, "t3", "awaiting-approval");

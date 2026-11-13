@@ -3,7 +3,7 @@
 // than /opt/homebrew/bin/codex). A Project Agent's worker is a real Codex CLI that AgentKib runs
 // (`web-read.ts`), against a loopback Responses provider, logged in with a fake API key in a
 // throwaway HOME, and confined by sandbox-exec to loopback. No account or user data is read.
-import { spawnSync } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import { createServer } from "node:http";
 import {
   chmodSync,
@@ -156,19 +156,31 @@ describe.skipIf(process.platform !== "darwin" || process.env.AGENTKIB_CODEX_WORK
       cleanups.push(() => readers.close());
       const web = new WebReadRequests(store, readers, root, () => 0n, environment);
       cleanups.push(() => web.closeAsync());
+      // The AgentKib the lanes go through; a later one stands in after a restart.
+      let reader = web;
       // What AgentKib's backend gives the orchestration service (`index.ts`, `#laneHost`).
       const lanes: LaneHost = {
-        options: () => web.managedOptions() as Promise<Record<string, unknown>>,
-        lifecycle: (value) => web.managedLifecycle(value),
-        control: (value) => web.managedControl(value),
+        options: () => reader.managedOptions() as Promise<Record<string, unknown>>,
+        lifecycle: (value) => reader.managedLifecycle(value),
+        control: (value) => reader.managedControl(value),
         live: (sessionId) =>
-          web.request({ operation: "live", sessionId, experimentalEnabled: true }) as Promise<Json>,
+          reader.request({
+            operation: "live",
+            sessionId,
+            experimentalEnabled: true,
+          }) as Promise<Json>,
         events: async (sessionId, limit) =>
           (
-            (await web.request({ operation: "events", sessionId, limit, retainCursor: false })) as {
+            (await reader.request({
+              operation: "events",
+              sessionId,
+              limit,
+              retainCursor: false,
+            })) as {
               events?: Json[];
             }
           ).events ?? [],
+        endedTurns: async (sessionId) => reader.endedTurns(sessionId),
         session: (sessionId) => {
           const summary = store.sessions.get(sessionId);
           return summary
@@ -179,7 +191,7 @@ describe.skipIf(process.platform !== "darwin" || process.env.AGENTKIB_CODEX_WORK
               }
             : null;
         },
-        managed: async (sessionId) => web.isManagedSession(sessionId),
+        managed: async (sessionId) => reader.isManagedSession(sessionId),
         workspaces: () => [{ id: "w1", name: "Project" }],
       };
       const reports: string[] = [];
@@ -235,6 +247,41 @@ describe.skipIf(process.platform !== "darwin" || process.env.AGENTKIB_CODEX_WORK
           lastReport: { preview: expect.any(String) },
         },
       ]);
+
+      // Codex's rollout records that turn under the ID the live report used: never told twice.
+      const [recorded] = await lanes.endedTurns!(opened.session);
+      expect(orchestration.status(lead)!.lanes[0]!.reportedTurns).toContain(recorded!.turnId);
+      await orchestration.catchUp(Date.now() + 60_000);
+      expect(reports).toHaveLength(1);
+
+      // AgentKib stops watching, and the Codex CLI runs a turn of the worker by itself: the
+      // Project Agent hears of it late, once.
+      await web.closeAsync();
+      reader = new WebReadRequests(store, readers, root, () => 0n, environment);
+      cleanups.push(() => reader.closeAsync());
+      // Not spawnSync: the provider answering it runs in this process.
+      const resumed = await new Promise<{ code: number | null; stderr: string }>((resolve) => {
+        const child = spawn(
+          wrapper,
+          ["exec", "--skip-git-repo-check", "resume", "--last", "BRIEF-2: add a second line"],
+          { env: environment, cwd: workspace, stdio: ["ignore", "ignore", "pipe"] },
+        );
+        let stderr = "";
+        child.stderr.on("data", (chunk) => (stderr += chunk));
+        const timer = setTimeout(() => child.kill("SIGTERM"), 90_000);
+        child.on("exit", (code) => {
+          clearTimeout(timer);
+          resolve({ code, stderr });
+        });
+      });
+      expect(resumed.code, resumed.stderr.slice(-2000)).toBe(0);
+      expect(model.inputs.some((input) => input.includes("BRIEF-2"))).toBe(true);
+      await orchestration.catchUp(Date.now() + 60_000);
+      await orchestration.catchUp(Date.now() + 60_000);
+      expect(reports).toHaveLength(2);
+      expect(reports[1]).toMatch(
+        /^\[AgentKib report\] Worker "api" \(Codex\) · turn ended: completed after \d+s\n/,
+      );
     }, 180_000);
   },
 );

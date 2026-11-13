@@ -2279,6 +2279,7 @@ export class TypeScriptBackend {
           : null;
       },
       managed: (sessionId) => this.#withWebRead((owner) => owner.isManagedSession(sessionId)),
+      endedTurns: (sessionId) => this.#withWebRead((owner) => owner.endedTurns(sessionId)),
       workspaces: () =>
         (store.listWorkspaces() as Array<{ id: string; name?: string; path: string }>).map(
           (workspace) => ({ id: workspace.id, name: workspace.name ?? workspace.path }),

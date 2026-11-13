@@ -58,6 +58,23 @@ describe("trusted Claude owner boundary", () => {
       expect(deps.receipt).not.toHaveBeenCalled();
     },
   );
+  it("reads and writes the background task setting as the local owner, and nothing else", async () => {
+    await localClaudeRequest(deps, { operation: "background-tasks", deviceId: "phone" });
+    await localClaudeRequest(deps, {
+      operation: "background-tasks",
+      enabled: false,
+      sessionId: "session",
+      deviceId: "phone",
+    });
+    await localClaudeRequest(deps, { operation: "background-tasks", enabled: "yes" });
+    expect(vi.mocked(deps.managed).mock.calls.map(([params]) => params)).toEqual([
+      { operation: "background-tasks", deviceId: "agentkib-local-owner" },
+      { operation: "background-tasks", enabled: false, deviceId: "agentkib-local-owner" },
+      // Anything but a boolean only reads.
+      { operation: "background-tasks", deviceId: "agentkib-local-owner" },
+    ]);
+    expect(deps.receipt).not.toHaveBeenCalled();
+  });
   it("rejects bridge management for a session outside the Claude catalog", async () => {
     await expect(
       localClaudeRequest(deps, {

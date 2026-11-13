@@ -1,6 +1,10 @@
 import { sessionContinuationCopy } from "@agentkib/session-ui";
 import { describe, expect, it } from "vitest";
-import { claudeSessionBanner } from "./claude-session-banner";
+import {
+  claudeBackgroundStatus,
+  claudeComposerNotice,
+  claudeSessionBanner,
+} from "./claude-session-banner";
 import { claudeConnectionCopy, claudeConnectionReason } from "./claude-connection-copy";
 import { sessionDisplayState } from "./session-display-state";
 import type { SessionController } from "./use-session-controller";
@@ -126,6 +130,18 @@ describe("Claude execution and terminal connection presentation", () => {
         body: continuation.backgroundEnded,
         notice: "background-ended",
       });
+      expect(claudeComposerNotice(claudeSessionBanner(ended))).toBe(true);
+      // Stopped after too many turns the CLI started by itself: also a line above the composer.
+      const limited = {
+        ...idle,
+        live: { ...idle.live!, continuationNotice: "background-limit" as const },
+      };
+      expect(claudeSessionBanner(limited)).toEqual({
+        title: "",
+        body: continuation.backgroundLimit,
+        notice: "background-limit",
+      });
+      expect(claudeComposerNotice(claudeSessionBanner(limited))).toBe(true);
       const conflict = {
         ...idle,
         live: {
@@ -203,4 +219,46 @@ describe("Claude execution and terminal connection presentation", () => {
   it("uses 對話 consistently in traditional Chinese connection copy", () => {
     expect(Object.values(claudeConnectionCopy["zh-TW"]).join(" ")).not.toContain("會話");
   });
+  it.each(["zh-CN", "zh-TW", "en-US", "ja-JP"] as const)(
+    "says what runs in the background of a managed session in %s",
+    (locale) => {
+      const continuation = sessionContinuationCopy(locale);
+      const session = (live: Record<string, unknown>) => {
+        const value = fixture(locale, "claude-managed", "idle");
+        Object.assign(value.live!, live);
+        return value;
+      };
+      expect(claudeBackgroundStatus(session({}))).toBeNull();
+      expect(claudeBackgroundStatus(session({ backgroundTasks: [] }))).toBeNull();
+      const one = {
+        kind: "command",
+        description: "Run the tests",
+        startedAt: "2026-11-13T09:00:00.000Z",
+      };
+      expect(claudeBackgroundStatus(session({ backgroundTasks: [one] }))).toBe(
+        continuation.backgroundRunning(1, "Run the tests"),
+      );
+      expect(continuation.backgroundRunning(1, "Run the tests")).toContain("Run the tests");
+      expect(
+        claudeBackgroundStatus(
+          session({ backgroundTasks: [one, { ...one, kind: "agent", description: null }] }),
+        ),
+      ).toBe(continuation.backgroundRunning(2, "Run the tests"));
+      expect(continuation.backgroundRunning(2, "Run the tests")).toContain("2");
+      // While the CLI continues by itself, that is what the line says.
+      for (const status of ["running", "waiting-approval"])
+        expect(
+          claudeBackgroundStatus(session({ status, turnOrigin: "self", backgroundTasks: [one] })),
+        ).toBe(continuation.backgroundTurn);
+      expect(
+        claudeBackgroundStatus(
+          session({ status: "running", turnOrigin: "host", backgroundTasks: [] }),
+        ),
+      ).toBeNull();
+      // Only a process AgentKib runs reports background tasks.
+      const follower = fixture(locale, "claude-follower", "idle");
+      Object.assign(follower.live!, { backgroundTasks: [one] });
+      expect(claudeBackgroundStatus(follower)).toBeNull();
+    },
+  );
 });

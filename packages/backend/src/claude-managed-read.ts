@@ -31,7 +31,11 @@ import type { BackendStore } from "./store";
 import { canonicalize, pathIdentity } from "./paths";
 import { restrictRemotePath } from "./remote-tls";
 import { acquirePortableFileLease } from "./managed-session-lock";
-import { readClaudeVersion, supportsClaudeVersion } from "./claude-version";
+import {
+  CLAUDE_BACKGROUND_TASKS_MINIMUM,
+  readClaudeVersion,
+  supportsClaudeVersion,
+} from "./claude-version";
 import {
   CLAUDE_COMMAND_REFUSALS,
   claudeInputCommandRefusal,
@@ -153,6 +157,22 @@ const isObject = (value: unknown): value is Record<string, any> =>
   value !== null && typeof value === "object" && !Array.isArray(value);
 const sessionIdPattern = /^[A-Za-z0-9-]{1,128}$/;
 const uuidPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+/** A stored snapshot of a turn the CLI started by itself that had not ended when it was stored. */
+const interruptedSelfTurn = (snapshot: Record<string, unknown>): boolean =>
+  snapshot.turnOrigin === "self" &&
+  ["running", "waiting-approval", "waiting-input"].includes(String(snapshot.status));
+/**
+ * What clients see of the worker's background tasks: what runs and since when. The CLI's task and
+ * tool ids stay in the host, as with sub-agents.
+ */
+const publicBackgroundTasks = (tasks: unknown): Record<string, unknown>[] =>
+  Array.isArray(tasks)
+    ? tasks.filter(isObject).map((task) => ({
+        kind: task.kind === "agent" ? "agent" : "command",
+        description: typeof task.description === "string" ? task.description : null,
+        startedAt: typeof task.startedAt === "string" ? task.startedAt : null,
+      }))
+    : [];
 const startupFailureCodes = new Set([
   "initialize-timeout",
   "initialize-write-failed",
@@ -187,6 +207,8 @@ type ClaudePermissionView = {
 export type ClaudeContinuationOptions = {
   idleTimeoutMs?: number;
   maintenanceIntervalMs?: number;
+  /** Whether the person lets managed sessions do background work; read when a worker starts. */
+  backgroundTasks?: () => boolean;
   isSessionObserved?: (sessionId: string) => boolean;
   isSessionBridged?: (sessionId: string) => boolean;
 };
@@ -1219,7 +1241,7 @@ export class ClaudeManagedReadOwner {
       (snapshot: ClaudeRunnerSnapshot) => {
         const current = this.#load(id);
         if (!current || current.released) throw new Error("Claude session unavailable");
-        if (snapshot.status === "idle" && !snapshot.activity)
+        if (snapshot.status === "idle" && !snapshot.activity && !snapshot.backgroundTasks.length)
           this.#idleSince.set(id, this.#idleSince.get(id) ?? Date.now());
         else this.#idleSince.delete(id);
         const turnId = snapshot.turnId;
@@ -1287,6 +1309,13 @@ export class ClaudeManagedReadOwner {
         onUndispatchedStartup: (proof) => this.#recordStartupCleanup(record, proof),
         beforeStart: () => this.#beforeRunnerStart(id),
         ...(this.#version?.value ? { cliVersion: this.#version.value } : {}),
+        backgroundTasks:
+          this.continuation.backgroundTasks?.() === true &&
+          supportsClaudeVersion(this.#version?.value ?? "", CLAUDE_BACKGROUND_TASKS_MINIMUM),
+        onSelfTurnLimit: () => {
+          this.#continuationNotices.set(id, "background-limit");
+          this.#continuationNoticeIds.set(id, randomUUID());
+        },
         onResult: (result) => {
           new ReadStateLedger(this.dataDir).record(
             conversationReadKey("claude-code", record.home, record.nativeId),
@@ -3413,7 +3442,9 @@ export class ClaudeManagedReadOwner {
             snapshot.status !== "idle" ||
             snapshot.activity ||
             snapshot.approvals.length ||
-            snapshot.questions.length
+            snapshot.questions.length ||
+            // Background work is the session still working, with nobody watching it or not.
+            snapshot.backgroundTasks.length
           ) {
             this.#idleSince.delete(id);
             return;
@@ -3566,6 +3597,31 @@ export class ClaudeManagedReadOwner {
     if (previous !== value) this.#catalogChanged?.();
   }
 
+  /**
+   * Whether managed sessions may keep background tasks: the person's preference, and whether this
+   * computer's Claude Code can (macOS, where the worker's whole process tree ends with it, and a
+   * CLI that reports when the turn of a message starts). A change applies from the next worker.
+   */
+  async backgroundTasksStatus(): Promise<{
+    enabled: boolean;
+    available: boolean;
+    reason: "platform-unsupported" | "claude-cli-unavailable" | "claude-cli-too-old" | null;
+    minimumVersion: string;
+    cliVersion: string | null;
+  }> {
+    const enabled = this.continuation.backgroundTasks?.() === true;
+    const status = { enabled, minimumVersion: CLAUDE_BACKGROUND_TASKS_MINIMUM };
+    if (process.platform !== "darwin" || !supportsClaudeManagedRunner())
+      return { ...status, available: false, reason: "platform-unsupported", cliVersion: null };
+    const version = await this.#installationVersion();
+    if (!version)
+      return { ...status, available: false, reason: "claude-cli-unavailable", cliVersion: null };
+    const cliVersion = version.replace(/ \(Claude Code\)$/, "");
+    if (!supportsClaudeVersion(version, CLAUDE_BACKGROUND_TASKS_MINIMUM))
+      return { ...status, available: false, reason: "claude-cli-too-old", cliVersion };
+    return { ...status, available: true, reason: null, cliVersion };
+  }
+
   /** Catalog presentation never probes processes or starts a runner. */
   catalogContinuation(
     id: string,
@@ -3574,7 +3630,8 @@ export class ClaudeManagedReadOwner {
     const runner = this.#runners.get(id);
     const status = this.#catalogUnconfirmed.has(id)
       ? "outcome-unknown"
-      : (runner?.status ?? persisted?.status);
+      : (runner?.status ??
+        (persisted && interruptedSelfTurn(persisted) ? "idle" : persisted?.status));
     // A cached external owner cannot turn an unresolved outcome into a fork choice.
     if (status === "outcome-unknown")
       return {
@@ -3597,6 +3654,7 @@ export class ClaudeManagedReadOwner {
         status: this.#starting.has(id) ? "starting" : (status ?? "idle"),
         executionLocation: "agentkib",
         ownershipReason: reason,
+        ...(runner?.backgroundTaskCount ? { backgroundTasks: runner.backgroundTaskCount } : {}),
       };
     if (reason)
       return {
@@ -4096,6 +4154,25 @@ export class ClaudeManagedReadOwner {
       this.#save(record);
       this.#recoverCompletions(record);
     }
+    if (!runner && interruptedSelfTurn(record.snapshot)) {
+      // A turn the CLI started by itself answers no command, so no outcome is in doubt: with its
+      // worker gone it did not finish, and the session can be used again.
+      record.snapshot = {
+        ...record.snapshot,
+        status: "idle",
+        lastOutcome: "cancelled",
+        sendEnabled: true,
+        stopEnabled: false,
+        approvals: [],
+        questions: [],
+        streamText: "",
+        streamTextTruncated: false,
+        activity: null,
+        apiRetry: null,
+        revision: Number(record.snapshot.revision ?? 0) + 1,
+      };
+      this.#save(record);
+    }
     const unconfirmed = managedSessionHasUnknownCommands(this.dataDir, id);
     this.#setCatalogUnconfirmed(id, unconfirmed);
     let live: Record<string, unknown>;
@@ -4128,6 +4205,9 @@ export class ClaudeManagedReadOwner {
     live.sessionId = record.id;
     // Runner observations carry native ids internally; only the parent-scoped projection is public.
     delete live.subagents;
+    // Background work lives in the worker: without one none runs, whatever was last stored.
+    live.backgroundTasks = runner?.hasWorker ? publicBackgroundTasks(live.backgroundTasks) : [];
+    if (live.turnOrigin !== "self") live.turnOrigin = "host";
     live.sourceSessionId = record.nativeId;
     live.workspaceId = record.workspaceId;
     live.runtimeBootId = this.bootId;
@@ -4227,6 +4307,7 @@ export class ClaudeManagedReadOwner {
     const pendingStartup = this.#runners.get(id)?.startupPending;
     return {
       ...snapshot,
+      backgroundTasks: publicBackgroundTasks(snapshot.backgroundTasks),
       subagents: snapshot.subagents?.length
         ? projectSubagentObservations(
             {

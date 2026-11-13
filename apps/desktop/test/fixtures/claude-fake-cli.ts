@@ -10,7 +10,8 @@ import path from "node:path";
  * that a real CLI emits any of these frames in this form is NOT verified.
  *
  * Plan items (`beforeInitialize` before answering initialize, `afterInitialize` after its
- * response, `onUser` on each user frame, then ordinary assistant/result unless `noResult`):
+ * response, `onUser` on each user frame, then ordinary assistant/result unless `noResult`, then
+ * `afterResult`, which is what a CLI does by itself once the turn has ended):
  *  - a frame object, sent as is;
  *  - `{ __exit: true }`: the process ends, like a CLI that dies mid-turn;
  *  - `{ __closeOutput: true }`: closes stdout while the root process stays alive;
@@ -18,13 +19,17 @@ import path from "node:path";
  *  - `{ __huge: true }`: writes more than the 25 MiB frame limit without a line break;
  *  - `{ __raw: "text" }`: writes the text and a line break as is, JSON or not;
  *  - `{ __wait: "<request_id>" }`: holds the rest of the plan until stdin carries a
- *    control_response for that request, so a test can prove the answer arrived before the result.
+ *    control_response for that request, so a test can prove the answer arrived before the result;
+ *  - `{ __sleep: <ms> }`: holds the rest of the plan for that long.
  */
 export type FakeClaudePlan = {
   beforeInitialize?: unknown[];
   afterInitialize?: unknown[];
   onUser?: unknown[];
   noResult?: boolean;
+  afterResult?: unknown[];
+  /** Report each user message as queued, started and completed, as the real CLI does. */
+  lifecycle?: boolean;
   /** Never answer initialize, so the runner's initialization times out. */
   silentInitialize?: boolean;
   /** The slash-command catalog the initialize response reports; empty by default. */
@@ -69,6 +74,7 @@ const run = () => {
     if (item.__huge) { process.stdout.write('x'.repeat(26 * 1024 * 1024)); continue; }
     if (item.__raw !== undefined) { process.stdout.write(item.__raw + '\n'); continue; }
     if (item.__wait) { waiting = item.__wait; return; }
+    if (item.__sleep) { setTimeout(run, item.__sleep); return; }
     send(item);
   }
 };
@@ -92,7 +98,11 @@ readline.createInterface({input: process.stdin}).on('line', (line) => {
     if (initialize) { queue = (plan().afterInitialize || []).slice(); run(); }
   } else if (frame.type === 'user') {
     first ||= frame.uuid;
-    queue = (plan().onUser || []).slice();
+    const lifecycle = (state) => ({type: 'command_lifecycle', command_uuid: frame.uuid, state});
+    queue = [
+      ...(plan().lifecycle ? [lifecycle('queued'), lifecycle('started')] : []),
+      ...(plan().onUser || []),
+    ];
     if (!plan().noResult) {
       queue.push({type: 'assistant', parent_tool_use_id: null, message: {
         id: first, model: 'fixture-model', usage: {input_tokens: 7}, content: [],
@@ -100,7 +110,9 @@ readline.createInterface({input: process.stdin}).on('line', (line) => {
       queue.push({type: 'result', subtype: 'success', is_error: false,
         usage: {input_tokens: 19, output_tokens: 11},
         modelUsage: {'fixture-model': {contextWindow: 100}}, terminal_reason: 'completed'});
+      if (plan().lifecycle) queue.push(lifecycle('completed'));
     }
+    queue.push(...(plan().afterResult || []));
     run();
   }
 });

@@ -1326,6 +1326,8 @@ export interface ConversationSessionSummary {
     executionLocation?: "agentkib" | "terminal" | "external" | null;
     ownershipReason?: string | null;
     reason?: string | null;
+    /** Managed Claude: background tasks running in AgentKib's process; absent when none. */
+    backgroundTasks?: number;
   };
   /** A turn that the Codex app or CLI runs now; display only, never a control. */
   externalTurn?: { status: "running"; startedAt: string | null } | null;

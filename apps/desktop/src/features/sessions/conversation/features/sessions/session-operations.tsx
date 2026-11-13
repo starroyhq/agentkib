@@ -7,6 +7,7 @@ import { CodexTools } from "./codex-tools";
 import { ManagedTasks } from "./managed-tasks";
 import { useSession } from "./session-context";
 import { webLayoutCopy } from "./web-layout-copy";
+import { ClaudeBackgroundSetting } from "./claude-background-setting";
 import { ClaudeBridgePanel } from "./claude-bridge-panel";
 import { DshBridgePanel } from "./dsh-bridge-panel";
 export function SessionOperations({
@@ -80,12 +81,18 @@ export function SessionOperations({
         {shortcuts}
       </Dialog>
     ) : null;
-  // How this computer's DeepSeek Harness connects, above the session's own actions.
+  // Settings of this computer's agent, above the session's own actions: how its DeepSeek
+  // Harness connects, or whether its Claude Code keeps background tasks.
   const header =
     current?.agent === "deepseek-harness" && !!access?.device?.manage ? (
       <>
         {shortcuts}
         <DshBridgePanel />
+      </>
+    ) : current?.agent === "claude-code" && !!access?.device?.manage ? (
+      <>
+        {shortcuts}
+        <ClaudeBackgroundSetting />
       </>
     ) : (
       shortcuts

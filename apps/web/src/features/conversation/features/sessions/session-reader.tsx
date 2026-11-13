@@ -3,7 +3,11 @@ import { isLiveSessionAgent, managedAgentOf } from "@agentkib/web-client";
 import { WorktreeNote } from "../catalog/worktree-note";
 import { codexReason } from "./codex-copy";
 import { isSendEnter, useEnterSends } from "./composer-shortcuts";
-import { claudeSessionBanner } from "./claude-session-banner";
+import {
+  claudeBackgroundStatus,
+  claudeComposerNotice,
+  claudeSessionBanner,
+} from "./claude-session-banner";
 import { HistoryReferenceChips } from "../history/history-search-controls";
 import { validHistoryMessage } from "../history/history-reference-model";
 import { SessionOperations } from "./session-operations";
@@ -93,6 +97,7 @@ export function SessionReader() {
   const composing = useRef(false);
   const submitPending = useRef(false);
   const banner = claudeSessionBanner(session, "web");
+  const backgroundStatus = claudeBackgroundStatus(session);
   const panels = useSessionPanels();
   const readSubscription = useCallback(
     (listener: (userAction?: boolean) => void) =>
@@ -222,17 +227,15 @@ export function SessionReader() {
           ) : (
             <div ref={contentRef} className="min-w-0 shrink-0">
               {readStateAgent && <ReadStateNotice locale={locale} observation={readObservation} />}
-              {current?.agent === "claude-code" &&
-                banner &&
-                banner.notice !== "background-ended" && (
-                  <aside
-                    className="info mx-auto mb-5 max-w-3xl"
-                    data-execution-mode={live?.executionMode}
-                  >
-                    {banner.title && <strong className="block mb-1">{banner.title}</strong>}
-                    {banner.body}
-                  </aside>
-                )}
+              {current?.agent === "claude-code" && banner && !claudeComposerNotice(banner) && (
+                <aside
+                  className="info mx-auto mb-5 max-w-3xl"
+                  data-execution-mode={live?.executionMode}
+                >
+                  {banner.title && <strong className="block mb-1">{banner.title}</strong>}
+                  {banner.body}
+                </aside>
+              )}
               {["codex", "claude-code"].includes(current?.agent ?? "") &&
                 current?.forked_from_session_id && (
                   <p className="mx-auto mb-4 w-full max-w-3xl text-xs text-muted-foreground">
@@ -307,15 +310,23 @@ export function SessionReader() {
           )}
           <div className="flex flex-col gap-2">
             {current?.agent === "claude-code" &&
-              banner?.notice === "background-ended" &&
+              claudeComposerNotice(banner) &&
               !session.pendingSend && (
                 <p
                   role="status"
                   className="mx-auto w-full max-w-3xl px-3 text-xs leading-5 text-muted-foreground"
                 >
-                  {banner.body}
+                  {banner?.body}
                 </p>
               )}
+            {current?.agent === "claude-code" && backgroundStatus && (
+              <p
+                role="status"
+                className="mx-auto w-full max-w-3xl px-3 text-xs leading-5 text-muted-foreground"
+              >
+                {backgroundStatus}
+              </p>
+            )}
             <SessionInteractionDock />
             {notice &&
               // An accepted message shows up in the conversation at once; saying so is noise.
@@ -355,7 +366,7 @@ export function SessionReader() {
             access.device?.send ? (
               managedAgentOf(current?.agent) ? (
                 <SessionComposer
-                  connectionStatusInBanner={!!banner && banner.notice !== "background-ended"}
+                  connectionStatusInBanner={!!banner && !claudeComposerNotice(banner)}
                   key={`composer-${selected}`}
                 />
               ) : (

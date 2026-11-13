@@ -18,6 +18,7 @@ import {
   claudeCommandInvocation,
   claudeCommandOutput,
   claudeLocalCommandText,
+  claudeTaskNotification,
 } from "./claude-command-records";
 import {
   compatibleEvents,
@@ -590,6 +591,30 @@ function parseRecord(
     // A message the person sent from AgentKib into a running terminal turn is meta to the
     // CLI, which stamps the plugin that added it, but the person wrote it.
     if (row?.isMeta === true && !agentKibTurnMessage(row)) return;
+    // The CLI's notice that a background task ended, which starts a turn of its own: a line of
+    // the CLI's, as Claude Code shows it, not the person's message.
+    const notification = row ? claudeTaskNotification(row) : null;
+    if (notification !== null) {
+      if (!hasText(notification)) return;
+      const from = state.pending.length;
+      message(
+        state,
+        offset,
+        "agent-message",
+        timestamp,
+        notification,
+        0,
+        true,
+        null,
+        undefined,
+        page,
+        typeof row.uuid === "string" && claudeMessageIdPattern.test(row.uuid)
+          ? row.uuid
+          : `event-${offset}`,
+      );
+      markCliOutput(state.pending.slice(from));
+      return;
+    }
     if (row?.type === "system" && row?.subtype === "local_command") {
       // A local command's output, with the uuid of its live frame, or a command the CLI does
       // not offer in print mode, recorded as typed (`/help`).

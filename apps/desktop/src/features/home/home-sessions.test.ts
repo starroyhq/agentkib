@@ -184,4 +184,21 @@ describe("workStoppedByQuit", () => {
     ]);
     expect(work.map((item) => item.id)).toEqual(["managed-approval", "managed-running"]);
   });
+
+  it("names idle sessions whose background tasks run in AgentKib's process", () => {
+    const work = workStoppedByQuit([
+      session("background", {
+        continuation: { status: "idle", executionLocation: "agentkib", backgroundTasks: 2 },
+      }),
+      session("running-with-background", {
+        continuation: { status: "running", executionLocation: "agentkib", backgroundTasks: 1 },
+      }),
+      session("no-worker", { continuation: { status: "idle", backgroundTasks: 1 } }),
+      session("archived-background", {
+        archived: true,
+        continuation: { status: "idle", executionLocation: "agentkib", backgroundTasks: 1 },
+      }),
+    ]);
+    expect(work.map((item) => item.id)).toEqual(["running-with-background", "background"]);
+  });
 });

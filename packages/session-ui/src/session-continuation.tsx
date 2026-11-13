@@ -30,6 +30,12 @@ export type SessionContinuationCopy = {
   installPlugin: string;
   codexQuit: string;
   backgroundEnded: string;
+  /** Managed Claude: AgentKib stopped the CLI after it started too many turns by itself. */
+  backgroundLimit: string;
+  /** Managed Claude: a turn the CLI started by itself after a background task ended. */
+  backgroundTurn: string;
+  /** Managed Claude: background tasks that keep running after their turn. */
+  backgroundRunning: (count: number, description: string | null) => string;
   draftPreserved: string;
   ownerOpenedElsewhere: string;
   claudeWindowsUnsupported: string;
@@ -77,6 +83,11 @@ const continuationCopy: Record<string, SessionContinuationCopy> = {
     installPlugin: "安装连接插件，以后自动连接",
     codexQuit: "只关掉 Codex 的窗口可能不够，完全退出应用后才能在这里继续",
     backgroundEnded: "后台进程已结束，下次发送时会自动继续",
+    backgroundLimit:
+      "Claude Code 连续自动运行了太多轮，AgentKib 已停止它和后台任务。发送消息即可继续。",
+    backgroundTurn: "后台任务有了结果，Claude Code 正在继续",
+    backgroundRunning: (count, description) =>
+      count === 1 && description ? `后台运行中：${description}` : `${count} 个后台任务运行中`,
     draftPreserved: "草稿已保留，回到这里后会恢复。",
     ownerOpenedElsewhere: "你在 Claude Code 里打开了这条会话，AgentKib 已停止，避免两边同时写入",
     claudeWindowsUnsupported: "Windows 上暂不支持在这里继续 Claude Code 会话",
@@ -124,6 +135,11 @@ const continuationCopy: Record<string, SessionContinuationCopy> = {
     installPlugin: "安裝連線外掛，以後自動連線",
     codexQuit: "只關閉 Codex 的視窗可能不夠，完全結束應用程式後才能在這裡繼續",
     backgroundEnded: "背景程序已結束，下次傳送訊息時會自動繼續",
+    backgroundLimit:
+      "Claude Code 連續自動執行了太多輪，AgentKib 已停止它和背景工作。傳送訊息即可繼續。",
+    backgroundTurn: "背景工作有了結果，Claude Code 正在繼續",
+    backgroundRunning: (count, description) =>
+      count === 1 && description ? `背景執行中：${description}` : `${count} 個背景工作執行中`,
     draftPreserved: "草稿已保留，回到這裡後會恢復。",
     ownerOpenedElsewhere: "你在 Claude Code 裡開啟了這段對話，AgentKib 已停止，避免兩邊同時寫入",
     claudeWindowsUnsupported: "Windows 上暫不支援在這裡繼續 Claude Code 對話",
@@ -176,6 +192,13 @@ const continuationCopy: Record<string, SessionContinuationCopy> = {
       "Codex のウィンドウを閉じるだけでは不十分な場合があります。ここで続けるには、アプリを完全に終了してください。",
     backgroundEnded:
       "バックグラウンドプロセスを終了しました。次のメッセージ送信時に自動で続行します。",
+    backgroundLimit:
+      "Claude Code が自動で何度も続けて実行したため、AgentKib がバックグラウンドタスクごと停止しました。メッセージを送ると続けられます。",
+    backgroundTurn: "バックグラウンドタスクの結果を受けて、Claude Code が続けています",
+    backgroundRunning: (count, description) =>
+      count === 1 && description
+        ? `バックグラウンドで実行中：${description}`
+        : `バックグラウンドタスク ${count} 件を実行中`,
     draftPreserved: "下書きを保存しています。ここに戻ると復元されます。",
     ownerOpenedElsewhere:
       "Claude Code でこの会話が開かれたため、同時に書き込まれないよう AgentKib を停止しました。",
@@ -229,6 +252,15 @@ const continuationCopy: Record<string, SessionContinuationCopy> = {
       "Closing the Codex window may not be enough. Quit the app completely to continue here.",
     backgroundEnded:
       "The background process ended. It will resume automatically when you send your next message.",
+    backgroundLimit:
+      "Claude Code kept starting turns on its own, so AgentKib stopped it and its background tasks. Send a message to continue.",
+    backgroundTurn: "A background task finished. Claude Code is continuing.",
+    backgroundRunning: (count, description) =>
+      count === 1 && description
+        ? `Running in the background: ${description}`
+        : count === 1
+          ? "1 background task running"
+          : `${count} background tasks running`,
     draftPreserved: "Your draft is kept and will be restored when you return here.",
     ownerOpenedElsewhere:
       "You opened this session in Claude Code. AgentKib stopped to avoid both sides writing at once.",
@@ -633,6 +665,8 @@ export type SessionListSession = {
     executionLocation?: string | null;
     ownershipReason?: string | null;
     reason?: string | null;
+    /** Managed Claude: background tasks running in AgentKib's process after their turn. */
+    backgroundTasks?: number;
   };
   /** A turn that the Codex app or CLI runs now, as the host reports it. */
   externalTurn?: { status: string; startedAt?: string | null } | null;
@@ -652,8 +686,9 @@ export type SessionListState = {
 /**
  * List presentation uses observed runtime state and never grants controls. In order: a request
  * waiting for the person, a turn running in AgentKib, in a connected terminal or in the Codex app,
- * and an idle connected terminal. A session another client only has open, a runner that stays
- * after its turn and an outcome to verify show nothing, as on the phone.
+ * background tasks running in AgentKib after their turn, and an idle connected terminal. A session
+ * another client only has open, a runner that stays after its turn and an outcome to verify show
+ * nothing, as on the phone.
  */
 export function sessionContinuationListState(
   session: SessionListSession,
@@ -696,6 +731,13 @@ export function sessionContinuationListState(
           copy.runningIn(session.agent === "claude-code" ? "Claude Code" : "Codex") + unreadLabel,
         ...(unread ? { unread: true } : {}),
         active: true,
+        dot: true,
+      };
+    // No turn runs, but its process does: a background task may start one by itself.
+    if (state?.executionLocation === "agentkib" && (state.backgroundTasks ?? 0) > 0)
+      return {
+        label: copy.backgroundRunning(state.backgroundTasks!, null) + unreadLabel,
+        ...(unread ? { unread: true } : {}),
         dot: true,
       };
   }

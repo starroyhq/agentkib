@@ -91,6 +91,8 @@ export interface ConversationSessionSummary {
     executionLocation?: "agentkib" | "terminal" | "external" | null;
     ownershipReason?: string | null;
     reason?: string | null;
+    /** Managed Claude: background tasks running in AgentKib's process; absent when none. */
+    backgroundTasks?: number;
   };
   /** A turn that the Codex app or CLI runs now; display only, never a control. */
   externalTurn?: { status: "running"; startedAt: string | null } | null;
@@ -343,11 +345,22 @@ export interface Live {
   reason?: string;
   executionLocation?: "agentkib" | "terminal" | "external" | null;
   ownershipReason?: string | null;
-  continuationNotice?: "background-ended" | "owner-opened-elsewhere" | null;
+  continuationNotice?: "background-ended" | "background-limit" | "owner-opened-elsewhere" | null;
   /** Ephemeral retirement event identity; a newly opened client must not replay an old notice. */
   continuationNoticeId?: string | null;
   /** Whether a connected terminal can take messages sent from AgentKib at all. */
   terminalSend?: boolean;
+  /**
+   * Managed Claude: background commands and agents that keep running after a turn. When one ends
+   * the CLI may start a turn by itself.
+   */
+  backgroundTasks?: {
+    kind: "command" | "agent";
+    description: string | null;
+    startedAt: string | null;
+  }[];
+  /** Managed Claude: whether the current turn is one AgentKib sent or one the CLI started. */
+  turnOrigin?: "host" | "self";
   /** Observed native terminal version; does not grant sending or stopping. */
   bridgeCompatibility?: import("@agentkib/runtime-protocol").ClaudeBridgeCompatibilityStatus | null;
   /** Authenticated offline reconnect failure; never a control grant. Null clears prior feedback. */

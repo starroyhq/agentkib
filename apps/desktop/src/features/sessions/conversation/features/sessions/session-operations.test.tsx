@@ -19,6 +19,9 @@ vi.mock("./codex-tools", () => ({
     open ? <section>{shortcuts}</section> : null,
 }));
 vi.mock("./dsh-bridge-panel", () => ({ DshBridgePanel: () => <p>DSH plugin panel</p> }));
+vi.mock("./claude-background-setting", () => ({
+  ClaudeBackgroundSetting: () => <p>Claude background setting</p>,
+}));
 vi.mock("./claude-bridge-panel", () => ({
   ClaudeBridgePanel: ({ onClose }: { onClose?: () => void }) => (
     <section role="dialog" aria-label={claudeConnectionCopy[session.locale].title}>
@@ -137,5 +140,19 @@ describe("DeepSeek Harness session actions entry", () => {
     session.access!.device!.manage = false;
     view.rerender(<View revision={1} />);
     expect(screen.queryByText("DSH plugin panel")).not.toBeInTheDocument();
+  });
+});
+
+describe("Claude Code session actions entry", () => {
+  it("shows this computer's background task setting to a device that manages", () => {
+    const view = render(<View />);
+    expect(screen.getByText("Claude background setting")).toBeInTheDocument();
+    session.access!.device!.manage = false;
+    view.rerender(<View revision={1} />);
+    expect(screen.queryByText("Claude background setting")).not.toBeInTheDocument();
+    session.access!.device!.manage = true;
+    session.current = { ...session.current!, agent: "codex" };
+    view.rerender(<View revision={2} />);
+    expect(screen.queryByText("Claude background setting")).not.toBeInTheDocument();
   });
 });

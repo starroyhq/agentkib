@@ -20,7 +20,7 @@
 - 新建先保存工作区、请求身份和原生 UUID，新 CLI 使用 `--session-id=<UUID>`；续接已有会话使用 `--resume=<UUID>`。UUID、工作区及日志指纹仍在内部核对；外部历史变化后只在确认无占用、无未知回执且安全的空闲边界更新基线，不要求用户手动交接，也不会通过“最新会话”猜测身份。
 - 桌面新建前按所选工作区读取原生模型和推理强度。临时 CLI 只执行初始化，关闭 hooks、MCP 和工具，使用不保存会话模式。目录读取失败时仍可按 Claude Code 默认设置新建。首页显式选择在创建前按工作区核对，启动首轮时通过 `--model` 和 `--effort` 应用。
 - 后台续接启动前合并核对 `claude agents --json`、PID 登记与 `procStart`、进程命令行，并在运行中巡检；无法确认时保守拒绝。私有操作锁只约束 AgentKib 实例，无法原子约束官方 CLI；检测和停止不等于 Claude CLI 自带了写入锁。已连接终端由插件控制，不启动同 UUID 的后台执行者。
-- 托管执行的 CLI 会加载其正常配置、CLAUDE.md、MCP 与 hooks；只对可信项目启用托管执行。启动会话执行时，AgentKib 只覆盖 `CLAUDE_CODE_DISABLE_BACKGROUND_TASKS=1`（理由与后果见下文“对 CLI 行为漂移的容错”）。保留 CLI 的权限配置，不启用跳过权限；CLI 自动允许的操作可能不会弹出审批，只有 CLI 实际请求的审批才展示。
+- 托管执行的 CLI 会加载其正常配置、CLAUDE.md、MCP 与 hooks；只对可信项目启用托管执行。启动会话执行时，AgentKib 只在不允许后台任务时覆盖 `CLAUDE_CODE_DISABLE_BACKGROUND_TASKS=1`（见下文“后台任务”）。保留 CLI 的权限配置，不启用跳过权限；CLI 自动允许的操作可能不会弹出审批，只有 CLI 实际请求的审批才展示。
 - 未选择权限模式时，AgentKib 不传 `--permission-mode`，会话沿用 CLI 自己的配置；用户设置、供应商和组织策略都可能让实际模式是 `auto`、`dontAsk` 或 `bypassPermissions`。AgentKib 只读取 CLI 在 `system/init` 与 `system/status` 帧里报告的 `permissionMode`（`manual` 视为 `default`）并如实显示：这三种模式下不会再逐项审批，桌面端和 Web 的会话输入区会显示带图标的文字提示（`bypassPermissions` 样式更醒目），只提示、不阻止发送。它们不是可选项，不进入权限选择控件，也不出现在“当前值”里。CLI 没有报告模式时保持未知，不推断；若检测到的 Claude Code 为 2.1.285 或更新、该会话在本次 Backend 运行中从未观察到模式、用户也没有选过权限，则补一句“可能以 auto 模式启动”的警示。依据是官方说明：拿不到功能开关的 `-p`/SDK 会话（例如第三方 provider 或关闭遥测）从 2.1.285 起默认 `auto`；组织策略也可能改变起始模式，所以这是提示，不是判定。Worker 空闲退休后继续显示上次观察到的模式并标注“上次观察”，会话释放或 Backend 重启后清除，不持久化。真机（2.1.299）确认：未传 `--permission-mode` 时 `system/init` 带 `permissionMode: "default"`，它出现在对 `initialize` 的控制响应之后，也晚于首条用户帧的写入，所以第一轮开始时的模式短暂是未知；AgentKib 取到后显示 `default`。其他版本、provider 与组织策略下是否总带该字段仍未验证。
 - 轮次用时：stream-json（`--print`）的会话记录不写 `system/turn_duration`，用时只在 `result.duration_ms` 里。AgentKib 在 `result` 到达时把它随本轮最后一条 Agent 回复下发，并存进应用数据的执行账本（`claude_turn_meta` 表，按原生会话与消息 ID，每个会话保留最新 1000 条），读取历史时补回；会话记录自带用时（在终端里运行的轮次）时以记录为准。本期之前托管的轮次没有存下用时，仍不显示。
 - 浏览器断线不等于终止模型执行；重连只同步快照，不重发请求。macOS 取消或退出会按父子关系捕获自有 Claude 进程树，核对 PID 与启动时间后清理，覆盖使用独立进程组的前台 Bash。无法确认完整清理时保留“结果待核对”，不报告安全释放；已脱离父子关系成为独立外部服务的进程不在清理保证内。
@@ -60,8 +60,8 @@
 拒绝不冒充取消整轮：Claude 会接收到拒绝并决定如何回应。已取消、过期、重复或 revision/轮次不匹配的审批不能提交。
 
 已接入适配版本的选择式 `AskUserQuestion`：问题独立展示，通过 `/answer` 回传原生答案，要求浏览器发送权限而不是审批权限。支持单选、多选和自定义回答；收起问题卡片不会拒绝或取消请求。新式 text/number/preview 等未验证契约仍保持控制禁用并报告限制；不能用“允许工具”代替回答问题。权限请求里本版本不认识的字段不再终止会话，而是有界地展示给用户（最多 32 个字段，每个最多 4 KiB），回应仍只含这一次的决定与原始输入。需要自带界面才能完成的其他工具（`requires_user_interaction`）会被拒绝并附说明，不会被放行；未知的控制请求会得到错误响应（CLI 视为被拒绝），绝不默认放行。
-从 2.1.285 起，前台 Bash task 通知仅在与当前轮次的原生 Bash 工具身份匹配时接受；后台升级、与当前 Bash 工具身份不匹配的前台任务，以及类型缺失或不属于 `local_bash`、`local_agent` 的任务启动继续拒绝，不因该兼容适配开放后台执行。从未在本轮开始过的任务的更新或完成通知（例如恢复会话时关闭更早进程的任务），以及轮次外到达的这两类通知，只观察、不终止会话。缺失的 `parent_tool_use_id` 按主线程处理，与 `null` 相同；既不是 `null`、也不是有界非空字符串的值既不当作主线程也不当作子代理，帧被忽略并计数，也不会创建、覆盖或完成界面中的工具条目；待审批与待回答状态保持不变。
-子代理里运行的前台 Bash（帧带非空 `parent_tool_use_id`，其任务帧带 `owned_by_subagent` 或对应的 Bash 调用已在子代理帧里出现过）只做观察：不计入当前轮次的前台任务，不会因此终止会话，也不改变停止、本轮结束核对和进程树清理的行为；子代理里的 Bash 任务一旦转入后台，仍按上面的规则停止会话。子代理自身的任务帧（`task_type` 为 `local_agent`，以及只含 `local_agent` 的 `background_tasks_changed`）现在只观察、不终止会话，也不阻塞本轮结束；后台 Bash、`local_agent` 以外的任务类型，以及 CLI 在 AgentKib 发起的轮次结束后自行继续的轮次（例如后台子代理完成后继续工作）仍会停止会话并给出原因。子代理的 `stream_event`、`assistant`、`user` 帧不改变主线程的流式文字、用量与对话项：子代理的提示词不会显示成用户消息，子代理的文字不进入对话，它的工具调用仍以扁平条目显示。这不是对子代理的完整支持（没有嵌套展示）。真机（2.1.299，Haiku 5.5）确认：子代理工具名是 `Agent`；设置 `CLAUDE_CODE_DISABLE_BACKGROUND_TASKS=1` 后子代理前台运行（`task_started` 的 `task_type` 为 `local_agent`、`is_backgrounded` 为 `false`），会话没有被终止；带 `parent_tool_use_id` 的是子代理的 `assistant`、`user` 帧，`system` 的任务帧和 `control_request` 不带；子代理发出的 `can_use_tool` 请求带 `agent_id`；之后还有 `task_updated` 与 `task_notification`（按“未跟踪”计数，不影响会话）。这次没有出现 `background_tasks_changed`。只验证了这一种简单的单个前台子代理。
+从 2.1.285 起，前台 Bash task 通知仅在与当前轮次的原生 Bash 工具身份匹配时接受；后台升级、与当前 Bash 工具身份不匹配的前台任务，以及类型缺失或不属于 `local_bash`、`local_agent` 的任务启动继续拒绝，不因该兼容适配开放后台执行（允许后台任务时，转入后台的 Bash 与子代理改为记作后台任务，见下文“后台任务”）。从未在本轮开始过的任务的更新或完成通知（例如恢复会话时关闭更早进程的任务），以及轮次外到达的这两类通知，只观察、不终止会话。缺失的 `parent_tool_use_id` 按主线程处理，与 `null` 相同；既不是 `null`、也不是有界非空字符串的值既不当作主线程也不当作子代理，帧被忽略并计数，也不会创建、覆盖或完成界面中的工具条目；待审批与待回答状态保持不变。
+子代理里运行的前台 Bash（帧带非空 `parent_tool_use_id`，其任务帧带 `owned_by_subagent` 或对应的 Bash 调用已在子代理帧里出现过）只做观察：不计入当前轮次的前台任务，不会因此终止会话，也不改变停止、本轮结束核对和进程树清理的行为；子代理里的 Bash 任务一旦转入后台，仍按上面的规则停止会话。子代理自身的任务帧（`task_type` 为 `local_agent`，以及只含 `local_agent` 的 `background_tasks_changed`）现在只观察、不终止会话，也不阻塞本轮结束；不允许后台任务时，后台 Bash、`local_agent` 以外的任务类型，以及 CLI 在 AgentKib 发起的轮次结束后自行继续的轮次（例如后台子代理完成后继续工作）仍会停止会话并给出原因；允许时见下文“后台任务”。子代理的 `stream_event`、`assistant`、`user` 帧不改变主线程的流式文字、用量与对话项：子代理的提示词不会显示成用户消息，子代理的文字不进入对话，它的工具调用仍以扁平条目显示。这不是对子代理的完整支持（没有嵌套展示）。真机（2.1.299，Haiku 5.5）确认：子代理工具名是 `Agent`；设置 `CLAUDE_CODE_DISABLE_BACKGROUND_TASKS=1` 后子代理前台运行（`task_started` 的 `task_type` 为 `local_agent`、`is_backgrounded` 为 `false`），会话没有被终止；带 `parent_tool_use_id` 的是子代理的 `assistant`、`user` 帧，`system` 的任务帧和 `control_request` 不带；子代理发出的 `can_use_tool` 请求带 `agent_id`；之后还有 `task_updated` 与 `task_notification`（按“未跟踪”计数，不影响会话）。这次没有出现 `background_tasks_changed`。只验证了这一种简单的单个前台子代理。
 “请求已接收”与“本轮已完成”分开记录；同一会话执行时仍拒绝第二次普通发送。用户可显式选择 `next` 插入或加入 AgentKib 队列；普通发送失败不会被改成排队。只有关联本轮身份的原生终态可以确认完成。
 
 上下文占用采用最近主会话 API 的 `input_tokens`、缓存读取和缓存写入输入之和，不包含输出，也不使用 `result.usage` 的轮次统计或 `modelUsage` 的累计计数。窗口上限必须来自同一原生模型的 `modelUsage.contextWindow`；模型未匹配或尚未报告窗口时保留已报告输入，百分比保持未知。新一轮和压缩后等待新的普通 API 报告；压缩期间的主会话报告作为候选保留，压缩结束或补齐窗口不会恢复其百分比。断线或闲置 worker 回收后，旧报告标记为过期；显式发送恢复 worker 并收到新的普通报告后恢复比例。`autocompact_state` 是配置而不是正在压缩；只有 `system/status` 的压缩阶段锁定新发送和归属释放，停止及有效原生审批仍可操作。压缩结束或 `compact_boundary` 不表示本轮完成。
@@ -80,19 +80,35 @@
 | 需要自带界面的其他工具（`requires_user_interaction`） | 拒绝并附说明，让模型转告用户在 Claude Code 终端里完成这一步 |
 | 子代理（`local_agent`）的任务帧，以及只含子代理的后台任务集 | 只观察，不终止会话，不使待处理的审批或问题失效 |
 | 子代理的 `stream_event`、`assistant`、`user` 帧 | 不影响主线程的流式文字、用量与对话项 |
-| 后台 Bash、`local_agent` 以外的任务类型 | 停止会话（原因码 `claude-background-task`） |
-| AgentKib 发起的轮次结束后 CLI 自行继续（轮次外的 `result`、空闲时的主线程内容帧、轮次外的审批请求） | 停止会话（`claude-unrequested-turn`） |
+| 不允许后台任务时的后台 Bash；`local_bash`、`local_agent` 以外的任务类型 | 停止会话（原因码 `claude-background-task`）；允许时后台 Bash 与子代理见下文“后台任务” |
+| AgentKib 发起的轮次结束后 CLI 自行继续（空闲时的主线程内容帧、轮次外的审批请求），且不是后台任务引起的 | 停止会话（`claude-unrequested-turn`）；后台任务结束后 CLI 自己开始的轮次见下文“后台任务” |
+| 不属于任何轮次的 `result`：重启后 CLI 先发的空结果，或 CLI 开始处理这条消息之前到达的结果 | 忽略并计数（`strayResults`），不结束当前轮次 |
 | 其余无法解析或前后矛盾的输出 | 停止会话（`claude-protocol-violation`） |
 | `system/api_retry` | 只显示，不改变会话状态；新的流式回复、`assistant` 或 `result` 到达后清除 |
 | 主线程 `authentication_failed` 或 HTTP 401 的错误 `result` | 本轮记为失败，会话保持可用（`claude-auth-failed`），进程随即回收 |
 
-为了让正常路径不出现后台任务与自发轮次，AgentKib 启动托管会话的 CLI 时设置 `CLAUDE_CODE_DISABLE_BACKGROUND_TASKS=1`，并覆盖用户环境里的同名值。后果：模型不能再用 `run_in_background` 把命令或子代理放到后台，也没有自动转入后台；长命令按 `BASH_DEFAULT_TIMEOUT_MS`（默认 2 分钟）超时。用户在 Claude Code 的 settings `env` 里设置同名变量可能反过来覆盖它，所以上表的帧级处理独立成立，不依赖这个变量。
+不允许后台任务时（偏好关闭、不是 macOS，或 CLI 早于 `2.1.299`），AgentKib 启动托管会话的 CLI 时设置 `CLAUDE_CODE_DISABLE_BACKGROUND_TASKS=1`，并覆盖用户环境里的同名值，让正常路径不出现后台任务与自发轮次。后果：模型不能再用 `run_in_background` 把命令或子代理放到后台，也没有自动转入后台；长命令按 `BASH_DEFAULT_TIMEOUT_MS`（默认 2 分钟）超时。用户在 Claude Code 的 settings `env` 里设置同名变量可能反过来覆盖它，所以上表的帧级处理独立成立，不依赖这个变量。`Monitor` 工具（2.1.322 有）不受这个变量限制：关闭后台任务时调用它，会话仍会停止。
 
 停止之后，会话进入“结果待核对”，在 AgentKib 中保持只读，没有应用内恢复入口。Claude Code 自己保存着此前的对话（最后几条消息可能缺失），要继续请在 Claude Code 终端里继续同一会话。原因显示在会话状态里，后端重启后仍保留（同时有未决命令时显示通用的“结果待核对”）。
 
 认证失败是例外：它不停止会话。主线程 `assistant` 帧带 `error: "authentication_failed"`，或错误 `result` 的 `api_error_status` 为 401 时，本轮按已知失败结束，会话保持空闲、可以发送，原因码 `claude-auth-failed` 后附 CLI 原文、HTTP 状态和 `apiKeySource`（见下文“登录与 API key”）。其他带 `is_error` 的 `result` 仍按上面的规则进入“结果待核对”。
 
-托管会话对帧的处理验证到 `2.1.299`；更新版本只作说明，不作门控，失败原因会注明 CLI 版本。2026-10-14 用真实 CLI 2.1.299 和 Haiku 5.5 做了真机验收（启动、一轮后空闲 20 秒、Bash 审批、前台子代理、MCP 工具审批、释放后用同一 UUID 续接），结果见 `qa/claude-live-acceptance-2026-10-14.md`。已确认：设置该变量后子代理前台运行；子代理帧的 `parent_tool_use_id` 形态；`can_use_tool` 的真实字段（`tool_name`、`display_name`、`input`、`description`、`permission_suggestions`、`blocked_path`、`tool_use_id`，子代理另有 `agent_id`，MCP 工具另有 `mcp_server: {name, source}` 与 `server_policy_ask_only`）；`echo` 等只读命令由 CLI 自己放行，不会发出 `can_use_tool`，要写文件的命令才会；一轮结束后空闲 20 秒内没有任何帧，也没有 `background_tasks_changed`；真实运行里出现过 `command_lifecycle`、`rate_limit_event`、`hook_started`/`hook_response` 等帧，均未影响会话。仍待确认：CLI 对 `error` 类型控制响应的反应、`requires_user_interaction` 的工具被拒绝之后的表现、stdin 保持打开时后台任务完成后的自发轮次，以及 `ambient` 类后台任务是否会在更长的会话里出现（本次只跑了短会话）。
+托管会话对帧的处理验证到 `2.1.299`；更新版本只作说明，不作门控，失败原因会注明 CLI 版本。2026-10-14 用真实 CLI 2.1.299 和 Haiku 5.5 做了真机验收（启动、一轮后空闲 20 秒、Bash 审批、前台子代理、MCP 工具审批、释放后用同一 UUID 续接），结果见 `qa/claude-live-acceptance-2026-10-14.md`。已确认：设置该变量后子代理前台运行；子代理帧的 `parent_tool_use_id` 形态；`can_use_tool` 的真实字段（`tool_name`、`display_name`、`input`、`description`、`permission_suggestions`、`blocked_path`、`tool_use_id`，子代理另有 `agent_id`，MCP 工具另有 `mcp_server: {name, source}` 与 `server_policy_ask_only`）；`echo` 等只读命令由 CLI 自己放行，不会发出 `can_use_tool`，要写文件的命令才会；一轮结束后空闲 20 秒内没有任何帧，也没有 `background_tasks_changed`；真实运行里出现过 `command_lifecycle`、`rate_limit_event`、`hook_started`/`hook_response` 等帧，均未影响会话。仍待确认：CLI 对 `error` 类型控制响应的反应、`requires_user_interaction` 的工具被拒绝之后的表现，以及 `ambient` 类后台任务是否会在更长的会话里出现（本次只跑了短会话）。后台任务完成后的自发轮次已在 2026-11-13 核对，见下文“后台任务”。
+
+## 后台任务
+
+macOS 上、Claude Code `2.1.299` 或更新版本时，托管会话默认允许后台任务：模型可以用 `run_in_background` 把 Bash 命令或子代理放到后台，较新的 CLI 还可以用 `Monitor` 盯一条输出流（2.1.322 有，2.1.299 没有）。偏好 `claude_background_tasks`（缺省为开），在桌面端 Claude Code 会话的“更多操作”里切换，只有这台电脑上的 AgentKib 能改，远程设备不能改；改动从下次启动 CLI 进程起生效。CLI 版本不够或找不到 CLI 时，开关说明原因并保持关闭。
+
+- **记录。** AgentKib 按 `task_started`（`is_backgrounded: true`）与 `background_tasks_changed` 记下正在后台运行的命令（`local_bash`，含 Monitor）和子代理（`local_agent`），按 `task_notification` 记它们结束。描述经脱敏、截到 240 字节；同时最多 64 个，超出则停止会话（`claude-background-task`）。客户端只拿到每项的类型、描述和开始时间，拿不到 CLI 的任务 ID。
+- **CLI 自己开始的轮次。** 后台任务结束，或 Monitor 报告一条事件时，CLI 会自己开始一轮来处理（先 `system/init`，再 `system/status` 的 `requesting`，没有 `user_message_uuids`）。AgentKib 把它当作单独的一轮（实时状态 `turnOrigin: "self"`，有自己的轮次 ID），可以停止、审批和回答；输入区上方显示“后台任务有了结果，Claude Code 正在继续”。只有在有后台任务正在运行、或有已结束还没处理的后台任务时才接受这样的轮次，每个结束的任务最多换来一轮（两个任务一起结束时 CLI 只开一轮，多出的额度留到下次）；其他轮次外的内容仍按上表停止会话。
+- **哪个结果属于哪一轮。** AgentKib 发出的消息，以 `command_lifecycle` 的 `started`（或 `system/status` 的 `user_message_uuids` 含这条消息）为这一轮真正开始；在此之前到达的 `result` 属于 CLI 自己的轮次，忽略并计数，不会把这一轮提前结束。如果 AgentKib 刚发出消息、CLI 正好开始了自己的一轮，那一轮的输出会显示在这条消息的轮次里，它的 `result` 被忽略，这条消息的轮次等 CLI 开始处理它之后照常结束（这种交错只用合成帧测过，没有在真实 CLI 上抓到）。
+- **上限。** 没有人发送消息时，CLI 连续自己开始的轮次超过 25 轮，AgentKib 正常结束进程（后台任务一并结束），这一轮记为取消，会话保持可发送，输入区上方提示“Claude Code 连续自动运行了太多轮，AgentKib 已停止它和后台任务”（`continuationNotice: "background-limit"`）。下次发送启动新进程时提示消失。
+- **空闲时的审批。** 没有进行中的轮次时，后台子代理发来的 `can_use_tool` 会被拒绝并附说明，不弹出审批。
+- **进程与退出。** 后台命令运行在自己的会话和进程组里，CLI 进程被强行结束后它们仍会存活。macOS 上 AgentKib 按进程树结束进程，后台命令随之结束；Linux 的进程组清理做不到，所以只在 macOS 开放。有后台任务时进程不做闲置回收，空闲计时从后台任务全部结束后才开始。AgentKib 的“停止”结束的是整个 CLI 进程，所以停止任何一轮（包括 CLI 自己开始的一轮）都会一并结束后台任务；只中断这一轮要改用 CLI 的 `interrupt`，还没有做。退出 AgentKib 会结束它们，退出确认会把这些会话列为“正在运行”。
+- **显示。** 输入区上方显示“后台运行中：<描述>”或“N 个后台任务运行中”；会话列表在没有轮次运行时显示同样的标记，目录在后台任务数变化时刷新。CLI 在会话文件里把通知记为 `origin.kind: "task-notification"` 的用户行，AgentKib 读历史时把它显示为 CLI 的一行说明（`<summary>`，Monitor 事件另附 `<event>`），不当作用户发的消息；在终端里跑过后台任务的会话同样如此。
+- **重启后的空结果。** 进程在后台命令还在运行时被结束后，下次启动同一会话，CLI 会先发这个命令 `stopped` 的通知和一个空的 `result`（`num_turns: 0`），只在第一次重启时出现，三个版本都有，关闭后台任务时也有。以前这个空结果会被当成刚发出的这一轮的结果，下一帧随即被判为轮次外内容，会话进入“结果待核对”；现在无论是否允许后台任务都忽略并计数。CLI 会在下一轮自己把命令被停止的事告诉模型。
+
+帧的形态用本地模型桩和沙箱里的真实 CLI（2.1.263、2.1.299、2.1.322）核对，13 份帧记录在 `apps/desktop/test/fixtures/claude-background/`，由 `claude-background-turns.test.ts` 回放；真实 CLI（2.1.299、2.1.322、2.1.323）在 AgentKib 的进程管理下的验收见 `claude-background-native.test.ts`（设 `AGENTKIB_CLAUDE_BACKGROUND_NATIVE=1` 才运行）。详情见 `qa/claude-background-tasks-probe-2026-11-13.md`。没有用真实模型验收；后台子代理在空闲时请求审批、多个 Monitor 并发、长时间运行的会话都还没有核对。
 
 ## 高级操作与产品语义
 

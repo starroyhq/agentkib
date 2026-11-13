@@ -1,0 +1,36 @@
+{
+ "note": "Captured from the real CLI by qa/probes/claude-background-turn.mjs against a mock model; 2.1.322, the same session start with no message sent.",
+ "frames": [
+  {
+   "type": "system",
+   "subtype": "task_notification",
+   "status": "stopped",
+   "task_id": "bnpzbemjd",
+   "tool_use_id": "toolu_bgprobe_1",
+   "summary": "Background shell command didn't finish before the previous session ended"
+  },
+  {
+   "type": "control_response",
+   "response": {
+    "subtype": "success",
+    "request_id": "88265ba6-a37d-4a02-8952-e9efeb3f070c"
+   }
+  },
+  {
+   "type": "system",
+   "subtype": "init",
+   "model": "claude-sonnet-4-6",
+   "apiKeySource": "ANTHROPIC_API_KEY",
+   "permissionMode": "default",
+   "claude_code_version": "2.1.322"
+  },
+  {
+   "type": "result",
+   "subtype": "success",
+   "is_error": false,
+   "num_turns": 0,
+   "result": "",
+   "total_cost_usd": 0
+  }
+ ]
+}

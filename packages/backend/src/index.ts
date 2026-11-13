@@ -684,6 +684,8 @@ export class TypeScriptBackend {
               this.#claudeBridge?.assertCanAdopt();
               return this.#claudeBridge?.blocksManagedResume(sessionId) ?? false;
             },
+            // On unless the person turned it off; a worker reads it when it starts.
+            backgroundTasks: () => readPreferences(dataDir).claude_background_tasks !== false,
           },
         );
         const claudeOwner = this.#claudeManaged;
@@ -2163,6 +2165,13 @@ export class TypeScriptBackend {
         this.#dshAutoStart = undefined;
         return this.#dshBridge.management({ ...params, operation: "dsh-bridge-status" });
       }
+      // Whether managed Claude sessions keep background tasks, for this computer.
+      if (params.operation === "background-tasks") {
+        if (!this.#claudeManaged || !this.#dataDir) throw new Error("claude-managed-unavailable");
+        if (typeof params.enabled === "boolean")
+          writePreference(this.#dataDir, "claude_background_tasks", params.enabled);
+        return { backgroundTasks: await this.#claudeManaged.backgroundTasksStatus() };
+      }
       if (params.operation === "adopt") this.#claudeBridge?.assertCanAdopt();
       if (
         ["bridge-status", "bridge-challenge", "bridge-disconnect", "bridge-auto-connect"].includes(
@@ -2234,6 +2243,8 @@ export class TypeScriptBackend {
         state.executionLocation,
         state.ownershipReason,
         state.reason,
+        // The catalog counts background tasks, which start and end while the session is idle.
+        Array.isArray(state.backgroundTasks) ? state.backgroundTasks.length : 0,
       ]);
       if (this.#catalogContinuation.get(sessionId) !== status) {
         this.#catalogContinuation.set(sessionId, status);

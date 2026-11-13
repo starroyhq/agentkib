@@ -10,7 +10,7 @@ export const relayUsageCopy = {
     exhausted: "本月中继额度已用完，官方中继已暂停。有效授权下的局域网直连和本地任务仍可继续",
     unavailable: "暂时无法读取中继用量，请刷新重试",
   },
-  "zh-TW": {
+  "zh-Hant": {
     title: "本月中繼流量",
     remaining: "剩餘",
     reset: "下次重設",

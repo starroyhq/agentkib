@@ -20,7 +20,7 @@ describe("McpPortField", () => {
   });
   afterEach(cleanup);
 
-  it.each(["en-US", "zh-CN", "zh-TW", "ja-JP"] as const)(
+  it.each(["en-US", "zh-CN", "zh-Hant", "ja-JP"] as const)(
     "labels invalid input and explains saving in %s",
     async (locale) => {
       await initializeI18n(locale);

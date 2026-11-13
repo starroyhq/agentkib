@@ -65,7 +65,7 @@ beforeEach(() => initializeI18n("en-US"));
 afterEach(cleanup);
 
 describe("v15 usage location cards", () => {
-  it.each(["zh-CN", "zh-TW", "en-US", "ja-JP"] as const)(
+  it.each(["zh-CN", "zh-Hant", "en-US", "ja-JP"] as const)(
     "keeps a personal source with a workspace relationship compact in %s",
     async (locale) => {
       await initializeI18n(locale);
@@ -164,7 +164,7 @@ describe("v15 usage location cards", () => {
       screen.queryByText(tr("skills.manager.personal"), { selector: '[data-slot="badge"]' }),
     ).toBeNull();
   });
-  it.each(["zh-CN", "zh-TW", "en-US", "ja-JP"] as const)(
+  it.each(["zh-CN", "zh-Hant", "en-US", "ja-JP"] as const)(
     "separates the real shared-root Hermes and OpenClaw failures in %s",
     async (locale) => {
       await initializeI18n(locale);
@@ -414,7 +414,7 @@ describe("v15 usage location cards", () => {
       screen.queryByText(/Hermes (will not load|loading is unconfirmed|needs confirmation)/),
     ).toBeNull();
   });
-  it.each(["zh-CN", "zh-TW", "en-US", "ja-JP"] as const)(
+  it.each(["zh-CN", "zh-Hant", "en-US", "ja-JP"] as const)(
     "keeps normal trusted, allowed and linked-owner information only in details in %s",
     async (locale) => {
       await initializeI18n(locale);
@@ -433,7 +433,7 @@ describe("v15 usage location cards", () => {
       for (const diagnostic of diagnostics) expect(screen.queryByText(diagnostic)).toBeNull();
     },
   );
-  it.each(["zh-CN", "zh-TW", "en-US", "ja-JP"] as const)(
+  it.each(["zh-CN", "zh-Hant", "en-US", "ja-JP"] as const)(
     "distinguishes a restricted Hermes profile from another trusted profile in %s",
     async (locale) => {
       await initializeI18n(locale);
@@ -495,7 +495,7 @@ describe("v15 usage location cards", () => {
     expect(screen.queryByText(diagnostic)).toBeNull();
   });
   it.each(
-    (["zh-CN", "zh-TW", "en-US", "ja-JP"] as const).flatMap((locale) =>
+    (["zh-CN", "zh-Hant", "en-US", "ja-JP"] as const).flatMap((locale) =>
       (["unverified", "recovery-required"] as const).map((status) => ({ locale, status })),
     ),
   )(
@@ -545,7 +545,7 @@ describe("v15 usage location cards", () => {
     expect(screen.getByText(tr("skills.manager.load.detailsNotice"))).toBeVisible();
     expect(screen.queryByText(diagnostic)).toBeNull();
   });
-  it.each(["zh-CN", "zh-TW", "en-US", "ja-JP"] as const)(
+  it.each(["zh-CN", "zh-Hant", "en-US", "ja-JP"] as const)(
     "bounds a long project source while retaining its full name and original path in %s",
     async (locale) => {
       await initializeI18n(locale);
@@ -569,7 +569,7 @@ describe("v15 usage location cards", () => {
       expect(onImport).toHaveBeenCalledExactlyOnceWith(related.id);
     },
   );
-  it.each(["zh-CN", "zh-TW", "en-US", "ja-JP"] as const)(
+  it.each(["zh-CN", "zh-Hant", "en-US", "ja-JP"] as const)(
     "keeps long workspace actions on one bounded line with their full accessible name in %s",
     async (locale) => {
       await initializeI18n(locale);

@@ -65,7 +65,7 @@ function expandMore(name = "More settings") {
   fireEvent.click(screen.getByRole("button", { name: new RegExp(`^${name}`) }));
 }
 
-it.each(["zh-CN", "zh-TW", "en-US", "ja-JP"] as const)(
+it.each(["zh-CN", "zh-Hant", "en-US", "ja-JP"] as const)(
   "names both controlled Agents in task permissions in %s",
   async (locale) => {
     const { webSettingsCopy } = await import("./web-settings-copy");
@@ -432,7 +432,7 @@ it("keeps advanced controls hidden and translates all primary actions in four la
   expect(screen.queryByRole("dialog")).toBeNull();
   expect(screen.queryByRole("checkbox", { name: "Enable local Web service" })).toBeNull();
   try {
-    for (const locale of ["zh-CN", "zh-TW", "ja-JP", "en-US"] as const) {
+    for (const locale of ["zh-CN", "zh-Hant", "ja-JP", "en-US"] as const) {
       await act(() => changeLocale(locale));
       expect(
         screen.getByRole("button", { name: remotePageCopy[locale].connectPhone }),
@@ -555,7 +555,7 @@ it("shows code-only full access without confirmation or per-workspace grants for
 
 it.each([
   ["zh-CN", "完整控制", "生成授权码", "授权档位"],
-  ["zh-TW", "完整控制", "產生授權碼", "授權等級"],
+  ["zh-Hant", "完整控制", "產生授權碼", "授權等級"],
   ["en-US", "Full control", "Generate access code", "Access level"],
   ["ja-JP", "フルコントロール", "認証コードを生成", "アクセスレベル"],
 ] as const)(
@@ -715,7 +715,7 @@ it("explains full code grants in all four locales without changing LAN pairing",
   const { remoteEntryCopy } = await import("./remote-entry-copy");
   request.mockResolvedValue({ ...status, pairingMode: "code" });
   try {
-    for (const locale of ["zh-CN", "zh-TW", "en-US", "ja-JP"] as const) {
+    for (const locale of ["zh-CN", "zh-Hant", "en-US", "ja-JP"] as const) {
       await act(() => changeLocale(locale));
       const view = render(<WebAccessSettings />);
       expect(
@@ -752,7 +752,7 @@ it("shows the experimental-control warning in the selected locale without mixed 
   const warnings = {
     "zh-CN":
       "实验功能仅在通过验证的这台电脑与会话上可用；停止仅表示中断当前轮次，不保证后台命令已结束。",
-    "zh-TW":
+    "zh-Hant":
       "實驗功能僅在通過驗證的這台電腦與對話上可用；停止僅表示中斷目前輪次，不保證背景命令已結束。",
     "en-US":
       "Experimental controls require a verified computer and session. Stopping interrupts a turn; background commands may still run.",
@@ -765,7 +765,7 @@ it("shows the experimental-control warning in the selected locale without mixed 
   fireEvent.click(await screen.findByRole("button", { name: remotePhoneCopy["en-US"].advanced }));
   expandMore();
   try {
-    for (const locale of ["zh-CN", "zh-TW", "en-US", "ja-JP"] as const) {
+    for (const locale of ["zh-CN", "zh-Hant", "en-US", "ja-JP"] as const) {
       await act(() => changeLocale(locale));
       expect(await screen.findByText(warnings[locale])).toBeVisible();
     }
@@ -1149,7 +1149,7 @@ it("retains a self-hosted invitation after registration fails and permits an exp
 
 it.each([
   { locale: "zh-CN", unsaved: "有未保存的更改" },
-  { locale: "zh-TW", unsaved: "有尚未儲存的變更" },
+  { locale: "zh-Hant", unsaved: "有尚未儲存的變更" },
   { locale: "en-US", unsaved: "Unsaved changes" },
   { locale: "ja-JP", unsaved: "未保存の変更があります" },
 ] as const)(

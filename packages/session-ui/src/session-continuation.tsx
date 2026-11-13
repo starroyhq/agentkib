@@ -118,7 +118,7 @@ const continuationCopy: Record<string, SessionContinuationCopy> = {
     localCommandHelp:
       "打开终端（Windows 请使用 PowerShell），粘贴并运行续接命令。如果原客户端仍占用这条会话，请先在原客户端继续。",
   },
-  "zh-TW": {
+  "zh-Hant": {
     placeholder: "繼續這段對話…",
     starting: "正在啟動…",
     running: "在 AgentKib 中執行",
@@ -302,8 +302,8 @@ const continuationCopy: Record<string, SessionContinuationCopy> = {
 
 export function sessionContinuationCopy(locale: string): SessionContinuationCopy {
   const key =
-    locale === "zh-TW"
-      ? "zh-TW"
+    locale === "zh-Hant"
+      ? "zh-Hant"
       : locale.startsWith("zh")
         ? "zh-CN"
         : locale.startsWith("ja")

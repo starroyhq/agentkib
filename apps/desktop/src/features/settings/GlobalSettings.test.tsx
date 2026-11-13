@@ -64,7 +64,7 @@ describe("GlobalSettings diagnostics health", () => {
     expect(time?.textContent).toBe(formatDateTime(createdAt));
 
     try {
-      for (const locale of ["zh-CN", "zh-TW", "ja-JP", "en-US"] as const) {
+      for (const locale of ["zh-CN", "zh-Hant", "ja-JP", "en-US"] as const) {
         await act(() => changeLocale(locale));
         expect(screen.getByText(tr("activity.action.discovery.complete"))).toBeTruthy();
         expect(container.querySelector("time")).toBe(time);
@@ -80,7 +80,7 @@ describe("GlobalSettings diagnostics health", () => {
 
   it("gives adjacent settings controls localized accessible names", async () => {
     try {
-      for (const locale of ["zh-CN", "zh-TW", "ja-JP", "en-US"] as const) {
+      for (const locale of ["zh-CN", "zh-Hant", "ja-JP", "en-US"] as const) {
         await act(() => changeLocale(locale));
 
         const general = render(<GlobalSettings {...baseProps} section="general" />);

@@ -12,7 +12,7 @@ const copy = {
     newIssues: (count: number) => `发现 ${count} 项新问题`,
     doctor: "去诊断",
   },
-  "zh-TW": {
+  "zh-Hant": {
     unapplied: (count: number) => `有 ${count} 個未套用的修改`,
     applied: (count: number) => `已套用 ${count} 個檔案的變更`,
     checking: "已備份原檔案，正在重新診斷…",

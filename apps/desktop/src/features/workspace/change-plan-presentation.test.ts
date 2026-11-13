@@ -53,7 +53,7 @@ describe("change plan presentation", () => {
 
   it("leaves other locales and templates without counts unchanged", () => {
     expect(planText("zh-CN", "writes", 1)).toBe("应用后会写入 1 个文件");
-    expect(planText("zh-TW", "writes", 1)).toBe("套用後會寫入 1 個檔案");
+    expect(planText("zh-Hant", "writes", 1)).toBe("套用後會寫入 1 個檔案");
     expect(planText("ja-JP", "writes", 1)).toBe("適用すると 1 個のファイルに書き込みます");
     expect(planText("en-US", "files", 1)).toBe("Files to write");
   });

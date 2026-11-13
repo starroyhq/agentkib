@@ -45,7 +45,7 @@ describe("useSearchAssets", () => {
     const { result } = renderHook(() => useSearchAssets("skill", true));
     await tick();
     try {
-      for (const locale of ["zh-CN", "zh-TW", "ja-JP", "en-US"] as const) {
+      for (const locale of ["zh-CN", "zh-Hant", "ja-JP", "en-US"] as const) {
         await act(() => changeLocale(locale));
         expect(result.current.error).toBe(tr("errors.generic"));
       }

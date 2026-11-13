@@ -83,7 +83,7 @@ type Copy = {
   speech: { colon: string; separator: string };
 };
 
-const copies: Record<"zh-CN" | "zh-TW" | "en-US" | "ja-JP", Copy> = {
+const copies: Record<"zh-CN" | "zh-Hant" | "en-US" | "ja-JP", Copy> = {
   "zh-CN": {
     kinds: {
       read: "读取",
@@ -130,7 +130,7 @@ const copies: Record<"zh-CN" | "zh-TW" | "en-US" | "ja-JP", Copy> = {
     units: { hour: " 小时", minute: " 分", second: " 秒", separator: " " },
     speech: { colon: "：", separator: "，" },
   },
-  "zh-TW": {
+  "zh-Hant": {
     kinds: {
       read: "讀取",
       edit: "修改",
@@ -271,7 +271,7 @@ const copies: Record<"zh-CN" | "zh-TW" | "en-US" | "ja-JP", Copy> = {
 };
 
 export function toolDetailCopy(locale: string): Copy {
-  if (locale === "zh-TW") return copies["zh-TW"];
+  if (locale === "zh-Hant") return copies["zh-Hant"];
   if (locale.startsWith("zh")) return copies["zh-CN"];
   if (locale.startsWith("ja")) return copies["ja-JP"];
   return copies["en-US"];

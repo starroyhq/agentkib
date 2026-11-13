@@ -127,7 +127,7 @@ describe("the AgentKib control a bare command opens", () => {
 });
 
 describe("menu descriptions", () => {
-  it.each(["zh-CN", "zh-TW", "en-US", "ja-JP"])(
+  it.each(["zh-CN", "zh-Hant", "en-US", "ja-JP"])(
     "describes AgentKib's action for the commands it handles in %s",
     (locale) => {
       const copy = slashCommandCopy(locale);
@@ -163,7 +163,7 @@ describe("menu descriptions", () => {
 });
 
 describe("messages AgentKib writes for Codex's /review and /init", () => {
-  const locales = ["zh-CN", "zh-TW", "en-US", "ja-JP"];
+  const locales = ["zh-CN", "zh-Hant", "en-US", "ja-JP"];
   it.each(locales)("reviews without changes and keeps an existing AGENTS.md, in %s", (locale) => {
     const uncommitted = codexCommandPrompt(locale, { kind: "review", base: null });
     const branch = codexCommandPrompt(locale, { kind: "review", base: "origin/main" });

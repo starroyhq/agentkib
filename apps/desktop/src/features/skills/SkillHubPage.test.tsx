@@ -193,7 +193,7 @@ describe("SkillHubPage", () => {
   it.each([
     ["en-US", "Skill library", "The Skill library is empty"],
     ["zh-CN", "技能库", "技能库还是空的"],
-    ["zh-TW", "技能庫", "技能庫還是空的"],
+    ["zh-Hant", "技能庫", "技能庫還是空的"],
     ["ja-JP", "スキルライブラリ", "スキルライブラリは空です"],
   ] as const)("names the library consistently in %s", async (locale, label, empty) => {
     await initializeI18n(locale);
@@ -292,7 +292,7 @@ describe("SkillHubPage", () => {
     expect(screen.getByText(/not enabled for any Agent automatically/)).toBeTruthy();
   });
 
-  it.each(["en-US", "zh-CN", "zh-TW", "ja-JP"] as const)(
+  it.each(["en-US", "zh-CN", "zh-Hant", "ja-JP"] as const)(
     "keeps library and usage counts tied to their own lists in %s",
     async (locale) => {
       await initializeI18n(locale);
@@ -467,7 +467,7 @@ describe("SkillHubPage", () => {
     await user.click(screen.getByRole("tab", { name: "Discover Skills" }));
 
     try {
-      for (const locale of ["en-US", "zh-CN", "zh-TW", "ja-JP"] as const) {
+      for (const locale of ["en-US", "zh-CN", "zh-Hant", "ja-JP"] as const) {
         await act(() => changeLocale(locale));
         expect(screen.getByRole("textbox", { name: tr("skills.addFromGithub") })).toBeTruthy();
         expect(screen.getByRole("textbox", { name: tr("skills.search") })).toBeTruthy();

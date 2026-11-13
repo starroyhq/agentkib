@@ -113,7 +113,7 @@ async function openModels() {
 }
 
 describe("composer model picker", () => {
-  it.each(["zh-CN", "zh-TW", "en-US", "ja-JP"] as const)(
+  it.each(["zh-CN", "zh-Hant", "en-US", "ja-JP"] as const)(
     "uses the verified model list and localized controls in %s",
     async (locale) => {
       props.locale = locale;
@@ -595,7 +595,7 @@ describe("composer model picker", () => {
     expect(props.onChange).not.toHaveBeenCalled();
   });
 
-  it.each(["zh-CN", "zh-TW", "en-US", "ja-JP"] as const)(
+  it.each(["zh-CN", "zh-Hant", "en-US", "ja-JP"] as const)(
     "shows last-used values without selecting them in %s",
     async (locale) => {
       const copy = composerModelCopy[locale];

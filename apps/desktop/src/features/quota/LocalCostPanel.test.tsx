@@ -77,7 +77,7 @@ describe("local usage estimate panel", () => {
     expect(screen.getAllByText("—").length).toBeGreaterThan(1);
   });
 
-  it.each(["en-US", "zh-CN", "zh-TW", "ja-JP"] as const)(
+  it.each(["en-US", "zh-CN", "zh-Hant", "ja-JP"] as const)(
     "localizes all cost content in %s",
     async (locale) => {
       await initializeI18n(locale);

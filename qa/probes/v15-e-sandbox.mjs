@@ -140,7 +140,7 @@ if (command === "prepare") {
   for (const directory of Object.values(paths))
     await mkdir(directory, { recursive: true, mode: 0o700 });
   const locale = options.locale ?? "zh-CN";
-  assert.ok(["zh-CN", "zh-TW", "en-US", "ja-JP"].includes(locale));
+  assert.ok(["zh-CN", "zh-Hant", "en-US", "ja-JP"].includes(locale));
   const cdpPort = Number(options["cdp-port"] ?? 19347);
   assert.ok(Number.isInteger(cdpPort) && cdpPort > 1024 && cdpPort < 65536);
   const requireDesktop = createRequire(path.join(desktop, "package.json"));

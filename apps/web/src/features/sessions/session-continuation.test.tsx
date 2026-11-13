@@ -25,7 +25,7 @@ const localizedChoices = [
     viewOnly: "仅可查看",
   },
   {
-    locale: "zh-TW",
+    locale: "zh-Hant",
     fork: "分支對話並繼續",
     returnTo: "回 Codex 繼續",
     choice: "這段對話正在 Codex 中使用。為避免兩邊同時寫入，請選擇：",
@@ -75,7 +75,7 @@ afterEach(cleanup);
 describe("shared session continuation choice", () => {
   it.each([
     ["zh-CN", "草稿已保留，回到这里后会恢复。"],
-    ["zh-TW", "草稿已保留，回到這裡後會恢復。"],
+    ["zh-Hant", "草稿已保留，回到這裡後會恢復。"],
     ["en-US", "Your draft is kept and will be restored when you return here."],
     ["ja-JP", "下書きを保存しています。ここに戻ると復元されます。"],
   ])("shows the retained draft only when present in %s", (locale, hint) => {
@@ -203,7 +203,7 @@ const readOnlyLocales = [
       "打开终端（Windows 请使用 PowerShell），粘贴并运行续接命令。如果原客户端仍占用这条会话，请先在原客户端继续。",
   },
   {
-    locale: "zh-TW",
+    locale: "zh-Hant",
     copy: "複製續接命令",
     copied: "續接命令已複製",
     help: "在執行 AgentKib 的電腦上開啟終端（Windows 請使用 PowerShell），貼上並執行續接命令。如果原客戶端仍在使用這段對話，請先在原客戶端繼續。",

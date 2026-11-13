@@ -127,7 +127,7 @@ describe("E2 asset edit locks", () => {
 });
 
 describe("workspace asset draft validation", () => {
-  it.each(["zh-CN", "zh-TW", "en-US", "ja-JP"] as const)(
+  it.each(["zh-CN", "zh-Hant", "en-US", "ja-JP"] as const)(
     "labels fields, names actual empty lists and associates Skill errors in %s",
     async (locale) => {
       await initializeI18n(locale);
@@ -148,7 +148,7 @@ describe("workspace asset draft validation", () => {
     },
   );
 
-  it.each(["zh-CN", "zh-TW", "en-US", "ja-JP"] as const)(
+  it.each(["zh-CN", "zh-Hant", "en-US", "ja-JP"] as const)(
     "labels MCP fields and both endpoint variants with localized errors in %s",
     async (locale) => {
       await initializeI18n(locale);

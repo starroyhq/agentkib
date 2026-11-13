@@ -20,14 +20,14 @@ const enFindings =
 const jaFindings =
   "修正すべき問題だけを、重大なものから順に挙げてください。各項目には、ファイルと行、どんな状況でなぜ問題になるか、修正案を書いてください。AGENTS.md などリポジトリの説明にある規約に従ってください。修正すべき問題がなければ、そうとだけ答えてください。";
 
-const prompts: Record<"zh-CN" | "zh-TW" | "en-US" | "ja-JP", Prompts> = {
+const prompts: Record<"zh-CN" | "zh-Hant" | "en-US" | "ja-JP", Prompts> = {
   "zh-CN": {
     reviewUncommitted: `审查当前未提交的改动（已暂存、未暂存和未跟踪的文件），只看不改。用 \`git status\` 和 \`git diff\`（包括 \`git diff --staged\`）查看改动，未跟踪的文件直接阅读，需要时再读相关代码。${zhCnFindings}`,
     reviewBase: (base) =>
       `审查当前分支相对 \`${base}\` 的改动，只看不改。先用 \`git merge-base HEAD ${base}\` 找到分叉点，再用 \`git diff <分叉点>\` 查看改动（其中包括未提交的部分；未跟踪的文件直接阅读），需要时再读相关代码。${zhCnFindings}`,
     init: "为这个目录写一份 AGENTS.md，供之后在这里工作的代理阅读。如果这里已经有 AGENTS.md，不要改动它，告诉我它已存在即可。先了解项目结构、构建和测试命令、代码风格与提交历史，再写这几部分：项目结构、常用命令（构建、测试、本地运行）、代码风格与命名、测试约定、提交与 PR 约定。只写这个仓库实际适用的内容，简短具体，给出实际的命令和路径。使用仓库现有文档的语言书写。",
   },
-  "zh-TW": {
+  "zh-Hant": {
     reviewUncommitted: `審查目前尚未提交的變更（已暫存、未暫存和未追蹤的檔案），只看不改。用 \`git status\` 和 \`git diff\`（包括 \`git diff --staged\`）查看變更，未追蹤的檔案直接閱讀，需要時再讀相關程式碼。${zhTwFindings}`,
     reviewBase: (base) =>
       `審查目前分支相對於 \`${base}\` 的變更，只看不改。先用 \`git merge-base HEAD ${base}\` 找到分岔點，再用 \`git diff <分岔點>\` 查看變更（其中包括尚未提交的部分；未追蹤的檔案直接閱讀），需要時再讀相關程式碼。${zhTwFindings}`,
@@ -51,8 +51,8 @@ const prompts: Record<"zh-CN" | "zh-TW" | "en-US" | "ja-JP", Prompts> = {
 export function codexCommandPrompt(locale: string, request: CodexCommandPromptRequest): string {
   const copy =
     prompts[
-      locale === "zh-TW"
-        ? "zh-TW"
+      locale === "zh-Hant"
+        ? "zh-Hant"
         : locale.startsWith("zh")
           ? "zh-CN"
           : locale.startsWith("ja")

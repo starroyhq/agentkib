@@ -22,10 +22,10 @@ export const sessionAgentCopy: Record<
     queuePaused: "队列已暂停，恢复后才会继续执行。",
     queueRecovery: "队列不会自动继续。请先核对上次操作结果，再恢复队列。",
   },
-  "zh-TW": {
+  "zh-Hant": {
     permission: "工具權限",
     permissionUnknown: "工具權限待確認",
-    queue: sessionContinuationCopy("zh-TW").queued,
+    queue: sessionContinuationCopy("zh-Hant").queued,
     pauseQueue: "暫停佇列",
     resumeQueue: "恢復佇列",
     queuePaused: "佇列已暫停，恢復後才會繼續執行。",

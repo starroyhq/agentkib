@@ -331,7 +331,7 @@ describe("native attachment images", () => {
 
   it.each([
     ["zh-CN", "查看图片", "图片不可用"],
-    ["zh-TW", "檢視圖片", "圖片無法使用"],
+    ["zh-Hant", "檢視圖片", "圖片無法使用"],
     ["en-US", "View image", "Image unavailable"],
     ["ja-JP", "画像を表示", "画像を表示できません"],
   ])("provides preview and failure labels in %s", (locale, title, error) => {

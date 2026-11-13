@@ -18,7 +18,7 @@ export const lanSettingsCopy = {
     session:
       "浏览器需要允许本地网络访问；刷新或关闭网页后需重新配对。明文风险与配对校验是两回事，配对不能防止网络窃听。",
   },
-  "zh-TW": {
+  "zh-Hant": {
     title: "區域網路直連",
     enabled: "啟用區域網路直連",
     scope:

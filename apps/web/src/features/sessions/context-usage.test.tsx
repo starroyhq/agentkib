@@ -45,7 +45,7 @@ const unmanagedClaude = () => {
 };
 
 describe("Claude context usage before its first continued turn", () => {
-  it.each(["zh-CN", "zh-TW", "en-US", "ja-JP"] as Locale[])(
+  it.each(["zh-CN", "zh-Hant", "en-US", "ja-JP"] as Locale[])(
     "explains the missing CLI report in %s without inventing usage",
     (locale) => {
       unmanagedClaude();
@@ -133,7 +133,7 @@ describe("Claude context usage before its first continued turn", () => {
 });
 
 describe("native context usage", () => {
-  it.each(["zh-CN", "zh-TW", "en-US", "ja-JP"] as const)(
+  it.each(["zh-CN", "zh-Hant", "en-US", "ja-JP"] as const)(
     "labels a historical Codex report and its date in %s",
     (locale) => {
       state.locale = locale;
@@ -415,7 +415,7 @@ describe("native context usage", () => {
     expect(screen.getByRole("dialog")).not.toHaveTextContent(contextUsageCopy["zh-CN"].offline);
   });
 
-  it.each(["zh-CN", "zh-TW", "en-US", "ja-JP"] as Locale[])(
+  it.each(["zh-CN", "zh-Hant", "en-US", "ja-JP"] as Locale[])(
     "localizes pending, stale and unavailable in %s without a bare question mark",
     (locale) => {
       state.locale = locale;

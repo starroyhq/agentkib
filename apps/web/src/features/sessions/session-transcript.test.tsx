@@ -144,7 +144,7 @@ describe("production transcript identity", () => {
 
   it.each([
     ["zh-CN", "执行中", "已完成"],
-    ["zh-TW", "執行中", "已完成"],
+    ["zh-Hant", "執行中", "已完成"],
     ["en-US", "Running", "Completed"],
     ["ja-JP", "実行中", "完了"],
   ])(

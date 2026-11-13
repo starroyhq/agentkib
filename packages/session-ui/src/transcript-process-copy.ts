@@ -7,7 +7,7 @@ const copies = {
     failed: "执行失败",
     earlierDetails: "加载此轮更早的过程",
   },
-  "zh-TW": {
+  "zh-Hant": {
     completed: "已完成",
     aborted: "已中斷",
     failed: "執行失敗",
@@ -28,7 +28,7 @@ const copies = {
 };
 
 export function transcriptProcessCopy(locale: string) {
-  if (locale === "zh-TW") return copies["zh-TW"];
+  if (locale === "zh-Hant") return copies["zh-Hant"];
   if (locale.startsWith("zh")) return copies["zh-CN"];
   if (locale.startsWith("ja")) return copies["ja-JP"];
   return copies["en-US"];

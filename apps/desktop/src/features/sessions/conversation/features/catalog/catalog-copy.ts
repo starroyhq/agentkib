@@ -37,7 +37,7 @@ export const catalogCopy = {
     interactive: "交互会话",
     auxiliarySource: "辅助会话",
   },
-  "zh-TW": {
+  "zh-Hant": {
     options: "目錄選項",
     agent: "Agent",
     allAgents: "全部 Agent",

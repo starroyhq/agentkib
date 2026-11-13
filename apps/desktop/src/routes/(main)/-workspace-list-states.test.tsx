@@ -147,7 +147,7 @@ it("uses the existing failure state and retries an initially unavailable workspa
   expect(doubles.memories).toHaveBeenCalledTimes(1);
 });
 
-it.each(["zh-CN", "zh-TW", "en-US", "ja-JP"] as const)(
+it.each(["zh-CN", "zh-Hant", "en-US", "ja-JP"] as const)(
   "explains a truly empty list in %s and keeps one executable add entry",
   async (locale) => {
     await initializeI18n(locale);

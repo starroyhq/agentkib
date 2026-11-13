@@ -1666,13 +1666,15 @@ export class TypeScriptBackend {
       }
       case RUNTIME_METHODS.setLocale: {
         if (typeof params.preference !== "string") invalid("Locale preference must be a string");
-        if (!["system", "en-US", "zh-CN", "zh-TW", "ja-JP"].includes(params.preference))
-          throw new Error(`Unsupported locale preference: ${params.preference}`);
+        // An older client still names Traditional Chinese "zh-TW"; it is saved as "zh-Hant".
+        if (params.preference === "zh-TW") params = { ...params, preference: "zh-Hant" };
+        if (!["system", "en-US", "zh-CN", "zh-Hant", "ja-JP"].includes(params.preference as string))
+          throw new Error(`Unsupported locale preference: ${String(params.preference)}`);
         return this.#setChoice(params, "locale_preference", [
           "system",
           "en-US",
           "zh-CN",
-          "zh-TW",
+          "zh-Hant",
           "ja-JP",
         ]);
       }

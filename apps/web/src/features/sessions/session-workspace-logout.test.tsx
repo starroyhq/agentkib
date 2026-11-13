@@ -167,7 +167,7 @@ it.each([
     description: "结束后，此浏览器需要重新配对才能再次访问这台电脑。",
   },
   {
-    locale: "zh-TW",
+    locale: "zh-Hant",
     title: "結束此瀏覽器的存取？",
     cancel: "保留存取",
     description: "結束後，此瀏覽器需要重新配對才能再次存取這台電腦。",

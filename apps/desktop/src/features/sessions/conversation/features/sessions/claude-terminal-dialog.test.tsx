@@ -11,7 +11,7 @@ vi.mock("./session-context", () => ({ useSession: () => state.session }));
 vi.mock("@/core/desktop", () => ({ desktopApi: () => ({ claude: { request: state.request } }) }));
 
 type Locale = keyof typeof claudeConnectionCopy;
-const locales: Locale[] = ["zh-CN", "zh-TW", "en-US", "ja-JP"];
+const locales: Locale[] = ["zh-CN", "zh-Hant", "en-US", "ja-JP"];
 const installCommand = "claude plugin install /isolated/agentkib-plugin";
 // Real codes contain an encoded payload. Do not accidentally test only a short preview code.
 const connectionCode = "synthetic_connection_payload_".repeat(12);

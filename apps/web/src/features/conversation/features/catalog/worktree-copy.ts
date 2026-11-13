@@ -16,7 +16,7 @@ export const worktreeCopy = {
     showExecution: "显示程序启动的会话",
     execution: "程序启动的会话",
   },
-  "zh-TW": {
+  "zh-Hant": {
     present: (name: string) => `在 git 工作樹 ${name} 中執行`,
     deleted: (name: string) => `工作樹 ${name} 的資料夾已經不在了，對話記錄仍可查看`,
     unknown: (name: string) => `無法檢查工作樹 ${name} 的狀態`,

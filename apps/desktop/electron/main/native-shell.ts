@@ -18,7 +18,7 @@ import {
 import enUS from "../../src/locales/en-US.json";
 import jaJP from "../../src/locales/ja-JP.json";
 import zhCN from "../../src/locales/zh-CN.json";
-import zhTW from "../../src/locales/zh-TW.json";
+import zhHant from "../../src/locales/zh-Hant.json";
 import type { AppMenuCommand, AppNavigationRequest, SupportedLocale } from "../../src/core/types";
 import {
   RUNNING_FRAMES,
@@ -49,7 +49,7 @@ const messages: Record<SupportedLocale, Record<string, string>> = {
   "en-US": enUS,
   "ja-JP": jaJP,
   "zh-CN": zhCN,
-  "zh-TW": zhTW,
+  "zh-Hant": zhHant,
 };
 
 interface NativeShellOptions {

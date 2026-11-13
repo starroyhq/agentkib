@@ -91,8 +91,8 @@ const ja: Copy = {
 };
 export function livePreviewCopy(locale: string, surface: SessionSurface = "desktop"): Copy {
   const language =
-    locale === "en-US" || locale === "zh-TW" || locale === "ja-JP" ? locale : "zh-CN";
+    locale === "en-US" || locale === "zh-Hant" || locale === "ja-JP" ? locale : "zh-CN";
   const copy =
-    language === "en-US" ? en : language === "zh-TW" ? tw : language === "ja-JP" ? ja : zh;
+    language === "en-US" ? en : language === "zh-Hant" ? tw : language === "ja-JP" ? ja : zh;
   return surfaceCopy(copy, surface, language);
 }

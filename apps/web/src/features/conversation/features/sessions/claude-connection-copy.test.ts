@@ -24,7 +24,7 @@ const cases = [
     clearInfo: "清除后，这条会话在终端继续时不会再自动连接；以后要连接，需要新的连接码。",
   },
   {
-    locale: "zh-TW",
+    locale: "zh-Hant",
     install: "安裝外掛（只需一次）",
     paste: "在終端貼上並按下 Enter",
     connected: "已連接終端",

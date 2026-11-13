@@ -2,7 +2,7 @@ import { surfaceCopy, surfaceText, type SessionSurface } from "./session-surface
 import { sessionContinuationCopy } from "@agentkib/session-ui";
 import { claudeConnectionReason } from "./claude-connection-copy";
 import { localizedUnavailableReasonText } from "../../live-status";
-type Locale = "zh-CN" | "zh-TW" | "en-US" | "ja-JP";
+type Locale = "zh-CN" | "zh-Hant" | "en-US" | "ja-JP";
 const zh = {
   composerHint: "空闲时发送；运行中可停止，获授权后可追加或加入待发队列。队列消息将自动执行。",
   queueTooLarge: "待发队列超过 100 条，此处暂不允许编辑或排序。",
@@ -118,7 +118,7 @@ const zh = {
 type Copy = { [K in keyof typeof zh]: string };
 export const codexCopy: Record<Locale, Copy> = {
   "zh-CN": zh,
-  "zh-TW": {
+  "zh-Hant": {
     previewAttachment: "預覽附件",
     composerHint: "閒置時傳送；執行中可停止，獲授權後可追加或加入待發佇列。佇列訊息將自動執行。",
     queueTooLarge: "待發佇列超過 100 條，此處暫不允許編輯或排序。",
@@ -605,7 +605,7 @@ const reasons: Record<Locale, Record<string, string>> = {
     "codex-command-terminal": "这条命令只在 Codex 的终端界面里起作用，本次消息尚未发送。",
     permission_denied: "此浏览器尚未获得对应权限，请在这台电脑上的 AgentKib 授权。",
   },
-  "zh-TW": {
+  "zh-Hant": {
     "unsupported-model":
       "目前模型不在這台電腦已驗證的模型清單中，本次訊息尚未傳送。請變更下一輪模型後再傳送。",
     "native-model-unconfirmed":

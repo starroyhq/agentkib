@@ -196,7 +196,7 @@ export interface MemoryRecord {
   invalidated_by?: string;
 }
 export type CloseBehavior = "minimize-to-tray" | "quit";
-export type SupportedLocale = "zh-CN" | "zh-TW" | "ja-JP" | "en-US";
+export type SupportedLocale = "zh-CN" | "zh-Hant" | "ja-JP" | "en-US";
 export type LocalePreference = "system" | SupportedLocale;
 export type ThemePreference = "system" | "light" | "dark";
 export type AccentThemeId = "minimal-neutral" | "vtron" | "claude" | "sakura" | "ocean-breeze";

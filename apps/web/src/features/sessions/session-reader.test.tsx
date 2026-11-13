@@ -59,7 +59,7 @@ function moveTo(top: number) {
 }
 
 describe("conversation reading position", () => {
-  it.each(["zh-CN", "zh-TW", "en-US", "ja-JP"] as const)(
+  it.each(["zh-CN", "zh-Hant", "en-US", "ja-JP"] as const)(
     "renders authenticated reconnect failures in %s and clears the prior reason",
     (locale) => {
       state = {
@@ -128,7 +128,7 @@ describe("conversation reading position", () => {
       }
     },
   );
-  it.each(["zh-CN", "zh-TW", "en-US", "ja-JP"] as const)(
+  it.each(["zh-CN", "zh-Hant", "en-US", "ja-JP"] as const)(
     "keeps unverified native version details out of the session page in %s without enabling controls",
     (locale) => {
       state = {

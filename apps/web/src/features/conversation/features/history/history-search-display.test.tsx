@@ -16,7 +16,7 @@ import { historyCopy } from "./history-copy";
 
 const timestamp = "2026-10-16T16:30:00+08:00";
 const indexedAt = "2026-10-16T17:45:00+08:00";
-const locales = ["en-US", "zh-CN", "zh-TW", "ja-JP"] as const;
+const locales = ["en-US", "zh-CN", "zh-Hant", "ja-JP"] as const;
 const coverage = {
   total: 1,
   ready: 1,
@@ -206,25 +206,27 @@ describe("localized history result metadata", () => {
 
   it("preserves highlighted result opening, exact excerpt references and source-session navigation", async () => {
     const f = fixture();
-    render(<HistorySearchPanel {...f.props} locale="zh-TW" />);
+    render(<HistorySearchPanel {...f.props} locale="zh-Hant" />);
     const button = await resultButton();
     expect(button.querySelector("mark")).toHaveTextContent("needle");
     fireEvent.click(button);
-    const source = await screen.findByRole("region", { name: historyCopy["zh-TW"].source });
+    const source = await screen.findByRole("region", { name: historyCopy["zh-Hant"].source });
     expect(f.client.historyLocate).toHaveBeenCalledExactlyOnceWith(
       f.source.location,
       expect.any(AbortSignal),
     );
-    const excerpt = within(source).getByRole("textbox", { name: historyCopy["zh-TW"].excerpt });
+    const excerpt = within(source).getByRole("textbox", { name: historyCopy["zh-Hant"].excerpt });
     fireEvent.select(excerpt, { target: { selectionStart: 7, selectionEnd: 13 } });
-    fireEvent.click(within(source).getByRole("button", { name: historyCopy["zh-TW"].quote }));
-    await screen.findByText(historyCopy["zh-TW"].added);
+    fireEvent.click(within(source).getByRole("button", { name: historyCopy["zh-Hant"].quote }));
+    await screen.findByText(historyCopy["zh-Hant"].added);
     expect(f.client.historyReferences).toHaveBeenCalledExactlyOnceWith(
       [{ ...f.source.location, contentHash: "hash", start: 7, end: 13 }],
       expect.any(AbortSignal),
     );
     expect(f.props.onReference).toHaveBeenCalledOnce();
-    fireEvent.click(within(source).getByRole("button", { name: historyCopy["zh-TW"].openSession }));
+    fireEvent.click(
+      within(source).getByRole("button", { name: historyCopy["zh-Hant"].openSession }),
+    );
     await waitFor(() =>
       expect(f.props.onOpenSession).toHaveBeenCalledExactlyOnceWith(f.catalog.sessions[0]),
     );

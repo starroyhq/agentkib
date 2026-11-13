@@ -50,7 +50,7 @@ describe("remote error feedback", () => {
     const summary = container.querySelector("p");
     const translations = new Set<string>();
     try {
-      for (const locale of ["zh-CN", "zh-TW", "ja-JP", "en-US"] as const) {
+      for (const locale of ["zh-CN", "zh-Hant", "ja-JP", "en-US"] as const) {
         await act(() => changeLocale(locale));
         const expected = tr("remote.error.pairing");
         expect(expected).not.toBe("remote.error.pairing");

@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import { sessionContinuationCopy, sessionContinuationListState } from "@agentkib/session-ui";
 
 describe("runtime-only session list presentation", () => {
-  it.each(["zh-CN", "zh-TW", "en-US", "ja-JP"])(
+  it.each(["zh-CN", "zh-Hant", "en-US", "ja-JP"])(
     "does not invent a runtime owner or expose a dot for view-only sources in %s",
     (locale) => {
       const session = { agent: "claude-code", availability: "readable" };

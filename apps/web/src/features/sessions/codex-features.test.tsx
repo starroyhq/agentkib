@@ -395,7 +395,7 @@ describe("Codex composer", () => {
     await waitFor(() => expect(state.codexAction).toHaveBeenCalledWith("goal-pause", {}));
   });
 });
-it.each(["zh-CN", "zh-TW", "en-US", "ja-JP"] as const)(
+it.each(["zh-CN", "zh-Hant", "en-US", "ja-JP"] as const)(
   "keeps Codex operations focused on session management and automatic queues in %s",
   async (locale) => {
     state = {
@@ -428,7 +428,7 @@ it.each(["zh-CN", "zh-TW", "en-US", "ja-JP"] as const)(
     const copy = codexCopyForSurface(locale, "web");
     const obsoleteResume = {
       "zh-CN": "恢复执行",
-      "zh-TW": "恢復執行",
+      "zh-Hant": "恢復執行",
       "en-US": "Resume execution",
       "ja-JP": "実行を再開",
     }[locale];

@@ -58,7 +58,7 @@ describe("E2 diagnostic presentation", () => {
 
   it.each([
     ["zh-CN", "CLAUDE.md：配置文件无效"],
-    ["zh-TW", "CLAUDE.md：配置文件无效"],
+    ["zh-Hant", "CLAUDE.md：配置文件无效"],
     ["en-US", "CLAUDE.md: 配置文件无效"],
     ["ja-JP", "CLAUDE.md：配置文件无效"],
   ] as const)("keeps the actual filename first for other known issues in %s", (locale, title) => {
@@ -69,7 +69,7 @@ describe("E2 diagnostic presentation", () => {
 
   it.each([
     ["zh-CN", "Grok Build 会读到两份相同的指令", "重新诊断"],
-    ["zh-TW", "Grok Build 會讀到兩份相同的指令", "重新診斷"],
+    ["zh-Hant", "Grok Build 會讀到兩份相同的指令", "重新診斷"],
     ["en-US", "Grok Build will read the same instructions twice", "Run diagnostics again"],
     ["ja-JP", "Grok Build が同じ指示を 2 回読み込みます", "再診断"],
   ] as const)(
@@ -99,7 +99,7 @@ describe("E2 diagnostic presentation", () => {
 
   it.each([
     ["zh-CN", "刚刚"],
-    ["zh-TW", "剛剛"],
+    ["zh-Hant", "剛剛"],
     ["en-US", "just now"],
     ["ja-JP", "たった今"],
   ] as const)(
@@ -147,7 +147,7 @@ describe("E2 diagnostic presentation", () => {
 
   it.each([
     ["zh-CN", "DeepSeek Harness 会把 CLAUDE.md 中的 @AGENTS.md 当作普通文字，不会导入其中的指令"],
-    ["zh-TW", "DeepSeek Harness 會把 CLAUDE.md 中的 @AGENTS.md 當作一般文字，不會匯入其中的指令"],
+    ["zh-Hant", "DeepSeek Harness 會把 CLAUDE.md 中的 @AGENTS.md 當作一般文字，不會匯入其中的指令"],
     [
       "en-US",
       "DeepSeek Harness reads @AGENTS.md in CLAUDE.md as text and does not import its instructions",

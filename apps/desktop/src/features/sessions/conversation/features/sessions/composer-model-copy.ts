@@ -18,7 +18,7 @@ export const composerModelCopy = {
     nextTurnSettings: "下一轮设置",
     saved: "已保存",
   },
-  "zh-TW": {
+  "zh-Hant": {
     chooseEffort: "選取推理強度",
     chooseModel: "選取模型",
     defaultModel: "預設",

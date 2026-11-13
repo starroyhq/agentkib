@@ -140,7 +140,7 @@ afterEach(cleanup);
 describe("empty change-plan review", () => {
   it.each([
     ["zh-CN", "本计划没有文件变更", "没有需要应用的文件变更，可返回继续操作。", "返回"],
-    ["zh-TW", "此計畫沒有檔案變更", "沒有需要套用的檔案變更，可返回繼續操作。", "返回"],
+    ["zh-Hant", "此計畫沒有檔案變更", "沒有需要套用的檔案變更，可返回繼續操作。", "返回"],
     [
       "en-US",
       "No file changes in this plan",

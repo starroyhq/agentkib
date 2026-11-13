@@ -96,7 +96,7 @@ afterEach(() => {
 describe("responsive composer behavior", () => {
   it.each([
     ["zh-CN", "电脑上的 AgentKib 尚未开启执行控制。"],
-    ["zh-TW", "電腦上的 AgentKib 尚未啟用執行控制。"],
+    ["zh-Hant", "電腦上的 AgentKib 尚未啟用執行控制。"],
     ["en-US", "Execution control is not enabled in AgentKib on your computer."],
     ["ja-JP", "コンピューター上の AgentKib で実行操作が有効になっていません。"],
   ] as const)(
@@ -122,7 +122,7 @@ describe("responsive composer behavior", () => {
 
   it.each([
     ["zh-CN", "连接协议不兼容。请更新电脑上的 AgentKib 并重新连接。"],
-    ["zh-TW", "連線協定不相容。請更新電腦上的 AgentKib 並重新連線。"],
+    ["zh-Hant", "連線協定不相容。請更新電腦上的 AgentKib 並重新連線。"],
     [
       "en-US",
       "The connection protocol is incompatible. Update AgentKib on your computer and reconnect.",
@@ -152,7 +152,7 @@ describe("responsive composer behavior", () => {
       expect(screen.getByRole("textbox")).toHaveValue("Keep this draft");
     },
   );
-  it.each(["zh-CN", "zh-TW", "en-US", "ja-JP"] as const)(
+  it.each(["zh-CN", "zh-Hant", "en-US", "ja-JP"] as const)(
     "keeps the complete settings label when no model is reported in %s",
     async (locale) => {
       state.locale = locale;
@@ -173,7 +173,7 @@ describe("responsive composer behavior", () => {
       ).not.toHaveClass("truncate");
     },
   );
-  it.each(["zh-CN", "zh-TW", "en-US", "ja-JP"] as const)(
+  it.each(["zh-CN", "zh-Hant", "en-US", "ja-JP"] as const)(
     "only shows unknown settings after a local settings intent in %s",
     async (locale) => {
       state.locale = locale;
@@ -199,7 +199,7 @@ describe("responsive composer behavior", () => {
       "更改下一轮模型",
     ],
     [
-      "zh-TW",
+      "zh-Hant",
       "目前模型不在執行 AgentKib 的電腦已驗證的模型清單中，本次訊息尚未傳送。請變更下一輪模型後再傳送。",
       "變更下一輪模型",
     ],
@@ -377,7 +377,7 @@ describe("responsive composer behavior", () => {
     expect(screen.getByRole("button", { name: "发送" })).toBeDisabled();
     expect(screen.getByLabelText("发送消息")).toBeEnabled();
   });
-  it.each(["zh-CN", "zh-TW", "en-US", "ja-JP"] as Locale[])(
+  it.each(["zh-CN", "zh-Hant", "en-US", "ja-JP"] as Locale[])(
     "localizes effort and exposes disabled reasons in %s",
     async (locale) => {
       state = { ...state, locale, t: dictionaries[locale] };
@@ -385,7 +385,7 @@ describe("responsive composer behavior", () => {
       fireEvent.click(await screen.findByRole("button", { name: /Test Model/ }));
       const dialog = screen.getByRole("dialog");
       const high = within(dialog).getByRole("option", {
-        name: { "zh-CN": "高", "zh-TW": "高", "en-US": "High", "ja-JP": "高" }[locale],
+        name: { "zh-CN": "高", "zh-Hant": "高", "en-US": "High", "ja-JP": "高" }[locale],
       });
       expect(high).toHaveValue("high");
       expect(within(dialog).getByText("owner_channel_unavailable")).toBeInTheDocument();

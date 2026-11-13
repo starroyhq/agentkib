@@ -3,7 +3,7 @@ import type { Locale } from "../../i18n";
 
 const operations = {
   "zh-CN": { command: "执行命令", files: "文件变更", permissions: "权限请求" },
-  "zh-TW": { command: "執行命令", files: "檔案變更", permissions: "權限請求" },
+  "zh-Hant": { command: "執行命令", files: "檔案變更", permissions: "權限請求" },
   "en-US": {
     command: "Command execution",
     files: "File changes",

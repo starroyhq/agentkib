@@ -309,7 +309,7 @@ describe("reader follows user intent across transcript and viewport layout", () 
 });
 
 describe("reader compaction status belongs to the conversation", () => {
-  it.each(["zh-CN", "zh-TW", "en-US", "ja-JP"] as const)(
+  it.each(["zh-CN", "zh-Hant", "en-US", "ja-JP"] as const)(
     "shows a single concise status after the transcript in %s",
     (locale) => {
       state = {

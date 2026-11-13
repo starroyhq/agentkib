@@ -9,7 +9,7 @@ import { createGlobalNavigation } from "./global-navigation";
 import { KeyboardShortcutsSettings } from "@/features/settings/KeyboardShortcutsSettings";
 
 const displayCases = (["macos", "windows", "linux"] as const).flatMap((platform) =>
-  (["zh-CN", "zh-TW", "en-US", "ja-JP"] as const).map((locale) => ({ platform, locale })),
+  (["zh-CN", "zh-Hant", "en-US", "ja-JP"] as const).map((locale) => ({ platform, locale })),
 );
 
 function navigationRows() {

@@ -74,7 +74,7 @@ export const managedControlCopy: Record<Locale, Record<ManagedControlBlockReason
     synchronizing: "正在同步控制状态。请等待同步完成后再交接。",
     sessionBusy: "会话操作进行中。请等待完成后再交接。",
   },
-  "zh-TW": {
+  "zh-Hant": {
     processing: "正在處理操作。請等待結果，再交接或交還此對話。",
     uncertain: "正在核對上次操作結果。請等待確認，勿重複交接。",
     compacting: "正在壓縮上下文。請等待完成並重新整理對話，再交接或交還。",

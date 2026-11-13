@@ -66,7 +66,7 @@ export const webSettingsCopy = {
       "实验功能仅在通过验证的这台电脑与会话上可用；停止仅表示中断当前轮次，不保证后台命令已结束。",
     read: "历史读取",
   },
-  "zh-TW": {
+  "zh-Hant": {
     unsaved: "有尚未儲存的變更",
     saveHint: "此處設定在點選「儲存設定」後生效。",
     saving: "正在儲存設定…",

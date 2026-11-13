@@ -103,7 +103,7 @@ describe("named source notices", () => {
 
   it.each([
     ["zh-CN", "暂时读不到 Antigravity、Codex 的会话", "重试"],
-    ["zh-TW", "暫時讀不到 Antigravity、Codex 的會話", "重試"],
+    ["zh-Hant", "暫時讀不到 Antigravity、Codex 的會話", "重試"],
     ["en-US", "Antigravity, Codex sessions are temporarily unavailable", "Retry"],
     ["ja-JP", "Antigravity、Codex のセッションを一時的に読み取れません", "再試行"],
   ] as const)(

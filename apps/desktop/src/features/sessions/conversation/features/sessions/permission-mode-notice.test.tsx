@@ -8,7 +8,7 @@ import { permissionModeCopy, permissionModeSummaryCopy } from "./permission-mode
 describe("compact Claude permission notice", () => {
   afterEach(cleanup);
 
-  it.each(["zh-CN", "zh-TW", "en-US", "ja-JP"] as const)(
+  it.each(["zh-CN", "zh-Hant", "en-US", "ja-JP"] as const)(
     "keeps the complete risk explanation expandable in %s",
     (locale) => {
       for (const mode of ["auto", "dontAsk", "bypassPermissions", null] as const) {
@@ -41,7 +41,7 @@ describe("compact Claude permission notice", () => {
     },
   );
 
-  it.each(["zh-CN", "zh-TW", "en-US", "ja-JP"] as const)(
+  it.each(["zh-CN", "zh-Hant", "en-US", "ja-JP"] as const)(
     "keeps the previous-mode explanation fully readable without compact disclosure in %s",
     (locale) => {
       for (const mode of ["auto", "dontAsk", "bypassPermissions"] as const) {

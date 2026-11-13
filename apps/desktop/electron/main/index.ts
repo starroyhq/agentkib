@@ -1384,9 +1384,11 @@ function applyApplicationIcon(preference: "white" | "black"): void {
   if (mainWindow && !mainWindow.isDestroyed()) mainWindow.setIcon(image);
 }
 
-function normalizeSystemLocale(locale: string | undefined): "zh-CN" | "zh-TW" | "ja-JP" | "en-US" {
+function normalizeSystemLocale(
+  locale: string | undefined,
+): "zh-CN" | "zh-Hant" | "ja-JP" | "en-US" {
   const normalized = locale?.replaceAll("_", "-").toLowerCase() ?? "";
-  if (/^(zh|yue)-(hant|tw|hk|mo)(-|$)/.test(normalized)) return "zh-TW";
+  if (/^(zh|yue)-(hant|tw|hk|mo)(-|$)/.test(normalized)) return "zh-Hant";
   if (/^zh-(hans|cn|sg)(-|$)/.test(normalized) || normalized === "zh") return "zh-CN";
   if (normalized === "ja" || normalized.startsWith("ja-")) return "ja-JP";
   return "en-US";

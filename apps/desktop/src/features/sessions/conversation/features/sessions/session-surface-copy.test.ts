@@ -7,7 +7,7 @@ import { surfaceText } from "./session-surface-copy";
 import { managedText } from "./managed-copy";
 import { artifactCopy } from "./artifact-copy";
 
-const locales = ["zh-CN", "zh-TW", "en-US", "ja-JP"] as const;
+const locales = ["zh-CN", "zh-Hant", "en-US", "ja-JP"] as const;
 
 describe("session copy identifies the computer and application", () => {
   it.each([
@@ -18,7 +18,7 @@ describe("session copy identifies the computer and application", () => {
       "请让电脑上的 AgentKib 保持运行。任务使用工作区权限，需要审批时等待你的确认。",
     ],
     [
-      "zh-TW",
+      "zh-Hant",
       "這台電腦上的 AgentKib",
       "電腦上的 AgentKib",
       "請讓電腦上的 AgentKib 保持執行。任務使用工作區權限，需要審批時等待你的確認。",
@@ -81,7 +81,7 @@ describe("session copy identifies the computer and application", () => {
     const desktop = codexCopyForSurface(locale);
     const expected = {
       "zh-CN": ["这台电脑", "运行 AgentKib 的电脑", "电脑上的 AgentKib"],
-      "zh-TW": ["這台電腦", "執行 AgentKib 的電腦", "電腦上的 AgentKib"],
+      "zh-Hant": ["這台電腦", "執行 AgentKib 的電腦", "電腦上的 AgentKib"],
       "en-US": ["this computer", "the computer running AgentKib", "AgentKib on your computer"],
       "ja-JP": [
         "このコンピューター",
@@ -123,7 +123,7 @@ describe("session copy identifies the computer and application", () => {
   });
 
   it("does not introduce Simplified Chinese into the browser's Traditional Chinese copy", () => {
-    expect(surfaceText("請在桌面端批准存取。", "web", "zh-TW")).toBe(
+    expect(surfaceText("請在桌面端批准存取。", "web", "zh-Hant")).toBe(
       "請在電腦上的 AgentKib 批准存取。",
     );
   });

@@ -78,7 +78,7 @@ describe("Claude Code scopes in the MCP import panel", () => {
       /Claude Code：local、managed/,
     ],
     [
-      "zh-TW",
+      "zh-Hant",
       "唯讀：此 local 範圍的服務僅供參考，AgentKib 不會收錄也不會遷移。",
       /Claude Code：local、managed/,
     ],

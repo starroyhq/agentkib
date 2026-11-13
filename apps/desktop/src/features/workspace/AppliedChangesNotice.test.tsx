@@ -44,7 +44,7 @@ const result: AppliedWorkspaceChanges = {
 describe("applied changes diagnosis", () => {
   beforeAll(() => initializeI18n("en-US"));
   afterEach(cleanup);
-  it.each(["zh-CN", "zh-TW", "en-US", "ja-JP"] as const)(
+  it.each(["zh-CN", "zh-Hant", "en-US", "ja-JP"] as const)(
     "renders the real result and localized warning in %s",
     async (locale) => {
       await changeLocale(locale);
@@ -65,7 +65,7 @@ describe("applied changes diagnosis", () => {
     },
   );
 
-  it.each(["zh-CN", "zh-TW", "en-US", "ja-JP"] as const)(
+  it.each(["zh-CN", "zh-Hant", "en-US", "ja-JP"] as const)(
     "reports no new problems without inventing a zero-resolved claim in %s",
     async (locale) => {
       await changeLocale(locale);
@@ -85,7 +85,7 @@ describe("applied changes diagnosis", () => {
     },
   );
 
-  it.each(["zh-CN", "zh-TW", "en-US", "ja-JP"] as const)(
+  it.each(["zh-CN", "zh-Hant", "en-US", "ja-JP"] as const)(
     "keeps unresolved original problems visible in %s",
     async (locale) => {
       await changeLocale(locale);

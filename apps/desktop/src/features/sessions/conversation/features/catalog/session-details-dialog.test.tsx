@@ -70,7 +70,7 @@ describe("Codex native session details", () => {
     expect(await screen.findAllByText("Codex 信息不可用")).toHaveLength(3);
     expect(screen.queryByText("stale-branch")).not.toBeInTheDocument();
   });
-  it.each(["zh-CN", "zh-TW", "en-US", "ja-JP"] as const)(
+  it.each(["zh-CN", "zh-Hant", "en-US", "ja-JP"] as const)(
     "shows the matching client's version and model only in session details in %s",
     async (locale) => {
       const copy = catalogCopy[locale];
@@ -110,7 +110,7 @@ describe("Codex native session details", () => {
     },
   );
 
-  it.each(["zh-CN", "zh-TW", "en-US", "ja-JP"] as const)(
+  it.each(["zh-CN", "zh-Hant", "en-US", "ja-JP"] as const)(
     "does not show a previous session's runtime metadata while switching in %s",
     (locale) => {
       const copy = catalogCopy[locale];
@@ -238,7 +238,7 @@ describe("Codex native session details", () => {
   });
   it.each([
     ["zh-CN", "交互会话", "辅助会话"],
-    ["zh-TW", "互動對話", "輔助對話"],
+    ["zh-Hant", "互動對話", "輔助對話"],
     ["en-US", "Interactive session", "Auxiliary session"],
     ["ja-JP", "対話型の会話", "補助会話"],
   ] as const)(

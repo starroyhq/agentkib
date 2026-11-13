@@ -721,7 +721,7 @@ describe("SessionHandoffDialog", () => {
         counted: "最近一次压缩之前的 3 个时间线节点未包含，由上下文摘要代替",
         unlinked: "压缩之前的更早历史在记录中无法定位，未包含",
       },
-      "zh-TW": {
+      "zh-Hant": {
         option: "包含壓縮前的歷史",
         counted: "最近一次壓縮之前的 3 個時間線節點未包含，由上下文摘要代替",
         unlinked: "壓縮之前的更早歷史在記錄中無法定位，未包含",

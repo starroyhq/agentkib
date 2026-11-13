@@ -46,7 +46,7 @@ const copy = {
     readFailed: "没能读到这个请求，打开会话查看。",
     disconnected: "已断线，连上后才能作答。",
   },
-  "zh-TW": {
+  "zh-Hant": {
     home: "首頁",
     needsYou: "需要你處理",
     inProgress: "進行中",

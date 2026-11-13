@@ -57,7 +57,7 @@ afterEach(cleanup);
 describe("SessionCatalog", () => {
   it.each([
     ["zh-CN", "项目信息不可用，请更新电脑上的 AgentKib。"],
-    ["zh-TW", "專案資訊不可用，請更新電腦上的 AgentKib。"],
+    ["zh-Hant", "專案資訊不可用，請更新電腦上的 AgentKib。"],
     ["en-US", "Project information unavailable. Update AgentKib on your computer."],
     ["ja-JP", "プロジェクト情報を取得できません。コンピューター上の AgentKib を更新してください。"],
   ] as const)(
@@ -197,7 +197,7 @@ describe("SessionCatalog", () => {
       expect(screen.queryByRole("button", { name: `${kind} · 1` })).toBeNull();
     },
   );
-  it.each(["zh-CN", "zh-TW", "en-US", "ja-JP"] as const)(
+  it.each(["zh-CN", "zh-Hant", "en-US", "ja-JP"] as const)(
     "labels an old Codex runtime as view-only in %s without probing rows",
     (locale) => {
       render(
@@ -217,7 +217,7 @@ describe("SessionCatalog", () => {
       expect(screen.getByText(sessionContinuationCopy(locale).viewOnly)).toBeVisible();
     },
   );
-  it.each(["zh-CN", "zh-TW", "en-US", "ja-JP"] as const)(
+  it.each(["zh-CN", "zh-Hant", "en-US", "ja-JP"] as const)(
     "keeps runtime dots distinct from pending interactions in %s",
     (locale) => {
       const copy = sessionContinuationCopy(locale);
@@ -280,7 +280,7 @@ describe("SessionCatalog", () => {
   );
   it.each([
     ["zh-CN", "没有匹配的会话"],
-    ["zh-TW", "沒有符合的對話"],
+    ["zh-Hant", "沒有符合的對話"],
     ["en-US", "No matching sessions"],
     ["ja-JP", "該当する会話はありません"],
   ] as const)("uses session terminology in empty search feedback in %s", (locale, noResults) => {

@@ -472,7 +472,7 @@ describe("composer sending shortcuts", () => {
     expect(input).toHaveValue("");
   });
 
-  it.each(["zh-CN", "zh-TW", "en-US", "ja-JP"] as const)(
+  it.each(["zh-CN", "zh-Hant", "en-US", "ja-JP"] as const)(
     "omits the removed shortcut instruction in %s",
     (locale) => {
       doubles.session.locale = locale;
@@ -503,7 +503,7 @@ describe("composer sending shortcuts", () => {
       reason: "codex-owner-busy",
     });
   }
-  it.each(["zh-CN", "zh-TW", "en-US", "ja-JP"] as const)(
+  it.each(["zh-CN", "zh-Hant", "en-US", "ja-JP"] as const)(
     "keeps the compact owner choice actionable without its secondary instructions in %s",
     (locale) => {
       continuationFixture();

@@ -260,7 +260,7 @@ describe("AgentsPage", () => {
     );
   });
 
-  it.each(["zh-CN", "zh-TW", "en-US", "ja-JP"] as const)(
+  it.each(["zh-CN", "zh-Hant", "en-US", "ja-JP"] as const)(
     "renders grouped agents and actionable empty data in %s",
     async (locale) => {
       await act(() => changeLocale(locale));
@@ -281,7 +281,7 @@ describe("AgentsPage", () => {
     },
   );
 
-  it.each(["zh-CN", "zh-TW", "en-US", "ja-JP"] as const)(
+  it.each(["zh-CN", "zh-Hant", "en-US", "ja-JP"] as const)(
     "keeps runtime capabilities, one configuration path, version warnings and beta notices in %s",
     async (locale) => {
       await act(() => changeLocale(locale));
@@ -324,7 +324,7 @@ describe("AgentsPage", () => {
     },
   );
 
-  it.each(["zh-CN", "zh-TW", "en-US", "ja-JP"] as const)(
+  it.each(["zh-CN", "zh-Hant", "en-US", "ja-JP"] as const)(
     "separates the unsupported control status without repeating supported states in %s",
     async (locale) => {
       await act(() => changeLocale(locale));
@@ -524,7 +524,7 @@ describe("AgentsPage", () => {
 
   it.each([
     ["zh-CN", "暂时读不到 Claude Code 的用量", "未找到 Claude Code 的本机用量统计文件"],
-    ["zh-TW", "暫時無法讀取 Claude Code 的用量", "找不到 Claude Code 的本機用量統計檔案"],
+    ["zh-Hant", "暫時無法讀取 Claude Code 的用量", "找不到 Claude Code 的本機用量統計檔案"],
     [
       "en-US",
       "Unable to read Claude Code usage right now",

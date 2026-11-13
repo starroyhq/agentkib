@@ -22,7 +22,7 @@ import { managedControlCopy } from "@/features/conversation/features/sessions/ma
 vi.mock("@tanstack/react-router", () => ({ useNavigate: () => vi.fn() }));
 const labels = [
   ["zh-CN", "选择附件文件", "引用文件或技能后，请输入消息或添加附件再发送。"],
-  ["zh-TW", "選取附件檔案", "引用檔案或技能後，請輸入訊息或新增附件再傳送。"],
+  ["zh-Hant", "選取附件檔案", "引用檔案或技能後，請輸入訊息或新增附件再傳送。"],
   [
     "en-US",
     "Choose attachment files",
@@ -250,7 +250,7 @@ describe("Web access attachment and permission copy", () => {
       const f = await start(locale, fixture(false, false));
       const expected = {
         "zh-CN": "当前访问没有发送权限。请在运行 AgentKib 的电脑上检查此访问的权限。",
-        "zh-TW": "目前存取沒有傳送權限。請在執行 AgentKib 的電腦上檢查此存取的權限。",
+        "zh-Hant": "目前存取沒有傳送權限。請在執行 AgentKib 的電腦上檢查此存取的權限。",
         "en-US":
           "This access does not include permission to send. Check its permissions on the computer running AgentKib.",
         "ja-JP":
@@ -273,7 +273,7 @@ describe("Web access attachment and permission copy", () => {
       const f = await start(locale, fixture(false, true, false));
       const expected = {
         "zh-CN": "当前访问没有附件上传权限。",
-        "zh-TW": "目前存取沒有附件上傳權限。",
+        "zh-Hant": "目前存取沒有附件上傳權限。",
         "en-US": "This access does not include permission to upload attachments.",
         "ja-JP": "現在のアクセスでは添付ファイルをアップロードできません。",
       }[locale];

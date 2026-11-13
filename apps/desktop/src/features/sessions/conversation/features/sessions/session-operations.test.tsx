@@ -75,7 +75,7 @@ beforeEach(() => {
 });
 afterEach(cleanup);
 describe("Claude terminal setup entry", () => {
-  it.each(["zh-CN", "zh-TW", "ja-JP", "en-US"] as const)(
+  it.each(["zh-CN", "zh-Hant", "ja-JP", "en-US"] as const)(
     "keeps the terminal dialog independent of session actions in %s",
     (locale) => {
       session.locale = locale;

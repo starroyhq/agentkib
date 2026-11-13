@@ -35,7 +35,7 @@ function fixture(
   } as unknown as SessionController;
 }
 describe("Claude execution and terminal connection presentation", () => {
-  it.each(["zh-CN", "zh-TW", "en-US", "ja-JP"] as const)(
+  it.each(["zh-CN", "zh-Hant", "en-US", "ja-JP"] as const)(
     "explains authenticated reconnect compatibility failures without overriding safety in %s",
     (locale) => {
       const copy = claudeConnectionCopy[locale];
@@ -87,7 +87,7 @@ describe("Claude execution and terminal connection presentation", () => {
       }
     },
   );
-  it.each(["zh-CN", "zh-TW", "en-US", "ja-JP"] as const)(
+  it.each(["zh-CN", "zh-Hant", "en-US", "ja-JP"] as const)(
     "keeps ownership, connection and failure states distinct in %s",
     (locale) => {
       const copy = claudeConnectionCopy[locale];
@@ -217,9 +217,9 @@ describe("Claude execution and terminal connection presentation", () => {
     },
   );
   it("uses 對話 consistently in traditional Chinese connection copy", () => {
-    expect(Object.values(claudeConnectionCopy["zh-TW"]).join(" ")).not.toContain("會話");
+    expect(Object.values(claudeConnectionCopy["zh-Hant"]).join(" ")).not.toContain("會話");
   });
-  it.each(["zh-CN", "zh-TW", "en-US", "ja-JP"] as const)(
+  it.each(["zh-CN", "zh-Hant", "en-US", "ja-JP"] as const)(
     "says what runs in the background of a managed session in %s",
     (locale) => {
       const continuation = sessionContinuationCopy(locale);

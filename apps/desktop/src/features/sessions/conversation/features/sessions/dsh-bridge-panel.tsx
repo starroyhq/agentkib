@@ -82,7 +82,7 @@ const copy: Record<
     unsupported: "当前只支持 macOS。",
     unavailable: "AgentKib 的连接服务没有启动。",
   },
-  "zh-TW": {
+  "zh-Hant": {
     title: "DeepSeek Harness 連線",
     connected: (count) => `已連線 ${count} 個正在執行的 DeepSeek Harness`,
     none: "沒有連線到正在執行的 DeepSeek Harness。安裝 AgentKib 外掛並重新啟動 DeepSeek Harness 後會自動連線。",

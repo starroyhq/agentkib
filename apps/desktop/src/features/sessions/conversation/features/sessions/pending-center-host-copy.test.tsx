@@ -12,7 +12,7 @@ import { pendingScope, readPending, rememberPending } from "./pending-controls";
 
 const labels = [
   ["zh-CN", "待处理中心", "汇总本页已查看会话的待处理事项及当前访问尚未确认的请求。"],
-  ["zh-TW", "待處理中心", "彙整此頁已查看對話的待處理事項及目前存取尚未確認的請求。"],
+  ["zh-Hant", "待處理中心", "彙整此頁已查看對話的待處理事項及目前存取尚未確認的請求。"],
   [
     "en-US",
     "Pending actions",

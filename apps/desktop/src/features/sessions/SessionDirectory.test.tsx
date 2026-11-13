@@ -469,7 +469,7 @@ describe("SessionDirectory", () => {
 
   it.each([
     ["zh-CN", "有历史内容", "无历史内容"],
-    ["zh-TW", "有歷史內容", "無歷史內容"],
+    ["zh-Hant", "有歷史內容", "無歷史內容"],
     ["en-US", "History available", "No history content"],
     ["ja-JP", "履歴あり", "履歴なし"],
   ] as const)(
@@ -488,7 +488,7 @@ describe("SessionDirectory", () => {
     },
   );
 
-  it.each(["zh-CN", "zh-TW", "en-US", "ja-JP"] as const)(
+  it.each(["zh-CN", "zh-Hant", "en-US", "ja-JP"] as const)(
     "keeps unused index source errors neutral per workspace in %s",
     async (locale) => {
       await initializeI18n(locale);
@@ -649,7 +649,7 @@ describe("SessionDirectory", () => {
     expect(card).toHaveTextContent("h2");
   });
 
-  it.each(["zh-CN", "zh-TW", "en-US", "ja-JP"] as const)(
+  it.each(["zh-CN", "zh-Hant", "en-US", "ja-JP"] as const)(
     "shows only one aggregate status on a folded project, without inline counts, in %s",
     (locale) => {
       initializeI18n(locale);
@@ -1233,7 +1233,7 @@ describe("SessionDirectory", () => {
       sessionOrder: { "workspace-a": ["archived", "first"] },
     });
   });
-  it.each(["zh-CN", "zh-TW", "en-US", "ja-JP"] as const)(
+  it.each(["zh-CN", "zh-Hant", "en-US", "ja-JP"] as const)(
     "labels a verified old Codex runtime in the actual sidebar in %s",
     (locale) => {
       initializeI18n(locale);
@@ -1245,7 +1245,7 @@ describe("SessionDirectory", () => {
       initializeI18n("en-US");
     },
   );
-  it.each(["zh-CN", "zh-TW", "en-US", "ja-JP"] as const)(
+  it.each(["zh-CN", "zh-Hant", "en-US", "ja-JP"] as const)(
     "shows runtime status in recent sessions and distinct sidebar dots in %s",
     (locale) => {
       initializeI18n(locale);

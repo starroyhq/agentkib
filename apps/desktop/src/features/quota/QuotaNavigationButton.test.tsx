@@ -270,7 +270,7 @@ describe("quota navigation's independent agent remaining values", () => {
   it("updates its accessible remaining values with the actual application language", async () => {
     render(button(snapshot([provider("codex", [quotaWindow(23)])])));
     const navigation = screen.getByRole("button", { name: "Quota" });
-    for (const locale of ["zh-CN", "zh-TW", "ja-JP", "en-US"] as const) {
+    for (const locale of ["zh-CN", "zh-Hant", "ja-JP", "en-US"] as const) {
       await act(() => changeLocale(locale));
       expect(navigation).toHaveAccessibleDescription(
         `Codex: ${tr("quota.remaining", { value: 23 })} · ${tr("quota.lowestRemaining")}; Claude Code: ${tr("quota.unavailable")}`,

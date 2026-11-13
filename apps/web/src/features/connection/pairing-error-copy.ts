@@ -14,7 +14,7 @@ const zh = {
 
 export const pairingErrorCopy: Record<Locale, typeof zh> = {
   "zh-CN": zh,
-  "zh-TW": {
+  "zh-Hant": {
     requesting: "正在請求連線…",
     invalid_pairing_code: "配對碼不正確、已過期或已使用。請在電腦上產生新碼後重新輸入。",
     device_limit: "已授權裝置已達上限。請在電腦的遠端存取設定中撤銷不再使用的裝置後重試。",
@@ -67,7 +67,7 @@ const accessCodeErrors: Record<Locale, { invalid_pairing_code: string; invalid_i
     invalid_pairing_code: "授权码不正确、已过期或已使用。请在电脑上生成新码后重新输入。",
     invalid_input: "请检查授权码和浏览器名称，名称不得超过 80 个字符或包含控制字符。",
   },
-  "zh-TW": {
+  "zh-Hant": {
     invalid_pairing_code: "授權碼不正確、已過期或已使用。請在電腦上產生新碼後重新輸入。",
     invalid_input: "請檢查授權碼和瀏覽器名稱，名稱不得超過 80 個字元或包含控制字元。",
   },

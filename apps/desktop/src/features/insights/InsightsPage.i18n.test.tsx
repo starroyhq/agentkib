@@ -78,7 +78,7 @@ describe("InsightsPage locale changes", () => {
     render(<InsightsPage section="tokens" workspaces={[]} />);
     expect(screen.getByText(tr("insights.unknownModel"))).toBeTruthy();
 
-    await act(() => changeLocale("zh-TW"));
+    await act(() => changeLocale("zh-Hant"));
 
     expect(screen.getByText(tr("insights.unknownModel"))).toBeTruthy();
     expect(screen.getAllByText(formatCompactNumber(123456)).length).toBeGreaterThan(0);

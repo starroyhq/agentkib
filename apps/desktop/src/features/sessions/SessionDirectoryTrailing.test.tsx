@@ -97,7 +97,7 @@ beforeEach(() => {
 afterEach(cleanup);
 
 describe("the desktop directory's shared trailing status slot", () => {
-  it.each(["zh-CN", "zh-TW", "en-US", "ja-JP"] as const)(
+  it.each(["zh-CN", "zh-Hant", "en-US", "ja-JP"] as const)(
     "prioritizes unread, then worktree, while retaining accessible runtime details in %s",
     (locale) => {
       initializeI18n(locale);

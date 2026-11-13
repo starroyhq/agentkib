@@ -34,7 +34,7 @@ describe("localized change plan explanation", () => {
   it.each([
     ["en-US", "Change plan", "Files are written only when you apply."],
     ["zh-CN", "变更计划", "点击应用后才会写入"],
-    ["zh-TW", "變更計畫", "點擊套用後才會寫入"],
+    ["zh-Hant", "變更計畫", "點擊套用後才會寫入"],
     ["ja-JP", "変更プラン", "適用するまでファイルは書き換えられません"],
   ] as const)(
     "explains the reviewed object in %s without changing file contents",

@@ -295,7 +295,7 @@ afterEach(async () => {
 });
 
 describe("desktop window conversation tools", () => {
-  it.each(["zh-CN", "zh-TW", "en-US", "ja-JP"] as const)(
+  it.each(["zh-CN", "zh-Hant", "en-US", "ja-JP"] as const)(
     "orders the Claude menu and opens terminal setup directly with draft and focus preserved in %s",
     async (locale) => {
       await changeLocale(locale);
@@ -461,7 +461,7 @@ describe("desktop window conversation tools", () => {
   });
   it.each([
     ["zh-CN", "文件与产物", "会话操作"],
-    ["zh-TW", "檔案與產物", "對話操作"],
+    ["zh-Hant", "檔案與產物", "對話操作"],
     ["en-US", "Files & artifacts", "Session actions"],
     ["ja-JP", "ファイルと成果物", "会話の操作"],
   ] as const)(

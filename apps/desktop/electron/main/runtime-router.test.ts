@@ -32,7 +32,7 @@ class Host extends EventEmitter implements RuntimeHost {
     if (method === RUNTIME_METHODS.runtimeInfo)
       return { data_dir: "/fixture", session_index_enabled: true };
     if (method === BACKEND_PREFERENCES || method === RUNTIME_METHODS.setLocale)
-      return { locale_preference: "zh-TW" };
+      return { locale_preference: "zh-Hant" };
     return [];
   };
   calls: string[] = [];
@@ -348,12 +348,12 @@ describe("RuntimeRouter history search ownership", () => {
         }
         if (method === RUNTIME_METHODS.runtimeInfo)
           return { data_dir: "/fixture", session_content_search_enabled: !configureFails };
-        return { locale_preference: "zh-TW" };
+        return { locale_preference: "zh-Hant" };
       };
       const first = router.request(RUNTIME_METHODS.updateMcpNetwork, { settings: {} });
       const configured = router.request(HISTORY_SEARCH_METHODS.configure, { enabled: true });
       const snapshot = router.request(RUNTIME_METHODS.runtimeInfo, {});
-      const following = router.request(RUNTIME_METHODS.setLocale, { preference: "zh-TW" });
+      const following = router.request(RUNTIME_METHODS.setLocale, { preference: "zh-Hant" });
       const requests = [first, configured, snapshot, following];
       for (const request of requests) void request.catch(() => undefined);
       try {
@@ -381,7 +381,7 @@ describe("RuntimeRouter history search ownership", () => {
         await expect(snapshot).resolves.toMatchObject({
           session_content_search_enabled: !configureFails,
         });
-        await expect(following).resolves.toEqual({ locale_preference: "zh-TW" });
+        await expect(following).resolves.toEqual({ locale_preference: "zh-Hant" });
         expect(ts.calls).toEqual([
           RUNTIME_METHODS.updateMcpNetwork,
           HISTORY_SEARCH_METHODS.configure,
@@ -544,13 +544,13 @@ describe("RuntimeRouter migration ownership and recovery", () => {
           throw new Error("fixture write failed");
         });
       if (method === RUNTIME_METHODS.setLocale || method === BACKEND_PREFERENCES)
-        return { locale_preference: "zh-TW" };
+        return { locale_preference: "zh-Hant" };
       return { data_dir: "/fixture", session_index_enabled: true };
     };
     const first = expect(
       router.request(RUNTIME_METHODS.updateMcpNetwork, { settings: {} }),
     ).rejects.toThrow("fixture write failed");
-    const second = router.request(RUNTIME_METHODS.setLocale, { preference: "zh-TW" });
+    const second = router.request(RUNTIME_METHODS.setLocale, { preference: "zh-Hant" });
     const snapshot = router.request(RUNTIME_METHODS.runtimeInfo, {});
     await vi.waitFor(() => expect(ts.calls).toContain(RUNTIME_METHODS.updateMcpNetwork));
     await new Promise<void>((resolve) => setImmediate(resolve));
@@ -558,7 +558,7 @@ describe("RuntimeRouter migration ownership and recovery", () => {
     expect(ts.calls).not.toContain(BACKEND_PREFERENCES);
     writing.resolve();
     await first;
-    expect(await second).toMatchObject({ locale_preference: "zh-TW" });
+    expect(await second).toMatchObject({ locale_preference: "zh-Hant" });
     expect(await snapshot).toMatchObject({ data_dir: "/fixture", session_index_enabled: true });
     expect(ts.calls.filter((method) => method === RUNTIME_METHODS.setLocale)).toHaveLength(1);
     await router.stop();

@@ -34,7 +34,7 @@ const copies = {
     preview: "查看图片",
     close: "关闭",
   },
-  "zh-TW": {
+  "zh-Hant": {
     image: "圖片",
     loading: "正在讀取圖片",
     unavailable: "圖片無法使用",

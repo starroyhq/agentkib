@@ -116,7 +116,7 @@ describe("session display state", () => {
     });
   });
   it("provides localized status for every locale", () => {
-    for (const locale of ["zh-CN", "zh-TW", "en-US", "ja-JP"] as const)
+    for (const locale of ["zh-CN", "zh-Hant", "en-US", "ja-JP"] as const)
       expect(sessionDisplayState({ ...state, locale }).label).toBeTruthy();
   });
 });
@@ -128,7 +128,7 @@ it("shows a cancelled Claude turn while leaving the idle send eligibility unchan
   expect(sessionDisplayState({ ...value, online: false }).label).toBe("已断线");
 });
 
-it.each(["zh-CN", "zh-TW", "en-US", "ja-JP"] as const)(
+it.each(["zh-CN", "zh-Hant", "en-US", "ja-JP"] as const)(
   "projects Codex continuation states in %s",
   (locale) => {
     const copy = sessionContinuationCopy(locale);
@@ -212,7 +212,7 @@ it.each(["zh-CN", "zh-TW", "en-US", "ja-JP"] as const)(
   },
 );
 
-it.each(["zh-CN", "zh-TW", "en-US", "ja-JP"] as const)(
+it.each(["zh-CN", "zh-Hant", "en-US", "ja-JP"] as const)(
   "projects Claude continuation without weakening dispatch in %s",
   (locale) => {
     const copy = sessionContinuationCopy(locale);
@@ -319,7 +319,7 @@ it.each(["zh-CN", "zh-TW", "en-US", "ja-JP"] as const)(
   },
 );
 
-it.each(["zh-CN", "zh-TW", "en-US", "ja-JP"] as const)(
+it.each(["zh-CN", "zh-Hant", "en-US", "ja-JP"] as const)(
   "projects a DeepSeek Harness that AgentKib starts as ready, not view-only, in %s",
   (locale) => {
     const copy = sessionContinuationCopy(locale);

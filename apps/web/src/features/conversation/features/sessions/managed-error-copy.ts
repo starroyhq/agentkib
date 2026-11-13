@@ -10,7 +10,7 @@ export const managedErrorCopy: Record<
     unconfirmed: "操作结果尚未确认，请刷新检查结果，勿重复操作。",
     details: "错误详情",
   },
-  "zh-TW": {
+  "zh-Hant": {
     failed: "無法完成操作，請重新整理對話並檢查這台電腦狀態後重試。",
     connection: "連線中斷，請先檢查任務列表再重試。",
     unconfirmed: "操作結果尚未確認，請重新整理檢查結果，勿重複操作。",

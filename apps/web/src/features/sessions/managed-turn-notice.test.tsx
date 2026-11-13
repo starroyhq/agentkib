@@ -10,7 +10,7 @@ import type { Locale } from "../conversation/i18n";
 
 // Claude fixtures are hand-built after the frames CLI 2.1.311 sent to a local API stub; the Codex
 // ones after the `error` notifications CLI 0.163.0 sent while a local stub answered 500 and 401.
-const locales: Locale[] = ["zh-CN", "zh-TW", "en-US", "ja-JP"];
+const locales: Locale[] = ["zh-CN", "zh-Hant", "en-US", "ja-JP"];
 const live = (patch: Partial<Live>): Live =>
   ({
     sessionId: "s",

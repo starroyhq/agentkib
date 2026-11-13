@@ -36,7 +36,7 @@ export const remoteAccountCopy = {
     claimPending: "设备绑定结果待核对，远程访问保持暂停。请重新登录原账号进行核对。",
     profileFailed: "账号状态暂未刷新，请重试核对设备配额。",
   },
-  "zh-TW": {
+  "zh-Hant": {
     title: "帳號",
     intro: "帳號僅用於遠端存取的裝置登記與管理。本機對話和 Codex 無需登入。",
     loading: "正在讀取帳號狀態…",

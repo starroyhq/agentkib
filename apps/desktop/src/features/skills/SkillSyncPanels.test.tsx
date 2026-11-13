@@ -831,7 +831,7 @@ describe("Skill conflict review hierarchy", () => {
       [
         ["en-US", "Review conflicting versions"],
         ["zh-CN", "比较冲突版本"],
-        ["zh-TW", "比較衝突版本"],
+        ["zh-Hant", "比較衝突版本"],
         ["ja-JP", "競合するバージョンを比較"],
       ] as const
     ).flatMap(([locale, title]) =>

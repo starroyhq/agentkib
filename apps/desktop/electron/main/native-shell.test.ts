@@ -273,7 +273,7 @@ describe("native text selection menu", () => {
 });
 
 describe("native navigation shortcuts", () => {
-  it.each(["zh-CN", "zh-TW", "en-US", "ja-JP"] as const)(
+  it.each(["zh-CN", "zh-Hant", "en-US", "ja-JP"] as const)(
     "dispatches all six sidebar destinations with matching labels in %s",
     (locale) => {
       const { shell, showMainWindow } = start(locale);

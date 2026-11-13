@@ -3,7 +3,7 @@ import { describe, expect, it } from "vitest";
 import enUS from "../locales/en-US.json";
 import jaJP from "../locales/ja-JP.json";
 import zhCN from "../locales/zh-CN.json";
-import zhTW from "../locales/zh-TW.json";
+import zhHant from "../locales/zh-Hant.json";
 import {
   cacheEffectiveLocale,
   cachedEffectiveLocale,
@@ -14,10 +14,10 @@ import {
   tr,
 } from "./i18n";
 
-const dictionaries = { "en-US": enUS, "zh-CN": zhCN, "zh-TW": zhTW, "ja-JP": jaJP } as const;
+const dictionaries = { "en-US": enUS, "zh-CN": zhCN, "zh-Hant": zhHant, "ja-JP": jaJP } as const;
 
 describe("i18n resources", () => {
-  it.each(["en-US", "zh-CN", "zh-TW", "ja-JP"] as const)(
+  it.each(["en-US", "zh-CN", "zh-Hant", "ja-JP"] as const)(
     "describes the actual ignored-workspace recovery destination in %s",
     async (locale) => {
       await initializeI18n(locale);
@@ -47,7 +47,7 @@ describe("i18n resources", () => {
 
   it("normalizes system locale variants and falls back to English", () => {
     expect(normalizeLocale("zh_Hans_CN")).toBe("zh-CN");
-    expect(normalizeLocale("zh-HK")).toBe("zh-TW");
+    expect(normalizeLocale("zh-HK")).toBe("zh-Hant");
     expect(normalizeLocale("ja")).toBe("ja-JP");
     expect(normalizeLocale("en-GB")).toBe("en-US");
     expect(normalizeLocale("fr-FR")).toBe("en-US");
@@ -57,7 +57,7 @@ describe("i18n resources", () => {
   it.each([
     ["en-US", "120K"],
     ["zh-CN", "12万"],
-    ["zh-TW", "12萬"],
+    ["zh-Hant", "12萬"],
     ["ja-JP", "12万"],
   ] as const)("formats compact numbers for %s", async (locale, expected) => {
     await initializeI18n(locale);
@@ -76,6 +76,14 @@ describe("i18n resources", () => {
     cacheEffectiveLocale("ja-JP", "ja-JP");
 
     expect(cachedEffectiveLocale("en-US")).toBe("ja-JP");
+  });
+
+  it("reads Traditional Chinese cached as zh-TW, before it became zh-Hant", () => {
+    window.localStorage.setItem("agentkib.effective-locale", "zh-TW");
+    window.localStorage.setItem("agentkib.cached-locale-preference", "zh-TW");
+
+    expect(cachedEffectiveLocale("en-US")).toBe("zh-Hant");
+    expect(normalizeLocale("zh-TW")).toBe("zh-Hant");
   });
 
   it("uses the current system locale when the cached preference follows the system", () => {

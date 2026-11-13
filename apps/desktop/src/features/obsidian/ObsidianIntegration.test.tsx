@@ -57,7 +57,7 @@ describe("ObsidianSettingsCard locale changes", () => {
     expect((await screen.findByRole("alert")).textContent).toContain(tr("obsidian.notInstalled"));
     const addVault = screen.getByRole("button", { name: tr("obsidian.addVault") });
 
-    await act(() => changeLocale("zh-TW"));
+    await act(() => changeLocale("zh-Hant"));
 
     expect(screen.getByRole("alert").textContent).toContain(tr("obsidian.notInstalled"));
     expect(screen.getByRole("status", { name: tr("common.loading") })).toBeTruthy();

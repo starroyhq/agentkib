@@ -9,7 +9,7 @@ import {
 } from "../conversation/features/sessions/permission-mode-copy";
 import type { Locale } from "../conversation/i18n";
 
-const locales: Locale[] = ["zh-CN", "zh-TW", "en-US", "ja-JP"];
+const locales: Locale[] = ["zh-CN", "zh-Hant", "en-US", "ja-JP"];
 const noticeKeys = ["auto", "dontAsk", "bypassPermissions", "possiblyAuto", "previous"] as const;
 const copy = permissionModeCopy["zh-CN"];
 

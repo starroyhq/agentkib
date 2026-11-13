@@ -112,7 +112,7 @@ afterEach(cleanup);
 describe("MCP management batch feedback", () => {
   it.each([
     ["zh-CN", "选择 Docs & tools"],
-    ["zh-TW", "選取 Docs & tools"],
+    ["zh-Hant", "選取 Docs & tools"],
     ["en-US", "Select Docs & tools"],
     ["ja-JP", "Docs & tools を選択"],
   ] as const)("localizes the service selection control in %s", async (locale, label) => {
@@ -323,7 +323,7 @@ describe("MCP management batch feedback", () => {
 });
 
 describe("MCP inventory empty feedback", () => {
-  it.each(["zh-CN", "zh-TW", "ja-JP", "en-US"] as const)(
+  it.each(["zh-CN", "zh-Hant", "ja-JP", "en-US"] as const)(
     "distinguishes a search miss from an empty scope in %s",
     async (locale) => {
       await initializeI18n(locale);
@@ -346,7 +346,7 @@ describe("MCP inventory empty feedback", () => {
     },
   );
 
-  it.each(["zh-CN", "zh-TW", "ja-JP", "en-US"] as const)(
+  it.each(["zh-CN", "zh-Hant", "ja-JP", "en-US"] as const)(
     "keeps the actual empty-scope message even with a query in %s",
     async (locale) => {
       await initializeI18n(locale);

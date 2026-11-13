@@ -95,7 +95,7 @@ describe("ArtifactBrowser", () => {
   });
   it.each([
     ["zh-CN", "请在电脑上的 AgentKib 的 Web 设置中授权目录。"],
-    ["zh-TW", "請在電腦上的 AgentKib 的 Web 設定中授權目錄。"],
+    ["zh-Hant", "請在電腦上的 AgentKib 的 Web 設定中授權目錄。"],
     ["en-US", "Authorize directories in Web settings in AgentKib on your computer."],
     ["ja-JP", "コンピューター上の AgentKib の Web 設定でディレクトリを許可してください。"],
   ] as const)(

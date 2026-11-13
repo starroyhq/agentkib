@@ -14,7 +14,7 @@ export const codePairingCopy: Record<
     safety:
       "授权码 5 分钟内有效，使用一次即失效。仅分享给可信设备；电脑可随时撤销访问。Codex 的执行审批仍由你决定。",
   },
-  "zh-TW": {
+  "zh-Hant": {
     title: "輸入授權碼，連接電腦",
     info: "輸入電腦上的 AgentKib 顯示的授權碼，即可直接連線，無需再次確認。",
     code: "授權碼",

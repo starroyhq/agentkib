@@ -114,7 +114,7 @@ const zh = {
   safety: "连接与数据保留在你自己的设备，不需要官方账号。",
 };
 export type Words = typeof zh;
-export type Locale = "zh-CN" | "zh-TW" | "en-US" | "ja-JP";
+export type Locale = "zh-CN" | "zh-Hant" | "en-US" | "ja-JP";
 const en: Words = {
   lanAddress: "Computer's LAN address",
   lanPlaintextShort: "Unencrypted LAN connection",
@@ -489,7 +489,7 @@ const ja: Words = {
 };
 export const dictionaries: Record<Locale, Words> = {
   "zh-CN": zh,
-  "zh-TW": tw,
+  "zh-Hant": tw,
   "en-US": en,
   "ja-JP": ja,
 };

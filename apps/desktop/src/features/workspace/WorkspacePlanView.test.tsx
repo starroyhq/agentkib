@@ -114,7 +114,7 @@ describe("E2 change plan view", () => {
 
   it.each([
     ["zh-CN", "本次变更的文件", "你改了：", "应用后会写入", "返回"],
-    ["zh-TW", "本次變更的檔案", "你修改了：", "套用後會寫入", "返回"],
+    ["zh-Hant", "本次變更的檔案", "你修改了：", "套用後會寫入", "返回"],
     [
       "en-US",
       "Files in this change",
@@ -246,7 +246,7 @@ describe("E2 change plan view", () => {
       "DeepSeek Harness 不解析 CLAUDE.md 中的 @AGENTS.md 引用，尚未确认它会独立读完 AGENTS.md，应用后可能仍有警告",
     ],
     [
-      "zh-TW",
+      "zh-Hant",
       "將寫入的檔案",
       "共用專案指令",
       "套用 3 項變更",
@@ -309,7 +309,7 @@ describe("E2 change plan view", () => {
 
   it.each([
     ["zh-CN", "你改了：共享项目指令新增 1 行（发布前更新 CHANGELOG）"],
-    ["zh-TW", "你修改了：共用專案指令新增 1 行（发布前更新 CHANGELOG）"],
+    ["zh-Hant", "你修改了：共用專案指令新增 1 行（发布前更新 CHANGELOG）"],
   ] as const)(
     "removes only a Markdown list marker from the preview and uses full-width parentheses in %s",
     async (locale, summary) => {
@@ -330,7 +330,7 @@ describe("E2 change plan view", () => {
 
   it.each([
     ["zh-CN", "原有内容会移进 AgentKib 托管的区块", "这段会和共享指令重复"],
-    ["zh-TW", "原有內容會移進 AgentKib 託管的區塊", "這段會和共用指令重複"],
+    ["zh-Hant", "原有內容會移進 AgentKib 託管的區塊", "這段會和共用指令重複"],
     [
       "en-US",
       "Existing content will move into the AgentKib-managed block",

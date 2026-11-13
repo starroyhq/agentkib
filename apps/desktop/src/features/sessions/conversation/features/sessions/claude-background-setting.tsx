@@ -30,7 +30,7 @@ const copy: Record<
     missing: "没有找到 Claude Code。",
     platform: "目前只支持 macOS。",
   },
-  "zh-TW": {
+  "zh-Hant": {
     toggle: "允許 Claude Code 在背景執行工作",
     hint: "命令和子代理可以在背景執行，結束後 Claude Code 會自己接著處理；結束 AgentKib 會停止它們。變更在 Claude Code 下次啟動時生效。",
     tooOld: (minimum, version) =>

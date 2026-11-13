@@ -6,7 +6,7 @@ import { CLAUDE_COMMAND_REFUSALS } from "@agentkib/web-client";
 import { managedControlCopy } from "@/features/conversation/features/sessions/managed-control-copy";
 
 describe("Codex capability reasons", () => {
-  const locales: Locale[] = ["zh-CN", "zh-TW", "en-US", "ja-JP"];
+  const locales: Locale[] = ["zh-CN", "zh-Hant", "en-US", "ja-JP"];
   it.each(locales)("explains unconfirmed fork settings with recovery guidance in %s", (locale) => {
     for (const reason of ["native-model-unconfirmed", "native-effort-unconfirmed"]) {
       const explanation = codexReason(locale, reason);
@@ -57,7 +57,7 @@ describe("Codex capability reasons", () => {
       "无法确认这条会话是否正在 Codex 中使用，目前仅可查看。请刷新重试。",
     ],
     [
-      "zh-TW",
+      "zh-Hant",
       "無法確認 Codex 版本，目前僅可查看。請檢查 Codex CLI 後重新整理再試。",
       "無法確認這段對話是否正在 Codex 中使用，目前僅可查看。請重新整理再試。",
     ],
@@ -84,7 +84,7 @@ describe("Codex capability reasons", () => {
 
   it.each([
     ["zh-CN", "待发队列", "检查会话状态"],
-    ["zh-TW", "待發佇列", "檢查對話狀態"],
+    ["zh-Hant", "待發佇列", "檢查對話狀態"],
     ["en-US", "Queued messages", "Inspect session state"],
     ["ja-JP", "送信待ちキュー", "会話の状態を確認"],
   ] as const)("describes the managed queue and inspection in %s", (locale, queue, inspect) => {
@@ -128,7 +128,7 @@ describe("Codex capability reasons", () => {
 
   it.each([
     ["zh-CN", "已保存请求", "不会自动重发", "勿重复提交"],
-    ["zh-TW", "已儲存請求", "不會自動重傳", "勿重複提交"],
+    ["zh-Hant", "已儲存請求", "不會自動重傳", "勿重複提交"],
     ["en-US", "saved request", "not be sent again automatically", "do not resubmit"],
     ["ja-JP", "保存済みリクエスト", "自動で再送しません", "再送しないでください"],
   ] as const)(
@@ -188,14 +188,14 @@ describe("Codex capability reasons", () => {
 });
 
 describe("reasons a Claude session was stopped for", () => {
-  const locales: Locale[] = ["zh-CN", "zh-TW", "en-US", "ja-JP"];
+  const locales: Locale[] = ["zh-CN", "zh-Hant", "en-US", "ja-JP"];
   const codes = ["claude-background-task", "claude-unrequested-turn", "claude-protocol-violation"];
   // The session stays read-only in AgentKib and cannot be resumed there, so the copy must not
   // promise an action that does not exist. Each language names the Claude Code terminal.
   const unavailableActions = /Ask Claude|Reopen|重新打开|重新開啟|让 Claude|讓 Claude|開き直/;
   const terminal: Record<Locale, string> = {
     "zh-CN": "Claude Code 终端",
-    "zh-TW": "Claude Code 終端機",
+    "zh-Hant": "Claude Code 終端機",
     "en-US": "Claude Code terminal",
     "ja-JP": "Claude Code のターミナル",
   };
@@ -253,13 +253,13 @@ describe("reasons a Claude session was stopped for", () => {
 });
 
 describe("a managed Claude turn that failed authentication", () => {
-  const locales: Locale[] = ["zh-CN", "zh-TW", "en-US", "ja-JP"];
+  const locales: Locale[] = ["zh-CN", "zh-Hant", "en-US", "ja-JP"];
   // The session stays usable, so the copy must not say read-only; it names the fixes that work
   // for a managed process: logging in, the settings env block, and apiKeyHelper.
   const readOnly = /只读|唯讀|read-only|読み取り専用/;
   const sendAgain: Record<Locale, string> = {
     "zh-CN": "重新发送",
-    "zh-TW": "重新傳送",
+    "zh-Hant": "重新傳送",
     "en-US": "send again",
     "ja-JP": "再送信",
   };
@@ -294,7 +294,7 @@ describe("a managed Claude turn that failed authentication", () => {
 });
 
 describe("a Claude Code command AgentKib did not send", () => {
-  const locales: Locale[] = ["zh-CN", "zh-TW", "en-US", "ja-JP"];
+  const locales: Locale[] = ["zh-CN", "zh-Hant", "en-US", "ja-JP"];
   it.each(locales)("explains each refusal in its own words in %s", (locale) => {
     const texts = CLAUDE_COMMAND_REFUSALS.map((code) => {
       const { text, technical } = codexReason(locale, code);

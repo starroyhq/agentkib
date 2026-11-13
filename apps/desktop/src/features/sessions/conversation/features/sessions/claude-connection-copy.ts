@@ -1,6 +1,6 @@
 import { CLAUDE_BRIDGE_CLI_VERSION, claudeBridgeCompatibility } from "@agentkib/web-client";
 import { surfaceCopy, type SessionSurface } from "./session-surface-copy";
-type Locale = "zh-CN" | "zh-TW" | "en-US" | "ja-JP";
+type Locale = "zh-CN" | "zh-Hant" | "en-US" | "ja-JP";
 
 const zh = {
   flow: "在终端里继续这条会话，AgentKib 同步显示；发送、停止和审批都在终端里做。",
@@ -106,7 +106,7 @@ const zh = {
 type Copy = { [K in keyof typeof zh]: string };
 export const claudeConnectionCopy: Record<Locale, Copy> = {
   "zh-CN": zh,
-  "zh-TW": {
+  "zh-Hant": {
     flow: "在終端裡繼續這段對話，AgentKib 同步顯示；傳送、停止和審批都在終端裡進行。",
     platformVersion: "僅 macOS · 需要 Claude Code {version} 或以上版本",
     installStep: "安裝外掛（只需一次）",
@@ -529,7 +529,7 @@ export function claudeConnectionReason(
 
 const webDisconnected: Record<Locale, string> = {
   "zh-CN": "尚未连接终端。请在电脑上的 AgentKib 打开连接指引，并在目标 Claude Code 会话中连接。",
-  "zh-TW": "尚未連接終端。請在電腦上的 AgentKib 開啟連線指引，並在目標 Claude Code 對話中連接。",
+  "zh-Hant": "尚未連接終端。請在電腦上的 AgentKib 開啟連線指引，並在目標 Claude Code 對話中連接。",
   "en-US":
     "The terminal is not connected. Open the connection guide in AgentKib on your computer and connect from the target Claude Code session.",
   "ja-JP":

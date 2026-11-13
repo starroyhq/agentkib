@@ -137,7 +137,7 @@ describe("E2 diagnosis UI", () => {
       "打开所在文件夹",
     ],
     [
-      "zh-TW",
+      "zh-Hant",
       "CLAUDE.md 與 AGENTS.md 內容完全相同",
       "Grok Build 會讀到兩份相同的指令",
       "重新診斷",
@@ -191,7 +191,7 @@ describe("E2 diagnosis UI", () => {
 
   it.each([
     ["zh-CN", "检查于 刚刚"],
-    ["zh-TW", "檢查於 剛剛"],
+    ["zh-Hant", "檢查於 剛剛"],
     ["en-US", "checked just now"],
     ["ja-JP", "最終確認：たった今"],
   ] as const)("renders a consistent recent summary in %s", async (locale, checked) => {
@@ -223,7 +223,7 @@ describe("E2 diagnosis UI", () => {
 
   it.each([
     ["zh-CN", "先审查将写入的文件，确认后再应用修复", "审查变更"],
-    ["zh-TW", "先審查將寫入的檔案，確認後再套用修復", "審查變更"],
+    ["zh-Hant", "先審查將寫入的檔案，確認後再套用修復", "審查變更"],
     ["en-US", "Review the files that will be written before applying the repair", "Review changes"],
     ["ja-JP", "修復を適用する前に、書き込まれるファイルを確認してください", "変更を確認"],
   ] as const)(

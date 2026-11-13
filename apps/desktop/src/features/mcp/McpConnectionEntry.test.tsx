@@ -66,7 +66,7 @@ beforeEach(() => {
 afterEach(cleanup);
 
 describe("production MCP management connection entry", () => {
-  it.each(["zh-CN", "zh-TW", "en-US", "ja-JP"] as const)(
+  it.each(["zh-CN", "zh-Hant", "en-US", "ja-JP"] as const)(
     "opens the actual batch review and keeps explicit workspace/Home approval in %s",
     async (locale) => {
       await initializeI18n(locale);

@@ -39,7 +39,7 @@ describe("shared component locale subscriptions", () => {
   beforeAll(() => initializeI18n("en-US"));
   afterEach(cleanup);
 
-  it.each(["zh-CN", "zh-TW", "en-US", "ja-JP"] as const)(
+  it.each(["zh-CN", "zh-Hant", "en-US", "ja-JP"] as const)(
     "names the destructive disk choice in %s",
     async (locale) => {
       await act(() => changeLocale(locale));
@@ -71,7 +71,7 @@ describe("shared component locale subscriptions", () => {
     render(<SettingsSkeleton />);
     const status = screen.getByRole("status", { name: "Loading settings" });
     try {
-      for (const locale of ["zh-CN", "zh-TW", "ja-JP"] as const) {
+      for (const locale of ["zh-CN", "zh-Hant", "ja-JP"] as const) {
         await act(() => changeLocale(locale));
         expect(screen.getByRole("status", { name: tr("loading.settings") })).toBe(status);
       }

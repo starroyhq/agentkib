@@ -66,6 +66,6 @@ export function managedText(
       ? english
       : locale === "zh-CN"
         ? chinese
-        : (copy[chinese]?.[locale === "zh-TW" ? 0 : 1] ?? chinese);
+        : (copy[chinese]?.[locale === "zh-Hant" ? 0 : 1] ?? chinese);
   return surfaceText(text, surface, locale);
 }

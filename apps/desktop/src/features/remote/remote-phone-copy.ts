@@ -45,7 +45,7 @@ export const remotePhoneCopy = {
     connectionDraft: "连接服务地址或程序路径有未应用的更改。",
     accountWebsite: "打开账号管理网页",
   },
-  "zh-TW": {
+  "zh-Hant": {
     introTitle: "用手機存取這台電腦",
     lifetime: "關閉視窗後仍可存取；結束 AgentKib 或關機後停止。",
     loginStep: "登入帳號",

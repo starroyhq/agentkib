@@ -74,7 +74,7 @@ beforeEach(() => {
 afterEach(cleanup);
 
 describe("Claude settings preparation", () => {
-  it.each(["zh-CN", "zh-TW", "en-US", "ja-JP"] as const)(
+  it.each(["zh-CN", "zh-Hant", "en-US", "ja-JP"] as const)(
     "shows localized default model and effort labels before opening either select in %s",
     async (locale) => {
       state.locale = locale;
@@ -103,7 +103,7 @@ describe("Claude settings preparation", () => {
 
   it.each([
     ["zh-CN", "工具权限待确认"],
-    ["zh-TW", "工具權限待確認"],
+    ["zh-Hant", "工具權限待確認"],
     ["en-US", "Tool permissions unconfirmed"],
     ["ja-JP", "ツール権限は未確認"],
   ] as const)(

@@ -18,7 +18,7 @@ export function retryText(locale: Locale, retry: Retry, agent: Agent = "Claude C
   switch (locale) {
     case "en-US":
       return `${agent}'s request failed and is being retried (attempt ${retry.attempt}${max ? ` of ${max}` : ""}${status ? `, HTTP ${status}` : ""}).${auth ? ` Authentication was rejected: check ${agent}'s login or API key. You can stop this turn.` : ""}`;
-    case "zh-TW":
+    case "zh-Hant":
       return `${agent} 的請求失敗，正在重試（第 ${retry.attempt}${max ? `/${max}` : ""} 次${status ? `，HTTP ${status}` : ""}）。${auth ? `驗證遭拒：請檢查 ${agent} 的登入或 API key，可以先停止這一輪。` : ""}`;
     case "ja-JP":
       return `${agent} のリクエストが失敗したため再試行しています（${retry.attempt}${max ? `/${max}` : ""} 回目${status ? `、HTTP ${status}` : ""}）。${auth ? `認証が拒否されました。${agent} のログインまたは API キーを確認してください。このターンは停止できます。` : ""}`;

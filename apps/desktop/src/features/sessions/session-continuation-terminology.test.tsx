@@ -9,7 +9,7 @@ import type { SessionController } from "@/features/sessions/conversation/feature
 import { conversationWords } from "@/core/i18n";
 import { claudeConnectionCopy } from "@/features/sessions/conversation/features/sessions/claude-connection-copy";
 
-type Locale = "zh-CN" | "zh-TW" | "en-US" | "ja-JP";
+type Locale = "zh-CN" | "zh-Hant" | "en-US" | "ja-JP";
 let session: SessionController;
 const FixtureContext = createContext<SessionController | null>(null);
 vi.mock("@/features/sessions/conversation/features/sessions/session-context", () => ({
@@ -57,7 +57,7 @@ const wording = [
       /^(交给 AgentKib|交还原客户端|执行管理|待交接|由 AgentKib 执行|已交还原客户端|已连接原会话|仅查看历史|恢复执行|连接原 Claude 终端|管理原终端连接)$/,
   },
   {
-    locale: "zh-TW",
+    locale: "zh-Hant",
     draftHint: "草稿已保留，回到這裡後會恢復。",
     placeholder: "繼續這段對話…",
     terminalHint: "核准和提問在終端中處理",

@@ -298,7 +298,7 @@ describe("SkillImportDialog", () => {
         onImported={vi.fn()}
       />,
     );
-    for (const locale of ["en-US", "zh-CN", "zh-TW", "ja-JP"] as const) {
+    for (const locale of ["en-US", "zh-CN", "zh-Hant", "ja-JP"] as const) {
       await act(() => changeLocale(locale));
       expect(screen.getByRole("dialog", { name: tr("skills.imports.title") })).toBeTruthy();
       expect(screen.getByRole("button", { name: tr("skills.imports.review") })).toBeTruthy();

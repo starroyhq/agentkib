@@ -250,7 +250,7 @@ const copy = {
       },
     },
   },
-  "zh-TW": {
+  "zh-Hant": {
     newSession: "新增對話",
     placeholder: "描述要做的事，在所選工作區新增對話…",
     message: "第一則訊息",

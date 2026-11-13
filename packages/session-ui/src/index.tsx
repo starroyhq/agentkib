@@ -257,3 +257,4 @@ export function SafeMarkdown({ text, literal = false }: { text: string; literal?
     </Markdown>
   );
 }
+export { projectAgentCopy, type ProjectAgentCopy } from "./project-agent-copy";

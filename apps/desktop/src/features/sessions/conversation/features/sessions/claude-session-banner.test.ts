@@ -142,6 +142,17 @@ describe("Claude execution and terminal connection presentation", () => {
         notice: "background-limit",
       });
       expect(claudeComposerNotice(claudeSessionBanner(limited))).toBe(true);
+      // A Project Agent past its automatic turns: the turn its CLI started was stopped.
+      const leadLimited = {
+        ...idle,
+        live: { ...idle.live!, continuationNotice: "lead-turn-limit" as const },
+      };
+      expect(claudeSessionBanner(leadLimited)).toEqual({
+        title: "",
+        body: continuation.leadTurnLimit,
+        notice: "lead-turn-limit",
+      });
+      expect(claudeComposerNotice(claudeSessionBanner(leadLimited))).toBe(true);
       const conflict = {
         ...idle,
         live: {

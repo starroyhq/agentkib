@@ -710,6 +710,40 @@ describe("SessionDirectory", () => {
     expect(hub.select).not.toHaveBeenCalled();
   });
 
+  it("marks a Project Agent and names it on each of its Workers", () => {
+    hub.sessions = [
+      {
+        ...first,
+        agent: "claude-code",
+        title: "Release plan",
+        orchestration: { role: "lead", workers: 1, paused: false },
+      },
+      { ...second, orchestration: { role: "worker", leadId: first.id, name: "api" } },
+    ];
+    render(<SessionDirectory />);
+    expect(screen.getByRole("img", { name: tr("sessions.projectAgent") })).toBeInTheDocument();
+    expect(
+      screen.getByRole("img", {
+        name: tr("sessions.workerOf", { name: "api", lead: "Release plan" }),
+      }),
+    ).toBeInTheDocument();
+    cleanup();
+    hub.sessions = [
+      { ...first, orchestration: { role: "lead", workers: 1, paused: true } },
+      // Its Project Agent is not in this list.
+      { ...second, orchestration: { role: "worker", leadId: "elsewhere", name: "api" } },
+    ];
+    render(<SessionDirectory />);
+    expect(
+      screen.getByRole("img", { name: tr("sessions.projectAgentPaused") }),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByRole("img", {
+        name: tr("sessions.workerOf", { name: "api", lead: tr("sessions.projectAgent") }),
+      }),
+    ).toBeInTheDocument();
+  });
+
   it("shows program-started sessions only after the directory option is turned on", async () => {
     const user = userEvent.setup();
     const pen = { ...second, id: "pen", title: "Pen design run", origin: "execution" as const };

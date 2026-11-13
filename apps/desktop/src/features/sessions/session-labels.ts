@@ -1,4 +1,8 @@
-import type { ConversationSessionSummary, SessionWorktree } from "@/core/types";
+import type {
+  ConversationSessionSummary,
+  SessionOrchestration,
+  SessionWorktree,
+} from "@/core/types";
 import { tr as defaultTranslate } from "@/core/i18n";
 import { isSessionVisible } from "./session-catalog";
 import { displaySessionTitle } from "@/features/workspace/session-title";
@@ -70,6 +74,21 @@ export function sessionSourceLabel(
   const details = sessionSourceDetails(session, sessions, tr, formatDateTime);
   if (!details.length) return session.origin === "auxiliary" ? tr("conversations.auxiliary") : "";
   return details.map(({ label }) => label).join(" · ");
+}
+
+/** The list's Project Agent and Worker marks; a Worker names the Project Agent it works for. */
+export function orchestrationLabel(
+  orchestration: SessionOrchestration,
+  sessions: ConversationSessionSummary[],
+  tr = defaultTranslate,
+) {
+  if (orchestration.role === "lead")
+    return tr(orchestration.paused ? "sessions.projectAgentPaused" : "sessions.projectAgent");
+  const lead = sessions.find((candidate) => candidate.id === orchestration.leadId);
+  return tr("sessions.workerOf", {
+    name: orchestration.name,
+    lead: lead ? displaySessionTitle(lead.title, tr) : tr("sessions.projectAgent"),
+  });
 }
 
 export function isInteractiveFork(session: ConversationSessionSummary) {

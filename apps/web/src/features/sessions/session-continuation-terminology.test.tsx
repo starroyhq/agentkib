@@ -243,6 +243,8 @@ beforeEach(() => {
       request: vi.fn(async () => ({ available: true, models: [], workspaces: [] })),
       codexQueue: queue,
       sessionQueue: queue,
+      // Not a Project Agent, nor one it could be: the panel stays out of the way.
+      projectAgent: vi.fn(async () => ({ lead: null, capable: false })),
       codexResumeCommand: vi.fn(async () => ({
         available: true,
         command: "codex resume fixture",

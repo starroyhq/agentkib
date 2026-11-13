@@ -1349,7 +1349,21 @@ export interface ConversationSessionSummary {
   forked_from_session_id?: string;
   availability: SessionAvailability;
   worktree?: SessionWorktree;
+  /** A Project Agent, or a Worker one directs; absent otherwise and on older hosts. */
+  orchestration?: SessionOrchestration;
 }
+/** A session's part in delegation (docs/agents/project-agent.md). */
+export type SessionOrchestration =
+  | {
+      role: "lead";
+      workers: number;
+      paused: boolean;
+      /** Why delegation is paused; absent on older hosts. */
+      reason?: string | null;
+      /** Reports on their way into its next turn; absent on older hosts. */
+      reports?: number;
+    }
+  | { role: "worker"; leadId: string; name: string };
 export interface ConversationIndexStatus {
   workspace_id: string;
   agent: AgentKind;

@@ -7,7 +7,7 @@ import { sessionContinuationCopy } from "./session-continuation";
  * The home's session groups as desktop, Web and the menu bar draw them. The groups come from
  * `homeSessionGroups` in session-catalog; these types match its result structurally.
  */
-export type HomeListNeed = "approval" | "question" | "verify";
+export type HomeListNeed = "approval" | "question" | "verify" | "delegation";
 export type HomeListResult = "completed" | "failed" | "cancelled" | "ended" | "unread";
 export type HomeListPlace = "agentkib" | "terminal" | "external";
 export interface HomeListGroups<S> {
@@ -34,6 +34,7 @@ const copy = {
     needsYou: "需要你处理",
     inProgress: "进行中",
     verifyResult: "结果待核对",
+    delegationPaused: "委派已暂停",
     runningFor: "已运行 {duration}",
     allClear: "一切就绪",
     allClearHint: "这台电脑上需要你审批或回答的事项会出现在这里",
@@ -51,6 +52,7 @@ const copy = {
     needsYou: "需要你處理",
     inProgress: "進行中",
     verifyResult: "結果待核對",
+    delegationPaused: "委派已暫停",
     runningFor: "已執行 {duration}",
     allClear: "一切就緒",
     allClearHint: "這台電腦上需要你審批或回答的事項會出現在這裡",
@@ -68,6 +70,7 @@ const copy = {
     needsYou: "Needs you",
     inProgress: "In progress",
     verifyResult: "Result to verify",
+    delegationPaused: "Delegation paused",
     runningFor: "Running for {duration}",
     allClear: "All caught up",
     allClearHint: "Approvals and questions from this computer will appear here",
@@ -85,6 +88,7 @@ const copy = {
     needsYou: "対応が必要",
     inProgress: "実行中",
     verifyResult: "結果の確認が必要",
+    delegationPaused: "委任を一時停止中",
     runningFor: "{duration} 実行中",
     allClear: "すべて対応済み",
     allClearHint: "このコンピュータで承認や回答が必要なものがここに表示されます",
@@ -132,6 +136,7 @@ type IconName =
   | "approval"
   | "question"
   | "verify"
+  | "pause"
   | "check"
   | "x"
   | "x-circle"
@@ -163,6 +168,7 @@ const NEED_ICONS: Record<HomeListNeed, IconName> = {
   approval: "approval",
   question: "question",
   verify: "verify",
+  delegation: "pause",
 };
 const RESULTS: Record<HomeListResult, { icon: IconName; tag: IconName; tone: Tone }> = {
   completed: { icon: "check", tag: "check", tone: "success" },
@@ -192,6 +198,13 @@ const ICONS: Record<IconName, ReactNode> = {
       <circle cx="12" cy="12" r="10" />
       <path d="M9.09 9a3 3 0 0 1 5.83 1c0 2-3 3-3 3" />
       <path d="M12 17h.01" />
+    </>
+  ),
+  pause: (
+    <>
+      <circle cx="12" cy="12" r="10" />
+      <line x1="10" x2="10" y1="15" y2="9" />
+      <line x1="14" x2="14" y1="15" y2="9" />
     </>
   ),
   check: <path d="M20 6 9 17l-5-5" />,
@@ -317,6 +330,7 @@ export function HomeSessionList<S extends { id: string }>({
     approval: card.waitingApproval,
     question: card.waitingAnswer,
     verify: t.verifyResult,
+    delegation: t.delegationPaused,
   };
   const resultLabels: Record<HomeListResult, string> = {
     completed: read.completed,
@@ -343,7 +357,9 @@ export function HomeSessionList<S extends { id: string }>({
           <Group title={t.needsYou} count={groups.needsYou.length}>
             {groups.needsYou.map(({ session, need }) => {
               const text = describe(session);
-              const inline = need !== "verify" && !!onToggle && !!renderCard;
+              // Only an approval or a question can be answered in place.
+              const inline =
+                (need === "approval" || need === "question") && !!onToggle && !!renderCard;
               const open = inline && expanded === session.id;
               return (
                 <Row

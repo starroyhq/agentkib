@@ -465,6 +465,7 @@ const API_ROUTES: Record<"GET" | "POST", Record<string, RouteSpec>> = {
     "/managed/queue": {},
     "/managed/goals": {},
     "/managed/resources": {},
+    "/managed/project-agent": {},
     "/files/workspaces": { lan: true },
     "/files/list": { lan: true },
     "/files/text": { lan: true },
@@ -502,6 +503,7 @@ const API_ROUTES: Record<"GET" | "POST", Record<string, RouteSpec>> = {
     "/managed/action": { control: true },
     // Explicit capability discovery starts a worker but never dispatches a command receipt.
     "/managed/settings-prepare": {},
+    "/managed/project-agent": {},
     "/artifact-tickets": { lan: true },
     // Full access only, so never on LAN.
     "/live-preview-tickets": {},
@@ -3897,6 +3899,99 @@ export class WebAccessService {
       // The conversation is already gone. Files left behind name no conversation anyone can open.
     }
   }
+  /**
+   * A Project Agent from Web or a phone (docs/agents/project-agent.md). Any device that may read
+   * the session sees its state. Setting one up, or resuming it, takes a device with full access
+   * that may do all the Project Agent then does in its name: open and manage sessions, send and
+   * queue, and approve when it may decide approvals; its workspaces must be the device's too.
+   * Pausing takes one that may send, ending it one that may manage sessions.
+   */
+  private async projectAgent(
+    res: ConversationResponse,
+    hash: string,
+    body: Record<string, unknown>,
+  ) {
+    if (this.options.mode === "lan") throw new HttpError(403, "capability_unavailable");
+    const request = this.options.claudeManagedRequest;
+    if (!request || !this.options.verifiedClaudeManaged)
+      throw new HttpError(503, "capability_unavailable");
+    if (Object.keys(body).some((key) => !["sessionId", "operation", "scope"].includes(key)))
+      throw new HttpError(400, "invalid_input");
+    const sessionId = this.field(body.sessionId);
+    const operation = this.field(body.operation, 32);
+    const needs: Record<string, ReadonlyArray<"send" | "manage" | "advancedControl">> = {
+      status: [],
+      pause: ["send"],
+      release: ["manage"],
+      designate: ["send", "manage", "advancedControl"],
+      resume: ["send", "manage", "advancedControl"],
+    };
+    if (!Object.hasOwn(needs, operation)) throw new HttpError(400, "invalid_operation");
+    let device = this.grant(hash);
+    if (operation !== "status") {
+      device = this.fullAccess(hash);
+      for (const permission of needs[operation]!) this.grant(hash, permission);
+    }
+    await this.codexScope(sessionId, hash, false, false);
+    const lead = (value: unknown) =>
+      value && typeof value === "object" && "lead" in value
+        ? (
+            value as {
+              lead: { scope?: { approvals?: unknown[]; workspaceIds?: unknown[] } } | null;
+            }
+          ).lead
+        : null;
+    let scope: Record<string, unknown> | undefined;
+    if (operation === "designate") {
+      if (!body.scope || typeof body.scope !== "object" || Array.isArray(body.scope))
+        throw new HttpError(400, "invalid_input");
+      scope = body.scope as Record<string, unknown>;
+      const workspaceIds = Array.isArray(scope.workspaceIds) ? scope.workspaceIds : [];
+      for (const id of workspaceIds)
+        if (typeof id !== "string" || !(await this.workspaceAllowed(id, device)))
+          throw new HttpError(403, "workspace_not_authorized");
+      if (Array.isArray(scope.approvals) && scope.approvals.length) this.grant(hash, "approve");
+    }
+    if (operation === "resume") {
+      const current = lead(
+        await request({ operation: "lead-status", sessionId, deviceId: device.id }),
+      );
+      if (current?.scope?.approvals?.length) this.grant(hash, "approve");
+      for (const id of current?.scope?.workspaceIds ?? [])
+        if (typeof id !== "string" || !(await this.workspaceAllowed(id, device)))
+          throw new HttpError(403, "workspace_not_authorized");
+    }
+    const result = await request({
+      operation: `lead-${operation}`,
+      sessionId,
+      deviceId: device.id,
+      ...(scope ? { scope } : {}),
+    }).catch((error: unknown) => {
+      const code = error instanceof Error ? error.message : "";
+      const known = [
+        "lead-requires-managed-claude",
+        "session-is-a-worker",
+        "lead-exists",
+        "lead-unavailable",
+        "invalid-lead-workspaces",
+        "invalid-lead-policies",
+        "invalid-lead-lane-limit",
+        "invalid-lead-turn-limit",
+        "invalid-lead-delegation",
+      ].find((reason) => code.includes(reason));
+      throw new HttpError(known ? 409 : 500, known ?? "project_agent_failed");
+    });
+    // The device may have lost its access while the host worked.
+    if (this.grant(hash).id !== device.id) throw new HttpError(401, "access_ended");
+    return this.json(res, 200, {
+      lead: lead(result),
+      capable:
+        !!result &&
+        typeof result === "object" &&
+        (result as { capable?: unknown }).capable === true,
+    });
+  }
+
   private async prepareClaudeSettings(
     res: ConversationResponse,
     hash: string,
@@ -5300,6 +5395,7 @@ export class WebAccessService {
           throw new HttpError(409, "incompatible_protocol");
         return this.prepareClaudeSettings(res, hash, body);
       }
+      if (path === "/managed/project-agent") return this.projectAgent(res, hash, body);
       if (path === "/managed/action")
         return this.codexAction(res, hash, this.field(body.operation, 64), body, control, true);
       if (path.startsWith("/managed/"))
@@ -5880,6 +5976,11 @@ export class WebAccessService {
       await this.codexScope(sessionId, hash, false, !path.startsWith("/managed/"));
       return this.json(res, 200, result);
     }
+    if (path === "/managed/project-agent")
+      return this.projectAgent(res, hash, {
+        operation: "status",
+        sessionId: url.searchParams.get("sessionId"),
+      });
     if (path === "/codex/capabilities" || path === "/codex/queue" || path === "/managed/queue") {
       if (path === "/managed/queue" && this.options.mode === "lan")
         throw new HttpError(403, "capability_unavailable");

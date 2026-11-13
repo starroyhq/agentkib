@@ -62,7 +62,8 @@ export function HomeSessions({
       ? {
           ...value,
           needsYou: value.needsYou.filter(
-            ({ session, need }) => need === "verify" || !answered.has(session.id),
+            ({ session, need }) =>
+              (need !== "approval" && need !== "question") || !answered.has(session.id),
           ),
         }
       : value;

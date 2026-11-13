@@ -128,7 +128,45 @@ export interface ConversationSessionSummary {
   pendingInteraction?: boolean;
   /** The linked git worktree the session ran in; absent for a main checkout and older hosts. */
   worktree?: SessionWorktree | null;
+  /** A Project Agent, or a Worker one directs; absent otherwise and on older hosts. */
+  orchestration?: SessionOrchestration;
 }
+/** What a Project Agent may use and decide for its workers (docs/agents/project-agent.md). */
+export interface ProjectAgentScope {
+  workspaceIds: string[];
+  policies: string[];
+  maxLanes: number;
+  maxAutoTurns: number;
+  /** "file-change" and "command": approvals it may decide; absent on older hosts. */
+  approvals?: string[];
+  answers?: boolean;
+}
+export interface ProjectAgentState {
+  sessionId: string;
+  paused: boolean;
+  reason: string | null;
+  scope: ProjectAgentScope;
+  pendingReports: number;
+  workers: Array<{
+    name: string;
+    sessionId: string;
+    status: string;
+    title: string | null;
+    lastReportAt: string | null;
+  }>;
+}
+/** A session's part in delegation (docs/agents/project-agent.md). */
+export type SessionOrchestration =
+  | {
+      role: "lead";
+      workers: number;
+      paused: boolean;
+      /** Why delegation is paused; absent on older hosts. */
+      reason?: string | null;
+      /** Reports on their way into its next turn; absent on older hosts. */
+      reports?: number;
+    }
+  | { role: "worker"; leadId: string; name: string };
 export type CheckoutStatus = "present" | "deleted" | "unknown";
 export interface SessionWorktree {
   repository_group_id: string | null;
@@ -345,7 +383,12 @@ export interface Live {
   reason?: string;
   executionLocation?: "agentkib" | "terminal" | "external" | null;
   ownershipReason?: string | null;
-  continuationNotice?: "background-ended" | "background-limit" | "owner-opened-elsewhere" | null;
+  continuationNotice?:
+    | "background-ended"
+    | "background-limit"
+    | "lead-turn-limit"
+    | "owner-opened-elsewhere"
+    | null;
   /** Ephemeral retirement event identity; a newly opened client must not replay an old notice. */
   continuationNoticeId?: string | null;
   /** Whether a connected terminal can take messages sent from AgentKib at all. */
@@ -1161,6 +1204,25 @@ export class WebClient {
     signal?: AbortSignal,
   ) {
     return this.request<SessionSettings>("managed/settings-prepare", body, signal);
+  }
+  /** Whether a managed Claude Code session is a Project Agent, and its workers. */
+  projectAgent(sessionId: string, signal?: AbortSignal) {
+    return this.request<{ lead: ProjectAgentState | null; capable?: boolean }>(
+      `managed/project-agent?${new URLSearchParams({ sessionId })}`,
+      undefined,
+      signal,
+    );
+  }
+  /** Sets a Project Agent up, pauses, resumes or ends it, in this device's name. */
+  manageProjectAgent(
+    body: {
+      sessionId: string;
+      operation: "designate" | "pause" | "resume" | "release";
+      scope?: ProjectAgentScope;
+    },
+    signal?: AbortSignal,
+  ) {
+    return this.request<{ lead: ProjectAgentState | null }>("managed/project-agent", body, signal);
   }
   sessionQueue(sessionId: string, agent: ManagedAgent, signal?: AbortSignal) {
     return agent === "codex"

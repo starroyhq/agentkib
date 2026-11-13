@@ -172,6 +172,107 @@ describe("push alerts", () => {
     expect(test.take().filter((input) => input.kind === "alert")).toEqual([]);
   });
 
+  describe("a Project Agent and its Workers", () => {
+    const lead = (state?: State, role: Record<string, unknown> = {}, backgroundTasks = 0) => {
+      const base = session("lead", state, "Release");
+      return {
+        ...base,
+        agent: "claude-code",
+        ...(backgroundTasks
+          ? { continuation: { status: base.continuation?.status ?? "idle", backgroundTasks } }
+          : {}),
+        orchestration: {
+          role: "lead",
+          workers: 2,
+          paused: false,
+          reason: null,
+          reports: 0,
+          ...role,
+        },
+      };
+    };
+    const worker = (id: string, state?: State) => ({
+      ...session(id, state),
+      orchestration: { role: "worker", leadId: "lead", name: id },
+    });
+    // Live Activity updates aside.
+    const alerts = (test: ReturnType<typeof harness>) =>
+      test
+        .take()
+        .filter((input) => input.kind === "alert")
+        .map((input) => {
+          const { kind, sessionId } = alertOf(input) as { kind: string; sessionId: string };
+          return `${kind}:${sessionId}`;
+        });
+
+    it("alerts once the Project Agent and all it set going stop; never for a Worker's turn", async () => {
+      const test = harness();
+      test.notifier.update([lead("running"), worker("w1"), worker("w2")]);
+      // Its turn ends with both Workers running.
+      test.notifier.update([lead("completed"), worker("w1", "running"), worker("w2", "running")]);
+      // A Worker ends; its report is on its way, then starts a turn of the Project Agent.
+      test.notifier.update([
+        lead("completed", { reports: 1 }),
+        worker("w1", "completed"),
+        worker("w2", "running"),
+      ]);
+      test.notifier.update([lead("running"), worker("w1", "completed"), worker("w2", "running")]);
+      test.notifier.update([lead("completed"), worker("w1", "completed"), worker("w2", "running")]);
+      await settle();
+      expect(alerts(test)).toEqual([]);
+      // A Worker waiting for the person alerts as any session does.
+      test.notifier.update([
+        lead("completed"),
+        worker("w1", "completed"),
+        worker("w2", "approval"),
+      ]);
+      await settle();
+      expect(alerts(test)).toEqual(["approval:w2"]);
+      // The Project Agent waits as long as that takes.
+      test.advance(30 * MINUTE);
+      test.notifier.update([lead("completed"), worker("w1", "completed"), worker("w2", "running")]);
+      test.notifier.update([
+        lead("completed", { reports: 1 }),
+        worker("w1", "completed"),
+        worker("w2", "completed"),
+      ]);
+      test.notifier.update([lead("running"), worker("w1", "completed"), worker("w2", "completed")]);
+      // Its own background task still runs after this turn.
+      test.notifier.update([
+        lead("completed", {}, 1),
+        worker("w1", "completed"),
+        worker("w2", "completed"),
+      ]);
+      await settle();
+      expect(alerts(test)).toEqual([]);
+      test.advance(20 * MINUTE);
+      test.notifier.update([
+        lead("completed"),
+        worker("w1", "completed"),
+        worker("w2", "completed"),
+      ]);
+      await settle();
+      expect(alerts(test)).toEqual(["completed:lead"]);
+    });
+
+    it("alerts when delegation pauses for the person, not when they paused it", async () => {
+      const test = harness();
+      test.notifier.update([lead("running"), worker("w1", "running")]);
+      test.notifier.update([
+        lead(undefined, { paused: true, reason: "user-paused" }),
+        worker("w1", "running"),
+      ]);
+      await settle();
+      expect(alerts(test)).toEqual([]);
+      test.notifier.update([
+        lead(undefined, { paused: true, reason: "auto-turn-limit" }),
+        worker("w1", "running"),
+      ]);
+      await settle();
+      expect(alerts(test)).toEqual(["delegation:lead"]);
+    });
+  });
+
   it("sends nothing without a relay device or to a phone that wants no alerts", async () => {
     const test = harness();
     test.context.deviceId = undefined;

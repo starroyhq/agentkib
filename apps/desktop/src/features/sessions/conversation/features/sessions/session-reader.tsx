@@ -4,6 +4,7 @@ import {
   useDesktopReadScope,
 } from "../../../read-state-scope";
 import { catalogCopy } from "../catalog/catalog-copy";
+import { OrchestrationNote } from "../catalog/orchestration-note";
 import { WorktreeNote } from "../catalog/worktree-note";
 import { codexReason } from "./codex-copy";
 import { isSendEnter, useEnterSends } from "./composer-shortcuts";
@@ -264,6 +265,19 @@ export function SessionReader() {
                     {forkSource ? session.sourceTitle(forkSource.id) : t.untitled}
                   </p>
                 )}
+              {current?.orchestration && (
+                <OrchestrationNote
+                  orchestration={current.orchestration}
+                  leadTitle={
+                    current.orchestration.role === "worker" &&
+                    session.sourceTitle(current.orchestration.leadId) !==
+                      current.orchestration.leadId
+                      ? session.sourceTitle(current.orchestration.leadId)
+                      : null
+                  }
+                  locale={locale}
+                />
+              )}
               {current?.worktree && <WorktreeNote worktree={current.worktree} locale={locale} />}
               {page?.warnings.length ? (
                 <aside className="mx-auto mb-5 max-w-3xl rounded-lg border border-amber-500/20 bg-amber-500/5 p-3 text-xs leading-6 text-amber-600">

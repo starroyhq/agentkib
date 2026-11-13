@@ -70,6 +70,44 @@ describe("homeSessionGroups", () => {
     expect(groups.running).toEqual([]);
   });
 
+  it("lists a Project Agent whose delegation paused for the person, once it is not working", () => {
+    const lead = (reason: string, extra: Partial<ConversationSessionSummary> = {}) =>
+      session(reason, {
+        agent: "claude-code",
+        orchestration: { role: "lead", workers: 1, paused: true, reason, reports: 0 },
+        readState: unread("completed"),
+        ...extra,
+      });
+    const groups = homeSessionGroups([
+      lead("auto-turn-limit"),
+      lead("report-undelivered"),
+      lead("restart-confirmation-required"),
+      // A pause the person chose, or one over a device's access, is no request.
+      lead("user-paused"),
+      lead("authorization-changed"),
+      // Still working: in progress first.
+      {
+        ...lead("running"),
+        orchestration: {
+          role: "lead" as const,
+          workers: 1,
+          paused: true,
+          reason: "auto-turn-limit",
+        },
+        continuation: { status: "running" },
+      },
+    ]);
+    expect(groups.needsYou.map(({ session, need }) => `${need}:${session.id}`)).toEqual([
+      "delegation:restart-confirmation-required",
+      "delegation:report-undelivered",
+      "delegation:auto-turn-limit",
+    ]);
+    expect(ids(groups.running)).toEqual(["running"]);
+    expect(ids(groups.review)).toEqual(["authorization-changed", "user-paused"]);
+    // Nothing of it stops when AgentKib quits.
+    expect(workStoppedByQuit(groups.needsYou.map(({ session }) => session))).toEqual([]);
+  });
+
   it("names where each turn runs and keeps a waiting session out of in progress", () => {
     const groups = homeSessionGroups([
       session("agentkib", { continuation: { status: "running", executionLocation: "agentkib" } }),

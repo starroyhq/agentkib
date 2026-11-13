@@ -26,7 +26,8 @@ export function HomeAttentionProvider({ children }: { children: ReactNode }) {
       ? {
           ...value,
           needsYou: value.needsYou.filter(
-            ({ session, need }) => need === "verify" || !replies.answered.has(session.id),
+            ({ session, need }) =>
+              (need !== "approval" && need !== "question") || !replies.answered.has(session.id),
           ),
         }
       : value;

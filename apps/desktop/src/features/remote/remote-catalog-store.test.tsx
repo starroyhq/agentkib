@@ -242,6 +242,7 @@ describe("remote catalog and history isolation", () => {
           origin: "auxiliary",
           spawned_by_session_id: "parent",
           forked_from_session_id: "fork",
+          orchestration: { role: "worker", leadId: "lead", name: "api" },
         },
       ],
     });
@@ -252,6 +253,12 @@ describe("remote catalog and history isolation", () => {
       expect(entry.origin).toBe("auxiliary");
       expect(entry.spawned_by_session_id).toBe(remoteRecordId(entry.remote.host_id, "parent"));
       expect(entry.forked_from_session_id).toBe(remoteRecordId(entry.remote.host_id, "fork"));
+      // A Worker's Project Agent is on the same computer.
+      expect(entry.orchestration).toEqual({
+        role: "worker",
+        leadId: remoteRecordId(entry.remote.host_id, "lead"),
+        name: "api",
+      });
     }
     expect(result.current.sessions[0].spawned_by_session_id).not.toBe(
       result.current.sessions[1].spawned_by_session_id,

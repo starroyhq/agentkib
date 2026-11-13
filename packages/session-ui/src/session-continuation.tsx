@@ -32,6 +32,8 @@ export type SessionContinuationCopy = {
   backgroundEnded: string;
   /** Managed Claude: AgentKib stopped the CLI after it started too many turns by itself. */
   backgroundLimit: string;
+  /** A Project Agent reached its automatic turns: the turn its CLI started by itself was stopped. */
+  leadTurnLimit: string;
   /** Managed Claude: a turn the CLI started by itself after a background task ended. */
   backgroundTurn: string;
   /** Managed Claude: background tasks that keep running after their turn. */
@@ -88,6 +90,8 @@ const continuationCopy: Record<string, SessionContinuationCopy> = {
     backgroundEnded: "后台进程已结束，下次发送时会自动继续",
     backgroundLimit:
       "Claude Code 连续自动运行了太多轮，AgentKib 已停止它和后台任务。发送消息即可继续。",
+    leadTurnLimit:
+      "项目 Agent 达到连续自动轮次上限，AgentKib 已停止它自己开始的这一轮并暂停委派。发送消息即可继续。",
     backgroundTurn: "后台任务有了结果，Claude Code 正在继续",
     backgroundRunning: (count, description) =>
       count === 1 && description ? `后台运行中：${description}` : `${count} 个后台任务运行中`,
@@ -142,6 +146,8 @@ const continuationCopy: Record<string, SessionContinuationCopy> = {
     backgroundEnded: "背景程序已結束，下次傳送訊息時會自動繼續",
     backgroundLimit:
       "Claude Code 連續自動執行了太多輪，AgentKib 已停止它和背景工作。傳送訊息即可繼續。",
+    leadTurnLimit:
+      "專案 Agent 達到連續自動輪次上限，AgentKib 已停止它自己開始的這一輪並暫停委派。傳送訊息即可繼續。",
     backgroundTurn: "背景工作有了結果，Claude Code 正在繼續",
     backgroundRunning: (count, description) =>
       count === 1 && description ? `背景執行中：${description}` : `${count} 個背景工作執行中`,
@@ -201,6 +207,8 @@ const continuationCopy: Record<string, SessionContinuationCopy> = {
       "バックグラウンドプロセスを終了しました。次のメッセージ送信時に自動で続行します。",
     backgroundLimit:
       "Claude Code が自動で何度も続けて実行したため、AgentKib がバックグラウンドタスクごと停止しました。メッセージを送ると続けられます。",
+    leadTurnLimit:
+      "プロジェクト Agent が連続する自動ターンの上限に達したため、AgentKib が自動で始まったこのターンを停止し、委任を一時停止しました。メッセージを送ると続けられます。",
     backgroundTurn: "バックグラウンドタスクの結果を受けて、Claude Code が続けています",
     backgroundRunning: (count, description) =>
       count === 1 && description
@@ -263,6 +271,8 @@ const continuationCopy: Record<string, SessionContinuationCopy> = {
       "The background process ended. It will resume automatically when you send your next message.",
     backgroundLimit:
       "Claude Code kept starting turns on its own, so AgentKib stopped it and its background tasks. Send a message to continue.",
+    leadTurnLimit:
+      "The Project Agent reached its limit of automatic turns, so AgentKib stopped the turn it started on its own and paused delegation. Send a message to continue.",
     backgroundTurn: "A background task finished. Claude Code is continuing.",
     backgroundRunning: (count, description) =>
       count === 1 && description

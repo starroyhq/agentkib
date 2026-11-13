@@ -54,10 +54,34 @@ describe("Project Agent panel", () => {
     expect(screen.getByRole("checkbox", { name: "app" })).toBeChecked();
     fireEvent.click(screen.getByRole("checkbox", { name: "worktrees" }));
     fireEvent.click(screen.getByRole("checkbox", { name: "Let workers use Codex auto-review" }));
+    // Nothing is decided for the user unless they tick it.
+    for (const name of [
+      "Workers' file change approvals",
+      "Workers' approvals to run commands outside the sandbox",
+      "Workers' questions",
+    ])
+      expect(screen.getByRole("checkbox", { name })).not.toBeChecked();
+    fireEvent.click(
+      screen.getByRole("checkbox", {
+        name: "Workers' approvals to run commands outside the sandbox",
+      }),
+    );
+    fireEvent.click(screen.getByRole("checkbox", { name: "Workers' questions" }));
     fireEvent.change(screen.getByRole("spinbutton", { name: "Most workers" }), {
       target: { value: "2" },
     });
-    request.mockResolvedValueOnce(agent());
+    request.mockResolvedValueOnce(
+      agent({
+        scope: {
+          workspaceIds: ["w1", "w2"],
+          policies: ["workspace-write-on-request"],
+          maxLanes: 2,
+          maxAutoTurns: 25,
+          approvals: ["command"],
+          answers: true,
+        },
+      }),
+    );
     await act(async () => {
       fireEvent.click(screen.getByRole("button", { name: "Make Project Agent" }));
     });
@@ -69,9 +93,16 @@ describe("Project Agent panel", () => {
         policies: ["workspace-write-on-request", "workspace-write-auto-review"],
         maxLanes: 2,
         maxAutoTurns: 25,
+        approvals: ["command"],
+        answers: true,
       },
     });
     expect(screen.getByText("0 workers")).toBeInTheDocument();
+    expect(
+      screen.getByText(
+        "Decides for you: Workers' approvals to run commands outside the sandbox, Workers' questions",
+      ),
+    ).toBeInTheDocument();
     expect(screen.getByText("No workers yet. Ask this session to open one.")).toBeInTheDocument();
   });
 

@@ -202,6 +202,13 @@ export function useRemoteCatalogEntries() {
         forked_from_session_id: session.forked_from_session_id
           ? remoteRecordId(host.id, session.forked_from_session_id)
           : undefined,
+        orchestration:
+          session.orchestration?.role === "worker"
+            ? {
+                ...session.orchestration,
+                leadId: remoteRecordId(host.id, session.orchestration.leadId),
+              }
+            : session.orchestration,
         remote: {
           host_id: host.id,
           host_name: host.name,

@@ -63,6 +63,8 @@ export function claudeSessionBanner(
     return { title: "", body: continuation.backgroundEnded, notice: "background-ended" as const };
   if (live?.continuationNotice === "background-limit")
     return { title: "", body: continuation.backgroundLimit, notice: "background-limit" as const };
+  if (live?.continuationNotice === "lead-turn-limit")
+    return { title: "", body: continuation.leadTurnLimit, notice: "lead-turn-limit" as const };
   if (live?.executionMode === "claude-follower") {
     if (live.reason === "claude-bridge-event-gap") return { title: copy.connected, body: copy.gap };
     if (live.reason === "claude-bridge-disconnected" || live.status === "unsupported") {
@@ -103,7 +105,11 @@ export function claudeSessionBanner(
 
 /** Notices about the background process read as a line above the composer, not as a banner. */
 export function claudeComposerNotice(banner: ReturnType<typeof claudeSessionBanner>): boolean {
-  return banner?.notice === "background-ended" || banner?.notice === "background-limit";
+  return (
+    banner?.notice === "background-ended" ||
+    banner?.notice === "background-limit" ||
+    banner?.notice === "lead-turn-limit"
+  );
 }
 
 /**

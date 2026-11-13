@@ -3,6 +3,7 @@ import { Button } from "../../components/ui/button";
 import { Dialog } from "../../components/dialog";
 import { CodexTools } from "./codex-tools";
 import { ManagedTasks } from "./managed-tasks";
+import { ProjectAgentPanel } from "./project-agent-panel";
 import { useSession } from "./session-context";
 import { webLayoutCopy } from "./web-layout-copy";
 export function SessionOperations({
@@ -65,6 +66,16 @@ export function SessionOperations({
         {shortcuts}
       </Dialog>
     ) : null;
+  // A Claude Code session that AgentKib runs may direct workers as a Project Agent.
+  const header =
+    current?.agent === "claude-code" ? (
+      <>
+        {shortcuts}
+        <ProjectAgentPanel />
+      </>
+    ) : (
+      shortcuts
+    );
   // Keep the receipt reconciler mounted even after the operations panel closes.
   return (
     <ManagedTasks
@@ -73,7 +84,7 @@ export function SessionOperations({
           open={open}
           onOpenChange={onOpenChange}
           showTrigger={false}
-          shortcuts={shortcuts}
+          shortcuts={header}
           ownership={ownership}
         />
       )}

@@ -32,6 +32,7 @@ import { dictionaries, type Locale } from "../../i18n";
 import { catalogCopyForSurface } from "./catalog-copy";
 import { interactionCopy } from "../interactions/interaction-copy";
 import { worktreeCopy, worktreeLabel } from "./worktree-copy";
+import { OrchestrationIcon, orchestrationText } from "./orchestration-note";
 import { WorktreeMark } from "./worktree-note";
 
 export interface CatalogWorkspace {
@@ -214,7 +215,19 @@ export function SessionCatalog({
                       const runtime = sessionContinuationListState(s, locale);
                       const title = displaySessionTitle(s.title, t.untitled);
                       const fork = s.origin === "interactive" && !!s.forked_from_session_id;
-                      const description = `${agentName(s.agent)} · ${title}${s.availability !== "readable" ? ` · ${t.metadataOnly}` : ""}${s.archived ? ` · ${c.archived}` : ""}${fork ? ` · ${c.fork}` : ""}${s.origin === "execution" ? ` · ${w.execution}` : ""}${s.worktree ? ` · ${worktreeLabel(s.worktree, locale)}` : ""}`;
+                      const role = s.orchestration;
+                      const lead =
+                        role?.role === "worker"
+                          ? sessions.find((item) => item.id === role.leadId)
+                          : undefined;
+                      const delegation = s.orchestration
+                        ? orchestrationText(
+                            s.orchestration,
+                            lead ? displaySessionTitle(lead.title, t.untitled) : null,
+                            locale,
+                          )
+                        : "";
+                      const description = `${agentName(s.agent)} · ${title}${s.availability !== "readable" ? ` · ${t.metadataOnly}` : ""}${s.archived ? ` · ${c.archived}` : ""}${fork ? ` · ${c.fork}` : ""}${s.origin === "execution" ? ` · ${w.execution}` : ""}${delegation ? ` · ${delegation}` : ""}${s.worktree ? ` · ${worktreeLabel(s.worktree, locale)}` : ""}`;
                       return (
                         <div key={s.id} className="group/session flex items-center gap-1">
                           <Button
@@ -254,6 +267,7 @@ export function SessionCatalog({
                             {s.origin === "execution" && (
                               <Bot size={12} className="shrink-0" aria-hidden="true" />
                             )}
+                            {s.orchestration && <OrchestrationIcon role={s.orchestration.role} />}
                             {s.worktree && <WorktreeMark worktree={s.worktree} locale={locale} />}
                             {fork && <GitBranch size={14} aria-hidden="true" />}
                           </Button>

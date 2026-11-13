@@ -325,10 +325,12 @@ describe("Claude Code native session plugin as a Project Agent", () => {
   /** A Runtime that names `lead-tools`, with this lead info in its command replies. */
   async function leading(options: { feature?: boolean; register?: boolean } = {}) {
     const registered: Value[] = [];
+    const logs: string[] = [];
     let lead: Value | null = null;
     let answer: Value = { text: '{"workers":[]}', isError: false };
     const f = await fixture({
       configure(api) {
+        api.ui = { ...api.ui, log: (text: string) => void logs.push(text) };
         if (options.register !== false)
           api.tool = {
             register: async (spec: Value) => {
@@ -355,6 +357,7 @@ describe("Claude Code native session plugin as a Project Agent", () => {
     return {
       f,
       registered,
+      logs,
       polls,
       setLead(value: Value | null) {
         lead = value;
@@ -425,6 +428,57 @@ describe("Claude Code native session plugin as a Project Agent", () => {
     expect(l.polls().at(-1)).not.toHaveProperty("takenReports");
   });
 
+  it("tells the terminal when delegation pauses and resumes, once a change", async () => {
+    const l = await leading();
+    l.setLead({ tools: [tool], reports: [], paused: null });
+    await l.f.tick();
+    await l.f.tick();
+    expect(l.logs).toEqual([]);
+    l.setLead({ tools: [tool], reports: [], paused: "auto-turn-limit" });
+    await l.f.tick();
+    await l.f.tick();
+    expect(l.logs).toEqual([
+      "AgentKib paused this Project Agent's delegation: its automatic turns reached the limit. Type a message here to continue.",
+    ]);
+    l.setLead({ tools: [tool], reports: [], paused: null });
+    await l.f.tick();
+    expect(l.logs.at(-1)).toBe("AgentKib resumed this Project Agent's delegation.");
+    expect(l.logs).toHaveLength(2);
+  });
+
+  it("lets its worker tools run without asking while it leads, unless a rule or policy asks", async () => {
+    const l = await leading();
+    const ask = { decision: "ask", reason: "Needs approval" };
+    const check = (verdict: Value, extra: Value = {}) =>
+      l.f.run(
+        "tool.check",
+        { tool: "mcp__agentkib-bridge__worker_list", input: {}, ...extra },
+        () => verdict,
+      );
+    // Not a Project Agent yet: the person decides.
+    expect(await check(ask)).toBe(ask);
+    l.setLead({ tools: [tool], reports: [] });
+    await l.f.tick();
+    await l.f.tick();
+    expect(await check(ask)).toMatchObject({ decision: "allow" });
+    for (const verdict of [
+      { ...ask, rule: "mcp__agentkib-bridge__worker_list" },
+      { ...ask, hook: "PreToolUse" },
+      { ...ask, setting: "permissions.example" },
+      { ...ask, plugin: "another-plugin" },
+      { decision: "deny", reason: "Denied by a rule" },
+    ])
+      expect(await check(verdict)).toBe(verdict);
+    expect(await check(ask, { ceiling: "ask" })).toBe(ask);
+    // Not this plugin's tool.
+    expect(await l.f.run("tool.check", { tool: "Bash", input: {} }, () => ask)).toBe(ask);
+    // Once it stops leading, the person decides again.
+    l.setLead(null);
+    await l.f.tick();
+    await l.f.tick();
+    expect(await check(ask)).toBe(ask);
+  });
+
   it("keeps to the 0.4.0 messages for a Runtime that does not name the feature", async () => {
     const l = await leading({ feature: false });
     l.setLead({ tools: [tool], reports: [] });
@@ -453,10 +507,29 @@ describe("Claude Code native session plugin as a Project Agent", () => {
     const l = await leading();
     await l.f.run("turn.start", { text: "typed in the terminal", turnId: randomUUID() });
     await l.f.run("turn.start", { text: "", turnId: randomUUID() });
+    // Background work's notice starts a turn no one typed; the engine stamps where it came from.
+    const notice = "<task-notification>build finished</task-notification>";
+    await l.f.run("prompt.submit", {
+      text: notice,
+      wait: false,
+      origin: { kind: "task-notification" },
+    });
+    await l.f.run("turn.start", { text: notice, turnId: randomUUID() });
+    await l.f.run("prompt.submit", {
+      text: "typed again",
+      wait: false,
+      origin: { kind: "composer" },
+    });
+    await l.f.run("turn.start", { text: "typed again", turnId: randomUUID() });
     const starts = l.f.events().filter((entry) => entry.event.type === "turn-start");
     await l.f.flush();
     const sent = l.f.events().filter((entry) => entry.event.type === "turn-start");
-    expect(sent.map((entry) => entry.event.origin)).toEqual(["terminal", undefined]);
+    expect(sent.map((entry) => entry.event.origin)).toEqual([
+      "terminal",
+      undefined,
+      undefined,
+      "terminal",
+    ]);
     expect(starts.length).toBeLessThanOrEqual(sent.length);
   });
 });

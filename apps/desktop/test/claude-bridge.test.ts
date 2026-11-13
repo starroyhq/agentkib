@@ -1712,7 +1712,10 @@ describe.skipIf(process.platform === "win32")(
     function terminalLead() {
       const calls: Array<{ sessionId: string; name: string; input: unknown }> = [];
       const spoke: string[] = [];
+      const selfTurns: string[] = [];
       let leading = false;
+      let turnsLeft = Number.POSITIVE_INFINITY;
+      let paused: string | null = null;
       const lead: BridgeLead = {
         tools: () =>
           leading
@@ -1723,13 +1726,27 @@ describe.skipIf(process.platform === "win32")(
           return { text: '{"workers":[]}' };
         },
         userSpoke: (sessionId) => spoke.push(sessionId),
+        selfTurn: (sessionId) => {
+          selfTurns.push(sessionId);
+          if (turnsLeft > 0) {
+            turnsLeft--;
+            return null;
+          }
+          paused = "auto-turn-limit";
+          return { stopAs: "desktop-local" };
+        },
+        paused: () => paused,
       };
       return {
         lead,
         calls,
         spoke,
+        selfTurns,
         setLeading(value: boolean) {
           leading = value;
+        },
+        allowTurns(count: number) {
+          turnsLeft = count;
         },
       };
     }
@@ -1778,6 +1795,43 @@ describe.skipIf(process.platform === "win32")(
         { type: "turn-start", turnId: randomUUID(), revision: 2, origin: "terminal" },
       );
       expect(l.spoke).toEqual([f.target.sessionId]);
+    });
+
+    it("counts the turns its CLI begins by itself, and stops one past the limit", async () => {
+      const l = terminalLead();
+      const f = await fixture(1000, l.lead);
+      // Until the plugin says it takes the tools, a turn without text is not counted.
+      await f.events({ type: "turn-start", turnId: randomUUID(), revision: 1 });
+      expect(l.selfTurns).toEqual([]);
+      l.setLeading(true);
+      l.allowTurns(1);
+      expect((await leadPoll(f)).body.lead).toMatchObject({ paused: null });
+      await f.events({ type: "turn-start", turnId: randomUUID(), revision: 2 });
+      expect(l.selfTurns).toEqual([f.target.sessionId]);
+      expect((await leadPoll(f)).body.commands).toEqual([]);
+      const past = randomUUID();
+      await f.events({ type: "turn-start", turnId: past, revision: 3 });
+      expect(l.selfTurns).toHaveLength(2);
+      // Stopped as Stop in AgentKib would, and the terminal hears why.
+      const reply = (await leadPoll(f)).body;
+      expect(reply.commands).toEqual([expect.objectContaining({ kind: "stop", turnId: past })]);
+      expect(reply.lead.paused).toBe("auto-turn-limit");
+      // A turn the person typed is theirs, not one more.
+      await f.events({ type: "turn-start", turnId: randomUUID(), revision: 4, origin: "terminal" });
+      expect(l.selfTurns).toHaveLength(2);
+      expect(l.spoke).toEqual([f.target.sessionId]);
+    });
+
+    it("takes a message the person sends from AgentKib as theirs, as one typed in the terminal", async () => {
+      const l = terminalLead();
+      const f = await fixture(1000, l.lead);
+      l.setLeading(true);
+      await leadPoll(f);
+      const sent = f.bridge.request(f.control());
+      await new Promise((resolve) => setImmediate(resolve));
+      expect(l.spoke).toEqual([f.target.sessionId]);
+      f.bridge.invalidate("browser-a");
+      expect(await sent).toMatchObject({ controlOutcome: "not-dispatched" });
     });
 
     it("offers nothing of it without a lead hook, nor to a plugin that did not ask", async () => {

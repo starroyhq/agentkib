@@ -168,8 +168,15 @@ export interface BridgeLead {
     name: string,
     input: Record<string, unknown>,
   ): Promise<{ text: string; isError?: boolean }>;
-  /** Someone typed into the terminal: a turn the person started. */
+  /** The person wrote to it, in the terminal or from AgentKib. */
   userSpoke(sessionId: string): void;
+  /**
+   * Its CLI began a turn by itself (background work woke it). Past the Project Agent's automatic
+   * turns it names the device to stop that turn as; null lets it run.
+   */
+  selfTurn?(sessionId: string): { stopAs: string } | null;
+  /** Why its delegation is paused, or null; the terminal tells the person. */
+  paused?(sessionId: string): string | null;
 }
 interface BridgeOptions {
   dataDir: string;
@@ -1062,6 +1069,9 @@ export class ClaudeBridge {
       evidence,
     );
     if (prior) return prior;
+    // The person wrote to a terminal Project Agent from AgentKib: as when they type there.
+    if (command.kind === "send" || command.kind === "steer" || command.kind === "queue")
+      this.#leadSpoke(connection, row.target.sessionId);
     if (command.kind === "send") {
       row.inflight = { requestId, commandId: command.commandId, turnId: null };
       this.#save();
@@ -1549,14 +1559,16 @@ export class ClaudeBridge {
         const lead = () => {
           if (!connection.leadTools || !this.options.lead) return {};
           let tools: ReturnType<BridgeLead["tools"]> = null;
+          let paused: string | null = null;
           try {
             tools = this.options.lead.tools(sessionId);
+            paused = this.options.lead.paused?.(sessionId) ?? null;
           } catch {
             /* The session is offered no tools rather than losing its commands. */
           }
           return {
             lead: tools
-              ? { tools, reports: (this.#reports.get(sessionId) ?? []).slice(0, 4) }
+              ? { tools, reports: (this.#reports.get(sessionId) ?? []).slice(0, 4), paused }
               : null,
           };
         };
@@ -1798,6 +1810,7 @@ export class ClaudeBridge {
     // A native terminal event remains evidence even when it precedes the first
     // display snapshot after reconnect. Never discard it merely for UI ordering.
     if (event.type === "turn-complete") this.#complete(row, connection, event);
+    let stop: { turnId: string; deviceId: string } | null = null;
     if (event.type === "snapshot") {
       const snapshot = event.snapshot;
       if (
@@ -1827,10 +1840,14 @@ export class ClaudeBridge {
         snapshot.status = "running";
         snapshot.waiting = null;
         snapshot.streamText = "";
-        // A Project Agent's count of turns without the person restarts when they type.
-        if (event.origin === "terminal" && connection.leadTools)
+        // A Project Agent's count of turns without the person restarts when they type. A turn the
+        // CLI begins by itself has no text, so no origin from a plugin that gives one; it counts,
+        // and past the limit it stops, as for a session AgentKib runs.
+        if (event.origin === "terminal") this.#leadSpoke(connection, id);
+        else if (event.origin === undefined && connection.leadTools)
           try {
-            this.options.lead?.userSpoke(row.target.sessionId);
+            const refused = this.options.lead?.selfTurn?.(id);
+            if (refused) stop = { turnId: event.turnId, deviceId: refused.stopAs };
           } catch {
             /* A lead's bookkeeping never disturbs the terminal. */
           }
@@ -1855,6 +1872,42 @@ export class ClaudeBridge {
     }
     connection.revision = ++this.#revision;
     this.#publish(id);
+    if (stop) void this.#stopLeadTurn(row, stop.turnId, stop.deviceId);
+  }
+
+  /** The person wrote to this session; for a terminal Project Agent, its turns restart. */
+  #leadSpoke(connection: Connection, sessionId: string): void {
+    if (!connection.leadTools) return;
+    try {
+      this.options.lead?.userSpoke(sessionId);
+    } catch {
+      /* A lead's bookkeeping never disturbs the terminal. */
+    }
+  }
+
+  /**
+   * Stops a turn a terminal Project Agent's CLI began by itself past its automatic turns, as Stop
+   * in AgentKib would, in the name of the device that set the Project Agent up.
+   */
+  async #stopLeadTurn(row: Binding, turnId: string, deviceId: string): Promise<void> {
+    try {
+      await this.#control(
+        {
+          operation: "stop",
+          sessionId: row.target.sessionId,
+          requestId: randomUUID(),
+          deviceId,
+          runtimeBootId: this.options.bootId,
+          expectedRevision: this.live(row.target.sessionId, true).revision,
+          experimentalEnabled: true,
+          turnId,
+        },
+        row,
+      );
+    } catch {
+      // Another command is on its way or the turn ended: it runs out by itself, and delegation
+      // is paused either way.
+    }
   }
 
   #complete(

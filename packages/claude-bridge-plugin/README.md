@@ -55,8 +55,13 @@ command and does not call a model.
 - When the Runtime names the `lead-tools` feature and AgentKib makes the session a
   Project Agent, register its worker tools (`mcp__agentkib-bridge__worker_*`) with
   `$.tool.register` and run their calls through AgentKib; queue each report AgentKib
-  sends as a message submitted once the terminal is idle. The tools follow the user's
-  own permission rules. See `docs/agents/project-agent.md`.
+  sends as a message submitted once the terminal is idle. While the session leads,
+  the tools run without asking: the plugin answers the engine's default ask for them
+  with allow, and leaves any rule, hook, setting, other plugin's or organization's ask
+  or deny as it is. Turns no one typed (a background task's notice, a schedule) carry
+  no `origin`, so AgentKib counts them toward the Project Agent's automatic turns, and
+  a line in the terminal says when delegation pauses or resumes. See
+  `docs/agents/project-agent.md`.
 
 - Read bounded native messages, tool activity, stream text and reported usage.
 - Take text messages sent from AgentKib, in three modes. Each needs a verified,
@@ -86,8 +91,9 @@ command and does not call a model.
   end of the session discards it.
 
 - Cancel the exact native turn observed by `turn.start` using `$.turn.abort`.
-- Keep approvals and questions in the original terminal. No permission override,
-  synthetic question response, or remote approval capability is provided.
+- Keep approvals and questions in the original terminal. Apart from a Project
+  Agent's own worker tools above, no permission override, synthetic question response,
+  or remote approval capability is provided.
 
 Snapshots are previews of the latest 80 text rows and 100 tool records, subject to
 a byte budget. Clipped text has an explicit marker. Complete history continues to

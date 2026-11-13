@@ -156,6 +156,14 @@ describe.skipIf(process.platform !== "darwin" || process.env.AGENTKIB_CLAUDE_BRI
       };
       // What the model was sent: the tools it was offered and the last user message.
       const requests: Array<{ tools: string[]; text: string; results: string[] }> = [];
+      // LEAD-BACKGROUND starts two background commands and ends the turn; each wakes the CLI.
+      let backgroundStep = 0;
+      const toolUse = (name: string, input: Json) => ({
+        type: "tool_use",
+        id: `toolu_${randomUUID().slice(0, 8)}`,
+        name,
+        input,
+      });
       const server = createServer(async (request, response) => {
         const chunks: Buffer[] = [];
         for await (const chunk of request) chunks.push(Buffer.from(chunk));
@@ -176,16 +184,29 @@ describe.skipIf(process.platform !== "darwin" || process.env.AGENTKIB_CLAUDE_BRI
           .map((block) => JSON.stringify(block.content));
         const tools = (body.tools ?? []).map((tool: Json) => tool.name);
         requests.push({ tools, text, results });
-        const callWorkers =
-          text.includes("LEAD-LIST") && tools.includes("mcp__agentkib-bridge__worker_list");
-        const content = callWorkers
-          ? {
-              type: "tool_use",
-              id: `toolu_${randomUUID().slice(0, 8)}`,
-              name: "mcp__agentkib-bridge__worker_list",
-              input: {},
-            }
-          : { type: "text", text: results.length ? "fixture-after-tool" : "fixture-reply" };
+        let content: Json;
+        if (text.includes("LEAD-LIST") && tools.includes("mcp__agentkib-bridge__worker_list"))
+          content = toolUse("mcp__agentkib-bridge__worker_list", {});
+        else if (text.includes("LEAD-BACKGROUND") && !results.length) {
+          backgroundStep = 1;
+          content = toolUse("Bash", {
+            command: "sleep 3 && echo BG-ONE",
+            description: "First background step",
+            run_in_background: true,
+          });
+        } else if (backgroundStep === 1 && results.length) {
+          backgroundStep = 2;
+          content = toolUse("Bash", {
+            command: "sleep 12 && echo BG-TWO",
+            description: "Second background step",
+            run_in_background: true,
+          });
+        } else if (backgroundStep === 2 && results.length) {
+          backgroundStep = 3;
+          content = { type: "text", text: "fixture-bg-started" };
+        } else
+          content = { type: "text", text: results.length ? "fixture-after-tool" : "fixture-reply" };
+        const callWorkers = content.type === "tool_use";
         const message = {
           id: `msg_${randomUUID()}`,
           type: "message",
@@ -218,7 +239,7 @@ describe.skipIf(process.platform !== "darwin" || process.env.AGENTKIB_CLAUDE_BRI
           type: "content_block_delta",
           index: 0,
           delta: callWorkers
-            ? { type: "input_json_delta", partial_json: "{}" }
+            ? { type: "input_json_delta", partial_json: JSON.stringify(content.input) }
             : { type: "text_delta", text: (content as Json).text },
         });
         event(response, "content_block_stop", { type: "content_block_stop", index: 0 });
@@ -233,6 +254,8 @@ describe.skipIf(process.platform !== "darwin" || process.env.AGENTKIB_CLAUDE_BRI
       await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
       const port = (server.address() as { port: number }).port;
       let bridge: ClaudeBridge;
+      // Turns the person typed, as AgentKib heard them (events flush every 250 ms).
+      let spoken = 0;
       // Workers stood in for: AgentKib's Codex side is not part of this run.
       const lanes = {
         options: async () => ({ models: [] }),
@@ -271,7 +294,18 @@ describe.skipIf(process.platform !== "darwin" || process.env.AGENTKIB_CLAUDE_BRI
           tools: (id) => orchestration.leadToolSpecs(id),
           call: (id, name, input) => orchestration.call(id, name, input),
           userSpoke: (id) => {
+            spoken++;
             if (orchestration.status(id)) orchestration.userSpoke(id);
+          },
+          // As the backend wires it (`index.ts`).
+          selfTurn: (id) => {
+            const lead = orchestration.status(id);
+            if (!lead) return null;
+            return orchestration.leadSelfTurn(id) ? null : { stopAs: lead.deviceId };
+          },
+          paused: (id) => {
+            const lead = orchestration.status(id);
+            return lead?.paused ? (lead.reason ?? "paused") : null;
           },
         },
       });
@@ -307,9 +341,10 @@ describe.skipIf(process.platform !== "darwin" || process.env.AGENTKIB_CLAUDE_BRI
           "manual",
           "--setting-sources",
           "user",
-          // As if the person had allowed the worker tools in this terminal.
+          // The worker tools are not allowed here: the plugin lets them run while the session
+          // leads. Bash is, for the background steps.
           "--allowedTools",
-          "mcp__agentkib-bridge",
+          "Bash",
         ],
         workspace,
         environment,
@@ -329,7 +364,12 @@ describe.skipIf(process.platform !== "darwin" || process.env.AGENTKIB_CLAUDE_BRI
         tty.write("\r");
         // The plugin asks for the feature on its polls once the broker named it.
         await expect.poll(() => bridge.leadCapable(sessionId), wait).toBe(true);
-        orchestration.designate({ sessionId, deviceId: "agentkib-local-owner", workspaceId: "w1" });
+        orchestration.designate({
+          sessionId,
+          deviceId: "agentkib-local-owner",
+          workspaceId: "w1",
+          scope: { maxAutoTurns: 1 },
+        });
         bridge.leadChanged(sessionId);
 
         // The poll it wakes registers the tools; a turn typed in the terminal uses one.
@@ -345,6 +385,8 @@ describe.skipIf(process.platform !== "darwin" || process.env.AGENTKIB_CLAUDE_BRI
           "mcp__agentkib-bridge__worker_list",
         );
         await expect.poll(() => tty.text.includes("fixture-after-tool"), wait).toBe(true);
+        // That typed turn is heard before a report arrives, as it came first.
+        await expect.poll(() => spoken, wait).toBeGreaterThanOrEqual(1);
 
         // A worker's turn ends: the report reaches the terminal as a turn of its own.
         const opened = JSON.parse(
@@ -362,6 +404,25 @@ describe.skipIf(process.platform !== "darwin" || process.env.AGENTKIB_CLAUDE_BRI
         // Typed in the terminal again: the count of turns without the person restarts.
         tty.write("terminal-again\r");
         await expect.poll(() => orchestration.status(sessionId)?.autoTurns, wait).toBe(0);
+
+        // Background work wakes the CLI by itself. One such turn counts; the next is past the
+        // limit of one: it stops, delegation pauses and the terminal says why.
+        tty.write("LEAD-BACKGROUND\r");
+        await expect.poll(() => tty.text.includes("fixture-bg-started"), wait).toBe(true);
+        const slow = { timeout: 60_000, interval: 200 };
+        await expect
+          .poll(() => orchestration.status(sessionId)?.reason, slow)
+          .toBe("auto-turn-limit");
+        expect(orchestration.status(sessionId)).toMatchObject({ paused: true, autoTurns: 1 });
+        const flat = () => tty.text.replace(/\s+/g, "");
+        await expect.poll(() => flat().includes("automaticturnsreachedthelimit"), wait).toBe(true);
+        await expect.poll(() => bridge.live(sessionId, true).status, wait).toBe("idle");
+        // Typed in the terminal: delegation goes on, and the terminal hears it.
+        tty.write("terminal-resume\r");
+        await expect.poll(() => orchestration.status(sessionId)?.paused, wait).toBe(false);
+        await expect
+          .poll(() => flat().includes("resumedthisProjectAgent'sdelegation"), slow)
+          .toBe(true);
       } catch (error) {
         throw new Error(`${(error as Error).message}\n--- terminal ---\n${tty.text.slice(-4000)}`);
       } finally {

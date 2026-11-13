@@ -42,6 +42,23 @@ const AUTO_FINAL_ERRORS = ["bridge-auto-declined", "unsupported-native-identity"
 const LEAD_FEATURE = "lead-tools";
 // The engine takes one unmatched hook per event, so each tool AgentKib may give is served by a
 // hook of its own; a tool of another name is not registered.
+const LEAD_TOOL_PREFIX = "mcp__agentkib-bridge__";
+// Prompts no one typed (prompt.submit's origin, as the engine stamps it): background work's
+// notices, schedules, other sessions and plugins. Their turns count toward a Project Agent's
+// turns without the person; a prompt of a kind not listed is taken as the person's.
+const UNATTENDED_ORIGINS = new Set([
+  "task-notification",
+  "scheduled-trigger",
+  "peer",
+  "peer-send-message",
+  "projects-relay",
+  "channel",
+  "coordinator",
+  "observer",
+  "observer-activity",
+  "auto-continuation",
+  "plugin",
+]);
 const LEAD_TOOLS = [
   "worker_list",
   "worker_open",
@@ -248,8 +265,13 @@ export function initialState() {
     // The worker tools registered last; why registering them failed on this connection.
     leadToolsKey: null,
     leadUnavailable: null,
+    // Whether the session leads now, and why its delegation is paused (undefined: not heard yet).
+    leadActive: false,
+    leadPaused: undefined,
     // Reports put in the outbox, said to the Runtime on the next poll that succeeds.
     takenReports: new Set(),
+    // The texts of the last prompts no one typed, until their turn starts.
+    unattended: [],
   };
 }
 
@@ -306,7 +328,11 @@ function validLeadTool(tool) {
  * names and AgentKib refuses their calls), and reports, each queued as a message of its own.
  */
 async function applyLead($, state, lead) {
-  if (!lead || typeof lead !== "object") return;
+  if (!lead || typeof lead !== "object") {
+    state.leadActive = false;
+    state.leadPaused = undefined;
+    return;
+  }
   const tools = (Array.isArray(lead.tools) ? lead.tools : [])
     .slice(0, LEAD_TOOLS.length)
     .filter(validLeadTool);
@@ -331,6 +357,12 @@ async function applyLead($, state, lead) {
       return;
     }
   }
+  state.leadActive = tools.length > 0;
+  // The person in the terminal hears when delegation pauses and how it goes on, once a change.
+  const paused = typeof lead.paused === "string" ? lead.paused.slice(0, 64) : null;
+  if (paused !== (state.leadPaused ?? null) && (paused || state.leadPaused !== undefined))
+    await note($, leadPauseNote(paused));
+  state.leadPaused = paused;
   for (const report of Array.isArray(lead.reports) ? lead.reports : []) {
     if (
       typeof report?.id !== "string" ||
@@ -347,6 +379,46 @@ async function applyLead($, state, lead) {
     state.takenReports.add(report.id);
     state.dirty = true;
   }
+}
+
+const LEAD_PAUSES = {
+  "auto-turn-limit":
+    "AgentKib paused this Project Agent's delegation: its automatic turns reached the limit. Type a message here to continue.",
+  "restart-confirmation-required":
+    "AgentKib paused this Project Agent's delegation after it restarted. Type a message here to continue.",
+  "report-undelivered":
+    "AgentKib paused this Project Agent's delegation: it could not confirm a report reached this session. Resume it in AgentKib.",
+  "authorization-changed":
+    "AgentKib paused this Project Agent's delegation: the device that set it up no longer has the access it needs. Resume it in AgentKib.",
+};
+
+function leadPauseNote(reason) {
+  if (!reason) return "AgentKib resumed this Project Agent's delegation.";
+  return (
+    LEAD_PAUSES[reason] ?? "AgentKib paused this Project Agent's delegation. Resume it in AgentKib."
+  );
+}
+
+/**
+ * Whether a permission check of a worker tool may answer allow. Being made a Project Agent in
+ * AgentKib is the person's permission for them, as for a session AgentKib runs; so only the
+ * engine's default ask turns into allow, and a rule, hook, setting, another plugin or the
+ * organization's ceiling still decides. AgentKib checks the Project Agent's scope on every call.
+ */
+function leadToolAllowed(state, e, verdict) {
+  return (
+    state.leadActive &&
+    leadFeature(state) &&
+    typeof e.tool === "string" &&
+    e.tool.startsWith(LEAD_TOOL_PREFIX) &&
+    LEAD_TOOLS.includes(e.tool.slice(LEAD_TOOL_PREFIX.length)) &&
+    verdict?.decision === "ask" &&
+    verdict.rule === undefined &&
+    verdict.hook === undefined &&
+    verdict.setting === undefined &&
+    verdict.plugin === undefined &&
+    (e.ceiling === undefined || e.ceiling === "allow")
+  );
 }
 
 function lease(state) {
@@ -1341,6 +1413,8 @@ async function adopt($, state, observed, response) {
   state.connection = connectionFrom(response);
   state.leadUnavailable = null;
   state.leadToolsKey = null;
+  state.leadActive = false;
+  state.leadPaused = undefined;
   state.credentialPath = response.credentialPath;
   state.closed = false;
   state.sendDisabled = false;
@@ -1790,6 +1864,10 @@ export function register(on) {
       pending.observed = true;
     } else {
       if (pending) pending.competing = true;
+      if (UNATTENDED_ORIGINS.has(e.origin?.kind)) {
+        state.unattended.push(e.text);
+        if (state.unattended.length > 8) state.unattended.shift();
+      }
       // A real terminal prompt bypasses background backoff without waiting on
       // an offline Runtime or changing the native prompt's execution path.
       if (state.needsReconnect) void pump($, state, true);
@@ -1837,6 +1915,8 @@ export function register(on) {
     const pending = state.pendingSend;
     const fromAgentKib = pending?.observed && !pending.competing && pending.text === e.text;
     if (fromAgentKib) pending.turnId = e.turnId;
+    const unattendedAt = e.text ? state.unattended.lastIndexOf(e.text) : -1;
+    if (unattendedAt >= 0) state.unattended.splice(unattendedAt, 1);
     // Steers waiting for the next turn join whichever turn starts, the terminal's too.
     for (const item of state.outbox)
       if (item.kind === "steer" && item.status === "pending" && item.turnId === null)
@@ -1845,9 +1925,12 @@ export function register(on) {
       type: "turn-start",
       turnId: e.turnId,
       revision: state.revision,
-      // Who typed it, for a Project Agent's count of turns without the person. A turn without
-      // text (a continuation, background work) is neither.
-      ...(leadFeature(state) && e.text ? { origin: fromAgentKib ? "agentkib" : "terminal" } : {}),
+      // Who started it, for a Project Agent's count of turns without the person: the person
+      // typing, or AgentKib. A turn no one typed (a continuation, background work's notice, a
+      // schedule) has neither.
+      ...(leadFeature(state) && (fromAgentKib || (e.text && unattendedAt < 0))
+        ? { origin: fromAgentKib ? "agentkib" : "terminal" }
+        : {}),
     });
     state.dirty = true;
     if (state.needsReconnect) void pump($, state, true);
@@ -1960,8 +2043,9 @@ export function register(on) {
     if (next.called) throw new Error(next.error.message);
     return next(e);
   });
-  // A Project Agent's worker tools: AgentKib runs each call for this session and answers it. The
-  // person's own permission rules decide whether it may run, as for any tool.
+  // A Project Agent's worker tools: AgentKib runs each call for this session and answers it. They
+  // run without asking while the session leads, unless the person's rules say otherwise
+  // (leadToolAllowed).
   on("tool.call", { tool: "mcp__agentkib-bridge__worker_list" }, ($, e) =>
     leadCall($, state, "worker_list", e),
   );
@@ -1990,7 +2074,9 @@ export function register(on) {
   // observable here, so the wait is the unconfirmed kind; it ends with the tool, its progress hint
   // or the turn, like the classic one. The verdict passes on unchanged.
   on("tool.check", async ($, e, next) => {
-    const result = await next(e);
+    let result = await next(e);
+    if (leadToolAllowed(state, e, result))
+      result = { decision: "allow", reason: "This session is a Project Agent in AgentKib." };
     const tool =
       e.agentId === undefined &&
       result?.decision === "ask" &&

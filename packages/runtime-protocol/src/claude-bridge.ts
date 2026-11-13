@@ -40,8 +40,9 @@ export const CLAUDE_BRIDGE_PATHS = {
  * (`features`). A plugin uses a feature only when the Runtime named it.
  * - `lead-tools`: the session may be a Project Agent (docs/agents/project-agent.md). The plugin
  *   says `leadTools: true` in its command polls when it can register tools; the poll reply then
- *   carries `lead` (its worker tools and the reports to queue), tool calls go to `leadCall`, and
- *   `turn-start` events say whether the terminal or AgentKib started the turn (`origin`).
+ *   carries `lead` (its worker tools, the reports to queue and why delegation is paused), tool
+ *   calls go to `leadCall`, and `turn-start` events say whether the terminal or AgentKib started
+ *   the turn (`origin`; none for a turn no one typed, which counts as an automatic turn).
  */
 export const CLAUDE_BRIDGE_FEATURES = ["lead-tools"] as const;
 

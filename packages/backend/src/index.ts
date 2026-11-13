@@ -743,6 +743,19 @@ export class TypeScriptBackend {
             userSpoke: (sessionId) => {
               if (this.#orchestration?.status(sessionId)) this.#orchestration.userSpoke(sessionId);
             },
+            // Its CLI's own turns count as a managed one's do; past the limit the turn stops, in
+            // the name of the device that set the Project Agent up.
+            selfTurn: (sessionId) => {
+              const lead = this.#orchestration?.status(sessionId);
+              if (!lead) return null;
+              return this.#orchestration!.leadSelfTurn(sessionId)
+                ? null
+                : { stopAs: lead.deviceId };
+            },
+            paused: (sessionId) => {
+              const lead = this.#orchestration?.status(sessionId);
+              return lead?.paused ? (lead.reason ?? "paused") : null;
+            },
           },
           target: (id, nativeId) => claudeOwner.nativeBridgeTarget(id, nativeId),
           discoveryFile: path.join(
@@ -2215,9 +2228,8 @@ export class TypeScriptBackend {
       default:
         throw new Error("unsupported-lead-operation");
     }
-    // A terminal that leads, or no longer does, hears of it on its next poll.
-    if (params.operation === "lead-designate" || params.operation === "lead-release")
-      this.#claudeBridge?.leadChanged(sessionId);
+    // A terminal that leads, stops leading, pauses or resumes hears of it at once.
+    this.#claudeBridge?.leadChanged(sessionId);
     return {
       lead: await orchestration.overview(sessionId),
       // Whether it could be one: a Claude Code session AgentKib runs.

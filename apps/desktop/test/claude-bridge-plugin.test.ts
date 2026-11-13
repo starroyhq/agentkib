@@ -109,6 +109,8 @@ async function fixture(
     version?: string;
     credentialVersion?: string;
     httpInterceptor?: (url: string) => Promise<void>;
+    /** `$.clock.sleep`; by default a short real wait. */
+    sleep?: (ms: number) => Promise<void>;
     storeGetInterceptor?: (key: string) => Promise<void>;
     configure?: (api: Value) => void;
   } = {},
@@ -174,7 +176,12 @@ async function fixture(
               pluginVersion: "0.4.0",
             }),
     },
-    clock: { every: (_ms: number, callback: () => Promise<void>) => timers.push(callback) },
+    clock: {
+      every: (_ms: number, callback: () => Promise<void>) => timers.push(callback),
+      sleep: (ms: number) =>
+        options.sleep?.(ms) ??
+        new Promise<void>((resolve) => setTimeout(resolve, Math.min(ms, 20))),
+    },
     http: {
       fetch: async (url: string, init: Value) => {
         if (init.method === "GET") {
@@ -535,6 +542,42 @@ describe("Claude Code native session plugin as a Project Agent", () => {
 });
 
 describe("Claude Code native session plugin", () => {
+  // 2.1.301 applies a changed hooks module as a turn ends; what the old module did not send is
+  // lost with it, and AgentKib could not confirm the message that started the turn.
+  it("sends a turn's end before its hook returns, after a send already under way", async () => {
+    let release: (() => void) | undefined;
+    let hold = false;
+    const f = await fixture({
+      httpInterceptor: async (url) => {
+        if (url.endsWith("/events") && hold) {
+          hold = false;
+          await new Promise<void>((resolve) => (release = resolve));
+        }
+      },
+      // AgentKib answers late but within the bound.
+      sleep: () => new Promise<void>(() => {}),
+    });
+    const turnId = randomUUID();
+    await f.run("turn.start", { text: "terminal", turnId });
+    hold = true;
+    const ticking = f.flush();
+    await expect.poll(() => release).toBeDefined();
+    let ended = false;
+    const ending = Promise.resolve(f.run("turn.complete", { turnId, answer: "done" })).then(() => {
+      ended = true;
+    });
+    await new Promise((resolve) => setImmediate(resolve));
+    expect(ended).toBe(false);
+    release!();
+    await ticking;
+    await ending;
+    expect(
+      f
+        .events()
+        .filter((entry) => entry.event.type === "turn-complete" && entry.event.turnId === turnId),
+    ).toHaveLength(1);
+  });
+
   it("explains an expired connection code and the next step in the terminal", async () => {
     const f = await fixture({ connect: false });
     f.nextHttpResponse("/v1/pair", { status: 409, body: { error: "expired-bridge-challenge" } });
@@ -1973,7 +2016,7 @@ describe("Claude Code native session plugin", () => {
     const turnId = randomUUID();
     await f.run("turn.start", { text: "terminal", turnId });
     await f.tick();
-    await f.run("turn.complete", { turnId, answer: "done", isAborted: true });
+    // The end goes out at once and is lost on the way.
     let fail = true;
     f.setHttpInterceptor(async (url) => {
       if (url.endsWith("/events") && fail) {
@@ -1981,6 +2024,7 @@ describe("Claude Code native session plugin", () => {
         throw new Error("lost event");
       }
     });
+    await f.run("turn.complete", { turnId, answer: "done", isAborted: true });
     await f.tick();
     await f.tick();
     const completions = f.calls

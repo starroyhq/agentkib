@@ -88,7 +88,10 @@ async function fixture(
         return value;
       },
     },
-    clock: { every: () => undefined },
+    clock: {
+      every: () => undefined,
+      sleep: (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, Math.min(ms, 20))),
+    },
     http: {
       fetch: async (url: string, init: Value) => {
         if (init.method === "GET") {

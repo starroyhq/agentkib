@@ -43,6 +43,8 @@ const LEAD_FEATURE = "lead-tools";
 // The engine takes one unmatched hook per event, so each tool AgentKib may give is served by a
 // hook of its own; a tool of another name is not registered.
 const LEAD_TOOL_PREFIX = "mcp__agentkib-bridge__";
+// How long a turn's end waits to reach AgentKib before the hook returns (deliverNow).
+const DELIVER_NOW_MS = 1_000;
 // Prompts no one typed (prompt.submit's origin, as the engine stamps it): background work's
 // notices, schedules, other sessions and plugins. Their turns count toward a Project Agent's
 // turns without the person; a prompt of a kind not listed is taken as the person's.
@@ -908,6 +910,8 @@ async function flush($, state) {
   )
     return;
   state.flushing = true;
+  let done;
+  state.flushDone = new Promise((resolve) => (done = resolve));
   try {
     // Terminal evidence survives delta overflow and reconnect until acknowledged.
     for (const event of state.completions.values()) {
@@ -958,7 +962,25 @@ async function flush($, state) {
     state.dirty = true;
   } finally {
     state.flushing = false;
+    done();
   }
+}
+
+/**
+ * Sends what is recorded now rather than on the next tick, for a turn's end: 2.1.301 applies a
+ * changed hooks module as a turn ends, and what this module has not sent goes with it, the end
+ * AgentKib needs to confirm a message it sent included. A flush already under way took its batch
+ * before this event, so it is waited for first. Bounded: a slow AgentKib never holds a turn's end;
+ * the next tick sends it then.
+ */
+async function deliverNow($, state) {
+  const sent = (async () => {
+    for (let round = 0; round < 2 && state.events.length; round++) {
+      if (state.flushing) await state.flushDone;
+      else await flush($, state);
+    }
+  })();
+  await Promise.race([sent, $.clock.sleep(DELIVER_NOW_MS)]);
 }
 
 /** The lease is verified and may carry AgentKib's messages into this terminal. */
@@ -2006,6 +2028,7 @@ export function register(on) {
       revision: state.revision,
     });
     state.dirty = true;
+    await deliverNow($, state).catch(() => {});
     // A new session's transcript exists after its first turn, so AgentKib can index it now.
     if (!state.connection && !state.needsReconnect) void autoConnect($, state).catch(() => {});
     return next(e);

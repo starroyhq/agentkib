@@ -278,7 +278,10 @@ describe.skipIf(process.platform === "win32")("native Claude borrowed-host broke
           store.set(key, value);
         },
       },
-      clock: { every: (_ms: number, callback: () => Promise<void>) => timers.push(callback) },
+      clock: {
+        every: (_ms: number, callback: () => Promise<void>) => timers.push(callback),
+        sleep: (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms)),
+      },
       http: {
         fetch: async (url: string, init: any) => {
           const response = await f.http(

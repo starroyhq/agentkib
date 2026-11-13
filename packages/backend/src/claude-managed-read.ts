@@ -23,7 +23,6 @@ import { claudeResumeCommand } from "./claude-resume-command";
 import { conversationReadKey, ReadStateLedger } from "./read-state-ledger";
 import type { ReadStateTarget } from "./conversation-read-state";
 import { ClaudeSessionOwnerProbe, type ClaudeOwnerObservationShare } from "./claude-session-owner";
-import { resolveCommand } from "./command-resolution";
 import { validHistoryControl } from "./history-control-schema";
 import type { Commands } from "./commands";
 import type { ClaudeControlMetadataShare, SessionReaders } from "./session-readers";
@@ -33,8 +32,9 @@ import { restrictRemotePath } from "./remote-tls";
 import { acquirePortableFileLease } from "./managed-session-lock";
 import {
   CLAUDE_BACKGROUND_TASKS_MINIMUM,
-  readClaudeVersion,
+  readClaudeInstallation,
   supportsClaudeVersion,
+  type ClaudeInstallation,
 } from "./claude-version";
 import {
   CLAUDE_COMMAND_REFUSALS,
@@ -215,7 +215,8 @@ export type ClaudeContinuationOptions = {
 
 /** Manages Claude session ownership, CLI runners, and read-side state. */
 export class ClaudeManagedReadOwner {
-  #version?: { at: number; value: string | null };
+  /** The installation managed sessions run; `value` is its version line when it qualifies. */
+  #version?: { at: number; value: string | null; installation: ClaudeInstallation };
   #newSessionCatalog?: { key: string; at: number; snapshot: ClaudeRunnerOptionsSnapshot };
   #catalogProbe?: {
     key: string;
@@ -776,9 +777,7 @@ export class ClaudeManagedReadOwner {
       );
       if (content === undefined) throw new Error("missing-input");
       validateClaudeContent(content);
-      if ((await this.#installationVersion()) === null) throw new Error("claude-cli-unavailable");
-      executable = resolveCommand("claude", this.environment);
-      if (!executable) throw new Error("claude-cli-unavailable");
+      executable = await this.#installationExecutable();
       if (!existingRunner?.hasWorker) {
         // Creating/adopting an idle session already retains this runtime's lease.
         // A second file-lock acquisition would reject our own first send.
@@ -1475,13 +1474,13 @@ export class ClaudeManagedReadOwner {
           throw new Error("unverified-session-identity");
         await this.#refreshIdleHistory(record);
       }
-      if ((await this.#installationVersion()) === null) throw new Error("claude-cli-unavailable");
+      if ((await this.#installationVersion()) === null)
+        throw new Error(this.#installationMissing());
       await this.#reserveRunner(record.id);
       runner = this.#newRunner(record, options, settings);
     }
     try {
-      const executable = resolveCommand("claude", this.environment);
-      if (!executable) throw new Error("claude-cli-unavailable");
+      const executable = await this.#installationExecutable();
       await runner.prepare(executable);
     } finally {
       this.#starting.delete(record.id);
@@ -2517,7 +2516,7 @@ export class ClaudeManagedReadOwner {
     )
       throw new Error("invalid-managed-create");
     const installation = await this.#installationVersion();
-    if (installation === null) throw new Error("claude-cli-unavailable");
+    if (installation === null) throw new Error(this.#installationMissing());
     // Before the request is claimed or dispatched: nothing may be left half-recorded.
     this.#home();
     const selectedSettings = this.#settings(value);
@@ -2700,7 +2699,7 @@ export class ClaudeManagedReadOwner {
       Object.keys(value).some((key) => !allowed.has(key))
     )
       throw new Error("invalid-managed-adopt");
-    if ((await this.#installationVersion()) === null) throw new Error("claude-cli-unavailable");
+    if ((await this.#installationVersion()) === null) throw new Error(this.#installationMissing());
     // Before the request is claimed or dispatched: nothing may be left half-recorded.
     this.#home();
     const logical = { ...value };
@@ -3034,7 +3033,7 @@ export class ClaudeManagedReadOwner {
       const unconfirmed = readUnknownManagedCommands(this.dataDir, id);
       if (unconfirmed.some((command) => command.evidence?.operation !== "delete"))
         return reject("control-outcome-unconfirmed");
-      if ((await this.#installationVersion()) === null) return reject("claude-cli-unavailable");
+      if ((await this.#installationVersion()) === null) return reject(this.#installationMissing());
       const live = await this.#live(id, true);
       if (live.revision !== value.expectedRevision) return reject("stale-Claude-revision");
       const runner = this.#runners.get(id);
@@ -3313,7 +3312,7 @@ export class ClaudeManagedReadOwner {
     this.#starting.add(id);
     const starting = runner ? this.#streamLive(id, runner.snapshot(), record) : null;
     if (starting) this.#publishConversationEvent?.(id, "state", starting, starting);
-    if ((await this.#installationVersion()) === null) throw new Error("claude-cli-unavailable");
+    if ((await this.#installationVersion()) === null) throw new Error(this.#installationMissing());
     await this.#ensureNoExternalOwner(record.nativeId);
     if (this.#shuttingDown || this.#runners.get(id) !== runner)
       throw new Error("session-unavailable");
@@ -3614,8 +3613,16 @@ export class ClaudeManagedReadOwner {
     if (process.platform !== "darwin" || !supportsClaudeManagedRunner())
       return { ...status, available: false, reason: "platform-unsupported", cliVersion: null };
     const version = await this.#installationVersion();
-    if (!version)
-      return { ...status, available: false, reason: "claude-cli-unavailable", cliVersion: null };
+    if (!version) {
+      const old = this.#installationMissing() === "claude-cli-too-old";
+      const found = this.#version?.installation.version;
+      return {
+        ...status,
+        available: false,
+        reason: old ? "claude-cli-too-old" : "claude-cli-unavailable",
+        cliVersion: old && found ? found.replace(/ \(Claude Code\)$/, "") : null,
+      };
+    }
     const cliVersion = version.replace(/ \(Claude Code\)$/, "");
     if (!supportsClaudeVersion(version, CLAUDE_BACKGROUND_TASKS_MINIMUM))
       return { ...status, available: false, reason: "claude-cli-too-old", cliVersion };
@@ -3672,7 +3679,11 @@ export class ClaudeManagedReadOwner {
     if (!supportsClaudeManagedRunner())
       return { status: "unsupported", executionLocation: null, reason: "platform-unsupported" };
     if (this.#version && this.#version.value === null)
-      return { status: "unsupported", executionLocation: null, reason: "claude-cli-unavailable" };
+      return {
+        status: "unsupported",
+        executionLocation: null,
+        reason: this.#installationMissing(),
+      };
     return undefined;
   }
 
@@ -3940,15 +3951,28 @@ export class ClaudeManagedReadOwner {
 
   async #installationVersion(): Promise<string | null> {
     if (this.#version && Date.now() - this.#version.at < 30_000) return this.#version.value;
-    const version = await readClaudeVersion(this.commands, this.environment);
-    const value = version !== null && supportsClaudeVersion(version) ? version : null;
-    this.#version = { at: Date.now(), value };
+    const installation = await readClaudeInstallation(this.commands, this.environment);
+    const value = installation.reason === null ? installation.version : null;
+    this.#version = { at: Date.now(), value, installation };
     return value;
   }
 
+  /** The Claude Code CLI managed sessions run, or why there is none. */
+  async #installationExecutable(): Promise<string> {
+    if ((await this.#installationVersion()) === null) throw new Error(this.#installationMissing());
+    const executable = this.#version?.installation.executable;
+    if (!executable) throw new Error("claude-cli-unavailable");
+    return executable;
+  }
+
+  /** Why no installation qualifies: none found, or only one that is too old. */
+  #installationMissing(): "claude-cli-unavailable" | "claude-cli-too-old" {
+    return this.#version?.installation.reason ?? "claude-cli-unavailable";
+  }
+
   async #readNewSessionCatalog(workspace: string, cliVersion: string, revalidate = false) {
-    // Resolve the installed executable in the host environment, independently of the project cwd.
-    const executable = resolveCommand("claude", this.environment);
+    // The installation the version check chose, independently of the project cwd.
+    const executable = this.#version?.value ? this.#version.installation.executable : null;
     if (!executable) return;
     const key = JSON.stringify([workspace, executable, cliVersion, this.#home()]);
     // Overlapping requests share the initialize, including during rapid workspace changes.
@@ -4067,7 +4091,7 @@ export class ClaudeManagedReadOwner {
         : !supportsClaudeManagedRunner()
           ? "platform-unsupported"
           : !version
-            ? "claude-cli-unavailable"
+            ? this.#installationMissing()
             : await this.#ownershipReason(id, target.nativeId, null);
       if (this.#load(id)) {
         this.#forgetOwnership(id);
@@ -4106,7 +4130,7 @@ export class ClaudeManagedReadOwner {
     const ownershipReason = !supportsClaudeManagedRunner()
       ? "platform-unsupported"
       : !version
-        ? "claude-cli-unavailable"
+        ? this.#installationMissing()
         : await this.#ownershipReason(id, record.nativeId, ownedPid);
     const current = this.#load(id);
     if (!current) throw new Error("session-unavailable");

@@ -84,6 +84,16 @@ describe.skipIf(!["darwin", "linux"].includes(process.platform))(
             cliVersion: "2.1.298",
           },
         );
+        // Below what managed sessions run at all: still "too old", not "not found".
+        await expect(owner("2.1.200 (Claude Code)", true).backgroundTasksStatus()).resolves.toEqual(
+          {
+            enabled: true,
+            available: false,
+            reason: "claude-cli-too-old",
+            minimumVersion: "2.1.299",
+            cliVersion: "2.1.200",
+          },
+        );
         await expect(owner(null, true).backgroundTasksStatus()).resolves.toEqual({
           enabled: true,
           available: false,

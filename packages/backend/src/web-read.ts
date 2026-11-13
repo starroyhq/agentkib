@@ -23,14 +23,18 @@ import { within } from "./files";
 import { catalogCheckouts } from "./git-checkouts";
 import { conversationReadKey, ReadStateLedger } from "./read-state-ledger";
 import { codexTurnMeta, isCodexTurnEndEvent } from "./codex-turn-end";
-import { resolveCommand } from "./command-resolution";
+import { codexExecutable } from "./codex-executable";
 import {
   CodexAppServerReader,
   CodexAppServerSession,
   codexThreadMissing,
   codexWriterBusy,
 } from "./codex-app-server";
-import { CodexRuntimePreflight } from "./codex-runtime-preflight";
+import {
+  CodexRuntimePreflight,
+  codexReleaseSupportsWriterLock,
+  codexServerVersion,
+} from "./codex-runtime-preflight";
 import { CodexCatalogCache } from "./codex-catalog-cache";
 import { CodexExternalTurns, type ExternalTurn } from "./codex-external-turns";
 import { codexResumeCommand } from "./codex-resume-command";
@@ -565,6 +569,11 @@ export class WebReadRequests {
 
   managedOptions() {
     return this.#runOperation(() => this.#managedOptions());
+  }
+
+  /** A Codex CLI for reads: the one the last version check chose, else the first found. */
+  #codexReader(): string | null {
+    return this.#preflight.preferred() ?? codexExecutable(this.environment);
   }
 
   async #managedOptions() {
@@ -1271,7 +1280,7 @@ export class WebReadRequests {
         throw new Error("session-unavailable");
       if (pathIdentity(workspace) !== pathIdentity(canonicalize(latest.workspace)))
         throw new Error("session-workspace-mismatch");
-      const executable = resolveCommand("codex", this.environment);
+      const executable = this.#codexReader();
       if (!executable) throw new Error("codex-cli-unavailable");
       const home = this.#assertManagedHome(latest);
       this.#assertOpen();
@@ -1362,7 +1371,7 @@ export class WebReadRequests {
       );
       if (!latest || !latest.archived || latest.native_id !== record.native_id)
         throw new Error("session-unavailable");
-      const executable = resolveCommand("codex", this.environment);
+      const executable = this.#codexReader();
       if (!executable) throw new Error("codex-cli-unavailable");
       this.#assertOpen();
       session = await CodexAppServerSession.start(
@@ -1520,9 +1529,11 @@ export class WebReadRequests {
     const unconfirmed = readUnknownManagedCommands(this.dataDir, source.id);
     if (unconfirmed.some((command) => command.evidence?.operation !== "delete"))
       return reject("control-outcome-unconfirmed");
+    let writer: string | undefined;
     if (nativeId) {
       const checked = await this.#preflight.check();
       if (checked.reason) return reject(checked.reason);
+      writer = checked.executable;
     }
     if (this.#startingRunners.has(source.id)) return reject("session-busy");
     const runner = this.#managedRunners.get(source.id);
@@ -1598,7 +1609,7 @@ export class WebReadRequests {
       }
       release = acquireManagedSessionLease(this.dataDir, source.id);
       if (nativeId) {
-        const executable = resolveCommand("codex", this.environment);
+        const executable = writer;
         if (!executable) throw new Error("codex-cli-unavailable");
         this.#assertOpen();
         session = await CodexAppServerSession.start(
@@ -2375,7 +2386,7 @@ export class WebReadRequests {
     const executionCwd = this.#managedCwd(
       record ?? (await this.#inactiveRecord(request.sessionId)),
     );
-    const executable = resolveCommand("codex", this.environment);
+    const executable = this.#codexReader();
     if (!executable) throw new Error("codex-cli-unavailable");
     const readRevision = this.#managedRunners.get(request.sessionId)?.state.revision;
     const response = await this.#codex.request(executable, executionCwd, home, "thread/read", {
@@ -3292,7 +3303,7 @@ export class WebReadRequests {
     );
     let thread: Record<string, unknown> | null = null;
     if (needsHistory) {
-      const executable = resolveCommand("codex", this.environment);
+      const executable = this.#codexReader();
       if (!executable) throw new Error("codex-cli-unavailable");
       const response = await this.#codex.request(
         executable,
@@ -4048,6 +4059,11 @@ export class WebReadRequests {
         captureRunner,
       );
       captureRunner(session);
+      // The version check above may have tried a CLI whose `--version` it could not read;
+      // the release the server reports settles it before the first turn.
+      const served = codexServerVersion(session.userAgent);
+      if (served && !codexReleaseSupportsWriterLock(served))
+        throw new Error("codex-cli-version-too-old");
       const runner = startingRunner!;
       const bridge = runner.bridge;
       this.#assertOpen();
@@ -5820,7 +5836,7 @@ export class WebReadRequests {
     }
     if (!nativeId) return { available: false, reason: "native-session-unverified" };
     const executionCwd = this.#managedCwd(managed ?? (await this.#inactiveRecord(sessionId)));
-    const executable = resolveCommand("codex", this.environment);
+    const executable = this.#codexReader();
     if (!executable) throw new Error("codex-cli-unavailable");
     let codexHome: string;
     try {
@@ -5861,7 +5877,7 @@ export class WebReadRequests {
       throw new Error("session-workspace-mismatch");
     const codexHome = this.#assertManagedHome(managed);
     const executionCwd = this.#managedCwd(managed);
-    const executable = resolveCommand("codex", this.environment);
+    const executable = this.#codexReader();
     if (!executable) throw new Error("codex-cli-unavailable");
     const result = await this.#codex.request(executable, executionCwd, codexHome, "skills/list", {
       cwds: [executionCwd],
@@ -5954,7 +5970,7 @@ export class WebReadRequests {
 
     let goal = storedGoal;
     let reason: string | null = null;
-    const executable = resolveCommand("codex", this.environment);
+    const executable = this.#codexReader();
     if (!executable) {
       reason = "recovery-required";
     } else {

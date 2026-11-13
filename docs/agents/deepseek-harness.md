@@ -111,7 +111,7 @@ CLI 接入（包括曾提议的 `agentkib bridge --stdio` 长期转发器）不�
 - 插件包可随 AgentKib 提供本地 tarball，由用户执行 `dsh plugin --profile <name> add <tarball>`，不要求发布到 npm。
 - 插件需安装到用户实际运行的 profile。仅安装到 sdk profile 不会自动进入 web 或 desktop profile；DSH Desktop 的保留 profile 需遵循其自身插件管理入口。
 - 通过 `dsh plugin add` 安装或更新后，运行中的 profile 保留启动时的组合包集合，须重启才生效；DSH 内置插件管理器在启用 HMR 时可即时生效，未启用时需重启（更新已运行的组合包时返回 `restart-required`）。因此“连接正在运行的会话”只适用于插件生效之后的 DSH 进程，首次接入和升级说明需包含重启。
-- `engines.dsh` 收窄到已验收的版本范围，沿用 Claude 原会话连接的已验证版本清单。未验证的版本同样可以连接，不常驻显示未验证提示；DSH 缺少的功能按插件上报的服务关闭，在用到时说明原因（例如这个版本的 DSH 不能从这里接收图片）。DSH 处于 developer preview，升级后插件可能被拒绝加载，连接说明需覆盖这种情况。
+- `engines.dsh` 只设下限 `>=0.2.1-rc.5`，不设上限（插件 0.7.1 起；之前是 `<0.3.0`）：DSH 在范围外会停用插件，上限会让 DSH 一升级 AgentKib 就连不上。已验证版本清单沿用 Claude 原会话连接的做法，未验证的版本同样可以连接，不常驻显示未验证提示；DSH 缺少或改变的功能按插件上报的服务关闭，在用到时说明原因（例如这个版本的 DSH 不能从这里接收图片）。DSH 处于 developer preview，以后的版本仍可能因别的原因拒绝加载插件（托管启动时按 stderr 识别，见下文“版本”），连接说明需覆盖这种情况。已装 0.7.0 及更早插件的 DSH 仍按旧上限，到 0.3.0 时需要重新安装 AgentKib 随附的插件。
 
 插件与 Host 的版本兼容（2026-11-09）：
 
@@ -389,7 +389,7 @@ DSH 的审批和问答经 `approval/request`、`user-questions/request` waterfal
   - 叠加 Desktop 的设置：设置界面只写当前 profile 的 patch，web profile 读不到用户在 Desktop 里改的默认模型与 provider；实测不叠加时 web profile 的默认模型不在它自己的模型目录里。patch 指向不存在的条目时 DSH 只记警告。密钥与 DeepSeek 账号登录在 DSH home 的 `.credentials.yaml`，所有 profile 共用。
   - AgentKib 叠加层写在 `<数据目录>/dsh-bridge/managed-overlay.yml`（0600）：禁用 profile 里可能装着的 `agentkib-dsh-bridge`，按绝对路径插入 `agentkib-dsh-bridge-managed`，配置 `managed.home` 为这个 AgentKib 的 home。
   - 环境：用户的环境去掉 `AGENTKIB_*` 与 `ELECTRON_*`，DSH 会把环境交给它运行的工具。
-- 版本：启动前用 `dsh --version` 对照插件的 `engines.dsh`（`dshBridgeLaunchable`，与 DSH 一样把预发布版本按先后比较）；不在范围内就不启动，原因为 `dsh-version-unsupported`。DSH 禁用插件时 stderr 写 `disabling profile plugin row "agentkib-dsh-bridge-managed"`，进程退出时据此报同一原因。stdout 里带 token 的网页地址不读取、不记录。
+- 版本：启动前用 `dsh --version` 对照插件的 `engines.dsh`（`dshBridgeLaunchable`，与 DSH 一样把预发布版本按先后比较）；低于最低版本就不启动，原因为 `dsh-version-unsupported`，更新的版本照常启动；读不出版本时也照常启动，由 DSH 自己核对范围。DSH 禁用插件时 stderr 写 `disabling profile plugin row "agentkib-dsh-bridge-managed"`，进程退出时据此报同一原因。stdout 里带 token 的网页地址不读取、不记录。
 
 **插件托管模式**（只在 AgentKib 启动的 DSH 里）
 

@@ -6,11 +6,12 @@
 // changing the protocol are in docs/agents/deepseek-harness.md.
 export const DSH_BRIDGE_COMPATIBILITY = Object.freeze({
   protocol: 1,
-  pluginVersion: "0.7.0",
+  pluginVersion: "0.7.1",
   minimumPluginVersion: "0.5.0",
+  // `engines.dsh` in package.json is `>=` this version, with no upper bound: DSH turns a plugin
+  // off outside its range, so a cap would cut AgentKib off the day DSH moves on. What a newer
+  // DSH lacks or changes is found from the services the plugin reports, as within a release.
   minimumDshVersion: "0.2.1-rc.5",
-  // The upper bound of `engines.dsh` in package.json: from this version on DSH turns the plugin off.
-  dshVersionBelow: "0.3.0",
   verifiedDshVersions: Object.freeze(["0.2.1-rc.5"]),
 });
 
@@ -49,14 +50,11 @@ export function dshBridgePluginCompatibility(version) {
 
 /**
  * Whether AgentKib may start this DSH with the plugin. DSH runs a plugin only inside its
- * `engines.dsh` range and otherwise starts without it, so a start outside the range is pointless.
+ * `engines.dsh` range and otherwise starts without it, so an older DSH is not started.
  */
 export function dshBridgeLaunchable(version) {
   if (typeof version !== "string" || !VERSION.test(version)) return false;
-  return (
-    compare(version, DSH_BRIDGE_COMPATIBILITY.minimumDshVersion) >= 0 &&
-    compare(version, DSH_BRIDGE_COMPATIBILITY.dshVersionBelow) < 0
-  );
+  return compare(version, DSH_BRIDGE_COMPATIBILITY.minimumDshVersion) >= 0;
 }
 
 /**

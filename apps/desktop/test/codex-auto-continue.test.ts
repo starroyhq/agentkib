@@ -184,12 +184,14 @@ function fixture(
   };
   let queueSupported = true;
   let exitOn: string | undefined;
+  let serverUserAgent: string | null = null;
   let deleteFailure: unknown;
   const deletes: Array<{ server: number; othersOpen: number }> = [];
   const servers: OfflineServer[] = [];
   class OfflineServer extends EventEmitter {
     connected = true;
     closed = false;
+    userAgent = serverUserAgent;
     closeFailure?: Error;
     async request(method: string, params: unknown, dispatch?: () => void): Promise<unknown> {
       dispatch?.();
@@ -430,6 +432,9 @@ function fixture(
     },
     setFailure: (error: unknown) => {
       nativeFailure = error;
+    },
+    setServerUserAgent: (value: string | null) => {
+      serverUserAgent = value;
     },
     setTurnFailure: (error: unknown) => {
       turnFailure = error;
@@ -2359,6 +2364,21 @@ describe("Codex automatic CLI continuation", () => {
     await expect(
       f.web.request({ operation: "events", sessionId: f.summary.id, limit: 1, cursor: "42" }),
     ).rejects.toThrow("TRANSCRIPT_CURSOR_STALE");
+  });
+
+  it("stops before the first turn when the started Codex reports a release without the writer lock", async () => {
+    const f = fixture(true);
+    // `--version` named nothing readable, so the check let this CLI through.
+    f.setServerUserAgent("agentkib/0.146.0 (Mac OS 26.0.0; arm64) fixture");
+    expect(await f.send()).toMatchObject({
+      accepted: false,
+      controlOutcome: "not-dispatched",
+      reason: "codex-cli-version-too-old",
+    });
+    expect(f.methods).not.toContain("turn/start");
+    expect(f.servers.every((server) => server.closed || !server.connected)).toBe(true);
+    f.setServerUserAgent("agentkib/0.167.0-alpha.4.1 (Mac OS 26.0.0; arm64) fixture");
+    expect(await f.send()).toMatchObject({ accepted: true });
   });
 
   it("keeps native writer conflicts authoritative for compressed history", async () => {

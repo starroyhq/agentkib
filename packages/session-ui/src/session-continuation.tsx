@@ -40,6 +40,7 @@ export type SessionContinuationCopy = {
   ownerOpenedElsewhere: string;
   claudeWindowsUnsupported: string;
   codexVersionTooOld: string;
+  claudeVersionTooOld: string;
   codexConnected: string;
   /** Codex: the Codex app holds the thread; sending asks it to take the thread. */
   codexHandoff: string;
@@ -94,6 +95,7 @@ const continuationCopy: Record<string, SessionContinuationCopy> = {
     ownerOpenedElsewhere: "你在 Claude Code 里打开了这条会话，AgentKib 已停止，避免两边同时写入",
     claudeWindowsUnsupported: "Windows 上暂不支持在这里继续 Claude Code 会话",
     codexVersionTooOld: "Codex 版本过低，升级后可以在这里继续",
+    claudeVersionTooOld: "Claude Code 版本过低，升级后可以在这里继续",
     codexConnected: "在 Codex 中运行 · 已连接",
     codexHandoff: "在 Codex 中打开 · 发送时连接",
     codexHandleThere: "这项请求请在 Codex 中处理",
@@ -147,6 +149,7 @@ const continuationCopy: Record<string, SessionContinuationCopy> = {
     ownerOpenedElsewhere: "你在 Claude Code 裡開啟了這段對話，AgentKib 已停止，避免兩邊同時寫入",
     claudeWindowsUnsupported: "Windows 上暫不支援在這裡繼續 Claude Code 對話",
     codexVersionTooOld: "Codex 版本過舊，升級後可以在這裡繼續",
+    claudeVersionTooOld: "Claude Code 版本過舊，升級後可以在這裡繼續",
     codexConnected: "在 Codex 中執行 · 已連線",
     codexHandoff: "在 Codex 中開啟 · 傳送時連線",
     codexHandleThere: "這項請求請在 Codex 中處理",
@@ -208,6 +211,7 @@ const continuationCopy: Record<string, SessionContinuationCopy> = {
       "Claude Code でこの会話が開かれたため、同時に書き込まれないよう AgentKib を停止しました。",
     claudeWindowsUnsupported: "Windows では、ここで Claude Code の会話を続ける機能はまだ使えません",
     codexVersionTooOld: "Codex のバージョンが古いため、更新するとここで続けられます。",
+    claudeVersionTooOld: "Claude Code のバージョンが古いため、更新するとここで続けられます。",
     codexConnected: "Codex で実行中 · 接続済み",
     codexHandoff: "Codex で開いています · 送信時に接続",
     codexHandleThere: "このリクエストは Codex で対応してください",
@@ -271,6 +275,7 @@ const continuationCopy: Record<string, SessionContinuationCopy> = {
       "You opened this session in Claude Code. AgentKib stopped to avoid both sides writing at once.",
     claudeWindowsUnsupported: "Continuing Claude Code sessions here isn't supported on Windows yet",
     codexVersionTooOld: "Your Codex version is too old. Update it to continue here.",
+    claudeVersionTooOld: "Your Claude Code version is too old. Update it to continue here.",
     codexConnected: "Running in Codex · Connected",
     codexHandoff: "Open in Codex · Connects when you send",
     codexHandleThere: "Handle this request in Codex",
@@ -769,6 +774,7 @@ export function sessionContinuationListState(
     [
       "platform-unsupported",
       "claude-cli-unavailable",
+      "claude-cli-too-old",
       "unsupported-codex-cli-version",
       "codex-cli-version-too-old",
     ].includes(state.reason ?? "") ||

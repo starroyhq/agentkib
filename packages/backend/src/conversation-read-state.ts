@@ -11,7 +11,7 @@ import { hasManagedCatalogWorkspace, managedRecordSchema } from "./managed-sessi
 import { readManagedRecord } from "./managed-ledger";
 import { canonicalize, pathIdentity } from "./paths";
 import { within } from "./files";
-import { resolveCommand } from "./command-resolution";
+import { codexExecutable } from "./codex-executable";
 
 export interface ReadStateTarget {
   provider: "codex" | "claude-code";
@@ -89,7 +89,7 @@ export class ConversationReadStates {
 
   #nativeTarget(target: Target): CodexReadTarget | null {
     if (target.provider !== "codex") return null;
-    const executable = resolveCommand("codex", this.environment);
+    const executable = codexExecutable(this.environment);
     return executable ? { ...target, executable } : null;
   }
 
@@ -321,7 +321,7 @@ export class ConversationReadStates {
   project<T>(rows: T[], scope: string): T[] {
     const now = Date.now();
     const fallbackKeys = new Map<string, boolean>();
-    let codexExecutable: string | null | undefined;
+    let codexCli: string | null | undefined;
     const projections = rows.map((row) => {
       if (
         !row ||
@@ -345,9 +345,9 @@ export class ConversationReadStates {
           row,
           state: unknown(candidate.provider === "codex" ? "codex-native" : "agentkib"),
         };
-      if (target.provider === "codex" && codexExecutable === undefined)
-        codexExecutable = resolveCommand("codex", this.environment);
-      const executable = target.provider === "codex" ? codexExecutable : null;
+      if (target.provider === "codex" && codexCli === undefined)
+        codexCli = codexExecutable(this.environment);
+      const executable = target.provider === "codex" ? codexCli : null;
       if (executable) {
         const state = this.#native.cached({ ...target, executable }, scope);
         if (state) return { row, state, stale };

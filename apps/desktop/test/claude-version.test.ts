@@ -1,6 +1,9 @@
 import { afterEach, describe, expect, it } from "vitest";
 import { supportsClaudeVersion as viaManagedRead } from "../../../packages/backend/src/claude-managed-read";
+import { chmodSync, mkdirSync, writeFileSync } from "node:fs";
+import path from "node:path";
 import {
+  readClaudeInstallation,
   readClaudeVersion,
   supportsClaudeVersion,
 } from "../../../packages/backend/src/claude-version";
@@ -69,5 +72,65 @@ posix("readClaudeVersion", () => {
     const f = setup();
     f.claude(output, { exitCode });
     expect(await readClaudeVersion(f.commands, f.environment)).toBeNull();
+  });
+});
+
+posix("readClaudeInstallation", () => {
+  function setup() {
+    const f = contextFixture();
+    fixtures.push(f);
+    // A second install after PATH's own, in a place the usual lookup also searches.
+    const local = path.join(f.environment.HOME!, ".local", "bin");
+    mkdirSync(local, { recursive: true });
+    const second = (output: string) => {
+      const executable = path.join(local, "claude");
+      writeFileSync(executable, `#!/bin/sh\nprintf '%s\\n' '${output}'\n`);
+      chmodSync(executable, 0o755);
+      return executable;
+    };
+    return { f, second };
+  }
+
+  it("keeps the CLI on PATH when it is new enough", async () => {
+    const { f, second } = setup();
+    f.claude("2.1.299 (Claude Code)");
+    second("2.1.323 (Claude Code)");
+    expect(await readClaudeInstallation(f.commands, f.environment)).toEqual({
+      executable: path.join(f.bin, "claude"),
+      version: "2.1.299 (Claude Code)",
+      reason: null,
+    });
+  });
+
+  it("passes over an old CLI on PATH for a current install elsewhere", async () => {
+    const { f, second } = setup();
+    f.claude("2.1.200 (Claude Code)");
+    const current = second("2.1.323 (Claude Code)");
+    expect(await readClaudeInstallation(f.commands, f.environment)).toEqual({
+      executable: current,
+      version: "2.1.323 (Claude Code)",
+      reason: null,
+    });
+  });
+
+  it("says the CLI is too old, not missing, when no install is new enough", async () => {
+    const { f, second } = setup();
+    f.claude("2.1.200 (Claude Code)");
+    second("version two");
+    expect(await readClaudeInstallation(f.commands, f.environment)).toEqual({
+      executable: path.join(f.bin, "claude"),
+      version: "2.1.200 (Claude Code)",
+      reason: "claude-cli-too-old",
+    });
+  });
+
+  it("says the CLI is missing when none can be read", async () => {
+    const { f } = setup();
+    f.claude("version two");
+    expect(await readClaudeInstallation(f.commands, f.environment)).toEqual({
+      executable: null,
+      version: null,
+      reason: "claude-cli-unavailable",
+    });
   });
 });

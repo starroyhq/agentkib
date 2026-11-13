@@ -54,6 +54,8 @@ export class CodexAppServerSession extends EventEmitter {
   #closing?: Promise<void>;
   #didClose = false;
   #exited: Promise<void>;
+  /** What the server called itself when it started, naming its Codex release. */
+  userAgent: string | null = null;
 
   private constructor(child: ChildProcess, tree?: NativeProcessTree) {
     super();
@@ -94,10 +96,12 @@ export class CodexAppServerSession extends EventEmitter {
       session = new CodexAppServerSession(child, tree);
       if (onNotification) session.on("notification", onNotification);
       onSessionStarted?.(session);
-      await session.request("initialize", {
+      const initialized = await session.request("initialize", {
         clientInfo: { name: "agentkib", title: "AgentKib", version: "0.13.0" },
         capabilities: { experimentalApi: true },
       });
+      if (isObject(initialized) && typeof initialized.userAgent === "string")
+        session.userAgent = initialized.userAgent;
       session.#write(Buffer.from('{"method":"initialized","params":{}}\n'));
       return session;
     } catch (error) {

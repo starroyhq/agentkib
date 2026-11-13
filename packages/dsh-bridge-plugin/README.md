@@ -1,7 +1,7 @@
 # AgentKib DeepSeek Harness bridge
 
 First-party DeepSeek Harness (DSH) bundle for DSH **0.2.1-rc.5 or later** (`engines.dsh`
-`>=0.2.1-rc.5 <0.3.0`), bridge protocol **1**, plugin **0.7.0**. It connects the sessions of a
+`>=0.2.1-rc.5`, with no upper bound), bridge protocol **1**, plugin **0.7.1**. It connects the sessions of a
 running DSH to AgentKib on the same computer. It never starts a second executor, never writes
 the session log itself and never calls a model: every action goes through DSH's own services.
 

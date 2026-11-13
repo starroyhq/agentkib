@@ -63,7 +63,8 @@ const copy: Record<
     startsWhenNeeded: "DeepSeek Harness 没有运行，需要时 AgentKib 会在后台启动它。",
     noLauncher:
       "没有找到 DeepSeek Harness。安装 DeepSeek Harness Desktop 后，AgentKib 能在需要时启动它。",
-    versionUnsupported: "这个版本的 DeepSeek Harness 还不能由 AgentKib 启动，请更新 AgentKib。",
+    versionUnsupported:
+      "这个版本的 DeepSeek Harness 不能由 AgentKib 启动，请更新 DeepSeek Harness 或 AgentKib。",
     startFailed: "上次在后台启动 DeepSeek Harness 没有成功。",
     version: (version) => `版本 ${version}`,
     background: "由 AgentKib 在后台启动",
@@ -88,7 +89,8 @@ const copy: Record<
     startsWhenNeeded: "DeepSeek Harness 沒有在執行，需要時 AgentKib 會在背景啟動它。",
     noLauncher:
       "找不到 DeepSeek Harness。安裝 DeepSeek Harness Desktop 後，AgentKib 能在需要時啟動它。",
-    versionUnsupported: "這個版本的 DeepSeek Harness 還不能由 AgentKib 啟動，請更新 AgentKib。",
+    versionUnsupported:
+      "這個版本的 DeepSeek Harness 不能由 AgentKib 啟動，請更新 DeepSeek Harness 或 AgentKib。",
     startFailed: "上次在背景啟動 DeepSeek Harness 沒有成功。",
     version: (version) => `版本 ${version}`,
     background: "由 AgentKib 在背景啟動",
@@ -115,7 +117,7 @@ const copy: Record<
     noLauncher:
       "DeepSeek Harness が見つかりません。DeepSeek Harness Desktop を入れると、必要なときに AgentKib が起動できます。",
     versionUnsupported:
-      "このバージョンの DeepSeek Harness はまだ AgentKib から起動できません。AgentKib を更新してください。",
+      "このバージョンの DeepSeek Harness は AgentKib から起動できません。DeepSeek Harness か AgentKib を更新してください。",
     startFailed: "前回、DeepSeek Harness をバックグラウンドで起動できませんでした。",
     version: (version) => `バージョン ${version}`,
     background: "AgentKib がバックグラウンドで起動",
@@ -143,7 +145,7 @@ const copy: Record<
     noLauncher:
       "DeepSeek Harness was not found. With DeepSeek Harness Desktop installed, AgentKib can start it when needed.",
     versionUnsupported:
-      "AgentKib cannot start this version of DeepSeek Harness yet. Update AgentKib.",
+      "AgentKib cannot start this version of DeepSeek Harness. Update DeepSeek Harness or AgentKib.",
     startFailed: "The last background start of DeepSeek Harness did not succeed.",
     version: (version) => `Version ${version}`,
     background: "Started by AgentKib in the background",

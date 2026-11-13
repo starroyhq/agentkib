@@ -25,6 +25,7 @@ export function continuationPreflightReason(
       "claude-owner-check-unavailable",
       "owner-opened-elsewhere",
       "claude-cli-unavailable",
+      "claude-cli-too-old",
       "platform-unsupported",
       "follower-operation-unverified",
       // The executor refused an image: its model takes none, or the image is outside its limits.

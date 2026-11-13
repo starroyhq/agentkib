@@ -145,6 +145,7 @@ D10、D11 的同 Agent 续接以“能否继续、在哪里运行”为准。用
 | AgentKib 后台进程正在运行 | 在 AgentKib 中运行 | 在 AgentKib 中執行 | AgentKib で実行中 | Running in AgentKib |
 | Claude Code 终端已连接 | 在终端中运行 · 已连接 | 在終端中執行 · 已連線 | ターミナルで実行中 · 接続済み | Running in terminal · Connected |
 | 跟随 Codex 桌面端 | 在 Codex 中运行 · 已连接 | 在 Codex 中執行 · 已連線 | Codex で実行中 · 接続済み | Running in Codex · Connected |
+| 桌面端占着会话但没有窗口在用（发送时请它接上） | 在 Codex 中打开 · 发送时连接 | 在 Codex 中開啟 · 傳送時連線 | Codex で開いています · 送信時に接続 | Open in Codex · Connects when you send |
 | 已连接的 DeepSeek Harness | 在 DeepSeek Harness 中运行 · 已连接 | 在 DeepSeek Harness 中執行 · 已連線 | DeepSeek Harness で実行中 · 接続済み | Running in DeepSeek Harness · Connected |
 | 已连接终端的列表徽标 | 终端 | 終端 | ターミナル | Terminal |
 | 列表里有审批或提问在等 | 等待你 | 等待你 | 対応待ち | Needs you |

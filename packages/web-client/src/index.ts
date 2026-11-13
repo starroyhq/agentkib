@@ -361,6 +361,11 @@ export interface Live {
   }[];
   /** Managed Claude: whether the current turn is one AgentKib sent or one the CLI started. */
   turnOrigin?: "host" | "self";
+  /**
+   * Codex: the Codex app holds the thread with no window answering for it. Sending stays open,
+   * and a message asks the app to show the thread, then goes through it.
+   */
+  ownerHandoff?: boolean;
   /** Observed native terminal version; does not grant sending or stopping. */
   bridgeCompatibility?: import("@agentkib/runtime-protocol").ClaudeBridgeCompatibilityStatus | null;
   /** Authenticated offline reconnect failure; never a control grant. Null clears prior feedback. */

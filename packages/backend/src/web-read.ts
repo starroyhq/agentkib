@@ -36,6 +36,7 @@ import { CodexExternalTurns, type ExternalTurn } from "./codex-external-turns";
 import { codexResumeCommand } from "./codex-resume-command";
 import { CodexFollowerBridge } from "./codex-follower-bridge";
 import { CodexFollowerConnection } from "./codex-follower-connection";
+import { CodexDesktopApp } from "./codex-desktop-app";
 import type { CodexFollowerState } from "./codex-follower-state";
 import { CodexFollowerStream } from "./codex-follower-stream";
 import { AntigravityManagedRunner } from "./antigravity-managed-runner";
@@ -63,6 +64,17 @@ import {
 
 const FOLLOWER_RETRY_MS = 5_000;
 const FOLLOWER_IDLE_MS = 30_000;
+/** How long a send waits for the Codex app to take a thread it was asked to show. */
+const HANDOFF_TIMEOUT_MS = 8_000;
+const HANDOFF_POLL_MS = 250;
+
+/** Owner discovery answered, and nobody answers for the thread. */
+function codexOwnerMissing(error: unknown): boolean {
+  return (
+    error instanceof Error &&
+    ["Codex session owner was not found", "no Codex session owner found"].includes(error.message)
+  );
+}
 
 const requestSchema = z.discriminatedUnion("operation", [
   z.object({ operation: z.literal("catalog") }).strict(),
@@ -419,6 +431,16 @@ export class WebReadRequests {
   #codexFollowerFlights = new Map<string, Promise<CodexFollowerRecord>>();
   #subagentObservers = new WeakMap<object, { identity: string; id: string }>();
   #followerMisses = new Map<string, number>();
+  /** Sessions whose last owner discovery answered that nobody holds the thread's window. */
+  #ownerMissing = new Set<string>();
+  /** When a send last asked the Codex app for a thread and the app did not take it. */
+  #handoffFailures = new Map<string, number>();
+  #desktopApp: CodexDesktopApp;
+  #handoffTimeoutMs: number;
+  #handoffFlights = new Map<
+    string,
+    Promise<{ follower: CodexFollowerRecord; revision: number } | undefined>
+  >();
   #antigravityRunners = new Map<string, AntigravityRunnerRecord>();
   #antigravityRunnerFlights = new Map<string, Promise<AntigravityRunnerRecord>>();
 
@@ -441,6 +463,14 @@ export class WebReadRequests {
   ) {
     this.#codex = new CodexAppServerReader(environment);
     this.#preflight = new CodexRuntimePreflight(environment);
+    this.#desktopApp = new CodexDesktopApp(environment);
+    const handoffTimeout = Number(environment.AGENTKIB_CODEX_HANDOFF_TIMEOUT_MS);
+    this.#handoffTimeoutMs =
+      environment.AGENTKIB_CODEX_HANDOFF_TIMEOUT_MS !== undefined &&
+      Number.isSafeInteger(handoffTimeout) &&
+      handoffTimeout > 0
+        ? handoffTimeout
+        : HANDOFF_TIMEOUT_MS;
     this.#retirementTimer = setInterval(() => void this.#retireIdleRunners(), 1000);
     this.#retirementTimer.unref();
   }
@@ -462,6 +492,7 @@ export class WebReadRequests {
     this.#shuttingDown = true;
     clearInterval(this.#retirementTimer);
     this.#preflight.close();
+    this.#desktopApp.close();
     return (this.#closing = this.#close());
   }
 
@@ -2137,6 +2168,12 @@ export class WebReadRequests {
         // send with attachments starts it the same way.
         for (const operation of ["settings", "rename", "archive", "attachments", "compact"])
           features[operation] = allowed ? { available: true } : features.send!;
+        // The Codex app holds the thread with no window answering for it: a message (with its
+        // attachments, as a follower sends them) asks the app to take it (#desktopHandoff).
+        if (await this.#desktopHandoffLive(source, live, controls)) {
+          features.send = { available: true };
+          features.attachments = { available: true };
+        }
         return {
           sessionId: source.id,
           executionMode: "codex-managed",
@@ -2612,6 +2649,18 @@ export class WebReadRequests {
               : "recovery-required";
           if (reason === "codex-owner-busy")
             this.#ownership.set(request.sessionId, { checkedAt: Date.now(), reason });
+          if (reason === "codex-owner-busy" && request.operation === "send") {
+            const handed = await this.#desktopHandoff(inactive);
+            // The app now runs the thread: the message goes to it, under the same receipt. The
+            // client's revision was the busy state's; the app's state starts its own count.
+            if (handed)
+              return this.#codexFollowerControl(
+                { ...request, expectedRevision: handed.revision },
+                fingerprint,
+                handed.follower,
+                inactive.workspace_id,
+              );
+          }
           // The native resume has its own durable receipt. Even if its reply is
           // lost, this user operation has not reached turn/start (or another
           // user mutation). Keep the child uncertainty as the session fence,
@@ -2627,6 +2676,16 @@ export class WebReadRequests {
           if (request.operation === "send") resumedControlState = managedControlState(runner.state);
         }
       } catch (error) {
+        if (codexWriterBusy(error) && request.operation === "send") {
+          const handed = await this.#desktopHandoff(inactive);
+          if (handed)
+            return this.#codexFollowerControl(
+              { ...request, expectedRevision: handed.revision },
+              fingerprint,
+              handed.follower,
+              inactive.workspace_id,
+            );
+        }
         return reject(
           codexWriterBusy(error)
             ? "codex-owner-busy"
@@ -5117,7 +5176,11 @@ export class WebReadRequests {
       try {
         const record = await this.#inactiveRecord(sessionId);
         const inactive = await this.#inactiveLive(record, experimentalEnabled);
-        return (await this.#desktopFollowerLive(record, inactive, experimentalEnabled)) ?? inactive;
+        return (
+          (await this.#desktopFollowerLive(record, inactive, experimentalEnabled)) ??
+          (await this.#desktopHandoffLive(record, inactive, experimentalEnabled)) ??
+          inactive
+        );
       } catch (error) {
         // Root/home sessions can live in an unregistered native collection.
         // Explain the proven directory failure without granting collection controls.
@@ -5187,7 +5250,11 @@ export class WebReadRequests {
     }
 
     const inactive = await this.#inactiveLive(managed, experimentalEnabled);
-    return (await this.#desktopFollowerLive(managed, inactive, experimentalEnabled)) ?? inactive;
+    return (
+      (await this.#desktopFollowerLive(managed, inactive, experimentalEnabled)) ??
+      (await this.#desktopHandoffLive(managed, inactive, experimentalEnabled)) ??
+      inactive
+    );
   }
 
   async #antigravityLive(sessionId: string): Promise<Record<string, unknown>> {
@@ -5560,16 +5627,105 @@ export class WebReadRequests {
       const follower = await this.#desktopFollower(record);
       const state = await follower.bridge.observeLive();
       follower.lastUsed = Date.now();
+      this.#ownerMissing.delete(record.id);
       return this.#followerLive(record, state, controls);
-    } catch {
+    } catch (error) {
       const follower = this.#codexFollowers.get(record.id);
       if (follower) {
         this.#codexFollowers.delete(record.id);
         follower.bridge.close();
       }
       this.#followerMisses.set(record.id, Date.now());
+      if (codexOwnerMissing(error)) this.#ownerMissing.add(record.id);
+      else this.#ownerMissing.delete(record.id);
       return undefined;
     }
+  }
+
+  /**
+   * The Codex app's server holds the thread and no window answers for it: sending stays open,
+   * and a send asks the app to show the thread (#desktopHandoff). The session still reads as in
+   * use in Codex; `ownerHandoff` tells a client it may send. Not offered again for a minute
+   * after the app did not take the thread.
+   */
+  async #desktopHandoffLive(
+    record: ManagedRecord,
+    inactive: Record<string, unknown>,
+    controls: boolean,
+  ): Promise<Record<string, unknown> | undefined> {
+    const failed = this.#handoffFailures.get(record.id);
+    if (
+      !controls ||
+      inactive.reason !== "codex-owner-busy" ||
+      inactive.ownershipReason !== "codex-owner-busy" ||
+      !record.native_id ||
+      !this.#ownerMissing.has(record.id) ||
+      (failed !== undefined && Date.now() - failed < 60_000) ||
+      !CodexFollowerConnection.supported() ||
+      managedSessionHasUnknownCommands(this.dataDir, record.id)
+    )
+      return undefined;
+    if (!(await this.#desktopApp.running())) return undefined;
+    return { ...inactive, sendEnabled: true, ownerHandoff: true };
+  }
+
+  /**
+   * Asks the running Codex app to show a thread its server holds with no window answering for
+   * it, then follows the app. Only a send asks: opening the session in AgentKib must not move
+   * the app's page. Never launches the app, never takes the writer lock and sends nothing by
+   * itself; undefined leaves the session in use in Codex.
+   */
+  async #desktopHandoff(
+    record: ManagedRecord,
+  ): Promise<{ follower: CodexFollowerRecord; revision: number } | undefined> {
+    if (!CodexFollowerConnection.supported() || !record.native_id) return undefined;
+    const pending = this.#handoffFlights.get(record.id);
+    if (pending) return pending;
+    const flight = this.#runDesktopHandoff(record, record.native_id);
+    this.#handoffFlights.set(record.id, flight);
+    try {
+      const handed = await flight;
+      if (handed) this.#handoffFailures.delete(record.id);
+      else this.#handoffFailures.set(record.id, Date.now());
+      return handed;
+    } finally {
+      if (this.#handoffFlights.get(record.id) === flight) this.#handoffFlights.delete(record.id);
+    }
+  }
+
+  async #runDesktopHandoff(
+    record: ManagedRecord,
+    nativeId: string,
+  ): Promise<{ follower: CodexFollowerRecord; revision: number } | undefined> {
+    const attach = async () => {
+      try {
+        const follower = await this.#desktopFollower(record);
+        const state = await follower.bridge.observeLive();
+        follower.lastUsed = Date.now();
+        this.#ownerMissing.delete(record.id);
+        this.#followerMisses.delete(record.id);
+        return state.revision === null ? undefined : { follower, revision: state.revision };
+      } catch (error) {
+        const follower = this.#codexFollowers.get(record.id);
+        if (follower) {
+          this.#codexFollowers.delete(record.id);
+          follower.bridge.close();
+        }
+        return codexOwnerMissing(error) ? ("missing" as const) : undefined;
+      }
+    };
+    // A window may have opened the thread since the session was last looked at.
+    const first = await attach();
+    if (first !== "missing") return first;
+    if (!(await this.#desktopApp.running()) || !(await this.#desktopApp.openThread(nativeId)))
+      return undefined;
+    const deadline = Date.now() + this.#handoffTimeoutMs;
+    while (Date.now() < deadline && !this.#shuttingDown) {
+      await new Promise((resolve) => setTimeout(resolve, HANDOFF_POLL_MS));
+      const attached = await attach();
+      if (attached !== "missing") return attached;
+    }
+    return undefined;
   }
 
   async #resumeCommand(sessionId: string) {

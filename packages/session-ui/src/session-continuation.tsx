@@ -41,6 +41,8 @@ export type SessionContinuationCopy = {
   claudeWindowsUnsupported: string;
   codexVersionTooOld: string;
   codexConnected: string;
+  /** Codex: the Codex app holds the thread; sending asks it to take the thread. */
+  codexHandoff: string;
   codexHandleThere: string;
   dshConnected: string;
   dshHandleThere: string;
@@ -93,6 +95,7 @@ const continuationCopy: Record<string, SessionContinuationCopy> = {
     claudeWindowsUnsupported: "Windows 上暂不支持在这里继续 Claude Code 会话",
     codexVersionTooOld: "Codex 版本过低，升级后可以在这里继续",
     codexConnected: "在 Codex 中运行 · 已连接",
+    codexHandoff: "在 Codex 中打开 · 发送时连接",
     codexHandleThere: "这项请求请在 Codex 中处理",
     dshConnected: "在 DeepSeek Harness 中运行 · 已连接",
     dshHandleThere: "这项请求请在 DeepSeek Harness 中处理",
@@ -145,6 +148,7 @@ const continuationCopy: Record<string, SessionContinuationCopy> = {
     claudeWindowsUnsupported: "Windows 上暫不支援在這裡繼續 Claude Code 對話",
     codexVersionTooOld: "Codex 版本過舊，升級後可以在這裡繼續",
     codexConnected: "在 Codex 中執行 · 已連線",
+    codexHandoff: "在 Codex 中開啟 · 傳送時連線",
     codexHandleThere: "這項請求請在 Codex 中處理",
     dshConnected: "在 DeepSeek Harness 中執行 · 已連線",
     dshHandleThere: "這項請求請在 DeepSeek Harness 中處理",
@@ -205,6 +209,7 @@ const continuationCopy: Record<string, SessionContinuationCopy> = {
     claudeWindowsUnsupported: "Windows では、ここで Claude Code の会話を続ける機能はまだ使えません",
     codexVersionTooOld: "Codex のバージョンが古いため、更新するとここで続けられます。",
     codexConnected: "Codex で実行中 · 接続済み",
+    codexHandoff: "Codex で開いています · 送信時に接続",
     codexHandleThere: "このリクエストは Codex で対応してください",
     dshConnected: "DeepSeek Harness で実行中 · 接続済み",
     dshHandleThere: "このリクエストは DeepSeek Harness で対応してください",
@@ -267,6 +272,7 @@ const continuationCopy: Record<string, SessionContinuationCopy> = {
     claudeWindowsUnsupported: "Continuing Claude Code sessions here isn't supported on Windows yet",
     codexVersionTooOld: "Your Codex version is too old. Update it to continue here.",
     codexConnected: "Running in Codex · Connected",
+    codexHandoff: "Open in Codex · Connects when you send",
     codexHandleThere: "Handle this request in Codex",
     dshConnected: "Running in DeepSeek Harness · Connected",
     dshHandleThere: "Handle this request in DeepSeek Harness",

@@ -85,6 +85,25 @@ export class CodexFollowerState {
     return this.#snapshot === null ? null : structuredClone(this.#snapshot);
   }
 
+  /** The last turns: whether each runs, and how it ended when it did (`codexTurnMeta`). */
+  turnOutcomes(): Array<{
+    turnId: string;
+    running: boolean;
+    meta: ReturnType<typeof codexTurnMeta>;
+  }> {
+    return (this.#conversationTurns() ?? []).slice(-20).flatMap((turn) =>
+      typeof turn.turnId === "string" && turn.turnId
+        ? [
+            {
+              turnId: turn.turnId,
+              running: turn.status === "inProgress",
+              meta: codexTurnMeta(turn),
+            },
+          ]
+        : [],
+    );
+  }
+
   activeTurn(): string | null {
     const turns = this.#conversationTurns();
     if (!turns) return null;

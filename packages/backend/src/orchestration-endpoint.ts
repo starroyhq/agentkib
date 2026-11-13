@@ -20,6 +20,12 @@ export type LeadEndpoint = {
 
 const MAX_BODY = 256 * 1024;
 const MAX_CONNECTIONS = 4;
+type Connection = {
+  server: Server;
+  transport: StreamableHTTPServerTransport;
+  /** When it last made a request, by a counter of requests to this endpoint. */
+  lastUsed: number;
+};
 const isObject = (value: unknown): value is Record<string, unknown> =>
   value !== null && typeof value === "object" && !Array.isArray(value);
 
@@ -56,10 +62,23 @@ export async function openLeadEndpoint(options: {
     import("@modelcontextprotocol/sdk/types.js"),
   ]);
   const endpointPath = `/lead/${randomBytes(32).toString("hex")}`;
-  const sessions = new Map<string, { server: Server; transport: StreamableHTTPServerTransport }>();
-  const connections = new Set<{ server: Server; transport: StreamableHTTPServerTransport }>();
+  const sessions = new Map<string, Connection>();
+  const connections = new Set<Connection>();
   let closed = false;
   let host = "";
+  let requests = 0;
+  // The endpoint outlives the lead's CLI processes, and the host ends those with SIGKILL, so a
+  // CLI never ends its session. Only the lead's own CLI knows the path and one runs at a time:
+  // when the endpoint is full, the session that went longest without a request is a dead
+  // process's, and it gives way (a live client that still used it would get 404 and start over).
+  const evictLeastRecent = async () => {
+    let oldest: Connection | undefined;
+    for (const connection of connections)
+      if (!oldest || connection.lastUsed < oldest.lastUsed) oldest = connection;
+    if (!oldest) return;
+    connections.delete(oldest);
+    await oldest.transport.close().catch(() => undefined);
+  };
 
   const http = createServer((request, response) => {
     void (async () => {
@@ -80,21 +99,22 @@ export async function openLeadEndpoint(options: {
           response.writeHead(404).end();
           return;
         }
+        session.lastUsed = ++requests;
         const body = request.method === "POST" ? await readBody(request) : undefined;
         await session.transport.handleRequest(request, response, body);
         return;
       }
-      if (request.method !== "POST" || connections.size >= MAX_CONNECTIONS) {
+      if (request.method !== "POST") {
         response.writeHead(400).end();
         return;
       }
       const body = await readBody(request);
-      if (
-        closed ||
-        connections.size >= MAX_CONNECTIONS ||
-        !isObject(body) ||
-        body.method !== "initialize"
-      ) {
+      if (closed || !isObject(body) || body.method !== "initialize") {
+        response.writeHead(400).end();
+        return;
+      }
+      while (connections.size >= MAX_CONNECTIONS) await evictLeastRecent();
+      if (closed) {
         response.writeHead(400).end();
         return;
       }
@@ -111,10 +131,10 @@ export async function openLeadEndpoint(options: {
         allowedOrigins: [],
         onsessioninitialized: (id) => {
           createdId = id;
-          sessions.set(id, { server, transport });
+          sessions.set(id, connection);
         },
       });
-      const connection = { server, transport };
+      const connection: Connection = { server, transport, lastUsed: ++requests };
       connections.add(connection);
       server.setRequestHandler(ListToolsRequestSchema, async () => ({
         tools: options.tools().map((tool) => ({

@@ -15,7 +15,11 @@ import {
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { ClaudeBridge, type ClaudeBridgeTarget } from "../../../packages/backend/src/claude-bridge";
+import {
+  ClaudeBridge,
+  type BridgeLead,
+  type ClaudeBridgeTarget,
+} from "../../../packages/backend/src/claude-bridge";
 import { readControlReceipt } from "../../../packages/backend/src/control-receipt";
 import { openManagedLedger } from "../../../packages/backend/src/managed-ledger";
 import { CLAUDE_BRIDGE_COMPATIBILITY, type ClaudeBridgeSnapshot } from "@agentkib/runtime-protocol";
@@ -28,7 +32,7 @@ afterEach(async () => {
   for (const cleanup of cleanups.splice(0).reverse()) await cleanup();
 });
 
-async function fixture(timeout = 1000) {
+async function fixture(timeout = 1000, lead?: BridgeLead) {
   const root = realpathSync(mkdtempSync(path.join(tmpdir(), "ak-bridge-test-")));
   const workspace = path.join(root, "workspace");
   mkdirSync(workspace);
@@ -56,6 +60,7 @@ async function fixture(timeout = 1000) {
     validate: () => {
       if (!valid) throw new Error("source unavailable");
     },
+    ...(lead ? { lead } : {}),
   };
   let bridge = new ClaudeBridge(options);
   cleanups.push(async () => {
@@ -1700,3 +1705,95 @@ describe.skipIf(process.platform === "win32")("native Claude borrowed-host broke
     expect((await f.poll()).body.commands).toEqual([]);
   });
 });
+
+describe.skipIf(process.platform === "win32")(
+  "a terminal Project Agent (feature lead-tools)",
+  () => {
+    function terminalLead() {
+      const calls: Array<{ sessionId: string; name: string; input: unknown }> = [];
+      const spoke: string[] = [];
+      let leading = false;
+      const lead: BridgeLead = {
+        tools: () =>
+          leading
+            ? [{ name: "worker_list", description: "List.", inputSchema: { type: "object" } }]
+            : null,
+        call: async (sessionId, name, input) => {
+          calls.push({ sessionId, name, input });
+          return { text: '{"workers":[]}' };
+        },
+        userSpoke: (sessionId) => spoke.push(sessionId),
+      };
+      return {
+        lead,
+        calls,
+        spoke,
+        setLeading(value: boolean) {
+          leading = value;
+        },
+      };
+    }
+    const leadPoll = (f: Awaited<ReturnType<typeof fixture>>, extra: object = {}) =>
+      f.post("/v1/commands", { afterCommandId: null, waitMs: 0, leadTools: true, ...extra });
+
+    it("names the feature and gives a lead its tools, its reports and its calls", async () => {
+      const l = terminalLead();
+      const f = await fixture(1000, l.lead);
+      expect(f.connection.features).toEqual(["lead-tools"]);
+      expect(f.bridge.leadCapable(f.target.sessionId)).toBe(false);
+      expect((await leadPoll(f)).body).toEqual({ commands: [], lead: null });
+      expect(f.bridge.leadCapable(f.target.sessionId)).toBe(true);
+      l.setLeading(true);
+      expect(f.bridge.queueReport(f.target.sessionId, "report one")).toBe(false);
+      // A report that comes before the terminal took the last one joins it.
+      expect(f.bridge.queueReport(f.target.sessionId, "report two")).toBe(true);
+      expect(f.bridge.queuedReports(f.target.sessionId)).toBe(1);
+      const offered = (await leadPoll(f)).body;
+      expect(offered.lead.tools.map((tool: { name: string }) => tool.name)).toEqual([
+        "worker_list",
+      ]);
+      expect(offered.lead.reports).toEqual([
+        { id: expect.any(String), text: "report one\n\nreport two" },
+      ]);
+      // Once taken, it is gone.
+      expect(
+        (await leadPoll(f, { takenReports: [offered.lead.reports[0].id] })).body.lead.reports,
+      ).toEqual([]);
+      expect(f.bridge.queuedReports(f.target.sessionId)).toBe(0);
+      // A poll waiting for commands wakes for a new report.
+      const waiting = leadPoll(f, { waitMs: 10_000 });
+      await new Promise((resolve) => setTimeout(resolve, 50));
+      const started = Date.now();
+      f.bridge.queueReport(f.target.sessionId, "report three");
+      expect((await waiting).body.lead.reports).toMatchObject([{ text: "report three" }]);
+      expect(Date.now() - started).toBeLessThan(5_000);
+      const call = await f.post("/v1/lead-call", { name: "worker_list", input: { limit: 1 } });
+      expect(call).toMatchObject({ status: 200, body: { text: '{"workers":[]}', isError: false } });
+      expect(l.calls).toEqual([
+        { sessionId: f.target.sessionId, name: "worker_list", input: { limit: 1 } },
+      ]);
+      // A turn typed in the terminal restarts its count; one AgentKib sent does not.
+      await f.events(
+        { type: "turn-start", turnId: randomUUID(), revision: 1, origin: "agentkib" },
+        { type: "turn-start", turnId: randomUUID(), revision: 2, origin: "terminal" },
+      );
+      expect(l.spoke).toEqual([f.target.sessionId]);
+    });
+
+    it("offers nothing of it without a lead hook, nor to a plugin that did not ask", async () => {
+      const plain = await fixture();
+      expect(plain.connection).not.toHaveProperty("features");
+      expect((await leadPoll(plain)).body).toEqual({ commands: [] });
+      expect(plain.bridge.leadCapable(plain.target.sessionId)).toBe(false);
+      const l = terminalLead();
+      l.setLeading(true);
+      const quiet = await fixture(1000, l.lead);
+      expect((await quiet.poll()).body).toEqual({ commands: [] });
+      expect(quiet.bridge.leadCapable(quiet.target.sessionId)).toBe(false);
+      expect(
+        (await quiet.post("/v1/lead-call", { name: "worker_list", input: {} })).status,
+      ).not.toBe(200);
+      expect(l.calls).toEqual([]);
+    });
+  },
+);

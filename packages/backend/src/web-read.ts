@@ -398,7 +398,8 @@ type ManagedModelOption = {
 
 /** See `WebReadRequests.observeLanes`. */
 export type LaneObserver = {
-  turnEnded(sessionId: string, turnId: string, outcome: string): void;
+  /** `durationMs` is Codex's own measure of the turn, when it gives one. */
+  turnEnded(sessionId: string, turnId: string, outcome: string, durationMs: number | null): void;
   waiting(sessionId: string, turnId: string | null, status: string): void;
 };
 
@@ -4037,11 +4038,22 @@ export class WebReadRequests {
               },
             );
             this.catalogChanged?.();
+          }
+          // Also for a session created by this runner, whose native ID the record does not hold
+          // yet: a lead hears of its new worker's first turn too.
+          if (
+            method === "turn/completed" &&
+            isObject(params.turn) &&
+            typeof params.turn.id === "string"
+          ) {
+            const turn = params.turn;
+            const outcome = codexTurnMeta(turn)?.outcome;
             this.#observeLane((observer) =>
               observer.turnEnded(
                 record.id,
                 String(turn.id),
                 outcome === "aborted" ? "cancelled" : (outcome ?? "ended"),
+                codexTurnMeta(turn)?.duration_ms ?? null,
               ),
             );
           }
@@ -5599,15 +5611,15 @@ export class WebReadRequests {
     }
     let bridge: CodexFollowerBridge | undefined;
     const stream = new CodexFollowerStream();
+    const watch = { running: new Set<string>(), waiting: "" };
     const publish = (snapshot: ReturnType<CodexFollowerState["streamSnapshot"]>) => {
       const state = bridge?.selectedState;
       if (!state) return;
-      stream.publish(
-        snapshot,
-        this.#followerLive(record, state, true),
-        (type, payload, live, item) =>
-          this.publishConversationEvent?.(sessionId, type, payload, live, item),
+      const live = this.#followerLive(record, state, true);
+      stream.publish(snapshot, live, (type, payload, live, item) =>
+        this.publishConversationEvent?.(sessionId, type, payload, live, item),
       );
+      this.#observeFollowedLane(sessionId, state, live, watch);
     };
     bridge = await CodexFollowerBridge.connect(
       path.join(home, "ipc", "ipc.sock"),
@@ -5635,6 +5647,47 @@ export class WebReadRequests {
       bridge.close();
       throw error;
     }
+  }
+
+  /**
+   * A turn of a session the Codex app runs, seen through its follower: a lead hears that it
+   * ended, or waits for the person, as of the turns AgentKib runs. Only turns this follower saw
+   * running count as ended.
+   */
+  #observeFollowedLane(
+    sessionId: string,
+    state: CodexFollowerState,
+    live: Record<string, unknown>,
+    watch: { running: Set<string>; waiting: string },
+  ): void {
+    if (!this.#laneObserver) return;
+    for (const turn of state.turnOutcomes()) {
+      if (turn.running) watch.running.add(turn.turnId);
+      else if (watch.running.delete(turn.turnId) && turn.meta) {
+        const { outcome, duration_ms } = turn.meta;
+        this.#observeLane((observer) =>
+          observer.turnEnded(
+            sessionId,
+            turn.turnId,
+            outcome === "aborted" ? "cancelled" : (outcome ?? "ended"),
+            duration_ms ?? null,
+          ),
+        );
+      }
+    }
+    const waiting =
+      live.status === "awaiting-approval" || live.status === "waiting-input"
+        ? `${String(live.turnId ?? "")}:${String(live.status)}`
+        : "";
+    if (waiting && waiting !== watch.waiting)
+      this.#observeLane((observer) =>
+        observer.waiting(
+          sessionId,
+          typeof live.turnId === "string" ? live.turnId : null,
+          String(live.status),
+        ),
+      );
+    watch.waiting = waiting;
   }
 
   /** A connected follower still tracking the record's native conversation with a valid snapshot. */

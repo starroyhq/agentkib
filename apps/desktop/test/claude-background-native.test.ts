@@ -7,7 +7,16 @@
 import { randomUUID } from "node:crypto";
 import { spawnSync } from "node:child_process";
 import { createServer, type ServerResponse } from "node:http";
-import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readdirSync,
+  readFileSync,
+  realpathSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
 import type { AddressInfo } from "node:net";
 import { homedir, tmpdir } from "node:os";
 import path from "node:path";
@@ -52,6 +61,8 @@ const FIRST_MOVES: Record<string, (seconds: string) => Json> = {
 async function mockModel() {
   const requests: Json[] = [];
   const offered = new Set<string>();
+  /** The tools the CLI offered in each request, in order. */
+  const toolsByRequest: string[][] = [];
   const server = createServer((request, response) => {
     let raw = "";
     request.on("data", (chunk) => (raw += chunk));
@@ -69,6 +80,7 @@ async function mockModel() {
         .join(" ");
       const tools: string[] = (body.tools ?? []).map((tool: Json) => tool.name);
       for (const tool of tools) offered.add(tool);
+      toolsByRequest.push(tools);
       let content: Json[] = [{ type: "text", text: `reply ${assistantTurns + 1}` }];
       let reason = "end_turn";
       const move = Object.entries(FIRST_MOVES).find(([name]) => prompt.includes(name));
@@ -194,6 +206,7 @@ async function mockModel() {
   return {
     port: (server.address() as AddressInfo).port,
     requests,
+    toolsByRequest,
     /** Whether the CLI offered the model this tool. */
     offered: (tool: string) => offered.has(tool),
     close: () => new Promise<void>((resolve) => server.close(() => resolve())),
@@ -308,6 +321,16 @@ const running = (pattern: string) =>
     .stdout.split("\n")
     .filter(Boolean).length;
 const wait = { timeout: 45_000, interval: 100 };
+
+/** Whether the CLI has written this text into the session's transcript. */
+function transcriptHas(box: Awaited<ReturnType<typeof sandbox>>, sessionId: string, text: string) {
+  const projects = path.join(box.environment.CLAUDE_CONFIG_DIR!, "projects");
+  if (!existsSync(projects)) return false;
+  return readdirSync(projects).some((directory) => {
+    const file = path.join(projects, directory, `${sessionId}.jsonl`);
+    return existsSync(file) && readFileSync(file, "utf8").includes(text);
+  });
+}
 
 describe.skipIf(
   process.platform !== "darwin" || process.env.AGENTKIB_CLAUDE_BACKGROUND_NATIVE !== "1",
@@ -465,6 +488,52 @@ describe.skipIf(
     expect(orchestration.status(lead)!.lanes).toMatchObject([{ name: "api", workspaceId: "w1" }]);
     expect(runner.snapshot()).toMatchObject({ status: "idle", reason: null });
   }, 120_000);
+
+  // The host ends each CLI with SIGKILL (idle retirement, stop, cleanup); none ends its session at
+  // the endpoint, which lasts as long as the backend.
+  it("gives a Project Agent its worker tools in every new CLI process", async () => {
+    const box = await sandbox();
+    const lanes = {
+      options: async () => ({ models: [] }),
+      lifecycle: async () => ({ accepted: true }),
+      control: async () => ({ accepted: true }),
+      live: async (sessionId: string) => ({ sessionId, status: "idle", revision: 1 }),
+      events: async () => [],
+      session: () => null,
+      managed: async () => false,
+      workspaces: () => [{ id: "w1", name: "app" }],
+    };
+    const data = mkdtempSync(path.join(tmpdir(), "agentkib-project-agent-native-"));
+    cleanups.push(() => rmSync(data, { recursive: true, force: true }));
+    const lead = randomUUID();
+    const orchestration = new OrchestrationService(data, "boot", lanes, (id) => id === lead);
+    cleanups.push(() => orchestration.close());
+    orchestration.designate({ sessionId: lead, deviceId: "desktop-local", workspaceId: "w1" });
+    const tools = (await orchestration.leadTools(lead)) as {
+      mcpServers: Record<string, { url: string }>;
+    };
+    box.allowPort(Number(new URL(tools.mcpServers.agentkib_workers!.url).port));
+    const sessionId = randomUUID();
+    const offered: boolean[] = [];
+    for (let count = 0; count < 6; count++) {
+      const before = box.model.toolsByRequest.length;
+      const { runner, results, send } = managed(box, sessionId, count === 0, true, {
+        mcpConfig: tools,
+        allowedTools: [...LEAD_ALLOWED_TOOLS],
+      });
+      await send(`message ${count + 1}`);
+      await expect.poll(() => results.length, wait).toBe(1);
+      offered.push(
+        box.model.toolsByRequest
+          .slice(before)
+          .some((names) => names.includes("mcp__agentkib_workers__worker_list")),
+      );
+      // 2.1.263 writes the transcript after the result; resuming a CLI killed at once finds nothing.
+      await expect.poll(() => transcriptHas(box, sessionId, `reply ${count + 1}`), wait).toBe(true);
+      await runner.shutdown();
+    }
+    expect(offered).toEqual([true, true, true, true, true, true]);
+  }, 300_000);
 
   // The next worker hears that the command was stopped. That start is where a session used to be
   // lost: the CLI sends an empty result before the turn of the message it was given.

@@ -1247,6 +1247,17 @@ describe.skipIf(process.platform !== "darwin")(
         deviceId: "desktop-local",
       });
       expect(lead.lead).toMatchObject({ sessionId, paused: false, workers: [], pendingReports: 0 });
+      // The session list marks it.
+      const role = async () =>
+        (await http("/catalog")).body.sessions.find((item: { id: string }) => item.id === sessionId)
+          ?.orchestration;
+      expect(await role()).toEqual({
+        role: "lead",
+        workers: 0,
+        paused: false,
+        reason: null,
+        reports: 0,
+      });
       expect((await send(sessionId)).status).toBe(200);
       await idle(sessionId);
       const launches = () => frames().filter((row) => Array.isArray(row.args));
@@ -1269,6 +1280,7 @@ describe.skipIf(process.platform !== "darwin")(
       expect(launches()).toHaveLength(2);
       expect(launches().at(-1)!.args).not.toContain("--mcp-config");
       expect(launches().at(-1)!.args).not.toContain("--allowedTools");
+      expect(await role()).toBeUndefined();
     });
 
     it("keeps goal completion pending until a bound MCP report and native success both exist", async () => {

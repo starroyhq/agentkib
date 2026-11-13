@@ -314,10 +314,10 @@ function fixture(
       this.emit("close");
     }
     respond() {}
-    complete() {
+    complete(turn: Record<string, unknown> = {}) {
       this.emit("notification", {
         method: "turn/completed",
-        params: { threadId: nativeId, turn: { id: "new-turn", status: "completed" } },
+        params: { threadId: nativeId, turn: { id: "new-turn", status: "completed", ...turn } },
       });
     }
     activateGoal() {
@@ -1668,6 +1668,36 @@ describe("Codex managed sandbox verification", () => {
       model: "model-a",
     });
 
+  // The runner of a session it creates holds a record without the native ID until it is saved.
+  it("tells a lead when a session it just created ends its first turn", async () => {
+    const f = fixture();
+    const ended: unknown[] = [];
+    f.web.observeLanes({ turnEnded: (...args) => ended.push(args), waiting: () => {} });
+    const result = await create(f, "workspace-write-on-request");
+    expect(result).toMatchObject({ accepted: true });
+    const live = (await f.web.request({
+      operation: "live",
+      sessionId: result.sessionId,
+      experimentalEnabled: true,
+    })) as Record<string, unknown>;
+    expect(
+      await f.web.managedControl({
+        operation: "send",
+        sessionId: result.sessionId,
+        requestId: randomUUID(),
+        deviceId: "fixture",
+        runtimeBootId: live.runtimeBootId,
+        expectedRevision: live.revision,
+        experimentalEnabled: true,
+        text: "The first task",
+      }),
+    ).toMatchObject({ accepted: true });
+    f.servers.at(-1)!.complete({ durationMs: 5_000 });
+    await vi.waitFor(() =>
+      expect(ended).toEqual([[result.sessionId, "new-turn", "completed", 5_000]]),
+    );
+  });
+
   it.each(policies)("confirms the native %s policy", async (policyId, approval, reviewer, type) => {
     const f = fixture();
     const result = await create(f, policyId);
@@ -2386,8 +2416,10 @@ describe("Codex automatic CLI continuation", () => {
     const ended: unknown[] = [];
     f.web.observeLanes({ turnEnded: (...args) => ended.push(args), waiting: () => {} });
     expect(await f.send()).toMatchObject({ accepted: true });
-    f.servers[0]!.complete();
-    await vi.waitFor(() => expect(ended).toEqual([[f.summary.id, "new-turn", "completed"]]));
+    f.servers[0]!.complete({ durationMs: 192_000 });
+    await vi.waitFor(() =>
+      expect(ended).toEqual([[f.summary.id, "new-turn", "completed", 192_000]]),
+    );
   });
 
   it("keeps native writer conflicts authoritative for compressed history", async () => {
@@ -3579,6 +3611,75 @@ describe("Codex Desktop follow", () => {
     expect(bridge.observeLive).toHaveBeenCalled();
     expect(f.start).not.toHaveBeenCalled();
     expect(f.methods).not.toContain("thread/resume");
+  });
+
+  it("tells a lead when a lane's turn in the Codex app waits or ends", async () => {
+    const { f, state } = followerFixture({ approval: true, revision: 3 });
+    const ended: unknown[] = [];
+    const waiting: unknown[] = [];
+    f.web.observeLanes({
+      turnEnded: (...args) => ended.push(args),
+      waiting: (...args) => waiting.push(args),
+    });
+    expect(await f.live()).toMatchObject({ executionMode: "codex-follower" });
+    const publish = f.follower.mock.calls[0]![2] as (snapshot: unknown) => void;
+    const change = (revision: number, turns: unknown[], requests: unknown[] = []) => {
+      state.notification({
+        type: "broadcast",
+        sourceClientId: "fixture-owner",
+        method: "thread-stream-state-changed",
+        version: 11,
+        params: {
+          conversationId: nativeId,
+          hostId: "local",
+          change: {
+            type: "snapshot",
+            revision,
+            conversationState: {
+              id: nativeId,
+              hostId: "local",
+              requests,
+              threadRuntimeStatus: { type: requests.length ? "active" : "idle" },
+              turns,
+            },
+          },
+        },
+      });
+      publish(state.streamSnapshot());
+    };
+    const running = [{ turnId: "followed-turn", status: "inProgress", items: [] }];
+    // The approval it waits for is told once, however often the Codex app's state changes.
+    change(4, running, [
+      {
+        id: "approval-1",
+        method: "item/commandExecution/requestApproval",
+        params: {
+          threadId: nativeId,
+          turnId: "followed-turn",
+          command: "ls",
+          cwd: f.workspace,
+          availableDecisions: ["accept", "decline"],
+        },
+      },
+    ]);
+    change(5, running, [
+      {
+        id: "approval-1",
+        method: "item/commandExecution/requestApproval",
+        params: {
+          threadId: nativeId,
+          turnId: "followed-turn",
+          command: "ls",
+          cwd: f.workspace,
+          availableDecisions: ["accept", "decline"],
+        },
+      },
+    ]);
+    expect(waiting).toEqual([[f.summary.id, "followed-turn", "awaiting-approval"]]);
+    change(6, running);
+    change(7, [{ turnId: "followed-turn", status: "completed", durationMs: 61_000, items: [] }]);
+    change(8, [{ turnId: "followed-turn", status: "completed", durationMs: 61_000, items: [] }]);
+    expect(ended).toEqual([[f.summary.id, "followed-turn", "completed", 61_000]]);
   });
 
   it("keeps the busy choice and backs off when no Codex owner is found", async () => {

@@ -140,6 +140,11 @@ export type ClaudeRunnerOptions = {
   selfTurnLimit?: number;
   /** The worker was stopped at that limit. The session stays usable. */
   onSelfTurnLimit?: () => void;
+  /**
+   * The CLI started a turn by itself. False stops that turn as Stop does (a Project Agent past
+   * its automatic turns); the worker and its background work stay.
+   */
+  onSelfTurn?: () => boolean;
   /** How long a stop waits for the CLI to end the turn before it ends the process instead. */
   interruptTimeoutMs?: number;
 };
@@ -2435,6 +2440,7 @@ export class ClaudeManagedRunnerProcess {
           return;
         }
         const wasInitialized = this.state.initialized;
+        const previousTurnId = this.state.turnId;
         const previousItemId = this.state.streamItemId;
         const previousItemText = this.state.streamItemText;
         const origin = frameOrigin(frame);
@@ -2458,6 +2464,16 @@ export class ClaudeManagedRunnerProcess {
         ) {
           await this.#stopSelfTurns();
           return;
+        }
+        if (
+          this.state.turnOrigin === "self" &&
+          this.state.status !== "idle" &&
+          this.state.turnId !== previousTurnId &&
+          this.options.onSelfTurn?.() === false
+        ) {
+          // Outside this chain of frames: the stop waits for the turn's end, which comes through it.
+          const { turnId, revision } = this.state;
+          void this.stop(turnId, revision).catch(() => undefined);
         }
         if (!wasInitialized && this.state.initialized) {
           inbound(() => this.#discoverOptions(frame.response?.response));

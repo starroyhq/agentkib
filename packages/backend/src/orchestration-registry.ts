@@ -12,6 +12,14 @@ import { openManagedLedger } from "./managed-ledger";
 export const LANE_POLICIES = ["workspace-write-on-request", "workspace-write-auto-review"] as const;
 export type LanePolicy = (typeof LANE_POLICIES)[number];
 
+/**
+ * Approvals a lead may decide for its lanes, when the person allows it: a file change, or a
+ * command run outside the sandbox. Only a plain approval qualifies (accept once or decline);
+ * one asking for network access, more permissions or a policy change always goes to the person.
+ */
+export const LEAD_APPROVALS = ["file-change", "command"] as const;
+export type LeadApproval = (typeof LEAD_APPROVALS)[number];
+
 export const LEAD_DEFAULTS = Object.freeze({ maxLanes: 4, maxAutoTurns: 25 });
 const MAX_RECORDS = 200;
 const MAX_REPORTED_TURNS = 64;
@@ -25,6 +33,10 @@ export type LeadScope = {
   maxLanes: number;
   /** Turns the lead may be started in a row without the user speaking (reports and its own). */
   maxAutoTurns: number;
+  /** Approvals the lead may decide for its lanes; none when absent, as in earlier records. */
+  approvals?: LeadApproval[];
+  /** Whether the lead may answer its lanes' question cards; no when absent. */
+  answers?: boolean;
 };
 
 export type Lane = {
@@ -45,7 +57,7 @@ export type Lane = {
 
 export type LeadRecord = {
   at: string;
-  kind: "open" | "send" | "stop" | "report" | "pause" | "resume";
+  kind: "open" | "send" | "stop" | "approve" | "answer" | "report" | "pause" | "resume";
   laneId: string | null;
   requestId: string | null;
   outcome: string;

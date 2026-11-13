@@ -53,7 +53,7 @@ import { RemoteAgent } from "./remote-agent";
 import { WorkspaceStorageOwner } from "./storage";
 import { QuotaOwner } from "./quota";
 import { ClaudeHostControlPreflightError, ClaudeManagedReadOwner } from "./claude-managed-read";
-import { OrchestrationService, type LaneHost } from "./orchestration-service";
+import { OrchestrationService, type LaneHost, type SessionRole } from "./orchestration-service";
 import { createRelayCsr } from "./relay-csr";
 import { readControlReceipt } from "./control-receipt";
 import { ConversationReadStates } from "./conversation-read-state";
@@ -699,15 +699,25 @@ export class TypeScriptBackend {
             userSent: (sessionId) => {
               if (this.#orchestration?.status(sessionId)) this.#orchestration.userSpoke(sessionId);
             },
+            selfTurn: (sessionId) => this.#orchestration?.leadSelfTurn(sessionId) ?? true,
           },
         );
         const leadOwner = this.#claudeManaged;
+        // A lead is a Claude Code session AgentKib runs, or one connected from a terminal whose
+        // plugin can take the worker tools; a connected terminal gets its reports there.
+        const terminal = (sessionId: string) => this.#claudeBridge?.leadCapable(sessionId) === true;
         this.#orchestration = new OrchestrationService(
           dataDir,
           leadOwner.bootId,
           this.#laneHost(store),
-          (sessionId) => leadOwner.hasManagedSession(sessionId),
-          (sessionId, deviceId, text) => leadOwner.queueReport(sessionId, deviceId, text),
+          (sessionId) => leadOwner.hasManagedSession(sessionId) || terminal(sessionId),
+          (sessionId, deviceId, text) =>
+            terminal(sessionId)
+              ? this.#claudeBridge!.queueReport(sessionId, text)
+              : leadOwner.queueReport(sessionId, deviceId, text),
+          (sessionId) =>
+            leadOwner.queuedReports(sessionId) +
+            (this.#claudeBridge?.queuedReports(sessionId) ?? 0),
         );
         const claudeOwner = this.#claudeManaged;
         this.#readStates = new ConversationReadStates(
@@ -723,6 +733,17 @@ export class TypeScriptBackend {
           dataDir,
           bootId: claudeOwner.bootId,
           pluginDirectory: this.environment.AGENTKIB_CLAUDE_PLUGIN_DIR ?? "",
+          // A connected terminal session may be a Project Agent (docs/agents/project-agent.md).
+          lead: {
+            tools: (sessionId) => this.#orchestration?.leadToolSpecs(sessionId) ?? null,
+            call: async (sessionId, name, input) => {
+              if (!this.#orchestration) return { text: "orchestration-unavailable", isError: true };
+              return this.#orchestration.call(sessionId, name, input);
+            },
+            userSpoke: (sessionId) => {
+              if (this.#orchestration?.status(sessionId)) this.#orchestration.userSpoke(sessionId);
+            },
+          },
           target: (id, nativeId) => claudeOwner.nativeBridgeTarget(id, nativeId),
           discoveryFile: path.join(
             this.environment.AGENTKIB_HOME ??
@@ -1247,7 +1268,9 @@ export class TypeScriptBackend {
               !("id" in session && aliases.has(String(session.id))),
           ),
           ...this.#withWorktrees(records),
-        ].map(continuation);
+        ]
+          .map(continuation)
+          .map(this.#withOrchestration());
         return {
           ...catalog,
           sessions: readerScope ? this.#readStates!.project(merged, readerScope) : merged,
@@ -2134,6 +2157,28 @@ export class TypeScriptBackend {
     return catalogCheckouts(this.#store, { ...process.env, ...this.environment }).sessions(rows);
   }
 
+  /** Marks catalog rows that are Project Agents or their Workers; the rest pass unchanged. */
+  #withOrchestration(): (session: unknown) => unknown {
+    let roles: Map<string, SessionRole>;
+    try {
+      roles = this.#orchestration?.roles() ?? new Map();
+    } catch {
+      // The session list never fails over delegation records.
+      roles = new Map();
+    }
+    return (session) => {
+      if (!roles.size || !session || typeof session !== "object" || Array.isArray(session))
+        return session;
+      const row = session as Record<string, unknown>;
+      const ids = [
+        row.id,
+        ...(Array.isArray(row.indexedSessionIds) ? row.indexedSessionIds : []),
+      ].filter((id): id is string => typeof id === "string");
+      const role = ids.map((id) => roles.get(id)).find(Boolean);
+      return role ? { ...row, orchestration: role } : row;
+    };
+  }
+
   /** Making a managed Claude session a lead, and the lead's state, for the desktop. */
   async #requestLead(params: Record<string, unknown>) {
     const orchestration = this.#orchestration;
@@ -2145,7 +2190,9 @@ export class TypeScriptBackend {
       case "lead-status":
         break;
       case "lead-designate": {
-        const workspaceId = this.#claudeManaged?.managedWorkspace(sessionId);
+        const workspaceId =
+          this.#claudeManaged?.managedWorkspace(sessionId) ??
+          this.#claudeBridge?.workspaceOf(sessionId);
         if (!workspaceId) throw new Error("lead-requires-managed-claude");
         const scope = params.scope && typeof params.scope === "object" ? params.scope : undefined;
         orchestration.designate({
@@ -2168,7 +2215,14 @@ export class TypeScriptBackend {
       default:
         throw new Error("unsupported-lead-operation");
     }
-    return { lead: await orchestration.overview(sessionId) };
+    // A terminal that leads, or no longer does, hears of it on its next poll.
+    if (params.operation === "lead-designate" || params.operation === "lead-release")
+      this.#claudeBridge?.leadChanged(sessionId);
+    return {
+      lead: await orchestration.overview(sessionId),
+      // Whether it could be one: a Claude Code session AgentKib runs.
+      capable: orchestration.isLeadCapable(sessionId),
+    };
   }
 
   /**
@@ -2245,12 +2299,12 @@ export class TypeScriptBackend {
         () => this.#sessionStream?.publish("", "invalidate", { domains: ["catalog"] }),
       );
       this.#webRead.observeLanes({
-        turnEnded: (sessionId, turnId, outcome) =>
+        turnEnded: (sessionId, turnId, outcome, durationMs) =>
           void this.#orchestration
-            ?.laneTurnEnded(sessionId, turnId, outcome)
+            ?.laneTurnEnded(sessionId, turnId, outcome, durationMs)
             .catch(() => undefined),
         waiting: (sessionId, turnId, status) =>
-          this.#orchestration?.laneWaiting(sessionId, turnId, status),
+          void this.#orchestration?.laneWaiting(sessionId, turnId, status).catch(() => undefined),
       });
     }
     return await operation(this.#webRead);

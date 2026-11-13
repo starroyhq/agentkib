@@ -36,6 +36,22 @@ const INCOMPATIBLE_ERRORS = [
 // after later turns: a workspace switched back on connects, and a version
 // refusal reaches the AgentKib dialog once the new session is indexed.
 const AUTO_FINAL_ERRORS = ["bridge-auto-declined", "unsupported-native-identity"];
+// A Project Agent (docs/agents/project-agent.md): when the Runtime names this feature, a session
+// it makes one gets its worker tools here, under this plugin's name, and its reports as queued
+// messages. A Runtime that does not name it hears nothing of it.
+const LEAD_FEATURE = "lead-tools";
+// The engine takes one unmatched hook per event, so each tool AgentKib may give is served by a
+// hook of its own; a tool of another name is not registered.
+const LEAD_TOOLS = [
+  "worker_list",
+  "worker_open",
+  "worker_send",
+  "worker_read",
+  "worker_stop",
+  "worker_approve",
+  "worker_answer",
+];
+// $.tool.register is verified on 2.1.301 (the oldest CLI that connects) and 2.1.323.
 function utf8Prefix(value, budget) {
   let read = 0;
   let written = 0;
@@ -229,7 +245,108 @@ export function initialState() {
     autoConnecting: false,
     autoTries: new Map(),
     autoDone: new Set(),
+    // The worker tools registered last; why registering them failed on this connection.
+    leadToolsKey: null,
+    leadUnavailable: null,
+    // Reports put in the outbox, said to the Runtime on the next poll that succeeds.
+    takenReports: new Set(),
   };
+}
+
+/** Runs a Project Agent's worker tool call in AgentKib and answers it as the tool. */
+async function leadCall($, state, name, e) {
+  if (!leadFeature(state) || !state.connection || state.connection.leaseId === "reconnecting")
+    return { deny: "AgentKib is not connected, so this session cannot direct its workers now." };
+  const {
+    tool: _tool,
+    tool_use_id: _id,
+    consent: _consent,
+    agentId: _agent,
+    requestMeta: _meta,
+    ...input
+  } = e;
+  try {
+    const answer = await request($, state, "/v1/lead-call", { ...lease(state), name, input });
+    if (typeof answer?.text !== "string") return { deny: "AgentKib gave no answer." };
+    return answer.isError ? { deny: answer.text } : { result: answer.text };
+  } catch (error) {
+    return { deny: `AgentKib could not run ${name} (${error?.message ?? "failed"}).` };
+  }
+}
+
+/** Whether the Runtime takes a Project Agent on this connection (`features` of its reply). */
+function leadOffered(state) {
+  return (
+    Array.isArray(state.connection?.features) && state.connection.features.includes(LEAD_FEATURE)
+  );
+}
+
+/** Whether this session can be a Project Agent now: offered, and its tools could be added. */
+function leadFeature(state) {
+  return leadOffered(state) && !state.leadUnavailable;
+}
+
+function validLeadTool(tool) {
+  return (
+    tool &&
+    typeof tool === "object" &&
+    LEAD_TOOLS.includes(tool.name) &&
+    typeof tool.description === "string" &&
+    tool.description.length > 0 &&
+    tool.description.length <= 8192 &&
+    tool.inputSchema &&
+    typeof tool.inputSchema === "object" &&
+    !Array.isArray(tool.inputSchema)
+  );
+}
+
+/**
+ * What the Runtime says of this Project Agent on a poll: its worker tools, registered again only
+ * when they change (the engine cannot withdraw one, so a session that stops leading keeps the
+ * names and AgentKib refuses their calls), and reports, each queued as a message of its own.
+ */
+async function applyLead($, state, lead) {
+  if (!lead || typeof lead !== "object") return;
+  const tools = (Array.isArray(lead.tools) ? lead.tools : [])
+    .slice(0, LEAD_TOOLS.length)
+    .filter(validLeadTool);
+  const key = JSON.stringify(tools);
+  if (key !== state.leadToolsKey) {
+    try {
+      for (const tool of tools)
+        await $.tool.register({
+          name: tool.name,
+          description: tool.description,
+          inputSchema: tool.inputSchema,
+          isDeferred: false,
+        });
+      state.leadToolsKey = key;
+    } catch (error) {
+      // The next poll tells the Runtime, which then takes no Project Agent here.
+      state.leadUnavailable = String(error?.message ?? error).slice(0, 200);
+      await note(
+        $,
+        `AgentKib could not add the Project Agent's worker tools to this session: ${state.leadUnavailable}`,
+      );
+      return;
+    }
+  }
+  for (const report of Array.isArray(lead.reports) ? lead.reports : []) {
+    if (
+      typeof report?.id !== "string" ||
+      state.takenReports.has(report.id) ||
+      state.outbox.some((item) => item.id === report.id)
+    )
+      continue;
+    if (!validSend({ text: report.text, requestId: report.id })) {
+      state.takenReports.add(report.id);
+      continue;
+    }
+    if (!writable(state) || state.outbox.length >= MAX_OUTBOX) break;
+    state.outbox.push(outboxItem({ commandId: report.id, text: report.text }, "queue", null));
+    state.takenReports.add(report.id);
+    state.dirty = true;
+  }
 }
 
 function lease(state) {
@@ -1113,17 +1230,26 @@ async function pump($, state, nativeEvent = false) {
     await identity($, state);
     for (const result of state.unacknowledgedResults.values()) await reportResult($, state, result);
     const connection = state.connection;
+    const lead = leadFeature(state);
+    const taken = [...state.takenReports];
     const response = await request($, state, "/v1/commands", {
       ...lease(state),
       afterCommandId: state.afterCommandId,
       waitMs: 20_000,
+      ...(leadOffered(state)
+        ? { leadTools: lead, ...(taken.length ? { takenReports: taken } : {}) }
+        : {}),
     });
     if (state.closed || state.connection !== connection) return;
     if (!Array.isArray(response?.commands) || response.commands.length > 1) {
       invalidate(state, "invalid-command-batch");
       return;
     }
+    // The Runtime has dropped them; a report still listed again is taken only once.
+    for (const id of taken)
+      if (!response.lead?.reports?.some?.((r) => r?.id === id)) state.takenReports.delete(id);
     for (const command of response.commands) await execute($, state, command);
+    if (lead) await applyLead($, state, response.lead);
   } catch {
     state.dirty = true;
   } finally {
@@ -1213,6 +1339,8 @@ async function connectOnce($, state, ticket, generation) {
 
 async function adopt($, state, observed, response) {
   state.connection = connectionFrom(response);
+  state.leadUnavailable = null;
+  state.leadToolsKey = null;
   state.credentialPath = response.credentialPath;
   state.closed = false;
   state.sendDisabled = false;
@@ -1707,13 +1835,20 @@ export function register(on) {
     state.activityVerified = true;
     state.revision += 1;
     const pending = state.pendingSend;
-    if (pending?.observed && !pending.competing && pending.text === e.text)
-      pending.turnId = e.turnId;
+    const fromAgentKib = pending?.observed && !pending.competing && pending.text === e.text;
+    if (fromAgentKib) pending.turnId = e.turnId;
     // Steers waiting for the next turn join whichever turn starts, the terminal's too.
     for (const item of state.outbox)
       if (item.kind === "steer" && item.status === "pending" && item.turnId === null)
         item.turnId = e.turnId;
-    record(state, { type: "turn-start", turnId: e.turnId, revision: state.revision });
+    record(state, {
+      type: "turn-start",
+      turnId: e.turnId,
+      revision: state.revision,
+      // Who typed it, for a Project Agent's count of turns without the person. A turn without
+      // text (a continuation, background work) is neither.
+      ...(leadFeature(state) && e.text ? { origin: fromAgentKib ? "agentkib" : "terminal" } : {}),
+    });
     state.dirty = true;
     if (state.needsReconnect) void pump($, state, true);
     return next(e);
@@ -1825,6 +1960,29 @@ export function register(on) {
     if (next.called) throw new Error(next.error.message);
     return next(e);
   });
+  // A Project Agent's worker tools: AgentKib runs each call for this session and answers it. The
+  // person's own permission rules decide whether it may run, as for any tool.
+  on("tool.call", { tool: "mcp__agentkib-bridge__worker_list" }, ($, e) =>
+    leadCall($, state, "worker_list", e),
+  );
+  on("tool.call", { tool: "mcp__agentkib-bridge__worker_open" }, ($, e) =>
+    leadCall($, state, "worker_open", e),
+  );
+  on("tool.call", { tool: "mcp__agentkib-bridge__worker_send" }, ($, e) =>
+    leadCall($, state, "worker_send", e),
+  );
+  on("tool.call", { tool: "mcp__agentkib-bridge__worker_read" }, ($, e) =>
+    leadCall($, state, "worker_read", e),
+  );
+  on("tool.call", { tool: "mcp__agentkib-bridge__worker_stop" }, ($, e) =>
+    leadCall($, state, "worker_stop", e),
+  );
+  on("tool.call", { tool: "mcp__agentkib-bridge__worker_approve" }, ($, e) =>
+    leadCall($, state, "worker_approve", e),
+  );
+  on("tool.call", { tool: "mcp__agentkib-bridge__worker_answer" }, ($, e) =>
+    leadCall($, state, "worker_answer", e),
+  );
   // Managed settings or a Team or Enterprise login load sec-default, which skips classic hooks of
   // user-installed plugins, so the PermissionRequest hook below never runs there. tool.check still
   // does, after tool.call: an `ask` verdict that a person answers (not a host) means the mode's

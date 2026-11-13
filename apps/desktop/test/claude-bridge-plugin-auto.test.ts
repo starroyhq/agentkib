@@ -224,7 +224,7 @@ describe("Claude bridge plugin automatic pairing", () => {
     const f = await fixture({ packageVersion: "0.9.0" });
     await f.completeTurn();
     expect(f.autoPairs()).toHaveLength(1);
-    expect(f.autoPairs()[0].body).toMatchObject({ pluginVersion: "0.4.0" });
+    expect(f.autoPairs()[0].body).toMatchObject({ pluginVersion: "0.5.0" });
     expect(await f.status()).toContain("is connected");
   });
 

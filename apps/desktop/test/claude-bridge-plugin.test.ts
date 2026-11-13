@@ -321,6 +321,146 @@ async function fixture(
   };
 }
 
+describe("Claude Code native session plugin as a Project Agent", () => {
+  /** A Runtime that names `lead-tools`, with this lead info in its command replies. */
+  async function leading(options: { feature?: boolean; register?: boolean } = {}) {
+    const registered: Value[] = [];
+    let lead: Value | null = null;
+    let answer: Value = { text: '{"workers":[]}', isError: false };
+    const f = await fixture({
+      configure(api) {
+        if (options.register !== false)
+          api.tool = {
+            register: async (spec: Value) => {
+              registered.push(spec);
+              return { tool: `mcp__agentkib-bridge__${spec.name}` };
+            },
+          };
+        const fetch = api.http.fetch;
+        api.http.fetch = async (url: string, init: Value) => {
+          const response = await fetch(url, init);
+          if (init.method === "GET" || !response.ok) return response;
+          const value = JSON.parse(response.text);
+          if ((url.endsWith("/pair") || url.endsWith("/reconnect")) && options.feature !== false)
+            return { ...response, text: JSON.stringify({ ...value, features: ["lead-tools"] }) };
+          if (url.endsWith("/commands") && lead)
+            return { ...response, text: JSON.stringify({ ...value, lead }) };
+          if (url.endsWith("/lead-call")) return { ...response, text: JSON.stringify(answer) };
+          return response;
+        };
+      },
+    });
+    const polls = () =>
+      f.calls.filter((call) => call.url.endsWith("/commands")).map((call) => call.body);
+    return {
+      f,
+      registered,
+      polls,
+      setLead(value: Value | null) {
+        lead = value;
+      },
+      setAnswer(value: Value) {
+        answer = value;
+      },
+      call(input: Value = {}) {
+        return f.run("tool.call", {
+          tool: "mcp__agentkib-bridge__worker_list",
+          tool_use_id: "toolu_lead",
+          ...input,
+        });
+      },
+    };
+  }
+  const tool = {
+    name: "worker_list",
+    description: "List your workers.",
+    inputSchema: { type: "object", properties: {} },
+  };
+
+  it("registers the worker tools AgentKib gives it and runs their calls through AgentKib", async () => {
+    const l = await leading();
+    await l.f.tick();
+    expect(l.polls().at(-1)).toMatchObject({ leadTools: true });
+    l.setLead({ tools: [tool], reports: [] });
+    await l.f.tick();
+    expect(l.registered).toEqual([{ ...tool, isDeferred: false }]);
+    // The same tools are not registered again.
+    await l.f.tick();
+    expect(l.registered).toHaveLength(1);
+    expect(await l.call({ limit: 2 })).toEqual({ result: '{"workers":[]}' });
+    const call = l.f.calls.find((entry) => entry.url.endsWith("/lead-call"))!;
+    expect(call.body).toMatchObject({ name: "worker_list", input: { limit: 2 } });
+    expect(call.body.input).not.toHaveProperty("tool");
+    expect(call.init.headers.Authorization).toBe(`Bearer ${l.f.connection.token}`);
+    l.setAnswer({ text: '{"accepted":false,"reason":"delegation-paused"}', isError: true });
+    expect(await l.call()).toEqual({ deny: '{"accepted":false,"reason":"delegation-paused"}' });
+  });
+
+  it("queues each report as a message of its own and says so once it holds it", async () => {
+    const l = await leading();
+    const report = {
+      id: randomUUID(),
+      text: '[AgentKib report] Worker "api" (Codex) · turn ended: completed',
+    };
+    const before = l.f.dispatches;
+    l.setLead({ tools: [tool], reports: [report] });
+    await l.f.tick();
+    // The terminal is idle: the report went out as the next prompt, AgentKib's.
+    expect(l.f.dispatches).toBe(before + 1);
+    await l.f.tick();
+    expect(l.polls().at(-1)).toMatchObject({ takenReports: [report.id] });
+    // Listed again before the Runtime heard of it, it is not sent twice.
+    expect(l.f.dispatches).toBe(before + 1);
+    await l.f.flush();
+    expect(
+      l.f
+        .events()
+        .filter((entry) => entry.event.type === "turn-start")
+        .map((entry) => entry.event.origin),
+    ).toContain("agentkib");
+    // Once the Runtime has dropped it, it is not mentioned again.
+    l.setLead({ tools: [tool], reports: [] });
+    await l.f.tick();
+    await l.f.tick();
+    expect(l.polls().at(-1)).not.toHaveProperty("takenReports");
+  });
+
+  it("keeps to the 0.4.0 messages for a Runtime that does not name the feature", async () => {
+    const l = await leading({ feature: false });
+    l.setLead({ tools: [tool], reports: [] });
+    await l.f.tick();
+    await l.f.tick();
+    expect(l.polls().every((poll) => !("leadTools" in poll) && !("takenReports" in poll))).toBe(
+      true,
+    );
+    expect(l.registered).toEqual([]);
+    expect(await l.call()).toMatchObject({ deny: expect.stringContaining("not connected") });
+    expect(l.f.calls.some((entry) => entry.url.endsWith("/lead-call"))).toBe(false);
+  });
+
+  it("tells the Runtime, and the terminal, when its tools cannot be added", async () => {
+    const l = await leading({ register: false });
+    await l.f.tick();
+    expect(l.polls().at(-1)).toMatchObject({ leadTools: true });
+    l.setLead({ tools: [tool], reports: [] });
+    await l.f.tick();
+    await l.f.tick();
+    expect(l.polls().at(-1)).toMatchObject({ leadTools: false });
+    expect(await l.call()).toMatchObject({ deny: expect.stringContaining("not connected") });
+  });
+
+  it("says who started a turn only to a Runtime that takes it", async () => {
+    const l = await leading();
+    await l.f.run("turn.start", { text: "typed in the terminal", turnId: randomUUID() });
+    await l.f.run("turn.start", { text: "", turnId: randomUUID() });
+    const starts = l.f.events().filter((entry) => entry.event.type === "turn-start");
+    await l.f.flush();
+    const sent = l.f.events().filter((entry) => entry.event.type === "turn-start");
+    expect(sent.map((entry) => entry.event.origin)).toEqual(["terminal", undefined]);
+    expect(starts.length).toBeLessThanOrEqual(sent.length);
+  });
+});
+
 describe("Claude Code native session plugin", () => {
   it("explains an expired connection code and the next step in the terminal", async () => {
     const f = await fixture({ connect: false });
@@ -349,7 +489,7 @@ describe("Claude Code native session plugin", () => {
       const f = await fixture({ version });
       expect(f.calls.find((call) => call.url.endsWith("/pair"))?.body).toMatchObject({
         cliVersion: version,
-        pluginVersion: "0.4.0",
+        pluginVersion: "0.5.0",
         nativeCapabilities: {
           version: 1,
           available: [
@@ -513,7 +653,7 @@ describe("Claude Code native session plugin", () => {
         bindingId: f.connection.bindingId,
         nativeId: f.nativeId,
         cwd: "/isolated/workspace",
-        pluginVersion: "0.4.0",
+        pluginVersion: "0.5.0",
       });
       expect(report.body).not.toHaveProperty("nativeCapabilities");
       expect(report.body).not.toHaveProperty("token");
@@ -772,7 +912,7 @@ describe("Claude Code native session plugin", () => {
     const result = await f.run("command.run", { command: "agentkib-connect", args: f.ticket });
     expect(result.text).toContain("AgentKib connected");
     const pair = f.calls.find((call) => call.url.endsWith("/pair"))?.body;
-    expect(pair).toMatchObject({ pluginVersion: "0.4.0", cliVersion: "2.1.307" });
+    expect(pair).toMatchObject({ pluginVersion: "0.5.0", cliVersion: "2.1.307" });
     expect(pair).not.toHaveProperty("connectionError");
   });
   it.each(["2.1.301-beta", "02.1.301", "not-a-version"])(
@@ -960,7 +1100,7 @@ describe("Claude Code native session plugin", () => {
       ).toHaveLength(1);
       expect(set).toHaveBeenCalledWith(
         "compatibility:credential-store:1",
-        "agentkib-bridge:0.4.0:capabilities:1",
+        "agentkib-bridge:0.5.0:capabilities:1",
       );
       expect((await f.run("command.run", { command: "agentkib-status", args: "" })).text).toContain(
         "is connected",
@@ -1809,7 +1949,7 @@ describe("Claude Code native session plugin", () => {
     });
     expect(pair.init.headers.Authorization).toBeUndefined();
     expect([...f.stored]).toEqual([
-      ["compatibility:credential-store:1", "agentkib-bridge:0.4.0:capabilities:1"],
+      ["compatibility:credential-store:1", "agentkib-bridge:0.5.0:capabilities:1"],
       [`credentialPath:${f.nativeId}`, f.connection.credentialPath],
     ]);
     expect(JSON.stringify([...f.stored])).not.toContain(f.connection.token);

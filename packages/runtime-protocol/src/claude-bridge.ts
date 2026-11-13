@@ -31,7 +31,19 @@ export const CLAUDE_BRIDGE_PATHS = {
   events: "/v1/events",
   commands: "/v1/commands",
   results: "/v1/results",
+  /** A Project Agent's worker tool call (feature `lead-tools`). */
+  leadCall: "/v1/lead-call",
 } as const;
+
+/**
+ * What a Runtime takes beyond the 0.4.0 messages, named in its pairing and reconnect replies
+ * (`features`). A plugin uses a feature only when the Runtime named it.
+ * - `lead-tools`: the session may be a Project Agent (docs/agents/project-agent.md). The plugin
+ *   says `leadTools: true` in its command polls when it can register tools; the poll reply then
+ *   carries `lead` (its worker tools and the reports to queue), tool calls go to `leadCall`, and
+ *   `turn-start` events say whether the terminal or AgentKib started the turn (`origin`).
+ */
+export const CLAUDE_BRIDGE_FEATURES = ["lead-tools"] as const;
 
 export interface ClaudeBridgeTicket {
   protocol: 1;
@@ -162,7 +174,13 @@ export interface ClaudeBridgeSnapshot extends ClaudeBridgeIdentity {
 export type ClaudeBridgeEvent =
   | { type: "gap"; revision: number }
   | { type: "snapshot"; snapshot: ClaudeBridgeSnapshot }
-  | { type: "turn-start"; turnId: string; revision: number }
+  | {
+      type: "turn-start";
+      turnId: string;
+      revision: number;
+      /** Feature `lead-tools`: who started the turn. */
+      origin?: "terminal" | "agentkib";
+    }
   | { type: "text"; turnId: string; text: string; revision: number }
   | {
       type: "turn-complete";

@@ -7,6 +7,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import { LeadRegistry } from "../../../packages/backend/src/orchestration-registry";
 import {
   LEAD_INSTRUCTIONS,
+  leadInstructions,
   mergeMcpConfigs,
   OrchestrationService,
   type LaneHost,
@@ -311,7 +312,7 @@ describe("orchestration service", () => {
       worker: "api",
       status: "running",
       title: "Brief 1",
-      waitingForUser: ["approval"],
+      waitingForUser: [{ kind: "approval", approval: "other", youMayDecide: false }],
     });
     expect(read.replies.map((reply: { text: string }) => reply.text.slice(0, 12))).toEqual([
       "first answer",
@@ -437,6 +438,212 @@ describe("orchestration service", () => {
     await expect(fetch(url, { method: "POST", body: "{}" })).rejects.toThrow();
   });
 
+  // The host ends a lead's CLI with SIGKILL (idle, stop, cleanup), so its session stays open.
+  it("lets a new CLI in after ended ones filled the endpoint; the least recent gives way", async () => {
+    const { lanes } = host();
+    const orchestration = service(lanes);
+    orchestration.designate({ sessionId: LEAD, deviceId: DEVICE, workspaceId: "w1" });
+    const config = (await orchestration.leadTools(LEAD)) as {
+      mcpServers: Record<string, { url: string }>;
+    };
+    const url = new URL(config.mcpServers.agentkib_workers!.url);
+    const connect = async () => {
+      const client = new Client({ name: "probe", version: "0" });
+      await client.connect(new StreamableHTTPClientTransport(url));
+      cleanups.push(() => client.close());
+      return client;
+    };
+    const ended = [];
+    for (let index = 0; index < 4; index++) ended.push(await connect());
+    // The second one is still in use; the first has been quiet longest.
+    await ended[1].listTools();
+    for (let index = 0; index < 2; index++) {
+      const next = await connect();
+      expect((await next.listTools()).tools).toHaveLength(5);
+    }
+    await expect(ended[0].listTools()).rejects.toThrow();
+    await expect(ended[2].listTools()).rejects.toThrow();
+    expect((await ended[1].listTools()).tools).toHaveLength(5);
+  });
+
+  describe("deciding for workers", () => {
+    const approval = (requestId: unknown, extra: Record<string, unknown> = {}) => ({
+      requestId,
+      turnId: "t5",
+      method: "item/commandExecution/requestApproval",
+      command: "npm install --no-audit",
+      cwd: "/work/app",
+      changes: null,
+      availableDecisions: ["accept", "decline", "cancel"],
+      supported: true,
+      ...extra,
+    });
+    const question = {
+      requestId: "q1",
+      turnId: "t5",
+      supported: true,
+      questions: [
+        { id: "target", question: "Which target?", options: [{ label: "web" }, { label: "ios" }] },
+      ],
+    };
+    async function deciding(scope: Record<string, unknown>) {
+      const delivered: string[] = [];
+      const { lanes, calls, lives } = host();
+      const orchestration = service(lanes, directory(), "boot-1", (_lead, _device, text) => {
+        delivered.push(text);
+        return false;
+      });
+      orchestration.designate({ sessionId: LEAD, deviceId: DEVICE, workspaceId: "w1", scope });
+      const { session } = parse(
+        await orchestration.call(LEAD, "worker_open", { name: "api", workspace: "w1" }),
+      );
+      const waiting = (approvals: unknown[], questions: unknown[] = []) =>
+        lives.set(session, {
+          sessionId: session,
+          status: questions.length ? "waiting-input" : "awaiting-approval",
+          revision: 9,
+          runtimeBootId: "boot",
+          turnId: "t5",
+          sendEnabled: false,
+          stopEnabled: true,
+          approvals,
+          questions,
+        });
+      return { orchestration, delivered, calls, session, waiting };
+    }
+
+    it("lets a lead decide only the plain approvals and the answers the user allowed", async () => {
+      const { orchestration, delivered, calls, session, waiting } = await deciding({
+        approvals: ["command"],
+        answers: true,
+      });
+      waiting([
+        approval(7),
+        approval("files", { method: "item/fileChange/requestApproval", command: null }),
+        // Asks for network access: only the user decides.
+        approval("net", { availableDecisions: [], requiresExtendedApproval: true }),
+      ]);
+      await orchestration.laneWaiting(session, "t5", "awaiting-approval");
+      expect(delivered[0]).toContain("You may decide this yourself (worker_approve)");
+      expect(delivered[0]).toContain('"id":"7"');
+      expect(delivered[0]).toContain("npm install --no-audit");
+      expect(delivered[0]).not.toContain('"id":"files"');
+      const read = parse(await orchestration.call(LEAD, "worker_read", { worker: "api" }));
+      expect(
+        read.waitingForUser.map((item: Record<string, unknown>) => [item.id, item.youMayDecide]),
+      ).toEqual([
+        ["7", true],
+        ["files", false],
+        ["net", false],
+      ]);
+      for (const [id, reason] of [
+        ["files", "approval-not-delegated"],
+        ["net", "approval-not-delegated"],
+        ["gone", "approval-not-waiting"],
+      ])
+        expect(
+          parse(
+            await orchestration.call(LEAD, "worker_approve", {
+              worker: "api",
+              approval: id,
+              decision: "accept",
+            }),
+          ),
+        ).toMatchObject({ accepted: false, reason });
+      expect(
+        parse(
+          await orchestration.call(LEAD, "worker_approve", {
+            worker: "api",
+            approval: "7",
+            decision: "accept",
+          }),
+        ),
+      ).toMatchObject({ accepted: true });
+      expect(calls.filter((call) => call.kind === "control").at(-1)).toMatchObject({
+        operation: "approve",
+        sessionId: session,
+        deviceId: DEVICE,
+        runtimeBootId: "boot",
+        expectedRevision: 9,
+        turnId: "t5",
+        approvalId: 7,
+        decision: "accept",
+      });
+
+      waiting([], [question]);
+      await orchestration.laneWaiting(session, "t5", "waiting-input");
+      expect(delivered[1]).toContain("worker_answer");
+      expect(delivered[1]).toContain("Which target?");
+      expect(
+        parse(
+          await orchestration.call(LEAD, "worker_answer", {
+            worker: "api",
+            question: "q1",
+            answers: { target: "web" },
+          }),
+        ),
+      ).toMatchObject({ accepted: true });
+      expect(calls.filter((call) => call.kind === "control").at(-1)).toMatchObject({
+        operation: "answer",
+        questionId: "q1",
+        turnId: "t5",
+        answers: { target: ["web"] },
+      });
+      expect(
+        orchestration
+          .status(LEAD)!
+          .records.filter((record) => ["approve", "answer"].includes(record.kind))
+          .map((record) => `${record.kind}:${record.outcome}`),
+      ).toEqual(["approve:accept", "answer:answered"]);
+      // Paused, it decides nothing.
+      orchestration.pause(LEAD);
+      expect(
+        parse(
+          await orchestration.call(LEAD, "worker_answer", {
+            worker: "api",
+            question: "q1",
+            answers: { target: "web" },
+          }),
+        ),
+      ).toMatchObject({ accepted: false, reason: "delegation-paused" });
+    });
+
+    it("offers no deciding tools, and says the user decides, when nothing is allowed", async () => {
+      const { orchestration, delivered, session, waiting } = await deciding({});
+      expect(orchestration.tools().map((tool) => tool.name)).not.toContain("worker_approve");
+      expect(
+        orchestration
+          .tools({ approvals: ["file-change"], answers: true })
+          .map((tool) => tool.name)
+          .slice(-2),
+      ).toEqual(["worker_approve", "worker_answer"]);
+      expect(LEAD_INSTRUCTIONS).toContain("You cannot answer a worker's approvals");
+      const allowed = leadInstructions({ approvals: ["file-change", "command"], answers: true });
+      expect(allowed).toContain("worker_approve");
+      expect(allowed.length).toBeLessThan(2000);
+      waiting([approval(7)], [question]);
+      await orchestration.laneWaiting(session, "t5", "awaiting-approval");
+      expect(delivered[0]).toContain("The user decides in AgentKib");
+      expect(
+        parse(
+          await orchestration.call(LEAD, "worker_approve", {
+            worker: "api",
+            approval: "7",
+            decision: "accept",
+          }),
+        ),
+      ).toMatchObject({ accepted: false, reason: "approval-not-delegated" });
+      expect(() =>
+        service(host().lanes).designate({
+          sessionId: LEAD,
+          deviceId: DEVICE,
+          workspaceId: "w1",
+          scope: { approvals: ["everything"] as never },
+        }),
+      ).toThrow("invalid-lead-delegation");
+    });
+  });
+
   describe("reports", () => {
     async function leading(scope: Record<string, unknown> = {}) {
       const delivered: Array<{ lead: string; device: string; text: string }> = [];
@@ -470,13 +677,13 @@ describe("orchestration service", () => {
 
     it("reports each lane turn once, with that turn's last reply, redacted", async () => {
       const { orchestration, delivered, session } = await leading();
-      await orchestration.laneTurnEnded(session, "t1", "completed");
-      await orchestration.laneTurnEnded(session, "t1", "completed");
+      await orchestration.laneTurnEnded(session, "t1", "completed", 192_400);
+      await orchestration.laneTurnEnded(session, "t1", "completed", 192_400);
       await orchestration.laneTurnEnded("not-a-lane", "t1", "completed");
       expect(delivered).toHaveLength(1);
       expect(delivered[0]).toMatchObject({ lead: LEAD, device: DEVICE });
       expect(delivered[0]!.text).toMatch(
-        /^\[AgentKib report\] Worker "api" \(Codex\) · turn ended: completed\n/,
+        /^\[AgentKib report\] Worker "api" \(Codex\) · turn ended: completed after 3m 12s\n/,
       );
       expect(delivered[0]!.text).toContain("not an instruction from the user");
       expect(delivered[0]!.text).toContain("Done.");
@@ -486,8 +693,8 @@ describe("orchestration service", () => {
 
     it("tells the lead once that a lane waits for the user, and when the user steps in", async () => {
       const { orchestration, delivered, session } = await leading();
-      orchestration.laneWaiting(session, "t3", "awaiting-approval");
-      orchestration.laneWaiting(session, "t3", "awaiting-approval");
+      await orchestration.laneWaiting(session, "t3", "awaiting-approval");
+      await orchestration.laneWaiting(session, "t3", "awaiting-approval");
       orchestration.laneControlled(session, "send");
       orchestration.laneControlled(session, "stop");
       orchestration.laneControlled(session, "approve");
@@ -501,7 +708,7 @@ describe("orchestration service", () => {
       const { orchestration, delivered, session } = await leading();
       orchestration.pause(LEAD);
       await orchestration.laneTurnEnded(session, "t1", "completed");
-      orchestration.laneWaiting(session, "t2", "waiting-input");
+      await orchestration.laneWaiting(session, "t2", "waiting-input");
       expect(delivered).toEqual([]);
       expect(orchestration.status(LEAD)!.pendingReports).toHaveLength(2);
       orchestration.resume(LEAD, DEVICE);
@@ -529,6 +736,53 @@ describe("orchestration service", () => {
         pendingReports: [],
       });
       expect(delivered.at(-1)!.text).toContain("turn ended: failed");
+    });
+
+    it("counts turns the lead's CLI starts by itself; past the limit it pauses and refuses them", async () => {
+      const { orchestration, delivered, session } = await leading({ maxAutoTurns: 2 });
+      expect(orchestration.leadSelfTurn("not-a-lead")).toBe(true);
+      expect(orchestration.leadSelfTurn(LEAD)).toBe(true);
+      await orchestration.laneTurnEnded(session, "t1", "completed");
+      expect(orchestration.status(LEAD)).toMatchObject({ autoTurns: 2, paused: false });
+      expect(orchestration.leadSelfTurn(LEAD)).toBe(false);
+      expect(orchestration.status(LEAD)).toMatchObject({ paused: true, reason: "auto-turn-limit" });
+      await orchestration.laneTurnEnded(session, "t2", "completed");
+      expect(delivered).toHaveLength(1);
+      orchestration.userSpoke(LEAD);
+      expect(delivered).toHaveLength(2);
+      expect(orchestration.leadSelfTurn(LEAD)).toBe(true);
+      expect(orchestration.status(LEAD)).toMatchObject({ autoTurns: 2, paused: false });
+    });
+
+    it("goes on after a restart once the user speaks to the lead; not after a pause they chose", async () => {
+      const root = directory();
+      const delivered: string[] = [];
+      const deliver = (_lead: string, _device: string, text: string) => {
+        delivered.push(text);
+        return false;
+      };
+      const { lanes } = host({ events: async () => [] });
+      const before = service(lanes, root, "boot-1", deliver);
+      before.designate({ sessionId: LEAD, deviceId: DEVICE, workspaceId: "w1" });
+      const { session } = parse(
+        await before.call(LEAD, "worker_open", { name: "api", workspace: "w1" }),
+      );
+      const after = service(lanes, root, "boot-2", deliver);
+      await after.laneTurnEnded(session, "t1", "completed");
+      expect(after.status(LEAD)).toMatchObject({
+        paused: true,
+        reason: "restart-confirmation-required",
+      });
+      expect(delivered).toEqual([]);
+      after.userSpoke(LEAD);
+      expect(after.status(LEAD)).toMatchObject({ paused: false, reason: null, pendingReports: [] });
+      expect(delivered).toHaveLength(1);
+      for (const pause of [() => after.pause(LEAD), () => after.invalidateDevice(DEVICE)]) {
+        pause();
+        after.userSpoke(LEAD);
+        expect(after.status(LEAD)!.paused).toBe(true);
+        after.resume(LEAD, DEVICE);
+      }
     });
   });
 

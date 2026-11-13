@@ -304,5 +304,40 @@ describe.skipIf(process.platform !== "darwin")(
         .poll(() => processAlive(fake.childPid("command")!), { timeout: 8000 })
         .toBe(false);
     }, 60_000);
+
+    it("stops a turn the CLI starts by itself when the host refuses it; the worker stays", async () => {
+      let asked = 0;
+      const { fake, runner, results, sent } = start(
+        {
+          onUser: [...startsBackgroundCommand, { __spawn: "command", detached: true }],
+          // A Monitor event wakes the CLI, and the turn runs until it is interrupted.
+          afterResult: [{ __sleep: 200 }, { type: "system", subtype: "status", status: "requesting" }],
+          onInterrupt: interrupted,
+        },
+        {
+          backgroundTasks: true,
+          onSelfTurn: () => {
+            asked++;
+            return false;
+          },
+        },
+      );
+      await sent;
+      await expect.poll(() => asked, { timeout: 15_000 }).toBe(1);
+      await expect
+        .poll(() => runner.snapshot().lastOutcome, { timeout: 15_000 })
+        .toBe("cancelled");
+      expect(fake.frames().some((frame) => frame.request?.subtype === "interrupt")).toBe(true);
+      expect(runner.snapshot()).toMatchObject({
+        status: "idle",
+        turnOrigin: "self",
+        reason: null,
+        sendEnabled: true,
+        backgroundTasks: [{ id: TASK, kind: "command" }],
+      });
+      expect(results).toHaveLength(1);
+      expect(runner.hasWorker).toBe(true);
+      expect(processAlive(fake.childPid("command")!)).toBe(true);
+    }, 60_000);
   },
 );

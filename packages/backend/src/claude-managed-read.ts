@@ -221,6 +221,8 @@ export type ClaudeContinuationOptions = {
   leadTools?: (sessionId: string) => Promise<Record<string, unknown> | null>;
   /** The person sent a message to this session themselves, not a queued or automatic one. */
   userSent?: (sessionId: string) => void;
+  /** The CLI started a turn by itself; false stops it (a Project Agent past its turn limit). */
+  selfTurn?: (sessionId: string) => boolean;
   isSessionObserved?: (sessionId: string) => boolean;
   isSessionBridged?: (sessionId: string) => boolean;
 };
@@ -782,6 +784,11 @@ export class ClaudeManagedReadOwner {
         this.continuation.userSent?.(id);
       } catch {
         /* Bookkeeping of others never blocks the person's message. */
+      }
+      // The person answered what the notice asked for; the worker it was about is still there.
+      if (this.#continuationNotices.get(id) === "lead-turn-limit") {
+        this.#continuationNotices.delete(id);
+        this.#continuationNoticeIds.delete(id);
       }
       const host = this.#hostState.read(id);
       if (host.goal?.status === "active")
@@ -1352,6 +1359,19 @@ export class ClaudeManagedReadOwner {
         onSelfTurnLimit: () => {
           this.#continuationNotices.set(id, "background-limit");
           this.#continuationNoticeIds.set(id, randomUUID());
+        },
+        onSelfTurn: () => {
+          let allowed = true;
+          try {
+            allowed = this.continuation.selfTurn?.(id) !== false;
+          } catch {
+            /* Bookkeeping of others never stops the session's own work. */
+          }
+          if (!allowed) {
+            this.#continuationNotices.set(id, "lead-turn-limit");
+            this.#continuationNoticeIds.set(id, randomUUID());
+          }
+          return allowed;
         },
         onResult: (result) => {
           new ReadStateLedger(this.dataDir).record(
@@ -3834,6 +3854,18 @@ export class ClaudeManagedReadOwner {
   queueReport(id: string, deviceId: string, text: string): boolean {
     if (!this.hasManagedSession(id)) throw new Error("session-unavailable");
     return this.#hostState.addReport(id, deviceId, text);
+  }
+
+  /** Reports waiting to start a turn of this session, or starting it now (read only). */
+  queuedReports(id: string): number {
+    return (
+      this.#hostState
+        .peek(id)
+        ?.work.filter(
+          (work) =>
+            work.kind === "report" && ["pending", "claimed", "dispatched"].includes(work.status),
+        ).length ?? 0
+    );
   }
 
   /** The workspace a managed session belongs to, also before its first turn is indexed. */

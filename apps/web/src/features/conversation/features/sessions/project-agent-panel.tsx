@@ -16,7 +16,7 @@ function projectAgentOf(value: unknown): ProjectAgent | null | undefined {
 }
 
 /**
- * Whether this managed Claude Code session is a Project Agent, from Web or a phone: its state for
+ * Whether this Claude Code or Codex session is a Project Agent, from Web or a phone: its state for
  * any paired device, and setting it up, pausing, resuming or ending it for a device with the
  * access the host asks for (`/managed/project-agent`).
  */

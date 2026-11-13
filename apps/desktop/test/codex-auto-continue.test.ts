@@ -448,6 +448,34 @@ function fixture(
   };
 }
 
+describe("a Codex Project Agent's thread", () => {
+  it("starts with its worker tools, and again without them once it no longer leads", async () => {
+    const f = fixture();
+    let url: string | null = "http://127.0.0.1:43123/lead-capability";
+    f.web.leadEndpoints(async (id) => (id === f.summary.id ? url : null));
+    const attached = () =>
+      f.requests.filter(({ method }) => ["thread/start", "thread/resume"].includes(method));
+    const config = () =>
+      (attached().at(-1)?.params as { config?: Record<string, unknown> } | undefined)?.config;
+    expect(await f.send()).toMatchObject({ accepted: true });
+    expect(config()).toMatchObject({ "mcp_servers.agentkib_workers.url": url });
+    expect(f.web.codexLeadCapable(f.summary.id)).toBe(true);
+    // Released while its turn runs: the thread starts again once the turn ends.
+    url = null;
+    await f.web.restartManagedRunner(f.summary.id);
+    const server = f.servers.at(-1)!;
+    expect(server.closed).toBe(false);
+    const before = attached().length;
+    server.complete();
+    await vi.waitFor(() => expect(server.closed).toBe(true), { timeout: 5_000 });
+    expect(await f.send()).toMatchObject({ accepted: true });
+    expect(attached()).toHaveLength(before + 1);
+    expect(config()).not.toHaveProperty("mcp_servers.agentkib_workers.url");
+    // Kept as AgentKib's, not released to the Codex app.
+    expect(f.web.isManagedSession(f.summary.id)).toBe(true);
+  });
+});
+
 describe("Codex manual compaction", () => {
   async function compact(f: ReturnType<typeof fixture>) {
     const state = await f.live();

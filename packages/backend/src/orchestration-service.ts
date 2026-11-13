@@ -276,8 +276,11 @@ export class OrchestrationService {
      * Queues a report as a turn of the lead, sent once it is idle on behalf of `deviceId`;
      * returns whether it joined a report still waiting (`ClaudeManagedReadOwner.queueReport`).
      */
-    readonly sendReport: (leadSessionId: string, deviceId: string, text: string) => boolean = () =>
-      false,
+    readonly sendReport: (
+      leadSessionId: string,
+      deviceId: string,
+      text: string,
+    ) => boolean | Promise<boolean> = () => false,
     /** Reports queued for a lead's next turn (`ClaudeManagedReadOwner.queuedReports`). */
     readonly queuedReports: (leadSessionId: string) => number = () => 0,
   ) {
@@ -570,6 +573,11 @@ export class OrchestrationService {
    * new turn counts toward the lead's automatic turns; past the limit delegation pauses.
    */
   #deliver(leadId: string, text: string): void {
+    void this.#deliverNow(leadId, text);
+  }
+
+  /** A Codex lead's report is a message AgentKib sends it, so its outcome comes later. */
+  async #deliverNow(leadId: string, text: string): Promise<void> {
     const lead = this.registry.get(leadId);
     if (!lead) return;
     const hold = (reason: string | null) =>
@@ -581,18 +589,27 @@ export class OrchestrationService {
           addLeadRecord(current, "pause", null, null, reason);
         }
       });
-    if (lead.paused) return hold(null);
-    if (lead.autoTurns >= lead.scope.maxAutoTurns) return hold("auto-turn-limit");
+    // The turn is counted before the report goes, so reports sent at once cannot pass the limit
+    // together; one that joins a waiting report, or is not sent, gives it back.
+    const verdict = this.registry.update(leadId, (current) => {
+      if (current.paused) return "paused";
+      if (current.autoTurns >= current.scope.maxAutoTurns) return "limit";
+      current.autoTurns++;
+      return "send";
+    });
+    if (verdict !== "send") return hold(verdict === "limit" ? "auto-turn-limit" : null);
+    const giveBack = () =>
+      this.registry.update(leadId, (current) => {
+        current.autoTurns = Math.max(0, current.autoTurns - 1);
+      });
     let merged: boolean;
     try {
-      merged = this.sendReport(leadId, lead.deviceId, text);
+      merged = await this.sendReport(leadId, lead.deviceId, text);
     } catch {
+      giveBack();
       return hold("report-undelivered");
     }
-    if (!merged)
-      this.registry.update(leadId, (current) => {
-        current.autoTurns++;
-      });
+    if (merged) giveBack();
   }
 
   /** A device lost or changed its authorization: what it set going stops until resumed. */

@@ -3913,8 +3913,7 @@ export class WebAccessService {
   ) {
     if (this.options.mode === "lan") throw new HttpError(403, "capability_unavailable");
     const request = this.options.claudeManagedRequest;
-    if (!request || !this.options.verifiedClaudeManaged)
-      throw new HttpError(503, "capability_unavailable");
+    if (!request) throw new HttpError(503, "capability_unavailable");
     if (Object.keys(body).some((key) => !["sessionId", "operation", "scope"].includes(key)))
       throw new HttpError(400, "invalid_input");
     const sessionId = this.field(body.sessionId);
@@ -3933,6 +3932,15 @@ export class WebAccessService {
       for (const permission of needs[operation]!) this.grant(hash, permission);
     }
     await this.codexScope(sessionId, hash, false, false);
+    // A Codex session can lead without Claude Code on this computer; a Claude Code one cannot.
+    if (
+      !this.options.verifiedClaudeManaged &&
+      !(await this.codexScope(sessionId, hash, false, true).then(
+        () => true,
+        () => false,
+      ))
+    )
+      throw new HttpError(503, "capability_unavailable");
     const lead = (value: unknown) =>
       value && typeof value === "object" && "lead" in value
         ? (

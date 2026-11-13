@@ -368,6 +368,15 @@ type ManagedRunner = {
   retiring?: boolean;
   retirementFailed?: boolean;
   leaseReleased?: boolean;
+  /** The Project Agent worker tools this thread was started with, or null. */
+  leadUrl?: string | null;
+  /** Restart once idle, keeping the session AgentKib's: its worker tools changed. */
+  restartWhenIdle?: boolean;
+  /**
+   * Whether Codex has written the thread: resumed ones are, a new one once a turn starts. A thread
+   * it has not written cannot be resumed, so it is not restarted before.
+   */
+  written?: boolean;
 };
 
 type CodexFollowerRecord = {
@@ -594,6 +603,65 @@ export class WebReadRequests {
   }
 
   /** Whether AgentKib runs this Codex session (it was created or taken over, not released). */
+  #leadEndpoint: ((sessionId: string) => Promise<string | null>) | undefined;
+
+  /**
+   * Where a Codex Project Agent's worker tools are served (`OrchestrationService.leadTools`): its
+   * thread starts with that MCP server in its configuration.
+   */
+  leadEndpoints(source: ((sessionId: string) => Promise<string | null>) | undefined): void {
+    this.#leadEndpoint = source;
+  }
+
+  /**
+   * Whether a Codex session could be a Project Agent: AgentKib runs it, now or once resumed. A
+   * session it just created may not be in the catalog yet; its record says it is Codex.
+   */
+  codexLeadCapable(sessionId: string): boolean {
+    const agent = this.store.sessions.get(sessionId)?.agent;
+    return (
+      (agent === undefined || agent === "codex") &&
+      readManagedRecords(this.dataDir, this.store).some(
+        (record) => record.id === sessionId && !record.archived,
+      )
+    );
+  }
+
+  /** Whether the Codex process running this session has the worker tools; null when none runs. */
+  runnerHasLeadTools(sessionId: string): boolean | null {
+    const runner = this.#managedRunners.get(sessionId);
+    return runner ? Boolean(runner.leadUrl) : null;
+  }
+
+  /** The workspace of a Codex session AgentKib runs, also before the catalog lists it. */
+  managedWorkspace(sessionId: string): string | null {
+    return (
+      readManagedRecords(this.dataDir, this.store).find(
+        (record) => record.id === sessionId && !record.archived,
+      )?.workspace_id ?? null
+    );
+  }
+
+  /**
+   * The session became a Project Agent or stopped being one: its thread restarts with or without
+   * the worker tools, now when idle, else once its turn ends. It stays AgentKib's.
+   */
+  async restartManagedRunner(sessionId: string): Promise<void> {
+    const runner = this.#managedRunners.get(sessionId);
+    if (!runner || runner.retiring) return;
+    const live = runner.state.snapshot(this.#bootId, false);
+    if (
+      live.status !== "idle" ||
+      live.activity ||
+      runner.written === false ||
+      this.#controlSessions.has(sessionId)
+    ) {
+      runner.restartWhenIdle = true;
+      return;
+    }
+    await this.#closeManagedRunner(sessionId, runner);
+  }
+
   isManagedSession(sessionId: string): boolean {
     return readManagedRecords(this.dataDir, this.store).some(
       (record) => record.id === sessionId && !record.released,
@@ -3276,6 +3344,7 @@ export class WebReadRequests {
           throw new Error("unconfirmed-turn");
         if (runner.state.turnId === null && runner.state.revision === request.expectedRevision)
           runner.state.acceptStartedTurn(response.turn.id, request.expectedRevision);
+        runner.written = true;
         runner.persist(runner.state);
       }
       const result = {
@@ -4170,6 +4239,14 @@ export class WebReadRequests {
       }
 
       const params = managedResumeParams(record, cwd);
+      // A Project Agent's worker tools: an MCP server for this thread only, never the user's
+      // Codex configuration.
+      const leadUrl = this.#leadEndpoint
+        ? await this.#leadEndpoint(record.id).catch(() => null)
+        : null;
+      if (leadUrl)
+        (params.config as Record<string, unknown>)["mcp_servers.agentkib_workers.url"] = leadUrl;
+      if (startingRunner) startingRunner.leadUrl = leadUrl;
       if (requestedModel) params.model = requestedModel;
       if (requestedEffort)
         (params.config as Record<string, unknown>).model_reasoning_effort = requestedEffort;
@@ -4191,6 +4268,7 @@ export class WebReadRequests {
         params,
         beforeDispatch,
       );
+      if (startingRunner) startingRunner.written = Boolean(fork || nativeId);
       if (!isObject(responseValue) || !isObject(responseValue.thread))
         throw new Error("native-session-unconfirmed");
       const response = responseValue;
@@ -5139,6 +5217,13 @@ export class WebReadRequests {
     try {
       for (const [id, runner] of this.#managedRunners) {
         if (runner.retiring || this.#controlSessions.has(id)) continue;
+        if (runner.restartWhenIdle && runner.written !== false) {
+          const now = runner.state.snapshot(this.#bootId, false);
+          if (now.status === "idle" && !now.activity) {
+            await this.#closeManagedRunner(id, runner).catch(() => undefined);
+            continue;
+          }
+        }
         const observed = this.isSessionObserved?.(id) === true;
         const left = runner.observed && !observed;
         runner.observed ||= observed;

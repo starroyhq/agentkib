@@ -93,6 +93,7 @@ import { SessionStreamHub } from "./session-stream";
 import { mergeCodexFollowerSnapshot } from "./codex-follower-stream";
 import { SessionSnapshotHistory } from "./session-snapshot-history";
 import { retainManagedLedgerReaders } from "./managed-ledger";
+import { CodexLeadReports } from "./codex-lead-reports";
 import { BackendStore } from "./store";
 import { canonicalize } from "./paths";
 import {
@@ -706,15 +707,20 @@ export class TypeScriptBackend {
         // A lead is a Claude Code session AgentKib runs, or one connected from a terminal whose
         // plugin can take the worker tools; a connected terminal gets its reports there.
         const terminal = (sessionId: string) => this.#claudeBridge?.leadCapable(sessionId) === true;
+        // A Codex session AgentKib runs, once its web services are loaded (#requestLead loads them).
+        const codex = (sessionId: string) => this.#webRead?.codexLeadCapable(sessionId) === true;
         this.#orchestration = new OrchestrationService(
           dataDir,
           leadOwner.bootId,
           this.#laneHost(store),
-          (sessionId) => leadOwner.hasManagedSession(sessionId) || terminal(sessionId),
+          (sessionId) =>
+            leadOwner.hasManagedSession(sessionId) || terminal(sessionId) || codex(sessionId),
           (sessionId, deviceId, text) =>
             terminal(sessionId)
               ? this.#claudeBridge!.queueReport(sessionId, text)
-              : leadOwner.queueReport(sessionId, deviceId, text),
+              : codex(sessionId)
+                ? this.#codexLeadReport(sessionId, deviceId, text)
+                : leadOwner.queueReport(sessionId, deviceId, text),
           (sessionId) =>
             leadOwner.queuedReports(sessionId) +
             (this.#claudeBridge?.queuedReports(sessionId) ?? 0),
@@ -2199,13 +2205,19 @@ export class TypeScriptBackend {
     const sessionId = typeof params.sessionId === "string" ? params.sessionId : "";
     const deviceId = typeof params.deviceId === "string" ? params.deviceId : "";
     if (!sessionId || !deviceId) throw new Error("invalid-lead-request");
+    // Whether a Codex session could lead is known once its web services are loaded; one AgentKib
+    // just created may not be in the catalog yet.
+    const agent = this.#store?.sessions.get(sessionId)?.agent;
+    if (agent === undefined || agent === "codex") await this.#withWebRead(() => undefined);
+    const codex = this.#webRead?.codexLeadCapable(sessionId) === true;
     switch (params.operation) {
       case "lead-status":
         break;
       case "lead-designate": {
         const workspaceId =
           this.#claudeManaged?.managedWorkspace(sessionId) ??
-          this.#claudeBridge?.workspaceOf(sessionId);
+          this.#claudeBridge?.workspaceOf(sessionId) ??
+          (codex ? this.#webRead?.managedWorkspace(sessionId) : undefined);
         if (!workspaceId) throw new Error("lead-requires-managed-claude");
         const scope = params.scope && typeof params.scope === "object" ? params.scope : undefined;
         orchestration.designate({
@@ -2230,11 +2242,34 @@ export class TypeScriptBackend {
     }
     // A terminal that leads, stops leading, pauses or resumes hears of it at once.
     this.#claudeBridge?.leadChanged(sessionId);
+    // A Codex thread takes its worker tools, or drops them, when it starts again.
+    if (codex && (params.operation === "lead-designate" || params.operation === "lead-release"))
+      await this.#withWebRead((owner) => owner.restartManagedRunner(sessionId)).catch(
+        () => undefined,
+      );
     return {
       lead: await orchestration.overview(sessionId),
-      // Whether it could be one: a Claude Code session AgentKib runs.
+      // Whether it could be one: a Claude Code or Codex session AgentKib runs.
       capable: orchestration.isLeadCapable(sessionId),
     };
+  }
+
+  /** Reports for Codex Project Agents, sent through AgentKib's own Codex controls. */
+  #codexLeadReports = new CodexLeadReports({
+    live: (sessionId) =>
+      this.#withWebRead((owner) =>
+        owner.request({ operation: "live", sessionId, experimentalEnabled: true }),
+      ) as Promise<Record<string, unknown>>,
+    control: (value) =>
+      this.#withWebRead((owner) => owner.managedControl(value)) as Promise<Record<string, unknown>>,
+    queue: (sessionId) =>
+      this.#withWebRead((owner) => owner.managedQueueList({ sessionId, limit: 100 })) as Promise<{
+        data?: Array<Record<string, unknown>>;
+      }>,
+  });
+
+  #codexLeadReport(sessionId: string, deviceId: string, text: string): Promise<boolean> {
+    return this.#codexLeadReports.send(sessionId, deviceId, text);
   }
 
   /**
@@ -2243,8 +2278,15 @@ export class TypeScriptBackend {
    */
   #codexControl(params: Record<string, unknown>) {
     try {
-      if (typeof params.sessionId === "string")
+      if (typeof params.sessionId === "string") {
         this.#orchestration?.laneControlled(params.sessionId, String(params.operation));
+        // The person wrote to a Codex Project Agent: its turns without them start over.
+        if (
+          ["send", "steer", "queue-add"].includes(String(params.operation)) &&
+          this.#orchestration?.status(params.sessionId)
+        )
+          this.#orchestration.userSpoke(params.sessionId);
+      }
     } catch {
       /* A lead's bookkeeping never blocks the person's control. */
     }
@@ -2318,6 +2360,15 @@ export class TypeScriptBackend {
             .catch(() => undefined),
         waiting: (sessionId, turnId, status) =>
           void this.#orchestration?.laneWaiting(sessionId, turnId, status).catch(() => undefined),
+      });
+      // A Codex Project Agent's thread starts with its worker tools.
+      this.#webRead.leadEndpoints(async (sessionId) => {
+        const config = (await this.#orchestration?.leadTools(sessionId)) as
+          | { mcpServers?: Record<string, { url?: unknown }> }
+          | null
+          | undefined;
+        const url = config?.mcpServers?.agentkib_workers?.url;
+        return typeof url === "string" ? url : null;
       });
     }
     return await operation(this.#webRead);

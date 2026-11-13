@@ -691,6 +691,45 @@ describe("orchestration service", () => {
       expect(orchestration.status(LEAD)!.lanes[0]!.lastReport?.preview).toContain("Done.");
     });
 
+    it("counts a Codex lead's reports as they go: two at once pass its limit no further", async () => {
+      const delivered: string[] = [];
+      const answers: Array<(merged: boolean) => void> = [];
+      const { lanes } = host();
+      const orchestration = service(
+        lanes,
+        directory(),
+        "boot-1",
+        (_lead, _device, text) =>
+          new Promise<boolean>((resolve) => {
+            delivered.push(text);
+            answers.push(resolve);
+          }),
+      );
+      orchestration.designate({
+        sessionId: LEAD,
+        deviceId: DEVICE,
+        workspaceId: "w1",
+        scope: { maxAutoTurns: 1 },
+      });
+      const { session } = parse(
+        await orchestration.call(LEAD, "worker_open", { name: "api", workspace: "w1" }),
+      );
+      await Promise.all([
+        orchestration.laneTurnEnded(session, "t1", "completed"),
+        orchestration.laneTurnEnded(session, "t2", "completed"),
+      ]);
+      expect(delivered).toHaveLength(1);
+      expect(orchestration.status(LEAD)).toMatchObject({
+        paused: true,
+        reason: "auto-turn-limit",
+        autoTurns: 1,
+        pendingReports: [expect.stringContaining("turn ended")],
+      });
+      // One that joined a report still waiting gives its turn back.
+      answers[0]!(true);
+      await expect.poll(() => orchestration.status(LEAD)!.autoTurns).toBe(0);
+    });
+
     it("reports late the turns a worker ended while AgentKib did not watch it", async () => {
       const delivered: string[] = [];
       let ended: Array<{

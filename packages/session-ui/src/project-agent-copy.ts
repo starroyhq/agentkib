@@ -76,7 +76,8 @@ const copy: Record<"zh-CN" | "zh-Hant" | "ja-JP" | "en-US", ProjectAgentCopy> = 
       "report-undelivered": "汇报没有送达，已暂停委派。",
     },
     errors: {
-      "lead-requires-managed-claude": "只有由 AgentKib 运行的 Claude Code 会话可以设为项目 Agent。",
+      "lead-requires-managed-claude":
+        "只有由 AgentKib 运行的 Claude Code 或 Codex 会话，或已连接终端的 Claude Code 会话，可以设为项目 Agent。",
       "session-is-a-worker": "这个会话是另一个项目 Agent 的 Worker。",
       "invalid-lead-workspaces": "至少选择一个工作区。",
       "lead-exists": "这个会话已经是项目 Agent。",
@@ -125,7 +126,8 @@ const copy: Record<"zh-CN" | "zh-Hant" | "ja-JP" | "en-US", ProjectAgentCopy> = 
       "report-undelivered": "回報沒有送達，已暫停委派。",
     },
     errors: {
-      "lead-requires-managed-claude": "只有由 AgentKib 執行的 Claude Code 對話可以設為專案 Agent。",
+      "lead-requires-managed-claude":
+        "只有由 AgentKib 執行的 Claude Code 或 Codex 對話，或已連線終端的 Claude Code 對話，可以設為專案 Agent。",
       "session-is-a-worker": "這個對話是另一個專案 Agent 的 Worker。",
       "invalid-lead-workspaces": "至少選擇一個工作區。",
       "lead-exists": "這個對話已經是專案 Agent。",
@@ -177,7 +179,7 @@ const copy: Record<"zh-CN" | "zh-Hant" | "ja-JP" | "en-US", ProjectAgentCopy> = 
     },
     errors: {
       "lead-requires-managed-claude":
-        "AgentKib が実行する Claude Code の会話だけがプロジェクト Agent になれます。",
+        "AgentKib が実行する Claude Code または Codex の会話、または接続済みターミナルの Claude Code の会話だけがプロジェクト Agent になれます。",
       "session-is-a-worker": "この会話は別のプロジェクト Agent のワーカーです。",
       "invalid-lead-workspaces": "ワークスペースを 1 つ以上選んでください。",
       "lead-exists": "この会話はすでにプロジェクト Agent です。",
@@ -229,7 +231,7 @@ const copy: Record<"zh-CN" | "zh-Hant" | "ja-JP" | "en-US", ProjectAgentCopy> = 
     },
     errors: {
       "lead-requires-managed-claude":
-        "Only a Claude Code session that AgentKib runs can be a Project Agent.",
+        "Only a Claude Code or Codex session that AgentKib runs, or a Claude Code session with its terminal connected, can be a Project Agent.",
       "session-is-a-worker": "This session is another Project Agent's worker.",
       "invalid-lead-workspaces": "Choose at least one workspace.",
       "lead-exists": "This session is already a Project Agent.",

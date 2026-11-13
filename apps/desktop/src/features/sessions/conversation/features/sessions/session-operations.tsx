@@ -83,8 +83,8 @@ export function SessionOperations({
       </Dialog>
     ) : null;
   // Settings of this computer's agent, above the session's own actions: how its DeepSeek
-  // Harness connects, or whether its Claude Code keeps background tasks and whether this
-  // Claude Code session directs workers as a Project Agent.
+  // Harness connects, or whether its Claude Code keeps background tasks, and whether this Claude
+  // Code or Codex session directs workers as a Project Agent.
   const header =
     current?.agent === "deepseek-harness" && !!access?.device?.manage ? (
       <>
@@ -95,6 +95,11 @@ export function SessionOperations({
       <>
         {shortcuts}
         <ClaudeBackgroundSetting />
+        <ProjectAgentPanel />
+      </>
+    ) : current?.agent === "codex" && !!access?.device?.manage ? (
+      <>
+        {shortcuts}
         <ProjectAgentPanel />
       </>
     ) : (

@@ -43,7 +43,7 @@ const request = (params: Record<string, unknown>) =>
   Promise.resolve().then(() => desktopApi().claude.request(params));
 
 /**
- * Whether this managed Claude Code session is a Project Agent: it opens workers (Codex
+ * Whether this Claude Code or Codex session is a Project Agent: it opens workers (Codex
  * sessions) and hears from them as reports. Its scope is set here, on this computer.
  */
 export function ProjectAgentPanel() {

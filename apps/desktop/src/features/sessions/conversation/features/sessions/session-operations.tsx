@@ -8,6 +8,7 @@ import { ManagedTasks } from "./managed-tasks";
 import { useSession } from "./session-context";
 import { webLayoutCopy } from "./web-layout-copy";
 import { ClaudeBackgroundSetting } from "./claude-background-setting";
+import { ProjectAgentPanel } from "./project-agent-panel";
 import { ClaudeBridgePanel } from "./claude-bridge-panel";
 import { DshBridgePanel } from "./dsh-bridge-panel";
 export function SessionOperations({
@@ -82,7 +83,8 @@ export function SessionOperations({
       </Dialog>
     ) : null;
   // Settings of this computer's agent, above the session's own actions: how its DeepSeek
-  // Harness connects, or whether its Claude Code keeps background tasks.
+  // Harness connects, or whether its Claude Code keeps background tasks and whether this
+  // Claude Code session directs workers as a Project Agent.
   const header =
     current?.agent === "deepseek-harness" && !!access?.device?.manage ? (
       <>
@@ -93,6 +95,7 @@ export function SessionOperations({
       <>
         {shortcuts}
         <ClaudeBackgroundSetting />
+        <ProjectAgentPanel />
       </>
     ) : (
       shortcuts

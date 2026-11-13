@@ -235,6 +235,20 @@ Claude Code 自动结束仅在用户停留期间真实回收进程时显示一�
 
 “工作树”与 Codex 中文界面的叫法一致，普通界面不写 worktree。工作树会话行和侧栏只放 lucide `Split` 图标，不加文字徽标；悬停和读屏写出名称、分支、路径和状态。已删除与状态未知用文字说明，图标变淡只作辅助，不只靠颜色或透明度区分。`GitBranch` 图标继续专指用户创建的分叉，两者不混用。主检出没有登记成工作区时，组名取主检出的文件夹名；连主检出都找不到时，组名旁加 `Split` 图标，悬停写“这是 git 工作树”。“程序启动的会话”指不是由人在客户端里开始的会话，不称“自动化”或“SDK 会话”；行上用 `Bot` 图标，开关默认关闭且不保存。
 
+## 项目 Agent（2026-11-13）
+
+| 概念 | 简体中文 | 繁體中文 | 日本語 | English |
+| --- | --- | --- | --- | --- |
+| 指挥其他会话的 Claude Code 会话 | 项目 Agent | 專案 Agent | プロジェクト Agent | Project Agent |
+| 由项目 Agent 开出、派任务的 Codex 会话 | Worker | Worker | ワーカー | Worker |
+| 项目 Agent 交给 Worker 的工作 | 任务 | 任務 | タスク | Task |
+| Worker 的结果送回项目 Agent | 汇报 | 回報 | 報告 | Report |
+| 开 Worker、派任务这件事（暂停和恢复的对象） | 委派 | 委派 | 委任 | Delegation |
+| 设定入口 | 设为项目 Agent… | 設為專案 Agent… | プロジェクト Agent にする… | Make Project Agent… |
+| 以后指挥项目 Agent 的个人助理（尚未提供） | 个人 Agent | 個人 Agent | パーソナル Agent | Personal Agent |
+
+“Agent”仍指 Claude Code、Codex 这类产品；项目 Agent 是一个会话担任的角色，三级依次是个人 Agent、项目 Agent、Worker。Worker 与 Agent 一样在中文界面保留英文，日文写“ワーカー”。Worker 是会话列表里能看到的独立 Codex 会话，不能叫“子代理”，子代理在一个会话内部。简体中文写“汇报”，不写“回报”，避免读成收益；繁体中文写“回報”。给 Claude Code 看的工具名（`worker_*`）和汇报开头（`[AgentKib report]`）固定用英文。
+
 ## 保留与解释的技术概念
 
 | 概念 | 用户界面的处理 |

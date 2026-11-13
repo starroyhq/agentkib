@@ -22,6 +22,7 @@ vi.mock("./dsh-bridge-panel", () => ({ DshBridgePanel: () => <p>DSH plugin panel
 vi.mock("./claude-background-setting", () => ({
   ClaudeBackgroundSetting: () => <p>Claude background setting</p>,
 }));
+vi.mock("./project-agent-panel", () => ({ ProjectAgentPanel: () => <p>Project Agent panel</p> }));
 vi.mock("./claude-bridge-panel", () => ({
   ClaudeBridgePanel: ({ onClose }: { onClose?: () => void }) => (
     <section role="dialog" aria-label={claudeConnectionCopy[session.locale].title}>

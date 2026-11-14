@@ -14,6 +14,7 @@ describe("Project Agent from a paired device", () => {
   let service: WebAccessService;
   let directory: string;
   let origin: string;
+  let port: number;
   const lead = {
     sessionId: "claude-session",
     paused: false,
@@ -83,7 +84,7 @@ describe("Project Agent from a paired device", () => {
     directory = await mkdtemp(join(tmpdir(), "ak-project-agent-route-"));
     const listener = createServer();
     await new Promise<void>((resolve) => listener.listen(0, "127.0.0.1", resolve));
-    const port = (listener.address() as { port: number }).port;
+    port = (listener.address() as { port: number }).port;
     await new Promise<void>((resolve) => listener.close(() => resolve()));
     origin = `http://127.0.0.1:${port}`;
     service = new WebAccessService({
@@ -168,6 +169,30 @@ describe("Project Agent from a paired device", () => {
       "lead-release",
     ]);
     expect(leadCalls().every((call) => call.deviceId === device.id)).toBe(true);
+  });
+
+  it("says so when it stops because the app quits, not when its settings change", async () => {
+    const device = await phone();
+    const invalidations = () =>
+      managed.mock.calls
+        .map(([value]) => value as Record<string, unknown>)
+        .filter((value) => value.operation === "schedule-invalidate");
+    // New settings may change what the device can reach: what it set going stops.
+    await service.request({
+      operation: "configure",
+      enabled: true,
+      port,
+      externalOrigin: "",
+      experimentalEnabled: false,
+      allowedWorkspaceIds: [],
+    });
+    expect(invalidations()).toEqual([{ operation: "schedule-invalidate", deviceId: device.id }]);
+    managed.mockClear();
+    // Quitting changes nothing about the device: the backend hears that it is a quit.
+    await service.dispose();
+    expect(invalidations()).toEqual([
+      { operation: "schedule-invalidate", deviceId: device.id, quitting: true },
+    ]);
   });
 
   it("lets a device without full access see one, and nothing more", async () => {

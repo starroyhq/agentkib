@@ -2498,7 +2498,9 @@ export class TypeScriptBackend {
         const sessionId = typeof params.sessionId === "string" ? params.sessionId : undefined;
         this.#claudeBridge?.invalidate(deviceId, sessionId);
         this.#dshBridge?.invalidate(deviceId, sessionId);
-        if (deviceId) this.#orchestration?.invalidateDevice(deviceId);
+        // A remote host that stops because AgentKib quits changes no device's access. Leads
+        // stay as they are: the next start pauses each, and says that it restarted.
+        if (deviceId && params.quitting !== true) this.#orchestration?.invalidateDevice(deviceId);
       }
       if (String(params.operation).startsWith("lead-")) return await this.#requestLead(params);
       // The desktop's local management channel also reports the DeepSeek Harness connection.

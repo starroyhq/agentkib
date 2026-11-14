@@ -95,6 +95,19 @@ describe("shared Claude host scheduler", () => {
     expect(f.operations()).toContain("schedule-invalidate");
     expect(f.operations()).toContain("schedule-pause");
   });
+  it("tells the backend when the host stops because the app quits", async () => {
+    const f = fixture();
+    await f.scheduler.invalidate("phone", "host-stopped");
+    await f.scheduler.invalidate("phone", "host-stopped", true);
+    expect(
+      f.invoke.mock.calls
+        .map(([value]) => value as Record<string, unknown>)
+        .filter((value) => value.operation === "schedule-invalidate"),
+    ).toEqual([
+      { operation: "schedule-invalidate", deviceId: "phone" },
+      { operation: "schedule-invalidate", deviceId: "phone", quitting: true },
+    ]);
+  });
   it("does not consume work after workspace, attachment or device authorization fails", async () => {
     const f = fixture();
     vi.mocked(f.authority.authorize).mockRejectedValueOnce(new Error("attachment revoked"));

@@ -1144,11 +1144,15 @@ export class WebAccessService {
     if (!this.controlsEnabled(session.sessionId, current)) throw new Error("control_unavailable");
   }
 
-  private invalidateScheduledDevice(deviceId: string, reason: string) {
+  private invalidateScheduledDevice(deviceId: string, reason: string, quitting = false) {
     return (
-      this.scheduler?.invalidate(deviceId, reason) ??
+      this.scheduler?.invalidate(deviceId, reason, quitting) ??
       this.options
-        .claudeManagedRequest?.({ operation: "schedule-invalidate", deviceId })
+        .claudeManagedRequest?.({
+          operation: "schedule-invalidate",
+          deviceId,
+          ...(quitting ? { quitting: true } : {}),
+        })
         .then(() => undefined)
         .catch(() => undefined) ??
       Promise.resolve()
@@ -2146,8 +2150,12 @@ export class WebAccessService {
   async shutdown() {
     this.managedSocket?.close();
     this.managedSocket = undefined;
+    // 随应用退出而停止时一并告诉 Runtime：这不是设备授权的变更，项目 Agent 不因此暂停，
+    // 下次启动时和其他项目 Agent 一样按“重启后需确认”暂停。
     await Promise.all(
-      this.credentials.map((c) => this.invalidateScheduledDevice(c.device.id, "host-stopped")),
+      this.credentials.map((c) =>
+        this.invalidateScheduledDevice(c.device.id, "host-stopped", this.disposed),
+      ),
     );
     this.relayEpoch += 1;
     await this.relay?.stop();

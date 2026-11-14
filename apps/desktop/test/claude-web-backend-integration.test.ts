@@ -1283,6 +1283,28 @@ describe.skipIf(process.platform !== "darwin")(
       expect(await role()).toBeUndefined();
     });
 
+    it("pauses a Project Agent when its device's access changes, not when the remote host stops with the app", async () => {
+      const sessionId = await create();
+      const lead = async (operation: string, more: Record<string, unknown> = {}) =>
+        (await rpc("claude.managed", { operation, sessionId, deviceId: "phone-1", ...more })).lead;
+      expect(await lead("lead-designate")).toMatchObject({ sessionId, paused: false });
+      // Quitting: the next start pauses it, and says that AgentKib restarted.
+      await rpc("claude.managed", {
+        operation: "schedule-invalidate",
+        deviceId: "phone-1",
+        quitting: true,
+      });
+      expect(await lead("lead-status")).toMatchObject({ paused: false, reason: null });
+      await rpc("claude.managed", { operation: "schedule-invalidate", deviceId: "phone-2" });
+      expect(await lead("lead-status")).toMatchObject({ paused: false, reason: null });
+      await rpc("claude.managed", { operation: "schedule-invalidate", deviceId: "phone-1" });
+      expect(await lead("lead-status")).toMatchObject({
+        paused: true,
+        reason: "authorization-changed",
+      });
+      await lead("lead-release");
+    });
+
     it("keeps goal completion pending until a bound MCP report and native success both exist", async () => {
       const sessionId = await create();
       expect(

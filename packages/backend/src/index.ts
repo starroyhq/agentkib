@@ -10,6 +10,7 @@ import { CursorBridge } from "./cursor-bridge";
 import { ClaudeBridge } from "./claude-bridge";
 import { DshBridge } from "./dsh-bridge";
 import { DshManagedRuntime } from "./dsh-managed-runtime";
+import { createDshWorker, DshLaneWatch } from "./dsh-lanes";
 import { listNativeImports } from "./session-native-imports";
 import {
   continueNativeImport,
@@ -196,6 +197,8 @@ export class TypeScriptBackend {
   #cursorBridge?: CursorBridge;
   #claudeBridge?: ClaudeBridge;
   #dshBridge?: DshBridge;
+  /** Reports DeepSeek Harness workers' turns from the states the DSH bridge publishes. */
+  #dshLanes?: DshLaneWatch;
   /** Whether DeepSeek Harness may be started in the background, read for a moment at a time. */
   #dshAutoStart?: { at: number; value: boolean };
   #catalogContinuation = new Map<string, string>();
@@ -263,6 +266,8 @@ export class TypeScriptBackend {
     this.#claudeManaged?.close();
     void this.#orchestration?.close();
     this.#orchestration = undefined;
+    this.#dshLanes?.close();
+    this.#dshLanes = undefined;
     void this.#claudeBridge?.close();
     this.#claudeBridge = undefined;
     void this.#dshBridge?.close();
@@ -315,6 +320,8 @@ export class TypeScriptBackend {
     const orchestration = this.#orchestration;
     this.#readStates = undefined;
     this.#orchestration = undefined;
+    this.#dshLanes?.close();
+    this.#dshLanes = undefined;
     this.#claudeManaged = undefined;
     this.#claudeBridge = undefined;
     this.#dshBridge = undefined;
@@ -656,7 +663,10 @@ export class TypeScriptBackend {
               }
             if (changed) this.#sessionStream?.publish("", "invalidate", { domains: ["catalog"] });
           },
-          publish: (id, type, payload, live) => this.#publishSession(id, type, payload, live),
+          publish: (id, type, payload, live) => {
+            this.#publishSession(id, type, payload, live);
+            if (type === "state") this.#dshLanes?.observe(id, live);
+          },
         });
         this.#dshBridge = dshBridge;
         this.#sessions = new SessionReaders(
@@ -725,6 +735,15 @@ export class TypeScriptBackend {
             leadOwner.queuedReports(sessionId) +
             (this.#claudeBridge?.queuedReports(sessionId) ?? 0),
         );
+        this.#dshLanes?.close();
+        this.#dshLanes = new DshLaneWatch({
+          isLane: (sessionId) => !!this.#orchestration?.registry.leadOfLane(sessionId),
+          endedTurns: (sessionId) => dshBridge.endedTurns(sessionId),
+          turnEnded: async (sessionId, turnId, outcome, durationMs) =>
+            this.#orchestration?.laneTurnEnded(sessionId, turnId, outcome, durationMs),
+          waiting: async (sessionId, turnId, status) =>
+            this.#orchestration?.laneWaiting(sessionId, turnId, status),
+        });
         const claudeOwner = this.#claudeManaged;
         this.#readStates = new ConversationReadStates(
           store,
@@ -2293,18 +2312,46 @@ export class TypeScriptBackend {
     return this.#withWebRead((owner) => owner.managedControl(params));
   }
 
-  /** The Codex sessions AgentKib runs, as the orchestration service reaches them. */
+  /**
+   * The sessions AgentKib runs as lanes, as the orchestration service reaches them: a DeepSeek
+   * Harness session through the DSH bridge, any other through AgentKib's Codex services.
+   */
   #laneHost(store: BackendStore): LaneHost {
+    const dsh = (sessionId: unknown) =>
+      typeof sessionId === "string" && this.#dshBridge?.handles(sessionId) ? this.#dshBridge : null;
     return {
       options: () =>
         this.#withWebRead((owner) => owner.managedOptions()) as Promise<Record<string, unknown>>,
-      lifecycle: (value) => this.#withWebRead((owner) => owner.managedLifecycle(value)),
-      control: (value) => this.#withWebRead((owner) => owner.managedControl(value)),
-      live: (sessionId) =>
-        this.#withWebRead((owner) =>
+      // Listing workers never starts DSH; opening a DSH worker does, as a new DSH session does.
+      dshOptions: async () =>
+        this.#dshBridge
+          ? this.#dshBridge.createOptions(true, { start: false })
+          : { available: false, reason: "platform-unsupported" },
+      lifecycle: async (value) => {
+        if (value.agent !== "deepseek-harness")
+          return this.#withWebRead((owner) => owner.managedLifecycle(value));
+        if (!this.#dshBridge) throw new Error("dsh-bridge-unavailable");
+        const { agent: _agent, ...create } = value;
+        return createDshWorker(this.#dshBridge, create);
+      },
+      control: (value) =>
+        dsh(value.sessionId)?.request(value) ??
+        this.#withWebRead((owner) => owner.managedControl(value)),
+      live: async (sessionId) =>
+        dsh(sessionId)?.live(sessionId, true) ??
+        ((await this.#withWebRead((owner) =>
           owner.request({ operation: "live", sessionId, experimentalEnabled: true }),
-        ) as Promise<Record<string, unknown>>,
+        )) as Record<string, unknown>),
       events: async (sessionId, limit) => {
+        const bridge = dsh(sessionId);
+        if (bridge) {
+          const nativeId = bridge.nativeId(sessionId);
+          return nativeId
+            ? ((await bridge.events(nativeId, null, limit)).events as unknown as Array<
+                Record<string, unknown>
+              >)
+            : [];
+        }
         const page = (await this.#withWebRead((owner) =>
           owner.request({ operation: "events", sessionId, limit, retainCursor: false }),
         )) as { events?: unknown };
@@ -2320,8 +2367,13 @@ export class TypeScriptBackend {
             }
           : null;
       },
-      managed: (sessionId) => this.#withWebRead((owner) => owner.isManagedSession(sessionId)),
-      endedTurns: (sessionId) => this.#withWebRead((owner) => owner.endedTurns(sessionId)),
+      managed: async (sessionId) =>
+        store.sessions.get(sessionId)?.agent === "deepseek-harness"
+          ? !!dsh(sessionId)
+          : this.#withWebRead((owner) => owner.isManagedSession(sessionId)),
+      endedTurns: (sessionId) =>
+        dsh(sessionId)?.endedTurns(sessionId) ??
+        this.#withWebRead((owner) => owner.endedTurns(sessionId)),
       workspaces: () =>
         (store.listWorkspaces() as Array<{ id: string; name?: string; path: string }>).map(
           (workspace) => ({ id: workspace.id, name: workspace.name ?? workspace.path }),
@@ -2374,10 +2426,19 @@ export class TypeScriptBackend {
     return await operation(this.#webRead);
   }
 
+  /**
+   * A DSH session's state or control from a person's device. When the session is a lead's lane,
+   * the lead hears that the person stepped in; the service's own controls do not come here.
+   */
   #requestDsh(params: Record<string, unknown>) {
     const bridge = this.#dshBridge;
     if (!bridge || typeof params.sessionId !== "string" || !bridge.handles(params.sessionId))
       throw new Error("session-unavailable");
+    try {
+      this.#orchestration?.laneControlled(params.sessionId, String(params.operation));
+    } catch {
+      /* A lead's bookkeeping never blocks the person's control. */
+    }
     return bridge.request(params);
   }
 

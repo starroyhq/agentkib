@@ -36,7 +36,7 @@ export type ProjectAgentCopy = {
 const copy: Record<"zh-CN" | "zh-Hant" | "ja-JP" | "en-US", ProjectAgentCopy> = {
   "zh-CN": {
     title: "项目 Agent",
-    hint: "让这个会话在你允许的工作区里开 Worker（Codex 会话）、派任务，Worker 的结果会作为汇报送回这里。Worker 的审批和提问默认由你处理。",
+    hint: "让这个会话在你允许的工作区里开 Worker（Codex 或 DeepSeek Harness 会话）、派任务，Worker 的结果会作为汇报送回这里。Worker 的审批和提问默认由你处理。",
     designate: "设为项目 Agent…",
     workspaces: "Worker 可以使用的工作区",
     autoReview: "允许 Worker 使用 Codex 自动审核",
@@ -86,7 +86,7 @@ const copy: Record<"zh-CN" | "zh-Hant" | "ja-JP" | "en-US", ProjectAgentCopy> = 
   },
   "zh-Hant": {
     title: "專案 Agent",
-    hint: "讓這個對話在你允許的工作區裡開 Worker（Codex 對話）、派任務，Worker 的結果會作為回報送回這裡。Worker 的核准和提問預設由你處理。",
+    hint: "讓這個對話在你允許的工作區裡開 Worker（Codex 或 DeepSeek Harness 對話）、派任務，Worker 的結果會作為回報送回這裡。Worker 的核准和提問預設由你處理。",
     designate: "設為專案 Agent…",
     workspaces: "Worker 可以使用的工作區",
     autoReview: "允許 Worker 使用 Codex 自動審核",
@@ -136,7 +136,7 @@ const copy: Record<"zh-CN" | "zh-Hant" | "ja-JP" | "en-US", ProjectAgentCopy> = 
   },
   "ja-JP": {
     title: "プロジェクト Agent",
-    hint: "この会話が、許可したワークスペースでワーカー（Codex の会話）を開いてタスクを任せ、その結果を報告として受け取ります。ワーカーの承認と質問への回答は、既定ではあなたが行います。",
+    hint: "この会話が、許可したワークスペースでワーカー（Codex または DeepSeek Harness の会話）を開いてタスクを任せ、その結果を報告として受け取ります。ワーカーの承認と質問への回答は、既定ではあなたが行います。",
     designate: "プロジェクト Agent にする…",
     workspaces: "ワーカーが使えるワークスペース",
     autoReview: "ワーカーに Codex の自動レビューを許可",
@@ -188,7 +188,7 @@ const copy: Record<"zh-CN" | "zh-Hant" | "ja-JP" | "en-US", ProjectAgentCopy> = 
   },
   "en-US": {
     title: "Project Agent",
-    hint: "Lets this session open workers (Codex sessions) in the workspaces you allow and give them tasks; their results come back here as reports. By default you answer the workers' approvals and questions.",
+    hint: "Lets this session open workers (Codex or DeepSeek Harness sessions) in the workspaces you allow and give them tasks; their results come back here as reports. By default you answer the workers' approvals and questions.",
     designate: "Make Project Agent…",
     workspaces: "Workspaces workers may use",
     autoReview: "Let workers use Codex auto-review",

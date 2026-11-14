@@ -211,6 +211,7 @@ describe("orchestration service", () => {
     expect(opened).toEqual({
       accepted: true,
       worker: "api",
+      agent: "codex",
       session: createHash("sha256").update(`managed:${create.requestId}`).digest("hex"),
     });
     // Already run by AgentKib: no takeover is needed.
@@ -237,7 +238,7 @@ describe("orchestration service", () => {
       [{ name: "a", workspace: "w9" }, "workspace-not-allowed"],
       [{ name: "a", workspace: "w1", policy: "workspace-write-auto-review" }, "policy-not-allowed"],
       [{ name: "a", session: "codex-elsewhere" }, "workspace-not-allowed"],
-      [{ name: "a", session: "claude-other" }, "worker-requires-codex-session"],
+      [{ name: "a", session: "claude-other" }, "worker-requires-codex-or-dsh-session"],
       [{ name: "a", session: LEAD }, "session-is-a-project-agent"],
       [{ name: "a" }, "worker-needs-workspace-or-session"],
       [{ name: "-bad", workspace: "w1" }, "invalid-worker-name"],
@@ -246,6 +247,230 @@ describe("orchestration service", () => {
         accepted: false,
         reason,
       });
+  });
+
+  it("opens DeepSeek Harness workers, whose approvals stay the user's", async () => {
+    const created: Array<Record<string, unknown>> = [];
+    let createAnswer: Record<string, unknown> = {
+      accepted: true,
+      controlOutcome: "accepted",
+      sessionId: "dsh-new",
+    };
+    const delivered: string[] = [];
+    const { lanes, calls, lives } = host({
+      dshOptions: async () => ({
+        available: true,
+        models: [
+          { id: "deepseek/deepseek-chat", name: "DeepSeek Chat", group: "DeepSeek", efforts: [] },
+          { id: "mock/think", name: "Think", group: "Mock", efforts: ["high", "max"] },
+        ],
+        defaults: { model: "deepseek/deepseek-chat", effort: null },
+      }),
+      lifecycle: async (value) => {
+        created.push(value);
+        return value.agent === "deepseek-harness" ? createAnswer : { accepted: true };
+      },
+      session: (sessionId) =>
+        sessionId.startsWith("dsh-")
+          ? { agent: "deepseek-harness", workspaceId: "w1", title: null }
+          : null,
+      managed: async (sessionId) => sessionId !== "dsh-gone",
+    });
+    const orchestration = service(lanes, directory(), "boot-1", (_lead, _device, text) => {
+      delivered.push(text);
+      return false;
+    });
+    orchestration.designate({
+      sessionId: LEAD,
+      deviceId: DEVICE,
+      workspaceId: "w1",
+      scope: { approvals: ["command", "file-change"], answers: true },
+    });
+    expect(parse(await orchestration.call(LEAD, "worker_list", {}))).toMatchObject({
+      deepseekHarness: {
+        available: true,
+        models: [
+          { id: "deepseek/deepseek-chat", name: "DeepSeek Chat" },
+          { id: "mock/think", name: "Think", efforts: ["high", "max"] },
+        ],
+        defaultModel: "deepseek/deepseek-chat",
+      },
+    });
+    expect(
+      parse(
+        await orchestration.call(LEAD, "worker_open", {
+          name: "ds",
+          agent: "deepseek-harness",
+          workspace: "w1",
+          model: "deepseek/deepseek-chat",
+        }),
+      ),
+    ).toEqual({ accepted: true, worker: "ds", agent: "deepseek-harness", session: "dsh-new" });
+    // DSH starts it in its own workspace-write preset; no Codex preset goes with it.
+    expect(created).toEqual([
+      expect.objectContaining({
+        operation: "create",
+        agent: "deepseek-harness",
+        workspaceId: "w1",
+        deviceId: DEVICE,
+        model: "deepseek/deepseek-chat",
+      }),
+    ]);
+    expect(created[0]).not.toHaveProperty("policyId");
+    // An existing DSH session is taken over as it is: nothing to adopt.
+    expect(
+      parse(
+        await orchestration.call(LEAD, "worker_open", { name: "old", session: "dsh-existing" }),
+      ),
+    ).toEqual({
+      accepted: true,
+      worker: "old",
+      agent: "deepseek-harness",
+      session: "dsh-existing",
+    });
+    expect(created).toHaveLength(1);
+    for (const [input, reason] of [
+      [
+        {
+          name: "a",
+          agent: "deepseek-harness",
+          workspace: "w1",
+          policy: "workspace-write-on-request",
+        },
+        "policy-is-codex-only",
+      ],
+      [{ name: "a", agent: "claude-code", workspace: "w1" }, "invalid-agent"],
+      [{ name: "a", session: "dsh-gone" }, "worker-unavailable"],
+      [{ name: "a", session: "dsh-other", agent: "codex" }, "session-is-another-agent"],
+    ] as const)
+      expect(parse(await orchestration.call(LEAD, "worker_open", input))).toMatchObject({
+        accepted: false,
+        reason,
+      });
+    for (const [answer, refusal] of [
+      [
+        { accepted: false, controlOutcome: "not-dispatched", reason: "dsh-runtime-offline" },
+        { reason: "dsh-runtime-offline" },
+      ],
+      [
+        { accepted: false, controlOutcome: "unknown", reason: "control-outcome-unconfirmed" },
+        { reason: "worker-open-unconfirmed" },
+      ],
+      [
+        { accepted: false, reason: "dsh-worker-preset-unavailable", sessionId: "dsh-loose" },
+        { reason: "dsh-worker-preset-unavailable", session: "dsh-loose" },
+      ],
+    ] as const) {
+      createAnswer = answer;
+      expect(
+        parse(
+          await orchestration.call(LEAD, "worker_open", {
+            name: "b",
+            agent: "deepseek-harness",
+            workspace: "w1",
+          }),
+        ),
+      ).toMatchObject({ accepted: false, ...refusal });
+    }
+    expect(orchestration.status(LEAD)!.lanes.map((lane) => lane.name)).toEqual(["ds", "old"]);
+
+    await orchestration.laneTurnEnded("dsh-new", "dsh-turn-1", "completed", 5_000);
+    expect(delivered.at(-1)).toMatch(
+      /^\[AgentKib report\] Worker "ds" \(DeepSeek Harness\) · turn ended: completed after 5s\n/,
+    );
+    // A DSH approval is the user's, whatever the lead may decide for Codex workers.
+    lives.set("dsh-new", {
+      sessionId: "dsh-new",
+      status: "awaiting-approval",
+      revision: 7,
+      runtimeBootId: "boot",
+      turnId: "dsh-turn-2",
+      approvals: [
+        {
+          requestId: "approval-1",
+          turnId: "dsh-turn-2",
+          method: "dsh/approval",
+          command: { tool: "bash", arguments: { command: "rm -rf build" } },
+          availableDecisions: ["accept", "decline"],
+          supported: true,
+        },
+      ],
+      questions: [],
+    });
+    await orchestration.laneWaiting("dsh-new", "dsh-turn-2", "awaiting-approval");
+    expect(delivered.at(-1)).toContain("The user decides in AgentKib");
+    expect(
+      parse(
+        await orchestration.call(LEAD, "worker_approve", {
+          worker: "ds",
+          approval: "approval-1",
+          decision: "accept",
+        }),
+      ),
+    ).toMatchObject({ accepted: false, reason: "approval-not-delegated" });
+    // A DSH card of fixed choices is a tool approval too; one that takes text is a question.
+    const card = (id: string, allowCustom: boolean) => ({
+      requestId: id,
+      turnId: "dsh-turn-3",
+      method: "dsh/question",
+      supported: true,
+      questions: [
+        { id: "q1", question: "Which?", options: [{ label: "A" }, { label: "B" }], allowCustom },
+      ],
+    });
+    lives.set("dsh-new", {
+      sessionId: "dsh-new",
+      status: "waiting-input",
+      revision: 8,
+      runtimeBootId: "boot",
+      turnId: "dsh-turn-3",
+      approvals: [],
+      questions: [card("approval-card", false), card("question-1", true)],
+    });
+    const read = parse(await orchestration.call(LEAD, "worker_read", { worker: "ds" }));
+    expect(
+      read.waitingForUser.map((item: { id: string; youMayDecide: boolean }) => [
+        item.id,
+        item.youMayDecide,
+      ]),
+    ).toEqual([
+      ["approval-card", false],
+      ["question-1", true],
+    ]);
+    expect(
+      parse(
+        await orchestration.call(LEAD, "worker_answer", {
+          worker: "ds",
+          question: "approval-card",
+          answers: { q1: "A" },
+        }),
+      ),
+    ).toMatchObject({ accepted: false, reason: "question-not-delegated" });
+    expect(
+      parse(
+        await orchestration.call(LEAD, "worker_answer", {
+          worker: "ds",
+          question: "question-1",
+          answers: { q1: "B" },
+        }),
+      ),
+    ).toMatchObject({ accepted: true });
+    expect(calls.at(-1)).toMatchObject({
+      operation: "answer",
+      sessionId: "dsh-new",
+      questionId: "question-1",
+      turnId: "dsh-turn-3",
+      expectedRevision: 8,
+      answers: { q1: ["B"] },
+    });
+    expect(
+      parse(await orchestration.call(LEAD, "worker_list", {})).workers.map(
+        (worker: { worker: string; agent: string }) => [worker.worker, worker.agent],
+      ),
+    ).toEqual([
+      ["ds", "deepseek-harness"],
+      ["old", "deepseek-harness"],
+    ]);
   });
 
   it("sends a brief to an idle lane, queues or steers while it runs, and stops its turn", async () => {

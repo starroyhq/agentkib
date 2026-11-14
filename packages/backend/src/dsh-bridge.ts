@@ -726,6 +726,19 @@ const within = (child: string, parent: string) =>
   child === parent || child.startsWith(parent.endsWith(path.sep) ? parent : `${parent}${path.sep}`);
 const turnIdOf = (turn: number | null | undefined) =>
   typeof turn === "number" ? `dsh-turn-${turn}` : null;
+/**
+ * Why a DSH turn ended, in the words reports use for Codex turns: a cancelled turn is DSH's
+ * `aborted`, a failed one its `error`; `blocked`, `max-tokens` and `interrupted` (closed after
+ * DSH stopped mid-turn) keep DSH's names.
+ */
+export const dshTurnOutcome = (reason: string | null): string =>
+  reason === "aborted"
+    ? "cancelled"
+    : reason === "error"
+      ? "failed"
+      : reason && /^[a-z][a-z-]{0,31}$/.test(reason)
+        ? reason
+        : "ended";
 /** Messages waiting for the next turn. Steering is already part of the running turn. */
 const queuedFor = (state: DshBridgeSessionState | null | undefined) =>
   (state?.queue ?? []).filter((item) => item.placement === "queued");
@@ -1271,6 +1284,48 @@ export class DshBridge {
     };
     this.#cachePage(key, history);
     return history;
+  }
+  /**
+   * The latest turns of a session that DSH recorded as ended, oldest first, with why each ended,
+   * read from the DSH that has the session (`LaneHost.endedTurns`). It never starts DSH: with
+   * none running there is nothing new. A turn begun before the page read has no start.
+   */
+  async endedTurns(
+    id: string,
+  ): Promise<
+    Array<{ turnId: string; outcome: string; startedAt: string | null; endedAt: string | null }>
+  > {
+    const nativeId = this.#ids.get(id);
+    if (!nativeId) throw new Error("session-unavailable");
+    const runtime =
+      this.#controlRuntime(nativeId) ??
+      this.#online().find((candidate) => candidate.services.sessionQuery);
+    if (!runtime) return [];
+    const result = await this.#command(
+      runtime,
+      { commandId: randomUUID(), type: "history", sessionId: nativeId, limit: 100 },
+      HISTORY_TIMEOUT_MS,
+    );
+    const page = result.ok ? (result.value as DshBridgeHistoryPage | null) : null;
+    if (!page || !Array.isArray(page.records) || page.sessionId !== nativeId)
+      throw new Error("dsh-history-unavailable");
+    const started = new Map<number, number | null>();
+    const ended: Array<{
+      turnId: string;
+      outcome: string;
+      startedAt: string | null;
+      endedAt: string | null;
+    }> = [];
+    for (const record of page.records)
+      if (record.kind === "turn-start") started.set(record.turn, record.time);
+      else if (record.kind === "turn-end" && turnIdOf(record.turn))
+        ended.push({
+          turnId: turnIdOf(record.turn)!,
+          outcome: dshTurnOutcome(record.reason),
+          startedAt: iso(started.get(record.turn) ?? null),
+          endedAt: iso(record.time),
+        });
+    return ended.slice(-20);
   }
   /**
    * One image a session's history shows, read from the DSH that has the session. DSH returns only
@@ -2014,8 +2069,13 @@ export class DshBridge {
   /**
    * Whether a new session can start now: exactly one running DSH that can take it. That DSH's
    * Agent presets come with it when it lists them; without them a session runs DSH's default.
+   * With `start` false a DSH that AgentKib could start is not started: the answer is then
+   * "available" without presets or models.
    */
-  async createOptions(includeModels = false): Promise<{
+  async createOptions(
+    includeModels = false,
+    { start = true }: { start?: boolean } = {},
+  ): Promise<{
     available: boolean;
     reason?: string;
     agentPresets?: DshBridgeAgentPreset[];
@@ -2027,6 +2087,7 @@ export class DshBridge {
     if (runtime === "ambiguous") return { available: false, reason: "dsh-create-ambiguous" };
     // Choosing DSH for a new session starts it in the background, the way the first Codex read
     // starts an app-server; it stops again when nothing comes of it.
+    if (!runtime && this.#startable() && !start) return { available: true };
     if (!runtime && this.#startable())
       try {
         runtime = await this.#ensureManaged();

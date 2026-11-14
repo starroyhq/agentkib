@@ -3,9 +3,9 @@ import { openManagedLedger } from "./managed-ledger";
 /**
  * Which managed sessions direct which (the "lead" and its "lanes"), and what the lead may do.
  * One row per lead in the managed-execution ledger, beside the Claude host states that deliver
- * its reports. A lead is a Claude Code session AgentKib runs; its lanes are Codex sessions
- * AgentKib runs. Nothing here starts a turn: the service checks this record before every lane
- * operation and every report it delivers.
+ * its reports. A lead is a Claude Code or Codex session AgentKib runs; its lanes are Codex or
+ * DeepSeek Harness sessions AgentKib runs. Nothing here starts a turn: the service checks this
+ * record before every lane operation and every report it delivers.
  */
 
 /** Codex permission presets a lead may choose for a lane; full access is never offered. */
@@ -39,13 +39,23 @@ export type LeadScope = {
   answers?: boolean;
 };
 
+/** The agents a lane can be; a record from before DeepSeek Harness lanes has none (Codex). */
+export const LANE_AGENTS = ["codex", "deepseek-harness"] as const;
+export type LaneAgent = (typeof LANE_AGENTS)[number];
+
 export type Lane = {
   id: string;
   name: string;
-  /** The Codex session AgentKib runs for it. */
+  /** The session AgentKib runs for it. */
   sessionId: string;
+  /** Absent in records from before DeepSeek Harness lanes: those are Codex. */
+  agent?: LaneAgent;
   workspaceId: string;
-  /** Null when an existing session was taken over: it keeps its own preset. */
+  /**
+   * The Codex preset it was created with. Null when an existing session was taken over (it keeps
+   * its own preset) and for a DeepSeek Harness lane, which starts in DSH's own workspace-write
+   * preset whatever the lead's Codex presets are.
+   */
   policyId: LanePolicy | null;
   /** What the lead last asked it to do, as the lead titled it. */
   title: string | null;

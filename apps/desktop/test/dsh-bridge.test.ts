@@ -14,6 +14,11 @@ import path from "node:path";
 import { PassThrough } from "node:stream";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { DshBridge, dshConversationEvents } from "../../../packages/backend/src/dsh-bridge";
+import {
+  createDshWorker,
+  DshLaneWatch,
+  type DshLaneBridge,
+} from "../../../packages/backend/src/dsh-lanes";
 import { readControlReceipt } from "../../../packages/backend/src/control-receipt";
 import {
   createBridge,
@@ -2994,5 +2999,186 @@ describe("DeepSeek Harness plugin in a DSH that AgentKib started", () => {
     expect(managedHost({ home: "/Users/someone/.agentkib" })).toEqual({
       home: "/Users/someone/.agentkib",
     });
+  });
+});
+
+describe("DeepSeek Harness sessions as a Project Agent's workers", () => {
+  it("reads how a session's turns ended from DSH's history", async () => {
+    const f = await fixture();
+    expect(await f.control("send", { text: "brief" })).toMatchObject({ accepted: true });
+    f.dsh.finishTurn("session-a", "done");
+    f.dsh.append("session-a", "turn/start", { turn: 2 });
+    f.dsh.append("session-a", "turn/end", {
+      turn: 2,
+      reason: { kind: "aborted", reason: { kind: "user" } },
+    });
+    f.dsh.append("session-a", "turn/start", { turn: 3 });
+    f.dsh.append("session-a", "turn/end", { turn: 3, reason: { kind: "error", error: {} } });
+    const turns = await f.bridge.endedTurns("ak-session-a");
+    expect(turns.map(({ turnId, outcome }) => ({ turnId, outcome }))).toEqual([
+      { turnId: "dsh-turn-1", outcome: "completed" },
+      { turnId: "dsh-turn-2", outcome: "cancelled" },
+      { turnId: "dsh-turn-3", outcome: "failed" },
+    ]);
+    expect(Date.parse(turns[0]!.endedAt!)).toBeGreaterThanOrEqual(Date.parse(turns[0]!.startedAt!));
+    await expect(f.bridge.endedTurns("ak-nope")).rejects.toThrow("session-unavailable");
+  });
+
+  it("neither lists nor reads worker turns by starting DSH", async () => {
+    const f = await managedFixture();
+    expect(await f.bridge.createOptions(true, { start: false })).toEqual({ available: true });
+    expect(await f.bridge.endedTurns("ak-session-a")).toEqual([]);
+    expect(f.starts).toEqual([]);
+    // A new session for the person still starts it.
+    expect(await f.bridge.createOptions(true)).toMatchObject({ available: true });
+    expect(f.starts).toHaveLength(1);
+  });
+
+  it("starts a worker in DSH's workspace-write preset, or refuses one it cannot confirm", async () => {
+    const f = await fixture();
+    const open = (preset?: string, bridge: Partial<DshLaneBridge> = {}) =>
+      createDshWorker(
+        {
+          create: async (value) => {
+            const created = await f.bridge.create(value);
+            // DSH's default preset for new sessions, as the user set it.
+            const nativeId =
+              typeof created.sessionId === "string" ? f.bridge.nativeId(created.sessionId) : null;
+            if (nativeId && preset) f.dsh.permissionOf.set(nativeId, preset);
+            return created;
+          },
+          request: (value) => f.bridge.request(value),
+          live: (id, controls) => f.bridge.live(id, controls),
+          ...bridge,
+        },
+        { requestId: randomUUID(), deviceId: "device-1", workspaceId: "workspace" },
+      );
+    // Already in a preset that asks: nothing to change.
+    const plain = await open();
+    expect(plain).toMatchObject({ accepted: true, sessionId: expect.stringMatching(/^ak-/) });
+    expect(f.dsh.executed).toEqual([]);
+    for (const preset of ["read-only"]) {
+      expect(await open(preset)).toMatchObject({ accepted: true });
+      expect(f.dsh.executed).toEqual([]);
+    }
+    // Full access by default: moved to workspace-write before it is a worker.
+    const moved = await open("danger-full-access");
+    expect(moved).toMatchObject({ accepted: true });
+    expect(f.dsh.executed).toEqual(["/permission workspace-write"]);
+    expect(f.dsh.permissionOf.get(f.bridge.nativeId(moved.sessionId as string)!)).toBe(
+      "workspace-write",
+    );
+    // A change DSH refuses leaves an ordinary session, named in the refusal.
+    const refused = await open("danger-full-access", {
+      request: async (value) =>
+        value.operation === "settings"
+          ? { accepted: false, controlOutcome: "not-dispatched", reason: "session-busy" }
+          : f.bridge.request(value),
+    });
+    expect(refused).toMatchObject({
+      accepted: false,
+      reason: "dsh-worker-preset-unavailable",
+      sessionId: expect.stringMatching(/^ak-/),
+    });
+    // A DSH that reports no presets cannot be checked.
+    expect(
+      await open("danger-full-access", {
+        request: async (value) =>
+          value.operation === "settings-state"
+            ? { available: true, current: {}, policies: [] }
+            : f.bridge.request(value),
+      }),
+    ).toMatchObject({ accepted: false, reason: "dsh-worker-preset-unavailable" });
+    // A create DSH refuses is passed on as it is.
+    expect(
+      await createDshWorker(
+        {
+          create: async () => ({ accepted: false, reason: "dsh-runtime-offline" }),
+          request: async () => ({}),
+          live: () => ({}),
+        },
+        { requestId: randomUUID(), deviceId: "device-1", workspaceId: "workspace" },
+      ),
+    ).toEqual({ accepted: false, reason: "dsh-runtime-offline" });
+  });
+
+  it("reports a worker's turn from the states the bridge publishes", async () => {
+    const f = await fixture();
+    const ended: unknown[][] = [];
+    const waiting: unknown[][] = [];
+    let lane = true;
+    const watch = new DshLaneWatch({
+      isLane: () => lane,
+      endedTurns: (id) => f.bridge.endedTurns(id),
+      turnEnded: async (...args) => void ended.push(args),
+      waiting: async (...args) => void waiting.push(args),
+      retryMs: 20,
+    });
+    cleanups.push(() => watch.close());
+    for (const [id, type, , live] of f.publish.mock.calls)
+      if (type === "state") watch.observe(id, live);
+    f.publish.mockImplementation((id, type, _payload, live) => {
+      if (type === "state") watch.observe(id, live);
+    });
+    expect(await f.control("send", { text: "brief" })).toMatchObject({ accepted: true });
+    await until(() => f.bridge.live("ak-session-a", true).status === "running");
+    f.dsh.finishTurn("session-a", "done");
+    await until(() => ended.length > 0);
+    expect(ended).toEqual([["ak-session-a", "dsh-turn-1", "completed", expect.any(Number)]]);
+    expect(waiting).toEqual([]);
+    // Not a worker: its turns are nobody's report.
+    lane = false;
+    expect(await f.control("send", { text: "again" })).toMatchObject({ accepted: true });
+    await until(() => f.bridge.live("ak-session-a", true).status === "running");
+    f.dsh.finishTurn("session-a", "done again");
+    await until(() => f.bridge.live("ak-session-a", true).status === "idle");
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    expect(ended).toHaveLength(1);
+  });
+
+  it("waits for a turn's end to reach DSH's history, and reports waiting states once", async () => {
+    const turns: Array<{
+      turnId: string;
+      outcome: string;
+      startedAt: string | null;
+      endedAt: string | null;
+    }> = [];
+    const ended: unknown[][] = [];
+    const waiting: unknown[][] = [];
+    const watch = new DshLaneWatch({
+      isLane: (id) => id === "lane",
+      endedTurns: async () => turns,
+      turnEnded: async (...args) => void ended.push(args),
+      waiting: async (...args) => void waiting.push(args),
+      retryMs: 10,
+      retries: 3,
+    });
+    cleanups.push(() => watch.close());
+    watch.observe("lane", { status: "running", turnId: "dsh-turn-4" });
+    watch.observe("lane", { status: "awaiting-approval", turnId: "dsh-turn-4" });
+    watch.observe("lane", { status: "awaiting-approval", turnId: "dsh-turn-4" });
+    watch.observe("lane", { status: "running", turnId: "dsh-turn-4" });
+    watch.observe("lane", { status: "waiting-input", turnId: "dsh-turn-4" });
+    expect(waiting).toEqual([
+      ["lane", "dsh-turn-4", "awaiting-approval"],
+      ["lane", "dsh-turn-4", "waiting-input"],
+    ]);
+    watch.observe("lane", { status: "idle", turnId: null });
+    await new Promise((resolve) => setTimeout(resolve, 15));
+    turns.push({
+      turnId: "dsh-turn-4",
+      outcome: "cancelled",
+      startedAt: null,
+      endedAt: new Date().toISOString(),
+    });
+    await until(() => ended.length > 0);
+    // DSH's history did not reach back to the start: no length is made up.
+    expect(ended).toEqual([["lane", "dsh-turn-4", "cancelled", null]]);
+    // DSH went away mid-turn: nothing in its history yet, so nothing is reported now.
+    turns.length = 0;
+    watch.observe("lane", { status: "running", turnId: "dsh-turn-5" });
+    watch.observe("lane", { status: "unsupported", turnId: null });
+    await new Promise((resolve) => setTimeout(resolve, 60));
+    expect(ended).toHaveLength(1);
   });
 });

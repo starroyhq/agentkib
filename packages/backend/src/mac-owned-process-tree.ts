@@ -35,6 +35,11 @@ function procApi() {
   return api;
 }
 
+/**
+ * A process's birth identity, or null when there is none to read. macOS answers ESRCH for a
+ * process that is gone and also for one that has exited without being reaped yet (measured on
+ * macOS 27.0.1), while `proc_listchildpids` still lists the latter under its parent.
+ */
 function info(pid: number): ProcessInfo | null {
   const native = procApi();
   const bytes = Buffer.alloc(BSD_INFO_SIZE);
@@ -124,7 +129,8 @@ export class MacOwnedProcessTree {
       if (!alive(parent)) throw new Error("owned parent exited during capture");
       for (const pid of children(parent.pid)) {
         const child = info(pid);
-        if (!child) throw new Error("child vanished during ownership capture");
+        // Listed but with nothing to read: it has exited. Nothing of it is left to own.
+        if (!child) continue;
         if (child.parent !== parent.pid || !alive(parent))
           throw new Error("process parent changed during capture");
         const old = this.#known.get(pid);
@@ -195,7 +201,12 @@ export class MacOwnedProcessTree {
       frozen.add(parent.pid);
       for (const pid of children(parent.pid)) {
         const child = info(pid);
-        if (!child) throw new Error("child vanished during frozen capture");
+        // Listed but with nothing to read: it exited before its frozen parent could reap it,
+        // which Claude Code is in for a moment after every short command it runs (`git` at
+        // startup). It runs nothing and can start nothing, so there is nothing to stop or to
+        // wait for; what it started earlier left this tree when it exited, as with any child
+        // that ended before the capture.
+        if (!child) continue;
         if (child.parent !== parent.pid) throw new Error("child ownership changed");
         const previous = this.#known.get(pid);
         if (previous && !sameIdentity(previous, child.identity))

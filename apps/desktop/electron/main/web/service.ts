@@ -3194,6 +3194,14 @@ export class WebAccessService {
       throw new HttpError(403, "workspace_not_authorized");
     return session.workspace_id;
   }
+  /** Whether a session's agent can be a Project Agent without Claude Code on this computer. */
+  private async leadsWithoutClaude(sessionId: string) {
+    const catalog = (await this.scopeCatalog(false)) as {
+      sessions: { id: string; agent: string }[];
+    };
+    const agent = catalog.sessions.find((item) => item.id === sessionId)?.agent;
+    return agent === "codex" || agent === "deepseek-harness";
+  }
   private async lanCodexScopeAllowed(sessionId: string, workspaceId: string, reserved = false) {
     // LAN has no workspace allowlist; retain its existing registered-session
     // boundary without granting file access or managed lifecycle permissions.
@@ -3932,14 +3940,9 @@ export class WebAccessService {
       for (const permission of needs[operation]!) this.grant(hash, permission);
     }
     await this.codexScope(sessionId, hash, false, false);
-    // A Codex session can lead without Claude Code on this computer; a Claude Code one cannot.
-    if (
-      !this.options.verifiedClaudeManaged &&
-      !(await this.codexScope(sessionId, hash, false, true).then(
-        () => true,
-        () => false,
-      ))
-    )
+    // A Codex or DeepSeek Harness session can lead without Claude Code on this computer; a
+    // Claude Code one cannot.
+    if (!this.options.verifiedClaudeManaged && !(await this.leadsWithoutClaude(sessionId)))
       throw new HttpError(503, "capability_unavailable");
     const lead = (value: unknown) =>
       value && typeof value === "object" && "lead" in value

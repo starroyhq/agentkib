@@ -13,7 +13,7 @@ import type { AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { CodexLeadReports } from "../../../packages/backend/src/codex-lead-reports";
+import { MessageLeadReports } from "../../../packages/backend/src/message-lead-reports";
 import { Commands } from "../../../packages/backend/src/commands";
 import type { CursorBridge } from "../../../packages/backend/src/cursor-bridge";
 import {
@@ -40,9 +40,7 @@ function lastUser(input: Json[]): { text: string; answered: boolean } {
   const text = Array.isArray(item?.content)
     ? item.content.map((part: Json) => String(part.text ?? "")).join("\n")
     : String(item?.content ?? "");
-  const answered = input
-    .slice(index + 1)
-    .some((later) => later.type === "custom_tool_call_output");
+  const answered = input.slice(index + 1).some((later) => later.type === "custom_tool_call_output");
   return { text, answered };
 }
 
@@ -214,7 +212,7 @@ describe.skipIf(process.platform !== "darwin" || process.env.AGENTKIB_CODEX_WORK
         managed: async (sessionId) => web.isManagedSession(sessionId),
         workspaces: () => [{ id: "w1", name: "Project" }],
       };
-      const reports = new CodexLeadReports({
+      const reports = new MessageLeadReports({
         live: (sessionId) => lanes.live(sessionId),
         control: (value) => web.managedControl(value) as Promise<Json>,
         queue: (sessionId) => web.managedQueueList({ sessionId, limit: 100 }) as Promise<Json>,

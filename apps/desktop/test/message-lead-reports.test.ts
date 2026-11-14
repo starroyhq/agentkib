@@ -1,12 +1,12 @@
 import { describe, expect, it } from "vitest";
-import { CodexLeadReports } from "../../../packages/backend/src/codex-lead-reports";
+import { MessageLeadReports } from "../../../packages/backend/src/message-lead-reports";
 
 describe("a Codex Project Agent's reports", () => {
   it("go at once when it is idle, queue while it works, and join a report still queued", async () => {
     const calls: Array<Record<string, unknown>> = [];
     let status = "idle";
     const queue: Array<Record<string, unknown>> = [];
-    const reports = new CodexLeadReports({
+    const reports = new MessageLeadReports({
       live: async () => ({ status, runtimeBootId: "boot", revision: 7 }),
       control: async (value) => {
         calls.push(value);
@@ -42,7 +42,7 @@ describe("a Codex Project Agent's reports", () => {
   });
 
   it("throw what refused them, so delegation pauses with the report held", async () => {
-    const reports = new CodexLeadReports({
+    const reports = new MessageLeadReports({
       live: async () => ({ status: "idle", runtimeBootId: "boot", revision: 1 }),
       control: async () => ({ accepted: false, error: "codex-owner-busy" }),
       queue: async () => null,

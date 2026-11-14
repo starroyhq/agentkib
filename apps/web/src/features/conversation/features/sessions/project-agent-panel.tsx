@@ -16,9 +16,9 @@ function projectAgentOf(value: unknown): ProjectAgent | null | undefined {
 }
 
 /**
- * Whether this Claude Code or Codex session is a Project Agent, from Web or a phone: its state for
- * any paired device, and setting it up, pausing, resuming or ending it for a device with the
- * access the host asks for (`/managed/project-agent`).
+ * Whether this Claude Code, Codex or DeepSeek Harness session is a Project Agent, from Web or a
+ * phone: its state for any paired device, and setting it up, pausing, resuming or ending it for a
+ * device with the access the host asks for (`/managed/project-agent`).
  */
 export function ProjectAgentPanel() {
   const { locale, selected, current, workspaces, choose, formatCatalogTime, client, access } =

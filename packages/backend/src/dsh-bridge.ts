@@ -27,6 +27,7 @@ import {
   type DshBridgeHistoryPage,
   type DshBridgeHistoryRecord,
   type DshBridgeInteraction,
+  type DshBridgeLead,
   type DshBridgePromptPart,
   type DshBridgeServices,
   type DshBridgeSessionState,
@@ -388,6 +389,7 @@ const servicesSchema = z
     subagents: z.boolean().optional(),
     documents: z.boolean().optional(),
     agentPresets: z.boolean().optional(),
+    leadTools: z.boolean().optional(),
   })
   .strip();
 const registerSchema = z
@@ -423,6 +425,14 @@ const reportSchema = z
       .optional(),
     goalChanged: z.array(nativeIdSchema).max(512).optional(),
     settingsChanged: z.array(nativeIdSchema).max(512).optional(),
+  })
+  .strip();
+const leadCallSchema = z
+  .object({
+    token: z.string().regex(/^[a-f0-9]{64}$/),
+    sessionId: nativeIdSchema,
+    name: z.string().regex(/^worker_[a-z]{1,16}$/),
+    input: z.record(z.string(), z.unknown()).default({}),
   })
   .strip();
 const resultSchema = z
@@ -621,6 +631,8 @@ type Runtime = {
   sessionCommands: Map<string, DshBridgeCommandEntry[]>;
   queue: Command[];
   waiting?: () => void;
+  /** Which sessions lead changed since its last poll reply (service `leadTools`). */
+  leadsChanged?: boolean;
   commands: Map<string, CommandWaiter>;
 };
 type Inflight = { requestId: string; commandId: string; runtime: string };
@@ -670,6 +682,20 @@ export interface DshBridgeOptions {
     reviewMs?: number;
     /** How long a command keeps the background DSH busy. */
     settleMs?: number;
+  };
+  /**
+   * DSH sessions that are Project Agents (`OrchestrationService`): their worker tools, which the
+   * plugin gives the lead's own agent, and where the calls go. Without it no DSH session leads.
+   */
+  lead?: {
+    /** AgentKib session IDs of the Project Agents; others are filtered out. */
+    sessions(): string[];
+    tools(sessionId: string): DshBridgeLead["tools"] | null;
+    call(
+      sessionId: string,
+      name: string,
+      input: Record<string, unknown>,
+    ): Promise<{ text: string; isError?: boolean }>;
   };
 }
 
@@ -1563,7 +1589,18 @@ export class DshBridge {
     const revised = new Set<string>();
     const historyChanged = new Set(report.historyChanged ?? []);
     let listChanged = false;
-    if (report.services) runtime.services = report.services;
+    if (report.services) {
+      // A plugin whose tool registry started after it registered: tell it the leads now.
+      if (
+        report.services.leadTools === true &&
+        runtime.services.leadTools !== true &&
+        this.options.lead
+      ) {
+        runtime.leadsChanged = true;
+        runtime.waiting?.();
+      }
+      runtime.services = report.services;
+    }
     if (report.commands && stable(report.commands) !== stable(runtime.slashCommands)) {
       runtime.slashCommands = report.commands;
       // The `/` menu comes with the capabilities; sessions this DSH serves read them again.
@@ -2053,6 +2090,8 @@ export class DshBridge {
         return {
           id: item.id,
           kind: "queue",
+          // The request that queued it, when AgentKib did (a Project Agent's reports merge by it).
+          ...(item.rpcId ? { clientUserMessageId: item.rpcId } : {}),
           input: [
             { type: "text", text: lines.filter((line) => !note(line)).join("\n") },
             ...lines.filter(note).map((text) => ({ type: "text", text })),
@@ -2065,6 +2104,59 @@ export class DshBridge {
       }),
       nextCursor: null,
     };
+  }
+  /**
+   * The Project Agents for a DSH's poll reply, with their tools; always the whole list, so a
+   * session that stopped leading loses its tools. Every DSH session that leads is named, not only
+   * those this DSH has listed yet: a DSH AgentKib just started may take a lead's message in its
+   * first poll, before its first report, and only a DSH running the session has its agent to give
+   * the tools to. Nothing for a plugin without `leadTools`.
+   */
+  #leads(runtime: Runtime): { leads?: DshBridgeLead[] } {
+    runtime.leadsChanged = false;
+    const lead = this.options.lead;
+    if (!lead || runtime.services.leadTools !== true) return {};
+    let sessions: string[];
+    try {
+      sessions = lead.sessions();
+    } catch {
+      // Unknown this time: the plugin keeps what it has.
+      return {};
+    }
+    const leads: DshBridgeLead[] = [];
+    for (const id of sessions) {
+      const nativeId = this.#ids.get(id);
+      if (!nativeId) continue;
+      let tools: DshBridgeLead["tools"] | null = null;
+      try {
+        tools = lead.tools(id);
+      } catch {
+        /* Offered no tools rather than failing the poll. */
+      }
+      if (tools) leads.push({ sessionId: nativeId, tools });
+    }
+    return { leads: leads.slice(0, 32) };
+  }
+  /** A session started or stopped leading, or its tools changed: the DSHs that serve leads hear. */
+  leadChanged(): void {
+    if (!this.options.lead) return;
+    for (const runtime of this.#online())
+      if (runtime.services.leadTools === true) {
+        runtime.leadsChanged = true;
+        runtime.waiting?.();
+      }
+  }
+  /**
+   * Whether a session can be a Project Agent: the DSH that has it gives a lead its worker tools
+   * (plugin 0.8.0 and later), or none has it and AgentKib can start one with its own plugin.
+   */
+  leadCapable(id: string): boolean {
+    const nativeId = this.#ids.get(id);
+    if (!nativeId || !this.options.lead || this.#closed || !this.supported) return false;
+    const runtime = this.#controlRuntime(nativeId);
+    if (runtime)
+      return runtime.services.sessionController === true && runtime.services.leadTools === true;
+    return this.#startable();
   }
   /**
    * Whether a new session can start now: exactly one running DSH that can take it. That DSH's
@@ -3646,6 +3738,8 @@ export class DshBridge {
             pid: hello.pid,
             managed,
             services: hello.services,
+            // Its first poll comes back at once with the Project Agents it may serve.
+            leadsChanged: hello.services.leadTools === true && this.options.lead !== undefined,
             lastSeen: Date.now(),
             listedAt: 0,
             reportedAt: 0,
@@ -3671,7 +3765,7 @@ export class DshBridge {
         case DSH_BRIDGE_PATHS.poll: {
           const { token } = z.object({ token: z.string() }).strip().parse(value);
           const runtime = this.#runtimeFor(token);
-          if (!runtime.queue.length)
+          if (!runtime.queue.length && !runtime.leadsChanged)
             await new Promise<void>((resolve) => {
               const timer = setTimeout(resolve, POLL_MS);
               runtime.waiting = () => {
@@ -3703,7 +3797,25 @@ export class DshBridge {
             waiter.onDelivered?.();
           }
           runtime.lastSeen = Date.now();
-          reply(200, { commands });
+          reply(200, { commands, ...this.#leads(runtime) });
+          return;
+        }
+        case DSH_BRIDGE_PATHS.leadCall: {
+          const call = leadCallSchema.parse(value);
+          const runtime = this.#runtimeFor(call.token);
+          const lead = this.options.lead;
+          if (!lead || runtime.services.leadTools !== true)
+            throw new BridgeHttpError(409, "dsh-bridge-feature-unavailable");
+          // Only a lead this DSH has, as its poll reply named it.
+          const id = this.#catalog.has(call.sessionId)
+            ? this.options.sessionId(call.sessionId)
+            : null;
+          const here = runtime.summaries.has(call.sessionId) || runtime.states.has(call.sessionId);
+          if (!id || !here || !lead.sessions().includes(id))
+            throw new BridgeHttpError(403, "not-a-project-agent");
+          runtime.lastSeen = Date.now();
+          const answer = await lead.call(id, call.name, call.input);
+          reply(200, { text: answer.text, isError: answer.isError === true });
           return;
         }
         case DSH_BRIDGE_PATHS.result: {

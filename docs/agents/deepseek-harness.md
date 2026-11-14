@@ -413,6 +413,14 @@ DSH 的审批和问答经 `approval/request`、`user-questions/request` waterfal
 
 **验收覆盖**：启动后原会话 ID 与 preset 不变、启动失败与版本不符的提示、用户随后自己打开 DSH 时控制目标的切换、AgentKib 启动的进程在空闲、崩溃和 AgentKib 退出时的处理。记录见三期 QA。
 
+### 项目 Agent 与 Worker（2026-11-14）
+
+DSH 会话可以作 Worker，也可以作项目 Agent，行为见[项目 Agent](project-agent.md)。
+
+- Worker：项目 Agent 用 `worker_open` 的 `agent: "deepseek-harness"` 经 `DshBridge.create` 新建会话（同新建 DSH 会话，没有 DSH 时在后台启动），发消息前用 `settings` 的 `policyId`（即 DSH 的 `/permission workspace-write`）把用户的默认预设换成“工作区可写”并读回确认。一轮结束从插件报来的会话状态看到，原因与用时读会话记录里的 `turn-start`、`turn-end`（`DshBridge.endedTurns`，从不为此启动 DSH）。不需要插件改动。
+- 项目 Agent：插件 0.8.0 报告服务 `leadTools`（DSH 有 `agents` 与 `tools` 服务时）。Host 在轮询回复里给出 `leads`：全部 DSH 项目 Agent 的原生会话 ID 与工具说明，不只限于这个 DSH 已列出的会话，因为 Host 刚启动的 DSH 可能在第一次报告之前就从轮询拿到发给项目 Agent 的消息；没有那个会话的 DSH 也就没有它的 Agent 可注册。新注册且有 `leadTools` 的 DSH 第一次轮询立即返回，项目 Agent 变化时 Host 唤醒轮询。插件先处理 `leads` 再执行同一回复里的命令，在会话自己的 Agent 上注册工具（`agent.ctx.tools.register`，DSH 的 Agent 作用域登记只对这个 Agent 生效），`agent/created` 时为再次加载的会话重新注册；调用发到 `/v1/lead-call`，Host 核对会话仍是项目 Agent、而且由这个 DSH 列出或运行，再交给编排服务。工具定义按 DSH `ToolDefinition` 的最小形状写（名称、说明、JSON Schema 参数、字符串输出与 `render`、`execute`），不依赖插件无法加载的 `@deepseek-ai/dsh-tools`。拒绝以工具失败返回，这一轮继续。没有选用 DSH 的 MCP 管理器：插件登记的服务器对整个 DSH 生效，其他会话也会拿到项目 Agent 的工具。
+- 待发队列的 `queue-list` 行带上 `clientUserMessageId`（DSH 记在消息上的 AgentKib 请求 ID），项目 Agent 排队中的汇报按它合并，与 Codex 相同。
+
 ### 四期：独立常驻 Host 与 CLI 接入
 
 确需 Desktop 关闭后仍可远控时，新增独立 `agentkib serve` 服务，让 Desktop 和 CLI 都 attach。CLI 的分发方式、管理连接身份与权限在此阶段一并确定。

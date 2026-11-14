@@ -239,7 +239,7 @@ Claude Code 自动结束仅在用户停留期间真实回收进程时显示一�
 
 | 概念 | 简体中文 | 繁體中文 | 日本語 | English |
 | --- | --- | --- | --- | --- |
-| 指挥其他会话的 Claude Code 会话 | 项目 Agent | 專案 Agent | プロジェクト Agent | Project Agent |
+| 指挥其他会话的 Claude Code、Codex 或 DeepSeek Harness 会话 | 项目 Agent | 專案 Agent | プロジェクト Agent | Project Agent |
 | 由项目 Agent 开出、派任务的 Codex 或 DeepSeek Harness 会话 | Worker | Worker | ワーカー | Worker |
 | 项目 Agent 交给 Worker 的工作 | 任务 | 任務 | タスク | Task |
 | Worker 的结果送回项目 Agent | 汇报 | 回報 | 報告 | Report |

@@ -13,7 +13,11 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { PassThrough } from "node:stream";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { DshBridge, dshConversationEvents } from "../../../packages/backend/src/dsh-bridge";
+import {
+  DshBridge,
+  dshConversationEvents,
+  type DshBridgeOptions,
+} from "../../../packages/backend/src/dsh-bridge";
 import {
   createDshWorker,
   DshLaneWatch,
@@ -89,6 +93,8 @@ function fakeDsh(cwd: string) {
   const attachmentInvalid = (reason: string) =>
     Object.assign(new Error(reason), { code: "session/attachment-invalid", details: { reason } });
   const archived = new Set<string>();
+  // Each agent's own tools (`agent.ctx.tools`), as DSH scopes them to one agent.
+  const agentTools = new Map<any, any[]>();
   const followers = new Set<(frame: unknown) => void>();
   const pushArchived = () => {
     for (const push of followers) push({ type: "archived", archivedSessionIds: [...archived] });
@@ -147,6 +153,8 @@ function fakeDsh(cwd: string) {
       get: (id: string) => sessions.get(id)?.agent,
       list: () => [...sessions.values()].map((session) => session.agent),
     },
+    // DSH's tool registry; a plugin reaches one agent's own through `agent.ctx.tools`.
+    tools: { register: () => () => undefined },
     llm: { resolveCallConfig: vi.fn(async () => ({})) },
     userQuestions: { ask: () => undefined },
     approval: { request: () => undefined },
@@ -556,8 +564,8 @@ function fakeDsh(cwd: string) {
           });
         }),
     );
-  const create = (id: string, title: string, parentSessionId?: string) => {
-    const agent = {
+  const newAgent = (id: string): any => {
+    const agent: any = {
       id,
       status: "idle",
       inbox: { nextTurn: [], nextStep: [] },
@@ -568,7 +576,26 @@ function fakeDsh(cwd: string) {
           append(id, "model/selection", selection);
         },
       },
+      ctx: {
+        tools: {
+          register(definition: any) {
+            const list = agentTools.get(agent) ?? [];
+            if (list.some((item) => item.name === definition.name))
+              throw new Error(`tool "${definition.name}" is already registered`);
+            list.push(definition);
+            agentTools.set(agent, list);
+            return () => {
+              const left = (agentTools.get(agent) ?? []).filter((item) => item !== definition);
+              agentTools.set(agent, left);
+            };
+          },
+        },
+      },
     };
+    return agent;
+  };
+  const create = (id: string, title: string, parentSessionId?: string) => {
+    const agent = newAgent(id);
     sessions.set(id, {
       events: [],
       agent,
@@ -660,6 +687,17 @@ function fakeDsh(cwd: string) {
     append,
     finishTurn,
     emit,
+    /** The tools a session's current agent has of its own. */
+    toolsOf: (id: string) => agentTools.get(sessions.get(id)?.agent) ?? [],
+    /** DSH loads the session again: a new agent replaces the old one. */
+    reload(id: string) {
+      const session = sessions.get(id)!;
+      emit("agent/disposed", { agent: session.agent });
+      agentTools.delete(session.agent);
+      session.agent = newAgent(id);
+      emit("agent/created", { agent: session.agent, source: "resume" });
+      return session.agent;
+    },
     close: () => disposers.forEach((dispose) => dispose()),
   };
 }
@@ -680,7 +718,10 @@ async function until<T>(read: () => T | undefined | false, ms = 5000): Promise<T
   }
 }
 
-async function fixture({ supportsCreateModelSelection = true } = {}) {
+async function fixture({
+  supportsCreateModelSelection = true,
+  lead,
+}: { supportsCreateModelSelection?: boolean; lead?: DshBridgeOptions["lead"] } = {}) {
   const root = realpathSync(mkdtempSync(path.join(tmpdir(), "ak-dsh-test-")));
   const workspace = path.join(root, "workspace");
   const agentkibHome = path.join(root, "agentkib-home");
@@ -703,6 +744,7 @@ async function fixture({ supportsCreateModelSelection = true } = {}) {
     workspacePath: (id) => (id === "workspace" ? workspace : null),
     sessionsChanged: (ids) => changed.push(ids),
     publish,
+    ...(lead ? { lead } : {}),
   });
   bridge.initialize();
   const dsh = fakeDsh(workspace);
@@ -3180,5 +3222,160 @@ describe("DeepSeek Harness sessions as a Project Agent's workers", () => {
     watch.observe("lane", { status: "unsupported", turnId: null });
     await new Promise((resolve) => setTimeout(resolve, 60));
     expect(ended).toHaveLength(1);
+  });
+});
+
+describe("DeepSeek Harness sessions as Project Agents", () => {
+  const SPECS = [
+    {
+      name: "worker_list",
+      description: "List your workers.",
+      inputSchema: { type: "object", properties: {}, additionalProperties: false },
+    },
+    {
+      name: "worker_send",
+      description: "Give a worker a task.",
+      inputSchema: {
+        type: "object",
+        properties: { worker: { type: "string" }, text: { type: "string" } },
+        required: ["worker", "text"],
+      },
+    },
+  ];
+
+  async function leading() {
+    let leads = ["ak-session-a"];
+    let specs = SPECS;
+    const calls: Array<[string, string, Record<string, unknown>]> = [];
+    const f = await fixture({
+      lead: {
+        sessions: () => leads,
+        tools: () => specs,
+        call: async (sessionId, name, input) => {
+          calls.push([sessionId, name, input]);
+          return name === "worker_send"
+            ? {
+                text: JSON.stringify({ accepted: false, reason: "delegation-paused" }),
+                isError: true,
+              }
+            : { text: JSON.stringify({ workers: [] }) };
+        },
+      },
+    });
+    return {
+      ...f,
+      calls,
+      lead: (value: string[]) => {
+        leads = value;
+        f.bridge.leadChanged();
+      },
+      specs: (value: typeof SPECS) => {
+        specs = value;
+        f.bridge.leadChanged();
+      },
+    };
+  }
+
+  it("gives a lead session's own agent its worker tools and runs their calls in AgentKib", async () => {
+    const f = await leading();
+    f.dsh.create("session-b", "Another session");
+    f.bridge.leadChanged();
+    await until(() => f.dsh.toolsOf("session-a").length === 2);
+    expect(f.dsh.toolsOf("session-a").map((tool: any) => tool.name)).toEqual([
+      "worker_list",
+      "worker_send",
+    ]);
+    // No other session sees them.
+    expect(f.dsh.toolsOf("session-b")).toEqual([]);
+    const [list, send] = f.dsh.toolsOf("session-a");
+    expect(list.parameters).toEqual(SPECS[0]!.inputSchema);
+    expect(list.output.render({}, "text")).toEqual([{ type: "text", text: "text" }]);
+    expect(await list.execute({}, { signal: new AbortController().signal })).toBe(
+      JSON.stringify({ workers: [] }),
+    );
+    // A refusal is the tool's failure, with AgentKib's reason for the model to read.
+    await expect(
+      send.execute({ worker: "api", text: "go" }, { signal: new AbortController().signal }),
+    ).rejects.toThrow("delegation-paused");
+    expect(f.calls).toEqual([
+      ["ak-session-a", "worker_list", {}],
+      ["ak-session-a", "worker_send", { worker: "api", text: "go" }],
+    ]);
+    // Only for a lead this DSH has: AgentKib checks again on every call.
+    const token = [...f.plugin.hosts.values()][0]!.token;
+    const discovery = JSON.parse(
+      readFileSync(path.join(f.agentkibHome, "dsh-bridge", "discovery-v1.json"), "utf8"),
+    );
+    await expect(
+      post(discovery.socketPath, DSH_BRIDGE_PATHS.leadCall, {
+        token,
+        sessionId: "session-b",
+        name: "worker_list",
+        input: {},
+      }),
+    ).rejects.toMatchObject({ status: 403, code: "not-a-project-agent" });
+  });
+
+  it("keeps the tools with the lead as DSH loads it again, changes them, and takes them away", async () => {
+    const f = await leading();
+    await until(() => f.dsh.toolsOf("session-a").length === 2);
+    // DSH runs the session in a new agent: it gets the tools as it is created.
+    f.dsh.reload("session-a");
+    expect(f.dsh.toolsOf("session-a").map((tool: any) => tool.name)).toEqual([
+      "worker_list",
+      "worker_send",
+    ]);
+    f.specs([SPECS[0]!]);
+    await until(() => f.dsh.toolsOf("session-a").length === 1);
+    f.lead([]);
+    await until(() => f.dsh.toolsOf("session-a").length === 0);
+    // Calls of a session that stopped leading are refused.
+    const token = [...f.plugin.hosts.values()][0]!.token;
+    const discovery = JSON.parse(
+      readFileSync(path.join(f.agentkibHome, "dsh-bridge", "discovery-v1.json"), "utf8"),
+    );
+    await expect(
+      post(discovery.socketPath, DSH_BRIDGE_PATHS.leadCall, {
+        token,
+        sessionId: "session-a",
+        name: "worker_list",
+        input: {},
+      }),
+    ).rejects.toMatchObject({ status: 403 });
+    expect(f.calls).toEqual([]);
+  });
+
+  it("says a session can lead only where its DSH gives leads their tools", async () => {
+    const f = await leading();
+    expect(f.bridge.leadCapable("ak-session-a")).toBe(true);
+    expect(f.bridge.leadCapable("ak-nope")).toBe(false);
+    // A DSH whose plugin predates the tools.
+    const old = await fixture();
+    expect(old.bridge.leadCapable("ak-session-a")).toBe(false);
+    const register = old.plugin.hosts.values().next().value!;
+    expect(register.token).toBeTruthy();
+  });
+
+  it("lists AgentKib's own queued messages by the request that queued them", async () => {
+    const f = await fixture();
+    await f.control("send", { text: "run the tests" });
+    await until(() => f.bridge.live("ak-session-a", true).status === "running");
+    const agent = f.dsh.sessions.get("session-a")!.agent;
+    const message = (id: string, text: string, rpcId?: string) => ({
+      id,
+      role: "user",
+      content: [{ type: "text", text }],
+      source: { kind: "user", ...(rpcId ? { rpcId } : {}) },
+    });
+    // A report AgentKib queued, and a message typed in DSH's own window.
+    agent.inbox.nextTurn = [message("q1", "report", "request-1"), message("q2", "typed in DSH")];
+    f.dsh.emit("agent/status", { agent, status: "running" });
+    await until(() => f.bridge.live("ak-session-a", true).queuedCount === 2);
+    const queued = (await f.bridge.request({
+      operation: "queue-list",
+      sessionId: "ak-session-a",
+    })) as { data: Array<Record<string, unknown>> };
+    expect(queued.data[0]).toMatchObject({ id: "q1", clientUserMessageId: "request-1" });
+    expect(queued.data[1]).not.toHaveProperty("clientUserMessageId");
   });
 });

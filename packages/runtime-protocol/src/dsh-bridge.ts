@@ -14,6 +14,8 @@ export const DSH_BRIDGE_PATHS = {
   report: "/v1/report",
   poll: "/v1/poll",
   result: "/v1/result",
+  /** A Project Agent's worker tool call (service `leadTools`). */
+  leadCall: "/v1/lead-call",
 } as const;
 
 /** Written by the Runtime with mode 0600; the key rotates with every Runtime start. */
@@ -52,6 +54,19 @@ export interface DshBridgeServices {
   documents?: boolean;
   /** DSH's Agent presets, chosen when a session starts. Plugins older than 0.5.0 do not report it. */
   agentPresets?: boolean;
+  /**
+   * A session may be a Project Agent (docs/agents/project-agent.md): poll replies then carry
+   * `leads`, the plugin gives each lead's own agent its worker tools, and their calls go to
+   * `leadCall`. Plugins older than 0.8.0 do not report it.
+   */
+  leadTools?: boolean;
+}
+
+/** A Project Agent a DSH serves, as poll replies carry it (service `leadTools`). */
+export interface DshBridgeLead {
+  /** DSH's own session ID. */
+  sessionId: string;
+  tools: Array<{ name: string; description: string; inputSchema: Record<string, unknown> }>;
 }
 
 /**

@@ -66,9 +66,12 @@ export function SessionOperations({
         {shortcuts}
       </Dialog>
     ) : null;
-  // A Claude Code or Codex session that AgentKib runs may direct workers as a Project Agent.
+  // A Claude Code, Codex or DeepSeek Harness session AgentKib runs or reaches may direct
+  // workers as a Project Agent.
   const header =
-    current?.agent === "claude-code" || current?.agent === "codex" ? (
+    current?.agent === "claude-code" ||
+    current?.agent === "codex" ||
+    current?.agent === "deepseek-harness" ? (
       <>
         {shortcuts}
         <ProjectAgentPanel />

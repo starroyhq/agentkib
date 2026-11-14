@@ -1,23 +1,27 @@
 import { randomUUID } from "node:crypto";
 
-/** What a Codex Project Agent's reports go through: AgentKib's own Codex session controls. */
-export type CodexLeadControls = {
+/**
+ * What a Project Agent's reports go through when they are messages to it: AgentKib's own controls
+ * of a Codex session it runs, or of a DeepSeek Harness session through the DSH bridge.
+ */
+export type LeadMessageControls = {
   live(sessionId: string): Promise<Record<string, unknown>>;
   control(value: Record<string, unknown>): Promise<Record<string, unknown>>;
   queue(sessionId: string): Promise<{ data?: Array<Record<string, unknown>> } | null>;
 };
 
 /**
- * The reports for Codex Project Agents (docs/agents/project-agent.md). A report is a message
- * AgentKib sends the lead in the name of the device that set it up: at once when it is idle,
- * else queued in Codex after its turn. A report still waiting in that queue takes the next one in
- * (`queue-update`), as a managed Claude Code lead's waiting report does.
+ * The reports for Codex and DeepSeek Harness Project Agents (docs/agents/project-agent.md). A
+ * report is a message AgentKib sends the lead in the name of the device that set it up: at once
+ * when it is idle, else queued after its turn in the agent's own queue. A report still waiting in
+ * that queue takes the next one in (`queue-update`, found by the request that queued it), as a
+ * managed Claude Code lead's waiting report does.
  */
-export class CodexLeadReports {
+export class MessageLeadReports {
   /** The report each lead has waiting in Codex's queue, by the request that queued it. */
   #waiting = new Map<string, { requestId: string; text: string }>();
 
-  constructor(private readonly controls: CodexLeadControls) {}
+  constructor(private readonly controls: LeadMessageControls) {}
 
   /** Sends or queues the report; true when it joined one still waiting. Throws when refused. */
   async send(sessionId: string, deviceId: string, text: string): Promise<boolean> {

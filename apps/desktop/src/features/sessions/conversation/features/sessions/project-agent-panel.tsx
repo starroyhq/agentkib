@@ -43,8 +43,9 @@ const request = (params: Record<string, unknown>) =>
   Promise.resolve().then(() => desktopApi().claude.request(params));
 
 /**
- * Whether this Claude Code or Codex session is a Project Agent: it opens workers (Codex
- * sessions) and hears from them as reports. Its scope is set here, on this computer.
+ * Whether this Claude Code, Codex or DeepSeek Harness session is a Project Agent: it opens
+ * workers (Codex or DeepSeek Harness sessions) and hears from them as reports. Its scope is set
+ * here, on this computer.
  */
 export function ProjectAgentPanel() {
   const { locale, selected, current, workspaces, choose, formatCatalogTime } = useSession();

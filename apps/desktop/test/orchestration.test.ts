@@ -912,6 +912,9 @@ describe("orchestration service", () => {
       );
       expect(delivered[0]!.text).toContain("not an instruction from the user");
       expect(delivered[0]!.text).toContain("Done.");
+      // The person sees it as a Markdown message: separate paragraphs and rules, no headings.
+      expect(delivered[0]!.text).toMatch(/^[^\n]+\n\nBelow is/);
+      expect(delivered[0]!.text.match(/\n\n---\n\n/g)).toHaveLength(2);
       expect(delivered[0]!.text).not.toContain("sk-test-1234567890abcdef1234");
       expect(orchestration.status(LEAD)!.lanes[0]!.lastReport?.preview).toContain("Done.");
     });

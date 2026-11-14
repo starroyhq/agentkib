@@ -58,7 +58,7 @@ const copy: Record<"zh-CN" | "zh-Hant" | "ja-JP" | "en-US", ProjectAgentCopy> = 
     resume: "恢复委派",
     release: "不再作为项目 Agent",
     releaseConfirm: "确定不再作为项目 Agent？Worker 会话会保留为普通会话。",
-    reported: (time) => `${time}汇报`,
+    reported: (time) => `${time} 汇报`,
     status: {
       idle: "空闲",
       running: "运行中",
@@ -108,7 +108,7 @@ const copy: Record<"zh-CN" | "zh-Hant" | "ja-JP" | "en-US", ProjectAgentCopy> = 
     resume: "恢復委派",
     release: "不再作為專案 Agent",
     releaseConfirm: "確定不再作為專案 Agent？Worker 對話會保留為一般對話。",
-    reported: (time) => `${time}回報`,
+    reported: (time) => `${time} 回報`,
     status: {
       idle: "閒置",
       running: "執行中",

@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { desktopApi } from "@/core/desktop";
 import { Switch } from "@/components/ui/switch";
+import { OperationCopy, OperationGroup, OperationRow } from "./operation-layout";
 import { useSession } from "./session-context";
 import type { SupportedLocale as Locale } from "@/core/types";
 
@@ -119,19 +120,18 @@ export function ClaudeBackgroundSetting() {
           ? text.platform
           : null;
   return (
-    <section className="flex items-start gap-3 border-t pt-4 text-sm" aria-label={text.toggle}>
-      <div className="min-w-0 flex-1 space-y-0.5">
-        <p>{text.toggle}</p>
-        <p className="text-xs leading-5 text-muted-foreground">
+    <OperationGroup title="Claude Code">
+      <OperationRow>
+        <OperationCopy title={text.toggle}>
           {status.available ? text.hint : (unavailable ?? text.hint)}
-        </p>
-      </div>
-      <Switch
-        checked={status.available && status.enabled}
-        disabled={switching || !status.available}
-        aria-label={text.toggle}
-        onCheckedChange={toggle}
-      />
-    </section>
+        </OperationCopy>
+        <Switch
+          checked={status.available && status.enabled}
+          disabled={switching || !status.available}
+          aria-label={text.toggle}
+          onCheckedChange={toggle}
+        />
+      </OperationRow>
+    </OperationGroup>
   );
 }

@@ -96,6 +96,17 @@ describe("deleting a session from its actions on the desktop", () => {
     expect(navigate).not.toHaveBeenCalled();
   });
 
+  it("says a reason shared by several management buttons once", () => {
+    prepare({
+      fork: { available: false, reason: "session-busy" },
+      delete: { available: false, reason: "session-busy" },
+    });
+    render(<CodexTools open />);
+    expect(screen.getByRole("button", { name: copy.fork })).toBeDisabled();
+    expect(screen.getByRole("button", { name: copy.delete })).toBeDisabled();
+    expect(screen.getAllByText(codexReason("en-US", "session-busy").text)).toHaveLength(1);
+  });
+
   it("says another Codex process has to quit first", () => {
     prepare({ delete: { available: false, reason: "codex-owner-busy" } });
     render(<CodexTools open />);

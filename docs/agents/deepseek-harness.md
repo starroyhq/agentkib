@@ -409,7 +409,7 @@ DSH 的审批和问答经 `approval/request`、`user-questions/request` waterfal
 
 - 会话的执行位置为 `agentkib`（用户自己的 DSH 仍为 `external`）。
 - 新原因：`dsh-start-failed`、`dsh-version-unsupported`、`dsh-launcher-unavailable`、`dsh-exited`；DSH 的 `session/writer-held` 报为 `dsh-session-in-use`（会话被没装插件的 DSH Desktop 占着时）。各端说明并保留草稿。
-- 桌面“会话操作”里的 DSH 连接面板：后台进程标为“由 AgentKib 在后台启动”；自动启动开关；先给 DSH Desktop“添加插件”要粘贴的插件目录，再给命令行写法。
+- 桌面“会话操作”里的 DSH 连接面板：后台进程标为“由 AgentKib 在后台启动”；自动启动开关；“安装 AgentKib 插件”一行展开后，先给 DSH Desktop“添加插件”要粘贴的插件目录，再给命令行写法，各带复制按钮。已连接 DSH 或 AgentKib 能自己启动它时这一行收起，两者都不成立时默认展开。
 
 **验收覆盖**：启动后原会话 ID 与 preset 不变、启动失败与版本不符的提示、用户随后自己打开 DSH 时控制目标的切换、AgentKib 启动的进程在空闲、崩溃和 AgentKib 退出时的处理。记录见三期 QA。
 

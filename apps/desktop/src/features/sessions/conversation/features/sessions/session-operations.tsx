@@ -1,4 +1,5 @@
 import { requestReadStateRefresh } from "@agentkib/session-ui";
+import { Info, RefreshCw, SlidersHorizontal } from "lucide-react";
 import { useEffect, useState } from "react";
 import { useSessionPanels } from "./session-panels";
 import { Button } from "@/components/ui/button";
@@ -31,37 +32,37 @@ export function SessionOperations({
     setTerminalOpen(false);
   }, [selected, canConnectTerminal, setTerminalOpen]);
   const shortcuts = (
-    <div className="flex flex-wrap gap-2 border-b pb-4">
+    <div className="flex flex-wrap gap-2">
       <Button
         variant="outline"
-        className="min-h-11"
         onClick={() => {
           onOpenChange(false);
           setModal("metadata");
         }}
       >
+        <Info aria-hidden="true" />
         {t.details}
       </Button>
       <Button
         variant="outline"
-        className="min-h-11"
         disabled={busy}
         onClick={() => {
           requestReadStateRefresh("desktop-local", selected);
           void refresh(true);
         }}
       >
+        <RefreshCw aria-hidden="true" />
         {t.refresh}
       </Button>
       {!embedded && (
         <Button
           variant="outline"
-          className="min-h-11"
           onClick={() => {
             onOpenChange(false);
             setModal("preferences");
           }}
         >
+          <SlidersHorizontal aria-hidden="true" />
           {t.preferences}
         </Button>
       )}
@@ -78,6 +79,7 @@ export function SessionOperations({
         title={webLayoutCopy[locale].actions}
         closeLabel={t.close}
         onClose={() => onOpenChange(false)}
+        bodyClassName="space-y-5 leading-5"
       >
         {shortcuts}
       </Dialog>

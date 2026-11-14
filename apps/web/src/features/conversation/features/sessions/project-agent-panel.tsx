@@ -4,6 +4,7 @@ import { useCallback, useEffect, useState } from "react";
 import { Button } from "../../components/ui/button";
 import { Input } from "../../components/ui/input";
 import { NativeCheckbox } from "../../components/ui/native-checkbox";
+import { OperationCopy, OperationGroup, OperationRow, TOUCH_TARGET } from "./operation-layout";
 import { useSession } from "./session-context";
 
 function projectAgentOf(value: unknown): ProjectAgent | null | undefined {
@@ -104,27 +105,28 @@ export function ProjectAgentPanel() {
     if (!mayLead) return null;
     if (!form)
       return (
-        <section className="space-y-2 border-t pt-4 text-sm" aria-label={text.title}>
-          <p>{text.title}</p>
-          <p className="text-xs leading-5 text-muted-foreground">{text.hint}</p>
-          <Button
-            variant="outline"
-            className="min-h-11"
-            onClick={() =>
-              setForm({
-                workspaceIds: current?.workspace_id ? [current.workspace_id] : [],
-                autoReview: false,
-                approveFiles: false,
-                approveCommands: false,
-                answers: false,
-                maxLanes: 4,
-                maxAutoTurns: 25,
-              })
-            }
-          >
-            {text.designate}
-          </Button>
-        </section>
+        <OperationGroup title={text.title}>
+          <OperationRow className="flex-wrap">
+            <OperationCopy className="basis-64">{text.hint}</OperationCopy>
+            <Button
+              variant="outline"
+              className={TOUCH_TARGET}
+              onClick={() =>
+                setForm({
+                  workspaceIds: current?.workspace_id ? [current.workspace_id] : [],
+                  autoReview: false,
+                  approveFiles: false,
+                  approveCommands: false,
+                  answers: false,
+                  maxLanes: 4,
+                  maxAutoTurns: 25,
+                })
+              }
+            >
+              {text.designate}
+            </Button>
+          </OperationRow>
+        </OperationGroup>
       );
     const toggleWorkspace = (id: string, on: boolean) =>
       setForm({
@@ -136,50 +138,55 @@ export function ProjectAgentPanel() {
     const bounded = (value: string, max: number) =>
       Math.min(max, Math.max(1, Math.trunc(Number(value)) || 1));
     return (
-      <section className="space-y-3 border-t pt-4 text-sm" aria-label={text.title}>
-        <p>{text.title}</p>
-        <fieldset className="space-y-1">
-          <legend className="text-xs text-muted-foreground">{text.workspaces}</legend>
-          {(workspaces ?? []).map((workspace) => (
-            <label key={workspace.id} className="flex items-center gap-2">
-              <NativeCheckbox
-                checked={form.workspaceIds.includes(workspace.id)}
-                onChange={(event) => toggleWorkspace(workspace.id, event.target.checked)}
-              />
-              <span className="truncate">{workspace.name}</span>
-            </label>
-          ))}
-        </fieldset>
-        <label className="flex items-center gap-2">
-          <NativeCheckbox
-            checked={form.autoReview}
-            onChange={(event) => setForm({ ...form, autoReview: event.target.checked })}
-          />
-          <span>{text.autoReview}</span>
-        </label>
-        <fieldset className="space-y-1">
-          <legend className="text-xs text-muted-foreground">{text.decides}</legend>
-          {(
-            [
-              ["approveFiles", text.approveFiles],
-              ["approveCommands", text.approveCommands],
-              ["answers", text.answers],
-            ] as const
-          ).map(([key, label]) => (
-            <label key={key} className="flex items-center gap-2">
-              <NativeCheckbox
-                checked={form[key]}
-                // Deciding approvals for workers takes a device that may approve them.
-                disabled={key !== "answers" && !device?.approve}
-                onChange={(event) => setForm({ ...form, [key]: event.target.checked })}
-              />
-              <span>{label}</span>
-            </label>
-          ))}
-          <p className="text-xs leading-5 text-muted-foreground">{text.decidesNote}</p>
-        </fieldset>
-        <div className="grid grid-cols-2 gap-3">
-          <label className="space-y-1">
+      <OperationGroup title={text.title}>
+        <OperationRow className="block">
+          <fieldset className="grid gap-1.5">
+            <legend className="mb-1.5 text-xs text-muted-foreground">{text.workspaces}</legend>
+            {(workspaces ?? []).map((workspace) => (
+              <label key={workspace.id} className="flex items-center gap-2">
+                <NativeCheckbox
+                  checked={form.workspaceIds.includes(workspace.id)}
+                  onChange={(event) => toggleWorkspace(workspace.id, event.target.checked)}
+                />
+                <span className="truncate">{workspace.name}</span>
+              </label>
+            ))}
+          </fieldset>
+        </OperationRow>
+        <OperationRow>
+          <label className="flex items-center gap-2">
+            <NativeCheckbox
+              checked={form.autoReview}
+              onChange={(event) => setForm({ ...form, autoReview: event.target.checked })}
+            />
+            <span>{text.autoReview}</span>
+          </label>
+        </OperationRow>
+        <OperationRow className="block">
+          <fieldset className="grid gap-1.5">
+            <legend className="mb-1.5 text-xs text-muted-foreground">{text.decides}</legend>
+            {(
+              [
+                ["approveFiles", text.approveFiles],
+                ["approveCommands", text.approveCommands],
+                ["answers", text.answers],
+              ] as const
+            ).map(([key, label]) => (
+              <label key={key} className="flex items-center gap-2">
+                <NativeCheckbox
+                  checked={form[key]}
+                  // Deciding approvals for workers takes a device that may approve them.
+                  disabled={key !== "answers" && !device?.approve}
+                  onChange={(event) => setForm({ ...form, [key]: event.target.checked })}
+                />
+                <span>{label}</span>
+              </label>
+            ))}
+            <p className="text-xs leading-5 text-muted-foreground">{text.decidesNote}</p>
+          </fieldset>
+        </OperationRow>
+        <OperationRow className="grid grid-cols-2 items-start gap-3">
+          <label className="grid gap-1.5">
             <span className="text-xs text-muted-foreground">{text.maxWorkers}</span>
             <Input
               type="number"
@@ -189,7 +196,7 @@ export function ProjectAgentPanel() {
               onChange={(event) => setForm({ ...form, maxLanes: bounded(event.target.value, 8) })}
             />
           </label>
-          <label className="space-y-1">
+          <label className="grid gap-1.5">
             <span className="text-xs text-muted-foreground">{text.maxAutoTurns}</span>
             <Input
               type="number"
@@ -201,11 +208,16 @@ export function ProjectAgentPanel() {
               }
             />
           </label>
-        </div>
-        {errorText && <p className="text-xs text-destructive">{errorText}</p>}
-        <div className="flex gap-2">
+        </OperationRow>
+        <OperationRow className="flex-wrap justify-end gap-2">
+          {errorText && (
+            <p className="mr-auto min-w-0 text-xs text-destructive-text">{errorText}</p>
+          )}
+          <Button variant="outline" className={TOUCH_TARGET} onClick={() => setForm(null)}>
+            {text.cancel}
+          </Button>
           <Button
-            className="min-h-11"
+            className={TOUCH_TARGET}
             disabled={busy || !form.workspaceIds.length}
             onClick={() =>
               void run({
@@ -228,107 +240,111 @@ export function ProjectAgentPanel() {
           >
             {text.confirm}
           </Button>
-          <Button variant="outline" className="min-h-11" onClick={() => setForm(null)}>
-            {text.cancel}
-          </Button>
-        </div>
-      </section>
+        </OperationRow>
+      </OperationGroup>
     );
   }
 
+  const decided = [
+    ...(agent.scope.approvals?.includes("file-change") ? [text.approveFiles] : []),
+    ...(agent.scope.approvals?.includes("command") ? [text.approveCommands] : []),
+    ...(agent.scope.answers ? [text.answers] : []),
+  ];
+  // What this device may do with it; a device that may only look gets no row of buttons.
+  const mayToggle = agent.paused
+    ? mayLead && (!agent.scope.approvals?.length || !!device?.approve)
+    : full && !!device?.send;
+  const mayRelease = full && !!device?.manage;
   return (
-    <section className="space-y-3 border-t pt-4 text-sm" aria-label={text.title}>
-      <div className="space-y-0.5">
-        <p>{text.title}</p>
-        <p className="text-xs text-muted-foreground">
-          {text.summary(agent.workers.length, agent.pendingReports)}
-        </p>
-        {(agent.scope.approvals?.length || agent.scope.answers) && (
-          <p className="text-xs leading-5 text-muted-foreground">
-            {text.decided([
-              ...(agent.scope.approvals?.includes("file-change") ? [text.approveFiles] : []),
-              ...(agent.scope.approvals?.includes("command") ? [text.approveCommands] : []),
-              ...(agent.scope.answers ? [text.answers] : []),
-            ])}
-          </p>
-        )}
-        {agent.paused && (
-          <p className="text-xs leading-5 text-muted-foreground">
-            {text.paused[agent.reason ?? "user-paused"] ?? text.paused["user-paused"]}
-          </p>
-        )}
-      </div>
-      {agent.workers.length ? (
-        <ul className="space-y-2">
-          {agent.workers.map((worker) => (
-            <li key={worker.sessionId} className="flex items-start gap-3">
-              <div className="min-w-0 flex-1">
-                <p className="truncate">
-                  {worker.name} · {text.status[worker.status] ?? text.status.unavailable}
-                </p>
-                {(worker.title || worker.lastReportAt) && (
-                  <p className="truncate text-xs text-muted-foreground">
-                    {[
-                      worker.title,
-                      worker.lastReportAt
-                        ? text.reported(formatCatalogTime(worker.lastReportAt))
-                        : null,
-                    ]
-                      .filter(Boolean)
-                      .join(" · ")}
-                  </p>
-                )}
-              </div>
-              <Button variant="outline" size="sm" onClick={() => void choose(worker.sessionId)}>
-                {text.open}
+    <OperationGroup title={text.title}>
+      <OperationRow>
+        <OperationCopy title={text.summary(agent.workers.length, agent.pendingReports)}>
+          {decided.length > 0 && <p>{text.decided(decided)}</p>}
+          {agent.paused && (
+            <p className="text-amber-700 dark:text-amber-300">
+              {text.paused[agent.reason ?? "user-paused"] ?? text.paused["user-paused"]}
+            </p>
+          )}
+          {!agent.workers.length && <p>{text.none}</p>}
+        </OperationCopy>
+      </OperationRow>
+      {agent.workers.map((worker) => (
+        <OperationRow key={worker.sessionId}>
+          <OperationCopy
+            title={`${worker.name} · ${text.status[worker.status] ?? text.status.unavailable}`}
+          >
+            {(worker.title || worker.lastReportAt) && (
+              <p className="truncate">
+                {[
+                  worker.title,
+                  worker.lastReportAt
+                    ? text.reported(formatCatalogTime(worker.lastReportAt))
+                    : null,
+                ]
+                  .filter(Boolean)
+                  .join(" · ")}
+              </p>
+            )}
+          </OperationCopy>
+          <Button
+            variant="outline"
+            size="sm"
+            className={TOUCH_TARGET}
+            onClick={() => void choose(worker.sessionId)}
+          >
+            {text.open}
+          </Button>
+        </OperationRow>
+      ))}
+      {(releasing || mayToggle || mayRelease || errorText) && (
+        <OperationRow className="flex-wrap gap-2">
+          {releasing ? (
+            <>
+              <p className="min-w-0 flex-1 basis-full text-xs leading-5">{text.releaseConfirm}</p>
+              <Button
+                variant="destructive"
+                className={TOUCH_TARGET}
+                disabled={busy}
+                onClick={() =>
+                  void run({ operation: "release" }).then((done) => done && setReleasing(false))
+                }
+              >
+                {text.release}
               </Button>
-            </li>
-          ))}
-        </ul>
-      ) : (
-        <p className="text-xs text-muted-foreground">{text.none}</p>
-      )}
-      {errorText && <p className="text-xs text-destructive">{errorText}</p>}
-      {releasing ? (
-        <div className="space-y-2">
-          <p className="text-xs leading-5">{text.releaseConfirm}</p>
-          <div className="flex gap-2">
-            <Button
-              variant="destructive"
-              className="min-h-11"
-              disabled={busy}
-              onClick={() =>
-                void run({ operation: "release" }).then((done) => done && setReleasing(false))
-              }
-            >
-              {text.release}
-            </Button>
-            <Button variant="outline" className="min-h-11" onClick={() => setReleasing(false)}>
-              {text.cancel}
-            </Button>
-          </div>
-        </div>
-      ) : (
-        <div className="flex flex-wrap gap-2">
-          {(agent.paused
-            ? mayLead && (!agent.scope.approvals?.length || !!device?.approve)
-            : full && !!device?.send) && (
-            <Button
-              variant="outline"
-              className="min-h-11"
-              disabled={busy}
-              onClick={() => void run({ operation: agent.paused ? "resume" : "pause" })}
-            >
-              {agent.paused ? text.resume : text.pause}
-            </Button>
+              <Button
+                variant="outline"
+                className={TOUCH_TARGET}
+                onClick={() => setReleasing(false)}
+              >
+                {text.cancel}
+              </Button>
+            </>
+          ) : (
+            <>
+              {mayToggle && (
+                <Button
+                  variant="outline"
+                  className={TOUCH_TARGET}
+                  disabled={busy}
+                  onClick={() => void run({ operation: agent.paused ? "resume" : "pause" })}
+                >
+                  {agent.paused ? text.resume : text.pause}
+                </Button>
+              )}
+              {mayRelease && (
+                <Button
+                  variant="ghost"
+                  className={`${TOUCH_TARGET} text-muted-foreground`}
+                  onClick={() => setReleasing(true)}
+                >
+                  {text.release}
+                </Button>
+              )}
+            </>
           )}
-          {full && !!device?.manage && (
-            <Button variant="outline" className="min-h-11" onClick={() => setReleasing(true)}>
-              {text.release}
-            </Button>
-          )}
-        </div>
+          {errorText && <p className="basis-full text-xs text-destructive-text">{errorText}</p>}
+        </OperationRow>
       )}
-    </section>
+    </OperationGroup>
   );
 }

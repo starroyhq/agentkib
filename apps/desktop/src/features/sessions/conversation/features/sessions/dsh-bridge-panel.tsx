@@ -1,7 +1,13 @@
 import { useEffect, useState } from "react";
 import { desktopApi } from "@/core/desktop";
-import { Button } from "@/components/ui/button";
 import { Switch } from "@/components/ui/switch";
+import {
+  CopyField,
+  OperationCopy,
+  OperationDisclosure,
+  OperationGroup,
+  OperationRow,
+} from "./operation-layout";
 import { useSession } from "./session-context";
 import type { SupportedLocale as Locale } from "@/core/types";
 
@@ -46,6 +52,7 @@ const copy: Record<
     readOnly: string;
     autoStart: string;
     autoStartHint: string;
+    install: string;
     desktop: string;
     copyDirectory: string;
     restart: string;
@@ -72,6 +79,7 @@ const copy: Record<
     autoStart: "需要时自动启动 DeepSeek Harness",
     autoStartHint:
       "没开 DeepSeek Harness 时，在后台启动它，空闲 3 分钟后关闭，退出 AgentKib 时一并关闭。",
+    install: "安装 AgentKib 插件",
     desktop:
       "想在 DeepSeek Harness Desktop 开着时也从这里继续会话，在 Desktop 的“添加插件”里粘贴这个目录（只需一次），然后重启 Desktop：",
     copyDirectory: "复制目录",
@@ -98,6 +106,7 @@ const copy: Record<
     autoStart: "需要時自動啟動 DeepSeek Harness",
     autoStartHint:
       "沒開 DeepSeek Harness 時，在背景啟動它，閒置 3 分鐘後關閉，結束 AgentKib 時一併關閉。",
+    install: "安裝 AgentKib 外掛",
     desktop:
       "想在 DeepSeek Harness Desktop 開著時也從這裡繼續對話，在 Desktop 的「添加插件」裡貼上這個目錄（只需一次），然後重新啟動 Desktop：",
     copyDirectory: "複製目錄",
@@ -125,6 +134,7 @@ const copy: Record<
     autoStart: "必要なときに DeepSeek Harness を自動で起動",
     autoStartHint:
       "DeepSeek Harness が開いていないときはバックグラウンドで起動し、3 分間使われなければ終了します。AgentKib を終了すると一緒に終了します。",
+    install: "AgentKib プラグインを入れる",
     desktop:
       "DeepSeek Harness Desktop を開いている間もここから会話を続けるには、Desktop の「プラグインを追加」にこのディレクトリを貼り付け（初回のみ）、Desktop を再起動します：",
     copyDirectory: "ディレクトリをコピー",
@@ -153,6 +163,7 @@ const copy: Record<
     autoStart: "Start DeepSeek Harness when needed",
     autoStartHint:
       "When DeepSeek Harness is not open, AgentKib starts it in the background, closes it after 3 idle minutes, and closes it when you quit AgentKib.",
+    install: "Install the AgentKib plugin",
     desktop:
       "To continue sessions from here while DeepSeek Harness Desktop is open, paste this directory into Desktop's “Add plugin” (once), then restart Desktop:",
     copyDirectory: "Copy directory",
@@ -173,7 +184,6 @@ export function DshBridgePanel() {
   const { locale } = useSession();
   const text = copy[locale] ?? copy["en-US"];
   const [status, setStatus] = useState<DshBridgeStatus>();
-  const [copied, setCopied] = useState<"directory" | "command">();
   const [switching, setSwitching] = useState(false);
   useEffect(() => {
     let current = true;
@@ -198,11 +208,6 @@ export function DshBridgePanel() {
       clearInterval(timer);
     };
   }, []);
-  useEffect(() => {
-    if (!copied) return;
-    const timer = setTimeout(() => setCopied(undefined), 3000);
-    return () => clearTimeout(timer);
-  }, [copied]);
   if (!status) return null;
   const runtimes = status.runtimes ?? [];
   const command = status.installInstructions?.split("\n").find((line) => !line.startsWith("#"));
@@ -217,11 +222,6 @@ export function DshBridgePanel() {
       )
       .finally(() => setSwitching(false));
   };
-  const write = (value: string, what: "directory" | "command") =>
-    void navigator.clipboard.writeText(value).then(
-      () => setCopied(what),
-      () => undefined,
-    );
   // What happens when nothing of the user's runs: the background start, or why it cannot.
   const offline = !autoStart?.enabled
     ? text.none
@@ -232,66 +232,73 @@ export function DshBridgePanel() {
       : autoStart.reason === "dsh-version-unsupported"
         ? text.versionUnsupported
         : text.noLauncher;
+  const supported = status.supported !== false;
+  // Installing matters when nothing is connected and AgentKib cannot start DSH itself; otherwise
+  // the steps stay folded.
+  const installFirst = !runtimes.length && !(autoStart?.enabled && autoStart.available);
   return (
-    <section className="space-y-3 border-t pt-4 text-sm" aria-label={text.title}>
-      <h3 className="font-medium">{text.title}</h3>
-      {status.supported === false ? (
-        <p className="text-muted-foreground">{text.unsupported}</p>
-      ) : status.reason === "dsh-bridge-unavailable" ? (
-        <p className="text-muted-foreground">{text.unavailable}</p>
-      ) : runtimes.length ? (
-        <div className="space-y-1">
-          <p>{text.connected(runtimes.length)}</p>
-          {runtimes.map((runtime) => (
-            <p key={runtime.runtimeId} className="text-xs leading-5 text-muted-foreground">
-              {text.version(runtime.dshVersion)}
-              {runtime.managed && ` · ${text.background}`}
-              {!runtime.sessionController && ` · ${text.readOnly}`}
-            </p>
-          ))}
-        </div>
-      ) : (
-        <p className="text-muted-foreground">{offline}</p>
-      )}
-      {status.supported !== false && autoStart && (
-        <div className="flex items-start gap-3">
-          <div className="min-w-0 flex-1 space-y-0.5">
-            <p>{text.autoStart}</p>
-            <p className="text-xs leading-5 text-muted-foreground">{text.autoStartHint}</p>
-          </div>
+    <OperationGroup title={text.title}>
+      <OperationRow>
+        {!supported ? (
+          <p className="text-muted-foreground">{text.unsupported}</p>
+        ) : status.reason === "dsh-bridge-unavailable" ? (
+          <p className="text-muted-foreground">{text.unavailable}</p>
+        ) : runtimes.length ? (
+          <OperationCopy
+            title={
+              <span className="flex items-center gap-2">
+                <span
+                  className="size-1.5 shrink-0 rounded-full bg-emerald-500"
+                  aria-hidden="true"
+                />
+                <span className="truncate">{text.connected(runtimes.length)}</span>
+              </span>
+            }
+          >
+            {runtimes.map((runtime) => (
+              <p key={runtime.runtimeId}>
+                {text.version(runtime.dshVersion)}
+                {runtime.managed && ` · ${text.background}`}
+                {!runtime.sessionController && ` · ${text.readOnly}`}
+              </p>
+            ))}
+          </OperationCopy>
+        ) : (
+          <p className="text-muted-foreground">{offline}</p>
+        )}
+      </OperationRow>
+      {supported && autoStart && (
+        <OperationRow>
+          <OperationCopy title={text.autoStart}>{text.autoStartHint}</OperationCopy>
           <Switch
             checked={autoStart.enabled}
             disabled={switching}
             aria-label={text.autoStart}
             onCheckedChange={toggle}
           />
-        </div>
+        </OperationRow>
       )}
-      {status.supported !== false && status.pluginDirectory && (
-        <div className="space-y-2">
-          <p className="text-xs leading-5 text-muted-foreground">{text.desktop}</p>
-          <pre className="overflow-x-auto rounded-lg border bg-muted/40 p-3 text-xs">
-            {status.pluginDirectory}
-          </pre>
-          <Button
-            variant="outline"
-            className="min-h-11"
-            onClick={() => write(status.pluginDirectory!, "directory")}
-          >
-            {copied === "directory" ? text.copied : text.copyDirectory}
-          </Button>
-        </div>
+      {supported && (status.pluginDirectory || command) && (
+        <OperationDisclosure title={text.install} defaultOpen={installFirst}>
+          {status.pluginDirectory && (
+            <div className="grid gap-1.5">
+              <p className="text-xs leading-5 text-muted-foreground">{text.desktop}</p>
+              <CopyField
+                value={status.pluginDirectory}
+                label={text.copyDirectory}
+                copiedLabel={text.copied}
+              />
+            </div>
+          )}
+          {command && (
+            <div className="grid gap-1.5">
+              <p className="text-xs leading-5 text-muted-foreground">{text.cli}</p>
+              <CopyField value={command} label={text.copy} copiedLabel={text.copied} />
+              <p className="text-xs leading-5 text-muted-foreground">{text.restart}</p>
+            </div>
+          )}
+        </OperationDisclosure>
       )}
-      {status.supported !== false && command && (
-        <div className="space-y-2">
-          <p className="text-xs leading-5 text-muted-foreground">{text.cli}</p>
-          <pre className="overflow-x-auto rounded-lg border bg-muted/40 p-3 text-xs">{command}</pre>
-          <p className="text-xs leading-5 text-muted-foreground">{text.restart}</p>
-          <Button variant="outline" className="min-h-11" onClick={() => write(command, "command")}>
-            {copied === "command" ? text.copied : text.copy}
-          </Button>
-        </div>
-      )}
-    </section>
+    </OperationGroup>
   );
 }

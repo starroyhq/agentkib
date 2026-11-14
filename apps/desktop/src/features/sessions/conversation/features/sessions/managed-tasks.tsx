@@ -249,7 +249,7 @@ export function ManagedTasks({
   )
     return renderContent(null);
   return renderContent(
-    <div className="space-y-4">
+    <div className="space-y-3">
       {(outcomeCheck?.message || error) && (
         <div role="alert" className="break-words text-sm text-destructive-text">
           <p>{outcomeCheck?.message || error}</p>
@@ -258,7 +258,6 @@ export function ManagedTasks({
       {showOutcomeCheck && access.protocolVersion === 2 && (
         <Button
           variant="outline"
-          className="min-h-11"
           disabled={!scope || !session.online || session.busy || !!pending || checkingOutcome}
           onClick={() => void checkOutcome()}
         >
@@ -266,7 +265,7 @@ export function ManagedTasks({
         </Button>
       )}
       {uncertain && (
-        <div className="space-y-2 rounded border p-3 text-sm">
+        <div className="space-y-2 rounded-xl border border-border/70 bg-card px-4 py-3 text-sm">
           <p>
             {managedText(
               locale,

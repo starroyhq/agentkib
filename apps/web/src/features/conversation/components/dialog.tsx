@@ -1,3 +1,4 @@
+import { XIcon } from "lucide-react";
 import { useEffect, useRef, type ReactNode } from "react";
 import { cn } from "../lib/utils";
 import {
@@ -66,10 +67,10 @@ export function Dialog({
           <DialogTitle>{title}</DialogTitle>
           {headerAdornment && <div className="mr-10 shrink-0">{headerAdornment}</div>}
           <DialogClose
-            className="absolute top-4 right-4 grid size-11 place-items-center rounded-md hover:bg-accent"
+            className="absolute top-2.5 right-3 grid size-9 place-items-center rounded-md text-muted-foreground hover:bg-accent hover:text-foreground pointer-coarse:top-1.5 pointer-coarse:right-2 pointer-coarse:size-11"
             aria-label={closeLabel}
           >
-            <span aria-hidden="true">×</span>
+            <XIcon aria-hidden="true" className="size-4" />
           </DialogClose>
         </DialogHeader>
         {description && <p className="px-4 pt-1 text-xs text-muted-foreground">{description}</p>}

@@ -1,8 +1,10 @@
 import { requestReadStateRefresh } from "@agentkib/session-ui";
+import { Info, RefreshCw, SlidersHorizontal } from "lucide-react";
 import { Button } from "../../components/ui/button";
 import { Dialog } from "../../components/dialog";
 import { CodexTools } from "./codex-tools";
 import { ManagedTasks } from "./managed-tasks";
+import { TOUCH_TARGET } from "./operation-layout";
 import { ProjectAgentPanel } from "./project-agent-panel";
 import { useSession } from "./session-context";
 import { webLayoutCopy } from "./web-layout-copy";
@@ -15,37 +17,40 @@ export function SessionOperations({
 }) {
   const { t, locale, current, selected, client, setModal, refresh, busy, embedded } = useSession();
   const shortcuts = (
-    <div className="flex flex-wrap gap-2 border-b pb-4">
+    <div className="flex flex-wrap gap-2">
       <Button
         variant="outline"
-        className="min-h-11"
+        className={TOUCH_TARGET}
         onClick={() => {
           onOpenChange(false);
           setModal("metadata");
         }}
       >
+        <Info aria-hidden="true" />
         {t.details}
       </Button>
       <Button
         variant="outline"
-        className="min-h-11"
+        className={TOUCH_TARGET}
         disabled={busy}
         onClick={() => {
           requestReadStateRefresh(client, selected);
           void refresh(true);
         }}
       >
+        <RefreshCw aria-hidden="true" />
         {t.refresh}
       </Button>
       {!embedded && (
         <Button
           variant="outline"
-          className="min-h-11"
+          className={TOUCH_TARGET}
           onClick={() => {
             onOpenChange(false);
             setModal("preferences");
           }}
         >
+          <SlidersHorizontal aria-hidden="true" />
           {t.preferences}
         </Button>
       )}
@@ -62,6 +67,7 @@ export function SessionOperations({
         title={webLayoutCopy[locale].actions}
         closeLabel={t.close}
         onClose={() => onOpenChange(false)}
+        bodyClassName="space-y-5 leading-5"
       >
         {shortcuts}
       </Dialog>

@@ -71,5 +71,5 @@
 
 ## 没有做的
 
-- 由 AgentKib 运行的 Claude Code 项目 Agent，一轮以错误结束时（例如账号额度用尽，CLI 以“You've hit your 5-hour limit”结束这一轮），和其他托管会话一样进入“结果待核对”，在 AgentKib 里只读，没有应用内恢复入口（见 [Claude Code 托管执行](claude-code-managed.md)）。它出现在“需要你处理”里；此后到的汇报留着不送，不会开始新的一轮，Worker 不受影响。要继续委派，取消这个项目 Agent 后换一个会话来当，或在 Claude Code 终端里继续这个会话。认证失败不在此列，会话保持可用。
+- 由 AgentKib 运行的 Claude Code 项目 Agent，一轮以错误结束时（例如账号额度用尽，CLI 以“You've hit your 5-hour limit”结束这一轮），和其他托管会话一样进入“结果待核对”，在 AgentKib 里只读，没有应用内恢复入口（见 [Claude Code 托管执行](claude-code-managed.md)）。它出现在“需要你处理”里；此后到的汇报留着不送，不会开始新的一轮，Worker 不受影响。要继续委派，取消这个项目 Agent（只读时也可以取消），再把另一个会话设为项目 Agent；这个会话本身照托管会话的规则，可以在 Claude Code 终端里继续。认证失败不在此列，会话保持可用。
 - DeepSeek Harness 项目 Agent 自己开始的一轮（目标继续、子代理结束后的回合）不计入自动轮次上限，达到上限时也不停止它；用户在 DSH 自己的窗口里给它发消息也不清零计数，在 AgentKib 里发送或在面板里恢复才清零。

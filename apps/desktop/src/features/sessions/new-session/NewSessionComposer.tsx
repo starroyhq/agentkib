@@ -26,10 +26,13 @@ import {
   newSessionCopy,
   newSessionCreateFields,
   PROMPT_AT_CREATE_AGENTS,
+  devinTerminalAction,
+  devinTerminalCopy,
   newSessionPermissions,
   newSessionPresets,
 } from "@agentkib/session-ui";
 import { Button } from "@/components/ui/button";
+import { createDesktopConversationClient } from "@/core/conversation-bridge";
 import { Disclosure, DisclosureSummary } from "@/components/ui/disclosure";
 import {
   DropdownMenu,
@@ -104,6 +107,8 @@ export function NewSessionComposer(props: NewSessionComposerProps) {
     recentContinuationWorkspaces(workspaces as WorkspaceSummary[], 1)[0];
   const [text, setText] = useState("");
   const [files, setFiles] = useState<File[]>([]);
+  const [terminalClient] = useState(createDesktopConversationClient);
+  const [terminalNote, setTerminalNote] = useState<{ detail: string; text: string }>();
   const [permission, setPermission] = useState<string>();
   const [modelDraft, setModelDraft] = useState<{
     scope: string;
@@ -261,15 +266,53 @@ export function NewSessionComposer(props: NewSessionComposerProps) {
     if (room > 0) setFiles((current) => [...current, ...list.slice(0, room)]);
   }
 
+  // Devin CLI's own login or workspace trust stopped the session from starting: offer to open it.
+  const terminalDetail = session.failure?.detail?.replaceAll("_", "-");
+  const terminalAction = agent === "devin" ? devinTerminalAction(terminalDetail) : undefined;
+  const openDevinTerminal = async () => {
+    if (!terminalAction || !terminalDetail || !workspace) return;
+    const words = devinTerminalCopy(locale);
+    try {
+      const result = await terminalClient.devinTerminal({
+        action: terminalAction,
+        workspaceId: workspace.id,
+      });
+      setTerminalNote({
+        detail: terminalDetail,
+        text: words.opened.replace("{terminal}", result.terminal),
+      });
+    } catch {
+      setTerminalNote({ detail: terminalDetail, text: words.failed });
+    }
+  };
+
   const notice = session.unknown ? (
     <Notice tone="warning" icon={<Hourglass className="size-3.5" />}>
       {copy.unknown}
     </Notice>
   ) : session.failure ? (
-    <Notice tone="error" icon={<CircleX className="size-3.5" />}>
+    <Notice
+      tone="error"
+      icon={<CircleX className="size-3.5" />}
+      action={
+        terminalAction ? (
+          <Button
+            type="button"
+            size="sm"
+            variant="outline"
+            onClick={() => void openDevinTerminal()}
+          >
+            {devinTerminalCopy(locale)[terminalAction]}
+          </Button>
+        ) : undefined
+      }
+    >
       {session.failure.detail === "dsh-create-model-not-applied"
         ? session.failure.reason
         : fillCopy(copy.notCreated, { reason: session.failure.reason })}
+      {terminalNote && terminalNote.detail === terminalDetail && (
+        <span className="mt-1 block">{terminalNote.text}</span>
+      )}
       {session.failure.detail && (
         <Disclosure className="mt-1">
           <DisclosureSummary>{copy.details}</DisclosureSummary>

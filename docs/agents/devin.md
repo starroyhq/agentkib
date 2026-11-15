@@ -25,7 +25,7 @@ Windows（`%APPDATA%\devin\cli`）和 Linux（`$XDG_DATA_HOME/devin/cli`）的�
 
 每一轮由 AgentKib 启动一次非交互的 `devin -p`：新建时带上第一条消息，继续时加 `-r <会话 ID>`，第一条消息和之后的消息都写进只有当前用户可读的临时文件，用 `--prompt-file` 交给 Devin，这一轮结束后删除。进度从 Devin 的会话库读回，会话页每秒更新一次；停止会结束这个进程：先发 SIGINT；`devin -p` 不因 SIGINT 退出，1.5 秒后发 SIGTERM，5 秒后仍在运行则 SIGKILL。
 
-- **登录**：Devin CLI 作为自己的宿主，用 `devin auth login` 保存的登录；AgentKib 不读取也不保存凭据。Devin Desktop 的登录只交给它自己启动的 `devin acp`，不能给 CLI 用。`devin acp` 在 ACP 模式下有意不用 CLI 的登录、要求宿主提供 API Key，所以这里不用 ACP。CLI 没有登录时 AgentKib 不提示；用户在 AgentKib 里新建或发送时，才说明需要先在终端运行一次 `devin auth login`。
+- **登录**：Devin CLI 作为自己的宿主，用 `devin auth login` 保存的登录；AgentKib 不读取也不保存凭据。Devin Desktop 的登录只交给它自己启动的 `devin acp`，不能给 CLI 用。`devin acp` 在 ACP 模式下有意不用 CLI 的登录、要求宿主提供 API Key，所以这里不用 ACP。CLI 没有登录时 AgentKib 不提示；用户在 AgentKib 里新建或发送时，才说明需要先在终端运行一次 `devin auth login`。 未登录或工作区未信任时，会话页输入框上方和新建失败的提示里说明原因；桌面端另有“在终端登录 Devin CLI”“在终端信任这个工作区”按钮，在终端里运行 `devin auth login`，或在工作区里运行 `devin` 让它询问是否信任。AgentKib 只启动命令，看不到输入的内容；这个入口只接受桌面端自己的请求，Web 和手机只显示说明。
 - **权限和模型**：用 Devin 自己的权限模式，对整轮生效：`accept-edits`（默认，自动批准只读工具和工作区内的文件修改）、`auto`（只自动批准只读工具）、`smart`、`dangerous`。`devin -p` 运行中不能询问，不在权限内的操作直接被拒绝，所以没有一轮中途的审批和提问。新建时选，或在会话页的“会话设置”里改；改动从下一轮生效，按 Devin 会话 ID 存在 AgentKib 数据目录的 `devin-session-settings.json` 里，AgentKib 重启后仍然有效。没选模型时继续会话不传 `--model`，Devin 沿用这个会话保存的模型，输入框里显示它。`smart` 和 `dangerous` 只接受有完全访问权限的设备。Devin 会话库里的 `agent_mode` 只记新建时的模式，之后不更新；AgentKib 每一轮都传 `--permission-mode`。
 - **工作区信任**：不传 `--respect-workspace-trust false`。Devin 还没信任的工作区会拒绝运行，AgentKib 说明需要先在那个目录里运行一次 `devin` 并选择信任。
 - **会话锁**：Devin 在 `session_locks/<会话 ID>.lock` 里记下持有者的 PID，退出后文件仍留着。持有者仍是运行中的 Devin 进程（例如会话正在 Devin Desktop 或终端里打开）时，AgentKib 不发送，并提示到那边关掉后再发。

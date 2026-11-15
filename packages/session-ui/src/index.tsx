@@ -97,6 +97,7 @@ export {
   type InteractionItemsContext,
   type InteractionItemsLive,
 } from "./interaction-items";
+export { DEVIN_TURN_REASONS, devinTerminalAction, devinTerminalCopy } from "./devin-terminal";
 export {
   NEW_SESSION_AGENTS,
   newSessionCopy,

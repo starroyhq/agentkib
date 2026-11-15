@@ -484,6 +484,8 @@ const API_ROUTES: Record<"GET" | "POST", Record<string, RouteSpec>> = {
     "/history/configure": {},
     "/history/clear": {},
     "/history/rebuild": {},
+    // Desktop only: the handler refuses every other caller.
+    "/devin/terminal": {},
     "/pair": { lan: true },
     "/pair/cancel": { lan: true },
     "/account-binding": { lan: true },
@@ -5464,6 +5466,20 @@ export class WebAccessService {
         return this.prepareClaudeSettings(res, hash, body);
       }
       if (path === "/managed/project-agent") return this.projectAgent(res, hash, body);
+      // Opens a terminal on this computer for Devin CLI's own login or workspace trust, so only
+      // the desktop app itself may ask; remote devices only see the explanation.
+      if (path === "/devin/terminal") {
+        if (!trustedLocal || lan) throw new HttpError(403, "owner_required");
+        const action = body.action === "login" || body.action === "trust" ? body.action : null;
+        if (!action) throw new HttpError(400, "invalid_input");
+        const params: Record<string, unknown> = { operation: "devin-terminal", action };
+        if (action === "trust")
+          params.workspaceId =
+            body.sessionId !== undefined
+              ? await this.codexScope(this.field(body.sessionId), hash, false, false)
+              : this.field(body.workspaceId);
+        return this.json(res, 200, await this.options.runtimeRequest(params));
+      }
       if (path === "/managed/action")
         return this.codexAction(res, hash, this.field(body.operation, 64), body, control, true);
       if (path.startsWith("/managed/"))

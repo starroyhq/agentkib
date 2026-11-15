@@ -73,6 +73,7 @@ export function isConversationPath(path: string, post: boolean) {
         "/history/rebuild",
         "/send",
         "/stop",
+        "/devin/terminal",
         "/approve",
         "/answer",
         "/artifact-tickets",

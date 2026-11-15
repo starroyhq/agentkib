@@ -1169,6 +1169,13 @@ export class WebClient {
       signal,
     );
   }
+  /**
+   * Desktop only: opens a terminal on this computer for Devin CLI's own login, or its trust prompt
+   * in a session's or workspace's folder. Other devices are refused.
+   */
+  devinTerminal(body: { action: "login" | "trust"; sessionId?: string; workspaceId?: string }) {
+    return this.request<{ terminal: string }>("devin/terminal", body);
+  }
   managedAction(operation: "create" | "adopt" | "release" | "reconcile", body: ManagedActionBody) {
     return this.request<ManagedActionResult>(`managed/${operation}`, body);
   }

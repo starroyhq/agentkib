@@ -73,7 +73,11 @@ import {
   needsDurableReceipt,
 } from "@agentkib/web-client";
 import { displaySessionTitle, isSessionListed } from "@agentkib/session-catalog";
-import { answerRequestBody, captureHistoryScrollAnchor } from "@agentkib/session-ui";
+import {
+  answerRequestBody,
+  captureHistoryScrollAnchor,
+  DEVIN_TURN_REASONS,
+} from "@agentkib/session-ui";
 import { interactionCopy } from "../interactions/interaction-copy";
 import type { CatalogWorkspace } from "../catalog/session-catalog";
 import { catalogCopy } from "../catalog/catalog-copy";
@@ -148,7 +152,17 @@ type NotDispatchedReason =
   | ClaudeCommandRefusal
   | ClaudeSettingsReason
   | AttachmentRefusal
-  | DshCommandReason;
+  | DshCommandReason
+  | DevinRefusal;
+/** Devin CLI's own refusals, explained under its composer (`DEVIN_TURN_REASONS`). */
+type DevinRefusal =
+  | "devin-login-required"
+  | "devin-workspace-untrusted"
+  | "devin-cli-unavailable"
+  | "devin-run-failed"
+  | "devin-session-not-found"
+  | "session-open-elsewhere"
+  | "attachments-unsupported";
 function codexSettingsRecoveryReason(
   agent: string | undefined,
   ...reasons: (string | undefined)[]
@@ -175,6 +189,10 @@ function codexSettingsRecoveryReason(
     return reasons.find(
       (reason): reason is DshCommandReason =>
         isDshCommandRefusal(reason) || reason === "dsh-command-unavailable",
+    );
+  if (agent === "devin")
+    return reasons.find(
+      (reason): reason is DevinRefusal => !!reason && DEVIN_TURN_REASONS.includes(reason),
     );
   if (agent !== "codex") return;
   return reasons.find(

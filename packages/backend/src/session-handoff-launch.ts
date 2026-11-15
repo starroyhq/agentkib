@@ -490,57 +490,91 @@ export async function launchPreparedHandoff(
   validateOwnership();
   return handoffCommit(async () => {
     validateOwnership();
-    const folder = mkdtempSync(path.join(os.tmpdir(), "agentkib-handoff-"));
-    const script = path.join(
-      folder,
-      process.platform === "win32" ? `${randomUUID()}.cmd` : `${randomUUID()}.command`,
-    );
+    const folder = await openTerminal(terminal, command, env);
     try {
-      writeFileSync(script, launcherScript(command, folder), { flag: "wx", mode: 0o700 });
-      if (process.platform !== "win32") chmodSync(script, 0o700);
-      let args: string[];
-      if (terminal.kind === "macos") args = ["-a", "Terminal.app", script];
-      else if (terminal.kind === "windows") args = ["/d", "/k", script];
-      else if (terminal.kind === "linux-xdg") args = [script];
-      else args = ["-e", script];
-      const child = spawn(terminal.executable, args, {
-        detached: process.platform !== "win32",
-        stdio: "ignore",
-        windowsHide: true,
-        env: command.env ?? env,
-      });
-      await new Promise<void>((resolve, reject) => {
-        child.once("error", reject);
-        child.once("spawn", resolve);
-      });
-      child.unref();
       if (request.mode === "native-import")
-        await markNativeImportLaunched(
-          dataDir,
-          request,
-          terminal.kind === "macos"
-            ? "Terminal.app"
-            : terminal.kind === "windows"
-              ? "Windows Terminal"
-              : terminal.kind === "linux-xdg"
-                ? "xdg-terminal-exec"
-                : "x-terminal-emulator",
-          validateOwnership,
-        );
-      return {
-        target_agent: request.target_agent,
-        terminal:
-          terminal.kind === "macos"
-            ? "Terminal.app"
-            : terminal.kind === "windows"
-              ? "Windows Terminal"
-              : terminal.kind === "linux-xdg"
-                ? "xdg-terminal-exec"
-                : "x-terminal-emulator",
-      };
+        await markNativeImportLaunched(dataDir, request, terminalName(terminal), validateOwnership);
+      return { target_agent: request.target_agent, terminal: terminalName(terminal) };
     } catch (error) {
       rmSync(folder, { recursive: true, force: true });
       throw error;
     }
   });
+}
+
+function terminalName(terminal: Terminal) {
+  return terminal.kind === "macos"
+    ? "Terminal.app"
+    : terminal.kind === "windows"
+      ? "Windows Terminal"
+      : terminal.kind === "linux-xdg"
+        ? "xdg-terminal-exec"
+        : "x-terminal-emulator";
+}
+
+/**
+ * Opens a terminal that runs one command through a launcher script, which deletes itself and its
+ * folder when it starts. Returns that folder, removed here if the terminal could not start.
+ */
+async function openTerminal(
+  terminal: Terminal,
+  command: InteractiveCommand,
+  env: NodeJS.ProcessEnv,
+): Promise<string> {
+  const folder = mkdtempSync(path.join(os.tmpdir(), "agentkib-handoff-"));
+  const script = path.join(
+    folder,
+    process.platform === "win32" ? `${randomUUID()}.cmd` : `${randomUUID()}.command`,
+  );
+  try {
+    writeFileSync(script, launcherScript(command, folder), { flag: "wx", mode: 0o700 });
+    if (process.platform !== "win32") chmodSync(script, 0o700);
+    let args: string[];
+    if (terminal.kind === "macos") args = ["-a", "Terminal.app", script];
+    else if (terminal.kind === "windows") args = ["/d", "/k", script];
+    else if (terminal.kind === "linux-xdg") args = [script];
+    else args = ["-e", script];
+    const child = spawn(terminal.executable, args, {
+      detached: process.platform !== "win32",
+      stdio: "ignore",
+      windowsHide: true,
+      env: command.env ?? env,
+    });
+    await new Promise<void>((resolve, reject) => {
+      child.once("error", reject);
+      child.once("spawn", resolve);
+    });
+    child.unref();
+    return folder;
+  } catch (error) {
+    rmSync(folder, { recursive: true, force: true });
+    throw error;
+  }
+}
+
+/**
+ * Runs one of Devin CLI's own interactive commands in a terminal for the person to complete:
+ * `devin auth login`, which stores the CLI's login itself, or `devin` in a workspace, which asks
+ * whether to trust it. AgentKib only starts the command; it never sees what is typed.
+ */
+export async function launchDevinTerminal(
+  action: "login" | "trust",
+  executable: string,
+  cwd: string,
+  commands: Commands,
+  env: NodeJS.ProcessEnv,
+): Promise<{ terminal: string }> {
+  const terminal = await resolveTerminal(commands, env);
+  await openTerminal(
+    terminal,
+    {
+      executable,
+      arguments: action === "login" ? ["auth", "login"] : [],
+      cwd,
+      // A CLI under an ACP host ignores its own login; this terminal has no such host.
+      environment: { ACP_BACKEND: null },
+    },
+    env,
+  );
+  return { terminal: terminalName(terminal) };
 }

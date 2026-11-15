@@ -226,5 +226,7 @@ export function useNewSession({
     /** A create whose outcome is not known yet. */
     unknown: !!pending,
     create,
+    /** Opens Devin CLI's own login or workspace trust in a terminal on this computer. */
+    devinTerminal: (body: Parameters<typeof client.devinTerminal>[0]) => client.devinTerminal(body),
   };
 }

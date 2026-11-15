@@ -27,6 +27,7 @@ Windows（`%APPDATA%\devin\cli`）和 Linux（`$XDG_DATA_HOME/devin/cli`）的�
 
 - **登录**：Devin CLI 作为自己的宿主，用 `devin auth login` 保存的登录；AgentKib 不读取也不保存凭据。Devin Desktop 的登录只交给它自己启动的 `devin acp`，不能给 CLI 用。`devin acp` 在 ACP 模式下有意不用 CLI 的登录、要求宿主提供 API Key，所以这里不用 ACP。CLI 没有登录时 AgentKib 不提示；用户在 AgentKib 里新建或发送时，才说明需要先在终端运行一次 `devin auth login`。 未登录或工作区未信任时，会话页输入框上方和新建失败的提示里说明原因；桌面端另有“在终端登录 Devin CLI”“在终端信任这个工作区”按钮，在终端里运行 `devin auth login`，或在工作区里运行 `devin` 让它询问是否信任。AgentKib 只启动命令，看不到输入的内容；这个入口只接受桌面端自己的请求，Web 和手机只显示说明。
 - **权限和模型**：用 Devin 自己的权限模式，对整轮生效：`accept-edits`（默认，自动批准只读工具和工作区内的文件修改）、`auto`（只自动批准只读工具）、`smart`、`dangerous`。`devin -p` 运行中不能询问，不在权限内的操作直接被拒绝，所以没有一轮中途的审批和提问。新建时选，或在会话页的“会话设置”里改；改动从下一轮生效，按 Devin 会话 ID 存在 AgentKib 数据目录的 `devin-session-settings.json` 里，AgentKib 重启后仍然有效。没选模型时继续会话不传 `--model`，Devin 沿用这个会话保存的模型，输入框里显示它。`smart` 和 `dangerous` 只接受有完全访问权限的设备。Devin 会话库里的 `agent_mode` 只记新建时的模式，之后不更新；AgentKib 每一轮都传 `--permission-mode`。
+  用 3000.12.59 和 swe-2 在临时工作区实测：`auto` 下写文件被拒绝；`accept-edits` 下能写文件，但运行 shell 命令被拒绝。
 - **工作区信任**：不传 `--respect-workspace-trust false`。Devin 还没信任的工作区会拒绝运行，AgentKib 说明需要先在那个目录里运行一次 `devin` 并选择信任。
 - **会话锁**：Devin 在 `session_locks/<会话 ID>.lock` 里记下持有者的 PID，退出后文件仍留着。持有者仍是运行中的 Devin 进程（例如会话正在 Devin Desktop 或终端里打开）时，AgentKib 不发送，并提示到那边关掉后再发。
 - **模型**：新建时按 `devin models list --format json` 的模型家族列出，用 `--model <slug>` 传给 Devin，由它选具体变体；没有登录时列表为空，用 Devin 配置的默认模型。列表缓存 10 分钟。
@@ -58,4 +59,4 @@ Windows（`%APPDATA%\devin\cli`）和 Linux（`$XDG_DATA_HOME/devin/cli`）的�
 
 `apps/desktop/test/devin-managed.test.ts` 用一个假的 `devin` 可执行文件覆盖：新建时识别 Devin 存下的会话、继续时带 `-r`、未登录时不启动、失败原因映射、停止、修订号和忙碌检查、会话锁（只认运行中的 Devin 进程）、CLI 回退到 Desktop 自带的副本，以及 token 用量去重。
 
-`apps/desktop/test/devin-sessions.test.ts` 用合成的会话库覆盖以下内容：列表与隐藏会话、压缩链与去重、分页、工具详情、交接文档的两种模式、图片、正文搜索记录、未知存储格式，以及 `DEVIN_SESSIONS_DIR` 和上下文来源。在本机真实会话库上也只读跑过一遍：6 个会话全部可读，压缩链完整还原，最长的会话首屏约 2.3 秒，之后 30 秒内翻页复用已读取的链。
+`apps/desktop/test/devin-sessions.test.ts` 用合成的会话库覆盖以下内容：列表与隐藏会话、压缩链与去重、分页、工具详情、交接文档的两种模式、图片、正文搜索记录、未知存储格式，以及 `DEVIN_SESSIONS_DIR` 和上下文来源。在本机真实会话库上也只读跑过一遍：6 个会话全部可读，压缩链完整还原，最长的会话（约 5 千个消息节点）首屏冷读约 0.2 秒，再读和往前翻页约 10 毫秒（2026-11-15 复测）。

@@ -3,6 +3,7 @@ import { promises as fs } from "node:fs";
 import spawn from "cross-spawn";
 import path from "node:path";
 import { resolveCommand, resolveCommands } from "./command-resolution";
+import { devinDesktopExecutables } from "./devin-executable";
 import { pathIdentity } from "./paths";
 import { windowsProcessTree, type NativeProcessTree } from "./native-process";
 
@@ -127,8 +128,8 @@ const CHANNELS: Record<string, Channel[]> = {
   hermes: ["official-installer", "desktop-app", "nix"],
   "grok-build": ["official-installer", "npm"],
   antigravity: [],
-  // Devin Desktop bundles its own CLI; only the official installer is offered from here.
-  devin: ["official-installer"],
+  // Devin Desktop bundles its own CLI and updates it with the app.
+  devin: ["official-installer", "homebrew"],
 };
 const PACKAGES: Record<string, string> = {
   codex: "@openai/codex",
@@ -136,6 +137,8 @@ const PACKAGES: Record<string, string> = {
   opencode: "opencode-ai",
   "open-claw": "openclaw",
   "grok-build": "@xai-official/grok",
+  // The Homebrew cask; Devin CLI has no npm package.
+  devin: "devin-cli",
 };
 
 export class AgentTools {
@@ -157,6 +160,7 @@ export class AgentTools {
           ...(spec.agent === "codex" ? ["homebrew-cask:codex"] : []),
           ...(spec.agent === "claude-code" ? ["homebrew-cask:claude-code"] : []),
           ...(spec.agent === "opencode" ? ["homebrew-formula:opencode"] : []),
+          ...(spec.agent === "devin" ? ["homebrew-cask:devin-cli"] : []),
         ]),
       ),
     ];
@@ -287,6 +291,11 @@ export class AgentTools {
     const additional: string[] = [];
     if (home) {
       additional.push(path.join(home, ".opencode/bin"), path.join(home, ".grok/bin"));
+      if (spec.agent === "devin")
+        additional.push(
+          path.join(home, ".local/bin"),
+          ...devinDesktopExecutables(process.env).map((file) => path.dirname(file)),
+        );
       const versions = path.join(process.env.NVM_DIR ?? path.join(home, ".nvm"), "versions/node");
       const entries = await fs.readdir(versions, { withFileTypes: true }).catch(() => []);
       additional.push(
@@ -427,7 +436,9 @@ export class AgentTools {
           ? "homebrew-formula:opencode"
           : spec.agent === "codex" || spec.agent === "claude-code"
             ? `homebrew-cask:${spec.agent}`
-            : this.#upstreamKey(spec)
+            : spec.agent === "devin"
+              ? "homebrew-cask:devin-cli"
+              : this.#upstreamKey(spec)
         : ["npm", "pnpm", "bun", "yarn", "volta"].includes(channel) && spec.npm
           ? `npm:${spec.npm}`
           : this.#upstreamKey(spec);
@@ -682,7 +693,13 @@ export class AgentTools {
       return [
         update ? "upgrade" : "install",
         ...(agent === "opencode" ? [] : ["--cask"]),
-        agent === "codex" ? "codex" : agent === "claude-code" ? "claude-code" : "opencode",
+        agent === "codex"
+          ? "codex"
+          : agent === "claude-code"
+            ? "claude-code"
+            : agent === "devin"
+              ? "devin-cli"
+              : "opencode",
       ];
     if (channel === "volta") return ["install", ref];
     if (channel === "pnpm")

@@ -714,6 +714,8 @@ export class WebAccessService {
       verifiedAntigravityManaged?: boolean;
       /** DeepSeek Harness sessions connected through the AgentKib plugin (macOS only for now). */
       verifiedDshFollower?: boolean;
+      /** Devin sessions run by AgentKib, one `devin -p` turn at a time. */
+      verifiedDevinManaged?: boolean;
       acceptanceSessionId?: string;
       mode?: "lan";
       sharedControl?: ReturnType<typeof createWebControlState>;
@@ -1023,7 +1025,8 @@ export class WebAccessService {
             executionMode === "claude-managed" ||
             executionMode === "claude-follower")) ||
         (this.options.verifiedAntigravityManaged === true && executionMode === "acp-managed") ||
-        (this.options.verifiedDshFollower === true && executionMode === "dsh-follower"))
+        (this.options.verifiedDshFollower === true && executionMode === "dsh-follower") ||
+        (this.options.verifiedDevinManaged === true && executionMode === "devin-print"))
     );
   }
 
@@ -1772,6 +1775,7 @@ export class WebAccessService {
         this.options.verifiedCodex === true ||
         this.options.verifiedClaudeManaged === true ||
         this.options.verifiedAntigravityManaged === true ||
+        this.options.verifiedDevinManaged === true ||
         !!this.options.acceptanceSessionId,
       acceptanceSessionId: this.options.acceptanceSessionId,
       localUrl: `http://${this.options.mode === "lan" ? this.config.lanAddress : "127.0.0.1"}:${this.config.port}`,
@@ -4407,6 +4411,8 @@ export class WebAccessService {
     // DeepSeek Harness only starts sessions here; its sessions are controlled through actions.
     if (agent === "deepseek-harness" && operation !== "create")
       throw new HttpError(404, "not_found");
+    // Devin also only starts sessions here, with their first message.
+    if (agent === "devin" && operation !== "create") throw new HttpError(404, "not_found");
     const requestId = this.field(body.requestId, 128);
     if (agent === "claude-code")
       await this.controlReceipt(requestId, this.grant(hash, "manage").id, control);
@@ -4422,6 +4428,12 @@ export class WebAccessService {
               ...(value as Record<string, unknown>),
               operation: "dsh-create",
             });
+        case "devin":
+          return (value: unknown) =>
+            this.options.runtimeRequest({
+              ...(value as Record<string, unknown>),
+              operation: "devin-create",
+            });
         default:
           return unhandledManagedAgent(agent);
       }
@@ -4429,6 +4441,8 @@ export class WebAccessService {
     if (agent === "claude-code" && !this.options.verifiedClaudeManaged)
       throw new HttpError(409, "unsupported_host");
     if (agent === "deepseek-harness" && this.options.verifiedDshFollower !== true)
+      throw new HttpError(409, "unsupported_host");
+    if (agent === "devin" && this.options.verifiedDevinManaged !== true)
       throw new HttpError(409, "unsupported_host");
     if (
       this.options.acceptanceSessionId &&
@@ -4479,6 +4493,22 @@ export class WebAccessService {
       // DSH picks an Agent preset only when a session starts, as on its own new-session screen.
       if (agent === "deepseek-harness" && body.agentPreset !== undefined)
         params.agentPreset = this.field(body.agentPreset, 128);
+      if (agent === "devin") {
+        if (body.effort !== undefined) throw new HttpError(400, "unsupported_effort");
+        if (body.permissionMode !== undefined) {
+          const mode = String(body.permissionMode);
+          if (!["auto", "accept-edits", "smart", "dangerous"].includes(mode))
+            throw new HttpError(400, "unsupported_permission_mode");
+          // Approving more without asking is changing what the session may do: full access only.
+          if (mode === "smart" || mode === "dangerous") this.fullAccess(hash);
+          params.permissionMode = mode;
+        }
+        if (typeof body.prompt !== "string" || !body.prompt.trim())
+          throw new HttpError(400, "missing_prompt");
+        if (Buffer.byteLength(body.prompt, "utf8") > 64 * 1024)
+          throw new HttpError(413, "prompt_too_large");
+        params.prompt = body.prompt;
+      }
     } else {
       params.sessionId = this.field(body.sessionId);
       if (
@@ -6185,6 +6215,7 @@ export class WebAccessService {
           case "claude-code":
             return this.options.claudeManagedRequest;
           case "deepseek-harness":
+          case "devin":
             return undefined;
           default:
             return unhandledManagedAgent(agent);
@@ -6199,14 +6230,18 @@ export class WebAccessService {
                 ...(workspaceId ? { includeModels: true } : {}),
               })
             : { available: false, reason: "unsupported_host" }
-          : managedRequest
-            ? await managedRequest({
-                operation: "options",
-                ...(workspaceId && agent === "claude-code" && this.options.verifiedClaudeManaged
-                  ? { workspaceId }
-                  : {}),
-              })
-            : { available: false, reason: "unsupported_host" };
+          : agent === "devin"
+            ? this.options.verifiedDevinManaged === true
+              ? await this.runtime({ operation: "devin-options" })
+              : { available: false, reason: "unsupported_host" }
+            : managedRequest
+              ? await managedRequest({
+                  operation: "options",
+                  ...(workspaceId && agent === "claude-code" && this.options.verifiedClaudeManaged
+                    ? { workspaceId }
+                    : {}),
+                })
+              : { available: false, reason: "unsupported_host" };
       const device = this.grant(hash, permission);
       const workspaces = device.manage === true ? await this.registeredWorkspaces() : [];
       const current = this.grant(hash, permission);

@@ -131,13 +131,15 @@ export function CodexComposerControls({
   } = useSession();
   const copy = codexCopyForSurface(locale, "web");
   const isClaude = current?.agent === "claude-code";
-  // Claude Code and DeepSeek Harness read through the shared managed routes, and only what their
-  // capabilities offer; DeepSeek Harness otherwise follows the Codex settings rules.
+  // Claude Code, DeepSeek Harness and Devin read through the shared managed routes, and only
+  // what their capabilities offer; DeepSeek Harness otherwise follows the Codex settings rules.
   const managedAgent: ManagedAgent | null = isClaude
     ? "claude-code"
     : current?.agent === "deepseek-harness"
       ? "deepseek-harness"
-      : null;
+      : current?.agent === "devin"
+        ? "devin"
+        : null;
   const agentCopy = sessionAgentCopy[locale];
   const feature = (name: string) =>
     (

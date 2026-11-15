@@ -1164,6 +1164,11 @@ export class TypeScriptBackend {
         if (!this.#dshBridge) throw new Error("session-unavailable");
         return this.#dshBridge.create(params);
       }
+      // A Devin session has no ID until its first turn has run; the web reader starts it.
+      if (params.operation === "devin-create")
+        return this.#withWebRead((owner) => owner.devinCreate(params));
+      if (params.operation === "devin-options")
+        return this.#withWebRead((owner) => owner.devinOptions());
       if (params.operation === "dsh-options")
         return (
           this.#dshBridge?.createOptions(params.includeModels === true) ?? {

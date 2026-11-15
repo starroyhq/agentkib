@@ -35,6 +35,15 @@ const options: Record<ManagedAgent, ManagedOptions> = {
     ],
     workspaces: [],
   },
+  devin: {
+    available: true,
+    models: [],
+    permissionModes: [
+      { id: "auto", name: "auto" },
+      { id: "accept-edits", name: "accept-edits" },
+    ],
+    workspaces: [],
+  },
   "deepseek-harness": {
     available: true,
     agentPresets: [

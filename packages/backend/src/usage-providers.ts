@@ -5,6 +5,7 @@ import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { claudeConfigFiles, resolveClaudeConfig } from "./claude-config";
 import type { Commands } from "./commands";
+import { devinSessionDatabase } from "./devin-sessions";
 
 export type UsageQuality = "exact" | "estimated" | "incomplete";
 export type DatePrecision = "exact" | "day" | "aggregate";
@@ -442,6 +443,97 @@ const hermes: Provider = async (cursor, { home }) => {
   return complete("hermes", events, current);
 };
 
+/**
+ * Devin keeps each reply's token metrics in its session store. Only tokens are counted: the
+ * store's credit and ACU totals are not quota and are left out. Copies of a message that Devin
+ * made on another chain share its message ID and count once; hidden helper sessions are skipped.
+ */
+const devin: Provider = async (cursor, { environment }) => {
+  const file = devinSessionDatabase(environment);
+  try {
+    await stat(file);
+  } catch {
+    throw new Error("Devin is not installed or sessions.db was not found");
+  }
+  const current = await fingerprint([file], true);
+  if (cursor === current) return unchanged("devin", current);
+  const db = new DatabaseSync(file, { readOnly: true, timeout: 1000 });
+  const buckets = new Map<string, UsageEvent>();
+  try {
+    const rows = db
+      .prepare(
+        `SELECT s.id AS session, s.working_directory AS cwd,
+           json_extract(m.chat_message,'$.message_id') AS message,
+           json_extract(m.chat_message,'$.metadata.generation_model') AS model,
+           json_extract(m.chat_message,'$.metadata.created_at') AS at,
+           json_extract(m.chat_message,'$.metadata.metrics.input_tokens') AS input,
+           json_extract(m.chat_message,'$.metadata.metrics.output_tokens') AS output,
+           json_extract(m.chat_message,'$.metadata.metrics.cache_read_tokens') AS cache_read,
+           json_extract(m.chat_message,'$.metadata.metrics.cache_creation_tokens') AS cache_write
+         FROM message_nodes m JOIN sessions s ON s.id=m.session_id
+         WHERE s.hidden=0 AND json_valid(m.chat_message)
+           AND json_extract(m.chat_message,'$.role')='assistant'`,
+      )
+      .all() as Array<Record<string, unknown>>;
+    const seen = new Set<string>();
+    const sessionDays = new Set<string>();
+    for (const row of rows) {
+      const session = typeof row.session === "string" ? row.session : null;
+      if (!session) continue;
+      const message = typeof row.message === "string" ? row.message : null;
+      if (message) {
+        const key = `${session}\0${message}`;
+        if (seen.has(key)) continue;
+        seen.add(key);
+      }
+      const input = number(row.input),
+        output = number(row.output);
+      if (!input && !output) continue;
+      const parsed = typeof row.at === "string" ? new Date(row.at) : null;
+      const at = parsed && Number.isFinite(parsed.getTime()) ? parsed : null;
+      const day = at
+        ? `${at.getFullYear()}-${String(at.getMonth() + 1).padStart(2, "0")}-${String(at.getDate()).padStart(2, "0")}`
+        : null;
+      const model = typeof row.model === "string" && row.model ? row.model : null;
+      const key = `devin:${session}:${day ?? "unknown"}:${model ?? "unknown"}`;
+      let event = buckets.get(key);
+      if (!event) {
+        // A session counts once per day, on its first model bucket.
+        const sessionDay = `${session}\0${day ?? ""}`;
+        event = {
+          source_key: key,
+          surface_agent: "devin",
+          workspace_path: typeof row.cwd === "string" ? row.cwd : null,
+          occurred_at: null,
+          day,
+          model,
+          input_tokens: 0,
+          output_tokens: 0,
+          cache_read_tokens: 0,
+          cache_write_tokens: 0,
+          reasoning_tokens: 0,
+          total_tokens: 0,
+          session_key: session,
+          session_count: sessionDays.has(sessionDay) ? 0 : 1,
+          date_precision: day ? "day" : "aggregate",
+          quality: "exact",
+        };
+        sessionDays.add(sessionDay);
+        buckets.set(key, event);
+      }
+      event.input_tokens += input;
+      event.output_tokens += output;
+      event.cache_read_tokens += number(row.cache_read);
+      event.cache_write_tokens += number(row.cache_write);
+      event.total_tokens += input + output;
+    }
+  } finally {
+    db.close();
+  }
+  if (!buckets.size) throw new Error("Devin sessions.db does not contain token statistics");
+  return complete("devin", [...buckets.values()], current);
+};
+
 export async function collectUsage(
   cursors: Map<string, string>,
   context: { home?: string; environment?: NodeJS.ProcessEnv; commands: Commands },
@@ -453,6 +545,7 @@ export async function collectUsage(
     ["open-claw", openClaw],
     ["hermes", hermes],
     ["deepseek-harness", deepSeek],
+    ["devin", devin],
   ];
   const output: UsageBatch[] = [];
   const concurrency = availableParallelism() <= 4 ? 1 : 2;

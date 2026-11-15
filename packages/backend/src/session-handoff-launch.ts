@@ -35,6 +35,7 @@ import { withinLexical } from "./files";
 import { markNativeImportLaunched, nativeImportLaunchInfo } from "./session-native-import-owner";
 import { openClawInteractive } from "./openclaw-native-import";
 import { requireUniqueContinuationWorkspace } from "./workspace-identity";
+import { devinExecutable } from "./devin-executable";
 
 const agentSchema = z.enum([
   "codex",
@@ -372,7 +373,8 @@ export async function prepareHandoffLaunch(
       : request.target_agent === "devin"
         ? "devin"
         : "claude";
-  const cli = resolveCommand(name, environment);
+  // Devin Desktop's bundled CLI counts too: it is the one most Devin users have.
+  const cli = name === "devin" ? devinExecutable(environment) : resolveCommand(name, environment);
   if (!cli || !path.isAbsolute(cli)) throw new Error(`${name} CLI is not available`);
   const args: string[] = [];
   if (request.target_agent === "devin" && request.mode === "handoff-file") {

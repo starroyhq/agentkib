@@ -421,6 +421,8 @@ export interface Live {
     | "claude-follower"
     | "dsh-follower"
     | "acp-managed"
+    /** Devin: AgentKib runs each turn with `devin -p`. */
+    | "devin-print"
     | "codex-managed"
     | "codex-follower";
   cliVersion?: string;
@@ -536,6 +538,7 @@ export type CodexAction =
   | "terminals-clean";
 export type SessionAction = CodexAction | "queue-pause" | "queue-resume";
 export type ClaudePermissionMode = "default" | "plan" | "acceptEdits";
+export type DevinPermissionMode = "auto" | "accept-edits" | "smart" | "dangerous";
 /**
  * Modes the Claude CLI can report about a running session. Only the first three can be
  * selected from AgentKib; the others are observed and displayed, never offered as choices.
@@ -601,7 +604,11 @@ export interface ManagedOptions {
   defaults?: { model?: string | null; effort?: string | null };
   /** Codex: the execution policies a session can start with. */
   policies?: { id: string; name: string; description?: string }[];
-  permissionModes?: { id: ClaudePermissionMode; name: string; description?: string }[];
+  permissionModes?: {
+    id: ClaudePermissionMode | DevinPermissionMode;
+    name: string;
+    description?: string;
+  }[];
   /**
    * DeepSeek Harness's Agent presets, chosen only when a session starts. A preset DSH ships has
    * a null `name`; `dshAgentPresetText` in `@agentkib/session-ui` names it.
@@ -641,11 +648,14 @@ export interface ManagedActionBody {
   effort?: string;
   /** Claude Code: confirm this startup choice against the native catalog for the workspace. */
   verifyStartupModel?: true;
-  permissionMode?: ClaudePermissionMode;
+  /** Claude Code's permission mode, or Devin's, which applies to each whole turn. */
+  permissionMode?: ClaudePermissionMode | DevinPermissionMode;
   /** Codex: the execution policy a new session starts with. */
   policyId?: string;
   /** DeepSeek Harness: the Agent preset a new session starts with. */
   agentPreset?: string;
+  /** Devin: the first message, which a new session starts with. */
+  prompt?: string;
   handoffConfirmed?: boolean;
   handoffFingerprint?: string;
 }

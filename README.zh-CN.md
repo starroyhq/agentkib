@@ -69,7 +69,7 @@ AgentKib 把电脑上的 Coding Agent 汇集到一个桌面应用里：Codex、C
 | OpenClaw | 只读 | — | 实验性 | 支持 | 支持 |
 | Hermes | 只读 | — | 实验性 | 支持 | 支持 |
 | Grok Build | 只读 | — | — | 支持 | 支持 |
-| Devin | 只读，含 CLI 与 Desktop | — | 交接文件 | 支持 | 检测 / 官方安装器 |
+| Devin | [新建和继续](docs/agents/devin.md)（经 `devin -p`），含 CLI 与 Desktop 的会话 | — | 交接文件 | 支持 | 检测 / 官方安装器 / Homebrew |
 | DeepSeek Harness（Beta） | 经运行中的 DSH（macOS） | 经桥接插件（macOS） | 交接文件 | 仅诊断 | — |
 
 DeepSeek Harness 支持仍在开发中，尚未包含在正式版里。各项能力的版本要求和限制见[功能与兼容矩阵](docs/FEATURES.md)和[会话互通矩阵](docs/sessions/interoperability.md)。

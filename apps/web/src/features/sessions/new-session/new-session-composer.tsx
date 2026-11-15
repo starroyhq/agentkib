@@ -26,6 +26,7 @@ import {
   NEW_SESSION_AGENTS,
   newSessionCopy,
   newSessionCreateFields,
+  PROMPT_AT_CREATE_AGENTS,
   newSessionPermissions,
   newSessionPresets,
   type NewSessionPermissionChoice,
@@ -125,10 +126,12 @@ export function NewSessionComposer({
   useEffect(() => {
     draft.current = { text, files };
   }, [text, files]);
+  // An Agent that starts with its first message has sent it with the create.
+  const promptAtCreate = PROMPT_AT_CREATE_AGENTS.includes(agent);
   // The composer stays busy until the new session opens.
   const handOff = async (sessionId: string) => {
     setSending(true);
-    offerNewSessionDraft(sessionId, draft.current);
+    if (!promptAtCreate) offerNewSessionDraft(sessionId, draft.current);
     setText("");
     setFiles([]);
     try {
@@ -179,7 +182,7 @@ export function NewSessionComposer({
     !!workspace &&
     !locked &&
     !session.unknown &&
-    (!!text.trim() || files.length > 0);
+    (promptAtCreate ? !!text.trim() && files.length === 0 : !!text.trim() || files.length > 0);
 
   async function send() {
     if (!canSend || !workspace) return;
@@ -198,12 +201,14 @@ export function NewSessionComposer({
       options,
     );
     rememberNewSessionTarget({ workspaceId: workspace.id, agent });
-    const sessionId = await session.create(fields);
+    const sessionId = await session.create(promptAtCreate ? { ...fields, prompt: text } : fields);
     if (sessionId) await handOff(sessionId);
     else setSending(false);
   }
 
   function addFiles(list: File[]) {
+    // Devin takes text only; its sessions get no attachments.
+    if (promptAtCreate) return;
     const room = MAX_FILES - files.length;
     setFileLimit(list.length > room);
     if (room > 0) setFiles((current) => [...current, ...list.slice(0, room)]);
@@ -320,7 +325,7 @@ export function NewSessionComposer({
             className="size-8 shrink-0 rounded-full bg-muted/60 p-0"
             aria-label={copy.attach}
             title={copy.attach}
-            disabled={locked || files.length >= MAX_FILES}
+            disabled={locked || promptAtCreate || files.length >= MAX_FILES}
             onClick={() => fileInput.current?.click()}
           >
             <Plus className="size-4" aria-hidden />

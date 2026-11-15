@@ -70,12 +70,13 @@ export function devinDataHome(environment: NodeJS.ProcessEnv): string {
     "cli",
   );
 }
-/** `DEVIN_SESSIONS_DIR` moves the session database out of the data directory. */
+/**
+ * `DEVIN_SESSIONS_DIR` moves the session store: Devin then keeps `cli/sessions.db` and
+ * `cli/session_locks/` under it, as in its data directory (seen with Devin CLI 3000.12.59).
+ */
 export function devinSessionDatabase(environment: NodeJS.ProcessEnv): string {
-  return path.join(
-    absolute(environment.DEVIN_SESSIONS_DIR) ?? devinDataHome(environment),
-    "sessions.db",
-  );
+  const moved = absolute(environment.DEVIN_SESSIONS_DIR);
+  return path.join(moved ? path.join(moved, "cli") : devinDataHome(environment), "sessions.db");
 }
 
 interface Source {

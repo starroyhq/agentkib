@@ -8,6 +8,7 @@ export const insightsAgentKinds: AgentKind[] = [
   "open-claw",
   "hermes",
   "deepseek-harness",
+  "devin",
 ];
 
 export function agentSupportsInsights(agent: AgentKind) {

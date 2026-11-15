@@ -273,6 +273,8 @@ export class RuntimeRouter extends EventEmitter implements RuntimeHost {
         "terminals-clean",
         "dsh-create",
         "dsh-options",
+        "devin-create",
+        "devin-options",
       ].includes(String(params.operation))
     ) {
       return this.typescript.request<TResult>(method, params);

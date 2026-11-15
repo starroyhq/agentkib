@@ -69,7 +69,7 @@ Everything runs on your computer. Discovery, diagnostics, history and handoff ne
 | OpenClaw | Read-only | — | Experimental | Yes | Yes |
 | Hermes | Read-only | — | Experimental | Yes | Yes |
 | Grok Build | Read-only | — | — | Yes | Yes |
-| Devin | Read-only, CLI and Desktop | — | Handoff file | Yes | Detect / official installer |
+| Devin | [Start and continue](docs/agents/devin.md) (through `devin -p`), CLI and Desktop sessions | — | Handoff file | Yes | Detect / official installer / Homebrew |
 | DeepSeek Harness (beta) | Through a running DSH (macOS) | Through its bridge plugin (macOS) | Handoff file | Diagnostics only | — |
 
 DeepSeek Harness support is in development and not yet part of a release. Version requirements and the limits of each capability are in the [feature and compatibility matrix](docs/FEATURES.md) and the [session handoff matrix](docs/sessions/interoperability.md).

@@ -514,6 +514,16 @@ const reasons: Record<Locale, Record<string, string>> = {
       "DeepSeek Harness 没有运行，或它的配置里没有装 AgentKib 插件。打开 DeepSeek Harness 后可以继续。",
     "dsh-runtime-ambiguous":
       "有多个 DeepSeek Harness 在运行。请先在其中一个打开这条会话，再从这里继续。",
+    "devin-login-required":
+      "Devin CLI 还没有登录（Devin Desktop 的登录不能给 CLI 用）。在终端运行一次 devin auth login，再发送。",
+    "devin-workspace-untrusted":
+      "Devin 还没有信任这个工作区。在终端进入这个目录运行一次 devin 并选择信任，再发送。",
+    "devin-cli-unavailable": "没有找到 Devin CLI。安装 Devin CLI 或 Devin Desktop 后可以继续。",
+    "devin-run-failed": "Devin 没能完成这一轮。可以稍后重试，或在终端运行 devin 查看原因。",
+    "devin-run-stopped": "这一轮已经停止。",
+    "devin-session-not-found": "Devin 结束了这一轮，但没有找到它保存的会话。",
+    "session-open-elsewhere": "这条会话正在 Devin Desktop 或终端里打开，关掉那边后再从这里发送。",
+    "attachments-unsupported": "Devin 只能从这里接收文字，不能带图片或文件。",
     "dsh-create-ambiguous":
       "有多个 DeepSeek Harness 在运行，无法确定用哪一个。请直接在要用的那个里新建会话，它会出现在这里。",
     "dsh-session-controller-unavailable": "这个 DeepSeek Harness 配置只能查看，不能从这里发送。",
@@ -650,6 +660,16 @@ const reasons: Record<Locale, Record<string, string>> = {
       "DeepSeek Harness 沒有執行，或它的設定裡沒有安裝 AgentKib 外掛。開啟 DeepSeek Harness 後即可繼續。",
     "dsh-runtime-ambiguous":
       "有多個 DeepSeek Harness 正在執行。請先在其中一個開啟這個對話，再從這裡繼續。",
+    "devin-login-required":
+      "Devin CLI 尚未登入（Devin Desktop 的登入無法給 CLI 使用）。在終端機執行一次 devin auth login，再傳送。",
+    "devin-workspace-untrusted":
+      "Devin 尚未信任這個工作區。在終端機進入這個目錄執行一次 devin 並選擇信任，再傳送。",
+    "devin-cli-unavailable": "找不到 Devin CLI。安裝 Devin CLI 或 Devin Desktop 後即可繼續。",
+    "devin-run-failed": "Devin 沒能完成這一輪。可以稍後重試，或在終端機執行 devin 查看原因。",
+    "devin-run-stopped": "這一輪已經停止。",
+    "devin-session-not-found": "Devin 結束了這一輪，但找不到它儲存的對話。",
+    "session-open-elsewhere": "這個對話正在 Devin Desktop 或終端機中開啟，關閉那邊後再從這裡傳送。",
+    "attachments-unsupported": "Devin 只能從這裡接收文字，無法附帶圖片或檔案。",
     "dsh-create-ambiguous":
       "有多個 DeepSeek Harness 正在執行，無法確定要用哪一個。請直接在要用的那個裡新建對話，它會出現在這裡。",
     "dsh-session-controller-unavailable": "這個 DeepSeek Harness 設定只能檢視，不能從這裡傳送。",
@@ -791,6 +811,19 @@ const reasons: Record<Locale, Record<string, string>> = {
       "DeepSeek Harness is not running, or the AgentKib plugin is not installed in its profile. Open DeepSeek Harness to continue.",
     "dsh-runtime-ambiguous":
       "More than one DeepSeek Harness is running. Open this session in one of them first, then continue here.",
+    "devin-login-required":
+      "Devin CLI is not logged in (Devin Desktop's login is not shared with the CLI). Run devin auth login once in a terminal, then send again.",
+    "devin-workspace-untrusted":
+      "Devin does not trust this workspace yet. Run devin once in this folder in a terminal and choose to trust it, then send again.",
+    "devin-cli-unavailable":
+      "Devin CLI was not found. Install Devin CLI or Devin Desktop to continue.",
+    "devin-run-failed":
+      "Devin could not finish this turn. Try again later, or run devin in a terminal to see why.",
+    "devin-run-stopped": "This turn was stopped.",
+    "devin-session-not-found": "Devin finished the turn, but the session it saved was not found.",
+    "session-open-elsewhere":
+      "This session is open in Devin Desktop or a terminal. Close it there, then send from here.",
+    "attachments-unsupported": "Devin takes only text from here, without images or files.",
     "dsh-create-ambiguous":
       "More than one DeepSeek Harness is running, so AgentKib cannot tell which to use. Start the session in the one you want; it will show up here.",
     "dsh-session-controller-unavailable":
@@ -948,6 +981,20 @@ const reasons: Record<Locale, Record<string, string>> = {
       "DeepSeek Harness が起動していないか、そのプロファイルに AgentKib プラグインがありません。DeepSeek Harness を開くと続行できます。",
     "dsh-runtime-ambiguous":
       "複数の DeepSeek Harness が起動しています。先にどれか一つでこのセッションを開いてから、ここで続けてください。",
+    "devin-login-required":
+      "Devin CLI にログインしていません（Devin Desktop のログインは CLI と共有されません）。ターミナルで devin auth login を一度実行してから、もう一度送信してください。",
+    "devin-workspace-untrusted":
+      "Devin はまだこのワークスペースを信頼していません。ターミナルでこのフォルダーに移動して devin を一度実行し、信頼を選んでから送信してください。",
+    "devin-cli-unavailable":
+      "Devin CLI が見つかりません。Devin CLI または Devin Desktop をインストールすると続行できます。",
+    "devin-run-failed":
+      "Devin はこのターンを完了できませんでした。後でもう一度試すか、ターミナルで devin を実行して原因を確認してください。",
+    "devin-run-stopped": "このターンは停止されました。",
+    "devin-session-not-found": "Devin はターンを終えましたが、保存したセッションが見つかりません。",
+    "session-open-elsewhere":
+      "このセッションは Devin Desktop またはターミナルで開かれています。そちらを閉じてから、ここから送信してください。",
+    "attachments-unsupported":
+      "Devin はここからテキストのみを受け取れます。画像やファイルは添付できません。",
     "dsh-create-ambiguous":
       "複数の DeepSeek Harness が起動しているため、どれを使うか判断できません。使いたい DeepSeek Harness で直接セッションを作成すると、ここに表示されます。",
     "dsh-session-controller-unavailable":

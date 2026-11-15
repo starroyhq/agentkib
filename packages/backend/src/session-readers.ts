@@ -214,6 +214,18 @@ export class SessionReaders {
     observation?: Pick<SubagentParent, "connected" | "observerId">,
   ) {
     const source = await this.resolve(sessionId);
+    // Devin keeps its subagents as chains of the same session's message tree.
+    if (source.native.agent === "devin" && !source.native.sidechain)
+      return childId
+        ? this.#devin.subagentEvents(
+            source.native.native_ref,
+            source.workspace,
+            sessionId,
+            childId,
+            cursor,
+            limit,
+          )
+        : this.#devin.subagents(source.native.native_ref, source.workspace, sessionId);
     if (
       !source.transcript ||
       !["codex", "claude-code"].includes(source.native.agent) ||

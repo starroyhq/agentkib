@@ -444,3 +444,66 @@ describe("Devin context sources", () => {
     );
   });
 });
+
+describe("Devin subagents", () => {
+  it("lists a session's subagents and reads each one's own chain", () => {
+    const { home, project, file, id } = fixture();
+    const db = new DatabaseSync(file);
+    db.exec(`CREATE TABLE subagent_heads (session_id TEXT NOT NULL, agent_id TEXT NOT NULL,
+      chain_node_id INTEGER NOT NULL, updated_at INTEGER NOT NULL,
+      PRIMARY KEY (session_id, agent_id))`);
+    const insert = db.prepare("INSERT INTO message_nodes VALUES (NULL,?,?,?,?,?,?)");
+    const message = (node: number, parent: number | null, role: string, content: string) =>
+      insert.run(
+        id,
+        node,
+        parent,
+        JSON.stringify({
+          message_id: `sub-${node}`,
+          role,
+          content,
+          metadata: {
+            ...(role === "user" ? { is_user_input: true } : {}),
+            created_at: new Date(Date.UTC(2026, 10, 12, 0, 1, node)).toISOString(),
+          },
+        }),
+        1_794_400_100 + node,
+        null,
+      );
+    message(40, null, "system", "subagent system prompt");
+    message(41, 40, "user", "Find where the config is read");
+    message(42, 41, "assistant", "It is read in config.ts");
+    db.prepare("INSERT INTO subagent_heads VALUES (?,?,?,?)").run(id, "a1b2c3", 42, 1_794_400_200);
+    db.close();
+    const reader = new DevinSessions({ HOME: home });
+    const catalog = reader.subagents(id, project, "parent-1");
+    expect(catalog.truncated).toBe(false);
+    expect(catalog.agents).toHaveLength(1);
+    expect(catalog.agents[0]).toMatchObject({
+      name: "Find where the config is read",
+      agent: "devin",
+      status: "unknown",
+      readable: true,
+    });
+    expect(catalog.agents[0]!.id).toMatch(/^[a-f0-9]{64}$/);
+    const page = reader.subagentEvents(id, project, "parent-1", catalog.agents[0]!.id, null, 50);
+    expect(page.events.map((event) => event.content)).toEqual([
+      "Find where the config is read",
+      "It is read in config.ts",
+    ]);
+    // The subagent's chain is not part of the session's own history.
+    expect(
+      reader
+        .events(id, project, null, 50)
+        .events.some((event) => event.content === "It is read in config.ts"),
+    ).toBe(false);
+    expect(() => reader.subagentEvents(id, project, "parent-1", "0".repeat(64), null, 50)).toThrow(
+      "subagent-unavailable",
+    );
+  });
+
+  it("has no subagents where Devin keeps no subagent table", () => {
+    const { home, project, id } = fixture();
+    expect(new DevinSessions({ HOME: home }).subagents(id, project, "parent-1").agents).toEqual([]);
+  });
+});

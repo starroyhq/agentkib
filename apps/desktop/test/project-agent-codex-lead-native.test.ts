@@ -13,6 +13,7 @@ import type { AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
+import { haltOwnTurns } from "../../../packages/backend/src/lead-turn-origin";
 import { MessageLeadReports } from "../../../packages/backend/src/message-lead-reports";
 import { Commands } from "../../../packages/backend/src/commands";
 import type { CursorBridge } from "../../../packages/backend/src/cursor-bridge";
@@ -118,155 +119,185 @@ async function provider() {
   return { port: (server.address() as AddressInfo).port, asked, outputs };
 }
 
+/**
+ * A Codex session AgentKib creates and runs, made a Project Agent, with what AgentKib's backend
+ * wires around it (`index.ts`): the real Codex CLI against the loopback provider.
+ */
+async function codexLead() {
+  /** What stopping the lead's own turns at its limit asked of its controls, and their outcomes. */
+  const stops: Json[] = [];
+  const codex = realpathSync(process.env.AGENTKIB_CODEX_EXECUTABLE ?? "/opt/homebrew/bin/codex");
+  const model = await provider();
+  const root = realpathSync(mkdtempSync(path.join(tmpdir(), "agentkib-codex-lead-")));
+  cleanups.push(() => rmSync(root, { recursive: true, force: true }));
+  const home = path.join(root, "home"),
+    codexHome = path.join(home, ".codex"),
+    workspace = path.join(root, "project"),
+    bin = path.join(root, "bin"),
+    temporary = path.join(root, "tmp");
+  for (const directory of [codexHome, workspace, bin, temporary])
+    mkdirSync(directory, { recursive: true });
+  writeFileSync(
+    path.join(codexHome, "config.toml"),
+    [
+      'model_provider = "mock"',
+      "check_for_update_on_startup = false",
+      'web_search = "disabled"',
+      "",
+      "[model_providers.mock]",
+      'name = "mock"',
+      `base_url = "http://127.0.0.1:${model.port}/v1"`,
+      'wire_api = "responses"',
+      "requires_openai_auth = true",
+      "supports_websockets = false",
+      "",
+    ].join("\n"),
+  );
+  // Loopback only: the provider, AgentKib's worker endpoint and the CLI's own sockets.
+  const profile = path.join(root, "codex-network.sb");
+  writeFileSync(
+    profile,
+    '(version 1)(allow default)(deny network*)(allow network* (local ip "localhost:*"))' +
+      '(allow network-outbound (remote ip "localhost:*"))(allow network-outbound (remote unix-socket))\n',
+  );
+  const wrapper = path.join(bin, "codex");
+  writeFileSync(wrapper, `#!/bin/sh\nexec /usr/bin/sandbox-exec -f '${profile}' '${codex}' "$@"\n`);
+  chmodSync(wrapper, 0o700);
+  const environment = {
+    HOME: home,
+    USERPROFILE: home,
+    CODEX_HOME: codexHome,
+    PATH: `${bin}:/usr/bin:/bin`,
+    TMPDIR: temporary,
+  };
+  expect(
+    spawnSync(wrapper, ["login", "--with-api-key"], {
+      env: environment,
+      input: "sk-offline-fixture-not-a-key\n",
+    }).status,
+  ).toBe(0);
+
+  const store = new BackendStore(path.join(root, "agentkib.db"));
+  cleanups.push(() => store.close());
+  store.sql.run(
+    "INSERT INTO workspaces(id,canonical_path,name,status,last_discovered_at) VALUES(?,?,?,?,?)",
+    "w1",
+    workspace,
+    "Project",
+    "healthy",
+    new Date().toISOString(),
+  );
+  const commands = new Commands();
+  cleanups.push(() => commands.close());
+  const readers = new SessionReaders(store.sessions, commands, environment, {} as CursorBridge);
+  cleanups.push(() => readers.close());
+  const web = new WebReadRequests(store, readers, root, () => 0n, environment);
+  cleanups.push(() => web.closeAsync());
+  // What AgentKib's backend wires (`index.ts`): the lane host, the Codex lead's reports and
+  // its thread's worker tools.
+  const lanes: LaneHost = {
+    options: () => web.managedOptions() as Promise<Record<string, unknown>>,
+    lifecycle: (value) => web.managedLifecycle(value),
+    control: (value) => web.managedControl(value),
+    live: (sessionId) =>
+      web.request({ operation: "live", sessionId, experimentalEnabled: true }) as Promise<Json>,
+    events: async (sessionId, limit) =>
+      (
+        (await web.request({ operation: "events", sessionId, limit, retainCursor: false })) as {
+          events?: Json[];
+        }
+      ).events ?? [],
+    session: () => null,
+    managed: async (sessionId) => web.isManagedSession(sessionId),
+    workspaces: () => [{ id: "w1", name: "Project" }],
+  };
+  const reports = new MessageLeadReports({
+    live: (sessionId) => lanes.live(sessionId),
+    control: (value) => web.managedControl(value) as Promise<Json>,
+    queue: (sessionId) => web.managedQueueList({ sessionId, limit: 100 }) as Promise<Json>,
+  });
+  const orchestration = new OrchestrationService(
+    path.join(root, "data"),
+    "boot",
+    lanes,
+    (id) => web.codexLeadCapable(id),
+    (id, device, text) => reports.send(id, device, text),
+  );
+  cleanups.push(() => orchestration.close());
+  web.leadEndpoints(async (sessionId) => {
+    const config = (await orchestration.leadTools(sessionId)) as Json | null;
+    return config?.mcpServers?.agentkib_workers?.url ?? null;
+  });
+  web.observeLanes({
+    turnEnded: (sessionId, turnId, outcome, durationMs) =>
+      void orchestration.laneTurnEnded(sessionId, turnId, outcome, durationMs),
+    waiting: (sessionId, turnId, status) =>
+      void orchestration.laneWaiting(sessionId, turnId, status),
+    // A lead's own turns count; past the limit its goal pauses (`index.ts`, `#leadOwnTurn`).
+    ownTurn: (sessionId, turnId) => {
+      const status = orchestration.status(sessionId);
+      if (!status || orchestration.leadSelfTurn(sessionId)) return;
+      void haltOwnTurns(
+        {
+          live: (id) => lanes.live(id),
+          control: async (value) => {
+            try {
+              const outcome = await web.managedControl(value);
+              stops.push({ operation: value.operation, outcome });
+              return outcome;
+            } catch (error) {
+              stops.push({ operation: value.operation, error: String(error) });
+              throw error;
+            }
+          },
+        },
+        sessionId,
+        turnId,
+        status.deviceId,
+        "codex",
+      ).catch(() => undefined);
+    },
+  });
+  const wait = { timeout: 60_000, interval: 200 };
+
+  // The lead: a Codex session AgentKib creates and runs.
+  const created = randomUUID();
+  await web.managedLifecycle({
+    operation: "create",
+    requestId: created,
+    deviceId: "desktop-local",
+    workspaceId: "w1",
+    policyId: "workspace-write-on-request",
+  });
+  const lead = createHash("sha256").update(`managed:${created}`).digest("hex");
+  await expect.poll(async () => (await lanes.live(lead)).sendEnabled, wait).toBe(true);
+  expect(web.codexLeadCapable(lead)).toBe(true);
+  orchestration.designate({ sessionId: lead, deviceId: "desktop-local", workspaceId: "w1" });
+  // Codex has not written a thread without a turn, so it cannot be restarted yet: the first
+  // turn goes without the worker tools, and the thread starts again with them after it.
+  await web.restartManagedRunner(lead);
+  expect(web.runnerHasLeadTools(lead)).toBe(false);
+  const say = async (text: string) => {
+    const live = await lanes.live(lead);
+    return web.managedControl({
+      operation: "send",
+      sessionId: lead,
+      requestId: randomUUID(),
+      deviceId: "desktop-local",
+      runtimeBootId: live.runtimeBootId,
+      expectedRevision: live.revision,
+      experimentalEnabled: true,
+      text,
+    });
+  };
+  return { web, lanes, orchestration, model, lead, say, wait, stops };
+}
+
 describe.skipIf(process.platform !== "darwin" || process.env.AGENTKIB_CODEX_WORKER_NATIVE !== "1")(
   "a Codex session as a Project Agent, on the real Codex CLI",
   () => {
     it("opens and briefs a worker through its tools, and takes the worker's report as a turn", async () => {
-      const codex = realpathSync(
-        process.env.AGENTKIB_CODEX_EXECUTABLE ?? "/opt/homebrew/bin/codex",
-      );
-      const model = await provider();
-      const root = realpathSync(mkdtempSync(path.join(tmpdir(), "agentkib-codex-lead-")));
-      cleanups.push(() => rmSync(root, { recursive: true, force: true }));
-      const home = path.join(root, "home"),
-        codexHome = path.join(home, ".codex"),
-        workspace = path.join(root, "project"),
-        bin = path.join(root, "bin"),
-        temporary = path.join(root, "tmp");
-      for (const directory of [codexHome, workspace, bin, temporary])
-        mkdirSync(directory, { recursive: true });
-      writeFileSync(
-        path.join(codexHome, "config.toml"),
-        [
-          'model_provider = "mock"',
-          "check_for_update_on_startup = false",
-          'web_search = "disabled"',
-          "",
-          "[model_providers.mock]",
-          'name = "mock"',
-          `base_url = "http://127.0.0.1:${model.port}/v1"`,
-          'wire_api = "responses"',
-          "requires_openai_auth = true",
-          "supports_websockets = false",
-          "",
-        ].join("\n"),
-      );
-      // Loopback only: the provider, AgentKib's worker endpoint and the CLI's own sockets.
-      const profile = path.join(root, "codex-network.sb");
-      writeFileSync(
-        profile,
-        '(version 1)(allow default)(deny network*)(allow network* (local ip "localhost:*"))' +
-          '(allow network-outbound (remote ip "localhost:*"))(allow network-outbound (remote unix-socket))\n',
-      );
-      const wrapper = path.join(bin, "codex");
-      writeFileSync(
-        wrapper,
-        `#!/bin/sh\nexec /usr/bin/sandbox-exec -f '${profile}' '${codex}' "$@"\n`,
-      );
-      chmodSync(wrapper, 0o700);
-      const environment = {
-        HOME: home,
-        USERPROFILE: home,
-        CODEX_HOME: codexHome,
-        PATH: `${bin}:/usr/bin:/bin`,
-        TMPDIR: temporary,
-      };
-      expect(
-        spawnSync(wrapper, ["login", "--with-api-key"], {
-          env: environment,
-          input: "sk-offline-fixture-not-a-key\n",
-        }).status,
-      ).toBe(0);
-
-      const store = new BackendStore(path.join(root, "agentkib.db"));
-      cleanups.push(() => store.close());
-      store.sql.run(
-        "INSERT INTO workspaces(id,canonical_path,name,status,last_discovered_at) VALUES(?,?,?,?,?)",
-        "w1",
-        workspace,
-        "Project",
-        "healthy",
-        new Date().toISOString(),
-      );
-      const commands = new Commands();
-      cleanups.push(() => commands.close());
-      const readers = new SessionReaders(store.sessions, commands, environment, {} as CursorBridge);
-      cleanups.push(() => readers.close());
-      const web = new WebReadRequests(store, readers, root, () => 0n, environment);
-      cleanups.push(() => web.closeAsync());
-      // What AgentKib's backend wires (`index.ts`): the lane host, the Codex lead's reports and
-      // its thread's worker tools.
-      const lanes: LaneHost = {
-        options: () => web.managedOptions() as Promise<Record<string, unknown>>,
-        lifecycle: (value) => web.managedLifecycle(value),
-        control: (value) => web.managedControl(value),
-        live: (sessionId) =>
-          web.request({ operation: "live", sessionId, experimentalEnabled: true }) as Promise<Json>,
-        events: async (sessionId, limit) =>
-          (
-            (await web.request({ operation: "events", sessionId, limit, retainCursor: false })) as {
-              events?: Json[];
-            }
-          ).events ?? [],
-        session: () => null,
-        managed: async (sessionId) => web.isManagedSession(sessionId),
-        workspaces: () => [{ id: "w1", name: "Project" }],
-      };
-      const reports = new MessageLeadReports({
-        live: (sessionId) => lanes.live(sessionId),
-        control: (value) => web.managedControl(value) as Promise<Json>,
-        queue: (sessionId) => web.managedQueueList({ sessionId, limit: 100 }) as Promise<Json>,
-      });
-      const orchestration = new OrchestrationService(
-        path.join(root, "data"),
-        "boot",
-        lanes,
-        (id) => web.codexLeadCapable(id),
-        (id, device, text) => reports.send(id, device, text),
-      );
-      cleanups.push(() => orchestration.close());
-      web.leadEndpoints(async (sessionId) => {
-        const config = (await orchestration.leadTools(sessionId)) as Json | null;
-        return config?.mcpServers?.agentkib_workers?.url ?? null;
-      });
-      web.observeLanes({
-        turnEnded: (sessionId, turnId, outcome, durationMs) =>
-          void orchestration.laneTurnEnded(sessionId, turnId, outcome, durationMs),
-        waiting: (sessionId, turnId, status) =>
-          void orchestration.laneWaiting(sessionId, turnId, status),
-      });
-      const wait = { timeout: 60_000, interval: 200 };
-
-      // The lead: a Codex session AgentKib creates and runs.
-      const created = randomUUID();
-      await web.managedLifecycle({
-        operation: "create",
-        requestId: created,
-        deviceId: "desktop-local",
-        workspaceId: "w1",
-        policyId: "workspace-write-on-request",
-      });
-      const lead = createHash("sha256").update(`managed:${created}`).digest("hex");
-      await expect.poll(async () => (await lanes.live(lead)).sendEnabled, wait).toBe(true);
-      expect(web.codexLeadCapable(lead)).toBe(true);
-      orchestration.designate({ sessionId: lead, deviceId: "desktop-local", workspaceId: "w1" });
-      // Codex has not written a thread without a turn, so it cannot be restarted yet: the first
-      // turn goes without the worker tools, and the thread starts again with them after it.
-      await web.restartManagedRunner(lead);
-      expect(web.runnerHasLeadTools(lead)).toBe(false);
-      const say = async (text: string) => {
-        const live = await lanes.live(lead);
-        return web.managedControl({
-          operation: "send",
-          sessionId: lead,
-          requestId: randomUUID(),
-          deviceId: "desktop-local",
-          runtimeBootId: live.runtimeBootId,
-          expectedRevision: live.revision,
-          experimentalEnabled: true,
-          text,
-        });
-      };
+      const { web, lanes, orchestration, model, lead, say, wait } = await codexLead();
 
       expect(await say("LEAD-HELLO")).toMatchObject({ accepted: true });
       await expect.poll(() => web.runnerHasLeadTools(lead), wait).toBeNull();
@@ -300,6 +331,58 @@ describe.skipIf(process.platform !== "darwin" || process.env.AGENTKIB_CODEX_WORK
       expect(orchestration.status(lead)).toMatchObject({ paused: false, autoTurns: 1 });
       // Its worker tools ran without asking anyone.
       expect((await lanes.live(lead)).approvals ?? []).toEqual([]);
+    }, 240_000);
+
+    it("counts its goal's automatic rounds, and at the limit pauses the goal", async () => {
+      const { web, lanes, orchestration, model, lead, say, wait, stops } = await codexLead();
+      await orchestration.update({
+        sessionId: lead,
+        deviceId: "desktop-local",
+        scope: { maxAutoTurns: 2 },
+      });
+      // Its thread starts again with the worker tools after the first turn, as in the case above.
+      expect(await say("LEAD-HELLO")).toMatchObject({ accepted: true });
+      await expect.poll(() => web.runnerHasLeadTools(lead), wait).toBeNull();
+      expect(await say("LEAD-READY")).toMatchObject({ accepted: true });
+      expect(web.runnerHasLeadTools(lead)).toBe(true);
+      await expect.poll(async () => (await lanes.live(lead)).status, wait).toBe("idle");
+      // A goal starts once the thread's settings are confirmed.
+      await expect
+        .poll(
+          async () => ((await lanes.live(lead)).settings as Json | null)?.applicationStatus,
+          wait,
+        )
+        .toBe("confirmed");
+      // A turn AgentKib sent is not one of its own.
+      expect(orchestration.status(lead)).toMatchObject({ paused: false, autoTurns: 0 });
+      const live = await lanes.live(lead);
+      const goalSet = await web.managedControl({
+        operation: "goal-set",
+        sessionId: lead,
+        requestId: randomUUID(),
+        deviceId: "desktop-local",
+        runtimeBootId: live.runtimeBootId,
+        expectedRevision: live.revision,
+        experimentalEnabled: true,
+        goal: { objective: "Keep checking the project.", intent: "start" },
+      });
+      expect(goalSet, JSON.stringify({ goalSet, settings: live.settings })).toMatchObject({
+        accepted: true,
+      });
+      // Codex goes on with the goal by itself: two rounds count, the next pauses delegation and
+      // the goal; the round under way ends by itself, and Codex starts no more.
+      await expect.poll(() => orchestration.status(lead)?.paused, wait).toBe(true);
+      expect(orchestration.status(lead)).toMatchObject({ reason: "auto-turn-limit", autoTurns: 2 });
+      await expect
+        .poll(async () => ((await lanes.live(lead)).goal as Json | null)?.status, {
+          ...wait,
+          message: JSON.stringify(stops).slice(0, 2000),
+        })
+        .toBe("paused");
+      await expect.poll(async () => (await lanes.live(lead)).status, wait).toBe("idle");
+      const asked = model.asked.length;
+      await new Promise((resolve) => setTimeout(resolve, 3000));
+      expect(model.asked.length).toBe(asked);
     }, 240_000);
   },
 );

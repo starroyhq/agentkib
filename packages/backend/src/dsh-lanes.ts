@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import type { LeadTurnOrigin } from "./lead-turn-origin";
 
 /**
  * DeepSeek Harness sessions as a Project Agent's workers (docs/agents/project-agent.md): how one
@@ -159,6 +160,79 @@ export class DshLaneWatch {
           turn.outcome,
           ended >= started ? ended - started : null,
         );
+      })
+      .catch(() => undefined);
+  }
+
+  close(): void {
+    this.#closed = true;
+    for (const timer of this.#timers) clearTimeout(timer);
+    this.#timers.clear();
+    this.#last.clear();
+  }
+}
+
+export type DshLeadWatchOptions = {
+  isLead(sessionId: string): boolean;
+  /** Where the turn came from, from DSH's history; null while that is not known yet. */
+  turnOrigin(sessionId: string, turnId: string): Promise<LeadTurnOrigin | null>;
+  /** The person wrote to it in DSH's own window. */
+  userSpoke(sessionId: string): void;
+  /** DSH started the turn by itself: it counts, and past the limit it stops. */
+  ownTurn(sessionId: string, turnId: string): Promise<void>;
+  /** The opening message may reach DSH's history a moment after the turn's start. */
+  retryMs?: number;
+  retries?: number;
+};
+
+/**
+ * Follows a DSH Project Agent's turns from the session states the bridge publishes, as
+ * `DshLaneWatch` follows a worker's: each new turn is looked up in DSH's history once. A turn the
+ * person opened in DSH's own window restarts the count of turns without them, as a message sent in
+ * AgentKib does; one DSH started by itself counts (`LeadTurnOrigin`).
+ */
+export class DshLeadWatch {
+  #last = new Map<string, string>();
+  #timers = new Set<ReturnType<typeof setTimeout>>();
+  #closed = false;
+
+  constructor(private readonly options: DshLeadWatchOptions) {}
+
+  observe(sessionId: string, live: Record<string, unknown>): void {
+    if (this.#closed) return;
+    try {
+      if (!this.options.isLead(sessionId)) {
+        this.#last.delete(sessionId);
+        return;
+      }
+    } catch {
+      return;
+    }
+    const turnId = typeof live.turnId === "string" ? live.turnId : null;
+    // The last turn is kept while idle, so that it is looked up once.
+    if (!turnId || this.#last.get(sessionId) === turnId) return;
+    this.#last.set(sessionId, turnId);
+    this.#classify(sessionId, turnId, 0);
+  }
+
+  #classify(sessionId: string, turnId: string, attempt: number): void {
+    void this.options
+      .turnOrigin(sessionId, turnId)
+      .then((origin) => {
+        if (this.#closed) return;
+        if (origin === null) {
+          if (attempt < (this.options.retries ?? 3)) {
+            const timer = setTimeout(() => {
+              this.#timers.delete(timer);
+              this.#classify(sessionId, turnId, attempt + 1);
+            }, this.options.retryMs ?? 1_000);
+            timer.unref?.();
+            this.#timers.add(timer);
+          }
+          return;
+        }
+        if (origin === "person") this.options.userSpoke(sessionId);
+        else if (origin === "self") return this.options.ownTurn(sessionId, turnId);
       })
       .catch(() => undefined);
   }

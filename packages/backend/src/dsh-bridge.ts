@@ -50,6 +50,7 @@ import type { ConversationEvent, ConversationEventPage } from "./session-events"
 import { decodedSessionImage, sessionImageResult } from "./session-images";
 import type { DocumentOptions, SessionDocument } from "./session-model";
 import type { NativeSession } from "./session-store";
+import { dshTurnOrigin, type LeadTurnOrigin } from "./lead-turn-origin";
 
 const MAX_BODY = 8 * 1024 * 1024;
 const OFFLINE_MS = 45_000;
@@ -1321,20 +1322,8 @@ export class DshBridge {
   ): Promise<
     Array<{ turnId: string; outcome: string; startedAt: string | null; endedAt: string | null }>
   > {
-    const nativeId = this.#ids.get(id);
-    if (!nativeId) throw new Error("session-unavailable");
-    const runtime =
-      this.#controlRuntime(nativeId) ??
-      this.#online().find((candidate) => candidate.services.sessionQuery);
-    if (!runtime) return [];
-    const result = await this.#command(
-      runtime,
-      { commandId: randomUUID(), type: "history", sessionId: nativeId, limit: 100 },
-      HISTORY_TIMEOUT_MS,
-    );
-    const page = result.ok ? (result.value as DshBridgeHistoryPage | null) : null;
-    if (!page || !Array.isArray(page.records) || page.sessionId !== nativeId)
-      throw new Error("dsh-history-unavailable");
+    const records = await this.#latestHistory(id);
+    if (!records) return [];
     const started = new Map<number, number | null>();
     const ended: Array<{
       turnId: string;
@@ -1342,7 +1331,7 @@ export class DshBridge {
       startedAt: string | null;
       endedAt: string | null;
     }> = [];
-    for (const record of page.records)
+    for (const record of records)
       if (record.kind === "turn-start") started.set(record.turn, record.time);
       else if (record.kind === "turn-end" && turnIdOf(record.turn))
         ended.push({
@@ -1352,6 +1341,36 @@ export class DshBridge {
           endedAt: iso(record.time),
         });
     return ended.slice(-20);
+  }
+  /**
+   * Where a turn of a session came from, from DSH's history (`dshTurnOrigin`): a person's message
+   * typed in DSH's window, one AgentKib sent, or none. Null while that is not known yet.
+   */
+  async turnOrigin(id: string, turnId: string): Promise<LeadTurnOrigin | null> {
+    const records = await this.#latestHistory(id);
+    return records
+      ? dshTurnOrigin(records as unknown as Array<Record<string, unknown>>, turnId, (turn) =>
+          turnIdOf(typeof turn === "number" ? turn : null),
+        )
+      : null;
+  }
+  /** The latest records of a session's history, from the DSH that has it; null without one. */
+  async #latestHistory(id: string): Promise<DshBridgeHistoryPage["records"] | null> {
+    const nativeId = this.#ids.get(id);
+    if (!nativeId) throw new Error("session-unavailable");
+    const runtime =
+      this.#controlRuntime(nativeId) ??
+      this.#online().find((candidate) => candidate.services.sessionQuery);
+    if (!runtime) return null;
+    const result = await this.#command(
+      runtime,
+      { commandId: randomUUID(), type: "history", sessionId: nativeId, limit: 100 },
+      HISTORY_TIMEOUT_MS,
+    );
+    const page = result.ok ? (result.value as DshBridgeHistoryPage | null) : null;
+    if (!page || !Array.isArray(page.records) || page.sessionId !== nativeId)
+      throw new Error("dsh-history-unavailable");
+    return page.records;
   }
   /**
    * One image a session's history shows, read from the DSH that has the session. DSH returns only

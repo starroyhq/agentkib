@@ -406,6 +406,30 @@ describe("Claude Code native session plugin as a Project Agent", () => {
     expect(await l.call()).toEqual({ deny: '{"accepted":false,"reason":"delegation-paused"}' });
   });
 
+  it("takes every worker tool AgentKib lists, worker_close last, and runs its calls", async () => {
+    const l = await leading();
+    await l.f.tick();
+    const names = [
+      "worker_list",
+      "worker_open",
+      "worker_send",
+      "worker_read",
+      "worker_stop",
+      "worker_approve",
+      "worker_answer",
+      "worker_close",
+    ];
+    l.setLead({ tools: names.map((name) => ({ ...tool, name })), reports: [] });
+    await l.f.tick();
+    expect(l.registered.map((spec) => spec.name)).toEqual(names);
+    expect(await l.call({ tool: "mcp__agentkib-bridge__worker_close", worker: "api" })).toEqual({
+      result: '{"workers":[]}',
+    });
+    expect(
+      l.f.calls.filter((entry) => entry.url.endsWith("/lead-call")).at(-1)!.body,
+    ).toMatchObject({ name: "worker_close", input: { worker: "api" } });
+  });
+
   it("queues each report as a message of its own and says so once it holds it", async () => {
     const l = await leading();
     const report = {
@@ -605,7 +629,7 @@ describe("Claude Code native session plugin", () => {
       const f = await fixture({ version });
       expect(f.calls.find((call) => call.url.endsWith("/pair"))?.body).toMatchObject({
         cliVersion: version,
-        pluginVersion: "0.5.0",
+        pluginVersion: "0.5.1",
         nativeCapabilities: {
           version: 1,
           available: [
@@ -769,7 +793,7 @@ describe("Claude Code native session plugin", () => {
         bindingId: f.connection.bindingId,
         nativeId: f.nativeId,
         cwd: "/isolated/workspace",
-        pluginVersion: "0.5.0",
+        pluginVersion: "0.5.1",
       });
       expect(report.body).not.toHaveProperty("nativeCapabilities");
       expect(report.body).not.toHaveProperty("token");
@@ -1028,7 +1052,7 @@ describe("Claude Code native session plugin", () => {
     const result = await f.run("command.run", { command: "agentkib-connect", args: f.ticket });
     expect(result.text).toContain("AgentKib connected");
     const pair = f.calls.find((call) => call.url.endsWith("/pair"))?.body;
-    expect(pair).toMatchObject({ pluginVersion: "0.5.0", cliVersion: "2.1.307" });
+    expect(pair).toMatchObject({ pluginVersion: "0.5.1", cliVersion: "2.1.307" });
     expect(pair).not.toHaveProperty("connectionError");
   });
   it.each(["2.1.301-beta", "02.1.301", "not-a-version"])(
@@ -1216,7 +1240,7 @@ describe("Claude Code native session plugin", () => {
       ).toHaveLength(1);
       expect(set).toHaveBeenCalledWith(
         "compatibility:credential-store:1",
-        "agentkib-bridge:0.5.0:capabilities:1",
+        "agentkib-bridge:0.5.1:capabilities:1",
       );
       expect((await f.run("command.run", { command: "agentkib-status", args: "" })).text).toContain(
         "is connected",
@@ -2066,7 +2090,7 @@ describe("Claude Code native session plugin", () => {
     });
     expect(pair.init.headers.Authorization).toBeUndefined();
     expect([...f.stored]).toEqual([
-      ["compatibility:credential-store:1", "agentkib-bridge:0.5.0:capabilities:1"],
+      ["compatibility:credential-store:1", "agentkib-bridge:0.5.1:capabilities:1"],
       [`credentialPath:${f.nativeId}`, f.connection.credentialPath],
     ]);
     expect(JSON.stringify([...f.stored])).not.toContain(f.connection.token);

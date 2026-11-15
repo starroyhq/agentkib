@@ -253,6 +253,8 @@ Claude Code 自动结束仅在用户停留期间真实回收进程时显示一�
 | Worker 的来源（列表与会话页） | Worker api · 委派自 〈项目 Agent〉 | Worker api · 委派自 〈專案 Agent〉 | ワーカー api · 委任元 〈プロジェクト Agent〉 | Worker api · Delegated by 〈Project Agent〉 |
 | 委派因上限、送达不明或重启暂停（“需要你”里的一项） | 委派已暂停 | 委派已暫停 | 委任を一時停止中 | Delegation paused |
 | 允许项目 Agent 替用户处理的事 | 项目 Agent 可以替你决定 | 專案 Agent 可以替你決定 | プロジェクト Agent に任せること | The Project Agent may decide |
+| 让一个 Worker 不再归这个项目 Agent（会话保留） | 移出 | 移出 | 外す | Remove |
+| 改动已设定的项目 Agent | 修改设定… | 修改設定… | 設定を変更… | Change settings… |
 
 “Agent”仍指 Claude Code、Codex 这类产品；项目 Agent 是一个会话担任的角色，三级依次是个人 Agent、项目 Agent、Worker。Worker 与 Agent 一样在中文界面保留英文，日文写“ワーカー”。Worker 是会话列表里能看到的独立 Codex 或 DeepSeek Harness 会话，不能叫“子代理”，子代理在一个会话内部。简体中文写“汇报”，不写“回报”，避免读成收益；繁体中文写“回報”。给 Claude Code 看的工具名（`worker_*`）和汇报开头（`[AgentKib report]`）固定用英文。
 

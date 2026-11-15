@@ -69,6 +69,8 @@ const LEAD_TOOLS = [
   "worker_stop",
   "worker_approve",
   "worker_answer",
+  // 0.5.1: AgentKib lists it last, after the ones 0.5.0 knows.
+  "worker_close",
 ];
 // $.tool.register is verified on 2.1.301 (the oldest CLI that connects) and 2.1.323.
 function utf8Prefix(value, budget) {
@@ -2089,6 +2091,9 @@ export function register(on) {
   );
   on("tool.call", { tool: "mcp__agentkib-bridge__worker_answer" }, ($, e) =>
     leadCall($, state, "worker_answer", e),
+  );
+  on("tool.call", { tool: "mcp__agentkib-bridge__worker_close" }, ($, e) =>
+    leadCall($, state, "worker_close", e),
   );
   // Managed settings or a Team or Enterprise login load sec-default, which skips classic hooks of
   // user-installed plugins, so the PermissionRequest hook below never runs there. tool.check still

@@ -22,12 +22,14 @@ import {
   type SessionAction,
   type SessionActionBody,
   type ClaudePermissionMode,
+  type DevinPermissionMode,
   type CodexContextOptions,
   type CodexContextResource,
   type CodexGoalState,
   type CodexSessionSettings,
   type ManagedAgent,
 } from "@agentkib/web-client";
+import { newSessionPermissions } from "@agentkib/session-ui";
 import { Button } from "../../components/ui/button";
 import { Input } from "../../components/ui/input";
 import { Dialog } from "../../components/dialog";
@@ -61,6 +63,9 @@ type CodexComposerControlsProps = {
   /** Told when plan mode or the composer's ability to switch it changes. */
   onPlan?: (state: ComposerPlanState) => void;
 };
+
+/** Devin CLI's permission modes, in the order its own client lists them. */
+const DEVIN_PERMISSION_IDS: string[] = ["auto", "accept-edits", "smart", "dangerous"];
 
 const selectClass =
   "block h-11 w-full rounded-md border bg-background px-3 text-sm disabled:opacity-50";
@@ -140,6 +145,19 @@ export function CodexComposerControls({
       : current?.agent === "devin"
         ? "devin"
         : null;
+  const isDevin = managedAgent === "devin";
+  // Devin's modes in its own words, as the new-session composer offers them.
+  const devinPermissions = isDevin
+    ? new Map(
+        (
+          newSessionPermissions(
+            "devin",
+            { available: true, permissionModes: DEVIN_PERMISSION_IDS.map((id) => ({ id })) },
+            locale,
+          )?.choices ?? []
+        ).map((choice) => [choice.id, choice]),
+      )
+    : undefined;
   const agentCopy = sessionAgentCopy[locale];
   const feature = (name: string) =>
     (
@@ -239,7 +257,9 @@ export function CodexComposerControls({
   const [effort, setEffort] = useState("");
   const [mode, setMode] = useState<"" | "default" | "plan">("");
   const [policy, setPolicy] = useState("");
-  const [permissionMode, setPermissionMode] = useState<ClaudePermissionMode | "">("");
+  const [permissionMode, setPermissionMode] = useState<
+    ClaudePermissionMode | DevinPermissionMode | ""
+  >("");
   const [serviceTier, setServiceTier] = useState("");
   const [objective, setObjective] = useState("");
   const [tokenBudget, setTokenBudget] = useState("");
@@ -677,7 +697,7 @@ export function CodexComposerControls({
   const goalChanged = goalDirty && goalDraftRevision.current !== goal?.revision;
   const editSettings = (field?: "model" | "effort" | "permissionMode") => {
     settingsDraftRevision.current ??= settings?.revision;
-    if (isClaude && field) editedClaudeSettings.current.add(field);
+    if ((isClaude || isDevin) && field) editedClaudeSettings.current.add(field);
     setSettingsDirty(true);
     setSaved(false);
   };
@@ -949,27 +969,30 @@ export function CodexComposerControls({
                       settingDisabled ||
                       settingsChanged ||
                       settingsReadStale ||
-                      (isClaude && !settingsDirty)
+                      ((isClaude || isDevin) && !settingsDirty)
                     }
                     onClick={() =>
                       void mutate("settings", {
                         ...(model &&
                         settings.writable.model.available &&
-                        (!isClaude || editedClaudeSettings.current.has("model"))
+                        (!(isClaude || isDevin) || editedClaudeSettings.current.has("model"))
                           ? { model }
                           : {}),
                         ...(settings.writable.effort.available &&
                         (isClaude ? editedClaudeSettings.current.has("effort") : effort)
                           ? { effort: effort || null }
                           : {}),
-                        ...(!isClaude && mode && modeWritable ? { mode } : {}),
-                        ...(!isClaude && policy && settings.writable.policy.available
+                        ...(!isClaude && !isDevin && mode && modeWritable ? { mode } : {}),
+                        ...(!isClaude && !isDevin && policy && settings.writable.policy.available
                           ? { policyId: policy }
                           : {}),
-                        ...(!isClaude && serviceTier && settings.writable.serviceTier.available
+                        ...(!isClaude &&
+                        !isDevin &&
+                        serviceTier &&
+                        settings.writable.serviceTier.available
                           ? { serviceTierId: serviceTier }
                           : {}),
-                        ...(isClaude &&
+                        ...((isClaude || isDevin) &&
                         permissionMode &&
                         editedClaudeSettings.current.has("permissionMode") &&
                         settings.writable.permissionMode?.available
@@ -1093,7 +1116,7 @@ export function CodexComposerControls({
                   {!settings.writable.effort?.available &&
                     settingReason(settings.writable.effort?.reason)}
                 </label>
-                {isClaude ? (
+                {isClaude || isDevin ? (
                   <label className="block space-y-1 text-sm">
                     {agentCopy.permission}
                     <select
@@ -1103,30 +1126,37 @@ export function CodexComposerControls({
                       title={reasonTitle(settings.writable.permissionMode?.reason)}
                       onChange={(event) => {
                         editSettings("permissionMode");
-                        setPermissionMode(event.target.value as ClaudePermissionMode);
+                        setPermissionMode(
+                          event.target.value as ClaudePermissionMode | DevinPermissionMode,
+                        );
                       }}
                     >
                       <option value="" disabled>
                         {agentCopy.permissionUnknown}
                       </option>
                       {settings.options.permissionModes
-                        ?.filter((item) => ["default", "plan", "acceptEdits"].includes(item.id))
+                        ?.filter((item) =>
+                          (isDevin
+                            ? DEVIN_PERMISSION_IDS
+                            : ["default", "plan", "acceptEdits"]
+                          ).includes(item.id),
+                        )
                         .map((item) => (
                           <option key={item.id} value={item.id}>
-                            {item.name}
+                            {devinPermissions?.get(item.id)?.name ?? item.name}
                           </option>
                         ))}
                     </select>
                     {!settings.writable.permissionMode?.available &&
                       settingReason(settings.writable.permissionMode?.reason)}
-                    {settings.options.permissionModes?.find((item) => item.id === permissionMode)
-                      ?.description && (
+                    {(devinPermissions?.get(permissionMode)?.description ??
+                      settings.options.permissionModes?.find((item) => item.id === permissionMode)
+                        ?.description) && (
                       <small className="block text-muted-foreground">
-                        {
-                          settings.options.permissionModes.find(
+                        {devinPermissions?.get(permissionMode)?.description ??
+                          settings.options.permissionModes?.find(
                             (item) => item.id === permissionMode,
-                          )?.description
-                        }
+                          )?.description}
                       </small>
                     )}
                   </label>

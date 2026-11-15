@@ -25,6 +25,7 @@ import {
   devinSessionLockedElsewhere,
   type DevinRunnerHost,
 } from "../../../packages/backend/src/devin-managed-runner";
+import { DevinSessionSettings } from "../../../packages/backend/src/devin-session-settings";
 import { collectUsage } from "../../../packages/backend/src/usage-providers";
 
 const posix = process.platform !== "win32";
@@ -340,6 +341,36 @@ describe("Devin token usage", () => {
       total_tokens: 175,
       session_count: 1,
       date_precision: "day",
+    });
+  });
+});
+
+describe("Devin session settings", () => {
+  it("defaults to accepting edits and keeps choices across instances", () => {
+    const dataDir = temp();
+    const first = new DevinSessionSettings(dataDir);
+    expect(first.get("some-session")).toEqual({ permissionMode: "accept-edits" });
+    first.set("some-session", { model: "swe-2", permissionMode: "auto" });
+    // A restart reads the same file.
+    expect(new DevinSessionSettings(dataDir).get("some-session")).toEqual({
+      model: "swe-2",
+      permissionMode: "auto",
+    });
+    first.set("some-session", {});
+    expect(first.get("some-session")).toEqual({ permissionMode: "accept-edits" });
+  });
+
+  it("ignores values it would not pass to the CLI", () => {
+    const dataDir = temp();
+    writeFileSync(
+      path.join(dataDir, "devin-session-settings.json"),
+      JSON.stringify({
+        bad: { model: "rm -rf /", permissionMode: "yolo", updatedAt: 1 },
+        list: [],
+      }),
+    );
+    expect(new DevinSessionSettings(dataDir).get("bad")).toEqual({
+      permissionMode: "accept-edits",
     });
   });
 });

@@ -1211,6 +1211,13 @@ export class TypeScriptBackend {
       ) {
         return this.#withWebRead((owner) => owner.request(params));
       }
+      // Devin's settings are what AgentKib saved for its next turns, not a Codex ledger entry.
+      if (
+        params.operation === "settings-state" &&
+        typeof params.sessionId === "string" &&
+        this.#store!.sessions.get(params.sessionId)?.agent === "devin"
+      )
+        return this.#withWebRead((owner) => owner.devinSettingsState(params));
       if (params.operation === "settings-state")
         return this.#withWebRead((owner) => owner.managedSettingsState(params));
       if (params.operation === "queue-list")

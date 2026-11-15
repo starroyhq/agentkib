@@ -13,7 +13,7 @@
 - `devin auth status` 未登录时输出 `Not logged in.`；`devin models list --format json` 需要登录。
 - 会话锁：`~/.local/share/devin/cli/session_locks/<会话 ID>.lock`，内容是持有者 PID，退出后文件保留。
 - Homebrew：cask `devin-cli`（Desktop 是 `devin-desktop`）。
-- 探测时 `devin acp` 的初始化会启动用户配置的 MCP 服务（本机为 `pencil`），进程随探测结束；用户会话库前后都是 7 个会话，临时目录已删除。
+- 探测时 `devin acp` 的初始化会启动用户配置的 MCP 服务，进程随探测结束；用户会话库前后都是 7 个会话，临时目录已删除。
 
 ## 验证
 
@@ -51,9 +51,18 @@
 - 发现并修正：Devin 会话的输入框一直显示“模型待确认”。原因是 `codex-session-controls.tsx`（桌面和 Web）只把 Claude Code 和 DeepSeek Harness 当作受控 Agent，其余都按 Codex 读设置；Devin 会话没有 Codex 的设置记录，模型就成了“待确认”。现在把 Devin 也按受控 Agent 处理，设置是否可读由它的能力决定；Devin 不提供会话设置，所以不再显示 Codex 的模型选择和上下文入口。
 - 未走查：Web 端（另一个开发实例占用了开发版端口），以及未登录、未信任时的提示文案在界面上的显示。
 
+## 第 2 步：会话内的模型和权限（同日）
+
+- 默认权限改为 `accept-edits`（用户决定）：新建输入框默认显示并发送它；不是在 AgentKib 里新建的会话也按它运行。
+- 会话页：输入框显示这个会话的模型（未选时是 Devin 保存的模型），“会话设置”里有 Devin 的四档权限（文案取自新建会话），“套用至下一轮”。选择存在 `devin-session-settings.json`，重启后仍有效；`smart`、`dangerous` 只接受完全访问的设备。
+- 走查中发现并修正：
+  - `/managed/capabilities` 不认 `agent=devin`（返回 `invalid_agent`），会话页拿不到能力，设置入口不出现；
+  - 设置的投影只放行 Claude 的权限值，Devin 的当前权限显示为“待确认”；
+  - 桌面和 Web 的会话控制只给 Claude Code 和 DSH 走 `/managed/action`，Devin 的设置请求走了 Codex 路由，被拒为“本次操作未执行”。
+- 界面走查（桌面开发版，隔离数据，swe-2）：新建时默认“自動接受編輯”；会话页显示 SWE-2；设置里把权限改成“唯讀自動”并套用，保存文件和受控命令台账都记下了；下一轮 CLI 收到的参数是 `-r <ID> --model swe-2 --permission-mode auto`。没有验证 `auto` 是否真的拒绝了修改（那需要让 Devin 去改仓库里的文件）。
+
 ## 留待以后
 
 - “在终端登录”的一键入口没有做，目前提示用户在终端运行 `devin auth login`。PATH 上没有 `devin` 时，用户要用 Desktop 自带 CLI 的完整路径。
-- 新建时选的权限模式和模型只保存在内存里，AgentKib 重启后该会话回到 Devin 配置的默认值。
 - 没有在 AgentKib 界面里走查（桌面、Web、手机）；上面的验收直接驱动后端 runner。
 - Windows 和 Linux 未实测；Windows 上停止只结束 CLI 进程本身。

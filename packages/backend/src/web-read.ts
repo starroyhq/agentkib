@@ -45,6 +45,7 @@ import type { CodexFollowerState } from "./codex-follower-state";
 import { CodexFollowerStream } from "./codex-follower-stream";
 import { AntigravityManagedRunner } from "./antigravity-managed-runner";
 import { devinExecutable } from "./devin-executable";
+import { DEVIN_DEFAULT_PERMISSION_MODE, DevinSessionSettings } from "./devin-session-settings";
 import {
   DEVIN_EXECUTION_MODE,
   DEVIN_MAX_PROMPT_BYTES,
@@ -367,6 +368,8 @@ const managedControlSchema = z
     queuedSubmissionId: z.string().min(1).max(256).optional(),
     queuedSubmissionIds: z.array(z.string().min(1).max(256)).max(100).optional(),
     model: z.string().min(1).max(256).optional(),
+    /** Devin: the permission mode its next turns run with. */
+    permissionMode: z.enum(DEVIN_PERMISSION_MODES).optional(),
     effort: z.string().min(1).max(64).nullable().optional(),
     serviceTier: z.string().min(1).max(128).nullable().optional(),
     mode: z.string().min(1).max(128).optional(),
@@ -502,6 +505,12 @@ export class WebReadRequests {
     string,
     { runner: DevinManagedRunner; lastUsed: number; settings: DevinTurnSettings }
   >();
+  #devinSavedSettings: DevinSessionSettings | undefined;
+
+  #devinSaved() {
+    this.#devinSavedSettings ??= new DevinSessionSettings(this.dataDir);
+    return this.#devinSavedSettings;
+  }
 
   constructor(
     readonly store: BackendStore,
@@ -5756,8 +5765,12 @@ export class WebReadRequests {
       resolved.native.native_ref,
       this.#devinHost(workspace, () => sessionId),
     );
-    // A session AgentKib did not start keeps Devin's own configured permission mode and model.
-    return this.#addDevinRunner(sessionId, runner, {});
+    // Without a saved choice a resumed turn keeps the session's model and edits the workspace.
+    return this.#addDevinRunner(
+      sessionId,
+      runner,
+      this.#devinSaved().get(resolved.native.native_ref),
+    );
   }
 
   async #devinLive(sessionId: string): Promise<Record<string, unknown>> {
@@ -5800,6 +5813,11 @@ export class WebReadRequests {
         experimental && live.stopEnabled === true
           ? { available: true }
           : { available: false, reason: reason ?? "session-not-running" },
+      "settings-state": { available: live.status !== "unsupported" },
+      settings:
+        experimental && live.sendEnabled === true
+          ? { available: true }
+          : { available: false, reason: reason ?? "session-busy" },
       // Devin runs a turn without asking: there is nothing to approve or answer mid-turn.
       approve: unsupported,
       answer: unsupported,
@@ -5823,8 +5841,14 @@ export class WebReadRequests {
     const runtimeBootId = this.#bootId;
     if (!request.experimentalEnabled || request.runtimeBootId !== runtimeBootId)
       throw new Error("stale-or-disabled-control");
-    if (request.operation !== "send" && request.operation !== "stop")
+    if (!["send", "stop", "settings"].includes(request.operation))
       throw new Error("unsupported-operation");
+    if (
+      request.operation === "settings" &&
+      request.model !== undefined &&
+      !/^[A-Za-z0-9._:@/+-]{1,128}$/.test(request.model)
+    )
+      throw new Error("unsupported-model");
     // `devin -p` takes text only; attachments are refused rather than dropped.
     if (request.input?.length || request.historyReferences?.length || request.resourceRefs?.length)
       throw new Error("attachments-unsupported");
@@ -5864,6 +5888,26 @@ export class WebReadRequests {
           beforeDispatch,
           record.settings,
         );
+      } else if (request.operation === "settings") {
+        const nativeId = record.runner.nativeId;
+        if (!nativeId || record.runner.snapshot().sendEnabled !== true)
+          throw new Error("session-busy");
+        beforeDispatch();
+        this.#devinSaved().set(
+          nativeId,
+          request.resetDefaults
+            ? {}
+            : {
+                ...(request.model
+                  ? { model: request.model }
+                  : record.settings.model
+                    ? { model: record.settings.model }
+                    : {}),
+                permissionMode: request.permissionMode ?? record.settings.permissionMode,
+              },
+        );
+        record.settings = this.#devinSaved().get(nativeId);
+        record.runner.bump();
       } else {
         if (typeof request.turnId !== "string") throw new Error("missing-turn");
         await record.runner.stop(request.turnId, request.expectedRevision, beforeDispatch);
@@ -5871,7 +5915,8 @@ export class WebReadRequests {
       record.lastUsed = Date.now();
       const result = {
         accepted: true,
-        completed: false,
+        // A settings change is applied when it is saved; the next turn runs with it.
+        completed: request.operation === "settings",
         sessionId: request.sessionId,
         requestId: request.requestId,
         runtimeBootId,
@@ -5919,7 +5964,7 @@ export class WebReadRequests {
     }
     const settings: DevinTurnSettings = {
       ...(request.model ? { model: request.model } : {}),
-      ...(request.permissionMode ? { permissionMode: request.permissionMode } : {}),
+      permissionMode: request.permissionMode ?? DEVIN_DEFAULT_PERMISSION_MODE,
     };
     let created: string | null = null;
     const runner = new DevinManagedRunner(
@@ -5968,6 +6013,12 @@ export class WebReadRequests {
         true,
       );
       created = this.store.sessions.id("devin", nativeId);
+      // The choices made when it started apply to its later turns too, also after a restart.
+      if (request.model || request.permissionMode)
+        this.#devinSaved().set(nativeId, {
+          ...(request.model ? { model: request.model } : {}),
+          ...(request.permissionMode ? { permissionMode: request.permissionMode } : {}),
+        });
       this.#addDevinRunner(created, runner, settings);
       const outcome = result("accepted", { sessionId: created });
       finishManagedCommand(this.dataDir, request.requestId, outcome);
@@ -5986,6 +6037,60 @@ export class WebReadRequests {
   }
 
   #devinModels: { at: number; models: Array<{ id: string; name?: string }> } | undefined;
+
+  /**
+   * A Devin session's settings in the shape the composer reads for managed sessions: the model
+   * and permission mode its next turn runs with. Without a saved model a resumed turn keeps the
+   * one Devin saved for the session.
+   */
+  async devinSettingsState(value: Record<string, unknown>): Promise<Record<string, unknown>> {
+    const sessionId = z.string().min(1).max(256).parse(value.sessionId);
+    let record: Awaited<ReturnType<WebReadRequests["devinRunnerFor"]>>;
+    try {
+      record = await this.devinRunnerFor(sessionId);
+    } catch (error) {
+      return {
+        available: false,
+        executionMode: DEVIN_EXECUTION_MODE,
+        revision: 0,
+        reason: error instanceof Error ? error.message : "session-unavailable",
+      };
+    }
+    const live = record.runner.snapshot();
+    const nativeId = record.runner.nativeId;
+    const options = await this.devinOptions();
+    const models = Array.isArray(options.models)
+      ? (options.models as Array<{ id: string; name?: string }>)
+      : [];
+    const current = {
+      model: record.settings.model ?? (nativeId ? this.sessions.devinSessionModel(nativeId) : null),
+      effort: null,
+      permissionMode: record.settings.permissionMode ?? DEVIN_DEFAULT_PERMISSION_MODE,
+    };
+    const mutable = live.sendEnabled === true;
+    return {
+      available: true,
+      executionMode: DEVIN_EXECUTION_MODE,
+      revision: live.revision,
+      current,
+      selected: current,
+      settings: current,
+      defaults: { model: null, effort: null, permissionMode: DEVIN_DEFAULT_PERMISSION_MODE },
+      applicationStatus: "confirmed",
+      models: models.map((model) => ({ ...model, efforts: [] })),
+      permissionModes: DEVIN_PERMISSION_MODES.map((id) => ({ id, name: id })),
+      writable: {
+        model: { available: mutable && models.length > 0 },
+        effort: { available: false, reason: "unsupported-operation" },
+        permissionMode: { available: mutable },
+        restoreDefaults: { available: mutable },
+      },
+    };
+  }
+
+  devinRunnerFor(sessionId: string) {
+    return this.#devinRunner(sessionId);
+  }
 
   /**
    * What a new Devin session can start with. Models are listed by family, whose slug `--model`

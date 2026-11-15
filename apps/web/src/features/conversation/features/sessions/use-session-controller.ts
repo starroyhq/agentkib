@@ -2009,7 +2009,9 @@ export function useSessionController({
       setSettingsIntentBinding(settingsBinding);
     const sessionAgent = sessions.find((session) => session.id === id)?.agent;
     const perform = (body: SessionActionBody) =>
-      sessionAgent === "claude-code" || sessionAgent === "deepseek-harness"
+      sessionAgent === "claude-code" ||
+      sessionAgent === "deepseek-harness" ||
+      sessionAgent === "devin"
         ? client.sessionAction(action, body, sessionAgent)
         : action === "queue-pause" || action === "queue-resume"
           ? Promise.reject(new ApiError(409, "operation_unavailable", "not-dispatched"))

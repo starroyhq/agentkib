@@ -321,6 +321,12 @@ export class DevinManagedRunner {
     setTimeout(() => this.#child === child && signal(child, "SIGKILL"), STOP_KILL_MS).unref();
   }
 
+  /** Marks a change to what the next turn runs with, so that a stale control is refused. */
+  bump() {
+    this.#revision++;
+    this.#publishState();
+  }
+
   close() {
     this.#closed = true;
     clearInterval(this.#timer);

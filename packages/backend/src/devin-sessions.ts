@@ -638,6 +638,19 @@ export class DevinSessions {
     if (value === null) throw new Error("Devin session history is no longer available");
     return value;
   }
+  /** The model Devin saved for a session, which a resumed turn keeps unless told otherwise. */
+  model(nativeId: string): string | null {
+    const value = this.#read((source) => {
+      const row = source.db.prepare("SELECT model FROM sessions WHERE id=?").get(nativeId) as
+        | { model?: unknown }
+        | undefined;
+      return typeof row?.model === "string" && /^[A-Za-z0-9._:@/+-]{1,128}$/.test(row.model)
+        ? row.model
+        : null;
+    });
+    return value ?? null;
+  }
+
   /** Sessions whose working directory is inside `workspace`; null lists every session. */
   list(workspace: string | null): { sessions: NativeSession[]; incomplete: boolean } {
     const listing = this.#read((source) => {

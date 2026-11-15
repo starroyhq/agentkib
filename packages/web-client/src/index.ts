@@ -726,7 +726,7 @@ export interface CodexSettingValues {
   mode?: string;
   policyId?: string;
   serviceTierId?: string;
-  permissionMode?: ClaudePermissionMode;
+  permissionMode?: ClaudePermissionMode | DevinPermissionMode;
 }
 export interface CodexSessionSettings {
   sessionId: string;
@@ -744,7 +744,7 @@ export interface CodexSessionSettings {
     modelId?: string;
     effort?: string;
     serviceTierId?: string;
-    permissionMode?: ClaudePermissionMode;
+    permissionMode?: ClaudePermissionMode | DevinPermissionMode;
   };
   writable: {
     model: CodexAvailability;
@@ -847,7 +847,7 @@ export interface CodexActionBody {
 }
 export interface SessionActionBody extends Omit<CodexActionBody, "effort"> {
   effort?: string | null;
-  permissionMode?: ClaudePermissionMode;
+  permissionMode?: ClaudePermissionMode | DevinPermissionMode;
 }
 export interface SessionActionResult {
   accepted?: boolean;

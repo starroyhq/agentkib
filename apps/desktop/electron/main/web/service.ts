@@ -375,6 +375,9 @@ const PAIRING_CODE_TTL_MS = 300_000;
  * A managed Agent with no host handler here. Each Agent in MANAGED_AGENTS needs its own case where
  * this is called; without one, its requests would otherwise reach another Agent's handler.
  */
+/** Devin CLI's permission modes, which apply to a whole `devin -p` turn. */
+const DEVIN_PERMISSION_MODES = ["auto", "accept-edits", "smart", "dangerous"];
+
 function unhandledManagedAgent(agent: never): never {
   void agent;
   throw new HttpError(400, "invalid_agent");
@@ -2813,7 +2816,10 @@ export class WebAccessService {
       ...(value(current, "effort") ? { effort: value(current, "effort") } : {}),
       ...(value(current, "mode") ? { mode: value(current, "mode") } : {}),
       ...(value(current, "policyId") ? { policyId: value(current, "policyId") } : {}),
-      ...(["default", "plan", "acceptEdits"].includes(value(current, "permissionMode") ?? "")
+      ...((data.executionMode === "devin-print"
+        ? DEVIN_PERMISSION_MODES
+        : ["default", "plan", "acceptEdits"]
+      ).includes(value(current, "permissionMode") ?? "")
         ? { permissionMode: value(current, "permissionMode") }
         : {}),
       ...(value(current, "serviceTier", "serviceTierId")
@@ -2875,11 +2881,11 @@ export class WebAccessService {
         mode: this.availability(writable?.mode),
         policy: this.availability(writable?.policy),
         serviceTier: this.availability(writable?.serviceTier),
-        ...(data.executionMode === "claude-managed"
+        ...(data.executionMode === "claude-managed" || data.executionMode === "devin-print"
           ? { permissionMode: this.availability(writable?.permissionMode) }
           : {}),
         restoreDefaults:
-          data.executionMode === "claude-managed"
+          data.executionMode === "claude-managed" || data.executionMode === "devin-print"
             ? this.availability(writable?.restoreDefaults)
             : {
                 available:
@@ -2892,13 +2898,17 @@ export class WebAccessService {
         models,
         policies,
         serviceTiers,
-        ...(data.executionMode === "claude-managed"
+        ...(data.executionMode === "claude-managed" || data.executionMode === "devin-print"
           ? {
               permissionModes: Array.isArray(data.permissionModes)
-                ? data.permissionModes.slice(0, 3).flatMap((value) => {
+                ? data.permissionModes.slice(0, 4).flatMap((value) => {
                     if (!value || typeof value !== "object") return [];
                     const mode = value as Record<string, unknown>;
-                    if (!["default", "plan", "acceptEdits"].includes(String(mode.id))) return [];
+                    const ids =
+                      data.executionMode === "devin-print"
+                        ? DEVIN_PERMISSION_MODES
+                        : ["default", "plan", "acceptEdits"];
+                    if (!ids.includes(String(mode.id))) return [];
                     return [{ id: mode.id, name: this.optionalString(mode.name, 128) ?? mode.id }];
                   })
                 : [],
@@ -3540,12 +3550,16 @@ export class WebAccessService {
           "goal-clear",
           "compact",
         ].includes(operation);
+      // Devin changes the model and permission mode its next turns run with.
+      const devin =
+        generic && capabilities.executionMode === "devin-print" && operation === "settings";
       if (
         (capabilities.executionMode !== "codex-managed" &&
           !claude &&
           !terminal &&
           !followerFork &&
-          !dsh) ||
+          !dsh &&
+          !devin) ||
         capabilities.features?.[operation]?.available !== true
       )
         throw new HttpError(
@@ -3770,11 +3784,16 @@ export class WebAccessService {
           params.effort = effort;
         }
         if (body.permissionMode !== undefined) {
-          if (capabilities.executionMode !== "claude-managed")
+          const devin = capabilities.executionMode === "devin-print";
+          if (capabilities.executionMode !== "claude-managed" && !devin)
             throw new HttpError(400, "unsupported_permission_mode");
           ensureWritable("permissionMode");
-          if (!["default", "plan", "acceptEdits"].includes(String(body.permissionMode)))
+          const mode = String(body.permissionMode);
+          if (!(devin ? DEVIN_PERMISSION_MODES : ["default", "plan", "acceptEdits"]).includes(mode))
             throw new HttpError(400, "unsupported_permission_mode");
+          // Devin cannot ask mid-turn: approving more without asking takes full access, as when
+          // a session starts with these modes.
+          if (devin && (mode === "smart" || mode === "dangerous")) this.fullAccess(hash);
           params.permissionMode = body.permissionMode;
         }
         if (mode) {
@@ -4497,7 +4516,7 @@ export class WebAccessService {
         if (body.effort !== undefined) throw new HttpError(400, "unsupported_effort");
         if (body.permissionMode !== undefined) {
           const mode = String(body.permissionMode);
-          if (!["auto", "accept-edits", "smart", "dangerous"].includes(mode))
+          if (!DEVIN_PERMISSION_MODES.includes(mode))
             throw new HttpError(400, "unsupported_permission_mode");
           // Approving more without asking is changing what the session may do: full access only.
           if (mode === "smart" || mode === "dangerous") this.fullAccess(hash);
@@ -6284,6 +6303,34 @@ export class WebAccessService {
                 this.grant(hash),
                 sessionId,
                 this.options.verifiedDshFollower === true,
+              )
+            : result,
+        );
+      }
+      if (agent === "devin") {
+        // As for DeepSeek Harness, the runtime resolves the provider from the indexed session.
+        const sessionId = this.field(url.searchParams.get("sessionId"));
+        const device = this.grant(hash);
+        if (path.endsWith("inspect")) this.grant(hash, "manage");
+        const workspaceId = await this.codexScope(sessionId, hash, false, false);
+        const result = await this.runtime({
+          operation: path.endsWith("inspect") ? "inspect" : "capabilities",
+          sessionId,
+          experimentalEnabled: this.controlsEnabled(sessionId, device),
+        });
+        if (snapshotField(result, "executionMode") !== "devin-print")
+          throw new HttpError(400, "invalid_agent");
+        if (!(await this.workspaceAllowed(workspaceId, this.grant(hash))))
+          throw new HttpError(403, "workspace_not_authorized");
+        return this.json(
+          res,
+          200,
+          path.endsWith("capabilities")
+            ? this.projectClaudeCapabilities(
+                result,
+                this.grant(hash),
+                sessionId,
+                this.options.verifiedDevinManaged === true,
               )
             : result,
         );

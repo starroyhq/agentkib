@@ -72,13 +72,13 @@ const PERMISSIONS: Partial<Record<NewSessionAgent, PermissionSpec>> = {
     offered: (options) => options.permissionModes,
     sendShown: false,
   },
-  // Devin runs a turn without asking, so its mode is the whole turn's; unchosen, Devin's own
-  // configured default applies.
+  // Devin runs a turn without asking, so its mode is the whole turn's. AgentKib starts it with
+  // edits inside the workspace approved, as Codex starts here, and lists that first.
   devin: {
     field: "permissionMode",
-    ids: ["auto", "accept-edits", "smart", "dangerous"],
+    ids: ["accept-edits", "auto", "smart", "dangerous"],
     offered: (options) => options.permissionModes,
-    sendShown: false,
+    sendShown: true,
     risky: ["dangerous"],
     fullAccessOnly: ["smart", "dangerous"],
   },

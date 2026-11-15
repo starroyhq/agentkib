@@ -155,6 +155,84 @@ describe("Project Agent panel", () => {
     expect(screen.getByRole("button", { name: "Make Project Agent…" })).toBeInTheDocument();
   });
 
+  it("stops a worker's turn, lets a worker go, and changes what it may do", async () => {
+    const working = {
+      name: "api",
+      sessionId: "codex-1",
+      status: "running",
+      stopEnabled: true,
+      title: "Fix login",
+      lastReportAt: null,
+    };
+    request.mockResolvedValueOnce(
+      agent({
+        workers: [
+          working,
+          { ...working, name: "docs", sessionId: "codex-2", status: "idle", stopEnabled: false },
+        ],
+      }),
+    );
+    render(<ProjectAgentPanel />);
+    await act(async () => undefined);
+    // Only a worker whose turn runs offers to stop it.
+    expect(screen.getAllByRole("button", { name: "Stop" })).toHaveLength(1);
+    request.mockResolvedValueOnce(agent({ workers: [{ ...working, stopEnabled: false }] }));
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: "Stop" }));
+    });
+    expect(request).toHaveBeenLastCalledWith({
+      operation: "lead-worker-stop",
+      worker: "codex-1",
+      sessionId: "lead-1",
+    });
+    // Letting one go asks first, and says what stays.
+    fireEvent.click(screen.getByRole("button", { name: "Remove" }));
+    expect(
+      screen.getByText(
+        "Remove api from this Project Agent? Its session stays as an ordinary session, it no longer reports here, and its place is free.",
+      ),
+    ).toBeInTheDocument();
+    const scope = {
+      workspaceIds: ["w1"],
+      policies: ["workspace-write-on-request", "workspace-write-auto-review"],
+      maxLanes: 4,
+      maxAutoTurns: 25,
+      approvals: ["file-change"],
+      answers: false,
+    };
+    request.mockResolvedValueOnce(agent({ scope }));
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: "Remove" }));
+    });
+    expect(request).toHaveBeenLastCalledWith({
+      operation: "lead-worker-remove",
+      worker: "codex-1",
+      sessionId: "lead-1",
+    });
+    expect(screen.getByText("No workers yet. Ask this session to open one.")).toBeInTheDocument();
+    // Its settings: the setup form again, with what it may do now.
+    fireEvent.click(screen.getByRole("button", { name: "Change settings…" }));
+    expect(screen.getByRole("checkbox", { name: "app" })).toBeChecked();
+    expect(
+      screen.getByRole("checkbox", { name: "Let workers use Codex auto-review" }),
+    ).toBeChecked();
+    expect(screen.getByRole("checkbox", { name: "Workers' file change approvals" })).toBeChecked();
+    expect(screen.getByRole("checkbox", { name: "Workers' questions" })).not.toBeChecked();
+    fireEvent.change(screen.getByRole("spinbutton", { name: "Most workers" }), {
+      target: { value: "6" },
+    });
+    request.mockResolvedValueOnce(agent({ scope: { ...scope, maxLanes: 6 } }));
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: "Save" }));
+    });
+    expect(request).toHaveBeenLastCalledWith({
+      operation: "lead-update",
+      sessionId: "lead-1",
+      scope: { ...scope, maxLanes: 6 },
+    });
+    expect(screen.getByRole("button", { name: "Change settings…" })).toBeInTheDocument();
+  });
+
   it("explains a refusal and shows nothing when the host does not answer", async () => {
     request.mockResolvedValueOnce({ lead: null });
     render(<ProjectAgentPanel />);

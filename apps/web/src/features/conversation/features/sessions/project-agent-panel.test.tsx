@@ -68,5 +68,64 @@ describe("Project Agent panel on Web", () => {
     expect(screen.getByText("0 workers")).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Pause delegation" })).toBeNull();
     expect(screen.queryByRole("button", { name: "Stop being a Project Agent" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Change settings…" })).toBeNull();
+  });
+
+  it("stops a worker's turn, lets one go and changes the settings, as the device may", async () => {
+    const worker = {
+      name: "api",
+      sessionId: "codex-1",
+      status: "running",
+      stopEnabled: true,
+      title: null,
+      lastReportAt: null,
+    };
+    // May stop a turn, but neither let a worker go nor take the Project Agent over.
+    device = { accessMode: "full", send: true };
+    projectAgent.mockResolvedValueOnce({ lead: { ...lead, workers: [worker] } });
+    const { unmount } = render(<ProjectAgentPanel />);
+    await act(async () => undefined);
+    expect(screen.getByRole("button", { name: "Stop" })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Remove" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Change settings…" })).toBeNull();
+    unmount();
+    device = full;
+    projectAgent.mockResolvedValueOnce({ lead: { ...lead, workers: [worker] } });
+    render(<ProjectAgentPanel />);
+    await act(async () => undefined);
+    manageProjectAgent.mockResolvedValueOnce({ lead: { ...lead, workers: [worker] } });
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: "Stop" }));
+    });
+    expect(manageProjectAgent).toHaveBeenLastCalledWith({
+      operation: "stop-worker",
+      worker: "codex-1",
+      sessionId: "lead-1",
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Remove" }));
+    manageProjectAgent.mockResolvedValueOnce({ lead });
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: "Remove" }));
+    });
+    expect(manageProjectAgent).toHaveBeenLastCalledWith({
+      operation: "remove-worker",
+      worker: "codex-1",
+      sessionId: "lead-1",
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Change settings…" }));
+    fireEvent.change(screen.getByRole("spinbutton", { name: "Most workers" }), {
+      target: { value: "2" },
+    });
+    manageProjectAgent.mockResolvedValueOnce({ lead });
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: "Save" }));
+    });
+    expect(manageProjectAgent).toHaveBeenLastCalledWith(
+      expect.objectContaining({
+        operation: "update",
+        sessionId: "lead-1",
+        scope: expect.objectContaining({ workspaceIds: ["w1"], maxLanes: 2 }),
+      }),
+    );
   });
 });

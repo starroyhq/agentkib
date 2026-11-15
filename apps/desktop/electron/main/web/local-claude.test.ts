@@ -83,7 +83,15 @@ describe("trusted Claude owner boundary", () => {
       deviceId: "phone",
     });
     await localClaudeRequest(deps, { operation: "lead-designate", sessionId: "session", scope });
-    await localClaudeRequest(deps, { operation: "lead-pause", sessionId: "session", scope });
+    await localClaudeRequest(deps, { operation: "lead-update", sessionId: "session", scope });
+    await localClaudeRequest(deps, {
+      operation: "lead-pause",
+      sessionId: "session",
+      scope,
+      worker: "lane",
+    });
+    for (const operation of ["lead-worker-stop", "lead-worker-remove"])
+      await localClaudeRequest(deps, { operation, sessionId: "session", worker: "lane", scope });
     expect(vi.mocked(deps.managed).mock.calls.map(([params]) => params)).toEqual([
       { operation: "lead-status", sessionId: "session", deviceId: "agentkib-local-owner" },
       {
@@ -92,8 +100,21 @@ describe("trusted Claude owner boundary", () => {
         scope,
         deviceId: "agentkib-local-owner",
       },
-      // Only designating carries a scope.
+      { operation: "lead-update", sessionId: "session", scope, deviceId: "agentkib-local-owner" },
+      // Only setting up and changing carry a scope, and only acting on one worker names it.
       { operation: "lead-pause", sessionId: "session", deviceId: "agentkib-local-owner" },
+      {
+        operation: "lead-worker-stop",
+        sessionId: "session",
+        worker: "lane",
+        deviceId: "agentkib-local-owner",
+      },
+      {
+        operation: "lead-worker-remove",
+        sessionId: "session",
+        worker: "lane",
+        deviceId: "agentkib-local-owner",
+      },
     ]);
     expect(deps.receipt).not.toHaveBeenCalled();
   });

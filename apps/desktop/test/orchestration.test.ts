@@ -627,6 +627,199 @@ describe("orchestration service", () => {
     expect(calls.slice(before).at(-1)).toMatchObject({ deviceId: DEVICE });
   });
 
+  describe("workers the person manages", () => {
+    it("lets a worker go, freeing its place, by the person or by the lead", async () => {
+      const { lanes } = host();
+      const orchestration = service(lanes);
+      orchestration.designate({
+        sessionId: LEAD,
+        deviceId: DEVICE,
+        workspaceId: "w1",
+        scope: { maxLanes: 2 },
+      });
+      const first = parse(
+        await orchestration.call(LEAD, "worker_open", { name: "a", workspace: "w1" }),
+      );
+      await orchestration.call(LEAD, "worker_open", { name: "b", workspace: "w1" });
+      expect(
+        parse(await orchestration.call(LEAD, "worker_open", { name: "c", workspace: "w1" })),
+      ).toMatchObject({ accepted: false, reason: "worker-limit-reached" });
+      orchestration.removeWorker(LEAD, first.session);
+      expect(orchestration.roles().get(first.session)).toBeUndefined();
+      expect(
+        parse(await orchestration.call(LEAD, "worker_open", { name: "c", workspace: "w1" })),
+      ).toMatchObject({ accepted: true });
+      expect(parse(await orchestration.call(LEAD, "worker_close", { worker: "b" }))).toMatchObject({
+        accepted: true,
+        worker: "b",
+      });
+      expect((await orchestration.overview(LEAD))!.workers).toEqual([
+        expect.objectContaining({ name: "c" }),
+      ]);
+      // One that is not there any more is a refusal like any other, not a failure.
+      expect(parse(await orchestration.call(LEAD, "worker_close", { worker: "b" }))).toMatchObject({
+        accepted: false,
+        reason: "worker-unavailable",
+      });
+      expect(() => orchestration.removeWorker(LEAD, first.session)).toThrow("worker-unavailable");
+      expect(
+        orchestration
+          .status(LEAD)!
+          .records.filter((record) => record.kind === "close")
+          .map((record) => record.outcome),
+      ).toEqual(["removed", "closed"]);
+    });
+
+    it("lets the person stop a worker's turn in their own name, also while delegation is paused", async () => {
+      const { lanes, calls, lives } = host();
+      const orchestration = service(lanes);
+      orchestration.designate({ sessionId: LEAD, deviceId: "phone-1", workspaceId: "w1" });
+      const { session } = parse(
+        await orchestration.call(LEAD, "worker_open", { name: "api", workspace: "w1" }),
+      );
+      expect(await orchestration.stopWorker(LEAD, session, DEVICE)).toEqual({
+        accepted: false,
+        reason: "worker-not-running",
+      });
+      expect((await orchestration.overview(LEAD))!.workers).toEqual([
+        expect.objectContaining({ stopEnabled: false }),
+      ]);
+      lives.set(session, {
+        status: "running",
+        revision: 5,
+        runtimeBootId: "boot",
+        turnId: "turn-1",
+        sendEnabled: false,
+        stopEnabled: true,
+        approvals: [],
+        questions: [],
+      });
+      expect((await orchestration.overview(LEAD))!.workers).toEqual([
+        expect.objectContaining({ stopEnabled: true }),
+      ]);
+      orchestration.pause(LEAD);
+      // The lead cannot let it go while paused; the person can stop it.
+      expect(
+        parse(await orchestration.call(LEAD, "worker_close", { worker: "api" })),
+      ).toMatchObject({ accepted: false, reason: "delegation-paused" });
+      expect(await orchestration.stopWorker(LEAD, session, DEVICE)).toMatchObject({
+        accepted: true,
+      });
+      expect(calls.at(-1)).toMatchObject({
+        kind: "control",
+        operation: "stop",
+        sessionId: session,
+        deviceId: DEVICE,
+        turnId: "turn-1",
+        expectedRevision: 5,
+      });
+      // The lead hears of it as of any stop the person makes; held while delegation is paused.
+      expect(orchestration.status(LEAD)!.pendingReports.join("\n")).toContain(
+        "the user stopped its turn directly",
+      );
+      await expect(orchestration.stopWorker(LEAD, "elsewhere", DEVICE)).rejects.toThrow(
+        "worker-unavailable",
+      );
+    });
+
+    it("changes the scope in the name of the device that changes it; the next CLI gets changed tools", async () => {
+      const { lanes, calls } = host();
+      const orchestration = service(lanes);
+      orchestration.designate({
+        sessionId: LEAD,
+        deviceId: "phone-1",
+        workspaceId: "w1",
+        scope: { workspaceIds: ["w1", "w2"] },
+      });
+      await orchestration.call(LEAD, "worker_open", { name: "api", workspace: "w2" });
+      type Config = { mcpServers: Record<string, { url: string }> };
+      const before = (await orchestration.leadTools(LEAD)) as Config;
+      // A scope that cannot be used is refused whole; the parts given replace those it had.
+      await expect(
+        orchestration.update({ sessionId: LEAD, deviceId: DEVICE, scope: { workspaceIds: [] } }),
+      ).rejects.toThrow("invalid-lead-workspaces");
+      await expect(
+        orchestration.update({ sessionId: LEAD, deviceId: DEVICE, scope: { maxLanes: 9 } }),
+      ).rejects.toThrow("invalid-lead-lane-limit");
+      await expect(
+        orchestration.update({ sessionId: "elsewhere", deviceId: DEVICE, scope: {} }),
+      ).rejects.toThrow("lead-unavailable");
+      expect(orchestration.status(LEAD)).toMatchObject({ deviceId: "phone-1" });
+      expect(
+        await orchestration.update({
+          sessionId: LEAD,
+          deviceId: DEVICE,
+          scope: { maxAutoTurns: 10 },
+        }),
+      ).toBe(false);
+      expect(await orchestration.leadTools(LEAD)).toEqual(before);
+      expect(orchestration.status(LEAD)).toMatchObject({
+        deviceId: DEVICE,
+        scope: { workspaceIds: ["w1", "w2"], maxLanes: 4, maxAutoTurns: 10, approvals: [] },
+      });
+      // Deciding approvals changes its tools. The CLI running now keeps its endpoint until the
+      // next one asks for its tools.
+      const running = new Client({ name: "running", version: "0" });
+      await running.connect(
+        new StreamableHTTPClientTransport(new URL(before.mcpServers.agentkib_workers!.url)),
+      );
+      cleanups.push(() => running.close());
+      expect(
+        await orchestration.update({
+          sessionId: LEAD,
+          deviceId: DEVICE,
+          scope: { approvals: ["command"], workspaceIds: ["w1"] },
+        }),
+      ).toBe(true);
+      const listed = await running.callTool({ name: "worker_list", arguments: {} });
+      expect(JSON.parse(listed.content[0].text)).toMatchObject({ paused: false });
+      const next = (await orchestration.leadTools(LEAD)) as Config;
+      expect(next.mcpServers.agentkib_workers!.url).not.toBe(
+        before.mcpServers.agentkib_workers!.url,
+      );
+      const client = new Client({ name: "next", version: "0" });
+      await client.connect(
+        new StreamableHTTPClientTransport(new URL(next.mcpServers.agentkib_workers!.url)),
+      );
+      cleanups.push(() => client.close());
+      expect(client.getInstructions()).toBe(leadInstructions({ approvals: ["command"] }));
+      expect((await client.listTools()).tools.map((tool: { name: string }) => tool.name)).toContain(
+        "worker_approve",
+      );
+      // The worker in w2, which the lead may no longer use, is only listed and let go.
+      expect(parse(await orchestration.call(LEAD, "worker_list", {})).workers).toEqual([
+        expect.objectContaining({ worker: "api", workspace: "no-longer-allowed" }),
+      ]);
+      const before2 = calls.length;
+      expect(
+        parse(await orchestration.call(LEAD, "worker_send", { worker: "api", text: "go" })),
+      ).toMatchObject({ accepted: false, reason: "workspace-not-allowed" });
+      expect(calls.length).toBe(before2);
+      expect(
+        parse(await orchestration.call(LEAD, "worker_close", { worker: "api" })),
+      ).toMatchObject({ accepted: true });
+      expect(orchestration.status(LEAD)!.records.map((record) => record.kind)).toContain("update");
+    });
+
+    it("lets a deleted session's worker go, and ends a lead whose session is deleted", async () => {
+      const { lanes } = host();
+      const orchestration = service(lanes);
+      orchestration.designate({ sessionId: LEAD, deviceId: DEVICE, workspaceId: "w1" });
+      const { session } = parse(
+        await orchestration.call(LEAD, "worker_open", { name: "api", workspace: "w1" }),
+      );
+      await orchestration.sessionGone("unrelated");
+      await orchestration.sessionGone(session);
+      expect(orchestration.status(LEAD)!.lanes).toEqual([]);
+      expect(orchestration.status(LEAD)!.records.at(-1)).toMatchObject({
+        kind: "close",
+        outcome: "session-deleted",
+      });
+      await orchestration.sessionGone(LEAD);
+      expect(orchestration.status(LEAD)).toBeNull();
+    });
+  });
+
   it("serves the tools at a private endpoint to the lead only", async () => {
     const { lanes } = host();
     const orchestration = service(lanes);
@@ -650,6 +843,7 @@ describe("orchestration service", () => {
       "worker_send",
       "worker_read",
       "worker_stop",
+      "worker_close",
     ]);
     const listed = await client.callTool({ name: "worker_list", arguments: {} });
     expect(JSON.parse(listed.content[0].text)).toMatchObject({ paused: false, workers: [] });
@@ -685,11 +879,11 @@ describe("orchestration service", () => {
     await ended[1].listTools();
     for (let index = 0; index < 2; index++) {
       const next = await connect();
-      expect((await next.listTools()).tools).toHaveLength(5);
+      expect((await next.listTools()).tools).toHaveLength(6);
     }
     await expect(ended[0].listTools()).rejects.toThrow();
     await expect(ended[2].listTools()).rejects.toThrow();
-    expect((await ended[1].listTools()).tools).toHaveLength(5);
+    expect((await ended[1].listTools()).tools).toHaveLength(6);
   });
 
   describe("deciding for workers", () => {
@@ -842,8 +1036,8 @@ describe("orchestration service", () => {
         orchestration
           .tools({ approvals: ["file-change"], answers: true })
           .map((tool) => tool.name)
-          .slice(-2),
-      ).toEqual(["worker_approve", "worker_answer"]);
+          .slice(-3),
+      ).toEqual(["worker_approve", "worker_answer", "worker_close"]);
       expect(LEAD_INSTRUCTIONS).toContain("You cannot answer a worker's approvals");
       const allowed = leadInstructions({ approvals: ["file-change", "command"], answers: true });
       expect(allowed).toContain("worker_approve");

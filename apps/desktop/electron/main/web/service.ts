@@ -3930,7 +3930,9 @@ export class WebAccessService {
     if (this.options.mode === "lan") throw new HttpError(403, "capability_unavailable");
     const request = this.options.claudeManagedRequest;
     if (!request) throw new HttpError(503, "capability_unavailable");
-    if (Object.keys(body).some((key) => !["sessionId", "operation", "scope"].includes(key)))
+    if (
+      Object.keys(body).some((key) => !["sessionId", "operation", "scope", "worker"].includes(key))
+    )
       throw new HttpError(400, "invalid_input");
     const sessionId = this.field(body.sessionId);
     const operation = this.field(body.operation, 32);
@@ -3939,7 +3941,11 @@ export class WebAccessService {
       pause: ["send"],
       release: ["manage"],
       designate: ["send", "manage", "advancedControl"],
+      update: ["send", "manage", "advancedControl"],
       resume: ["send", "manage", "advancedControl"],
+      // One worker: letting it go is like ending the lead, stopping its turn like any stop.
+      "remove-worker": ["manage"],
+      "stop-worker": ["send"],
     };
     if (!Object.hasOwn(needs, operation)) throw new HttpError(400, "invalid_operation");
     let device = this.grant(hash);
@@ -3960,16 +3966,32 @@ export class WebAccessService {
             }
           ).lead
         : null;
+    // A worker the person acts on is one of this device's sessions too.
+    const worker = ["remove-worker", "stop-worker"].includes(operation)
+      ? this.field(body.worker)
+      : undefined;
+    if (worker) await this.codexScope(worker, hash, false, false);
     let scope: Record<string, unknown> | undefined;
-    if (operation === "designate") {
+    if (operation === "designate" || operation === "update") {
       if (!body.scope || typeof body.scope !== "object" || Array.isArray(body.scope))
         throw new HttpError(400, "invalid_input");
       scope = body.scope as Record<string, unknown>;
-      const workspaceIds = Array.isArray(scope.workspaceIds) ? scope.workspaceIds : [];
+      // A change keeps what it does not name, and this device answers for all of it from now on.
+      const current =
+        operation === "update"
+          ? lead(await request({ operation: "lead-status", sessionId, deviceId: device.id }))
+          : null;
+      if (operation === "update" && !current) throw new HttpError(409, "lead-unavailable");
+      const workspaceIds = Array.isArray(scope.workspaceIds)
+        ? scope.workspaceIds
+        : (current?.scope?.workspaceIds ?? []);
       for (const id of workspaceIds)
         if (typeof id !== "string" || !(await this.workspaceAllowed(id, device)))
           throw new HttpError(403, "workspace_not_authorized");
-      if (Array.isArray(scope.approvals) && scope.approvals.length) this.grant(hash, "approve");
+      const approvals = Array.isArray(scope.approvals)
+        ? scope.approvals
+        : (current?.scope?.approvals ?? []);
+      if (approvals.length) this.grant(hash, "approve");
     }
     if (operation === "resume") {
       const current = lead(
@@ -3980,11 +4002,18 @@ export class WebAccessService {
         if (typeof id !== "string" || !(await this.workspaceAllowed(id, device)))
           throw new HttpError(403, "workspace_not_authorized");
     }
+    const backendOperation =
+      operation === "remove-worker"
+        ? "lead-worker-remove"
+        : operation === "stop-worker"
+          ? "lead-worker-stop"
+          : `lead-${operation}`;
     const result = await request({
-      operation: `lead-${operation}`,
+      operation: backendOperation,
       sessionId,
       deviceId: device.id,
       ...(scope ? { scope } : {}),
+      ...(worker ? { worker } : {}),
     }).catch((error: unknown) => {
       const code = error instanceof Error ? error.message : "";
       const known = [
@@ -3997,6 +4026,8 @@ export class WebAccessService {
         "invalid-lead-lane-limit",
         "invalid-lead-turn-limit",
         "invalid-lead-delegation",
+        "worker-unavailable",
+        "worker-not-running",
       ].find((reason) => code.includes(reason));
       throw new HttpError(known ? 409 : 500, known ?? "project_agent_failed");
     });

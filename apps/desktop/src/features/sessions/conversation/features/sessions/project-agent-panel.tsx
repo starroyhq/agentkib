@@ -11,6 +11,8 @@ type Worker = {
   name: string;
   sessionId: string;
   status: string;
+  /** A turn runs that the person can stop; absent from older hosts. */
+  stopEnabled?: boolean;
   title: string | null;
   lastReportAt: string | null;
 };
@@ -54,7 +56,9 @@ export function ProjectAgentPanel() {
   const [agent, setAgent] = useState<ProjectAgent | null>();
   // Whether the host lets this session lead; older hosts do not say, and it is offered.
   const [capable, setCapable] = useState(true);
+  // Setting one up, or changing what it may do: the same form.
   const [form, setForm] = useState<null | {
+    mode: "designate" | "update";
     workspaceIds: string[];
     autoReview: boolean;
     approveFiles: boolean;
@@ -65,6 +69,8 @@ export function ProjectAgentPanel() {
   }>(null);
   const [busy, setBusy] = useState(false);
   const [releasing, setReleasing] = useState(false);
+  // The worker, by session, whose letting go waits for a confirmation.
+  const [removing, setRemoving] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
 
   /** Resolves to whether the host did it; a refusal stays on screen with its reason. */
@@ -118,33 +124,18 @@ export function ProjectAgentPanel() {
 
   if (agent === undefined || !selected) return null;
   const errorText = error ? (text.errors[error] ?? text.failed) : null;
+  const formOf = (mode: "designate" | "update", scope?: ProjectAgent["scope"]) => ({
+    mode,
+    workspaceIds: scope?.workspaceIds ?? (current?.workspace_id ? [current.workspace_id] : []),
+    autoReview: scope?.policies.includes("workspace-write-auto-review") ?? false,
+    approveFiles: scope?.approvals?.includes("file-change") ?? false,
+    approveCommands: scope?.approvals?.includes("command") ?? false,
+    answers: scope?.answers ?? false,
+    maxLanes: scope?.maxLanes ?? 4,
+    maxAutoTurns: scope?.maxAutoTurns ?? 25,
+  });
 
-  if (agent === null) {
-    if (!capable) return null;
-    if (!form)
-      return (
-        <OperationGroup title={text.title}>
-          <OperationRow>
-            <OperationCopy>{text.hint}</OperationCopy>
-            <Button
-              variant="outline"
-              onClick={() =>
-                setForm({
-                  workspaceIds: current?.workspace_id ? [current.workspace_id] : [],
-                  autoReview: false,
-                  approveFiles: false,
-                  approveCommands: false,
-                  answers: false,
-                  maxLanes: 4,
-                  maxAutoTurns: 25,
-                })
-              }
-            >
-              {text.designate}
-            </Button>
-          </OperationRow>
-        </OperationGroup>
-      );
+  if (form) {
     const toggleWorkspace = (id: string, on: boolean) =>
       setForm({
         ...form,
@@ -235,7 +226,7 @@ export function ProjectAgentPanel() {
             disabled={busy || !form.workspaceIds.length}
             onClick={() =>
               void run({
-                operation: "lead-designate",
+                operation: form.mode === "designate" ? "lead-designate" : "lead-update",
                 scope: {
                   workspaceIds: form.workspaceIds,
                   policies: form.autoReview
@@ -252,12 +243,24 @@ export function ProjectAgentPanel() {
               }).then((done) => done && setForm(null))
             }
           >
-            {text.confirm}
+            {form.mode === "designate" ? text.confirm : text.save}
           </Button>
         </OperationRow>
       </OperationGroup>
     );
   }
+
+  if (agent === null)
+    return capable ? (
+      <OperationGroup title={text.title}>
+        <OperationRow>
+          <OperationCopy>{text.hint}</OperationCopy>
+          <Button variant="outline" onClick={() => setForm(formOf("designate"))}>
+            {text.designate}
+          </Button>
+        </OperationRow>
+      </OperationGroup>
+    ) : null;
 
   const decided = [
     ...(agent.scope.approvals?.includes("file-change") ? [text.approveFiles] : []),
@@ -277,29 +280,74 @@ export function ProjectAgentPanel() {
           {!agent.workers.length && <p>{text.none}</p>}
         </OperationCopy>
       </OperationRow>
-      {agent.workers.map((worker) => (
-        <OperationRow key={worker.sessionId}>
-          <OperationCopy
-            title={`${worker.name} · ${text.status[worker.status] ?? text.status.unavailable}`}
-          >
-            {(worker.title || worker.lastReportAt) && (
-              <p className="truncate">
-                {[
-                  worker.title,
-                  worker.lastReportAt
-                    ? text.reported(formatCatalogTime(worker.lastReportAt))
-                    : null,
-                ]
-                  .filter(Boolean)
-                  .join(" · ")}
-              </p>
-            )}
-          </OperationCopy>
-          <Button variant="outline" size="sm" onClick={() => void choose(worker.sessionId)}>
-            {text.open}
-          </Button>
-        </OperationRow>
-      ))}
+      {agent.workers.map((worker) =>
+        removing === worker.sessionId ? (
+          <OperationRow key={worker.sessionId} className="flex-wrap gap-2">
+            <p className="min-w-0 flex-1 basis-full text-xs leading-5">
+              {text.removeConfirm(worker.name)}
+            </p>
+            <Button
+              variant="destructive"
+              size="sm"
+              disabled={busy}
+              onClick={() =>
+                void run({ operation: "lead-worker-remove", worker: worker.sessionId }).then(
+                  (done) => done && setRemoving(null),
+                )
+              }
+            >
+              {text.removeWorker}
+            </Button>
+            <Button variant="outline" size="sm" onClick={() => setRemoving(null)}>
+              {text.cancel}
+            </Button>
+          </OperationRow>
+        ) : (
+          <OperationRow key={worker.sessionId}>
+            <OperationCopy
+              title={`${worker.name} · ${text.status[worker.status] ?? text.status.unavailable}`}
+            >
+              {(worker.title || worker.lastReportAt) && (
+                <p className="truncate">
+                  {[
+                    worker.title,
+                    worker.lastReportAt
+                      ? text.reported(formatCatalogTime(worker.lastReportAt))
+                      : null,
+                  ]
+                    .filter(Boolean)
+                    .join(" · ")}
+                </p>
+              )}
+            </OperationCopy>
+            <div className="flex shrink-0 items-center gap-1.5">
+              {worker.stopEnabled && (
+                <Button
+                  variant="outline"
+                  size="sm"
+                  disabled={busy}
+                  onClick={() =>
+                    void run({ operation: "lead-worker-stop", worker: worker.sessionId })
+                  }
+                >
+                  {text.stopWorker}
+                </Button>
+              )}
+              <Button variant="outline" size="sm" onClick={() => void choose(worker.sessionId)}>
+                {text.open}
+              </Button>
+              <Button
+                variant="ghost"
+                size="sm"
+                className="text-muted-foreground"
+                onClick={() => setRemoving(worker.sessionId)}
+              >
+                {text.removeWorker}
+              </Button>
+            </div>
+          </OperationRow>
+        ),
+      )}
       <OperationRow className="flex-wrap gap-2">
         {releasing ? (
           <>
@@ -325,6 +373,15 @@ export function ProjectAgentPanel() {
               onClick={() => void run({ operation: agent.paused ? "lead-resume" : "lead-pause" })}
             >
               {agent.paused ? text.resume : text.pause}
+            </Button>
+            <Button
+              variant="outline"
+              onClick={() => {
+                setRemoving(null);
+                setForm(formOf("update", agent.scope));
+              }}
+            >
+              {text.edit}
             </Button>
             <Button
               variant="ghost"

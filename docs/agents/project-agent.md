@@ -17,9 +17,12 @@
 
 只有能当项目 Agent 的会话才显示这个入口：由 AgentKib 运行的 Claude Code 或 Codex 会话，已经连接、插件能为它添加工具的终端会话，或所在 DSH 装有 0.8.0 及以上插件的 DSH 会话（没有 DSH 在运行而 AgentKib 能在后台启动时也算，启动的 DSH 用 AgentKib 自带的插件）。
 
-桌面在本机设定。Web 和手机上设定需要完全访问的设备，并有发送、管理会话和高级控制的权限，允许代批时还要有审批权限；Worker 的工作区也必须是这台设备能访问的。暂停需要发送权限，取消需要管理会话的权限；只能读取的设备只看到状态。设定记下是哪台设备做的；这台设备的授权被撤销或变更时，委派暂停，在电脑上改动远程连接的设置（连接服务随之重启）也一样。退出 AgentKib 不算授权变更：下次启动和其他项目 Agent 一样，按重启暂停。经局域网直连时不提供这个面板，电脑上的 AgentKib 较旧时手机提示先更新。
+桌面在本机设定。Web 和手机上设定需要完全访问的设备，并有发送、管理会话和高级控制的权限，允许代批时还要有审批权限；Worker 的工作区也必须是这台设备能访问的。修改设定和设定要求相同。暂停、停止某个 Worker 的这一轮需要发送权限，移出 Worker、取消需要管理会话的权限，操作的 Worker 也必须是这台设备能访问的会话；只能读取的设备只看到状态。设定记下是哪台设备做的；这台设备的授权被撤销或变更时，委派暂停，在电脑上改动远程连接的设置（连接服务随之重启）也一样。退出 AgentKib 不算授权变更：下次启动和其他项目 Agent 一样，按重启暂停。经局域网直连时不提供这个面板，电脑上的 AgentKib 较旧时手机提示先更新。
 
-同一个面板列出 Worker（名称、状态、当前任务、最近一次汇报），可以打开 Worker 的会话、暂停和恢复委派、取消项目 Agent。取消后 Worker 会话保留为普通会话。
+同一个面板列出 Worker（名称、状态、当前任务、最近一次汇报），可以打开 Worker 的会话、暂停和恢复委派、修改设定、取消项目 Agent。取消后 Worker 会话保留为普通会话。
+
+- **每个 Worker**：运行中的 Worker 可以在这里停止这一轮，以做这个操作的设备的名义，委派暂停时也可以；项目 Agent 照常收到“用户直接停止了它”的汇报。“移出”把一个 Worker 从这个项目 Agent 名下拿掉：它的会话保留为普通会话，正在跑的一轮照常跑完，之后不再汇报，也不再占名额。项目 Agent 也可以用 `worker_close` 自己放掉做完的 Worker。在 AgentKib 里删除一个 Worker 的会话，它自动移出；删除项目 Agent 自己的会话，项目 Agent 随之取消。
+- **修改设定**：打开和设定时相同的表单，带着现在的设定，保存后替换原来的设定，已有的 Worker 保留。Worker 数量上限调低时已有的 Worker 不受影响，只是名额空出来之前不能再开新的；某个 Worker 所在的工作区不再允许时，项目 Agent 只能列出和移出它。修改设定的设备从此为这个项目 Agent 负责，和恢复委派一样。代批、代答的范围变了时工具随之变化：由 AgentKib 运行的 Claude Code 项目 Agent 在下一次发送、进程空闲时换新进程，Codex 项目 Agent 在线程空闲时重新启动，终端和 DSH 里的项目 Agent 马上换上新工具。
 
 ## 项目 Agent 拿到的工具
 
@@ -30,10 +33,11 @@
 | `worker_send` | 给 Worker 派任务或跟进，立即返回回执；Worker 运行中时默认排到这一轮之后，也可以加入这一轮。结果未知时不自动重发 |
 | `worker_read` | 读取 Worker 的状态、最近几条回复（每条最多 4,000 字符）和在等用户处理的事，并标出项目 Agent 能否替用户决定 |
 | `worker_stop` | 停止 Worker 当前这一轮 |
+| `worker_close` | 放掉一个做完或不再需要的 Worker：会话保留为普通会话，不再汇报，也不再占名额 |
 | `worker_approve` | 只在允许代批时提供：对允许的审批“接受一次”或“拒绝” |
 | `worker_answer` | 只在允许代答时提供：回答 Worker 的提问卡片 |
 
-工具的回执和拒绝原因都是固定的代码，例如 `worker-limit-reached`、`workspace-not-allowed`、`policy-not-allowed`、`policy-is-codex-only`、`delegation-paused`、`approval-not-delegated`、`codex-owner-busy`（Worker 正被 Codex 应用占用）、`dsh-worker-preset-unavailable`。项目 Agent 只能操作自己名下的 Worker，不能选择授权范围以外的工作区和权限档。
+工具的回执和拒绝原因都是固定的代码，例如 `worker-limit-reached`、`workspace-not-allowed`、`policy-not-allowed`、`policy-is-codex-only`、`delegation-paused`、`approval-not-delegated`、`codex-owner-busy`（Worker 正被 Codex 应用占用）、`dsh-worker-preset-unavailable`。项目 Agent 只能操作自己名下的 Worker，不能选择授权范围以外的工作区和权限档；用户把某个工作区移出设定后，那里的 Worker 只能列出和放掉（`workspace-not-allowed`）。
 
 **由 AgentKib 运行的项目 Agent**：AgentKib 为每个项目 Agent 开一个只在本机回环地址上的 MCP 端点，路径是随机生成的能力 URL，只存在于 AgentKib 进程和这个会话的启动参数里，不写入用户的 Claude Code 配置。会话每次启动时带上它（`--mcp-config`，服务名 `agentkib_workers`），与持续目标的汇报端点合并；同时用 `--allowedTools mcp__agentkib_workers` 让这些工具不必逐次审批：设为项目 Agent 本身就是授权，主机在每次调用时按授权范围检查（2.1.263、2.1.299、2.1.323 实测不再发出 `can_use_tool`）。设为项目 Agent 或取消后，下一次发送时如果进程空闲，会换一个带或不带这些工具的新进程。托管的 CLI 进程被结束时不会注销自己的 MCP 会话，端点满 4 个连接时让最久没用的连接让位，所以进程重启多少次都能连上（三个版本各重启 6 次实测）。
 

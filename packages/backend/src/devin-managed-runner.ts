@@ -100,35 +100,58 @@ export async function devinSessionLockedElsewhere(
   return /devin/i.test(command);
 }
 
+/** Devin's models by family, and which family each concrete model (variant) belongs to. */
+export interface DevinModelCatalog {
+  families: Array<{ id: string; name?: string }>;
+  familyOf: Map<string, string>;
+}
+
+const MODEL_ID = /^[A-Za-z0-9._:@/+-]{1,128}$/;
+
 /**
  * The model families `devin models list --format json` reports (`{ families: [{ slug,
- * family_label, variants }] }`), one choice each: `--model <slug>` lets Devin pick the variant.
- * Empty when the CLI cannot list them, for example without a login.
+ * family_label, variants: [{ model_uid }] }] }`), one choice each: `--model <slug>` lets Devin
+ * pick the variant. A session keeps the variant it ran with, which `familyOf` names a family
+ * for. Empty when the CLI cannot list them, for example without a login.
  */
-export function devinModelFamilies(executable: string, environment: NodeJS.ProcessEnv) {
-  return new Promise<Array<{ id: string; name?: string }>>((resolve) =>
+export function devinModelCatalog(
+  executable: string,
+  environment: NodeJS.ProcessEnv,
+): Promise<DevinModelCatalog> {
+  const empty = (): DevinModelCatalog => ({ families: [], familyOf: new Map() });
+  return new Promise((resolve) =>
     execFile(
       executable,
       ["models", "list", "--format", "json"],
       { env: environment, timeout: 15_000, maxBuffer: 8 * 1024 * 1024, windowsHide: true },
       (error, stdout) => {
-        if (error) return resolve([]);
+        if (error) return resolve(empty());
         try {
           const families = (JSON.parse(String(stdout)) as { families?: unknown }).families;
-          if (!Array.isArray(families)) return resolve([]);
-          const models: Array<{ id: string; name?: string }> = [];
+          if (!Array.isArray(families)) return resolve(empty());
+          const catalog = empty();
           for (const family of families.slice(0, 200)) {
-            const slug = (family as { slug?: unknown } | null)?.slug;
-            const label = (family as { family_label?: unknown } | null)?.family_label;
-            if (typeof slug !== "string" || !/^[A-Za-z0-9._:@/+-]{1,128}$/.test(slug)) continue;
-            models.push({
-              id: slug,
+            const entry = (family ?? {}) as {
+              slug?: unknown;
+              family_label?: unknown;
+              variants?: unknown;
+            };
+            if (typeof entry.slug !== "string" || !MODEL_ID.test(entry.slug)) continue;
+            const label = entry.family_label;
+            catalog.families.push({
+              id: entry.slug,
               ...(typeof label === "string" && label ? { name: label } : {}),
             });
+            if (Array.isArray(entry.variants))
+              for (const variant of entry.variants.slice(0, 2_000)) {
+                const uid = (variant as { model_uid?: unknown } | null)?.model_uid;
+                if (typeof uid === "string" && MODEL_ID.test(uid) && !catalog.familyOf.has(uid))
+                  catalog.familyOf.set(uid, entry.slug);
+              }
           }
-          resolve(models);
+          resolve(catalog);
         } catch {
-          resolve([]);
+          resolve(empty());
         }
       },
     ),

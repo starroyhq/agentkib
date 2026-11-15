@@ -21,6 +21,7 @@ import {
 import {
   DevinManagedRunner,
   devinChildEnvironment,
+  devinModelCatalog,
   devinRunFailure,
   devinSessionLockedElsewhere,
   type DevinRunnerHost,
@@ -372,5 +373,41 @@ describe("Devin session settings", () => {
     expect(new DevinSessionSettings(dataDir).get("bad")).toEqual({
       permissionMode: "accept-edits",
     });
+  });
+});
+
+describe.runIf(posix)("Devin model catalog", () => {
+  it("lists families and names the family of each variant a session keeps", async () => {
+    const root = temp();
+    const file = path.join(root, "devin");
+    const listing = {
+      families: [
+        {
+          slug: "swe-2",
+          family_label: "SWE-2",
+          variants: [{ model_uid: "swe-2-high" }, { model_uid: "swe-2" }],
+        },
+        { slug: "bad slug!", family_label: "Bad", variants: [{ model_uid: "bad" }] },
+        { slug: "opus", variants: [{ model_uid: "opus-4" }, { model_uid: "x y" }] },
+      ],
+    };
+    writeFileSync(file, `#!/bin/sh\ncat <<'JSON'\n${JSON.stringify(listing)}\nJSON\n`);
+    chmodSync(file, 0o755);
+    const catalog = await devinModelCatalog(file, process.env);
+    expect(catalog.families).toEqual([{ id: "swe-2", name: "SWE-2" }, { id: "opus" }]);
+    expect(catalog.familyOf.get("swe-2-high")).toBe("swe-2");
+    expect(catalog.familyOf.get("opus-4")).toBe("opus");
+    expect(catalog.familyOf.has("bad")).toBe(false);
+    expect(catalog.familyOf.has("x y")).toBe(false);
+  });
+
+  it("is empty when the CLI cannot list them", async () => {
+    const root = temp();
+    const file = path.join(root, "devin");
+    writeFileSync(file, '#!/bin/sh\necho "Error: Not logged in." >&2\nexit 1\n');
+    chmodSync(file, 0o755);
+    const catalog = await devinModelCatalog(file, process.env);
+    expect(catalog.families).toEqual([]);
+    expect(catalog.familyOf.size).toBe(0);
   });
 });

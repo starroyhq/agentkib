@@ -52,7 +52,8 @@ import {
   DEVIN_PERMISSION_MODES,
   DevinManagedRunner,
   devinChildEnvironment,
-  devinModelFamilies,
+  devinModelCatalog,
+  type DevinModelCatalog,
   type DevinRunnerHost,
   type DevinTurnSettings,
 } from "./devin-managed-runner";
@@ -6036,7 +6037,7 @@ export class WebReadRequests {
     }
   }
 
-  #devinModels: { at: number; models: Array<{ id: string; name?: string }> } | undefined;
+  #devinModels: { at: number; catalog: DevinModelCatalog } | undefined;
 
   /**
    * A Devin session's settings in the shape the composer reads for managed sessions: the model
@@ -6058,12 +6059,16 @@ export class WebReadRequests {
     }
     const live = record.runner.snapshot();
     const nativeId = record.runner.nativeId;
-    const options = await this.devinOptions();
-    const models = Array.isArray(options.models)
-      ? (options.models as Array<{ id: string; name?: string }>)
-      : [];
+    const environment = devinChildEnvironment({ ...process.env, ...this.environment });
+    const executable = devinExecutable(environment);
+    const catalog = executable
+      ? await this.#devinCatalog(executable, environment)
+      : { families: [], familyOf: new Map<string, string>() };
+    const models = catalog.families;
+    // Devin keeps the concrete variant a session ran with; it is shown as its family.
+    const saved = nativeId ? this.sessions.devinSessionModel(nativeId) : null;
     const current = {
-      model: record.settings.model ?? (nativeId ? this.sessions.devinSessionModel(nativeId) : null),
+      model: record.settings.model ?? (saved ? (catalog.familyOf.get(saved) ?? saved) : null),
       effort: null,
       permissionMode: record.settings.permissionMode ?? DEVIN_DEFAULT_PERMISSION_MODE,
     };
@@ -6101,16 +6106,20 @@ export class WebReadRequests {
     const environment = devinChildEnvironment({ ...process.env, ...this.environment });
     const executable = devinExecutable(environment);
     if (!executable) return { available: false, reason: "devin-cli-unavailable" };
-    if (!this.#devinModels || Date.now() - this.#devinModels.at > 10 * 60_000)
-      this.#devinModels = {
-        at: Date.now(),
-        models: await devinModelFamilies(executable, environment),
-      };
     return {
       available: true,
       permissionModes: DEVIN_PERMISSION_MODES.map((id) => ({ id })),
-      models: this.#devinModels.models,
+      models: (await this.#devinCatalog(executable, environment)).families,
     };
+  }
+
+  async #devinCatalog(executable: string, environment: NodeJS.ProcessEnv) {
+    if (!this.#devinModels || Date.now() - this.#devinModels.at > 10 * 60_000)
+      this.#devinModels = {
+        at: Date.now(),
+        catalog: await devinModelCatalog(executable, environment),
+      };
+    return this.#devinModels.catalog;
   }
 
   async #desktopFollower(record: ManagedRecord): Promise<CodexFollowerRecord> {

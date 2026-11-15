@@ -10,6 +10,7 @@ import { CursorBridge } from "./cursor-bridge";
 import { ClaudeBridge } from "./claude-bridge";
 import { DshBridge } from "./dsh-bridge";
 import { DshManagedRuntime } from "./dsh-managed-runtime";
+import { createDshWorker, DshLaneWatch } from "./dsh-lanes";
 import { listNativeImports } from "./session-native-imports";
 import {
   continueNativeImport,
@@ -53,6 +54,7 @@ import { RemoteAgent } from "./remote-agent";
 import { WorkspaceStorageOwner } from "./storage";
 import { QuotaOwner } from "./quota";
 import { ClaudeHostControlPreflightError, ClaudeManagedReadOwner } from "./claude-managed-read";
+import { OrchestrationService, type LaneHost, type SessionRole } from "./orchestration-service";
 import { createRelayCsr } from "./relay-csr";
 import { readControlReceipt } from "./control-receipt";
 import { ConversationReadStates } from "./conversation-read-state";
@@ -92,6 +94,7 @@ import { SessionStreamHub } from "./session-stream";
 import { mergeCodexFollowerSnapshot } from "./codex-follower-stream";
 import { SessionSnapshotHistory } from "./session-snapshot-history";
 import { retainManagedLedgerReaders } from "./managed-ledger";
+import { MessageLeadReports } from "./message-lead-reports";
 import { BackendStore } from "./store";
 import { canonicalize } from "./paths";
 import {
@@ -194,6 +197,8 @@ export class TypeScriptBackend {
   #cursorBridge?: CursorBridge;
   #claudeBridge?: ClaudeBridge;
   #dshBridge?: DshBridge;
+  /** Reports DeepSeek Harness workers' turns from the states the DSH bridge publishes. */
+  #dshLanes?: DshLaneWatch;
   /** Whether DeepSeek Harness may be started in the background, read for a moment at a time. */
   #dshAutoStart?: { at: number; value: boolean };
   #catalogContinuation = new Map<string, string>();
@@ -218,6 +223,8 @@ export class TypeScriptBackend {
   #storage?: WorkspaceStorageOwner;
   #quota?: QuotaOwner;
   #claudeManaged?: ClaudeManagedReadOwner;
+  /** Leads and their lanes (`orchestration-service.ts`). */
+  #orchestration?: OrchestrationService;
   #workspaceApplications?: WorkspaceApplications;
   #closing?: Promise<void>;
 
@@ -257,6 +264,10 @@ export class TypeScriptBackend {
     this.#storage = undefined;
     this.#quota = undefined;
     this.#claudeManaged?.close();
+    void this.#orchestration?.close();
+    this.#orchestration = undefined;
+    this.#dshLanes?.close();
+    this.#dshLanes = undefined;
     void this.#claudeBridge?.close();
     this.#claudeBridge = undefined;
     void this.#dshBridge?.close();
@@ -306,7 +317,11 @@ export class TypeScriptBackend {
     const remoteAgent = this.#remoteAgent;
     const webRead = this.#webRead;
     const readStates = this.#readStates;
+    const orchestration = this.#orchestration;
     this.#readStates = undefined;
+    this.#orchestration = undefined;
+    this.#dshLanes?.close();
+    this.#dshLanes = undefined;
     this.#claudeManaged = undefined;
     this.#claudeBridge = undefined;
     this.#dshBridge = undefined;
@@ -315,6 +330,7 @@ export class TypeScriptBackend {
     const closing = (async () => {
       const results = await Promise.allSettled([
         this.#skills?.close(),
+        orchestration?.close(),
         this.#historySearch?.close(),
         this.#handoffQueue.drain().then(() => this.#handoffWork.close()),
         Promise.resolve().then(() => mcp?.closeAsync()),
@@ -647,7 +663,25 @@ export class TypeScriptBackend {
               }
             if (changed) this.#sessionStream?.publish("", "invalidate", { domains: ["catalog"] });
           },
-          publish: (id, type, payload, live) => this.#publishSession(id, type, payload, live),
+          publish: (id, type, payload, live) => {
+            this.#publishSession(id, type, payload, live);
+            if (type === "state") this.#dshLanes?.observe(id, live);
+          },
+          // DSH sessions that are Project Agents get their worker tools from the plugin.
+          lead: {
+            sessions: () =>
+              (this.#orchestration?.registry.list() ?? [])
+                .map((lead) => lead.sessionId)
+                .filter((sessionId) => dshBridge.handles(sessionId)),
+            tools: (sessionId) => this.#orchestration?.leadToolSpecs(sessionId) ?? null,
+            call: async (sessionId, name, input) =>
+              this.#orchestration
+                ? this.#orchestration.call(sessionId, name, input)
+                : {
+                    text: JSON.stringify({ accepted: false, reason: "orchestration-unavailable" }),
+                    isError: true,
+                  },
+          },
         });
         this.#dshBridge = dshBridge;
         this.#sessions = new SessionReaders(
@@ -684,8 +718,55 @@ export class TypeScriptBackend {
               this.#claudeBridge?.assertCanAdopt();
               return this.#claudeBridge?.blocksManagedResume(sessionId) ?? false;
             },
+            // On unless the person turned it off; a worker reads it when it starts.
+            backgroundTasks: () => readPreferences(dataDir).claude_background_tasks !== false,
+            leadTools: (sessionId) =>
+              this.#orchestration?.leadTools(sessionId) ?? Promise.resolve(null),
+            userSent: (sessionId) => {
+              if (this.#orchestration?.status(sessionId)) this.#orchestration.userSpoke(sessionId);
+            },
+            selfTurn: (sessionId) => this.#orchestration?.leadSelfTurn(sessionId) ?? true,
           },
         );
+        const leadOwner = this.#claudeManaged;
+        // A lead is a Claude Code session AgentKib runs, or one connected from a terminal whose
+        // plugin can take the worker tools; a connected terminal gets its reports there.
+        const terminal = (sessionId: string) => this.#claudeBridge?.leadCapable(sessionId) === true;
+        // A Codex session AgentKib runs, once its web services are loaded (#requestLead loads them).
+        const codex = (sessionId: string) => this.#webRead?.codexLeadCapable(sessionId) === true;
+        // A DSH session whose DSH gives a lead its tools (plugin 0.8.0), or one AgentKib can start.
+        const dsh = (sessionId: string) => dshBridge.leadCapable(sessionId);
+        this.#orchestration = new OrchestrationService(
+          dataDir,
+          leadOwner.bootId,
+          this.#laneHost(store),
+          (sessionId) =>
+            leadOwner.hasManagedSession(sessionId) ||
+            terminal(sessionId) ||
+            codex(sessionId) ||
+            dsh(sessionId),
+          (sessionId, deviceId, text) =>
+            terminal(sessionId)
+              ? this.#claudeBridge!.queueReport(sessionId, text)
+              : codex(sessionId)
+                ? this.#codexLeadReport(sessionId, deviceId, text)
+                : // A DSH lead hears through the bridge, whether or not its DSH runs right now.
+                  dshBridge.handles(sessionId)
+                  ? this.#dshLeadReports.send(sessionId, deviceId, text)
+                  : leadOwner.queueReport(sessionId, deviceId, text),
+          (sessionId) =>
+            leadOwner.queuedReports(sessionId) +
+            (this.#claudeBridge?.queuedReports(sessionId) ?? 0),
+        );
+        this.#dshLanes?.close();
+        this.#dshLanes = new DshLaneWatch({
+          isLane: (sessionId) => !!this.#orchestration?.registry.leadOfLane(sessionId),
+          endedTurns: (sessionId) => dshBridge.endedTurns(sessionId),
+          turnEnded: async (sessionId, turnId, outcome, durationMs) =>
+            this.#orchestration?.laneTurnEnded(sessionId, turnId, outcome, durationMs),
+          waiting: async (sessionId, turnId, status) =>
+            this.#orchestration?.laneWaiting(sessionId, turnId, status),
+        });
         const claudeOwner = this.#claudeManaged;
         this.#readStates = new ConversationReadStates(
           store,
@@ -700,6 +781,30 @@ export class TypeScriptBackend {
           dataDir,
           bootId: claudeOwner.bootId,
           pluginDirectory: this.environment.AGENTKIB_CLAUDE_PLUGIN_DIR ?? "",
+          // A connected terminal session may be a Project Agent (docs/agents/project-agent.md).
+          lead: {
+            tools: (sessionId) => this.#orchestration?.leadToolSpecs(sessionId) ?? null,
+            call: async (sessionId, name, input) => {
+              if (!this.#orchestration) return { text: "orchestration-unavailable", isError: true };
+              return this.#orchestration.call(sessionId, name, input);
+            },
+            userSpoke: (sessionId) => {
+              if (this.#orchestration?.status(sessionId)) this.#orchestration.userSpoke(sessionId);
+            },
+            // Its CLI's own turns count as a managed one's do; past the limit the turn stops, in
+            // the name of the device that set the Project Agent up.
+            selfTurn: (sessionId) => {
+              const lead = this.#orchestration?.status(sessionId);
+              if (!lead) return null;
+              return this.#orchestration!.leadSelfTurn(sessionId)
+                ? null
+                : { stopAs: lead.deviceId };
+            },
+            paused: (sessionId) => {
+              const lead = this.#orchestration?.status(sessionId);
+              return lead?.paused ? (lead.reason ?? "paused") : null;
+            },
+          },
           target: (id, nativeId) => claudeOwner.nativeBridgeTarget(id, nativeId),
           discoveryFile: path.join(
             this.environment.AGENTKIB_HOME ??
@@ -992,7 +1097,7 @@ export class TypeScriptBackend {
         "terminals-clean",
       ].includes(String(params.operation))
     )
-      return this.#withWebRead((owner) => owner.managedControl(params));
+      return this.#codexControl(params);
     if (method === RUNTIME_METHODS.refreshInsights) return this.#insightRefresh!.refresh();
     if (method === RUNTIME_METHODS.listWorkspaceOpeners)
       return this.#workspaceApplications!.list(string(params, "workspaceId"));
@@ -1136,7 +1241,7 @@ export class TypeScriptBackend {
           "terminals-clean",
         ].includes(String(params.operation))
       )
-        return this.#withWebRead((owner) => owner.managedControl(params));
+        return this.#codexControl(params);
       if (
         params.operation === "catalog" ||
         params.operation === "events" ||
@@ -1224,7 +1329,9 @@ export class TypeScriptBackend {
               !("id" in session && aliases.has(String(session.id))),
           ),
           ...this.#withWorktrees(records),
-        ].map(continuation);
+        ]
+          .map(continuation)
+          .map(this.#withOrchestration());
         return {
           ...catalog,
           sessions: readerScope ? this.#readStates!.project(merged, readerScope) : merged,
@@ -1664,13 +1771,15 @@ export class TypeScriptBackend {
       }
       case RUNTIME_METHODS.setLocale: {
         if (typeof params.preference !== "string") invalid("Locale preference must be a string");
-        if (!["system", "en-US", "zh-CN", "zh-TW", "ja-JP"].includes(params.preference))
-          throw new Error(`Unsupported locale preference: ${params.preference}`);
+        // An older client still names Traditional Chinese "zh-TW"; it is saved as "zh-Hant".
+        if (params.preference === "zh-TW") params = { ...params, preference: "zh-Hant" };
+        if (!["system", "en-US", "zh-CN", "zh-Hant", "ja-JP"].includes(params.preference as string))
+          throw new Error(`Unsupported locale preference: ${String(params.preference)}`);
         return this.#setChoice(params, "locale_preference", [
           "system",
           "en-US",
           "zh-CN",
-          "zh-TW",
+          "zh-Hant",
           "ja-JP",
         ]);
       }
@@ -2109,6 +2218,212 @@ export class TypeScriptBackend {
     return catalogCheckouts(this.#store, { ...process.env, ...this.environment }).sessions(rows);
   }
 
+  /** Marks catalog rows that are Project Agents or their Workers; the rest pass unchanged. */
+  #withOrchestration(): (session: unknown) => unknown {
+    let roles: Map<string, SessionRole>;
+    try {
+      roles = this.#orchestration?.roles() ?? new Map();
+    } catch {
+      // The session list never fails over delegation records.
+      roles = new Map();
+    }
+    return (session) => {
+      if (!roles.size || !session || typeof session !== "object" || Array.isArray(session))
+        return session;
+      const row = session as Record<string, unknown>;
+      const ids = [
+        row.id,
+        ...(Array.isArray(row.indexedSessionIds) ? row.indexedSessionIds : []),
+      ].filter((id): id is string => typeof id === "string");
+      const role = ids.map((id) => roles.get(id)).find(Boolean);
+      return role ? { ...row, orchestration: role } : row;
+    };
+  }
+
+  /** Making a managed Claude session a lead, and the lead's state, for the desktop. */
+  async #requestLead(params: Record<string, unknown>) {
+    const orchestration = this.#orchestration;
+    if (!orchestration) throw new Error("orchestration-unavailable");
+    const sessionId = typeof params.sessionId === "string" ? params.sessionId : "";
+    const deviceId = typeof params.deviceId === "string" ? params.deviceId : "";
+    if (!sessionId || !deviceId) throw new Error("invalid-lead-request");
+    // Whether a Codex session could lead is known once its web services are loaded; one AgentKib
+    // just created may not be in the catalog yet.
+    const agent = this.#store?.sessions.get(sessionId)?.agent;
+    if (agent === undefined || agent === "codex") await this.#withWebRead(() => undefined);
+    const codex = this.#webRead?.codexLeadCapable(sessionId) === true;
+    const dsh = this.#dshBridge?.leadCapable(sessionId) === true;
+    switch (params.operation) {
+      case "lead-status":
+        break;
+      case "lead-designate": {
+        const workspaceId =
+          this.#claudeManaged?.managedWorkspace(sessionId) ??
+          this.#claudeBridge?.workspaceOf(sessionId) ??
+          (codex ? this.#webRead?.managedWorkspace(sessionId) : undefined) ??
+          (dsh ? this.#store?.sessions.get(sessionId)?.workspace_id : undefined);
+        if (!workspaceId) throw new Error("lead-requires-managed-claude");
+        const scope = params.scope && typeof params.scope === "object" ? params.scope : undefined;
+        orchestration.designate({
+          sessionId,
+          deviceId,
+          workspaceId,
+          scope: scope as Parameters<OrchestrationService["designate"]>[0]["scope"],
+        });
+        break;
+      }
+      case "lead-release":
+        await orchestration.release(sessionId);
+        break;
+      case "lead-pause":
+        orchestration.pause(sessionId);
+        break;
+      case "lead-resume":
+        orchestration.resume(sessionId, deviceId);
+        break;
+      default:
+        throw new Error("unsupported-lead-operation");
+    }
+    // A terminal or a DSH that leads, stops leading, pauses or resumes hears of it at once.
+    this.#claudeBridge?.leadChanged(sessionId);
+    this.#dshBridge?.leadChanged();
+    // A Codex thread takes its worker tools, or drops them, when it starts again.
+    if (codex && (params.operation === "lead-designate" || params.operation === "lead-release"))
+      await this.#withWebRead((owner) => owner.restartManagedRunner(sessionId)).catch(
+        () => undefined,
+      );
+    return {
+      lead: await orchestration.overview(sessionId),
+      // Whether it could be one: a Claude Code or Codex session AgentKib runs, a connected
+      // terminal, or a DSH session whose DSH can take the tools.
+      capable: orchestration.isLeadCapable(sessionId),
+    };
+  }
+
+  /** Reports for Codex Project Agents, sent through AgentKib's own Codex controls. */
+  #codexLeadReports = new MessageLeadReports({
+    live: (sessionId) =>
+      this.#withWebRead((owner) =>
+        owner.request({ operation: "live", sessionId, experimentalEnabled: true }),
+      ) as Promise<Record<string, unknown>>,
+    control: (value) =>
+      this.#withWebRead((owner) => owner.managedControl(value)) as Promise<Record<string, unknown>>,
+    queue: (sessionId) =>
+      this.#withWebRead((owner) => owner.managedQueueList({ sessionId, limit: 100 })) as Promise<{
+        data?: Array<Record<string, unknown>>;
+      }>,
+  });
+
+  #codexLeadReport(sessionId: string, deviceId: string, text: string): Promise<boolean> {
+    return this.#codexLeadReports.send(sessionId, deviceId, text);
+  }
+
+  /** Reports for DeepSeek Harness Project Agents, sent through the DSH bridge's own controls. */
+  #dshLeadReports = new MessageLeadReports({
+    live: async (sessionId) => {
+      if (!this.#dshBridge) throw new Error("dsh-bridge-unavailable");
+      return this.#dshBridge.live(sessionId, true);
+    },
+    control: async (value) => {
+      if (!this.#dshBridge) throw new Error("dsh-bridge-unavailable");
+      return (await this.#dshBridge.request(value)) as Record<string, unknown>;
+    },
+    queue: async (sessionId) =>
+      ((await this.#dshBridge?.request({ operation: "queue-list", sessionId })) ?? null) as {
+        data?: Array<Record<string, unknown>>;
+      } | null,
+  });
+
+  /**
+   * A control of a Codex session from a person's device. When the session is a lead's lane,
+   * the lead hears that the person stepped in; the service's own controls do not come here.
+   */
+  #codexControl(params: Record<string, unknown>) {
+    try {
+      if (typeof params.sessionId === "string") {
+        this.#orchestration?.laneControlled(params.sessionId, String(params.operation));
+        // The person wrote to a Codex Project Agent: its turns without them start over.
+        if (
+          ["send", "steer", "queue-add"].includes(String(params.operation)) &&
+          this.#orchestration?.status(params.sessionId)
+        )
+          this.#orchestration.userSpoke(params.sessionId);
+      }
+    } catch {
+      /* A lead's bookkeeping never blocks the person's control. */
+    }
+    return this.#withWebRead((owner) => owner.managedControl(params));
+  }
+
+  /**
+   * The sessions AgentKib runs as lanes, as the orchestration service reaches them: a DeepSeek
+   * Harness session through the DSH bridge, any other through AgentKib's Codex services.
+   */
+  #laneHost(store: BackendStore): LaneHost {
+    const dsh = (sessionId: unknown) =>
+      typeof sessionId === "string" && this.#dshBridge?.handles(sessionId) ? this.#dshBridge : null;
+    return {
+      options: () =>
+        this.#withWebRead((owner) => owner.managedOptions()) as Promise<Record<string, unknown>>,
+      // Listing workers never starts DSH; opening a DSH worker does, as a new DSH session does.
+      dshOptions: async () =>
+        this.#dshBridge
+          ? this.#dshBridge.createOptions(true, { start: false })
+          : { available: false, reason: "platform-unsupported" },
+      lifecycle: async (value) => {
+        if (value.agent !== "deepseek-harness")
+          return this.#withWebRead((owner) => owner.managedLifecycle(value));
+        if (!this.#dshBridge) throw new Error("dsh-bridge-unavailable");
+        const { agent: _agent, ...create } = value;
+        return createDshWorker(this.#dshBridge, create);
+      },
+      control: (value) =>
+        dsh(value.sessionId)?.request(value) ??
+        this.#withWebRead((owner) => owner.managedControl(value)),
+      live: async (sessionId) =>
+        dsh(sessionId)?.live(sessionId, true) ??
+        ((await this.#withWebRead((owner) =>
+          owner.request({ operation: "live", sessionId, experimentalEnabled: true }),
+        )) as Record<string, unknown>),
+      events: async (sessionId, limit) => {
+        const bridge = dsh(sessionId);
+        if (bridge) {
+          const nativeId = bridge.nativeId(sessionId);
+          return nativeId
+            ? ((await bridge.events(nativeId, null, limit)).events as unknown as Array<
+                Record<string, unknown>
+              >)
+            : [];
+        }
+        const page = (await this.#withWebRead((owner) =>
+          owner.request({ operation: "events", sessionId, limit, retainCursor: false }),
+        )) as { events?: unknown };
+        return Array.isArray(page?.events) ? (page.events as Array<Record<string, unknown>>) : [];
+      },
+      session: (sessionId) => {
+        const summary = store.sessions.get(sessionId);
+        return summary
+          ? {
+              agent: summary.agent,
+              workspaceId: summary.workspace_id,
+              title: summary.title ?? null,
+            }
+          : null;
+      },
+      managed: async (sessionId) =>
+        store.sessions.get(sessionId)?.agent === "deepseek-harness"
+          ? !!dsh(sessionId)
+          : this.#withWebRead((owner) => owner.isManagedSession(sessionId)),
+      endedTurns: (sessionId) =>
+        dsh(sessionId)?.endedTurns(sessionId) ??
+        this.#withWebRead((owner) => owner.endedTurns(sessionId)),
+      workspaces: () =>
+        (store.listWorkspaces() as Array<{ id: string; name?: string; path: string }>).map(
+          (workspace) => ({ id: workspace.id, name: workspace.name ?? workspace.path }),
+        ),
+    };
+  }
+
   async #withWebRead<T>(operation: (owner: WebReadRequests) => T): Promise<Awaited<T>> {
     if (!this.#webRead) {
       const store = this.#store,
@@ -2133,14 +2448,46 @@ export class TypeScriptBackend {
         this.#sessionIndex,
         () => this.#sessionStream?.publish("", "invalidate", { domains: ["catalog"] }),
       );
+      this.#webRead.observeLanes({
+        turnEnded: (sessionId, turnId, outcome, durationMs) =>
+          void this.#orchestration
+            ?.laneTurnEnded(sessionId, turnId, outcome, durationMs)
+            .catch(() => undefined),
+        waiting: (sessionId, turnId, status) =>
+          void this.#orchestration?.laneWaiting(sessionId, turnId, status).catch(() => undefined),
+      });
+      // A Codex Project Agent's thread starts with its worker tools.
+      this.#webRead.leadEndpoints(async (sessionId) => {
+        const config = (await this.#orchestration?.leadTools(sessionId)) as
+          | { mcpServers?: Record<string, { url?: unknown }> }
+          | null
+          | undefined;
+        const url = config?.mcpServers?.agentkib_workers?.url;
+        return typeof url === "string" ? url : null;
+      });
     }
     return await operation(this.#webRead);
   }
 
+  /**
+   * A DSH session's state or control from a person's device. When the session is a lead's lane,
+   * the lead hears that the person stepped in; the service's own controls do not come here.
+   */
   #requestDsh(params: Record<string, unknown>) {
     const bridge = this.#dshBridge;
     if (!bridge || typeof params.sessionId !== "string" || !bridge.handles(params.sessionId))
       throw new Error("session-unavailable");
+    try {
+      this.#orchestration?.laneControlled(params.sessionId, String(params.operation));
+      // The person wrote to a DSH Project Agent: its turns without them start over.
+      if (
+        ["send", "steer", "queue-add"].includes(String(params.operation)) &&
+        this.#orchestration?.status(params.sessionId)
+      )
+        this.#orchestration.userSpoke(params.sessionId);
+    } catch {
+      /* A lead's bookkeeping never blocks the person's control. */
+    }
     return bridge.request(params);
   }
 
@@ -2151,7 +2498,11 @@ export class TypeScriptBackend {
         const sessionId = typeof params.sessionId === "string" ? params.sessionId : undefined;
         this.#claudeBridge?.invalidate(deviceId, sessionId);
         this.#dshBridge?.invalidate(deviceId, sessionId);
+        // A remote host that stops because AgentKib quits changes no device's access. Leads
+        // stay as they are: the next start pauses each, and says that it restarted.
+        if (deviceId && params.quitting !== true) this.#orchestration?.invalidateDevice(deviceId);
       }
+      if (String(params.operation).startsWith("lead-")) return await this.#requestLead(params);
       // The desktop's local management channel also reports the DeepSeek Harness connection.
       if (params.operation === "dsh-bridge-status") {
         if (!this.#dshBridge) throw new Error("dsh-bridge-unavailable");
@@ -2162,6 +2513,13 @@ export class TypeScriptBackend {
         writePreference(this.#dataDir, "dsh_auto_start", params.enabled === true);
         this.#dshAutoStart = undefined;
         return this.#dshBridge.management({ ...params, operation: "dsh-bridge-status" });
+      }
+      // Whether managed Claude sessions keep background tasks, for this computer.
+      if (params.operation === "background-tasks") {
+        if (!this.#claudeManaged || !this.#dataDir) throw new Error("claude-managed-unavailable");
+        if (typeof params.enabled === "boolean")
+          writePreference(this.#dataDir, "claude_background_tasks", params.enabled);
+        return { backgroundTasks: await this.#claudeManaged.backgroundTasksStatus() };
       }
       if (params.operation === "adopt") this.#claudeBridge?.assertCanAdopt();
       if (
@@ -2234,6 +2592,8 @@ export class TypeScriptBackend {
         state.executionLocation,
         state.ownershipReason,
         state.reason,
+        // The catalog counts background tasks, which start and end while the session is idle.
+        Array.isArray(state.backgroundTasks) ? state.backgroundTasks.length : 0,
       ]);
       if (this.#catalogContinuation.get(sessionId) !== status) {
         this.#catalogContinuation.set(sessionId, status);

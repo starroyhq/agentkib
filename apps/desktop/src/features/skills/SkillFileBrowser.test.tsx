@@ -222,7 +222,7 @@ describe("Skill content preview", () => {
 });
 
 describe("Skill file read states", () => {
-  it.each(["zh-CN", "zh-TW", "en-US", "ja-JP"] as const)(
+  it.each(["zh-CN", "zh-Hant", "en-US", "ja-JP"] as const)(
     "does not announce an error while loading or after a successful read in %s",
     async (locale) => {
       await initializeI18n(locale);
@@ -253,7 +253,7 @@ describe("Skill file read states", () => {
     },
   );
 
-  it.each(["zh-CN", "zh-TW", "en-US", "ja-JP"] as const)(
+  it.each(["zh-CN", "zh-Hant", "en-US", "ja-JP"] as const)(
     "does not announce an error while loading or after an empty text read in %s",
     async (locale) => {
       await initializeI18n(locale);
@@ -285,7 +285,7 @@ describe("Skill file read states", () => {
     },
   );
 
-  it.each(["zh-CN", "zh-TW", "en-US", "ja-JP"] as const)(
+  it.each(["zh-CN", "zh-Hant", "en-US", "ja-JP"] as const)(
     "does not announce an error when only directories or no files are available in %s",
     async (locale) => {
       await initializeI18n(locale);
@@ -313,7 +313,7 @@ describe("Skill file read states", () => {
     },
   );
 
-  it.each(["zh-CN", "zh-TW", "en-US", "ja-JP"] as const)(
+  it.each(["zh-CN", "zh-Hant", "en-US", "ja-JP"] as const)(
     "keeps an actual file read error readable in %s",
     async (locale) => {
       await initializeI18n(locale);

@@ -121,7 +121,7 @@ describe("ContextPage", () => {
     expect(screen.queryByText(/^Note: /)).toBeNull();
   });
 
-  it.each(["en-US", "zh-CN", "zh-TW", "ja-JP"] as const)(
+  it.each(["en-US", "zh-CN", "zh-Hant", "ja-JP"] as const)(
     "localizes the Claude Code context messages in %s",
     async (locale) => {
       await changeLocale(locale);
@@ -184,7 +184,7 @@ describe("ContextPage", () => {
   }
   const sourceKinds = ["managed", "user", "ancestor", "auto-memory", "conditional"] as const;
 
-  it.each(["en-US", "zh-CN", "zh-TW", "ja-JP"] as const)(
+  it.each(["en-US", "zh-CN", "zh-Hant", "ja-JP"] as const)(
     "labels the source of each section in %s",
     async (locale) => {
       await changeLocale(locale);

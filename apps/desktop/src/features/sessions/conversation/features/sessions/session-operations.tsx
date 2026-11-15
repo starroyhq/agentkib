@@ -1,4 +1,5 @@
 import { requestReadStateRefresh } from "@agentkib/session-ui";
+import { Info, RefreshCw, SlidersHorizontal } from "lucide-react";
 import { useEffect, useState } from "react";
 import { useSessionPanels } from "./session-panels";
 import { Button } from "@/components/ui/button";
@@ -7,6 +8,8 @@ import { CodexTools } from "./codex-tools";
 import { ManagedTasks } from "./managed-tasks";
 import { useSession } from "./session-context";
 import { webLayoutCopy } from "./web-layout-copy";
+import { ClaudeBackgroundSetting } from "./claude-background-setting";
+import { ProjectAgentPanel } from "./project-agent-panel";
 import { ClaudeBridgePanel } from "./claude-bridge-panel";
 import { DshBridgePanel } from "./dsh-bridge-panel";
 export function SessionOperations({
@@ -29,37 +32,37 @@ export function SessionOperations({
     setTerminalOpen(false);
   }, [selected, canConnectTerminal, setTerminalOpen]);
   const shortcuts = (
-    <div className="flex flex-wrap gap-2 border-b pb-4">
+    <div className="flex flex-wrap gap-2">
       <Button
         variant="outline"
-        className="min-h-11"
         onClick={() => {
           onOpenChange(false);
           setModal("metadata");
         }}
       >
+        <Info aria-hidden="true" />
         {t.details}
       </Button>
       <Button
         variant="outline"
-        className="min-h-11"
         disabled={busy}
         onClick={() => {
           requestReadStateRefresh("desktop-local", selected);
           void refresh(true);
         }}
       >
+        <RefreshCw aria-hidden="true" />
         {t.refresh}
       </Button>
       {!embedded && (
         <Button
           variant="outline"
-          className="min-h-11"
           onClick={() => {
             onOpenChange(false);
             setModal("preferences");
           }}
         >
+          <SlidersHorizontal aria-hidden="true" />
           {t.preferences}
         </Button>
       )}
@@ -76,16 +79,31 @@ export function SessionOperations({
         title={webLayoutCopy[locale].actions}
         closeLabel={t.close}
         onClose={() => onOpenChange(false)}
+        bodyClassName="space-y-5 leading-5"
       >
         {shortcuts}
       </Dialog>
     ) : null;
-  // How this computer's DeepSeek Harness connects, above the session's own actions.
+  // Settings of this computer's agent, above the session's own actions: how its DeepSeek
+  // Harness connects, or whether its Claude Code keeps background tasks, and whether this
+  // session directs workers as a Project Agent.
   const header =
     current?.agent === "deepseek-harness" && !!access?.device?.manage ? (
       <>
         {shortcuts}
         <DshBridgePanel />
+        <ProjectAgentPanel />
+      </>
+    ) : current?.agent === "claude-code" && !!access?.device?.manage ? (
+      <>
+        {shortcuts}
+        <ClaudeBackgroundSetting />
+        <ProjectAgentPanel />
+      </>
+    ) : current?.agent === "codex" && !!access?.device?.manage ? (
+      <>
+        {shortcuts}
+        <ProjectAgentPanel />
       </>
     ) : (
       shortcuts

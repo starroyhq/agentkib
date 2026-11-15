@@ -1,7 +1,7 @@
 # AgentKib DeepSeek Harness bridge
 
 First-party DeepSeek Harness (DSH) bundle for DSH **0.2.1-rc.5 or later** (`engines.dsh`
-`>=0.2.1-rc.5 <0.3.0`), bridge protocol **1**, plugin **0.7.0**. It connects the sessions of a
+`>=0.2.1-rc.5`, with no upper bound), bridge protocol **1**, plugin **0.8.0**. It connects the sessions of a
 running DSH to AgentKib on the same computer. It never starts a second executor, never writes
 the session log itself and never calls a model: every action goes through DSH's own services.
 
@@ -74,7 +74,13 @@ with every Runtime it finds, and then:
   record sits in what DSH's model currently sees, and lists DSH's Agent presets (`presets`) for a
   new session;
 - answers verification requests from that record when a result was lost; for a slash command,
-  from the requests it ran since DSH started.
+  from the requests it ran since DSH started;
+- gives a session AgentKib made a Project Agent its worker tools (`worker_list`, `worker_open`,
+  `worker_send`, …; 0.8.0 and later, service `leadTools`). AgentKib names its Project Agents
+  with their tools in its poll replies; the plugin registers the tools on that session's own
+  agent (`agent.ctx.tools`), so no other session sees them, registers them again on the agent of
+  a session DSH loads again, and sends each call to `/v1/lead-call`, where AgentKib checks that
+  the session still leads before acting. A refusal is the tool's failure, and the turn goes on.
 
 Only human prompts (and the images in them, when AgentKib shows one), assistant text and tool
 summaries leave DSH. Injected context, hidden reasoning, system prompts and provider frames stay

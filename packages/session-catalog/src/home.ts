@@ -1,7 +1,8 @@
 import { isSessionVisible, sortSessions, type CatalogSession } from "./index";
 
 /** What a session on the home waits for from the person. */
-export type HomeNeed = "approval" | "question" | "verify";
+/** "delegation": a Project Agent whose delegation paused until the person looks at it. */
+export type HomeNeed = "approval" | "question" | "verify" | "delegation";
 /** The unread result of a session; "unread" is a session marked unread without a result. */
 export type HomeResult = "completed" | "failed" | "cancelled" | "ended" | "unread";
 /** Where a turn runs now: in AgentKib, in a connected terminal, or in another client. */
@@ -15,8 +16,18 @@ export interface HomeSession extends CatalogSession {
     status: string;
     executionLocation?: string | null;
     reason?: string | null;
+    /** Background tasks running in AgentKib's process after their turn. */
+    backgroundTasks?: number;
   };
   externalTurn?: { status: string; startedAt?: string | null } | null;
+  /** A Project Agent or its Worker (docs/agents/project-agent.md). */
+  orchestration?: {
+    role: string;
+    paused?: boolean;
+    reason?: string | null;
+    reports?: number;
+    leadId?: string;
+  };
   readState?: {
     status: string;
     firstUnread?: { type: string } | null;
@@ -36,6 +47,15 @@ const WAITING: Record<string, HomeNeed> = {
   "waiting-input": "question",
 };
 const RESULTS = new Set<string>(["completed", "failed", "cancelled", "ended"]);
+/**
+ * Why a Project Agent's delegation pauses until the person looks: its automatic turns ran out, a
+ * report's delivery is unknown, or AgentKib restarted. A pause they chose is not a need.
+ */
+const DELEGATION_NEEDS = new Set([
+  "auto-turn-limit",
+  "report-undelivered",
+  "restart-confirmation-required",
+]);
 
 /**
  * Sorts this computer's sessions into the home's groups, newest first, as the phone's first tab
@@ -82,6 +102,12 @@ export function homeSessionGroups<S extends HomeSession>(
         place: "external",
         startedAt: session.externalTurn.startedAt ?? undefined,
       });
+    else if (
+      session.orchestration?.role === "lead" &&
+      session.orchestration.paused &&
+      DELEGATION_NEEDS.has(session.orchestration.reason ?? "")
+    )
+      groups.needsYou.push({ session, need: "delegation" });
     else if (session.readState?.status === "unread") {
       const outcome = session.readState.latestResult?.outcome;
       groups.review.push({
@@ -99,7 +125,8 @@ export function homeSessionGroups<S extends HomeSession>(
 /**
  * Sessions whose work stops when AgentKib quits: a turn running, or waiting for the person, in
  * a process AgentKib started (managed Codex, Claude Code and Antigravity, and a DeepSeek Harness
- * it started in the background). Turns in a connected terminal or another client go on.
+ * it started in the background), and Claude Code background tasks still running in one. Turns in
+ * a connected terminal or another client go on.
  */
 export function workStoppedByQuit<S extends HomeSession>(sessions: readonly S[]): S[] {
   const groups = homeSessionGroups(sessions, { recent: 0 });
@@ -107,10 +134,23 @@ export function workStoppedByQuit<S extends HomeSession>(sessions: readonly S[])
     const place = session.continuation?.executionLocation;
     return place !== "terminal" && place !== "external";
   };
-  return [
+  const work = [
     ...groups.needsYou
-      .filter((entry) => entry.need !== "verify" && here(entry.session))
+      .filter(
+        (entry) => (entry.need === "approval" || entry.need === "question") && here(entry.session),
+      )
       .map((entry) => entry.session),
     ...groups.running.filter((entry) => entry.place === "agentkib").map((entry) => entry.session),
   ];
+  // Background tasks end with the process that runs them, even while no turn runs.
+  const listed = new Set(work);
+  for (const session of sessions)
+    if (
+      !listed.has(session) &&
+      !session.archived &&
+      session.continuation?.executionLocation === "agentkib" &&
+      (session.continuation.backgroundTasks ?? 0) > 0
+    )
+      work.push(session);
+  return work;
 }

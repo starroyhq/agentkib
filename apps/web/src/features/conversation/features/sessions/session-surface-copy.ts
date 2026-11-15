@@ -1,4 +1,4 @@
-type CopyLocale = "zh-CN" | "zh-TW" | "en-US" | "ja-JP";
+type CopyLocale = "zh-CN" | "zh-Hant" | "en-US" | "ja-JP";
 
 export type SessionSurface = "desktop" | "web";
 
@@ -34,7 +34,7 @@ export function surfaceText(
       "macOS のコンピューター上の AgentKib で操作してください。",
     )
     .replaceAll("桌面 Web 设置", "电脑上的 AgentKib 的 Web 设置")
-    .replaceAll("桌面端", locale === "zh-TW" ? "電腦上的 AgentKib" : "电脑上的 AgentKib")
+    .replaceAll("桌面端", locale === "zh-Hant" ? "電腦上的 AgentKib" : "电脑上的 AgentKib")
     .replaceAll("这台电脑", "运行 AgentKib 的电脑")
     .replaceAll("桌面 Web 設定", "電腦上的 AgentKib 的 Web 設定")
     .replaceAll("這台電腦", "執行 AgentKib 的電腦")

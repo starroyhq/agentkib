@@ -399,7 +399,7 @@ describe("approval card model", () => {
 
   it.each([
     ["zh-CN", "允许 Codex 与 https://destination.example.test 建立连接？"],
-    ["zh-TW", "允許 Codex 連線到 https://destination.example.test 嗎？"],
+    ["zh-Hant", "允許 Codex 連線到 https://destination.example.test 嗎？"],
     ["en-US", "Allow Codex to connect to https://destination.example.test?"],
     ["ja-JP", "Codex が https://destination.example.test に接続することを許可しますか？"],
   ] as const)("names the network destination in %s", (locale, title) => {

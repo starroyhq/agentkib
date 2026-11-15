@@ -44,7 +44,7 @@ const wording = [
     access: "远程访问",
   },
   {
-    locale: "zh-TW",
+    locale: "zh-Hant",
     hint: "在對方電腦的 AgentKib 的遠端連線設定中取得配對碼。",
     code: "配對碼",
     nearby: "附近的電腦",
@@ -77,7 +77,7 @@ const safetyWording = [
     scope: ["全部现有", "以后新增", "工作区", "任务控制", "审批", "上传"],
   },
   {
-    locale: "zh-TW",
+    locale: "zh-Hant",
     network: ["共用進階設定", "選擇並儲存", "區域網路介面", "才能在此對話框開啟區域網路直連"],
     openNetworkSettings: "開啟共用網路設定",
     scope: ["全部既有", "日後新增", "工作區", "任務控制", "審批", "上傳"],
@@ -129,7 +129,7 @@ function placeholders(value: string) {
 describe("remote connection terminology", () => {
   it.each([
     ["zh-CN", "自己的设备"],
-    ["zh-TW", "自己的裝置"],
+    ["zh-Hant", "自己的裝置"],
     ["en-US", "your own devices"],
     ["ja-JP", "自分の端末"],
   ] as const)("keeps one complete phone authorization explanation in %s", (locale, devices) => {
@@ -205,7 +205,7 @@ describe("remote connection terminology", () => {
     },
   );
 
-  it.each(["zh-CN", "zh-TW"] as const)(
+  it.each(["zh-CN", "zh-Hant"] as const)(
     "removes retired terms only from connection copy in %s",
     (locale) => {
       const resources = localeResources[locale];

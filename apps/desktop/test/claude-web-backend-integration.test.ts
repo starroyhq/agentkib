@@ -53,13 +53,20 @@ const finish = async () => {
   const configArg = args[args.indexOf('--mcp-config')+1];
   if (args.includes('--mcp-config') && !m.includes('no-report')) {
     const config = JSON.parse(configArg);
-    const server = Object.values(config.mcpServers)[0];
+    const lanes = config.mcpServers.agentkib_workers;
+    const server = lanes || Object.values(config.mcpServers)[0];
     const headers = {'Content-Type':'application/json', Accept:'application/json, text/event-stream'};
     const init = await fetch(server.url,{method:'POST',headers,body:JSON.stringify({jsonrpc:'2.0',id:1,method:'initialize',params:{protocolVersion:'2025-03-26',capabilities:{},clientInfo:{name:'offline-fixture',version:'1'}}})});
     const sid = init.headers.get('mcp-session-id'); await init.text(); headers['mcp-session-id']=sid;
     await fetch(server.url,{method:'POST',headers,body:JSON.stringify({jsonrpc:'2.0',method:'notifications/initialized'})});
+    if (lanes) {
+      // A lead: list its lanes through the tools AgentKib gave it.
+      const listed = await fetch(server.url,{method:'POST',headers,body:JSON.stringify({jsonrpc:'2.0',id:2,method:'tools/call',params:{name:'worker_list',arguments:{}}})});
+      log({workers:JSON.parse(JSON.parse(await listed.text()).result.content[0].text)});
+    } else {
     const result = await fetch(server.url,{method:'POST',headers,body:JSON.stringify({jsonrpc:'2.0',id:2,method:'tools/call',params:{name:'report_goal_step',arguments:{reportId:crypto.randomUUID(),outcome:m.includes('continue')?'continue':'complete',summary:'Synthetic verified work',evidence:['offline fixture assertion'],remainingWork:m.includes('continue')?['next fixture step']:[]}}})});
     const text = await result.text(); log({report:JSON.parse(text)});
+    }
   }
   const uuid=crypto.randomUUID();
   if (m === 'cli-output') {
@@ -440,49 +447,110 @@ describe.skipIf(process.platform !== "darwin")(
       await idle(sessionId);
       const state = await live(sessionId);
       const nativeId = state.sourceSessionId as string;
-      const project = join(environment.CLAUDE_CONFIG_DIR!, "projects", workspace.replace(/[^a-zA-Z0-9]/g, "-"));
+      const project = join(
+        environment.CLAUDE_CONFIG_DIR!,
+        "projects",
+        workspace.replace(/[^a-zA-Z0-9]/g, "-"),
+      );
       const parentFile = join(project, `${nativeId}.jsonl`);
       const childDirectory = join(project, nativeId, "subagents");
       mkdirSync(childDirectory, { recursive: true });
       const childId = "offline-reviewer";
       const stamp = new Date().toISOString();
-      const row = (value: Record<string, unknown>) => JSON.stringify({
-        sessionId: nativeId, cwd: workspace, timestamp: stamp, ...value,
-      }) + "\n";
-      appendFileSync(parentFile,
-        row({ type: "assistant", uuid: randomUUID(), message: { role: "assistant", content: [
-          { type: "tool_use", id: "spawn-offline", name: "Agent", input: { description: "Offline child review" } },
-        ] } }) +
-        row({ type: "user", uuid: randomUUID(), message: { role: "user", content: [
-          { type: "tool_result", tool_use_id: "spawn-offline", content: "done" },
-        ] }, toolUseResult: { agentId: childId, status: "completed" } }),
+      const row = (value: Record<string, unknown>) =>
+        JSON.stringify({
+          sessionId: nativeId,
+          cwd: workspace,
+          timestamp: stamp,
+          ...value,
+        }) + "\n";
+      appendFileSync(
+        parentFile,
+        row({
+          type: "assistant",
+          uuid: randomUUID(),
+          message: {
+            role: "assistant",
+            content: [
+              {
+                type: "tool_use",
+                id: "spawn-offline",
+                name: "Agent",
+                input: { description: "Offline child review" },
+              },
+            ],
+          },
+        }) +
+          row({
+            type: "user",
+            uuid: randomUUID(),
+            message: {
+              role: "user",
+              content: [{ type: "tool_result", tool_use_id: "spawn-offline", content: "done" }],
+            },
+            toolUseResult: { agentId: childId, status: "completed" },
+          }),
       );
-      writeFileSync(join(childDirectory, `agent-${childId}.jsonl`),
-        row({ type: "user", uuid: randomUUID(), isSidechain: true, agentId: childId,
-          message: { role: "user", content: "Synthetic delegated task" } }) +
-        row({ type: "assistant", uuid: randomUUID(), isSidechain: true, agentId: childId,
-          message: { role: "assistant", content: [{ type: "text", text: "Synthetic delegated result" }] } }),
+      writeFileSync(
+        join(childDirectory, `agent-${childId}.jsonl`),
+        row({
+          type: "user",
+          uuid: randomUUID(),
+          isSidechain: true,
+          agentId: childId,
+          message: { role: "user", content: "Synthetic delegated task" },
+        }) +
+          row({
+            type: "assistant",
+            uuid: randomUUID(),
+            isSidechain: true,
+            agentId: childId,
+            message: {
+              role: "assistant",
+              content: [{ type: "text", text: "Synthetic delegated result" }],
+            },
+          }),
       );
       const listing = await http(`/subagents?sessionId=${sessionId}`);
       expect(listing.status, JSON.stringify(listing.body)).toBe(200);
-      expect(listing.body).toMatchObject({ version: 1, sessionId, agents: [
-        { name: "Offline child review", agent: "claude-code", status: "completed", readable: true },
-      ] });
+      expect(listing.body).toMatchObject({
+        version: 1,
+        sessionId,
+        agents: [
+          {
+            name: "Offline child review",
+            agent: "claude-code",
+            status: "completed",
+            readable: true,
+          },
+        ],
+      });
       const opaque = listing.body.agents[0].id as string;
       expect(opaque).toMatch(/^[a-f0-9]{64}$/);
       expect(JSON.stringify(listing.body)).not.toContain(childDirectory);
       expect(JSON.stringify(listing.body)).not.toContain(childId);
       const history = await http(`/subagent/events?sessionId=${sessionId}&subagentId=${opaque}`);
       expect(history.status, JSON.stringify(history.body)).toBe(200);
-      expect(history.body).toMatchObject({ version: 1, sessionId, subagentId: opaque, epoch: expect.any(String) });
-      expect(history.body.events.map((item: { content: string }) => item.content))
-        .toEqual(["Synthetic delegated task", "Synthetic delegated result"]);
+      expect(history.body).toMatchObject({
+        version: 1,
+        sessionId,
+        subagentId: opaque,
+        epoch: expect.any(String),
+      });
+      expect(history.body.events.map((item: { content: string }) => item.content)).toEqual([
+        "Synthetic delegated task",
+        "Synthetic delegated result",
+      ]);
       const other = await create();
-      expect((await http(`/subagent/events?sessionId=${other}&subagentId=${opaque}`)).status).not.toBe(200);
+      expect(
+        (await http(`/subagent/events?sessionId=${other}&subagentId=${opaque}`)).status,
+      ).not.toBe(200);
       const catalog = await http("/catalog");
       expect(catalog.status).toBe(200);
       expect(catalog.body.sessions.some((item: { id: string }) => item.id === opaque)).toBe(false);
-      expect(catalog.body.sessions.some((item: { origin: string }) => item.origin === "auxiliary")).toBe(false);
+      expect(
+        catalog.body.sessions.some((item: { origin: string }) => item.origin === "auxiliary"),
+      ).toBe(false);
       // Reading the child never resumes it or dispatches additional model input.
       expect(frames().filter((frame) => frame.type === "user")).toHaveLength(1);
     });
@@ -1169,6 +1237,72 @@ describe.skipIf(process.platform !== "darwin")(
           .filter((row) => row.type === "user")
           .map((row) => row.message.content),
       ).toEqual(["second", "first"]);
+    });
+
+    it("gives a lead session its lane tools, and only while it leads", async () => {
+      const sessionId = await create();
+      const lead = await rpc("claude.managed", {
+        operation: "lead-designate",
+        sessionId,
+        deviceId: "desktop-local",
+      });
+      expect(lead.lead).toMatchObject({ sessionId, paused: false, workers: [], pendingReports: 0 });
+      // The session list marks it.
+      const role = async () =>
+        (await http("/catalog")).body.sessions.find((item: { id: string }) => item.id === sessionId)
+          ?.orchestration;
+      expect(await role()).toEqual({
+        role: "lead",
+        workers: 0,
+        paused: false,
+        reason: null,
+        reports: 0,
+      });
+      expect((await send(sessionId)).status).toBe(200);
+      await idle(sessionId);
+      const launches = () => frames().filter((row) => Array.isArray(row.args));
+      const first = launches().at(-1)!.args as string[];
+      const config = JSON.parse(first[first.indexOf("--mcp-config") + 1]);
+      expect(Object.keys(config.mcpServers)).toEqual(["agentkib_workers"]);
+      // Its worker tools run without asking: being made a Project Agent is the authorization.
+      expect(first.slice(-2)).toEqual(["--allowedTools", "mcp__agentkib_workers"]);
+      expect(frames().find((row) => row.workers)).toMatchObject({
+        workers: { paused: false, workers: [], maxWorkers: 4 },
+      });
+      // No longer a lead: the next message starts a worker without the tools.
+      await rpc("claude.managed", {
+        operation: "lead-release",
+        sessionId,
+        deviceId: "desktop-local",
+      });
+      expect((await send(sessionId)).status).toBe(200);
+      await idle(sessionId);
+      expect(launches()).toHaveLength(2);
+      expect(launches().at(-1)!.args).not.toContain("--mcp-config");
+      expect(launches().at(-1)!.args).not.toContain("--allowedTools");
+      expect(await role()).toBeUndefined();
+    });
+
+    it("pauses a Project Agent when its device's access changes, not when the remote host stops with the app", async () => {
+      const sessionId = await create();
+      const lead = async (operation: string, more: Record<string, unknown> = {}) =>
+        (await rpc("claude.managed", { operation, sessionId, deviceId: "phone-1", ...more })).lead;
+      expect(await lead("lead-designate")).toMatchObject({ sessionId, paused: false });
+      // Quitting: the next start pauses it, and says that AgentKib restarted.
+      await rpc("claude.managed", {
+        operation: "schedule-invalidate",
+        deviceId: "phone-1",
+        quitting: true,
+      });
+      expect(await lead("lead-status")).toMatchObject({ paused: false, reason: null });
+      await rpc("claude.managed", { operation: "schedule-invalidate", deviceId: "phone-2" });
+      expect(await lead("lead-status")).toMatchObject({ paused: false, reason: null });
+      await rpc("claude.managed", { operation: "schedule-invalidate", deviceId: "phone-1" });
+      expect(await lead("lead-status")).toMatchObject({
+        paused: true,
+        reason: "authorization-changed",
+      });
+      await lead("lead-release");
     });
 
     it("keeps goal completion pending until a bound MCP report and native success both exist", async () => {

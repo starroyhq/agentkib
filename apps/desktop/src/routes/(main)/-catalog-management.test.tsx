@@ -60,7 +60,7 @@ describe("catalog network settings destination", () => {
     await initializeI18n("en-US");
   });
   afterEach(cleanup);
-  it.each(["en-US", "zh-CN", "zh-TW", "ja-JP"] as const)(
+  it.each(["en-US", "zh-CN", "zh-Hant", "ja-JP"] as const)(
     "omits unrelated scan counts from Skills and MCP navigation in %s",
     async (locale) => {
       await initializeI18n(locale);
@@ -96,7 +96,7 @@ describe("catalog network settings destination", () => {
     },
   );
   it.each(
-    (["zh-CN", "zh-TW", "en-US", "ja-JP"] as const).flatMap((locale) =>
+    (["zh-CN", "zh-Hant", "en-US", "ja-JP"] as const).flatMap((locale) =>
       [true, false].map((pending) => ({ locale, pending })),
     ),
   )(

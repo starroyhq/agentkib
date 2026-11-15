@@ -177,7 +177,7 @@ describe("AppSidebar v8 navigation", () => {
 
   it.each([
     ["zh-CN", "设置", "远程连接"],
-    ["zh-TW", "設定", "遠端連線"],
+    ["zh-Hant", "設定", "遠端連線"],
     ["ja-JP", "設定", "リモート接続"],
     ["en-US", "Settings", "Remote connections"],
   ] as const)(

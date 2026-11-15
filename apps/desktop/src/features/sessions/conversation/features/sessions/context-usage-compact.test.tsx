@@ -94,7 +94,7 @@ describe("context usage is an informational surface", () => {
 });
 
 describe("compact context usage in the desktop composer", () => {
-  it.each(["zh-CN", "zh-TW", "en-US", "ja-JP"] as const)(
+  it.each(["zh-CN", "zh-Hant", "en-US", "ja-JP"] as const)(
     "uses an accessible icon during compaction and restores fresh usage in %s",
     async (locale) => {
       state = {
@@ -137,7 +137,7 @@ describe("compact context usage in the desktop composer", () => {
 });
 
 describe("context window ring and hover details", () => {
-  it.each(["zh-CN", "zh-TW", "en-US", "ja-JP"] as const)(
+  it.each(["zh-CN", "zh-Hant", "en-US", "ja-JP"] as const)(
     "shows usage only on hover in %s",
     async (locale) => {
       state = {
@@ -280,7 +280,7 @@ describe("historical Codex context reports", () => {
     };
   });
 
-  it.each(["zh-CN", "zh-TW", "en-US", "ja-JP"] as const)(
+  it.each(["zh-CN", "zh-Hant", "en-US", "ja-JP"] as const)(
     "shows an explicitly historical fallback for an empty idle projection in %s",
     async (locale) => {
       state.locale = locale;

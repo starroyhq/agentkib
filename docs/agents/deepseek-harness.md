@@ -111,7 +111,7 @@ CLI 接入（包括曾提议的 `agentkib bridge --stdio` 长期转发器）不�
 - 插件包可随 AgentKib 提供本地 tarball，由用户执行 `dsh plugin --profile <name> add <tarball>`，不要求发布到 npm。
 - 插件需安装到用户实际运行的 profile。仅安装到 sdk profile 不会自动进入 web 或 desktop profile；DSH Desktop 的保留 profile 需遵循其自身插件管理入口。
 - 通过 `dsh plugin add` 安装或更新后，运行中的 profile 保留启动时的组合包集合，须重启才生效；DSH 内置插件管理器在启用 HMR 时可即时生效，未启用时需重启（更新已运行的组合包时返回 `restart-required`）。因此“连接正在运行的会话”只适用于插件生效之后的 DSH 进程，首次接入和升级说明需包含重启。
-- `engines.dsh` 收窄到已验收的版本范围，沿用 Claude 原会话连接的已验证版本清单。未验证的版本同样可以连接，不常驻显示未验证提示；DSH 缺少的功能按插件上报的服务关闭，在用到时说明原因（例如这个版本的 DSH 不能从这里接收图片）。DSH 处于 developer preview，升级后插件可能被拒绝加载，连接说明需覆盖这种情况。
+- `engines.dsh` 只设下限 `>=0.2.1-rc.5`，不设上限（插件 0.7.1 起；之前是 `<0.3.0`）：DSH 在范围外会停用插件，上限会让 DSH 一升级 AgentKib 就连不上。已验证版本清单沿用 Claude 原会话连接的做法，未验证的版本同样可以连接，不常驻显示未验证提示；DSH 缺少或改变的功能按插件上报的服务关闭，在用到时说明原因（例如这个版本的 DSH 不能从这里接收图片）。DSH 处于 developer preview，以后的版本仍可能因别的原因拒绝加载插件（托管启动时按 stderr 识别，见下文“版本”），连接说明需覆盖这种情况。已装 0.7.0 及更早插件的 DSH 仍按旧上限，到 0.3.0 时需要重新安装 AgentKib 随附的插件。
 
 插件与 Host 的版本兼容（2026-11-09）：
 
@@ -389,7 +389,7 @@ DSH 的审批和问答经 `approval/request`、`user-questions/request` waterfal
   - 叠加 Desktop 的设置：设置界面只写当前 profile 的 patch，web profile 读不到用户在 Desktop 里改的默认模型与 provider；实测不叠加时 web profile 的默认模型不在它自己的模型目录里。patch 指向不存在的条目时 DSH 只记警告。密钥与 DeepSeek 账号登录在 DSH home 的 `.credentials.yaml`，所有 profile 共用。
   - AgentKib 叠加层写在 `<数据目录>/dsh-bridge/managed-overlay.yml`（0600）：禁用 profile 里可能装着的 `agentkib-dsh-bridge`，按绝对路径插入 `agentkib-dsh-bridge-managed`，配置 `managed.home` 为这个 AgentKib 的 home。
   - 环境：用户的环境去掉 `AGENTKIB_*` 与 `ELECTRON_*`，DSH 会把环境交给它运行的工具。
-- 版本：启动前用 `dsh --version` 对照插件的 `engines.dsh`（`dshBridgeLaunchable`，与 DSH 一样把预发布版本按先后比较）；不在范围内就不启动，原因为 `dsh-version-unsupported`。DSH 禁用插件时 stderr 写 `disabling profile plugin row "agentkib-dsh-bridge-managed"`，进程退出时据此报同一原因。stdout 里带 token 的网页地址不读取、不记录。
+- 版本：启动前用 `dsh --version` 对照插件的 `engines.dsh`（`dshBridgeLaunchable`，与 DSH 一样把预发布版本按先后比较）；低于最低版本就不启动，原因为 `dsh-version-unsupported`，更新的版本照常启动；读不出版本时也照常启动，由 DSH 自己核对范围。DSH 禁用插件时 stderr 写 `disabling profile plugin row "agentkib-dsh-bridge-managed"`，进程退出时据此报同一原因。stdout 里带 token 的网页地址不读取、不记录。
 
 **插件托管模式**（只在 AgentKib 启动的 DSH 里）
 
@@ -409,9 +409,17 @@ DSH 的审批和问答经 `approval/request`、`user-questions/request` waterfal
 
 - 会话的执行位置为 `agentkib`（用户自己的 DSH 仍为 `external`）。
 - 新原因：`dsh-start-failed`、`dsh-version-unsupported`、`dsh-launcher-unavailable`、`dsh-exited`；DSH 的 `session/writer-held` 报为 `dsh-session-in-use`（会话被没装插件的 DSH Desktop 占着时）。各端说明并保留草稿。
-- 桌面“会话操作”里的 DSH 连接面板：后台进程标为“由 AgentKib 在后台启动”；自动启动开关；先给 DSH Desktop“添加插件”要粘贴的插件目录，再给命令行写法。
+- 桌面“会话操作”里的 DSH 连接面板：后台进程标为“由 AgentKib 在后台启动”；自动启动开关；“安装 AgentKib 插件”一行展开后，先给 DSH Desktop“添加插件”要粘贴的插件目录，再给命令行写法，各带复制按钮。已连接 DSH 或 AgentKib 能自己启动它时这一行收起，两者都不成立时默认展开。
 
 **验收覆盖**：启动后原会话 ID 与 preset 不变、启动失败与版本不符的提示、用户随后自己打开 DSH 时控制目标的切换、AgentKib 启动的进程在空闲、崩溃和 AgentKib 退出时的处理。记录见三期 QA。
+
+### 项目 Agent 与 Worker（2026-11-14）
+
+DSH 会话可以作 Worker，也可以作项目 Agent，行为见[项目 Agent](project-agent.md)。
+
+- Worker：项目 Agent 用 `worker_open` 的 `agent: "deepseek-harness"` 经 `DshBridge.create` 新建会话（同新建 DSH 会话，没有 DSH 时在后台启动），发消息前用 `settings` 的 `policyId`（即 DSH 的 `/permission workspace-write`）把用户的默认预设换成“工作区可写”并读回确认。一轮结束从插件报来的会话状态看到，原因与用时读会话记录里的 `turn-start`、`turn-end`（`DshBridge.endedTurns`，从不为此启动 DSH）。不需要插件改动。
+- 项目 Agent：插件 0.8.0 报告服务 `leadTools`（DSH 有 `agents` 与 `tools` 服务时）。Host 在轮询回复里给出 `leads`：全部 DSH 项目 Agent 的原生会话 ID 与工具说明，不只限于这个 DSH 已列出的会话，因为 Host 刚启动的 DSH 可能在第一次报告之前就从轮询拿到发给项目 Agent 的消息；没有那个会话的 DSH 也就没有它的 Agent 可注册。新注册且有 `leadTools` 的 DSH 第一次轮询立即返回，项目 Agent 变化时 Host 唤醒轮询。插件先处理 `leads` 再执行同一回复里的命令，在会话自己的 Agent 上注册工具（`agent.ctx.tools.register`，DSH 的 Agent 作用域登记只对这个 Agent 生效），`agent/created` 时为再次加载的会话重新注册；调用发到 `/v1/lead-call`，Host 核对会话仍是项目 Agent、而且由这个 DSH 列出或运行，再交给编排服务。工具定义按 DSH `ToolDefinition` 的最小形状写（名称、说明、JSON Schema 参数、字符串输出与 `render`、`execute`），不依赖插件无法加载的 `@deepseek-ai/dsh-tools`。拒绝以工具失败返回，这一轮继续。没有选用 DSH 的 MCP 管理器：插件登记的服务器对整个 DSH 生效，其他会话也会拿到项目 Agent 的工具。
+- 待发队列的 `queue-list` 行带上 `clientUserMessageId`（DSH 记在消息上的 AgentKib 请求 ID），项目 Agent 排队中的汇报按它合并，与 Codex 相同。
 
 ### 四期：独立常驻 Host 与 CLI 接入
 

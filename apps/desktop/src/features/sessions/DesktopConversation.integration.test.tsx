@@ -750,7 +750,7 @@ describe("desktop embedded conversation", () => {
       screen.queryAllByRole("status").some((element) => element.textContent?.includes(text));
     async function open(
       initial: Live,
-      locale: "zh-CN" | "en-US" | "zh-TW" | "ja-JP" = "zh-CN",
+      locale: "zh-CN" | "en-US" | "zh-Hant" | "ja-JP" = "zh-CN",
       adoptAvailable = false,
     ) {
       vi.spyOn(window, "scrollTo").mockImplementation(() => {});
@@ -1032,7 +1032,7 @@ describe("desktop embedded conversation", () => {
       );
     });
 
-    it.each(["zh-CN", "zh-TW", "en-US", "ja-JP"] as const)(
+    it.each(["zh-CN", "zh-Hant", "en-US", "ja-JP"] as const)(
       "renders authenticated reconnect failures in %s and clears them without enabling terminal controls",
       async (locale) => {
         const reason = "bridge-cli-too-old";
@@ -1071,7 +1071,7 @@ describe("desktop embedded conversation", () => {
       },
     );
 
-    it.each(["zh-CN", "zh-TW", "en-US", "ja-JP"] as const)(
+    it.each(["zh-CN", "zh-Hant", "en-US", "ja-JP"] as const)(
       "keeps unverified native version details out of the session page in %s without enabling controls",
       async (locale) => {
         const { bridge, patch } = await open(
@@ -1108,7 +1108,7 @@ describe("desktop embedded conversation", () => {
       },
     );
 
-    it.each(["zh-CN", "zh-TW", "en-US", "ja-JP"] as const)(
+    it.each(["zh-CN", "zh-Hant", "en-US", "ja-JP"] as const)(
       "shows unconfirmed native turn state in %s without handoff",
       async (locale) => {
         const { bridge } = await open(
@@ -1145,7 +1145,7 @@ describe("desktop embedded conversation", () => {
       expect(screen.queryByRole("button", { name: "交给 AgentKib" })).not.toBeInTheDocument();
     });
 
-    it.each(["zh-CN", "zh-TW", "en-US", "ja-JP"] as const)(
+    it.each(["zh-CN", "zh-Hant", "en-US", "ja-JP"] as const)(
       "places the automatic background end notice below the transcript in %s",
       async (locale) => {
         const copy = sessionContinuationCopy(locale);
@@ -1162,7 +1162,7 @@ describe("desktop embedded conversation", () => {
         ).toEqual([]);
       },
     );
-    it.each(["zh-CN", "zh-TW", "en-US", "ja-JP"] as const)(
+    it.each(["zh-CN", "zh-Hant", "en-US", "ja-JP"] as const)(
       "shows one conflict notice and restores the preserved draft when its owner leaves in %s",
       async (locale) => {
         const copy = sessionContinuationCopy(locale);
@@ -1203,7 +1203,7 @@ describe("desktop embedded conversation", () => {
     it.each([
       ["zh-CN", "auto", { mode: "auto" }],
       ["en-US", "dontAsk", { mode: "dontAsk" }],
-      ["zh-TW", "bypassPermissions", { mode: "bypassPermissions" }],
+      ["zh-Hant", "bypassPermissions", { mode: "bypassPermissions" }],
       ["ja-JP", "possiblyAuto", { mode: null, possiblyAuto: true }],
     ] as const)(
       "shows the %s %s notice in the desktop composer",

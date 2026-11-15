@@ -88,7 +88,7 @@ const messages = {
     readOnlyImpact: "AgentKib 可以检查此 Agent 的配置，但不能修改",
     unknownImpact: "修改前请先查看详情和原始文件",
   },
-  "zh-TW": {
+  "zh-Hant": {
     refresh: "重新診斷",
     details: "詳細資料",
     revealFolder: "開啟所在資料夾",

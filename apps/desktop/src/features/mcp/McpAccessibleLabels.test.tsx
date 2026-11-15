@@ -14,10 +14,10 @@ vi.mock("@/core/api", () => ({
   api: { saveMcpConfiguration: vi.fn(), previewMcpImport: vi.fn(), applyMcpImport: vi.fn() },
 }));
 
-const locales = ["zh-CN", "zh-TW", "ja-JP", "en-US"] as const;
+const locales = ["zh-CN", "zh-Hant", "ja-JP", "en-US"] as const;
 const labels = {
   "zh-CN": { action: " 的操作", value: " 的值", key: " 键名", import: " 的导入操作" },
-  "zh-TW": { action: " 的操作", value: " 的值", key: " 鍵名", import: " 的匯入操作" },
+  "zh-Hant": { action: " 的操作", value: " 的值", key: " 鍵名", import: " 的匯入操作" },
   "ja-JP": { action: " の操作", value: " の値", key: " のキー名", import: " の取り込み操作" },
   "en-US": { action: " action", value: " value", key: " key name", import: " import action" },
 } as const;

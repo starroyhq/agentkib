@@ -326,7 +326,7 @@ const copy: Record<SupportedLocale, PlanCopy> = {
     empty: "没有文件变更",
     checksums: "自动生成的校验信息 {count} 行（已折叠）",
   },
-  "zh-TW": {
+  "zh-Hant": {
     files: "將寫入的檔案",
     filesApplied: "本次變更的檔案",
     applied: "本次變更已套用",

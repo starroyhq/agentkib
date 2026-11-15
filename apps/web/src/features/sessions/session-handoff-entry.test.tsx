@@ -92,7 +92,12 @@ beforeEach(() => {
     page: { events: [], warnings: [] },
     liveContentVersion: 0,
     scroll: { current: null },
-    client: { request, codexQueue: vi.fn(async () => ({ sessionId: "session", data: [] })) },
+    client: {
+      request,
+      codexQueue: vi.fn(async () => ({ sessionId: "session", data: [] })),
+      // A Codex session may lead workers; this one cannot.
+      projectAgent: vi.fn(async () => ({ lead: null, capable: false })),
+    },
     refresh: vi.fn(async () => {}),
     codexAction: vi.fn(async () => ({ accepted: true })),
     setModal: vi.fn(),

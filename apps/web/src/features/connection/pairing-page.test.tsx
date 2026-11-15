@@ -51,7 +51,7 @@ beforeEach(() => {
 
 it.each([
   ["zh-CN", "电脑上的 AgentKib"],
-  ["zh-TW", "電腦上的 AgentKib"],
+  ["zh-Hant", "電腦上的 AgentKib"],
   ["en-US", "AgentKib on your computer"],
   ["ja-JP", "コンピューター上の AgentKib"],
 ] as const)(

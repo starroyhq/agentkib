@@ -15,7 +15,7 @@ vi.mock("./artifact-browser", () => ({ ArtifactBrowser: () => null }));
 
 type Session = ReturnType<typeof useSession>;
 let state: Session;
-const locales = ["zh-CN", "zh-TW", "en-US", "ja-JP"] as const;
+const locales = ["zh-CN", "zh-Hant", "en-US", "ja-JP"] as const;
 function approval(overrides: Partial<Approval> = {}): Approval {
   return {
     requestId: "request",

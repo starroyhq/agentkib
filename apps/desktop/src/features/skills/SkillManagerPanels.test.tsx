@@ -830,7 +830,7 @@ describe("Skill usage and details", () => {
   it.each([
     ["en-US", "Broken link"],
     ["zh-CN", "链接断开"],
-    ["zh-TW", "連結失效"],
+    ["zh-Hant", "連結失效"],
     ["ja-JP", "リンク切れ"],
   ] as const)("localizes the native broken-link status in %s", async (locale, label) => {
     await changeLocale(locale);
@@ -1002,7 +1002,7 @@ describe("Skill usage and details", () => {
       }
     },
   );
-  it.each(["zh-CN", "zh-TW", "en-US", "ja-JP"] as const)(
+  it.each(["zh-CN", "zh-Hant", "en-US", "ja-JP"] as const)(
     "keeps per-entry loading evidence and workspace names in details in %s",
     async (locale) => {
       await changeLocale(locale);
@@ -1732,7 +1732,7 @@ describe("Skill deployment action hierarchy", () => {
   it.each([
     ["en-US", "Withdraw eligible deployments", "Its deployed files will be removed"],
     ["zh-CN", "撤销无冲突位置的部署", "部署文件会被移除"],
-    ["zh-TW", "撤銷無衝突位置的部署", "部署檔案會被移除"],
+    ["zh-Hant", "撤銷無衝突位置的部署", "部署檔案會被移除"],
     ["ja-JP", "競合のない配置を撤去", "配置したファイルは削除されます"],
   ] as const)(
     "names and styles withdrawal as destructive in %s while preserving approval and conflicts",
@@ -1906,7 +1906,7 @@ describe("Skill deployment state-specific safeguards", () => {
   it.each([
     ["en-US", "Generate a new plan", "Retry recovery status check"],
     ["zh-CN", "重新生成计划", "重新检查恢复状态"],
-    ["zh-TW", "重新產生計畫", "重新檢查恢復狀態"],
+    ["zh-Hant", "重新產生計畫", "重新檢查恢復狀態"],
     ["ja-JP", "計画を再作成", "復旧状態の確認を再試行"],
   ] as const)(
     "distinguishes planning from recovery lookup in the real dialog in %s",

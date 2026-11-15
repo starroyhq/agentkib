@@ -47,6 +47,20 @@ const worktree = z
   .nullish()
   .catch(undefined)
   .transform((value) => value ?? undefined);
+/** A Project Agent or its Worker; anything malformed is dropped, never the session. */
+const orchestration = z
+  .discriminatedUnion("role", [
+    z.object({
+      role: z.literal("lead"),
+      workers: z.number().int().nonnegative().max(1000),
+      paused: z.boolean(),
+      reason: z.string().max(128).nullish().catch(undefined),
+      reports: z.number().int().nonnegative().max(1000).optional().catch(undefined),
+    }),
+    z.object({ role: z.literal("worker"), leadId: id, name: z.string().min(1).max(256) }),
+  ])
+  .optional()
+  .catch(undefined);
 const turnMeta = z
   .object({
     outcome: z.enum(["completed", "aborted", "failed"]).optional().catch(undefined),
@@ -124,6 +138,7 @@ const catalog = z.object({
         availability: z.enum(["readable", "metadata-only"]),
         readState: readState.optional(),
         worktree,
+        orchestration,
       }),
     )
     .max(20_000),

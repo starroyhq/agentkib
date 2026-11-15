@@ -121,6 +121,9 @@ export function sessionDisplayState(
       capabilities?.sessionId !== state.selected
     )
       return { label: c.verifying, reason: c.verifying, tone: "muted", loading: true };
+    // The Codex app holds the thread with no window on it: a message asks the app to take it.
+    if (live.ownerHandoff === true && live.sendEnabled)
+      return { label: copy.codexHandoff, reason: "", tone: "muted", continuation: "codex" };
     if (live.ownershipReason === "codex-owner-busy" || reason === "codex-owner-busy")
       return { label: copy.busy("Codex"), reason: "", tone: "muted", continuation: "busy" };
     if (live.executionMode === "codex-follower")

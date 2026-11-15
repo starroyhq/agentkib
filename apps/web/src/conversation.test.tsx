@@ -374,7 +374,7 @@ describe("ordinary conversation directory", () => {
     },
   );
 
-  it.each(["zh-CN", "zh-TW", "en-US", "ja-JP"] as const)(
+  it.each(["zh-CN", "zh-Hant", "en-US", "ja-JP"] as const)(
     "returns an embedded hidden deep link to the directory with a %s explanation",
     async (locale) => {
       const { client, sessions } = fixture();

@@ -129,7 +129,7 @@ afterEach(() => {
   vi.useRealTimers();
 });
 
-it.each(["zh-CN", "zh-TW", "en-US", "ja-JP"] as const)(
+it.each(["zh-CN", "zh-Hant", "en-US", "ja-JP"] as const)(
   "shows only the current first-time step action in %s",
   async (locale) => {
     const pc = remotePageCopy[locale];
@@ -368,7 +368,7 @@ it("opens the code step for a new phone while account actions stay in account ma
   ).toBeVisible();
 });
 
-it.each(["zh-CN", "zh-TW", "en-US", "ja-JP"] as const)(
+it.each(["zh-CN", "zh-Hant", "en-US", "ja-JP"] as const)(
   "requires sign-in before resuming a saved official pause in %s",
   async (locale) => {
     const pc = remotePageCopy[locale];
@@ -559,7 +559,7 @@ it("does not restart local Web for external-only save failures, retries, or disc
   expect(statusOnly()).toBe(true);
 });
 
-it.each(["zh-CN", "zh-TW", "en-US", "ja-JP"] as const)(
+it.each(["zh-CN", "zh-Hant", "en-US", "ja-JP"] as const)(
   "migrates a ready legacy official service through the account with explicit confirmation in %s",
   async (locale) => {
     await changeLocale(locale);
@@ -740,7 +740,7 @@ it.each([false, true])(
   },
 );
 
-it.each(["zh-CN", "zh-TW", "en-US", "ja-JP"] as const)(
+it.each(["zh-CN", "zh-Hant", "en-US", "ja-JP"] as const)(
   "retries a failed official enable intent without an invitation and stays in setup in %s",
   async (locale) => {
     const pc = remotePageCopy[locale];
@@ -778,7 +778,7 @@ it.each(["zh-CN", "zh-TW", "en-US", "ja-JP"] as const)(
 );
 
 it.each(
-  (["zh-CN", "zh-TW", "en-US", "ja-JP"] as const).flatMap((locale) =>
+  (["zh-CN", "zh-Hant", "en-US", "ja-JP"] as const).flatMap((locale) =>
     [false, true].map((management) => ({ locale, management })),
   ),
 )(
@@ -823,7 +823,7 @@ it.each(
   },
 );
 
-it.each(["zh-CN", "zh-TW", "en-US", "ja-JP"] as const)(
+it.each(["zh-CN", "zh-Hant", "en-US", "ja-JP"] as const)(
   "keeps a self-hosted invitation in advanced settings and omits it after switching to official in %s",
   async (locale) => {
     const pc = remotePageCopy[locale];
@@ -946,7 +946,7 @@ it("resumes saved connection settings without applying unconfirmed provider or p
   );
 });
 
-it.each(["zh-CN", "zh-TW", "en-US", "ja-JP"] as const)(
+it.each(["zh-CN", "zh-Hant", "en-US", "ja-JP"] as const)(
   "explains the code grant scope once beside first and additional phone generation in %s",
   async (locale) => {
     const pc = remotePageCopy[locale];
@@ -983,7 +983,7 @@ it.each(["zh-CN", "zh-TW", "en-US", "ja-JP"] as const)(
 
 it.each([
   ["zh-CN", "还没有授权的浏览器"],
-  ["zh-TW", "還沒有授權的瀏覽器"],
+  ["zh-Hant", "還沒有授權的瀏覽器"],
   ["en-US", "No authorized browsers yet"],
   ["ja-JP", "認証済みのブラウザーはまだありません"],
 ] as const)("shows an authorized browser empty state in %s", async (locale, empty) => {

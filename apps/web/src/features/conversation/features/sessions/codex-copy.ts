@@ -2,7 +2,7 @@ import { surfaceCopy, surfaceText, type SessionSurface } from "./session-surface
 import { sessionContinuationCopy } from "@agentkib/session-ui";
 import { claudeConnectionReason } from "./claude-connection-copy";
 import { localizedUnavailableReasonText } from "../../live-status";
-type Locale = "zh-CN" | "zh-TW" | "en-US" | "ja-JP";
+type Locale = "zh-CN" | "zh-Hant" | "en-US" | "ja-JP";
 const zh = {
   composerHint: "空闲时发送；运行中可停止，获授权后可追加或加入待发队列。队列消息将自动执行。",
   queueTooLarge: "待发队列超过 100 条，此处暂不允许编辑或排序。",
@@ -118,7 +118,7 @@ const zh = {
 type Copy = { [K in keyof typeof zh]: string };
 export const codexCopy: Record<Locale, Copy> = {
   "zh-CN": zh,
-  "zh-TW": {
+  "zh-Hant": {
     previewAttachment: "預覽附件",
     composerHint: "閒置時傳送；執行中可停止，獲授權後可追加或加入待發佇列。佇列訊息將自動執行。",
     queueTooLarge: "待發佇列超過 100 條，此處暫不允許編輯或排序。",
@@ -521,7 +521,7 @@ const reasons: Record<Locale, Record<string, string>> = {
     "dsh-start-failed":
       "没能在后台启动 DeepSeek Harness。请稍后重试，或打开 DeepSeek Harness 后继续。",
     "dsh-version-unsupported":
-      "这个版本的 DeepSeek Harness 还不能由 AgentKib 启动。请更新 AgentKib，或打开 DeepSeek Harness 后继续。",
+      "这个版本的 DeepSeek Harness 不能由 AgentKib 启动。请更新 DeepSeek Harness 或 AgentKib，或打开 DeepSeek Harness 后继续。",
     "dsh-launcher-unavailable":
       "没有找到 DeepSeek Harness。安装 DeepSeek Harness Desktop 后可以继续。",
     "dsh-exited": "DeepSeek Harness 意外退出了，请重试。",
@@ -605,7 +605,7 @@ const reasons: Record<Locale, Record<string, string>> = {
     "codex-command-terminal": "这条命令只在 Codex 的终端界面里起作用，本次消息尚未发送。",
     permission_denied: "此浏览器尚未获得对应权限，请在这台电脑上的 AgentKib 授权。",
   },
-  "zh-TW": {
+  "zh-Hant": {
     "unsupported-model":
       "目前模型不在這台電腦已驗證的模型清單中，本次訊息尚未傳送。請變更下一輪模型後再傳送。",
     "native-model-unconfirmed":
@@ -657,7 +657,7 @@ const reasons: Record<Locale, Record<string, string>> = {
     "dsh-start-failed":
       "沒能在背景啟動 DeepSeek Harness。請稍後再試，或開啟 DeepSeek Harness 後繼續。",
     "dsh-version-unsupported":
-      "這個版本的 DeepSeek Harness 還不能由 AgentKib 啟動。請更新 AgentKib，或開啟 DeepSeek Harness 後繼續。",
+      "這個版本的 DeepSeek Harness 不能由 AgentKib 啟動。請更新 DeepSeek Harness 或 AgentKib，或開啟 DeepSeek Harness 後繼續。",
     "dsh-launcher-unavailable":
       "找不到 DeepSeek Harness。安裝 DeepSeek Harness Desktop 後可以繼續。",
     "dsh-exited": "DeepSeek Harness 意外結束了，請再試一次。",
@@ -799,7 +799,7 @@ const reasons: Record<Locale, Record<string, string>> = {
     "dsh-start-failed":
       "DeepSeek Harness could not be started in the background. Try again later, or open DeepSeek Harness to continue.",
     "dsh-version-unsupported":
-      "AgentKib cannot start this DeepSeek Harness version yet. Update AgentKib, or open DeepSeek Harness to continue.",
+      "AgentKib cannot start this DeepSeek Harness version. Update DeepSeek Harness or AgentKib, or open DeepSeek Harness to continue.",
     "dsh-launcher-unavailable":
       "DeepSeek Harness was not found. Install DeepSeek Harness Desktop to continue.",
     "dsh-exited": "DeepSeek Harness quit unexpectedly. Try again.",
@@ -957,7 +957,7 @@ const reasons: Record<Locale, Record<string, string>> = {
     "dsh-start-failed":
       "DeepSeek Harness をバックグラウンドで起動できませんでした。しばらくしてから再試行するか、DeepSeek Harness を開いて続けてください。",
     "dsh-version-unsupported":
-      "このバージョンの DeepSeek Harness はまだ AgentKib から起動できません。AgentKib を更新するか、DeepSeek Harness を開いて続けてください。",
+      "このバージョンの DeepSeek Harness は AgentKib から起動できません。DeepSeek Harness か AgentKib を更新するか、DeepSeek Harness を開いて続けてください。",
     "dsh-launcher-unavailable":
       "DeepSeek Harness が見つかりません。DeepSeek Harness Desktop を入れると続けられます。",
     "dsh-exited": "DeepSeek Harness が予期せず終了しました。もう一度お試しください。",
@@ -1073,6 +1073,7 @@ export function codexReason(
   const continuation = sessionContinuationCopy(locale);
   if (reason === "codex-owner-busy") return { text: continuation.busy("Codex") };
   if (reason === "codex-cli-version-too-old") return { text: continuation.codexVersionTooOld };
+  if (reason === "claude-cli-too-old") return { text: continuation.claudeVersionTooOld };
   const claudeReason = claudeConnectionReason(locale, reason, surface);
   if (claudeReason) return { text: claudeReason };
   if (

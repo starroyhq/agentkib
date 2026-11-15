@@ -10,7 +10,7 @@ afterEach(cleanup);
 describe("ConnectionScreen", () => {
   it.each([
     ["zh-CN", "局域网直连", "电脑上的 AgentKib"],
-    ["zh-TW", "區域網路直連", "電腦上的 AgentKib"],
+    ["zh-Hant", "區域網路直連", "電腦上的 AgentKib"],
     ["en-US", "LAN direct connection", "AgentKib on your computer"],
     ["ja-JP", "LAN 直接接続", "コンピューター上の AgentKib"],
   ] as const)(

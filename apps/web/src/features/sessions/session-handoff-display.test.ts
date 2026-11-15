@@ -343,7 +343,7 @@ describe("handoff-aware session presentation", () => {
     expect(sessionDisplayState(state).nextAction).toBeUndefined();
   });
   it("uses the same neutral ownership state for both Agents in all four locales", () => {
-    for (const locale of ["en-US", "zh-CN", "zh-TW", "ja-JP"] as const) {
+    for (const locale of ["en-US", "zh-CN", "zh-Hant", "ja-JP"] as const) {
       const state = fixture();
       state.locale = locale;
       for (const [agent, reason, name] of [

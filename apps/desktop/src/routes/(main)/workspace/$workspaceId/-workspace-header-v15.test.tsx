@@ -123,7 +123,7 @@ const copies: Record<
   { healthy: string; attention: (count: number) => string; undiagnosed: string }
 > = {
   "zh-CN": { healthy: "正常", attention: (count) => `需关注 ${count} 项`, undiagnosed: "未诊断" },
-  "zh-TW": { healthy: "正常", attention: (count) => `需關注 ${count} 項`, undiagnosed: "未診斷" },
+  "zh-Hant": { healthy: "正常", attention: (count) => `需關注 ${count} 項`, undiagnosed: "未診斷" },
   "en-US": {
     healthy: "Healthy",
     attention: (count) => `Needs attention: ${count}`,

@@ -207,7 +207,7 @@ describe("MCP row action hierarchy", () => {
     );
   });
 
-  it.each(["zh-CN", "zh-TW", "ja-JP", "en-US"] as const)(
+  it.each(["zh-CN", "zh-Hant", "ja-JP", "en-US"] as const)(
     "names the service in a destructive confirmation and preserves cancel in %s",
     async (locale) => {
       await initializeI18n(locale);

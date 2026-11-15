@@ -91,7 +91,7 @@ export const remoteEntryCopy = {
     },
     retryAt: "下次重试：",
   },
-  "zh-TW": {
+  "zh-Hant": {
     codeInstructions:
       "開啟遠端存取後，用手機掃碼並輸入授權碼即可連線，無需再次確認。關閉視窗後可繼續執行；完全結束或關機將停止存取。",
     legacyPermissions: "舊版瀏覽器授權範圍",

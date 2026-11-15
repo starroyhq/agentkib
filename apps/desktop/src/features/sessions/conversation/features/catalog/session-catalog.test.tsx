@@ -10,7 +10,7 @@ afterEach(cleanup);
 describe("desktop legacy catalog instructions", () => {
   it.each([
     ["zh-CN", "项目信息不可用，请更新这台电脑上的 AgentKib。"],
-    ["zh-TW", "專案資訊不可用，請更新這台電腦上的 AgentKib。"],
+    ["zh-Hant", "專案資訊不可用，請更新這台電腦上的 AgentKib。"],
     ["en-US", "Project information unavailable. Update AgentKib on this computer."],
     [
       "ja-JP",

@@ -749,7 +749,7 @@ describe("native and platform memory", () => {
     }
   });
 
-  it.each(["zh-CN", "zh-TW", "en-US", "ja-JP"] as const)(
+  it.each(["zh-CN", "zh-Hant", "en-US", "ja-JP"] as const)(
     "has translated controls and wrapping layout in %s",
     async (locale) => {
       await initializeI18n(locale);

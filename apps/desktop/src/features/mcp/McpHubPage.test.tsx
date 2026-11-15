@@ -216,7 +216,7 @@ describe("McpHubPage management", () => {
   });
   afterEach(cleanup);
 
-  it.each(["zh-CN", "zh-TW", "en-US", "ja-JP"] as const)(
+  it.each(["zh-CN", "zh-Hant", "en-US", "ja-JP"] as const)(
     "shows the MCP page explanation and advanced summary before expansion in %s",
     async (locale) => {
       await initializeI18n(locale);
@@ -350,7 +350,7 @@ describe("McpHubPage management", () => {
   });
   it.each([
     ["zh-CN", "高级设置", "官方目录、运行实例与网络", "官方目录"],
-    ["zh-TW", "進階設定", "官方目錄、執行實例與網路", "官方目錄"],
+    ["zh-Hant", "進階設定", "官方目錄、執行實例與網路", "官方目錄"],
     [
       "en-US",
       "Advanced settings",
@@ -556,7 +556,7 @@ describe("McpHubPage management", () => {
     expect(props.onRuntimeChanged).not.toHaveBeenCalledWith(runtime);
     expect(input).toHaveValue(49000);
   });
-  it.each(["en-US", "zh-CN", "zh-TW", "ja-JP"] as const)(
+  it.each(["en-US", "zh-CN", "zh-Hant", "ja-JP"] as const)(
     "distinguishes Registry prompts, pending searches and no matches in %s",
     async (locale) => {
       await initializeI18n(locale);
@@ -587,7 +587,7 @@ describe("McpHubPage management", () => {
       expect(screen.queryByText(tr("mcp.registryNoResults"))).not.toBeInTheDocument();
     },
   );
-  it.each(["en-US", "zh-CN", "zh-TW", "ja-JP"] as const)(
+  it.each(["en-US", "zh-CN", "zh-Hant", "ja-JP"] as const)(
     "distinguishes Registry failure from no matches and permits retry in %s",
     async (locale) => {
       await initializeI18n(locale);
@@ -672,7 +672,7 @@ describe("McpHubPage management", () => {
   it.each([
     ["en-US", "MCP Hub", "one connection to enabled services"],
     ["zh-CN", "MCP 服务中心", "向 Agent 提供已启用的服务"],
-    ["zh-TW", "MCP 服務中心", "向 Agent 提供已啟用的服務"],
+    ["zh-Hant", "MCP 服務中心", "向 Agent 提供已啟用的服務"],
     ["ja-JP", "MCP ハブ", "共通の接続を通じて"],
   ] as const)(
     "preserves the MCP entry explanation above advanced settings in %s",

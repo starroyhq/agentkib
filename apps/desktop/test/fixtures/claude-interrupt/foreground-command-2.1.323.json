@@ -1,0 +1,604 @@
+{
+ "note": "Captured from the real CLI by qa/probes/claude-background-turn.mjs against a mock model; 2.1.323. A background command runs; a second message runs a foreground command that the CLI reports as a task; the host interrupts it, then sends a third message.",
+ "unanswered": [],
+ "steered": [],
+ "frames": [
+  {
+   "type": "control_response",
+   "response": {
+    "subtype": "success",
+    "request_id": "117ac274-ae6c-4f5b-90da-16060cc30cfa"
+   }
+  },
+  {
+   "type": "command_lifecycle",
+   "command_uuid": "43023c7c-43de-4514-b9f6-b4e673772d41",
+   "state": "queued"
+  },
+  {
+   "type": "command_lifecycle",
+   "command_uuid": "43023c7c-43de-4514-b9f6-b4e673772d41",
+   "state": "started"
+  },
+  {
+   "type": "system",
+   "subtype": "init",
+   "model": "claude-sonnet-4-6",
+   "apiKeySource": "ANTHROPIC_API_KEY",
+   "permissionMode": "default",
+   "claude_code_version": "2.1.323",
+   "user_message_uuids": [
+    "43023c7c-43de-4514-b9f6-b4e673772d41"
+   ]
+  },
+  {
+   "type": "system",
+   "subtype": "status",
+   "status": "requesting",
+   "user_message_uuids": [
+    "43023c7c-43de-4514-b9f6-b4e673772d41"
+   ]
+  },
+  {
+   "type": "stream_event",
+   "parent_tool_use_id": null,
+   "event": {
+    "type": "message_start",
+    "message": {
+     "id": "msg_bgprobe_1",
+     "model": "claude-sonnet-4-6",
+     "usage": {
+      "input_tokens": 100,
+      "output_tokens": 0
+     }
+    }
+   }
+  },
+  {
+   "type": "stream_event",
+   "parent_tool_use_id": null,
+   "event": {
+    "type": "content_block_start",
+    "index": 0,
+    "content_block": {
+     "type": "tool_use",
+     "id": "toolu_bgprobe_1",
+     "name": "Bash",
+     "input": {}
+    }
+   }
+  },
+  {
+   "type": "stream_event",
+   "parent_tool_use_id": null,
+   "event": {
+    "type": "content_block_delta",
+    "index": 0,
+    "delta": {
+     "type": "input_json_delta",
+     "partial_json": "{\"command\":\"sleep 25; echo bg-done\",\"description\":\"Background probe\",\"run_in_background\":true}"
+    }
+   }
+  },
+  {
+   "type": "assistant",
+   "parent_tool_use_id": null,
+   "uuid": "ac888fe0-91a1-41b8-9e9b-f93f670e70b7",
+   "message": {
+    "id": "msg_bgprobe_1",
+    "model": "claude-sonnet-4-6",
+    "content": [
+     {
+      "type": "tool_use",
+      "id": "toolu_bgprobe_1",
+      "name": "Bash",
+      "input": {
+       "command": "sleep 25; echo bg-done",
+       "description": "Background probe",
+       "run_in_background": true
+      }
+     }
+    ],
+    "usage": {
+     "input_tokens": 100,
+     "output_tokens": 0
+    }
+   }
+  },
+  {
+   "type": "stream_event",
+   "parent_tool_use_id": null,
+   "event": {
+    "type": "content_block_stop",
+    "index": 0
+   }
+  },
+  {
+   "type": "stream_event",
+   "parent_tool_use_id": null,
+   "event": {
+    "type": "message_delta",
+    "delta": {
+     "stop_reason": "tool_use",
+     "stop_sequence": null
+    }
+   }
+  },
+  {
+   "type": "stream_event",
+   "parent_tool_use_id": null,
+   "event": {
+    "type": "message_stop"
+   }
+  },
+  {
+   "type": "system",
+   "subtype": "background_tasks_changed",
+   "tasks": [
+    {
+     "task_id": "b5o6932r4",
+     "task_type": "local_bash",
+     "description": "Background probe"
+    }
+   ]
+  },
+  {
+   "type": "system",
+   "subtype": "task_started",
+   "task_id": "b5o6932r4",
+   "tool_use_id": "toolu_bgprobe_1",
+   "description": "Background probe",
+   "is_backgrounded": true,
+   "task_type": "local_bash"
+  },
+  {
+   "type": "user",
+   "parent_tool_use_id": null,
+   "message": {
+    "role": "user",
+    "content": [
+     {
+      "type": "tool_result",
+      "tool_use_id": "toolu_bgprobe_1",
+      "content": "Command running in background with ID: b5o6932r4. Output is being written to: <path> You will be notified when it completes. To check interim output, use Read on that file path."
+     }
+    ]
+   }
+  },
+  {
+   "type": "system",
+   "subtype": "status",
+   "status": "requesting",
+   "user_message_uuids": [
+    "43023c7c-43de-4514-b9f6-b4e673772d41"
+   ]
+  },
+  {
+   "type": "stream_event",
+   "parent_tool_use_id": null,
+   "event": {
+    "type": "message_start",
+    "message": {
+     "id": "msg_bgprobe_2",
+     "model": "claude-sonnet-4-6",
+     "usage": {
+      "input_tokens": 100,
+      "output_tokens": 0
+     }
+    }
+   }
+  },
+  {
+   "type": "stream_event",
+   "parent_tool_use_id": null,
+   "event": {
+    "type": "content_block_start",
+    "index": 0,
+    "content_block": {
+     "type": "text",
+     "text": ""
+    }
+   }
+  },
+  {
+   "type": "stream_event",
+   "parent_tool_use_id": null,
+   "event": {
+    "type": "content_block_delta",
+    "index": 0,
+    "delta": {
+     "type": "text_delta",
+     "text": "STARTED"
+    }
+   }
+  },
+  {
+   "type": "assistant",
+   "parent_tool_use_id": null,
+   "uuid": "a6fdef7d-e322-47f6-8f55-9a9959168ca1",
+   "message": {
+    "id": "msg_bgprobe_2",
+    "model": "claude-sonnet-4-6",
+    "content": [
+     {
+      "type": "text",
+      "text": "STARTED"
+     }
+    ],
+    "usage": {
+     "input_tokens": 100,
+     "output_tokens": 0
+    }
+   }
+  },
+  {
+   "type": "stream_event",
+   "parent_tool_use_id": null,
+   "event": {
+    "type": "content_block_stop",
+    "index": 0
+   }
+  },
+  {
+   "type": "stream_event",
+   "parent_tool_use_id": null,
+   "event": {
+    "type": "message_delta",
+    "delta": {
+     "stop_reason": "end_turn",
+     "stop_sequence": null
+    }
+   }
+  },
+  {
+   "type": "stream_event",
+   "parent_tool_use_id": null,
+   "event": {
+    "type": "message_stop"
+   }
+  },
+  {
+   "type": "result",
+   "subtype": "success",
+   "is_error": false,
+   "num_turns": 2,
+   "result": "STARTED",
+   "terminal_reason": "completed",
+   "total_cost_usd": 0.0012000000000000001
+  },
+  {
+   "type": "command_lifecycle",
+   "command_uuid": "43023c7c-43de-4514-b9f6-b4e673772d41",
+   "state": "completed"
+  },
+  {
+   "type": "command_lifecycle",
+   "command_uuid": "3a68edd3-be87-440a-90d9-066452f22d26",
+   "state": "queued"
+  },
+  {
+   "type": "command_lifecycle",
+   "command_uuid": "3a68edd3-be87-440a-90d9-066452f22d26",
+   "state": "started"
+  },
+  {
+   "type": "system",
+   "subtype": "init",
+   "model": "claude-sonnet-4-6",
+   "apiKeySource": "ANTHROPIC_API_KEY",
+   "permissionMode": "default",
+   "claude_code_version": "2.1.323",
+   "user_message_uuids": [
+    "3a68edd3-be87-440a-90d9-066452f22d26"
+   ]
+  },
+  {
+   "type": "system",
+   "subtype": "status",
+   "status": "requesting",
+   "user_message_uuids": [
+    "3a68edd3-be87-440a-90d9-066452f22d26"
+   ]
+  },
+  {
+   "type": "stream_event",
+   "parent_tool_use_id": null,
+   "event": {
+    "type": "message_start",
+    "message": {
+     "id": "msg_bgprobe_3",
+     "model": "claude-sonnet-4-6",
+     "usage": {
+      "input_tokens": 100,
+      "output_tokens": 0
+     }
+    }
+   }
+  },
+  {
+   "type": "stream_event",
+   "parent_tool_use_id": null,
+   "event": {
+    "type": "content_block_start",
+    "index": 0,
+    "content_block": {
+     "type": "tool_use",
+     "id": "toolu_bgprobe_2",
+     "name": "Bash",
+     "input": {}
+    }
+   }
+  },
+  {
+   "type": "stream_event",
+   "parent_tool_use_id": null,
+   "event": {
+    "type": "content_block_delta",
+    "index": 0,
+    "delta": {
+     "type": "input_json_delta",
+     "partial_json": "{\"command\":\"perl -e 'select(undef, undef, undef, 30); print qq(fg-done\\\\n)'\",\"description\":\"Foreground probe\"}"
+    }
+   }
+  },
+  {
+   "type": "assistant",
+   "parent_tool_use_id": null,
+   "uuid": "88a2be83-bfc5-4456-8e2f-8c15cd9e683e",
+   "message": {
+    "id": "msg_bgprobe_3",
+    "model": "claude-sonnet-4-6",
+    "content": [
+     {
+      "type": "tool_use",
+      "id": "toolu_bgprobe_2",
+      "name": "Bash",
+      "input": {
+       "command": "perl -e 'select(undef, undef, undef, 30); print qq(fg-done\\n)'",
+       "description": "Foreground probe"
+      }
+     }
+    ],
+    "usage": {
+     "input_tokens": 100,
+     "output_tokens": 0
+    }
+   }
+  },
+  {
+   "type": "stream_event",
+   "parent_tool_use_id": null,
+   "event": {
+    "type": "content_block_stop",
+    "index": 0
+   }
+  },
+  {
+   "type": "stream_event",
+   "parent_tool_use_id": null,
+   "event": {
+    "type": "message_delta",
+    "delta": {
+     "stop_reason": "tool_use",
+     "stop_sequence": null
+    }
+   }
+  },
+  {
+   "type": "control_request",
+   "request_id": "d0f7a82f-53b6-4b9b-8fe0-a06e5d294a3b",
+   "request": {
+    "subtype": "can_use_tool",
+    "tool_name": "Bash",
+    "input": {
+     "command": "perl -e 'select(undef, undef, undef, 30); print qq(fg-done\\n)'",
+     "description": "Foreground probe"
+    },
+    "tool_use_id": "toolu_bgprobe_2"
+   }
+  },
+  {
+   "type": "stream_event",
+   "parent_tool_use_id": null,
+   "event": {
+    "type": "message_stop"
+   }
+  },
+  {
+   "type": "system",
+   "subtype": "task_started",
+   "task_id": "bjldhhfho",
+   "tool_use_id": "toolu_bgprobe_2",
+   "description": "Foreground probe",
+   "is_backgrounded": false,
+   "task_type": "local_bash"
+  },
+  {
+   "type": "<host interrupt>"
+  },
+  {
+   "type": "control_response",
+   "response": {
+    "subtype": "success",
+    "request_id": "<interrupt>",
+    "response": {
+     "still_queued": []
+    }
+   }
+  },
+  {
+   "type": "system",
+   "subtype": "task_notification",
+   "status": "stopped",
+   "task_id": "bjldhhfho",
+   "tool_use_id": "toolu_bgprobe_2",
+   "summary": "Foreground probe"
+  },
+  {
+   "type": "user",
+   "parent_tool_use_id": null,
+   "message": {
+    "role": "user",
+    "content": [
+     {
+      "type": "tool_result",
+      "tool_use_id": "toolu_bgprobe_2",
+      "content": "The user doesn't want to proceed with this tool use. The tool use was rejected (eg. if it was a file edit, the new_string was NOT written to the file). STOP what you are doing and wait for the user to tell you how to proceed. Correction to the text above: this call was stopped while running, not refused before it ran. It may have run in part or in full, and its changes may have been written. No permission prompt was involved. Work it started elsewhere (a remote command, a background process) may still be running, so check before starting the same work again. The instruction to stop and wait still stands."
+     }
+    ]
+   }
+  },
+  {
+   "type": "user",
+   "parent_tool_use_id": null,
+   "message": {
+    "role": "user",
+    "content": [
+     {
+      "type": "text"
+     }
+    ]
+   }
+  },
+  {
+   "type": "result",
+   "subtype": "error_during_execution",
+   "is_error": true,
+   "num_turns": 3,
+   "terminal_reason": "aborted_tools",
+   "total_cost_usd": 0.0018000000000000002
+  },
+  {
+   "type": "command_lifecycle",
+   "command_uuid": "3a68edd3-be87-440a-90d9-066452f22d26",
+   "state": "cancelled"
+  },
+  {
+   "type": "command_lifecycle",
+   "command_uuid": "86809514-1aff-4c01-b16e-d226059062a7",
+   "state": "queued"
+  },
+  {
+   "type": "command_lifecycle",
+   "command_uuid": "86809514-1aff-4c01-b16e-d226059062a7",
+   "state": "started"
+  },
+  {
+   "type": "system",
+   "subtype": "init",
+   "model": "claude-sonnet-4-6",
+   "apiKeySource": "ANTHROPIC_API_KEY",
+   "permissionMode": "default",
+   "claude_code_version": "2.1.323",
+   "user_message_uuids": [
+    "86809514-1aff-4c01-b16e-d226059062a7"
+   ]
+  },
+  {
+   "type": "system",
+   "subtype": "status",
+   "status": "requesting",
+   "user_message_uuids": [
+    "86809514-1aff-4c01-b16e-d226059062a7"
+   ]
+  },
+  {
+   "type": "stream_event",
+   "parent_tool_use_id": null,
+   "event": {
+    "type": "message_start",
+    "message": {
+     "id": "msg_bgprobe_4",
+     "model": "claude-sonnet-4-6",
+     "usage": {
+      "input_tokens": 100,
+      "output_tokens": 0
+     }
+    }
+   }
+  },
+  {
+   "type": "stream_event",
+   "parent_tool_use_id": null,
+   "event": {
+    "type": "content_block_start",
+    "index": 0,
+    "content_block": {
+     "type": "text",
+     "text": ""
+    }
+   }
+  },
+  {
+   "type": "stream_event",
+   "parent_tool_use_id": null,
+   "event": {
+    "type": "content_block_delta",
+    "index": 0,
+    "delta": {
+     "type": "text_delta",
+     "text": "FG-DONE"
+    }
+   }
+  },
+  {
+   "type": "assistant",
+   "parent_tool_use_id": null,
+   "uuid": "267bb78d-43ac-46eb-8ff9-6f4a86af4dc7",
+   "message": {
+    "id": "msg_bgprobe_4",
+    "model": "claude-sonnet-4-6",
+    "content": [
+     {
+      "type": "text",
+      "text": "FG-DONE"
+     }
+    ],
+    "usage": {
+     "input_tokens": 100,
+     "output_tokens": 0
+    }
+   }
+  },
+  {
+   "type": "stream_event",
+   "parent_tool_use_id": null,
+   "event": {
+    "type": "content_block_stop",
+    "index": 0
+   }
+  },
+  {
+   "type": "stream_event",
+   "parent_tool_use_id": null,
+   "event": {
+    "type": "message_delta",
+    "delta": {
+     "stop_reason": "end_turn",
+     "stop_sequence": null
+    }
+   }
+  },
+  {
+   "type": "stream_event",
+   "parent_tool_use_id": null,
+   "event": {
+    "type": "message_stop"
+   }
+  },
+  {
+   "type": "result",
+   "subtype": "success",
+   "is_error": false,
+   "num_turns": 1,
+   "result": "FG-DONE",
+   "terminal_reason": "completed",
+   "total_cost_usd": 0.0024000000000000002
+  },
+  {
+   "type": "command_lifecycle",
+   "command_uuid": "86809514-1aff-4c01-b16e-d226059062a7",
+   "state": "completed"
+  }
+ ]
+}

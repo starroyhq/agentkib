@@ -196,7 +196,7 @@ export interface MemoryRecord {
   invalidated_by?: string;
 }
 export type CloseBehavior = "minimize-to-tray" | "quit";
-export type SupportedLocale = "zh-CN" | "zh-TW" | "ja-JP" | "en-US";
+export type SupportedLocale = "zh-CN" | "zh-Hant" | "ja-JP" | "en-US";
 export type LocalePreference = "system" | SupportedLocale;
 export type ThemePreference = "system" | "light" | "dark";
 export type AccentThemeId = "minimal-neutral" | "vtron" | "claude" | "sakura" | "ocean-breeze";
@@ -1326,6 +1326,8 @@ export interface ConversationSessionSummary {
     executionLocation?: "agentkib" | "terminal" | "external" | null;
     ownershipReason?: string | null;
     reason?: string | null;
+    /** Managed Claude: background tasks running in AgentKib's process; absent when none. */
+    backgroundTasks?: number;
   };
   /** A turn that the Codex app or CLI runs now; display only, never a control. */
   externalTurn?: { status: "running"; startedAt: string | null } | null;
@@ -1347,7 +1349,21 @@ export interface ConversationSessionSummary {
   forked_from_session_id?: string;
   availability: SessionAvailability;
   worktree?: SessionWorktree;
+  /** A Project Agent, or a Worker one directs; absent otherwise and on older hosts. */
+  orchestration?: SessionOrchestration;
 }
+/** A session's part in delegation (docs/agents/project-agent.md). */
+export type SessionOrchestration =
+  | {
+      role: "lead";
+      workers: number;
+      paused: boolean;
+      /** Why delegation is paused; absent on older hosts. */
+      reason?: string | null;
+      /** Reports on their way into its next turn; absent on older hosts. */
+      reports?: number;
+    }
+  | { role: "worker"; leadId: string; name: string };
 export interface ConversationIndexStatus {
   workspace_id: string;
   agent: AgentKind;

@@ -90,6 +90,7 @@ export function MenuBarSessions({
     approval: card.waitingApproval,
     question: card.waitingAnswer,
     verify: t.verifyResult,
+    delegation: t.delegationPaused,
   };
   const resultLabels: Record<HomeListResult, string> = {
     completed: read.completed,

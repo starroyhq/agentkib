@@ -1,0 +1,506 @@
+{
+ "note": "Captured from the real CLI by qa/probes/claude-background-turn.mjs against a mock model; 2.1.322, the Monitor tool: one event while its command runs, then the end of the command.",
+ "frames": [
+  {
+   "type": "control_response",
+   "response": {
+    "subtype": "success",
+    "request_id": "efbeab79-3a4e-4d65-920c-0d5f00703731"
+   }
+  },
+  {
+   "type": "command_lifecycle",
+   "command_uuid": "1598cb81-fe58-4498-aaa3-be12b0271004",
+   "state": "queued"
+  },
+  {
+   "type": "command_lifecycle",
+   "command_uuid": "1598cb81-fe58-4498-aaa3-be12b0271004",
+   "state": "started"
+  },
+  {
+   "type": "system",
+   "subtype": "init",
+   "model": "claude-sonnet-4-6",
+   "apiKeySource": "ANTHROPIC_API_KEY",
+   "permissionMode": "default",
+   "claude_code_version": "2.1.322",
+   "user_message_uuids": [
+    "1598cb81-fe58-4498-aaa3-be12b0271004"
+   ]
+  },
+  {
+   "type": "system",
+   "subtype": "status",
+   "status": "requesting",
+   "user_message_uuids": [
+    "1598cb81-fe58-4498-aaa3-be12b0271004"
+   ]
+  },
+  {
+   "type": "stream_event",
+   "parent_tool_use_id": null,
+   "event": {
+    "type": "message_start",
+    "message": {
+     "id": "msg_bgprobe_1",
+     "model": "claude-sonnet-4-6",
+     "usage": {
+      "input_tokens": 100,
+      "output_tokens": 0
+     }
+    }
+   }
+  },
+  {
+   "type": "stream_event",
+   "parent_tool_use_id": null,
+   "event": {
+    "type": "content_block_start",
+    "index": 0,
+    "content_block": {
+     "type": "tool_use",
+     "id": "toolu_kind_1",
+     "name": "Monitor",
+     "input": {}
+    }
+   }
+  },
+  {
+   "type": "stream_event",
+   "parent_tool_use_id": null,
+   "event": {
+    "type": "content_block_delta",
+    "index": 0,
+    "delta": {
+     "type": "input_json_delta",
+     "partial_json": "{\"description\":\"Probe monitor\",\"timeout_ms\":30000,\"command\":\"sleep 3; echo line-one; sleep 3; echo line-two\"}"
+    }
+   }
+  },
+  {
+   "type": "assistant",
+   "parent_tool_use_id": null,
+   "uuid": "e6107caf-c81d-4c3f-a934-25024771715d",
+   "message": {
+    "id": "msg_bgprobe_1",
+    "model": "claude-sonnet-4-6",
+    "content": [
+     {
+      "type": "tool_use",
+      "id": "toolu_kind_1",
+      "name": "Monitor",
+      "input": {
+       "description": "Probe monitor",
+       "timeout_ms": 30000,
+       "command": "sleep 3; echo line-one; sleep 3; echo line-two"
+      }
+     }
+    ],
+    "usage": {
+     "input_tokens": 100,
+     "output_tokens": 0
+    }
+   }
+  },
+  {
+   "type": "stream_event",
+   "parent_tool_use_id": null,
+   "event": {
+    "type": "content_block_stop",
+    "index": 0
+   }
+  },
+  {
+   "type": "stream_event",
+   "parent_tool_use_id": null,
+   "event": {
+    "type": "message_delta",
+    "delta": {
+     "stop_reason": "tool_use",
+     "stop_sequence": null
+    }
+   }
+  },
+  {
+   "type": "stream_event",
+   "parent_tool_use_id": null,
+   "event": {
+    "type": "message_stop"
+   }
+  },
+  {
+   "type": "system",
+   "subtype": "background_tasks_changed",
+   "tasks": [
+    {
+     "task_id": "bvdib6a85",
+     "task_type": "local_bash",
+     "description": "Probe monitor"
+    }
+   ]
+  },
+  {
+   "type": "system",
+   "subtype": "task_started",
+   "task_id": "bvdib6a85",
+   "tool_use_id": "toolu_kind_1",
+   "description": "Probe monitor",
+   "is_backgrounded": true,
+   "task_type": "local_bash"
+  },
+  {
+   "type": "user",
+   "parent_tool_use_id": null,
+   "message": {
+    "role": "user",
+    "content": [
+     {
+      "type": "tool_result",
+      "tool_use_id": "toolu_kind_1",
+      "content": "Monitor started (task bvdib6a85, expires in 30s unless the source ends first; you get one notice at expiry — re-arm if you still need the watch). You will be notified on each event. Keep working — do not poll or sleep. Events may arrive while you are waiting for the user — an event is not their reply."
+     }
+    ]
+   }
+  },
+  {
+   "type": "system",
+   "subtype": "status",
+   "status": "requesting",
+   "user_message_uuids": [
+    "1598cb81-fe58-4498-aaa3-be12b0271004"
+   ]
+  },
+  {
+   "type": "stream_event",
+   "parent_tool_use_id": null,
+   "event": {
+    "type": "message_start",
+    "message": {
+     "id": "msg_bgprobe_2",
+     "model": "claude-sonnet-4-6",
+     "usage": {
+      "input_tokens": 100,
+      "output_tokens": 0
+     }
+    }
+   }
+  },
+  {
+   "type": "stream_event",
+   "parent_tool_use_id": null,
+   "event": {
+    "type": "content_block_start",
+    "index": 0,
+    "content_block": {
+     "type": "text",
+     "text": ""
+    }
+   }
+  },
+  {
+   "type": "stream_event",
+   "parent_tool_use_id": null,
+   "event": {
+    "type": "content_block_delta",
+    "index": 0,
+    "delta": {
+     "type": "text_delta",
+     "text": "STARTED"
+    }
+   }
+  },
+  {
+   "type": "assistant",
+   "parent_tool_use_id": null,
+   "uuid": "2008f15f-e3ba-4011-b2ac-f46478cd256f",
+   "message": {
+    "id": "msg_bgprobe_2",
+    "model": "claude-sonnet-4-6",
+    "content": [
+     {
+      "type": "text",
+      "text": "STARTED"
+     }
+    ],
+    "usage": {
+     "input_tokens": 100,
+     "output_tokens": 0
+    }
+   }
+  },
+  {
+   "type": "stream_event",
+   "parent_tool_use_id": null,
+   "event": {
+    "type": "content_block_stop",
+    "index": 0
+   }
+  },
+  {
+   "type": "stream_event",
+   "parent_tool_use_id": null,
+   "event": {
+    "type": "message_delta",
+    "delta": {
+     "stop_reason": "end_turn",
+     "stop_sequence": null
+    }
+   }
+  },
+  {
+   "type": "stream_event",
+   "parent_tool_use_id": null,
+   "event": {
+    "type": "message_stop"
+   }
+  },
+  {
+   "type": "result",
+   "subtype": "success",
+   "is_error": false,
+   "num_turns": 2,
+   "result": "STARTED",
+   "terminal_reason": "completed",
+   "total_cost_usd": 0.0012000000000000001
+  },
+  {
+   "type": "command_lifecycle",
+   "command_uuid": "1598cb81-fe58-4498-aaa3-be12b0271004",
+   "state": "completed"
+  },
+  {
+   "type": "system",
+   "subtype": "init",
+   "model": "claude-sonnet-4-6",
+   "apiKeySource": "ANTHROPIC_API_KEY",
+   "permissionMode": "default",
+   "claude_code_version": "2.1.322"
+  },
+  {
+   "type": "system",
+   "subtype": "status",
+   "status": "requesting"
+  },
+  {
+   "type": "stream_event",
+   "parent_tool_use_id": null,
+   "event": {
+    "type": "message_start",
+    "message": {
+     "id": "msg_bgprobe_3",
+     "model": "claude-sonnet-4-6",
+     "usage": {
+      "input_tokens": 100,
+      "output_tokens": 0
+     }
+    }
+   }
+  },
+  {
+   "type": "stream_event",
+   "parent_tool_use_id": null,
+   "event": {
+    "type": "content_block_start",
+    "index": 0,
+    "content_block": {
+     "type": "text",
+     "text": ""
+    }
+   }
+  },
+  {
+   "type": "stream_event",
+   "parent_tool_use_id": null,
+   "event": {
+    "type": "content_block_delta",
+    "index": 0,
+    "delta": {
+     "type": "text_delta",
+     "text": "NOTED-2"
+    }
+   }
+  },
+  {
+   "type": "assistant",
+   "parent_tool_use_id": null,
+   "uuid": "715d8b7b-4216-413d-98f8-0d739251b0e9",
+   "message": {
+    "id": "msg_bgprobe_3",
+    "model": "claude-sonnet-4-6",
+    "content": [
+     {
+      "type": "text",
+      "text": "NOTED-2"
+     }
+    ],
+    "usage": {
+     "input_tokens": 100,
+     "output_tokens": 0
+    }
+   }
+  },
+  {
+   "type": "stream_event",
+   "parent_tool_use_id": null,
+   "event": {
+    "type": "content_block_stop",
+    "index": 0
+   }
+  },
+  {
+   "type": "stream_event",
+   "parent_tool_use_id": null,
+   "event": {
+    "type": "message_delta",
+    "delta": {
+     "stop_reason": "end_turn",
+     "stop_sequence": null
+    }
+   }
+  },
+  {
+   "type": "stream_event",
+   "parent_tool_use_id": null,
+   "event": {
+    "type": "message_stop"
+   }
+  },
+  {
+   "type": "result",
+   "subtype": "success",
+   "is_error": false,
+   "num_turns": 1,
+   "result": "NOTED-2",
+   "terminal_reason": "completed",
+   "total_cost_usd": 0.0018000000000000002
+  },
+  {
+   "type": "system",
+   "subtype": "task_updated",
+   "task_id": "bvdib6a85",
+   "patch": {
+    "status": "completed"
+   }
+  },
+  {
+   "type": "system",
+   "subtype": "task_notification",
+   "status": "completed",
+   "task_id": "bvdib6a85",
+   "tool_use_id": "toolu_kind_1",
+   "summary": "Monitor \"Probe monitor\" stream ended"
+  },
+  {
+   "type": "system",
+   "subtype": "background_tasks_changed",
+   "tasks": []
+  },
+  {
+   "type": "system",
+   "subtype": "init",
+   "model": "claude-sonnet-4-6",
+   "apiKeySource": "ANTHROPIC_API_KEY",
+   "permissionMode": "default",
+   "claude_code_version": "2.1.322"
+  },
+  {
+   "type": "system",
+   "subtype": "status",
+   "status": "requesting"
+  },
+  {
+   "type": "stream_event",
+   "parent_tool_use_id": null,
+   "event": {
+    "type": "message_start",
+    "message": {
+     "id": "msg_bgprobe_4",
+     "model": "claude-sonnet-4-6",
+     "usage": {
+      "input_tokens": 100,
+      "output_tokens": 0
+     }
+    }
+   }
+  },
+  {
+   "type": "stream_event",
+   "parent_tool_use_id": null,
+   "event": {
+    "type": "content_block_start",
+    "index": 0,
+    "content_block": {
+     "type": "text",
+     "text": ""
+    }
+   }
+  },
+  {
+   "type": "stream_event",
+   "parent_tool_use_id": null,
+   "event": {
+    "type": "content_block_delta",
+    "index": 0,
+    "delta": {
+     "type": "text_delta",
+     "text": "NOTED-3"
+    }
+   }
+  },
+  {
+   "type": "assistant",
+   "parent_tool_use_id": null,
+   "uuid": "30901341-5310-44a9-9a8d-12e9883eb60a",
+   "message": {
+    "id": "msg_bgprobe_4",
+    "model": "claude-sonnet-4-6",
+    "content": [
+     {
+      "type": "text",
+      "text": "NOTED-3"
+     }
+    ],
+    "usage": {
+     "input_tokens": 100,
+     "output_tokens": 0
+    }
+   }
+  },
+  {
+   "type": "stream_event",
+   "parent_tool_use_id": null,
+   "event": {
+    "type": "content_block_stop",
+    "index": 0
+   }
+  },
+  {
+   "type": "stream_event",
+   "parent_tool_use_id": null,
+   "event": {
+    "type": "message_delta",
+    "delta": {
+     "stop_reason": "end_turn",
+     "stop_sequence": null
+    }
+   }
+  },
+  {
+   "type": "stream_event",
+   "parent_tool_use_id": null,
+   "event": {
+    "type": "message_stop"
+   }
+  },
+  {
+   "type": "result",
+   "subtype": "success",
+   "is_error": false,
+   "num_turns": 1,
+   "result": "NOTED-3",
+   "terminal_reason": "completed",
+   "total_cost_usd": 0.0024000000000000002
+  }
+ ]
+}

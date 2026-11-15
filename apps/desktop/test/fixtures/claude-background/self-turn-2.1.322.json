@@ -1,0 +1,400 @@
+{
+ "note": "Captured from the real CLI by qa/probes/claude-background-turn.mjs against a mock model; 2.1.322, one background command that ends after the turn.",
+ "frames": [
+  {
+   "type": "control_response",
+   "response": {
+    "subtype": "success",
+    "request_id": "72caab98-9903-48e5-be06-f569e000b37e"
+   }
+  },
+  {
+   "type": "command_lifecycle",
+   "command_uuid": "929529b5-660e-40fd-902d-a65f79f345e4",
+   "state": "queued"
+  },
+  {
+   "type": "command_lifecycle",
+   "command_uuid": "929529b5-660e-40fd-902d-a65f79f345e4",
+   "state": "started"
+  },
+  {
+   "type": "system",
+   "subtype": "init",
+   "model": "claude-sonnet-4-6",
+   "apiKeySource": "ANTHROPIC_API_KEY",
+   "permissionMode": "default",
+   "claude_code_version": "2.1.322",
+   "user_message_uuids": [
+    "929529b5-660e-40fd-902d-a65f79f345e4"
+   ]
+  },
+  {
+   "type": "system",
+   "subtype": "status",
+   "status": "requesting",
+   "user_message_uuids": [
+    "929529b5-660e-40fd-902d-a65f79f345e4"
+   ]
+  },
+  {
+   "type": "stream_event",
+   "parent_tool_use_id": null,
+   "event": {
+    "type": "message_start",
+    "message": {
+     "id": "msg_bgprobe_1",
+     "model": "claude-sonnet-4-6",
+     "usage": {
+      "input_tokens": 100,
+      "output_tokens": 0
+     }
+    }
+   }
+  },
+  {
+   "type": "stream_event",
+   "parent_tool_use_id": null,
+   "event": {
+    "type": "content_block_start",
+    "index": 0,
+    "content_block": {
+     "type": "tool_use",
+     "id": "toolu_bgprobe_1",
+     "name": "Bash",
+     "input": {}
+    }
+   }
+  },
+  {
+   "type": "stream_event",
+   "parent_tool_use_id": null,
+   "event": {
+    "type": "content_block_delta",
+    "index": 0,
+    "delta": {
+     "type": "input_json_delta",
+     "partial_json": "{\"command\":\"sleep 6; echo bg-done\",\"description\":\"Background probe\",\"run_in_background\":true}"
+    }
+   }
+  },
+  {
+   "type": "assistant",
+   "parent_tool_use_id": null,
+   "uuid": "50947d8c-35ec-4729-b5e1-163b7041467e",
+   "message": {
+    "id": "msg_bgprobe_1",
+    "model": "claude-sonnet-4-6",
+    "content": [
+     {
+      "type": "tool_use",
+      "id": "toolu_bgprobe_1",
+      "name": "Bash",
+      "input": {
+       "command": "sleep 6; echo bg-done",
+       "description": "Background probe",
+       "run_in_background": true
+      }
+     }
+    ],
+    "usage": {
+     "input_tokens": 100,
+     "output_tokens": 0
+    }
+   }
+  },
+  {
+   "type": "stream_event",
+   "parent_tool_use_id": null,
+   "event": {
+    "type": "content_block_stop",
+    "index": 0
+   }
+  },
+  {
+   "type": "stream_event",
+   "parent_tool_use_id": null,
+   "event": {
+    "type": "message_delta",
+    "delta": {
+     "stop_reason": "tool_use",
+     "stop_sequence": null
+    }
+   }
+  },
+  {
+   "type": "stream_event",
+   "parent_tool_use_id": null,
+   "event": {
+    "type": "message_stop"
+   }
+  },
+  {
+   "type": "system",
+   "subtype": "background_tasks_changed",
+   "tasks": [
+    {
+     "task_id": "bivan0lkj",
+     "task_type": "local_bash",
+     "description": "Background probe"
+    }
+   ]
+  },
+  {
+   "type": "system",
+   "subtype": "task_started",
+   "task_id": "bivan0lkj",
+   "tool_use_id": "toolu_bgprobe_1",
+   "description": "Background probe",
+   "is_backgrounded": true,
+   "task_type": "local_bash"
+  },
+  {
+   "type": "user",
+   "parent_tool_use_id": null,
+   "message": {
+    "role": "user",
+    "content": [
+     {
+      "type": "tool_result",
+      "tool_use_id": "toolu_bgprobe_1",
+      "content": "Command running in background with ID: bivan0lkj. Output is being written to: <path> You will be notified when it completes. To check interim output, use Read on that file path."
+     }
+    ]
+   }
+  },
+  {
+   "type": "system",
+   "subtype": "status",
+   "status": "requesting",
+   "user_message_uuids": [
+    "929529b5-660e-40fd-902d-a65f79f345e4"
+   ]
+  },
+  {
+   "type": "stream_event",
+   "parent_tool_use_id": null,
+   "event": {
+    "type": "message_start",
+    "message": {
+     "id": "msg_bgprobe_2",
+     "model": "claude-sonnet-4-6",
+     "usage": {
+      "input_tokens": 100,
+      "output_tokens": 0
+     }
+    }
+   }
+  },
+  {
+   "type": "stream_event",
+   "parent_tool_use_id": null,
+   "event": {
+    "type": "content_block_start",
+    "index": 0,
+    "content_block": {
+     "type": "text",
+     "text": ""
+    }
+   }
+  },
+  {
+   "type": "stream_event",
+   "parent_tool_use_id": null,
+   "event": {
+    "type": "content_block_delta",
+    "index": 0,
+    "delta": {
+     "type": "text_delta",
+     "text": "STARTED"
+    }
+   }
+  },
+  {
+   "type": "assistant",
+   "parent_tool_use_id": null,
+   "uuid": "e96ffdf6-938c-4bc1-89f0-03fa5d17421f",
+   "message": {
+    "id": "msg_bgprobe_2",
+    "model": "claude-sonnet-4-6",
+    "content": [
+     {
+      "type": "text",
+      "text": "STARTED"
+     }
+    ],
+    "usage": {
+     "input_tokens": 100,
+     "output_tokens": 0
+    }
+   }
+  },
+  {
+   "type": "stream_event",
+   "parent_tool_use_id": null,
+   "event": {
+    "type": "content_block_stop",
+    "index": 0
+   }
+  },
+  {
+   "type": "stream_event",
+   "parent_tool_use_id": null,
+   "event": {
+    "type": "message_delta",
+    "delta": {
+     "stop_reason": "end_turn",
+     "stop_sequence": null
+    }
+   }
+  },
+  {
+   "type": "stream_event",
+   "parent_tool_use_id": null,
+   "event": {
+    "type": "message_stop"
+   }
+  },
+  {
+   "type": "result",
+   "subtype": "success",
+   "is_error": false,
+   "num_turns": 2,
+   "result": "STARTED",
+   "terminal_reason": "completed",
+   "total_cost_usd": 0.0012000000000000001
+  },
+  {
+   "type": "command_lifecycle",
+   "command_uuid": "929529b5-660e-40fd-902d-a65f79f345e4",
+   "state": "completed"
+  },
+  {
+   "type": "system",
+   "subtype": "task_updated",
+   "task_id": "bivan0lkj",
+   "patch": {
+    "status": "completed"
+   }
+  },
+  {
+   "type": "system",
+   "subtype": "task_notification",
+   "status": "completed",
+   "task_id": "bivan0lkj",
+   "tool_use_id": "toolu_bgprobe_1",
+   "summary": "Background command \"Background probe\" completed (exit code 0)"
+  },
+  {
+   "type": "system",
+   "subtype": "background_tasks_changed",
+   "tasks": []
+  },
+  {
+   "type": "system",
+   "subtype": "init",
+   "model": "claude-sonnet-4-6",
+   "apiKeySource": "ANTHROPIC_API_KEY",
+   "permissionMode": "default",
+   "claude_code_version": "2.1.322"
+  },
+  {
+   "type": "system",
+   "subtype": "status",
+   "status": "requesting"
+  },
+  {
+   "type": "stream_event",
+   "parent_tool_use_id": null,
+   "event": {
+    "type": "message_start",
+    "message": {
+     "id": "msg_bgprobe_3",
+     "model": "claude-sonnet-4-6",
+     "usage": {
+      "input_tokens": 100,
+      "output_tokens": 0
+     }
+    }
+   }
+  },
+  {
+   "type": "stream_event",
+   "parent_tool_use_id": null,
+   "event": {
+    "type": "content_block_start",
+    "index": 0,
+    "content_block": {
+     "type": "text",
+     "text": ""
+    }
+   }
+  },
+  {
+   "type": "stream_event",
+   "parent_tool_use_id": null,
+   "event": {
+    "type": "content_block_delta",
+    "index": 0,
+    "delta": {
+     "type": "text_delta",
+     "text": "NOTED-2"
+    }
+   }
+  },
+  {
+   "type": "assistant",
+   "parent_tool_use_id": null,
+   "uuid": "1d6d708b-18ee-43de-860d-5b32dc9cf616",
+   "message": {
+    "id": "msg_bgprobe_3",
+    "model": "claude-sonnet-4-6",
+    "content": [
+     {
+      "type": "text",
+      "text": "NOTED-2"
+     }
+    ],
+    "usage": {
+     "input_tokens": 100,
+     "output_tokens": 0
+    }
+   }
+  },
+  {
+   "type": "stream_event",
+   "parent_tool_use_id": null,
+   "event": {
+    "type": "content_block_stop",
+    "index": 0
+   }
+  },
+  {
+   "type": "stream_event",
+   "parent_tool_use_id": null,
+   "event": {
+    "type": "message_delta",
+    "delta": {
+     "stop_reason": "end_turn",
+     "stop_sequence": null
+    }
+   }
+  },
+  {
+   "type": "stream_event",
+   "parent_tool_use_id": null,
+   "event": {
+    "type": "message_stop"
+   }
+  },
+  {
+   "type": "result",
+   "subtype": "success",
+   "is_error": false,
+   "num_turns": 1,
+   "result": "NOTED-2",
+   "terminal_reason": "completed",
+   "total_cost_usd": 0.0018000000000000002
+  }
+ ]
+}

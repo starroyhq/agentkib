@@ -10,6 +10,7 @@ import { Button } from "@/components/ui/button";
 import { Disclosure, DisclosureSummary } from "@/components/ui/disclosure";
 import { Input } from "@/components/ui/input";
 import { Dialog } from "../../components/dialog";
+import { OperationDisclosure, OperationGroup, OperationRow } from "./operation-layout";
 import { useSession } from "./session-context";
 import { webLayoutCopy } from "./web-layout-copy";
 import { codexCopy, codexReason } from "./codex-copy";
@@ -228,23 +229,42 @@ export function CodexTools({
     label: string,
     fields = {},
     itemAvailable = true,
+    size: "default" | "sm" = "sm",
+    withReason = true,
   ) => (
     <div className="min-w-0 max-w-full space-y-1">
       <Button
         type="button"
         variant="outline"
-        size="sm"
+        size={size}
         disabled={!itemAvailable || !enabled(action)}
         title={enabled(action) ? undefined : reason(action)}
         onClick={() => void run(action, fields)}
       >
         {label}
       </Button>
-      {!enabled(action) && (
+      {withReason && !enabled(action) && (
         <p className="max-w-64 text-xs text-muted-foreground">{reason(action)}</p>
       )}
     </div>
   );
+  // The management buttons that are off, and why. One reason for all of them is said once under
+  // the row; different reasons stay under their own buttons.
+  const archiveAction: SessionAction | null =
+    capabilities?.features.archive || capabilities?.features.unarchive
+      ? current.archived
+        ? "unarchive"
+        : "archive"
+      : null;
+  const managementActions: SessionAction[] = [
+    ...(archiveAction ? [archiveAction] : []),
+    "fork",
+    ...(capabilities?.features.delete ? (["delete"] as const) : []),
+  ];
+  const blockedReasons = new Set(
+    managementActions.filter((action) => !enabled(action)).map((action) => reason(action)),
+  );
+  const sharedReason = blockedReasons.size === 1 ? [...blockedReasons][0]! : null;
   const pendingQueue =
     queue?.data?.filter(
       (item) => item.status === "pending" || (!isClaude && item.status === undefined),
@@ -257,109 +277,134 @@ export function CodexTools({
         </Button>
       )}
       {open && (
-        <Dialog panel title={layout.actions} closeLabel={copy.close} onClose={() => setOpen(false)}>
+        <Dialog
+          panel
+          title={layout.actions}
+          closeLabel={copy.close}
+          onClose={() => setOpen(false)}
+          bodyClassName="space-y-5 leading-5"
+        >
           {shortcuts}
 
-          <section className="space-y-3 border-t pt-3">
-            <h3 className="font-medium">{layout.management}</h3>
-            <label className="block text-sm">
-              {copy.name}
-              <Input value={name} maxLength={200} onChange={(e) => setName(e.target.value)} />
-            </label>
-            <div className="flex flex-wrap gap-2">
+          <OperationGroup title={layout.management}>
+            <OperationRow>
+              <label className="flex min-w-0 flex-1 items-center gap-3">
+                <span className="shrink-0 text-muted-foreground">{copy.name}</span>
+                <Input value={name} maxLength={200} onChange={(e) => setName(e.target.value)} />
+              </label>
               <Button
                 variant="outline"
+                className="h-8"
                 disabled={!enabled("rename") || !name.trim()}
                 title={enabled("rename") ? undefined : reason("rename")}
                 onClick={() => void run("rename", { name: name.trim() })}
               >
                 {copy.rename}
               </Button>
-              {/* Archiving is the agent's own (Codex); AgentKib keeps no archive of its own. */}
-              {(capabilities?.features.archive || capabilities?.features.unarchive) &&
-                actionButton(
-                  current.archived ? "unarchive" : "archive",
-                  current.archived ? copy.unarchive : copy.archive,
-                )}
-              {actionButton("fork", copy.fork)}
-              {capabilities?.features.delete && (
-                <div className="min-w-0 max-w-full space-y-1">
-                  <Button
-                    type="button"
-                    variant="outline"
-                    size="sm"
-                    disabled={!enabled("delete") || confirmDelete}
-                    title={enabled("delete") ? undefined : reason("delete")}
-                    onClick={() => setConfirmDelete(true)}
-                  >
-                    {copy.delete}
-                  </Button>
-                  {!enabled("delete") && (
-                    <p className="max-w-64 text-xs text-muted-foreground">{reason("delete")}</p>
+            </OperationRow>
+            <OperationRow className="block space-y-2">
+              <div className="flex flex-wrap items-start gap-2">
+                {/* Archiving is the agent's own (Codex); AgentKib keeps no archive of its own. */}
+                {archiveAction &&
+                  actionButton(
+                    archiveAction,
+                    archiveAction === "unarchive" ? copy.unarchive : copy.archive,
+                    {},
+                    true,
+                    "default",
+                    sharedReason === null,
                   )}
-                </div>
-              )}
-            </div>
-            {confirmDelete && (
-              <div
-                role="group"
-                aria-labelledby="session-delete-title"
-                aria-describedby="session-delete-detail"
-                className="space-y-2 rounded-md border border-destructive/40 p-3"
-              >
-                <p id="session-delete-title" className="text-sm font-medium">
-                  {copy.deleteTitle}
-                </p>
-                <p id="session-delete-detail" className="text-sm text-muted-foreground">
-                  {isClaude ? copy.deleteClaudeDetail : copy.deleteCodexDetail}
-                </p>
-                <div className="flex flex-wrap gap-2">
-                  <Button
-                    type="button"
-                    variant="destructive"
-                    size="sm"
-                    disabled={!enabled("delete")}
-                    onClick={() => void run("delete")}
-                  >
-                    {copy.deleteConfirm}
-                  </Button>
-                  <Button
-                    type="button"
-                    variant="outline"
-                    size="sm"
-                    disabled={operation}
-                    onClick={() => setConfirmDelete(false)}
-                  >
-                    {copy.cancel}
-                  </Button>
-                </div>
+                {actionButton("fork", copy.fork, {}, true, "default", sharedReason === null)}
+                {capabilities?.features.delete && (
+                  <div className="min-w-0 max-w-full space-y-1">
+                    <Button
+                      type="button"
+                      variant="outline"
+                      disabled={!enabled("delete") || confirmDelete}
+                      title={enabled("delete") ? undefined : reason("delete")}
+                      onClick={() => setConfirmDelete(true)}
+                    >
+                      {copy.delete}
+                    </Button>
+                    {sharedReason === null && !enabled("delete") && (
+                      <p className="max-w-64 text-xs text-muted-foreground">{reason("delete")}</p>
+                    )}
+                  </div>
+                )}
               </div>
-            )}
-          </section>
-          {isClaude && ownership}
-          {queueReadable && (
-            <section className="space-y-3 border-t pt-3">
-              <h3>{isClaude ? agentCopy.queue : copy.queue}</h3>
-              {isClaude && (queue?.requiresResume || queue?.paused) && (
-                <p role="status" className="text-sm text-muted-foreground">
-                  {queue.requiresResume ? agentCopy.queueRecovery : agentCopy.queuePaused}
-                </p>
+              {sharedReason !== null && (
+                <p className="text-xs leading-5 text-muted-foreground">{sharedReason}</p>
               )}
+            </OperationRow>
+            {confirmDelete && (
+              <OperationRow className="block">
+                <div
+                  role="group"
+                  aria-labelledby="session-delete-title"
+                  aria-describedby="session-delete-detail"
+                  className="grid gap-2"
+                >
+                  <p id="session-delete-title" className="font-medium">
+                    {copy.deleteTitle}
+                  </p>
+                  <p id="session-delete-detail" className="text-xs leading-5 text-muted-foreground">
+                    {isClaude ? copy.deleteClaudeDetail : copy.deleteCodexDetail}
+                  </p>
+                  <div className="flex flex-wrap gap-2">
+                    <Button
+                      type="button"
+                      variant="destructive"
+                      disabled={!enabled("delete")}
+                      onClick={() => void run("delete")}
+                    >
+                      {copy.deleteConfirm}
+                    </Button>
+                    <Button
+                      type="button"
+                      variant="outline"
+                      disabled={operation}
+                      onClick={() => setConfirmDelete(false)}
+                    >
+                      {copy.cancel}
+                    </Button>
+                  </div>
+                </div>
+              </OperationRow>
+            )}
+          </OperationGroup>
+          {isClaude && ownership}
+          {queueReadable && (queue || queueError) && (
+            <OperationGroup title={isClaude ? agentCopy.queue : copy.queue}>
               {isClaude &&
                 queue &&
-                (queue.paused || queue.requiresResume
-                  ? actionButton("queue-resume", agentCopy.resumeQueue)
-                  : !!queue.data.length && actionButton("queue-pause", agentCopy.pauseQueue))}
-              {queueError && <p role="status">{queueError}</p>}
-              {queue?.data?.length === 0 && <p>{copy.queueEmpty}</p>}
+                (queue.requiresResume || queue.paused || !!queue.data.length) && (
+                  <OperationRow className="flex-wrap gap-2">
+                    {(queue.requiresResume || queue.paused) && (
+                      <p role="status" className="min-w-0 flex-1 text-muted-foreground">
+                        {queue.requiresResume ? agentCopy.queueRecovery : agentCopy.queuePaused}
+                      </p>
+                    )}
+                    {queue.paused || queue.requiresResume
+                      ? actionButton("queue-resume", agentCopy.resumeQueue)
+                      : actionButton("queue-pause", agentCopy.pauseQueue)}
+                  </OperationRow>
+                )}
+              {queueError && (
+                <OperationRow>
+                  <p role="status">{queueError}</p>
+                </OperationRow>
+              )}
+              {queue?.data?.length === 0 && (
+                <OperationRow>
+                  <p className="text-muted-foreground">{copy.queueEmpty}</p>
+                </OperationRow>
+              )}
               {queue?.data?.map((item) => {
                 const pendingIndex = pendingQueue.findIndex((entry) => entry.id === item.id);
                 const editable = pendingIndex >= 0;
                 return (
-                  <div key={item.id} className="space-y-2 rounded border p-3">
-                    <p className="whitespace-pre-wrap break-words text-sm">
-                      {item.text || item.id}
-                    </p>
+                  <OperationRow key={item.id} className="block space-y-2">
+                    <p className="whitespace-pre-wrap break-words">{item.text || item.id}</p>
                     {item.hasAttachments && (
                       <p className="text-xs text-muted-foreground">{copy.queueAttachments}</p>
                     )}
@@ -408,22 +453,24 @@ export function CodexTools({
                           ),
                         })}
                     </div>
-                  </div>
+                  </OperationRow>
                 );
               })}
-            </section>
+            </OperationGroup>
           )}
-          <Disclosure className="space-y-3 border-t pt-3">
-            <DisclosureSummary className="cursor-pointer py-2 font-medium">
-              {layout.diagnostics}
-            </DisclosureSummary>
-            <h3>{copy.capabilities}</h3>
-            <p className="break-words text-xs text-muted-foreground">
-              {capabilities
-                ? `${capabilities.status}${capabilities.reason ? ` · ${codexReason(locale, capabilities.reason).text}` : ""}`
-                : copy.unavailable}
-            </p>
-            <ul className="space-y-1 text-xs text-muted-foreground">
+          <OperationDisclosure
+            title={layout.diagnostics}
+            className="overflow-hidden rounded-xl border border-border/70"
+          >
+            <div className="grid gap-1">
+              <h3>{copy.capabilities}</h3>
+              <p className="break-words text-xs text-muted-foreground">
+                {capabilities
+                  ? `${capabilities.status}${capabilities.reason ? ` · ${codexReason(locale, capabilities.reason).text}` : ""}`
+                  : copy.unavailable}
+              </p>
+            </div>
+            <ul className="space-y-1 text-xs text-muted-foreground empty:hidden">
               {Object.entries(capabilities?.features ?? {})
                 .filter(
                   ([action, feature]) =>
@@ -442,23 +489,26 @@ export function CodexTools({
                   </li>
                 ))}
             </ul>
-            <Button
-              variant="ghost"
-              disabled={busy}
-              onClick={() => {
-                setRevision((n) => n + 1);
-                void refresh(true);
-              }}
-            >
-              {copy.refresh}
-            </Button>
-            <div className="flex flex-wrap gap-2">{actionButton("inspect", copy.inspect)}</div>
+            <div className="flex flex-wrap items-start gap-2">
+              <Button
+                variant="outline"
+                size="sm"
+                disabled={busy}
+                onClick={() => {
+                  setRevision((n) => n + 1);
+                  void refresh(true);
+                }}
+              >
+                {copy.refresh}
+              </Button>
+              {actionButton("inspect", copy.inspect)}
+            </div>
             {context !== undefined && (
               <pre className="whitespace-pre-wrap break-words text-xs">
                 {JSON.stringify(context, null, 2)}
               </pre>
             )}
-          </Disclosure>
+          </OperationDisclosure>
         </Dialog>
       )}
     </>

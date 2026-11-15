@@ -20,7 +20,7 @@ export const remoteNetworkCopy = {
     nativeUnchanged: "电脑共享设置未更改。",
     nativeNotApplied: "电脑共享设置尚未应用。",
   },
-  "zh-TW": {
+  "zh-Hant": {
     title: "區域網路介面與連接埠",
     interface: "共用區域網路網卡",
     port: "手機區域網路連接埠",

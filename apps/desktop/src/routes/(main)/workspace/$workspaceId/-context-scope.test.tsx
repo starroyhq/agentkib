@@ -104,7 +104,7 @@ describe("Context disk preview scope", () => {
   it.each([
     ["en-US", "disk", "Unapplied", "does not reload"],
     ["zh-CN", "磁盘", "尚未应用", "不会让 Agent 重新加载"],
-    ["zh-TW", "磁碟", "尚未套用", "不會讓 Agent 重新載入"],
+    ["zh-Hant", "磁碟", "尚未套用", "不會讓 Agent 重新載入"],
     ["ja-JP", "ディスク", "未適用", "再読み込みされません"],
   ] as const)(
     "explains the disk and Agent reload boundaries during loading, error and empty results in %s",

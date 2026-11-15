@@ -107,6 +107,8 @@ interface PendingAlert {
   state: SessionState;
   session: HomeSession;
   at: number;
+  /** A Project Agent's result held while its work went on (`#leadBusy`). */
+  held?: boolean;
 }
 interface Activity {
   /** An update reached it, so the phone reported its update token after the remote start. */
@@ -159,6 +161,8 @@ export class PushNotifier {
   readonly #activityEndDelayMs: number;
   readonly #tickMs: number;
   #states = new Map<string, SessionState>();
+  /** The last catalog snapshot, for what a Project Agent's alert waits on. */
+  #sessions: readonly HomeSession[] = [];
   #known = false;
   #pending = new Map<string, PendingAlert>();
   /** Work started at `since`; `idleSince` is when the last session stopped working. */
@@ -184,6 +188,7 @@ export class PushNotifier {
     if (this.#stopped || !sessions) return;
     const now = this.#now();
     this.#snapshotAt = now;
+    this.#sessions = sessions;
     const groups = homeSessionGroups(sessions, { recent: 0 });
     const next = new Map<string, SessionState>();
     for (const entry of groups.needsYou) next.set(entry.session.id, `needs:${entry.need}`);
@@ -204,10 +209,12 @@ export class PushNotifier {
             session,
             at: now,
           });
-        // Only a turn seen working counts as ended: marking a session unread alerts nothing.
+        // Only a turn seen working counts as ended: marking a session unread alerts nothing. A
+        // Worker's turn goes to its Project Agent as a report; the person hears from that one.
         else if (
           (state === "result:completed" || state === "result:failed") &&
-          (previous === "running" || previous?.startsWith("needs:"))
+          (previous === "running" || previous?.startsWith("needs:")) &&
+          session.orchestration?.role !== "worker"
         )
           this.#pending.set(id, {
             kind: state === "result:completed" ? "completed" : "failed",
@@ -307,15 +314,43 @@ export class PushNotifier {
     if (!this.#pending.size) return;
     const present = this.#options.present?.() ?? false;
     for (const [id, alert] of this.#pending) {
-      const expired =
-        now - alert.at >
-        (alert.kind === "completed" || alert.kind === "failed" ? RESULT_HOLD_MS : NEED_HOLD_MS);
+      const result = alert.kind === "completed" || alert.kind === "failed";
+      // A Project Agent's turn ended while its work goes on: one alert once all of it stops,
+      // counted from when that is seen.
+      if (result && this.#states.get(id) === alert.state) {
+        if (this.#leadBusy(id)) {
+          alert.held = true;
+          continue;
+        }
+        if (alert.held) {
+          alert.held = false;
+          alert.at = now;
+        }
+      }
+      const expired = now - alert.at > (result ? RESULT_HOLD_MS : NEED_HOLD_MS);
       if (this.#states.get(id) !== alert.state || expired) this.#pending.delete(id);
       else if (!present) {
         this.#pending.delete(id);
         this.#sendAlert(alert, now, targets);
       }
     }
+  }
+
+  /**
+   * A Project Agent still has work in progress: a Worker running or waiting for the person, a
+   * report on its way into its next turn, or a background task of its own.
+   */
+  #leadBusy(id: string): boolean {
+    const lead = this.#sessions.find((session) => session.id === id);
+    const role = lead?.orchestration;
+    if (!lead || role?.role !== "lead") return false;
+    if ((role.reports ?? 0) > 0 || (lead.continuation?.backgroundTasks ?? 0) > 0) return true;
+    return this.#sessions.some((session) => {
+      if (session.orchestration?.role !== "worker" || session.orchestration.leadId !== id)
+        return false;
+      const state = this.#states.get(session.id);
+      return state === "running" || !!state?.startsWith("needs:");
+    });
   }
 
   #sendAlert(alert: PendingAlert, now: number, targets: Map<string, PushTarget>): void {

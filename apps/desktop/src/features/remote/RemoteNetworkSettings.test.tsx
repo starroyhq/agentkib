@@ -531,7 +531,7 @@ it.each(["address", "port"] as const)(
   },
 );
 
-it.each(["zh-CN", "zh-TW", "en-US", "ja-JP"] as const)(
+it.each(["zh-CN", "zh-Hant", "en-US", "ja-JP"] as const)(
   "localizes shared network settings in %s",
   async (locale) => {
     await act(() => changeLocale(locale));

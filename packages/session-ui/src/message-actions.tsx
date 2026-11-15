@@ -7,7 +7,7 @@ const copy = {
     failed: "复制失败，请选中文字后复制",
     time: "发送时间",
   },
-  "zh-TW": {
+  "zh-Hant": {
     copy: "複製正文",
     copied: "已複製",
     failed: "複製失敗，請選取文字後複製",

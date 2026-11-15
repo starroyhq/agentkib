@@ -21,6 +21,7 @@ import {
 import { CodexFollowerBridge } from "../../../packages/backend/src/codex-follower-bridge";
 import { CodexFollowerConnection } from "../../../packages/backend/src/codex-follower-connection";
 import { CodexFollowerState } from "../../../packages/backend/src/codex-follower-state";
+import { CodexDesktopApp } from "../../../packages/backend/src/codex-desktop-app";
 import * as codexFollowerLocks from "../../../packages/backend/src/codex-follower-operation-lock";
 import { CodexRuntimePreflight } from "../../../packages/backend/src/codex-runtime-preflight";
 import { readControlReceipt } from "../../../packages/backend/src/control-receipt";
@@ -155,6 +156,9 @@ function fixture(
   const follower = vi
     .spyOn(CodexFollowerBridge, "connect")
     .mockRejectedValue(new Error("must-not-follow-desktop"));
+  // Never look for, or open anything in, the machine's real Codex app.
+  vi.spyOn(CodexDesktopApp.prototype, "running").mockResolvedValue(false);
+  vi.spyOn(CodexDesktopApp.prototype, "openThread").mockResolvedValue(false);
   let nativeFailure: unknown;
   let turnFailure: unknown;
   const methods: string[] = [];
@@ -180,12 +184,14 @@ function fixture(
   };
   let queueSupported = true;
   let exitOn: string | undefined;
+  let serverUserAgent: string | null = null;
   let deleteFailure: unknown;
   const deletes: Array<{ server: number; othersOpen: number }> = [];
   const servers: OfflineServer[] = [];
   class OfflineServer extends EventEmitter {
     connected = true;
     closed = false;
+    userAgent = serverUserAgent;
     closeFailure?: Error;
     async request(method: string, params: unknown, dispatch?: () => void): Promise<unknown> {
       dispatch?.();
@@ -308,10 +314,10 @@ function fixture(
       this.emit("close");
     }
     respond() {}
-    complete() {
+    complete(turn: Record<string, unknown> = {}) {
       this.emit("notification", {
         method: "turn/completed",
-        params: { threadId: nativeId, turn: { id: "new-turn", status: "completed" } },
+        params: { threadId: nativeId, turn: { id: "new-turn", status: "completed", ...turn } },
       });
     }
     activateGoal() {
@@ -427,6 +433,9 @@ function fixture(
     setFailure: (error: unknown) => {
       nativeFailure = error;
     },
+    setServerUserAgent: (value: string | null) => {
+      serverUserAgent = value;
+    },
     setTurnFailure: (error: unknown) => {
       turnFailure = error;
     },
@@ -438,6 +447,34 @@ function fixture(
     },
   };
 }
+
+describe("a Codex Project Agent's thread", () => {
+  it("starts with its worker tools, and again without them once it no longer leads", async () => {
+    const f = fixture();
+    let url: string | null = "http://127.0.0.1:43123/lead-capability";
+    f.web.leadEndpoints(async (id) => (id === f.summary.id ? url : null));
+    const attached = () =>
+      f.requests.filter(({ method }) => ["thread/start", "thread/resume"].includes(method));
+    const config = () =>
+      (attached().at(-1)?.params as { config?: Record<string, unknown> } | undefined)?.config;
+    expect(await f.send()).toMatchObject({ accepted: true });
+    expect(config()).toMatchObject({ "mcp_servers.agentkib_workers.url": url });
+    expect(f.web.codexLeadCapable(f.summary.id)).toBe(true);
+    // Released while its turn runs: the thread starts again once the turn ends.
+    url = null;
+    await f.web.restartManagedRunner(f.summary.id);
+    const server = f.servers.at(-1)!;
+    expect(server.closed).toBe(false);
+    const before = attached().length;
+    server.complete();
+    await vi.waitFor(() => expect(server.closed).toBe(true), { timeout: 5_000 });
+    expect(await f.send()).toMatchObject({ accepted: true });
+    expect(attached()).toHaveLength(before + 1);
+    expect(config()).not.toHaveProperty("mcp_servers.agentkib_workers.url");
+    // Kept as AgentKib's, not released to the Codex app.
+    expect(f.web.isManagedSession(f.summary.id)).toBe(true);
+  });
+});
 
 describe("Codex manual compaction", () => {
   async function compact(f: ReturnType<typeof fixture>) {
@@ -1659,6 +1696,36 @@ describe("Codex managed sandbox verification", () => {
       model: "model-a",
     });
 
+  // The runner of a session it creates holds a record without the native ID until it is saved.
+  it("tells a lead when a session it just created ends its first turn", async () => {
+    const f = fixture();
+    const ended: unknown[] = [];
+    f.web.observeLanes({ turnEnded: (...args) => ended.push(args), waiting: () => {} });
+    const result = await create(f, "workspace-write-on-request");
+    expect(result).toMatchObject({ accepted: true });
+    const live = (await f.web.request({
+      operation: "live",
+      sessionId: result.sessionId,
+      experimentalEnabled: true,
+    })) as Record<string, unknown>;
+    expect(
+      await f.web.managedControl({
+        operation: "send",
+        sessionId: result.sessionId,
+        requestId: randomUUID(),
+        deviceId: "fixture",
+        runtimeBootId: live.runtimeBootId,
+        expectedRevision: live.revision,
+        experimentalEnabled: true,
+        text: "The first task",
+      }),
+    ).toMatchObject({ accepted: true });
+    f.servers.at(-1)!.complete({ durationMs: 5_000 });
+    await vi.waitFor(() =>
+      expect(ended).toEqual([[result.sessionId, "new-turn", "completed", 5_000]]),
+    );
+  });
+
   it.each(policies)("confirms the native %s policy", async (policyId, approval, reviewer, type) => {
     const f = fixture();
     const result = await create(f, policyId);
@@ -2355,6 +2422,32 @@ describe("Codex automatic CLI continuation", () => {
     await expect(
       f.web.request({ operation: "events", sessionId: f.summary.id, limit: 1, cursor: "42" }),
     ).rejects.toThrow("TRANSCRIPT_CURSOR_STALE");
+  });
+
+  it("stops before the first turn when the started Codex reports a release without the writer lock", async () => {
+    const f = fixture(true);
+    // `--version` named nothing readable, so the check let this CLI through.
+    f.setServerUserAgent("agentkib/0.146.0 (Mac OS 26.0.0; arm64) fixture");
+    expect(await f.send()).toMatchObject({
+      accepted: false,
+      controlOutcome: "not-dispatched",
+      reason: "codex-cli-version-too-old",
+    });
+    expect(f.methods).not.toContain("turn/start");
+    expect(f.servers.every((server) => server.closed || !server.connected)).toBe(true);
+    f.setServerUserAgent("agentkib/0.167.0-alpha.4.1 (Mac OS 26.0.0; arm64) fixture");
+    expect(await f.send()).toMatchObject({ accepted: true });
+  });
+
+  it("tells a lead when one of its lanes ends a turn", async () => {
+    const f = fixture(true);
+    const ended: unknown[] = [];
+    f.web.observeLanes({ turnEnded: (...args) => ended.push(args), waiting: () => {} });
+    expect(await f.send()).toMatchObject({ accepted: true });
+    f.servers[0]!.complete({ durationMs: 192_000 });
+    await vi.waitFor(() =>
+      expect(ended).toEqual([[f.summary.id, "new-turn", "completed", 192_000]]),
+    );
   });
 
   it("keeps native writer conflicts authoritative for compressed history", async () => {
@@ -3548,6 +3641,75 @@ describe("Codex Desktop follow", () => {
     expect(f.methods).not.toContain("thread/resume");
   });
 
+  it("tells a lead when a lane's turn in the Codex app waits or ends", async () => {
+    const { f, state } = followerFixture({ approval: true, revision: 3 });
+    const ended: unknown[] = [];
+    const waiting: unknown[] = [];
+    f.web.observeLanes({
+      turnEnded: (...args) => ended.push(args),
+      waiting: (...args) => waiting.push(args),
+    });
+    expect(await f.live()).toMatchObject({ executionMode: "codex-follower" });
+    const publish = f.follower.mock.calls[0]![2] as (snapshot: unknown) => void;
+    const change = (revision: number, turns: unknown[], requests: unknown[] = []) => {
+      state.notification({
+        type: "broadcast",
+        sourceClientId: "fixture-owner",
+        method: "thread-stream-state-changed",
+        version: 11,
+        params: {
+          conversationId: nativeId,
+          hostId: "local",
+          change: {
+            type: "snapshot",
+            revision,
+            conversationState: {
+              id: nativeId,
+              hostId: "local",
+              requests,
+              threadRuntimeStatus: { type: requests.length ? "active" : "idle" },
+              turns,
+            },
+          },
+        },
+      });
+      publish(state.streamSnapshot());
+    };
+    const running = [{ turnId: "followed-turn", status: "inProgress", items: [] }];
+    // The approval it waits for is told once, however often the Codex app's state changes.
+    change(4, running, [
+      {
+        id: "approval-1",
+        method: "item/commandExecution/requestApproval",
+        params: {
+          threadId: nativeId,
+          turnId: "followed-turn",
+          command: "ls",
+          cwd: f.workspace,
+          availableDecisions: ["accept", "decline"],
+        },
+      },
+    ]);
+    change(5, running, [
+      {
+        id: "approval-1",
+        method: "item/commandExecution/requestApproval",
+        params: {
+          threadId: nativeId,
+          turnId: "followed-turn",
+          command: "ls",
+          cwd: f.workspace,
+          availableDecisions: ["accept", "decline"],
+        },
+      },
+    ]);
+    expect(waiting).toEqual([[f.summary.id, "followed-turn", "awaiting-approval"]]);
+    change(6, running);
+    change(7, [{ turnId: "followed-turn", status: "completed", durationMs: 61_000, items: [] }]);
+    change(8, [{ turnId: "followed-turn", status: "completed", durationMs: 61_000, items: [] }]);
+    expect(ended).toEqual([[f.summary.id, "followed-turn", "completed", 61_000]]);
+  });
+
   it("keeps the busy choice and backs off when no Codex owner is found", async () => {
     const f = fixture();
     vi.spyOn(CodexFollowerConnection, "supported").mockReturnValue(true);
@@ -3580,6 +3742,130 @@ describe("Codex Desktop follow", () => {
     });
     expect(f.follower).not.toHaveBeenCalled();
     expect(f.start).not.toHaveBeenCalled();
+  });
+
+  // What Codex's app-server answers a resume while another process writes the thread.
+  const activeWriter = () =>
+    new CodexAppServerError({
+      code: -32600,
+      message: `thread ${nativeId} already has an active writer`,
+    });
+
+  it("keeps sending open while the Codex app holds the thread with no window on it", async () => {
+    const f = fixture();
+    vi.spyOn(CodexFollowerConnection, "supported").mockReturnValue(true);
+    holdWriterLock(f);
+    f.setFailure(activeWriter());
+    f.follower.mockRejectedValue(new Error("no Codex session owner found"));
+    const running = vi.spyOn(CodexDesktopApp.prototype, "running").mockResolvedValue(true);
+    const open = vi.spyOn(CodexDesktopApp.prototype, "openThread").mockResolvedValue(true);
+    expect(await f.live()).toMatchObject({
+      executionLocation: "external",
+      ownershipReason: "codex-owner-busy",
+      sendEnabled: true,
+      ownerHandoff: true,
+    });
+    const capabilities = (await f.web.managedQuery({
+      operation: "capabilities",
+      sessionId: f.summary.id,
+      experimentalEnabled: true,
+    })) as { features: Record<string, unknown> };
+    expect(capabilities.features).toMatchObject({
+      send: { available: true },
+      attachments: { available: true },
+      settings: { available: false, reason: "codex-owner-busy" },
+      "queue-add": { available: false, reason: "codex-owner-busy" },
+    });
+    // Looking at the session does not move the app's page.
+    expect(open).not.toHaveBeenCalled();
+
+    // Without the app running nothing can take the thread: the session is simply in use.
+    running.mockResolvedValue(false);
+    const busy = await f.live();
+    expect(busy).toMatchObject({ ownershipReason: "codex-owner-busy", sendEnabled: false });
+    expect(busy).not.toHaveProperty("ownerHandoff");
+    // A client that still sends is turned away before anything is dispatched.
+    expect(await f.sendWithState(busy)).toMatchObject({
+      accepted: false,
+      controlOutcome: "not-dispatched",
+      reason: "codex-owner-busy",
+    });
+    expect(open).not.toHaveBeenCalled();
+    expect(f.methods).not.toContain("turn/start");
+  });
+
+  it("asks the Codex app to show the thread when a message is sent, then sends through it", async () => {
+    const { f, bridge } = followerFixture({ revision: 4 });
+    f.setFailure(activeWriter());
+    let shown = false;
+    f.follower.mockImplementation(async () => {
+      if (!shown) throw new Error("no Codex session owner found");
+      return bridge as unknown as CodexFollowerBridge;
+    });
+    vi.spyOn(CodexDesktopApp.prototype, "running").mockResolvedValue(true);
+    const open = vi.spyOn(CodexDesktopApp.prototype, "openThread").mockImplementation(async () => {
+      shown = true;
+      return true;
+    });
+    const state = await f.live();
+    expect(state).toMatchObject({ sendEnabled: true, ownerHandoff: true });
+    const requestId = randomUUID();
+    expect(await f.sendWithState(state, { requestId })).toMatchObject({ accepted: true });
+    expect(open).toHaveBeenCalledExactlyOnceWith(nativeId);
+    // The message goes to the app under its own receipt, against the app's revision.
+    expect(bridge.mutate).toHaveBeenCalledWith(
+      "thread-follower-start-turn",
+      {
+        conversationId: nativeId,
+        turnStart: {
+          request: {
+            threadId: nativeId,
+            clientUserMessageId: requestId,
+            input: [{ type: "text", text: "Continue", text_elements: [] }],
+          },
+        },
+      },
+      4,
+      expect.any(Function),
+    );
+    expect(f.methods).not.toContain("turn/start");
+    const ledger = openManagedLedger(f.root)!;
+    try {
+      const row = ledger
+        .prepare("SELECT evidence FROM managed_commands WHERE request_id=?")
+        .get(requestId) as { evidence: string };
+      expect(JSON.parse(row.evidence)).toMatchObject({ executionMode: "codex-follower" });
+    } finally {
+      ledger.close();
+    }
+    // From now on the session follows the app.
+    expect(await f.live()).toMatchObject({
+      executionMode: "codex-follower",
+      ownershipReason: null,
+    });
+  });
+
+  it("leaves the message unsent when the Codex app does not take the thread", async () => {
+    const f = fixture(false, undefined, { AGENTKIB_CODEX_HANDOFF_TIMEOUT_MS: "600" });
+    vi.spyOn(CodexFollowerConnection, "supported").mockReturnValue(true);
+    holdWriterLock(f);
+    f.setFailure(activeWriter());
+    f.follower.mockRejectedValue(new Error("no Codex session owner found"));
+    vi.spyOn(CodexDesktopApp.prototype, "running").mockResolvedValue(true);
+    const open = vi.spyOn(CodexDesktopApp.prototype, "openThread").mockResolvedValue(true);
+    const state = await f.live();
+    expect(state).toMatchObject({ ownerHandoff: true });
+    expect(await f.sendWithState(state, { requestId: randomUUID() })).toMatchObject({
+      accepted: false,
+      controlOutcome: "not-dispatched",
+      reason: "codex-owner-busy",
+    });
+    expect(open).toHaveBeenCalledTimes(1);
+    expect(f.methods).not.toContain("turn/start");
+    // Sending is not offered again right away.
+    const after = await f.live();
+    expect(after).toMatchObject({ ownershipReason: "codex-owner-busy", sendEnabled: false });
+    expect(after).not.toHaveProperty("ownerHandoff");
   });
 
   it("forwards a send to the owner instead of resuming", async () => {

@@ -33,7 +33,7 @@ export const contextUsageCopy = {
     compactDetailCodex:
       "让 Codex 总结此前的对话，为后续轮次腾出上下文；压缩作为单独的一轮运行，此前的消息仍会显示在这里。",
   },
-  "zh-TW": {
+  "zh-Hant": {
     windowTitle: "上下文視窗",
     usedRemaining: "已使用 {used}%（剩餘 {remaining}%）",
     tokenUsage: "已使用 {used} / {total} Token",

@@ -41,6 +41,25 @@ describe("remote payload validation", () => {
     expect(result.workspaces.map((item) => item.checkout)).toEqual([checkout, undefined]);
     expect(result.sessions.map((item) => item.worktree)).toEqual([worktree, undefined, undefined]);
   });
+  it("keeps Project Agent and Worker roles and drops malformed ones without the session", () => {
+    const lead = { role: "lead", workers: 2, paused: false };
+    const worker = { role: "worker", leadId: "s", name: "api" };
+    const result = parseRemoteCatalog({
+      workspaces: [workspace],
+      sessions: [
+        { ...session, agent: "claude-code", orchestration: lead },
+        { ...session, id: "s2", orchestration: worker },
+        { ...session, id: "s3", orchestration: { role: "manager" } },
+        { ...session, id: "s4", orchestration: { ...worker, extra: "dropped" } },
+      ],
+    });
+    expect(result.sessions.map((item) => item.orchestration)).toEqual([
+      lead,
+      worker,
+      undefined,
+      worker,
+    ]);
+  });
   it.each([
     "not-a-date",
     "",

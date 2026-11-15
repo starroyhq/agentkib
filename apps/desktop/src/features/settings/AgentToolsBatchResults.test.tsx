@@ -421,7 +421,7 @@ describe("batch update result details", () => {
 
   it.each([
     ["zh-CN", "批量更新逐项结果", "结果尚未确认"],
-    ["zh-TW", "批次更新逐項結果", "結果尚未確認"],
+    ["zh-Hant", "批次更新逐項結果", "結果尚未確認"],
     ["en-US", "Batch update results", "Outcome unconfirmed"],
     ["ja-JP", "一括更新の個別結果", "結果未確認"],
   ] as const)(

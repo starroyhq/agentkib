@@ -34,7 +34,7 @@ export const hostedCopy: Record<
     lan: "局域网连接",
     lanNote: "已在电脑上的 AgentKib 启用“局域网直连”？同一网络下可使用此入口。",
   },
-  "zh-TW": {
+  "zh-Hant": {
     title: "連接你的電腦",
     account: "登入並選擇電腦",
     accountNote: "查看帳號下的電腦。新瀏覽器首次連線仍需電腦上的 AgentKib 顯示的授權碼。",

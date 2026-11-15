@@ -142,7 +142,7 @@ beforeEach(async () => {
 afterEach(cleanup);
 
 describe("pending synchronization navigation", () => {
-  it.each(["zh-CN", "zh-TW", "en-US", "ja-JP"] as const)(
+  it.each(["zh-CN", "zh-Hant", "en-US", "ja-JP"] as const)(
     "is keyboard reachable and opens only the actual pending rows in %s",
     async (locale) => {
       await initializeI18n(locale);

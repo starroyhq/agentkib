@@ -3,12 +3,17 @@ import {
   sessionContinuationListState,
   SessionContinuationDot,
 } from "@agentkib/session-ui";
-import { Bot, GitBranch } from "lucide-react";
+import { Bot, CornerDownRight, GitBranch, Network } from "lucide-react";
 import type { ConversationSessionSummary } from "@/core/types";
 import { useI18n } from "@/core/useI18n";
 import { AgentIcon } from "@/features/agents/AgentIcon";
 import { displaySessionTitle } from "@/features/workspace/session-title";
-import { isInteractiveFork, sessionSourceLabel, worktreeLabel } from "./session-labels";
+import {
+  isInteractiveFork,
+  orchestrationLabel,
+  sessionSourceLabel,
+  worktreeLabel,
+} from "./session-labels";
 import { WorktreeMark } from "./WorktreeMark";
 
 /** Shared row contents for the global directory and the workspace's session list. */
@@ -25,6 +30,8 @@ export function SessionDirectoryEntry({
 }) {
   const { locale, tr, formatDateTime } = useI18n();
   const status = sessionContinuationListState(session, locale);
+  const delegation =
+    session.orchestration && orchestrationLabel(session.orchestration, sessions, tr);
   return (
     <>
       <AgentIcon agent={session.agent} compact />
@@ -33,6 +40,24 @@ export function SessionDirectoryEntry({
           {displaySessionTitle(session.title, tr)}
         </strong>
       </span>
+      {/* Whom a session works for is not a state. It stays next to the title, also where the
+          directory shows a single state at the end of the row. */}
+      {session.orchestration && (
+        <span
+          role="img"
+          aria-label={delegation}
+          title={delegation}
+          data-orchestration={session.orchestration.role}
+          className="inline-flex shrink-0 text-muted-foreground"
+        >
+          {/* The size class keeps the row button from enlarging the icon to its default. */}
+          {session.orchestration.role === "lead" ? (
+            <Network size={12} className="size-3" aria-hidden="true" />
+          ) : (
+            <CornerDownRight size={12} className="size-3" aria-hidden="true" />
+          )}
+        </span>
+      )}
       <span className={hideIndicators ? "sr-only" : "contents"}>
         {hideIndicators && session.readState?.status === "unread" && !status?.unread && (
           <span>

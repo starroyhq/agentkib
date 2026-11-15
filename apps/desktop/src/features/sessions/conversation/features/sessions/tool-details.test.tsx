@@ -298,7 +298,7 @@ describe("turn file changes", () => {
 describe("tool detail helpers", () => {
   it("formats turn durations in every locale", () => {
     expect(formatToolDuration(127_000, "zh-CN")).toBe("2 分 7 秒");
-    expect(formatToolDuration(127_000, "zh-TW")).toBe("2 分 7 秒");
+    expect(formatToolDuration(127_000, "zh-Hant")).toBe("2 分 7 秒");
     expect(formatToolDuration(127_000, "en-US")).toBe("2m 7s");
     expect(formatToolDuration(127_000, "ja-JP")).toBe("2分7秒");
     expect(formatToolDuration(3_725_000, "en-US")).toBe("1h 2m");
@@ -326,6 +326,6 @@ describe("tool detail helpers", () => {
         ...Object.keys(copy.agentActions).sort(),
       ];
     };
-    for (const locale of ["zh-TW", "en-US", "ja-JP"]) expect(keys(locale)).toEqual(keys("zh-CN"));
+    for (const locale of ["zh-Hant", "en-US", "ja-JP"]) expect(keys(locale)).toEqual(keys("zh-CN"));
   });
 });

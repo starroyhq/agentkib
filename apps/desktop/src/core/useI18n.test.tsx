@@ -28,7 +28,7 @@ describe("reactive internationalization", () => {
     const original = screen.getByRole("button");
     fireEvent.click(original);
     try {
-      for (const locale of ["zh-CN", "zh-TW", "ja-JP", "en-US"] as const) {
+      for (const locale of ["zh-CN", "zh-Hant", "ja-JP", "en-US"] as const) {
         await act(() => changeLocale(locale));
         expect(screen.getByRole("button", { name: tr("sessions.more") })).toBe(original);
         expect(screen.getByTestId("counter").textContent).toBe("1");

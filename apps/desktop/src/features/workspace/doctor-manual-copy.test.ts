@@ -38,7 +38,7 @@ const parameters = (text: string) =>
 
 describe.each([
   ["zh-CN", "详情"],
-  ["zh-TW", "詳細資料"],
+  ["zh-Hant", "詳細資料"],
   ["en-US", "Details"],
   ["ja-JP", "詳細"],
 ] as const)("diagnostic manual guidance in %s", (locale, details) => {

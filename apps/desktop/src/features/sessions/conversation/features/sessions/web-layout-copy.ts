@@ -30,7 +30,7 @@ const zh = {
 type Copy = { [K in keyof typeof zh]: string };
 export const webLayoutCopy: Record<Locale, Copy> = {
   "zh-CN": zh,
-  "zh-TW": {
+  "zh-Hant": {
     actions: "對話操作",
     management: "對話管理",
     diagnostics: "診斷",

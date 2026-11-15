@@ -16,7 +16,7 @@ describe("Web content search settings instructions", () => {
       "仅运行 AgentKib 的电脑",
     ],
     [
-      "zh-TW",
+      "zh-Hant",
       "正文索引未開啟，請聯絡電腦擁有者，在電腦上的 AgentKib「設定 → 隱私 → 對話正文搜尋」中啟用。",
       "僅執行 AgentKib 的電腦",
     ],

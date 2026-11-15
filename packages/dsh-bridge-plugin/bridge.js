@@ -33,6 +33,8 @@ export const DSH_BRIDGE_PATHS = Object.freeze({
   report: "/v1/report",
   poll: "/v1/poll",
   result: "/v1/result",
+  /** A Project Agent's worker tool call (service `leadTools`). */
+  leadCall: "/v1/lead-call",
 });
 
 const HEARTBEAT_MS = 10_000;
@@ -57,6 +59,10 @@ const IMAGE_TYPES = new Set(["image/png", "image/jpeg", "image/webp", "image/gif
 // outcome is in the session's history either way. AgentKib's Host answers no reads while it
 // waits for a control, so the wait stays short; DSH's own commands answer in milliseconds.
 const COMMAND_WAIT_MS = 2_000;
+/** A worker tool may start a session or wait for one; AgentKib bounds its own steps. */
+const LEAD_CALL_MS = 120_000;
+/** The worker tools AgentKib gives a Project Agent (docs/agents/project-agent.md). */
+const LEAD_TOOL = /^worker_[a-z]{1,16}$/;
 const MAX_SUBAGENTS = 50;
 // Session events that change what a session's settings show: its permission preset, and its plan
 // mode, which a `/plan` switches once its command settles.
@@ -200,6 +206,8 @@ export function createBridge(ctx, options = {}) {
   const roots = options.roots ?? (managed ? [managed.home] : discoveryRoots());
   const lifetime = new AbortController();
   const hosts = new Map();
+  /** Each Project Agent's registered worker tools, by session: `{ agent, signature, dispose }`. */
+  const leadTools = new Map();
   /** When an AgentKib last answered; a DSH that AgentKib started stops once this is too old. */
   let lastContact = Date.now();
   /** Monotonic change counter; every report sends what changed after the host's last ack. */
@@ -316,11 +324,16 @@ export function createBridge(ctx, options = {}) {
   ctx.on("agent/created", ({ agent }) => {
     attach(agent);
     refreshList();
+    // A Project Agent DSH loads again gets its worker tools before its first step; the agent is
+    // the one being announced, whether or not DSH's registry lists it yet.
+    syncLead(String(agent.id), agent);
     return undefined;
   });
   ctx.on("agent/disposed", ({ agent }) => {
     detach(agent);
     refreshList();
+    // The agent's own registrations unwind with it.
+    if (leadTools.get(String(agent.id))?.agent === agent) leadTools.delete(String(agent.id));
   });
   ctx.on("agent/status", ({ agent, status }) => {
     const state = stateOf(String(agent.id));
@@ -1230,6 +1243,114 @@ export function createBridge(ctx, options = {}) {
     }
   }
 
+  // ---- Project Agent tools -----------------------------------------------------------------
+
+  // AgentKib names the sessions that are Project Agents in its poll replies, with their worker
+  // tools. Each lead's tools are registered on that session's own agent, so no other session sees
+  // them, and calls go back to the AgentKib that named it. DSH runs a session it loads again in a
+  // new agent, which gets them again when it is created (`leadTools` is declared with `hosts`).
+  /** The AgentKib that made a session a Project Agent, and the tools it gave it. */
+  function leadOf(sessionId) {
+    for (const host of hosts.values()) {
+      const tools = host.leads?.get(sessionId);
+      if (tools && !host.closed) return { host, tools };
+    }
+    return null;
+  }
+  function syncLead(sessionId, created = undefined) {
+    const owner = leadOf(sessionId);
+    const agent = created ?? service("agents")?.get?.(sessionId);
+    const signature = owner ? JSON.stringify(owner.tools) : null;
+    const current = leadTools.get(sessionId);
+    if (current && current.agent === agent && current.signature === signature) return;
+    if (current) {
+      leadTools.delete(sessionId);
+      current.dispose();
+    }
+    if (!owner || typeof agent?.ctx?.tools?.register !== "function") return;
+    const disposers = [];
+    const dispose = () => {
+      for (const unregister of disposers.splice(0))
+        try {
+          unregister();
+        } catch {
+          // Already gone with the agent.
+        }
+    };
+    try {
+      for (const spec of owner.tools)
+        disposers.push(agent.ctx.tools.register(leadTool(sessionId, spec)));
+    } catch {
+      // A name the agent already has, or an agent being disposed: none rather than some.
+      dispose();
+      return;
+    }
+    leadTools.set(sessionId, { agent, signature, dispose });
+  }
+  /** One worker tool, as DSH's tool registry takes it: the call is AgentKib's to run. */
+  function leadTool(sessionId, spec) {
+    return {
+      name: spec.name,
+      description: spec.description,
+      parameters: spec.inputSchema,
+      output: {
+        schema: { type: "string" },
+        render: (_args, value) => [{ type: "text", text: String(value) }],
+      },
+      async execute(args, exec) {
+        const owner = leadOf(sessionId);
+        if (!owner?.host.token)
+          throw new Error(JSON.stringify({ accepted: false, reason: "agentkib-unavailable" }));
+        const reply = await post(
+          owner.host.socketPath,
+          DSH_BRIDGE_PATHS.leadCall,
+          {
+            token: owner.host.token,
+            sessionId,
+            name: spec.name,
+            input: args && typeof args === "object" && !Array.isArray(args) ? args : {},
+          },
+          { timeoutMs: LEAD_CALL_MS, signal: exec?.signal },
+        );
+        const text = typeof reply?.text === "string" ? reply.text : "";
+        // A refusal is the tool's failure; the model reads why and the turn goes on.
+        if (reply?.isError === true) throw new Error(text);
+        return text;
+      },
+    };
+  }
+  /** A poll reply's leads: every Project Agent that AgentKib has in this DSH, with its tools. */
+  function applyLeads(host, leads) {
+    const next = new Map();
+    for (const lead of leads.slice(0, 32)) {
+      if (typeof lead?.sessionId !== "string" || !Array.isArray(lead.tools)) continue;
+      const tools = lead.tools
+        .filter(
+          (tool) =>
+            LEAD_TOOL.test(String(tool?.name)) &&
+            typeof tool.description === "string" &&
+            tool.inputSchema !== null &&
+            typeof tool.inputSchema === "object",
+        )
+        .slice(0, 16)
+        .map(({ name, description, inputSchema }) => ({
+          name,
+          description: description.slice(0, 8192),
+          inputSchema,
+        }));
+      if (tools.length) next.set(lead.sessionId, tools);
+    }
+    const before = host.leads ?? new Map();
+    host.leads = next;
+    for (const sessionId of new Set([...before.keys(), ...next.keys()])) syncLead(sessionId);
+  }
+  /** An AgentKib went away: the leads it named lose their tools. */
+  function dropLeads(host) {
+    const before = host.leads ?? new Map();
+    host.leads = new Map();
+    for (const sessionId of before.keys()) syncLead(sessionId);
+  }
+
   // ---- hosts ------------------------------------------------------------------------------
 
   const services = () => {
@@ -1254,6 +1375,10 @@ export function createBridge(ctx, options = {}) {
       documents:
         typeof query?.observeSession === "function" && typeof query?.readSurface === "function",
       agentPresets: typeof service("agentPresets")?.remoteExportList === "function",
+      // A session's own agent takes the worker tools of a Project Agent.
+      leadTools:
+        typeof service("agents")?.get === "function" &&
+        typeof service("tools")?.register === "function",
     };
   };
   function report(host) {
@@ -1357,6 +1482,8 @@ export function createBridge(ctx, options = {}) {
         host.failures = 0;
         lastContact = Date.now();
         if (Date.now() - host.lastReport > HEARTBEAT_MS) void send(host);
+        // Before the commands: a message that resumes a lead finds its tools in place.
+        if (Array.isArray(reply?.leads)) applyLeads(host, reply.leads);
         for (const command of Array.isArray(reply?.commands) ? reply.commands : [])
           void (async () => {
             let result;
@@ -1399,6 +1526,7 @@ export function createBridge(ctx, options = {}) {
           if (host.failures > 6) {
             host.closed = true;
             hosts.delete(host.socketPath);
+            dropLeads(host);
             return;
           }
         }
@@ -1413,7 +1541,10 @@ export function createBridge(ctx, options = {}) {
         for (const found of await discover(roots)) {
           const existing = hosts.get(found.socketPath);
           if (existing && existing.key === found.key) continue;
-          if (existing) existing.closed = true;
+          if (existing) {
+            existing.closed = true;
+            dropLeads(existing);
+          }
           const host = {
             ...found,
             token: null,
@@ -1501,6 +1632,8 @@ export function createBridge(ctx, options = {}) {
       stdin?.off?.("end", exit);
       if (scheduled) clearTimeout(scheduled);
       for (const host of hosts.values()) host.closed = true;
+      for (const registration of leadTools.values()) registration.dispose();
+      leadTools.clear();
     },
   };
 }

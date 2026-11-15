@@ -45,7 +45,7 @@ describe("manifest diff checksums", () => {
   });
   it.each([
     ["zh-CN", "自动生成的校验信息 3 行（已折叠）"],
-    ["zh-TW", "自動產生的校驗資訊 3 行（已摺疊）"],
+    ["zh-Hant", "自動產生的校驗資訊 3 行（已摺疊）"],
     ["en-US", "Automatically generated checksums: 3 lines (collapsed)"],
     ["ja-JP", "自動生成されたチェックサム 3 行（折りたたみ）"],
   ] as const)("keeps actual instructions and settings visible in %s", async (locale, label) => {

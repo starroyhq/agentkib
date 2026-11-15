@@ -45,7 +45,7 @@ export interface ReadStateClient {
 }
 export function readStateCopy(locale: string) {
   const values =
-    locale === "zh-TW"
+    locale === "zh-Hant"
       ? [
           "待查看",
           "未讀",

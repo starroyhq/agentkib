@@ -837,7 +837,7 @@ function LanguageSetting({
         <SelectContent>
           <SelectGroup>
             <SelectLabel>{tr("settings.language")}</SelectLabel>
-            {(["system", "zh-CN", "zh-TW", "ja-JP", "en-US"] as LocalePreference[]).map(
+            {(["system", "zh-CN", "zh-Hant", "ja-JP", "en-US"] as LocalePreference[]).map(
               (locale) => (
                 <SelectItem key={locale} value={locale}>
                   {tr(`settings.language.${locale}`)}

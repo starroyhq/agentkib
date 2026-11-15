@@ -74,7 +74,7 @@ describe("management destinations", () => {
     await initializeI18n("en-US");
   });
   afterEach(cleanup);
-  it.each(["en-US", "zh-CN", "zh-TW", "ja-JP"] as const)(
+  it.each(["en-US", "zh-CN", "zh-Hant", "ja-JP"] as const)(
     "links integrations to MCP network settings in %s",
     async (locale) => {
       await initializeI18n(locale);

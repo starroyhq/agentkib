@@ -186,7 +186,7 @@ afterEach(cleanup);
 
 it.each([
   ["zh-CN", "指令", "钩子与配置档", "搜索指令、技能、MCP、钩子…"],
-  ["zh-TW", "指令", "鉤子與設定檔", "搜尋指令、技能、MCP、鉤子…"],
+  ["zh-Hant", "指令", "鉤子與設定檔", "搜尋指令、技能、MCP、鉤子…"],
   ["en-US", "Instructions", "Hooks & Profiles", "Search Instructions, Skills, MCP, Hooks…"],
   ["ja-JP", "指示", "フックとプロファイル", "指示、スキル、MCP、フックを検索…"],
 ] as const)(
@@ -425,7 +425,7 @@ it.each(sources)(
   },
 );
 
-it.each(["zh-CN", "zh-TW", "en-US", "ja-JP"] as const)(
+it.each(["zh-CN", "zh-Hant", "en-US", "ja-JP"] as const)(
   "keeps section navigation and names only active failed dependencies in %s",
   async (locale) => {
     await initializeI18n(locale);

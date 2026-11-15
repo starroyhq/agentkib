@@ -313,7 +313,7 @@ it("keeps all localized management explanations aligned between Desktop and Web"
     expect(Object.values(copy).every((text) => text.trim().length > 0)).toBe(true);
   }
   for (const key of Object.keys(webCopy["en-US"]) as (keyof (typeof webCopy)["en-US"])[]) {
-    expect(webCopy["zh-TW"][key]).not.toBe(webCopy["zh-CN"][key]);
+    expect(webCopy["zh-Hant"][key]).not.toBe(webCopy["zh-CN"][key]);
     expect(webCopy["ja-JP"][key]).not.toBe(webCopy["zh-CN"][key]);
   }
 });

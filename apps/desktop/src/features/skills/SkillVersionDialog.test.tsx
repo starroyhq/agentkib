@@ -172,7 +172,7 @@ describe("SkillVersionDialog", () => {
         onPrepared={vi.fn()}
       />,
     );
-    for (const locale of ["en-US", "zh-CN", "zh-TW", "ja-JP"] as const) {
+    for (const locale of ["en-US", "zh-CN", "zh-Hant", "ja-JP"] as const) {
       await act(() => changeLocale(locale));
       expect(screen.getByRole("textbox", { name: tr("skills.versions.commitInput") })).toBeTruthy();
       expect(screen.getByRole("button", { name: tr("skills.versions.review") })).toBeTruthy();

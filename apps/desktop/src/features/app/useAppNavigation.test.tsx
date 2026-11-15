@@ -257,7 +257,7 @@ describe("useAppNavigation guards", () => {
     expect(testDoubles.notify).not.toHaveBeenCalled();
   });
 
-  it.each(["en-US", "zh-CN", "zh-TW", "ja-JP"] as const)(
+  it.each(["en-US", "zh-CN", "zh-Hant", "ja-JP"] as const)(
     "clears applied feedback after visiting settings and returning without discarding the draft in %s",
     async (locale) => {
       await initializeI18n(locale);
@@ -413,7 +413,7 @@ describe("useAppNavigation guards", () => {
     });
   });
 
-  it.each(["en-US", "zh-CN", "zh-TW", "ja-JP"] as const)(
+  it.each(["en-US", "zh-CN", "zh-Hant", "ja-JP"] as const)(
     "blocks settings navigation with an operation warning in %s",
     async (locale) => {
       await initializeI18n(locale);

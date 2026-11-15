@@ -225,7 +225,7 @@ describe("catalog loading through the real Web application and session provider"
     expect(host.fetcher.mock.calls.some(([, init]) => init?.method === "POST")).toBe(false);
   });
 
-  it.each(["zh-CN", "zh-TW", "en-US", "ja-JP"] as const)(
+  it.each(["zh-CN", "zh-Hant", "en-US", "ja-JP"] as const)(
     "shows %s loading until the first accepted snapshot, then the real empty result",
     async (locale) => {
       const host = fixture(locale);

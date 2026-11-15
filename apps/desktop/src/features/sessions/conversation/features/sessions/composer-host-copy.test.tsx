@@ -19,7 +19,7 @@ import { managedControlCopy } from "./managed-control-copy";
 vi.mock("@tanstack/react-router", () => ({ useNavigate: () => vi.fn() }));
 const labels = [
   ["zh-CN", "选择附件文件", "引用文件或技能后，请输入消息或添加附件再发送。"],
-  ["zh-TW", "選取附件檔案", "引用檔案或技能後，請輸入訊息或新增附件再傳送。"],
+  ["zh-Hant", "選取附件檔案", "引用檔案或技能後，請輸入訊息或新增附件再傳送。"],
   [
     "en-US",
     "Choose attachment files",

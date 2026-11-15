@@ -41,7 +41,7 @@ const root = path
   .resolve(options.root ?? "/tmp/agentkib-v15-b-sandbox")
   .replace(/^\/tmp\//, "/private/tmp/");
 assert.ok(/^\/(?:private\/)?tmp\/agentkib-v15-b-[^/]+$/.test(root), "Use a dedicated QA root");
-assert.ok(!options.locale || ["zh-CN", "zh-TW", "en-US", "ja-JP"].includes(options.locale));
+assert.ok(!options.locale || ["zh-CN", "zh-Hant", "en-US", "ja-JP"].includes(options.locale));
 const owner = "agentkib-v15-b-sandbox";
 const states = [
   "unconnected",

@@ -79,7 +79,13 @@ export const bridgeSnapshotSchema = bridgeIdentitySchema.extend({
 export const bridgeEventSchema = z.discriminatedUnion("type", [
   z.object({ type: z.literal("gap"), revision }),
   z.object({ type: z.literal("snapshot"), snapshot: bridgeSnapshotSchema }),
-  z.object({ type: z.literal("turn-start"), turnId: id, revision }),
+  z.object({
+    type: z.literal("turn-start"),
+    turnId: id,
+    revision,
+    /** Feature `lead-tools`: who started the turn; absent from plugins without it. */
+    origin: z.enum(["terminal", "agentkib"]).optional(),
+  }),
   z.object({ type: z.literal("text"), turnId: id, text, revision }),
   z.object({
     type: z.literal("turn-complete"),
@@ -97,6 +103,15 @@ export const bridgeEventsSchema = bridgeLeaseSchema.extend({
 export const bridgePollSchema = bridgeLeaseSchema.extend({
   afterCommandId: id.nullable(),
   waitMs: z.number().int().min(0).max(20_000),
+  /** Feature `lead-tools`: whether this plugin can add a Project Agent's tools now. */
+  leadTools: z.boolean().optional(),
+  /** Feature `lead-tools`: reports it has put in its outbox since the last poll. */
+  takenReports: z.array(id).max(32).optional(),
+});
+/** A Project Agent's tool call from its terminal (feature `lead-tools`). */
+export const bridgeLeadCallSchema = bridgeLeaseSchema.extend({
+  name: z.string().regex(/^worker_[a-z]{1,32}$/),
+  input: z.record(z.string(), z.unknown()),
 });
 export const bridgeResultSchema = bridgeLeaseSchema.extend({
   commandId: id,

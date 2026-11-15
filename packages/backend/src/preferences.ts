@@ -40,8 +40,10 @@ export function writePreferences(dataDir: string, changes: Record<string, unknow
 
 export function preferenceSnapshot(dataDir: string, environment: NodeJS.ProcessEnv) {
   const preferences = readPreferences(dataDir);
-  const locale =
+  const saved =
     typeof preferences.locale_preference === "string" ? preferences.locale_preference : "system";
+  // Traditional Chinese was saved as "zh-TW" before it became "zh-Hant".
+  const locale = saved === "zh-TW" ? "zh-Hant" : saved;
   const theme = member(preferences.theme_preference, THEMES) ?? "system";
   const width = preferences.sidebar_width_preference;
   return {

@@ -21,7 +21,7 @@ describe("worktree chip", () => {
     ["present", "zh-CN", "工作树 h2 · codex/h2"],
     ["deleted", "zh-CN", "工作树 h2 · 已删除"],
     ["unknown", "zh-CN", "工作树 h2 · 状态未知"],
-    ["deleted", "zh-TW", "工作樹 h2 · 已刪除"],
+    ["deleted", "zh-Hant", "工作樹 h2 · 已刪除"],
     ["deleted", "en-US", "Worktree h2 · deleted"],
     ["unknown", "ja-JP", "ワークツリー h2 · 状態不明"],
   ] as const)("names a %s worktree in %s", (status, locale, text) => {

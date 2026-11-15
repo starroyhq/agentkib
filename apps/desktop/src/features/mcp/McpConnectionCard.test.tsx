@@ -430,7 +430,7 @@ describe("McpConnectionCard", () => {
   it("retranslates the connection flow in all four locales", async () => {
     render(<McpConnectionCard {...props} />);
     await screen.findByTestId("mcp-connection-url");
-    for (const locale of ["zh-CN", "zh-TW", "ja-JP", "en-US"] as const) {
+    for (const locale of ["zh-CN", "zh-Hant", "ja-JP", "en-US"] as const) {
       await act(() => changeLocale(locale));
       expect(screen.getByText(tr("mcp.connection.title"))).toBeVisible();
       expect(screen.getByRole("button", { name: tr("mcp.connection.preview") })).toBeVisible();

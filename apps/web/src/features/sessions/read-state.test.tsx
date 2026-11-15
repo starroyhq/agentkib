@@ -678,7 +678,7 @@ describe("review lane and shared list semantics", () => {
     expect(container.querySelectorAll('[data-unread="true"]')).toHaveLength(1);
     expect(status.label).toContain("Unread");
   });
-  it.each(["zh-CN", "zh-TW", "ja-JP", "en-US"])(
+  it.each(["zh-CN", "zh-Hant", "ja-JP", "en-US"])(
     "provides old-host, stale and fallback scope copy in %s",
     (locale) => {
       const view = render(
@@ -714,7 +714,7 @@ describe("review lane and shared list semantics", () => {
       const manualLabel = (
         {
           "zh-CN": "未读会话",
-          "zh-TW": "未讀對話",
+          "zh-Hant": "未讀對話",
           "ja-JP": "未読の会話",
           "en-US": "Unread conversation",
         } as Record<string, string>

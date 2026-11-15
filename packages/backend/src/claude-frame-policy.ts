@@ -161,7 +161,8 @@ export type DiagnosticCategory =
   | "refusedTools"
   | "unknownPermissionFields"
   | "observedTaskTypes"
-  | "unattributedFrames";
+  | "unattributedFrames"
+  | "strayResults";
 
 const DIAGNOSTIC_LABELS: Record<DiagnosticCategory, string> = {
   ignoredFrameTypes: "ignored frame type",
@@ -170,6 +171,7 @@ const DIAGNOSTIC_LABELS: Record<DiagnosticCategory, string> = {
   unknownPermissionFields: "showed unknown permission field",
   observedTaskTypes: "observed task type",
   unattributedFrames: "ignored unattributed frame",
+  strayResults: "ignored result that ends no turn",
 };
 
 const MAX_KEYS_PER_CATEGORY = 32;

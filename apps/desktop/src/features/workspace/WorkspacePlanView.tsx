@@ -61,7 +61,7 @@ export function WorkspacePlanView(props: WorkspacePlanViewProps) {
   const details: string[] = [];
   if (edit?.added)
     details.push(
-      `${text("added", edit.added)}${edit.addedPreview ? (locale === "zh-CN" || locale === "zh-TW" ? `（${edit.addedPreview}）` : ` (${edit.addedPreview})`) : ""}`,
+      `${text("added", edit.added)}${edit.addedPreview ? (locale === "zh-CN" || locale === "zh-Hant" ? `（${edit.addedPreview}）` : ` (${edit.addedPreview})`) : ""}`,
     );
   if (edit?.removed) details.push(text("removed", edit.removed));
   if (edit?.otherSections.length) details.push(text("other", edit.otherSections.length));

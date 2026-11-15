@@ -24,7 +24,7 @@ export const connectionCopy: Record<
     formTitle: "连接你的电脑",
     hint: "地址来自电脑上的 AgentKib 的“局域网直连”，默认端口为 1422。",
   },
-  "zh-TW": {
+  "zh-Hant": {
     title: "區域網路連線",
     addressHelp: "如何取得位址",
     intro:

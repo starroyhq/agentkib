@@ -1,12 +1,13 @@
 import { randomUUID } from "node:crypto";
 import { isUtf8 } from "node:buffer";
 import { spawn, type ChildProcess } from "node:child_process";
-import { mkdirSync, chmodSync } from "node:fs";
+import { mkdirSync, chmodSync, readFileSync } from "node:fs";
 import path from "node:path";
 import { homedir } from "node:os";
 import { MacOwnedProcessTree } from "./mac-owned-process-tree";
 import { acquirePortableFileLease } from "./managed-session-lock";
 import { truncateUtf8 } from "./session-events";
+import { sanitizeSessionText } from "./session-handoff";
 import { claudeToolDetail, claudeToolResult, compactClaudeInput } from "./conversation-tools";
 import { claudeCommandInvocation, claudeCommandOutput } from "./claude-command-records";
 import {
@@ -37,6 +38,26 @@ const MAX_LINE = 6 * MAX_TEXT + 1024 * 1024;
 const MAX_INTERACTIONS = 1024 * 1024;
 // Stable texts that tests and logs match on.
 const BACKGROUND_REFUSED = "Claude background tasks are unsupported in managed sessions";
+const MAX_BACKGROUND_TASKS = 64;
+/**
+ * The tools that schedule a prompt for later (`/loop`, reminders). The CLI begins a turn for it by
+ * itself, like one for ended background work, so they go with background work: on where that is,
+ * off at the source where it is not.
+ */
+const SCHEDULING_TOOLS = ["CronCreate", "CronDelete", "ScheduleWakeup"];
+/** How long a scheduled job may still fire: the CLI expires jobs after 7 days. */
+const CRON_LIFETIME_MS = 7 * 24 * 60 * 60_000 + 60 * 60_000;
+/** A wakeup fires within its delay, which the CLI clamps to 60–3600 s; this much later it has. */
+const WAKEUP_SLACK_MS = 10 * 60_000;
+const MAX_SCHEDULED = 64;
+/** The project's durable jobs (`CronCreate` with `durable: true`), as the CLI keeps them. */
+const DURABLE_JOBS_FILE = path.join(".claude", "scheduled_tasks.json");
+const DURABLE_JOBS_TTL_MS = 5_000;
+/** Turns in a row the CLI may start by itself; a message from AgentKib starts the count again. */
+export const CLAUDE_SELF_TURN_LIMIT = 25;
+const REFUSED_BACKGROUND_APPROVAL_TEXT =
+  "AgentKib cannot ask the user for this approval: it came from background work while no turn was running, so the call was not run. Do work that needs approval in the foreground.";
+const MAX_BACKGROUND_DESCRIPTION = 240;
 const UNVERIFIED_START = "unverified Claude foreground Bash task";
 const PERMISSION_KEYS: ReadonlySet<string> = new Set([
   "subtype",
@@ -111,6 +132,11 @@ export type ClaudeRunnerOptions = {
   forkSourceNativeId?: string;
   forkCutoff?: string;
   mcpConfig?: Record<string, unknown>;
+  /**
+   * Tools the CLI runs without asking (`--allowedTools`), such as a Project Agent's worker
+   * tools: being made a Project Agent is the authorization, and the host checks each call.
+   */
+  allowedTools?: string[];
   onResult?: (result: ClaudeRunnerTerminalResult) => void;
   controlTimeoutMs?: number;
   /** Revalidate native ownership immediately before every new worker, including retirement reuse. */
@@ -119,6 +145,22 @@ export type ClaudeRunnerOptions = {
   onUndispatchedStartup?: (proof: ClaudeStartupCleanupProof) => void;
   /** `claude --version` output; only used to explain a failure when the CLI is newer than verified. */
   cliVersion?: string;
+  /**
+   * Lets the model run Bash commands, Monitors and sub-agents in the background. The caller
+   * checks the CLI version; the runner allows it only where it can end that work with the worker.
+   */
+  backgroundTasks?: boolean;
+  /** How many turns in a row the CLI may start by itself before the worker is stopped. */
+  selfTurnLimit?: number;
+  /** The worker was stopped at that limit. The session stays usable. */
+  onSelfTurnLimit?: () => void;
+  /**
+   * The CLI started a turn by itself. False stops that turn as Stop does (a Project Agent past
+   * its automatic turns); the worker and its background work stay.
+   */
+  onSelfTurn?: () => boolean;
+  /** How long a stop waits for the CLI to end the turn before it ends the process instead. */
+  interruptTimeoutMs?: number;
 };
 export type ClaudeStartupFailureCode =
   | "initialize-timeout"
@@ -150,8 +192,24 @@ export type ClaudeApiRetry = {
   /** The CLI's error category, e.g. `authentication_failed`. */
   error: string | null;
 };
+/**
+ * Work the worker does in the background, as the CLI reports it: a Bash command (including what
+ * the Monitor tool starts) or a sub-agent.
+ */
+export type ClaudeBackgroundTask = {
+  id: string;
+  kind: "command" | "agent";
+  /** The tool call that started it, when the CLI named one. */
+  toolUseId: string | null;
+  description: string | null;
+  startedAt: string;
+};
 export type ClaudeRunnerSnapshot = {
   subagents?: ClaudeSubagentSnapshot[];
+  /** Background commands and sub-agents still running; empty where they are not allowed. */
+  backgroundTasks: ClaudeBackgroundTask[];
+  /** Who started the turn `turnId` names: AgentKib, or the CLI after background work ended. */
+  turnOrigin: "host" | "self";
   terminalResult: ClaudeRunnerTerminalResult | null;
   lastOutcome: string | null;
   model: string | null;
@@ -228,6 +286,38 @@ export class ClaudeRunnerState {
   retireRequested = false;
   // Control requests refused in the current turn; a stream that keeps sending them is broken.
   unknownRequests = 0;
+  // Whether this worker may run Bash commands in the background: the host allows it, on a
+  // platform and a CLI version where their frames and their cleanup are verified.
+  backgroundTasksEnabled = false;
+  // Background work the CLI reports as running, by task ID. It belongs to the worker process,
+  // not to a turn, so no checkpoint holds it.
+  backgroundTasks = new Map<string, ClaudeBackgroundTask>();
+  // Every background task this worker started, so its end is counted once whichever of the
+  // CLI's frames about it comes first.
+  backgroundTaskIds = new Set<string>();
+  // Background tasks that ended and whose end may still start a turn. The CLI tells the model
+  // about an end with a request of the running turn or in a turn it starts by itself; which of
+  // the two cannot be seen, so a count can outlast the end it stands for.
+  pendingWakes = 0;
+  // Prompts this worker will begin a turn for by itself later (CronCreate, ScheduleWakeup), and
+  // until when they may: such a turn is the CLI's own, like one for ended background work. They
+  // live in the worker, so they end with it; durable jobs are read from the project's schedule.
+  scheduled = new Map<string, { until: number; text: string }>();
+  // This worker's scheduling calls waiting for their result, by tool use ID.
+  schedulingCalls = new Map<string, { name: string; input: JsonObject }>();
+  // Whether a durable job this session made is in the project's schedule (set by the process).
+  durableJobs: () => boolean = () => false;
+  // Who started the current turn: AgentKib, or the CLI after background work ended.
+  turnOrigin: "host" | "self" = "host";
+  // What the CLI has said about the message AgentKib sent (`command_lifecycle`): nothing, that it
+  // is queued, or that its turn started. Whatever the CLI does before that is not this turn.
+  hostTurnPhase: "queued" | "started" | null = null;
+  // Whether the main thread has sent anything in the current turn.
+  turnContent = false;
+  // Turns the CLI started by itself since the last one AgentKib sent.
+  selfTurns = 0;
+  // The turn the host asked the CLI to interrupt, until a result ends it.
+  interrupting: string | null = null;
   // What was ignored or refused, by category. Not part of any snapshot or checkpoint.
   readonly diagnostics = new ClaudeProtocolDiagnostics();
 
@@ -271,6 +361,10 @@ export class ClaudeRunnerState {
       terminalResult: this.terminalResult ? structuredClone(this.terminalResult) : null,
       apiRetry: this.apiRetry ? { ...this.apiRetry } : null,
       unknownRequests: this.unknownRequests,
+      turnOrigin: this.turnOrigin,
+      hostTurnPhase: this.hostTurnPhase,
+      turnContent: this.turnContent,
+      selfTurns: this.selfTurns,
     };
   }
 
@@ -323,6 +417,8 @@ export class ClaudeRunnerState {
     }
     return {
       subagents: this.subagentObservation.snapshot(),
+      backgroundTasks: [...this.backgroundTasks.values()].map((task) => ({ ...task })),
+      turnOrigin: this.turnOrigin,
       terminalResult: this.terminalResult ? structuredClone(this.terminalResult) : null,
       lastOutcome: this.lastOutcome,
       model: this.model,
@@ -351,7 +447,23 @@ export class ClaudeRunnerState {
     if (!uuidPattern.test(turnId)) throw new Error("invalid Claude turn ID");
     if (this.activity === "compacting") throw new ClaudeUndispatchedError();
     if (this.status !== "idle") throw new Error("Claude session is busy or failed");
+    this.#startTurn(turnId, "host");
+    return {
+      type: "user",
+      session_id: this.sessionId,
+      parent_tool_use_id: null,
+      uuid: turnId,
+      message: { role: "user", content },
+    };
+  }
+
+  /** The state every turn starts from, whoever started it. */
+  #startTurn(turnId: string, origin: "host" | "self"): void {
     this.turnId = turnId;
+    this.turnOrigin = origin;
+    this.hostTurnPhase = null;
+    this.turnContent = false;
+    this.selfTurns = origin === "self" ? this.selfTurns + 1 : 0;
     this.streamText = "";
     this.streamItemId = "";
     this.streamItemText = "";
@@ -374,13 +486,96 @@ export class ClaudeRunnerState {
     this.status = "running";
     this.#pendingUsage();
     this.revision++;
-    return {
-      type: "user",
-      session_id: this.sessionId,
-      parent_tool_use_id: null,
-      uuid: turnId,
-      message: { role: "user", content },
-    };
+  }
+
+  /**
+   * The CLI starts a turn by itself to tell the model what its background work did: that a
+   * command or a sub-agent ended, or that a Monitor reported an event while it still runs
+   * (verified with 2.1.263, 2.1.299 and 2.1.322). It is a turn like any other, under an ID of its
+   * own: its approvals, its text and its result are kept apart from what AgentKib sent. With no
+   * background work running or just ended there is no such turn, and the caller stops the session.
+   */
+  #beginSelfTurn(): boolean {
+    if (!this.backgroundTasksEnabled) return false;
+    if (this.pendingWakes > 0) this.pendingWakes--;
+    else if (this.backgroundTasks.size === 0 && !this.hasScheduledWork()) return false;
+    this.#startTurn(randomUUID(), "self");
+    return true;
+  }
+
+  /** Whether a prompt scheduled in this session may still make the CLI begin a turn by itself. */
+  hasScheduledWork(now = Date.now()): boolean {
+    for (const [key, job] of this.scheduled) if (job.until <= now) this.scheduled.delete(key);
+    return this.scheduled.size > 0 || this.durableJobs();
+  }
+
+  /** A main-thread call of a scheduling tool, whose result says whether it scheduled. */
+  #observeScheduling(block: JsonObject): void {
+    if (
+      !this.backgroundTasksEnabled ||
+      block?.type !== "tool_use" ||
+      !SCHEDULING_TOOLS.includes(block.name) ||
+      typeof block.id !== "string" ||
+      !block.id ||
+      !object(block.input)
+    )
+      return;
+    if (this.schedulingCalls.size >= MAX_SCHEDULED)
+      this.schedulingCalls.delete(this.schedulingCalls.keys().next().value!);
+    this.schedulingCalls.set(block.id, { name: block.name, input: block.input });
+  }
+
+  #observeSchedulingResult(block: JsonObject, now = Date.now()): void {
+    if (block?.type !== "tool_result" || typeof block.tool_use_id !== "string") return;
+    const call = this.schedulingCalls.get(block.tool_use_id);
+    if (!call) return;
+    this.schedulingCalls.delete(block.tool_use_id);
+    if (block.is_error === true) return;
+    const text = (
+      typeof block.content === "string"
+        ? block.content
+        : Array.isArray(block.content)
+          ? block.content
+              .map((part: JsonObject) => (typeof part?.text === "string" ? part.text : ""))
+              .join(" ")
+          : ""
+    ).slice(0, 2_000);
+    if (call.name === "CronDelete") {
+      const id = call.input.id;
+      if (typeof id === "string" && id)
+        for (const [key, job] of this.scheduled)
+          if (job.text.includes(id)) this.scheduled.delete(key);
+      return;
+    }
+    let key = block.tool_use_id;
+    let until = now + CRON_LIFETIME_MS;
+    if (call.name === "ScheduleWakeup") {
+      // One wakeup at a time; scheduling another replaces it, `stop` ends the loop.
+      key = "wakeup";
+      if (call.input.stop === true) {
+        this.scheduled.delete(key);
+        return;
+      }
+      const delay = Number(call.input.delaySeconds);
+      until =
+        now +
+        Math.min(Math.max(Number.isFinite(delay) ? delay : 3600, 60), 3600) * 1000 +
+        WAKEUP_SLACK_MS;
+    }
+    this.scheduled.delete(key);
+    if (this.scheduled.size >= MAX_SCHEDULED)
+      this.scheduled.delete(this.scheduled.keys().next().value!);
+    this.scheduled.set(key, { until, text });
+  }
+
+  /** Clears what only a living worker has. Called whenever the worker is gone. */
+  workerEnded(): void {
+    this.backgroundTasks.clear();
+    this.backgroundTaskIds.clear();
+    this.scheduled.clear();
+    this.schedulingCalls.clear();
+    this.pendingWakes = 0;
+    this.hostTurnPhase = null;
   }
 
   steer(content: unknown, requestId: string, turnId: string, revision: number): JsonObject {
@@ -494,11 +689,21 @@ export class ClaudeRunnerState {
 
   stop(turnId: string, revision: number): void {
     this.assertCanStop(turnId, revision);
+    this.processStopped();
+  }
+
+  /**
+   * The worker was ended while a turn ran, so nothing of the turn or the process is left. Also
+   * after an interrupt that did not end the turn, when the revision has moved on since.
+   */
+  processStopped(): void {
+    this.interrupting = null;
     this.subagentObservation.unavailable(true);
     this.bashToolIds.clear();
     this.foregroundTasks.clear();
     this.subagentBashToolIds.clear();
     this.subagentTasks.clear();
+    this.workerEnded();
     this.unknownRequests = 0;
     this.status = "idle";
     this.lastOutcome = "cancelled";
@@ -517,7 +722,44 @@ export class ClaudeRunnerState {
     this.revision++;
   }
 
+  /**
+   * The host is about to ask the CLI to end the running turn but keep its process. Only the
+   * turn ends: background commands, Monitors and sub-agents go on.
+   */
+  beginInterrupt(turnId: string, revision: number): void {
+    this.assertCanStop(turnId, revision);
+    this.interrupting = turnId;
+  }
+
+  /**
+   * The result that ends an interrupted turn: an `error_during_execution` with nothing left to
+   * answer, since the CLI withdrew any open approval or question first. It ends the turn as a
+   * stop does, without the reset a new process needs.
+   */
+  #interruptEnded(): void {
+    this.interrupting = null;
+    // Interrupted commands report `stopped` first (2.1.263, 2.1.323); anything still listed
+    // ended with the turn.
+    if (this.foregroundTasks.size) {
+      this.diagnostics.record("observedTaskTypes", "interrupted_foreground");
+      this.foregroundTasks.clear();
+    }
+    this.status = "idle";
+    this.lastOutcome = "cancelled";
+    this.terminalResult = null;
+    this.approvals = [];
+    this.questions = [];
+    this.pendingUser = null;
+    this.reason = null;
+    this.activity = null;
+    this.apiRetry = null;
+    this.streamText = "";
+    this.partial = false;
+    this.revision++;
+  }
+
   fail(reason: string): void {
+    this.interrupting = null;
     this.subagentObservation.unavailable();
     this.status = "outcome-unknown";
     this.activity = null;
@@ -537,6 +779,7 @@ export class ClaudeRunnerState {
     this.approvals = [];
     this.questions = [];
     this.pendingUser = null;
+    this.workerEnded();
     this.revision++;
   }
 
@@ -555,6 +798,8 @@ export class ClaudeRunnerState {
       );
     switch (frame.type) {
       case "command_lifecycle":
+        this.#commandLifecycle(frame);
+        return null;
       case "keep_alive":
       case "transcript_mirror":
       case "active_goal":
@@ -588,6 +833,7 @@ export class ClaudeRunnerState {
           return null;
         }
         this.#assertTurnActive("stream_event");
+        this.turnContent = true;
         // A streamed response means the request a retry was waiting for got through.
         this.apiRetry = null;
         const event = frame.event;
@@ -624,6 +870,7 @@ export class ClaudeRunnerState {
           return null;
         }
         this.#assertTurnActive("assistant");
+        this.turnContent = true;
         this.apiRetry = null;
         // The CLI's own message for a rejected login or key (2.1.311: `Not logged in · Please
         // run /login`, `Invalid API key · Fix external API key`), followed by an error result.
@@ -638,7 +885,11 @@ export class ClaudeRunnerState {
           "";
         const hasText =
           Array.isArray(blocks) && blocks.some((block: JsonObject) => block?.type === "text");
-        if (Array.isArray(blocks)) for (const block of blocks) this.#observeBash(block, origin);
+        if (Array.isArray(blocks))
+          for (const block of blocks) {
+            this.#observeBash(block, origin);
+            this.#observeScheduling(block);
+          }
         if (hasText && nativeId && Array.isArray(blocks)) {
           const textBlocks = blocks.flatMap((block: JsonObject, index: number) => {
             if (block?.type !== "text") return [];
@@ -666,6 +917,11 @@ export class ClaudeRunnerState {
         break;
       }
       case "result":
+        if (this.interrupting !== null && this.initialized && this.#turnActive()) {
+          this.#interruptEnded();
+          break;
+        }
+        if (this.#strayResult(frame)) return null;
         if (this.foregroundTasks.size)
           throw new Error("Claude result with unresolved foreground tasks");
         // result usage is a per-turn aggregate; only the latest main-loop API input
@@ -779,6 +1035,7 @@ export class ClaudeRunnerState {
                 : null,
           };
         if (frame.subtype === "status") {
+          if (frame.status === "requesting") this.#modelRequested(frame);
           if (frame.status === "compacting") {
             this.activity = "compacting";
             this.#pendingUsage();
@@ -815,6 +1072,9 @@ export class ClaudeRunnerState {
           return null;
         }
         this.#assertTurnActive("user");
+        this.turnContent = true;
+        const blocks = frame.message?.content;
+        if (Array.isArray(blocks)) for (const block of blocks) this.#observeSchedulingResult(block);
         break;
       }
       case "tool_progress":
@@ -917,11 +1177,18 @@ export class ClaudeRunnerState {
       return controlError(id);
     }
     if (!this.initialized) throw new Error("Claude requested interaction before initialize");
-    if (!["running", "waiting-approval", "waiting-input"].includes(this.status))
+    if (!["running", "waiting-approval", "waiting-input"].includes(this.status)) {
+      // A background sub-agent asks while no turn runs. An approval card belongs to a turn, so
+      // there is nowhere to show this one: it is denied with words the sub-agent can pass on.
+      if (this.backgroundTasksEnabled && this.status === "idle" && this.backgroundTasks.size > 0) {
+        this.diagnostics.record("refusedTools", request.tool_name);
+        return controlDeny(id, REFUSED_BACKGROUND_APPROVAL_TEXT);
+      }
       throw new ClaudeProtocolError(
         "claude-unrequested-turn",
         "Claude interaction outside active turn",
       );
+    }
     if (this.seenRequests.size >= 4096 || this.seenRequests.has(id))
       throw new Error("duplicate Claude control request");
     this.seenRequests.add(id);
@@ -1043,11 +1310,74 @@ export class ClaudeRunnerState {
    * `initialized`: the dying process may still flush frames.
    */
   #assertTurnActive(type: string): void {
-    if (this.initialized && this.status === "idle")
-      throw new ClaudeProtocolError(
-        "claude-unrequested-turn",
-        `Claude ${type} frame outside an active turn`,
-      );
+    if (!this.initialized || this.status !== "idle" || this.#beginSelfTurn()) return;
+    throw new ClaudeProtocolError(
+      "claude-unrequested-turn",
+      `Claude ${type} frame outside an active turn`,
+    );
+  }
+
+  #turnActive(): boolean {
+    return ["running", "waiting-approval", "waiting-input"].includes(this.status);
+  }
+
+  /**
+   * The CLI's report on a user message it was sent: queued, then started, then completed (seen
+   * from 2.1.263 on). Until the message AgentKib sent has started, what the CLI does is not
+   * that turn.
+   */
+  #commandLifecycle(frame: JsonObject): void {
+    if (
+      this.turnOrigin !== "host" ||
+      !this.turnId ||
+      frame.command_uuid !== this.turnId ||
+      !this.#turnActive()
+    )
+      return;
+    if (frame.state === "queued" && this.hostTurnPhase === null) this.hostTurnPhase = "queued";
+    else if (frame.state === "started") this.hostTurnPhase = "started";
+  }
+
+  /**
+   * A `result` that ends no turn AgentKib knows of. The CLI sends an empty one (`num_turns: 0`)
+   * when it starts with a background command of an earlier process to report as stopped, and
+   * before it tells the model about commands that ended together. It comes before the turn of
+   * the message AgentKib sent starts, and before or after that message is reported as queued
+   * (verified with 2.1.263, 2.1.299 and 2.1.322). Booked to that turn it would end the turn
+   * before its first frame, and the next frame would stop the session.
+   *
+   * Where background work is allowed the CLI is known to report when a turn starts, and may be
+   * in a turn of its own when the message arrives: no result before that report is this turn's.
+   */
+  #strayResult(frame: JsonObject): boolean {
+    if (!this.initialized) return false;
+    const empty = frame.num_turns === 0 && frame.is_error !== true;
+    let where: "before_turn_start" | "idle" | null = null;
+    if (this.#turnActive()) {
+      if (
+        this.turnOrigin === "host" &&
+        this.hostTurnPhase !== "started" &&
+        (this.backgroundTasksEnabled ||
+          (empty && (this.hostTurnPhase === "queued" || !this.turnContent)))
+      )
+        where = "before_turn_start";
+    } else if (this.status === "idle" && empty) where = "idle";
+    if (where) this.diagnostics.record("strayResults", where);
+    return where !== null;
+  }
+
+  /**
+   * The CLI is about to ask the model. From 2.1.299 on the request names the user messages it
+   * answers, and when nothing runs it is the first sign of a turn the CLI starts by itself.
+   */
+  #modelRequested(frame: JsonObject): void {
+    if (
+      this.hostTurnPhase === "queued" &&
+      Array.isArray(frame.user_message_uuids) &&
+      frame.user_message_uuids.includes(this.turnId)
+    )
+      this.hostTurnPhase = "started";
+    if (this.initialized && this.status === "idle") this.#beginSelfTurn();
   }
 
   /**
@@ -1117,14 +1447,67 @@ export class ClaudeRunnerState {
         object(frame.patch) &&
         frame.patch.is_backgrounded !== undefined &&
         frame.patch.is_backgrounded !== false
-      )
-        throw new ClaudeProtocolError("claude-background-task", BACKGROUND_REFUSED);
+      ) {
+        if (!this.backgroundTasksEnabled || frame.patch.is_backgrounded !== true)
+          throw new ClaudeProtocolError("claude-background-task", BACKGROUND_REFUSED);
+        this.#trackBackground(task, "command", this.subagentTasks.get(task), null);
+        this.subagentTasks.delete(task);
+        this.revision++;
+      }
       return true;
     }
     if (subtype === "task_notification") {
       if (this.subagentTasks.get(task) === frame.tool_use_id) this.subagentTasks.delete(task);
       return true;
     }
+    return false;
+  }
+
+  /** Starts following a background task. It outlives the turn that started it. */
+  #trackBackground(
+    task: string,
+    kind: ClaudeBackgroundTask["kind"],
+    tool: unknown,
+    description: unknown,
+  ): void {
+    if (!this.backgroundTasks.has(task) && this.backgroundTasks.size >= MAX_BACKGROUND_TASKS)
+      throw new ClaudeProtocolError("claude-background-task", "too many Claude background tasks");
+    this.backgroundTaskIds.add(task);
+    this.backgroundTasks.set(task, {
+      id: task,
+      kind: this.backgroundTasks.get(task)?.kind ?? kind,
+      toolUseId:
+        typeof tool === "string" && tool && Buffer.byteLength(tool) <= 256
+          ? tool
+          : (this.backgroundTasks.get(task)?.toolUseId ?? null),
+      description:
+        typeof description === "string" && description.trim()
+          ? truncateUtf8(
+              sanitizeSessionText(description.replace(/\s+/g, " ").trim(), { value: 0 }),
+              MAX_BACKGROUND_DESCRIPTION,
+            ).content
+          : (this.backgroundTasks.get(task)?.description ?? null),
+      startedAt: this.backgroundTasks.get(task)?.startedAt ?? new Date().toISOString(),
+    });
+  }
+
+  /**
+   * The end of a background task. The model has yet to hear of it, possibly in a turn the CLI
+   * starts for that. Counted once per task, whichever frame reports the end first.
+   */
+  #backgroundEnded(task: string): void {
+    this.backgroundTasks.delete(task);
+    if (!this.backgroundTaskIds.delete(task)) return;
+    this.pendingWakes = Math.min(this.pendingWakes + 1, MAX_BACKGROUND_TASKS);
+  }
+
+  /** `task_updated` and `task_notification` of a background task this worker started. */
+  #backgroundTaskFrame(frame: JsonObject, subtype: string, task: string): boolean {
+    if (subtype === "task_notification") {
+      this.#backgroundEnded(task);
+      return true;
+    }
+    // The notification that follows reports the end; a patch changes nothing that is shown.
     return false;
   }
 
@@ -1136,14 +1519,13 @@ export class ClaudeRunnerState {
    */
   #taskFrame(frame: JsonObject): boolean {
     const subtype = typeof frame.subtype === "string" ? frame.subtype : "";
-    if (subtype === "background_tasks_changed") {
-      this.#backgroundTasksChanged(frame);
-      return false;
-    }
+    if (subtype === "background_tasks_changed") return this.#backgroundTasksChanged(frame);
     if (subtype === "task_started") return this.#taskStarted(frame);
     // task_updated and task_notification, with the contract on.
     if (this.#observeSubagentTask(frame, subtype)) return false;
     const task = frame.task_id;
+    if (typeof task === "string" && this.backgroundTaskIds.has(task))
+      return this.#backgroundTaskFrame(frame, subtype, task);
     // A task this turn never saw start (an earlier process's task closed on resume, or a frame
     // outside a turn) has nothing to track: observe it.
     if (typeof task !== "string" || !this.foregroundTasks.has(task)) {
@@ -1152,8 +1534,14 @@ export class ClaudeRunnerState {
     }
     if (subtype === "task_updated") {
       if (!object(frame.patch)) throw new Error("unknown Claude foreground task");
-      if (frame.patch.is_backgrounded !== undefined && frame.patch.is_backgrounded !== false)
-        throw new ClaudeProtocolError("claude-background-task", BACKGROUND_REFUSED);
+      if (frame.patch.is_backgrounded !== undefined && frame.patch.is_backgrounded !== false) {
+        if (!this.backgroundTasksEnabled || frame.patch.is_backgrounded !== true)
+          throw new ClaudeProtocolError("claude-background-task", BACKGROUND_REFUSED);
+        // It no longer holds the turn open: `result` may come while it runs.
+        this.#trackBackground(task, "command", this.foregroundTasks.get(task), null);
+        this.foregroundTasks.delete(task);
+        return true;
+      }
       if (
         frame.patch.status !== undefined &&
         !["pending", "running", "completed", "failed", "killed", "paused"].includes(
@@ -1179,7 +1567,17 @@ export class ClaudeRunnerState {
     const type = frame.task_type;
     if (type === "local_agent") {
       this.diagnostics.record("observedTaskTypes", type);
-      return false;
+      const task = frame.task_id;
+      if (
+        !this.backgroundTasksEnabled ||
+        frame.is_backgrounded !== true ||
+        typeof task !== "string" ||
+        !task ||
+        Buffer.byteLength(task) > 256
+      )
+        return false;
+      this.#trackBackground(task, "agent", frame.tool_use_id, frame.description);
+      return true;
     }
     if (type !== "local_bash") {
       this.diagnostics.record("observedTaskTypes", type);
@@ -1200,8 +1598,12 @@ export class ClaudeRunnerState {
     const task = frame.task_id;
     if (typeof task !== "string" || !task || Buffer.byteLength(task) > 256)
       throw new Error("invalid Claude task ID");
-    if (frame.is_backgrounded !== false)
-      throw new ClaudeProtocolError("claude-background-task", UNVERIFIED_START);
+    if (frame.is_backgrounded !== false) {
+      if (!this.backgroundTasksEnabled || frame.is_backgrounded !== true)
+        throw new ClaudeProtocolError("claude-background-task", UNVERIFIED_START);
+      this.#trackBackground(task, "command", frame.tool_use_id, frame.description);
+      return true;
+    }
     const tool = frame.tool_use_id;
     if (
       frame.owned_by_subagent === true ||
@@ -1216,18 +1618,46 @@ export class ClaudeRunnerState {
     return true;
   }
 
-  #backgroundTasksChanged(frame: JsonObject): void {
+  /** Returns whether the set of background commands shown to the user changed. */
+  #backgroundTasksChanged(frame: JsonObject): boolean {
     const tasks = frame.tasks;
     if (!Array.isArray(tasks))
       throw new ClaudeProtocolError("claude-protocol-violation", BACKGROUND_REFUSED);
     // The list is the full live set, replaced each time. An empty one means nothing runs.
     let supervised = true;
+    const running = new Map<string, unknown>();
     for (const member of tasks) {
       const type = object(member) ? member.task_type : undefined;
       this.diagnostics.record("observedTaskTypes", type);
-      if (type !== "local_agent") supervised = false;
+      const task = object(member) ? member.task_id : undefined;
+      if (type === "local_agent") {
+        // A sub-agent is followed from its own start frame, which says whether it runs in the
+        // background; the list only keeps one that is.
+        if (typeof task === "string" && this.backgroundTasks.has(task))
+          running.set(task, member.description);
+        continue;
+      }
+      if (
+        this.backgroundTasksEnabled &&
+        type === "local_bash" &&
+        typeof task === "string" &&
+        task &&
+        Buffer.byteLength(task) <= 256
+      )
+        running.set(task, member.description);
+      else supervised = false;
     }
     if (!supervised) throw new ClaudeProtocolError("claude-background-task", BACKGROUND_REFUSED);
+    if (!this.backgroundTasksEnabled) return false;
+    const before = [...this.backgroundTasks.keys()].join("\n");
+    // A task the list no longer names has ended, whether or not its notification came yet
+    // (2.1.263 sends the list first). A command it names is followed from here on.
+    for (const task of [...this.backgroundTasks.keys()])
+      if (!running.has(task)) this.backgroundTasks.delete(task);
+    for (const [task, description] of running)
+      if (!this.backgroundTasks.has(task))
+        this.#trackBackground(task, "command", null, description);
+    return before !== [...this.backgroundTasks.keys()].join("\n");
   }
 }
 
@@ -1332,6 +1762,8 @@ export class ClaudeManagedRunnerProcess {
   #observedPermissionMode: ClaudeObservedPermissionMode | null = null;
   #configuring = false;
   #steeringIds = new Set<string>();
+  /** Set while a stop waits for the interrupted turn's result. */
+  #interruptEnded?: () => void;
   #reportedResult?: ClaudeRunnerTerminalResult;
   /** The current turn's last native agent message, which carries the turn end when it comes. */
   #lastAgentItem: Record<string, unknown> | null = null;
@@ -1357,6 +1789,19 @@ export class ClaudeManagedRunnerProcess {
     this.state = new ClaudeRunnerState(sessionId);
     this.state.revision = revision;
     this.state.foregroundBashContract = foregroundBashContract;
+    // Background work runs in sessions of its own, which a process-group signal does not reach.
+    // Only the macOS process-tree supervisor ends it with the worker, so only there is it allowed.
+    this.state.backgroundTasksEnabled =
+      options.backgroundTasks === true &&
+      foregroundBashContract &&
+      !options.catalogOnly &&
+      process.platform === "darwin";
+    this.state.durableJobs = () => this.#durableJobs();
+    if (
+      options.selfTurnLimit !== undefined &&
+      (!Number.isSafeInteger(options.selfTurnLimit) || options.selfTurnLimit < 1)
+    )
+      throw new Error("invalid Claude self-turn limit");
     this.#fresh = fresh;
     this.#settings = {
       model: options.model ?? null,
@@ -1384,6 +1829,13 @@ export class ClaudeManagedRunnerProcess {
         options.controlTimeoutMs > 30_000)
     )
       throw new Error("invalid Claude control timeout");
+    if (
+      options.interruptTimeoutMs !== undefined &&
+      (!Number.isSafeInteger(options.interruptTimeoutMs) ||
+        options.interruptTimeoutMs < 1 ||
+        options.interruptTimeoutMs > 30_000)
+    )
+      throw new Error("invalid Claude interrupt timeout");
   }
 
   snapshot(): ClaudeRunnerSnapshot {
@@ -1596,6 +2048,41 @@ export class ClaudeManagedRunnerProcess {
     return this.#retiring;
   }
 
+  /** Background work the worker still does; it keeps the worker from being retired. */
+  #durableRead: { at: number; found: boolean } | null = null;
+
+  /**
+   * Whether the project's durable schedule holds a job this session made: it fires in whichever
+   * worker runs the session, a later one too. Read again at most every few seconds.
+   */
+  #durableJobs(now = Date.now()): boolean {
+    if (this.#durableRead && now - this.#durableRead.at < DURABLE_JOBS_TTL_MS)
+      return this.#durableRead.found;
+    let found = false;
+    try {
+      const raw = readFileSync(path.join(this.workspace, DURABLE_JOBS_FILE), "utf8");
+      if (raw.length <= 1024 * 1024) {
+        const tasks = (JSON.parse(raw) as { tasks?: unknown }).tasks;
+        found =
+          Array.isArray(tasks) &&
+          tasks.some(
+            (task) =>
+              object(task) &&
+              task.createdBySessionId === this.sessionId &&
+              (typeof task.createdAt !== "number" || now - task.createdAt < CRON_LIFETIME_MS),
+          );
+      }
+    } catch {
+      // No schedule, or one being written: nothing durable to wait for.
+    }
+    this.#durableRead = { at: now, found };
+    return found;
+  }
+
+  get backgroundTaskCount(): number {
+    return this.state.backgroundTasks.size;
+  }
+
   /** The last turn ended on a rejected login or key; the idle worker should go now. */
   get retireRequested(): boolean {
     return this.state.retireRequested && this.state.status === "idle";
@@ -1607,7 +2094,11 @@ export class ClaudeManagedRunnerProcess {
       this.#retiring ||
       this.#configuring ||
       this.state.status !== "idle" ||
-      this.state.activity === "compacting"
+      this.state.activity === "compacting" ||
+      // The worker is still doing something for the session, or about to report on it.
+      this.state.backgroundTasks.size > 0 ||
+      // A prompt scheduled here fires only while the worker runs (`/loop`, reminders).
+      this.state.hasScheduledWork()
     )
       return null;
     this.#retiring = true;
@@ -1763,15 +2254,69 @@ export class ClaudeManagedRunnerProcess {
   async stop(turnId: string, revision: number): Promise<void> {
     this.state.assertCanStop(turnId, revision);
     if (!this.#child) throw new Error("Claude session has not started");
+    // Where background work may outlive the turn, only the turn is ended, as Esc does in the
+    // terminal; the process, and what runs in the background, stays.
+    if (this.state.backgroundTasksEnabled && (await this.#interrupt(turnId, revision))) return;
     await this.#terminate();
-    this.state.stop(turnId, revision);
+    // The interrupt may have moved the revision on, or ended the turn, before it gave up.
+    this.state.processStopped();
     this.#notify();
+  }
+
+  /**
+   * Asks the CLI to end the running turn (`interrupt`, with `cancel_queued` for messages added to
+   * the turn that it still holds). Verified with 2.1.263, 2.1.299 and 2.1.323: it acknowledges at
+   * once, withdraws an open approval or question (`control_cancel_request`), stops a foreground
+   * command, ends the turn with an `error_during_execution` result and keeps the process and its
+   * background tasks. False when the turn did not end that way in time; the caller then ends the
+   * process as before.
+   */
+  async #interrupt(turnId: string, revision: number): Promise<boolean> {
+    if (!this.#child || this.#retiring || this.#configuring || !this.state.initialized)
+      return false;
+    this.state.beginInterrupt(turnId, revision);
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const turnEnded = new Promise<boolean>((resolve) => {
+      timer = setTimeout(() => resolve(false), this.options.interruptTimeoutMs ?? 5_000);
+      this.#interruptEnded = () => resolve(true);
+    });
+    try {
+      const acknowledgement = await this.#requestControl(
+        { subtype: "interrupt", cancel_queued: true },
+        this.options.interruptTimeoutMs ?? 5_000,
+      );
+      // A CLI that keeps a message for later would start a turn of it after this one.
+      if (Array.isArray(acknowledgement.still_queued) && acknowledgement.still_queued.length)
+        return false;
+      return await turnEnded;
+    } catch {
+      return false;
+    } finally {
+      clearTimeout(timer);
+      // Still marked when it gave up: a result of the turn that comes before the process is
+      // gone ends it as cancelled rather than as a failure.
+      this.#interruptEnded = undefined;
+    }
   }
 
   async shutdown(): Promise<void> {
     if (!this.#child) return;
     await this.#terminate();
     this.state.subagentObservation.unavailable();
+    this.state.workerEnded();
+  }
+
+  /**
+   * The CLI kept starting turns by itself with nobody sending anything. The worker and its
+   * background work are ended as a stop would end them; the session stays usable.
+   */
+  async #stopSelfTurns(): Promise<void> {
+    const { turnId, revision } = this.state;
+    await this.#terminate();
+    this.state.stop(turnId, revision);
+    // Before the snapshot goes out, so that it carries the host's explanation.
+    this.options.onSelfTurnLimit?.();
+    this.#notify();
   }
 
   get cleanupError(): string | null {
@@ -1813,6 +2358,10 @@ export class ClaudeManagedRunnerProcess {
           "host",
           "--permission-prompt-tool",
           "stdio",
+          // Scheduled prompts go with background work (SCHEDULING_TOOLS).
+          ...(this.state.backgroundTasksEnabled || this.options.catalogOnly
+            ? []
+            : [`--disallowedTools=${SCHEDULING_TOOLS.join(",")}`]),
           ...(this.options.catalogOnly
             ? [
                 "--no-session-persistence",
@@ -1831,15 +2380,22 @@ export class ClaudeManagedRunnerProcess {
           ...(this.options.mcpConfig
             ? ["--mcp-config", JSON.stringify(this.options.mcpConfig)]
             : []),
+          // Last: the option takes every argument after it.
+          ...(this.options.allowedTools?.length
+            ? ["--allowedTools", ...this.options.allowedTools]
+            : []),
         ],
         {
           cwd: this.workspace,
           // Background work (Bash run_in_background, background sub-agents) outlives the turn
-          // AgentKib starts and makes the CLI start turns of its own, which a managed session
-          // cannot follow. Turn it off at the source, over whatever the user's environment says.
+          // AgentKib starts and makes the CLI start turns of its own. Where the runner cannot
+          // follow and end that work, it is turned off at the source, over whatever the user's
+          // environment says. (The Monitor tool is offered either way.)
           env: {
             ...this.environment,
-            CLAUDE_CODE_DISABLE_BACKGROUND_TASKS: "1",
+            ...(this.state.backgroundTasksEnabled
+              ? {}
+              : { CLAUDE_CODE_DISABLE_BACKGROUND_TASKS: "1" }),
             ...(this.options.catalogOnly ? { CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: "1" } : {}),
           },
           detached: true,
@@ -2016,12 +2572,14 @@ export class ClaudeManagedRunnerProcess {
           return;
         }
         const wasInitialized = this.state.initialized;
+        const previousTurnId = this.state.turnId;
         const previousItemId = this.state.streamItemId;
         const previousItemText = this.state.streamItemText;
         const origin = frameOrigin(frame);
         let response: JsonObject | null;
         try {
           response = inbound(() => this.state.frame(frame));
+          if (this.#interruptEnded && this.state.interrupting === null) this.#interruptEnded();
         } finally {
           this.#logDiagnostics();
           const result = this.state.terminalResult;
@@ -2030,6 +2588,24 @@ export class ClaudeManagedRunnerProcess {
             this.options.onResult?.(structuredClone(result));
             this.#emitTurnEnd(frame, result);
           }
+        }
+        if (
+          this.state.turnOrigin === "self" &&
+          this.state.status !== "idle" &&
+          this.state.selfTurns > (this.options.selfTurnLimit ?? CLAUDE_SELF_TURN_LIMIT)
+        ) {
+          await this.#stopSelfTurns();
+          return;
+        }
+        if (
+          this.state.turnOrigin === "self" &&
+          this.state.status !== "idle" &&
+          this.state.turnId !== previousTurnId &&
+          this.options.onSelfTurn?.() === false
+        ) {
+          // Outside this chain of frames: the stop waits for the turn's end, which comes through it.
+          const { turnId, revision } = this.state;
+          void this.stop(turnId, revision).catch(() => undefined);
         }
         if (!wasInitialized && this.state.initialized) {
           inbound(() => this.#discoverOptions(frame.response?.response));
@@ -2452,17 +3028,27 @@ export class ClaudeManagedRunnerProcess {
     this.#commands = projectCommands(payload.commands);
   }
 
-  async #requestControl(request: Record<string, unknown>): Promise<Record<string, unknown>> {
+  /**
+   * Sends a control request and waits for its acknowledgement. Without its own `timeoutMs` a
+   * request that goes unanswered ends the worker; with one, the caller decides what follows.
+   */
+  async #requestControl(
+    request: Record<string, unknown>,
+    timeoutMs?: number,
+  ): Promise<Record<string, unknown>> {
     if (!this.#child || !this.state.initialized || this.#controls.size >= 8)
       throw new Error("Claude control unavailable");
     const requestId = randomUUID();
     const response = new Promise<Record<string, unknown>>((resolve, reject) => {
-      const timer = setTimeout(() => {
-        this.#controls.delete(requestId);
-        const error = new Error("Claude control acknowledgement timed out");
-        reject(error);
-        this.#fail(error.message);
-      }, this.options.controlTimeoutMs ?? 30_000);
+      const timer = setTimeout(
+        () => {
+          this.#controls.delete(requestId);
+          const error = new Error("Claude control acknowledgement timed out");
+          reject(error);
+          if (timeoutMs === undefined) this.#fail(error.message);
+        },
+        timeoutMs ?? this.options.controlTimeoutMs ?? 30_000,
+      );
       this.#controls.set(requestId, { resolve, reject, timer });
     });
     // Observe early transport failures even when the pipe write has not settled.

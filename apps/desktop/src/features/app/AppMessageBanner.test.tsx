@@ -71,7 +71,7 @@ describe("global action notice", () => {
   it.each([
     ["en-US", "Close"],
     ["zh-CN", "关闭"],
-    ["zh-TW", "關閉"],
+    ["zh-Hant", "關閉"],
     ["ja-JP", "閉じる"],
   ] as const)(
     "can be dismissed with the keyboard in %s without changing the draft or apply lock",

@@ -29,7 +29,7 @@ const copy = {
     permission: "当前访问没有发送权限。",
     waiting: "请先处理待审批或回答的请求。",
   },
-  "zh-TW": {
+  "zh-Hant": {
     sendShortcut: "Enter 傳送，Shift+Enter 換行。",
     resourceNeedsMessage: "引用檔案或技能後，請輸入訊息或新增附件再傳送。",
     details: "診斷詳情",
@@ -143,7 +143,7 @@ const terms: Record<Locale, Record<string, string>> = {
     budgetLimited: "预算受限",
     usageLimited: "用量受限",
   },
-  "zh-TW": {
+  "zh-Hant": {
     none: "無",
     off: "關閉",
     minimal: "最低",

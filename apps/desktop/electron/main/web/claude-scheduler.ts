@@ -11,7 +11,7 @@ export interface ClaudeScheduledSession {
     requestId: string;
     deviceId: string;
     originDeviceId?: string;
-    kind: "queue" | "goal";
+    kind: "queue" | "goal" | "report";
     requiresAttachments?: boolean;
   };
 }
@@ -50,12 +50,21 @@ export class ClaudeHostScheduler {
     };
   }
 
-  async invalidate(deviceId: string, reason = "authorization-changed"): Promise<void> {
+  /** `quitting`: the host stops because AgentKib quits, which the backend is told. */
+  async invalidate(
+    deviceId: string,
+    reason = "authorization-changed",
+    quitting = false,
+  ): Promise<void> {
     // Advance before the first await: an in-flight prepare can no longer dispatch.
     this.epochs.set(deviceId, (this.epochs.get(deviceId) ?? 0) + 1);
     // A disconnected backend must not prevent the host from persisting revocation.
     // The epoch still fences any pending host dispatch; recovery requires confirmation.
-    await this.invoke({ operation: "schedule-invalidate", deviceId }).catch(() => undefined);
+    await this.invoke({
+      operation: "schedule-invalidate",
+      deviceId,
+      ...(quitting ? { quitting: true } : {}),
+    }).catch(() => undefined);
     for (const session of this.sessions.values()) {
       if (session.next?.deviceId !== deviceId) continue;
       await this.pause(session, reason).catch(() => undefined);

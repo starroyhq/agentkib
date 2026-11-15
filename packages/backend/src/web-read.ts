@@ -23,19 +23,24 @@ import { within } from "./files";
 import { catalogCheckouts } from "./git-checkouts";
 import { conversationReadKey, ReadStateLedger } from "./read-state-ledger";
 import { codexTurnMeta, isCodexTurnEndEvent } from "./codex-turn-end";
-import { resolveCommand } from "./command-resolution";
+import { codexExecutable } from "./codex-executable";
 import {
   CodexAppServerReader,
   CodexAppServerSession,
   codexThreadMissing,
   codexWriterBusy,
 } from "./codex-app-server";
-import { CodexRuntimePreflight } from "./codex-runtime-preflight";
+import {
+  CodexRuntimePreflight,
+  codexReleaseSupportsWriterLock,
+  codexServerVersion,
+} from "./codex-runtime-preflight";
 import { CodexCatalogCache } from "./codex-catalog-cache";
-import { CodexExternalTurns, type ExternalTurn } from "./codex-external-turns";
+import { CodexExternalTurns, type EndedTurn, type ExternalTurn } from "./codex-external-turns";
 import { codexResumeCommand } from "./codex-resume-command";
 import { CodexFollowerBridge } from "./codex-follower-bridge";
 import { CodexFollowerConnection } from "./codex-follower-connection";
+import { CodexDesktopApp } from "./codex-desktop-app";
 import type { CodexFollowerState } from "./codex-follower-state";
 import { CodexFollowerStream } from "./codex-follower-stream";
 import { AntigravityManagedRunner } from "./antigravity-managed-runner";
@@ -63,6 +68,17 @@ import {
 
 const FOLLOWER_RETRY_MS = 5_000;
 const FOLLOWER_IDLE_MS = 30_000;
+/** How long a send waits for the Codex app to take a thread it was asked to show. */
+const HANDOFF_TIMEOUT_MS = 8_000;
+const HANDOFF_POLL_MS = 250;
+
+/** Owner discovery answered, and nobody answers for the thread. */
+function codexOwnerMissing(error: unknown): boolean {
+  return (
+    error instanceof Error &&
+    ["Codex session owner was not found", "no Codex session owner found"].includes(error.message)
+  );
+}
 
 const requestSchema = z.discriminatedUnion("operation", [
   z.object({ operation: z.literal("catalog") }).strict(),
@@ -352,6 +368,15 @@ type ManagedRunner = {
   retiring?: boolean;
   retirementFailed?: boolean;
   leaseReleased?: boolean;
+  /** The Project Agent worker tools this thread was started with, or null. */
+  leadUrl?: string | null;
+  /** Restart once idle, keeping the session AgentKib's: its worker tools changed. */
+  restartWhenIdle?: boolean;
+  /**
+   * Whether Codex has written the thread: resumed ones are, a new one once a turn starts. A thread
+   * it has not written cannot be resumed, so it is not restarted before.
+   */
+  written?: boolean;
 };
 
 type CodexFollowerRecord = {
@@ -380,6 +405,13 @@ type ManagedModelOption = {
   serviceTiers: string[];
 };
 
+/** See `WebReadRequests.observeLanes`. */
+export type LaneObserver = {
+  /** `durationMs` is Codex's own measure of the turn, when it gives one. */
+  turnEnded(sessionId: string, turnId: string, outcome: string, durationMs: number | null): void;
+  waiting(sessionId: string, turnId: string | null, status: string): void;
+};
+
 export class WebReadRequests {
   #codex: CodexAppServerReader;
   #preflight: CodexRuntimePreflight;
@@ -398,6 +430,7 @@ export class WebReadRequests {
   #retirementTimer: ReturnType<typeof setInterval>;
   #retiring = false;
   #controlSessions = new Map<string, { count: number; observed: boolean }>();
+  #laneObserver?: LaneObserver;
   #closing?: Promise<void>;
   #shuttingDown = false;
   #operations = new Set<Promise<unknown>>();
@@ -419,6 +452,16 @@ export class WebReadRequests {
   #codexFollowerFlights = new Map<string, Promise<CodexFollowerRecord>>();
   #subagentObservers = new WeakMap<object, { identity: string; id: string }>();
   #followerMisses = new Map<string, number>();
+  /** Sessions whose last owner discovery answered that nobody holds the thread's window. */
+  #ownerMissing = new Set<string>();
+  /** When a send last asked the Codex app for a thread and the app did not take it. */
+  #handoffFailures = new Map<string, number>();
+  #desktopApp: CodexDesktopApp;
+  #handoffTimeoutMs: number;
+  #handoffFlights = new Map<
+    string,
+    Promise<{ follower: CodexFollowerRecord; revision: number } | undefined>
+  >();
   #antigravityRunners = new Map<string, AntigravityRunnerRecord>();
   #antigravityRunnerFlights = new Map<string, Promise<AntigravityRunnerRecord>>();
 
@@ -441,6 +484,14 @@ export class WebReadRequests {
   ) {
     this.#codex = new CodexAppServerReader(environment);
     this.#preflight = new CodexRuntimePreflight(environment);
+    this.#desktopApp = new CodexDesktopApp(environment);
+    const handoffTimeout = Number(environment.AGENTKIB_CODEX_HANDOFF_TIMEOUT_MS);
+    this.#handoffTimeoutMs =
+      environment.AGENTKIB_CODEX_HANDOFF_TIMEOUT_MS !== undefined &&
+      Number.isSafeInteger(handoffTimeout) &&
+      handoffTimeout > 0
+        ? handoffTimeout
+        : HANDOFF_TIMEOUT_MS;
     this.#retirementTimer = setInterval(() => void this.#retireIdleRunners(), 1000);
     this.#retirementTimer.unref();
   }
@@ -462,6 +513,7 @@ export class WebReadRequests {
     this.#shuttingDown = true;
     clearInterval(this.#retirementTimer);
     this.#preflight.close();
+    this.#desktopApp.close();
     return (this.#closing = this.#close());
   }
 
@@ -532,8 +584,108 @@ export class WebReadRequests {
     return pending;
   }
 
+  /**
+   * Tells the orchestration service when a Codex session's turn ends or starts waiting for the
+   * person, so a lead hears about its lanes. Never part of running the session.
+   */
+  observeLanes(observer: LaneObserver | undefined): void {
+    this.#laneObserver = observer;
+  }
+
+  #observeLane(notify: (observer: LaneObserver) => void): void {
+    const observer = this.#laneObserver;
+    if (!observer) return;
+    try {
+      notify(observer);
+    } catch {
+      /* A lead's bookkeeping must not disturb its lane. */
+    }
+  }
+
+  /** Whether AgentKib runs this Codex session (it was created or taken over, not released). */
+  #leadEndpoint: ((sessionId: string) => Promise<string | null>) | undefined;
+
+  /**
+   * Where a Codex Project Agent's worker tools are served (`OrchestrationService.leadTools`): its
+   * thread starts with that MCP server in its configuration.
+   */
+  leadEndpoints(source: ((sessionId: string) => Promise<string | null>) | undefined): void {
+    this.#leadEndpoint = source;
+  }
+
+  /**
+   * Whether a Codex session could be a Project Agent: AgentKib runs it, now or once resumed. A
+   * session it just created may not be in the catalog yet; its record says it is Codex.
+   */
+  codexLeadCapable(sessionId: string): boolean {
+    const agent = this.store.sessions.get(sessionId)?.agent;
+    return (
+      (agent === undefined || agent === "codex") &&
+      readManagedRecords(this.dataDir, this.store).some(
+        (record) => record.id === sessionId && !record.archived,
+      )
+    );
+  }
+
+  /** Whether the Codex process running this session has the worker tools; null when none runs. */
+  runnerHasLeadTools(sessionId: string): boolean | null {
+    const runner = this.#managedRunners.get(sessionId);
+    return runner ? Boolean(runner.leadUrl) : null;
+  }
+
+  /** The workspace of a Codex session AgentKib runs, also before the catalog lists it. */
+  managedWorkspace(sessionId: string): string | null {
+    return (
+      readManagedRecords(this.dataDir, this.store).find(
+        (record) => record.id === sessionId && !record.archived,
+      )?.workspace_id ?? null
+    );
+  }
+
+  /**
+   * The session became a Project Agent or stopped being one: its thread restarts with or without
+   * the worker tools, now when idle, else once its turn ends. It stays AgentKib's.
+   */
+  async restartManagedRunner(sessionId: string): Promise<void> {
+    const runner = this.#managedRunners.get(sessionId);
+    if (!runner || runner.retiring) return;
+    const live = runner.state.snapshot(this.#bootId, false);
+    if (
+      live.status !== "idle" ||
+      live.activity ||
+      runner.written === false ||
+      this.#controlSessions.has(sessionId)
+    ) {
+      runner.restartWhenIdle = true;
+      return;
+    }
+    await this.#closeManagedRunner(sessionId, runner);
+  }
+
+  isManagedSession(sessionId: string): boolean {
+    return readManagedRecords(this.dataDir, this.store).some(
+      (record) => record.id === sessionId && !record.released,
+    );
+  }
+
+  /**
+   * The latest turns of a Codex session AgentKib manages whose end Codex recorded, whoever ran
+   * them: a Project Agent hears of those its worker ran while AgentKib did not watch it.
+   */
+  endedTurns(sessionId: string): EndedTurn[] {
+    const record = readManagedRecords(this.dataDir, this.store).find(
+      (item) => item.id === sessionId && !item.released,
+    );
+    return record?.native_id ? this.#externalTurns.endedTurns(record.native_id) : [];
+  }
+
   managedOptions() {
     return this.#runOperation(() => this.#managedOptions());
+  }
+
+  /** A Codex CLI for reads: the one the last version check chose, else the first found. */
+  #codexReader(): string | null {
+    return this.#preflight.preferred() ?? codexExecutable(this.environment);
   }
 
   async #managedOptions() {
@@ -1240,7 +1392,7 @@ export class WebReadRequests {
         throw new Error("session-unavailable");
       if (pathIdentity(workspace) !== pathIdentity(canonicalize(latest.workspace)))
         throw new Error("session-workspace-mismatch");
-      const executable = resolveCommand("codex", this.environment);
+      const executable = this.#codexReader();
       if (!executable) throw new Error("codex-cli-unavailable");
       const home = this.#assertManagedHome(latest);
       this.#assertOpen();
@@ -1331,7 +1483,7 @@ export class WebReadRequests {
       );
       if (!latest || !latest.archived || latest.native_id !== record.native_id)
         throw new Error("session-unavailable");
-      const executable = resolveCommand("codex", this.environment);
+      const executable = this.#codexReader();
       if (!executable) throw new Error("codex-cli-unavailable");
       this.#assertOpen();
       session = await CodexAppServerSession.start(
@@ -1489,9 +1641,11 @@ export class WebReadRequests {
     const unconfirmed = readUnknownManagedCommands(this.dataDir, source.id);
     if (unconfirmed.some((command) => command.evidence?.operation !== "delete"))
       return reject("control-outcome-unconfirmed");
+    let writer: string | undefined;
     if (nativeId) {
       const checked = await this.#preflight.check();
       if (checked.reason) return reject(checked.reason);
+      writer = checked.executable;
     }
     if (this.#startingRunners.has(source.id)) return reject("session-busy");
     const runner = this.#managedRunners.get(source.id);
@@ -1567,7 +1721,7 @@ export class WebReadRequests {
       }
       release = acquireManagedSessionLease(this.dataDir, source.id);
       if (nativeId) {
-        const executable = resolveCommand("codex", this.environment);
+        const executable = writer;
         if (!executable) throw new Error("codex-cli-unavailable");
         this.#assertOpen();
         session = await CodexAppServerSession.start(
@@ -2137,6 +2291,12 @@ export class WebReadRequests {
         // send with attachments starts it the same way.
         for (const operation of ["settings", "rename", "archive", "attachments", "compact"])
           features[operation] = allowed ? { available: true } : features.send!;
+        // The Codex app holds the thread with no window answering for it: a message (with its
+        // attachments, as a follower sends them) asks the app to take it (#desktopHandoff).
+        if (await this.#desktopHandoffLive(source, live, controls)) {
+          features.send = { available: true };
+          features.attachments = { available: true };
+        }
         return {
           sessionId: source.id,
           executionMode: "codex-managed",
@@ -2338,7 +2498,7 @@ export class WebReadRequests {
     const executionCwd = this.#managedCwd(
       record ?? (await this.#inactiveRecord(request.sessionId)),
     );
-    const executable = resolveCommand("codex", this.environment);
+    const executable = this.#codexReader();
     if (!executable) throw new Error("codex-cli-unavailable");
     const readRevision = this.#managedRunners.get(request.sessionId)?.state.revision;
     const response = await this.#codex.request(executable, executionCwd, home, "thread/read", {
@@ -2612,6 +2772,18 @@ export class WebReadRequests {
               : "recovery-required";
           if (reason === "codex-owner-busy")
             this.#ownership.set(request.sessionId, { checkedAt: Date.now(), reason });
+          if (reason === "codex-owner-busy" && request.operation === "send") {
+            const handed = await this.#desktopHandoff(inactive);
+            // The app now runs the thread: the message goes to it, under the same receipt. The
+            // client's revision was the busy state's; the app's state starts its own count.
+            if (handed)
+              return this.#codexFollowerControl(
+                { ...request, expectedRevision: handed.revision },
+                fingerprint,
+                handed.follower,
+                inactive.workspace_id,
+              );
+          }
           // The native resume has its own durable receipt. Even if its reply is
           // lost, this user operation has not reached turn/start (or another
           // user mutation). Keep the child uncertainty as the session fence,
@@ -2627,6 +2799,16 @@ export class WebReadRequests {
           if (request.operation === "send") resumedControlState = managedControlState(runner.state);
         }
       } catch (error) {
+        if (codexWriterBusy(error) && request.operation === "send") {
+          const handed = await this.#desktopHandoff(inactive);
+          if (handed)
+            return this.#codexFollowerControl(
+              { ...request, expectedRevision: handed.revision },
+              fingerprint,
+              handed.follower,
+              inactive.workspace_id,
+            );
+        }
         return reject(
           codexWriterBusy(error)
             ? "codex-owner-busy"
@@ -3162,6 +3344,7 @@ export class WebReadRequests {
           throw new Error("unconfirmed-turn");
         if (runner.state.turnId === null && runner.state.revision === request.expectedRevision)
           runner.state.acceptStartedTurn(response.turn.id, request.expectedRevision);
+        runner.written = true;
         runner.persist(runner.state);
       }
       const result = {
@@ -3233,7 +3416,7 @@ export class WebReadRequests {
     );
     let thread: Record<string, unknown> | null = null;
     if (needsHistory) {
-      const executable = resolveCommand("codex", this.environment);
+      const executable = this.#codexReader();
       if (!executable) throw new Error("codex-cli-unavailable");
       const response = await this.#codex.request(
         executable,
@@ -3936,6 +4119,32 @@ export class WebReadRequests {
             );
             this.catalogChanged?.();
           }
+          // Also for a session created by this runner, whose native ID the record does not hold
+          // yet: a lead hears of its new worker's first turn too.
+          if (
+            method === "turn/completed" &&
+            isObject(params.turn) &&
+            typeof params.turn.id === "string"
+          ) {
+            const turn = params.turn;
+            const outcome = codexTurnMeta(turn)?.outcome;
+            this.#observeLane((observer) =>
+              observer.turnEnded(
+                record.id,
+                String(turn.id),
+                outcome === "aborted" ? "cancelled" : (outcome ?? "ended"),
+                codexTurnMeta(turn)?.duration_ms ?? null,
+              ),
+            );
+          }
+          if (live.status === "awaiting-approval" || live.status === "waiting-input")
+            this.#observeLane((observer) =>
+              observer.waiting(
+                record.id,
+                typeof live.turnId === "string" ? live.turnId : null,
+                String(live.status),
+              ),
+            );
           if (method === "item/agentMessage/delta" || method === "item/plan/delta") {
             const delta = typeof params.delta === "string" ? params.delta : "";
             const streamText = typeof live.streamText === "string" ? live.streamText : "";
@@ -3989,6 +4198,11 @@ export class WebReadRequests {
         captureRunner,
       );
       captureRunner(session);
+      // The version check above may have tried a CLI whose `--version` it could not read;
+      // the release the server reports settles it before the first turn.
+      const served = codexServerVersion(session.userAgent);
+      if (served && !codexReleaseSupportsWriterLock(served))
+        throw new Error("codex-cli-version-too-old");
       const runner = startingRunner!;
       const bridge = runner.bridge;
       this.#assertOpen();
@@ -4025,6 +4239,14 @@ export class WebReadRequests {
       }
 
       const params = managedResumeParams(record, cwd);
+      // A Project Agent's worker tools: an MCP server for this thread only, never the user's
+      // Codex configuration.
+      const leadUrl = this.#leadEndpoint
+        ? await this.#leadEndpoint(record.id).catch(() => null)
+        : null;
+      if (leadUrl)
+        (params.config as Record<string, unknown>)["mcp_servers.agentkib_workers.url"] = leadUrl;
+      if (startingRunner) startingRunner.leadUrl = leadUrl;
       if (requestedModel) params.model = requestedModel;
       if (requestedEffort)
         (params.config as Record<string, unknown>).model_reasoning_effort = requestedEffort;
@@ -4046,6 +4268,7 @@ export class WebReadRequests {
         params,
         beforeDispatch,
       );
+      if (startingRunner) startingRunner.written = Boolean(fork || nativeId);
       if (!isObject(responseValue) || !isObject(responseValue.thread))
         throw new Error("native-session-unconfirmed");
       const response = responseValue;
@@ -4994,6 +5217,13 @@ export class WebReadRequests {
     try {
       for (const [id, runner] of this.#managedRunners) {
         if (runner.retiring || this.#controlSessions.has(id)) continue;
+        if (runner.restartWhenIdle && runner.written !== false) {
+          const now = runner.state.snapshot(this.#bootId, false);
+          if (now.status === "idle" && !now.activity) {
+            await this.#closeManagedRunner(id, runner).catch(() => undefined);
+            continue;
+          }
+        }
         const observed = this.isSessionObserved?.(id) === true;
         const left = runner.observed && !observed;
         runner.observed ||= observed;
@@ -5117,7 +5347,11 @@ export class WebReadRequests {
       try {
         const record = await this.#inactiveRecord(sessionId);
         const inactive = await this.#inactiveLive(record, experimentalEnabled);
-        return (await this.#desktopFollowerLive(record, inactive, experimentalEnabled)) ?? inactive;
+        return (
+          (await this.#desktopFollowerLive(record, inactive, experimentalEnabled)) ??
+          (await this.#desktopHandoffLive(record, inactive, experimentalEnabled)) ??
+          inactive
+        );
       } catch (error) {
         // Root/home sessions can live in an unregistered native collection.
         // Explain the proven directory failure without granting collection controls.
@@ -5187,7 +5421,11 @@ export class WebReadRequests {
     }
 
     const inactive = await this.#inactiveLive(managed, experimentalEnabled);
-    return (await this.#desktopFollowerLive(managed, inactive, experimentalEnabled)) ?? inactive;
+    return (
+      (await this.#desktopFollowerLive(managed, inactive, experimentalEnabled)) ??
+      (await this.#desktopHandoffLive(managed, inactive, experimentalEnabled)) ??
+      inactive
+    );
   }
 
   async #antigravityLive(sessionId: string): Promise<Record<string, unknown>> {
@@ -5469,15 +5707,15 @@ export class WebReadRequests {
     }
     let bridge: CodexFollowerBridge | undefined;
     const stream = new CodexFollowerStream();
+    const watch = { running: new Set<string>(), waiting: "" };
     const publish = (snapshot: ReturnType<CodexFollowerState["streamSnapshot"]>) => {
       const state = bridge?.selectedState;
       if (!state) return;
-      stream.publish(
-        snapshot,
-        this.#followerLive(record, state, true),
-        (type, payload, live, item) =>
-          this.publishConversationEvent?.(sessionId, type, payload, live, item),
+      const live = this.#followerLive(record, state, true);
+      stream.publish(snapshot, live, (type, payload, live, item) =>
+        this.publishConversationEvent?.(sessionId, type, payload, live, item),
       );
+      this.#observeFollowedLane(sessionId, state, live, watch);
     };
     bridge = await CodexFollowerBridge.connect(
       path.join(home, "ipc", "ipc.sock"),
@@ -5505,6 +5743,47 @@ export class WebReadRequests {
       bridge.close();
       throw error;
     }
+  }
+
+  /**
+   * A turn of a session the Codex app runs, seen through its follower: a lead hears that it
+   * ended, or waits for the person, as of the turns AgentKib runs. Only turns this follower saw
+   * running count as ended.
+   */
+  #observeFollowedLane(
+    sessionId: string,
+    state: CodexFollowerState,
+    live: Record<string, unknown>,
+    watch: { running: Set<string>; waiting: string },
+  ): void {
+    if (!this.#laneObserver) return;
+    for (const turn of state.turnOutcomes()) {
+      if (turn.running) watch.running.add(turn.turnId);
+      else if (watch.running.delete(turn.turnId) && turn.meta) {
+        const { outcome, duration_ms } = turn.meta;
+        this.#observeLane((observer) =>
+          observer.turnEnded(
+            sessionId,
+            turn.turnId,
+            outcome === "aborted" ? "cancelled" : (outcome ?? "ended"),
+            duration_ms ?? null,
+          ),
+        );
+      }
+    }
+    const waiting =
+      live.status === "awaiting-approval" || live.status === "waiting-input"
+        ? `${String(live.turnId ?? "")}:${String(live.status)}`
+        : "";
+    if (waiting && waiting !== watch.waiting)
+      this.#observeLane((observer) =>
+        observer.waiting(
+          sessionId,
+          typeof live.turnId === "string" ? live.turnId : null,
+          String(live.status),
+        ),
+      );
+    watch.waiting = waiting;
   }
 
   /** A connected follower still tracking the record's native conversation with a valid snapshot. */
@@ -5560,16 +5839,105 @@ export class WebReadRequests {
       const follower = await this.#desktopFollower(record);
       const state = await follower.bridge.observeLive();
       follower.lastUsed = Date.now();
+      this.#ownerMissing.delete(record.id);
       return this.#followerLive(record, state, controls);
-    } catch {
+    } catch (error) {
       const follower = this.#codexFollowers.get(record.id);
       if (follower) {
         this.#codexFollowers.delete(record.id);
         follower.bridge.close();
       }
       this.#followerMisses.set(record.id, Date.now());
+      if (codexOwnerMissing(error)) this.#ownerMissing.add(record.id);
+      else this.#ownerMissing.delete(record.id);
       return undefined;
     }
+  }
+
+  /**
+   * The Codex app's server holds the thread and no window answers for it: sending stays open,
+   * and a send asks the app to show the thread (#desktopHandoff). The session still reads as in
+   * use in Codex; `ownerHandoff` tells a client it may send. Not offered again for a minute
+   * after the app did not take the thread.
+   */
+  async #desktopHandoffLive(
+    record: ManagedRecord,
+    inactive: Record<string, unknown>,
+    controls: boolean,
+  ): Promise<Record<string, unknown> | undefined> {
+    const failed = this.#handoffFailures.get(record.id);
+    if (
+      !controls ||
+      inactive.reason !== "codex-owner-busy" ||
+      inactive.ownershipReason !== "codex-owner-busy" ||
+      !record.native_id ||
+      !this.#ownerMissing.has(record.id) ||
+      (failed !== undefined && Date.now() - failed < 60_000) ||
+      !CodexFollowerConnection.supported() ||
+      managedSessionHasUnknownCommands(this.dataDir, record.id)
+    )
+      return undefined;
+    if (!(await this.#desktopApp.running())) return undefined;
+    return { ...inactive, sendEnabled: true, ownerHandoff: true };
+  }
+
+  /**
+   * Asks the running Codex app to show a thread its server holds with no window answering for
+   * it, then follows the app. Only a send asks: opening the session in AgentKib must not move
+   * the app's page. Never launches the app, never takes the writer lock and sends nothing by
+   * itself; undefined leaves the session in use in Codex.
+   */
+  async #desktopHandoff(
+    record: ManagedRecord,
+  ): Promise<{ follower: CodexFollowerRecord; revision: number } | undefined> {
+    if (!CodexFollowerConnection.supported() || !record.native_id) return undefined;
+    const pending = this.#handoffFlights.get(record.id);
+    if (pending) return pending;
+    const flight = this.#runDesktopHandoff(record, record.native_id);
+    this.#handoffFlights.set(record.id, flight);
+    try {
+      const handed = await flight;
+      if (handed) this.#handoffFailures.delete(record.id);
+      else this.#handoffFailures.set(record.id, Date.now());
+      return handed;
+    } finally {
+      if (this.#handoffFlights.get(record.id) === flight) this.#handoffFlights.delete(record.id);
+    }
+  }
+
+  async #runDesktopHandoff(
+    record: ManagedRecord,
+    nativeId: string,
+  ): Promise<{ follower: CodexFollowerRecord; revision: number } | undefined> {
+    const attach = async () => {
+      try {
+        const follower = await this.#desktopFollower(record);
+        const state = await follower.bridge.observeLive();
+        follower.lastUsed = Date.now();
+        this.#ownerMissing.delete(record.id);
+        this.#followerMisses.delete(record.id);
+        return state.revision === null ? undefined : { follower, revision: state.revision };
+      } catch (error) {
+        const follower = this.#codexFollowers.get(record.id);
+        if (follower) {
+          this.#codexFollowers.delete(record.id);
+          follower.bridge.close();
+        }
+        return codexOwnerMissing(error) ? ("missing" as const) : undefined;
+      }
+    };
+    // A window may have opened the thread since the session was last looked at.
+    const first = await attach();
+    if (first !== "missing") return first;
+    if (!(await this.#desktopApp.running()) || !(await this.#desktopApp.openThread(nativeId)))
+      return undefined;
+    const deadline = Date.now() + this.#handoffTimeoutMs;
+    while (Date.now() < deadline && !this.#shuttingDown) {
+      await new Promise((resolve) => setTimeout(resolve, HANDOFF_POLL_MS));
+      const attached = await attach();
+      if (attached !== "missing") return attached;
+    }
+    return undefined;
   }
 
   async #resumeCommand(sessionId: string) {
@@ -5664,7 +6032,7 @@ export class WebReadRequests {
     }
     if (!nativeId) return { available: false, reason: "native-session-unverified" };
     const executionCwd = this.#managedCwd(managed ?? (await this.#inactiveRecord(sessionId)));
-    const executable = resolveCommand("codex", this.environment);
+    const executable = this.#codexReader();
     if (!executable) throw new Error("codex-cli-unavailable");
     let codexHome: string;
     try {
@@ -5705,7 +6073,7 @@ export class WebReadRequests {
       throw new Error("session-workspace-mismatch");
     const codexHome = this.#assertManagedHome(managed);
     const executionCwd = this.#managedCwd(managed);
-    const executable = resolveCommand("codex", this.environment);
+    const executable = this.#codexReader();
     if (!executable) throw new Error("codex-cli-unavailable");
     const result = await this.#codex.request(executable, executionCwd, codexHome, "skills/list", {
       cwds: [executionCwd],
@@ -5798,7 +6166,7 @@ export class WebReadRequests {
 
     let goal = storedGoal;
     let reason: string | null = null;
-    const executable = resolveCommand("codex", this.environment);
+    const executable = this.#codexReader();
     if (!executable) {
       reason = "recovery-required";
     } else {

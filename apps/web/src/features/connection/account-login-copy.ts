@@ -9,7 +9,7 @@ export const accountLoginCopy = {
     retry: "返回电脑页面",
     unavailable: "暂时无法完成账号登录，请稍后重试",
   },
-  "zh-TW": {
+  "zh-Hant": {
     title: "先登入這台電腦所屬的帳號",
     info: "官方遠端存取要求手機與電腦登入同一帳號。登入後仍需八位碼配對授權",
     login: "登入帳號",

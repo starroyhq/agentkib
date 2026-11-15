@@ -186,7 +186,7 @@ describe("v15 Skill library", () => {
     expect(await screen.findByRole("menuitem", { name: tr("skills.sync.policy") })).toBeVisible();
     expect(screen.getByRole("menuitem", { name: tr("skills.sync.history") })).toBeVisible();
   });
-  it.each(["zh-CN", "zh-TW", "en-US", "ja-JP"] as const)(
+  it.each(["zh-CN", "zh-Hant", "en-US", "ja-JP"] as const)(
     "renders translated source filters and native actions in %s",
     async (locale) => {
       await initializeI18n(locale);

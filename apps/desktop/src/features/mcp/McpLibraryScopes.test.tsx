@@ -280,7 +280,7 @@ it("filters legacy all-Agent targets without changing configuration and restores
 
 it.each([
   ["zh-CN", "全部作用域", "全部 Agent", "已启用于", "选择 Agent…"],
-  ["zh-TW", "全部作用域", "全部 Agent", "已啟用於", "選擇 Agent…"],
+  ["zh-Hant", "全部作用域", "全部 Agent", "已啟用於", "選擇 Agent…"],
   ["en-US", "All scopes", "All Agents", "Enabled for", "Choose Agents…"],
   ["ja-JP", "すべてのスコープ", "すべての Agent", "有効な Agent", "Agent を選択…"],
 ] as const)(
@@ -326,7 +326,7 @@ it("does not repeat inherited global services from project snapshots in the all-
 
 it.each([
   ["zh-CN", "项目 northstar-api 里有 1 个服务"],
-  ["zh-TW", "專案 northstar-api 裡有 1 個服務"],
+  ["zh-Hant", "專案 northstar-api 裡有 1 個服務"],
 ] as const)("separates a Latin scope name from its Chinese suffix in %s", async (locale, text) => {
   await initializeI18n(locale);
   vi.mocked(api.mcpManagementState).mockImplementation(async ({ project }) => ({

@@ -467,7 +467,7 @@ describe("composer sending shortcuts", () => {
     expect(input).toHaveValue("");
   });
 
-  it.each(["zh-CN", "zh-TW", "en-US", "ja-JP"] as const)(
+  it.each(["zh-CN", "zh-Hant", "en-US", "ja-JP"] as const)(
     "omits the removed shortcut instruction in %s",
     (locale) => {
       doubles.session.locale = locale;

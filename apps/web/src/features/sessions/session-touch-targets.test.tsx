@@ -72,7 +72,7 @@ afterEach(() => {
 });
 
 describe("Web session touch targets", () => {
-  it.each(["zh-CN", "zh-TW", "en-US", "ja-JP"] as const)(
+  it.each(["zh-CN", "zh-Hant", "en-US", "ja-JP"] as const)(
     "keeps refresh, workspace toggle and path disclosure independently reachable in %s",
     (locale) => {
       fixture.locale = locale;

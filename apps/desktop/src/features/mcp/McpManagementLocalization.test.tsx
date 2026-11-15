@@ -26,7 +26,7 @@ beforeEach(() => vi.resetAllMocks());
 
 describe("MCP structured diagnostic localization", () => {
   it("shows traditional Chinese connection blockers and recovery receipts", async () => {
-    await initializeI18n("zh-TW");
+    await initializeI18n("zh-Hant");
     vi.mocked(api.planMcpConnections).mockResolvedValue({
       token: "preview",
       workspace_id: "project",

@@ -79,7 +79,7 @@ describe("Agent and integrations settings", () => {
     expect(screen.getByText("Agent details")).toBeTruthy();
   });
 
-  it.each(["zh-CN", "zh-TW", "en-US", "ja-JP"] as const)(
+  it.each(["zh-CN", "zh-Hant", "en-US", "ja-JP"] as const)(
     "renders separate tabs and preserved integrations in %s",
     async (locale) => {
       await initializeI18n(locale);

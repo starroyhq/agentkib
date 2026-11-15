@@ -469,7 +469,7 @@ describe("SessionDirectory", () => {
 
   it.each([
     ["zh-CN", "有历史内容", "无历史内容"],
-    ["zh-TW", "有歷史內容", "無歷史內容"],
+    ["zh-Hant", "有歷史內容", "無歷史內容"],
     ["en-US", "History available", "No history content"],
     ["ja-JP", "履歴あり", "履歴なし"],
   ] as const)(
@@ -488,7 +488,7 @@ describe("SessionDirectory", () => {
     },
   );
 
-  it.each(["zh-CN", "zh-TW", "en-US", "ja-JP"] as const)(
+  it.each(["zh-CN", "zh-Hant", "en-US", "ja-JP"] as const)(
     "keeps unused index source errors neutral per workspace in %s",
     async (locale) => {
       await initializeI18n(locale);
@@ -649,7 +649,7 @@ describe("SessionDirectory", () => {
     expect(card).toHaveTextContent("h2");
   });
 
-  it.each(["zh-CN", "zh-TW", "en-US", "ja-JP"] as const)(
+  it.each(["zh-CN", "zh-Hant", "en-US", "ja-JP"] as const)(
     "shows only one aggregate status on a folded project, without inline counts, in %s",
     (locale) => {
       initializeI18n(locale);
@@ -708,6 +708,44 @@ describe("SessionDirectory", () => {
     expect(card).toHaveTextContent("Codex");
     expect(card).toHaveTextContent(workspaces[0].path);
     expect(hub.select).not.toHaveBeenCalled();
+  });
+
+  it("marks a Project Agent and names it on each of its Workers", async () => {
+    const user = userEvent.setup();
+    hub.sessions = [
+      {
+        ...first,
+        agent: "claude-code",
+        title: "Release plan",
+        orchestration: { role: "lead", workers: 1, paused: false },
+      },
+      { ...second, orchestration: { role: "worker", leadId: first.id, name: "api" } },
+    ];
+    render(<SessionDirectory />);
+    const workerOf = tr("sessions.workerOf", { name: "api", lead: "Release plan" });
+    // Marks to be seen, not only read out: outside the row's screen-reader-only details.
+    expect(
+      screen.getByRole("img", { name: tr("sessions.projectAgent") }).closest(".sr-only"),
+    ).toBeNull();
+    expect(screen.getByRole("img", { name: workerOf }).closest(".sr-only")).toBeNull();
+    // The Worker's details card says whom it works for.
+    await focusByKeyboard(user, screen.getByRole("button", { name: /Inspect token layout/ }));
+    await waitFor(() => expect(screen.getByRole("tooltip")).toHaveTextContent(workerOf));
+    cleanup();
+    hub.sessions = [
+      { ...first, orchestration: { role: "lead", workers: 1, paused: true } },
+      // Its Project Agent is not in this list.
+      { ...second, orchestration: { role: "worker", leadId: "elsewhere", name: "api" } },
+    ];
+    render(<SessionDirectory />);
+    expect(
+      screen.getByRole("img", { name: tr("sessions.projectAgentPaused") }),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByRole("img", {
+        name: tr("sessions.workerOf", { name: "api", lead: tr("sessions.projectAgent") }),
+      }),
+    ).toBeInTheDocument();
   });
 
   it("shows program-started sessions only after the directory option is turned on", async () => {
@@ -1233,7 +1271,7 @@ describe("SessionDirectory", () => {
       sessionOrder: { "workspace-a": ["archived", "first"] },
     });
   });
-  it.each(["zh-CN", "zh-TW", "en-US", "ja-JP"] as const)(
+  it.each(["zh-CN", "zh-Hant", "en-US", "ja-JP"] as const)(
     "labels a verified old Codex runtime in the actual sidebar in %s",
     (locale) => {
       initializeI18n(locale);
@@ -1245,7 +1283,7 @@ describe("SessionDirectory", () => {
       initializeI18n("en-US");
     },
   );
-  it.each(["zh-CN", "zh-TW", "en-US", "ja-JP"] as const)(
+  it.each(["zh-CN", "zh-Hant", "en-US", "ja-JP"] as const)(
     "shows runtime status in recent sessions and distinct sidebar dots in %s",
     (locale) => {
       initializeI18n(locale);

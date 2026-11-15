@@ -25,7 +25,10 @@ export function PendingCenter({
   needsYou,
 }: {
   compact?: boolean;
-  needsYou?: { session: { id: string }; need: "approval" | "question" | "verify" }[];
+  needsYou?: {
+    session: { id: string };
+    need: "approval" | "question" | "verify" | "delegation";
+  }[];
 }) {
   const {
     access,
@@ -86,7 +89,9 @@ export function PendingCenter({
         ? card.waitingAnswer
         : need === "verify"
           ? homeSessionCopy(locale).verifyResult
-          : undefined;
+          : need === "delegation"
+            ? homeSessionCopy(locale).delegationPaused
+            : undefined;
   };
   return (
     <>

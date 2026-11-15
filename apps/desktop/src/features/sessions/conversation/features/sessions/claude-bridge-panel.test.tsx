@@ -574,7 +574,7 @@ describe("Claude terminal connection management", () => {
 
   it.each([
     ["zh-CN", "未连接", "仅可查看"],
-    ["zh-TW", "未連線", "僅可查看"],
+    ["zh-Hant", "未連線", "僅可查看"],
     ["en-US", "Not connected", "View only"],
     ["ja-JP", "未接続", "閲覧のみ"],
   ] as const)(

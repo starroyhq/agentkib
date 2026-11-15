@@ -19,7 +19,7 @@ describe("management copy at actual call sites", () => {
     expect(calls).toHaveLength([...source.matchAll(/managedText\(/g)].length);
     expect(calls.every(({ surface }) => surface === "web")).toBe(true);
   });
-  it.each(["zh-CN", "zh-TW", "en-US", "ja-JP"] as const)(
+  it.each(["zh-CN", "zh-Hant", "en-US", "ja-JP"] as const)(
     "resolves every rendered management string in %s without the Chinese fallback",
     (locale) => {
       for (const { english, chinese } of calls) {
@@ -27,7 +27,7 @@ describe("management copy at actual call sites", () => {
         if (locale === "en-US") expect(translated).toBe(surfaceText(english, "web", locale));
         else if (locale === "zh-CN") expect(translated).toBe(surfaceText(chinese, "web", locale));
         // This label has the same valid spelling in both Chinese locales.
-        else if (locale === "zh-TW" && chinese === "模型") expect(translated).toBe("模型");
+        else if (locale === "zh-Hant" && chinese === "模型") expect(translated).toBe("模型");
         else {
           expect(translated, chinese).not.toBe(chinese);
           expect(translated, chinese).not.toBe(english);

@@ -7,7 +7,7 @@ export const sessionAccessCopy = {
     pending: "正在结束访问…",
     failed: "未能确认访问已结束。请检查连接后重试。",
   },
-  "zh-TW": {
+  "zh-Hant": {
     title: "結束此瀏覽器的存取？",
     description: "結束後，此瀏覽器需要重新配對才能再次存取這台電腦。",
     cancel: "保留存取",

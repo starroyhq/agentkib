@@ -41,7 +41,7 @@ describe("HistoryFeedback", () => {
     );
     const alert = screen.getByRole("alert");
     try {
-      for (const locale of ["zh-CN", "zh-TW", "ja-JP", "en-US"] as const) {
+      for (const locale of ["zh-CN", "zh-Hant", "ja-JP", "en-US"] as const) {
         await act(() => changeLocale(locale));
         expect(screen.getByRole("alert")).toBe(alert);
         expect(screen.getByText(tr("history.error.cursor"))).toBeVisible();

@@ -271,6 +271,6 @@ const ja: Copy = {
 export const historyCopy: Record<Locale, Copy> = {
   "en-US": en,
   "zh-CN": zh,
-  "zh-TW": tw,
+  "zh-Hant": tw,
   "ja-JP": ja,
 };

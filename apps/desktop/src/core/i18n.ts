@@ -3,16 +3,16 @@ import { initReactI18next } from "react-i18next";
 import enUS from "../locales/en-US.json";
 import jaJP from "../locales/ja-JP.json";
 import zhCN from "../locales/zh-CN.json";
-import zhTW from "../locales/zh-TW.json";
+import zhHant from "../locales/zh-Hant.json";
 import type { LocalizedMessage, SupportedLocale } from "./types";
 
 export type LocalePreference = "system" | SupportedLocale;
 
-export const supportedLocales: SupportedLocale[] = ["zh-CN", "zh-TW", "ja-JP", "en-US"];
+export const supportedLocales: SupportedLocale[] = ["zh-CN", "zh-Hant", "ja-JP", "en-US"];
 export const localeResources = {
   "en-US": enUS,
   "zh-CN": zhCN,
-  "zh-TW": zhTW,
+  "zh-Hant": zhHant,
   "ja-JP": jaJP,
 } as const;
 const conversationKeys = [
@@ -151,7 +151,7 @@ const LOCALE_PREFERENCE_STORAGE_KEY = "agentkib.cached-locale-preference";
 export function normalizeLocale(locale?: string | null): SupportedLocale {
   if (!locale) return "en-US";
   const normalized = locale.replaceAll("_", "-").toLowerCase();
-  if (/^zh-(hant|tw|hk|mo)(-|$)/.test(normalized)) return "zh-TW";
+  if (/^zh-(hant|tw|hk|mo)(-|$)/.test(normalized)) return "zh-Hant";
   if (/^zh-(hans|cn|sg)(-|$)/.test(normalized) || normalized === "zh") return "zh-CN";
   if (normalized === "ja" || normalized.startsWith("ja-")) return "ja-JP";
   if (normalized === "en" || normalized.startsWith("en-")) return "en-US";
@@ -163,7 +163,9 @@ export function cachedEffectiveLocale(fallback?: string | null): SupportedLocale
     if (window.localStorage.getItem(LOCALE_PREFERENCE_STORAGE_KEY) === "system") {
       return normalizeLocale(fallback);
     }
-    const value = window.localStorage.getItem(EFFECTIVE_LOCALE_STORAGE_KEY);
+    const stored = window.localStorage.getItem(EFFECTIVE_LOCALE_STORAGE_KEY);
+    // Traditional Chinese was cached as "zh-TW" before it became "zh-Hant".
+    const value = stored === "zh-TW" ? "zh-Hant" : stored;
     if (supportedLocales.includes(value as SupportedLocale)) return value as SupportedLocale;
   } catch {
     // The system locale remains a safe fallback in restricted webviews.

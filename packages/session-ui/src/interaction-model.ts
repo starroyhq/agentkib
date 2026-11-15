@@ -1,4 +1,4 @@
-export type InteractionLocale = "zh-CN" | "zh-TW" | "en-US" | "ja-JP";
+export type InteractionLocale = "zh-CN" | "zh-Hant" | "en-US" | "ja-JP";
 
 /** The fields of an approval the card reads; web-client's `Approval` satisfies it. */
 export interface InteractionApproval {
@@ -43,7 +43,7 @@ export interface InteractionQuestionRequest {
 }
 
 // Titles, labels and option names follow the Codex app's own approval and question cards
-// (its zh-CN, zh-TW, en and ja language packs), with "conversation" written as AgentKib's "session".
+// (its zh-CN, zh-Hant, en and ja language packs), with "conversation" written as AgentKib's "session".
 const copy = {
   "zh-CN": {
     waitingApproval: "等待审批",
@@ -115,7 +115,7 @@ const copy = {
     duplicate: "自定义回答与已选选项重复，请修改或取消重复项。",
     tooLarge: "回答总量超过请求上限，请减少选项或缩短回答。",
   },
-  "zh-TW": {
+  "zh-Hant": {
     waitingApproval: "等待審批",
     waitingAnswer: "有問題待回答",
     question: "問題",

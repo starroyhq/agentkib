@@ -113,7 +113,7 @@ describe("workspace draft transitions", () => {
     expect(navigateWorkspacePageFor).not.toHaveBeenCalled();
   });
 
-  it.each(["en-US", "zh-CN", "zh-TW", "ja-JP"] as const)(
+  it.each(["en-US", "zh-CN", "zh-Hant", "ja-JP"] as const)(
     "uses an operation warning when navigation is locked in %s",
     async (locale) => {
       await initializeI18n(locale);

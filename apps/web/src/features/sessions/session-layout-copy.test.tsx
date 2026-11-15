@@ -41,7 +41,7 @@ afterEach(cleanup);
 describe("LAN error instructions", () => {
   it.each([
     ["zh-CN", "电脑上的 AgentKib"],
-    ["zh-TW", "電腦上的 AgentKib"],
+    ["zh-Hant", "電腦上的 AgentKib"],
     ["en-US", "AgentKib on your computer"],
     ["ja-JP", "コンピューター上の AgentKib"],
   ] as const)("identifies the computer application in general errors in %s", (locale, app) => {
@@ -58,7 +58,7 @@ describe("LAN error instructions", () => {
 
   it.each([
     ["zh-CN", "电脑上的 AgentKib"],
-    ["zh-TW", "電腦上的 AgentKib"],
+    ["zh-Hant", "電腦上的 AgentKib"],
     ["en-US", "AgentKib on your computer"],
     ["ja-JP", "コンピューター上の AgentKib"],
   ] as const)(

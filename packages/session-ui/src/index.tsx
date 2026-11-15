@@ -164,7 +164,7 @@ export {
 
 export function toolStatusLabel(status: string | null | undefined, locale: string): string {
   const names =
-    locale === "zh-TW"
+    locale === "zh-Hant"
       ? ["已完成", "失敗", "執行中", "等待中", "已取消", "已拒絕"]
       : locale.startsWith("zh")
         ? ["已完成", "失败", "执行中", "等待中", "已取消", "已拒绝"]
@@ -257,3 +257,4 @@ export function SafeMarkdown({ text, literal = false }: { text: string; literal?
     </Markdown>
   );
 }
+export { projectAgentCopy, type ProjectAgentCopy } from "./project-agent-copy";

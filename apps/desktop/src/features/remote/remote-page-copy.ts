@@ -86,7 +86,7 @@ export const remotePageCopy = {
     enterAddress: "输入地址",
     computerAddress: "电脑地址",
   },
-  "zh-TW": {
+  "zh-Hant": {
     phone: "手機",
     phoneInfo:
       "在手機上查看和控制這台電腦上的對話。關閉視窗後仍可使用，結束 AgentKib 或關機後停止。",

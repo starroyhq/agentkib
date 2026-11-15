@@ -145,6 +145,7 @@ D10、D11 的同 Agent 续接以“能否继续、在哪里运行”为准。用
 | AgentKib 后台进程正在运行 | 在 AgentKib 中运行 | 在 AgentKib 中執行 | AgentKib で実行中 | Running in AgentKib |
 | Claude Code 终端已连接 | 在终端中运行 · 已连接 | 在終端中執行 · 已連線 | ターミナルで実行中 · 接続済み | Running in terminal · Connected |
 | 跟随 Codex 桌面端 | 在 Codex 中运行 · 已连接 | 在 Codex 中執行 · 已連線 | Codex で実行中 · 接続済み | Running in Codex · Connected |
+| 桌面端占着会话但没有窗口在用（发送时请它接上） | 在 Codex 中打开 · 发送时连接 | 在 Codex 中開啟 · 傳送時連線 | Codex で開いています · 送信時に接続 | Open in Codex · Connects when you send |
 | 已连接的 DeepSeek Harness | 在 DeepSeek Harness 中运行 · 已连接 | 在 DeepSeek Harness 中執行 · 已連線 | DeepSeek Harness で実行中 · 接続済み | Running in DeepSeek Harness · Connected |
 | 已连接终端的列表徽标 | 终端 | 終端 | ターミナル | Terminal |
 | 列表里有审批或提问在等 | 等待你 | 等待你 | 対応待ち | Needs you |
@@ -182,11 +183,18 @@ D10、D11 的同 Agent 续接以“能否继续、在哪里运行”为准。用
 | 跟随时不开放的操作 | 这项操作请在 Codex 中完成。 | 這項操作請在 Codex 中完成。 | この操作は Codex で行ってください。 | Use Codex for this action. |
 | Codex 完全退出说明 | 只关掉 Codex 的窗口可能不够，完全退出应用后才能在这里继续 | 只關閉 Codex 的視窗可能不夠，完全結束應用程式後才能在這裡繼續 | Codex のウィンドウを閉じるだけでは不十分な場合があります。ここで続けるには、アプリを完全に終了してください。 | Closing the Codex window may not be enough. Quit the app completely to continue here. |
 | Claude Code 后台自动结束 | 后台进程已结束，下次发送时会自动继续 | 背景程序已結束，下次傳送訊息時會自動繼續 | バックグラウンドプロセスを終了しました。次のメッセージ送信時に自動で続行します。 | The background process ended. It will resume automatically when you send your next message. |
+| Claude Code 后台任务运行中（一项，有描述） | 后台运行中：{description} | 背景執行中：{description} | バックグラウンドで実行中：{description} | Running in the background: {description} |
+| Claude Code 后台任务运行中（多项；会话列表） | {n} 个后台任务运行中 | {n} 個背景工作執行中 | バックグラウンドタスク {n} 件を実行中 | {n} background tasks running（一项时为 1 background task running） |
+| 后台任务结束后 Claude Code 自己开始的一轮 | 后台任务有了结果，Claude Code 正在继续 | 背景工作有了結果，Claude Code 正在繼續 | バックグラウンドタスクの結果を受けて、Claude Code が続けています | A background task finished. Claude Code is continuing. |
+| Claude Code 连续自动轮次超过上限 | Claude Code 连续自动运行了太多轮，AgentKib 已停止它和后台任务。发送消息即可继续。 | Claude Code 連續自動執行了太多輪，AgentKib 已停止它和背景工作。傳送訊息即可繼續。 | Claude Code が自動で何度も続けて実行したため、AgentKib がバックグラウンドタスクごと停止しました。メッセージを送ると続けられます。 | Claude Code kept starting turns on its own, so AgentKib stopped it and its background tasks. Send a message to continue. |
+| 后台任务开关（本机 Claude Code 会话的“更多操作”） | 允许 Claude Code 在后台运行任务 | 允許 Claude Code 在背景執行工作 | Claude Code にバックグラウンドでの実行を許可 | Let Claude Code run tasks in the background |
+| 后台任务开关说明 | 命令、子代理和 /loop 这类定时任务可以在后台运行，结束或到点后 Claude Code 会自己接着处理；退出 AgentKib 会停止它们。改动在 Claude Code 下次启动时生效。 | 命令、子代理和 /loop 這類排程工作可以在背景執行，結束或到時間後 Claude Code 會自己接著處理；結束 AgentKib 會停止它們。變更在 Claude Code 下次啟動時生效。 | コマンドやサブエージェント、/loop などの定期実行をバックグラウンドで実行し、終わったり時間になったりすると Claude Code が自動で続けます。AgentKib を終了すると停止します。変更は Claude Code の次回起動時に反映されます。 | Commands, subagents and scheduled prompts such as /loop can run in the background, and Claude Code picks them up by itself when they finish or come due. Quitting AgentKib stops them. Changes apply the next time Claude Code starts. |
+| 后台任务开关不可用：CLI 版本过低 | 需要 Claude Code {minimum} 或更新版本（当前 {version}）。 | 需要 Claude Code {minimum} 或更新版本（目前 {version}）。 | Claude Code {minimum} 以降が必要です（現在 {version}）。 | Requires Claude Code {minimum} or later (this computer has {version}). |
 | Claude Code 中途外部打开 | 你在 Claude Code 里打开了这条会话，AgentKib 已停止，避免两边同时写入 | 你在 Claude Code 裡開啟了這段對話，AgentKib 已停止，避免兩邊同時寫入 | Claude Code でこの会話が開かれたため、同時に書き込まれないよう AgentKib を停止しました。 | You opened this session in Claude Code. AgentKib stopped to avoid both sides writing at once. |
 | Windows Claude Code 原因 | Windows 上暂不支持在这里继续 Claude Code 会话 | Windows 上暫不支援在這裡繼續 Claude Code 對話 | Windows では、ここで Claude Code の会話を続ける機能はまだ使えません | Continuing Claude Code sessions here isn't supported on Windows yet |
 | Codex 版本过低原因 | Codex 版本过低，升级后可以在这里继续 | Codex 版本過舊，升級後可以在這裡繼續 | Codex のバージョンが古いため、更新するとここで続けられます。 | Your Codex version is too old. Update it to continue here. |
 
-Claude Code 自动结束仅在用户停留期间真实回收进程时显示一次浅色提示，重新进入不重播；中途冲突显示信息提示；Codex 自动释放不显示结束提示。连接终端设置只在 macOS 桌面提供，入口为所选 Claude Code 会话的“更多操作 → 连接终端…”，不再在“会话操作”中重复提供。指引依次为“安装插件（只需一次）”“生成连接码”“在终端粘贴并回车”，安装与连接命令使用短按钮“复制”，无障碍标签区分具体命令。当前生产插件还不能接收从 AgentKib 发出的消息：已连接时输入区换成“在终端中继续这条会话，这里会同步显示”，发送与停止都在终端处理，跟随态不提供“停止”按钮；选择条在此之前不显示插件链接。AgentKib 后台执行的停止入口保留。Web 沿用现有能力提供复制续接命令与电脑上的 AgentKib 操作说明，不增加跨 Agent 功能。
+Claude Code 自动结束仅在用户停留期间真实回收进程时显示一次浅色提示，重新进入不重播。后台任务运行中、Claude Code 自己开始的一轮和连续自动轮次超过上限三种状态用同一位置（输入区上方）的浅色一行；超过上限的提示重新进入仍显示，直到下次发送。会话列表只在没有轮次运行时显示后台任务标记（圆点，不转动）；中途冲突显示信息提示；Codex 自动释放不显示结束提示。连接终端设置只在 macOS 桌面提供，入口为所选 Claude Code 会话的“更多操作 → 连接终端…”，不再在“会话操作”中重复提供。指引依次为“安装插件（只需一次）”“生成连接码”“在终端粘贴并回车”，安装与连接命令使用短按钮“复制”，无障碍标签区分具体命令。当前生产插件还不能接收从 AgentKib 发出的消息：已连接时输入区换成“在终端中继续这条会话，这里会同步显示”，发送与停止都在终端处理，跟随态不提供“停止”按钮；选择条在此之前不显示插件链接。AgentKib 后台执行的停止入口保留。Web 沿用现有能力提供复制续接命令与电脑上的 AgentKib 操作说明，不增加跨 Agent 功能。
 
 连接终端对话框尚未连接时使用“未连接”，不将其描述为会话“仅可查看”。连接后徽标用“已连接”，正文用“已连接终端”；已连接、等待终端重新连接、连接码已过期及现有错误互斥显示，不与生成指引并列。未撤销绑定在终端退出或应用重启后继续保留，用中性图标及“等待终端重新连接”说明正常离线；已安装步骤折叠，提供“复制继续命令”“重新生成连接码”和“清除连接…”，不要求重用已消费的连接命令。明确清除成功后回到首次未连接指引，随后恢复终端不会自动连接。检查连接保留尚未到期的连接命令。已有绑定但初次检查尚未完成，或暂时无法检查时，提示“暂时无法核实终端连接状态”，不直接宣告断开；繁忙或控制暂不可用也不将已确认在线的连接改称断开。在线连接提供需确认的“断开”；已离线但仍有可撤销绑定时，保留需确认的“清除连接…”，确认说明写清用户可见结果：“清除后，这条会话在终端继续时不会再自动连接；以后要连接，需要新的连接码。”底层仍撤销该终端连接的凭据与未使用连接码，终端照常运行，AgentKib 停止同步。桌面指引不再要求用户回到当前对话框；Web 提示仍明确在“电脑上的 AgentKib”打开连接指引。平台版本提示使用代码要求的最低版本：“仅 macOS · 需要 Claude Code {最低版本} 或更高版本”。通过能力检查但尚未验证的版本以中性灰字说明“Claude Code {版本} 还没有验证过，同步显示可能不完整”，不使用警告色，不覆盖权限、缺口或结果未知提示。旧 CLI、旧插件、必需能力缺失分别说明下一步，不兼容时不显示连接命令；更高版本不自动开放发送或停止。输入区的权限模式风险采用可展开的简短说明，保留完整原生模式解释及“上次观察”区别，不更改审批或发送权限。移动端主要操作的触控高度至少为 44px。
 
@@ -195,6 +203,10 @@ Claude Code 自动结束仅在用户停留期间真实回收进程时显示一�
 跨 Agent 的“在其他 Agent 中继续”“交接文件”是独立功能，保留现有继续流程。v15 E 将会话页“更多操作”中的“在工作区续接”改为“在其他 Agent 中继续”，直接打开原有跨 Agent 继续对话框；内部 `handoff.*`、`sessions.*Handoff` 键和协议保持不变。工作区侧栏“继续工作”改为“会话”，首页、概览及工作区列表中的“打开会话”均进入同一个可输入的会话页面。保留“在原客户端继续”和 Codex follower。
 
 工作区状态统一为“正常 / 需关注 N 项 / 未诊断”。N 为该工作区诊断的错误、警告和待审记忆总数，不计信息项；首页待处理总数以同一批配置问题加全部待审记忆计算，记忆单列，避免重复计数。尚未取得诊断或诊断读取失败时使用中性的“未诊断”；已知有待审记忆时仍显示其需关注数。未安装的 Agent 是中性状态，不算发现或会话来源异常。读不到已安装 Agent 的会话时点名来源，用中性文字与重试；只有同工作区、同 Agent 曾读到会话而这次失败时才用 warning。概览最近会话已有记录时不显示来源状态。待处理与待审批计数使用主题的 warning 色（复用现有 amber 值）。
+
+### 会话操作对话框（2026-11-14）
+
+“会话操作”和设置页用同一套版式：每一部分是一个带标题的分组，分组里的各行放在同一个带边框的卡片里，行内左边写名称和说明，右边放开关或按钮。桌面用应用的标准按钮尺寸；Web 在触屏上保留 44 px 的点按高度，用鼠标时与桌面一致。目录、命令这类长文本显示为一行，放不下时截断，悬停看全文，行尾是复制按钮，复制后短暂显示对勾。不常用的内容收在可展开的一行里，如 DeepSeek Harness 的“安装 AgentKib 插件”和“诊断”。委派暂停的原因用琥珀色，和“需要你处理”里的一致。往这个对话框里加新内容时沿用这些组件（`operation-layout.tsx`），不单独写一套间距和按钮。
 
 ### 工具详情（2026-10-27）
 
@@ -227,6 +239,23 @@ Claude Code 自动结束仅在用户停留期间真实回收进程时显示一�
 
 “工作树”与 Codex 中文界面的叫法一致，普通界面不写 worktree。工作树会话行和侧栏只放 lucide `Split` 图标，不加文字徽标；悬停和读屏写出名称、分支、路径和状态。已删除与状态未知用文字说明，图标变淡只作辅助，不只靠颜色或透明度区分。`GitBranch` 图标继续专指用户创建的分叉，两者不混用。主检出没有登记成工作区时，组名取主检出的文件夹名；连主检出都找不到时，组名旁加 `Split` 图标，悬停写“这是 git 工作树”。“程序启动的会话”指不是由人在客户端里开始的会话，不称“自动化”或“SDK 会话”；行上用 `Bot` 图标，开关默认关闭且不保存。
 
+## 项目 Agent（2026-11-13）
+
+| 概念 | 简体中文 | 繁體中文 | 日本語 | English |
+| --- | --- | --- | --- | --- |
+| 指挥其他会话的 Claude Code、Codex 或 DeepSeek Harness 会话 | 项目 Agent | 專案 Agent | プロジェクト Agent | Project Agent |
+| 由项目 Agent 开出、派任务的 Codex 或 DeepSeek Harness 会话 | Worker | Worker | ワーカー | Worker |
+| 项目 Agent 交给 Worker 的工作 | 任务 | 任務 | タスク | Task |
+| Worker 的结果送回项目 Agent | 汇报 | 回報 | 報告 | Report |
+| 开 Worker、派任务这件事（暂停和恢复的对象） | 委派 | 委派 | 委任 | Delegation |
+| 设定入口 | 设为项目 Agent… | 設為專案 Agent… | プロジェクト Agent にする… | Make Project Agent… |
+| 以后指挥项目 Agent 的个人助理（尚未提供） | 个人 Agent | 個人 Agent | パーソナル Agent | Personal Agent |
+| Worker 的来源（列表与会话页） | Worker api · 委派自 〈项目 Agent〉 | Worker api · 委派自 〈專案 Agent〉 | ワーカー api · 委任元 〈プロジェクト Agent〉 | Worker api · Delegated by 〈Project Agent〉 |
+| 委派因上限、送达不明或重启暂停（“需要你”里的一项） | 委派已暂停 | 委派已暫停 | 委任を一時停止中 | Delegation paused |
+| 允许项目 Agent 替用户处理的事 | 项目 Agent 可以替你决定 | 專案 Agent 可以替你決定 | プロジェクト Agent に任せること | The Project Agent may decide |
+
+“Agent”仍指 Claude Code、Codex 这类产品；项目 Agent 是一个会话担任的角色，三级依次是个人 Agent、项目 Agent、Worker。Worker 与 Agent 一样在中文界面保留英文，日文写“ワーカー”。Worker 是会话列表里能看到的独立 Codex 或 DeepSeek Harness 会话，不能叫“子代理”，子代理在一个会话内部。简体中文写“汇报”，不写“回报”，避免读成收益；繁体中文写“回報”。给 Claude Code 看的工具名（`worker_*`）和汇报开头（`[AgentKib report]`）固定用英文。
+
 ## 保留与解释的技术概念
 
 | 概念 | 用户界面的处理 |
@@ -244,6 +273,6 @@ UX-30 的范围为变更审查流程、资源库与技能管理的主要入口�
 
 UX-31 当时补齐了旧工作区 Claude 面板及文件面板的四语文案、`managedText` 调用键与四语词条的匹配，以及远程 Web 设置简体文案中的繁体混字。工作区 Claude 入口现已迁移到通用会话页。检查语言分支是否落到简体、动态字符串键是否无法匹配而显示原文。已有完整四语分支的 `native-scope`、`question-form`、`native-decisions` 等组件不计为缺译。
 
-验收以实际组件的 `zh-TW`、`ja-JP` 渲染和关键操作文案为准，并回归 `zh-CN`、`en-US`；四语言键数量一致只能作为辅助检查。本轮不据此声称全仓所有文案或所有实机状态均已审计，也不恢复“约 170 处缺翻译”的旧统计。
+验收以实际组件的 `zh-Hant`、`ja-JP` 渲染和关键操作文案为准，并回归 `zh-CN`、`en-US`；四语言键数量一致只能作为辅助检查。本轮不据此声称全仓所有文案或所有实机状态均已审计，也不恢复“约 170 处缺翻译”的旧统计。
 
 D10、D11 会话无感续接（2026-10-19）更新本表“会话与续接”部分，取代早期 UX-30 中的手动执行交接术语。核对范围为桌面会话页、工作区 Claude 面板、Web 会话页，以及首页、目录、连接向导和会话详情；四语词条和实际渲染均需验证。真实 CLI、Windows 与真手机验收单独记录，不能由字典比对或合成测试替代。第 4 阶段记录见 `qa/session-continue-stage-4-validation-2026-10-19.md`。

@@ -23,7 +23,6 @@ import { claudeResumeCommand } from "./claude-resume-command";
 import { conversationReadKey, ReadStateLedger } from "./read-state-ledger";
 import type { ReadStateTarget } from "./conversation-read-state";
 import { ClaudeSessionOwnerProbe, type ClaudeOwnerObservationShare } from "./claude-session-owner";
-import { resolveCommand } from "./command-resolution";
 import { validHistoryControl } from "./history-control-schema";
 import type { Commands } from "./commands";
 import type { ClaudeControlMetadataShare, SessionReaders } from "./session-readers";
@@ -31,7 +30,13 @@ import type { BackendStore } from "./store";
 import { canonicalize, pathIdentity } from "./paths";
 import { restrictRemotePath } from "./remote-tls";
 import { acquirePortableFileLease } from "./managed-session-lock";
-import { readClaudeVersion, supportsClaudeVersion } from "./claude-version";
+import { LEAD_ALLOWED_TOOLS, mergeMcpConfigs } from "./orchestration-service";
+import {
+  CLAUDE_BACKGROUND_TASKS_MINIMUM,
+  readClaudeInstallation,
+  supportsClaudeVersion,
+  type ClaudeInstallation,
+} from "./claude-version";
 import {
   CLAUDE_COMMAND_REFUSALS,
   claudeInputCommandRefusal,
@@ -153,6 +158,22 @@ const isObject = (value: unknown): value is Record<string, any> =>
   value !== null && typeof value === "object" && !Array.isArray(value);
 const sessionIdPattern = /^[A-Za-z0-9-]{1,128}$/;
 const uuidPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+/** A stored snapshot of a turn the CLI started by itself that had not ended when it was stored. */
+const interruptedSelfTurn = (snapshot: Record<string, unknown>): boolean =>
+  snapshot.turnOrigin === "self" &&
+  ["running", "waiting-approval", "waiting-input"].includes(String(snapshot.status));
+/**
+ * What clients see of the worker's background tasks: what runs and since when. The CLI's task and
+ * tool ids stay in the host, as with sub-agents.
+ */
+const publicBackgroundTasks = (tasks: unknown): Record<string, unknown>[] =>
+  Array.isArray(tasks)
+    ? tasks.filter(isObject).map((task) => ({
+        kind: task.kind === "agent" ? "agent" : "command",
+        description: typeof task.description === "string" ? task.description : null,
+        startedAt: typeof task.startedAt === "string" ? task.startedAt : null,
+      }))
+    : [];
 const startupFailureCodes = new Set([
   "initialize-timeout",
   "initialize-write-failed",
@@ -184,16 +205,32 @@ type ClaudePermissionView = {
   possiblyAuto?: true;
 };
 
+/** What tells two sets of lead tools apart; undefined for none. */
+const toolKey = (tools: Record<string, unknown> | null | undefined): string | undefined =>
+  tools ? JSON.stringify(tools) : undefined;
+
 export type ClaudeContinuationOptions = {
   idleTimeoutMs?: number;
   maintenanceIntervalMs?: number;
+  /** Whether the person lets managed sessions do background work; read when a worker starts. */
+  backgroundTasks?: () => boolean;
+  /**
+   * The `--mcp-config` content of a lead's delegation tools (see `orchestration-service.ts`),
+   * or null when the session directs no lanes. Read when a worker starts.
+   */
+  leadTools?: (sessionId: string) => Promise<Record<string, unknown> | null>;
+  /** The person sent a message to this session themselves, not a queued or automatic one. */
+  userSent?: (sessionId: string) => void;
+  /** The CLI started a turn by itself; false stops it (a Project Agent past its turn limit). */
+  selfTurn?: (sessionId: string) => boolean;
   isSessionObserved?: (sessionId: string) => boolean;
   isSessionBridged?: (sessionId: string) => boolean;
 };
 
 /** Manages Claude session ownership, CLI runners, and read-side state. */
 export class ClaudeManagedReadOwner {
-  #version?: { at: number; value: string | null };
+  /** The installation managed sessions run; `value` is its version line when it qualifies. */
+  #version?: { at: number; value: string | null; installation: ClaudeInstallation };
   #newSessionCatalog?: { key: string; at: number; snapshot: ClaudeRunnerOptionsSnapshot };
   #catalogProbe?: {
     key: string;
@@ -201,6 +238,8 @@ export class ClaudeManagedReadOwner {
     result: Promise<ClaudeRunnerOptionsSnapshot>;
   };
   #runners = new Map<string, ClaudeManagedRunnerProcess>();
+  /** The lead tools each runner's workers start with, as JSON; absent for none. */
+  #leadToolKeys = new Map<string, string>();
   #hostState: ClaudeHostStateStore;
   #turnMeta: ClaudeTurnMetaStore;
   // Bumped when a turn end is stored, so cached history projections are read again with it.
@@ -726,8 +765,31 @@ export class ClaudeManagedReadOwner {
       record.snapshot = this.#load(id)!.snapshot;
       live = await this.#live(id, true);
     }
+    const leadTools = operation === "send" ? await this.#leadTools(id) : undefined;
+    if (
+      operation === "send" &&
+      live.status === "idle" &&
+      existingRunner &&
+      this.#leadToolKeys.get(id) !== toolKey(leadTools)
+    ) {
+      // It became a lead, or stopped being one, since its worker started.
+      await this.#retireGoalRunner(id);
+      existingRunner = undefined;
+      record.snapshot = this.#load(id)!.snapshot;
+      live = await this.#live(id, true);
+    }
 
     if (operation === "send" && !value.schedulePermitId) {
+      try {
+        this.continuation.userSent?.(id);
+      } catch {
+        /* Bookkeeping of others never blocks the person's message. */
+      }
+      // The person answered what the notice asked for; the worker it was about is still there.
+      if (this.#continuationNotices.get(id) === "lead-turn-limit") {
+        this.#continuationNotices.delete(id);
+        this.#continuationNoticeIds.delete(id);
+      }
       const host = this.#hostState.read(id);
       if (host.goal?.status === "active")
         this.#hostState.update(id, (state) => {
@@ -754,9 +816,7 @@ export class ClaudeManagedReadOwner {
       );
       if (content === undefined) throw new Error("missing-input");
       validateClaudeContent(content);
-      if ((await this.#installationVersion()) === null) throw new Error("claude-cli-unavailable");
-      executable = resolveCommand("claude", this.environment);
-      if (!executable) throw new Error("claude-cli-unavailable");
+      executable = await this.#installationExecutable();
       if (!existingRunner?.hasWorker) {
         // Creating/adopting an idle session already retains this runtime's lease.
         // A second file-lock acquisition would reject our own first send.
@@ -827,7 +887,7 @@ export class ClaudeManagedReadOwner {
       }
       let runner = existingRunner;
       if (!runner) {
-        runner = this.#newRunner(record);
+        runner = this.#newRunner(record, { leadTools });
       }
 
       try {
@@ -1206,10 +1266,14 @@ export class ClaudeManagedReadOwner {
 
   #newRunner(
     record: ClaudeRecord,
-    options: { mcpConfig?: Record<string, unknown> } = {},
+    {
+      leadTools,
+      ...options
+    }: { mcpConfig?: Record<string, unknown>; leadTools?: Record<string, unknown> | null } = {},
     settings = this.#hostState.read(record.id).settings,
   ): ClaudeManagedRunnerProcess {
     const id = record.id;
+    const mcpConfig = mergeMcpConfigs(options.mcpConfig, leadTools);
     const runner = new ClaudeManagedRunnerProcess(
       record.workspace,
       record.nativeId,
@@ -1219,7 +1283,7 @@ export class ClaudeManagedReadOwner {
       (snapshot: ClaudeRunnerSnapshot) => {
         const current = this.#load(id);
         if (!current || current.released) throw new Error("Claude session unavailable");
-        if (snapshot.status === "idle" && !snapshot.activity)
+        if (snapshot.status === "idle" && !snapshot.activity && !snapshot.backgroundTasks.length)
           this.#idleSince.set(id, this.#idleSince.get(id) ?? Date.now());
         else this.#idleSince.delete(id);
         const turnId = snapshot.turnId;
@@ -1284,9 +1348,31 @@ export class ClaudeManagedReadOwner {
           ? { forkSourceNativeId: record.forkSourceNativeId, forkCutoff: record.forkCutoff }
           : {}),
         ...options,
+        ...(mcpConfig ? { mcpConfig } : {}),
+        ...(leadTools ? { allowedTools: [...LEAD_ALLOWED_TOOLS] } : {}),
         onUndispatchedStartup: (proof) => this.#recordStartupCleanup(record, proof),
         beforeStart: () => this.#beforeRunnerStart(id),
         ...(this.#version?.value ? { cliVersion: this.#version.value } : {}),
+        backgroundTasks:
+          this.continuation.backgroundTasks?.() === true &&
+          supportsClaudeVersion(this.#version?.value ?? "", CLAUDE_BACKGROUND_TASKS_MINIMUM),
+        onSelfTurnLimit: () => {
+          this.#continuationNotices.set(id, "background-limit");
+          this.#continuationNoticeIds.set(id, randomUUID());
+        },
+        onSelfTurn: () => {
+          let allowed = true;
+          try {
+            allowed = this.continuation.selfTurn?.(id) !== false;
+          } catch {
+            /* Bookkeeping of others never stops the session's own work. */
+          }
+          if (!allowed) {
+            this.#continuationNotices.set(id, "lead-turn-limit");
+            this.#continuationNoticeIds.set(id, randomUUID());
+          }
+          return allowed;
+        },
         onResult: (result) => {
           new ReadStateLedger(this.dataDir).record(
             conversationReadKey("claude-code", record.home, record.nativeId),
@@ -1322,7 +1408,19 @@ export class ClaudeManagedReadOwner {
     this.#runners.set(id, runner);
     if (this.continuation.isSessionObserved?.(id)) this.#observed.add(id);
     if (options.mcpConfig) this.#goalRunners.add(id);
+    const key = toolKey(leadTools);
+    if (key === undefined) this.#leadToolKeys.delete(id);
+    else this.#leadToolKeys.set(id, key);
     return runner;
+  }
+
+  /** A lead's delegation tools; none when the lookup fails, so the session still runs. */
+  async #leadTools(id: string): Promise<Record<string, unknown> | null> {
+    try {
+      return (await this.continuation.leadTools?.(id)) ?? null;
+    } catch {
+      return null;
+    }
   }
 
   /** Keeps a turn end the transcript will not have, so history shows it after the live rows go. */
@@ -1367,6 +1465,7 @@ export class ClaudeManagedReadOwner {
     if (runner) await runner.shutdown();
     this.#runners.delete(id);
     this.#goalRunners.delete(id);
+    this.#leadToolKeys.delete(id);
   }
 
   #queue(id: string): Record<string, unknown> {
@@ -1437,7 +1536,13 @@ export class ClaudeManagedReadOwner {
       if (!release) throw new Error("session-managed-by-another-runtime");
       this.#ownerLocks.set(record.id, release);
     }
+    const leadTools = await this.#leadTools(record.id);
     let runner = this.#runners.get(record.id);
+    if (runner && !runner.hasWorker && this.#leadToolKeys.get(record.id) !== toolKey(leadTools)) {
+      await this.#retireGoalRunner(record.id);
+      record = this.#load(record.id)!;
+      runner = undefined;
+    }
     if (!runner?.hasWorker) {
       await this.#ensureNoExternalOwner(record.nativeId);
       if (!record.fresh) {
@@ -1446,13 +1551,13 @@ export class ClaudeManagedReadOwner {
           throw new Error("unverified-session-identity");
         await this.#refreshIdleHistory(record);
       }
-      if ((await this.#installationVersion()) === null) throw new Error("claude-cli-unavailable");
+      if ((await this.#installationVersion()) === null)
+        throw new Error(this.#installationMissing());
       await this.#reserveRunner(record.id);
-      runner = this.#newRunner(record, options, settings);
+      runner = this.#newRunner(record, { ...options, leadTools }, settings);
     }
     try {
-      const executable = resolveCommand("claude", this.environment);
-      if (!executable) throw new Error("claude-cli-unavailable");
+      const executable = await this.#installationExecutable();
       await runner.prepare(executable);
     } finally {
       this.#starting.delete(record.id);
@@ -2488,7 +2593,7 @@ export class ClaudeManagedReadOwner {
     )
       throw new Error("invalid-managed-create");
     const installation = await this.#installationVersion();
-    if (installation === null) throw new Error("claude-cli-unavailable");
+    if (installation === null) throw new Error(this.#installationMissing());
     // Before the request is claimed or dispatched: nothing may be left half-recorded.
     this.#home();
     const selectedSettings = this.#settings(value);
@@ -2671,7 +2776,7 @@ export class ClaudeManagedReadOwner {
       Object.keys(value).some((key) => !allowed.has(key))
     )
       throw new Error("invalid-managed-adopt");
-    if ((await this.#installationVersion()) === null) throw new Error("claude-cli-unavailable");
+    if ((await this.#installationVersion()) === null) throw new Error(this.#installationMissing());
     // Before the request is claimed or dispatched: nothing may be left half-recorded.
     this.#home();
     const logical = { ...value };
@@ -3005,7 +3110,7 @@ export class ClaudeManagedReadOwner {
       const unconfirmed = readUnknownManagedCommands(this.dataDir, id);
       if (unconfirmed.some((command) => command.evidence?.operation !== "delete"))
         return reject("control-outcome-unconfirmed");
-      if ((await this.#installationVersion()) === null) return reject("claude-cli-unavailable");
+      if ((await this.#installationVersion()) === null) return reject(this.#installationMissing());
       const live = await this.#live(id, true);
       if (live.revision !== value.expectedRevision) return reject("stale-Claude-revision");
       const runner = this.#runners.get(id);
@@ -3284,7 +3389,7 @@ export class ClaudeManagedReadOwner {
     this.#starting.add(id);
     const starting = runner ? this.#streamLive(id, runner.snapshot(), record) : null;
     if (starting) this.#publishConversationEvent?.(id, "state", starting, starting);
-    if ((await this.#installationVersion()) === null) throw new Error("claude-cli-unavailable");
+    if ((await this.#installationVersion()) === null) throw new Error(this.#installationMissing());
     await this.#ensureNoExternalOwner(record.nativeId);
     if (this.#shuttingDown || this.#runners.get(id) !== runner)
       throw new Error("session-unavailable");
@@ -3413,7 +3518,9 @@ export class ClaudeManagedReadOwner {
             snapshot.status !== "idle" ||
             snapshot.activity ||
             snapshot.approvals.length ||
-            snapshot.questions.length
+            snapshot.questions.length ||
+            // Background work is the session still working, with nobody watching it or not.
+            snapshot.backgroundTasks.length
           ) {
             this.#idleSince.delete(id);
             return;
@@ -3566,6 +3673,39 @@ export class ClaudeManagedReadOwner {
     if (previous !== value) this.#catalogChanged?.();
   }
 
+  /**
+   * Whether managed sessions may keep background tasks: the person's preference, and whether this
+   * computer's Claude Code can (macOS, where the worker's whole process tree ends with it, and a
+   * CLI that reports when the turn of a message starts). A change applies from the next worker.
+   */
+  async backgroundTasksStatus(): Promise<{
+    enabled: boolean;
+    available: boolean;
+    reason: "platform-unsupported" | "claude-cli-unavailable" | "claude-cli-too-old" | null;
+    minimumVersion: string;
+    cliVersion: string | null;
+  }> {
+    const enabled = this.continuation.backgroundTasks?.() === true;
+    const status = { enabled, minimumVersion: CLAUDE_BACKGROUND_TASKS_MINIMUM };
+    if (process.platform !== "darwin" || !supportsClaudeManagedRunner())
+      return { ...status, available: false, reason: "platform-unsupported", cliVersion: null };
+    const version = await this.#installationVersion();
+    if (!version) {
+      const old = this.#installationMissing() === "claude-cli-too-old";
+      const found = this.#version?.installation.version;
+      return {
+        ...status,
+        available: false,
+        reason: old ? "claude-cli-too-old" : "claude-cli-unavailable",
+        cliVersion: old && found ? found.replace(/ \(Claude Code\)$/, "") : null,
+      };
+    }
+    const cliVersion = version.replace(/ \(Claude Code\)$/, "");
+    if (!supportsClaudeVersion(version, CLAUDE_BACKGROUND_TASKS_MINIMUM))
+      return { ...status, available: false, reason: "claude-cli-too-old", cliVersion };
+    return { ...status, available: true, reason: null, cliVersion };
+  }
+
   /** Catalog presentation never probes processes or starts a runner. */
   catalogContinuation(
     id: string,
@@ -3574,7 +3714,8 @@ export class ClaudeManagedReadOwner {
     const runner = this.#runners.get(id);
     const status = this.#catalogUnconfirmed.has(id)
       ? "outcome-unknown"
-      : (runner?.status ?? persisted?.status);
+      : (runner?.status ??
+        (persisted && interruptedSelfTurn(persisted) ? "idle" : persisted?.status));
     // A cached external owner cannot turn an unresolved outcome into a fork choice.
     if (status === "outcome-unknown")
       return {
@@ -3597,6 +3738,7 @@ export class ClaudeManagedReadOwner {
         status: this.#starting.has(id) ? "starting" : (status ?? "idle"),
         executionLocation: "agentkib",
         ownershipReason: reason,
+        ...(runner?.backgroundTaskCount ? { backgroundTasks: runner.backgroundTaskCount } : {}),
       };
     if (reason)
       return {
@@ -3614,7 +3756,11 @@ export class ClaudeManagedReadOwner {
     if (!supportsClaudeManagedRunner())
       return { status: "unsupported", executionLocation: null, reason: "platform-unsupported" };
     if (this.#version && this.#version.value === null)
-      return { status: "unsupported", executionLocation: null, reason: "claude-cli-unavailable" };
+      return {
+        status: "unsupported",
+        executionLocation: null,
+        reason: this.#installationMissing(),
+      };
     return undefined;
   }
 
@@ -3698,6 +3844,35 @@ export class ClaudeManagedReadOwner {
 
   hasManagedSession(id: string): boolean {
     return sessionIdPattern.test(id) && this.#load(id) !== null;
+  }
+
+  /**
+   * Queues a lead's report from its lanes; it is sent as a turn of its own once the session is
+   * idle, after the person's own queued messages (`ClaudeHostStateStore.addReport`).
+   */
+  /** Returns whether it joined a report still waiting, so that no new turn is needed. */
+  queueReport(id: string, deviceId: string, text: string): boolean {
+    if (!this.hasManagedSession(id)) throw new Error("session-unavailable");
+    return this.#hostState.addReport(id, deviceId, text);
+  }
+
+  /** Reports waiting to start a turn of this session, or starting it now (read only). */
+  queuedReports(id: string): number {
+    return (
+      this.#hostState
+        .peek(id)
+        ?.work.filter(
+          (work) =>
+            work.kind === "report" && ["pending", "claimed", "dispatched"].includes(work.status),
+        ).length ?? 0
+    );
+  }
+
+  /** The workspace a managed session belongs to, also before its first turn is indexed. */
+  managedWorkspace(id: string): string | null {
+    if (!sessionIdPattern.test(id)) return null;
+    const record = this.#load(id);
+    return record && !record.released ? record.workspaceId : null;
   }
 
   readStateTarget(id: string): ReadStateTarget | null {
@@ -3882,15 +4057,28 @@ export class ClaudeManagedReadOwner {
 
   async #installationVersion(): Promise<string | null> {
     if (this.#version && Date.now() - this.#version.at < 30_000) return this.#version.value;
-    const version = await readClaudeVersion(this.commands, this.environment);
-    const value = version !== null && supportsClaudeVersion(version) ? version : null;
-    this.#version = { at: Date.now(), value };
+    const installation = await readClaudeInstallation(this.commands, this.environment);
+    const value = installation.reason === null ? installation.version : null;
+    this.#version = { at: Date.now(), value, installation };
     return value;
   }
 
+  /** The Claude Code CLI managed sessions run, or why there is none. */
+  async #installationExecutable(): Promise<string> {
+    if ((await this.#installationVersion()) === null) throw new Error(this.#installationMissing());
+    const executable = this.#version?.installation.executable;
+    if (!executable) throw new Error("claude-cli-unavailable");
+    return executable;
+  }
+
+  /** Why no installation qualifies: none found, or only one that is too old. */
+  #installationMissing(): "claude-cli-unavailable" | "claude-cli-too-old" {
+    return this.#version?.installation.reason ?? "claude-cli-unavailable";
+  }
+
   async #readNewSessionCatalog(workspace: string, cliVersion: string, revalidate = false) {
-    // Resolve the installed executable in the host environment, independently of the project cwd.
-    const executable = resolveCommand("claude", this.environment);
+    // The installation the version check chose, independently of the project cwd.
+    const executable = this.#version?.value ? this.#version.installation.executable : null;
     if (!executable) return;
     const key = JSON.stringify([workspace, executable, cliVersion, this.#home()]);
     // Overlapping requests share the initialize, including during rapid workspace changes.
@@ -4009,7 +4197,7 @@ export class ClaudeManagedReadOwner {
         : !supportsClaudeManagedRunner()
           ? "platform-unsupported"
           : !version
-            ? "claude-cli-unavailable"
+            ? this.#installationMissing()
             : await this.#ownershipReason(id, target.nativeId, null);
       if (this.#load(id)) {
         this.#forgetOwnership(id);
@@ -4048,7 +4236,7 @@ export class ClaudeManagedReadOwner {
     const ownershipReason = !supportsClaudeManagedRunner()
       ? "platform-unsupported"
       : !version
-        ? "claude-cli-unavailable"
+        ? this.#installationMissing()
         : await this.#ownershipReason(id, record.nativeId, ownedPid);
     const current = this.#load(id);
     if (!current) throw new Error("session-unavailable");
@@ -4096,6 +4284,25 @@ export class ClaudeManagedReadOwner {
       this.#save(record);
       this.#recoverCompletions(record);
     }
+    if (!runner && interruptedSelfTurn(record.snapshot)) {
+      // A turn the CLI started by itself answers no command, so no outcome is in doubt: with its
+      // worker gone it did not finish, and the session can be used again.
+      record.snapshot = {
+        ...record.snapshot,
+        status: "idle",
+        lastOutcome: "cancelled",
+        sendEnabled: true,
+        stopEnabled: false,
+        approvals: [],
+        questions: [],
+        streamText: "",
+        streamTextTruncated: false,
+        activity: null,
+        apiRetry: null,
+        revision: Number(record.snapshot.revision ?? 0) + 1,
+      };
+      this.#save(record);
+    }
     const unconfirmed = managedSessionHasUnknownCommands(this.dataDir, id);
     this.#setCatalogUnconfirmed(id, unconfirmed);
     let live: Record<string, unknown>;
@@ -4128,6 +4335,9 @@ export class ClaudeManagedReadOwner {
     live.sessionId = record.id;
     // Runner observations carry native ids internally; only the parent-scoped projection is public.
     delete live.subagents;
+    // Background work lives in the worker: without one none runs, whatever was last stored.
+    live.backgroundTasks = runner?.hasWorker ? publicBackgroundTasks(live.backgroundTasks) : [];
+    if (live.turnOrigin !== "self") live.turnOrigin = "host";
     live.sourceSessionId = record.nativeId;
     live.workspaceId = record.workspaceId;
     live.runtimeBootId = this.bootId;
@@ -4227,6 +4437,7 @@ export class ClaudeManagedReadOwner {
     const pendingStartup = this.#runners.get(id)?.startupPending;
     return {
       ...snapshot,
+      backgroundTasks: publicBackgroundTasks(snapshot.backgroundTasks),
       subagents: snapshot.subagents?.length
         ? projectSubagentObservations(
             {

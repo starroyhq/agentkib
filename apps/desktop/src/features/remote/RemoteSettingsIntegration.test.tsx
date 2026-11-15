@@ -266,7 +266,7 @@ describe("remote settings integration", () => {
 
   it.each([
     ["zh-CN", "连接新手机", "连接手机", "重新生成", "完整控制"],
-    ["zh-TW", "連接新手機", "連接手機", "重新產生", "完整控制"],
+    ["zh-Hant", "連接新手機", "連接手機", "重新產生", "完整控制"],
     ["en-US", "Connect a new phone", "Connect phone", "Regenerate", "Full control"],
     ["ja-JP", "新しいスマートフォンを接続", "スマートフォンを接続", "再生成", "フルコントロール"],
   ] as const)(

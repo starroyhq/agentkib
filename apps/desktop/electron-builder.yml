@@ -11,6 +11,8 @@ files:
   - "!**/*.map"
   - "!**/*.tsbuildinfo"
   - "!**/.DS_Store"
+# Chromium's own resource packs, which name Traditional Chinese "zh-TW" (no "zh-Hant" pack
+# exists); AgentKib's own locale is "zh-Hant".
 electronLanguages:
   - en-US
   - ja

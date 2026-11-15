@@ -170,7 +170,7 @@ describe("catalog Skills URL navigation", () => {
     },
   );
 
-  it.each(["en-US", "zh-CN", "zh-TW", "ja-JP"] as const)(
+  it.each(["en-US", "zh-CN", "zh-Hant", "ja-JP"] as const)(
     "restores the localized usage tab from a deep link in %s",
     async (locale) => {
       await initializeI18n(locale);

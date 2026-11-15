@@ -1,5 +1,7 @@
+import { XIcon } from "lucide-react";
 import { useEffect, useRef, type ReactNode } from "react";
 import { cn } from "cn";
+import { Button } from "@/components/ui/button";
 import {
   Dialog as DialogRoot,
   DialogClose,
@@ -61,34 +63,34 @@ export function Dialog({
         <DialogHeader
           className={cn(
             "relative flex-row items-start justify-between gap-3 pr-10",
-            panel && "shrink-0 px-6 pt-6",
+            panel && "shrink-0 px-5 pt-5",
           )}
         >
-          <div className="min-w-0 space-y-1">
-            <DialogTitle className="text-lg font-semibold tracking-tight">{title}</DialogTitle>
+          <div className="min-w-0 space-y-1.5">
+            <DialogTitle className="leading-6">{title}</DialogTitle>
             {description && <DialogDescription>{description}</DialogDescription>}
           </div>
           {headerAdornment && <div className="mr-10 shrink-0">{headerAdornment}</div>}
+          {/* The same close button as the app's other dialogs. */}
           <DialogClose
-            className="absolute top-4 right-4 grid size-8 place-items-center rounded-md text-muted-foreground opacity-70 hover:bg-accent hover:text-foreground hover:opacity-100"
+            render={<Button variant="ghost" size="icon-sm" />}
+            className={cn("absolute", panel ? "top-4 right-4" : "-top-2 -right-2")}
             aria-label={closeLabel}
           >
-            <span aria-hidden="true" className="text-xl leading-none">
-              ×
-            </span>
+            <XIcon aria-hidden="true" />
           </DialogClose>
         </DialogHeader>
         <div
           className={cn(
             "dialog-body agentkib-conversation-dialog min-w-0 space-y-4",
-            panel && "min-h-0 flex-1 overflow-y-auto overscroll-contain px-6 py-5",
+            panel && "min-h-0 flex-1 overflow-y-auto overscroll-contain px-5 py-4",
             bodyClassName,
           )}
         >
           {children}
         </div>
         {footer && (
-          <div className="shrink-0 border-t bg-muted/30 px-6 py-4 pb-[max(1rem,env(safe-area-inset-bottom))]">
+          <div className="shrink-0 border-t bg-muted/30 px-5 py-4 pb-[max(1rem,env(safe-area-inset-bottom))]">
             {footer}
           </div>
         )}

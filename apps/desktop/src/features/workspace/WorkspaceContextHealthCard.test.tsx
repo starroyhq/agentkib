@@ -38,7 +38,7 @@ describe("WorkspaceContextHealthCard", () => {
     vi.restoreAllMocks();
   });
 
-  it.each(["zh-CN", "zh-TW", "en-US", "ja-JP"] as const)(
+  it.each(["zh-CN", "zh-Hant", "en-US", "ja-JP"] as const)(
     "uses the Doctor issue title for context and unmanaged duplicates in %s",
     async (locale) => {
       await changeLocale(locale);
@@ -77,7 +77,7 @@ describe("WorkspaceContextHealthCard", () => {
 
   it.each([
     ["zh-CN", "诊断正常 · 检查于 刚刚", "检查于 刚刚"],
-    ["zh-TW", "診斷正常 · 檢查於 剛剛", "檢查於 剛剛"],
+    ["zh-Hant", "診斷正常 · 檢查於 剛剛", "檢查於 剛剛"],
     ["en-US", "Diagnostics healthy · Checked just now", "Checked just now"],
     ["ja-JP", "診断は正常 · 最終確認：たった今", "最終確認：たった今"],
   ] as const)(
@@ -163,7 +163,7 @@ describe("WorkspaceContextHealthCard", () => {
     expect(onOpenChanges).toHaveBeenCalledOnce();
   });
 
-  it.each(["zh-CN", "zh-TW", "en-US", "ja-JP"] as const)(
+  it.each(["zh-CN", "zh-Hant", "en-US", "ja-JP"] as const)(
     "names the duplicate files in %s without exposing raw evidence",
     async (locale) => {
       await initializeI18n(locale);
@@ -192,7 +192,7 @@ describe("WorkspaceContextHealthCard", () => {
       );
       const files = {
         "zh-CN": "CLAUDE.md 与 AGENTS.md",
-        "zh-TW": "CLAUDE.md 與 AGENTS.md",
+        "zh-Hant": "CLAUDE.md 與 AGENTS.md",
         "en-US": "CLAUDE.md and AGENTS.md",
         "ja-JP": "CLAUDE.md と AGENTS.md",
       };

@@ -186,7 +186,7 @@ describe("catalog workspace draft opening", () => {
     expect(doubles.confirm).toHaveBeenCalledTimes(2);
   });
 
-  it.each(["zh-CN", "zh-TW", "en-US", "ja-JP"] as const)(
+  it.each(["zh-CN", "zh-Hant", "en-US", "ja-JP"] as const)(
     "shows explicit conflict actions in %s",
     async (locale) => {
       await initializeI18n(locale);

@@ -17,6 +17,7 @@ import { z } from "zod";
 import {
   CLAUDE_BRIDGE_CLI_VERSION,
   CLAUDE_BRIDGE_COMPATIBILITY,
+  CLAUDE_BRIDGE_FEATURES,
   CLAUDE_BRIDGE_PATHS,
   CLAUDE_BRIDGE_REQUIRED_CAPABILITIES,
   claudeBridgeCompatibility,
@@ -32,6 +33,7 @@ import {
 import {
   bridgeIdentitySchema,
   bridgeEventsSchema,
+  bridgeLeadCallSchema,
   bridgePollSchema,
   bridgeResultSchema,
 } from "./claude-bridge-schema";
@@ -148,7 +150,34 @@ type Connection = {
   wake?: () => void;
   pollActive: boolean;
   completed: Map<string, boolean>;
+  /** The plugin can register a Project Agent's tools (feature `lead-tools`). */
+  leadTools?: boolean;
 };
+/** A report on its way into a terminal Project Agent's outbox. */
+type QueuedReport = { id: string; text: string };
+/** A Project Agent in a terminal (docs/agents/project-agent.md); `orchestration-service.ts`. */
+export interface BridgeLead {
+  /** Its worker tools, or null when the session directs none. */
+  tools(sessionId: string): Array<{
+    name: string;
+    description: string;
+    inputSchema: Record<string, unknown>;
+  }> | null;
+  call(
+    sessionId: string,
+    name: string,
+    input: Record<string, unknown>,
+  ): Promise<{ text: string; isError?: boolean }>;
+  /** The person wrote to it, in the terminal or from AgentKib. */
+  userSpoke(sessionId: string): void;
+  /**
+   * Its CLI began a turn by itself (background work woke it). Past the Project Agent's automatic
+   * turns it names the device to stop that turn as; null lets it run.
+   */
+  selfTurn?(sessionId: string): { stopAs: string } | null;
+  /** Why its delegation is paused, or null; the terminal tells the person. */
+  paused?(sessionId: string): string | null;
+}
 interface BridgeOptions {
   dataDir: string;
   bootId: string;
@@ -173,7 +202,14 @@ interface BridgeOptions {
   platform?: NodeJS.Platform;
   commandTimeoutMs?: number;
   completed?(target: ClaudeBridgeTarget, turnId: string, aborted: boolean): void;
+  /** Lets a connected terminal session be a Project Agent; absent, none is. */
+  lead?: BridgeLead;
 }
+
+/** Reports a terminal holds at most before it takes them, as its outbox holds 20 messages. */
+const MAX_QUEUED_REPORTS = 16;
+/** A report that joins one still waiting stays under this, as merged Claude host reports do. */
+const MAX_REPORT_TEXT = 32_000;
 
 function privatePath(value: string, directory = false): void {
   if (!path.isAbsolute(value) || path.normalize(value) !== value)
@@ -265,6 +301,8 @@ export class ClaudeBridge {
   // Sessions the user disconnected. Only an explicit one-time code pairs them again.
   #declined = new Set<string>();
   #autoBindings = new Set<string>();
+  /** Reports for terminal Project Agents, by session, until their plugin takes them. */
+  #reports = new Map<string, QueuedReport[]>();
 
   constructor(readonly options: BridgeOptions) {
     this.root = path.join(options.dataDir, "claude-bridge");
@@ -1031,6 +1069,9 @@ export class ClaudeBridge {
       evidence,
     );
     if (prior) return prior;
+    // The person wrote to a terminal Project Agent from AgentKib: as when they type there.
+    if (command.kind === "send" || command.kind === "steer" || command.kind === "queue")
+      this.#leadSpoke(connection, row.target.sessionId);
     if (command.kind === "send") {
       row.inflight = { requestId, commandId: command.commandId, turnId: null };
       this.#save();
@@ -1127,7 +1168,52 @@ export class ClaudeBridge {
       token: row.token,
       leaseId: connection.leaseId,
       credentialPath: this.#credentialPath(row.bindingId),
+      ...this.#features(),
     };
+  }
+
+  /** What this Runtime takes beyond the 0.4.0 messages; a plugin uses only what is named. */
+  #features(): { features?: string[] } {
+    return this.options.lead ? { features: [...CLAUDE_BRIDGE_FEATURES] } : {};
+  }
+
+  /** Whether this session's terminal can take a Project Agent's tools now. */
+  leadCapable(sessionId: string): boolean {
+    return this.#connections.get(sessionId)?.leadTools === true;
+  }
+
+  /** The session became a Project Agent or stopped being one: its poll answers at once. */
+  leadChanged(sessionId: string): void {
+    this.#connections.get(sessionId)?.wake?.();
+  }
+
+  /** The registered workspace of a connected session. */
+  workspaceOf(sessionId: string): string | null {
+    return this.#bindings.get(sessionId)?.target.workspaceId ?? null;
+  }
+
+  /** Reports waiting for this terminal to take them. */
+  queuedReports(sessionId: string): number {
+    return this.#reports.get(sessionId)?.length ?? 0;
+  }
+
+  /**
+   * Queues a report for a terminal Project Agent; its plugin takes it on its next poll and
+   * submits it as a turn once the terminal is idle. True when it joined one still waiting.
+   */
+  queueReport(sessionId: string, text: string): boolean {
+    if (!this.#bindings.has(sessionId)) throw new Error("session-unavailable");
+    const queued = this.#reports.get(sessionId) ?? [];
+    const last = queued.at(-1);
+    if (last && last.text.length + text.length + 2 <= MAX_REPORT_TEXT) {
+      last.text = `${last.text}\n\n${text}`;
+      return true;
+    }
+    if (queued.length >= MAX_QUEUED_REPORTS) throw new Error("report-queue-full");
+    queued.push({ id: randomUUID(), text });
+    this.#reports.set(sessionId, queued);
+    this.#connections.get(sessionId)?.wake?.();
+    return false;
   }
   /** Frees room for a new automatic binding by dropping the oldest idle automatic one. */
   #evictAutoBinding(): void {
@@ -1417,6 +1503,7 @@ export class ClaudeBridge {
           token: row.token,
           leaseId: connection.leaseId,
           credentialPath: this.#credentialPath(row.bindingId),
+          ...this.#features(),
         });
         return;
       }
@@ -1459,8 +1546,34 @@ export class ClaudeBridge {
         const input = bridgePollSchema.parse(value);
         if (connection.pollActive) throw new Error("bridge-poll-already-active");
         connection.pollActive = true;
+        const sessionId = row.target.sessionId;
+        if (input.leadTools !== undefined && this.options.lead)
+          connection.leadTools = input.leadTools;
+        if (input.takenReports?.length) {
+          const taken = new Set(input.takenReports);
+          const left = (this.#reports.get(sessionId) ?? []).filter((item) => !taken.has(item.id));
+          if (left.length) this.#reports.set(sessionId, left);
+          else this.#reports.delete(sessionId);
+        }
+        // What a terminal Project Agent needs: its tools, and the reports for it to queue.
+        const lead = () => {
+          if (!connection.leadTools || !this.options.lead) return {};
+          let tools: ReturnType<BridgeLead["tools"]> = null;
+          let paused: string | null = null;
+          try {
+            tools = this.options.lead.tools(sessionId);
+            paused = this.options.lead.paused?.(sessionId) ?? null;
+          } catch {
+            /* The session is offered no tools rather than losing its commands. */
+          }
+          return {
+            lead: tools
+              ? { tools, reports: (this.#reports.get(sessionId) ?? []).slice(0, 4), paused }
+              : null,
+          };
+        };
         try {
-          if (!connection.pending && input.waitMs)
+          if (!connection.pending && !this.#reports.get(sessionId)?.length && input.waitMs)
             await new Promise<void>((resolve) => {
               const done = () => {
                 clearTimeout(timer);
@@ -1483,11 +1596,21 @@ export class ClaudeBridge {
             if (response.destroyed) return;
             dispatchManagedCommand(this.options.dataDir, pending.requestId);
             pending.delivered = true;
-            reply(200, { commands: [pending.command] });
-          } else reply(200, { commands: [] });
+            reply(200, { commands: [pending.command], ...lead() });
+          } else reply(200, { commands: [], ...lead() });
         } finally {
           connection.pollActive = false;
         }
+        return;
+      }
+      if (request.url === CLAUDE_BRIDGE_PATHS.leadCall) {
+        const input = bridgeLeadCallSchema.parse(value);
+        if (!connection.leadTools || !this.options.lead)
+          throw new Error("bridge-feature-unavailable");
+        // The binding must still be one AgentKib lets control this session.
+        this.options.validate(row.target, true, row.bindingId);
+        const answer = await this.options.lead.call(row.target.sessionId, input.name, input.input);
+        reply(200, { text: answer.text, isError: answer.isError === true });
         return;
       }
       if (request.url === CLAUDE_BRIDGE_PATHS.results) {
@@ -1687,6 +1810,7 @@ export class ClaudeBridge {
     // A native terminal event remains evidence even when it precedes the first
     // display snapshot after reconnect. Never discard it merely for UI ordering.
     if (event.type === "turn-complete") this.#complete(row, connection, event);
+    let stop: { turnId: string; deviceId: string } | null = null;
     if (event.type === "snapshot") {
       const snapshot = event.snapshot;
       if (
@@ -1716,6 +1840,17 @@ export class ClaudeBridge {
         snapshot.status = "running";
         snapshot.waiting = null;
         snapshot.streamText = "";
+        // A Project Agent's count of turns without the person restarts when they type. A turn the
+        // CLI begins by itself has no text, so no origin from a plugin that gives one; it counts,
+        // and past the limit it stops, as for a session AgentKib runs.
+        if (event.origin === "terminal") this.#leadSpoke(connection, id);
+        else if (event.origin === undefined && connection.leadTools)
+          try {
+            const refused = this.options.lead?.selfTurn?.(id);
+            if (refused) stop = { turnId: event.turnId, deviceId: refused.stopAs };
+          } catch {
+            /* A lead's bookkeeping never disturbs the terminal. */
+          }
       } else if (event.type === "text") {
         if (snapshot.currentTurnId !== event.turnId) throw new Error("bridge-turn-mismatch");
         if (Buffer.byteLength(snapshot.streamText + event.text) > 128 * 1024) {
@@ -1737,6 +1872,42 @@ export class ClaudeBridge {
     }
     connection.revision = ++this.#revision;
     this.#publish(id);
+    if (stop) void this.#stopLeadTurn(row, stop.turnId, stop.deviceId);
+  }
+
+  /** The person wrote to this session; for a terminal Project Agent, its turns restart. */
+  #leadSpoke(connection: Connection, sessionId: string): void {
+    if (!connection.leadTools) return;
+    try {
+      this.options.lead?.userSpoke(sessionId);
+    } catch {
+      /* A lead's bookkeeping never disturbs the terminal. */
+    }
+  }
+
+  /**
+   * Stops a turn a terminal Project Agent's CLI began by itself past its automatic turns, as Stop
+   * in AgentKib would, in the name of the device that set the Project Agent up.
+   */
+  async #stopLeadTurn(row: Binding, turnId: string, deviceId: string): Promise<void> {
+    try {
+      await this.#control(
+        {
+          operation: "stop",
+          sessionId: row.target.sessionId,
+          requestId: randomUUID(),
+          deviceId,
+          runtimeBootId: this.options.bootId,
+          expectedRevision: this.live(row.target.sessionId, true).revision,
+          experimentalEnabled: true,
+          turnId,
+        },
+        row,
+      );
+    } catch {
+      // Another command is on its way or the turn ended: it runs out by itself, and delegation
+      // is paused either way.
+    }
   }
 
   #complete(

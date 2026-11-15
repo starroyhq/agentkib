@@ -19,7 +19,14 @@ afterEach(() => {
 describe("hosted remote entry", () => {
   it.each([
     ["zh-CN", "局域网直连", "电脑上的 AgentKib", "设置 → 远程连接 → 手机", "授权码", "远程控制"],
-    ["zh-TW", "區域網路直連", "電腦上的 AgentKib", "設定 → 遠端連線 → 手機", "授權碼", "遠端控制"],
+    [
+      "zh-Hant",
+      "區域網路直連",
+      "電腦上的 AgentKib",
+      "設定 → 遠端連線 → 手機",
+      "授權碼",
+      "遠端控制",
+    ],
     [
       "en-US",
       "LAN direct connection",

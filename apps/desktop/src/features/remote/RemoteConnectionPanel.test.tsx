@@ -111,7 +111,7 @@ beforeEach(() => {
 });
 afterEach(cleanup);
 
-it.each(["zh-CN", "zh-TW", "en-US", "ja-JP"] as const)(
+it.each(["zh-CN", "zh-Hant", "en-US", "ja-JP"] as const)(
   "shows the nothing-found guidance only after discovery has finished in %s",
   async (locale) => {
     await changeLocale(locale);
@@ -286,7 +286,7 @@ describe("quick connection flow", () => {
 });
 
 describe("remote connections UI", () => {
-  it.each(["zh-CN", "zh-TW", "en-US", "ja-JP"] as const)(
+  it.each(["zh-CN", "zh-Hant", "en-US", "ja-JP"] as const)(
     "shows one computers empty state and finding computers never turns sharing on in %s",
     async (locale) => {
       await act(() => changeLocale(locale));
@@ -429,7 +429,7 @@ describe("remote connections UI", () => {
     expect(screen.getByRole("status").textContent).toBe(remoteSettingsCopy["en-US"].saved);
   });
 
-  it.each(["zh-CN", "zh-TW", "en-US", "ja-JP"] as const)(
+  it.each(["zh-CN", "zh-Hant", "en-US", "ja-JP"] as const)(
     "saves the computer name separately from advanced settings and shows success in %s",
     async (locale) => {
       await act(() => changeLocale(locale));
@@ -700,7 +700,7 @@ describe("remote connections UI", () => {
     expect(alert.textContent).not.toContain(failure.detail);
 
     try {
-      for (const locale of ["zh-CN", "zh-TW", "ja-JP", "en-US"] as const) {
+      for (const locale of ["zh-CN", "zh-Hant", "ja-JP", "en-US"] as const) {
         await act(() => changeLocale(locale));
         expect(screen.getByRole("alert")).toBe(alert);
         expect(alert.textContent).toContain(tr(failure.key));
@@ -725,7 +725,7 @@ describe("remote connections UI", () => {
     fireEvent.change(address, { target: { value: "192.168.1.20:42987" } });
     fireEvent.change(code, { target: { value: "1234" } });
     try {
-      for (const locale of ["zh-CN", "zh-TW", "ja-JP", "en-US"] as const) {
+      for (const locale of ["zh-CN", "zh-Hant", "ja-JP", "en-US"] as const) {
         await act(() => changeLocale(locale));
         expect(
           screen.getByRole("heading", { name: remotePageCopy[locale].addComputer }),

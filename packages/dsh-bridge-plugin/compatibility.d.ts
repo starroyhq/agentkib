@@ -3,7 +3,6 @@ export const DSH_BRIDGE_COMPATIBILITY: Readonly<{
   pluginVersion: string;
   minimumPluginVersion: string;
   minimumDshVersion: string;
-  dshVersionBelow: string;
   verifiedDshVersions: readonly string[];
 }>;
 export function dshBridgePluginCompatibility(version: unknown): "supported" | "too-old" | "invalid";

@@ -36,7 +36,7 @@ const copies = {
     codexArchive: "归档会话",
     codexDiff: "查看文件与差异",
   },
-  "zh-TW": {
+  "zh-Hant": {
     label: "Claude Code 指令",
     empty: "Claude Code 在這段對話中執行過一次後，這裡會列出可用的指令。",
     model: "變更下一輪模型",
@@ -103,8 +103,8 @@ const copies = {
 
 export function slashCommandCopy(locale: string) {
   return copies[
-    locale === "zh-TW"
-      ? "zh-TW"
+    locale === "zh-Hant"
+      ? "zh-Hant"
       : locale.startsWith("zh")
         ? "zh-CN"
         : locale.startsWith("ja")

@@ -784,7 +784,7 @@ export function McpManagementPanel({
                   {tr("mcp.manage.otherScopeCount", {
                     scope:
                       scopeName(other.project) +
-                      ((locale === "zh-CN" || locale === "zh-TW") &&
+                      ((locale === "zh-CN" || locale === "zh-Hant") &&
                       /[A-Za-z0-9]$/.test(scopeName(other.project))
                         ? " "
                         : ""),

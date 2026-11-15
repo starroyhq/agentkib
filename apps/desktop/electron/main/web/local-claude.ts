@@ -105,6 +105,27 @@ async function localClaudeRequestInner(
   if (operation === "dsh-bridge-status") return deps.managed({ operation, deviceId: OWNER });
   if (operation === "dsh-auto-start")
     return deps.managed({ operation, enabled: input.enabled === true, deviceId: OWNER });
+  // Whether managed Claude Code sessions keep background tasks; a read without `enabled`.
+  if (operation === "background-tasks")
+    return deps.managed({
+      operation,
+      ...(typeof input.enabled === "boolean" ? { enabled: input.enabled } : {}),
+      deviceId: OWNER,
+    });
+  // Whether a session directs lanes, and making it do so, on behalf of this computer's owner.
+  if (
+    ["lead-status", "lead-designate", "lead-release", "lead-pause", "lead-resume"].includes(
+      operation,
+    )
+  )
+    return deps.managed({
+      operation,
+      sessionId: field(input.sessionId),
+      ...(operation === "lead-designate" && input.scope && typeof input.scope === "object"
+        ? { scope: input.scope }
+        : {}),
+      deviceId: OWNER,
+    });
   if (operation === "receipt")
     return deps.receipt({ requestId: field(input.requestId), deviceId: OWNER });
   if (operation === "catalog") {

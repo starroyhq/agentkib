@@ -37,7 +37,7 @@ const managementLocales = [
     checking: "正在自动查询已保存请求的处理状态；刷新不会重新执行操作。",
   },
   {
-    locale: "zh-TW",
+    locale: "zh-Hant",
     handoff: "交給 AgentKib",
     release: "交還原客戶端",
     notHandedOver: "此對話尚未交給 AgentKib",

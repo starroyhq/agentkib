@@ -18,7 +18,7 @@ export const remoteSettingsCopy = {
     invalidName: "请输入 1 至 64 个字符的电脑名称。",
     retryName: "重试保存名称",
   },
-  "zh-TW": {
+  "zh-Hant": {
     title: "遠端連線",
     phone: "手機",
     computers: "其他電腦",

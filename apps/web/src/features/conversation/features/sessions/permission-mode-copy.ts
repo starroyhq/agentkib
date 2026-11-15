@@ -11,7 +11,7 @@ export const permissionModeCopy = {
       "AgentKib 未能读取此会话的权限模式。Claude Code 2.1.285 及以上版本在拿不到功能开关时（例如使用第三方 provider 或关闭遥测）可能以 auto 模式启动，此时由分类器代替你审批操作。",
     previous: "这是此会话上一次观察到的模式，下次启动时可能不同。",
   },
-  "zh-TW": {
+  "zh-Hant": {
     auto: "此對話處於 auto 模式：由分類器審核操作並自動放行或攔截，不會逐項詢問你。",
     dontAsk: "此對話處於 dontAsk 模式：不會彈出審批；未被規則預先核准的操作會被自動拒絕。",
     bypassPermissions: "此對話略過權限檢查：工具無需審批即可執行，僅明確的詢問規則仍會提示。",
@@ -50,7 +50,7 @@ export const permissionModeSummaryCopy = {
     possiblyAuto: "权限模式未确认，可能自动审批",
     previous: "上次观察",
   },
-  "zh-TW": {
+  "zh-Hant": {
     auto: "auto：操作由分類器審批",
     dontAsk: "dontAsk：不彈出審批",
     bypassPermissions: "略過權限檢查",

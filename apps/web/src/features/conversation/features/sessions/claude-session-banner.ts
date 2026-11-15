@@ -61,6 +61,10 @@ export function claudeSessionBanner(
     };
   if (live?.continuationNotice === "background-ended")
     return { title: "", body: continuation.backgroundEnded, notice: "background-ended" as const };
+  if (live?.continuationNotice === "background-limit")
+    return { title: "", body: continuation.backgroundLimit, notice: "background-limit" as const };
+  if (live?.continuationNotice === "lead-turn-limit")
+    return { title: "", body: continuation.leadTurnLimit, notice: "lead-turn-limit" as const };
   if (live?.executionMode === "claude-follower") {
     if (live.reason === "claude-bridge-event-gap") return { title: copy.connected, body: copy.gap };
     if (live.reason === "claude-bridge-disconnected" || live.status === "unsupported") {
@@ -97,4 +101,33 @@ export function claudeSessionBanner(
     }
   }
   return null;
+}
+
+/** Notices about the background process read as a line above the composer, not as a banner. */
+export function claudeComposerNotice(banner: ReturnType<typeof claudeSessionBanner>): boolean {
+  return (
+    banner?.notice === "background-ended" ||
+    banner?.notice === "background-limit" ||
+    banner?.notice === "lead-turn-limit"
+  );
+}
+
+/**
+ * Managed Claude: what runs in the background, or that the CLI is continuing by itself after a
+ * background task ended. Null when nothing does.
+ */
+export function claudeBackgroundStatus({
+  locale,
+  live,
+}: Pick<SessionController, "locale" | "live">): string | null {
+  if (live?.executionMode !== "claude-managed") return null;
+  const continuation = sessionContinuationCopy(locale);
+  if (
+    live.turnOrigin === "self" &&
+    ["running", "waiting-approval", "waiting-input"].includes(live.status)
+  )
+    return continuation.backgroundTurn;
+  const tasks = live.backgroundTasks ?? [];
+  if (!tasks.length) return null;
+  return continuation.backgroundRunning(tasks.length, tasks[0]?.description ?? null);
 }

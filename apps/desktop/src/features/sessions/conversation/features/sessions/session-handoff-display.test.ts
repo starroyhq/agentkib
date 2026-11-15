@@ -113,6 +113,25 @@ describe("handoff-aware session presentation", () => {
       tone: "muted",
     });
   });
+  it("lets a message go to the Codex app that holds the session with no window on it", () => {
+    const state = codexFixture();
+    Object.assign(state.live!, {
+      sendEnabled: true,
+      executionLocation: "external",
+      ownershipReason: "codex-owner-busy",
+      reason: "codex-owner-busy",
+      ownerHandoff: true,
+    });
+    expect(sessionDisplayState(state)).toMatchObject({
+      label: "Open in Codex · Connects when you send",
+      reason: "",
+      tone: "muted",
+      continuation: "codex",
+    });
+    // Without sending open, the session is simply in use.
+    Object.assign(state.live!, { sendEnabled: false });
+    expect(sessionDisplayState(state)).toMatchObject({ continuation: "busy" });
+  });
   it("labels a followed Codex session as connected without a starting hint", () => {
     const state = codexFixture();
     Object.assign(state.live!, {
@@ -367,7 +386,7 @@ describe("handoff-aware session presentation", () => {
     expect(sessionDisplayState(state).nextAction).toBeUndefined();
   });
   it("uses the same neutral ownership state for both Agents in all four locales", () => {
-    for (const locale of ["en-US", "zh-CN", "zh-TW", "ja-JP"] as const) {
+    for (const locale of ["en-US", "zh-CN", "zh-Hant", "ja-JP"] as const) {
       const state = fixture();
       state.locale = locale;
       for (const [agent, reason, name] of [

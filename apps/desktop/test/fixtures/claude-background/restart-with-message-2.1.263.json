@@ -1,0 +1,157 @@
+{
+ "note": "Captured from the real CLI by qa/probes/claude-background-turn.mjs against a mock model; 2.1.263, the same.",
+ "frames": [
+  {
+   "type": "system",
+   "subtype": "task_notification",
+   "status": "stopped",
+   "task_id": "b78y9i1bn",
+   "tool_use_id": "toolu_bgprobe_1",
+   "summary": "No completion record was found for this background shell command from the previous session. It may have been stopped (via the UI, Monitor timeout, or agent teardown — these leave no transcript marker), or it may have been running when the previous Claude Code process exited. Check the output file for partial results before assuming it completed."
+  },
+  {
+   "type": "control_response",
+   "response": {
+    "subtype": "success",
+    "request_id": "dda25a1c-b8bc-43b7-9315-c837018c9989"
+   }
+  },
+  {
+   "type": "command_lifecycle",
+   "command_uuid": "0c403e19-3995-4979-8032-a651287794e5",
+   "state": "queued"
+  },
+  {
+   "type": "system",
+   "subtype": "init",
+   "model": "claude-sonnet-4-6",
+   "apiKeySource": "ANTHROPIC_API_KEY",
+   "permissionMode": "default",
+   "claude_code_version": "2.1.263"
+  },
+  {
+   "type": "result",
+   "subtype": "success",
+   "is_error": false,
+   "num_turns": 0,
+   "result": "",
+   "total_cost_usd": 0
+  },
+  {
+   "type": "command_lifecycle",
+   "command_uuid": "0c403e19-3995-4979-8032-a651287794e5",
+   "state": "started"
+  },
+  {
+   "type": "system",
+   "subtype": "init",
+   "model": "claude-sonnet-4-6",
+   "apiKeySource": "ANTHROPIC_API_KEY",
+   "permissionMode": "default",
+   "claude_code_version": "2.1.263"
+  },
+  {
+   "type": "system",
+   "subtype": "status",
+   "status": "requesting"
+  },
+  {
+   "type": "stream_event",
+   "parent_tool_use_id": null,
+   "event": {
+    "type": "message_start",
+    "message": {
+     "id": "msg_bgprobe_1",
+     "model": "claude-sonnet-4-6",
+     "usage": {
+      "input_tokens": 100,
+      "output_tokens": 0
+     }
+    }
+   }
+  },
+  {
+   "type": "stream_event",
+   "parent_tool_use_id": null,
+   "event": {
+    "type": "content_block_start",
+    "index": 0,
+    "content_block": {
+     "type": "text",
+     "text": ""
+    }
+   }
+  },
+  {
+   "type": "stream_event",
+   "parent_tool_use_id": null,
+   "event": {
+    "type": "content_block_delta",
+    "index": 0,
+    "delta": {
+     "type": "text_delta",
+     "text": "NOTED-2"
+    }
+   }
+  },
+  {
+   "type": "assistant",
+   "parent_tool_use_id": null,
+   "uuid": "45de3855-0ed1-4af9-b8a0-61b6eebbe91e",
+   "message": {
+    "id": "msg_bgprobe_1",
+    "model": "claude-sonnet-4-6",
+    "content": [
+     {
+      "type": "text",
+      "text": "NOTED-2"
+     }
+    ],
+    "usage": {
+     "input_tokens": 100,
+     "output_tokens": 0
+    }
+   }
+  },
+  {
+   "type": "stream_event",
+   "parent_tool_use_id": null,
+   "event": {
+    "type": "content_block_stop",
+    "index": 0
+   }
+  },
+  {
+   "type": "stream_event",
+   "parent_tool_use_id": null,
+   "event": {
+    "type": "message_delta",
+    "delta": {
+     "stop_reason": "end_turn",
+     "stop_sequence": null
+    }
+   }
+  },
+  {
+   "type": "stream_event",
+   "parent_tool_use_id": null,
+   "event": {
+    "type": "message_stop"
+   }
+  },
+  {
+   "type": "result",
+   "subtype": "success",
+   "is_error": false,
+   "num_turns": 1,
+   "result": "NOTED-2",
+   "terminal_reason": "completed",
+   "total_cost_usd": 0.0006000000000000001
+  },
+  {
+   "type": "command_lifecycle",
+   "command_uuid": "0c403e19-3995-4979-8032-a651287794e5",
+   "state": "completed"
+  }
+ ]
+}

@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import { sessionContinuationCopy, sessionContinuationListState } from "@agentkib/session-ui";
 
 describe("runtime-only session list presentation", () => {
-  it.each(["zh-CN", "zh-TW", "en-US", "ja-JP"])(
+  it.each(["zh-CN", "zh-Hant", "en-US", "ja-JP"])(
     "does not invent a runtime owner or expose a dot for view-only sources in %s",
     (locale) => {
       const session = { agent: "claude-code", availability: "readable" };
@@ -74,5 +74,28 @@ describe("runtime-only session list presentation", () => {
     expect(
       sessionContinuationListState({ ...session, availability: "metadata-only" }, "en-US"),
     ).toEqual({ label: copy.viewOnly });
+  });
+
+  it("marks a managed Claude session whose background tasks run after their turn", () => {
+    const session = { agent: "claude-code", availability: "readable" };
+    const state = (continuation: Record<string, unknown>, locale = "en-US") =>
+      sessionContinuationListState(
+        { ...session, continuation: { status: "idle", ...continuation } },
+        locale,
+      );
+    expect(state({ executionLocation: "agentkib", backgroundTasks: 1 })).toEqual({
+      label: "1 background task running",
+      dot: true,
+    });
+    expect(state({ executionLocation: "agentkib", backgroundTasks: 2 }, "zh-CN")).toEqual({
+      label: "2 个后台任务运行中",
+      dot: true,
+    });
+    // A running turn says more; no process, no tasks.
+    expect(state({ status: "running", executionLocation: "agentkib", backgroundTasks: 1 })).toEqual(
+      { label: "Running in AgentKib", active: true, dot: true },
+    );
+    expect(state({ executionLocation: null, backgroundTasks: 1 })).toBeUndefined();
+    expect(state({ executionLocation: "agentkib" })).toBeUndefined();
   });
 });

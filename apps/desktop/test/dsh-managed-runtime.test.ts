@@ -141,16 +141,15 @@ describe("background DeepSeek Harness process", () => {
         "utf8",
       ),
     );
-    expect(manifest.engines.dsh).toBe(
-      `>=${DSH_BRIDGE_COMPATIBILITY.minimumDshVersion} <${DSH_BRIDGE_COMPATIBILITY.dshVersionBelow}`,
-    );
+    expect(manifest.engines.dsh).toBe(`>=${DSH_BRIDGE_COMPATIBILITY.minimumDshVersion}`);
     expect(manifest.version).toBe(DSH_BRIDGE_COMPATIBILITY.pluginVersion);
     expect(dshBridgeLaunchable("0.2.1-rc.5")).toBe(true);
     expect(dshBridgeLaunchable("0.2.2-rc.1")).toBe(true);
     expect(dshBridgeLaunchable("0.2.1-rc.4")).toBe(false);
-    // DSH compares with `includePrerelease`, so a 0.3.0 prerelease is still inside <0.3.0.
+    // No upper bound: a DSH release AgentKib has not seen yet still starts with the plugin.
     expect(dshBridgeLaunchable("0.3.0-alpha.1")).toBe(true);
-    expect(dshBridgeLaunchable("0.3.0")).toBe(false);
+    expect(dshBridgeLaunchable("0.3.0")).toBe(true);
+    expect(dshBridgeLaunchable("1.0.0")).toBe(true);
     expect(dshBridgeLaunchable("unknown")).toBe(false);
   });
 
@@ -215,9 +214,9 @@ describe("background DeepSeek Harness process", () => {
     expect(spawned[0]!.args.filter((arg) => arg === "--patch")).toHaveLength(1);
   });
 
-  it("refuses a DSH version the plugin does not run in, before starting anything", async () => {
+  it("refuses a DSH older than the plugin runs in, before starting anything", async () => {
     const root = temporary();
-    const { managed, spawned } = runtime(root, { version: "0.3.0" });
+    const { managed, spawned } = runtime(root, { version: "0.2.1-rc.4" });
     await expect(managed.start()).rejects.toThrow("dsh-version-unsupported");
     expect(spawned).toEqual([]);
     expect(managed.available()).toEqual({ available: false, reason: "dsh-version-unsupported" });

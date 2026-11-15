@@ -65,6 +65,7 @@ import {
   replayManagedCommand,
   saveManagedRecord,
 } from "./managed-ledger";
+import { CodexLeadTurns } from "./lead-turn-origin";
 
 const FOLLOWER_RETRY_MS = 5_000;
 const FOLLOWER_IDLE_MS = 30_000;
@@ -410,6 +411,11 @@ export type LaneObserver = {
   /** `durationMs` is Codex's own measure of the turn, when it gives one. */
   turnEnded(sessionId: string, turnId: string, outcome: string, durationMs: number | null): void;
   waiting(sessionId: string, turnId: string | null, status: string): void;
+  /**
+   * A turn Codex started by itself, as a goal continues (`CodexLeadTurns`), told for any session
+   * AgentKib runs; the observer counts it when the session is a Project Agent.
+   */
+  ownTurn?(sessionId: string, turnId: string): void;
 };
 
 export class WebReadRequests {
@@ -4087,6 +4093,13 @@ export class WebReadRequests {
     let startingRunner: ManagedRunner | undefined;
     const captureRunner = (session: CodexAppServerSession) => {
       if (startingRunner) return;
+      // A Project Agent's turns without the person count toward its limit, and one that leads
+      // only later is followed from now on.
+      const ownTurns = new CodexLeadTurns();
+      session.on("notification", (value: unknown) => {
+        const turnId = ownTurns.observe(value);
+        if (turnId) this.#observeLane((observer) => observer.ownTurn?.(record.id, turnId));
+      });
       const bridge = new ManagedCodexEventBridge(
         session,
         state,

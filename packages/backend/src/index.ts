@@ -10,7 +10,7 @@ import { CursorBridge } from "./cursor-bridge";
 import { ClaudeBridge } from "./claude-bridge";
 import { DshBridge } from "./dsh-bridge";
 import { DshManagedRuntime } from "./dsh-managed-runtime";
-import { createDshWorker, DshLaneWatch } from "./dsh-lanes";
+import { createDshWorker, DshLaneWatch, DshLeadWatch } from "./dsh-lanes";
 import { listNativeImports } from "./session-native-imports";
 import {
   continueNativeImport,
@@ -127,6 +127,7 @@ import {
   BACKEND_DEFAULT_MANIFEST,
   BACKEND_PLAN_PROJECT_ASSETS,
 } from "./migration";
+import { haltOwnTurns } from "./lead-turn-origin";
 
 /** Session requests a DeepSeek Harness bridge answers; history and everything else stay on the readers. */
 const DSH_BRIDGE_OPERATIONS = new Set<string>([
@@ -199,6 +200,8 @@ export class TypeScriptBackend {
   #dshBridge?: DshBridge;
   /** Reports DeepSeek Harness workers' turns from the states the DSH bridge publishes. */
   #dshLanes?: DshLaneWatch;
+  /** A DSH Project Agent's turns, counted when nobody sent them (`DshLeadWatch`). */
+  #dshLeads?: DshLeadWatch;
   /** Whether DeepSeek Harness may be started in the background, read for a moment at a time. */
   #dshAutoStart?: { at: number; value: boolean };
   #catalogContinuation = new Map<string, string>();
@@ -268,6 +271,8 @@ export class TypeScriptBackend {
     this.#orchestration = undefined;
     this.#dshLanes?.close();
     this.#dshLanes = undefined;
+    this.#dshLeads?.close();
+    this.#dshLeads = undefined;
     void this.#claudeBridge?.close();
     this.#claudeBridge = undefined;
     void this.#dshBridge?.close();
@@ -322,6 +327,8 @@ export class TypeScriptBackend {
     this.#orchestration = undefined;
     this.#dshLanes?.close();
     this.#dshLanes = undefined;
+    this.#dshLeads?.close();
+    this.#dshLeads = undefined;
     this.#claudeManaged = undefined;
     this.#claudeBridge = undefined;
     this.#dshBridge = undefined;
@@ -665,7 +672,10 @@ export class TypeScriptBackend {
           },
           publish: (id, type, payload, live) => {
             this.#publishSession(id, type, payload, live);
-            if (type === "state") this.#dshLanes?.observe(id, live);
+            if (type === "state") {
+              this.#dshLanes?.observe(id, live);
+              this.#dshLeads?.observe(id, live);
+            }
           },
           // DSH sessions that are Project Agents get their worker tools from the plugin.
           lead: {
@@ -758,6 +768,13 @@ export class TypeScriptBackend {
             leadOwner.queuedReports(sessionId) +
             (this.#claudeBridge?.queuedReports(sessionId) ?? 0),
         );
+        this.#dshLeads?.close();
+        this.#dshLeads = new DshLeadWatch({
+          isLead: (sessionId) => !!this.#orchestration?.status(sessionId),
+          turnOrigin: (sessionId, turnId) => dshBridge.turnOrigin(sessionId, turnId),
+          userSpoke: (sessionId) => this.#orchestration?.userSpoke(sessionId),
+          ownTurn: (sessionId, turnId) => this.#leadOwnTurn(sessionId, turnId),
+        });
         this.#dshLanes?.close();
         this.#dshLanes = new DshLaneWatch({
           isLane: (sessionId) => !!this.#orchestration?.registry.leadOfLane(sessionId),
@@ -2340,6 +2357,50 @@ export class TypeScriptBackend {
   }
 
   /**
+   * A Codex or DeepSeek Harness Project Agent started a turn by itself, as a goal goes on: it
+   * counts as an automatic turn (`OrchestrationService.leadSelfTurn`). Past the limit delegation
+   * pauses, and in the name of the device that set the lead up a Codex goal pauses (the round under
+   * way ends by itself) or a DSH round stops (`haltOwnTurns`). Never a step the person's own
+   * controls go through.
+   */
+  async #leadOwnTurn(sessionId: string, turnId: string): Promise<void> {
+    const orchestration = this.#orchestration;
+    const lead = orchestration?.status(sessionId);
+    if (!orchestration || !lead || orchestration.leadSelfTurn(sessionId)) return;
+    try {
+      const dsh = this.#dshBridge;
+      if (dsh?.handles(sessionId))
+        await haltOwnTurns(
+          { live: async (id) => dsh.live(id, true), control: (value) => dsh.request(value) },
+          sessionId,
+          turnId,
+          lead.deviceId,
+          "deepseek-harness",
+        );
+      else
+        await this.#withWebRead((owner) =>
+          haltOwnTurns(
+            {
+              live: async (id) =>
+                (await owner.request({
+                  operation: "live",
+                  sessionId: id,
+                  experimentalEnabled: true,
+                })) as Record<string, unknown>,
+              control: (value) => owner.managedControl(value),
+            },
+            sessionId,
+            turnId,
+            lead.deviceId,
+            "codex",
+          ),
+        );
+    } catch {
+      /* Delegation stays paused, and the panel says why; the turn is the person's to stop. */
+    }
+  }
+
+  /**
    * A session AgentKib deleted is let go by delegation: as a worker its place is free, as a lead
    * it ends (`OrchestrationService.sessionGone`).
    */
@@ -2511,6 +2572,7 @@ export class TypeScriptBackend {
             .catch(() => undefined),
         waiting: (sessionId, turnId, status) =>
           void this.#orchestration?.laneWaiting(sessionId, turnId, status).catch(() => undefined),
+        ownTurn: (sessionId, turnId) => void this.#leadOwnTurn(sessionId, turnId),
       });
       // A Codex Project Agent's thread starts with its worker tools.
       this.#webRead.leadEndpoints(async (sessionId) => {

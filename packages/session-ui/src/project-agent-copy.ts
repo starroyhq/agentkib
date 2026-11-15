@@ -26,6 +26,13 @@ export type ProjectAgentCopy = {
   resume: string;
   release: string;
   releaseConfirm: string;
+  /** Changing what an existing Project Agent may do: the setup form again. */
+  edit: string;
+  save: string;
+  /** One worker's row: stop its turn, or let it go. */
+  stopWorker: string;
+  removeWorker: string;
+  removeConfirm: (name: string) => string;
   reported: (time: string) => string;
   status: Record<string, string>;
   paused: Record<string, string>;
@@ -58,6 +65,12 @@ const copy: Record<"zh-CN" | "zh-Hant" | "ja-JP" | "en-US", ProjectAgentCopy> = 
     resume: "恢复委派",
     release: "不再作为项目 Agent",
     releaseConfirm: "确定不再作为项目 Agent？Worker 会话会保留为普通会话。",
+    edit: "修改设定…",
+    save: "保存",
+    stopWorker: "停止",
+    removeWorker: "移出",
+    removeConfirm: (name) =>
+      `移出 ${name}？它的会话保留为普通会话，不再向项目 Agent 汇报，也不再占名额。`,
     reported: (time) => `${time} 汇报`,
     status: {
       idle: "空闲",
@@ -81,6 +94,8 @@ const copy: Record<"zh-CN" | "zh-Hant" | "ja-JP" | "en-US", ProjectAgentCopy> = 
       "session-is-a-worker": "这个会话是另一个项目 Agent 的 Worker。",
       "invalid-lead-workspaces": "至少选择一个工作区。",
       "lead-exists": "这个会话已经是项目 Agent。",
+      "worker-unavailable": "这个 Worker 已经不在项目 Agent 名下。",
+      "worker-not-running": "这个 Worker 现在没有在运行。",
     },
     failed: "没有完成，请重试。",
   },
@@ -108,6 +123,12 @@ const copy: Record<"zh-CN" | "zh-Hant" | "ja-JP" | "en-US", ProjectAgentCopy> = 
     resume: "恢復委派",
     release: "不再作為專案 Agent",
     releaseConfirm: "確定不再作為專案 Agent？Worker 對話會保留為一般對話。",
+    edit: "修改設定…",
+    save: "儲存",
+    stopWorker: "停止",
+    removeWorker: "移出",
+    removeConfirm: (name) =>
+      `移出 ${name}？它的對話保留為一般對話，不再向專案 Agent 回報，也不再佔名額。`,
     reported: (time) => `${time} 回報`,
     status: {
       idle: "閒置",
@@ -131,6 +152,8 @@ const copy: Record<"zh-CN" | "zh-Hant" | "ja-JP" | "en-US", ProjectAgentCopy> = 
       "session-is-a-worker": "這個對話是另一個專案 Agent 的 Worker。",
       "invalid-lead-workspaces": "至少選擇一個工作區。",
       "lead-exists": "這個對話已經是專案 Agent。",
+      "worker-unavailable": "這個 Worker 已經不在專案 Agent 名下。",
+      "worker-not-running": "這個 Worker 現在沒有在執行。",
     },
     failed: "沒有完成，請重試。",
   },
@@ -159,6 +182,12 @@ const copy: Record<"zh-CN" | "zh-Hant" | "ja-JP" | "en-US", ProjectAgentCopy> = 
     resume: "委任を再開",
     release: "プロジェクト Agent をやめる",
     releaseConfirm: "プロジェクト Agent をやめますか？ワーカーの会話は通常の会話として残ります。",
+    edit: "設定を変更…",
+    save: "保存",
+    stopWorker: "停止",
+    removeWorker: "外す",
+    removeConfirm: (name) =>
+      `${name} を外しますか？会話は通常の会話として残り、プロジェクト Agent に報告しなくなります。枠も空きます。`,
     reported: (time) => `${time}に報告`,
     status: {
       idle: "待機中",
@@ -183,6 +212,8 @@ const copy: Record<"zh-CN" | "zh-Hant" | "ja-JP" | "en-US", ProjectAgentCopy> = 
       "session-is-a-worker": "この会話は別のプロジェクト Agent のワーカーです。",
       "invalid-lead-workspaces": "ワークスペースを 1 つ以上選んでください。",
       "lead-exists": "この会話はすでにプロジェクト Agent です。",
+      "worker-unavailable": "このワーカーはもうプロジェクト Agent の下にありません。",
+      "worker-not-running": "このワーカーはいま実行中ではありません。",
     },
     failed: "完了できませんでした。もう一度お試しください。",
   },
@@ -211,6 +242,12 @@ const copy: Record<"zh-CN" | "zh-Hant" | "ja-JP" | "en-US", ProjectAgentCopy> = 
     resume: "Resume delegation",
     release: "Stop being a Project Agent",
     releaseConfirm: "Stop being a Project Agent? The workers stay as ordinary sessions.",
+    edit: "Change settings…",
+    save: "Save",
+    stopWorker: "Stop",
+    removeWorker: "Remove",
+    removeConfirm: (name) =>
+      `Remove ${name} from this Project Agent? Its session stays as an ordinary session, it no longer reports here, and its place is free.`,
     reported: (time) => `reported ${time}`,
     status: {
       idle: "Idle",
@@ -235,6 +272,8 @@ const copy: Record<"zh-CN" | "zh-Hant" | "ja-JP" | "en-US", ProjectAgentCopy> = 
       "session-is-a-worker": "This session is another Project Agent's worker.",
       "invalid-lead-workspaces": "Choose at least one workspace.",
       "lead-exists": "This session is already a Project Agent.",
+      "worker-unavailable": "This worker no longer belongs to the Project Agent.",
+      "worker-not-running": "This worker is not running now.",
     },
     failed: "That did not work. Try again.",
   },

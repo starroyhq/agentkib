@@ -67,7 +67,19 @@ export type Lane = {
 
 export type LeadRecord = {
   at: string;
-  kind: "open" | "send" | "stop" | "approve" | "answer" | "report" | "pause" | "resume";
+  kind:
+    | "open"
+    | "send"
+    | "stop"
+    | "approve"
+    | "answer"
+    | "report"
+    | "pause"
+    | "resume"
+    /** A worker let go: by the person, by the lead (`worker_close`), or with its session. */
+    | "close"
+    /** The person changed the lead's scope. */
+    | "update";
   laneId: string | null;
   requestId: string | null;
   outcome: string;

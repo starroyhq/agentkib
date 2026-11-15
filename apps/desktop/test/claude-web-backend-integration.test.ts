@@ -1269,6 +1269,31 @@ describe.skipIf(process.platform !== "darwin")(
       expect(frames().find((row) => row.workers)).toMatchObject({
         workers: { paused: false, workers: [], maxWorkers: 4 },
       });
+      // Its settings change. Only a change of what it may decide changes its tools: the next
+      // message starts a worker with an endpoint that offers them.
+      const update = async (scope: Record<string, unknown>) =>
+        (
+          await rpc("claude.managed", {
+            operation: "lead-update",
+            sessionId,
+            deviceId: "desktop-local",
+            scope,
+          })
+        ).lead;
+      expect(await update({ maxLanes: 2 })).toMatchObject({ scope: { maxLanes: 2 } });
+      expect((await send(sessionId)).status).toBe(200);
+      await idle(sessionId);
+      expect(launches()).toHaveLength(1);
+      expect(await update({ approvals: ["command"] })).toMatchObject({
+        scope: { approvals: ["command"] },
+      });
+      expect((await send(sessionId)).status).toBe(200);
+      await idle(sessionId);
+      expect(launches()).toHaveLength(2);
+      const second = launches().at(-1)!.args as string[];
+      const url = (args: string[]) =>
+        JSON.parse(args[args.indexOf("--mcp-config") + 1]).mcpServers.agentkib_workers.url;
+      expect(url(second)).not.toBe(url(first));
       // No longer a lead: the next message starts a worker without the tools.
       await rpc("claude.managed", {
         operation: "lead-release",
@@ -1277,7 +1302,7 @@ describe.skipIf(process.platform !== "darwin")(
       });
       expect((await send(sessionId)).status).toBe(200);
       await idle(sessionId);
-      expect(launches()).toHaveLength(2);
+      expect(launches()).toHaveLength(3);
       expect(launches().at(-1)!.args).not.toContain("--mcp-config");
       expect(launches().at(-1)!.args).not.toContain("--allowedTools");
       expect(await role()).toBeUndefined();

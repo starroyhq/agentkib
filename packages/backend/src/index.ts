@@ -1060,7 +1060,10 @@ export class TypeScriptBackend {
     if (method === RUNTIME_METHODS.codexManaged && params.operation === "unarchive")
       return this.#withWebRead((owner) => owner.managedUnarchive(params));
     if (method === RUNTIME_METHODS.codexManaged && params.operation === "delete")
-      return this.#withWebRead((owner) => owner.managedDelete(params));
+      return this.#deleted(
+        params,
+        this.#withWebRead((owner) => owner.managedDelete(params)),
+      );
     if (method === RUNTIME_METHODS.codexManaged && params.operation === "settings-state")
       return this.#withWebRead((owner) => owner.managedSettingsState(params));
     if (
@@ -1217,7 +1220,10 @@ export class TypeScriptBackend {
       if (params.operation === "unarchive")
         return this.#withWebRead((owner) => owner.managedUnarchive(params));
       if (params.operation === "delete")
-        return this.#withWebRead((owner) => owner.managedDelete(params));
+        return this.#deleted(
+          params,
+          this.#withWebRead((owner) => owner.managedDelete(params)),
+        );
       if (
         [
           "send",
@@ -2253,6 +2259,12 @@ export class TypeScriptBackend {
     if (agent === undefined || agent === "codex") await this.#withWebRead(() => undefined);
     const codex = this.#webRead?.codexLeadCapable(sessionId) === true;
     const dsh = this.#dshBridge?.leadCapable(sessionId) === true;
+    const worker = () => {
+      const value = typeof params.worker === "string" ? params.worker : "";
+      if (!value || value.length > 256) throw new Error("invalid-lead-request");
+      return value;
+    };
+    let toolsChanged = false;
     switch (params.operation) {
       case "lead-status":
         break;
@@ -2281,6 +2293,27 @@ export class TypeScriptBackend {
       case "lead-resume":
         orchestration.resume(sessionId, deviceId);
         break;
+      // The person changes what it may do, as setting it up again would.
+      case "lead-update": {
+        const scope = params.scope;
+        if (!scope || typeof scope !== "object" || Array.isArray(scope))
+          throw new Error("invalid-lead-request");
+        toolsChanged = await orchestration.update({
+          sessionId,
+          deviceId,
+          scope: scope as Parameters<OrchestrationService["update"]>[0]["scope"],
+        });
+        break;
+      }
+      // The person lets one worker go, or stops its turn, from the Project Agent's panel.
+      case "lead-worker-remove":
+        orchestration.removeWorker(sessionId, worker());
+        break;
+      case "lead-worker-stop": {
+        const result = await orchestration.stopWorker(sessionId, worker(), deviceId);
+        if (!result.accepted) throw new Error(result.reason ?? "worker-stop-failed");
+        break;
+      }
       default:
         throw new Error("unsupported-lead-operation");
     }
@@ -2288,16 +2321,39 @@ export class TypeScriptBackend {
     this.#claudeBridge?.leadChanged(sessionId);
     this.#dshBridge?.leadChanged();
     // A Codex thread takes its worker tools, or drops them, when it starts again.
-    if (codex && (params.operation === "lead-designate" || params.operation === "lead-release"))
+    if (
+      codex &&
+      (params.operation === "lead-designate" || params.operation === "lead-release" || toolsChanged)
+    )
       await this.#withWebRead((owner) => owner.restartManagedRunner(sessionId)).catch(
         () => undefined,
       );
+    // Which sessions lead or work, and whether delegation is paused, show in every list.
+    if (params.operation !== "lead-status")
+      this.#sessionStream?.publish("", "invalidate", { domains: ["catalog"] });
     return {
       lead: await orchestration.overview(sessionId),
       // Whether it could be one: a Claude Code or Codex session AgentKib runs, a connected
       // terminal, or a DSH session whose DSH can take the tools.
       capable: orchestration.isLeadCapable(sessionId),
     };
+  }
+
+  /**
+   * A session AgentKib deleted is let go by delegation: as a worker its place is free, as a lead
+   * it ends (`OrchestrationService.sessionGone`).
+   */
+  #deleted<T>(params: Record<string, unknown>, result: Promise<T>): Promise<T> {
+    return result.then(async (value) => {
+      if (
+        typeof params.sessionId === "string" &&
+        value &&
+        typeof value === "object" &&
+        (value as { deleted?: unknown }).deleted === true
+      )
+        await this.#orchestration?.sessionGone(params.sessionId).catch(() => undefined);
+      return value;
+    });
   }
 
   /** Reports for Codex Project Agents, sent through AgentKib's own Codex controls. */
@@ -2536,7 +2592,8 @@ export class TypeScriptBackend {
         this.#claudeBridge?.blocksManagedResume(params.sessionId)
       )
         return this.#claudeBridge.request(params);
-      return await this.#claudeManaged!.request(params);
+      const result = this.#claudeManaged!.request(params);
+      return await (params.operation === "delete" ? this.#deleted(params, result) : result);
     } catch (error) {
       if (error instanceof ClaudeHostControlPreflightError) return error.result;
       throw error;

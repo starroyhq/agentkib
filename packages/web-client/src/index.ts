@@ -151,6 +151,8 @@ export interface ProjectAgentState {
     name: string;
     sessionId: string;
     status: string;
+    /** Whether a turn runs that the person can stop from the panel; absent on older hosts. */
+    stopEnabled?: boolean;
     title: string | null;
     lastReportAt: string | null;
   }>;
@@ -1213,12 +1215,23 @@ export class WebClient {
       signal,
     );
   }
-  /** Sets a Project Agent up, pauses, resumes or ends it, in this device's name. */
+  /**
+   * Sets a Project Agent up, changes its settings, pauses, resumes or ends it, or lets one of its
+   * workers go or stops its turn (`worker`, by session), in this device's name.
+   */
   manageProjectAgent(
     body: {
       sessionId: string;
-      operation: "designate" | "pause" | "resume" | "release";
-      scope?: ProjectAgentScope;
+      operation:
+        | "designate"
+        | "update"
+        | "pause"
+        | "resume"
+        | "release"
+        | "remove-worker"
+        | "stop-worker";
+      scope?: Partial<ProjectAgentScope>;
+      worker?: string;
     },
     signal?: AbortSignal,
   ) {

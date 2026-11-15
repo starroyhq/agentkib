@@ -114,15 +114,28 @@ async function localClaudeRequestInner(
     });
   // Whether a session directs lanes, and making it do so, on behalf of this computer's owner.
   if (
-    ["lead-status", "lead-designate", "lead-release", "lead-pause", "lead-resume"].includes(
-      operation,
-    )
+    [
+      "lead-status",
+      "lead-designate",
+      "lead-update",
+      "lead-release",
+      "lead-pause",
+      "lead-resume",
+      "lead-worker-remove",
+      "lead-worker-stop",
+    ].includes(operation)
   )
     return deps.managed({
       operation,
       sessionId: field(input.sessionId),
-      ...(operation === "lead-designate" && input.scope && typeof input.scope === "object"
+      ...((operation === "lead-designate" || operation === "lead-update") &&
+      input.scope &&
+      typeof input.scope === "object"
         ? { scope: input.scope }
+        : {}),
+      // The worker, by its session, that the person lets go or stops.
+      ...(operation === "lead-worker-remove" || operation === "lead-worker-stop"
+        ? { worker: field(input.worker) }
         : {}),
       deviceId: OWNER,
     });

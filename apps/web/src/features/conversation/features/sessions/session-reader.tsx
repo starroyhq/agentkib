@@ -37,6 +37,7 @@ import {
   ReadStateNotice,
   readStateCopy,
   transcriptRepresentsResult,
+  DEVIN_TURN_REASONS,
 } from "@agentkib/session-ui";
 import { publishSessionInvalidation, subscribeSessionInvalidation } from "./session-events";
 import { webLayoutCopy } from "./web-layout-copy";
@@ -359,7 +360,9 @@ export function SessionReader() {
                   (current?.agent === "claude-code" &&
                     access?.device?.accessMode === "full" &&
                     (noticeReason === "claude-model-unsupported" ||
-                      noticeReason === "claude-effort-unsupported")))
+                      noticeReason === "claude-effort-unsupported")) ||
+                  // Devin's own refusals are explained under its composer.
+                  (current?.agent === "devin" && DEVIN_TURN_REASONS.includes(noticeReason ?? "")))
               ) &&
               !(current?.agent === "claude-code" && banner && notice === "uncertain") && (
                 <p

@@ -6,14 +6,17 @@ import type { InteractionLocale } from "./interaction-model";
  * takes. The desktop and Web composers only draw it, so a new Agent is added here.
  */
 
-export type NewSessionAgent = "codex" | "claude-code" | "deepseek-harness";
+export type NewSessionAgent = "codex" | "claude-code" | "deepseek-harness" | "devin";
 export type ClaudeStartMode = "default" | "acceptEdits" | "plan";
+/** Devin CLI's own permission modes; each applies to a whole turn. */
+export type DevinStartMode = "auto" | "accept-edits" | "smart" | "dangerous";
 
 /** Agents a session can be started with, in the order the composer lists them. */
 export const NEW_SESSION_AGENTS: readonly NewSessionAgent[] = [
   "codex",
   "claude-code",
   "deepseek-harness",
+  "devin",
 ];
 
 /** The start options the host reports for an Agent (`ManagedOptions` in web-client). */
@@ -69,7 +72,20 @@ const PERMISSIONS: Partial<Record<NewSessionAgent, PermissionSpec>> = {
     offered: (options) => options.permissionModes,
     sendShown: false,
   },
+  // Devin runs a turn without asking, so its mode is the whole turn's. AgentKib starts it with
+  // edits inside the workspace approved, as Codex starts here, and lists that first.
+  devin: {
+    field: "permissionMode",
+    ids: ["accept-edits", "auto", "smart", "dangerous"],
+    offered: (options) => options.permissionModes,
+    sendShown: true,
+    risky: ["dangerous"],
+    fullAccessOnly: ["smart", "dangerous"],
+  },
 };
+
+/** Agents whose session starts with its first message, sent along with the create. */
+export const PROMPT_AT_CREATE_AGENTS: readonly NewSessionAgent[] = ["devin"];
 
 /** Agents that start from one of their presets, chosen only when a session starts. */
 const PRESET_AGENTS: readonly NewSessionAgent[] = ["deepseek-harness"];
@@ -161,8 +177,10 @@ export interface NewSessionCreateFields {
   model?: string;
   effort?: string;
   policyId?: string;
-  permissionMode?: ClaudeStartMode;
+  permissionMode?: ClaudeStartMode | DevinStartMode;
   agentPreset?: string;
+  /** The first message, for an Agent in `PROMPT_AT_CREATE_AGENTS`. */
+  prompt?: string;
 }
 
 export function newSessionCreateFields(
@@ -185,7 +203,7 @@ export function newSessionCreateFields(
     ...(spec && sent
       ? spec.field === "policyId"
         ? { policyId: sent }
-        : { permissionMode: sent as ClaudeStartMode }
+        : { permissionMode: sent as ClaudeStartMode | DevinStartMode }
       : {}),
     // Without a choice an Agent starts its own default preset.
     ...(preset && preset !== defaultId ? { agentPreset: preset } : {}),
@@ -238,6 +256,15 @@ const copy = {
             name: "完全访问权限",
             description: "可不受限制地访问互联网和你电脑上的任何文件",
           },
+        },
+      },
+      devin: {
+        title: "这一轮的权限（Devin 运行中不能询问你）",
+        choices: {
+          auto: { name: "只读自动", description: "只自动批准只读工具，其他操作会被拒绝" },
+          "accept-edits": { name: "自动接受编辑", description: "另外自动批准工作区内的文件修改" },
+          smart: { name: "智能批准", description: "另外自动执行快速模型判断为安全的操作" },
+          dangerous: { name: "全部批准", description: "自动批准所有工具，包括任何命令" },
         },
       },
       "claude-code": {
@@ -295,6 +322,15 @@ const copy = {
             name: "完整存取權限",
             description: "可不受限制地存取網際網路和你電腦上的任何檔案",
           },
+        },
+      },
+      devin: {
+        title: "這一輪的權限（Devin 執行中無法詢問你）",
+        choices: {
+          auto: { name: "唯讀自動", description: "只自動核准唯讀工具，其他操作會被拒絕" },
+          "accept-edits": { name: "自動接受編輯", description: "另外自動核准工作區內的檔案修改" },
+          smart: { name: "智慧核准", description: "另外自動執行快速模型判斷為安全的操作" },
+          dangerous: { name: "全部核准", description: "自動核准所有工具，包括任何指令" },
         },
       },
       "claude-code": {
@@ -356,6 +392,24 @@ const copy = {
           "full-access-on-request": {
             name: "Full access",
             description: "Unrestricted access to the internet and any file on your computer",
+          },
+        },
+      },
+      devin: {
+        title: "Permissions for this turn (Devin cannot ask while it runs)",
+        choices: {
+          auto: {
+            name: "Read-only auto",
+            description: "Approve only read-only tools; refuse the rest",
+          },
+          "accept-edits": {
+            name: "Accept edits",
+            description: "Also approve file changes inside the workspace",
+          },
+          smart: { name: "Smart", description: "Also run actions a fast model judges safe" },
+          dangerous: {
+            name: "Approve all",
+            description: "Approve every tool, including any command",
           },
         },
       },
@@ -421,6 +475,27 @@ const copy = {
             name: "フルアクセス",
             description:
               "インターネットとコンピューター上のすべてのファイルに制限なくアクセスできます",
+          },
+        },
+      },
+      devin: {
+        title: "このターンの権限（Devin は実行中に確認できません）",
+        choices: {
+          auto: {
+            name: "読み取りのみ自動",
+            description: "読み取り専用のツールだけを自動承認し、それ以外は拒否します",
+          },
+          "accept-edits": {
+            name: "編集を自動承認",
+            description: "ワークスペース内のファイル変更も自動承認します",
+          },
+          smart: {
+            name: "スマート承認",
+            description: "高速モデルが安全と判断した操作も自動で実行します",
+          },
+          dangerous: {
+            name: "すべて承認",
+            description: "どのコマンドも含め、すべてのツールを自動承認します",
           },
         },
       },

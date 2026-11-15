@@ -25,10 +25,14 @@ import {
   NEW_SESSION_AGENTS,
   newSessionCopy,
   newSessionCreateFields,
+  PROMPT_AT_CREATE_AGENTS,
+  devinTerminalAction,
+  devinTerminalCopy,
   newSessionPermissions,
   newSessionPresets,
 } from "@agentkib/session-ui";
 import { Button } from "@/components/ui/button";
+import { createDesktopConversationClient } from "@/core/conversation-bridge";
 import { Disclosure, DisclosureSummary } from "@/components/ui/disclosure";
 import {
   DropdownMenu,
@@ -103,6 +107,8 @@ export function NewSessionComposer(props: NewSessionComposerProps) {
     recentContinuationWorkspaces(workspaces as WorkspaceSummary[], 1)[0];
   const [text, setText] = useState("");
   const [files, setFiles] = useState<File[]>([]);
+  const [terminalClient] = useState(createDesktopConversationClient);
+  const [terminalNote, setTerminalNote] = useState<{ detail: string; text: string }>();
   const [permission, setPermission] = useState<string>();
   const [modelDraft, setModelDraft] = useState<{
     scope: string;
@@ -115,10 +121,12 @@ export function NewSessionComposer(props: NewSessionComposerProps) {
   useEffect(() => {
     draft.current = { text, files };
   }, [text, files]);
+  // An Agent that starts with its first message has sent it with the create.
+  const promptAtCreate = PROMPT_AT_CREATE_AGENTS.includes(agent);
   // The composer stays busy until the new session opens.
   const handOff = async (sessionId: string) => {
     setSending(true);
-    offerNewSessionDraft(sessionId, draft.current);
+    if (!promptAtCreate) offerNewSessionDraft(sessionId, draft.current);
     setText("");
     setFiles([]);
     try {
@@ -227,7 +235,7 @@ export function NewSessionComposer(props: NewSessionComposerProps) {
     !!workspace &&
     !locked &&
     !session.unknown &&
-    (!!text.trim() || files.length > 0);
+    (promptAtCreate ? !!text.trim() && files.length === 0 : !!text.trim() || files.length > 0);
 
   async function send() {
     if (!canSend || !workspace) return;
@@ -245,26 +253,66 @@ export function NewSessionComposer(props: NewSessionComposerProps) {
       options,
     );
     rememberNewSessionTarget({ workspaceId: workspace.id, agent });
-    const sessionId = await session.create(fields);
+    const sessionId = await session.create(promptAtCreate ? { ...fields, prompt: text } : fields);
     if (sessionId) await handOff(sessionId);
     else setSending(false);
   }
 
   function addFiles(list: File[]) {
+    // Devin takes text only; its sessions get no attachments.
+    if (promptAtCreate) return;
     const room = MAX_FILES - files.length;
     setFileLimit(list.length > room);
     if (room > 0) setFiles((current) => [...current, ...list.slice(0, room)]);
   }
+
+  // Devin CLI's own login or workspace trust stopped the session from starting: offer to open it.
+  const terminalDetail = session.failure?.detail?.replaceAll("_", "-");
+  const terminalAction = agent === "devin" ? devinTerminalAction(terminalDetail) : undefined;
+  const openDevinTerminal = async () => {
+    if (!terminalAction || !terminalDetail || !workspace) return;
+    const words = devinTerminalCopy(locale);
+    try {
+      const result = await terminalClient.devinTerminal({
+        action: terminalAction,
+        workspaceId: workspace.id,
+      });
+      setTerminalNote({
+        detail: terminalDetail,
+        text: words.opened.replace("{terminal}", result.terminal),
+      });
+    } catch {
+      setTerminalNote({ detail: terminalDetail, text: words.failed });
+    }
+  };
 
   const notice = session.unknown ? (
     <Notice tone="warning" icon={<Hourglass className="size-3.5" />}>
       {copy.unknown}
     </Notice>
   ) : session.failure ? (
-    <Notice tone="error" icon={<CircleX className="size-3.5" />}>
+    <Notice
+      tone="error"
+      icon={<CircleX className="size-3.5" />}
+      action={
+        terminalAction ? (
+          <Button
+            type="button"
+            size="sm"
+            variant="outline"
+            onClick={() => void openDevinTerminal()}
+          >
+            {devinTerminalCopy(locale)[terminalAction]}
+          </Button>
+        ) : undefined
+      }
+    >
       {session.failure.detail === "dsh-create-model-not-applied"
         ? session.failure.reason
         : fillCopy(copy.notCreated, { reason: session.failure.reason })}
+      {terminalNote && terminalNote.detail === terminalDetail && (
+        <span className="mt-1 block">{terminalNote.text}</span>
+      )}
       {session.failure.detail && (
         <Disclosure className="mt-1">
           <DisclosureSummary>{copy.details}</DisclosureSummary>
@@ -472,7 +520,7 @@ export function NewSessionComposer(props: NewSessionComposerProps) {
                 variant="ghost"
                 aria-label={copy.attach}
                 title={copy.attach}
-                disabled={locked || files.length >= MAX_FILES}
+                disabled={locked || promptAtCreate || files.length >= MAX_FILES}
                 onClick={() => fileInput.current?.click()}
               >
                 <Plus size={20} aria-hidden />

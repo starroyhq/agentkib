@@ -74,6 +74,7 @@ import {
 import { useSessionPanels } from "./session-panels";
 import { PermissionModeNotice } from "./permission-mode-notice";
 import { ManagedTurnNotice } from "./managed-turn-notice";
+import { DevinTurnNotice } from "./devin-turn-notice";
 
 type Upload = {
   key: string;
@@ -652,6 +653,19 @@ export function SessionComposer({
       )}
       {isClaude && <PermissionModeNotice permission={live?.permission} locale={locale} compact />}
       {(isClaude || isCodex) && <ManagedTurnNotice live={live} locale={locale} surface="web" />}
+      {current?.agent === "devin" && (
+        <DevinTurnNotice
+          // A refused send names its reason; a turn that ended without running leaves it on live.
+          reason={
+            notice === "notDispatched" && session.noticeReason
+              ? session.noticeReason
+              : live?.status === "idle"
+                ? live.reason
+                : undefined
+          }
+          locale={locale}
+        />
+      )}
       {current?.agent === "deepseek-harness" && <DshQueue key={selected} />}
       <form
         className="relative w-full space-y-2 rounded-3xl border border-border bg-background p-2 shadow-sm transition-colors focus-within:border-ring/40 md:p-3"

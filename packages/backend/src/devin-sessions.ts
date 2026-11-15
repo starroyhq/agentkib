@@ -70,12 +70,13 @@ export function devinDataHome(environment: NodeJS.ProcessEnv): string {
     "cli",
   );
 }
-/** `DEVIN_SESSIONS_DIR` moves the session database out of the data directory. */
+/**
+ * `DEVIN_SESSIONS_DIR` moves the session store: Devin then keeps `cli/sessions.db` and
+ * `cli/session_locks/` under it, as in its data directory (seen with Devin CLI 3000.12.59).
+ */
 export function devinSessionDatabase(environment: NodeJS.ProcessEnv): string {
-  return path.join(
-    absolute(environment.DEVIN_SESSIONS_DIR) ?? devinDataHome(environment),
-    "sessions.db",
-  );
+  const moved = absolute(environment.DEVIN_SESSIONS_DIR);
+  return path.join(moved ? path.join(moved, "cli") : devinDataHome(environment), "sessions.db");
 }
 
 interface Source {
@@ -637,6 +638,19 @@ export class DevinSessions {
     if (value === null) throw new Error("Devin session history is no longer available");
     return value;
   }
+  /** The model Devin saved for a session, which a resumed turn keeps unless told otherwise. */
+  model(nativeId: string): string | null {
+    const value = this.#read((source) => {
+      const row = source.db.prepare("SELECT model FROM sessions WHERE id=?").get(nativeId) as
+        | { model?: unknown }
+        | undefined;
+      return typeof row?.model === "string" && /^[A-Za-z0-9._:@/+-]{1,128}$/.test(row.model)
+        ? row.model
+        : null;
+    });
+    return value ?? null;
+  }
+
   /** Sessions whose working directory is inside `workspace`; null lists every session. */
   list(workspace: string | null): { sessions: NativeSession[]; incomplete: boolean } {
     const listing = this.#read((source) => {

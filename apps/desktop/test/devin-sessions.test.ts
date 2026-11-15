@@ -405,8 +405,11 @@ describe("Devin sessions", () => {
     ).toThrow("Devin session is no longer available in this workspace");
     expect(new DevinSessions({ HOME: elsewhere }).list(project).sessions).toEqual([]);
     expect(
-      new DevinSessions({ HOME: elsewhere, DEVIN_SESSIONS_DIR: path.dirname(file) }).list(project)
-        .sessions,
+      // Devin keeps `cli/sessions.db` under the moved directory.
+      new DevinSessions({
+        HOME: elsewhere,
+        DEVIN_SESSIONS_DIR: path.dirname(path.dirname(file)),
+      }).list(project).sessions,
     ).toHaveLength(1);
   });
 });

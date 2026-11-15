@@ -10,7 +10,19 @@ function sendNotification(method: string, params: unknown): void {
 
 const backend = new TypeScriptBackend(process.env, sendNotification);
 const pending = new Set<Promise<void>>();
+/** "Backend is closing" replies still being written. */
+const closingReplies = new Set<Promise<unknown>>();
 let closing = false;
+/**
+ * Before the process exits after a shutdown, requests the client already wrote are answered
+ * "Backend is closing" rather than dropped. A pipe can hand them over in a later read than the
+ * shutdown itself (Windows does), after a quick shutdown has already finished.
+ */
+async function answerQueuedRequests(): Promise<void> {
+  if (process.parentPort) return;
+  await new Promise((resolve) => setTimeout(resolve, 100));
+  await Promise.allSettled([...closingReplies]);
+}
 function shutdown(request: unknown): boolean {
   return (
     typeof request === "object" &&
@@ -22,7 +34,7 @@ function shutdown(request: unknown): boolean {
 function dispatch(request: unknown, send: (response: unknown) => Promise<void>): void {
   if (closing) {
     const id = request && typeof request === "object" && "id" in request ? request.id : null;
-    void send({
+    const reply = send({
       jsonrpc: "2.0",
       id,
       error: {
@@ -31,6 +43,8 @@ function dispatch(request: unknown, send: (response: unknown) => Promise<void>):
         data: { detail: "Backend is closing" },
       },
     }).catch(() => undefined);
+    closingReplies.add(reply);
+    void reply.finally(() => closingReplies.delete(reply));
     return;
   }
   const stopping = shutdown(request);
@@ -42,7 +56,10 @@ function dispatch(request: unknown, send: (response: unknown) => Promise<void>):
     }
     const response = await backend.handleAsync(request);
     await send(response);
-    if (stopping && !response.error) process.exit(0);
+    if (stopping && !response.error) {
+      await answerQueuedRequests();
+      process.exit(0);
+    }
     if (stopping) closing = false;
   })()
     .catch(async () => {

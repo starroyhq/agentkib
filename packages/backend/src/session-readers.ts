@@ -266,6 +266,9 @@ export class SessionReaders {
   antigravityControlExecutable(): string {
     return this.#antigravity.controlExecutable();
   }
+  devinSessionModel(nativeRef: string): string | null {
+    return this.#devin.model(nativeRef);
+  }
   antigravityReadHandoff(nativeRef: string) {
     return this.#antigravity.readHandoff(nativeRef);
   }

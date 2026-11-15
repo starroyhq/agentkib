@@ -4,7 +4,7 @@
  * and maps keyed by `ManagedAgent` stop compiling until they cover an Agent added here. Each
  * Agent still needs its own host adapter; see docs/development/adding-an-agent.md.
  */
-export const MANAGED_AGENTS = ["codex", "claude-code", "deepseek-harness"] as const;
+export const MANAGED_AGENTS = ["codex", "claude-code", "deepseek-harness", "devin"] as const;
 export type ManagedAgent = (typeof MANAGED_AGENTS)[number];
 
 /** The managed Agent named by `agent`, or null for an Agent AgentKib only reads. */

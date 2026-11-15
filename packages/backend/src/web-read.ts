@@ -44,6 +44,19 @@ import { CodexDesktopApp } from "./codex-desktop-app";
 import type { CodexFollowerState } from "./codex-follower-state";
 import { CodexFollowerStream } from "./codex-follower-stream";
 import { AntigravityManagedRunner } from "./antigravity-managed-runner";
+import { devinExecutable } from "./devin-executable";
+import { DEVIN_DEFAULT_PERMISSION_MODE, DevinSessionSettings } from "./devin-session-settings";
+import {
+  DEVIN_EXECUTION_MODE,
+  DEVIN_MAX_PROMPT_BYTES,
+  DEVIN_PERMISSION_MODES,
+  DevinManagedRunner,
+  devinChildEnvironment,
+  devinModelCatalog,
+  type DevinModelCatalog,
+  type DevinRunnerHost,
+  type DevinTurnSettings,
+} from "./devin-managed-runner";
 import { ManagedCodexState, elicitationResponse } from "./managed-codex-state";
 import { ManagedCodexEventBridge } from "./managed-codex-state";
 import { projectContextUsage } from "./context-usage";
@@ -221,6 +234,29 @@ const managedQuerySchema = z
   })
   .strict();
 
+/** A Devin session starts with its first message: Devin stores a session only once a turn runs. */
+const devinCreateSchema = z
+  .object({
+    operation: z.literal("devin-create"),
+    requestId: z.string().uuid(),
+    deviceId: z
+      .string()
+      .min(1)
+      .max(256)
+      .regex(/^[A-Za-z0-9_:-]+$/),
+    workspaceId: z.string().min(1).max(256),
+    prompt: z
+      .string()
+      .min(1)
+      .refine((value) => Buffer.byteLength(value, "utf8") <= DEVIN_MAX_PROMPT_BYTES),
+    model: z
+      .string()
+      .regex(/^[A-Za-z0-9._:@/+-]{1,128}$/)
+      .optional(),
+    permissionMode: z.enum(DEVIN_PERMISSION_MODES).optional(),
+  })
+  .strict();
+
 const managedLifecycleSchema = z.discriminatedUnion("operation", [
   z
     .object({
@@ -334,6 +370,8 @@ const managedControlSchema = z
     queuedSubmissionId: z.string().min(1).max(256).optional(),
     queuedSubmissionIds: z.array(z.string().min(1).max(256)).max(100).optional(),
     model: z.string().min(1).max(256).optional(),
+    /** Devin: the permission mode its next turns run with. */
+    permissionMode: z.enum(DEVIN_PERMISSION_MODES).optional(),
     effort: z.string().min(1).max(64).nullable().optional(),
     serviceTier: z.string().min(1).max(128).nullable().optional(),
     mode: z.string().min(1).max(128).optional(),
@@ -470,6 +508,16 @@ export class WebReadRequests {
   >();
   #antigravityRunners = new Map<string, AntigravityRunnerRecord>();
   #antigravityRunnerFlights = new Map<string, Promise<AntigravityRunnerRecord>>();
+  #devinRunners = new Map<
+    string,
+    { runner: DevinManagedRunner; lastUsed: number; settings: DevinTurnSettings }
+  >();
+  #devinSavedSettings: DevinSessionSettings | undefined;
+
+  #devinSaved() {
+    this.#devinSavedSettings ??= new DevinSessionSettings(this.dataDir);
+    return this.#devinSavedSettings;
+  }
 
   constructor(
     readonly store: BackendStore,
@@ -527,6 +575,8 @@ export class WebReadRequests {
     const pending = [this.#codex.closeAsync()];
     for (const record of this.#antigravityRunners.values()) record.runner.close();
     this.#antigravityRunners.clear();
+    for (const record of this.#devinRunners.values()) record.runner.close();
+    this.#devinRunners.clear();
     for (const follower of this.#codexFollowers.values()) follower.bridge.close();
     this.#codexFollowers.clear();
     const closeRunners = () => {
@@ -1991,6 +2041,8 @@ export class WebReadRequests {
 
   async #managedQuery(value: unknown) {
     const request = managedQuerySchema.parse(value);
+    if (this.store.sessions.get(request.sessionId)?.agent === "devin")
+      return this.#devinQuery(request);
     if (this.store.sessions.get(request.sessionId)?.agent === "antigravity") {
       let runner: AntigravityRunnerRecord;
       try {
@@ -2680,6 +2732,8 @@ export class WebReadRequests {
     const fingerprint = createHash("sha256").update(stableJson(value)).digest("hex");
     const previous = replayManagedCommand(this.dataDir, request.requestId, fingerprint);
     if (previous) return previous;
+    if (this.store.sessions.get(request.sessionId)?.agent === "devin")
+      return this.#devinControl(request, fingerprint);
     if (
       this.store.sessions.get(request.sessionId)?.agent === "antigravity" &&
       (request.effort === null || request.serviceTier === null)
@@ -4520,6 +4574,7 @@ export class WebReadRequests {
     if (request.operation === "live") {
       const session = this.store.sessions.get(request.sessionId);
       if (session?.agent === "antigravity") return this.#antigravityLive(request.sessionId);
+      if (session?.agent === "devin") return this.#devinLive(request.sessionId);
       if (session && session.agent !== "codex" && session.agent !== "claude-code")
         return {
           sessionId: request.sessionId,
@@ -4539,10 +4594,13 @@ export class WebReadRequests {
     if (request.operation === "context") return this.#context(request.sessionId);
     if (request.operation === "resume-command") return this.#resumeCommand(request.sessionId);
     if (request.operation === "usage") {
+      const agent = this.store.sessions.get(request.sessionId)?.agent;
       const live =
-        this.store.sessions.get(request.sessionId)?.agent === "antigravity"
+        agent === "antigravity"
           ? await this.#antigravityLive(request.sessionId)
-          : await this.#managedLive(request.sessionId, false);
+          : agent === "devin"
+            ? await this.#devinLive(request.sessionId)
+            : await this.#managedLive(request.sessionId, false);
       return (
         projectContextUsage(live.usage) ?? {
           available: false,
@@ -5659,6 +5717,422 @@ export class WebReadRequests {
       if (!outcomeUnknown) finishManagedCommand(this.dataDir, request.requestId, result);
       return result;
     }
+  }
+
+  #devinHost(workspace: string, sessionId: () => string | null): DevinRunnerHost {
+    const environment = devinChildEnvironment({ ...process.env, ...this.environment });
+    const page = (nativeId: string, limit: number) =>
+      this.sessions.eventsForNative("devin", nativeId, workspace, null, limit);
+    return {
+      executable: () => devinExecutable(environment),
+      environment,
+      latestItems: async (nativeId) =>
+        (await page(nativeId, 100)).events.map((event) => ({
+          ...event,
+          turn_id: event.turn_id ?? event.id,
+          ephemeral: false,
+        })),
+      listSessions: async () =>
+        (await this.sessions.list("devin", workspace)).sessions.map((session) => ({
+          nativeId: session.native_ref,
+          createdAt: Date.parse(session.created_at ?? "") || 0,
+        })),
+      firstUserText: async (nativeId) =>
+        (await page(nativeId, 20)).events.find((event) => event.kind === "user-message")?.content ??
+        null,
+      publish: (type, payload, live) => {
+        const id = sessionId();
+        if (!id) return;
+        const current = { ...live, sessionId: id, runtimeBootId: this.#bootId };
+        const eventPayload = isObject(payload.live) ? { ...payload, live: current } : payload;
+        this.publishConversationEvent?.(id, type, eventPayload, current);
+      },
+    };
+  }
+
+  #addDevinRunner(sessionId: string, runner: DevinManagedRunner, settings: DevinTurnSettings) {
+    if (this.#devinRunners.size >= 8) {
+      const [retireId, retire] =
+        [...this.#devinRunners.entries()]
+          .filter(([, value]) => value.runner.snapshot().sendEnabled === true)
+          .sort(([, left], [, right]) => left.lastUsed - right.lastUsed)[0] ?? [];
+      if (!retireId || !retire) throw new Error("live-session-limit");
+      this.#devinRunners.delete(retireId);
+      retire.runner.close();
+    }
+    const record = { runner, lastUsed: Date.now(), settings };
+    this.#devinRunners.set(sessionId, record);
+    return record;
+  }
+
+  async #devinRunner(sessionId: string) {
+    const existing = this.#devinRunners.get(sessionId);
+    if (existing) {
+      existing.lastUsed = Date.now();
+      return existing;
+    }
+    const resolved = await this.sessions.resolve(sessionId);
+    if (resolved.native.agent !== "devin") throw new Error("session-unavailable");
+    const workspace = canonicalize(this.store.workspacePath(resolved.summary.workspace_id));
+    const runner = new DevinManagedRunner(
+      workspace,
+      resolved.native.native_ref,
+      this.#devinHost(workspace, () => sessionId),
+    );
+    // Without a saved choice a resumed turn keeps the session's model and edits the workspace.
+    return this.#addDevinRunner(
+      sessionId,
+      runner,
+      this.#devinSaved().get(resolved.native.native_ref),
+    );
+  }
+
+  async #devinLive(sessionId: string): Promise<Record<string, unknown>> {
+    try {
+      const record = await this.#devinRunner(sessionId);
+      return { ...record.runner.snapshot(), sessionId, runtimeBootId: this.#bootId };
+    } catch (error) {
+      return {
+        sessionId,
+        executionMode: DEVIN_EXECUTION_MODE,
+        runtimeBootId: this.#bootId,
+        status: "unsupported",
+        revision: 0,
+        turnId: null,
+        sendEnabled: false,
+        stopEnabled: false,
+        approvals: [],
+        questions: [],
+        reason: error instanceof Error ? error.message : "open-in-original-client",
+      };
+    }
+  }
+
+  async #devinQuery(request: z.infer<typeof managedQuerySchema>) {
+    const live = await this.#devinLive(request.sessionId);
+    const experimental = request.experimentalEnabled === true;
+    const reason =
+      live.status === "unsupported"
+        ? String(live.reason)
+        : experimental
+          ? ((live.reason as string | null) ?? null)
+          : "control-disabled";
+    const unsupported = { available: false, reason: "unsupported-operation" };
+    const features = {
+      send:
+        experimental && live.sendEnabled === true
+          ? { available: true }
+          : { available: false, reason: reason ?? "session-busy" },
+      stop:
+        experimental && live.stopEnabled === true
+          ? { available: true }
+          : { available: false, reason: reason ?? "session-not-running" },
+      "settings-state": { available: live.status !== "unsupported" },
+      settings:
+        experimental && live.sendEnabled === true
+          ? { available: true }
+          : { available: false, reason: reason ?? "session-busy" },
+      // Devin runs a turn without asking: there is nothing to approve or answer mid-turn.
+      approve: unsupported,
+      answer: unsupported,
+      inspect: { available: live.status !== "unsupported" },
+      resume: unsupported,
+      usage: { available: false, reason: "usage-not-reported" },
+    };
+    const base = {
+      sessionId: request.sessionId,
+      executionMode: DEVIN_EXECUTION_MODE,
+      runtimeBootId: this.#bootId,
+      status: live.status,
+      reason: live.reason,
+    };
+    return request.operation === "capabilities"
+      ? { ...base, features }
+      : { ...base, revision: live.revision, turnId: live.turnId, approvals: [] };
+  }
+
+  async #devinControl(request: z.infer<typeof managedControlSchema>, fingerprint: string) {
+    const runtimeBootId = this.#bootId;
+    if (!request.experimentalEnabled || request.runtimeBootId !== runtimeBootId)
+      throw new Error("stale-or-disabled-control");
+    if (!["send", "stop", "settings"].includes(request.operation))
+      throw new Error("unsupported-operation");
+    if (
+      request.operation === "settings" &&
+      request.model !== undefined &&
+      !/^[A-Za-z0-9._:@/+-]{1,128}$/.test(request.model)
+    )
+      throw new Error("unsupported-model");
+    // `devin -p` takes text only; attachments are refused rather than dropped.
+    if (request.input?.length || request.historyReferences?.length || request.resourceRefs?.length)
+      throw new Error("attachments-unsupported");
+    if (managedSessionHasUnknownCommands(this.dataDir, request.sessionId))
+      throw new Error("control-outcome-unconfirmed");
+    const record = await this.#devinRunner(request.sessionId);
+    if (request.expectedRevision !== record.runner.snapshot().revision)
+      throw new Error("stale-or-disabled-control");
+    const claimed = claimManagedCommand(
+      this.dataDir,
+      request.requestId,
+      request.sessionId,
+      fingerprint,
+      request.deviceId ?? null,
+      {
+        operation: request.operation,
+        workspaceId: this.store.sessions.get(request.sessionId)?.workspace_id ?? null,
+        runtimeBootId,
+        expectedRevision: request.expectedRevision,
+        turnId: request.turnId ?? null,
+        executionMode: DEVIN_EXECUTION_MODE,
+        ...(request.historyInputHash ? { historyInputHash: request.historyInputHash } : {}),
+      },
+    );
+    if (claimed) return claimed;
+    let dispatched = false;
+    const beforeDispatch = () => {
+      dispatchManagedCommand(this.dataDir, request.requestId);
+      dispatched = true;
+    };
+    try {
+      if (request.operation === "send") {
+        if (typeof request.text !== "string") throw new Error("missing-text");
+        await record.runner.send(
+          request.text,
+          request.expectedRevision,
+          beforeDispatch,
+          record.settings,
+        );
+      } else if (request.operation === "settings") {
+        const nativeId = record.runner.nativeId;
+        if (!nativeId || record.runner.snapshot().sendEnabled !== true)
+          throw new Error("session-busy");
+        beforeDispatch();
+        this.#devinSaved().set(
+          nativeId,
+          request.resetDefaults
+            ? {}
+            : {
+                ...(request.model
+                  ? { model: request.model }
+                  : record.settings.model
+                    ? { model: record.settings.model }
+                    : {}),
+                permissionMode: request.permissionMode ?? record.settings.permissionMode,
+              },
+        );
+        record.settings = this.#devinSaved().get(nativeId);
+        record.runner.bump();
+      } else {
+        if (typeof request.turnId !== "string") throw new Error("missing-turn");
+        await record.runner.stop(request.turnId, request.expectedRevision, beforeDispatch);
+      }
+      record.lastUsed = Date.now();
+      const result = {
+        accepted: true,
+        // A settings change is applied when it is saved; the next turn runs with it.
+        completed: request.operation === "settings",
+        sessionId: request.sessionId,
+        requestId: request.requestId,
+        runtimeBootId,
+      };
+      finishManagedCommand(this.dataDir, request.requestId, result);
+      return result;
+    } catch (error) {
+      const result = {
+        accepted: false,
+        completed: false,
+        sessionId: request.sessionId,
+        controlOutcome: dispatched ? "unknown" : "not-dispatched",
+        reason: error instanceof Error ? error.message : "control-preflight-rejected",
+        requestId: request.requestId,
+        runtimeBootId,
+      };
+      if (!dispatched) finishManagedCommand(this.dataDir, request.requestId, result);
+      return result;
+    }
+  }
+
+  /**
+   * Starts a Devin session with its first message and answers once Devin has stored it, so the
+   * new session opens already running. Its model and permission mode apply to later turns too.
+   */
+  async devinCreate(value: Record<string, unknown>): Promise<Record<string, unknown>> {
+    const request = devinCreateSchema.parse(value);
+    const fingerprint = createHash("sha256").update(stableJson(value)).digest("hex");
+    const replay = replayManagedCommand(this.dataDir, request.requestId, fingerprint);
+    if (replay) return replay;
+    const result = (outcome: "accepted" | "not-dispatched" | "unknown", extra = {}) => ({
+      accepted: outcome === "accepted",
+      completed: outcome === "accepted",
+      requestId: request.requestId,
+      runtimeBootId: this.#bootId,
+      executionMode: DEVIN_EXECUTION_MODE,
+      controlOutcome: outcome,
+      ...extra,
+    });
+    let workspace: string;
+    try {
+      workspace = canonicalize(this.store.workspacePath(request.workspaceId));
+    } catch {
+      return result("not-dispatched", { reason: "workspace-unavailable" });
+    }
+    const settings: DevinTurnSettings = {
+      ...(request.model ? { model: request.model } : {}),
+      permissionMode: request.permissionMode ?? DEVIN_DEFAULT_PERMISSION_MODE,
+    };
+    let created: string | null = null;
+    const runner = new DevinManagedRunner(
+      workspace,
+      null,
+      this.#devinHost(workspace, () => created),
+    );
+    const prior = claimManagedCommand(
+      this.dataDir,
+      request.requestId,
+      `devin-create:${request.requestId}`,
+      fingerprint,
+      request.deviceId,
+      {
+        operation: "create",
+        workspaceId: request.workspaceId,
+        runtimeBootId: this.#bootId,
+        executionMode: DEVIN_EXECUTION_MODE,
+        claimedAt: Date.now(),
+      },
+    );
+    if (prior) return prior;
+    let dispatched = false;
+    try {
+      await runner.send(
+        request.prompt,
+        0,
+        () => {
+          dispatchManagedCommand(this.dataDir, request.requestId);
+          dispatched = true;
+        },
+        settings,
+      );
+      let timer: NodeJS.Timeout | undefined;
+      const nativeId = await Promise.race([
+        runner.session(),
+        new Promise<never>((_, reject) => {
+          timer = setTimeout(() => reject(new Error("devin-session-unconfirmed")), 120_000);
+        }),
+      ]).finally(() => clearTimeout(timer));
+      // Index it now so that its ID resolves before the next catalog refresh.
+      this.store.sessions.sync(
+        request.workspaceId,
+        "devin",
+        (await this.sessions.list("devin", workspace)).sessions,
+        true,
+      );
+      created = this.store.sessions.id("devin", nativeId);
+      // The choices made when it started apply to its later turns too, also after a restart.
+      if (request.model || request.permissionMode)
+        this.#devinSaved().set(nativeId, {
+          ...(request.model ? { model: request.model } : {}),
+          ...(request.permissionMode ? { permissionMode: request.permissionMode } : {}),
+        });
+      this.#addDevinRunner(created, runner, settings);
+      const outcome = result("accepted", { sessionId: created });
+      finishManagedCommand(this.dataDir, request.requestId, outcome);
+      return outcome;
+    } catch (error) {
+      const reason = error instanceof Error ? error.message : "control-preflight-rejected";
+      // A turn that ended without storing a session made nothing, so it may be sent again.
+      if (!dispatched || reason !== "devin-session-unconfirmed") {
+        runner.close();
+        const outcome = result("not-dispatched", { reason });
+        finishManagedCommand(this.dataDir, request.requestId, outcome);
+        return outcome;
+      }
+      return result("unknown", { reason: "control-outcome-unconfirmed" });
+    }
+  }
+
+  #devinModels: { at: number; catalog: DevinModelCatalog } | undefined;
+
+  /**
+   * A Devin session's settings in the shape the composer reads for managed sessions: the model
+   * and permission mode its next turn runs with. Without a saved model a resumed turn keeps the
+   * one Devin saved for the session.
+   */
+  async devinSettingsState(value: Record<string, unknown>): Promise<Record<string, unknown>> {
+    const sessionId = z.string().min(1).max(256).parse(value.sessionId);
+    let record: Awaited<ReturnType<WebReadRequests["devinRunnerFor"]>>;
+    try {
+      record = await this.devinRunnerFor(sessionId);
+    } catch (error) {
+      return {
+        available: false,
+        executionMode: DEVIN_EXECUTION_MODE,
+        revision: 0,
+        reason: error instanceof Error ? error.message : "session-unavailable",
+      };
+    }
+    const live = record.runner.snapshot();
+    const nativeId = record.runner.nativeId;
+    const environment = devinChildEnvironment({ ...process.env, ...this.environment });
+    const executable = devinExecutable(environment);
+    const catalog = executable
+      ? await this.#devinCatalog(executable, environment)
+      : { families: [], familyOf: new Map<string, string>() };
+    const models = catalog.families;
+    // Devin keeps the concrete variant a session ran with; it is shown as its family.
+    const saved = nativeId ? this.sessions.devinSessionModel(nativeId) : null;
+    const current = {
+      model: record.settings.model ?? (saved ? (catalog.familyOf.get(saved) ?? saved) : null),
+      effort: null,
+      permissionMode: record.settings.permissionMode ?? DEVIN_DEFAULT_PERMISSION_MODE,
+    };
+    const mutable = live.sendEnabled === true;
+    return {
+      available: true,
+      executionMode: DEVIN_EXECUTION_MODE,
+      revision: live.revision,
+      current,
+      selected: current,
+      settings: current,
+      defaults: { model: null, effort: null, permissionMode: DEVIN_DEFAULT_PERMISSION_MODE },
+      applicationStatus: "confirmed",
+      models: models.map((model) => ({ ...model, efforts: [] })),
+      permissionModes: DEVIN_PERMISSION_MODES.map((id) => ({ id, name: id })),
+      writable: {
+        model: { available: mutable && models.length > 0 },
+        effort: { available: false, reason: "unsupported-operation" },
+        permissionMode: { available: mutable },
+        restoreDefaults: { available: mutable },
+      },
+    };
+  }
+
+  devinRunnerFor(sessionId: string) {
+    return this.#devinRunner(sessionId);
+  }
+
+  /**
+   * What a new Devin session can start with. Models are listed by family, whose slug `--model`
+   * takes; Devin picks the variant. Without a CLI login the list is empty and Devin's configured
+   * default applies; the login is explained only when a session is started.
+   */
+  async devinOptions(): Promise<Record<string, unknown>> {
+    const environment = devinChildEnvironment({ ...process.env, ...this.environment });
+    const executable = devinExecutable(environment);
+    if (!executable) return { available: false, reason: "devin-cli-unavailable" };
+    return {
+      available: true,
+      permissionModes: DEVIN_PERMISSION_MODES.map((id) => ({ id })),
+      models: (await this.#devinCatalog(executable, environment)).families,
+    };
+  }
+
+  async #devinCatalog(executable: string, environment: NodeJS.ProcessEnv) {
+    if (!this.#devinModels || Date.now() - this.#devinModels.at > 10 * 60_000)
+      this.#devinModels = {
+        at: Date.now(),
+        catalog: await devinModelCatalog(executable, environment),
+      };
+    return this.#devinModels.catalog;
   }
 
   async #desktopFollower(record: ManagedRecord): Promise<CodexFollowerRecord> {

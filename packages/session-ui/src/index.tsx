@@ -97,13 +97,16 @@ export {
   type InteractionItemsContext,
   type InteractionItemsLive,
 } from "./interaction-items";
+export { DEVIN_TURN_REASONS, devinTerminalAction, devinTerminalCopy } from "./devin-terminal";
 export {
   NEW_SESSION_AGENTS,
   newSessionCopy,
   newSessionCreateFields,
   newSessionPermissions,
   newSessionPresets,
+  PROMPT_AT_CREATE_AGENTS,
   type ClaudeStartMode,
+  type DevinStartMode,
   type NewSessionAgent,
   type NewSessionCopy,
   type NewSessionCreateFields,

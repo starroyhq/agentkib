@@ -375,6 +375,9 @@ const PAIRING_CODE_TTL_MS = 300_000;
  * A managed Agent with no host handler here. Each Agent in MANAGED_AGENTS needs its own case where
  * this is called; without one, its requests would otherwise reach another Agent's handler.
  */
+/** Devin CLI's permission modes, which apply to a whole `devin -p` turn. */
+const DEVIN_PERMISSION_MODES = ["auto", "accept-edits", "smart", "dangerous"];
+
 function unhandledManagedAgent(agent: never): never {
   void agent;
   throw new HttpError(400, "invalid_agent");
@@ -481,6 +484,8 @@ const API_ROUTES: Record<"GET" | "POST", Record<string, RouteSpec>> = {
     "/history/configure": {},
     "/history/clear": {},
     "/history/rebuild": {},
+    // Desktop only: the handler refuses every other caller.
+    "/devin/terminal": {},
     "/pair": { lan: true },
     "/pair/cancel": { lan: true },
     "/account-binding": { lan: true },
@@ -714,6 +719,8 @@ export class WebAccessService {
       verifiedAntigravityManaged?: boolean;
       /** DeepSeek Harness sessions connected through the AgentKib plugin (macOS only for now). */
       verifiedDshFollower?: boolean;
+      /** Devin sessions run by AgentKib, one `devin -p` turn at a time. */
+      verifiedDevinManaged?: boolean;
       acceptanceSessionId?: string;
       mode?: "lan";
       sharedControl?: ReturnType<typeof createWebControlState>;
@@ -1023,7 +1030,8 @@ export class WebAccessService {
             executionMode === "claude-managed" ||
             executionMode === "claude-follower")) ||
         (this.options.verifiedAntigravityManaged === true && executionMode === "acp-managed") ||
-        (this.options.verifiedDshFollower === true && executionMode === "dsh-follower"))
+        (this.options.verifiedDshFollower === true && executionMode === "dsh-follower") ||
+        (this.options.verifiedDevinManaged === true && executionMode === "devin-print"))
     );
   }
 
@@ -1772,6 +1780,7 @@ export class WebAccessService {
         this.options.verifiedCodex === true ||
         this.options.verifiedClaudeManaged === true ||
         this.options.verifiedAntigravityManaged === true ||
+        this.options.verifiedDevinManaged === true ||
         !!this.options.acceptanceSessionId,
       acceptanceSessionId: this.options.acceptanceSessionId,
       localUrl: `http://${this.options.mode === "lan" ? this.config.lanAddress : "127.0.0.1"}:${this.config.port}`,
@@ -2809,7 +2818,10 @@ export class WebAccessService {
       ...(value(current, "effort") ? { effort: value(current, "effort") } : {}),
       ...(value(current, "mode") ? { mode: value(current, "mode") } : {}),
       ...(value(current, "policyId") ? { policyId: value(current, "policyId") } : {}),
-      ...(["default", "plan", "acceptEdits"].includes(value(current, "permissionMode") ?? "")
+      ...((data.executionMode === "devin-print"
+        ? DEVIN_PERMISSION_MODES
+        : ["default", "plan", "acceptEdits"]
+      ).includes(value(current, "permissionMode") ?? "")
         ? { permissionMode: value(current, "permissionMode") }
         : {}),
       ...(value(current, "serviceTier", "serviceTierId")
@@ -2871,11 +2883,11 @@ export class WebAccessService {
         mode: this.availability(writable?.mode),
         policy: this.availability(writable?.policy),
         serviceTier: this.availability(writable?.serviceTier),
-        ...(data.executionMode === "claude-managed"
+        ...(data.executionMode === "claude-managed" || data.executionMode === "devin-print"
           ? { permissionMode: this.availability(writable?.permissionMode) }
           : {}),
         restoreDefaults:
-          data.executionMode === "claude-managed"
+          data.executionMode === "claude-managed" || data.executionMode === "devin-print"
             ? this.availability(writable?.restoreDefaults)
             : {
                 available:
@@ -2888,13 +2900,17 @@ export class WebAccessService {
         models,
         policies,
         serviceTiers,
-        ...(data.executionMode === "claude-managed"
+        ...(data.executionMode === "claude-managed" || data.executionMode === "devin-print"
           ? {
               permissionModes: Array.isArray(data.permissionModes)
-                ? data.permissionModes.slice(0, 3).flatMap((value) => {
+                ? data.permissionModes.slice(0, 4).flatMap((value) => {
                     if (!value || typeof value !== "object") return [];
                     const mode = value as Record<string, unknown>;
-                    if (!["default", "plan", "acceptEdits"].includes(String(mode.id))) return [];
+                    const ids =
+                      data.executionMode === "devin-print"
+                        ? DEVIN_PERMISSION_MODES
+                        : ["default", "plan", "acceptEdits"];
+                    if (!ids.includes(String(mode.id))) return [];
                     return [{ id: mode.id, name: this.optionalString(mode.name, 128) ?? mode.id }];
                   })
                 : [],
@@ -3536,12 +3552,16 @@ export class WebAccessService {
           "goal-clear",
           "compact",
         ].includes(operation);
+      // Devin changes the model and permission mode its next turns run with.
+      const devin =
+        generic && capabilities.executionMode === "devin-print" && operation === "settings";
       if (
         (capabilities.executionMode !== "codex-managed" &&
           !claude &&
           !terminal &&
           !followerFork &&
-          !dsh) ||
+          !dsh &&
+          !devin) ||
         capabilities.features?.[operation]?.available !== true
       )
         throw new HttpError(
@@ -3766,11 +3786,16 @@ export class WebAccessService {
           params.effort = effort;
         }
         if (body.permissionMode !== undefined) {
-          if (capabilities.executionMode !== "claude-managed")
+          const devin = capabilities.executionMode === "devin-print";
+          if (capabilities.executionMode !== "claude-managed" && !devin)
             throw new HttpError(400, "unsupported_permission_mode");
           ensureWritable("permissionMode");
-          if (!["default", "plan", "acceptEdits"].includes(String(body.permissionMode)))
+          const mode = String(body.permissionMode);
+          if (!(devin ? DEVIN_PERMISSION_MODES : ["default", "plan", "acceptEdits"]).includes(mode))
             throw new HttpError(400, "unsupported_permission_mode");
+          // Devin cannot ask mid-turn: approving more without asking takes full access, as when
+          // a session starts with these modes.
+          if (devin && (mode === "smart" || mode === "dangerous")) this.fullAccess(hash);
           params.permissionMode = body.permissionMode;
         }
         if (mode) {
@@ -4438,6 +4463,8 @@ export class WebAccessService {
     // DeepSeek Harness only starts sessions here; its sessions are controlled through actions.
     if (agent === "deepseek-harness" && operation !== "create")
       throw new HttpError(404, "not_found");
+    // Devin also only starts sessions here, with their first message.
+    if (agent === "devin" && operation !== "create") throw new HttpError(404, "not_found");
     const requestId = this.field(body.requestId, 128);
     if (agent === "claude-code")
       await this.controlReceipt(requestId, this.grant(hash, "manage").id, control);
@@ -4453,6 +4480,12 @@ export class WebAccessService {
               ...(value as Record<string, unknown>),
               operation: "dsh-create",
             });
+        case "devin":
+          return (value: unknown) =>
+            this.options.runtimeRequest({
+              ...(value as Record<string, unknown>),
+              operation: "devin-create",
+            });
         default:
           return unhandledManagedAgent(agent);
       }
@@ -4460,6 +4493,8 @@ export class WebAccessService {
     if (agent === "claude-code" && !this.options.verifiedClaudeManaged)
       throw new HttpError(409, "unsupported_host");
     if (agent === "deepseek-harness" && this.options.verifiedDshFollower !== true)
+      throw new HttpError(409, "unsupported_host");
+    if (agent === "devin" && this.options.verifiedDevinManaged !== true)
       throw new HttpError(409, "unsupported_host");
     if (
       this.options.acceptanceSessionId &&
@@ -4510,6 +4545,22 @@ export class WebAccessService {
       // DSH picks an Agent preset only when a session starts, as on its own new-session screen.
       if (agent === "deepseek-harness" && body.agentPreset !== undefined)
         params.agentPreset = this.field(body.agentPreset, 128);
+      if (agent === "devin") {
+        if (body.effort !== undefined) throw new HttpError(400, "unsupported_effort");
+        if (body.permissionMode !== undefined) {
+          const mode = String(body.permissionMode);
+          if (!DEVIN_PERMISSION_MODES.includes(mode))
+            throw new HttpError(400, "unsupported_permission_mode");
+          // Approving more without asking is changing what the session may do: full access only.
+          if (mode === "smart" || mode === "dangerous") this.fullAccess(hash);
+          params.permissionMode = mode;
+        }
+        if (typeof body.prompt !== "string" || !body.prompt.trim())
+          throw new HttpError(400, "missing_prompt");
+        if (Buffer.byteLength(body.prompt, "utf8") > 64 * 1024)
+          throw new HttpError(413, "prompt_too_large");
+        params.prompt = body.prompt;
+      }
     } else {
       params.sessionId = this.field(body.sessionId);
       if (
@@ -5446,6 +5497,20 @@ export class WebAccessService {
         return this.prepareClaudeSettings(res, hash, body);
       }
       if (path === "/managed/project-agent") return this.projectAgent(res, hash, body);
+      // Opens a terminal on this computer for Devin CLI's own login or workspace trust, so only
+      // the desktop app itself may ask; remote devices only see the explanation.
+      if (path === "/devin/terminal") {
+        if (!trustedLocal || lan) throw new HttpError(403, "owner_required");
+        const action = body.action === "login" || body.action === "trust" ? body.action : null;
+        if (!action) throw new HttpError(400, "invalid_input");
+        const params: Record<string, unknown> = { operation: "devin-terminal", action };
+        if (action === "trust")
+          params.workspaceId =
+            body.sessionId !== undefined
+              ? await this.codexScope(this.field(body.sessionId), hash, false, false)
+              : this.field(body.workspaceId);
+        return this.json(res, 200, await this.options.runtimeRequest(params));
+      }
       if (path === "/managed/action")
         return this.codexAction(res, hash, this.field(body.operation, 64), body, control, true);
       if (path.startsWith("/managed/"))
@@ -6216,6 +6281,7 @@ export class WebAccessService {
           case "claude-code":
             return this.options.claudeManagedRequest;
           case "deepseek-harness":
+          case "devin":
             return undefined;
           default:
             return unhandledManagedAgent(agent);
@@ -6230,14 +6296,18 @@ export class WebAccessService {
                 ...(workspaceId ? { includeModels: true } : {}),
               })
             : { available: false, reason: "unsupported_host" }
-          : managedRequest
-            ? await managedRequest({
-                operation: "options",
-                ...(workspaceId && agent === "claude-code" && this.options.verifiedClaudeManaged
-                  ? { workspaceId }
-                  : {}),
-              })
-            : { available: false, reason: "unsupported_host" };
+          : agent === "devin"
+            ? this.options.verifiedDevinManaged === true
+              ? await this.runtime({ operation: "devin-options" })
+              : { available: false, reason: "unsupported_host" }
+            : managedRequest
+              ? await managedRequest({
+                  operation: "options",
+                  ...(workspaceId && agent === "claude-code" && this.options.verifiedClaudeManaged
+                    ? { workspaceId }
+                    : {}),
+                })
+              : { available: false, reason: "unsupported_host" };
       const device = this.grant(hash, permission);
       const workspaces = device.manage === true ? await this.registeredWorkspaces() : [];
       const current = this.grant(hash, permission);
@@ -6280,6 +6350,34 @@ export class WebAccessService {
                 this.grant(hash),
                 sessionId,
                 this.options.verifiedDshFollower === true,
+              )
+            : result,
+        );
+      }
+      if (agent === "devin") {
+        // As for DeepSeek Harness, the runtime resolves the provider from the indexed session.
+        const sessionId = this.field(url.searchParams.get("sessionId"));
+        const device = this.grant(hash);
+        if (path.endsWith("inspect")) this.grant(hash, "manage");
+        const workspaceId = await this.codexScope(sessionId, hash, false, false);
+        const result = await this.runtime({
+          operation: path.endsWith("inspect") ? "inspect" : "capabilities",
+          sessionId,
+          experimentalEnabled: this.controlsEnabled(sessionId, device),
+        });
+        if (snapshotField(result, "executionMode") !== "devin-print")
+          throw new HttpError(400, "invalid_agent");
+        if (!(await this.workspaceAllowed(workspaceId, this.grant(hash))))
+          throw new HttpError(403, "workspace_not_authorized");
+        return this.json(
+          res,
+          200,
+          path.endsWith("capabilities")
+            ? this.projectClaudeCapabilities(
+                result,
+                this.grant(hash),
+                sessionId,
+                this.options.verifiedDevinManaged === true,
               )
             : result,
         );

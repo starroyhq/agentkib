@@ -19,6 +19,7 @@ import { claudeConfigFiles, resolveClaudeConfig } from "./claude-config";
 import { claudeProjectKey } from "./claude-project-path";
 import { probeClaudeSessionFormat } from "./claude-session-probe";
 import { resolveCommand } from "./command-resolution";
+import { devinExecutable } from "./devin-executable";
 import type { DshBridge } from "./dsh-bridge";
 import { isReparseOrSymlink } from "./native-files";
 import { versionAtLeast } from "./native-version";
@@ -210,7 +211,11 @@ export async function interactiveLaunchCapability(
   }
   if (target !== "codex" && target !== "claude-code" && target !== "devin")
     return { status: "unsupported", reason: "target-not-supported" };
-  return resolveCommand(target === "codex" ? "codex" : target === "devin" ? "devin" : "claude", env)
+  return (
+    target === "devin"
+      ? devinExecutable(env)
+      : resolveCommand(target === "codex" ? "codex" : "claude", env)
+  )
     ? { status: "supported", reason: null }
     : { status: "unavailable", reason: "cli-unavailable" };
 }

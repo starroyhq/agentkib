@@ -24,6 +24,7 @@ import { planSessionHandoff } from "./session-handoff-plan";
 import { applySessionHandoff } from "./session-handoff-apply";
 import {
   launchDshHandoff,
+  launchDevinTerminal,
   launchPreparedHandoff,
   prepareHandoffLaunch,
 } from "./session-handoff-launch";
@@ -75,6 +76,9 @@ import { defaultManifest, prepareManifest } from "./default-manifest";
 import { InstructionImports } from "./instruction-adoption";
 import { parameters } from "./rpc";
 import { z } from "zod";
+import os from "node:os";
+import { devinExecutable } from "./devin-executable";
+import { devinChildEnvironment } from "./devin-managed-runner";
 import { BACKEND_INSPECT } from "./migration";
 import { RpcFault } from "./rpc";
 import { Commands } from "./commands";
@@ -1184,6 +1188,31 @@ export class TypeScriptBackend {
         if (!this.#dshBridge) throw new Error("session-unavailable");
         return this.#dshBridge.create(params);
       }
+      // A Devin session has no ID until its first turn has run; the web reader starts it.
+      if (params.operation === "devin-create")
+        return this.#withWebRead((owner) => owner.devinCreate(params));
+      // Devin CLI's own login or workspace trust, run in a terminal for the person to finish.
+      if (params.operation === "devin-terminal") {
+        const action =
+          params.action === "login" || params.action === "trust" ? params.action : null;
+        if (!action) throw new Error("invalid-request");
+        const environment = devinChildEnvironment({ ...process.env, ...this.environment });
+        const executable = devinExecutable(environment);
+        if (!executable) throw new Error("devin-cli-unavailable");
+        const cwd =
+          action === "trust"
+            ? this.#store!.workspacePath(z.string().min(1).max(256).parse(params.workspaceId))
+            : (environment.HOME ?? environment.USERPROFILE ?? os.homedir());
+        return launchDevinTerminal(
+          action,
+          executable,
+          cwd,
+          this.#handoffWork.commands,
+          environment,
+        );
+      }
+      if (params.operation === "devin-options")
+        return this.#withWebRead((owner) => owner.devinOptions());
       if (params.operation === "dsh-options")
         return (
           this.#dshBridge?.createOptions(params.includeModels === true) ?? {
@@ -1226,6 +1255,13 @@ export class TypeScriptBackend {
       ) {
         return this.#withWebRead((owner) => owner.request(params));
       }
+      // Devin's settings are what AgentKib saved for its next turns, not a Codex ledger entry.
+      if (
+        params.operation === "settings-state" &&
+        typeof params.sessionId === "string" &&
+        this.#store!.sessions.get(params.sessionId)?.agent === "devin"
+      )
+        return this.#withWebRead((owner) => owner.devinSettingsState(params));
       if (params.operation === "settings-state")
         return this.#withWebRead((owner) => owner.managedSettingsState(params));
       if (params.operation === "queue-list")

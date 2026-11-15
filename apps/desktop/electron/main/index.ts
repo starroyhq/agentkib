@@ -322,6 +322,7 @@ async function startApplication(): Promise<void> {
     enableClaudeScheduler: process.platform === "darwin",
     verifiedAntigravityManaged: true,
     verifiedDshFollower: process.platform === "darwin",
+    verifiedDevinManaged: true,
     accountSessions: () => {
       if (!accountService) return Promise.reject(new Error("account_unavailable"));
       return accountService.liveSessions();

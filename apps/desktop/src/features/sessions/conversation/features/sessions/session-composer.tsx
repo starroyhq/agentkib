@@ -76,6 +76,7 @@ import {
 import { useSessionPanels } from "./session-panels";
 import { PermissionModeNotice } from "./permission-mode-notice";
 import { ManagedTurnNotice } from "./managed-turn-notice";
+import { DevinTurnNotice } from "./devin-turn-notice";
 import { claudeConnectionCopy } from "./claude-connection-copy";
 import { DshQueue } from "./dsh-queue";
 
@@ -120,6 +121,7 @@ export function SessionComposer({
     busy,
     online,
     notice,
+    noticeReason,
   } = session;
   const isClaude = current?.agent === "claude-code";
   const isCodex = current?.agent === "codex";
@@ -653,6 +655,21 @@ export function SessionComposer({
       )}
       {isClaude && <PermissionModeNotice permission={live?.permission} locale={locale} compact />}
       {(isClaude || isCodex) && <ManagedTurnNotice live={live} locale={locale} />}
+      {current?.agent === "devin" && (
+        <DevinTurnNotice
+          // A refused send names its reason; a turn that ended without running leaves it on live.
+          reason={
+            notice === "notDispatched" && noticeReason
+              ? noticeReason
+              : live?.status === "idle"
+                ? live.reason
+                : undefined
+          }
+          locale={locale}
+          client={client}
+          sessionId={current.id}
+        />
+      )}
       {current?.agent === "deepseek-harness" && <DshQueue key={selected} />}
       <ComposerFrame
         onSubmit={(event) => {

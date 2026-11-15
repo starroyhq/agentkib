@@ -398,7 +398,8 @@ describe("orchestration service", () => {
       questions: [],
     });
     await orchestration.laneWaiting("dsh-new", "dsh-turn-2", "awaiting-approval");
-    expect(delivered.at(-1)).toContain("The user decides in AgentKib");
+    // Its own paragraph under the line that says which Worker waits.
+    expect(delivered.at(-1)).toMatch(/approval\n\nThe user decides in AgentKib/);
     expect(
       parse(
         await orchestration.call(LEAD, "worker_approve", {
@@ -749,8 +750,9 @@ describe("orchestration service", () => {
         approval("net", { availableDecisions: [], requiresExtendedApproval: true }),
       ]);
       await orchestration.laneWaiting(session, "t5", "awaiting-approval");
-      expect(delivered[0]).toContain("You may decide this yourself (worker_approve)");
-      expect(delivered[0]).toContain('"id":"7"');
+      expect(delivered[0]).toMatch(/approval\n\nYou may decide this yourself \(worker_approve\)/);
+      // The approval itself, fenced so that the conversation shows it as it is.
+      expect(delivered[0]).toMatch(/counts:\n\n```json\n\[\{.*"id":"7".*\}\]\n```$/);
       expect(delivered[0]).toContain("npm install --no-audit");
       expect(delivered[0]).not.toContain('"id":"files"');
       const read = parse(await orchestration.call(LEAD, "worker_read", { worker: "api" }));

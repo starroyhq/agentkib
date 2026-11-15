@@ -555,20 +555,25 @@ export class OrchestrationService {
     const pending = live ? waitingItems(live, owner.lead.scope) : [];
     const mine = pending.filter((item) => item.youMayDecide);
     const what = status === "waiting-input" ? "an answer to its question" : "approval";
+    // Like `workerReport`, read as Markdown in the lead's conversation: a blank line keeps each
+    // part a paragraph of its own, and the fence keeps a command or a path as it was written.
     const body = mine.length
       ? [
           `You may decide ${mine.length === 1 ? "this" : "these"} yourself (${mine[0]!.kind === "question" ? "worker_answer" : "worker_approve"}), or leave ${mine.length === 1 ? "it" : "them"} to the user; the first answer counts:`,
+          "",
+          "```json",
           bounded(
             JSON.stringify(mine, (key, value) => (key === "youMayDecide" ? undefined : value)),
             MAX_REPLY,
           ),
+          "```",
         ].join("\n")
       : "The user decides in AgentKib; you hear when the turn ends.";
     this.#report(
       owner.lead.sessionId,
       owner.lane.id,
       key,
-      `${workerReport(owner.lane, `waiting for the user's ${what}`)}\n${body}`,
+      `${workerReport(owner.lane, `waiting for the user's ${what}`)}\n\n${body}`,
       null,
     );
   }

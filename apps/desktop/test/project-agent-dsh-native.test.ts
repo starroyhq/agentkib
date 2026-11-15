@@ -13,7 +13,12 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { afterEach, describe, expect, it } from "vitest";
 import { DshBridge } from "../../../packages/backend/src/dsh-bridge";
-import { createDshWorker, DshLaneWatch } from "../../../packages/backend/src/dsh-lanes";
+import {
+  createDshWorker,
+  DshLaneWatch,
+  DshLeadWatch,
+} from "../../../packages/backend/src/dsh-lanes";
+import { haltOwnTurns } from "../../../packages/backend/src/lead-turn-origin";
 import { DshManagedRuntime } from "../../../packages/backend/src/dsh-managed-runtime";
 import { MessageLeadReports } from "../../../packages/backend/src/message-lead-reports";
 import {
@@ -191,6 +196,7 @@ async function sandbox(port: number) {
   };
 
   let watch: DshLaneWatch | undefined;
+  let leads: DshLeadWatch | undefined;
   let orchestration!: OrchestrationService;
   let bridge!: DshBridge;
   const runtime = new DshManagedRuntime({
@@ -214,7 +220,10 @@ async function sandbox(port: number) {
     workspacePath: (id) => (id === "w1" ? workspace : null),
     sessionsChanged: () => undefined,
     publish: (id, type, _payload, live) => {
-      if (type === "state") watch?.observe(id, live);
+      if (type === "state") {
+        watch?.observe(id, live);
+        leads?.observe(id, live);
+      }
     },
     lead: {
       sessions: () =>
@@ -283,6 +292,27 @@ async function sandbox(port: number) {
     waiting: (...args) => orchestration.laneWaiting(...args),
   });
   cleanups.push(() => watch?.close());
+  // A lead's own turns count; past the limit the round stops (`index.ts`, `#leadOwnTurn`).
+  leads = new DshLeadWatch({
+    isLead: (id) => !!orchestration.status(id),
+    turnOrigin: (id, turnId) => bridge.turnOrigin(id, turnId),
+    userSpoke: (id) => orchestration.userSpoke(id),
+    ownTurn: async (id, turnId) => {
+      const status = orchestration.status(id);
+      if (!status || orchestration.leadSelfTurn(id)) return;
+      await haltOwnTurns(
+        {
+          live: async (session) => bridge.live(session, true),
+          control: (value) => bridge.request(value),
+        },
+        id,
+        turnId,
+        status.deviceId,
+        "deepseek-harness",
+      );
+    },
+  });
+  cleanups.push(() => leads?.close());
   const history = async (sessionId: string) =>
     (await bridge.events(bridge.nativeId(sessionId)!, null, 50)).events as unknown as Json[];
   return { bridge, runtime, orchestration, reports, presetSteps, history };
@@ -439,5 +469,50 @@ describe.skipIf(
           JSON.stringify((body.messages as Json[]).at(-1)).includes("BRIEF-2"),
       ),
     ).toBe(true);
+  }, 300_000);
+  it("counts a DSH lead's goal rounds, and at the limit stops the round; DSH pauses the goal", async () => {
+    const model = await provider();
+    const { bridge, orchestration } = await sandbox(model.port);
+    const created = await bridge.create({
+      requestId: randomUUID(),
+      deviceId: DEVICE,
+      workspaceId: "w1",
+    });
+    expect(created).toMatchObject({ accepted: true });
+    const lead = created.sessionId as string;
+    await until(() => bridge.leadCapable(lead), 30_000);
+    orchestration.designate({
+      sessionId: lead,
+      deviceId: DEVICE,
+      workspaceId: "w1",
+      scope: { maxAutoTurns: 2 },
+    });
+    bridge.leadChanged();
+    // The person sets a goal; DSH goes on with it by itself, round after round.
+    await until(() => bridge.live(lead, true).queueEditEnabled === true, 30_000);
+    const live = bridge.live(lead, true);
+    expect(
+      await bridge.request({
+        operation: "goal-set",
+        sessionId: lead,
+        requestId: randomUUID(),
+        deviceId: DEVICE,
+        runtimeBootId: live.runtimeBootId,
+        expectedRevision: live.revision,
+        experimentalEnabled: true,
+        goal: { objective: "Keep checking the project." },
+      }),
+    ).toMatchObject({ accepted: true });
+    // Two rounds count; the next pauses delegation and is stopped, and DSH pauses its goal.
+    await until(() => orchestration.status(lead)?.paused, 150_000);
+    expect(orchestration.status(lead)).toMatchObject({ reason: "auto-turn-limit", autoTurns: 2 });
+    await until(async () => {
+      const state = (await bridge.request({ operation: "goal", sessionId: lead })) as Json;
+      return state.goal?.status === "paused";
+    }, 60_000);
+    await until(() => bridge.live(lead, true).status === "idle", 60_000);
+    const asked = model.requests.length;
+    await new Promise((resolve) => setTimeout(resolve, 3000));
+    expect(model.requests.length).toBe(asked);
   }, 300_000);
 });

@@ -60,16 +60,24 @@ const summary = (fields: Partial<ConversationSessionSummary> = {}) =>
     ...fields,
   }) as ConversationSessionSummary;
 
-function Row({ session, local = true }: { session: ConversationSessionSummary; local?: boolean }) {
+function Row({
+  session,
+  sessions = [session],
+  local = true,
+}: {
+  session: ConversationSessionSummary;
+  sessions?: ConversationSessionSummary[];
+  local?: boolean;
+}) {
   return (
     <AppDialogProvider>
       <div className="session-directory-row group/session">
         <button type="button" onClick={() => select(session.id)}>
-          <SessionDirectoryEntry session={session} sessions={[session]} hideIndicators />
+          <SessionDirectoryEntry session={session} sessions={sessions} hideIndicators />
         </button>
         <SessionDirectoryTrailing
           session={session}
-          sessions={[session]}
+          sessions={sessions}
           local={local}
           onChanged={changed}
           onDeleted={deleted}
@@ -195,6 +203,33 @@ describe("the desktop directory's shared trailing status slot", () => {
     expect(menuButton).toHaveFocus();
     expect(changed).not.toHaveBeenCalled();
     expect(deleted).not.toHaveBeenCalled();
+  });
+
+  it("shows whom a session works for next to its title, whatever the status slot shows", () => {
+    const lead = summary({
+      id: "lead",
+      title: "Plan the release",
+      orchestration: { role: "lead", workers: 1, paused: false },
+    });
+    const worker = summary({
+      readState: unread,
+      orchestration: { role: "worker", leadId: "lead", name: "api" },
+    });
+    const view = render(<Row session={worker} sessions={[lead, worker]} />);
+    const mark = view.container.querySelector<HTMLElement>('[data-orchestration="worker"]')!;
+    // Not in the part of the row kept for screen readers only: it is there to be seen.
+    expect(mark.closest(".sr-only")).toBeNull();
+    expect(mark).toHaveAttribute(
+      "title",
+      tr("sessions.workerOf", { name: "api", lead: "Plan the release" }),
+    );
+    expect(visualIndicator(view.container).querySelector("[data-unread]")).not.toBeNull();
+    expect(visualIndicator(view.container).querySelector("[data-orchestration]")).toBeNull();
+
+    view.rerender(<Row session={lead} sessions={[lead, worker]} />);
+    const leadMark = view.container.querySelector<HTMLElement>('[data-orchestration="lead"]')!;
+    expect(leadMark.closest(".sr-only")).toBeNull();
+    expect(leadMark).toHaveAttribute("title", tr("sessions.projectAgent"));
   });
 
   it("keeps the workspace entry's default indicators unchanged", () => {

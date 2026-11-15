@@ -40,6 +40,24 @@ export function SessionDirectoryEntry({
           {displaySessionTitle(session.title, tr)}
         </strong>
       </span>
+      {/* Whom a session works for is not a state. It stays next to the title, also where the
+          directory shows a single state at the end of the row. */}
+      {session.orchestration && (
+        <span
+          role="img"
+          aria-label={delegation}
+          title={delegation}
+          data-orchestration={session.orchestration.role}
+          className="inline-flex shrink-0 text-muted-foreground"
+        >
+          {/* The size class keeps the row button from enlarging the icon to its default. */}
+          {session.orchestration.role === "lead" ? (
+            <Network size={12} className="size-3" aria-hidden="true" />
+          ) : (
+            <CornerDownRight size={12} className="size-3" aria-hidden="true" />
+          )}
+        </span>
+      )}
       <span className={hideIndicators ? "sr-only" : "contents"}>
         {hideIndicators && session.readState?.status === "unread" && !status?.unread && (
           <span>
@@ -67,21 +85,6 @@ export function SessionDirectoryEntry({
             className="inline-flex shrink-0 text-muted-foreground"
           >
             <Bot size={12} aria-hidden="true" />
-          </span>
-        )}
-        {session.orchestration && (
-          <span
-            role="img"
-            aria-label={delegation}
-            title={delegation}
-            data-orchestration={session.orchestration.role}
-            className="inline-flex shrink-0 text-muted-foreground"
-          >
-            {session.orchestration.role === "lead" ? (
-              <Network size={12} aria-hidden="true" />
-            ) : (
-              <CornerDownRight size={12} aria-hidden="true" />
-            )}
           </span>
         )}
         {session.worktree && (

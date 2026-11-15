@@ -710,7 +710,8 @@ describe("SessionDirectory", () => {
     expect(hub.select).not.toHaveBeenCalled();
   });
 
-  it("marks a Project Agent and names it on each of its Workers", () => {
+  it("marks a Project Agent and names it on each of its Workers", async () => {
+    const user = userEvent.setup();
     hub.sessions = [
       {
         ...first,
@@ -721,12 +722,15 @@ describe("SessionDirectory", () => {
       { ...second, orchestration: { role: "worker", leadId: first.id, name: "api" } },
     ];
     render(<SessionDirectory />);
-    expect(screen.getByRole("img", { name: tr("sessions.projectAgent") })).toBeInTheDocument();
+    const workerOf = tr("sessions.workerOf", { name: "api", lead: "Release plan" });
+    // Marks to be seen, not only read out: outside the row's screen-reader-only details.
     expect(
-      screen.getByRole("img", {
-        name: tr("sessions.workerOf", { name: "api", lead: "Release plan" }),
-      }),
-    ).toBeInTheDocument();
+      screen.getByRole("img", { name: tr("sessions.projectAgent") }).closest(".sr-only"),
+    ).toBeNull();
+    expect(screen.getByRole("img", { name: workerOf }).closest(".sr-only")).toBeNull();
+    // The Worker's details card says whom it works for.
+    await focusByKeyboard(user, screen.getByRole("button", { name: /Inspect token layout/ }));
+    await waitFor(() => expect(screen.getByRole("tooltip")).toHaveTextContent(workerOf));
     cleanup();
     hub.sessions = [
       { ...first, orchestration: { role: "lead", workers: 1, paused: true } },

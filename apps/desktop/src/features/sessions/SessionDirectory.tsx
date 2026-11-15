@@ -16,6 +16,7 @@ import { displaySessionTitle } from "@/features/workspace/session-title";
 import { useSessionHub } from "./SessionHubContext";
 import { useSessionViewStore } from "./session-view-store";
 import {
+  orchestrationLabel,
   sessionAgentNames,
   sessionRecordLabel,
   sessionSourceLabel,
@@ -283,7 +284,13 @@ export function SessionDirectory({
                       >
                         <SessionDirectoryHoverCard
                           title={title}
-                          details={[description.split("\n").slice(1).join("\n"), status?.label]
+                          details={[
+                            description.split("\n").slice(1).join("\n"),
+                            session.orchestration
+                              ? orchestrationLabel(session.orchestration, hub.sessions, tr)
+                              : "",
+                            status?.label,
+                          ]
                             .filter(Boolean)
                             .join("\n")}
                           disabled={!!draggingId}

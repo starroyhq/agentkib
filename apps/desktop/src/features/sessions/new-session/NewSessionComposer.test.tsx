@@ -18,6 +18,7 @@ const doubles = vi.hoisted(() => ({
     managedOptions: vi.fn(),
     managedAction: vi.fn(),
     receipt: vi.fn(),
+    devinTerminal: vi.fn(),
   },
   controlChanged: undefined as (() => void) | undefined,
 }));
@@ -466,6 +467,25 @@ describe("NewSessionComposer", () => {
     expect(doubles.client.managedAction.mock.calls[0]![1]).toMatchObject({
       agent: "deepseek-harness",
       agentPreset: "ptc",
+    });
+  });
+
+  it("offers Devin CLI's own login in a terminal when Devin is not logged in", async () => {
+    doubles.client.managedAction.mockRejectedValue(
+      new ApiError(409, "devin-login-required", "not-dispatched"),
+    );
+    doubles.client.devinTerminal.mockResolvedValue({ terminal: "Terminal.app" });
+    renderComposer({ initial: { agent: "devin" } });
+    await write("Fix the build");
+    fireEvent.click(send());
+    fireEvent.click(
+      await screen.findByRole("button", { name: "Log in to Devin CLI in a terminal" }),
+    );
+    expect(await screen.findByText(/Opened in Terminal\.app/)).toBeVisible();
+    // The same client that read this device's access asks; a fresh one would refuse to send.
+    expect(doubles.client.devinTerminal).toHaveBeenCalledWith({
+      action: "login",
+      workspaceId: expect.any(String),
     });
   });
 

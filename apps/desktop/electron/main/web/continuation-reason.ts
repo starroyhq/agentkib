@@ -50,6 +50,15 @@ export function continuationPreflightReason(
       "goal-action-unavailable",
       "goal-rounds-exhausted",
       "goal-token-budget-unavailable",
+      // Devin CLI refused before running a turn; clients explain each one, and the desktop offers
+      // to open Devin's own login or workspace trust in a terminal.
+      "devin-login-required",
+      "devin-workspace-untrusted",
+      "devin-cli-unavailable",
+      "devin-run-failed",
+      "devin-session-not-found",
+      "session-open-elsewhere",
+      "attachments-unsupported",
     ]).has(reason)
     ? reason
     : fallback;

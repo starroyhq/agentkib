@@ -32,7 +32,6 @@ import {
   newSessionPresets,
 } from "@agentkib/session-ui";
 import { Button } from "@/components/ui/button";
-import { createDesktopConversationClient } from "@/core/conversation-bridge";
 import { Disclosure, DisclosureSummary } from "@/components/ui/disclosure";
 import {
   DropdownMenu,
@@ -107,7 +106,6 @@ export function NewSessionComposer(props: NewSessionComposerProps) {
     recentContinuationWorkspaces(workspaces as WorkspaceSummary[], 1)[0];
   const [text, setText] = useState("");
   const [files, setFiles] = useState<File[]>([]);
-  const [terminalClient] = useState(createDesktopConversationClient);
   const [terminalNote, setTerminalNote] = useState<{ detail: string; text: string }>();
   const [permission, setPermission] = useState<string>();
   const [modelDraft, setModelDraft] = useState<{
@@ -273,7 +271,7 @@ export function NewSessionComposer(props: NewSessionComposerProps) {
     if (!terminalAction || !terminalDetail || !workspace) return;
     const words = devinTerminalCopy(locale);
     try {
-      const result = await terminalClient.devinTerminal({
+      const result = await session.devinTerminal({
         action: terminalAction,
         workspaceId: workspace.id,
       });

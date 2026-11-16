@@ -9,6 +9,8 @@ export const DEVIN_TURN_REASONS: readonly string[] = [
   "devin-workspace-untrusted",
   "devin-cli-unavailable",
   "devin-run-failed",
+  // `devin -p` was ended by a signal without anyone stopping the turn.
+  "devin-run-stopped",
   "devin-session-not-found",
   "session-open-elsewhere",
   "attachments-unsupported",

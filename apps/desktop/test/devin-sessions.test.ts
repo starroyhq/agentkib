@@ -241,6 +241,20 @@ describe("Devin sessions", () => {
       expect(existsSync(file + suffix)).toBe(false);
   });
 
+  it("titles a session Devin has not titled yet with what the user first typed", () => {
+    const { project, file, readers, id } = fixture();
+    const update = new DatabaseSync(file);
+    update.prepare("UPDATE sessions SET title=? WHERE id=?").run("  ", id);
+    update.prepare("UPDATE sessions SET title=NULL WHERE id='far-away'").run();
+    update.close();
+    // The system prompt and the context Devin injects are not something the user typed.
+    expect(readers.list(project).sessions[0]!.title).toBe("Fix the bug");
+    // A session without any typed message keeps no title.
+    expect(
+      readers.list(null).sessions.find((session) => session.native_ref === "far-away")!.title,
+    ).toBeNull();
+  });
+
   it("follows compactions into one timeline with answers and tool details", () => {
     const { project, readers, id } = fixture();
     const page = readers.events(id, project, null, 100);

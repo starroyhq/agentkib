@@ -190,6 +190,24 @@ function sessionRow(row: Row): Session | null {
     head: typeof row.head === "number" && Number.isSafeInteger(row.head) ? row.head : null,
   };
 }
+/**
+ * What the user first typed, as the title of a session Devin has not titled: Devin asks a model
+ * for the title, so a session can be without one until that answer comes, or after it failed.
+ */
+function firstInput(source: Source, id: string): string | null {
+  if (!source.history) return null;
+  const row = source.db
+    .prepare(
+      `SELECT substr(json_extract(chat_message,'$.content'),1,1024) AS text FROM message_nodes
+       WHERE session_id=? AND json_valid(chat_message)
+         AND json_extract(chat_message,'$.role')='user'
+         AND json_extract(chat_message,'$.metadata.is_user_input')=1
+         AND json_type(chat_message,'$.content')='text'
+       ORDER BY node_id LIMIT 1`,
+    )
+    .get(id) as { text?: unknown } | undefined;
+  return sessionTitle(row?.text);
+}
 /** The session as it is now, still in this workspace and not one Devin hides. */
 function ownedSession(source: Source, ref: string, workspace: string): Session {
   if (!SESSION_ID.test(ref)) throw new Error("Invalid Devin session reference");
@@ -675,7 +693,7 @@ export class DevinSessions {
         sessions.push({
           native_ref: session.id,
           agent: "devin",
-          title: sessionTitle(session.title),
+          title: sessionTitle(session.title) ?? firstInput(source, session.id),
           created_at: session.created,
           updated_at: session.updated,
           message_count: null,

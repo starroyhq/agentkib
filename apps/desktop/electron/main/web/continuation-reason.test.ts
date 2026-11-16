@@ -8,6 +8,7 @@ describe("continuationPreflightReason", () => {
       "devin-workspace-untrusted",
       "devin-cli-unavailable",
       "devin-run-failed",
+      "devin-run-stopped",
       "devin-session-not-found",
       "session-open-elsewhere",
       "attachments-unsupported",

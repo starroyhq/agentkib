@@ -79,7 +79,11 @@ const CATCH_UP_MS = 20_000;
 /** A turn this recent is left to the live observers, which report it with Codex's own measure. */
 const CATCH_UP_GRACE_MS = 15_000;
 /** Pauses that end when the person sends the lead a message (`userSpoke`). */
-const RESUMED_BY_MESSAGE = new Set(["auto-turn-limit", "restart-confirmation-required"]);
+const RESUMED_BY_MESSAGE = new Set([
+  "auto-turn-limit",
+  "restart-confirmation-required",
+  "usage-limit",
+]);
 
 /** "42s", "3m 12s", "1h 05m". */
 function elapsed(milliseconds: number): string {
@@ -333,6 +337,11 @@ export class OrchestrationService {
     ) => boolean | Promise<boolean> = () => false,
     /** Reports queued for a lead's next turn (`ClaudeManagedReadOwner.queuedReports`). */
     readonly queuedReports: (leadSessionId: string) => number = () => 0,
+    /**
+     * Whether a lead that hears reports as messages waits for its usage limit to reset
+     * (`WebReadRequests.usageLimited`); a managed Claude Code lead's queue holds them itself.
+     */
+    readonly leadLimited: (leadSessionId: string) => boolean = () => false,
   ) {
     this.registry = new LeadRegistry(dataDir, bootId);
     if (lanes.endedTurns) {
@@ -537,6 +546,21 @@ export class OrchestrationService {
     });
     if (held.length) this.#deliver(sessionId, held.join("\n\n"));
     return this.registry.get(sessionId)!;
+  }
+
+  /** The lead's usage limit is over (AgentKib's continue went through): held reports go on. */
+  limitEnded(sessionId: string): void {
+    if (!this.registry.get(sessionId)) return;
+    const held = this.registry.update(sessionId, (lead) => {
+      if (!lead.paused || lead.reason !== "usage-limit") return [];
+      lead.paused = false;
+      lead.reason = null;
+      addLeadRecord(lead, "resume", null, null, "usage-limit-reset");
+      const pending = lead.pendingReports;
+      lead.pendingReports = [];
+      return pending;
+    });
+    if (held.length) this.#deliver(sessionId, held.join("\n\n"));
   }
 
   /**
@@ -760,6 +784,13 @@ export class OrchestrationService {
       return "send";
     });
     if (verdict !== "send") return hold(verdict === "limit" ? "auto-turn-limit" : null);
+    // Sent now, it would meet the limit again and take the place of the continue armed for it.
+    if (this.leadLimited(leadId)) {
+      this.registry.update(leadId, (current) => {
+        current.autoTurns = Math.max(0, current.autoTurns - 1);
+      });
+      return hold("usage-limit");
+    }
     const giveBack = () =>
       this.registry.update(leadId, (current) => {
         current.autoTurns = Math.max(0, current.autoTurns - 1);

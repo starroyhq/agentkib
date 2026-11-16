@@ -14,6 +14,7 @@ import {
 import { jsonTimestamp } from "./session-history";
 import { codexErrorText, codexTurnErrorEvent } from "./codex-turn-error";
 import { codexTurnEndEvent } from "./codex-turn-end";
+import { isAutoContinueText } from "./usage-limit";
 import {
   claudeCommandInvocation,
   claudeCommandOutput,
@@ -221,6 +222,9 @@ function message(
   id = `event-${offset}`,
   images: ConversationImage[] = [],
 ): void {
+  // AgentKib's continue after a usage limit is an instruction to the model, not the person's
+  // message; Claude Code does not show its own either.
+  if (kind === "user-message" && isAutoContinueText(content)) return;
   const event: ConversationEvent = {
     id,
     kind,

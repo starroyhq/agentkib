@@ -1440,6 +1440,28 @@ describe("DeepSeek Harness plugin projections", () => {
     expect(dshBridgePluginCompatibility("latest")).toBe("invalid");
     expect(dshBridgePluginCompatibility(undefined)).toBe("invalid");
     expect(historyRecord({ seq: 1, time: 1, type: "system/message", data: {} })).toBeNull();
+    // A failed turn keeps the provider's error code and a bounded message; others add nothing.
+    expect(
+      historyRecord({
+        seq: 2,
+        time: 1,
+        type: "turn/end",
+        data: {
+          turn: 3,
+          reason: { kind: "error", error: { code: "QUOTA", message: "x".repeat(900) } },
+        },
+      }),
+    ).toMatchObject({
+      kind: "turn-end",
+      reason: "error",
+      failure: { code: "QUOTA", message: "x".repeat(500) },
+    });
+    expect(
+      historyRecord({ seq: 3, time: 1, type: "turn/end", data: { turn: 3, reason: { kind: "error", error: {} } } }),
+    ).not.toHaveProperty("failure");
+    expect(
+      historyRecord({ seq: 4, time: 1, type: "turn/end", data: { turn: 3, reason: { kind: "completed" } } }),
+    ).not.toHaveProperty("failure");
     expect(
       historyRecord({
         seq: 2,
@@ -3064,6 +3086,42 @@ describe("DeepSeek Harness sessions as a Project Agent's workers", () => {
     ]);
     expect(Date.parse(turns[0]!.endedAt!)).toBeGreaterThanOrEqual(Date.parse(turns[0]!.startedAt!));
     await expect(f.bridge.endedTurns("ak-nope")).rejects.toThrow("session-unavailable");
+  });
+
+  it("shows a used-up provider quota as a usage limit and clears it with the next turn", async () => {
+    const f = await fixture();
+    expect(f.bridge.live("ak-session-a", true).usageLimit).toBeNull();
+    expect(await f.control("send", { text: "go" })).toMatchObject({ accepted: true });
+    const agent = f.dsh.sessions.get("session-a")!.agent;
+    f.dsh.append("session-a", "turn/end", {
+      turn: 1,
+      reason: {
+        kind: "error",
+        error: { code: "ACCOUNT_QUOTA", message: "Request quota exhausted." },
+      },
+    });
+    agent.status = "idle";
+    f.dsh.emit("agent/status", { agent, status: "idle" });
+    await until(() => f.bridge.live("ak-session-a", true).usageLimit);
+    expect(f.bridge.live("ak-session-a", true)).toMatchObject({
+      status: "idle",
+      usageLimit: {
+        agent: "deepseek-harness",
+        kind: "quota",
+        resetsAt: null,
+        continueAt: null,
+        manual: "reset-unknown",
+        message: "Request quota exhausted.",
+      },
+    });
+    // A later turn clears it, and a turn that ends normally does not bring it back.
+    f.dsh.append("session-a", "turn/start", { turn: 2 });
+    agent.status = "running";
+    f.dsh.emit("agent/status", { agent, status: "running" });
+    await until(() => f.bridge.live("ak-session-a", true).usageLimit === null);
+    f.dsh.finishTurn("session-a", "done again");
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    expect(f.bridge.live("ak-session-a", true).usageLimit).toBeNull();
   });
 
   it("neither lists nor reads worker turns by starting DSH", async () => {

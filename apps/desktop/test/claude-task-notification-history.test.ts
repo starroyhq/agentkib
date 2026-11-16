@@ -133,3 +133,20 @@ describe("background task notifications in Claude Code history", () => {
     ]);
   });
 });
+
+describe("AgentKib's continue after a usage limit in Claude Code history", () => {
+  it("is left out: the model's instruction, not the person's message", async () => {
+    const { AUTO_CONTINUE_TEXT } = await import("../../../packages/backend/src/usage-limit");
+    const events = read([
+      user("Refactor the parser."),
+      assistant("You've hit your 5-hour limit · resets 3pm"),
+      user(AUTO_CONTINUE_TEXT["claude-code"]),
+      assistant("Continuing with the parser."),
+    ]);
+    expect(events.map(({ kind, content }) => ({ kind, content }))).toEqual([
+      { kind: "user-message", content: "Refactor the parser." },
+      { kind: "agent-message", content: "You've hit your 5-hour limit · resets 3pm" },
+      { kind: "agent-message", content: "Continuing with the parser." },
+    ]);
+  });
+});

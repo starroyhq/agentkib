@@ -187,6 +187,12 @@ D10、D11 的同 Agent 续接以“能否继续、在哪里运行”为准。用
 | Claude Code 后台任务运行中（多项；会话列表） | {n} 个后台任务运行中 | {n} 個背景工作執行中 | バックグラウンドタスク {n} 件を実行中 | {n} background tasks running（一项时为 1 background task running） |
 | 后台任务结束后 Claude Code 自己开始的一轮 | 后台任务有了结果，Claude Code 正在继续 | 背景工作有了結果，Claude Code 正在繼續 | バックグラウンドタスクの結果を受けて、Claude Code が続けています | A background task finished. Claude Code is continuing. |
 | Claude Code 连续自动轮次超过上限 | Claude Code 连续自动运行了太多轮，AgentKib 已停止它和后台任务。发送消息即可继续。 | Claude Code 連續自動執行了太多輪，AgentKib 已停止它和背景工作。傳送訊息即可繼續。 | Claude Code が自動で何度も続けて実行したため、AgentKib がバックグラウンドタスクごと停止しました。メッセージを送ると続けられます。 | Claude Code kept starting turns on its own, so AgentKib stopped it and its background tasks. Send a message to continue. |
+| 账户达到使用上限（输入框上方，随上限名称和重置时间） | 你已达到使用上限 / 已达到 5 小时使用上限，15:30 重置，重置后自动继续。 | 你已達到使用上限 / 已達到 5 小時使用上限，15:30 重置，重置後自動繼續。 | 利用制限に達しました / 5 時間の利用制限に達しました。15:30にリセットされます。リセット後に自動で続行します。 | You've hit your usage limit / You've hit your 5-hour limit · resets 3:30 PM · continues automatically after the reset. |
+| 关掉重置后的自动继续 | 不自动继续 | 不自動繼續 | 自動で続行しない | Don't continue automatically |
+| 这一次重置后自动继续（提示上的按钮） | 重置后自动继续 | 重置後自動繼續 | リセット後に自動で続行 | Continue automatically after the reset |
+| 设置：达到使用上限后的默认做法 | 达到使用上限时，重置后自动继续 | 達到使用上限時，重置後自動繼續 | 利用制限に達したら、リセット後に自動で続行 | Continue automatically when a usage limit resets |
+| DSH 额度用尽（随 DSH） | 当前请求的额度已用尽。 | 目前請求的額度已用盡。 | リクエストのクォータを使い切りました。 | Request quota exhausted. |
+| 项目 Agent 等待使用上限重置（委派暂停原因） | 项目 Agent 达到使用上限，汇报会在它重置后继续送达。 | 專案 Agent 達到使用上限，回報會在重置後繼續送達。 | プロジェクト Agent が利用制限に達しました。報告はリセット後に届けられます。 | The Project Agent hit its usage limit. Reports go on once it resets. |
 | Codex 执行策略（随 Codex 桌面端，按策略 ID 本地化） | 请求批准 / 帮我批准 / 完全访问权限 | 要求核准 / 代我核准 / 完整存取權 | 承認を求める / 代わりに承認 / フルアクセス | Ask for approval / Approve for me / Full access |
 | DSH 权限预设（随 DSH，按预设 ID 本地化） | 仅可查看 / 工作区内修改 / 完全权限 / 自动审查 | 僅可檢視 / 工作區內修改 / 完整權限 / 自動審查 | 読み取り専用 / ワークスペース書き込み / フルアクセス / 自動認可レビュー | Read Only / Workspace Write / Full access / Auto review |
 | 后台任务开关（本机 Claude Code 会话的“更多操作”） | 允许 Claude Code 在后台运行任务 | 允許 Claude Code 在背景執行工作 | Claude Code にバックグラウンドでの実行を許可 | Let Claude Code run tasks in the background |

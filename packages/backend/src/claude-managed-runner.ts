@@ -32,6 +32,7 @@ import {
 import type { ClaudeCommandEntry } from "@agentkib/runtime-protocol";
 import { ClaudeSubagentState, type ClaudeSubagentSnapshot } from "./claude-subagent-state";
 import type { ConversationEvent } from "./session-events";
+import { claudeUsageLimitHit, type UsageLimitHit } from "./usage-limit";
 
 const MAX_TEXT = 4 * 1024 * 1024;
 const MAX_LINE = 6 * MAX_TEXT + 1024 * 1024;
@@ -183,6 +184,15 @@ export class ClaudeUndispatchedError extends Error {
 }
 const object = (value: unknown): value is JsonObject =>
   value !== null && typeof value === "object" && !Array.isArray(value);
+/** The text blocks of an assistant message, joined. */
+const claudeText = (content: unknown): string =>
+  Array.isArray(content)
+    ? content
+        .filter((block) => object(block) && block.type === "text" && typeof block.text === "string")
+        .map((block) => (block as JsonObject).text as string)
+        .join("\n")
+        .trim()
+    : "";
 /** The CLI's latest `system/api_retry` in the running turn, for display only. */
 export type ClaudeApiRetry = {
   attempt: number;
@@ -284,6 +294,12 @@ export class ClaudeRunnerState {
   authFailed = false;
   // The turn ended on an authentication failure: the next worker must read the login afresh.
   retireRequested = false;
+  // The latest `rate_limit_event`: the account's limits, kept across turns.
+  rateLimitInfo: Record<string, unknown> | null = null;
+  // The running turn's main-thread assistant frame reported `rate_limit`: the account met a limit.
+  limitHit: UsageLimitHit | null = null;
+  // The last turn ended on a usage limit; the host continues the session after the reset.
+  usageLimit: UsageLimitHit | null = null;
   // Control requests refused in the current turn; a stream that keeps sending them is broken.
   unknownRequests = 0;
   // Whether this worker may run Bash commands in the background: the host allows it, on a
@@ -360,6 +376,9 @@ export class ClaudeRunnerState {
       subagentTasks: new Map(this.subagentTasks),
       terminalResult: this.terminalResult ? structuredClone(this.terminalResult) : null,
       apiRetry: this.apiRetry ? { ...this.apiRetry } : null,
+      rateLimitInfo: this.rateLimitInfo ? structuredClone(this.rateLimitInfo) : null,
+      limitHit: this.limitHit ? { ...this.limitHit } : null,
+      usageLimit: this.usageLimit ? { ...this.usageLimit } : null,
       unknownRequests: this.unknownRequests,
       turnOrigin: this.turnOrigin,
       hostTurnPhase: this.hostTurnPhase,
@@ -388,6 +407,7 @@ export class ClaudeRunnerState {
       modelWindows: this.modelWindows,
       initialized: this.initialized,
       initId: this.initId,
+      rateLimitInfo: this.rateLimitInfo,
       pendingUser: null,
       revision: Math.max(this.revision, checkpoint.revision) + 1,
     };
@@ -478,6 +498,8 @@ export class ClaudeRunnerState {
     this.apiRetry = null;
     this.authFailed = false;
     this.retireRequested = false;
+    this.limitHit = null;
+    this.usageLimit = null;
     this.bashToolIds.clear();
     this.foregroundTasks.clear();
     this.subagentBashToolIds.clear();
@@ -875,6 +897,13 @@ export class ClaudeRunnerState {
         // The CLI's own message for a rejected login or key (2.1.311: `Not logged in · Please
         // run /login`, `Invalid API key · Fix external API key`), followed by an error result.
         if (frame.error === "authentication_failed") this.authFailed = true;
+        // The CLI's own message for a request the account's limits refused (2.1.323: `You've
+        // hit your 5-hour limit · resets 3pm`), followed by an error result.
+        if (frame.error === "rate_limit")
+          this.limitHit = claudeUsageLimitHit(
+            object(frame.api_error_params) ? frame.api_error_params.rate_limit_info : null,
+            claudeText(frame.message?.content),
+          );
         if (frame.isUnmetered !== true) this.#observeUsage(frame.message);
         const blocks = frame.message?.content;
         const nativeId =
@@ -994,6 +1023,34 @@ export class ClaudeRunnerState {
             this.retireRequested = true;
             break;
           }
+          if (this.limitHit || frame.api_error === "usage_limit_reached") {
+            // The account met a usage limit and the CLI ended the turn itself, so the outcome is
+            // known. The session stays usable; the host continues it after the reset.
+            const text =
+              (typeof frame.result === "string" && frame.result) ||
+              this.limitHit?.message ||
+              detail ||
+              "usage limit reached";
+            // 2.1.263 names the limit only in its `rate_limit_event`, not on the message.
+            const event = claudeUsageLimitHit(
+              this.rateLimitInfo?.status === "rejected" ? this.rateLimitInfo : null,
+              text,
+            );
+            const hit = this.limitHit;
+            this.usageLimit = {
+              resetsAt: hit?.resetsAt ?? event.resetsAt,
+              kind: hit?.kind ?? event.kind,
+              scope: hit?.scope ?? event.scope,
+              message: text,
+            };
+            this.reason = formatTermination("claude-usage-limit", text);
+            this.status = "idle";
+            this.lastOutcome = "failed";
+            this.activity = null;
+            this.apiRetry = null;
+            this.streamText = "";
+            break;
+          }
           throw new ClaudeTurnFailure(
             `Claude turn failed: ${detail || frame.result || "unknown execution error"}`,
           );
@@ -1077,9 +1134,14 @@ export class ClaudeRunnerState {
         if (Array.isArray(blocks)) for (const block of blocks) this.#observeSchedulingResult(block);
         break;
       }
+      case "rate_limit_event":
+        // Account-level, and sent between turns too: kept for the reset time of a later limit.
+        this.rateLimitInfo = object(frame.rate_limit_info)
+          ? structuredClone(frame.rate_limit_info)
+          : this.rateLimitInfo;
+        break;
       case "tool_progress":
       case "tool_use_summary":
-      case "rate_limit_event":
       case "auth_status":
       case "prompt_suggestion":
         break;

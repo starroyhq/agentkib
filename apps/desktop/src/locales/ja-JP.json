@@ -2633,5 +2633,7 @@
   "home.side.toolUpdates_other": "{{count}} 件のツールに更新があります",
   "home.side.undiagnosed": "未診断のワークスペース {{count}} 件",
   "home.side.undiagnosed_one": "未診断のワークスペース {{count}} 件",
-  "home.side.undiagnosed_other": "未診断のワークスペース {{count}} 件"
+  "home.side.undiagnosed_other": "未診断のワークスペース {{count}} 件",
+  "settings.usageLimitAutoContinue": "利用制限に達したら、リセット後に自動で続行",
+  "settings.usageLimitAutoContinueHint": "Claude Code と Codex のセッションが利用制限に達したとき、Claude Code 自身と同じように、AgentKib が制限のリセット後に自動で続行します。オフにすると、通知ごとに選べます。"
 }

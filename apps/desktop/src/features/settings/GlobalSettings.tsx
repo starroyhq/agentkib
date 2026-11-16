@@ -1,4 +1,5 @@
 import { AgentIntegrationsSettings } from "./AgentIntegrationsSettings";
+import { UsageLimitAutoContinueSetting } from "./UsageLimitAutoContinueSetting";
 import { HistorySearchSettings } from "./HistorySearchSettings";
 import { useOptionalAppNavigationContext } from "@/features/app/AppNavigationContext";
 import { useTranslation } from "react-i18next";
@@ -182,6 +183,7 @@ export function GlobalSettings({
             />
           </SettingsRow>
           <SendWhileRunningSetting />
+          <UsageLimitAutoContinueSetting />
           <SettingsRow>
             <SettingsCopy>
               <strong>{tr("settings.onboarding")}</strong>

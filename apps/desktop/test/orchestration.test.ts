@@ -3,7 +3,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { LeadRegistry } from "../../../packages/backend/src/orchestration-registry";
 import {
   LEAD_INSTRUCTIONS,
@@ -1300,5 +1300,50 @@ describe("orchestration service", () => {
         { mcpServers: { lanes: { url: "b" }, goal: { url: "c" } } },
       ),
     ).toEqual({ mcpServers: { goal: { url: "c" }, lanes: { url: "b" } } });
+  });
+});
+
+describe("a lead that waits for its usage limit to reset", () => {
+  it("holds the reports until the limit is over, then sends them", async () => {
+    const delivered: string[] = [];
+    let limited = true;
+    const { lanes } = host({
+      events: async () => [{ kind: "agent-message", content: "Done.", turn_id: "t1" }],
+    });
+    const orchestration = new OrchestrationService(
+      directory(),
+      "boot-1",
+      lanes,
+      (id) => id === LEAD,
+      (_lead, _device, text) => {
+        delivered.push(text);
+        return false;
+      },
+      () => 0,
+      () => limited,
+    );
+    cleanups.push(() => orchestration.close());
+    orchestration.designate({ sessionId: LEAD, deviceId: DEVICE, workspaceId: "w1", scope: {} });
+    const { session } = parse(
+      await orchestration.call(LEAD, "worker_open", { name: "api", workspace: "w1" }),
+    );
+    await orchestration.laneTurnEnded(session, "t1", "completed");
+    // Sent now, it would meet the limit again in place of the continue AgentKib armed.
+    expect(delivered).toEqual([]);
+    expect(orchestration.registry.get(LEAD)).toMatchObject({
+      paused: true,
+      reason: "usage-limit",
+      autoTurns: 0,
+    });
+    expect(orchestration.registry.get(LEAD)!.pendingReports).toHaveLength(1);
+    limited = false;
+    orchestration.limitEnded(LEAD);
+    await vi.waitFor(() => expect(delivered).toHaveLength(1));
+    expect(delivered[0]).toContain('Worker "api"');
+    expect(orchestration.registry.get(LEAD)).toMatchObject({ paused: false, reason: null });
+    // Only a pause for the limit ends with it.
+    orchestration.pause(LEAD, "user-paused");
+    orchestration.limitEnded(LEAD);
+    expect(orchestration.registry.get(LEAD)).toMatchObject({ paused: true, reason: "user-paused" });
   });
 });

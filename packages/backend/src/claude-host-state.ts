@@ -5,6 +5,12 @@ import type {
   ClaudeObservedPermissionMode,
   ClaudeRunnerOptionsSnapshot,
 } from "./claude-managed-runner";
+import {
+  holdUsageLimit,
+  usageLimitContinue,
+  type UsageLimit,
+  type UsageLimitHit,
+} from "./usage-limit";
 
 export const validClaudeDeviceId = (value: unknown): value is string =>
   typeof value === "string" && /^[A-Za-z0-9_:-]{1,256}$/.test(value);
@@ -42,8 +48,11 @@ export type ClaudeHostWork = {
   deviceId: string;
   originDeviceId: string;
   originRequestId?: string;
-  /** `report`: what a lead's lanes did, delivered to the lead (`orchestration-service.ts`). */
-  kind: "queue" | "goal" | "report";
+  /**
+   * `report`: what a lead's lanes did, delivered to the lead (`orchestration-service.ts`).
+   * `continue`: AgentKib continuing the session after a usage limit reset (`usage-limit.ts`).
+   */
+  kind: "queue" | "goal" | "report" | "continue";
   goalGeneration?: string;
   goalId?: string;
   usageAccounted?: boolean;
@@ -71,6 +80,8 @@ export type ClaudeHostState = {
   goal: ClaudeHostGoal | null;
   work: ClaudeHostWork[];
   settledRequests: string[];
+  /** The usage limit the last turn met, until a turn succeeds or the person sends something. */
+  usageLimit?: UsageLimit | null;
 };
 const fresh = (bootId: string): ClaudeHostState => ({
   version: 1,
@@ -327,10 +338,12 @@ export class ClaudeHostStateStore {
         state.work.some((item) => ["claimed", "dispatched", "unknown"].includes(item.status))
       )
         return null;
-      // The user's own messages first, then reports from lanes, then the goal's next step.
+      // The user's own messages first, then reports from lanes, then AgentKib's continue after a
+      // usage limit, then the goal's next step.
       let item =
         state.work.find((work) => work.kind === "queue" && work.status === "pending") ??
-        state.work.find((work) => work.kind === "report" && work.status === "pending");
+        state.work.find((work) => work.kind === "report" && work.status === "pending") ??
+        state.work.find((work) => work.kind === "continue" && work.status === "pending");
       const goal = state.goal;
       if (!item && goal?.status === "active") {
         if (goal.tokenBudget !== null && goal.usageIncomplete) {
@@ -469,6 +482,75 @@ export class ClaudeHostStateStore {
     });
   }
 
+  /**
+   * Continues a session its usage limit held once the continue is due (`usage-limit.ts`): the
+   * queue resumes, a goal the limit paused resumes, and when neither has anything to send,
+   * AgentKib queues `text` in the name of the device whose turn met the limit. Past the time by
+   * more than the grace, the person continues instead.
+   */
+  continueAfterLimit(
+    sessionId: string,
+    text: string,
+    now = Date.now(),
+  ): "continued" | "stale" | "wait" | "never" {
+    return this.#transaction(sessionId, (state) => {
+      const limit = state.usageLimit;
+      if (!limit) return "never";
+      const due = usageLimitContinue(limit, state.bootId, now);
+      if (due === "wait" || due === "never") return due;
+      if (!state.paused || state.reason !== "usage-limit") return "never";
+      if (due === "stale") {
+        state.usageLimit = { ...limit, continueAt: null, manual: "stale" };
+        state.revision++;
+        return "stale";
+      }
+      state.paused = false;
+      state.reason = null;
+      const goal = state.goal;
+      const goalResumes = goal?.status === "paused" && goal.reason === "usage-limit";
+      if (goalResumes) {
+        goal.status = "active";
+        goal.reason = null;
+      }
+      const waiting = state.work.some(
+        (work) => (work.kind === "queue" || work.kind === "report") && work.status === "pending",
+      );
+      if (!waiting && !goalResumes)
+        state.work.push({
+          id: randomUUID(),
+          requestId: randomUUID(),
+          deviceId: limit.deviceId,
+          originDeviceId: limit.deviceId,
+          kind: "continue",
+          status: "pending",
+          input: text,
+          requiresAttachments: false,
+          createdAt: new Date(now).toISOString(),
+          report: null,
+          usage: null,
+        });
+      state.usageLimit = { ...limit, continueAt: null, autoContinues: limit.autoContinues + 1 };
+      state.revision++;
+      return "continued";
+    });
+  }
+
+  /**
+   * The person sent a message: it takes over from the continue AgentKib armed, as typing does
+   * in Claude Code, and the queue the limit held runs again after it.
+   */
+  personSent(sessionId: string): void {
+    this.#transaction(sessionId, (state) => {
+      if (!state.usageLimit) return;
+      state.usageLimit = null;
+      if (state.paused && state.reason === "usage-limit") {
+        state.paused = false;
+        state.reason = null;
+      }
+      state.revision++;
+    });
+  }
+
   report(sessionId: string, itemId: string, report: ClaudeGoalReport): void {
     this.update(sessionId, (state) => {
       const item = state.work.find((work) => work.id === itemId);
@@ -506,10 +588,38 @@ export class ClaudeHostStateStore {
       usage: Record<string, unknown> | null;
       cancelled?: boolean;
       unknown?: boolean;
+      /** The turn met the account's usage limit; `deviceId` sent it. */
+      usageLimit?: UsageLimitHit | null;
+      deviceId?: string | null;
+      /** Whether to continue after the reset, as chosen for this computer. */
+      autoContinue?: boolean;
     },
   ): void {
     this.#transaction(sessionId, (state) => {
       const item = state.work.find((work) => work.requestId === requestId);
+      // The person's own messages are no work items, so a limit they meet is held here.
+      const limited = !result.unknown && !result.success && !!result.usageLimit;
+      if (limited) {
+        state.usageLimit = holdUsageLimit("claude-code", result.usageLimit!, {
+          deviceId: item?.deviceId ?? result.deviceId ?? state.usageLimit?.deviceId ?? "",
+          bootId: state.bootId,
+          // Work AgentKib sent by itself (a continue, a report, a goal step) counts toward the
+          // three in a row; the person's own message starts again from zero.
+          previous: item && item.kind !== "queue" ? state.usageLimit : null,
+          autoContinue: result.autoContinue,
+        });
+        // Nothing queued goes out into the limit; the scheduler resumes at the continue time.
+        state.paused = true;
+        state.reason = "usage-limit";
+        if (state.goal?.status === "active") {
+          state.goal.status = "paused";
+          state.goal.reason = "usage-limit";
+        }
+        state.revision++;
+      } else if (result.success && state.usageLimit) {
+        state.usageLimit = null;
+        state.revision++;
+      }
       if (!item) return;
       const goal = state.goal;
       const belongsToGoal =
@@ -567,7 +677,7 @@ export class ClaudeHostStateStore {
       )
         state.settledRequests.push(item.originRequestId);
       state.revision++;
-      if (result.unknown || !result.success) {
+      if ((result.unknown || !result.success) && !limited) {
         state.paused = true;
         state.reason = result.unknown
           ? "control-outcome-unconfirmed"
@@ -585,11 +695,13 @@ export class ClaudeHostStateStore {
       }
       if (result.unknown || !result.success) {
         goal.status = "paused";
-        goal.reason = result.unknown
-          ? "control-outcome-unconfirmed"
-          : result.cancelled
-            ? "cancelled"
-            : "turn-failed";
+        goal.reason = limited
+          ? "usage-limit"
+          : result.unknown
+            ? "control-outcome-unconfirmed"
+            : result.cancelled
+              ? "cancelled"
+              : "turn-failed";
       } else if (goal.tokenBudget !== null && goal.usageIncomplete) {
         goal.status = "paused";
         goal.reason = "usage-unavailable";

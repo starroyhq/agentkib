@@ -6,12 +6,17 @@ export interface ClaudeScheduledSession {
   runtimeBootId: string;
   revision: number;
   paused: boolean;
+  /**
+   * When a continue armed after a usage limit is due (ms since the epoch). The backend resumes
+   * the session then, and its continue goes out as scheduled work like any other.
+   */
+  continueAt?: number | null;
   next: null | {
     itemId: string;
     requestId: string;
     deviceId: string;
     originDeviceId?: string;
-    kind: "queue" | "goal" | "report";
+    kind: "queue" | "goal" | "report" | "continue";
     requiresAttachments?: boolean;
   };
 }
@@ -106,6 +111,14 @@ export class ClaudeHostScheduler {
         session.sessionId,
         session.next ? session : previous ? { ...session, next: previous.next } : session,
       );
+      if (session.paused && typeof session.continueAt === "number") {
+        if (Date.now() < session.continueAt) continue;
+        // The backend checks again that it is due; the next tick dispatches what it queued.
+        await this.invoke({ operation: "schedule-continue", sessionId: session.sessionId }).catch(
+          () => undefined,
+        );
+        continue;
+      }
       if (!session.next || session.paused) {
         const owner = previous?.next?.deviceId;
         const authority = [...this.authorities].find((entry) => owner && entry.owns(owner));

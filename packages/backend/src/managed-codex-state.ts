@@ -713,6 +713,11 @@ export class ManagedCodexEventBridge {
       result: { changed: boolean; event?: JsonObject },
       state: ManagedCodexState,
     ) => void,
+    /**
+     * Messages of another thread on the same app-server that are none of the session's, such as
+     * the temporary thread that names it (`codex-thread-title.ts`): never applied or persisted.
+     */
+    readonly ignore?: (value: unknown) => boolean,
   ) {
     session.on("notification", (value: unknown) => this.#enqueue(value));
     session.on("serverRequest", (value: unknown) => this.#enqueue(value));
@@ -754,7 +759,7 @@ export class ManagedCodexEventBridge {
   }
 
   #enqueue(value: unknown): void {
-    if (this.#closed) return;
+    if (this.#closed || this.ignore?.(value)) return;
     this.#queue(async () => {
       const result = this.state.apply(value);
       if (result.reply) this.#reply(result.reply);

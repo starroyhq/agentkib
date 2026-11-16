@@ -23,7 +23,7 @@ Start with the repository [README](../README.md) for the overview and downloads.
 
 - [连接 Claude Code 终端](agents/claude-code-terminal.md)：用插件把正在运行的 Claude Code 终端接到 AgentKib。
 - [Claude Code 托管执行](agents/claude-code-managed.md)：由 AgentKib 启动 Claude Code 继续会话，以及审批、高级操作、斜杠命令、登录和额度采集的凭据边界。
-- [Codex 托管执行](agents/codex-managed.md)：AgentKib 自己的 app-server、跟随 Codex 桌面端、按原 ID 续接、压缩和斜杠命令。
+- [Codex 托管执行](agents/codex-managed.md)：AgentKib 自己的 app-server、跟随 Codex 桌面端、按原 ID 续接、压缩和斜杠命令、会话标题。
 - [项目 Agent](agents/project-agent.md)：由 AgentKib 运行的 Claude Code 会话指挥 Codex Worker：设定、工具、汇报和暂停。
 - [达到使用上限](agents/usage-limits.md)：Claude Code、Codex、DSH 会话达到使用上限时的提示，以及重置后像 Claude Code 一样自动继续。
 - [DeepSeek Harness](agents/deepseek-harness.md)：经插件接入运行中的 DSH，接入方案与分期进度。

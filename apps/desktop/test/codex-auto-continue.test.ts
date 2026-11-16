@@ -19,6 +19,12 @@ import {
   CodexAppServerSession,
 } from "../../../packages/backend/src/codex-app-server";
 import { CodexFollowerBridge } from "../../../packages/backend/src/codex-follower-bridge";
+import {
+  CodexTitleThreads,
+  parseThreadTitle,
+  threadTitleModel,
+  threadTitlePrompt,
+} from "../../../packages/backend/src/codex-thread-title";
 import { CodexFollowerConnection } from "../../../packages/backend/src/codex-follower-connection";
 import { CodexFollowerState } from "../../../packages/backend/src/codex-follower-state";
 import { CodexDesktopApp } from "../../../packages/backend/src/codex-desktop-app";
@@ -189,6 +195,10 @@ function fixture(
   let exitOn: string | undefined;
   let serverUserAgent: string | null = null;
   let deleteFailure: unknown;
+  /** Answers a request first when it returns anything; an Error is thrown. */
+  let intercept:
+    | ((method: string, params: Record<string, unknown>, server: OfflineServer) => unknown)
+    | undefined;
   const deletes: Array<{ server: number; othersOpen: number }> = [];
   const servers: OfflineServer[] = [];
   class OfflineServer extends EventEmitter {
@@ -200,6 +210,9 @@ function fixture(
       dispatch?.();
       methods.push(method);
       requests.push({ method, params });
+      const intercepted = intercept?.(method, (params ?? {}) as Record<string, unknown>, this);
+      if (intercepted instanceof Error) throw intercepted;
+      if (intercepted !== undefined) return intercepted;
       if (method === exitOn) {
         // The CLI exits before it answers.
         this.connected = false;
@@ -345,6 +358,7 @@ function fixture(
       },
     );
   let observed = true;
+  const catalogChanged = vi.fn();
   const web = new WebReadRequests(
     store,
     readers,
@@ -353,6 +367,8 @@ function fixture(
     { CODEX_HOME: home, HOME: root, PATH: bin, ...runtimeEnvironment },
     publishConversationEvent,
     () => observed,
+    undefined,
+    catalogChanged,
   );
   cleanups.push(() => web.closeAsync());
   const live = () =>
@@ -393,6 +409,12 @@ function fixture(
     version,
     follower,
     start,
+    catalogChanged,
+    intercept: (
+      value: (method: string, params: Record<string, unknown>, server: OfflineServer) => unknown,
+    ) => {
+      intercept = value;
+    },
     setCwd: (cwd: string) => {
       executionCwd = cwd;
     },
@@ -4447,5 +4469,515 @@ describe("a managed Codex turn that meets the usage limit", () => {
         manual: "reset-unknown",
       }),
     );
+  });
+});
+
+describe("a managed Codex thread without a name", () => {
+  const namingThread = "aaaaaaaa-bbbb-4ccc-8ddd-000000000001";
+  const preview = "Fix the flaky upload test in CI";
+  const answer = '{"title":"Fix flaky upload test"}';
+  type Emit = (method: string, params: Record<string, unknown>) => void;
+  type Script = {
+    /** The name Codex has for the session's thread; null when it has none. */
+    name?: string | null;
+    /** The final agent message of the title's turn. */
+    answer?: string;
+    /** How the title's turn ends, over a completed one. */
+    end?: Record<string, unknown>;
+    /** Nothing of the title's turn shows before this settles. */
+    hold?: Promise<unknown>;
+    /** What else the title's turn sends before its answer. */
+    during?: (emit: Emit, server: EventEmitter) => void;
+  };
+
+  /**
+   * Codex 0.167.0's side: the session's thread as `thread/read` shows it, the temporary thread
+   * that names it with its one turn, and the name the thread gets.
+   */
+  function codexNames(f: ReturnType<typeof fixture>, script: Script = {}) {
+    const thread = { name: script.name === undefined ? null : script.name };
+    f.intercept((method, params, server) => {
+      if (method === "thread/read" && params.threadId === nativeId)
+        return {
+          thread: {
+            id: nativeId,
+            name: thread.name,
+            preview,
+            model: "model-a",
+            ephemeral: false,
+            status: { type: "active", activeFlags: [] },
+            turns: [],
+          },
+        };
+      // The person's config.toml for this directory, with two MCP servers.
+      if (method === "config/read")
+        return {
+          config: {
+            model: "model-a",
+            mcp_servers: {
+              linear: { url: "https://mcp.linear.app/mcp" },
+              docs: { command: "docs-mcp", args: ["--stdio"] },
+            },
+          },
+          origins: {},
+          layers: null,
+        };
+      if (method === "thread/start" && params.ephemeral === true)
+        return {
+          thread: {
+            id: namingThread,
+            name: null,
+            preview: "",
+            ephemeral: true,
+            status: { type: "idle" },
+            turns: [],
+          },
+          cwd: params.cwd,
+          model: params.model,
+          reasoningEffort: null,
+          approvalPolicy: "never",
+          sandbox: { type: "readOnly", networkAccess: false },
+        };
+      if (method === "turn/start" && params.threadId === namingThread) {
+        const emit: Emit = (name, values) =>
+          server.emit("notification", {
+            method: name,
+            params: { threadId: namingThread, ...values },
+          });
+        void (async () => {
+          await script.hold;
+          await new Promise((resolve) => setTimeout(resolve, 0));
+          const turn = { id: "naming-turn", items: [] };
+          emit("turn/started", { turn: { ...turn, status: "inProgress" } });
+          // The prompt is the thread's user message: no client ID, as a person's in Codex.
+          emit("item/started", {
+            turnId: turn.id,
+            item: {
+              type: "userMessage",
+              id: "naming-prompt",
+              clientId: null,
+              content: params.input,
+            },
+          });
+          script.during?.(emit, server);
+          const text = script.answer ?? answer;
+          emit("item/agentMessage/delta", {
+            turnId: turn.id,
+            itemId: "naming-answer",
+            delta: text,
+          });
+          emit("item/completed", {
+            turnId: turn.id,
+            item: { type: "agentMessage", id: "naming-answer", text, phase: "final_answer" },
+          });
+          const usage = { totalTokens: 1_200, inputTokens: 1_100, outputTokens: 100 };
+          emit("thread/tokenUsage/updated", {
+            turnId: turn.id,
+            tokenUsage: { total: usage, last: usage, modelContextWindow: 272_000 },
+          });
+          emit("turn/completed", {
+            turn: { ...turn, status: "completed", durationMs: 900, ...script.end },
+          });
+        })();
+        return { turn: { id: "naming-turn", status: "inProgress", items: [] } };
+      }
+      if (method === "thread/unsubscribe") return { status: "unsubscribed" };
+      if (method === "thread/name/set") {
+        thread.name = String(params.name);
+        return {};
+      }
+      return undefined;
+    });
+    return thread;
+  }
+
+  /** The person's message starts the session's turn, as Codex shows it. */
+  function personWrites(f: ReturnType<typeof fixture>, text = "Continue") {
+    const server = f.servers.at(-1)!;
+    server.emit("notification", {
+      method: "turn/started",
+      params: { threadId: nativeId, turn: { id: "new-turn", status: "inProgress", items: [] } },
+    });
+    server.emit("notification", {
+      method: "item/started",
+      params: {
+        threadId: nativeId,
+        turnId: "new-turn",
+        item: {
+          type: "userMessage",
+          id: "person-message",
+          clientId: "person",
+          content: [{ type: "text", text }],
+        },
+      },
+    });
+  }
+
+  const sent = (f: ReturnType<typeof fixture>, method: string) =>
+    f.requests
+      .filter((request) => request.method === method)
+      .map((request) => request.params as Record<string, unknown>);
+  const settle = () => new Promise((resolve) => setTimeout(resolve, 50));
+  const withLuna = [
+    { model: "model-a", isDefault: true, supportedReasoningEfforts: [{ reasoningEffort: "low" }] },
+    {
+      model: "gpt-5.6-luna",
+      supportedReasoningEfforts: [{ reasoningEffort: "low" }, { reasoningEffort: "medium" }],
+    },
+  ];
+
+  it("gets the title Codex's terminal client would give it, once", async () => {
+    const f = fixture();
+    f.setModels(withLuna);
+    const thread = codexNames(f);
+    expect(await f.send()).toMatchObject({ accepted: true });
+    personWrites(f);
+    await vi.waitFor(() => expect(thread.name).toBe("Fix flaky upload test"));
+    // The TUI's temporary thread: kept by nothing, read-only, never asking, and with nothing to
+    // run: no tools, hooks or plugins, and none of the person's MCP servers.
+    expect(sent(f, "config/read")).toEqual([{ includeLayers: false, cwd: f.workspace }]);
+    expect(sent(f, "thread/start")).toEqual([
+      {
+        cwd: f.workspace,
+        model: "gpt-5.6-luna",
+        approvalPolicy: "never",
+        sandbox: "read-only",
+        ephemeral: true,
+        threadSource: "thread_title",
+        config: {
+          ...Object.fromEntries(
+            [
+              "apps",
+              "code_mode",
+              "code_mode_only",
+              "context_management",
+              "current_time_reminder",
+              "deferred_executor",
+              "enable_fanout",
+              "goals",
+              "hooks",
+              "image_generation",
+              "memories",
+              "multi_agent",
+              "multi_agent_v2",
+              "plugins",
+              "request_permissions_tool",
+              "shell_snapshot",
+              "shell_tool",
+              "standalone_web_search",
+              "token_budget",
+              "tool_suggest",
+              "unified_exec",
+              "view_image",
+            ].map((feature) => [`features.${feature}`, false]),
+          ),
+          "cloud.skills.enabled": false,
+          "skills.include_instructions": false,
+          "tools.experimental_request_user_input.enabled": false,
+          "tools.update_plan.enabled": false,
+          web_search: "disabled",
+          default_permissions: ":read-only",
+          mcp_servers: { docs: { enabled: false }, linear: { enabled: false } },
+        },
+      },
+    ]);
+    const turn = sent(f, "turn/start").find((params) => params.threadId === namingThread);
+    expect(turn).toEqual({
+      threadId: namingThread,
+      input: [{ type: "text", text: threadTitlePrompt(preview) }],
+      outputSchema: {
+        type: "object",
+        properties: { title: { type: "string", minLength: 1, maxLength: 36 } },
+        required: ["title"],
+        additionalProperties: false,
+      },
+      effort: "low",
+    });
+    expect(threadTitlePrompt(preview)).toBe(
+      "Generate a concise, single-line task title of at most 36 characters and under five " +
+        "words where possible. Start with an imperative verb. Capitalize only the first word " +
+        "unless the user's language, proper nouns, acronyms, or code terms require otherwise. " +
+        "Preserve ticket references exactly. Write in the user's language. Do not use quotes, " +
+        "markdown, or trailing punctuation. Do not answer the request.\n\nUser prompt:\n" +
+        preview,
+    );
+    expect(sent(f, "thread/unsubscribe")).toEqual([{ threadId: namingThread }]);
+    expect(sent(f, "thread/name/set")).toEqual([
+      { threadId: nativeId, name: "Fix flaky upload test" },
+    ]);
+    await vi.waitFor(() => expect(f.catalogChanged).toHaveBeenCalled());
+    // Not again while AgentKib runs, even for a thread that lost its name.
+    f.servers.at(-1)!.complete();
+    await vi.waitFor(async () => expect((await f.live()).status).toBe("idle"));
+    thread.name = null;
+    expect(await f.send({ text: "And the docs" })).toMatchObject({ accepted: true });
+    personWrites(f, "And the docs");
+    await settle();
+    expect(sent(f, "thread/start")).toHaveLength(1);
+    expect(sent(f, "thread/name/set")).toHaveLength(1);
+  });
+
+  it("uses the session's own model at its lowest effort without the title model", async () => {
+    const f = fixture();
+    f.setModels([
+      {
+        model: "model-a",
+        isDefault: true,
+        supportedReasoningEfforts: ["medium", "low", "minimal"].map((reasoningEffort) => ({
+          reasoningEffort,
+        })),
+      },
+    ]);
+    const thread = codexNames(f);
+    await f.send();
+    personWrites(f);
+    await vi.waitFor(() => expect(thread.name).toBe("Fix flaky upload test"));
+    expect(sent(f, "thread/start")[0]).toMatchObject({ model: "model-a" });
+    expect(sent(f, "turn/start").find((params) => params.threadId === namingThread)).toMatchObject({
+      effort: "minimal",
+    });
+  });
+
+  it("keeps the name the thread has", async () => {
+    const f = fixture();
+    const thread = codexNames(f, { name: "Upload test fix" });
+    await f.send();
+    personWrites(f);
+    await vi.waitFor(() => expect(sent(f, "thread/read")).toHaveLength(1));
+    await settle();
+    expect(sent(f, "thread/start")).toEqual([]);
+    expect(sent(f, "thread/name/set")).toEqual([]);
+    expect(thread.name).toBe("Upload test fix");
+  });
+
+  it("keeps a name the thread gets while its title is made", async () => {
+    const f = fixture();
+    let release!: () => void;
+    const thread = codexNames(f, { hold: new Promise<void>((resolve) => (release = resolve)) });
+    await f.send();
+    personWrites(f);
+    await vi.waitFor(() => expect(sent(f, "turn/start")).toHaveLength(2));
+    // The person renames the thread in AgentKib once the turn ends.
+    f.servers.at(-1)!.complete();
+    await vi.waitFor(async () => expect((await f.live()).status).toBe("idle"));
+    const state = await f.live();
+    expect(
+      await f.web.managedControl({
+        operation: "rename",
+        sessionId: f.summary.id,
+        requestId: randomUUID(),
+        deviceId: "fixture",
+        runtimeBootId: state.runtimeBootId,
+        expectedRevision: state.revision,
+        experimentalEnabled: true,
+        name: "Upload fixes",
+      }),
+    ).toMatchObject({ accepted: true });
+    release();
+    await vi.waitFor(() => expect(sent(f, "thread/unsubscribe")).toHaveLength(1));
+    await settle();
+    expect(sent(f, "thread/name/set")).toEqual([{ threadId: nativeId, name: "Upload fixes" }]);
+    expect(thread.name).toBe("Upload fixes");
+  });
+
+  it("keeps Codex's own title when the title's turn fails, without a usage limit", async () => {
+    const f = fixture();
+    // Codex 0.167.0's shapes when the account is out of usage.
+    const limit = { message: "You've hit your usage limit.", codexErrorInfo: "usageLimitExceeded" };
+    const thread = codexNames(f, {
+      during: (emit) => emit("error", { turnId: "naming-turn", willRetry: false, error: limit }),
+      end: { status: "failed", error: limit },
+    });
+    expect(await f.send()).toMatchObject({ accepted: true });
+    personWrites(f);
+    await vi.waitFor(() => expect(sent(f, "thread/unsubscribe")).toHaveLength(1));
+    await settle();
+    expect(thread.name).toBeNull();
+    expect(sent(f, "thread/name/set")).toEqual([]);
+    expect(f.web.usageLimited(f.summary.id)).toBe(false);
+    expect(await f.live()).toMatchObject({
+      status: "running",
+      turnId: "new-turn",
+      reason: null,
+      usageLimit: null,
+    });
+    // The session's own turn ends as usual; nothing waits for a reset.
+    f.servers.at(-1)!.complete();
+    await vi.waitFor(async () =>
+      expect(await f.live()).toMatchObject({ status: "idle", sendEnabled: true, usageLimit: null }),
+    );
+    expect(f.web.usageLimited(f.summary.id)).toBe(false);
+    expect(sent(f, "account/rateLimits/read")).toEqual([]);
+  });
+
+  it("keeps Codex's own title when the answer is not a title", async () => {
+    const f = fixture();
+    const thread = codexNames(f, { answer: "Fix flaky upload test" });
+    await f.send();
+    personWrites(f);
+    await vi.waitFor(() => expect(sent(f, "thread/unsubscribe")).toHaveLength(1));
+    await settle();
+    expect(thread.name).toBeNull();
+    expect(sent(f, "thread/name/set")).toEqual([]);
+  });
+
+  it("keeps the temporary thread's turn out of the session", async () => {
+    const published: unknown[][] = [];
+    const f = fixture(false, undefined, {}, (...args) => published.push(args));
+    const lanes = { turnEnded: vi.fn(), waiting: vi.fn(), ownTurn: vi.fn(), limitEnded: vi.fn() };
+    f.web.observeLanes(lanes);
+    let release!: () => void;
+    const thread = codexNames(f, {
+      hold: new Promise<void>((resolve) => (release = resolve)),
+      // It asks for something, as an MCP server's form: declined at once.
+      during: (_emit, server) =>
+        server.emit("serverRequest", {
+          id: 91,
+          method: "mcpServer/elicitation/request",
+          params: {
+            threadId: namingThread,
+            turnId: "naming-turn",
+            serverName: "docs",
+            mode: "form",
+            message: "Allow the docs server?",
+            requestedSchema: { type: "object", properties: {} },
+          },
+        }),
+    });
+    await f.send();
+    const server = f.servers.at(-1)!;
+    const respond = vi.spyOn(server, "respond");
+    personWrites(f);
+    const before = await f.live();
+    release();
+    await vi.waitFor(() => expect(thread.name).toBe("Fix flaky upload test"));
+    const after = await f.live();
+    expect(after.revision).toBe(before.revision);
+    expect(after).toMatchObject({
+      status: "running",
+      turnId: "new-turn",
+      approvals: [],
+      streamText: "",
+      tokenUsage: null,
+    });
+    expect(respond).toHaveBeenCalledWith(91, { action: "decline" });
+    expect(lanes.ownTurn).not.toHaveBeenCalled();
+    expect(lanes.waiting).not.toHaveBeenCalled();
+    expect(lanes.turnEnded).not.toHaveBeenCalled();
+    expect(JSON.stringify(published)).not.toMatch(/naming-|Fix flaky upload test/);
+    // The session's own turn ends with its own rows only.
+    server.emit("notification", {
+      method: "item/completed",
+      params: {
+        threadId: nativeId,
+        turnId: "new-turn",
+        item: { type: "agentMessage", id: "reply", text: "Done." },
+      },
+    });
+    server.complete();
+    await vi.waitFor(() =>
+      expect(lanes.turnEnded).toHaveBeenCalledWith(f.summary.id, "new-turn", "completed", null),
+    );
+    expect(lanes.turnEnded).toHaveBeenCalledTimes(1);
+    expect(
+      readManagedEvents(f.root, f.summary.id, null, 100).events.map((event) => event.id),
+    ).toEqual(["reply"]);
+  });
+
+  it("stops a title turn that does not end in time, and never touches the session's thread", async () => {
+    const calls: Array<[string, unknown]> = [];
+    let reply: (method: string) => unknown = () => ({});
+    const session = Object.assign(new EventEmitter(), {
+      connected: true,
+      request: async (method: string, params: unknown) => {
+        calls.push([method, params]);
+        return reply(method);
+      },
+      respond: vi.fn(),
+      respondError: vi.fn(),
+    });
+    const titles = new CodexTitleThreads();
+    const generate = () =>
+      titles.generate(session as unknown as CodexAppServerSession, {
+        threadId: nativeId,
+        cwd: "/work",
+        model: "gpt-5.6-luna",
+        effort: "low",
+        message: "Fix the upload test",
+        timeoutMs: 30,
+      });
+    const started = (thread: Record<string, unknown>) => (method: string) =>
+      method === "config/read"
+        ? { config: { model: null }, origins: {}, layers: null }
+        : method === "thread/start"
+          ? { thread, sandbox: { type: "readOnly", networkAccess: false } }
+          : method === "turn/start"
+            ? { turn: { id: "naming-turn", status: "inProgress" } }
+            : {};
+    reply = started({ id: namingThread, ephemeral: true });
+    expect(await generate()).toBeNull();
+    expect(calls).toEqual([
+      ["config/read", { includeLayers: false, cwd: "/work" }],
+      [
+        "thread/start",
+        expect.objectContaining({
+          ephemeral: true,
+          config: expect.objectContaining({ "features.shell_tool": false, mcp_servers: {} }),
+        }),
+      ],
+      ["turn/start", expect.objectContaining({ threadId: namingThread })],
+      ["turn/interrupt", { threadId: namingThread, turnId: "naming-turn" }],
+      ["thread/unsubscribe", { threadId: namingThread }],
+    ]);
+    expect(session.listenerCount("notification") + session.listenerCount("serverRequest")).toBe(0);
+    // Its late messages stay out of the session.
+    expect(titles.owns({ method: "turn/completed", params: { threadId: namingThread } })).toBe(
+      true,
+    );
+    // A thread/start that answers with the session's own thread runs nothing on it.
+    calls.length = 0;
+    reply = started({ id: nativeId, ephemeral: true });
+    expect(await generate()).toBeNull();
+    expect(calls.map(([method]) => method)).toEqual(["config/read", "thread/start"]);
+    expect(titles.owns({ method: "turn/started", params: { threadId: nativeId } })).toBe(false);
+    // Nor does a thread Codex would keep.
+    calls.length = 0;
+    reply = started({ id: "kept-thread", ephemeral: false });
+    expect(await generate()).toBeNull();
+    expect(calls.map(([method]) => method)).toEqual([
+      "config/read",
+      "thread/start",
+      "thread/unsubscribe",
+    ]);
+    // Without the person's MCP servers known, no thread starts, as in the TUI.
+    for (const failure of [{ origins: {} }, new Error("Invalid request: unknown variant")]) {
+      calls.length = 0;
+      reply = (method) => {
+        if (method !== "config/read") return {};
+        if (failure instanceof Error) throw failure;
+        return failure;
+      };
+      expect(await generate()).toBeNull();
+      expect(calls.map(([method]) => method)).toEqual(["config/read"]);
+    }
+  });
+
+  it("parses and bounds a title as Codex's terminal client does", () => {
+    expect(parseThreadTitle('  {"title":"  “Fix the login bug.” "}')).toBe("Fix the login bug");
+    expect(parseThreadTitle('{"title":"Add\\n  dark\\tmode support!?"}')).toBe(
+      "Add dark mode support",
+    );
+    expect(parseThreadTitle('{"title":"' + "x".repeat(40) + '"}')).toBe("x".repeat(36));
+    expect(parseThreadTitle('{"title":"修复 上传测试"}')).toBe("修复 上传测试");
+    for (const reply of ['Title: {"title":"x"}', '{"title":"x","why":"y"}', '{"title":" ."}', "{"])
+      expect(parseThreadTitle(reply)).toBeNull();
+    // 960 bytes of the message, no character split.
+    const prompt = threadTitlePrompt(`  ${"é".repeat(600)}  `);
+    expect(prompt.endsWith(`User prompt:\n${"é".repeat(480)}`)).toBe(true);
+    expect(threadTitleModel({ data: [] }, null)).toBeNull();
+    expect(threadTitleModel({ data: [{ model: "other" }] }, "other")).toEqual({
+      model: "other",
+      effort: null,
+    });
   });
 });

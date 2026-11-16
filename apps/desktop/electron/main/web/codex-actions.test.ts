@@ -1,5 +1,5 @@
 // @vitest-environment node
-import { beforeEach, afterEach, it, expect, vi } from "vitest";
+import { beforeEach, afterEach, describe, it, expect, vi } from "vitest";
 import { mkdtemp, rm } from "node:fs/promises";
 import { createServer, request } from "node:http";
 import { tmpdir } from "node:os";
@@ -684,6 +684,125 @@ it("rejects send for a followed Codex session in an unauthorized workspace", asy
   expect(runtime.mock.calls.some(([p]) => (p as { operation: string }).operation === "send")).toBe(
     false,
   );
+});
+// AgentKib runs these sessions itself; a device controls them only in its workspaces, also when
+// it knows the ID of a session elsewhere.
+describe.each([
+  ["Devin", "devin-print"],
+  ["Antigravity", "acp-managed"],
+])("%s sessions", (_agent, mode) => {
+  const outside = (workspaceId: unknown) =>
+    runtime.mockImplementation(async (input) => {
+      const result = await runtimeHandler(input);
+      return (input as { operation: string }).operation === "live"
+        ? { ...(result as object), workspaceId }
+        : result;
+    });
+  const dispatched = (operation: string) =>
+    runtime.mock.calls.some(([p]) => (p as { operation: string }).operation === operation);
+
+  it("dispatches send in an allowed workspace", async () => {
+    await pair();
+    executionMode = mode;
+    expect((await http("/send", action())).status).toBe(200);
+    expect(dispatched("send")).toBe(true);
+  });
+
+  it.each(["/send", "/stop"])("refuses %s outside the device's workspaces", async (path) => {
+    await pair();
+    executionMode = mode;
+    outside("outside");
+    const result = await http(path, action());
+    expect(result.status).toBe(403);
+    expect(result.data.error).toBe("provider_control_not_allowed");
+    expect(dispatched(path.slice(1))).toBe(false);
+  });
+
+  it("refuses send when the live state names no workspace", async () => {
+    await pair();
+    executionMode = mode;
+    outside(undefined);
+    const result = await http("/send", action());
+    expect(result.status).toBe(403);
+    expect(dispatched("send")).toBe(false);
+  });
+
+  it("shows its controls disabled outside the device's workspaces", async () => {
+    await pair();
+    executionMode = mode;
+    outside("outside");
+    const live = await http("/live?sessionId=session");
+    expect(live.status).toBe(200);
+    expect(live.data).toMatchObject({ sendEnabled: false, stopEnabled: false });
+  });
+});
+// The phone and the browsers turn the continue after a Devin usage limit off and on through the
+// generic action, as for Codex; it takes no more than sending.
+describe("Devin's usage-limit choices", () => {
+  const withChoices = () =>
+    runtime.mockImplementation(async (input) => {
+      const result = await runtimeHandler(input);
+      return (input as { operation: string }).operation === "capabilities"
+        ? {
+            ...(result as { features: object }),
+            features: {
+              ...(result as { features: object }).features,
+              "usage-limit-cancel": { available: true },
+              "usage-limit-continue": { available: true },
+            },
+          }
+        : result;
+    });
+  const request = (operation: string) => ({ ...deletion(), operation, agent: "devin" });
+
+  it.each(["usage-limit-cancel", "usage-limit-continue"])(
+    "dispatches %s with the send permission",
+    async (operation) => {
+      await pair();
+      executionMode = "devin-print";
+      withChoices();
+      const result = await http("/managed/action", request(operation));
+      expect(result.status).toBe(200);
+      const dispatched = runtime.mock.calls.find(
+        ([p]) => (p as { operation: string }).operation === operation,
+      )![0];
+      expect(dispatched).toMatchObject({ operation, sessionId: "session", expectedRevision: 1 });
+    },
+  );
+
+  it("refuses them to a device that cannot send", async () => {
+    await pair({ send: false });
+    executionMode = "devin-print";
+    withChoices();
+    expect((await http("/managed/action", request("usage-limit-continue"))).status).toBe(403);
+    expect(
+      runtime.mock.calls.some(
+        ([p]) => (p as { operation: string }).operation === "usage-limit-continue",
+      ),
+    ).toBe(false);
+  });
+
+  it("offers no other Codex action for Devin", async () => {
+    await pair({ organize: true });
+    executionMode = "devin-print";
+    runtime.mockImplementation(async (input) => {
+      const result = await runtimeHandler(input);
+      return (input as { operation: string }).operation === "capabilities"
+        ? {
+            ...(result as { features: object }),
+            features: { rename: { available: true } },
+          }
+        : result;
+    });
+    const result = await http("/managed/action", {
+      ...request("rename"),
+      name: "New name",
+    });
+    expect(result.status).toBe(409);
+    expect(
+      runtime.mock.calls.some(([p]) => (p as { operation: string }).operation === "rename"),
+    ).toBe(false);
+  });
 });
 it("projects follower capabilities like managed ones", async () => {
   await pair();

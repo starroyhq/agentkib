@@ -30,7 +30,7 @@ AgentKib 不自动下载 ACP server，也不读取或复制 Google 登录凭据�
 
 新版 CLI 自动发现 `agy` 并以参数 `acp` 启动；显式 `AGENTKIB_ANTIGRAVITY_ACP_BIN` 指向绝对路径的 `agy` 时也使用同样参数。新版身份 `Antigravity ACP Server` 仅用于能力协商后的只读浏览，不继承旧服务的控制信任。缺少可选 ACP 返回空来源，不再产生常驻“暂时读不到”的故障提示；已配置路径损坏、协议错误、认证或真实读取失败仍保留诊断。
 
-验证入口：`antigravity-local-store.test.ts`、`antigravity-local-runtime.test.ts`、`antigravity-history.test.ts`、`antigravity-local-readonly.test.ts`、`antigravity-modern-acp.test.ts` 和 `antigravity-runtime-scope.test.ts`，位于 `apps/desktop/test`。使用隔离目录、合成 SQLite/Protobuf、只读 HTTP fixture 与合成 ACP 子进程，不依赖用户凭据或模型调用。
+验证入口：`antigravity-local-store.test.ts`、`antigravity-local-runtime.test.ts`、`antigravity-history.test.ts`、`antigravity-local-readonly.test.ts`、`antigravity-modern-acp.test.ts`、`antigravity-runtime-scope.test.ts` 和 `antigravity-continuation.test.ts`，位于 `apps/desktop/test`。使用隔离目录、合成 SQLite/Protobuf、只读 HTTP fixture 与合成 ACP 子进程，不依赖用户凭据或模型调用。
 
 ## 已实现范围
 
@@ -41,6 +41,7 @@ AgentKib 不自动下载 ACP server，也不读取或复制 Google 登录凭据�
 - 加载项目根 `.agents/plugins/*`、全局 `~/.gemini/config/plugins/*` 以及 CLI 暂存目录 `~/.gemini/antigravity-cli/plugins/*` 中通过 `plugin.json` 校验的插件规则。CLI 插件按官方自动发现语义默认启用，并尊重已验证的配置覆盖和 manifest 默认禁用值；无法解析的显式状态会失败关闭并告警。名称冲突或带有无法可靠解释的 `rules.json` 时同样排除并告警。
 - 通过 Google 分发的 ACP server 列出和读取 ACP 原生会话，归一化为 AgentKib `SessionDocument`。
 - 原生 MCP 迁移会保留无法转换的配置：带静态 OAuth 客户端配置或显式 SSE 传输的服务不会标为可自动迁移；未声明传输的远程服务仍需通过迁移前连接探测。
+- AgentKib 运行的 ACP 会话在会话目录里标出进行中的一轮（`continuation`，`executionLocation: agentkib`）：首页的“进行中”、菜单栏、手机的实时活动和退出确认都算它，等待审批的一轮算作等你处理，结果待核实的算作需要核实，和 Devin 会话一样。
 - 在桌面与 Web 中对已核验的 ACP 会话发送消息、停止精确活动轮次，并只提交服务端真实提供的审批 `optionId`。审批仅在命令、文件编辑或单文件读取的操作范围可完整展示时开放；未验证的工具类型（包括移动、删除）保持不可审批。活动轮次断线后保留 outcome-unknown 防线，不自动重连或重发。
 - 将 Antigravity ACP 会话作为来源，导入 Codex 或 Claude Code 的目标原生历史，并沿用预览、脱敏、损失确认和回读验证流程。
 

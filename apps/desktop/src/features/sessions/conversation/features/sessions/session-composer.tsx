@@ -654,7 +654,7 @@ export function SessionComposer({
         <p className="px-3 text-xs leading-5 text-muted-foreground">{continuation.terminalHint}</p>
       )}
       {isClaude && <PermissionModeNotice permission={live?.permission} locale={locale} compact />}
-      {(isClaude || isCodex || isDsh) && (
+      {(isClaude || isCodex || isDsh || current?.agent === "devin") && (
         <ManagedTurnNotice
           live={live}
           locale={locale}

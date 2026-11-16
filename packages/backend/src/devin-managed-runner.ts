@@ -4,6 +4,7 @@ import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { devinSessionDatabase } from "./devin-sessions";
+import { devinUsageLimitHit, type UsageLimitHit, type UsageLimitView } from "./usage-limit";
 
 /**
  * Devin CLI runs each turn non-interactively (`devin -p`), so it is its own host and uses the
@@ -28,6 +29,19 @@ export interface DevinTurnSettings {
   permissionMode?: DevinPermissionMode;
 }
 
+/** How a turn of a session Devin stored ended, told before the runner shows itself idle. */
+export interface DevinTurnEnd {
+  nativeId: string;
+  /** AgentKib's ID of the turn, as the live state named it. */
+  turnId: string;
+  /** Answered, failed (also on a usage limit), or stopped by the person. */
+  outcome: "completed" | "failed" | "cancelled";
+  /** The turn's prompt and answer in the session's history, when Devin stored them. */
+  historyTurnId: string | null;
+  answerItemId: string | null;
+  usageLimit: UsageLimitHit | null;
+}
+
 export interface DevinRunnerHost {
   executable(): string | null;
   environment: NodeJS.ProcessEnv;
@@ -37,6 +51,8 @@ export interface DevinRunnerHost {
   listSessions(): Promise<Array<{ nativeId: string; createdAt: number }>>;
   /** The text of a session's first user message, to tell sessions started together apart. */
   firstUserText(nativeId: string): Promise<string | null>;
+  turnEnded?(end: DevinTurnEnd): void;
+  /** A `state` event's payload is the live state itself; a `snapshot` carries it as `live`. */
   publish(
     type: "state" | "snapshot",
     payload: Record<string, unknown>,
@@ -194,9 +210,13 @@ export class DevinManagedRunner {
   #turnId: string | null = null;
   #completedTurnId: string | null = null;
   #reason: string | null = null;
+  /** The usage limit the last turn met, until the next turn starts. */
+  #usageLimit: UsageLimitView | null = null;
   #child: ChildProcess | null = null;
   #timer: NodeJS.Timeout | undefined;
   #published = "";
+  /** The history items last read, which tell the turn's answer once it ends. */
+  #items: Array<Record<string, unknown>> = [];
   #closed = false;
   #found: Array<(nativeId: string) => void> = [];
   #ended: Array<(reason: string) => void> = [];
@@ -227,6 +247,7 @@ export class DevinManagedRunner {
       approvals: [],
       questions: [],
       reason: this.#reason,
+      usageLimit: this.#usageLimit,
       usage: { available: false },
     };
   }
@@ -291,14 +312,20 @@ export class DevinManagedRunner {
     this.#child = child;
     this.#status = "running";
     this.#reason = null;
+    this.#usageLimit = null;
     this.#turnId = randomUUID();
     this.#revision++;
+    // The ends are kept: Devin prints why a turn failed after whatever it printed before.
     let output = "";
-    const collect = (chunk: Buffer) => {
-      if (output.length < OUTPUT_LIMIT) output += chunk.toString("utf8").slice(0, OUTPUT_LIMIT);
-    };
-    child.stdout?.on("data", collect);
-    child.stderr?.on("data", collect);
+    let errors = "";
+    child.stdout?.on("data", (chunk: Buffer) => {
+      output = (output + chunk.toString("utf8")).slice(-OUTPUT_LIMIT);
+    });
+    child.stderr?.on("data", (chunk: Buffer) => {
+      const text = chunk.toString("utf8");
+      output = (output + text).slice(-OUTPUT_LIMIT);
+      errors = (errors + text).slice(-OUTPUT_LIMIT);
+    });
     const startedAt = Date.now();
     this.#publishState();
     const exited = new Promise<number | null>((resolve) => {
@@ -312,21 +339,44 @@ export class DevinManagedRunner {
       await this.#poll(before, text, startedAt);
       await rm(directory, { recursive: true, force: true });
       const stopped = this.#status === "stopping";
+      // A usage limit can end a turn that exits 0, so what Devin printed as errors is read
+      // either way; its reply only when the turn failed, where it cannot pass for an answer.
+      const limit = stopped ? null : devinUsageLimitHit(code === 0 ? errors : output);
+      const failed = code !== 0 && !stopped && !limit;
       this.#child = null;
-      this.#status = code === 0 || stopped ? "idle" : "failed";
-      this.#reason =
-        code === 0 || stopped
-          ? this.#nativeId
-            ? null
-            : "devin-session-not-found"
-          : devinRunFailure(output, code);
+      this.#status = failed ? "failed" : "idle";
+      this.#reason = failed
+        ? devinRunFailure(output, code)
+        : this.#nativeId
+          ? null
+          : "devin-session-not-found";
+      // `devin -p` says no reset time: the notice says so until the host learns more
+      // (docs/agents/usage-limits.md).
+      this.#usageLimit = limit
+        ? { ...limit, agent: "devin", continueAt: null, manual: "reset-unknown", autoContinues: 0 }
+        : null;
       if (!this.#nativeId) for (const end of this.#ended.splice(0)) end(this.#reason ?? "failed");
       this.#found = [];
-      this.#completedTurnId = this.#turnId;
+      const turnId = this.#turnId;
+      this.#completedTurnId = turnId;
       this.#turnId = null;
       this.#revision++;
+      // Told before the idle state goes out, so that what follows it already knows the outcome.
+      if (this.#nativeId && turnId)
+        try {
+          this.host.turnEnded?.({
+            nativeId: this.#nativeId,
+            turnId,
+            outcome: stopped ? "cancelled" : failed || limit ? "failed" : "completed",
+            ...this.#answer(),
+            usageLimit: limit,
+          });
+        } catch {
+          // The host's bookkeeping never changes how the turn ended.
+        }
       this.#publishState();
-      await this.#publishItems();
+      // The session view reads the store itself when this last read fails.
+      await this.#publishItems().catch(() => undefined);
     });
   }
 
@@ -342,6 +392,18 @@ export class DevinManagedRunner {
     signal(child, "SIGINT");
     setTimeout(() => this.#child === child && signal(child, "SIGTERM"), STOP_TERM_MS).unref();
     setTimeout(() => this.#child === child && signal(child, "SIGKILL"), STOP_KILL_MS).unref();
+  }
+
+  /**
+   * Shows `view` as the usage limit the last turn met, as the host holds it. The revision stays:
+   * what the notice says is not something a control was decided on.
+   */
+  showUsageLimit(view: UsageLimitView | null): boolean {
+    if (this.#status === "running" || this.#status === "stopping") return false;
+    if (JSON.stringify(view) === JSON.stringify(this.#usageLimit)) return false;
+    this.#usageLimit = view ? { ...view } : null;
+    this.#publishState();
+    return true;
   }
 
   /** Marks a change to what the next turn runs with, so that a stale control is refused. */
@@ -382,9 +444,31 @@ export class DevinManagedRunner {
     }
   }
 
+  /**
+   * The last prompt in the history read, and the answer to it: Devin's last reply in that turn
+   * that is not commentary. AgentKib's own continue is not an item, so a continued turn answers
+   * under the prompt it continues.
+   */
+  #answer(): { historyTurnId: string | null; answerItemId: string | null } {
+    const text = (value: unknown) => (typeof value === "string" && value ? value : null);
+    const newestFirst = [...this.#items].reverse();
+    const prompt = newestFirst.find((item) => item.kind === "user-message");
+    const historyTurnId = text(prompt?.turn_id) ?? text(prompt?.id);
+    const answer = historyTurnId
+      ? newestFirst.find(
+          (item) =>
+            item.kind === "agent-message" &&
+            item.turn_id === historyTurnId &&
+            item.message_phase !== "commentary",
+        )
+      : undefined;
+    return { historyTurnId, answerItemId: text(answer?.id) };
+  }
+
   async #publishItems() {
     if (!this.#nativeId) return;
     const items = await this.host.latestItems(this.#nativeId);
+    this.#items = items;
     const digest = createHash("sha256").update(JSON.stringify(items)).digest("hex");
     if (digest === this.#published) return;
     this.#published = digest;
@@ -404,6 +488,7 @@ export class DevinManagedRunner {
 
   #publishState() {
     const live = this.snapshot();
-    this.host.publish("state", { live }, live);
+    // Clients merge a state event's payload into the live state they hold.
+    this.host.publish("state", live, live);
   }
 }

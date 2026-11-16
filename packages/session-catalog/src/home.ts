@@ -124,9 +124,9 @@ export function homeSessionGroups<S extends HomeSession>(
 
 /**
  * Sessions whose work stops when AgentKib quits: a turn running, or waiting for the person, in
- * a process AgentKib started (managed Codex, Claude Code and Antigravity, and a DeepSeek Harness
- * it started in the background), and Claude Code background tasks still running in one. Turns in
- * a connected terminal or another client go on.
+ * a process AgentKib started (managed Codex, Claude Code and Antigravity, Devin's `devin -p`, and
+ * a DeepSeek Harness it started in the background), and Claude Code background tasks still
+ * running in one. Turns in a connected terminal or another client go on.
  */
 export function workStoppedByQuit<S extends HomeSession>(sessions: readonly S[]): S[] {
   const groups = homeSessionGroups(sessions, { recent: 0 });

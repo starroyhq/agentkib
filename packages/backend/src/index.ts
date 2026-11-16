@@ -2613,6 +2613,10 @@ export class TypeScriptBackend {
         ownTurn: (sessionId, turnId) => void this.#leadOwnTurn(sessionId, turnId),
         limitEnded: (sessionId) => this.#orchestration?.limitEnded(sessionId),
       });
+      // Devin's history marks no turn's end: the turns AgentKib ran record their own results.
+      this.#webRead.observeResults((target, result) =>
+        this.#readStates?.recordTerminal(target, result),
+      );
       // A Codex Project Agent's thread starts with its worker tools.
       this.#webRead.leadEndpoints(async (sessionId) => {
         const config = (await this.#orchestration?.leadTools(sessionId)) as

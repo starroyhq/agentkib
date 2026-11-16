@@ -200,7 +200,8 @@ export class ReadStateLedger {
     });
   }
 
-  record(key: string, result: ConversationReadResult): boolean {
+  /** `complete`: no history scan follows, so the source's baseline is done. */
+  record(key: string, result: ConversationReadResult, complete = false): boolean {
     // A live completion precedes an initial history scan; keep it outside that baseline.
     const pendingKey = `${pathIdentity(this.dataDir)}\0${key}`;
     try {
@@ -209,7 +210,7 @@ export class ReadStateLedger {
         key,
         [{ result, baseline: false }],
         prior.checkpoint,
-        prior.complete,
+        prior.complete || complete,
       );
       pendingObservations.get(pendingKey)?.delete(result.id);
       if (pendingObservations.get(pendingKey)?.size === 0) pendingObservations.delete(pendingKey);
@@ -225,11 +226,11 @@ export class ReadStateLedger {
     }
   }
 
-  retryObservations(key: string): void {
+  retryObservations(key: string, complete = false): void {
     for (const result of [
       ...(pendingObservations.get(`${pathIdentity(this.dataDir)}\0${key}`)?.values() ?? []),
     ])
-      this.record(key, result);
+      this.record(key, result, complete);
   }
 
   get(key: string, scope: string): ConversationReadState {

@@ -560,6 +560,17 @@ function snapshotField(snapshot: unknown, key: string): unknown {
     : undefined;
 }
 const isCodexMode = (mode: unknown) => mode === "codex-managed" || mode === "codex-follower";
+/**
+ * Besides Codex, the execution modes whose controls stay within the device's workspaces, checked
+ * against the `workspaceId` their live state and stream patches name: Claude Code, and the
+ * Antigravity and Devin sessions AgentKib runs. DeepSeek Harness's live state is checked too.
+ */
+const WORKSPACE_SCOPED_MODES: readonly string[] = [
+  "claude-managed",
+  "claude-follower",
+  "acp-managed",
+  "devin-print",
+];
 /** 小于这个大小的回复不压缩，省下的字节抵不过压缩本身。 */
 const COMPRESSED_REPLY_MIN_BYTES = 16 * 1024;
 /** 客户端是否接受 gzip；显式的 `gzip;q=0` 视为拒绝。 */
@@ -999,9 +1010,11 @@ export class WebAccessService {
     reserved = false,
   ) {
     const executionMode = snapshotField(snapshot, "executionMode");
+    // A session belongs to the workspace its live state names; a device controls it only when
+    // allowed that workspace, also when it knows the ID of a session elsewhere.
     if (
       isCodexMode(executionMode) ||
-      ["claude-managed", "claude-follower", "dsh-follower"].includes(String(executionMode))
+      [...WORKSPACE_SCOPED_MODES, "dsh-follower"].includes(String(executionMode))
     ) {
       const workspaceId = snapshotField(snapshot, "workspaceId");
       if (
@@ -3564,9 +3577,12 @@ export class WebAccessService {
           "goal-clear",
           "compact",
         ].includes(operation);
-      // Devin changes the model and permission mode its next turns run with.
+      // Devin changes the model and permission mode its next turns run with, and continues after
+      // a usage limit as Codex does.
       const devin =
-        generic && capabilities.executionMode === "devin-print" && operation === "settings";
+        generic &&
+        capabilities.executionMode === "devin-print" &&
+        ["settings", "usage-limit-cancel", "usage-limit-continue"].includes(operation);
       if (
         (capabilities.executionMode !== "codex-managed" &&
           !claude &&
@@ -6670,9 +6686,7 @@ export class WebAccessService {
         let enabled =
           this.controlsEnabledForProvider(sessionId, controlContext, device) &&
           ((!isCodexMode(controlContext.executionMode) &&
-            !["claude-managed", "claude-follower"].includes(
-              String(controlContext.executionMode),
-            )) ||
+            !WORKSPACE_SCOPED_MODES.includes(String(controlContext.executionMode))) ||
             (typeof controlContext.workspaceId === "string" &&
               (this.options.mode === "lan" && isCodexMode(controlContext.executionMode) && sessionId
                 ? await this.lanCodexScopeAllowed(sessionId, controlContext.workspaceId, true)

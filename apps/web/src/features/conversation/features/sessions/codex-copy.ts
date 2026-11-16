@@ -520,7 +520,7 @@ const reasons: Record<Locale, Record<string, string>> = {
       "Devin 还没有信任这个工作区。在终端进入这个目录运行一次 devin 并选择信任，再发送。",
     "devin-cli-unavailable": "没有找到 Devin CLI。安装 Devin CLI 或 Devin Desktop 后可以继续。",
     "devin-run-failed": "Devin 没能完成这一轮。可以稍后重试，或在终端运行 devin 查看原因。",
-    "devin-run-stopped": "这一轮已经停止。",
+    "devin-run-stopped": "Devin CLI 的进程在这一轮完成前被结束了。可以再发送一次。",
     "devin-session-not-found": "Devin 结束了这一轮，但没有找到它保存的会话。",
     "session-open-elsewhere": "这条会话正在 Devin Desktop 或终端里打开，关掉那边后再从这里发送。",
     "attachments-unsupported": "Devin 只能从这里接收文字，不能带图片或文件。",
@@ -666,7 +666,7 @@ const reasons: Record<Locale, Record<string, string>> = {
       "Devin 尚未信任這個工作區。在終端機進入這個目錄執行一次 devin 並選擇信任，再傳送。",
     "devin-cli-unavailable": "找不到 Devin CLI。安裝 Devin CLI 或 Devin Desktop 後即可繼續。",
     "devin-run-failed": "Devin 沒能完成這一輪。可以稍後重試，或在終端機執行 devin 查看原因。",
-    "devin-run-stopped": "這一輪已經停止。",
+    "devin-run-stopped": "Devin CLI 的程序在這一輪完成前被結束了。可以再傳送一次。",
     "devin-session-not-found": "Devin 結束了這一輪，但找不到它儲存的對話。",
     "session-open-elsewhere": "這個對話正在 Devin Desktop 或終端機中開啟，關閉那邊後再從這裡傳送。",
     "attachments-unsupported": "Devin 只能從這裡接收文字，無法附帶圖片或檔案。",
@@ -819,7 +819,8 @@ const reasons: Record<Locale, Record<string, string>> = {
       "Devin CLI was not found. Install Devin CLI or Devin Desktop to continue.",
     "devin-run-failed":
       "Devin could not finish this turn. Try again later, or run devin in a terminal to see why.",
-    "devin-run-stopped": "This turn was stopped.",
+    "devin-run-stopped":
+      "The Devin CLI process was ended before this turn finished. You can send again.",
     "devin-session-not-found": "Devin finished the turn, but the session it saved was not found.",
     "session-open-elsewhere":
       "This session is open in Devin Desktop or a terminal. Close it there, then send from here.",
@@ -989,7 +990,8 @@ const reasons: Record<Locale, Record<string, string>> = {
       "Devin CLI が見つかりません。Devin CLI または Devin Desktop をインストールすると続行できます。",
     "devin-run-failed":
       "Devin はこのターンを完了できませんでした。後でもう一度試すか、ターミナルで devin を実行して原因を確認してください。",
-    "devin-run-stopped": "このターンは停止されました。",
+    "devin-run-stopped":
+      "このターンが終わる前に Devin CLI のプロセスが終了しました。もう一度送信できます。",
     "devin-session-not-found": "Devin はターンを終えましたが、保存したセッションが見つかりません。",
     "session-open-elsewhere":
       "このセッションは Devin Desktop またはターミナルで開かれています。そちらを閉じてから、ここから送信してください。",

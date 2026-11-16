@@ -282,6 +282,57 @@ export function saveManagedRecord(dataDir: string, record: Record<string, unknow
   }
 }
 
+/**
+ * The usage limit a session's last turn met, as its notice stood, so that the notice outlives a
+ * restart (`usage-limit.ts`); null clears it. Kept apart from the other tables: nothing else
+ * reads it, and an older ledger gains it on the first write.
+ */
+export function saveManagedUsageLimit(
+  dataDir: string,
+  sessionId: string,
+  limit: Record<string, unknown> | null,
+  savedAt = Date.now(),
+): void {
+  // Nothing to clear in a ledger that was never written.
+  if (!limit && !existsSync(path.join(dataDir, "codex-managed", "executions.sqlite"))) return;
+  const database = openManagedLedger(dataDir, true);
+  if (!database) throw new Error("session-unavailable");
+  try {
+    database.exec(
+      "CREATE TABLE IF NOT EXISTS managed_usage_limits(session_id TEXT PRIMARY KEY, record TEXT NOT NULL, saved_at INTEGER NOT NULL)",
+    );
+    if (limit)
+      database
+        .prepare(
+          "INSERT INTO managed_usage_limits(session_id,record,saved_at) VALUES(?,?,?) ON CONFLICT(session_id) DO UPDATE SET record=excluded.record,saved_at=excluded.saved_at",
+        )
+        .run(sessionId, JSON.stringify(limit), savedAt);
+    else database.prepare("DELETE FROM managed_usage_limits WHERE session_id=?").run(sessionId);
+  } finally {
+    database.close();
+  }
+}
+
+/** The usage limit kept for a session (see `saveManagedUsageLimit`), with when it was kept. */
+export function readManagedUsageLimit(
+  dataDir: string,
+  sessionId: string,
+): { limit: Record<string, unknown>; savedAt: number } | null {
+  const database = openManagedLedgerForRead(dataDir);
+  if (!database) return null;
+  try {
+    if (!hasLedgerTable(database, "managed_usage_limits")) return null;
+    const row = database
+      .prepare("SELECT record,saved_at FROM managed_usage_limits WHERE session_id=?")
+      .get(sessionId) as { record: string; saved_at: number } | undefined;
+    if (!row) return null;
+    const limit: unknown = JSON.parse(row.record);
+    return isObject(limit) ? { limit, savedAt: row.saved_at } : null;
+  } finally {
+    releaseManagedLedgerReader(database);
+  }
+}
+
 /** Return a completed receipt or a fail-closed result for any earlier claim. */
 export function replayManagedCommand(
   dataDir: string,

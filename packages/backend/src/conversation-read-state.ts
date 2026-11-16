@@ -12,9 +12,18 @@ import { readManagedRecord } from "./managed-ledger";
 import { canonicalize, pathIdentity } from "./paths";
 import { within } from "./files";
 import { codexExecutable } from "./codex-executable";
+import { devinSessionHome } from "./devin-sessions";
+
+/**
+ * Codex and Claude Code record each turn's end in their transcripts. Devin's history does not, so
+ * a Devin session's results are only the turns AgentKib ran, recorded as each ended
+ * (`WebReadRequests.observeResults`), and the ledger is its whole read state.
+ */
+type ReadStateProvider = "codex" | "claude-code" | "devin";
+const PROVIDERS: readonly unknown[] = ["codex", "claude-code", "devin"];
 
 export interface ReadStateTarget {
-  provider: "codex" | "claude-code";
+  provider: ReadStateProvider;
   home: string;
   nativeId: string;
   workspace: string;
@@ -22,7 +31,7 @@ export interface ReadStateTarget {
 }
 type Target = ReadStateTarget & { key: string };
 type Candidate = {
-  provider: "codex" | "claude-code";
+  provider: ReadStateProvider;
   target?: Target;
   touched: number;
   stale: boolean;
@@ -44,6 +53,11 @@ const nothingToRead: ConversationReadState = {
   firstUnread: null,
   latestResult: null,
 };
+/** A Devin session none of whose turns AgentKib ran has no result to review either. */
+const devinState = (state: ConversationReadState): ConversationReadState =>
+  state.status === "unknown" && !state.latestResult && !state.firstUnread
+    ? { ...nothingToRead, source: "agentkib" }
+    : state;
 function readStateFailure(error: unknown): Error {
   return error instanceof Error &&
     ["read-state-conflict", "read-state-unavailable", "read-state-unsupported"].includes(
@@ -96,6 +110,9 @@ export class ConversationReadStates {
   async #resolve(id: string): Promise<Target> {
     const flight = this.#flights.get(id);
     if (flight) return flight;
+    // A Devin session keeps its native ID and folder: the observer's polls need not look again.
+    const known = this.#candidates.get(id)?.target;
+    if (known?.provider === "devin" && this.store.sessions.get(id)?.agent === "devin") return known;
     const work = (async (): Promise<Target> => {
       const claude = this.claudeManagedTarget(id);
       let target: ReadStateTarget;
@@ -137,8 +154,8 @@ export class ConversationReadStates {
           };
         } else {
           const summary = this.store.sessions.get(id);
-          if (summary?.agent !== "codex" && summary?.agent !== "claude-code")
-            throw new Error("read-state-unsupported");
+          if (!PROVIDERS.includes(summary?.agent)) throw new Error("read-state-unsupported");
+          const provider = summary!.agent as ReadStateProvider;
           const source = await this.sessions.resolve(id);
           if (!source.workspace) throw new Error("read-state-unavailable");
           const workspace =
@@ -149,11 +166,13 @@ export class ConversationReadStates {
           if (!within(canonicalize(workspace), canonicalize(source.workspace)))
             throw new Error("read-state-unavailable");
           target = {
-            provider: summary.agent,
+            provider,
             home:
-              summary.agent === "codex"
+              provider === "codex"
                 ? this.sessions.codexHome()
-                : resolveClaudeConfig(this.environment, this.environment.HOME ?? homedir()).dir,
+                : provider === "devin"
+                  ? devinSessionHome(this.environment)
+                  : resolveClaudeConfig(this.environment, this.environment.HOME ?? homedir()).dir,
             nativeId: source.native.native_ref,
             workspace,
             transcript: "transcript" in source ? (source.transcript ?? null) : null,
@@ -220,7 +239,9 @@ export class ConversationReadStates {
     }
     const before = this.ledger.get(target.key, scope);
     try {
-      this.ledger.retryObservations(target.key);
+      this.ledger.retryObservations(target.key, target.provider === "devin");
+      // The results recorded as AgentKib's turns ended are all there is to read.
+      if (target.provider === "devin") return devinState(this.ledger.get(target.key, scope));
       if (target.transcript) {
         const file =
           target.provider === "codex"
@@ -329,13 +350,13 @@ export class ConversationReadStates {
         !("id" in row) ||
         !("agent" in row) ||
         typeof row.id !== "string" ||
-        (row.agent !== "codex" && row.agent !== "claude-code")
+        !PROVIDERS.includes(row.agent)
       )
         return { row };
       let candidate = this.#candidates.get(row.id);
       if (!candidate) {
         if (this.#candidates.size >= 20_000) return { row };
-        candidate = { provider: row.agent, touched: now, stale: true };
+        candidate = { provider: row.agent as ReadStateProvider, touched: now, stale: true };
         this.#candidates.set(row.id, candidate);
       }
       candidate.touched = now;
@@ -355,12 +376,15 @@ export class ConversationReadStates {
         return { row, state: unknown("codex-native") };
       }
       fallbackKeys.set(target.key, candidate.provider === "codex");
-      return { row, fallbackKey: target.key, stale };
+      return { row, fallbackKey: target.key, stale, devin: target.provider === "devin" };
     });
     const fallbackStates = this.ledger.catalogStates(fallbackKeys, scope);
-    return projections.map(({ row, state, fallbackKey, stale }) => {
+    return projections.map(({ row, state, fallbackKey, stale, devin }) => {
+      const kept = fallbackKey ? fallbackStates.get(fallbackKey) : undefined;
       const readState = fallbackKey
-        ? (fallbackStates.get(fallbackKey) ?? unknown("agentkib"))
+        ? devin
+          ? devinState(kept ?? unknown("agentkib"))
+          : (kept ?? unknown("agentkib"))
         : state;
       return readState
         ? { ...row, readState: stale ? { ...readState, freshness: "stale" } : readState }
@@ -416,7 +440,12 @@ export class ConversationReadStates {
     result: ConversationReadResult,
   ): void {
     if (this.#closed) return;
-    this.ledger.record(conversationReadKey(target.provider, target.home, target.nativeId), result);
+    this.ledger.record(
+      conversationReadKey(target.provider, target.home, target.nativeId),
+      result,
+      // No transcript backs a Devin session's results: nothing older is left to scan.
+      target.provider === "devin",
+    );
     this.changed();
   }
 }

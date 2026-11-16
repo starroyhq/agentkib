@@ -9,13 +9,15 @@
  * continues the person did not ask for, and does not fire when the computer slept or AgentKib
  * was closed long past the time. A message the person sends meanwhile takes over.
  *
- * Codex sessions get the same continue. DeepSeek Harness reports no reset time, so its sessions
- * only say what happened.
+ * Codex sessions get the same continue, and Devin sessions once Devin's `/usage` named the reset
+ * (`devin-usage.ts`). DeepSeek Harness reports no reset time, so its sessions only say what
+ * happened.
  */
 
+import { plainTerminalText } from "./conversation-tools";
 import { readPreferences } from "./preferences";
 
-export type UsageLimitAgent = "claude-code" | "codex" | "deepseek-harness";
+export type UsageLimitAgent = "claude-code" | "codex" | "deepseek-harness" | "devin";
 
 /** `model`: a model's own limit (`scope` names it); `credits`: usage credits; `quota`: an API balance. */
 export type UsageLimitKind = "five-hour" | "weekly" | "model" | "credits" | "quota";
@@ -68,13 +70,16 @@ const JITTER_SPAN_MS = 60_000;
 
 /**
  * What AgentKib sends when it continues: Claude Code's own text (2.1.323), and the same words for
- * Codex, whose clients have none. The person reads it as a notice, not as their message.
+ * Codex and Devin, whose clients have none; Devin's names its quota, as Devin's errors do. The
+ * person reads it as a notice, not as their message.
  */
 export const AUTO_CONTINUE_TEXT = {
   "claude-code":
     "Your claude.ai usage limit has reset. Continue the task you were working on when the limit was reached; do not repeat work that is already complete.",
   codex:
     "Your usage limit has reset. Continue the task you were working on when the limit was reached; do not repeat work that is already complete.",
+  devin:
+    "Your Devin usage quota has reset. Continue the task you were working on when the quota ran out; do not repeat work that is already complete.",
 } as const;
 
 /** Whether `text` is a continue AgentKib sent, so readers can show it as a notice. */
@@ -107,6 +112,7 @@ export function holdUsageLimit(
     continueAt: null,
     manual: reason,
   });
+  // DeepSeek Harness never says when a limit resets.
   if (agent === "deepseek-harness" || hit.resetsAt === null) return manual("reset-unknown");
   if (context.autoContinue === false) return manual("off");
   if (autoContinues >= MAX_AUTO_CONTINUES) return manual("repeated");
@@ -199,6 +205,51 @@ export function armUsageLimit(
   };
 }
 
+const KINDS: readonly unknown[] = ["five-hour", "weekly", "model", "credits", "quota"];
+const MANUAL: readonly unknown[] = [
+  "off",
+  "reset-unknown",
+  "reset-too-far",
+  "repeated",
+  "cancelled",
+  "stale",
+  "restarted",
+];
+const time = (value: unknown) =>
+  value === null || (typeof value === "number" && Number.isSafeInteger(value) && value > 0);
+const text = (value: unknown, limit: number) => typeof value === "string" && value.length <= limit;
+
+/** A hold read back from where AgentKib kept it (`saveManagedUsageLimit`); null when it is not one. */
+export function parseUsageLimit(value: unknown, agent: UsageLimitAgent): UsageLimit | null {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  const limit = value as Record<string, unknown>;
+  return limit.agent === agent &&
+    time(limit.resetsAt) &&
+    (limit.kind === null || KINDS.includes(limit.kind)) &&
+    (limit.scope === null || text(limit.scope, 200)) &&
+    text(limit.message, 500) &&
+    time(limit.continueAt) &&
+    (limit.manual === null || MANUAL.includes(limit.manual)) &&
+    typeof limit.autoContinues === "number" &&
+    Number.isSafeInteger(limit.autoContinues) &&
+    limit.autoContinues >= 0 &&
+    text(limit.deviceId, 256) &&
+    text(limit.bootId, 256)
+    ? {
+        agent,
+        resetsAt: limit.resetsAt as number | null,
+        kind: limit.kind as UsageLimitKind | null,
+        scope: limit.scope as string | null,
+        message: limit.message as string,
+        continueAt: limit.continueAt as number | null,
+        manual: limit.manual as UsageLimitManual | null,
+        autoContinues: limit.autoContinues,
+        deviceId: limit.deviceId as string,
+        bootId: limit.bootId as string,
+      }
+    : null;
+}
+
 /** The person's choice for this computer: continue after a usage limit resets, on by default. */
 export const usageLimitAutoContinue = (dataDir: string): boolean =>
   readPreferences(dataDir).usage_limit_auto_continue !== false;
@@ -289,3 +340,48 @@ export function codexUsageLimitHit(read: unknown, message: string): UsageLimitHi
 }
 
 const stringOrNull = (value: unknown) => (typeof value === "string" && value ? value : null);
+
+/**
+ * Devin's words for a limit (3000.12.59): its service ends the turn with JSON-RPC error -32011
+ * ("Your daily usage quota has been exhausted. Visit … to purchase on-demand usage or turn on
+ * auto-reload.", also weekly), and the CLI's own errors say "Quota exhausted", "Usage limit
+ * reached", "Organization usage limit reached", "You've reached your monthly usage limit", "You've
+ * reached your ChatGPT subscription usage limit" or "Rate limited".
+ */
+const DEVIN_LIMIT =
+  /\b(?:usage quota has been exhausted|quota exhausted|wait for your quota to reset|usage limit reached|reached (?:your|its) (?:monthly |ChatGPT subscription )?usage limit|rate limited:)/i;
+// The error's message when the line prints the whole error: JSON, or Rust's `message: "…"`.
+const QUOTED_MESSAGE = /"?message"?\s*:\s*"((?:[^"\\]|\\.)*)"/;
+
+/**
+ * A Devin limit from what `devin -p` printed; null when the text names none. `devin -p` gives no
+ * reset time: only the interactive CLI's `/usage` shows it, which `devin-usage.ts` reads. `message`
+ * keeps Devin's words, without the "Error:" prefix and the trace ID.
+ */
+export function devinUsageLimitHit(text: string): UsageLimitHit | null {
+  // Colors and other terminal controls are not Devin's words.
+  for (const raw of plainTerminalText(text).split("\n")) {
+    if (!DEVIN_LIMIT.test(raw)) continue;
+    let line = raw.trim();
+    const quoted = QUOTED_MESSAGE.exec(line)?.[1];
+    if (quoted !== undefined)
+      try {
+        const message = JSON.parse(`"${quoted}"`) as string;
+        if (DEVIN_LIMIT.test(message)) line = message;
+      } catch {
+        // Keep the whole line.
+      }
+    const message = line
+      .replace(/^error:\s*/i, "")
+      .replace(/\s*\(trace ID:[^)]*\)\s*$/i, "")
+      .trim()
+      .slice(0, 500);
+    return {
+      resetsAt: null,
+      kind: /\bweekly\b/i.test(message) ? "weekly" : null,
+      scope: null,
+      message,
+    };
+  }
+  return null;
+}

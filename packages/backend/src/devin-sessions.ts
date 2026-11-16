@@ -79,6 +79,10 @@ export function devinSessionDatabase(environment: NodeJS.ProcessEnv): string {
   const moved = absolute(environment.DEVIN_SESSIONS_DIR);
   return path.join(moved ? path.join(moved, "cli") : devinDataHome(environment), "sessions.db");
 }
+/** Where Devin keeps its sessions: with a session's ID, what names its read state. */
+export function devinSessionHome(environment: NodeJS.ProcessEnv): string {
+  return path.dirname(devinSessionDatabase(environment));
+}
 
 interface Source {
   db: DatabaseSync;

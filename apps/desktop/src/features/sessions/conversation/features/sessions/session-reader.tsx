@@ -148,9 +148,10 @@ export function SessionReader() {
       }),
     [session.client, selected],
   );
-  // Only Codex and Claude Code sessions keep a read state. For other Agents a missing read state
-  // is expected, not a sign that the computer needs an update.
-  const readStateAgent = ["codex", "claude-code"].includes(current?.agent ?? "");
+  // Codex, Claude Code and Devin sessions keep a read state (Devin's has the turns AgentKib ran).
+  // For other Agents a missing read state is expected, not a sign that the computer needs an
+  // update.
+  const readStateAgent = ["codex", "claude-code", "devin"].includes(current?.agent ?? "");
   const readObservation = useVisibleReadState({
     client: session.client,
     sessionId: selected,

@@ -4,10 +4,11 @@ import { existsSync, lstatSync, readFileSync, realpathSync, statSync } from "nod
 import { homedir } from "node:os";
 import path from "node:path";
 import { z } from "zod";
-import { SESSION_COLLECTIONS } from "@agentkib/runtime-protocol";
+import { SESSION_COLLECTIONS, type ConversationReadResult } from "@agentkib/runtime-protocol";
 import { historyReferenceSchema, validHistoryControl } from "./history-control-schema";
 import type { BackendStore } from "./store";
 import type { SessionReaders } from "./session-readers";
+import type { ReadStateTarget } from "./conversation-read-state";
 import { enrichLedgerImages } from "./session-image-matching";
 import type { ConversationImage } from "./session-events";
 import type { SessionIndex } from "./session-index";
@@ -45,6 +46,7 @@ import type { CodexFollowerState } from "./codex-follower-state";
 import { CodexFollowerStream } from "./codex-follower-stream";
 import { AntigravityManagedRunner } from "./antigravity-managed-runner";
 import { devinExecutable } from "./devin-executable";
+import { devinSessionHome } from "./devin-sessions";
 import { devinLimitReset, readDevinUsage, type DevinUsageWindow } from "./devin-usage";
 import { DEVIN_DEFAULT_PERMISSION_MODE, DevinSessionSettings } from "./devin-session-settings";
 import {
@@ -581,6 +583,11 @@ export class WebReadRequests {
   /** The last read of Devin's `/usage`, shared by sessions that meet a limit together. */
   #devinUsage?: DevinUsageRead;
   #devinUsageAbort = new AbortController();
+  /** See `observeResults`. */
+  #resultObserver?: (
+    target: Omit<ReadStateTarget, "transcript">,
+    result: ConversationReadResult,
+  ) => void;
 
   #devinSaved() {
     this.#devinSavedSettings ??= new DevinSessionSettings(this.dataDir);
@@ -717,6 +724,18 @@ export class WebReadRequests {
    */
   observeLanes(observer: LaneObserver | undefined): void {
     this.#laneObserver = observer;
+  }
+
+  /**
+   * Where the turns AgentKib runs record their results when the agent's history marks no turn's
+   * end (Devin): the read state takes unread results and the phone's alerts from them.
+   */
+  observeResults(
+    observer:
+      | ((target: Omit<ReadStateTarget, "transcript">, result: ConversationReadResult) => void)
+      | undefined,
+  ): void {
+    this.#resultObserver = observer;
   }
 
   #observeLane(notify: (observer: LaneObserver) => void): void {
@@ -5275,6 +5294,8 @@ export class WebReadRequests {
         sessions: checkouts.sessions(sessions).map((session) => {
           if (isSessionSummary(session) && "agent" in session && session.agent === "devin")
             return this.#devinContinuation(session);
+          if (isSessionSummary(session) && "agent" in session && session.agent === "antigravity")
+            return this.#antigravityContinuation(session);
           if (!isSessionSummary(session) || !("agent" in session) || session.agent !== "codex")
             return session;
           const runner = this.#managedRunners.get(session.id);
@@ -6111,10 +6132,30 @@ export class WebReadRequests {
   }
 
   /**
-   * A Devin turn AgentKib ran ended: a usage limit it met is held as Codex's are, and any other
-   * end is the next turn after a limit, which ends the hold.
+   * A Devin turn AgentKib ran ended. Its result goes to the read state, which unread results and
+   * the phone's alerts come from; a usage limit it met is held as Codex's are, and any other end
+   * is the next turn after a limit, which ends the hold.
    */
   #devinTurnEnded(sessionId: string, workspace: string, end: DevinTurnEnd): void {
+    try {
+      this.#resultObserver?.(
+        {
+          provider: "devin",
+          home: devinSessionHome(this.environment),
+          nativeId: end.nativeId,
+          workspace,
+        },
+        {
+          id: `turn:${end.turnId}`,
+          turnId: end.historyTurnId,
+          itemId: end.answerItemId,
+          outcome: end.outcome,
+          completedAt: new Date().toISOString(),
+        },
+      );
+    } catch {
+      // A result that cannot be recorded changes nothing about the turn.
+    }
     if (end.usageLimit) void this.#holdDevinLimit(sessionId, workspace, end.usageLimit);
     else if (this.#devinLimits.has(sessionId)) this.#armDevinLimit(sessionId, null);
   }
@@ -6316,6 +6357,38 @@ export class WebReadRequests {
         executionLocation: "agentkib",
         ownershipReason: null,
         reason: live.reason ?? null,
+      },
+    };
+  }
+
+  /**
+   * An Antigravity row of the catalog while AgentKib holds the session's ACP runner, as for
+   * Devin: its turns run in the `antigravity` process AgentKib started, which quitting ends. A
+   * turn waiting for a permission waits for the person, as a Codex approval does.
+   */
+  #antigravityContinuation<T extends { id: string }>(session: T): T {
+    const live = this.#antigravityRunners.get(session.id)?.runner.snapshot();
+    if (!live) return session;
+    const status =
+      live.status === "running"
+        ? "running"
+        : live.status === "waiting-approval"
+          ? "awaiting-approval"
+          : live.status === "outcome-unknown"
+            ? "outcome-unknown"
+            : "idle";
+    return {
+      ...session,
+      continuation: {
+        status,
+        executionLocation: "agentkib",
+        ownershipReason: null,
+        reason:
+          status === "outcome-unknown"
+            ? "control-outcome-unconfirmed"
+            : typeof live.reason === "string"
+              ? live.reason
+              : null,
       },
     };
   }

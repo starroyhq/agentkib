@@ -3577,9 +3577,12 @@ export class WebAccessService {
           "goal-clear",
           "compact",
         ].includes(operation);
-      // Devin changes the model and permission mode its next turns run with.
+      // Devin changes the model and permission mode its next turns run with, and continues after
+      // a usage limit as Codex does.
       const devin =
-        generic && capabilities.executionMode === "devin-print" && operation === "settings";
+        generic &&
+        capabilities.executionMode === "devin-print" &&
+        ["settings", "usage-limit-cancel", "usage-limit-continue"].includes(operation);
       if (
         (capabilities.executionMode !== "codex-managed" &&
           !claude &&

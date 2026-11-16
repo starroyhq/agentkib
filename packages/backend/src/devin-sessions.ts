@@ -20,6 +20,7 @@ import { jsonTimestamp } from "./session-history";
 import { decodedSessionImage, sessionImageResult } from "./session-images";
 import type { DocumentOptions, SessionDocument } from "./session-model";
 import type { NativeSession } from "./session-store";
+import { AUTO_CONTINUE_TEXT } from "./usage-limit";
 
 type Row = Record<string, unknown>;
 type Turn = SessionDocument["turns"][number];
@@ -231,6 +232,8 @@ interface Node {
   /** Typed by the user, rather than added to the conversation by Devin. */
   input: boolean;
   text: boolean;
+  /** AgentKib's continue after a usage limit: an instruction to the model, not the person's. */
+  continued: boolean;
   images: number;
   message: string | null;
   /** On a compaction summary: the last node of the history it replaced. */
@@ -254,6 +257,9 @@ SELECT c.node_id AS node,c.depth AS depth,json_valid(m.chat_message) AS valid,
   CASE WHEN json_valid(m.chat_message) THEN json_extract(m.chat_message,'$.metadata.is_user_input') END AS input,
   CASE WHEN json_valid(m.chat_message) AND json_type(m.chat_message,'$.content')='text'
     THEN length(trim(json_extract(m.chat_message,'$.content'),char(32,9,10,13)))>0 END AS text,
+  CASE WHEN json_valid(m.chat_message) AND json_type(m.chat_message,'$.content')='text'
+    THEN trim(json_extract(m.chat_message,'$.content'),char(32,9,10,13))
+      IN (SELECT value FROM json_each(?4)) END AS continued,
   CASE WHEN json_valid(m.chat_message) AND json_type(m.chat_message,'$.images')='array'
     THEN json_array_length(m.chat_message,'$.images') END AS images,
   CASE WHEN json_valid(m.chat_message) THEN json_extract(m.chat_message,'$.message_id') END AS message,
@@ -269,6 +275,7 @@ SELECT c.node_id AS node,c.depth AS depth,json_valid(m.chat_message) AS valid,
   m.created_at AS created
 FROM chain c JOIN message_nodes m ON m.session_id=?1 AND m.node_id=c.node_id
 ORDER BY c.depth DESC`;
+const CONTINUE_TEXTS = JSON.stringify(Object.values(AUTO_CONTINUE_TEXT));
 const integer = (value: unknown) =>
   typeof value === "number" && Number.isSafeInteger(value) ? value : null;
 const nonEmpty = (value: unknown) => (typeof value === "string" && value ? value : null);
@@ -292,6 +299,7 @@ function nodeRow(row: Row): Node {
     role: typeof row.role === "string" ? row.role : "",
     input: row.input === 1,
     text: row.text === 1,
+    continued: row.continued === 1,
     images: integer(row.images) ?? 0,
     message: nonEmpty(row.message),
     summarized: integer(row.summarized),
@@ -330,7 +338,7 @@ function readHistory(source: Source, session: Session): History {
       break;
     }
     seen.add(head);
-    const rows = source.db.prepare(CHAIN).all(session.id, head, remaining);
+    const rows = source.db.prepare(CHAIN).all(session.id, head, remaining, CONTINUE_TEXTS);
     if (!rows.length) {
       // The newest head is gone only if the session changed; an older link can be missing.
       partial = true;
@@ -384,7 +392,9 @@ function project(nodes: Node[], seen: Set<string>, state: { turn?: string } = {}
     if (node.message !== null && seen.has(node.message)) continue;
     const id = `devin-${node.message ?? `node-${node.node}`}`;
     if (node.role === "user") {
-      if (!node.input || (!node.text && !node.images)) continue;
+      // AgentKib's continue is not shown, as Claude Code shows none of its own: what Devin
+      // answers belongs to the turn it continues.
+      if (!node.input || node.continued || (!node.text && !node.images)) continue;
       if (node.message !== null) seen.add(node.message);
       state.turn = id;
       items.push({ type: "user", id, turn: id, node });

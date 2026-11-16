@@ -27,6 +27,7 @@ import {
   type DevinRunnerHost,
 } from "../../../packages/backend/src/devin-managed-runner";
 import { DevinSessionSettings } from "../../../packages/backend/src/devin-session-settings";
+import { devinUsageLimitHit, holdUsageLimit } from "../../../packages/backend/src/usage-limit";
 import { collectUsage } from "../../../packages/backend/src/usage-providers";
 
 const posix = process.platform !== "win32";
@@ -66,6 +67,46 @@ exit ${code}
   chmodSync(file, 0o755);
   return { file, log };
 }
+
+/**
+ * A stand-in `devin` whose `-p` turn prints and exits as the files beside it say, so that one
+ * runner's turns can end differently.
+ */
+function scriptedDevin(root: string) {
+  const file = path.join(root, "devin");
+  writeFileSync(
+    file,
+    `#!/bin/sh
+dir="$(dirname "$0")"
+if [ "$1" = "auth" ]; then echo "Logged in as tester"; exit 0; fi
+[ -f "$dir/turn-sleep" ] && sleep "$(cat "$dir/turn-sleep")"
+[ -f "$dir/turn-stdout" ] && cat "$dir/turn-stdout"
+[ -f "$dir/turn-stderr" ] && cat "$dir/turn-stderr" >&2
+exit "$(cat "$dir/turn-code" 2>/dev/null || echo 0)"
+`,
+  );
+  chmodSync(file, 0o755);
+  return {
+    file,
+    turn({ stdout = "", stderr = "", code = 0, sleep = 0 } = {}) {
+      for (const [name, value] of Object.entries({ stdout, stderr })) {
+        const target = path.join(root, `turn-${name}`);
+        if (value) writeFileSync(target, value);
+        else rmSync(target, { force: true });
+      }
+      writeFileSync(path.join(root, "turn-code"), String(code));
+      if (sleep) writeFileSync(path.join(root, "turn-sleep"), String(sleep));
+      else rmSync(path.join(root, "turn-sleep"), { force: true });
+    },
+  };
+}
+
+// What Devin's service answered when a daily or weekly quota ran out (Devin's own log of the
+// session/prompt error -32011, 2026-10), as `devin -p` prints a failed turn: "Error: <message>".
+const DAILY_QUOTA =
+  "Your daily usage quota has been exhausted. Visit https://app.devin.ai/settings/usage to purchase on-demand usage or turn on auto-reload.";
+const WEEKLY_QUOTA =
+  "Your weekly usage quota has been exhausted. Visit https://app.devin.ai/settings/usage to purchase on-demand usage or turn on auto-reload.";
 
 function host(
   executable: string,
@@ -207,6 +248,254 @@ describe.runIf(posix)("Devin managed runner", () => {
     await expect(runner.send("Again", 1, () => {})).rejects.toThrow("session-busy");
     runner.close();
   });
+
+  it("explains a usage limit in Devin's words until the next turn, and arms no continue", async () => {
+    const root = temp();
+    const devin = scriptedDevin(root);
+    const published: Array<{ type: string; payload: Record<string, unknown> }> = [];
+    const runner = new DevinManagedRunner(
+      root,
+      "known-session",
+      host(devin.file, () => [], published),
+    );
+    devin.turn({
+      stderr: `Error: ${DAILY_QUOTA} (trace ID: 0123456789abcdef0123456789abcdef)\n`,
+      code: 1,
+    });
+    await runner.send("Hello", 0, () => {});
+    await settled(runner);
+    expect(runner.snapshot()).toMatchObject({
+      status: "idle",
+      sendEnabled: true,
+      // The limit explains the turn; it is not a failure to run.
+      reason: null,
+      usageLimit: {
+        agent: "devin",
+        resetsAt: null,
+        kind: null,
+        scope: null,
+        message: DAILY_QUOTA,
+        continueAt: null,
+        manual: "reset-unknown",
+        autoContinues: 0,
+      },
+    });
+    // The state event is the live state itself, as clients merge it.
+    const state = published.filter((event) => event.type === "state").at(-1)!.payload;
+    expect(state).toMatchObject({ status: "idle", usageLimit: { agent: "devin" } });
+    expect(state).not.toHaveProperty("live");
+    devin.turn();
+    await runner.send("Again", Number(runner.snapshot().revision), () => {});
+    expect(runner.snapshot().usageLimit).toBeNull();
+    await settled(runner);
+    expect(runner.snapshot()).toMatchObject({ reason: null, usageLimit: null });
+  });
+
+  it("reads a limit that ends a turn with exit 0 from stderr, never from Devin's reply", async () => {
+    const root = temp();
+    const devin = scriptedDevin(root);
+    const runner = new DevinManagedRunner(
+      root,
+      "known-session",
+      host(devin.file, () => [], []),
+    );
+    devin.turn({ stdout: "Partial answer\n", stderr: `Error: ${WEEKLY_QUOTA}\n` });
+    await runner.send("Hello", 0, () => {});
+    await settled(runner);
+    expect(runner.snapshot().usageLimit).toMatchObject({ kind: "weekly", message: WEEKLY_QUOTA });
+    // A reply that quotes Devin's words is an answer like any other.
+    devin.turn({ stdout: `Devin says "Usage limit reached" when ${DAILY_QUOTA}\n` });
+    await runner.send("What does it say?", Number(runner.snapshot().revision), () => {});
+    await settled(runner);
+    expect(runner.snapshot()).toMatchObject({ reason: null, usageLimit: null });
+  });
+
+  it("names a turn whose process was ended without a stop", async () => {
+    const root = temp();
+    const devin = scriptedDevin(root);
+    const runner = new DevinManagedRunner(
+      root,
+      "known-session",
+      host(devin.file, () => [], []),
+    );
+    devin.turn({ sleep: 30 });
+    await runner.send("Long task", 0, () => {});
+    runner.close();
+    for (let attempt = 0; attempt < 200 && runner.snapshot().turnId; attempt++)
+      await new Promise((resolve) => setTimeout(resolve, 50));
+    expect(runner.snapshot()).toMatchObject({ turnId: null, reason: "devin-run-stopped" });
+  });
+
+  it("tells the host how each turn ended, with its answer, before it shows itself idle", async () => {
+    const root = temp();
+    const devin = scriptedDevin(root);
+    const published: Array<{ type: string; payload: Record<string, unknown> }> = [];
+    const ends: Array<Record<string, unknown>> = [];
+    const runner = new DevinManagedRunner(root, "known-session", {
+      ...host(devin.file, () => [], published),
+      latestItems: async () => [
+        { id: "devin-u1", kind: "user-message", turn_id: "devin-u1" },
+        { id: "devin-r1", kind: "agent-message", turn_id: "devin-u1", message_phase: "commentary" },
+        { id: "devin-tool-1", kind: "tool-summary", turn_id: "devin-u1" },
+        {
+          id: "devin-r2",
+          kind: "agent-message",
+          turn_id: "devin-u1",
+          message_phase: "final_answer",
+        },
+      ],
+      turnEnded: (end) => {
+        // Clients have not been told yet that the turn ended.
+        const state = published.filter((event) => event.type === "state").at(-1);
+        ends.push({ ...end, published: state?.payload.status });
+      },
+    });
+    devin.turn();
+    await runner.send("Hello", 0, () => {});
+    const turnId = runner.snapshot().turnId;
+    await settled(runner);
+    devin.turn({ stderr: `Error: ${DAILY_QUOTA}\n`, code: 1 });
+    await runner.send("Again", Number(runner.snapshot().revision), () => {});
+    await settled(runner);
+    devin.turn({ sleep: 30 });
+    await runner.send("Long", Number(runner.snapshot().revision), () => {});
+    await runner.stop(
+      String(runner.snapshot().turnId),
+      Number(runner.snapshot().revision),
+      () => {},
+    );
+    await settled(runner);
+    expect(ends).toEqual([
+      {
+        nativeId: "known-session",
+        turnId,
+        outcome: "completed",
+        historyTurnId: "devin-u1",
+        answerItemId: "devin-r2",
+        usageLimit: null,
+        published: "running",
+      },
+      expect.objectContaining({
+        outcome: "failed",
+        usageLimit: expect.objectContaining({ message: DAILY_QUOTA }),
+      }),
+      expect.objectContaining({ outcome: "cancelled", usageLimit: null }),
+    ]);
+  });
+
+  it("shows the usage limit the host holds, until the next turn", async () => {
+    const root = temp();
+    const devin = scriptedDevin(root);
+    const published: Array<{ type: string; payload: Record<string, unknown> }> = [];
+    const runner = new DevinManagedRunner(
+      root,
+      "known-session",
+      host(devin.file, () => [], published),
+    );
+    devin.turn({ stderr: `Error: ${DAILY_QUOTA}\n`, code: 1 });
+    await runner.send("Hello", 0, () => {});
+    await settled(runner);
+    const revision = runner.snapshot().revision;
+    const view = {
+      agent: "devin" as const,
+      resetsAt: Date.now() + 3_600_000,
+      kind: null,
+      scope: null,
+      message: DAILY_QUOTA,
+      continueAt: Date.now() + 3_630_000,
+      manual: null,
+      autoContinues: 0,
+    };
+    expect(runner.showUsageLimit(view)).toBe(true);
+    expect(runner.showUsageLimit(view)).toBe(false);
+    // What the notice says is not something a control was decided on.
+    expect(runner.snapshot()).toMatchObject({ revision, usageLimit: view });
+    expect(published.at(-1)).toMatchObject({ type: "state", payload: { usageLimit: view } });
+    devin.turn();
+    await runner.send("Again", Number(revision), () => {});
+    expect(runner.showUsageLimit(view)).toBe(false);
+    expect(runner.snapshot().usageLimit).toBeNull();
+    await settled(runner);
+  });
+});
+
+describe("Devin usage limits", () => {
+  it.each([
+    // Recorded: the service's -32011 errors, printed by `devin -p` and as Devin logs them.
+    [`Error: ${DAILY_QUOTA} (trace ID: 0123456789abcdef0123456789abcdef)`, null, DAILY_QUOTA],
+    [`Error: ${WEEKLY_QUOTA}`, "weekly", WEEKLY_QUOTA],
+    [
+      `WARN run_acp_server: Sending error response id=Number(84) method=session/prompt error=Error { code: -32011: Unknown error, message: "${DAILY_QUOTA}", data: Some(Object {"cognition.ai/errorKind": String("resource_exhausted")}) }`,
+      null,
+      DAILY_QUOTA,
+    ],
+    [
+      `{"error":{"code":-32011,"message":"${WEEKLY_QUOTA}","data":{"cognition.ai/errorKind":"resource_exhausted","cognition.ai/retryable":true}}}`,
+      "weekly",
+      WEEKLY_QUOTA,
+    ],
+    // The CLI's own words for its errors (3000.12.59).
+    ["Error: Quota exhausted: Quota exhausted.", null, "Quota exhausted: Quota exhausted."],
+    [
+      "Quota exhausted\nPurchase on-demand usage or turn on auto-reload, or wait for your quota to reset.",
+      null,
+      "Quota exhausted",
+    ],
+    ["\u001b[31mUsage limit reached\u001b[0m", null, "Usage limit reached"],
+    ["Organization usage limit reached", null, "Organization usage limit reached"],
+    [
+      "You've reached your monthly usage limit. Wait for the limit to reset next month.",
+      null,
+      "You've reached your monthly usage limit. Wait for the limit to reset next month.",
+    ],
+    [
+      "Your organization has reached its monthly usage limit. Ask an account admin to raise it, or wait for the limit to reset next month.",
+      null,
+      "Your organization has reached its monthly usage limit. Ask an account admin to raise it, or wait for the limit to reset next month.",
+    ],
+    [
+      "You've reached your ChatGPT subscription usage limit. Resume this session once your limit resets, or turn off ChatGPT token sharing in settings to continue on Devin usage.",
+      null,
+      "You've reached your ChatGPT subscription usage limit. Resume this session once your limit resets, or turn off ChatGPT token sharing in settings to continue on Devin usage.",
+    ],
+    ["Error: Rate limited: Too many requests", null, "Rate limited: Too many requests"],
+  ])("recognizes %j", (output, kind, message) => {
+    expect(devinUsageLimitHit(`warning: something else\n${output}\n`)).toEqual({
+      resetsAt: null,
+      kind,
+      scope: null,
+      message,
+    });
+  });
+
+  it.each([
+    "Error: Not logged in. Run `devin auth login` to authenticate.",
+    "Error: Failed to load team settings: Connection failed",
+    "An admin paused usage on your account. Ask them to resume it to continue.",
+    "warning: rejected a tool call that requires confirmation. Running in non-interactive mode.",
+    "",
+  ])("leaves %j alone", (output) => {
+    expect(devinUsageLimitHit(output)).toBeNull();
+  });
+
+  it("arms a continue once the reset is known, as for Codex, and none without it", () => {
+    const now = Date.now();
+    const hit = { resetsAt: null, kind: null, scope: null, message: "Quota exhausted" };
+    const context = { deviceId: "phone", bootId: "boot", now, random: () => 0 };
+    expect(holdUsageLimit("devin", hit, context)).toMatchObject({
+      agent: "devin",
+      continueAt: null,
+      manual: "reset-unknown",
+    });
+    expect(holdUsageLimit("devin", { ...hit, resetsAt: now + 3_600_000 }, context)).toMatchObject({
+      continueAt: now + 3_600_000 + 30_000,
+      manual: null,
+    });
+    // A weekly reset days away is the person's to continue, as for the other agents.
+    expect(
+      holdUsageLimit("devin", { ...hit, resetsAt: now + 3 * 86_400_000 }, context),
+    ).toMatchObject({ continueAt: null, manual: "reset-too-far" });
+  });
 });
 
 describe("Devin child environment", () => {
@@ -225,6 +514,8 @@ describe("Devin run failures", () => {
     ["Error: session abc is locked by another process", 1, "session-open-elsewhere"],
     ["something else", 2, "devin-run-failed"],
     ["", null, "devin-run-stopped"],
+    // A limit is recognized before this mapping runs; on its own it is a failed turn.
+    [`Error: ${DAILY_QUOTA}`, 1, "devin-run-failed"],
   ])("maps %j", (output, code, reason) => {
     expect(devinRunFailure(output, code)).toBe(reason);
   });

@@ -45,6 +45,7 @@ import type { CodexFollowerState } from "./codex-follower-state";
 import { CodexFollowerStream } from "./codex-follower-stream";
 import { AntigravityManagedRunner } from "./antigravity-managed-runner";
 import { devinExecutable } from "./devin-executable";
+import { devinLimitReset, readDevinUsage, type DevinUsageWindow } from "./devin-usage";
 import { DEVIN_DEFAULT_PERMISSION_MODE, DevinSessionSettings } from "./devin-session-settings";
 import {
   DEVIN_EXECUTION_MODE,
@@ -55,6 +56,7 @@ import {
   devinModelCatalog,
   type DevinModelCatalog,
   type DevinRunnerHost,
+  type DevinTurnEnd,
   type DevinTurnSettings,
 } from "./devin-managed-runner";
 import { ManagedCodexState, elicitationResponse } from "./managed-codex-state";
@@ -74,9 +76,11 @@ import {
   openManagedLedger,
   persistManagedGoal,
   readManagedEvents,
+  readManagedUsageLimit,
   readUnknownManagedCommands,
   replayManagedCommand,
   saveManagedRecord,
+  saveManagedUsageLimit,
 } from "./managed-ledger";
 import { CodexLeadTurns } from "./lead-turn-origin";
 import { CodexTitleThreads, codexUserMessageText, threadTitleModel } from "./codex-thread-title";
@@ -85,11 +89,13 @@ import {
   armUsageLimit,
   codexUsageLimitHit,
   holdUsageLimit,
+  parseUsageLimit,
   usageLimitArmable,
   usageLimitAutoContinue,
   usageLimitContinue,
   usageLimitView,
   type UsageLimit,
+  type UsageLimitHit,
 } from "./usage-limit";
 
 const FOLLOWER_RETRY_MS = 5_000;
@@ -458,6 +464,13 @@ type ManagedModelOption = {
   serviceTiers: string[];
 };
 
+/** A usage limit's notice kept longer than this is not shown after a restart. */
+const KEPT_LIMIT_MS = 7 * 24 * 60 * 60_000;
+/** Longer waits are taken a day at a time: a timer cannot wait much more than 24 days. */
+const LIMIT_TIMER_MS = 24 * 60 * 60_000;
+/** A read of Devin's `/usage`; `known` once it ended, whether it named any window. */
+type DevinUsageRead = { at: number; read: Promise<DevinUsageWindow[] | null>; known?: boolean };
+
 /** See `WebReadRequests.observeLanes`. */
 export type LaneObserver = {
   /** `durationMs` is Codex's own measure of the turn, when it gives one. */
@@ -553,6 +566,21 @@ export class WebReadRequests {
     }
   >();
   #devinSavedSettings: DevinSessionSettings | undefined;
+  /**
+   * The usage limit each Devin session AgentKib runs last met, and the continue armed for it, as
+   * `#codexLimits` holds Codex's. The notice is also kept in the managed ledger, so that it
+   * outlives a restart. `continuing` is the request of the continue AgentKib sent, until that
+   * turn ends.
+   */
+  #devinLimits = new Map<
+    string,
+    { limit: UsageLimit; timer?: ReturnType<typeof setTimeout>; continuing?: string }
+  >();
+  /** The device whose message each Devin session last took. */
+  #devinSenders = new Map<string, string>();
+  /** The last read of Devin's `/usage`, shared by sessions that meet a limit together. */
+  #devinUsage?: DevinUsageRead;
+  #devinUsageAbort = new AbortController();
 
   #devinSaved() {
     this.#devinSavedSettings ??= new DevinSessionSettings(this.dataDir);
@@ -607,6 +635,8 @@ export class WebReadRequests {
     this.#shuttingDown = true;
     clearInterval(this.#retirementTimer);
     for (const entry of this.#codexLimits.values()) clearTimeout(entry.timer);
+    for (const entry of this.#devinLimits.values()) clearTimeout(entry.timer);
+    this.#devinUsageAbort.abort();
     this.#preflight.close();
     this.#desktopApp.close();
     return (this.#closing = this.#close());
@@ -2917,6 +2947,9 @@ export class WebReadRequests {
     for (const [sessionId, held] of this.#codexLimits)
       if (held.limit.deviceId === deviceId && held.limit.continueAt !== null)
         this.#armCodexLimit(sessionId, { ...held.limit, continueAt: null, manual: "cancelled" });
+    for (const [sessionId, held] of this.#devinLimits)
+      if (held.limit.deviceId === deviceId && held.limit.continueAt !== null)
+        this.#armDevinLimit(sessionId, { ...held.limit, continueAt: null, manual: "cancelled" });
   }
 
   managedControl(value: unknown) {
@@ -6058,6 +6091,10 @@ export class WebReadRequests {
       firstUserText: async (nativeId) =>
         (await page(nativeId, 20)).events.find((event) => event.kind === "user-message")?.content ??
         null,
+      turnEnded: (end) => {
+        const id = sessionId();
+        if (id) this.#devinTurnEnded(id, workspace, end);
+      },
       publish: (type, payload, live) => {
         const id = sessionId();
         if (!id) return;
@@ -6071,6 +6108,196 @@ export class WebReadRequests {
         this.publishConversationEvent?.(id, type, eventPayload, current);
       },
     };
+  }
+
+  /**
+   * A Devin turn AgentKib ran ended: a usage limit it met is held as Codex's are, and any other
+   * end is the next turn after a limit, which ends the hold.
+   */
+  #devinTurnEnded(sessionId: string, workspace: string, end: DevinTurnEnd): void {
+    if (end.usageLimit) void this.#holdDevinLimit(sessionId, workspace, end.usageLimit);
+    else if (this.#devinLimits.has(sessionId)) this.#armDevinLimit(sessionId, null);
+  }
+
+  /**
+   * Holds the limit a Devin turn met. The notice says so at once; when the limit resets follows
+   * once Devin's `/usage` has said, and then the continue is armed as for Codex.
+   */
+  async #holdDevinLimit(sessionId: string, workspace: string, hit: UsageLimitHit): Promise<void> {
+    const held = this.#devinLimits.get(sessionId);
+    const context = {
+      deviceId: this.#devinSenders.get(sessionId) ?? held?.limit.deviceId ?? "",
+      bootId: this.#bootId,
+      // Only a turn AgentKib's continue started counts toward the three in a row.
+      previous: held?.continuing ? held.limit : null,
+      autoContinue: usageLimitAutoContinue(this.dataDir),
+    };
+    const first = holdUsageLimit("devin", hit, context);
+    this.#armDevinLimit(sessionId, first);
+    const windows = await this.#devinUsageWindows(workspace);
+    const reset = windows ? devinLimitReset(windows, hit) : null;
+    // A turn that started meanwhile decides instead.
+    if (!reset || this.#shuttingDown || this.#devinLimits.get(sessionId)?.limit !== first) return;
+    this.#armDevinLimit(sessionId, holdUsageLimit("devin", { ...hit, ...reset }, context));
+  }
+
+  /**
+   * Devin's `/usage` (`devin-usage.ts`), read in the session's workspace. Sessions that meet the
+   * account's limit together share one read; a read that told nothing is not reused.
+   */
+  #devinUsageWindows(workspace: string): Promise<DevinUsageWindow[] | null> {
+    const recent = this.#devinUsage;
+    if (recent && recent.known !== false && Date.now() - recent.at < 60_000) return recent.read;
+    const environment = devinChildEnvironment({ ...process.env, ...this.environment });
+    const executable = devinExecutable(environment);
+    const read = executable
+      ? readDevinUsage(executable, workspace, environment, {
+          signal: this.#devinUsageAbort.signal,
+        }).catch(() => null)
+      : Promise.resolve(null);
+    const entry: DevinUsageRead = { at: Date.now(), read };
+    void read.then((windows) => {
+      entry.known = !!windows?.length;
+    });
+    this.#devinUsage = entry;
+    return read;
+  }
+
+  /**
+   * Holds `limit` for a Devin session (null ends the hold), arms its continue, keeps its notice
+   * for a later run of AgentKib, and with `show` puts it on the session's live state.
+   */
+  #armDevinLimit(
+    sessionId: string,
+    limit: UsageLimit | null,
+    continuing?: string,
+    show = true,
+  ): void {
+    const held = this.#devinLimits.get(sessionId);
+    clearTimeout(held?.timer);
+    if (!limit) this.#devinLimits.delete(sessionId);
+    else {
+      const timer =
+        limit.continueAt === null
+          ? undefined
+          : setTimeout(
+              () => void this.#fireDevinContinue(sessionId).catch(() => undefined),
+              Math.min(LIMIT_TIMER_MS, Math.max(0, limit.continueAt - Date.now())),
+            );
+      timer?.unref?.();
+      this.#devinLimits.set(sessionId, { limit, timer, continuing });
+    }
+    try {
+      // What the person is told outlives a restart; a continue on its way is a turn that started.
+      saveManagedUsageLimit(this.dataDir, sessionId, limit && !continuing ? limit : null);
+    } catch {
+      // The notice still shows until AgentKib quits.
+    }
+    if (show)
+      this.#devinRunners.get(sessionId)?.runner.showUsageLimit(usageLimitView(limit, this.#bootId));
+  }
+
+  /** A new runner shows the hold for its session, also one an earlier run of AgentKib kept. */
+  #showDevinLimit(sessionId: string, runner: DevinManagedRunner): void {
+    let limit = this.#devinLimits.get(sessionId)?.limit;
+    if (!limit) {
+      let kept: ReturnType<typeof readManagedUsageLimit> = null;
+      try {
+        kept = readManagedUsageLimit(this.dataDir, sessionId);
+      } catch {
+        kept = null;
+      }
+      const parsed = kept ? parseUsageLimit(kept.limit, "devin") : null;
+      if (parsed && Date.now() - kept!.savedAt < KEPT_LIMIT_MS) {
+        // A continue an earlier run armed ended with it: the person continues, or arms it again.
+        limit =
+          usageLimitContinue(parsed, this.#bootId) === "never" && parsed.continueAt !== null
+            ? { ...parsed, continueAt: null, manual: "restarted" }
+            : parsed;
+        this.#devinLimits.set(sessionId, { limit });
+      }
+    }
+    if (limit) runner.showUsageLimit(usageLimitView(limit, this.#bootId));
+  }
+
+  /**
+   * The continue armed after a Devin usage limit is due: AgentKib sends its continue in the name
+   * of the device whose turn met the limit, as for Codex.
+   */
+  async #fireDevinContinue(sessionId: string): Promise<void> {
+    const held = this.#devinLimits.get(sessionId);
+    if (!held || this.#shuttingDown) return;
+    const due = usageLimitContinue(held.limit, this.#bootId);
+    if (due === "never") return;
+    if (due === "wait") return this.#armDevinLimit(sessionId, held.limit);
+    if (due === "stale")
+      return this.#armDevinLimit(sessionId, { ...held.limit, continueAt: null, manual: "stale" });
+    const requestId = randomUUID();
+    this.#armDevinLimit(
+      sessionId,
+      { ...held.limit, continueAt: null, autoContinues: held.limit.autoContinues + 1 },
+      requestId,
+      false,
+    );
+    const live = await this.#devinLive(sessionId).catch(() => null);
+    if (!live || live.status !== "idle" || live.sendEnabled !== true)
+      // Something else runs: look again shortly.
+      return this.#armDevinLimit(sessionId, { ...held.limit, continueAt: Date.now() + 60_000 });
+    const result = (await this.managedControl({
+      operation: "send",
+      sessionId,
+      requestId,
+      ...(held.limit.deviceId ? { deviceId: held.limit.deviceId } : {}),
+      runtimeBootId: live.runtimeBootId,
+      expectedRevision: live.revision,
+      experimentalEnabled: true,
+      text: AUTO_CONTINUE_TEXT.devin,
+    }).catch(() => null)) as Record<string, unknown> | null;
+    const current = this.#devinLimits.get(sessionId);
+    if (result?.accepted !== true && current?.continuing === requestId)
+      // Refused: the person continues.
+      this.#armDevinLimit(sessionId, { ...current.limit, manual: "stale" });
+  }
+
+  /**
+   * The person's choice about a Devin session's continue: off this time (`usage-limit-cancel`),
+   * or on. Armed again, it goes in the name of the device that asked.
+   */
+  #devinLimitChoice(
+    request: z.infer<typeof managedControlSchema>,
+    fingerprint: string,
+    choose: (limit: UsageLimit) => UsageLimit | null,
+  ): Record<string, unknown> {
+    const held = this.#devinLimits.get(request.sessionId);
+    const next = held && !held.continuing ? choose(held.limit) : null;
+    if (!next) throw new Error("usage-limit-continue-unavailable");
+    const claimed = claimManagedCommand(
+      this.dataDir,
+      request.requestId,
+      request.sessionId,
+      fingerprint,
+      request.deviceId ?? null,
+      {
+        operation: request.operation,
+        workspaceId: this.store.sessions.get(request.sessionId)?.workspace_id ?? null,
+        runtimeBootId: request.runtimeBootId,
+        expectedRevision: request.expectedRevision,
+        executionMode: DEVIN_EXECUTION_MODE,
+        turnId: null,
+        nativeRequestId: null,
+      },
+    );
+    if (claimed) return claimed;
+    this.#armDevinLimit(request.sessionId, next);
+    const result = {
+      sessionId: request.sessionId,
+      accepted: true,
+      completed: true,
+      requestId: request.requestId,
+      runtimeBootId: this.#bootId,
+    };
+    finishManagedCommand(this.dataDir, request.requestId, result);
+    return result;
   }
 
   /**
@@ -6129,12 +6356,14 @@ export class WebReadRequests {
       this.#devinHost(workspace, workspaceId, () => sessionId),
     );
     // Without a saved choice a resumed turn keeps the session's model and edits the workspace.
-    return this.#addDevinRunner(
+    const record = this.#addDevinRunner(
       sessionId,
       runner,
       this.#devinSaved().get(resolved.native.native_ref),
       workspaceId,
     );
+    this.#showDevinLimit(sessionId, runner);
+    return record;
   }
 
   async #devinLive(sessionId: string): Promise<Record<string, unknown>> {
@@ -6168,6 +6397,11 @@ export class WebReadRequests {
   async #devinQuery(request: z.infer<typeof managedQuerySchema>) {
     const live = await this.#devinLive(request.sessionId);
     const experimental = request.experimentalEnabled === true;
+    const held = this.#devinLimits.get(request.sessionId);
+    const limitChoice = (available: boolean) =>
+      experimental && available && !held?.continuing && live.status !== "unsupported"
+        ? { available: true }
+        : { available: false, reason: "usage-limit-continue-unavailable" };
     const reason =
       live.status === "unsupported"
         ? String(live.reason)
@@ -6195,6 +6429,9 @@ export class WebReadRequests {
       inspect: { available: live.status !== "unsupported" },
       resume: unsupported,
       usage: { available: false, reason: "usage-not-reported" },
+      // The continue armed after a usage limit, once Devin's `/usage` said when it resets.
+      "usage-limit-cancel": limitChoice(typeof held?.limit.continueAt === "number"),
+      "usage-limit-continue": limitChoice(usageLimitArmable(held?.limit, this.#bootId)),
     };
     const base = {
       sessionId: request.sessionId,
@@ -6212,8 +6449,29 @@ export class WebReadRequests {
     const runtimeBootId = this.#bootId;
     if (!request.experimentalEnabled || request.runtimeBootId !== runtimeBootId)
       throw new Error("stale-or-disabled-control");
-    if (!["send", "stop", "settings"].includes(request.operation))
+    if (
+      !["send", "stop", "settings", "usage-limit-cancel", "usage-limit-continue"].includes(
+        request.operation,
+      )
+    )
       throw new Error("unsupported-operation");
+    if (
+      request.operation === "usage-limit-cancel" ||
+      request.operation === "usage-limit-continue"
+    ) {
+      // The runner shows the hold, also one kept from before a restart.
+      const record = await this.#devinRunner(request.sessionId);
+      if (request.expectedRevision !== record.runner.snapshot().revision)
+        throw new Error("stale-or-disabled-control");
+      return request.operation === "usage-limit-cancel"
+        ? this.#devinLimitChoice(request, fingerprint, (limit) =>
+            limit.continueAt === null ? null : { ...limit, continueAt: null, manual: "cancelled" },
+          )
+        : this.#devinLimitChoice(request, fingerprint, (limit) => {
+            const armed = armUsageLimit(limit, { bootId: runtimeBootId });
+            return armed && request.deviceId ? { ...armed, deviceId: request.deviceId } : armed;
+          });
+    }
     if (
       request.operation === "settings" &&
       request.model !== undefined &&
@@ -6249,6 +6507,13 @@ export class WebReadRequests {
     const beforeDispatch = () => {
       dispatchManagedCommand(this.dataDir, request.requestId);
       dispatched = true;
+      if (request.operation !== "send") return;
+      // The person's message takes over from a continue armed after a usage limit; the turn it
+      // starts clears what the live state shows.
+      const held = this.#devinLimits.get(request.sessionId);
+      if (held && held.continuing !== request.requestId)
+        this.#armDevinLimit(request.sessionId, null, undefined, false);
+      if (request.deviceId) this.#devinSenders.set(request.sessionId, request.deviceId);
     };
     try {
       if (request.operation === "send") {

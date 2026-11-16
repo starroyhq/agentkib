@@ -6,6 +6,7 @@ import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { DevinSessions } from "../../../packages/backend/src/devin-sessions";
 import { sources } from "../../../packages/backend/src/context-sources";
+import { AUTO_CONTINUE_TEXT } from "../../../packages/backend/src/usage-limit";
 
 const cleanup: (() => void)[] = [];
 afterEach(() => {
@@ -299,6 +300,45 @@ describe("Devin sessions", () => {
       title: "README.md",
       locations: [{ path: "README.md" }],
     });
+  });
+
+  it("leaves out AgentKib's continue after a usage limit, as Claude Code shows none of its own", () => {
+    const { project, file, readers, id } = fixture();
+    const db = new DatabaseSync(file);
+    const insert = db.prepare("INSERT INTO message_nodes VALUES (NULL,?,?,?,?,?,NULL)");
+    for (const [node, parent, message] of [
+      [13, 12, { message_id: "m8", role: "user", content: `${AUTO_CONTINUE_TEXT.devin}\n` }],
+      [
+        14,
+        13,
+        { message_id: "m9", role: "assistant", content: "Picked up again", phase: "final_answer" },
+      ],
+    ] as const)
+      insert.run(
+        id,
+        node,
+        parent,
+        JSON.stringify({ ...message, metadata: { is_user_input: true } }),
+        1_794_400_100 + node,
+      );
+    db.prepare("UPDATE sessions SET main_chain_id=14 WHERE id=?").run(id);
+    db.close();
+    const page = readers.events(id, project, null, 100);
+    expect(page.events.some((event) => event.content?.includes("usage quota has reset"))).toBe(
+      false,
+    );
+    // Devin's answer belongs to the turn it continues.
+    expect(
+      page.events.slice(-2).map((event) => [event.id, event.turn_id, event.message_phase]),
+    ).toEqual([
+      ["devin-m7", "devin-m4", "commentary"],
+      ["devin-m9", "devin-m4", "final_answer"],
+    ]);
+    expect(
+      readers
+        .searchRecords(id, project)
+        .records.some((record) => record.recordId === "devin-m8:text"),
+    ).toBe(false);
   });
 
   it("pages backwards from the newest item", () => {

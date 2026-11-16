@@ -8,7 +8,7 @@ import type { UploadedAttachment } from "@agentkib/web-client";
 import { SessionComposer } from "./session-composer";
 import { offerNewSessionDraft, takeNewSessionDraft } from "./new-session-draft";
 import { composerLayoutCopy } from "./composer-layout-copy";
-import { codexCopy } from "./codex-copy";
+import { codexCopy, codexReason } from "./codex-copy";
 import type { CodexResource } from "./codex-session-controls";
 import type { SessionController } from "./use-session-controller";
 
@@ -963,5 +963,73 @@ describe("composer sending shortcuts", () => {
     expect(screen.getByRole("textbox", { name: "Message" })).toHaveValue("Add rate limiting");
     await act(async () => {});
     expect(doubles.control).not.toHaveBeenCalled();
+  });
+  it("explains a usage limit a Devin turn met, without a continue to choose", () => {
+    doubles.session.current = { id: "session", agent: "devin" } as SessionController["current"];
+    doubles.session.live = {
+      ...doubles.session.live,
+      executionMode: "devin-print",
+      status: "idle",
+      usageLimit: {
+        agent: "devin",
+        resetsAt: null,
+        kind: "weekly",
+        scope: null,
+        message: "Your weekly usage quota has been exhausted.",
+        continueAt: null,
+        manual: "reset-unknown",
+        autoContinues: 0,
+      },
+    } as SessionController["live"];
+    render(<SessionComposer />);
+    expect(screen.getByRole("status")).toHaveTextContent(
+      "You've hit your weekly limit. Try again later.",
+    );
+    expect(screen.queryByRole("button", { name: /continue automatically/i })).toBeNull();
+  });
+  it("offers the continue after Devin's reset, once its /usage told when that is", () => {
+    doubles.session.current = { id: "session", agent: "devin" } as SessionController["current"];
+    const resetsAt = Date.now() + 3_600_000;
+    const usageLimit = {
+      agent: "devin" as const,
+      resetsAt,
+      kind: null,
+      scope: null,
+      message: "Your daily usage quota has been exhausted.",
+      continueAt: resetsAt + 30_000,
+      manual: null,
+      autoContinues: 0,
+    };
+    doubles.session.live = {
+      ...doubles.session.live,
+      executionMode: "devin-print",
+      status: "idle",
+      usageLimit,
+    } as SessionController["live"];
+    const view = render(<SessionComposer />);
+    expect(screen.getByRole("status")).toHaveTextContent("continues automatically after the reset");
+    fireEvent.click(screen.getByRole("button", { name: "Don't continue automatically" }));
+    expect(doubles.codexAction).toHaveBeenCalledWith("usage-limit-cancel");
+    view.unmount();
+    doubles.session.live = {
+      ...doubles.session.live,
+      usageLimit: { ...usageLimit, continueAt: null, manual: "cancelled" },
+    } as SessionController["live"];
+    render(<SessionComposer />);
+    fireEvent.click(screen.getByRole("button", { name: "Continue automatically after the reset" }));
+    expect(doubles.codexAction).toHaveBeenCalledWith("usage-limit-continue");
+  });
+  it("explains a Devin turn whose CLI process was ended", () => {
+    doubles.session.current = { id: "session", agent: "devin" } as SessionController["current"];
+    doubles.session.live = {
+      ...doubles.session.live,
+      executionMode: "devin-print",
+      status: "idle",
+      reason: "devin-run-stopped",
+    } as SessionController["live"];
+    render(<SessionComposer />);
+    expect(screen.getByRole("status")).toHaveTextContent(
+      codexReason("en-US", "devin-run-stopped", "web").text,
+    );
   });
 });

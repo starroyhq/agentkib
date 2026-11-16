@@ -369,9 +369,9 @@ export interface UserQuestionRequest {
     allowCustom: boolean;
   }[];
 }
-/** A usage limit an agent's account met (Claude Code, Codex, DeepSeek Harness). */
+/** A usage limit an agent's account met (Claude Code, Codex, DeepSeek Harness, Devin). */
 export interface UsageLimitNotice {
-  agent: "claude-code" | "codex" | "deepseek-harness";
+  agent: "claude-code" | "codex" | "deepseek-harness" | "devin";
   /** When the limit resets, ms since the epoch; null when the agent did not say. */
   resetsAt: number | null;
   /** `model`: a model's own limit, named by `scope`; `quota`: an API balance. */

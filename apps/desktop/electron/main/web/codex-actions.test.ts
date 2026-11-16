@@ -736,6 +736,74 @@ describe.each([
     expect(live.data).toMatchObject({ sendEnabled: false, stopEnabled: false });
   });
 });
+// The phone and the browsers turn the continue after a Devin usage limit off and on through the
+// generic action, as for Codex; it takes no more than sending.
+describe("Devin's usage-limit choices", () => {
+  const withChoices = () =>
+    runtime.mockImplementation(async (input) => {
+      const result = await runtimeHandler(input);
+      return (input as { operation: string }).operation === "capabilities"
+        ? {
+            ...(result as { features: object }),
+            features: {
+              ...(result as { features: object }).features,
+              "usage-limit-cancel": { available: true },
+              "usage-limit-continue": { available: true },
+            },
+          }
+        : result;
+    });
+  const request = (operation: string) => ({ ...deletion(), operation, agent: "devin" });
+
+  it.each(["usage-limit-cancel", "usage-limit-continue"])(
+    "dispatches %s with the send permission",
+    async (operation) => {
+      await pair();
+      executionMode = "devin-print";
+      withChoices();
+      const result = await http("/managed/action", request(operation));
+      expect(result.status).toBe(200);
+      const dispatched = runtime.mock.calls.find(
+        ([p]) => (p as { operation: string }).operation === operation,
+      )![0];
+      expect(dispatched).toMatchObject({ operation, sessionId: "session", expectedRevision: 1 });
+    },
+  );
+
+  it("refuses them to a device that cannot send", async () => {
+    await pair({ send: false });
+    executionMode = "devin-print";
+    withChoices();
+    expect((await http("/managed/action", request("usage-limit-continue"))).status).toBe(403);
+    expect(
+      runtime.mock.calls.some(
+        ([p]) => (p as { operation: string }).operation === "usage-limit-continue",
+      ),
+    ).toBe(false);
+  });
+
+  it("offers no other Codex action for Devin", async () => {
+    await pair({ organize: true });
+    executionMode = "devin-print";
+    runtime.mockImplementation(async (input) => {
+      const result = await runtimeHandler(input);
+      return (input as { operation: string }).operation === "capabilities"
+        ? {
+            ...(result as { features: object }),
+            features: { rename: { available: true } },
+          }
+        : result;
+    });
+    const result = await http("/managed/action", {
+      ...request("rename"),
+      name: "New name",
+    });
+    expect(result.status).toBe(409);
+    expect(
+      runtime.mock.calls.some(([p]) => (p as { operation: string }).operation === "rename"),
+    ).toBe(false);
+  });
+});
 it("projects follower capabilities like managed ones", async () => {
   await pair();
   executionMode = "codex-follower";

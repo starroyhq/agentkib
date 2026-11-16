@@ -1,5 +1,5 @@
 import { cleanup, render, screen } from "@testing-library/react";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, beforeEach, vi } from "vitest";
 import type { Live } from "@agentkib/web-client";
 import {
   ManagedTurnNotice,
@@ -139,6 +139,12 @@ describe("usage limit notice", () => {
   afterEach(cleanup);
   // The reset at 15:30 local time on a fixed day, read in the test's own time zone.
   const now = new Date(2026, 10, 16, 12, 0).getTime();
+  // The notices read the clock: hold it at `now`, or a reset that has passed changes them.
+  beforeEach(() => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(now);
+  });
+  afterEach(() => vi.useRealTimers());
   const resetsAt = new Date(2026, 10, 16, 15, 30).getTime();
   const limit = (patch: Partial<NonNullable<Live["usageLimit"]>> = {}) =>
     ({

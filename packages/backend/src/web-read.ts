@@ -5240,6 +5240,8 @@ export class WebReadRequests {
             .map(({ id, name, path }) => ({ id, name, path })),
         ),
         sessions: checkouts.sessions(sessions).map((session) => {
+          if (isSessionSummary(session) && "agent" in session && session.agent === "devin")
+            return this.#devinContinuation(session);
           if (!isSessionSummary(session) || !("agent" in session) || session.agent !== "codex")
             return session;
           const runner = this.#managedRunners.get(session.id);
@@ -6060,8 +6062,33 @@ export class WebReadRequests {
         const id = sessionId();
         if (!id) return;
         const current = { ...live, sessionId: id, runtimeBootId: this.#bootId, workspaceId };
-        const eventPayload = isObject(payload.live) ? { ...payload, live: current } : payload;
+        const eventPayload =
+          type === "state"
+            ? current
+            : isObject(payload.live)
+              ? { ...payload, live: current }
+              : payload;
         this.publishConversationEvent?.(id, type, eventPayload, current);
+      },
+    };
+  }
+
+  /**
+   * A Devin row of the catalog while AgentKib holds the session's runner. Its turns run in a
+   * `devin -p` AgentKib started, which quitting ends, so the home, menu bar, push and the quit
+   * confirmation count a running one as they do the other agents' turns.
+   */
+  #devinContinuation<T extends { id: string }>(session: T): T {
+    const live = this.#devinRunners.get(session.id)?.runner.snapshot();
+    if (!live) return session;
+    return {
+      ...session,
+      continuation: {
+        // A turn being stopped runs until its process exits.
+        status: live.status === "running" || live.status === "stopping" ? "running" : "idle",
+        executionLocation: "agentkib",
+        ownershipReason: null,
+        reason: live.reason ?? null,
       },
     };
   }
@@ -6364,6 +6391,8 @@ export class WebReadRequests {
           ...(request.permissionMode ? { permissionMode: request.permissionMode } : {}),
         });
       this.#addDevinRunner(created, runner, settings, request.workspaceId);
+      // Its first turn runs already: the catalog lists it in progress without waiting for it.
+      this.catalogChanged?.();
       const outcome = result("accepted", { sessionId: created });
       finishManagedCommand(this.dataDir, request.requestId, outcome);
       return outcome;

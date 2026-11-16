@@ -37,6 +37,7 @@ export interface DevinRunnerHost {
   listSessions(): Promise<Array<{ nativeId: string; createdAt: number }>>;
   /** The text of a session's first user message, to tell sessions started together apart. */
   firstUserText(nativeId: string): Promise<string | null>;
+  /** A `state` event's payload is the live state itself; a `snapshot` carries it as `live`. */
   publish(
     type: "state" | "snapshot",
     payload: Record<string, unknown>,
@@ -404,6 +405,7 @@ export class DevinManagedRunner {
 
   #publishState() {
     const live = this.snapshot();
-    this.host.publish("state", { live }, live);
+    // Clients merge a state event's payload into the live state they hold.
+    this.host.publish("state", live, live);
   }
 }

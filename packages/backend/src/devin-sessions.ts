@@ -617,11 +617,14 @@ export class DevinSessions {
     ref: string,
     workspace: string,
     read: (source: Source, session: Session, history: History) => T,
+    head?: number,
   ): T {
     const value = this.#read((source) => {
       if (!source.history)
         throw new Error("This Devin version stores history in a format AgentKib cannot read yet");
-      const session = ownedSession(source, ref, workspace);
+      const owned = ownedSession(source, ref, workspace);
+      // A subagent's messages are another chain of the same session's tree.
+      const session = head === undefined ? owned : { ...owned, head };
       if (session.head === null) throw new Error("Devin session has no readable history");
       const key = JSON.stringify([this.database(), session.id, session.head, session.updated]);
       const cached = this.#histories.get(key);
@@ -696,59 +699,149 @@ export class DevinSessions {
     workspace: string,
     cursor: string | null,
     limit: number,
+    head?: number,
   ): ConversationEventPage {
-    return this.#history(ref, workspace, (source, session, history) => {
-      const items = project(
-        history.segments.flatMap((segment) => segment.nodes),
-        new Set(),
-      );
-      phases(items);
-      let end = items.length;
-      if (cursor !== null) {
-        if (!cursor.startsWith(CURSOR)) throw new Error("Invalid Devin history cursor");
-        end = items.findIndex((item) => item.id === cursor.slice(CURSOR.length));
-        if (end < 0) throw new Error("Devin history changed while it was being read");
-      }
-      const slice = items.slice(Math.max(0, end - Math.min(100, Math.max(1, limit))), end);
-      const tools = slice.filter((item) => item.type === "tool");
-      const bodies = readBodies(source, session.id, [
-        ...slice.filter((item) => item.type !== "tool").map((item) => item.node.node),
-        ...tools.map((item) => item.node.node),
-        ...tools.flatMap((item) => (item.result ? [item.result.node] : [])),
-      ]);
-      const states = readToolStates(
-        source,
-        session.id,
-        tools.map((item) => item.call.id),
-      );
-      const context: ToolContext = { workspace, cwd: session.cwd };
-      const events: ConversationEvent[] = [];
-      let bytes = 0;
-      let start = end;
-      // Fill from the newest item back, within the page budget; a page keeps at least one item.
-      for (let index = slice.length - 1; index >= 0; index--) {
-        const item = slice[index]!;
-        const event =
-          item.type === "tool"
-            ? toolEvent(
-                item,
-                states.get(item.call.id),
-                bodies.get(item.node.node)?.arguments.get(item.call.id),
-                item.result ? (bodies.get(item.result.node)?.content ?? null) : null,
-                context,
-              )
-            : messageEvent(item, bodies.get(item.node.node));
-        bytes += eventBytes(event);
-        if (events.length && bytes > MAX_PAGE_BYTES) break;
-        events.unshift(event);
-        start = end - events.length;
+    return this.#history(
+      ref,
+      workspace,
+      (source, session, history) => {
+        const items = project(
+          history.segments.flatMap((segment) => segment.nodes),
+          new Set(),
+        );
+        phases(items);
+        let end = items.length;
+        if (cursor !== null) {
+          if (!cursor.startsWith(CURSOR)) throw new Error("Invalid Devin history cursor");
+          end = items.findIndex((item) => item.id === cursor.slice(CURSOR.length));
+          if (end < 0) throw new Error("Devin history changed while it was being read");
+        }
+        const slice = items.slice(Math.max(0, end - Math.min(100, Math.max(1, limit))), end);
+        const tools = slice.filter((item) => item.type === "tool");
+        const bodies = readBodies(source, session.id, [
+          ...slice.filter((item) => item.type !== "tool").map((item) => item.node.node),
+          ...tools.map((item) => item.node.node),
+          ...tools.flatMap((item) => (item.result ? [item.result.node] : [])),
+        ]);
+        const states = readToolStates(
+          source,
+          session.id,
+          tools.map((item) => item.call.id),
+        );
+        const context: ToolContext = { workspace, cwd: session.cwd };
+        const events: ConversationEvent[] = [];
+        let bytes = 0;
+        let start = end;
+        // Fill from the newest item back, within the page budget; a page keeps at least one item.
+        for (let index = slice.length - 1; index >= 0; index--) {
+          const item = slice[index]!;
+          const event =
+            item.type === "tool"
+              ? toolEvent(
+                  item,
+                  states.get(item.call.id),
+                  bodies.get(item.node.node)?.arguments.get(item.call.id),
+                  item.result ? (bodies.get(item.result.node)?.content ?? null) : null,
+                  context,
+                )
+              : messageEvent(item, bodies.get(item.node.node));
+          bytes += eventBytes(event);
+          if (events.length && bytes > MAX_PAGE_BYTES) break;
+          events.unshift(event);
+          start = end - events.length;
+        }
+        return {
+          events,
+          next_cursor: start > 0 ? `${CURSOR}${items[start]!.id}` : null,
+          warnings: history.partial ? [PARTIAL_HISTORY] : [],
+        };
+      },
+      head,
+    );
+  }
+  /** Devin's subagents of a session: each runs its own chain in the session's message tree. */
+  #subagentHeads(ref: string, workspace: string) {
+    return (
+      this.#read((source) => {
+        ownedSession(source, ref, workspace);
+        if (!columns(source.db, "subagent_heads").has("chain_node_id")) return [];
+        return (
+          source.db
+            .prepare(
+              "SELECT agent_id, chain_node_id, updated_at FROM subagent_heads WHERE session_id=? ORDER BY updated_at DESC LIMIT 65",
+            )
+            .all(ref) as Array<{ agent_id: unknown; chain_node_id: unknown; updated_at: unknown }>
+        ).flatMap((row) =>
+          typeof row.agent_id === "string" &&
+          /^[A-Za-z0-9_-]{1,128}$/.test(row.agent_id) &&
+          Number.isSafeInteger(row.chain_node_id)
+            ? [
+                {
+                  agent: row.agent_id,
+                  head: row.chain_node_id as number,
+                  updated: typeof row.updated_at === "number" ? row.updated_at : null,
+                },
+              ]
+            : [],
+        );
+      }) ?? []
+    );
+  }
+  static subagentId(sessionId: string, agent: string) {
+    return createHash("sha256").update(`devin-subagent:${sessionId}:${agent}`).digest("hex");
+  }
+  /** The subagents Devin ran in a session, named by the task each was given. */
+  subagents(ref: string, workspace: string, sessionId: string) {
+    const heads = this.#subagentHeads(ref, workspace);
+    const agents = heads.slice(0, 64).map((head) => {
+      let name = "Devin";
+      try {
+        const page = this.events(ref, workspace, null, 100, head.head);
+        const task = page.events.find((event) => event.kind === "user-message")?.content;
+        const line = task
+          ?.split("\n")
+          .find((value) => value.trim())
+          ?.trim();
+        if (line) name = line.length > 80 ? `${line.slice(0, 79)}…` : line;
+      } catch {
+        // A chain Devin no longer has keeps the generic name; reading it says why.
       }
       return {
-        events,
-        next_cursor: start > 0 ? `${CURSOR}${items[start]!.id}` : null,
-        warnings: history.partial ? [PARTIAL_HISTORY] : [],
+        id: DevinSessions.subagentId(sessionId, head.agent),
+        name,
+        agent: "devin" as const,
+        // Devin does not record whether a subagent is still running.
+        status: "unknown" as const,
+        ...(head.updated !== null
+          ? { updatedAt: new Date(head.updated * 1000).toISOString() }
+          : {}),
+        readable: true,
       };
     });
+    return { version: 1 as const, sessionId, agents, truncated: heads.length > 64 };
+  }
+  /** One page of a subagent's own chain, newest first. */
+  subagentEvents(
+    ref: string,
+    workspace: string,
+    sessionId: string,
+    subagentId: string,
+    cursor: string | null,
+    limit: number,
+  ) {
+    if (!/^[a-f0-9]{64}$/.test(subagentId)) throw new Error("invalid-request");
+    const head = this.#subagentHeads(ref, workspace).find(
+      (value) => DevinSessions.subagentId(sessionId, value.agent) === subagentId,
+    );
+    if (!head) throw new Error("subagent-unavailable");
+    const page = this.events(ref, workspace, cursor, limit, head.head);
+    return {
+      ...page,
+      version: 1 as const,
+      sessionId,
+      subagentId,
+      epoch: createHash("sha256").update(`${subagentId}:${head.head}`).digest("hex"),
+    };
   }
   /**
    * The session as a handoff document. By default it holds what Devin's model sees now: the

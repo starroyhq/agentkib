@@ -79,6 +79,7 @@ import {
   saveManagedRecord,
 } from "./managed-ledger";
 import { CodexLeadTurns } from "./lead-turn-origin";
+import { CodexTitleThreads, codexUserMessageText, threadTitleModel } from "./codex-thread-title";
 import {
   AUTO_CONTINUE_TEXT,
   armUsageLimit,
@@ -506,6 +507,13 @@ export class WebReadRequests {
   >();
   /** The device whose message each managed Codex session last took. */
   #codexSenders = new Map<string, string>();
+  /** The temporary threads that name managed Codex threads (`codex-thread-title.ts`). */
+  #titleThreads = new CodexTitleThreads();
+  /**
+   * The native threads AgentKib tried to name while it runs, at most once each, and whether the
+   * person renamed one meanwhile: their name is never replaced.
+   */
+  #titleAttempts = new Map<string, { renamed: boolean }>();
   #managedImagePages = new Map<
     string,
     {
@@ -3310,6 +3318,9 @@ export class WebReadRequests {
           throw new Error("invalid-session-name");
         params = { threadId: record.native_id, name: request.name };
         method = "thread/name/set";
+        // The person's name wins over a title still being made for the thread.
+        const naming = record.native_id ? this.#titleAttempts.get(record.native_id) : undefined;
+        if (naming) naming.renamed = true;
       } else if (request.operation === "archive") {
         if (snapshot.status !== "idle") throw new Error("session-busy");
         params = { threadId: record.native_id };
@@ -4346,6 +4357,54 @@ export class WebReadRequests {
     saveManagedRecord(this.dataDir, current as unknown as Record<string, unknown>);
   }
 
+  /**
+   * Gives a managed Codex thread that has no name the title Codex's terminal client would give
+   * it (`codex-thread-title.ts`), from its first message: at most once per thread while AgentKib
+   * runs, in the background of the turn that started. Any failure leaves Codex's own title.
+   */
+  #nameCodexThread(
+    session: CodexAppServerSession,
+    threadId: string,
+    cwd: string,
+    observedMessage: string,
+  ): void {
+    if (this.#shuttingDown || this.#titleAttempts.has(threadId)) return;
+    const attempt = { renamed: false };
+    this.#titleAttempts.set(threadId, attempt);
+    /** The thread while Codex says it has no name; one it says nothing about is left alone. */
+    const unnamed = async () => {
+      const read = await session.request("thread/read", { threadId, includeTurns: false });
+      const thread = isObject(read) && isObject(read.thread) ? read.thread : null;
+      const nameless =
+        thread?.id === threadId &&
+        (thread.name === null || (typeof thread.name === "string" && !thread.name.trim()));
+      return nameless && !attempt.renamed && !this.#shuttingDown ? thread : null;
+    };
+    void (async () => {
+      const thread = await unnamed();
+      if (!thread) return;
+      // Codex's preview is the thread's first message; a new thread may not show it yet.
+      const message =
+        (typeof thread.preview === "string" ? thread.preview.trim() : "") || observedMessage.trim();
+      if (!message) return;
+      const choice = threadTitleModel(
+        await session.request("model/list", { limit: 100 }),
+        typeof thread.model === "string" ? thread.model : null,
+      );
+      if (!choice || this.#shuttingDown) return;
+      const title = await this.#titleThreads.generate(session, {
+        threadId,
+        cwd,
+        message,
+        ...choice,
+      });
+      // The person, or a Codex client, may have named the thread meanwhile.
+      if (!title || !(await unnamed()) || attempt.renamed) return;
+      await session.request("thread/name/set", { threadId, name: title });
+      if (!this.#shuttingDown) this.catalogChanged?.();
+    })().catch(() => undefined);
+  }
+
   async #attachManagedRunner(
     record: ManagedRecord,
     workspace: string,
@@ -4378,8 +4437,13 @@ export class WebReadRequests {
       // only later is followed from now on.
       const ownTurns = new CodexLeadTurns();
       session.on("notification", (value: unknown) => {
+        // The temporary thread that names this one runs no turn of the session's.
+        if (this.#titleThreads.owns(value)) return;
         const turnId = ownTurns.observe(value);
         if (turnId) this.#observeLane((observer) => observer.ownTurn?.(record.id, turnId));
+        // A user message in the session's thread: one without a name gets a title once.
+        const message = codexUserMessageText(value, state.nativeId);
+        if (message !== null) this.#nameCodexThread(session, state.nativeId!, cwd, message);
       });
       const bridge = new ManagedCodexEventBridge(
         session,
@@ -4470,6 +4534,8 @@ export class WebReadRequests {
           }
           this.publishConversationEvent?.(record.id, "state", live, live);
         },
+        // Its live state, history, lane reports and usage limits are the session's thread's only.
+        (value) => this.#titleThreads.owns(value),
       );
       startingRunner = {
         session,

@@ -87,6 +87,10 @@ export const CODEX_PROTOCOL_CONTRACT = {
       "thread/queue/update",
       "thread/queue/delete",
       "thread/queue/reorder",
+      // Naming a thread as the TUI does: the MCP servers its temporary thread turns off, and
+      // how that thread ends.
+      "config/read",
+      "thread/unsubscribe",
     ],
     serverRequests: ["item/permissions/requestApproval", "mcpServer/elicitation/request"],
     serverNotifications: [
@@ -96,7 +100,9 @@ export const CODEX_PROTOCOL_CONTRACT = {
       "item/plan/delta",
     ],
     properties: {
-      TurnStartParams: ["clientUserMessageId", "collaborationMode"],
+      TurnStartParams: ["clientUserMessageId", "collaborationMode", "outputSchema"],
+      ThreadStartParams: ["ephemeral", "threadSource", "config"],
+      ConfigReadParams: ["includeLayers", "cwd"],
       ThreadQueueAddParams: ["threadId", "clientUserMessageId", "input"],
       ThreadResumeResponse: ["collaborationMode"],
       ThreadSettingsUpdatedNotification: ["threadId", "threadSettings"],

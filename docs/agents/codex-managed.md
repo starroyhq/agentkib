@@ -122,9 +122,21 @@ app-server 没有斜杠命令：`/compact` 这样的文字只会作为消息交�
 - `!命令`（`thread/shellCommand`）。
 - MCP 表单与 URL 请求只能拒绝；不提供“始终允许”。
 
+## 会话标题（2026-11-16）
+
+Codex 的 app-server 不会自己给会话起名，终端客户端是自己起的（0.167.0 `tui/src/app/thread_title.rs`）。AgentKib 照同样的做法给它运行的 Codex 会话（包括项目 Agent 的 Worker）起标题：这次运行中会话第一次出现用户消息（发送、追加或排队）时，如果 `thread/read` 说这条会话没有名称（`name` 为 `null`；没有这个字段时不起），就在这条会话的 app-server 上另开一个临时线程跑一轮，得到标题后用 `thread/name/set` 设给会话，并通知目录刷新。实现在 `packages/backend/src/codex-thread-title.ts`。
+
+- **与终端客户端相同**：临时线程 `ephemeral`（不写磁盘，不出现在 Codex 的会话列表里）、只读沙箱（`default_permissions` 为内置的 `:read-only`）、审批 `never`、工作目录与会话相同、`threadSource: "thread_title"`。和终端客户端一样用 `thread/start` 的 `config` 关掉这个线程能用的一切：`features.*` 里的 shell、unified exec、hooks、apps、插件、记忆、多代理、图片等 22 项，skills 说明、update_plan、提问工具和网页搜索；用户的 MCP 服务器先用 `config/read`（带会话的 cwd）读出名字，再逐个设 `enabled: false`，读不到就不起标题。提示词用终端客户端的原文，后面是会话的第一条消息（Codex 的 `preview`；新会话还没有时取刚出现的这条），截到 960 字节；`outputSchema` 只有 `title`（1–36 个字符）。回复按终端客户端的规则解析：必须是只含 `title` 的 JSON 对象，去掉两端引号、合并空白和句末的 `.?!`，截到 36 个字符。结束后 `thread/unsubscribe`；30 秒内没结束先 `turn/interrupt`。
+- **模型与用量**：`model/list` 里有 `gpt-5.6-luna` 时用它，思考强度 low，与终端客户端相同；没有时用会话自己的模型和它支持的最低思考强度。每条新会话因此多一次很小的模型请求，计入账户的 Codex 用量。
+- **不覆盖名称**：只在 Codex 说没有名称时起；设名前再读一次，期间用户或其他 Codex 客户端起了名、或在 AgentKib 里重命名过，就不设。同一条会话在 AgentKib 每次运行期间最多试一次。
+- **失败不提示**：模型出错、达到使用上限、超时、回复不是标题、runner 被回收或 AgentKib 正在退出，都不显示，会话保留 Codex 自己的标题（第一条消息）。退出时不再开始新的。
+- **不算会话的轮次**：临时线程的通知和服务端请求不进入会话的实时状态、历史、已读记录、项目 Agent 的自发轮次计数、Worker 汇报和使用上限处理；它的服务端请求一律拒绝（MCP 表单回 `decline`）。标题在后台生成，不延迟用户的这一轮。
+
+2026-11-16 用 0.167.0 的 app-server 在隔离的 CODEX_HOME 里（无登录、沙箱禁网）核对：`model/list` 列出 `gpt-5.6-luna`（思考强度 low 到 max 五档）；上面的 `thread/start` 回 `ephemeral: true`、`path: null`、只读沙箱，`thread/list` 不含它，`thread/unsubscribe` 回 `unsubscribed`。config.toml 里配一个启动时会留下标记文件的 MCP 服务器：不带这些设置时临时线程启动了它，带上后没有启动。再用 AgentKib 的实际代码跑完整流程：`config/read`、`thread/start`、`turn/start`（含 `outputSchema` 和 `effort`）都被接受，没有网络时这一轮一直重连，30 秒的上限（测试里设 20 秒）到了先 `turn/interrupt` 再 `thread/unsubscribe`，不设名称。真实模型下的一轮未实机验收。
+
 ## 协议检查（CI）
 
-`.github/workflows/codex-protocol-compatibility.yml` 每天、手动或相关文件改动的 PR 时，在 macos-15 上分别检查最低版本（`MINIMUM_CODEX_WRITER_VERSION`）与最新版。脚本从 npm 官方源安装 `@openai/codex`，在 `sandbox-exec` 里运行 `codex app-server generate-json-schema --experimental`（无网络、不读个人目录、不登录、不调模型），核对 AgentKib 调用、处理和读取的方法与字段。`required` 层是每个受支持版本都必须有的，两端都查；`current` 层是缺了会降级的功能（Plan、待发队列、MCP 请求、设置与目标通知等），只查最新版。输出只有固定标签，不转发 CLI 输出。脚本的单元测试也在 Linux 与 Windows 的辅助任务里运行。
+`.github/workflows/codex-protocol-compatibility.yml` 每天、手动或相关文件改动的 PR 时，在 macos-15 上分别检查最低版本（`MINIMUM_CODEX_WRITER_VERSION`）与最新版。脚本从 npm 官方源安装 `@openai/codex`，在 `sandbox-exec` 里运行 `codex app-server generate-json-schema --experimental`（无网络、不读个人目录、不登录、不调模型），核对 AgentKib 调用、处理和读取的方法与字段。`required` 层是每个受支持版本都必须有的，两端都查；`current` 层是缺了会降级的功能（Plan、待发队列、MCP 请求、设置与目标通知、会话标题等），只查最新版。输出只有固定标签，不转发 CLI 输出。脚本的单元测试也在 Linux 与 Windows 的辅助任务里运行。
 
 ## 验证
 

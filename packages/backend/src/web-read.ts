@@ -544,7 +544,13 @@ export class WebReadRequests {
   #antigravityRunnerFlights = new Map<string, Promise<AntigravityRunnerRecord>>();
   #devinRunners = new Map<
     string,
-    { runner: DevinManagedRunner; lastUsed: number; settings: DevinTurnSettings }
+    {
+      runner: DevinManagedRunner;
+      lastUsed: number;
+      settings: DevinTurnSettings;
+      /** The workspace the session belongs to; its live state names it for access checks. */
+      workspaceId: string;
+    }
   >();
   #devinSavedSettings: DevinSessionSettings | undefined;
 
@@ -5809,12 +5815,15 @@ export class WebReadRequests {
         ...record.runner.snapshot(),
         sessionId,
         runtimeBootId: this.#bootId,
+        // Restricted devices may control sessions in their workspaces only.
+        workspaceId: record.workspaceId,
       };
     } catch (error) {
       return {
         sessionId,
         executionMode: "acp-managed",
         runtimeBootId: this.#bootId,
+        workspaceId: this.store.sessions.get(sessionId)?.workspace_id ?? null,
         status: "unsupported",
         revision: 0,
         turnId: null,
@@ -5894,7 +5903,7 @@ export class WebReadRequests {
       nativeId,
       { ...process.env, ...this.environment },
       (type, payload, live) => {
-        const current = { ...live, sessionId, runtimeBootId: this.#bootId };
+        const current = { ...live, sessionId, runtimeBootId: this.#bootId, workspaceId };
         const eventPayload = isObject(payload.live) ? { ...payload, live: current } : payload;
         this.publishConversationEvent?.(sessionId, type, eventPayload, current);
       },
@@ -6022,7 +6031,11 @@ export class WebReadRequests {
     }
   }
 
-  #devinHost(workspace: string, sessionId: () => string | null): DevinRunnerHost {
+  #devinHost(
+    workspace: string,
+    workspaceId: string,
+    sessionId: () => string | null,
+  ): DevinRunnerHost {
     const environment = devinChildEnvironment({ ...process.env, ...this.environment });
     const page = (nativeId: string, limit: number) =>
       this.sessions.eventsForNative("devin", nativeId, workspace, null, limit);
@@ -6046,14 +6059,19 @@ export class WebReadRequests {
       publish: (type, payload, live) => {
         const id = sessionId();
         if (!id) return;
-        const current = { ...live, sessionId: id, runtimeBootId: this.#bootId };
+        const current = { ...live, sessionId: id, runtimeBootId: this.#bootId, workspaceId };
         const eventPayload = isObject(payload.live) ? { ...payload, live: current } : payload;
         this.publishConversationEvent?.(id, type, eventPayload, current);
       },
     };
   }
 
-  #addDevinRunner(sessionId: string, runner: DevinManagedRunner, settings: DevinTurnSettings) {
+  #addDevinRunner(
+    sessionId: string,
+    runner: DevinManagedRunner,
+    settings: DevinTurnSettings,
+    workspaceId: string,
+  ) {
     if (this.#devinRunners.size >= 8) {
       const [retireId, retire] =
         [...this.#devinRunners.entries()]
@@ -6063,7 +6081,7 @@ export class WebReadRequests {
       this.#devinRunners.delete(retireId);
       retire.runner.close();
     }
-    const record = { runner, lastUsed: Date.now(), settings };
+    const record = { runner, lastUsed: Date.now(), settings, workspaceId };
     this.#devinRunners.set(sessionId, record);
     return record;
   }
@@ -6076,29 +6094,38 @@ export class WebReadRequests {
     }
     const resolved = await this.sessions.resolve(sessionId);
     if (resolved.native.agent !== "devin") throw new Error("session-unavailable");
-    const workspace = canonicalize(this.store.workspacePath(resolved.summary.workspace_id));
+    const workspaceId = resolved.summary.workspace_id;
+    const workspace = canonicalize(this.store.workspacePath(workspaceId));
     const runner = new DevinManagedRunner(
       workspace,
       resolved.native.native_ref,
-      this.#devinHost(workspace, () => sessionId),
+      this.#devinHost(workspace, workspaceId, () => sessionId),
     );
     // Without a saved choice a resumed turn keeps the session's model and edits the workspace.
     return this.#addDevinRunner(
       sessionId,
       runner,
       this.#devinSaved().get(resolved.native.native_ref),
+      workspaceId,
     );
   }
 
   async #devinLive(sessionId: string): Promise<Record<string, unknown>> {
     try {
       const record = await this.#devinRunner(sessionId);
-      return { ...record.runner.snapshot(), sessionId, runtimeBootId: this.#bootId };
+      return {
+        ...record.runner.snapshot(),
+        sessionId,
+        runtimeBootId: this.#bootId,
+        // Restricted devices may control sessions in their workspaces only.
+        workspaceId: record.workspaceId,
+      };
     } catch (error) {
       return {
         sessionId,
         executionMode: DEVIN_EXECUTION_MODE,
         runtimeBootId: this.#bootId,
+        workspaceId: this.store.sessions.get(sessionId)?.workspace_id ?? null,
         status: "unsupported",
         revision: 0,
         turnId: null,
@@ -6287,7 +6314,7 @@ export class WebReadRequests {
     const runner = new DevinManagedRunner(
       workspace,
       null,
-      this.#devinHost(workspace, () => created),
+      this.#devinHost(workspace, request.workspaceId, () => created),
     );
     const prior = claimManagedCommand(
       this.dataDir,
@@ -6336,7 +6363,7 @@ export class WebReadRequests {
           ...(request.model ? { model: request.model } : {}),
           ...(request.permissionMode ? { permissionMode: request.permissionMode } : {}),
         });
-      this.#addDevinRunner(created, runner, settings);
+      this.#addDevinRunner(created, runner, settings, request.workspaceId);
       const outcome = result("accepted", { sessionId: created });
       finishManagedCommand(this.dataDir, request.requestId, outcome);
       return outcome;

@@ -1,5 +1,5 @@
 // @vitest-environment node
-import { beforeEach, afterEach, it, expect, vi } from "vitest";
+import { beforeEach, afterEach, describe, it, expect, vi } from "vitest";
 import { mkdtemp, rm } from "node:fs/promises";
 import { createServer, request } from "node:http";
 import { tmpdir } from "node:os";
@@ -684,6 +684,57 @@ it("rejects send for a followed Codex session in an unauthorized workspace", asy
   expect(runtime.mock.calls.some(([p]) => (p as { operation: string }).operation === "send")).toBe(
     false,
   );
+});
+// AgentKib runs these sessions itself; a device controls them only in its workspaces, also when
+// it knows the ID of a session elsewhere.
+describe.each([
+  ["Devin", "devin-print"],
+  ["Antigravity", "acp-managed"],
+])("%s sessions", (_agent, mode) => {
+  const outside = (workspaceId: unknown) =>
+    runtime.mockImplementation(async (input) => {
+      const result = await runtimeHandler(input);
+      return (input as { operation: string }).operation === "live"
+        ? { ...(result as object), workspaceId }
+        : result;
+    });
+  const dispatched = (operation: string) =>
+    runtime.mock.calls.some(([p]) => (p as { operation: string }).operation === operation);
+
+  it("dispatches send in an allowed workspace", async () => {
+    await pair();
+    executionMode = mode;
+    expect((await http("/send", action())).status).toBe(200);
+    expect(dispatched("send")).toBe(true);
+  });
+
+  it.each(["/send", "/stop"])("refuses %s outside the device's workspaces", async (path) => {
+    await pair();
+    executionMode = mode;
+    outside("outside");
+    const result = await http(path, action());
+    expect(result.status).toBe(403);
+    expect(result.data.error).toBe("provider_control_not_allowed");
+    expect(dispatched(path.slice(1))).toBe(false);
+  });
+
+  it("refuses send when the live state names no workspace", async () => {
+    await pair();
+    executionMode = mode;
+    outside(undefined);
+    const result = await http("/send", action());
+    expect(result.status).toBe(403);
+    expect(dispatched("send")).toBe(false);
+  });
+
+  it("shows its controls disabled outside the device's workspaces", async () => {
+    await pair();
+    executionMode = mode;
+    outside("outside");
+    const live = await http("/live?sessionId=session");
+    expect(live.status).toBe(200);
+    expect(live.data).toMatchObject({ sendEnabled: false, stopEnabled: false });
+  });
 });
 it("projects follower capabilities like managed ones", async () => {
   await pair();

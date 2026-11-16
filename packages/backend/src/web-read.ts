@@ -4858,7 +4858,10 @@ export class WebReadRequests {
           id: record.id,
           workspace_id: record.workspace_id,
           agent: "codex",
-          title: record.title,
+          // The thread's title as Codex lists it: the name the person or a Codex client gave
+          // it, else Codex's own title from its first message. The record's title (a
+          // placeholder for a session AgentKib created) shows only until Codex has the thread.
+          title: nativeByOwner.get(record.id)?.title?.trim() || record.title,
           created_at: record.created_at,
           updated_at: nativeByOwner.get(record.id)?.updated_at ?? record.created_at,
           message_count: null,

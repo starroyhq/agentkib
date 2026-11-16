@@ -1165,3 +1165,26 @@ describe("paired optional ownership failures", () => {
     expect(f.store.sessions.list("workspace")).toEqual(indexed);
   });
 });
+
+describe("the title of a session AgentKib runs in Codex", () => {
+  it("is Codex's own: a name it was given, else its first message, and the record's until then", async () => {
+    const f = fixture();
+    f.nativeDatabase.exec("ALTER TABLE threads ADD COLUMN name TEXT");
+    const title = async () =>
+      (await f.localCatalog()).sessions.find((row) => row.id === f.owner.id)?.title;
+    f.saveOwners([{ ...f.owner, title: "Codex" }]);
+    // Codex does not have the thread yet.
+    expect(await title()).toBe("Codex");
+    f.addNative(f.owner.native_id!);
+    f.nativeDatabase
+      .prepare("UPDATE threads SET title=? WHERE id=?")
+      .run("Fix the flaky upload test", f.owner.native_id);
+    f.sync();
+    expect(await title()).toBe("Fix the flaky upload test");
+    f.nativeDatabase
+      .prepare("UPDATE threads SET name=? WHERE id=?")
+      .run("Upload test fix", f.owner.native_id);
+    f.sync();
+    expect(await title()).toBe("Upload test fix");
+  });
+});

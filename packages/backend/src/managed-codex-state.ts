@@ -4,6 +4,7 @@ import { createContextUsageGeneration, projectContextUsage } from "./context-usa
 import { codexItemTool, type ToolContext } from "./conversation-tools";
 import { codexErrorText, codexTurnErrorEvent } from "./codex-turn-error";
 import { codexTurnEndEvent, codexTurnMeta } from "./codex-turn-end";
+import type { UsageLimitView } from "./usage-limit";
 
 type JsonObject = Record<string, unknown>;
 type ManagedRecord = JsonObject & {
@@ -70,6 +71,12 @@ export class ManagedCodexState {
   #retry: CodexApiRetry | null = null;
   /** The final `error` of the running turn, for a completion that carries none itself. */
   #turnError: { turnId: string; text: string } | null = null;
+  /** The last completed turn met the account's usage limit (`codexErrorInfo` 0.167.0). */
+  #limitedTurn: { turnId: string; message: string } | null = null;
+  /** The running turn's final `error` said so, for a completion that does not repeat it. */
+  #errorLimit: { turnId: string; message: string } | null = null;
+  /** The limit as the person sees it, and the continue armed for it (`usage-limit.ts`). */
+  #usageLimit: UsageLimitView | null = null;
   #turnsStarted = 0;
 
   constructor(record: ManagedRecord, initialRevision = 0) {
@@ -184,7 +191,21 @@ export class ManagedCodexState {
       goal: this.#record.goal ?? null,
       apiRetry: this.#retry && this.#turn !== null ? { ...this.#retry } : null,
       reason: this.#reason,
+      usageLimit: this.#usageLimit ? { ...this.#usageLimit } : null,
     };
+  }
+
+  /** The last completed turn met the account's usage limit, with Codex's own message. */
+  get limitedTurn(): { turnId: string; message: string } | null {
+    return this.#turn === null && this.#limitedTurn ? { ...this.#limitedTurn } : null;
+  }
+
+  /** Shows the limit the owner holds for the session; true when that changed what clients see. */
+  showUsageLimit(view: UsageLimitView | null): boolean {
+    if (JSON.stringify(view) === JSON.stringify(this.#usageLimit)) return false;
+    this.#usageLimit = view ? { ...view } : null;
+    this.#changed(false, true);
+    return true;
   }
 
   /**
@@ -231,6 +252,10 @@ export class ManagedCodexState {
         this.#lastTurnEvent = null;
         this.#retry = null;
         this.#turnError = null;
+        this.#limitedTurn = null;
+        this.#errorLimit = null;
+        // A turn that starts, AgentKib's continue or the person's message, ends what was shown.
+        this.#usageLimit = null;
         break;
       }
       case "turn/completed": {
@@ -251,6 +276,14 @@ export class ManagedCodexState {
         this.#retry = null;
         const reported = this.#turnError?.turnId === id ? this.#turnError.text : null;
         this.#turnError = null;
+        // Each completion decides from its own turn: its error, or the final `error` before it.
+        const turnError = isObject(params.turn.error) ? params.turn.error : null;
+        const fromError = this.#errorLimit?.turnId === id ? this.#errorLimit : null;
+        this.#errorLimit = null;
+        this.#limitedTurn =
+          turnError?.codexErrorInfo === "usageLimitExceeded"
+            ? { turnId: id, message: codexErrorText(turnError) || reported || "" }
+            : fromError;
         // The native turn reports its duration; history readers attach the same
         // value to the turn's last item, so the live row carries it too.
         const meta = codexTurnMeta(params.turn);
@@ -285,6 +318,8 @@ export class ManagedCodexState {
         }
         const text = codexErrorText(params.error);
         if (text) this.#turnError = { turnId: this.#turn, text };
+        if (params.error.codexErrorInfo === "usageLimitExceeded")
+          this.#errorLimit = { turnId: this.#turn, message: text ?? "" };
         if (this.#retry === null) return { changed: false };
         this.#retry = null;
         return this.#changed(false, true);

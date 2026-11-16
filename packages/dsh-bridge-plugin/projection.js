@@ -64,7 +64,13 @@ export function historyRecord(event) {
     case "turn/start":
       return { ...base, kind: "turn-start", turn: data.turn };
     case "turn/end":
-      return { ...base, kind: "turn-end", turn: data.turn, reason: reasonOf(data.reason) };
+      return {
+        ...base,
+        kind: "turn-end",
+        turn: data.turn,
+        reason: reasonOf(data.reason),
+        ...failureOf(data.reason),
+      };
     case "user/message": {
       if (!isHumanMessage(data)) return null;
       const parts = contentParts(data.content);
@@ -225,6 +231,19 @@ export function presetEntry(row) {
     description: optional(row.description, 1024),
     isDefault: row.isDefault === true,
     broken: optional(row.broken, 512),
+  };
+}
+
+/** Why a failed turn failed (`LlmFailure` code and message), so AgentKib can tell a used-up quota. */
+function failureOf(reason) {
+  if (!reason || typeof reason !== "object" || reason.kind !== "error") return {};
+  const error = reason.error;
+  if (!error || typeof error.code !== "string") return {};
+  return {
+    failure: {
+      code: bounded(error.code, 64).text,
+      message: typeof error.message === "string" ? bounded(error.message, 500).text : "",
+    },
   };
 }
 

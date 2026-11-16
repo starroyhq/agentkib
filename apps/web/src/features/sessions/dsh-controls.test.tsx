@@ -110,7 +110,8 @@ describe("DeepSeek Harness controls", () => {
     // Only the model and its effort wait for the turn to end.
     expect(screen.getByText(copy.settingsWhileRunningModel)).toBeVisible();
     expect(screen.queryByText(copy.settingsWhileRunning)).not.toBeInTheDocument();
-    expect(screen.getByText("Can write inside the workspace.")).toBeVisible();
+    // The host text is English only; clients show DSH's preset wording by id.
+    expect(screen.getByText(/^Can write inside the workspace and permitted/)).toBeVisible();
     // DSH has no collaboration mode or service tier to offer.
     expect(screen.queryByLabelText(copy.mode)).not.toBeInTheDocument();
     expect(screen.queryByLabelText(copy.serviceTier)).not.toBeInTheDocument();

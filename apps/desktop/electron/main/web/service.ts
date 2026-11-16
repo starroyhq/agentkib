@@ -3244,7 +3244,14 @@ export class WebAccessService {
     operation: string,
   ): "send" | "approve" | "manage" | "attachments" | "advancedControl" | "organize" | "settings" {
     if (operation === "approve") return "approve";
-    if (operation === "stop" || operation === "answer" || operation === "terminals-clean")
+    if (
+      operation === "stop" ||
+      operation === "answer" ||
+      operation === "terminals-clean" ||
+      // Stops AgentKib sending in the device's name after a usage limit; no more than sending.
+      operation === "usage-limit-cancel" ||
+      operation === "usage-limit-continue"
+    )
       return "send";
     if (operation === "attachments") return "attachments";
     if (["resume", "fork"].includes(operation)) return "manage";
@@ -3270,6 +3277,9 @@ export class WebAccessService {
       send: "send",
       stop: "send",
       answer: "send",
+      // Stops AgentKib sending in the device's name after a usage limit; no more than sending.
+      "usage-limit-cancel": "send",
+      "usage-limit-continue": "send",
       approve: "approve",
       adopt: "manage",
       release: "manage",
@@ -3410,6 +3420,8 @@ export class WebAccessService {
       "queue-reorder",
       "queue-start",
       ...(generic ? ["queue-pause", "queue-resume", "queue-steer"] : []),
+      "usage-limit-cancel",
+      "usage-limit-continue",
       "rename",
       "archive",
       "unarchive",

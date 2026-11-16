@@ -44,6 +44,7 @@ import {
 } from "./managed-ledger";
 import { dshSessionDocument, type DshDocumentImage } from "./dsh-document";
 import type { DshManagedRuntime } from "./dsh-managed-runtime";
+import type { UsageLimitView } from "./usage-limit";
 import { sanitizeSessionText } from "./session-handoff";
 import type { DocumentSource } from "./session-document-providers";
 import type { ConversationEvent, ConversationEventPage } from "./session-events";
@@ -959,6 +960,10 @@ export class DshBridge {
   #pageChars = 0;
   /** Sessions whose history was answered without a DSH; they read again once one serves them. */
   #servedOffline = new Set<string>();
+  /** Sessions whose latest ended turn failed on the provider's quota; absent otherwise. */
+  #quotaLimits = new Map<string, UsageLimitView>();
+  /** Sessions whose latest turn end is being read, so one read serves a burst of reports. */
+  #quotaReads = new Set<string>();
   /** Native sessions with commands of unknown outcome, asked about again while DSH runs. */
   #unknownSessions = new Set<string>();
   /** When this run first saw each unconfirmed request. */
@@ -1564,6 +1569,51 @@ export class DshBridge {
       ? [...runtime.interactions.values()].filter((item) => item.sessionId === nativeId)
       : [];
   }
+  /**
+   * Reads the session's latest turn end and keeps a quota failure (plugin 0.8.1 and later report
+   * the failure code) as the session's usage limit; publishes when that changed.
+   */
+  #readQuota(nativeId: string): void {
+    if (this.#quotaReads.has(nativeId) || !this.#catalog.has(nativeId)) return;
+    const runtime = this.#state(nativeId).runtime;
+    if (!runtime || runtime.states.get(nativeId)?.status === "running") return;
+    this.#quotaReads.add(nativeId);
+    void (async () => {
+      let next: UsageLimitView | null = null;
+      try {
+        const records = await this.#latestHistory(this.options.sessionId(nativeId));
+        const last = [...(records ?? [])]
+          .reverse()
+          .find((record) => record.kind === "turn-start" || record.kind === "turn-end");
+        const failure =
+          last?.kind === "turn-end"
+            ? (last as { failure?: { code?: unknown; message?: unknown } }).failure
+            : undefined;
+        if (failure && (failure.code === "QUOTA" || failure.code === "ACCOUNT_QUOTA"))
+          next = {
+            agent: "deepseek-harness",
+            resetsAt: null,
+            kind: "quota",
+            scope: null,
+            message: typeof failure.message === "string" ? failure.message : "",
+            continueAt: null,
+            manual: "reset-unknown",
+            autoContinues: 0,
+          };
+      } catch {
+        return;
+      } finally {
+        this.#quotaReads.delete(nativeId);
+      }
+      // A turn began while the history was read: it clears the limit.
+      if (this.#state(nativeId).state?.status === "running") next = null;
+      if (stable(next) === stable(this.#quotaLimits.get(nativeId) ?? null)) return;
+      if (next) this.#quotaLimits.set(nativeId, next);
+      else this.#quotaLimits.delete(nativeId);
+      this.#touch(nativeId);
+      this.#publish(nativeId);
+    })();
+  }
   #touch(nativeId: string): void {
     this.#revisions.set(nativeId, ++this.#revision);
   }
@@ -1672,6 +1722,9 @@ export class DshBridge {
         revised.add(state.sessionId);
       runtime.states.set(state.sessionId, state);
       changed.add(state.sessionId);
+      // A turn started or ended: whether it ended on the quota is read from the history.
+      if (state.status === "running") this.#quotaLimits.delete(state.sessionId);
+      else if (state.live && previous?.status === "running") this.#readQuota(state.sessionId);
     }
     if (report.interactions) {
       const next = new Map(
@@ -1692,6 +1745,9 @@ export class DshBridge {
       for (const [id, entry] of this.#answered)
         if (Date.now() - entry.at > 10 * 60_000) this.#answered.delete(id);
     }
+    // The turn end may be recorded after the state turned idle, and a session first seen idle
+    // may have ended on the quota earlier; both are read once, never while a turn runs.
+    for (const id of historyChanged) if (!this.#quotaLimits.has(id)) this.#readQuota(id);
     const goalChanged = new Set(report.goalChanged ?? []);
     const settingsChanged = new Set(report.settingsChanged ?? []);
     for (const id of new Set([...changed, ...historyChanged, ...goalChanged, ...settingsChanged])) {
@@ -1862,6 +1918,7 @@ export class DshBridge {
       streamText: running ? sanitizeSessionText(state?.streamText ?? "", { value: 0 }) : "",
       streamTextTruncated: running && state?.streamTruncated === true,
       usage: { available: false, state: "unavailable", reason: "usage-unavailable" },
+      usageLimit: running || !online ? null : (this.#quotaLimits.get(nativeId) ?? null),
     };
   }
   #approval(

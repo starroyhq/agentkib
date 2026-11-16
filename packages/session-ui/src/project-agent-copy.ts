@@ -86,6 +86,8 @@ const copy: Record<"zh-CN" | "zh-Hant" | "ja-JP" | "en-US", ProjectAgentCopy> = 
         "AgentKib 重启后暂停了委派。恢复委派，或在这个会话里发一条消息就会继续。",
       "authorization-changed": "设定它的设备授权已变更，已暂停委派。",
       "auto-turn-limit": "达到连续自动轮次上限，已暂停委派。在这个会话里发一条消息就会继续。",
+      "usage-limit":
+        "项目 Agent 达到使用上限，汇报会在它重置后继续送达。在这个会话里发一条消息也会继续。",
       "report-undelivered": "汇报没有送达，已暂停委派。",
     },
     errors: {
@@ -144,6 +146,8 @@ const copy: Record<"zh-CN" | "zh-Hant" | "ja-JP" | "en-US", ProjectAgentCopy> = 
         "AgentKib 重新啟動後暫停了委派。恢復委派，或在這個對話裡傳一則訊息就會繼續。",
       "authorization-changed": "設定它的裝置授權已變更，已暫停委派。",
       "auto-turn-limit": "達到連續自動輪次上限，已暫停委派。在這個對話裡傳一則訊息就會繼續。",
+      "usage-limit":
+        "專案 Agent 達到使用上限，回報會在重置後繼續送達。在這個對話裡傳一則訊息也會繼續。",
       "report-undelivered": "回報沒有送達，已暫停委派。",
     },
     errors: {
@@ -204,6 +208,8 @@ const copy: Record<"zh-CN" | "zh-Hant" | "ja-JP" | "en-US", ProjectAgentCopy> = 
       "authorization-changed": "設定したデバイスの権限が変わったため、委任を一時停止しました。",
       "auto-turn-limit":
         "連続する自動ターンの上限に達したため、委任を一時停止しました。この会話にメッセージを送ると再開します。",
+      "usage-limit":
+        "プロジェクト Agent が利用制限に達しました。報告はリセット後に届けられます。この会話でメッセージを送っても続行します。",
       "report-undelivered": "報告を届けられなかったため、委任を一時停止しました。",
     },
     errors: {
@@ -264,6 +270,8 @@ const copy: Record<"zh-CN" | "zh-Hant" | "ja-JP" | "en-US", ProjectAgentCopy> = 
       "authorization-changed": "Delegation paused: the device that set it up has changed access.",
       "auto-turn-limit":
         "Delegation paused at the limit of automatic turns. Send this session a message to go on.",
+      "usage-limit":
+        "The Project Agent hit its usage limit. Reports go on once it resets, or when you send a message in this session.",
       "report-undelivered": "Delegation paused: a report could not be delivered.",
     },
     errors: {

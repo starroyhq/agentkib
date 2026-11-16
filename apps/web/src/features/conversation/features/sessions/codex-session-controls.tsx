@@ -29,7 +29,7 @@ import {
   type CodexSessionSettings,
   type ManagedAgent,
 } from "@agentkib/web-client";
-import { newSessionPermissions } from "@agentkib/session-ui";
+import { codexPolicyLabel, dshPolicyLabel, newSessionPermissions } from "@agentkib/session-ui";
 import { Button } from "../../components/ui/button";
 import { Input } from "../../components/ui/input";
 import { Dialog } from "../../components/dialog";
@@ -738,8 +738,18 @@ export function CodexComposerControls({
     : [];
   const settingsFeatureUnavailable = feature("settings")?.available !== true;
   // Codex's execution policies; for DeepSeek Harness, its permission presets.
+  // The host names policies in English only; show Codex's and DeepSeek Harness's own wording
+  // per locale, and the host's text for an id neither knows.
+  const policyText = (item: { id: string; name: string; description?: string }) => {
+    const label =
+      current?.agent === "deepseek-harness"
+        ? dshPolicyLabel(item.id, locale)
+        : codexPolicyLabel(item.id, locale);
+    return { name: label?.name ?? item.name, description: label?.description ?? item.description };
+  };
   const policyControl = (value: CodexSessionSettings) => {
-    const described = value.options.policies?.find((item) => item.id === policy)?.description;
+    const found = value.options.policies?.find((item) => item.id === policy);
+    const described = found && policyText(found).description;
     return (
       <label className="block space-y-1 text-sm">
         {copy.executionPolicy}
@@ -1612,7 +1622,7 @@ export function CodexComposerControls({
                                   />
                                   <span className="min-w-0">
                                     <span className="block break-words font-medium">
-                                      {item.name}
+                                      {policyText(item).name}
                                     </span>
                                     <span className="block text-xs text-muted-foreground">
                                       {term(item.kind)}

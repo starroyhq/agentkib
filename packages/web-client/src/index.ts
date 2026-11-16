@@ -369,6 +369,29 @@ export interface UserQuestionRequest {
     allowCustom: boolean;
   }[];
 }
+/** A usage limit an agent's account met (Claude Code, Codex, DeepSeek Harness). */
+export interface UsageLimitNotice {
+  agent: "claude-code" | "codex" | "deepseek-harness";
+  /** When the limit resets, ms since the epoch; null when the agent did not say. */
+  resetsAt: number | null;
+  /** `model`: a model's own limit, named by `scope`; `quota`: an API balance. */
+  kind: "five-hour" | "weekly" | "model" | "credits" | "quota" | null;
+  scope: string | null;
+  /** The agent's own words, untranslated. */
+  message: string;
+  continueAt: number | null;
+  manual:
+    | "off"
+    | "reset-unknown"
+    | "reset-too-far"
+    | "repeated"
+    | "cancelled"
+    | "stale"
+    | "restarted"
+    | null;
+  /** Automatic continues sent since the person last sent something. */
+  autoContinues: number;
+}
 export interface Live {
   sessionId: string;
   /** Backend incarnation captured by this state, distinct from the access boot id. */
@@ -406,6 +429,12 @@ export interface Live {
   }[];
   /** Managed Claude: whether the current turn is one AgentKib sent or one the CLI started. */
   turnOrigin?: "host" | "self";
+  /**
+   * The usage limit the session's last turn met, while it lasts. The session stays usable;
+   * `continueAt` is when AgentKib continues it by itself, as Claude Code does, and `manual` says
+   * why it won't. A message the person sends takes over.
+   */
+  usageLimit?: UsageLimitNotice | null;
   /**
    * Codex: the Codex app holds the thread with no window answering for it. Sending stays open,
    * and a message asks the app to show the thread, then goes through it.
@@ -537,7 +566,11 @@ export type CodexAction =
   | "goal-resume"
   | "goal-clear"
   | "compact"
-  | "terminals-clean";
+  | "terminals-clean"
+  /** Turns off the continue AgentKib armed after a usage limit (`Live.usageLimit`). */
+  | "usage-limit-cancel"
+  /** Continues after this limit's reset after all: off by setting, turned off, or a day away. */
+  | "usage-limit-continue";
 export type SessionAction = CodexAction | "queue-pause" | "queue-resume";
 export type ClaudePermissionMode = "default" | "plan" | "acceptEdits";
 export type DevinPermissionMode = "auto" | "accept-edits" | "smart" | "dangerous";

@@ -1,5 +1,7 @@
 import { AlertTriangle } from "lucide-react";
 import type { Live } from "@agentkib/web-client";
+import { usageLimitNotice } from "@agentkib/session-ui";
+import { Button } from "../../components/ui/button";
 import type { Locale } from "../../i18n";
 import { codexReason } from "./codex-copy";
 import type { SessionSurface } from "./session-surface-copy";
@@ -28,23 +30,63 @@ export function retryText(locale: Locale, retry: Retry, agent: Agent = "Claude C
 }
 
 /**
- * A managed Claude Code or Codex turn the CLI is retrying, or a Claude turn it ended on a
- * rejected login or key. Text and an icon, never color alone; it only informs and never blocks
- * sending or stopping. A failed Codex turn shows its error in the conversation instead.
+ * A managed Claude Code or Codex turn the CLI is retrying, a Claude turn it ended on a rejected
+ * login or key, or a usage limit the session's agent met (any agent): when it resets and whether
+ * AgentKib continues by itself. Text and an icon, never color alone; it only informs and never
+ * blocks sending or stopping. A failed Codex turn shows its error in the conversation instead.
  */
 export function ManagedTurnNotice({
   live,
   locale,
   surface = "desktop",
   retriesOnly = false,
+  onUsageLimitCancel,
+  onUsageLimitArm,
 }: {
   live?: Live | null;
   locale: Locale;
   surface?: SessionSurface;
   /** Where the session's reason is already shown elsewhere. */
   retriesOnly?: boolean;
+  /** Turns off the continue armed after a usage limit; no button without it. */
+  onUsageLimitCancel?: () => void;
+  /** Arms the continue after the reset when none is armed; no button without it. */
+  onUsageLimitArm?: () => void;
 }) {
   const claude = live?.executionMode === "claude-managed";
+  const limit = live?.usageLimit ? usageLimitNotice(locale, live.usageLimit) : null;
+  if (live && limit && live.status === "idle")
+    return (
+      <div
+        role="status"
+        className="flex min-w-0 items-start gap-2 rounded-lg border border-amber-500/30 bg-amber-500/5 px-3 py-2 text-xs leading-5 text-amber-900 dark:text-amber-200"
+      >
+        <AlertTriangle aria-hidden="true" className="mt-0.5 size-3.5 shrink-0" />
+        <span className="min-w-0 flex-1">{limit.text}</span>
+        {limit.cancel && onUsageLimitCancel && (
+          <Button
+            type="button"
+            variant="ghost"
+            size="xs"
+            onClick={onUsageLimitCancel}
+            className="-my-0.5 shrink-0 font-medium text-current"
+          >
+            {limit.cancel}
+          </Button>
+        )}
+        {limit.arm && onUsageLimitArm && (
+          <Button
+            type="button"
+            variant="ghost"
+            size="xs"
+            onClick={onUsageLimitArm}
+            className="-my-0.5 shrink-0 font-medium text-current"
+          >
+            {limit.arm}
+          </Button>
+        )}
+      </div>
+    );
   if (!live || (!claude && live.executionMode !== "codex-managed")) return null;
   let text: string | undefined;
   let technical: string | undefined;

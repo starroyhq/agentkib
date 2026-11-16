@@ -2633,5 +2633,7 @@
   "home.side.toolUpdates_other": "{{count}} 个工具有新版本",
   "home.side.undiagnosed": "还有 {{count}} 个工作区未诊断",
   "home.side.undiagnosed_one": "还有 {{count}} 个工作区未诊断",
-  "home.side.undiagnosed_other": "还有 {{count}} 个工作区未诊断"
+  "home.side.undiagnosed_other": "还有 {{count}} 个工作区未诊断",
+  "settings.usageLimitAutoContinue": "达到使用上限时，重置后自动继续",
+  "settings.usageLimitAutoContinueHint": "Claude Code 和 Codex 会话达到使用上限后，AgentKib 在额度重置后自动继续，和 Claude Code 自己的做法一样。关掉后，可以在每次的提示里单独选择。"
 }

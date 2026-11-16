@@ -2633,5 +2633,7 @@
   "home.side.toolUpdates_other": "{{count}} tool updates available",
   "home.side.undiagnosed": "{{count}} workspaces not diagnosed yet",
   "home.side.undiagnosed_one": "{{count}} workspace not diagnosed yet",
-  "home.side.undiagnosed_other": "{{count}} workspaces not diagnosed yet"
+  "home.side.undiagnosed_other": "{{count}} workspaces not diagnosed yet",
+  "settings.usageLimitAutoContinue": "Continue automatically after a usage limit resets",
+  "settings.usageLimitAutoContinueHint": "When a Claude Code or Codex session hits its usage limit, AgentKib continues it after the limit resets, the way Claude Code does itself. Turn this off to choose each time from the notice."
 }

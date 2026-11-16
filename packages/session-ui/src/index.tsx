@@ -128,6 +128,7 @@ export {
   type HomeSessionCopy,
   type HomeSessionListProps,
 } from "./home-sessions";
+export { codexPolicyLabel, dshPolicyLabel, type PolicyLabel } from "./policy-labels";
 export { codexCommandPrompt, type CodexCommandPromptRequest } from "./codex-prompts";
 export { dshAgentPresetCopy, dshAgentPresetText, type DshAgentPreset } from "./dsh-agent-presets";
 export {
@@ -261,3 +262,4 @@ export function SafeMarkdown({ text, literal = false }: { text: string; literal?
   );
 }
 export { projectAgentCopy, type ProjectAgentCopy } from "./project-agent-copy";
+export { usageLimitNotice, usageLimitTime, type UsageLimitNoticeInput } from "./usage-limit-copy";

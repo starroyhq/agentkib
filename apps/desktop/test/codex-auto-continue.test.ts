@@ -22,6 +22,7 @@ import { CodexFollowerBridge } from "../../../packages/backend/src/codex-followe
 import { CodexFollowerConnection } from "../../../packages/backend/src/codex-follower-connection";
 import { CodexFollowerState } from "../../../packages/backend/src/codex-follower-state";
 import { CodexDesktopApp } from "../../../packages/backend/src/codex-desktop-app";
+import { AUTO_CONTINUE_TEXT } from "../../../packages/backend/src/usage-limit";
 import * as codexFollowerLocks from "../../../packages/backend/src/codex-follower-operation-lock";
 import { CodexRuntimePreflight } from "../../../packages/backend/src/codex-runtime-preflight";
 import { readControlReceipt } from "../../../packages/backend/src/control-receipt";
@@ -161,6 +162,8 @@ function fixture(
   vi.spyOn(CodexDesktopApp.prototype, "openThread").mockResolvedValue(false);
   let nativeFailure: unknown;
   let turnFailure: unknown;
+  // What `account/rateLimits/read` answers; an API-key login has no ChatGPT limits to read.
+  let rateLimits: unknown = new Error("account-rate-limits-unavailable");
   const methods: string[] = [];
   const requests: Array<{ method: string; params: unknown }> = [];
   let broadSandbox = false;
@@ -210,6 +213,10 @@ function fixture(
         return collaborationModes;
       }
       if (method === "thread/goal/get") return { goal: null };
+      if (method === "account/rateLimits/read") {
+        if (rateLimits instanceof Error) throw rateLimits;
+        return rateLimits;
+      }
       if (method === "skills/list") return { data: [] };
       if (method === "thread/read")
         return {
@@ -410,6 +417,9 @@ function fixture(
     },
     withoutQueue: () => {
       queueSupported = false;
+    },
+    setRateLimits: (value: unknown) => {
+      rateLimits = value;
     },
     exitOn: (method: string | undefined) => {
       exitOn = method;
@@ -4311,5 +4321,131 @@ describe("Codex Desktop follow", () => {
       ],
     ]);
     expect(publish.mock.calls.some((call) => call[1] === "snapshot")).toBe(false);
+  });
+});
+
+describe("a managed Codex turn that meets the usage limit", () => {
+  // Codex 0.167.0's own shapes: the final `error` and the failed turn carry
+  // `codexErrorInfo: "usageLimitExceeded"` and no reset time; `account/rateLimits/read` has the
+  // account's windows, `resetsAt` in seconds.
+  const message =
+    "You've hit your usage limit. Upgrade to Pro (https://chatgpt.com/explore/pro), or try again at 3:05 PM.";
+  const limitError = { message, codexErrorInfo: "usageLimitExceeded" };
+  function meetLimit(f: ReturnType<typeof fixture>) {
+    const server = f.servers.at(-1)!;
+    server.emit("notification", {
+      method: "error",
+      params: { threadId: nativeId, turnId: "new-turn", willRetry: false, error: limitError },
+    });
+    server.complete({ status: "failed", error: limitError });
+  }
+  const windows = (resetsAt: number) => ({
+    rateLimits: {
+      primary: { usedPercent: 100, windowDurationMins: 300, resetsAt },
+      secondary: { usedPercent: 41, windowDurationMins: 10080, resetsAt: resetsAt + 86_400 },
+      planType: "plus",
+    },
+  });
+
+  afterEach(() => vi.useRealTimers());
+
+  const features = async (f: ReturnType<typeof fixture>) =>
+    (
+      (await f.web.managedQuery({
+        operation: "capabilities",
+        sessionId: f.summary.id,
+        experimentalEnabled: true,
+      })) as { features: Record<string, { available: boolean; reason?: string }> }
+    ).features;
+
+  it("stays usable, says when the limit resets, and continues on its own after it", async () => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "Date"], shouldAdvanceTime: true });
+    vi.spyOn(Math, "random").mockReturnValue(0);
+    const f = fixture();
+    const resetsAt = Math.floor(Date.now() / 1000) + 3600;
+    f.setRateLimits(windows(resetsAt));
+    expect(await f.send()).toMatchObject({ accepted: true });
+    meetLimit(f);
+    await vi.waitFor(async () =>
+      expect(await f.live()).toMatchObject({
+        status: "idle",
+        sendEnabled: true,
+        usageLimit: {
+          agent: "codex",
+          resetsAt: resetsAt * 1000,
+          kind: "five-hour",
+          continueAt: resetsAt * 1000 + 30_000,
+          manual: null,
+          message,
+        },
+      }),
+    );
+    expect((await features(f))["usage-limit-cancel"]).toEqual({ available: true });
+    const starts = () => f.requests.filter(({ method }) => method === "turn/start");
+    expect(starts()).toHaveLength(1);
+    await vi.advanceTimersByTimeAsync(3600_000 + 30_000);
+    await vi.waitFor(() => expect(starts()).toHaveLength(2));
+    expect(JSON.stringify(starts().at(-1)!.params)).toContain(AUTO_CONTINUE_TEXT.codex);
+    await vi.waitFor(async () =>
+      expect((await f.live()).usageLimit).toMatchObject({ continueAt: null, autoContinues: 1 }),
+    );
+    // The continue went through: the limit is over.
+    f.servers.at(-1)!.complete();
+    await vi.waitFor(async () => expect((await f.live()).usageLimit ?? null).toBeNull());
+  });
+
+  it("gives way to the person's message, and can be turned off", async () => {
+    const f = fixture();
+    f.setRateLimits(windows(Math.floor(Date.now() / 1000) + 3600));
+    await f.send();
+    meetLimit(f);
+    await vi.waitFor(async () =>
+      expect((await f.live()).usageLimit).toMatchObject({ manual: null }),
+    );
+    const state = await f.live();
+    expect(
+      await f.web.managedControl({
+        operation: "usage-limit-cancel",
+        sessionId: f.summary.id,
+        requestId: randomUUID(),
+        deviceId: "fixture",
+        runtimeBootId: state.runtimeBootId,
+        expectedRevision: state.revision,
+        experimentalEnabled: true,
+      }),
+    ).toMatchObject({ accepted: true, completed: true });
+    expect((await f.live()).usageLimit).toMatchObject({ continueAt: null, manual: "cancelled" });
+    expect((await features(f))["usage-limit-cancel"]?.available).toBe(false);
+    // And on again, for this time.
+    expect((await features(f))["usage-limit-continue"]).toEqual({ available: true });
+    const again = await f.live();
+    expect(
+      await f.web.managedControl({
+        operation: "usage-limit-continue",
+        sessionId: f.summary.id,
+        requestId: randomUUID(),
+        deviceId: "fixture",
+        runtimeBootId: again.runtimeBootId,
+        expectedRevision: again.revision,
+        experimentalEnabled: true,
+      }),
+    ).toMatchObject({ accepted: true, completed: true });
+    expect((await f.live()).usageLimit).toMatchObject({ manual: null, autoContinues: 0 });
+    expect(typeof (await f.live()).usageLimit?.continueAt).toBe("number");
+    await f.send();
+    expect((await f.live()).usageLimit ?? null).toBeNull();
+  });
+
+  it("says try again later when Codex cannot read the account's limits", async () => {
+    const f = fixture();
+    await f.send();
+    meetLimit(f);
+    await vi.waitFor(async () =>
+      expect((await f.live()).usageLimit).toMatchObject({
+        resetsAt: null,
+        continueAt: null,
+        manual: "reset-unknown",
+      }),
+    );
   });
 });

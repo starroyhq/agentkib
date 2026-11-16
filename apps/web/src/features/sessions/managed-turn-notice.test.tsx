@@ -7,6 +7,7 @@ import {
 } from "../conversation/features/sessions/managed-turn-notice";
 import { codexReason } from "../conversation/features/sessions/codex-copy";
 import type { Locale } from "../conversation/i18n";
+import { usageLimitNotice } from "@agentkib/session-ui";
 
 // Claude fixtures are hand-built after the frames CLI 2.1.311 sent to a local API stub; the Codex
 // ones after the `error` notifications CLI 0.163.0 sent while a local stub answered 500 and 401.
@@ -131,5 +132,157 @@ describe("managed turn notice", () => {
       expect(view.container).toBeEmptyDOMElement();
       view.unmount();
     }
+  });
+});
+
+describe("usage limit notice", () => {
+  afterEach(cleanup);
+  // The reset at 15:30 local time on a fixed day, read in the test's own time zone.
+  const now = new Date(2026, 10, 16, 12, 0).getTime();
+  const resetsAt = new Date(2026, 10, 16, 15, 30).getTime();
+  const limit = (patch: Partial<NonNullable<Live["usageLimit"]>> = {}) =>
+    ({
+      agent: "claude-code",
+      resetsAt,
+      kind: "five-hour",
+      scope: null,
+      message: "You've hit your 5-hour limit · resets 3:30pm",
+      continueAt: resetsAt + 60_000,
+      manual: null,
+      autoContinues: 0,
+      ...patch,
+    }) as NonNullable<Live["usageLimit"]>;
+
+  it("says which limit, when it resets and that AgentKib continues, in every locale", () => {
+    const texts = locales.map((locale) => usageLimitNotice(locale, limit(), now));
+    expect(texts.every((text) => text?.cancel && text.text.length > 0)).toBe(true);
+    expect(usageLimitNotice("zh-CN", limit(), now)).toEqual({
+      text: "已达到 5 小时使用上限，15:30 重置，重置后自动继续。",
+      cancel: "不自动继续",
+      arm: null,
+    });
+    expect(usageLimitNotice("en-US", limit(), now)?.text).toBe(
+      "You've hit your 5-hour limit · resets 3:30 PM · continues automatically after the reset.",
+    );
+    // Another day carries the date.
+    expect(
+      usageLimitNotice(
+        "zh-CN",
+        limit({
+          kind: "weekly",
+          resetsAt: resetsAt + 3 * 86_400_000,
+          continueAt: null,
+          manual: "reset-too-far",
+        }),
+        now,
+      )?.text,
+    ).toBe("已达到每周使用上限，11月19日 15:30 重置。重置后发送消息即可继续。");
+  });
+
+  it("follows each agent's own words when nothing is armed", () => {
+    // Codex gives no reset time with its error: its desktop app's "请稍后再试".
+    expect(
+      usageLimitNotice(
+        "zh-CN",
+        limit({
+          agent: "codex",
+          kind: null,
+          resetsAt: null,
+          continueAt: null,
+          manual: "reset-unknown",
+        }),
+        now,
+      )?.text,
+    ).toBe("你已达到使用上限。请稍后再试。");
+    // DeepSeek Harness's own text for a used-up balance.
+    expect(
+      usageLimitNotice(
+        "ja-JP",
+        limit({
+          agent: "deepseek-harness",
+          kind: "quota",
+          resetsAt: null,
+          continueAt: null,
+          manual: "reset-unknown",
+        }),
+        now,
+      )?.text,
+    ).toBe("リクエストのクォータを使い切りました。");
+    expect(
+      usageLimitNotice("zh-Hant", limit({ continueAt: null, manual: "repeated" }), now)?.text,
+    ).toBe("已達到 5 小時使用上限，15:30 重置。連續多次達到上限，已停止自動繼續。");
+    // Past the reset, or woken long after it: the person continues.
+    expect(usageLimitNotice("zh-CN", limit({ continueAt: null, manual: "stale" }), now)?.text).toBe(
+      "使用上限已重置，发送消息即可继续。",
+    );
+    // While AgentKib's continue is on its way there is nothing to say.
+    expect(usageLimitNotice("zh-CN", limit({ continueAt: null, manual: null }), now)).toBeNull();
+  });
+
+  it("offers to arm the continue only where the host can", () => {
+    // Switched off on this computer: the reset is known, so the notice offers the continue.
+    expect(usageLimitNotice("zh-CN", limit({ continueAt: null, manual: "off" }), now)).toEqual({
+      text: "已达到 5 小时使用上限，15:30 重置。重置后发送消息即可继续。",
+      cancel: null,
+      arm: "重置后自动继续",
+    });
+    expect(
+      usageLimitNotice("zh-Hant", limit({ continueAt: null, manual: "cancelled" }), now)?.arm,
+    ).toBe("重置後自動繼續");
+    expect(
+      usageLimitNotice("ja-JP", limit({ continueAt: null, manual: "repeated" }), now)?.arm,
+    ).toBe("リセット後に自動で続行");
+    expect(
+      usageLimitNotice("en-US", limit({ continueAt: null, manual: "restarted" }), now)?.arm,
+    ).toBe("Continue automatically after the reset");
+    // Nothing to arm: already armed, no reset time, an agent without one, or the reset has passed.
+    expect(usageLimitNotice("en-US", limit(), now)?.arm).toBeNull();
+    expect(
+      usageLimitNotice("en-US", limit({ continueAt: null, manual: "off", resetsAt: null }), now)
+        ?.arm,
+    ).toBeNull();
+    expect(
+      usageLimitNotice("en-US", limit({ continueAt: null, manual: "reset-unknown" }), now)?.arm,
+    ).toBeNull();
+    expect(
+      usageLimitNotice("en-US", limit({ continueAt: null, manual: "off", resetsAt: now - 1 }), now)
+        ?.arm,
+    ).toBeNull();
+  });
+
+  it("arms the continue from the notice", () => {
+    let armed = 0;
+    render(
+      <ManagedTurnNotice
+        live={live({
+          status: "idle",
+          usageLimit: limit({ continueAt: null, manual: "off" }),
+          executionMode: undefined,
+        })}
+        locale="en-US"
+        onUsageLimitArm={() => armed++}
+      />,
+    );
+    expect(screen.queryByRole("button", { name: "Don't continue automatically" })).toBeNull();
+    screen.getByRole("button", { name: "Continue automatically after the reset" }).click();
+    expect(armed).toBe(1);
+  });
+
+  it("shows on an idle session of any agent, with the button only where it can act", () => {
+    let cancelled = 0;
+    const { rerender } = render(
+      <ManagedTurnNotice
+        live={live({ status: "idle", usageLimit: limit(), executionMode: undefined })}
+        locale="en-US"
+        onUsageLimitCancel={() => cancelled++}
+      />,
+    );
+    screen.getByRole("button", { name: "Don't continue automatically" }).click();
+    expect(cancelled).toBe(1);
+    rerender(
+      <ManagedTurnNotice live={live({ status: "idle", usageLimit: limit() })} locale="en-US" />,
+    );
+    expect(screen.getByRole("status").textContent).toContain("5-hour limit");
+    expect(screen.queryByRole("button")).toBeNull();
   });
 });

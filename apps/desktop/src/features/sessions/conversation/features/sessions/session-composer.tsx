@@ -654,7 +654,14 @@ export function SessionComposer({
         <p className="px-3 text-xs leading-5 text-muted-foreground">{continuation.terminalHint}</p>
       )}
       {isClaude && <PermissionModeNotice permission={live?.permission} locale={locale} compact />}
-      {(isClaude || isCodex) && <ManagedTurnNotice live={live} locale={locale} />}
+      {(isClaude || isCodex || isDsh) && (
+        <ManagedTurnNotice
+          live={live}
+          locale={locale}
+          onUsageLimitCancel={() => void codexAction("usage-limit-cancel")}
+          onUsageLimitArm={() => void codexAction("usage-limit-continue")}
+        />
+      )}
       {current?.agent === "devin" && (
         <DevinTurnNotice
           // A refused send names its reason; a turn that ended without running leaves it on live.

@@ -99,6 +99,7 @@ import { mergeCodexFollowerSnapshot } from "./codex-follower-stream";
 import { SessionSnapshotHistory } from "./session-snapshot-history";
 import { retainManagedLedgerReaders } from "./managed-ledger";
 import { MessageLeadReports } from "./message-lead-reports";
+import { usageLimitAutoContinue } from "./usage-limit";
 import { BackendStore } from "./store";
 import { canonicalize } from "./paths";
 import {
@@ -771,6 +772,7 @@ export class TypeScriptBackend {
           (sessionId) =>
             leadOwner.queuedReports(sessionId) +
             (this.#claudeBridge?.queuedReports(sessionId) ?? 0),
+          (sessionId) => this.#webRead?.usageLimited(sessionId) === true,
         );
         this.#dshLeads?.close();
         this.#dshLeads = new DshLeadWatch({
@@ -2609,6 +2611,7 @@ export class TypeScriptBackend {
         waiting: (sessionId, turnId, status) =>
           void this.#orchestration?.laneWaiting(sessionId, turnId, status).catch(() => undefined),
         ownTurn: (sessionId, turnId) => void this.#leadOwnTurn(sessionId, turnId),
+        limitEnded: (sessionId) => this.#orchestration?.limitEnded(sessionId),
       });
       // A Codex Project Agent's thread starts with its worker tools.
       this.#webRead.leadEndpoints(async (sessionId) => {
@@ -2654,7 +2657,13 @@ export class TypeScriptBackend {
         this.#dshBridge?.invalidate(deviceId, sessionId);
         // A remote host that stops because AgentKib quits changes no device's access. Leads
         // stay as they are: the next start pauses each, and says that it restarted.
-        if (deviceId && params.quitting !== true) this.#orchestration?.invalidateDevice(deviceId);
+        if (deviceId && params.quitting !== true) {
+          this.#orchestration?.invalidateDevice(deviceId);
+          // Nor does AgentKib continue a Codex session in its name after a usage limit.
+          void this.#withWebRead((owner) => owner.invalidateUsageLimitDevice(deviceId)).catch(
+            () => undefined,
+          );
+        }
       }
       if (String(params.operation).startsWith("lead-")) return await this.#requestLead(params);
       // The desktop's local management channel also reports the DeepSeek Harness connection.
@@ -2667,6 +2676,13 @@ export class TypeScriptBackend {
         writePreference(this.#dataDir, "dsh_auto_start", params.enabled === true);
         this.#dshAutoStart = undefined;
         return this.#dshBridge.management({ ...params, operation: "dsh-bridge-status" });
+      }
+      // Whether sessions continue after a usage limit resets, for this computer (on by default).
+      if (params.operation === "usage-limit-auto-continue") {
+        if (!this.#dataDir) throw new Error("claude-managed-unavailable");
+        if (typeof params.enabled === "boolean")
+          writePreference(this.#dataDir, "usage_limit_auto_continue", params.enabled);
+        return { autoContinue: usageLimitAutoContinue(this.#dataDir) };
       }
       // Whether managed Claude sessions keep background tasks, for this computer.
       if (params.operation === "background-tasks") {

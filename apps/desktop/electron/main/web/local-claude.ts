@@ -105,6 +105,14 @@ async function localClaudeRequestInner(
   if (operation === "dsh-bridge-status") return deps.managed({ operation, deviceId: OWNER });
   if (operation === "dsh-auto-start")
     return deps.managed({ operation, enabled: input.enabled === true, deviceId: OWNER });
+  // Whether sessions continue after a usage limit resets, for this computer; a read without
+  // `enabled`.
+  if (operation === "usage-limit-auto-continue")
+    return deps.managed({
+      operation,
+      ...(typeof input.enabled === "boolean" ? { enabled: input.enabled } : {}),
+      deviceId: OWNER,
+    });
   // Whether managed Claude Code sessions keep background tasks; a read without `enabled`.
   if (operation === "background-tasks")
     return deps.managed({

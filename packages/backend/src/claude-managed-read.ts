@@ -65,6 +65,14 @@ import {
   type ClaudeHostWork,
   type ClaudeSettings,
 } from "./claude-host-state";
+import {
+  AUTO_CONTINUE_TEXT,
+  armUsageLimit,
+  usageLimitArmable,
+  usageLimitAutoContinue,
+  usageLimitContinue,
+  usageLimitView,
+} from "./usage-limit";
 import { createClaudeGoalReportEndpoint } from "./claude-goal-report";
 import { projectContextUsage } from "./context-usage";
 import {
@@ -298,6 +306,8 @@ export class ClaudeManagedReadOwner {
   #activeHostClaims = new Map<string, string>();
   #continuationNotices = new Map<string, string>();
   #continuationNoticeIds = new Map<string, string>();
+  // The device whose message each session's runner last took: a limit it meets is held for it.
+  #senders = new Map<string, string>();
   #maintenanceTimer: ReturnType<typeof setInterval>;
   #maintenance?: Promise<void>;
   #shuttingDown = false;
@@ -557,6 +567,9 @@ export class ClaudeManagedReadOwner {
       case "schedule-resume":
         if (!id) throw new Error("missing-session");
         return this.#schedule(value, id);
+      case "schedule-continue":
+        if (!id) throw new Error("missing-session");
+        return this.#continueAfterLimit(id);
       case "settings":
       case "queue-add":
       case "queue-update":
@@ -564,6 +577,8 @@ export class ClaudeManagedReadOwner {
       case "queue-reorder":
       case "queue-resume":
       case "queue-pause":
+      case "usage-limit-cancel":
+      case "usage-limit-continue":
       case "rename":
       case "goal-set":
       case "goal-pause":
@@ -790,6 +805,8 @@ export class ClaudeManagedReadOwner {
         this.#continuationNotices.delete(id);
         this.#continuationNoticeIds.delete(id);
       }
+      // The person's message takes over from a continue armed after a usage limit.
+      this.#hostState.personSent(id);
       const host = this.#hostState.read(id);
       if (host.goal?.status === "active")
         this.#hostState.update(id, (state) => {
@@ -923,6 +940,7 @@ export class ClaudeManagedReadOwner {
                 }
                 dispatchManagedCommand(this.dataDir, requestId);
                 dispatched = true;
+                this.#senders.set(id, value.deviceId);
               },
             );
             try {
@@ -1396,6 +1414,9 @@ export class ClaudeManagedReadOwner {
           this.#hostState.complete(id, result.turnId, {
             success: result.success,
             usage: result.usage,
+            usageLimit: result.success ? null : runner.state.usageLimit,
+            deviceId: this.#senders.get(id) ?? null,
+            autoContinue: usageLimitAutoContinue(this.dataDir),
           });
           void this.#goalEndpoints
             .get(id)
@@ -2110,6 +2131,23 @@ export class ClaudeManagedReadOwner {
             host.paused = true;
             host.reason = "user-paused";
             return {};
+          case "usage-limit-cancel":
+            // The person turned the automatic continue off; the session waits for them.
+            if (!host.usageLimit || host.usageLimit.continueAt === null)
+              throw new Error("usage-limit-continue-unavailable");
+            host.usageLimit = { ...host.usageLimit, continueAt: null, manual: "cancelled" };
+            return {};
+          case "usage-limit-continue": {
+            // The person wants the continue this time after all; the queue waits for it.
+            const armed = armUsageLimit(host.usageLimit, { bootId: this.bootId });
+            if (!armed) throw new Error("usage-limit-continue-unavailable");
+            host.usageLimit = armed;
+            if (!host.paused) {
+              host.paused = true;
+              host.reason = "usage-limit";
+            }
+            return {};
+          }
           case "queue-resume":
           case "goal-resume": {
             if (host.work.some((work) => work.status === "unknown" || work.status === "dispatched"))
@@ -2240,6 +2278,13 @@ export class ClaudeManagedReadOwner {
           scheduleRevision: host.revision,
           paused: host.paused,
           reason: host.reason,
+          // When a continue armed after a usage limit is due; the scheduler asks for it then.
+          continueAt:
+            host.paused &&
+            host.reason === "usage-limit" &&
+            usageLimitContinue(host.usageLimit, this.bootId) !== "never"
+              ? host.usageLimit!.continueAt
+              : null,
           next: next
             ? {
                 itemId: next.id,
@@ -2258,6 +2303,20 @@ export class ClaudeManagedReadOwner {
       }
     }
     return { sessions };
+  }
+
+  /**
+   * The scheduler found a continue armed after a usage limit due (`usage-limit.ts`): the session
+   * resumes and AgentKib's continue is queued. Sending it is then ordinary scheduled work,
+   * authorized in the name of the device whose turn met the limit.
+   */
+  async #continueAfterLimit(id: string): Promise<Record<string, unknown>> {
+    const record = this.#load(id);
+    if (!record || record.released) throw new Error("session-unavailable");
+    this.#validate(record);
+    const outcome = this.#hostState.continueAfterLimit(id, AUTO_CONTINUE_TEXT["claude-code"]);
+    if (outcome === "continued" || outcome === "stale") this.#catalogChanged?.();
+    return { accepted: outcome === "continued", outcome };
   }
 
   async #schedule(value: Record<string, any>, id: string): Promise<Record<string, unknown>> {
@@ -4403,6 +4462,7 @@ export class ClaudeManagedReadOwner {
     live.revision = Number(live.revision ?? 0) + host.revision;
     live.goal = host.goal;
     live.schedule = { paused: host.paused, reason: host.reason, revision: host.revision };
+    live.usageLimit = usageLimitView(host.usageLimit, this.bootId);
     const options = runner?.optionsSnapshot.settingsAcknowledged
       ? runner.optionsSnapshot
       : host.lastConfirmedOptions?.options;
@@ -4796,6 +4856,8 @@ export class ClaudeManagedReadOwner {
       "queue-reorder": writable,
       "queue-resume": idle && host?.paused === true,
       "queue-pause": writable && host?.paused !== true,
+      "usage-limit-cancel": writable && typeof host?.usageLimit?.continueAt === "number",
+      "usage-limit-continue": writable && usageLimitArmable(host?.usageLimit, this.bootId),
       fork:
         version &&
         controls &&
@@ -4826,6 +4888,8 @@ export class ClaudeManagedReadOwner {
         "queue-reorder",
         "queue-resume",
         "queue-pause",
+        "usage-limit-cancel",
+        "usage-limit-continue",
         "fork",
         "rename",
         "goal",

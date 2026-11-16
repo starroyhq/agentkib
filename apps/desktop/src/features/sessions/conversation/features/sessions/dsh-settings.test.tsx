@@ -125,7 +125,7 @@ describe("DeepSeek Harness model settings in the composer", () => {
           options: {
             ...settings.options,
             policies: [
-              { id: "read-only", name: "Read only · ask when needed" },
+              { id: "read-only", name: "Read Only" },
               { id: "workspace-write", name: "Workspace write · ask when needed" },
             ],
           },
@@ -134,7 +134,7 @@ describe("DeepSeek Harness model settings in the composer", () => {
     } as unknown as ReturnType<typeof useSession>;
     render(<CodexComposerControls {...props} />);
     const permissions = await screen.findByRole("button", { name: copy.conversationSettings });
-    expect(permissions).toHaveTextContent("Workspace write · ask when needed");
+    expect(permissions).toHaveTextContent("Workspace Write");
     fireEvent.click(permissions);
     expect(await screen.findByText(copy.settingsWhileRunningModel)).toBeInTheDocument();
     expect(screen.queryByText(copy.settingsWhileRunning)).not.toBeInTheDocument();
@@ -142,14 +142,14 @@ describe("DeepSeek Harness model settings in the composer", () => {
     const policy = screen.getByLabelText(copy.executionPolicy, { exact: false });
     expect(policy).not.toBeDisabled();
     // The select names the preset, not its ID.
-    expect(policy).toHaveTextContent("Workspace write · ask when needed");
+    expect(policy).toHaveTextContent("Workspace Write");
     expect(policy).not.toHaveTextContent("workspace-write");
     for (const label of [copy.model, copy.effort, copy.serviceTier])
       expect(screen.queryByLabelText(label)).not.toBeInTheDocument();
     const user = userEvent.setup();
     await user.click(policy);
-    await user.click(await screen.findByRole("option", { name: "Read only · ask when needed" }));
-    expect(policy).toHaveTextContent("Read only · ask when needed");
+    await user.click(await screen.findByRole("option", { name: "Read Only" }));
+    expect(policy).toHaveTextContent("Read Only");
     const apply = screen.getByRole("button", { name: copy.apply });
     expect(apply).toBeEnabled();
     await user.click(apply);

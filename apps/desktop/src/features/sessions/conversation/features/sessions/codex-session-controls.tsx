@@ -30,7 +30,7 @@ import {
   type CodexSessionSettings,
   type ManagedAgent,
 } from "@agentkib/web-client";
-import { newSessionPermissions } from "@agentkib/session-ui";
+import { codexPolicyLabel, dshPolicyLabel, newSessionPermissions } from "@agentkib/session-ui";
 import { Button } from "@/components/ui/button";
 import { Disclosure, DisclosureSummary } from "@/components/ui/disclosure";
 import { Input } from "@/components/ui/input";
@@ -842,9 +842,18 @@ export function CodexComposerControls({
       : {}),
   };
   // Codex's execution policies; for DeepSeek Harness, its permission presets.
+  // The host names policies in English only; show Codex's and DeepSeek Harness's own wording
+  // per locale, and the host's text for an id neither knows.
+  const policyText = (item: { id: string; name: string; description?: string }) => {
+    const label =
+      current?.agent === "deepseek-harness"
+        ? dshPolicyLabel(item.id, locale)
+        : codexPolicyLabel(item.id, locale);
+    return { name: label?.name ?? item.name, description: label?.description ?? item.description };
+  };
   const policyControl = (value: CodexSessionSettings) => {
     const selected = value.options.policies?.find((item) => item.id === policy);
-    const described = selected?.description;
+    const described = selected && policyText(selected).description;
     return (
       <label className="block space-y-1 text-sm">
         {copy.executionPolicy}
@@ -858,7 +867,7 @@ export function CodexComposerControls({
         >
           <SelectTrigger className={selectClass} title={reasonTitle(value.writable.policy?.reason)}>
             <SelectValue placeholder={copy.defaultOption}>
-              {policy ? selected?.name || policy : copy.defaultOption}
+              {policy ? (selected && policyText(selected).name) || policy : copy.defaultOption}
             </SelectValue>
           </SelectTrigger>
           <SelectContent>
@@ -866,7 +875,7 @@ export function CodexComposerControls({
               <SelectLabel>{copy.executionPolicy}</SelectLabel>
               {value.options.policies?.map((item) => (
                 <SelectItem value={item.id} key={item.id}>
-                  {item.name}
+                  {policyText(item).name}
                 </SelectItem>
               ))}
             </SelectGroup>
@@ -877,12 +886,16 @@ export function CodexComposerControls({
       </label>
     );
   };
+  const selectedPolicy = settings?.options.policies?.find(
+    (item) => item.id === settings.current.policyId,
+  );
   const permissionLabel = isClaude
     ? (settings?.options.permissionModes?.find(
         (item) => item.id === settings.current.permissionMode,
       )?.name ?? agentCopy.permission)
-    : (settings?.options.policies?.find((item) => item.id === settings.current.policyId)?.name ??
-      copy.executionPolicy);
+    : selectedPolicy
+      ? policyText(selectedPolicy).name
+      : copy.executionPolicy;
   const quickStatus = mutationError
     ? reason(mutationError)
     : settingsError

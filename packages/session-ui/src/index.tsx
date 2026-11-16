@@ -260,4 +260,5 @@ export function SafeMarkdown({ text, literal = false }: { text: string; literal?
     </Markdown>
   );
 }
+export { codexPolicyLabel, dshPolicyLabel, type PolicyLabel } from "./policy-labels";
 export { projectAgentCopy, type ProjectAgentCopy } from "./project-agent-copy";

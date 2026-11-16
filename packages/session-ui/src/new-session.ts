@@ -311,16 +311,16 @@ const copy = {
         title: "應如何核准 Codex 操作？",
         choices: {
           "workspace-write-on-request": {
-            name: "請求核准",
-            description: "編輯外部檔案和使用網際網路時一律詢問",
+            name: "要求核准",
+            description: "一律先詢問是否要編輯外部檔案及使用網際網路",
           },
           "workspace-write-auto-review": {
-            name: "幫我核准",
-            description: "僅對偵測到的風險操作請求核准",
+            name: "代我核准",
+            description: "僅對偵測為可能不安全的操作要求核准",
           },
           "full-access-on-request": {
-            name: "完整存取權限",
-            description: "可不受限制地存取網際網路和你電腦上的任何檔案",
+            name: "完整存取權",
+            description: "可無限制存取網際網路和您電腦上的任何檔案",
           },
         },
       },
@@ -382,12 +382,11 @@ const copy = {
         choices: {
           "workspace-write-on-request": {
             name: "Ask for approval",
-            description:
-              "Always ask before editing files outside the workspace or using the internet",
+            description: "Always ask to edit external files and use the internet",
           },
           "workspace-write-auto-review": {
             name: "Approve for me",
-            description: "Ask only for actions detected as risky",
+            description: "Only ask for actions detected as potentially unsafe",
           },
           "full-access-on-request": {
             name: "Full access",
@@ -465,16 +464,16 @@ const copy = {
         choices: {
           "workspace-write-on-request": {
             name: "承認を求める",
-            description: "外部ファイルの編集やインターネットの使用時は常に確認します",
+            description: "外部ファイルの編集やインターネットの利用について、常に確認を求めます",
           },
           "workspace-write-auto-review": {
             name: "代わりに承認",
-            description: "リスクが検出された操作のみ承認を求めます",
+            description: "安全でない可能性があると検出された操作についてのみ確認を求めます",
           },
           "full-access-on-request": {
             name: "フルアクセス",
             description:
-              "インターネットとコンピューター上のすべてのファイルに制限なくアクセスできます",
+              "インターネットとコンピューター上のすべてのファイルに無制限でアクセスします",
           },
         },
       },

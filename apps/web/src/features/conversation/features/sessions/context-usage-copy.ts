@@ -4,6 +4,7 @@ import { surfaceCopy, type SessionSurface } from "./session-surface-copy";
 export const contextUsageCopy = {
   "zh-CN": {
     windowTitle: "上下文窗口",
+    capacity: "模型上下文上限 {total} Token",
     usedRemaining: "已使用 {used}%（剩余 {remaining}%）",
     tokenUsage: "已使用 {used} / {total} Token",
     pending: "等待用量",
@@ -25,7 +26,7 @@ export const contextUsageCopy = {
     reported: "上次上报",
     historicalReport: "上次记录",
     historicalDetail: "这是 Codex 保存的历史用量。",
-    devinLastRequest: "这是 Devin 上次模型请求的输入用量。",
+    lastRequestDetail: "这是上次模型请求的输入用量。",
     recentNativeReport: "最近原生报告",
     compactAction: "压缩上下文",
     compactDetail:
@@ -36,6 +37,7 @@ export const contextUsageCopy = {
   },
   "zh-Hant": {
     windowTitle: "上下文視窗",
+    capacity: "模型上下文上限 {total} Token",
     usedRemaining: "已使用 {used}%（剩餘 {remaining}%）",
     tokenUsage: "已使用 {used} / {total} Token",
     pending: "等待用量",
@@ -57,7 +59,7 @@ export const contextUsageCopy = {
     reported: "上次上報",
     historicalReport: "上次記錄",
     historicalDetail: "這是 Codex 儲存的歷史用量。",
-    devinLastRequest: "這是 Devin 上次模型請求的輸入用量。",
+    lastRequestDetail: "這是上次模型請求的輸入用量。",
     recentNativeReport: "最近原生報告",
     compactAction: "壓縮上下文",
     compactDetail:
@@ -68,6 +70,7 @@ export const contextUsageCopy = {
   },
   "en-US": {
     windowTitle: "Context window",
+    capacity: "Model context limit of {total} tokens",
     usedRemaining: "{used}% used ({remaining}% remaining)",
     tokenUsage: "{used} / {total} tokens used",
     pending: "Awaiting usage",
@@ -91,7 +94,7 @@ export const contextUsageCopy = {
     reported: "Last reported",
     historicalReport: "Last recorded",
     historicalDetail: "This usage is from the Codex session history.",
-    devinLastRequest: "Input usage from Devin’s last model request.",
+    lastRequestDetail: "Input usage from the last model request.",
     recentNativeReport: "Latest native report",
     compactAction: "Compact context",
     compactDetail:
@@ -102,6 +105,7 @@ export const contextUsageCopy = {
   },
   "ja-JP": {
     windowTitle: "コンテキストウィンドウ",
+    capacity: "モデルのコンテキスト上限 {total} トークン",
     usedRemaining: "{used}% 使用（残り {remaining}%）",
     tokenUsage: "{used} / {total} トークン使用",
     pending: "使用量を待機中",
@@ -124,7 +128,7 @@ export const contextUsageCopy = {
     reported: "前回の報告",
     historicalReport: "前回の記録",
     historicalDetail: "Codex が保存した履歴の使用量です。",
-    devinLastRequest: "Devin が最後にモデルへ送った入力の使用量です。",
+    lastRequestDetail: "前回のモデルリクエストで使用した入力トークン数です。",
     recentNativeReport: "最新のネイティブ報告",
     compactAction: "コンテキストを圧縮",
     compactDetail:

@@ -19,6 +19,8 @@ import {
 } from "lucide-react";
 import {
   ApiError,
+  managedAgentOf,
+  sessionProviderCapabilities,
   type SessionAction,
   type SessionActionBody,
   type ClaudePermissionMode,
@@ -27,9 +29,14 @@ import {
   type CodexContextResource,
   type CodexGoalState,
   type CodexSessionSettings,
-  type ManagedAgent,
 } from "@agentkib/web-client";
-import { codexPolicyLabel, dshPolicyLabel, newSessionPermissions } from "@agentkib/session-ui";
+import {
+  codexPolicyLabel,
+  dshPolicyLabel,
+  modelEffortsForTier,
+  modelSupportsTier,
+  newSessionPermissions,
+} from "@agentkib/session-ui";
 import { Button } from "../../components/ui/button";
 import { Input } from "../../components/ui/input";
 import { Dialog } from "../../components/dialog";
@@ -87,8 +94,9 @@ function settingsSelection(settings: CodexSessionSettings, isClaude: boolean) {
 
 function modelOption(settings: CodexSessionSettings | undefined, model: string | undefined) {
   if (!model) return undefined;
-  return settings?.options.models?.find(
-    (item) => item.id === model || item.resolvedModel === model,
+  return (
+    settings?.options.models?.find((item) => item.id === model || item.resolvedModel === model) ??
+    settings?.options.models?.find((item) => item.variants?.some((variant) => variant.id === model))
   );
 }
 
@@ -136,15 +144,8 @@ export function CodexComposerControls({
   } = useSession();
   const copy = codexCopyForSurface(locale, "web");
   const isClaude = current?.agent === "claude-code";
-  // Claude Code, DeepSeek Harness and Devin read through the shared managed routes, and only
-  // what their capabilities offer; DeepSeek Harness otherwise follows the Codex settings rules.
-  const managedAgent: ManagedAgent | null = isClaude
-    ? "claude-code"
-    : current?.agent === "deepseek-harness"
-      ? "deepseek-harness"
-      : current?.agent === "devin"
-        ? "devin"
-        : null;
+  // Codex keeps its legacy route, which includes the last-used settings for inactive sessions.
+  const managedAgent = current?.agent === "codex" ? null : managedAgentOf(current?.agent);
   const isDevin = managedAgent === "devin";
   // Devin's modes in its own words, as the new-session composer offers them.
   const devinPermissions = isDevin
@@ -220,13 +221,23 @@ export function CodexComposerControls({
   const [contextNames, setContextNames] = useState<string[]>([]);
   const [contextLoading, setContextLoading] = useState(false);
   const settingsDraftRevision = useRef<number | undefined>(undefined);
-  const editedClaudeSettings = useRef(new Set<"model" | "effort" | "permissionMode">());
+  const editedFields = useRef(new Set<"model" | "effort" | "permissionMode" | "serviceTier">());
   const goalDraftRevision = useRef<number | undefined>(undefined);
   const [settingsDirty, setSettingsDirty] = useState(false);
   const [goalDirty, setGoalDirty] = useState(false);
   const full = access?.device?.accessMode === "full";
   const [dialog, setDialog] = useState<"settings" | "goal" | "context">();
   const [settings, setSettings] = useState<CodexSessionSettings>();
+  const settingsScopeMatches =
+    settings?.sessionId === selected &&
+    resourceScope.current.client === client &&
+    resourceScope.current.bootId === access?.bootId &&
+    resourceScope.current.deviceId === access?.device?.id;
+  const fallbackProvider = sessionProviderCapabilities(current?.agent);
+  const provider = (settingsScopeMatches ? settings?.provider : undefined) ?? fallbackProvider;
+  const usesVariants = provider?.models.selection === "variants";
+  const canClearEffort = provider?.models.clearEffort ?? isClaude;
+  const preparesSettings = provider?.models.prepare === true;
   const [goal, setGoal] = useState<CodexGoalState>();
   const [context, setContext] = useState<CodexContextOptions>();
   const [settingsError, setSettingsError] = useState("");
@@ -268,19 +279,46 @@ export function CodexComposerControls({
   // While a turn runs, the note below the settings already says to wait for it.
   const settingReason = (code?: string) =>
     running && code === "session-busy" ? null : reasonDetail(code);
-  const usageView = useContextUsage(settings?.sessionId === selected ? settings.usage : undefined);
+  const currentUsageSettings =
+    settingsScopeMatches &&
+    (provider?.contextUsage !== "last-request" ||
+      (!pendingSettings && (live?.revision === undefined || live.revision === settings?.revision)))
+      ? settings
+      : undefined;
+  const usageCapacity =
+    provider?.contextUsage === "last-request" &&
+    currentUsageSettings?.applicationStatus !== "pending" &&
+    currentUsageSettings?.applicationStatus !== "unknown"
+      ? currentUsageSettings?.current.maxContextTokens
+      : undefined;
+  const usageView = useContextUsage(
+    currentUsageSettings?.usage,
+    usageCapacity,
+    provider?.contextUsage,
+  );
+  const supportsContextUsage = provider?.contextUsage !== "unsupported";
+  const showContextUsage =
+    supportsContextUsage &&
+    (provider?.contextUsage !== "last-request" ||
+      usageView.usage?.historical === true ||
+      usageView.capacity !== undefined);
 
   const applySettings = useCallback(
     (value: CodexSessionSettings, fromLive = false) => {
-      setSettings((previous) =>
-        fromLive && previous?.sessionId === value.sessionId
-          ? {
-              ...value,
-              historicalSettings: value.historicalSettings ?? previous.historicalSettings,
-              usage: previous.usage?.historical ? previous.usage : value.usage,
-            }
-          : value,
-      );
+      setSettings((previous) => {
+        if (!fromLive || previous?.sessionId !== value.sessionId) return value;
+        const registered = value.provider ?? previous.provider;
+        const source = registered?.contextUsage ?? fallbackProvider?.contextUsage;
+        const keepHistory =
+          previous.usage?.historical &&
+          (source !== "last-request" || previous.revision === value.revision);
+        return {
+          ...value,
+          provider: registered,
+          historicalSettings: value.historicalSettings ?? previous.historicalSettings,
+          usage: keepHistory ? previous.usage : value.usage,
+        };
+      });
       if (settingsDraftRevision.current !== undefined) return;
       const selected = settingsSelection(value, isClaude);
       setModel(modelOption(value, selected.modelId)?.id ?? selected.modelId ?? "");
@@ -290,7 +328,7 @@ export function CodexComposerControls({
       setPermissionMode(selected.permissionMode ?? "");
       setServiceTier(selected.serviceTierId ?? "");
     },
-    [isClaude],
+    [isClaude, fallbackProvider],
   );
 
   const loadContext = useCallback(
@@ -407,7 +445,7 @@ export function CodexComposerControls({
   useEffect(() => {
     loadGeneration.current++;
     settingsDraftRevision.current = undefined;
-    editedClaudeSettings.current.clear();
+    editedFields.current.clear();
     goalDraftRevision.current = undefined;
     setSettingsDirty(false);
     setGoalDirty(false);
@@ -531,7 +569,7 @@ export function CodexComposerControls({
           }
         : pendingSettings;
     const confirmed =
-      (!isClaude ||
+      (!(isClaude || usesVariants) ||
         (settings.applicationStatus === "confirmed" &&
           settings.revision > pendingSettings.expectedRevision)) &&
       settings.applicationStatus !== "pending" &&
@@ -551,12 +589,15 @@ export function CodexComposerControls({
       (expected.permissionMode === undefined ||
         settings.current.permissionMode === expected.permissionMode) &&
       (expected.serviceTierId === undefined ||
-        settings.current.serviceTierId === expected.serviceTierId);
+        (expected.serviceTierId === null
+          ? settings.current.serviceTierId == null ||
+            (!usesVariants && settings.current.serviceTierId === settings.defaults.serviceTierId)
+          : settings.current.serviceTierId === expected.serviceTierId));
     if (confirmed) {
       setPendingSettings(undefined);
       setSaved(true);
     }
-  }, [isClaude, pendingSettings, settings]);
+  }, [isClaude, pendingSettings, settings, usesVariants]);
 
   /** Changes the settings or the goal; true once the host accepted the change. */
   async function mutate(
@@ -578,7 +619,7 @@ export function CodexComposerControls({
       if (name === "settings") {
         setPendingSettings({ ...fields, expectedRevision: readRevision ?? 0 });
         settingsDraftRevision.current = undefined;
-        editedClaudeSettings.current.clear();
+        editedFields.current.clear();
         setSettingsDirty(false);
       }
       if (name.startsWith("goal-")) {
@@ -602,12 +643,14 @@ export function CodexComposerControls({
     setDialog(next);
     if (
       next === "settings" &&
-      isClaude &&
+      preparesSettings &&
       feature("settings")?.available &&
       access?.bootId &&
       selected &&
       live?.revision !== undefined &&
-      !preparingSettings
+      (!live.executionMode || live.executionMode === "claude-managed") &&
+      !running &&
+      !settingsPreparation.current
     ) {
       const generation = loadGeneration.current;
       const preparation = Symbol("settings-prepare");
@@ -676,7 +719,28 @@ export function CodexComposerControls({
   }));
 
   if (!full) return null;
-  const selectedModel = modelOption(settings, model);
+  const selectedModel = modelOption(
+    settings,
+    model || (provider ? settings?.defaults.modelId : undefined),
+  );
+  const modelEfforts = modelEffortsForTier(selectedModel, serviceTier);
+  const serviceTierOptions =
+    settings?.options.serviceTiers?.filter((item) =>
+      provider
+        ? modelSupportsTier(selectedModel, item.id, effort || undefined)
+        : !selectedModel?.serviceTierIds?.length || selectedModel.serviceTierIds.includes(item.id),
+    ) ?? [];
+  const canClearTier =
+    usesVariants && modelSupportsTier(selectedModel, undefined, effort || undefined);
+  const showTiers = provider
+    ? serviceTierOptions.length > 0 || (canClearTier && !!serviceTier)
+    : !managedAgent;
+  const showModel = !provider || !!settings?.options.models?.length || !!model;
+  const showEffort =
+    !provider ||
+    modelEfforts.length > 0 ||
+    (!!effort && canClearEffort) ||
+    (!model && settings?.options.models?.some((option) => option.efforts.length > 0));
   const availableResources = (context?.resources ?? []).filter((item) => {
     const needle = query.trim().toLocaleLowerCase();
     return !needle || `${item.name} ${item.description ?? ""}`.toLocaleLowerCase().includes(needle);
@@ -695,9 +759,9 @@ export function CodexComposerControls({
   ];
   const settingsChanged = settingsDirty && settingsDraftRevision.current !== settings?.revision;
   const goalChanged = goalDirty && goalDraftRevision.current !== goal?.revision;
-  const editSettings = (field?: "model" | "effort" | "permissionMode") => {
+  const editSettings = (field?: "model" | "effort" | "permissionMode" | "serviceTier") => {
     settingsDraftRevision.current ??= settings?.revision;
-    if ((isClaude || isDevin) && field) editedClaudeSettings.current.add(field);
+    if (field) editedFields.current.add(field);
     setSettingsDirty(true);
     setSaved(false);
   };
@@ -725,12 +789,12 @@ export function CodexComposerControls({
   const unavailableSettings = settings
     ? [
         [copy.model, settings.writable.model?.available],
-        [copy.effort, settings.writable.effort?.available],
-        ...(isClaude
+        ...(showEffort ? [[copy.effort, settings.writable.effort?.available]] : []),
+        ...(showTiers ? [[copy.serviceTier, settings.writable.serviceTier?.available]] : []),
+        ...(isClaude || isDevin
           ? [[agentCopy.permission, settings.writable.permissionMode?.available]]
           : [
               [copy.mode, modeWritable],
-              [copy.serviceTier, settings.writable.serviceTier?.available],
               [copy.executionPolicy, settings.writable.policy?.available],
             ]),
         [copy.restoreDefaults, settings.writable.restoreDefaults?.available],
@@ -775,7 +839,6 @@ export function CodexComposerControls({
     );
   };
   const isCodex = current?.agent === "codex";
-  const settingsScope = resourceScope.current;
   const liveSettings =
     isCodex && live?.settings?.sessionId === selected ? live.settings : undefined;
   const liveSelection = liveSettings && settingsSelection(liveSettings, false);
@@ -790,10 +853,7 @@ export function CodexComposerControls({
   const lastUsed =
     isCodex &&
     access?.device?.advancedControl === true &&
-    settingsScope.client === client &&
-    settingsScope.bootId === access?.bootId &&
-    settingsScope.deviceId === access?.device?.id &&
-    settings?.sessionId === selected &&
+    settingsScopeMatches &&
     !reportedSettings?.modelId &&
     !reportedSettings?.effort &&
     settings.applicationStatus !== "pending" &&
@@ -920,9 +980,13 @@ export function CodexComposerControls({
         </div>
         <div className="ml-auto flex shrink-0 items-center gap-1">
           {advancedActions}
-          <ContextUsageGauge
-            fallback={settings?.sessionId === selected ? settings.usage : undefined}
-          />
+          {showContextUsage && (
+            <ContextUsageGauge
+              fallback={currentUsageSettings?.usage}
+              capacity={usageCapacity}
+              source={provider?.contextUsage}
+            />
+          )}
           {action}
         </div>
       </div>
@@ -954,7 +1018,7 @@ export function CodexComposerControls({
                         type="button"
                         onClick={() => {
                           settingsDraftRevision.current = undefined;
-                          editedClaudeSettings.current.clear();
+                          editedFields.current.clear();
                           setSettingsDirty(false);
                           applySettings(settings);
                         }}
@@ -985,28 +1049,30 @@ export function CodexComposerControls({
                       void mutate("settings", {
                         ...(model &&
                         settings.writable.model.available &&
-                        (!(isClaude || isDevin) || editedClaudeSettings.current.has("model"))
+                        (!(isClaude || isDevin || usesVariants) ||
+                          editedFields.current.has("model"))
                           ? { model }
                           : {}),
                         ...(settings.writable.effort.available &&
-                        (isClaude
-                          ? editedClaudeSettings.current.has("effort")
-                          : effort && (!isDevin || editedClaudeSettings.current.has("effort")))
+                        (isClaude || isDevin || usesVariants || canClearEffort
+                          ? editedFields.current.has("effort") && (!!effort || canClearEffort)
+                          : !!effort)
                           ? { effort: effort || null }
                           : {}),
                         ...(!isClaude && !isDevin && mode && modeWritable ? { mode } : {}),
                         ...(!isClaude && !isDevin && policy && settings.writable.policy.available
                           ? { policyId: policy }
                           : {}),
-                        ...(!isClaude &&
-                        !isDevin &&
-                        serviceTier &&
-                        settings.writable.serviceTier.available
-                          ? { serviceTierId: serviceTier }
+                        ...(settings.writable.serviceTier.available &&
+                        (usesVariants
+                          ? editedFields.current.has("serviceTier")
+                          : (!isClaude && !isDevin && !!serviceTier) ||
+                            (!!provider && editedFields.current.has("serviceTier")))
+                          ? { serviceTierId: serviceTier || null }
                           : {}),
                         ...((isClaude || isDevin) &&
                         permissionMode &&
-                        editedClaudeSettings.current.has("permissionMode") &&
+                        editedFields.current.has("permissionMode") &&
                         settings.writable.permissionMode?.available
                           ? { permissionMode }
                           : {}),
@@ -1067,67 +1133,94 @@ export function CodexComposerControls({
             </p>
           ) : (
             <section className="session-settings-layout space-y-5">
-              <div className="rounded-xl border bg-muted/20 p-4">
-                <ContextUsageDetails {...usageView} locale={locale} online={online} />
-              </div>
-              <label className="block space-y-1 text-sm">
-                {copy.model}
-                <select
-                  className={selectClass}
-                  value={model}
-                  disabled={settingDisabled || !settings.writable.model?.available}
-                  title={reasonTitle(settings.writable.model?.reason)}
-                  onChange={(event) => {
-                    editSettings("model");
-                    const next = event.target.value;
-                    const option = settings.options.models?.find((item) => item.id === next);
-                    setModel(next);
-                    if (!option?.efforts?.includes(effort)) {
-                      editSettings("effort");
-                      setEffort(option?.defaultEffort ?? "");
-                    }
-                    if (!option?.serviceTierIds?.includes(serviceTier)) {
-                      setServiceTier(
-                        option?.serviceTierIds?.includes(settings.defaults.serviceTierId ?? "")
-                          ? (settings.defaults.serviceTierId ?? "")
-                          : "",
-                      );
-                    }
-                  }}
-                >
-                  <option value="">{copy.defaultOption}</option>
-                  {settings.options.models?.map((item) => (
-                    <option value={item.id} key={item.id}>
-                      {item.name || item.id}
-                    </option>
-                  ))}
-                </select>
-                {!settings.writable.model?.available &&
-                  settingReason(settings.writable.model?.reason)}
-              </label>
-              <div className="grid gap-3 sm:grid-cols-2">
+              {supportsContextUsage && (
+                <div className="rounded-xl border bg-muted/20 p-4">
+                  <ContextUsageDetails {...usageView} locale={locale} online={online} />
+                </div>
+              )}
+              {showModel && (
                 <label className="block space-y-1 text-sm">
-                  {copy.effort}
+                  {copy.model}
                   <select
                     className={selectClass}
-                    value={effort}
-                    disabled={settingDisabled || !settings.writable.effort?.available}
-                    title={reasonTitle(settings.writable.effort?.reason)}
+                    value={model}
+                    disabled={settingDisabled || !settings.writable.model?.available}
+                    title={reasonTitle(settings.writable.model?.reason)}
                     onChange={(event) => {
-                      editSettings("effort");
-                      setEffort(event.target.value);
+                      editSettings("model");
+                      const next = event.target.value;
+                      const option = settings.options.models?.find((item) => item.id === next);
+                      setModel(next);
+                      if (usesVariants) {
+                        // A different family starts at its native default. A combination the
+                        // user edited for the previous family must not be carried across.
+                        setEffort("");
+                        setServiceTier("");
+                        editedFields.current.delete("effort");
+                        editedFields.current.delete("serviceTier");
+                        return;
+                      }
+                      if (!option?.efforts?.includes(effort)) {
+                        editSettings("effort");
+                        setEffort(option?.defaultEffort ?? "");
+                      }
+                      if (!option?.serviceTierIds?.includes(serviceTier)) {
+                        setServiceTier(
+                          option?.serviceTierIds?.includes(settings.defaults.serviceTierId ?? "")
+                            ? (settings.defaults.serviceTierId ?? "")
+                            : "",
+                        );
+                      }
                     }}
                   >
-                    <option value="">{copy.defaultOption}</option>
-                    {selectedModel?.efforts?.map((item) => (
-                      <option key={item} value={item}>
-                        {term(item)}
+                    {(!provider || !model) && (
+                      <option value="" disabled={!!provider}>
+                        {copy.defaultOption}
+                      </option>
+                    )}
+                    {settings.options.models?.map((item) => (
+                      <option value={item.id} key={item.id}>
+                        {item.name || item.id}
                       </option>
                     ))}
                   </select>
-                  {!settings.writable.effort?.available &&
-                    settingReason(settings.writable.effort?.reason)}
+                  {!settings.writable.model?.available &&
+                    settingReason(settings.writable.model?.reason)}
                 </label>
+              )}
+              <div className="grid gap-3 sm:grid-cols-2">
+                {showEffort && (
+                  <label className="block space-y-1 text-sm">
+                    {copy.effort}
+                    <select
+                      className={selectClass}
+                      value={effort}
+                      disabled={
+                        settingDisabled ||
+                        !settings.writable.effort?.available ||
+                        (!!provider && !modelEfforts.length && !canClearEffort)
+                      }
+                      title={reasonTitle(settings.writable.effort?.reason)}
+                      onChange={(event) => {
+                        editSettings("effort");
+                        setEffort(event.target.value);
+                      }}
+                    >
+                      {(!provider || !effort || canClearEffort) && (
+                        <option value="" disabled={!canClearEffort && !!provider}>
+                          {copy.defaultOption}
+                        </option>
+                      )}
+                      {modelEfforts.map((item) => (
+                        <option key={item} value={item}>
+                          {term(item)}
+                        </option>
+                      ))}
+                    </select>
+                    {!settings.writable.effort?.available &&
+                      settingReason(settings.writable.effort?.reason)}
+                  </label>
+                )}
                 {isClaude || isDevin ? (
                   <label className="block space-y-1 text-sm">
                     {agentCopy.permission}
@@ -1205,45 +1298,39 @@ export function CodexComposerControls({
                           settings.writable.mode?.reason || "collaboration-modes-unavailable",
                         )}
                     </label>
-                    <label className="block space-y-1 text-sm">
-                      {copy.serviceTier}
-                      <select
-                        className={selectClass}
-                        value={serviceTier}
-                        disabled={settingDisabled || !settings.writable.serviceTier?.available}
-                        title={reasonTitle(settings.writable.serviceTier?.reason)}
-                        onChange={(event) => {
-                          editSettings();
-                          setServiceTier(event.target.value);
-                        }}
-                      >
-                        <option value="">{copy.defaultOption}</option>
-                        {settings.options.serviceTiers
-                          ?.filter(
-                            (item) =>
-                              !selectedModel?.serviceTierIds?.length ||
-                              selectedModel.serviceTierIds.includes(item.id),
-                          )
-                          .map((item) => (
-                            <option value={item.id} key={item.id}>
-                              {item.name || item.id}
-                            </option>
-                          ))}
-                      </select>
-                      {!settings.writable.serviceTier?.available &&
-                        settingReason(settings.writable.serviceTier?.reason)}
-                      {!!settings.options.serviceTiers?.find((item) => item.id === serviceTier)
-                        ?.description && (
-                        <small className="block text-muted-foreground">
-                          {
-                            settings.options.serviceTiers.find((item) => item.id === serviceTier)
-                              ?.description
-                          }
-                        </small>
-                      )}
-                    </label>
                     {policyControl(settings)}
                   </>
+                )}
+                {showTiers && (
+                  <label className="block space-y-1 text-sm">
+                    {copy.serviceTier}
+                    <select
+                      className={selectClass}
+                      value={serviceTier}
+                      disabled={settingDisabled || !settings.writable.serviceTier?.available}
+                      title={reasonTitle(settings.writable.serviceTier?.reason)}
+                      onChange={(event) => {
+                        editSettings("serviceTier");
+                        setServiceTier(event.target.value);
+                      }}
+                    >
+                      <option value="" disabled={usesVariants && !canClearTier}>
+                        {copy.defaultOption}
+                      </option>
+                      {serviceTierOptions.map((item) => (
+                        <option value={item.id} key={item.id}>
+                          {item.name || item.id}
+                        </option>
+                      ))}
+                    </select>
+                    {!settings.writable.serviceTier?.available &&
+                      settingReason(settings.writable.serviceTier?.reason)}
+                    {!!serviceTierOptions.find((item) => item.id === serviceTier)?.description && (
+                      <small className="block text-muted-foreground">
+                        {serviceTierOptions.find((item) => item.id === serviceTier)?.description}
+                      </small>
+                    )}
+                  </label>
                 )}
               </div>
               {feature("settings")?.available !== true &&

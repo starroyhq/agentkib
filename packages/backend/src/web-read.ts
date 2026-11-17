@@ -4,7 +4,11 @@ import { existsSync, lstatSync, readFileSync, realpathSync, statSync } from "nod
 import { homedir } from "node:os";
 import path from "node:path";
 import { z } from "zod";
-import { SESSION_COLLECTIONS, type ConversationReadResult } from "@agentkib/runtime-protocol";
+import {
+  SESSION_COLLECTIONS,
+  sessionProviderCapabilities,
+  type ConversationReadResult,
+} from "@agentkib/runtime-protocol";
 import { historyReferenceSchema, validHistoryControl } from "./history-control-schema";
 import type { BackendStore } from "./store";
 import type { SessionReaders } from "./session-readers";
@@ -68,7 +72,8 @@ import {
 } from "./devin-managed-runner";
 import { ManagedCodexState, elicitationResponse } from "./managed-codex-state";
 import { ManagedCodexEventBridge } from "./managed-codex-state";
-import { projectContextUsage } from "./context-usage";
+import { projectContextUsage, type ContextUsage } from "./context-usage";
+import { SessionProviderRegistry, type SessionProvider } from "./session-provider";
 import { activityBlocks, assertActivityAllows } from "./session-activity";
 import { acquireManagedSessionLease, existingFileLeaseBusy } from "./managed-session-lock";
 import { acquireCodexFollowerOperationLock } from "./codex-follower-operation-lock";
@@ -245,6 +250,10 @@ const managedSettingsStateSchema = z
   })
   .strict();
 
+const sessionProviderOptionsScopeSchema = z
+  .object({ workspaceId: z.string().min(1).max(256).optional() })
+  .strict();
+
 const managedQuerySchema = z
   .object({
     operation: z.enum(["capabilities", "inspect"]),
@@ -416,6 +425,20 @@ const managedControlSchema = z
     (request) =>
       request.operation === "settings" || (request.effort !== null && request.serviceTier !== null),
   );
+
+type SettingsRead = z.infer<typeof managedSettingsStateSchema>;
+type SettingsControl = z.infer<typeof managedControlSchema>;
+type ApplyManagedSettings = (request: SettingsControl, fingerprint: string) => Promise<unknown>;
+
+function normalizeContextUsage(snapshot: { usage?: unknown; reason?: unknown }): ContextUsage {
+  return (
+    projectContextUsage(snapshot.usage) ?? {
+      available: false,
+      state: "unavailable",
+      reason: typeof snapshot.reason === "string" ? snapshot.reason : "usage-not-reported",
+    }
+  );
+}
 
 type DevinModelSelection = {
   model?: string;
@@ -617,6 +640,58 @@ export type LaneObserver = {
 export class WebReadRequests {
   #codex: CodexAppServerReader;
   #preflight: CodexRuntimePreflight;
+  readonly #sessionProviders = new SessionProviderRegistry({
+    codex: {
+      agent: "codex",
+      createOperation: "create",
+      options: () => this.#managedOptions(),
+      create: (request) => this.managedLifecycle(request),
+      settingsState: (request) =>
+        this.#managedSettingsState(managedSettingsStateSchema.parse(request)),
+      updateSettings: (request) =>
+        this.#managedControlAdmission(request, (validated, fingerprint) =>
+          this.#codexControl(validated, fingerprint),
+        ),
+      contextUsage: async (sessionId) =>
+        normalizeContextUsage(await this.#managedLive(sessionId, false)),
+    },
+    "claude-code": {
+      agent: "claude-code",
+      createOperation: "create",
+      options: ({ workspaceId }) => this.#claudeProvider({ operation: "options", workspaceId }),
+      create: (request) => this.#claudeProvider(request),
+      settingsState: (request) => this.#claudeProvider(request),
+      prepareSettings: (request) => this.#claudeProvider(request),
+      updateSettings: (request) => this.#claudeProvider(request),
+      contextUsage: (sessionId) => this.#claudeProvider({ operation: "usage", sessionId }),
+    },
+    "deepseek-harness": {
+      agent: "deepseek-harness",
+      createOperation: "dsh-create",
+      options: ({ workspaceId, includeModels }) =>
+        this.#dshProvider({
+          operation: "dsh-options",
+          includeModels: workspaceId !== undefined || includeModels === true,
+        }),
+      create: (request) => this.#dshProvider(request),
+      settingsState: (request) => this.#dshProvider(request),
+      updateSettings: (request) => this.#dshProvider(request),
+      contextUsage: (sessionId) => this.#dshProvider({ operation: "usage", sessionId }),
+    },
+    devin: {
+      agent: "devin",
+      createOperation: "devin-create",
+      options: () => this.#devinOptions(),
+      create: (request) => this.#devinCreate(request),
+      settingsState: (request) =>
+        this.#devinSettingsState(managedSettingsStateSchema.parse(request).sessionId),
+      updateSettings: (request) =>
+        this.#managedControlAdmission(request, (validated, fingerprint) =>
+          this.#devinControl(validated, fingerprint),
+        ),
+      contextUsage: (sessionId) => this.#devinContextUsage(sessionId),
+    },
+  });
   // New-session options and settings without a runner each start an app-server.
   #optionsCatalog = new CodexCatalogCache<Record<string, unknown>>();
   #settingsCatalog = new CodexCatalogCache<{
@@ -737,6 +812,8 @@ export class WebReadRequests {
     readonly isSessionObserved?: (sessionId: string) => boolean,
     readonly sessionIndex?: SessionIndex,
     readonly catalogChanged?: () => void,
+    readonly requestClaudeProvider?: (request: Record<string, unknown>) => Promise<unknown>,
+    readonly requestDshProvider?: (request: Record<string, unknown>) => Promise<unknown>,
   ) {
     this.#codex = new CodexAppServerReader(environment);
     this.#preflight = new CodexRuntimePreflight(environment);
@@ -750,6 +827,16 @@ export class WebReadRequests {
         : HANDOFF_TIMEOUT_MS;
     this.#retirementTimer = setInterval(() => void this.#retireIdleRunners(), 1000);
     this.#retirementTimer.unref();
+  }
+
+  async #claudeProvider(request: Record<string, unknown>) {
+    if (!this.requestClaudeProvider) throw new Error("claude-managed-unavailable");
+    return this.requestClaudeProvider(request);
+  }
+
+  async #dshProvider(request: Record<string, unknown>) {
+    if (!this.requestDshProvider) throw new Error("session-unavailable");
+    return this.requestDshProvider(request);
   }
 
   close(): void {
@@ -953,7 +1040,62 @@ export class WebReadRequests {
   }
 
   managedOptions() {
-    return this.#runOperation(() => this.#managedOptions());
+    return this.sessionProviderOptions("codex");
+  }
+
+  sessionProviderOptions(agent: unknown, scope: unknown = {}): Promise<Record<string, unknown>> {
+    return this.#runOperation(async () => {
+      const provider = this.#sessionProviders.require(agent);
+      const options = await provider.options(sessionProviderOptionsScopeSchema.parse(scope));
+      return this.#withProviderCapabilities(provider, options);
+    });
+  }
+
+  async sessionProviderCreate(agent: unknown, fields: Record<string, unknown>) {
+    const provider = this.#sessionProviders.require(agent);
+    return provider.create({ ...fields, operation: provider.createOperation });
+  }
+
+  #sessionProviderForSession(sessionId: string) {
+    // Newly created Codex sessions may only be present in the managed ledger until indexed.
+    return this.#sessionProviders.get(this.store.sessions.get(sessionId)?.agent ?? "codex");
+  }
+
+  #withProviderCapabilities(provider: SessionProvider, value: unknown): Record<string, unknown> {
+    if (!isObject(value)) throw new Error("invalid-provider-response");
+    return { ...value, provider: sessionProviderCapabilities(provider.agent) };
+  }
+
+  /** The backend transport resolves the bridge owner before sending its native request here. */
+  async bridgedSessionProviderRequest(
+    agent: "claude-code" | "deepseek-harness",
+    value: Record<string, unknown>,
+  ): Promise<unknown> {
+    const provider = this.#sessionProviders.require(agent);
+    switch (value.operation) {
+      case "options":
+        return this.#withProviderCapabilities(provider, await provider.options(value));
+      case "dsh-options":
+        return this.#withProviderCapabilities(
+          provider,
+          await provider.options({ includeModels: value.includeModels === true }),
+        );
+      case "create":
+      case "dsh-create":
+        return provider.create(value);
+      case "settings-state":
+        return this.#withProviderCapabilities(provider, await provider.settingsState(value));
+      case "settings-prepare":
+        if (!provider.prepareSettings) throw new Error("unsupported-session-provider-operation");
+        return this.#withProviderCapabilities(provider, await provider.prepareSettings(value));
+      case "settings":
+        return provider.updateSettings(value);
+      case "usage":
+        if (typeof value.sessionId === "string") return provider.contextUsage(value.sessionId);
+        return agent === "claude-code" ? this.#claudeProvider(value) : this.#dshProvider(value);
+      default:
+        throw new Error("unsupported-session-provider-operation");
+    }
   }
 
   /** A Codex CLI for reads: the one the last version check chose, else the first found. */
@@ -2100,11 +2242,26 @@ export class WebReadRequests {
   }
 
   managedSettingsState(value: unknown) {
-    return this.#runOperation(() => this.#managedSettingsState(value));
+    return this.#runOperation(async () => {
+      const provider = this.#sessionProviders.require("codex");
+      if (!isObject(value)) throw new Error("invalid-request");
+      return this.#withProviderCapabilities(provider, await provider.settingsState(value));
+    });
   }
 
-  async #managedSettingsState(value: unknown) {
-    const request = managedSettingsStateSchema.parse(value);
+  sessionProviderSettingsState(value: Record<string, unknown>) {
+    return this.#runOperation(async () => {
+      const provider =
+        typeof value.sessionId === "string"
+          ? this.#sessionProviderForSession(value.sessionId)
+          : undefined;
+      return provider
+        ? this.#withProviderCapabilities(provider, await provider.settingsState(value))
+        : this.#managedSettingsState(managedSettingsStateSchema.parse(value));
+    });
+  }
+
+  async #managedSettingsState(request: SettingsRead) {
     const stored = readManagedRecords(this.dataDir, this.store).find(
       (item) => item.id === request.sessionId,
     );
@@ -3099,10 +3256,22 @@ export class WebReadRequests {
   }
 
   managedControl(value: unknown) {
-    return this.#runOperation(() => this.#managedControlAdmission(value));
+    return this.#runOperation(() => {
+      if (
+        isObject(value) &&
+        value.operation === "settings" &&
+        typeof value.sessionId === "string"
+      ) {
+        const provider = this.#sessionProviderForSession(value.sessionId);
+        // The native bridge dispatchers authorize their own control request shapes.
+        if (provider?.agent === "codex" || provider?.agent === "devin")
+          return provider.updateSettings(value);
+      }
+      return this.#managedControlAdmission(value);
+    });
   }
 
-  async #managedControlAdmission(value: unknown) {
+  async #managedControlAdmission(value: unknown, applySettings?: ApplyManagedSettings) {
     const request = managedControlSchema.parse(value);
     const id = request.sessionId;
     const admission = this.#controlSessions.get(id) ?? { count: 0, observed: false };
@@ -3112,7 +3281,7 @@ export class WebReadRequests {
     const runner = this.#managedRunners.get(id);
     if (runner && admission.observed) runner.observed = true;
     try {
-      return await this.#managedControl(value);
+      return await this.#managedControl(value, request, applySettings);
     } finally {
       const current = this.#managedRunners.get(id);
       if (current && admission.observed) current.observed = true;
@@ -3129,21 +3298,25 @@ export class WebReadRequests {
     if (admission) admission.observed = true;
   }
 
-  async #managedControl(value: unknown) {
-    const request = managedControlSchema.parse(value);
+  async #managedControl(
+    value: unknown,
+    request: SettingsControl,
+    applySettings?: ApplyManagedSettings,
+  ) {
     const fingerprint = createHash("sha256").update(stableJson(value)).digest("hex");
     const previous = replayManagedCommand(this.dataDir, request.requestId, fingerprint);
     if (previous) return previous;
-    if (this.store.sessions.get(request.sessionId)?.agent === "devin")
-      return this.#devinControl(request, fingerprint);
-    if (
-      this.store.sessions.get(request.sessionId)?.agent === "antigravity" &&
-      (request.effort === null || request.serviceTier === null)
-    )
+    if (applySettings) return applySettings(request, fingerprint);
+    const agent = this.store.sessions.get(request.sessionId)?.agent;
+    if (agent === "devin") return this.#devinControl(request, fingerprint);
+    if (agent === "antigravity" && (request.effort === null || request.serviceTier === null))
       throw new Error("unsupported-setting-clear");
-    if (this.store.sessions.get(request.sessionId)?.agent === "antigravity")
-      return this.#antigravityControl(request, fingerprint);
+    if (agent === "antigravity") return this.#antigravityControl(request, fingerprint);
 
+    return this.#codexControl(request, fingerprint);
+  }
+
+  async #codexControl(request: SettingsControl, fingerprint: string) {
     let record = readManagedRecords(this.dataDir, this.store).find(
       (item) => item.id === request.sessionId,
     );
@@ -5079,20 +5252,14 @@ export class WebReadRequests {
     if (request.operation === "context") return this.#context(request.sessionId);
     if (request.operation === "resume-command") return this.#resumeCommand(request.sessionId);
     if (request.operation === "usage") {
+      const provider = this.#sessionProviderForSession(request.sessionId);
+      if (provider) return provider.contextUsage(request.sessionId);
       const agent = this.store.sessions.get(request.sessionId)?.agent;
       const live =
         agent === "antigravity"
           ? await this.#antigravityLive(request.sessionId)
-          : agent === "devin"
-            ? await this.#devinLive(request.sessionId)
-            : await this.#managedLive(request.sessionId, false);
-      return (
-        projectContextUsage(live.usage) ?? {
-          available: false,
-          state: "unavailable",
-          reason: typeof live.reason === "string" ? live.reason : "usage-not-reported",
-        }
-      );
+          : await this.#managedLive(request.sessionId, false);
+      return normalizeContextUsage(live);
     }
     if (request.operation === "goal") return this.#goal(request.sessionId);
     if (request.operation === "resources") return this.#resources(request.sessionId);
@@ -6794,7 +6961,11 @@ export class WebReadRequests {
    * Starts a Devin session with its first message and answers once Devin has stored it, so the
    * new session opens already running. Its model and permission mode apply to later turns too.
    */
-  async devinCreate(value: Record<string, unknown>): Promise<Record<string, unknown>> {
+  devinCreate(value: Record<string, unknown>) {
+    return this.#sessionProviders.require("devin").create(value);
+  }
+
+  async #devinCreate(value: Record<string, unknown>): Promise<Record<string, unknown>> {
     const request = devinCreateSchema.parse(value);
     const fingerprint = createHash("sha256").update(stableJson(value)).digest("hex");
     const replay = replayManagedCommand(this.dataDir, request.requestId, fingerprint);
@@ -6896,13 +7067,20 @@ export class WebReadRequests {
 
   #devinModels: { at: number; catalog: DevinModelCatalog } | undefined;
 
+  async #devinContextUsage(sessionId: string): Promise<ContextUsage> {
+    const settings = await this.#devinSettingsState(sessionId);
+    return normalizeContextUsage({
+      usage: settings.historicalUsage ?? (settings.available ? { available: false } : undefined),
+      reason: settings.reason,
+    });
+  }
+
   /**
    * A Devin session's settings in the shape the composer reads for managed sessions: the model
    * and permission mode its next turn runs with. Without a saved model a resumed turn keeps the
    * one Devin saved for the session.
    */
-  async devinSettingsState(value: Record<string, unknown>): Promise<Record<string, unknown>> {
-    const sessionId = z.string().min(1).max(256).parse(value.sessionId);
+  async #devinSettingsState(sessionId: string): Promise<Record<string, unknown>> {
     let record: Awaited<ReturnType<WebReadRequests["devinRunnerFor"]>>;
     try {
       record = await this.devinRunnerFor(sessionId);
@@ -6982,7 +7160,11 @@ export class WebReadRequests {
    * What a new Devin session can start with. Without a CLI login the list is empty and Devin's
    * configured default applies; the login is explained only when a session is started.
    */
-  async devinOptions(): Promise<Record<string, unknown>> {
+  devinOptions() {
+    return this.sessionProviderOptions("devin");
+  }
+
+  async #devinOptions(): Promise<Record<string, unknown>> {
     const environment = devinChildEnvironment({ ...process.env, ...this.environment });
     const executable = devinExecutable(environment);
     if (!executable) return { available: false, reason: "devin-cli-unavailable" };

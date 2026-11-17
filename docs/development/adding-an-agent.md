@@ -38,16 +38,24 @@
   - 用 `Record<ManagedAgent, …>` 的地方，漏了会编译不过。
 - 只能在会话页继续、不能新建的 Agent（如 Antigravity），加进同一文件的 `LIVE_SESSION_AGENTS`。
 
-**新建会话**（`packages/session-ui/src/new-session.ts`）
+**会话 Provider**
+
+- Codex、Claude Code、DeepSeek Harness 和 Devin 已接入 `packages/backend/src/session-provider.ts`。在注册表给 Agent 装配新建选项、创建、设置读取与写入、上下文用量；原生参数的翻译放在各自适配器。
+- 在 `packages/runtime-protocol/src/session-providers.ts` 声明首条消息何时提交、模型选择方式和上下文用量来源。主机把描述与实际模型目录、可写字段和会话状态一起返回。桌面、Web 和菜单栏用这些数据选择控件和提交方式。
+- `/managed/options` 和 `/managed/create` 对已注册的 Provider 使用同一分派。已有会话按后端确认的会话归属选择 Provider。Claude Code 使用所选工作区的模型目录，显式选择的启动模型仍需原生确认。接管的 Claude Code 会话可准备模型设置，已连接原生终端的会话使用终端上报的能力。
+- DeepSeek Harness 由桥接插件提供 Agent 预设、按提供方分组的模型目录和各模型的推理档位。实际可选项以插件返回为准。插件暂未上报占用量，桌面和 Web 隐藏上下文用量控件。
+- 工作区授权、设备权限、会话修订号和回执仍在主机与后端校验。旧请求路径继续由同一个适配器处理。
+
+**新建会话的展示配置**（`packages/session-ui/src/new-session.ts`）
 
 - `NewSessionAgent` 和 `NEW_SESSION_AGENTS`：必须和 `MANAGED_AGENTS` 一致，`apps/web/src/managed-agents.test.ts` 会检查。
 - `PERMISSIONS`：权限选项，用这个 Agent 自己的说法，四种语言。
-- `PRESET_AGENTS`：它有预设时才加。
+- 支持新建预设时在 Provider 声明 `create.agentPresets`，会话开始后按原生权限能力显示设置。
 
 **主机**
 
 - 后端的受控适配：新建、发送、审批、回答、停止、读取实时状态，以及控制回执（参考 `codexManaged`、`claudeManaged` 和 DSH 插件桥）。新的运行时方法登记在 `packages/runtime-protocol` 的 `RUNTIME_METHODS`。
-- `apps/desktop/electron/main/web/service.ts`：把这个 Agent 的 `/managed/options`、新建和会话操作分到它的适配。这两处是对 `ManagedAgent` 的穷举 `switch`，加进登记表后编译会停在 `unhandledManagedAgent`，补上它的 `case` 即可。
+- 旧请求的兼容路由和 Provider 专属的权限规则位于 `apps/desktop/electron/main/web/service.ts`。会话发送、审批和停止继续使用现有的执行适配。
 - 回执：`web-client` 的 `needsDurableReceipt` 认为受控 Agent 都会留下回执，所以适配必须写控制回执，否则结果不明时没法核对。
 
 **各 Agent 自己的界面**（按需）

@@ -4,6 +4,7 @@ import { mkdir, mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
+import { sessionProviderCapabilities } from "@agentkib/runtime-protocol";
 import { WebAccessService } from "./service";
 
 const model = {
@@ -45,6 +46,7 @@ const runtime = vi.fn(async (input: unknown) => {
     case "settings-state":
       return {
         ...live,
+        provider: sessionProviderCapabilities("devin"),
         available: true,
         current: {
           model: model.id,
@@ -64,8 +66,13 @@ const runtime = vi.fn(async (input: unknown) => {
           contextWindow: 1_000_000,
         },
       };
-    case "devin-options":
-      return { available: true, models: [model], serviceTiers };
+    case "provider-options":
+      return {
+        available: true,
+        provider: sessionProviderCapabilities(params.agent),
+        models: params.agent === "devin" ? [model] : [],
+        ...(params.agent === "devin" ? { serviceTiers } : {}),
+      };
     case "usage":
       return { available: false, reason: "usage-not-reported" };
     default:
@@ -88,6 +95,7 @@ beforeEach(async () => {
     staticDir: directory,
     desktopOrigin: "app://bundle",
     runtimeRequest: runtime,
+    sessionProviderRequest: runtime,
     workspaceRequest: async () => [{ id: "workspace", name: "Workspace", path }],
     verifiedAntigravityManaged: true,
     verifiedDevinManaged: true,
@@ -115,6 +123,7 @@ it("keeps model variants and window limits in the settings and new-session respo
         maxContextTokens: 1_000_000,
       },
       options: { models, serviceTiers },
+      provider: sessionProviderCapabilities("devin"),
       usage: {
         historical: true,
         state: "stale",
@@ -124,11 +133,17 @@ it("keeps model variants and window limits in the settings and new-session respo
       },
     },
   });
+  expect(runtime).not.toHaveBeenCalledWith({ operation: "usage", sessionId: "devin-session" });
   expect(
     await service.localRequest("/managed/options?agent=devin&workspaceId=workspace"),
   ).toMatchObject({
     status: 200,
-    body: { models, serviceTiers },
+    body: { models, serviceTiers, provider: sessionProviderCapabilities("devin") },
+  });
+  expect(runtime).toHaveBeenCalledWith({
+    operation: "provider-options",
+    agent: "devin",
+    workspaceId: "workspace",
   });
 });
 
@@ -147,7 +162,8 @@ it("forwards Devin's preferred effort and tier on create and allows turning Fast
   ).toMatchObject({ status: 200 });
   expect(runtime).toHaveBeenCalledWith(
     expect.objectContaining({
-      operation: "devin-create",
+      operation: "provider-create",
+      agent: "devin",
       model: "opus",
       effort: "high",
       serviceTier: "fast",
@@ -167,4 +183,43 @@ it("forwards Devin's preferred effort and tier on create and allows turning Fast
   expect(runtime).toHaveBeenCalledWith(
     expect.objectContaining({ operation: "settings", expectedRevision: 4, serviceTier: null }),
   );
+});
+
+it("uses the same registered create path for Codex without dispatching invalid creation requests", async () => {
+  const request = { bootId, workspaceId: "workspace" };
+  expect(await service.localRequest("/managed/options?agent=codex")).toMatchObject({
+    status: 200,
+    body: { provider: sessionProviderCapabilities("codex") },
+  });
+  expect(
+    await service.localRequest("/managed/create", {
+      ...request,
+      agent: "devin",
+      requestId: randomUUID(),
+    }),
+  ).toMatchObject({ status: 400, body: { error: "missing_prompt" } });
+  expect(
+    await service.localRequest("/managed/create", {
+      ...request,
+      workspaceId: "unknown",
+      requestId: randomUUID(),
+    }),
+  ).toMatchObject({ status: 403, body: { error: "workspace_not_authorized" } });
+  expect(
+    await service.localRequest("/managed/create", {
+      ...request,
+      requestId: randomUUID(),
+    }),
+  ).toMatchObject({ status: 200, body: { accepted: true } });
+  const dispatched = runtime.mock.calls
+    .map(([params]) => params as Record<string, unknown>)
+    .filter(({ operation }) => operation === "provider-create");
+  expect(dispatched).toEqual([
+    expect.objectContaining({
+      agent: "codex",
+      workspaceId: "workspace",
+      policyId: "workspace-write-on-request",
+    }),
+  ]);
+  expect(dispatched[0]).not.toHaveProperty("prompt");
 });

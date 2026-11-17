@@ -5,6 +5,8 @@ import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createServer, request } from "node:http";
+import { sessionProviderCapabilities } from "@agentkib/runtime-protocol";
+import { RuntimeRequestError } from "../runtime-host";
 import { WebAccessService, createWebControlState } from "./service";
 
 describe("trusted desktop conversation routes", () => {
@@ -206,16 +208,25 @@ describe("trusted desktop conversation routes", () => {
   it("scopes Claude's startup catalog to a registered workspace and forwards the launch selection", async () => {
     await service.shutdown();
     const models = [{ id: "fixture-model", resolvedModel: "fixture-model-v2", efforts: ["high"] }];
-    const claude = vi.fn(async (input: Record<string, unknown>) =>
-      input.operation === "create"
+    const provider = sessionProviderCapabilities("claude-code");
+    const claude = vi.fn(async (input: unknown) => {
+      const { operation, workspaceId } = input as Record<string, unknown>;
+      return operation === "provider-create"
         ? { accepted: true, sessionId: "new-claude" }
-        : { available: true, models: input.workspaceId === "w" ? models : [] },
-    );
+        : { available: true, provider, models: workspaceId === "w" ? models : [] };
+    });
+    const legacy = vi.fn(async () => ({ available: false }));
+    const receipt = vi.fn(async ({ requestId }: { requestId: string }) => ({
+      found: false,
+      requestId,
+    }));
     service = new WebAccessService({
       dataDir: directory,
       staticDir: directory,
       runtimeRequest: runtime,
-      claudeManagedRequest: (input) => claude(input as Record<string, unknown>),
+      claudeManagedRequest: legacy,
+      sessionProviderRequest: claude,
+      receiptRequest: receipt,
       verifiedClaudeManaged: true,
       desktopOrigin: "app://bundle",
       workspaceRequest: async () =>
@@ -234,34 +245,56 @@ describe("trusted desktop conversation routes", () => {
     });
     expect(await service.localRequest(`${options}&workspaceId=w`)).toMatchObject({
       status: 200,
-      body: { models },
+      body: { models, provider },
     });
     const access = await service.localRequest("/access");
+    const requestId = randomUUID();
+    const create = {
+      agent: "claude-code",
+      workspaceId: "w",
+      requestId,
+      bootId: (access.body as { bootId: string }).bootId,
+      model: "fixture-model",
+      effort: "high",
+      permissionMode: "plan",
+      verifyStartupModel: true,
+    };
+    expect(
+      await service.localRequest("/managed/create", { ...create, verifyStartupModel: false }),
+    ).toMatchObject({ status: 400, body: { error: "invalid_input" } });
     expect(
       await service.localRequest("/managed/create", {
-        agent: "claude-code",
-        workspaceId: "w",
-        requestId: randomUUID(),
-        bootId: (access.body as { bootId: string }).bootId,
-        model: "fixture-model",
-        effort: "high",
-        verifyStartupModel: true,
+        ...create,
+        permissionMode: "bypassPermissions",
       }),
+    ).toMatchObject({ status: 400, body: { error: "unsupported_permission_mode" } });
+    expect(
+      await service.localRequest("/managed/create", { ...create, prompt: "send after creating" }),
     ).toMatchObject({ status: 200, body: { accepted: true, sessionId: "new-claude" } });
     expect(claude.mock.calls.map(([input]) => input)).toEqual([
-      { operation: "options" },
-      { operation: "options", workspaceId: "w" },
+      { operation: "provider-options", agent: "claude-code" },
+      { operation: "provider-options", agent: "claude-code", workspaceId: "w" },
       expect.objectContaining({
-        operation: "create",
+        operation: "provider-create",
+        agent: "claude-code",
         workspaceId: "w",
         model: "fixture-model",
         effort: "high",
+        permissionMode: "plan",
         verifyStartupModel: true,
       }),
     ]);
+    expect(claude.mock.calls[2][0]).not.toHaveProperty("prompt");
+    expect(legacy).not.toHaveBeenCalled();
+    const retryId = randomUUID();
+    claude.mockRejectedValueOnce(new RuntimeRequestError({ code: -32000, message: "web-busy" }));
+    expect(
+      await service.localRequest("/managed/create", { ...create, requestId: retryId }),
+    ).toMatchObject({ status: 409, body: { error: "web-busy", controlOutcome: "not-dispatched" } });
+    expect(receipt.mock.calls.filter(([entry]) => entry.requestId === retryId)).toHaveLength(2);
     claude.mockImplementationOnce(async () => {
       workspaceRegistered = false;
-      return { available: true, models };
+      return { available: true, provider, models };
     });
     expect(await service.localRequest(`${options}&workspaceId=w`)).toMatchObject({ status: 403 });
   });

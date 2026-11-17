@@ -91,6 +91,35 @@ describe("context usage is an informational surface", () => {
     expect(control).not.toHaveBeenCalled();
     expect(codexAction).not.toHaveBeenCalled();
   });
+
+  it("waits for the registered Claude live report without showing an invented percentage", async () => {
+    const report = state.live!.usage;
+    state.live = { ...state.live!, usage: undefined };
+    const view = render(<ContextUsageGauge />);
+    await userEvent.setup().hover(ring());
+    expect(await screen.findByRole("tooltip")).toHaveTextContent(copy.awaitingCliReportDetail);
+    expect(screen.getByRole("tooltip")).not.toHaveTextContent("%");
+    state.live = { ...state.live, usage: report };
+    view.rerender(<ContextUsageGauge />);
+    expect(screen.getByRole("tooltip")).toHaveTextContent("20% used");
+  });
+
+  it("dismisses the gauge when switching to a provider that cannot report usage", async () => {
+    const view = render(<ContextUsageGauge />);
+    await userEvent.setup().hover(ring());
+    expect(await screen.findByRole("tooltip")).toHaveTextContent("20% used");
+
+    state = {
+      ...state,
+      current: { ...state.current!, agent: "deepseek-harness" },
+      live: { ...state.live!, executionMode: "dsh-follower" },
+    };
+    view.rerender(<ContextUsageGauge />);
+    expect(
+      screen.queryByRole("img", { name: codexCopy["en-US"].contextUsage }),
+    ).not.toBeInTheDocument();
+    expect(screen.queryByRole("tooltip")).not.toBeInTheDocument();
+  });
 });
 
 describe("compact context usage in the desktop composer", () => {

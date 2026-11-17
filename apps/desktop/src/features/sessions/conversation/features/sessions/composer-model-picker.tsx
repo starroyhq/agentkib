@@ -11,7 +11,12 @@ import {
 import { Popover } from "@base-ui/react/popover";
 import { Slider } from "@base-ui/react/slider";
 import { Check, ChevronDown, ChevronRight, LoaderCircle, RotateCcw, Zap } from "lucide-react";
-import type { CodexSessionSettings, CodexSettingValues } from "@agentkib/web-client";
+import { modelEffortsForTier, modelSupportsTier } from "@agentkib/session-ui";
+import type {
+  CodexSessionSettings,
+  CodexSettingValues,
+  SessionProviderCapabilities,
+} from "@agentkib/web-client";
 import type { SupportedLocale as Locale } from "@/core/types";
 import { Button } from "@/components/ui/button";
 import { NativeSelect, NativeSelectOption } from "@/components/ui/native-select";
@@ -34,10 +39,8 @@ export type ComposerModelPickerHandle = {
   open(page: ComposerModelPage): void;
 };
 
-function isFastTier(id?: string, nativeVariants = false) {
-  // Codex 0.163 reports Fast as `priority`; older hosts use `fast`.
-  return id === "fast" || id === "priority" || (nativeVariants && id === "lightning");
-}
+// Older hosts only report the tier IDs.
+const LEGACY_FAST_TIERS = ["fast", "priority"];
 
 const effortParticles = (() => {
   let seed = 0x51a7c0de;
@@ -152,10 +155,10 @@ export function ComposerModelPicker({
   disabled,
   saving,
   status,
-  modelDefault,
-  effortDefault,
-  nativeVariants = false,
-  clearEffort = false,
+  provider = settings?.provider,
+  modelDefault = provider?.models.modelDefault,
+  effortDefault = provider?.models.effortDefault,
+  clearEffort = provider?.models.clearEffort ?? false,
   pickerRef,
   side = "top",
   onOpen,
@@ -169,6 +172,7 @@ export function ComposerModelPicker({
   disabled: boolean;
   saving: boolean;
   status?: string;
+  provider?: SessionProviderCapabilities;
   /** A new session can delegate the model choice to the Agent. */
   modelDefault?: boolean;
   /**
@@ -176,8 +180,6 @@ export function ComposerModelPicker({
    * unknown one.
    */
   effortDefault?: boolean;
-  /** This agent's effort and speed choices are limited to catalogued model variants. */
-  nativeVariants?: boolean;
   /** The host accepts clearing the effort without resetting the model or permissions. */
   clearEffort?: boolean;
   pickerRef?: Ref<ComposerModelPickerHandle>;
@@ -214,14 +216,13 @@ export function ComposerModelPicker({
   const modelName = model?.name || modelId || missingModelLabel;
   const selectedTier = selection?.serviceTierId ?? "";
   const standardEfforts = model?.efforts ?? [];
+  const nativeVariants = provider?.models.selection === "variants";
   const variants = nativeVariants ? model?.variants : undefined;
   const efforts = variants
-    ? standardEfforts.filter((effort) =>
-        variants.some(
-          (variant) => variant.effort === effort && (variant.serviceTierId ?? "") === selectedTier,
-        ),
-      )
+    ? modelEffortsForTier(model, selectedTier || undefined)
     : standardEfforts;
+  const fastTierIds = provider?.models.fastTierIds ?? LEGACY_FAST_TIERS;
+  const isFastTier = (id: string) => fastTierIds.includes(id);
   // The model's default effort runs; the slider shows where it stands.
   const followsDefault = effortDefault === true && !!settings?.available && !selection?.effort;
   const effort =
@@ -255,27 +256,21 @@ export function ComposerModelPicker({
           .join(" · ")
       : undefined;
   const showModelChoices = modelDefault === true && !displayModel && !historicalSummary;
-  const modelOnly = nativeVariants && !standardEfforts.length && !model?.serviceTierIds?.length;
+  const modelOnly =
+    (nativeVariants || (!!provider && !!model)) &&
+    !standardEfforts.length &&
+    !model?.serviceTierIds?.length;
   const triggerLabel = showModelChoices || modelOnly ? copy.chooseModel : copy.chooseEffort;
   const writable = settings?.available && !disabled && !saving;
-  const fast = isFastTier(selectedTier, nativeVariants);
+  const fast = isFastTier(selectedTier);
   const supportedTiers = settings?.options.serviceTiers.filter((item) =>
     model?.serviceTierIds?.includes(item.id),
   );
-  const permitsTier = (tier: string) => {
-    if (!variants) return true;
-    const matching = variants.filter((variant) => (variant.serviceTierId ?? "") === tier);
-    return effort === undefined
-      ? matching.length === 1
-      : matching.some((variant) => variant.effort === effort);
-  };
-  const fastTier = supportedTiers?.find(
-    (item) => isFastTier(item.id, nativeVariants) && permitsTier(item.id),
-  );
+  const permitsTier = (tier: string) =>
+    !variants || modelSupportsTier(model, tier || undefined, effort);
+  const fastTier = supportedTiers?.find((item) => isFastTier(item.id) && permitsTier(item.id));
   const otherTiers =
-    supportedTiers?.filter(
-      (item) => !isFastTier(item.id, nativeVariants) && permitsTier(item.id),
-    ) ?? [];
+    supportedTiers?.filter((item) => !isFastTier(item.id) && permitsTier(item.id)) ?? [];
   const selectedTierOption = settings?.options.serviceTiers.find(
     (item) => item.id === selectedTier,
   );
@@ -497,10 +492,9 @@ export function ComposerModelPicker({
                 ) : (
                   <>
                     <div className="flex items-start justify-between gap-2">
-                      {tiered &&
-                      (!nativeVariants ||
-                        fast ||
-                        !!model?.serviceTierIds?.some((id) => isFastTier(id, true))) ? (
+                      {fastTierIds.length > 0 &&
+                      tiered &&
+                      (!nativeVariants || fast || !!model?.serviceTierIds?.some(isFastTier)) ? (
                         <Tooltip>
                           <TooltipTrigger
                             render={

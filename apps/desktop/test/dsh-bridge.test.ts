@@ -13,6 +13,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { PassThrough } from "node:stream";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { RUNTIME_METHODS, sessionProviderCapabilities } from "@agentkib/runtime-protocol";
 import {
   DshBridge,
   dshConversationEvents,
@@ -24,6 +25,10 @@ import {
   type DshLaneBridge,
 } from "../../../packages/backend/src/dsh-lanes";
 import { readControlReceipt } from "../../../packages/backend/src/control-receipt";
+import { TypeScriptBackend } from "../../../packages/backend/src/index";
+import { McpHub } from "../../../packages/backend/src/mcp-hub";
+import { RemoteAgent } from "../../../packages/backend/src/remote-agent";
+import { BackendStore } from "../../../packages/backend/src/store";
 import {
   createBridge,
   DSH_BRIDGE_PATHS,
@@ -797,6 +802,156 @@ async function fixture({
 }
 
 describe("DeepSeek Harness bridge", () => {
+  it.skipIf(process.platform !== "darwin")(
+    "routes the registered DSH provider and legacy requests to the same bridge and receipts",
+    async () => {
+      const root = realpathSync(mkdtempSync(path.join(tmpdir(), "ak-dsh-provider-")));
+      cleanups.push(() => rmSync(root, { recursive: true, force: true }));
+      const dataDir = path.join(root, "data");
+      const workspace = path.join(root, "workspace");
+      const agentkibHome = path.join(root, "agentkib-home");
+      mkdirSync(dataDir);
+      mkdirSync(workspace);
+      const store = new BackendStore(path.join(dataDir, "agentkib.db"));
+      store.sql.run(
+        "INSERT INTO workspaces(id,canonical_path,name,status,last_discovered_at) VALUES(?,?,?,?,?)",
+        "workspace",
+        workspace,
+        "Synthetic DSH workspace",
+        "healthy",
+        new Date().toISOString(),
+      );
+      store.close();
+      vi.spyOn(McpHub.prototype, "start").mockResolvedValue();
+      vi.spyOn(RemoteAgent.prototype, "start").mockResolvedValue();
+      const backend = new TypeScriptBackend({
+        HOME: root,
+        USERPROFILE: root,
+        AGENTKIB_HOME: agentkibHome,
+        AGENTKIB_DSH_PLUGIN_DIR: "",
+        CLAUDE_CONFIG_DIR: path.join(root, ".claude"),
+        CODEX_HOME: path.join(root, ".codex"),
+        DSH_HOME: path.join(root, ".dsh"),
+        PATH: "/usr/bin:/bin",
+      });
+      cleanups.push(() => backend.close());
+      const call = (method: string, params: Record<string, unknown>) =>
+        backend.handleAsync({ jsonrpc: "2.0", id: randomUUID(), method, params });
+      const rpc = async (method: string, params: Record<string, unknown>) => {
+        const response = await call(method, params);
+        if (response.error) throw new Error(JSON.stringify(response.error));
+        return response.result as Record<string, unknown>;
+      };
+      const web = (params: Record<string, unknown>) => rpc(RUNTIME_METHODS.webRequest, params);
+      await rpc("backend.initialize", { dataDir });
+      const dsh = fakeDsh(workspace);
+      dsh.create("session-a", "Existing DSH session");
+      const plugin = createBridge(dsh.ctx, {
+        roots: [agentkibHome],
+        dshVersion: "0.2.1-rc.5",
+        discoveryMs: 50,
+        debounceMs: 10,
+      });
+      cleanups.push(() => {
+        plugin.close();
+        dsh.close();
+      });
+      await until(() => [...plugin.hosts.values()].some((host) => host.watch.has("session-a")));
+
+      const agent = "deepseek-harness";
+      const provider = sessionProviderCapabilities(agent);
+      const baseOptions = await web({ operation: "provider-options", agent });
+      expect(baseOptions).toMatchObject({ available: true, provider });
+      expect(baseOptions).not.toHaveProperty("models");
+      const options = await web({ operation: "provider-options", agent, workspaceId: "workspace" });
+      expect(options).toMatchObject({
+        available: true,
+        provider,
+        models: expect.arrayContaining([
+          expect.objectContaining({ id: "deepseek/deepseek-chat", efforts: ["low", "high"] }),
+        ]),
+        agentPresets: expect.arrayContaining([expect.objectContaining({ id: "ptc" })]),
+      });
+      expect(await web({ operation: "dsh-options", includeModels: true })).toEqual(options);
+
+      const creation = {
+        requestId: randomUUID(),
+        deviceId: "device-1",
+        workspaceId: "workspace",
+        agentPreset: "ptc",
+        model: "deepseek/deepseek-chat",
+        effort: "high",
+      };
+      const result = await web({ operation: "provider-create", agent, ...creation });
+      expect(result).toMatchObject({
+        accepted: true,
+        completed: true,
+        sessionId: expect.any(String),
+      });
+      const sessionId = String(result.sessionId);
+      expect(await web({ operation: "dsh-create", ...creation })).toMatchObject({
+        accepted: true,
+        sessionId,
+      });
+      expect(dsh.creations).toHaveLength(1);
+      expect(dsh.creations[0]).toMatchObject({ cwd: workspace, agentPreset: "ptc" });
+      expect(dsh.prompts).toHaveLength(0);
+
+      const settings = () => web({ operation: "settings-state", sessionId });
+      await vi.waitFor(async () => {
+        expect(await settings()).toMatchObject({
+          available: true,
+          provider,
+          current: { model: creation.model, effort: "high" },
+          writable: { effort: { available: true } },
+        });
+      });
+      expect(await web({ operation: "usage", sessionId })).toEqual({
+        available: false,
+        state: "unavailable",
+        reason: "usage-unavailable",
+      });
+
+      const live = await web({ operation: "live", sessionId, experimentalEnabled: true });
+      const update = {
+        operation: "settings",
+        sessionId,
+        deviceId: creation.deviceId,
+        runtimeBootId: live.runtimeBootId,
+        expectedRevision: live.revision,
+        experimentalEnabled: true,
+        requestId: randomUUID(),
+        effort: "low",
+      };
+      // The Codex RPC cannot claim an indexed DSH session using its native boot and revision.
+      expect(await call(RUNTIME_METHODS.codexManaged, update)).toHaveProperty("error");
+      expect(
+        await web({
+          ...update,
+          requestId: randomUUID(),
+          expectedRevision: Number(live.revision) + 1,
+        }),
+      ).toMatchObject({ controlOutcome: "not-dispatched", reason: "stale-dsh-revision" });
+      expect(dsh.selections).toHaveLength(0);
+      expect(await web(update)).toMatchObject({ accepted: true });
+      expect(await web(update)).toMatchObject({ accepted: true });
+      expect(dsh.selections).toHaveLength(1);
+      expect(await settings()).toMatchObject({ current: { effort: "low" } });
+      expect(
+        await rpc(RUNTIME_METHODS.controlReceipt, {
+          requestId: update.requestId,
+          deviceId: creation.deviceId,
+        }),
+      ).toMatchObject({ found: true, status: "accepted", operation: "settings", sessionId });
+      expect(
+        await rpc(RUNTIME_METHODS.controlReceipt, {
+          requestId: update.requestId,
+          deviceId: "other-device",
+        }),
+      ).toMatchObject({ found: false });
+    },
+  );
+
   it("publishes a private discovery file and lists sessions of registered workspaces", async () => {
     const f = await fixture();
     const discovery = path.join(f.agentkibHome, "dsh-bridge", "discovery-v1.json");
@@ -1457,10 +1612,20 @@ describe("DeepSeek Harness plugin projections", () => {
       failure: { code: "QUOTA", message: "x".repeat(500) },
     });
     expect(
-      historyRecord({ seq: 3, time: 1, type: "turn/end", data: { turn: 3, reason: { kind: "error", error: {} } } }),
+      historyRecord({
+        seq: 3,
+        time: 1,
+        type: "turn/end",
+        data: { turn: 3, reason: { kind: "error", error: {} } },
+      }),
     ).not.toHaveProperty("failure");
     expect(
-      historyRecord({ seq: 4, time: 1, type: "turn/end", data: { turn: 3, reason: { kind: "completed" } } }),
+      historyRecord({
+        seq: 4,
+        time: 1,
+        type: "turn/end",
+        data: { turn: 3, reason: { kind: "completed" } },
+      }),
     ).not.toHaveProperty("failure");
     expect(
       historyRecord({

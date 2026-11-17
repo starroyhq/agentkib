@@ -5,7 +5,12 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
-import { ApiError, type ManagedAgent, type ManagedOptions } from "@agentkib/web-client";
+import {
+  ApiError,
+  sessionProviderCapabilities,
+  type ManagedAgent,
+  type ManagedOptions,
+} from "@agentkib/web-client";
 import { initializeI18n } from "@/core/i18n";
 import { composerModelCopy } from "../conversation/features/sessions/composer-model-copy";
 import { takeNewSessionDraft } from "../conversation/features/sessions/new-session-draft";
@@ -87,6 +92,7 @@ const claudeCatalog: ManagedOptions = {
 };
 const dshCatalog: ManagedOptions = {
   ...options["deepseek-harness"],
+  provider: sessionProviderCapabilities("deepseek-harness"),
   models: [
     { id: "official/flash", name: "Flash", group: "Official", efforts: ["low", "high"] },
     {
@@ -218,6 +224,32 @@ describe("NewSessionComposer", () => {
     });
   });
 
+  it("uses the host's create capabilities in preference to its local provider defaults", async () => {
+    const provider = sessionProviderCapabilities("codex")!;
+    doubles.client.managedOptions.mockResolvedValue({
+      ...options.codex,
+      provider: {
+        ...provider,
+        create: { ...provider.create, mode: "with-first-message", attachments: false },
+      },
+    } satisfies ManagedOptions);
+    doubles.client.managedAction.mockResolvedValue({ accepted: true, sessionId: "created" });
+    const props = renderComposer({ initial: { agent: "codex" } });
+
+    await write("Review the routes");
+    expect(screen.getByRole("button", { name: "Add files" })).toBeDisabled();
+    fireEvent.click(send());
+    await waitFor(() => expect(props.onCreated).toHaveBeenCalledWith("created"));
+    expect(doubles.client.managedAction).toHaveBeenCalledExactlyOnceWith("create", {
+      bootId: "boot",
+      requestId: expect.any(String),
+      workspaceId: "north",
+      policyId: "workspace-write-on-request",
+      prompt: "Review the routes",
+    });
+    expect(takeNewSessionDraft("created")).toBeUndefined();
+  });
+
   it("names the model when only the effort changes, as Codex needs", async () => {
     doubles.client.managedAction.mockResolvedValue({ accepted: true, sessionId: "created" });
     renderComposer();
@@ -296,7 +328,10 @@ describe("NewSessionComposer", () => {
   });
 
   it("uses Claude's native catalogue and submits an explicit model and effort before opening the session", async () => {
-    doubles.client.managedOptions.mockResolvedValue(claudeCatalog);
+    doubles.client.managedOptions.mockResolvedValue({
+      ...claudeCatalog,
+      provider: sessionProviderCapabilities("claude-code"),
+    });
     doubles.client.managedAction.mockResolvedValue({ accepted: true, sessionId: "created" });
     const props = renderComposer({ initial: { agent: "claude-code" } });
     const models = await openModels("Sonnet");
@@ -307,9 +342,16 @@ describe("NewSessionComposer", () => {
     fireEvent.click(within(models).getByRole("button", { name: "Opus" }));
     await chooseHighestEffort();
     await write("Review the routes");
+    const file = new File(["spec"], "spec.md", { type: "text/markdown" });
+    fireEvent.change(document.querySelector('input[type="file"]')!, { target: { files: [file] } });
     fireEvent.click(send());
 
     await waitFor(() => expect(props.onCreated).toHaveBeenCalledWith("created"));
+    expect(doubles.client.managedOptions).toHaveBeenCalledWith(
+      "claude-code",
+      expect.any(AbortSignal),
+      "north",
+    );
     expect(doubles.client.managedAction).toHaveBeenCalledExactlyOnceWith("create", {
       agent: "claude-code",
       bootId: "boot",
@@ -319,7 +361,11 @@ describe("NewSessionComposer", () => {
       effort: "high",
       verifyStartupModel: true,
     });
-    expect(takeNewSessionDraft("created")).toMatchObject({ text: "Review the routes", send: true });
+    expect(takeNewSessionDraft("created")).toEqual({
+      text: "Review the routes",
+      files: [file],
+      send: true,
+    });
   });
 
   it("opens Claude's model list when its default is unknown and can clear just the chosen effort", async () => {
@@ -380,12 +426,34 @@ describe("NewSessionComposer", () => {
     fireEvent.click(send());
 
     await waitFor(() => expect(doubles.client.managedAction).toHaveBeenCalledOnce());
+    expect(doubles.client.managedOptions).toHaveBeenCalledWith(
+      "deepseek-harness",
+      expect.any(AbortSignal),
+      "north",
+    );
     expect(doubles.client.managedAction.mock.calls[0]![1]).toMatchObject({
       agent: "deepseek-harness",
       agentPreset: "ptc",
       model: "local/pro",
       effort: "high",
     });
+    expect(doubles.client.managedAction.mock.calls[0]![1]).not.toHaveProperty("prompt");
+    expect(takeNewSessionDraft("created")?.text).toBe("Profile the parser");
+  });
+
+  it("disables DSH's startup preset UI when the host declares it unavailable", async () => {
+    const provider = sessionProviderCapabilities("deepseek-harness")!;
+    doubles.client.managedOptions.mockResolvedValue({
+      ...dshCatalog,
+      provider: { ...provider, create: { ...provider.create, agentPresets: false } },
+    });
+    doubles.client.managedAction.mockResolvedValue({ accepted: true, sessionId: "created" });
+    renderComposer({ initial: { agent: "deepseek-harness" } });
+    await write("Start with the default preset");
+    expect(screen.queryByRole("button", { name: /Preset/ })).not.toBeInTheDocument();
+    fireEvent.click(send());
+    await waitFor(() => expect(doubles.client.managedAction).toHaveBeenCalledOnce());
+    expect(doubles.client.managedAction.mock.calls[0]![1]).not.toHaveProperty("agentPreset");
   });
 
   it.each(["direct", "receipt"])(

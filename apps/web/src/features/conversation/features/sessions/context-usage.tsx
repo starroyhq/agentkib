@@ -1,6 +1,11 @@
 import { useRef, useState } from "react";
 import { Gauge } from "lucide-react";
-import type { ContextUsage, Live } from "@agentkib/web-client";
+import {
+  sessionProviderCapabilities,
+  type ContextUsage,
+  type Live,
+  type SessionProviderCapabilities,
+} from "@agentkib/web-client";
 import type { Locale } from "../../i18n";
 import { Button } from "../../components/ui/button";
 import { Dialog } from "../../components/dialog";
@@ -50,23 +55,51 @@ function acceptsReport(native: ContextUsage, current?: ContextUsage) {
 }
 
 /** Settings are a compatibility fallback; a native report always has priority. */
-export function useContextUsage(fallback?: ContextUsage) {
+type UsageSource = SessionProviderCapabilities["contextUsage"];
+
+export function useContextUsage(
+  fallback?: ContextUsage,
+  capacity?: number,
+  declaredSource?: UsageSource,
+) {
   const { selected, current, client, access, live, online, usageEpoch } = useSession();
+  const liveProvider =
+    live?.sessionId === selected && live.settings?.sessionId === selected
+      ? live.settings.provider
+      : undefined;
+  const source =
+    declaredSource ??
+    liveProvider?.contextUsage ??
+    (current?.id === selected
+      ? sessionProviderCapabilities(current.agent)?.contextUsage
+      : undefined);
+  const supported = source !== "unsupported";
   const authorized =
     access?.device?.accessMode === "full" && access.device.advancedControl === true;
-  const scope = `${selected}\0${access?.bootId ?? ""}\0${access?.device?.id ?? ""}\0${authorized}\0${usageEpoch ?? ""}\0${live?.connectionGeneration ?? ""}`;
+  const scope = `${selected}\0${access?.bootId ?? ""}\0${access?.device?.id ?? ""}\0${authorized}\0${usageEpoch ?? ""}\0${live?.connectionGeneration ?? ""}\0${source ?? ""}`;
   const view = useObservedContextUsage({
     selected,
     scope,
     identity: client,
-    live,
+    live: supported ? live : undefined,
     online,
     authorized,
-    fallback,
+    fallback: supported ? fallback : undefined,
+    source,
   });
   return {
     ...view,
+    source,
+    capacity:
+      supported &&
+      authorized &&
+      capacity !== undefined &&
+      Number.isSafeInteger(capacity) &&
+      capacity > 0
+        ? capacity
+        : undefined,
     awaitingCliReport:
+      supported &&
       current?.id === selected &&
       current.agent === "claude-code" &&
       live?.sessionId === selected &&
@@ -91,6 +124,7 @@ export function useObservedContextUsage({
   online,
   authorized,
   fallback,
+  source,
 }: {
   selected: string;
   scope: string;
@@ -99,6 +133,7 @@ export function useObservedContextUsage({
   online: boolean;
   authorized: boolean;
   fallback?: ContextUsage;
+  source?: UsageSource;
 }) {
   const observation = useRef<Observation | undefined>(undefined);
   if (observation.current?.scope !== scope || observation.current?.identity !== identity) {
@@ -117,9 +152,12 @@ export function useObservedContextUsage({
   const value = observation.current;
   value.lastLive = live;
   value.lastFallback = fallback;
+  const report = live?.usage ?? live?.settings?.usage;
   const native =
     authorized && live?.sessionId === selected && live !== value.blockedLive
-      ? (live.usage ?? live.settings?.usage)
+      ? source !== "last-request" || report?.historical
+        ? report
+        : undefined
       : undefined;
   const acceptsNative = native !== undefined && acceptsReport(native, value.usage);
   if (native && native !== value.lastNative) {
@@ -200,6 +238,8 @@ export function useObservedContextUsage({
 
 type ContextUsageView = ReturnType<typeof useObservedContextUsage> & {
   awaitingCliReport?: boolean;
+  capacity?: number;
+  source?: UsageSource;
 };
 
 export function ContextUsageDetails({
@@ -208,6 +248,8 @@ export function ContextUsageDetails({
   state,
   compacting,
   awaitingCliReport,
+  capacity,
+  source,
   locale,
   online,
 }: ContextUsageView & { locale: Locale; online: boolean }) {
@@ -226,8 +268,8 @@ export function ContextUsageDetails({
       : awaitingCliReport
         ? copy.awaitingCliReportDetail
         : historical
-          ? usage.reason === "devin-last-model-request"
-            ? copy.devinLastRequest
+          ? source === "last-request" || usage.reason === "devin-last-model-request"
+            ? copy.lastRequestDetail
             : copy.historicalDetail
           : (contextUsageReason(locale, usage?.reason, "web") ??
             (state === "pending"
@@ -237,7 +279,10 @@ export function ContextUsageDetails({
                 : codexCopyForSurface(locale, "web").contextUnknown));
   return (
     <div className="space-y-2 text-sm">
-      {state !== "ready" && <p role="status">{message}</p>}
+      {(state !== "ready" || historical) && <p role="status">{message}</p>}
+      {percent === undefined && capacity !== undefined && (
+        <p>{copy.capacity.replace("{total}", capacity.toLocaleString(locale))}</p>
+      )}
       {percent !== undefined && (
         <div className="space-y-2">
           <p>
@@ -301,11 +346,20 @@ function useCompactAction(): CompactAction | undefined {
   };
 }
 
-export function ContextUsageGauge({ fallback }: { fallback?: ContextUsage } = {}) {
+export function ContextUsageGauge({
+  fallback,
+  capacity,
+  source,
+}: {
+  fallback?: ContextUsage;
+  capacity?: number;
+  source?: UsageSource;
+} = {}) {
   const { selected, locale, access, live, online, usageEpoch } = useSession();
   const scope = `${selected}\0${access?.bootId ?? ""}\0${access?.device?.id ?? ""}\0${usageEpoch ?? ""}\0${live?.connectionGeneration ?? ""}`;
-  const view = useContextUsage(fallback);
+  const view = useContextUsage(fallback, capacity, source);
   const compact = useCompactAction();
+  if (view.source === "unsupported") return null;
   return (
     <ContextUsageIndicator
       scope={scope}

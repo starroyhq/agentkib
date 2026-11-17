@@ -17,14 +17,17 @@ import {
   TriangleAlert,
   X,
 } from "lucide-react";
-import type { CodexSessionSettings, ManagedAgent } from "@agentkib/web-client";
+import {
+  newSessionProvider,
+  type CodexSessionSettings,
+  type ManagedAgent,
+} from "@agentkib/web-client";
 import {
   dshAgentPresetText,
   fillCopy,
   NEW_SESSION_AGENTS,
   newSessionCopy,
   newSessionCreateFields,
-  PROMPT_AT_CREATE_AGENTS,
   devinTerminalAction,
   devinTerminalCopy,
   newSessionPermissions,
@@ -97,7 +100,6 @@ export function NewSessionComposer(props: NewSessionComposerProps) {
   const [agent, setAgent] = useState<ManagedAgent>(
     target.agent && !notInstalled?.has(target.agent) ? target.agent : "codex",
   );
-  const isCodex = agent === "codex";
   const isDevin = agent === "devin";
   const [workspaceId, setWorkspaceId] = useState(target.workspaceId ?? "");
   const workspace =
@@ -117,15 +119,14 @@ export function NewSessionComposer(props: NewSessionComposerProps) {
   const [agentPreset, setAgentPreset] = useState<string>();
   const [sending, setSending] = useState(false);
   const draft = useRef({ text, files });
+  const submittedWithPrompt = useRef(false);
   useEffect(() => {
     draft.current = { text, files };
   }, [text, files]);
-  // An Agent that starts with its first message has sent it with the create.
-  const promptAtCreate = PROMPT_AT_CREATE_AGENTS.includes(agent);
   // The composer stays busy until the new session opens.
-  const handOff = async (sessionId: string) => {
+  const handOff = async (sessionId: string, promptWasSubmitted: boolean) => {
     setSending(true);
-    if (!promptAtCreate) offerNewSessionDraft(sessionId, draft.current);
+    if (!promptWasSubmitted) offerNewSessionDraft(sessionId, draft.current);
     setText("");
     setFiles([]);
     try {
@@ -141,19 +142,29 @@ export function NewSessionComposer(props: NewSessionComposerProps) {
     // A create checked after its outcome was unknown opens the session it made, with this
     // composer's draft, only while that draft is still here.
     onReconciled: (sessionId, own) => {
-      if (own) void handOff(sessionId);
+      if (own) void handOff(sessionId, submittedWithPrompt.current);
     },
   });
   const options = session.options.data;
+  const provider = newSessionProvider(agent, options);
+  const promptAtCreate = provider?.create.mode === "with-first-message";
+  // The create request can carry the first message's text. Attachments use the opened session.
+  const acceptsAttachments = (provider?.create.attachments ?? true) && !promptAtCreate;
+  const workspaceCatalog = provider?.create.catalogScope !== "host";
+  const variantSelection = provider?.models.selection === "variants";
+  const effortDefault = provider?.models.effortDefault ?? true;
   const enterSends = useEnterSends();
   const composing = useRef(false);
   const fileInput = useRef<HTMLInputElement>(null);
   const [fileLimit, setFileLimit] = useState(false);
   const side = placement === "home" ? "bottom" : "top";
-  const modelScope = JSON.stringify([agent, isCodex ? null : workspace?.id]);
+  const modelScope = JSON.stringify([agent, workspaceCatalog ? workspace?.id : null]);
 
   const selectWorkspace = (id: string) => {
-    if (!isCodex && id !== workspace?.id) setModelDraft(undefined);
+    if (workspaceCatalog && id !== workspace?.id) {
+      setModelDraft(undefined);
+      setAgentPreset(undefined);
+    }
     setWorkspaceId(id);
   };
 
@@ -185,6 +196,7 @@ export function NewSessionComposer(props: NewSessionComposerProps) {
       sessionId: "",
       available: true,
       revision: 0,
+      provider,
       current: defaults,
       defaults,
       writable: {
@@ -192,7 +204,8 @@ export function NewSessionComposer(props: NewSessionComposerProps) {
         effort: available,
         mode: unavailable,
         policy: unavailable,
-        serviceTier: isDevin && options.serviceTiers?.length ? available : unavailable,
+        serviceTier:
+          provider?.create.serviceTiers && options.serviceTiers?.length ? available : unavailable,
         restoreDefaults: available,
       },
       options: {
@@ -203,15 +216,15 @@ export function NewSessionComposer(props: NewSessionComposerProps) {
           group: item.group,
           efforts: item.efforts ?? [],
           defaultEffort: item.defaultEffort,
-          serviceTierIds: isDevin ? (item.serviceTierIds ?? []) : [],
+          serviceTierIds: provider?.create.serviceTiers ? (item.serviceTierIds ?? []) : [],
           variants: item.variants,
           maxContextTokens: item.maxContextTokens,
         })),
         policies: [],
-        serviceTiers: isDevin ? (options.serviceTiers ?? []) : [],
+        serviceTiers: provider?.create.serviceTiers ? (options.serviceTiers ?? []) : [],
       },
     };
-  }, [options, isDevin]);
+  }, [options, provider]);
   const {
     model = "",
     effort = "",
@@ -219,7 +232,7 @@ export function NewSessionComposer(props: NewSessionComposerProps) {
     exactModel,
   } = modelDraft?.scope === modelScope ? modelDraft : {};
   const modelId = model || modelSettings?.defaults.modelId;
-  const chosenModelDefaultEffort = isCodex
+  const chosenModelDefaultEffort = !effortDefault
     ? modelSettings?.options.models.find((item) => item.id === model)?.defaultEffort
     : undefined;
   const shownEffort = effort || (model ? chosenModelDefaultEffort : modelSettings?.defaults.effort);
@@ -229,7 +242,7 @@ export function NewSessionComposer(props: NewSessionComposerProps) {
   const shownPermission = permissions?.choices.find(
     (item) => item.id === (permission ?? permissions.initial),
   );
-  const { presets, defaultId: defaultPreset } = newSessionPresets(agent, options);
+  const { presets, defaultId: defaultPreset } = newSessionPresets(agent, options, provider?.create);
   const preset = presets.find((item) => item.id === (agentPreset ?? defaultPreset));
 
   const unavailableReason = session.options.isError
@@ -244,7 +257,8 @@ export function NewSessionComposer(props: NewSessionComposerProps) {
     !!workspace &&
     !locked &&
     !session.unknown &&
-    (promptAtCreate ? !!text.trim() && files.length === 0 : !!text.trim() || files.length > 0);
+    (acceptsAttachments || files.length === 0) &&
+    (promptAtCreate ? !!text.trim() : !!text.trim() || files.length > 0);
 
   async function send() {
     if (!canSend || !workspace) return;
@@ -261,16 +275,17 @@ export function NewSessionComposer(props: NewSessionComposerProps) {
         preset: agentPreset,
       },
       options,
+      provider?.create,
     );
     rememberNewSessionTarget({ workspaceId: workspace.id, agent });
+    submittedWithPrompt.current = promptAtCreate;
     const sessionId = await session.create(promptAtCreate ? { ...fields, prompt: text } : fields);
-    if (sessionId) await handOff(sessionId);
+    if (sessionId) await handOff(sessionId, promptAtCreate);
     else setSending(false);
   }
 
   function addFiles(list: File[]) {
-    // Devin takes text only; its sessions get no attachments.
-    if (promptAtCreate) return;
+    if (!acceptsAttachments) return;
     const room = MAX_FILES - files.length;
     setFileLimit(list.length > room);
     if (room > 0) setFiles((current) => [...current, ...list.slice(0, room)]);
@@ -530,7 +545,7 @@ export function NewSessionComposer(props: NewSessionComposerProps) {
                 variant="ghost"
                 aria-label={copy.attach}
                 title={copy.attach}
-                disabled={locked || promptAtCreate || files.length >= MAX_FILES}
+                disabled={locked || !acceptsAttachments || files.length >= MAX_FILES}
                 onClick={() => fileInput.current?.click()}
               >
                 <Plus size={20} aria-hidden />
@@ -560,15 +575,14 @@ export function NewSessionComposer(props: NewSessionComposerProps) {
                   disabled={locked}
                   saving={false}
                   side={side}
-                  modelDefault={!isCodex}
-                  effortDefault={!isCodex}
-                  nativeVariants={isDevin}
-                  clearEffort={!isCodex && !isDevin && !!effort}
+                  modelDefault={provider?.models.modelDefault ?? true}
+                  effortDefault={effortDefault}
+                  clearEffort={(provider?.models.clearEffort ?? true) && !!effort}
                   onOpen={() => undefined}
                   onChange={async (change) => {
                     if (change.restoreDefaults) {
                       setModelDraft(undefined);
-                    } else if (isDevin) {
+                    } else if (variantSelection) {
                       const nextModel = change.model ?? modelId;
                       const chosen = modelSettings.options.models.find(
                         (item) => item.id === nextModel,
@@ -603,7 +617,7 @@ export function NewSessionComposer(props: NewSessionComposerProps) {
                         (item) => item.id === change.model,
                       );
                       if (!chosen) return;
-                      const nextEffort = isCodex
+                      const nextEffort = !effortDefault
                         ? change.effort
                         : chosen.efforts.find((level) => level === effort);
                       setModelDraft({
@@ -611,8 +625,17 @@ export function NewSessionComposer(props: NewSessionComposerProps) {
                         model: chosen.id,
                         effort: nextEffort ?? "",
                       });
-                    } else if (change.effort !== undefined)
-                      setModelDraft({ scope: modelScope, model, effort: change.effort ?? "" });
+                    } else if (change.effort !== undefined || change.serviceTierId !== undefined) {
+                      setModelDraft({
+                        scope: modelScope,
+                        model,
+                        effort: change.effort === undefined ? effort : (change.effort ?? ""),
+                        serviceTierId:
+                          change.serviceTierId === undefined
+                            ? serviceTierId
+                            : (change.serviceTierId ?? ""),
+                      });
+                    }
                   }}
                 />
               )}

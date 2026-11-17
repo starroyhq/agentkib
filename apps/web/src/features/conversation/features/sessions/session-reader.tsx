@@ -1,5 +1,9 @@
 import { catalogCopy } from "../catalog/catalog-copy";
-import { isLiveSessionAgent, managedAgentOf } from "@agentkib/web-client";
+import {
+  isLiveSessionAgent,
+  managedAgentOf,
+  sessionProviderCapabilities,
+} from "@agentkib/web-client";
 import { OrchestrationNote } from "../catalog/orchestration-note";
 import { WorktreeNote } from "../catalog/worktree-note";
 import { codexReason } from "./codex-copy";
@@ -100,6 +104,25 @@ export function SessionReader() {
   const submitPending = useRef(false);
   const banner = claudeSessionBanner(session, "web");
   const backgroundStatus = claudeBackgroundStatus(session);
+  const scopedLive = live?.sessionId === selected ? live : undefined;
+  const scopedSettings =
+    scopedLive?.settings?.sessionId === selected ? scopedLive.settings : undefined;
+  const contextUsageSource =
+    scopedSettings?.provider?.contextUsage ??
+    sessionProviderCapabilities(current?.agent)?.contextUsage;
+  const readOnlyCapacity =
+    contextUsageSource === "last-request" &&
+    scopedSettings?.applicationStatus !== "pending" &&
+    scopedSettings?.applicationStatus !== "unknown"
+      ? scopedSettings?.current.maxContextTokens
+      : undefined;
+  const showReadOnlyContext =
+    contextUsageSource === "last-request"
+      ? (scopedLive?.usage ?? scopedSettings?.usage)?.historical === true ||
+        (readOnlyCapacity !== undefined &&
+          Number.isSafeInteger(readOnlyCapacity) &&
+          readOnlyCapacity > 0)
+      : contextUsageSource === "live" || current?.agent === "antigravity";
   const panels = useSessionPanels();
   const readSubscription = useCallback(
     (listener: (userAction?: boolean) => void) =>
@@ -483,9 +506,9 @@ export function SessionReader() {
                 {access.protocolVersion === 2 &&
                   access.device?.accessMode === "full" &&
                   access.device.advancedControl &&
-                  ["codex", "claude-code", "antigravity"].includes(current?.agent ?? "") && (
+                  showReadOnlyContext && (
                     <div className="flex justify-center">
-                      <ContextUsageGauge />
+                      <ContextUsageGauge source={contextUsageSource} capacity={readOnlyCapacity} />
                     </div>
                   )}
                 {isLiveSessionAgent(current?.agent) &&

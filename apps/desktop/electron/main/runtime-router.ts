@@ -273,6 +273,8 @@ export class RuntimeRouter extends EventEmitter implements RuntimeHost {
         "terminals-clean",
         "dsh-create",
         "dsh-options",
+        "provider-create",
+        "provider-options",
         "devin-create",
         "devin-options",
         "devin-terminal",

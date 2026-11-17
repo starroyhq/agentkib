@@ -1,4 +1,8 @@
-import { isLiveSessionAgent, managedAgentOf } from "@agentkib/web-client";
+import {
+  isLiveSessionAgent,
+  managedAgentOf,
+  sessionProviderCapabilities,
+} from "@agentkib/web-client";
 import {
   desktopReadScope as currentDesktopReadScope,
   useDesktopReadScope,
@@ -132,6 +136,23 @@ export function SessionReader() {
   }, [readerReady, selected]);
   const composing = useRef(false);
   const submitPending = useRef(false);
+  const selectedLive = live?.sessionId === selected ? live : undefined;
+  const selectedSettings =
+    selectedLive?.settings?.sessionId === selected ? selectedLive.settings : undefined;
+  const contextUsageSource =
+    selectedSettings?.provider?.contextUsage ??
+    sessionProviderCapabilities(current?.agent)?.contextUsage;
+  const contextLimit =
+    contextUsageSource === "last-request" &&
+    selectedSettings?.applicationStatus !== "pending" &&
+    selectedSettings?.applicationStatus !== "unknown"
+      ? selectedSettings?.current.maxContextTokens
+      : undefined;
+  const showReadOnlyUsage =
+    contextUsageSource === "last-request"
+      ? (selectedLive?.usage ?? selectedSettings?.usage)?.historical === true ||
+        (contextLimit !== undefined && Number.isSafeInteger(contextLimit) && contextLimit > 0)
+      : contextUsageSource === "live" || current?.agent === "antigravity";
   const banner = claudeSessionBanner(session);
   const backgroundStatus = claudeBackgroundStatus(session);
   const panels = useSessionPanels();
@@ -510,9 +531,9 @@ export function SessionReader() {
                   {access.protocolVersion === 2 &&
                     access.device?.accessMode === "full" &&
                     access.device.advancedControl &&
-                    ["codex", "claude-code", "antigravity"].includes(current?.agent ?? "") && (
+                    showReadOnlyUsage && (
                       <div className="flex justify-center">
-                        <ContextUsageGauge />
+                        <ContextUsageGauge source={contextUsageSource} limit={contextLimit} />
                       </div>
                     )}
                   {isLiveSessionAgent(current?.agent) &&

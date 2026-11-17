@@ -17,16 +17,17 @@ import {
   TriangleAlert,
   X,
 } from "lucide-react";
-import type { ManagedAgent, ManagedOptions } from "@agentkib/web-client";
+import { newSessionProvider, type ManagedAgent, type ManagedOptions } from "@agentkib/web-client";
 import { AgentMark, agentName } from "@agentkib/agent-identity";
 import { sortSessions } from "@agentkib/session-catalog";
 import {
   dshAgentPresetText,
   fillCopy,
+  modelEffortsForTier,
+  modelSupportsTier,
   NEW_SESSION_AGENTS,
   newSessionCopy,
   newSessionCreateFields,
-  PROMPT_AT_CREATE_AGENTS,
   newSessionPermissions,
   newSessionPresets,
   type NewSessionPermissionChoice,
@@ -86,9 +87,8 @@ function recentWorkspaces(
 
 /**
  * Starts a session from this browser, as the desktop composer does: the workspace and Agent above,
- * the first message with its files, permissions, model and effort below. The session is created
- * first; its own composer then sends the message, so a message that cannot go out stays there as
- * the draft.
+ * the first message with its files, permissions and model settings below. The provider chooses
+ * whether the first message travels with create or through the new session's own composer.
  */
 export function NewSessionComposer({
   onCreated,
@@ -120,18 +120,20 @@ export function NewSessionComposer({
   const [permission, setPermission] = useState<string>();
   const [model, setModel] = useState("");
   const [effort, setEffort] = useState("");
+  const [serviceTier, setServiceTier] = useState<string>();
+  const [exactModel, setExactModel] = useState<string>();
   const [agentPreset, setAgentPreset] = useState<string>();
   const [sending, setSending] = useState(false);
   const draft = useRef({ text, files });
   useEffect(() => {
     draft.current = { text, files };
   }, [text, files]);
-  // An Agent that starts with its first message has sent it with the create.
-  const promptAtCreate = PROMPT_AT_CREATE_AGENTS.includes(agent);
+  // Reconciliation can finish after options have refreshed; use the mode of the submitted request.
+  const sentWithPrompt = useRef(false);
   // The composer stays busy until the new session opens.
   const handOff = async (sessionId: string) => {
     setSending(true);
-    if (!promptAtCreate) offerNewSessionDraft(sessionId, draft.current);
+    if (!sentWithPrompt.current) offerNewSessionDraft(sessionId, draft.current);
     setText("");
     setFiles([]);
     try {
@@ -142,6 +144,7 @@ export function NewSessionComposer({
   };
   const session = useNewSession({
     agent,
+    workspaceId: workspace?.id,
     // A create checked after its outcome was unknown opens the session it made, with this
     // composer's draft, only while that draft is still here.
     onReconciled: (sessionId, own) => {
@@ -149,6 +152,9 @@ export function NewSessionComposer({
     },
   });
   const options = session.options;
+  const provider = newSessionProvider(agent, options);
+  const promptAtCreate = provider?.create.mode === "with-first-message";
+  const attachments = (provider?.create.attachments ?? true) && !promptAtCreate;
   const enterSends = useEnterSends();
   const composing = useRef(false);
   const fileInput = useRef<HTMLInputElement>(null);
@@ -156,17 +162,40 @@ export function NewSessionComposer({
 
   const models = options?.available ? (options.models ?? []) : [];
   const defaultModel = options?.defaults?.model ?? models.find((item) => item.isDefault)?.id;
-  const modelId = model || defaultModel || undefined;
+  const selectedModel = models.find((item) => item.id === model);
+  const currentModel = selectedModel ?? models.find((item) => item.id === defaultModel);
+  const modelId = currentModel?.id ?? defaultModel;
+  const chosenTier =
+    serviceTier !== undefined &&
+    provider?.create.serviceTiers &&
+    currentModel &&
+    modelSupportsTier(currentModel, serviceTier || undefined, effort || undefined)
+      ? serviceTier
+      : undefined;
+  const shownTier = chosenTier ?? (!selectedModel ? options?.defaults?.serviceTierId : undefined);
+  const selectedEffort = modelEffortsForTier(currentModel, shownTier).includes(effort)
+    ? effort
+    : "";
   const shownEffort =
-    effort ||
-    (model
-      ? models.find((item) => item.id === model)?.defaultEffort
+    selectedEffort ||
+    (selectedModel
+      ? provider?.models.effortDefault
+        ? undefined
+        : selectedModel.defaultEffort
       : (options?.defaults?.effort ?? undefined));
+  const serviceTiers =
+    provider?.create.serviceTiers && currentModel
+      ? (options?.serviceTiers ?? []).filter((item) =>
+          modelSupportsTier(currentModel, item.id, shownEffort),
+        )
+      : [];
+  const canUseStandardTier =
+    !!shownTier && !!currentModel && modelSupportsTier(currentModel, undefined, shownEffort);
   const permissions = newSessionPermissions(agent, options, locale, { fullAccess });
   const shownPermission = permissions?.choices.find(
     (item) => item.id === (permission ?? permissions.initial),
   );
-  const { presets, defaultId: defaultPreset } = newSessionPresets(agent, options);
+  const { presets, defaultId: defaultPreset } = newSessionPresets(agent, options, provider?.create);
   const preset = presets.find((item) => item.id === (agentPreset ?? defaultPreset));
 
   const unavailableReason = session.optionsError
@@ -182,7 +211,7 @@ export function NewSessionComposer({
     !!workspace &&
     !locked &&
     !session.unknown &&
-    (promptAtCreate ? !!text.trim() && files.length === 0 : !!text.trim() || files.length > 0);
+    (attachments ? !!text.trim() || files.length > 0 : !!text.trim() && files.length === 0);
 
   async function send() {
     if (!canSend || !workspace) return;
@@ -191,24 +220,36 @@ export function NewSessionComposer({
       {
         agent,
         workspaceId: workspace.id,
-        model,
-        effort,
+        model:
+          chosenTier === "" && currentModel?.variants?.some((item) => item.id === exactModel)
+            ? (exactModel ?? selectedModel?.id ?? "")
+            : (selectedModel?.id ?? ""),
+        effort: selectedEffort,
+        serviceTierId: chosenTier,
         shownModel: modelId,
         permission,
         preset: agentPreset,
         fullAccess,
       },
       options,
+      provider?.create,
     );
     rememberNewSessionTarget({ workspaceId: workspace.id, agent });
+    sentWithPrompt.current = promptAtCreate;
     const sessionId = await session.create(promptAtCreate ? { ...fields, prompt: text } : fields);
     if (sessionId) await handOff(sessionId);
     else setSending(false);
   }
 
+  function resetModel() {
+    setModel("");
+    setEffort("");
+    setServiceTier(undefined);
+    setExactModel(undefined);
+  }
+
   function addFiles(list: File[]) {
-    // Devin takes text only; its sessions get no attachments.
-    if (promptAtCreate) return;
+    if (!attachments) return;
     const room = MAX_FILES - files.length;
     setFileLimit(list.length > room);
     if (room > 0) setFiles((current) => [...current, ...list.slice(0, room)]);
@@ -302,7 +343,7 @@ export function NewSessionComposer({
           }}
           onPaste={(event) => {
             const pasted = Array.from(event.clipboardData.files);
-            if (!pasted.length) return;
+            if (!attachments || !pasted.length) return;
             event.preventDefault();
             addFiles(pasted);
           }}
@@ -319,24 +360,32 @@ export function NewSessionComposer({
           }}
         />
         <div className="flex min-w-0 flex-wrap items-center gap-1">
-          <Button
-            type="button"
-            variant="ghost"
-            className="size-8 shrink-0 rounded-full bg-muted/60 p-0"
-            aria-label={copy.attach}
-            title={copy.attach}
-            disabled={locked || promptAtCreate || files.length >= MAX_FILES}
-            onClick={() => fileInput.current?.click()}
-          >
-            <Plus className="size-4" aria-hidden />
-          </Button>
+          {(attachments || files.length > 0) && (
+            <Button
+              type="button"
+              variant="ghost"
+              className="size-8 shrink-0 rounded-full bg-muted/60 p-0"
+              aria-label={copy.attach}
+              title={copy.attach}
+              disabled={locked || !attachments || files.length >= MAX_FILES}
+              onClick={() => fileInput.current?.click()}
+            >
+              <Plus className="size-4" aria-hidden />
+            </Button>
+          )}
           <WorkspacePicker
             locale={locale}
             workspaces={workspaces}
             recent={recentWorkspaces(workspaces, sessions, 3)}
             selected={workspace?.id}
             disabled={locked}
-            onSelect={setWorkspaceId}
+            onSelect={(id) => {
+              if (workspace?.id !== id && provider?.create.catalogScope === "workspace") {
+                resetModel();
+                setAgentPreset(undefined);
+              }
+              setWorkspaceId(id);
+            }}
           />
           <DropdownMenu>
             <DropdownMenuTrigger
@@ -356,8 +405,7 @@ export function NewSessionComposer({
                   key={item}
                   onClick={() => {
                     setAgent(item);
-                    setModel("");
-                    setEffort("");
+                    resetModel();
                     setPermission(undefined);
                     setAgentPreset(undefined);
                   }}
@@ -420,12 +468,42 @@ export function NewSessionComposer({
                 models={models}
                 modelId={modelId}
                 effort={shownEffort}
+                efforts={modelEffortsForTier(currentModel, shownTier)}
+                serviceTier={shownTier || undefined}
+                serviceTiers={serviceTiers}
+                canUseStandardTier={canUseStandardTier}
+                resetModel={provider?.models.modelDefault ? resetModel : undefined}
+                resetEffort={
+                  provider?.models.effortDefault &&
+                  !!selectedEffort &&
+                  (!shownTier || modelSupportsTier(currentModel, shownTier))
+                    ? () => setEffort("")
+                    : undefined
+                }
                 disabled={locked}
                 onModel={(id) => {
+                  resetModel();
                   setModel(id);
-                  setEffort("");
                 }}
-                onEffort={setEffort}
+                onEffort={(nextEffort) => {
+                  setEffort(nextEffort);
+                  if (shownTier) setServiceTier(shownTier);
+                  setExactModel(undefined);
+                }}
+                onTier={(tier) => {
+                  if (!currentModel) return;
+                  const matches = currentModel.variants?.filter(
+                    (variant) =>
+                      variant.serviceTierId === (tier || undefined) &&
+                      (!shownEffort || variant.effort === shownEffort),
+                  );
+                  if (matches && matches.length !== 1) return;
+                  const match = matches?.[0];
+                  setModel(currentModel.id);
+                  setEffort(shownEffort ?? match?.effort ?? "");
+                  setServiceTier(tier);
+                  setExactModel(!tier && !match?.effort ? match?.id : undefined);
+                }}
               />
             )}
             <Button
@@ -544,23 +622,39 @@ function ModelMenu({
   models,
   modelId,
   effort,
+  efforts,
+  serviceTier,
+  serviceTiers,
+  canUseStandardTier,
   disabled,
+  resetModel,
+  resetEffort,
   onModel,
   onEffort,
+  onTier,
 }: {
   locale: Locale;
   models: NonNullable<ManagedOptions["models"]>;
   modelId?: string;
   effort?: string;
+  efforts: readonly string[];
+  serviceTier?: string;
+  serviceTiers: NonNullable<ManagedOptions["serviceTiers"]>;
+  canUseStandardTier: boolean;
   disabled: boolean;
+  resetModel?: () => void;
+  resetEffort?: () => void;
   onModel: (id: string) => void;
   onEffort: (effort: string) => void;
+  onTier: (id: string) => void;
 }) {
   const copy = codexCopyForSurface(locale, "web");
   const current = models.find((item) => item.id === modelId);
-  const name = current?.name ?? modelId ?? "";
-  const efforts = current?.efforts ?? [];
-  const label = [name, effort ? composerTerm(locale, effort) : ""].filter(Boolean).join(" · ");
+  const name = current?.name ?? modelId ?? copy.model;
+  const tierName = serviceTiers.find((item) => item.id === serviceTier)?.name;
+  const label = [name, effort && composerTerm(locale, effort), tierName]
+    .filter(Boolean)
+    .join(" · ");
   return (
     <DropdownMenu>
       <DropdownMenuTrigger
@@ -573,6 +667,9 @@ function ModelMenu({
       <DropdownMenuContent align="end" className="w-60">
         <DropdownMenuGroup>
           <DropdownMenuLabel>{copy.model}</DropdownMenuLabel>
+          {resetModel && (
+            <DropdownMenuItem onClick={resetModel}>{copy.defaultOption}</DropdownMenuItem>
+          )}
           {models.map((item) => (
             <DropdownMenuItem key={item.id} onClick={() => onModel(item.id)}>
               <span className="min-w-0 flex-1 truncate">{item.name ?? item.id}</span>
@@ -585,10 +682,30 @@ function ModelMenu({
             <DropdownMenuSeparator />
             <DropdownMenuGroup>
               <DropdownMenuLabel>{copy.effort}</DropdownMenuLabel>
+              {resetEffort && (
+                <DropdownMenuItem onClick={resetEffort}>{copy.defaultOption}</DropdownMenuItem>
+              )}
               {efforts.map((item) => (
                 <DropdownMenuItem key={item} onClick={() => onEffort(item)}>
                   <span className="min-w-0 flex-1">{composerTerm(locale, item)}</span>
                   {item === effort && <Check className="size-4" aria-hidden />}
+                </DropdownMenuItem>
+              ))}
+            </DropdownMenuGroup>
+          </>
+        )}
+        {(serviceTiers.length > 0 || canUseStandardTier) && (
+          <>
+            <DropdownMenuSeparator />
+            <DropdownMenuGroup>
+              <DropdownMenuLabel>{copy.serviceTier}</DropdownMenuLabel>
+              {canUseStandardTier && (
+                <DropdownMenuItem onClick={() => onTier("")}>{copy.defaultOption}</DropdownMenuItem>
+              )}
+              {serviceTiers.map((item) => (
+                <DropdownMenuItem key={item.id} onClick={() => onTier(item.id)}>
+                  <span className="min-w-0 flex-1">{item.name || item.id}</span>
+                  {item.id === serviceTier && <Check className="size-4" aria-hidden />}
                 </DropdownMenuItem>
               ))}
             </DropdownMenuGroup>

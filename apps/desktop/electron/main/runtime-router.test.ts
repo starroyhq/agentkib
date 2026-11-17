@@ -257,6 +257,8 @@ describe("RuntimeRouter Codex controls", () => {
     [RUNTIME_METHODS.webRequest, "queue-steer"],
     [RUNTIME_METHODS.webRequest, "dsh-create"],
     [RUNTIME_METHODS.webRequest, "dsh-options"],
+    [RUNTIME_METHODS.webRequest, "provider-create"],
+    [RUNTIME_METHODS.webRequest, "provider-options"],
     // A Devin session starts with its first turn, which the backend runs.
     [RUNTIME_METHODS.webRequest, "devin-create"],
     [RUNTIME_METHODS.webRequest, "devin-options"],

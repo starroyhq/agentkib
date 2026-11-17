@@ -286,8 +286,14 @@ describe.runIf(process.platform !== "win32")("Devin sessions run by AgentKib", (
       usedTokens: 45_600,
       updatedAt: "2026-11-16T00:00:00Z",
     });
-    const options = await f.web.devinOptions();
+    await expect(f.web.sessionProviderOptions("devin", { workspaceId: "" })).rejects.toThrow();
+    const options = await f.web.sessionProviderOptions("devin", { workspaceId: "workspace" });
     expect(options).toMatchObject({
+      provider: {
+        create: { mode: "with-first-message", attachments: false },
+        models: { selection: "variants" },
+        contextUsage: "last-request",
+      },
       serviceTiers: [{ id: "fast", name: "Fast" }],
       models: expect.arrayContaining([
         {
@@ -304,8 +310,10 @@ describe.runIf(process.platform !== "win32")("Devin sessions run by AgentKib", (
     expect(
       (options.models as { id: string }[]).find((model) => model.id === "claude-opus-4.6"),
     ).not.toHaveProperty("maxContextTokens");
-    const state = () => f.web.devinSettingsState({ sessionId: f.id });
+    const state = () =>
+      f.web.sessionProviderSettingsState({ operation: "settings-state", sessionId: f.id });
     expect(await state()).toMatchObject({
+      provider: options.provider,
       current: { model: family, effort: "high", maxContextTokens: 1_000_000 },
       historicalUsage: {
         available: true,
@@ -318,6 +326,25 @@ describe.runIf(process.platform !== "win32")("Devin sessions run by AgentKib", (
       writable: { effort: { available: true }, serviceTier: { available: true } },
     });
     expect(context).toHaveBeenCalledWith("brisk-otter", f.workspace, variant("high").model_uid);
+    const usage = () => f.web.request({ operation: "usage", sessionId: f.id });
+    expect(await usage()).toEqual({
+      available: true,
+      state: "stale",
+      historical: true,
+      reason: "devin-last-model-request",
+      usedTokens: 45_600,
+      contextWindow: 1_000_000,
+      updatedAt: "2026-11-16T00:00:00Z",
+    });
+    context.mockReturnValueOnce({ usedTokens: 1_000_001, updatedAt: "2026-11-16T00:00:00Z" });
+    expect(await usage()).toEqual({ available: false, state: "unavailable" });
+    await expect(
+      f.web.sessionProviderSettingsState({
+        operation: "settings-state",
+        sessionId: f.id,
+        agent: "codex",
+      }),
+    ).rejects.toThrow();
     expect(await f.control("settings", { model: family })).toMatchObject({ accepted: true });
     expect(await state()).toMatchObject({ current: { model: family, effort: "high" } });
     expect(await f.control("settings", { serviceTier: "fast" })).toMatchObject({ accepted: true });
@@ -331,6 +358,7 @@ describe.runIf(process.platform !== "win32")("Devin sessions run by AgentKib", (
       },
     });
     expect(fast).not.toHaveProperty("historicalUsage");
+    expect(await usage()).toEqual({ available: false, state: "unavailable" });
     expect(await f.control("settings", { effort: "low" })).toMatchObject({
       accepted: false,
       controlOutcome: "not-dispatched",
@@ -377,6 +405,7 @@ describe.runIf(process.platform !== "win32")("Devin sessions run by AgentKib", (
       effort: "high",
       serviceTier: "fast",
     };
+    await expect(f.web.devinCreate({ ...request, operation: "create" })).rejects.toThrow();
     expect(await f.web.devinCreate({ ...request, effort: "low" })).toMatchObject({
       accepted: false,
       controlOutcome: "not-dispatched",
@@ -390,10 +419,17 @@ describe.runIf(process.platform !== "win32")("Devin sessions run by AgentKib", (
       reason: "unsupported-service-tier",
     });
     expect(f.log("prompts.log")).toBe("");
-    expect(await f.web.devinCreate({ ...request, requestId: randomUUID() })).toMatchObject({
+    const { operation, ...fields } = request;
+    const create = { ...fields, requestId: randomUUID() };
+    const createdResult = await f.web.sessionProviderCreate("devin", create);
+    expect(createdResult).toMatchObject({
       accepted: true,
       sessionId: f.store.sessions.id("devin", created.native_ref),
     });
+    expect(await f.web.devinCreate({ ...create, operation })).toEqual(createdResult);
+    await expect(
+      f.web.sessionProviderCreate("devin", { ...create, prompt: "Changed" }),
+    ).rejects.toThrow("request-id-reused-with-different-input");
     expect(f.log("models.log")).toBe(`${variant("high-fast").model_uid}\n`);
   });
 

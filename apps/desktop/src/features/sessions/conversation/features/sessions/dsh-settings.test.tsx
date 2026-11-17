@@ -3,11 +3,12 @@ import "@testing-library/jest-dom/vitest";
 import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import userEvent from "@testing-library/user-event";
-import type { CodexSessionSettings } from "@agentkib/web-client";
+import { sessionProviderCapabilities, type CodexSessionSettings } from "@agentkib/web-client";
 import { CodexComposerControls } from "./codex-session-controls";
 import { useSession } from "./session-context";
 import { codexCopy, codexReason } from "./codex-copy";
 import { composerModelCopy } from "./composer-model-copy";
+import { contextUsageCopy } from "./context-usage-copy";
 
 vi.mock("./session-context", () => ({ useSession: vi.fn() }));
 let state: ReturnType<typeof useSession>;
@@ -15,6 +16,7 @@ let props: Parameters<typeof CodexComposerControls>[0];
 const copy = codexCopy["en-US"];
 const settings: CodexSessionSettings = {
   sessionId: "session",
+  provider: sessionProviderCapabilities("deepseek-harness"),
   revision: 1,
   available: true,
   current: { modelId: "deepseek/deepseek-chat", effort: "low" },
@@ -81,6 +83,37 @@ describe("DeepSeek Harness model settings in the composer", () => {
     // Without goal, resource or attachment capabilities there is nothing to add.
     expect(state.client.sessionGoals).not.toHaveBeenCalled();
     expect(screen.queryByRole("button", { name: copy.addContext })).not.toBeInTheDocument();
+    expect(screen.queryByRole("img", { name: copy.contextUsage })).not.toBeInTheDocument();
+  });
+
+  it("keeps permission presets accessible when the plugin offers no model settings", async () => {
+    vi.mocked(state.client.sessionSettings).mockResolvedValue({
+      ...settings,
+      current: { policyId: "read-only" },
+      writable: {
+        ...settings.writable,
+        model: { available: false },
+        effort: { available: false },
+        policy: { available: true },
+      },
+      options: {
+        ...settings.options,
+        models: [],
+        policies: [{ id: "read-only", name: "Read Only" }],
+      },
+    });
+    render(<CodexComposerControls {...props} />);
+    fireEvent.click(await screen.findByRole("button", { name: copy.conversationSettings }));
+    const dialog = await screen.findByRole("dialog", { name: copy.conversationSettings });
+    expect(within(dialog).getByLabelText(copy.executionPolicy, { exact: false })).toBeEnabled();
+    const picker = composerModelCopy["en-US"];
+    expect(
+      screen.queryByRole("button", { name: new RegExp(`^${picker.chooseModel}:`) }),
+    ).not.toBeInTheDocument();
+    expect(
+      screen.queryByRole("button", { name: new RegExp(`^${picker.chooseEffort}:`) }),
+    ).not.toBeInTheDocument();
+    expect(dialog).not.toHaveTextContent(contextUsageCopy["en-US"].unavailableDetail);
   });
 
   it("says once, while a turn runs, that the settings wait for it", async () => {

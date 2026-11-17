@@ -1094,9 +1094,11 @@ export class TypeScriptBackend {
       ["capabilities", "inspect"].includes(String(params.operation))
     )
       return this.#withWebRead((owner) => owner.managedQuery(params));
+    if (method === RUNTIME_METHODS.codexManaged && params.operation === "create")
+      return this.#withWebRead((owner) => owner.sessionProviderCreate("codex", params));
     if (
       method === RUNTIME_METHODS.codexManaged &&
-      ["create", "adopt", "release"].includes(String(params.operation))
+      ["adopt", "release"].includes(String(params.operation))
     )
       return this.#withWebRead((owner) => owner.managedLifecycle(params));
     if (
@@ -1185,11 +1187,16 @@ export class TypeScriptBackend {
           this.#claudeManaged!.hasManagedSession(params.sessionId)
           ? { cwd: null }
           : this.#withWebRead((owner) => owner.request(params));
-      // A new DSH session has no session ID yet; the bridge starts it in the running DSH.
-      if (params.operation === "dsh-create") {
-        if (!this.#dshBridge) throw new Error("session-unavailable");
-        return this.#dshBridge.create(params);
+      if (params.operation === "provider-options") {
+        const { agent, operation: _operation, ...scope } = params;
+        return this.#withWebRead((owner) => owner.sessionProviderOptions(agent, scope));
       }
+      if (params.operation === "provider-create") {
+        const { agent, operation: _operation, ...fields } = params;
+        return this.#withWebRead((owner) => owner.sessionProviderCreate(agent, fields));
+      }
+      if (params.operation === "dsh-create" || params.operation === "dsh-options")
+        return this.#requestDsh(params);
       // A Devin session has no ID until its first turn has run; the web reader starts it.
       if (params.operation === "devin-create")
         return this.#withWebRead((owner) => owner.devinCreate(params));
@@ -1215,13 +1222,6 @@ export class TypeScriptBackend {
       }
       if (params.operation === "devin-options")
         return this.#withWebRead((owner) => owner.devinOptions());
-      if (params.operation === "dsh-options")
-        return (
-          this.#dshBridge?.createOptions(params.includeModels === true) ?? {
-            available: false,
-            reason: "platform-unsupported",
-          }
-        );
       // Resolve the provider from persisted identity, never from a browser-supplied agent.
       // Fresh Claude sessions are not indexed until their first native transcript exists.
       if (typeof params.sessionId === "string" && params.operation !== "catalog") {
@@ -1257,15 +1257,8 @@ export class TypeScriptBackend {
       ) {
         return this.#withWebRead((owner) => owner.request(params));
       }
-      // Devin's settings are what AgentKib saved for its next turns, not a Codex ledger entry.
-      if (
-        params.operation === "settings-state" &&
-        typeof params.sessionId === "string" &&
-        this.#store!.sessions.get(params.sessionId)?.agent === "devin"
-      )
-        return this.#withWebRead((owner) => owner.devinSettingsState(params));
       if (params.operation === "settings-state")
-        return this.#withWebRead((owner) => owner.managedSettingsState(params));
+        return this.#withWebRead((owner) => owner.sessionProviderSettingsState(params));
       if (params.operation === "queue-list")
         return this.#withWebRead((owner) => owner.managedQueueList(params));
       if (["capabilities", "inspect"].includes(String(params.operation)))
@@ -2602,6 +2595,8 @@ export class TypeScriptBackend {
         (sessionId) => this.#sessionStream?.hasSubscribers(sessionId) ?? false,
         this.#sessionIndex,
         () => this.#sessionStream?.publish("", "invalidate", { domains: ["catalog"] }),
+        (request) => this.#dispatchClaudeManaged(request),
+        (request) => this.#dispatchDsh(request),
       );
       this.#webRead.observeLanes({
         turnEnded: (sessionId, turnId, outcome, durationMs) =>
@@ -2630,12 +2625,39 @@ export class TypeScriptBackend {
     return await operation(this.#webRead);
   }
 
+  #requestDsh(params: Record<string, unknown>) {
+    switch (params.operation) {
+      case "dsh-options":
+      case "dsh-create":
+      case "settings-state":
+      case "settings":
+      case "usage":
+        return this.#withWebRead((owner) =>
+          owner.bridgedSessionProviderRequest("deepseek-harness", params),
+        );
+      default:
+        return this.#dispatchDsh(params);
+    }
+  }
+
   /**
    * A DSH session's state or control from a person's device. When the session is a lead's lane,
    * the lead hears that the person stepped in; the service's own controls do not come here.
    */
-  #requestDsh(params: Record<string, unknown>) {
+  async #dispatchDsh(params: Record<string, unknown>) {
     const bridge = this.#dshBridge;
+    if (params.operation === "dsh-options")
+      return (
+        bridge?.createOptions(params.includeModels === true) ?? {
+          available: false,
+          reason: "platform-unsupported",
+        }
+      );
+    // A new session has no ID yet; the bridge starts it in the chosen DSH runtime.
+    if (params.operation === "dsh-create") {
+      if (!bridge) throw new Error("session-unavailable");
+      return bridge.create(params);
+    }
     if (!bridge || typeof params.sessionId !== "string" || !bridge.handles(params.sessionId))
       throw new Error("session-unavailable");
     try {
@@ -2652,7 +2674,24 @@ export class TypeScriptBackend {
     return bridge.request(params);
   }
 
-  async #requestClaudeManaged(params: Record<string, unknown>) {
+  #requestClaudeManaged(params: Record<string, unknown>) {
+    switch (params.operation) {
+      case "options":
+      case "create":
+      case "settings-state":
+      case "settings-prepare":
+      case "settings":
+      case "usage":
+        // The Claude transport also addresses sessions before their transcripts are indexed.
+        return this.#withWebRead((owner) =>
+          owner.bridgedSessionProviderRequest("claude-code", params),
+        );
+      default:
+        return this.#dispatchClaudeManaged(params);
+    }
+  }
+
+  async #dispatchClaudeManaged(params: Record<string, unknown>) {
     try {
       if (params.operation === "schedule-invalidate") {
         const deviceId = typeof params.deviceId === "string" ? params.deviceId : undefined;

@@ -1,8 +1,14 @@
 import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import type { CodexCapabilities, UploadedAttachment } from "@agentkib/web-client";
+import {
+  sessionProviderCapabilities,
+  type CodexCapabilities,
+  type SessionSettings,
+  type UploadedAttachment,
+} from "@agentkib/web-client";
 import { CodexTools } from "@/features/conversation/features/sessions/codex-tools";
 import { CodexComposer } from "@/features/conversation/features/sessions/codex-composer";
+import { SessionComposer } from "@/features/conversation/features/sessions/session-composer";
 import { useSession } from "@/features/conversation/features/sessions/session-context";
 import { dictionaries } from "@/features/conversation/i18n";
 import { codexCopyForSurface } from "@/features/conversation/features/sessions/codex-copy";
@@ -251,6 +257,94 @@ describe("Codex composer", () => {
     await waitFor(() =>
       expect(state.codexAction).toHaveBeenCalledWith("settings", { restoreDefaults: true }),
     );
+  });
+
+  it("edits an offered Devin tier against the current revision and shows only reported usage", async () => {
+    const available = { available: true };
+    const unavailable = { available: false };
+    const copy = codexCopyForSurface("zh-CN", "web");
+    const settings: SessionSettings = {
+      sessionId: "s",
+      revision: 4,
+      provider: sessionProviderCapabilities("devin"),
+      available: true,
+      applicationStatus: "confirmed",
+      current: {
+        modelId: "opus",
+        effort: "high",
+        permissionMode: "accept-edits",
+        maxContextTokens: 100_000,
+      },
+      defaults: {},
+      writable: {
+        model: available,
+        effort: available,
+        serviceTier: available,
+        permissionMode: available,
+        restoreDefaults: available,
+        mode: unavailable,
+        policy: unavailable,
+      },
+      options: {
+        models: [
+          {
+            id: "opus",
+            name: "Claude Opus",
+            efforts: ["low", "high"],
+            serviceTierIds: ["fast"],
+            variants: [
+              { id: "opus-low", effort: "low" },
+              { id: "opus-high", effort: "high" },
+              { id: "opus-high-fast", effort: "high", serviceTierId: "fast" },
+            ],
+          },
+        ],
+        serviceTiers: [{ id: "fast", name: "Fast" }],
+        permissionModes: [{ id: "accept-edits", name: "Accept edits" }],
+        policies: [],
+      },
+    };
+    state.current = { id: "s", agent: "devin" } as typeof state.current;
+    state.access!.device!.accessMode = "full";
+    state.live = { ...state.live!, sessionId: "s", revision: 4 };
+    state.capabilities!.features.settings = available;
+    state.client.sessionSettings = vi.fn(async (): Promise<SessionSettings> => settings);
+    const view = render(<SessionComposer />);
+    fireEvent.click(await screen.findByRole("button", { name: /Claude Opus/ }));
+    expect(screen.getByRole("dialog")).toHaveTextContent("模型上下文上限 100,000 Token");
+    expect(screen.getByRole("dialog")).not.toHaveTextContent("%");
+    const tier = screen.getByLabelText(copy.serviceTier);
+    fireEvent.change(tier, { target: { value: "fast" } });
+    expect(screen.getByLabelText(copy.effort)).not.toHaveTextContent("低");
+    expect(screen.getByLabelText(copy.effort)).toHaveValue("high");
+    fireEvent.click(screen.getByRole("button", { name: copy.apply }));
+    await waitFor(() =>
+      expect(state.codexAction).toHaveBeenCalledExactlyOnceWith("settings", {
+        serviceTierId: "fast",
+      }),
+    );
+    expect(screen.queryByText(copy.settingsSaved)).not.toBeInTheDocument();
+    settings.revision = 5;
+    settings.current.serviceTierId = "fast";
+    settings.usage = {
+      available: true,
+      state: "stale",
+      historical: true,
+      usedTokens: 25_000,
+      contextWindow: 100_000,
+    };
+    state.live = { ...state.live, revision: 5 };
+    view.rerender(<SessionComposer />);
+    expect(await screen.findByText("这是上次模型请求的输入用量。")).toBeVisible();
+    expect(screen.getByText(copy.settingsSaved)).toBeVisible();
+    expect(screen.getByRole("dialog")).toHaveTextContent("25%");
+    state.access = {
+      ...state.access!,
+      device: { ...state.access!.device!, advancedControl: false },
+    };
+    view.rerender(<SessionComposer />);
+    expect(screen.getByRole("dialog")).not.toHaveTextContent("25%");
+    expect(screen.getByRole("dialog")).not.toHaveTextContent("100,000");
   });
 
   it("sends opaque host resource IDs and never exposes the control to a legacy credential", async () => {

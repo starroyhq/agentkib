@@ -317,6 +317,7 @@ async function startApplication(): Promise<void> {
     claudeManagedRequest: (params) =>
       requestWhenRuntimeReady(RUNTIME_METHODS.claudeManaged, params),
     runtimeRequest: (params) => requestWhenRuntimeReady(RUNTIME_METHODS.webRequest, params),
+    sessionProviderRequest: (params) => requestWhenRuntimeReady(RUNTIME_METHODS.webRequest, params),
     verifiedCodex: process.platform === "darwin",
     verifiedClaudeManaged: process.platform === "darwin",
     enableClaudeScheduler: process.platform === "darwin",

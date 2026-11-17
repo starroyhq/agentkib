@@ -3,7 +3,7 @@ import "@testing-library/jest-dom/vitest";
 import { createRef, type RefObject } from "react";
 import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import type { CodexSessionSettings } from "@agentkib/web-client";
+import { sessionProviderCapabilities, type CodexSessionSettings } from "@agentkib/web-client";
 import {
   CodexComposerControls,
   type ComposerControlsHandle,
@@ -74,6 +74,18 @@ beforeEach(() => {
 afterEach(cleanup);
 
 describe("Claude settings preparation", () => {
+  it("opens the existing catalog when the provider does not offer preparation", async () => {
+    const declared = sessionProviderCapabilities("claude-code")!;
+    vi.mocked(state.client.sessionSettings).mockResolvedValue({
+      ...settings(),
+      provider: { ...declared, models: { ...declared.models, prepare: undefined } },
+    });
+    render(<CodexComposerControls {...props} />);
+    fireEvent.click(await screen.findByRole("button", { name: /Claude session/ }));
+    expect(await screen.findByLabelText("Model")).toBeEnabled();
+    expect(state.client.prepareSessionSettings).not.toHaveBeenCalled();
+  });
+
   it.each(["zh-CN", "zh-Hant", "en-US", "ja-JP"] as const)(
     "shows localized default model and effort labels before opening either select in %s",
     async (locale) => {

@@ -20,6 +20,7 @@ import {
 } from "lucide-react";
 import {
   ApiError,
+  sessionProviderCapabilities,
   type SessionAction,
   type SessionActionBody,
   type ClaudePermissionMode,
@@ -238,10 +239,16 @@ export function CodexComposerControls({
   const [dialog, setDialog] = useState<"settings" | "goal" | "context">();
   const [devinPermissionOpen, setDevinPermissionOpen] = useState(false);
   const [settings, setSettings] = useState<CodexSessionSettings>();
+  const provider =
+    (settings?.sessionId === selected ? settings?.provider : undefined) ??
+    sessionProviderCapabilities(current?.agent);
+  const preparesSettings = provider?.models.prepare === true;
+  const canPrepareSettings = preparesSettings && live?.executionMode === "claude-managed";
   const historyScope = `${selected}\0${access?.bootId ?? ""}\0${access?.device?.id ?? ""}`;
   const [historyRead, setHistoryRead] = useState<{
     scope: string;
     client: typeof client;
+    revision: number;
     values?: CodexSessionSettings["historicalSettings"];
     usage?: CodexSessionSettings["usage"];
   }>();
@@ -285,7 +292,6 @@ export function CodexComposerControls({
   const settingReason = (code?: string) =>
     running && code === "session-busy" ? null : reasonDetail(code);
   const history =
-    isCodex &&
     full &&
     access.device?.advancedControl === true &&
     historyRead?.scope === historyScope &&
@@ -303,14 +309,22 @@ export function CodexComposerControls({
       ? history?.values
       : undefined;
   const settingsUsage =
-    settings?.sessionId === selected && !settings.usage?.historical ? settings.usage : undefined;
-  const usageFallback =
-    isDevin && settings?.sessionId === selected && !pendingSettings
+    provider?.contextUsage !== "last-request" &&
+    settings?.sessionId === selected &&
+    !settings.usage?.historical
       ? settings.usage
-      : contextUsagePercent(settingsUsage) !== undefined
-        ? settingsUsage
-        : (history?.usage ?? settingsUsage);
-  const usageView = useContextUsage(usageFallback);
+      : undefined;
+  // A last-request report belongs to the settings revision read with it.
+  const historicalUsage =
+    provider?.contextUsage === "last-request" &&
+    (pendingSettings || (live?.revision !== undefined && history?.revision !== live.revision))
+      ? undefined
+      : history?.usage;
+  const usageFallback =
+    contextUsagePercent(settingsUsage) !== undefined
+      ? settingsUsage
+      : (historicalUsage ?? settingsUsage);
+  const usageView = useContextUsage(usageFallback, provider?.contextUsage);
 
   const applySettings = useCallback(
     (value: CodexSessionSettings) => {
@@ -407,21 +421,19 @@ export function CodexComposerControls({
           if (generation !== loadGeneration.current) return;
           if (settingsResult.status === "fulfilled") {
             const value = settingsResult.value;
-            if (isCodex) {
-              // Live settings can replace the GET's editable projection, while historical
-              // metadata belongs to the independently authorized read of this session.
-              setHistoryRead(
-                value?.sessionId === selected &&
-                  (value.historicalSettings || value.usage?.historical)
-                  ? {
-                      scope: historyScope,
-                      client,
-                      values: value.historicalSettings,
-                      usage: value.usage?.historical ? value.usage : undefined,
-                    }
-                  : undefined,
-              );
-            }
+            // A live settings update can replace the editable projection. Keep the historical
+            // data tied to this independently authorized read, regardless of its Provider.
+            setHistoryRead(
+              value?.sessionId === selected && (value.historicalSettings || value.usage?.historical)
+                ? {
+                    scope: historyScope,
+                    client,
+                    revision: value.revision,
+                    values: value.historicalSettings,
+                    usage: value.usage?.historical ? value.usage : undefined,
+                  }
+                : undefined,
+            );
             if (value) applySettings(value);
             else setSettings(undefined);
             setSettingsError("");
@@ -456,7 +468,6 @@ export function CodexComposerControls({
       managedAgent,
       settingsReadable,
       goalReadable,
-      isCodex,
       historyScope,
     ],
   );
@@ -670,8 +681,7 @@ export function CodexComposerControls({
   const goalReadStale = live?.revision !== undefined && goal?.revision !== live.revision;
   const prepareSettings = () => {
     if (
-      isClaude &&
-      live?.executionMode === "claude-managed" &&
+      canPrepareSettings &&
       !running &&
       feature("settings")?.available &&
       access?.bootId &&
@@ -709,8 +719,31 @@ export function CodexComposerControls({
     void load();
   };
   const displayedSettings = settings ? settingsSelection(settings, isClaude) : undefined;
+  const contextLimit =
+    settings?.sessionId === selected &&
+    (provider?.contextUsage !== "last-request" ||
+      (!pendingSettings &&
+        !settingsReadStale &&
+        settings.applicationStatus !== "pending" &&
+        settings.applicationStatus !== "unknown"))
+      ? displayedSettings?.maxContextTokens
+      : undefined;
+  const supportsContextUsage = provider?.contextUsage !== "unsupported";
+  const showContextUsage =
+    supportsContextUsage &&
+    (provider?.contextUsage !== "last-request" ||
+      usageView.usage?.historical === true ||
+      contextLimit !== undefined);
+  const showModelPicker =
+    settingsReadable &&
+    (!provider ||
+      preparesSettings ||
+      !settings?.available ||
+      settings.options.models.length > 0 ||
+      !!displayedSettings?.modelId);
   const liveSettings =
-    isCodex &&
+    provider !== undefined &&
+    !preparesSettings &&
     live?.sessionId === selected &&
     live.settings?.sessionId === selected &&
     live.settings.revision >= (settings?.revision ?? 0)
@@ -1076,20 +1109,20 @@ export function CodexComposerControls({
         trailing={
           <>
             {advancedActions}
-            <ContextUsageGauge
-              fallback={usageFallback}
-              limit={
-                isDevin && settings?.sessionId === selected
-                  ? displayedSettings?.maxContextTokens
-                  : undefined
-              }
-            />
-            {settingsReadable && (
+            {showContextUsage && (
+              <ContextUsageGauge
+                fallback={usageFallback}
+                limit={contextLimit}
+                source={provider?.contextUsage}
+              />
+            )}
+            {showModelPicker && (
               <ComposerModelPicker
                 key={`${selected}\0${access?.bootId ?? ""}\0${access?.device?.id ?? ""}\0${usageEpoch ?? ""}`}
                 pickerRef={modelPicker}
                 locale={locale}
                 settings={settings}
+                provider={provider}
                 selection={displayedSettings}
                 reportedSettings={reportedSettings}
                 historicalSettings={historicalSettings}
@@ -1113,9 +1146,12 @@ export function CodexComposerControls({
                     prepareSettings();
                 }}
                 // Claude Code and DeepSeek Harness report no effort for the model's own default.
-                effortDefault={managedAgent !== null}
-                nativeVariants={isDevin}
-                clearEffort={isClaude && live?.executionMode === "claude-managed"}
+                effortDefault={provider?.models.effortDefault ?? managedAgent !== null}
+                // A live session can still be resolving its selected model during preparation.
+                modelDefault={!preparesSettings && provider?.models.modelDefault}
+                clearEffort={
+                  provider?.models.clearEffort === true && (!preparesSettings || canPrepareSettings)
+                }
                 onChange={async (fields) => {
                   await mutate("settings", fields);
                 }}
@@ -1217,9 +1253,16 @@ export function CodexComposerControls({
             </p>
           ) : (
             <section className="space-y-5">
-              <div className="rounded-xl border bg-muted/20 p-4">
-                <ContextUsageDetails {...usageView} locale={locale} online={online} />
-              </div>
+              {supportsContextUsage && (
+                <div className="rounded-xl border bg-muted/20 p-4">
+                  <ContextUsageDetails
+                    {...usageView}
+                    source={provider?.contextUsage}
+                    locale={locale}
+                    online={online}
+                  />
+                </div>
+              )}
               <div className="grid gap-3 sm:grid-cols-2">
                 {isClaude ? (
                   <label className="block space-y-1 text-sm">

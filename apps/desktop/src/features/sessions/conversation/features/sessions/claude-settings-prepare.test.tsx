@@ -3,7 +3,7 @@ import "@testing-library/jest-dom/vitest";
 import { createRef, type RefObject } from "react";
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import type { CodexSessionSettings } from "@agentkib/web-client";
+import { sessionProviderCapabilities, type CodexSessionSettings } from "@agentkib/web-client";
 import { CodexComposerControls, type ComposerControlsHandle } from "./codex-session-controls";
 import { useSession } from "./session-context";
 import { sessionAgentCopy } from "./session-agent-copy";
@@ -133,7 +133,7 @@ describe("Claude's plan mode in the composer", () => {
 describe("Claude settings preparation", () => {
   it("loads the native model catalog from the picker when a session has no options yet", async () => {
     const picker = composerModelCopy["en-US"];
-    const value = settings();
+    const value = { ...settings(), provider: sessionProviderCapabilities("claude-code") };
     vi.mocked(state.client.sessionSettings).mockResolvedValue({
       ...value,
       current: {},
@@ -152,6 +152,24 @@ describe("Claude settings preparation", () => {
       bootId: "boot",
       expectedRevision: 1,
     });
+    expect(state.codexAction).not.toHaveBeenCalled();
+  });
+
+  it("leaves native preparation and effort reset unavailable for a Claude follower", async () => {
+    const picker = composerModelCopy["en-US"];
+    state.live = { ...state.live!, executionMode: "claude-follower" };
+    vi.mocked(state.client.sessionSettings).mockResolvedValue({
+      ...settings(),
+      provider: sessionProviderCapabilities("claude-code"),
+    });
+    render(<CodexComposerControls {...props} />);
+    fireEvent.click(
+      await screen.findByRole("button", { name: `${picker.chooseEffort}: Claude session · Low` }),
+    );
+    const popup = await screen.findByRole("dialog");
+    expect(within(popup).queryByRole("button", { name: picker.useDefaultEffort })).toBeNull();
+    expect(within(popup).queryByRole("button", { name: picker.fast })).toBeNull();
+    expect(state.client.prepareSessionSettings).not.toHaveBeenCalled();
     expect(state.codexAction).not.toHaveBeenCalled();
   });
 

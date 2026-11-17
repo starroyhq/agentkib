@@ -3,7 +3,7 @@ import "@testing-library/jest-dom/vitest";
 import { cleanup, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import type { CodexSessionSettings } from "@agentkib/web-client";
+import { sessionProviderCapabilities, type CodexSessionSettings } from "@agentkib/web-client";
 import { CodexComposerControls } from "./codex-session-controls";
 import { codexCopy } from "./codex-copy";
 import { composerModelCopy } from "./composer-model-copy";
@@ -17,19 +17,26 @@ function renderControls({
   writable = true,
   readRevision = 3,
   hasModel = false,
+  fastTier = "priority",
+  provider,
   usage,
+  liveUsage,
 }: {
   running?: boolean;
   writable?: boolean;
   readRevision?: number;
   hasModel?: boolean;
+  fastTier?: string;
+  provider?: CodexSessionSettings["provider"];
   usage?: CodexSessionSettings["usage"];
+  liveUsage?: CodexSessionSettings["usage"];
 } = {}) {
   let settings: CodexSessionSettings = {
     sessionId: "devin-session",
     revision: readRevision,
     available: true,
     applicationStatus: "confirmed",
+    provider,
     usage,
     current: {
       permissionMode: "accept-edits",
@@ -52,16 +59,16 @@ function renderControls({
               id: "sol",
               name: "Sol",
               efforts: ["low"],
-              serviceTierIds: ["priority"],
+              serviceTierIds: [fastTier],
               variants: [
                 { id: "sol-low", effort: "low", maxContextTokens: 1_000_000 },
-                { id: "sol-low-priority", effort: "low", serviceTierId: "priority" },
+                { id: "sol-low-fast", effort: "low", serviceTierId: fastTier },
               ],
             },
           ]
         : [],
       policies: [],
-      serviceTiers: hasModel ? [{ id: "priority", name: "Fast" }] : [],
+      serviceTiers: hasModel ? [{ id: fastTier, name: "Fast" }] : [],
       permissionModes: [
         { id: "accept-edits", name: "accept-edits" },
         { id: "auto", name: "auto" },
@@ -85,6 +92,7 @@ function renderControls({
       status: running ? "running" : "idle",
       revision: 3,
       executionMode: "devin-print",
+      usage: liveUsage,
     },
     capabilities: {
       sessionId: settings.sessionId,
@@ -151,7 +159,12 @@ describe("permissions in an existing Devin conversation", () => {
 
 describe("the model in an existing Devin conversation", () => {
   it("shows the context capacity and writes Fast using the selected native tier", async () => {
-    const { codexAction } = renderControls({ hasModel: true });
+    const provider = sessionProviderCapabilities("devin")!;
+    const { codexAction } = renderControls({
+      hasModel: true,
+      fastTier: "turbo",
+      provider: { ...provider, models: { ...provider.models, fastTierIds: ["turbo"] } },
+    });
     const copy = composerModelCopy["en-US"];
     const user = userEvent.setup();
     const ring = await screen.findByRole("img", { name: codexCopy["en-US"].contextUsage });
@@ -172,20 +185,25 @@ describe("the model in an existing Devin conversation", () => {
     await user.click(await screen.findByRole("button", { name: copy.fast }));
     await waitFor(() =>
       expect(codexAction).toHaveBeenCalledExactlyOnceWith("settings", {
-        serviceTierId: "priority",
+        serviceTierId: "turbo",
       }),
     );
   });
 
-  it("uses the shared ring for an explicitly historical model request", async () => {
+  it("uses the last request in the shared ring when the provider does not report live usage", async () => {
     renderControls({
       hasModel: true,
       usage: {
         available: true,
         state: "stale",
         historical: true,
-        reason: "devin-last-model-request",
         usedTokens: 40_000,
+        contextWindow: 1_000_000,
+      },
+      liveUsage: {
+        available: true,
+        state: "ready",
+        usedTokens: 350_000,
         contextWindow: 1_000_000,
       },
     });

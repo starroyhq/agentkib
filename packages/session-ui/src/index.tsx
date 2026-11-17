@@ -98,6 +98,7 @@ export {
   type InteractionItemsLive,
 } from "./interaction-items";
 export { DEVIN_TURN_REASONS, devinTerminalAction, devinTerminalCopy } from "./devin-terminal";
+export { modelEffortsForTier, modelSupportsTier } from "./model-capabilities";
 export {
   NEW_SESSION_AGENTS,
   newSessionCopy,

@@ -9,6 +9,7 @@ import {
 } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
+  sessionProviderCapabilities,
   WebClient,
   type Access,
   type Live,
@@ -641,6 +642,7 @@ describe("Claude Remote parity", () => {
 
   it("clears only the effort override and waits for native confirmation of its default", async () => {
     const host = createHost();
+    host.state.settings.provider = sessionProviderCapabilities("claude-code");
     host.state.settings.selected = { effort: "high", permissionMode: "plan" };
     host.state.settings.current.effort = "high";
     host.state.settings.current.permissionMode = "plan";

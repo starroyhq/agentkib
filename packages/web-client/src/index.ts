@@ -1,7 +1,12 @@
 export { mergeCatalogSessions, isStaleCatalogRead, retryStaleCatalogRead } from "./catalog";
 export type { IncompleteSessionSource } from "./catalog";
 
-import { managedAgentOf, type ManagedAgent } from "@agentkib/runtime-protocol";
+import {
+  managedAgentOf,
+  sessionProviderCapabilities,
+  type ManagedAgent,
+  type SessionProviderCapabilities,
+} from "@agentkib/runtime-protocol";
 import type {
   ConversationReadState,
   ConversationReadResult,
@@ -54,6 +59,8 @@ export {
   MANAGED_AGENTS,
   managedAgentOf,
   type ManagedAgent,
+  sessionProviderCapabilities,
+  type SessionProviderCapabilities,
   CLAUDE_BRIDGE_CLI_VERSION,
   CLAUDE_COMMAND_REFUSALS,
   claudeCommandDecision,
@@ -632,6 +639,7 @@ export interface DevinModelVariantOption {
 export interface ManagedOptions {
   available: boolean;
   reason?: string;
+  provider?: SessionProviderCapabilities;
   cliVersion?: string;
   models?: {
     id: string;
@@ -668,6 +676,15 @@ export interface ManagedOptions {
   }[];
   workspaces: { id: string; name: string }[];
 }
+
+/** Prefer the host's declaration. Older hosts omit this optional field. */
+export function newSessionProvider(
+  agent: ManagedAgent,
+  options?: Pick<ManagedOptions, "provider">,
+): SessionProviderCapabilities | undefined {
+  return options?.provider ?? sessionProviderCapabilities(agent);
+}
+
 export interface ManagedInspection {
   sessionId: string;
   handoffFingerprint?: string;
@@ -784,6 +801,7 @@ export interface CodexSessionSettings {
   reason?: string;
   revision: number;
   executionMode?: string;
+  provider?: SessionProviderCapabilities;
   status?: string;
   current: CodexSettingValues;
   selected?: CodexSettingValues;

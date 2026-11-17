@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import {
   ApiError,
   isLegacyPreparedReceipt,
+  newSessionProvider,
   type ManagedAgent,
   type ManagedOptions,
 } from "@agentkib/web-client";
@@ -41,9 +42,11 @@ const optionsCache = new Map<string, { at: number; value: ManagedOptions }>();
  */
 export function useNewSession({
   agent,
+  workspaceId,
   onReconciled,
 }: {
   agent: ManagedAgent;
+  workspaceId?: string;
   /** A create whose outcome was unknown turned out to have run. `own` is this composer's. */
   onReconciled: (sessionId: string, own: boolean) => void;
 }) {
@@ -53,14 +56,23 @@ export function useNewSession({
     access?.status === "approved" && access.device?.id
       ? pendingScope(origin, access.device.id)
       : undefined;
-  const cacheKey = `${origin}:${access?.bootId ?? ""}:${agent}`;
+  const workspaceCatalog = newSessionProvider(agent)?.create.catalogScope === "workspace";
+  const catalogWorkspaceId = workspaceCatalog ? workspaceId : undefined;
+  const canReadOptions = controls && (!workspaceCatalog || !!catalogWorkspaceId);
+  const cacheKey = JSON.stringify([
+    origin,
+    access?.bootId,
+    access?.device?.id,
+    agent,
+    catalogWorkspaceId,
+  ]);
   const [options, setOptions] = useState<{
     key: string;
     data?: ManagedOptions;
     error?: unknown;
   }>();
   useEffect(() => {
-    if (!controls) return;
+    if (!canReadOptions) return;
     const cached = optionsCache.get(cacheKey);
     if (cached && Date.now() - cached.at < OPTIONS_FRESH) {
       setOptions({ key: cacheKey, data: cached.value });
@@ -68,8 +80,9 @@ export function useNewSession({
     }
     const controller = new AbortController();
     setOptions({ key: cacheKey });
-    client.managedOptions(agent, controller.signal).then(
+    client.managedOptions(agent, controller.signal, catalogWorkspaceId).then(
       (value) => {
+        if (controller.signal.aborted) return;
         optionsCache.set(cacheKey, { at: Date.now(), value });
         setOptions({ key: cacheKey, data: value });
       },
@@ -78,8 +91,8 @@ export function useNewSession({
       },
     );
     return () => controller.abort();
-  }, [client, agent, controls, cacheKey]);
-  const current = options?.key === cacheKey ? options : undefined;
+  }, [client, agent, canReadOptions, cacheKey, catalogWorkspaceId]);
+  const current = canReadOptions && options?.key === cacheKey ? options : undefined;
 
   const [busy, setBusy] = useState(false);
   const [failure, setFailure] = useState<NewSessionFailure>();

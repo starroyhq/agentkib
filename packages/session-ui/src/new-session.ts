@@ -23,6 +23,7 @@ export const NEW_SESSION_AGENTS: readonly NewSessionAgent[] = [
 export interface NewSessionOptions {
   available: boolean;
   reason?: string;
+  provider?: { create: NewSessionProviderCreate };
   models?: {
     id: string;
     name?: string;
@@ -31,6 +32,7 @@ export interface NewSessionOptions {
     defaultEffort?: string;
   }[];
   defaults?: { model?: string | null; effort?: string | null };
+  serviceTiers?: { id: string }[];
   policies?: { id: string }[];
   permissionModes?: { id: string }[];
   agentPresets?: {
@@ -41,6 +43,12 @@ export interface NewSessionOptions {
     broken: string | null;
   }[];
 }
+
+type NewSessionProviderCreate = {
+  serviceTiers: boolean;
+  agentPresets?: boolean;
+  verifyStartupModel?: boolean;
+};
 
 interface PermissionSpec {
   /** The create field the choice is sent in. */
@@ -86,9 +94,6 @@ const PERMISSIONS: Partial<Record<NewSessionAgent, PermissionSpec>> = {
 
 /** Agents whose session starts with its first message, sent along with the create. */
 export const PROMPT_AT_CREATE_AGENTS: readonly NewSessionAgent[] = ["devin"];
-
-/** Agents that start from one of their presets, chosen only when a session starts. */
-const PRESET_AGENTS: readonly NewSessionAgent[] = ["deepseek-harness"];
 
 export interface NewSessionPermissionChoice {
   id: string;
@@ -149,8 +154,13 @@ export function newSessionPermissions(
 }
 
 /** The presets an Agent starts from, and the one it uses when none is chosen. */
-export function newSessionPresets(agent: NewSessionAgent, options: NewSessionOptions | undefined) {
-  const presets = PRESET_AGENTS.includes(agent) ? (options?.agentPresets ?? []) : [];
+export function newSessionPresets(
+  agent: NewSessionAgent,
+  options: NewSessionOptions | undefined,
+  create = options?.provider?.create,
+) {
+  const supportsPresets = create ? create.agentPresets === true : agent === "deepseek-harness";
+  const presets = supportsPresets ? (options?.agentPresets ?? []) : [];
   return { presets, defaultId: presets.find((item) => item.isDefault)?.id };
 }
 
@@ -181,21 +191,25 @@ export interface NewSessionCreateFields {
   policyId?: string;
   permissionMode?: ClaudeStartMode | DevinStartMode;
   agentPreset?: string;
-  /** The first message, for an Agent in `PROMPT_AT_CREATE_AGENTS`. */
+  /** The first message for a provider that creates sessions with a message. */
   prompt?: string;
+  verifyStartupModel?: true;
 }
 
 export function newSessionCreateFields(
   selection: NewSessionSelection,
   options: NewSessionOptions | undefined,
+  create = options?.provider?.create,
 ): NewSessionCreateFields {
   const { agent, workspaceId, model, effort, shownModel, permission, preset } = selection;
-  const serviceTierId = agent === "devin" ? selection.serviceTierId : undefined;
+  const canChooseTier =
+    create?.serviceTiers ?? options?.serviceTiers?.some(({ id }) => id === selection.serviceTierId);
+  const serviceTierId = canChooseTier ? selection.serviceTierId : undefined;
   const spec = PERMISSIONS[agent];
   const ids = offeredPermissions(agent, options, selection.fullAccess ?? true);
   const sent =
     permission && ids.includes(permission) ? permission : spec?.sendShown ? ids[0] : undefined;
-  const { defaultId } = newSessionPresets(agent, options);
+  const { presets, defaultId } = newSessionPresets(agent, options, create);
   return {
     // Hosts that predate other Agents read a create without one as Codex.
     ...(agent !== "codex" ? { agent } : {}),
@@ -204,13 +218,18 @@ export function newSessionCreateFields(
     ...(model || effort || serviceTierId ? { model: model || shownModel } : {}),
     ...(effort ? { effort } : {}),
     ...(serviceTierId ? { serviceTierId } : {}),
+    ...(create?.verifyStartupModel && options?.models?.length && workspaceId && (model || effort)
+      ? { verifyStartupModel: true }
+      : {}),
     ...(spec && sent
       ? spec.field === "policyId"
         ? { policyId: sent }
         : { permissionMode: sent as ClaudeStartMode | DevinStartMode }
       : {}),
     // Without a choice an Agent starts its own default preset.
-    ...(preset && preset !== defaultId ? { agentPreset: preset } : {}),
+    ...(preset && preset !== defaultId && presets.some(({ id, broken }) => id === preset && !broken)
+      ? { agentPreset: preset }
+      : {}),
   };
 }
 

@@ -1728,6 +1728,45 @@ describe("Codex managed sandbox verification", () => {
       model: "model-a",
     });
 
+  it("creates an empty Codex session through the provider and replays legacy receipts", async () => {
+    const f = fixture();
+    await expect(f.web.sessionProviderOptions("constructor")).rejects.toThrow(
+      "unsupported-session-provider",
+    );
+    const options = await f.web.sessionProviderOptions("codex");
+    expect(options).toMatchObject({
+      available: true,
+      models: expect.arrayContaining([expect.objectContaining({ id: "model-a" })]),
+      provider: {
+        create: { mode: "empty", attachments: true },
+        models: { selection: "independent" },
+        contextUsage: "live",
+      },
+    });
+    const input = {
+      requestId: randomUUID(),
+      deviceId: "fixture",
+      workspaceId: "workspace",
+      policyId: "workspace-write-on-request",
+      model: "model-a",
+    };
+    await expect(
+      f.web.sessionProviderCreate("codex", { ...input, prompt: "No" }),
+    ).rejects.toThrow();
+    expect(f.methods).not.toContain("thread/start");
+    const created = await f.web.sessionProviderCreate("codex", input);
+    expect(created).toMatchObject({ accepted: true });
+    expect(await f.web.managedLifecycle({ ...input, operation: "create" })).toEqual(created);
+    expect(f.methods.filter((method) => method === "thread/start")).toHaveLength(1);
+    expect(f.methods).not.toContain("turn/start");
+    expect(
+      await f.web.sessionProviderSettingsState({
+        operation: "settings-state",
+        sessionId: created.sessionId,
+      }),
+    ).toMatchObject({ available: true, provider: options.provider });
+  });
+
   // The runner of a session it creates holds a record without the native ID until it is saved.
   it("tells a lead when a session it just created ends its first turn", async () => {
     const f = fixture();
@@ -3479,9 +3518,10 @@ describe("Codex automatic CLI continuation", () => {
 
     const settings = { operation: "settings-state", sessionId: f.summary.id };
     expect(await f.web.managedSettingsState(settings)).not.toHaveProperty("historicalSettings");
-    const read = () => f.web.managedSettingsState({ ...settings, includeHistorical: true });
+    const read = () => f.web.sessionProviderSettingsState({ ...settings, includeHistorical: true });
     expect(await read()).toMatchObject({
       available: true,
+      provider: { contextUsage: "live" },
       historicalSettings: { modelId: "last-model", effort: "xhigh" },
       historicalUsage: {
         historical: true,

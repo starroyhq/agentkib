@@ -5,6 +5,7 @@ import { createServer } from "node:http";
 import { mkdir, mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { sessionProviderCapabilities } from "@agentkib/runtime-protocol";
 import { WebAccessService } from "./service";
 import { approveLegacyBrowser } from "./legacy-pairing-fixture";
 
@@ -14,6 +15,7 @@ describe("DeepSeek Harness host control boundary", () => {
   let service: WebAccessService;
   let features: Record<string, { available: boolean; reason?: string }>;
   const runtime = vi.fn<(value: unknown) => Promise<unknown>>();
+  const provider = sessionProviderCapabilities("deepseek-harness");
   const models = [
     { id: "deepseek/deepseek-chat", name: "DeepSeek Chat", efforts: ["low", "high"] },
     { id: "mock%2Flocal/m-1", name: "Mock One", efforts: [] },
@@ -53,6 +55,7 @@ describe("DeepSeek Harness host control boundary", () => {
         case "settings-state":
           return {
             available: true,
+            provider,
             executionMode: "dsh-follower",
             revision: 4,
             current: { model: "deepseek/deepseek-chat", effort: "low" },
@@ -63,15 +66,16 @@ describe("DeepSeek Harness host control boundary", () => {
           };
         case "usage":
           return { available: false, state: "unavailable", reason: "usage-unavailable" };
-        case "dsh-options":
-          return params.includeModels === true
+        case "provider-options":
+          return params.workspaceId === "workspace"
             ? {
                 available: true,
+                provider,
                 models: models.map((model) => ({ ...model, group: "Native provider" })),
                 defaults: { model: "deepseek/deepseek-chat", effort: "low" },
               }
-            : { available: true };
-        case "dsh-create":
+            : { available: true, provider };
+        case "provider-create":
           return {
             accepted: true,
             completed: true,
@@ -94,6 +98,7 @@ describe("DeepSeek Harness host control boundary", () => {
       staticDir: directory,
       desktopOrigin: "app://bundle",
       runtimeRequest: runtime,
+      sessionProviderRequest: runtime,
       workspaceRequest: async () => [
         { id: "workspace", name: "Synthetic workspace", path: join(directory, "workspace") },
       ],
@@ -154,6 +159,8 @@ describe("DeepSeek Harness host control boundary", () => {
       body: {
         available: true,
         executionMode: "dsh-follower",
+        provider,
+        usage: { available: false, state: "unavailable", reason: "usage-unavailable" },
         current: { modelId: "deepseek/deepseek-chat", effort: "low" },
         options: {
           models: [
@@ -200,6 +207,7 @@ describe("DeepSeek Harness host control boundary", () => {
     ).toMatchObject({
       status: 200,
       body: {
+        provider,
         defaults: { model: "deepseek/deepseek-chat", effort: "low" },
         models: [
           expect.objectContaining({ id: "deepseek/deepseek-chat", group: "Native provider" }),
@@ -207,9 +215,9 @@ describe("DeepSeek Harness host control boundary", () => {
         ],
       },
     });
-    expect(forwarded("dsh-options")).toEqual([
-      { operation: "dsh-options" },
-      { operation: "dsh-options", includeModels: true },
+    expect(forwarded("provider-options")).toEqual([
+      { operation: "provider-options", agent: "deepseek-harness" },
+      { operation: "provider-options", agent: "deepseek-harness", workspaceId: "workspace" },
     ]);
     const desktop = await service.localRequest("/access");
     const bootId = (desktop.body as { bootId: string }).bootId;
@@ -230,6 +238,7 @@ describe("DeepSeek Harness host control boundary", () => {
         agentPreset: "ptc",
         model: "deepseek/deepseek-chat",
         effort: "high",
+        prompt: "send after creation",
       }),
     ).toMatchObject({ status: 200, body: { accepted: true, sessionId: "dsh-new" } });
     expect(
@@ -242,12 +251,14 @@ describe("DeepSeek Harness host control boundary", () => {
         effort: "high",
       }),
     ).toMatchObject({ status: 400, body: { controlOutcome: "not-dispatched" } });
-    const creates = forwarded("dsh-create");
+    const creates = forwarded("provider-create");
     expect(creates).toHaveLength(2);
     expect(creates[0]).not.toHaveProperty("agentPreset");
     expect(creates[0]).not.toHaveProperty("model");
     expect(creates[0]).not.toHaveProperty("effort");
+    expect(creates[1]).not.toHaveProperty("prompt");
     expect(creates[1]).toMatchObject({
+      agent: "deepseek-harness",
       workspaceId: "workspace",
       agentPreset: "ptc",
       model: "deepseek/deepseek-chat",
@@ -262,6 +273,36 @@ describe("DeepSeek Harness host control boundary", () => {
         sessionId: "dsh-session",
       }),
     ).toMatchObject({ status: 404 });
+  });
+
+  it("preserves the verified-host gate even when the provider transport is configured", async () => {
+    await service.shutdown();
+    service = new WebAccessService({
+      dataDir: directory,
+      staticDir: directory,
+      desktopOrigin: "app://bundle",
+      runtimeRequest: runtime,
+      sessionProviderRequest: runtime,
+      workspaceRequest: async () => [
+        { id: "workspace", name: "Synthetic workspace", path: join(directory, "workspace") },
+      ],
+      verifiedDshFollower: false,
+    });
+    await service.initialize();
+    expect(
+      await service.localRequest("/managed/options?agent=deepseek-harness&workspaceId=workspace"),
+    ).toMatchObject({ status: 200, body: { available: false, reason: "unsupported_host" } });
+    const desktop = await service.localRequest("/access");
+    expect(
+      await service.localRequest("/managed/create", {
+        agent: "deepseek-harness",
+        bootId: (desktop.body as { bootId: string }).bootId,
+        requestId: randomUUID(),
+        workspaceId: "workspace",
+      }),
+    ).toMatchObject({ status: 409, body: { error: "unsupported_host" } });
+    expect(forwarded("provider-options")).toEqual([]);
+    expect(forwarded("provider-create")).toEqual([]);
   });
 
   it("hands DSH an uploaded image as a checked file in DSH's own form", async () => {

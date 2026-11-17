@@ -2,7 +2,11 @@
 import "@testing-library/jest-dom/vitest";
 import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import type { CodexGoalState, CodexSessionSettings } from "@agentkib/web-client";
+import {
+  sessionProviderCapabilities,
+  type CodexGoalState,
+  type CodexSessionSettings,
+} from "@agentkib/web-client";
 import { CodexComposerControls } from "../conversation/features/sessions/codex-session-controls";
 import { useSession } from "../conversation/features/sessions/session-context";
 import { codexCopy, codexReason } from "../conversation/features/sessions/codex-copy";
@@ -101,6 +105,15 @@ afterEach(cleanup);
 
 describe("DeepSeek Harness controls", () => {
   it("switches the permission preset during a turn, while the model waits", async () => {
+    const provider = sessionProviderCapabilities("deepseek-harness");
+    vi.mocked(state.client.sessionSettings).mockResolvedValue({ ...settings(true), provider });
+    state.access!.device!.advancedControl = true;
+    state.live!.usage = {
+      available: true,
+      state: "ready",
+      usedTokens: 700,
+      contextWindow: 1000,
+    };
     render(<CodexComposerControls {...props} />);
     fireEvent.click(await screen.findByRole("button", { name: /DeepSeek Chat/ }));
     // The label also holds the chosen preset's description.
@@ -115,6 +128,9 @@ describe("DeepSeek Harness controls", () => {
     // DSH has no collaboration mode or service tier to offer.
     expect(screen.queryByLabelText(copy.mode)).not.toBeInTheDocument();
     expect(screen.queryByLabelText(copy.serviceTier)).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: copy.contextUsage })).not.toBeInTheDocument();
+    expect(screen.getByRole("dialog")).not.toHaveTextContent("70%");
+    expect(screen.getByRole("dialog")).not.toHaveTextContent(copy.contextUnknown);
     fireEvent.change(policy, { target: { value: "read-only" } });
     fireEvent.click(screen.getByRole("button", { name: copy.apply }));
     await waitFor(() =>

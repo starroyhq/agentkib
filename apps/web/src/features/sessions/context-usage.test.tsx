@@ -44,6 +44,19 @@ const unmanagedClaude = () => {
   };
 };
 
+it("hides unsupported usage in the generic gauge only for the selected DSH session", () => {
+  state.current = { id: "s", agent: "deepseek-harness" } as typeof state.current;
+  const view = render(<ContextUsageGauge />);
+  expect(
+    screen.queryByRole("button", { name: codexCopy[state.locale].contextUsage }),
+  ).not.toBeInTheDocument();
+
+  state.selected = "next";
+  state.live = { ...state.live!, sessionId: "next", usage: report(27) };
+  view.rerender(<ContextUsageGauge />);
+  expect(gauge()).toHaveTextContent("27%");
+});
+
 describe("Claude context usage before its first continued turn", () => {
   it.each(["zh-CN", "zh-Hant", "en-US", "ja-JP"] as Locale[])(
     "explains the missing CLI report in %s without inventing usage",

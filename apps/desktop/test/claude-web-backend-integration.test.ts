@@ -18,6 +18,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { WebSocket } from "ws";
 import { once } from "node:events";
+import { sessionProviderCapabilities } from "@agentkib/runtime-protocol";
 import { AttachmentStore } from "../electron/main/web/attachments";
 import { WebAccessService, createWebControlState } from "../electron/main/web/service";
 import { TypeScriptBackend } from "../../../packages/backend/src/index";
@@ -201,6 +202,7 @@ describe.skipIf(process.platform !== "darwin")(
         staticDir: directory,
         desktopOrigin: "app://bundle",
         runtimeRequest: (params) => rpc("web.request", params),
+        sessionProviderRequest: (params) => rpc("web.request", params),
         claudeManagedRequest: (params) => rpc("claude.managed", params),
         managedRequest: (params) => rpc("codex.managed", params),
         receiptRequest: (params) => rpc("control.receipt", params),
@@ -643,6 +645,61 @@ describe.skipIf(process.platform !== "darwin")(
         text: "different",
       });
       expect(conflict.status).not.toBe(200);
+    });
+
+    it("uses one Claude provider for workspace options, creation replay and fresh settings and usage", async () => {
+      const provider = sessionProviderCapabilities("claude-code");
+      const options = await http("/managed/options?agent=claude-code&workspaceId=workspace");
+      expect(options.status, JSON.stringify(options.body)).toBe(200);
+      expect(options.body).toMatchObject({
+        provider,
+        models: expect.arrayContaining([expect.objectContaining({ id: "fixture-model" })]),
+      });
+
+      const startup = {
+        workspaceId: "workspace",
+        model: "fixture-model",
+        effort: "high",
+        verifyStartupModel: true,
+      };
+      expect(
+        await rpc("web.request", {
+          operation: "provider-create",
+          agent: "claude-code",
+          ...startup,
+          model: "low-model",
+          deviceId,
+          requestId: randomUUID(),
+        }),
+      ).toMatchObject({
+        accepted: false,
+        controlOutcome: "not-dispatched",
+        reason: "unsupported-effort",
+      });
+
+      const requestId = randomUUID();
+      const created = await http("/managed/create", {
+        agent: "claude-code",
+        bootId,
+        requestId,
+        ...startup,
+      });
+      expect(created.status, JSON.stringify(created.body)).toBe(200);
+      const { sessionId } = created.body;
+      expect(created.body).toMatchObject({ accepted: true, sessionId: expect.any(String) });
+      expect(
+        await rpc("claude.managed", { operation: "create", requestId, deviceId, ...startup }),
+      ).toMatchObject({
+        accepted: true,
+        sessionId,
+      });
+      expect(await rpc("web.request", { operation: "settings-state", sessionId })).toMatchObject({
+        provider,
+        executionMode: "claude-managed",
+      });
+      expect((await prepareSettings(sessionId)).body).toMatchObject({ provider });
+      const usage = { operation: "usage", sessionId };
+      expect(await rpc("web.request", usage)).toEqual(await rpc("claude.managed", usage));
     });
 
     it.each([false, true])(

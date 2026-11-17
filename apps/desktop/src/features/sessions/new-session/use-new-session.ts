@@ -3,6 +3,7 @@ import { useQuery } from "@tanstack/react-query";
 import {
   ApiError,
   isLegacyPreparedReceipt,
+  sessionProviderCapabilities,
   type Access,
   type ManagedAgent,
   type ManagedOptions,
@@ -91,7 +92,8 @@ export function useNewSession({
       : undefined;
   // The host reads an Agent's options from its own cache: the first Codex read starts an
   // app-server once, later ones answer at once.
-  const catalogWorkspace = agent === "codex" ? undefined : workspaceId;
+  const catalogWorkspace =
+    sessionProviderCapabilities(agent)?.create.catalogScope === "host" ? undefined : workspaceId;
   const options = useQuery({
     queryKey: newSessionOptionsKey(agent, catalogWorkspace),
     queryFn: ({ signal }): Promise<ManagedOptions> =>
@@ -191,9 +193,6 @@ export function useNewSession({
         }
         const result = await client.managedAction("create", {
           ...fields,
-          ...(fields.agent === "claude-code" && catalogWorkspace && (fields.model || fields.effort)
-            ? { verifyStartupModel: true }
-            : {}),
           bootId: access.bootId,
           requestId,
         });
@@ -214,7 +213,7 @@ export function useNewSession({
         setBusy(false);
       }
     },
-    [access, scope, pending, client, locale, catalogWorkspace],
+    [access, scope, pending, client, locale],
   );
 
   return {

@@ -1,7 +1,12 @@
 import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { ApiError, type ManagedAgent, type ManagedOptions } from "@agentkib/web-client";
+import {
+  ApiError,
+  sessionProviderCapabilities,
+  type ManagedAgent,
+  type ManagedOptions,
+} from "@agentkib/web-client";
 import { takeNewSessionDraft } from "@/features/conversation/features/sessions/new-session-draft";
 import { publishSessionInvalidation } from "@/features/conversation/features/sessions/session-events";
 import { NewSessionComposer } from "./new-session-composer";
@@ -61,7 +66,9 @@ function setup({
   disabled = false,
 }: { full?: boolean; created?: string; disabled?: boolean } = {}) {
   const client = {
-    managedOptions: vi.fn(async (agent: ManagedAgent) => options[agent]),
+    managedOptions: vi.fn(
+      async (agent: ManagedAgent, _signal?: AbortSignal, _workspaceId?: string) => options[agent],
+    ),
     managedAction: vi.fn(async (_operation: string, _body: Record<string, unknown>) => ({
       accepted: true,
       sessionId: created,
@@ -177,6 +184,144 @@ describe("Web NewSessionComposer", () => {
     });
   });
 
+  it("verifies Claude startup choices against the selected workspace and hands off its first message", async () => {
+    const { client, onCreated } = setup();
+    let resolveOld!: (value: ManagedOptions) => void;
+    const oldCatalog = new Promise<ManagedOptions>((resolve) => {
+      resolveOld = resolve;
+    });
+    const claudeOptions = {
+      ...options["claude-code"],
+      provider: sessionProviderCapabilities("claude-code"),
+    };
+    client.managedOptions.mockImplementation(async (agent, _signal, workspaceId) => {
+      if (agent !== "claude-code") return options[agent];
+      if (workspaceId === "atlas") return oldCatalog;
+      return {
+        ...claudeOptions,
+        models: [{ id: "north-claude", name: "North Claude", efforts: ["medium", "high"] }],
+        defaults: { model: "north-claude", effort: "medium" },
+      };
+    });
+
+    const user = userEvent.setup();
+    await user.click(screen.getByRole("button", { name: "Agent: Codex" }));
+    await user.click(await screen.findByRole("menuitem", { name: "Claude Code" }));
+    const oldRequest = client.managedOptions.mock.calls.find(([agent]) => agent === "claude-code");
+    expect(oldRequest).toEqual(["claude-code", expect.any(AbortSignal), "atlas"]);
+    await user.click(screen.getByRole("button", { name: "Workspace: atlas-studio" }));
+    await user.click(await screen.findByRole("button", { name: "northstar-api" }));
+    expect(client.managedOptions).toHaveBeenCalledWith(
+      "claude-code",
+      expect.any(AbortSignal),
+      "north",
+    );
+    expect(oldRequest?.[1]?.aborted).toBe(true);
+    await act(async () =>
+      resolveOld({
+        ...claudeOptions,
+        models: [{ id: "old", name: "Old Claude", efforts: ["low"] }],
+        defaults: { model: "old", effort: "low" },
+      }),
+    );
+
+    await user.click(await screen.findByRole("button", { name: "Model: North Claude · Medium" }));
+    expect(screen.queryByRole("menuitem", { name: "Old Claude" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("menuitem", { name: "Fast" })).not.toBeInTheDocument();
+    await user.click(await screen.findByRole("menuitem", { name: "High" }));
+    await user.click(screen.getByRole("button", { name: "Permissions: Default" }));
+    await user.click(await screen.findByRole("menuitem", { name: /Plan mode/ }));
+    const attachment = new File(["notes"], "notes.txt", { type: "text/plain" });
+    fireEvent.paste(message(), { clipboardData: { files: [attachment] } });
+    await write("Review the startup path");
+    fireEvent.click(send());
+    await waitFor(() => expect(onCreated).toHaveBeenCalledWith("created"));
+    expect(client.managedAction).toHaveBeenCalledExactlyOnceWith("create", {
+      agent: "claude-code",
+      bootId: "boot",
+      requestId: expect.any(String),
+      workspaceId: "north",
+      model: "north-claude",
+      effort: "high",
+      permissionMode: "plan",
+      verifyStartupModel: true,
+    });
+    expect(takeNewSessionDraft("created")).toEqual({
+      text: "Review the startup path",
+      files: [attachment],
+      send: true,
+    });
+  });
+
+  it("starts Devin with an offered effort and Fast pair and never hands off its dispatched prompt", async () => {
+    const { client, onCreated } = setup();
+    client.managedOptions.mockImplementation(async (agent) =>
+      agent === "devin"
+        ? {
+            ...options.devin,
+            provider: sessionProviderCapabilities("devin"),
+            models: [
+              {
+                id: "opus",
+                name: "Claude Opus",
+                efforts: ["low", "high"],
+                serviceTierIds: ["fast"],
+                variants: [
+                  { id: "opus-low", effort: "low" },
+                  { id: "opus-high", effort: "high" },
+                  { id: "opus-high-fast", effort: "high", serviceTierId: "fast" },
+                ],
+              },
+            ],
+            serviceTiers: [{ id: "fast", name: "Fast" }],
+          }
+        : options[agent],
+    );
+    client.managedAction.mockRejectedValue(new ApiError(504, "request_timeout"));
+    const user = userEvent.setup();
+    await user.click(screen.getByRole("button", { name: "Agent: Codex" }));
+    await user.click(await screen.findByRole("menuitem", { name: "Devin" }));
+    expect(client.managedOptions).toHaveBeenCalledWith("devin", expect.any(AbortSignal), "atlas");
+    expect(screen.queryByRole("button", { name: "Add files" })).not.toBeInTheDocument();
+    await user.click(await screen.findByRole("button", { name: "Model: Model" }));
+    await user.click(await screen.findByRole("menuitem", { name: "Claude Opus" }));
+    await user.click(await screen.findByRole("button", { name: "Model: Claude Opus" }));
+    await user.click(await screen.findByRole("menuitem", { name: "Low" }));
+    await user.click(await screen.findByRole("button", { name: "Model: Claude Opus · Low" }));
+    expect(screen.queryByRole("menuitem", { name: "Fast" })).not.toBeInTheDocument();
+    await user.click(await screen.findByRole("menuitem", { name: "High" }));
+    await user.click(await screen.findByRole("button", { name: "Model: Claude Opus · High" }));
+    await user.click(await screen.findByRole("menuitem", { name: "Fast" }));
+    await user.click(
+      await screen.findByRole("button", { name: "Model: Claude Opus · High · Fast" }),
+    );
+    expect(screen.queryByRole("menuitem", { name: "Low" })).not.toBeInTheDocument();
+    await user.keyboard("{Escape}");
+    await write("Check the parser");
+    fireEvent.click(send());
+    await screen.findByText(/Not sure yet whether the session was created/);
+    const request = client.managedAction.mock.calls[0]![1];
+    expect(request).toMatchObject({
+      agent: "devin",
+      workspaceId: "atlas",
+      model: "opus",
+      effort: "high",
+      serviceTierId: "fast",
+      prompt: "Check the parser",
+    });
+    client.receipt.mockResolvedValue({
+      found: true,
+      requestId: request.requestId,
+      operation: "create",
+      status: "accepted",
+      sessionId: "made",
+    } as never);
+    await act(async () => publishSessionInvalidation(client, "", ["receipts"]));
+    await waitFor(() => expect(onCreated).toHaveBeenCalledWith("made"));
+    expect(client.managedAction).toHaveBeenCalledOnce();
+    expect(takeNewSessionDraft("made")).toBeUndefined();
+  });
+
   it("keeps the draft and says why when nothing was created", async () => {
     const { client, onCreated } = setup();
     client.managedAction.mockRejectedValue(
@@ -243,6 +388,60 @@ describe("Web NewSessionComposer", () => {
     expect(dsh.client.managedAction.mock.calls[0]![1]).toMatchObject({
       agent: "deepseek-harness",
       agentPreset: "ptc",
+    });
+  });
+
+  it("reads the current DSH workspace catalog and sends only its offered startup choices", async () => {
+    const { client, onCreated } = setup();
+    const dshOptions = options["deepseek-harness"];
+    client.managedOptions.mockImplementation(async (agent, _signal, workspaceId) => {
+      if (agent !== "deepseek-harness") return options[agent];
+      if (workspaceId === "atlas") return dshOptions;
+      return {
+        available: true,
+        provider: sessionProviderCapabilities("deepseek-harness"),
+        models: [{ id: "deepseek/chat", name: "DeepSeek Chat", efforts: ["low", "high"] }],
+        defaults: { model: "deepseek/chat", effort: "low" },
+        workspaces: [],
+      };
+    });
+
+    const user = userEvent.setup();
+    await user.click(screen.getByRole("button", { name: "Agent: Codex" }));
+    await user.click(await screen.findByRole("menuitem", { name: "DeepSeek Harness" }));
+    await user.click(await screen.findByRole("button", { name: /Preset/ }));
+    await user.click(await screen.findByRole("menuitem", { name: /PTC/ }));
+    expect(client.managedOptions).toHaveBeenCalledWith(
+      "deepseek-harness",
+      expect.any(AbortSignal),
+      "atlas",
+    );
+    await user.click(screen.getByRole("button", { name: "Workspace: atlas-studio" }));
+    await user.click(await screen.findByRole("button", { name: "northstar-api" }));
+    expect(client.managedOptions).toHaveBeenCalledWith(
+      "deepseek-harness",
+      expect.any(AbortSignal),
+      "north",
+    );
+
+    await user.click(await screen.findByRole("button", { name: "Model: DeepSeek Chat · Low" }));
+    expect(screen.queryByRole("menuitem", { name: "Fast" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /Preset/ })).not.toBeInTheDocument();
+    await user.click(await screen.findByRole("menuitem", { name: "High" }));
+    await write("Profile the parser");
+    fireEvent.click(send());
+    await waitFor(() => expect(onCreated).toHaveBeenCalledWith("created"));
+    expect(client.managedAction).toHaveBeenCalledExactlyOnceWith("create", {
+      agent: "deepseek-harness",
+      bootId: "boot",
+      requestId: expect.any(String),
+      workspaceId: "north",
+      model: "deepseek/chat",
+      effort: "high",
+    });
+    expect(takeNewSessionDraft("created")).toMatchObject({
+      text: "Profile the parser",
+      send: true,
     });
   });
 

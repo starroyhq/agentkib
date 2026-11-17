@@ -3,8 +3,11 @@ import {
   HISTORY_SEARCH_METHODS,
   claudeModelOption,
   managedAgentOf,
+  sessionProviderCapabilities,
   type HistoryReference,
+  type ManagedAgent,
   type ResolvedHistoryReference,
+  type SessionProviderCapabilities,
 } from "@agentkib/runtime-protocol";
 import {
   historyInputHash,
@@ -371,17 +374,9 @@ const token = () => randomBytes(32).toString("base64url");
 const digest = (value: string) => createHash("sha256").update(value).digest("hex");
 const MAX_AGE = 30 * 24 * 60 * 60 * 1000;
 const PAIRING_CODE_TTL_MS = 300_000;
-/**
- * A managed Agent with no host handler here. Each Agent in MANAGED_AGENTS needs its own case where
- * this is called; without one, its requests would otherwise reach another Agent's handler.
- */
 /** Devin CLI's permission modes, which apply to a whole `devin -p` turn. */
 const DEVIN_PERMISSION_MODES = ["auto", "accept-edits", "smart", "dangerous"];
 
-function unhandledManagedAgent(agent: never): never {
-  void agent;
-  throw new HttpError(400, "invalid_agent");
-}
 /** A paired device counts as online this long after its last request, or while it holds a stream. */
 const ONLINE_WINDOW_MS = 60_000;
 const PAIRING_FAILURES_PER_BROWSER = 5;
@@ -697,6 +692,7 @@ export class WebAccessService {
       historyRequest?: (method: string, params: unknown) => Promise<unknown>;
       managedRequest?: (params: unknown) => Promise<unknown>;
       claudeManagedRequest?: (params: unknown) => Promise<unknown>;
+      sessionProviderRequest?: (params: unknown) => Promise<unknown>;
       receiptRequest?: (params: { requestId: string; deviceId: string }) => Promise<unknown>;
       createRelayCsr?: (params: {
         privateKeyDer: string;
@@ -2697,12 +2693,47 @@ export class WebAccessService {
     const permission = this.projectPermission(raw);
     return permission ? { ...rest, permission } : rest;
   }
+  private projectSessionProvider(value: unknown): SessionProviderCapabilities | undefined {
+    if (!value || typeof value !== "object") return;
+    const { create, models, contextUsage } = value as Partial<SessionProviderCapabilities>;
+    if (
+      (create?.mode !== "empty" && create?.mode !== "with-first-message") ||
+      (create.catalogScope !== "host" && create.catalogScope !== "workspace") ||
+      (models?.selection !== "independent" && models?.selection !== "variants") ||
+      (contextUsage !== "live" && contextUsage !== "last-request" && contextUsage !== "unsupported")
+    )
+      return;
+    return {
+      create: {
+        mode: create.mode,
+        catalogScope: create.catalogScope,
+        attachments: create.attachments === true,
+        serviceTiers: create.serviceTiers === true,
+        ...(create.agentPresets === true ? { agentPresets: true } : {}),
+        ...(create.verifyStartupModel === true ? { verifyStartupModel: true } : {}),
+      },
+      models: {
+        selection: models.selection,
+        modelDefault: models.modelDefault === true,
+        effortDefault: models.effortDefault === true,
+        clearEffort: models.clearEffort === true,
+        fastTierIds: Array.isArray(models.fastTierIds)
+          ? models.fastTierIds
+              .slice(0, 32)
+              .filter((tier) => this.optionalString(tier, 128) !== undefined)
+          : [],
+        ...(models.prepare === true ? { prepare: true } : {}),
+      },
+      contextUsage,
+    };
+  }
   private projectSettings(raw: unknown, usage?: unknown) {
     const data =
       raw && typeof raw === "object"
         ? (raw as {
             available?: unknown;
             executionMode?: unknown;
+            provider?: unknown;
             status?: unknown;
             settings?: {
               current?: Record<string, unknown>;
@@ -2732,6 +2763,7 @@ export class WebAccessService {
     const applicationStatus = data.applicationStatus ?? data.settings?.applicationStatus;
     const defaults = data.defaults ?? data.settings?.defaults;
     const writable = data.writable ?? data.settings?.writable;
+    const provider = this.projectSessionProvider(data.provider);
     const devin = data.executionMode === "devin-print";
     const contextLimit = (value: unknown) =>
       typeof value === "number" && Number.isSafeInteger(value) && value > 0 ? value : undefined;
@@ -2776,9 +2808,11 @@ export class WebAccessService {
           );
           // The provider an agent lists the model under (DeepSeek Harness).
           const group = this.optionalString(model.group, 256);
-          const maxContextTokens = devin ? contextLimit(model.maxContextTokens) : undefined;
+          const maxContextTokens =
+            provider || devin ? contextLimit(model.maxContextTokens) : undefined;
           const variants =
-            devin && Array.isArray(model.variants)
+            (provider?.models.selection === "variants" || (!provider && devin)) &&
+            Array.isArray(model.variants)
               ? model.variants.slice(0, 128).flatMap((entry) => {
                   if (!entry || typeof entry !== "object") return [];
                   const variant = entry as Record<string, unknown>;
@@ -2864,7 +2898,7 @@ export class WebAccessService {
       ...(value(current, "serviceTier", "serviceTierId")
         ? { serviceTierId: value(current, "serviceTier", "serviceTierId") }
         : {}),
-      ...(devin && contextLimit(current?.maxContextTokens)
+      ...((provider || devin) && contextLimit(current?.maxContextTokens)
         ? { maxContextTokens: contextLimit(current?.maxContextTokens) }
         : {}),
     });
@@ -2873,7 +2907,8 @@ export class WebAccessService {
     const historicalModel = codex ? value(data.historicalSettings, "modelId") : undefined;
     const historicalEffort = codex ? value(data.historicalSettings, "effort") : undefined;
     const liveUsage = this.projectUsage(usage);
-    const historicalUsage = codex || devin ? this.projectUsage(data.historicalUsage) : undefined;
+    const historicalUsage =
+      provider || codex || devin ? this.projectUsage(data.historicalUsage) : undefined;
     const projectedUsage =
       historicalUsage?.historical &&
       (!liveUsage?.available ||
@@ -2883,6 +2918,7 @@ export class WebAccessService {
         : liveUsage;
     return {
       available: data.available === true,
+      ...(provider ? { provider } : {}),
       ...(reason ? { reason } : {}),
       ...(this.optionalString(data.executionMode, 64)
         ? { executionMode: this.optionalString(data.executionMode, 64) }
@@ -4505,6 +4541,56 @@ export class WebAccessService {
     }
     return this.json(res, 200, result);
   }
+  private sessionProviderOperation(agent: ManagedAgent, operation: "options" | "create") {
+    const dispatch = this.options.sessionProviderRequest;
+    if (!dispatch || !sessionProviderCapabilities(agent)) return;
+    return (params: unknown) =>
+      dispatch({
+        ...(params as Record<string, unknown>),
+        agent,
+        operation: `provider-${operation}`,
+      });
+  }
+  private async sessionCreationOptions(agent: ManagedAgent, workspaceId: string | undefined) {
+    const unsupported = { available: false, reason: "unsupported_host" };
+    if (agent === "devin" || agent === "deepseek-harness") {
+      const verified =
+        agent === "devin" ? this.options.verifiedDevinManaged : this.options.verifiedDshFollower;
+      if (verified !== true) return unsupported;
+      if (this.admission) throw new HttpError(409, "operation_busy");
+    }
+    const registered = this.sessionProviderOperation(agent, "options");
+    if (registered) {
+      const workspaceScoped =
+        sessionProviderCapabilities(agent)?.create.catalogScope === "workspace" &&
+        (agent !== "claude-code" || this.options.verifiedClaudeManaged === true);
+      return this.runtime(
+        { operation: "provider-options" },
+        registered(workspaceScoped && workspaceId ? { workspaceId } : {}),
+      );
+    }
+
+    switch (agent) {
+      case "codex":
+        return this.options.managedRequest?.({ operation: "options" }) ?? unsupported;
+      case "claude-code":
+        return (
+          this.options.claudeManagedRequest?.({
+            operation: "options",
+            ...(workspaceId && this.options.verifiedClaudeManaged ? { workspaceId } : {}),
+          }) ?? unsupported
+        );
+      case "deepseek-harness":
+        return this.runtime({
+          operation: "dsh-options",
+          ...(workspaceId ? { includeModels: true } : {}),
+        });
+      case "devin":
+        return this.runtime({ operation: "devin-options" });
+      default:
+        return unsupported;
+    }
+  }
   private async manage(
     _req: ConversationRequest,
     res: ConversationResponse,
@@ -4516,6 +4602,7 @@ export class WebAccessService {
     this.grant(hash, "manage");
     const agent = managedAgentOf(body.agent ?? "codex");
     if (!agent) throw new HttpError(400, "invalid_agent");
+    const provider = sessionProviderCapabilities(agent);
     // DeepSeek Harness only starts sessions here; its sessions are controlled through actions.
     if (agent === "deepseek-harness" && operation !== "create")
       throw new HttpError(404, "not_found");
@@ -4524,28 +4611,32 @@ export class WebAccessService {
     const requestId = this.field(body.requestId, 128);
     if (agent === "claude-code")
       await this.controlReceipt(requestId, this.grant(hash, "manage").id, control);
-    const managedRequest = (() => {
-      switch (agent) {
-        case "codex":
-          return this.options.managedRequest;
-        case "claude-code":
-          return this.options.claudeManagedRequest;
-        case "deepseek-harness":
-          return (value: unknown) =>
-            this.options.runtimeRequest({
-              ...(value as Record<string, unknown>),
-              operation: "dsh-create",
-            });
-        case "devin":
-          return (value: unknown) =>
-            this.options.runtimeRequest({
-              ...(value as Record<string, unknown>),
-              operation: "devin-create",
-            });
-        default:
-          return unhandledManagedAgent(agent);
-      }
-    })();
+    const providerCreate =
+      operation === "create" ? this.sessionProviderOperation(agent, "create") : undefined;
+    const managedRequest =
+      providerCreate ??
+      (() => {
+        switch (agent) {
+          case "codex":
+            return this.options.managedRequest;
+          case "claude-code":
+            return this.options.claudeManagedRequest;
+          case "deepseek-harness":
+            return (value: unknown) =>
+              this.options.runtimeRequest({
+                ...(value as Record<string, unknown>),
+                operation: "dsh-create",
+              });
+          case "devin":
+            return (value: unknown) =>
+              this.options.runtimeRequest({
+                ...(value as Record<string, unknown>),
+                operation: "devin-create",
+              });
+          default:
+            return undefined;
+        }
+      })();
     if (agent === "claude-code" && !this.options.verifiedClaudeManaged)
       throw new HttpError(409, "unsupported_host");
     if (agent === "deepseek-harness" && this.options.verifiedDshFollower !== true)
@@ -4587,31 +4678,30 @@ export class WebAccessService {
       }
       if (body.model !== undefined) params.model = this.field(body.model, 128);
       if (body.effort !== undefined) params.effort = this.field(body.effort, 32);
+      if (provider?.create.verifyStartupModel && body.verifyStartupModel !== undefined) {
+        if (body.verifyStartupModel !== true) throw new HttpError(400, "invalid_input");
+        params.verifyStartupModel = true;
+      }
       if (agent === "claude-code") {
-        if (body.verifyStartupModel !== undefined) {
-          if (body.verifyStartupModel !== true) throw new HttpError(400, "invalid_input");
-          params.verifyStartupModel = true;
-        }
         if (body.permissionMode !== undefined) {
           if (!["default", "plan", "acceptEdits"].includes(String(body.permissionMode)))
             throw new HttpError(400, "unsupported_permission_mode");
           params.permissionMode = body.permissionMode;
         }
       }
-      // DSH picks an Agent preset only when a session starts, as on its own new-session screen.
-      if (agent === "deepseek-harness" && body.agentPreset !== undefined)
+      if (provider?.create.agentPresets && body.agentPreset !== undefined)
         params.agentPreset = this.field(body.agentPreset, 128);
-      if (agent === "devin") {
-        if (body.serviceTierId !== undefined)
-          params.serviceTier = this.field(body.serviceTierId, 128);
-        if (body.permissionMode !== undefined) {
-          const mode = String(body.permissionMode);
-          if (!DEVIN_PERMISSION_MODES.includes(mode))
-            throw new HttpError(400, "unsupported_permission_mode");
-          // Approving more without asking is changing what the session may do: full access only.
-          if (mode === "smart" || mode === "dangerous") this.fullAccess(hash);
-          params.permissionMode = mode;
-        }
+      if (provider?.create.serviceTiers && body.serviceTierId !== undefined)
+        params.serviceTier = this.field(body.serviceTierId, 128);
+      if (agent === "devin" && body.permissionMode !== undefined) {
+        const mode = String(body.permissionMode);
+        if (!DEVIN_PERMISSION_MODES.includes(mode))
+          throw new HttpError(400, "unsupported_permission_mode");
+        // Approving more without asking is changing what the session may do: full access only.
+        if (mode === "smart" || mode === "dangerous") this.fullAccess(hash);
+        params.permissionMode = mode;
+      }
+      if (provider?.create.mode === "with-first-message") {
         if (typeof body.prompt !== "string" || !body.prompt.trim())
           throw new HttpError(400, "missing_prompt");
         if (Buffer.byteLength(body.prompt, "utf8") > 64 * 1024)
@@ -6113,16 +6203,20 @@ export class WebAccessService {
           ...(path === "/codex/session-settings" ? { includeHistorical: true } : {}),
         });
         this.fullAccess(hash, "advancedControl");
-        const usage = await this.runtime({ operation: "usage", sessionId }).catch((error) => {
-          // The optional live usage read cannot take down already available history.
-          if (
-            !settings ||
-            typeof settings !== "object" ||
-            (!("historicalSettings" in settings) && !("historicalUsage" in settings))
-          )
-            throw error;
-          return undefined;
-        });
+        const provider = this.projectSessionProvider(snapshotField(settings, "provider"));
+        const usage =
+          provider?.contextUsage === "last-request"
+            ? undefined
+            : await this.runtime({ operation: "usage", sessionId }).catch((error) => {
+                // Keep any history already returned with the settings.
+                if (
+                  !settings ||
+                  typeof settings !== "object" ||
+                  (!("historicalSettings" in settings) && !("historicalUsage" in settings))
+                )
+                  throw error;
+                return undefined;
+              });
         result = { sessionId, ...this.projectSettings(settings, usage) };
       } else if (path === "/codex/goals" || path === "/managed/goals") {
         const goal = await this.runtime({ operation: "goal", sessionId });
@@ -6331,40 +6425,7 @@ export class WebAccessService {
         this.grant(hash, permission);
         if (this.bootId !== bootId) throw new HttpError(409, "stale_boot");
       }
-      const managedRequest = (() => {
-        switch (agent) {
-          case "codex":
-            return this.options.managedRequest;
-          case "claude-code":
-            return this.options.claudeManagedRequest;
-          case "deepseek-harness":
-          case "devin":
-            return undefined;
-          default:
-            return unhandledManagedAgent(agent);
-        }
-      })();
-      // A new DeepSeek Harness session needs exactly one running DSH with the plugin.
-      const options =
-        agent === "deepseek-harness"
-          ? this.options.verifiedDshFollower === true
-            ? await this.runtime({
-                operation: "dsh-options",
-                ...(workspaceId ? { includeModels: true } : {}),
-              })
-            : { available: false, reason: "unsupported_host" }
-          : agent === "devin"
-            ? this.options.verifiedDevinManaged === true
-              ? await this.runtime({ operation: "devin-options" })
-              : { available: false, reason: "unsupported_host" }
-            : managedRequest
-              ? await managedRequest({
-                  operation: "options",
-                  ...(workspaceId && agent === "claude-code" && this.options.verifiedClaudeManaged
-                    ? { workspaceId }
-                    : {}),
-                })
-              : { available: false, reason: "unsupported_host" };
+      const options = await this.sessionCreationOptions(agent, workspaceId);
       const device = this.grant(hash, permission);
       const workspaces = device.manage === true ? await this.registeredWorkspaces() : [];
       const current = this.grant(hash, permission);

@@ -35,6 +35,8 @@ interface Message {
   thinking?: boolean;
   images?: { mime_type: string; base64_data: string }[];
   summarizedFrom?: number;
+  generationModel?: string;
+  contextInputTokens?: number;
 }
 
 /** The parts of Devin CLI's `sessions.db` schema (refinery v20) that AgentKib reads. */
@@ -74,7 +76,11 @@ function database(file: string, compat = "0") {
           ...(value.thinking ? { thinking: { thinking: "private reasoning" } } : {}),
           ...(value.images ? { images: value.images } : {}),
           metadata: {
-            ...(value.input ? { is_user_input: true } : {}),
+            ...(value.input !== undefined ? { is_user_input: value.input } : {}),
+            ...(value.generationModel ? { generation_model: value.generationModel } : {}),
+            ...(value.contextInputTokens !== undefined
+              ? { metrics: { context_input_tokens: value.contextInputTokens } }
+              : {}),
             created_at: new Date(Date.UTC(2026, 10, 12, 0, 0, value.node)).toISOString(),
           },
         }),
@@ -218,6 +224,80 @@ function fixture(compat = "0") {
   update.close();
   return { home, project, file, id, readers: new DevinSessions({ HOME: home }) };
 }
+
+describe("Devin context input reports", () => {
+  it("reads the latest matching generation on the active main chain", () => {
+    const home = temp();
+    const project = path.join(home, "project");
+    const db = database(path.join(home, ".local/share/devin/cli/sessions.db"));
+    const model = "swe-1-6";
+    const buildReport = (node: number, parent: number | null, tokens: number): Message => ({
+      node,
+      parent,
+      role: "assistant",
+      generationModel: model,
+      contextInputTokens: tokens,
+    });
+    try {
+      db.session("active", project, 5);
+      db.message("active", buildReport(1, null, 1900));
+      db.message("active", buildReport(2, 1, 2100));
+      db.message("active", { node: 3, parent: 2, role: "tool" });
+      db.message("active", buildReport(4, 1, 9900));
+      db.message("active", { node: 5, parent: 3, role: "user", input: false });
+      db.session("hidden", project, 1, 1);
+      db.message("hidden", buildReport(1, null, 1900));
+    } finally {
+      db.close();
+    }
+    const reader = new DevinSessions({ HOME: home });
+    expect(reader.lastContextInput("active", project, model)).toEqual({
+      usedTokens: 2100,
+      updatedAt: "2026-11-12T00:00:02Z",
+    });
+    expect(reader.lastContextInput("active", project, "different-model")).toBeUndefined();
+    expect(reader.lastContextInput("active", path.join(home, "other"), model)).toBeUndefined();
+    expect(reader.lastContextInput("hidden", project, model)).toBeUndefined();
+  });
+
+  it("does not cross a compaction, new user input or unreported generation", () => {
+    const home = temp();
+    const project = path.join(home, "project");
+    const db = database(path.join(home, ".local/share/devin/cli/sessions.db"));
+    const model = "swe-1-6";
+    const barriers: Record<string, Message> = {
+      compacted: { node: 2, parent: 1, role: "system", summarizedFrom: 1 },
+      pending: { node: 2, parent: 1, role: "user", input: true },
+      unknown: { node: 2, parent: 1, role: "user" },
+      unreported: { node: 2, parent: 1, role: "assistant", generationModel: model },
+      switched: {
+        node: 2,
+        parent: 1,
+        role: "assistant",
+        generationModel: "different-model",
+        contextInputTokens: 3500,
+      },
+    };
+    try {
+      for (const [id, barrier] of Object.entries(barriers)) {
+        db.session(id, project, 2);
+        db.message(id, {
+          node: 1,
+          parent: null,
+          role: "assistant",
+          generationModel: model,
+          contextInputTokens: 1900,
+        });
+        db.message(id, barrier);
+      }
+    } finally {
+      db.close();
+    }
+    const reader = new DevinSessions({ HOME: home });
+    for (const id of Object.keys(barriers))
+      expect(reader.lastContextInput(id, project, model)).toBeUndefined();
+  });
+});
 
 describe("Devin sessions", () => {
   it("lists visible sessions of a workspace without changing the closed database", () => {

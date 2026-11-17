@@ -25,6 +25,7 @@ export const contextUsageCopy = {
     reported: "上次上报",
     historicalReport: "上次记录",
     historicalDetail: "这是 Codex 保存的历史用量。",
+    devinLastRequest: "这是 Devin 上次模型请求的输入用量。",
     recentNativeReport: "最近原生报告",
     compactAction: "压缩上下文",
     compactDetail:
@@ -56,6 +57,7 @@ export const contextUsageCopy = {
     reported: "上次上報",
     historicalReport: "上次記錄",
     historicalDetail: "這是 Codex 儲存的歷史用量。",
+    devinLastRequest: "這是 Devin 上次模型請求的輸入用量。",
     recentNativeReport: "最近原生報告",
     compactAction: "壓縮上下文",
     compactDetail:
@@ -89,6 +91,7 @@ export const contextUsageCopy = {
     reported: "Last reported",
     historicalReport: "Last recorded",
     historicalDetail: "This usage is from the Codex session history.",
+    devinLastRequest: "Input usage from Devin’s last model request.",
     recentNativeReport: "Latest native report",
     compactAction: "Compact context",
     compactDetail:
@@ -121,6 +124,7 @@ export const contextUsageCopy = {
     reported: "前回の報告",
     historicalReport: "前回の記録",
     historicalDetail: "Codex が保存した履歴の使用量です。",
+    devinLastRequest: "Devin が最後にモデルへ送った入力の使用量です。",
     recentNativeReport: "最新のネイティブ報告",
     compactAction: "コンテキストを圧縮",
     compactDetail:

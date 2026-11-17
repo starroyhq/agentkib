@@ -52,11 +52,16 @@ import { DEVIN_DEFAULT_PERMISSION_MODE, DevinSessionSettings } from "./devin-ses
 import {
   DEVIN_EXECUTION_MODE,
   DEVIN_MAX_PROMPT_BYTES,
+  DEVIN_MODEL_EFFORTS,
   DEVIN_PERMISSION_MODES,
   DevinManagedRunner,
   devinChildEnvironment,
   devinModelCatalog,
+  devinModelVariant,
+  emptyDevinModelCatalog,
+  resolveDevinModel,
   type DevinModelCatalog,
+  type DevinModelVariant,
   type DevinRunnerHost,
   type DevinTurnEnd,
   type DevinTurnSettings,
@@ -273,6 +278,8 @@ const devinCreateSchema = z
       .string()
       .regex(/^[A-Za-z0-9._:@/+-]{1,128}$/)
       .optional(),
+    effort: z.string().min(1).max(64).optional(),
+    serviceTier: z.string().min(1).max(128).optional(),
     permissionMode: z.enum(DEVIN_PERMISSION_MODES).optional(),
   })
   .strict();
@@ -409,6 +416,126 @@ const managedControlSchema = z
     (request) =>
       request.operation === "settings" || (request.effort !== null && request.serviceTier !== null),
   );
+
+type DevinModelSelection = {
+  model?: string;
+  effort?: string | null;
+  serviceTier?: string | null;
+};
+
+const DEVIN_SPEED_NAMES = {
+  fast: "Fast",
+  priority: "Priority",
+  lightning: "Lightning",
+};
+
+function devinModelOptions(catalog: DevinModelCatalog) {
+  const exact: Array<{
+    id: string;
+    name?: string;
+    efforts: string[];
+    serviceTierIds: string[];
+    maxContextTokens?: number;
+    variants: DevinModelVariant[];
+  }> = [];
+  const exactLimit = 256 - catalog.families.length;
+  const familyIds = new Set(catalog.families.map(({ id }) => id));
+  const families = catalog.families.map((family) => {
+    const allVariants = catalog.variantsByFamily.get(family.id) ?? [];
+    const variants = allVariants.slice(0, 128);
+    const maxContextTokens = variants[0]?.maxContextTokens;
+    const sameCapacity =
+      maxContextTokens !== undefined &&
+      allVariants.every((variant) => variant.maxContextTokens === maxContextTokens);
+    for (const variant of variants) {
+      // Native variants without normal effort/tier controls (for example Thinking + 1M)
+      // remain selectable by their own IDs.
+      if (
+        exact.length < exactLimit &&
+        variants.length > 1 &&
+        !variant.effort &&
+        !variant.serviceTierId &&
+        !familyIds.has(variant.id)
+      )
+        exact.push({
+          id: variant.id,
+          name: variant.name,
+          efforts: [],
+          serviceTierIds: [],
+          maxContextTokens: variant.maxContextTokens,
+          variants: [variant],
+        });
+    }
+    return {
+      ...family,
+      efforts: DEVIN_MODEL_EFFORTS.filter((effort) =>
+        variants.some((variant) => variant.effort === effort),
+      ),
+      serviceTierIds: [
+        ...new Set(
+          variants.flatMap((variant) => (variant.serviceTierId ? [variant.serviceTierId] : [])),
+        ),
+      ],
+      variants,
+      ...(sameCapacity ? { maxContextTokens } : {}),
+    };
+  });
+  const serviceTiers = [...new Set(families.flatMap((model) => model.serviceTierIds))].map(
+    (id) => ({ id, name: DEVIN_SPEED_NAMES[id] }),
+  );
+  return { models: [...families, ...exact], serviceTiers };
+}
+
+function devinSelectedVariant(
+  catalog: DevinModelCatalog,
+  selectedModel?: string | null,
+  nativeModel?: string | null,
+) {
+  const native = nativeModel ? devinModelVariant(catalog, nativeModel) : undefined;
+  if (!selectedModel) return native;
+  // A family previously saved by AgentKib still goes to the CLI as a family. Its last actual
+  // variant can identify the existing effort, as long as that variant belongs to this family.
+  return (
+    devinModelVariant(catalog, selectedModel) ??
+    (native?.familyId === selectedModel ? native : undefined)
+  );
+}
+
+function devinSettingsModel(
+  choice: DevinModelSelection,
+  catalog: DevinModelCatalog,
+  currentId?: string | null,
+  nativeModel?: string | null,
+) {
+  const { model, effort, serviceTier } = choice;
+  const target = model ?? currentId ?? nativeModel;
+  if (!target) throw new Error("unsupported-model");
+  const current = devinSelectedVariant(catalog, currentId, nativeModel);
+  const proposed = devinModelVariant(catalog, target);
+  const familyId = proposed?.familyId ?? target;
+  const previous = proposed ?? (current?.familyId === familyId ? current : undefined);
+  const selectedEffort = effort === undefined ? previous?.effort : (effort ?? undefined);
+  const selectedTier =
+    serviceTier === undefined ? previous?.serviceTierId : (serviceTier ?? undefined);
+  const variants = catalog.variantsByFamily.get(familyId);
+  if (!variants?.length) throw new Error("unsupported-model");
+  if (selectedEffort && !variants.some((variant) => variant.effort === selectedEffort))
+    throw new Error("unsupported-effort");
+  // Turning off Fast is an explicit choice of a standard variant even without a known effort.
+  if (serviceTier === null && !selectedEffort) {
+    const standard = variants.filter((variant) => !variant.serviceTierId);
+    if (standard.length !== 1) throw new Error("unsupported-service-tier");
+    return standard[0]!.id;
+  }
+  const resolved = resolveDevinModel(catalog, {
+    modelId: familyId,
+    effort: selectedEffort,
+    serviceTierId: selectedTier,
+  });
+  if (!resolved)
+    throw new Error(serviceTier !== undefined ? "unsupported-service-tier" : "unsupported-effort");
+  return resolved;
+}
 
 type ManagedRecord = z.infer<typeof managedRecordSchema>;
 
@@ -6601,17 +6728,33 @@ export class WebReadRequests {
         const nativeId = record.runner.nativeId;
         if (!nativeId || record.runner.snapshot().sendEnabled !== true)
           throw new Error("session-busy");
+        let model = request.model ?? record.settings.model;
+        if (
+          !request.resetDefaults &&
+          (request.effort !== undefined || request.serviceTier !== undefined)
+        ) {
+          const catalog = await this.#readDevinCatalog();
+          const latest = record.runner.snapshot();
+          if (
+            this.#devinRunners.get(request.sessionId) !== record ||
+            latest.revision !== request.expectedRevision
+          )
+            throw new Error("stale-or-disabled-control");
+          if (latest.sendEnabled !== true) throw new Error("session-busy");
+          model = devinSettingsModel(
+            request,
+            catalog,
+            record.settings.model,
+            this.sessions.devinSessionModel(nativeId),
+          );
+        }
         beforeDispatch();
         this.#devinSaved().set(
           nativeId,
           request.resetDefaults
             ? {}
             : {
-                ...(request.model
-                  ? { model: request.model }
-                  : record.settings.model
-                    ? { model: record.settings.model }
-                    : {}),
+                ...(model ? { model } : {}),
                 permissionMode: request.permissionMode ?? record.settings.permissionMode,
               },
         );
@@ -6671,10 +6814,6 @@ export class WebReadRequests {
     } catch {
       return result("not-dispatched", { reason: "workspace-unavailable" });
     }
-    const settings: DevinTurnSettings = {
-      ...(request.model ? { model: request.model } : {}),
-      permissionMode: request.permissionMode ?? DEVIN_DEFAULT_PERMISSION_MODE,
-    };
     let created: string | null = null;
     const runner = new DevinManagedRunner(
       workspace,
@@ -6698,6 +6837,14 @@ export class WebReadRequests {
     if (prior) return prior;
     let dispatched = false;
     try {
+      const model =
+        request.effort !== undefined || request.serviceTier !== undefined
+          ? devinSettingsModel(request, await this.#readDevinCatalog())
+          : request.model;
+      const settings: DevinTurnSettings = {
+        ...(model ? { model } : {}),
+        permissionMode: request.permissionMode ?? DEVIN_DEFAULT_PERMISSION_MODE,
+      };
       await runner.send(
         request.prompt,
         0,
@@ -6723,9 +6870,9 @@ export class WebReadRequests {
       );
       created = this.store.sessions.id("devin", nativeId);
       // The choices made when it started apply to its later turns too, also after a restart.
-      if (request.model || request.permissionMode)
+      if (model || request.permissionMode)
         this.#devinSaved().set(nativeId, {
-          ...(request.model ? { model: request.model } : {}),
+          ...(model ? { model } : {}),
           ...(request.permissionMode ? { permissionMode: request.permissionMode } : {}),
         });
       this.#addDevinRunner(created, runner, settings, request.workspaceId);
@@ -6767,19 +6914,30 @@ export class WebReadRequests {
         reason: error instanceof Error ? error.message : "session-unavailable",
       };
     }
+    const catalog = await this.#readDevinCatalog();
+    const options = devinModelOptions(catalog);
     const live = record.runner.snapshot();
     const nativeId = record.runner.nativeId;
-    const environment = devinChildEnvironment({ ...process.env, ...this.environment });
-    const executable = devinExecutable(environment);
-    const catalog = executable
-      ? await this.#devinCatalog(executable, environment)
-      : { families: [], familyOf: new Map<string, string>() };
-    const models = catalog.families;
-    // Devin keeps the concrete variant a session ran with; it is shown as its family.
-    const saved = nativeId ? this.sessions.devinSessionModel(nativeId) : null;
+    const nativeModel = nativeId ? this.sessions.devinSessionModel(nativeId) : null;
+    const selectedModel = record.settings.model ?? nativeModel;
+    const variant = devinSelectedVariant(catalog, selectedModel, nativeModel);
+    // Regular variants show their family and both controls. An exact variant outside that pair
+    // of controls is represented by its own row when the catalog offers one.
+    const exact = variant && options.models.some((option) => option.id === variant.id);
+    const model = variant ? (exact ? variant.id : variant.familyId) : selectedModel;
+    const capacity =
+      variant?.maxContextTokens ??
+      options.models.find((option) => option.id === model)?.maxContextTokens;
+    const historicalUsage =
+      nativeId && variant?.id === nativeModel && capacity !== undefined && live.status === "idle"
+        ? this.sessions.devinLastContextInput(nativeId, record.runner.workspace, variant.id)
+        : undefined;
     const current = {
-      model: record.settings.model ?? (saved ? (catalog.familyOf.get(saved) ?? saved) : null),
-      effort: null,
+      model,
+      effort: variant?.effort ?? null,
+      ...(variant?.serviceTierId ? { serviceTier: variant.serviceTierId } : {}),
+      ...(variant ? { variantId: variant.id } : {}),
+      ...(capacity !== undefined ? { maxContextTokens: capacity } : {}),
       permissionMode: record.settings.permissionMode ?? DEVIN_DEFAULT_PERMISSION_MODE,
     };
     const mutable = live.sendEnabled === true;
@@ -6792,11 +6950,24 @@ export class WebReadRequests {
       settings: current,
       defaults: { model: null, effort: null, permissionMode: DEVIN_DEFAULT_PERMISSION_MODE },
       applicationStatus: "confirmed",
-      models: models.map((model) => ({ ...model, efforts: [] })),
+      ...options,
+      ...(historicalUsage && capacity !== undefined && historicalUsage.usedTokens <= capacity
+        ? {
+            historicalUsage: {
+              available: true,
+              state: "stale",
+              historical: true,
+              reason: "devin-last-model-request",
+              contextWindow: capacity,
+              ...historicalUsage,
+            },
+          }
+        : {}),
       permissionModes: DEVIN_PERMISSION_MODES.map((id) => ({ id, name: id })),
       writable: {
-        model: { available: mutable && models.length > 0 },
-        effort: { available: false, reason: "unsupported-operation" },
+        model: { available: mutable && options.models.length > 0 },
+        effort: { available: mutable && options.models.some((model) => model.efforts.length > 0) },
+        serviceTier: { available: mutable && options.serviceTiers.length > 0 },
         permissionMode: { available: mutable },
         restoreDefaults: { available: mutable },
       },
@@ -6808,9 +6979,8 @@ export class WebReadRequests {
   }
 
   /**
-   * What a new Devin session can start with. Models are listed by family, whose slug `--model`
-   * takes; Devin picks the variant. Without a CLI login the list is empty and Devin's configured
-   * default applies; the login is explained only when a session is started.
+   * What a new Devin session can start with. Without a CLI login the list is empty and Devin's
+   * configured default applies; the login is explained only when a session is started.
    */
   async devinOptions(): Promise<Record<string, unknown>> {
     const environment = devinChildEnvironment({ ...process.env, ...this.environment });
@@ -6819,8 +6989,14 @@ export class WebReadRequests {
     return {
       available: true,
       permissionModes: DEVIN_PERMISSION_MODES.map((id) => ({ id })),
-      models: (await this.#devinCatalog(executable, environment)).families,
+      ...devinModelOptions(await this.#devinCatalog(executable, environment)),
     };
+  }
+
+  async #readDevinCatalog() {
+    const environment = devinChildEnvironment({ ...process.env, ...this.environment });
+    const executable = devinExecutable(environment);
+    return executable ? this.#devinCatalog(executable, environment) : emptyDevinModelCatalog();
   }
 
   async #devinCatalog(executable: string, environment: NodeJS.ProcessEnv) {

@@ -157,10 +157,11 @@ export function newSessionPresets(agent: NewSessionAgent, options: NewSessionOpt
 export interface NewSessionSelection {
   agent: NewSessionAgent;
   workspaceId: string;
-  /** The model and effort picked in the composer; empty for the Agent's defaults. */
+  /** The model and settings picked in the composer; empty for the Agent's defaults. */
   model?: string;
   effort?: string;
-  /** The model the composer shows, which a picked effort is sent with. */
+  serviceTierId?: string;
+  /** The model the composer shows, which a picked effort or tier is sent with. */
   shownModel?: string;
   /** The permission choice the person picked, if any. */
   permission?: string;
@@ -176,6 +177,7 @@ export interface NewSessionCreateFields {
   workspaceId: string;
   model?: string;
   effort?: string;
+  serviceTierId?: string;
   policyId?: string;
   permissionMode?: ClaudeStartMode | DevinStartMode;
   agentPreset?: string;
@@ -188,6 +190,7 @@ export function newSessionCreateFields(
   options: NewSessionOptions | undefined,
 ): NewSessionCreateFields {
   const { agent, workspaceId, model, effort, shownModel, permission, preset } = selection;
+  const serviceTierId = agent === "devin" ? selection.serviceTierId : undefined;
   const spec = PERMISSIONS[agent];
   const ids = offeredPermissions(agent, options, selection.fullAccess ?? true);
   const sent =
@@ -197,9 +200,10 @@ export function newSessionCreateFields(
     // Hosts that predate other Agents read a create without one as Codex.
     ...(agent !== "codex" ? { agent } : {}),
     workspaceId,
-    // A chosen effort applies to the model displayed by the composer.
-    ...(model || effort ? { model: model || shownModel } : {}),
+    // Effort and service tier apply to the model displayed by the composer.
+    ...(model || effort || serviceTierId ? { model: model || shownModel } : {}),
     ...(effort ? { effort } : {}),
+    ...(serviceTierId ? { serviceTierId } : {}),
     ...(spec && sent
       ? spec.field === "policyId"
         ? { policyId: sent }

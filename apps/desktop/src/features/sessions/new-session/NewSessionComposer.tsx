@@ -14,7 +14,6 @@ import {
   LoaderCircle,
   Plus,
   Search,
-  Shield,
   TriangleAlert,
   X,
 } from "lucide-react";
@@ -36,9 +35,7 @@ import { Disclosure, DisclosureSummary } from "@/components/ui/disclosure";
 import {
   DropdownMenu,
   DropdownMenuContent,
-  DropdownMenuGroup,
   DropdownMenuItem,
-  DropdownMenuLabel,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { Input } from "@/components/ui/input";
@@ -54,6 +51,7 @@ import {
   ComposerTextarea,
   ComposerToolbar,
 } from "../ComposerFrame";
+import { ComposerPermissionMenu } from "../ComposerPermissionMenu";
 import { codexCopy, codexReason } from "../conversation/features/sessions/codex-copy";
 import { ComposerModelPicker } from "../conversation/features/sessions/composer-model-picker";
 import { isSendEnter, useEnterSends } from "../conversation/features/sessions/composer-shortcuts";
@@ -100,6 +98,7 @@ export function NewSessionComposer(props: NewSessionComposerProps) {
     target.agent && !notInstalled?.has(target.agent) ? target.agent : "codex",
   );
   const isCodex = agent === "codex";
+  const isDevin = agent === "devin";
   const [workspaceId, setWorkspaceId] = useState(target.workspaceId ?? "");
   const workspace =
     workspaces.find((item) => item.id === workspaceId) ??
@@ -112,6 +111,8 @@ export function NewSessionComposer(props: NewSessionComposerProps) {
     scope: string;
     model: string;
     effort: string;
+    serviceTierId?: string;
+    exactModel?: string;
   }>();
   const [agentPreset, setAgentPreset] = useState<string>();
   const [sending, setSending] = useState(false);
@@ -178,6 +179,7 @@ export function NewSessionComposer(props: NewSessionComposerProps) {
     const defaults = {
       modelId: defaultModel?.id ?? reported ?? undefined,
       effort: options.defaults?.effort ?? undefined,
+      serviceTierId: options.defaults?.serviceTierId ?? undefined,
     };
     return {
       sessionId: "",
@@ -190,7 +192,7 @@ export function NewSessionComposer(props: NewSessionComposerProps) {
         effort: available,
         mode: unavailable,
         policy: unavailable,
-        serviceTier: unavailable,
+        serviceTier: isDevin && options.serviceTiers?.length ? available : unavailable,
         restoreDefaults: available,
       },
       options: {
@@ -201,19 +203,28 @@ export function NewSessionComposer(props: NewSessionComposerProps) {
           group: item.group,
           efforts: item.efforts ?? [],
           defaultEffort: item.defaultEffort,
-          serviceTierIds: [],
+          serviceTierIds: isDevin ? (item.serviceTierIds ?? []) : [],
+          variants: item.variants,
+          maxContextTokens: item.maxContextTokens,
         })),
         policies: [],
-        serviceTiers: [],
+        serviceTiers: isDevin ? (options.serviceTiers ?? []) : [],
       },
     };
-  }, [options]);
-  const { model = "", effort = "" } = modelDraft?.scope === modelScope ? modelDraft : {};
+  }, [options, isDevin]);
+  const {
+    model = "",
+    effort = "",
+    serviceTierId,
+    exactModel,
+  } = modelDraft?.scope === modelScope ? modelDraft : {};
   const modelId = model || modelSettings?.defaults.modelId;
   const chosenModelDefaultEffort = isCodex
     ? modelSettings?.options.models.find((item) => item.id === model)?.defaultEffort
     : undefined;
   const shownEffort = effort || (model ? chosenModelDefaultEffort : modelSettings?.defaults.effort);
+  const shownTier =
+    (serviceTierId ?? (!model ? modelSettings?.defaults.serviceTierId : undefined)) || undefined;
   const permissions = newSessionPermissions(agent, options, locale);
   const shownPermission = permissions?.choices.find(
     (item) => item.id === (permission ?? permissions.initial),
@@ -242,8 +253,9 @@ export function NewSessionComposer(props: NewSessionComposerProps) {
       {
         agent,
         workspaceId: workspace.id,
-        model,
+        model: exactModel ?? model,
         effort,
+        serviceTierId,
         shownModel: modelId,
         permission,
         preset: agentPreset,
@@ -266,7 +278,7 @@ export function NewSessionComposer(props: NewSessionComposerProps) {
 
   // Devin CLI's own login or workspace trust stopped the session from starting: offer to open it.
   const terminalDetail = session.failure?.detail?.replaceAll("_", "-");
-  const terminalAction = agent === "devin" ? devinTerminalAction(terminalDetail) : undefined;
+  const terminalAction = isDevin ? devinTerminalAction(terminalDetail) : undefined;
   const openDevinTerminal = async () => {
     if (!terminalAction || !terminalDetail || !workspace) return;
     const words = devinTerminalCopy(locale);
@@ -524,7 +536,7 @@ export function NewSessionComposer(props: NewSessionComposerProps) {
                 <Plus size={20} aria-hidden />
               </ComposerIconButton>
               {permissions && shownPermission && (
-                <PermissionMenu
+                <ComposerPermissionMenu
                   label={shownPermission.name}
                   title={permissions.title}
                   risky={shownPermission.risky}
@@ -544,17 +556,48 @@ export function NewSessionComposer(props: NewSessionComposerProps) {
                   key={modelScope}
                   locale={locale}
                   settings={modelSettings}
-                  selection={{ modelId, effort: shownEffort }}
+                  selection={{ modelId, effort: shownEffort, serviceTierId: shownTier }}
                   disabled={locked}
                   saving={false}
                   side={side}
                   modelDefault={!isCodex}
                   effortDefault={!isCodex}
-                  clearEffort={!isCodex && !!effort}
+                  nativeVariants={isDevin}
+                  clearEffort={!isCodex && !isDevin && !!effort}
                   onOpen={() => undefined}
                   onChange={async (change) => {
                     if (change.restoreDefaults) {
                       setModelDraft(undefined);
+                    } else if (isDevin) {
+                      const nextModel = change.model ?? modelId;
+                      const chosen = modelSettings.options.models.find(
+                        (item) => item.id === nextModel,
+                      );
+                      if (!chosen) return;
+                      const nextTier =
+                        change.serviceTierId === null
+                          ? undefined
+                          : (change.serviceTierId ?? (change.model ? undefined : shownTier));
+                      const nextEffort = change.effort ?? (change.model ? undefined : shownEffort);
+                      const tierCandidates =
+                        change.serviceTierId !== undefined && !nextEffort
+                          ? chosen.variants?.filter((item) => item.serviceTierId === nextTier)
+                          : undefined;
+                      const tierVariant =
+                        tierCandidates?.length === 1 ? tierCandidates[0] : undefined;
+                      if (tierCandidates && !tierVariant) return;
+                      setModelDraft({
+                        scope: modelScope,
+                        model: chosen.id,
+                        effort: nextEffort ?? tierVariant?.effort ?? "",
+                        serviceTierId: nextTier ?? "",
+                        // Disabling Fast can select a concrete standard variant with no effort.
+                        // A bare family slug would leave the choice to Devin again.
+                        exactModel:
+                          change.serviceTierId === null && !tierVariant?.effort
+                            ? tierVariant?.id
+                            : undefined,
+                      });
                     } else if (change.model !== undefined) {
                       const chosen = modelSettings.options.models.find(
                         (item) => item.id === change.model,
@@ -619,70 +662,6 @@ function Notice({
       <div className="min-w-0 flex-1">{children}</div>
       {action}
     </div>
-  );
-}
-
-function PermissionMenu({
-  label,
-  title,
-  risky = false,
-  disabled,
-  side,
-  items,
-  selected,
-  onSelect,
-}: {
-  label: string;
-  title: string;
-  risky?: boolean;
-  disabled: boolean;
-  side: "top" | "bottom";
-  items: { id: string; name: string; description: string; risky?: boolean }[];
-  selected?: string;
-  onSelect: (id: string) => void;
-}) {
-  return (
-    <DropdownMenu>
-      <DropdownMenuTrigger
-        render={
-          <Button
-            variant="ghost"
-            className={cn(chip, "h-11", risky && "text-orange-600 hover:text-orange-700")}
-            disabled={disabled}
-          />
-        }
-        aria-label={`${title}: ${label}`}
-      >
-        <Shield className="size-3.5 shrink-0" aria-hidden />
-        <span className="truncate @max-[28rem]:sr-only">{label}</span>
-        <ChevronDown className="size-3.5 shrink-0" aria-hidden />
-      </DropdownMenuTrigger>
-      <DropdownMenuContent side={side} className="w-72">
-        <DropdownMenuGroup>
-          <DropdownMenuLabel>{title}</DropdownMenuLabel>
-          {items.map((item) => (
-            <DropdownMenuItem
-              key={item.id}
-              className={cn("items-start", item.risky && "text-orange-600")}
-              onClick={() => onSelect(item.id)}
-            >
-              <span className="grid min-w-0 flex-1">
-                <span>{item.name}</span>
-                <span
-                  className={cn(
-                    "text-xs",
-                    item.risky ? "text-orange-600/80" : "text-muted-foreground",
-                  )}
-                >
-                  {item.description}
-                </span>
-              </span>
-              {item.id === selected && <Check className="mt-0.5 size-4" aria-hidden />}
-            </DropdownMenuItem>
-          ))}
-        </DropdownMenuGroup>
-      </DropdownMenuContent>
-    </DropdownMenu>
   );
 }
 

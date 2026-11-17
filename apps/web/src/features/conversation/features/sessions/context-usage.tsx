@@ -226,7 +226,9 @@ export function ContextUsageDetails({
       : awaitingCliReport
         ? copy.awaitingCliReportDetail
         : historical
-          ? copy.historicalDetail
+          ? usage.reason === "devin-last-model-request"
+            ? copy.devinLastRequest
+            : copy.historicalDetail
           : (contextUsageReason(locale, usage?.reason, "web") ??
             (state === "pending"
               ? copy.pendingDetail

@@ -989,7 +989,9 @@ export function CodexComposerControls({
                           ? { model }
                           : {}),
                         ...(settings.writable.effort.available &&
-                        (isClaude ? editedClaudeSettings.current.has("effort") : effort)
+                        (isClaude
+                          ? editedClaudeSettings.current.has("effort")
+                          : effort && (!isDevin || editedClaudeSettings.current.has("effort")))
                           ? { effort: effort || null }
                           : {}),
                         ...(!isClaude && !isDevin && mode && modeWritable ? { mode } : {}),

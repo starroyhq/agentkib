@@ -622,6 +622,13 @@ export interface CodexCapabilities {
   commands?: ClaudeCommandEntry[];
 }
 export type SessionCapabilities = CodexCapabilities;
+export interface DevinModelVariantOption {
+  id: string;
+  name?: string;
+  effort?: string;
+  serviceTierId?: string;
+  maxContextTokens?: number;
+}
 export interface ManagedOptions {
   available: boolean;
   reason?: string;
@@ -634,9 +641,13 @@ export interface ManagedOptions {
     efforts?: string[];
     isDefault?: boolean;
     defaultEffort?: string;
+    serviceTierIds?: string[];
+    maxContextTokens?: number;
+    variants?: DevinModelVariantOption[];
   }[];
   /** The model and effort the Agent reports for a new session. */
-  defaults?: { model?: string | null; effort?: string | null };
+  defaults?: { model?: string | null; effort?: string | null; serviceTierId?: string | null };
+  serviceTiers?: { id: string; name: string; description?: string }[];
   /** Codex: the execution policies a session can start with. */
   policies?: { id: string; name: string; description?: string }[];
   permissionModes?: {
@@ -681,6 +692,8 @@ export interface ManagedActionBody {
   name?: string;
   model?: string;
   effort?: string;
+  /** Devin: the service tier another variant of the same model provides. */
+  serviceTierId?: string;
   /** Claude Code: confirm this startup choice against the native catalog for the workspace. */
   verifyStartupModel?: true;
   /** Claude Code's permission mode, or Devin's, which applies to each whole turn. */
@@ -761,6 +774,8 @@ export interface CodexSettingValues {
   mode?: string;
   policyId?: string;
   serviceTierId?: string;
+  /** Model window limit, independent of this conversation's token consumption. */
+  maxContextTokens?: number;
   permissionMode?: ClaudePermissionMode | DevinPermissionMode;
 }
 export interface CodexSessionSettings {
@@ -801,10 +816,16 @@ export interface CodexSessionSettings {
       efforts: string[];
       defaultEffort?: string;
       serviceTierIds: string[];
+      maxContextTokens?: number;
+      variants?: DevinModelVariantOption[];
     }[];
     policies: { id: string; name: string; description?: string }[];
     serviceTiers: { id: string; name: string; description?: string }[];
-    permissionModes?: { id: ClaudePermissionMode; name: string; description?: string }[];
+    permissionModes?: {
+      id: ClaudePermissionMode | DevinPermissionMode;
+      name: string;
+      description?: string;
+    }[];
   };
   usage?: CodexTokenUsage;
 }

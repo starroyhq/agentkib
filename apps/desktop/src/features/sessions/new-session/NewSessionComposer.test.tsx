@@ -470,6 +470,97 @@ describe("NewSessionComposer", () => {
     });
   });
 
+  it("submits a supported Devin effort and Fast variant and shows its model capacity", async () => {
+    const catalog: ManagedOptions = {
+      ...options.devin,
+      models: [
+        {
+          id: "opus",
+          name: "Opus",
+          efforts: ["low", "medium", "high"],
+          serviceTierIds: ["fast"],
+          variants: [
+            { id: "opus-low", effort: "low", maxContextTokens: 200_000 },
+            { id: "opus-medium", effort: "medium", maxContextTokens: 400_000 },
+            { id: "opus-high", effort: "high", maxContextTokens: 600_000 },
+            {
+              id: "opus-medium-fast",
+              effort: "medium",
+              serviceTierId: "fast",
+              maxContextTokens: 800_000,
+            },
+            {
+              id: "opus-high-fast",
+              effort: "high",
+              serviceTierId: "fast",
+              maxContextTokens: 1_000_000,
+            },
+          ],
+        },
+      ],
+      serviceTiers: [{ id: "fast", name: "Fast" }],
+    };
+    doubles.client.managedOptions.mockResolvedValue(catalog);
+    doubles.client.managedAction.mockResolvedValue({ accepted: true, sessionId: "created" });
+    renderComposer({ initial: { agent: "devin" } });
+
+    fireEvent.click(
+      await screen.findByRole("button", { name: `${modelCopy.chooseModel}: Default` }),
+    );
+    fireEvent.click(await screen.findByRole("button", { name: "Opus" }));
+    const slider = await screen.findByRole("slider", { name: modelCopy.chooseEffort });
+    expect(screen.getByRole("button", { name: modelCopy.fast })).toBeDisabled();
+    fireEvent.keyDown(slider, { key: "Home" });
+    await waitFor(() =>
+      expect(screen.getByRole("button", { name: modelCopy.fast })).toBeDisabled(),
+    );
+    fireEvent.keyDown(slider, { key: "End" });
+    const fast = screen.getByRole("button", { name: modelCopy.fast });
+    await waitFor(() => expect(fast).toBeEnabled());
+    fireEvent.click(fast);
+    await waitFor(() => expect(fast).toHaveAttribute("aria-pressed", "true"));
+    await userEvent.setup().keyboard("{Escape}");
+
+    await write("Review the routes");
+    fireEvent.click(send());
+    await waitFor(() => expect(doubles.client.managedAction).toHaveBeenCalledOnce());
+    expect(doubles.client.managedAction.mock.calls[0]![1]).toMatchObject({
+      agent: "devin",
+      model: "opus",
+      effort: "high",
+      serviceTierId: "fast",
+      prompt: "Review the routes",
+    });
+  });
+
+  it("can start a Devin session using a standalone context window variant", async () => {
+    const standard = { id: "opus", maxContextTokens: 200_000 };
+    const long = { id: "opus-1m", maxContextTokens: 1_000_000 };
+    doubles.client.managedOptions.mockResolvedValue({
+      ...options.devin,
+      models: [
+        { id: "opus", name: "Opus", variants: [standard, long] },
+        { ...long, name: "Opus 1M", variants: [long] },
+      ],
+    } satisfies ManagedOptions);
+    doubles.client.managedAction.mockResolvedValue({ accepted: true, sessionId: "created" });
+    renderComposer({ initial: { agent: "devin" } });
+    fireEvent.click(
+      await screen.findByRole("button", { name: `${modelCopy.chooseModel}: Default` }),
+    );
+    fireEvent.click(await screen.findByRole("button", { name: "Opus" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Opus 1M" }));
+    await userEvent.setup().keyboard("{Escape}");
+    await write("Review the routes");
+    fireEvent.click(send());
+    await waitFor(() => expect(doubles.client.managedAction).toHaveBeenCalledOnce());
+    expect(doubles.client.managedAction.mock.calls[0]![1]).toMatchObject({
+      agent: "devin",
+      model: "opus-1m",
+      prompt: "Review the routes",
+    });
+  });
+
   it("offers Devin CLI's own login in a terminal when Devin is not logged in", async () => {
     doubles.client.managedAction.mockRejectedValue(
       new ApiError(409, "devin-login-required", "not-dispatched"),

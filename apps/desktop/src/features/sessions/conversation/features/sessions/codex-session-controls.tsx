@@ -59,6 +59,7 @@ import {
 import { sessionAgentCopy } from "./session-agent-copy";
 import { ComposerModelPicker, type ComposerModelPickerHandle } from "./composer-model-picker";
 import { ComposerIconButton, ComposerToolbar } from "../../../ComposerFrame";
+import { ComposerPermissionMenu } from "../../../ComposerPermissionMenu";
 
 export type CodexResource = CodexContextResource;
 
@@ -119,8 +120,13 @@ function offersGoalAction(
   return true;
 }
 
-/** Devin CLI's permission modes, in the order its own client lists them. */
-const DEVIN_PERMISSION_IDS: string[] = ["auto", "accept-edits", "smart", "dangerous"];
+/** Permission mode IDs accepted by Devin's settings action. */
+const DEVIN_PERMISSION_IDS: readonly DevinPermissionMode[] = [
+  "auto",
+  "accept-edits",
+  "smart",
+  "dangerous",
+];
 
 export function CodexComposerControls({
   resources,
@@ -230,6 +236,7 @@ export function CodexComposerControls({
   const [goalDirty, setGoalDirty] = useState(false);
   const full = access?.device?.accessMode === "full";
   const [dialog, setDialog] = useState<"settings" | "goal" | "context">();
+  const [devinPermissionOpen, setDevinPermissionOpen] = useState(false);
   const [settings, setSettings] = useState<CodexSessionSettings>();
   const historyScope = `${selected}\0${access?.bootId ?? ""}\0${access?.device?.id ?? ""}`;
   const [historyRead, setHistoryRead] = useState<{
@@ -298,9 +305,11 @@ export function CodexComposerControls({
   const settingsUsage =
     settings?.sessionId === selected && !settings.usage?.historical ? settings.usage : undefined;
   const usageFallback =
-    contextUsagePercent(settingsUsage) !== undefined
-      ? settingsUsage
-      : (history?.usage ?? settingsUsage);
+    isDevin && settings?.sessionId === selected && !pendingSettings
+      ? settings.usage
+      : contextUsagePercent(settingsUsage) !== undefined
+        ? settingsUsage
+        : (history?.usage ?? settingsUsage);
   const usageView = useContextUsage(usageFallback);
 
   const applySettings = useCallback(
@@ -485,6 +494,7 @@ export function CodexComposerControls({
       deviceId: access?.device?.id,
     };
     setDialog(undefined);
+    setDevinPermissionOpen(false);
     setSaved(false);
     setSaving(false);
     mutationFlight.current = undefined;
@@ -714,19 +724,40 @@ export function CodexComposerControls({
         : liveSettings?.current
       : undefined;
   const hasPermissionPanel =
-    settingsReadable && (isCodex || isClaude || isDevin || !!settings?.options.policies?.length);
-  // Devin's modes in its own words, as the new-session composer offers them.
-  const devinPermissions = isDevin
-    ? new Map(
-        (
-          newSessionPermissions(
-            "devin",
-            { available: true, permissionModes: DEVIN_PERMISSION_IDS.map((id) => ({ id })) },
-            locale,
-          )?.choices ?? []
-        ).map((choice) => [choice.id, choice]),
-      )
-    : undefined;
+    !isDevin && settingsReadable && (isCodex || isClaude || !!settings?.options.policies?.length);
+  const showingDevinPermissions = isDevin && settingsReadable;
+  const devinSettings = settings?.sessionId === selected ? settings : undefined;
+  const devinPermissions =
+    showingDevinPermissions && devinSettings?.available
+      ? newSessionPermissions(
+          "devin",
+          { available: true, permissionModes: devinSettings.options.permissionModes },
+          locale,
+        )
+      : undefined;
+  const devinPermission = devinPermissions?.choices.find(
+    (item) => item.id === displayedSettings?.permissionMode,
+  );
+  const devinPermissionLocked =
+    disabled ||
+    !online ||
+    busy ||
+    saving ||
+    running ||
+    feature("settings")?.available !== true ||
+    (devinSettings?.available === true && !devinSettings.writable.permissionMode?.available);
+  const devinPermissionStatus =
+    !devinSettings?.available || settingsReadStale
+      ? (reasonTitle(settingsError || devinSettings?.reason) ?? layout.connecting)
+      : !devinPermissions
+        ? copy.settingUnavailable
+        : settingsChangedHere && devinSettings.applicationStatus === "unknown"
+          ? layout.settingsUnknown
+          : undefined;
+  const changeDevinPermissionOpen = (open: boolean) => {
+    setDevinPermissionOpen(open);
+    if (open && (!devinSettings?.available || settingsReadStale)) void load();
+  };
   const openControls = (next: "settings" | "goal") => {
     setDialog(next);
     if (next === "settings") prepareSettings();
@@ -761,6 +792,11 @@ export function CodexComposerControls({
   }, [onPlan, planOn, planAvailable]);
   useImperativeHandle(controlsRef, () => ({
     open: (next) => {
+      if (next === "settings" && isDevin) {
+        if (!full || !showingDevinPermissions || devinPermissionLocked) return false;
+        changeDevinPermissionOpen(true);
+        return true;
+      }
       if (!full || disabled || !(next === "settings" ? hasPermissionPanel : goalReadable))
         return false;
       openControls(next);
@@ -834,7 +870,7 @@ export function CodexComposerControls({
     policy !== displayedSettings?.policyId
       ? { policyId: policy }
       : {}),
-    ...((isClaude || isDevin) &&
+    ...(isClaude &&
     permissionMode &&
     settings?.writable.permissionMode?.available &&
     permissionMode !== displayedSettings?.permissionMode
@@ -918,6 +954,11 @@ export function CodexComposerControls({
 
   return (
     <>
+      {showingDevinPermissions && mutationError && (
+        <p role="alert" className="px-1 text-xs text-destructive-text">
+          {reason(mutationError)}
+        </p>
+      )}
       {notice === "notDispatched" &&
         (isClaude
           ? noticeReason === "claude-model-unsupported" ||
@@ -958,6 +999,38 @@ export function CodexComposerControls({
               >
                 <Plus size={20} />
               </ComposerIconButton>
+            )}
+            {showingDevinPermissions && (
+              <ComposerPermissionMenu
+                title={agentCopy.nextTurnPermission}
+                label={devinPermission?.name ?? agentCopy.permission}
+                risky={devinPermission?.risky}
+                selected={devinPermission?.id}
+                disabled={devinPermissionLocked}
+                disabledReason={
+                  running
+                    ? copy.settingsWhileRunning
+                    : reasonTitle(
+                        devinSettings?.writable.permissionMode?.reason ??
+                          feature("settings")?.reason,
+                      )
+                }
+                side="top"
+                open={devinPermissionOpen}
+                onOpenChange={changeDevinPermissionOpen}
+                status={devinPermissionStatus}
+                items={devinPermissions?.choices ?? []}
+                onSelect={(id) => {
+                  const permission = DEVIN_PERMISSION_IDS.find((mode) => mode === id);
+                  if (
+                    permission &&
+                    !devinPermissionLocked &&
+                    !devinPermissionStatus &&
+                    id !== devinPermission?.id
+                  )
+                    void mutate("settings", { permissionMode: permission });
+                }}
+              />
             )}
             {hasPermissionPanel && (
               <Button
@@ -1003,7 +1076,14 @@ export function CodexComposerControls({
         trailing={
           <>
             {advancedActions}
-            <ContextUsageGauge fallback={usageFallback} />
+            <ContextUsageGauge
+              fallback={usageFallback}
+              limit={
+                isDevin && settings?.sessionId === selected
+                  ? displayedSettings?.maxContextTokens
+                  : undefined
+              }
+            />
             {settingsReadable && (
               <ComposerModelPicker
                 key={`${selected}\0${access?.bootId ?? ""}\0${access?.device?.id ?? ""}\0${usageEpoch ?? ""}`}
@@ -1034,6 +1114,7 @@ export function CodexComposerControls({
                 }}
                 // Claude Code and DeepSeek Harness report no effort for the model's own default.
                 effortDefault={managedAgent !== null}
+                nativeVariants={isDevin}
                 clearEffort={isClaude && live?.executionMode === "claude-managed"}
                 onChange={async (fields) => {
                   await mutate("settings", fields);
@@ -1057,7 +1138,7 @@ export function CodexComposerControls({
           <span className="truncate">{goal.goal.objective}</span>
         </Button>
       )}
-      {dialog === "settings" && (
+      {!isDevin && dialog === "settings" && (
         <Dialog
           panel
           bodyClassName="space-y-5 bg-muted/5"
@@ -1140,7 +1221,7 @@ export function CodexComposerControls({
                 <ContextUsageDetails {...usageView} locale={locale} online={online} />
               </div>
               <div className="grid gap-3 sm:grid-cols-2">
-                {isClaude || isDevin ? (
+                {isClaude ? (
                   <label className="block space-y-1 text-sm">
                     {agentCopy.permission}
                     <Select
@@ -1149,7 +1230,7 @@ export function CodexComposerControls({
                       onValueChange={(value) => {
                         editSettings();
                         if (value && value !== unknownModeValue)
-                          setPermissionMode(value as ClaudePermissionMode | DevinPermissionMode);
+                          setPermissionMode(value as ClaudePermissionMode);
                       }}
                     >
                       <SelectTrigger
@@ -1158,11 +1239,9 @@ export function CodexComposerControls({
                       >
                         <SelectValue placeholder={agentCopy.permissionUnknown}>
                           {permissionMode
-                            ? (devinPermissions?.get(permissionMode)?.name ??
-                              settings.options.permissionModes?.find(
+                            ? (settings.options.permissionModes?.find(
                                 (item) => item.id === permissionMode,
-                              )?.name ??
-                              permissionMode)
+                              )?.name ?? permissionMode)
                             : agentCopy.permissionUnknown}
                         </SelectValue>
                       </SelectTrigger>
@@ -1173,15 +1252,10 @@ export function CodexComposerControls({
                             {agentCopy.permissionUnknown}
                           </SelectItem>
                           {settings.options.permissionModes
-                            ?.filter((item) =>
-                              (isDevin
-                                ? DEVIN_PERMISSION_IDS
-                                : ["default", "plan", "acceptEdits"]
-                              ).includes(item.id),
-                            )
+                            ?.filter((item) => ["default", "plan", "acceptEdits"].includes(item.id))
                             .map((item) => (
                               <SelectItem key={item.id} value={item.id}>
-                                {devinPermissions?.get(item.id)?.name ?? item.name}
+                                {item.name}
                               </SelectItem>
                             ))}
                         </SelectGroup>
@@ -1189,14 +1263,14 @@ export function CodexComposerControls({
                     </Select>
                     {!settings.writable.permissionMode?.available &&
                       settingReason(settings.writable.permissionMode?.reason)}
-                    {(devinPermissions?.get(permissionMode)?.description ??
-                      settings.options.permissionModes?.find((item) => item.id === permissionMode)
-                        ?.description) && (
+                    {settings.options.permissionModes?.find((item) => item.id === permissionMode)
+                      ?.description && (
                       <small className="block text-muted-foreground">
-                        {devinPermissions?.get(permissionMode)?.description ??
+                        {
                           settings.options.permissionModes?.find(
                             (item) => item.id === permissionMode,
-                          )?.description}
+                          )?.description
+                        }
                       </small>
                     )}
                   </label>

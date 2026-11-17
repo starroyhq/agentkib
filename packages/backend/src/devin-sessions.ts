@@ -38,6 +38,8 @@ const MAX_TOOL_JSON_CHARS = 4 * 1024 * 1024;
 const MAX_IMAGE_CHARS = 4 * Math.ceil((8 * 1024 * 1024) / 3);
 const MAX_DOCUMENT_IMAGE_CHARS = 32 * 1024 * 1024;
 const MAX_SEARCH_CHARS = 64 * 1024;
+const MAX_CONTEXT_REPORT_NODES = 64;
+const MAX_CONTEXT_REPORT_NODE_BYTES = 256 * 1024;
 const SESSION_ID = /^[A-Za-z0-9][A-Za-z0-9._-]{0,255}$/;
 /** `app_state.schema_compat_version` values whose message format this reader was verified with. */
 const COMPATIBLE_SCHEMAS = new Set(["0"]);
@@ -283,6 +285,25 @@ const CONTINUE_TEXTS = JSON.stringify(Object.values(AUTO_CONTINUE_TEXT));
 const integer = (value: unknown) =>
   typeof value === "number" && Number.isSafeInteger(value) ? value : null;
 const nonEmpty = (value: unknown) => (typeof value === "string" && value ? value : null);
+// Read only numeric context metadata, one indexed parent at a time, and avoid parsing huge nodes.
+const CONTEXT_REPORT_NODE = `WITH bounded AS MATERIALIZED (
+  SELECT parent_node_id AS parent, created_at AS created,
+    CASE WHEN octet_length(chat_message)<=?3 AND json_valid(chat_message) THEN chat_message END AS message,
+    CASE
+      WHEN metadata IS NULL THEN 0
+      WHEN octet_length(metadata)<=?3 AND json_valid(metadata)
+        THEN coalesce(json_type(metadata,'$.summarized_from')<>'null',0)
+      ELSE 1
+    END AS boundary
+  FROM message_nodes WHERE session_id=?1 AND node_id=?2
+)
+SELECT parent,created,boundary,json_extract(message,'$.role') AS role,
+  json_type(message,'$.metadata.is_user_input') AS input,
+  json_extract(message,'$.metadata.generation_model') AS model,
+  CASE WHEN json_type(message,'$.metadata.metrics.context_input_tokens')='integer'
+    THEN json_extract(message,'$.metadata.metrics.context_input_tokens') END AS tokens,
+  json_extract(message,'$.metadata.created_at') AS reported
+FROM bounded`;
 function nodeRow(row: Row): Node {
   let calls: Call[] = [];
   if (typeof row.calls === "string")
@@ -684,6 +705,46 @@ export class DevinSessions {
         : null;
     });
     return value ?? null;
+  }
+
+  /** Context tokens from the last model request on the active main chain. */
+  lastContextInput(ref: string, workspace: string, model: string) {
+    try {
+      return (
+        this.#read((source) => {
+          if (!source.history) return;
+          const session = ownedSession(source, ref, workspace);
+          if (source.db.prepare("SELECT model FROM sessions WHERE id=?").get(ref)?.model !== model)
+            return;
+          const node = source.db.prepare(CONTEXT_REPORT_NODE);
+          const visited = new Set<number>();
+          let head = session.head;
+          while (head !== null && visited.size < MAX_CONTEXT_REPORT_NODES && !visited.has(head)) {
+            visited.add(head);
+            const row = node.get(ref, head, MAX_CONTEXT_REPORT_NODE_BYTES);
+            if (!row || row.boundary !== 0) return;
+            if (row.role === "assistant") {
+              // Stop at the latest generation, even if Devin did not report its metrics.
+              const usedTokens = integer(row.tokens);
+              if (row.model !== model || usedTokens === null || usedTokens < 0) return;
+              const updatedAt = jsonTimestamp(row.reported) ?? jsonTimestamp(row.created);
+              return { usedTokens, ...(updatedAt ? { updatedAt } : {}) };
+            }
+            if (
+              row.role !== "system" &&
+              row.role !== "tool" &&
+              (row.role !== "user" || row.input !== "false")
+            )
+              return;
+            head = integer(row.parent);
+          }
+          return undefined;
+        }) ?? undefined
+      );
+    } catch {
+      // An unreadable snapshot only removes the report; the catalog can still give its limit.
+      return undefined;
+    }
   }
 
   /** Sessions whose working directory is inside `workspace`; null lists every session. */

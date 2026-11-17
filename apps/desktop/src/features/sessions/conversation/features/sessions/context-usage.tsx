@@ -224,7 +224,9 @@ function contextUsageMessage({
   return compacting
     ? copy.compactingDetail
     : usage?.historical
-      ? copy.historicalDetail
+      ? usage.reason === "devin-last-model-request"
+        ? copy.devinLastRequest
+        : copy.historicalDetail
       : !online && usage?.reason !== "permission_denied" && usage?.reason !== "permission-denied"
         ? copy.offline
         : awaitingCliReport
@@ -276,11 +278,22 @@ export function ContextUsageDetails({
   );
 }
 
-export function ContextUsageGauge({ fallback }: { fallback?: ContextUsage } = {}) {
+export function ContextUsageGauge({
+  fallback,
+  limit,
+}: { fallback?: ContextUsage; limit?: number } = {}) {
   const { selected, locale, access, live, online, usageEpoch } = useSession();
   const scope = `${selected}\0${access?.bootId ?? ""}\0${access?.device?.id ?? ""}\0${usageEpoch ?? ""}\0${live?.connectionGeneration ?? ""}`;
   const view = useContextUsage(fallback);
-  return <ContextUsageIndicator scope={scope} locale={locale} online={online} view={view} />;
+  return (
+    <ContextUsageIndicator
+      scope={scope}
+      locale={locale}
+      online={online}
+      view={view}
+      limit={limit}
+    />
+  );
 }
 
 export function ContextUsageIndicator({
@@ -288,11 +301,13 @@ export function ContextUsageIndicator({
   locale,
   online,
   view,
+  limit,
 }: {
   scope: string;
   locale: Locale;
   online: boolean;
   view: ContextUsageView;
+  limit?: number;
 }) {
   const copy = contextUsageCopy[locale];
   const title = codexCopy[locale].contextUsage;
@@ -319,8 +334,17 @@ export function ContextUsageIndicator({
     : undefined;
   const fresh =
     view.state === "ready" && !historyLabel && !view.compacting && !view.awaitingCliReport;
+  const capacity =
+    !reported && limit !== undefined && Number.isSafeInteger(limit) && limit > 0
+      ? copy.capacity.replace("{total}", new Intl.NumberFormat(locale).format(limit))
+      : undefined;
+  const message =
+    capacity && !view.compacting
+      ? copy.unavailableDetail
+      : contextUsageMessage({ ...view, locale, online });
   const description = [
-    !fresh && contextUsageMessage({ ...view, locale, online }),
+    !fresh && message,
+    capacity,
     !view.compacting && historyLabel,
     reported && !view.compacting && proportions,
     reported && !view.compacting && tokens,
@@ -375,7 +399,8 @@ export function ContextUsageIndicator({
         sideOffset={8}
       >
         <p className="text-muted-foreground">{copy.windowTitle}</p>
-        {!fresh && <p className="mt-1">{contextUsageMessage({ ...view, locale, online })}</p>}
+        {!fresh && <p className="mt-1">{message}</p>}
+        {capacity && <p className="mt-1">{capacity}</p>}
         {reported && !view.compacting && (
           <>
             {!fresh && (

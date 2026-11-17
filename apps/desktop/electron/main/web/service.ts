@@ -2732,6 +2732,9 @@ export class WebAccessService {
     const applicationStatus = data.applicationStatus ?? data.settings?.applicationStatus;
     const defaults = data.defaults ?? data.settings?.defaults;
     const writable = data.writable ?? data.settings?.writable;
+    const devin = data.executionMode === "devin-print";
+    const contextLimit = (value: unknown) =>
+      typeof value === "number" && Number.isSafeInteger(value) && value > 0 ? value : undefined;
     const stringList = (value: unknown, max = 32) =>
       Array.isArray(value)
         ? [
@@ -2757,7 +2760,7 @@ export class WebAccessService {
           ].slice(0, 32)
         : [];
     const models = Array.isArray(data.models)
-      ? data.models.slice(0, 64).flatMap((value) => {
+      ? data.models.slice(0, devin ? 256 : 64).flatMap((value) => {
           if (!value || typeof value !== "object") return [];
           const model = value as Record<string, unknown>;
           const id = this.optionalString(model.id, 128);
@@ -2773,6 +2776,25 @@ export class WebAccessService {
           );
           // The provider an agent lists the model under (DeepSeek Harness).
           const group = this.optionalString(model.group, 256);
+          const maxContextTokens = devin ? contextLimit(model.maxContextTokens) : undefined;
+          const variants =
+            devin && Array.isArray(model.variants)
+              ? model.variants.slice(0, 128).flatMap((entry) => {
+                  if (!entry || typeof entry !== "object") return [];
+                  const variant = entry as Record<string, unknown>;
+                  const id = this.optionalString(variant.id, 128);
+                  if (!id) return [];
+                  return [
+                    {
+                      id,
+                      name: this.optionalString(variant.name, 256),
+                      effort: this.optionalString(variant.effort, 128),
+                      serviceTierId: this.optionalString(variant.serviceTierId, 128),
+                      maxContextTokens: contextLimit(variant.maxContextTokens),
+                    },
+                  ];
+                })
+              : undefined;
           return [
             {
               id,
@@ -2784,6 +2806,8 @@ export class WebAccessService {
               serviceTierIds: tierIds(
                 model.serviceTierIds ?? model.serviceTiers ?? model.service_tiers,
               ),
+              ...(maxContextTokens ? { maxContextTokens } : {}),
+              ...(variants?.length ? { variants } : {}),
             },
           ];
         })
@@ -2840,13 +2864,16 @@ export class WebAccessService {
       ...(value(current, "serviceTier", "serviceTierId")
         ? { serviceTierId: value(current, "serviceTier", "serviceTierId") }
         : {}),
+      ...(devin && contextLimit(current?.maxContextTokens)
+        ? { maxContextTokens: contextLimit(current?.maxContextTokens) }
+        : {}),
     });
     const reason = this.optionalString(data.reason);
     const codex = isCodexMode(data.executionMode);
     const historicalModel = codex ? value(data.historicalSettings, "modelId") : undefined;
     const historicalEffort = codex ? value(data.historicalSettings, "effort") : undefined;
     const liveUsage = this.projectUsage(usage);
-    const historicalUsage = codex ? this.projectUsage(data.historicalUsage) : undefined;
+    const historicalUsage = codex || devin ? this.projectUsage(data.historicalUsage) : undefined;
     const projectedUsage =
       historicalUsage?.historical &&
       (!liveUsage?.available ||
@@ -3723,6 +3750,7 @@ export class WebAccessService {
       }
       if (operation === "rename") params.name = this.field(body.name, 200);
       if (operation === "settings") {
+        const devin = capabilities.executionMode === "devin-print";
         const usesFullAccessFields =
           body.serviceTierId !== undefined ||
           body.policyId !== undefined ||
@@ -3780,14 +3808,15 @@ export class WebAccessService {
         const effort =
           body.effort === null &&
           (capabilities.executionMode === "claude-managed" ||
-            capabilities.executionMode === "codex-managed")
+            capabilities.executionMode === "codex-managed" ||
+            devin)
             ? null
             : body.effort === undefined
               ? undefined
               : this.field(body.effort, 128);
         const mode = body.mode === undefined ? undefined : this.field(body.mode, 128);
         const serviceTier =
-          body.serviceTierId === null && capabilities.executionMode === "codex-managed"
+          body.serviceTierId === null && (capabilities.executionMode === "codex-managed" || devin)
             ? null
             : body.serviceTierId === undefined
               ? undefined
@@ -3814,7 +3843,6 @@ export class WebAccessService {
           params.effort = effort;
         }
         if (body.permissionMode !== undefined) {
-          const devin = capabilities.executionMode === "devin-print";
           if (capabilities.executionMode !== "claude-managed" && !devin)
             throw new HttpError(400, "unsupported_permission_mode");
           ensureWritable("permissionMode");
@@ -4574,7 +4602,8 @@ export class WebAccessService {
       if (agent === "deepseek-harness" && body.agentPreset !== undefined)
         params.agentPreset = this.field(body.agentPreset, 128);
       if (agent === "devin") {
-        if (body.effort !== undefined) throw new HttpError(400, "unsupported_effort");
+        if (body.serviceTierId !== undefined)
+          params.serviceTier = this.field(body.serviceTierId, 128);
         if (body.permissionMode !== undefined) {
           const mode = String(body.permissionMode);
           if (!DEVIN_PERMISSION_MODES.includes(mode))

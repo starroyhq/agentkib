@@ -281,6 +281,9 @@ export class SessionReaders {
   devinSessionModel(nativeRef: string): string | null {
     return this.#devin.model(nativeRef);
   }
+  devinLastContextInput(nativeRef: string, workspace: string, model: string) {
+    return this.#devin.lastContextInput(nativeRef, workspace, model);
+  }
   antigravityReadHandoff(nativeRef: string) {
     return this.#antigravity.readHandoff(nativeRef);
   }

@@ -296,7 +296,11 @@ export function useNewSession({
   return {
     /** False while access is read, and on a device that cannot start sessions. */
     ready: controls,
+    client,
+    resourceAuthority: JSON.stringify([access?.bootId, access?.device?.id]),
     fullAccess: controls && access.device?.accessMode === "full",
+    advancedAccess:
+      controls && access.device?.accessMode === "full" && access.device.advancedControl === true,
     options,
     optionsData: controls ? options.data : undefined,
     optionsAccessDenied: options.data?.accessDenied === true,

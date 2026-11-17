@@ -5,6 +5,7 @@ import { useState } from "react";
 import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { UploadedAttachment } from "@agentkib/web-client";
+import { composerAddCopy } from "@agentkib/session-ui";
 import { SessionComposer } from "./session-composer";
 import { codexCopy } from "./codex-copy";
 import type { SessionController } from "./use-session-controller";
@@ -124,17 +125,23 @@ describe("composer drafts across connection changes", () => {
     const pick = vi.spyOn(input, "click").mockImplementation(() => undefined);
     const add = screen.getByRole("button", { name: copy.addContext });
     fireEvent.click(add);
-    fireEvent.click(await screen.findByRole("button", { name: copy.uploadFromPhone }));
+    fireEvent.click(
+      await screen.findByRole("button", { name: composerAddCopy("en-US").attachment }),
+    );
     expect(pick).toHaveBeenCalledOnce();
     expect(add).toHaveAttribute("aria-expanded", "false");
 
     fireEvent.click(add);
-    expect(await screen.findByRole("button", { name: copy.uploadFromPhone })).toBeEnabled();
+    expect(
+      await screen.findByRole("button", { name: composerAddCopy("en-US").attachment }),
+    ).toBeEnabled();
     doubles.session.capabilities = { ...doubles.session.capabilities!, sessionId: "previous" };
     rerender(<SessionComposer />);
     expect(add).toBeDisabled();
     expect(add).toHaveAttribute("title", copy.permission);
-    expect(screen.queryByRole("button", { name: copy.uploadFromPhone })).not.toBeInTheDocument();
+    expect(
+      screen.queryByRole("button", { name: composerAddCopy("en-US").attachment }),
+    ).not.toBeInTheDocument();
     expect(pick).toHaveBeenCalledOnce();
   });
 

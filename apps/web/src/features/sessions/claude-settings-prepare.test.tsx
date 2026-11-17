@@ -4,7 +4,7 @@ import { createRef, type RefObject } from "react";
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { sessionProviderCapabilities, type CodexSessionSettings } from "@agentkib/web-client";
-import { composerModelCopy } from "@agentkib/session-ui";
+import { composerGoalCopy, composerModelCopy, newSessionCopy } from "@agentkib/session-ui";
 import {
   CodexComposerControls,
   type ComposerControlsHandle,
@@ -84,6 +84,90 @@ async function openModelList(model = "Claude session") {
 }
 
 describe("Claude settings preparation", () => {
+  it("keeps an imported goal draft local and disables saving if the advertised feature disappears", async () => {
+    const base = state.capabilities!;
+    state.controlReady = true;
+    state.client.sessionGoals = vi.fn();
+    const settingsWhileEditing = deferred();
+    vi.mocked(state.client.sessionSettings).mockReturnValue(settingsWhileEditing.promise);
+    const capabilities = {
+      ...base,
+      features: { ...base.features, "goal-draft": { available: true } },
+    };
+    state.capabilities = capabilities;
+    const onStageGoal = vi.fn();
+    const view = render(<CodexComposerControls {...props} onStageGoal={onStageGoal} />);
+    const copy = composerGoalCopy("en-US");
+    const addLabel = codexCopy["en-US"].addContext;
+    fireEvent.click(screen.getByRole("button", { name: addLabel }));
+    const add = within(await screen.findByRole("dialog", { name: addLabel }));
+    fireEvent.click(add.getByRole("button", { name: copy.title }));
+    const editor = within(await screen.findByRole("dialog", { name: copy.title }));
+    fireEvent.change(editor.getByRole("textbox", { name: copy.objective }), {
+      target: { value: "  Review the imported session  " },
+    });
+    fireEvent.change(editor.getByRole("spinbutton", { name: copy.budget }), {
+      target: { value: "10" },
+    });
+    await act(async () => settingsWhileEditing.resolve(settings()));
+    expect(editor.getByRole("textbox", { name: copy.objective })).toHaveValue(
+      "  Review the imported session  ",
+    );
+    expect(editor.getByRole("spinbutton", { name: copy.budget })).toHaveValue(10);
+
+    state.capabilities = base;
+    view.rerender(<CodexComposerControls {...props} onStageGoal={onStageGoal} />);
+    const save = editor.getByRole("button", { name: copy.saveDraft });
+    expect(save).toBeDisabled();
+    fireEvent.click(save);
+    expect(onStageGoal).not.toHaveBeenCalled();
+
+    state.capabilities = capabilities;
+    view.rerender(<CodexComposerControls {...props} onStageGoal={onStageGoal} />);
+    expect(save).toBeEnabled();
+    fireEvent.click(save);
+    expect(onStageGoal).toHaveBeenCalledExactlyOnceWith({
+      objective: "Review the imported session",
+      tokenBudget: 10,
+    });
+    expect(state.client.sessionGoals).not.toHaveBeenCalled();
+    expect(state.client.prepareSessionSettings).not.toHaveBeenCalled();
+    expect(state.codexAction).not.toHaveBeenCalled();
+  });
+
+  it("reserves Claude settings controls before reading the session's capabilities", async () => {
+    const capabilities = state.capabilities;
+    state = {
+      ...state,
+      access: {
+        ...state.access!,
+        status: "approved",
+        device: { ...state.access!.device!, advancedControl: true },
+      },
+      capabilities: undefined,
+    };
+    const picker = composerModelCopy["en-US"];
+    const { rerender } = render(<CodexComposerControls {...props} />);
+    const model = screen.getByRole("button", { name: picker.modelSettings });
+    const permissions = screen.getByRole("button", { name: sessionAgentCopy["en-US"].permission });
+    expect(model).toBeDisabled();
+    expect(permissions).toBeDisabled();
+    fireEvent.click(model);
+    fireEvent.click(permissions);
+    await act(async () => {});
+    expect(state.client.sessionSettings).not.toHaveBeenCalled();
+    expect(state.client.prepareSessionSettings).not.toHaveBeenCalled();
+    expect(state.codexAction).not.toHaveBeenCalled();
+
+    state = { ...state, capabilities };
+    rerender(<CodexComposerControls {...props} />);
+    expect(
+      await screen.findByRole("button", { name: /^Select reasoning effort: Claude session/ }),
+    ).toBeEnabled();
+    expect(state.client.sessionSettings).toHaveBeenCalledWith("session", "claude-code");
+    expect(state.client.prepareSessionSettings).not.toHaveBeenCalled();
+  });
+
   it("opens the existing catalog when the provider does not offer preparation", async () => {
     const declared = sessionProviderCapabilities("claude-code")!;
     vi.mocked(state.client.sessionSettings).mockResolvedValue({
@@ -131,7 +215,8 @@ describe("Claude settings preparation", () => {
       fireEvent.click(
         await screen.findByRole("button", { name: new RegExp(`^${title}(?:: ${title})?$`) }),
       );
-      const item = await screen.findByRole("menuitem", { name: "Default" });
+      const manual = newSessionCopy(locale).permissions["claude-code"].choices.default.name;
+      const item = await screen.findByRole("menuitem", { name: new RegExp(`^${manual}`) });
       await waitFor(() => expect(item).not.toHaveAttribute("aria-disabled", "true"));
       expect(item).not.toHaveAttribute("aria-current", "true");
       expect(screen.getByRole("menu", { name: title })).not.toHaveTextContent(/Codex/);

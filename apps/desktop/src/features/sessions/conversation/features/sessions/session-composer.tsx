@@ -6,8 +6,11 @@ import {
   claudeSlashOptions,
   codexCommandPrompt,
   codexSlashOptions,
-  ComposerAddAction,
-  ComposerAddMenu,
+  ComposerPrimaryAction,
+  ComposerToolbar,
+  SessionComposerAddMenu,
+  SessionComposerInput,
+  useNewSessionGoalDraft,
   dshSlashOptions,
   slashCommandCopy,
   sessionContinuationCopy,
@@ -20,22 +23,12 @@ import {
 } from "@agentkib/session-ui";
 import { SessionBusyChoice } from "./session-busy-choice";
 import { SessionReadOnly } from "./session-read-only";
-import { isSendEnter, useEnterSends } from "./composer-shortcuts";
 import { runningSendAction, useSendWhileRunning } from "../preferences/send-while-running";
 import { HistoryReferenceChips } from "../history/history-search-controls";
 import { validHistoryMessage } from "../history/history-reference-model";
 import { useEffect, useId, useMemo, useRef, useState } from "react";
 import { toast } from "sonner";
-import {
-  ArrowUp,
-  AlertTriangle,
-  CornerDownRight,
-  ListPlus,
-  MoreHorizontal,
-  Paperclip,
-  Square,
-  X,
-} from "lucide-react";
+import { AlertTriangle, CornerDownRight, ListPlus, MoreHorizontal, X } from "lucide-react";
 import {
   CODEX_MENU_COMMANDS,
   claudeCommandDecision,
@@ -45,14 +38,7 @@ import {
   type UploadedAttachment,
 } from "@agentkib/web-client";
 import { Button } from "@/components/ui/button";
-import {
-  ComposerFrame,
-  ComposerIconButton,
-  ComposerTextarea,
-  ComposerToolbar,
-} from "../../../ComposerFrame";
 import { Disclosure, DisclosureSummary } from "@/components/ui/disclosure";
-import { Input } from "@/components/ui/input";
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -140,13 +126,19 @@ export function SessionComposer({
   const [restrictedAddOpen, setRestrictedAddOpen] = useState(false);
   const [submitted, setSubmitted] = useState(false);
   const submitPending = useRef(false);
-  const composing = useRef(false);
-  const enterSends = useEnterSends();
   // While the agent runs, Send queues the message or adds it to the running turn, as this
   // device chose in preferences; the menu beside Send offers both either way.
   const runningAction = runningSendAction(useSendWhileRunning());
   const [error, setError] = useState("");
   const [resources, setResources] = useState<CodexResource[]>([]);
+  const {
+    value: startupGoal,
+    load: loadStartupGoal,
+    confirmFirstMessage,
+    handled: startupGoalHandled,
+    discard: startupGoalDiscarded,
+    stage: stageGoal,
+  } = useNewSessionGoalDraft(selected);
   const [previewKey, setPreviewKey] = useState<string>();
   const previewUrls = useRef(new Map<string, string>());
   const active = useRef(new Map<string, AbortController>());
@@ -221,7 +213,6 @@ export function SessionComposer({
     setRestrictedAddOpen(false);
     setSubmitted(false);
     submitPending.current = false;
-    composing.current = false;
     setError("");
     setCommandNotice(undefined);
     setPreviewKey(undefined);
@@ -365,7 +356,11 @@ export function SessionComposer({
     const draft = takeNewSessionDraft(selected);
     if (!draft) return;
     setMessage(draft.text);
-    firstMessage.current = draft.send ? { sessionId: selected, text: draft.text } : undefined;
+    setResources(draft.resources ?? []);
+    loadStartupGoal(draft, draft.send);
+    const hasMessage = !!draft.text.trim() || draft.files.length > 0;
+    firstMessage.current =
+      draft.send && hasMessage ? { sessionId: selected, text: draft.text } : undefined;
     if (!draft.files.length) return;
     if (uploadPermission) void add(draft.files);
     else {
@@ -383,6 +378,7 @@ export function SessionComposer({
       setError(codexReason(locale, capabilities.features.attachments?.reason).text);
     }
   }, [
+    loadStartupGoal,
     selected,
     online,
     controlReady,
@@ -502,6 +498,7 @@ export function SessionComposer({
                   ...(action === "steer" ? { turnId: live?.turnId } : {}),
                 });
       if (result && requestGeneration === generation.current) {
+        if (action === "send" && !mapped) confirmFirstMessage(live?.revision);
         for (const url of previewUrls.current.values()) URL.revokeObjectURL(url);
         previewUrls.current.clear();
         setPreviewKey(undefined);
@@ -561,24 +558,13 @@ export function SessionComposer({
   const runningLabel = runningAction === "steer" ? copy.steer : copy.queueAdd;
   const primaryAction =
     canStop && live?.executionMode !== "claude-follower" ? (
-      <ComposerIconButton
-        type="button"
-        variant="outline"
-        aria-label={t.stop}
-        onClick={() => void control("stop")}
-      >
-        <Square size={17} />
-      </ComposerIconButton>
+      <ComposerPrimaryAction label={t.stop} kind="stop" onStop={() => void control("stop")} />
     ) : (
-      <ComposerIconButton
-        type="submit"
-        compact
-        aria-label={runningReady ? runningLabel : t.send}
+      <ComposerPrimaryAction
+        label={runningReady ? runningLabel : t.send}
         title={runningReady ? runningLabel : undefined}
         disabled={((!canSubmit || compacting) && !runningReady) || !valid || submitted}
-      >
-        <ArrowUp size={20} />
-      </ComposerIconButton>
+      />
     );
   const advancedActions =
     (running || compacting) &&
@@ -690,191 +676,162 @@ export function SessionComposer({
         />
       )}
       {current?.agent === "deepseek-harness" && <DshQueue key={selected} />}
-      <ComposerFrame
-        onSubmit={(event) => {
-          event.preventDefault();
+      <SessionComposerInput
+        editorContextKey={selected}
+        editor={{
+          id: "message",
+          "aria-label": t.message,
+          value: composerValue,
+          maxLength: MAX_MESSAGE_LENGTH,
+          onChange: (event) => setMessage(event.target.value),
+          placeholder: planState.on
+            ? copy.planPlaceholder
+            : isCodex || isClaude
+              ? continuation.placeholder
+              : t.message,
+          onFocus: () => {
+            if (isCodex || isClaude) void session.checkContinuation?.();
+          },
+          disabled: busy || submitted,
+          ...slash.inputProps,
+        }}
+        onSubmit={() => {
           if (canSubmit && !compacting) void send("send");
           else if (runningReady) void send(runningAction);
         }}
-      >
-        <label className="sr-only" htmlFor="message">
-          {t.message}
-        </label>
-        <ComposerTextarea
-          id="message"
-          value={composerValue}
-          maxLength={MAX_MESSAGE_LENGTH}
-          onChange={(event) => setMessage(event.target.value)}
-          placeholder={
-            planState.on
-              ? copy.planPlaceholder
-              : isCodex || isClaude
-                ? continuation.placeholder
-                : t.message
-          }
-          onFocus={() => {
-            if (isCodex || isClaude) void session.checkContinuation?.();
-          }}
-          disabled={busy || submitted}
-          {...slash.inputProps}
-          onCompositionStart={() => {
-            composing.current = true;
-          }}
-          onCompositionEnd={() => {
-            composing.current = false;
-          }}
-          onBlur={() => {
-            composing.current = false;
-          }}
-          onKeyDown={(event) => {
-            if (slash.onKeyDown(event, composing.current)) return;
-            if (!enterSends || !isSendEnter(event, composing.current)) return;
-            event.preventDefault();
-            if (
-              !event.repeat &&
-              !event.currentTarget.disabled &&
-              ((canSubmit && !compacting) || runningReady) &&
-              valid &&
-              !submitPending.current
-            )
-              event.currentTarget.form?.requestSubmit();
-          }}
-          onPaste={(event) => {
-            const files = Array.from(event.clipboardData.files);
-            if (files.length && uploadPermission) {
-              event.preventDefault();
-              void add(files);
-            }
-          }}
-        />
-        {slash.menu}
-        <HistoryReferenceChips />
-        {uploads.length > 0 && (
-          <ul className="space-y-2">
-            {uploads.map((item) => (
-              <li key={item.key} className="flex items-center gap-2 text-xs">
-                {item.previewUrl && (
-                  <Button
-                    type="button"
-                    variant="outline"
-                    className="size-11 shrink-0 overflow-hidden p-0"
-                    aria-label={`${copy.previewAttachment}: ${item.name}`}
-                    onClick={() => setPreviewKey(item.key)}
-                  >
-                    <img
-                      src={item.previewUrl}
-                      alt=""
-                      className="size-full object-cover"
-                      onError={() => unavailablePreview(item.key)}
-                    />
-                  </Button>
-                )}
-                <span className="min-w-0 flex-1 truncate">{item.name}</span>
-                <span role="status">
-                  {item.failed
-                    ? copy.uploadFailed
-                    : item.result
-                      ? "100%"
-                      : `${copy.uploading} ${item.percent}%`}
-                </span>
-                <Button
-                  type="button"
-                  variant="ghost"
-                  size="sm"
-                  className="size-11 shrink-0 p-0"
-                  aria-label={`${copy.remove}: ${item.name}`}
-                  disabled={busy || submitted}
-                  onClick={() => void remove(item)}
-                >
-                  <X size={14} />
-                </Button>
-              </li>
-            ))}
-          </ul>
-        )}
-        {preview?.previewUrl && (
-          <Dialog
-            title={`${copy.previewAttachment}: ${preview.name}`}
-            closeLabel={copy.close}
-            onClose={() => setPreviewKey(undefined)}
-          >
-            <img
-              src={preview.previewUrl}
-              alt={preview.name}
-              className="mx-auto max-h-[65dvh] max-w-full object-contain"
-              onError={() => unavailablePreview(preview.key)}
-            />
-          </Dialog>
-        )}
-        <div className="space-y-2">
-          <Input
-            ref={fileInput}
-            className="hidden"
-            type="file"
-            multiple
-            aria-label={copy.attachment}
-            disabled={attachmentDisabled}
-            onChange={(event) => {
-              void add(Array.from(event.target.files ?? []));
-              event.target.value = "";
-            }}
-          />
-          {fullAccess && (
-            <CodexComposerControls
-              controlsRef={controls}
-              resources={resources}
-              setResources={setResources}
-              openPhoneFiles={() => fileInput.current?.click()}
-              disabled={busy || submitted || !online}
-              action={primaryAction}
-              advancedActions={advancedActions}
-              onPlan={setPlanState}
-            />
-          )}
-          {!fullAccess && (
-            <ComposerToolbar
-              leading={
-                <ComposerAddMenu
-                  label={copy.addContext}
-                  disabled={attachmentDisabled}
-                  disabledReason={
-                    uploadPermission
-                      ? undefined
-                      : isClaude && live?.executionMode === "claude-follower"
-                        ? claudeConnectionCopy[locale].attachments
-                        : capabilities?.sessionId === selected &&
-                            capabilities.features.attachments?.reason
-                          ? codexReason(locale, capabilities.features.attachments.reason).text
-                          : copy.permission
-                  }
-                  open={restrictedAddOpen && !attachmentDisabled}
-                  onOpenChange={setRestrictedAddOpen}
-                >
-                  {uploadPermission && (
-                    <ComposerAddAction
-                      label={copy.attachment}
-                      icon={<Paperclip aria-hidden="true" className="size-4" />}
-                      title={copy.attachmentNote}
-                      disabled={attachmentDisabled}
-                      onClick={() => {
-                        setRestrictedAddOpen(false);
-                        fileInput.current?.click();
-                      }}
-                    />
-                  )}
-                </ComposerAddMenu>
-              }
-              trailing={
-                <>
-                  {advancedActions}
-                  <ContextUsageGauge />
-                  {primaryAction}
-                </>
-              }
-            />
-          )}
-        </div>
-      </ComposerFrame>
+        onEditorKeyDown={slash.onKeyDown}
+        canSubmitFromKeyboard={() =>
+          ((canSubmit && !compacting) || runningReady) && valid && !submitPending.current
+        }
+        attachments={{
+          inputRef: fileInput,
+          label: copy.attachment,
+          disabled: attachmentDisabled,
+          onFiles: (files) => void add(files),
+        }}
+        afterEditor={
+          <>
+            {slash.menu}
+            <HistoryReferenceChips />
+            {uploads.length > 0 && (
+              <ul className="space-y-2">
+                {uploads.map((item) => (
+                  <li key={item.key} className="flex items-center gap-2 text-xs">
+                    {item.previewUrl && (
+                      <Button
+                        type="button"
+                        variant="outline"
+                        className="size-11 shrink-0 overflow-hidden p-0"
+                        aria-label={`${copy.previewAttachment}: ${item.name}`}
+                        onClick={() => setPreviewKey(item.key)}
+                      >
+                        <img
+                          src={item.previewUrl}
+                          alt=""
+                          className="size-full object-cover"
+                          onError={() => unavailablePreview(item.key)}
+                        />
+                      </Button>
+                    )}
+                    <span className="min-w-0 flex-1 truncate">{item.name}</span>
+                    <span role="status">
+                      {item.failed
+                        ? copy.uploadFailed
+                        : item.result
+                          ? "100%"
+                          : `${copy.uploading} ${item.percent}%`}
+                    </span>
+                    <Button
+                      type="button"
+                      variant="ghost"
+                      size="sm"
+                      className="size-11 shrink-0 p-0"
+                      aria-label={`${copy.remove}: ${item.name}`}
+                      disabled={busy || submitted}
+                      onClick={() => void remove(item)}
+                    >
+                      <X size={14} />
+                    </Button>
+                  </li>
+                ))}
+              </ul>
+            )}
+            {preview?.previewUrl && (
+              <Dialog
+                title={`${copy.previewAttachment}: ${preview.name}`}
+                closeLabel={copy.close}
+                onClose={() => setPreviewKey(undefined)}
+              >
+                <img
+                  src={preview.previewUrl}
+                  alt={preview.name}
+                  className="mx-auto max-h-[65dvh] max-w-full object-contain"
+                  onError={() => unavailablePreview(preview.key)}
+                />
+              </Dialog>
+            )}
+          </>
+        }
+        toolbar={
+          <div className="space-y-2">
+            {fullAccess && (
+              <CodexComposerControls
+                controlsRef={controls}
+                resources={resources}
+                setResources={setResources}
+                openPhoneFiles={() => fileInput.current?.click()}
+                disabled={busy || submitted || !online}
+                action={primaryAction}
+                advancedActions={advancedActions}
+                onPlan={setPlanState}
+                startupGoal={startupGoal}
+                onStartupGoalHandled={startupGoalHandled}
+                onStartupGoalDiscarded={startupGoalDiscarded}
+                onStageGoal={stageGoal}
+              />
+            )}
+            {!fullAccess && (
+              <ComposerToolbar
+                leading={
+                  <SessionComposerAddMenu
+                    locale={locale}
+                    label={copy.addContext}
+                    disabled={attachmentDisabled}
+                    disabledReason={
+                      uploadPermission
+                        ? undefined
+                        : isClaude && live?.executionMode === "claude-follower"
+                          ? claudeConnectionCopy[locale].attachments
+                          : capabilities?.sessionId === selected &&
+                              capabilities.features.attachments?.reason
+                            ? codexReason(locale, capabilities.features.attachments.reason).text
+                            : copy.permission
+                    }
+                    open={restrictedAddOpen && !attachmentDisabled}
+                    onOpenChange={setRestrictedAddOpen}
+                    attachment={
+                      uploadPermission
+                        ? {
+                            disabled: attachmentDisabled,
+                            reason: copy.attachmentNote,
+                            onPick: () => fileInput.current?.click(),
+                          }
+                        : undefined
+                    }
+                  />
+                }
+                trailing={
+                  <>
+                    {advancedActions}
+                    <ContextUsageGauge />
+                    {primaryAction}
+                  </>
+                }
+              />
+            )}
+          </div>
+        }
+      />
       {!isClaude && access?.device?.accessMode !== "full" && (
         <Disclosure className="px-3 text-xs text-muted-foreground">
           <DisclosureSummary className="min-h-11 cursor-pointer content-center">

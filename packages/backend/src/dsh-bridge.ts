@@ -2247,6 +2247,7 @@ export class DshBridge {
     available: boolean;
     reason?: string;
     agentPresets?: DshBridgeAgentPreset[];
+    nativeGoals?: true;
     models?: ReturnType<typeof modelChoices>;
     defaults?: { model: string | null; effort: string | null };
   }> {
@@ -2280,6 +2281,7 @@ export class DshBridge {
     const defaultEffort = catalog?.default?.reasoningEffort;
     return {
       available: true,
+      ...(runtime.services.goals === true ? { nativeGoals: true } : {}),
       ...(roster?.success ? { agentPresets: roster.data.presets } : {}),
       ...(models.length
         ? {

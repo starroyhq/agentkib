@@ -17,6 +17,7 @@ describe("remote capabilities share device and workspace authorization", () => {
     deviceId: string;
   let service: WebAccessService, config: WebConfig;
   const managed = vi.fn();
+  const claude = vi.fn();
   const runtime = vi.fn();
   async function api(path: string, body?: unknown) {
     return fetch(`${origin}/api/web/v1/${path}`, {
@@ -35,7 +36,9 @@ describe("remote capabilities share device and workspace authorization", () => {
       body: body === undefined ? undefined : JSON.stringify(body),
     });
   }
-  async function pair(grants: { files?: boolean; manage?: boolean } = {}) {
+  async function pair(
+    grants: { files?: boolean; manage?: boolean; advancedControl?: boolean } = {},
+  ) {
     const access = await api("access");
     cookie = access.headers.get("set-cookie")!.split(";")[0];
     const data = await access.json();
@@ -46,6 +49,7 @@ describe("remote capabilities share device and workspace authorization", () => {
   beforeEach(async () => {
     cookie = "";
     managed.mockReset();
+    claude.mockReset();
     runtime.mockReset();
     dir = await mkdtemp(join(tmpdir(), "agentkib-remote-capabilities-"));
     root = join(dir, "project");
@@ -78,6 +82,8 @@ describe("remote capabilities share device and workspace authorization", () => {
       staticDir: root,
       runtimeRequest: runtime,
       managedRequest: managed,
+      claudeManagedRequest: claude,
+      verifiedClaudeManaged: true,
       verifiedCodex: true,
     });
     await service.initialize();
@@ -103,8 +109,42 @@ describe("remote capabilities share device and workspace authorization", () => {
     );
     expect(managed).not.toHaveBeenCalled();
   });
+  it("only exposes imported Claude goal drafts to full devices within an authorized workspace", async () => {
+    runtime.mockResolvedValue({
+      workspaces: [{ id: "w", name: "Project", path: root }],
+      sessions: [
+        { id: "claude", workspace_id: "w", agent: "claude-code" },
+        { id: "elsewhere", workspace_id: "unknown", agent: "claude-code" },
+      ],
+    });
+    claude.mockResolvedValue({
+      executionMode: "claude-managed",
+      features: { "goal-draft": { available: true }, "goal-set": { available: false } },
+    });
+    const capabilities = "managed/capabilities?agent=claude-code&sessionId=";
+    await pair({ advancedControl: true });
+    expect(await (await api(`${capabilities}claude`)).json()).toMatchObject({
+      features: { "goal-draft": { available: false, reason: "permission_denied" } },
+    });
+
+    cookie = "";
+    const access = await api("access");
+    cookie = access.headers.get("set-cookie")!.split(";")[0];
+    csrf = (await access.json()).csrfToken;
+    const { code } = await service.request({ operation: "generate-code" });
+    expect((await api("pair", { code: code!.value, name: "Phone" })).status).toBe(200);
+    expect(await (await api(`${capabilities}claude`)).json()).toMatchObject({
+      features: { "goal-draft": { available: true }, "goal-set": { available: false } },
+    });
+    expect((await api(`${capabilities}elsewhere`)).status).toBe(403);
+    expect(claude.mock.calls.map(([request]) => request.operation)).toEqual([
+      "capabilities",
+      "capabilities",
+    ]);
+  });
   it("lists only authorized roots and resolves explicit task references", async () => {
     await pair({ files: true });
+    expect((await api("managed/resources?workspaceId=w&agent=codex")).status).toBe(403);
     expect(await (await api("files/workspaces")).json()).toEqual({
       workspaces: [{ id: "w", name: "Project" }],
     });

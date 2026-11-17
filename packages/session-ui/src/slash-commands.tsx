@@ -308,6 +308,7 @@ export function useSlashCommandMenu({
   catalogKnown,
   locale,
   label,
+  side = "top",
   plan,
   onChoose,
 }: {
@@ -320,6 +321,8 @@ export function useSlashCommandMenu({
   locale: string;
   /** The list's accessible name; Claude Code's commands by default. */
   label?: string;
+  /** Which edge of the composer anchors the menu. */
+  side?: "top" | "bottom";
   /**
    * Plan mode, as Codex's composer offers it: `/plan` turns it on rather than going into the
    * draft, also typed after a space. `enter` says whether it could.
@@ -399,7 +402,9 @@ export function useSlashCommandMenu({
     return true;
   };
   const menu = open ? (
-    <div className="absolute inset-x-0 bottom-full z-30 mb-2 rounded-lg bg-popover p-1 text-popover-foreground shadow-md ring-1 ring-foreground/10">
+    <div
+      className={`absolute inset-x-0 z-30 rounded-lg bg-popover p-1 text-popover-foreground shadow-md ring-1 ring-foreground/10 ${side === "bottom" ? "top-full mt-2" : "bottom-full mb-2"}`}
+    >
       {listOpen ? (
         <ul
           ref={list}

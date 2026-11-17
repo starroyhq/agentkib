@@ -7,7 +7,7 @@ import {
   type ReactNode,
   type Ref,
 } from "react";
-import { ArrowLeft, ChevronRight, Folder, Goal, Lightbulb, Paperclip, X } from "lucide-react";
+import { X } from "lucide-react";
 import {
   ApiError,
   canDisplayCodexModelFallback,
@@ -24,21 +24,23 @@ import {
   type CodexSessionSettings,
 } from "@agentkib/web-client";
 import {
-  ComposerAddAction,
-  ComposerAddMenu,
+  ComposerGoalFields,
   ComposerModelPicker,
+  ComposerModeChip,
+  SessionComposerAddMenu,
   ComposerPermissionMenu,
-  ComposerPlanAction,
+  ComposerToolbar,
+  composerGoalCopy,
   codexPolicyLabel,
-  composerAddCopy,
   dshPolicyLabel,
   newSessionPermissions,
-  planModeCopy,
+  parseGoalDraft,
   sessionCollaborationMode,
+  sessionComposerCapabilities,
   type ComposerModelPickerHandle,
+  type NewSessionGoalDraft,
 } from "@agentkib/session-ui";
 import { Button } from "../../components/ui/button";
-import { Input } from "../../components/ui/input";
 import { Dialog } from "../../components/dialog";
 import { useSession } from "./session-context";
 import { composerLayoutCopy, composerTerm } from "./composer-layout-copy";
@@ -69,10 +71,11 @@ type CodexComposerControlsProps = {
   controlsRef?: Ref<ComposerControlsHandle>;
   /** Told when plan mode or the composer's ability to switch it changes. */
   onPlan?: (state: ComposerPlanState) => void;
+  startupGoal?: { value: NewSessionGoalDraft; apply: boolean; afterRevision?: number };
+  onStageGoal?: (goal: NewSessionGoalDraft) => void;
+  onStartupGoalHandled?: (applied: boolean) => void;
+  onStartupGoalDiscarded?: () => void;
 };
-
-/** Devin CLI's permission modes, in the order its own client lists them. */
-const DEVIN_PERMISSION_IDS: string[] = ["auto", "accept-edits", "smart", "dangerous"];
 
 function unavailable(error: unknown) {
   return error instanceof ApiError ? error.code : "request_failed";
@@ -126,6 +129,10 @@ export function CodexComposerControls({
   advancedActions,
   controlsRef,
   onPlan,
+  startupGoal,
+  onStageGoal,
+  onStartupGoalHandled,
+  onStartupGoalDiscarded,
 }: CodexComposerControlsProps) {
   const {
     current,
@@ -136,6 +143,7 @@ export function CodexComposerControls({
     live,
     busy,
     online,
+    controlReady,
     codexAction,
     capabilities,
     usageEpoch,
@@ -147,7 +155,7 @@ export function CodexComposerControls({
     t,
   } = useSession();
   const copy = codexCopyForSurface(locale, "web");
-  const addCopy = composerAddCopy(locale);
+  const goalCopy = composerGoalCopy(locale);
   const currentAgent =
     current?.id === selected && current.availability === "readable" ? current.agent : undefined;
   const modelDisplayScope = useRef({ access, agent: currentAgent });
@@ -156,38 +164,36 @@ export function CodexComposerControls({
   // Codex keeps its legacy route, which includes the last-used settings for inactive sessions.
   const managedAgent = current?.agent === "codex" ? null : managedAgentOf(current?.agent);
   const isDevin = managedAgent === "devin";
-  // Devin's modes in its own words, as the new-session composer offers them.
-  const devinPermissions = isDevin
-    ? new Map(
-        (
-          newSessionPermissions(
-            "devin",
-            { available: true, permissionModes: DEVIN_PERMISSION_IDS.map((id) => ({ id })) },
-            locale,
-          )?.choices ?? []
-        ).map((choice) => [choice.id, choice]),
-      )
-    : undefined;
   const agentCopy = sessionAgentCopy[locale];
-  const feature = (name: string) =>
-    (
-      capabilities?.features as
-        | Record<string, { available: boolean; reason?: string } | undefined>
-        | undefined
-    )?.[name];
-  const settingsReadable =
-    !managedAgent ||
-    feature("settings-state")?.available === true ||
-    feature("settings")?.available === true;
-  const goalReadable =
-    !managedAgent ||
-    ["goal", "goal-set", "goal-pause", "goal-resume", "goal-clear"].some(
-      (key) => feature(key)?.available,
-    );
-  const resourcesReadable =
-    !managedAgent ||
-    feature("resources")?.available === true ||
-    feature("context")?.available === true;
+  const {
+    feature,
+    settingsReadable,
+    settingsReadReason,
+    reservesModelSlot,
+    reservesPermissionSlot,
+    goalReadable,
+    goalDraftOffered,
+    resourcesReadable,
+    attachmentOffered,
+    attachmentAllowed,
+  } = sessionComposerCapabilities({
+    capabilities,
+    sessionId: selected,
+    legacyReads: !managedAgent,
+    attachmentsGranted: access?.device?.attachments === true,
+    settingsSlots:
+      isClaude &&
+      current.id === selected &&
+      access?.status === "approved" &&
+      access.device?.accessMode === "full" &&
+      access.device.advancedControl === true &&
+      (live?.sessionId !== selected ||
+        !live.executionMode ||
+        live.executionMode === "claude-managed")
+        ? sessionProviderCapabilities(current.agent)?.create
+        : undefined,
+  });
+  const offersGoalDraft = goalDraftOffered && !goalReadable && !!onStageGoal;
   const layout = composerLayoutCopy[locale];
   const term = (value: string) => composerTerm(locale, value);
   const reason = (code?: string) => codexReason(locale, code, "web").text;
@@ -233,18 +239,14 @@ export function CodexComposerControls({
   const modelPicker = useRef<ComposerModelPickerHandle>(null);
   const usage = useRef<ContextUsageHandle>(null);
   const [addOpen, setAddOpen] = useState(false);
-  const [browsingContext, setBrowsingContext] = useState(false);
-  const focusAddNavigation = useRef(false);
-  const focusNavigationRow = useCallback((row: HTMLDivElement | null) => {
-    if (!row || !focusAddNavigation.current) return;
-    focusAddNavigation.current = false;
-    row.querySelector("button")?.focus();
-  }, []);
   const [permissionsOpen, setPermissionsOpen] = useState(false);
   const goalDraftRevision = useRef<number | undefined>(undefined);
+  const attemptedStartupGoal = useRef<NewSessionGoalDraft | undefined>(undefined);
   const [goalDirty, setGoalDirty] = useState(false);
   const full = access?.device?.accessMode === "full";
-  const [goalOpen, setGoalOpen] = useState(false);
+  const [goalDialog, setGoalDialog] = useState<
+    { kind: "draft"; objective: string; budget: string } | { kind: "native" }
+  >();
   const [settings, setSettings] = useState<CodexSessionSettings>();
   const settingsScopeMatches =
     settings?.sessionId === selected &&
@@ -265,6 +267,7 @@ export function CodexComposerControls({
   const [mutationError, setMutationError] = useState("");
   const [resourceWarning, setResourceWarning] = useState("");
   const [saving, setSaving] = useState(false);
+  const mutationFlight = useRef<symbol | undefined>(undefined);
   const changingSettings = useRef(false);
   const [preparingSettings, setPreparingSettings] = useState(false);
   const settingsPreparation = useRef<symbol | undefined>(undefined);
@@ -282,7 +285,6 @@ export function CodexComposerControls({
         | "expectedRevision"
       >
     >();
-  const [query, setQuery] = useState("");
   const [objective, setObjective] = useState("");
   const [tokenBudget, setTokenBudget] = useState("");
   const compacting = live?.activity === "compacting";
@@ -348,7 +350,7 @@ export function CodexComposerControls({
         if (abort.signal.aborted || generation !== contextGeneration.current) return;
         setContext(value);
         setContextNames(names);
-        setQuery("");
+
         // A directory response is only a partial catalog. Missing references may
         // belong to another folder; the host revalidates every reference on send.
         const current = resourcesRef.current;
@@ -463,7 +465,10 @@ export function CodexComposerControls({
   useEffect(() => {
     loadGeneration.current++;
     goalDraftRevision.current = undefined;
+    attemptedStartupGoal.current = undefined;
     setGoalDirty(false);
+    setObjective("");
+    setTokenBudget("");
     setSettings(undefined);
     setGoal(undefined);
     setContext(undefined);
@@ -472,7 +477,7 @@ export function CodexComposerControls({
     contextLocation.current = { names: [] };
     setContextNames([]);
     setContextLoading(false);
-    setQuery("");
+
     // The composer owns selection resets and may have just restored a fork draft.
     // A host/device replacement still invalidates previously resolved context IDs.
     const previousScope = resourceScope.current;
@@ -490,10 +495,10 @@ export function CodexComposerControls({
       deviceId: access?.device?.id,
       advancedControl: access?.device?.advancedControl,
     };
-    setGoalOpen(false);
+    setGoalDialog(undefined);
     setAddOpen(false);
-    setBrowsingContext(false);
-    focusAddNavigation.current = false;
+    setSaving(false);
+
     setPermissionsOpen(false);
     settingsPreparation.current = undefined;
     setPreparingSettings(false);
@@ -505,6 +510,8 @@ export function CodexComposerControls({
     setResourceWarning("");
     return () => {
       loadGeneration.current++;
+      mutationFlight.current = undefined;
+      changingSettings.current = false;
       settingsPreparation.current = undefined;
       contextGeneration.current++;
       contextAbort.current?.abort();
@@ -637,18 +644,22 @@ export function CodexComposerControls({
       "requestId" | "bootId" | "sessionId" | "expectedRevision"
     > = {},
   ): Promise<boolean> {
-    if (!full || saving || compacting) return false;
+    if (!full || mutationFlight.current || compacting) return false;
     const settingsMutation = name === "settings";
     if (settingsMutation && (!settingsScopeMatches || !settings?.available)) return false;
     const readRevision = name === "settings" ? settings?.revision : goal?.revision;
     if (live?.revision !== undefined && readRevision !== live.revision) return false;
     const generation = loadGeneration.current;
+    const mutation = Symbol("settings-or-goal");
+    mutationFlight.current = mutation;
     changingSettings.current = settingsMutation;
     setSaving(true);
     setMutationError("");
     try {
       const result = await codexAction(name, fields);
-      if (!result || (settingsMutation && generation !== loadGeneration.current)) return false;
+      if (!result || mutationFlight.current !== mutation) return false;
+      if (name === "goal-set" && startupGoal) onStartupGoalHandled?.(true);
+      if (settingsMutation && generation !== loadGeneration.current) return false;
       if (settingsMutation) {
         setPendingSettings({ ...fields, expectedRevision: readRevision ?? 0 });
       }
@@ -659,12 +670,15 @@ export function CodexComposerControls({
       await load(false, settingsMutation ? "settings" : undefined);
       return true;
     } catch (error) {
-      if (!settingsMutation || generation === loadGeneration.current)
+      if (mutationFlight.current === mutation && generation === loadGeneration.current)
         setMutationError(unavailable(error));
       return false;
     } finally {
-      changingSettings.current = false;
-      setSaving(false);
+      if (mutationFlight.current === mutation) {
+        mutationFlight.current = undefined;
+        changingSettings.current = false;
+        setSaving(false);
+      }
     }
   }
 
@@ -672,13 +686,19 @@ export function CodexComposerControls({
   const goalReadStale = live?.revision !== undefined && goal?.revision !== live.revision;
   const closeAdd = () => {
     setAddOpen(false);
-    setBrowsingContext(false);
-    focusAddNavigation.current = false;
   };
   const openGoal = () => {
     closeAdd();
-    setGoalOpen(true);
-    if (goalReadStale) void load();
+    if (!goalReadable && (offersGoalDraft || startupGoal)) {
+      setGoalDialog({
+        kind: "draft",
+        objective: startupGoal?.value.objective ?? "",
+        budget: startupGoal?.value.tokenBudget?.toString() ?? "",
+      });
+    } else {
+      setGoalDialog({ kind: "native" });
+      if (goalReadable && goalReadStale) void load();
+    }
   };
   const prepareSettings = () => {
     if (!settingsReadable || !online) return;
@@ -722,33 +742,88 @@ export function CodexComposerControls({
     }
     if (settingsReadStale || !settings?.available || settingsError) void load(false, "settings");
   };
-  const availableResources = (context?.resources ?? []).filter((item) => {
-    const needle = query.trim().toLocaleLowerCase();
-    return !needle || `${item.name} ${item.description ?? ""}`.toLocaleLowerCase().includes(needle);
-  });
-  const resourceGroups = [
-    {
-      label: copy.computerFiles,
-      items: availableResources.filter((item) => item.kind === "file" || item.kind === "directory"),
-    },
-    {
-      label: copy.skillsPlugins,
-      items: availableResources.filter(
-        (item) => item.kind === "skill" || item.kind === "plugin" || item.kind === "app",
-      ),
-    },
-  ];
+  const stagedGoal = goalDirty ? undefined : startupGoal?.value;
+  const persistedGoal = goal?.sessionId === selected ? goal.goal : undefined;
+  const resetGoalEditor = () => {
+    goalDraftRevision.current = undefined;
+    setGoalDirty(false);
+    setObjective(persistedGoal?.objective ?? "");
+    setTokenBudget(persistedGoal?.tokenBudget?.toString() ?? "");
+  };
+  const closeGoal = () => {
+    setGoalDialog(undefined);
+  };
+  const discardStartupGoal = () => {
+    if (!onStartupGoalDiscarded || mutationFlight.current) return;
+    resetGoalEditor();
+    onStartupGoalDiscarded();
+  };
+  const disarmStartupGoal = () => {
+    if (!startupGoal?.apply || attemptedStartupGoal.current === startupGoal.value) return;
+    attemptedStartupGoal.current = startupGoal.value;
+    onStartupGoalHandled?.(false);
+  };
+  const goalObjective = stagedGoal?.objective ?? objective;
+  const goalBudget = stagedGoal ? (stagedGoal.tokenBudget?.toString() ?? "") : tokenBudget;
   const goalChanged = goalDirty && goalDraftRevision.current !== goal?.revision;
   const editGoal = () => {
     goalDraftRevision.current ??= goal?.revision;
+    if (stagedGoal) {
+      setObjective(goalObjective);
+      setTokenBudget(goalBudget);
+      disarmStartupGoal();
+    }
     setGoalDirty(true);
   };
   // DeepSeek Harness's permission preset changes at once during a turn; its model waits.
   const presetWhileRunning =
     running && managedAgent === "deepseek-harness" && settings?.writable.policy?.available === true;
-  const parsedBudget = tokenBudget ? Number(tokenBudget) : undefined;
+  const parsedBudget = goalBudget ? Number(goalBudget) : undefined;
   const budgetValid =
     parsedBudget === undefined || (Number.isSafeInteger(parsedBudget) && parsedBudget > 0);
+  const goalDraftEditor = goalDialog?.kind === "draft" ? goalDialog : undefined;
+  const goalDraftDisabled =
+    !offersGoalDraft ||
+    disabled ||
+    !online ||
+    !controlReady ||
+    busy ||
+    saving ||
+    compacting ||
+    notice === "uncertain";
+  const goalDraft = goalDraftEditor
+    ? parseGoalDraft(goalDraftEditor.objective, goalDraftEditor.budget)
+    : undefined;
+  const saveGoalDraft = () => {
+    if (goalDraftDisabled || !goalDraft) return;
+    onStageGoal?.(goalDraft);
+    closeGoal();
+  };
+  const goalFields = (fieldsDisabled: boolean, hideBudget: boolean) => (
+    <ComposerGoalFields
+      locale={locale}
+      objective={goalDraftEditor?.objective ?? goalObjective}
+      budget={goalDraftEditor?.budget ?? goalBudget}
+      disabled={fieldsDisabled}
+      hideBudget={hideBudget}
+      onObjectiveChange={(value) => {
+        if (goalDraftEditor) {
+          setGoalDialog({ ...goalDraftEditor, objective: value });
+          return;
+        }
+        editGoal();
+        setObjective(value);
+      }}
+      onBudgetChange={(value) => {
+        if (goalDraftEditor) {
+          setGoalDialog({ ...goalDraftEditor, budget: value });
+          return;
+        }
+        editGoal();
+        setTokenBudget(value);
+      }}
+    />
+  );
   // Codex's execution policies; for DeepSeek Harness, its permission presets.
   // The host names policies in English only; show Codex's and DeepSeek Harness's own wording
   // per locale, and the host's text for an id neither knows.
@@ -867,7 +942,7 @@ export function CodexComposerControls({
     visibleTier,
     cachedModel,
   ]);
-  const showModelPicker = settingsReadable || !!cachedModel;
+  const showModelPicker = settingsReadable || reservesModelSlot || !!cachedModel;
   const settingsControlScope = JSON.stringify([
     selected,
     access?.bootId,
@@ -889,41 +964,49 @@ export function CodexComposerControls({
     notice === "uncertain" ||
     live?.status === "outcome-unknown";
   const permissionsLocked = settingsLocked || (running && !presetWhileRunning);
-  const collaboration = sessionCollaborationMode(scopedSettings, selection, isClaude);
+  const collaboration = sessionCollaborationMode(scopedSettings, selection);
   const clearSavedMode =
     isCodex &&
     !collaboration &&
     scopedSettings?.writable.mode.available &&
     !!scopedSettings.selected?.mode;
-  const attachmentOffered =
-    capabilities?.sessionId === selected && feature("attachments")?.available === true;
-  const attachmentAllowed = attachmentOffered && access?.device?.attachments === true;
-  const canAdd = resourcesReadable || goalReadable || !!collaboration || attachmentAllowed;
   const collaborationLocked =
     settingsLocked || !collaboration?.writable || (running && managedAgent !== "deepseek-harness");
-  const planOn = isClaude ? selection?.permissionMode === "plan" : selection?.mode === "plan";
+  const canClearSavedMode = clearSavedMode && !settingsLocked && !running;
+  const canTurnOffPlan =
+    (!collaborationLocked && collaboration?.modes.includes("default")) || canClearSavedMode;
+  const planOn =
+    (collaboration?.field
+      ? selection?.[collaboration.field]
+      : (selection?.mode ?? selection?.permissionMode)) === "plan";
   const planAvailable = full && !collaborationLocked && !!collaboration?.modes.includes("plan");
   const toggledMode = planOn ? "default" : "plan";
   useEffect(() => {
     onPlan?.({ on: planOn, available: planAvailable });
   }, [onPlan, planOn, planAvailable]);
+  const permissionModes = scopedSettings?.options.permissionModes;
+  const permissionChoices = permissionsUseMode
+    ? newSessionPermissions(
+        isClaude ? "claude-code" : "devin",
+        { available: true, permissionModes },
+        locale,
+      )?.choices
+    : undefined;
   const permissionItems = permissionsUseMode
-    ? (scopedSettings?.options.permissionModes ?? [])
-        .filter((item) =>
-          isDevin
-            ? DEVIN_PERMISSION_IDS.includes(item.id)
-            : ["default", "acceptEdits"].includes(item.id),
-        )
-        .map((item) => ({
-          id: item.id,
-          name: devinPermissions?.get(item.id)?.name ?? item.name,
-          description: devinPermissions?.get(item.id)?.description ?? item.description ?? "",
-          risky: devinPermissions?.get(item.id)?.risky,
-          disabled:
-            permissionsLocked || scopedSettings?.writable.permissionMode?.available !== true,
-          selected: item.id === selection?.permissionMode,
-          change: { permissionMode: item.id },
-        }))
+    ? (permissionModes ?? []).flatMap(({ id }) => {
+        const choice = permissionChoices?.find((item) => item.id === id);
+        return choice
+          ? [
+              {
+                ...choice,
+                disabled:
+                  permissionsLocked || scopedSettings?.writable.permissionMode?.available !== true,
+                selected: id === selection?.permissionMode,
+                change: { permissionMode: id },
+              },
+            ]
+          : [];
+      })
     : (scopedSettings?.options.policies ?? []).map((item) => {
         const label = policyText(item);
         return {
@@ -942,7 +1025,9 @@ export function CodexComposerControls({
     ? scopedSettings?.writable.permissionMode
     : scopedSettings?.writable.policy;
   const showPermissions =
-    settingsReadable && (isCodex || permissionsUseMode || !!permissionItems.length);
+    reservesPermissionSlot ||
+    (settingsReadable && (isCodex || permissionsUseMode || !!permissionItems.length));
+  const permissionTriggerLocked = disabled || (reservesPermissionSlot && !settingsReadable);
   const writeStatus =
     settingsNotice?.status === "uncertain"
       ? layout.settingsUnknown
@@ -954,21 +1039,26 @@ export function CodexComposerControls({
   const permissionWriteStatus = settingsNotice?.target === "permissions" ? writeStatus : undefined;
   const modelWriteStatus = settingsNotice?.target === "model" ? writeStatus : undefined;
   const settingsStatus =
-    mutationError || settingsError
-      ? reason(mutationError || settingsError)
-      : preparingSettings || settingsReadStale
-        ? layout.connecting
-        : !scopedSettings?.available
-          ? (reasonTitle(scopedSettings?.reason) ?? copy.settingUnavailable)
-          : !settingsNotice && settingsChangedHere && scopedSettings.applicationStatus === "unknown"
-            ? layout.settingsUnknown
-            : running
-              ? presetWhileRunning
-                ? copy.settingsWhileRunningModel
-                : copy.settingsWhileRunning
-              : feature("settings")?.available !== true
-                ? reasonTitle(feature("settings")?.reason)
-                : undefined;
+    reservesModelSlot && !settingsReadable
+      ? (reasonTitle(settingsReadReason) ??
+        (capabilities?.sessionId === selected ? copy.settingUnavailable : layout.connecting))
+      : mutationError || settingsError
+        ? reason(mutationError || settingsError)
+        : preparingSettings || settingsReadStale
+          ? layout.connecting
+          : !scopedSettings?.available
+            ? (reasonTitle(scopedSettings?.reason) ?? copy.settingUnavailable)
+            : !settingsNotice &&
+                settingsChangedHere &&
+                scopedSettings.applicationStatus === "unknown"
+              ? layout.settingsUnknown
+              : running
+                ? presetWhileRunning
+                  ? copy.settingsWhileRunningModel
+                  : copy.settingsWhileRunning
+                : feature("settings")?.available !== true
+                  ? reasonTitle(feature("settings")?.reason)
+                  : undefined;
   const permissionsStatus =
     permissionWriteStatus ??
     (presetWhileRunning && !settingsLocked && permissionFeature?.available
@@ -993,6 +1083,13 @@ export function CodexComposerControls({
     )
       void mutate("settings", collaboration.change(mode));
   };
+  const clearCollaboration = () => {
+    if (canClearSavedMode) void mutate("settings", { mode: null });
+  };
+  const turnOffPlan = () => {
+    if (canClearSavedMode) clearCollaboration();
+    else changeCollaboration("default");
+  };
   const changeAddOpen = (open: boolean) => {
     if (!open) {
       closeAdd();
@@ -1001,23 +1098,57 @@ export function CodexComposerControls({
     setAddOpen(true);
     void load();
   };
-  const openContextBrowser = () => {
-    focusAddNavigation.current = true;
-    setBrowsingContext(true);
-    void loadContext(contextLocation.current.id, contextLocation.current.names);
-  };
   const openModel = (page: "models" | "effort") => {
     if (!full || disabled || !settingsReadable || !modelPicker.current) return false;
     modelPicker.current.open(page);
     return true;
   };
+  useEffect(() => {
+    // A submitted draft has at most one automatic dispatch. The existing action
+    // controller owns its receipt, including after a reconnect.
+    if (
+      !startupGoal?.apply ||
+      attemptedStartupGoal.current === startupGoal.value ||
+      !selected ||
+      !full ||
+      !online ||
+      !controlReady ||
+      disabled ||
+      busy ||
+      saving ||
+      compacting ||
+      goalDirty ||
+      goalDraftEditor ||
+      notice === "uncertain" ||
+      live?.sessionId !== selected ||
+      live.status !== "idle" ||
+      live.revision == null ||
+      (startupGoal.afterRevision !== undefined && live.revision <= startupGoal.afterRevision) ||
+      capabilities?.sessionId !== selected ||
+      feature("goal-set")?.available !== true ||
+      goal?.sessionId !== selected ||
+      !goal.available ||
+      !goal.actions.set?.available ||
+      goal.goal ||
+      goalReadStale
+    )
+      return;
+    const { objective, tokenBudget } = startupGoal.value;
+    disarmStartupGoal();
+    void mutate("goal-set", {
+      objective,
+      intent: "start",
+      tokenBudget: tokenBudget ?? null,
+    });
+  });
   useImperativeHandle(controlsRef, () => ({
     open: (panel) => {
       if (!full || disabled) return false;
       if (panel === "models" || panel === "effort") return openModel(panel);
-      if (panel === "permissions" && showPermissions) changePermissionsOpen(true);
+      if (panel === "permissions" && showPermissions && !permissionTriggerLocked)
+        changePermissionsOpen(true);
       else if (panel === "usage" && usage.current) usage.current.open();
-      else if (panel === "goal" && goalReadable) openGoal();
+      else if (panel === "goal" && (goalReadable || offersGoalDraft)) openGoal();
       else return false;
       return true;
     },
@@ -1028,157 +1159,9 @@ export function CodexComposerControls({
     },
   }));
   if (!full) return null;
-  const contextBrowser = addOpen && browsingContext && resourcesReadable && (
-    <section className="space-y-3">
-      <div ref={focusNavigationRow}>
-        <ComposerAddAction
-          label={addCopy.back}
-          icon={<ArrowLeft size={16} />}
-          onClick={() => {
-            focusAddNavigation.current = true;
-            setBrowsingContext(false);
-          }}
-        />
-      </div>
-      <div className="flex min-w-0 items-center gap-2">
-        <Button
-          type="button"
-          variant="outline"
-          className="min-h-11 shrink-0"
-          disabled={!context?.parentId || contextLoading || !online}
-          onClick={() => void loadContext(context?.parentId, contextNames.slice(0, -1))}
-        >
-          <ArrowLeft size={16} />
-          {layout.parentDirectory}
-        </Button>
-        <span className="min-w-0 break-words text-sm">
-          {[layout.contextRoot, ...contextNames].join(" / ")}
-        </span>
-      </div>
-      {contextLoading && (
-        <p role="status" className="text-sm">
-          {layout.contextLoading}
-        </p>
-      )}
-      {contextError && (
-        <div role="alert" className="space-y-2 text-sm">
-          {reason(contextError)}
-          <Button
-            type="button"
-            variant="outline"
-            disabled={contextLoading || !online}
-            onClick={() =>
-              void loadContext(contextLocation.current.id, contextLocation.current.names)
-            }
-          >
-            {layout.contextRetry}
-          </Button>
-        </div>
-      )}
-      {!context ? (
-        <p role="status" className="text-sm text-muted-foreground">
-          {!contextLoading && !contextError ? copy.resourceUnavailable : null}
-        </p>
-      ) : (
-        <>
-          <Input
-            aria-label={copy.resourceSearch}
-            placeholder={copy.resourceSearch}
-            value={query}
-            onChange={(event) => setQuery(event.target.value)}
-          />
-          <p className="text-xs text-muted-foreground">{copy.directoryReference}</p>
-          <div className="space-y-2">
-            {availableResources.length === 0 && (
-              <p className="text-sm text-muted-foreground">{copy.resourceEmpty}</p>
-            )}
-            {resourceGroups.map(
-              (group) =>
-                group.items.length > 0 && (
-                  <section key={group.label} className="space-y-2">
-                    <h3 className="text-xs font-medium text-muted-foreground">{group.label}</h3>
-                    {group.items.map((item) => {
-                      const checked = resources.some((selected) => selected.id === item.id);
-                      return (
-                        <div
-                          key={item.id}
-                          className="flex items-center gap-2 rounded-lg border p-3 text-sm"
-                        >
-                          <label className="flex min-w-0 flex-1 items-start gap-3">
-                            <input
-                              type="checkbox"
-                              checked={checked}
-                              disabled={
-                                !item.available ||
-                                contextLoading ||
-                                !online ||
-                                disabled ||
-                                feature("context")?.available !== true
-                              }
-                              title={reasonTitle(item.reason || feature("context")?.reason)}
-                              onChange={(event) =>
-                                setResources(
-                                  event.target.checked
-                                    ? [...resources, item]
-                                    : resources.filter((selected) => selected.id !== item.id),
-                                )
-                              }
-                            />
-                            <span className="min-w-0">
-                              <span className="block break-words font-medium">
-                                {policyText(item).name}
-                              </span>
-                              <span className="block text-xs text-muted-foreground">
-                                {term(item.kind)}
-                                {item.description ? ` · ${item.description}` : ""}
-                                {!item.available || feature("context")?.available !== true
-                                  ? ` · ${reason(item.reason || feature("context")?.reason)}`
-                                  : ""}
-                              </span>
-                            </span>
-                          </label>
-                          {item.kind === "directory" && item.navigationId && (
-                            <Button
-                              type="button"
-                              variant="ghost"
-                              className="size-11 shrink-0 p-0"
-                              aria-label={`${layout.enterDirectory}: ${item.name}`}
-                              disabled={
-                                contextLoading ||
-                                !online ||
-                                disabled ||
-                                !item.available ||
-                                feature("context")?.available !== true
-                              }
-                              onClick={() =>
-                                void loadContext(item.navigationId, [...contextNames, item.name])
-                              }
-                            >
-                              <ChevronRight size={18} />
-                            </Button>
-                          )}
-                        </div>
-                      );
-                    })}
-                  </section>
-                ),
-            )}
-          </div>
-        </>
-      )}
-      <div className="flex items-center justify-between gap-3">
-        <span className="text-xs text-muted-foreground">
-          {layout.selected}: {resources.length}
-        </span>
-        <Button type="button" size="sm" onClick={closeAdd}>
-          {layout.done}
-        </Button>
-      </div>
-    </section>
-  );
   return (
     <>
-      {mutationError && !goalOpen && (
+      {mutationError && !goalDialog && (
         <p role="alert" className="px-1 text-xs text-destructive-text">
           {reason(mutationError)}
         </p>
@@ -1204,124 +1187,139 @@ export function CodexComposerControls({
             </Button>
           </div>
         )}
-      <div className="@container -mx-1 flex min-w-0 items-center justify-between gap-2 pt-4">
-        <div className="flex min-w-0 flex-1 items-center gap-0.5">
-          <ComposerAddMenu
-            label={copy.addContext}
-            disabled={disabled || !canAdd}
-            disabledReason={!canAdd ? addCopy.unavailable : undefined}
-            open={addOpen}
-            onOpenChange={changeAddOpen}
-          >
-            {contextBrowser || (
-              <>
-                {(!managedAgent || attachmentOffered) && (
-                  <ComposerAddAction
-                    label={copy.uploadFromPhone}
-                    icon={<Paperclip size={16} />}
-                    disabled={disabled || !attachmentAllowed}
-                    onClick={() => {
-                      closeAdd();
-                      openPhoneFiles();
-                    }}
-                  />
-                )}
-                {resourcesReadable && (
-                  <div ref={focusNavigationRow}>
-                    <ComposerAddAction
-                      label={addCopy.filesAndFolders}
-                      icon={<Folder size={16} />}
-                      onClick={openContextBrowser}
-                    />
-                  </div>
-                )}
-                {goalReadable && (
-                  <ComposerAddAction
-                    label={copy.goals}
-                    icon={<Goal size={16} />}
-                    onClick={openGoal}
-                  />
-                )}
-                {collaboration && settingsReadable && (
-                  <ComposerPlanAction
-                    label={planModeCopy(locale).title}
-                    active={planOn}
-                    disabled={collaborationLocked || !collaboration.modes.includes(toggledMode)}
-                    disabledReason={
-                      collaborationLocked
-                        ? (settingsStatus ?? reasonTitle(collaboration.reason))
-                        : undefined
-                    }
-                    onToggle={() => {
-                      closeAdd();
-                      changeCollaboration(toggledMode);
-                    }}
-                  />
-                )}
-                {clearSavedMode && (
-                  <ComposerAddAction
-                    label={planModeCopy(locale).clear}
-                    icon={<Lightbulb className="size-4" aria-hidden />}
-                    disabled={settingsLocked || running}
-                    onClick={() => {
-                      closeAdd();
-                      void mutate("settings", { mode: null });
-                    }}
-                  />
-                )}
-              </>
-            )}
-          </ComposerAddMenu>
-          {showPermissions && (
-            <ComposerPermissionMenu
-              title={permissionTitle}
-              label={currentPermission?.name ?? permissionTitle}
-              risky={currentPermission?.risky}
-              disabled={disabled}
-              side="top"
-              items={permissionItems}
-              selected={currentPermission?.id}
-              open={permissionsOpen}
-              onOpenChange={changePermissionsOpen}
-              status={permissionsStatus}
-              blockItemsOnStatus={false}
-              onSelect={(id) => void changePermission(id)}
-            />
-          )}
-        </div>
-        <div className="ml-auto flex shrink-0 items-center gap-1">
-          {advancedActions}
-          {showContextUsage && (
-            <ContextUsageGauge
-              fallback={currentUsageSettings?.usage}
-              capacity={usageCapacity}
-              source={provider?.contextUsage}
-              usageRef={usage}
-            />
-          )}
-          {showModelPicker && (
-            <ComposerModelPicker
-              key={settingsControlScope}
+      <ComposerToolbar
+        leading={
+          <>
+            <SessionComposerAddMenu
               locale={locale}
-              settings={scopedSettings}
-              selection={selection}
-              reportedSettings={reportedSettings}
-              displayFallback={displayFallback}
-              provider={provider}
-              clearEffort={canClearEffort}
-              disabled={disabled || !settingsReadable}
-              saving={settingsLocked || running}
-              status={modelWriteStatus ?? settingsStatus}
-              pickerRef={modelPicker}
-              onOpen={prepareSettings}
-              onChange={(change) =>
-                settingsLocked || running ? Promise.resolve(false) : mutate("settings", change)
+              label={copy.addContext}
+              disabled={disabled}
+              open={addOpen}
+              onOpenChange={changeAddOpen}
+              attachment={
+                attachmentOffered
+                  ? { disabled: disabled || !attachmentAllowed, onPick: openPhoneFiles }
+                  : undefined
+              }
+              resources={
+                resourcesReadable
+                  ? {
+                      page: context,
+                      path: contextNames,
+                      selected: resources,
+                      loading: contextLoading,
+                      error: contextError,
+                      offline: !online,
+                      selectable: !disabled && feature("context")?.available === true,
+                      selectionReason: feature("context")?.reason,
+                      reasonText: reason,
+                      load: loadContext,
+                      retry: () =>
+                        void loadContext(contextLocation.current.id, contextLocation.current.names),
+                      onSelect: setResources,
+                    }
+                  : undefined
+              }
+              goal={
+                goalReadable || offersGoalDraft
+                  ? { selected: !!(startupGoal || persistedGoal) || undefined, onOpen: openGoal }
+                  : undefined
+              }
+              plan={
+                collaboration && settingsReadable
+                  ? {
+                      active: planOn,
+                      disabled: collaborationLocked || !collaboration.modes.includes(toggledMode),
+                      reason: settingsStatus ?? reasonTitle(collaboration.reason),
+                      onToggle: () => changeCollaboration(toggledMode),
+                    }
+                  : undefined
+              }
+              clearMode={
+                clearSavedMode
+                  ? {
+                      disabled: settingsLocked || running,
+                      onClear: clearCollaboration,
+                    }
+                  : undefined
               }
             />
-          )}
-          {action}
-        </div>
-      </div>
+            {showPermissions && (
+              <ComposerPermissionMenu
+                title={permissionTitle}
+                label={currentPermission?.name ?? permissionTitle}
+                risky={currentPermission?.risky}
+                disabled={permissionTriggerLocked}
+                disabledReason={permissionTriggerLocked ? permissionsStatus : undefined}
+                side="top"
+                items={permissionItems}
+                selected={currentPermission?.id}
+                open={permissionsOpen}
+                onOpenChange={changePermissionsOpen}
+                status={permissionsStatus}
+                blockItemsOnStatus={false}
+                onSelect={(id) => void changePermission(id)}
+              />
+            )}
+            {planOn && (
+              <ComposerModeChip
+                mode="plan"
+                locale={locale}
+                disabled={!canTurnOffPlan}
+                onRemove={turnOffPlan}
+              />
+            )}
+            {(persistedGoal || startupGoal) && (
+              <ComposerModeChip
+                mode="goal"
+                locale={locale}
+                detail={persistedGoal?.objective ?? goalObjective}
+                disabled={!persistedGoal && (saving || disabled)}
+                onOpen={openGoal}
+                onRemove={!persistedGoal && onStartupGoalDiscarded ? discardStartupGoal : undefined}
+              />
+            )}
+          </>
+        }
+        trailing={
+          <>
+            {advancedActions}
+            {showContextUsage && (
+              <ContextUsageGauge
+                fallback={currentUsageSettings?.usage}
+                capacity={usageCapacity}
+                source={provider?.contextUsage}
+                usageRef={usage}
+              />
+            )}
+            {showModelPicker && (
+              <ComposerModelPicker
+                key={settingsControlScope}
+                locale={locale}
+                settings={scopedSettings}
+                selection={selection}
+                reportedSettings={reportedSettings}
+                displayFallback={displayFallback}
+                provider={provider}
+                clearEffort={canClearEffort}
+                disabled={disabled || !settingsReadable}
+                triggerDisabled={reservesModelSlot && !settingsReadable}
+                modelDefault={
+                  reservesModelSlot && !settingsReadable ? false : provider?.models.modelDefault
+                }
+                saving={settingsLocked || running}
+                status={modelWriteStatus ?? settingsStatus}
+                pickerRef={modelPicker}
+                onOpen={prepareSettings}
+                onChange={(change) =>
+                  settingsLocked || running ? Promise.resolve(false) : mutate("settings", change)
+                }
+              />
+            )}
+            {action}
+          </>
+        }
+      />
       {permissionWriteStatus && (showPermissions || collaboration) && !permissionsOpen && (
         <p role="status" className="px-3 text-xs text-muted-foreground">
           {permissionWriteStatus}
@@ -1332,24 +1330,20 @@ export function CodexComposerControls({
           {writeStatus}
         </p>
       )}
-      {goal?.goal && (
-        <Button
-          type="button"
-          variant="ghost"
-          className="h-auto min-h-11 w-full justify-start overflow-hidden px-2 text-xs"
-          aria-label={copy.goals}
-          onClick={openGoal}
-        >
-          <Goal className="shrink-0" size={16} />
-          <span className="shrink-0">{term(goal.goal.status)}</span>
-          <span className="truncate">{goal.goal.objective}</span>
-        </Button>
-      )}
-      {goalOpen && (
+      {goalDialog && (
         <Dialog
           panel
           footer={
-            goal?.available ? (
+            goalDraftEditor ? (
+              <Button
+                type="button"
+                className="min-h-11"
+                disabled={goalDraftDisabled || !goalDraft}
+                onClick={saveGoalDraft}
+              >
+                {goalCopy.saveDraft}
+              </Button>
+            ) : goal?.available ? (
               <div className="flex flex-wrap gap-2">
                 <Button
                   type="button"
@@ -1362,17 +1356,18 @@ export function CodexComposerControls({
                     goalReadStale ||
                     !goal.actions.set?.available ||
                     feature("goal-set")?.available !== true ||
-                    !objective.trim() ||
+                    !goalObjective.trim() ||
                     !budgetValid
                   }
                   title={reasonTitle(goal.actions.set?.reason || feature("goal-set")?.reason)}
-                  onClick={() =>
+                  onClick={() => {
+                    disarmStartupGoal();
                     void mutate("goal-set", {
-                      objective: objective.trim(),
+                      objective: goalObjective.trim(),
                       intent: goal.goal ? "update" : "start",
                       tokenBudget: parsedBudget ?? null,
-                    })
-                  }
+                    });
+                  }}
                 >
                   {goal.goal ? copy.goalUpdate : copy.goalCreate}
                 </Button>
@@ -1439,9 +1434,9 @@ export function CodexComposerControls({
           }
           title={copy.goals}
           closeLabel={copy.close}
-          onClose={() => setGoalOpen(false)}
+          onClose={closeGoal}
         >
-          {goalReadStale && (goal?.available || !!goalError) && (
+          {!goalDraftEditor && goalReadStale && (goal?.available || !!goalError) && (
             <div role="status" className="mb-3 text-xs text-muted-foreground">
               {layout.connecting}
               <Button type="button" variant="outline" onClick={() => void load()}>
@@ -1449,7 +1444,16 @@ export function CodexComposerControls({
               </Button>
             </div>
           )}
-          {!goal?.available ? (
+          {goalDraftEditor ? (
+            <section className="space-y-3">
+              {!offersGoalDraft && (
+                <p role="status" className="text-sm text-muted-foreground">
+                  {copy.goalUnavailable}
+                </p>
+              )}
+              {goalFields(goalDraftDisabled, provider?.create.goalBudget === "rounds")}
+            </section>
+          ) : !goal?.available ? (
             <p role="status" className="text-sm text-muted-foreground">
               {copy.goalUnavailable}
               {reason(goal?.reason || goalError)}
@@ -1528,34 +1532,7 @@ export function CodexComposerControls({
                     )}
                   </div>
                 ))}
-              <label className="block space-y-1 text-sm">
-                {copy.goalObjective}
-                <textarea
-                  className="min-h-24 w-full rounded-md border bg-background p-2"
-                  value={objective}
-                  disabled={busy || saving || compacting}
-                  onChange={(event) => {
-                    editGoal();
-                    setObjective(event.target.value);
-                  }}
-                />
-              </label>
-              {/* A goal bounded by rounds takes no token budget. */}
-              {goal.budget !== "rounds" && (
-                <label className="block space-y-1 text-sm">
-                  {copy.goalBudget}
-                  <Input
-                    type="number"
-                    min={1}
-                    value={tokenBudget}
-                    disabled={busy || saving || compacting}
-                    onChange={(event) => {
-                      editGoal();
-                      setTokenBudget(event.target.value);
-                    }}
-                  />
-                </label>
-              )}
+              {goalFields(busy || saving || compacting, goal.budget === "rounds")}
             </section>
           )}
         </Dialog>

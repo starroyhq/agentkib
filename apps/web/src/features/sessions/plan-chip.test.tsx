@@ -127,9 +127,10 @@ describe("plan mode in the Web composer", () => {
     session(false, "plan");
     vi.mocked(state.codexAction).mockRejectedValue(new Error("offline"));
     render(<CodexComposerControls {...props} />);
-    const plan = await openPlan();
-    fireEvent.click(plan);
+    const cancel = await screen.findByRole("button", { name: "Exit Plan mode" });
+    fireEvent.click(cancel);
     expect(await screen.findByRole("alert")).toBeVisible();
+    expect(cancel).toBeVisible();
     expect(await openPlan()).toHaveAttribute("aria-pressed", "true");
   });
 

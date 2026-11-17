@@ -8,7 +8,13 @@ import { CodexComposerControls, type ComposerControlsHandle } from "./codex-sess
 import { useSession } from "./session-context";
 import { sessionAgentCopy } from "./session-agent-copy";
 import { codexCopy } from "./codex-copy";
-import { composerModelCopy, planModeCopy } from "@agentkib/session-ui";
+import {
+  composerGoalCopy,
+  composerModelCopy,
+  newSessionCopy,
+  planModeCopy,
+} from "@agentkib/session-ui";
+import { SessionComposer } from "./session-composer";
 
 vi.mock("./session-context", () => ({ useSession: vi.fn() }));
 let state: ReturnType<typeof useSession>;
@@ -73,7 +79,7 @@ afterEach(cleanup);
 
 function permissionTrigger(locale = state.locale) {
   return screen.findByRole("button", {
-    name: new RegExp(`^${sessionAgentCopy[locale].permission}:`),
+    name: new RegExp(`^${sessionAgentCopy[locale].permission}(?::|$)`),
   });
 }
 
@@ -139,7 +145,116 @@ describe("Claude's plan mode in the composer", () => {
   });
 });
 
+it("stages a goal without a native operation until an imported Claude conversation sends and becomes idle", async () => {
+  const copy = codexCopy["en-US"];
+  const goalCopy = composerGoalCopy("en-US");
+  state.live = {
+    ...state.live!,
+    executionMode: "managed-resume",
+    sendEnabled: true,
+    approvals: [],
+    questions: [],
+  };
+  state.canSend = true;
+  state.controlReady = true;
+  state.t = { message: "Message", send: "Send" } as typeof state.t;
+  state.setMessage = vi.fn();
+  state.message = "";
+  state.capabilities = {
+    ...state.capabilities!,
+    features: { "goal-draft": { available: true } },
+  };
+  state.client.sessionGoals = vi.fn(async () => ({
+    sessionId: "session",
+    available: true,
+    revision: 2,
+    actions: {
+      set: { available: true },
+      pause: { available: false },
+      resume: { available: false },
+      clear: { available: false },
+    },
+  }));
+  vi.mocked(state.control).mockResolvedValue(true);
+  vi.mocked(state.codexAction).mockResolvedValue({ accepted: true } as Awaited<
+    ReturnType<typeof state.codexAction>
+  >);
+  const { rerender } = render(<SessionComposer />);
+
+  fireEvent.click(screen.getByRole("button", { name: copy.addContext }));
+  fireEvent.click(await screen.findByRole("button", { name: goalCopy.title }));
+  const editor = await screen.findByRole("dialog", { name: goalCopy.title });
+  expect(within(editor).getByRole("button", { name: goalCopy.saveDraft })).toBeDisabled();
+  fireEvent.change(within(editor).getByRole("textbox", { name: goalCopy.objective }), {
+    target: { value: "  Improve the test coverage  " },
+  });
+  fireEvent.change(within(editor).getByRole("spinbutton", { name: goalCopy.budget }), {
+    target: { value: "3000" },
+  });
+  fireEvent.click(within(editor).getByRole("button", { name: goalCopy.saveDraft }));
+  expect(screen.getByRole("button", { name: goalCopy.title })).toHaveAttribute(
+    "title",
+    "Improve the test coverage",
+  );
+  expect(state.client.sessionGoals).not.toHaveBeenCalled();
+  expect(state.control).not.toHaveBeenCalled();
+  expect(state.codexAction).not.toHaveBeenCalled();
+
+  state.message = "Start reviewing the project";
+  rerender(<SessionComposer />);
+  fireEvent.click(screen.getByRole("button", { name: "Send" }));
+  await waitFor(() => expect(state.control).toHaveBeenCalledTimes(1));
+  expect(state.codexAction).not.toHaveBeenCalled();
+
+  state.live = { ...state.live, executionMode: "claude-managed", revision: 2 };
+  state.capabilities = {
+    ...state.capabilities,
+    features: { goal: { available: true }, "goal-set": { available: true } },
+  };
+  rerender(<SessionComposer />);
+  await waitFor(() =>
+    expect(state.codexAction).toHaveBeenCalledExactlyOnceWith("goal-set", {
+      objective: "Improve the test coverage",
+      intent: "start",
+      tokenBudget: 3000,
+    }),
+  );
+});
+
 describe("Claude settings preparation", () => {
+  it("reserves Claude settings controls before reading the session's capabilities", async () => {
+    const capabilities = state.capabilities;
+    state = {
+      ...state,
+      access: {
+        ...state.access!,
+        status: "approved",
+        device: { ...state.access!.device!, advancedControl: true },
+      },
+      capabilities: undefined,
+    };
+    const picker = composerModelCopy["en-US"];
+    const { rerender } = render(<CodexComposerControls {...props} />);
+    const model = screen.getByRole("button", { name: picker.modelSettings });
+    const permissions = screen.getByRole("button", { name: sessionAgentCopy["en-US"].permission });
+    expect(model).toBeDisabled();
+    expect(permissions).toBeDisabled();
+    fireEvent.click(model);
+    fireEvent.click(permissions);
+    await act(async () => {});
+    expect(state.client.sessionSettings).not.toHaveBeenCalled();
+    expect(state.client.prepareSessionSettings).not.toHaveBeenCalled();
+    expect(state.codexAction).not.toHaveBeenCalled();
+
+    state = { ...state, capabilities };
+    rerender(<CodexComposerControls {...props} />);
+    expect(
+      await screen.findByRole("button", { name: /^Select reasoning effort: Claude session/ }),
+    ).toBeEnabled();
+    expect(state.client.sessionSettings).toHaveBeenCalledWith("session", "claude-code");
+    expect(state.client.prepareSessionSettings).not.toHaveBeenCalled();
+  });
+
   it("loads the native model catalog from the picker when a session has no options yet", async () => {
     const picker = composerModelCopy["en-US"];
     const value = { ...settings(), provider: sessionProviderCapabilities("claude-code") };
@@ -194,7 +309,10 @@ describe("Claude settings preparation", () => {
       expect(screen.getByRole("button", { name: picker.modelSettings })).toBeInTheDocument();
       fireEvent.click(await permissionTrigger(locale));
       const panel = await screen.findByRole("menu");
-      const permission = within(panel).getByRole("menuitem");
+      const defaultLabel = newSessionCopy(locale).permissions["claude-code"].choices.default.name;
+      const permission = within(panel).getByRole("menuitem", {
+        name: new RegExp(`^${defaultLabel}`),
+      });
       await waitFor(() => expect(permission).not.toHaveAttribute("aria-disabled", "true"));
       expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
       expect(within(panel).queryByLabelText(copy.model)).not.toBeInTheDocument();
@@ -208,19 +326,33 @@ describe("Claude settings preparation", () => {
     },
   );
 
-  it.each([
-    ["zh-CN", "工具权限待确认"],
-    ["zh-Hant", "工具權限待確認"],
-    ["en-US", "Tool permissions unconfirmed"],
-    ["ja-JP", "ツール権限は未確認"],
-  ] as const)(
-    "names unknown Claude permissions in %s without a Codex label",
-    async (locale, expected) => {
+  it.each(["zh-CN", "zh-Hant", "en-US", "ja-JP"] as const)(
+    "shows only the supported menu choices before sending from an imported Claude session in %s",
+    async (locale) => {
       state.locale = locale;
+      state.live = { ...state.live!, executionMode: "managed-resume" };
+      const value = settings();
+      value.options.permissionModes = (["default", "acceptEdits", "plan"] as const).map((id) => ({
+        id,
+        name: id,
+      }));
+      vi.mocked(state.client.sessionSettings).mockResolvedValue(value);
       render(<CodexComposerControls {...props} />);
-      const trigger = await permissionTrigger(locale);
-      expect(trigger).toHaveTextContent(expected);
-      expect(trigger).not.toHaveTextContent(/Codex/);
+      fireEvent.click(
+        await screen.findByRole("button", {
+          name: sessionAgentCopy[locale].permission,
+        }),
+      );
+      const menu = within(await screen.findByRole("menu"));
+      const choices = newSessionCopy(locale).permissions["claude-code"].choices;
+      expect(menu.getAllByRole("menuitem")).toHaveLength(2);
+      for (const { name } of [choices.default, choices.acceptEdits]) {
+        expect(menu.getByRole("menuitem", { name: new RegExp(`^${name}`) })).not.toHaveAttribute(
+          "aria-current",
+        );
+      }
+      expect(state.client.prepareSessionSettings).not.toHaveBeenCalled();
+      expect(state.codexAction).not.toHaveBeenCalled();
     },
   );
 
@@ -231,7 +363,7 @@ describe("Claude settings preparation", () => {
       vi.mocked(state.client.prepareSessionSettings).mockReturnValueOnce(pending.promise);
       const view = render(<CodexComposerControls {...props} />);
       fireEvent.click(await permissionTrigger());
-      const permission = await screen.findByRole("menuitem");
+      const permission = await screen.findByRole("menuitem", { name: /^Manual approval/ });
       expect(permission).toHaveAttribute("aria-disabled", "true");
       state = { ...state, usageEpoch: "observation-b" };
       view.rerender(<CodexComposerControls {...props} />);
@@ -242,9 +374,7 @@ describe("Claude settings preparation", () => {
         else pending.reject(new Error("stale-prepare-error"));
       });
       await waitFor(() => expect(permission).not.toHaveAttribute("aria-disabled", "true"));
-      expect(await permissionTrigger()).toHaveTextContent(
-        sessionAgentCopy[state.locale].permissionUnknown,
-      );
+      expect(await permissionTrigger()).toHaveAccessibleName("Tool permissions");
       expect(screen.queryByText("stale-prepare-error")).not.toBeInTheDocument();
       expect(state.client.prepareSessionSettings).toHaveBeenCalledTimes(1);
       expect(state.codexAction).not.toHaveBeenCalled();
@@ -279,13 +409,13 @@ describe("Claude settings preparation", () => {
       fireEvent.click(await permissionTrigger());
       expect(state.client.prepareSessionSettings).toHaveBeenCalledTimes(2);
       await act(async () => old.resolve(settings()));
-      const permission = await screen.findByRole("menuitem");
+      const permission = await screen.findByRole("menuitem", { name: /^Manual approval/ });
       expect(permission).toHaveAttribute("aria-disabled", "true");
       await act(async () =>
         next.resolve({ ...settings(state.selected), current: { permissionMode: "default" } }),
       );
       await waitFor(() => expect(permission).not.toHaveAttribute("aria-disabled", "true"));
-      expect(await permissionTrigger()).toHaveTextContent("Default");
+      expect(await permissionTrigger()).toHaveTextContent("Manual approval");
       expect(state.codexAction).not.toHaveBeenCalled();
     },
   );

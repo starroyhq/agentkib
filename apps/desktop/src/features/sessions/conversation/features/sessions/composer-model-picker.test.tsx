@@ -608,11 +608,23 @@ describe("composer model picker", () => {
     await waitFor(() => expect(props.onChange).toHaveBeenCalledExactlyOnceWith({ model: "terra" }));
   });
 
-  it("can clear the effort independently where the host accepts it", async () => {
+  it("offers only the full reset when both resets are available", async () => {
     props = { ...props, clearEffort: true, effortDefault: true };
     render(<ComposerModelPicker {...props} />);
     const popup = await openPicker();
-    fireEvent.click(within(popup).getByRole("button", { name: copy.useDefaultEffort }));
+    expect(within(popup).queryByRole("button", { name: copy.useDefaultEffort })).toBeNull();
+    fireEvent.click(within(popup).getByRole("button", { name: copy.reset }));
+    expect(props.onChange).toHaveBeenCalledExactlyOnceWith({ restoreDefaults: true });
+  });
+
+  it("uses the same reset button to clear effort when a full reset is unavailable", async () => {
+    props = { ...props, clearEffort: true, effortDefault: true };
+    props.settings!.writable.restoreDefaults = { available: false };
+    render(<ComposerModelPicker {...props} />);
+    const popup = await openPicker();
+    const reset = within(popup).getByRole("button", { name: copy.useDefaultEffort });
+    expect(within(popup).queryByText(copy.useDefaultEffort)).not.toBeInTheDocument();
+    fireEvent.click(reset);
     expect(props.onChange).toHaveBeenCalledExactlyOnceWith({ effort: null });
   });
 

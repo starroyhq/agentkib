@@ -11,7 +11,6 @@ import { catalogCopy } from "../catalog/catalog-copy";
 import { OrchestrationNote } from "../catalog/orchestration-note";
 import { WorktreeNote } from "../catalog/worktree-note";
 import { codexCopy, codexReason } from "./codex-copy";
-import { isSendEnter, useEnterSends } from "./composer-shortcuts";
 import {
   claudeBackgroundStatus,
   claudeComposerNotice,
@@ -25,8 +24,7 @@ import { ContextUsageGauge } from "./context-usage";
 import { contextUsageCopy } from "./context-usage-copy";
 import { SessionComposer } from "./session-composer";
 import { Button } from "@/components/ui/button";
-import { Textarea } from "@/components/ui/textarea";
-import { ArrowDown, ArrowUp, LoaderCircle, Square } from "lucide-react";
+import { ArrowDown, LoaderCircle } from "lucide-react";
 import { SessionTranscript } from "./session-transcript";
 import { SessionInteractionDock } from "../interactions/interaction-dock";
 import { MAX_MESSAGE_LENGTH } from "./session-model";
@@ -41,7 +39,10 @@ import {
 } from "./session-image-scope";
 import {
   composerAddCopy,
-  ComposerAddMenu,
+  ComposerPrimaryAction,
+  ComposerToolbar,
+  SessionComposerAddMenu,
+  SessionComposerInput,
   useTranscriptFollow,
   useVisibleReadState,
   ReadStateNotice,
@@ -82,7 +83,6 @@ export function SessionReader() {
     indexEnabled,
     imageRequestVersion,
   } = session;
-  const enterSends = useEnterSends();
   const imageCacheRevision = sessionImageRevision(client);
   const imageCacheScope = sessionImageCacheScope(client, access, selected, indexEnabled !== false);
   const imageLoader = useMemo(() => {
@@ -122,7 +122,7 @@ export function SessionReader() {
     }
     const measure = () => {
       const bounds = composer.getBoundingClientRect();
-      const card = composer.querySelector(".session-composer-frame");
+      const card = composer.querySelector('[data-slot="session-composer"]');
       // Prompts can move the card down. Align the solid backing with the card
       // so only its upper gap stays transparent, including after a resize.
       const cardTop = card
@@ -136,7 +136,6 @@ export function SessionReader() {
     observer?.observe(composer);
     return () => observer?.disconnect();
   }, [readerReady, selected]);
-  const composing = useRef(false);
   const submitPending = useRef(false);
   const selectedLive = live?.sessionId === selected ? live : undefined;
   const selectedSettings =
@@ -230,11 +229,16 @@ export function SessionReader() {
   useLayoutEffect(() => {
     if (previousSession.current !== selected) {
       previousSession.current = selected;
-      composing.current = false;
       submitPending.current = false;
     }
   }, [selected]);
   if (!access || !selected) return null;
+  const basicComposerReady =
+    online &&
+    !busy &&
+    canSend &&
+    live?.activity !== "compacting" &&
+    validHistoryMessage(message, historyReferences);
   return (
     <ArtifactWorkspace
       browser={
@@ -443,100 +447,65 @@ export function SessionReader() {
                     key={`composer-${selected}`}
                   />
                 ) : (
-                  <form
-                    className="session-composer-frame w-full max-w-3xl shrink-0 self-center space-y-2 rounded-3xl border bg-background p-2 shadow-sm transition-shadow focus-within:ring-2 focus-within:ring-ring/20"
-                    onSubmit={(event) => {
-                      event.preventDefault();
-                      if (
-                        online &&
-                        !busy &&
-                        canSend &&
-                        live?.activity !== "compacting" &&
-                        validHistoryMessage(message, historyReferences)
-                      ) {
-                        if (submitPending.current) return;
+                  <div className="w-full max-w-3xl shrink-0 self-center">
+                    <SessionComposerInput
+                      editorContextKey={selected}
+                      editor={{
+                        id: "message",
+                        "aria-label": t.message,
+                        value: message,
+                        maxLength: MAX_MESSAGE_LENGTH,
+                        onChange: (event) => setMessage(event.target.value),
+                        placeholder: t.message,
+                        disabled: busy,
+                      }}
+                      onSubmit={() => {
+                        if (!basicComposerReady || submitPending.current) return;
                         submitPending.current = true;
                         const requestSession = selected;
                         void Promise.resolve(control("send")).finally(() => {
                           if (previousSession.current === requestSession)
                             submitPending.current = false;
                         });
+                      }}
+                      canSubmitFromKeyboard={() => !!basicComposerReady && !submitPending.current}
+                      beforeEditor={<HistoryReferenceChips />}
+                      toolbar={
+                        <ComposerToolbar
+                          leading={
+                            <>
+                              <SessionComposerAddMenu
+                                locale={locale}
+                                label={codexCopy[locale].addContext}
+                                disabled
+                                disabledReason={composerAddCopy(locale).unavailable}
+                              />
+                              <small className="max-w-lg text-xs leading-5 text-muted-foreground">
+                                {t.experimental} · {t.controlInfo}
+                              </small>
+                            </>
+                          }
+                          trailing={
+                            <>
+                              <ContextUsageGauge />
+                              {canStop ? (
+                                <ComposerPrimaryAction
+                                  label={t.stop}
+                                  kind="stop"
+                                  onStop={() => void control("stop")}
+                                />
+                              ) : (
+                                <ComposerPrimaryAction
+                                  label={t.send}
+                                  disabled={!basicComposerReady}
+                                />
+                              )}
+                            </>
+                          }
+                        />
                       }
-                    }}
-                  >
-                    <HistoryReferenceChips />
-                    <label className="sr-only" htmlFor="message">
-                      {t.message}
-                    </label>
-                    <Textarea
-                      id="message"
-                      className="min-h-10 max-h-40 resize-none overflow-y-auto border-0 bg-transparent px-3 pt-2.5 text-sm shadow-none focus-visible:ring-0"
-                      value={message}
-                      maxLength={MAX_MESSAGE_LENGTH}
-                      rows={1}
-                      onChange={(e) => setMessage(e.target.value)}
-                      placeholder={t.message}
-                      disabled={busy}
-                      onCompositionStart={() => {
-                        composing.current = true;
-                      }}
-                      onCompositionEnd={() => {
-                        composing.current = false;
-                      }}
-                      onBlur={() => {
-                        composing.current = false;
-                      }}
-                      onKeyDown={(event) => {
-                        if (!enterSends || !isSendEnter(event, composing.current)) return;
-                        event.preventDefault();
-                        if (!event.repeat && !busy && !submitPending.current)
-                          event.currentTarget.form?.requestSubmit();
-                      }}
                     />
-                    <div className="flex items-center justify-between gap-2 px-2 pb-1">
-                      <div className="flex min-w-0 items-center gap-2">
-                        <ComposerAddMenu
-                          label={codexCopy[locale].addContext}
-                          disabled
-                          disabledReason={composerAddCopy(locale).unavailable}
-                        >
-                          {null}
-                        </ComposerAddMenu>
-                        <small className="max-w-lg text-xs leading-5 text-muted-foreground">
-                          {t.experimental} · {t.controlInfo}
-                        </small>
-                      </div>
-                      <div className="flex min-w-0 items-center gap-1">
-                        <ContextUsageGauge />
-                        {canStop ? (
-                          <Button
-                            type="button"
-                            variant="destructive"
-                            className="inline-flex size-11 shrink-0 items-center justify-center rounded-full bg-destructive text-destructive-foreground transition-opacity hover:opacity-90 disabled:opacity-50"
-                            aria-label={t.stop}
-                            onClick={() => void control("stop")}
-                          >
-                            <Square size={17} />
-                          </Button>
-                        ) : (
-                          <Button
-                            type="submit"
-                            size="icon"
-                            className="shrink-0 rounded-full bg-primary p-0 text-primary-foreground transition-opacity hover:opacity-90 disabled:opacity-30 pointer-coarse:size-11"
-                            aria-label={t.send}
-                            disabled={
-                              !online ||
-                              !canSend ||
-                              live?.activity === "compacting" ||
-                              !validHistoryMessage(message, historyReferences)
-                            }
-                          >
-                            <ArrowUp size={20} />
-                          </Button>
-                        )}
-                      </div>
-                    </div>
-                  </form>
+                  </div>
                 )
               ) : (
                 <footer className="shrink-0 border-t px-5 py-4 text-center text-xs text-muted-foreground">

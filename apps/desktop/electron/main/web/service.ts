@@ -1,6 +1,7 @@
 import { createHash, randomBytes, randomInt, randomUUID } from "node:crypto";
 import {
   HISTORY_SEARCH_METHODS,
+  SESSION_RESOURCE_LIMIT,
   claudeModelOption,
   managedAgentOf,
   sessionProviderCapabilities,
@@ -362,6 +363,12 @@ type ContextResourceReference = {
   id?: string;
   relativePath?: string;
 };
+type ContextResourceScope = { deviceId: string; sessionId: string; workspaceId: string };
+type RememberedContextResource = ContextResourceScope &
+  (
+    | { draftAgent?: ManagedAgent; artifactId: string; revision: string }
+    | { draftAgent: ManagedAgent; reference: ContextResourceReference }
+  );
 class HttpError extends Error {
   constructor(
     readonly status: number,
@@ -672,16 +679,7 @@ export class WebAccessService {
   private scheduler?: ClaudeHostScheduler;
   private unregisterScheduler?: () => void;
   private managedSocket?: { close(): void };
-  private contextArtifactRefs = new Map<
-    string,
-    {
-      deviceId: string;
-      sessionId: string;
-      workspaceId: string;
-      artifactId: string;
-      revision: string;
-    }
-  >();
+  private contextArtifactRefs = new Map<string, RememberedContextResource>();
   constructor(
     private readonly options: {
       conversationHub?: ConversationHub;
@@ -2715,6 +2713,12 @@ export class WebAccessService {
           : {}),
         ...(create.agentPresets === true ? { agentPresets: true } : {}),
         ...(create.verifyStartupModel === true ? { verifyStartupModel: true } : {}),
+        ...(create.planMode === "mode" || create.planMode === "permissionMode"
+          ? { planMode: create.planMode }
+          : {}),
+        ...(create.workspaceResources === true ? { workspaceResources: true } : {}),
+        ...(create.goal === true ? { goal: true } : {}),
+        ...(create.goal === true && create.goalBudget === "rounds" ? { goalBudget: "rounds" } : {}),
       },
       models: {
         selection: models.selection,
@@ -2729,6 +2733,26 @@ export class WebAccessService {
         ...(models.prepare === true ? { prepare: true } : {}),
       },
       contextUsage,
+    };
+  }
+  private projectNewSessionOptions(options: unknown, device: WebDevice) {
+    const provider = this.projectSessionProvider(snapshotField(options, "provider"));
+    if (!provider) return {};
+    const { planMode, workspaceResources, goal, goalBudget, ...create } = provider.create;
+    const advanced =
+      device.manage === true && device.advancedControl === true && this.isFullAccess(device);
+    return {
+      provider: {
+        ...provider,
+        create: {
+          ...create,
+          ...(planMode && (planMode !== "mode" || device.settings === true) ? { planMode } : {}),
+          ...(workspaceResources && advanced && device.files === true
+            ? { workspaceResources }
+            : {}),
+          ...(goal && advanced ? { goal, ...(goalBudget ? { goalBudget } : {}) } : {}),
+        },
+      },
     };
   }
   private projectSettings(raw: unknown, usage?: unknown) {
@@ -3118,6 +3142,30 @@ export class WebAccessService {
       );
     if (!Number.isSafeInteger(revision) || revision < 0)
       throw new HttpError(409, "state_unavailable");
+    return this.projectContextResources(
+      { deviceId: device.id, sessionId, workspaceId },
+      raw,
+      revision,
+      directoryId,
+    );
+  }
+  private rememberContextResource(id: string, resource: RememberedContextResource) {
+    // Kept in order of listing; the oldest make way instead of refusing new listings.
+    this.contextArtifactRefs.delete(id);
+    this.contextArtifactRefs.set(id, resource);
+    for (const oldest of this.contextArtifactRefs.keys()) {
+      if (this.contextArtifactRefs.size <= CONTEXT_ARTIFACT_LIMIT) break;
+      this.contextArtifactRefs.delete(oldest);
+    }
+  }
+  private async projectContextResources(
+    scope: ContextResourceScope,
+    raw: Record<string, unknown>,
+    revision: number,
+    directoryId?: string,
+    draftAgent?: ManagedAgent,
+  ) {
+    const { deviceId, sessionId, workspaceId } = scope;
     const resources: {
       id: string;
       kind: ContextResourceReference["kind"];
@@ -3148,7 +3196,7 @@ export class WebAccessService {
           ...(nativeId ? { id: nativeId } : {}),
           ...(relativePath ? { relativePath } : {}),
         };
-        const id = digest(`${this.bootId}|${device.id}|${sessionId}|${JSON.stringify(reference)}`);
+        const id = digest(`${this.bootId}|${deviceId}|${sessionId}|${JSON.stringify(reference)}`);
         if (seenIds.has(id)) continue;
         const name =
           this.optionalString(item.name, 256) ?? relativePath?.split("/").at(-1) ?? nativeId;
@@ -3163,7 +3211,10 @@ export class WebAccessService {
               },
         );
         seenIds.add(id);
-        if (availability.available) references.set(id, reference);
+        if (availability.available) {
+          references.set(id, reference);
+          if (draftAgent) this.rememberContextResource(id, { ...scope, draftAgent, reference });
+        }
         resources.push({
           id,
           kind,
@@ -3184,34 +3235,24 @@ export class WebAccessService {
           entries: { id: string; name: string; kind: "file" | "directory"; revision: string }[];
         }
       | undefined;
-    const artifacts = this.artifactsFor(device.id);
+    const artifacts = this.artifactsFor(deviceId);
     if (artifacts) {
       try {
-        directory = await artifacts.list(
-          { deviceId: device.id, workspaceId, sessionId },
-          directoryId,
-        );
+        directory = await artifacts.list(scope, directoryId);
       } catch (error) {
         if (error instanceof ArtifactError) throw new HttpError(error.status, error.code);
         throw error;
       }
       for (const entry of directory.entries) {
         const id = digest(
-          `${this.bootId}|${device.id}|${sessionId}|${workspaceId}|${entry.id}|${entry.revision}`,
+          `${this.bootId}|${deviceId}|${sessionId}|${workspaceId}|${entry.id}|${entry.revision}`,
         );
-        // Kept in order of listing; the oldest make way instead of refusing new listings.
-        this.contextArtifactRefs.delete(id);
-        this.contextArtifactRefs.set(id, {
-          deviceId: device.id,
-          sessionId,
-          workspaceId,
+        this.rememberContextResource(id, {
+          ...scope,
+          ...(draftAgent ? { draftAgent } : {}),
           artifactId: entry.id,
           revision: entry.revision,
         });
-        for (const oldest of this.contextArtifactRefs.keys()) {
-          if (this.contextArtifactRefs.size <= CONTEXT_ARTIFACT_LIMIT) break;
-          this.contextArtifactRefs.delete(oldest);
-        }
         resources.push({
           id,
           kind: entry.kind,
@@ -3236,17 +3277,55 @@ export class WebAccessService {
       references,
     };
   }
+  private async newSessionResources(hash: string, url: URL) {
+    if (this.options.acceptanceSessionId) throw new HttpError(403, "session_control_not_allowed");
+    if (url.searchParams.has("sessionId")) throw new HttpError(400, "invalid_input");
+    const device = this.fullAccess(hash, "advancedControl");
+    this.grant(hash, "manage");
+    this.grant(hash, "files");
+    const workspaceId = this.field(url.searchParams.get("workspaceId"));
+    const agent = managedAgentOf(url.searchParams.get("agent"));
+    if (!agent || !sessionProviderCapabilities(agent)?.create.workspaceResources)
+      throw new HttpError(400, "unsupported_provider_resources");
+    if (!(await this.workspaceAllowed(workspaceId, device)))
+      throw new HttpError(403, "workspace_not_authorized");
+    const bootId = this.bootId;
+    const directoryId = url.searchParams.get("directoryId") ?? undefined;
+    if (directoryId && directoryId.length > 128) throw new HttpError(400, "invalid_directory_id");
+    const raw = (await this.runtime({
+      operation: "provider-workspace-resources",
+      agent,
+      workspaceId,
+    }).catch(() => ({}))) as Record<string, unknown>;
+    const { response } = await this.projectContextResources(
+      { deviceId: device.id, workspaceId, sessionId: `draft:${agent}:${workspaceId}` },
+      raw ?? {},
+      0,
+      directoryId,
+      agent,
+    );
+    if (!(await this.workspaceAllowed(workspaceId, device)))
+      throw new HttpError(403, "workspace_not_authorized");
+    if (this.bootId !== bootId) throw new HttpError(409, "stale_boot");
+    if (this.fullAccess(hash, "advancedControl").id !== device.id)
+      throw new HttpError(401, "access_ended");
+    this.grant(hash, "manage");
+    this.grant(hash, "files");
+    const { sessionId: _scope, ...resources } = response;
+    return { ...resources, workspaceId };
+  }
   private async resolveContextResources(
     sessionId: string,
     hash: string,
     value: unknown,
     expectedRevision: unknown,
     reserved = false,
+    draftAgent?: ManagedAgent,
   ) {
     if (value === undefined) return undefined;
     if (
       !Array.isArray(value) ||
-      value.length > 10 ||
+      value.length > SESSION_RESOURCE_LIMIT ||
       value.some((id) => typeof id !== "string" || !/^[a-f0-9]{64}$/.test(id)) ||
       new Set(value).size !== value.length
     )
@@ -3273,14 +3352,34 @@ export class WebAccessService {
       if (
         !artifact ||
         artifact.deviceId !== device.id ||
-        artifact.sessionId !== sessionId ||
         artifact.workspaceId !== workspaceId ||
-        !artifacts
+        (artifact.draftAgent
+          ? artifact.draftAgent !== draftAgent
+          : artifact.sessionId !== sessionId)
       )
         throw new HttpError(409, "resource_unavailable");
+      if (artifact.draftAgent) {
+        this.fullAccess(hash, "advancedControl");
+        this.grant(hash, "files");
+      }
+      if ("reference" in artifact) {
+        const { reference } = artifact;
+        if (
+          ![...references.values()].some(
+            (current) =>
+              current.kind === reference.kind &&
+              current.id === reference.id &&
+              current.relativePath === reference.relativePath,
+          )
+        )
+          throw new HttpError(409, "resource_unavailable");
+        resolved.push(reference);
+        continue;
+      }
+      if (!artifacts) throw new HttpError(409, "resource_unavailable");
       try {
         const reference = await artifacts.resolveContextReference(
-          { deviceId: device.id, workspaceId, sessionId },
+          { deviceId: device.id, workspaceId, sessionId: artifact.sessionId },
           artifact.artifactId,
           artifact.revision,
         );
@@ -3358,6 +3457,7 @@ export class WebAccessService {
     verified = this.options.verifiedClaudeManaged === true,
   ) {
     const data = result as {
+      executionMode?: unknown;
       features?: Record<string, { available: boolean; reason?: string }>;
       commands?: unknown;
     };
@@ -3381,6 +3481,7 @@ export class WebAccessService {
       context: "advancedControl",
       resources: "advancedControl",
       goal: "advancedControl",
+      "goal-draft": "advancedControl",
       "goal-set": "advancedControl",
       "goal-pause": "advancedControl",
       "goal-resume": "advancedControl",
@@ -3442,7 +3543,9 @@ export class WebAccessService {
             (operation !== "fork" || device.organize === true) &&
             transport &&
             execution &&
-            (operation !== "attachments" || device.send === true);
+            (operation !== "attachments" || device.send === true) &&
+            (operation !== "goal-draft" ||
+              (data.executionMode === "claude-managed" && device.send === true));
           return [
             operation,
             allowed
@@ -4725,6 +4828,12 @@ export class WebAccessService {
         if (policyId !== "workspace-write-on-request") this.fullAccess(hash);
         params.policyId = policyId;
       }
+      if (body.mode !== undefined) {
+        if (provider?.create.planMode !== "mode" || body.mode !== "plan")
+          throw new HttpError(400, "unsupported_mode");
+        this.grant(hash, "settings");
+        params.mode = body.mode;
+      }
       if (body.model !== undefined) params.model = this.field(body.model, 128);
       if (body.effort !== undefined) params.effort = this.field(body.effort, 32);
       if (provider?.create.verifyStartupModel && body.verifyStartupModel !== undefined) {
@@ -4798,6 +4907,7 @@ export class WebAccessService {
     )
       throw new HttpError(403, "workspace_not_authorized");
     this.grant(hash, "manage");
+    if (params.mode === "plan") this.grant(hash, "settings");
     if (body.bootId !== this.bootId) throw new HttpError(409, "stale_boot");
     if (this.admission) throw new HttpError(409, "operation_busy");
     if (agent !== "claude-code" && this.requests.has(requestId)) {
@@ -5869,6 +5979,7 @@ export class WebAccessService {
           runtimeBootId?: string;
           revision?: number;
           status?: string;
+          executionMode?: string;
           turnId?: string;
           sendEnabled?: boolean;
           stopEnabled?: boolean;
@@ -6067,6 +6178,11 @@ export class WebAccessService {
               body.resourceIds,
               body.expectedRevision,
               true,
+              snapshot.executionMode === "codex-managed"
+                ? "codex"
+                : snapshot.executionMode === "claude-managed"
+                  ? "claude-code"
+                  : undefined,
             )) ?? [];
           const inputRows = Array.isArray(params.input) ? params.input.length : 1;
           if (inputRows > 11 || resourceRefs.length > 32)
@@ -6227,6 +6343,8 @@ export class WebAccessService {
       this.grant(hash, "attachments");
       return this.json(res, 200, { attachments });
     }
+    if (path === "/managed/resources" && url.searchParams.has("workspaceId"))
+      return this.json(res, 200, await this.newSessionResources(hash, url));
     if (
       path === "/codex/session-settings" ||
       path === "/codex/goals" ||
@@ -6489,6 +6607,7 @@ export class WebAccessService {
       }
       return this.json(res, 200, {
         ...(options as object),
+        ...this.projectNewSessionOptions(options, current),
         workspaces: allowed.map(({ id, name }) => ({ id, name })),
       });
     }

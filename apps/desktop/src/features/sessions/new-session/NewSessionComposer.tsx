@@ -1,7 +1,6 @@
 import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { Popover } from "@base-ui/react/popover";
 import {
-  ArrowUp,
   Check,
   ChevronDown,
   CircleX,
@@ -12,7 +11,6 @@ import {
   ImageIcon,
   Layers,
   LoaderCircle,
-  Paperclip,
   Plus,
   Search,
   Shield,
@@ -21,15 +19,17 @@ import {
 } from "lucide-react";
 import { newSessionProvider, type ManagedAgent } from "@agentkib/web-client";
 import {
-  ComposerAddAction,
-  composerAddCopy,
-  ComposerAddMenu,
+  composerGoalCopy,
+  ComposerGoalFields,
+  ComposerModeChip,
   ComposerModelPicker,
   ComposerPermissionMenu,
-  ComposerPlanAction,
+  ComposerPrimaryAction,
+  ComposerToolbar,
   dshAgentPresetText,
   fillCopy,
   NEW_SESSION_AGENTS,
+  NewSessionAddDraftChips,
   newSessionCopy,
   newSessionCreateFields,
   newSessionModelSettings,
@@ -37,7 +37,13 @@ import {
   devinTerminalCopy,
   newSessionPermissions,
   newSessionPresets,
-  planModeCopy,
+  newSessionAddCapabilities,
+  planSlashOption,
+  SessionComposerAddMenu,
+  SessionComposerInput,
+  slashCommandCopy,
+  useNewSessionAdd,
+  useSlashCommandMenu,
 } from "@agentkib/session-ui";
 import { Button } from "@/components/ui/button";
 import { Disclosure, DisclosureSummary } from "@/components/ui/disclosure";
@@ -54,24 +60,21 @@ import { useI18n } from "@/core/useI18n";
 import { AgentIcon } from "@/features/agents/AgentIcon";
 import { recentContinuationWorkspaces } from "@/features/home/home-continuations";
 import { cn } from "cn";
-import {
-  ComposerFrame,
-  ComposerIconButton,
-  ComposerTextarea,
-  ComposerToolbar,
-} from "../ComposerFrame";
 import { codexCopy, codexReason } from "../conversation/features/sessions/codex-copy";
-import { isSendEnter, useEnterSends } from "../conversation/features/sessions/composer-shortcuts";
+import { composerLayoutCopy } from "../conversation/features/sessions/composer-layout-copy";
+import { Dialog } from "../conversation/components/dialog";
 import { MAX_MESSAGE_LENGTH } from "../conversation/features/sessions/session-model";
 import {
   offerNewSessionDraft,
   readNewSessionTarget,
   rememberNewSessionTarget,
+  type NewSessionDraft,
   type NewSessionTarget,
 } from "../conversation/features/sessions/new-session-draft";
 import { failureOf, useNewSession } from "./use-new-session";
 
 const MAX_FILES = 10;
+const NO_STARTUP_COMMANDS = [] as const;
 const chip =
   "h-8 min-w-0 gap-1.5 rounded-full px-2.5 text-sm font-normal text-muted-foreground hover:text-foreground";
 
@@ -122,17 +125,15 @@ export function NewSessionComposer(props: NewSessionComposerProps) {
   }>();
   const [agentPreset, setAgentPreset] = useState<string>();
   const [sending, setSending] = useState(false);
-  const draft = useRef({ text, files });
+  const draft = useRef<NewSessionDraft>({ text, files });
   const submittedWithPrompt = useRef(false);
-  useEffect(() => {
-    draft.current = { text, files };
-  }, [text, files]);
   // The composer stays busy until the new session opens.
   const handOff = async (sessionId: string, promptWasSubmitted: boolean) => {
     setSending(true);
     if (!promptWasSubmitted) offerNewSessionDraft(sessionId, draft.current);
     setText("");
     setFiles([]);
+    add.clearDraftAdditions();
     try {
       await onCreated(sessionId);
     } finally {
@@ -156,22 +157,46 @@ export function NewSessionComposer(props: NewSessionComposerProps) {
   const showPresets = provider?.create.agentPresets === true;
   const optionsStatus = session.optionsLoading ? copy.loadingOptions : copy.optionsUnavailable;
   const promptAtCreate = provider?.create.mode === "with-first-message";
+  const locked = sending || session.busy;
+  const { resourcesAllowed, goalsAllowed, hideGoalBudget, planField, offersPlan } =
+    newSessionAddCapabilities(options, provider?.create, session.advancedAccess);
+  const goalCopy = composerGoalCopy(locale);
+  const add = useNewSessionAdd({
+    agent,
+    workspaceId: workspace?.id,
+    client: session.client,
+    resourceAuthority: session.resourceAuthority,
+    resourcesAllowed,
+    locked,
+    resourceError: (error) => failureOf(error, locale).reason,
+    resourceReason: (code) => codexReason(locale, code).text,
+  });
+  const { resources, goal } = add;
+  useEffect(() => {
+    draft.current = {
+      text,
+      files,
+      ...(resources.length ? { resources } : {}),
+      ...(goal ? { goal } : {}),
+    };
+  }, [text, files, resources, goal]);
   // The create request can carry the first message's text. Attachments use the opened session.
   const acceptsAttachments = (provider?.create.attachments ?? true) && !promptAtCreate;
   const workspaceCatalog = provider?.create.catalogScope !== "host";
   const variantSelection = provider?.models.selection === "variants";
   const effortDefault = provider?.models.effortDefault ?? true;
-  const enterSends = useEnterSends();
-  const composing = useRef(false);
   const fileInput = useRef<HTMLInputElement>(null);
   const [fileLimit, setFileLimit] = useState(false);
   const side = placement === "home" ? "bottom" : "top";
   const modelScope = JSON.stringify([agent, workspaceCatalog ? workspace?.id : null]);
 
   const selectWorkspace = (id: string) => {
-    if (workspaceCatalog && id !== workspace?.id) {
-      setModelDraft(undefined);
-      setAgentPreset(undefined);
+    if (id !== workspace?.id) {
+      setAddMenuOpen(false);
+      if (workspaceCatalog) {
+        setModelDraft(undefined);
+        setAgentPreset(undefined);
+      }
     }
     setWorkspaceId(id);
   };
@@ -209,16 +234,31 @@ export function NewSessionComposer(props: NewSessionComposerProps) {
   const permissions = newSessionPermissions(agent, verifiedOptions, locale, {
     fullAccess: session.fullAccess,
   });
-  const permissionChoices = permissions?.choices.filter((item) => item.id !== "plan") ?? [];
+  const permissionChoices = permissions?.choices ?? [];
   const shownPermission = permissionChoices.find(
-    (item) => item.id === (permission ?? permissionChoices[0]?.id),
+    (item) => item.id === (permission ?? permissions?.initial),
   );
-  const planning = agent === "claude-code" && startupPlanning;
-  const offersPlan =
-    agent === "claude-code" &&
-    showPermission &&
-    permissions?.choices.some((item) => item.id === "plan");
-  const hasAddActions = acceptsAttachments || offersPlan || planning;
+  const planning = startupPlanning;
+  const planOption = useMemo(() => planSlashOption(locale), [locale]);
+  const slash = useSlashCommandMenu({
+    value: text,
+    options: NO_STARTUP_COMMANDS,
+    enabled: offersPlan && !locked,
+    catalogKnown: true,
+    locale,
+    side,
+    label: agent === "codex" ? slashCommandCopy(locale).codexLabel : undefined,
+    plan: offersPlan
+      ? {
+          option: planOption,
+          enter: () => {
+            setStartupPlanning(true);
+            return true;
+          },
+        }
+      : undefined,
+    onChoose: setText,
+  });
   const { presets, defaultId: defaultPreset } = newSessionPresets(
     agent,
     verifiedOptions,
@@ -232,7 +272,11 @@ export function NewSessionComposer(props: NewSessionComposerProps) {
       : options && !options.available
         ? codexReason(locale, options.reason).text
         : undefined;
-  const locked = sending || session.busy;
+  const hasMessage = !!text.trim() || (acceptsAttachments && files.length > 0);
+  const resourceNeedsMessage = resources.length > 0 && !hasMessage;
+  const resourceNeedsReselection = resources.some((item) => !item.available);
+  const goalNeedsMessage = !!goal && !hasMessage && planning && planField === "mode";
+  const sendLabel = goal && !hasMessage ? codexCopy[locale].goalCreate : copy.send;
   const canSend =
     session.ready &&
     !!options?.available &&
@@ -240,8 +284,12 @@ export function NewSessionComposer(props: NewSessionComposerProps) {
     !locked &&
     !session.unknown &&
     (!planning || offersPlan) &&
+    (!resources.length ||
+      (resourcesAllowed && !resourceNeedsMessage && !resourceNeedsReselection)) &&
+    (!goal || goalsAllowed) &&
+    !goalNeedsMessage &&
     (acceptsAttachments || files.length === 0) &&
-    (promptAtCreate ? !!text.trim() : !!text.trim() || files.length > 0);
+    (hasMessage || !!goal);
 
   async function send() {
     if (!canSend || !workspace) return;
@@ -254,8 +302,8 @@ export function NewSessionComposer(props: NewSessionComposerProps) {
         effort,
         serviceTierId,
         shownModel: modelId,
-        // Claude stores Plan and its execution permission in the same native field.
-        permission: planning ? "plan" : permission,
+        permission,
+        planning,
         preset: agentPreset,
         fullAccess: session.fullAccess,
       },
@@ -398,6 +446,7 @@ export function NewSessionComposer(props: NewSessionComposerProps) {
                 key={item}
                 disabled={notInstalled?.has(item)}
                 onClick={() => {
+                  if (item === agent) return;
                   setAgent(item);
                   setModelDraft(undefined);
                   setPermission(undefined);
@@ -461,247 +510,279 @@ export function NewSessionComposer(props: NewSessionComposerProps) {
           />
         )}
       </div>
-      <ComposerFrame
-        onSubmit={(event) => {
-          event.preventDefault();
-          void send();
+      <SessionComposerInput
+        editor={{
+          "aria-label": copy.message,
+          value: text,
+          maxLength: MAX_MESSAGE_LENGTH,
+          placeholder: planning ? codexCopy[locale].planPlaceholder : copy.placeholder,
+          disabled: locked,
+          onChange: (event) => setText(event.target.value),
+          ...slash.inputProps,
         }}
-      >
-        {files.length > 0 && (
-          <ul className="flex flex-wrap gap-1.5 px-1 pt-1">
-            {files.map((file, index) => (
-              <li
-                key={`${file.name}:${index}`}
-                className="flex max-w-56 items-center gap-1.5 rounded-md border border-border bg-muted/40 py-1 pl-2 pr-1 text-xs"
-              >
-                {file.type.startsWith("image/") ? (
-                  <ImageIcon className="size-3.5 shrink-0" aria-hidden />
-                ) : (
-                  <FileText className="size-3.5 shrink-0" aria-hidden />
-                )}
-                <span className="truncate">{file.name}</span>
-                <Button
-                  variant="ghost"
-                  size="content"
-                  className="grid size-5 shrink-0 place-items-center rounded text-muted-foreground"
-                  aria-label={fillCopy(copy.removeFile, { name: file.name })}
-                  disabled={locked}
-                  onClick={() => {
-                    setFileLimit(false);
-                    setFiles((current) => current.filter((_, at) => at !== index));
-                  }}
-                >
-                  <X className="size-3" aria-hidden />
-                </Button>
-              </li>
-            ))}
-          </ul>
-        )}
-        <ComposerTextarea
-          aria-label={copy.message}
-          value={text}
-          maxLength={MAX_MESSAGE_LENGTH}
-          placeholder={copy.placeholder}
-          disabled={locked}
-          onChange={(event) => setText(event.target.value)}
-          onCompositionStart={() => {
-            composing.current = true;
-          }}
-          onCompositionEnd={() => {
-            composing.current = false;
-          }}
-          onKeyDown={(event) => {
-            if (!enterSends || !isSendEnter(event, composing.current)) return;
-            event.preventDefault();
-            if (!event.repeat) event.currentTarget.form?.requestSubmit();
-          }}
-          onPaste={(event) => {
-            const pasted = Array.from(event.clipboardData.files);
-            if (!pasted.length) return;
-            event.preventDefault();
-            addFiles(pasted);
-          }}
-        />
-        <Input
-          ref={fileInput}
-          type="file"
-          multiple
-          className="hidden"
-          aria-label={copy.attach}
-          onChange={(event) => {
-            addFiles(Array.from(event.target.files ?? []));
-            event.target.value = "";
-          }}
-        />
-        <ComposerToolbar
-          leading={
-            <>
-              <ComposerAddMenu
-                label={codexCopy[locale].addContext}
-                disabled={locked || !hasAddActions}
-                disabledReason={
-                  hasAddActions
-                    ? undefined
-                    : session.optionsLoading
-                      ? copy.loadingOptions
-                      : composerAddCopy(locale).unavailable
-                }
-                side={side}
-                open={addMenuOpen && !locked && hasAddActions}
-                onOpenChange={setAddMenuOpen}
-              >
-                {acceptsAttachments && (
-                  <ComposerAddAction
-                    label={copy.attach}
-                    icon={<Paperclip className="size-4" aria-hidden />}
-                    disabled={locked || files.length >= MAX_FILES}
-                    onClick={() => {
-                      setAddMenuOpen(false);
-                      fileInput.current?.click();
-                    }}
-                  />
-                )}
-                {(offersPlan || planning) && (
-                  <ComposerPlanAction
-                    label={planModeCopy(locale).title}
-                    active={planning}
-                    disabled={locked}
-                    disabledReason={planning && !offersPlan ? optionsStatus : undefined}
-                    onToggle={() => {
-                      setAddMenuOpen(false);
-                      setStartupPlanning(!planning);
-                    }}
-                  />
-                )}
-              </ComposerAddMenu>
-              {showPermission && permissions && shownPermission && (
-                <ComposerPermissionMenu
-                  label={shownPermission.name}
-                  title={permissions.title}
-                  risky={shownPermission.risky}
-                  disabled={locked}
-                  side={side}
-                  items={
-                    planning
-                      ? permissionChoices.map((item) => ({ ...item, disabled: true }))
-                      : permissionChoices
-                  }
-                  selected={shownPermission.id}
-                  onSelect={setPermission}
-                />
-              )}
-              {showPermission && !shownPermission && (
-                <UnavailableOptionButton
-                  label={copy.permission}
-                  status={optionsStatus}
-                  loading={session.optionsLoading}
-                  className="h-11 min-w-0 rounded-full px-2.5 text-sm font-normal text-muted-foreground"
-                  compact
-                  icon={<Shield className="size-3.5 shrink-0" aria-hidden />}
-                />
-              )}
-            </>
-          }
-          trailing={
-            <>
-              {showModel && modelSettings && (
-                <ComposerModelPicker
-                  key={modelScope}
+        onSubmit={() => void send()}
+        onEditorKeyDown={slash.onKeyDown}
+        canSubmitFromKeyboard={() => canSend}
+        attachments={{
+          inputRef: fileInput,
+          label: copy.attach,
+          disabled: locked || !acceptsAttachments,
+          onFiles: addFiles,
+        }}
+        afterEditor={slash.menu}
+        beforeEditor={
+          <>
+            {files.length > 0 && (
+              <ul className="flex flex-wrap gap-1.5 px-1 pt-1">
+                {files.map((file, index) => (
+                  <li
+                    key={`${file.name}:${index}`}
+                    className="flex max-w-56 items-center gap-1.5 rounded-md border border-border bg-muted/40 py-1 pl-2 pr-1 text-xs"
+                  >
+                    {file.type.startsWith("image/") ? (
+                      <ImageIcon className="size-3.5 shrink-0" aria-hidden />
+                    ) : (
+                      <FileText className="size-3.5 shrink-0" aria-hidden />
+                    )}
+                    <span className="truncate">{file.name}</span>
+                    <Button
+                      variant="ghost"
+                      size="content"
+                      className="grid size-5 shrink-0 place-items-center rounded text-muted-foreground"
+                      aria-label={fillCopy(copy.removeFile, { name: file.name })}
+                      disabled={locked}
+                      onClick={() => {
+                        setFileLimit(false);
+                        setFiles((current) => current.filter((_, at) => at !== index));
+                      }}
+                    >
+                      <X className="size-3" aria-hidden />
+                    </Button>
+                  </li>
+                ))}
+              </ul>
+            )}
+            <NewSessionAddDraftChips
+              locale={locale}
+              resources={resources}
+              disabled={locked}
+              onRemoveResource={(id) =>
+                add.setResources(resources.filter((item) => item.id !== id))
+              }
+            />
+            {(resourceNeedsReselection || resourceNeedsMessage || goalNeedsMessage) && (
+              <p className="px-2 text-xs text-muted-foreground">
+                {resourceNeedsReselection
+                  ? codexCopy[locale].resourceRemoved
+                  : resourceNeedsMessage
+                    ? composerLayoutCopy[locale].resourceNeedsMessage
+                    : goalCopy.planNeedsMessage}
+              </p>
+            )}
+          </>
+        }
+        toolbar={
+          <ComposerToolbar
+            leading={
+              <>
+                <SessionComposerAddMenu
+                  key={JSON.stringify([agent, workspace?.id, session.resourceAuthority])}
                   locale={locale}
-                  settings={modelSettings}
-                  selection={{ modelId, effort: shownEffort, serviceTierId: shownTier }}
+                  label={codexCopy[locale].addContext}
                   disabled={locked}
-                  saving={false}
+                  disabledReason={session.optionsLoading ? copy.loadingOptions : undefined}
                   side={side}
-                  modelDefault={provider?.models.modelDefault ?? true}
-                  effortDefault={effortDefault}
-                  clearEffort={(provider?.models.clearEffort ?? true) && !!effort}
-                  onOpen={() => undefined}
-                  onChange={async (change) => {
-                    if (change.restoreDefaults) {
-                      setModelDraft(undefined);
-                    } else if (variantSelection) {
-                      const nextModel = change.model ?? modelId;
-                      const chosen = modelSettings.options.models.find(
-                        (item) => item.id === nextModel,
-                      );
-                      if (!chosen) return;
-                      const nextTier =
-                        change.serviceTierId === null
-                          ? undefined
-                          : (change.serviceTierId ?? (change.model ? undefined : shownTier));
-                      const nextEffort = change.effort ?? (change.model ? undefined : shownEffort);
-                      const tierCandidates =
-                        change.serviceTierId !== undefined && !nextEffort
-                          ? chosen.variants?.filter((item) => item.serviceTierId === nextTier)
-                          : undefined;
-                      const tierVariant =
-                        tierCandidates?.length === 1 ? tierCandidates[0] : undefined;
-                      if (tierCandidates && !tierVariant) return;
-                      setModelDraft({
-                        scope: modelScope,
-                        model: chosen.id,
-                        effort: nextEffort ?? tierVariant?.effort ?? "",
-                        serviceTierId: nextTier ?? "",
-                        // Disabling Fast can select a concrete standard variant with no effort.
-                        // A bare family slug would leave the choice to Devin again.
-                        exactModel:
-                          change.serviceTierId === null && !tierVariant?.effort
-                            ? tierVariant?.id
-                            : undefined,
-                      });
-                    } else if (change.model !== undefined) {
-                      const chosen = modelSettings.options.models.find(
-                        (item) => item.id === change.model,
-                      );
-                      if (!chosen) return;
-                      const nextEffort = !effortDefault
-                        ? change.effort
-                        : chosen.efforts.find((level) => level === effort);
-                      setModelDraft({
-                        scope: modelScope,
-                        model: chosen.id,
-                        effort: nextEffort ?? "",
-                      });
-                    } else if (change.effort !== undefined || change.serviceTierId !== undefined) {
-                      setModelDraft({
-                        scope: modelScope,
-                        model,
-                        effort: change.effort === undefined ? effort : (change.effort ?? ""),
-                        serviceTierId:
-                          change.serviceTierId === undefined
-                            ? serviceTierId
-                            : (change.serviceTierId ?? ""),
-                      });
+                  open={addMenuOpen && !locked}
+                  onOpenChange={setAddMenuOpen}
+                  attachment={
+                    acceptsAttachments
+                      ? {
+                          disabled: files.length >= MAX_FILES,
+                          reason: files.length >= MAX_FILES ? codexCopy[locale].limit : undefined,
+                          onPick: () => fileInput.current?.click(),
+                        }
+                      : undefined
+                  }
+                  resources={add.resourceBrowser}
+                  goal={goalsAllowed ? { selected: !!goal, onOpen: add.openGoal } : undefined}
+                  plan={
+                    offersPlan || planning
+                      ? {
+                          active: planning,
+                          reason: planning && !offersPlan ? optionsStatus : undefined,
+                          onToggle: () => setStartupPlanning(!planning),
+                        }
+                      : undefined
+                  }
+                />
+                {showPermission && permissions && (
+                  <ComposerPermissionMenu
+                    label={shownPermission?.name ?? permissions.title}
+                    title={permissions.title}
+                    risky={shownPermission?.risky}
+                    disabled={locked}
+                    side={side}
+                    items={
+                      planning && planField === "permissionMode"
+                        ? permissionChoices.map((item) => ({ ...item, disabled: true }))
+                        : permissionChoices
                     }
-                  }}
-                />
-              )}
-              {showModel && !modelSettings && (
-                <UnavailableOptionButton
-                  label={copy.model}
-                  status={optionsStatus}
-                  loading={session.optionsLoading}
-                  className="h-9 min-w-0 max-w-64 rounded-full px-2 text-sm font-normal"
-                />
-              )}
-              <ComposerIconButton
-                type="submit"
-                compact
-                aria-label={copy.send}
-                title={copy.send}
-                disabled={!canSend}
-              >
-                {locked ? (
-                  <LoaderCircle className="size-4 animate-spin" aria-hidden />
-                ) : (
-                  <ArrowUp size={20} aria-hidden />
+                    selected={shownPermission?.id}
+                    onSelect={setPermission}
+                  />
                 )}
-              </ComposerIconButton>
-            </>
+                {showPermission && !permissions && (
+                  <UnavailableOptionButton
+                    label={
+                      agent === "claude-code" ? copy.permissions[agent].title : copy.permission
+                    }
+                    status={optionsStatus}
+                    loading={session.optionsLoading}
+                    className="h-11 min-w-0 rounded-full px-2.5 text-sm font-normal text-muted-foreground"
+                    compact
+                    icon={<Shield className="size-3.5 shrink-0" aria-hidden />}
+                  />
+                )}
+                {planning && (
+                  <ComposerModeChip
+                    mode="plan"
+                    locale={locale}
+                    disabled={locked}
+                    onRemove={() => setStartupPlanning(false)}
+                  />
+                )}
+                {goal && (
+                  <ComposerModeChip
+                    mode="goal"
+                    locale={locale}
+                    detail={goal.objective}
+                    disabled={locked}
+                    onOpen={add.openGoal}
+                    onRemove={add.clearGoal}
+                  />
+                )}
+              </>
+            }
+            trailing={
+              <>
+                {showModel && modelSettings && (
+                  <ComposerModelPicker
+                    key={modelScope}
+                    locale={locale}
+                    settings={modelSettings}
+                    selection={{ modelId, effort: shownEffort, serviceTierId: shownTier }}
+                    disabled={locked}
+                    saving={false}
+                    side={side}
+                    modelDefault={provider?.models.modelDefault ?? true}
+                    effortDefault={effortDefault}
+                    clearEffort={(provider?.models.clearEffort ?? true) && !!effort}
+                    onOpen={() => undefined}
+                    onChange={async (change) => {
+                      if (change.restoreDefaults) {
+                        setModelDraft(undefined);
+                      } else if (variantSelection) {
+                        const nextModel = change.model ?? modelId;
+                        const chosen = modelSettings.options.models.find(
+                          (item) => item.id === nextModel,
+                        );
+                        if (!chosen) return;
+                        const nextTier =
+                          change.serviceTierId === null
+                            ? undefined
+                            : (change.serviceTierId ?? (change.model ? undefined : shownTier));
+                        const nextEffort =
+                          change.effort ?? (change.model ? undefined : shownEffort);
+                        const tierCandidates =
+                          change.serviceTierId !== undefined && !nextEffort
+                            ? chosen.variants?.filter((item) => item.serviceTierId === nextTier)
+                            : undefined;
+                        const tierVariant =
+                          tierCandidates?.length === 1 ? tierCandidates[0] : undefined;
+                        if (tierCandidates && !tierVariant) return;
+                        setModelDraft({
+                          scope: modelScope,
+                          model: chosen.id,
+                          effort: nextEffort ?? tierVariant?.effort ?? "",
+                          serviceTierId: nextTier ?? "",
+                          // Disabling Fast can select a concrete standard variant with no effort.
+                          // A bare family slug would leave the choice to Devin again.
+                          exactModel:
+                            change.serviceTierId === null && !tierVariant?.effort
+                              ? tierVariant?.id
+                              : undefined,
+                        });
+                      } else if (change.model !== undefined) {
+                        const chosen = modelSettings.options.models.find(
+                          (item) => item.id === change.model,
+                        );
+                        if (!chosen) return;
+                        const nextEffort = !effortDefault
+                          ? change.effort
+                          : chosen.efforts.find((level) => level === effort);
+                        setModelDraft({
+                          scope: modelScope,
+                          model: chosen.id,
+                          effort: nextEffort ?? "",
+                        });
+                      } else if (
+                        change.effort !== undefined ||
+                        change.serviceTierId !== undefined
+                      ) {
+                        setModelDraft({
+                          scope: modelScope,
+                          model,
+                          effort: change.effort === undefined ? effort : (change.effort ?? ""),
+                          serviceTierId:
+                            change.serviceTierId === undefined
+                              ? serviceTierId
+                              : (change.serviceTierId ?? ""),
+                        });
+                      }
+                    }}
+                  />
+                )}
+                {showModel && !modelSettings && (
+                  <UnavailableOptionButton
+                    label={copy.model}
+                    status={optionsStatus}
+                    loading={session.optionsLoading}
+                    className="h-9 min-w-0 max-w-64 rounded-full px-2 text-sm font-normal"
+                  />
+                )}
+                <ComposerPrimaryAction label={sendLabel} disabled={!canSend} loading={locked} />
+              </>
+            }
+          />
+        }
+      />
+      {add.goalEditor && (
+        <Dialog
+          panel
+          title={goalCopy.title}
+          closeLabel={goalCopy.close}
+          onClose={add.closeGoal}
+          footer={
+            <Button
+              type="button"
+              disabled={locked || !goalsAllowed || !add.goalValid}
+              onClick={add.saveGoal}
+            >
+              {goalCopy.saveDraft}
+            </Button>
           }
-        />
-      </ComposerFrame>
+        >
+          <ComposerGoalFields
+            locale={locale}
+            objective={add.goalEditor.objective}
+            budget={add.goalEditor.budget}
+            hideBudget={hideGoalBudget}
+            disabled={locked || !goalsAllowed}
+            onObjectiveChange={(objective) => add.editGoal({ objective })}
+            onBudgetChange={(budget) => add.editGoal({ budget })}
+          />
+        </Dialog>
+      )}
     </section>
   );
 }

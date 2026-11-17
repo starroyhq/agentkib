@@ -183,6 +183,7 @@ export function ComposerModelPicker({
   reportedSettings,
   displayFallback,
   disabled,
+  triggerDisabled = false,
   saving,
   status,
   provider = settings?.provider,
@@ -202,6 +203,7 @@ export function ComposerModelPicker({
     name?: string;
   };
   disabled: boolean;
+  triggerDisabled?: boolean;
   saving: boolean;
   status?: string;
   provider?: SessionProviderCapabilities;
@@ -342,6 +344,9 @@ export function ComposerModelPicker({
   const tierWritable = writable && !fallback && settings?.writable.serviceTier?.available;
   const fastWritable = tierWritable && fastSupported;
   const effortWritable = writable && !fallback && settings?.writable.effort?.available;
+  const restoresDefaults = settings?.writable.restoreDefaults?.available === true;
+  const clearsEffort = !restoresDefaults && clearEffort && !!selection?.effort;
+  const resetLabel = clearsEffort ? copy.useDefaultEffort : copy.reset;
   const onlyEffort = efforts.length === 1 ? efforts[0] : undefined;
   useEffortMotion(popup, open && page === "effort", fast);
 
@@ -349,6 +354,7 @@ export function ComposerModelPicker({
     pickerRef,
     () => ({
       open(next) {
+        if (triggerDisabled) return;
         if (openState.current) {
           setPage(next);
           return;
@@ -357,12 +363,19 @@ export function ComposerModelPicker({
         popover.open(triggerId);
       },
     }),
-    [popover, triggerId],
+    [popover, triggerId, triggerDisabled],
   );
 
   useEffect(() => {
     unknownEffortPointer.current = undefined;
   }, [effortScope]);
+  useEffect(() => {
+    if (!triggerDisabled || !openState.current) return;
+    openState.current = false;
+    requestedPage.current = undefined;
+    setOpen(false);
+    setDraft(undefined);
+  }, [triggerDisabled]);
 
   async function change(value: ComposerModelChange) {
     if (!writable || flight.current) return;
@@ -412,9 +425,9 @@ export function ComposerModelPicker({
   return (
     <Popover.Root
       handle={popover}
-      open={open}
+      open={open && !triggerDisabled}
       onOpenChange={(next) => {
-        if (next === openState.current) return;
+        if (next === openState.current || (next && triggerDisabled)) return;
         openState.current = next;
         setOpen(next);
         setDraftEffort(undefined);
@@ -433,11 +446,14 @@ export function ComposerModelPicker({
               handle={popover}
               id={triggerId}
               payload={page}
+              disabled={triggerDisabled}
               render={
                 <Button
                   type="button"
                   variant="ghost"
                   className="h-9 min-w-0 max-w-64 gap-1.5 rounded-full px-2 text-sm font-normal"
+                  title={triggerDisabled ? status : undefined}
+                  aria-description={triggerDisabled ? status : undefined}
                   aria-label={
                     !hasDisplaySelection
                       ? copy.modelSettings
@@ -461,7 +477,9 @@ export function ComposerModelPicker({
           {displayFast && <ComposerFastIcon active />}
           <ChevronDown className="size-3.5 shrink-0 text-muted-foreground" aria-hidden="true" />
         </Tooltip.Trigger>
-        <TooltipContent>{overviewLabel}</TooltipContent>
+        <TooltipContent>
+          {triggerDisabled ? (status ?? overviewLabel) : overviewLabel}
+        </TooltipContent>
       </Tooltip.Root>
       <Popover.Portal>
         <Popover.Positioner
@@ -495,7 +513,7 @@ export function ComposerModelPicker({
                         variant="ghost"
                         className="mb-1 h-auto min-h-12 w-full justify-start rounded-lg px-2 py-2 text-left font-normal"
                         aria-pressed={modelDefault ? !modelId : undefined}
-                        disabled={!writable || !settings?.writable.restoreDefaults?.available}
+                        disabled={!writable || !restoresDefaults}
                         onClick={() => {
                           if (!nativeVariants) setPage("effort");
                           void change({ restoreDefaults: true });
@@ -636,10 +654,12 @@ export function ComposerModelPicker({
                         type="button"
                         variant="ghost"
                         className="size-7 rounded-full p-0 text-muted-foreground"
-                        aria-label={copy.reset}
-                        title={copy.reset}
-                        disabled={!writable || !settings?.writable.restoreDefaults?.available}
-                        onClick={() => void change({ restoreDefaults: true })}
+                        aria-label={resetLabel}
+                        title={resetLabel}
+                        disabled={clearsEffort ? !effortWritable : !writable || !restoresDefaults}
+                        onClick={() =>
+                          void change(clearsEffort ? { effort: null } : { restoreDefaults: true })
+                        }
                       >
                         <RotateCcw className="size-4" aria-hidden="true" />
                       </Button>
@@ -756,17 +776,6 @@ export function ComposerModelPicker({
                         onClick={() => void change({ effort: onlyEffort })}
                       >
                         {effortText(onlyEffort)}
-                      </Button>
-                    )}
-                    {clearEffort && selection?.effort && (
-                      <Button
-                        type="button"
-                        variant="ghost"
-                        className="mt-1 h-6 px-2 text-xs text-muted-foreground"
-                        disabled={!effortWritable}
-                        onClick={() => void change({ effort: null })}
-                      >
-                        {copy.useDefaultEffort}
                       </Button>
                     )}
                     {otherTiers.length > 0 && (

@@ -6,11 +6,13 @@ import {
   claudeSlashOptions,
   codexCommandPrompt,
   codexSlashOptions,
-  ComposerAddAction,
-  ComposerAddMenu,
-  ComposerPlanAction,
+  ComposerModeChip,
+  ComposerPrimaryAction,
+  ComposerToolbar,
+  SessionComposerAddMenu,
+  SessionComposerInput,
+  useNewSessionGoalDraft,
   dshSlashOptions,
-  planModeCopy,
   planSlashOption,
   slashCommandCopy,
   sessionContinuationCopy,
@@ -22,7 +24,6 @@ import {
 } from "@agentkib/session-ui";
 import { SessionBusyChoice } from "./session-busy-choice";
 import { SessionReadOnly } from "./session-read-only";
-import { isSendEnter, useEnterSends } from "./composer-shortcuts";
 import { runningSendAction, useSendWhileRunning } from "../preferences/send-while-running";
 import { claudeConnectionCopyForSurface } from "./claude-connection-copy";
 import { DshQueue } from "./dsh-queue";
@@ -30,16 +31,7 @@ import { HistoryReferenceChips } from "../history/history-search-controls";
 import { validHistoryMessage } from "../history/history-reference-model";
 import { useEffect, useId, useMemo, useRef, useState } from "react";
 import { toast } from "sonner";
-import {
-  ArrowUp,
-  AlertTriangle,
-  CornerDownRight,
-  ListPlus,
-  MoreHorizontal,
-  Paperclip,
-  Square,
-  X,
-} from "lucide-react";
+import { AlertTriangle, CornerDownRight, ListPlus, MoreHorizontal, X } from "lucide-react";
 import {
   CODEX_MENU_COMMANDS,
   claudeCommandDecision,
@@ -49,9 +41,7 @@ import {
   type UploadedAttachment,
 } from "@agentkib/web-client";
 import { Button } from "../../components/ui/button";
-import { Textarea } from "../../components/ui/textarea";
 import { Disclosure, DisclosureSummary } from "../../components/ui/disclosure";
-import { Input } from "../../components/ui/input";
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -136,13 +126,19 @@ export function SessionComposer({
   const [uploads, setUploads] = useState<Upload[]>([]);
   const [submitted, setSubmitted] = useState(false);
   const submitPending = useRef(false);
-  const composing = useRef(false);
-  const enterSends = useEnterSends();
   // While the agent runs, Send queues the message or adds it to the running turn, as this
   // device chose in preferences; the menu beside Send offers both either way.
   const runningAction = runningSendAction(useSendWhileRunning());
   const [error, setError] = useState("");
   const [resources, setResources] = useState<CodexResource[]>([]);
+  const {
+    value: startupGoal,
+    load: loadStartupGoal,
+    confirmFirstMessage,
+    stage: stageGoal,
+    handled: startupGoalHandled,
+    discard: discardStartupGoal,
+  } = useNewSessionGoalDraft(selected);
   const [previewKey, setPreviewKey] = useState<string>();
   const previewUrls = useRef(new Map<string, string>());
   const active = useRef(new Map<string, AbortController>());
@@ -205,6 +201,9 @@ export function SessionComposer({
   const limitedPlanReason = compacting
     ? contextUsageCopyForSurface(locale, "web").compactingDetail
     : codexReason(locale, limitedSettings?.reason ?? capabilities?.reason, "web").text;
+  const changeLimitedPlan = () => {
+    if (canChangeLimitedPlan) void codexAction("settings", { mode: nextMode });
+  };
   const settingsNotice =
     !fullAccess && isCodex && session.settingsNotice?.target === "permissions"
       ? session.settingsNotice
@@ -303,7 +302,6 @@ export function SessionComposer({
     setResources([]);
     setSubmitted(false);
     submitPending.current = false;
-    composing.current = false;
     setError("");
     setCommandNotice(undefined);
     setPreviewKey(undefined);
@@ -444,7 +442,11 @@ export function SessionComposer({
     const draft = takeNewSessionDraft(selected);
     if (!draft) return;
     setMessage(draft.text);
-    firstMessage.current = draft.send ? { sessionId: selected, text: draft.text } : undefined;
+    setResources(draft.resources ?? []);
+    loadStartupGoal(draft, draft.send);
+    const hasMessage = !!draft.text.trim() || draft.files.length > 0;
+    firstMessage.current =
+      draft.send && hasMessage ? { sessionId: selected, text: draft.text } : undefined;
     if (!draft.files.length) return;
     if (uploadPermission) void add(draft.files);
     else {
@@ -462,6 +464,7 @@ export function SessionComposer({
       setError(codexReason(locale, capabilities.features.attachments?.reason).text);
     }
   }, [
+    loadStartupGoal,
     selected,
     online,
     controlReady,
@@ -574,6 +577,7 @@ export function SessionComposer({
                   ...(action === "steer" ? { turnId: live?.turnId } : {}),
                 });
       if (result && requestGeneration === generation.current) {
+        if (action === "send" && !mapped) confirmFirstMessage(live?.revision);
         for (const url of previewUrls.current.values()) URL.revokeObjectURL(url);
         previewUrls.current.clear();
         setPreviewKey(undefined);
@@ -632,26 +636,13 @@ export function SessionComposer({
   const runningLabel = runningAction === "steer" ? copy.steer : copy.queueAdd;
   const primaryAction =
     canStop && live?.executionMode !== "claude-follower" ? (
-      <Button
-        type="button"
-        variant="outline"
-        className="inline-flex size-11 shrink-0 items-center justify-center rounded-full p-0"
-        aria-label={t.stop}
-        onClick={() => void control("stop")}
-      >
-        <Square size={17} />
-      </Button>
+      <ComposerPrimaryAction kind="stop" label={t.stop} onStop={() => void control("stop")} />
     ) : (
-      <Button
-        type="submit"
-        size="icon"
-        className="rounded-full p-0 pointer-coarse:size-11"
-        aria-label={runningReady ? runningLabel : t.send}
+      <ComposerPrimaryAction
+        label={runningReady ? runningLabel : t.send}
         title={runningReady ? runningLabel : undefined}
         disabled={((!canSubmit || compacting) && !runningReady) || !valid || submitted}
-      >
-        <ArrowUp size={20} />
-      </Button>
+      />
     );
   const advancedActions =
     (running || compacting) &&
@@ -762,207 +753,186 @@ export function SessionComposer({
         />
       )}
       {current?.agent === "deepseek-harness" && <DshQueue key={selected} />}
-      <form
-        className="relative w-full space-y-2 rounded-3xl border border-border bg-background px-2 pt-2 pb-1 shadow-sm transition-colors focus-within:border-ring/40 md:px-3 md:pt-3"
-        onSubmit={(event) => {
-          event.preventDefault();
+      <SessionComposerInput
+        editorContextKey={selected}
+        onSubmit={() => {
           if (canSubmit && !compacting) void send("send");
           else if (runningReady) void send(runningAction);
         }}
-      >
-        <label className="sr-only" htmlFor="message">
-          {t.message}
-        </label>
-        <Textarea
-          id="message"
-          className="min-h-10 max-h-40 w-full resize-none overflow-y-auto rounded-none border-0 bg-transparent px-3 py-2 text-sm shadow-none placeholder:text-muted-foreground focus-visible:border-transparent focus-visible:ring-0 disabled:bg-transparent dark:bg-transparent dark:disabled:bg-transparent"
-          value={composerValue}
-          maxLength={MAX_MESSAGE_LENGTH}
-          rows={1}
-          onChange={(event) => setMessage(event.target.value)}
-          placeholder={
-            planState.on
-              ? copy.planPlaceholder
-              : isCodex || isClaude
-                ? continuation.placeholder
-                : t.message
-          }
-          onFocus={() => {
+        editor={{
+          id: "message",
+          "aria-label": t.message,
+          value: composerValue,
+          maxLength: MAX_MESSAGE_LENGTH,
+          onChange: (event) => setMessage(event.currentTarget.value),
+          placeholder: planState.on
+            ? copy.planPlaceholder
+            : isCodex || isClaude
+              ? continuation.placeholder
+              : t.message,
+          onFocus: () => {
             if (isCodex || isClaude) void session.checkContinuation?.();
-          }}
-          disabled={(busy && !session.settingsOnlyBlocked) || submitted}
-          {...slash.inputProps}
-          onCompositionStart={() => {
-            composing.current = true;
-          }}
-          onCompositionEnd={() => {
-            composing.current = false;
-          }}
-          onBlur={() => {
-            composing.current = false;
-          }}
-          onKeyDown={(event) => {
-            if (slash.onKeyDown(event, composing.current)) return;
-            if (!enterSends || !isSendEnter(event, composing.current)) return;
-            event.preventDefault();
-            if (
-              !event.repeat &&
-              !event.currentTarget.disabled &&
-              ((canSubmit && !compacting) || runningReady) &&
-              valid &&
-              !submitPending.current
-            )
-              event.currentTarget.form?.requestSubmit();
-          }}
-          onPaste={(event) => {
-            const files = Array.from(event.clipboardData.files);
-            if (files.length && uploadPermission) {
-              event.preventDefault();
-              void add(files);
-            }
-          }}
-        />
-        {slash.menu}
-        <HistoryReferenceChips />
-        {uploads.length > 0 && (
-          <ul className="space-y-2">
-            {uploads.map((item) => (
-              <li key={item.key} className="flex items-center gap-2 text-xs">
-                {item.previewUrl && (
-                  <Button
-                    type="button"
-                    variant="outline"
-                    className="size-11 shrink-0 overflow-hidden p-0"
-                    aria-label={`${copy.previewAttachment}: ${item.name}`}
-                    onClick={() => setPreviewKey(item.key)}
-                  >
-                    <img
-                      src={item.previewUrl}
-                      alt=""
-                      className="size-full object-cover"
-                      onError={() => unavailablePreview(item.key)}
-                    />
-                  </Button>
-                )}
-                <span className="min-w-0 flex-1 truncate">{item.name}</span>
-                <span role="status">
-                  {item.failed
-                    ? copy.uploadFailed
-                    : item.result
-                      ? "100%"
-                      : `${copy.uploading} ${item.percent}%`}
-                </span>
-                <Button
-                  type="button"
-                  variant="ghost"
-                  size="sm"
-                  className="size-11 shrink-0 p-0"
-                  aria-label={`${copy.remove}: ${item.name}`}
-                  disabled={busy || submitted}
-                  onClick={() => void remove(item)}
-                >
-                  <X size={14} />
-                </Button>
-              </li>
-            ))}
-          </ul>
-        )}
-        {preview?.previewUrl && (
-          <Dialog
-            title={`${copy.previewAttachment}: ${preview.name}`}
-            closeLabel={copy.close}
-            onClose={() => setPreviewKey(undefined)}
-          >
-            <img
-              src={preview.previewUrl}
-              alt={preview.name}
-              className="mx-auto max-h-[65dvh] max-w-full object-contain"
-              onError={() => unavailablePreview(preview.key)}
-            />
-          </Dialog>
-        )}
-        <div className="space-y-2">
-          <Input
-            ref={fileInput}
-            className="hidden"
-            type="file"
-            multiple
-            aria-label={copy.attachment}
-            disabled={!uploadPermission || busy || submitted}
-            onChange={(event) => {
-              void add(Array.from(event.target.files ?? []));
-              event.target.value = "";
-            }}
-          />
-          {access?.device?.accessMode === "full" && (
-            <CodexComposerControls
-              controlsRef={controls}
-              onPlan={setPlanState}
-              resources={resources}
-              setResources={setResources}
-              openPhoneFiles={() => fileInput.current?.click()}
-              disabled={busy || submitted || !online}
-              action={primaryAction}
-              advancedActions={advancedActions}
-            />
-          )}
-          {access?.device?.accessMode !== "full" && (
-            <div className="@container -mx-1 flex min-w-0 items-center justify-between gap-2 pt-4">
-              <ComposerAddMenu
-                label={copy.addContext}
-                disabled={!canOpenAddMenu}
-                disabledReason={
-                  canOpenAddMenu
-                    ? undefined
-                    : showLimitedPlan
-                      ? limitedPlanReason
-                      : uploadPermission
-                        ? undefined
-                        : attachmentsReason
-                }
-                open={canOpenAddMenu && addMenuScope === addActionsScope}
-                onOpenChange={(open) => setAddMenuScope(open ? addActionsScope : undefined)}
+          },
+          disabled: (busy && !session.settingsOnlyBlocked) || submitted,
+          ...slash.inputProps,
+        }}
+        onEditorKeyDown={slash.onKeyDown}
+        canSubmitFromKeyboard={() =>
+          ((canSubmit && !compacting) || runningReady) && valid && !submitPending.current
+        }
+        attachments={{
+          inputRef: fileInput,
+          label: copy.attachment,
+          disabled: !uploadPermission || busy || submitted,
+          onFiles: (files) => void add(files),
+        }}
+        afterEditor={
+          <>
+            {slash.menu}
+            <HistoryReferenceChips />
+            {uploads.length > 0 && (
+              <ul className="space-y-2">
+                {uploads.map((item) => (
+                  <li key={item.key} className="flex items-center gap-2 text-xs">
+                    {item.previewUrl && (
+                      <Button
+                        type="button"
+                        variant="outline"
+                        className="size-11 shrink-0 overflow-hidden p-0"
+                        aria-label={`${copy.previewAttachment}: ${item.name}`}
+                        onClick={() => setPreviewKey(item.key)}
+                      >
+                        <img
+                          src={item.previewUrl}
+                          alt=""
+                          className="size-full object-cover"
+                          onError={() => unavailablePreview(item.key)}
+                        />
+                      </Button>
+                    )}
+                    <span className="min-w-0 flex-1 truncate">{item.name}</span>
+                    <span role="status">
+                      {item.failed
+                        ? copy.uploadFailed
+                        : item.result
+                          ? "100%"
+                          : `${copy.uploading} ${item.percent}%`}
+                    </span>
+                    <Button
+                      type="button"
+                      variant="ghost"
+                      size="sm"
+                      className="size-11 shrink-0 p-0"
+                      aria-label={`${copy.remove}: ${item.name}`}
+                      disabled={busy || submitted}
+                      onClick={() => void remove(item)}
+                    >
+                      <X size={14} />
+                    </Button>
+                  </li>
+                ))}
+              </ul>
+            )}
+            {preview?.previewUrl && (
+              <Dialog
+                title={`${copy.previewAttachment}: ${preview.name}`}
+                closeLabel={copy.close}
+                onClose={() => setPreviewKey(undefined)}
               >
-                {uploadPermission && (
-                  <ComposerAddAction
-                    label={copy.uploadFromPhone}
-                    icon={<Paperclip className="size-4" aria-hidden />}
-                    title={copy.attachmentNote}
-                    disabled={!canChooseAttachments}
-                    onClick={() => {
-                      setAddMenuScope(undefined);
-                      fileInput.current?.click();
-                    }}
-                  />
-                )}
-                {showLimitedPlan && (
-                  <ComposerPlanAction
-                    label={planModeCopy(locale).title}
-                    active={limitedPlanOn}
-                    disabled={!canChangeLimitedPlan}
-                    disabledReason={canChangeLimitedPlan ? undefined : limitedPlanReason}
-                    onToggle={() => {
-                      if (!canChangeLimitedPlan) return;
-                      setAddMenuScope(undefined);
-                      void codexAction("settings", { mode: nextMode });
-                    }}
-                  />
-                )}
-              </ComposerAddMenu>
-              <div className="flex min-w-0 items-center gap-1">
-                {advancedActions}
-                <ContextUsageGauge usageRef={limitedUsage} />
-                {primaryAction}
-              </div>
-            </div>
-          )}
-          {planWriteStatus && (
-            <p role="status" className="px-3 text-xs text-muted-foreground">
-              {planWriteStatus}
-            </p>
-          )}
-        </div>
-      </form>
+                <img
+                  src={preview.previewUrl}
+                  alt={preview.name}
+                  className="mx-auto max-h-[65dvh] max-w-full object-contain"
+                  onError={() => unavailablePreview(preview.key)}
+                />
+              </Dialog>
+            )}
+          </>
+        }
+        toolbar={
+          <>
+            {access?.device?.accessMode === "full" && (
+              <CodexComposerControls
+                controlsRef={controls}
+                onPlan={setPlanState}
+                resources={resources}
+                setResources={setResources}
+                openPhoneFiles={() => fileInput.current?.click()}
+                disabled={busy || submitted || !online}
+                action={primaryAction}
+                advancedActions={advancedActions}
+                startupGoal={startupGoal}
+                onStageGoal={stageGoal}
+                onStartupGoalHandled={startupGoalHandled}
+                onStartupGoalDiscarded={discardStartupGoal}
+              />
+            )}
+            {access?.device?.accessMode !== "full" && (
+              <ComposerToolbar
+                leading={
+                  <>
+                    <SessionComposerAddMenu
+                      locale={locale}
+                      label={copy.addContext}
+                      disabled={!canOpenAddMenu}
+                      disabledReason={
+                        canOpenAddMenu
+                          ? undefined
+                          : showLimitedPlan
+                            ? limitedPlanReason
+                            : uploadPermission
+                              ? undefined
+                              : attachmentsReason
+                      }
+                      open={canOpenAddMenu && addMenuScope === addActionsScope}
+                      onOpenChange={(open) => setAddMenuScope(open ? addActionsScope : undefined)}
+                      attachment={
+                        uploadPermission
+                          ? {
+                              disabled: !canChooseAttachments,
+                              reason: copy.attachmentNote,
+                              onPick: () => fileInput.current?.click(),
+                            }
+                          : undefined
+                      }
+                      plan={
+                        showLimitedPlan
+                          ? {
+                              active: limitedPlanOn,
+                              disabled: !canChangeLimitedPlan,
+                              reason: canChangeLimitedPlan ? undefined : limitedPlanReason,
+                              onToggle: changeLimitedPlan,
+                            }
+                          : undefined
+                      }
+                    />
+                    {showLimitedPlan && limitedPlanOn && (
+                      <ComposerModeChip
+                        mode="plan"
+                        locale={locale}
+                        disabled={!canChangeLimitedPlan}
+                        onRemove={changeLimitedPlan}
+                      />
+                    )}
+                  </>
+                }
+                trailing={
+                  <>
+                    {advancedActions}
+                    <ContextUsageGauge usageRef={limitedUsage} />
+                    {primaryAction}
+                  </>
+                }
+              />
+            )}
+            {planWriteStatus && (
+              <p role="status" className="px-3 text-xs text-muted-foreground">
+                {planWriteStatus}
+              </p>
+            )}
+          </>
+        }
+      />
       {!isClaude && access?.device?.accessMode !== "full" && (
         <Disclosure className="px-3 text-xs text-muted-foreground">
           <DisclosureSummary className="min-h-11 cursor-pointer content-center">

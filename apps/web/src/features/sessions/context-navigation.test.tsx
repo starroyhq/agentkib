@@ -2,6 +2,7 @@ import { continuationResources } from "@/features/conversation/features/sessions
 import { useState } from "react";
 import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
+import { composerAddCopy } from "@agentkib/session-ui";
 import { type CodexContextOptions, type CodexContextResource } from "@agentkib/web-client";
 import { CodexComposerControls } from "@/features/conversation/features/sessions/codex-session-controls";
 import { useSession } from "@/features/conversation/features/sessions/session-context";
@@ -78,8 +79,14 @@ afterEach(() => {
   cleanup();
   vi.clearAllMocks();
 });
-async function open() {
+async function openBrowser() {
   fireEvent.click(screen.getByRole("button", { name: "Add context" }));
+  fireEvent.click(
+    await screen.findByRole("button", { name: composerAddCopy("en-US").filesAndFolders }),
+  );
+}
+async function open() {
+  await openBrowser();
   await screen.findByRole("button", { name: "Open folder: src" });
   await waitFor(() =>
     expect(screen.getByRole("button", { name: "Open folder: src" })).toBeEnabled(),
@@ -160,9 +167,25 @@ it("keeps directory browsing disabled when context capability is unavailable", a
     capabilities: { ...state.capabilities!, features: { context: { available: false } } },
   };
   render(<Harness />);
-  fireEvent.click(screen.getByRole("button", { name: "Add context" }));
+  await openBrowser();
   expect(await screen.findByRole("button", { name: "Open folder: src" })).toBeDisabled();
   expect(screen.getByRole("checkbox", { name: /src/ })).toBeDisabled();
+});
+
+it("allows browsing and removing references when the selection reaches the send limit", async () => {
+  const initialResources = [
+    rootFile,
+    ...Array.from({ length: 9 }, (_, i) => ({ ...nestedFile, id: `other-${i}` })),
+  ];
+  render(<Harness initialResources={initialResources} />);
+  await open();
+  expect(screen.getByText("Select up to 10 items")).toBeVisible();
+  expect(screen.getByRole("checkbox", { name: /src/ })).toBeDisabled();
+  fireEvent.click(screen.getByRole("button", { name: "Open folder: src" }));
+  expect(await screen.findByRole("checkbox", { name: /nested.ts/ })).toBeDisabled();
+  fireEvent.click(screen.getByRole("button", { name: "Parent folder" }));
+  fireEvent.click(await screen.findByRole("checkbox", { name: /README.md/ }));
+  expect(screen.getByRole("checkbox", { name: /src/ })).toBeEnabled();
 });
 
 it("retains restored resource chips on initial mount without reusing source IDs or directory cursors", async () => {

@@ -2,6 +2,7 @@
 import "@testing-library/jest-dom/vitest";
 import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { composerGoalCopy } from "@agentkib/session-ui";
 import {
   sessionProviderCapabilities,
   type CodexGoalState,
@@ -170,5 +171,56 @@ describe("DeepSeek Harness controls", () => {
     expect(await screen.findByLabelText(copy.goalObjective)).toBeVisible();
     expect(screen.getByRole("button", { name: copy.goalCreate })).toBeInTheDocument();
     expect(screen.queryByText(codexReasonText("goal-action-unavailable"))).not.toBeInTheDocument();
+  });
+
+  it("keeps an unconfirmed staged goal editable after a single automatic submission", async () => {
+    state.controlReady = true;
+    state.live = { ...state.live!, status: "idle" };
+    vi.mocked(state.client.sessionGoals).mockResolvedValue({ ...goal, goal: undefined });
+    vi.mocked(state.codexAction).mockResolvedValue(undefined);
+    const onStartupGoalHandled = vi.fn();
+    render(
+      <CodexComposerControls
+        {...props}
+        startupGoal={{ value: { objective: "Ship it" }, apply: true }}
+        onStartupGoalHandled={onStartupGoalHandled}
+      />,
+    );
+    await waitFor(() =>
+      expect(state.codexAction).toHaveBeenCalledExactlyOnceWith("goal-set", {
+        objective: "Ship it",
+        intent: "start",
+        tokenBudget: null,
+      }),
+    );
+    fireEvent.click(await screen.findByRole("button", { name: copy.goals }));
+    expect(await screen.findByLabelText(copy.goalObjective)).toHaveValue("Ship it");
+    expect(onStartupGoalHandled).toHaveBeenCalledExactlyOnceWith(false);
+    expect(state.codexAction).toHaveBeenCalledTimes(1);
+  });
+
+  it("discards an inherited goal draft and clears its local editor without a host action", async () => {
+    vi.mocked(state.client.sessionGoals).mockResolvedValue({ ...goal, goal: undefined });
+    const onStartupGoalDiscarded = vi.fn();
+    const view = render(
+      <CodexComposerControls
+        {...props}
+        startupGoal={{ value: { objective: "Ship it" }, apply: false }}
+        onStartupGoalDiscarded={onStartupGoalDiscarded}
+      />,
+    );
+    fireEvent.click(await screen.findByRole("button", { name: copy.goals }));
+    fireEvent.change(await screen.findByLabelText(copy.goalObjective), {
+      target: { value: "Revised goal" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: copy.close }));
+    fireEvent.click(screen.getByRole("button", { name: composerGoalCopy("en-US").clearDraft }));
+    expect(onStartupGoalDiscarded).toHaveBeenCalledOnce();
+
+    view.rerender(<CodexComposerControls {...props} />);
+    fireEvent.click(await screen.findByRole("button", { name: copy.addContext }));
+    fireEvent.click(await screen.findByRole("button", { name: copy.goals }));
+    expect(await screen.findByLabelText(copy.goalObjective)).toHaveValue("");
+    expect(state.codexAction).not.toHaveBeenCalled();
   });
 });

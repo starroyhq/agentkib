@@ -7,16 +7,7 @@ import {
   type ReactNode,
   type Ref,
 } from "react";
-import {
-  ArrowLeft,
-  ChevronRight,
-  Folder,
-  Goal,
-  Lightbulb,
-  Paperclip,
-  Search,
-  X,
-} from "lucide-react";
+import { X } from "lucide-react";
 import {
   ApiError,
   forgetSessionModelDisplay,
@@ -37,23 +28,23 @@ import {
 } from "@agentkib/web-client";
 import {
   codexPolicyLabel,
-  composerAddCopy,
-  ComposerAddAction,
-  ComposerAddMenu,
-  ComposerPlanAction,
+  composerGoalCopy,
+  ComposerGoalFields,
+  ComposerModeChip,
   ComposerModelPicker,
+  SessionComposerAddMenu,
   ComposerPermissionMenu,
+  ComposerToolbar,
   dshPolicyLabel,
   newSessionPermissions,
-  planModeCopy,
+  parseGoalDraft,
   sessionCollaborationMode,
+  sessionComposerCapabilities,
   type ComposerModelPickerHandle,
+  type NewSessionGoalDraft,
 } from "@agentkib/session-ui";
 import { Button } from "@/components/ui/button";
 import { Disclosure, DisclosureSummary } from "@/components/ui/disclosure";
-import { Input } from "@/components/ui/input";
-import { NativeCheckbox } from "@/components/ui/native-checkbox";
-import { Textarea } from "@/components/ui/textarea";
 import { Dialog } from "../../components/dialog";
 import { useSession } from "./session-context";
 import { settingsNoticeGroup, type SettingsNotice } from "./use-session-controller";
@@ -67,7 +58,6 @@ import {
   type ContextUsageGaugeHandle,
 } from "./context-usage";
 import { sessionAgentCopy } from "./session-agent-copy";
-import { ComposerToolbar } from "../../../ComposerFrame";
 
 export type CodexResource = CodexContextResource;
 
@@ -93,6 +83,10 @@ type CodexComposerControlsProps = {
   controlsRef?: Ref<ComposerControlsHandle>;
   /** Told when plan mode or the composer's ability to switch it changes. */
   onPlan?: (state: ComposerPlanState) => void;
+  startupGoal?: { value: NewSessionGoalDraft; apply: boolean; afterRevision?: number };
+  onStartupGoalHandled?: (applied: boolean) => void;
+  onStartupGoalDiscarded?: () => void;
+  onStageGoal?: (goal: NewSessionGoalDraft) => void;
 };
 
 function unavailable(error: unknown) {
@@ -144,6 +138,10 @@ export function CodexComposerControls({
   advancedActions,
   controlsRef,
   onPlan,
+  startupGoal,
+  onStartupGoalHandled,
+  onStartupGoalDiscarded,
+  onStageGoal,
 }: CodexComposerControlsProps) {
   const {
     current,
@@ -154,6 +152,7 @@ export function CodexComposerControls({
     live,
     busy,
     online,
+    controlReady,
     codexAction,
     capabilities,
     usageEpoch,
@@ -179,27 +178,35 @@ export function CodexComposerControls({
   const usageGauge = useRef<ContextUsageGaugeHandle>(null);
   const refreshModelOnOpen = useRef(false);
   const agentCopy = sessionAgentCopy[locale];
-  const feature = (name: string) =>
-    (
-      capabilities?.features as
-        | Record<string, { available: boolean; reason?: string } | undefined>
-        | undefined
-    )?.[name];
-  const settingsReadable =
-    !managedAgent ||
-    feature("settings-state")?.available === true ||
-    feature("settings")?.available === true;
-  const goalReadable =
-    !managedAgent ||
-    ["goal", "goal-set", "goal-pause", "goal-resume", "goal-clear"].some(
-      (key) => feature(key)?.available,
-    );
-  const resourcesReadable =
-    !managedAgent ||
-    feature("resources")?.available === true ||
-    feature("context")?.available === true;
+  const {
+    feature,
+    settingsReadable,
+    settingsReadReason,
+    reservesModelSlot,
+    reservesPermissionSlot,
+    goalDraftOffered,
+    goalReadable,
+    resourcesReadable,
+    attachmentOffered,
+    attachmentAllowed,
+  } = sessionComposerCapabilities({
+    capabilities,
+    sessionId: selected,
+    legacyReads: !managedAgent,
+    attachmentsGranted: access?.device?.attachments === true,
+    settingsSlots:
+      isClaude &&
+      current.id === selected &&
+      access?.status === "approved" &&
+      access.device?.accessMode === "full" &&
+      access.device.advancedControl === true &&
+      (live?.sessionId !== selected ||
+        !live.executionMode ||
+        live.executionMode === "claude-managed")
+        ? sessionProviderCapabilities(current.agent)?.create
+        : undefined,
+  });
   const layout = composerLayoutCopy[locale];
-  const addCopy = composerAddCopy(locale);
   const term = (value: string) => composerTerm(locale, value);
   const reason = (code?: string) => codexReason(locale, code).text;
   const reasonTitle = (code?: string) => (code ? reason(code) : undefined);
@@ -242,20 +249,18 @@ export function CodexComposerControls({
   const [contextNames, setContextNames] = useState<string[]>([]);
   const [contextLoading, setContextLoading] = useState(false);
   const goalDraftRevision = useRef<number | undefined>(undefined);
+  const attemptedStartupGoal = useRef<NewSessionGoalDraft | undefined>(undefined);
   const [goalDirty, setGoalDirty] = useState(false);
   const full = access?.device?.accessMode === "full";
+  const applyingStartupGoal = startupGoal?.apply === true;
   const modelAccess = useRef(access);
   modelAccess.current = access;
   const displayAgent = current?.id === selected ? current.agent : undefined;
-  const [dialog, setDialog] = useState<"goal">();
+  const [dialog, setDialog] = useState<"goal" | "goal-draft">();
+  const offerGoalDraft = goalDraftOffered && !goalReadable && !!onStageGoal;
+  const editingGoalDraft = dialog === "goal-draft";
+  const goalCopy = composerGoalCopy(locale);
   const [addOpen, setAddOpen] = useState(false);
-  const [browsingContext, setBrowsingContext] = useState(false);
-  const focusAddNavigation = useRef(false);
-  const focusNavigationRow = useCallback((row: HTMLDivElement | null) => {
-    if (!row || !focusAddNavigation.current) return;
-    focusAddNavigation.current = false;
-    row.querySelector("button")?.focus();
-  }, []);
   const [permissionOpen, setPermissionOpen] = useState(false);
   const historyScope = JSON.stringify([
     selected,
@@ -326,7 +331,6 @@ export function CodexComposerControls({
     >();
   const pendingModelSettings =
     !!pendingSettings && settingsNoticeGroup(pendingSettings) !== "permissions";
-  const [query, setQuery] = useState("");
   const [objective, setObjective] = useState("");
   const [tokenBudget, setTokenBudget] = useState("");
   const compacting = live?.activity === "compacting";
@@ -399,7 +403,7 @@ export function CodexComposerControls({
         if (abort.signal.aborted || generation !== contextGeneration.current) return;
         setContext(value);
         setContextNames(names);
-        setQuery("");
+
         // A directory response is only a partial catalog. Missing references may
         // belong to another folder; the host revalidates every reference on send.
         const current = resourcesRef.current;
@@ -542,7 +546,10 @@ export function CodexComposerControls({
   useEffect(() => {
     loadGeneration.current++;
     goalDraftRevision.current = undefined;
+    attemptedStartupGoal.current = undefined;
     setGoalDirty(false);
+    setObjective("");
+    setTokenBudget("");
     setSettingsSource(undefined);
     setSettingsRead(undefined);
     setGoal(undefined);
@@ -552,7 +559,7 @@ export function CodexComposerControls({
     contextLocation.current = { names: [] };
     setContextNames([]);
     setContextLoading(false);
-    setQuery("");
+
     // The composer owns selection resets and may have just restored a fork draft.
     // A host/device replacement still invalidates previously resolved context IDs.
     const previousScope = resourceScope.current;
@@ -572,8 +579,7 @@ export function CodexComposerControls({
     setDialog(undefined);
     setPermissionOpen(false);
     setAddOpen(false);
-    setBrowsingContext(false);
-    focusAddNavigation.current = false;
+
     setSaved(false);
     setSaving(false);
     mutationFlight.current = undefined;
@@ -587,6 +593,7 @@ export function CodexComposerControls({
     setResourceWarning("");
     return () => {
       loadGeneration.current++;
+      mutationFlight.current = undefined;
       settingsPreparation.current = undefined;
       contextGeneration.current++;
       contextAbort.current?.abort();
@@ -645,8 +652,18 @@ export function CodexComposerControls({
       live.revision !== undefined &&
       live.revision !== null
     )
-      void load(true, dialog === "goal");
-  }, [full, load, online, selected, live?.sessionId, live?.status, live?.revision, dialog]);
+      void load(true, dialog === "goal" || applyingStartupGoal);
+  }, [
+    full,
+    load,
+    online,
+    selected,
+    live?.sessionId,
+    live?.status,
+    live?.revision,
+    dialog,
+    applyingStartupGoal,
+  ]);
 
   useEffect(() => {
     if (live?.settings?.sessionId === selected) {
@@ -730,7 +747,9 @@ export function CodexComposerControls({
     mutationFlight.current = mutation;
     try {
       const result = await codexAction(name, fields);
-      if (generation !== loadGeneration.current) return false;
+      if (mutationFlight.current !== mutation) return false;
+      if (name === "goal-set" && result && startupGoal) onStartupGoalHandled?.(true);
+      if (generation !== loadGeneration.current) return !!result;
       if (result) {
         if (name === "settings") {
           setPendingSettings({ ...fields, expectedRevision: readRevision ?? 0 });
@@ -886,7 +905,7 @@ export function CodexComposerControls({
     settingsUnknown,
   ]);
   const showModelPicker =
-    (settingsReadable || !!cachedModelDisplay) &&
+    (settingsReadable || reservesModelSlot || !!cachedModelDisplay) &&
     (!provider ||
       preparesSettings ||
       !settings?.available ||
@@ -894,7 +913,12 @@ export function CodexComposerControls({
       !!observedModelId ||
       !!cachedModelDisplay);
   const showPermissions =
-    settingsReadable && (isCodex || isClaude || isDevin || !!settings?.options.policies?.length);
+    reservesPermissionSlot ||
+    (settingsReadable && (isCodex || isClaude || isDevin || !!settings?.options.policies?.length));
+  const missingSettingsStatus = !settingsReadable
+    ? (reasonTitle(settingsReadReason) ??
+      (capabilities?.sessionId === selected ? copy.settingUnavailable : layout.connecting))
+    : undefined;
   const changePermissionOpen = (open: boolean) => {
     setPermissionOpen(open);
     if (!open) return;
@@ -908,13 +932,15 @@ export function CodexComposerControls({
   };
   const closeAdd = () => {
     setAddOpen(false);
-    setBrowsingContext(false);
-    focusAddNavigation.current = false;
   };
   const openGoal = () => {
     closeAdd();
+    if (offerGoalDraft) {
+      setDialog("goal-draft");
+      return;
+    }
     setDialog("goal");
-    if (goalReadStale) void load();
+    if (goalReadable && goalReadStale) void load();
   };
   const openModel = (page: "effort" | "models", refresh = false) => {
     if (!full || disabled || !settingsReadable || !modelPicker.current) return false;
@@ -922,25 +948,43 @@ export function CodexComposerControls({
     modelPicker.current.open(page);
     return true;
   };
-  const availableResources = (context?.resources ?? []).filter((item) => {
-    const needle = query.trim().toLocaleLowerCase();
-    return !needle || `${item.name} ${item.description ?? ""}`.toLocaleLowerCase().includes(needle);
-  });
-  const resourceGroups = [
-    {
-      label: copy.computerFiles,
-      items: availableResources.filter((item) => item.kind === "file" || item.kind === "directory"),
-    },
-    {
-      label: copy.skillsPlugins,
-      items: availableResources.filter(
-        (item) => item.kind === "skill" || item.kind === "plugin" || item.kind === "app",
-      ),
-    },
-  ];
+  const stagedGoal = goalDirty ? undefined : startupGoal?.value;
+  const disarmStartupGoal = () => {
+    if (!startupGoal?.apply || attemptedStartupGoal.current === startupGoal.value) return;
+    attemptedStartupGoal.current = startupGoal.value;
+    onStartupGoalHandled?.(false);
+  };
+  const goalObjective = stagedGoal?.objective ?? objective;
+  const goalBudget = stagedGoal ? (stagedGoal.tokenBudget?.toString() ?? "") : tokenBudget;
+  const savedGoal =
+    goal?.sessionId === selected ? goal.goal : live?.sessionId === selected ? live.goal : undefined;
+  const selectedGoalDetail = savedGoal
+    ? `${term(savedGoal.status)} · ${savedGoal.objective}`
+    : startupGoal && goalObjective;
+  const goalDraftLocked = disabled || saving || notice === "uncertain";
+  const resetGoalDraftEditor = () => {
+    goalDraftRevision.current = undefined;
+    setGoalDirty(false);
+    setObjective(savedGoal?.objective ?? "");
+    setTokenBudget(savedGoal?.tokenBudget?.toString() ?? "");
+  };
+  const closeGoal = () => {
+    if (editingGoalDraft) resetGoalDraftEditor();
+    setDialog(undefined);
+  };
+  const discardStartupGoal = () => {
+    if (savedGoal || !startupGoal || goalDraftLocked || mutationFlight.current) return;
+    onStartupGoalDiscarded?.();
+    resetGoalDraftEditor();
+  };
   const goalChanged = goalDirty && goalDraftRevision.current !== goal?.revision;
   const editGoal = () => {
     goalDraftRevision.current ??= goal?.revision;
+    if (stagedGoal) {
+      setObjective(goalObjective);
+      setTokenBudget(goalBudget);
+      if (!editingGoalDraft) disarmStartupGoal();
+    }
     setGoalDirty(true);
   };
   // DeepSeek Harness's permission preset changes at once during a turn; its model waits.
@@ -948,11 +992,20 @@ export function CodexComposerControls({
     running && managedAgent === "deepseek-harness" && settings?.writable.policy?.available === true;
   const settingDisabled =
     disabled || busy || saving || preparingSettings || feature("settings")?.available !== true;
-  const parsedBudget = tokenBudget ? Number(tokenBudget) : undefined;
+  const parsedBudget = goalBudget ? Number(goalBudget) : undefined;
   const budgetValid =
     parsedBudget === undefined || (Number.isSafeInteger(parsedBudget) && parsedBudget > 0);
+  const parsedGoalDraft = editingGoalDraft ? parseGoalDraft(goalObjective, goalBudget) : undefined;
+  const goalDraftDisabled =
+    !offerGoalDraft || goalDraftLocked || !online || !controlReady || busy || compacting;
+  const saveGoalDraft = () => {
+    if (goalDraftDisabled || !parsedGoalDraft) return;
+    onStageGoal?.(parsedGoalDraft);
+    closeGoal();
+  };
   const permissionTriggerLocked =
     disabled ||
+    (reservesPermissionSlot && !settingsReadable) ||
     (!settingsUnknown &&
       isDevin &&
       (!online ||
@@ -981,7 +1034,7 @@ export function CodexComposerControls({
     const permissionMode = (isDevin ? DEVIN_PERMISSION_IDS : CLAUDE_PERMISSION_IDS).find(
       (id) => id === choice.id,
     );
-    return permissionMode && !(isClaude && permissionMode === "plan")
+    return permissionMode
       ? [
           {
             ...choice,
@@ -1013,21 +1066,25 @@ export function CodexComposerControls({
     };
   });
   const permissionItems = isClaude || isDevin ? (permissionChoices ?? []) : policies;
-  const collaboration = sessionCollaborationMode(settings, displayedSettings, isClaude);
+  const collaboration = sessionCollaborationMode(settings, displayedSettings);
   const clearSavedMode =
     isCodex && !collaboration && settings?.writable.mode.available && !!settings.selected?.mode;
-  const attachmentOffered =
-    capabilities?.sessionId === selected && feature("attachments")?.available === true;
-  const attachmentAllowed = attachmentOffered && access?.device?.attachments === true;
-  const canAdd = resourcesReadable || goalReadable || !!collaboration || attachmentAllowed;
-  const planOn = isClaude
-    ? displayedSettings?.permissionMode === "plan"
-    : displayedSettings?.mode === "plan";
+  const planOn =
+    (collaboration?.field
+      ? displayedSettings?.[collaboration.field]
+      : (displayedSettings?.mode ?? displayedSettings?.permissionMode)) === "plan";
   const planAvailable =
     full &&
     !settingsWriteLocked &&
     (!running || managedAgent === "deepseek-harness") &&
     collaboration?.writable === true;
+  const savedModeCanClear = clearSavedMode && !settingsWriteLocked && !running;
+  const canExitPlan = collaboration
+    ? planAvailable && collaboration.modes.includes("default")
+    : savedModeCanClear;
+  const clearSavedModeSelection = () => {
+    if (savedModeCanClear) void mutate("settings", { mode: null });
+  };
   useEffect(() => {
     onPlan?.({ on: planOn, available: planAvailable });
   }, [onPlan, planOn, planAvailable]);
@@ -1038,12 +1095,7 @@ export function CodexComposerControls({
   };
   const selectedPermission = (permissionChoices ?? policies).find((item) => item.selected);
   const permissionLabel =
-    selectedPermission?.name ??
-    (isClaude
-      ? agentCopy.permissionUnknown
-      : isDevin
-        ? agentCopy.permission
-        : copy.executionPolicy);
+    selectedPermission?.name ?? (isClaude || isDevin ? agentCopy.permission : copy.executionPolicy);
   const localSettingsNotice: SettingsNotice | undefined =
     settingsNotice ??
     (settingsUnknown
@@ -1083,6 +1135,44 @@ export function CodexComposerControls({
               : saved
                 ? copy.settingsSaved
                 : undefined;
+  useEffect(() => {
+    // A submitted draft has at most one automatic dispatch. The existing action
+    // controller owns its receipt, including after a reconnect.
+    if (
+      !startupGoal?.apply ||
+      attemptedStartupGoal.current === startupGoal.value ||
+      !selected ||
+      !full ||
+      !online ||
+      !controlReady ||
+      disabled ||
+      busy ||
+      saving ||
+      compacting ||
+      editingGoalDraft ||
+      goalDirty ||
+      notice === "uncertain" ||
+      live?.sessionId !== selected ||
+      live.status !== "idle" ||
+      live.revision == null ||
+      (startupGoal.afterRevision !== undefined && live.revision <= startupGoal.afterRevision) ||
+      capabilities?.sessionId !== selected ||
+      feature("goal-set")?.available !== true ||
+      goal?.sessionId !== selected ||
+      !goal.available ||
+      !goal.actions.set?.available ||
+      goal.goal ||
+      goalReadStale
+    )
+      return;
+    const { objective, tokenBudget } = startupGoal.value;
+    disarmStartupGoal();
+    void mutate("goal-set", {
+      objective,
+      intent: "start",
+      tokenBudget: tokenBudget ?? null,
+    });
+  });
   useImperativeHandle(controlsRef, () => ({
     open: (next) => {
       if (!full || disabled) return false;
@@ -1091,7 +1181,7 @@ export function CodexComposerControls({
         changePermissionOpen(true);
         return true;
       }
-      if (!goalReadable) return false;
+      if (!goalReadable && !offerGoalDraft) return false;
       openGoal();
       return true;
     },
@@ -1132,160 +1222,24 @@ export function CodexComposerControls({
       {settingsMessage}
     </p>
   );
-
-  const contextBrowser = addOpen && browsingContext && resourcesReadable && (
-    <section className="mt-1 space-y-2 border-t px-1 pt-2">
-      <div ref={focusNavigationRow}>
-        <ComposerAddAction
-          label={addCopy.back}
-          icon={<ArrowLeft className="size-4" aria-hidden />}
-          onClick={() => {
-            focusAddNavigation.current = true;
-            setBrowsingContext(false);
-          }}
-        />
-      </div>
-      <div className="flex min-w-0 items-center gap-2 rounded-lg border p-2">
-        <Button
-          type="button"
-          variant="outline"
-          className="min-h-9 shrink-0"
-          disabled={!context?.parentId || contextLoading || !online}
-          onClick={() => void loadContext(context?.parentId, contextNames.slice(0, -1))}
-        >
-          <ArrowLeft size={16} />
-          {layout.parentDirectory}
-        </Button>
-        <span className="min-w-0 break-words px-1 text-xs text-muted-foreground">
-          {[layout.contextRoot, ...contextNames].join(" / ")}
-        </span>
-      </div>
-      {contextLoading && (
-        <p role="status" className="text-sm">
-          {layout.contextLoading}
-        </p>
-      )}
-      {contextError && (
-        <div role="alert" className="space-y-2 text-sm">
-          {reason(contextError)}
-          <Button
-            type="button"
-            variant="outline"
-            disabled={contextLoading || !online}
-            onClick={() =>
-              void loadContext(contextLocation.current.id, contextLocation.current.names)
-            }
-          >
-            {layout.contextRetry}
-          </Button>
-        </div>
-      )}
-      {!context ? (
-        <p role="status" className="text-sm text-muted-foreground">
-          {!contextLoading && !contextError ? copy.resourceUnavailable : null}
-        </p>
-      ) : (
-        <>
-          <div className="relative">
-            <Search
-              aria-hidden="true"
-              className="pointer-events-none absolute top-1/2 left-3 size-4 -translate-y-1/2 text-muted-foreground"
-            />
-            <Input
-              aria-label={copy.resourceSearch}
-              placeholder={copy.resourceSearch}
-              value={query}
-              className="h-10 pl-9"
-              onChange={(event) => setQuery(event.target.value)}
-            />
-          </div>
-          <p className="text-sm text-muted-foreground">{copy.directoryReference}</p>
-          <div className="space-y-2">
-            {availableResources.length === 0 && (
-              <p className="text-sm text-muted-foreground">{copy.resourceEmpty}</p>
-            )}
-            {resourceGroups.map(
-              (group) =>
-                group.items.length > 0 && (
-                  <section key={group.label} className="space-y-2">
-                    <h3 className="text-xs font-medium text-muted-foreground">{group.label}</h3>
-                    {group.items.map((item) => {
-                      const checked = resources.some((selected) => selected.id === item.id);
-                      return (
-                        <div
-                          key={item.id}
-                          className={`flex items-center gap-2 rounded-lg border p-3 text-sm transition-colors ${checked ? "border-primary/40 bg-primary/5" : "hover:bg-muted/30"}`}
-                        >
-                          <label className="flex min-w-0 flex-1 items-start gap-3">
-                            <NativeCheckbox
-                              checked={checked}
-                              disabled={
-                                !item.available ||
-                                contextLoading ||
-                                !online ||
-                                disabled ||
-                                feature("context")?.available !== true
-                              }
-                              title={reasonTitle(item.reason || feature("context")?.reason)}
-                              onChange={(event) =>
-                                setResources(
-                                  event.target.checked
-                                    ? [...resources, item]
-                                    : resources.filter((selected) => selected.id !== item.id),
-                                )
-                              }
-                            />
-                            <span className="min-w-0">
-                              <span className="block break-words font-medium">{item.name}</span>
-                              <span className="block text-xs text-muted-foreground">
-                                {term(item.kind)}
-                                {item.description ? ` · ${item.description}` : ""}
-                                {!item.available || feature("context")?.available !== true
-                                  ? ` · ${reason(item.reason || feature("context")?.reason)}`
-                                  : ""}
-                              </span>
-                            </span>
-                          </label>
-                          {item.kind === "directory" && item.navigationId && (
-                            <Button
-                              type="button"
-                              variant="ghost"
-                              className="size-11 shrink-0 p-0"
-                              aria-label={`${layout.enterDirectory}: ${item.name}`}
-                              disabled={
-                                contextLoading ||
-                                !online ||
-                                disabled ||
-                                !item.available ||
-                                feature("context")?.available !== true
-                              }
-                              onClick={() =>
-                                void loadContext(item.navigationId, [...contextNames, item.name])
-                              }
-                            >
-                              <ChevronRight size={18} />
-                            </Button>
-                          )}
-                        </div>
-                      );
-                    })}
-                  </section>
-                ),
-            )}
-          </div>
-        </>
-      )}
-      {resources.length > 0 && (
-        <div className="flex items-center justify-between gap-2 pt-1">
-          <span className="text-xs text-muted-foreground">
-            {layout.selected}: {resources.length}
-          </span>
-          <Button type="button" size="sm" onClick={closeAdd}>
-            {layout.done}
-          </Button>
-        </div>
-      )}
-    </section>
+  const goalFields = dialog && (
+    <ComposerGoalFields
+      locale={locale}
+      objective={goalObjective}
+      budget={goalBudget}
+      disabled={
+        editingGoalDraft ? !offerGoalDraft || goalDraftLocked : busy || saving || compacting
+      }
+      hideBudget={goal?.budget === "rounds"}
+      onObjectiveChange={(value) => {
+        editGoal();
+        setObjective(value);
+      }}
+      onBudgetChange={(value) => {
+        editGoal();
+        setTokenBudget(value);
+      }}
+    />
   );
 
   return (
@@ -1313,85 +1267,65 @@ export function CodexComposerControls({
       <ComposerToolbar
         leading={
           <>
-            <ComposerAddMenu
+            <SessionComposerAddMenu
+              locale={locale}
               label={copy.addContext}
-              disabled={disabled || !canAdd}
-              disabledReason={!canAdd ? addCopy.unavailable : undefined}
+              disabled={disabled}
               open={addOpen}
               onOpenChange={(open) => {
-                if (!open) {
-                  closeAdd();
-                  return;
-                }
-                setAddOpen(true);
-                void load(false, false);
+                setAddOpen(open);
+                if (open) void load(false, false);
               }}
-            >
-              {contextBrowser || (
-                <>
-                  {(!managedAgent || attachmentOffered) && (
-                    <ComposerAddAction
-                      label={copy.uploadFromPhone}
-                      icon={<Paperclip className="size-4" aria-hidden />}
-                      disabled={disabled || !attachmentAllowed}
-                      onClick={() => {
-                        closeAdd();
-                        openPhoneFiles();
-                      }}
-                    />
-                  )}
-                  {resourcesReadable && (
-                    <div ref={focusNavigationRow}>
-                      <ComposerAddAction
-                        label={addCopy.filesAndFolders}
-                        icon={<Folder className="size-4" aria-hidden />}
-                        onClick={() => {
-                          focusAddNavigation.current = true;
-                          setBrowsingContext(true);
-                          if (!context && !contextLoading)
-                            void loadContext(
-                              contextLocation.current.id,
-                              contextLocation.current.names,
-                            );
-                        }}
-                      />
-                    </div>
-                  )}
-                  {goalReadable && (
-                    <ComposerAddAction
-                      label={copy.goals}
-                      icon={<Goal className="size-4" aria-hidden />}
-                      onClick={openGoal}
-                    />
-                  )}
-                  {collaboration && (
-                    <ComposerPlanAction
-                      label={planModeCopy(locale).title}
-                      active={planOn}
-                      disabled={
-                        !planAvailable || !collaboration.modes.includes(planOn ? "default" : "plan")
-                      }
-                      disabledReason={reasonTitle(collaboration.reason)}
-                      onToggle={() => {
-                        closeAdd();
-                        setPlan(!planOn);
-                      }}
-                    />
-                  )}
-                  {clearSavedMode && (
-                    <ComposerAddAction
-                      label={planModeCopy(locale).clear}
-                      icon={<Lightbulb className="size-4" aria-hidden />}
-                      disabled={settingsWriteLocked || running}
-                      onClick={() => {
-                        closeAdd();
-                        void mutate("settings", { mode: null });
-                      }}
-                    />
-                  )}
-                </>
-              )}
-            </ComposerAddMenu>
+              attachment={
+                attachmentOffered
+                  ? { disabled: disabled || !attachmentAllowed, onPick: openPhoneFiles }
+                  : undefined
+              }
+              resources={
+                resourcesReadable
+                  ? {
+                      page: context,
+                      path: contextNames,
+                      selected: resources,
+                      loading: contextLoading,
+                      error: contextError,
+                      offline: !online,
+                      selectable: !disabled && feature("context")?.available === true,
+                      selectionReason: feature("context")?.reason,
+                      reasonText: reason,
+                      load: loadContext,
+                      retry: () =>
+                        void loadContext(contextLocation.current.id, contextLocation.current.names),
+                      onSelect: setResources,
+                    }
+                  : undefined
+              }
+              goal={
+                goalReadable || offerGoalDraft
+                  ? { selected: !!startupGoal || !!savedGoal, onOpen: openGoal }
+                  : undefined
+              }
+              plan={
+                collaboration
+                  ? {
+                      active: planOn,
+                      disabled:
+                        !planAvailable ||
+                        !collaboration.modes.includes(planOn ? "default" : "plan"),
+                      reason: reasonTitle(collaboration.reason),
+                      onToggle: () => setPlan(!planOn),
+                    }
+                  : undefined
+              }
+              clearMode={
+                clearSavedMode
+                  ? {
+                      disabled: !savedModeCanClear,
+                      onClear: clearSavedModeSelection,
+                    }
+                  : undefined
+              }
+            />
             <div
               className={
                 permissionMessage && settingsFeedback
@@ -1402,10 +1336,14 @@ export function CodexComposerControls({
               {showPermissions && (
                 <ComposerPermissionMenu
                   title={menuTitle}
-                  label={permissionLabel}
+                  label={reservesPermissionSlot && !settingsReadable ? menuTitle : permissionLabel}
                   risky={selectedPermission?.risky}
                   disabled={permissionTriggerLocked}
-                  disabledReason={permissionTriggerLocked ? permissionStatus : undefined}
+                  disabledReason={
+                    permissionTriggerLocked
+                      ? (missingSettingsStatus ?? permissionStatus)
+                      : undefined
+                  }
                   side="top"
                   open={permissionOpen}
                   onOpenChange={changePermissionOpen}
@@ -1421,6 +1359,24 @@ export function CodexComposerControls({
               )}
               {permissionMessage && settingsFeedback}
             </div>
+            {planOn && (
+              <ComposerModeChip
+                mode="plan"
+                locale={locale}
+                disabled={!canExitPlan}
+                onRemove={() => (collaboration ? setPlan(false) : clearSavedModeSelection())}
+              />
+            )}
+            {(savedGoal || startupGoal) && (
+              <ComposerModeChip
+                mode="goal"
+                locale={locale}
+                detail={selectedGoalDetail}
+                disabled={!savedGoal && goalDraftLocked}
+                onOpen={openGoal}
+                onRemove={!savedGoal && onStartupGoalDiscarded ? discardStartupGoal : undefined}
+              />
+            )}
           </>
         }
         trailing={
@@ -1450,8 +1406,9 @@ export function CodexComposerControls({
                   reportedSettings={reportedSettings}
                   displayFallback={displayModelFallback}
                   disabled={settingDisabled || running || settingsReadStale || settingsUnknown}
+                  triggerDisabled={reservesModelSlot && !settingsReadable}
                   saving={saving}
-                  status={quickStatus}
+                  status={missingSettingsStatus ?? quickStatus}
                   onOpen={() => {
                     const refresh = refreshModelOnOpen.current;
                     refreshModelOnOpen.current = false;
@@ -1481,25 +1438,20 @@ export function CodexComposerControls({
         }
       />
       {!permissionMessage && !modelMessage && settingsFeedback}
-      {goal?.goal && (
-        <Button
-          type="button"
-          variant="ghost"
-          className="h-auto min-h-11 w-full justify-start overflow-hidden px-2 text-xs"
-          aria-label={copy.goals}
-          onClick={openGoal}
-        >
-          <Goal className="shrink-0" size={16} />
-          <span className="shrink-0">{term(goal.goal.status)}</span>
-          <span className="truncate">{goal.goal.objective}</span>
-        </Button>
-      )}
-      {dialog === "goal" && (
+      {dialog && (
         <Dialog
           panel
-          description={`${layout.selected}: ${resources.length}`}
+          description={editingGoalDraft ? undefined : `${layout.selected}: ${resources.length}`}
           footer={
-            goal?.available ? (
+            editingGoalDraft ? (
+              <Button
+                type="button"
+                disabled={goalDraftDisabled || !parsedGoalDraft}
+                onClick={saveGoalDraft}
+              >
+                {goalCopy.saveDraft}
+              </Button>
+            ) : goal?.available ? (
               <div className="flex flex-wrap gap-2">
                 <Button
                   type="button"
@@ -1512,17 +1464,18 @@ export function CodexComposerControls({
                     goalReadStale ||
                     !goal.actions.set?.available ||
                     feature("goal-set")?.available !== true ||
-                    !objective.trim() ||
+                    !goalObjective.trim() ||
                     !budgetValid
                   }
                   title={reasonTitle(goal.actions.set?.reason || feature("goal-set")?.reason)}
-                  onClick={() =>
+                  onClick={() => {
+                    disarmStartupGoal();
                     void mutate("goal-set", {
-                      objective: objective.trim(),
+                      objective: goalObjective.trim(),
                       intent: goal.goal ? "update" : "start",
                       tokenBudget: parsedBudget ?? null,
-                    })
-                  }
+                    });
+                  }}
                 >
                   {goal.goal ? copy.goalUpdate : copy.goalCreate}
                 </Button>
@@ -1589,9 +1542,9 @@ export function CodexComposerControls({
           }
           title={copy.goals}
           closeLabel={copy.close}
-          onClose={() => setDialog(undefined)}
+          onClose={closeGoal}
         >
-          {goalReadStale && (goal?.available || !!goalError) && (
+          {!editingGoalDraft && goalReadStale && (goal?.available || !!goalError) && (
             <div role="status" className="mb-3 text-xs text-muted-foreground">
               {layout.connecting}
               <Button type="button" variant="outline" onClick={() => void load()}>
@@ -1599,7 +1552,9 @@ export function CodexComposerControls({
               </Button>
             </div>
           )}
-          {!goal?.available ? (
+          {editingGoalDraft ? (
+            goalFields
+          ) : !goal?.available ? (
             <p role="status" className="text-sm text-muted-foreground">
               {copy.goalUnavailable}
               {reason(goal?.reason || goalError)}
@@ -1678,34 +1633,7 @@ export function CodexComposerControls({
                     )}
                   </div>
                 ))}
-              <label className="block space-y-1 text-sm">
-                {copy.goalObjective}
-                <Textarea
-                  className="min-h-24 w-full rounded-md border bg-background p-2"
-                  value={objective}
-                  disabled={busy || saving || compacting}
-                  onChange={(event) => {
-                    editGoal();
-                    setObjective(event.target.value);
-                  }}
-                />
-              </label>
-              {/* A goal bounded by rounds takes no token budget. */}
-              {goal.budget !== "rounds" && (
-                <label className="block space-y-1 text-sm">
-                  {copy.goalBudget}
-                  <Input
-                    type="number"
-                    min={1}
-                    value={tokenBudget}
-                    disabled={busy || saving || compacting}
-                    onChange={(event) => {
-                      editGoal();
-                      setTokenBudget(event.target.value);
-                    }}
-                  />
-                </label>
-              )}
+              {goalFields}
             </section>
           )}
         </Dialog>

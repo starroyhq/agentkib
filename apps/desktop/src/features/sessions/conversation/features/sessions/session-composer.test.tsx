@@ -5,7 +5,7 @@ import { useState, type ReactNode } from "react";
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { UploadedAttachment } from "@agentkib/web-client";
-import { sessionContinuationCopy } from "@agentkib/session-ui";
+import { composerAddCopy, sessionContinuationCopy } from "@agentkib/session-ui";
 import { SessionComposer } from "./session-composer";
 import { offerNewSessionDraft, takeNewSessionDraft } from "./new-session-draft";
 import { composerLayoutCopy } from "./composer-layout-copy";
@@ -293,7 +293,9 @@ describe("composer sending shortcuts", () => {
     fireEvent.click(addContext);
     const menu = await screen.findByRole("dialog", { name: copy.addContext });
     expect(pickFiles).not.toHaveBeenCalled();
-    fireEvent.click(within(menu).getByRole("button", { name: copy.attachment }));
+    fireEvent.click(
+      within(menu).getByRole("button", { name: composerAddCopy("en-US").attachment }),
+    );
     expect(pickFiles).toHaveBeenCalledTimes(1);
     await waitFor(() => expect(menu).not.toBeVisible());
 
@@ -978,11 +980,15 @@ describe("composer sending shortcuts", () => {
     );
     expect(doubles.control).not.toHaveBeenCalled();
   });
-  it("sends a new session's first message once, after its files upload", async () => {
+  it("sends a new session's first message with workspace references once, after its files upload", async () => {
     const file = new File(["abc"], "spec.md", { type: "text/markdown" });
     const upload = deferred<UploadedAttachment>();
     doubles.upload.mockReturnValue(upload.promise);
-    offerNewSessionDraft("session", { text: "Add rate limiting", files: [file] });
+    offerNewSessionDraft("session", {
+      text: "Add rate limiting",
+      files: [file],
+      resources: [{ id: "draft-resource", kind: "file", name: "README.md", available: true }],
+    });
     const { rerender } = render(<SessionComposer />);
     expect(screen.getByRole("textbox", { name: "Message" })).toHaveValue("Add rate limiting");
     expect(screen.getByText("spec.md")).toBeVisible();
@@ -996,7 +1002,7 @@ describe("composer sending shortcuts", () => {
         undefined,
         undefined,
         undefined,
-        { attachmentIds: ["spec"] },
+        { attachmentIds: ["spec"], resourceIds: ["draft-resource"] },
       ),
     );
     rerender(<SessionComposer />);

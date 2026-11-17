@@ -7,7 +7,6 @@ import {
 import { OrchestrationNote } from "../catalog/orchestration-note";
 import { WorktreeNote } from "../catalog/worktree-note";
 import { codexCopyForSurface, codexReason } from "./codex-copy";
-import { isSendEnter, useEnterSends } from "./composer-shortcuts";
 import {
   claudeBackgroundStatus,
   claudeComposerNotice,
@@ -21,8 +20,7 @@ import { ContextUsageGauge } from "./context-usage";
 import { contextUsageCopyForSurface } from "./context-usage-copy";
 import { SessionComposer } from "./session-composer";
 import { Button } from "../../components/ui/button";
-import { Textarea } from "../../components/ui/textarea";
-import { ArrowDown, ArrowUp, LoaderCircle, Square } from "lucide-react";
+import { ArrowDown, LoaderCircle } from "lucide-react";
 import { SessionTranscript } from "./session-transcript";
 import { SessionInteractionDock } from "../interactions/interaction-dock";
 import { MAX_MESSAGE_LENGTH } from "./session-model";
@@ -37,7 +35,10 @@ import {
 } from "./session-image-scope";
 import {
   composerAddCopy,
-  ComposerAddMenu,
+  ComposerPrimaryAction,
+  ComposerToolbar,
+  SessionComposerAddMenu,
+  SessionComposerInput,
   useTranscriptFollow,
   useVisibleReadState,
   ReadStateNotice,
@@ -78,7 +79,6 @@ export function SessionReader() {
     imageRequestVersion,
   } = session;
   const composerCopy = codexCopyForSurface(locale, "web");
-  const enterSends = useEnterSends();
   const imageCacheRevision = sessionImageRevision(client);
   const imageCacheScope = sessionImageCacheScope(client, access, selected, indexEnabled !== false);
   const imageLoader = useMemo(() => {
@@ -103,7 +103,6 @@ export function SessionReader() {
     imageCacheRevision,
     imageCacheScope,
   ]);
-  const composing = useRef(false);
   const submitPending = useRef(false);
   const banner = claudeSessionBanner(session, "web");
   const backgroundStatus = claudeBackgroundStatus(session);
@@ -195,7 +194,6 @@ export function SessionReader() {
   useLayoutEffect(() => {
     if (previousSession.current !== selected) {
       previousSession.current = selected;
-      composing.current = false;
       submitPending.current = false;
       setHasNewMessages(false);
     } else if (!following.current && previousLiveContentVersion.current !== liveContentVersion) {
@@ -414,105 +412,85 @@ export function SessionReader() {
                   key={`composer-${selected}`}
                 />
               ) : (
-                <form
-                  className="w-full max-w-3xl shrink-0 self-center space-y-2 rounded-3xl border bg-background p-2 shadow-sm transition-shadow focus-within:ring-2 focus-within:ring-ring/20"
-                  onSubmit={(event) => {
-                    event.preventDefault();
-                    if (
-                      online &&
-                      !busy &&
-                      canSend &&
-                      live?.activity !== "compacting" &&
-                      validHistoryMessage(message, historyReferences)
-                    ) {
-                      if (submitPending.current) return;
+                <div className="w-full max-w-3xl shrink-0 self-center">
+                  <SessionComposerInput
+                    editorContextKey={selected}
+                    editor={{
+                      id: "message",
+                      "aria-label": t.message,
+                      value: message,
+                      maxLength: MAX_MESSAGE_LENGTH,
+                      onChange: (event) => setMessage(event.currentTarget.value),
+                      placeholder: t.message,
+                      disabled: busy,
+                    }}
+                    onSubmit={() => {
+                      if (
+                        !online ||
+                        busy ||
+                        !canSend ||
+                        live?.activity === "compacting" ||
+                        !validHistoryMessage(message, historyReferences) ||
+                        submitPending.current
+                      )
+                        return;
                       submitPending.current = true;
                       const requestSession = selected;
                       void Promise.resolve(control("send")).finally(() => {
                         if (previousSession.current === requestSession)
                           submitPending.current = false;
                       });
-                    }
-                  }}
-                >
-                  <HistoryReferenceChips />
-                  <label className="sr-only" htmlFor="message">
-                    {t.message}
-                  </label>
-                  <Textarea
-                    id="message"
-                    className="min-h-10 max-h-40 resize-none overflow-y-auto border-0 bg-transparent px-3 pt-2.5 text-sm shadow-none focus-visible:ring-0"
-                    value={message}
-                    maxLength={MAX_MESSAGE_LENGTH}
-                    rows={1}
-                    onChange={(e) => setMessage(e.target.value)}
-                    placeholder={t.message}
-                    disabled={busy}
-                    onCompositionStart={() => {
-                      composing.current = true;
                     }}
-                    onCompositionEnd={() => {
-                      composing.current = false;
-                    }}
-                    onBlur={() => {
-                      composing.current = false;
-                    }}
-                    onKeyDown={(event) => {
-                      if (!enterSends || !isSendEnter(event, composing.current)) return;
-                      event.preventDefault();
-                      if (!event.repeat && !busy && !submitPending.current)
-                        event.currentTarget.form?.requestSubmit();
-                    }}
-                  />
-                  <div className="flex items-center justify-between gap-2 px-2 pb-1">
-                    <div className="flex min-w-0 items-center gap-2">
-                      <ComposerAddMenu
-                        label={composerCopy.addContext}
-                        disabled
-                        disabledReason={composerAddCopy(locale).unavailable}
-                      >
-                        {null}
-                      </ComposerAddMenu>
-                      <small className="max-w-lg text-xs leading-5 text-muted-foreground">
-                        {t.experimental} · {t.controlInfo}
-                      </small>
-                    </div>
-                    <div className="flex min-w-0 items-center gap-1">
-                      <ContextUsageGauge />
-                      {canStop ? (
-                        <Button
-                          type="button"
-                          variant="destructive"
-                          className="inline-flex size-11 shrink-0 items-center justify-center rounded-full bg-destructive text-destructive-foreground transition-opacity hover:opacity-90 disabled:opacity-50"
-                          aria-label={t.stop}
-                          onClick={() => void control("stop")}
-                        >
-                          <Square size={17} />
-                        </Button>
-                      ) : (
-                        <Button
-                          type="submit"
-                          size="icon"
-                          className="shrink-0 rounded-full bg-primary p-0 text-primary-foreground transition-opacity hover:opacity-90 disabled:opacity-30 pointer-coarse:size-11"
-                          aria-label={t.send}
-                          disabled={
-                            !online ||
-                            !canSend ||
-                            live?.activity === "compacting" ||
-                            !validHistoryMessage(message, historyReferences)
+                    canSubmitFromKeyboard={() => !busy && !submitPending.current}
+                    beforeEditor={<HistoryReferenceChips />}
+                    toolbar={
+                      <>
+                        <ComposerToolbar
+                          leading={
+                            <>
+                              <SessionComposerAddMenu
+                                locale={locale}
+                                label={composerCopy.addContext}
+                                disabled
+                                disabledReason={composerAddCopy(locale).unavailable}
+                              />
+                              <small className="max-w-lg text-xs leading-5 text-muted-foreground">
+                                {t.experimental} · {t.controlInfo}
+                              </small>
+                            </>
                           }
-                        >
-                          <ArrowUp size={20} />
-                        </Button>
-                      )}
-                    </div>
-                  </div>
-                  {live?.activity === "compacting" && (
-                    <p role="status" className="mt-2 text-xs text-muted-foreground">
-                      {contextUsageCopyForSurface(locale, "web").compactingDetail}
-                    </p>
-                  )}
-                </form>
+                          trailing={
+                            <>
+                              <ContextUsageGauge />
+                              {canStop ? (
+                                <ComposerPrimaryAction
+                                  kind="stop"
+                                  label={t.stop}
+                                  onStop={() => void control("stop")}
+                                />
+                              ) : (
+                                <ComposerPrimaryAction
+                                  label={t.send}
+                                  disabled={
+                                    !online ||
+                                    !canSend ||
+                                    live?.activity === "compacting" ||
+                                    !validHistoryMessage(message, historyReferences)
+                                  }
+                                />
+                              )}
+                            </>
+                          }
+                        />
+                        {live?.activity === "compacting" && (
+                          <p role="status" className="mt-2 text-xs text-muted-foreground">
+                            {contextUsageCopyForSurface(locale, "web").compactingDetail}
+                          </p>
+                        )}
+                      </>
+                    }
+                  />
+                </div>
               )
             ) : (
               <footer className="shrink-0 border-t px-5 py-4 text-center text-xs text-muted-foreground">

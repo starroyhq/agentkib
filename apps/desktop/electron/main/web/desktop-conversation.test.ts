@@ -1,7 +1,7 @@
 // @vitest-environment node
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { randomUUID } from "node:crypto";
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createServer, request } from "node:http";
@@ -443,6 +443,72 @@ describe("trusted desktop conversation routes", () => {
     const files = await service.localRequest("/files/list?workspaceId=w");
     expect(files.status).toBe(200);
     expect((await service.request({ operation: "status" })).running).toBe(false);
+  });
+
+  it("browses and revalidates draft workspace references before sending", async () => {
+    await mkdir(join(directory, "notes"));
+    const file = join(directory, "notes", "topic.md");
+    await writeFile(file, "topic");
+    runtime.mockImplementation(async (params) => {
+      const input = params as { operation: string };
+      if (input.operation === "resources") return { revision: 4 };
+      if (input.operation === "capabilities")
+        return { features: { resources: { available: true } } };
+      return defaultRuntime(params);
+    });
+    const path = "/managed/resources?workspaceId=w&agent=codex";
+    const root = await service.localRequest(path);
+    expect(root).toMatchObject({ status: 200, body: { workspaceId: "w" } });
+    expect(root.body).not.toHaveProperty("sessionId");
+    expect(runtime).toHaveBeenCalledExactlyOnceWith({
+      operation: "provider-workspace-resources",
+      workspaceId: "w",
+      agent: "codex",
+    });
+    type Listing = { resources: Array<{ id: string; name: string; navigationId?: string }> };
+    const notes = (root.body as Listing).resources.find((row) => row.name === "notes")!;
+    const folder = await service.localRequest(`${path}&directoryId=${notes.navigationId}`);
+    const topic = (folder.body as Listing).resources.find((row) => row.name === "topic.md")!;
+    expect(topic.id).toMatch(/^[a-f0-9]{64}$/);
+    expect(
+      await service.localRequest(
+        path.replace("agent=codex", "agent=claude-code") + `&directoryId=${notes.navigationId}`,
+      ),
+    ).toMatchObject({ status: 404 });
+    expect(
+      await service.localRequest(path.replace("workspaceId=w", "workspaceId=outside")),
+    ).toMatchObject({ status: 403 });
+
+    const access = await service.localRequest("/access");
+    const send = (resourceId: string) =>
+      service.localRequest("/send", {
+        sessionId: "s",
+        text: "Read the notes",
+        requestId: randomUUID(),
+        expectedRevision: 4,
+        bootId: (access.body as { bootId: string }).bootId,
+        resourceIds: [resourceId],
+      });
+    await writeFile(file, "new longer topic");
+    expect(await send(topic.id)).toMatchObject({
+      status: 409,
+      body: { error: "artifact_changed" },
+    });
+    expect(
+      runtime.mock.calls.some(([params]) => (params as { operation: string }).operation === "send"),
+    ).toBe(false);
+    const refreshed = await service.localRequest(`${path}&directoryId=${notes.navigationId}`);
+    const currentTopic = (refreshed.body as Listing).resources.find(
+      (row) => row.name === "topic.md",
+    )!;
+    expect(await send(currentTopic.id)).toMatchObject({ status: 200, body: { accepted: true } });
+    expect(runtime).toHaveBeenCalledWith(
+      expect.objectContaining({
+        operation: "send",
+        sessionId: "s",
+        resourceRefs: [{ kind: "file", relativePath: "notes/topic.md" }],
+      }),
+    );
   });
 
   it("keeps desktop preview tickets on a separate loopback listener across relay origin changes", async () => {

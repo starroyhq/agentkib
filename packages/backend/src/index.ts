@@ -1191,6 +1191,10 @@ export class TypeScriptBackend {
         const { agent, operation: _operation, ...scope } = params;
         return this.#withWebRead((owner) => owner.sessionProviderOptions(agent, scope));
       }
+      if (params.operation === "provider-workspace-resources") {
+        const { agent, operation: _operation, ...scope } = params;
+        return this.#withWebRead((owner) => owner.sessionProviderWorkspaceResources(agent, scope));
+      }
       if (params.operation === "provider-create") {
         const { agent, operation: _operation, ...fields } = params;
         return this.#withWebRead((owner) => owner.sessionProviderCreate(agent, fields));

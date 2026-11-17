@@ -139,8 +139,11 @@ describe("composer sending shortcuts", () => {
 
   it("submits Enter through the same form path as the send button", async () => {
     const { input, form } = renderComposer();
-    expect(screen.getByRole("button", { name: "Send" })).toHaveClass("size-11");
-    expect(screen.getByRole("button", { name: codexCopy["en-US"].attachment })).toHaveClass(
+    expect(screen.getByRole("button", { name: "Send" })).toHaveClass(
+      "size-8",
+      "pointer-coarse:size-11",
+    );
+    expect(screen.getByRole("button", { name: codexCopy["en-US"].addContext })).toHaveClass(
       "size-11",
     );
     const requestSubmit = vi.spyOn(form, "requestSubmit");
@@ -171,7 +174,7 @@ describe("composer sending shortcuts", () => {
       },
     };
     renderComposer();
-    const button = screen.getByRole("button", { name: codexCopy["en-US"].attachment });
+    const button = screen.getByRole("button", { name: codexCopy["en-US"].addContext });
     expect(button).toBeDisabled();
     expect(button).toHaveAttribute(
       "title",
@@ -919,11 +922,15 @@ describe("composer sending shortcuts", () => {
     );
     expect(doubles.control).not.toHaveBeenCalled();
   });
-  it("sends a new session's first message once, after its files upload", async () => {
+  it("sends a new session's first message with workspace references once, after its files upload", async () => {
     const file = new File(["abc"], "spec.md", { type: "text/markdown" });
     const upload = deferred<UploadedAttachment>();
     doubles.upload.mockReturnValue(upload.promise);
-    offerNewSessionDraft("session", { text: "Add rate limiting", files: [file] });
+    offerNewSessionDraft("session", {
+      text: "Add rate limiting",
+      files: [file],
+      resources: [{ id: "draft-resource", kind: "file", name: "README.md", available: true }],
+    });
     const { rerender } = render(<SessionComposer />);
     expect(screen.getByRole("textbox", { name: "Message" })).toHaveValue("Add rate limiting");
     expect(screen.getByText("spec.md")).toBeVisible();
@@ -937,7 +944,7 @@ describe("composer sending shortcuts", () => {
         undefined,
         undefined,
         undefined,
-        { attachmentIds: ["spec"] },
+        { attachmentIds: ["spec"], resourceIds: ["draft-resource"] },
       ),
     );
     rerender(<SessionComposer />);

@@ -416,6 +416,9 @@ describe.skipIf(!["darwin", "linux"].includes(process.platform))(
       expect(
         await f.owner.request({ operation: "options", workspaceId: "workspace" }),
       ).toMatchObject({ available: true, models: [], permissionModes: [] });
+      expect(await f.owner.capabilities(f.indexNative(), true)).toMatchObject({
+        features: { "goal-draft": { available: false } },
+      });
       expect(f.frames()).toEqual([]);
     });
 
@@ -773,6 +776,121 @@ describe.skipIf(!["darwin", "linux"].includes(process.platform))(
           .at(-1)!.args,
       ).toContain(`--resume=${id}`);
       expect(f.frames().filter((frame) => frame.type === "user")).toHaveLength(1);
+    });
+    it("stages settings for an idle native session without resuming it before the first send", async () => {
+      const states: Array<Record<string, unknown>> = [];
+      const f = fixture("2.1.286", 0, "ordinary", (state) => states.push(state));
+      const id = f.indexNative();
+      const originalTranscript = readFileSync(f.transcript(id), "utf8");
+      const managedRecord = path.join(f.root, "claude-managed", `${id}.json`);
+      expect(await f.owner.capabilities(id, true)).toMatchObject({
+        features: {
+          settings: { available: true },
+          "settings-state": { available: true },
+          resources: { available: true },
+          attachments: { available: true },
+          goal: { available: false },
+          "goal-draft": { available: true },
+          "goal-set": { available: false },
+        },
+      });
+      expect(await f.owner.capabilities(id, false)).toMatchObject({
+        features: { "goal-draft": { available: false } },
+      });
+      expect(await f.owner.settingsState(id)).toMatchObject({
+        current: { model: null },
+        models: [],
+      });
+      expect(f.frames()).toEqual([]);
+
+      expect(await prepareSettings(f.owner, id)).toMatchObject({
+        current: { model: null },
+        applicationStatus: "pending",
+        models: [{ id: "fixture-model" }],
+        writable: { model: { available: true }, permissionMode: { available: true } },
+      });
+      const settings = { model: "fixture-model", effort: "high", permissionMode: "plan" };
+      const request = {
+        operation: "settings",
+        sessionId: id,
+        deviceId: "browser-device-a",
+        requestId: randomUUID(),
+        runtimeBootId: f.owner.bootId,
+        expectedRevision: (await f.owner.live(id, true)).revision,
+        experimentalEnabled: true,
+        ...settings,
+      };
+      const receipt = await f.owner.request(request);
+      expect(receipt).toMatchObject({
+        requestId: request.requestId,
+        controlOutcome: "accepted",
+        completed: true,
+        settings,
+      });
+      expect(states).toEqual([
+        expect.objectContaining({
+          sessionId: id,
+          status: "idle",
+          sendEnabled: true,
+          revision: Number(request.expectedRevision) + 1,
+        }),
+      ]);
+      expect(await f.owner.request(request)).toEqual(receipt);
+      await expect(
+        f.owner.request({ ...request, requestId: randomUUID(), permissionMode: "acceptEdits" }),
+      ).rejects.toThrow("stale-Claude-revision");
+      expect(await f.owner.settingsState(id)).toMatchObject({
+        selected: settings,
+        current: { model: null },
+        applicationStatus: "pending",
+      });
+      expect(existsSync(managedRecord)).toBe(false);
+      expect(readFileSync(f.transcript(id), "utf8")).toBe(originalTranscript);
+      const launchesBeforeSend = f.frames().filter((frame) => frame.args);
+      expect(launchesBeforeSend).toHaveLength(1);
+      expect(launchesBeforeSend[0]!.args).toContain("--no-session-persistence");
+      expect(f.frames().filter((frame) => frame.type === "user")).toHaveLength(0);
+
+      expect(
+        await control(f.owner, id, "send", { text: "Continue with staged settings" }),
+      ).toMatchObject({
+        accepted: true,
+      });
+      await expect.poll(async () => (await f.owner.live(id, true)).status).toBe("idle");
+      expect(await f.owner.capabilities(id, true)).toMatchObject({
+        features: { "goal-draft": { available: false }, "goal-set": { available: true } },
+      });
+      const launch = f
+        .frames()
+        .filter((frame) => frame.args)
+        .at(-1)!;
+      expect(launch.args).toContain(`--resume=${id}`);
+      for (const [option, selected] of [
+        ["--model", settings.model],
+        ["--effort", settings.effort],
+        ["--permission-mode", settings.permissionMode],
+      ]) {
+        expect(launch.args[launch.args.indexOf(option) + 1]).toBe(selected);
+      }
+      expect(f.frames().filter((frame) => frame.type === "user")).toHaveLength(1);
+    });
+    it("rechecks native ownership before preparing or staging imported settings", async () => {
+      const f = fixture();
+      const id = f.indexNative();
+      expect(await f.owner.live(id, true)).toMatchObject({ sendEnabled: true });
+      f.setExternalOwner(id);
+      await expect(prepareSettings(f.owner, id)).rejects.toThrow("claude-owner-busy");
+      await expect(control(f.owner, id, "settings", { permissionMode: "plan" })).rejects.toThrow(
+        "claude-owner-busy",
+      );
+      expect(await f.owner.settingsState(id)).toMatchObject({
+        selected: { permissionMode: null },
+        writable: { permissionMode: { available: false } },
+      });
+      expect(await f.owner.capabilities(id, true)).toMatchObject({
+        features: { "goal-draft": { available: false } },
+      });
+      expect(f.frames()).toEqual([]);
     });
     it("creates under the real browser device, persists selections without a user frame, and rejects malformed identities", async () => {
       const f = fixture();

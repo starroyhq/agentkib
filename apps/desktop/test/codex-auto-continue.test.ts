@@ -2075,6 +2075,65 @@ describe("Codex managed sandbox verification", () => {
     });
   });
 
+  it("uses Codex Plan chosen at creation on its first turn without a separate settings receipt", async () => {
+    const f = fixture();
+    expect(await f.web.sessionProviderOptions("codex")).toMatchObject({
+      provider: { create: { planMode: "mode", workspaceResources: true, goal: true } },
+    });
+    expect(f.methods).not.toContain("thread/start");
+    // The live runner must recheck the presets, even when they were available on the home screen.
+    f.setCollaborationModes({ data: [] });
+    const create = {
+      deviceId: "fixture",
+      workspaceId: "workspace",
+      policyId: "workspace-write-on-request",
+      mode: "plan",
+    };
+    expect(
+      await f.web.sessionProviderCreate("codex", { ...create, requestId: randomUUID() }),
+    ).toMatchObject({
+      controlOutcome: "not-dispatched",
+      reason: "native-collaboration-modes-unavailable",
+    });
+    expect(f.methods).not.toContain("thread/start");
+
+    f.setCollaborationModes({
+      data: [
+        { mode: "plan", name: "Plan" },
+        { mode: "default", name: "Default" },
+      ],
+    });
+    const created = await f.web.sessionProviderCreate("codex", {
+      ...create,
+      requestId: randomUUID(),
+    });
+    expect(created).toMatchObject({
+      accepted: true,
+      live: { settings: { selected: { mode: "plan" } } },
+    });
+    expect(f.methods).not.toContain("turn/start");
+    const live = (await f.web.request({
+      operation: "live",
+      sessionId: created.sessionId,
+      experimentalEnabled: true,
+    })) as Record<string, unknown>;
+    expect(
+      await f.web.managedControl({
+        operation: "send",
+        sessionId: created.sessionId,
+        requestId: randomUUID(),
+        deviceId: "fixture",
+        runtimeBootId: live.runtimeBootId,
+        expectedRevision: live.revision,
+        experimentalEnabled: true,
+        text: "Plan the first task",
+      }),
+    ).toMatchObject({ accepted: true });
+    expect(f.requests.find(({ method }) => method === "turn/start")?.params).toMatchObject({
+      collaborationMode: { mode: "plan", settings: { model: "model-a" } },
+    });
+  });
+
   // The runner of a session it creates holds a record without the native ID until it is saved.
   it("tells a lead when a session it just created ends its first turn", async () => {
     const f = fixture();

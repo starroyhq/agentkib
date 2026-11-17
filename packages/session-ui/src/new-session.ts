@@ -48,6 +48,7 @@ type NewSessionProviderCreate = {
   serviceTiers: boolean;
   agentPresets?: boolean;
   verifyStartupModel?: boolean;
+  planMode?: "mode" | "permissionMode";
 };
 
 interface PermissionSpec {
@@ -106,8 +107,8 @@ export interface NewSessionPermissions {
   /** The menu's heading in the Agent's own words. */
   title: string;
   choices: NewSessionPermissionChoice[];
-  /** The choice shown before the person picks one. */
-  initial: string;
+  /** The choice applied at startup without an explicit selection, if the Agent sends one. */
+  initial?: string;
 }
 
 function offeredPermissions(
@@ -136,14 +137,16 @@ export function newSessionPermissions(
   locale: InteractionLocale,
   { fullAccess = true }: { fullAccess?: boolean } = {},
 ): NewSessionPermissions | undefined {
-  const ids = offeredPermissions(agent, options, fullAccess);
+  const ids = offeredPermissions(agent, options, fullAccess).filter(
+    (id) => agent !== "claude-code" || id !== "plan",
+  );
   const spec = PERMISSIONS[agent];
   const words = newSessionCopy(locale).permissions[agent as keyof NewSessionCopy["permissions"]];
   if (!spec || !ids.length || !words) return undefined;
   const names = words.choices as Record<string, { name: string; description: string }>;
   return {
     title: words.title,
-    initial: ids[0]!,
+    initial: spec.sendShown ? ids[0] : undefined,
     choices: ids.map((id) => ({
       id,
       name: names[id]?.name ?? id,
@@ -175,6 +178,7 @@ export interface NewSessionSelection {
   shownModel?: string;
   /** The permission choice the person picked, if any. */
   permission?: string;
+  planning?: boolean;
   /** The preset the person picked, if any. */
   preset?: string;
   /** Whether this device has full access; see `newSessionPermissions`. */
@@ -189,6 +193,7 @@ export interface NewSessionCreateFields {
   effort?: string;
   serviceTierId?: string;
   policyId?: string;
+  mode?: "plan";
   permissionMode?: ClaudeStartMode | DevinStartMode;
   agentPreset?: string;
   /** The first message for a provider that creates sessions with a message. */
@@ -207,8 +212,15 @@ export function newSessionCreateFields(
   const serviceTierId = canChooseTier ? selection.serviceTierId : undefined;
   const spec = PERMISSIONS[agent];
   const ids = offeredPermissions(agent, options, selection.fullAccess ?? true);
+  const planMode = create?.planMode;
+  const requestedPermission =
+    selection.planning && planMode === "permissionMode" ? "plan" : permission;
   const sent =
-    permission && ids.includes(permission) ? permission : spec?.sendShown ? ids[0] : undefined;
+    requestedPermission && ids.includes(requestedPermission)
+      ? requestedPermission
+      : spec?.sendShown
+        ? ids[0]
+        : undefined;
   const { presets, defaultId } = newSessionPresets(agent, options, create);
   return {
     // Hosts that predate other Agents read a create without one as Codex.
@@ -218,6 +230,7 @@ export function newSessionCreateFields(
     ...(model || effort || serviceTierId ? { model: model || shownModel } : {}),
     ...(effort ? { effort } : {}),
     ...(serviceTierId ? { serviceTierId } : {}),
+    ...(selection.planning && planMode === "mode" ? { mode: "plan" as const } : {}),
     ...(create?.verifyStartupModel && options?.models?.length && workspaceId && (model || effort)
       ? { verifyStartupModel: true }
       : {}),
@@ -295,11 +308,10 @@ const copy = {
         },
       },
       "claude-code": {
-        title: "权限",
+        title: "工具权限",
         choices: {
-          default: { name: "默认", description: "修改文件和运行命令前先问你" },
+          default: { name: "手动审批", description: "修改文件和运行命令前先问你" },
           acceptEdits: { name: "自动接受编辑", description: "直接修改文件，运行命令前仍会问你" },
-          plan: { name: "计划模式", description: "只读和规划，不修改文件" },
         },
       },
     },
@@ -365,11 +377,10 @@ const copy = {
         },
       },
       "claude-code": {
-        title: "權限",
+        title: "工具權限",
         choices: {
-          default: { name: "預設", description: "修改檔案和執行指令前先問你" },
+          default: { name: "手動核准", description: "修改檔案和執行指令前先問你" },
           acceptEdits: { name: "自動接受編輯", description: "直接修改檔案，執行指令前仍會問你" },
-          plan: { name: "計畫模式", description: "只讀取和規劃，不修改檔案" },
         },
       },
     },
@@ -448,14 +459,16 @@ const copy = {
         },
       },
       "claude-code": {
-        title: "Permissions",
+        title: "Tool permissions",
         choices: {
-          default: { name: "Default", description: "Ask before editing files or running commands" },
+          default: {
+            name: "Manual approval",
+            description: "Ask before editing files or running commands",
+          },
           acceptEdits: {
             name: "Accept edits",
             description: "Edit files directly; still ask before running commands",
           },
-          plan: { name: "Plan mode", description: "Read and plan only; no file changes" },
         },
       },
     },
@@ -538,19 +551,15 @@ const copy = {
         },
       },
       "claude-code": {
-        title: "権限",
+        title: "ツール権限",
         choices: {
           default: {
-            name: "デフォルト",
+            name: "手動承認",
             description: "ファイルの変更やコマンドの実行前に確認します",
           },
           acceptEdits: {
             name: "編集を自動承認",
             description: "ファイルは直接変更し、コマンドの実行前には確認します",
-          },
-          plan: {
-            name: "プランモード",
-            description: "読み取りと計画のみで、ファイルは変更しません",
           },
         },
       },

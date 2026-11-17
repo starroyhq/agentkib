@@ -316,6 +316,7 @@ const managedLifecycleSchema = z.discriminatedUnion("operation", [
       model: z.string().min(1).max(256).optional(),
       effort: z.string().min(1).max(64).optional(),
       serviceTier: z.string().min(1).max(128).optional(),
+      mode: z.literal("plan").optional(),
     })
     .strict(),
   z
@@ -650,6 +651,7 @@ export class WebReadRequests {
       agent: "codex",
       createOperation: "create",
       options: () => this.#managedOptions(),
+      workspaceResources: (workspaceId) => this.#codexWorkspaceResources(workspaceId),
       create: (request) => this.managedLifecycle(request),
       settingsState: (request) =>
         this.#managedSettingsState(managedSettingsStateSchema.parse(request)),
@@ -664,6 +666,8 @@ export class WebReadRequests {
       agent: "claude-code",
       createOperation: "create",
       options: ({ workspaceId }) => this.#claudeProvider({ operation: "options", workspaceId }),
+      workspaceResources: (workspaceId) =>
+        this.#claudeProvider({ operation: "workspace-resources", workspaceId }),
       create: (request) => this.#claudeProvider(request),
       settingsState: (request) => this.#claudeProvider(request),
       prepareSettings: (request) => this.#claudeProvider(request),
@@ -1056,7 +1060,17 @@ export class WebReadRequests {
     return this.#runOperation(async () => {
       const provider = this.#sessionProviders.require(agent);
       const options = await provider.options(sessionProviderOptionsScopeSchema.parse(scope));
-      return this.#withProviderCapabilities(provider, options);
+      return this.#withProviderCapabilities(provider, options, true);
+    });
+  }
+
+  sessionProviderWorkspaceResources(agent: unknown, scope: unknown) {
+    return this.#runOperation(async () => {
+      const provider = this.#sessionProviders.require(agent);
+      const { workspaceId } = sessionProviderOptionsScopeSchema.required().parse(scope);
+      if (!sessionProviderCapabilities(provider.agent)?.create.workspaceResources)
+        throw new Error("unsupported-session-provider-operation");
+      return provider.workspaceResources?.(workspaceId) ?? {};
     });
   }
 
@@ -1070,9 +1084,35 @@ export class WebReadRequests {
     return this.#sessionProviders.get(this.store.sessions.get(sessionId)?.agent ?? "codex");
   }
 
-  #withProviderCapabilities(provider: SessionProvider, value: unknown): Record<string, unknown> {
+  #withProviderCapabilities(
+    provider: SessionProvider,
+    value: unknown,
+    creating = false,
+  ): Record<string, unknown> {
     if (!isObject(value)) throw new Error("invalid-provider-response");
-    return { ...value, provider: sessionProviderCapabilities(provider.agent) };
+    const declared = sessionProviderCapabilities(provider.agent)!;
+    if (!creating) return { ...value, provider: declared };
+    const { nativePlan, nativeGoals, ...options } = value;
+    const { planMode, goal, goalBudget, workspaceResources, ...create } = declared.create;
+    const available = value.available === true;
+    const claudePlan =
+      provider.agent === "claude-code" &&
+      Array.isArray(value.permissionModes) &&
+      value.permissionModes.some((item) => isObject(item) && item.id === "plan");
+    return {
+      ...options,
+      provider: {
+        ...declared,
+        create: {
+          ...create,
+          ...(available && planMode && (nativePlan === true || claudePlan) ? { planMode } : {}),
+          ...(available && workspaceResources ? { workspaceResources } : {}),
+          ...(available && goal && (nativeGoals === true || claudePlan)
+            ? { goal, ...(goalBudget ? { goalBudget } : {}) }
+            : {}),
+        },
+      },
+    };
   }
 
   /** The backend transport resolves the bridge owner before sending its native request here. */
@@ -1083,11 +1123,12 @@ export class WebReadRequests {
     const provider = this.#sessionProviders.require(agent);
     switch (value.operation) {
       case "options":
-        return this.#withProviderCapabilities(provider, await provider.options(value));
+        return this.#withProviderCapabilities(provider, await provider.options(value), true);
       case "dsh-options":
         return this.#withProviderCapabilities(
           provider,
           await provider.options({ includeModels: value.includeModels === true }),
+          true,
         );
       case "create":
       case "dsh-create":
@@ -1122,9 +1163,11 @@ export class WebReadRequests {
         this.environment.CODEX_HOME ?? path.join(this.environment.HOME ?? homedir(), ".codex"),
       );
       return await this.#optionsCatalog.read(codexCatalogKey(executable, home, home), async () => {
-        const [response] = await this.#codex.requestMany(executable, home, home, [
-          ["model/list", { limit: 100 }],
-        ]);
+        const [response, collaborationModes] = await this.#readCodexRawCatalog(
+          executable,
+          home,
+          home,
+        );
         const rows = isObject(response) && Array.isArray(response.data) ? response.data : null;
         if (!rows) throw new Error("invalid-model-catalog");
         const catalogTiers = new Map<string, { id: string; name: string; description?: string }>();
@@ -1173,6 +1216,9 @@ export class WebReadRequests {
             serviceTier: defaultModel?.defaultServiceTier ?? null,
           },
           policies: managedPolicyCatalog(),
+          nativePlan: verifiedCollaborationModes(collaborationModes).length > 0,
+          // The goal methods are required by the minimum supported Codex writer protocol.
+          nativeGoals: true,
         };
       });
     } catch (error) {
@@ -1502,7 +1548,7 @@ export class WebReadRequests {
       default_effort: null,
       default_service_tier: null,
       native_settings: null,
-      mode: null,
+      mode: request.mode ?? null,
       source_session_id: null,
       title: "Codex",
       created_at: new Date().toISOString(),
@@ -2395,24 +2441,36 @@ export class WebReadRequests {
 
   #readCodexSettingsCatalog(executable: string, home: string, cwd: string) {
     return this.#settingsCatalog.read(codexCatalogKey(executable, home, cwd), async () => {
-      let catalog: unknown[];
-      try {
-        catalog = await this.#codex.requestMany(executable, cwd, home, [
-          ["model/list", { limit: 100 }],
-          ["collaborationMode/list", {}],
-        ]);
-      } catch {
-        // A CLI that rejects the presets still lists its models.
-        catalog = [
-          await this.#codex.request(executable, cwd, home, "model/list", { limit: 100 }),
-          null,
-        ];
-      }
+      const catalog = await this.#readCodexRawCatalog(executable, home, cwd);
       return {
         models: projectManagedModels(catalog[0]),
         collaborationModes: verifiedCollaborationModes(catalog[1]),
       };
     });
+  }
+
+  async #readCodexRawCatalog(executable: string, home: string, cwd: string) {
+    let models: unknown;
+    try {
+      return await this.#codex.requestMany(
+        executable,
+        cwd,
+        home,
+        [
+          ["model/list", { limit: 100 }],
+          ["collaborationMode/list", {}],
+        ],
+        (index, result) => {
+          if (index === 0) models = result;
+        },
+      );
+    } catch {
+      // A CLI that rejects the presets still lists its models.
+      return [
+        models ?? (await this.#codex.request(executable, cwd, home, "model/list", { limit: 100 })),
+        null,
+      ];
+    }
   }
 
   managedQuery(value: unknown) {
@@ -5048,6 +5106,8 @@ export class WebReadRequests {
         if (!session.connected) throw error;
         runner.planVerified = false;
       }
+      if (!nativeId && !fork && record.mode === "plan" && !runner.planVerified)
+        throw new Error("native-collaboration-modes-unavailable");
       const requestedModel = record.model ?? null;
       const requestedEffort = record.effort ?? null;
       const stagedModelSettings = hasStagedCodexModelSettings(record);
@@ -7933,12 +7993,7 @@ export class WebReadRequests {
       throw new Error("session-workspace-mismatch");
     const codexHome = this.#assertManagedHome(managed);
     const executionCwd = this.#managedCwd(managed);
-    const executable = this.#codexReader();
-    if (!executable) throw new Error("codex-cli-unavailable");
-    const result = await this.#codex.request(executable, executionCwd, codexHome, "skills/list", {
-      cwds: [executionCwd],
-      forceReload: false,
-    });
+    const skills = await this.#readCodexSkills(executionCwd, codexHome);
     const latest = readManagedRecords(this.dataDir, this.store).find(
       (record) => record.id === sessionId,
     );
@@ -7951,6 +8006,42 @@ export class WebReadRequests {
         pathIdentity(canonicalize(latest.home)) !== pathIdentity(codexHome))
     )
       throw new Error("session-unavailable");
+    return {
+      available: true,
+      executionMode: "codex-managed",
+      skills,
+      plugins: [],
+      apps: [],
+      contextReferences: {
+        supportedTypes: ["computerPath", "skill"],
+        unavailable: {
+          plugin: "unsupported-codex-cli-version",
+          app: "unsupported-codex-cli-version",
+        },
+      },
+    };
+  }
+
+  async #codexWorkspaceResources(workspaceId: string) {
+    const workspace = this.#checkedCodexDirectory(this.store.workspacePath(workspaceId));
+    const home = canonicalize(this.sessions.codexHome());
+    const skills = await this.#readCodexSkills(workspace, home);
+    if (
+      pathIdentity(this.#checkedCodexDirectory(this.store.workspacePath(workspaceId))) !==
+        pathIdentity(workspace) ||
+      pathIdentity(canonicalize(this.sessions.codexHome())) !== pathIdentity(home)
+    )
+      throw new Error("session-workspace-mismatch");
+    return { skills };
+  }
+
+  async #readCodexSkills(executionCwd: string, codexHome: string) {
+    const executable = this.#codexReader();
+    if (!executable) throw new Error("codex-cli-unavailable");
+    const result = await this.#codex.request(executable, executionCwd, codexHome, "skills/list", {
+      cwds: [executionCwd],
+      forceReload: false,
+    });
     const entries = isObject(result) && Array.isArray(result.data) ? result.data : [];
     const skills: Record<string, unknown>[] = [];
     for (const entry of entries) {
@@ -7987,20 +8078,7 @@ export class WebReadRequests {
         });
       }
     }
-    return {
-      available: true,
-      executionMode: "codex-managed",
-      skills,
-      plugins: [],
-      apps: [],
-      contextReferences: {
-        supportedTypes: ["computerPath", "skill"],
-        unavailable: {
-          plugin: "unsupported-codex-cli-version",
-          app: "unsupported-codex-cli-version",
-        },
-      },
-    };
+    return skills;
   }
 
   async #goal(sessionId: string) {

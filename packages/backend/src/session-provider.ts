@@ -5,6 +5,7 @@ export interface SessionProvider {
   readonly agent: SessionProviderAgent;
   readonly createOperation: string;
   options(scope: { workspaceId?: unknown; includeModels?: boolean }): Promise<unknown>;
+  workspaceResources?(workspaceId: string): Promise<unknown>;
   create(fields: Record<string, unknown>): Promise<unknown>;
   settingsState(request: Record<string, unknown>): Promise<unknown>;
   prepareSettings?(request: Record<string, unknown>): Promise<unknown>;

@@ -11,7 +11,13 @@ import {
   type ManagedAgent,
   type ManagedOptions,
 } from "@agentkib/web-client";
-import { composerModelCopy, newSessionCopy, planModeCopy } from "@agentkib/session-ui";
+import {
+  composerAddCopy,
+  composerGoalCopy,
+  composerModelCopy,
+  newSessionCopy,
+  planModeCopy,
+} from "@agentkib/session-ui";
 import { initializeI18n } from "@/core/i18n";
 import { takeNewSessionDraft } from "../conversation/features/sessions/new-session-draft";
 import { NewSessionComposer, type NewSessionComposerProps } from "./NewSessionComposer";
@@ -21,6 +27,7 @@ const doubles = vi.hoisted(() => ({
     origin: "",
     access: vi.fn(),
     managedOptions: vi.fn(),
+    newSessionResources: vi.fn(),
     managedAction: vi.fn(),
     receipt: vi.fn(),
     devinTerminal: vi.fn(),
@@ -80,6 +87,8 @@ const options: Record<ManagedAgent, ManagedOptions> = {
 };
 const modelCopy = composerModelCopy["en-US"];
 const copy = newSessionCopy("en-US");
+const addCopy = composerAddCopy("en-US");
+const goalCopy = composerGoalCopy("en-US");
 const pickerName = new RegExp(`^${modelCopy.chooseEffort}`);
 const anyPickerName = new RegExp(`^(?:${modelCopy.chooseModel}|${modelCopy.chooseEffort}):`);
 const claudeCatalog: ManagedOptions = {
@@ -192,6 +201,7 @@ describe("NewSessionComposer", () => {
         send: true,
         approve: true,
         manage: true,
+        advancedControl: true,
       },
     });
     doubles.client.managedOptions.mockImplementation(async (agent: ManagedAgent) => options[agent]);
@@ -313,7 +323,7 @@ describe("NewSessionComposer", () => {
     await user.click(addContext());
     const addMenu = await screen.findByRole("dialog", { name: "Add context" });
     expect(within(addMenu).queryByText(planLabel())).not.toBeInTheDocument();
-    await user.click(within(addMenu).getByRole("button", { name: "Add files" }));
+    await user.click(within(addMenu).getByRole("button", { name: addCopy.attachment }));
     expect(chooseFile).toHaveBeenCalledOnce();
     const file = new File(["spec"], "spec.md", { type: "text/markdown" });
     fireEvent.change(fileInput, { target: { files: [file] } });
@@ -338,6 +348,102 @@ describe("NewSessionComposer", () => {
       workspaceId: "atlas",
       agent: "codex",
     });
+  });
+
+  it("stages workspace references, Plan, and a goal before creating a native thread", async () => {
+    const folder = {
+      id: "opaque-folder",
+      kind: "directory",
+      name: "docs",
+      available: true,
+      navigationId: "opaque-nav",
+    };
+    const file = { id: "opaque-file", kind: "file", name: "Guide.md", available: true };
+    doubles.client.managedOptions.mockResolvedValue({
+      ...options.codex,
+      provider: sessionProviderCapabilities("codex"),
+    });
+    doubles.client.newSessionResources
+      .mockResolvedValueOnce({ workspaceId: "north", revision: 0, resources: [folder] })
+      .mockResolvedValueOnce({ workspaceId: "north", revision: 0, resources: [file] });
+    doubles.client.managedAction.mockResolvedValue({ accepted: true, sessionId: "created" });
+    const props = renderComposer();
+    const user = userEvent.setup();
+
+    await screen.findByRole("button", { name: /gpt-6.1-sol/ });
+    await user.click(addContext());
+    expect(doubles.client.newSessionResources).not.toHaveBeenCalled();
+    expect(await screen.findByRole("button", { name: planLabel(), pressed: false })).toBeVisible();
+    await user.keyboard("{Escape}");
+    await user.type(message(), "/");
+    expect(screen.getByRole("listbox").parentElement).toHaveClass("top-full");
+    expect(screen.getByRole("option", { name: /\/plan/ })).toBeVisible();
+    await user.keyboard("{Enter}");
+    expect(message()).toHaveValue("");
+
+    await user.click(addContext());
+    expect(await screen.findByRole("button", { name: planLabel(), pressed: true })).toBeVisible();
+    await user.click(await screen.findByRole("button", { name: goalCopy.title }));
+    await user.type(screen.getByRole("textbox", { name: goalCopy.objective }), "Improve docs");
+    fireEvent.change(screen.getByRole("spinbutton", { name: goalCopy.budget }), {
+      target: { value: "4000" },
+    });
+    await user.click(screen.getByRole("button", { name: goalCopy.saveDraft }));
+    expect(screen.getByRole("button", { name: "Start goal" })).toBeDisabled();
+    expect(screen.getByText(goalCopy.planNeedsMessage)).toBeVisible();
+    await user.click(addContext());
+    await user.click(await screen.findByRole("button", { name: addCopy.filesAndFolders }));
+    await user.click(await screen.findByRole("checkbox", { name: /docs/ }));
+    await user.click(screen.getByRole("button", { name: "Open folder: docs" }));
+    await user.click(await screen.findByRole("checkbox", { name: /Guide.md/ }));
+    await user.click(screen.getByRole("button", { name: "Done" }));
+    expect(doubles.client.newSessionResources.mock.calls.map((call) => call.slice(0, 3))).toEqual([
+      ["north", "codex", undefined],
+      ["north", "codex", "opaque-nav"],
+    ]);
+    expect(doubles.client.managedAction).not.toHaveBeenCalled();
+
+    await write("Review this project before updating the docs");
+    await user.click(send());
+    await waitFor(() => expect(props.onCreated).toHaveBeenCalledWith("created"));
+    expect(doubles.client.managedAction).toHaveBeenCalledExactlyOnceWith("create", {
+      bootId: "boot",
+      requestId: expect.any(String),
+      workspaceId: "north",
+      mode: "plan",
+      policyId: "workspace-write-on-request",
+    });
+    expect(takeNewSessionDraft("created")).toEqual({
+      text: "Review this project before updating the docs",
+      files: [],
+      resources: [folder, file],
+      goal: { objective: "Improve docs", tokenBudget: 4000 },
+      send: true,
+    });
+  });
+
+  it("opens and removes a saved goal from the composer toolbar without creating a session", async () => {
+    doubles.client.managedOptions.mockResolvedValue({
+      ...options.codex,
+      provider: sessionProviderCapabilities("codex"),
+    });
+    renderComposer();
+    await write("Keep this first message");
+    const user = userEvent.setup();
+    await user.click(addContext());
+    await user.click(await screen.findByRole("button", { name: goalCopy.title }));
+    await user.type(screen.getByRole("textbox", { name: goalCopy.objective }), "Fix docs");
+    await user.click(screen.getByRole("button", { name: goalCopy.saveDraft }));
+
+    const goalChip = screen.getByRole("button", { name: goalCopy.title });
+    expect(goalChip).toHaveAttribute("title", "Fix docs");
+    await user.click(goalChip);
+    expect(screen.getByRole("textbox", { name: goalCopy.objective })).toHaveValue("Fix docs");
+    await user.click(screen.getByRole("button", { name: goalCopy.close }));
+    await user.click(screen.getByRole("button", { name: goalCopy.clearDraft }));
+    expect(screen.queryByRole("button", { name: goalCopy.title })).not.toBeInTheDocument();
+    expect(message()).toHaveValue("Keep this first message");
+    expect(doubles.client.managedAction).not.toHaveBeenCalled();
   });
 
   it("uses the host's create capabilities in preference to its local provider defaults", async () => {
@@ -498,28 +604,47 @@ describe("NewSessionComposer", () => {
     expect(doubles.client.managedAction.mock.calls[1]![1]).toMatchObject({ workspaceId: "atlas" });
   });
 
-  it("starts from a session's own workspace and Agent, sending Claude's mode only when chosen", async () => {
-    localStorage.setItem(
-      "agentkib.newSession.target",
-      JSON.stringify({ workspaceId: "atlas", agent: "codex" }),
-    );
-    doubles.client.managedAction.mockResolvedValue({ accepted: true, sessionId: "created" });
-    renderComposer({ initial: { workspaceId: "north", agent: "claude-code" } });
-    expect(screen.getByRole("button", { name: "Workspace: northstar-api" })).toBeVisible();
-    expect(screen.getByRole("button", { name: "Agent: Claude Code" })).toBeVisible();
-    expect(await screen.findByRole("button", { name: /Permissions: Default/ })).toBeVisible();
-    expect(screen.queryByRole("button", { name: anyPickerName })).not.toBeInTheDocument();
-    await write("Map the routes");
-    fireEvent.click(send());
+  it.each([undefined, "default"])(
+    "starts from the session's workspace and sends Claude permission %s only when chosen",
+    async (permissionMode) => {
+      localStorage.setItem(
+        "agentkib.newSession.target",
+        JSON.stringify({ workspaceId: "atlas", agent: "codex" }),
+      );
+      doubles.client.managedAction.mockResolvedValue({ accepted: true, sessionId: "created" });
+      renderComposer({ initial: { workspaceId: "north", agent: "claude-code" } });
+      expect(screen.getByRole("button", { name: "Workspace: northstar-api" })).toBeVisible();
+      expect(screen.getByRole("button", { name: "Agent: Claude Code" })).toBeVisible();
+      const user = userEvent.setup();
+      await user.click(await screen.findByRole("button", { name: "Tool permissions" }));
+      const menu = within(await screen.findByRole("menu", { name: "Tool permissions" }));
+      const manual = menu.getByRole("menuitem", { name: /^Manual approval/ });
+      const acceptEdits = menu.getByRole("menuitem", { name: /^Accept edits/ });
+      expect(menu.getAllByRole("menuitem")).toEqual([manual, acceptEdits]);
+      expect(manual).not.toHaveAttribute("aria-current");
+      expect(acceptEdits).not.toHaveAttribute("aria-current");
+      if (permissionMode) {
+        await user.click(manual);
+        expect(
+          screen.getByRole("button", { name: "Tool permissions: Manual approval" }),
+        ).toBeVisible();
+      } else {
+        await user.keyboard("{Escape}");
+      }
+      expect(screen.queryByRole("button", { name: anyPickerName })).not.toBeInTheDocument();
+      await write("Map the routes");
+      fireEvent.click(send());
 
-    await waitFor(() => expect(doubles.client.managedAction).toHaveBeenCalledOnce());
-    expect(doubles.client.managedAction.mock.calls[0]![1]).toEqual({
-      agent: "claude-code",
-      bootId: "boot",
-      requestId: expect.any(String),
-      workspaceId: "north",
-    });
-  });
+      await waitFor(() => expect(doubles.client.managedAction).toHaveBeenCalledOnce());
+      expect(doubles.client.managedAction.mock.calls[0]![1]).toEqual({
+        agent: "claude-code",
+        bootId: "boot",
+        requestId: expect.any(String),
+        workspaceId: "north",
+        ...(permissionMode ? { permissionMode } : {}),
+      });
+    },
+  );
 
   it.each([
     ["Plan", "plan"],
@@ -530,16 +655,16 @@ describe("NewSessionComposer", () => {
       doubles.client.managedAction.mockResolvedValue({ accepted: true, sessionId: "created" });
       renderComposer({ initial: { workspaceId: "north", agent: "claude-code" } });
       const user = userEvent.setup();
-      await user.click(await screen.findByRole("button", { name: "Permissions: Default" }));
-      const permissions = await screen.findByRole("menu", { name: "Permissions" });
+      await user.click(await screen.findByRole("button", { name: "Tool permissions" }));
+      const permissions = await screen.findByRole("menu", { name: "Tool permissions" });
       expect(within(permissions).queryByText(/Plan/)).not.toBeInTheDocument();
       await user.click(within(permissions).getByText("Accept edits"));
 
       await user.click(addContext());
       const addMenu = await screen.findByRole("dialog", { name: "Add context" });
-      expect(within(addMenu).getByRole("button", { name: "Add files" })).toBeVisible();
+      expect(within(addMenu).getByRole("button", { name: addCopy.attachment })).toBeVisible();
       await user.click(within(addMenu).getByText(planLabel()));
-      await user.click(screen.getByRole("button", { name: "Permissions: Accept edits" }));
+      await user.click(screen.getByRole("button", { name: "Tool permissions: Accept edits" }));
       expect(await screen.findByRole("menuitem", { name: /^Accept edits/ })).toHaveAttribute(
         "aria-disabled",
         "true",
@@ -571,7 +696,7 @@ describe("NewSessionComposer", () => {
     );
     renderComposer({ initial: { workspaceId: "north", agent: "claude-code" } });
     const user = userEvent.setup();
-    await screen.findByRole("button", { name: "Permissions: Default" });
+    await screen.findByRole("button", { name: "Tool permissions" });
     await user.click(addContext());
     const addMenu = await screen.findByRole("dialog", { name: "Add context" });
     await user.click(within(addMenu).getByRole("button", { name: planLabel() }));
@@ -579,7 +704,7 @@ describe("NewSessionComposer", () => {
 
     await user.click(screen.getByRole("button", { name: "Workspace: northstar-api" }));
     await user.click(await screen.findByRole("button", { name: "atlas-studio" }));
-    await screen.findByRole("button", { name: "Permissions: Default" });
+    await screen.findByRole("button", { name: "Tool permissions" });
     expect(send()).toBeDisabled();
     expect(doubles.client.managedAction).not.toHaveBeenCalled();
     await user.click(addContext());
@@ -629,7 +754,7 @@ describe("NewSessionComposer", () => {
     });
   });
 
-  it("opens Claude's model list when its default is unknown and can clear just the chosen effort", async () => {
+  it("opens Claude's model list when its default is unknown and resets both model and effort", async () => {
     doubles.client.managedOptions.mockResolvedValue({ ...claudeCatalog, defaults: undefined });
     doubles.client.managedAction.mockResolvedValue({ accepted: true, sessionId: "created" });
     renderComposer({ initial: { agent: "claude-code" } });
@@ -643,14 +768,16 @@ describe("NewSessionComposer", () => {
     await chooseHighestEffort();
 
     const picker = await openModelPicker();
-    const clear = within(picker).getByRole("button", { name: modelCopy.useDefaultEffort });
-    fireEvent.click(clear);
-    await waitFor(() => expect(clear).not.toBeInTheDocument());
+    expect(within(picker).queryByRole("button", { name: modelCopy.useDefaultEffort })).toBeNull();
+    fireEvent.click(within(picker).getByRole("button", { name: modelCopy.reset }));
+    await screen.findByRole("dialog", { name: modelCopy.modelSettings });
     await userEvent.setup().keyboard("{Escape}");
     expect(
-      await screen.findByRole("button", { name: `${modelCopy.chooseEffort}: Opus` }),
+      await screen.findByRole("button", {
+        name: `${modelCopy.chooseModel}: ${modelCopy.defaultModel}`,
+      }),
     ).toBeVisible();
-    await write("Use Opus with its default effort");
+    await write("Use the default model and effort");
     fireEvent.click(send());
 
     await waitFor(() => expect(doubles.client.managedAction).toHaveBeenCalledOnce());
@@ -659,8 +786,6 @@ describe("NewSessionComposer", () => {
       bootId: "boot",
       requestId: expect.any(String),
       workspaceId: "north",
-      model: "opus",
-      verifyStartupModel: true,
     });
   });
 

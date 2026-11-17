@@ -1,5 +1,7 @@
 import type { ManagedAgent } from "./agents";
 
+export const SESSION_RESOURCE_LIMIT = 10;
+
 /**
  * Stable provider capabilities. A session's live capabilities and the device's grants still
  * determine what can be used now. Model lists and writable fields come from the provider's
@@ -16,6 +18,10 @@ export interface SessionProviderCapabilities {
     permissionPicker?: boolean;
     agentPresets?: boolean;
     verifyStartupModel?: boolean;
+    planMode?: "mode" | "permissionMode";
+    workspaceResources?: boolean;
+    goal?: boolean;
+    goalBudget?: "rounds";
   };
   models: {
     selection: "independent" | "variants";
@@ -37,6 +43,9 @@ const PROVIDERS = {
       serviceTiers: true,
       modelPicker: true,
       permissionPicker: true,
+      planMode: "mode",
+      workspaceResources: true,
+      goal: true,
     },
     models: {
       selection: "independent",
@@ -56,6 +65,9 @@ const PROVIDERS = {
       modelPicker: true,
       permissionPicker: true,
       verifyStartupModel: true,
+      planMode: "permissionMode",
+      workspaceResources: true,
+      goal: true,
     },
     models: {
       selection: "independent",
@@ -76,6 +88,8 @@ const PROVIDERS = {
       modelPicker: true,
       permissionPicker: false,
       agentPresets: true,
+      goal: true,
+      goalBudget: "rounds",
     },
     models: {
       selection: "independent",

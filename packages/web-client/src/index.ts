@@ -1,5 +1,6 @@
 export { mergeCatalogSessions, isStaleCatalogRead, retryStaleCatalogRead } from "./catalog";
 export type { IncompleteSessionSource } from "./catalog";
+export { SESSION_RESOURCE_LIMIT } from "@agentkib/runtime-protocol";
 
 import {
   managedAgentOf,
@@ -611,6 +612,7 @@ export interface CodexCapabilities {
       | "reconcile"
       | "settings-state"
       | "goal"
+      | "goal-draft"
       | "queue-list"
       | "attachments"
       | "context"
@@ -680,12 +682,19 @@ export interface ManagedOptions {
 /** Prefer the host's declaration. Older hosts omit this optional field. */
 export function newSessionProvider(
   agent: ManagedAgent,
-  options?: Pick<ManagedOptions, "provider">,
+  options?: Pick<ManagedOptions, "provider" | "permissionModes">,
 ): SessionProviderCapabilities | undefined {
   const declared = sessionProviderCapabilities(agent);
   const reported = options?.provider;
   if (!reported || !declared) return reported ?? declared;
-  if (reported.create.modelPicker !== undefined && reported.create.permissionPicker !== undefined)
+  const legacyPlan =
+    declared.create.planMode === "permissionMode" &&
+    options?.permissionModes?.some(({ id }) => id === "plan");
+  if (
+    reported.create.modelPicker !== undefined &&
+    reported.create.permissionPicker !== undefined &&
+    (reported.create.planMode !== undefined || !legacyPlan)
+  )
     return reported;
   return {
     ...reported,
@@ -693,6 +702,9 @@ export function newSessionProvider(
       ...reported.create,
       modelPicker: reported.create.modelPicker ?? declared.create.modelPicker,
       permissionPicker: reported.create.permissionPicker ?? declared.create.permissionPicker,
+      ...(legacyPlan && reported.create.planMode === undefined
+        ? { planMode: "permissionMode" }
+        : {}),
     },
   };
 }
@@ -729,6 +741,8 @@ export interface ManagedActionBody {
   permissionMode?: ClaudePermissionMode | DevinPermissionMode;
   /** Codex: the execution policy a new session starts with. */
   policyId?: string;
+  /** Codex: run the first turn using the native Plan preset. */
+  mode?: "plan";
   /** DeepSeek Harness: the Agent preset a new session starts with. */
   agentPreset?: string;
   /** Devin: the first message, which a new session starts with. */
@@ -907,6 +921,7 @@ export interface CodexContextOptions {
 }
 export type SessionResource = CodexContextResource;
 export type SessionResources = CodexContextOptions;
+export type NewSessionResources = Omit<SessionResources, "sessionId"> & { workspaceId: string };
 export interface CodexActionBody {
   historyReferences?: HistoryReference[];
   bootId: string;
@@ -1390,6 +1405,16 @@ export class WebClient {
     const query = new URLSearchParams({ sessionId, agent });
     if (directoryId) query.set("directoryId", directoryId);
     return this.request<SessionResources>(`managed/resources?${query}`, undefined, signal);
+  }
+  newSessionResources(
+    workspaceId: string,
+    agent: ManagedAgent,
+    directoryId?: string,
+    signal?: AbortSignal,
+  ) {
+    const query = new URLSearchParams({ workspaceId, agent });
+    if (directoryId) query.set("directoryId", directoryId);
+    return this.request<NewSessionResources>(`managed/resources?${query}`, undefined, signal);
   }
   codexCapabilities(sessionId: string, signal?: AbortSignal) {
     return this.request<CodexCapabilities>(

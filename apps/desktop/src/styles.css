@@ -800,10 +800,6 @@ button {
   min-height: 0;
 }
 
-.session-composer-frame {
-  min-height: 7.5rem;
-}
-
 /* Leave only the upper gap open; back the rounded corners and lower area. */
 .reader-composer {
   background: linear-gradient(

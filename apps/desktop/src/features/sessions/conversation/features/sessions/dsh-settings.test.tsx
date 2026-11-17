@@ -228,14 +228,60 @@ describe("DeepSeek Harness model settings in the composer", () => {
     ).not.toBeInTheDocument();
   });
 
-  it("turns DSH Plan mode off from the shared add menu", async () => {
+  it("applies a staged goal once the first turn has finished and the controller is ready", async () => {
+    state.controlReady = true;
+    state.capabilities!.features.goal = { available: true };
+    state.capabilities!.features["goal-set"] = { available: true };
+    vi.mocked(state.client.sessionGoals).mockImplementation(async () => ({
+      sessionId: "session",
+      available: true,
+      revision: state.live!.revision!,
+      budget: "rounds",
+      actions: {
+        set: { available: true },
+        pause: { available: false },
+        resume: { available: false },
+        clear: { available: false },
+      },
+    }));
+    vi.mocked(state.codexAction).mockResolvedValue({ accepted: true });
+    const onStartupGoalHandled = vi.fn();
+    const startupGoal = { value: { objective: "Ship it" }, apply: true, afterRevision: 1 };
+    const controls = () => (
+      <CodexComposerControls
+        {...props}
+        startupGoal={startupGoal}
+        onStartupGoalHandled={onStartupGoalHandled}
+      />
+    );
+    const { rerender } = render(controls());
+    await waitFor(() => expect(state.client.sessionGoals).toHaveBeenCalled());
+    expect(state.codexAction).not.toHaveBeenCalled();
+    state.controlReady = false;
+    state.live = { ...state.live!, revision: 2 };
+    rerender(controls());
+    await waitFor(() => expect(state.client.sessionGoals).toHaveBeenCalledTimes(2));
+    expect(state.codexAction).not.toHaveBeenCalled();
+    state.controlReady = true;
+    rerender(controls());
+    await waitFor(() => expect(onStartupGoalHandled).toHaveBeenLastCalledWith(true));
+    expect(onStartupGoalHandled.mock.calls).toEqual([[false], [true]]);
+    expect(state.codexAction).toHaveBeenCalledExactlyOnceWith("goal-set", {
+      objective: "Ship it",
+      intent: "start",
+      tokenBudget: null,
+    });
+  });
+
+  it("shows DSH Plan mode in the add menu and exits it from the toolbar", async () => {
+    let mode = "plan";
     state = {
       ...state,
       client: {
         ...state.client,
         sessionSettings: vi.fn(async () => ({
           ...settings,
-          current: { ...settings.current, mode: "plan" },
+          current: { ...settings.current, mode },
           writable: { ...settings.writable, mode: { available: true } },
           options: {
             ...settings.options,
@@ -246,17 +292,28 @@ describe("DeepSeek Harness model settings in the composer", () => {
           },
         })),
       },
-      codexAction: vi.fn(async () => ({ accepted: true })),
+      codexAction: vi.fn(async () => {
+        mode = "default";
+        return true;
+      }),
     } as unknown as ReturnType<typeof useSession>;
     render(<CodexComposerControls {...props} />);
     await waitFor(() =>
       expect(screen.getByRole("button", { name: copy.addContext })).toBeEnabled(),
     );
-    fireEvent.click(screen.getByRole("button", { name: copy.addContext }));
+    const user = userEvent.setup();
+    await user.click(screen.getByRole("button", { name: copy.addContext }));
     const add = within(await screen.findByRole("dialog", { name: copy.addContext }));
-    fireEvent.click(add.getByRole("button", { name: planModeCopy("en-US").title, pressed: true }));
+    expect(
+      add.getByRole("button", { name: planModeCopy("en-US").title, pressed: true }),
+    ).toBeVisible();
+    await user.keyboard("{Escape}");
+    await user.click(screen.getByRole("button", { name: "Exit Plan mode" }));
     await waitFor(() =>
-      expect(state.codexAction).toHaveBeenCalledWith("settings", { mode: "default" }),
+      expect(state.codexAction).toHaveBeenCalledExactlyOnceWith("settings", { mode: "default" }),
+    );
+    await waitFor(() =>
+      expect(screen.queryByRole("button", { name: "Exit Plan mode" })).not.toBeInTheDocument(),
     );
   });
 

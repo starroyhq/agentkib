@@ -299,6 +299,7 @@ export class RuntimeRouter extends EventEmitter implements RuntimeHost {
         "usage",
         "goal",
         "resources",
+        "provider-workspace-resources",
         "session-directory",
         "read-state",
         "read-state-update",

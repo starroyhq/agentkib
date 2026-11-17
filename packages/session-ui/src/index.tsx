@@ -273,12 +273,32 @@ export {
   type ComposerModelPickerHandle,
 } from "./composer-model-picker";
 export { composerModelCopy } from "./composer-model-copy";
+export { ComposerModeChip } from "./composer-mode-chip";
 export { ComposerPermissionMenu } from "./composer-permission-menu";
-export { sessionCollaborationMode } from "./session-collaboration-mode";
 export {
-  ComposerAddMenu,
-  ComposerAddAction,
-  ComposerPlanAction,
+  ComposerPrimaryAction,
+  ComposerToolbar,
+  SessionComposerInput,
+} from "./session-composer-input";
+export { sessionCollaborationMode } from "./session-collaboration-mode";
+export { sessionComposerCapabilities } from "./session-composer-capabilities";
+export {
+  ComposerGoalFields,
+  SessionComposerAddMenu,
   composerAddCopy,
+  composerGoalCopy,
   planModeCopy,
+  type ComposerResourceBrowser,
 } from "./composer-add-menu";
+export {
+  NewSessionAddDraftChips,
+  newSessionAddCapabilities,
+  useNewSessionAdd,
+} from "./new-session-add";
+
+export {
+  parseGoalDraft,
+  useNewSessionGoalDraft,
+  type NewSessionDraft,
+  type NewSessionGoalDraft,
+} from "./new-session-draft";

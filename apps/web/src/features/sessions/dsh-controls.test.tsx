@@ -115,24 +115,25 @@ describe("DeepSeek Harness controls", () => {
       contextWindow: 1000,
     };
     render(<CodexComposerControls {...props} />);
-    fireEvent.click(await screen.findByRole("button", { name: /DeepSeek Chat/ }));
-    // The label also holds the chosen preset's description.
-    const policy = await screen.findByLabelText(new RegExp(`^${copy.executionPolicy}`));
-    expect(policy).toBeEnabled();
-    expect(screen.getByLabelText(copy.model)).toBeDisabled();
+    const model = await screen.findByRole("button", { name: /DeepSeek Chat/ });
+    fireEvent.click(model);
+    expect(screen.getByRole("button", { name: "Reset default model" })).toBeDisabled();
     // Only the model and its effort wait for the turn to end.
-    expect(screen.getByText(copy.settingsWhileRunningModel)).toBeVisible();
+    await waitFor(() => expect(screen.getByText(copy.settingsWhileRunningModel)).toBeVisible());
     expect(screen.queryByText(copy.settingsWhileRunning)).not.toBeInTheDocument();
-    // The host text is English only; clients show DSH's preset wording by id.
-    expect(screen.getByText(/^Can write inside the workspace and permitted/)).toBeVisible();
     // DSH has no collaboration mode or service tier to offer.
     expect(screen.queryByLabelText(copy.mode)).not.toBeInTheDocument();
     expect(screen.queryByLabelText(copy.serviceTier)).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: copy.contextUsage })).not.toBeInTheDocument();
     expect(screen.getByRole("dialog")).not.toHaveTextContent("70%");
     expect(screen.getByRole("dialog")).not.toHaveTextContent(copy.contextUnknown);
-    fireEvent.change(policy, { target: { value: "read-only" } });
-    fireEvent.click(screen.getByRole("button", { name: copy.apply }));
+    fireEvent.click(model);
+    fireEvent.click(screen.getByRole("button", { name: new RegExp(`^${copy.executionPolicy}`) }));
+    // The host text is English only; clients show DSH's preset wording by id.
+    await waitFor(() =>
+      expect(screen.getByText(/^Can write inside the workspace and permitted/)).toBeVisible(),
+    );
+    fireEvent.click(screen.getByRole("menuitem", { name: /^Read only/i }));
     await waitFor(() =>
       expect(state.codexAction).toHaveBeenCalledWith("settings", { policyId: "read-only" }),
     );

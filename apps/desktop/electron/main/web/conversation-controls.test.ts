@@ -96,10 +96,7 @@ describe("Codex conversation controls", () => {
             name: "Model A",
             efforts: ["medium", "high"],
             defaultEffort: "medium",
-            serviceTiers: [
-              { id: "standard", name: "Standard" },
-              { id: "fast", name: "Fast", description: "Host-provided description" },
-            ],
+            serviceTiers: ["standard", "fast", "priority"],
           },
         ],
         policies: [{ id: "workspace", name: "Workspace", native: { unsafe: true } }],
@@ -144,7 +141,14 @@ describe("Codex conversation controls", () => {
         apps: [{ id: "app-safe", name: "Safe app", available: false, reason: "signed_out" }],
         contextReferences: { supportedTypes: ["computerPath", "skill"] },
       };
-    return { accepted: true, requestId: params.requestId };
+    return {
+      accepted: true,
+      requestId: params.requestId,
+      ...(params.operation === "settings" && {
+        sessionId: params.sessionId,
+        runtimeBootId: params.runtimeBootId,
+      }),
+    };
   });
 
   async function browser() {
@@ -269,7 +273,16 @@ describe("Codex conversation controls", () => {
       { id: "default", name: "Default" },
       { id: "plan", name: "Plan" },
     ]);
-    expect(settings.data.options.models[0].serviceTierIds).toEqual(["standard", "fast"]);
+    expect(settings.data.options.models[0].serviceTierIds).toEqual([
+      "standard",
+      "fast",
+      "priority",
+    ]);
+    expect(settings.data.options.serviceTiers).toEqual([
+      { id: "standard", name: "Standard" },
+      { id: "fast", name: "Fast", description: "Host-provided description" },
+      { id: "priority", name: "Fast" },
+    ]);
     expect(JSON.stringify(settings.data)).not.toContain("must-not-leak");
     expect(JSON.stringify(settings.data)).not.toContain("unsafe");
 
@@ -316,6 +329,66 @@ describe("Codex conversation controls", () => {
     expect(dispatched).not.toHaveProperty("nativeRpc");
     expect(dispatched).not.toHaveProperty("serviceTierId");
   });
+
+  it.each([
+    ["accepted", { accepted: true }, true],
+    ["not dispatched", { accepted: false, controlOutcome: "not-dispatched" }, true],
+    ["wrong runtime", { accepted: true, runtimeBootId: "stale-runtime" }, false],
+    ["wrong session", { accepted: true, sessionId: "other-session" }, false],
+    ["wrong request", { accepted: true, requestId: "other-request" }, false],
+    ["unknown", { accepted: false, controlOutcome: "unknown" }, false],
+  ])(
+    "settles a settings fence after the client times out only with a matching result (%s)",
+    async (_label, result, settles) => {
+      const client = await fullBrowser();
+      const requestId = randomUUID();
+      let finish!: (value: unknown) => void;
+      let settingsStarted!: () => void;
+      const started = new Promise<void>((resolve) => {
+        settingsStarted = resolve;
+      });
+      const normal = runtime.getMockImplementation()!;
+      runtime.mockImplementation((input) =>
+        (input as { operation: string }).operation === "settings"
+          ? new Promise((resolve) => {
+              finish = resolve;
+              settingsStarted();
+            })
+          : normal(input),
+      );
+      try {
+        vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+        const pending = client.api("codex/settings", {
+          bootId: client.bootId,
+          requestId,
+          sessionId: "session",
+          expectedRevision: 7,
+          policyId: "workspace",
+        });
+        await started;
+        await vi.advanceTimersByTimeAsync(20_000);
+        const timeout = await pending;
+        expect(timeout.response.status).toBe(504);
+        expect(timeout.data).toMatchObject({ error: "outcome_unknown", controlOutcome: "unknown" });
+        finish({ requestId, sessionId: "session", runtimeBootId: "runtime", ...result });
+        await new Promise<void>((resolve) => setImmediate(resolve));
+        const live = await client.api("live?sessionId=session");
+        expect(live.response.status).toBe(200);
+        expect(live.data).toMatchObject({
+          status: settles ? "idle" : "outcome-unknown",
+          sendEnabled: settles,
+        });
+        expect(
+          runtime.mock.calls.filter(
+            ([input]) => (input as { operation: string }).operation === "settings",
+          ),
+        ).toHaveLength(1);
+      } finally {
+        runtime.mockImplementation(normal);
+        vi.useRealTimers();
+      }
+    },
+  );
 
   it("takes a Codex model only by its exact id", async () => {
     // Claude's `/model` matching (any case, full model ID) is not applied to Codex.

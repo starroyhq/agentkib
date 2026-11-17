@@ -11,8 +11,8 @@ import {
   type ManagedAgent,
   type ManagedOptions,
 } from "@agentkib/web-client";
+import { composerModelCopy, newSessionCopy } from "@agentkib/session-ui";
 import { initializeI18n } from "@/core/i18n";
-import { composerModelCopy } from "../conversation/features/sessions/composer-model-copy";
 import { takeNewSessionDraft } from "../conversation/features/sessions/new-session-draft";
 import { NewSessionComposer, type NewSessionComposerProps } from "./NewSessionComposer";
 
@@ -79,6 +79,7 @@ const options: Record<ManagedAgent, ManagedOptions> = {
   },
 };
 const modelCopy = composerModelCopy["en-US"];
+const copy = newSessionCopy("en-US");
 const pickerName = new RegExp(`^${modelCopy.chooseEffort}`);
 const anyPickerName = new RegExp(`^(?:${modelCopy.chooseModel}|${modelCopy.chooseEffort}):`);
 const claudeCatalog: ManagedOptions = {
@@ -106,7 +107,10 @@ const dshCatalog: ManagedOptions = {
   defaults: { model: "official/flash", effort: null },
 };
 
-function renderComposer(extra: Partial<NewSessionComposerProps> = {}) {
+function renderComposer(
+  extra: Partial<NewSessionComposerProps> = {},
+  client = new QueryClient({ defaultOptions: { queries: { retry: false } } }),
+) {
   const props: NewSessionComposerProps = {
     workspaces,
     placement: "home",
@@ -115,7 +119,6 @@ function renderComposer(extra: Partial<NewSessionComposerProps> = {}) {
     onOpenSettings: vi.fn(),
     ...extra,
   };
-  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   render(
     <QueryClientProvider client={client}>
       <NewSessionComposer {...props} />
@@ -125,6 +128,8 @@ function renderComposer(extra: Partial<NewSessionComposerProps> = {}) {
 }
 const message = () => screen.getByRole("textbox", { name: "First message" });
 const send = () => screen.getByRole("button", { name: "Send" });
+const optionSlot = (label: string, status = copy.loadingOptions) =>
+  screen.getByRole("button", { name: `${label}: ${status}` });
 async function write(text: string) {
   fireEvent.change(message(), { target: { value: text } });
   await waitFor(() => expect(send()).toBeEnabled());
@@ -140,7 +145,15 @@ async function openModels(currentName: string) {
   fireEvent.click(
     within(picker).getByRole("button", { name: `${modelCopy.chooseModel}: ${currentName}` }),
   );
-  return screen.findByRole("dialog", { name: modelCopy.chooseModel });
+  return screen.findByRole("dialog", { name: modelCopy.model });
+}
+
+async function openDefaultModelList() {
+  const modelButton = `${modelCopy.chooseModel}: ${modelCopy.defaultModel}`;
+  fireEvent.click(await screen.findByRole("button", { name: modelButton }));
+  const overview = await screen.findByRole("dialog", { name: modelCopy.modelSettings });
+  fireEvent.click(within(overview).getByRole("button", { name: modelButton }));
+  return screen.findByRole("dialog", { name: modelCopy.model });
 }
 
 async function chooseHighestEffort() {
@@ -170,7 +183,14 @@ describe("NewSessionComposer", () => {
       csrfToken: "",
       protocolVersion: 2,
       experimentalEnabled: true,
-      device: { id: "desktop", name: "Desktop", send: true, approve: true, manage: true },
+      device: {
+        id: "desktop",
+        name: "Desktop",
+        accessMode: "full",
+        send: true,
+        approve: true,
+        manage: true,
+      },
     });
     doubles.client.managedOptions.mockImplementation(async (agent: ManagedAgent) => options[agent]);
     doubles.client.receipt.mockResolvedValue({ found: false });
@@ -187,6 +207,93 @@ describe("NewSessionComposer", () => {
   afterEach(() => {
     cleanup();
     vi.restoreAllMocks();
+  });
+
+  it("reserves the selected Agent's slots while loading and reuses its cached options immediately", async () => {
+    let resolveDevin!: (value: ManagedOptions) => void;
+    const devinCatalog = new Promise<ManagedOptions>((resolve) => {
+      resolveDevin = resolve;
+    });
+    doubles.client.managedOptions.mockImplementation((agent: ManagedAgent) =>
+      agent === "devin" ? devinCatalog : Promise.resolve(options[agent]),
+    );
+    renderComposer();
+    const chooseAgent = async (from: string, to: string) => {
+      fireEvent.click(screen.getByRole("button", { name: `Agent: ${from}` }));
+      fireEvent.click(await screen.findByRole("menuitem", { name: to }));
+    };
+    await write("Keep this draft while switching");
+    await chooseAgent("Codex", "Devin");
+    for (const label of [copy.permission, copy.model]) {
+      expect(optionSlot(label)).toBeDisabled();
+      expect(optionSlot(label)).toHaveAttribute("aria-busy", "true");
+    }
+    expect(screen.queryByRole("button", { name: /Ask for approval/ })).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Add files" })).toBeDisabled();
+    expect(send()).toBeDisabled();
+    expect(message()).toHaveValue("Keep this draft while switching");
+
+    await act(async () => {
+      resolveDevin({
+        ...options.devin,
+        permissionModes: [{ id: "accept-edits", name: "Accept edits" }],
+        models: [{ id: "devin-native", name: "Devin native model", efforts: ["high"] }],
+        defaults: { model: "devin-native", effort: "high" },
+      });
+    });
+    expect(await screen.findByRole("button", { name: /Devin native model/ })).toBeEnabled();
+    fireEvent.click(screen.getByRole("button", { name: /Accept edits/ }));
+    const choices = await screen.findAllByRole("menuitem");
+    expect(choices).toHaveLength(1);
+    fireEvent.click(choices[0]!);
+    await chooseAgent("Devin", "Codex");
+    expect(screen.getByRole("button", { name: /gpt-6\.1-sol/ })).toBeEnabled();
+    await chooseAgent("Codex", "Devin");
+    expect(screen.getByRole("button", { name: /Devin native model/ })).toBeEnabled();
+    expect(doubles.client.managedOptions).toHaveBeenCalledTimes(2);
+    expect(doubles.client.managedAction).not.toHaveBeenCalled();
+  });
+
+  it("shows no selectable permissions or model when this device cannot create sessions", async () => {
+    doubles.client.access.mockResolvedValue({
+      status: "approved",
+      bootId: "boot",
+      csrfToken: "",
+      protocolVersion: 2,
+      experimentalEnabled: true,
+      device: { id: "desktop", name: "Desktop", send: true, approve: false, manage: false },
+    });
+    renderComposer();
+    await screen.findByRole("button", { name: `${copy.permission}: ${copy.optionsUnavailable}` });
+    expect(optionSlot(copy.permission, copy.optionsUnavailable)).toBeDisabled();
+    expect(optionSlot(copy.model, copy.optionsUnavailable)).toBeDisabled();
+    expect(doubles.client.managedOptions).not.toHaveBeenCalled();
+    fireEvent.change(message(), { target: { value: "Draft only" } });
+    expect(send()).toBeDisabled();
+    fireEvent.click(send());
+    expect(doubles.client.managedAction).not.toHaveBeenCalled();
+  });
+
+  it("keeps a warm catalogue through a transient error and removes it after access is refused", async () => {
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    renderComposer({}, client);
+    await write("Keep this draft");
+    const refresh = () => client.invalidateQueries({ queryKey: ["new-session-options"] });
+    doubles.client.managedOptions.mockRejectedValueOnce(new ApiError(503, "host_offline"));
+    await act(refresh);
+    expect(screen.getByRole("button", { name: /gpt-6\.1-sol/ })).toBeEnabled();
+    expect(send()).toBeEnabled();
+
+    doubles.client.managedOptions.mockRejectedValueOnce(new ApiError(403, "permission_denied"));
+    await act(refresh);
+    await waitFor(() => expect(optionSlot(copy.model, copy.optionsUnavailable)).toBeDisabled());
+    expect(optionSlot(copy.permission, copy.optionsUnavailable)).toBeDisabled();
+    expect(send()).toBeDisabled();
+    expect(message()).toHaveValue("Keep this draft");
+    doubles.client.managedOptions.mockRejectedValueOnce(new ApiError(503, "host_offline"));
+    await act(refresh);
+    expect(optionSlot(copy.model, copy.optionsUnavailable)).toBeDisabled();
+    expect(send()).toBeDisabled();
   });
 
   it("starts a Codex session with the chosen permission and hands it the first message", async () => {
@@ -262,6 +369,38 @@ describe("NewSessionComposer", () => {
       workspaceId: "north",
       model: "gpt-6.1-sol",
       effort: "high",
+    });
+  });
+
+  it("starts Codex with its offered Fast tier", async () => {
+    doubles.client.managedOptions.mockResolvedValue({
+      ...options.codex,
+      provider: sessionProviderCapabilities("codex"),
+      models: options.codex.models?.map((model) => ({ ...model, serviceTierIds: ["priority"] })),
+      serviceTiers: [{ id: "priority", name: "Fast" }],
+    } satisfies ManagedOptions);
+    doubles.client.managedAction.mockResolvedValue({ accepted: true, sessionId: "created" });
+    renderComposer();
+
+    const picker = await openModelPicker();
+    const fast = within(picker).getByRole("button", { name: modelCopy.fast });
+    expect(fast).toBeEnabled();
+    expect(fast.querySelector("svg")).toHaveAttribute("fill", "none");
+    fireEvent.click(fast);
+    await waitFor(() => expect(fast).toHaveAttribute("aria-pressed", "true"));
+    expect(fast.querySelector("svg")).toHaveAttribute("fill", "currentColor");
+    await userEvent.setup().keyboard("{Escape}");
+    expect(
+      screen.getByRole("button", { name: /gpt-6\.1-sol.*Fast/ }).querySelector("svg"),
+    ).toHaveAttribute("fill", "currentColor");
+
+    await write("Review the routes");
+    fireEvent.click(send());
+    await waitFor(() => expect(doubles.client.managedAction).toHaveBeenCalledOnce());
+    expect(doubles.client.managedAction.mock.calls[0]![1]).toMatchObject({
+      workspaceId: "north",
+      model: "gpt-6.1-sol",
+      serviceTierId: "priority",
     });
   });
 
@@ -372,10 +511,7 @@ describe("NewSessionComposer", () => {
     doubles.client.managedOptions.mockResolvedValue({ ...claudeCatalog, defaults: undefined });
     doubles.client.managedAction.mockResolvedValue({ accepted: true, sessionId: "created" });
     renderComposer({ initial: { agent: "claude-code" } });
-    fireEvent.click(
-      await screen.findByRole("button", { name: `${modelCopy.chooseModel}: Default` }),
-    );
-    const models = await screen.findByRole("dialog", { name: modelCopy.chooseModel });
+    const models = await openDefaultModelList();
     expect(within(models).getByRole("button", { name: "Default", pressed: true })).toBeVisible();
     expect(within(models).getByRole("button", { name: "Default (recommended)" })).toHaveAttribute(
       "aria-pressed",
@@ -407,11 +543,21 @@ describe("NewSessionComposer", () => {
   });
 
   it("groups DSH models by provider and submits the preset together with model and effort", async () => {
-    doubles.client.managedOptions.mockResolvedValue(dshCatalog);
+    let resolveCatalog!: (value: ManagedOptions) => void;
+    doubles.client.managedOptions.mockReturnValue(
+      new Promise<ManagedOptions>((resolve) => {
+        resolveCatalog = resolve;
+      }),
+    );
     doubles.client.managedAction.mockResolvedValue({ accepted: true, sessionId: "created" });
     renderComposer({ initial: { agent: "deepseek-harness" } });
+    expect(optionSlot(copy.preset)).toBeDisabled();
+    expect(optionSlot(copy.model)).toBeDisabled();
+    expect(screen.queryByRole("button", { name: /^Permissions/ })).not.toBeInTheDocument();
+    await act(async () => resolveCatalog(dshCatalog));
     const user = userEvent.setup();
-    await user.click(await screen.findByRole("button", { name: /Preset/ }));
+    await waitFor(() => expect(screen.getByRole("button", { name: /Preset/ })).toBeEnabled());
+    await user.click(screen.getByRole("button", { name: /Preset/ }));
     await user.click(await screen.findByRole("menuitem", { name: /PTC/ }));
     const models = await openModels("Flash");
     expect(within(models).getByText("Official")).toBeVisible();
@@ -526,7 +672,8 @@ describe("NewSessionComposer", () => {
     doubles.client.managedAction.mockResolvedValue({ accepted: true, sessionId: "created" });
     renderComposer({ initial: { agent: "deepseek-harness" } });
     const user = userEvent.setup();
-    await user.click(await screen.findByRole("button", { name: /Preset/ }));
+    await waitFor(() => expect(screen.getByRole("button", { name: /Preset/ })).toBeEnabled());
+    await user.click(screen.getByRole("button", { name: /Preset/ }));
     await user.click(await screen.findByRole("menuitem", { name: /PTC/ }));
     await write("Profile the parser");
     fireEvent.click(send());
@@ -572,10 +719,8 @@ describe("NewSessionComposer", () => {
     doubles.client.managedAction.mockResolvedValue({ accepted: true, sessionId: "created" });
     renderComposer({ initial: { agent: "devin" } });
 
-    fireEvent.click(
-      await screen.findByRole("button", { name: `${modelCopy.chooseModel}: Default` }),
-    );
-    fireEvent.click(await screen.findByRole("button", { name: "Opus" }));
+    const models = await openDefaultModelList();
+    fireEvent.click(within(models).getByRole("button", { name: "Opus" }));
     const slider = await screen.findByRole("slider", { name: modelCopy.chooseEffort });
     expect(screen.getByRole("button", { name: modelCopy.fast })).toBeDisabled();
     fireEvent.keyDown(slider, { key: "Home" });
@@ -588,6 +733,10 @@ describe("NewSessionComposer", () => {
     fireEvent.click(fast);
     await waitFor(() => expect(fast).toHaveAttribute("aria-pressed", "true"));
     await userEvent.setup().keyboard("{Escape}");
+    expect(screen.getByRole("button", { name: /Opus.*Fast/ }).querySelector("svg")).toHaveAttribute(
+      "fill",
+      "currentColor",
+    );
 
     await write("Review the routes");
     fireEvent.click(send());
@@ -613,10 +762,8 @@ describe("NewSessionComposer", () => {
     } satisfies ManagedOptions);
     doubles.client.managedAction.mockResolvedValue({ accepted: true, sessionId: "created" });
     renderComposer({ initial: { agent: "devin" } });
-    fireEvent.click(
-      await screen.findByRole("button", { name: `${modelCopy.chooseModel}: Default` }),
-    );
-    fireEvent.click(await screen.findByRole("button", { name: "Opus" }));
+    const models = await openDefaultModelList();
+    fireEvent.click(within(models).getByRole("button", { name: "Opus" }));
     fireEvent.click(await screen.findByRole("button", { name: "Opus 1M" }));
     await userEvent.setup().keyboard("{Escape}");
     await write("Review the routes");

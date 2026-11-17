@@ -25,6 +25,8 @@ import {
 export const newSessionOptionsKey = (agent: ManagedAgent, workspaceId?: string) =>
   workspaceId ? ["new-session-options", agent, workspaceId] : ["new-session-options", agent];
 
+type OptionsSnapshot = ManagedOptions & { accessDenied?: true };
+
 /** Why nothing was created, in the words the old new-task form used, with the code as detail. */
 export type NewSessionFailure = { reason: string; detail?: string };
 
@@ -71,7 +73,7 @@ export function useNewSession({
   readOptions?: boolean;
 }) {
   const [client] = useState(createDesktopConversationClient);
-  const [access, setAccess] = useState<Omit<Access, "bearerToken">>();
+  const [access, setAccess] = useState<Omit<Access, "bearerToken"> | null>();
   useEffect(() => {
     let cancelled = false;
     // Without access nothing can start here; the send button stays off.
@@ -79,28 +81,45 @@ export function useNewSession({
       (value) => {
         if (!cancelled) setAccess(value);
       },
-      () => undefined,
+      () => {
+        if (!cancelled) setAccess(null);
+      },
     );
     return () => {
       cancelled = true;
     };
   }, [client]);
-  const controls = !!access?.device?.manage && !!access.experimentalEnabled;
+  const controls =
+    access?.status === "approved" && !!access.device?.manage && !!access.experimentalEnabled;
   const scope =
     access?.status === "approved" && access.device?.id
       ? pendingScope(client.origin, access.device.id)
       : undefined;
   // The host reads an Agent's options from its own cache: the first Codex read starts an
   // app-server once, later ones answer at once.
-  const catalogWorkspace =
-    sessionProviderCapabilities(agent)?.create.catalogScope === "host" ? undefined : workspaceId;
+  const workspaceCatalog = sessionProviderCapabilities(agent)?.create.catalogScope === "workspace";
+  const catalogWorkspace = workspaceCatalog ? workspaceId : undefined;
+  const canReadOptions = controls && readOptions && (!workspaceCatalog || !!catalogWorkspace);
   const options = useQuery({
-    queryKey: newSessionOptionsKey(agent, catalogWorkspace),
-    queryFn: ({ signal }): Promise<ManagedOptions> =>
-      catalogWorkspace
-        ? client.managedOptions(agent, signal, catalogWorkspace)
-        : client.managedOptions(agent, signal),
-    enabled: controls && readOptions,
+    queryKey: [
+      ...newSessionOptionsKey(agent, catalogWorkspace),
+      client.origin,
+      access?.bootId,
+      access?.device?.id,
+    ],
+    queryFn: async ({ signal }): Promise<OptionsSnapshot> => {
+      try {
+        return await (catalogWorkspace
+          ? client.managedOptions(agent, signal, catalogWorkspace)
+          : client.managedOptions(agent, signal));
+      } catch (error) {
+        // Replace a usable cache entry on explicit denial, even if a subsequent read fails.
+        if (error instanceof ApiError && [401, 403].includes(error.status))
+          return { available: false, reason: error.code, workspaces: [], accessDenied: true };
+        throw error;
+      }
+    },
+    enabled: canReadOptions,
     staleTime: 5 * 60_000,
     retry: false,
   });
@@ -219,7 +238,11 @@ export function useNewSession({
   return {
     /** False while access is read, and on a device that cannot start sessions. */
     ready: controls,
+    fullAccess: controls && access.device?.accessMode === "full",
     options,
+    optionsData: controls ? options.data : undefined,
+    optionsAccessDenied: options.data?.accessDenied === true,
+    optionsLoading: access === undefined || (canReadOptions && options.isPending),
     busy,
     failure,
     /** A create whose outcome is not known yet. */

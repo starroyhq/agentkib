@@ -23,6 +23,7 @@ import {
   type NativeCoverage,
 } from "./session-model";
 import { createHistoryPagination, recordLatestHistoryPage } from "./history-pagination";
+import { retryBusyRead } from "./session-read-retry";
 type Setter<T> = Dispatch<SetStateAction<T>>;
 // These fields cannot grant control or remove an execution/authorization fence.
 // Unknown fields conservatively count as control boundaries.
@@ -71,6 +72,12 @@ interface LiveSyncOptions {
   setPage: Setter<ConversationEventPage | undefined>;
   setLiveContentVersion?: Setter<number>;
   setUsageEpoch?: Setter<string>;
+  settingsInFlight: RefObject<
+    { sessionId: string; generation: number; controlChanged?: boolean } | undefined
+  >;
+  readSettingsControls: RefObject<
+    ((sessionId: string, accept?: (live: Live) => boolean) => Promise<void>) | undefined
+  >;
 }
 export function useSessionLive({
   streamReady,
@@ -99,6 +106,8 @@ export function useSessionLive({
   liveDelivery,
   setLiveContentVersion,
   setUsageEpoch,
+  settingsInFlight,
+  readSettingsControls,
 }: LiveSyncOptions) {
   useEffect(() => {
     if (!selected || access?.status !== "approved" || access.protocolVersion !== 2) return;
@@ -245,27 +254,35 @@ export function useSessionLive({
       const active = () => current() && connection === connectionEpoch;
       let snapshotSeen = false;
       let readyReconciled = false;
-      const reconcileControls = () => {
-        controlReconciliationPending.current = true;
-        setControlReady(false);
-        publishSessionInvalidation(client, id, ["receipts"]);
+      const reconcileControls = (
+        quiet = false,
+        accept?: (live: Live) => boolean,
+      ): Promise<void> => {
+        if (!quiet) {
+          controlReconciliationPending.current = true;
+          setControlReady(false);
+        }
+        if (!quiet) publishSessionInvalidation(client, id, ["receipts"]);
         const request = ++controlRequest;
         const wake = refreshWake.current;
         const boundary = controlGeneration;
         const progress: ProgressPatch = new Map();
         progressPatch = progress;
-        void client
-          .live(id)
+        return (quiet ? retryBusyRead(() => client.live(id)) : client.live(id))
           .then((live) => {
             if (!active() || request !== controlRequest) return;
             if (boundary !== controlGeneration) {
               // A changed owner, native control state or host fence requires a
               // fresh complete projection. Text/revision progress alone does not.
-              reconcileControls();
-              return;
+              return reconcileControls(quiet, accept);
             }
             progressPatch = undefined;
             controlReconciliationPending.current = false;
+            if (live.sessionId !== id) throw new ApiError(409, "session-state-unavailable");
+            if (accept && !accept(live)) {
+              setControlReady(false);
+              return;
+            }
             const projected: Live & Record<string, unknown> = { ...live };
             // Preserve only native progress observed at/after this response's
             // revision. Never turn a null/unknown host projection into a usable
@@ -294,9 +311,13 @@ export function useSessionLive({
             if (error instanceof ApiError && error.code === "operation_busy") {
               progressPatch = undefined;
               controlReconciliationPending.current = false;
-              readBusy(wake, g);
+              if (quiet) fail(error, g);
+              else readBusy(wake, g);
             } else fail(error, g);
           });
+      };
+      readSettingsControls.current = async (sessionId, accept) => {
+        if (sessionId === id && active()) await reconcileControls(true, accept);
       };
       const disconnected = () => {
         needsDomainRecovery = true;
@@ -388,7 +409,9 @@ export function useSessionLive({
             try {
               const changed = JSON.parse(data) as { sessionId?: string };
               if (changed.sessionId !== id) return false;
-              reconcileControls();
+              const write = settingsInFlight.current;
+              if (write?.sessionId === id && write.generation === g) write.controlChanged = true;
+              else void reconcileControls();
             } catch {
               return false;
             }
@@ -539,6 +562,7 @@ export function useSessionLive({
     connect();
     return () => {
       closed = true;
+      readSettingsControls.current = undefined;
       window.clearTimeout(historyRetry);
       streamReady.current = false;
       setControlReady(false);
@@ -571,5 +595,7 @@ export function useSessionLive({
     streamReady,
     controlReconciliationPending,
     nativeCoverage,
+    settingsInFlight,
+    readSettingsControls,
   ]);
 }

@@ -22,6 +22,7 @@ type State = Pick<
   | "selected"
   | "current"
   | "notice"
+  | "settingsNotice"
 > & { pendingSend?: SessionController["pendingSend"] };
 
 export type SessionNextAction = "managed-handoff";
@@ -60,6 +61,22 @@ export function sessionDisplayState(
     capabilities.reason !== "handoff-required"
       ? capabilities.reason
       : live?.reason || capabilities?.features.send?.reason || capabilities?.reason;
+  // A local settings receipt can fence the composer while the host still reports an idle session.
+  const settingsReceiptOnly =
+    state.settingsNotice?.status === "uncertain" &&
+    !!state.selected &&
+    state.current?.id === state.selected &&
+    live?.sessionId === state.selected &&
+    capabilities?.sessionId === state.selected &&
+    capabilities.features.send?.available === true &&
+    live.sendEnabled &&
+    (live.status === "idle" ||
+      (state.current.agent === "claude-code" && live.status === "released")) &&
+    !live.ownershipReason &&
+    live.activity !== "compacting" &&
+    !busy &&
+    !reason;
+  const connectionReady = controlReady || settingsReceiptOnly;
   if (
     state.notice === "uncertain" ||
     live?.status === "outcome-unknown" ||
@@ -147,7 +164,7 @@ export function sessionDisplayState(
       };
     if (live.executionLocation === "agentkib")
       return { label: copy.running, reason: "", tone: "active", continuation: "running" };
-    if (!controlReady)
+    if (!connectionReady)
       return { label: c.verifying, reason: c.verifying, tone: "muted", loading: true };
     if (canSend || (live.sendEnabled && !reason))
       return { label: "", reason: "", tone: "muted", continuation: "idle" };
@@ -220,7 +237,7 @@ export function sessionDisplayState(
       };
     if (live.executionLocation === "agentkib")
       return { label: copy.running, reason: "", tone: "active", continuation: "running" };
-    if (!controlReady)
+    if (!connectionReady)
       return { label: c.verifying, reason: c.verifying, tone: "muted", loading: true };
     if (canSend || (live.sendEnabled && !reason))
       return { label: "", reason: "", tone: "muted", continuation: "idle" };
@@ -296,7 +313,7 @@ export function sessionDisplayState(
           loading: true,
           continuation: "starting",
         };
-      if (!controlReady)
+      if (!connectionReady)
         return { label: c.verifying, reason: c.verifying, tone: "muted", loading: true };
       if (canSend || (live.sendEnabled && !reason))
         return { label: "", reason: "", tone: "muted", continuation: "idle" };
@@ -392,7 +409,7 @@ export function sessionDisplayState(
     };
   if (
     !canSend &&
-    (((!controlReady || !live) && (!reason || reason === "handoff-required")) ||
+    (((!connectionReady || !live) && (!reason || reason === "handoff-required")) ||
       (state.selected &&
         (state.current?.id !== state.selected ||
           live?.sessionId !== state.selected ||
@@ -401,7 +418,7 @@ export function sessionDisplayState(
     return { label: c.verifying, reason: c.verifying, tone: "muted", loading: true };
   if (controlReady && live?.status === "idle" && live.lastOutcome === "cancelled")
     return { label: c.cancelled, reason: "", tone: "muted" };
-  if (canSend) return { label: c.ready, reason: "", tone: "active" };
+  if (canSend || settingsReceiptOnly) return { label: c.ready, reason: "", tone: "active" };
   if (
     reason === "handoff-required" &&
     !access.device.manage &&
@@ -418,7 +435,7 @@ export function sessionDisplayState(
       reason: codexReason(locale, reason, surface).text,
       tone: "muted",
     };
-  if (!controlReady || !live)
+  if (!connectionReady || !live)
     return { label: c.verifying, reason: c.verifying, tone: "muted", loading: true };
   return { label: c.readonly, reason: c.readonly, tone: "muted" };
 }

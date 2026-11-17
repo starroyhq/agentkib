@@ -41,8 +41,8 @@ const zh = {
   cancel: "取消",
   rowMenu: "会话菜单",
   name: "会话名称",
-  settings: "下一轮设置",
-  changeNextTurnModel: "更改下一轮模型",
+  settings: "会话设置",
+  changeNextTurnModel: "更改模型",
   model: "模型",
   effort: "思考强度",
   mode: "协作模式",
@@ -53,7 +53,7 @@ const zh = {
   planExitFailed: "退出计划模式失败",
   planPlaceholder: "描述你的任务以生成计划…",
   normal: "执行",
-  apply: "应用到下一轮",
+  apply: "保存设置",
   attachment: "添加附件",
   attachmentNote: "选择文件或粘贴图片；上传只暂存，发送后才加入会话。",
   previewAttachment: "预览附件",
@@ -80,7 +80,6 @@ const zh = {
   confirmation: "确认操作",
   close: "关闭",
   text: "消息内容",
-  conversationSettings: "会话设置",
   restoreDefaults: "恢复这台电脑默认",
   serviceTier: "服务档位",
   executionPolicy: "执行策略",
@@ -157,8 +156,8 @@ export const codexCopy: Record<Locale, Copy> = {
     cancel: "取消",
     rowMenu: "對話選單",
     name: "對話名稱",
-    settings: "下一輪設定",
-    changeNextTurnModel: "變更下一輪模型",
+    settings: "對話設定",
+    changeNextTurnModel: "變更模型",
     model: "模型",
     effort: "思考強度",
     mode: "協作模式",
@@ -169,7 +168,7 @@ export const codexCopy: Record<Locale, Copy> = {
     planExitFailed: "退出計畫模式失敗",
     planPlaceholder: "描述你的任務以產生計畫…",
     normal: "執行",
-    apply: "套用至下一輪",
+    apply: "儲存設定",
     attachment: "新增附件",
     attachmentNote: "選取檔案或貼上圖片；上傳僅暫存，傳送後才加入對話。",
     uploading: "上傳中",
@@ -195,7 +194,6 @@ export const codexCopy: Record<Locale, Copy> = {
     confirmation: "確認操作",
     close: "關閉",
     text: "訊息內容",
-    conversationSettings: "對話設定",
     restoreDefaults: "恢復這台電腦預設",
     serviceTier: "服務等級",
     executionPolicy: "執行策略",
@@ -273,8 +271,8 @@ export const codexCopy: Record<Locale, Copy> = {
     cancel: "Cancel",
     rowMenu: "Session menu",
     name: "Session name",
-    settings: "Next-turn settings",
-    changeNextTurnModel: "Change next-turn model",
+    settings: "Session settings",
+    changeNextTurnModel: "Change model",
     model: "Model",
     effort: "Reasoning effort",
     mode: "Collaboration mode",
@@ -285,7 +283,7 @@ export const codexCopy: Record<Locale, Copy> = {
     planExitFailed: "Could not leave Plan mode",
     planPlaceholder: "Describe your task to make a plan…",
     normal: "Execute",
-    apply: "Apply to next turn",
+    apply: "Save settings",
     attachment: "Add attachments",
     attachmentNote:
       "Choose files or paste images. Uploads are staged and only join the session when sent.",
@@ -313,7 +311,6 @@ export const codexCopy: Record<Locale, Copy> = {
     confirmation: "Confirm action",
     close: "Close",
     text: "Message text",
-    conversationSettings: "Session settings",
     restoreDefaults: "Restore computer defaults",
     serviceTier: "Service tier",
     executionPolicy: "Execution policy",
@@ -393,8 +390,8 @@ export const codexCopy: Record<Locale, Copy> = {
     cancel: "キャンセル",
     rowMenu: "会話メニュー",
     name: "会話名",
-    settings: "次のターンの設定",
-    changeNextTurnModel: "次のターンのモデルを変更",
+    settings: "会話の設定",
+    changeNextTurnModel: "モデルを変更",
     model: "モデル",
     effort: "推論の強度",
     mode: "協調モード",
@@ -405,7 +402,7 @@ export const codexCopy: Record<Locale, Copy> = {
     planExitFailed: "計画モードを終了できませんでした",
     planPlaceholder: "タスクを説明して計画を作成…",
     normal: "実行",
-    apply: "次のターンに適用",
+    apply: "設定を保存",
     attachment: "添付ファイルを追加",
     attachmentNote:
       "ファイルを選択するか画像を貼り付けます。アップロードは一時保存で、送信後に会話に追加されます。",
@@ -432,7 +429,6 @@ export const codexCopy: Record<Locale, Copy> = {
     confirmation: "操作を確認",
     close: "閉じる",
     text: "メッセージ内容",
-    conversationSettings: "会話の設定",
     restoreDefaults: "このコンピューターの既定値に戻す",
     serviceTier: "サービス階層",
     executionPolicy: "実行ポリシー",
@@ -472,13 +468,13 @@ export const codexCopy: Record<Locale, Copy> = {
 const reasons: Record<Locale, Record<string, string>> = {
   "zh-CN": {
     "unsupported-model":
-      "当前模型不在这台电脑已验证的模型列表中，本次消息尚未发送。请更改下一轮模型后再发送。",
+      "当前模型不在这台电脑已验证的模型列表中，本次消息尚未发送。请更改模型后再发送。",
     "native-model-unconfirmed":
       "无法确认源会话的模型，本次分支尚未创建。请先在 Codex 中明确源会话的模型和思考强度，再刷新重试。",
     "native-effort-unconfirmed":
       "无法确认源会话的思考强度，本次分支尚未创建。请先在 Codex 中明确源会话的模型和思考强度，再刷新重试。",
     "unsupported-effort":
-      "当前模型不支持所选思考强度，本次消息尚未发送。请调整下一轮模型或思考强度后再发送。",
+      "当前模型不支持所选思考强度，本次消息尚未发送。请调整模型或思考强度后再发送。",
     "codex-session-directory-unsafe":
       "会话目录是文件系统根目录或用户主目录，为保护文件，目前仅可查看。请在具体项目目录中使用 Codex 新建会话。",
     "session-directory-missing": "会话目录已不存在，目前仅可查看。请恢复该目录后刷新重试。",
@@ -597,13 +593,13 @@ const reasons: Record<Locale, Record<string, string>> = {
     "claude-command-rename":
       "/rename 只更改 Claude Code 中的名称，AgentKib 中的名称不会随之改变，本次消息尚未发送。请在 AgentKib 中重命名会话。",
     "claude-command-settings":
-      "带参数的 /model 和 /effort 只影响当前进程，AgentKib 无法保留，本次消息尚未发送。请在下一轮设置中更改模型或思考强度。",
+      "带参数的 /model 和 /effort 只影响当前进程，AgentKib 无法保留，本次消息尚未发送。请在会话设置中更改模型或思考强度。",
     "claude-command-owner-only":
       "这条命令可能更改这台电脑上的 Claude Code 设置或文件，只能在这台电脑上的 AgentKib 或终端中使用，本次消息尚未发送。",
     "claude-model-unsupported":
-      "下一轮设置只支持其中列出的模型，这个模型不在列表里，下一轮模型没有改动。请改用列出的模型，名称或完整模型 ID 都可以。",
+      "会话设置只支持其中列出的模型，这个模型不在列表里，模型没有改动。请改用列出的模型，名称或完整模型 ID 都可以。",
     "claude-effort-unsupported":
-      "下一轮设置的思考强度只能是 low、medium、high、xhigh 或 max，而且要是所选模型支持的级别。下一轮设置没有改动，请在下一轮设置里选择。",
+      "会话设置的思考强度只能是 low、medium、high、xhigh 或 max，而且要是所选模型支持的级别。会话设置没有改动，请在会话设置里选择。",
     "codex-command-agentkib":
       "AgentKib 用自己的操作代替这条 Codex 命令，但它现在不可用，本次消息尚未发送。请等当前轮次结束，或在这台电脑上检查这台设备的权限。",
     "codex-command-arguments":
@@ -617,13 +613,13 @@ const reasons: Record<Locale, Record<string, string>> = {
   },
   "zh-Hant": {
     "unsupported-model":
-      "目前模型不在這台電腦已驗證的模型清單中，本次訊息尚未傳送。請變更下一輪模型後再傳送。",
+      "目前模型不在這台電腦已驗證的模型清單中，本次訊息尚未傳送。請變更模型後再傳送。",
     "native-model-unconfirmed":
       "無法確認來源對話的模型，本次分支尚未建立。請先在 Codex 中明確設定來源對話的模型和思考強度，再重新整理後重試。",
     "native-effort-unconfirmed":
       "無法確認來源對話的思考強度，本次分支尚未建立。請先在 Codex 中明確設定來源對話的模型和思考強度，再重新整理後重試。",
     "unsupported-effort":
-      "目前模型不支援所選思考強度，本次訊息尚未傳送。請調整下一輪模型或思考強度後再傳送。",
+      "目前模型不支援所選思考強度，本次訊息尚未傳送。請調整模型或思考強度後再傳送。",
     "codex-session-directory-unsafe":
       "對話目錄是檔案系統根目錄或使用者主目錄，為保護檔案，目前僅可查看。請在具體專案目錄中使用 Codex 建立新對話。",
     "session-directory-missing": "對話目錄已不存在，目前僅可查看。請還原該目錄後重新整理再試。",
@@ -743,13 +739,13 @@ const reasons: Record<Locale, Record<string, string>> = {
     "claude-command-rename":
       "/rename 只變更 Claude Code 中的名稱，AgentKib 中的名稱不會隨之改變，本次訊息尚未傳送。請在 AgentKib 中重新命名對話。",
     "claude-command-settings":
-      "帶參數的 /model 和 /effort 只影響目前的程序，AgentKib 無法保留，本次訊息尚未傳送。請在下一輪設定中變更模型或思考強度。",
+      "帶參數的 /model 和 /effort 只影響目前的程序，AgentKib 無法保留，本次訊息尚未傳送。請在對話設定中變更模型或思考強度。",
     "claude-command-owner-only":
       "這個指令可能變更這台電腦上的 Claude Code 設定或檔案，只能在這台電腦上的 AgentKib 或終端機中使用，本次訊息尚未傳送。",
     "claude-model-unsupported":
-      "下一輪設定只支援其中列出的模型，這個模型不在清單中，下一輪模型沒有變更。請改用列出的模型，名稱或完整模型 ID 都可以。",
+      "對話設定只支援其中列出的模型，這個模型不在清單中，模型沒有變更。請改用列出的模型，名稱或完整模型 ID 都可以。",
     "claude-effort-unsupported":
-      "下一輪設定的思考強度只能是 low、medium、high、xhigh 或 max，而且要是所選模型支援的等級。下一輪設定沒有變更，請在下一輪設定中選擇。",
+      "對話設定的思考強度只能是 low、medium、high、xhigh 或 max，而且要是所選模型支援的等級。對話設定沒有變更，請在對話設定中選擇。",
     "codex-command-agentkib":
       "AgentKib 以自己的操作取代這個 Codex 指令，但它目前無法使用，本次訊息尚未傳送。請等目前輪次結束，或在這台電腦上檢查這台裝置的權限。",
     "codex-command-arguments":
@@ -763,13 +759,13 @@ const reasons: Record<Locale, Record<string, string>> = {
   },
   "en-US": {
     "unsupported-model":
-      "The current model is not in the model list verified on this computer. This message was not sent. Change the next-turn model before sending again.",
+      "The current model is not in the model list verified on this computer. This message was not sent. Change the model before sending again.",
     "native-model-unconfirmed":
       "The source session's model could not be confirmed. No branch was created. Set the source session's model and reasoning effort in Codex, then refresh to retry.",
     "native-effort-unconfirmed":
       "The source session's reasoning effort could not be confirmed. No branch was created. Set the source session's model and reasoning effort in Codex, then refresh to retry.",
     "unsupported-effort":
-      "The current model does not support the selected reasoning effort. This message was not sent. Adjust the next-turn model or reasoning effort before sending again.",
+      "The current model does not support the selected reasoning effort. This message was not sent. Adjust the model or reasoning effort before sending again.",
     "codex-session-directory-unsafe":
       "The session directory is a filesystem root or your home directory. This session is view only to protect your files. Start a new Codex session from a specific project directory.",
     "session-directory-missing":
@@ -911,13 +907,13 @@ const reasons: Record<Locale, Record<string, string>> = {
     "claude-command-rename":
       "/rename changes only the name in Claude Code, not the one in AgentKib. This message was not sent. Rename the session in AgentKib instead.",
     "claude-command-settings":
-      "/model and /effort with an argument change only the running process, which AgentKib cannot keep. This message was not sent. Change the model or reasoning effort in Next-turn settings.",
+      "/model and /effort with an argument change only the running process, which AgentKib cannot keep. This message was not sent. Change the model or reasoning effort in Session settings.",
     "claude-command-owner-only":
       "This command can change Claude Code settings or files on this computer, so it only runs from AgentKib on this computer or a terminal. This message was not sent.",
     "claude-model-unsupported":
-      "Next-turn settings support only the models they list, and this one is not listed. The next-turn model was not changed. Use a listed model, by its name or full model ID.",
+      "Session settings support only the models they list, and this one is not listed. The model was not changed. Use a listed model, by its name or full model ID.",
     "claude-effort-unsupported":
-      "Next-turn reasoning effort can be only low, medium, high, xhigh, or max, and only a level the selected model supports. Next-turn settings were not changed; choose a level in Next-turn settings.",
+      "Reasoning effort can be only low, medium, high, xhigh, or max, and only a level the selected model supports. Session settings were not changed; choose a level in Session settings.",
     "codex-command-agentkib":
       "AgentKib stands in for this Codex command with its own action, which is not available right now. This message was not sent. Wait for the current turn to end, or check this device's permissions on this computer.",
     "codex-command-arguments":
@@ -933,13 +929,13 @@ const reasons: Record<Locale, Record<string, string>> = {
   },
   "ja-JP": {
     "unsupported-model":
-      "現在のモデルはこのコンピューターで検証済みのモデル一覧にありません。このメッセージは送信されていません。次のターンのモデルを変更してから送信してください。",
+      "現在のモデルはこのコンピューターで検証済みのモデル一覧にありません。このメッセージは送信されていません。モデルを変更してから送信してください。",
     "native-model-unconfirmed":
       "元の会話のモデルを確認できないため、分岐は作成されていません。Codex で元の会話のモデルと思考強度を明示してから、再読み込みしてお試しください。",
     "native-effort-unconfirmed":
       "元の会話の思考強度を確認できないため、分岐は作成されていません。Codex で元の会話のモデルと思考強度を明示してから、再読み込みしてお試しください。",
     "unsupported-effort":
-      "現在のモデルは選択した思考強度に対応していません。このメッセージは送信されていません。次のターンのモデルまたは思考強度を調整してから送信してください。",
+      "現在のモデルは選択した思考強度に対応していません。このメッセージは送信されていません。モデルまたは思考強度を調整してから送信してください。",
     "codex-session-directory-unsafe":
       "会話のディレクトリがファイルシステムのルートまたはホームディレクトリのため、ファイルを保護するために閲覧のみになっています。個別のプロジェクトディレクトリで Codex の新しい会話を開始してください。",
     "session-directory-missing":
@@ -1085,13 +1081,13 @@ const reasons: Record<Locale, Record<string, string>> = {
     "claude-command-rename":
       "/rename は Claude Code 内の名前だけを変更し、AgentKib の名前は変わりません。このメッセージは送信されていません。AgentKib で会話の名前を変更してください。",
     "claude-command-settings":
-      "引数付きの /model と /effort は実行中のプロセスだけを変更し、AgentKib には保持されません。このメッセージは送信されていません。次のターンの設定でモデルまたは推論の強度を変更してください。",
+      "引数付きの /model と /effort は実行中のプロセスだけを変更し、AgentKib には保持されません。このメッセージは送信されていません。会話の設定でモデルまたは推論の強度を変更してください。",
     "claude-command-owner-only":
       "このコマンドはこのコンピューター上の Claude Code の設定やファイルを変更する可能性があるため、このコンピューター上の AgentKib またはターミナルからのみ実行できます。このメッセージは送信されていません。",
     "claude-model-unsupported":
-      "次のターンの設定で使えるのは一覧にあるモデルだけで、このモデルは一覧にありません。次のターンのモデルは変更されていません。一覧にあるモデルを、名前か完全なモデル ID で指定してください。",
+      "会話の設定で使えるのは一覧にあるモデルだけで、このモデルは一覧にありません。モデルは変更されていません。一覧にあるモデルを、名前か完全なモデル ID で指定してください。",
     "claude-effort-unsupported":
-      "次のターンの推論の強度は low、medium、high、xhigh、max のいずれかで、選択したモデルが対応しているものに限られます。次のターンの設定は変更されていません。次のターンの設定で選んでください。",
+      "推論の強度は low、medium、high、xhigh、max のいずれかで、選択したモデルが対応しているものに限られます。会話の設定は変更されていません。会話の設定で選んでください。",
     "codex-command-agentkib":
       "AgentKib はこの Codex のコマンドを独自の操作で代わりに行いますが、今は使えません。このメッセージは送信されていません。現在のターンが終わるのを待つか、このコンピューターでこのデバイスの権限を確認してください。",
     "codex-command-arguments":

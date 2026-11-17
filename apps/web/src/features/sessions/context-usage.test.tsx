@@ -147,7 +147,7 @@ describe("Claude context usage before its first continued turn", () => {
 
 describe("native context usage", () => {
   it.each(["zh-CN", "zh-Hant", "en-US", "ja-JP"] as const)(
-    "labels a historical Codex report and its date in %s",
+    "shows numeric usage from a historical Codex report in %s",
     (locale) => {
       state.locale = locale;
       state.live = { ...state.live!, usage: { available: true, state: "stale" } };
@@ -157,14 +157,13 @@ describe("native context usage", () => {
           fallback={{ ...report(29), state: "stale", historical: true, updatedAt }}
         />,
       );
-      expect(gauge()).toHaveAccessibleDescription(
-        `${contextUsageCopy[locale].historicalReport} · 29%`,
-      );
+      expect(gauge()).toHaveAccessibleDescription("29%");
+      expect(gauge()).toHaveAttribute("title", `${gauge().getAttribute("aria-label")}: 29 / 100`);
       fireEvent.click(gauge());
       const dialog = screen.getByRole("dialog");
-      expect(dialog).toHaveTextContent(contextUsageCopy[locale].historicalDetail);
       expect(dialog).toHaveTextContent("29 / 100 (29%)");
-      expect(dialog.querySelector("time")).toHaveAttribute("datetime", updatedAt);
+      expect(dialog.querySelector("time")).toBeNull();
+      expect(dialog.querySelector('[role="status"]')).toBeNull();
     },
   );
 
@@ -265,10 +264,10 @@ describe("native context usage", () => {
     expect(gauge()).toHaveTextContent("80%");
     state.live = { ...state.live!, usage: { ...report(80, 2, 1), state: "stale" } };
     view.rerender(<ContextUsageGauge />);
-    expect(gauge()).toHaveTextContent(contextUsageCopy["zh-CN"].stale);
+    expect(gauge()).toHaveTextContent("80%");
     state.live = { ...state.live!, usage: { ...report(80, 0, 2), state: "stale" } };
     view.rerender(<ContextUsageGauge />);
-    expect(gauge()).toHaveTextContent(contextUsageCopy["zh-CN"].stale);
+    expect(gauge()).toHaveTextContent("80%");
     state.live = { ...state.live!, usage: report(5, 1, 2) };
     view.rerender(<ContextUsageGauge />);
     expect(gauge()).toHaveTextContent("5%");
@@ -297,7 +296,7 @@ describe("native context usage", () => {
       activity: null,
     };
     view.rerender(<ContextUsageGauge />);
-    expect(gauge()).toHaveTextContent(contextUsageCopy["zh-CN"].stale);
+    expect(gauge()).toHaveTextContent("30%");
     state.live = { ...state.live!, usage: { ...report(30, 2, 1), state: "pending" } };
     view.rerender(<ContextUsageGauge />);
     expect(gauge()).toHaveTextContent(contextUsageCopy["zh-CN"].pending);
@@ -337,10 +336,10 @@ describe("native context usage", () => {
       activity: null,
     };
     view.rerender(<ContextUsageGauge />);
-    expect(gauge()).toHaveTextContent(contextUsageCopy["zh-CN"].stale);
+    expect(gauge()).toHaveTextContent("20%");
     state.live = { ...state.live!, usage: report(90, 52, 1) };
     view.rerender(<ContextUsageGauge />);
-    expect(gauge()).toHaveTextContent(contextUsageCopy["zh-CN"].stale);
+    expect(gauge()).toHaveTextContent("20%");
     state.live = { ...state.live!, usage: report(5, 1, 2) };
     view.rerender(<ContextUsageGauge />);
     expect(gauge()).toHaveTextContent("5%");
@@ -378,13 +377,13 @@ describe("native context usage", () => {
     expect(gauge()).toHaveTextContent(contextUsageCopy["zh-CN"].compacting);
     state.live = { ...state.live!, activity: null, revision: 2 };
     view.rerender(<ContextUsageGauge />);
-    expect(gauge()).toHaveTextContent(contextUsageCopy["zh-CN"].stale);
+    expect(gauge()).toHaveTextContent("20%");
     state.live = { ...state.live!, usage: report(5, 2) };
     view.rerender(<ContextUsageGauge />);
     expect(gauge()).toHaveTextContent("5%");
     state.online = false;
     view.rerender(<ContextUsageGauge />);
-    expect(gauge()).toHaveTextContent(contextUsageCopy["zh-CN"].stale);
+    expect(gauge()).toHaveTextContent("5%");
   });
 
   it("shows a disconnected pending report without a window, preserving permission and compaction messages", () => {
@@ -451,8 +450,10 @@ describe("native context usage", () => {
         usage: { ...report(), state: "stale", reason: "usage-after-compaction-unconfirmed" },
       };
       view.rerender(<ContextUsageGauge />);
-      expect(gauge()).toHaveTextContent(contextUsageCopy[locale].stale);
-      expect(screen.getByRole("dialog")).toHaveTextContent(contextUsageCopy[locale].staleDetail);
+      expect(gauge()).toHaveTextContent("20%");
+      const dialog = screen.getByRole("dialog");
+      expect(dialog).toHaveTextContent("20 / 100 (20%)");
+      expect(dialog.querySelector('[role="status"]')).toBeNull();
       state.live = { ...state.live!, usage: { available: false, state: "unavailable" } };
       view.rerender(<ContextUsageGauge />);
       expect(gauge()).toHaveTextContent(contextUsageCopy[locale].unavailable);

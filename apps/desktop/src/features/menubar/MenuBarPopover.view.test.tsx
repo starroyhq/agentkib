@@ -65,8 +65,10 @@ vi.mock("@/features/sessions/new-session/use-new-session", () => ({
   failureOf: () => ({ reason: "failed" }),
   useNewSession: () => ({
     ready: true,
+    fullAccess: true,
+    optionsAccessDenied: false,
+    optionsData: { available: true, models: [] },
     options: {
-      data: { available: true, models: [] },
       isError: false,
       isFetching: false,
       refetch: vi.fn(),

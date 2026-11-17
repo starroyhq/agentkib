@@ -227,7 +227,25 @@ describe("context window ring and hover details", () => {
     }
   });
 
-  it("labels retained offline usage as the last report", async () => {
+  it("shows stale usage without the generic report notices", async () => {
+    state.locale = "zh-Hant";
+    state.live = {
+      ...state.live!,
+      usage: { available: true, state: "stale", usedTokens: 70700, contextWindow: 475000 },
+    };
+    render(<ContextUsageGauge />);
+    const indicator = ring("zh-Hant");
+    expect(indicator).toHaveAccessibleDescription(
+      "已使用 15%（剩餘 85%） 已使用 70.7K / 475K Token",
+    );
+    await userEvent.setup().hover(indicator);
+    const tooltip = await screen.findByRole("tooltip");
+    expect(tooltip).not.toHaveTextContent("上次上報");
+    expect(tooltip).toHaveTextContent("15%（剩餘 85%）");
+    expect(tooltip).toHaveTextContent("70.7K / 475K");
+  });
+
+  it("shows the offline notice and retained usage", async () => {
     state.online = false;
     render(<ContextUsageGauge />);
     const button = ring();
@@ -235,7 +253,6 @@ describe("context window ring and hover details", () => {
     await userEvent.setup().hover(button);
     const tooltip = await screen.findByRole("tooltip");
     expect(tooltip).toHaveTextContent(copy.offline);
-    expect(tooltip).toHaveTextContent(copy.reported);
     expect(tooltip).toHaveTextContent("20% used");
   });
 
@@ -310,39 +327,42 @@ describe("historical Codex context reports", () => {
   });
 
   it.each(["zh-CN", "zh-Hant", "en-US", "ja-JP"] as const)(
-    "shows an explicitly historical fallback for an empty idle projection in %s",
+    "shows the usage figures from an idle fallback in %s",
     async (locale) => {
       state.locale = locale;
       render(<ContextUsageGauge fallback={historicalUsage} />);
       const indicator = ring(locale);
       expect(indicator.querySelector("circle[pathLength]")).toHaveAttribute("opacity", "0.5");
-      expect(indicator).toHaveAccessibleDescription(
-        expect.stringContaining(contextUsageCopy[locale].historicalReport),
-      );
+      const usageCopy = contextUsageCopy[locale];
+      const percentages = usageCopy.usedRemaining
+        .replace("{used}", "29")
+        .replace("{remaining}", "71");
+      const tokens = usageCopy.tokenUsage.replace("{used}", "75.6K").replace("{total}", "258.4K");
+      expect(indicator).toHaveAccessibleDescription(`${percentages} ${tokens}`);
       await userEvent.setup().hover(indicator);
       const tooltip = await screen.findByRole("tooltip");
-      expect(tooltip).toHaveTextContent(contextUsageCopy[locale].historicalDetail);
-      expect(tooltip).toHaveTextContent("29%");
-      expect(tooltip).toHaveTextContent("75.6K / 258.4K");
+      expect(tooltip.querySelectorAll("p")).toHaveLength(3);
+      expect(tooltip).toHaveTextContent(percentages);
+      expect(tooltip).toHaveTextContent(tokens);
     },
   );
 
   it("prefers a fresh native report and never exposes history across a permission change", () => {
     const { rerender } = render(<ContextUsageGauge fallback={historicalUsage} />);
-    expect(ring()).toHaveAccessibleDescription(expect.stringContaining(copy.historicalReport));
+    expect(ring()).toHaveAccessibleDescription(expect.stringContaining("29% used"));
     state.live = {
       ...state.live!,
       usage: { available: true, state: "ready", reportId: 1, usedTokens: 15, contextWindow: 100 },
     };
     rerender(<ContextUsageGauge fallback={historicalUsage} />);
     expect(ring()).toHaveAccessibleDescription(expect.stringContaining("15% used"));
-    expect(ring()).not.toHaveAccessibleDescription(expect.stringContaining(copy.historicalReport));
+    expect(ring()).not.toHaveAccessibleDescription(expect.stringContaining("29% used"));
     state.live = {
       ...state.live,
       usage: { available: true, state: "stale" },
     };
     rerender(<ContextUsageGauge fallback={historicalUsage} />);
-    expect(ring()).not.toHaveAccessibleDescription(expect.stringContaining(copy.historicalReport));
+    expect(ring()).not.toHaveAccessibleDescription(expect.stringContaining("29% used"));
     expect(ring().querySelector("circle[pathLength]")).toBeNull();
     state.access = {
       ...state.access!,
@@ -358,7 +378,7 @@ describe("historical Codex context reports", () => {
     expect(ring()).toHaveAccessibleDescription(copy.compactingDetail);
     state.live = { ...state.live, activity: undefined };
     rerender(<ContextUsageGauge fallback={historicalUsage} />);
-    expect(ring()).not.toHaveAccessibleDescription(expect.stringContaining(copy.historicalReport));
+    expect(ring()).not.toHaveAccessibleDescription(expect.stringContaining("29% used"));
     expect(ring().querySelector("circle[pathLength]")).toBeNull();
   });
 });

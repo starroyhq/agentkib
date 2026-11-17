@@ -6,7 +6,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { sessionProviderCapabilities, type CodexSessionSettings } from "@agentkib/web-client";
 import { CodexComposerControls } from "./codex-session-controls";
 import { codexCopy } from "./codex-copy";
-import { composerModelCopy } from "./composer-model-copy";
+import { composerModelCopy } from "@agentkib/session-ui";
 import { useSession } from "./session-context";
 
 vi.mock("./session-context", () => ({ useSession: vi.fn() }));
@@ -209,7 +209,7 @@ describe("the model in an existing Devin conversation", () => {
     });
     const ring = await screen.findByRole("img", { name: codexCopy["en-US"].contextUsage });
     await waitFor(() =>
-      expect(ring).toHaveAccessibleDescription(/last model request.*4% used.*40K \/ 1M tokens/),
+      expect(ring).toHaveAccessibleDescription("4% used (96% remaining) 40K / 1M tokens used"),
     );
     expect(ring.querySelector("circle[pathLength]")).toHaveAttribute("stroke-dasharray", "4 100");
   });

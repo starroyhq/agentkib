@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from "react";
 import {
   ApiError,
   isLegacyPreparedReceipt,
@@ -34,6 +34,16 @@ export function failureOf(error: unknown, locale: Locale): NewSessionFailure {
 // The host reads an Agent's options from its own cache; this page keeps them a few minutes.
 const OPTIONS_FRESH = 5 * 60_000;
 const optionsCache = new Map<string, { at: number; value: ManagedOptions }>();
+const optionsListeners = new Set<() => void>();
+
+function subscribeOptions(listener: () => void) {
+  optionsListeners.add(listener);
+  return () => optionsListeners.delete(listener);
+}
+
+function notifyOptions() {
+  for (const listener of optionsListeners) listener();
+}
 
 /**
  * Starts sessions from this browser's new-session composer through the host's managed create, as
@@ -58,41 +68,46 @@ export function useNewSession({
       : undefined;
   const workspaceCatalog = newSessionProvider(agent)?.create.catalogScope === "workspace";
   const catalogWorkspaceId = workspaceCatalog ? workspaceId : undefined;
-  const canReadOptions = controls && (!workspaceCatalog || !!catalogWorkspaceId);
+  const canReadOptions = !!scope && controls && (!workspaceCatalog || !!catalogWorkspaceId);
   const cacheKey = JSON.stringify([
     origin,
     access?.bootId,
     access?.device?.id,
+    access?.device?.accessMode,
     agent,
     catalogWorkspaceId,
   ]);
-  const [options, setOptions] = useState<{
-    key: string;
-    data?: ManagedOptions;
-    error?: unknown;
-  }>();
+  const [failedOptions, setFailedOptions] = useState<{ key: string; error: unknown }>();
+  const readOptions = useCallback(
+    () => (canReadOptions ? optionsCache.get(cacheKey) : undefined),
+    [canReadOptions, cacheKey],
+  );
+  // Inspect the requested scope during render so a cache hit has no loading frame.
+  const options = useSyncExternalStore(subscribeOptions, readOptions)?.value;
+  const optionsError =
+    canReadOptions && !options && failedOptions?.key === cacheKey ? failedOptions.error : undefined;
   useEffect(() => {
     if (!canReadOptions) return;
     const cached = optionsCache.get(cacheKey);
-    if (cached && Date.now() - cached.at < OPTIONS_FRESH) {
-      setOptions({ key: cacheKey, data: cached.value });
-      return;
-    }
+    if (cached && Date.now() - cached.at < OPTIONS_FRESH) return;
     const controller = new AbortController();
-    setOptions({ key: cacheKey });
+    setFailedOptions(undefined);
     client.managedOptions(agent, controller.signal, catalogWorkspaceId).then(
       (value) => {
         if (controller.signal.aborted) return;
         optionsCache.set(cacheKey, { at: Date.now(), value });
-        setOptions({ key: cacheKey, data: value });
+        notifyOptions();
       },
       (error: unknown) => {
-        if (!controller.signal.aborted) setOptions({ key: cacheKey, error });
+        if (controller.signal.aborted) return;
+        if (error instanceof ApiError && (error.status === 401 || error.status === 403)) {
+          if (optionsCache.delete(cacheKey)) notifyOptions();
+        }
+        setFailedOptions({ key: cacheKey, error });
       },
     );
     return () => controller.abort();
   }, [client, agent, canReadOptions, cacheKey, catalogWorkspaceId]);
-  const current = canReadOptions && options?.key === cacheKey ? options : undefined;
 
   const [busy, setBusy] = useState(false);
   const [failure, setFailure] = useState<NewSessionFailure>();
@@ -205,8 +220,9 @@ export function useNewSession({
   return {
     /** False while access is read, and on a device that cannot start sessions. */
     ready: controls,
-    options: current?.data,
-    optionsError: current?.error,
+    options,
+    optionsError,
+    optionsLoading: canReadOptions && !options && !optionsError,
     busy,
     failure,
     /** A create whose outcome is not known yet. */

@@ -857,7 +857,12 @@ function managedSettingsProjection(record: ManagedRecord): JsonObject {
   return {
     current,
     selected,
-    applicationStatus: !native ? "unknown" : confirmed ? "confirmed" : "pending",
+    applicationStatus:
+      !native && record.snapshot?.settingsStaged !== true
+        ? "unknown"
+        : confirmed
+          ? "confirmed"
+          : "pending",
     defaults: {
       model: record.default_model ?? null,
       effort: record.default_effort ?? null,

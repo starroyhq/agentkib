@@ -442,7 +442,9 @@ export function SessionComposer({
     const opened =
       panel === "settings" && (command === "model" || command === "effort")
         ? controls.current?.openModel(command === "model" ? "models" : "effort")
-        : panel && openPanel(panel);
+        : panel === "settings" && command === "status"
+          ? controls.current?.openStatus()
+          : panel && openPanel(panel);
     if (opened) {
       setCommandNotice(undefined);
       setMessage("");
@@ -883,6 +885,7 @@ export function SessionComposer({
           </p>
         )}
         {!canSend &&
+          display.reason &&
           !(connectionStatusInBanner && isClaude) &&
           (!running || (live?.executionMode === "claude-follower" && display.tone === "warning")) &&
           !compacting &&

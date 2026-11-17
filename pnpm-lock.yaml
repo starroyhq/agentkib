@@ -546,6 +546,15 @@ importers:
 
   packages/session-ui:
     dependencies:
+      '@agentkib/web-client':
+        specifier: workspace:*
+        version: link:../web-client
+      '@base-ui/react':
+        specifier: ^1.9.0
+        version: 1.9.0(@types/react@19.3.0)(react-dom@19.3.1(react@19.3.1))(react@19.3.1)
+      lucide-react:
+        specifier: ^1.59.0
+        version: 1.59.0(@types/react@19.3.0)(react@19.3.1)
       react:
         specifier: ^19.1.0
         version: 19.3.1

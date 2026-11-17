@@ -11,6 +11,9 @@ export interface SessionProviderCapabilities {
     catalogScope: "host" | "workspace";
     attachments: boolean;
     serviceTiers: boolean;
+    /** Fixed toolbar slots. The host supplies the choices and grants separately. */
+    modelPicker?: boolean;
+    permissionPicker?: boolean;
     agentPresets?: boolean;
     verifyStartupModel?: boolean;
   };
@@ -27,7 +30,14 @@ export interface SessionProviderCapabilities {
 
 const PROVIDERS = {
   codex: {
-    create: { mode: "empty", catalogScope: "host", attachments: true, serviceTiers: false },
+    create: {
+      mode: "empty",
+      catalogScope: "host",
+      attachments: true,
+      serviceTiers: true,
+      modelPicker: true,
+      permissionPicker: true,
+    },
     models: {
       selection: "independent",
       modelDefault: false,
@@ -43,6 +53,8 @@ const PROVIDERS = {
       catalogScope: "workspace",
       attachments: true,
       serviceTiers: false,
+      modelPicker: true,
+      permissionPicker: true,
       verifyStartupModel: true,
     },
     models: {
@@ -61,6 +73,8 @@ const PROVIDERS = {
       catalogScope: "workspace",
       attachments: true,
       serviceTiers: false,
+      modelPicker: true,
+      permissionPicker: false,
       agentPresets: true,
     },
     models: {
@@ -78,6 +92,8 @@ const PROVIDERS = {
       catalogScope: "workspace",
       attachments: false,
       serviceTiers: true,
+      modelPicker: true,
+      permissionPicker: true,
     },
     models: {
       selection: "variants",

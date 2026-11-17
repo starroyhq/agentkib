@@ -45,6 +45,23 @@ describe("session display state", () => {
       }).label,
     ).toBe("仅可查看");
   });
+  it("keeps a settings-only write fence out of the conversation status", () => {
+    const settings = {
+      ...state,
+      canSend: false,
+      busy: true,
+      controlReady: false,
+      settingsOnlyBlocked: true,
+    };
+    expect(sessionDisplayState(settings)).toMatchObject({ label: "", reason: "" });
+    expect(sessionDisplayState({ ...settings, online: false }).label).toBe("已断线");
+    expect(
+      sessionDisplayState({
+        ...settings,
+        live: { ...settings.live!, status: "outcome-unknown" },
+      }).label,
+    ).toBe("结果待确认");
+  });
   it("never describes SSE alone as controllable", () => {
     expect(
       sessionDisplayState({ ...state, canSend: false, controlReady: false, live: undefined }).label,

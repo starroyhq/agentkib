@@ -682,7 +682,19 @@ export function newSessionProvider(
   agent: ManagedAgent,
   options?: Pick<ManagedOptions, "provider">,
 ): SessionProviderCapabilities | undefined {
-  return options?.provider ?? sessionProviderCapabilities(agent);
+  const declared = sessionProviderCapabilities(agent);
+  const reported = options?.provider;
+  if (!reported || !declared) return reported ?? declared;
+  if (reported.create.modelPicker !== undefined && reported.create.permissionPicker !== undefined)
+    return reported;
+  return {
+    ...reported,
+    create: {
+      ...reported.create,
+      modelPicker: reported.create.modelPicker ?? declared.create.modelPicker,
+      permissionPicker: reported.create.permissionPicker ?? declared.create.permissionPicker,
+    },
+  };
 }
 
 export interface ManagedInspection {
@@ -923,11 +935,36 @@ export interface SessionActionBody extends Omit<CodexActionBody, "effort"> {
   effort?: string | null;
   permissionMode?: ClaudePermissionMode | DevinPermissionMode;
 }
+export {
+  canDisplayCodexModelFallback,
+  readSessionModelDisplay,
+  rememberSessionModelDisplay,
+  forgetSessionModelDisplay,
+  type SessionModelDisplay,
+} from "./session-model-display";
+
 export interface SessionActionResult {
   accepted?: boolean;
+  completed?: boolean;
+  requestId?: string;
   sessionId?: string;
+  runtimeBootId?: string;
   reconciled?: boolean;
   context?: unknown;
+}
+
+export function matchesSettingsAck(
+  result: SessionActionResult | null | undefined,
+  requestId: string,
+  sessionId: string,
+  runtimeBootId?: string,
+): result is SessionActionResult & { accepted: true; requestId: string; sessionId: string } {
+  return (
+    result?.accepted === true &&
+    result.requestId === requestId &&
+    result.sessionId === sessionId &&
+    (!runtimeBootId || result.runtimeBootId === runtimeBootId)
+  );
 }
 
 export type WebConnection = { type: "same-origin" } | { type: "lan-http"; origin: string };
@@ -1274,12 +1311,11 @@ export class WebClient {
     }
     if (action === "inspect")
       return this.managedInspect(body.sessionId, agent).then((context) => ({ context }));
-    return this.request<{
-      accepted?: boolean;
-      sessionId?: string;
-      reconciled?: boolean;
-      context?: unknown;
-    }>("managed/action", { ...body, operation: action, agent });
+    return this.request<SessionActionResult>("managed/action", {
+      ...body,
+      operation: action,
+      agent,
+    });
   }
   sessionSettings(sessionId: string, agent: ManagedAgent, signal?: AbortSignal) {
     return agent === "codex"
@@ -1391,12 +1427,7 @@ export class WebClient {
   codexAction(action: CodexAction, body: SessionActionBody) {
     if (body.effort === null)
       return Promise.reject(new ApiError(400, "invalid_effort", "not-dispatched"));
-    return this.request<{
-      accepted?: boolean;
-      sessionId?: string;
-      reconciled?: boolean;
-      context?: unknown;
-    }>(`codex/${action}`, body);
+    return this.request<SessionActionResult>(`codex/${action}`, body);
   }
   attachments(sessionId: string, signal?: AbortSignal) {
     return this.request<{ attachments: UploadedAttachment[] }>(

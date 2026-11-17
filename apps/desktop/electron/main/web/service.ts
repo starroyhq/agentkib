@@ -2709,6 +2709,10 @@ export class WebAccessService {
         catalogScope: create.catalogScope,
         attachments: create.attachments === true,
         serviceTiers: create.serviceTiers === true,
+        ...(typeof create.modelPicker === "boolean" ? { modelPicker: create.modelPicker } : {}),
+        ...(typeof create.permissionPicker === "boolean"
+          ? { permissionPicker: create.permissionPicker }
+          : {}),
         ...(create.agentPresets === true ? { agentPresets: true } : {}),
         ...(create.verifyStartupModel === true ? { verifyStartupModel: true } : {}),
       },
@@ -2867,19 +2871,28 @@ export class WebAccessService {
           })
         : []),
     ];
-    const serviceTiers = [
-      ...new Map(
-        rawServiceTiers.slice(0, 256).flatMap((value) => {
-          if (!value || typeof value !== "object") return [];
-          const tier = value as Record<string, unknown>;
-          const id = this.optionalString(tier.id, 128);
-          if (!id) return [];
-          const name = this.optionalString(tier.name, 256) ?? id;
-          const description = this.optionalString(tier.description, 1024);
-          return [[id, { id, name, ...(description ? { description } : {}) }] as const];
-        }),
-      ).values(),
-    ].slice(0, 32);
+    const serviceTiers = new Map(
+      rawServiceTiers.slice(0, 256).flatMap((value) => {
+        if (!value || typeof value !== "object") return [];
+        const tier = value as Record<string, unknown>;
+        const id = this.optionalString(tier.id, 128);
+        if (!id) return [];
+        const name = this.optionalString(tier.name, 256) ?? id;
+        const description = this.optionalString(tier.description, 1024);
+        return [[id, { id, name, ...(description ? { description } : {}) }] as const];
+      }),
+    );
+    const codex = isCodexMode(data.executionMode);
+    if (codex) {
+      // The native settings catalog can list only IDs for a model's service tiers.
+      const fastTierIds =
+        provider?.models.fastTierIds ?? sessionProviderCapabilities("codex")?.models.fastTierIds;
+      for (const id of new Set(models.flatMap((model) => model.serviceTierIds))) {
+        if (serviceTiers.size >= 32) break;
+        if (!serviceTiers.has(id))
+          serviceTiers.set(id, { id, name: fastTierIds?.includes(id) ? "Fast" : id });
+      }
+    }
     const value = (source: Record<string, unknown> | undefined, key: string, fallback?: string) =>
       this.optionalString(source?.[key] ?? (fallback ? source?.[fallback] : undefined), 128);
     const projectValues = (current: Record<string, unknown> | undefined) => ({
@@ -2903,7 +2916,6 @@ export class WebAccessService {
         : {}),
     });
     const reason = this.optionalString(data.reason);
-    const codex = isCodexMode(data.executionMode);
     const historicalModel = codex ? value(data.historicalSettings, "modelId") : undefined;
     const historicalEffort = codex ? value(data.historicalSettings, "effort") : undefined;
     const liveUsage = this.projectUsage(usage);
@@ -2975,7 +2987,7 @@ export class WebAccessService {
       options: {
         models,
         policies,
-        serviceTiers,
+        serviceTiers: [...serviceTiers.values()].slice(0, 32),
         ...(data.executionMode === "claude-managed" || data.executionMode === "devin-print"
           ? {
               permissionModes: Array.isArray(data.permissionModes)
@@ -3986,11 +3998,36 @@ export class WebAccessService {
       this.unconfirmedRequests.set(sessionId, requestId);
       dispatched = true;
       control.dispatched = true;
-      const pending = this.options.runtimeRequest(params).finally(() => {
-        this.active.delete(sessionId);
-        this.admission = false;
-        this.notifyControlChanged(sessionId);
-      });
+      let settingsConfirmed = false;
+      const pending = this.options
+        .runtimeRequest(params)
+        .then((result) => {
+          if (operation !== "settings") return result;
+          const accepted = snapshotField(result, "accepted");
+          const outcome = snapshotField(result, "controlOutcome");
+          settingsConfirmed =
+            snapshotField(result, "requestId") === requestId &&
+            snapshotField(result, "sessionId") === sessionId &&
+            snapshotField(result, "runtimeBootId") === snapshot.runtimeBootId &&
+            ((accepted === true && (outcome === undefined || outcome === "accepted")) ||
+              (accepted === false && outcome === "not-dispatched"));
+          // The HTTP request may time out while the backend still owns the control. A matching
+          // settings result can settle its fence even if that response has already ended.
+          if (
+            settingsConfirmed &&
+            this.bootId === body.bootId &&
+            this.unconfirmedRequests.get(sessionId) === requestId
+          ) {
+            this.unconfirmedRequests.delete(sessionId);
+            this.clearUnconfirmed(sessionId);
+          }
+          return result;
+        })
+        .finally(() => {
+          this.active.delete(sessionId);
+          this.admission = false;
+          this.notifyControlChanged(sessionId);
+        });
       const result = (await this.runtime(params, pending)) as {
         accepted?: boolean;
         requestId?: string;
@@ -4001,8 +4038,12 @@ export class WebAccessService {
       this.grant(hash, permission);
       if (body.bootId !== this.bootId) throw new HttpError(409, "stale_boot");
       if (result.accepted !== true) {
-        if (result.requestId === requestId && result.controlOutcome === "not-dispatched") {
-          this.clearUnconfirmed(sessionId);
+        if (
+          result.requestId === requestId &&
+          result.controlOutcome === "not-dispatched" &&
+          (operation !== "settings" || settingsConfirmed)
+        ) {
+          if (operation !== "settings") this.clearUnconfirmed(sessionId);
           control.dispatched = false;
           if (newlyPinnedDevice)
             await this.attachmentStore.settle(newlyPinnedDevice, sessionId, requestId);
@@ -4011,9 +4052,10 @@ export class WebAccessService {
         throw new HttpError(502, "outcome_unknown");
       }
       if (operation === "delete") await this.forgetDeletedSession(sessionId);
-      res.once("finish", () => {
-        if (!res.destroyed && res.statusCode === 200) this.clearUnconfirmed(sessionId);
-      });
+      if (operation !== "settings")
+        res.once("finish", () => {
+          if (!res.destroyed && res.statusCode === 200) this.clearUnconfirmed(sessionId);
+        });
       return this.json(res, 200, result);
     } finally {
       if (!dispatched) {
@@ -4808,6 +4850,7 @@ export class WebAccessService {
           "unsupported-codex-cli-version",
           "unsupported-model",
           "unsupported-effort",
+          "unsupported-service-tier",
           "claude-startup-models-unavailable",
           "session-managed-by-another-runtime",
           "pause-original-goal-before-handoff",

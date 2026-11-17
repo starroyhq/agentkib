@@ -3,7 +3,7 @@ import "@testing-library/jest-dom/vitest";
 import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { ComponentProps } from "react";
-import { ComposerModelPicker } from "./composer-model-picker";
+import { ComposerModelPicker } from "@agentkib/session-ui";
 
 function motion(name: string) {
   const animation = {

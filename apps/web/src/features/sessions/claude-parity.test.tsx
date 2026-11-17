@@ -6,6 +6,7 @@ import {
   renderHook,
   screen,
   waitFor,
+  within,
 } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
@@ -220,7 +221,7 @@ function createHost({
       }
       if (body.operation === "goal-resume") state.goal.goal.status = "active";
       if (body.operation === "queue-update") state.queue.data[0]!.text = String(body.text);
-      return Response.json({ accepted: true, sessionId: "session" });
+      return Response.json({ accepted: true, sessionId: "session", requestId: body.requestId });
     }
     if (path === "access") return Response.json(access);
     if (path === "catalog")
@@ -304,9 +305,37 @@ async function openSession() {
   await screen.findByText("Claude history");
   await waitFor(() => expect(screen.getByRole("button", { name: "会话操作" })).toBeEnabled());
 }
-async function openSettings() {
-  fireEvent.click(await screen.findByRole("button", { name: /Host Claude/ }));
-  await waitFor(() => expect(screen.getByLabelText(copy.model)).toBeEnabled());
+async function openEffort(model = "Host Claude") {
+  fireEvent.click(
+    await screen.findByRole("button", { name: new RegExp(`^选择推理强度: ${model}`) }),
+  );
+  return within(await screen.findByRole("dialog"));
+}
+async function chooseModel(model: string) {
+  const picker = await openEffort();
+  fireEvent.click(picker.getByRole("button", { name: "选择模型: Host Claude" }));
+  const choice = await screen.findByRole("button", { name: model });
+  await waitFor(() => expect(choice).toBeEnabled());
+  fireEvent.click(choice);
+}
+async function chooseHighEffort(picker?: ReturnType<typeof within>) {
+  const slider = await (picker ?? (await openEffort())).findByRole("slider", {
+    name: "选择推理强度",
+  });
+  await waitFor(() => expect(slider).not.toHaveAttribute("disabled"));
+  fireEvent.keyDown(slider, { key: "End" });
+}
+async function choosePermission(permission: string) {
+  fireEvent.click(await screen.findByRole("button", { name: /^工具权限(?::|$)/ }));
+  const item = await screen.findByRole("menuitem", { name: permission });
+  await waitFor(() => expect(item).not.toHaveAttribute("aria-disabled", "true"));
+  fireEvent.click(item);
+}
+function reportNativeSettings(state: ReturnType<typeof createHost>["state"]) {
+  act(() => {
+    for (const source of ClaudeEventSource.instances)
+      source.emit({ ...state.live, settings: state.settings });
+  });
 }
 beforeEach(() => {
   sessionStorage.clear();
@@ -319,13 +348,13 @@ afterEach(() => {
 });
 
 describe("idle Claude settings and retirement", () => {
-  it("prepares native settings only when the user opens the settings panel", async () => {
+  it("prepares native settings only when the user opens the model picker", async () => {
     const { fetcher } = createHost();
     await openSession();
     expect(
       fetcher.mock.calls.filter(([url]) => String(url).endsWith("/managed/settings-prepare")),
     ).toHaveLength(0);
-    await openSettings();
+    await openEffort();
     await waitFor(() =>
       expect(
         fetcher.mock.calls.filter(([url]) => String(url).endsWith("/managed/settings-prepare")),
@@ -566,31 +595,54 @@ describe("original Claude terminal over Web", () => {
 });
 
 describe("Claude Remote parity", () => {
-  it("does not confirm an effort clear against the pre-request settings revision", async () => {
+  beforeEach(() => {
+    // Base UI exposes the slider thumb after measuring it. jsdom has no layout.
+    vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockImplementation(
+      function (this: HTMLElement) {
+        const width = this.hasAttribute("data-index") ? 28 : 240;
+        return new DOMRect(0, 0, width, 28);
+      },
+    );
+  });
+
+  it("does not write another effort against stale settings while the native revision advances", async () => {
     const host = createHost({ staleSettingsAfterMutation: true });
-    host.state.settings.selected = {};
+    host.state.settings.selected = { effort: "high" };
+    host.state.settings.current.effort = "high";
     await openSession();
-    await openSettings();
-    fireEvent.change(screen.getByLabelText(copy.effort), { target: { value: "" } });
-    fireEvent.click(screen.getByRole("button", { name: copy.apply }));
+    const picker = await openEffort();
+    const clear = picker.getByRole("button", { name: "使用默认强度" });
+    await waitFor(() => expect(clear).toBeEnabled());
+    fireEvent.click(clear);
     await waitFor(() => expect(host.state.mutations).toHaveLength(1));
+    expect(host.state.mutations[0]).toMatchObject({
+      operation: "settings",
+      expectedRevision: 1,
+      effort: null,
+    });
     await waitFor(() =>
       expect(
         host.fetcher.mock.calls.filter(([url]) => String(url).includes("/managed/settings?"))
           .length,
       ).toBeGreaterThan(1),
     );
-    await waitFor(() =>
-      expect(screen.getByRole("button", { name: copy.restoreDefaults })).toBeEnabled(),
-    );
-    expect(screen.queryByText(copy.settingsSaved)).not.toBeInTheDocument();
-    host.state.settings = { ...host.state.settings, revision: 2 };
     host.state.live.revision = 2;
-    act(() => {
-      for (const source of ClaudeEventSource.instances)
-        source.emit({ ...host.state.live, settings: host.state.settings });
-    });
-    await screen.findByText(copy.settingsSaved);
+    reportNativeSettings(host.state);
+    const slider = await picker.findByRole("slider");
+    await waitFor(() => expect(slider).toBeDisabled());
+    fireEvent.keyDown(slider, { key: "End" });
+    expect(host.state.mutations).toHaveLength(1);
+    host.state.settings = {
+      ...host.state.settings,
+      revision: 2,
+      selected: {},
+      current: { ...host.state.settings.current, effort: "medium" },
+    };
+    reportNativeSettings(host.state);
+    await waitFor(() => expect(picker.getByRole("slider")).toHaveAttribute("aria-valuetext", "中"));
+    await chooseHighEffort(picker);
+    await waitFor(() => expect(host.state.mutations).toHaveLength(2));
+    expect(host.state.mutations[1]).toMatchObject({ effort: "high", expectedRevision: 2 });
   });
 
   it("does not send Claude effort clearing semantics through the Codex API", async () => {
@@ -627,9 +679,7 @@ describe("Claude Remote parity", () => {
       host.state.settings.options.models[1]!.efforts = ["low"];
       host.state.settings.options.models[1]!.defaultEffort = defaultEffort;
       await openSession();
-      await openSettings();
-      fireEvent.change(screen.getByLabelText(copy.model), { target: { value: "second-model" } });
-      fireEvent.click(screen.getByRole("button", { name: copy.apply }));
+      await chooseModel("Second Claude");
       await waitFor(() => expect(host.state.mutations).toHaveLength(1));
       expect(host.state.mutations[0]).toMatchObject({
         operation: "settings",
@@ -647,25 +697,21 @@ describe("Claude Remote parity", () => {
     host.state.settings.current.effort = "high";
     host.state.settings.current.permissionMode = "plan";
     await openSession();
-    await openSettings();
-    fireEvent.change(screen.getByLabelText(copy.effort), { target: { value: "" } });
-    fireEvent.click(screen.getByRole("button", { name: copy.apply }));
+    const picker = await openEffort();
+    const clear = picker.getByRole("button", { name: "使用默认强度" });
+    await waitFor(() => expect(clear).toBeEnabled());
+    fireEvent.click(clear);
     await waitFor(() => expect(host.state.mutations).toHaveLength(1));
     expect(host.state.mutations[0]).toMatchObject({ operation: "settings", effort: null });
     expect(host.state.mutations[0]).not.toHaveProperty("model");
     expect(host.state.mutations[0]).not.toHaveProperty("permissionMode");
-    await screen.findByText(composerLayoutCopy["zh-CN"].settingsPending);
-    expect(screen.queryByText(copy.settingsSaved)).not.toBeInTheDocument();
     host.state.settings = {
       ...host.state.settings,
       applicationStatus: "confirmed",
       current: { ...host.state.settings.current, effort: "medium" },
     };
-    act(() => {
-      for (const source of ClaudeEventSource.instances)
-        source.emit({ ...host.state.live, settings: host.state.settings });
-    });
-    await screen.findByText(copy.settingsSaved);
+    reportNativeSettings(host.state);
+    await waitFor(() => expect(picker.getByRole("slider")).toHaveAttribute("aria-valuetext", "中"));
     expect(host.state.settings.selected?.effort).toBeUndefined();
     expect(host.state.settings.selected?.permissionMode).toBe("plan");
   });
@@ -679,10 +725,7 @@ describe("Claude Remote parity", () => {
       resolvedModel: "claude-sonnet-fixture",
     });
     await openSession();
-    await openSettings();
-    expect(screen.getByLabelText(copy.model)).toHaveValue("sonnet");
-    fireEvent.change(screen.getByLabelText(copy.effort), { target: { value: "high" } });
-    fireEvent.click(screen.getByRole("button", { name: copy.apply }));
+    await chooseHighEffort();
     await waitFor(() => expect(host.state.mutations).toHaveLength(1));
     expect(host.state.mutations[0]).toMatchObject({ operation: "settings", effort: "high" });
     expect(host.state.mutations[0]).not.toHaveProperty("model");
@@ -703,54 +746,40 @@ describe("Claude Remote parity", () => {
       serviceTierIds: [],
     });
     await openSession();
-    await openSettings();
-    fireEvent.change(screen.getByLabelText(copy.model), { target: { value: "sonnet" } });
-    fireEvent.click(screen.getByRole("button", { name: copy.apply }));
-    await screen.findByText(composerLayoutCopy["zh-CN"].settingsPending);
+    await chooseModel("Second Claude");
+    await waitFor(() => expect(host.state.mutations).toHaveLength(1));
     host.state.settings = {
       ...host.state.settings,
       applicationStatus: "confirmed",
       current: { ...host.state.settings.current, modelId: "claude-sonnet-fixture" },
     };
-    act(() => {
-      for (const source of ClaudeEventSource.instances)
-        source.emit({ ...host.state.live, settings: host.state.settings });
-    });
-    await waitFor(() => {
-      expect(screen.getByText(copy.settingsSaved)).toBeInTheDocument();
-      const model = screen.getByLabelText(copy.model);
-      expect(model).toBeEnabled();
-      expect(model).toHaveValue("sonnet");
-    });
+    reportNativeSettings(host.state);
+    const picker = within(await screen.findByRole("dialog"));
+    fireEvent.click(await picker.findByRole("button", { name: "选择模型: Second Claude" }));
+    const choice = await screen.findByRole("button", { name: "Second Claude" });
+    await waitFor(() => expect(choice).toBeEnabled());
+    expect(choice).toHaveAttribute("aria-pressed", "true");
+    expect(screen.getByRole("button", { name: "Default Claude" })).toHaveAttribute(
+      "aria-pressed",
+      "false",
+    );
+    expect(host.state.mutations[0]).toMatchObject({ model: "sonnet" });
     expect(host.state.mutations[0]).not.toHaveProperty("effort");
     expect(host.state.mutations[0]).not.toHaveProperty("permissionMode");
   });
 
-  it.each([undefined, ""])(
-    "does not confirm a selected model when native model identity is %s",
-    async (modelId) => {
-      const host = createHost();
-      host.state.settings.options.models[1]!.efforts = ["medium", "high"];
-      await openSession();
-      await openSettings();
-      fireEvent.change(screen.getByLabelText(copy.model), { target: { value: "second-model" } });
-      fireEvent.click(screen.getByRole("button", { name: copy.apply }));
-      await screen.findByText(composerLayoutCopy["zh-CN"].settingsPending);
-      host.state.settings = {
-        ...host.state.settings,
-        applicationStatus: "confirmed",
-        current: { ...host.state.settings.current, modelId },
-      };
-      act(() => {
-        for (const source of ClaudeEventSource.instances)
-          source.emit({ ...host.state.live, settings: host.state.settings });
-      });
-      expect(
-        screen.queryByText(composerLayoutCopy["zh-CN"].settingsPending),
-      ).not.toBeInTheDocument();
-      expect(screen.queryByText(copy.settingsSaved)).not.toBeInTheDocument();
-    },
-  );
+  it("surfaces an actual unknown native result without retrying the model change", async () => {
+    const host = createHost();
+    host.state.settings.options.models[1]!.efforts = ["medium", "high"];
+    await openSession();
+    await chooseModel("Second Claude");
+    await waitFor(() => expect(host.state.mutations).toHaveLength(1));
+    host.state.settings = { ...host.state.settings, applicationStatus: "unknown" };
+    reportNativeSettings(host.state);
+    const picker = within(await screen.findByRole("dialog"));
+    expect(await picker.findByText(composerLayoutCopy["zh-CN"].settingsUnknown)).toBeVisible();
+    expect(host.state.mutations).toHaveLength(1);
+  });
 
   it.each(["default", "plan", "acceptEdits", undefined] as const)(
     "preserves inherited %s permission when only the model is changed",
@@ -761,10 +790,15 @@ describe("Claude Remote parity", () => {
       host.state.settings.defaults = {};
       host.state.settings.options.models[1]!.efforts = ["medium", "high"];
       await openSession();
-      await openSettings();
-      expect(screen.getByLabelText("工具权限")).toHaveValue(permissionMode ?? "");
-      fireEvent.change(screen.getByLabelText(copy.model), { target: { value: "second-model" } });
-      fireEvent.click(screen.getByRole("button", { name: copy.apply }));
+      const permission = host.state.settings.options.permissionModes?.find(
+        (item) => item.id === permissionMode,
+      )?.name;
+      expect(
+        await screen.findByRole("button", {
+          name: permission ? `工具权限: ${permission}` : /^工具权限(?:: 工具权限)?$/,
+        }),
+      ).toBeVisible();
+      await chooseModel("Second Claude");
       await waitFor(() => expect(host.state.mutations).toHaveLength(1));
       expect(host.state.mutations[0]).toMatchObject({
         path: "managed/action",
@@ -773,7 +807,6 @@ describe("Claude Remote parity", () => {
       });
       expect(host.state.mutations[0]).not.toHaveProperty("permissionMode");
       expect(host.state.mutations[0]).not.toHaveProperty("effort");
-      expect(screen.getByLabelText("工具权限")).toHaveValue(permissionMode ?? "");
       expect(host.state.settings.current.permissionMode).toBe(permissionMode);
     },
   );
@@ -783,9 +816,7 @@ describe("Claude Remote parity", () => {
     host.state.settings.selected = { permissionMode: "plan" };
     host.state.settings.current.permissionMode = "plan";
     await openSession();
-    await openSettings();
-    fireEvent.change(screen.getByLabelText(copy.effort), { target: { value: "high" } });
-    fireEvent.click(screen.getByRole("button", { name: copy.apply }));
+    await chooseHighEffort();
     await waitFor(() => expect(host.state.mutations).toHaveLength(1));
     expect(host.state.mutations[0]).toMatchObject({ operation: "settings", effort: "high" });
     expect(host.state.mutations[0]).not.toHaveProperty("permissionMode");
@@ -795,43 +826,54 @@ describe("Claude Remote parity", () => {
   it("clears submitted fields before the next settings edit", async () => {
     const host = createHost();
     await openSession();
-    await openSettings();
-    fireEvent.change(screen.getByLabelText("工具权限"), { target: { value: "plan" } });
-    fireEvent.click(screen.getByRole("button", { name: copy.apply }));
+    await choosePermission("计划权限");
     await waitFor(() => expect(host.state.settings.selected?.permissionMode).toBe("plan"));
-    fireEvent.change(screen.getByLabelText(copy.effort), { target: { value: "high" } });
-    await waitFor(() => expect(screen.getByRole("button", { name: copy.apply })).toBeEnabled());
-    fireEvent.click(screen.getByRole("button", { name: copy.apply }));
+    await chooseHighEffort();
     await waitFor(() => expect(host.state.mutations).toHaveLength(2));
-    expect(host.state.mutations[1]).toMatchObject({ operation: "settings", effort: "high" });
+    expect(host.state.mutations[0]).toMatchObject({
+      operation: "settings",
+      permissionMode: "plan",
+      expectedRevision: 1,
+    });
+    expect(host.state.mutations[1]).toMatchObject({
+      operation: "settings",
+      effort: "high",
+      expectedRevision: 2,
+    });
     expect(host.state.mutations[1]).not.toHaveProperty("permissionMode");
     expect(host.state.mutations[1]).not.toHaveProperty("model");
   });
 
-  it("applies discovered settings through the generic action and keeps the previous current settings pending", async () => {
+  it("applies only the changed models and permissions through the generic action", async () => {
     const host = createHost();
     await openSession();
-    await openSettings();
-    expect(screen.queryByLabelText(copy.executionPolicy)).not.toBeInTheDocument();
-    expect(screen.queryByLabelText(copy.serviceTier)).not.toBeInTheDocument();
-    fireEvent.change(screen.getByLabelText(copy.model), { target: { value: "second-model" } });
-    fireEvent.change(screen.getByLabelText(copy.effort), { target: { value: "high" } });
-    fireEvent.change(screen.getByLabelText("工具权限"), { target: { value: "acceptEdits" } });
-    fireEvent.click(screen.getByRole("button", { name: copy.apply }));
-    await waitFor(() => expect(host.state.mutations).toHaveLength(1));
-    expect(host.state.mutations[0]).toMatchObject({
+    expect(
+      screen.queryByRole("button", { name: new RegExp(`^${copy.executionPolicy}:`) }),
+    ).not.toBeInTheDocument();
+    await chooseModel("Second Claude");
+    await screen.findByRole("button", { name: /^选择推理强度: Second Claude/ });
+    const picker = within(await screen.findByRole("dialog"));
+    expect(picker.queryByRole("button", { name: "Fast 模式" })).not.toBeInTheDocument();
+    await chooseHighEffort(picker);
+    await waitFor(() => expect(host.state.mutations).toHaveLength(2));
+    fireEvent.keyDown(picker.getByRole("slider"), { key: "Escape" });
+    await choosePermission("允许编辑");
+    await waitFor(() => expect(host.state.mutations).toHaveLength(3));
+    const [model, effort, permission] = host.state.mutations;
+    expect(model).toMatchObject({
       path: "managed/action",
       operation: "settings",
       agent: "claude-code",
       model: "second-model",
-      effort: "high",
-      permissionMode: "acceptEdits",
       expectedRevision: 1,
     });
-    expect(host.state.mutations[0]).not.toHaveProperty("policyId");
+    expect(effort).toMatchObject({ effort: "high", expectedRevision: 2 });
+    expect(permission).toMatchObject({ permissionMode: "acceptEdits", expectedRevision: 3 });
+    expect(model).not.toHaveProperty("permissionMode");
+    expect(effort).not.toHaveProperty("model");
+    expect(permission).not.toHaveProperty("model");
+    expect(permission).not.toHaveProperty("effort");
     expect(host.state.settings.current.modelId).toBe("host-model");
-    await waitFor(() => expect(screen.getByLabelText(copy.model)).toHaveValue("second-model"));
-    expect(screen.queryByText(copy.settingsSaved)).not.toBeInTheDocument();
     expect(host.fetcher.mock.calls.some(([url]) => String(url).includes("/codex/"))).toBe(false);
   });
 

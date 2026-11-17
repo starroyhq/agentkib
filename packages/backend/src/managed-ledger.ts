@@ -490,6 +490,37 @@ export function finishManagedCommand(
   }
 }
 
+/** Store a local settings change and its receipt together. Neither can survive alone. */
+export function saveManagedSettingsReceipt(
+  dataDir: string,
+  record: { id: string } & Record<string, unknown>,
+  requestId: string,
+  result: Record<string, unknown>,
+): void {
+  const database = openManagedLedger(dataDir);
+  if (!database) throw new Error("session-unavailable");
+  try {
+    database.exec("BEGIN IMMEDIATE");
+    const changed = database
+      .prepare(
+        "UPDATE managed_commands SET phase='resolved',result=? WHERE request_id=? AND session_id=? AND phase='prepared'",
+      )
+      .run(JSON.stringify(result), requestId, record.id).changes;
+    if (changed !== 1) throw new Error("control-ledger-not-prepared");
+    database
+      .prepare(
+        "INSERT INTO managed_sessions(id,record) VALUES(?,?) ON CONFLICT(id) DO UPDATE SET record=excluded.record",
+      )
+      .run(record.id, JSON.stringify(record));
+    database.exec("COMMIT");
+  } catch (error) {
+    if (database.isTransaction) database.exec("ROLLBACK");
+    throw error;
+  } finally {
+    database.close();
+  }
+}
+
 /** Add matching native completion evidence without replacing an accepted acknowledgement. */
 export function observeManagedCommandCompletion(
   dataDir: string,
@@ -824,6 +855,10 @@ export function createManagedSnapshotWriter(
   ) => {
     const current = state.record;
     const snapshot = state.snapshot("", false);
+    if (isObject(current.snapshot) && current.snapshot.settingsStaged === true) {
+      snapshot.settingsStaged = true;
+      if (current.snapshot.policyOnlyStaged === true) snapshot.policyOnlyStaged = true;
+    }
     const nextRevision = persistManagedSnapshot(
       dataDir,
       {

@@ -1,4 +1,4 @@
-import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   sessionProviderCapabilities,
@@ -75,6 +75,41 @@ afterEach(() => {
   vi.clearAllMocks();
 });
 describe("Codex composer", () => {
+  it("preserves limited-device model and mode changes without the old settings form", async () => {
+    state.current = { id: "s", agent: "codex" } as typeof state.current;
+    state.live = { ...state.live!, sessionId: "s", revision: 1 };
+    state.access!.experimentalEnabled = true;
+    state.capabilities!.features.settings = { available: true };
+    vi.mocked(state.client.request).mockImplementation(async (path: string) =>
+      path === "managed/options"
+        ? {
+            available: true,
+            workspaces: [],
+            models: [{ id: "native-model", name: "Native model", efforts: ["low"] }],
+          }
+        : {},
+    );
+    render(<CodexTools open />);
+    const modelPicker = await screen.findByRole("button", { name: "模型设置" });
+    fireEvent.click(modelPicker);
+    const overview = within(await screen.findByRole("dialog", { name: "模型设置" }));
+    expect(overview.queryByRole("button", { name: "Native model" })).not.toBeInTheDocument();
+    fireEvent.click(overview.getByRole("button", { name: "选择模型" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Native model" }));
+    await waitFor(() =>
+      expect(state.codexAction).toHaveBeenCalledWith("settings", {
+        model: "native-model",
+        effort: "low",
+      }),
+    );
+    fireEvent.click(modelPicker);
+    fireEvent.click(screen.getByRole("button", { name: /^协作模式/ }));
+    fireEvent.click(screen.getByRole("menuitem", { name: "计划" }));
+    await waitFor(() =>
+      expect(state.codexAction).toHaveBeenCalledWith("settings", { mode: "plan" }),
+    );
+  });
+
   it("blocks send and steer during compaction while keeping explicit queueing and native stop available", () => {
     state.message = "next";
     state.live = {
@@ -186,6 +221,7 @@ describe("Codex composer", () => {
   it("shows host-confirmed settings and context usage only to a full-access browser", async () => {
     state = {
       ...state,
+      current: { id: "s", agent: "codex" } as typeof state.current,
       access: {
         ...state.access!,
         device: { ...state.access!.device!, accessMode: "full" },
@@ -248,12 +284,16 @@ describe("Codex composer", () => {
       return {};
     });
     render(<CodexComposer />);
-    expect(await screen.findByRole("button", { name: /GPT-6 Sol/ })).toBeVisible();
+    const picker = await screen.findByRole("button", { name: /GPT-6 Sol.*Fast/ });
+    expect(picker.querySelector('svg[fill="currentColor"]')).toBeVisible();
     expect(screen.getByTitle("上下文用量: 最近原生报告: 50 / 100")).toHaveTextContent("50%");
-    fireEvent.click(screen.getByRole("button", { name: /GPT-6 Sol/ }));
-    expect(screen.getByLabelText("思考强度")).toHaveValue("high");
-    expect(screen.getByDisplayValue("加速")).toHaveValue("fast");
-    fireEvent.click(screen.getByRole("button", { name: "恢复运行 AgentKib 的电脑默认" }));
+    fireEvent.click(picker);
+    expect(await screen.findByRole("heading", { name: /高/ })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Fast 模式" })).toHaveAttribute(
+      "aria-pressed",
+      "true",
+    );
+    fireEvent.click(screen.getByRole("button", { name: "恢复默认模型" }));
     await waitFor(() =>
       expect(state.codexAction).toHaveBeenCalledWith("settings", { restoreDefaults: true }),
     );
@@ -310,41 +350,58 @@ describe("Codex composer", () => {
     state.capabilities!.features.settings = available;
     state.client.sessionSettings = vi.fn(async (): Promise<SessionSettings> => settings);
     const view = render(<SessionComposer />);
-    fireEvent.click(await screen.findByRole("button", { name: /Claude Opus/ }));
-    expect(screen.getByRole("dialog")).toHaveTextContent("模型上下文上限 100,000 Token");
-    expect(screen.getByRole("dialog")).not.toHaveTextContent("%");
-    const tier = screen.getByLabelText(copy.serviceTier);
-    fireEvent.change(tier, { target: { value: "fast" } });
-    expect(screen.getByLabelText(copy.effort)).not.toHaveTextContent("低");
-    expect(screen.getByLabelText(copy.effort)).toHaveValue("high");
-    fireEvent.click(screen.getByRole("button", { name: copy.apply }));
+    const picker = await screen.findByRole("button", { name: /Claude Opus/ });
+    const gauge = screen.getByRole("button", { name: copy.contextUsage });
+    fireEvent.click(gauge);
+    expect(await screen.findByRole("dialog", { name: copy.contextUsage })).toHaveTextContent(
+      "模型上下文上限 100,000 Token",
+    );
+    expect(screen.getByRole("dialog", { name: copy.contextUsage })).not.toHaveTextContent("%");
+    fireEvent.click(screen.getByRole("button", { name: copy.close }));
+    fireEvent.click(picker);
+    expect(picker.querySelector('svg[fill="currentColor"]')).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "Fast 模式" }));
     await waitFor(() =>
       expect(state.codexAction).toHaveBeenCalledExactlyOnceWith("settings", {
         serviceTierId: "fast",
       }),
     );
     expect(screen.queryByText(copy.settingsSaved)).not.toBeInTheDocument();
-    settings.revision = 5;
-    settings.current.serviceTierId = "fast";
-    settings.usage = {
-      available: true,
-      state: "stale",
-      historical: true,
-      usedTokens: 25_000,
-      contextWindow: 100_000,
-    };
+    vi.mocked(state.client.sessionSettings).mockResolvedValue({
+      ...settings,
+      revision: 5,
+      current: { ...settings.current, serviceTierId: "fast" },
+      applicationStatus: "confirmed",
+      usage: {
+        available: true,
+        state: "stale",
+        historical: true,
+        usedTokens: 25_000,
+        contextWindow: 100_000,
+      },
+    });
     state.live = { ...state.live, revision: 5 };
     view.rerender(<SessionComposer />);
+    expect(
+      (await screen.findByRole("button", { name: /Claude Opus.*Fast/ })).querySelector(
+        'svg[fill="currentColor"]',
+      ),
+    ).toBeVisible();
+    fireEvent.click(await screen.findByRole("button", { name: copy.contextUsage }));
     expect(await screen.findByText("这是上次模型请求的输入用量。")).toBeVisible();
-    expect(screen.getByText(copy.settingsSaved)).toBeVisible();
-    expect(screen.getByRole("dialog")).toHaveTextContent("25%");
+    expect(screen.queryByText(copy.settingsSaved)).not.toBeInTheDocument();
+    expect(screen.getByRole("dialog", { name: copy.contextUsage })).toHaveTextContent("25%");
     state.access = {
       ...state.access!,
       device: { ...state.access!.device!, advancedControl: false },
     };
     view.rerender(<SessionComposer />);
-    expect(screen.getByRole("dialog")).not.toHaveTextContent("25%");
-    expect(screen.getByRole("dialog")).not.toHaveTextContent("100,000");
+    expect(
+      screen.queryByRole("dialog", { name: copy.contextUsage })?.textContent ?? "",
+    ).not.toContain("25%");
+    expect(
+      screen.queryByRole("dialog", { name: copy.contextUsage })?.textContent ?? "",
+    ).not.toContain("100,000");
   });
 
   it("sends opaque host resource IDs and never exposes the control to a legacy credential", async () => {
@@ -436,7 +493,11 @@ describe("Codex composer", () => {
             model: { available: true },
             restoreDefaults: { available: true },
           },
-          options: { models: [{ id: "model", name: "Model" }] },
+          options: {
+            models: [{ id: "model", name: "Model", efforts: [] }],
+            serviceTiers: [],
+            policies: [],
+          },
         };
       if (path.startsWith("codex/goals?"))
         return { sessionId: "s", revision: 2, available: false, actions: {} };
@@ -444,9 +505,8 @@ describe("Codex composer", () => {
     });
     render(<CodexComposer />);
     fireEvent.click(await screen.findByRole("button", { name: /Model/ }));
-    expect(screen.getByLabelText("模型")).toBeDisabled();
-    expect(screen.getByRole("button", { name: "恢复运行 AgentKib 的电脑默认" })).toBeDisabled();
-    expect(screen.getByText("当前轮次结束后才能修改设置")).toBeVisible();
+    expect(screen.getByRole("button", { name: "恢复默认模型" })).toBeDisabled();
+    await waitFor(() => expect(screen.getByText("当前轮次结束后才能修改设置")).toBeVisible());
   });
 
   it("uses the durable Codex action path for goal changes", async () => {

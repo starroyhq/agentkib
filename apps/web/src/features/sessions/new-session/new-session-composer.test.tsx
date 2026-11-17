@@ -1,12 +1,15 @@
-import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
+import { Profiler } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   ApiError,
   sessionProviderCapabilities,
+  type Access,
   type ManagedAgent,
   type ManagedOptions,
 } from "@agentkib/web-client";
+import { composerModelCopy } from "@agentkib/session-ui";
 import { takeNewSessionDraft } from "@/features/conversation/features/sessions/new-session-draft";
 import { publishSessionInvalidation } from "@/features/conversation/features/sessions/session-events";
 import { NewSessionComposer } from "./new-session-composer";
@@ -64,10 +67,19 @@ function setup({
   full = true,
   created = "created",
   disabled = false,
-}: { full?: boolean; created?: string; disabled?: boolean } = {}) {
+  onRender,
+  codexOptions = options.codex,
+}: {
+  full?: boolean;
+  created?: string;
+  disabled?: boolean;
+  onRender?: () => void;
+  codexOptions?: ManagedOptions;
+} = {}) {
   const client = {
     managedOptions: vi.fn(
-      async (agent: ManagedAgent, _signal?: AbortSignal, _workspaceId?: string) => options[agent],
+      async (agent: ManagedAgent, _signal?: AbortSignal, _workspaceId?: string) =>
+        agent === "codex" ? codexOptions : options[agent],
     ),
     managedAction: vi.fn(async (_operation: string, _body: Record<string, unknown>) => ({
       accepted: true,
@@ -112,11 +124,28 @@ function setup({
     ],
   };
   const onCreated = vi.fn();
-  render(<NewSessionComposer onCreated={onCreated} disabled={disabled} />);
-  return { client, onCreated };
+  const composer = <NewSessionComposer onCreated={onCreated} disabled={disabled} />;
+  const view = render(
+    onRender ? (
+      <Profiler id="new session" onRender={onRender}>
+        {composer}
+      </Profiler>
+    ) : (
+      composer
+    ),
+  );
+  return { client, onCreated, view };
 }
 const message = () => screen.getByRole("textbox", { name: "First message" });
 const send = () => screen.getByRole("button", { name: "Send" });
+const modelCopy = composerModelCopy["en-US"];
+const settingLabel = (name: string) => `${modelCopy.chooseEffort}: ${name}`;
+const effortControl = () => screen.findByRole("slider", { name: modelCopy.chooseEffort });
+async function highestEffort() {
+  const thumb = await effortControl();
+  fireEvent.keyDown(thumb, { key: "End" });
+  await waitFor(() => expect(thumb).toHaveAttribute("aria-valuetext", "High"));
+}
 async function write(text: string) {
   fireEvent.change(message(), { target: { value: text } });
   await waitFor(() => expect(send()).toBeEnabled());
@@ -126,8 +155,17 @@ describe("Web NewSessionComposer", () => {
   beforeEach(() => {
     localStorage.clear();
     sessionStorage.clear();
+    // The shared slider measures the control and thumb, which have no size in jsdom.
+    vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockImplementation(
+      function (this: HTMLElement) {
+        return new DOMRect(0, 0, this.hasAttribute("data-index") ? 28 : 240, 28);
+      },
+    );
   });
-  afterEach(cleanup);
+  afterEach(() => {
+    cleanup();
+    vi.restoreAllMocks();
+  });
 
   it("starts in the most recent workspace and hands the new session its first message", async () => {
     const { client, onCreated } = setup();
@@ -156,6 +194,42 @@ describe("Web NewSessionComposer", () => {
     });
   });
 
+  it("starts Codex with its offered Fast tier", async () => {
+    const { client } = setup({
+      codexOptions: {
+        ...options.codex,
+        provider: sessionProviderCapabilities("codex"),
+        models: options.codex.models?.map((model) => ({ ...model, serviceTierIds: ["priority"] })),
+        serviceTiers: [{ id: "priority", name: "Fast" }],
+      },
+    });
+    const user = userEvent.setup();
+    const picker = await screen.findByRole("button", {
+      name: settingLabel("gpt-6.1-sol · Medium"),
+    });
+    expect(picker.querySelector('svg[fill="currentColor"]')).toBeNull();
+    await user.click(picker);
+    await user.click(
+      await within(await screen.findByRole("dialog")).findByRole("button", {
+        name: modelCopy.fast,
+      }),
+    );
+    const fastPicker = screen.getByRole("button", {
+      name: settingLabel(`gpt-6.1-sol · Medium · ${modelCopy.fast}`),
+    });
+    expect(fastPicker.querySelector('svg[fill="currentColor"]')).toBeVisible();
+    await user.keyboard("{Escape}");
+
+    await write("Review the routes");
+    fireEvent.click(send());
+    await waitFor(() => expect(client.managedAction).toHaveBeenCalledOnce());
+    expect(client.managedAction.mock.calls[0]![1]).toMatchObject({
+      workspaceId: "atlas",
+      model: "gpt-6.1-sol",
+      serviceTierId: "priority",
+    });
+  });
+
   it("offers a browser without full access only the policies the host takes from it", async () => {
     const { client } = setup({ full: false });
     await write("Tidy the logs");
@@ -170,11 +244,115 @@ describe("Web NewSessionComposer", () => {
     });
   });
 
+  it("reserves the new agent's controls while loading and mounts the warm catalog in its first render", async () => {
+    const renders: { agent: string | null; model: string | null }[] = [];
+    const label = (prefix: string) =>
+      document.querySelector(`button[aria-label^="${prefix}:"]`)?.getAttribute("aria-label") ??
+      null;
+    const { client } = setup({
+      full: false,
+      onRender: () =>
+        renders.push({
+          agent: label("Agent"),
+          model: label(modelCopy.chooseEffort) ?? label("Model"),
+        }),
+    });
+    let resolveDevin!: (value: ManagedOptions) => void;
+    const devinCatalog = new Promise<ManagedOptions>((resolve) => {
+      resolveDevin = resolve;
+    });
+    client.managedOptions.mockImplementation((agent) =>
+      agent === "devin" ? devinCatalog : Promise.resolve(options[agent]),
+    );
+
+    const user = userEvent.setup();
+    await screen.findByRole("button", { name: settingLabel("gpt-6.1-sol · Medium") });
+    await user.click(screen.getByRole("button", { name: "Agent: Codex" }));
+    await user.click(await screen.findByRole("menuitem", { name: "Devin" }));
+
+    expect(screen.getByRole("button", { name: "Model: Loading options…" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Permissions: Loading options…" })).toBeDisabled();
+    expect(screen.queryByRole("button", { name: /Ask for approval/ })).not.toBeInTheDocument();
+    fireEvent.change(message(), { target: { value: "Check the parser" } });
+    expect(send()).toBeDisabled();
+
+    await act(async () =>
+      resolveDevin({
+        ...options.devin,
+        models: [{ id: "opus", name: "Claude Opus", efforts: ["high"] }],
+        defaults: { model: "opus", effort: "high" },
+        permissionModes: [
+          { id: "accept-edits", name: "accept-edits" },
+          { id: "dangerous", name: "dangerous" },
+        ],
+      }),
+    );
+    expect(screen.getByRole("button", { name: settingLabel("Claude Opus · High") })).toBeEnabled();
+    await user.click(screen.getByRole("button", { name: /Accept edits/ }));
+    expect(await screen.findAllByRole("menuitem")).toHaveLength(1);
+    await user.keyboard("{Escape}");
+
+    await user.click(screen.getByRole("button", { name: "Agent: Devin" }));
+    await user.click(await screen.findByRole("menuitem", { name: "Codex" }));
+    const start = renders.length;
+    await user.click(screen.getByRole("button", { name: "Agent: Codex" }));
+    await user.click(await screen.findByRole("menuitem", { name: "Devin" }));
+    expect(renders.slice(start).find(({ agent }) => agent === "Agent: Devin")?.model).toBe(
+      settingLabel("Claude Opus · High"),
+    );
+    expect(client.managedOptions.mock.calls.filter(([agent]) => agent === "devin")).toHaveLength(1);
+  });
+
+  it("keeps a catalog from the previous host boot out of the new controls", async () => {
+    const { client, onCreated, view } = setup();
+    await screen.findByRole("button", { name: settingLabel("gpt-6.1-sol · Medium") });
+    client.managedOptions.mockImplementationOnce(() => new Promise(() => {}));
+    const access = fixture.session.access as Access;
+    fixture.session = { ...fixture.session, access: { ...access, bootId: "rebooted" } };
+    view.rerender(<NewSessionComposer onCreated={onCreated} />);
+
+    expect(screen.getByRole("button", { name: "Model: Loading options…" })).toBeDisabled();
+    expect(screen.queryByRole("button", { name: /gpt-6.1-sol/ })).not.toBeInTheDocument();
+    expect(client.managedOptions).toHaveBeenCalledTimes(2);
+  });
+
+  it("keeps cached options during a background refresh but clears them if access is refused", async () => {
+    const { client, onCreated, view } = setup();
+    const model = settingLabel("gpt-6.1-sol · Medium");
+    await screen.findByRole("button", { name: model });
+    const stale = vi.spyOn(Date, "now").mockReturnValue(Date.now() + 5 * 60_000 + 1);
+    try {
+      let rejectRefresh!: (error: Error) => void;
+      const refresh = new Promise<ManagedOptions>((_, reject) => {
+        rejectRefresh = reject;
+      });
+      client.managedOptions.mockReturnValueOnce(refresh);
+      view.unmount();
+      const refreshed = render(<NewSessionComposer onCreated={onCreated} />);
+      expect(screen.getByRole("button", { name: model })).toBeEnabled();
+      await act(async () => rejectRefresh(new Error("temporarily offline")));
+      expect(screen.getByRole("button", { name: model })).toBeEnabled();
+
+      client.managedOptions.mockRejectedValueOnce(new ApiError(403, "workspace_not_authorized"));
+      refreshed.unmount();
+      render(<NewSessionComposer onCreated={onCreated} />);
+      expect(
+        await screen.findByRole("button", { name: "Model: Options unavailable" }),
+      ).toBeDisabled();
+      expect(screen.queryByRole("button", { name: model })).not.toBeInTheDocument();
+    } finally {
+      stale.mockRestore();
+    }
+  });
+
   it("names the model when only the effort changes, as Codex needs", async () => {
     const { client } = setup();
     const user = userEvent.setup();
-    await user.click(await screen.findByRole("button", { name: "Model: gpt-6.1-sol · Medium" }));
-    await user.click(await screen.findByRole("menuitem", { name: "High" }));
+    await user.click(
+      await screen.findByRole("button", { name: settingLabel("gpt-6.1-sol · Medium") }),
+    );
+    await highestEffort();
+    await user.keyboard("{Escape}");
     await write("Tidy the logs");
     fireEvent.click(send());
     await waitFor(() => expect(client.managedAction).toHaveBeenCalledOnce());
@@ -225,10 +403,22 @@ describe("Web NewSessionComposer", () => {
       }),
     );
 
-    await user.click(await screen.findByRole("button", { name: "Model: North Claude · Medium" }));
-    expect(screen.queryByRole("menuitem", { name: "Old Claude" })).not.toBeInTheDocument();
-    expect(screen.queryByRole("menuitem", { name: "Fast" })).not.toBeInTheDocument();
-    await user.click(await screen.findByRole("menuitem", { name: "High" }));
+    await user.click(
+      await screen.findByRole("button", { name: settingLabel("North Claude · Medium") }),
+    );
+    const overview = await screen.findByRole("dialog");
+    expect(
+      within(overview).queryByRole("button", { name: modelCopy.fast }),
+    ).not.toBeInTheDocument();
+    fireEvent.click(
+      within(overview).getByRole("button", { name: `${modelCopy.chooseModel}: North Claude` }),
+    );
+    const models = await screen.findByRole("dialog", { name: modelCopy.model });
+    expect(within(models).queryByRole("button", { name: "Old Claude" })).not.toBeInTheDocument();
+    await user.keyboard("{Escape}");
+    await user.click(screen.getByRole("button", { name: settingLabel("North Claude · Medium") }));
+    await highestEffort();
+    await user.keyboard("{Escape}");
     await user.click(screen.getByRole("button", { name: "Permissions: Default" }));
     await user.click(await screen.findByRole("menuitem", { name: /Plan mode/ }));
     const attachment = new File(["notes"], "notes.txt", { type: "text/plain" });
@@ -283,19 +473,35 @@ describe("Web NewSessionComposer", () => {
     await user.click(await screen.findByRole("menuitem", { name: "Devin" }));
     expect(client.managedOptions).toHaveBeenCalledWith("devin", expect.any(AbortSignal), "atlas");
     expect(screen.queryByRole("button", { name: "Add files" })).not.toBeInTheDocument();
-    await user.click(await screen.findByRole("button", { name: "Model: Model" }));
-    await user.click(await screen.findByRole("menuitem", { name: "Claude Opus" }));
-    await user.click(await screen.findByRole("button", { name: "Model: Claude Opus" }));
-    await user.click(await screen.findByRole("menuitem", { name: "Low" }));
-    await user.click(await screen.findByRole("button", { name: "Model: Claude Opus · Low" }));
-    expect(screen.queryByRole("menuitem", { name: "Fast" })).not.toBeInTheDocument();
-    await user.click(await screen.findByRole("menuitem", { name: "High" }));
-    await user.click(await screen.findByRole("button", { name: "Model: Claude Opus · High" }));
-    await user.click(await screen.findByRole("menuitem", { name: "Fast" }));
     await user.click(
-      await screen.findByRole("button", { name: "Model: Claude Opus · High · Fast" }),
+      await screen.findByRole("button", {
+        name: `${modelCopy.chooseModel}: ${modelCopy.defaultModel}`,
+      }),
     );
-    expect(screen.queryByRole("menuitem", { name: "Low" })).not.toBeInTheDocument();
+    const startSettings = within(
+      await screen.findByRole("dialog", { name: modelCopy.modelSettings }),
+    );
+    expect(startSettings.queryByRole("button", { name: "Claude Opus" })).not.toBeInTheDocument();
+    await user.click(
+      startSettings.getByRole("button", {
+        name: `${modelCopy.chooseModel}: ${modelCopy.defaultModel}`,
+      }),
+    );
+    const models = await screen.findByRole("dialog", { name: modelCopy.model });
+    await user.click(within(models).getByRole("button", { name: "Claude Opus" }));
+    const overview = await screen.findByRole("dialog");
+    const thumb = await effortControl();
+    fireEvent.keyDown(thumb, { key: "Home" });
+    await waitFor(() => expect(thumb).toHaveAttribute("aria-valuetext", "Low"));
+    const fast = within(overview).getByRole("button", { name: modelCopy.fast });
+    expect(fast).toBeDisabled();
+    await highestEffort();
+    expect(fast).toBeEnabled();
+    await user.click(fast);
+    expect(
+      screen.getByRole("button", { name: settingLabel(`Claude Opus · High · ${modelCopy.fast}`) }),
+    ).toBeVisible();
+    expect(within(overview).queryByRole("slider")).not.toBeInTheDocument();
     await user.keyboard("{Escape}");
     await write("Check the parser");
     fireEvent.click(send());
@@ -394,16 +600,14 @@ describe("Web NewSessionComposer", () => {
   it("reads the current DSH workspace catalog and sends only its offered startup choices", async () => {
     const { client, onCreated } = setup();
     const dshOptions = options["deepseek-harness"];
+    let resolveNorth!: (value: ManagedOptions) => void;
+    const northCatalog = new Promise<ManagedOptions>((resolve) => {
+      resolveNorth = resolve;
+    });
     client.managedOptions.mockImplementation(async (agent, _signal, workspaceId) => {
       if (agent !== "deepseek-harness") return options[agent];
       if (workspaceId === "atlas") return dshOptions;
-      return {
-        available: true,
-        provider: sessionProviderCapabilities("deepseek-harness"),
-        models: [{ id: "deepseek/chat", name: "DeepSeek Chat", efforts: ["low", "high"] }],
-        defaults: { model: "deepseek/chat", effort: "low" },
-        workspaces: [],
-      };
+      return northCatalog;
     });
 
     const user = userEvent.setup();
@@ -423,11 +627,26 @@ describe("Web NewSessionComposer", () => {
       expect.any(AbortSignal),
       "north",
     );
+    expect(screen.getByRole("button", { name: "Preset: Loading options…" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Model: Loading options…" })).toBeDisabled();
+    expect(screen.queryByRole("button", { name: /^Permissions:/ })).not.toBeInTheDocument();
+    await act(async () =>
+      resolveNorth({
+        available: true,
+        provider: sessionProviderCapabilities("deepseek-harness"),
+        models: [{ id: "deepseek/chat", name: "DeepSeek Chat", efforts: ["low", "high"] }],
+        defaults: { model: "deepseek/chat", effort: "low" },
+        workspaces: [],
+      }),
+    );
 
-    await user.click(await screen.findByRole("button", { name: "Model: DeepSeek Chat · Low" }));
-    expect(screen.queryByRole("menuitem", { name: "Fast" })).not.toBeInTheDocument();
-    expect(screen.queryByRole("button", { name: /Preset/ })).not.toBeInTheDocument();
-    await user.click(await screen.findByRole("menuitem", { name: "High" }));
+    await user.click(
+      await screen.findByRole("button", { name: settingLabel("DeepSeek Chat · Low") }),
+    );
+    expect(screen.queryByRole("button", { name: modelCopy.fast })).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Preset: Options unavailable" })).toBeDisabled();
+    await highestEffort();
+    await user.keyboard("{Escape}");
     await write("Profile the parser");
     fireEvent.click(send());
     await waitFor(() => expect(onCreated).toHaveBeenCalledWith("created"));

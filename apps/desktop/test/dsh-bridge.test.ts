@@ -1874,7 +1874,12 @@ describe("DeepSeek Harness plugin projections", () => {
     ]);
 
     // An effort change keeps the current model.
-    expect(await f.control("settings", { effort: "high" })).toMatchObject({ accepted: true });
+    f.publish.mockClear();
+    const changed = await f.control("settings", { effort: "high" });
+    expect(changed).toMatchObject({ accepted: true });
+    expect(f.publish.mock.calls.filter(([, type]) => type === "invalidate")).toEqual([
+      ["ak-session-a", "invalidate", { domains: ["settings"] }, changed.live],
+    ]);
     expect(f.dsh.selections.at(-1)).toEqual({
       sessionId: "session-a",
       provider: "deepseek",
@@ -1921,6 +1926,50 @@ describe("DeepSeek Harness plugin projections", () => {
       provider: "deepseek",
       model: "deepseek-chat",
     });
+  });
+
+  it("reconciles a lost DSH model settings reply without invalidating history", async () => {
+    const f = await fixture();
+    await until(
+      () =>
+        (f.bridge.capabilities("ak-session-a", true).features as Record<string, any>)[
+          "settings-state"
+        ].available,
+    );
+    await f.bridge.request({ operation: "settings-state", sessionId: "ak-session-a" });
+    const controller = f.dsh.ctx.sessionController;
+    const select = controller.selectModel.bind(controller);
+    controller.selectModel = (request: unknown) => {
+      void select(request);
+      return new Promise(() => undefined);
+    };
+    f.publish.mockClear();
+    const result = await f.control("settings", { effort: "high" });
+    expect(result).toMatchObject({ accepted: false, controlOutcome: "unknown" });
+
+    const receipt = () =>
+      readControlReceipt(f.bridge.options.dataDir, {
+        requestId: result.requestId,
+        deviceId: "device-1",
+      });
+    await vi.waitFor(
+      async () => {
+        await f.bridge.request({
+          operation: "reconcile",
+          sessionId: "ak-session-a",
+          experimentalEnabled: true,
+        });
+        expect(receipt()).toMatchObject({ found: true, status: "accepted" });
+      },
+      { timeout: 2000 },
+    );
+    expect(f.dsh.selections).toHaveLength(1);
+    expect(f.bridge.live("ak-session-a", true).reason).not.toBe("control-outcome-unconfirmed");
+    expect(
+      f.publish.mock.calls
+        .filter(([id, type]) => id === "ak-session-a" && type === "invalidate")
+        .flatMap(([, , payload]) => payload.domains),
+    ).toEqual(["settings", "receipts"]);
   });
 
   it("starts a new DSH session in a registered workspace, once per request", async () => {
@@ -2462,8 +2511,15 @@ describe("DeepSeek Harness goals, commands, presets and subagents", () => {
       collaborationModes: [{ id: "default" }, { id: "plan" }],
       writable: { mode: { available: true } },
     });
+    f.publish.mockClear();
     expect(await f.control("settings", { mode: "plan" })).toMatchObject({ accepted: true });
     expect(f.dsh.executed.at(-1)).toBe("/plan");
+    await until(() =>
+      f.publish.mock.calls.some(
+        ([id, type, payload]) =>
+          id === "ak-session-a" && type === "invalidate" && payload.domains.includes("history"),
+      ),
+    );
     // A switch counts at once, as DSH's chip shows it, though DSH applies it at the next step.
     expect(f.dsh.planOf.get("session-a")).toEqual({ active: false, pending: true });
     expect((await settings()).current.mode).toBe("plan");

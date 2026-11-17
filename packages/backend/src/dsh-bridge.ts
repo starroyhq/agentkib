@@ -2897,15 +2897,20 @@ export class DshBridge {
     const runtime = this.#controlRuntime(nativeId);
     const unknown = readUnknownManagedCommands(this.options.dataDir, id);
     const giveUp = this.options.reconcileGiveUpMs ?? RECONCILE_GIVE_UP_MS;
-    let reconciled = false;
-    const settle = (requestId: string, outcome: "accepted" | "not-dispatched", reason?: string) => {
+    const updates = new Set<"history" | "settings">();
+    const settle = (
+      operation: string,
+      requestId: string,
+      outcome: "accepted" | "not-dispatched",
+      reason?: string,
+    ) => {
       finishManagedCommand(
         this.options.dataDir,
         requestId,
         this.#result(id, requestId, outcome, reason),
       );
       this.#unknownSince.delete(requestId);
-      reconciled = true;
+      updates.add(operation === "settings" ? "settings" : "history");
     };
     for (const command of unknown) {
       // A command still waiting for its result is not unconfirmed yet.
@@ -2919,7 +2924,7 @@ export class DshBridge {
           const catalog = await this.#readModelCatalog(runtime, nativeId, true);
           if (catalog) verified = matchesSelection(catalog.selected, expected.data);
         }
-        if (this.#settleCreate(id, command.requestId, verified)) reconciled = true;
+        if (this.#settleCreate(id, command.requestId, verified)) updates.add("history");
         continue;
       }
       const since = this.#unknownSince.get(command.requestId) ?? Date.now();
@@ -2937,9 +2942,9 @@ export class DshBridge {
         const found = result.ok
           ? (result.value as { present?: boolean; inFlight?: boolean } | null)
           : null;
-        if (found?.present === true) settle(command.requestId, "accepted");
+        if (found?.present === true) settle(operation, command.requestId, "accepted");
         else if (found?.present === false && found.inFlight !== true && overdue)
-          settle(command.requestId, "not-dispatched", "dsh-message-not-recorded");
+          settle(operation, command.requestId, "not-dispatched", "dsh-message-not-recorded");
         continue;
       }
       if (!overdue) continue;
@@ -3001,6 +3006,7 @@ export class DshBridge {
                           : !!goal && goal.revision !== evidence.goalRevision
                     : false;
       settle(
+        operation,
         command.requestId,
         applied ? "accepted" : "not-dispatched",
         applied ? undefined : "control-outcome-expired",
@@ -3010,9 +3016,15 @@ export class DshBridge {
       this.#unknownSessions.delete(nativeId);
       this.#reconciledAt.delete(nativeId);
     }
+    const reconciled = updates.size > 0;
     if (reconciled) {
       this.#touch(nativeId);
-      this.#publish(nativeId, true);
+      this.#publish(
+        nativeId,
+        updates.has("history"),
+        false,
+        updates.has("settings") ? ["settings"] : [],
+      );
       // Clients fencing these requests read their receipts again.
       this.options.publish(id, "invalidate", { domains: ["receipts"] }, this.live(id, controls));
     }
@@ -3613,7 +3625,14 @@ export class DshBridge {
         finishManagedCommand(this.options.dataDir, requestId, outcome);
       }
       this.#touch(nativeId);
-      this.#publish(nativeId, result.ok);
+      // Settings refresh the model/permission projection. Real transcript changes are reported by DSH.
+      const settings = value.operation === "settings";
+      this.#publish(
+        nativeId,
+        result.ok && !settings,
+        false,
+        settings && outcome.accepted === true ? ["settings"] : [],
+      );
       const settled = { ...outcome, live: this.live(id, true) };
       // The stored result was built while this request still counted as unconfirmed, so its
       // snapshot says "outcome-unknown". A replay or a receipt would hand that to a client,

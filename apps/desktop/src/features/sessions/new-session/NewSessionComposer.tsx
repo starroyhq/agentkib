@@ -14,20 +14,20 @@ import {
   LoaderCircle,
   Plus,
   Search,
+  Shield,
   TriangleAlert,
   X,
 } from "lucide-react";
+import { newSessionProvider, type ManagedAgent } from "@agentkib/web-client";
 import {
-  newSessionProvider,
-  type CodexSessionSettings,
-  type ManagedAgent,
-} from "@agentkib/web-client";
-import {
+  ComposerModelPicker,
+  ComposerPermissionMenu,
   dshAgentPresetText,
   fillCopy,
   NEW_SESSION_AGENTS,
   newSessionCopy,
   newSessionCreateFields,
+  newSessionModelSettings,
   devinTerminalAction,
   devinTerminalCopy,
   newSessionPermissions,
@@ -54,9 +54,7 @@ import {
   ComposerTextarea,
   ComposerToolbar,
 } from "../ComposerFrame";
-import { ComposerPermissionMenu } from "../ComposerPermissionMenu";
 import { codexCopy, codexReason } from "../conversation/features/sessions/codex-copy";
-import { ComposerModelPicker } from "../conversation/features/sessions/composer-model-picker";
 import { isSendEnter, useEnterSends } from "../conversation/features/sessions/composer-shortcuts";
 import { MAX_MESSAGE_LENGTH } from "../conversation/features/sessions/session-model";
 import {
@@ -68,8 +66,6 @@ import {
 import { failureOf, useNewSession } from "./use-new-session";
 
 const MAX_FILES = 10;
-const available = { available: true };
-const unavailable = { available: false };
 const chip =
   "h-8 min-w-0 gap-1.5 rounded-full px-2.5 text-sm font-normal text-muted-foreground hover:text-foreground";
 
@@ -145,8 +141,12 @@ export function NewSessionComposer(props: NewSessionComposerProps) {
       if (own) void handOff(sessionId, submittedWithPrompt.current);
     },
   });
-  const options = session.options.data;
+  const options = session.optionsData;
   const provider = newSessionProvider(agent, options);
+  const showPermission = provider?.create.permissionPicker === true;
+  const showModel = provider?.create.modelPicker === true;
+  const showPresets = provider?.create.agentPresets === true;
+  const optionsStatus = session.optionsLoading ? copy.loadingOptions : copy.optionsUnavailable;
   const promptAtCreate = provider?.create.mode === "with-first-message";
   // The create request can carry the first message's text. Attachments use the opened session.
   const acceptsAttachments = (provider?.create.attachments ?? true) && !promptAtCreate;
@@ -180,51 +180,10 @@ export function NewSessionComposer(props: NewSessionComposerProps) {
     }
   };
 
-  const modelSettings = useMemo((): CodexSessionSettings | undefined => {
-    if (!options?.available || !options.models?.length) return undefined;
-    const reported = options.defaults?.model;
-    const defaultModel = reported
-      ? (options.models.find((item) => item.id === reported) ??
-        options.models.find((item) => item.resolvedModel === reported))
-      : options.models.find((item) => item.isDefault);
-    const defaults = {
-      modelId: defaultModel?.id ?? reported ?? undefined,
-      effort: options.defaults?.effort ?? undefined,
-      serviceTierId: options.defaults?.serviceTierId ?? undefined,
-    };
-    return {
-      sessionId: "",
-      available: true,
-      revision: 0,
-      provider,
-      current: defaults,
-      defaults,
-      writable: {
-        model: available,
-        effort: available,
-        mode: unavailable,
-        policy: unavailable,
-        serviceTier:
-          provider?.create.serviceTiers && options.serviceTiers?.length ? available : unavailable,
-        restoreDefaults: available,
-      },
-      options: {
-        models: options.models.map((item) => ({
-          id: item.id,
-          name: item.name,
-          resolvedModel: item.resolvedModel,
-          group: item.group,
-          efforts: item.efforts ?? [],
-          defaultEffort: item.defaultEffort,
-          serviceTierIds: provider?.create.serviceTiers ? (item.serviceTierIds ?? []) : [],
-          variants: item.variants,
-          maxContextTokens: item.maxContextTokens,
-        })),
-        policies: [],
-        serviceTiers: provider?.create.serviceTiers ? (options.serviceTiers ?? []) : [],
-      },
-    };
-  }, [options, provider]);
+  const modelSettings = useMemo(
+    () => newSessionModelSettings(options, provider),
+    [options, provider],
+  );
   const {
     model = "",
     effort = "",
@@ -238,18 +197,26 @@ export function NewSessionComposer(props: NewSessionComposerProps) {
   const shownEffort = effort || (model ? chosenModelDefaultEffort : modelSettings?.defaults.effort);
   const shownTier =
     (serviceTierId ?? (!model ? modelSettings?.defaults.serviceTierId : undefined)) || undefined;
-  const permissions = newSessionPermissions(agent, options, locale);
+  const verifiedOptions = options?.available ? options : undefined;
+  const permissions = newSessionPermissions(agent, verifiedOptions, locale, {
+    fullAccess: session.fullAccess,
+  });
   const shownPermission = permissions?.choices.find(
     (item) => item.id === (permission ?? permissions.initial),
   );
-  const { presets, defaultId: defaultPreset } = newSessionPresets(agent, options, provider?.create);
+  const { presets, defaultId: defaultPreset } = newSessionPresets(
+    agent,
+    verifiedOptions,
+    provider?.create,
+  );
   const preset = presets.find((item) => item.id === (agentPreset ?? defaultPreset));
 
-  const unavailableReason = session.options.isError
-    ? failureOf(session.options.error, locale).reason
-    : options && !options.available
-      ? codexReason(locale, options.reason).text
-      : undefined;
+  const unavailableReason =
+    session.options.isError && !options
+      ? failureOf(session.options.error, locale).reason
+      : options && !options.available
+        ? codexReason(locale, options.reason).text
+        : undefined;
   const locked = sending || session.busy;
   const canSend =
     session.ready &&
@@ -273,6 +240,7 @@ export function NewSessionComposer(props: NewSessionComposerProps) {
         shownModel: modelId,
         permission,
         preset: agentPreset,
+        fullAccess: session.fullAccess,
       },
       options,
       provider?.create,
@@ -431,7 +399,7 @@ export function NewSessionComposer(props: NewSessionComposerProps) {
             ))}
           </DropdownMenuContent>
         </DropdownMenu>
-        {presets.length > 0 && (
+        {showPresets && presets.length > 0 && (
           <DropdownMenu>
             <DropdownMenuTrigger
               render={<Button variant="ghost" className={chip} disabled={locked} />}
@@ -463,6 +431,15 @@ export function NewSessionComposer(props: NewSessionComposerProps) {
               ))}
             </DropdownMenuContent>
           </DropdownMenu>
+        )}
+        {showPresets && presets.length === 0 && (
+          <UnavailableOptionButton
+            label={copy.preset}
+            status={optionsStatus}
+            loading={session.optionsLoading}
+            className={chip}
+            icon={<Layers className="size-3.5 shrink-0" aria-hidden />}
+          />
         )}
       </div>
       <ComposerFrame
@@ -550,7 +527,7 @@ export function NewSessionComposer(props: NewSessionComposerProps) {
               >
                 <Plus size={20} aria-hidden />
               </ComposerIconButton>
-              {permissions && shownPermission && (
+              {showPermission && permissions && shownPermission && (
                 <ComposerPermissionMenu
                   label={shownPermission.name}
                   title={permissions.title}
@@ -562,11 +539,21 @@ export function NewSessionComposer(props: NewSessionComposerProps) {
                   onSelect={setPermission}
                 />
               )}
+              {showPermission && !shownPermission && (
+                <UnavailableOptionButton
+                  label={copy.permission}
+                  status={optionsStatus}
+                  loading={session.optionsLoading}
+                  className="h-11 min-w-0 rounded-full px-2.5 text-sm font-normal text-muted-foreground"
+                  compact
+                  icon={<Shield className="size-3.5 shrink-0" aria-hidden />}
+                />
+              )}
             </>
           }
           trailing={
             <>
-              {modelSettings && (
+              {showModel && modelSettings && (
                 <ComposerModelPicker
                   key={modelScope}
                   locale={locale}
@@ -639,6 +626,14 @@ export function NewSessionComposer(props: NewSessionComposerProps) {
                   }}
                 />
               )}
+              {showModel && !modelSettings && (
+                <UnavailableOptionButton
+                  label={copy.model}
+                  status={optionsStatus}
+                  loading={session.optionsLoading}
+                  className="h-9 min-w-0 max-w-64 rounded-full px-2 text-sm font-normal"
+                />
+              )}
               <ComposerIconButton
                 type="submit"
                 aria-label={copy.send}
@@ -656,6 +651,42 @@ export function NewSessionComposer(props: NewSessionComposerProps) {
         />
       </ComposerFrame>
     </section>
+  );
+}
+
+function UnavailableOptionButton({
+  label,
+  status,
+  loading,
+  className,
+  icon,
+  compact,
+}: {
+  label: string;
+  status: string;
+  loading: boolean;
+  className: string;
+  icon?: ReactNode;
+  compact?: boolean;
+}) {
+  return (
+    <Button
+      type="button"
+      variant="ghost"
+      className={className}
+      disabled
+      aria-busy={loading || undefined}
+      aria-label={`${label}: ${status}`}
+      title={status}
+    >
+      {icon}
+      <span className={cn("truncate", compact && "@max-[28rem]:sr-only")}>{label}</span>
+      {loading ? (
+        <LoaderCircle className="size-3.5 shrink-0 motion-safe:animate-spin" aria-hidden />
+      ) : (
+        <ChevronDown className="size-3.5 shrink-0" aria-hidden />
+      )}
+    </Button>
   );
 }
 

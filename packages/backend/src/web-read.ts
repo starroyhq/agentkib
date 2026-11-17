@@ -78,6 +78,7 @@ import { activityBlocks, assertActivityAllows } from "./session-activity";
 import { acquireManagedSessionLease, existingFileLeaseBusy } from "./managed-session-lock";
 import { acquireCodexFollowerOperationLock } from "./codex-follower-operation-lock";
 import {
+  annotateManagedCommand,
   claimManagedCommand,
   createManagedSnapshotWriter,
   deleteManagedSessions,
@@ -88,10 +89,12 @@ import {
   openManagedLedger,
   persistManagedGoal,
   readManagedEvents,
+  readManagedRecord,
   readManagedUsageLimit,
   readUnknownManagedCommands,
   replayManagedCommand,
   saveManagedRecord,
+  saveManagedSettingsReceipt,
   saveManagedUsageLimit,
 } from "./managed-ledger";
 import { CodexLeadTurns } from "./lead-turn-origin";
@@ -112,6 +115,7 @@ import {
 
 const FOLLOWER_RETRY_MS = 5_000;
 const FOLLOWER_IDLE_MS = 30_000;
+const LEGACY_ADOPT_RECHECK_MS = 5_000;
 /** How long a send waits for the Codex app to take a thread it was asked to show. */
 const HANDOFF_TIMEOUT_MS = 8_000;
 const HANDOFF_POLL_MS = 250;
@@ -311,6 +315,7 @@ const managedLifecycleSchema = z.discriminatedUnion("operation", [
       ]),
       model: z.string().min(1).max(256).optional(),
       effort: z.string().min(1).max(64).optional(),
+      serviceTier: z.string().min(1).max(128).optional(),
     })
     .strict(),
   z
@@ -713,6 +718,10 @@ export class WebReadRequests {
   #operations = new Set<Promise<unknown>>();
   #bootId = randomUUID();
   #managedRunners = new Map<string, ManagedRunner>();
+  #legacyAdoptChecks = new Map<
+    string,
+    { retryAt: number; live: Promise<Record<string, unknown> | undefined> }
+  >();
   /**
    * The usage limit each managed Codex session's last turn met, and the continue armed for it
    * (`usage-limit.ts`). In memory only: as Claude Code's own wait does, it ends with AgentKib.
@@ -804,9 +813,9 @@ export class WebReadRequests {
     readonly environment: NodeJS.ProcessEnv,
     readonly publishConversationEvent?: (
       sessionId: string,
-      type: "state" | "text-delta" | "item-upsert" | "snapshot",
+      type: "state" | "text-delta" | "item-upsert" | "snapshot" | "invalidate",
       payload: Record<string, unknown>,
-      live: Record<string, unknown>,
+      live?: Record<string, unknown>,
       textItem?: Record<string, unknown>,
     ) => void,
     readonly isSessionObserved?: (sessionId: string) => boolean,
@@ -1118,35 +1127,46 @@ export class WebReadRequests {
         ]);
         const rows = isObject(response) && Array.isArray(response.data) ? response.data : null;
         if (!rows) throw new Error("invalid-model-catalog");
+        const catalogTiers = new Map<string, { id: string; name: string; description?: string }>();
         const models = rows
           .filter((model) => isObject(model) && model.hidden !== true)
           .slice(0, 100)
-          .map((model) => ({
-            id: model.model,
-            name: model.displayName,
-            isDefault: model.isDefault,
-            defaultEffort: model.defaultReasoningEffort,
-            defaultServiceTier: model.defaultServiceTier,
-            efforts: Array.isArray(model.supportedReasoningEfforts)
-              ? model.supportedReasoningEfforts
-                  .filter(isObject)
-                  .map((effort: Record<string, unknown>) => effort.reasoningEffort)
-              : [],
-            serviceTiers: Array.isArray(model.serviceTiers)
-              ? model.serviceTiers
-                  .slice(0, 16)
-                  .map((tier: unknown) =>
-                    isObject(tier)
-                      ? { id: tier.id, name: tier.name, description: tier.description }
-                      : {},
-                  )
-              : [],
-          }));
+          .map((model) => {
+            const serviceTiers = Array.isArray(model.serviceTiers)
+              ? model.serviceTiers.slice(0, 16).flatMap((tier: unknown) => {
+                  if (!isObject(tier) || typeof tier.id !== "string" || !tier.id) return [];
+                  const entry = {
+                    id: tier.id,
+                    name: typeof tier.name === "string" ? tier.name : tier.id,
+                    ...(typeof tier.description === "string"
+                      ? { description: tier.description }
+                      : {}),
+                  };
+                  if (!catalogTiers.has(tier.id)) catalogTiers.set(tier.id, entry);
+                  return [entry];
+                })
+              : [];
+            return {
+              id: model.model,
+              name: model.displayName,
+              isDefault: model.isDefault,
+              defaultEffort: model.defaultReasoningEffort,
+              defaultServiceTier: model.defaultServiceTier,
+              efforts: Array.isArray(model.supportedReasoningEfforts)
+                ? model.supportedReasoningEfforts
+                    .filter(isObject)
+                    .map((effort: Record<string, unknown>) => effort.reasoningEffort)
+                : [],
+              serviceTiers,
+              serviceTierIds: serviceTiers.map(({ id }: { id: string }) => id),
+            };
+          });
         const defaultModel = models.find((model) => model.isDefault === true);
         return {
           available: true,
           executionMode: "codex-managed",
           models,
+          serviceTiers: [...catalogTiers.values()],
           defaults: {
             model: defaultModel?.id ?? null,
             effort: defaultModel?.defaultEffort ?? null,
@@ -1319,6 +1339,16 @@ export class WebReadRequests {
       fingerprintOverride ?? createHash("sha256").update(stableJson(value)).digest("hex");
     const prior = replayManagedCommand(this.dataDir, request.requestId, fingerprint);
     if (prior) return prior;
+    if (request.operation === "adopt")
+      return {
+        accepted: false,
+        completed: false,
+        controlOutcome: "not-dispatched",
+        reason: "operation-unavailable",
+        sessionId: request.sessionId,
+        requestId: request.requestId,
+        runtimeBootId: this.#bootId,
+      };
     const records = readManagedRecords(this.dataDir, this.store);
     if (request.operation === "release") {
       const record = records.find((item) => item.id === request.sessionId);
@@ -1442,46 +1472,11 @@ export class WebReadRequests {
       }
     }
     if (this.#managedRunners.size >= 8) throw new Error("managed-session-limit");
-    let id: string;
-    let workspaceId: string;
-    let nativeId: string | null = null;
-    let title = "Codex";
-    let adopted = false;
-    let policyId = "workspace-write-on-request";
-    let model: string | null = null;
-    let effort: string | null = null;
-
-    if (request.operation === "create") {
-      id = createHash("sha256").update(`managed:${request.requestId}`).digest("hex");
-      workspaceId = request.workspaceId;
-      policyId = request.policyId;
-      model = request.model ?? null;
-      effort = request.effort ?? null;
-      if (effort && !model) throw new Error("effort-requires-model");
-    } else {
-      const summary = this.store.sessions.get(request.sessionId);
-      if (!summary) throw new Error("session-unavailable");
-      if (summary.agent !== "codex" || summary.sidechain) throw new Error("session-not-adoptable");
-      if (records.some((record) => record.id === request.sessionId && !record.released))
-        throw new Error("session-already-managed");
-      const resolved = await this.sessions.resolve(request.sessionId);
-      if (resolved.summary.agent !== "codex" || resolved.native.agent !== "codex")
-        throw new Error("session-not-adoptable");
-      nativeId = resolved.native.native_ref;
-      const verified = this.sessions.verifiedCodexControlIds([nativeId]);
-      if (!verified.has(nativeId.toLowerCase())) throw new Error("unverified-session");
-      if (
-        records.some(
-          (record) => (!record.released || !record.adopted) && record.native_id === nativeId,
-        )
-      )
-        throw new Error("session-already-managed");
-      id = request.sessionId;
-      workspaceId = summary.workspace_id;
-      title = summary.title ?? "Codex";
-      adopted = true;
-    }
-
+    const id = createHash("sha256").update(`managed:${request.requestId}`).digest("hex");
+    const { workspaceId, policyId } = request;
+    const model = request.model ?? null;
+    const effort = request.effort ?? null;
+    if (effort && !model) throw new Error("effort-requires-model");
     const workspace = canonicalize(this.store.workspacePath(workspaceId));
     const home = canonicalize(this.sessions.codexHome());
     const workspaceRow = (this.store.listWorkspaces() as Array<{ id: string; path: string }>).find(
@@ -1498,10 +1493,10 @@ export class WebReadRequests {
       workspace_id: workspaceId,
       workspace,
       home,
-      native_id: nativeId,
+      native_id: null,
       model,
       effort,
-      service_tier: null,
+      service_tier: request.serviceTier ?? null,
       policy_id: policyId,
       default_model: null,
       default_effort: null,
@@ -1509,10 +1504,10 @@ export class WebReadRequests {
       native_settings: null,
       mode: null,
       source_session_id: null,
-      title,
+      title: "Codex",
       created_at: new Date().toISOString(),
       released: false,
-      adopted,
+      adopted: false,
       archived: false,
       token_usage: null,
       goal: null,
@@ -1608,11 +1603,11 @@ export class WebReadRequests {
     }
   }
 
-  managedResume(value: unknown, automatic = false) {
-    return this.#runOperation(() => this.#managedResume(value, automatic));
+  managedResume(value: unknown) {
+    return this.#runOperation(() => this.#managedResume(value));
   }
 
-  async #managedResume(value: unknown, automatic = false) {
+  async #managedResume(value: unknown) {
     const request = managedResumeSchema.parse(value);
     const fingerprint = createHash("sha256").update(stableJson(value)).digest("hex");
     const previous = replayManagedCommand(this.dataDir, request.requestId, fingerprint);
@@ -1620,21 +1615,8 @@ export class WebReadRequests {
     const record = readManagedRecords(this.dataDir, this.store, true).find(
       (item) => item.id === request.sessionId,
     );
-    if (!record) {
-      if (!request.experimentalEnabled || request.runtimeBootId !== this.#bootId)
-        throw new Error("stale-or-disabled-control");
-      return this.managedLifecycle(
-        {
-          operation: "adopt",
-          requestId: request.requestId,
-          deviceId: request.deviceId,
-          sessionId: request.sessionId,
-          handoffConfirmed: request.handoffConfirmed,
-        },
-        fingerprint,
-      );
-    }
-    if (!record.released && !automatic) throw new Error("session-not-released");
+    if (!record) throw new Error("session-unavailable");
+    if (!record.released) throw new Error("session-not-released");
     if (record.archived) throw new Error("session-archived");
     if (!request.experimentalEnabled || request.runtimeBootId !== this.#bootId)
       throw new Error("stale-or-disabled-control");
@@ -1654,7 +1636,7 @@ export class WebReadRequests {
     );
     if (
       !latest ||
-      (!latest.released && !automatic) ||
+      !latest.released ||
       latest.archived ||
       latest.native_id !== record.native_id ||
       latest.workspace_id !== record.workspace_id ||
@@ -2310,31 +2292,12 @@ export class WebReadRequests {
       const cwd = this.#managedCwd(record);
       const home = this.#assertManagedHome(record);
       const executable = checked.executable;
-      const catalog = await this.#settingsCatalog
-        .read(codexCatalogKey(executable, home, cwd), async () => {
-          let catalog: unknown[];
-          try {
-            catalog = await this.#codex.requestMany(executable, cwd, home, [
-              ["model/list", { limit: 100 }],
-              ["collaborationMode/list", {}],
-            ]);
-          } catch {
-            // A CLI that rejects the presets still lists its models; Plan stays unavailable.
-            catalog = [
-              await this.#codex.request(executable, cwd, home, "model/list", { limit: 100 }),
-              null,
-            ];
-          }
-          // Sending or saving settings starts the runner, which checks the presets again.
-          return {
-            models: projectManagedModels(catalog[0]),
-            collaborationModes: verifiedCollaborationModes(catalog[1]),
-          };
-        })
-        .catch((error: unknown) => {
+      const catalog = await this.#readCodexSettingsCatalog(executable, home, cwd).catch(
+        (error: unknown) => {
           if (!history) throw error;
           return undefined;
-        });
+        },
+      );
       if (!catalog) return unavailable("request_failed");
       const { models, collaborationModes } = catalog;
       return {
@@ -2407,6 +2370,28 @@ export class WebReadRequests {
       revision: live.revision,
       runtimeBootId: this.#bootId,
     };
+  }
+
+  #readCodexSettingsCatalog(executable: string, home: string, cwd: string) {
+    return this.#settingsCatalog.read(codexCatalogKey(executable, home, cwd), async () => {
+      let catalog: unknown[];
+      try {
+        catalog = await this.#codex.requestMany(executable, cwd, home, [
+          ["model/list", { limit: 100 }],
+          ["collaborationMode/list", {}],
+        ]);
+      } catch {
+        // A CLI that rejects the presets still lists its models.
+        catalog = [
+          await this.#codex.request(executable, cwd, home, "model/list", { limit: 100 }),
+          null,
+        ];
+      }
+      return {
+        models: projectManagedModels(catalog[0]),
+        collaborationModes: verifiedCollaborationModes(catalog[1]),
+      };
+    });
   }
 
   managedQuery(value: unknown) {
@@ -2503,9 +2488,11 @@ export class WebReadRequests {
     if (request.operation === "capabilities") {
       if (!record || !this.#managedRunners.get(request.sessionId)?.session.connected) {
         const source = record ?? (await this.#inactiveRecord(request.sessionId));
-        const live = await this.#inactiveLive(source, request.experimentalEnabled === true);
-        const checked = await this.#preflight.check();
         const controls = request.experimentalEnabled === true;
+        let live = await this.#inactiveLive(source, controls);
+        if (controls && record && live.reason === "control-outcome-unconfirmed")
+          live = (await this.#recoverLegacyAdopt(record)) ?? live;
+        const checked = await this.#preflight.check();
         const followed = await this.#desktopFollowerLive(source, live, controls);
         if (followed) {
           const f = followed;
@@ -2721,8 +2708,7 @@ export class WebReadRequests {
         features.delete = deleteReason
           ? { available: false, reason: deleteReason }
           : { available: true };
-        // Settings can be applied before the first turn by starting our own runner, and a
-        // send with attachments starts it the same way.
+        // Model choices can be saved before the first turn. Execution obtains its own writer.
         for (const operation of ["settings", "rename", "archive", "attachments", "compact"])
           features[operation] = allowed ? { available: true } : features.send!;
         // The Codex app holds the thread with no window answering for it: a message (with its
@@ -3316,6 +3302,150 @@ export class WebReadRequests {
     return this.#codexControl(request, fingerprint);
   }
 
+  async #inactiveCodexControlRecord(source: ManagedRecord, expectedRevision: number) {
+    const records = readManagedRecords(this.dataDir, this.store);
+    const record =
+      records.find((item) => item.id === source.id) ?? (await this.#inactiveRecord(source.id));
+    if (
+      !record.native_id ||
+      record.native_id !== source.native_id ||
+      record.archived ||
+      record.workspace_id !== source.workspace_id ||
+      (record.snapshot?.revision ?? 0) !== expectedRevision ||
+      managedSessionHasUnknownCommands(this.dataDir, source.id)
+    )
+      throw new Error("stale-or-disabled-control");
+    if (
+      records.some(
+        (item) =>
+          item.id !== record.id &&
+          item.native_id === record.native_id &&
+          (!item.released || !item.adopted),
+      )
+    )
+      throw new Error("session-already-managed");
+    return { ...record, native_id: record.native_id };
+  }
+
+  async #connectCodexForControl(source: ManagedRecord, request: SettingsControl) {
+    const unlock = acquireManagedSessionLease(this.dataDir, source.id);
+    let ownsLease = true;
+    const release = () => {
+      if (!ownsLease) return;
+      ownsLease = false;
+      unlock();
+    };
+    let prior: ManagedRecord | undefined;
+    const restore = (_error: unknown, ownsLease: boolean) => {
+      if (prior && ownsLease) {
+        saveManagedRecord(this.dataDir, prior);
+        prior = undefined;
+      }
+    };
+    try {
+      const record = await this.#inactiveCodexControlRecord(source, request.expectedRevision);
+      if (this.#managedRunners.size >= 8) throw new Error("managed-session-limit");
+      const cwd = this.#managedCwd(record);
+      const home = this.#assertManagedHome(record);
+      this.#assertOpen();
+      const starting: ManagedRecord = {
+        ...record,
+        cwd,
+        released: false,
+        snapshot: { ...record.snapshot, status: "starting", reason: null },
+      };
+      saveManagedRecord(this.dataDir, starting);
+      prior = record;
+      const runner = await this.#attachManagedRunner(
+        starting,
+        record.workspace,
+        home,
+        release,
+        undefined,
+        undefined,
+        restore,
+      );
+      this.#managedRunners.set(source.id, runner);
+      return runner;
+    } catch (error) {
+      if (!this.#managedRunners.has(source.id)) {
+        try {
+          restore(error, ownsLease);
+        } finally {
+          release();
+        }
+      }
+      throw error;
+    }
+  }
+
+  async #stageCodexSettings(
+    source: ManagedRecord,
+    request: SettingsControl,
+    policyOnly?: NonNullable<SettingsControl["policyId"]>,
+  ) {
+    const release = acquireManagedSessionLease(this.dataDir, source.id);
+    try {
+      const record = await this.#inactiveCodexControlRecord(source, request.expectedRevision);
+      const cwd = this.#managedCwd(record);
+      const home = this.#assertManagedHome(record);
+      let settings: Partial<ManagedRecord> = { policy_id: policyOnly };
+      if (!policyOnly) {
+        const checked = await this.#preflight.check();
+        if (!checked.executable || checked.reason)
+          throw new Error(checked.reason ?? "codex-cli-unavailable");
+        const { models } = await this.#readCodexSettingsCatalog(checked.executable, home, cwd);
+        const defaults = models.find((model) => model.isDefault);
+        const withDefaults = {
+          default_model: defaults?.id ?? null,
+          default_effort: defaults?.defaultEffort ?? null,
+          default_service_tier: defaults?.defaultServiceTier ?? null,
+        };
+        settings = {
+          ...withDefaults,
+          ...codexSettingsMutation(request, { ...record, ...withDefaults }, models),
+        };
+      }
+      const snapshot: Record<string, unknown> = {
+        ...record.snapshot,
+        status: "idle",
+        reason: null,
+        settingsStaged: true,
+        revision: request.expectedRevision + 1,
+      };
+      // Recording permissions alone should not clear inherited effort or Fast at resume.
+      if (policyOnly && !hasStagedCodexModelSettings(record)) snapshot.policyOnlyStaged = true;
+      else delete snapshot.policyOnlyStaged;
+      const staged: ManagedRecord = {
+        ...record,
+        ...settings,
+        snapshot,
+      };
+      this.#assertOpen();
+      if (this.#assertManagedHome(record) !== home || this.#managedCwd(record) !== cwd)
+        throw new Error("codex-workspace-mismatch");
+      if (existingFileLeaseBusy(path.join(home, "thread-writer-locks", `${record.native_id}.lock`)))
+        throw new Error("codex-owner-busy");
+      if (managedSessionHasUnknownCommands(this.dataDir, source.id))
+        throw new Error("control-outcome-unconfirmed");
+      const result = {
+        accepted: true,
+        completed: true,
+        appliesTo: "next-turn",
+        sessionId: source.id,
+        requestId: request.requestId,
+        runtimeBootId: this.#bootId,
+      };
+      saveManagedSettingsReceipt(this.dataDir, staged, request.requestId, result);
+      this.publishConversationEvent?.(source.id, "invalidate", {
+        domains: ["settings", "ownership", "receipts"],
+      });
+      return result;
+    } finally {
+      release();
+    }
+  }
+
   async #codexControl(request: SettingsControl, fingerprint: string) {
     let record = readManagedRecords(this.dataDir, this.store).find(
       (item) => item.id === request.sessionId,
@@ -3353,171 +3483,130 @@ export class WebReadRequests {
     }
     let runner = this.#managedRunners.get(request.sessionId);
     let resumedControlState: string | undefined;
+    let prepared = false;
+    const claim = (workspaceId: string) =>
+      claimManagedCommand(
+        this.dataDir,
+        request.requestId,
+        request.sessionId,
+        fingerprint,
+        request.deviceId ?? null,
+        codexCommandEvidence(request, workspaceId),
+      );
+    const reject = (reason: string, workspaceId: string) => {
+      if (!prepared) {
+        const prior = claim(workspaceId);
+        if (prior) return prior;
+      }
+      const result = {
+        accepted: false,
+        completed: false,
+        controlOutcome: "not-dispatched",
+        reason,
+        sessionId: request.sessionId,
+        requestId: request.requestId,
+        runtimeBootId: this.#bootId,
+      };
+      finishManagedCommand(this.dataDir, request.requestId, result);
+      return result;
+    };
     if (!runner?.session.connected || runner.retiring) {
       const inactive = record ?? (await this.#inactiveRecord(request.sessionId));
-      const reject = (reason: string) => {
-        const result = {
-          accepted: false,
-          completed: false,
-          controlOutcome: "not-dispatched",
-          reason,
-          sessionId: request.sessionId,
-          requestId: request.requestId,
-          runtimeBootId: this.#bootId,
-        };
-        // This acknowledgement may itself be lost between the backend, host and
-        // browser. Give the unsent parent operation a device-bound receipt too;
-        // never overwrite a concurrent claim or the child's unknown resume.
-        const claimed = claimManagedCommand(
-          this.dataDir,
-          request.requestId,
-          request.sessionId,
-          fingerprint,
-          request.deviceId ?? null,
-          {
-            operation: request.operation,
-            workspaceId: inactive.workspace_id,
-            runtimeBootId: request.runtimeBootId,
-            expectedRevision: request.expectedRevision,
-            executionMode: "codex-managed",
-            turnId: null,
-            nativeRequestId: null,
-            ...(request.historyInputHash ? { historyInputHash: request.historyInputHash } : {}),
-          },
-        );
-        if (claimed) return claimed;
-        finishManagedCommand(this.dataDir, request.requestId, result);
-        return result;
-      };
+      const rejectInactive = (reason: string) => reject(reason, inactive.workspace_id);
       if (runner?.retiring || managedSessionHasUnknownCommands(this.dataDir, request.sessionId))
-        return reject("control-outcome-unconfirmed");
+        return rejectInactive("control-outcome-unconfirmed");
       const follower = this.#attachedCodexFollower(inactive);
       if (follower) {
         if (!["send", "stop", "approve"].includes(request.operation))
-          return reject("follower-operation-unverified");
+          return rejectInactive("follower-operation-unverified");
+        if (request.operation === "send" && inactive.snapshot?.settingsStaged === true)
+          return rejectInactive("codex-owner-busy");
         return this.#codexFollowerControl(request, fingerprint, follower, inactive.workspace_id);
       }
       if (request.expectedRevision !== (inactive.snapshot?.revision ?? 0))
-        return reject("stale-or-disabled-control");
+        return rejectInactive("stale-or-disabled-control");
       if (!["send", "settings", "rename", "archive", "compact"].includes(request.operation))
-        return reject("session-not-running");
-      const checked = await this.#preflight.check();
-      if (checked.reason) return reject(checked.reason);
+        return rejectInactive("session-not-running");
+      const policyOnly = codexPolicyOnly(request);
+      if (!policyOnly) {
+        const checked = await this.#preflight.check();
+        if (checked.reason) return rejectInactive(checked.reason);
+      }
+      const prior = claim(inactive.workspace_id);
+      if (prior) return prior;
+      prepared = true;
       // Only resume is authoritative: the earlier focus probe can race another client.
       try {
-        const resumed: unknown = await this.managedResume(
-          {
-            operation: "resume",
-            sessionId: request.sessionId,
-            requestId: randomUUID(),
-            deviceId: request.deviceId ?? "agentkib-local-owner",
-            runtimeBootId: this.#bootId,
-            expectedRevision: request.expectedRevision,
-            experimentalEnabled: true,
-          },
-          true,
-        );
-        if (!isObject(resumed) || resumed.accepted !== true) {
-          const reason =
-            isObject(resumed) && typeof resumed.reason === "string"
-              ? resumed.reason
-              : "recovery-required";
-          if (reason === "codex-owner-busy")
-            this.#ownership.set(request.sessionId, { checkedAt: Date.now(), reason });
-          if (reason === "codex-owner-busy" && request.operation === "send") {
-            const handed = await this.#desktopHandoff(inactive);
-            // The app now runs the thread: the message goes to it, under the same receipt. The
-            // client's revision was the busy state's; the app's state starts its own count.
-            if (handed)
-              return this.#codexFollowerControl(
-                { ...request, expectedRevision: handed.revision },
-                fingerprint,
-                handed.follower,
-                inactive.workspace_id,
-              );
-          }
-          // The native resume has its own durable receipt. Even if its reply is
-          // lost, this user operation has not reached turn/start (or another
-          // user mutation). Keep the child uncertainty as the session fence,
-          // while allowing the caller to clear this unsent message's receipt.
-          return reject(reason);
-        }
-        runner = this.#managedRunners.get(request.sessionId);
-        record = readManagedRecords(this.dataDir, this.store).find(
-          (item) => item.id === request.sessionId,
-        );
-        if (runner) {
-          request.expectedRevision = runner.state.revision;
-          if (request.operation === "send") resumedControlState = managedControlState(runner.state);
-        }
+        if (
+          policyOnly ||
+          (request.operation === "settings" &&
+            request.mode === undefined &&
+            request.policyId === undefined)
+        )
+          return await this.#stageCodexSettings(inactive, request, policyOnly);
+        runner = await this.#connectCodexForControl(inactive, request);
+        record = { ...(runner.state.record as ManagedRecord) };
+        request.expectedRevision = runner.state.revision;
+        if (request.operation === "send") resumedControlState = managedControlState(runner.state);
       } catch (error) {
-        if (codexWriterBusy(error) && request.operation === "send") {
-          const handed = await this.#desktopHandoff(inactive);
+        const busy = codexWriterBusy(error);
+        if (busy)
+          this.#ownership.set(request.sessionId, {
+            checkedAt: Date.now(),
+            reason: "codex-owner-busy",
+          });
+        if (busy && request.operation === "send" && inactive.snapshot?.settingsStaged !== true) {
+          const handed = await this.#desktopHandoff(inactive).catch(() => undefined);
           if (handed)
             return this.#codexFollowerControl(
               { ...request, expectedRevision: handed.revision },
               fingerprint,
               handed.follower,
               inactive.workspace_id,
+              true,
             );
         }
-        return reject(
-          codexWriterBusy(error)
-            ? "codex-owner-busy"
-            : error instanceof Error
-              ? error.message
-              : "recovery-required",
+        return rejectInactive(
+          busy ? "codex-owner-busy" : error instanceof Error ? error.message : "recovery-required",
         );
       }
     }
-    if (!record) throw new Error("session-unavailable");
-    if (!runner || !runner.session.connected) throw new Error("session-runner-unavailable");
-    if (managedSessionHasUnknownCommands(this.dataDir, request.sessionId))
-      throw new Error("control-outcome-unconfirmed");
-
-    const workspace = canonicalize(this.store.workspacePath(record.workspace_id));
-    if (pathIdentity(workspace) !== pathIdentity(canonicalize(record.workspace)))
-      throw new Error("session-workspace-mismatch");
-    this.#assertManagedHome(record);
-    if (!record.native_id || record.native_id !== runner.state.nativeId)
-      throw new Error("native-session-unconfirmed");
-    const cwd = this.#managedCwd(record);
-    const snapshot = await runner.bridge.snapshot(this.#bootId, true);
-    if (activityBlocks(snapshot, request.operation))
-      return compactingRejection(request, this.#bootId);
-    if (
-      resumedControlState !== undefined &&
-      managedControlState(runner.state) === resumedControlState
-    )
-      request.expectedRevision = Number(snapshot.revision);
-    if (snapshot.reason || snapshot.revision !== request.expectedRevision)
-      throw new Error("stale-or-disabled-control");
+    if (!record || !runner) throw new Error("session-unavailable");
+    let cwd: string;
+    let snapshot: Record<string, unknown>;
+    try {
+      if (!runner.session.connected) throw new Error("session-runner-unavailable");
+      if (managedSessionHasUnknownCommands(this.dataDir, request.sessionId))
+        throw new Error("control-outcome-unconfirmed");
+      this.#assertManagedHome(record);
+      if (!record.native_id || record.native_id !== runner.state.nativeId)
+        throw new Error("native-session-unconfirmed");
+      cwd = this.#managedCwd(record);
+      snapshot = await runner.bridge.snapshot(this.#bootId, true);
+      if (activityBlocks(snapshot, request.operation)) {
+        const result = compactingRejection(request, this.#bootId);
+        if (prepared) finishManagedCommand(this.dataDir, request.requestId, result);
+        return result;
+      }
+      if (
+        resumedControlState !== undefined &&
+        managedControlState(runner.state) === resumedControlState
+      )
+        request.expectedRevision = Number(snapshot.revision);
+      if (snapshot.reason || snapshot.revision !== request.expectedRevision)
+        throw new Error("stale-or-disabled-control");
+    } catch (error) {
+      if (prepared)
+        return reject(
+          error instanceof Error ? error.message : "control-preflight-rejected",
+          record.workspace_id,
+        );
+      throw error;
+    }
     if (request.operation === "fork")
       return this.#managedFork(request, record, runner, fingerprint);
 
-    const evidence = {
-      operation: request.operation,
-      turnId: request.turnId ?? null,
-      nativeRequestId:
-        request.operation === "approve"
-          ? (request.approvalId ?? null)
-          : request.operation === "answer"
-            ? (request.questionId ?? null)
-            : null,
-      runtimeBootId: request.runtimeBootId,
-      expectedRevision: request.expectedRevision,
-      executionMode: "codex-managed",
-      workspaceId: record.workspace_id,
-      ...(request.historyInputHash ? { historyInputHash: request.historyInputHash } : {}),
-    };
-    const claimed = claimManagedCommand(
-      this.dataDir,
-      request.requestId,
-      request.sessionId,
-      fingerprint,
-      request.deviceId ?? null,
-      evidence,
-    );
+    const claimed = prepared ? null : claim(record.workspace_id);
     if (claimed) return claimed;
 
     try {
@@ -3744,39 +3833,14 @@ export class WebReadRequests {
         const models = projectManagedModels(
           await runner.session.request("model/list", { limit: 100 }),
         );
-        const defaultModel = models.find((item) => item.isDefault);
-        const model = request.resetDefaults
-          ? record.default_model
-          : (request.model ?? record.model);
-        const selected =
-          models.find((item) => item.id === model) ?? (model ? undefined : defaultModel);
-        if (!selected) throw new Error("unsupported-model");
-        const effort = request.resetDefaults
-          ? record.default_effort
-          : request.effort === undefined
-            ? record.effort
-            : request.effort;
-        if (effort && !selected.efforts.includes(effort)) throw new Error("unsupported-effort");
-        const serviceTier = request.resetDefaults
-          ? record.default_service_tier
-          : request.serviceTier === undefined
-            ? record.service_tier
-            : request.serviceTier;
-        if (serviceTier && !selected.serviceTiers.includes(serviceTier))
-          throw new Error("unsupported-service-tier");
-        if (
-          request.policyId &&
-          !managedPolicyCatalog().some((policy) => policy.id === request.policyId)
-        )
-          throw new Error("unsupported-policy");
-        const mode = request.mode ?? record.mode ?? null;
+        localMutation = codexSettingsMutation(request, record, models);
         const clearsInheritedEffort =
-          effort === null &&
+          localMutation.effort === null &&
           isObject(record.native_settings) &&
           typeof record.native_settings.effort === "string";
         const effectiveMode = clearsInheritedEffort
-          ? managedTurnMode({ ...record, model: selected.id, effort, mode })
-          : mode;
+          ? managedTurnMode({ ...record, ...localMutation })
+          : localMutation.mode;
         if (request.mode || clearsInheritedEffort) {
           if (!runner.planVerified) throw new Error("native-collaboration-modes-unavailable");
           // The presets are `{mode, name}` rows (0.163.0 CollaborationModeMask); AgentKib's
@@ -3787,13 +3851,6 @@ export class WebReadRequests {
           if (!modes.some((entry) => entry.id === effectiveMode))
             throw new Error("unsupported-collaboration-mode");
         }
-        localMutation = {
-          model: selected.id,
-          effort,
-          service_tier: serviceTier,
-          policy_id: request.policyId ?? record.policy_id,
-          mode,
-        };
         method = "";
         params = {};
       } else if (request.operation === "approve") {
@@ -4149,6 +4206,7 @@ export class WebReadRequests {
     fingerprint: string,
     follower: CodexFollowerRecord,
     workspaceId: string,
+    prepared = false,
   ): Promise<Record<string, unknown>> {
     let dispatched = false;
     try {
@@ -4227,23 +4285,22 @@ export class WebReadRequests {
         throw new Error("follower-operation-unverified");
       }
 
-      const claimed = claimManagedCommand(
-        this.dataDir,
-        request.requestId,
-        request.sessionId,
-        fingerprint,
-        request.deviceId ?? null,
-        {
-          operation: request.operation,
-          workspaceId,
-          turnId: turnId ?? null,
-          nativeRequestId: responseId,
-          runtimeBootId: request.runtimeBootId,
-          expectedRevision: request.expectedRevision,
-          executionMode: "codex-follower",
-          ...(request.historyInputHash ? { historyInputHash: request.historyInputHash } : {}),
-        },
-      );
+      const evidence = {
+        ...codexCommandEvidence(request, workspaceId),
+        nativeRequestId: responseId,
+        executionMode: "codex-follower",
+      };
+      if (prepared) annotateManagedCommand(this.dataDir, request.requestId, evidence);
+      const claimed = prepared
+        ? null
+        : claimManagedCommand(
+            this.dataDir,
+            request.requestId,
+            request.sessionId,
+            fingerprint,
+            request.deviceId ?? null,
+            evidence,
+          );
       if (claimed) return claimed;
 
       const release = acquireCodexFollowerOperationLock(
@@ -4941,14 +4998,16 @@ export class WebReadRequests {
       }
       const requestedModel = record.model ?? null;
       const requestedEffort = record.effort ?? null;
+      const stagedModelSettings = hasStagedCodexModelSettings(record);
       const clearingEffort =
         requestedEffort === null &&
-        isObject(record.native_settings) &&
-        typeof record.native_settings.effort === "string";
+        ((isObject(record.native_settings) && typeof record.native_settings.effort === "string") ||
+          (stagedModelSettings && record.effort === null));
       // Creating a new thread is an explicit model choice. Attaching an existing
       // thread or its fork must also work when its inherited model left the picker;
       // send and explicit settings changes validate their own model selection.
-      if (!nativeId && !fork) validateManagedModelSelection(record, models);
+      if ((!nativeId && !fork) || stagedModelSettings)
+        validateManagedModelSelection(record, models);
       const tier = record.service_tier ?? null;
 
       let goal: Record<string, unknown> | null = null;
@@ -4970,7 +5029,12 @@ export class WebReadRequests {
       if (requestedModel) params.model = requestedModel;
       if (requestedEffort)
         (params.config as Record<string, unknown>).model_reasoning_effort = requestedEffort;
-      if (tier || isObject(record.native_settings)) params.serviceTier = tier;
+      if (
+        tier ||
+        isObject(record.native_settings) ||
+        (record.service_tier === null && stagedModelSettings)
+      )
+        params.serviceTier = tier;
       if (fork) {
         params.threadId = fork.nativeId;
         params.lastTurnId = fork.lastTurnId;
@@ -5027,13 +5091,21 @@ export class WebReadRequests {
           ? response.reasoningEffort
           : undefined;
       if (effort === undefined) throw new Error("native-effort-unconfirmed");
+      if (stagedModelSettings) {
+        if (requestedModel && model !== requestedModel) throw new Error("native-model-unconfirmed");
+        if (requestedEffort && effort !== requestedEffort)
+          throw new Error("native-effort-unconfirmed");
+      }
 
       const mutableRecord = state.record as ManagedRecord;
       mutableRecord.model = model;
       // A resume can report the old inherited effort before the pending clear is
       // applied with the verified collaboration mode on the next turn.
       mutableRecord.effort = clearingEffort ? null : effort;
-      mutableRecord.service_tier = normalizeManagedTier(response.serviceTier);
+      mutableRecord.service_tier =
+        stagedModelSettings && record.service_tier === null
+          ? null
+          : normalizeManagedTier(response.serviceTier);
       mutableRecord.native_settings = {
         model,
         effort,
@@ -5062,6 +5134,10 @@ export class WebReadRequests {
       }
       await bridge.flush();
       this.#assertOpen();
+      if (mutableRecord.snapshot) {
+        delete mutableRecord.snapshot.settingsStaged;
+        delete mutableRecord.snapshot.policyOnlyStaged;
+      }
       const hydrated = state.hydrate(nativeThread, true, readRevision);
       persist(state, hydrated.events);
       runner.idleSince = Date.now();
@@ -6066,6 +6142,100 @@ export class WebReadRequests {
     }
   }
 
+  #recoverLegacyAdopt(record: ManagedRecord) {
+    const now = Date.now();
+    const pending = this.#legacyAdoptChecks.get(record.id);
+    if (pending && now < pending.retryAt) return pending.live;
+    for (const [id, check] of this.#legacyAdoptChecks) {
+      if (check.retryAt <= now) this.#legacyAdoptChecks.delete(id);
+    }
+    const check = {
+      retryAt: Infinity,
+      live: this.#checkLegacyAdopt(record).catch(() => undefined),
+    };
+    this.#legacyAdoptChecks.set(record.id, check);
+    void check.live.then((live) => {
+      if (live) this.#legacyAdoptChecks.delete(record.id);
+      else check.retryAt = Date.now() + LEGACY_ADOPT_RECHECK_MS;
+    });
+    return check.live;
+  }
+
+  async #checkLegacyAdopt(record: ManagedRecord) {
+    const nativeId = record.native_id;
+    if (!record.adopted || record.archived || record.released || !nativeId) return;
+    const pendingAdopt = () => {
+      const commands = readUnknownManagedCommands(this.dataDir, record.id);
+      const [command] = commands;
+      return commands.length === 1 &&
+        command?.evidence?.operation === "adopt" &&
+        command.evidence.executionMode === "codex-managed" &&
+        command.evidence.workspaceId === record.workspace_id
+        ? command.requestId
+        : undefined;
+    };
+    const requestId = pendingAdopt();
+    if (!requestId) return;
+
+    const release = acquireManagedSessionLease(this.dataDir, record.id);
+    try {
+      const cwd = this.#managedCwd(record);
+      const home = this.#assertManagedHome(record);
+      const lock = path.join(home, "thread-writer-locks", `${nativeId}.lock`);
+      if (existingFileLeaseBusy(lock)) return;
+      const { executable, reason } = await this.#preflight.check();
+      if (!executable || reason) return;
+      this.#assertOpen();
+      const response = await this.#codex.readThread(executable, cwd, home, nativeId);
+      const thread = isObject(response) ? response.thread : null;
+      if (
+        !isObject(thread) ||
+        thread.id !== nativeId ||
+        typeof thread.cwd !== "string" ||
+        pathIdentity(canonicalize(thread.cwd)) !== pathIdentity(cwd) ||
+        !isObject(thread.status) ||
+        (thread.status.type !== "idle" && thread.status.type !== "notLoaded")
+      )
+        return;
+
+      this.#assertOpen();
+      const stored = managedRecordSchema.safeParse(readManagedRecord(this.dataDir, record.id));
+      if (!stored.success) return;
+      const latest = stored.data;
+      if (
+        latest.archived ||
+        latest.released ||
+        !latest.adopted ||
+        latest.native_id !== nativeId ||
+        latest.workspace_id !== record.workspace_id ||
+        pathIdentity(this.#managedCwd(latest)) !== pathIdentity(cwd) ||
+        pathIdentity(this.#assertManagedHome(latest)) !== pathIdentity(home) ||
+        existingFileLeaseBusy(lock) ||
+        pendingAdopt() !== requestId
+      )
+        return;
+      // Only the lost attachment acknowledgement is settled. A native read proves the thread
+      // can be reached again. Any later write still acquires and verifies the native writer.
+      finishManagedCommand(this.dataDir, requestId, {
+        accepted: true,
+        completed: false,
+        reconciled: true,
+        requestId,
+        runtimeBootId: this.#bootId,
+        sessionId: record.id,
+      });
+      this.#ownership.delete(record.id);
+      const live = await this.#inactiveLive(latest, true);
+      this.publishConversationEvent?.(record.id, "state", live, live);
+      this.publishConversationEvent?.(record.id, "invalidate", {
+        domains: ["receipts", "ownership", "settings"],
+      });
+      return live;
+    } finally {
+      release();
+    }
+  }
+
   async #managedLive(
     sessionId: string,
     experimentalEnabled = false,
@@ -6150,7 +6320,9 @@ export class WebReadRequests {
       await this.#closeManagedRunner(sessionId, resident);
     }
 
-    const inactive = await this.#inactiveLive(managed, experimentalEnabled);
+    let inactive = await this.#inactiveLive(managed, experimentalEnabled);
+    if (experimentalEnabled && inactive.reason === "control-outcome-unconfirmed")
+      inactive = (await this.#recoverLegacyAdopt(managed)) ?? inactive;
     return (
       (await this.#desktopFollowerLive(managed, inactive, experimentalEnabled)) ??
       (await this.#desktopHandoffLive(managed, inactive, experimentalEnabled)) ??
@@ -7931,6 +8103,74 @@ function managedPolicyCatalog() {
       networkAccess: false,
     },
   ];
+}
+
+function codexCommandEvidence(request: SettingsControl, workspaceId: string) {
+  return {
+    operation: request.operation,
+    turnId: request.turnId ?? null,
+    nativeRequestId:
+      request.operation === "approve"
+        ? (request.approvalId ?? null)
+        : request.operation === "answer"
+          ? (request.questionId ?? null)
+          : null,
+    runtimeBootId: request.runtimeBootId,
+    expectedRevision: request.expectedRevision,
+    executionMode: "codex-managed",
+    workspaceId,
+    ...(request.historyInputHash ? { historyInputHash: request.historyInputHash } : {}),
+  };
+}
+
+function codexPolicyOnly(request: SettingsControl): SettingsControl["policyId"] {
+  if (
+    request.operation !== "settings" ||
+    request.model !== undefined ||
+    request.effort !== undefined ||
+    request.serviceTier !== undefined ||
+    request.mode !== undefined ||
+    request.resetDefaults === true
+  )
+    return undefined;
+  return request.policyId;
+}
+
+function hasStagedCodexModelSettings(record: ManagedRecord): boolean {
+  return record.snapshot?.settingsStaged === true && record.snapshot.policyOnlyStaged !== true;
+}
+
+function codexSettingsMutation(
+  request: SettingsControl,
+  record: ManagedRecord,
+  models: ManagedModelOption[],
+) {
+  const model = request.resetDefaults ? record.default_model : (request.model ?? record.model);
+  const selected = model
+    ? models.find((item) => item.id === model)
+    : models.find((item) => item.isDefault);
+  if (!selected) throw new Error("unsupported-model");
+  const effort = request.resetDefaults
+    ? record.default_effort
+    : request.effort === undefined
+      ? record.effort
+      : request.effort;
+  const serviceTier = request.resetDefaults
+    ? record.default_service_tier
+    : request.serviceTier === undefined
+      ? record.service_tier
+      : request.serviceTier;
+  if (request.policyId && !managedPolicyCatalog().some((policy) => policy.id === request.policyId))
+    throw new Error("unsupported-policy");
+  const selection = {
+    model: selected.id,
+    effort,
+    service_tier: serviceTier,
+    policy_id: request.policyId ?? record.policy_id,
+    mode: request.mode ?? record.mode ?? null,
+  };
+  validateManagedModelSelection(selection, models);
+  return selection;
 }
 
 function validateManagedModelSelection(

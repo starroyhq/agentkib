@@ -99,6 +99,8 @@ export {
 } from "./interaction-items";
 export { DEVIN_TURN_REASONS, devinTerminalAction, devinTerminalCopy } from "./devin-terminal";
 export { modelEffortsForTier, modelSupportsTier } from "./model-capabilities";
+export { newSessionModelSettings } from "./new-session-model-settings";
+export { ComposerFastIcon } from "./composer-fast-icon";
 export {
   NEW_SESSION_AGENTS,
   newSessionCopy,
@@ -264,3 +266,11 @@ export function SafeMarkdown({ text, literal = false }: { text: string; literal?
 }
 export { projectAgentCopy, type ProjectAgentCopy } from "./project-agent-copy";
 export { usageLimitNotice, usageLimitTime, type UsageLimitNoticeInput } from "./usage-limit-copy";
+
+export {
+  ComposerModelPicker,
+  type ComposerModelChange,
+  type ComposerModelPickerHandle,
+} from "./composer-model-picker";
+export { composerModelCopy } from "./composer-model-copy";
+export { ComposerPermissionMenu } from "./composer-permission-menu";

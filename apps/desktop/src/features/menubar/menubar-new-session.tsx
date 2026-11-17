@@ -71,23 +71,33 @@ export function MenuBarNewSession({
       if (own) onCreated(sessionId, submittedDraft.current);
     },
   });
-  const options = session.options.data;
-  const unavailable = session.options.isError
-    ? failureOf(session.options.error, locale).reason
-    : options && !options.available
-      ? fillCopy(copy.agentUnavailableHere, { reason: codexReason(locale, options.reason).text })
-      : undefined;
+  const options = session.optionsData;
+  const unavailable =
+    session.options.isError && !options
+      ? failureOf(session.options.error, locale).reason
+      : options && !options.available
+        ? fillCopy(copy.agentUnavailableHere, { reason: codexReason(locale, options.reason).text })
+        : undefined;
   const busy = session.busy || (engaged && !!text.trim() && session.options.isFetching && !options);
   const canSend =
-    session.ready && !!workspace && !session.busy && !session.unknown && !!text.trim();
+    session.ready &&
+    !session.optionsAccessDenied &&
+    !!workspace &&
+    !session.busy &&
+    !session.unknown &&
+    !!text.trim();
 
   async function send() {
     if (!canSend || !workspace) return;
-    const read = options ?? (await session.options.refetch()).data;
+    const fresh = options ? undefined : await session.options.refetch();
+    const read = options ?? (fresh?.isSuccess ? fresh.data : undefined);
     if (!read?.available) return;
     const value = text.trim();
     const promptAtCreate = newSessionProvider(agent, read)?.create.mode === "with-first-message";
-    const fields = newSessionCreateFields({ agent, workspaceId: workspace.id }, read);
+    const fields = newSessionCreateFields(
+      { agent, workspaceId: workspace.id, fullAccess: session.fullAccess },
+      read,
+    );
     const draft = promptAtCreate ? undefined : value;
     submittedDraft.current = draft;
     rememberNewSessionTarget({ workspaceId: workspace.id, agent });

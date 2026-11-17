@@ -91,6 +91,26 @@ describe("handoff-aware session presentation", () => {
       continuation: "idle",
     });
   });
+  it("keeps settings-only receipt verification out of the connection display", () => {
+    const state = codexFixture();
+    state.controlReady = false;
+    state.canSend = false;
+    state.settingsNotice = { group: "permissions", status: "uncertain" };
+    expect(sessionDisplayState(state)).toEqual({
+      label: "",
+      reason: "",
+      tone: "muted",
+      continuation: "idle",
+    });
+    state.capabilities!.sessionId = "previous";
+    expect(sessionDisplayState(state)).toMatchObject({ label: "Verifying state", loading: true });
+    state.capabilities!.sessionId = state.selected;
+    state.live!.status = "outcome-unknown";
+    expect(sessionDisplayState(state)).toMatchObject({
+      label: "Result unconfirmed",
+      tone: "warning",
+    });
+  });
   it("does not require management permission to send to an automatically continued Codex session", () => {
     const state = codexFixture();
     state.access!.device!.manage = false;

@@ -7,7 +7,7 @@ import { sessionProviderCapabilities, type CodexSessionSettings } from "@agentki
 import { CodexComposerControls } from "./codex-session-controls";
 import { useSession } from "./session-context";
 import { codexCopy, codexReason } from "./codex-copy";
-import { composerModelCopy } from "./composer-model-copy";
+import { composerModelCopy } from "@agentkib/session-ui";
 import { contextUsageCopy } from "./context-usage-copy";
 
 vi.mock("./session-context", () => ({ useSession: vi.fn() }));
@@ -76,7 +76,7 @@ describe("DeepSeek Harness model settings in the composer", () => {
     );
     expect(await screen.findByRole("button", { name: /DeepSeek Chat/ })).toBeInTheDocument();
     expect(
-      screen.queryByRole("button", { name: copy.conversationSettings }),
+      screen.queryByRole("button", { name: new RegExp(`^${copy.executionPolicy}:`) }),
     ).not.toBeInTheDocument();
     expect(state.client.codexSessionSettings).not.toHaveBeenCalled();
     expect(state.client.codexGoals).not.toHaveBeenCalled();
@@ -103,9 +103,14 @@ describe("DeepSeek Harness model settings in the composer", () => {
       },
     });
     render(<CodexComposerControls {...props} />);
-    fireEvent.click(await screen.findByRole("button", { name: copy.conversationSettings }));
-    const dialog = await screen.findByRole("dialog", { name: copy.conversationSettings });
-    expect(within(dialog).getByLabelText(copy.executionPolicy, { exact: false })).toBeEnabled();
+    fireEvent.click(
+      await screen.findByRole("button", { name: new RegExp(`^${copy.executionPolicy}:`) }),
+    );
+    const menu = await screen.findByRole("menu");
+    expect(within(menu).getByRole("menuitem", { name: /^Read Only/ })).not.toHaveAttribute(
+      "aria-disabled",
+      "true",
+    );
     const picker = composerModelCopy["en-US"];
     expect(
       screen.queryByRole("button", { name: new RegExp(`^${picker.chooseModel}:`) }),
@@ -113,7 +118,7 @@ describe("DeepSeek Harness model settings in the composer", () => {
     expect(
       screen.queryByRole("button", { name: new RegExp(`^${picker.chooseEffort}:`) }),
     ).not.toBeInTheDocument();
-    expect(dialog).not.toHaveTextContent(contextUsageCopy["en-US"].unavailableDetail);
+    expect(menu).not.toHaveTextContent(contextUsageCopy["en-US"].unavailableDetail);
   });
 
   it("says once, while a turn runs, that the settings wait for it", async () => {
@@ -166,26 +171,20 @@ describe("DeepSeek Harness model settings in the composer", () => {
       },
     } as unknown as ReturnType<typeof useSession>;
     render(<CodexComposerControls {...props} />);
-    const permissions = await screen.findByRole("button", { name: copy.conversationSettings });
+    const permissions = await screen.findByRole("button", {
+      name: new RegExp(`^${copy.executionPolicy}:`),
+    });
     expect(permissions).toHaveTextContent("Workspace Write");
     fireEvent.click(permissions);
     expect(await screen.findByText(copy.settingsWhileRunningModel)).toBeInTheDocument();
     expect(screen.queryByText(copy.settingsWhileRunning)).not.toBeInTheDocument();
-    // A row's label also holds its reason text, so match the label's start.
-    const policy = screen.getByLabelText(copy.executionPolicy, { exact: false });
-    expect(policy).not.toBeDisabled();
-    // The select names the preset, not its ID.
-    expect(policy).toHaveTextContent("Workspace Write");
-    expect(policy).not.toHaveTextContent("workspace-write");
-    for (const label of [copy.model, copy.effort, copy.serviceTier])
-      expect(screen.queryByLabelText(label)).not.toBeInTheDocument();
-    const user = userEvent.setup();
-    await user.click(policy);
-    await user.click(await screen.findByRole("option", { name: "Read Only" }));
-    expect(policy).toHaveTextContent("Read Only");
-    const apply = screen.getByRole("button", { name: copy.apply });
-    expect(apply).toBeEnabled();
-    await user.click(apply);
+    const menu = await screen.findByRole("menu");
+    expect(within(menu).getByRole("menuitem", { name: /^Workspace Write/ })).toBeVisible();
+    expect(menu).not.toHaveTextContent("workspace-write");
+    const readOnly = within(menu).getByRole("menuitem", { name: /^Read Only/ });
+    expect(readOnly).not.toHaveAttribute("aria-disabled", "true");
+    await userEvent.click(readOnly);
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
     expect(state.codexAction).toHaveBeenCalledExactlyOnceWith("settings", {
       policyId: "read-only",
     });
@@ -289,7 +288,7 @@ describe("DeepSeek Harness model settings in the composer", () => {
       await screen.findByRole("button", { name: `${picker.chooseEffort}: DeepSeek Chat` }),
     ).toBeInTheDocument();
     expect(
-      screen.queryByRole("button", { name: copy.conversationSettings }),
+      screen.queryByRole("button", { name: new RegExp(`^${copy.executionPolicy}:`) }),
     ).not.toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: `${picker.chooseEffort}: DeepSeek Chat` }));
     const popup = await screen.findByRole("dialog");
@@ -299,7 +298,7 @@ describe("DeepSeek Harness model settings in the composer", () => {
     fireEvent.click(
       within(popup).getByRole("button", { name: `${picker.chooseModel}: DeepSeek Chat` }),
     );
-    const models = await screen.findByRole("dialog", { name: picker.chooseModel });
+    const models = await screen.findByRole("dialog", { name: picker.model });
     expect(within(models).getByText("DeepSeek")).toBeVisible();
     expect(within(models).getByText("Local")).toBeVisible();
     fireEvent.click(within(models).getByRole("button", { name: "Mock One" }));

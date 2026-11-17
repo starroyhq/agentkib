@@ -183,6 +183,19 @@ describe("composer drafts across connection changes", () => {
     expectNoDispatch();
   });
 
+  it("keeps drafts editable but unsendable while only a settings write is outstanding", () => {
+    doubles.session.settingsOnlyBlocked = true;
+    doubles.session.busy = true;
+    doubles.session.controlReady = false;
+    doubles.session.canSend = false;
+    const { input, form } = renderComposer();
+    expect(input).toBeEnabled();
+    expect(input).toHaveValue("Original draft");
+    expect(screen.getByRole("button", { name: "Send" })).toBeDisabled();
+    attemptSend(input, form);
+    expectNoDispatch();
+  });
+
   it("keeps a pending or unconfirmed send locked until a not-dispatched outcome allows offline editing", async () => {
     const pending = deferred<boolean | undefined>();
     doubles.control.mockReturnValueOnce(pending.promise);

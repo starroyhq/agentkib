@@ -1,4 +1,5 @@
-import { useRef } from "react";
+import { useId, useImperativeHandle, useRef, useState, type Ref } from "react";
+import { Tooltip as TooltipPrimitive } from "@base-ui/react/tooltip";
 import {
   sessionProviderCapabilities,
   type ContextUsage,
@@ -222,91 +223,40 @@ type ContextUsageView = ReturnType<typeof useObservedContextUsage> & {
   source?: ContextUsageSource;
 };
 
-function historicalUsageLabel(locale: Locale, usage?: ContextUsage) {
-  if (usage?.historical !== true) return undefined;
-  const label = contextUsageCopy[locale].historicalReport;
-  const timestamp = Date.parse(usage.updatedAt ?? "");
-  if (!Number.isFinite(timestamp)) return label;
-  const date = new Intl.DateTimeFormat(locale, { dateStyle: "medium", timeStyle: "short" }).format(
-    timestamp,
-  );
-  return `${label} · ${date}`;
-}
-
 function contextUsageMessage({
-  usage,
-  state,
-  compacting,
-  awaitingCliReport,
-  source,
-  locale,
-  online,
-}: ContextUsageView & { locale: Locale; online: boolean }) {
-  const copy = contextUsageCopy[locale];
-  return compacting
-    ? copy.compactingDetail
-    : usage?.historical
-      ? source === "last-request" || usage.reason === "devin-last-model-request"
-        ? copy.lastRequestDetail
-        : copy.historicalDetail
-      : !online && usage?.reason !== "permission_denied" && usage?.reason !== "permission-denied"
-        ? copy.offline
-        : awaitingCliReport
-          ? copy.awaitingCliReportDetail
-          : (contextUsageReason(locale, usage?.reason) ??
-            (state === "pending"
-              ? copy.pendingDetail
-              : state === "stale"
-                ? copy.staleDetail
-                : codexCopy[locale].contextUnknown));
-}
-
-export function ContextUsageDetails({
   usage,
   percent,
   state,
   compacting,
   awaitingCliReport,
-  source,
   locale,
   online,
 }: ContextUsageView & { locale: Locale; online: boolean }) {
   const copy = contextUsageCopy[locale];
-  const historyLabel = historicalUsageLabel(locale, usage);
-  const message = contextUsageMessage({
-    usage,
-    percent,
-    state,
-    compacting,
-    awaitingCliReport,
-    source,
-    locale,
-    online,
-  });
-  return (
-    <div className="space-y-2 text-sm">
-      {state !== "ready" && <p role="status">{message}</p>}
-      {percent !== undefined && (
-        <div className="space-y-2">
-          <p>
-            {`${historyLabel ?? (state === "ready" ? copy.recentNativeReport : copy.reported)}: `}
-            {usage!.usedTokens!.toLocaleString()} / {usage!.contextWindow!.toLocaleString()} (
-            {Math.round(percent)}%)
-          </p>
-          <div className="h-1.5 overflow-hidden rounded-full bg-muted">
-            <div className="h-full bg-primary" style={{ width: `${percent}%` }} />
-          </div>
-        </div>
-      )}
-    </div>
-  );
+  if (compacting) return copy.compactingDetail;
+  if (!online && usage?.reason !== "permission_denied" && usage?.reason !== "permission-denied")
+    return copy.offline;
+  if (awaitingCliReport) return copy.awaitingCliReportDetail;
+  if (state === "ready") return undefined;
+  const reason = contextUsageReason(locale, usage?.reason);
+  if (reason) return reason === copy.stale && percent !== undefined ? undefined : reason;
+  if (state === "stale") return percent === undefined ? copy.stale : undefined;
+  return state === "pending" ? copy.pendingDetail : codexCopy[locale].contextUnknown;
 }
+
+export type ContextUsageGaugeHandle = { open(): void };
 
 export function ContextUsageGauge({
   fallback,
   limit,
   source,
-}: { fallback?: ContextUsage; limit?: number; source?: ContextUsageSource } = {}) {
+  gaugeRef,
+}: {
+  fallback?: ContextUsage;
+  limit?: number;
+  source?: ContextUsageSource;
+  gaugeRef?: Ref<ContextUsageGaugeHandle>;
+} = {}) {
   const { selected, locale, access, live, online, usageEpoch } = useSession();
   const scope = `${selected}\0${access?.bootId ?? ""}\0${access?.device?.id ?? ""}\0${usageEpoch ?? ""}\0${live?.connectionGeneration ?? ""}`;
   const view = useContextUsage(fallback, source);
@@ -320,6 +270,7 @@ export function ContextUsageGauge({
       online={online}
       view={view}
       limit={authorized ? limit : undefined}
+      gaugeRef={gaugeRef}
     />
   );
 }
@@ -330,16 +281,23 @@ export function ContextUsageIndicator({
   online,
   view,
   limit,
+  gaugeRef,
 }: {
   scope: string;
   locale: Locale;
   online: boolean;
   view: ContextUsageView;
   limit?: number;
+  gaugeRef?: Ref<ContextUsageGaugeHandle>;
 }) {
+  const triggerId = useId();
+  const [tooltip] = useState(() => TooltipPrimitive.createHandle());
+  useImperativeHandle(gaugeRef, () => ({ open: () => tooltip.open(triggerId) }), [
+    tooltip,
+    triggerId,
+  ]);
   const copy = contextUsageCopy[locale];
   const title = codexCopy[locale].contextUsage;
-  const historyLabel = historicalUsageLabel(locale, view.usage);
   const reported = view.percent !== undefined;
   const used = Math.round(view.percent ?? 0);
   const proportions = copy.usedRemaining
@@ -361,27 +319,31 @@ export function ContextUsageIndicator({
         )
     : undefined;
   const fresh =
-    view.state === "ready" && !historyLabel && !view.compacting && !view.awaitingCliReport;
+    view.state === "ready" &&
+    !view.usage?.historical &&
+    !view.compacting &&
+    !view.awaitingCliReport;
   const capacity =
     !reported && limit !== undefined && Number.isSafeInteger(limit) && limit > 0
       ? copy.capacity.replace("{total}", new Intl.NumberFormat(locale).format(limit))
       : undefined;
-  const message =
+  const statusMessage =
     capacity && !view.compacting
       ? copy.unavailableDetail
       : contextUsageMessage({ ...view, locale, online });
   const description = [
-    !fresh && message,
+    statusMessage,
     capacity,
-    !view.compacting && historyLabel,
     reported && !view.compacting && proportions,
     reported && !view.compacting && tokens,
   ]
     .filter(Boolean)
     .join(" ");
   return (
-    <Tooltip key={scope}>
+    <Tooltip key={scope} handle={tooltip}>
       <TooltipTrigger
+        handle={tooltip}
+        id={triggerId}
         closeOnClick={false}
         render={
           <span
@@ -427,13 +389,10 @@ export function ContextUsageIndicator({
         sideOffset={8}
       >
         <p className="text-muted-foreground">{copy.windowTitle}</p>
-        {!fresh && <p className="mt-1">{message}</p>}
+        {statusMessage && <p className="mt-1">{statusMessage}</p>}
         {capacity && <p className="mt-1">{capacity}</p>}
         {reported && !view.compacting && (
           <>
-            {!fresh && (
-              <p className="mt-1 text-muted-foreground">{historyLabel ?? copy.reported}</p>
-            )}
             <p className="mt-1">{proportions}</p>
             <p className="mt-1">{tokens}</p>
           </>

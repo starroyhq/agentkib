@@ -209,6 +209,8 @@ it("uses the same registered create path for Codex without dispatching invalid c
     await service.localRequest("/managed/create", {
       ...request,
       requestId: randomUUID(),
+      model: "gpt-6.1-sol",
+      serviceTierId: "priority",
     }),
   ).toMatchObject({ status: 200, body: { accepted: true } });
   const dispatched = runtime.mock.calls
@@ -219,6 +221,8 @@ it("uses the same registered create path for Codex without dispatching invalid c
       agent: "codex",
       workspaceId: "workspace",
       policyId: "workspace-write-on-request",
+      model: "gpt-6.1-sol",
+      serviceTier: "priority",
     }),
   ]);
   expect(dispatched[0]).not.toHaveProperty("prompt");

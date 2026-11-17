@@ -7,6 +7,9 @@ import { composerLayoutCopy } from "@/features/conversation/features/sessions/co
 import { codexCopyForSurface } from "@/features/conversation/features/sessions/codex-copy";
 import { publishSessionInvalidation } from "@/features/conversation/features/sessions/session-events";
 import type { CodexGoalState, CodexSessionSettings } from "@agentkib/web-client";
+import { composerModelCopy } from "@agentkib/session-ui";
+
+const modelReset = () => screen.getByRole("button", { name: "恢复默认模型" });
 vi.mock("@/features/conversation/features/sessions/session-context", () => ({
   useSession: vi.fn(),
 }));
@@ -36,6 +39,12 @@ function settings(id = "s"): CodexSessionSettings {
   };
 }
 beforeEach(() => {
+  // Base UI measures the control before exposing the slider in browsers.
+  vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockImplementation(
+    function (this: HTMLElement) {
+      return new DOMRect(0, 0, this.hasAttribute("data-index") ? 28 : 240, 28);
+    },
+  );
   state = {
     selected: "s",
     current: {
@@ -91,6 +100,7 @@ beforeEach(() => {
 });
 afterEach(() => {
   cleanup();
+  vi.restoreAllMocks();
   vi.useRealTimers();
 });
 describe("responsive composer behavior", () => {
@@ -153,24 +163,26 @@ describe("responsive composer behavior", () => {
     },
   );
   it.each(["zh-CN", "zh-Hant", "en-US", "ja-JP"] as const)(
-    "keeps the complete settings label when no model is reported in %s",
+    "shows a neutral model picker when no model is reported in %s",
     async (locale) => {
       state.locale = locale;
       state.t = dictionaries[locale];
       vi.mocked(state.client.codexSessionSettings).mockResolvedValue({
         ...settings(),
         current: {},
+        defaults: {},
         options: { models: [], policies: [], serviceTiers: [] },
       });
       render(<CodexComposer />);
       await waitFor(() => expect(state.client.codexSessionSettings).toHaveBeenCalled());
-      const button = screen.getByRole("button", {
-        name: codexCopyForSurface(locale, "web").conversationSettings,
-      });
-      expect(button).toHaveClass("h-11", "shrink-0");
-      expect(
-        screen.getByText(codexCopyForSurface(locale, "web").conversationSettings),
-      ).not.toHaveClass("truncate");
+      const copy = composerModelCopy[locale];
+      const trigger = screen.getByRole("button", { name: copy.modelSettings });
+      expect(trigger).toHaveTextContent(copy.modelSettings);
+      fireEvent.click(trigger);
+      const overview = within(await screen.findByRole("dialog", { name: copy.modelSettings }));
+      expect(overview.getByRole("button", { name: copy.chooseModel })).toHaveTextContent(
+        copy.model,
+      );
     },
   );
   it.each(["zh-CN", "zh-Hant", "en-US", "ja-JP"] as const)(
@@ -183,35 +195,37 @@ describe("responsive composer behavior", () => {
         applicationStatus: "unknown",
       });
       const view = render(<CodexComposer />);
-      await waitFor(() => expect(state.client.codexSessionSettings).toHaveBeenCalled());
+      fireEvent.click(await screen.findByRole("button", { name: /Test Model/ }));
       expect(
         screen.queryByText(composerLayoutCopy[locale].settingsUnknown),
       ).not.toBeInTheDocument();
       state = { ...state, settingsChangedHere: true };
       view.rerender(<CodexComposer />);
-      expect(screen.getByText(composerLayoutCopy[locale].settingsUnknown)).toBeVisible();
+      await waitFor(() =>
+        expect(screen.getByText(composerLayoutCopy[locale].settingsUnknown)).toBeVisible(),
+      );
     },
   );
   it.each([
     [
       "zh-CN",
-      "当前模型不在运行 AgentKib 的电脑已验证的模型列表中，本次消息尚未发送。请更改下一轮模型后再发送。",
-      "更改下一轮模型",
+      "当前模型不在运行 AgentKib 的电脑已验证的模型列表中，本次消息尚未发送。请更改模型后再发送。",
+      "更改模型",
     ],
     [
       "zh-Hant",
-      "目前模型不在執行 AgentKib 的電腦已驗證的模型清單中，本次訊息尚未傳送。請變更下一輪模型後再傳送。",
-      "變更下一輪模型",
+      "目前模型不在執行 AgentKib 的電腦已驗證的模型清單中，本次訊息尚未傳送。請變更模型後再傳送。",
+      "變更模型",
     ],
     [
       "en-US",
-      "The current model is not in the model list verified on the computer running AgentKib. This message was not sent. Change the next-turn model before sending again.",
-      "Change next-turn model",
+      "The current model is not in the model list verified on the computer running AgentKib. This message was not sent. Change the model before sending again.",
+      "Change model",
     ],
     [
       "ja-JP",
-      "現在のモデルはAgentKib を実行しているコンピューターで検証済みのモデル一覧にありません。このメッセージは送信されていません。次のターンのモデルを変更してから送信してください。",
-      "次のターンのモデルを変更",
+      "現在のモデルはAgentKib を実行しているコンピューターで検証済みのモデル一覧にありません。このメッセージは送信されていません。モデルを変更してから送信してください。",
+      "モデルを変更",
     ],
   ] as const)(
     "opens settings for an unsupported model in %s without sending or changing the draft",
@@ -234,19 +248,12 @@ describe("responsive composer behavior", () => {
       await screen.findByRole("button", { name: /unlisted-model/ });
       vi.mocked(state.client.codexSessionSettings).mockClear();
       fireEvent.click(screen.getByRole("button", { name: action }));
-      const dialog = screen.getByRole("dialog", {
-        name: codexCopyForSurface(locale, "web").conversationSettings,
-      });
+      const dialog = await screen.findByRole("dialog", { name: composerModelCopy[locale].model });
       await waitFor(() => expect(state.client.codexSessionSettings).toHaveBeenCalledWith("s"));
       expect(state.codexAction).not.toHaveBeenCalled();
       expect(state.control).not.toHaveBeenCalled();
       expect(state.setMessage).not.toHaveBeenCalled();
-      fireEvent.change(within(dialog).getByLabelText(codexCopyForSurface(locale, "web").model), {
-        target: { value: "model" },
-      });
-      fireEvent.click(
-        within(dialog).getByRole("button", { name: codexCopyForSurface(locale, "web").apply }),
-      );
+      fireEvent.click(within(dialog).getByRole("button", { name: "Test Model s" }));
       await waitFor(() =>
         expect(state.codexAction).toHaveBeenCalledWith(
           "settings",
@@ -263,13 +270,13 @@ describe("responsive composer behavior", () => {
     const view = render(<CodexComposer />);
     expect(
       await screen.findByText(
-        "当前模型不支持所选思考强度，本次消息尚未发送。请调整下一轮模型或思考强度后再发送。",
+        "当前模型不支持所选思考强度，本次消息尚未发送。请调整模型或思考强度后再发送。",
       ),
     ).toBeVisible();
-    expect(screen.getByRole("button", { name: "更改下一轮模型" })).toBeVisible();
+    expect(screen.getByRole("button", { name: "更改模型" })).toBeVisible();
     state = { ...state, notice: "uncertain" };
     view.rerender(<CodexComposer />);
-    expect(screen.queryByRole("button", { name: "更改下一轮模型" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "更改模型" })).not.toBeInTheDocument();
     state = {
       ...state,
       notice: "notDispatched",
@@ -277,7 +284,7 @@ describe("responsive composer behavior", () => {
       capabilities: { ...state.capabilities!, features: {} },
     };
     view.rerender(<CodexComposer />);
-    expect(screen.queryByRole("button", { name: "更改下一轮模型" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "更改模型" })).not.toBeInTheDocument();
   });
 
   it("shows native usage before settings load and preserves it after a late settings response", async () => {
@@ -327,13 +334,10 @@ describe("responsive composer behavior", () => {
       },
     });
     render(<CodexComposer />);
-    fireEvent.click(await screen.findByRole("button", { name: /Test Model/ }));
-    expect(screen.getByLabelText("模型")).toBeDisabled();
-    expect(
-      screen.getByRole("button", { name: codexCopyForSurface("zh-CN", "web").apply }),
-    ).toBeDisabled();
-    expect(screen.getByRole("button", { name: "恢复运行 AgentKib 的电脑默认" })).toBeDisabled();
-    fireEvent.click(screen.getByRole("button", { name: "关闭" }));
+    const picker = await screen.findByRole("button", { name: /Test Model/ });
+    fireEvent.click(picker);
+    expect(modelReset()).toBeDisabled();
+    fireEvent.click(picker);
     fireEvent.click(screen.getByRole("button", { name: "持续目标" }));
     expect(
       screen.getByRole("button", { name: codexCopyForSurface("zh-CN", "web").goalUpdate }),
@@ -381,23 +385,25 @@ describe("responsive composer behavior", () => {
     "localizes effort and exposes disabled reasons in %s",
     async (locale) => {
       state = { ...state, locale, t: dictionaries[locale] };
+      const native = settings();
+      native.options.collaborationModes = [{ id: "plan", name: "Plan" }];
+      vi.mocked(state.client.codexSessionSettings).mockResolvedValue(native);
       render(<CodexComposer />);
-      fireEvent.click(await screen.findByRole("button", { name: /Test Model/ }));
-      const dialog = screen.getByRole("dialog");
-      const high = within(dialog).getByRole("option", {
-        name: { "zh-CN": "高", "zh-Hant": "高", "en-US": "High", "ja-JP": "高" }[locale],
-      });
-      expect(high).toHaveValue("high");
-      expect(within(dialog).getByText("owner_channel_unavailable")).toBeInTheDocument();
-      const apply = within(dialog).getByRole("button", {
-        name: codexCopyForSurface(locale, "web").apply,
-      });
-      expect(apply.closest(".dialog-body")).toBeNull();
-      expect(
-        within(dialog).getByRole("combobox", {
-          name: new RegExp(codexCopyForSurface(locale, "web").mode),
-        }),
-      ).toBeDisabled();
+      const model = await screen.findByRole("button", { name: /Test Model/ });
+      fireEvent.click(model);
+      expect(await screen.findByRole("slider")).toHaveAttribute(
+        "aria-valuetext",
+        { "zh-CN": "高", "zh-Hant": "高", "en-US": "High", "ja-JP": "高" }[locale],
+      );
+      fireEvent.click(model);
+      const copy = codexCopyForSurface(locale, "web");
+      fireEvent.click(screen.getByRole("button", { name: new RegExp(`^${copy.executionPolicy}`) }));
+      const menu = await screen.findByRole("menu", { name: copy.executionPolicy });
+      expect(within(menu).getByRole("status")).toHaveTextContent(copy.unavailable);
+      expect(within(menu).getByRole("menuitem", { name: copy.plan })).toHaveAttribute(
+        "aria-disabled",
+        "true",
+      );
     },
   );
   it("does not confuse an empty message with missing authorization", async () => {
@@ -452,19 +458,42 @@ describe("native Plan and Goal projection", () => {
   it("shows selected next-turn mode without claiming native confirmation, and confirms only on native state", async () => {
     const native = settings();
     native.writable.mode = { available: true };
+    native.writable.serviceTier = { available: true };
     native.options.collaborationModes = [
       { id: "default", name: "Default" },
       { id: "plan", name: "Plan" },
     ];
-    native.selected = { ...native.current, mode: "plan" };
+    native.options.models.push({
+      id: "next-model",
+      name: "Next Model",
+      efforts: ["low"],
+      serviceTierIds: ["priority"],
+    });
+    native.options.serviceTiers = [{ id: "priority", name: "Fast" }];
+    native.selected = {
+      modelId: "next-model",
+      effort: "low",
+      mode: "plan",
+      serviceTierId: "priority",
+    };
     native.applicationStatus = "pending";
     vi.mocked(state.client.codexSessionSettings).mockResolvedValue(native);
+    state = { ...state, message: "Keep this draft" };
     const view = render(<CodexComposer />);
-    fireEvent.click(await screen.findByRole("button", { name: /Test Model.*下一轮/ }));
-    expect(screen.getByRole("combobox", { name: "协作模式" })).toHaveValue("plan");
-    expect(screen.getByRole("option", { name: "Codex 模式待确认" })).toBeDisabled();
-    expect(screen.getByRole("option", { name: "执行" })).toHaveValue("default");
-    expect(screen.getByText(composerLayoutCopy["zh-CN"].settingsPending)).toBeVisible();
+    const modelSettings = await screen.findByRole("button", {
+      name: /Next Model.*Fast/,
+    });
+    expect(modelSettings).not.toHaveAccessibleName(/下一轮/);
+    expect(modelSettings.querySelector('svg[fill="currentColor"]')).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "发送" })).toBeEnabled();
+    fireEvent.click(screen.getByRole("button", { name: /^执行策略/ }));
+    const menu = await screen.findByRole("menu");
+    expect(within(menu).getByRole("menuitem", { name: "计划" })).toHaveAttribute(
+      "aria-current",
+      "true",
+    );
+    expect(within(menu).getByRole("menuitem", { name: "执行" })).toBeEnabled();
+    expect(screen.queryByText(composerLayoutCopy["zh-CN"].settingsPending)).not.toBeInTheDocument();
     expect(
       screen.queryByText(codexCopyForSurface("zh-CN", "web").settingsSaved),
     ).not.toBeInTheDocument();
@@ -482,15 +511,17 @@ describe("native Plan and Goal projection", () => {
       ).not.toBeInTheDocument(),
     );
     expect(state.codexAction).not.toHaveBeenCalled();
+    expect(state.control).not.toHaveBeenCalled();
   });
   it("does not manufacture modes when native mode directory is absent", async () => {
     const native = settings();
     native.writable.mode = { available: true };
     vi.mocked(state.client.codexSessionSettings).mockResolvedValue(native);
     render(<CodexComposer />);
-    fireEvent.click(await screen.findByRole("button", { name: /Test Model/ }));
-    expect(screen.getByRole("combobox", { name: /协作模式/ })).toBeDisabled();
-    expect(screen.queryByRole("option", { name: "计划" })).not.toBeInTheDocument();
+    await screen.findByRole("button", { name: /Test Model/ });
+    fireEvent.click(screen.getByRole("button", { name: /^执行策略/ }));
+    const menu = await screen.findByRole("menu");
+    expect(within(menu).queryByRole("menuitem", { name: "计划" })).not.toBeInTheDocument();
   });
   it.each(["paused", "blocked", "active", "budgetLimited", "usageLimited", "complete"])(
     "maps native %s to valid goal controls and updates without activation",
@@ -540,7 +571,7 @@ describe("native Plan and Goal projection", () => {
   );
 });
 
-it("reconciles selected native invalidations, clears native goal, and preserves conflicting drafts", async () => {
+it("reconciles selected native invalidations and freezes changes until the new revision is read", async () => {
   const native = settings();
   native.selected = { ...native.current, mode: "plan" };
   native.applicationStatus = "pending";
@@ -564,9 +595,6 @@ it("reconciles selected native invalidations, clears native goal, and preserves 
   });
   const view = render(<CodexComposer />);
   fireEvent.click(await screen.findByRole("button", { name: /Test Model/ }));
-  fireEvent.change(screen.getByRole("combobox", { name: "思考强度" }), {
-    target: { value: "medium" },
-  });
   vi.useFakeTimers();
   const initialReads = vi.mocked(state.client.codexSessionSettings).mock.calls.length;
   const initialResources = vi.mocked(state.client.codexContextOptions).mock.calls.length;
@@ -598,8 +626,8 @@ it("reconciles selected native invalidations, clears native goal, and preserves 
   });
   state = { ...state, live: { ...state.live!, revision: 2 } };
   view.rerender(<CodexComposer />);
-  expect(screen.getByRole("button", { name: "应用到下一轮" })).toBeDisabled();
-  fireEvent.click(screen.getByRole("button", { name: "应用到下一轮" }));
+  expect(modelReset()).toBeDisabled();
+  fireEvent.click(modelReset());
   expect(state.codexAction).not.toHaveBeenCalled();
   await act(async () => {
     publishSessionInvalidation(state.client, "s", ["settings", "goal"]);
@@ -608,11 +636,8 @@ it("reconciles selected native invalidations, clears native goal, and preserves 
   expect(state.client.codexContextOptions).toHaveBeenCalledTimes(initialResources);
   expect(screen.queryByText(composerLayoutCopy["zh-CN"].settingsPending)).not.toBeInTheDocument();
   expect(screen.queryByRole("button", { name: "持续目标" })).not.toBeInTheDocument();
-  expect(screen.getByRole("combobox", { name: "思考强度" })).toHaveValue("medium");
-  expect(screen.getByRole("button", { name: "应用到下一轮" })).toBeDisabled();
-  fireEvent.click(screen.getByRole("button", { name: "重新载入" }));
-  expect(screen.getByRole("combobox", { name: "思考强度" })).toHaveValue("high");
-  expect(screen.getByRole("button", { name: "应用到下一轮" })).toBeEnabled();
+  expect(screen.getByRole("slider")).toHaveAttribute("aria-valuenow", "1");
+  expect(modelReset()).toBeEnabled();
   expect(state.codexAction).not.toHaveBeenCalled();
   vi.useRealTimers();
 });
@@ -684,7 +709,7 @@ describe("idle conversation revision calibration", () => {
       vi.mocked(state.client.codexSessionSettings).mockResolvedValue(native);
       const view = render(<CodexComposer />);
       const model = await screen.findByRole("button", {
-        name: executionMode === "codex-follower" ? /^model/ : /Test Model/,
+        name: executionMode === "codex-follower" ? /model/ : /Test Model/,
       });
       if (open) fireEvent.click(model);
       expect(state.client.codexSessionSettings).toHaveBeenCalledOnce();
@@ -696,9 +721,7 @@ describe("idle conversation revision calibration", () => {
       act(() => publishSessionInvalidation(state.client, "s", ["catalog"]));
       await waitFor(() => expect(state.client.codexSessionSettings).toHaveBeenCalledTimes(2));
       if (!open) fireEvent.click(model);
-      await waitFor(() =>
-        expect(screen.getByRole("button", { name: "应用到下一轮" })).toBeEnabled(),
-      );
+      await waitFor(() => expect(modelReset()).toBeEnabled());
       expect(state.client.codexGoals).toHaveBeenCalledTimes(2);
       expect(state.client.codexContextOptions).toHaveBeenCalledOnce();
       expect(state.codexAction).not.toHaveBeenCalled();
@@ -760,7 +783,7 @@ describe("idle conversation revision calibration", () => {
     expect(state.client.codexSessionSettings).toHaveBeenCalledOnce();
     await act(async () => finish(settings()));
     fireEvent.click(await screen.findByRole("button", { name: /Test Model/ }));
-    await waitFor(() => expect(screen.getByRole("button", { name: "应用到下一轮" })).toBeEnabled());
+    await waitFor(() => expect(modelReset()).toBeEnabled());
     expect(state.client.codexSessionSettings).toHaveBeenCalledTimes(2);
     expect(state.client.codexGoals).toHaveBeenCalledTimes(2);
   });
@@ -792,15 +815,15 @@ describe("idle conversation revision calibration", () => {
     state = { ...state, live: { ...state.live!, revision: 2 } };
     view.rerender(<CodexComposer />);
     await act(async () => {});
-    expect(screen.getByRole("combobox", { name: "思考强度" })).toHaveValue("high");
-    expect(screen.getByRole("button", { name: "应用到下一轮" })).toBeDisabled();
+    expect(screen.getByRole("slider")).toHaveAttribute("aria-valuenow", "1");
+    expect(modelReset()).toBeDisabled();
     await act(() => vi.advanceTimersByTimeAsync(30_000));
     expect(state.client.codexSessionSettings).toHaveBeenCalledTimes(2);
     vi.mocked(state.client.codexSessionSettings).mockResolvedValue({ ...settings(), revision: 3 });
     state = { ...state, live: { ...state.live!, revision: 3 } };
     view.rerender(<CodexComposer />);
     await act(async () => {});
-    expect(screen.getByRole("button", { name: "应用到下一轮" })).toBeEnabled();
+    expect(modelReset()).toBeEnabled();
     expect(state.client.codexSessionSettings).toHaveBeenCalledTimes(3);
   });
 
@@ -815,11 +838,11 @@ describe("idle conversation revision calibration", () => {
         }),
     );
     vi.mocked(state.codexAction).mockResolvedValue({ accepted: true } as never);
-    fireEvent.click(screen.getByRole("button", { name: "应用到下一轮" }));
+    fireEvent.click(modelReset());
     await waitFor(() => expect(state.client.codexSessionSettings).toHaveBeenCalledTimes(2));
-    expect(screen.getByRole("button", { name: "应用到下一轮" })).toBeDisabled();
+    expect(modelReset()).toBeDisabled();
     await act(async () => finish(settings()));
-    expect(screen.getByRole("button", { name: "应用到下一轮" })).toBeEnabled();
+    expect(modelReset()).toBeEnabled();
   });
 
   it.each([true, false])(
@@ -894,18 +917,32 @@ describe("idle conversation revision calibration", () => {
 
   it("retries a failed explicit settings refresh on demand without rescanning resources", async () => {
     const view = render(<CodexComposer />);
-    fireEvent.click(await screen.findByRole("button", { name: /Test Model/ }));
+    const picker = await screen.findByRole("button", { name: /Test Model/ });
+    const reopen = async () => {
+      fireEvent.click(picker);
+      await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
+      fireEvent.click(picker);
+    };
+    fireEvent.click(picker);
     vi.mocked(state.client.codexSessionSettings).mockRejectedValue(new Error("unavailable"));
     state = { ...state, live: { ...state.live!, revision: 2 } };
     view.rerender(<CodexComposer />);
     await waitFor(() => expect(state.client.codexSessionSettings).toHaveBeenCalledTimes(2));
-    fireEvent.click(screen.getByRole("button", { name: "重新载入" }));
+    await reopen();
     await waitFor(() => expect(state.client.codexSessionSettings).toHaveBeenCalledTimes(3));
     await act(async () => {});
-    expect(screen.queryByRole("button", { name: "应用到下一轮" })).not.toBeInTheDocument();
+    expect(modelReset()).toBeDisabled();
     vi.mocked(state.client.codexSessionSettings).mockResolvedValue({ ...settings(), revision: 2 });
-    fireEvent.click(screen.getByRole("button", { name: "重新载入" }));
-    await waitFor(() => expect(screen.getByRole("button", { name: "应用到下一轮" })).toBeEnabled());
+    await reopen();
+    const overview = within(await screen.findByRole("dialog"));
+    const copy = composerModelCopy["zh-CN"];
+    fireEvent.click(
+      await overview.findByRole("button", { name: `${copy.chooseModel}: Test Model s` }),
+    );
+    const models = await screen.findByRole("dialog", { name: copy.model });
+    await waitFor(() =>
+      expect(within(models).getByRole("button", { name: "Test Model s" })).toBeEnabled(),
+    );
     expect(state.client.codexContextOptions).toHaveBeenCalledOnce();
     expect(state.codexAction).not.toHaveBeenCalled();
   });

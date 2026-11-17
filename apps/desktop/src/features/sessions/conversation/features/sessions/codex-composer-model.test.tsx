@@ -91,16 +91,52 @@ describe("Codex composer quick model settings", () => {
         Node.DOCUMENT_POSITION_FOLLOWING,
     ).toBeTruthy();
     expect(ring.compareDocumentPosition(picker) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
-    fireEvent.click(screen.getByRole("button", { name: "Session settings" }));
-    expect(screen.getByRole("dialog", { name: "Session settings" })).toBeVisible();
+    const policy = codexCopy["en-US"].executionPolicy;
+    fireEvent.click(screen.getByRole("button", { name: policy }));
+    expect(await screen.findByRole("menu", { name: policy })).toBeVisible();
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
     expect(state.codexAction).not.toHaveBeenCalled();
   });
 
-  it("uses the existing settings action and reads back the acknowledged selection", async () => {
+  it.each([
+    ["Plan", { mode: "plan" }],
+    ["Verified policy", { policyId: "new-policy" }],
+  ])("applies only %s from the grouped permissions menu", async (name, fields) => {
+    settings.current = { ...settings.current, mode: "default", policyId: "old-policy" };
+    settings.options.collaborationModes = [
+      { id: "default", name: "Default" },
+      { id: "plan", name: "Plan" },
+    ];
+    settings.options.policies = [
+      { id: "old-policy", name: "Current policy" },
+      { id: "new-policy", name: "Verified policy" },
+    ];
+    render(<CodexComposerControls {...props} />);
+    const copy = codexCopy["en-US"];
+    fireEvent.click(
+      await screen.findByRole("button", { name: `${copy.executionPolicy}: Current policy` }),
+    );
+    const menu = await screen.findByRole("menu", { name: copy.executionPolicy });
+    expect(within(menu).getByRole("menuitem", { name: "Current policy" })).toHaveAttribute(
+      "aria-current",
+      "true",
+    );
+    expect(within(menu).getByRole("menuitem", { name: copy.normal })).toHaveAttribute(
+      "aria-current",
+      "true",
+    );
+    fireEvent.click(within(menu).getByRole("menuitem", { name }));
+    await waitFor(() =>
+      expect(state.codexAction).toHaveBeenCalledExactlyOnceWith("settings", fields),
+    );
+  });
+
+  it("keeps the staged Fast selection editable before a Codex connection is active", async () => {
     vi.mocked(state.codexAction).mockImplementation(async () => {
       settings = {
         ...settings,
         revision: 2,
+        current: {},
         applicationStatus: "pending",
         selected: { modelId: "sol", effort: "high", serviceTierId: "fast" },
       };
@@ -123,6 +159,8 @@ describe("Codex composer quick model settings", () => {
     );
     // A saved next-turn selection is not an unknown write: further edits remain possible.
     expect(within(dialog).getByRole("button", { name: "Fast mode" })).toBeEnabled();
+    expect(within(dialog).queryByText(/next turn/i)).not.toBeInTheDocument();
+    expect(state.control).not.toHaveBeenCalled();
     expect(state.client.codexSessionSettings).toHaveBeenCalledTimes(2);
   });
 
@@ -151,6 +189,10 @@ describe("Codex composer quick model settings", () => {
     const dialog = await openPicker();
     fireEvent.click(within(dialog).getByRole("button", { name: "Fast mode" }));
     await waitFor(() => expect(state.codexAction).toHaveBeenCalledTimes(1));
+    state = { ...state, live: { ...state.live!, revision: 2 } };
+    view.rerender(<CodexComposerControls {...props} />);
+    expect(within(dialog).getByRole("button", { name: "Fast mode" })).toBeDisabled();
+    expect(within(dialog).queryByRole("status")).not.toBeInTheDocument();
     settings = { ...settings, sessionId: "other", current: { modelId: "other-model" } };
     state = {
       ...state,

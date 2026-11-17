@@ -22,7 +22,7 @@ type State = Pick<
   | "selected"
   | "current"
   | "notice"
-> & { pendingSend?: SessionController["pendingSend"] };
+> & { pendingSend?: SessionController["pendingSend"]; settingsOnlyBlocked?: boolean };
 
 export type SessionNextAction = "managed-handoff";
 type DisplayState = {
@@ -52,7 +52,9 @@ export function sessionDisplayState(
   state: State,
   surface: SessionSurface = "desktop",
 ): DisplayState {
-  const { live, online, controlReady, busy, canSend, access, capabilities, locale } = state;
+  const { live, online, canSend, access, capabilities, locale } = state;
+  const controlReady = state.controlReady || state.settingsOnlyBlocked;
+  const busy = state.busy && !state.settingsOnlyBlocked;
   const c = webLayoutCopy[locale];
   const reason =
     live?.reason === "handoff-required" &&
@@ -88,6 +90,7 @@ export function sessionDisplayState(
       tone: "warning",
       loading: !live,
     };
+  const idleUnderSettings = state.settingsOnlyBlocked && live?.status === "idle" && !reason;
   if (state.current?.agent === "codex") {
     const copy = sessionContinuationCopy(locale);
     if (access?.status !== "approved")
@@ -149,7 +152,7 @@ export function sessionDisplayState(
       return { label: copy.running, reason: "", tone: "active", continuation: "running" };
     if (!controlReady)
       return { label: c.verifying, reason: c.verifying, tone: "muted", loading: true };
-    if (canSend || (live.sendEnabled && !reason))
+    if (canSend || (live.sendEnabled && !reason) || idleUnderSettings)
       return { label: "", reason: "", tone: "muted", continuation: "idle" };
     return {
       label: copy.viewOnly,
@@ -222,7 +225,7 @@ export function sessionDisplayState(
       return { label: copy.running, reason: "", tone: "active", continuation: "running" };
     if (!controlReady)
       return { label: c.verifying, reason: c.verifying, tone: "muted", loading: true };
-    if (canSend || (live.sendEnabled && !reason))
+    if (canSend || (live.sendEnabled && !reason) || idleUnderSettings)
       return { label: "", reason: "", tone: "muted", continuation: "idle" };
     return {
       label: copy.viewOnly,
@@ -298,7 +301,7 @@ export function sessionDisplayState(
         };
       if (!controlReady)
         return { label: c.verifying, reason: c.verifying, tone: "muted", loading: true };
-      if (canSend || (live.sendEnabled && !reason))
+      if (canSend || (live.sendEnabled && !reason) || idleUnderSettings)
         return { label: "", reason: "", tone: "muted", continuation: "idle" };
     }
     return {
@@ -401,6 +404,7 @@ export function sessionDisplayState(
     return { label: c.verifying, reason: c.verifying, tone: "muted", loading: true };
   if (controlReady && live?.status === "idle" && live.lastOutcome === "cancelled")
     return { label: c.cancelled, reason: "", tone: "muted" };
+  if (idleUnderSettings) return { label: "", reason: "", tone: "muted", continuation: "idle" };
   if (canSend) return { label: c.ready, reason: "", tone: "active" };
   if (
     reason === "handoff-required" &&

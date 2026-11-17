@@ -17,10 +17,12 @@ import {
   TriangleAlert,
   X,
 } from "lucide-react";
-import { newSessionProvider, type ManagedAgent, type ManagedOptions } from "@agentkib/web-client";
+import { newSessionProvider, type ManagedAgent } from "@agentkib/web-client";
 import { AgentMark, agentName } from "@agentkib/agent-identity";
 import { sortSessions } from "@agentkib/session-catalog";
 import {
+  ComposerModelPicker,
+  ComposerPermissionMenu,
   dshAgentPresetText,
   fillCopy,
   modelEffortsForTier,
@@ -28,19 +30,17 @@ import {
   NEW_SESSION_AGENTS,
   newSessionCopy,
   newSessionCreateFields,
+  newSessionModelSettings,
   newSessionPermissions,
   newSessionPresets,
-  type NewSessionPermissionChoice,
+  type ComposerModelChange,
 } from "@agentkib/session-ui";
 import { Button } from "@/features/conversation/components/ui/button";
 import { Disclosure, DisclosureSummary } from "@/features/conversation/components/ui/disclosure";
 import {
   DropdownMenu,
   DropdownMenuContent,
-  DropdownMenuGroup,
   DropdownMenuItem,
-  DropdownMenuLabel,
-  DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from "@/features/conversation/components/ui/dropdown-menu";
 import { Input } from "@/features/conversation/components/ui/input";
@@ -51,7 +51,6 @@ import {
   codexCopyForSurface,
   codexReason,
 } from "@/features/conversation/features/sessions/codex-copy";
-import { composerTerm } from "@/features/conversation/features/sessions/composer-layout-copy";
 import {
   isSendEnter,
   useEnterSends,
@@ -153,6 +152,8 @@ export function NewSessionComposer({
   });
   const options = session.options;
   const provider = newSessionProvider(agent, options);
+  const showsModelPicker = provider?.create.modelPicker === true;
+  const showsPermissionPicker = provider?.create.permissionPicker === true;
   const promptAtCreate = provider?.create.mode === "with-first-message";
   const attachments = (provider?.create.attachments ?? true) && !promptAtCreate;
   const enterSends = useEnterSends();
@@ -160,8 +161,16 @@ export function NewSessionComposer({
   const fileInput = useRef<HTMLInputElement>(null);
   const [fileLimit, setFileLimit] = useState(false);
 
-  const models = options?.available ? (options.models ?? []) : [];
-  const defaultModel = options?.defaults?.model ?? models.find((item) => item.isDefault)?.id;
+  const modelSettings = useMemo(
+    () => (showsModelPicker ? newSessionModelSettings(options, provider) : undefined),
+    [options, provider, showsModelPicker],
+  );
+  const modelScope = JSON.stringify([
+    agent,
+    provider?.create.catalogScope === "workspace" ? workspace?.id : null,
+  ]);
+  const models = modelSettings?.options.models ?? [];
+  const defaultModel = modelSettings?.defaults.modelId;
   const selectedModel = models.find((item) => item.id === model);
   const currentModel = selectedModel ?? models.find((item) => item.id === defaultModel);
   const modelId = currentModel?.id ?? defaultModel;
@@ -172,7 +181,8 @@ export function NewSessionComposer({
     modelSupportsTier(currentModel, serviceTier || undefined, effort || undefined)
       ? serviceTier
       : undefined;
-  const shownTier = chosenTier ?? (!selectedModel ? options?.defaults?.serviceTierId : undefined);
+  const shownTier =
+    chosenTier ?? (!selectedModel ? modelSettings?.defaults.serviceTierId : undefined);
   const selectedEffort = modelEffortsForTier(currentModel, shownTier).includes(effort)
     ? effort
     : "";
@@ -182,21 +192,21 @@ export function NewSessionComposer({
       ? provider?.models.effortDefault
         ? undefined
         : selectedModel.defaultEffort
-      : (options?.defaults?.effort ?? undefined));
-  const serviceTiers =
-    provider?.create.serviceTiers && currentModel
-      ? (options?.serviceTiers ?? []).filter((item) =>
-          modelSupportsTier(currentModel, item.id, shownEffort),
-        )
-      : [];
-  const canUseStandardTier =
-    !!shownTier && !!currentModel && modelSupportsTier(currentModel, undefined, shownEffort);
-  const permissions = newSessionPermissions(agent, options, locale, { fullAccess });
-  const shownPermission = permissions?.choices.find(
-    (item) => item.id === (permission ?? permissions.initial),
-  );
+      : modelSettings?.defaults.effort);
+  const canClearEffort =
+    provider?.models.effortDefault === true &&
+    !!selectedEffort &&
+    (!shownTier || modelSupportsTier(currentModel, shownTier));
+  const permissions = showsPermissionPicker
+    ? newSessionPermissions(agent, options, locale, { fullAccess })
+    : undefined;
+  const shownPermission =
+    permissions?.choices.find((item) => item.id === permission) ?? permissions?.choices[0];
   const { presets, defaultId: defaultPreset } = newSessionPresets(agent, options, provider?.create);
-  const preset = presets.find((item) => item.id === (agentPreset ?? defaultPreset));
+  const preset =
+    presets.find((item) => item.id === agentPreset) ??
+    presets.find((item) => item.id === defaultPreset);
+  const optionStatus = session.optionsLoading ? copy.loadingOptions : copy.optionsUnavailable;
 
   const unavailableReason = session.optionsError
     ? failureOf(session.optionsError, locale).reason
@@ -204,6 +214,7 @@ export function NewSessionComposer({
       ? codexReason(locale, options.reason, "web").text
       : undefined;
   const locked = sending || session.busy;
+  const optionsLocked = locked || !options?.available;
   const canSend =
     !disabled &&
     session.ready &&
@@ -246,6 +257,34 @@ export function NewSessionComposer({
     setEffort("");
     setServiceTier(undefined);
     setExactModel(undefined);
+  }
+
+  async function changeModel(change: ComposerModelChange) {
+    if (change.restoreDefaults) {
+      resetModel();
+    } else if (change.model !== undefined) {
+      if (!models.some((item) => item.id === change.model)) return false;
+      resetModel();
+      setModel(change.model);
+    } else if (change.serviceTierId !== undefined) {
+      if (!currentModel) return false;
+      const tier = change.serviceTierId ?? "";
+      const matches = currentModel.variants?.filter(
+        (variant) =>
+          variant.serviceTierId === (tier || undefined) &&
+          (!shownEffort || variant.effort === shownEffort),
+      );
+      if (matches && matches.length !== 1) return false;
+      const match = matches?.[0];
+      setModel(currentModel.id);
+      setEffort(shownEffort ?? match?.effort ?? "");
+      setServiceTier(tier);
+      setExactModel(!tier && !match?.effort ? match?.id : undefined);
+    } else if (change.effort !== undefined) {
+      setEffort(change.effort ?? "");
+      if (shownTier) setServiceTier(shownTier);
+      setExactModel(undefined);
+    }
   }
 
   function addFiles(list: File[]) {
@@ -417,10 +456,12 @@ export function NewSessionComposer({
               ))}
             </DropdownMenuContent>
           </DropdownMenu>
-          {presets.length > 0 && (
+          {presets.length > 0 ? (
             <DropdownMenu>
               <DropdownMenuTrigger
-                render={<Button type="button" variant="ghost" className={chip} disabled={locked} />}
+                render={
+                  <Button type="button" variant="ghost" className={chip} disabled={optionsLocked} />
+                }
               >
                 <Layers className="size-3.5 shrink-0" aria-hidden />
                 <span className="@max-[28rem]:sr-only">{copy.preset}</span>
@@ -449,63 +490,54 @@ export function NewSessionComposer({
                 ))}
               </DropdownMenuContent>
             </DropdownMenu>
-          )}
-          {permissions && shownPermission && (
-            <PermissionMenu
+          ) : provider?.create.agentPresets === true ? (
+            <OptionPlaceholder
+              label={copy.preset}
+              status={optionStatus}
+              loading={session.optionsLoading}
+              icon={<Layers className="size-3.5 shrink-0" aria-hidden />}
+            />
+          ) : null}
+          {permissions && shownPermission ? (
+            <ComposerPermissionMenu
               label={shownPermission.name}
               title={permissions.title}
               risky={shownPermission.risky}
-              disabled={locked}
+              disabled={optionsLocked}
+              side="bottom"
               items={permissions.choices}
               selected={shownPermission.id}
               onSelect={setPermission}
             />
-          )}
+          ) : showsPermissionPicker ? (
+            <OptionPlaceholder
+              label={copy.permission}
+              status={optionStatus}
+              loading={session.optionsLoading}
+              icon={<Shield className="size-3.5 shrink-0" aria-hidden />}
+            />
+          ) : null}
           <div className="ml-auto flex min-w-0 items-center gap-1">
-            {models.length > 0 && (
-              <ModelMenu
+            {modelSettings ? (
+              <ComposerModelPicker
+                key={modelScope}
                 locale={locale}
-                models={models}
-                modelId={modelId}
-                effort={shownEffort}
-                efforts={modelEffortsForTier(currentModel, shownTier)}
-                serviceTier={shownTier || undefined}
-                serviceTiers={serviceTiers}
-                canUseStandardTier={canUseStandardTier}
-                resetModel={provider?.models.modelDefault ? resetModel : undefined}
-                resetEffort={
-                  provider?.models.effortDefault &&
-                  !!selectedEffort &&
-                  (!shownTier || modelSupportsTier(currentModel, shownTier))
-                    ? () => setEffort("")
-                    : undefined
-                }
-                disabled={locked}
-                onModel={(id) => {
-                  resetModel();
-                  setModel(id);
-                }}
-                onEffort={(nextEffort) => {
-                  setEffort(nextEffort);
-                  if (shownTier) setServiceTier(shownTier);
-                  setExactModel(undefined);
-                }}
-                onTier={(tier) => {
-                  if (!currentModel) return;
-                  const matches = currentModel.variants?.filter(
-                    (variant) =>
-                      variant.serviceTierId === (tier || undefined) &&
-                      (!shownEffort || variant.effort === shownEffort),
-                  );
-                  if (matches && matches.length !== 1) return;
-                  const match = matches?.[0];
-                  setModel(currentModel.id);
-                  setEffort(shownEffort ?? match?.effort ?? "");
-                  setServiceTier(tier);
-                  setExactModel(!tier && !match?.effort ? match?.id : undefined);
-                }}
+                settings={modelSettings}
+                selection={{ modelId, effort: shownEffort, serviceTierId: shownTier || undefined }}
+                disabled={optionsLocked}
+                saving={false}
+                side="bottom"
+                clearEffort={canClearEffort}
+                onOpen={() => undefined}
+                onChange={changeModel}
               />
-            )}
+            ) : showsModelPicker ? (
+              <OptionPlaceholder
+                label={copy.model}
+                status={optionStatus}
+                loading={session.optionsLoading}
+              />
+            ) : null}
             <Button
               type="submit"
               className="h-8 shrink-0 gap-1 rounded-full px-3"
@@ -524,6 +556,38 @@ export function NewSessionComposer({
         </div>
       </form>
     </section>
+  );
+}
+
+function OptionPlaceholder({
+  label,
+  status,
+  loading,
+  icon,
+}: {
+  label: string;
+  status: string;
+  loading: boolean;
+  icon?: ReactNode;
+}) {
+  return (
+    <Button
+      type="button"
+      variant="ghost"
+      className={chip}
+      disabled
+      aria-busy={loading || undefined}
+      aria-label={`${label}: ${status}`}
+      title={status}
+    >
+      {icon}
+      <span className="truncate">{label}</span>
+      {loading ? (
+        <LoaderCircle className="size-3.5 shrink-0 motion-safe:animate-spin" aria-hidden />
+      ) : (
+        <ChevronDown className="size-3.5 shrink-0" aria-hidden />
+      )}
+    </Button>
   );
 }
 
@@ -550,169 +614,6 @@ function Notice({
       {icon && <span className="mt-0.5 shrink-0">{icon}</span>}
       <div className="min-w-0 flex-1">{children}</div>
     </div>
-  );
-}
-
-function PermissionMenu({
-  label,
-  title,
-  risky,
-  disabled,
-  items,
-  selected,
-  onSelect,
-}: {
-  label: string;
-  title: string;
-  risky: boolean;
-  disabled: boolean;
-  items: NewSessionPermissionChoice[];
-  selected?: string;
-  onSelect: (id: string) => void;
-}) {
-  return (
-    <DropdownMenu>
-      <DropdownMenuTrigger
-        render={
-          <Button
-            type="button"
-            variant="ghost"
-            className={cn(chip, risky && "text-orange-600 hover:text-orange-700")}
-            disabled={disabled}
-          />
-        }
-        aria-label={`${title}: ${label}`}
-      >
-        <Shield className="size-3.5 shrink-0" aria-hidden />
-        <span className="truncate @max-[28rem]:sr-only">{label}</span>
-        <ChevronDown className="size-3.5 shrink-0" aria-hidden />
-      </DropdownMenuTrigger>
-      <DropdownMenuContent className="w-72">
-        <DropdownMenuGroup>
-          <DropdownMenuLabel>{title}</DropdownMenuLabel>
-          {items.map((item) => (
-            <DropdownMenuItem
-              key={item.id}
-              className={cn("items-start", item.risky && "text-orange-600")}
-              onClick={() => onSelect(item.id)}
-            >
-              <span className="grid min-w-0 flex-1">
-                <span>{item.name}</span>
-                <span
-                  className={cn(
-                    "text-xs",
-                    item.risky ? "text-orange-600/80" : "text-muted-foreground",
-                  )}
-                >
-                  {item.description}
-                </span>
-              </span>
-              {item.id === selected && <Check className="mt-0.5 size-4" aria-hidden />}
-            </DropdownMenuItem>
-          ))}
-        </DropdownMenuGroup>
-      </DropdownMenuContent>
-    </DropdownMenu>
-  );
-}
-
-/** The model and its effort, as the session's own composer names them. */
-function ModelMenu({
-  locale,
-  models,
-  modelId,
-  effort,
-  efforts,
-  serviceTier,
-  serviceTiers,
-  canUseStandardTier,
-  disabled,
-  resetModel,
-  resetEffort,
-  onModel,
-  onEffort,
-  onTier,
-}: {
-  locale: Locale;
-  models: NonNullable<ManagedOptions["models"]>;
-  modelId?: string;
-  effort?: string;
-  efforts: readonly string[];
-  serviceTier?: string;
-  serviceTiers: NonNullable<ManagedOptions["serviceTiers"]>;
-  canUseStandardTier: boolean;
-  disabled: boolean;
-  resetModel?: () => void;
-  resetEffort?: () => void;
-  onModel: (id: string) => void;
-  onEffort: (effort: string) => void;
-  onTier: (id: string) => void;
-}) {
-  const copy = codexCopyForSurface(locale, "web");
-  const current = models.find((item) => item.id === modelId);
-  const name = current?.name ?? modelId ?? copy.model;
-  const tierName = serviceTiers.find((item) => item.id === serviceTier)?.name;
-  const label = [name, effort && composerTerm(locale, effort), tierName]
-    .filter(Boolean)
-    .join(" · ");
-  return (
-    <DropdownMenu>
-      <DropdownMenuTrigger
-        render={<Button type="button" variant="ghost" className={chip} disabled={disabled} />}
-        aria-label={`${copy.model}: ${label}`}
-      >
-        <span className="max-w-40 truncate @max-[28rem]:max-w-24">{label}</span>
-        <ChevronDown className="size-3.5 shrink-0" aria-hidden />
-      </DropdownMenuTrigger>
-      <DropdownMenuContent align="end" className="w-60">
-        <DropdownMenuGroup>
-          <DropdownMenuLabel>{copy.model}</DropdownMenuLabel>
-          {resetModel && (
-            <DropdownMenuItem onClick={resetModel}>{copy.defaultOption}</DropdownMenuItem>
-          )}
-          {models.map((item) => (
-            <DropdownMenuItem key={item.id} onClick={() => onModel(item.id)}>
-              <span className="min-w-0 flex-1 truncate">{item.name ?? item.id}</span>
-              {item.id === current?.id && <Check className="size-4" aria-hidden />}
-            </DropdownMenuItem>
-          ))}
-        </DropdownMenuGroup>
-        {efforts.length > 0 && (
-          <>
-            <DropdownMenuSeparator />
-            <DropdownMenuGroup>
-              <DropdownMenuLabel>{copy.effort}</DropdownMenuLabel>
-              {resetEffort && (
-                <DropdownMenuItem onClick={resetEffort}>{copy.defaultOption}</DropdownMenuItem>
-              )}
-              {efforts.map((item) => (
-                <DropdownMenuItem key={item} onClick={() => onEffort(item)}>
-                  <span className="min-w-0 flex-1">{composerTerm(locale, item)}</span>
-                  {item === effort && <Check className="size-4" aria-hidden />}
-                </DropdownMenuItem>
-              ))}
-            </DropdownMenuGroup>
-          </>
-        )}
-        {(serviceTiers.length > 0 || canUseStandardTier) && (
-          <>
-            <DropdownMenuSeparator />
-            <DropdownMenuGroup>
-              <DropdownMenuLabel>{copy.serviceTier}</DropdownMenuLabel>
-              {canUseStandardTier && (
-                <DropdownMenuItem onClick={() => onTier("")}>{copy.defaultOption}</DropdownMenuItem>
-              )}
-              {serviceTiers.map((item) => (
-                <DropdownMenuItem key={item.id} onClick={() => onTier(item.id)}>
-                  <span className="min-w-0 flex-1">{item.name || item.id}</span>
-                  {item.id === serviceTier && <Check className="size-4" aria-hidden />}
-                </DropdownMenuItem>
-              ))}
-            </DropdownMenuGroup>
-          </>
-        )}
-      </DropdownMenuContent>
-    </DropdownMenu>
   );
 }
 

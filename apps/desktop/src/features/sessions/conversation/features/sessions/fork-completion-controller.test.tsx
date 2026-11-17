@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { act, cleanup, renderHook } from "@testing-library/react";
+import { act, cleanup, renderHook, waitFor } from "@testing-library/react";
 import { useEffect } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
@@ -9,34 +9,68 @@ import {
   type ConversationSessionSummary,
   type Live,
   type ResolvedHistoryReference,
+  type SessionActionBody,
+  type SessionActionResult,
 } from "@agentkib/web-client";
 import { useSessionController } from "@/features/sessions/conversation/features/sessions/use-session-controller";
 import {
   pendingScope,
   readPending,
 } from "@/features/sessions/conversation/features/sessions/pending-controls";
+import { publishSessionInvalidation } from "@/features/sessions/conversation/features/sessions/session-events";
 
 vi.mock("@/features/sessions/conversation/features/preferences/use-appearance", () => ({
   useAppearance: () => {},
 }));
 vi.mock("@/features/sessions/conversation/features/sessions/use-session-live", () => ({
   useSessionLive: ({
+    client,
     selected,
     streamReady,
     refreshRequired,
     hasDurablePending,
     setControlReady,
+    readSettingsControls,
+    setLive,
   }: {
+    client: WebClient;
     selected: string;
     streamReady: { current: boolean };
     refreshRequired: { current: boolean };
     hasDurablePending: (id: string) => boolean;
     setControlReady: (ready: boolean) => void;
+    readSettingsControls: { current: ((sessionId: string) => Promise<void>) | undefined };
+    setLive: (live: Live) => void;
   }) => {
     useEffect(() => {
       streamReady.current = !!selected;
       setControlReady(!!selected && !refreshRequired.current && !hasDurablePending(selected));
     }, [selected, streamReady, refreshRequired, hasDurablePending, setControlReady]);
+    useEffect(() => {
+      let mounted = true;
+      readSettingsControls.current = async (sessionId) => {
+        if (sessionId !== selected) return;
+        const live = await client.live(sessionId);
+        if (!mounted) return;
+        setLive(live);
+        setControlReady(
+          streamReady.current && !refreshRequired.current && !hasDurablePending(selected),
+        );
+      };
+      return () => {
+        mounted = false;
+        readSettingsControls.current = undefined;
+      };
+    }, [
+      client,
+      selected,
+      streamReady,
+      refreshRequired,
+      hasDurablePending,
+      setControlReady,
+      readSettingsControls,
+      setLive,
+    ]);
   },
 }));
 
@@ -293,6 +327,163 @@ describe("active send receipt ownership", () => {
     expect(view.result.current.message).toBe("Keep this startup draft");
     expect(view.result.current.canSend).toBe(true);
     expect(host.request).toHaveBeenCalledOnce();
+  });
+});
+
+describe("settings actions and their receipts", () => {
+  function fixture(agent: "codex" | "claude-code") {
+    const live = { ...baseIdle("original", agent), runtimeBootId: "runtime" };
+    const host = baseFixture(live, agent);
+    vi.mocked(host.client.sessionCapabilities).mockImplementation(async (sessionId) => ({
+      sessionId,
+      executionMode: agent === "codex" ? "codex-managed" : "claude-managed",
+      status: "idle",
+      features: { fork: { available: true }, settings: { available: true } },
+    }));
+    return { ...host, updated: () => host.liveById.set("original", { ...live, revision: 2 }) };
+  }
+
+  const ack = (requestId: string) => ({
+    accepted: true,
+    completed: true,
+    requestId,
+    sessionId: "original",
+    runtimeBootId: "runtime",
+  });
+
+  it.each(["codex", "claude-code"] as const)(
+    "does one scoped read after an acknowledged %s settings write",
+    async (agent) => {
+      const host = fixture(agent);
+      const { result } = await open(host);
+      act(() => result.current.setMessage("Keep this draft"));
+      host.live.mockClear();
+      host.events.mockClear();
+      vi.mocked(host.client.catalog).mockClear();
+      let finish!: (result: SessionActionResult) => void;
+      host.request.mockImplementationOnce(async () => new Promise((resolve) => (finish = resolve)));
+      let save!: ReturnType<typeof result.current.codexAction>;
+      const change = agent === "codex" ? { serviceTierId: "priority" } : { model: "sonnet" };
+      await act(async () => {
+        save = result.current.codexAction("settings", change);
+      });
+      expect(host.request).toHaveBeenCalledExactlyOnceWith(
+        agent === "codex" ? "codex/settings" : "managed/action",
+        expect.objectContaining({ ...change, sessionId: "original", expectedRevision: 1 }),
+      );
+      const { requestId } = host.request.mock.calls[0]![1] as SessionActionBody;
+      expect(readPending(host.scope)).toMatchObject([
+        { requestId, sessionId: "original", kind: "settings" },
+      ]);
+      expect(result.current.canSend).toBe(false);
+      expect(result.current.busy).toBe(false);
+      await act(async () => publishSessionInvalidation(host.client, "original", ["receipts"]));
+      expect(host.receipt).not.toHaveBeenCalled();
+      expect(result.current.notice).toBeUndefined();
+      expect(host.live).not.toHaveBeenCalled();
+
+      host.updated();
+      await act(async () => {
+        finish(ack(requestId));
+        await expect(save).resolves.toMatchObject(ack(requestId));
+      });
+      expect(host.live).toHaveBeenCalledExactlyOnceWith("original");
+      expect(host.events).not.toHaveBeenCalled();
+      expect(host.client.catalog).not.toHaveBeenCalled();
+      expect(host.receipt).not.toHaveBeenCalled();
+      expect(readPending(host.scope)).toEqual([]);
+      expect(result.current.live?.revision).toBe(2);
+      expect(result.current.message).toBe("Keep this draft");
+      expect(result.current.canSend).toBe(true);
+      expect(host.request).toHaveBeenCalledOnce();
+    },
+  );
+
+  it.each(["matching", "other revision", "other acknowledgement"] as const)(
+    "checks a %s receipt when the settings response is lost",
+    async (receiptKind) => {
+      const host = fixture("codex");
+      const { result } = await open(host);
+      host.live.mockClear();
+      host.events.mockClear();
+      vi.mocked(host.client.catalog).mockClear();
+      host.request.mockRejectedValueOnce(new ApiError(504, "outcome_unknown", "unknown"));
+      host.receipt.mockImplementation(async (requestId) => ({
+        found: true,
+        requestId,
+        sessionId: "original",
+        operation: "settings",
+        runtimeBootId: "runtime",
+        expectedRevision: receiptKind === "other revision" ? 2 : 1,
+        status: "accepted",
+        completionObserved: false,
+        ack: ack(receiptKind === "other acknowledgement" ? crypto.randomUUID() : requestId),
+      }));
+      host.updated();
+      let saved: SessionActionResult | undefined;
+      await act(async () => {
+        saved = await result.current.codexAction("settings", { effort: "high" });
+      });
+      const { requestId } = host.request.mock.calls[0]![1] as SessionActionBody;
+      expect(host.request).toHaveBeenCalledOnce();
+      expect(host.receipt).toHaveBeenCalledExactlyOnceWith(requestId);
+      expect(host.live).toHaveBeenCalledExactlyOnceWith("original");
+      expect(host.events).not.toHaveBeenCalled();
+      expect(host.client.catalog).not.toHaveBeenCalled();
+      if (receiptKind === "matching") {
+        expect(saved).toMatchObject(ack(requestId));
+        expect(result.current.notice).toBeUndefined();
+        expect(readPending(host.scope)).toEqual([]);
+        expect(result.current.canSend).toBe(true);
+      } else {
+        expect(saved).toBeUndefined();
+        expect(result.current.notice).toBeUndefined();
+        expect(result.current.settingsNotice).toEqual({ group: "model", status: "uncertain" });
+        expect(readPending(host.scope)).toMatchObject([
+          { requestId, sessionId: "original", kind: "settings" },
+        ]);
+        expect(result.current.canSend).toBe(false);
+      }
+    },
+  );
+
+  it("keeps a policy receipt fence local and restores sending when it is resolved", async () => {
+    const host = fixture("codex");
+    const { result } = await open(host);
+    act(() => result.current.setMessage("Keep this draft"));
+    host.events.mockClear();
+    vi.mocked(host.client.catalog).mockClear();
+    host.request.mockRejectedValueOnce(new ApiError(504, "outcome_unknown", "unknown"));
+    await act(async () =>
+      result.current.codexAction("settings", { policyId: "full-access-on-request" }),
+    );
+    const { requestId } = host.request.mock.calls[0]![1] as SessionActionBody;
+    expect(result.current.notice).toBeUndefined();
+    expect(result.current.settingsNotice).toEqual({ group: "permissions", status: "uncertain" });
+    expect(result.current.canSend).toBe(false);
+    expect(readPending(host.scope)).toMatchObject([{ requestId, kind: "settings" }]);
+
+    host.updated();
+    host.receipt.mockResolvedValueOnce({
+      found: true,
+      requestId,
+      sessionId: "original",
+      operation: "settings",
+      runtimeBootId: "runtime",
+      expectedRevision: 1,
+      status: "accepted",
+      completionObserved: false,
+      ack: ack(requestId),
+    });
+    act(() => publishSessionInvalidation(host.client, "original", ["receipts"]));
+    await waitFor(() => expect(result.current.canSend).toBe(true));
+    expect(result.current.notice).toBeUndefined();
+    expect(result.current.settingsNotice).toBeUndefined();
+    expect(result.current.message).toBe("Keep this draft");
+    expect(readPending(host.scope)).toEqual([]);
+    expect(host.request).toHaveBeenCalledOnce();
+    expect(host.events).not.toHaveBeenCalled();
+    expect(host.client.catalog).not.toHaveBeenCalled();
   });
 });
 
@@ -700,7 +891,11 @@ describe("a Claude settings change Claude Code refuses", () => {
       "managed/action",
       expect.objectContaining({ operation: "settings", model: "no-such-model" }),
     );
-    expect(result.current.notice).toBe("notDispatched");
-    expect(result.current.noticeReason).toBe(reason);
+    expect(result.current.notice).toBeUndefined();
+    expect(result.current.settingsNotice).toEqual({
+      group: "model",
+      status: "notDispatched",
+      reason: reason ?? code,
+    });
   });
 });

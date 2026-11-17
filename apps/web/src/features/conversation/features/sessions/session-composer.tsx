@@ -59,7 +59,7 @@ import {
 } from "../../components/ui/dropdown-menu";
 import { Dialog } from "../../components/dialog";
 import { useSession } from "./session-context";
-import { ContextUsageGauge } from "./context-usage";
+import { ContextUsageGauge, type ContextUsageHandle } from "./context-usage";
 import { contextUsageCopyForSurface } from "./context-usage-copy";
 import { sessionDisplayState } from "./session-display-state";
 import { composerLayoutCopy } from "./composer-layout-copy";
@@ -171,6 +171,7 @@ export function SessionComposer({
   const [commandNotice, setCommandNotice] = useState<{ draft: string; reason: string }>();
   // A command typed without an argument opens AgentKib's control for it, as a button would.
   const controls = useRef<ComposerControlsHandle>(null);
+  const limitedUsage = useRef<ContextUsageHandle>(null);
   // `/plan`, at the start or after a space, turns plan mode on as in Codex's composer. Only the
   // controls report it, and they show only with full access.
   const [reportedPlan, setPlanState] = useState<ComposerPlanState>({
@@ -202,8 +203,23 @@ export function SessionComposer({
     onChoose: setMessage,
   });
   const panels = useSessionPanels();
-  const openPanel = (panel: AgentKibPanel) => {
-    if (panel === "settings" || panel === "goal") return controls.current?.open(panel) ?? false;
+  const openPanel = (panel: AgentKibPanel, command?: string) => {
+    if (panel === "settings") {
+      const target =
+        command === "permissions"
+          ? "permissions"
+          : command === "status"
+            ? "usage"
+            : command === "effort"
+              ? "effort"
+              : "models";
+      if (target === "usage" && limitedUsage.current) {
+        limitedUsage.current.open();
+        return true;
+      }
+      return controls.current?.open(target) ?? false;
+    }
+    if (panel === "goal") return controls.current?.open(panel) ?? false;
     if (!panels) return false;
     if (panel === "files") panels.setFilesOpen(true);
     else panels.setActionsOpen(true);
@@ -439,7 +455,7 @@ export function SessionComposer({
         ? agentKibPanel(decision)
         : (codexCommand?.panel ?? null)
       : null;
-    if (panel && openPanel(panel)) {
+    if (panel && openPanel(panel, decision?.command ?? codexCommand?.command)) {
       setCommandNotice(undefined);
       setMessage("");
       return;
@@ -703,7 +719,7 @@ export function SessionComposer({
           onFocus={() => {
             if (isCodex || isClaude) void session.checkContinuation?.();
           }}
-          disabled={busy || submitted}
+          disabled={(busy && !session.settingsOnlyBlocked) || submitted}
           {...slash.inputProps}
           onCompositionStart={() => {
             composing.current = true;
@@ -843,7 +859,7 @@ export function SessionComposer({
               </Button>
               <div className="flex min-w-0 items-center gap-1">
                 {advancedActions}
-                <ContextUsageGauge />
+                <ContextUsageGauge usageRef={limitedUsage} />
                 {primaryAction}
               </div>
             </div>
@@ -890,6 +906,7 @@ export function SessionComposer({
           (!running || (live?.executionMode === "claude-follower" && display.tone === "warning")) &&
           !compacting &&
           !connectionFailure &&
+          display.reason &&
           !display.loading && (
             <div
               role="status"

@@ -1,4 +1,4 @@
-import { useRef, useState } from "react";
+import { useImperativeHandle, useRef, useState, type Ref } from "react";
 import { Gauge } from "lucide-react";
 import {
   sessionProviderCapabilities,
@@ -249,54 +249,38 @@ export function ContextUsageDetails({
   compacting,
   awaitingCliReport,
   capacity,
-  source,
   locale,
   online,
 }: ContextUsageView & { locale: Locale; online: boolean }) {
   const copy = contextUsageCopyForSurface(locale, "web");
-  const historical = usage?.historical === true && percent !== undefined;
-  const recordedAt = historical && usage.updatedAt ? new Date(usage.updatedAt) : undefined;
-  const reportLabel = historical
-    ? copy.historicalReport
-    : state === "ready"
-      ? copy.recentNativeReport
-      : copy.reported;
+  const reason = contextUsageReason(locale, usage?.reason, "web");
   const message = compacting
     ? copy.compactingDetail
     : !online && usage?.reason !== "permission_denied" && usage?.reason !== "permission-denied"
       ? copy.offline
       : awaitingCliReport
         ? copy.awaitingCliReportDetail
-        : historical
-          ? source === "last-request" || usage.reason === "devin-last-model-request"
-            ? copy.lastRequestDetail
-            : copy.historicalDetail
-          : (contextUsageReason(locale, usage?.reason, "web") ??
+        : state === "ready"
+          ? undefined
+          : (reason ??
             (state === "pending"
               ? copy.pendingDetail
               : state === "stale"
-                ? copy.staleDetail
+                ? copy.stale
                 : codexCopyForSurface(locale, "web").contextUnknown));
+  const showMessage = message && (percent === undefined || message !== copy.stale);
   return (
     <div className="space-y-2 text-sm">
-      {(state !== "ready" || historical) && <p role="status">{message}</p>}
+      {showMessage && <p role="status">{message}</p>}
       {percent === undefined && capacity !== undefined && (
         <p>{copy.capacity.replace("{total}", capacity.toLocaleString(locale))}</p>
       )}
       {percent !== undefined && (
         <div className="space-y-2">
           <p>
-            {`${reportLabel}: `}
             {usage!.usedTokens!.toLocaleString()} / {usage!.contextWindow!.toLocaleString()} (
             {Math.round(percent)}%)
           </p>
-          {recordedAt && Number.isFinite(recordedAt.valueOf()) && (
-            <time dateTime={usage!.updatedAt} className="block text-xs text-muted-foreground">
-              {new Intl.DateTimeFormat(locale, { dateStyle: "medium", timeStyle: "short" }).format(
-                recordedAt,
-              )}
-            </time>
-          )}
           <div className="h-1.5 overflow-hidden rounded-full bg-muted">
             <div className="h-full bg-primary" style={{ width: `${percent}%` }} />
           </div>
@@ -346,14 +330,18 @@ function useCompactAction(): CompactAction | undefined {
   };
 }
 
+export type ContextUsageHandle = { open(): void };
+
 export function ContextUsageGauge({
   fallback,
   capacity,
   source,
+  usageRef,
 }: {
   fallback?: ContextUsage;
   capacity?: number;
   source?: UsageSource;
+  usageRef?: Ref<ContextUsageHandle>;
 } = {}) {
   const { selected, locale, access, live, online, usageEpoch } = useSession();
   const scope = `${selected}\0${access?.bootId ?? ""}\0${access?.device?.id ?? ""}\0${usageEpoch ?? ""}\0${live?.connectionGeneration ?? ""}`;
@@ -367,6 +355,7 @@ export function ContextUsageGauge({
       online={online}
       view={view}
       compact={compact}
+      usageRef={usageRef}
     />
   );
 }
@@ -377,26 +366,31 @@ export function ContextUsageIndicator({
   online,
   view,
   compact,
+  usageRef,
 }: {
   scope: string;
   locale: Locale;
   online: boolean;
   view: ContextUsageView;
   compact?: CompactAction;
+  usageRef?: Ref<ContextUsageHandle>;
 }) {
   const copy = contextUsageCopyForSurface(locale, "web");
   const [opened, setOpened] = useState<string>();
+  useImperativeHandle(usageRef, () => ({ open: () => setOpened(scope) }), [scope]);
   const title = codexCopyForSurface(locale, "web").contextUsage;
-  const historical = view.usage?.historical === true && view.percent !== undefined;
+  const showPercentage =
+    view.percent !== undefined && (view.state === "ready" || view.state === "stale");
   const label = view.compacting
     ? copy.compacting
     : view.awaitingCliReport
       ? copy.awaitingCliReport
-      : historical
-        ? `${copy.historicalReport} · ${Math.round(view.percent!)}%`
-        : view.state === "ready" && view.percent !== undefined
-          ? `${Math.round(view.percent)}%`
-          : copy[view.state === "ready" ? "unavailable" : view.state];
+      : showPercentage
+        ? `${Math.round(view.percent!)}%`
+        : copy[view.state === "ready" ? "unavailable" : view.state];
+  const usageTitle = showPercentage
+    ? `${view.usage!.usedTokens!.toLocaleString()} / ${view.usage!.contextWindow!.toLocaleString()}`
+    : label;
   return (
     <>
       <Button
@@ -404,14 +398,12 @@ export function ContextUsageIndicator({
         variant="ghost"
         className="h-11 shrink-0 gap-1.5 rounded-full px-2 text-xs text-muted-foreground hover:text-foreground"
         aria-label={title}
-        aria-description={historical ? label : undefined}
-        title={`${title}: ${view.state === "ready" && view.percent !== undefined ? `${copy.recentNativeReport}: ${view.usage!.usedTokens!.toLocaleString()} / ${view.usage!.contextWindow!.toLocaleString()}` : label}`}
+        aria-description={showPercentage ? label : undefined}
+        title={`${title}: ${usageTitle}`}
         onClick={() => setOpened(scope)}
       >
         <Gauge className="size-4" aria-hidden="true" />
-        {!historical && (view.state !== "ready" || view.compacting || view.awaitingCliReport) && (
-          <span className="hidden @min-[32rem]:inline">{title}</span>
-        )}
+        {!showPercentage && <span className="hidden @min-[32rem]:inline">{title}</span>}
         <span className="@max-[22rem]:sr-only">{label}</span>
       </Button>
       {opened === scope && (

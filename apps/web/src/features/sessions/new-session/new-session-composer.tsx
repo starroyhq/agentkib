@@ -11,7 +11,7 @@ import {
   ImageIcon,
   Layers,
   LoaderCircle,
-  Plus,
+  Paperclip,
   Search,
   Shield,
   TriangleAlert,
@@ -21,8 +21,12 @@ import { newSessionProvider, type ManagedAgent } from "@agentkib/web-client";
 import { AgentMark, agentName } from "@agentkib/agent-identity";
 import { sortSessions } from "@agentkib/session-catalog";
 import {
+  ComposerAddAction,
+  ComposerAddMenu,
   ComposerModelPicker,
   ComposerPermissionMenu,
+  ComposerPlanAction,
+  composerAddCopy,
   dshAgentPresetText,
   fillCopy,
   modelEffortsForTier,
@@ -33,6 +37,7 @@ import {
   newSessionModelSettings,
   newSessionPermissions,
   newSessionPresets,
+  planModeCopy,
   type ComposerModelChange,
 } from "@agentkib/session-ui";
 import { Button } from "@/features/conversation/components/ui/button";
@@ -107,6 +112,7 @@ export function NewSessionComposer({
     [catalogWorkspaces],
   );
   const copy = newSessionCopy(locale);
+  const conversationCopy = codexCopyForSurface(locale, "web");
   const [target] = useState(readNewSessionTarget);
   const [agent, setAgent] = useState<ManagedAgent>(target.agent ?? "codex");
   const [workspaceId, setWorkspaceId] = useState(target.workspaceId ?? "");
@@ -117,6 +123,8 @@ export function NewSessionComposer({
   const [text, setText] = useState("");
   const [files, setFiles] = useState<File[]>([]);
   const [permission, setPermission] = useState<string>();
+  const [claudePlan, setClaudePlan] = useState(false);
+  const [addMenuOpen, setAddMenuOpen] = useState(false);
   const [model, setModel] = useState("");
   const [effort, setEffort] = useState("");
   const [serviceTier, setServiceTier] = useState<string>();
@@ -155,7 +163,10 @@ export function NewSessionComposer({
   const showsModelPicker = provider?.create.modelPicker === true;
   const showsPermissionPicker = provider?.create.permissionPicker === true;
   const promptAtCreate = provider?.create.mode === "with-first-message";
-  const attachments = (provider?.create.attachments ?? true) && !promptAtCreate;
+  const attachments =
+    access?.device?.attachments === true &&
+    (provider?.create.attachments ?? true) &&
+    !promptAtCreate;
   const enterSends = useEnterSends();
   const composing = useRef(false);
   const fileInput = useRef<HTMLInputElement>(null);
@@ -200,8 +211,26 @@ export function NewSessionComposer({
   const permissions = showsPermissionPicker
     ? newSessionPermissions(agent, options, locale, { fullAccess })
     : undefined;
+  const offersPlan =
+    agent === "claude-code" &&
+    showsPermissionPicker &&
+    options?.available === true &&
+    options.permissionModes?.some(({ id }) => id === "plan");
+  const startupPlanning = agent === "claude-code" && claudePlan;
+  const canPickFiles = attachments && files.length < MAX_FILES;
+  const hasAddActions = canPickFiles || offersPlan || startupPlanning;
+  const addDisabledReason = attachments
+    ? conversationCopy.limit
+    : !access?.device?.attachments
+      ? conversationCopy.permission
+      : session.optionsLoading
+        ? copy.loadingOptions
+        : composerAddCopy(locale).unavailable;
+  const permissionChoices = permissions?.choices
+    .filter(({ id }) => agent !== "claude-code" || id !== "plan")
+    .map((item) => (startupPlanning ? { ...item, disabled: true } : item));
   const shownPermission =
-    permissions?.choices.find((item) => item.id === permission) ?? permissions?.choices[0];
+    permissionChoices?.find((item) => item.id === permission) ?? permissionChoices?.[0];
   const { presets, defaultId: defaultPreset } = newSessionPresets(agent, options, provider?.create);
   const preset =
     presets.find((item) => item.id === agentPreset) ??
@@ -220,6 +249,7 @@ export function NewSessionComposer({
     session.ready &&
     !!options?.available &&
     !!workspace &&
+    (!startupPlanning || offersPlan) &&
     !locked &&
     !session.unknown &&
     (attachments ? !!text.trim() || files.length > 0 : !!text.trim() && files.length === 0);
@@ -238,7 +268,7 @@ export function NewSessionComposer({
         effort: selectedEffort,
         serviceTierId: chosenTier,
         shownModel: modelId,
-        permission,
+        permission: startupPlanning ? "plan" : permission,
         preset: agentPreset,
         fullAccess,
       },
@@ -313,7 +343,7 @@ export function NewSessionComposer({
       {fillCopy(copy.agentUnavailableHere, { reason: unavailableReason })}
     </Notice>
   ) : fileLimit ? (
-    <Notice tone="muted">{codexCopyForSurface(locale, "web").limit}</Notice>
+    <Notice tone="muted">{conversationCopy.limit}</Notice>
   ) : null;
 
   if (!workspaces.length) return null;
@@ -399,19 +429,38 @@ export function NewSessionComposer({
           }}
         />
         <div className="flex min-w-0 flex-wrap items-center gap-1">
-          {(attachments || files.length > 0) && (
-            <Button
-              type="button"
-              variant="ghost"
-              className="size-8 shrink-0 rounded-full bg-muted/60 p-0"
-              aria-label={copy.attach}
-              title={copy.attach}
-              disabled={locked || !attachments || files.length >= MAX_FILES}
-              onClick={() => fileInput.current?.click()}
-            >
-              <Plus className="size-4" aria-hidden />
-            </Button>
-          )}
+          <ComposerAddMenu
+            label={conversationCopy.addContext}
+            side="bottom"
+            disabled={locked || !hasAddActions}
+            disabledReason={!hasAddActions ? addDisabledReason : undefined}
+            open={addMenuOpen && hasAddActions && !locked}
+            onOpenChange={setAddMenuOpen}
+          >
+            {attachments && (
+              <ComposerAddAction
+                label={copy.attach}
+                icon={<Paperclip className="size-4" aria-hidden />}
+                disabled={locked || !canPickFiles}
+                title={canPickFiles ? undefined : conversationCopy.limit}
+                onClick={() => {
+                  setAddMenuOpen(false);
+                  fileInput.current?.click();
+                }}
+              />
+            )}
+            {(offersPlan || startupPlanning) && (
+              <ComposerPlanAction
+                label={planModeCopy(locale).title}
+                active={startupPlanning}
+                disabled={locked}
+                onToggle={() => {
+                  setClaudePlan(!startupPlanning);
+                  setAddMenuOpen(false);
+                }}
+              />
+            )}
+          </ComposerAddMenu>
           <WorkspacePicker
             locale={locale}
             workspaces={workspaces}
@@ -446,6 +495,8 @@ export function NewSessionComposer({
                     setAgent(item);
                     resetModel();
                     setPermission(undefined);
+                    setClaudePlan(false);
+                    setAddMenuOpen(false);
                     setAgentPreset(undefined);
                   }}
                 >
@@ -498,14 +549,14 @@ export function NewSessionComposer({
               icon={<Layers className="size-3.5 shrink-0" aria-hidden />}
             />
           ) : null}
-          {permissions && shownPermission ? (
+          {permissions && permissionChoices && shownPermission ? (
             <ComposerPermissionMenu
               label={shownPermission.name}
               title={permissions.title}
               risky={shownPermission.risky}
               disabled={optionsLocked}
               side="bottom"
-              items={permissions.choices}
+              items={permissionChoices}
               selected={shownPermission.id}
               onSelect={setPermission}
             />

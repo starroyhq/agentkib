@@ -117,6 +117,27 @@ describe("composer drafts across connection changes", () => {
   });
   afterEach(cleanup);
 
+  it("opens the restricted attachment picker from + only for the authorized session", async () => {
+    const { rerender } = renderComposer();
+    const copy = codexCopy["en-US"];
+    const input = screen.getByLabelText(copy.attachment);
+    const pick = vi.spyOn(input, "click").mockImplementation(() => undefined);
+    const add = screen.getByRole("button", { name: copy.addContext });
+    fireEvent.click(add);
+    fireEvent.click(await screen.findByRole("button", { name: copy.uploadFromPhone }));
+    expect(pick).toHaveBeenCalledOnce();
+    expect(add).toHaveAttribute("aria-expanded", "false");
+
+    fireEvent.click(add);
+    expect(await screen.findByRole("button", { name: copy.uploadFromPhone })).toBeEnabled();
+    doubles.session.capabilities = { ...doubles.session.capabilities!, sessionId: "previous" };
+    rerender(<SessionComposer />);
+    expect(add).toBeDisabled();
+    expect(add).toHaveAttribute("title", copy.permission);
+    expect(screen.queryByRole("button", { name: copy.uploadFromPhone })).not.toBeInTheDocument();
+    expect(pick).toHaveBeenCalledOnce();
+  });
+
   it.each(["codex", "claude-code"])(
     "keeps the %s draft editable and focused offline, then requires an explicit send after recovery",
     async (agent) => {

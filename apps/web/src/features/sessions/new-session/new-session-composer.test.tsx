@@ -9,12 +9,13 @@ import {
   type ManagedAgent,
   type ManagedOptions,
 } from "@agentkib/web-client";
-import { composerModelCopy } from "@agentkib/session-ui";
+import { composerModelCopy, planModeCopy } from "@agentkib/session-ui";
 import { takeNewSessionDraft } from "@/features/conversation/features/sessions/new-session-draft";
 import { publishSessionInvalidation } from "@/features/conversation/features/sessions/session-events";
 import { NewSessionComposer } from "./new-session-composer";
 
 const fixture = vi.hoisted(() => ({ session: undefined as unknown as Record<string, unknown> }));
+const planLabel = planModeCopy("en-US").title;
 vi.mock("@/features/conversation/features/sessions/session-context", () => ({
   useSession: () => fixture.session,
 }));
@@ -65,12 +66,14 @@ const options: Record<ManagedAgent, ManagedOptions> = {
 let origin = 0;
 function setup({
   full = true,
+  attachments = true,
   created = "created",
   disabled = false,
   onRender,
   codexOptions = options.codex,
 }: {
   full?: boolean;
+  attachments?: boolean;
   created?: string;
   disabled?: boolean;
   onRender?: () => void;
@@ -104,6 +107,7 @@ function setup({
         send: true,
         approve: true,
         manage: true,
+        attachments,
         ...(full ? { accessMode: "full" } : {}),
       },
     },
@@ -420,7 +424,11 @@ describe("Web NewSessionComposer", () => {
     await highestEffort();
     await user.keyboard("{Escape}");
     await user.click(screen.getByRole("button", { name: "Permissions: Default" }));
-    await user.click(await screen.findByRole("menuitem", { name: /Plan mode/ }));
+    expect(screen.queryByRole("menuitem", { name: /Plan mode/ })).not.toBeInTheDocument();
+    await user.click(await screen.findByRole("menuitem", { name: /^Accept edits/ }));
+    await user.click(screen.getByRole("button", { name: "Add context" }));
+    expect(await screen.findByRole("button", { name: "Add files" })).toBeEnabled();
+    await user.click(await screen.findByRole("button", { name: planLabel }));
     const attachment = new File(["notes"], "notes.txt", { type: "text/plain" });
     fireEvent.paste(message(), { clipboardData: { files: [attachment] } });
     await write("Review the startup path");
@@ -441,6 +449,62 @@ describe("Web NewSessionComposer", () => {
       files: [attachment],
       send: true,
     });
+  });
+
+  it("keeps Claude Plan explicit when switching to a workspace that offers only Execute", async () => {
+    const { client, onCreated } = setup();
+    client.managedOptions.mockImplementation(async (agent, _signal, workspaceId) =>
+      agent === "claude-code" && workspaceId === "north"
+        ? {
+            ...options[agent],
+            permissionModes: options[agent].permissionModes?.filter(({ id }) => id !== "plan"),
+          }
+        : options[agent],
+    );
+    const user = userEvent.setup();
+    await user.click(screen.getByRole("button", { name: "Agent: Codex" }));
+    await user.click(await screen.findByRole("menuitem", { name: "Claude Code" }));
+    await user.click(await screen.findByRole("button", { name: "Permissions: Default" }));
+    await user.click(await screen.findByRole("menuitem", { name: /^Accept edits/ }));
+    await user.click(screen.getByRole("button", { name: "Add context" }));
+    await user.click(await screen.findByRole("button", { name: planLabel }));
+    await user.click(screen.getByRole("button", { name: "Permissions: Accept edits" }));
+    expect(await screen.findByRole("menuitem", { name: /^Accept edits/ })).toHaveAttribute(
+      "aria-disabled",
+      "true",
+    );
+    await user.keyboard("{Escape}");
+    await user.click(screen.getByRole("button", { name: "Workspace: atlas-studio" }));
+    await user.click(await screen.findByRole("button", { name: "northstar-api" }));
+    fireEvent.change(message(), { target: { value: "Review before making changes" } });
+    expect(await screen.findByRole("button", { name: "Permissions: Accept edits" })).toBeEnabled();
+    expect(send()).toBeDisabled();
+    expect(client.managedAction).not.toHaveBeenCalled();
+    await user.click(screen.getByRole("button", { name: "Add context" }));
+    await user.click(await screen.findByRole("button", { name: planLabel }));
+    await waitFor(() => expect(send()).toBeEnabled());
+    fireEvent.click(send());
+    await waitFor(() => expect(onCreated).toHaveBeenCalledWith("created"));
+    expect(client.managedAction).toHaveBeenCalledExactlyOnceWith("create", {
+      agent: "claude-code",
+      bootId: "boot",
+      requestId: expect.any(String),
+      workspaceId: "north",
+      permissionMode: "acceptEdits",
+    });
+  });
+
+  it("keeps + visible when the device has no attachment grant", () => {
+    setup({ attachments: false });
+    const add = screen.getByRole("button", { name: "Add context" });
+    expect(add).toBeVisible();
+    expect(add).toBeDisabled();
+    expect(add).toHaveAttribute(
+      "title",
+      "This access does not include permission to upload attachments.",
+    );
+    fireEvent.click(add);
+    expect(screen.queryByRole("button", { name: "Add files" })).not.toBeInTheDocument();
   });
 
   it("starts Devin with an offered effort and Fast pair and never hands off its dispatched prompt", async () => {
@@ -472,6 +536,7 @@ describe("Web NewSessionComposer", () => {
     await user.click(screen.getByRole("button", { name: "Agent: Codex" }));
     await user.click(await screen.findByRole("menuitem", { name: "Devin" }));
     expect(client.managedOptions).toHaveBeenCalledWith("devin", expect.any(AbortSignal), "atlas");
+    expect(screen.getByRole("button", { name: "Add context" })).toBeDisabled();
     expect(screen.queryByRole("button", { name: "Add files" })).not.toBeInTheDocument();
     await user.click(
       await screen.findByRole("button", {
@@ -562,6 +627,35 @@ describe("Web NewSessionComposer", () => {
     await waitFor(() => expect(onCreated).toHaveBeenCalledWith("made"));
     expect(client.managedAction).toHaveBeenCalledOnce();
     expect(takeNewSessionDraft("made")).toMatchObject({ text: "Add rate limiting", send: true });
+  });
+
+  it("leaves Claude creation available while Codex awaits a receipt in the same workspace", async () => {
+    const { client, onCreated } = setup();
+    client.managedAction.mockRejectedValueOnce(new ApiError(504, "request_timeout"));
+    await write("Work in Codex");
+    fireEvent.click(send());
+    await screen.findByText(/Not sure yet whether the session was created/);
+    expect(send()).toBeDisabled();
+
+    const user = userEvent.setup();
+    await user.click(screen.getByRole("button", { name: "Agent: Codex" }));
+    await user.click(await screen.findByRole("menuitem", { name: "Claude Code" }));
+    await write("Work in Claude");
+    await waitFor(() => expect(send()).toBeEnabled());
+    fireEvent.click(send());
+    await waitFor(() => expect(onCreated).toHaveBeenCalledExactlyOnceWith("created"));
+    expect(client.managedAction.mock.calls[1]![1]).toMatchObject({
+      agent: "claude-code",
+      workspaceId: "atlas",
+    });
+    expect(takeNewSessionDraft("created")).toMatchObject({ text: "Work in Claude" });
+
+    await user.click(screen.getByRole("button", { name: "Agent: Claude Code" }));
+    await user.click(await screen.findByRole("menuitem", { name: "Codex" }));
+    fireEvent.change(message(), { target: { value: "Check the original target" } });
+    expect(await screen.findByText(/Not sure yet whether the session was created/)).toBeVisible();
+    expect(send()).toBeDisabled();
+    expect(client.managedAction).toHaveBeenCalledTimes(2);
   });
 
   it("sends Claude's mode only when chosen and a DeepSeek Harness preset only when not the default", async () => {

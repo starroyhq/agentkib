@@ -12,6 +12,11 @@ type JsonRecord = Record<string, unknown>;
 /** Session facade over the one-owner desktop bridge and its bounded state reducer. */
 export class CodexFollowerBridge {
   #state: CodexFollowerState | null = null;
+  #lastPublished?: {
+    state: CodexFollowerState;
+    revision: number;
+    status: CodexFollowerState["status"];
+  };
   #lastOwnerCheck = 0;
   #lastFullRefresh = 0;
   #resyncAfterMutation = false;
@@ -297,8 +302,13 @@ export class CodexFollowerBridge {
   }
 
   #publishSnapshot(state: CodexFollowerState): void {
-    if (state.revision === null) return;
-    this.onSnapshot?.(state.streamSnapshot());
+    const { revision, status } = state;
+    if (!this.onSnapshot || revision === null) return;
+    const previous = this.#lastPublished;
+    if (previous?.state === state && previous.revision === revision && previous.status === status)
+      return;
+    this.#lastPublished = { state, revision, status };
+    this.onSnapshot(state.streamSnapshot());
   }
 
   async #followAndAwaitSnapshot(baseline: number): Promise<void> {

@@ -8,7 +8,7 @@ import {
   type CodexQueue,
   type CodexSessionSettings,
 } from "@agentkib/web-client";
-import { ComposerModelPicker, ComposerPermissionMenu } from "@agentkib/session-ui";
+import { ComposerModelPicker } from "@agentkib/session-ui";
 import { Button } from "../../components/ui/button";
 import { Input } from "../../components/ui/input";
 import { Dialog } from "../../components/dialog";
@@ -317,7 +317,7 @@ export function CodexTools({
           writable: {
             model: { available: enabled("settings") },
             effort: { available: enabled("settings") },
-            mode: { available: enabled("settings") },
+            mode: { available: false },
             serviceTier: { available: false },
             policy: { available: false },
             restoreDefaults: { available: false },
@@ -333,7 +333,6 @@ export function CodexTools({
           },
         }
       : undefined;
-  const limitedMode = observedSettings?.selected?.mode ?? observedSettings?.current.mode;
   const settingsStatus =
     settingsNotice?.status === "uncertain"
       ? composerLayoutCopy[locale].settingsUnknown
@@ -452,27 +451,6 @@ export function CodexTools({
           {limitedSettings && (
             <OperationGroup title={copy.settings}>
               <OperationRow className="flex-wrap">
-                <ComposerPermissionMenu
-                  title={copy.mode}
-                  label={
-                    limitedMode === "plan"
-                      ? copy.plan
-                      : limitedMode === "default"
-                        ? copy.normal
-                        : copy.mode
-                  }
-                  side="bottom"
-                  disabled={!enabled("settings")}
-                  disabledReason={reason("settings")}
-                  items={[
-                    { id: "default", name: copy.normal, description: "" },
-                    { id: "plan", name: copy.plan, description: "" },
-                  ]}
-                  selected={limitedMode}
-                  onSelect={(id) => {
-                    if (id === "default" || id === "plan") void run("settings", { mode: id });
-                  }}
-                />
                 <ComposerModelPicker
                   locale={locale}
                   settings={limitedModel}
@@ -488,7 +466,7 @@ export function CodexTools({
                   onChange={(change) => run("settings", change)}
                 />
               </OperationRow>
-              {settingsStatus && settingsNotice?.target !== "model" && (
+              {settingsStatus && settingsNotice?.target === "settings" && (
                 <p role="status" className="text-xs text-muted-foreground">
                   {settingsStatus}
                 </p>

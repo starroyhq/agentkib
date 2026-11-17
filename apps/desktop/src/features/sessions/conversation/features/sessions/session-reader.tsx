@@ -10,7 +10,7 @@ import {
 import { catalogCopy } from "../catalog/catalog-copy";
 import { OrchestrationNote } from "../catalog/orchestration-note";
 import { WorktreeNote } from "../catalog/worktree-note";
-import { codexReason } from "./codex-copy";
+import { codexCopy, codexReason } from "./codex-copy";
 import { isSendEnter, useEnterSends } from "./composer-shortcuts";
 import {
   claudeBackgroundStatus,
@@ -40,6 +40,8 @@ import {
   sessionImageRevision,
 } from "./session-image-scope";
 import {
+  composerAddCopy,
+  ComposerAddMenu,
   useTranscriptFollow,
   useVisibleReadState,
   ReadStateNotice,
@@ -492,9 +494,18 @@ export function SessionReader() {
                       }}
                     />
                     <div className="flex items-center justify-between gap-2 px-2 pb-1">
-                      <small className="max-w-lg text-xs leading-5 text-muted-foreground">
-                        {t.experimental} · {t.controlInfo}
-                      </small>
+                      <div className="flex min-w-0 items-center gap-2">
+                        <ComposerAddMenu
+                          label={codexCopy[locale].addContext}
+                          disabled
+                          disabledReason={composerAddCopy(locale).unavailable}
+                        >
+                          {null}
+                        </ComposerAddMenu>
+                        <small className="max-w-lg text-xs leading-5 text-muted-foreground">
+                          {t.experimental} · {t.controlInfo}
+                        </small>
+                      </div>
                       <div className="flex min-w-0 items-center gap-1">
                         <ContextUsageGauge />
                         {canStop ? (
@@ -510,7 +521,8 @@ export function SessionReader() {
                         ) : (
                           <Button
                             type="submit"
-                            className="inline-flex size-11 shrink-0 items-center justify-center rounded-full bg-primary text-primary-foreground transition-opacity hover:opacity-90 disabled:opacity-30"
+                            size="icon"
+                            className="shrink-0 rounded-full bg-primary p-0 text-primary-foreground transition-opacity hover:opacity-90 disabled:opacity-30 pointer-coarse:size-11"
                             aria-label={t.send}
                             disabled={
                               !online ||

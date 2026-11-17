@@ -2,6 +2,7 @@
 import { act, cleanup, renderHook, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
+  ApiError,
   WebClient,
   type ConversationClientBridge,
   type ConversationEventPage,
@@ -182,6 +183,117 @@ describe("independent history display", () => {
       await reopening;
     });
     expect(host.result.current.page?.events[0].content).toBe("first history");
+  });
+
+  it("restarts stale pagination without dropping loaded rows or checking live state", async () => {
+    const host = await fixture();
+    const initial = { ...page("Current history", "current"), next_cursor: "previous-source-1" };
+    const events = vi.spyOn(host.client, "events").mockResolvedValueOnce(initial);
+    await act(async () => host.result.current.choose("first"));
+    host.emit(0);
+    events.mockResolvedValueOnce({
+      ...page("Already loaded history", "already-loaded"),
+      next_cursor: "previous-source-2",
+    });
+    await act(async () => host.result.current.earlier());
+    expect(host.result.current.page?.next_cursor).toBe("previous-source-2");
+    expect(host.result.current.online).toBe(true);
+    expect(host.result.current.canSend).toBe(true);
+
+    const liveReads = vi.spyOn(host.client, "live");
+    const catalogReads = vi.spyOn(host.client, "catalog");
+    const releaseLatest = deferred<ConversationEventPage>();
+    events
+      .mockClear()
+      .mockRejectedValueOnce(new ApiError(409, "stale_cursor"))
+      .mockReturnValueOnce(releaseLatest.promise)
+      .mockResolvedValueOnce({
+        events: [
+          page("Newly loaded history", "new-earlier").events[0]!,
+          page("Already loaded history", "already-loaded").events[0]!,
+        ],
+        warnings: [],
+      });
+    let loading!: Promise<void>;
+    act(() => {
+      loading = host.result.current.earlier();
+    });
+    await waitFor(() => expect(events).toHaveBeenCalledTimes(2));
+    expect(host.result.current.page?.events.map((event) => event.id)).toEqual([
+      "already-loaded",
+      "current",
+    ]);
+    expect(host.result.current.online).toBe(true);
+    expect(host.result.current.canSend).toBe(true);
+    await act(async () => {
+      releaseLatest.resolve({ ...initial, next_cursor: "current-source" });
+      await loading;
+    });
+    expect(events.mock.calls).toEqual([
+      ["first", "previous-source-2"],
+      ["first", undefined],
+      ["first", "current-source"],
+    ]);
+    expect(host.result.current.page?.events.map((event) => event.id)).toEqual([
+      "new-earlier",
+      "already-loaded",
+      "current",
+    ]);
+    expect(host.result.current.page?.next_cursor).toBeUndefined();
+    expect(host.result.current.online).toBe(true);
+    expect(host.result.current.canSend).toBe(true);
+    expect(liveReads).not.toHaveBeenCalled();
+    expect(catalogReads).not.toHaveBeenCalled();
+  });
+
+  it("rebases only once when the history source changes again in the same request", async () => {
+    const host = await fixture();
+    const initial = { ...page("Current history", "current"), next_cursor: "previous-source" };
+    const events = vi.spyOn(host.client, "events").mockResolvedValueOnce(initial);
+    await act(async () => host.result.current.choose("first"));
+    host.emit(0);
+    events
+      .mockClear()
+      .mockRejectedValueOnce(new ApiError(409, "stale_cursor"))
+      .mockResolvedValueOnce({ ...initial, next_cursor: "current-source" })
+      .mockRejectedValueOnce(new ApiError(409, "stale_cursor"));
+    await act(async () => host.result.current.earlier());
+    expect(events.mock.calls).toEqual([
+      ["first", "previous-source"],
+      ["first", undefined],
+      ["first", "current-source"],
+    ]);
+    expect(host.result.current.page?.events.map((event) => event.id)).toEqual(["current"]);
+    expect(host.result.current.page?.next_cursor).toBe("current-source");
+    expect(host.result.current.loadingEarlier).toBe(false);
+    expect(host.result.current.online).toBe(true);
+    expect(host.result.current.canSend).toBe(true);
+  });
+
+  it("ignores a stale pagination recovery that finishes after changing sessions", async () => {
+    const host = await fixture();
+    const initial = { ...page("Current history", "current"), next_cursor: "previous-source" };
+    const events = vi.spyOn(host.client, "events").mockResolvedValueOnce(initial);
+    await act(async () => host.result.current.choose("first"));
+    host.emit(0);
+    const releaseLatest = deferred<ConversationEventPage>();
+    events
+      .mockClear()
+      .mockRejectedValueOnce(new ApiError(409, "stale_cursor"))
+      .mockReturnValueOnce(releaseLatest.promise);
+    let loading!: Promise<void>;
+    act(() => {
+      loading = host.result.current.earlier();
+    });
+    await waitFor(() => expect(events).toHaveBeenCalledTimes(2));
+    await act(async () => host.result.current.choose("second"));
+    expect(host.result.current.page?.events[0]?.content).toBe("second history");
+    await act(async () => {
+      releaseLatest.resolve({ ...initial, next_cursor: "current-source" });
+      await loading;
+    });
+    expect(host.result.current.page?.events[0]?.content).toBe("second history");
+    expect(events).not.toHaveBeenCalledWith("first", "current-source");
   });
 
   it("keeps oversized active history intact without retaining it after leaving", async () => {

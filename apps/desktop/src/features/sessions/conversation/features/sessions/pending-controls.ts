@@ -104,6 +104,19 @@ export function readPending(scope: string): PendingControl[] {
     ...(agent ? { agent } : {}),
   }));
 }
+export function pendingCreateMatches(
+  pending: PendingControl,
+  agent: ManagedAgent,
+  workspaceId: string,
+): boolean {
+  // The original Codex-only creator saved a workspace but no Agent.
+  return (
+    pending.kind === "create" &&
+    pending.workspaceId === workspaceId &&
+    (pending.agent ?? "codex") === agent
+  );
+}
+
 export function rememberPending(scope: string, pending: PendingControl): void {
   const entries = readPending(scope);
   if (
@@ -111,7 +124,10 @@ export function rememberPending(scope: string, pending: PendingControl): void {
       pending.sessionId
         ? entry.sessionId === pending.sessionId &&
           (pending.kind !== "reconcile" || entry.kind === "reconcile")
-        : entry.kind === "create",
+        : entry.requestId === pending.requestId ||
+          (pending.workspaceId
+            ? pendingCreateMatches(entry, pending.agent ?? "codex", pending.workspaceId)
+            : entry.kind === "create"),
     )
   )
     throw new Error("control_outcome_unconfirmed");

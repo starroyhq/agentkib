@@ -113,6 +113,26 @@ describe("Codex Desktop application minimums", () => {
 });
 
 describe("managed Codex activity and context usage", () => {
+  it("keeps a newer finished turn idle when its matching send receipt is reconciled", () => {
+    const state = managed();
+    start(state);
+    state.fail("control-outcome-unconfirmed");
+    const readRevision = state.revision;
+    notify(state, "turn/completed", { turn: { id: "turn-a", status: "completed" } });
+    state.hydrate(
+      { id: threadId, turns: [{ id: "turn-a", status: "inProgress", items: [] }] },
+      true,
+      readRevision,
+    );
+
+    expect(state.restoreReconciledTurn()).toBe(true);
+    expect(state.snapshot("boot", true)).toMatchObject({
+      status: "idle",
+      sendEnabled: true,
+      reason: null,
+    });
+  });
+
   it("projects last-report occupancy, retains cumulative consumption and does not turn every revision into a report", () => {
     const state = managed();
     start(state);

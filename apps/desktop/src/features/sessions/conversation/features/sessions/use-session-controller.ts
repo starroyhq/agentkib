@@ -103,6 +103,7 @@ import {
   beginHistoryPagination,
   createHistoryPagination,
   historyPaginationCursor,
+  rebaseHistoryPagination,
   recordLatestHistoryPage,
 } from "./history-pagination";
 import { useAppearance } from "../preferences/use-appearance";
@@ -775,6 +776,8 @@ export function useSessionController({
           // is still observed before the caller schedules read recovery.
           if (error instanceof ApiError && error.code === "operation_busy")
             return { type: "busy" as const, error };
+          if (cursor && error instanceof ApiError && error.code === "stale_cursor")
+            return { type: "stale-cursor" as const };
           if (failHistoryRead(nativeCoverage.current, attempt)) {
             setError(true);
             fail(error, g);
@@ -1835,8 +1838,8 @@ export function useSessionController({
         pending.cacheEpoch === historyCacheEpoch)
     )
       return;
-    const initialTicket = beginHistoryPagination(pagination, current.next_cursor);
-    if (!initialTicket) return;
+    let rangeId = beginHistoryPagination(pagination, current.next_cursor)?.rangeId;
+    if (rangeId === undefined) return;
     const scope = { generation: g, pagination, cacheEpoch: historyCacheEpoch };
     earlierFlight.current = scope;
     setLoadingEarlier(true);
@@ -1847,6 +1850,18 @@ export function useSessionController({
       !excludedIds.current.has(id) &&
       pagination === nativeCoverage.current.historyPagination &&
       historyCacheEpoch === nativeCoverage.current.historyCacheEpoch;
+    const preserveScroll = () => {
+      const viewport = scroll.current;
+      if (!viewport || earlierAnchor.current?.scope === scope) return;
+      const restore = captureHistoryScrollAnchor(viewport);
+      earlierAnchor.current = {
+        scope,
+        restore: () => {
+          if (stillCurrent() && scroll.current === viewport) restore();
+        },
+      };
+    };
+    let rebased = false;
     try {
       await loadEarlierHistoryBatch(
         current.next_cursor,
@@ -1854,11 +1869,61 @@ export function useSessionController({
         async (cursor) => {
           if (!stillCurrent() || historyPaginationCursor(pagination) !== cursor) return;
           const ticket = beginHistoryPagination(pagination, cursor);
-          if (!ticket || ticket.rangeId !== initialTicket.rangeId) return;
+          if (!ticket || ticket.rangeId !== rangeId) return;
           const historyRead = await readHistory(id, g, historyCacheEpoch, cursor);
           if (!stillCurrent()) return;
+          if (historyRead?.type === "stale-cursor") {
+            if (rebased || historyPaginationCursor(pagination) !== cursor) return;
+            rebased = true;
+            const delivered = liveDelivery.current;
+            const latest = await readHistory(id, g, historyCacheEpoch);
+            if (
+              !stillCurrent() ||
+              latest?.type !== "page" ||
+              !rebaseHistoryPagination(pagination, ticket, latest.page, latest.attempt.id)
+            )
+              return;
+            const coverage = nativeCoverage.current;
+            const hadHistoryError = coverage.historyRecoveryFailed;
+            completeHistoryRead(coverage, latest.attempt);
+            if (hadHistoryError) setError(!!coverage.historyRecoveryFailed);
+            const nextCursor = historyPaginationCursor(pagination);
+            rangeId = beginHistoryPagination(pagination, nextCursor)?.rangeId;
+            preserveScroll();
+            setPage((previous) => ({
+              events: mergeNativeCoverage(
+                mergeConversationItems(
+                  mergeOrderedPersistedHistory(
+                    previous?.events ?? [],
+                    latest.page.events,
+                    "latest",
+                    coverage.preserveItemsOutsideCoverage,
+                  ),
+                  removePersistedOverlays(
+                    previous?.events.filter(
+                      (item) => delivered !== liveDelivery.current || item.ephemeral,
+                    ) ?? [],
+                    latest.page.events,
+                    coverage.preserveItemsOutsideCoverage,
+                  ),
+                ),
+                coverage,
+              ),
+              next_cursor: nextCursor,
+              warnings: [
+                ...new Set([
+                  ...(previous?.warnings ?? []).filter(
+                    (warning) => warning !== "TRANSCRIPT_SCAN_BUDGET",
+                  ),
+                  ...latest.page.warnings,
+                ]),
+              ],
+            }));
+            // The latest page sets a new cursor; the batch only counts earlier rows.
+            return { events: [], next_cursor: nextCursor };
+          }
           if (historyRead?.type === "busy") {
-            readBusy(wake, g);
+            if (!rebased) readBusy(wake, g);
             return;
           }
           if (historyRead?.type !== "page") return;
@@ -1870,16 +1935,7 @@ export function useSessionController({
           completeHistoryRead(nativeCoverage.current, attempt);
           if (hadHistoryError) setError(!!nativeCoverage.current.historyRecoveryFailed);
 
-          const viewport = scroll.current;
-          if (viewport && earlierAnchor.current?.scope !== scope) {
-            const restore = captureHistoryScrollAnchor(viewport);
-            earlierAnchor.current = {
-              scope,
-              restore: () => {
-                if (stillCurrent() && scroll.current === viewport) restore();
-              },
-            };
-          }
+          preserveScroll();
           setPage((latest) =>
             latest
               ? {

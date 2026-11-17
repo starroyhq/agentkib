@@ -90,6 +90,28 @@ describe("pending Codex identities", () => {
       expect(readPending(scope)).toEqual([]);
     },
   );
+  it("can register other creates without replacing an unresolved create for the same target", () => {
+    const scope = pendingScope("", "device");
+    const legacy = { requestId: crypto.randomUUID(), kind: "create" as const, workspaceId: "one" };
+    sessionStorage.setItem(scope, JSON.stringify([legacy]));
+    expect(() =>
+      rememberPending(scope, { ...legacy, requestId: crypto.randomUUID(), agent: "codex" }),
+    ).toThrow("control_outcome_unconfirmed");
+    const otherAgent = { ...legacy, requestId: crypto.randomUUID(), agent: "claude-code" as const };
+    const otherWorkspace = {
+      ...legacy,
+      requestId: crypto.randomUUID(),
+      agent: "codex" as const,
+      workspaceId: "two",
+    };
+    rememberPending(scope, otherAgent);
+    rememberPending(scope, otherWorkspace);
+    expect(() => rememberPending(scope, { ...otherAgent, requestId: crypto.randomUUID() })).toThrow(
+      "control_outcome_unconfirmed",
+    );
+    forgetPending(scope, otherAgent.requestId);
+    expect(readPending(scope)).toEqual([legacy, otherWorkspace]);
+  });
   it("rejects an agent no control can name", () => {
     const scope = pendingScope("", "device");
     sessionStorage.setItem(

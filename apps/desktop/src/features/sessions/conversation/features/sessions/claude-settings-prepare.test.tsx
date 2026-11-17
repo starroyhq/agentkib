@@ -8,7 +8,7 @@ import { CodexComposerControls, type ComposerControlsHandle } from "./codex-sess
 import { useSession } from "./session-context";
 import { sessionAgentCopy } from "./session-agent-copy";
 import { codexCopy } from "./codex-copy";
-import { composerModelCopy } from "@agentkib/session-ui";
+import { composerModelCopy, planModeCopy } from "@agentkib/session-ui";
 
 vi.mock("./session-context", () => ({ useSession: vi.fn() }));
 let state: ReturnType<typeof useSession>;
@@ -111,7 +111,7 @@ describe("Claude's model in the composer", () => {
 });
 
 describe("Claude's plan mode in the composer", () => {
-  it("shows plan mode and turns it off from its chip, as Codex's composer does", async () => {
+  it("turns Plan mode off from the shared add menu", async () => {
     state.client.sessionSettings = vi.fn(async (id: string) => ({
       ...settings(id),
       current: { modelId: "model", effort: "low", permissionMode: "plan" as const },
@@ -127,7 +127,12 @@ describe("Claude's plan mode in the composer", () => {
       ReturnType<typeof state.codexAction>
     >);
     render(<CodexComposerControls {...props} />);
-    fireEvent.click(await screen.findByRole("button", { name: codexCopy["en-US"].planOn }));
+    const addLabel = codexCopy["en-US"].addContext;
+    fireEvent.click(await screen.findByRole("button", { name: addLabel }));
+    const add = within(await screen.findByRole("dialog", { name: addLabel }));
+    fireEvent.click(
+      await add.findByRole("button", { name: planModeCopy("en-US").title, pressed: true }),
+    );
     await waitFor(() =>
       expect(state.codexAction).toHaveBeenCalledWith("settings", { permissionMode: "default" }),
     );

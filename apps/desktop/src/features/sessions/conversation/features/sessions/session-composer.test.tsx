@@ -2,7 +2,7 @@
 
 import "@testing-library/jest-dom/vitest";
 import { useState, type ReactNode } from "react";
-import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { UploadedAttachment } from "@agentkib/web-client";
 import { sessionContinuationCopy } from "@agentkib/session-ui";
@@ -143,8 +143,8 @@ describe("composer sending shortcuts", () => {
 
   it("submits Enter through the same form path as the send button", async () => {
     const { input, form } = renderComposer();
-    expect(screen.getByRole("button", { name: "Send" })).toHaveClass("size-11");
-    expect(screen.getByRole("button", { name: codexCopy["en-US"].attachment })).toHaveClass(
+    expect(screen.getByRole("button", { name: "Send" })).toHaveClass("pointer-coarse:size-11");
+    expect(screen.getByRole("button", { name: codexCopy["en-US"].addContext })).toHaveClass(
       "size-11",
     );
     const requestSubmit = vi.spyOn(form, "requestSubmit");
@@ -273,6 +273,34 @@ describe("composer sending shortcuts", () => {
     const { input } = renderComposer(message);
     fireEvent.keyDown(input, { key: "Enter" });
     expect(doubles.control).not.toHaveBeenCalled();
+  });
+
+  it("opens the native attachment picker from the shared menu only with scoped access", async () => {
+    const copy = codexCopy["en-US"];
+    doubles.session.capabilities!.sessionId = "another-session";
+    const { rerender } = renderComposer();
+    const addContext = screen.getByRole("button", { name: copy.addContext });
+    const fileInput = screen.getByLabelText(copy.attachment);
+    const pickFiles = vi.spyOn(fileInput, "click");
+
+    expect(addContext).toBeDisabled();
+    expect(fileInput).toBeDisabled();
+    expect(pickFiles).not.toHaveBeenCalled();
+
+    doubles.session.capabilities!.sessionId = "session";
+    rerender(<SessionComposer />);
+    expect(addContext).toBeEnabled();
+    fireEvent.click(addContext);
+    const menu = await screen.findByRole("dialog", { name: copy.addContext });
+    expect(pickFiles).not.toHaveBeenCalled();
+    fireEvent.click(within(menu).getByRole("button", { name: copy.attachment }));
+    expect(pickFiles).toHaveBeenCalledTimes(1);
+    await waitFor(() => expect(menu).not.toBeVisible());
+
+    doubles.session.access!.device!.attachments = false;
+    rerender(<SessionComposer />);
+    expect(addContext).toBeDisabled();
+    expect(fileInput).toBeDisabled();
   });
 
   it("waits for uploads and permits an attachment-only message once ready", async () => {

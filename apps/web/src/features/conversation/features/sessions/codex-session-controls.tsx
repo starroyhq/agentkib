@@ -7,7 +7,7 @@ import {
   type ReactNode,
   type Ref,
 } from "react";
-import { ArrowLeft, ChevronRight, Goal, Lightbulb, Plus, X } from "lucide-react";
+import { ArrowLeft, ChevronRight, Folder, Goal, Lightbulb, Paperclip, X } from "lucide-react";
 import {
   ApiError,
   canDisplayCodexModelFallback,
@@ -18,18 +18,23 @@ import {
   sessionProviderCapabilities,
   type SessionAction,
   type SessionActionBody,
-  type ClaudePermissionMode,
   type CodexContextOptions,
   type CodexContextResource,
   type CodexGoalState,
   type CodexSessionSettings,
 } from "@agentkib/web-client";
 import {
+  ComposerAddAction,
+  ComposerAddMenu,
   ComposerModelPicker,
   ComposerPermissionMenu,
+  ComposerPlanAction,
   codexPolicyLabel,
+  composerAddCopy,
   dshPolicyLabel,
   newSessionPermissions,
+  planModeCopy,
+  sessionCollaborationMode,
   type ComposerModelPickerHandle,
 } from "@agentkib/session-ui";
 import { Button } from "../../components/ui/button";
@@ -142,6 +147,7 @@ export function CodexComposerControls({
     t,
   } = useSession();
   const copy = codexCopyForSurface(locale, "web");
+  const addCopy = composerAddCopy(locale);
   const currentAgent =
     current?.id === selected && current.availability === "readable" ? current.agent : undefined;
   const modelDisplayScope = useRef({ access, agent: currentAgent });
@@ -226,11 +232,19 @@ export function CodexComposerControls({
   const [contextLoading, setContextLoading] = useState(false);
   const modelPicker = useRef<ComposerModelPickerHandle>(null);
   const usage = useRef<ContextUsageHandle>(null);
+  const [addOpen, setAddOpen] = useState(false);
+  const [browsingContext, setBrowsingContext] = useState(false);
+  const focusAddNavigation = useRef(false);
+  const focusNavigationRow = useCallback((row: HTMLDivElement | null) => {
+    if (!row || !focusAddNavigation.current) return;
+    focusAddNavigation.current = false;
+    row.querySelector("button")?.focus();
+  }, []);
   const [permissionsOpen, setPermissionsOpen] = useState(false);
   const goalDraftRevision = useRef<number | undefined>(undefined);
   const [goalDirty, setGoalDirty] = useState(false);
   const full = access?.device?.accessMode === "full";
-  const [dialog, setDialog] = useState<"goal" | "context">();
+  const [goalOpen, setGoalOpen] = useState(false);
   const [settings, setSettings] = useState<CodexSessionSettings>();
   const settingsScopeMatches =
     settings?.sessionId === selected &&
@@ -476,7 +490,10 @@ export function CodexComposerControls({
       deviceId: access?.device?.id,
       advancedControl: access?.device?.advancedControl,
     };
-    setDialog(undefined);
+    setGoalOpen(false);
+    setAddOpen(false);
+    setBrowsingContext(false);
+    focusAddNavigation.current = false;
     setPermissionsOpen(false);
     settingsPreparation.current = undefined;
     setPreparingSettings(false);
@@ -595,7 +612,10 @@ export function CodexComposerControls({
         (isClaude && expected.effort === null
           ? settings.selected !== undefined && settings.selected.effort === undefined
           : settings.current.effort === expected.effort)) &&
-      (expected.mode === undefined || settings.current.mode === expected.mode) &&
+      (expected.mode === undefined ||
+        (expected.mode === null
+          ? settings.selected !== undefined && settings.selected.mode === undefined
+          : settings.current.mode === expected.mode)) &&
       (expected.policyId === undefined || settings.current.policyId === expected.policyId) &&
       (expected.permissionMode === undefined ||
         settings.current.permissionMode === expected.permissionMode) &&
@@ -650,8 +670,14 @@ export function CodexComposerControls({
 
   const settingsReadStale = live?.revision !== undefined && settings?.revision !== live.revision;
   const goalReadStale = live?.revision !== undefined && goal?.revision !== live.revision;
+  const closeAdd = () => {
+    setAddOpen(false);
+    setBrowsingContext(false);
+    focusAddNavigation.current = false;
+  };
   const openGoal = () => {
-    setDialog("goal");
+    closeAdd();
+    setGoalOpen(true);
     if (goalReadStale) void load();
   };
   const prepareSettings = () => {
@@ -696,28 +722,6 @@ export function CodexComposerControls({
     }
     if (settingsReadStale || !settings?.available || settingsError) void load(false, "settings");
   };
-  // Plan mode, as Codex's and DeepSeek Harness's own composers show and switch it: their
-  // collaboration mode, and Claude Code's permission mode. The same as on the desktop.
-  const planSelection = settings ? settingsSelection(settings, isClaude) : undefined;
-  const planOn = planSelection?.mode === "plan" || planSelection?.permissionMode === "plan";
-  const planAvailable =
-    full &&
-    !disabled &&
-    !!settings?.available &&
-    !settingsReadStale &&
-    (isClaude
-      ? settings.writable.permissionMode?.available === true &&
-        !!settings.options.permissionModes?.some((item) => item.id === "plan")
-      : settings.writable.mode?.available === true &&
-        !!settings.options.collaborationModes?.some((item) => item.id === "plan"));
-  const planChange = (on: boolean) =>
-    isClaude
-      ? { permissionMode: (on ? "plan" : "default") as ClaudePermissionMode }
-      : { mode: on ? ("plan" as const) : ("default" as const) };
-  const [planFailed, setPlanFailed] = useState(false);
-  useEffect(() => {
-    onPlan?.({ on: planOn, available: planAvailable });
-  }, [onPlan, planOn, planAvailable]);
   const availableResources = (context?.resources ?? []).filter((item) => {
     const needle = query.trim().toLocaleLowerCase();
     return !needle || `${item.name} ${item.description ?? ""}`.toLocaleLowerCase().includes(needle);
@@ -885,12 +889,30 @@ export function CodexComposerControls({
     notice === "uncertain" ||
     live?.status === "outcome-unknown";
   const permissionsLocked = settingsLocked || (running && !presetWhileRunning);
+  const collaboration = sessionCollaborationMode(scopedSettings, selection, isClaude);
+  const clearSavedMode =
+    isCodex &&
+    !collaboration &&
+    scopedSettings?.writable.mode.available &&
+    !!scopedSettings.selected?.mode;
+  const attachmentOffered =
+    capabilities?.sessionId === selected && feature("attachments")?.available === true;
+  const attachmentAllowed = attachmentOffered && access?.device?.attachments === true;
+  const canAdd = resourcesReadable || goalReadable || !!collaboration || attachmentAllowed;
+  const collaborationLocked =
+    settingsLocked || !collaboration?.writable || (running && managedAgent !== "deepseek-harness");
+  const planOn = isClaude ? selection?.permissionMode === "plan" : selection?.mode === "plan";
+  const planAvailable = full && !collaborationLocked && !!collaboration?.modes.includes("plan");
+  const toggledMode = planOn ? "default" : "plan";
+  useEffect(() => {
+    onPlan?.({ on: planOn, available: planAvailable });
+  }, [onPlan, planOn, planAvailable]);
   const permissionItems = permissionsUseMode
     ? (scopedSettings?.options.permissionModes ?? [])
         .filter((item) =>
           isDevin
             ? DEVIN_PERMISSION_IDS.includes(item.id)
-            : ["default", "plan", "acceptEdits"].includes(item.id),
+            : ["default", "acceptEdits"].includes(item.id),
         )
         .map((item) => ({
           id: item.id,
@@ -911,24 +933,11 @@ export function CodexComposerControls({
           risky: item.id === "danger-full-access",
           disabled: permissionsLocked || scopedSettings?.writable.policy?.available !== true,
           selected: item.id === selection?.policyId,
-          group: isCodex ? copy.executionPolicy : undefined,
           change: { policyId: item.id },
         };
       });
   const currentPermissionId = permissionsUseMode ? selection?.permissionMode : selection?.policyId;
   const currentPermission = permissionItems.find((item) => item.id === currentPermissionId);
-  const collaborationItems = isCodex
-    ? (scopedSettings?.options.collaborationModes ?? []).map((item) => ({
-        id: `mode:${item.id}`,
-        name: item.id === "plan" ? copy.plan : copy.normal,
-        description: "",
-        group: copy.mode,
-        disabled: settingsLocked || running || scopedSettings?.writable.mode?.available !== true,
-        selected: item.id === selection?.mode,
-        change: { mode: item.id },
-      }))
-    : [];
-  const permissionChoices = [...collaborationItems, ...permissionItems];
   const permissionFeature = permissionsUseMode
     ? scopedSettings?.writable.permissionMode
     : scopedSettings?.writable.policy;
@@ -965,16 +974,37 @@ export function CodexComposerControls({
     (presetWhileRunning && !settingsLocked && permissionFeature?.available
       ? undefined
       : (settingsStatus ??
-        (permissionChoices.every((item) => item.disabled)
-          ? reasonTitle(permissionFeature?.reason ?? scopedSettings?.writable.mode?.reason)
+        (permissionItems.every((item) => item.disabled)
+          ? reasonTitle(permissionFeature?.reason)
           : undefined)));
   const changePermissionsOpen = (open: boolean) => {
     setPermissionsOpen(open);
     if (open) prepareSettings();
   };
   const changePermission = (id: string) => {
-    const item = permissionChoices.find((item) => item.id === id);
+    const item = permissionItems.find((item) => item.id === id);
     if (item && !item.disabled && !item.selected) return mutate("settings", item.change);
+  };
+  const changeCollaboration = (mode: "default" | "plan") => {
+    if (
+      !collaborationLocked &&
+      collaboration?.modes.includes(mode) &&
+      mode !== collaboration.selected
+    )
+      void mutate("settings", collaboration.change(mode));
+  };
+  const changeAddOpen = (open: boolean) => {
+    if (!open) {
+      closeAdd();
+      return;
+    }
+    setAddOpen(true);
+    void load();
+  };
+  const openContextBrowser = () => {
+    focusAddNavigation.current = true;
+    setBrowsingContext(true);
+    void loadContext(contextLocation.current.id, contextLocation.current.names);
   };
   const openModel = (page: "models" | "effort") => {
     if (!full || disabled || !settingsReadable || !modelPicker.current) return false;
@@ -993,14 +1023,162 @@ export function CodexComposerControls({
     },
     plan: () => {
       if (!planAvailable) return false;
-      if (!planOn) void mutate("settings", planChange(true));
+      if (!planOn) changeCollaboration("plan");
       return true;
     },
   }));
   if (!full) return null;
+  const contextBrowser = addOpen && browsingContext && resourcesReadable && (
+    <section className="space-y-3">
+      <div ref={focusNavigationRow}>
+        <ComposerAddAction
+          label={addCopy.back}
+          icon={<ArrowLeft size={16} />}
+          onClick={() => {
+            focusAddNavigation.current = true;
+            setBrowsingContext(false);
+          }}
+        />
+      </div>
+      <div className="flex min-w-0 items-center gap-2">
+        <Button
+          type="button"
+          variant="outline"
+          className="min-h-11 shrink-0"
+          disabled={!context?.parentId || contextLoading || !online}
+          onClick={() => void loadContext(context?.parentId, contextNames.slice(0, -1))}
+        >
+          <ArrowLeft size={16} />
+          {layout.parentDirectory}
+        </Button>
+        <span className="min-w-0 break-words text-sm">
+          {[layout.contextRoot, ...contextNames].join(" / ")}
+        </span>
+      </div>
+      {contextLoading && (
+        <p role="status" className="text-sm">
+          {layout.contextLoading}
+        </p>
+      )}
+      {contextError && (
+        <div role="alert" className="space-y-2 text-sm">
+          {reason(contextError)}
+          <Button
+            type="button"
+            variant="outline"
+            disabled={contextLoading || !online}
+            onClick={() =>
+              void loadContext(contextLocation.current.id, contextLocation.current.names)
+            }
+          >
+            {layout.contextRetry}
+          </Button>
+        </div>
+      )}
+      {!context ? (
+        <p role="status" className="text-sm text-muted-foreground">
+          {!contextLoading && !contextError ? copy.resourceUnavailable : null}
+        </p>
+      ) : (
+        <>
+          <Input
+            aria-label={copy.resourceSearch}
+            placeholder={copy.resourceSearch}
+            value={query}
+            onChange={(event) => setQuery(event.target.value)}
+          />
+          <p className="text-xs text-muted-foreground">{copy.directoryReference}</p>
+          <div className="space-y-2">
+            {availableResources.length === 0 && (
+              <p className="text-sm text-muted-foreground">{copy.resourceEmpty}</p>
+            )}
+            {resourceGroups.map(
+              (group) =>
+                group.items.length > 0 && (
+                  <section key={group.label} className="space-y-2">
+                    <h3 className="text-xs font-medium text-muted-foreground">{group.label}</h3>
+                    {group.items.map((item) => {
+                      const checked = resources.some((selected) => selected.id === item.id);
+                      return (
+                        <div
+                          key={item.id}
+                          className="flex items-center gap-2 rounded-lg border p-3 text-sm"
+                        >
+                          <label className="flex min-w-0 flex-1 items-start gap-3">
+                            <input
+                              type="checkbox"
+                              checked={checked}
+                              disabled={
+                                !item.available ||
+                                contextLoading ||
+                                !online ||
+                                disabled ||
+                                feature("context")?.available !== true
+                              }
+                              title={reasonTitle(item.reason || feature("context")?.reason)}
+                              onChange={(event) =>
+                                setResources(
+                                  event.target.checked
+                                    ? [...resources, item]
+                                    : resources.filter((selected) => selected.id !== item.id),
+                                )
+                              }
+                            />
+                            <span className="min-w-0">
+                              <span className="block break-words font-medium">
+                                {policyText(item).name}
+                              </span>
+                              <span className="block text-xs text-muted-foreground">
+                                {term(item.kind)}
+                                {item.description ? ` · ${item.description}` : ""}
+                                {!item.available || feature("context")?.available !== true
+                                  ? ` · ${reason(item.reason || feature("context")?.reason)}`
+                                  : ""}
+                              </span>
+                            </span>
+                          </label>
+                          {item.kind === "directory" && item.navigationId && (
+                            <Button
+                              type="button"
+                              variant="ghost"
+                              className="size-11 shrink-0 p-0"
+                              aria-label={`${layout.enterDirectory}: ${item.name}`}
+                              disabled={
+                                contextLoading ||
+                                !online ||
+                                disabled ||
+                                !item.available ||
+                                feature("context")?.available !== true
+                              }
+                              onClick={() =>
+                                void loadContext(item.navigationId, [...contextNames, item.name])
+                              }
+                            >
+                              <ChevronRight size={18} />
+                            </Button>
+                          )}
+                        </div>
+                      );
+                    })}
+                  </section>
+                ),
+            )}
+          </div>
+        </>
+      )}
+      <div className="flex items-center justify-between gap-3">
+        <span className="text-xs text-muted-foreground">
+          {layout.selected}: {resources.length}
+        </span>
+        <Button type="button" size="sm" onClick={closeAdd}>
+          {layout.done}
+        </Button>
+      </div>
+    </section>
+  );
   return (
     <>
-      {mutationError && dialog !== "goal" && (
+      {mutationError && !goalOpen && (
         <p role="alert" className="px-1 text-xs text-destructive-text">
           {reason(mutationError)}
         </p>
@@ -1026,27 +1204,74 @@ export function CodexComposerControls({
             </Button>
           </div>
         )}
-      <div className="@container flex min-w-0 items-center justify-between gap-2 px-1">
+      <div className="@container -mx-1 flex min-w-0 items-center justify-between gap-2 pt-4">
         <div className="flex min-w-0 flex-1 items-center gap-0.5">
-          {(!managedAgent ||
-            resourcesReadable ||
-            goalReadable ||
-            feature("attachments")?.available) && (
-            <Button
-              type="button"
-              variant="ghost"
-              className="size-11 shrink-0 rounded-full p-0"
-              aria-label={copy.addContext}
-              disabled={disabled}
-              onClick={() => {
-                void load();
-                void loadContext(context?.directoryId, contextNames);
-                setDialog("context");
-              }}
-            >
-              <Plus size={20} />
-            </Button>
-          )}
+          <ComposerAddMenu
+            label={copy.addContext}
+            disabled={disabled || !canAdd}
+            disabledReason={!canAdd ? addCopy.unavailable : undefined}
+            open={addOpen}
+            onOpenChange={changeAddOpen}
+          >
+            {contextBrowser || (
+              <>
+                {(!managedAgent || attachmentOffered) && (
+                  <ComposerAddAction
+                    label={copy.uploadFromPhone}
+                    icon={<Paperclip size={16} />}
+                    disabled={disabled || !attachmentAllowed}
+                    onClick={() => {
+                      closeAdd();
+                      openPhoneFiles();
+                    }}
+                  />
+                )}
+                {resourcesReadable && (
+                  <div ref={focusNavigationRow}>
+                    <ComposerAddAction
+                      label={addCopy.filesAndFolders}
+                      icon={<Folder size={16} />}
+                      onClick={openContextBrowser}
+                    />
+                  </div>
+                )}
+                {goalReadable && (
+                  <ComposerAddAction
+                    label={copy.goals}
+                    icon={<Goal size={16} />}
+                    onClick={openGoal}
+                  />
+                )}
+                {collaboration && settingsReadable && (
+                  <ComposerPlanAction
+                    label={planModeCopy(locale).title}
+                    active={planOn}
+                    disabled={collaborationLocked || !collaboration.modes.includes(toggledMode)}
+                    disabledReason={
+                      collaborationLocked
+                        ? (settingsStatus ?? reasonTitle(collaboration.reason))
+                        : undefined
+                    }
+                    onToggle={() => {
+                      closeAdd();
+                      changeCollaboration(toggledMode);
+                    }}
+                  />
+                )}
+                {clearSavedMode && (
+                  <ComposerAddAction
+                    label={planModeCopy(locale).clear}
+                    icon={<Lightbulb className="size-4" aria-hidden />}
+                    disabled={settingsLocked || running}
+                    onClick={() => {
+                      closeAdd();
+                      void mutate("settings", { mode: null });
+                    }}
+                  />
+                )}
+              </>
+            )}
+          </ComposerAddMenu>
           {showPermissions && (
             <ComposerPermissionMenu
               title={permissionTitle}
@@ -1054,7 +1279,7 @@ export function CodexComposerControls({
               risky={currentPermission?.risky}
               disabled={disabled}
               side="top"
-              items={permissionChoices}
+              items={permissionItems}
               selected={currentPermission?.id}
               open={permissionsOpen}
               onOpenChange={changePermissionsOpen}
@@ -1062,30 +1287,6 @@ export function CodexComposerControls({
               blockItemsOnStatus={false}
               onSelect={(id) => void changePermission(id)}
             />
-          )}
-          {planOn && (
-            // As in Codex's and DSH's own composers: plan mode shows here and turns off here.
-            <Button
-              type="button"
-              variant="ghost"
-              className="group h-11 shrink-0 gap-1.5 rounded-full px-3 text-muted-foreground hover:text-foreground"
-              aria-label={copy.planOn}
-              title={copy.planOnTitle}
-              disabled={!planAvailable || saving}
-              onClick={async () => {
-                setPlanFailed(false);
-                if (!(await mutate("settings", planChange(false)))) setPlanFailed(true);
-              }}
-            >
-              <Lightbulb className="size-4 group-hover:hidden" aria-hidden="true" />
-              <X className="hidden size-4 group-hover:block" aria-hidden="true" />
-              <span>{copy.plan}</span>
-            </Button>
-          )}
-          {planOn && planFailed && (
-            <span role="status" className="shrink-0 text-xs text-destructive">
-              {copy.planExitFailed}
-            </span>
           )}
         </div>
         <div className="ml-auto flex shrink-0 items-center gap-1">
@@ -1121,7 +1322,7 @@ export function CodexComposerControls({
           {action}
         </div>
       </div>
-      {permissionWriteStatus && showPermissions && !permissionsOpen && (
+      {permissionWriteStatus && (showPermissions || collaboration) && !permissionsOpen && (
         <p role="status" className="px-3 text-xs text-muted-foreground">
           {permissionWriteStatus}
         </p>
@@ -1144,7 +1345,7 @@ export function CodexComposerControls({
           <span className="truncate">{goal.goal.objective}</span>
         </Button>
       )}
-      {dialog === "goal" && (
+      {goalOpen && (
         <Dialog
           panel
           footer={
@@ -1238,7 +1439,7 @@ export function CodexComposerControls({
           }
           title={copy.goals}
           closeLabel={copy.close}
-          onClose={() => setDialog(undefined)}
+          onClose={() => setGoalOpen(false)}
         >
           {goalReadStale && (goal?.available || !!goalError) && (
             <div role="status" className="mb-3 text-xs text-muted-foreground">
@@ -1357,186 +1558,6 @@ export function CodexComposerControls({
               )}
             </section>
           )}
-        </Dialog>
-      )}
-
-      {dialog === "context" && (
-        <Dialog
-          panel
-          footer={
-            <div className="flex items-center justify-between gap-3">
-              <span className="text-sm">
-                {layout.selected}: {resources.length}
-              </span>
-              <Button type="button" className="min-h-11" onClick={() => setDialog(undefined)}>
-                {layout.done}
-              </Button>
-            </div>
-          }
-          title={copy.addContext}
-          closeLabel={copy.close}
-          onClose={() => setDialog(undefined)}
-        >
-          <section className="space-y-4">
-            {goalReadable && (
-              <Button
-                type="button"
-                variant="outline"
-                className="min-h-11 w-full justify-start"
-                onClick={openGoal}
-              >
-                <Goal size={16} />
-                {copy.goals}
-              </Button>
-            )}
-            <details className="text-xs text-muted-foreground">
-              <summary className="min-h-11 cursor-pointer content-center">{layout.help}</summary>
-              <p className="pb-2 leading-5">{copy.composerHint}</p>
-            </details>
-            <Button
-              type="button"
-              variant="outline"
-              className="min-h-11 w-full justify-start"
-              disabled={disabled || capabilities?.features.attachments?.available !== true}
-              onClick={() => {
-                setDialog(undefined);
-                openPhoneFiles();
-              }}
-            >
-              {copy.uploadFromPhone}
-            </Button>
-            <div className="flex min-w-0 items-center gap-2">
-              <Button
-                type="button"
-                variant="outline"
-                className="min-h-11 shrink-0"
-                disabled={!context?.parentId || contextLoading || !online}
-                onClick={() => void loadContext(context?.parentId, contextNames.slice(0, -1))}
-              >
-                <ArrowLeft size={16} />
-                {layout.parentDirectory}
-              </Button>
-              <span className="min-w-0 break-words text-sm">
-                {[layout.contextRoot, ...contextNames].join(" / ")}
-              </span>
-            </div>
-            {contextLoading && (
-              <p role="status" className="text-sm">
-                {layout.contextLoading}
-              </p>
-            )}
-            {contextError && (
-              <div role="alert" className="space-y-2 text-sm">
-                {reason(contextError)}
-                <Button
-                  type="button"
-                  variant="outline"
-                  disabled={contextLoading || !online}
-                  onClick={() =>
-                    void loadContext(contextLocation.current.id, contextLocation.current.names)
-                  }
-                >
-                  {layout.contextRetry}
-                </Button>
-              </div>
-            )}
-            {!context ? (
-              <p role="status" className="text-sm text-muted-foreground">
-                {!contextLoading && !contextError ? copy.resourceUnavailable : null}
-              </p>
-            ) : (
-              <>
-                <Input
-                  aria-label={copy.resourceSearch}
-                  placeholder={copy.resourceSearch}
-                  value={query}
-                  onChange={(event) => setQuery(event.target.value)}
-                />
-                <p className="text-xs text-muted-foreground">{copy.directoryReference}</p>
-                <div className="space-y-2">
-                  {availableResources.length === 0 && (
-                    <p className="text-sm text-muted-foreground">{copy.resourceEmpty}</p>
-                  )}
-                  {resourceGroups.map(
-                    (group) =>
-                      group.items.length > 0 && (
-                        <section key={group.label} className="space-y-2">
-                          <h3 className="text-xs font-medium text-muted-foreground">
-                            {group.label}
-                          </h3>
-                          {group.items.map((item) => {
-                            const checked = resources.some((selected) => selected.id === item.id);
-                            return (
-                              <div
-                                key={item.id}
-                                className="flex items-center gap-2 rounded-lg border p-3 text-sm"
-                              >
-                                <label className="flex min-w-0 flex-1 items-start gap-3">
-                                  <input
-                                    type="checkbox"
-                                    checked={checked}
-                                    disabled={
-                                      !item.available ||
-                                      contextLoading ||
-                                      !online ||
-                                      disabled ||
-                                      feature("context")?.available !== true
-                                    }
-                                    title={reasonTitle(item.reason || feature("context")?.reason)}
-                                    onChange={(event) =>
-                                      setResources(
-                                        event.target.checked
-                                          ? [...resources, item]
-                                          : resources.filter((selected) => selected.id !== item.id),
-                                      )
-                                    }
-                                  />
-                                  <span className="min-w-0">
-                                    <span className="block break-words font-medium">
-                                      {policyText(item).name}
-                                    </span>
-                                    <span className="block text-xs text-muted-foreground">
-                                      {term(item.kind)}
-                                      {item.description ? ` · ${item.description}` : ""}
-                                      {!item.available || feature("context")?.available !== true
-                                        ? ` · ${reason(item.reason || feature("context")?.reason)}`
-                                        : ""}
-                                    </span>
-                                  </span>
-                                </label>
-                                {item.kind === "directory" && item.navigationId && (
-                                  <Button
-                                    type="button"
-                                    variant="ghost"
-                                    className="size-11 shrink-0 p-0"
-                                    aria-label={`${layout.enterDirectory}: ${item.name}`}
-                                    disabled={
-                                      contextLoading ||
-                                      !online ||
-                                      disabled ||
-                                      !item.available ||
-                                      feature("context")?.available !== true
-                                    }
-                                    onClick={() =>
-                                      void loadContext(item.navigationId, [
-                                        ...contextNames,
-                                        item.name,
-                                      ])
-                                    }
-                                  >
-                                    <ChevronRight size={18} />
-                                  </Button>
-                                )}
-                              </div>
-                            );
-                          })}
-                        </section>
-                      ),
-                  )}
-                </div>
-              </>
-            )}
-          </section>
         </Dialog>
       )}
 

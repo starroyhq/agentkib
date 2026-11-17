@@ -1,5 +1,6 @@
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { composerAddCopy } from "@agentkib/session-ui";
 import {
   sessionProviderCapabilities,
   type CodexCapabilities,
@@ -75,7 +76,7 @@ afterEach(() => {
   vi.clearAllMocks();
 });
 describe("Codex composer", () => {
-  it("preserves limited-device model and mode changes without the old settings form", async () => {
+  it("keeps limited-device model changes in operations and Plan out of the panel", async () => {
     state.current = { id: "s", agent: "codex" } as typeof state.current;
     state.live = { ...state.live!, sessionId: "s", revision: 1 };
     state.access!.experimentalEnabled = true;
@@ -103,11 +104,51 @@ describe("Codex composer", () => {
       }),
     );
     fireEvent.click(modelPicker);
-    fireEvent.click(screen.getByRole("button", { name: /^协作模式/ }));
-    fireEvent.click(screen.getByRole("menuitem", { name: "计划" }));
+    expect(screen.queryByRole("button", { name: "计划模式" })).not.toBeInTheDocument();
+  });
+
+  it("offers restricted Codex Plan only in Add, without requiring attachments", async () => {
+    state.current = { id: "s", agent: "codex" } as typeof state.current;
+    state.live = { ...state.live!, sessionId: "s", revision: 1, sendEnabled: true };
+    state.access!.experimentalEnabled = true;
+    state.access!.device = {
+      ...state.access!.device!,
+      send: true,
+      settings: true,
+      attachments: false,
+    };
+    state.capabilities!.features.settings = { available: true };
+    const view = render(<SessionComposer />);
+    const add = screen.getByRole("button", { name: "添加上下文" });
+    expect(add).toBeEnabled();
+    expect(screen.queryByRole("button", { name: "计划模式" })).not.toBeInTheDocument();
+    fireEvent.click(add);
+    const plan = await screen.findByRole("button", { name: "计划模式" });
+    expect(plan).toHaveAttribute("aria-pressed", "false");
+    fireEvent.click(plan);
     await waitFor(() =>
       expect(state.codexAction).toHaveBeenCalledWith("settings", { mode: "plan" }),
     );
+    await waitFor(() =>
+      expect(screen.queryByRole("dialog", { name: "添加上下文" })).not.toBeInTheDocument(),
+    );
+    state.live = {
+      ...state.live!,
+      settings: { selected: { mode: "plan" } } as typeof state.live.settings,
+    };
+    view.rerender(<SessionComposer />);
+    fireEvent.click(add);
+    const activePlan = await screen.findByRole("button", { name: "计划模式" });
+    expect(activePlan).toHaveAttribute("aria-pressed", "true");
+    fireEvent.click(activePlan);
+    await waitFor(() =>
+      expect(state.codexAction).toHaveBeenCalledWith("settings", { mode: "default" }),
+    );
+    state.capabilities!.features.settings = { available: false };
+    view.rerender(<SessionComposer />);
+    expect(add).toBeDisabled();
+    fireEvent.click(add);
+    expect(state.codexAction).toHaveBeenCalledTimes(2);
   });
 
   it("blocks send and steer during compaction while keeping explicit queueing and native stop available", () => {
@@ -286,7 +327,7 @@ describe("Codex composer", () => {
     render(<CodexComposer />);
     const picker = await screen.findByRole("button", { name: /GPT-6 Sol.*Fast/ });
     expect(picker.querySelector('svg[fill="currentColor"]')).toBeVisible();
-    expect(screen.getByTitle("上下文用量: 最近原生报告: 50 / 100")).toHaveTextContent("50%");
+    expect(screen.getByTitle("上下文用量: 50 / 100")).toHaveTextContent("50%");
     fireEvent.click(picker);
     expect(await screen.findByRole("heading", { name: /高/ })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Fast 模式" })).toHaveAttribute(
@@ -388,9 +429,10 @@ describe("Codex composer", () => {
       ),
     ).toBeVisible();
     fireEvent.click(await screen.findByRole("button", { name: copy.contextUsage }));
-    expect(await screen.findByText("这是上次模型请求的输入用量。")).toBeVisible();
     expect(screen.queryByText(copy.settingsSaved)).not.toBeInTheDocument();
-    expect(screen.getByRole("dialog", { name: copy.contextUsage })).toHaveTextContent("25%");
+    const usage = await screen.findByRole("dialog", { name: copy.contextUsage });
+    expect(usage).toHaveTextContent("25%");
+    expect(usage).not.toHaveTextContent("这是上次模型请求的输入用量。");
     state.access = {
       ...state.access!,
       device: { ...state.access!.device!, advancedControl: false },
@@ -441,8 +483,11 @@ describe("Codex composer", () => {
     });
     const view = render(<CodexComposer />);
     fireEvent.click(await screen.findByRole("button", { name: "添加上下文" }));
+    fireEvent.click(
+      await screen.findByRole("button", { name: composerAddCopy("zh-CN").filesAndFolders }),
+    );
     fireEvent.click(await screen.findByRole("checkbox"));
-    fireEvent.click(screen.getByRole("button", { name: "关闭" }));
+    fireEvent.click(screen.getByRole("button", { name: "完成" }));
     expect(screen.getByRole("button", { name: "发送" })).toBeDisabled();
     expect(screen.getByText("引用文件或技能后，请输入消息或添加附件再发送。")).toBeVisible();
     expect(state.control).not.toHaveBeenCalled();

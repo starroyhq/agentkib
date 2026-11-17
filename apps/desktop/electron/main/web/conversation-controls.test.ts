@@ -14,6 +14,8 @@ describe("Codex conversation controls", () => {
   let workspaceDir: string;
   let origin: string;
   let usageMode: "live" | "empty" | "error";
+  let collaborationModesAvailable: boolean;
+  let collaborationModeWritable: boolean;
   const runtime = vi.fn(async (input: unknown): Promise<unknown> => {
     const params = input as Record<string, unknown>;
     if (params.operation === "catalog")
@@ -66,11 +68,13 @@ describe("Codex conversation controls", () => {
             path: "must-not-leak",
           },
         }),
-        collaborationModes: [
-          { id: "default", name: "Default" },
-          { id: "plan", name: "Plan", native: "must-not-leak" },
-          { id: "unsafe", name: "Unsafe" },
-        ],
+        collaborationModes: collaborationModesAvailable
+          ? [
+              { id: "default", name: "Default" },
+              { id: "plan", name: "Plan", native: "must-not-leak" },
+              { id: "unsafe", name: "Unsafe" },
+            ]
+          : [],
         settings: {
           selected: {
             model: "model-a",
@@ -88,7 +92,13 @@ describe("Codex conversation controls", () => {
             policyId: "workspace",
           },
           defaults: { model: "model-a", effort: "medium", serviceTier: "standard" },
-          writable: { model: true, effort: true, mode: true, serviceTier: true, policy: true },
+          writable: {
+            model: true,
+            effort: true,
+            mode: collaborationModeWritable,
+            serviceTier: true,
+            policy: true,
+          },
         },
         models: [
           {
@@ -192,6 +202,8 @@ describe("Codex conversation controls", () => {
   beforeEach(async () => {
     runtime.mockClear();
     usageMode = "live";
+    collaborationModesAvailable = true;
+    collaborationModeWritable = true;
     dataDir = await mkdtemp(join(tmpdir(), "agentkib-conversation-controls-"));
     workspaceDir = join(dataDir, "workspace");
     await mkdir(join(workspaceDir, "src"), { recursive: true });
@@ -510,6 +522,48 @@ describe("Codex conversation controls", () => {
       (await client.api("codex/settings", { ...action, requestId: randomUUID(), mode: "custom" }))
         .response.status,
     ).toBe(400);
+  });
+
+  it("forwards an explicit mode clear without a catalog using full access and the current revision", async () => {
+    collaborationModesAvailable = false;
+    const limited = await browser();
+    await approveLegacyBrowser(service, limited.cookie, {
+      send: true,
+      settings: true,
+      advancedControl: true,
+    });
+    const client = await fullBrowser();
+    const clear = (target: typeof client, expectedRevision = 7) =>
+      target.api("codex/settings", {
+        bootId: target.bootId,
+        sessionId: "session",
+        requestId: randomUUID(),
+        expectedRevision,
+        mode: null,
+      });
+    expect((await clear(limited)).response.status).toBe(403);
+    expect((await clear(client, 6)).response.status).toBe(409);
+    collaborationModeWritable = false;
+    const unavailable = await clear(client);
+    expect(unavailable.response.status).toBe(409);
+    expect(unavailable.data.error).toBe("setting_unavailable");
+    collaborationModeWritable = true;
+    expect((await clear(client)).response.status).toBe(200);
+
+    const mutations = runtime.mock.calls
+      .map(([value]) => value as Record<string, unknown>)
+      .filter(({ operation }) => operation === "settings" || operation === "send");
+    expect(mutations).toHaveLength(1);
+    expect(mutations[0]).toMatchObject({ operation: "settings", mode: null, expectedRevision: 7 });
+    for (const field of [
+      "model",
+      "effort",
+      "serviceTier",
+      "policyId",
+      "permissionMode",
+      "resetDefaults",
+    ])
+      expect(mutations[0]).not.toHaveProperty(field);
   });
 
   it("uses opaque resource ids and resolves them again before send", async () => {

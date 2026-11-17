@@ -144,6 +144,18 @@ async function fixture(running = true) {
 }
 
 describe("resident native Codex follower stream", () => {
+  it("does not reproject duplicate and unrelated native notifications", async () => {
+    const f = await fixture();
+    f.socket.push(
+      { ...textPatch(2, "Unrelated"), sourceClientId: "another-owner" },
+      change(1, { type: "snapshot", conversationState: conversation() }),
+      textPatch(2, "Selected thread"),
+    );
+    await vi.waitFor(() => expect(f.snapshots.at(-1)?.live.revision).toBe(2));
+    expect(f.snapshots.map(({ live }) => live.revision)).toEqual([1, 2]);
+    expect(f.bridge.selectedState?.snapshotCount).toBe(2);
+  });
+
   it("publishes incoming text without a live read and handles split native frames", async () => {
     const f = await fixture();
     const bytes = encode(textPatch(2, "Native text"));

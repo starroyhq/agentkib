@@ -274,3 +274,11 @@ export {
 } from "./composer-model-picker";
 export { composerModelCopy } from "./composer-model-copy";
 export { ComposerPermissionMenu } from "./composer-permission-menu";
+export { sessionCollaborationMode } from "./session-collaboration-mode";
+export {
+  ComposerAddMenu,
+  ComposerAddAction,
+  ComposerPlanAction,
+  composerAddCopy,
+  planModeCopy,
+} from "./composer-add-menu";

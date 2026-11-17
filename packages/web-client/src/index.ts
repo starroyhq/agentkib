@@ -923,7 +923,7 @@ export interface CodexActionBody {
   queuedSubmissionIds?: string[];
   model?: string;
   effort?: string | null;
-  mode?: "plan" | "default";
+  mode?: "plan" | "default" | null;
   policyId?: string;
   serviceTierId?: string | null;
   restoreDefaults?: true;

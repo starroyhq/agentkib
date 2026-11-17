@@ -5,6 +5,7 @@ import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import {
   claimManagedCommand,
+  createManagedSnapshotWriter,
   listManagedRecords,
   managedSessionHasUnknownCommands,
   openManagedLedger,
@@ -144,4 +145,47 @@ describe("managed ledger reader lifetime", () => {
         expect(readManagedRecord(dir, "a")).toMatchObject({ title: String(i) }),
       );
   });
+});
+
+it("keeps existing history rows and their sequence unchanged when identical turns replay", () => {
+  const { dir, file } = fixture();
+  const record = {
+    id: "session",
+    workspace_id: "workspace",
+    workspace: path.join(dir, "workspace"),
+    home: path.join(dir, "home"),
+    native_id: "native",
+    snapshot: { revision: 0 },
+  };
+  saveManagedRecord(dir, record);
+  const save = createManagedSnapshotWriter(dir, record);
+  let revision = 0;
+  const state = { nativeId: "native", record, snapshot: () => ({ revision: ++revision }) };
+  const first = { id: "first", content: "saved reply", turn_meta: { duration_ms: 10 } };
+  const second = { id: "second", content: "next reply" };
+  save(state, [first, second]);
+
+  const ledger = new DatabaseSync(file);
+  try {
+    ledger.exec(`
+      CREATE TABLE event_writes (event_id TEXT NOT NULL);
+      CREATE TRIGGER count_event_update AFTER UPDATE ON managed_events
+      BEGIN INSERT INTO event_writes VALUES (new.event_id); END;
+    `);
+    save(state, [first, second]);
+    expect(ledger.prepare("SELECT * FROM event_writes").all()).toEqual([]);
+    expect(
+      ledger.prepare("SELECT seq FROM sqlite_sequence WHERE name='managed_events'").get(),
+    ).toMatchObject({ seq: 2 });
+
+    save(state, [{ ...first, content: "do not overwrite", turn_meta: { duration_ms: 11 } }]);
+    expect(ledger.prepare("SELECT * FROM event_writes").all()).toEqual([{ event_id: "first" }]);
+    const row = ledger.prepare("SELECT event FROM managed_events WHERE event_id='first'").get();
+    expect(JSON.parse(String(row?.event))).toMatchObject({
+      content: "saved reply",
+      turn_meta: { duration_ms: 11 },
+    });
+  } finally {
+    ledger.close();
+  }
 });

@@ -7,10 +7,25 @@ interface ComposerPermissionItem {
   name: string;
   description?: string;
   risky?: boolean;
-  group?: string;
   disabled?: boolean;
   selected?: boolean;
 }
+
+type PermissionMenuProps = {
+  label: string;
+  title: string;
+  risky?: boolean;
+  disabled: boolean;
+  side: "top" | "bottom";
+  items: ComposerPermissionItem[];
+  selected?: string;
+  onSelect: (id: string) => void;
+  open?: boolean;
+  onOpenChange?: (open: boolean) => void;
+  disabledReason?: string;
+  status?: string;
+  blockItemsOnStatus?: boolean;
+};
 
 export function ComposerPermissionMenu({
   label,
@@ -26,27 +41,7 @@ export function ComposerPermissionMenu({
   disabledReason,
   status,
   blockItemsOnStatus = true,
-}: {
-  label: string;
-  title: string;
-  risky?: boolean;
-  disabled: boolean;
-  side: "top" | "bottom";
-  items: ComposerPermissionItem[];
-  selected?: string;
-  onSelect: (id: string) => void;
-  open?: boolean;
-  onOpenChange?: (open: boolean) => void;
-  disabledReason?: string;
-  status?: string;
-  blockItemsOnStatus?: boolean;
-}) {
-  const groups = new Map<string, ComposerPermissionItem[]>([[title, []]]);
-  for (const item of items) {
-    const group = item.group ?? title;
-    if (!groups.has(group)) groups.set(group, []);
-    groups.get(group)!.push(item);
-  }
+}: PermissionMenuProps) {
   return (
     <Menu.Root open={open} onOpenChange={onOpenChange}>
       <Menu.Trigger
@@ -65,46 +60,41 @@ export function ComposerPermissionMenu({
             className="max-h-(--available-height) w-72 max-w-[calc(100vw-24px)] overflow-y-auto rounded-lg bg-popover p-1 text-popover-foreground shadow-md ring-1 ring-foreground/10 outline-none"
             aria-label={title}
           >
-            {Array.from(groups, ([group, choices]) => (
-              <Menu.Group
-                key={group}
-                className={group !== title ? "mt-1 border-t pt-1" : undefined}
-              >
-                <Menu.GroupLabel className="px-1.5 py-1 text-xs font-medium text-muted-foreground">
-                  {group}
-                </Menu.GroupLabel>
-                {status && group === title && (
-                  <p role="status" className="px-1.5 py-1 text-xs text-muted-foreground">
-                    {status}
-                  </p>
-                )}
-                {choices.map((item) => {
-                  const active = item.selected ?? item.id === selected;
-                  return (
-                    <Menu.Item
-                      key={item.id}
-                      className={`flex cursor-default items-start gap-1.5 rounded-md px-1.5 py-1 text-sm outline-none select-none data-highlighted:bg-accent data-highlighted:text-accent-foreground data-disabled:opacity-50 ${item.risky ? "text-orange-600" : ""}`}
-                      disabled={disabled || item.disabled || (blockItemsOnStatus && !!status)}
-                      aria-current={active || undefined}
-                      onClick={() => onSelect(item.id)}
-                    >
-                      <span className="grid min-w-0 flex-1">
-                        <span>{item.name}</span>
-                        {item.description && " "}
-                        {item.description && (
-                          <span
-                            className={`text-xs ${item.risky ? "text-orange-600/80" : "text-muted-foreground"}`}
-                          >
-                            {item.description}
-                          </span>
-                        )}
-                      </span>
-                      {active && <Check className="mt-0.5 size-4" aria-hidden />}
-                    </Menu.Item>
-                  );
-                })}
-              </Menu.Group>
-            ))}
+            <Menu.Group>
+              <Menu.GroupLabel className="px-1.5 py-1 text-xs font-medium text-muted-foreground">
+                {title}
+              </Menu.GroupLabel>
+              {status && (
+                <p role="status" className="px-1.5 py-1 text-xs text-muted-foreground">
+                  {status}
+                </p>
+              )}
+              {items.map((item) => {
+                const active = item.selected ?? item.id === selected;
+                return (
+                  <Menu.Item
+                    key={item.id}
+                    className={`flex cursor-default items-start gap-1.5 rounded-md px-1.5 py-1 text-sm outline-none select-none data-highlighted:bg-accent data-highlighted:text-accent-foreground data-disabled:opacity-50 ${item.risky ? "text-orange-600" : ""}`}
+                    disabled={disabled || item.disabled || (blockItemsOnStatus && !!status)}
+                    aria-current={active || undefined}
+                    onClick={() => onSelect(item.id)}
+                  >
+                    <span className="grid min-w-0 flex-1">
+                      <span>{item.name}</span>
+                      {item.description && " "}
+                      {item.description && (
+                        <span
+                          className={`text-xs ${item.risky ? "text-orange-600/80" : "text-muted-foreground"}`}
+                        >
+                          {item.description}
+                        </span>
+                      )}
+                    </span>
+                    {active && <Check className="mt-0.5 size-4" aria-hidden />}
+                  </Menu.Item>
+                );
+              })}
+            </Menu.Group>
           </Menu.Popup>
         </Menu.Positioner>
       </Menu.Portal>

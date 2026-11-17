@@ -3,6 +3,7 @@ import "@testing-library/jest-dom/vitest";
 import { useEffect } from "react";
 import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { composerAddCopy } from "@agentkib/session-ui";
 import {
   WebClient,
   type Access,
@@ -208,6 +209,9 @@ describe("Web access attachment and permission copy", () => {
       const choose = within(dialog).getByRole("button", { name: chooseLabel });
       expect(choose).toBeEnabled();
       expect(dialog).not.toHaveTextContent(/手机|手機|phone|スマートフォン/);
+      fireEvent.click(
+        within(dialog).getByRole("button", { name: composerAddCopy(locale).filesAndFolders }),
+      );
       fireEvent.click(await within(dialog).findByRole("checkbox", { name: /README.md/ }));
       fireEvent.click(
         within(dialog).getByRole("button", { name: composerLayoutCopy[locale].done }),
@@ -268,7 +272,7 @@ describe("Web access attachment and permission copy", () => {
     },
   );
   it.each(labels)(
-    "explains missing attachment permission on the legacy entry in %s",
+    "explains missing attachment permission on Add for a restricted device in %s",
     async (locale) => {
       const f = await start(locale, fixture(false, true, false));
       const expected = {
@@ -277,7 +281,7 @@ describe("Web access attachment and permission copy", () => {
         "en-US": "This access does not include permission to upload attachments.",
         "ja-JP": "現在のアクセスでは添付ファイルをアップロードできません。",
       }[locale];
-      const button = screen.getByRole("button", { name: codexCopy[locale].attachment });
+      const button = screen.getByRole("button", { name: codexCopy[locale].addContext });
       expect(button).toBeDisabled();
       expect(button).toHaveAttribute("title", expected);
       fireEvent.click(button);

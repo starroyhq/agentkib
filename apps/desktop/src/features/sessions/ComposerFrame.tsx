@@ -5,7 +5,7 @@ import { Textarea } from "@/components/ui/textarea";
 export function ComposerFrame(props: Pick<ComponentProps<"form">, "children" | "onSubmit">) {
   return (
     <form
-      className="session-composer-frame relative w-full space-y-2 rounded-3xl border border-border bg-background p-2 shadow-sm transition-colors focus-within:border-ring/40 md:p-3"
+      className="session-composer-frame relative w-full space-y-2 rounded-3xl border border-border bg-background px-2 pt-2 pb-1 shadow-sm transition-colors focus-within:border-ring/40 md:px-3 md:pt-3"
       {...props}
     />
   );
@@ -31,15 +31,22 @@ export function ComposerToolbar({
   trailing: ReactNode;
 }) {
   return (
-    <div className="@container flex min-w-0 items-center justify-between gap-2 px-1">
+    <div className="@container -mx-1 flex min-w-0 items-center justify-between gap-2 pt-4">
       <div className="flex min-w-0 flex-1 items-center gap-0.5">{leading}</div>
       <div className="ml-auto flex min-w-0 items-center gap-1">{trailing}</div>
     </div>
   );
 }
 
-export function ComposerIconButton(
-  props: Omit<ComponentProps<typeof Button>, "className" | "size">,
-) {
-  return <Button className="size-11 shrink-0 rounded-full p-0" size="icon" {...props} />;
+export function ComposerIconButton({
+  compact = false,
+  ...props
+}: Omit<ComponentProps<typeof Button>, "className" | "size"> & { compact?: boolean }) {
+  return (
+    <Button
+      className={`shrink-0 rounded-full p-0 ${compact ? "pointer-coarse:size-11" : "size-11"}`}
+      size="icon"
+      {...props}
+    />
+  );
 }

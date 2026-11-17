@@ -6,7 +6,11 @@ import {
   claudeSlashOptions,
   codexCommandPrompt,
   codexSlashOptions,
+  ComposerAddAction,
+  ComposerAddMenu,
+  ComposerPlanAction,
   dshSlashOptions,
+  planModeCopy,
   planSlashOption,
   slashCommandCopy,
   sessionContinuationCopy,
@@ -143,6 +147,7 @@ export function SessionComposer({
   const previewUrls = useRef(new Map<string, string>());
   const active = useRef(new Map<string, AbortController>());
   const fileInput = useRef<HTMLInputElement>(null);
+  const [addMenuScope, setAddMenuScope] = useState<string>();
   const count = useRef(0);
   const generation = useRef(0);
   const uploadPermission = !!(
@@ -154,6 +159,72 @@ export function SessionComposer({
   // ones that need full access to a device without it, so the menu leaves them out.
   const isDsh = current?.agent === "deepseek-harness";
   const fullAccess = access?.device?.accessMode === "full";
+  const addActionsScope = JSON.stringify([
+    selected,
+    access?.bootId,
+    access?.device?.id,
+    live?.connectionGeneration,
+  ]);
+  const compacting = live?.activity === "compacting";
+  const limitedSettings =
+    isCodex && !fullAccess && current.id === selected && capabilities?.sessionId === selected
+      ? capabilities.features.settings
+      : undefined;
+  // Restricted devices can receive the native mode in a live snapshot without its own session ID.
+  const observedSettings =
+    live?.sessionId === selected &&
+    (!live.settings?.sessionId || live.settings.sessionId === selected)
+      ? live.settings
+      : undefined;
+  // Older restricted hosts do not expose a mode directory. The settings action verifies this on write.
+  const offeredModes =
+    observedSettings?.options?.collaborationModes?.map((item) => item.id) ??
+    (["default", "plan"] as const);
+  const showLimitedPlan = !!limitedSettings && offeredModes.includes("plan");
+  const limitedPlanOn =
+    (observedSettings?.selected?.mode ?? observedSettings?.current?.mode) === "plan";
+  const nextMode = limitedPlanOn ? "default" : "plan";
+  const canChangeLimitedPlan = !!(
+    showLimitedPlan &&
+    limitedSettings?.available &&
+    access?.status === "approved" &&
+    access.experimentalEnabled &&
+    access.device &&
+    access.device.settings !== false &&
+    live?.sessionId === selected &&
+    offeredModes.includes(nextMode) &&
+    online &&
+    controlReady &&
+    !busy &&
+    !submitted &&
+    !compacting &&
+    notice !== "uncertain" &&
+    live.status !== "outcome-unknown" &&
+    session.settingsNotice?.status !== "uncertain"
+  );
+  const limitedPlanReason = compacting
+    ? contextUsageCopyForSurface(locale, "web").compactingDetail
+    : codexReason(locale, limitedSettings?.reason ?? capabilities?.reason, "web").text;
+  const settingsNotice =
+    !fullAccess && isCodex && session.settingsNotice?.target === "permissions"
+      ? session.settingsNotice
+      : undefined;
+  const planWriteStatus =
+    settingsNotice?.status === "uncertain"
+      ? layout.settingsUnknown
+      : settingsNotice?.status === "notDispatched"
+        ? settingsNotice.reason
+          ? codexReason(locale, settingsNotice.reason, "web").text
+          : t.notDispatched
+        : undefined;
+  const attachmentsReason =
+    isClaude && live?.executionMode === "claude-follower"
+      ? claudeConnectionCopyForSurface(locale, "web").attachments
+      : capabilities?.sessionId === selected && capabilities?.features.attachments?.reason
+        ? codexReason(locale, capabilities.features.attachments.reason, "web").text
+        : copy.permission;
+  const canChooseAttachments = uploadPermission && !busy && !submitted;
+  const canOpenAddMenu = canChooseAttachments || canChangeLimitedPlan;
   const commandCatalog =
     (isClaude || isDsh) && capabilities?.sessionId === selected ? capabilities.commands : undefined;
   const commandOptions = useMemo(
@@ -519,7 +590,6 @@ export function SessionComposer({
     }
   }
   const preview = uploads.find((item) => item.key === previewKey && item.previewUrl);
-  const compacting = live?.activity === "compacting";
   const running = live?.status === "running";
   const connectionToastId = useId();
   const connectionFailure =
@@ -574,7 +644,8 @@ export function SessionComposer({
     ) : (
       <Button
         type="submit"
-        className="inline-flex size-11 shrink-0 items-center justify-center rounded-full p-0"
+        size="icon"
+        className="rounded-full p-0 pointer-coarse:size-11"
         aria-label={runningReady ? runningLabel : t.send}
         title={runningReady ? runningLabel : undefined}
         disabled={((!canSubmit || compacting) && !runningReady) || !valid || submitted}
@@ -692,7 +763,7 @@ export function SessionComposer({
       )}
       {current?.agent === "deepseek-harness" && <DshQueue key={selected} />}
       <form
-        className="relative w-full space-y-2 rounded-3xl border border-border bg-background p-2 shadow-sm transition-colors focus-within:border-ring/40 md:p-3"
+        className="relative w-full space-y-2 rounded-3xl border border-border bg-background px-2 pt-2 pb-1 shadow-sm transition-colors focus-within:border-ring/40 md:px-3 md:pt-3"
         onSubmit={(event) => {
           event.preventDefault();
           if (canSubmit && !compacting) void send("send");
@@ -836,33 +907,59 @@ export function SessionComposer({
             />
           )}
           {access?.device?.accessMode !== "full" && (
-            <div className="@container flex min-w-0 items-center justify-between gap-2 px-2 pb-1">
-              <Button
-                type="button"
-                variant="ghost"
-                size="icon"
-                className="size-11 rounded-full"
-                disabled={!uploadPermission || busy || submitted}
-                title={
-                  uploadPermission
-                    ? copy.attachmentNote
-                    : isClaude && live?.executionMode === "claude-follower"
-                      ? claudeConnectionCopyForSurface(locale, "web").attachments
-                      : capabilities?.features.attachments?.reason
-                        ? codexReason(locale, capabilities.features.attachments.reason, "web").text
-                        : copy.permission
+            <div className="@container -mx-1 flex min-w-0 items-center justify-between gap-2 pt-4">
+              <ComposerAddMenu
+                label={copy.addContext}
+                disabled={!canOpenAddMenu}
+                disabledReason={
+                  canOpenAddMenu
+                    ? undefined
+                    : showLimitedPlan
+                      ? limitedPlanReason
+                      : uploadPermission
+                        ? undefined
+                        : attachmentsReason
                 }
-                onClick={() => fileInput.current?.click()}
+                open={canOpenAddMenu && addMenuScope === addActionsScope}
+                onOpenChange={(open) => setAddMenuScope(open ? addActionsScope : undefined)}
               >
-                <Paperclip aria-hidden="true" className="size-4" />
-                <span className="sr-only">{copy.attachment}</span>
-              </Button>
+                {uploadPermission && (
+                  <ComposerAddAction
+                    label={copy.uploadFromPhone}
+                    icon={<Paperclip className="size-4" aria-hidden />}
+                    title={copy.attachmentNote}
+                    disabled={!canChooseAttachments}
+                    onClick={() => {
+                      setAddMenuScope(undefined);
+                      fileInput.current?.click();
+                    }}
+                  />
+                )}
+                {showLimitedPlan && (
+                  <ComposerPlanAction
+                    label={planModeCopy(locale).title}
+                    active={limitedPlanOn}
+                    disabled={!canChangeLimitedPlan}
+                    disabledReason={canChangeLimitedPlan ? undefined : limitedPlanReason}
+                    onToggle={() => {
+                      if (!canChangeLimitedPlan) return;
+                      setAddMenuScope(undefined);
+                      void codexAction("settings", { mode: nextMode });
+                    }}
+                  />
+                )}
+              </ComposerAddMenu>
               <div className="flex min-w-0 items-center gap-1">
                 {advancedActions}
                 <ContextUsageGauge usageRef={limitedUsage} />
                 {primaryAction}
               </div>
             </div>
+          )}
+          {planWriteStatus && (
+            <p role="status" className="px-3 text-xs text-muted-foreground">
+              {planWriteStatus}
+            </p>
           )}
         </div>
       </form>

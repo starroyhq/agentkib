@@ -75,7 +75,7 @@ function enableComposerSettings() {
         { id: "default", name: "Default" },
         { id: "plan", name: "Plan" },
       ],
-      policies: [],
+      policies: [{ id: "verified", name: "Verified policy" }],
       serviceTiers: [],
     },
   }));
@@ -320,7 +320,8 @@ describe("Codex slash commands in the desktop composer", () => {
     const permissions = renderComposer("/permissions");
     fireEvent.submit(permissions.form);
     const menu = await screen.findByRole("menu");
-    expect(within(menu).getByRole("menuitem", { name: codexCopy["en-US"].plan })).toBeVisible();
+    expect(within(menu).getByRole("menuitem", { name: "Verified policy" })).toBeVisible();
+    expect(within(menu).getAllByRole("menuitem")).toHaveLength(1);
     expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
     expect(permissions.input).toHaveValue("");
     expect(doubles.control).not.toHaveBeenCalled();

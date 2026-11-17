@@ -328,6 +328,7 @@ describe("conversation reading position", () => {
       },
     };
     const view = render(<SessionReader />);
+    expect(screen.getByRole("button", { name: "添加上下文" })).toBeDisabled();
     expect(screen.getByRole("button", { name: "上下文用量" })).toHaveTextContent("0%");
     state.live = { ...state.live!, activity: "compacting" };
     view.rerender(<SessionReader />);

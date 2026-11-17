@@ -204,6 +204,46 @@ describe("session stream snapshot reads", () => {
     expect(notify.mock.calls[0]?.[0].payload.live).toEqual({ status: "blocked" });
   });
 
+  it("keeps older pages through appends, and invalidates them when unretained history changes", async () => {
+    vi.useFakeTimers();
+    const row = (index: number) => ({
+      id: String(index),
+      turn_id: String(index),
+      content: "x".repeat(16 * 1024),
+    });
+    let items = Array.from({ length: 75 }, (_, index) => row(index));
+    const { hub, notify } = createHub(async () => ({ ...snapshot(), items }));
+    const first = (await hub.subscribe("session")).events[0];
+    const epoch = first.payload.historyCacheEpoch;
+    expect(epoch).toEqual(expect.any(String));
+    expect(first.payload.items).not.toContainEqual(row(0));
+
+    items = [...items, row(75)];
+    await vi.advanceTimersByTimeAsync(250);
+    const appended = notify.mock.calls.at(-1)?.[0];
+    expect(appended.payload.historyCacheEpoch).toBe(epoch);
+    expect(appended.payload.items.at(-1)).toEqual(row(75));
+
+    const ending = { ...row(75), turn_meta: { duration_ms: 40 } };
+    items = [...items.slice(0, -1), ending, row(76)];
+    hub.publish("session", "item-upsert", ending);
+    hub.publish("session", "item-upsert", row(76));
+    await vi.advanceTimersByTimeAsync(250);
+    const afterLiveAppend = (await hub.subscribe("session")).events[0];
+    expect(afterLiveAppend.payload.historyCacheEpoch).toBe(epoch);
+
+    // This rewrite is outside the retained window. The tail can be unchanged,
+    // but subscribers still need the new history epoch to drop the older copy.
+    items = items.map((item) => (item.id === "0" ? { ...item, content: "rewritten" } : item));
+    notify.mockClear();
+    await vi.advanceTimersByTimeAsync(250);
+    expect(notify).toHaveBeenCalled();
+    const replaced = notify.mock.calls.at(-1)?.[0];
+    expect(replaced.type).toBe("snapshot");
+    expect(replaced.payload.historyCacheEpoch).not.toBe(epoch);
+    expect(replaced.payload.items.at(-1)).toEqual(row(76));
+  });
+
   it("cannot recreate a subscription after the hub closes during a read", async () => {
     const delayed = deferred<Snapshot>();
     const { hub, observed } = createHub(() => delayed.promise);

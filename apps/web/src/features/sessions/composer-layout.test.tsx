@@ -7,7 +7,7 @@ import { composerLayoutCopy } from "@/features/conversation/features/sessions/co
 import { codexCopyForSurface } from "@/features/conversation/features/sessions/codex-copy";
 import { publishSessionInvalidation } from "@/features/conversation/features/sessions/session-events";
 import type { CodexGoalState, CodexSessionSettings } from "@agentkib/web-client";
-import { composerModelCopy } from "@agentkib/session-ui";
+import { composerAddCopy, composerModelCopy, planModeCopy } from "@agentkib/session-ui";
 
 const modelReset = () => screen.getByRole("button", { name: "恢复默认模型" });
 vi.mock("@/features/conversation/features/sessions/session-context", () => ({
@@ -366,13 +366,30 @@ describe("responsive composer behavior", () => {
   it("keeps selected resources in the draft after Done and puts goals in Add", async () => {
     render(<CodexComposer />);
     await screen.findByRole("button", { name: /Test Model/ });
+    await waitFor(() => expect(state.client.codexContextOptions).toHaveBeenCalledOnce());
     expect(screen.queryByRole("button", { name: "持续目标" })).not.toBeInTheDocument();
     const add = screen.getByRole("button", { name: "添加上下文" });
     add.focus();
     fireEvent.click(add);
-    expect(screen.getByRole("button", { name: "持续目标" })).toBeVisible();
-    fireEvent.click(await screen.findByRole("checkbox", { name: /readme/ }));
+    const panel = await screen.findByRole("dialog", { name: "添加上下文" });
+    expect(panel).not.toHaveAttribute("aria-modal", "true");
+    await waitFor(() =>
+      expect(within(panel).getByRole("button", { name: "持续目标" })).toBeVisible(),
+    );
+    const { back, filesAndFolders } = composerAddCopy("zh-CN");
+    const actions = within(panel);
+    expect(actions.queryByRole("checkbox", { name: /readme/ })).not.toBeInTheDocument();
+    expect(state.client.codexContextOptions).toHaveBeenCalledOnce();
+    fireEvent.click(actions.getByRole("button", { name: filesAndFolders }));
+    expect(actions.getByRole("button", { name: back })).toHaveFocus();
+    expect(actions.queryByRole("button", { name: "持续目标" })).not.toBeInTheDocument();
+    fireEvent.click(await actions.findByRole("checkbox", { name: /readme/ }));
     expect(screen.getByText("已选: 1")).toBeVisible();
+    fireEvent.click(actions.getByRole("button", { name: back }));
+    expect(actions.queryByRole("checkbox", { name: /readme/ })).not.toBeInTheDocument();
+    expect(actions.getByRole("button", { name: filesAndFolders })).toHaveFocus();
+    fireEvent.click(actions.getByRole("button", { name: filesAndFolders }));
+    expect(await actions.findByRole("checkbox", { name: /readme/ })).toBeChecked();
     fireEvent.click(screen.getByRole("button", { name: "完成" }));
     await waitFor(() => expect(add).toHaveFocus());
     expect(screen.getByRole("button", { name: "移除附件: readme.md" })).toBeVisible();
@@ -397,13 +414,16 @@ describe("responsive composer behavior", () => {
       );
       fireEvent.click(model);
       const copy = codexCopyForSurface(locale, "web");
+      const add = screen.getByRole("button", { name: copy.addContext });
+      fireEvent.click(add);
+      const panel = within(await screen.findByRole("dialog", { name: copy.addContext }));
+      const plan = panel.getByRole("button", { name: planModeCopy(locale).title });
+      expect(plan).toBeDisabled();
+      expect(plan).toHaveAttribute("title", copy.unavailable);
+      fireEvent.click(add);
       fireEvent.click(screen.getByRole("button", { name: new RegExp(`^${copy.executionPolicy}`) }));
       const menu = await screen.findByRole("menu", { name: copy.executionPolicy });
-      expect(within(menu).getByRole("status")).toHaveTextContent(copy.unavailable);
-      expect(within(menu).getByRole("menuitem", { name: copy.plan })).toHaveAttribute(
-        "aria-disabled",
-        "true",
-      );
+      expect(within(menu).queryByRole("menuitem", { name: copy.plan })).not.toBeInTheDocument();
     },
   );
   it("does not confuse an empty message with missing authorization", async () => {
@@ -486,13 +506,12 @@ describe("native Plan and Goal projection", () => {
     expect(modelSettings).not.toHaveAccessibleName(/下一轮/);
     expect(modelSettings.querySelector('svg[fill="currentColor"]')).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "发送" })).toBeEnabled();
-    fireEvent.click(screen.getByRole("button", { name: /^执行策略/ }));
-    const menu = await screen.findByRole("menu");
-    expect(within(menu).getByRole("menuitem", { name: "计划" })).toHaveAttribute(
-      "aria-current",
-      "true",
-    );
-    expect(within(menu).getByRole("menuitem", { name: "执行" })).toBeEnabled();
+    fireEvent.click(screen.getByRole("button", { name: "添加上下文" }));
+    const add = await screen.findByRole("dialog", { name: "添加上下文" });
+    expect(add).not.toHaveAttribute("aria-modal", "true");
+    const plan = within(add).getByRole("button", { name: "计划模式" });
+    expect(plan).toHaveAttribute("aria-pressed", "true");
+    expect(plan).toBeEnabled();
     expect(screen.queryByText(composerLayoutCopy["zh-CN"].settingsPending)).not.toBeInTheDocument();
     expect(
       screen.queryByText(codexCopyForSurface("zh-CN", "web").settingsSaved),
@@ -519,6 +538,11 @@ describe("native Plan and Goal projection", () => {
     vi.mocked(state.client.codexSessionSettings).mockResolvedValue(native);
     render(<CodexComposer />);
     await screen.findByRole("button", { name: /Test Model/ });
+    const add = screen.getByRole("button", { name: "添加上下文" });
+    fireEvent.click(add);
+    const panel = within(await screen.findByRole("dialog", { name: "添加上下文" }));
+    expect(panel.queryByRole("button", { name: "计划模式" })).not.toBeInTheDocument();
+    fireEvent.click(add);
     fireEvent.click(screen.getByRole("button", { name: /^执行策略/ }));
     const menu = await screen.findByRole("menu");
     expect(within(menu).queryByRole("menuitem", { name: "计划" })).not.toBeInTheDocument();

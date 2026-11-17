@@ -12,6 +12,7 @@ import {
   ImageIcon,
   Layers,
   LoaderCircle,
+  Paperclip,
   Plus,
   Search,
   Shield,
@@ -20,8 +21,12 @@ import {
 } from "lucide-react";
 import { newSessionProvider, type ManagedAgent } from "@agentkib/web-client";
 import {
+  ComposerAddAction,
+  composerAddCopy,
+  ComposerAddMenu,
   ComposerModelPicker,
   ComposerPermissionMenu,
+  ComposerPlanAction,
   dshAgentPresetText,
   fillCopy,
   NEW_SESSION_AGENTS,
@@ -32,6 +37,7 @@ import {
   devinTerminalCopy,
   newSessionPermissions,
   newSessionPresets,
+  planModeCopy,
 } from "@agentkib/session-ui";
 import { Button } from "@/components/ui/button";
 import { Disclosure, DisclosureSummary } from "@/components/ui/disclosure";
@@ -105,6 +111,8 @@ export function NewSessionComposer(props: NewSessionComposerProps) {
   const [files, setFiles] = useState<File[]>([]);
   const [terminalNote, setTerminalNote] = useState<{ detail: string; text: string }>();
   const [permission, setPermission] = useState<string>();
+  const [startupPlanning, setStartupPlanning] = useState(false);
+  const [addMenuOpen, setAddMenuOpen] = useState(false);
   const [modelDraft, setModelDraft] = useState<{
     scope: string;
     model: string;
@@ -201,9 +209,16 @@ export function NewSessionComposer(props: NewSessionComposerProps) {
   const permissions = newSessionPermissions(agent, verifiedOptions, locale, {
     fullAccess: session.fullAccess,
   });
-  const shownPermission = permissions?.choices.find(
-    (item) => item.id === (permission ?? permissions.initial),
+  const permissionChoices = permissions?.choices.filter((item) => item.id !== "plan") ?? [];
+  const shownPermission = permissionChoices.find(
+    (item) => item.id === (permission ?? permissionChoices[0]?.id),
   );
+  const planning = agent === "claude-code" && startupPlanning;
+  const offersPlan =
+    agent === "claude-code" &&
+    showPermission &&
+    permissions?.choices.some((item) => item.id === "plan");
+  const hasAddActions = acceptsAttachments || offersPlan || planning;
   const { presets, defaultId: defaultPreset } = newSessionPresets(
     agent,
     verifiedOptions,
@@ -224,6 +239,7 @@ export function NewSessionComposer(props: NewSessionComposerProps) {
     !!workspace &&
     !locked &&
     !session.unknown &&
+    (!planning || offersPlan) &&
     (acceptsAttachments || files.length === 0) &&
     (promptAtCreate ? !!text.trim() : !!text.trim() || files.length > 0);
 
@@ -238,7 +254,8 @@ export function NewSessionComposer(props: NewSessionComposerProps) {
         effort,
         serviceTierId,
         shownModel: modelId,
-        permission,
+        // Claude stores Plan and its execution permission in the same native field.
+        permission: planning ? "plan" : permission,
         preset: agentPreset,
         fullAccess: session.fullAccess,
       },
@@ -384,7 +401,9 @@ export function NewSessionComposer(props: NewSessionComposerProps) {
                   setAgent(item);
                   setModelDraft(undefined);
                   setPermission(undefined);
+                  setStartupPlanning(false);
                   setAgentPreset(undefined);
+                  setAddMenuOpen(false);
                 }}
               >
                 <AgentIcon agent={item} compact />
@@ -517,16 +536,44 @@ export function NewSessionComposer(props: NewSessionComposerProps) {
         <ComposerToolbar
           leading={
             <>
-              <ComposerIconButton
-                type="button"
-                variant="ghost"
-                aria-label={copy.attach}
-                title={copy.attach}
-                disabled={locked || !acceptsAttachments || files.length >= MAX_FILES}
-                onClick={() => fileInput.current?.click()}
+              <ComposerAddMenu
+                label={codexCopy[locale].addContext}
+                disabled={locked || !hasAddActions}
+                disabledReason={
+                  hasAddActions
+                    ? undefined
+                    : session.optionsLoading
+                      ? copy.loadingOptions
+                      : composerAddCopy(locale).unavailable
+                }
+                side={side}
+                open={addMenuOpen && !locked && hasAddActions}
+                onOpenChange={setAddMenuOpen}
               >
-                <Plus size={20} aria-hidden />
-              </ComposerIconButton>
+                {acceptsAttachments && (
+                  <ComposerAddAction
+                    label={copy.attach}
+                    icon={<Paperclip className="size-4" aria-hidden />}
+                    disabled={locked || files.length >= MAX_FILES}
+                    onClick={() => {
+                      setAddMenuOpen(false);
+                      fileInput.current?.click();
+                    }}
+                  />
+                )}
+                {(offersPlan || planning) && (
+                  <ComposerPlanAction
+                    label={planModeCopy(locale).title}
+                    active={planning}
+                    disabled={locked}
+                    disabledReason={planning && !offersPlan ? optionsStatus : undefined}
+                    onToggle={() => {
+                      setAddMenuOpen(false);
+                      setStartupPlanning(!planning);
+                    }}
+                  />
+                )}
+              </ComposerAddMenu>
               {showPermission && permissions && shownPermission && (
                 <ComposerPermissionMenu
                   label={shownPermission.name}
@@ -534,7 +581,11 @@ export function NewSessionComposer(props: NewSessionComposerProps) {
                   risky={shownPermission.risky}
                   disabled={locked}
                   side={side}
-                  items={permissions.choices}
+                  items={
+                    planning
+                      ? permissionChoices.map((item) => ({ ...item, disabled: true }))
+                      : permissionChoices
+                  }
                   selected={shownPermission.id}
                   onSelect={setPermission}
                 />
@@ -636,6 +687,7 @@ export function NewSessionComposer(props: NewSessionComposerProps) {
               )}
               <ComposerIconButton
                 type="submit"
+                compact
                 aria-label={copy.send}
                 title={copy.send}
                 disabled={!canSend}

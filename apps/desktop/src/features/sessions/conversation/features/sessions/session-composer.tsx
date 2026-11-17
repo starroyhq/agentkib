@@ -6,6 +6,8 @@ import {
   claudeSlashOptions,
   codexCommandPrompt,
   codexSlashOptions,
+  ComposerAddAction,
+  ComposerAddMenu,
   dshSlashOptions,
   slashCommandCopy,
   sessionContinuationCopy,
@@ -135,6 +137,7 @@ export function SessionComposer({
   const composerValue = message;
   const setComposerText = setMessage;
   const [uploads, setUploads] = useState<Upload[]>([]);
+  const [restrictedAddOpen, setRestrictedAddOpen] = useState(false);
   const [submitted, setSubmitted] = useState(false);
   const submitPending = useRef(false);
   const composing = useRef(false);
@@ -155,6 +158,8 @@ export function SessionComposer({
     capabilities?.sessionId === selected &&
     capabilities.features.attachments?.available
   );
+  const fullAccess = access?.device?.accessMode === "full";
+  const attachmentDisabled = !uploadPermission || busy || submitted;
   // DeepSeek Harness runs a message naming one of its commands itself. The person at this
   // computer has full access, so every command it reports is offered.
   const isDsh = current?.agent === "deepseek-harness";
@@ -213,6 +218,7 @@ export function SessionComposer({
     const urls = previewUrls.current;
     setUploads([]);
     setResources([]);
+    setRestrictedAddOpen(false);
     setSubmitted(false);
     submitPending.current = false;
     composing.current = false;
@@ -228,6 +234,9 @@ export function SessionComposer({
       urls.clear();
     };
   }, [selected, setComposerText]);
+  useEffect(() => {
+    if (attachmentDisabled || fullAccess) setRestrictedAddOpen(false);
+  }, [attachmentDisabled, fullAccess]);
   useEffect(() => {
     if (access?.device?.attachments && live?.executionMode !== "claude-follower") return;
     for (const abort of active.current.values()) abort.abort();
@@ -563,6 +572,7 @@ export function SessionComposer({
     ) : (
       <ComposerIconButton
         type="submit"
+        compact
         aria-label={runningReady ? runningLabel : t.send}
         title={runningReady ? runningLabel : undefined}
         disabled={((!canSubmit || compacting) && !runningReady) || !valid || submitted}
@@ -803,13 +813,13 @@ export function SessionComposer({
             type="file"
             multiple
             aria-label={copy.attachment}
-            disabled={!uploadPermission || busy || submitted}
+            disabled={attachmentDisabled}
             onChange={(event) => {
               void add(Array.from(event.target.files ?? []));
               event.target.value = "";
             }}
           />
-          {access?.device?.accessMode === "full" && (
+          {fullAccess && (
             <CodexComposerControls
               controlsRef={controls}
               resources={resources}
@@ -821,27 +831,38 @@ export function SessionComposer({
               onPlan={setPlanState}
             />
           )}
-          {access?.device?.accessMode !== "full" && (
+          {!fullAccess && (
             <ComposerToolbar
               leading={
-                <ComposerIconButton
-                  type="button"
-                  variant="ghost"
-                  disabled={!uploadPermission || busy || submitted}
-                  title={
+                <ComposerAddMenu
+                  label={copy.addContext}
+                  disabled={attachmentDisabled}
+                  disabledReason={
                     uploadPermission
-                      ? copy.attachmentNote
+                      ? undefined
                       : isClaude && live?.executionMode === "claude-follower"
                         ? claudeConnectionCopy[locale].attachments
-                        : capabilities?.features.attachments?.reason
+                        : capabilities?.sessionId === selected &&
+                            capabilities.features.attachments?.reason
                           ? codexReason(locale, capabilities.features.attachments.reason).text
                           : copy.permission
                   }
-                  onClick={() => fileInput.current?.click()}
+                  open={restrictedAddOpen && !attachmentDisabled}
+                  onOpenChange={setRestrictedAddOpen}
                 >
-                  <Paperclip aria-hidden="true" className="size-4" />
-                  <span className="sr-only">{copy.attachment}</span>
-                </ComposerIconButton>
+                  {uploadPermission && (
+                    <ComposerAddAction
+                      label={copy.attachment}
+                      icon={<Paperclip aria-hidden="true" className="size-4" />}
+                      title={copy.attachmentNote}
+                      disabled={attachmentDisabled}
+                      onClick={() => {
+                        setRestrictedAddOpen(false);
+                        fileInput.current?.click();
+                      }}
+                    />
+                  )}
+                </ComposerAddMenu>
               }
               trailing={
                 <>

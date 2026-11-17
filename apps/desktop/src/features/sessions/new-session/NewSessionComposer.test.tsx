@@ -11,7 +11,7 @@ import {
   type ManagedAgent,
   type ManagedOptions,
 } from "@agentkib/web-client";
-import { composerModelCopy, newSessionCopy } from "@agentkib/session-ui";
+import { composerModelCopy, newSessionCopy, planModeCopy } from "@agentkib/session-ui";
 import { initializeI18n } from "@/core/i18n";
 import { takeNewSessionDraft } from "../conversation/features/sessions/new-session-draft";
 import { NewSessionComposer, type NewSessionComposerProps } from "./NewSessionComposer";
@@ -128,6 +128,8 @@ function renderComposer(
 }
 const message = () => screen.getByRole("textbox", { name: "First message" });
 const send = () => screen.getByRole("button", { name: "Send" });
+const addContext = () => screen.getByRole("button", { name: "Add context" });
+const planLabel = () => planModeCopy("en-US").title;
 const optionSlot = (label: string, status = copy.loadingOptions) =>
   screen.getByRole("button", { name: `${label}: ${status}` });
 async function write(text: string) {
@@ -229,7 +231,7 @@ describe("NewSessionComposer", () => {
       expect(optionSlot(label)).toHaveAttribute("aria-busy", "true");
     }
     expect(screen.queryByRole("button", { name: /Ask for approval/ })).not.toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "Add files" })).toBeDisabled();
+    expect(addContext()).toBeDisabled();
     expect(send()).toBeDisabled();
     expect(message()).toHaveValue("Keep this draft while switching");
 
@@ -305,10 +307,17 @@ describe("NewSessionComposer", () => {
     const props = renderComposer();
     expect(screen.getByRole("button", { name: "Workspace: atlas-studio" })).toBeVisible();
     await write("Add rate limiting to login");
-    const file = new File(["spec"], "spec.md", { type: "text/markdown" });
-    fireEvent.change(document.querySelector('input[type="file"]')!, { target: { files: [file] } });
-    expect(screen.getByText("spec.md")).toBeVisible();
     const user = userEvent.setup();
+    const fileInput = screen.getByLabelText("Add files", { selector: "input" });
+    const chooseFile = vi.spyOn(fileInput, "click");
+    await user.click(addContext());
+    const addMenu = await screen.findByRole("dialog", { name: "Add context" });
+    expect(within(addMenu).queryByText(planLabel())).not.toBeInTheDocument();
+    await user.click(within(addMenu).getByRole("button", { name: "Add files" }));
+    expect(chooseFile).toHaveBeenCalledOnce();
+    const file = new File(["spec"], "spec.md", { type: "text/markdown" });
+    fireEvent.change(fileInput, { target: { files: [file] } });
+    expect(screen.getByText("spec.md")).toBeVisible();
     await user.click(screen.getByRole("button", { name: /Ask for approval/ }));
     await user.click(await screen.findByRole("menuitem", { name: /Full access/ }));
     fireEvent.click(send());
@@ -344,7 +353,8 @@ describe("NewSessionComposer", () => {
     const props = renderComposer({ initial: { agent: "codex" } });
 
     await write("Review the routes");
-    expect(screen.getByRole("button", { name: "Add files" })).toBeDisabled();
+    expect(addContext()).toBeDisabled();
+    expect(addContext()).toHaveAttribute("title", "Nothing to add");
     fireEvent.click(send());
     await waitFor(() => expect(props.onCreated).toHaveBeenCalledWith("created"));
     expect(doubles.client.managedAction).toHaveBeenCalledExactlyOnceWith("create", {
@@ -443,6 +453,51 @@ describe("NewSessionComposer", () => {
     expect(takeNewSessionDraft("made")).toMatchObject({ text: "Add rate limiting", send: true });
   });
 
+  it("allows creating in another workspace and ignores an earlier target's late receipt", async () => {
+    doubles.client.managedAction.mockRejectedValueOnce(new ApiError(504, "request_timeout"));
+    let finishReceipt!: (result: unknown) => void;
+    doubles.client.receipt.mockReturnValueOnce(
+      new Promise((resolve) => {
+        finishReceipt = resolve;
+      }),
+    );
+    const { onCreated } = renderComposer();
+    await write("Work in northstar");
+    fireEvent.click(send());
+    await screen.findByText(/Not sure yet whether the session was created/);
+    await waitFor(() => expect(doubles.client.receipt).toHaveBeenCalledOnce());
+    const requestId = doubles.client.managedAction.mock.calls[0]![1].requestId;
+    expect(send()).toBeDisabled();
+
+    const user = userEvent.setup();
+    await user.click(screen.getByRole("button", { name: "Workspace: northstar-api" }));
+    await user.click(await screen.findByRole("button", { name: "atlas-studio" }));
+    await write("Work in atlas");
+    await act(async () =>
+      finishReceipt({
+        found: true,
+        requestId,
+        operation: "create",
+        status: "accepted",
+        workspaceId: "north",
+        sessionId: "northstar-session",
+      }),
+    );
+    expect(onCreated).not.toHaveBeenCalled();
+    expect(takeNewSessionDraft("northstar-session")).toBeUndefined();
+    expect(message()).toHaveValue("Work in atlas");
+    expect(send()).toBeEnabled();
+
+    doubles.client.managedAction.mockResolvedValueOnce({
+      accepted: true,
+      sessionId: "atlas-session",
+    });
+    fireEvent.click(send());
+    await waitFor(() => expect(onCreated).toHaveBeenCalledExactlyOnceWith("atlas-session"));
+    expect(doubles.client.managedAction).toHaveBeenCalledTimes(2);
+    expect(doubles.client.managedAction.mock.calls[1]![1]).toMatchObject({ workspaceId: "atlas" });
+  });
+
   it("starts from a session's own workspace and Agent, sending Claude's mode only when chosen", async () => {
     localStorage.setItem(
       "agentkib.newSession.target",
@@ -464,6 +519,73 @@ describe("NewSessionComposer", () => {
       requestId: expect.any(String),
       workspaceId: "north",
     });
+  });
+
+  it.each([
+    ["Plan", "plan"],
+    ["Execute", "acceptEdits"],
+  ])(
+    "starts Claude in %s with the matching native permission field",
+    async (mode, permissionMode) => {
+      doubles.client.managedAction.mockResolvedValue({ accepted: true, sessionId: "created" });
+      renderComposer({ initial: { workspaceId: "north", agent: "claude-code" } });
+      const user = userEvent.setup();
+      await user.click(await screen.findByRole("button", { name: "Permissions: Default" }));
+      const permissions = await screen.findByRole("menu", { name: "Permissions" });
+      expect(within(permissions).queryByText(/Plan/)).not.toBeInTheDocument();
+      await user.click(within(permissions).getByText("Accept edits"));
+
+      await user.click(addContext());
+      const addMenu = await screen.findByRole("dialog", { name: "Add context" });
+      expect(within(addMenu).getByRole("button", { name: "Add files" })).toBeVisible();
+      await user.click(within(addMenu).getByText(planLabel()));
+      await user.click(screen.getByRole("button", { name: "Permissions: Accept edits" }));
+      expect(await screen.findByRole("menuitem", { name: /^Accept edits/ })).toHaveAttribute(
+        "aria-disabled",
+        "true",
+      );
+      await user.keyboard("{Escape}");
+      if (mode === "Execute") {
+        await user.click(addContext());
+        const addMenu = await screen.findByRole("dialog", { name: "Add context" });
+        const plan = within(addMenu).getByRole("button", { name: planLabel() });
+        expect(plan).toHaveAttribute("aria-pressed", "true");
+        await user.click(plan);
+      }
+
+      await write("Map the routes");
+      fireEvent.click(send());
+      await waitFor(() => expect(doubles.client.managedAction).toHaveBeenCalledOnce());
+      expect(doubles.client.managedAction.mock.calls[0]![1]).toMatchObject({
+        agent: "claude-code",
+        permissionMode,
+      });
+    },
+  );
+
+  it("requires an explicit mode change if the next workspace cannot start in Plan", async () => {
+    doubles.client.managedOptions.mockImplementation(async (_agent, _signal, workspaceId) =>
+      workspaceId === "north"
+        ? options["claude-code"]
+        : { ...options["claude-code"], permissionModes: [{ id: "default", name: "default" }] },
+    );
+    renderComposer({ initial: { workspaceId: "north", agent: "claude-code" } });
+    const user = userEvent.setup();
+    await screen.findByRole("button", { name: "Permissions: Default" });
+    await user.click(addContext());
+    const addMenu = await screen.findByRole("dialog", { name: "Add context" });
+    await user.click(within(addMenu).getByRole("button", { name: planLabel() }));
+    await write("Map the routes");
+
+    await user.click(screen.getByRole("button", { name: "Workspace: northstar-api" }));
+    await user.click(await screen.findByRole("button", { name: "atlas-studio" }));
+    await screen.findByRole("button", { name: "Permissions: Default" });
+    expect(send()).toBeDisabled();
+    expect(doubles.client.managedAction).not.toHaveBeenCalled();
+    await user.click(addContext());
+    const menu = await screen.findByRole("dialog", { name: "Add context" });
+    await user.click(within(menu).getByRole("button", { name: planLabel() }));
+    expect(send()).toBeEnabled();
   });
 
   it("uses Claude's native catalogue and submits an explicit model and effort before opening the session", async () => {

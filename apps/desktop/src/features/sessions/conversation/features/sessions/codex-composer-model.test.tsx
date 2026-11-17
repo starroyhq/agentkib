@@ -4,6 +4,7 @@ import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testi
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { CodexSessionSettings } from "@agentkib/web-client";
 import { createRef } from "react";
+import { planModeCopy } from "@agentkib/session-ui";
 import { CodexComposerControls, type ComposerControlsHandle } from "./codex-session-controls";
 import { useSession } from "./session-context";
 import { codexCopy } from "./codex-copy";
@@ -98,10 +99,7 @@ describe("Codex composer quick model settings", () => {
     expect(state.codexAction).not.toHaveBeenCalled();
   });
 
-  it.each([
-    ["Plan", { mode: "plan" }],
-    ["Verified policy", { policyId: "new-policy" }],
-  ])("applies only %s from the grouped permissions menu", async (name, fields) => {
+  it("shows only policies in the permissions menu and applies only the selected policy", async () => {
     settings.current = { ...settings.current, mode: "default", policyId: "old-policy" };
     settings.options.collaborationModes = [
       { id: "default", name: "Default" },
@@ -121,13 +119,12 @@ describe("Codex composer quick model settings", () => {
       "aria-current",
       "true",
     );
-    expect(within(menu).getByRole("menuitem", { name: copy.normal })).toHaveAttribute(
-      "aria-current",
-      "true",
-    );
-    fireEvent.click(within(menu).getByRole("menuitem", { name }));
+    expect(within(menu).getAllByRole("menuitem")).toHaveLength(2);
+    fireEvent.click(within(menu).getByRole("menuitem", { name: "Verified policy" }));
     await waitFor(() =>
-      expect(state.codexAction).toHaveBeenCalledExactlyOnceWith("settings", fields),
+      expect(state.codexAction).toHaveBeenCalledExactlyOnceWith("settings", {
+        policyId: "new-policy",
+      }),
     );
   });
 
@@ -243,7 +240,7 @@ describe("plan mode in the composer, as in Codex's own", () => {
     { id: "default" as const, name: "Default" },
     { id: "plan" as const, name: "Plan" },
   ];
-  it("shows plan mode and turns it off from its chip", async () => {
+  it("turns Plan mode off from the add menu", async () => {
     settings = {
       ...settings,
       current: { ...settings.current, mode: "plan" },
@@ -254,10 +251,14 @@ describe("plan mode in the composer, as in Codex's own", () => {
     >);
     const onPlan = vi.fn();
     render(<CodexComposerControls {...props} onPlan={onPlan} />);
-    const chip = await screen.findByRole("button", { name: codexCopy["en-US"].planOn });
-    expect(chip).toHaveTextContent(codexCopy["en-US"].plan);
     await waitFor(() => expect(onPlan).toHaveBeenLastCalledWith({ on: true, available: true }));
-    fireEvent.click(chip);
+    const addLabel = codexCopy["en-US"].addContext;
+    fireEvent.click(screen.getByRole("button", { name: addLabel }));
+    const add = await screen.findByRole("dialog", { name: addLabel });
+    expect(add).not.toHaveAttribute("aria-modal", "true");
+    fireEvent.click(
+      within(add).getByRole("button", { name: planModeCopy("en-US").title, pressed: true }),
+    );
     await waitFor(() =>
       expect(state.codexAction).toHaveBeenCalledExactlyOnceWith("settings", { mode: "default" }),
     );
@@ -270,7 +271,7 @@ describe("plan mode in the composer, as in Codex's own", () => {
     render(<CodexComposerControls {...props} controlsRef={ref} onPlan={onPlan} />);
     await waitFor(() => expect(onPlan).toHaveBeenLastCalledWith({ on: false, available: true }));
     expect(
-      screen.queryByRole("button", { name: codexCopy["en-US"].planOn }),
+      screen.queryByRole("button", { name: planModeCopy("en-US").title }),
     ).not.toBeInTheDocument();
     act(() => {
       expect(ref.current!.plan()).toBe(true);
@@ -278,5 +279,48 @@ describe("plan mode in the composer, as in Codex's own", () => {
     await waitFor(() =>
       expect(state.codexAction).toHaveBeenCalledExactlyOnceWith("settings", { mode: "plan" }),
     );
+  });
+
+  it("clears a saved mode from Add when Codex no longer offers collaboration modes", async () => {
+    const unchanged = {
+      modelId: "sol",
+      effort: "high",
+      serviceTierId: "fast",
+      policyId: "current",
+    };
+    settings = {
+      ...settings,
+      current: { ...unchanged, mode: "plan" },
+      selected: { ...unchanged, mode: "plan" },
+      applicationStatus: "confirmed",
+    };
+    state.live = { ...state.live!, executionMode: "codex-managed" };
+    vi.mocked(state.codexAction).mockImplementation(async () => {
+      settings = { ...settings, revision: 2, selected: unchanged };
+      state.live = { ...state.live!, revision: 2 };
+      return { accepted: true } as Awaited<ReturnType<typeof state.codexAction>>;
+    });
+    const onPlan = vi.fn();
+    render(<CodexComposerControls {...props} onPlan={onPlan} />);
+    await waitFor(() => expect(onPlan).toHaveBeenLastCalledWith({ on: true, available: false }));
+    const label = codexCopy["en-US"].addContext;
+    fireEvent.click(screen.getByRole("button", { name: label }));
+    const add = within(await screen.findByRole("dialog", { name: label }));
+    expect(
+      add.queryByRole("button", { name: planModeCopy("en-US").title }),
+    ).not.toBeInTheDocument();
+    fireEvent.click(add.getByRole("button", { name: planModeCopy("en-US").clear }));
+
+    await waitFor(() => {
+      expect(state.codexAction).toHaveBeenCalledExactlyOnceWith("settings", { mode: null });
+      expect(onPlan).toHaveBeenLastCalledWith({ on: false, available: false });
+      expect(screen.queryByRole("dialog", { name: label })).not.toBeInTheDocument();
+    });
+    expect(state.control).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByRole("button", { name: label }));
+    const reopened = within(await screen.findByRole("dialog", { name: label }));
+    expect(
+      reopened.queryByRole("button", { name: planModeCopy("en-US").clear }),
+    ).not.toBeInTheDocument();
   });
 });

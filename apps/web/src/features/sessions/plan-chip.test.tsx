@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 import "@testing-library/jest-dom/vitest";
 import { createRef } from "react";
-import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { CodexSessionSettings } from "@agentkib/web-client";
 import {
@@ -10,6 +10,8 @@ import {
 } from "../conversation/features/sessions/codex-session-controls";
 import { useSession } from "../conversation/features/sessions/session-context";
 import { codexCopy } from "../conversation/features/sessions/codex-copy";
+import { sessionAgentCopy } from "../conversation/features/sessions/session-agent-copy";
+import { planModeCopy } from "@agentkib/session-ui";
 
 vi.mock("../conversation/features/sessions/session-context", () => ({ useSession: vi.fn() }));
 const copy = codexCopy["en-US"];
@@ -75,6 +77,7 @@ function session(claude: boolean, selected: "default" | "plan") {
     },
     client: {
       sessionSettings: vi.fn(async () => settings(claude, selected)),
+      prepareSessionSettings: vi.fn(async () => settings(claude, selected)),
       sessionGoals: vi.fn(async () => ({ sessionId: "session", available: false, revision: 1 })),
       sessionResources: vi.fn(async () => ({ sessionId: "session", revision: 1, resources: [] })),
     },
@@ -89,43 +92,74 @@ beforeEach(() => {
 });
 afterEach(cleanup);
 
-describe("plan mode in the Web composer, as on the desktop", () => {
-  it("shows beside the settings while on, and turns off there", async () => {
-    session(false, "plan");
-    const onPlan = vi.fn();
-    render(<CodexComposerControls {...props} onPlan={onPlan} />);
-    const chip = await screen.findByRole("button", { name: copy.planOn });
-    await waitFor(() => expect(onPlan).toHaveBeenLastCalledWith({ on: true, available: true }));
-    fireEvent.click(chip);
-    await waitFor(() =>
-      expect(state.codexAction).toHaveBeenCalledWith("settings", { mode: "default" }),
-    );
-  });
+async function openAdd() {
+  fireEvent.click(await screen.findByRole("button", { name: copy.addContext }));
+  return within(await screen.findByRole("dialog", { name: copy.addContext }));
+}
+
+async function openPlan() {
+  const add = await openAdd();
+  return add.findByRole("button", { name: planModeCopy("en-US").title });
+}
+
+describe("plan mode in the Web composer", () => {
+  it.each(["idle", "running"])(
+    "switches off from Add with a writable DSH mode while %s",
+    async (status) => {
+      session(false, "plan");
+      state.live = { ...state.live!, status };
+      const onPlan = vi.fn();
+      render(<CodexComposerControls {...props} onPlan={onPlan} />);
+      const plan = await openPlan();
+      await waitFor(() => expect(onPlan).toHaveBeenLastCalledWith({ on: true, available: true }));
+      expect(plan).toHaveAttribute("aria-pressed", "true");
+      fireEvent.click(plan);
+      await waitFor(() =>
+        expect(screen.queryByRole("dialog", { name: copy.addContext })).not.toBeInTheDocument(),
+      );
+      await waitFor(() =>
+        expect(state.codexAction).toHaveBeenCalledWith("settings", { mode: "default" }),
+      );
+    },
+  );
 
   it("says so when it could not turn off", async () => {
     session(false, "plan");
     vi.mocked(state.codexAction).mockRejectedValue(new Error("offline"));
     render(<CodexComposerControls {...props} />);
-    fireEvent.click(await screen.findByRole("button", { name: copy.planOn }));
-    expect(await screen.findByRole("status")).toHaveTextContent(copy.planExitFailed);
+    const plan = await openPlan();
+    fireEvent.click(plan);
+    expect(await screen.findByRole("alert")).toBeVisible();
+    expect(await openPlan()).toHaveAttribute("aria-pressed", "true");
   });
 
-  it("is Claude Code's permission mode there", async () => {
+  it("keeps Claude Plan out of permissions while writing its native permission mode", async () => {
     session(true, "plan");
     render(<CodexComposerControls {...props} />);
-    fireEvent.click(await screen.findByRole("button", { name: copy.planOn }));
+    const permissions = sessionAgentCopy["en-US"].permission;
+    fireEvent.click(await screen.findByRole("button", { name: permissions }));
+    const permissionMenu = within(await screen.findByRole("menu", { name: permissions }));
+    expect(permissionMenu.queryByRole("menuitem", { name: "Plan" })).not.toBeInTheDocument();
+    expect(permissionMenu.getByRole("menuitem", { name: "Default" })).not.toHaveAttribute(
+      "aria-current",
+      "true",
+    );
+    fireEvent.keyDown(permissionMenu.getByRole("menuitem", { name: "Default" }), { key: "Escape" });
+    const plan = await openPlan();
+    await waitFor(() => expect(plan).toBeEnabled());
+    fireEvent.click(plan);
     await waitFor(() =>
       expect(state.codexAction).toHaveBeenCalledWith("settings", { permissionMode: "default" }),
     );
   });
 
-  it("turns on from the composer's /plan, and shows nothing while off", async () => {
+  it("turns on from the composer's /plan while Add shows the toggle as off", async () => {
     session(false, "default");
     const onPlan = vi.fn();
     const controls = createRef<ComposerControlsHandle>();
     render(<CodexComposerControls {...props} controlsRef={controls} onPlan={onPlan} />);
     await waitFor(() => expect(onPlan).toHaveBeenLastCalledWith({ on: false, available: true }));
-    expect(screen.queryByRole("button", { name: copy.planOn })).not.toBeInTheDocument();
+    expect(await openPlan()).toHaveAttribute("aria-pressed", "false");
     let entered = false;
     act(() => {
       entered = controls.current!.plan();
@@ -145,5 +179,68 @@ describe("plan mode in the Web composer, as on the desktop", () => {
     await waitFor(() => expect(onPlan).toHaveBeenLastCalledWith({ on: false, available: false }));
     expect(controls.current!.plan()).toBe(false);
     expect(state.codexAction).not.toHaveBeenCalled();
+  });
+
+  it("accepts /plan while already active even when the host does not offer Execute", async () => {
+    session(false, "plan");
+    const projected = settings(false, "plan");
+    projected.options.collaborationModes = [{ id: "plan", name: "Plan" }];
+    vi.mocked(state.client.sessionSettings).mockResolvedValue(projected);
+    const controls = createRef<ComposerControlsHandle>();
+    render(<CodexComposerControls {...props} controlsRef={controls} />);
+    expect(await openPlan()).toBeDisabled();
+    expect(controls.current!.plan()).toBe(true);
+    expect(state.codexAction).not.toHaveBeenCalled();
+  });
+
+  it("clears only the saved Codex mode when the native catalog no longer offers it", async () => {
+    session(false, "plan");
+    const unchanged = { modelId: "model-a", effort: "low", policyId: "current" };
+    const previous = settings(false, "plan");
+    let projected: CodexSessionSettings = {
+      ...previous,
+      executionMode: "codex-managed",
+      current: { ...unchanged, mode: "plan" },
+      selected: { ...unchanged, mode: "plan" },
+      applicationStatus: "confirmed",
+      options: { ...previous.options, collaborationModes: [] },
+    };
+    state.current = { ...state.current!, agent: "codex" };
+    state.live = { ...state.live!, executionMode: "codex-managed" };
+    state.client.codexSessionSettings = vi.fn(async () => projected);
+    const unavailable = { available: false };
+    state.client.codexGoals = vi.fn(async () => ({
+      sessionId: "session",
+      available: false,
+      revision: 1,
+      actions: { set: unavailable, pause: unavailable, resume: unavailable, clear: unavailable },
+    }));
+    state.client.codexContextOptions = vi.fn(async () => ({
+      sessionId: "session",
+      revision: 1,
+      resources: [],
+    }));
+    vi.mocked(state.codexAction).mockImplementation(async () => {
+      projected = { ...projected, revision: 2, selected: unchanged };
+      state.live = { ...state.live!, revision: 2 };
+      return { accepted: true } as Awaited<ReturnType<typeof state.codexAction>>;
+    });
+    const onPlan = vi.fn();
+    render(<CodexComposerControls {...props} onPlan={onPlan} />);
+    await waitFor(() => expect(onPlan).toHaveBeenLastCalledWith({ on: true, available: false }));
+    const add = await openAdd();
+    expect(
+      add.queryByRole("button", { name: planModeCopy("en-US").title }),
+    ).not.toBeInTheDocument();
+    fireEvent.click(add.getByRole("button", { name: planModeCopy("en-US").clear }));
+    await waitFor(() => {
+      expect(state.codexAction).toHaveBeenCalledExactlyOnceWith("settings", { mode: null });
+      expect(onPlan).toHaveBeenLastCalledWith({ on: false, available: false });
+      expect(screen.queryByRole("dialog", { name: copy.addContext })).not.toBeInTheDocument();
+    });
+    expect(state.control).not.toHaveBeenCalled();
+    expect(
+      (await openAdd()).queryByRole("button", { name: planModeCopy("en-US").clear }),
+    ).not.toBeInTheDocument();
   });
 });

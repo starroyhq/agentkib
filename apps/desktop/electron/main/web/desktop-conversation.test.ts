@@ -120,6 +120,26 @@ describe("trusted desktop conversation routes", () => {
     });
   });
 
+  it("projects a stale cursor from the targeted desktop history route", async () => {
+    runtime.mockRejectedValueOnce(
+      new RuntimeRequestError({
+        code: -32000,
+        message: "request rejected",
+        data: { detail: "TRANSCRIPT_CURSOR_STALE" },
+      }),
+    );
+    expect(await service.localRequest("/events?sessionId=s&cursor=old-source")).toMatchObject({
+      status: 409,
+      body: { error: "stale_cursor" },
+    });
+    expect(runtime).toHaveBeenCalledExactlyOnceWith({
+      operation: "desktop-events",
+      sessionId: "s",
+      limit: 50,
+      cursor: "old-source",
+    });
+  });
+
   it.each(["compact", "terminals-clean", "delete"])(
     "sends the Codex %s action over the desktop route",
     async (operation) => {

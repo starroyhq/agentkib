@@ -7,7 +7,7 @@ import { sessionProviderCapabilities, type CodexSessionSettings } from "@agentki
 import { CodexComposerControls } from "./codex-session-controls";
 import { useSession } from "./session-context";
 import { codexCopy, codexReason } from "./codex-copy";
-import { composerModelCopy } from "@agentkib/session-ui";
+import { composerModelCopy, planModeCopy } from "@agentkib/session-ui";
 import { contextUsageCopy } from "./context-usage-copy";
 
 vi.mock("./session-context", () => ({ useSession: vi.fn() }));
@@ -82,7 +82,7 @@ describe("DeepSeek Harness model settings in the composer", () => {
     expect(state.client.codexGoals).not.toHaveBeenCalled();
     // Without goal, resource or attachment capabilities there is nothing to add.
     expect(state.client.sessionGoals).not.toHaveBeenCalled();
-    expect(screen.queryByRole("button", { name: copy.addContext })).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: copy.addContext })).toBeDisabled();
     expect(screen.queryByRole("img", { name: copy.contextUsage })).not.toBeInTheDocument();
   });
 
@@ -228,7 +228,7 @@ describe("DeepSeek Harness model settings in the composer", () => {
     ).not.toBeInTheDocument();
   });
 
-  it("shows DSH's plan mode in the composer and turns it off there, as DSH's chip does", async () => {
+  it("turns DSH Plan mode off from the shared add menu", async () => {
     state = {
       ...state,
       client: {
@@ -249,7 +249,12 @@ describe("DeepSeek Harness model settings in the composer", () => {
       codexAction: vi.fn(async () => ({ accepted: true })),
     } as unknown as ReturnType<typeof useSession>;
     render(<CodexComposerControls {...props} />);
-    fireEvent.click(await screen.findByRole("button", { name: copy.planOn }));
+    await waitFor(() =>
+      expect(screen.getByRole("button", { name: copy.addContext })).toBeEnabled(),
+    );
+    fireEvent.click(screen.getByRole("button", { name: copy.addContext }));
+    const add = within(await screen.findByRole("dialog", { name: copy.addContext }));
+    fireEvent.click(add.getByRole("button", { name: planModeCopy("en-US").title, pressed: true }));
     await waitFor(() =>
       expect(state.codexAction).toHaveBeenCalledWith("settings", { mode: "default" }),
     );

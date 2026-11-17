@@ -96,6 +96,44 @@ function fixture(initialItems: Item[] = [], residentOverlay = false) {
 }
 
 describe("native Codex message stream projection", () => {
+  it("batches follower text across progress revisions and publishes control changes immediately", async () => {
+    const f = fixture();
+    await f.subscribe();
+    const mode = { executionMode: "codex-follower" };
+    f.publish([item("reply-a", "Start")], ["turn-a"], { ...mode, revision: 1 });
+    f.delivered.length = 0;
+
+    for (const [index, text] of [" a", " ab", " abc"].entries())
+      f.publish([item("reply-a", "Start" + text)], ["turn-a"], {
+        ...mode,
+        revision: index + 2,
+        usage: { revision: index + 2, usedTokens: 10 },
+      });
+    const latest = { ...mode, revision: 4, usage: { revision: 4, usedTokens: 10 } };
+    f.publish([item("reply-a", "Start abc")], ["turn-a"], latest);
+    expect(f.delivered).toHaveLength(0);
+    await f.flush();
+    expect(f.delivered).toMatchObject([
+      { type: "state", payload: { revision: 4 } },
+      { type: "text-delta", payload: { text: " abc" } },
+    ]);
+    expect(f.client.getSnapshot().items[0]?.content).toBe("Start abc");
+
+    f.delivered.length = 0;
+    f.publish([item("reply-a", "Start abcd")], ["turn-a"], { ...mode, revision: 5 });
+    f.publish([item("reply-a", "Start abcd")], ["turn-a"], {
+      ...mode,
+      revision: 6,
+      status: "awaiting-approval",
+      approvals: [{ requestId: "approval" }],
+    });
+    expect(f.delivered).toMatchObject([
+      { type: "state", payload: { revision: 5 } },
+      { type: "text-delta", payload: { text: "d" } },
+      { type: "state", payload: { revision: 6, status: "awaiting-approval" } },
+    ]);
+  });
+
   it("includes an already-generated resident reply in the first baseline without needing another token", async () => {
     const f = fixture([], true);
     f.publish([

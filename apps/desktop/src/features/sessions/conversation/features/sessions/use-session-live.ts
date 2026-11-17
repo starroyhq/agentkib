@@ -127,6 +127,8 @@ export function useSessionLive({
     let historyDirty = false;
     let historyRetry: number | undefined;
     let historyRecoveryPending = false;
+    let historyWaitingForSettings = false;
+    let settingsHistoryWake = 0;
     let controlRequest = 0;
     let controlGeneration = 0;
     let progressPatch: ProgressPatch | undefined;
@@ -135,7 +137,13 @@ export function useSessionLive({
     // remove the previously rendered native tail without touching older pages.
     let sourceItems: ConversationEvent[] = nativeCoverage.current.items;
     const current = () => !closed && g === generation.current && selection.current === id;
+    const selectedSettingsWrite = () => {
+      const write = settingsInFlight.current;
+      return write?.sessionId === id && write.generation === g ? write : undefined;
+    };
+    let historyRetriedForWrite: ReturnType<typeof selectedSettingsWrite>;
     const scheduleHistory = () => {
+      if (historyWaitingForSettings) return;
       window.clearTimeout(historyRetry);
       // Only an invalidated read waits for native updates to settle. Token
       // delivery by itself never schedules a historical read.
@@ -144,6 +152,12 @@ export function useSessionLive({
         if (current() && historyDirty) loadHistory();
       }, 50);
     };
+    const wakeSettingsHistory = () => {
+      settingsHistoryWake++;
+      if (!historyWaitingForSettings) return;
+      historyWaitingForSettings = false;
+      if (!historyLoading && historyDirty) scheduleHistory();
+    };
     const loadHistory = () => {
       historyLoading = true;
       historyDirty = false;
@@ -151,6 +165,8 @@ export function useSessionLive({
       const request = historyRequest;
       const attempt = beginHistoryRead(nativeCoverage.current);
       const wake = refreshWake.current;
+      const settingsWakeAtRead = settingsHistoryWake;
+      const writeAtRead = selectedSettingsWrite();
       void client
         .events(id)
         .then((page) => {
@@ -204,6 +220,19 @@ export function useSessionLive({
         .catch((error) => {
           if (current() && request === historyRequest) {
             if (error instanceof ApiError && error.code === "operation_busy") {
+              const activeWrite = selectedSettingsWrite();
+              const write = activeWrite ?? writeAtRead;
+              if (write && historyRetriedForWrite !== write) {
+                // A native settings command can append history before the host frees admission.
+                // Keep that invalidation and retry only history once the write settles.
+                historyRetriedForWrite = write;
+                historyDirty = true;
+                historyWaitingForSettings =
+                  !!activeWrite &&
+                  !activeWrite.controlChanged &&
+                  settingsWakeAtRead === settingsHistoryWake;
+                return;
+              }
               readBusy(wake, g);
               return;
             }
@@ -224,7 +253,7 @@ export function useSessionLive({
     const readHistory = () => {
       historyRequest++;
       historyDirty = true;
-      if (historyLoading) return;
+      if (historyLoading || historyWaitingForSettings) return;
       if (historyRetry !== undefined) scheduleHistory();
       else loadHistory();
     };
@@ -317,7 +346,9 @@ export function useSessionLive({
           });
       };
       readSettingsControls.current = async (sessionId, accept) => {
-        if (sessionId === id && active()) await reconcileControls(true, accept);
+        if (sessionId !== id || !active()) return;
+        await reconcileControls(true, accept);
+        if (active()) wakeSettingsHistory();
       };
       const disconnected = () => {
         needsDomainRecovery = true;
@@ -383,6 +414,7 @@ export function useSessionLive({
                     "capabilities",
                   ]);
                 needsDomainRecovery = false;
+                if (!selectedSettingsWrite()) wakeSettingsHistory();
                 setOnline(true);
                 if (!nativeCoverage.current.historyRecoveryFailed) setError(false);
                 streamReady.current = true;
@@ -409,9 +441,10 @@ export function useSessionLive({
             try {
               const changed = JSON.parse(data) as { sessionId?: string };
               if (changed.sessionId !== id) return false;
-              const write = settingsInFlight.current;
-              if (write?.sessionId === id && write.generation === g) write.controlChanged = true;
+              const write = selectedSettingsWrite();
+              if (write) write.controlChanged = true;
               else void reconcileControls();
+              wakeSettingsHistory();
             } catch {
               return false;
             }

@@ -125,6 +125,8 @@ export function useSessionLive({
     let historyDirty = false;
     let historyRetry: number | undefined;
     let historyRecoveryPending = false;
+    let settingsHistory: "waiting" | "retry" | undefined;
+    let settingsHistoryWake = 0;
     let controlRequest = 0;
     let controlGeneration = 0;
     let progressPatch: ProgressPatch | undefined;
@@ -142,13 +144,23 @@ export function useSessionLive({
         if (current() && historyDirty) loadHistory();
       }, 50);
     };
+    const wakeSettingsHistory = () => {
+      settingsHistoryWake++;
+      if (settingsHistory !== "waiting") return;
+      settingsHistory = "retry";
+      if (historyDirty && !historyLoading) scheduleHistory();
+    };
     const loadHistory = () => {
       historyLoading = true;
       historyDirty = false;
+      const retryAfterSettings = settingsHistory === "retry";
+      settingsHistory = undefined;
       const itemsAtRequest = itemGeneration;
       const request = historyRequest;
       const attempt = beginHistoryRead(nativeCoverage.current);
       const wake = refreshWake.current;
+      const settingsWake = settingsHistoryWake;
+      const duringSettings = isSettingsWriteActive?.(id);
       void client
         .events(id)
         .then((page) => {
@@ -202,6 +214,13 @@ export function useSessionLive({
         .catch((error) => {
           if (current() && request === historyRequest) {
             if (error instanceof ApiError && error.code === "operation_busy") {
+              // A provider can append history before our settings command releases admission.
+              // Retry this page on settlement without promoting the contention to a full refresh.
+              if (!retryAfterSettings && (duringSettings || isSettingsWriteActive?.(id))) {
+                historyDirty = true;
+                settingsHistory = settingsWake === settingsHistoryWake ? "waiting" : "retry";
+                return;
+              }
               readBusy(wake, g);
               return;
             }
@@ -216,13 +235,13 @@ export function useSessionLive({
         })
         .finally(() => {
           historyLoading = false;
-          if (current() && historyDirty) scheduleHistory();
+          if (current() && historyDirty && settingsHistory !== "waiting") scheduleHistory();
         });
     };
     const readHistory = () => {
       historyRequest++;
       historyDirty = true;
-      if (historyLoading) return;
+      if (historyLoading || settingsHistory === "waiting") return;
       if (historyRetry !== undefined) scheduleHistory();
       else loadHistory();
     };
@@ -320,8 +339,11 @@ export function useSessionLive({
           });
       };
       if (readSettingsControls)
-        readSettingsControls.current = (accept) =>
-          active() ? reconcileControls(accept) : Promise.resolve();
+        readSettingsControls.current = (accept) => {
+          if (!active()) return Promise.resolve();
+          wakeSettingsHistory();
+          return reconcileControls(accept);
+        };
       const disconnected = () => {
         needsDomainRecovery = true;
         snapshotSeen = false;
@@ -386,6 +408,7 @@ export function useSessionLive({
                     "capabilities",
                   ]);
                 needsDomainRecovery = false;
+                wakeSettingsHistory();
                 setOnline(true);
                 if (!nativeCoverage.current.historyRecoveryFailed) setError(false);
                 streamReady.current = true;
@@ -412,6 +435,7 @@ export function useSessionLive({
             try {
               const changed = JSON.parse(data) as { sessionId?: string };
               if (changed.sessionId !== id) return false;
+              wakeSettingsHistory();
               reconcileControls();
             } catch {
               return false;

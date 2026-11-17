@@ -152,10 +152,18 @@ describe("stable capability observation", () => {
       const { result } = await open(host);
       const reads = vi.mocked(host.client.sessionCapabilities).mock.calls.length;
       vi.mocked(host.client.sessionCapabilities).mockResolvedValue(capabilities(false));
-      await act(async () => result.current.codexAction(action, { name: "new name" }));
+      const fields = action === "settings" ? { mode: "plan" as const } : { name: "new name" };
+      await act(async () => result.current.codexAction(action, fields));
       expect(host.request).not.toHaveBeenCalled();
       expect(host.client.sessionCapabilities).toHaveBeenCalledTimes(reads + 1);
-      expect(result.current.notice).toBe("notDispatched");
+      if (action === "settings") {
+        expect(result.current.settingsNotice).toMatchObject({
+          target: "permissions",
+          status: "notDispatched",
+          reason: "permission_denied",
+        });
+        expect(result.current.notice).toBeUndefined();
+      } else expect(result.current.notice).toBe("notDispatched");
       expect(result.current.settingsChangedHere).toBe(false);
     },
   );
@@ -641,8 +649,12 @@ describe("Codex next-turn settings recovery", () => {
         "managed/action",
         expect.objectContaining({ operation: "settings", model: "no-such-model" }),
       );
-      expect(result.current.notice).toBe("notDispatched");
-      expect(result.current.noticeReason).toBe(reason);
+      expect(result.current.settingsNotice).toMatchObject({
+        target: "model",
+        status: "notDispatched",
+        reason,
+      });
+      expect(result.current.notice).toBeUndefined();
     },
   );
 

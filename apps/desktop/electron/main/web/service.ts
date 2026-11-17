@@ -3802,6 +3802,7 @@ export class WebAccessService {
         const usesFullAccessFields =
           body.serviceTierId !== undefined ||
           body.policyId !== undefined ||
+          body.mode === null ||
           body.restoreDefaults !== undefined ||
           body.resourceIds !== undefined;
         if (usesFullAccessFields) this.fullAccess(hash);
@@ -3862,7 +3863,12 @@ export class WebAccessService {
             : body.effort === undefined
               ? undefined
               : this.field(body.effort, 128);
-        const mode = body.mode === undefined ? undefined : this.field(body.mode, 128);
+        const mode =
+          body.mode === null && capabilities.executionMode === "codex-managed"
+            ? null
+            : body.mode === undefined
+              ? undefined
+              : this.field(body.mode, 128);
         const serviceTier =
           body.serviceTierId === null && (capabilities.executionMode === "codex-managed" || devin)
             ? null
@@ -3902,11 +3908,12 @@ export class WebAccessService {
           if (devin && (mode === "smart" || mode === "dangerous")) this.fullAccess(hash);
           params.permissionMode = body.permissionMode;
         }
-        if (mode) {
+        if (mode !== undefined) {
           ensureWritable("mode");
           if (
-            !new Set(["default", "plan"]).has(mode) ||
-            !state.collaborationModes?.some((item) => item.id === mode)
+            mode !== null &&
+            (!["default", "plan"].includes(mode) ||
+              !state.collaborationModes?.some((item) => item.id === mode))
           )
             throw new HttpError(400, "unsupported_mode");
           params.mode = mode;
@@ -3939,7 +3946,7 @@ export class WebAccessService {
         if (
           !model &&
           effort === undefined &&
-          !mode &&
+          mode === undefined &&
           serviceTier === undefined &&
           !policyId &&
           body.permissionMode === undefined &&
@@ -7013,10 +7020,11 @@ export class WebAccessService {
         }
       } else result = await this.runtime(params);
     } catch (error) {
-      if (path === "/catalog") {
+      if (path === "/catalog" || (path === "/events" && params.cursor)) {
         this.grant(hash);
         if (boot !== this.bootId) throw new HttpError(409, "stale_boot");
-        if (readerScope !== this.readerScope()) throw new HttpError(409, "access_changed");
+        if ((path === "/catalog" || localEvents) && readerScope !== this.readerScope())
+          throw new HttpError(409, "access_changed");
         const detail =
           error instanceof RuntimeRequestError &&
           error.data !== null &&
@@ -7026,7 +7034,10 @@ export class WebAccessService {
             : error instanceof Error
               ? error.message
               : undefined;
-        if (detail === "catalog-stale") throw new HttpError(409, "catalog_stale");
+        if (path === "/catalog" && detail === "catalog-stale")
+          throw new HttpError(409, "catalog_stale");
+        if (path === "/events" && detail === "TRANSCRIPT_CURSOR_STALE")
+          throw new HttpError(409, "stale_cursor");
       }
       throw error;
     }

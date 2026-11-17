@@ -240,7 +240,7 @@ export class CodexFollowerState {
     };
   }
 
-  settingsState(supportsThreadSettings: boolean): JsonRecord {
+  settingsState(): JsonRecord {
     const snapshot = this.#snapshot;
     if (!snapshot)
       return {
@@ -252,10 +252,10 @@ export class CodexFollowerState {
     const current = isRecord(saved.collaborationMode) ? saved.collaborationMode : {};
     const currentMode = isRecord(current) ? current.mode : null;
     return {
-      available: supportsThreadSettings,
+      available: true,
       executionMode: "codex-follower",
       settings: {
-        applicationStatus: supportsThreadSettings ? "confirmed" : "unknown",
+        applicationStatus: "confirmed",
         current: {
           model: Object.hasOwn(saved, "model") ? saved.model : (snapshot.latestModel ?? null),
           effort: Object.hasOwn(saved, "effort")
@@ -273,37 +273,14 @@ export class CodexFollowerState {
         writable: {
           model: false,
           effort: false,
-          mode: supportsThreadSettings,
+          mode: false,
           serviceTier: false,
-          policy: supportsThreadSettings,
+          policy: false,
           restoreDefaults: false,
         },
       },
-      collaborationModes: supportsThreadSettings
-        ? [
-            { id: "default", name: "Default" },
-            { id: "plan", name: "Plan" },
-          ]
-        : [],
-      policies: [
-        {
-          id: "workspace-write-on-request",
-          name: "Workspace write · ask when needed",
-          description: "Can edit the workspace; risky actions still require user approval.",
-        },
-        {
-          id: "full-access-on-request",
-          name: "Full access · no approval prompts",
-          description: "Can access the computer and network without prompting for approvals.",
-        },
-        {
-          id: "workspace-write-auto-review",
-          name: "Workspace write · agent review",
-          description: "Can edit the workspace; the native agent reviews approval requests.",
-        },
-      ],
       revision: this.#revision,
-      reason: supportsThreadSettings ? null : "follower-operation-unverified",
+      reason: null,
     };
   }
 

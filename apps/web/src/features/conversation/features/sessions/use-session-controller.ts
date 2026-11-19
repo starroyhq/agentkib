@@ -1,5 +1,7 @@
 import {
   createSessionControl,
+  createWarmSessionStreamPool,
+  warmSessionAuthority,
   createEarlierSessionHistory,
   useSessionHistoryRead,
   type EarlierHistoryFlight,
@@ -49,7 +51,7 @@ import {
 import { blockedWhileCompacting } from "./session-activity";
 import { contextUsageCopyForSurface } from "./context-usage-copy";
 import { retryBusyRead } from "./session-read-retry";
-import { useSessionLive } from "./use-session-live";
+import { useSessionLive, type WarmSessionNavigation } from "./use-session-live";
 import { capabilityAccessBinding, useSessionCapabilities } from "./use-session-capabilities";
 import {
   useCallback,
@@ -152,6 +154,10 @@ export function useSessionController({
   const [client] = useState(
     () => providedClient ?? new WebClient(undefined, connection ?? legacyOrigin),
   );
+  // Leave room for ordinary HTTP requests alongside catalog and detail SSE streams.
+  const [warmStreams] = useState(() => createWarmSessionStreamPool(client, 2));
+  const warmNavigation = useRef<WarmSessionNavigation>({});
+  const [selectionVisit, setSelectionVisit] = useState(0);
   const [streamEpoch, setStreamEpoch] = useState(0);
   const [usageEpoch, setUsageEpoch] = useState("");
   const [liveContentVersion, setLiveContentVersion] = useState(0);
@@ -195,7 +201,7 @@ export function useSessionController({
     }>({}),
     [loadingEarlier, setLoadingEarlier] = useState(false),
     [live, publishLive] = useState<Live>(),
-    [controlReady, setControlReady] = useState(false),
+    [controlReady, publishControlReady] = useState(false),
     [indexEnabled, setIndexEnabled] = useState(true),
     [busy, setBusy] = useState(false),
     [error, setError] = useState(false),
@@ -213,6 +219,13 @@ export function useSessionController({
     [modal, setModal] = useState<
       "preferences" | "metadata" | ConversationEvent | Approval | UserQuestionRequest
     >();
+  const controlReadyRef = useRef(false);
+  const setControlReady = useCallback((next: SetStateAction<boolean>) => {
+    controlReadyRef.current = typeof next === "function" ? next(controlReadyRef.current) : next;
+    publishControlReady(controlReadyRef.current);
+  }, []);
+  const warmScope = warmSessionAuthority(access, streamEpoch);
+  useEffect(() => () => warmStreams.clear(), [warmStreams, warmScope]);
   const selectedAgent = sessions.find((item) => item.id === selected)?.agent;
   const { capabilities, capabilityScope, verifyCapabilities, clearCapabilities } =
     useSessionCapabilities({
@@ -312,6 +325,13 @@ export function useSessionController({
     if (!selected || !page) return;
     pageCache.current.set(selected, page);
   }, [selected, page]);
+  const parkSelectedSession = useCallback(() => {
+    const id = selection.current;
+    const page = pageValue.current;
+    if (!id || !page || !controlReadyRef.current || earlierFlight.current) return;
+    pageCache.current.set(id, page);
+    warmNavigation.current.park?.();
+  }, []);
   const catalogSessions = useRef<ConversationSessionSummary[]>([]);
   // The last accepted catalog, so the program-started sessions option can re-filter it.
   const catalogRecords = useRef<ConversationSessionSummary[] | undefined>(undefined);
@@ -485,6 +505,8 @@ export function useSessionController({
   const accessFlight = useRef<Promise<Access | undefined> | undefined>(undefined);
   useAppearance(locale, theme, accent, !embedded);
   const clear = useCallback(() => {
+    warmStreams.clear();
+    warmNavigation.current.resume = undefined;
     cancelForkNavigation();
     generation.current++;
     readinessEpoch.current++;
@@ -533,6 +555,7 @@ export function useSessionController({
     setOnline,
     clearCapabilities,
     cancelForkNavigation,
+    warmStreams,
   ]);
   const clearEndedImageAccess = useCallback(() => {
     invalidateSessionImages(client);
@@ -543,6 +566,8 @@ export function useSessionController({
     disconnect?.();
   }, [client, disconnect]);
   const leaveSession = useCallback(() => {
+    parkSelectedSession();
+    warmNavigation.current.resume = undefined;
     cancelForkNavigation();
     // Mounting the directory with no selected conversation must not invalidate
     // its initial catalog read, which may still be waiting on the host.
@@ -572,6 +597,7 @@ export function useSessionController({
     setOnline,
     clearCapabilities,
     cancelForkNavigation,
+    parkSelectedSession,
   ]);
   const acceptCatalog = useCallback(
     (
@@ -595,7 +621,10 @@ export function useSessionController({
         records.filter((record) => record.availability === "readable").map((record) => record.id),
       );
       for (const record of previous ?? [])
-        if (!readable.has(record.id)) forgetSessionImages(client, record.id);
+        if (!readable.has(record.id)) {
+          warmStreams.discardParked(record.id);
+          forgetSessionImages(client, record.id);
+        }
       for (const record of readableEvidence) restoreSessionImages(client, record.id);
       catalogRecords.current = usable ? records : undefined;
       const listed = (record: ConversationSessionSummary) =>
@@ -615,7 +644,7 @@ export function useSessionController({
         setCatalogNotice(true);
       }
     },
-    [client, leaveSession, observeForkNavigation],
+    [client, leaveSession, observeForkNavigation, warmStreams],
   );
   useEffect(() => {
     if (showExecutionValue.current === showExecution) return;
@@ -1355,6 +1384,7 @@ export function useSessionController({
             return false;
           }
           if (["catalog-invalidated", "access-changed"].includes(type)) {
+            if (type === "access-changed") warmStreams.discardParked();
             wakeDeferredRefresh();
             void update();
             return false;
@@ -1423,6 +1453,7 @@ export function useSessionController({
     fail,
     wakeDeferredRefresh,
     acceptCatalog,
+    warmStreams,
   ]);
   useEffect(
     () =>
@@ -1439,6 +1470,11 @@ export function useSessionController({
     [client, reconcilePending, fail],
   );
   useSessionLive({
+    warmStreams,
+    warmScope,
+    warmNavigation,
+    selectionVisit,
+    liveValue,
     setLiveContentVersion,
     setUsageEpoch,
     streamReady,
@@ -1478,6 +1514,8 @@ export function useSessionController({
       if (selection.current === id) return;
       if (catalogSessions.current.find((session) => session.id === id)?.availability !== "readable")
         return;
+      parkSelectedSession();
+      warmNavigation.current.resume = undefined;
       cancelForkNavigation();
       generation.current++;
       continuationDraft.current = undefined;
@@ -1487,11 +1525,19 @@ export function useSessionController({
       refreshRequired.current = uncertainOutcomes.current.has(id);
       manualRefreshRequired.current = false;
       selection.current = id;
+      setSelectionVisit(generation.current);
       setSelected(id);
       nativeCoverage.current = { items: [], authoritativeTurnIds: [], removedTurnIds: [] };
-      // Seed from cache for an instant reopen; an unseen session stays undefined and shows the spinner.
-      setPage(pageCache.current.get(id));
-      setLive(undefined);
+      const cachedPage = pageCache.current.get(id);
+      const scope = warmSessionAuthority(accessRef.current, streamEpoch);
+      const pendingScope = durableScope.current;
+      if (pendingScope) durablePending.current = readPending(pendingScope);
+      const warm =
+        cachedPage && scope && !refreshRequired.current && !hasDurablePending(id)
+          ? warmStreams.peek(scope, id)
+          : undefined;
+      setPage(cachedPage);
+      setLive(warm?.state.live);
       setModal(undefined);
       setMessage(initialDraft ?? "");
       setPendingSend(undefined);
@@ -1500,90 +1546,107 @@ export function useSessionController({
       setNotice(undefined);
       setSettingsNotice(undefined);
       setCatalogNotice(false);
-      setOnline(false);
+      setOnline(!!warm);
       setControlReady(false);
       streamReady.current = false;
       setError(false);
       const g = generation.current;
-      const wake = refreshWake.current;
-      let historyScope: { epoch?: string } | undefined;
-      try {
-        const delivered = liveDelivery.current;
-        const historyCacheEpoch = nativeCoverage.current.historyCacheEpoch;
-        historyScope = { epoch: historyCacheEpoch };
-        const epoch = readinessEpoch.current;
-        const historyPromise = readHistory(id, g, historyCacheEpoch).then((historyRead) => {
-          if (g !== generation.current || selection.current !== id || historyRead?.type !== "page")
-            return historyRead;
-          const { page: history, attempt } = historyRead;
-          if (historyCacheEpoch === nativeCoverage.current.historyCacheEpoch) {
-            const pagination = (nativeCoverage.current.historyPagination ??=
-              createHistoryPagination());
-            // An older baseline can fill disjoint history, while a newer read
-            // keeps its cursor, warnings and overlapping item contents.
-            const newerHistory = (pagination.latestReadOrder ?? 0) > attempt.id;
-            const nextCursor = recordLatestHistoryPage(pagination, history, attempt.id);
-            completeHistoryRead(nativeCoverage.current, attempt);
-            if (epoch === readinessEpoch.current)
-              setError(!!nativeCoverage.current.historyRecoveryFailed);
-            setPage((previous) => ({
-              ...(newerHistory && previous ? previous : history),
-              next_cursor: nextCursor,
-              events: mergeNativeCoverage(
-                mergeConversationItems(
-                  mergeOrderedPersistedHistory(
-                    previous?.events ?? [],
-                    history.events,
-                    "older",
-                    nativeCoverage.current.preserveItemsOutsideCoverage,
+      const readSelection = async () => {
+        if (g !== generation.current || selection.current !== id) return;
+        const wake = refreshWake.current;
+        let historyScope: { epoch?: string } | undefined;
+        try {
+          const delivered = liveDelivery.current;
+          const historyCacheEpoch = nativeCoverage.current.historyCacheEpoch;
+          historyScope = { epoch: historyCacheEpoch };
+          const epoch = readinessEpoch.current;
+          const historyPromise = readHistory(id, g, historyCacheEpoch).then((historyRead) => {
+            if (
+              g !== generation.current ||
+              selection.current !== id ||
+              historyRead?.type !== "page"
+            )
+              return historyRead;
+            const { page: history, attempt } = historyRead;
+            if (historyCacheEpoch === nativeCoverage.current.historyCacheEpoch) {
+              const pagination = (nativeCoverage.current.historyPagination ??=
+                createHistoryPagination());
+              // An older baseline can fill disjoint history, while a newer read
+              // keeps its cursor, warnings and overlapping item contents.
+              const newerHistory = (pagination.latestReadOrder ?? 0) > attempt.id;
+              const nextCursor = recordLatestHistoryPage(pagination, history, attempt.id);
+              completeHistoryRead(nativeCoverage.current, attempt);
+              if (epoch === readinessEpoch.current)
+                setError(!!nativeCoverage.current.historyRecoveryFailed);
+              setPage((previous) => ({
+                ...(newerHistory && previous ? previous : history),
+                next_cursor: nextCursor,
+                events: mergeNativeCoverage(
+                  mergeConversationItems(
+                    mergeOrderedPersistedHistory(
+                      previous?.events ?? [],
+                      history.events,
+                      "older",
+                      nativeCoverage.current.preserveItemsOutsideCoverage,
+                    ),
+                    removePersistedOverlays(
+                      previous?.events ?? [],
+                      history.events,
+                      nativeCoverage.current.preserveItemsOutsideCoverage,
+                    ),
                   ),
-                  removePersistedOverlays(
-                    previous?.events ?? [],
-                    history.events,
-                    nativeCoverage.current.preserveItemsOutsideCoverage,
-                  ),
+                  nativeCoverage.current,
                 ),
-                nativeCoverage.current,
-              ),
-            }));
+              }));
+            }
+            return historyRead;
+          });
+          // History is available independently of native writes and their receipts.
+          // Readiness still waits for reconciliation before enabling controls.
+          const [historyRead, state] = await Promise.all([
+            historyPromise,
+            client.live(id),
+            reconcilePending(id),
+          ]);
+          if (historyRead?.type === "busy") {
+            readBusy(wake, g);
+            return;
           }
-          return historyRead;
-        });
-        // History is available independently of native writes and their receipts.
-        // Readiness still waits for reconciliation before enabling controls.
-        const [historyRead, state] = await Promise.all([
-          historyPromise,
-          client.live(id),
-          reconcilePending(id),
-        ]);
-        if (historyRead?.type === "busy") {
-          readBusy(wake, g);
-          return;
+          if (
+            !historyRead ||
+            historyRead.type !== "page" ||
+            g !== generation.current ||
+            historyCacheEpoch !== nativeCoverage.current.historyCacheEpoch ||
+            epoch !== readinessEpoch.current
+          )
+            return;
+          if (delivered === liveDelivery.current) setLive(state);
+          setOnline(true);
+          setControlReady(
+            streamReady.current &&
+              !controlReconciliationPending.current &&
+              accessRef.current?.protocolVersion === 2 &&
+              !refreshRequired.current &&
+              !uncertainOutcomes.current.has(id) &&
+              !hasDurablePending(id),
+          );
+        } catch (e) {
+          if (!historyScope || historyScope.epoch === nativeCoverage.current.historyCacheEpoch) {
+            if (e instanceof ApiError && e.code === "operation_busy") readBusy(wake, g);
+            else fail(e, g);
+          }
         }
-        if (
-          !historyRead ||
-          historyRead.type !== "page" ||
-          g !== generation.current ||
-          historyCacheEpoch !== nativeCoverage.current.historyCacheEpoch ||
-          epoch !== readinessEpoch.current
-        )
-          return;
-        if (delivered === liveDelivery.current) setLive(state);
-        setOnline(true);
-        setControlReady(
-          streamReady.current &&
-            !controlReconciliationPending.current &&
-            accessRef.current?.protocolVersion === 2 &&
-            !refreshRequired.current &&
-            !uncertainOutcomes.current.has(id) &&
-            !hasDurablePending(id),
-        );
-      } catch (e) {
-        if (!historyScope || historyScope.epoch === nativeCoverage.current.historyCacheEpoch) {
-          if (e instanceof ApiError && e.code === "operation_busy") readBusy(wake, g);
-          else fail(e, g);
-        }
-      }
+      };
+      if (warm) {
+        warmNavigation.current.resume = {
+          generation: g,
+          onCold() {
+            setLive(undefined);
+            setOnline(false);
+            void readSelection();
+          },
+        };
+      } else await readSelection();
     },
     [
       client,
@@ -1599,6 +1662,9 @@ export function useSessionController({
       setOnline,
       leaveSession,
       cancelForkNavigation,
+      parkSelectedSession,
+      streamEpoch,
+      warmStreams,
     ],
   );
   async function post(path: string, body: unknown) {

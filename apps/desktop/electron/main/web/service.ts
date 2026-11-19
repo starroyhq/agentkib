@@ -594,6 +594,9 @@ const WORKSPACE_SCOPED_MODES: readonly string[] = [
 ];
 /** 小于这个大小的回复不压缩，省下的字节抵不过压缩本身。 */
 const COMPRESSED_REPLY_MIN_BYTES = 16 * 1024;
+const MAX_EVENT_STREAMS = 16;
+const MAX_DEVICE_STREAMS = 4;
+const MAX_DEVICE_DETAIL_STREAMS = 3;
 /** 客户端是否接受 gzip；显式的 `gzip;q=0` 视为拒绝。 */
 function acceptsGzip(header: string | string[] | undefined): boolean {
   let wildcard = false;
@@ -659,7 +662,10 @@ export class WebAccessService {
   private credentials: Credential[] = [];
   private browsers = new Map<string, Browser>();
   // 按建立顺序登记；evict 走该流自己的 unavailable 清理路径。
-  private streams = new Map<ConversationResponse, { hash: string; evict: () => void }>();
+  private streams = new Map<
+    ConversationResponse,
+    { hash: string; sessionId?: string; evict: () => void }
+  >();
   /** When each paired credential last made an API request, for the device's online state. */
   private seen = new Map<string, number>();
   private active = new Set<string>();
@@ -6907,22 +6913,33 @@ export class WebAccessService {
         String(req.headers["last-event-id"] ?? "") ||
         undefined;
       if (afterCursor && afterCursor.length > 1024) throw new HttpError(400, "invalid_cursor");
-      // 网络切换后旧连接可能半开，心跳仍能写入，名额迟迟不释放。同一凭据重连就是同一客户端：
-      // 达到每设备 2 条上限时淘汰它自己最早的流，接纳新流。只淘汰本凭据的流，不影响其他设备；
-      // 全局 16 条仍是硬上限，替换自己的流不增加总数，所以表满时也允许。
+      // Allow a catalog and up to three detail streams, including the recently
+      // viewed sessions retained by the client. Idle tabs can share a credential.
+      // Replace a half-open detail on reconnect, or prefer an older detail at a cap.
       const owned = [...this.streams.values()].filter((stream) => stream.hash === hash);
-      if (owned.length < 2 && this.streams.size >= 16) {
+      const details = owned.filter((stream) => stream.sessionId !== undefined);
+      const reconnect =
+        sessionId !== undefined && (owned.length >= 2 || this.streams.size >= MAX_EVENT_STREAMS)
+          ? details.find((stream) => stream.sessionId === sessionId)
+          : undefined;
+      const previous =
+        reconnect ??
+        (owned.length >= MAX_DEVICE_STREAMS ||
+        (sessionId !== undefined && details.length >= MAX_DEVICE_DETAIL_STREAMS)
+          ? (details[0] ?? owned[0])
+          : undefined);
+      if (!previous && this.streams.size >= MAX_EVENT_STREAMS) {
         res.setHeader("Retry-After", "3");
         throw new HttpError(429, "stream_limit");
       }
-      if (owned.length >= 2) owned[0].evict();
+      previous?.evict();
       res.writeHead(200, {
         "Content-Type": "text/event-stream",
         "Cache-Control": "no-store",
         "X-Accel-Buffering": "no",
       });
       // unavailable 定义在下方；首个 await 之前不会有其他请求调用 evict。
-      this.streams.set(res, { hash, evict: () => unavailable() });
+      this.streams.set(res, { hash, sessionId, evict: () => unavailable() });
       const hub = this.options.conversationHub;
       let subscriptionId: string | undefined;
       let closed = false;

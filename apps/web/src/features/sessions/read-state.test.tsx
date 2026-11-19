@@ -174,6 +174,23 @@ afterEach(() => {
 });
 
 describe("visible result read acknowledgements", () => {
+  it.each([
+    { status: "read", firstUnread: null },
+    { status: "unknown" },
+    { freshness: "stale" },
+  ] satisfies Partial<SessionReadState>[])(
+    "reads only metadata when the state does not require a transcript proof (%j)",
+    async (state) => {
+      const client = fixture(unread(state));
+      render(<Probe client={client} />);
+      await settle();
+      expect(screen.getByTestId("read-observation")).toHaveTextContent("native:revision-1");
+      expect(client.readState).toHaveBeenCalledTimes(1);
+      expect(client.events).not.toHaveBeenCalled();
+      expect(client.acknowledgeReadState).not.toHaveBeenCalled();
+    },
+  );
+
   it("does not acknowledge a reported ending for the current running turn", async () => {
     const client = fixture();
     const view = render(<Probe client={client} activeTurnId="turn" />);

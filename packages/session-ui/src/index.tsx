@@ -32,6 +32,13 @@ export {
   type SessionContextUsageGaugeProps,
 } from "./session-context-usage-gauge";
 export { useTranscriptFollow } from "./use-transcript-follow";
+export {
+  createWarmSessionStreamPool,
+  warmSessionAuthority,
+  WARM_SESSION_IDLE_MS,
+  type WarmSessionCheckpoint,
+  type WarmSessionStreamPool,
+} from "./warm-session-stream";
 export { captureHistoryScrollAnchor } from "./history-scroll-anchor";
 export { MessageActions, messageActionGroups } from "./message-actions";
 export { transcriptProcessCopy, transcriptProcessLabel } from "./transcript-process-copy";

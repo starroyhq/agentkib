@@ -1,6 +1,7 @@
 // @vitest-environment jsdom
 import { act, cleanup, renderHook, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { WARM_SESSION_IDLE_MS } from "@agentkib/session-ui";
 import {
   ApiError,
   WebClient,
@@ -44,6 +45,7 @@ const live = (sessionId = "first", revision = 1): Live => ({
 
 async function fixture(agent: "claude-code" | "deepseek-harness" = "claude-code") {
   const streams = new Map<string, SessionStreamHandlers>();
+  const closeStream = vi.fn<(id: string) => void>();
   const sessionLive = (id?: string): Live =>
     agent === "deepseek-harness" ? { ...live(id), executionMode: "dsh-follower" } : live(id);
   const bridge: ConversationClientBridge = {
@@ -81,21 +83,29 @@ async function fixture(agent: "claude-code" | "deepseek-harness" = "claude-code"
     },
     stream(id, handlers) {
       streams.set(id, handlers);
-      return () => {};
+      return () => {
+        closeStream(id);
+        if (streams.get(id) === handlers) streams.delete(id);
+      };
     },
     uploadAttachment: vi.fn(),
   };
   const client = new WebClient(undefined, { type: "same-origin" }, bridge);
   const view = renderHook(() => useSessionController({ client, embedded: true }));
   await waitFor(() => expect(view.result.current.sessions).toHaveLength(2));
-  const emit = (seq: number, type = "snapshot", payload: unknown = { live: sessionLive() }) =>
+  const emit = (
+    seq: number,
+    type = "snapshot",
+    payload: unknown = { live: sessionLive() },
+    sessionId = "first",
+  ) =>
     act(() => {
-      streams.get("first")!.event(
+      streams.get(sessionId)!.event(
         "session-event",
         JSON.stringify({
           protocolVersion: 2,
-          subscriptionId: "first",
-          sessionId: "first",
+          subscriptionId: sessionId,
+          sessionId,
           runtimeBootId: "runtime",
           epoch: "epoch",
           seq,
@@ -109,7 +119,14 @@ async function fixture(agent: "claude-code" | "deepseek-harness" = "claude-code"
     act(() => {
       streams.get("first")!.event("control-changed", JSON.stringify({ sessionId: "first" }));
     });
-  return { client, ...view, emit, controlChanged };
+  const ready = (seq: number, sessionId = "first") =>
+    act(() =>
+      streams.get(sessionId)!.event("session-ready", JSON.stringify({ cursor: `cursor-${seq}` })),
+    );
+  const disconnect = (sessionId: string) => act(() => streams.get(sessionId)!.error());
+  const changeAccess = (sessionId: string) =>
+    act(() => streams.get(sessionId)!.event("access-changed", "{}"));
+  return { client, ...view, emit, controlChanged, ready, disconnect, changeAccess, closeStream };
 }
 
 describe("independent history display", () => {
@@ -163,7 +180,104 @@ describe("independent history display", () => {
     expect(host.result.current.page?.events[0].content).toBe("Fast history");
   });
 
-  it("reopens a recently viewed session from cache instead of clearing to a spinner", async () => {
+  it("reuses a healthy recent session and applies the reply that arrived while away", async () => {
+    const host = await fixture();
+    const history = vi.spyOn(host.client, "events");
+    const liveReads = vi.spyOn(host.client, "live");
+    const receipts = vi.spyOn(host.client, "receipt");
+    const streams = vi.spyOn(host.client, "stream");
+    await act(async () => host.result.current.choose("first"));
+    host.emit(0);
+    host.ready(0);
+    host.emit(1, "text-delta", { itemId: "reply", turnId: "turn", offset: 0, text: "Hello" });
+    await act(async () => host.result.current.choose("second"));
+    host.emit(0, "snapshot", { live: live("second") }, "second");
+    host.ready(0, "second");
+    expect(host.closeStream).not.toHaveBeenCalledWith("first");
+
+    host.emit(2, "text-delta", { itemId: "reply", turnId: "turn", offset: 5, text: " world" });
+    expect(host.result.current.page?.events.map((event) => event.content)).toEqual([
+      "second history",
+    ]);
+    expect(host.result.current.live?.sessionId).toBe("second");
+    history.mockClear();
+    liveReads.mockClear();
+    receipts.mockClear();
+    streams.mockClear();
+
+    await act(async () => host.result.current.choose("first"));
+    expect(host.result.current.page?.events.map((event) => event.content)).toEqual([
+      "first history",
+      "Hello world",
+    ]);
+    expect(host.result.current.live?.sessionId).toBe("first");
+    expect(host.result.current.online).toBe(true);
+    expect(host.result.current.canSend).toBe(true);
+    expect(history).not.toHaveBeenCalled();
+    expect(liveReads).not.toHaveBeenCalled();
+    expect(receipts).not.toHaveBeenCalled();
+    expect(streams).not.toHaveBeenCalled();
+
+    host.emit(3, "text-delta", { itemId: "reply", turnId: "turn", offset: 11, text: "!" });
+    expect(host.result.current.page?.events.map((event) => event.content)).toEqual([
+      "first history",
+      "Hello world!",
+    ]);
+  });
+
+  it.each(["disconnects", "expires", "receives a gap", "loses its access binding"] as const)(
+    "validates the session again when its retained stream %s",
+    async (reason) => {
+      const host = await fixture();
+      const history = vi.spyOn(host.client, "events");
+      const liveReads = vi.spyOn(host.client, "live");
+      const streams = vi.spyOn(host.client, "stream");
+      await act(async () => host.result.current.choose("first"));
+      host.emit(0);
+      host.ready(0);
+      if (reason === "expires") vi.useFakeTimers();
+      await act(async () => host.result.current.choose("second"));
+      expect(host.closeStream).not.toHaveBeenCalledWith("first");
+      if (reason === "disconnects") host.disconnect("first");
+      else if (reason === "receives a gap") host.emit(2, "text-delta", { offset: 0, text: "gap" });
+      else if (reason === "loses its access binding") host.changeAccess("first");
+      else {
+        await act(async () => vi.advanceTimersByTimeAsync(WARM_SESSION_IDLE_MS - 1));
+        expect(host.closeStream).not.toHaveBeenCalledWith("first");
+        await act(async () => vi.advanceTimersByTimeAsync(1));
+        expect(host.closeStream).toHaveBeenCalledWith("first");
+      }
+      expect(host.result.current.live?.sessionId).toBe("second");
+      expect(host.result.current.online).toBe(true);
+
+      const fresh = deferred<ConversationEventPage>();
+      history.mockClear().mockReturnValueOnce(fresh.promise);
+      liveReads.mockClear();
+      streams.mockClear();
+      let reopening!: Promise<void>;
+      act(() => {
+        reopening = host.result.current.choose("first");
+      });
+      expect(host.result.current.page?.events[0].content).toBe("first history");
+      expect(host.result.current.canSend).toBe(false);
+      expect(history).toHaveBeenCalledWith("first", undefined);
+      expect(liveReads).toHaveBeenCalledWith("first");
+      expect(streams.mock.calls.map(([id]) => id)).toEqual(["first"]);
+      await act(async () => {
+        fresh.resolve({
+          events: [...page("first history").events, ...page("Fresh history").events],
+          warnings: [],
+        });
+        await reopening;
+      });
+      expect(host.result.current.page?.events.map((event) => event.content)).toEqual([
+        "first history",
+        "Fresh history",
+      ]);
+    },
+  );
+
+  it("shows cached history while rereading a session without a stream baseline", async () => {
     const host = await fixture();
     const events = vi.spyOn(host.client, "events");
     await act(async () => void (await host.result.current.choose("first")));
@@ -361,7 +475,10 @@ describe("independent history display", () => {
       opening = host.result.current.choose("first");
     });
     await waitFor(() => expect(events).toHaveBeenCalledOnce());
+    host.emit(0);
+    host.ready(0);
     await act(async () => host.result.current.choose("second"));
+    expect(host.closeStream).toHaveBeenCalledWith("first");
     await act(async () => {
       pending.resolve(page("Obsolete first history"));
       await opening;

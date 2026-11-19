@@ -528,8 +528,15 @@ export function useVisibleReadState(options: {
           proofScope.current = undefined;
           const before = (await options.client.readState(options.sessionId, abort.signal))
             .readState;
-          const page = await options.client.events(options.sessionId, undefined, abort.signal);
-          const { readState } = await options.client.readState(options.sessionId, abort.signal);
+          // Only an acknowledgement needs persisted transcript evidence.
+          const needsProof =
+            before.status === "unread" && before.freshness === "current" && !!before.version;
+          const page = needsProof
+            ? await options.client.events(options.sessionId, undefined, abort.signal)
+            : undefined;
+          const readState = page
+            ? (await options.client.readState(options.sessionId, abort.signal)).readState
+            : before;
           const stable =
             before.source === readState.source &&
             before.version === readState.version &&
@@ -545,7 +552,7 @@ export function useVisibleReadState(options: {
           proofScope.current = scope;
           setObservation((old) => ({
             readState,
-            events: !stable || page.warnings.length ? undefined : page.events,
+            events: page && stable && !page.warnings.length ? page.events : undefined,
             status: "ready",
             revision: old.revision + 1,
           }));

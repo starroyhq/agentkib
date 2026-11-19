@@ -1,6 +1,7 @@
 import { act, cleanup, renderHook } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { useRef, useState } from "react";
+import { createWarmSessionStreamPool, warmSessionAuthority } from "@agentkib/session-ui";
 import type {
   Access,
   ConversationEventPage,
@@ -9,7 +10,10 @@ import type {
   WebClient,
 } from "@agentkib/web-client";
 import { ApiError } from "@agentkib/web-client";
-import { useSessionLive } from "@/features/conversation/features/sessions/use-session-live";
+import {
+  useSessionLive,
+  type WarmSessionNavigation,
+} from "@/features/conversation/features/sessions/use-session-live";
 import { subscribeSessionInvalidation } from "@/features/conversation/features/sessions/session-events";
 import {
   createHistoryPagination,
@@ -60,6 +64,7 @@ function setup(hasDurablePending = () => false, isSettingsWriteActive?: () => bo
     events: vi.fn(),
     live: vi.fn().mockResolvedValue(initial),
   } as unknown as WebClient;
+  const warmStreams = createWarmSessionStreamPool(client);
   const fail = vi.fn(),
     readBusy = vi.fn(),
     clear = vi.fn(),
@@ -72,6 +77,9 @@ function setup(hasDurablePending = () => false, isSettingsWriteActive?: () => bo
     const [online, setOnline] = useState(false);
     const [ready, setControlReady] = useState(false);
     const [usageEpoch, setUsageEpoch] = useState("");
+    const warmNavigation = useRef<WarmSessionNavigation>({});
+    const liveValue = useRef(live);
+    liveValue.current = live;
     const selection = useRef("s"),
       generation = useRef(0),
       liveDelivery = useRef(0);
@@ -88,6 +96,10 @@ function setup(hasDurablePending = () => false, isSettingsWriteActive?: () => bo
     });
     selection.current = selected;
     useSessionLive({
+      warmStreams,
+      warmScope: warmSessionAuthority(access, 0),
+      warmNavigation,
+      liveValue,
       streamReady,
       controlReconciliationPending,
       nativeCoverage,

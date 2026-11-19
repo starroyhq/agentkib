@@ -101,7 +101,7 @@ export function SessionDirectoryAgentFilter({
       <div
         className={cn(
           "pointer-events-none absolute inset-y-0 z-10 flex w-7 items-center before:absolute before:inset-0",
-          "before:[background:linear-gradient(var(--agent-filter-fade-direction),var(--sidebar)_0_4px,transparent)]",
+          "before:[background:linear-gradient(var(--agent-filter-fade-direction),var(--agent-filter-fade-surface)_0_4px,transparent)]",
           left
             ? "left-0 justify-start [--agent-filter-fade-direction:to_right]"
             : "right-0 justify-end [--agent-filter-fade-direction:to_left]",
@@ -129,7 +129,7 @@ export function SessionDirectoryAgentFilter({
     <div
       role="group"
       aria-label={tr("conversations.agentFilter")}
-      className="relative mx-2 min-w-0"
+      className="relative mx-2 min-w-0 [--agent-filter-fade-surface:var(--sidebar)] min-[1024px]:[--agent-filter-fade-surface:var(--background)]"
     >
       {overflow.left && scrollButton(-1)}
       <div

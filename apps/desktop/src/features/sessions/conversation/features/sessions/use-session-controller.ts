@@ -89,6 +89,7 @@ import type { CatalogWorkspace } from "../catalog/session-catalog";
 import { catalogCopy } from "../catalog/catalog-copy";
 import { conversationWords } from "@/core/i18n";
 import type { SupportedLocale as Locale } from "@/core/types";
+import { useDesktopConversationWindow } from "../../../DesktopConversationWindow";
 import { unavailableReasonText } from "../../live-status";
 import {
   mergeLatestPage,
@@ -159,13 +160,29 @@ export function useSessionController({
   const [client] = useState(
     () => providedClient ?? new WebClient(undefined, connection ?? legacyOrigin),
   );
-  const [warmStreams] = useState(() => createWarmSessionStreamPool(client));
+  const windowConversation = useDesktopConversationWindow();
+  const retention = windowConversation?.client === client ? windowConversation : undefined;
+  const verifiedWindowRevision = useRef<number | undefined>(undefined);
+  const selectedWindowRevision = useRef<number | undefined>(undefined);
+  const canRetainPage = useCallback(
+    () => !retention || selectedWindowRevision.current === retention.revision,
+    [retention],
+  );
+  const [warmStreams] = useState(
+    () => retention?.warmStreams ?? createWarmSessionStreamPool(client),
+  );
   const warmNavigation = useRef<WarmSessionNavigation>({});
   const [selectionVisit, setSelectionVisit] = useState(0);
   const initialCatalog = useRef(() =>
     initialSessionId ? readInitialCatalog?.(initialSessionId) : undefined,
   );
-  const [streamEpoch, setStreamEpoch] = useState(0);
+  const [streamEpoch, setStreamEpoch] = useState(() => retention?.streamEpoch ?? 0);
+  const renewStream = useCallback(() => {
+    if (retention) {
+      warmStreams.discardParked();
+      setStreamEpoch(++retention.streamEpoch);
+    } else setStreamEpoch((value) => value + 1);
+  }, [retention, warmStreams]);
   const [usageEpoch, setUsageEpoch] = useState("");
   const [liveContentVersion, setLiveContentVersion] = useState(0);
   const [catalogObservationFailed, setCatalogObservationFailed] = useState(false);
@@ -230,17 +247,28 @@ export function useSessionController({
     }>({ online: false }),
     [code, setCode] = useState(""),
     [name, setName] = useState(""),
-    [message, setMessage] = useState(""),
+    [message, publishMessage] = useState(""),
     [modal, setModal] = useState<
       "preferences" | "metadata" | ConversationEvent | Approval | UserQuestionRequest
     >();
   const controlReadyRef = useRef(false);
+  const setMessage = useCallback(
+    (text: string) => {
+      const id = selection.current;
+      if (id && canRetainPage()) retention?.setDraft(id, text);
+      publishMessage(text);
+    },
+    [canRetainPage, retention],
+  );
   const setControlReady = useCallback((next: SetStateAction<boolean>) => {
     controlReadyRef.current = typeof next === "function" ? next(controlReadyRef.current) : next;
     publishControlReady(controlReadyRef.current);
   }, []);
   const warmScope = warmSessionAuthority(access, streamEpoch);
-  useEffect(() => () => warmStreams.clear(), [warmStreams, warmScope]);
+  useEffect(
+    () => (retention ? undefined : () => warmStreams.clear()),
+    [retention, warmStreams, warmScope],
+  );
   const selectedAgent = sessions.find((item) => item.id === selected)?.agent;
   const { capabilities, capabilityScope, verifyCapabilities, clearCapabilities } =
     useSessionCapabilities({
@@ -265,7 +293,7 @@ export function useSessionController({
   const entryNotice = useRef<{ sessionId: string; ignoredId?: string } | undefined>(undefined);
   const liveValue = useRef<Live | undefined>(undefined);
   const setLive = useCallback(
-    (value: SetStateAction<Live | undefined>) => {
+    (value: SetStateAction<Live | undefined>, display?: Live) => {
       let next = typeof value === "function" ? value(liveValue.current) : value;
       noteSessionImageBoot(client, next?.runtimeBootId);
       if (!next) entryNotice.current = undefined;
@@ -287,8 +315,9 @@ export function useSessionController({
       }
       liveValue.current = next;
       publishLive(next);
+      retention?.publishLive(canRetainPage() ? (display ?? next) : undefined);
     },
-    [client],
+    [client, canRetainPage, retention],
   );
   const { online, notice, reason: noticeReason, source: noticeSource } = connectionNotice;
   const setNotice = useCallback(
@@ -302,12 +331,16 @@ export function useSessionController({
     },
     [],
   );
-  const setOnline = useCallback((next: SetStateAction<boolean>) => {
-    setConnectionNotice((value) => {
-      const online = typeof next === "function" ? next(value.online) : next;
-      return { ...value, online, reason: online ? value.reason : undefined };
-    });
-  }, []);
+  const setOnline = useCallback(
+    (next: SetStateAction<boolean>) => {
+      if (next === false) retention?.publishLive(undefined);
+      setConnectionNotice((value) => {
+        const online = typeof next === "function" ? next(value.online) : next;
+        return { ...value, online, reason: online ? value.reason : undefined };
+      });
+    },
+    [retention],
+  );
   const generation = useRef(0);
   const earlierFlight = useRef<EarlierHistoryFlight>(undefined);
   const pageValue = useRef<ConversationEventPage | undefined>(undefined);
@@ -339,18 +372,29 @@ export function useSessionController({
   }, []);
   // Reopening a recent session shows cached history while its fresh read runs. Retention is
   // bounded by bytes as well as count; the current reader still owns its complete history.
-  const pageCache = useRef(createTranscriptPageCache<ConversationEventPage>());
+  const [pageCache] = useState(
+    () => retention?.pageCache ?? createTranscriptPageCache<ConversationEventPage>(),
+  );
   useEffect(() => {
-    if (!selected || !page) return;
-    pageCache.current.set(selected, page);
-  }, [selected, page]);
+    if (!selected || !page || !canRetainPage()) return;
+    pageCache.set(selected, page);
+  }, [selected, page, pageCache, canRetainPage]);
   const parkSelectedSession = useCallback(() => {
     const id = selection.current;
     const page = pageValue.current;
-    if (!id || !page || !controlReadyRef.current || earlierFlight.current) return;
-    pageCache.current.set(id, page);
+    if (!id || !page || !controlReadyRef.current || earlierFlight.current || !canRetainPage())
+      return;
+    pageCache.set(id, page);
     warmNavigation.current.park?.();
-  }, []);
+  }, [pageCache, canRetainPage]);
+  // Route teardown must park the stream before its passive subscription cleanup.
+  useLayoutEffect(() => {
+    if (!retention) return;
+    return () => {
+      parkSelectedSession();
+      retention.publishLive(undefined);
+    };
+  }, [retention, parkSelectedSession]);
   const catalogSessions = useRef<ConversationSessionSummary[]>([]);
   // The last accepted catalog, so the program-started sessions option can re-filter it.
   const catalogRecords = useRef<ConversationSessionSummary[] | undefined>(undefined);
@@ -515,6 +559,7 @@ export function useSessionController({
   useAppearance(locale, theme, accent, !embedded);
   const clear = useCallback(() => {
     warmStreams.clear();
+    retention?.clearPresentation();
     warmNavigation.current.resume = undefined;
     cancelForkNavigation();
     generation.current++;
@@ -546,7 +591,7 @@ export function useSessionController({
     setOnline(false);
     setControlReady(false);
     setCatalogObservationFailed(false);
-    pageCache.current.clear();
+    pageCache.clear();
     streamReady.current = false;
     nativeCoverage.current = { items: [], authoritativeTurnIds: [], removedTurnIds: [] };
     refreshRequired.current = false;
@@ -559,11 +604,14 @@ export function useSessionController({
     setLive,
     setPage,
     setHistoryReferences,
+    setMessage,
     setNotice,
     setOnline,
     clearCapabilities,
     cancelForkNavigation,
     warmStreams,
+    pageCache,
+    retention,
   ]);
   const clearEndedImageAccess = useCallback(() => {
     invalidateSessionImages(client);
@@ -701,6 +749,7 @@ export function useSessionController({
       let imageRevision = sessionImageRevision(client);
       const flight = (async () => {
         for (let imageAttempt = 0; ; imageAttempt++) {
+          const revision = retention?.revision;
           let next: Access;
           try {
             next = await readSessionImageAccess(client);
@@ -716,7 +765,7 @@ export function useSessionController({
           // the refresh and leave its control fence set indefinitely.
           if (epoch !== accessEpoch.current) return accessFlight.current;
           if (stillCurrent && !stillCurrent()) return;
-          if (imageRevision !== sessionImageRevision(client)) {
+          if (imageRevision !== sessionImageRevision(client) || revision !== retention?.revision) {
             if (imageAttempt >= 2) throw new DOMException("Access scope changed", "AbortError");
             imageRevision = sessionImageRevision(client);
             continue;
@@ -746,6 +795,9 @@ export function useSessionController({
               durablePending.current = pending;
             }
           }
+          retention?.acceptAccess(next);
+          verifiedWindowRevision.current =
+            next.status === "approved" ? retention?.revision : undefined;
           acceptSessionImageAccess(client, next);
           accessRef.current = next;
           observeForkNavigation();
@@ -757,7 +809,7 @@ export function useSessionController({
       accessFlight.current = flight;
       return flight;
     },
-    [clear, client, origin, isLan, setHistoryReferences, observeForkNavigation],
+    [clear, client, origin, isLan, setHistoryReferences, observeForkNavigation, retention],
   );
   const reconcilePending = useCallback(
     async (sessionId?: string) => {
@@ -1114,7 +1166,7 @@ export function useSessionController({
           )
             return;
           if (delivered === liveDelivery.current) setLive(state);
-          if (manual && next.protocolVersion === 2) setStreamEpoch((value) => value + 1);
+          if (manual && next.protocolVersion === 2) renewStream();
         }
         setOnline(true);
         if (epoch === readinessEpoch.current) {
@@ -1176,6 +1228,7 @@ export function useSessionController({
       setPage,
       setOnline,
       acceptCatalog,
+      renewStream,
     ],
   );
   const readBusy = useCallback(
@@ -1552,8 +1605,11 @@ export function useSessionController({
       selection.current = id;
       setSelectionVisit(generation.current);
       setSelected(id);
+      // Stamp the selection's authority. A later access check cannot give old
+      // history permission to repopulate the cache after a boundary change.
+      selectedWindowRevision.current = verifiedWindowRevision.current;
       nativeCoverage.current = { items: [], authoritativeTurnIds: [], removedTurnIds: [] };
-      const cachedPage = pageCache.current.get(id);
+      const cachedPage = canRetainPage() ? pageCache.get(id) : undefined;
       const scope = warmSessionAuthority(accessRef.current, streamEpoch);
       const pendingScope = durableScope.current;
       if (pendingScope) durablePending.current = readPending(pendingScope);
@@ -1562,9 +1618,9 @@ export function useSessionController({
           ? warmStreams.peek(scope, id)
           : undefined;
       setPage(cachedPage);
-      setLive(warm?.state.live);
+      setLive(warm?.state.live, warm ? warmStreams.peekParkedLive(id) : undefined);
       setModal(undefined);
-      setMessage(initialDraft ?? "");
+      setMessage(initialDraft ?? (canRetainPage() ? retention?.getDraft(id) : undefined) ?? "");
       setPendingSend(undefined);
       setHistoryReferences([]);
       setHistorySearchOpen(false);
@@ -1683,11 +1739,15 @@ export function useSessionController({
       setLive,
       setPage,
       setHistoryReferences,
+      setMessage,
       setNotice,
       setOnline,
       leaveSession,
       cancelForkNavigation,
       parkSelectedSession,
+      pageCache,
+      canRetainPage,
+      retention,
       streamEpoch,
       warmStreams,
     ],

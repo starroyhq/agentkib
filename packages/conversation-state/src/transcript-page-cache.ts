@@ -56,6 +56,9 @@ export function createTranscriptPageCache<Page extends object>(
     get estimatedBytes() {
       return estimatedBytes;
     },
+    peek(key: string): Page | undefined {
+      return entries.get(key)?.page;
+    },
     get(key: string): Page | undefined {
       const entry = entries.get(key);
       if (!entry) return undefined;

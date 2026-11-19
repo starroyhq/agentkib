@@ -14,12 +14,14 @@ import { Button } from "@/components/ui/button";
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
 import { displaySessionTitle } from "@/features/workspace/session-title";
 import { useSessionHub } from "./SessionHubContext";
+import { useConversationDisplayLive } from "./DesktopConversationWindow";
 import { useSessionViewStore } from "./session-view-store";
 import {
   orchestrationLabel,
   sessionAgentNames,
   sessionRecordLabel,
   sessionSourceLabel,
+  sessionWithObservedActivity,
   worktreeLabel,
 } from "./session-labels";
 import { SessionDirectoryControls } from "./SessionDirectoryControls";
@@ -51,6 +53,9 @@ export function SessionDirectory({
 }: { onMenuOpenChange?: (open: boolean) => void } = {}) {
   const { formatDateTime, locale, tr } = useI18n();
   const hub = useSessionHub();
+  const selected =
+    !hub.selected?.remote && hub.selected?.availability === "readable" ? hub.selected : undefined;
+  const selectedLive = useConversationDisplayLive(selected?.id);
   const view = useSessionViewStore(
     useShallow((state) => ({
       agent: state.agent,
@@ -186,6 +191,13 @@ export function SessionDirectory({
           const groupStart = agentMotion.startSize(workspaceKey);
           const expanded = view.unreadOnly || !view.collapsed[group.id];
           const sessions = sessionOrder(workspaceSessions, view.sessionOrder[group.id] ?? []);
+          if (selectedLive) {
+            const index = sessions.findIndex(
+              (session) => !session.remote && session.id === selectedLive.sessionId,
+            );
+            if (index !== -1)
+              sessions[index] = sessionWithObservedActivity(sessions[index], selectedLive);
+          }
           const worktreeNames = group.worktrees.join("\n");
           const activity = sessionGroupActivity(sessions, locale);
           const groupDescription = [

@@ -15,6 +15,7 @@ import { useAppHistory } from "@/features/app/useAppHistory";
 import { useAppNavigation } from "@/features/app/useAppNavigation";
 import { useAppShortcuts } from "@/features/app/useAppShortcuts";
 import { RemoteCatalogBridge } from "@/features/remote/remote-catalog-store";
+import { DesktopConversationWindowProvider } from "@/features/sessions/DesktopConversationWindow";
 import { useSessionViewStore } from "@/features/sessions/session-view-store";
 import { useAppStore } from "@/stores/app-store";
 
@@ -60,7 +61,9 @@ function RootLayout() {
           <AppRuntimeBridge />
           <RemoteCatalogBridge />
           <SidebarPanelProvider>
-            <Outlet />
+            <DesktopConversationWindowProvider>
+              <Outlet />
+            </DesktopConversationWindowProvider>
           </SidebarPanelProvider>
           <GlobalSearchDialog
             open={searchOpen}

@@ -37,6 +37,7 @@ import {
   useSessionDetailReadState,
 } from "@agentkib/session-ui";
 import { webLayoutCopy } from "./web-layout-copy";
+import { useConversationDisplayLive } from "../../../DesktopConversationWindow";
 export function SessionReader() {
   const session = useSession();
   const desktopReadScope = useDesktopReadScope();
@@ -68,6 +69,7 @@ export function SessionReader() {
     indexEnabled,
     imageRequestVersion,
   } = session;
+  const displayLive = useConversationDisplayLive(selected);
   const imageCacheRevision = sessionImageRevision(client);
   const imageCacheScope = sessionImageCacheScope(client, access, selected, indexEnabled !== false);
   const imageLoader = useMemo(() => {
@@ -159,6 +161,7 @@ export function SessionReader() {
         history={{
           page,
           live: selectedLive,
+          turnLive: displayLive,
           online,
           externalTurn: current?.id === selected ? current.externalTurn : undefined,
           liveContentVersion,

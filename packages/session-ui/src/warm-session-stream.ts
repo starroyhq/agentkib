@@ -7,7 +7,7 @@ import {
 import type { Access, Live, SessionStreamHandlers, WebClient } from "@agentkib/web-client";
 import { capabilityAccessBinding } from "./use-session-capabilities";
 
-export const WARM_SESSION_IDLE_MS = 30_000;
+export const WARM_SESSION_IDLE_MS = 10 * 60_000;
 const MAX_PARKED_SESSIONS = 4;
 const MAX_PARKED_EVENTS = 256;
 const MAX_PARKED_BYTES = 2 * 1024 * 1024;
@@ -48,20 +48,26 @@ export function warmSessionAuthority(access: Access | undefined, streamEpoch: nu
   ]);
 }
 
-/** One pool per controller. Only healthy, validated streams can outlive a selection. */
+/** Only healthy, validated streams can outlive a selection. */
 export function createWarmSessionStreamPool(
   client: Pick<WebClient, "stream">,
   maxParkedSessions = MAX_PARKED_SESSIONS,
 ) {
   const entries = new Map<string, Entry>();
+  const parkedListeners = new Set<() => void>();
+  const notifyParked = () => {
+    for (const listener of parkedListeners) listener();
+  };
   const current = (entry: Entry) => entries.get(entry.id) === entry;
   const close = (entry: Entry) => {
     if (!current(entry)) return;
+    const parked = entry.parked;
     entries.delete(entry.id);
-    clearTimeout(entry.parked?.timer);
+    clearTimeout(parked?.timer);
     entry.parked = undefined;
     entry.handlers = undefined;
     entry.close?.();
+    if (parked) notifyParked();
   };
   const clear = () => {
     for (const entry of entries.values()) close(entry);
@@ -135,10 +141,12 @@ export function createWarmSessionStreamPool(
         return false;
       }
       if (next !== parked.accepted) {
+        const liveChanged = next.live !== parked.accepted.live;
         parked.packets.push(packet);
         parked.bytes += data.length * 2;
         parked.accepted = next;
         entry.cursor = next.cursor;
+        if (liveChanged) notifyParked();
       }
       return next.cursor;
     } catch {
@@ -161,6 +169,21 @@ export function createWarmSessionStreamPool(
     peek,
     clear,
     discardParked,
+    // Rendering may consult a parked stream but cannot claim it or change its lease.
+    hasParked(id: string) {
+      const entry = entries.get(id);
+      return !!entry?.parked && !entry.owner && Date.now() < entry.parked.expires;
+    },
+    peekParkedLive(id: string) {
+      const parked = entries.get(id)?.parked;
+      return parked && Date.now() < parked.expires ? parked.accepted.live : undefined;
+    },
+    subscribeParked(listener: () => void) {
+      parkedListeners.add(listener);
+      return () => {
+        parkedListeners.delete(listener);
+      };
+    },
     claim(scope: string, id: string) {
       const checkpoint = peek(scope, id);
       const previous = entries.get(id);
@@ -169,6 +192,7 @@ export function createWarmSessionStreamPool(
       entries.set(id, entry);
       const owner = {};
       entry.owner = owner;
+      if (checkpoint) notifyParked();
       return {
         checkpoint,
         start(handlers: SessionStreamHandlers) {
@@ -181,7 +205,6 @@ export function createWarmSessionStreamPool(
               return false;
             }
             clearTimeout(parked.timer);
-            entry.parked = undefined;
             // Resume from the active checkpoint, so playback includes only
             // changes since leaving and never repeats a handled invalidation.
             entry.cursor = parked.checkpoint.state.cursor;
@@ -193,6 +216,8 @@ export function createWarmSessionStreamPool(
               "session-ready",
               JSON.stringify({ cursor: parked.accepted.cursor }),
             ]);
+            entry.parked = undefined;
+            notifyParked();
             return true;
           }
           const stop = client.stream(id, {
@@ -247,6 +272,7 @@ export function createWarmSessionStreamPool(
           const parked = [...entries.values()].filter((item) => item.parked);
           for (const item of parked.slice(0, Math.max(0, parked.length - maxParkedSessions)))
             close(item);
+          notifyParked();
         },
       };
     },

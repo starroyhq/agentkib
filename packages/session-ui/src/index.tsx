@@ -192,6 +192,7 @@ export {
 export { toolStatusLabel } from "./tool-status";
 export { SafeMarkdown } from "./safe-markdown";
 export { SessionTranscript, type SessionTranscriptProps } from "./session-transcript";
+export { sessionTurnStatus } from "./session-turn-status";
 export { SessionDetail, type SessionDetailProps } from "./session-detail";
 export { useSessionDetailReadState } from "./session-detail-read-state";
 export { SessionDetailHeader } from "./session-detail-header";

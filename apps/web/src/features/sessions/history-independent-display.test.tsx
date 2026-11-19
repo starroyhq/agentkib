@@ -1,7 +1,6 @@
 // @vitest-environment jsdom
 import { act, cleanup, renderHook, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { WARM_SESSION_IDLE_MS } from "@agentkib/session-ui";
 import {
   ApiError,
   WebClient,
@@ -236,7 +235,7 @@ describe("independent history display", () => {
       else if (reason === "receives a gap") host.emit(2, "text-delta", { offset: 0, text: "gap" });
       else if (reason === "loses its access binding") host.changeAccess("first");
       else {
-        await act(async () => vi.advanceTimersByTimeAsync(WARM_SESSION_IDLE_MS - 1));
+        await act(async () => vi.advanceTimersByTimeAsync(10 * 60_000 - 1));
         expect(host.closeStream).not.toHaveBeenCalledWith("first");
         await act(async () => vi.advanceTimersByTimeAsync(1));
         expect(host.closeStream).toHaveBeenCalledWith("first");

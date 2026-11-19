@@ -570,8 +570,12 @@ export function sessionContinuationListState(
     if (state?.status === "running" || state?.status === "starting")
       return {
         label:
-          (state.executionLocation === "terminal" ? copy.terminalRunning : copy.running) +
-          unreadLabel,
+          (state.executionLocation === "terminal"
+            ? copy.terminalRunning
+            : state.executionLocation === "external" &&
+                (session.agent === "codex" || session.agent === "claude-code")
+              ? copy.runningIn(session.agent === "claude-code" ? "Claude Code" : "Codex")
+              : copy.running) + unreadLabel,
         ...(unread ? { unread: true } : {}),
         active: true,
         dot: true,

@@ -42,13 +42,14 @@ export interface SessionDetailProps {
   history: {
     page?: ConversationEventPage | null;
     live?: (SessionTurnLive & Pick<Live, "streamText" | "streamTextTruncated">) | null;
+    turnLive?: SessionTurnLive;
     online?: boolean;
     externalTurn?: SessionExternalTurn | null;
     liveContentVersion?: number;
     pending?: SessionTranscriptProps["pendingMessage"];
     detailTurnId?: string;
     loadingEarlier?: boolean;
-    loadEarlier: NonNullable<SessionTranscriptProps["onLoadEarlier"]>;
+    loadEarlier?: SessionTranscriptProps["onLoadEarlier"];
     onTool?: SessionTranscriptProps["onTool"];
     imageLoader?: SessionTranscriptProps["imageLoader"];
     readObservation?: ReturnType<typeof useVisibleReadState>;
@@ -73,10 +74,12 @@ export function SessionDetail({
   Transcript = SessionTranscript,
 }: SessionDetailProps) {
   const sticky = layout === "desktop";
-  const { page, pending, liveContentVersion, readObservation } = history;
+  const { page, pending, liveContentVersion, readObservation, loadEarlier } = history;
   const live = history.live?.sessionId === sessionId ? history.live : undefined;
   const turn =
-    history.online === false ? undefined : sessionTurnStatus(sessionId, live, history.externalTurn);
+    history.online === false
+      ? undefined
+      : sessionTurnStatus(sessionId, history.turnLive ?? live, history.externalTurn);
   const activeLabel =
     turn?.kind === "running"
       ? runningTurnLabel(locale, sessionId, turn)
@@ -256,14 +259,17 @@ export function SessionDetail({
                     }
                   : undefined
               }
-              hasEarlier={!!page.next_cursor}
+              hasEarlier={!!page.next_cursor && !!loadEarlier}
               loadingEarlier={history.loadingEarlier}
               historyDetailTurnId={history.detailTurnId}
               earlierLabel={labels.earlier}
-              onLoadEarlier={async (turnId) => {
-                pause();
-                await history.loadEarlier(turnId);
-              }}
+              onLoadEarlier={
+                loadEarlier &&
+                (async (turnId) => {
+                  pause();
+                  await loadEarlier(turnId);
+                })
+              }
             />
             {currentReadState && !result && (threadStart || (!page.events.length && !turn)) && (
               <p

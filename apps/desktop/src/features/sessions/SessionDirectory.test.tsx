@@ -188,6 +188,38 @@ describe("SessionDirectory", () => {
     ).not.toBeNull();
   });
 
+  it("shows unread dots per Agent and clears them after the last unread session is read", () => {
+    const unreadFirst = { ...first, readState: unreadState };
+    const unreadOther = { ...first, id: "other-codex", readState: unreadState };
+    const readState = { ...unreadState, status: "read" as const, firstUnread: null };
+    hub.sessions = [unreadFirst, unreadOther, second];
+    useSessionViewStore.setState({ agent: "claude-code" });
+    const { rerender } = render(<SessionDirectory />);
+    const agents = within(screen.getByRole("group", { name: tr("conversations.agentFilter") }));
+    const all = agents.getByRole("button", { name: tr("sessions.allAgents") });
+    const codex = agents.getByRole("button", { name: "Codex" });
+    const claude = agents.getByRole("button", { name: "Claude Code" });
+
+    expect(codex).toHaveAccessibleDescription(readStateCopy("en-US").unread);
+    expect(codex.querySelector("[data-unread]")).toHaveClass("bg-primary");
+    expect(claude.querySelector("[data-unread]")).toBeNull();
+    expect(all.querySelector("[data-unread]")).toBeNull();
+
+    hub.sessions = [{ ...unreadFirst, readState }, unreadOther, second];
+    rerender(<SessionDirectory />);
+    expect(codex.querySelector("[data-unread]")).toBeInTheDocument();
+
+    hub.sessions = [
+      { ...unreadFirst, readState },
+      { ...unreadOther, readState },
+      { ...second, readState: unreadState },
+    ];
+    rerender(<SessionDirectory />);
+    expect(codex.querySelector("[data-unread]")).toBeNull();
+    expect(codex).not.toHaveAttribute("aria-description");
+    expect(claude.querySelector("[data-unread]")).toBeInTheDocument();
+  });
+
   it("toggles all unread rows including running, manually unread and stale states", () => {
     const rows: NamedSession[] = [
       { ...first, title: "Completed unread", readState: unreadState },
@@ -1026,6 +1058,7 @@ describe("SessionDirectory", () => {
       const { container } = render(
         <SessionDirectoryAgentFilter
           agents={["codex", "claude-code", "antigravity", "devin"]}
+          unreadAgents={new Set()}
           value="all"
           onChange={onChange}
         />,

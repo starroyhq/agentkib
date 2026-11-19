@@ -50,9 +50,14 @@ export function SessionDirectoryControls({
       resetFilters: state.resetFilters,
     })),
   );
-  const agents = useMemo(() => {
-    const present = new Set(hub.sessions.map((session) => session.agent));
-    return AGENT_KINDS.filter((agent) => present.has(agent));
+  const { agents, unreadAgents } = useMemo(() => {
+    const present = new Set<AgentKind>();
+    const unreadAgents = new Set<AgentKind>();
+    for (const session of hub.sessions) {
+      present.add(session.agent);
+      if (session.readState?.status === "unread") unreadAgents.add(session.agent);
+    }
+    return { agents: AGENT_KINDS.filter((agent) => present.has(agent)), unreadAgents };
   }, [hub.sessions]);
   const agent = view.agent;
   const setAgent = view.setAgent;
@@ -74,6 +79,7 @@ export function SessionDirectoryControls({
     >
       <SessionDirectoryAgentFilter
         agents={agents}
+        unreadAgents={unreadAgents}
         value={agentFilterAvailable ? agent : "all"}
         onChange={onAgentChange}
         disabled={!hub.enabled}

@@ -1,4 +1,5 @@
 import { AgentMark } from "@agentkib/agent-identity";
+import { readStateCopy } from "@agentkib/session-ui";
 import { cn } from "cn";
 import { ChevronLeft, ChevronRight, LayoutGrid } from "lucide-react";
 import { useCallback, useId, useLayoutEffect, useRef, useState } from "react";
@@ -9,16 +10,18 @@ import { sessionAgentNames } from "./session-labels";
 
 export function SessionDirectoryAgentFilter({
   agents,
+  unreadAgents,
   value,
   onChange,
   disabled,
 }: {
   agents: readonly AgentKind[];
+  unreadAgents: ReadonlySet<AgentKind>;
   value: AgentKind | "all";
   onChange: (agent: AgentKind | "all") => void;
   disabled?: boolean;
 }) {
-  const { tr } = useI18n();
+  const { locale, tr } = useI18n();
   const viewportId = useId();
   const viewportRef = useRef<HTMLDivElement>(null);
   const itemsRef = useRef<HTMLDivElement>(null);
@@ -59,15 +62,17 @@ export function SessionDirectoryAgentFilter({
 
   function filterButton(agent: AgentKind | "all") {
     const label = agent === "all" ? tr("sessions.allAgents") : sessionAgentNames[agent];
+    const unread = agent !== "all" && unreadAgents.has(agent);
     return (
       <Button
         key={agent}
         type="button"
         variant="ghost"
         size="icon-lg"
-        className="size-10 rounded-full border-border bg-sidebar-accent/45 aria-pressed:border-primary"
+        className="relative size-10 rounded-full border-border bg-sidebar-accent/45 aria-pressed:border-primary"
         aria-pressed={value === agent}
         aria-label={label}
+        aria-description={unread ? readStateCopy(locale).unread : undefined}
         title={label}
         disabled={disabled}
         onClick={() => onChange(agent)}
@@ -76,6 +81,13 @@ export function SessionDirectoryAgentFilter({
           <LayoutGrid className="size-5.5" strokeWidth={1.5} aria-hidden="true" />
         ) : (
           <AgentMark agent={agent} size={30} />
+        )}
+        {unread && (
+          <span
+            aria-hidden="true"
+            data-unread="true"
+            className="pointer-events-none absolute top-0.5 right-0.5 size-2 rounded-full bg-primary ring-2 ring-sidebar"
+          />
         )}
       </Button>
     );

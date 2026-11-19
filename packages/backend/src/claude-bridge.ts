@@ -28,6 +28,7 @@ import {
   type ClaudeBridgeCommand,
   type ClaudeBridgeEvent,
   type ClaudeBridgeSnapshot,
+  type ClaudeBridgeTool,
   type SessionStreamEvent,
 } from "@agentkib/runtime-protocol";
 import {
@@ -39,6 +40,7 @@ import {
 } from "./claude-bridge-schema";
 import { acquirePortableFileLease } from "./managed-session-lock";
 import {
+  acknowledgeDispatchedManagedCommand,
   claimManagedCommand,
   dispatchManagedCommand,
   finishManagedCommand,
@@ -48,6 +50,9 @@ import {
 } from "./managed-ledger";
 import { validHistoryControl } from "./history-control-schema";
 import { sanitizeSessionText } from "./session-handoff";
+import type { ClaudeTranscriptObservation } from "./claude-context-usage";
+import type { ContextUsage } from "./context-usage";
+import type { ClaudeObservedPermissionMode } from "./claude-managed-runner";
 
 const MAX_BODY = 1024 * 1024;
 const HEARTBEAT_MS = 35_000;
@@ -78,6 +83,9 @@ const bindingSchema = z
   })
   .strict();
 type Binding = z.infer<typeof bindingSchema>;
+const bindingRegistrySchema = z
+  .object({ version: z.literal(1), bindings: z.array(bindingSchema).max(64) })
+  .strict();
 type Challenge = { target: ClaudeBridgeTarget; expires: number };
 type ConnectionAttempt = (
   | { challenge: Challenge; bindingId?: never; auto?: never }
@@ -129,6 +137,59 @@ const autoStateSchema = z
     autoBindings: z.array(uuid).max(64),
   })
   .strict();
+const contextWindowAnchorSchema = z
+  .object({
+    usedTokens: z.number().int().min(0),
+    updatedAt: z.string().datetime(),
+    model: z.string().min(1).max(128).nullable(),
+    afterCompaction: z.boolean(),
+  })
+  .strict();
+const contextWindowEntrySchema = z
+  .object({
+    bindingId: uuid,
+    anchor: contextWindowAnchorSchema,
+    window: z.number().int().positive(),
+    reportedModel: z.string().min(1).max(128).nullable(),
+  })
+  .strict()
+  .refine((entry) => entry.window >= entry.anchor.usedTokens)
+  .refine((entry) =>
+    entry.reportedModel === null
+      ? entry.anchor.afterCompaction
+      : entry.reportedModel === entry.anchor.model,
+  );
+// Keep optional display observations separate so older runtimes can read the binding registry.
+const contextWindowRegistrySchema = z
+  .object({ version: z.literal(1), observations: z.array(contextWindowEntrySchema).max(64) })
+  .strict();
+type ContextWindowEntry = z.infer<typeof contextWindowEntrySchema>;
+
+function transcriptWindowAnchor(observation?: ClaudeTranscriptObservation) {
+  const usage = observation?.usage;
+  if (!usage?.available || !usage.historical) return undefined;
+  const parsed = contextWindowAnchorSchema.safeParse({
+    usedTokens: usage.usedTokens,
+    updatedAt: usage.updatedAt,
+    model: observation?.model ?? null,
+    afterCompaction: usage.reason === "claude-post-compaction-usage",
+  });
+  return parsed.success ? parsed.data : undefined;
+}
+
+function withContextWindow(usage: ContextUsage, entry: ContextWindowEntry): ContextUsage {
+  const { reason, ...saved } = usage;
+  return {
+    ...saved,
+    contextWindow: entry.window,
+    ...(entry.reportedModel === null
+      ? { reason: "claude-post-compaction-current-window" }
+      : reason && reason !== "model-context-window-unavailable"
+        ? { reason }
+        : {}),
+  };
+}
+
 type Pending = {
   command: ClaudeBridgeCommand;
   requestId: string;
@@ -150,6 +211,8 @@ type Connection = {
   wake?: () => void;
   pollActive: boolean;
   completed: Map<string, boolean>;
+  turnTools: Map<string, ClaudeBridgeTool>;
+  publishedTools: Map<string, ClaudeBridgeTool>;
   /** The plugin can register a Project Agent's tools (feature `lead-tools`). */
   leadTools?: boolean;
 };
@@ -180,12 +243,23 @@ export interface BridgeLead {
 }
 interface BridgeOptions {
   dataDir: string;
+  /** Explicit legacy Dev profile, supplied only by the shared runtime launcher. */
+  legacyDataDir?: string;
+  sessionIdForNative?(nativeId: string): string;
   bootId: string;
   pluginDirectory: string;
   /** A bounded native identity read. No model, transcript rewrite or managed adopt. */
-  target(sessionId: string, nativeId?: string): Promise<ClaudeBridgeTarget>;
+  target(
+    sessionId: string,
+    nativeId?: string,
+    activeWorkspace?: string,
+  ): Promise<ClaudeBridgeTarget>;
   /** The binding ID only accompanies an existing row's authenticated execution or recovery. */
   validate(target: ClaudeBridgeTarget, forControl: boolean, bindingId?: string): void;
+  /** Pure verified history reads; never opens a CLI/SDK worker or changes terminal settings. */
+  observation?(target: ClaudeBridgeTarget): ClaudeTranscriptObservation;
+  /** Read only the native session's persisted last-wins permission-mode marker. */
+  permission?(target: ClaudeBridgeTarget): ClaudeObservedPermissionMode | null;
   /**
    * Resolves a terminal's own native identity to its registered workspace session.
    * Absent means automatic pairing is unavailable; one-time codes keep working.
@@ -201,7 +275,12 @@ interface BridgeOptions {
   ): void;
   platform?: NodeJS.Platform;
   commandTimeoutMs?: number;
-  completed?(target: ClaudeBridgeTarget, turnId: string, aborted: boolean): void;
+  completed?(
+    target: ClaudeBridgeTarget,
+    turnId: string,
+    aborted: boolean,
+    timing: { occurredAt?: number; startedAt?: number },
+  ): void;
   /** Lets a connected terminal session be a Project Agent; absent, none is. */
   lead?: BridgeLead;
 }
@@ -238,6 +317,19 @@ function privateJson(file: string, value: unknown): void {
     rmSync(temporary, { force: true });
   }
 }
+function readLegacyJson(file: string): unknown {
+  privatePath(file);
+  const stat = lstatSync(file);
+  if (
+    !stat.isFile() ||
+    stat.size > MAX_BODY ||
+    (stat.mode & 0o077) !== 0 ||
+    (process.getuid && stat.uid !== process.getuid())
+  )
+    throw new Error("unsafe-Claude-bridge-path");
+  return JSON.parse(readFileSync(file, "utf8"));
+}
+
 function stable(value: unknown): string {
   if (Array.isArray(value)) return `[${value.map(stable).join(",")}]`;
   if (value && typeof value === "object")
@@ -282,6 +374,8 @@ function compatibilityStatus(connection?: Connection) {
 export class ClaudeBridge {
   readonly root: string;
   #bindings = new Map<string, Binding>();
+  #contextWindows = new Map<string, ContextWindowEntry>();
+  #compactStartedAt = new WeakMap<Binding, number>();
   #connections = new Map<string, Connection>();
   #challenges = new Map<string, Challenge>();
   #connectionAttempts = new Map<string, ConnectionAttempt>();
@@ -301,6 +395,9 @@ export class ClaudeBridge {
   // Sessions the user disconnected. Only an explicit one-time code pairs them again.
   #declined = new Set<string>();
   #autoBindings = new Set<string>();
+  #legacyBindings: Binding[] = [];
+  #legacyUnresolved = new Set<string>();
+  #releaseLegacyLock?: () => void;
   /** Reports for terminal Project Agents, by session, until their plugin takes them. */
   #reports = new Map<string, QueuedReport[]>();
 
@@ -316,10 +413,7 @@ export class ClaudeBridge {
           throw new Error("invalid-Claude-bridge-registry");
         if (lstatSync(registry).size > MAX_BODY) throw new Error("invalid-Claude-bridge-registry");
         chmodSync(registry, 0o600);
-        const rows = z
-          .object({ version: z.literal(1), bindings: z.array(bindingSchema).max(64) })
-          .strict()
-          .parse(JSON.parse(readFileSync(registry, "utf8")));
+        const rows = bindingRegistrySchema.parse(JSON.parse(readFileSync(registry, "utf8")));
         for (const row of rows.bindings) {
           if (this.#bindings.has(row.target.sessionId))
             throw new Error("duplicate-Claude-bridge-binding");
@@ -352,6 +446,18 @@ export class ClaudeBridge {
     } catch {
       // Unreadable preferences fall back to the default: automatic connection on.
     }
+    try {
+      const file = path.join(this.root, "context-usage-v1.json");
+      const { observations } = contextWindowRegistrySchema.parse(readLegacyJson(file));
+      const bindings = new Set(
+        [...this.#bindings.values()].filter((row) => !row.revoked).map((row) => row.bindingId),
+      );
+      for (const entry of observations)
+        if (bindings.has(entry.bindingId)) this.#contextWindows.set(entry.bindingId, entry);
+    } catch {
+      // Optional display data cannot keep the broker from starting.
+    }
+    this.#readLegacyBindings();
     this.#timer = setInterval(() => {
       for (const [id, connection] of this.#connections)
         if (Date.now() - connection.lastSeen > HEARTBEAT_MS) this.#disconnect(id);
@@ -444,15 +550,21 @@ export class ClaudeBridge {
       /* Missing or foreign discovery files are left alone. */
     }
   }
-  assertCanAdopt(): void {
+  assertRegistryValid(): void {
     if (this.#registryInvalid) throw new Error("claude-bridge-registry-invalid");
+  }
+  #assertLegacySettled(sessionId: string): void {
+    if (this.#legacyUnresolved.has(sessionId)) throw new Error("control-outcome-unconfirmed");
   }
   handles(sessionId: string): boolean {
     const row = this.#bindings.get(sessionId);
-    return !!row && (!row.revoked || row.inflight !== null);
+    return (
+      this.#legacyUnresolved.has(sessionId) || (!!row && (!row.revoked || row.inflight !== null))
+    );
   }
   blocksManagedResume(sessionId: string): boolean {
-    this.assertCanAdopt();
+    this.assertRegistryValid();
+    this.#assertLegacySettled(sessionId);
     const row = this.#bindings.get(sessionId);
     if (!row) return false;
     if (row.inflight || readUnknownManagedCommands(this.options.dataDir, sessionId).length > 0)
@@ -467,6 +579,157 @@ export class ClaudeBridge {
       version: 1,
       bindings: [...this.#bindings.values()],
     });
+  }
+
+  #saveContextWindows(): void {
+    const active = new Set(
+      [...this.#bindings.values()].filter((row) => !row.revoked).map((row) => row.bindingId),
+    );
+    for (const id of this.#contextWindows.keys())
+      if (!active.has(id)) this.#contextWindows.delete(id);
+    try {
+      privateJson(path.join(this.root, "context-usage-v1.json"), {
+        version: 1,
+        observations: [...this.#contextWindows.values()],
+      });
+    } catch {
+      // Observable window metadata never changes the terminal lease or event acknowledgement.
+    }
+  }
+
+  #readLegacyBindings(): void {
+    const { legacyDataDir, sessionIdForNative } = this.options;
+    if (!this.supported || !legacyDataDir || !sessionIdForNative) return;
+    try {
+      privatePath(legacyDataDir);
+      if (realpathSync(legacyDataDir) === realpathSync(this.options.dataDir)) return;
+      const root = path.join(legacyDataDir, "claude-bridge");
+      const parent = lstatSync(legacyDataDir);
+      const directory = lstatSync(root);
+      const uid = process.getuid?.();
+      if (
+        !parent.isDirectory() ||
+        (parent.mode & 0o022) !== 0 ||
+        !directory.isDirectory() ||
+        (directory.mode & 0o077) !== 0 ||
+        (uid !== undefined && (parent.uid !== uid || directory.uid !== uid))
+      )
+        return;
+      const registry = path.join(root, "bindings-v1.json");
+      let bindings = bindingRegistrySchema.parse(readLegacyJson(registry)).bindings;
+      try {
+        this.#releaseLegacyLock = acquirePortableFileLease(path.join(root, "broker.lock"));
+      } catch {
+        // An older Dev process may still use these credentials. Leave its data in place.
+        for (const row of bindings)
+          if (!row.revoked || row.inflight)
+            this.#legacyUnresolved.add(sessionIdForNative(row.target.nativeId));
+        return;
+      }
+      // Read again under the old broker lease to catch writes that won the startup race.
+      bindings = bindingRegistrySchema.parse(readLegacyJson(registry)).bindings;
+      for (const row of bindings) {
+        const sessionId = sessionIdForNative(row.target.nativeId);
+        try {
+          if (
+            row.inflight ||
+            readUnknownManagedCommands(legacyDataDir, row.target.sessionId).length
+          ) {
+            this.#legacyUnresolved.add(sessionId);
+            continue;
+          }
+        } catch {
+          this.#legacyUnresolved.add(sessionId);
+          continue;
+        }
+        if (!row.revoked) this.#legacyBindings.push(row);
+      }
+      const autoFile = path.join(root, "auto-v1.json");
+      if (existsSync(autoFile)) {
+        const { declined } = autoStateSchema.parse(readLegacyJson(autoFile));
+        this.#legacyBindings = this.#legacyBindings.filter(
+          (row) => !declined.includes(row.target.nativeId),
+        );
+      }
+    } catch {
+      // Legacy files are optional. Never replace or recreate an unreadable registry.
+      this.#releaseLegacyLock?.();
+      this.#releaseLegacyLock = undefined;
+      this.#legacyBindings = [];
+    }
+  }
+
+  async #migrateLegacyBindings(): Promise<void> {
+    const { legacyDataDir, sessionIdForNative, autoTarget } = this.options;
+    if (!legacyDataDir || !sessionIdForNative || !autoTarget || !this.#releaseLegacyLock) return;
+    const root = path.join(legacyDataDir, "claude-bridge");
+    for (const legacy of this.#legacyBindings) {
+      const { nativeId, workspace, registeredWorkspace } = legacy.target;
+      if (
+        this.#closed ||
+        this.#declined.has(nativeId) ||
+        this.#legacyBindings.some((other) => other !== legacy && other.target.nativeId === nativeId)
+      )
+        continue;
+      try {
+        const legacyFile = path.join(root, `${legacy.bindingId}.credential.json`);
+        const credential = z
+          .object({
+            protocol: z.literal(1),
+            nativeId: uuid,
+            cwd: z.string(),
+            bindingId: uuid,
+            token: z.string(),
+          })
+          .parse(readLegacyJson(legacyFile));
+        if (credential.nativeId !== nativeId || credential.cwd !== workspace) continue;
+        const matchesCredential = (row: Binding) =>
+          credential.bindingId === row.bindingId &&
+          timingSafeEqual(digest(credential.token), digest(row.token));
+        const sessionId = sessionIdForNative(nativeId);
+        const canonical = this.#bindings.get(sessionId);
+        const matchesLegacy = matchesCredential(legacy);
+        // After migration the same old path may already hold the canonical credential.
+        if (!matchesLegacy && !(canonical && !canonical.revoked && matchesCredential(canonical)))
+          continue;
+        const target = targetSchema.parse(await autoTarget(nativeId, workspace));
+        const existing = this.#bindings.get(sessionId);
+        if (
+          this.#closed ||
+          this.#declined.has(nativeId) ||
+          target.sessionId !== sessionId ||
+          target.nativeId !== nativeId ||
+          target.workspace !== workspace ||
+          target.registeredWorkspace !== registeredWorkspace ||
+          (!matchesLegacy && existing !== canonical) ||
+          (existing &&
+            (existing.revoked ||
+              existing.inflight ||
+              stable(existing.target) !== stable(target))) ||
+          (!existing &&
+            (this.#bindings.size >= 64 ||
+              [...this.#bindings.values()].some((row) => row.bindingId === legacy.bindingId)))
+        )
+          continue;
+        this.#assertLegacySettled(target.sessionId);
+        if (readUnknownManagedCommands(this.options.dataDir, target.sessionId).length) continue;
+        this.options.validate(target, false);
+        const row = existing ?? { ...legacy, target };
+        if (!existing) {
+          this.#bindings.set(target.sessionId, row);
+          try {
+            this.#save();
+          } catch (error) {
+            this.#bindings.delete(target.sessionId);
+            throw error;
+          }
+        }
+        // The old terminal can authenticate at the new socket with its saved path and binding.
+        this.#writeCredential(row, legacyFile);
+      } catch {
+        // Missing workspaces, unresolved controls and unverifiable credentials stay in Dev.
+      }
+    }
   }
   initialize(): void {
     if (
@@ -517,6 +780,7 @@ export class ClaudeBridge {
       if (row) {
         row.revoked = true;
         this.#save();
+        if (this.#contextWindows.delete(row.bindingId)) this.#saveContextWindows();
         rmSync(this.#credentialPath(row.bindingId), { force: true });
         // Respect the disconnect: automatic pairing must not reconnect this session.
         this.#declined.delete(row.target.nativeId);
@@ -526,9 +790,17 @@ export class ClaudeBridge {
       this.#disconnect(input.sessionId);
       return { disconnected: true };
     }
+    if (input.operation === "bridge-challenge") this.#assertLegacySettled(input.sessionId);
     let target: ClaudeBridgeTarget;
     try {
-      target = await this.options.target(input.sessionId);
+      const previous =
+        input.operation === "bridge-status" ? this.#bindings.get(input.sessionId) : undefined;
+      target =
+        previous && !previous.revoked
+          ? await this.options
+              .target(input.sessionId, previous.target.nativeId, previous.target.workspace)
+              .catch(() => this.options.target(input.sessionId))
+          : await this.options.target(input.sessionId);
     } catch {
       if (input.operation === "bridge-challenge")
         throw new Error("claude-bridge-session-unavailable");
@@ -631,6 +903,209 @@ export class ClaudeBridge {
       Date.now() - connection.lastSeen <= HEARTBEAT_MS
     );
   }
+  #sourceReadable(row: Binding): boolean {
+    if (row.revoked) return false;
+    try {
+      this.options.validate(row.target, false, row.bindingId);
+      return true;
+    } catch {
+      return false;
+    }
+  }
+  #readTranscriptObservation(
+    row: Binding,
+    snapshot: ClaudeBridgeSnapshot | null,
+  ): ClaudeTranscriptObservation | undefined {
+    try {
+      const observation = this.options.observation?.(row.target);
+      const started = this.#compactStartedAt.get(row);
+      if (
+        observation?.usage.available &&
+        ((started !== undefined && !(Date.parse(observation.usage.updatedAt ?? "") >= started)) ||
+          (snapshot?.model && snapshot.model !== observation.model))
+      )
+        return { ...observation, usage: { available: false, state: "unavailable" } };
+      return observation;
+    } catch {
+      // Missing optional metadata never changes the native execution lease.
+      return undefined;
+    }
+  }
+
+  #windowFromSnapshot(
+    row: Binding,
+    observation: ClaudeTranscriptObservation | undefined,
+    snapshot: ClaudeBridgeSnapshot | null,
+  ): ContextWindowEntry | undefined {
+    const report = snapshot?.usage;
+    if (!report?.window || !snapshot?.capabilities.read || snapshot.compacting) return undefined;
+    const anchor = transcriptWindowAnchor(observation);
+    if (!anchor || report.observedAt < Date.parse(anchor.updatedAt)) return undefined;
+    // A model-less report can establish the window only for this exact compaction boundary.
+    const entry = contextWindowEntrySchema.safeParse({
+      bindingId: row.bindingId,
+      anchor,
+      window: report.window,
+      reportedModel: snapshot.model ?? null,
+    });
+    return entry.success ? entry.data : undefined;
+  }
+
+  #rememberContextWindow(row: Binding, snapshot: ClaudeBridgeSnapshot): void {
+    // The plugin sends a cleared snapshot before releasing its lease on exit.
+    // Binding revocation is handled separately from that terminal lifecycle event.
+    if (snapshot.status === "disconnected" && !snapshot.capabilities.read) return;
+    const previous = this.#contextWindows.get(row.bindingId);
+    const started = this.#compactStartedAt.get(row);
+    const invalid =
+      snapshot.compacting ||
+      !snapshot.capabilities.read ||
+      (previous &&
+        ((snapshot.model && snapshot.model !== previous.anchor.model) ||
+          (snapshot.usage?.window && snapshot.usage.window !== previous.window) ||
+          (started !== undefined && Date.parse(previous.anchor.updatedAt) < started)));
+    // An unchanged live window needs no new transcript read on each streamed
+    // snapshot. The first report and the next idle snapshot capture the anchor.
+    const observed =
+      snapshot.usage?.window && (!previous || invalid || !snapshot.currentTurnId)
+        ? this.#windowFromSnapshot(row, this.#readTranscriptObservation(row, snapshot), snapshot)
+        : undefined;
+    const next = observed ?? (invalid ? undefined : previous);
+    if (stable(next) === stable(previous)) return;
+    if (next) this.#contextWindows.set(row.bindingId, next);
+    else this.#contextWindows.delete(row.bindingId);
+    this.#saveContextWindows();
+  }
+
+  #retainedWindow(
+    row: Binding,
+    observation: ClaudeTranscriptObservation | undefined,
+    snapshot: ClaudeBridgeSnapshot | null,
+  ): ContextWindowEntry | undefined {
+    if (snapshot?.compacting || snapshot?.capabilities.read === false) return undefined;
+    const previous = this.#contextWindows.get(row.bindingId);
+    if (!previous || (snapshot?.model && snapshot.model !== previous.anchor.model))
+      return undefined;
+    const anchor = transcriptWindowAnchor(observation);
+    const started = this.#compactStartedAt.get(row);
+    return anchor &&
+      (started === undefined || Date.parse(anchor.updatedAt) >= started) &&
+      stable(anchor) === stable(previous.anchor)
+      ? previous
+      : undefined;
+  }
+
+  /** The managed read may reuse a window while the original executor is offline. */
+  retainedUsage(
+    sessionId: string,
+    source: Pick<ClaudeBridgeTarget, "nativeId" | "workspace" | "workspaceId">,
+    observation: ClaudeTranscriptObservation,
+    readEarlier?: () => ClaudeTranscriptObservation,
+  ): ContextUsage | undefined {
+    const row = this.#bindings.get(sessionId);
+    const cached = row && this.#contextWindows.get(row.bindingId);
+    if (
+      !row ||
+      !cached ||
+      observation.usage.contextWindow !== undefined ||
+      source.nativeId !== row.target.nativeId ||
+      source.workspace !== row.target.workspace ||
+      source.workspaceId !== row.target.workspaceId ||
+      !this.#sourceReadable(row)
+    )
+      return undefined;
+    const window = this.#retainedWindow(row, observation, null);
+    if (window) return withContextWindow(observation.usage, window);
+    // A saved window can refer to a compaction older than the usual history tail.
+    if (
+      observation.usage.available &&
+      (observation.usage.updatedAt !== cached.anchor.updatedAt ||
+        observation.usage.usedTokens !== cached.anchor.usedTokens)
+    )
+      return undefined;
+    const earlier = readEarlier?.();
+    const retained = this.#retainedWindow(row, earlier, null);
+    return earlier && retained ? withContextWindow(earlier.usage, retained) : undefined;
+  }
+
+  #observation(
+    row: Binding,
+    snapshot: ClaudeBridgeSnapshot | null,
+  ): ClaudeTranscriptObservation | undefined {
+    const observation = this.#readTranscriptObservation(row, snapshot);
+    if (!observation || observation.usage.contextWindow !== undefined) return observation;
+    const window =
+      this.#windowFromSnapshot(row, observation, snapshot) ??
+      this.#retainedWindow(row, observation, snapshot);
+    return window
+      ? { ...observation, usage: withContextWindow(observation.usage, window) }
+      : observation;
+  }
+  #permission(
+    row: Binding,
+    observation?: ClaudeTranscriptObservation,
+  ): ClaudeObservedPermissionMode | null {
+    if (observation?.permissionMode !== undefined) return observation.permissionMode;
+    try {
+      return this.options.permission?.(row.target) ?? null;
+    } catch {
+      return null;
+    }
+  }
+  #usage(
+    snapshot: ClaudeBridgeSnapshot | null,
+    observation: ClaudeTranscriptObservation | undefined,
+    revision: number | undefined,
+    compactStartedAt: number | undefined,
+  ): ContextUsage {
+    if (snapshot?.compacting)
+      return {
+        available: true,
+        state: "pending",
+        reason: "session-compacting",
+        revision,
+        ...(compactStartedAt !== undefined
+          ? { updatedAt: new Date(compactStartedAt).toISOString() }
+          : {}),
+      };
+    if (snapshot?.usage?.tokens !== null && snapshot?.usage?.tokens !== undefined) {
+      const report = snapshot.usage;
+      const window = report.window;
+      const full = window !== null && window > 0;
+      if (
+        !full &&
+        observation?.usage.usedTokens === report.tokens &&
+        observation.usage.contextWindow !== undefined
+      )
+        return { ...observation.usage, revision };
+      return {
+        available: true,
+        state: full ? "ready" : "stale",
+        usedTokens: report.tokens!,
+        ...(full
+          ? {
+              contextWindow: window,
+              percent: Math.min(100, (report.tokens! / window) * 100),
+            }
+          : { reason: "model-context-window-unavailable" }),
+        revision,
+        updatedAt: new Date(report.observedAt).toISOString(),
+      };
+    }
+    if (observation?.usage.available) return { ...observation.usage };
+    if (snapshot?.usage?.window && snapshot.usage.window > 0)
+      return {
+        available: true,
+        state: "pending",
+        contextWindow: snapshot.usage.window,
+        reason: "usage-not-reported",
+        revision,
+        updatedAt: new Date(snapshot.usage.observedAt).toISOString(),
+      };
+    if (compactStartedAt !== undefined)
+      return { available: true, state: "pending", reason: "usage-not-reported", revision };
+    return { available: false, state: "unavailable", reason: "usage-unavailable" };
+  }
   live(id: string, controls: boolean): Record<string, unknown> {
     const row = this.#bindings.get(id);
     if (!row) throw new Error("session-unavailable");
@@ -644,14 +1119,27 @@ export class ClaudeBridge {
     const connection = this.#connections.get(id);
     const online = valid && !row.revoked && this.#online(id);
     const snapshot = online ? connection!.snapshot! : null;
-    const unknownCommand = readUnknownManagedCommands(this.options.dataDir, id).some(
+    const observation =
+      valid &&
+      !row.revoked &&
+      !snapshot?.compacting &&
+      (snapshot?.usage?.tokens == null ||
+        (!snapshot.usage.window && this.#contextWindows.has(row.bindingId)))
+        ? this.#observation(row, snapshot)
+        : undefined;
+    const unknownCommands = readUnknownManagedCommands(this.options.dataDir, id).filter(
       (command) => command.requestId !== connection?.pending?.requestId,
     );
     const uncertain =
-      unknownCommand ||
+      unknownCommands.some((command) => command.evidence?.operation !== "open-model-picker") ||
       (row.inflight !== null &&
         (!online || !row.inflight.turnId || snapshot?.currentTurnId !== row.inflight.turnId));
     const gap = connection?.gap === true;
+    const pickerOpen =
+      snapshot?.modelPickerOpen === true &&
+      !snapshot.currentTurnId &&
+      !snapshot.waiting &&
+      !snapshot.compacting;
     const attempt = this.#connectionAttempts.get(id);
     const connectionFailure: ClaudeBridgeConnectionFailure | null =
       valid && !row.revoked && !online && attempt?.bindingId === row.bindingId && attempt.error
@@ -669,22 +1157,33 @@ export class ClaudeBridge {
           ? (connectionFailure?.reason ?? "claude-bridge-disconnected")
           : gap
             ? "claude-bridge-event-gap"
-            : snapshot?.waiting === "permission"
-              ? "claude-terminal-approval"
-              : snapshot?.waiting === "question"
-                ? "claude-terminal-question"
-                : snapshot?.waiting === "unknown"
-                  ? "claude-terminal-permission-unconfirmed"
-                  : snapshot?.status === "running" && !snapshot.currentTurnId
-                    ? "claude-follower-turn-unconfirmed"
-                    : snapshot?.status === "idle" &&
-                        !snapshot.capabilities.send &&
-                        // Waiting messages go out next; a direct send waits for them.
-                        snapshot.outbox.length === 0
-                      ? "claude-follower-send-unverified"
-                      : undefined;
+            : snapshot?.compacting
+              ? "session-compacting"
+              : snapshot?.waiting === "permission"
+                ? "claude-terminal-approval"
+                : snapshot?.waiting === "question"
+                  ? "claude-terminal-question"
+                  : snapshot?.waiting === "unknown"
+                    ? "claude-terminal-permission-unconfirmed"
+                    : pickerOpen
+                      ? "claude-model-picker-open"
+                      : snapshot?.status === "running" && !snapshot.currentTurnId
+                        ? "claude-follower-turn-unconfirmed"
+                        : snapshot?.status === "idle" &&
+                            !snapshot.capabilities.send &&
+                            // Waiting messages go out next; a direct send waits for them.
+                            snapshot.outbox.length === 0
+                          ? "claude-follower-send-unverified"
+                          : undefined;
     // One command at a time reaches the plugin; every mode also needs a verified lease.
-    const controllable = controls && online && !uncertain && !gap && !connection?.pending;
+    const controllable =
+      controls &&
+      online &&
+      !uncertain &&
+      !gap &&
+      !connection?.pending &&
+      !snapshot?.compacting &&
+      !pickerOpen;
     const status = uncertain
       ? "outcome-unknown"
       : !online || gap
@@ -693,7 +1192,10 @@ export class ClaudeBridge {
           ? "awaiting-approval"
           : snapshot?.waiting === "question"
             ? "waiting-input"
-            : snapshot?.status === "running" || snapshot?.status === "waiting"
+            : !pickerOpen &&
+                (snapshot?.compacting ||
+                  snapshot?.status === "running" ||
+                  snapshot?.status === "waiting")
               ? "running"
               : "idle";
     return {
@@ -707,15 +1209,17 @@ export class ClaudeBridge {
       // The plugin takes messages from here. Which mode can go now is in the *Enabled flags:
       // a send needs an idle terminal, a steer a running turn, a queued message neither.
       terminalSend:
-        snapshot?.capabilities.send === true ||
-        snapshot?.capabilities.steer === true ||
-        snapshot?.capabilities.queue === true,
+        !pickerOpen &&
+        (snapshot?.capabilities.send === true ||
+          snapshot?.capabilities.steer === true ||
+          snapshot?.capabilities.queue === true),
       connectionGeneration: connection?.leaseId ?? this.options.bootId,
       cliVersion: connection ? `${connection.identity.cliVersion} (Claude Code)` : undefined,
       bridgeCompatibility: valid ? (compatibilityStatus(connection) ?? null) : null,
       bridgeConnectionFailure: connectionFailure,
       revision: connection?.revision ?? this.#revision,
       status,
+      ...(snapshot?.compacting ? { activity: "compacting" } : {}),
       reason,
       turnId: snapshot?.currentTurnId ?? null,
       sendEnabled:
@@ -723,6 +1227,15 @@ export class ClaudeBridge {
       steerEnabled:
         controllable && !!snapshot?.currentTurnId && snapshot.capabilities.steer === true,
       queueEnabled: controllable && snapshot?.capabilities.queue === true,
+      modelPickerEnabled:
+        controllable &&
+        !unknownCommands.some((command) => command.evidence?.operation === "open-model-picker") &&
+        !row.inflight &&
+        snapshot?.status === "idle" &&
+        !snapshot.waiting &&
+        !snapshot.currentTurnId &&
+        snapshot.outbox.length === 0 &&
+        snapshot.capabilities.modelPicker === true,
       // Withdrawing needs no writable terminal: an unknown message stays until it is deleted.
       queueEditEnabled: controllable && (snapshot?.outbox.length ?? 0) > 0,
       queuedCount: snapshot?.outbox.length ?? 0,
@@ -736,27 +1249,19 @@ export class ClaudeBridge {
         snapshot.capabilities.stop,
       approvals: [],
       questions: [],
+      permission: { mode: valid && !row.revoked ? this.#permission(row, observation) : null },
       streamText: sanitizeSessionText(snapshot?.streamText ?? "", { value: 0 }),
-      usage:
-        snapshot?.usage &&
-        snapshot.usage.tokens !== null &&
-        snapshot.usage.window !== null &&
-        snapshot.usage.window > 0
-          ? {
-              available: true,
-              state: "ready",
-              usedTokens: snapshot.usage.tokens,
-              contextWindow: snapshot.usage.window,
-              percent:
-                snapshot.usage.percent ?? (snapshot.usage.tokens / snapshot.usage.window) * 100,
-              revision: connection?.revision,
-              updatedAt: new Date(snapshot.usage.observedAt).toISOString(),
-            }
-          : { available: false, state: "unavailable", reason: "usage-unavailable" },
+      usage: this.#usage(
+        snapshot,
+        observation,
+        connection?.revision,
+        valid && !row.revoked ? this.#compactStartedAt.get(row) : undefined,
+      ),
     };
   }
   capabilities(id: string, controls: boolean): Record<string, unknown> {
     const live = this.live(id, controls);
+    const readable = this.#sourceReadable(this.#bindings.get(id)!);
     const flags: Record<string, boolean> = {
       send: live.sendEnabled === true,
       stop: live.stopEnabled === true,
@@ -765,15 +1270,15 @@ export class ClaudeBridge {
       context: false,
       files: true,
       reconcile: true,
-      adopt: false,
       release: false,
       approve: false,
       answer: false,
       attachments: false,
       steer: live.steerEnabled === true,
-      resources: false,
+      resources: readable,
       settings: false,
-      "settings-state": false,
+      "settings-state": readable,
+      "open-model-picker": live.modelPickerEnabled === true,
       queue: live.queueEnabled === true,
       "queue-list": live.executionLocation === "terminal",
       "queue-add": live.queueEnabled === true,
@@ -805,19 +1310,27 @@ export class ClaudeBridge {
             : {
                 available: false,
                 reason:
-                  key === "approve"
-                    ? "claude-terminal-approval"
-                    : key === "answer"
-                      ? "claude-terminal-question"
-                      : key === "attachments"
-                        ? "claude-follower-attachments-unavailable"
-                        : key === "send" && !this.#connections.get(id)?.snapshot?.capabilities.send
-                          ? (live.reason ??
-                            (live.status === "idle" &&
-                            !this.#connections.get(id)?.snapshot?.outbox.length
-                              ? "claude-follower-send-unverified"
-                              : "session-busy"))
-                          : (live.reason ?? "operation-unavailable"),
+                  live.reason ??
+                  (key === "settings"
+                    ? "claude-follower-settings-unavailable"
+                    : key === "context"
+                      ? "follower-resource-input-unsupported"
+                      : key === "goal" || key.startsWith("goal-")
+                        ? "native-operation-not-integrated"
+                        : key === "approve"
+                          ? "claude-terminal-approval"
+                          : key === "answer"
+                            ? "claude-terminal-question"
+                            : key === "attachments"
+                              ? "claude-follower-attachments-unavailable"
+                              : key === "send" &&
+                                  !this.#connections.get(id)?.snapshot?.capabilities.send
+                                ? (live.reason ??
+                                  (live.status === "idle" &&
+                                  !this.#connections.get(id)?.snapshot?.outbox.length
+                                    ? "claude-follower-send-unverified"
+                                    : "session-busy"))
+                                : "operation-unavailable"),
               },
         ]),
       ),
@@ -825,6 +1338,7 @@ export class ClaudeBridge {
   }
   async request(value: Record<string, unknown>): Promise<unknown> {
     const id = z.string().min(1).max(256).parse(value.sessionId);
+    this.#assertLegacySettled(id);
     const row = this.#bindings.get(id);
     if (!row) throw new Error("session-unavailable");
     const controls = value.experimentalEnabled === true;
@@ -843,6 +1357,61 @@ export class ClaudeBridge {
         };
       case "usage":
         return this.live(id, false).usage;
+      case "settings-state": {
+        if (!this.#sourceReadable(row)) throw new Error("session-unavailable");
+        const snapshot = this.#online(id) ? this.#connections.get(id)?.snapshot : null;
+        const observation =
+          !snapshot?.compacting && (!snapshot?.model || snapshot.usage?.tokens == null)
+            ? this.#observation(row, snapshot ?? null)
+            : undefined;
+        const model = snapshot?.model ?? null;
+        const readonly = { available: false, reason: "claude-follower-settings-unavailable" };
+        return {
+          available: true,
+          sessionId: id,
+          executionMode: "claude-follower",
+          revision: this.#connections.get(id)?.revision ?? this.#revision,
+          current: {
+            model,
+            effort: null,
+            permissionMode: this.#permission(row, observation),
+            ...(snapshot?.usage?.window && snapshot.usage.window > 0
+              ? { maxContextTokens: snapshot.usage.window }
+              : {}),
+          },
+          ...(model ? { selected: { model }, applicationStatus: "confirmed" } : {}),
+          ...(observation?.model ? { historicalSettings: { model: observation.model } } : {}),
+          ...(observation?.usage.available ? { historicalUsage: observation.usage } : {}),
+          defaults: {},
+          models: model ? [{ id: model, name: model, efforts: [] }] : [],
+          permissionModes: [],
+          policies: [],
+          serviceTiers: [],
+          writable: Object.fromEntries(
+            [
+              "model",
+              "effort",
+              "mode",
+              "policy",
+              "serviceTier",
+              "permissionMode",
+              "restoreDefaults",
+            ].map((key) => [key, readonly]),
+          ),
+        };
+      }
+      case "resources":
+        if (!this.#sourceReadable(row)) throw new Error("session-unavailable");
+        return {
+          available: true,
+          sessionId: id,
+          executionMode: "claude-follower",
+          revision: this.#connections.get(id)?.revision ?? this.#revision,
+          skills: [],
+          plugins: [],
+          apps: [],
+          contextReferences: { supportedTypes: [] },
+        };
       case "context":
         this.options.validate(row.target, false, row.bindingId);
         return {
@@ -867,6 +1436,7 @@ export class ClaudeBridge {
       case "steer":
       case "queue-add":
       case "queue-delete":
+      case "open-model-picker":
         return this.#control(value, row);
       default:
         throw new Error("operation-unavailable");
@@ -949,6 +1519,10 @@ export class ClaudeBridge {
     ]);
     if (
       Object.keys(value).some((key) => !allowed.has(key)) ||
+      (value.operation === "open-model-picker" &&
+        ["text", "input", "turnId", "queuedSubmissionId"].some((key) =>
+          Object.hasOwn(value, key),
+        )) ||
       !validHistoryControl({ ...value, operation: String(value.operation) })
     )
       throw new Error("invalid-managed-control");
@@ -1001,6 +1575,13 @@ export class ClaudeBridge {
         kind: "send",
         requestId,
         text: messageText(),
+        expectedRevision: connection.snapshot.revision,
+      };
+    } else if (value.operation === "open-model-picker") {
+      if (live.modelPickerEnabled !== true) throw new Error("operation-unavailable");
+      command = {
+        commandId: randomUUID(),
+        kind: "open-model-picker",
         expectedRevision: connection.snapshot.revision,
       };
     } else if (value.operation === "steer") {
@@ -1119,6 +1700,7 @@ export class ClaudeBridge {
   }
   /** Creates the binding for a verified pairing, by one-time code or automatically. */
   #bind(target: ClaudeBridgeTarget, hello: ClaudeBridgeIdentity, auto: boolean) {
+    this.#assertLegacySettled(target.sessionId);
     const old = this.#bindings.get(target.sessionId);
     if (
       old?.inflight ||
@@ -1153,6 +1735,7 @@ export class ClaudeBridge {
     this.#save();
     this.#writeCredential(row);
     if (old) {
+      if (this.#contextWindows.delete(old.bindingId)) this.#saveContextWindows();
       rmSync(this.#credentialPath(old.bindingId), { force: true });
       this.#autoBindings.delete(old.bindingId);
     }
@@ -1173,8 +1756,12 @@ export class ClaudeBridge {
   }
 
   /** What this Runtime takes beyond the 0.4.0 messages; a plugin uses only what is named. */
-  #features(): { features?: string[] } {
-    return this.options.lead ? { features: [...CLAUDE_BRIDGE_FEATURES] } : {};
+  #features(): { features: string[] } {
+    return {
+      features: CLAUDE_BRIDGE_FEATURES.filter(
+        (feature) => feature !== "lead-tools" || !!this.options.lead,
+      ),
+    };
   }
 
   /** Whether this session's terminal can take a Project Agent's tools now. */
@@ -1228,6 +1815,7 @@ export class ClaudeBridge {
       // Resuming that terminal later pairs it again automatically.
       this.#bindings.delete(id);
       this.#autoBindings.delete(row.bindingId);
+      if (this.#contextWindows.delete(row.bindingId)) this.#saveContextWindows();
       rmSync(this.#credentialPath(row.bindingId), { force: true });
       return;
     }
@@ -1261,6 +1849,8 @@ export class ClaudeBridge {
       this.#socketPath = socket;
       this.#socketDirectory = directory;
       this.#server = server;
+      await this.#migrateLegacyBindings();
+      if (this.#closed) throw new Error("claude-bridge-unavailable");
       await new Promise<void>((resolve, reject) => {
         server.once("error", reject);
         server.listen(socket, () => {
@@ -1285,8 +1875,8 @@ export class ClaudeBridge {
       });
     return this.#listening;
   }
-  #writeCredential(row: Binding): void {
-    privateJson(this.#credentialPath(row.bindingId), {
+  #writeCredential(row: Binding, file = this.#credentialPath(row.bindingId)): void {
+    privateJson(file, {
       protocol: 1,
       socketPath: this.#socketPath,
       bindingId: row.bindingId,
@@ -1312,12 +1902,15 @@ export class ClaudeBridge {
     };
     try {
       if (
-        this.#closed ||
         request.method !== "POST" ||
         request.headers.host !== "localhost" ||
         request.headers.origin
       ) {
         reply(403, { error: "bridge-request-rejected" });
+        return;
+      }
+      if (this.#closed) {
+        reply(409, { error: "bridge-lease-expired" });
         return;
       }
       let bytes = 0;
@@ -1330,6 +1923,10 @@ export class ClaudeBridge {
           return;
         }
         chunks.push(chunk);
+      }
+      if (this.#closed) {
+        reply(409, { error: "bridge-lease-expired" });
+        return;
       }
       const value: unknown = JSON.parse(Buffer.concat(chunks).toString("utf8"));
       if (request.url === CLAUDE_BRIDGE_PATHS.pair) {
@@ -1450,7 +2047,9 @@ export class ClaudeBridge {
         this.options.validate(row.target, false, row.bindingId);
       } catch {
         this.#disconnect(row.target.sessionId);
-        reply(410, { error: "bridge-source-unavailable" });
+        // The source may disappear briefly while indexing or while the shared service exits.
+        // Existing plugins already retry this response without changing the saved binding.
+        reply(409, { error: "bridge-lease-expired" });
         return;
       }
       if (request.url === CLAUDE_BRIDGE_PATHS.reconnect) {
@@ -1616,16 +2215,20 @@ export class ClaudeBridge {
       if (request.url === CLAUDE_BRIDGE_PATHS.results) {
         const input = bridgeResultSchema.parse(value);
         const pending = connection.pending;
-        const lateClaim = !pending
-          ? readUnknownManagedCommands(this.options.dataDir, row.target.sessionId).find(
-              (command) =>
-                command.evidence?.commandId === input.commandId &&
-                command.evidence.bindingId === row.bindingId &&
-                command.evidence.nativeId === row.target.nativeId,
-            )
-          : undefined;
+        // A chooser receipt can arrive while an unrelated request is in flight: it fences
+        // reopening the chooser, but never changes that other request's delivery or turn.
+        const lateClaim =
+          pending?.command.commandId !== input.commandId
+            ? readUnknownManagedCommands(this.options.dataDir, row.target.sessionId).find(
+                (command) =>
+                  (!pending || command.evidence?.operation === "open-model-picker") &&
+                  command.evidence?.commandId === input.commandId &&
+                  command.evidence.bindingId === row.bindingId &&
+                  command.evidence.nativeId === row.target.nativeId,
+              )
+            : undefined;
         const recovering =
-          !pending && (row.inflight?.commandId === input.commandId || lateClaim !== undefined);
+          lateClaim !== undefined || (!pending && row.inflight?.commandId === input.commandId);
         if (
           (!pending || !pending.delivered || pending.command.commandId !== input.commandId) &&
           !recovering
@@ -1638,7 +2241,9 @@ export class ClaudeBridge {
           // start no turn of their own here, so nothing waits for a completion.
           if (
             lateClaim &&
-            ["steer", "queue-add", "queue-delete"].includes(String(lateClaim.evidence?.operation))
+            ["steer", "queue-add", "queue-delete", "open-model-picker"].includes(
+              String(lateClaim.evidence?.operation),
+            )
           ) {
             if (input.status !== "unknown")
               finishManagedCommand(
@@ -1675,7 +2280,10 @@ export class ClaudeBridge {
           if (input.status === "accepted" && input.turnId) {
             row.inflight!.turnId = input.turnId;
             const requestId = row.inflight!.requestId;
-            const completed = connection.completed.has(input.turnId);
+            const completedTurns = lateClaim?.evidence?.completedTurns;
+            const completed =
+              connection.completed.has(input.turnId) ||
+              (Array.isArray(completedTurns) && completedTurns.includes(input.turnId));
             if (completed) row.inflight = null;
             this.#save();
             finishManagedCommand(
@@ -1788,6 +2396,8 @@ export class ClaudeBridge {
       pending: null,
       pollActive: false,
       completed: new Map(),
+      turnTools: new Map(),
+      publishedTools: new Map(),
     };
     this.#connections.set(row.target.sessionId, connection);
     this.#publish(row.target.sessionId);
@@ -1810,6 +2420,7 @@ export class ClaudeBridge {
     // A native terminal event remains evidence even when it precedes the first
     // display snapshot after reconnect. Never discard it merely for UI ordering.
     if (event.type === "turn-complete") this.#complete(row, connection, event);
+    const previousTurnId = connection.snapshot?.currentTurnId;
     let stop: { turnId: string; deviceId: string } | null = null;
     if (event.type === "snapshot") {
       const snapshot = event.snapshot;
@@ -1824,8 +2435,14 @@ export class ClaudeBridge {
         throw new Error("bridge-identity-mismatch");
       if (connection.snapshot && snapshot.revision < connection.snapshot.revision)
         throw new Error("stale-bridge-snapshot");
+      const started =
+        snapshot.compactStartedAt ??
+        (snapshot.compacting && !connection.snapshot?.compacting ? connection.lastSeen : undefined);
+      if (started !== undefined && started > (this.#compactStartedAt.get(row) ?? -1))
+        this.#compactStartedAt.set(row, Math.min(started, connection.lastSeen));
       connection.snapshot = snapshot;
       connection.gap = false;
+      this.#rememberContextWindow(row, snapshot);
     } else {
       const snapshot = connection.snapshot;
       if (!snapshot) {
@@ -1864,12 +2481,19 @@ export class ClaudeBridge {
           snapshot.streamText = "";
         }
       } else if (event.type === "tool-start" || event.type === "tool-complete") {
-        snapshot.toolItems = [
-          ...snapshot.toolItems.filter((tool) => tool.id !== event.tool.id),
-          event.tool,
-        ].slice(-256);
+        if (
+          snapshot.currentTurnId &&
+          (event.turnId === snapshot.currentTurnId ||
+            (event.turnId === undefined &&
+              (event.type === "tool-start" || connection.turnTools.has(event.tool.id))))
+        ) {
+          connection.turnTools.set(event.tool.id, event.tool);
+          if (connection.turnTools.size > 256)
+            connection.turnTools.delete(connection.turnTools.keys().next().value!);
+        }
       }
     }
+    if (previousTurnId !== connection.snapshot?.currentTurnId) connection.turnTools.clear();
     connection.revision = ++this.#revision;
     this.#publish(id);
     if (stop) void this.#stopLeadTurn(row, stop.turnId, stop.deviceId);
@@ -1916,7 +2540,10 @@ export class ClaudeBridge {
     event: Extract<ClaudeBridgeEvent, { type: "turn-complete" }>,
   ): void {
     try {
-      this.options.completed?.(row.target, event.turnId, event.aborted);
+      this.options.completed?.(row.target, event.turnId, event.aborted, {
+        occurredAt: event.occurredAt,
+        startedAt: event.startedAt,
+      });
     } catch {
       console.warn("Conversation read-state observation could not be recorded");
     }
@@ -1926,6 +2553,30 @@ export class ClaudeBridge {
     );
     if (connection.completed.size > 256)
       connection.completed.delete(connection.completed.keys().next().value!);
+    // Native completion can be acknowledged before the send's receipt identifies its turn.
+    // Preserve the candidate on the dispatched request so a restarted service can match it.
+    const inflight = row.inflight;
+    if (inflight?.turnId === null) {
+      const claim = readUnknownManagedCommands(this.options.dataDir, row.target.sessionId).find(
+        (command) => command.requestId === inflight.requestId,
+      );
+      const evidence = claim?.evidence;
+      if (
+        evidence?.operation === "send" &&
+        evidence.commandId === inflight.commandId &&
+        evidence.bindingId === row.bindingId &&
+        evidence.nativeId === row.target.nativeId
+      ) {
+        const turns: unknown[] = Array.isArray(evidence.completedTurns)
+          ? evidence.completedTurns
+          : [];
+        if (!turns.includes(event.turnId))
+          acknowledgeDispatchedManagedCommand(this.options.dataDir, inflight.requestId, {
+            ...evidence,
+            completedTurns: [...turns.slice(-255), event.turnId],
+          });
+      }
+    }
     if (row.inflight?.turnId === event.turnId) {
       const requestId = row.inflight.requestId;
       row.inflight = null;
@@ -1965,30 +2616,45 @@ export class ClaudeBridge {
       return;
     }
     this.options.publish(id, "state", live, live);
-    if (connection?.snapshot && this.#online(id)) {
-      for (const tool of connection.snapshot.toolItems)
-        this.options.publish(
-          id,
-          "item-upsert",
-          {
-            id: `claude-follower-tool:${tool.id}`,
-            kind: "tool-summary",
-            content: "",
-            tool_name: sanitizeSessionText(tool.name, { value: 0 }),
-            tool_status: tool.status,
-            attachment_count: 0,
-            truncated: false,
-            turn_id: connection.snapshot.currentTurnId,
-          },
-          live,
-        );
+    // The snapshot contains a history preview. Live overlays come only from this turn's tool events.
+    const turnId = connection.gap ? null : connection.snapshot.currentTurnId;
+    const previous = connection.publishedTools;
+    const tools = new Map<string, ClaudeBridgeTool>();
+    if (turnId)
+      for (const tool of connection.turnTools.values())
+        tools.set(`claude-follower-tool:${tool.id}`, tool);
+    const removed = [...previous.keys()].filter((key) => !tools.has(key));
+    if (removed.length)
+      this.options.publish(
+        id,
+        "snapshot",
+        { live, items: [], replaceItemIds: removed, completeItems: false },
+        live,
+      );
+    connection.publishedTools = tools;
+    for (const [toolId, tool] of tools) {
+      if (previous.get(toolId) === tool) continue;
+      this.options.publish(
+        id,
+        "item-upsert",
+        {
+          id: toolId,
+          kind: "tool-summary",
+          content: "",
+          tool_name: sanitizeSessionText(tool.name, { value: 0 }),
+          tool_status: tool.status,
+          attachment_count: 0,
+          truncated: false,
+          turn_id: turnId,
+        },
+        live,
+      );
     }
   }
   #disconnect(id: string): void {
     const connection = this.#connections.get(id);
     if (!connection) return;
-    const overlays =
-      connection.snapshot?.toolItems.map((tool) => `claude-follower-tool:${tool.id}`) ?? [];
+    const overlays = [...connection.publishedTools.keys()];
     this.#connections.delete(id);
     ++this.#revision;
     connection.wake?.();
@@ -2037,5 +2703,7 @@ export class ClaudeBridge {
       rmdirSync(this.#socketDirectory);
     this.#releaseLock?.();
     this.#releaseLock = undefined;
+    this.#releaseLegacyLock?.();
+    this.#releaseLegacyLock = undefined;
   }
 }

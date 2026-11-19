@@ -474,6 +474,23 @@ export function annotateManagedCommand(
   }
 }
 
+export function acknowledgeDispatchedManagedCommand(
+  dataDir: string,
+  requestId: string,
+  evidence: Record<string, unknown>,
+): void {
+  const database = openManagedLedger(dataDir);
+  if (!database) throw new Error("session-unavailable");
+  try {
+    const changed = database
+      .prepare("UPDATE managed_commands SET evidence=? WHERE request_id=? AND phase='dispatched'")
+      .run(JSON.stringify(evidence), requestId).changes;
+    if (changed !== 1) throw new Error("control-ledger-not-dispatched");
+  } finally {
+    database.close();
+  }
+}
+
 export function finishManagedCommand(
   dataDir: string,
   requestId: string,

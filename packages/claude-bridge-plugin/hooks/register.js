@@ -21,10 +21,10 @@ const OUTBOX_PREVIEW = 2 * 1024;
 const MAX_EVENTS = 256;
 // The existing 250ms pump skips these ticks before retrying: about 1/2/4/8s.
 const RECONNECT_BACKOFF_TICKS = [3, 7, 15, 31];
+// First discovery also needs to recover when the terminal predates AgentKib.
+// Keep looking while idle, at most once every 30s after the initial backoff.
+const AUTO_BACKOFF_TICKS = [3, 7, 15, 31, 63, 119];
 const PREVIEW_MARKER = "\n[AgentKib preview truncated; read the original history for full content]";
-// A new session is pairable only after AgentKib indexes its transcript, so
-// automatic pairing retries after later turns, a bounded number of times.
-const AUTO_RETRY_LIMIT = 20;
 // Versions AgentKib rejects; /agentkib-status explains them.
 const INCOMPATIBLE_ERRORS = [
   "bridge-cli-too-old",
@@ -236,10 +236,12 @@ export function initialState() {
     unacknowledgedResults: new Map(),
     afterCommandId: null,
     currentTurnId: null,
+    currentTurnStartedAt: null,
     streamText: "",
     streamBytes: 0,
     streamTruncated: false,
     nativeWorking: null,
+    compacting: false,
     activeTools: new Map(),
     waits: new Map(),
     // A reload can happen mid-turn. Only native activity events establish idle.
@@ -249,13 +251,17 @@ export function initialState() {
     snapshotRecovery: null,
     sendDisabled: false,
     pendingSend: null,
+    modelPicker: null,
+    modelPickerSupported: undefined,
     outbox: [],
     dispatching: null,
     dirty: true,
+    bridgeStarted: false,
     pumping: false,
     flushing: false,
     closed: false,
     needsReconnect: false,
+    pairingGeneration: null,
     pairingRecoveryGeneration: null,
     reconnectGeneration: null,
     reconnectFailures: 0,
@@ -264,6 +270,7 @@ export function initialState() {
     termination: null,
     terminating: false,
     autoConnecting: false,
+    autoDelayTicks: 0,
     autoTries: new Map(),
     autoDone: new Set(),
     // The worker tools registered last; why registering them failed on this connection.
@@ -447,6 +454,35 @@ function requireGeneration(state, generation, reason) {
   if (state.generation !== generation) throw new Error(reason);
 }
 
+async function readSessionDirectories($) {
+  const current = await $.session.cwd();
+  // Claude changes cwd after shell commands, and changes root only when the
+  // session itself moves (for example, native EnterWorktree).
+  const workspace = await $.session.root();
+  return { current, workspace };
+}
+
+async function isInsideSessionWorkspace($, current, workspace) {
+  if (!safeAbsolute(current) || !safeAbsolute(workspace)) return false;
+  if (current === workspace) return true;
+  const prefix = workspace.endsWith("/") ? workspace : `${workspace}/`;
+  if (!current.startsWith(prefix)) return false;
+  // The Mod API exposes symlink metadata, but has no realpath operation.
+  let path = prefix;
+  for (const part of current.slice(prefix.length).split("/")) {
+    if (!part || part === ".") return false;
+    path += part;
+    try {
+      const entry = await $.fs.stat(path);
+      if (entry?.kind !== "dir" || entry.isLink !== false) return false;
+    } catch {
+      return false;
+    }
+    path += "/";
+  }
+  return true;
+}
+
 async function identity($, state) {
   const generation = state.generation;
   let version;
@@ -462,11 +498,11 @@ async function identity($, state) {
   if (compatibility === "too-old")
     throw compatibilityFailure("bridge-cli-too-old", version.version);
   let nativeId;
-  let cwd;
+  let directories;
   try {
     nativeId = await $.session.id();
     requireGeneration(state, generation, "stale-native-identity");
-    cwd = await $.session.cwd();
+    directories = await readSessionDirectories($);
   } catch {
     requireGeneration(state, generation, "stale-native-identity");
     throw compatibilityFailure("bridge-capabilities-missing", version.version, [
@@ -476,17 +512,23 @@ async function identity($, state) {
   // A completed host read can belong to the session that just ended. It must
   // not overwrite or invalidate an identity explicitly paired in a later generation.
   requireGeneration(state, generation, "stale-native-identity");
+  const { current, workspace: cwd } = directories;
   if (
     typeof nativeId !== "string" ||
     !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(nativeId) ||
-    typeof cwd !== "string" ||
-    !cwd.startsWith("/")
+    !safeAbsolute(cwd)
   )
     throw new Error("unsupported-native-identity");
   if (state.identity && (state.identity.nativeId !== nativeId || state.identity.cwd !== cwd)) {
     invalidate(state, "native-identity-changed");
     void flush($, state);
     throw new Error("native-identity-changed");
+  }
+  const insideWorkspace = await isInsideSessionWorkspace($, current, cwd);
+  requireGeneration(state, generation, "stale-native-identity");
+  if (!insideWorkspace) {
+    if (state.connection) state.needsReconnect = true;
+    throw new Error("native-working-directory-outside-workspace");
   }
   state.identity = {
     protocol: 1,
@@ -535,8 +577,17 @@ export async function probeCapabilities($, state) {
       )
     )
       throw new Error("invalid-native-history");
-  } catch {
+  } catch (error) {
     requireGeneration(state, generation, "stale-capability-probe");
+    // session.start can run before the native REPL binds its session. This is
+    // a readiness failure, not evidence that this CLI lacks the history API.
+    if (
+      typeof error?.message === "string" &&
+      error.message.includes(
+        "$.session.messages is not available in this mode: no session is bound in this process",
+      )
+    )
+      throw new Error("native-session-not-ready");
     missing.push("session-messages");
   }
   try {
@@ -693,7 +744,10 @@ function invalidate(state, reason) {
   state.outbox = [];
   state.activityVerified = false;
   state.nativeWorking = null;
+  state.compacting = false;
+  state.compactStartedAt = undefined;
   state.currentTurnId = null;
+  state.modelPicker = null;
   state.streamText = "";
   state.streamBytes = 0;
   state.streamTruncated = false;
@@ -738,6 +792,7 @@ function invalidate(state, reason) {
   state.connection = null;
   state.connectionFailure = null;
   state.needsReconnect = false;
+  state.pairingGeneration = null;
   state.pairingRecoveryGeneration = null;
   state.reconnectGeneration = null;
   state.reconnectFailures = 0;
@@ -767,7 +822,11 @@ async function request($, state, path, body, authenticated = true) {
   if (state.generation !== generation || (authenticated && state.connection !== connection))
     throw new Error("stale-bridge-response");
   const decoded = typeof response?.text === "string" ? JSON.parse(response.text) : null;
-  if (response?.status === 409 && decoded?.error === "bridge-lease-expired") {
+  if (
+    (response?.status === 409 && decoded?.error === "bridge-lease-expired") ||
+    (response?.status === 410 && decoded?.error === "bridge-source-unavailable")
+  ) {
+    // Older hosts reported unavailable sources with the same status as explicit revocation.
     state.needsReconnect = true;
     throw new Error("bridge-lease-expired");
   }
@@ -817,9 +876,19 @@ async function snapshot($, state) {
   const observed = await identity($, state);
   const rows = await $.session.messages();
   const usage = await $.session.usage();
-  const context = usage?.context;
+  const context = state.compacting ? null : usage?.context;
+  let model = null;
+  try {
+    const current = await $.session.model();
+    if (typeof current === "string" && current.length > 0 && current.length <= 128) model = current;
+  } catch {
+    // This optional getter is absent in older native contracts.
+  }
   const numeric = (v) => (typeof v === "number" && Number.isFinite(v) ? v : null);
   const waiting = waitingState(state);
+  const offersPicker = state.connection?.features?.includes("open-model-picker") === true;
+  if (offersPicker && state.modelPickerSupported === undefined)
+    state.modelPickerSupported = await hasNativeModelPicker($);
   const result = {
     ...observed,
     revision: state.revision,
@@ -832,8 +901,12 @@ async function snapshot($, state) {
           : "idle",
     waiting,
     messages: visibleMessages(rows),
-    toolItems: visibleTools(rows),
+    toolItems: state.currentTurnId ? visibleTools(rows) : [],
     streamText: state.streamText,
+    model,
+    ...(offersPicker ? { modelPickerOpen: state.modelPicker !== null } : {}),
+    compacting: state.compacting,
+    ...(state.compactStartedAt !== undefined ? { compactStartedAt: state.compactStartedAt } : {}),
     usage: context
       ? {
           tokens: numeric(context.tokens),
@@ -851,6 +924,7 @@ async function snapshot($, state) {
     })),
     capabilities: {
       read: true,
+      ...(offersPicker ? { modelPicker: canOpenModelPicker(state) } : {}),
       send:
         writable(state) &&
         state.activityVerified &&
@@ -987,7 +1061,101 @@ async function deliverNow($, state) {
 
 /** The lease is verified and may carry AgentKib's messages into this terminal. */
 function writable(state) {
-  return !state.closed && !state.needsReconnect && !state.sendDisabled && !state.bufferPaused;
+  return (
+    !state.closed &&
+    !state.needsReconnect &&
+    !state.sendDisabled &&
+    !state.bufferPaused &&
+    !state.modelPicker &&
+    !state.compacting
+  );
+}
+
+async function hasNativeModelPicker($) {
+  try {
+    // A command registered by a plugin under the same name cannot stand in for the built-in.
+    const matches = (await $.command.list()).filter((entry) => entry.name === "model");
+    return matches.length === 1 && matches[0].source === "builtin";
+  } catch {
+    return false;
+  }
+}
+
+function canOpenModelPicker(state) {
+  return (
+    state.modelPickerSupported === true &&
+    writable(state) &&
+    state.activityVerified &&
+    state.nativeWorking === false &&
+    !state.currentTurnId &&
+    !state.pendingSend &&
+    !waitingState(state) &&
+    state.outbox.length === 0
+  );
+}
+
+async function openModelPicker($, state, command, result) {
+  const connection = state.connection;
+  if (!connection?.features?.includes("open-model-picker") || !canOpenModelPicker(state)) {
+    result.reason = "session-not-idle";
+    return;
+  }
+  if (!(await hasNativeModelPicker($))) {
+    state.modelPickerSupported = false;
+    result.reason = "native-model-picker-unavailable";
+    return;
+  }
+  if (
+    state.connection !== connection ||
+    command.expectedRevision !== state.revision ||
+    !canOpenModelPicker(state)
+  ) {
+    result.reason = "session-state-unverified";
+    return;
+  }
+  const picker = command.commandId;
+  const previousModel = state.lastSnapshot?.model;
+  state.modelPicker = picker;
+  state.dirty = true;
+  try {
+    // The native promise settles when the user dismisses the picker. Acknowledge dispatch;
+    // the next native model observation, including after a cancellation, owns the setting.
+    const native = $.command.run({ command: "model" });
+    const dismissal = native
+      .then(
+        (response) => response?.isError !== true,
+        () => false,
+      )
+      .then((ok) => {
+        if (state.modelPicker !== picker) return ok;
+        state.modelPicker = null;
+        state.dirty = true;
+        if (!ok) {
+          state.modelPickerSupported = false;
+          void note(
+            $,
+            "Claude Code could not open the model picker. Enter /model in this terminal.",
+          );
+        } else {
+          // The selection can reach $.session.model() after the command's own result.
+          for (const delay of [1_000, 3_000])
+            $.clock.after(delay, () => {
+              if (state.connection === connection && state.lastSnapshot?.model === previousModel)
+                state.dirty = true;
+            });
+        }
+        return ok;
+      });
+    // An immediately refused invocation gets a rejection, rather than a successful dispatch.
+    if (await Promise.race([dismissal, $.clock.sleep(100).then(() => true)])) {
+      result.status = "accepted";
+      delete result.reason;
+    } else result.reason = "native-model-picker-unavailable";
+  } catch {
+    state.modelPicker = null;
+    state.dirty = true;
+    result.reason = "native-model-picker-unavailable";
+  }
 }
 
 /** Shows the person in the terminal what AgentKib sent; a lost notice changes no delivery. */
@@ -1041,14 +1209,20 @@ async function appendSteer($, state, item) {
 async function deliverSteers($, state) {
   const turnId = state.currentTurnId;
   if (!turnId || !writable(state)) return;
-  // Parallel tool calls run this concurrently: claim each row before any await.
-  const claimed = state.outbox.filter(
-    (item) =>
-      item.kind === "steer" &&
-      item.status === "pending" &&
-      item.turnId === turnId &&
-      !item.appendRefused,
-  );
+  const ready = (item) =>
+    item.kind === "steer" &&
+    item.status === "pending" &&
+    item.turnId === turnId &&
+    !item.appendRefused;
+  if (!state.outbox.some(ready)) return;
+  try {
+    await identity($, state);
+  } catch {
+    return;
+  }
+  if (state.currentTurnId !== turnId || !writable(state)) return;
+  // Parallel tool calls run this concurrently: claim each row before appending.
+  const claimed = state.outbox.filter(ready);
   for (const item of claimed) item.status = "dispatching";
   for (const item of claimed) {
     const outcome = await appendSteer($, state, item);
@@ -1146,6 +1320,24 @@ async function dispatchOutbox($, state) {
     state.outbox.find((entry) => entry.kind === "steer" && entry.turnId === null && ready(entry)) ??
     state.outbox.find((entry) => entry.kind === "queue" && ready(entry));
   if (!item) return;
+  const connection = state.connection;
+  try {
+    await identity($, state);
+  } catch {
+    return;
+  }
+  if (
+    state.connection !== connection ||
+    state.dispatching ||
+    state.pendingSend ||
+    !writable(state) ||
+    state.currentTurnId ||
+    !state.activityVerified ||
+    state.nativeWorking !== false ||
+    !state.outbox.includes(item) ||
+    !ready(item)
+  )
+    return;
   const pending = {
     text: item.text,
     expectedRevision: state.revision,
@@ -1233,12 +1425,12 @@ async function execute($, state, command) {
   else if (command.kind === "queue") await enqueue($, state, command, result);
   else if (command.kind === "cancel") withdraw(state, command, result);
   else if (command.expectedRevision !== state.revision) result.reason = "revision-conflict";
+  else if (command.kind === "open-model-picker") await openModelPicker($, state, command, result);
   else if (command.kind === "send") {
     if (!validSend(command)) result.reason = "invalid-text";
     else if (
       state.closed ||
-      state.sendDisabled ||
-      state.bufferPaused ||
+      !writable(state) ||
       !state.activityVerified ||
       state.currentTurnId ||
       state.pendingSend ||
@@ -1306,8 +1498,22 @@ async function execute($, state, command) {
 }
 
 async function pump($, state, nativeEvent = false) {
+  if (!state.connection && !state.needsReconnect) {
+    if (
+      state.closed ||
+      state.autoConnecting ||
+      state.pendingSend ||
+      state.pairingGeneration === state.generation
+    )
+      return;
+    if (!nativeEvent && state.autoDelayTicks > 0) {
+      state.autoDelayTicks -= 1;
+      return;
+    }
+    await autoConnect($, state);
+    return;
+  }
   if (
-    (!state.connection && !state.needsReconnect) ||
     state.connection?.leaseId === "reconnecting" ||
     state.reconnectGeneration === state.generation ||
     state.closed ||
@@ -1364,6 +1570,7 @@ async function connect($, state, ticket) {
   const resumeRecovery =
     state.needsReconnect || state.pairingRecoveryGeneration === state.generation;
   const generation = ++state.generation;
+  state.pairingGeneration = generation;
   state.pairingRecoveryGeneration = resumeRecovery ? generation : null;
   state.connection = null;
   state.connectionFailure = null;
@@ -1380,6 +1587,7 @@ async function connect($, state, ticket) {
       state.needsReconnect = true;
     throw error;
   } finally {
+    if (state.pairingGeneration === generation) state.pairingGeneration = null;
     if (state.pairingRecoveryGeneration === generation) state.pairingRecoveryGeneration = null;
   }
 }
@@ -1435,6 +1643,7 @@ async function connectOnce($, state, ticket, generation) {
 
 async function adopt($, state, observed, response) {
   state.connection = connectionFrom(response);
+  state.modelPickerSupported = undefined;
   state.leadUnavailable = null;
   state.leadToolsKey = null;
   state.leadActive = false;
@@ -1461,15 +1670,14 @@ async function reportReconnectFailure($, state, generation, failure) {
   const current = () => state.generation === generation && !state.closed;
   const nativeId = await $.session.id();
   if (!current()) return;
-  const cwd = await $.session.cwd();
+  const { current: workingDirectory, workspace: cwd } = await readSessionDirectories($);
+  if (!current()) return;
+  const insideWorkspace = await isInsideSessionWorkspace($, workingDirectory, cwd);
   if (!current()) return;
   if (
     typeof nativeId !== "string" ||
     !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(nativeId) ||
-    typeof cwd !== "string" ||
-    !cwd.startsWith("/") ||
-    cwd.includes("\0") ||
-    cwd.split("/").includes("..")
+    !insideWorkspace
   )
     return;
   const path = await $.store.get(`credentialPath:${nativeId}`);
@@ -1613,6 +1821,7 @@ async function reconnectOnce($, state) {
     if (state.generation !== generation || state.closed || state.connection !== connecting)
       throw new Error("stale-reconnect");
     state.connection = connectionFrom(response);
+    state.modelPickerSupported = undefined;
     state.connectionFailure = null;
     state.credentialPath = path;
     state.closed = false;
@@ -1676,11 +1885,20 @@ export async function discoverAgentKib($) {
  * AgentKib always takes precedence.
  */
 export async function autoConnect($, state) {
-  if (state.connection || state.needsReconnect || state.autoConnecting || state.pendingSend) return;
+  if (
+    state.connection ||
+    state.needsReconnect ||
+    state.autoConnecting ||
+    state.pendingSend ||
+    state.pairingGeneration === state.generation
+  )
+    return;
   state.autoConnecting = true;
+  let generation = state.generation;
   let nativeId;
   try {
     nativeId = await $.session.id();
+    requireGeneration(state, generation, "stale-auto-connect");
     if (typeof nativeId !== "string" || state.autoDone.has(nativeId)) return;
     // A session revoked in this terminal stays disconnected until a new code.
     if (state.closed && state.identity?.nativeId === nativeId) {
@@ -1688,28 +1906,36 @@ export async function autoConnect($, state) {
       return;
     }
     const tries = state.autoTries.get(nativeId) ?? 0;
-    if (tries >= AUTO_RETRY_LIMIT) return;
-    state.autoTries.set(nativeId, tries + 1);
+    state.autoTries.set(nativeId, Math.min(tries + 1, AUTO_BACKOFF_TICKS.length));
     // A session paired earlier reconnects with its own credential instead.
-    if (typeof (await $.store.get(`credentialPath:${nativeId}`)) === "string") {
+    const credentialPath = await $.store.get(`credentialPath:${nativeId}`);
+    requireGeneration(state, generation, "stale-auto-connect");
+    if (typeof credentialPath === "string") {
       state.autoDone.add(nativeId);
       if (state.closed) {
         state.identity = null;
         state.closed = false;
         state.sendDisabled = false;
-        state.needsReconnect = true;
       }
+      state.needsReconnect = true;
+      await reconnect($, state);
       return;
     }
     // A discovery file a closed Runtime left behind names a socket nothing answers on.
     const sources = [];
-    for (const source of await discoverAgentKib($))
-      if (await runtimeReachable($, source.socketPath)) sources.push(source);
+    const discovered = await discoverAgentKib($);
+    requireGeneration(state, generation, "stale-auto-connect");
+    for (const source of discovered) {
+      const reachable = await runtimeReachable($, source.socketPath);
+      requireGeneration(state, generation, "stale-auto-connect");
+      if (reachable) sources.push(source);
+    }
     if (!sources.length) return;
     // After /clear or /resume the previous conversation's identity no longer applies.
     if (state.closed) state.identity = null;
-    const generation = ++state.generation;
+    generation = ++state.generation;
     const observed = await probeCapabilities($, state);
+    if (observed.nativeId !== nativeId) throw new Error("stale-auto-connect");
     for (const source of sources) {
       let response;
       try {
@@ -1720,6 +1946,7 @@ export async function autoConnect($, state) {
           body: JSON.stringify({ ...observed, autoKey: source.autoKey }),
         });
       } catch {
+        requireGeneration(state, generation, "stale-auto-connect");
         continue;
       }
       if (state.generation !== generation || state.connection) return;
@@ -1748,19 +1975,28 @@ export async function autoConnect($, state) {
         state.autoDone.add(nativeId);
         return;
       }
-      // A stale key or a session not indexed yet: try the next source, then a later turn.
+      // A stale key or a session not indexed yet: try the next source, then back off.
     }
   } catch (error) {
     // The local probe found this plugin or CLI unusable; retrying cannot change that.
-    if (nativeId && INCOMPATIBLE_ERRORS.includes(error?.message)) {
+    if (
+      state.generation === generation &&
+      nativeId &&
+      INCOMPATIBLE_ERRORS.includes(error?.message)
+    ) {
       state.connectionFailure = {
         reason: error.message,
         ...(error.cliVersion ? { cliVersion: error.cliVersion } : {}),
       };
       state.autoDone.add(nativeId);
     }
-    if (nativeId && AUTO_FINAL_ERRORS.includes(error?.message)) state.autoDone.add(nativeId);
+    if (state.generation === generation && nativeId && AUTO_FINAL_ERRORS.includes(error?.message))
+      state.autoDone.add(nativeId);
   } finally {
+    if (state.generation === generation && !state.connection && !state.closed) {
+      const tries = nativeId ? (state.autoTries.get(nativeId) ?? 1) : 1;
+      state.autoDelayTicks = AUTO_BACKOFF_TICKS[Math.max(tries - 1, 0)];
+    }
     state.autoConnecting = false;
   }
 }
@@ -1796,9 +2032,27 @@ export function connectionFailureText(reason, cliVersion) {
   }
 }
 
+function startBridge($, state) {
+  if (state.bridgeStarted || state.closed) return;
+  state.bridgeStarted = true;
+  $.clock.every(250, () => flush($, state));
+  $.clock.every(250, () => pump($, state));
+  // A native submit waits for the turn ending in its hook, so dispatch outside that hook.
+  $.clock.every(250, () => dispatchOutbox($, state));
+  const generation = state.generation;
+  // The original terminal can continue even while its saved connection is recovering.
+  void reconnect($, state)
+    .catch(() => {})
+    .then(() => {
+      if (state.generation === generation && !state.closed) return autoConnect($, state);
+    })
+    .catch(() => {});
+}
+
 export function register(on) {
   const state = initialState();
   on("session.start", async ($, e, next) => {
+    const generation = state.generation;
     await $.command.register({
       name: "agentkib-connect",
       description: "Connect this session using the one-time connection code shown in AgentKib",
@@ -1810,17 +2064,7 @@ export function register(on) {
       description: "Show local AgentKib connection status without calling a model",
       immediate: true,
     });
-    $.clock.every(250, () => flush($, state));
-    $.clock.every(250, () => pump($, state));
-    // Never awaited by a hook: the native submit waits for the turn that is ending.
-    $.clock.every(250, () => dispatchOutbox($, state));
-    // Offline Runtime must not delay startup of the original terminal. A later
-    // session.end or explicit pairing invalidates this background generation.
-    // Without a saved binding, try automatic pairing for this workspace.
-    void reconnect($, state)
-      .catch(() => {})
-      .then(() => autoConnect($, state))
-      .catch(() => {});
+    if (state.generation === generation) startBridge($, state);
     return next(e);
   });
   on("command.run", { command: "agentkib-connect" }, async ($, e) => {
@@ -1847,6 +2091,11 @@ export function register(on) {
           : "AgentKib bridge is not connected.",
   }));
   on("ui.render", { component: "AbovePrompt" }, async ($, e, next) => {
+    // Reloading the plugin into a running terminal may not replay session.start.
+    startBridge($, state);
+    // Claude's interactive /model command also sets isWorking while its UI is open.
+    // A real turn is still established independently by turn.start or turn.step.
+    if (state.modelPicker && !state.currentTurnId && e.props?.isWorking === true) return next(e);
     if (typeof e.props?.isWorking === "boolean" && !state.pendingSend) {
       const verified = !e.props.isWorking;
       if (verified !== state.activityVerified || e.props.isWorking !== state.nativeWorking) {
@@ -1927,7 +2176,9 @@ export function register(on) {
   });
   on("turn.start", async ($, e, next) => {
     if (e.agentId !== undefined) return next(e);
+    startBridge($, state);
     state.currentTurnId = e.turnId;
+    state.currentTurnStartedAt = Date.now();
     state.streamText = "";
     state.streamBytes = 0;
     state.streamTruncated = false;
@@ -2005,8 +2256,10 @@ export function register(on) {
   });
   on("turn.complete", async ($, e, next) => {
     if (e.agentId !== undefined) return next(e);
+    const startedAt = e.turnId === state.currentTurnId ? state.currentTurnStartedAt : null;
     if (e.turnId === state.currentTurnId || state.currentTurnId === null) {
       state.currentTurnId = null;
+      state.currentTurnStartedAt = null;
       state.nativeWorking = false;
       state.activeTools.clear();
       state.waits.clear();
@@ -2028,6 +2281,8 @@ export function register(on) {
       text: previewText(e.answer, MAX_STREAM),
       aborted: e.isAborted === true,
       revision: state.revision,
+      occurredAt: Date.now(),
+      ...(startedAt !== null ? { startedAt } : {}),
     });
     state.dirty = true;
     await deliverNow($, state).catch(() => {});
@@ -2038,25 +2293,28 @@ export function register(on) {
   on("tool.call", async ($, e, next) => {
     if (e.agentId !== undefined || !state.currentTurnId || typeof e.tool_use_id !== "string")
       return next(e);
+    const turnId = state.currentTurnId;
     const tool = { id: e.tool_use_id, name: e.tool, input: boundedJson(e), status: "running" };
-    const active = { name: e.tool, input: e, turnId: state.currentTurnId };
+    const active = { name: e.tool, input: e, turnId };
     state.activeTools.set(tool.id, active);
     if (e.tool === "AskUserQuestion") state.waits.set(active, "question");
-    record(state, { type: "tool-start", tool, revision: state.revision });
+    record(state, { type: "tool-start", turnId, tool, revision: state.revision });
     state.dirty = true;
     try {
       // Rows appended now reach the model with this tool's result, in this turn.
       await deliverSteers($, state);
       const result = await next(e);
-      record(state, {
-        type: "tool-complete",
-        tool: {
-          ...tool,
-          status: result?.isError || result?.deny ? "failed" : "completed",
-          output: boundedJson(result),
-        },
-        revision: state.revision,
-      });
+      if (state.currentTurnId === turnId)
+        record(state, {
+          type: "tool-complete",
+          turnId,
+          tool: {
+            ...tool,
+            status: result?.isError || result?.deny ? "failed" : "completed",
+            output: boundedJson(result),
+          },
+          revision: state.revision,
+        });
       return result;
     } finally {
       if (state.activeTools.get(tool.id) === active) state.activeTools.delete(tool.id);
@@ -2139,6 +2397,24 @@ export function register(on) {
       throw error;
     } finally {
       state.dirty = true;
+    }
+  }).catch(async ($, e, next) => {
+    if (next.called) throw new Error(next.error.message);
+    return next(e);
+  });
+  on("session.compact", async ($, e, next) => {
+    if (e.agentId !== undefined) return next(e);
+    const generation = state.generation;
+    state.compacting = true;
+    state.compactStartedAt = Date.now();
+    state.dirty = true;
+    try {
+      return await next(e);
+    } finally {
+      if (state.generation === generation) {
+        state.compacting = false;
+        state.dirty = true;
+      }
     }
   }).catch(async ($, e, next) => {
     if (next.called) throw new Error(next.error.message);

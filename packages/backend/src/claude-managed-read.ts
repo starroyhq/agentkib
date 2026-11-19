@@ -28,6 +28,7 @@ import type { Commands } from "./commands";
 import type { ClaudeControlMetadataShare, SessionReaders } from "./session-readers";
 import type { BackendStore } from "./store";
 import { canonicalize, pathIdentity } from "./paths";
+import { within } from "./files";
 import { restrictRemotePath } from "./remote-tls";
 import { acquirePortableFileLease } from "./managed-session-lock";
 import { LEAD_ALLOWED_TOOLS, mergeMcpConfigs } from "./orchestration-service";
@@ -75,6 +76,10 @@ import {
 } from "./usage-limit";
 import { createClaudeGoalReportEndpoint } from "./claude-goal-report";
 import { projectContextUsage } from "./context-usage";
+import {
+  readClaudeTranscriptObservation,
+  type ClaudeTranscriptObservation,
+} from "./claude-context-usage";
 import {
   projectSubagentObservations,
   type SubagentObservation,
@@ -233,6 +238,13 @@ export type ClaudeContinuationOptions = {
   selfTurn?: (sessionId: string) => boolean;
   isSessionObserved?: (sessionId: string) => boolean;
   isSessionBridged?: (sessionId: string) => boolean;
+  retainedTerminalUsage?: (
+    sessionId: string,
+    source: { nativeId: string; workspace: string; workspaceId: string },
+    observation: ClaudeTranscriptObservation,
+    readEarlier?: () => ClaudeTranscriptObservation,
+  ) => ClaudeTranscriptObservation["usage"] | undefined;
+  isCatalogObserved?: () => boolean;
 };
 
 /** Manages Claude session ownership, CLI runners, and read-side state. */
@@ -277,6 +289,9 @@ export class ClaudeManagedReadOwner {
   #desktopClaims?: { at: number; claims: Set<string> | null };
   #ownership: ClaudeSessionOwnerProbe;
   #ownershipReasons = new Map<string, { at: number; reason: string | null }>();
+  #externalTurns = new Map<string, { status: "running"; startedAt: string }>();
+  #externalTurnsAt = 0;
+  #externalTurnsRead?: Promise<void>;
   /**
    * The observation behind the displayed ownership of every session in one interval. Each open
    * Claude session used to start its own `claude agents` and `ps` every few seconds; a status
@@ -361,6 +376,68 @@ export class ClaudeManagedReadOwner {
 
   close(): void {
     void this.shutdown().catch(() => undefined);
+  }
+
+  externalTurn(sessionId: string) {
+    return this.#externalTurns.get(sessionId);
+  }
+
+  /** One registry sample for both the directory and all open detail views. */
+  refreshExternalTurns(): Promise<void> {
+    if (this.#externalTurnsRead) return this.#externalTurnsRead;
+    if (this.#shuttingDown || Date.now() - this.#externalTurnsAt < 1_500) return Promise.resolve();
+    const read = this.#ownership
+      .activeRegistryTurns()
+      .catch(() => [])
+      .then((turns) => {
+        if (this.#shuttingDown) return;
+        this.#externalTurnsAt = Date.now();
+        const next = new Map<string, { status: "running"; startedAt: string }>();
+        const counts = new Map<string, number>();
+        for (const turn of turns) counts.set(turn.nativeId, (counts.get(turn.nativeId) ?? 0) + 1);
+        const records = turns.length ? this.#listRecords() : [];
+        const indexed =
+          turns.length > 0 &&
+          !!this.store.sessions.sql.one(
+            "SELECT value FROM schema_meta WHERE key='conversation_salt'",
+          );
+        for (const turn of turns) {
+          if (counts.get(turn.nativeId) !== 1) continue;
+          try {
+            const cwd = canonicalize(turn.cwd);
+            const projected = { status: "running", startedAt: turn.startedAt } as const;
+            if (indexed) {
+              const id = this.store.sessions.id("claude-code", turn.nativeId);
+              const row = this.store.sessions.get(id);
+              if (
+                row?.agent === "claude-code" &&
+                !row.sidechain &&
+                within(cwd, canonicalize(this.store.workspacePath(row.workspace_id)))
+              )
+                next.set(id, projected);
+            }
+            for (const row of records)
+              if (
+                row.nativeId === turn.nativeId &&
+                pathIdentity(row.workspace) === pathIdentity(cwd) &&
+                !this.#runners.get(row.id)?.hasWorker
+              )
+                next.set(row.id, projected);
+          } catch {
+            // A disappearing directory cannot establish ownership of a visible chat.
+          }
+        }
+        const changed =
+          next.size !== this.#externalTurns.size ||
+          [...next].some(([id, turn]) => this.#externalTurns.get(id)?.startedAt !== turn.startedAt);
+        this.#externalTurns = next;
+        if (changed) this.#catalogChanged?.();
+      })
+      .finally(() => {
+        this.#externalTurnsRead = undefined;
+      });
+    this.#externalTurnsRead = read;
+    return read;
   }
 
   invalidateSchedulePermits(sessionId?: string, deviceId?: string): void {
@@ -592,9 +669,14 @@ export class ClaudeManagedReadOwner {
       case "usage": {
         if (!id) throw new Error("missing-session");
         const live = await this.#live(id, false);
+        const usage =
+          !this.#runners.get(id)?.hasWorker &&
+          (!isObject(live.usage) || live.usage.available !== true)
+            ? this.#savedTranscriptObservation(id, { searchEarlier: true }).usage
+            : live.usage;
         return {
           ...projectContextUsage(
-            live.usage ?? { available: false, state: "unavailable" },
+            usage ?? { available: false, state: "unavailable" },
             Number(live.revision),
           ),
           executionMode: "claude-managed",
@@ -608,6 +690,33 @@ export class ClaudeManagedReadOwner {
         return this.#delete(value, id);
       default:
         throw new Error(`unsupported-Claude-managed-operation:${value.operation}`);
+    }
+  }
+
+  #savedTranscriptObservation(
+    id: string,
+    options: {
+      source?: ReturnType<SessionReaders["verifiedClaudeReadSource"]>;
+      searchEarlier?: boolean;
+    } = {},
+  ) {
+    try {
+      const source = options.source ?? this.sessions.verifiedClaudeReadSource(id);
+      const observation = readClaudeTranscriptObservation(
+        source.transcript,
+        source.nativeId,
+        options.searchEarlier,
+      );
+      const retained = this.continuation.retainedTerminalUsage?.(
+        id,
+        source,
+        observation,
+        () =>
+          readClaudeTranscriptObservation(source.transcript, source.nativeId, "terminal-usage"),
+      );
+      return retained ? { ...observation, usage: retained } : observation;
+    } catch {
+      return { usage: { available: false, state: "unavailable" as const }, model: undefined };
     }
   }
 
@@ -3571,13 +3680,17 @@ export class ClaudeManagedReadOwner {
   }
 
   async #maintain(): Promise<void> {
+    const external = this.continuation.isCatalogObserved?.()
+      ? this.refreshExternalTurns()
+      : undefined;
     // One read-only observation per tick serves every live worker, so the patrol cost does not
     // grow with the number of sessions. Each worker is still evaluated with its own process.
     const share = this.#freshObservation();
     const runners = [...this.#runners];
     const workers = new Map(runners.map(([id, runner]) => [id, runner.processId] as const));
-    await Promise.allSettled(
-      runners.map(async ([id, runner]) => {
+    await Promise.allSettled([
+      external,
+      ...runners.map(async ([id, runner]) => {
         if (this.#shuttingDown || runner.isRetiring) return;
         await this.#serializeSession(id, async () => {
           if (this.#shuttingDown || this.#runners.get(id) !== runner || !runner.hasWorker) return;
@@ -3638,7 +3751,7 @@ export class ClaudeManagedReadOwner {
           }
         });
       }),
-    );
+    ]);
   }
 
   async #reconcile(value: Record<string, any>, id: string): Promise<Record<string, unknown>> {
@@ -4338,6 +4451,7 @@ export class ClaudeManagedReadOwner {
         reason,
         cliVersion: version,
         permissionMode: "cli-configured",
+        usage: this.#savedTranscriptObservation(id, { source: target }).usage,
       };
     }
     this.#validate(record);
@@ -4657,7 +4771,7 @@ export class ClaudeManagedReadOwner {
   }
 
   /** Bounded identity discovery for a borrowed native host; this never transfers execution. */
-  async nativeBridgeTarget(id: string, nativeId?: string) {
+  async nativeBridgeTarget(id: string, nativeId?: string, activeWorkspace?: string) {
     const record = this.#load(id);
     this.#assertBridgeAvailable(id, record);
     if (record) {
@@ -4687,8 +4801,9 @@ export class ClaudeManagedReadOwner {
       )?.native_ref;
     }
     if (!nativeId) throw new Error("session-unavailable");
-    const workspace = this.sessions.claudeControlWorkspace(nativeId, registeredWorkspace);
-    this.sessions.verifiedClaudeControlTarget(nativeId, workspace);
+    const sourceWorkspace = this.sessions.claudeControlWorkspace(nativeId, registeredWorkspace);
+    const workspace = activeWorkspace ?? sourceWorkspace;
+    this.#verifyClaudeBridgeWorkspace(nativeId, sourceWorkspace, workspace);
     this.#assertBridgeAvailable(id, record, nativeId, workspace);
     return {
       sessionId: id,
@@ -4741,7 +4856,18 @@ export class ClaudeManagedReadOwner {
       canonicalize(target.workspace) !== target.workspace
     )
       throw new Error("unverified-session-identity");
-    if (forControl) this.sessions.verifiedClaudeControlTarget(target.nativeId, target.workspace);
+    if (forControl) {
+      const sourceWorkspace = this.sessions.claudeControlWorkspace(
+        target.nativeId,
+        target.registeredWorkspace,
+      );
+      this.#verifyClaudeBridgeWorkspace(target.nativeId, sourceWorkspace, target.workspace);
+    }
+  }
+
+  #verifyClaudeBridgeWorkspace(nativeId: string, source: string, workspace: string): void {
+    if (source === workspace) this.sessions.verifiedClaudeControlTarget(nativeId, source);
+    else this.sessions.verifyClaudeBridgeWorktree(nativeId, source, workspace);
   }
 
   #assertBridgeAvailable(
@@ -4757,7 +4883,9 @@ export class ClaudeManagedReadOwner {
       for (const other of this.#listRecords())
         if (
           other.nativeId === nativeId &&
-          other.workspace === workspace &&
+          (other.workspace === workspace ||
+            (workspace !== undefined &&
+              path.dirname(workspace) === path.join(other.workspace, ".claude", "worktrees"))) &&
           other.home === this.#home()
         )
           aliases.set(other.id, other);

@@ -7,7 +7,8 @@ import {
   reconcileCursorNativeImport,
 } from "./cursor-native-import";
 import { CursorBridge } from "./cursor-bridge";
-import { ClaudeBridge } from "./claude-bridge";
+import { ClaudeBridge, type ClaudeBridgeTarget } from "./claude-bridge";
+import { readClaudeTranscriptObservation } from "./claude-context-usage";
 import { DshBridge } from "./dsh-bridge";
 import { DshManagedRuntime } from "./dsh-managed-runtime";
 import { createDshWorker, DshLaneWatch, DshLeadWatch } from "./dsh-lanes";
@@ -729,10 +730,13 @@ export class TypeScriptBackend {
           {
             isSessionObserved: (sessionId) =>
               this.#sessionStream?.hasSubscribers(sessionId) ?? false,
+            isCatalogObserved: () => this.#sessionStream?.hasSubscribers("") ?? false,
             isSessionBridged: (sessionId) => {
-              this.#claudeBridge?.assertCanAdopt();
+              this.#claudeBridge?.assertRegistryValid();
               return this.#claudeBridge?.blocksManagedResume(sessionId) ?? false;
             },
+            retainedTerminalUsage: (sessionId, source, observation, readEarlier) =>
+              this.#claudeBridge?.retainedUsage(sessionId, source, observation, readEarlier),
             // On unless the person turned it off; a worker reads it when it starts.
             backgroundTasks: () => readPreferences(dataDir).claude_background_tasks !== false,
             leadTools: (sessionId) =>
@@ -800,8 +804,30 @@ export class TypeScriptBackend {
           () => this.#sessionStream?.publish("", "invalidate", { domains: ["catalog"] }),
           () => this.#sessionStream?.hasSubscribers("") ?? false,
         );
+        const readTerminalObservation = (target: ClaudeBridgeTarget, searchEarlier: boolean) => {
+          const readers = this.#sessions!;
+          const source = readers.claudeControlWorkspace(
+            target.nativeId,
+            target.registeredWorkspace,
+          );
+          const transcript = readers.verifiedClaudeControlTarget(target.nativeId, source);
+          if (target.workspace !== source)
+            readers.verifyClaudeBridgeWorktree(target.nativeId, source, target.workspace);
+          const observation = readClaudeTranscriptObservation(
+            transcript,
+            target.nativeId,
+            searchEarlier ? "terminal-usage" : false,
+          );
+          // Recheck the source after the bounded optional read, without touching a native worker.
+          readers.verifiedClaudeControlTarget(target.nativeId, source);
+          if (target.workspace !== source)
+            readers.verifyClaudeBridgeWorktree(target.nativeId, source, target.workspace);
+          return observation;
+        };
         this.#claudeBridge = new ClaudeBridge({
           dataDir,
+          legacyDataDir: this.environment.AGENTKIB_LEGACY_DEV_DATA_DIR,
+          sessionIdForNative: (nativeId) => store.sessions.id("claude-code", nativeId),
           bootId: claudeOwner.bootId,
           pluginDirectory: this.environment.AGENTKIB_CLAUDE_PLUGIN_DIR ?? "",
           // A connected terminal session may be a Project Agent (docs/agents/project-agent.md).
@@ -828,7 +854,8 @@ export class TypeScriptBackend {
               return lead?.paused ? (lead.reason ?? "paused") : null;
             },
           },
-          target: (id, nativeId) => claudeOwner.nativeBridgeTarget(id, nativeId),
+          target: (id, nativeId, activeWorkspace) =>
+            claudeOwner.nativeBridgeTarget(id, nativeId, activeWorkspace),
           discoveryFile: path.join(
             this.environment.AGENTKIB_HOME ??
               path.join(
@@ -852,12 +879,32 @@ export class TypeScriptBackend {
             const id = store.sessions.id("claude-code", nativeId);
             if (!store.sessions.get(id))
               await this.#sessionIndex?.refresh({ workspaceId: workspace.id, force: true });
-            return claudeOwner.nativeBridgeTarget(id, nativeId);
+            const target = await claudeOwner.nativeBridgeTarget(id, nativeId, cwd);
+            if (target.workspaceId !== workspace.id) throw new Error("session-workspace-mismatch");
+            return target;
           },
           validate: (target, forControl, bindingId) => {
             if (readPreferences(dataDir).session_index_enabled === false)
               throw new Error("session-index-disabled");
             claudeOwner.validateNativeBridgeTarget(target, forControl, bindingId);
+            if (!forControl) {
+              const readers = this.#sessions!;
+              const source = readers.claudeControlWorkspace(
+                target.nativeId,
+                target.registeredWorkspace,
+              );
+              readers.verifiedClaudeControlTarget(target.nativeId, source);
+              if (target.workspace !== source)
+                readers.verifyClaudeBridgeWorktree(target.nativeId, source, target.workspace);
+            }
+          },
+          observation: (target) => readTerminalObservation(target, true),
+          permission: (target) => {
+            const recent = readTerminalObservation(target, false).permissionMode;
+            // A long tool result can push the last mode marker beyond the small usage tail.
+            return recent === undefined
+              ? (readTerminalObservation(target, true).permissionMode ?? null)
+              : recent;
           },
           publish: (id, type, payload, live) => this.#publishSession(id, type, payload, live),
           completed: (target, turnId, aborted) =>
@@ -1314,7 +1361,9 @@ export class TypeScriptBackend {
       return this.#withWebRead((owner) => owner.request(params)).then((value) => {
         if (!value || typeof value !== "object" || Array.isArray(value)) return value;
         const catalog = value as Record<string, unknown>;
-        const records = this.#claudeManaged!.catalog();
+        const claude = this.#claudeManaged!;
+        void claude.refreshExternalTurns().catch(() => undefined);
+        const records = claude.catalog();
         const managedIds = new Set(records.map((record) => record.id));
         const aliases = new Set(
           records.flatMap((record) =>
@@ -1351,7 +1400,7 @@ export class TypeScriptBackend {
             ? projection && typeof projection === "object" && !Array.isArray(projection)
               ? (projection as Record<string, unknown>)
               : undefined
-            : this.#claudeManaged!.catalogContinuation(row.id);
+            : claude.catalogContinuation(row.id);
           try {
             if (
               this.#claudeBridge?.handles(row.id) &&
@@ -1366,9 +1415,13 @@ export class TypeScriptBackend {
               reason: "claude-bridge-registry-invalid",
             };
           }
+          const externalTurn = !["terminal", "agentkib"].includes(String(live?.executionLocation))
+            ? claude.externalTurn(row.id)
+            : undefined;
+          const observedRow = externalTurn ? { ...row, externalTurn } : row;
           return live
             ? {
-                ...row,
+                ...observedRow,
                 continuation: {
                   status: live.status,
                   executionLocation: live.executionLocation,
@@ -1376,7 +1429,7 @@ export class TypeScriptBackend {
                   reason: live.reason,
                 },
               }
-            : row;
+            : observedRow;
         };
         const merged = [
           ...sessions.filter(
@@ -2738,7 +2791,7 @@ export class TypeScriptBackend {
           writePreference(this.#dataDir, "claude_background_tasks", params.enabled);
         return { backgroundTasks: await this.#claudeManaged.backgroundTasksStatus() };
       }
-      if (params.operation === "adopt") this.#claudeBridge?.assertCanAdopt();
+      if (params.operation === "adopt") this.#claudeBridge?.assertRegistryValid();
       if (
         ["bridge-status", "bridge-challenge", "bridge-disconnect", "bridge-auto-connect"].includes(
           String(params.operation),

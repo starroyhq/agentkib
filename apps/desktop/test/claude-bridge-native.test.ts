@@ -1,6 +1,7 @@
 // @vitest-environment node
-// Opt in on macOS with AGENTKIB_CLAUDE_BRIDGE_NATIVE=1. This runs the installed
-// 2.1.301 TUI against a synthetic localhost provider, never a real model account.
+// On macOS, AGENTKIB_CLAUDE_BRIDGE_NATIVE=1 exercises the pinned 2.1.301 TUI.
+// AGENTKIB_CLAUDE_BRIDGE_NATIVE_RESTART=1 tests broker restarts with the installed TUI.
+// Both use synthetic localhost providers. The chooser fixture requires no provider.
 import { randomUUID } from "node:crypto";
 import { spawn, spawnSync, type ChildProcessWithoutNullStreams } from "node:child_process";
 import { createServer, type ServerResponse } from "node:http";
@@ -12,6 +13,7 @@ import {
   readFileSync,
   readdirSync,
   realpathSync,
+  rmSync,
   writeFileSync,
 } from "node:fs";
 import path from "node:path";
@@ -244,14 +246,7 @@ describe.skipIf(process.platform !== "darwin" || process.env.AGENTKIB_CLAUDE_BRI
           });
           return;
         }
-        event(response, "content_block_stop", { type: "content_block_stop", index: 0 });
-        event(response, "message_delta", {
-          type: "message_delta",
-          delta: { stop_reason: "end_turn", stop_sequence: null },
-          usage: { output_tokens: 8 },
-        });
-        event(response, "message_stop", { type: "message_stop" });
-        response.end();
+        completeTestResponse(response);
       });
       await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
       const port = (server.address() as { port: number }).port;
@@ -606,3 +601,510 @@ describe.skipIf(process.platform !== "darwin" || process.env.AGENTKIB_CLAUDE_BRI
     }, 120_000);
   },
 );
+
+describe.skipIf(
+  process.platform !== "darwin" || process.env.AGENTKIB_CLAUDE_BRIDGE_NATIVE_RESTART !== "1",
+)("installed Claude terminal reconnect", () => {
+  it("reconnects the same terminal from a subdirectory twice and restores its live turn", async () => {
+    const root = realpathSync(mkdtempSync(path.join(tmpdir(), "ak-reconnect-")));
+    const workspace = path.join(root, "workspace"),
+      nestedDirectory = path.join(workspace, "fixture-subdirectory"),
+      home = path.join(root, "home"),
+      config = path.join(root, "config"),
+      plugin = path.join(root, "plugin"),
+      dataDir = path.join(root, "data");
+    for (const dir of [workspace, nestedDirectory, home, config]) mkdirSync(dir, { mode: 0o700 });
+    cpSync(path.resolve(import.meta.dirname, "../../../packages/claude-bridge-plugin"), plugin, {
+      recursive: true,
+    });
+    writeFileSync(
+      path.join(config, ".claude.json"),
+      JSON.stringify({
+        hasCompletedOnboarding: true,
+        theme: "dark",
+        projects: { [workspace]: { hasTrustDialogAccepted: true, projectOnboardingSeenCount: 1 } },
+      }),
+    );
+    writeFileSync(
+      path.join(config, "settings.json"),
+      JSON.stringify({ permissions: { defaultMode: "manual" }, enabledPlugins: {} }),
+    );
+
+    const sessionId = "native-reconnect-session";
+    const nativeId = randomUUID();
+    const target: ClaudeBridgeTarget = {
+      sessionId,
+      nativeId,
+      workspaceId: "workspace",
+      workspace,
+      registeredWorkspace: workspace,
+    };
+    const idleMessage = `idle-reconnect-${randomUUID()}`;
+    const runningMessage = `running-reconnect-${randomUUID()}`;
+    const messages: string[] = [];
+    const held = new Set<ServerResponse>();
+    const server = createServer(async (request, response) => {
+      const chunks: Buffer[] = [];
+      for await (const chunk of request) chunks.push(Buffer.from(chunk));
+      response.setHeader("Content-Type", "application/json");
+      if (request.url?.includes("count_tokens")) {
+        response.end('{"input_tokens":64}');
+        return;
+      }
+      if (!request.url?.startsWith("/v1/messages")) {
+        response.end("{}");
+        return;
+      }
+      const body = JSON.parse(Buffer.concat(chunks).toString());
+      const prompt = [...(body.messages ?? [])].findLast((message) => message.role === "user");
+      const text =
+        typeof prompt?.content === "string"
+          ? prompt.content
+          : [...(prompt?.content ?? [])]
+              .filter((block) => block.type === "text")
+              .map((block) => block.text)
+              .join("\n");
+      const testPrompt = [idleMessage, runningMessage].find((candidate) =>
+        text.includes(candidate),
+      );
+      if (body.stream && testPrompt) messages.push(testPrompt);
+      const message = {
+        id: `msg_${randomUUID()}`,
+        type: "message",
+        role: "assistant",
+        model: body.model,
+        content: [],
+        stop_reason: null,
+        stop_sequence: null,
+        usage: { input_tokens: 64, output_tokens: 0 },
+      };
+      if (!body.stream) {
+        response.end(
+          JSON.stringify({
+            ...message,
+            content: [{ type: "text", text: "fixture reply" }],
+            stop_reason: "end_turn",
+          }),
+        );
+        return;
+      }
+      response.setHeader("Content-Type", "text/event-stream");
+      event(response, "message_start", { type: "message_start", message });
+      event(response, "content_block_start", {
+        type: "content_block_start",
+        index: 0,
+        content_block: { type: "text", text: "" },
+      });
+      event(response, "content_block_delta", {
+        type: "content_block_delta",
+        index: 0,
+        delta: { type: "text_delta", text: "fixture reply" },
+      });
+      if (testPrompt === runningMessage) {
+        held.add(response);
+        response.once("close", () => held.delete(response));
+        return;
+      }
+      completeTestResponse(response);
+    });
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+    const port = (server.address() as { port: number }).port;
+
+    let bootId = randomUUID();
+    let cutOnTurn = false;
+    let originalTurn: string | undefined;
+    let interruption: Promise<void> | undefined;
+    const openBridge = () => {
+      const current = new ClaudeBridge({
+        dataDir,
+        bootId,
+        pluginDirectory: plugin,
+        target: async () => target,
+        discoveryFile: path.join(home, ".agentkib", "claude-bridge", "auto-v1.json"),
+        autoTarget: async (id, cwd) => {
+          if (id !== nativeId || cwd !== workspace) throw new Error("unexpected-fixture-identity");
+          return target;
+        },
+        validate: () => undefined,
+        publish: (_id, type, _payload, live) => {
+          if (cutOnTurn && type === "state" && typeof live.turnId === "string") {
+            // Close the broker after dispatch and before it can persist the send acknowledgement.
+            cutOnTurn = false;
+            originalTurn = live.turnId;
+            interruption = current.close();
+          }
+        },
+      });
+      current.initialize();
+      return current;
+    };
+    let bridge = openBridge();
+    const tty = terminal(
+      process.env.AGENTKIB_CLAUDE_EXECUTABLE ?? path.join(homedir(), ".local/bin/claude"),
+      [
+        "--session-id",
+        nativeId,
+        "--plugin-dir",
+        plugin,
+        "--setting-sources",
+        "user",
+        "--model",
+        "claude-sonnet-4-5-20250929",
+      ],
+      workspace,
+      {
+        PATH: process.env.PATH,
+        LANG: "en_US.UTF-8",
+        TERM: "xterm-256color",
+        HOME: home,
+        USERPROFILE: home,
+        TMPDIR: process.env.TMPDIR,
+        XDG_CONFIG_HOME: path.join(home, ".config"),
+        CLAUDE_CONFIG_DIR: config,
+        ANTHROPIC_AUTH_TOKEN: "synthetic-offline-fixture",
+        ANTHROPIC_BASE_URL: `http://127.0.0.1:${port}`,
+        CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: "1",
+        DISABLE_AUTOUPDATER: "1",
+      },
+    );
+    const live = () => (bridge.handles(sessionId) ? bridge.live(sessionId, true) : null);
+    const bindingId = () =>
+      JSON.parse(readFileSync(path.join(dataDir, "claude-bridge/bindings-v1.json"), "utf8"))
+        .bindings[0].bindingId;
+    const command = (text: string) => ({
+      operation: "send",
+      sessionId,
+      requestId: randomUUID(),
+      deviceId: "agentkib-local-owner",
+      runtimeBootId: bootId,
+      expectedRevision: live()!.revision,
+      experimentalEnabled: true,
+      text,
+    });
+    let failure: { error: unknown } | undefined;
+    try {
+      await expect
+        .poll(
+          () =>
+            tty.text.includes("Make auto mode your default permission mode") ||
+            live()?.sendEnabled === true,
+          { timeout: 15_000 },
+        )
+        .toBe(true);
+      if (tty.text.includes("Make auto mode your default permission mode")) {
+        tty.write("\x1b[B");
+        await new Promise((resolve) => setTimeout(resolve, 300));
+        tty.write("\r");
+      }
+      await expect
+        .poll(live, { timeout: 20_000 })
+        .toMatchObject({ sourceSessionId: nativeId, sendEnabled: true });
+      const savedBinding = bindingId();
+      const first = command(idleMessage);
+      await expect(bridge.request(first)).resolves.toMatchObject({ accepted: true });
+      await expect.poll(() => messages, { timeout: 10_000 }).toEqual([idleMessage]);
+      await expect
+        .poll(live, { timeout: 10_000 })
+        .toMatchObject({ status: "idle", sendEnabled: true });
+      const firstLease = live()!.connectionGeneration;
+
+      const transcript = readdirSync(config, { recursive: true }).find((item) =>
+        String(item).endsWith(`${nativeId}.jsonl`),
+      );
+      expect(transcript).toBeDefined();
+      const transcriptPath = path.join(config, String(transcript));
+      tty.write("!");
+      await new Promise((resolve) => setTimeout(resolve, 300));
+      tty.write("cd fixture-subdirectory && pwd\r");
+      await expect.poll(() => tty.text, { timeout: 10_000 }).toContain(nestedDirectory);
+      // A subsequent local command records the persisted native working directory.
+      tty.write("/agentkib-status\r");
+      await expect
+        .poll(
+          () => {
+            const content = readFileSync(transcriptPath, "utf8");
+            return content
+              .slice(0, content.lastIndexOf("\n"))
+              .split("\n")
+              .filter((line) => line.trim())
+              .some((line) => {
+                const row = JSON.parse(line);
+                return (
+                  row.sessionId === nativeId && !row.isSidechain && row.cwd === nestedDirectory
+                );
+              });
+          },
+          { timeout: 10_000 },
+        )
+        .toBe(true);
+      await expect.poll(live, { timeout: 10_000 }).toMatchObject({
+        connectionGeneration: firstLease,
+        status: "idle",
+        sendEnabled: true,
+      });
+      expect(messages).toEqual([idleMessage]);
+
+      await bridge.close();
+      bootId = randomUUID();
+      bridge = openBridge();
+      await expect
+        .poll(live, { timeout: 25_000 })
+        .toMatchObject({ sourceSessionId: nativeId, status: "idle", sendEnabled: true });
+      expect(bindingId()).toBe(savedBinding);
+      const secondLease = live()!.connectionGeneration;
+      expect(secondLease).not.toBe(firstLease);
+      await expect(bridge.request(first)).resolves.toMatchObject({ accepted: true });
+      expect(messages).toEqual([idleMessage]);
+
+      const second = command(runningMessage);
+      cutOnTurn = true;
+      await expect(bridge.request(second)).resolves.toMatchObject({ controlOutcome: "unknown" });
+      expect(originalTurn).toEqual(expect.any(String));
+      await interruption;
+      await expect.poll(() => held.size, { timeout: 10_000 }).toBe(1);
+      bootId = randomUUID();
+      bridge = openBridge();
+      await expect.poll(live, { timeout: 25_000 }).toMatchObject({
+        sourceSessionId: nativeId,
+        status: "running",
+        turnId: originalTurn,
+        sendEnabled: false,
+      });
+      expect(bindingId()).toBe(savedBinding);
+      expect(live()!.connectionGeneration).not.toBe(firstLease);
+      expect(live()!.connectionGeneration).not.toBe(secondLease);
+      await expect(bridge.request(second)).resolves.toMatchObject({ accepted: true });
+      expect(messages).toEqual([idleMessage, runningMessage]);
+
+      completeTestResponse([...held][0]!);
+      await expect
+        .poll(live, { timeout: 10_000 })
+        .toMatchObject({ status: "idle", sendEnabled: true });
+      await expect(bridge.request(second)).resolves.toMatchObject({
+        accepted: true,
+        completed: true,
+      });
+      expect(messages).toEqual([idleMessage, runningMessage]);
+      expect(tty.child.exitCode).toBeNull();
+      expect(
+        readdirSync(config, { recursive: true }).filter((item) =>
+          String(item).endsWith(`${nativeId}.jsonl`),
+        ),
+      ).toHaveLength(1);
+    } catch (error) {
+      failure = { error };
+    } finally {
+      await finishClaudeBridgeNative({
+        terminal: tty,
+        bridge,
+        provider: server,
+        held,
+        root,
+        failure,
+        saveEvidence() {},
+      });
+    }
+  }, 105_000);
+});
+
+function completeTestResponse(response: ServerResponse) {
+  event(response, "content_block_stop", { type: "content_block_stop", index: 0 });
+  event(response, "message_delta", {
+    type: "message_delta",
+    delta: { stop_reason: "end_turn", stop_sequence: null },
+    usage: { output_tokens: 8 },
+  });
+  event(response, "message_stop", { type: "message_stop" });
+  response.end();
+}
+
+describe.skipIf(
+  process.platform !== "darwin" || process.env.AGENTKIB_CLAUDE_BRIDGE_NATIVE_PICKER !== "1",
+)("installed Claude terminal model picker", () => {
+  it("opens the actual chooser on the same terminal and reads a session-only selection after its dispatch receipt", async () => {
+    const root = realpathSync(mkdtempSync(path.join(tmpdir(), "ak-picker-")));
+    const workspace = path.join(root, "workspace"),
+      home = path.join(root, "home"),
+      config = path.join(root, "config");
+    for (const dir of [workspace, home, config]) mkdirSync(dir, { mode: 0o700 });
+    writeFileSync(
+      path.join(config, ".claude.json"),
+      JSON.stringify({
+        hasCompletedOnboarding: true,
+        theme: "dark",
+        projects: { [workspace]: { hasTrustDialogAccepted: true, projectOnboardingSeenCount: 1 } },
+      }),
+    );
+    const settings = path.join(config, "settings.json");
+    writeFileSync(
+      settings,
+      JSON.stringify({
+        permissions: { defaultMode: "manual" },
+        model: "sonnet",
+        enabledPlugins: {},
+      }),
+    );
+    const nativeId = randomUUID(),
+      sessionId = "native-picker-session",
+      bootId = randomUUID();
+    const plugin = path.join(root, "plugin");
+    cpSync(path.resolve(import.meta.dirname, "../../../packages/claude-bridge-plugin"), plugin, {
+      recursive: true,
+    });
+    const target = {
+      nativeId,
+      sessionId,
+      workspaceId: "workspace",
+      workspace,
+      registeredWorkspace: workspace,
+    };
+    const dataDir = path.join(root, "data");
+    const openBridge = (runtimeBootId: string) =>
+      new ClaudeBridge({
+        dataDir,
+        bootId: runtimeBootId,
+        pluginDirectory: plugin,
+        target: async () => target,
+        discoveryFile: path.join(home, ".agentkib", "claude-bridge", "auto-v1.json"),
+        autoTarget: async (id, cwd) => {
+          if (id !== nativeId || cwd !== workspace) throw new Error("unexpected-fixture-identity");
+          return target;
+        },
+        validate: () => undefined,
+        publish: () => undefined,
+      });
+    let bridge = openBridge(bootId);
+    bridge.initialize();
+    // Only this fixture's terminal is driven. No real model endpoint or account is used.
+    const tty = terminal(
+      process.env.AGENTKIB_CLAUDE_EXECUTABLE ?? path.join(homedir(), ".local/bin/claude"),
+      ["--session-id", nativeId, "--plugin-dir", plugin],
+      workspace,
+      {
+        PATH: process.env.PATH,
+        LANG: "en_US.UTF-8",
+        TERM: "xterm-256color",
+        HOME: home,
+        USERPROFILE: home,
+        TMPDIR: process.env.TMPDIR,
+        XDG_CONFIG_HOME: path.join(home, ".config"),
+        CLAUDE_CONFIG_DIR: config,
+        ANTHROPIC_AUTH_TOKEN: "synthetic-offline-fixture",
+        ANTHROPIC_BASE_URL: "http://127.0.0.1:4",
+        CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: "1",
+        DISABLE_AUTOUPDATER: "1",
+      },
+    );
+    const observedModel = async () => {
+      const state = await bridge.request({ operation: "settings-state", sessionId });
+      return (state.current as { model?: string } | undefined)?.model;
+    };
+    try {
+      // Fresh CLI profiles may ask this before rendering the first idle prompt.
+      await expect
+        .poll(
+          () =>
+            tty.text.includes("Make auto mode your default permission mode") ||
+            (bridge.handles(sessionId) && bridge.live(sessionId, true).modelPickerEnabled === true),
+          { timeout: 15000 },
+        )
+        .toBe(true);
+      if (tty.text.includes("Make auto mode your default permission mode")) {
+        tty.write("\x1b[B");
+        await new Promise((resolve) => setTimeout(resolve, 300));
+        tty.write("\r");
+      }
+      await expect
+        .poll(() => bridge.live(sessionId, true).modelPickerEnabled, { timeout: 20_000 })
+        .toBe(true);
+      const initial = await observedModel();
+      expect(initial).toMatch(/sonnet/i);
+      const input = {
+        operation: "open-model-picker",
+        sessionId,
+        requestId: randomUUID(),
+        deviceId: "agentkib-local-owner",
+        runtimeBootId: bootId,
+        expectedRevision: bridge.live(sessionId, true).revision,
+        experimentalEnabled: true,
+      };
+      const opened = await bridge.request(input);
+      expect(opened).toMatchObject({ accepted: true, completed: false });
+      await expect
+        .poll(() => tty.text.includes("Select model") && tty.text.includes("5. Haiku"), {
+          timeout: 8000,
+        })
+        .toBe(true);
+      await expect
+        .poll(() => bridge.live(sessionId, true), { timeout: 8000 })
+        .toMatchObject({
+          status: "idle",
+          turnId: null,
+          reason: "claude-model-picker-open",
+          sendEnabled: false,
+        });
+      expect(await observedModel()).toBe(initial);
+      expect(await bridge.request(input)).toEqual(opened);
+      tty.write("\x1b[B");
+      await new Promise((resolve) => setTimeout(resolve, 300));
+      tty.write("s");
+      await expect.poll(observedModel, { timeout: 10000 }).toMatch(/haiku/i);
+      await expect
+        .poll(() => bridge.live(sessionId, true), { timeout: 8000 })
+        .toMatchObject({
+          status: "idle",
+          modelPickerEnabled: true,
+          sendEnabled: true,
+        });
+      expect(JSON.parse(readFileSync(settings, "utf8")).model).toBe("sonnet");
+      expect(bridge.live(sessionId, true)).toMatchObject({
+        sourceSessionId: nativeId,
+        turnId: null,
+      });
+      const selected = await observedModel();
+      await bridge.request({
+        ...input,
+        requestId: randomUUID(),
+        expectedRevision: bridge.live(sessionId, true).revision,
+      });
+      await expect
+        .poll(() => bridge.live(sessionId, true), { timeout: 8000 })
+        .toMatchObject({
+          status: "idle",
+          reason: "claude-model-picker-open",
+        });
+      tty.write("\x1b");
+      await expect
+        .poll(() => bridge.live(sessionId, true), { timeout: 8000 })
+        .toMatchObject({
+          status: "idle",
+          modelPickerEnabled: true,
+          sendEnabled: true,
+        });
+      expect(await observedModel()).toBe(selected);
+      const bindingId = () =>
+        JSON.parse(readFileSync(path.join(dataDir, "claude-bridge/bindings-v1.json"), "utf8"))
+          .bindings[0].bindingId;
+      const savedBinding = bindingId();
+      const oldLease = bridge.live(sessionId, true).connectionGeneration;
+      await bridge.close();
+      bridge = openBridge(randomUUID());
+      bridge.initialize();
+      await expect
+        .poll(() => bridge.live(sessionId, true), { timeout: 25_000 })
+        .toMatchObject({
+          sourceSessionId: nativeId,
+          executionLocation: "terminal",
+          status: "idle",
+          sendEnabled: true,
+        });
+      expect(bridge.live(sessionId, true).connectionGeneration).not.toBe(oldLease);
+      expect(bindingId()).toBe(savedBinding);
+      expect(await observedModel()).toBe(selected);
+    } finally {
+      await tty.close();
+      await bridge.close();
+      rmSync(root, { recursive: true, force: true });
+    }
+  }, 65_000);
+});

@@ -58,7 +58,7 @@ pnpm dev
 
 This launches **AgentKib Dev** with its own Electron window profile. Dev and stable automatically attach to the same per-user TypeScript runtime. The first client can start the runtime, both clients receive the same Agent session events, and the runtime stays up while either client is connected. It uses the existing stable application data directory and one authenticated local socket or pipe.
 
-Close any older standalone AgentKib version before launching the shared runtime. Existing stable terminal credentials are reused. The old Dev database remains available in isolated mode.
+Close any older standalone AgentKib version before launching the shared runtime. Existing stable terminal credentials are reused. The runtime also reuses eligible legacy Dev Claude credentials when the native session and registered workspace match and outstanding commands are settled. The old Dev database remains available in isolated mode.
 
 To test backend or database changes with the isolated Dev profile, use:
 
@@ -189,7 +189,7 @@ pnpm dev
 
 该命令启动 **AgentKib Dev**，它保留独立的 Electron 窗口配置。Dev 和正式版自动连接同一系统用户的 TypeScript 运行时。先打开的客户端可以启动服务，两边收到同一份 Agent 会话事件。仍有客户端连接时，服务继续运行。运行时使用正式版原有数据目录，通过认证的本地 socket 或命名管道通信。
 
-升级后先退出还在运行的旧版独立后端。正式版终端沿用现有凭据。旧 Dev 数据库可通过隔离模式查看。
+升级后先退出还在运行的旧版独立后端。正式版终端沿用现有凭据。旧 Dev 的 Claude 凭据在原生会话和已登记工作区一致、且历史命令已确认时自动续用。旧 Dev 数据库可通过隔离模式查看。
 
 需要验证后端或数据库改动时，可用隔离模式启动 Dev。
 

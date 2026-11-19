@@ -1,7 +1,9 @@
 // @vitest-environment node
+import { randomUUID } from "node:crypto";
 import { spawn, type ChildProcess } from "node:child_process";
 import { once } from "node:events";
-import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { request } from "node:http";
 import { createRequire } from "node:module";
 import { createServer } from "node:net";
 import { tmpdir } from "node:os";
@@ -18,10 +20,17 @@ import {
   type SessionSubscription,
 } from "@agentkib/runtime-protocol";
 import { afterEach, expect, it } from "vitest";
+import { BackendStore } from "../../../packages/backend/src/store";
 import { resolveDesktopRuntimeProfile } from "../electron/main/application-data-dir";
 import { createLocalRuntimeTransport } from "../electron/main/local-runtime-transport";
 import { DesktopRuntimeHost } from "../electron/main/runtime-host";
 import { RuntimeRouter } from "../electron/main/runtime-router";
+import {
+  assistantRecord,
+  jsonl,
+  userRecord,
+  writeTranscript,
+} from "./fixtures/claude-native-session";
 
 const require = createRequire(import.meta.url);
 const electronPath: string = require("electron");
@@ -183,3 +192,246 @@ it("retains the benchmark data override as an isolated worker", async () => {
     dataDir: path.resolve(directory),
   });
 });
+
+function olderDevBinding(fixture: Awaited<ReturnType<typeof runtimeFixture>>) {
+  const nativeId = randomUUID();
+  const bindingId = randomUUID();
+  const token = "d".repeat(64);
+  const workspace = path.join(fixture.directory, "project");
+  const workspaceId = "registered";
+  const timestamp = new Date().toISOString();
+  const claudeProject = path.join(
+    fixture.directory,
+    ".claude",
+    "projects",
+    workspace.replace(/[^a-zA-Z0-9]/g, "-"),
+  );
+  mkdirSync(workspace);
+  const user = userRecord(nativeId, { cwd: workspace, timestamp });
+  const assistant = assistantRecord(nativeId, user.uuid, { cwd: workspace, timestamp });
+  writeTranscript(claudeProject, jsonl([user, assistant]), { name: `${nativeId}.jsonl` });
+
+  const store = new BackendStore(path.join(fixture.dataDir, "agentkib.db"));
+  const sessionId = store.sessions.id("claude-code", nativeId);
+  try {
+    store.sql.run(
+      "INSERT INTO workspaces(id,canonical_path,name,status,last_discovered_at) VALUES(?,?,?,?,?)",
+      workspaceId,
+      workspace,
+      "Fixture",
+      "healthy",
+      timestamp,
+    );
+    store.sessions.sync(workspaceId, "claude-code", [
+      {
+        native_ref: nativeId,
+        agent: "claude-code",
+        title: "Terminal fixture",
+        created_at: timestamp,
+        updated_at: timestamp,
+        message_count: 2,
+        git_branch: null,
+        archived: false,
+        sidechain: false,
+        availability: "readable",
+        origin: "interactive",
+      },
+    ]);
+  } finally {
+    store.close();
+  }
+
+  const oldBridge = path.join(fixture.shared.legacyDevDataDir, "claude-bridge");
+  mkdirSync(oldBridge, { recursive: true, mode: 0o700 });
+  const target = {
+    sessionId: randomUUID(),
+    nativeId,
+    workspaceId: "old-registration",
+    workspace,
+    registeredWorkspace: workspace,
+  };
+  writeFileSync(
+    path.join(oldBridge, "bindings-v1.json"),
+    JSON.stringify({
+      version: 1,
+      bindings: [
+        {
+          version: 1,
+          bindingId,
+          token,
+          target,
+          revoked: false,
+          inflight: null,
+        },
+      ],
+    }),
+    { mode: 0o600 },
+  );
+  const oldSocket = "/tmp/unused-agentkib-old-dev-bridge.sock";
+  const credential = path.join(oldBridge, `${bindingId}.credential.json`);
+  writeFileSync(
+    credential,
+    JSON.stringify({
+      protocol: 1,
+      nativeId,
+      cwd: workspace,
+      bindingId,
+      token,
+      socketPath: oldSocket,
+    }),
+    { mode: 0o600 },
+  );
+
+  return { bindingId, credential, nativeId, oldSocket, sessionId, token, workspace };
+}
+
+function bridgeRequest<T>(
+  socketPath: string,
+  token: string,
+  endpoint: string,
+  body: unknown,
+): Promise<T> {
+  return new Promise((resolve, reject) => {
+    const req = request(
+      {
+        socketPath,
+        path: endpoint,
+        method: "POST",
+        headers: { Host: "localhost", Authorization: `Bearer ${token}`, Connection: "close" },
+      },
+      (response) => {
+        const chunks: Buffer[] = [];
+        response.on("data", (chunk: Buffer) => chunks.push(chunk));
+        response.on("error", reject);
+        response.on("end", () => {
+          const data = Buffer.concat(chunks).toString();
+          if (response.statusCode !== 200) {
+            reject(
+              new Error(`Fixture terminal ${endpoint} returned ${response.statusCode}: ${data}`),
+            );
+            return;
+          }
+          try {
+            resolve(JSON.parse(data) as T);
+          } catch (error) {
+            reject(error);
+          }
+        });
+      },
+    );
+    req.setTimeout(3_000, () => req.destroy(new Error(`Fixture terminal ${endpoint} timed out`)));
+    req.on("error", reject);
+    req.end(JSON.stringify(body));
+  });
+}
+
+it.skipIf(!["darwin", "linux"].includes(process.platform))(
+  "reconnects an existing Dev terminal credential and streams the same turn to both desktops",
+  async () => {
+    const runtime = await runtimeFixture();
+    const binding = olderDevBinding(runtime);
+    const [formal, dev] = await Promise.all([runtime.attach("formal"), runtime.attach("dev")]);
+    expect(formal.handshake.pid).toBe(dev.handshake.pid);
+
+    const readCredential = () =>
+      JSON.parse(readFileSync(binding.credential, "utf8")) as {
+        socketPath: string;
+        bindingId: string;
+        token: string;
+      };
+    await expect.poll(() => readCredential().socketPath).not.toBe(binding.oldSocket);
+    const credential = readCredential();
+    expect(credential).toMatchObject({ bindingId: binding.bindingId, token: binding.token });
+    const identity = {
+      protocol: 1,
+      bindingId: binding.bindingId,
+      nativeId: binding.nativeId,
+      cwd: binding.workspace,
+      cliVersion: "2.1.301",
+      pluginVersion: "0.4.0",
+      instanceId: randomUUID(),
+      nativeCapabilities: {
+        version: 1,
+        available: [
+          "session-identity",
+          "session-messages",
+          "session-usage",
+          "credential-store",
+          "credential-read",
+        ],
+      },
+    };
+    const lease = await bridgeRequest<{ leaseId: string; bindingId: string }>(
+      credential.socketPath,
+      binding.token,
+      "/v1/reconnect",
+      identity,
+    );
+    expect(lease.bindingId).toBe(binding.bindingId);
+    const [formalSubscription, devSubscription] = await Promise.all([
+      formal.subscribe(binding.sessionId),
+      dev.subscribe(binding.sessionId),
+    ]);
+    const turnId = randomUUID();
+    await expect(
+      bridgeRequest(credential.socketPath, binding.token, "/v1/events", {
+        bindingId: binding.bindingId,
+        leaseId: lease.leaseId,
+        nativeId: binding.nativeId,
+        cwd: binding.workspace,
+        instanceId: identity.instanceId,
+        events: [
+          {
+            seq: 1,
+            event: {
+              type: "snapshot",
+              snapshot: {
+                ...identity,
+                revision: 1,
+                currentTurnId: turnId,
+                status: "running",
+                waiting: null,
+                messages: [],
+                toolItems: [],
+                streamText: "",
+                usage: null,
+                outbox: [],
+                capabilities: {
+                  read: true,
+                  send: true,
+                  steer: true,
+                  queue: true,
+                  stop: true,
+                  approve: false,
+                  answer: false,
+                },
+              },
+            },
+          },
+        ],
+      }),
+    ).resolves.toEqual({ ackSeq: 1 });
+    const notified = (events: SessionStreamEvent[]) =>
+      events.find(
+        (event) =>
+          event.sessionId === binding.sessionId &&
+          event.type === "state" &&
+          event.payload.turnId === turnId,
+      );
+    await expect
+      .poll(() => notified(formal.events))
+      .toMatchObject({ subscriptionId: formalSubscription.subscriptionId });
+    await expect
+      .poll(() => notified(dev.events))
+      .toMatchObject({ subscriptionId: devSubscription.subscriptionId });
+    const formalEvent = notified(formal.events)!;
+    const devEvent = notified(dev.events)!;
+    expect(devEvent).toMatchObject({
+      runtimeBootId: formalEvent.runtimeBootId,
+      epoch: formalEvent.epoch,
+      seq: formalEvent.seq,
+      payload: formalEvent.payload,
+    });
+  },
+  30_000,
+);

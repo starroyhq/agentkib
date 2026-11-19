@@ -31,6 +31,13 @@ export type ClaudeOwnerObservation = {
 /** Lets one maintenance tick evaluate all of its workers against a single observation. */
 export type ClaudeOwnerObservationShare = { current?: Promise<ClaudeOwnerObservation> };
 
+export type ClaudeRegistryTurn = {
+  nativeId: string;
+  cwd: string;
+  startedAt: string;
+  pid: number;
+};
+
 const unavailable = () => new Error("claude-owner-check-unavailable");
 const uuidPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const object = (value: unknown): value is Record<string, unknown> =>
@@ -149,6 +156,42 @@ export class ClaudeSessionOwnerProbe {
       processes,
       registry: processes ? this.#registry(processes) : { uncertain: false, entries: [] },
     };
+  }
+
+  /** Display only. A matching live process can report activity before its bridge is online. */
+  async activeRegistryTurns(): Promise<ClaudeRegistryTurn[]> {
+    if (process.platform !== "darwin" && process.platform !== "linux") return [];
+    const processes = await this.#processes();
+    const registry = this.#registry(processes);
+    if (registry.uncertain) return [];
+    const turns: ClaudeRegistryTurn[] = [];
+    for (const { pid, value } of registry.entries) {
+      if (!object(value) || value.status !== "working") continue;
+      const processRow = processes.get(pid);
+      if (
+        !processRow ||
+        value.pid !== pid ||
+        value.pidDomain !== process.platform ||
+        typeof value.procStart !== "string" ||
+        normalizedStart(value.procStart) !== processRow.start ||
+        typeof value.sessionId !== "string" ||
+        !uuidPattern.test(value.sessionId) ||
+        typeof value.cwd !== "string" ||
+        !path.isAbsolute(value.cwd) ||
+        typeof value.statusUpdatedAt !== "number" ||
+        !Number.isSafeInteger(value.statusUpdatedAt) ||
+        value.statusUpdatedAt <= 0 ||
+        value.statusUpdatedAt > Date.now() + 2_000
+      )
+        continue;
+      turns.push({
+        nativeId: value.sessionId.toLowerCase(),
+        cwd: value.cwd,
+        startedAt: new Date(value.statusUpdatedAt).toISOString(),
+        pid,
+      });
+    }
+    return turns;
   }
 
   #evaluate(

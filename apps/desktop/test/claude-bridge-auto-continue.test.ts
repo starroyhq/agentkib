@@ -24,7 +24,9 @@ import { RemoteAgent } from "../../../packages/backend/src/remote-agent";
 import {
   claimManagedCommand,
   dispatchManagedCommand,
+  readUnknownManagedCommands,
 } from "../../../packages/backend/src/managed-ledger";
+import { acquirePortableFileLease } from "../../../packages/backend/src/managed-session-lock";
 import type { Commands } from "../../../packages/backend/src/commands";
 import type { SessionReaders } from "../../../packages/backend/src/session-readers";
 
@@ -121,12 +123,13 @@ require("node:readline").createInterface({ input: process.stdin }).on("line", li
   const ownership = vi
     .spyOn(ClaudeSessionOwnerProbe.prototype, "check")
     .mockResolvedValue({ kind: "idle" });
+  const verifyBridgeWorktree = vi.fn();
   let bridge: ClaudeBridge;
   const continuation = {
     idleTimeoutMs: options.idleTimeoutMs ?? 600_000,
     maintenanceIntervalMs: 20,
     isSessionBridged: (id: string) => {
-      bridge.assertCanAdopt();
+      bridge.assertRegistryValid();
       return bridge.blocksManagedResume(id);
     },
   };
@@ -157,6 +160,7 @@ require("node:readline").createInterface({ input: process.stdin }).on("line", li
         transcript,
       }),
       claudeControlWorkspace: () => workspace,
+      verifyClaudeBridgeWorktree: verifyBridgeWorktree,
       list: async () => ({ sessions: [{ native_ref: nativeId, sidechain: false }] }),
       document: async () => ({ source: { agent: "claude-code", workspace_id: "workspace" } }),
     } as unknown as SessionReaders,
@@ -322,6 +326,7 @@ require("node:readline").createInterface({ input: process.stdin }).on("line", li
     connect,
     environment,
     indexedId,
+    verifyBridgeWorktree,
   };
 }
 
@@ -333,9 +338,338 @@ async function rejection(action: Promise<unknown>): Promise<Record<string, unkno
   }
 }
 
+function legacyBindingFixture(
+  mode:
+    | "settled"
+    | "unresolved"
+    | "active-legacy"
+    | "missing-workspace"
+    | "wrong-scope"
+    | "wrong-credential"
+    | "overlap"
+    | "canonical-revoked"
+    | "dev-revoked"
+    | "dev-declined"
+    | "canonical-inflight"
+    | "canonical-unresolved",
+) {
+  const home = realpathSync(mkdtempSync(path.join(tmpdir(), "ak-shared-bridge-")));
+  cleanups.push(() => rmSync(home, { recursive: true, force: true }));
+  const dataDir = path.join(home, "Application Support/ai.agentkib");
+  const legacyDataDir = path.join(home, "Application Support/ai.agentkib.dev");
+  const legacyRoot = path.join(legacyDataDir, "claude-bridge");
+  const discovery = path.join(home, ".agentkib", "claude-bridge", "auto-v1.json");
+  mkdirSync(dataDir, { recursive: true, mode: 0o700 });
+  mkdirSync(legacyRoot, { recursive: true, mode: 0o700 });
+  const nativeId = randomUUID();
+  const bindingId = randomUUID();
+  const sessionId = randomUUID();
+  const legacySessionId = randomUUID();
+  const token = "d".repeat(64);
+  const oldSocket = "/tmp/synthetic-legacy-dev-bridge.sock";
+  const workspace = path.join(home, "projects", "session");
+  mkdirSync(workspace, { recursive: true });
+  const legacyTarget = {
+    sessionId: legacySessionId,
+    nativeId,
+    workspaceId: "legacy-workspace",
+    workspace,
+    registeredWorkspace: workspace,
+  };
+  const target = {
+    ...legacyTarget,
+    sessionId,
+    workspaceId: "canonical-workspace",
+    registeredWorkspace: mode === "wrong-scope" ? path.dirname(workspace) : workspace,
+  };
+  const registry = path.join(legacyRoot, "bindings-v1.json");
+  const originalRegistry = JSON.stringify({
+    version: 1,
+    bindings: [
+      {
+        version: 1,
+        bindingId,
+        target: legacyTarget,
+        token,
+        revoked: mode === "dev-revoked",
+        inflight: null,
+      },
+    ],
+  });
+  writeFileSync(registry, originalRegistry, { mode: 0o600 });
+  const credentialPath = path.join(legacyRoot, `${bindingId}.credential.json`);
+  const originalCredential = JSON.stringify({
+    protocol: 1,
+    nativeId,
+    cwd: workspace,
+    bindingId,
+    token: mode === "wrong-credential" ? "b".repeat(64) : token,
+    socketPath: oldSocket,
+  });
+  writeFileSync(credentialPath, originalCredential, { mode: 0o600 });
+  if (mode === "dev-declined")
+    writeFileSync(
+      path.join(legacyRoot, "auto-v1.json"),
+      JSON.stringify({
+        version: 1,
+        disabledWorkspaces: [],
+        declined: [nativeId],
+        autoBindings: [],
+      }),
+      { mode: 0o600 },
+    );
+  const canonicalBindingId = randomUUID();
+  const canonicalToken = "e".repeat(64);
+  const canonicalRoot = path.join(dataDir, "claude-bridge");
+  const canonicalRegistry = path.join(canonicalRoot, "bindings-v1.json");
+  const originalCanonicalRegistry = JSON.stringify({
+    version: 1,
+    bindings: [
+      {
+        version: 1,
+        bindingId: canonicalBindingId,
+        target,
+        token: canonicalToken,
+        revoked: mode === "canonical-revoked",
+        inflight:
+          mode === "canonical-inflight"
+            ? { requestId: randomUUID(), commandId: randomUUID(), turnId: null }
+            : null,
+      },
+    ],
+  });
+  if (mode === "overlap" || mode.startsWith("canonical-") || mode.startsWith("dev-")) {
+    mkdirSync(canonicalRoot, { mode: 0o700 });
+    writeFileSync(canonicalRegistry, originalCanonicalRegistry, { mode: 0o600 });
+  }
+  if (mode === "active-legacy")
+    cleanups.push(acquirePortableFileLease(path.join(legacyRoot, "broker.lock")));
+  const requestId = randomUUID();
+  if (mode === "unresolved" || mode === "canonical-unresolved") {
+    const receiptDir = mode === "unresolved" ? legacyDataDir : dataDir;
+    claimManagedCommand(
+      receiptDir,
+      requestId,
+      mode === "unresolved" ? legacySessionId : sessionId,
+      "a".repeat(64),
+      "agentkib-local-owner",
+      {
+        operation: "send",
+        bindingId: mode === "unresolved" ? bindingId : canonicalBindingId,
+        nativeId,
+      },
+    );
+    dispatchManagedCommand(receiptDir, requestId);
+  }
+  const options: ConstructorParameters<typeof ClaudeBridge>[0] = {
+    dataDir,
+    legacyDataDir,
+    sessionIdForNative: () => sessionId,
+    bootId: randomUUID(),
+    platform: "darwin",
+    pluginDirectory: path.join(home, "plugin"),
+    target: async () => target,
+    autoTarget: async () => {
+      if (mode === "missing-workspace") throw new Error("workspace-not-registered");
+      return target;
+    },
+    validate: vi.fn(),
+    publish: () => {},
+    discoveryFile: discovery,
+  };
+  const start = () => {
+    const bridge = new ClaudeBridge(options);
+    cleanups.push(() => bridge.close());
+    bridge.initialize();
+    return bridge;
+  };
+  return {
+    bridge: start(),
+    start,
+    dataDir,
+    legacyDataDir,
+    oldSocket,
+    registry,
+    originalRegistry,
+    canonicalRegistry,
+    originalCanonicalRegistry,
+    canonicalBindingId,
+    canonicalToken,
+    credentialPath,
+    originalCredential,
+    discovery,
+    bindingId,
+    token,
+    nativeId,
+    workspace,
+    sessionId,
+    legacySessionId,
+    requestId,
+  };
+}
+
+function reconnectLegacyBinding(
+  f: ReturnType<typeof legacyBindingFixture>,
+  credential: { socketPath: string; token: string; bindingId: string },
+) {
+  return new Promise<{ status: number; body: Record<string, unknown> }>((resolve, reject) => {
+    const req = request(
+      {
+        socketPath: credential.socketPath,
+        path: "/v1/reconnect",
+        method: "POST",
+        headers: {
+          Host: "localhost",
+          Authorization: `Bearer ${credential.token}`,
+          Connection: "close",
+        },
+      },
+      (res) => {
+        const chunks: Buffer[] = [];
+        res.on("data", (chunk) => chunks.push(Buffer.from(chunk)));
+        res.on("end", () =>
+          resolve({
+            status: res.statusCode!,
+            body: JSON.parse(Buffer.concat(chunks).toString()),
+          }),
+        );
+      },
+    );
+    req.on("error", reject);
+    req.end(
+      JSON.stringify({
+        protocol: 1,
+        bindingId: credential.bindingId,
+        nativeId: f.nativeId,
+        cwd: f.workspace,
+        cliVersion: "2.1.301",
+        pluginVersion: "0.4.0",
+        instanceId: randomUUID(),
+        nativeCapabilities: {
+          version: 1,
+          available: [
+            "session-identity",
+            "session-messages",
+            "session-usage",
+            "credential-store",
+            "credential-read",
+          ],
+        },
+      }),
+    );
+  });
+}
+
+describe.skipIf(!["darwin", "linux"].includes(process.platform))("shared Claude bridge", () => {
+  it("preserves a verified legacy Dev binding and reconnects it on the shared socket", async () => {
+    const f = legacyBindingFixture("settled");
+    await expect.poll(() => existsSync(f.discovery)).toBe(true);
+    expect(readFileSync(f.registry, "utf8")).toBe(f.originalRegistry);
+    const credential = JSON.parse(readFileSync(f.credentialPath, "utf8"));
+    expect(credential).toMatchObject({
+      bindingId: f.bindingId,
+      token: f.token,
+      nativeId: f.nativeId,
+    });
+    expect(credential.socketPath).not.toBe(f.oldSocket);
+    const response = await reconnectLegacyBinding(f, credential);
+    expect(response).toMatchObject({
+      status: 200,
+      body: { bindingId: f.bindingId, token: f.token, leaseId: expect.any(String) },
+    });
+    expect(f.bridge.blocksManagedResume(f.sessionId)).toBe(true);
+  });
+
+  it("reuses the existing canonical binding from an overlapping Dev credential after restart", async () => {
+    const f = legacyBindingFixture("overlap");
+    await expect.poll(() => existsSync(f.discovery)).toBe(true);
+    const credential = JSON.parse(readFileSync(f.credentialPath, "utf8"));
+    expect(credential).toMatchObject({
+      bindingId: f.canonicalBindingId,
+      token: f.canonicalToken,
+      nativeId: f.nativeId,
+      cwd: f.workspace,
+    });
+    expect(credential.socketPath).not.toBe(f.oldSocket);
+    expect(readFileSync(f.registry, "utf8")).toBe(f.originalRegistry);
+    expect(readFileSync(f.canonicalRegistry, "utf8")).toBe(f.originalCanonicalRegistry);
+    await f.bridge.close();
+
+    // The older plugin keeps the Dev path in its local store even after reconnecting.
+    writeFileSync(f.credentialPath, JSON.stringify({ ...credential, socketPath: f.oldSocket }));
+    const restarted = f.start();
+    await expect.poll(() => existsSync(f.discovery)).toBe(true);
+    const rewritten = JSON.parse(readFileSync(f.credentialPath, "utf8"));
+    expect(rewritten).toEqual(credential);
+    await expect(reconnectLegacyBinding(f, rewritten)).resolves.toMatchObject({
+      status: 200,
+      body: { bindingId: f.canonicalBindingId, token: f.canonicalToken },
+    });
+    expect(restarted.blocksManagedResume(f.sessionId)).toBe(true);
+  });
+
+  it.each([
+    "canonical-revoked",
+    "dev-revoked",
+    "dev-declined",
+    "canonical-inflight",
+    "canonical-unresolved",
+  ] as const)("keeps both bindings untouched when the overlap is %s", async (mode) => {
+    const f = legacyBindingFixture(mode);
+    await expect.poll(() => existsSync(f.discovery)).toBe(true);
+    expect(readFileSync(f.registry, "utf8")).toBe(f.originalRegistry);
+    expect(readFileSync(f.canonicalRegistry, "utf8")).toBe(f.originalCanonicalRegistry);
+    expect(readFileSync(f.credentialPath, "utf8")).toBe(f.originalCredential);
+    if (mode === "canonical-unresolved")
+      expect(readUnknownManagedCommands(f.dataDir, f.sessionId)).toEqual([
+        expect.objectContaining({ requestId: f.requestId }),
+      ]);
+  });
+
+  it.each([
+    "missing-workspace",
+    "wrong-scope",
+    "wrong-credential",
+    "unresolved",
+    "active-legacy",
+  ] as const)("leaves the old Dev binding intact when migration is %s", async (mode) => {
+    const f = legacyBindingFixture(mode);
+    await expect.poll(() => existsSync(f.discovery)).toBe(true);
+    expect(readFileSync(f.registry, "utf8")).toBe(f.originalRegistry);
+    expect(readFileSync(f.credentialPath, "utf8")).toBe(f.originalCredential);
+    expect(existsSync(path.join(f.dataDir, "claude-bridge", "bindings-v1.json"))).toBe(false);
+    if (mode === "unresolved" || mode === "active-legacy") {
+      expect(() => f.bridge.blocksManagedResume(f.sessionId)).toThrow(
+        "control-outcome-unconfirmed",
+      );
+      await expect(f.bridge.request({ sessionId: f.sessionId, operation: "send" })).rejects.toThrow(
+        "control-outcome-unconfirmed",
+      );
+      if (mode === "unresolved")
+        expect(readUnknownManagedCommands(f.legacyDataDir, f.legacySessionId)).toEqual([
+          expect.objectContaining({ requestId: f.requestId }),
+        ]);
+    } else expect(f.bridge.blocksManagedResume(f.sessionId)).toBe(false);
+  });
+});
+
 describe.skipIf(!["darwin", "linux"].includes(process.platform))(
   "Claude automatic continuation and terminal bridge exclusion",
   () => {
+    it("binds and revalidates the terminal's verified worktree against its original session directory", async () => {
+      const f = fixture({ managedAliasOnly: true });
+      rmSync(path.join(f.root, "claude-managed", `${f.target.sessionId}.json`));
+      const source = f.target.workspace;
+      const worktree = path.join(source, ".claude", "worktrees", "native-worktree");
+      mkdirSync(worktree, { recursive: true });
+      const target = await f.owner.nativeBridgeTarget(f.indexedId, f.target.nativeId, worktree);
+      expect(target).toMatchObject({ workspace: worktree, registeredWorkspace: source });
+      expect(f.verifyBridgeWorktree).toHaveBeenCalledWith(f.target.nativeId, source, worktree);
+      f.verifyBridgeWorktree.mockClear();
+      f.owner.validateNativeBridgeTarget(target, true);
+      expect(f.verifyBridgeWorktree).toHaveBeenCalledWith(f.target.nativeId, source, worktree);
+    });
+
     it("admits the terminal plugin after automatic idle retirement without manual release", async () => {
       const f = fixture({ idleTimeoutMs: 50 });
       await f.dispatch();
@@ -466,7 +800,7 @@ describe.skipIf(!["darwin", "linux"].includes(process.platform))(
         error: "claude-bridge-registry-invalid",
       });
       expect(f.frames()).toEqual([]);
-      expect(() => f.bridge.assertCanAdopt()).toThrow("claude-bridge-registry-invalid");
+      expect(() => f.bridge.assertRegistryValid()).toThrow("claude-bridge-registry-invalid");
       expect(readFileSync(path.join(f.root, "claude-bridge", "bindings-v1.json"), "utf8")).toBe(
         "{corrupt",
       );

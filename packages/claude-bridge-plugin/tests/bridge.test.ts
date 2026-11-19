@@ -86,6 +86,7 @@ test("the native engine bounds a connected register stream without changing nati
     session: {
       id: async () => nativeId,
       cwd: async () => "/synthetic/workspace",
+      root: async () => "/synthetic/workspace",
       version: async () => ({ version: "2.1.301" }),
       messages: async () => [],
       usage: async () => null,
@@ -285,6 +286,7 @@ function capabilityApi(version: string) {
     session: {
       id: async () => "00000000-0000-4000-8000-000000000001",
       cwd: async () => "/synthetic/workspace",
+      root: async () => "/synthetic/workspace",
       version: async () => ({ version }),
       messages: async () => [],
       usage: async () => null,

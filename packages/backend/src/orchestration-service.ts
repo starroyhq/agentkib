@@ -310,6 +310,8 @@ export type SessionRole =
     }
   | { role: "worker"; leadId: string; name: string };
 
+type AssignmentCandidate = { sessionId: string; reason: string | null; assigned?: boolean };
+
 export class OrchestrationService {
   readonly registry: LeadRegistry;
   #endpoints = new Map<string, Promise<LeadEndpoint>>();
@@ -360,26 +362,136 @@ export class OrchestrationService {
     workspaceId: string;
   }): Lead {
     if (!this.isLeadCapable(input.sessionId)) throw new Error("lead-requires-managed-claude");
-    if (this.registry.leadOfLane(input.sessionId)) throw new Error("session-is-a-worker");
-    const scope = this.#scope(
-      {
-        workspaceIds: [input.workspaceId],
-        policies: ["workspace-write-on-request"],
-        maxLanes: LEAD_DEFAULTS.maxLanes,
-        maxAutoTurns: LEAD_DEFAULTS.maxAutoTurns,
-        approvals: [],
-        answers: false,
-      },
-      input.scope,
-    );
     return this.registry.create({
       sessionId: input.sessionId,
       deviceId: input.deviceId,
       createdAt: new Date().toISOString(),
       paused: false,
       reason: null,
-      scope,
+      scope: this.#scope(this.#defaultScope([input.workspaceId]), input.scope),
     });
+  }
+
+  async assignmentOptions(
+    sessionId: string,
+    workspaceId: string,
+    candidateIds: string[],
+  ): Promise<{
+    capable: boolean;
+    remaining: number;
+    reason?: string;
+    candidates: AssignmentCandidate[];
+  }> {
+    const leads = this.registry.list();
+    const lead = leads.find((item) => item.sessionId === sessionId);
+    const leadIds = new Set(leads.map((item) => item.sessionId));
+    const workerOwners = new Map(
+      leads.flatMap((item) => item.lanes.map((lane) => [lane.sessionId, item.sessionId] as const)),
+    );
+    const capable = !!workspaceId && !workerOwners.has(sessionId) && this.isLeadCapable(sessionId);
+    const names = this.#workerNames(sessionId, lead);
+    return {
+      capable,
+      remaining:
+        capable && !lead?.paused
+          ? Math.max(0, (lead?.scope.maxLanes ?? LEAD_DEFAULTS.maxLanes) - names.size)
+          : 0,
+      ...(lead?.paused ? { reason: "delegation-paused" } : {}),
+      candidates: await Promise.all(
+        candidateIds.map(async (id): Promise<AssignmentCandidate> => {
+          if (id === sessionId || leadIds.has(id))
+            return { sessionId: id, reason: "session-is-a-project-agent" };
+          const owner = workerOwners.get(id);
+          if (owner)
+            return {
+              sessionId: id,
+              reason: "session-is-a-worker",
+              ...(owner === sessionId ? { assigned: true } : {}),
+            };
+          try {
+            const worker = this.#workerSession(id);
+            if (lead && !lead.scope.workspaceIds.includes(worker.workspaceId))
+              return { sessionId: id, reason: "workspace-not-allowed" };
+            await this.#checkWorkerReachable(id, worker.agent);
+            return { sessionId: id, reason: null };
+          } catch (error) {
+            return {
+              sessionId: id,
+              reason: error instanceof Error ? error.message : "worker-unavailable",
+            };
+          }
+        }),
+      ),
+    };
+  }
+
+  /** Attach existing sessions directly, without creating or sending to any worker. */
+  async assignWorkers({
+    sessionId,
+    deviceId,
+    workspaceId,
+    workers,
+  }: {
+    sessionId: string;
+    deviceId: string;
+    workspaceId: string;
+    workers: string[];
+  }): Promise<{ designated: boolean }> {
+    if (!workers.length || new Set(workers).size !== workers.length)
+      throw new Error("invalid-lead-request");
+    if (workers.length > 8) throw new Error("worker-limit-reached");
+    if (workers.includes(sessionId)) throw new Error("session-is-a-project-agent");
+    const candidates = await Promise.all(
+      workers.map(async (id) => {
+        const summary = this.#workerSession(id);
+        await this.#checkWorkerReachable(id, summary.agent);
+        return { ...summary, id };
+      }),
+    );
+    if (!this.isLeadCapable(sessionId)) throw new Error("lead-requires-managed-claude");
+    return this.registry.registerWorkers(
+      sessionId,
+      (lead) => {
+        if (lead.paused) throw new Error("delegation-paused");
+        const names = this.#workerNames(sessionId, lead);
+        if (names.size + candidates.length > lead.scope.maxLanes)
+          throw new Error("worker-limit-reached");
+        let number = 1;
+        return candidates.map((worker) => {
+          const current = this.#workerSession(worker.id);
+          if (current.agent !== worker.agent || current.workspaceId !== worker.workspaceId)
+            throw new Error("worker-unavailable");
+          if (!lead.scope.workspaceIds.includes(worker.workspaceId))
+            throw new Error("workspace-not-allowed");
+          while (names.has(`worker-${number}`)) number++;
+          const name = `worker-${number++}`;
+          return this.#newLane(name, worker.id, worker.workspaceId, null, worker.agent);
+        });
+      },
+      null,
+      () => ({
+        sessionId,
+        deviceId,
+        createdAt: new Date().toISOString(),
+        paused: false,
+        reason: null,
+        scope: this.#scope(
+          this.#defaultScope([workspaceId, ...candidates.map((worker) => worker.workspaceId)]),
+          undefined,
+        ),
+      }),
+    );
+  }
+
+  #defaultScope(workspaceIds: string[]): LeadScope {
+    return {
+      workspaceIds,
+      policies: ["workspace-write-on-request"],
+      maxLanes: LEAD_DEFAULTS.maxLanes,
+      maxAutoTurns: LEAD_DEFAULTS.maxAutoTurns,
+      approvals: [],
+      answers: false,
+    };
   }
 
   /**
@@ -1207,11 +1319,31 @@ export class OrchestrationService {
     }
   }
 
+  #workerNames(sessionId: string, lead?: Lead): Set<string> {
+    return new Set([
+      ...(lead?.lanes.map((lane) => lane.name) ?? []),
+      ...(this.#openingWorkers.get(sessionId) ?? []),
+    ]);
+  }
+
+  #workerSession(sessionId: string): { agent: LaneAgent; workspaceId: string } {
+    const summary = this.lanes.session(sessionId);
+    const agent = summary?.agent;
+    if (!summary || (agent !== "codex" && agent !== "deepseek-harness"))
+      throw new Error("worker-requires-codex-or-dsh-session");
+    return { agent, workspaceId: summary.workspaceId };
+  }
+
+  async #checkWorkerReachable(sessionId: string, agent: LaneAgent): Promise<void> {
+    if (agent === "deepseek-harness" && !(await this.lanes.managed(sessionId)))
+      throw new Error("worker-unavailable");
+  }
+
   async #open(lead: Lead, input: Record<string, unknown>): Promise<EndpointResult> {
     const name = stringField(input, "name", 48);
     if (!name || !WORKER_NAME.test(name)) return refuse("invalid-worker-name");
     const opening = this.#openingWorkers.get(lead.sessionId) ?? new Set<string>();
-    const workerNames = new Set([...lead.lanes.map((lane) => lane.name), ...opening]);
+    const workerNames = this.#workerNames(lead.sessionId, lead);
     if (workerNames.has(name)) return refuse("worker-name-taken");
     if (workerNames.size >= lead.scope.maxLanes) return refuse("worker-limit-reached");
 
@@ -1243,18 +1375,12 @@ export class OrchestrationService {
       if (this.registry.leadOfLane(session)) return refuse("session-is-a-worker");
       if (this.registry.get(session) || session === lead.sessionId)
         return refuse("session-is-a-project-agent");
-      const summary = this.lanes.session(session);
-      const agent = summary?.agent as LaneAgent | undefined;
-      if (!summary || !agent || !(LANE_AGENTS as readonly string[]).includes(agent))
-        return refuse("worker-requires-codex-or-dsh-session");
+      const { agent, workspaceId } = this.#workerSession(session);
       if (asked && asked !== agent) return refuse("session-is-another-agent", { agent });
-      if (!lead.scope.workspaceIds.includes(summary.workspaceId))
-        return refuse("workspace-not-allowed");
-      if (agent === "deepseek-harness") {
-        if (!(await this.lanes.managed(session))) return refuse("worker-unavailable");
-      }
+      if (!lead.scope.workspaceIds.includes(workspaceId)) return refuse("workspace-not-allowed");
+      await this.#checkWorkerReachable(session, agent);
       // Linking a Codex worker leaves native execution preparation to its send request.
-      lane = this.#newLane(name, session, summary.workspaceId, null, agent);
+      lane = this.#newLane(name, session, workspaceId, null, agent);
     } else {
       if (!lead.scope.workspaceIds.includes(workspace!)) return refuse("workspace-not-allowed");
       const model = stringField(input, "model", 256);
@@ -1312,11 +1438,21 @@ export class OrchestrationService {
         lane = this.#newLane(name, sessionId, workspace!, policy, "codex");
       }
     }
-    this.registry.update(lead.sessionId, (current) => {
-      if (current.lanes.some((item) => item.name === name)) throw new Error("worker-name-taken");
-      current.lanes.push(lane);
-      addLeadRecord(current, "open", lane.id, requestId, "accepted");
-    });
+    this.registry.registerWorkers(
+      lead.sessionId,
+      (current) => {
+        if (session) {
+          if (current.paused) throw new Error("delegation-paused");
+          if (!current.scope.workspaceIds.includes(lane.workspaceId))
+            throw new Error("workspace-not-allowed");
+          const worker = this.#workerSession(session);
+          if (worker.agent !== lane.agent || worker.workspaceId !== lane.workspaceId)
+            throw new Error("worker-unavailable");
+        }
+        return [lane];
+      },
+      requestId,
+    );
     return text({ accepted: true, worker: name, agent: lane.agent, session: lane.sessionId });
   }
 

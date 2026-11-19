@@ -2367,21 +2367,50 @@ export class TypeScriptBackend {
     if (agent === undefined || agent === "codex") await this.#withWebRead(() => undefined);
     const codex = this.#webRead?.codexLeadCapable(sessionId) === true;
     const dsh = this.#dshBridge?.leadCapable(sessionId) === true;
+    const leadWorkspace = () =>
+      this.#claudeManaged?.managedWorkspace(sessionId) ??
+      this.#claudeBridge?.workspaceOf(sessionId) ??
+      (codex ? this.#webRead?.managedWorkspace(sessionId) : undefined) ??
+      (dsh ? this.#store?.sessions.get(sessionId)?.workspace_id : undefined);
     const worker = () => {
       const value = typeof params.worker === "string" ? params.worker : "";
       if (!value || value.length > 256) throw new Error("invalid-lead-request");
       return value;
     };
+    const localSessionIds = (value: unknown, limit: number): string[] => {
+      if (deviceId !== "agentkib-local-owner" || !Array.isArray(value) || value.length > limit)
+        throw new Error("invalid-lead-request");
+      return value.map((id) => {
+        if (typeof id !== "string" || !id || id.length > 256)
+          throw new Error("invalid-lead-request");
+        return id;
+      });
+    };
     let toolsChanged = false;
     switch (params.operation) {
       case "lead-status":
         break;
+      case "lead-assignment-options":
+        return orchestration.assignmentOptions(
+          sessionId,
+          leadWorkspace() ?? "",
+          localSessionIds(params.candidateIds, 20_000),
+        );
+      case "lead-assign-workers": {
+        const workers = localSessionIds(params.workers, 8);
+        const workspaceId = leadWorkspace();
+        if (!workspaceId) throw new Error("lead-requires-managed-claude");
+        const result = await orchestration.assignWorkers({
+          sessionId,
+          deviceId,
+          workspaceId,
+          workers,
+        });
+        toolsChanged = result.designated;
+        break;
+      }
       case "lead-designate": {
-        const workspaceId =
-          this.#claudeManaged?.managedWorkspace(sessionId) ??
-          this.#claudeBridge?.workspaceOf(sessionId) ??
-          (codex ? this.#webRead?.managedWorkspace(sessionId) : undefined) ??
-          (dsh ? this.#store?.sessions.get(sessionId)?.workspace_id : undefined);
+        const workspaceId = leadWorkspace();
         if (!workspaceId) throw new Error("lead-requires-managed-claude");
         const scope = params.scope && typeof params.scope === "object" ? params.scope : undefined;
         orchestration.designate({
@@ -2610,13 +2639,16 @@ export class TypeScriptBackend {
       },
       session: (sessionId) => {
         const summary = store.sessions.get(sessionId);
-        return summary
-          ? {
-              agent: summary.agent,
-              workspaceId: summary.workspace_id,
-              title: summary.title ?? null,
-            }
+        if (summary)
+          return {
+            agent: summary.agent,
+            workspaceId: summary.workspace_id,
+            title: summary.title ?? null,
+          };
+        const workspaceId = this.#webRead?.codexLeadCapable(sessionId)
+          ? this.#webRead.managedWorkspace(sessionId)
           : null;
+        return workspaceId ? { agent: "codex", workspaceId, title: null } : null;
       },
       managed: async (sessionId) =>
         store.sessions.get(sessionId)?.agent === "deepseek-harness"

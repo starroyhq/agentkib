@@ -51,14 +51,10 @@ const request = (params: Record<string, unknown>) =>
  * here, on this computer.
  */
 export function ProjectAgentPanel() {
-  const { locale, selected, current, workspaces, choose, formatCatalogTime } = useSession();
+  const { locale, selected, workspaces, choose, formatCatalogTime } = useSession();
   const text = projectAgentCopy(locale);
   const [agent, setAgent] = useState<ProjectAgent | null>();
-  // Whether the host lets this session lead; older hosts do not say, and it is offered.
-  const [capable, setCapable] = useState(true);
-  // Setting one up, or changing what it may do: the same form.
   const [form, setForm] = useState<null | {
-    mode: "designate" | "update";
     workspaceIds: string[];
     autoReview: boolean;
     approveFiles: boolean;
@@ -105,11 +101,6 @@ export function ProjectAgentPanel() {
         (value) => {
           if (!live) return;
           setAgent(projectAgentOf(value));
-          setCapable(
-            !value ||
-              typeof value !== "object" ||
-              (value as { capable?: unknown }).capable !== false,
-          );
         },
         () => undefined,
       );
@@ -122,17 +113,16 @@ export function ProjectAgentPanel() {
     };
   }, [selected]);
 
-  if (agent === undefined || !selected) return null;
+  if (!agent || !selected) return null;
   const errorText = error ? (text.errors[error] ?? text.failed) : null;
-  const formOf = (mode: "designate" | "update", scope?: ProjectAgent["scope"]) => ({
-    mode,
-    workspaceIds: scope?.workspaceIds ?? (current?.workspace_id ? [current.workspace_id] : []),
-    autoReview: scope?.policies.includes("workspace-write-auto-review") ?? false,
-    approveFiles: scope?.approvals?.includes("file-change") ?? false,
-    approveCommands: scope?.approvals?.includes("command") ?? false,
-    answers: scope?.answers ?? false,
-    maxLanes: scope?.maxLanes ?? 4,
-    maxAutoTurns: scope?.maxAutoTurns ?? 25,
+  const formOf = (scope: ProjectAgent["scope"]) => ({
+    workspaceIds: scope.workspaceIds,
+    autoReview: scope.policies.includes("workspace-write-auto-review"),
+    approveFiles: scope.approvals?.includes("file-change") ?? false,
+    approveCommands: scope.approvals?.includes("command") ?? false,
+    answers: scope.answers ?? false,
+    maxLanes: scope.maxLanes,
+    maxAutoTurns: scope.maxAutoTurns,
   });
 
   if (form) {
@@ -226,7 +216,7 @@ export function ProjectAgentPanel() {
             disabled={busy || !form.workspaceIds.length}
             onClick={() =>
               void run({
-                operation: form.mode === "designate" ? "lead-designate" : "lead-update",
+                operation: "lead-update",
                 scope: {
                   workspaceIds: form.workspaceIds,
                   policies: form.autoReview
@@ -243,24 +233,12 @@ export function ProjectAgentPanel() {
               }).then((done) => done && setForm(null))
             }
           >
-            {form.mode === "designate" ? text.confirm : text.save}
+            {text.save}
           </Button>
         </OperationRow>
       </OperationGroup>
     );
   }
-
-  if (agent === null)
-    return capable ? (
-      <OperationGroup title={text.title}>
-        <OperationRow>
-          <OperationCopy>{text.hint}</OperationCopy>
-          <Button variant="outline" onClick={() => setForm(formOf("designate"))}>
-            {text.designate}
-          </Button>
-        </OperationRow>
-      </OperationGroup>
-    ) : null;
 
   const decided = [
     ...(agent.scope.approvals?.includes("file-change") ? [text.approveFiles] : []),
@@ -378,7 +356,7 @@ export function ProjectAgentPanel() {
               variant="outline"
               onClick={() => {
                 setRemoving(null);
-                setForm(formOf("update", agent.scope));
+                setForm(formOf(agent.scope));
               }}
             >
               {text.edit}

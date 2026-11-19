@@ -118,6 +118,119 @@ describe("trusted Claude owner boundary", () => {
     ]);
     expect(deps.receipt).not.toHaveBeenCalled();
   });
+  it("opens Worker assignment for the row's local project and checks the group again on save", async () => {
+    const workspace = (id: string, kind: "primary" | "worktree") => ({
+      id,
+      name: id,
+      path: `/test/${id}`,
+      checkout: {
+        repository_group_id: "repository",
+        primary_path: "/test/project",
+        kind,
+        status: "present",
+      },
+    });
+    const session = (id: string, workspace_id: string, fields = {}) => ({
+      id,
+      workspace_id,
+      agent: "codex",
+      availability: "readable",
+      ...fields,
+    });
+    vi.mocked(deps.runtime).mockResolvedValue({
+      workspaces: [
+        workspace("project", "primary"),
+        workspace("branch", "worktree"),
+        { id: "unrelated", name: "project", path: "/another/project" },
+      ],
+      sessions: [
+        session("lead", "project", { agent: "claude-code" }),
+        session("api", "branch", { origin: "execution" }),
+        session("other-claude", "project", { agent: "claude-code" }),
+        session("other-workspace", "unrelated"),
+        session("already-worker", "project", {
+          orchestration: { role: "worker", leadId: "another-lead" },
+        }),
+        session("archived", "project", { archived: true }),
+        session("remote", "project", { remote: { host_id: "another-host" } }),
+      ],
+    });
+    await localClaudeRequest(deps, {
+      operation: "lead-assignment-options",
+      sessionId: "lead",
+      candidateIds: ["other-workspace"],
+    });
+    expect(deps.managed).toHaveBeenLastCalledWith({
+      operation: "lead-assignment-options",
+      sessionId: "lead",
+      candidateIds: expect.arrayContaining(["api", "other-claude", "already-worker"]),
+      deviceId: "agentkib-local-owner",
+    });
+    const request = vi.mocked(deps.managed).mock.lastCall?.[0] as { candidateIds: string[] };
+    expect(request.candidateIds).toHaveLength(3);
+
+    for (const [worker, reason] of [
+      ["other-workspace", "worker-outside-project"],
+      ["already-worker", "session-is-a-worker"],
+    ])
+      await expect(
+        localClaudeRequest(deps, {
+          operation: "lead-assign-workers",
+          sessionId: "lead",
+          workers: [worker],
+        }),
+      ).rejects.toThrow(reason);
+    expect(deps.managed).toHaveBeenCalledTimes(1);
+
+    await localClaudeRequest(deps, {
+      operation: "lead-assign-workers",
+      sessionId: "lead",
+      workers: ["api"],
+      deviceId: "phone",
+      scope: { workspaceIds: ["unrelated"] },
+    });
+    expect(deps.managed).toHaveBeenLastCalledWith({
+      operation: "lead-assign-workers",
+      sessionId: "lead",
+      workers: ["api"],
+      deviceId: "agentkib-local-owner",
+    });
+    expect(deps.runtime).toHaveBeenCalledTimes(4);
+  });
+  it("keeps the saved ID for a Worker shown under a managed session alias", async () => {
+    const request = { operation: "lead-assignment-options", sessionId: "lead" };
+    const assigned = {
+      sessionId: "native",
+      reason: "session-is-a-worker",
+      assigned: true,
+    };
+    vi.mocked(deps.runtime).mockResolvedValue({
+      workspaces: [{ id: "w", name: "App", path: "/test/app" }],
+      sessions: [
+        { id: "lead", workspace_id: "w", agent: "claude-code", availability: "readable" },
+        {
+          id: "managed",
+          workspace_id: "w",
+          agent: "codex",
+          availability: "readable",
+          indexedSessionIds: ["native"],
+        },
+      ],
+    });
+    vi.mocked(deps.managed).mockResolvedValueOnce({
+      capable: true,
+      remaining: 1,
+      candidates: [{ sessionId: "managed", reason: null }, assigned],
+    });
+    await expect(localClaudeRequest(deps, request)).resolves.toMatchObject({
+      candidates: [assigned],
+    });
+    expect(deps.managed).toHaveBeenLastCalledWith({
+      ...request,
+      candidateIds: ["managed", "native"],
+      deviceId: "agentkib-local-owner",
+    });
+  });
   it("rejects bridge management for a session outside the Claude catalog", async () => {
     await expect(
       localClaudeRequest(deps, {

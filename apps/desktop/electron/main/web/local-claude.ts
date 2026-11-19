@@ -4,6 +4,11 @@ import { AttachmentStore } from "./attachments";
 import { replayClaudeAttachments, settleClaudeAttachments } from "./claude-attachment-receipts";
 import { historyInputHash } from "./history-references";
 import type { HistoryReference } from "@agentkib/runtime-protocol";
+import {
+  groupSessions,
+  type CatalogSession,
+  type CatalogWorkspace,
+} from "@agentkib/session-catalog";
 
 export const CLAUDE_LOCAL_OWNER = "agentkib-local-owner";
 const OWNER = CLAUDE_LOCAL_OWNER;
@@ -28,6 +33,95 @@ const field = (value: unknown, max = 256): string => {
   if (typeof value !== "string" || !value || value.length > max) throw new Error("invalid_field");
   return value;
 };
+
+type AssignmentSession = CatalogSession & {
+  sidechain?: boolean;
+  remote?: unknown;
+  indexedSessionIds?: string[];
+  orchestration?: { role: "lead" | "worker"; leadId?: string };
+};
+
+async function localWorkerAssignment(
+  deps: LocalClaudeDependencies,
+  input: Record<string, unknown>,
+  operation: "lead-assignment-options" | "lead-assign-workers",
+) {
+  const sessionId = field(input.sessionId);
+  const workers = operation === "lead-assign-workers" ? assignmentWorkers(input.workers) : [];
+  const catalog = record(await deps.runtime({ operation: "catalog" }));
+  if (!Array.isArray(catalog.sessions) || !Array.isArray(catalog.workspaces))
+    throw new Error("orchestration-unavailable");
+  const sessions = (catalog.sessions as AssignmentSession[]).filter((session) => !session.remote);
+  const workspaces = (catalog.workspaces as CatalogWorkspace[]).filter(
+    (workspace) => !workspace.remote,
+  );
+  const group = groupSessions(sessions, workspaces, { execution: true }).find((item) =>
+    item.sessions.some((session) => session.id === sessionId),
+  );
+  const lead = group?.sessions.find((session) => session.id === sessionId);
+  if (!group || !lead || lead.archived || lead.sidechain || lead.availability !== "readable")
+    throw new Error("lead-requires-managed-claude");
+  if (lead.orchestration?.role === "worker") throw new Error("session-is-a-worker");
+
+  const candidates = group.sessions.filter(
+    (session) =>
+      session.id !== sessionId &&
+      !session.sidechain &&
+      ((!session.archived && session.availability === "readable") ||
+        session.orchestration?.leadId === sessionId),
+  );
+  if (operation === "lead-assignment-options") {
+    const candidateIds = [
+      ...new Set(
+        candidates.flatMap((session) => [session.id, ...(session.indexedSessionIds ?? [])]),
+      ),
+    ];
+    const result = await deps.managed({
+      operation,
+      sessionId,
+      candidateIds,
+      deviceId: OWNER,
+    });
+    return projectAssignmentOptions(result, candidates);
+  }
+
+  const byId = new Map(candidates.map((session) => [session.id, session]));
+  for (const id of workers) {
+    const candidate = byId.get(id);
+    if (!candidate) throw new Error("worker-outside-project");
+    if (candidate.orchestration?.role === "lead") throw new Error("session-is-a-project-agent");
+    if (candidate.orchestration?.role === "worker") throw new Error("session-is-a-worker");
+  }
+  return deps.managed({ operation, sessionId, workers, deviceId: OWNER });
+}
+
+/** Keep one visible row when an older assignment is recorded under a session's indexed ID. */
+function projectAssignmentOptions(result: unknown, sessions: AssignmentSession[]) {
+  const options = record(result);
+  if (!Array.isArray(options.candidates)) return result;
+  const rows = options.candidates as { sessionId: string; reason: string | null }[];
+  const byId = new Map(rows.map((row) => [row.sessionId, row]));
+  const roleIsAssigned = (row: (typeof rows)[number] | undefined) =>
+    row?.reason === "session-is-a-worker" || row?.reason === "session-is-a-project-agent";
+  return {
+    ...options,
+    candidates: sessions.flatMap((session) => {
+      const canonical = byId.get(session.id);
+      const linked = (session.indexedSessionIds ?? [])
+        .map((id) => byId.get(id))
+        .find(roleIsAssigned);
+      const row = roleIsAssigned(canonical) ? canonical : (linked ?? canonical);
+      return row ? [row] : [];
+    }),
+  };
+}
+
+function assignmentWorkers(value: unknown): string[] {
+  if (!Array.isArray(value) || value.length < 1 || value.length > 8)
+    throw new Error("invalid-lead-request");
+  return value.map((worker) => field(worker));
+}
+
 /** Trusted renderer only. Owner identity is assigned here, never accepted from IPC. */
 export async function localClaudeRequest(
   deps: LocalClaudeDependencies,
@@ -92,6 +186,8 @@ async function localClaudeRequestInner(
 ): Promise<unknown> {
   const input = record(raw);
   const operation = field(input.operation, 32);
+  if (operation === "lead-assignment-options" || operation === "lead-assign-workers")
+    return localWorkerAssignment(deps, input, operation);
   if (operation === "options") return deps.managed({ operation });
   // The DeepSeek Harness connection is per computer, not per session: its status, and whether
   // AgentKib starts DSH in the background.

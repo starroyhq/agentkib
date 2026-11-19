@@ -45,65 +45,12 @@ beforeEach(() => {
 afterEach(cleanup);
 
 describe("Project Agent panel", () => {
-  it("makes the session a Project Agent with the workspaces and limits chosen", async () => {
-    request.mockResolvedValueOnce({ lead: null });
-    render(<ProjectAgentPanel />);
+  it("leaves first-time assignment to the session row", async () => {
+    request.mockResolvedValueOnce({ lead: null, capable: true });
+    const { container } = render(<ProjectAgentPanel />);
     await act(async () => undefined);
     expect(request).toHaveBeenLastCalledWith({ operation: "lead-status", sessionId: "lead-1" });
-    fireEvent.click(screen.getByRole("button", { name: "Make Project Agent…" }));
-    expect(screen.getByRole("checkbox", { name: "app" })).toBeChecked();
-    fireEvent.click(screen.getByRole("checkbox", { name: "worktrees" }));
-    fireEvent.click(screen.getByRole("checkbox", { name: "Let workers use Codex auto-review" }));
-    // Nothing is decided for the user unless they tick it.
-    for (const name of [
-      "Workers' file change approvals",
-      "Workers' approvals to run commands outside the sandbox",
-      "Workers' questions",
-    ])
-      expect(screen.getByRole("checkbox", { name })).not.toBeChecked();
-    fireEvent.click(
-      screen.getByRole("checkbox", {
-        name: "Workers' approvals to run commands outside the sandbox",
-      }),
-    );
-    fireEvent.click(screen.getByRole("checkbox", { name: "Workers' questions" }));
-    fireEvent.change(screen.getByRole("spinbutton", { name: "Most workers" }), {
-      target: { value: "2" },
-    });
-    request.mockResolvedValueOnce(
-      agent({
-        scope: {
-          workspaceIds: ["w1", "w2"],
-          policies: ["workspace-write-on-request"],
-          maxLanes: 2,
-          maxAutoTurns: 25,
-          approvals: ["command"],
-          answers: true,
-        },
-      }),
-    );
-    await act(async () => {
-      fireEvent.click(screen.getByRole("button", { name: "Make Project Agent" }));
-    });
-    expect(request).toHaveBeenLastCalledWith({
-      operation: "lead-designate",
-      sessionId: "lead-1",
-      scope: {
-        workspaceIds: ["w1", "w2"],
-        policies: ["workspace-write-on-request", "workspace-write-auto-review"],
-        maxLanes: 2,
-        maxAutoTurns: 25,
-        approvals: ["command"],
-        answers: true,
-      },
-    });
-    expect(screen.getByText("0 workers")).toBeInTheDocument();
-    expect(
-      screen.getByText(
-        "Decides for you: Workers' approvals to run commands outside the sandbox, Workers' questions",
-      ),
-    ).toBeInTheDocument();
-    expect(screen.getByText("No workers yet. Ask this session to open one.")).toBeInTheDocument();
+    expect(container).toBeEmptyDOMElement();
   });
 
   it("lists workers, opens one, and pauses, resumes or releases delegation", async () => {
@@ -152,7 +99,7 @@ describe("Project Agent panel", () => {
       fireEvent.click(screen.getByRole("button", { name: "Stop being a Project Agent" }));
     });
     expect(request).toHaveBeenLastCalledWith({ operation: "lead-release", sessionId: "lead-1" });
-    expect(screen.getByRole("button", { name: "Make Project Agent…" })).toBeInTheDocument();
+    expect(screen.queryByText("Project Agent")).not.toBeInTheDocument();
   });
 
   it("stops a worker's turn, lets a worker go, and changes what it may do", async () => {
@@ -234,13 +181,12 @@ describe("Project Agent panel", () => {
   });
 
   it("explains a refusal and shows nothing when the host does not answer", async () => {
-    request.mockResolvedValueOnce({ lead: null });
+    request.mockResolvedValueOnce(agent());
     render(<ProjectAgentPanel />);
     await act(async () => undefined);
-    fireEvent.click(screen.getByRole("button", { name: "Make Project Agent…" }));
     request.mockRejectedValueOnce(new Error("AgentKib command failed: session-is-a-worker"));
     await act(async () => {
-      fireEvent.click(screen.getByRole("button", { name: "Make Project Agent" }));
+      fireEvent.click(screen.getByRole("button", { name: "Pause delegation" }));
     });
     expect(screen.getByText("This session is another Project Agent's worker.")).toBeInTheDocument();
     cleanup();

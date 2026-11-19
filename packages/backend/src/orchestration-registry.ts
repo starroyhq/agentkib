@@ -1,3 +1,4 @@
+import type { DatabaseSync } from "node:sqlite";
 import { openManagedLedger } from "./managed-ledger";
 
 /**
@@ -104,6 +105,11 @@ export type Lead = {
   pendingReports: string[];
 };
 
+type NewLead = Omit<
+  Lead,
+  "version" | "bootId" | "revision" | "records" | "lanes" | "autoTurns" | "pendingReports"
+>;
+
 const TABLE =
   "CREATE TABLE IF NOT EXISTS orchestration_leads(session_id TEXT PRIMARY KEY, record TEXT NOT NULL)";
 
@@ -123,7 +129,10 @@ export class LeadRegistry {
    * Reads and writes one lead atomically. A lead first read after a restart is paused until
    * the user resumes it, as automatic Claude turns are.
    */
-  #transaction<T>(sessionId: string, fn: (lead: Lead | null) => { lead: Lead | null; value: T }) {
+  #transaction<T>(
+    sessionId: string,
+    fn: (lead: Lead | null, database: DatabaseSync) => { lead: Lead | null; value: T },
+  ) {
     const database = this.#open();
     try {
       database.exec("BEGIN IMMEDIATE");
@@ -131,7 +140,7 @@ export class LeadRegistry {
         .prepare("SELECT record FROM orchestration_leads WHERE session_id=?")
         .get(sessionId) as { record: string } | undefined;
       const current = row ? this.#restarted(JSON.parse(row.record) as Lead) : null;
-      const { lead, value } = fn(current);
+      const { lead, value } = fn(current, database);
       if (lead === null) {
         if (row)
           database.prepare("DELETE FROM orchestration_leads WHERE session_id=?").run(sessionId);
@@ -209,25 +218,71 @@ export class LeadRegistry {
     });
   }
 
-  create(
-    lead: Omit<
-      Lead,
-      "version" | "bootId" | "revision" | "records" | "lanes" | "autoTurns" | "pendingReports"
-    >,
-  ) {
-    return this.#transaction(lead.sessionId, (current) => {
+  #newLead(lead: NewLead): Lead {
+    return {
+      ...lead,
+      version: 1,
+      bootId: this.bootId,
+      revision: 1,
+      autoTurns: 0,
+      lanes: [],
+      records: [],
+      pendingReports: [],
+    };
+  }
+
+  #hasWorker(database: DatabaseSync, sessionId: string): boolean {
+    return !!database
+      .prepare(
+        `SELECT 1 FROM orchestration_leads, json_each(orchestration_leads.record, '$.lanes') AS lane
+         WHERE json_extract(lane.value, '$.sessionId') = ? LIMIT 1`,
+      )
+      .get(sessionId);
+  }
+
+  create(lead: NewLead) {
+    return this.#transaction(lead.sessionId, (current, database) => {
       if (current) throw new Error("lead-exists");
-      const created: Lead = {
-        ...lead,
-        version: 1,
-        bootId: this.bootId,
-        revision: 1,
-        autoTurns: 0,
-        lanes: [],
-        records: [],
-        pendingReports: [],
-      };
+      if (this.#hasWorker(database, lead.sessionId)) throw new Error("session-is-a-worker");
+      const created = this.#newLead(lead);
       return { lead: created, value: structuredClone(created) };
+    });
+  }
+
+  /**
+   * Register a batch of workers and, if needed, its lead in one write. Every path that
+   * assigns a worker uses this check so a concurrent assignment cannot claim the same session.
+   */
+  registerWorkers(
+    sessionId: string,
+    workers: (lead: Lead) => Lane[],
+    requestId: string | null,
+    create?: () => NewLead,
+  ): { designated: boolean } {
+    return this.#transaction(sessionId, (current, database) => {
+      if (this.#hasWorker(database, sessionId)) throw new Error("session-is-a-worker");
+      let lead = current;
+      if (!lead) {
+        if (!create) throw new Error("lead-unavailable");
+        lead = this.#newLead(create());
+      }
+      const lanes = workers(lead);
+      const sessions = new Set<string>();
+      const names = new Set(lead.lanes.map((lane) => lane.name));
+      const hasLead = database.prepare("SELECT 1 FROM orchestration_leads WHERE session_id = ?");
+      for (const lane of lanes) {
+        if (lane.sessionId === sessionId || hasLead.get(lane.sessionId))
+          throw new Error("session-is-a-project-agent");
+        if (sessions.has(lane.sessionId) || this.#hasWorker(database, lane.sessionId))
+          throw new Error("session-is-a-worker");
+        if (names.has(lane.name)) throw new Error("worker-name-taken");
+        sessions.add(lane.sessionId);
+        names.add(lane.name);
+        lead.lanes.push(lane);
+        addLeadRecord(lead, "open", lane.id, requestId, "accepted");
+      }
+      if (current) lead.revision++;
+      return { lead, value: { designated: current === null } };
     });
   }
 

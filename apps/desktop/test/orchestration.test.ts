@@ -98,8 +98,9 @@ function service(
   root = directory(),
   bootId = "boot-1",
   sendReport: (lead: string, device: string, text: string) => boolean = () => false,
+  isLeadCapable = (id: string) => id === LEAD,
 ) {
-  const created = new OrchestrationService(root, bootId, lanes, (id) => id === LEAD, sendReport);
+  const created = new OrchestrationService(root, bootId, lanes, isLeadCapable, sendReport);
   cleanups.push(() => created.close());
   return created;
 }
@@ -320,6 +321,124 @@ describe("orchestration service", () => {
     expect(orchestration.status(LEAD)!.lanes).toEqual([
       expect.objectContaining({ name: "api", sessionId: opened.session }),
     ]);
+  });
+
+  describe("assigning existing sessions", () => {
+    const OWNER = { sessionId: LEAD, deviceId: DEVICE, workspaceId: "w1" };
+
+    it("creates the lead and all selected relationships without starting a session or sending", async () => {
+      const sessions: Record<string, NonNullable<ReturnType<LaneHost["session"]>>> = {
+        "existing-api": { agent: "codex", workspaceId: "w1", title: "API" },
+        "existing-tests": { agent: "deepseek-harness", workspaceId: "w2", title: "Tests" },
+        elsewhere: { agent: "codex", workspaceId: "w9", title: null },
+        "claude-other": { agent: "claude-code", workspaceId: "w1", title: null },
+      };
+      const { lanes, calls } = host({
+        session: (id) => sessions[id] ?? null,
+        managed: async (id) => id === "existing-tests",
+      });
+      const orchestration = service(lanes);
+      expect(
+        await orchestration.assignWorkers({
+          ...OWNER,
+          workers: ["existing-api", "existing-tests"],
+        }),
+      ).toEqual({ designated: true });
+      expect(orchestration.status(LEAD)).toMatchObject({
+        scope: {
+          workspaceIds: ["w1", "w2"],
+          policies: ["workspace-write-on-request"],
+          approvals: [],
+          answers: false,
+        },
+        lanes: [
+          { sessionId: "existing-api", agent: "codex", name: "worker-1", policyId: null },
+          {
+            sessionId: "existing-tests",
+            agent: "deepseek-harness",
+            name: "worker-2",
+            policyId: null,
+          },
+        ],
+      });
+      expect(
+        await orchestration.assignmentOptions(LEAD, "w1", [
+          "existing-api",
+          "elsewhere",
+          "claude-other",
+        ]),
+      ).toEqual({
+        capable: true,
+        remaining: 2,
+        candidates: [
+          { sessionId: "existing-api", reason: "session-is-a-worker", assigned: true },
+          { sessionId: "elsewhere", reason: "workspace-not-allowed" },
+          { sessionId: "claude-other", reason: "worker-requires-codex-or-dsh-session" },
+        ],
+      });
+      await expect(
+        orchestration.assignWorkers({ ...OWNER, workers: ["elsewhere"] }),
+      ).rejects.toThrow("workspace-not-allowed");
+      orchestration.pause(LEAD);
+      expect(await orchestration.assignmentOptions(LEAD, "w1", [])).toMatchObject({
+        remaining: 0,
+        reason: "delegation-paused",
+      });
+      expect(calls).toEqual([]);
+    });
+
+    it("rolls back the entire first assignment if a selected session already leads", async () => {
+      const orchestration = service(host().lanes, directory(), "boot-1", undefined, () => true);
+      orchestration.designate({
+        sessionId: "codex-elsewhere",
+        deviceId: DEVICE,
+        workspaceId: "w9",
+      });
+      expect(
+        await orchestration.assignmentOptions(LEAD, "w1", ["codex-existing", "codex-elsewhere"]),
+      ).toMatchObject({
+        candidates: [
+          { sessionId: "codex-existing", reason: null },
+          { sessionId: "codex-elsewhere", reason: "session-is-a-project-agent" },
+        ],
+      });
+      await expect(
+        orchestration.assignWorkers({
+          ...OWNER,
+          workers: ["codex-existing", "codex-elsewhere"],
+        }),
+      ).rejects.toThrow("session-is-a-project-agent");
+      expect(orchestration.status(LEAD)).toBeNull();
+      expect(orchestration.registry.leadOfLane("codex-existing")).toBeNull();
+    });
+
+    it("keeps a worker exclusive to one lead across the desktop and model assignment paths", async () => {
+      const available = Promise.withResolvers<boolean>();
+      const { lanes } = host({
+        session: (id) =>
+          id === "dsh-one" ? { agent: "deepseek-harness", workspaceId: "w1", title: null } : null,
+        managed: () => available.promise,
+      });
+      const orchestration = service(lanes, directory(), "boot-1", undefined, () => true);
+      orchestration.designate({
+        sessionId: "other-lead",
+        deviceId: DEVICE,
+        workspaceId: "w1",
+      });
+      const tool = orchestration.call("other-lead", "worker_open", {
+        name: "one",
+        session: "dsh-one",
+      });
+      const desktop = orchestration.assignWorkers({ ...OWNER, workers: ["dsh-one"] });
+      available.resolve(true);
+      expect(parse(await tool)).toMatchObject({ accepted: true });
+      await expect(desktop).rejects.toThrow("session-is-a-worker");
+      expect(orchestration.status(LEAD)).toBeNull();
+      expect(orchestration.registry.leadOfLane("dsh-one")?.lead.sessionId).toBe("other-lead");
+      expect(() =>
+        orchestration.designate({ sessionId: "dsh-one", deviceId: DEVICE, workspaceId: "w1" }),
+      ).toThrow("session-is-a-worker");
+    });
   });
 
   it.each([

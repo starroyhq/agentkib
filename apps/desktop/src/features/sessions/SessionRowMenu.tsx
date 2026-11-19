@@ -30,17 +30,20 @@ import type { ConversationSessionSummary } from "@/core/types";
 import { useI18n } from "@/core/useI18n";
 import { displaySessionTitle } from "@/features/workspace/session-title";
 import { codexCopy, codexReason } from "./conversation/features/sessions/codex-copy";
+import { SessionWorkerAssignmentDialog } from "./SessionWorkerAssignmentDialog";
+import { workerAssignmentCopy } from "./worker-assignment-copy";
 
 /**
- * Rename, archive (only where the agent archives natively, as Codex does) and permanent delete
- * for a session row, without opening the session. The host decides what each session offers.
+ * Session-specific actions without opening the session. The host decides what each session offers.
  */
 export function SessionRowMenu({
   session,
+  sessions = [],
   onChanged,
   onDeleted,
 }: {
   session: ConversationSessionSummary;
+  sessions?: ConversationSessionSummary[];
   onChanged?: () => void;
   onDeleted?: () => void;
 }) {
@@ -51,6 +54,7 @@ export function SessionRowMenu({
   const [open, setOpen] = useState(false);
   const [features, setFeatures] = useState<SessionManagementFeatures>();
   const [renaming, setRenaming] = useState(false);
+  const [assigningWorkers, setAssigningWorkers] = useState(false);
   const [name, setName] = useState("");
   const [busy, setBusy] = useState(false);
   useEffect(() => {
@@ -67,6 +71,12 @@ export function SessionRowMenu({
   }, [open, client, session.id, session.agent]);
   if (!managedAgentOf(session.agent)) return null;
   const isClaude = session.agent === "claude-code";
+  const canAssignWorkers =
+    ["claude-code", "codex", "deepseek-harness"].includes(session.agent) &&
+    session.availability === "readable" &&
+    !session.archived &&
+    !session.sidechain &&
+    session.orchestration?.role !== "worker";
   const reason = (action: SessionManagementAction) => {
     const value = features?.[action]?.reason;
     if (action === "delete" && value === "codex-owner-busy") return copy.deleteOwnerBusy;
@@ -152,6 +162,11 @@ export function SessionRowMenu({
             setName(session.title ?? "");
             setRenaming(true);
           })}
+          {canAssignWorkers && (
+            <DropdownMenuItem onClick={() => setAssigningWorkers(true)}>
+              {workerAssignmentCopy[locale].menu}
+            </DropdownMenuItem>
+          )}
           {archive &&
             item(archiveAction, session.archived ? copy.unarchive : copy.archive, () => {
               void run(archiveAction);
@@ -164,6 +179,14 @@ export function SessionRowMenu({
           )}
         </DropdownMenuContent>
       </DropdownMenu>
+      {assigningWorkers && (
+        <SessionWorkerAssignmentDialog
+          session={session}
+          sessions={sessions}
+          onClose={() => setAssigningWorkers(false)}
+          onChanged={onChanged}
+        />
+      )}
       <Dialog open={renaming} onOpenChange={setRenaming}>
         <DialogContent>
           <DialogHeader>

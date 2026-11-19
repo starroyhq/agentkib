@@ -89,7 +89,14 @@ export function SessionDirectoryTrailing({
       >
         {indicator}
       </span>
-      {hasMenu && <SessionRowMenu session={session} onChanged={onChanged} onDeleted={onDeleted} />}
+      {hasMenu && (
+        <SessionRowMenu
+          session={session}
+          sessions={sessions}
+          onChanged={onChanged}
+          onDeleted={onDeleted}
+        />
+      )}
     </div>
   );
 }

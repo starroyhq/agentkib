@@ -296,7 +296,7 @@ function EventRow({
           ) : (
             hasText && (
               <div data-message-body className="select-text">
-                <SafeMarkdown text={content} literal={event.cli_output === true} />
+                <SafeMarkdown text={content} literal={event.cli_output === true} locale={locale} />
               </div>
             )
           )}

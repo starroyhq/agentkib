@@ -1,0 +1,148 @@
+.session-code-block {
+  --syntax-comment: var(--muted-foreground);
+  --syntax-keyword: #6842ab;
+  --syntax-string: #167443;
+  --syntax-number: #a54a1a;
+  --syntax-operator: #a53060;
+  --syntax-property: #175ea2;
+
+  max-inline-size: 100%;
+  min-inline-size: 0;
+  margin-block: 0.875rem;
+  overflow: hidden;
+  border: 1px solid var(--border);
+  border-radius: 0.875rem;
+  background: color-mix(in srgb, var(--muted) 62%, var(--card));
+  color: var(--foreground);
+}
+
+.session-code-block:first-child {
+  margin-block-start: 0;
+}
+
+.session-code-block:last-child {
+  margin-block-end: 0;
+}
+
+:where(.dark) .session-code-block {
+  --syntax-keyword: #c7a7ff;
+  --syntax-string: #8bd9a6;
+  --syntax-number: #ffb38d;
+  --syntax-operator: #ff9ec3;
+  --syntax-property: #90c4ff;
+}
+
+.session-code-block-toolbar,
+.session-code-block-language,
+.session-code-block-actions {
+  display: flex;
+  align-items: center;
+}
+
+.session-code-block-toolbar {
+  justify-content: space-between;
+  gap: 0.5rem;
+  padding: 0.3rem 0.5rem 0.3rem 0.875rem;
+  border-block-end: 1px solid var(--border);
+  background: color-mix(in srgb, var(--muted) 45%, transparent);
+}
+
+.session-code-block-language {
+  min-inline-size: 0;
+  gap: 0.5rem;
+  font-size: 0.75rem;
+  font-weight: 600;
+}
+
+.session-code-block-language svg {
+  flex-shrink: 0;
+  color: var(--muted-foreground);
+}
+
+.session-code-block-language span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.session-code-block-actions {
+  flex-shrink: 0;
+  gap: 0.125rem;
+}
+
+.session-code-block-button {
+  display: grid;
+  inline-size: 2rem;
+  block-size: 2rem;
+  place-items: center;
+  border-radius: 0.375rem;
+  color: var(--muted-foreground);
+  cursor: pointer;
+}
+
+.session-code-block-button:hover,
+.session-code-block-button[aria-pressed="true"] {
+  background: var(--accent);
+  color: var(--accent-foreground);
+}
+
+.session-code-block-button:focus-visible {
+  outline: 2px solid var(--ring);
+  outline-offset: -2px;
+}
+
+@media (pointer: coarse) {
+  .session-code-block-button {
+    inline-size: 2.5rem;
+    block-size: 2.5rem;
+  }
+}
+
+.session-code-block-error {
+  display: block;
+  padding: 0.5rem 0.875rem 0;
+  color: var(--destructive);
+  font-size: 0.75rem;
+}
+
+.session-code-block-content {
+  margin: 0;
+  padding: 0.75rem 0.875rem;
+  overflow-x: auto;
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: 0.8125rem;
+  line-height: 1.65;
+  tab-size: 4;
+  white-space: pre;
+  overflow-wrap: normal;
+  word-break: normal;
+  scrollbar-width: thin;
+}
+
+.session-code-block-content[data-wrap="true"] {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.session-code-block-content > code {
+  font: inherit;
+}
+
+.session-code-block [data-syntax="comment"] {
+  color: var(--syntax-comment);
+}
+.session-code-block :is([data-syntax="keyword"], [data-syntax="word"]) {
+  color: var(--syntax-keyword);
+}
+.session-code-block :is([data-syntax="string"], [data-syntax="added"]) {
+  color: var(--syntax-string);
+}
+.session-code-block [data-syntax="number"] {
+  color: var(--syntax-number);
+}
+.session-code-block :is([data-syntax="operator"], [data-syntax="removed"]) {
+  color: var(--syntax-operator);
+}
+.session-code-block :is([data-syntax="property"], [data-syntax="tag"], [data-syntax="variable"]) {
+  color: var(--syntax-property);
+}

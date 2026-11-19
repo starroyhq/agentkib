@@ -11,9 +11,6 @@ export {
   visibleReadTarget,
   type SessionReadState,
 } from "./read-state";
-import Markdown, { type Components } from "react-markdown";
-import remarkGfm from "remark-gfm";
-import rehypeSanitize from "rehype-sanitize";
 
 export { useTranscriptFollow } from "./use-transcript-follow";
 export { captureHistoryScrollAnchor } from "./history-scroll-anchor";
@@ -188,82 +185,7 @@ export function toolStatusLabel(status: string | null | undefined, locale: strin
   return status ?? "";
 }
 
-const markdownComponents: Components = {
-  img: ({ alt }) => (
-    <span
-      role="img"
-      aria-label={alt || "Image omitted"}
-      title={alt || "Image omitted"}
-      className="inline rounded bg-muted px-1.5 py-0.5 text-xs text-muted-foreground"
-    >
-      {alt || "Image omitted"}
-    </span>
-  ),
-  a: ({ href, children }) =>
-    href && /^https?:\/\//i.test(href) ? (
-      <a href={href} target="_blank" rel="noreferrer noopener">
-        {children}
-      </a>
-    ) : (
-      <span>{children}</span>
-    ),
-};
-
-/** A Markdown tree node, as far as `remarkLiteral` reads it. */
-interface MarkdownNode {
-  type: string;
-  value?: string;
-  children?: MarkdownNode[];
-}
-// Nodes whose children are blocks: an HTML block there becomes a paragraph of its text.
-const FLOW_PARENTS = new Set(["root", "blockquote", "listItem", "footnoteDefinition"]);
-
-/**
- * For text Claude Code wrote itself: HTML shows as written, so a usage line keeps `<name>`
- * rather than losing it to the sanitizer, and each line break stays one. Code, tables and
- * headings still render.
- */
-function remarkLiteral() {
-  return (tree: MarkdownNode) => keepAsWritten(tree);
-}
-function keepAsWritten(node: MarkdownNode): void {
-  if (!node.children) return;
-  node.children = node.children.map((child) => {
-    if (child.type !== "html") return child;
-    const text = { type: "text", value: child.value ?? "" };
-    return FLOW_PARENTS.has(node.type) ? { type: "paragraph", children: [text] } : text;
-  });
-  for (const child of node.children) keepAsWritten(child);
-  node.children = node.children.flatMap((child) =>
-    child.type === "text" && child.value?.includes("\n")
-      ? child.value
-          .split("\n")
-          .flatMap((line, index) => [
-            ...(index ? [{ type: "break" }] : []),
-            { type: "text", value: line },
-          ])
-      : [child],
-  );
-}
-
-const remarkPlugins = [remarkGfm];
-const literalRemarkPlugins = [remarkGfm, remarkLiteral];
-
-/**
- * Markdown with raw HTML, scripts and remote images removed. `literal` is for text Claude Code
- * wrote itself (`cli_output`), such as a local command's output.
- */
-export function SafeMarkdown({ text, literal = false }: { text: string; literal?: boolean }) {
-  return (
-    <Markdown
-      remarkPlugins={literal ? literalRemarkPlugins : remarkPlugins}
-      rehypePlugins={[rehypeSanitize]}
-      components={markdownComponents}
-    >
-      {text}
-    </Markdown>
-  );
-}
+export { SafeMarkdown } from "./safe-markdown";
 export { projectAgentCopy, type ProjectAgentCopy } from "./project-agent-copy";
 export { usageLimitNotice, usageLimitTime, type UsageLimitNoticeInput } from "./usage-limit-copy";
 

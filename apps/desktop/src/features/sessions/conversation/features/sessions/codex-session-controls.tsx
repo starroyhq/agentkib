@@ -965,6 +965,7 @@ export function CodexComposerControls({
     permissionReadOnlyWithoutMenu,
     permissionLabel,
     permissionDescription,
+    permissionHint,
     permissionRisky,
     changePermission,
     collaboration,
@@ -1194,6 +1195,7 @@ export function CodexComposerControls({
                   permissionLabel ??
                   (isClaude || isDevin ? agentCopy.permission : copy.executionPolicy),
                 description: permissionDescription,
+                hint: permissionHint,
                 risky: permissionRisky,
                 disabled: permissionTriggerLocked,
                 side: "top",
@@ -1263,7 +1265,8 @@ export function CodexComposerControls({
                   terminal: {
                     offered: canOpenTerminalModel,
                     settingsReadable,
-                    executionMode: live?.executionMode,
+                    sessionId: selected,
+                    live,
                     ready: controlReady,
                     online,
                     blocked: disabled || busy || running,

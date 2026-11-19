@@ -29,22 +29,32 @@ export function useComposerModelPanel() {
     terminal: {
       offered: boolean;
       settingsReadable: boolean;
-      executionMode?: Live["executionMode"];
+      sessionId: string;
+      live?: Live | null;
       ready: boolean;
       online: boolean;
       blocked: boolean;
       open: () => Promise<boolean>;
     };
   }) {
+    const terminalLive =
+      terminal.live?.sessionId === terminal.sessionId &&
+      terminal.live.executionMode === "claude-follower"
+        ? terminal.live
+        : undefined;
+    const terminalPickerOpen =
+      terminal.online && terminalLive?.reason === "claude-model-picker-open";
     const terminalPickerAvailable =
       terminal.offered &&
       terminal.settingsReadable &&
-      terminal.executionMode === "claude-follower" &&
+      terminalLive !== undefined &&
       terminal.ready &&
       terminal.online &&
+      !terminalPickerOpen &&
       !terminal.blocked;
     return {
       pickerRef,
+      terminalPickerOpen,
       onOpenTerminalPicker: terminalPickerAvailable ? terminal.open : undefined,
       onOpen: () => {
         const requestedRefresh = refreshOnOpen.current;

@@ -11,6 +11,7 @@ import type {
 import { claudeTerminalPermission } from "./claude-terminal-permission";
 import type { InteractionLocale } from "./interaction-model";
 import { newSessionPermissions } from "./new-session";
+import { changeClaudeTerminalPermissionCopy } from "./permission-mode-copy";
 import { codexPolicyLabel, dshPolicyLabel } from "./policy-labels";
 import { sessionCollaborationMode } from "./session-collaboration-mode";
 import { observedClaudePermissionLabel } from "./session-composer-capabilities";
@@ -233,6 +234,13 @@ export function projectComposerSettingsControls({
     agent === "claude-code"
       ? claudeTerminalPermission(live, sessionId, selection?.permissionMode, locale)
       : undefined;
+  const permissionHint =
+    agent === "claude-code" &&
+    live?.sessionId === sessionId &&
+    live.executionMode === "claude-follower" &&
+    live.executionLocation === "terminal"
+      ? changeClaudeTerminalPermissionCopy[locale]
+      : undefined;
   const observedPermission =
     agent === "claude-code"
       ? observedClaudePermissionLabel(
@@ -280,13 +288,15 @@ export function projectComposerSettingsControls({
     permissionReadOnlyWithoutMenu:
       permissionField?.available === false &&
       !permissionItems.length &&
-      !terminalPermission?.description,
+      !terminalPermission?.description &&
+      !permissionHint,
     permissionLabel:
       terminalPermission?.name ??
       currentPermission?.name ??
       observedPermission ??
       observedPolicy?.name,
     permissionDescription: terminalPermission?.description,
+    permissionHint,
     permissionRisky: terminalPermission?.risky ?? currentPermission?.risky,
     changePermission,
     collaboration,

@@ -15,6 +15,7 @@ type PermissionMenuProps = {
   label: string;
   title: string;
   description?: string;
+  hint?: string;
   risky?: boolean;
   disabled: boolean;
   side: "top" | "bottom";
@@ -30,6 +31,7 @@ export function ComposerPermissionMenu({
   label,
   title,
   description,
+  hint,
   risky = false,
   disabled,
   side,
@@ -65,6 +67,7 @@ export function ComposerPermissionMenu({
               {description && (
                 <p className="px-1.5 py-1 text-xs text-muted-foreground">{description}</p>
               )}
+              {hint && <p className="px-1.5 py-1 text-xs text-muted-foreground">{hint}</p>}
               {items.map((item) => {
                 const active = item.selected ?? item.id === selected;
                 return (

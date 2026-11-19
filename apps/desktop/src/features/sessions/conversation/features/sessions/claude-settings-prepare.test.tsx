@@ -52,10 +52,10 @@ function settings(id = "session"): CodexSessionSettings {
     },
   };
 }
-function deferred() {
-  let resolve!: (value: CodexSessionSettings) => void;
+function deferred<T = CodexSessionSettings>() {
+  let resolve!: (value: T) => void;
   let reject!: (error: Error) => void;
-  const promise = new Promise<CodexSessionSettings>((yes, no) => {
+  const promise = new Promise<T>((yes, no) => {
     resolve = yes;
     reject = no;
   });
@@ -811,7 +811,7 @@ it("prepares an external owner's draft without enabling native sends or reusing 
   ).not.toBeInTheDocument();
 });
 
-it("opens the connected terminal's model picker only on explicit request and keeps the reported model", async () => {
+it("tracks the original terminal's model picker across reopening and unlocks when the terminal closes it", async () => {
   state.controlReady = true;
   state.access = {
     ...state.access!,
@@ -831,20 +831,47 @@ it("opens the connected terminal's model picker only on explicit request and kee
   const reported = settings();
   reported.writable.model = { available: false, reason: "claude-follower-settings-unavailable" };
   vi.mocked(state.client.sessionSettings).mockResolvedValue(reported);
-  vi.mocked(state.codexAction).mockResolvedValue({
-    accepted: true,
-    requestId: "request",
-    sessionId: "session",
-  });
-  render(<CodexComposerControls {...props} />);
+  const dispatch = deferred<Awaited<ReturnType<typeof state.codexAction>>>();
+  vi.mocked(state.codexAction).mockReturnValue(dispatch.promise);
+  const view = render(<CodexComposerControls {...props} />);
   const model = await screen.findByRole("button", { name: /^Model: Claude session/ });
+  const { openTerminalModel, chooseInTerminal } = composerModelCopy["en-US"];
   fireEvent.click(model);
   const dialog = within(await screen.findByRole("dialog"));
-  const open = dialog.getByRole("button", { name: composerModelCopy["en-US"].openTerminalModel });
+  const open = dialog.getByRole("button", { name: openTerminalModel });
   expect(state.codexAction).not.toHaveBeenCalled();
   fireEvent.click(open);
-  await waitFor(() => expect(open).toBeDisabled());
+  expect(open).toBeDisabled();
+  fireEvent.click(open);
   expect(state.codexAction).toHaveBeenCalledExactlyOnceWith("open-model-picker");
+  await act(async () =>
+    dispatch.resolve({ accepted: true, requestId: "request", sessionId: "session" }),
+  );
+  expect(open).toBeEnabled();
+
+  const idle = state.live!;
+  const capabilities = state.capabilities!;
+  state.live = { ...idle, reason: "claude-model-picker-open" };
+  state.capabilities = {
+    ...capabilities,
+    features: { ...capabilities.features, "open-model-picker": { available: false } },
+  };
+  view.rerender(<CodexComposerControls {...props} />);
+  expect(open).toBeDisabled();
+  expect(dialog.getByText(chooseInTerminal)).toBeVisible();
+  fireEvent.keyDown(screen.getByRole("dialog"), { key: "Escape" });
+  await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
+  fireEvent.click(model);
+  const reopened = within(await screen.findByRole("dialog"));
+  expect(reopened.getByText(chooseInTerminal)).toBeVisible();
+  expect(reopened.getByRole("button", { name: openTerminalModel })).toBeDisabled();
+
+  state.live = idle;
+  state.capabilities = capabilities;
+  view.rerender(<CodexComposerControls {...props} />);
+  expect(reopened.queryByText(chooseInTerminal)).not.toBeInTheDocument();
+  expect(reopened.getByRole("button", { name: openTerminalModel })).toBeEnabled();
+  expect(state.codexAction).toHaveBeenCalledOnce();
   expect(model).toHaveTextContent("Claude session");
   expect(state.client.prepareSessionSettings).not.toHaveBeenCalled();
   expect(state.control).not.toHaveBeenCalled();

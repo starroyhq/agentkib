@@ -199,6 +199,7 @@ export function ComposerModelPicker({
   settingsAuthority,
   readOnly,
   terminalModel,
+  terminalPickerOpen = false,
   onOpenTerminalPicker,
   side = "top",
   onOpen,
@@ -235,6 +236,7 @@ export function ComposerModelPicker({
   settingsAuthority?: object;
   readOnly?: boolean;
   terminalModel?: boolean;
+  terminalPickerOpen?: boolean;
   onOpenTerminalPicker?: () => Promise<boolean>;
   /** Where the picker opens: above a composer at the bottom, below one at the top of a page. */
   side?: "top" | "bottom";
@@ -245,7 +247,8 @@ export function ComposerModelPicker({
   const copy = composerModelCopy[locale];
   const [open, setOpen] = useState(false);
   const [page, setPage] = useState<ComposerModelPage>("effort");
-  const [terminalPicker, setTerminalPicker] = useState<"idle" | "opening" | "opened">("idle");
+  const [terminalPickerPending, setTerminalPickerPending] = useState(false);
+  const terminalPickerFlight = useRef(false);
   const triggerId = useId();
   const [popover] = useState(() => Popover.createHandle<ComposerModelPage>());
   const openState = useRef(false);
@@ -505,7 +508,6 @@ export function ComposerModelPicker({
         if (next === openState.current || (next && triggerDisabled)) return;
         openState.current = next;
         setOpen(next);
-        if (next) setTerminalPicker("idle");
         setDraftEffort(undefined);
         unknownEffortPointer.current = undefined;
         if (next) {
@@ -615,20 +617,31 @@ export function ComposerModelPicker({
                       type="button"
                       variant="outline"
                       className="h-8 rounded-lg px-2 text-sm"
-                      disabled={!onOpenTerminalPicker || terminalPicker !== "idle"}
+                      disabled={
+                        !onOpenTerminalPicker || terminalPickerOpen || terminalPickerPending
+                      }
                       onClick={async () => {
-                        if (!onOpenTerminalPicker) return;
-                        setTerminalPicker("opening");
+                        if (
+                          !onOpenTerminalPicker ||
+                          terminalPickerOpen ||
+                          terminalPickerFlight.current
+                        )
+                          return;
+                        terminalPickerFlight.current = true;
+                        setTerminalPickerPending(true);
                         try {
-                          setTerminalPicker((await onOpenTerminalPicker()) ? "opened" : "idle");
+                          await onOpenTerminalPicker();
                         } catch {
-                          setTerminalPicker("idle");
+                          // The session action reports the dispatch failure.
+                        } finally {
+                          terminalPickerFlight.current = false;
+                          setTerminalPickerPending(false);
                         }
                       }}
                     >
                       {copy.openTerminalModel}
                     </Button>
-                    {terminalPicker === "opened" && (
+                    {terminalPickerOpen && (
                       <p className="text-xs leading-5 text-muted-foreground">
                         {copy.chooseInTerminal}
                       </p>

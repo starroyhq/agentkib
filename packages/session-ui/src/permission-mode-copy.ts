@@ -41,6 +41,13 @@ export const permissionModeCopy = {
   },
 } satisfies Record<Locale, Record<string, string>>;
 
+export const changeClaudeTerminalPermissionCopy = {
+  "zh-CN": "在原 Claude Code 终端按 Shift+Tab 切换权限模式。",
+  "zh-Hant": "在原 Claude Code 終端按 Shift+Tab 切換權限模式。",
+  "en-US": "Press Shift+Tab in the original Claude Code terminal to switch permission modes.",
+  "ja-JP": "元の Claude Code ターミナルで Shift+Tab を押すと、権限モードを切り替えられます。",
+} satisfies Record<Locale, string>;
+
 /** Short labels keep the risk visible while the full explanation remains expandable. */
 export const permissionModeSummaryCopy = {
   "zh-CN": {

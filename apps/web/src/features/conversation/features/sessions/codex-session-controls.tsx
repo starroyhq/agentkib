@@ -423,56 +423,63 @@ export function CodexComposerControls({
           const readGoal = flight.sections.has("goal");
           flight.sections.clear();
           flight.background = true;
-          const [settingsResult, goalResult] = await Promise.allSettled([
-            readSettings && settingsReadable && settingsAgent
-              ? client.sessionSettings(selected, settingsAgent)
-              : Promise.resolve(undefined),
-            readGoal && goalReadable
-              ? managedAgent
-                ? client.sessionGoals(selected, managedAgent)
-                : client.codexGoals(selected)
-              : Promise.resolve(undefined),
+          await Promise.all([
+            (async () => {
+              if (!readSettings) return;
+              try {
+                const value =
+                  settingsReadable && settingsAgent
+                    ? await client.sessionSettings(selected, settingsAgent)
+                    : undefined;
+                if (
+                  generation !== loadGeneration.current ||
+                  readVersion !== settingsReadVersion.current
+                )
+                  return;
+                if (value) applySettings(value);
+                else if (settingsReadable) setSettings(undefined);
+                setSettingsError("");
+              } catch (error) {
+                if (generation !== loadGeneration.current) return;
+                const denied = modelReadDenied(error);
+                if (denied) {
+                  forgetSessionModelDisplay(
+                    client,
+                    displayScope.access,
+                    selected,
+                    displayScope.agent,
+                  );
+                  settingsPreparation.current = undefined;
+                  setPreparingSettings(false);
+                }
+                if ((readVersion === settingsReadVersion.current && !quiet) || denied) {
+                  setSettings(undefined);
+                  setSettingsError(unavailable(error));
+                }
+              }
+            })(),
+            (async () => {
+              if (!readGoal) return;
+              try {
+                const value = goalReadable
+                  ? managedAgent
+                    ? await client.sessionGoals(selected, managedAgent)
+                    : await client.codexGoals(selected)
+                  : undefined;
+                if (generation !== loadGeneration.current) return;
+                setGoal(value);
+                if (goalDraftRevision.current === undefined) {
+                  setObjective(value?.goal?.objective ?? "");
+                  setTokenBudget(value?.goal?.tokenBudget?.toString() ?? "");
+                }
+                setGoalError("");
+              } catch (error) {
+                if (generation !== loadGeneration.current || quiet) return;
+                setGoal(undefined);
+                setGoalError(unavailable(error));
+              }
+            })(),
           ]);
-          if (generation !== loadGeneration.current) return;
-          if (readSettings) {
-            if (
-              readVersion === settingsReadVersion.current &&
-              settingsResult.status === "fulfilled"
-            ) {
-              if (settingsResult.value) applySettings(settingsResult.value);
-              else if (settingsReadable) setSettings(undefined);
-              setSettingsError("");
-            } else if (settingsResult.status === "rejected") {
-              const denied = modelReadDenied(settingsResult.reason);
-              if (denied) {
-                forgetSessionModelDisplay(
-                  client,
-                  displayScope.access,
-                  selected,
-                  displayScope.agent,
-                );
-                settingsPreparation.current = undefined;
-                setPreparingSettings(false);
-              }
-              if ((readVersion === settingsReadVersion.current && !quiet) || denied) {
-                setSettings(undefined);
-                setSettingsError(unavailable(settingsResult.reason));
-              }
-            }
-          }
-          if (readGoal) {
-            if (goalResult.status === "fulfilled") {
-              setGoal(goalResult.value);
-              if (goalDraftRevision.current === undefined) {
-                setObjective(goalResult.value?.goal?.objective ?? "");
-                setTokenBudget(goalResult.value?.goal?.tokenBudget?.toString() ?? "");
-              }
-              setGoalError("");
-            } else if (!quiet) {
-              setGoal(undefined);
-              setGoalError(unavailable(goalResult.reason));
-            }
-          }
         }
         if (loadFlight.current === flight) loadFlight.current = undefined;
       })().finally(() => {
@@ -1171,6 +1178,10 @@ export function CodexComposerControls({
                 selection: selection,
                 reportedSettings: reportedSettings,
                 displayFallback: displayFallback,
+                verifiedHistoricalModel:
+                  settingsReadable && reservesModelSlot
+                    ? claudeHistoricalModel?.modelId
+                    : undefined,
                 retainedEffortOptions,
                 provider: provider,
                 clearEffort: canClearEffort,
@@ -1182,7 +1193,9 @@ export function CodexComposerControls({
                 modelDefault:
                   reservesModelSlot && !settingsReadable ? false : provider?.models.modelDefault,
                 saving: saving,
-                loading: preparingSettings,
+                loading:
+                  preparingSettings || (online && settingsReadable && !settings && !settingsError),
+                readError: settingsError,
                 ...modelPanel.modelActions({
                   settings: scopedSettings,
                   stale: settingsReadStale,

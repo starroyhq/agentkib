@@ -464,69 +464,75 @@ export function CodexComposerControls({
           flight.dirty = false;
           flight.background = true;
           flight.includeGoal = false;
-          const [settingsResult, goalResult] = await Promise.allSettled([
-            settingsReadable && settingsAgent
-              ? client.sessionSettings(selected, settingsAgent)
-              : Promise.resolve(undefined),
-            readGoal
-              ? managedAgent
-                ? client.sessionGoals(selected, managedAgent)
-                : client.codexGoals(selected)
-              : Promise.resolve(undefined),
+          // The model can display as soon as its read settles, even if goals take longer.
+          await Promise.all([
+            (async () => {
+              try {
+                const value =
+                  settingsReadable && settingsAgent
+                    ? await client.sessionSettings(selected, settingsAgent)
+                    : undefined;
+                if (
+                  generation !== loadGeneration.current ||
+                  readVersion !== settingsReadVersion.current
+                )
+                  return;
+                // Keep historical display data tied to the authorized read, even when live
+                // settings replace the editable projection.
+                setSettingsRead(
+                  value?.sessionId === selected &&
+                    (value.historicalSettings ||
+                      value.usage?.historical ||
+                      (!managedAgent && value.defaults.modelId))
+                    ? {
+                        scope: historyScope,
+                        client,
+                        revision: value.revision,
+                        values: value.historicalSettings,
+                        usage: value.usage?.historical ? value.usage : undefined,
+                        defaults: value.defaults,
+                      }
+                    : undefined,
+                );
+                if (value) applySettings(value);
+                else if (settingsReadable) setSettingsSource(undefined);
+                setSettingsError("");
+              } catch (error) {
+                if (generation !== loadGeneration.current) return;
+                const accessLost =
+                  error instanceof ApiError && [401, 403, 404, 410].includes(error.status);
+                if (accessLost) {
+                  forgetSessionModelDisplay(client, modelAccess.current, selected, displayAgent);
+                  settingsPreparation.current = undefined;
+                  setPreparingSettings(false);
+                }
+                if ((readVersion === settingsReadVersion.current && !quiet) || accessLost) {
+                  setSettingsSource(undefined);
+                  setSettingsRead(undefined);
+                  setSettingsError(unavailable(error));
+                }
+              }
+            })(),
+            (async () => {
+              if (!readGoal) return;
+              try {
+                const value = managedAgent
+                  ? await client.sessionGoals(selected, managedAgent)
+                  : await client.codexGoals(selected);
+                if (generation !== loadGeneration.current) return;
+                setGoal(value);
+                if (goalDraftRevision.current === undefined) {
+                  setObjective(value?.goal?.objective ?? "");
+                  setTokenBudget(value?.goal?.tokenBudget?.toString() ?? "");
+                }
+                setGoalError("");
+              } catch (error) {
+                if (generation !== loadGeneration.current || quiet) return;
+                setGoal(undefined);
+                setGoalError(unavailable(error));
+              }
+            })(),
           ]);
-          if (generation !== loadGeneration.current) return;
-          if (
-            readVersion === settingsReadVersion.current &&
-            settingsResult.status === "fulfilled"
-          ) {
-            const value = settingsResult.value;
-            // Keep historical display data tied to the authorized read, even when live settings
-            // replace the editable projection.
-            setSettingsRead(
-              value?.sessionId === selected &&
-                (value.historicalSettings ||
-                  value.usage?.historical ||
-                  (!managedAgent && value.defaults.modelId))
-                ? {
-                    scope: historyScope,
-                    client,
-                    revision: value.revision,
-                    values: value.historicalSettings,
-                    usage: value.usage?.historical ? value.usage : undefined,
-                    defaults: value.defaults,
-                  }
-                : undefined,
-            );
-            if (value) applySettings(value);
-            else if (settingsReadable) setSettingsSource(undefined);
-            setSettingsError("");
-          } else if (settingsResult.status === "rejected") {
-            const error = settingsResult.reason;
-            const accessLost =
-              error instanceof ApiError && [401, 403, 404, 410].includes(error.status);
-            if (accessLost) {
-              forgetSessionModelDisplay(client, modelAccess.current, selected, displayAgent);
-              settingsPreparation.current = undefined;
-              setPreparingSettings(false);
-            }
-            if ((readVersion === settingsReadVersion.current && !quiet) || accessLost) {
-              setSettingsSource(undefined);
-              setSettingsRead(undefined);
-              setSettingsError(unavailable(error));
-            }
-          }
-          if (!readGoal) continue;
-          if (goalResult.status === "fulfilled") {
-            setGoal(goalResult.value);
-            if (goalDraftRevision.current === undefined) {
-              setObjective(goalResult.value?.goal?.objective ?? "");
-              setTokenBudget(goalResult.value?.goal?.tokenBudget?.toString() ?? "");
-            }
-            setGoalError("");
-          } else if (!quiet) {
-            setGoal(undefined);
-            setGoalError(unavailable(goalResult.reason));
-          }
         }
         if (loadFlight.current === flight) loadFlight.current = undefined;
       })().finally(() => {
@@ -1234,6 +1240,10 @@ export function CodexComposerControls({
                 selection: displayedSettings,
                 reportedSettings: reportedSettings,
                 displayFallback: displayModelFallback,
+                verifiedHistoricalModel:
+                  settingsReadable && reservesModelSlot
+                    ? claudeHistoricalModel?.modelId
+                    : undefined,
                 retainedEffortOptions,
                 disabled: settingsWriteLocked,
                 triggerDisabled: false,
@@ -1241,7 +1251,9 @@ export function CodexComposerControls({
                 settingsAuthority: followerAuthority,
                 terminalModel: terminalModel,
                 saving: saving,
-                loading: preparingSettings,
+                loading:
+                  preparingSettings || (online && settingsReadable && !settings && !settingsError),
+                readError: settingsError,
                 ...modelPanel.modelActions({
                   settings: settings,
                   stale: settingsReadStale,

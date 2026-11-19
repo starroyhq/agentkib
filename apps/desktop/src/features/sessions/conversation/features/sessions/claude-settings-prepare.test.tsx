@@ -287,6 +287,76 @@ it("stages a goal without a native operation until an imported Claude conversati
 });
 
 describe("Claude settings preparation", () => {
+  it("shows the last used model and saved next-turn settings on first open", async () => {
+    state.locale = "zh-Hant";
+    state.access = {
+      ...state.access!,
+      status: "approved",
+      device: { ...state.access!.device!, advancedControl: true },
+    };
+    state.live = { ...state.live!, executionLocation: null };
+    const cold = settings();
+    vi.mocked(state.client.sessionSettings).mockResolvedValue({
+      ...cold,
+      executionMode: "claude-managed",
+      applicationStatus: "pending",
+      current: {},
+      historicalSettings: { modelId: "claude-opus-5-5" },
+      selected: { modelId: "opus", effort: "max" },
+      defaults: {},
+      options: { ...cold.options, models: [] },
+    });
+
+    const view = render(<CodexComposerControls {...props} />);
+    const trigger = await screen.findByRole("button", {
+      name: /下輪設定 Opus · 最高.*上次使用 claude-opus-5-5/,
+    });
+    expect(within(trigger).getByText("上次使用 claude-opus-5-5")).toBeVisible();
+    expect(within(trigger).getByText("下輪設定 Opus · 最高")).toBeVisible();
+    expect(state.client.prepareSessionSettings).not.toHaveBeenCalled();
+    expect(state.codexAction).not.toHaveBeenCalled();
+
+    state.access = {
+      ...state.access,
+      device: { ...state.access.device!, advancedControl: false },
+    };
+    view.rerender(<CodexComposerControls {...props} />);
+    expect(screen.queryByText("上次使用 claude-opus-5-5")).not.toBeInTheDocument();
+    expect(screen.queryByText("下輪設定 Opus · 最高")).not.toBeInTheDocument();
+  });
+
+  it("displays the saved model before an unrelated goal read settles", async () => {
+    state.live = { ...state.live!, executionLocation: null };
+    state.capabilities = {
+      ...state.capabilities!,
+      features: {
+        settings: { available: true },
+        "settings-state": { available: true },
+        goal: { available: true },
+      },
+    };
+    const cold = settings();
+    vi.mocked(state.client.sessionSettings).mockResolvedValue({
+      ...cold,
+      applicationStatus: "pending",
+      current: {},
+      selected: { modelId: "opus", effort: "max" },
+      defaults: {},
+      options: { ...cold.options, models: [] },
+    });
+    type Goals = Awaited<ReturnType<typeof state.client.sessionGoals>>;
+    const pendingGoals = new Promise<Goals>(() => {});
+    state.client.sessionGoals = vi.fn(() => pendingGoals);
+
+    render(<CodexComposerControls {...props} />);
+    await waitFor(() => expect(state.client.sessionGoals).toHaveBeenCalled());
+    expect(
+      await screen.findByRole("button", { name: "Select reasoning effort: opus · Maximum" }),
+    ).toBeVisible();
+    expect(state.client.prepareSessionSettings).not.toHaveBeenCalled();
+    expect(state.codexAction).not.toHaveBeenCalled();
+  });
+
   it("reserves Claude settings controls before reading the session's capabilities", async () => {
     const capabilities = state.capabilities;
     state = {
@@ -328,13 +398,18 @@ describe("Claude settings preparation", () => {
       current: {},
       options: { ...value.options, models: [] },
     });
+    const catalog = deferred();
+    vi.mocked(state.client.prepareSessionSettings).mockReturnValueOnce(catalog.promise);
     render(<CodexComposerControls {...props} />);
     await waitFor(() => expect(state.client.sessionSettings).toHaveBeenCalled());
     fireEvent.click(await screen.findByRole("button", { name: /^Select reasoning effort: model/ }));
     const overview = await screen.findByRole("dialog");
     fireEvent.click(within(overview).getByRole("button", { name: /^Select model(?::|$)/ }));
     const models = await screen.findByRole("dialog", { name: picker.model });
+    expect(await within(models).findByText("Reading model options…")).toBeVisible();
+    await act(async () => catalog.resolve(value));
     expect(await within(models).findByRole("button", { name: "Claude session" })).toBeVisible();
+    expect(within(models).queryByText("Reading model options…")).not.toBeInTheDocument();
     expect(state.client.prepareSessionSettings).toHaveBeenCalledExactlyOnceWith({
       sessionId: "session",
       bootId: "boot",

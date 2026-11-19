@@ -77,6 +77,7 @@ import {
 import { createClaudeGoalReportEndpoint } from "./claude-goal-report";
 import { projectContextUsage } from "./context-usage";
 import {
+  readClaudeTranscriptModel,
   readClaudeTranscriptObservation,
   type ClaudeTranscriptObservation,
 } from "./claude-context-usage";
@@ -706,16 +707,22 @@ export class ClaudeManagedReadOwner {
         source.nativeId,
         options.searchEarlier,
       );
-      const retained = this.continuation.retainedTerminalUsage?.(
-        id,
-        source,
-        observation,
-        () =>
-          readClaudeTranscriptObservation(source.transcript, source.nativeId, "terminal-usage"),
+      const retained = this.continuation.retainedTerminalUsage?.(id, source, observation, () =>
+        readClaudeTranscriptObservation(source.transcript, source.nativeId, "terminal-usage"),
       );
       return retained ? { ...observation, usage: retained } : observation;
     } catch {
       return { usage: { available: false, state: "unavailable" as const }, model: undefined };
+    }
+  }
+
+  #savedTranscriptModel(id: string) {
+    try {
+      const source = this.sessions.verifiedClaudeReadSource(id);
+      return readClaudeTranscriptModel(source.transcript, source.nativeId);
+    } catch {
+      // A missing display observation does not fail the settings read.
+      return undefined;
     }
   }
 
@@ -5678,9 +5685,7 @@ export class ClaudeManagedReadOwner {
       stableJson(state.lastConfirmedOptions?.selection) === stableJson(state.settings);
     const current = native?.settings ?? { model: null, effort: null, permissionMode: null };
     const historicalModel =
-      !runner?.hasWorker && !selected.model && !current.model
-        ? this.#savedTranscriptObservation(id, { searchEarlier: true }).model
-        : undefined;
+      !runner?.hasWorker && !current.model ? this.#savedTranscriptModel(id) : undefined;
     const models = importedCatalog?.models ?? native?.models ?? [];
     const reportedDefault = importedCatalog?.settings.model;
     const defaultModel = reportedDefault ? claudeModelOption(models, reportedDefault) : undefined;

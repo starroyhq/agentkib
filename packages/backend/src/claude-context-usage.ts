@@ -7,7 +7,7 @@ import {
 
 const TAIL_BYTES = 128 * 1024;
 const SETTINGS_TAIL_BYTES = 2 * 1024 * 1024;
-const TERMINAL_USAGE_TAIL_BYTES = 4 * 1024 * 1024;
+const EXTENDED_TAIL_BYTES = 4 * 1024 * 1024;
 const object = (value: unknown): value is Record<string, unknown> =>
   value !== null && typeof value === "object" && !Array.isArray(value);
 const count = (value: unknown): value is number =>
@@ -38,12 +38,38 @@ export function readClaudeTranscriptObservation(
   nativeId: string,
   searchEarlier: boolean | "terminal-usage" = false,
 ): ClaudeTranscriptObservation {
+  // Terminal resume can append several large metadata records after the last
+  // compaction without reporting newer usage. Keep normal reads on the small tail.
+  const limit =
+    searchEarlier === "terminal-usage"
+      ? EXTENDED_TAIL_BYTES
+      : searchEarlier
+        ? SETTINGS_TAIL_BYTES
+        : TAIL_BYTES;
+  return readClaudeTranscriptTail(transcript, nativeId, limit);
+}
+
+/** The last reported model can outlive a worker and any staged next-turn selection. */
+export function readClaudeTranscriptModel(transcript: string, nativeId: string) {
+  return (
+    readClaudeTranscriptTail(transcript, nativeId, SETTINGS_TAIL_BYTES, true).model ??
+    readClaudeTranscriptTail(transcript, nativeId, EXTENDED_TAIL_BYTES, true).model
+  );
+}
+
+function readClaudeTranscriptTail(
+  transcript: string,
+  nativeId: string,
+  limit: number,
+  modelOnly = false,
+): ClaudeTranscriptObservation {
   let fd: number | undefined;
   const missing = { usage: unavailable() };
   try {
     const metadata = lstatSync(transcript);
     if (!metadata.isFile() || metadata.isSymbolicLink()) return missing;
-    const key = `${nativeId}\0${transcript}`;
+    // Searching farther back for identity must not change the context usage read budget.
+    const key = `${nativeId}\0${transcript}${modelOnly ? "\0model" : ""}`;
     const version = [
       metadata.dev,
       metadata.ino,
@@ -51,14 +77,6 @@ export function readClaudeTranscriptObservation(
       metadata.mtimeMs,
       metadata.ctimeMs,
     ].join(":");
-    // Terminal resume can append several large metadata records after the last
-    // compaction without reporting newer usage. Keep normal reads on the small tail.
-    const limit =
-      searchEarlier === "terminal-usage"
-        ? TERMINAL_USAGE_TAIL_BYTES
-        : searchEarlier
-          ? SETTINGS_TAIL_BYTES
-          : TAIL_BYTES;
     const bytes = Math.min(metadata.size, limit);
     const cached = cachedReports.get(key);
     if (

@@ -184,11 +184,13 @@ export function ComposerModelPicker({
   selection: savedSelection,
   reportedSettings,
   displayFallback,
+  verifiedHistoricalModel,
   retainedEffortOptions,
   disabled,
   triggerDisabled = false,
   saving,
   loading = false,
+  readError,
   provider = settings?.provider,
   modelDefault = provider?.models.modelDefault,
   effortDefault = provider?.models.effortDefault,
@@ -209,12 +211,15 @@ export function ComposerModelPicker({
   displayFallback?: Pick<CodexSettingValues, "modelId" | "effort" | "serviceTierId"> & {
     name?: string;
   };
+  /** Display-only model ID from the authorized native history of this session. */
+  verifiedHistoricalModel?: string;
   /** Last observed scale for the same authorized session, for display while the catalog is absent. */
   retainedEffortOptions?: SessionModelEffortOptions;
   disabled: boolean;
   triggerDisabled?: boolean;
   saving: boolean;
   loading?: boolean;
+  readError?: string;
   provider?: SessionProviderCapabilities;
   /** A new session can delegate the model choice to the Agent. */
   modelDefault?: boolean;
@@ -350,6 +355,28 @@ export function ComposerModelPicker({
   const peak = effortIndex >= 0 && effortIndex === efforts.length - 1;
   const effortLabels: Record<string, string> = copy.efforts;
   const effortText = (value: string) => effortLabels[value] ?? value;
+  const savedNextTurn =
+    !activePreview &&
+    !terminalModel &&
+    settings?.available &&
+    settings.executionMode === "claude-managed" &&
+    settings.applicationStatus === "pending" &&
+    !settings.current.modelId &&
+    settings.selected?.modelId &&
+    verifiedHistoricalModel
+      ? settings.selected
+      : undefined;
+  const nextTurnModelId = savedNextTurn?.modelId;
+  const nextTurnModelName =
+    findModel(nextTurnModelId)?.name ||
+    nextTurnModelId?.replace(/^[a-z](?=[a-z]+$)/, (initial) => initial.toUpperCase());
+  const nextTurnEffort = savedNextTurn?.effort;
+  const nextTurnLabel = nextTurnModelName
+    ? `${copy.nextTurnSettings} ${nextTurnModelName}${nextTurnEffort ? ` · ${effortText(nextTurnEffort)}` : ""}`
+    : undefined;
+  const historicalLabel = verifiedHistoricalModel
+    ? `${copy.lastUsedModel} ${verifiedHistoricalModel}`
+    : undefined;
   const hasDisplaySelection = !!displayModel || modelDefault;
   const showsEffort =
     !terminalModel && !!displayModel && (!panelModel || panelModel.efforts.length > 0);
@@ -500,29 +527,49 @@ export function ComposerModelPicker({
                 <Button
                   type="button"
                   variant="ghost"
-                  className="h-9 min-w-0 max-w-64 gap-1.5 rounded-full px-2 text-sm font-normal"
+                  className={`${nextTurnLabel ? "h-10" : "h-9"} min-w-0 max-w-64 gap-1.5 rounded-full px-2 text-sm font-normal`}
                   aria-label={
-                    !hasDisplaySelection
-                      ? copy.modelSettings
-                      : `${triggerLabel}: ${displayModelName}${displayEffort ? ` · ${effortText(displayEffort)}` : ""}${displayFast ? ` · ${copy.fast}` : ""}`
+                    nextTurnLabel
+                      ? `${triggerLabel} · ${nextTurnLabel} · ${historicalLabel}`
+                      : !hasDisplaySelection
+                        ? copy.modelSettings
+                        : `${triggerLabel}: ${displayModelName}${displayEffort ? ` · ${effortText(displayEffort)}` : ""}${displayFast ? ` · ${copy.fast}` : ""}`
                   }
                 />
               }
             />
           }
         >
-          <span className="truncate">{displayModelName}</span>
-          {hasDisplaySelection && displayEffort && (
-            <span
-              className={`shrink-0 @max-[25rem]:hidden ${displayEffort === efforts.at(-1) ? "text-violet-600 dark:text-violet-400" : "text-muted-foreground"}`}
-            >
-              {effortText(displayEffort)}
+          {nextTurnLabel ? (
+            <span className="grid min-w-0 text-left text-xs leading-tight">
+              <span className="truncate">{nextTurnLabel}</span>
+              <span className="truncate text-muted-foreground">{historicalLabel}</span>
             </span>
+          ) : (
+            <>
+              <span className="truncate">{displayModelName}</span>
+              {hasDisplaySelection && displayEffort && (
+                <span
+                  className={`shrink-0 @max-[25rem]:hidden ${displayEffort === efforts.at(-1) ? "text-violet-600 dark:text-violet-400" : "text-muted-foreground"}`}
+                >
+                  {effortText(displayEffort)}
+                </span>
+              )}
+            </>
           )}
           {displayFast && <ComposerFastIcon active />}
           <ChevronDown className="size-3.5 shrink-0 text-muted-foreground" aria-hidden="true" />
         </Tooltip.Trigger>
-        <TooltipContent>{overviewLabel}</TooltipContent>
+        <TooltipContent>
+          {nextTurnLabel ? (
+            <>
+              <div>{nextTurnLabel}</div>
+              <div>{historicalLabel}</div>
+            </>
+          ) : (
+            overviewLabel
+          )}
+        </TooltipContent>
       </Tooltip.Root>
       <Popover.Portal>
         <Popover.Positioner
@@ -542,6 +589,21 @@ export function ComposerModelPicker({
             data-peak={peak || undefined}
             data-fast={fast || undefined}
           >
+            {!terminalModel && loading && !settings?.options.models.length && (
+              <p role="status" className="mb-2 px-1 text-xs text-muted-foreground">
+                {copy.readingModels}
+              </p>
+            )}
+            {!terminalModel && !loading && readError && (
+              <div className="mb-2 flex flex-col items-start gap-1 px-1">
+                <p role="status" className="text-xs text-destructive-text">
+                  {readError}
+                </p>
+                <Button type="button" variant="ghost" className="h-7 px-2 text-xs" onClick={onOpen}>
+                  {copy.retryModelRead}
+                </Button>
+              </div>
+            )}
             <Popover.Viewport className="composer-model-viewport">
               <div key={page} className="composer-model-page" data-page={page}>
                 {terminalModel ? (

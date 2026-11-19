@@ -56,6 +56,7 @@ vi.mock("node:fs", async (importOriginal) => {
 });
 
 import { ClaudeManagedReadOwner } from "../../../packages/backend/src/claude-managed-read";
+import { ClaudeHostStateStore } from "../../../packages/backend/src/claude-host-state";
 import { ClaudeSessions } from "../../../packages/backend/src/claude-sessions";
 import { ClaudeSessionOwnerProbe } from "../../../packages/backend/src/claude-session-owner";
 import { Commands } from "../../../packages/backend/src/commands";
@@ -412,6 +413,34 @@ describe("Claude read observation cost and identity boundaries", () => {
     });
     expect(document).not.toHaveBeenCalled();
     expect(fingerprint).not.toHaveBeenCalled();
+  });
+
+  it("shows the last native model behind appended metadata without confirming pending settings", async () => {
+    const f = await fixture();
+    const assistant = JSON.parse(f.message("Synthetic last reply", "assistant"));
+    assistant.message.model = "native-model";
+    assistant.message.usage = { input_tokens: 24_606 };
+    appendFileSync(f.file, JSON.stringify(assistant) + "\n");
+    const adapterMetadata = JSON.stringify({ type: "progress", data: "x".repeat(256 * 1024) });
+    appendFileSync(f.file, (adapterMetadata + "\n").repeat(9));
+    new ClaudeHostStateStore(f.root, f.owner.bootId).update(f.id, (state) => {
+      state.settings = { model: "opus", effort: "max" };
+    });
+    const document = vi.spyOn(f.sessions, "document");
+
+    const settings = await f.owner.request({ operation: "settings-state", sessionId: f.id });
+    expect(settings).toMatchObject({
+      current: { model: null, effort: null },
+      selected: { model: "opus", effort: "max" },
+      historicalSettings: { model: "native-model" },
+      applicationStatus: "pending",
+      models: [],
+      writable: { model: { available: false }, effort: { available: false } },
+    });
+    expect(await f.owner.request({ operation: "usage", sessionId: f.id })).toMatchObject({
+      available: false,
+    });
+    expect(document).not.toHaveBeenCalled();
   });
 
   it("uses one discovery and no complete document for an unmanaged live read and each history page", async () => {

@@ -673,13 +673,13 @@ describe("composer model picker", () => {
     expect(props.onChange).toHaveBeenCalledExactlyOnceWith({ model: "terra" });
   });
 
-  it("opens the overview during loading without presenting active settings or status text", async () => {
+  it("shows loading in the overview without presenting active settings", async () => {
     props = { ...props, settings: undefined, selection: undefined, loading: true };
     render(<ComposerModelPicker {...props} />);
     const trigger = screen.getByRole("button", { name: copy.modelSettings });
     fireEvent.click(trigger);
     const popup = await screen.findByRole("dialog", { name: copy.modelSettings });
-    expect(within(popup).queryByRole("status")).not.toBeInTheDocument();
+    expect(within(popup).getByRole("status")).toHaveTextContent(copy.readingModels);
     expect(within(popup).queryByRole("slider")).not.toBeInTheDocument();
     expect(within(popup).getByRole("button", { name: copy.reset })).toBeDisabled();
     expect(within(popup).getByRole("button", { name: copy.fast })).toBeDisabled();

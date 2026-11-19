@@ -53,7 +53,11 @@ describe("Claude execution and terminal connection presentation", () => {
         };
         Object.assign(failed.live!, { bridgeConnectionFailure: failure });
         const expected = claudeConnectionReason(locale, reason, "desktop", failure);
-        expect(claudeSessionBanner(failed)).toEqual({ title: copy.lostTitle, body: expected });
+        expect(claudeSessionBanner(failed)).toEqual({
+          title: copy.lostTitle,
+          body: expected,
+          connection: true,
+        });
         expect(sessionDisplayState(failed)).toMatchObject({
           reason: expected,
           continuation: "view-only",
@@ -61,6 +65,7 @@ describe("Claude execution and terminal connection presentation", () => {
         expect(claudeSessionBanner({ ...failed, online: false })).toEqual({
           title: copy.hostDisconnected,
           body: copy.hostDisconnectedInfo,
+          connection: true,
         });
         const uncertain = { ...failed, notice: "uncertain" as const };
         expect(claudeSessionBanner(uncertain)?.body).toBe(copy.connectionUnconfirmed);
@@ -82,7 +87,11 @@ describe("Claude execution and terminal connection presentation", () => {
           bridgeConnectionFailure: null,
           reason: "claude-bridge-disconnected",
         });
-        expect(claudeSessionBanner(failed)).toEqual({ title: copy.lostTitle, body: copy.lost });
+        expect(claudeSessionBanner(failed)).toEqual({
+          title: copy.lostTitle,
+          body: copy.lost,
+          connection: true,
+        });
         expect(sessionDisplayState(failed).reason).toBe(copy.lost);
       }
     },
@@ -200,6 +209,7 @@ describe("Claude execution and terminal connection presentation", () => {
       expect(claudeSessionBanner(hostOffline)).toEqual({
         title: copy.hostDisconnected,
         body: copy.hostDisconnectedInfo,
+        connection: true,
       });
       for (const unconfirmed of [
         {
@@ -218,7 +228,11 @@ describe("Claude execution and terminal connection presentation", () => {
       expect(claudeSessionBanner(gap)).toEqual({ title: copy.connected, body: copy.gap });
       for (const status of ["idle", "unsupported"]) {
         const lost = fixture(locale, "claude-follower", status, "claude-bridge-disconnected");
-        expect(claudeSessionBanner(lost)).toEqual({ title: copy.lostTitle, body: copy.lost });
+        expect(claudeSessionBanner(lost)).toEqual({
+          title: copy.lostTitle,
+          body: copy.lost,
+          connection: true,
+        });
         expect(sessionDisplayState(lost).label).toBe(continuation.viewOnly);
       }
       expect(claudeConnectionReason(locale, "platform-unsupported")).toBe(copy.platformUnsupported);

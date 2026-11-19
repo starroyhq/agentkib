@@ -99,10 +99,7 @@ export function SessionWindowToolbar() {
         {displaySessionTitle(selected.title, tr)}
       </h1>
       {interactive && (
-        <div
-          data-session-window-status-slot
-          className="hidden min-w-0 shrink items-center sm:flex empty:hidden"
-        />
+        <div data-session-window-status-slot className="flex shrink-0 items-center empty:hidden" />
       )}
       <div className="session-window-actions flex shrink-0 items-center gap-2">
         {hasDesktopConversation() && hub.localEnabled && (

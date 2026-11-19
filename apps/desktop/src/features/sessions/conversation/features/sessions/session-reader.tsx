@@ -157,6 +157,7 @@ export function SessionReader() {
   const banner = claudeSessionBanner(session);
   const backgroundStatus = claudeBackgroundStatus(session);
   const panels = useSessionPanels();
+  const connectionNoticeInToolbar = !!(banner?.connection && panels?.statusInToolbar);
   const readSubscription = useCallback(
     (listener: (userAction?: boolean) => void) =>
       subscribeSessionInvalidation(session.client, (id, domains) => {
@@ -278,15 +279,18 @@ export function SessionReader() {
           ) : (
             <div ref={contentRef} className="reader-content min-w-0 shrink-0 px-4 pb-2 md:px-8">
               {readStateAgent && <ReadStateNotice locale={locale} observation={readObservation} />}
-              {current?.agent === "claude-code" && banner && !claudeComposerNotice(banner) && (
-                <aside
-                  className="info mx-auto mb-5 max-w-3xl"
-                  data-execution-mode={live?.executionMode}
-                >
-                  {banner.title && <strong className="block mb-1">{banner.title}</strong>}
-                  {banner.body}
-                </aside>
-              )}
+              {current?.agent === "claude-code" &&
+                banner &&
+                !connectionNoticeInToolbar &&
+                !claudeComposerNotice(banner) && (
+                  <aside
+                    className="info mx-auto mb-5 max-w-3xl"
+                    data-execution-mode={live?.executionMode}
+                  >
+                    {banner.title && <strong className="block mb-1">{banner.title}</strong>}
+                    {banner.body}
+                  </aside>
+                )}
               {["codex", "claude-code"].includes(current?.agent ?? "") &&
                 current?.forked_from_session_id && (
                   <p className="mx-auto mb-4 w-full max-w-3xl text-xs text-muted-foreground">
@@ -444,6 +448,7 @@ export function SessionReader() {
                 managedAgentOf(current?.agent) ? (
                   <SessionComposer
                     connectionStatusInBanner={!!banner && !claudeComposerNotice(banner)}
+                    connectionNoticeInToolbar={connectionNoticeInToolbar}
                     key={`composer-${selected}`}
                   />
                 ) : (

@@ -83,6 +83,7 @@ function EmbeddedShell() {
   const [filesOpen, setFilesOpen] = useState(false);
   const [actionsOpen, setActionsOpen] = useState(false);
   const [terminalOpen, setTerminalOpen] = useState(false);
+  const [statusInToolbar, setStatusInToolbar] = useState(false);
   useImperativeHandle(
     props.controlsRef,
     () => ({
@@ -217,12 +218,17 @@ function EmbeddedShell() {
         setActionsOpen,
         terminalOpen,
         setTerminalOpen,
+        statusInToolbar,
       }}
     >
       <div className="agentkib-conversation flex min-h-0 flex-1 flex-col bg-background text-foreground">
-        <ConversationWindowTools filesOpen={filesOpen} onFilesOpenChange={setFilesOpen} />
+        <ConversationWindowTools
+          filesOpen={filesOpen}
+          onFilesOpenChange={setFilesOpen}
+          onStatusInToolbarChange={setStatusInToolbar}
+        />
         <PendingCenter compact />
-        {session.error && (
+        {session.error && (!statusInToolbar || session.online || session.incompatible) && (
           <p role="alert" className="px-4 py-2 text-sm text-destructive-text">
             {session.incompatible ? session.t.lanIncompatible : session.t.error}{" "}
             <Button

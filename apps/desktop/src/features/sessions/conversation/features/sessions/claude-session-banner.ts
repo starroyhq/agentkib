@@ -52,7 +52,11 @@ export function claudeSessionBanner(
       ? { title: "", body: copy.managedUnconfirmed }
       : { title: t.controlUnconfirmed, body: copy.connectionUnconfirmed };
   if (!online && live?.executionMode === "claude-follower")
-    return { title: copy.hostDisconnected, body: copy.hostDisconnectedInfo };
+    return {
+      title: copy.hostDisconnected,
+      body: copy.hostDisconnectedInfo,
+      connection: true as const,
+    };
   if (live?.continuationNotice === "owner-opened-elsewhere")
     return {
       title: "",
@@ -77,7 +81,7 @@ export function claudeSessionBanner(
           !access.device?.send)
       )
         return null;
-      return { title: copy.lostTitle, body: failureReason ?? copy.lost };
+      return { title: copy.lostTitle, body: failureReason ?? copy.lost, connection: true as const };
     }
     if (
       ["claude-follower-turn-unconfirmed", "claude-terminal-permission-unconfirmed"].includes(

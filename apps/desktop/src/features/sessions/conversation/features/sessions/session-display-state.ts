@@ -31,6 +31,7 @@ type DisplayState = {
   reason: string;
   tone: "warning" | "active" | "muted";
   loading?: boolean;
+  offline?: boolean;
   nextAction?: SessionNextAction;
   continuation?:
     | "idle"
@@ -104,6 +105,7 @@ export function sessionDisplayState(
       reason: live ? c.offline : c.connecting,
       tone: "warning",
       loading: !live,
+      offline: true,
     };
   if (state.current?.agent === "codex") {
     const copy = sessionContinuationCopy(locale);

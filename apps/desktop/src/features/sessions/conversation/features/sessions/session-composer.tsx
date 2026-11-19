@@ -84,8 +84,10 @@ const floatingNotice =
   "pointer-events-auto rounded-lg border px-3 py-2 text-xs leading-5 shadow-sm";
 export function SessionComposer({
   connectionStatusInBanner = false,
+  connectionNoticeInToolbar = false,
 }: {
   connectionStatusInBanner?: boolean;
+  connectionNoticeInToolbar?: boolean;
 }) {
   const session = useSession();
   const {
@@ -198,6 +200,8 @@ export function SessionComposer({
     onChoose: setMessage,
   });
   const panels = useSessionPanels();
+  const connectionReasonInToolbar =
+    connectionNoticeInToolbar || (display.offline && panels?.statusInToolbar);
   const openPanel = (panel: AgentKibPanel) => {
     if (panel === "settings" || panel === "goal") return controls.current?.open(panel) ?? false;
     if (!panels) return false;
@@ -639,7 +643,7 @@ export function SessionComposer({
       />
     );
   if ((isCodex || isClaude) && display.continuation === "view-only")
-    return <SessionReadOnly reason={display.reason} />;
+    return <SessionReadOnly reason={connectionReasonInToolbar ? undefined : display.reason} />;
   if (isClaude && display.continuation === "terminal-watch")
     return (
       <div className="w-full max-w-3xl shrink-0 self-center">
@@ -864,6 +868,7 @@ export function SessionComposer({
         )}
         {!canSend &&
           display.reason &&
+          !connectionReasonInToolbar &&
           !(connectionStatusInBanner && isClaude) &&
           (!running || (live?.executionMode === "claude-follower" && display.tone === "warning")) &&
           !compacting &&

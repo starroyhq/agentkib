@@ -75,7 +75,7 @@ export function SessionComposerInput({
   return (
     <form
       data-slot="session-composer"
-      className="relative min-h-30 w-full space-y-2 rounded-3xl border border-border bg-background px-2 pt-2 pb-1 shadow-sm transition-colors focus-within:border-ring/40 md:px-3 md:pt-3"
+      className="relative min-h-30 w-full space-y-2 rounded-3xl border border-border bg-sidebar px-2 pt-2 pb-1 shadow-sm transition-colors focus-within:border-ring/40 md:px-3 md:pt-3"
       onSubmit={(event) => {
         event.preventDefault();
         onSubmit();

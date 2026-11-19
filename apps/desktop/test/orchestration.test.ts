@@ -4,6 +4,7 @@ import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { codexTurnErrorEvent } from "../../../packages/backend/src/codex-turn-error";
 import { LeadRegistry } from "../../../packages/backend/src/orchestration-registry";
 import {
   LEAD_INSTRUCTIONS,
@@ -272,6 +273,54 @@ describe("orchestration service", () => {
         });
     },
   );
+
+  it("creates only one session when concurrent opens compete for the last worker slot", async () => {
+    const { lanes, calls } = host();
+    const createStarted = Promise.withResolvers<void>();
+    const secondCreateStarted = Promise.withResolvers<void>();
+    const finishCreate = Promise.withResolvers<void>();
+    const lifecycle = lanes.lifecycle;
+    let creates = 0;
+    lanes.lifecycle = async (input) => {
+      if (++creates === 1) createStarted.resolve();
+      else secondCreateStarted.resolve();
+      await finishCreate.promise;
+      return lifecycle(input);
+    };
+    const orchestration = service(lanes);
+    orchestration.designate({
+      sessionId: LEAD,
+      deviceId: DEVICE,
+      workspaceId: "w1",
+      scope: { maxLanes: 1 },
+    });
+    const config = (await orchestration.leadTools(LEAD)) as {
+      mcpServers: Record<string, { url: string }>;
+    };
+    const client = new Client({ name: "probe", version: "0" });
+    await client.connect(
+      new StreamableHTTPClientTransport(new URL(config.mcpServers.agentkib_workers!.url)),
+    );
+    cleanups.push(() => client.close());
+    const open = (name: string) =>
+      client.callTool({ name: "worker_open", arguments: { name, workspace: "w1" } });
+
+    const first = open("api");
+    await createStarted.promise;
+    const second = open("web");
+    // Release the first creation as soon as the competing request is refused or reaches the host.
+    await Promise.race([second, secondCreateStarted.promise]).finally(finishCreate.resolve);
+    const [opened, refused] = (await Promise.all([first, second])).map((result) =>
+      parse(result.content[0]),
+    );
+
+    expect(opened).toMatchObject({ accepted: true, worker: "api" });
+    expect(refused).toMatchObject({ accepted: false, reason: "worker-limit-reached" });
+    expect(calls.filter((call) => call.operation === "create")).toHaveLength(1);
+    expect(orchestration.status(LEAD)!.lanes).toEqual([
+      expect.objectContaining({ name: "api", sessionId: opened.session }),
+    ]);
+  });
 
   it.each([
     ["refused", "codex-owner-busy"],
@@ -1142,6 +1191,8 @@ describe("orchestration service", () => {
             content: "Done. api_key=sk-test-1234567890abcdef1234",
             turn_id: "t1",
           },
+          { kind: "user-message", content: "Another task", turn_id: "failed-turn" },
+          codexTurnErrorEvent("failed-with-cli-error", "CLI error details", null),
           { kind: "agent-message", content: "a later turn", turn_id: "t2" },
         ],
       });
@@ -1179,6 +1230,21 @@ describe("orchestration service", () => {
       expect(delivered[0]!.text).not.toContain("sk-test-1234567890abcdef1234");
       expect(orchestration.status(LEAD)!.lanes[0]!.lastReport?.preview).toContain("Done.");
     });
+
+    it.each(["failed-turn", "failed-with-cli-error"])(
+      "reports no reply when the failed turn only has replies from other turns (%s)",
+      async (turnId) => {
+        const { orchestration, delivered, session } = await leading();
+        await orchestration.laneTurnEnded(session, turnId, "failed");
+
+        expect(delivered).toHaveLength(1);
+        expect(delivered[0]!.text).toContain("turn ended: failed");
+        expect(delivered[0]!.text).toContain("(no reply was recorded)");
+        expect(delivered[0]!.text).not.toMatch(
+          /earlier turn|Done\.|a later turn|CLI error details/,
+        );
+      },
+    );
 
     it("counts a Codex lead's reports as they go: two at once pass its limit no further", async () => {
       const delivered: string[] = [];

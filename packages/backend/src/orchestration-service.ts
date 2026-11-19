@@ -315,6 +315,7 @@ export class OrchestrationService {
   #endpoints = new Map<string, Promise<LeadEndpoint>>();
   /** Endpoints of leads whose tools changed, still used by the CLI that runs (`update`). */
   #retiredEndpoints = new Map<string, Array<Promise<LeadEndpoint>>>();
+  #openingWorkers = new Map<string, Set<string>>();
   #interventions = new Map<string, number>();
   #closed = false;
   #catchUp: ReturnType<typeof setInterval> | undefined;
@@ -620,10 +621,16 @@ export class OrchestrationService {
     if (!owner || owner.lane.reportedTurns.includes(turnId)) return;
     let reply: string | null = null;
     try {
-      const replies = (await this.lanes.events(sessionId, 50)).filter(
-        (event) => event.kind === "agent-message" && typeof event.content === "string",
-      );
-      const last = replies.filter((event) => event.turn_id === turnId).at(-1) ?? replies.at(-1);
+      const last = (await this.lanes.events(sessionId, 50))
+        .filter(
+          (event) =>
+            event.turn_id === turnId &&
+            event.kind === "agent-message" &&
+            event.cli_output !== true &&
+            typeof event.content === "string" &&
+            event.content.trim() !== "",
+        )
+        .at(-1);
       if (last) reply = bounded(sanitizeSessionText(String(last.content), { value: 0 }), MAX_REPLY);
     } catch {
       /* The report still says the turn ended. */
@@ -1203,8 +1210,27 @@ export class OrchestrationService {
   async #open(lead: Lead, input: Record<string, unknown>): Promise<EndpointResult> {
     const name = stringField(input, "name", 48);
     if (!name || !WORKER_NAME.test(name)) return refuse("invalid-worker-name");
-    if (lead.lanes.some((lane) => lane.name === name)) return refuse("worker-name-taken");
-    if (lead.lanes.length >= lead.scope.maxLanes) return refuse("worker-limit-reached");
+    const opening = this.#openingWorkers.get(lead.sessionId) ?? new Set<string>();
+    const workerNames = new Set([...lead.lanes.map((lane) => lane.name), ...opening]);
+    if (workerNames.has(name)) return refuse("worker-name-taken");
+    if (workerNames.size >= lead.scope.maxLanes) return refuse("worker-limit-reached");
+
+    // Reserve the name and slot before calling a host that may already create a session.
+    opening.add(name);
+    this.#openingWorkers.set(lead.sessionId, opening);
+    try {
+      return await this.#createOrLinkWorker(lead, name, input);
+    } finally {
+      opening.delete(name);
+      if (opening.size === 0) this.#openingWorkers.delete(lead.sessionId);
+    }
+  }
+
+  async #createOrLinkWorker(
+    lead: Lead,
+    name: string,
+    input: Record<string, unknown>,
+  ): Promise<EndpointResult> {
     const session = stringField(input, "session", 256);
     const workspace = stringField(input, "workspace", 256);
     if (!!session === !!workspace) return refuse("worker-needs-workspace-or-session");
